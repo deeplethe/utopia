@@ -1,0 +1,24 @@
+# OntoPilot — one-command run:
+#   1. cp backend/.env.example backend/.env   (set OPENROUTER_API_KEY + a real ADMIN_PASSWORD)
+#   2. docker compose up -d --build
+#   3. open http://localhost:8080   (log in with the admin account from your .env)
+services:
+  backend:
+    build: ./backend
+    env_file: ./backend/.env
+    volumes:
+      - ontopilot-data:/app/data      # persists the SQLite DB, document blobs, and Oxigraph store
+    restart: unless-stopped
+    expose:
+      - "8000"                        # internal only; the frontend proxies to it
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"                     # the app is served here
+    restart: unless-stopped
+
+volumes:
+  ontopilot-data:
