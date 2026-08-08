@@ -1,32 +1,45 @@
-# React + TypeScript + Vite
+# OntoPilot Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The OntoPilot frontend is a React and TypeScript single-page application for managing documents,
+reviewing extraction jobs, exploring RDF/OWL ontologies, resolving conflicts, and auditing changes.
 
-Currently, two official plugins are available:
+For the complete project overview and deployment instructions, see the repository
+[README](../README.md).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Stack
 
-## React Compiler
+- React 19
+- TypeScript 6
+- Vite 8
+- Tailwind CSS 4
+- Radix UI and shadcn components
+- React Flow and Dagre for ontology visualization
+- Recharts for metrics
+- KaTeX for ontology expressions
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Development
 
-## Expanding the Oxlint configuration
+Requirements:
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+- Node.js 22+
+- pnpm
+- OntoPilot backend running at `http://127.0.0.1:8000`
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```powershell
+pnpm install
+pnpm dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The Vite server runs at <http://localhost:5173> and proxies `/api` requests to the backend.
+
+## Validation
+
+```powershell
+pnpm lint
+pnpm build
+```
+
+## Production Image
+
+The frontend Dockerfile builds the static Vite bundle and serves it through Nginx. Nginx also
+proxies `/api` to the backend service, keeping browser requests same-origin.
