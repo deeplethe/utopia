@@ -5,6 +5,30 @@ on:
   pull_request:
 
 jobs:
+  branch-flow:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate pull request branch flow
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if [[ "$BASE_BRANCH" == "dev" && "$HEAD_BRANCH" == feat/* ]]; then
+            echo "Valid feature flow: $HEAD_BRANCH -> $BASE_BRANCH"
+            exit 0
+          fi
+
+          if [[ "$BASE_BRANCH" == "main" && "$HEAD_BRANCH" == "dev" && "$PR_AUTHOR" == "WaylandYang" ]]; then
+            echo "Valid owner release flow: $HEAD_BRANCH -> $BASE_BRANCH"
+            exit 0
+          fi
+
+          echo "Invalid pull request branch flow: $HEAD_BRANCH -> $BASE_BRANCH"
+          echo "Allowed flows are feat/** -> dev and owner-authored dev -> main."
+          exit 1
+
   backend:
     runs-on: ubuntu-latest
     defaults:
