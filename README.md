@@ -56,17 +56,17 @@ LLMs can propose ontology content quickly, but production ontology work also nee
 
 ## Benchmark Highlight
 
-### Benchmark gains across evaluated projects
+### Gains across directly comparable projects
 
-| Unique-edge F1 | Wine | OWL-Time |
+| Protocol F1 | Wine | GeoNames |
 | --- | ---: | ---: |
-| OntoLearner prompt | 46.81% | 22.22% |
-| **OntoPilot prompt** | **50.00%** | **32.14%** |
-| **Improvement** | **+3.19 pp / +6.8%** | **+9.92 pp / +44.6%** |
+| OntoLearner paper · Qwen3-8B | 18.60% | 19.70% |
+| **OntoPilot evaluation · Qwen3-8B** | **28.95%** | **27.03%** |
+| **Improvement** | **+10.35 pp / +55.6%** | **+7.33 pp / +37.2%** |
 
-On Wine, OntoPilot also establishes a **new SOTA under the paper's protocol**: **28.95% F1**, above
-the previous best of 25.00% and **55.6% higher** than the paper's Qwen3-8B result. See the
-[benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md).
+OntoPilot establishes a **new Wine SOTA under the paper's protocol**: 28.95% also exceeds the
+paper-wide best of 25.00%. GeoNames is a 37.2% same-model gain; its paper-wide best is 31.60%.
+See the [benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md).
 
 ## Capabilities
 

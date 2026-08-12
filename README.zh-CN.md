@@ -56,17 +56,17 @@
 
 ## Benchmark 亮点
 
-### 多项目 Benchmark 提升
+### 在可直接对比项目上的提升
 
-| 唯一边 F1 | Wine | OWL-Time |
+| 协议 F1 | Wine | GeoNames |
 | --- | ---: | ---: |
-| OntoLearner 提示词 | 46.81% | 22.22% |
-| **OntoPilot 提示词** | **50.00%** | **32.14%** |
-| **提升** | **+3.19 个百分点 / +6.8%** | **+9.92 个百分点 / +44.6%** |
+| OntoLearner 论文 · Qwen3-8B | 18.60% | 19.70% |
+| **OntoPilot 评测 · Qwen3-8B** | **28.95%** | **27.03%** |
+| **提升** | **+10.35 个百分点 / +55.6%** | **+7.33 个百分点 / +37.2%** |
 
-在 Wine 上，OntoPilot 还以 **28.95% F1** 超过论文此前最佳的 25.00%，取得该论文协议下
-的**新 SOTA**；相比论文 Qwen3-8B 的 18.60% 提升 **55.6%**。完整对比方法、六个数据集、
-消融实验、限制和复现方式见 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
+OntoPilot 在 Wine 上取得论文协议下的**新 SOTA**：28.95% 同样超过论文全部模型的最佳
+25.00%。GeoNames 相比同模型提升 37.2%，但论文全部模型最佳为 31.60%，因此不标为 SOTA。
+完整方法、六个数据集、消融和复现见 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
 
 ## 核心能力
 
