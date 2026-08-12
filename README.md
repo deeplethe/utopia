@@ -6,10 +6,10 @@
 
 Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data from one self-hosted workspace.
 
-[简体中文](README.zh-CN.md) · [Documentation](#documentation) · [Architecture](docs/architecture.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md)
+[简体中文](README.zh-CN.md) · [Documentation](#documentation) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md)
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-007595)](LICENSE)
-![Release](https://img.shields.io/badge/status-pre--1.0-f59e0b)
+[![Release](https://img.shields.io/badge/release-v0.1.0-2563eb)](CHANGELOG.md)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
@@ -45,14 +45,14 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 
 ## Why OntoPilot
 
-LLMs can propose ontology content quickly, but production ontology work also needs boundaries, evidence, review, access control, and stable delivery. OntoPilot treats model output as a governed proposal—not an unquestioned final artifact.
+OntoPilot is an ontology production workspace for companies and domain teams that need to turn knowledge buried in policies, manuals, product specifications, research, and operational documents into structured ontology data—fast.
 
-- **TBox stays conceptual.** Independent role critics and domain-neutral guards keep named individuals and literal values out of the schema.
-- **ABox stays scalable.** Instances live in a separate graph and export asynchronously as checksummed N-Quads shards.
-- **Terminology stays governed.** OWL entities map to SKOS concepts; uncertain aliases, mappings, and hierarchy changes enter human review.
-- **Every decision stays traceable.** Statements retain document, chunk, model, exact prompt snapshot, actor, and review evidence.
-- **Published versions stay immutable.** Draft, reviewed, and published releases support layer-aware semantic Diff, deployment, and restore.
-- **Agents stay accountable.** Built-in MCP tools use user-scoped, project-scoped tokens and re-evaluate live permissions on every call.
+It goes beyond asking an LLM to “generate an ontology.” OntoPilot puts domain experts, reviewers, and agents on the same production line: **AI reads and drafts at scale, people resolve ambiguity and make accountable decisions, and the platform governs evidence, permissions, versions, and releases.** The result is not a one-off model response, but a living knowledge asset that can be reviewed, published, served, and continuously evolved.
+
+- **From documents to computable domain knowledge.** Convert scattered language into a connected TBox, SKOS terminology, and ABox while retaining the source behind every statement.
+- **Human–AI co-creation with governance built in.** Models propose; experts review, correct, and approve through focused queues instead of rebuilding machine output by hand.
+- **From a promising draft to a production asset.** Semantic Diff, immutable releases, rollback, REST APIs, and MCP carry approved knowledge into business systems and agent workflows.
+- **Traceable by design, not by afterthought.** Every decision can be traced to its document chunk, model, prompt snapshot, actor, and review history.
 
 ## Benchmark Highlight
 
