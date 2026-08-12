@@ -14,7 +14,7 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
-![OntoPilot 将文档转化为经过审核的知识图谱和不可变发布版本](docs/images/ontopilot-hero-title.png)
+![OntoPilot 将文档转化为经过审核的知识图谱和不可变发布版本](docs/images/ontopilot-hero-title.webp)
 
 </div>
 
@@ -26,6 +26,7 @@
 
 - [项目定位](#项目定位)
 - [核心能力](#核心能力)
+- [产品界面](#产品界面)
 - [工作流程](#工作流程)
 - [架构](#架构)
 - [Docker 快速启动](#docker-快速启动)
@@ -69,18 +70,20 @@
 | 互操作 | RDF 直接导入，支持自动 TBox/ABox 分类或显式选择目标层 |
 | 国际化 | 中英文界面和文档；后端提示词系统语言独立配置 |
 
+## 产品界面
+
+![OntoPilot 本体工作台，包含治理导航、类层级、图谱浏览和实体详情](docs/images/ontopilot-web-demo.png)
+
+本体工作台在同一视图中整合类导航、关系图谱和实体详情；项目侧边栏则将审核队列、发布、文档、历史、成员和 API 访问串联在统一的治理流程中。
+
 ## 工作流程
 
 ```mermaid
 flowchart LR
-    SOURCE["文档与 RDF"] --> PARSE["解析与切分"]
-    PARSE --> EXTRACT["基于证据的 TBox / ABox 抽取"]
-    EXTRACT --> GUARD["角色判定与确定性守卫"]
-    GUARD --> GRAPHS["TBox · SKOS · ABox"]
-    GRAPHS --> REVIEW["四类人工审核队列"]
-    REVIEW --> RELEASE["不可变发布版本"]
-    RELEASE --> SERVE["REST · RDF · SPARQL"]
-    AGENT["MCP Agent"] -->|"读取 · 预览 · 修改"| GRAPHS
+    SOURCE["1 · 输入<br/>文档 · RDF"] --> BUILD["2 · 构建<br/>解析 · 抽取 · 守卫"]
+    BUILD --> GOVERN["3 · 治理<br/>TBox · SKOS · ABox · 审核"]
+    GOVERN --> DELIVER["4 · 交付<br/>发布 · REST · RDF · SPARQL"]
+    AGENT["MCP Agent"] -->|"读取 · 预览 · 修改"| GOVERN
 ```
 
 只要仍有阻断性冲突、待消歧实体、待审术语或 ABox 验证错误，发布质量门禁就不会允许审核通过。
@@ -406,7 +409,8 @@ curl --fail http://localhost:8080/api/health
 - **协作：** 更完善的审核分配、评论/提及、通知、保存筛选条件和大团队审计流程。
 - **Agent 辅助治理：** 第一方对话页面，使用短期用户 MCP Token，并在执行前展示可审核变更预览。
 - **集成：** 对象存储适配、Webhook/事件、身份提供商集成和常用平台部署模板。
-- **规模与质量：** 更大语料接入、增量抽取、Benchmark 扩展、发布可复现和性能预算。
+- **规模与质量：** 增加 MinerU 等可插拔解析框架、更大语料接入、增量抽取、Benchmark 扩展、发布可复现和性能预算。
+- **建模与推演：** 时空建模，以及受治理、可版本化、可复现的沙盘推演和假设分析。
 - **达到 1.0：** 稳定 REST/MCP/发布契约、兼容性策略、迁移、灾难恢复验证和安全审查。
 
 ## 项目规范

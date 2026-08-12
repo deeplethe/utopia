@@ -30,6 +30,7 @@ Exit criteria: a clean installation and an upgrade from the previous supported s
 - [ ] Organization/workspace administration beyond a single installation-wide user list.
 - [ ] OIDC/OAuth identity-provider integration and deployer-oriented role mapping.
 - [ ] S3-compatible artifact storage and pluggable document/blob backends.
+- [ ] Pluggable parsing adapters for MinerU and other document-understanding frameworks, with normalized chunks, layout metadata, and provenance across backends.
 - [ ] Signed webhooks or an event-delivery API for extraction, review, release, and deployment state changes.
 - [ ] Deployment recipes for reverse proxies, object storage, managed PostgreSQL, and common container platforms.
 - [ ] Retention controls for source chunks, provider payloads, audit evidence, and exported artifacts.
@@ -44,8 +45,9 @@ Exit criteria: multi-reviewer teams can coordinate work without external spreads
 - [ ] Conversation-level budgets, tool allowlists, cancellation, and complete audit playback.
 - [ ] Proposal comparison, partial approval, and reusable review policies.
 - [ ] Evaluation suites for agent safety, permission enforcement, hallucinated evidence, and rollback correctness.
+- [ ] Spatiotemporal modeling and governed sandbox simulation with versioned scenarios, explicit assumptions, what-if analysis, and reproducible results.
 
-Exit criteria: an agent can suggest and execute approved changes without receiving browser credentials, bypassing live roles, mutating published releases, or hiding the exact diff from the user.
+Exit criteria: an agent can suggest and execute approved changes without receiving browser credentials, bypassing live roles, mutating published releases, or hiding the exact diff from the user; simulations remain isolated from published state and traceable to versioned graphs, inputs, and assumptions.
 
 ## Toward 1.0
 
@@ -74,7 +76,8 @@ Open a focused GitHub issue describing the user problem, affected workflow, secu
 
 - **近期：稳定 1.0 前基础。** 正式数据库迁移、备份恢复、可观测性、浏览器回归、无障碍、公共契约兼容检查和性能基线。
 - **下一阶段：团队治理与集成。** 审核分配/评论/通知、组织管理、OIDC、对象存储、Webhook 和生产部署模板。
-- **后续：Agent 辅助本体工程。** 第一方对话、短期用户 MCP Token、证据引用、强制 Diff 预览、预算/Tool 白名单和安全评测。
+- **解析框架扩展。** 增加 MinerU 等文档理解框架的可插拔适配，统一不同后端输出的 Chunk、版面元数据和溯源信息。
+- **后续：Agent 辅助本体工程与高级建模。** 第一方对话、短期用户 MCP Token、证据引用、强制 Diff 预览、预算/Tool 白名单和安全评测；支持时空建模与受治理的沙盘推演，场景、假设和结果可版本化、可复现、可追溯。
 - **1.0 标准：** 稳定版本策略、完整迁移链路、灾难恢复目标、独立安全审查以及可复现的大规模质量/性能报告。
 
 明确不做：无人审核自动发布、用不透明单分数掩盖不确定性、为 Benchmark 写特例、开放 SPARQL 更新或任意 Agent 网络/文件访问、让可变工作区替代固定版本的生产服务。

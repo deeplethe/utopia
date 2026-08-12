@@ -14,7 +14,7 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
-![OntoPilot turns documents into reviewed knowledge graphs and immutable releases](docs/images/ontopilot-hero-title.png)
+![OntoPilot turns documents into reviewed knowledge graphs and immutable releases](docs/images/ontopilot-hero-title.webp)
 
 </div>
 
@@ -26,6 +26,7 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 
 - [Why OntoPilot](#why-ontopilot)
 - [Capabilities](#capabilities)
+- [Product Interface](#product-interface)
 - [How It Works](#how-it-works)
 - [Architecture](#architecture)
 - [Quick Start with Docker](#quick-start-with-docker)
@@ -69,18 +70,20 @@ LLMs can propose ontology content quickly, but production ontology work also nee
 | Interoperability | RDF import with automatic TBox/ABox classification or explicit target-layer selection |
 | Internationalization | English and Simplified Chinese UI/docs; independently configurable backend prompt language |
 
+## Product Interface
+
+![OntoPilot ontology workspace showing the governance navigation, class hierarchy, graph explorer, and entity details](docs/images/ontopilot-web-demo.png)
+
+The ontology workspace combines class navigation, an interactive relationship graph, and entity details in one view. The project sidebar keeps review queues, releases, documents, history, members, and API access within the same governed workflow.
+
 ## How It Works
 
 ```mermaid
 flowchart LR
-    SOURCE["Documents and RDF"] --> PARSE["Parse and chunk"]
-    PARSE --> EXTRACT["Grounded TBox / ABox extraction"]
-    EXTRACT --> GUARD["Role critics and deterministic guards"]
-    GUARD --> GRAPHS["TBox · SKOS · ABox"]
-    GRAPHS --> REVIEW["Four human review queues"]
-    REVIEW --> RELEASE["Immutable release"]
-    RELEASE --> SERVE["REST · RDF · SPARQL"]
-    AGENT["MCP agent"] -->|"read · preview · mutate"| GRAPHS
+    SOURCE["1 · Sources<br/>Documents · RDF"] --> BUILD["2 · Build<br/>Parse · extract · guard"]
+    BUILD --> GOVERN["3 · Govern<br/>TBox · SKOS · ABox · review"]
+    GOVERN --> DELIVER["4 · Deliver<br/>Release · REST · RDF · SPARQL"]
+    AGENT["MCP agent"] -->|"read · preview · mutate"| GOVERN
 ```
 
 The release quality gate blocks approval while blocking conflicts, unresolved entities, pending terminology proposals, or ABox validation errors remain.
@@ -406,7 +409,8 @@ The roadmap is directional rather than a release promise. See [ROADMAP.md](ROADM
 - **Collaborate:** richer review assignment, comments/mentions, notifications, saved filters, and large-team audit workflows.
 - **Agent-assisted governance:** a first-party chat surface that uses short-lived user MCP tokens and always previews mutations before approval.
 - **Integrate:** object-storage adapters, webhooks/event delivery, identity-provider integration, and deployment recipes for common platforms.
-- **Scale and quality:** larger-corpus ingestion, incremental extraction, benchmark expansion, release reproducibility, and performance budgets.
+- **Scale and quality:** MinerU and other pluggable parsing frameworks, larger-corpus ingestion, incremental extraction, benchmark expansion, release reproducibility, and performance budgets.
+- **Model and simulate:** spatiotemporal modeling plus governed, versioned, and reproducible sandbox simulations for what-if analysis.
 - **Reach 1.0:** stable public API/MCP/release contracts, documented compatibility policy, migrations, disaster-recovery verification, and security review.
 
 ## Project Policy
