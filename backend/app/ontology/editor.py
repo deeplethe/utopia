@@ -73,6 +73,9 @@ def _prop_is_object(graph_iri: str, node: NamedNode) -> bool:
 
 def _set_single(graph_iri: str, subj: NamedNode, pred, obj) -> None:
     """Replace all values of a single-valued predicate."""
+    for old in store.object_terms(graph_iri, subj, pred):
+        if isinstance(old, BlankNode):
+            _gc_blank(graph_iri, old)
     store.remove_pattern(graph_iri, subj, pred, None)
     if obj is not None:
         store.add_triples(graph_iri, [(subj, pred, obj)])

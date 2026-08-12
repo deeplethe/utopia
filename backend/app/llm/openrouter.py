@@ -7,6 +7,7 @@ DeepSeek model — never an expensive Claude model.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -15,10 +16,25 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.llm import capacity
 
 
 class LLMError(RuntimeError):
     pass
+
+
+def _capacity_spec() -> tuple[str, int]:
+    from app import model_config
+
+    return model_config.llm_capacity_key(), model_config.llm_concurrency()
+
+
+@contextlib.asynccontextmanager
+async def capacity_slot():
+    """Reserve a slot on the current LLM endpoint before caller timeouts start."""
+    key, limit = _capacity_spec()
+    async with capacity.async_slot(key, limit):
+        yield
 
 
 def _payload_headers_url(messages, model, temperature, max_tokens):
@@ -54,16 +70,18 @@ def chat_sync(
     """Synchronous chat completion (for use inside worker threads, e.g. entity resolution,
     where the surrounding code is already off the event loop and uses blocking I/O)."""
     payload, headers, url = _payload_headers_url(messages, model, temperature, max_tokens)
-    last_err: Exception | None = None
-    for attempt in range(retries):
-        try:
-            resp = httpx.post(url, json=payload, headers=headers, timeout=settings.llm_timeout_s)
-            resp.raise_for_status()
-            return resp.json()["choices"][0]["message"]["content"]
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-            time.sleep(1.5 * (attempt + 1))
-    raise LLMError(f"OpenRouter (sync) call failed after {retries} tries: {last_err}")
+    key, limit = _capacity_spec()
+    with capacity.sync_slot(key, limit):
+        last_err: Exception | None = None
+        for attempt in range(retries):
+            try:
+                resp = httpx.post(url, json=payload, headers=headers, timeout=settings.llm_timeout_s)
+                resp.raise_for_status()
+                return resp.json()["choices"][0]["message"]["content"]
+            except Exception as e:  # noqa: BLE001
+                last_err = e
+                time.sleep(1.5 * (attempt + 1))
+        raise LLMError(f"OpenRouter (sync) call failed after {retries} tries: {last_err}")
 
 
 async def chat(
@@ -76,19 +94,20 @@ async def chat(
 ) -> str:
     """Send a chat completion request, returning the assistant message content."""
     payload, headers, url = _payload_headers_url(messages, model, temperature, max_tokens)
-
-    last_err: Exception | None = None
-    async with httpx.AsyncClient(timeout=settings.llm_timeout_s) as client:
-        for attempt in range(retries):
-            try:
-                resp = await client.post(url, json=payload, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-                return data["choices"][0]["message"]["content"]
-            except Exception as e:  # noqa: BLE001
-                last_err = e
-                await asyncio.sleep(2 * (attempt + 1))
-    raise LLMError(f"OpenRouter call failed after {retries} tries: {last_err}")
+    key, limit = _capacity_spec()
+    async with capacity.async_slot(key, limit):
+        last_err: Exception | None = None
+        async with httpx.AsyncClient(timeout=settings.llm_timeout_s) as client:
+            for attempt in range(retries):
+                try:
+                    resp = await client.post(url, json=payload, headers=headers)
+                    resp.raise_for_status()
+                    data = resp.json()
+                    return data["choices"][0]["message"]["content"]
+                except Exception as e:  # noqa: BLE001
+                    last_err = e
+                    await asyncio.sleep(2 * (attempt + 1))
+        raise LLMError(f"OpenRouter call failed after {retries} tries: {last_err}")
 
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)

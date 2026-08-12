@@ -2,287 +2,427 @@
 
 # OntoPilot
 
-**将文档转化为可审阅、可追溯的本体。**
+**从源文档构建由人治理、可追溯、可发布的本体。**
 
-OntoPilot 是一套本地优先的 RDF/OWL 知识建模工作台，通过人工参与的 AI 流程完成文档解析、
-本体抽取、审阅校正、验证和发布。
+在一个自托管工作台中完成 TBox、SKOS 术语、ABox 的构建、审阅、版本化、发布与服务。
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+[English](README.md) · [文档](#文档与接口) · [架构](docs/architecture.md) · [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [安全策略](SECURITY.md)
 
+[![License](https://img.shields.io/badge/license-Apache--2.0-007595)](LICENSE)
+![Release](https://img.shields.io/badge/status-pre--1.0-f59e0b)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
-![Status](https://img.shields.io/badge/status-private%20preview-6B7280)
+
+![OntoPilot 将文档转化为经过审核的知识图谱和不可变发布版本](docs/images/ontopilot-hero-title.png)
 
 </div>
 
-## 项目简介
+> [!IMPORTANT]
+> OntoPilot 正在快速开发，尚未达到 1.0。升级前请备份 PostgreSQL、OntoPilot 数据卷和 Token 加密密钥，并先使用生产数据副本验证迁移。
 
-OntoPilot 的目标不是生成一次性的 LLM 输出，而是把源文档逐步转化为经过审阅的知识本体。
-系统将结构感知文档解析、模式与实例抽取、语义检索、专用审阅智能体、溯源、人工编辑和可回滚
-历史整合在一个自托管应用中。
+<details>
+<summary><strong>目录</strong></summary>
 
-文档、元数据和本体图默认保存在本地。只有用户选择的文档分块和相关本体上下文会发送到管理员
-配置的 OpenAI 兼容模型端点。
+- [项目定位](#项目定位)
+- [核心能力](#核心能力)
+- [工作流程](#工作流程)
+- [架构](#架构)
+- [Docker 快速启动](#docker-快速启动)
+- [MCP 与 Agent 集成](#mcp-与-agent-集成)
+- [文档与接口](#文档与接口)
+- [配置](#配置)
+- [源码开发](#源码开发)
+- [测试与 Benchmark](#测试与-benchmark)
+- [运维](#运维)
+- [安全与隐私](#安全与隐私)
+- [路线图](#路线图)
+- [开源协议](#开源协议)
+
+</details>
+
+## 项目定位
+
+大模型可以快速提出本体候选，但真正可用于生产的本体工程还需要边界、证据、审阅、权限和稳定交付。OntoPilot 把模型输出视为“待治理提案”，而不是不经验证的最终结果。
+
+- **TBox 保持概念层。** 独立角色判定器和领域无关守卫阻止具体实例、字面量误入模式层。
+- **ABox 可扩展。** 实例位于独立图中，并异步导出为带校验和的 N-Quads 分片。
+- **术语可治理。** OWL 实体映射为 SKOS 概念；不确定的别名、映射和层级进入人工审核。
+- **决策可追溯。** 语句保留文档、chunk、模型、完整提示词快照、操作者和审核证据。
+- **发布版本不可变。** 草稿、已审核和已发布版本支持分层语义 Diff、部署与恢复。
+- **Agent 权责明确。** 内置 MCP 使用“用户 + 知识体系”范围的 Token，并在每次调用时重新检查实时权限。
 
 ## 核心能力
 
 | 领域 | 能力 |
 | --- | --- |
-| 文档接入 | PDF、Word、Excel、Markdown、CSV 和文本；内容寻址存储；虚拟文件夹 |
-| 结构化分块 | 原生 Docling 层级与表格感知分块，并提供轻量解析回退 |
-| TBox 抽取 | 类、子类、对象属性、数据属性、定义域、值域和公理 |
-| ABox 抽取 | 个体、类型、对象断言、数据断言和来源证据 |
-| 智能体辅助 | 本体检索、实体消歧、定义域/值域协调、冲突分流、验证和孤立类挂接 |
-| 人工审阅 | 本体冲突、实体消歧和数据类型验证三类专用队列 |
-| 溯源 | 每条抽取公理和事实都可回溯到源文档及文本分块 |
-| 本体工作台 | 类层级、聚焦邻域图、全图、检查器、明细表和 LaTeX 公理展示 |
-| 治理 | 知识体系级 owner/editor/viewer 权限、审计历史和按图回滚 |
-| 互操作 | 导出 Turtle、RDF/XML、N-Triples 或 JSON-LD |
+| 文档接入 | PDF、Word、Excel、Markdown、CSV、文本；结构化切分；目录；批量解析 |
+| 本体抽取 | 类、属性、上下位、互斥、等价、定义域、值域和注释 |
+| 实例抽取 | 实例、类型、对象断言、数据断言和实体消歧 |
+| 受控术语 | SKOS 词表与概念、多语言标签、别名、层级、映射和提案 |
+| 人工审核 | 冲突、实体消歧、术语、ABox 验证四个队列，支持搜索和组合筛选 |
+| 治理 | 知识体系角色、可编辑提示词、提示词历史、溯源、审计和回滚 |
+| 发布工程 | 草稿 → 已审核 → 已发布、不可变快照、语义 Diff、恢复与部署 |
+| 导出 | TBox、术语、ABox 分层导出；完整包；异步 N-Quads 分片 |
+| 对外服务 | 知识体系 API Token、固定版本 REST、RDF 导出、受限只读 SPARQL |
+| Agent 集成 | 随后端自动启动的 Streamable HTTP MCP，覆盖读取、建议、修改、审核和生命周期 |
+| 互操作 | RDF 直接导入，支持自动 TBox/ABox 分类或显式选择目标层 |
+| 国际化 | 中英文界面和文档；后端提示词系统语言独立配置 |
 
-## 系统架构
+## 工作流程
 
 ```mermaid
 flowchart LR
-    UI["React + TypeScript 前端"] -->|REST / JSON| API["FastAPI 应用"]
-    API --> META["SQLite 元数据"]
-    API --> BLOB["SHA-256 文件库"]
-    API --> RDF["嵌入式 Oxigraph RDF 存储"]
-    API --> PARSE["Docling + 回退解析器"]
-    API --> MODEL["OpenAI 兼容 LLM 与 Embedding 端点"]
-    PARSE --> API
-    MODEL --> API
+    SOURCE["文档与 RDF"] --> PARSE["解析与切分"]
+    PARSE --> EXTRACT["基于证据的 TBox / ABox 抽取"]
+    EXTRACT --> GUARD["角色判定与确定性守卫"]
+    GUARD --> GRAPHS["TBox · SKOS · ABox"]
+    GRAPHS --> REVIEW["四类人工审核队列"]
+    REVIEW --> RELEASE["不可变发布版本"]
+    RELEASE --> SERVE["REST · RDF · SPARQL"]
+    AGENT["MCP Agent"] -->|"读取 · 预览 · 修改"| GRAPHS
 ```
 
-每个知识体系拥有两张 Oxigraph named graph：
+只要仍有阻断性冲突、待消歧实体、待审术语或 ABox 验证错误，发布质量门禁就不会允许审核通过。
 
-- **TBox 图**：保存类、属性和模式公理；
-- **ABox 图**：保存个体和断言。
+## 架构
 
-SQLite 保存用户、权限、文档、分块、抽取任务、溯源、冲突、历史决策和审计事件。原始文件按
-SHA-256 内容寻址，只在本地文件库中保存一份。
+![OntoPilot 高层架构](docs/images/ontopilot-architecture.png)
 
-## 典型流程
+上图用于快速阅读；下面可版本管理的 Mermaid 是高层拓扑的事实来源。
 
-1. 创建知识体系并选择模型端点。
-2. 上传和整理源文档。
-3. 将文档解析为结构感知分块。
-4. 通过后台任务抽取模式、实例或两者。
-5. 审阅冲突、歧义实体匹配和验证问题。
-6. 在本体工作台中浏览和编辑知识图。
-7. 将实体和断言回溯到原始文档。
-8. 导出本体，或回滚某次修改前的图状态。
+```mermaid
+flowchart LR
+    WEB["React Web UI"] -->|"REST API"| API["FastAPI Backend"]
+    MCP["MCP Agent"] -->|"/mcp"| API
+    API <--> PG["PostgreSQL"]
+    API <--> RDF["Oxigraph RDF"]
+    API <--> ART["Artifact Storage"]
+    API <--> MODEL["Model Endpoints"]
 
-## 使用 Docker 快速启动
+    subgraph LAYERS["RDF 命名图"]
+      TBOX["TBox"]
+      SKOS["SKOS"]
+      ABOX["ABox"]
+    end
 
-### 前置条件
+    RDF --> LAYERS
+```
 
-- Docker Engine 与 Docker Compose
-- OpenAI 兼容 API Key，例如 OpenRouter Key
+| 组件 | 职责 |
+| --- | --- |
+| React + TypeScript | 治理工作台、图谱浏览、审核、发布、设置和文档 |
+| FastAPI | 认证、权限、接入、抽取编排、审核、发布、REST 与 MCP |
+| PostgreSQL | 用户、角色、文档/任务元数据、提示词快照、溯源、审核状态、审计和发布记录 |
+| Oxigraph | 可变 TBox/SKOS/ABox 图，以及独立的已发布版本服务投影 |
+| 制品存储 | 源文件、不可变快照、清单、溯源 JSONL 和导出分片 |
+| 模型端点 | 管理员配置的 OpenAI 兼容对话/向量服务，支持每端点独立限流 |
 
-### 启动
+SQLite 适用于单进程本地开发；共享环境和 Docker 部署使用 PostgreSQL。信任边界、图层隔离、溯源和导出设计详见[架构文档](docs/architecture.md)。
+
+## Docker 快速启动
+
+### 环境要求
+
+- Docker Engine 27+ 和 Docker Compose v2
+- 建议至少 4 GB 可用内存，以便顺利构建和首次启动
+- 抽取时需要 OpenAI 兼容 API 凭据；没有凭据时应用仍可启动
+
+### 1. 配置
 
 ```bash
 git clone https://github.com/deeplethe/ontopilot.git
 cd ontopilot
+cp .env.example .env
 cp backend/.env.example backend/.env
 ```
 
-PowerShell 使用：
-
-```powershell
-Copy-Item backend/.env.example backend/.env
-```
-
-编辑 `backend/.env`，至少设置：
+至少修改以下内容：
 
 ```dotenv
-OPENROUTER_API_KEY=sk-or-v1-your-key
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=replace-with-a-strong-password
+# .env
+POSTGRES_PASSWORD=替换为强随机密码
+SYSTEM_LANGUAGE=zh-CN
+MCP_PUBLIC_URL=http://localhost:8080/mcp
+ONTOPILOT_BIND_ADDRESS=0.0.0.0
+ONTOPILOT_PORT=8080
 ```
 
-启动应用：
+```dotenv
+# backend/.env
+OPENROUTER_API_KEY=sk-or-v1-your-key
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=替换为强密码
+COOKIE_SECURE=false
+```
+
+`SYSTEM_LANGUAGE` 控制内置模型提示词（`en` 或 `zh-CN`），与每个用户选择的前端语言无关；知识体系级提示词覆盖始终优先。
+
+### 2. 启动并检查
 
 ```bash
 docker compose up -d --build
+docker compose ps
+curl --fail http://localhost:8080/api/health
 ```
 
-打开 <http://localhost:8080>，使用 `backend/.env` 中的管理员账号登录。
+打开 <http://localhost:8080>，使用配置的管理员账号登录。首次构建后容器可能需要短暂时间进入健康状态。
 
-停止服务但保留数据：
+如需仅本机可访问的隔离部署：
+
+```dotenv
+ONTOPILOT_BIND_ADDRESS=127.0.0.1
+ONTOPILOT_PORT=18080
+MCP_PUBLIC_URL=http://127.0.0.1:18080/mcp
+```
+
+### 3. 停止
 
 ```bash
 docker compose down
 ```
 
-运行数据保存在 `ontopilot-data` Docker volume 中。
+该命令保留命名卷。`docker compose down -v` 会永久删除当前部署的 PostgreSQL 和 OntoPilot 数据卷，只有明确需要全新环境时才可使用。
 
-为控制镜像体积，基础 Docker 镜像默认使用轻量回退解析器。如需在 Docker 中启用 Docling 的层级与表格感知流程，请在自定义后端镜像中加入可选 Docling 依赖后重新构建。
+## 第一次完整治理流程
 
-## 本地开发
+1. 打开 **设置 → 模型端点**，配置对话/向量服务，为每个端点设置独立并发限制并测试连接。
+2. 创建知识体系，以 owner、editor 或 viewer 身份邀请成员。
+3. 在 **文档** 中上传 `examples/pump-operations.txt` 并解析。
+4. 选择已解析 chunk，运行 **TBox**、**ABox** 或组合抽取。
+5. 检查本体、受控术语、实例、来源证据和抽取任务。
+6. 清空冲突、实体消歧、术语和验证四个审核队列。
+7. 创建发布草稿，通过质量门禁，审核并正式发布。
+8. 部署发布投影，或导出完整制品供下游系统使用。
+
+首次启动后端前设置 `SEED_DEMO_DATA=true`，可以在不调用模型的情况下创建确定性的 Pump Operations 演示库。已有源码环境可在仓库根目录运行 `python backend/scripts/seed_demo.py`。
+
+## MCP 与 Agent 集成
+
+MCP 默认在 `/mcp` 提供服务，并与后端使用同一个生命周期自动启动，不需要额外安装或守护 MCP 进程。每个 MCP Token 绑定一个用户和一个知识体系；每次调用都取 Token Scope 与用户实时角色的交集。
+
+```json
+{
+  "mcpServers": {
+    "ontopilot": {
+      "type": "streamable-http",
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ONTOPILOT_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+| Scope | 最低知识体系角色 | 能力示例 |
+| --- | --- | --- |
+| `mcp:read` | Viewer | 本体、文档、词表、实例、证据、审核队列、历史、发布、SPARQL |
+| `mcp:write` | Editor | 预览/应用 TBox、ABox、SKOS 修改，处理审核项，启动抽取 |
+| `mcp:manage` | Owner | 发布、部署、停止/删除发布版本、回滚审计变更 |
+
+修改 Tool 必须携带审计原因；破坏性操作必须显式确认；本体修改可以先返回精确 RDF Diff，再由用户决定是否执行。请在知识体系的 API 访问区域创建短期 MCP Token，不要把浏览器 Cookie 或 Token 写入提示词、日志或源码。
+
+[MCP 中文指南](frontend/src/content/docs/zh-CN/mcp.md)列出了全部已注册 Tool，以及推荐的“读取证据 → 预览 → 用户确认 → 执行”流程。
+
+## 文档与接口
+
+登录后通过 `/docs` 打开文档中心。左侧目录树中的每一项对应独立的中/英文 Markdown，右侧渲染 Markdown 和项目主题色 Mermaid 图。
+
+| 资源 | 默认地址 / 文件 |
+| --- | --- |
+| 产品与设计文档 | <http://localhost:8080/docs> |
+| MCP 指南 | <http://localhost:8080/docs/mcp> |
+| OpenAPI UI | <http://localhost:8080/api/docs> |
+| ReDoc | <http://localhost:8080/api/redoc> |
+| OpenAPI JSON | <http://localhost:8080/api/openapi.json> |
+| 健康检查 | <http://localhost:8080/api/health> |
+| 外部 API 指南 | [docs/external-api.zh-CN.md](docs/external-api.zh-CN.md) |
+| RDF 导入指南 | [docs/rdf-import.zh-CN.md](docs/rdf-import.zh-CN.md) |
+| 发布和导出指南 | [docs/release-and-export.md](docs/release-and-export.md) |
+
+浏览器治理 API 使用 HttpOnly Session Cookie。下游应用使用可吊销的知识体系 API Token，并访问 `/api/v1/knowledge-systems/{public_id}` 下的版本化接口。生产消费者应固定发布版本；`/published` 会有意跟随最新发布版本。
+
+## 发布、服务与导出
+
+草稿使用内部标识，只有发布成功才分配公开 `vN` 版本。因此删除未发布草稿不会消耗下一个公开版本号。
+
+每次发布固化三层 RDF 和溯源文件：
+
+```text
+release/
+├── manifest.json
+├── tbox-00001.nq
+├── vocabulary-00001.nq
+├── abox-00001.nq
+├── abox-00002.nq
+├── tbox-provenance.jsonl
+└── abox-provenance.jsonl
+```
+
+制品有意保持未压缩，以支持 HTTP Range、逐行处理、分片独立校验和对象存储/CDN 复制；清单记录 SHA-256。反向代理仍可启用传输压缩。
+
+## 配置
+
+仓库中的 [.env.example](.env.example) 和 [backend/.env.example](backend/.env.example) 是配置参考。
+
+| 变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `POSTGRES_PASSWORD` | Compose 回退为 `ontopilot` | PostgreSQL 密码，非一次性本地环境必须修改 |
+| `SYSTEM_LANGUAGE` | `en` | 内置后端提示词语言（`en` / `zh-CN`），独立于前端语言 |
+| `ONTOPILOT_BIND_ADDRESS` | `0.0.0.0` | 前端容器映射到宿主机的监听地址 |
+| `ONTOPILOT_PORT` | `8080` | 前端容器映射到宿主机的端口 |
+| `DATABASE_URL` | 本地 SQLite | SQLAlchemy 地址；Compose 会自动注入 PostgreSQL |
+| `OPENROUTER_API_KEY` | 空 | 初始兼容模型凭据；也可在设置页管理端点 |
+| `LLM_EXTRACT_MODEL` | `deepseek/deepseek-chat` | 初始抽取/Agent 模型 |
+| `EMBEDDING_MODEL` | `baai/bge-m3` | 初始向量模型 |
+| `EXTRACTION_CONCURRENCY` | `10` | 旧配置/回退种子；运行时由每个模型端点分别限流 |
+| `MCP_PUBLIC_URL` | `http://localhost:8000/mcp` | 后端向客户端声明的 Streamable HTTP 地址 |
+| `MCP_TOKEN_TTL_MINUTES` | `60` | 委派 MCP Token 默认有效期 |
+| `TOKEN_ENCRYPTION_KEY` | 在数据卷中生成 | 可再次显示的 API Token 密钥加密材料，必须备份 |
+| `COOKIE_SECURE` | `false` | 是否要求浏览器 Session Cookie 只能通过 HTTPS 传输 |
+| `SEED_DEMO_DATA` | `false` | 是否向空数据库写入无模型调用的演示数据 |
+| `RDF_IMPORT_MAX_BYTES` | `26214400` | RDF 直接上传大小上限 |
+| `RDF_IMPORT_MAX_TRIPLES` | `250000` | RDF 解析语句数上限 |
+
+## 源码开发
 
 ### 环境要求
 
 - Python 3.12+
 - Node.js 22+
-- pnpm
-- OpenAI 兼容 API Key
+- Corepack 与 pnpm 10.2.1（已在 `frontend/package.json` 固定）
 
 ### 后端
 
-```powershell
+```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+# POSIX: source .venv/bin/activate
+# PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+cp .env.example .env
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Docling 在基础依赖中是可选项。要启用层级与表格感知解析，请安装：
-
-```powershell
-pip install "docling>=2.118,<3" "docling-core[chunking]>=2.90,<3"
-```
-
-复制并配置环境文件：
-
-```powershell
-Copy-Item .env.example .env
-```
-
-启动 API：
-
-```powershell
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-- 健康检查：<http://127.0.0.1:8000/api/health>
-- OpenAPI 文档：<http://127.0.0.1:8000/docs>
+`DATABASE_URL` 为空时，后端使用 SQLite，并把 SQLite、Oxigraph 和其他开发数据写入 `backend/data/`。
 
 ### 前端
 
-```powershell
+```bash
 cd frontend
-pnpm install
+corepack enable
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-开发服务器运行在 <http://localhost:5173>，并将 `/api` 代理到后端。
+Vite 默认运行在 <http://localhost:5173>，并把 `/api` 和 `/mcp` 代理到 `http://127.0.0.1:8000`。隔离源码部署可以覆盖目标：
 
-### 校验命令
+```bash
+VITE_BACKEND_PROXY_TARGET=http://127.0.0.1:18000 pnpm dev --host 127.0.0.1 --port 15173
+```
 
-```powershell
-# 后端语法检查
+PowerShell 请先设置 `$env:VITE_BACKEND_PROXY_TARGET`，再执行 `pnpm dev`。
+
+## 测试与 Benchmark
+
+运行核心测试、Lint、构建和契约检查：
+
+```bash
 cd backend
-.venv\Scripts\python.exe -m compileall -q app
+pytest -q
+python scripts/check_tbox_guard.py
+python scripts/check_ontolearner_regression.py tests/gold/ontolearner_reference_result.json
 
-# 前端检查
-cd ..\frontend
+cd ../frontend
 pnpm lint
 pnpm build
+
+cd ..
+docker compose config --quiet
 ```
 
-## 配置
+项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。OntoLearner Wine 协议和可复现说明位于 [docs/benchmarks](docs/benchmarks/ontolearner-wine-official.md)。模型和供应商行为会影响得分，本项目不把该结果表述为官方排行榜成绩。
 
-系统从 `backend/.env` 读取基础配置。管理员也可以在运行时管理模型端点，并为每个知识体系设置
-独立覆盖配置。
+完整人工端到端路径见 [docs/acceptance.md](docs/acceptance.md)。
 
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` | 空 | 默认 OpenRouter 连接的 API Key |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | 默认 OpenAI 兼容基础地址 |
-| `LLM_EXTRACT_MODEL` | `deepseek/deepseek-chat` | 默认抽取与智能体模型 |
-| `EMBEDDING_MODEL` | `baai/bge-m3` | 默认多语言 Embedding 模型 |
-| `LLM_TEMPERATURE` | `0.1` | 模型采样温度 |
-| `LLM_MAX_TOKENS` | `4000` | 最大输出 Token 数 |
-| `CHUNK_SIZE_TOKENS` | `900` | Docling HybridChunker 分块预算 |
-| `EXTRACTION_MODE` | `auto` | `rag`、`agentic` 或自动选择 |
-| `EXTRACTION_CONCURRENCY` | `5` | 单个任务并发抽取分块数上限 |
-| `ADMIN_USERNAME` | `admin` | 空数据库首次启动时创建的管理员用户名 |
-| `ADMIN_PASSWORD` | `admin` | 初始管理员密码，必须覆盖 |
-| `COOKIE_SECURE` | `false` | HTTPS 部署时设为 `true` |
-| `CORS_ORIGINS` | 本地 Vite 地址 | 允许访问后端的浏览器来源 JSON 列表 |
+## 运维
 
-全部高级智能体和验证参数见 `backend/app/config.py`。
+### 备份
 
-## 抽取模式
+以下内容必须组成一套一致的恢复数据：
 
-- **RAG**：检索相关本体实体与邻域，通过一次模型调用完成抽取。
-- **Agentic**：允许模型在受限工具循环中搜索本体和查看邻域，再输出本体增量。
-- **Auto**：小型本体使用 RAG，达到配置的类数量阈值后使用 Agentic 模式。
+- `ontopilot-postgres` 卷，或由 `pg_dump` 生成的备份；
+- `ontopilot-data` 卷，其中包含文档、Oxigraph、发布版本、导出和自动生成的 Token 密钥；
+- 通过密钥管理系统保存的部署 `.env`，不得提交到 Git。
 
-TBox 分块并发处理，图写入串行化，从而保持抽取原子性、任务进度可查询和回滚差异一致。
+请定期进行恢复演练。仅恢复数据库是不完整的，因为 RDF 图和制品位于 PostgreSQL 之外。
 
-## 溯源与安全删除
+### 升级
 
-OntoPilot 将本体视为多个来源合并后的产物。同一条公理或事实可能由多个文档共同支撑，也可能来自
-人工编辑。
-
-删除文档前，系统会计算影响范围并找出仅由该文档支撑的内容。用户必须确认这些撤回项。仍有其他
-来源支撑或由人工创建的内容会保留，从而避免误删图谱和遗留无来源事实。
-
-## 数据与隐私
-
-本地开发时的运行数据位于 `backend/data/`：
-
-```text
-backend/data/
-├── blobs/          # 内容寻址源文件
-├── ontopilot.db    # SQLite 元数据、用户、任务、溯源和审计历史
-└── oxigraph/       # 持久化 RDF named graph
+```bash
+git pull --ff-only
+docker compose build --pull
+docker compose up -d
+docker compose ps
+curl --fail http://localhost:8080/api/health
 ```
 
-该目录和 `backend/.env` 均已被 Git 忽略。
+升级前先备份，检查示例配置变量变化；1.0 之前应先在生产数据副本上验证。
 
-重要隐私说明：
+### 反向代理检查项
 
-- 用户选中的文档分块和相关本体上下文会发送给配置的模型服务商；
-- Provider API Key 只保存在服务端，API 不会返回未遮罩的 Key；
-- 非本地部署必须使用 HTTPS，并设置 `COOKIE_SECURE=true`；
-- 备份时应同时备份 SQLite、文件库和 Oxigraph，以保持跨存储一致性。
+- 终止 TLS，并设置 `COOKIE_SECURE=true`；
+- 把 `MCP_PUBLIC_URL` 设置为外部可访问的 HTTPS `/mcp` 地址；
+- `/mcp` 需要保持流式传输并关闭响应缓冲；
+- 按文档接入需要设置上传大小、限流和超时；
+- PostgreSQL 和后端内部端口不得直接暴露公网。
 
-## 部署边界
+### 常见问题
 
-当前版本面向单机自托管后端。SQLite、嵌入式 Oxigraph、进程内后台任务和图写锁均针对本地优先
-场景设计，目前不支持横向扩容和分布式持久任务。
+| 现象 | 检查项 |
+| --- | --- |
+| 前端启动但 API 请求失败 | `docker compose ps`、后端健康状态、Nginx 日志 |
+| 源码前端意外请求 8000 | 启动 Vite 前设置 `VITE_BACKEND_PROXY_TARGET` |
+| 无法抽取 | 测试当前模型端点，检查凭据、模型名和端点并发限制 |
+| MCP 返回 `401` | 在 `Authorization: Bearer` Header 中使用未过期的 `opm_...` Token |
+| HTTPS 后重复登录 | 设置 `COOKIE_SECURE=true`，检查代理的协议和 Host 转发 |
+| 后端无法打开 Oxigraph | 确保同一数据目录只有一个后端进程，并检查数据卷权限 |
 
-## 目录结构
+## 安全与隐私
 
-```text
-ontopilot/
-├── backend/
-│   ├── app/api/          # FastAPI 路由
-│   ├── app/db/           # SQLModel 元数据与迁移
-│   ├── app/llm/          # OpenAI 兼容模型客户端
-│   ├── app/ontology/     # RDF 存储、抽取、智能体、验证和溯源
-│   ├── app/parsing/      # Docling 集成与回退分块
-│   ├── app/storage/      # 内容寻址文件库
-│   └── scripts/          # 评估与压力测试工具
-├── frontend/
-│   └── src/              # React 应用、页面、组件和类型化 API 客户端
-└── docker-compose.yml
-```
+被选择的源 chunk 和有限的本体上下文会发送给管理员配置的模型供应商。除非运维人员配置外部存储或服务，文档、RDF 图、关系元数据、凭据和发布制品都保留在部署环境内。
+
+公开部署前：
+
+- 修改管理员和 PostgreSQL 默认密码；
+- 启用 HTTPS 和安全 Cookie；
+- 保护并备份 Token 加密材料；
+- 缩小 API/MCP Token Scope、设置有效期并及时吊销；
+- 限制模型端点、反向代理请求大小和频率；
+- 阅读 [SECURITY.md](SECURITY.md)，并通过私密渠道报告漏洞。
 
 ## 路线图
 
-- 后端、前端和端到端自动化测试
-- 持久化抽取 Worker 与可恢复任务
-- 版本化数据库迁移
-- 更严格的 OWL-DL 推理集成
-- 在可视化工作台中直接创建图关系
-- 可复现的 Python 依赖锁定和公开容器镜像
+路线图表达方向，不构成发布日期承诺。目标、验收标准与非目标见 [ROADMAP.md](ROADMAP.md)。
 
-## 参与贡献
+- **稳定性：** 正式迁移与升级测试、备份恢复工具、生产可观测性、无障碍和浏览器覆盖。
+- **协作：** 更完善的审核分配、评论/提及、通知、保存筛选条件和大团队审计流程。
+- **Agent 辅助治理：** 第一方对话页面，使用短期用户 MCP Token，并在执行前展示可审核变更预览。
+- **集成：** 对象存储适配、Webhook/事件、身份提供商集成和常用平台部署模板。
+- **规模与质量：** 更大语料接入、增量抽取、Benchmark 扩展、发布可复现和性能预算。
+- **达到 1.0：** 稳定 REST/MCP/发布契约、兼容性策略、迁移、灾难恢复验证和安全审查。
 
-项目目前由 DeepLethe 组织以私有预览形式维护。仓库向外部贡献者开放前，将补充贡献指南、Issue
-模板和公开治理规则。
+## 项目规范
 
-## 许可证
+- 欢迎贡献，流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 社区参与遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
+- 安全问题必须使用 [SECURITY.md](SECURITY.md) 中的私密渠道，不要创建公开 Issue。
+- 公共交换格式变化必须提供兼容性说明、必要迁移和回归测试。
+- AI 生成的本体修改与人工修改遵守相同的证据、审核、权限和审计规则。
 
-项目尚未选择公开开源许可证。当前仓库保留全部权利，不得重新分发。在仓库转为公开前，必须用选定
-的开源许可证替换 `LICENSE`。
+## 开源协议
 
-## 致谢
+Copyright 2026 DeepLethe and OntoPilot contributors.
 
-OntoPilot 基于 FastAPI、React、Docling、Oxigraph、RDFLib、pySHACL 和 RDF/OWL 生态构建。
+本项目使用 [Apache License 2.0](LICENSE) 开源，并包含 [NOTICE](NOTICE)。除法律要求或书面约定外，本软件按**现状**提供，不附带任何明示或默示担保。

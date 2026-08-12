@@ -21,19 +21,46 @@ from app.db.models import KnowledgeSystem, Provider, SystemConfig
 Conn = tuple[str, str, str]  # (base_url, api_key, model)
 
 
+@dataclass(frozen=True)
+class Endpoint:
+    conn: Conn
+    capacity_key: str
+    concurrency_limit: int
+
+
 @dataclass
 class _Defaults:
-    llm: Conn
-    embed: Conn
+    llm: Endpoint
+    embed: Endpoint
+
+
+def _limit(value: int | None) -> int:
+    return max(1, min(64, int(value or settings.extraction_concurrency)))
+
+
+def _fallback_endpoint(kind: str, conn: Conn) -> Endpoint:
+    return Endpoint(
+        conn=conn,
+        capacity_key=f"{kind}:fallback:{conn[0].rstrip('/')}:{conn[2]}",
+        concurrency_limit=_limit(settings.extraction_concurrency),
+    )
 
 
 _rt = _Defaults(
-    llm=(settings.openrouter_base_url, settings.openrouter_api_key, settings.llm_extract_model),
-    embed=(settings.openrouter_base_url, settings.openrouter_api_key, settings.embedding_model),
+    llm=_fallback_endpoint(
+        "llm", (settings.openrouter_base_url, settings.openrouter_api_key, settings.llm_extract_model),
+    ),
+    embed=_fallback_endpoint(
+        "embedding", (settings.openrouter_base_url, settings.openrouter_api_key, settings.embedding_model),
+    ),
 )
 
-_llm_conn: contextvars.ContextVar = contextvars.ContextVar("llm_conn", default=None)      # Conn
-_embed_conn: contextvars.ContextVar = contextvars.ContextVar("embed_conn", default=None)  # Conn
+_llm_endpoint: contextvars.ContextVar[Endpoint | None] = contextvars.ContextVar(
+    "llm_endpoint", default=None,
+)
+_embed_endpoint: contextvars.ContextVar[Endpoint | None] = contextvars.ContextVar(
+    "embed_endpoint", default=None,
+)
 
 
 def get_system_config(session: Session) -> SystemConfig:
@@ -50,10 +77,19 @@ def _entry(session: Session, pid) -> Provider | None:
     return session.get(Provider, pid) if pid else None
 
 
-def _conn_of(p: Provider | None, fallback: Conn) -> Conn:
+def _endpoint_of(p: Provider | None, fallback: Endpoint, kind: str) -> Endpoint:
     if p is None:
         return fallback
-    return (p.base_url or fallback[0], p.api_key or fallback[1], p.model or fallback[2])
+    conn = (
+        p.base_url or fallback.conn[0],
+        p.api_key or fallback.conn[1],
+        p.model or fallback.conn[2],
+    )
+    return Endpoint(
+        conn=conn,
+        capacity_key=f"{kind}:provider:{p.id}",
+        concurrency_limit=_limit(p.concurrency_limit),
+    )
 
 
 def seed_default_provider(session: Session) -> None:
@@ -63,10 +99,14 @@ def seed_default_provider(session: Session) -> None:
     entries = session.exec(select(Provider)).all()
     base = cfg.base_url or settings.openrouter_base_url
     key = cfg.api_key or settings.openrouter_api_key
+    legacy_limit = _limit(cfg.extraction_concurrency)
 
     llm = next((p for p in entries if (p.kind or "llm") == "llm"), None)
     if llm is None:
-        llm = Provider(name="Default", base_url=base, api_key=key, model=settings.llm_extract_model, kind="llm")
+        llm = Provider(
+            name="Default", base_url=base, api_key=key, model=settings.llm_extract_model,
+            kind="llm", concurrency_limit=legacy_limit,
+        )
         session.add(llm)
         session.commit()
         session.refresh(llm)
@@ -83,7 +123,8 @@ def seed_default_provider(session: Session) -> None:
     emb = next((p for p in entries if p.kind == "embedding"), None)
     if emb is None:
         emb = Provider(name="Default embedding", base_url=base, api_key=key,
-                       model=settings.embedding_model, kind="embedding")
+                       model=settings.embedding_model, kind="embedding",
+                       concurrency_limit=legacy_limit)
         session.add(emb)
         session.commit()
         session.refresh(emb)
@@ -103,25 +144,50 @@ def seed_default_provider(session: Session) -> None:
 
 
 def refresh_runtime(session: Session) -> None:
-    """Reload the system-default (base_url, api_key, model) for llm + embedding from the DB."""
+    """Reload the system-default endpoints, including each endpoint's own capacity."""
     cfg = get_system_config(session)
-    _rt.llm = _conn_of(_entry(session, cfg.llm_provider_id),
-                       (settings.openrouter_base_url, settings.openrouter_api_key, settings.llm_extract_model))
-    _rt.embed = _conn_of(_entry(session, cfg.embedding_provider_id),
-                         (settings.openrouter_base_url, settings.openrouter_api_key, settings.embedding_model))
+    llm_fallback = _fallback_endpoint(
+        "llm", (settings.openrouter_base_url, settings.openrouter_api_key, settings.llm_extract_model),
+    )
+    embed_fallback = _fallback_endpoint(
+        "embedding", (settings.openrouter_base_url, settings.openrouter_api_key, settings.embedding_model),
+    )
+    _rt.llm = _endpoint_of(_entry(session, cfg.llm_provider_id), llm_fallback, "llm")
+    _rt.embed = _endpoint_of(_entry(session, cfg.embedding_provider_id), embed_fallback, "embedding")
 
 
 # --- effective connections (read by openrouter + embeddings) ---
 def llm_conn() -> Conn:
-    return _llm_conn.get() or _rt.llm
+    return (_llm_endpoint.get() or _rt.llm).conn
 
 
 def embed_conn() -> Conn:
-    return _embed_conn.get() or _rt.embed
+    return (_embed_endpoint.get() or _rt.embed).conn
 
 
 def system_extract_model() -> str:
-    return _rt.llm[2] or settings.llm_extract_model
+    return _rt.llm.conn[2] or settings.llm_extract_model
+
+
+def llm_concurrency() -> int:
+    return (_llm_endpoint.get() or _rt.llm).concurrency_limit
+
+
+def embedding_concurrency() -> int:
+    return (_embed_endpoint.get() or _rt.embed).concurrency_limit
+
+
+def llm_capacity_key() -> str:
+    return (_llm_endpoint.get() or _rt.llm).capacity_key
+
+
+def embedding_capacity_key() -> str:
+    return (_embed_endpoint.get() or _rt.embed).capacity_key
+
+
+def extraction_concurrency() -> int:
+    """Compatibility alias for code outside this package; the value is endpoint-specific."""
+    return llm_concurrency()
 
 
 def available_models() -> list[str]:
@@ -137,34 +203,34 @@ def resolve_extract_model(session: Session, ks: KnowledgeSystem | None = None,
     """Effective LLM model for a job: explicit request > the KS's (or default) llm entry's model."""
     if request_model:
         return request_model
-    return _resolve_llm_conn(session, ks)[2] or settings.llm_extract_model
+    return _resolve_llm_endpoint(session, ks).conn[2] or settings.llm_extract_model
 
 
 # --- per-KS resolution ---
-def _resolve_llm_conn(session: Session, ks: KnowledgeSystem | None) -> Conn:
+def _resolve_llm_endpoint(session: Session, ks: KnowledgeSystem | None) -> Endpoint:
     p = _entry(session, getattr(ks, "llm_provider_id", None) if ks else None)
-    return _conn_of(p, _rt.llm)
+    return _endpoint_of(p, _rt.llm, "llm")
 
 
-def _resolve_embed_conn(session: Session, ks: KnowledgeSystem | None) -> Conn:
+def _resolve_embed_endpoint(session: Session, ks: KnowledgeSystem | None) -> Endpoint:
     p = _entry(session, getattr(ks, "embedding_provider_id", None) if ks else None)
-    return _conn_of(p, _rt.embed)
+    return _endpoint_of(p, _rt.embed, "embedding")
 
 
 def set_ks_connections(session: Session, ks: KnowledgeSystem | None) -> None:
     """Set the KS's llm + embedding connections for the current task (no reset — for a background
     job whose task ends afterwards; request handlers should prefer use_ks_connections)."""
-    _llm_conn.set(_resolve_llm_conn(session, ks))
-    _embed_conn.set(_resolve_embed_conn(session, ks))
+    _llm_endpoint.set(_resolve_llm_endpoint(session, ks))
+    _embed_endpoint.set(_resolve_embed_endpoint(session, ks))
 
 
 @contextlib.contextmanager
 def use_ks_connections(session: Session, ks: KnowledgeSystem | None):
     """Publish the KS's effective llm + embedding connections for the duration of the block."""
-    t1 = _llm_conn.set(_resolve_llm_conn(session, ks))
-    t2 = _embed_conn.set(_resolve_embed_conn(session, ks))
+    t1 = _llm_endpoint.set(_resolve_llm_endpoint(session, ks))
+    t2 = _embed_endpoint.set(_resolve_embed_endpoint(session, ks))
     try:
         yield
     finally:
-        _llm_conn.reset(t1)
-        _embed_conn.reset(t2)
+        _llm_endpoint.reset(t1)
+        _embed_endpoint.reset(t2)

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Check, Cpu, Loader2, Pencil, Plus, Sparkles, Star, Trash2, X, Zap } from "lucide-react"
 import { api } from "@/lib/api"
+import { useI18n } from "@/lib/i18n"
+import { useConfirm } from "@/lib/confirm"
 import type { Provider, SystemSettings } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,6 +16,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 const err = (e: unknown) => (e as Error).message.replace(/^\d+:\s*/, "")
 
 export default function SettingsPage() {
+  const { t } = useI18n()
+  const confirmAction = useConfirm()
   const [providers, setProviders] = useState<Provider[]>([])
   const [s, setS] = useState<SystemSettings | null>(null)
   const [loading, setLoading] = useState(true)
@@ -28,11 +32,11 @@ export default function SettingsPage() {
       setProviders(ps)
       setS(st)
     } catch (e) {
-      toast.error(`Failed to load: ${(e as Error).message}`)
+      toast.error(t("common.failedLoad", { error: (e as Error).message }))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
   useEffect(() => { load() }, [load])
 
   const setDefault = async (p: Provider) => {
@@ -41,17 +45,17 @@ export default function SettingsPage() {
         ? await api.updateSettings({ embedding_provider_id: p.id })
         : await api.updateSettings({ llm_provider_id: p.id })
       setS(st)
-      toast.success(`Default ${p.kind} → ${p.name}`)
+      toast.success(t("models.defaultChanged", { kind: p.kind, name: p.name }))
     } catch (e) {
       toast.error(err(e))
     }
   }
 
   const del = async (p: Provider) => {
-    if (!confirm(`Delete "${p.name}"?`)) return
+    if (!await confirmAction(t("models.deleteConfirm", { name: p.name }), { destructive: true })) return
     try {
       await api.deleteProvider(p.id)
-      toast.success("Deleted")
+      toast.success(t("common.deleted"))
       load()
     } catch (e) {
       toast.error(err(e))
@@ -60,7 +64,7 @@ export default function SettingsPage() {
 
   const testRow = async (p: Provider) => {
     setBusy(p.id)
-    const id = toast.loading(`Testing ${p.name}…`)
+    const id = toast.loading(t("models.testing", { name: p.name }))
     try {
       const r = await api.testProvider({ provider_id: p.id })
       setTestStatus((m) => ({ ...m, [p.id]: r.ok ? "ok" : "fail" }))
@@ -77,7 +81,7 @@ export default function SettingsPage() {
   if (loading || !s) {
     return (
       <div className="flex h-40 items-center justify-center text-muted-foreground">
-        {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : "No settings"}
+        {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : t("models.noSettings")}
       </div>
     )
   }
@@ -89,33 +93,31 @@ export default function SettingsPage() {
     testStatus[p.id] ?? (p.last_test_ok == null ? undefined : p.last_test_ok ? "ok" : "fail")
 
   return (
-    <div className="max-w-4xl space-y-5">
+    <div className="max-w-5xl space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Model Endpoints</h1>
-          <p className="text-sm text-muted-foreground">
-            Each row is one endpoint + key + model. Star one <b>LLM</b> and one <b>embedding</b> as the
-            default; a knowledge system can point at any. Temperature {s.temperature} (backend/.env).
-          </p>
+          <h1 className="text-xl font-semibold tracking-tight">{t("models.title")}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{t("models.description")}</p>
         </div>
-        <Button size="sm" onClick={() => setEditing("new")}><Plus className="h-4 w-4" /> Add model</Button>
+        <Button size="sm" onClick={() => setEditing("new")}><Plus className="h-4 w-4" /> {t("models.add")}</Button>
       </div>
 
       <div className="rounded-lg border">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-32">Type</TableHead>
-              <TableHead>Name</TableHead>
-              <TableHead>Model</TableHead>
-              <TableHead>Endpoint</TableHead>
-              <TableHead className="w-24">Key</TableHead>
-              <TableHead className="w-44 text-right">Actions</TableHead>
+              <TableHead className="w-32">{t("common.type")}</TableHead>
+              <TableHead>{t("common.name")}</TableHead>
+              <TableHead>{t("models.model")}</TableHead>
+              <TableHead>{t("models.endpoint")}</TableHead>
+              <TableHead className="w-24">{t("models.key")}</TableHead>
+              <TableHead className="w-24 text-center">{t("models.concurrencyLimit")}</TableHead>
+              <TableHead className="w-44 text-right">{t("common.actions")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {providers.length === 0 ? (
-              <TableRow><TableCell colSpan={6} className="h-16 text-center text-muted-foreground">No model entries — click "Add model".</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className="h-16 text-center text-muted-foreground">{t("models.empty")}</TableCell></TableRow>
             ) : providers.map((p) => (
               <TableRow key={p.id}>
                 <TableCell>
@@ -124,29 +126,30 @@ export default function SettingsPage() {
                       {p.kind === "embedding" ? <Cpu className="h-3 w-3" /> : <Sparkles className="h-3 w-3 text-primary" />}
                       {p.kind}
                     </Badge>
-                    {isDefault(p) && <Badge className="gap-1 text-[10px]"><Star className="h-3 w-3" /> default</Badge>}
+                    {isDefault(p) && <Badge className="gap-1 text-[10px]"><Star className="h-3 w-3" /> {t("models.default")}</Badge>}
                   </span>
                 </TableCell>
                 <TableCell className="font-medium">{p.name}</TableCell>
                 <TableCell className="font-mono text-xs">{p.model || <span className="text-muted-foreground">—</span>}</TableCell>
                 <TableCell className="max-w-[14rem] truncate text-xs text-muted-foreground" title={p.base_url}>{p.base_url}</TableCell>
                 <TableCell className="font-mono text-xs">{p.has_api_key ? p.api_key_hint : <span className="text-muted-foreground">—</span>}</TableCell>
+                <TableCell className="text-center font-mono text-sm">{p.concurrency_limit}</TableCell>
                 <TableCell className="space-x-1 text-right">
                   <Button size="sm" variant="ghost" className="h-7" disabled={busy === p.id} onClick={() => testRow(p)}>
                     {busy === p.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       : rowStatus(p) === "ok" ? <Check className="h-3.5 w-3.5 text-emerald-500" />
                       : rowStatus(p) === "fail" ? <X className="h-3.5 w-3.5 text-destructive" />
-                      : <Zap className="h-3.5 w-3.5" />} Test
+                      : <Zap className="h-3.5 w-3.5" />} {t("common.test")}
                   </Button>
                   {!isDefault(p) && (
-                    <Button size="icon" variant="ghost" className="h-7 w-7" title="Set as default" onClick={() => setDefault(p)}>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" title={t("models.setDefault")} onClick={() => setDefault(p)}>
                       <Star className="h-3.5 w-3.5" />
                     </Button>
                   )}
-                  <Button size="icon" variant="ghost" className="h-7 w-7" title="Edit" onClick={() => setEditing(p)}>
+                  <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.edit")} onClick={() => setEditing(p)}>
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
-                  <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" title="Delete" onClick={() => del(p)}>
+                  <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" title={t("common.delete")} onClick={() => del(p)}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </TableCell>
@@ -168,11 +171,13 @@ export default function SettingsPage() {
 }
 
 function ModelDialog({ entry, onClose, onSaved }: { entry: Provider | null; onClose: () => void; onSaved: () => void }) {
+  const { t } = useI18n()
   const [name, setName] = useState(entry?.name ?? "")
   const [kind, setKind] = useState<"llm" | "embedding">(entry?.kind ?? "llm")
   const [baseUrl, setBaseUrl] = useState(entry?.base_url ?? "https://openrouter.ai/api/v1")
   const [apiKey, setApiKey] = useState("")
   const [model, setModel] = useState(entry?.model ?? "")
+  const [concurrencyLimit, setConcurrencyLimit] = useState(String(entry?.concurrency_limit ?? 10))
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testOk, setTestOk] = useState<boolean | null>(null)
@@ -197,14 +202,25 @@ function ModelDialog({ entry, onClose, onSaved }: { entry: Provider | null; onCl
 
   const save = async () => {
     if (!name.trim() || !model.trim()) return
+    const limit = Number(concurrencyLimit)
+    if (!Number.isInteger(limit) || limit < 1 || limit > 64) {
+      toast.error(t("models.concurrencyRange"))
+      return
+    }
     setSaving(true)
     try {
       if (entry) {
-        await api.updateProvider(entry.id, { name: name.trim(), kind, base_url: baseUrl.trim(), model: model.trim(), api_key: apiKey.trim() || undefined })
+        await api.updateProvider(entry.id, {
+          name: name.trim(), kind, base_url: baseUrl.trim(), model: model.trim(),
+          api_key: apiKey.trim() || undefined, concurrency_limit: limit,
+        })
       } else {
-        await api.createProvider({ name: name.trim(), kind, base_url: baseUrl.trim(), model: model.trim(), api_key: apiKey.trim() })
+        await api.createProvider({
+          name: name.trim(), kind, base_url: baseUrl.trim(), model: model.trim(),
+          api_key: apiKey.trim(), concurrency_limit: limit,
+        })
       }
-      toast.success("Saved")
+      toast.success(t("common.saved"))
       onSaved()
     } catch (e) {
       toast.error(err(e))
@@ -216,38 +232,51 @@ function ModelDialog({ entry, onClose, onSaved }: { entry: Provider | null; onCl
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{entry ? `Edit "${entry.name}"` : "Add model endpoint"}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{entry ? t("models.editTitle", { name: entry.name }) : t("models.addTitle")}</DialogTitle></DialogHeader>
         <div className="space-y-4 py-2">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="m-name">Name</Label>
-              <Input id="m-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. OpenRouter DeepSeek" />
+              <Label htmlFor="m-name">{t("common.name")}</Label>
+              <Input id="m-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={t("models.namePlaceholder")} />
             </div>
             <div className="space-y-1.5">
-              <Label>Type</Label>
+              <Label>{t("common.type")}</Label>
               <Select value={kind} onValueChange={(v) => setKind(v as "llm" | "embedding")}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="llm">LLM (chat)</SelectItem>
-                  <SelectItem value="embedding">Embedding</SelectItem>
+                  <SelectItem value="llm">{t("models.llmChat")}</SelectItem>
+                  <SelectItem value="embedding">{t("models.embedding")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="m-url">API base URL</Label>
+            <Label htmlFor="m-url">{t("models.apiBaseUrl")}</Label>
             <Input id="m-url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://openrouter.ai/api/v1" spellCheck={false} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="m-key">API key (sk-…)</Label>
+            <Label htmlFor="m-key">{t("models.apiKey")}</Label>
             <Input id="m-key" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)}
-              placeholder={entry?.has_api_key ? `Leave blank to keep (${entry.api_key_hint})` : "sk-…"}
+              placeholder={entry?.has_api_key ? t("models.keepKey", { hint: entry.api_key_hint ?? "" }) : "sk-…"}
               autoComplete="off" spellCheck={false} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="m-model">Model name</Label>
+            <Label htmlFor="m-model">{t("models.modelName")}</Label>
             <Input id="m-model" value={model} onChange={(e) => setModel(e.target.value)}
               placeholder={kind === "embedding" ? "baai/bge-m3" : "deepseek/deepseek-chat"} spellCheck={false} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="m-concurrency">{t("models.concurrencyLimit")}</Label>
+            <Input
+              id="m-concurrency"
+              type="number"
+              min={1}
+              max={64}
+              step={1}
+              value={concurrencyLimit}
+              onChange={(e) => setConcurrencyLimit(e.target.value)}
+            />
+            <p className="text-xs text-muted-foreground">{t("models.concurrencyLimitHelp")}</p>
           </div>
         </div>
         <DialogFooter className="sm:justify-between">
@@ -255,12 +284,12 @@ function ModelDialog({ entry, onClose, onSaved }: { entry: Provider | null; onCl
             {testing ? <Loader2 className="h-4 w-4 animate-spin" />
               : testOk === true ? <Check className="h-4 w-4 text-emerald-500" />
               : testOk === false ? <X className="h-4 w-4 text-destructive" />
-              : <Zap className="h-4 w-4" />} Test
+              : <Zap className="h-4 w-4" />} {t("common.test")}
           </Button>
           <div className="flex gap-2">
-            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button variant="outline" onClick={onClose}>{t("common.cancel")}</Button>
             <Button onClick={save} disabled={saving || !name.trim() || !model.trim()}>
-              {saving && <Loader2 className="h-4 w-4 animate-spin" />} Save
+              {saving && <Loader2 className="h-4 w-4 animate-spin" />} {t("common.save")}
             </Button>
           </div>
         </DialogFooter>

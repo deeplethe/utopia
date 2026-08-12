@@ -1,25 +1,29 @@
 import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
-import {
-  ChevronDown, ChevronLeft, ChevronRight, Loader2, RefreshCw, Search, Trash2,
-} from "lucide-react"
+import { Trash2 } from "lucide-react"
 import { api } from "@/lib/api"
+import { useI18n, type MessageKey } from "@/lib/i18n"
+import { useConfirm } from "@/lib/confirm"
 import type { ValidationDecision, ValidationFix, ValidationResult, Violation } from "@/lib/types"
+import ValidationReviewSheet from "@/components/ValidationReviewSheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { By, fmtWhen } from "@/components/review-bits"
+import {
+  REVIEW_PAGE_SIZE, ReviewActionButton, ReviewPagination, ReviewProvenance, ReviewQueueHeader,
+  ReviewStatusBadge, ReviewTableFrame, type ReviewFilter, type ReviewStatusTone,
+  matchesReviewFilters,
+} from "@/components/review-bits"
 
-const TYPE_LABEL: Record<Violation["type"], string> = {
-  disjoint: "Disjoint types", domain: "Domain", range: "Range", datatype: "Datatype",
+const TYPE_KEY: Record<Violation["type"], MessageKey> = {
+  placeholder: "review.validation.placeholder",
+  type_count: "review.validation.typeCount",
+  role: "review.validation.roleConflict",
+  disjoint: "review.validation.disjointTypes",
+  domain: "review.validation.domain",
+  range: "review.validation.range",
+  datatype: "review.validation.datatype",
 }
-const PAGE_SIZE = 20
-type Filter = "all" | "pending" | "decided"
 
 type Row = {
   key: string
@@ -27,20 +31,14 @@ type Row = {
   type: string
   subject: string
   status: string
-  statusTone: "error" | "warning" | "neutral"
+  statusTone: ReviewStatusTone
   reason: string | null
   by: string | null
   when: string | null
-  violation?: Violation // pending rows carry the source violation for the fix menu
+  violation?: Violation
   onForget?: () => void
 }
 
-/**
- * Validation — one table: current ABox violations (pending, on top) alongside the datatype-fix
- * rules the validation agent has learned. A pending violation is fixed via a compact "Fix" menu on
- * the instance data; a learned rule can be forgotten so the agent re-judges that property next time.
- * Violations are recomputed fresh from the graph, so the pending rows always reflect the current state.
- */
 export default function ValidationPanel({
   ksId, canWrite, onChanged,
 }: {
@@ -48,167 +46,194 @@ export default function ValidationPanel({
   canWrite: boolean
   onChanged?: () => void
 }) {
+  const { t } = useI18n()
+  const confirmAction = useConfirm()
   const [result, setResult] = useState<ValidationResult | null>(null)
   const [decisions, setDecisions] = useState<ValidationDecision[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
-  const [q, setQ] = useState("")
-  const [filter, setFilter] = useState<Filter>("all")
+  const [selected, setSelected] = useState<Violation | null>(null)
+  const [query, setQuery] = useState("")
+  const [filter, setFilter] = useState<ReviewFilter>("all")
+  const [startDate, setStartDate] = useState("")
+  const [endDate, setEndDate] = useState("")
+  const [decisionMaker, setDecisionMaker] = useState<string | null>(null)
   const [page, setPage] = useState(0)
-  useEffect(() => { setPage(0) }, [q, filter])
+  useEffect(() => { setPage(0) }, [query, filter, startDate, endDate, decisionMaker])
 
   const loadDecisions = useCallback(async () => {
     try {
-      const res = await api.listValidationDecisions(ksId, { limit: 500 })
-      setDecisions(res.items)
-    } catch (e) {
-      toast.error(`Failed to load decisions: ${(e as Error).message}`)
+      const response = await api.listValidationDecisions(ksId, { limit: 500 })
+      setDecisions(response.items)
+    } catch (error) {
+      toast.error(t("review.validation.loadDecisionsFailed", { error: (error as Error).message }))
     }
-  }, [ksId])
+  }, [ksId, t])
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [v] = await Promise.all([api.validateAbox(ksId), loadDecisions()])
-      setResult(v)
-    } catch (e) {
-      toast.error(`Validation failed: ${(e as Error).message}`)
+      const [validation] = await Promise.all([api.validateAbox(ksId), loadDecisions()])
+      setResult(validation)
+    } catch (error) {
+      toast.error(t("review.validation.failed", { error: (error as Error).message }))
     } finally {
       setLoading(false)
     }
-  }, [ksId, loadDecisions])
+  }, [ksId, loadDecisions, t])
   useEffect(() => { load() }, [load])
 
-  const applyFix = useCallback(async (v: Violation, fix: ValidationFix) => {
-    setBusy(v.id + fix.id)
+  const applyFix = useCallback(async (violation: Violation, fix: ValidationFix) => {
+    setBusy(violation.id + fix.id)
     try {
-      const res = await api.fixViolation(ksId, fix.op, `${fix.label} — ${v.summary}`)
-      setResult(res)
-      await loadDecisions() // a relax fix records a new learned rule
-      toast.success("Applied fix")
+      const validation = await api.fixViolation(ksId, fix.op, `${fix.label} — ${violation.summary}`)
+      setResult(validation)
+      setSelected(null)
+      await loadDecisions()
+      toast.success(t("review.validation.appliedFix"))
       onChanged?.()
-    } catch (e) {
-      toast.error(`Fix failed: ${(e as Error).message.replace(/^\d+:\s*/, "")}`)
+    } catch (error) {
+      toast.error(t("review.validation.fixFailed", { error: (error as Error).message.replace(/^\d+:\s*/, "") }))
     } finally {
       setBusy(null)
     }
-  }, [ksId, loadDecisions, onChanged])
+  }, [ksId, loadDecisions, onChanged, t])
 
-  const forget = useCallback(async (d: ValidationDecision) => {
-    if (!confirm(`Forget the fix rule for "${d.property_label}"? The agent will re-judge it next time. (The schema change already applied is not undone.)`)) return
-    setBusy(`d${d.id}`)
+  const forget = useCallback(async (decision: ValidationDecision) => {
+    if (!await confirmAction(t("review.validation.forgetRuleConfirm", { name: decision.property_label }), { destructive: true })) return
+    setBusy(`d${decision.id}`)
     try {
-      await api.revokeValidationDecision(ksId, d.id)
-      toast.success("Forgotten")
+      await api.revokeValidationDecision(ksId, decision.id)
+      toast.success(t("review.forgotten"))
       await loadDecisions()
       onChanged?.()
-    } catch (e) {
-      toast.error(`Failed: ${(e as Error).message.replace(/^\d+:\s*/, "")}`)
+    } catch (error) {
+      toast.error(t("review.failed", { error: (error as Error).message.replace(/^\d+:\s*/, "") }))
     } finally {
       setBusy(null)
     }
-  }, [ksId, loadDecisions, onChanged])
+  }, [confirmAction, ksId, loadDecisions, onChanged, t])
 
   const counts = result?.counts
   const violations = result?.violations ?? []
   const rows: Row[] = [
-    ...violations.map<Row>((v) => ({
-      key: `v${v.id}`, pending: true, type: TYPE_LABEL[v.type], subject: v.summary,
-      status: v.severity, statusTone: v.severity === "error" ? "error" : "warning",
-      reason: null, by: null, when: null, violation: v,
+    ...violations.map<Row>((violation) => ({
+      key: `v${violation.id}`,
+      pending: true,
+      type: t(TYPE_KEY[violation.type]),
+      subject: violation.individual.label,
+      status: t("common.pending"),
+      statusTone: violation.severity === "error" ? "error" : "warning",
+      reason: violation.summary,
+      by: null,
+      when: null,
+      violation,
     })),
-    ...decisions.map<Row>((d) => ({
-      key: `d${d.id}`, pending: false, type: "Datatype rule",
-      subject: d.property_label + (d.xsd_type ? `  ·  xsd:${d.xsd_type}` : ""),
-      status: d.action === "relax" ? "→ text" : "remove noise", statusTone: "neutral",
-      reason: d.reason, by: d.resolved_by, when: d.created_at, onForget: () => forget(d),
+    ...decisions.map<Row>((decision) => ({
+      key: `d${decision.id}`,
+      pending: false,
+      type: t("review.validation.datatypeRule"),
+      subject: decision.property_label,
+      status: decision.action === "relax" ? t("review.validation.toText") : t("review.validation.removeNoise"),
+      statusTone: "neutral",
+      reason: decision.reason,
+      by: decision.resolved_by,
+      when: decision.created_at,
+      onForget: () => forget(decision),
     })),
   ]
 
-  const term = q.trim().toLowerCase()
-  const filtered = rows.filter((r) =>
-    (filter === "all" || (filter === "pending" ? r.pending : !r.pending)) &&
-    `${r.type} ${r.subject} ${r.status}`.toLowerCase().includes(term))
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const p = Math.min(page, pageCount - 1)
-  const shown = filtered.slice(p * PAGE_SIZE, p * PAGE_SIZE + PAGE_SIZE)
+  const decisionMakers = rows.flatMap((row) => row.by ? [row.by] : [])
+  const term = query.trim().toLowerCase()
+  const filtered = rows.filter((row) =>
+    (filter === "all" || (filter === "pending" ? row.pending : !row.pending))
+    && `${row.type} ${row.subject} ${row.status} ${row.reason ?? ""}`.toLowerCase().includes(term)
+    && matchesReviewFilters({ when: row.when, by: row.by, startDate, endDate, decisionMaker }))
+  const pageCount = Math.max(1, Math.ceil(filtered.length / REVIEW_PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const shown = filtered.slice(safePage * REVIEW_PAGE_SIZE, (safePage + 1) * REVIEW_PAGE_SIZE)
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold">Validation</h2>
-          <p className="text-xs text-muted-foreground">
-            Individuals checked against the ontology's disjointness, domain/range and datatype constraints —
-            fixes the agent learns become reusable rules.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {counts && (counts.error > 0 || counts.warning > 0) && (
-            <div className="flex items-center gap-1.5 text-xs">
-              <Badge variant="outline" className="gap-1 text-destructive">{counts.error} error{counts.error === 1 ? "" : "s"}</Badge>
-              <Badge variant="outline" className="gap-1 text-amber-600 dark:text-amber-400">{counts.warning} warning{counts.warning === 1 ? "" : "s"}</Badge>
-            </div>
-          )}
-          <Button size="sm" variant="outline" onClick={load} disabled={loading} title="Re-check individuals">
-            {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />} Re-run
-          </Button>
-          <div className="relative">
-            <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…" className="h-8 w-44 pl-7 text-sm" />
+    <div className="space-y-4">
+      <ReviewQueueHeader
+        title={t("review.validation.title")}
+        query={query}
+        onQueryChange={setQuery}
+        filter={filter}
+        onFilterChange={setFilter}
+        pendingCount={violations.length}
+        startDate={startDate}
+        onStartDateChange={setStartDate}
+        endDate={endDate}
+        onEndDateChange={setEndDate}
+        decisionMaker={decisionMaker}
+        onDecisionMakerChange={setDecisionMaker}
+        decisionMakers={decisionMakers}
+        onReset={() => {
+          setQuery("")
+          setFilter("all")
+          setStartDate("")
+          setEndDate("")
+          setDecisionMaker(null)
+        }}
+        onRefresh={load}
+        refreshing={loading}
+        summary={counts && (counts.error > 0 || counts.warning > 0) ? (
+          <div className="flex items-center gap-1.5">
+            {counts.error > 0 && <ReviewStatusBadge tone="error">{t(counts.error === 1 ? "review.error" : "review.errors", { count: counts.error })}</ReviewStatusBadge>}
+            {counts.warning > 0 && <ReviewStatusBadge tone="warning">{t(counts.warning === 1 ? "review.warning" : "review.warnings", { count: counts.warning })}</ReviewStatusBadge>}
           </div>
-          <Select value={filter} onValueChange={(v) => setFilter(v as Filter)}>
-            <SelectTrigger className="h-8 w-32 text-sm"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All</SelectItem>
-              <SelectItem value="pending">Pending{violations.length ? ` (${violations.length})` : ""}</SelectItem>
-              <SelectItem value="decided">Decided</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
+        ) : undefined}
+      />
 
       {result?.truncated && (
-        <p className="text-xs text-muted-foreground">Showing the first {violations.length} violations; fix some and re-run to see more.</p>
+        <p className="text-xs text-muted-foreground">{t("review.validation.truncated", { count: violations.length })}</p>
       )}
 
-      <div className="rounded-lg border">
-        <Table>
+      <ReviewTableFrame>
+        <Table className="table-fixed">
           <TableHeader>
             <TableRow>
-              <TableHead className="w-32">Type</TableHead><TableHead>Subject</TableHead>
-              <TableHead className="w-32">Status</TableHead><TableHead>Reason</TableHead>
-              <TableHead className="w-24">By</TableHead><TableHead className="w-20">When</TableHead>
-              <TableHead className="w-28" />
+              <TableHead className="w-[28%]">{t("review.subject")}</TableHead>
+              <TableHead className="w-36">{t("review.handlingMethod")}</TableHead>
+              <TableHead>{t("review.issueRationale")}</TableHead>
+              <TableHead className="w-40">{t("review.provenance")}</TableHead>
+              <TableHead className="w-24" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={7} className="h-16 text-center text-muted-foreground">Checking individuals…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={5} className="h-20 text-center text-muted-foreground">{t("review.validation.checking")}</TableCell></TableRow>
             ) : shown.length === 0 ? (
-              <TableRow><TableCell colSpan={7} className="h-16 text-center text-muted-foreground">No data</TableCell></TableRow>
-            ) : shown.map((r) => (
-              <TableRow key={r.key} className={r.pending ? "bg-amber-500/5" : undefined}>
-                <TableCell><Badge variant="outline" className="text-[10px]">{r.type}</Badge></TableCell>
-                <TableCell className="max-w-[20rem] truncate font-medium" title={r.subject}>{r.subject}</TableCell>
-                <TableCell>
-                  <Badge variant="outline" className={`text-[10px] ${
-                    r.statusTone === "error" ? "text-destructive"
-                      : r.statusTone === "warning" ? "text-amber-600 dark:text-amber-400" : ""}`}>
-                    {r.status}
-                  </Badge>
+              <TableRow><TableCell colSpan={5} className="h-20 text-center text-muted-foreground">{t("common.noData")}</TableCell></TableRow>
+            ) : shown.map((row) => (
+              <TableRow key={row.key} className={row.pending ? (row.statusTone === "error" ? "bg-destructive/5" : "bg-amber-500/5") : undefined}>
+                <TableCell className="max-w-[20rem]">
+                  <div className="whitespace-normal break-words font-medium">{row.subject}</div>
+                  <Badge variant="outline" className="mt-1 text-[10px]">{row.type}</Badge>
                 </TableCell>
-                <TableCell className="max-w-[16rem] truncate text-xs text-muted-foreground" title={r.reason ?? ""}>{r.reason || "—"}</TableCell>
-                <TableCell><By by={r.by} /></TableCell>
-                <TableCell className="text-xs text-muted-foreground" title={r.when ?? ""}>{fmtWhen(r.when)}</TableCell>
+                <TableCell>
+                  <ReviewStatusBadge
+                    tone={row.statusTone}
+                    title={row.pending ? (row.statusTone === "error" ? t("common.error") : t("common.warning")) : undefined}
+                  >
+                    {row.status}
+                  </ReviewStatusBadge>
+                </TableCell>
+                <TableCell className="text-xs leading-relaxed text-muted-foreground">{row.reason || "—"}</TableCell>
+                <TableCell><ReviewProvenance by={row.by} when={row.when} /></TableCell>
                 <TableCell className="text-right">
-                  {!canWrite ? null : r.pending && r.violation ? (
-                    r.violation.fixes.length > 0 ? (
-                      <FixMenu v={r.violation} busy={busy} onFix={applyFix} />
-                    ) : null
-                  ) : r.onForget ? (
-                    <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                      title="Forget this rule" disabled={busy !== null} onClick={r.onForget}>
+                  {row.pending && row.violation ? (
+                    <ReviewActionButton onClick={() => setSelected(row.violation ?? null)} disabled={busy !== null} />
+                  ) : canWrite && row.onForget ? (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                      title={t("review.validation.forgetRule")}
+                      disabled={busy !== null}
+                      onClick={row.onForget}
+                    >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   ) : null}
@@ -217,46 +242,18 @@ export default function ValidationPanel({
             ))}
           </TableBody>
         </Table>
-      </div>
+      </ReviewTableFrame>
 
-      {filtered.length > PAGE_SIZE && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>{p * PAGE_SIZE + 1}–{Math.min(filtered.length, (p + 1) * PAGE_SIZE)} of {filtered.length}</span>
-          <div className="flex gap-1">
-            <Button size="sm" variant="outline" className="h-7 w-7 p-0" disabled={p === 0} onClick={() => setPage(p - 1)}>
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-            <Button size="sm" variant="outline" className="h-7 w-7 p-0" disabled={p >= pageCount - 1} onClick={() => setPage(p + 1)}>
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      )}
+      <ReviewPagination page={safePage} total={filtered.length} onPageChange={setPage} />
+
+      <ValidationReviewSheet
+        violation={selected}
+        typeLabel={selected ? t(TYPE_KEY[selected.type]) : ""}
+        canWrite={canWrite}
+        busy={selected ? busy?.startsWith(selected.id) ?? false : false}
+        onClose={() => setSelected(null)}
+        onFix={(fix) => { if (selected) applyFix(selected, fix) }}
+      />
     </div>
-  )
-}
-
-/** Compact per-violation action: each available fix as a menu item. */
-function FixMenu({
-  v, busy, onFix,
-}: {
-  v: Violation
-  busy: string | null
-  onFix: (v: Violation, fix: ValidationFix) => void
-}) {
-  const active = busy !== null && busy.startsWith(v.id)
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="outline" className="h-7 gap-1" disabled={active}>
-          {active ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <>Fix <ChevronDown className="h-3.5 w-3.5" /></>}
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-w-[18rem]">
-        {v.fixes.map((fix) => (
-          <DropdownMenuItem key={fix.id} onClick={() => onFix(v, fix)}>{fix.label}</DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
   )
 }

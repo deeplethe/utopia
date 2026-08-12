@@ -2,15 +2,17 @@ import { useEffect, useState } from "react"
 import { useTheme } from "next-themes"
 import { Check, Monitor, Moon, Sun } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useI18n, type MessageKey } from "@/lib/i18n"
 
 const OPTIONS = [
-  { key: "light", label: "Light", icon: Sun },
-  { key: "dark", label: "Dark", icon: Moon },
-  { key: "system", label: "System", icon: Monitor },
+  { key: "light", label: "appearance.light", icon: Sun },
+  { key: "dark", label: "appearance.dark", icon: Moon },
+  { key: "system", label: "appearance.system", icon: Monitor },
 ] as const
 
 export default function AppearanceSection() {
   const { theme, setTheme } = useTheme()
+  const { t } = useI18n()
   // next-themes resolves `theme` only after mount; gate the active highlight to avoid a flash
   // of the wrong option on first paint.
   const [mounted, setMounted] = useState(false)
@@ -20,8 +22,8 @@ export default function AppearanceSection() {
   return (
     <div className="max-w-2xl space-y-6">
       <div>
-        <h1 className="text-xl font-semibold tracking-tight">Appearance</h1>
-        <p className="text-sm text-muted-foreground">Choose your theme. “System” follows your OS setting.</p>
+        <h1 className="text-xl font-semibold tracking-tight">{t("appearance.title")}</h1>
+        <p className="text-sm text-muted-foreground">{t("appearance.description")}</p>
       </div>
 
       <div className="grid grid-cols-3 gap-3">
@@ -41,7 +43,7 @@ export default function AppearanceSection() {
             >
               {isActive && <Check className="absolute right-2 top-2 h-4 w-4 text-primary" />}
               <Icon className="h-6 w-6" />
-              {o.label}
+              {t(o.label as MessageKey)}
             </button>
           )
         })}

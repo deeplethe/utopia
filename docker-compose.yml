@@ -1,24 +1,53 @@
-# OntoPilot — one-command run:
-#   1. cp backend/.env.example backend/.env   (set OPENROUTER_API_KEY + a real ADMIN_PASSWORD)
-#   2. docker compose up -d --build
-#   3. open http://localhost:8080   (log in with the admin account from your .env)
+# One-command self-hosted stack:
+#   cp backend/.env.example backend/.env
+#   docker compose up -d --build
+#   open http://localhost:8080
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ontopilot
+      POSTGRES_USER: ontopilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ontopilot}
+    volumes:
+      - ontopilot-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ontopilot -d ontopilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
   backend:
     build: ./backend
     env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://ontopilot:${POSTGRES_PASSWORD:-ontopilot}@postgres:5432/ontopilot
+      SYSTEM_LANGUAGE: ${SYSTEM_LANGUAGE:-en}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8080/mcp}
+    depends_on:
+      postgres:
+        condition: service_healthy
     volumes:
-      - ontopilot-data:/app/data      # persists the SQLite DB, document blobs, and Oxigraph store
+      - ontopilot-data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
     restart: unless-stopped
     expose:
-      - "8000"                        # internal only; the frontend proxies to it
+      - "8000"
 
   frontend:
     build: ./frontend
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     ports:
-      - "8080:80"                     # the app is served here
+      - "${ONTOPILOT_BIND_ADDRESS:-0.0.0.0}:${ONTOPILOT_PORT:-8080}:80"
     restart: unless-stopped
 
 volumes:
   ontopilot-data:
+  ontopilot-postgres:

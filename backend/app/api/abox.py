@@ -6,16 +6,19 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import delete, func
 from sqlmodel import Session, select
 
 from app import audit
 from app.api.knowledge import GRAPH_ROOT
 from app.db.database import get_session
-from app.db.models import KnowledgeSystem, User, ValidationDecision
+from app.db.models import AboxProvenance, EntityResolution, KnowledgeSystem, User, ValidationDecision
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
-from app.ontology import abox, abox_provenance, abox_validate, editor, schema, store, validation_agent
+from app.ontology import (
+    abox, abox_provenance, abox_validate, editor, schema, statement_provenance, store,
+    validation_agent,
+)
 
 router = APIRouter(prefix="/api/knowledge", tags=["abox"])
 
@@ -39,6 +42,46 @@ def _labels(ks: KnowledgeSystem) -> tuple[dict[str, str], dict[str, str]]:
 def _guard(session: Session, ks: KnowledgeSystem) -> None:
     if extraction_active(session, ks.id):
         raise HTTPException(status_code=409, detail="An extraction is in progress; try again after it finishes.")
+
+
+class ResetAboxRequest(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/{ks_id}/abox/reset")
+def reset_abox(
+    body: ResetAboxRequest,
+    ks: KnowledgeSystem = Depends(ks_writer),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    _guard(session, ks)
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true is required to reset all instances")
+    abox_iri = abox_iri_for(ks)
+    provenance_rows = session.exec(
+        select(func.count(AboxProvenance.id)).where(AboxProvenance.knowledge_system_id == ks.id)
+    ).one()
+    resolution_rows = session.exec(
+        select(func.count(EntityResolution.id)).where(EntityResolution.knowledge_system_id == ks.id)
+    ).one()
+    with store.capture(abox_iri, revert_on_error=True) as cap:
+        store.clear_graph(abox_iri)
+    added_nt, removed_nt = cap.diff()
+    session.exec(delete(AboxProvenance).where(AboxProvenance.knowledge_system_id == ks.id))
+    session.exec(delete(EntityResolution).where(EntityResolution.knowledge_system_id == ks.id))
+    audit.record(
+        session, ks_id=ks.id, action="abox.reset", summary="Reset all instances for re-extraction",
+        actor_id=user.id, actor_name=user.username,
+        detail={"provenance_rows": provenance_rows, "resolution_rows": resolution_rows},
+        added=added_nt, removed=removed_nt, graph=abox_iri,
+    )
+    session.commit()
+    return {
+        "removed_triples": len(store.load_triples(removed_nt)) if removed_nt else 0,
+        "provenance_rows": provenance_rows,
+        "resolution_rows": resolution_rows,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -117,12 +160,15 @@ def create_individual(
     with store.capture(abox_iri, revert_on_error=True) as cap:
         iri = abox.create_individual(abox_iri, ks.base_iri, body.label, body.class_iri)
     added_nt, removed_nt = cap.diff()
-    audit.record(
+    event = audit.record(
         session, ks_id=ks.id, action="abox.add_individual",
         summary=f'Added individual "{body.label}" ({class_labels[body.class_iri]})',
         actor_id=user.id, actor_name=user.username,
         detail={"iri": iri, "class_iri": body.class_iri, "label": body.label},
         added=added_nt, removed=removed_nt, graph=abox_iri,
+    )
+    statement_provenance.record_abox_fact(
+        session, ks.id, abox_provenance.ind_key(iri), event,
     )
     return abox.get_individual(abox_iri, iri, class_labels, prop_labels)
 
@@ -147,6 +193,15 @@ def delete_individual(
     with store.capture(abox_iri, revert_on_error=True) as cap:
         removed = abox.delete_individual(abox_iri, body.iri)
     added_nt, removed_nt = cap.diff()
+    fact_keys = {abox_provenance.ind_key(body.iri)}
+    fact_keys.update(
+        abox_provenance.data_key(body.iri, item["prop"], item["value"])
+        for item in existing["data_assertions"]
+    )
+    fact_keys.update(
+        abox_provenance.obj_key(body.iri, item["prop"], item["target"])
+        for item in existing["object_assertions"]
+    )
     audit.record(
         session, ks_id=ks.id, action="abox.delete_individual",
         summary=f'Deleted individual "{existing["label"]}"',
@@ -154,6 +209,7 @@ def delete_individual(
         detail={"iri": body.iri, "label": existing["label"], "triples_removed": removed},
         added=added_nt, removed=removed_nt, graph=abox_iri,
     )
+    statement_provenance.remove_abox_facts(session, ks.id, fact_keys)
     return {"removed": removed}
 
 
@@ -208,11 +264,19 @@ def add_assertion(
     with store.capture(abox_iri, revert_on_error=True) as cap:
         _apply_assertion(abox_iri, body, remove=False)
     added_nt, removed_nt = cap.diff()
-    audit.record(
+    event = audit.record(
         session, ks_id=ks.id, action="abox.add_assertion",
         summary=_assert_summary(body, prop_labels, subj["label"], "Asserted"),
         actor_id=user.id, actor_name=user.username, detail=body.model_dump(),
         added=added_nt, removed=removed_nt, graph=abox_iri,
+    )
+    statement_provenance.record_abox_fact(
+        session,
+        ks.id,
+        statement_provenance.assertion_key(
+            body.subject, body.prop, body.kind, body.target, body.value,
+        ),
+        event,
     )
     return abox.get_individual(abox_iri, body.subject, class_labels, prop_labels)
 
@@ -233,12 +297,16 @@ def remove_assertion(
     with store.capture(abox_iri, revert_on_error=True) as cap:
         _apply_assertion(abox_iri, body, remove=True)
     added_nt, removed_nt = cap.diff()
+    key = statement_provenance.assertion_key(
+        body.subject, body.prop, body.kind, body.target, body.value,
+    )
     audit.record(
         session, ks_id=ks.id, action="abox.remove_assertion",
         summary=_assert_summary(body, prop_labels, subj["label"], "Removed"),
         actor_id=user.id, actor_name=user.username, detail=body.model_dump(),
         added=added_nt, removed=removed_nt, graph=abox_iri,
     )
+    statement_provenance.remove_abox_facts(session, ks.id, {key})
     return abox.get_individual(abox_iri, body.subject, class_labels, prop_labels)
 
 

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 import { ChevronLeft, ChevronRight, FileText, Loader2, Plus, Search, Sparkles, Trash2, X } from "lucide-react"
 import { api } from "@/lib/api"
+import { useI18n, type Translate } from "@/lib/i18n"
+import { useConfirm } from "@/lib/confirm"
 import type { AboxClass, AboxSource, ExtractionJob, Individual, IndividualSummary, OntologyView } from "@/lib/types"
 import ExtractDialog from "@/components/ExtractDialog"
 import { Badge } from "@/components/ui/badge"
@@ -36,6 +38,7 @@ export default function InstancesPanel({
   canWrite: boolean
   onChanged?: () => void
 }) {
+  const { t } = useI18n()
   const [classes, setClasses] = useState<AboxClass[]>([])
   const [total, setTotal] = useState(0)
   const [selected, setSelected] = useState<string | null>(null) // class iri; null = all
@@ -62,15 +65,15 @@ export default function InstancesPanel({
       setClasses(res.classes)
       setTotal(res.total)
     } catch (e) {
-      toast.error(`Failed to load classes: ${(e as Error).message}`)
+      toast.error(t("instances.loadClassesFailed", { error: (e as Error).message }))
     }
-  }, [ksId])
+  }, [ksId, t])
 
   useEffect(() => { loadClasses() }, [loadClasses])
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedQ(q), 300)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => setDebouncedQ(q), 300)
+    return () => clearTimeout(timer)
   }, [q])
   useEffect(() => { setPage(0) }, [selected, debouncedQ])
   // Clamp the page when the list shrinks (e.g. deleting the last individual on the last page),
@@ -89,11 +92,11 @@ export default function InstancesPanel({
       setItems(res.items)
       setListTotal(res.total)
     } catch (e) {
-      toast.error(`Failed to load individuals: ${(e as Error).message}`)
+      toast.error(t("instances.loadFailed", { error: (e as Error).message }))
     } finally {
       setLoading(false)
     }
-  }, [ksId, selected, debouncedQ, page])
+  }, [ksId, selected, debouncedQ, page, t])
 
   useEffect(() => { loadItems() }, [loadItems])
 
@@ -147,39 +150,45 @@ export default function InstancesPanel({
       try { await api.editOntology(ksId, { op: "add_class", label }); ok++ } catch { /* skip dups */ }
     }
     setAddingClasses(false)
-    toast.success(`Added ${ok} class(es) to the ontology — re-extract to type these instances`)
+    toast.success(t("instances.suggestionsAdded", { count: ok }))
     setSuggestions({})
     setDismissedJobId(suggestJobId)
     onChanged?.()
-  }, [ksId, suggestions, suggestJobId, onChanged])
+  }, [ksId, suggestions, suggestJobId, onChanged, t])
 
   // Poll the ABox extraction job until it finishes, then refresh.
   useEffect(() => {
     if (!job) return
     if (job.status === "completed" || job.status === "failed") {
       if (job.status === "completed") {
-        toast.success(
-          `Instances extracted: +${job.individuals_added} new / ${job.pending_added} queued / ${job.assertions_added} assertions`,
-        )
+        toast.success(t("instances.extracted", {
+          added: job.individuals_added, queued: job.pending_added, assertions: job.assertions_added,
+          terms: job.terms_added, proposals: job.terminology_proposals,
+        }))
       } else {
-        toast.error(`Instance extraction failed: ${job.error ?? "Unknown error"}`)
+        toast.error(t("instances.extractionFailed", { error: job.error ?? t("ontology.unknownError") }))
       }
+      if (job.terminology_error) {
+        toast.warning(t("ontology.terminologyFailed", { error: job.terminology_error }))
+      }
+      window.dispatchEvent(new Event("ontopilot:vocabulary-changed"))
+      window.dispatchEvent(new Event("ontopilot:review-counts-changed"))
       setJob(null)
       refreshAll()
       return
     }
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try {
         setJob(await api.getJob(ksId, job.id))
       } catch {
         setJob(null)
       }
     }, 1500)
-    return () => clearTimeout(t)
-  }, [job, ksId, refreshAll])
+    return () => clearTimeout(timer)
+  }, [job, ksId, refreshAll, t])
 
   const pageCount = Math.max(1, Math.ceil(listTotal / PAGE_SIZE))
-  const selectedLabel = selected ? classes.find((c) => c.iri === selected)?.label ?? shortIri(selected) : "All individuals"
+  const selectedLabel = selected ? classes.find((c) => c.iri === selected)?.label ?? shortIri(selected) : t("instances.all")
   const extracting = job != null && (job.status === "running" || job.status === "pending")
   const suggestionLabels = Object.keys(suggestions)
   const showSuggestions = suggestionLabels.length > 0 && suggestJobId !== dismissedJobId
@@ -191,17 +200,19 @@ export default function InstancesPanel({
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="text-sm font-medium">
-                Instances referenced {suggestionLabels.length} class{suggestionLabels.length === 1 ? "" : "es"} not in your ontology
+                {t("instances.unknownClassesTitle", { count: suggestionLabels.length })}
               </p>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                {suggestionLabels.slice(0, 12).join("、")}{suggestionLabels.length > 12 ? " …" : ""} — add them to the schema, then re-extract to type these instances.
+                {t("instances.unknownClassesDescription", {
+                  names: suggestionLabels.slice(0, 12).join("、") + (suggestionLabels.length > 12 ? " …" : ""),
+                })}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-1.5">
               {canWrite && (
                 <Button size="sm" onClick={addSuggestedClasses} disabled={addingClasses}>
                   {addingClasses ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                  Add {suggestionLabels.length} to ontology
+                  {t("instances.addToOntology", { count: suggestionLabels.length })}
                 </Button>
               )}
               <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => setDismissedJobId(suggestJobId)}>
@@ -216,18 +227,18 @@ export default function InstancesPanel({
       {/* Left: classes with instance counts */}
       <div className="w-56 shrink-0 space-y-2">
         <div className="flex items-center justify-between px-1">
-          <span className="text-xs font-medium text-muted-foreground">Classes</span>
+          <span className="text-xs font-medium text-muted-foreground">{t("common.classes")}</span>
           <span className="text-xs text-muted-foreground">{total}</span>
         </div>
         {classes.length > 8 && (
           <div className="relative">
             <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input value={classFilter} onChange={(e) => setClassFilter(e.target.value)} placeholder="Filter classes…" className="h-8 pl-7 text-sm" />
+            <Input value={classFilter} onChange={(e) => setClassFilter(e.target.value)} placeholder={t("instances.filterClasses")} className="h-8 pl-7 text-sm" />
           </div>
         )}
         <ScrollArea className="h-[calc(100svh-13rem)] pr-2">
           <div className="space-y-0.5">
-            <ClassRow label="All individuals" count={total} active={selected === null} onClick={() => setSelected(null)} />
+            <ClassRow label={t("instances.all")} count={total} active={selected === null} onClick={() => setSelected(null)} />
             {classes.filter((c) => c.label.toLowerCase().includes(classFilter.trim().toLowerCase())).map((c) => (
               <ClassRow
                 key={c.iri} label={c.label} count={c.count}
@@ -243,25 +254,25 @@ export default function InstancesPanel({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold" title={selectedLabel}>{selectedLabel}</h2>
-            <p className="text-xs text-muted-foreground">{listTotal} individual{listTotal === 1 ? "" : "s"}</p>
+            <p className="text-xs text-muted-foreground">{t(listTotal === 1 ? "instances.individual" : "instances.individuals", { count: listTotal })}</p>
           </div>
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={q} onChange={(e) => setQ(e.target.value)}
-                placeholder="Search individuals…" className="h-8 w-52 pl-7 text-sm"
+                placeholder={t("instances.search")} className="h-8 w-52 pl-7 text-sm"
               />
             </div>
             {canWrite && (
               <Button size="sm" variant="outline" onClick={() => setExtractOpen(true)} disabled={extracting}>
                 {extracting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                Extract from documents
+                {t("instances.extractDocuments")}
               </Button>
             )}
             {canWrite && (
               <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
-                <Plus className="h-3.5 w-3.5" /> Add individual
+                <Plus className="h-3.5 w-3.5" /> {t("instances.add")}
               </Button>
             )}
           </div>
@@ -270,7 +281,10 @@ export default function InstancesPanel({
         {extracting && (
           <div className="space-y-1 rounded-md border bg-muted/30 px-3 py-2">
             <div className="flex items-center justify-between text-xs text-muted-foreground">
-              <span>Extracting instances… {job!.processed_chunks}/{job!.total_chunks} chunks · {job!.model}</span>
+              <span>
+                {job!.phase ? t(`extract.phase.${job!.phase}`) : t("ontology.extracting")}
+                {` · ${job!.processed_chunks}/${job!.total_chunks} ${t("ontology.chunks")} · ${job!.model}`}
+              </span>
             </div>
             <div className="h-1.5 overflow-hidden rounded-full bg-muted">
               <div
@@ -285,17 +299,17 @@ export default function InstancesPanel({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Label</TableHead>
-                <TableHead>Type</TableHead>
+                <TableHead>{t("edit.label")}</TableHead>
+                <TableHead>{t("common.type")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
-                <TableRow><TableCell colSpan={2} className="h-24 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+                <TableRow><TableCell colSpan={2} className="h-24 text-center text-muted-foreground">{t("common.loading")}</TableCell></TableRow>
               ) : items.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={2} className="h-24 text-center text-muted-foreground">
-                    {debouncedQ ? "No matching individuals." : "No individuals yet."}
+                    {debouncedQ ? t("instances.noMatches") : t("instances.empty")}
                   </TableCell>
                 </TableRow>
               ) : (
@@ -314,7 +328,7 @@ export default function InstancesPanel({
 
         {listTotal > PAGE_SIZE && (
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>{page * PAGE_SIZE + 1}–{Math.min(listTotal, (page + 1) * PAGE_SIZE)} of {listTotal}</span>
+            <span>{t("review.page", { start: page * PAGE_SIZE + 1, end: Math.min(listTotal, (page + 1) * PAGE_SIZE), total: listTotal })}</span>
             <div className="flex gap-1">
               <Button size="sm" variant="outline" className="h-7 w-7 p-0" disabled={page === 0} onClick={() => setPage(page - 1)}>
                 <ChevronLeft className="h-4 w-4" />
@@ -376,6 +390,7 @@ function CreateDialog({
   onClose: () => void
   onCreated: (ind: Individual) => void
 }) {
+  const { t } = useI18n()
   const [label, setLabel] = useState("")
   const [classIri, setClassIri] = useState(defaultClass ?? view.classes[0]?.iri ?? "")
   const [saving, setSaving] = useState(false)
@@ -385,10 +400,10 @@ function CreateDialog({
     setSaving(true)
     try {
       const ind = await api.createIndividual(ksId, label.trim(), classIri)
-      toast.success(`Added "${ind.label}"`)
+      toast.success(t("instances.added", { name: ind.label }))
       onCreated(ind)
     } catch (e) {
-      toast.error(`Create failed: ${(e as Error).message.replace(/^\d+:\s*/, "")}`)
+      toast.error(t("instances.createFailed", { error: (e as Error).message.replace(/^\d+:\s*/, "") }))
     } finally {
       setSaving(false)
     }
@@ -398,28 +413,28 @@ function CreateDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add individual</DialogTitle>
-          <DialogDescription>Create a new instance of a class.</DialogDescription>
+          <DialogTitle>{t("instances.add")}</DialogTitle>
+          <DialogDescription>{t("instances.createDescription")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
           <div className="space-y-1.5">
-            <Label>Label</Label>
-            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Well No. 3" autoFocus
+            <Label>{t("edit.label")}</Label>
+            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t("instances.labelPlaceholder")} autoFocus
               onKeyDown={(e) => e.key === "Enter" && submit()} />
           </div>
           <div className="space-y-1.5">
-            <Label>Class</Label>
+            <Label>{t("common.class")}</Label>
             <Combobox
               value={classIri} onChange={setClassIri}
               options={view.classes.map((c) => ({ value: c.iri, label: c.label }))}
-              placeholder="Select a class" searchPlaceholder="Search classes…"
+              placeholder={t("edit.selectClass")} searchPlaceholder={t("edit.searchClasses")}
             />
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="outline" onClick={onClose}>{t("common.cancel")}</Button>
           <Button onClick={submit} disabled={saving || !label.trim() || !classIri}>
-            {saving && <Loader2 className="h-4 w-4 animate-spin" />} Create
+            {saving && <Loader2 className="h-4 w-4 animate-spin" />} {t("common.create")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -438,6 +453,8 @@ function IndividualSheet({
   onChanged: () => void
   onDeleted: () => void
 }) {
+  const { t } = useI18n()
+  const confirmAction = useConfirm()
   const [ind, setInd] = useState<Individual | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -446,11 +463,11 @@ function IndividualSheet({
     try {
       setInd(await api.getIndividual(ksId, iri))
     } catch (e) {
-      toast.error(`Failed to load: ${(e as Error).message}`)
+      toast.error(t("common.failedLoad", { error: (e as Error).message }))
     } finally {
       setLoading(false)
     }
-  }, [ksId, iri])
+  }, [ksId, iri, t])
 
   useEffect(() => { load() }, [load])
 
@@ -469,10 +486,10 @@ function IndividualSheet({
     } catch (e) { toast.error((e as Error).message.replace(/^\d+:\s*/, "")) }
   }
   const del = async () => {
-    if (!confirm(`Delete individual "${ind?.label}" and all its assertions?`)) return
+    if (!await confirmAction(t("instances.deleteConfirm", { name: ind?.label ?? "" }), { destructive: true })) return
     try {
       await api.deleteIndividual(ksId, iri)
-      toast.success("Individual deleted")
+      toast.success(t("instances.deleted"))
       onDeleted()
     } catch (e) { toast.error((e as Error).message.replace(/^\d+:\s*/, "")) }
   }
@@ -481,14 +498,14 @@ function IndividualSheet({
     <Sheet open onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
         <SheetHeader>
-          <SheetTitle className="truncate">{loading ? "Loading…" : ind?.label}</SheetTitle>
+          <SheetTitle className="truncate">{loading ? t("common.loading") : ind?.label}</SheetTitle>
           <SheetDescription className="break-all font-mono text-[11px]">{iri}</SheetDescription>
         </SheetHeader>
 
         {ind && (
           <div className="space-y-5 px-4 pb-8">
             <section>
-              <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">Types</h4>
+              <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">{t("instances.types")}</h4>
               <div className="flex flex-wrap gap-1.5">
                 {ind.types.length ? ind.types.map((t) => (
                   <Badge key={t.iri} variant="secondary">{t.label}</Badge>
@@ -499,14 +516,14 @@ function IndividualSheet({
             <SourceSection sources={ind.sources ?? []} />
 
             <AssertionList
-              title="Relationships"
+              title={t("instances.relationships")}
               rows={ind.object_assertions.map((a) => ({
                 key: `${a.prop}|${a.target}`, prop: a.prop_label, value: a.target_label, sources: a.sources,
                 onRemove: canWrite ? () => removeObject(a.prop, a.target) : undefined,
               }))}
             />
             <AssertionList
-              title="Attributes"
+              title={t("instances.attributes")}
               rows={ind.data_assertions.map((a) => ({
                 key: `${a.prop}|${a.value}`, prop: a.prop_label, value: a.value, sources: a.sources,
                 onRemove: canWrite ? () => removeData(a.prop, a.value, a.datatype) : undefined,
@@ -520,7 +537,7 @@ function IndividualSheet({
             {canWrite && (
               <div className="border-t pt-4">
                 <Button variant="ghost" className="text-destructive hover:text-destructive" onClick={del}>
-                  <Trash2 className="h-4 w-4" /> Delete individual
+                  <Trash2 className="h-4 w-4" /> {t("instances.delete")}
                 </Button>
               </div>
             )}
@@ -533,10 +550,11 @@ function IndividualSheet({
 
 /** The distinct source documents an individual (or assertion) was extracted from, each with a
  *  text snippet — the "溯源" for instance data. */
-function docName(s: AboxSource) {
-  return s.document ?? `文档 #${s.document_id ?? "?"}`
+function docName(source: AboxSource, t: Translate) {
+  return source.document ?? t("instances.documentFallback", { id: source.document_id ?? "?" })
 }
 function SourceSection({ sources }: { sources: AboxSource[] }) {
+  const { t } = useI18n()
   if (sources.length === 0) return null
   // De-dup by document (an individual is usually mentioned across a few chunks of the same doc).
   const byDoc = new Map<string, AboxSource>()
@@ -546,13 +564,13 @@ function SourceSection({ sources }: { sources: AboxSource[] }) {
   }
   return (
     <section>
-      <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">Sources · 来源</h4>
+      <h4 className="mb-1.5 text-xs font-medium text-muted-foreground">{t("instances.sources")}</h4>
       <ul className="space-y-1.5">
         {[...byDoc.values()].map((s, i) => (
           <li key={i} className="rounded-md border px-2.5 py-1.5">
             <div className="flex items-center gap-1.5 text-xs font-medium">
               <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate" title={docName(s)}>{docName(s)}</span>
+              <span className="truncate" title={docName(s, t)}>{docName(s, t)}</span>
             </div>
             {s.snippet && <p className="mt-1 line-clamp-3 text-xs text-muted-foreground">{s.snippet}</p>}
           </li>
@@ -587,6 +605,7 @@ function AssertionRow({
 }: {
   prop: string; value: string; sources?: AboxSource[]; onRemove?: () => void
 }) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
   const n = sources?.length ?? 0
   return (
@@ -599,14 +618,14 @@ function AssertionRow({
         <div className="flex shrink-0 items-center gap-0.5">
           {n > 0 && (
             <button
-              type="button" onClick={() => setOpen((o) => !o)} title={`${n} 处来源`}
+              type="button" onClick={() => setOpen((o) => !o)} title={t("instances.sourceCount", { count: n })}
               className={`inline-flex items-center gap-0.5 rounded px-1 py-0.5 text-[11px] ${open ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
             >
               <FileText className="h-3.5 w-3.5" />{n}
             </button>
           )}
           {onRemove && (
-            <Button size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground hover:text-destructive" onClick={onRemove}>
+            <Button size="icon" variant="ghost" className="h-6 w-6 text-muted-foreground hover:text-destructive" title={t("common.delete")} onClick={onRemove}>
               <X className="h-3.5 w-3.5" />
             </Button>
           )}
@@ -617,7 +636,7 @@ function AssertionRow({
           {sources!.map((s, i) => (
             <div key={i} className="text-xs">
               <div className="flex items-center gap-1.5 font-medium text-muted-foreground">
-                <FileText className="h-3 w-3 shrink-0" /><span className="truncate" title={docName(s)}>{docName(s)}</span>
+                <FileText className="h-3 w-3 shrink-0" /><span className="truncate" title={docName(s, t)}>{docName(s, t)}</span>
               </div>
               {s.snippet && <p className="mt-0.5 line-clamp-3 text-muted-foreground">{s.snippet}</p>}
             </div>
@@ -636,6 +655,7 @@ function AddAssertion({
   view: OntologyView
   onAdded: () => void
 }) {
+  const { t } = useI18n()
   const [kind, setKind] = useState<"object" | "data">("object")
   const [prop, setProp] = useState("")
   const [target, setTarget] = useState("")
@@ -669,7 +689,7 @@ function AddAssertion({
       setProp(""); setTarget(""); setValue("")
       onAdded()
     } catch (e) {
-      toast.error(`Add failed: ${(e as Error).message.replace(/^\d+:\s*/, "")}`)
+      toast.error(t("instances.addFailed", { error: (e as Error).message.replace(/^\d+:\s*/, "") }))
     } finally {
       setSaving(false)
     }
@@ -677,37 +697,37 @@ function AddAssertion({
 
   return (
     <section className="rounded-lg border bg-muted/30 p-3">
-      <h4 className="mb-2 text-xs font-medium text-muted-foreground">Add assertion</h4>
+      <h4 className="mb-2 text-xs font-medium text-muted-foreground">{t("instances.addAssertion")}</h4>
       <div className="space-y-2">
         <div className="flex gap-2">
           <Select value={kind} onValueChange={(v) => setKind(v as "object" | "data")}>
             <SelectTrigger className="h-8 w-32 text-sm"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="object">Relationship</SelectItem>
-              <SelectItem value="data">Attribute</SelectItem>
+              <SelectItem value="object">{t("instances.relationship")}</SelectItem>
+              <SelectItem value="data">{t("instances.attribute")}</SelectItem>
             </SelectContent>
           </Select>
           <Combobox
             value={prop} onChange={setProp} className="flex-1" triggerClassName="h-8"
             options={props.map((p) => ({ value: p.iri, label: p.label }))}
-            placeholder="Property" searchPlaceholder="Search properties…"
-            emptyText={`No ${kind} properties defined`}
+            placeholder={t("instances.property")} searchPlaceholder={t("instances.searchProperties")}
+            emptyText={kind === "object" ? t("instances.noObjectProperties") : t("instances.noDataProperties")}
           />
         </div>
         {kind === "object" ? (
           <Combobox
             value={target} onChange={setTarget} triggerClassName="h-8"
             options={targets.map((t) => ({ value: t.iri, label: t.label }))}
-            placeholder="Target individual" searchPlaceholder="Search individuals…"
-            emptyText="No other individuals"
+            placeholder={t("instances.target")} searchPlaceholder={t("instances.search")}
+            emptyText={t("instances.noOther")}
           />
         ) : (
-          <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Value"
+          <Input value={value} onChange={(e) => setValue(e.target.value)} placeholder={t("instances.value")}
             className="h-8 text-sm" onKeyDown={(e) => e.key === "Enter" && submit()} />
         )}
         <div className="flex justify-end">
           <Button size="sm" onClick={submit} disabled={!canSubmit || saving}>
-            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} Add
+            {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />} {t("common.add")}
           </Button>
         </div>
       </div>

@@ -15,6 +15,7 @@ import logging
 from pyoxigraph import NamedNode
 from sqlmodel import Session, select
 
+from app import prompt_config
 from app.config import settings
 from app.db.database import engine
 from app.db.models import TboxReconciliation
@@ -37,6 +38,16 @@ Respond with EXACTLY ONE JSON object per turn:
 2) {"action":"lookup_experience","property":"<a property label>"}  -> past reconciliation decisions
 3) {"action":"finish","choice":"common_super|union|keep","class":"<class label for common_super/keep>","reason":"..."}
 Output MUST be a single valid JSON object, no prose."""
+
+prompt_config.register(
+    key="tbox.domain_range_reconcile",
+    category="governance",
+    title="Domain and range reconciliation",
+    description="Collapse conflicting property domains or ranges to a coherent schema decision.",
+    default=_SYSTEM,
+    variables=("slot",),
+    order=20,
+)
 
 
 def _ancestors(supers: dict[str, set[str]], iri: str) -> set[str]:
@@ -64,7 +75,7 @@ def _past(session: Session, ks_id: int, property_label: str, slot: str | None = 
 
 
 def _decide(session, ks_id, graph_iri, model, prop_label, slot, cand_labels, common_super_label) -> dict | None:
-    system = _SYSTEM.replace("{slot}", slot)
+    system = prompt_config.render("tbox.domain_range_reconcile", slot=slot)
     exp = _past(session, ks_id, prop_label, slot)
     user = (
         f'Property "{prop_label}" has multiple {slot}s: {", ".join(cand_labels)}.\n'
@@ -143,6 +154,8 @@ def reconcile(ks_id: int, graph_iri: str, base_iri: str, model: str | None = Non
                 # Collapse values subsumed by a more-general one (union semantics): {抽油机, 设备}
                 # with 抽油机⊑设备 is just 设备 — deterministic, no agent, no conflict.
                 reduced = [v for v in vals if not any(w != v and w in _ancestors(supers, v) for w in vals)]
+                if not reduced:
+                    reduced = vals
                 if len(reduced) == 1:
                     try:
                         editor.apply_edit(graph_iri, base_iri, {"op": "update_property", "iri": p["iri"], slot: reduced[0]})
@@ -155,6 +168,7 @@ def reconcile(ks_id: int, graph_iri: str, base_iri: str, model: str | None = Non
                         choice="subsume", chosen_label=lbl(reduced[0]),
                         reason="redundant — subsumed by the more general class", resolved_by="agent",
                     ))
+                    session.commit()
                     applied.append(f'{lbl(p["iri"])}.{slot} → {lbl(reduced[0])} (subsumed)')
                     continue
                 vals = reduced  # only genuinely unrelated classes remain — decide among these
@@ -178,8 +192,8 @@ def reconcile(ks_id: int, graph_iri: str, base_iri: str, model: str | None = Non
                     choice=d["choice"], chosen_label=(lbl(chosen) if chosen else "union"),
                     reason=d.get("reason"), resolved_by="agent",
                 ))
+                session.commit()
                 applied.append(f'{lbl(p["iri"])}.{slot} → {d["choice"]} ({lbl(chosen) if chosen else "union"})')
-        session.commit()
     return applied
 
 

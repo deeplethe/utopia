@@ -18,7 +18,7 @@ from app.db.database import get_session
 from app.db.models import EntityResolution, KnowledgeSystem, User, utcnow
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
-from app.ontology import abox, schema, store
+from app.ontology import abox, abox_provenance, schema, statement_provenance, store
 
 router = APIRouter(prefix="/api/knowledge", tags=["resolution"])
 
@@ -39,6 +39,25 @@ def _queue_item(row: EntityResolution, class_labels: dict[str, str]) -> dict:
         "source_chunk_id": row.source_chunk_id,
         "created_at": row.created_at.isoformat(),
     }
+
+
+def _decision_individual_label(
+    row: EntityResolution,
+    individual_labels: dict[str, str],
+) -> str | None:
+    if not row.individual_iri:
+        return None
+    if label := individual_labels.get(row.individual_iri):
+        return label
+    context = row.context or {}
+    if label := context.get("matched_label"):
+        return str(label)
+    for candidate in context.get("candidates", []) or []:
+        if (isinstance(candidate, dict)
+                and candidate.get("iri") == row.individual_iri
+                and candidate.get("label")):
+            return str(candidate["label"])
+    return row.surface_form or None
 
 
 @router.get("/{ks_id}/resolution/queue")
@@ -84,17 +103,19 @@ def get_decisions(
         .order_by(EntityResolution.id.desc()).limit(limit).offset(offset)
     ).all()
     class_labels = _class_labels(ks)
-    # One scan of the ABox graph for all individual labels, instead of a full scan per row.
-    ind_labels = abox.label_index(abox_iri_for(ks))
+    individual_index = abox.build_resolution_index(abox_iri_for(ks))
+    ind_labels = individual_index.label_index()
     items = []
     for r in rows:
-        ind_label = None
-        if r.individual_iri:
-            ind_label = ind_labels.get(r.individual_iri, r.individual_iri)
+        ind_label = _decision_individual_label(r, ind_labels)
+        individual_deleted = bool(
+            r.individual_iri and not individual_index.exists(r.individual_iri)
+        )
         items.append({
             "id": r.id, "surface_form": r.surface_form,
             "class_label": class_labels.get(r.class_iri or "", r.class_iri),
             "status": r.status, "individual_iri": r.individual_iri, "individual_label": ind_label,
+            "individual_deleted": individual_deleted,
             "confidence": r.confidence, "resolved_by": r.resolved_by,
             "reason": (r.context or {}).get("reason") or None,
             "created_at": r.created_at.isoformat(),
@@ -197,6 +218,7 @@ def resolve(
     ctx = row.context or {}
     pending_attrs = ctx.get("pending_attributes", []) or []
     pending_rels = ctx.get("pending_relations", []) or []
+    resolved_relations: list[tuple[str, str]] = []
 
     with store.capture(abox_iri) as cap:
         subject_iri = (
@@ -215,6 +237,7 @@ def resolve(
                 tgt = label_to_iri.get(str(r.get("target_label", "")).strip().lower())
                 if tgt:
                     abox.add_object_assertion(abox_iri, subject_iri, r["prop"], tgt)
+                    resolved_relations.append((r["prop"], tgt))
     added_nt, removed_nt = cap.diff()
 
     replayed = len(pending_attrs) + len(pending_rels)
@@ -225,7 +248,7 @@ def resolve(
     row.resolved_at = utcnow()
     session.add(row)
     extra = f" (+{replayed} assertion(s))" if replayed else ""
-    audit.record(
+    event = audit.record(
         session, ks_id=ks.id, action="abox.resolve",
         summary=f'Resolved "{row.surface_form}" → {"new" if is_new else "existing"} individual{extra}',
         actor_id=user.id, actor_name=user.username,
@@ -233,6 +256,29 @@ def resolve(
                 "action": body.action, "replayed": replayed},
         added=added_nt, removed=removed_nt, graph=abox_iri,
     )
+    statement_provenance.record_abox_fact(
+        session,
+        ks.id,
+        abox_provenance.ind_key(subject_iri),
+        event,
+        chunk_id=row.source_chunk_id,
+    )
+    for item in pending_attrs:
+        statement_provenance.record_abox_fact(
+            session,
+            ks.id,
+            abox_provenance.data_key(subject_iri, item["prop"], item["value"]),
+            event,
+            chunk_id=row.source_chunk_id,
+        )
+    for prop, target in resolved_relations:
+        statement_provenance.record_abox_fact(
+            session,
+            ks.id,
+            abox_provenance.obj_key(subject_iri, prop, target),
+            event,
+            chunk_id=row.source_chunk_id,
+        )
     session.commit()
     summary = f'Resolved "{row.surface_form}" → {"new" if is_new else "existing"} individual{extra}'
     return {"id": row.id, "status": row.status, "individual_iri": subject_iri, "summary": summary}

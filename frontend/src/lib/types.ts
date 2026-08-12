@@ -76,6 +76,12 @@ export interface DocumentMeta {
   abox_extracted_at: string | null
 }
 
+export interface DocumentListResponse {
+  items: DocumentMeta[]
+  total: number
+  folders: string[]
+}
+
 export interface DocumentContribution {
   chunk_count: number
   axiom_count: number
@@ -95,6 +101,7 @@ export interface Chunk {
 
 export interface KnowledgeSystem {
   id: number
+  public_id: string
   name: string
   description: string
   owner_id: number | null
@@ -112,12 +119,36 @@ export interface KnowledgeSystem {
   my_role: Role
 }
 
+export type ApiTokenScope = "ontology:read" | "vocabulary:read" | "instances:read" | "query:read" | "provenance:read"
+
+export interface ApiToken {
+  id: number
+  name: string
+  token_prefix: string
+  scopes: ApiTokenScope[]
+  status: "active" | "expired" | "revoked"
+  created_at: string
+  expires_at: string | null
+  last_used_at: string | null
+  revoked_at: string | null
+  can_reveal: boolean
+}
+
+export interface ApiTokenCreated extends ApiToken {
+  token: string
+}
+
+export interface ApiTokenRevealed {
+  token: string
+}
+
 export interface Provider {
   id: number
   name: string
   kind: "llm" | "embedding"
   base_url: string
   model: string
+  concurrency_limit: number
   has_api_key: boolean
   api_key_hint: string // masked, never the raw key
   last_test_ok: boolean | null // persisted result of the most recent connection test
@@ -157,8 +188,10 @@ export interface OntologyProperty {
   comment: string
   domain: string | null
   domain_label: string | null
+  domain_members?: string[]
   range: string | null
   range_label: string | null
+  range_members?: string[]
 }
 
 export interface OntologyView {
@@ -173,6 +206,148 @@ export interface OntologyView {
   labels: Record<string, string>
   stats: { class_count: number; property_count: number; axiom_count: number }
   knowledge_system?: { id: number; name: string; base_iri: string }
+}
+
+// ---- Controlled terminology (SKOS) ----
+export interface VocabularyLabel {
+  value: string
+  language: string
+}
+
+export type VocabularyOrigin = "manual" | "extraction" | "agent"
+
+export interface VocabularyScheme {
+  iri: string
+  title: string
+  titles: VocabularyLabel[]
+  description: string
+  descriptions: VocabularyLabel[]
+  default_language: string
+  origin: VocabularyOrigin
+  created_at: string
+  modified_at: string
+  concept_count: number
+}
+
+export interface VocabularyConcept {
+  iri: string
+  scheme_iri: string
+  pref_labels: VocabularyLabel[]
+  alt_labels: VocabularyLabel[]
+  hidden_labels: VocabularyLabel[]
+  display_label: string
+  description: string
+  notation: string
+  broader: string[]
+  broader_labels: string[]
+  related: string[]
+  related_labels: string[]
+  mapped_entity_iri: string | null
+  status: "active" | "deprecated"
+  origin: VocabularyOrigin
+  created_at: string
+  modified_at: string
+}
+
+export interface VocabularyStats {
+  scheme_count: number
+  concept_count: number
+  label_count: number
+  mapped_count: number
+  unmapped_count: number
+}
+
+export interface VocabularyView {
+  schemes: VocabularyScheme[]
+  concepts: VocabularyConcept[]
+  stats: VocabularyStats
+}
+
+export interface VocabularySchemeList {
+  items: VocabularyScheme[]
+  total: number
+  stats: VocabularyStats
+}
+
+export interface VocabularyConceptList {
+  items: VocabularyConcept[]
+  total: number
+}
+
+export interface VocabularyConceptInput {
+  scheme_iri: string
+  pref_labels: VocabularyLabel[]
+  alt_labels: VocabularyLabel[]
+  hidden_labels: VocabularyLabel[]
+  description: string
+  notation: string
+  broader: string[]
+  related: string[]
+  mapped_entity_iri: string | null
+  status: "active" | "deprecated"
+}
+
+export interface TermProposalEvidence {
+  chunk_id: number
+  document_id: number | null
+  document: string | null
+  snippet: string
+}
+
+export interface TermProposal {
+  id: number
+  action: "create" | "add_alias" | "update"
+  term: string
+  target_iri: string | null
+  target_label: string | null
+  status: "pending" | "accepted" | "rejected"
+  payload: Record<string, unknown>
+  confidence: number | null
+  reason: string | null
+  evidence: TermProposalEvidence[]
+  source_chunk_ids: number[]
+  extraction_job_id: number | null
+  proposed_by: string
+  resolved_by: string | null
+  resolution_note: string | null
+  created_at: string
+  resolved_at: string | null
+}
+
+export interface TermProposalList {
+  items: TermProposal[]
+  total: number
+}
+
+export type RdfImportTarget = "auto" | "tbox" | "abox"
+export type RdfImportStrategy = "merge" | "replace"
+export type RdfImportFormat = "auto" | "turtle" | "rdfxml" | "ntriples" | "jsonld"
+
+export interface RdfImportResult {
+  filename: string
+  sha256: string
+  format: Exclude<RdfImportFormat, "auto">
+  target: RdfImportTarget
+  strategy: RdfImportStrategy
+  base_iri: string
+  parsed_triples: number
+  tbox_triples: number
+  abox_triples: number
+  tbox_added: number
+  tbox_removed: number
+  abox_added: number
+  abox_removed: number
+  view: OntologyView
+  open_conflicts: Conflict[]
+  validation: {
+    counts: { error: number; warning: number }
+    truncated: boolean
+  }
+  terminology: {
+    terms_added: number
+    terms_mapped: number
+    terminology_error: string | null
+  }
 }
 
 export interface ExtractionJob {
@@ -195,6 +370,12 @@ export interface ExtractionJob {
   assertions_added: number
   pending_added: number
   unknown_classes: Record<string, number>
+  phase: "" | "tbox" | "role_recovery" | "hierarchy" | "reconciling" | "conflicts" |
+    "structure" | "abox" | "terminology" | "finalizing" | "completed" | "failed"
+  terms_added: number
+  terms_mapped: number
+  terminology_proposals: number
+  terminology_error: string | null
 }
 
 export interface ExtractionResult {
@@ -204,6 +385,109 @@ export interface ExtractionResult {
   axioms_added: number
   stats: { class_count: number; property_count: number; axiom_count: number }
   per_chunk: { chunk_id: number; status: string; axioms: number; error: string | null }[]
+}
+
+// ---- Immutable releases and streaming exports ----
+export type ReleaseStatus = "draft" | "reviewed" | "published" | "deleted"
+export type ReleaseLayer = "tbox" | "vocabulary" | "abox" | "bundle"
+
+export interface ReleaseDeployment {
+  id: number
+  status: "provisioning" | "active" | "stopping" | "stopped" | "failed"
+  statement_count: number
+  provenance_count: number
+  error: string | null
+  activated_at: string | null
+  stopped_at: string | null
+}
+
+export interface ArtifactFile {
+  name: string
+  layer?: string
+  statements?: number
+  records?: number
+  bytes: number
+  sha256: string
+}
+
+export interface ReleaseQualityGate {
+  open_conflict_errors: number
+  unresolved_entities: number
+  pending_terminology: number
+  validation_errors: number
+  blocking: number
+}
+
+export interface ReleaseManifest {
+  capture_status: "pending" | "running" | "ready" | "failed" | "deleted"
+  error?: string
+  compression?: "none"
+  quality_gate?: ReleaseQualityGate
+  layers?: Record<Exclude<ReleaseLayer, "bundle">, {
+    graph_iri: string
+    statements: number
+    files: ArtifactFile[]
+  }>
+  provenance?: ArtifactFile[]
+}
+
+export interface OntologyRelease {
+  id: number
+  knowledge_system_id: number
+  version: string
+  status: ReleaseStatus
+  title: string
+  notes: string
+  manifest: ReleaseManifest
+  created_by: string
+  reviewed_by: string | null
+  published_by: string | null
+  created_at: string
+  reviewed_at: string | null
+  published_at: string | null
+  deployment: ReleaseDeployment | null
+  service_url: string | null
+}
+
+export interface ReleaseList {
+  items: OntologyRelease[]
+  total: number
+}
+
+export interface ReleaseDiffLayer {
+  added: number
+  removed: number
+  added_sample: string[]
+  removed_sample: string[]
+}
+
+export interface ReleaseDiff {
+  from: { id: number; version: string }
+  to: { id: number; version: string }
+  layers: Record<Exclude<ReleaseLayer, "bundle">, ReleaseDiffLayer>
+}
+
+export interface ExportJob {
+  id: number
+  knowledge_system_id: number
+  release_id: number | null
+  layer: ReleaseLayer
+  format: "nquads"
+  status: "pending" | "running" | "completed" | "failed"
+  shard_size: number
+  processed_statements: number
+  total_statements: number
+  files: ArtifactFile[]
+  error: string | null
+  created_by: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface ExportList {
+  items: ExportJob[]
+  total: number
 }
 
 export interface ImpactAxiom {
@@ -245,6 +529,13 @@ export interface ParseResponse {
   error: string | null
 }
 
+export interface ParseBatchResponse {
+  items: ParseResponse[]
+  total: number
+  parsed: number
+  failed: number
+}
+
 export interface ConflictEntity {
   iri: string
   label: string
@@ -273,6 +564,28 @@ export interface Conflict {
   created_at: string
   resolved_at: string | null
   resolution: string | null
+}
+
+export interface ConflictEvidenceSource {
+  chunk_id: number
+  chunk_index: number
+  document_id: number | null
+  document: string | null
+  folder: string | null
+  job_id: number | null
+  snippet: string
+}
+
+export interface ConflictEvidenceAxiom {
+  axiom_key: string
+  description: string
+  source_count: number
+  sources: ConflictEvidenceSource[]
+}
+
+export interface ConflictContext {
+  conflict: Conflict
+  evidence: ConflictEvidenceAxiom[]
 }
 
 // An ontology edit operation. `op` selects the operation; the rest are its params.
@@ -320,10 +633,16 @@ export interface IndividualList {
 
 /** Where an ABox fact came from: the source chunk (→ document) + a text snippet. */
 export interface AboxSource {
-  chunk_id: number
+  chunk_id: number | null
   document_id: number | null
   document: string | null
   snippet: string
+  job_id?: number | null
+  model?: string | null
+  prompt_snapshot?: Record<string, unknown> | null
+  method?: "extraction" | "manual" | "review"
+  actor?: string | null
+  review?: Record<string, unknown> | null
 }
 
 export interface ObjectAssertion {
@@ -385,6 +704,7 @@ export interface ResolutionDecision {
   status: "matched" | "new" | "distinct"
   individual_iri: string | null
   individual_label: string | null
+  individual_deleted: boolean
   confidence: number | null
   reason: string | null
   resolved_by: string | null
@@ -439,6 +759,7 @@ export interface ValidationDecisionList {
 export interface ReviewCounts {
   conflicts: number
   resolution: number
+  terminology: number
   validation: number
   total: number
 }
@@ -452,7 +773,7 @@ export interface ValidationFix {
 
 export interface Violation {
   id: string
-  type: "disjoint" | "domain" | "range" | "datatype"
+  type: "placeholder" | "type_count" | "role" | "disjoint" | "domain" | "range" | "datatype"
   severity: "error" | "warning"
   individual: { iri: string; label: string }
   summary: string
@@ -463,4 +784,25 @@ export interface ValidationResult {
   violations: Violation[]
   counts: { error: number; warning: number }
   truncated: boolean
+}
+
+// ---- Per-knowledge-system prompts ----
+export type PromptCategory = "extraction" | "review" | "governance" | "validation"
+
+export interface KnowledgePrompt {
+  key: string
+  category: PromptCategory
+  title: string
+  description: string
+  default_content: string
+  effective_content: string
+  variables: string[]
+  is_overridden: boolean
+  updated_at: string | null
+  updated_by: string | null
+}
+
+export interface KnowledgePromptList {
+  items: KnowledgePrompt[]
+  total_overrides: number
 }

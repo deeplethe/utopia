@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from uuid import uuid4
 
+from sqlalchemy import event
 from sqlmodel import Session, SQLModel, create_engine
 
 from app.config import settings
@@ -13,8 +15,24 @@ from app.config import settings
 engine = create_engine(
     settings.db_url,
     echo=False,
-    connect_args={"check_same_thread": False, "timeout": 30},
+    connect_args={"check_same_thread": False, "timeout": 30}
+    if settings.db_url.startswith("sqlite") else {},
+    pool_pre_ping=True,
 )
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite(dbapi_connection, _connection_record) -> None:
+    """Use WAL and an explicit busy timeout for concurrent extraction jobs."""
+    if not settings.db_url.startswith("sqlite"):
+        return
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+    finally:
+        cursor.close()
 
 
 def init_db() -> None:
@@ -26,8 +44,30 @@ def init_db() -> None:
 
 
 def _migrate() -> None:
-    """Additive column migrations for SQLite (create_all does not ALTER existing tables)."""
+    """Small additive migrations for existing SQLite/PostgreSQL installations."""
     from sqlalchemy import text
+
+    if not settings.db_url.startswith("sqlite"):
+        if engine.dialect.name == "postgresql":
+            with engine.begin() as conn:
+                conn.execute(text(
+                    "ALTER TABLE systemconfig ADD COLUMN IF NOT EXISTS extraction_concurrency INTEGER"
+                ))
+                existed = bool(conn.execute(text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() AND table_name = 'provider' "
+                    "AND column_name = 'concurrency_limit'"
+                )).scalar())
+                conn.execute(text(
+                    "ALTER TABLE provider ADD COLUMN IF NOT EXISTS "
+                    "concurrency_limit INTEGER NOT NULL DEFAULT 10"
+                ))
+                if not existed:
+                    conn.execute(text(
+                        "UPDATE provider SET concurrency_limit = GREATEST(1, LEAST(64, COALESCE("
+                        "(SELECT extraction_concurrency FROM systemconfig WHERE id = 1), :fallback)))"
+                    ), {"fallback": settings.extraction_concurrency})
+        return
 
     additions = {
         "user": [
@@ -41,6 +81,27 @@ def _migrate() -> None:
             ("assertions_added", "INTEGER NOT NULL DEFAULT 0"),
             ("pending_added", "INTEGER NOT NULL DEFAULT 0"),
             ("unknown_classes", "JSON"),
+            ("phase", "TEXT NOT NULL DEFAULT ''"),
+            ("terms_added", "INTEGER NOT NULL DEFAULT 0"),
+            ("terms_mapped", "INTEGER NOT NULL DEFAULT 0"),
+            ("terminology_proposals", "INTEGER NOT NULL DEFAULT 0"),
+            ("terminology_error", "TEXT"),
+            ("prompt_snapshot", "JSON"),
+        ],
+        "axiomprovenance": [
+            ("method", "TEXT NOT NULL DEFAULT 'extraction'"),
+            ("actor_name", "TEXT NOT NULL DEFAULT ''"),
+            ("audit_event_id", "INTEGER"),
+            ("review_record", "JSON"),
+        ],
+        "aboxprovenance": [
+            ("method", "TEXT NOT NULL DEFAULT 'extraction'"),
+            ("actor_name", "TEXT NOT NULL DEFAULT ''"),
+            ("audit_event_id", "INTEGER"),
+            ("review_record", "JSON"),
+        ],
+        "termproposal": [
+            ("extraction_job_id", "INTEGER"),
         ],
         "document": [
             ("folder", "TEXT NOT NULL DEFAULT '/'"),
@@ -49,6 +110,7 @@ def _migrate() -> None:
             ("abox_extracted_at", "TIMESTAMP"),
         ],
         "knowledgesystem": [
+            ("public_id", "TEXT"),
             ("owner_id", "INTEGER"),
             ("llm_model", "TEXT"),
             ("llm_provider_id", "INTEGER"),
@@ -70,20 +132,34 @@ def _migrate() -> None:
             ("embedding_model", "TEXT"),
             ("llm_provider_id", "INTEGER"),
             ("embedding_provider_id", "INTEGER"),
+            ("extraction_concurrency", "INTEGER"),
         ],
         "provider": [
             ("model", "TEXT NOT NULL DEFAULT ''"),
             ("kind", "TEXT NOT NULL DEFAULT 'llm'"),
+            ("concurrency_limit", "INTEGER NOT NULL DEFAULT 10"),
             ("last_test_ok", "BOOLEAN"),
             ("last_tested_at", "TIMESTAMP"),
         ],
+        "knowledgeapitoken": [
+            ("secret_ciphertext", "TEXT"),
+        ],
     }
+    provider_limit_added = False
     with engine.begin() as conn:
         for table, cols in additions.items():
             existing = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
             for name, ddl in cols:
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+                    if table == "provider" and name == "concurrency_limit":
+                        provider_limit_added = True
+
+        if provider_limit_added:
+            conn.execute(text(
+                "UPDATE provider SET concurrency_limit = MAX(1, MIN(64, COALESCE("
+                "(SELECT extraction_concurrency FROM systemconfig WHERE id = 1), :fallback)))"
+            ), {"fallback": settings.extraction_concurrency})
 
         # Documents are now bound per-KS, so the same bytes can appear in multiple KS —
         # relax the old global-unique index on document.sha256 to a plain index, and add a
@@ -91,6 +167,21 @@ def _migrate() -> None:
         # unknown_classes was added nullable; the model field is a non-Optional dict, so
         # backfill pre-existing NULL rows to an empty JSON object.
         conn.execute(text("UPDATE extractionjob SET unknown_classes = '{}' WHERE unknown_classes IS NULL"))
+        conn.execute(text("UPDATE extractionjob SET prompt_snapshot = '{}' WHERE prompt_snapshot IS NULL"))
+        conn.execute(text("UPDATE axiomprovenance SET review_record = '{}' WHERE review_record IS NULL"))
+        conn.execute(text("UPDATE aboxprovenance SET review_record = '{}' WHERE review_record IS NULL"))
+
+        for row in conn.execute(text(
+            "SELECT id FROM knowledgesystem WHERE public_id IS NULL OR public_id = ''"
+        )):
+            conn.execute(
+                text("UPDATE knowledgesystem SET public_id = :public_id WHERE id = :id"),
+                {"public_id": uuid4().hex, "id": row[0]},
+            )
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_knowledgesystem_public_id "
+            "ON knowledgesystem (public_id)"
+        ))
 
         doc_indexes = {row[1] for row in conn.execute(text("PRAGMA index_list(document)"))}
         if "ix_document_sha256" in doc_indexes:

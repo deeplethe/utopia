@@ -1,21 +1,23 @@
 import { NavLink, Navigate, useParams } from "react-router-dom"
 import type { ComponentType } from "react"
-import { Cpu, Palette, User as UserIcon, Users as UsersIcon } from "lucide-react"
+import { Cpu, Languages, Palette, User as UserIcon, Users as UsersIcon } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/lib/auth"
+import { useI18n, type MessageKey } from "@/lib/i18n"
 import UsersPage from "@/pages/UsersPage"
 import ModelEndpointsPage from "@/pages/SettingsPage"
 import ProfileSection from "./ProfileSection"
 import AppearanceSection from "./AppearanceSection"
+import LanguageSection from "./LanguageSection"
 
 interface Item {
   key: string
-  label: string
+  label: MessageKey
   icon: ComponentType<{ className?: string }>
   element: React.ReactNode
 }
 interface Group {
-  title: string
+  title: MessageKey
   admin?: boolean
   items: Item[]
 }
@@ -24,18 +26,19 @@ interface Group {
 // re-navigating back to a section keeps its own (fresh) mount.
 const GROUPS: Group[] = [
   {
-    title: "Account",
+    title: "settings.group.account",
     items: [
-      { key: "profile", label: "Profile", icon: UserIcon, element: <ProfileSection /> },
-      { key: "appearance", label: "Appearance", icon: Palette, element: <AppearanceSection /> },
+      { key: "profile", label: "settings.profile", icon: UserIcon, element: <ProfileSection /> },
+      { key: "appearance", label: "settings.appearance", icon: Palette, element: <AppearanceSection /> },
+      { key: "language", label: "settings.language", icon: Languages, element: <LanguageSection /> },
     ],
   },
   {
-    title: "Admin",
+    title: "settings.group.admin",
     admin: true,
     items: [
-      { key: "users", label: "Users", icon: UsersIcon, element: <UsersPage /> },
-      { key: "models", label: "Model endpoints", icon: Cpu, element: <ModelEndpointsPage /> },
+      { key: "users", label: "settings.users", icon: UsersIcon, element: <UsersPage /> },
+      { key: "models", label: "settings.models", icon: Cpu, element: <ModelEndpointsPage /> },
     ],
   },
 ]
@@ -43,6 +46,7 @@ const GROUPS: Group[] = [
 export default function SettingsLayout() {
   const { section } = useParams()
   const { user } = useAuth()
+  const { t } = useI18n()
   const isAdmin = !!user?.is_admin
 
   const current = GROUPS.flatMap((g) => g.items.map((it) => ({ ...it, admin: g.admin }))).find(
@@ -54,12 +58,12 @@ export default function SettingsLayout() {
   return (
     <div className="flex flex-col gap-8 md:flex-row">
       <aside className="shrink-0 md:w-52">
-        <h1 className="mb-3 px-2 text-lg font-semibold tracking-tight">Settings</h1>
+        <h1 className="mb-3 px-2 text-lg font-semibold tracking-tight">{t("settings.title")}</h1>
         <nav className="space-y-4">
           {GROUPS.filter((g) => !g.admin || isAdmin).map((g) => (
             <div key={g.title}>
               <div className="mb-1 px-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                {g.title}
+                {t(g.title)}
               </div>
               <div className="space-y-0.5">
                 {g.items.map((it) => {
@@ -77,7 +81,7 @@ export default function SettingsLayout() {
                         )
                       }
                     >
-                      <Icon className="h-4 w-4" /> {it.label}
+                      <Icon className="h-4 w-4" /> {t(it.label)}
                     </NavLink>
                   )
                 })}

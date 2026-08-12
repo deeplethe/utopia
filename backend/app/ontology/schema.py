@@ -60,33 +60,41 @@ class MergeIndex:
 
     class_by_norm: dict[str, str] = field(default_factory=dict)   # norm_label -> iri
     prop_by_norm: dict[str, str] = field(default_factory=dict)    # norm_label -> iri
+    object_property_norms: set[str] = field(default_factory=set)
+    data_property_norms: set[str] = field(default_factory=set)
     labeled: set[str] = field(default_factory=set)                # iris that already have rdfs:label
 
 
 def read_index(graph_iri: str) -> MergeIndex:
     idx = MergeIndex()
-    types: dict[str, str] = {}
+    types: dict[str, set[str]] = {}
     labels: dict[str, str] = {}
     for s, p, o in store.read_triples(graph_iri):
         if p.value == RDF_TYPE.value:
             if o.value == OWL_CLASS.value:
-                types[s.value] = "class"
-            elif o.value in (OWL_OBJECT_PROPERTY.value, OWL_DATATYPE_PROPERTY.value):
-                types[s.value] = "prop"
+                types.setdefault(s.value, set()).add("class")
+            elif o.value == OWL_OBJECT_PROPERTY.value:
+                types.setdefault(s.value, set()).add("object_property")
+            elif o.value == OWL_DATATYPE_PROPERTY.value:
+                types.setdefault(s.value, set()).add("data_property")
         elif p.value == RDFS_LABEL.value:
             labels[s.value] = o.value
             idx.labeled.add(s.value)
     from app.ontology.vocab import norm_label
 
-    for iri, kind in types.items():
+    for iri, kinds in types.items():
         label = labels.get(iri, "")
         if not label:
             continue
         norm = norm_label(label)
-        if kind == "class":
+        if "class" in kinds:
             idx.class_by_norm.setdefault(norm, iri)
-        else:
+        if kinds & {"object_property", "data_property"}:
             idx.prop_by_norm.setdefault(norm, iri)
+        if "object_property" in kinds:
+            idx.object_property_norms.add(norm)
+        if "data_property" in kinds:
+            idx.data_property_norms.add(norm)
     return idx
 
 

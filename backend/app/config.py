@@ -8,6 +8,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/ directory (this file lives at backend/app/config.py)
@@ -20,6 +21,21 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    # --- System language ---
+    # Backend-only language for built-in model prompts. This is intentionally independent from
+    # the browser UI locale. Docker/local deployments may override it with SYSTEM_LANGUAGE.
+    system_language: str = "en"
+
+    @field_validator("system_language")
+    @classmethod
+    def normalize_system_language(cls, value: str) -> str:
+        normalized = value.strip().lower().replace("_", "-")
+        if normalized in {"en", "en-us", "en-gb"}:
+            return "en"
+        if normalized in {"zh", "zh-cn", "zh-hans"}:
+            return "zh-CN"
+        raise ValueError("SYSTEM_LANGUAGE must be 'en' or 'zh-CN'")
 
     # --- LLM / OpenRouter ---
     openrouter_api_key: str = ""
@@ -40,6 +56,7 @@ class Settings(BaseSettings):
 
     # --- Paths (all under backend/data) ---
     data_dir: Path = BACKEND_DIR / "data"
+    database_url: str = ""
 
     # --- Chunking defaults ---
     chunk_size_chars: int = 1200
@@ -53,7 +70,15 @@ class Settings(BaseSettings):
     extraction_mode: str = "auto"
     agentic_min_classes: int = 12
     agentic_max_steps: int = 6
-    extraction_concurrency: int = 5  # max chunks extracted in parallel per job
+    # Legacy/fallback limit: seeds model endpoints on upgrade and applies only when no endpoint exists.
+    extraction_concurrency: int = 10
+
+    # --- Independent TBox/ABox role verification ---
+    # The first extractor proposes candidates; a separate critic classifies each candidate from
+    # exact source evidence. High-confidence decisions are accepted, medium-confidence individual
+    # decisions enter human review, and everything else is rejected rather than guessed.
+    role_auto_accept_floor: float = 0.85
+    role_review_floor: float = 0.55
 
     # --- Semantic (embedding-based) duplicate-class detection (via OpenRouter) ---
     # Embeddings are only a candidate generator (they conflate "related" with "same");
@@ -68,7 +93,7 @@ class Settings(BaseSettings):
     # candidate's facts and query past decisions via tools) makes the same/new/uncertain call.
     # When disabled, resolution falls back to embedding thresholds.
     agentic_resolution: bool = True
-    resolution_candidate_floor: float = 0.55  # min similarity to bother judging a candidate
+    resolution_candidate_floor: float = 0.78  # only plausible duplicates warrant an LLM judgment
     resolution_max_candidates: int = 5
     resolution_max_steps: int = 4  # ReAct tool-call budget per mention
 
@@ -105,6 +130,32 @@ class Settings(BaseSettings):
     agentic_validation: bool = True
     validation_auto_apply_floor: float = 0.85
 
+    # --- Controlled terminology formation ---
+    # Every extraction deterministically mirrors named ontology entities into mapped SKOS concepts.
+    # An optional LLM stage then proposes uncertain aliases/domain terms for human review.
+    automatic_terminology: bool = True
+    terminology_suggest_during_extraction: bool = True
+    terminology_suggestion_max_chunks: int = 12
+    terminology_suggestion_max_chars: int = 18_000
+
+    # --- External read-only API ---
+    external_query_max_rows: int = 500
+    external_query_max_chars: int = 20_000
+    # Optional Fernet key used to encrypt revealable API-token secrets. When empty, a random key
+    # is created in data_dir/token-encryption.key and therefore persists with the data volume.
+    token_encryption_key: str = ""
+
+    # --- MCP ---
+    # MCP is mounted into the FastAPI process and starts with the normal backend. This public URL
+    # is used only for protocol metadata; reverse proxies may override it for their external host.
+    mcp_public_url: str = "http://localhost:8000/mcp"
+    mcp_token_ttl_minutes: int = 60
+    mcp_max_token_ttl_minutes: int = 30 * 24 * 60
+
+    # --- Direct RDF import ---
+    rdf_import_max_bytes: int = 25 * 1024 * 1024
+    rdf_import_max_triples: int = 250_000
+
     # --- CORS (frontend dev server) ---
     cors_origins: list[str] = [
         "http://localhost:5173",
@@ -117,6 +168,7 @@ class Settings(BaseSettings):
     cookie_secure: bool = False       # set True when served over HTTPS
     admin_username: str = "admin"     # seed account created on first boot (empty user table)
     admin_password: str = "admin"     # CHANGE via backend/.env
+    seed_demo_data: bool = False       # create a deterministic no-LLM demo KS on first boot
 
     @property
     def blob_dir(self) -> Path:
@@ -128,16 +180,31 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
-        return f"sqlite:///{self.db_path.as_posix()}"
+        return self.database_url or f"sqlite:///{self.db_path.as_posix()}"
 
     @property
     def oxigraph_dir(self) -> Path:
         return self.data_dir / "oxigraph"
 
+    @property
+    def serving_oxigraph_dir(self) -> Path:
+        return self.data_dir / "serving-oxigraph"
+
+    @property
+    def release_dir(self) -> Path:
+        return self.data_dir / "releases"
+
+    @property
+    def export_dir(self) -> Path:
+        return self.data_dir / "exports"
+
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.blob_dir.mkdir(parents=True, exist_ok=True)
         self.oxigraph_dir.mkdir(parents=True, exist_ok=True)
+        self.serving_oxigraph_dir.mkdir(parents=True, exist_ok=True)
+        self.release_dir.mkdir(parents=True, exist_ok=True)
+        self.export_dir.mkdir(parents=True, exist_ok=True)
 
 
 @lru_cache

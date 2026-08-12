@@ -1,30 +1,49 @@
 // Thin typed API client. All calls go to /api which Vite proxies to the FastAPI backend.
 import type {
   AboxClassList,
+  ApiToken,
+  ApiTokenCreated,
+  ApiTokenRevealed,
+  ApiTokenScope,
   AssertionInput,
   Chunk,
   Conflict,
+  ConflictContext,
   HistoryResponse,
   DocumentContribution,
   DocumentImpact,
+  DocumentListResponse,
   DocumentMeta,
   EditOp,
   EditResult,
   ExtractionJob,
+  ExportJob,
+  ExportList,
   Individual,
   IndividualList,
+  KnowledgePrompt,
+  KnowledgePromptList,
   KnowledgeSystem,
   GrantableUser,
   Member,
   MemberDetail,
   ModelCatalog,
   OntologyView,
+  OntologyRelease,
   ParseResponse,
+  ParseBatchResponse,
   ReconciliationList,
   ResolutionDecisions,
   ResolutionQueue,
   ReviewCounts,
   Provider,
+  ReleaseDiff,
+  ReleaseLayer,
+  ReleaseList,
+  RdfImportFormat,
+  RdfImportResult,
+  RdfImportStrategy,
+  RdfImportTarget,
   ResolveResult,
   Role,
   SourceDoc,
@@ -33,6 +52,14 @@ import type {
   User,
   ValidationDecisionList,
   ValidationResult,
+  VocabularyConcept,
+  VocabularyConceptList,
+  VocabularyConceptInput,
+  VocabularyScheme,
+  VocabularySchemeList,
+  VocabularyView,
+  TermProposal,
+  TermProposalList,
 } from "./types"
 
 // The AuthProvider registers a handler here so a 401 from any call (e.g. an expired
@@ -42,18 +69,39 @@ export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn
 }
 
+function errorMessage(detail: unknown) {
+  if (typeof detail === "string") return detail
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const message = (detail as { message?: unknown }).message
+    if (typeof message === "string") return message
+  }
+  return JSON.stringify(detail)
+}
+
+export class ApiError extends Error {
+  readonly status: number
+  readonly detail: unknown
+
+  constructor(status: number, detail: unknown) {
+    super(`${status}: ${errorMessage(detail)}`)
+    this.name = "ApiError"
+    this.status = status
+    this.detail = detail
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "include", ...init })
   if (!res.ok) {
     if (res.status === 401 && onUnauthorized) onUnauthorized()
-    let detail = res.statusText
+    let detail: unknown = res.statusText
     try {
       const body = await res.json()
-      detail = body.detail ?? JSON.stringify(body)
+      detail = body.detail ?? body
     } catch {
       /* ignore */
     }
-    throw new Error(`${res.status}: ${detail}`)
+    throw new ApiError(res.status, detail)
   }
   // Some endpoints (logout) return trivial JSON; a 204 would have no body.
   if (res.status === 204) return undefined as T
@@ -72,13 +120,47 @@ const patch = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 })
 
+const put = (body: unknown): RequestInit => ({
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(body),
+})
+
 export const api = {
   health: () => request<{ status: string; extract_model: string; has_llm_key: boolean }>("/api/health"),
+
+  // Immutable ontology releases + asynchronous uncompressed N-Quads exports
+  listReleases: (ksId: number) => request<ReleaseList>(`/api/knowledge/${ksId}/releases`),
+  createRelease: (ksId: number, body: { version?: string; title?: string; notes?: string; shard_size?: number } = {}) =>
+    request<OntologyRelease>(`/api/knowledge/${ksId}/releases`, json(body)),
+  reviewRelease: (ksId: number, releaseId: number, note = "") =>
+    request<OntologyRelease>(`/api/knowledge/${ksId}/releases/${releaseId}/review`, json({ note })),
+  publishRelease: (ksId: number, releaseId: number, note = "") =>
+    request<OntologyRelease>(`/api/knowledge/${ksId}/releases/${releaseId}/publish`, json({ note })),
+  deployRelease: (ksId: number, releaseId: number) =>
+    request<OntologyRelease>(`/api/knowledge/${ksId}/releases/${releaseId}/deployment`, json({})),
+  stopReleaseService: (ksId: number, releaseId: number) =>
+    request<OntologyRelease>(`/api/knowledge/${ksId}/releases/${releaseId}/deployment`, { method: "DELETE" }),
+  deleteRelease: (ksId: number, releaseId: number) =>
+    request<OntologyRelease>(`/api/knowledge/${ksId}/releases/${releaseId}`, { method: "DELETE" }),
+  rollbackRelease: (ksId: number, releaseId: number) =>
+    request<{ restored: number; version: string }>(`/api/knowledge/${ksId}/releases/${releaseId}/rollback`, json({})),
+  diffReleases: (ksId: number, fromId: number, toId: number) =>
+    request<ReleaseDiff>(`/api/knowledge/${ksId}/releases/diff?from_id=${fromId}&to_id=${toId}`),
+  listExports: (ksId: number) => request<ExportList>(`/api/knowledge/${ksId}/exports`),
+  createExport: (ksId: number, layer: ReleaseLayer, releaseId?: number, shardSize = 100_000) =>
+    request<ExportJob>(`/api/knowledge/${ksId}/exports`, json({ layer, release_id: releaseId, shard_size: shardSize })),
+  getExport: (ksId: number, jobId: number) => request<ExportJob>(`/api/knowledge/${ksId}/exports/${jobId}`),
+  exportFileUrl: (ksId: number, jobId: number, filename: string) =>
+    `/api/knowledge/${ksId}/exports/${jobId}/files/${encodeURIComponent(filename)}`,
 
   // System settings + model catalog
   getModels: () => request<ModelCatalog>("/api/models"),
   getSettings: () => request<SystemSettings>("/api/settings"),
-  updateSettings: (body: { llm_provider_id?: number; embedding_provider_id?: number }) =>
+  updateSettings: (body: {
+    llm_provider_id?: number
+    embedding_provider_id?: number
+  }) =>
     request<SystemSettings>("/api/settings", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -87,9 +169,9 @@ export const api = {
 
   // Model entries (a flat list of endpoint + key + model + kind)
   listProviders: () => request<Provider[]>("/api/providers"),
-  createProvider: (body: { name: string; kind: "llm" | "embedding"; base_url: string; api_key: string; model: string }) =>
+  createProvider: (body: { name: string; kind: "llm" | "embedding"; base_url: string; api_key: string; model: string; concurrency_limit: number }) =>
     request<Provider>("/api/providers", json(body)),
-  updateProvider: (id: number, body: { name?: string; kind?: "llm" | "embedding"; base_url?: string; api_key?: string; model?: string }) =>
+  updateProvider: (id: number, body: { name?: string; kind?: "llm" | "embedding"; base_url?: string; api_key?: string; model?: string; concurrency_limit?: number }) =>
     request<Provider>(`/api/providers/${id}`, patch(body)),
   deleteProvider: (id: number) =>
     request<{ deleted: number }>(`/api/providers/${id}`, { method: "DELETE" }),
@@ -125,6 +207,26 @@ export const api = {
 
   // Documents (scoped to a knowledge system)
   listDocuments: (ksId: number) => request<DocumentMeta[]>(`/api/knowledge/${ksId}/documents`),
+  getDocument: (ksId: number, id: number) =>
+    request<DocumentMeta>(`/api/knowledge/${ksId}/documents/${id}`),
+  listDocumentsPage: (
+    ksId: number,
+    params: {
+      folder?: string
+      q?: string
+      status?: "pending" | "parsed" | "failed"
+      limit?: number
+      offset?: number
+    } = {},
+  ) => {
+    const qs = new URLSearchParams()
+    if (params.folder !== undefined) qs.set("folder", params.folder)
+    if (params.q) qs.set("q", params.q)
+    if (params.status) qs.set("status", params.status)
+    qs.set("limit", String(params.limit ?? 20))
+    qs.set("offset", String(params.offset ?? 0))
+    return request<DocumentListResponse>(`/api/knowledge/${ksId}/documents/page?${qs.toString()}`)
+  },
   uploadDocument: (ksId: number, file: File, folder = "/") => {
     const fd = new FormData()
     fd.append("file", file)
@@ -133,6 +235,13 @@ export const api = {
   },
   parseDocument: (ksId: number, id: number) =>
     request<ParseResponse>(`/api/knowledge/${ksId}/documents/${id}/parse`, { method: "POST" }),
+  parseDocuments: (
+    ksId: number,
+    body: { document_ids?: number[]; folders?: string[]; recursive?: boolean },
+  ) => request<ParseBatchResponse>(
+    `/api/knowledge/${ksId}/documents/parse-batch`,
+    json(body),
+  ),
   getChunks: (ksId: number, id: number) =>
     request<Chunk[]>(`/api/knowledge/${ksId}/documents/${id}/chunks`),
   getContribution: (ksId: number, id: number) =>
@@ -178,6 +287,17 @@ export const api = {
   getMemberDetail: (ksId: number, userId: number) =>
     request<MemberDetail>(`/api/knowledge/${ksId}/members/${userId}/detail`),
 
+  // External API access (owner-managed)
+  listApiTokens: (ksId: number) => request<ApiToken[]>(`/api/knowledge/${ksId}/tokens`),
+  createApiToken: (
+    ksId: number,
+    body: { name: string; scopes: ApiTokenScope[]; expires_in_days: number | null },
+  ) => request<ApiTokenCreated>(`/api/knowledge/${ksId}/tokens`, json(body)),
+  revealApiToken: (ksId: number, tokenId: number) =>
+    request<ApiTokenRevealed>(`/api/knowledge/${ksId}/tokens/${tokenId}/reveal`, { method: "POST" }),
+  revokeApiToken: (ksId: number, tokenId: number) =>
+    request<ApiToken>(`/api/knowledge/${ksId}/tokens/${tokenId}`, { method: "DELETE" }),
+
   // Ontology
   getOntology: (ksId: number) => request<OntologyView>(`/api/knowledge/${ksId}/ontology`),
   exportOntology: async (ksId: number, fmt: string): Promise<string> => {
@@ -186,6 +306,125 @@ export const api = {
       if (res.status === 401 && onUnauthorized) onUnauthorized()
       throw new Error(`${res.status}: ${res.statusText}`)
     }
+    return res.text()
+  },
+  importRdf: (
+    ksId: number,
+    file: File,
+    options: {
+      target: RdfImportTarget
+      strategy: RdfImportStrategy
+      format: RdfImportFormat
+      baseIri?: string
+    },
+  ) => {
+    const fd = new FormData()
+    fd.append("file", file)
+    fd.append("target", options.target)
+    fd.append("strategy", options.strategy)
+    fd.append("format", options.format)
+    if (options.baseIri?.trim()) fd.append("base_iri", options.baseIri.trim())
+    return request<RdfImportResult>(`/api/knowledge/${ksId}/rdf/import`, { method: "POST", body: fd })
+  },
+
+  // Controlled terminology (SKOS vocabulary + human-reviewed agent proposals)
+  getVocabulary: (ksId: number) => request<VocabularyView>(`/api/knowledge/${ksId}/vocabulary`),
+  listVocabularySchemes: (ksId: number) =>
+    request<VocabularySchemeList>(`/api/knowledge/${ksId}/vocabulary/schemes`),
+  listVocabularyConcepts: (
+    ksId: number,
+    params: {
+      scheme_iri?: string
+      q?: string
+      status?: "active" | "deprecated"
+      mapping?: "mapped" | "standalone"
+      origin?: "manual" | "extraction" | "agent"
+      start_date?: string
+      end_date?: string
+      limit?: number
+      offset?: number
+    } = {},
+  ) => {
+    const qs = new URLSearchParams()
+    if (params.scheme_iri) qs.set("scheme_iri", params.scheme_iri)
+    if (params.q) qs.set("q", params.q)
+    if (params.status) qs.set("status", params.status)
+    if (params.mapping) qs.set("mapping", params.mapping)
+    if (params.origin) qs.set("origin", params.origin)
+    if (params.start_date) qs.set("start_date", params.start_date)
+    if (params.end_date) qs.set("end_date", params.end_date)
+    qs.set("limit", String(params.limit ?? 20))
+    qs.set("offset", String(params.offset ?? 0))
+    return request<VocabularyConceptList>(`/api/knowledge/${ksId}/vocabulary/concepts?${qs.toString()}`)
+  },
+  syncVocabulary: (ksId: number) => request<{
+    scheme_iri: string | null
+    terms_added: number
+    terms_mapped: number
+    aliases_added: number
+    broader_added: number
+    stale_mappings_removed: number
+    mapping_conflicts: number
+    view: VocabularyView
+  }>(`/api/knowledge/${ksId}/vocabulary/sync`, { method: "POST" }),
+  createVocabularyScheme: (
+    ksId: number,
+    body: { title: string; description: string; default_language: string },
+  ) => request<VocabularyScheme>(`/api/knowledge/${ksId}/vocabulary/schemes`, json(body)),
+  updateVocabularyScheme: (
+    ksId: number,
+    iri: string,
+    body: { title: string; description: string; default_language: string },
+  ) => request<VocabularyScheme>(
+    `/api/knowledge/${ksId}/vocabulary/schemes?iri=${encodeURIComponent(iri)}`,
+    patch(body),
+  ),
+  deleteVocabularyScheme: (ksId: number, iri: string) =>
+    request<{ deleted: string; removed_triples: number }>(
+      `/api/knowledge/${ksId}/vocabulary/schemes?iri=${encodeURIComponent(iri)}`,
+      { method: "DELETE" },
+    ),
+  createVocabularyConcept: (ksId: number, body: VocabularyConceptInput) =>
+    request<VocabularyConcept>(`/api/knowledge/${ksId}/vocabulary/concepts`, json(body)),
+  updateVocabularyConcept: (ksId: number, iri: string, body: VocabularyConceptInput) =>
+    request<VocabularyConcept>(
+      `/api/knowledge/${ksId}/vocabulary/concepts?iri=${encodeURIComponent(iri)}`,
+      patch(body),
+    ),
+  deleteVocabularyConcept: (ksId: number, iri: string) =>
+    request<{ deleted: string; removed_triples: number }>(
+      `/api/knowledge/${ksId}/vocabulary/concepts?iri=${encodeURIComponent(iri)}`,
+      { method: "DELETE" },
+    ),
+  suggestVocabulary: (ksId: number, schemeIri: string) =>
+    request<TermProposalList>(
+      `/api/knowledge/${ksId}/vocabulary/suggest`,
+      json({ scheme_iri: schemeIri }),
+    ),
+  listTermProposals: (
+    ksId: number,
+    params: { status?: string; q?: string; limit?: number; offset?: number } = {},
+  ) => {
+    const qs = new URLSearchParams()
+    qs.set("status", params.status ?? "all")
+    if (params.q) qs.set("q", params.q)
+    qs.set("limit", String(params.limit ?? 100))
+    qs.set("offset", String(params.offset ?? 0))
+    return request<TermProposalList>(`/api/knowledge/${ksId}/vocabulary/proposals?${qs.toString()}`)
+  },
+  acceptTermProposal: (ksId: number, proposalId: number, payload?: Record<string, unknown>, note = "") =>
+    request<{ proposal: TermProposal; concept: VocabularyConcept }>(
+      `/api/knowledge/${ksId}/vocabulary/proposals/${proposalId}/accept`,
+      json({ payload, note }),
+    ),
+  rejectTermProposal: (ksId: number, proposalId: number, note = "") =>
+    request<TermProposal>(
+      `/api/knowledge/${ksId}/vocabulary/proposals/${proposalId}/reject`,
+      json({ note }),
+    ),
+  exportVocabulary: async (ksId: number, fmt = "turtle"): Promise<string> => {
+    const res = await fetch(`/api/knowledge/${ksId}/vocabulary/export?fmt=${fmt}`, { credentials: "include" })
+    if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`)
     return res.text()
   },
 
@@ -215,6 +454,22 @@ export const api = {
       { method: "POST" },
     ),
 
+  // Per-knowledge-system model prompts
+  listPrompts: (ksId: number) =>
+    request<KnowledgePromptList>(`/api/knowledge/${ksId}/prompts`),
+  updatePrompt: (ksId: number, promptKey: string, content: string) =>
+    request<KnowledgePrompt>(
+      `/api/knowledge/${ksId}/prompts/${encodeURIComponent(promptKey)}`,
+      put({ content }),
+    ),
+  restorePrompt: (ksId: number, promptKey: string) =>
+    request<KnowledgePrompt>(
+      `/api/knowledge/${ksId}/prompts/${encodeURIComponent(promptKey)}`,
+      { method: "DELETE" },
+    ),
+  restoreAllPrompts: (ksId: number) =>
+    request<void>(`/api/knowledge/${ksId}/prompts/restore-all`, { method: "POST" }),
+
   // Manual editing
   editOntology: (ksId: number, op: EditOp) =>
     request<EditResult>(`/api/knowledge/${ksId}/ontology/edit`, json(op)),
@@ -224,6 +479,8 @@ export const api = {
     request<Conflict[]>(`/api/knowledge/${ksId}/conflicts/detect`, { method: "POST" }),
   listConflicts: (ksId: number, status = "open", ctype?: string) =>
     request<Conflict[]>(`/api/knowledge/${ksId}/conflicts?status=${status}${ctype ? `&ctype=${ctype}` : ""}`),
+  getConflictContext: (ksId: number, cid: number) =>
+    request<ConflictContext>(`/api/knowledge/${ksId}/conflicts/${cid}`),
   resolveConflict: (ksId: number, cid: number, resolutionId: string) =>
     request<ResolveResult>(
       `/api/knowledge/${ksId}/conflicts/${cid}/resolve`,

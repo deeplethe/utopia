@@ -8,29 +8,46 @@ like the other agents; leaves the genuinely-rootless ones alone.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
+from app import model_config, prompt_config
 from app.config import settings
 from app.db.database import engine
-from app.db.models import KnowledgeSystem
+from app.db.models import Chunk, Document, KnowledgeSystem
 from app.llm import openrouter
-from app.ontology import editor, schema, store
+from app.ontology import editor, role_evidence, schema, store
 from app.ontology.vocab import norm_label
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM = """An ontology class is UNATTACHED — it has no parent class and no relationships. Suggest
-the single best BROADER parent class it should be a subclass of.
+_SYSTEM = """An ontology class is UNATTACHED: it has no parent class and no relationships. Use the
+provided SOURCE EXCERPTS to suggest the single best BROADER parent class it should be a subclass of.
 
-- Strongly prefer an EXISTING class from the provided list — reply with its exact label and new=false.
-- Only propose a NEW general class if none of the existing ones is a sensible parent (new=true).
-- If the class genuinely has no sensible broader kind, reply parent="" (skip).
+- Strongly prefer an EXISTING class from the provided list; reply with its exact label and new=false.
+- Only propose a NEW general class when its exact reusable label occurs in the source and the source
+  explicitly states the is-a relation (new=true).
+- If the class genuinely has no source-supported broader kind, reply parent="" (skip).
 - The parent must be a strictly MORE GENERAL kind, never a synonym or the class itself.
+- Do not use outside knowledge or mere semantic plausibility. Copy the decisive source wording
+  exactly into evidence. Named individuals must not be attached as subclasses.
 
-Reply with EXACTLY ONE JSON object: {"parent":"<label or empty>","new":<bool>,"confidence":<0..1>,"reason":"<=200 chars>"}."""
+Reply with EXACTLY ONE JSON object: {"parent":"<label or empty>","new":<bool>,
+"confidence":<0..1>,"evidence":"<exact source span or empty>","reason":"<=200 chars>"}."""
+
+prompt_config.register(
+    key="tbox.structure_repair",
+    category="governance",
+    title="Isolated-class structure repair",
+    description="Suggest a broader parent for classes that have no structural connections.",
+    default=_SYSTEM,
+    order=10,
+)
 
 
 def _isolated(view: dict) -> list[dict]:
@@ -46,18 +63,90 @@ def _isolated(view: dict) -> list[dict]:
             if not supers[c["iri"]] and c["iri"] not in has_child and c["iri"] not in used]
 
 
-def _decide(label: str, existing: list[str], model: str | None) -> dict | None:
-    user = f'Unattached class: "{label}"\nExisting classes: {existing}\n\nSuggest its parent.'
+def _verified_source_edge(
+    source_text: str,
+    child: str,
+    parent: str,
+    evidence: str,
+    model: str | None,
+) -> bool:
+    if not role_evidence.evidence_is_grounded(source_text, evidence):
+        return False
+    from app.ontology import extract
+
     try:
-        reply = openrouter.chat_sync([{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}], model=model)
+        verified = asyncio.run(extract._verify_tbox_candidates(
+            source_text,
+            {
+                "classes": [
+                    {"label": child, "comment": "", "evidence": evidence},
+                    {"label": parent, "comment": "", "evidence": evidence},
+                ],
+                "object_properties": [],
+                "data_properties": [],
+                "subclass_of": [{"sub": child, "super": parent, "evidence": evidence}],
+                "disjoint_with": [],
+                "equivalent_class": [],
+            },
+            model,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("structure evidence verification failed for %s: %s", child, exc)
+        return False
+    accepted = {
+        norm_label(str(row.get("label") or row.get("name") or ""))
+        for row in verified.get("classes", [])
+        if isinstance(row, dict)
+    }
+    edge_verified = any(
+        isinstance(row, dict)
+        and norm_label(str(row.get("sub") or row.get("child") or row.get("subclass") or ""))
+        == norm_label(child)
+        and norm_label(str(row.get("super") or row.get("parent") or row.get("superclass") or ""))
+        == norm_label(parent)
+        for row in verified.get("subclass_of", [])
+    )
+    return {norm_label(child), norm_label(parent)} <= accepted and edge_verified
+
+
+def _decide(label: str, existing: list[str], source_text: str, model: str | None) -> dict | None:
+    if not source_text:
+        return None
+    user = (
+        f'Unattached class: "{label}"\nExisting classes: {existing}\n\n'
+        f'SOURCE EXCERPTS:\n"""\n{source_text}\n"""\n\nSuggest its parent.'
+    )
+    try:
+        reply = openrouter.chat_sync(
+            [
+                {"role": "system", "content": prompt_config.get("tbox.structure_repair")},
+                {"role": "user", "content": user},
+            ],
+            model=model,
+        )
         data = openrouter.extract_json(reply)
     except Exception as e:  # noqa: BLE001
         logger.warning("structure agent error (%s) on %s", e, label)
         return None
     if not isinstance(data, dict):
         return None
-    return {"parent": str(data.get("parent", "")).strip(), "new": bool(data.get("new")),
-            "confidence": data.get("confidence"), "reason": str(data.get("reason", ""))[:200]}
+    result = {
+        "parent": str(data.get("parent", "")).strip(),
+        "new": bool(data.get("new")),
+        "confidence": data.get("confidence"),
+        "evidence": str(data.get("evidence", "")).strip(),
+        "reason": str(data.get("reason", ""))[:200],
+        "verified": False,
+    }
+    try:
+        confidence = float(result["confidence"] or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if result["parent"] and confidence >= settings.conflict_auto_apply_floor:
+        result["verified"] = _verified_source_edge(
+            source_text, label, result["parent"], result["evidence"], model,
+        )
+    return result
 
 
 def attach_isolated_bg(ks_id: int, model: str | None = None) -> list[str]:
@@ -76,12 +165,47 @@ def attach_isolated_bg(ks_id: int, model: str | None = None) -> list[str]:
         if not isolated:
             return []
         all_labels = sorted(c["label"] for c in view["classes"])
+        document_ids = [
+            document.id
+            for document in session.exec(
+                select(Document).where(Document.knowledge_system_id == ks.id)
+            ).all()
+            if document.id is not None
+        ]
+        source_chunks = session.exec(
+            select(Chunk).where(Chunk.document_id.in_(document_ids)).order_by(Chunk.id)
+        ).all() if document_ids else []
+
+        def source_for(label: str) -> str:
+            matched = [
+                chunk.text for chunk in source_chunks
+                if role_evidence.surface_is_grounded(chunk.text, label)
+            ][:4]
+            return "\n\n".join(text[:8000] for text in matched)
+
         # Pass 1 — propose a parent for each isolated class (no writes yet).
         proposals: list[tuple[dict, dict]] = []
-        for c in isolated:
-            d = _decide(c["label"], [x for x in all_labels if x != c["label"]], model)
-            if d:
-                proposals.append((c, d))
+        workers = min(len(isolated), model_config.llm_concurrency())
+        source_inputs = [(c, source_for(c["label"])) for c in isolated]
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            futures = [
+                (
+                    c,
+                    pool.submit(
+                        copy_context().run,
+                        _decide,
+                        c["label"],
+                        [label for label in all_labels if label != c["label"]],
+                        source_text,
+                        model,
+                    ),
+                )
+                for c, source_text in source_inputs
+            ]
+            for c, future in futures:
+                d = future.result()
+                if d:
+                    proposals.append((c, d))
         # A parent proposed for MANY isolated classes is almost certainly an over-general catch-all
         # (a systematic mis-guess — e.g. dozens of "…function" classes all under "process profile"),
         # so don't auto-attach those; leave them for a human to place.
@@ -107,6 +231,9 @@ def attach_isolated_bg(ks_id: int, model: str | None = None) -> list[str]:
             if parent_votes[norm_label(parent)] > max_same_parent:  # over-general dumping ground → leave for a human
                 log.append(f'{c["label"]}: "{parent}" proposed for {parent_votes[norm_label(parent)]} classes — likely over-generalization, left')
                 continue
+            if not d.get("verified"):
+                log.append(f'{c["label"]}: "{parent}" was not verified by source evidence — left')
+                continue
             p_iri = idx.class_by_norm.get(norm_label(parent))
             if not p_iri and not d["new"]:
                 continue  # agent named a non-existent "existing" class → don't invent it
@@ -125,11 +252,15 @@ def attach_isolated_bg(ks_id: int, model: str | None = None) -> list[str]:
             added, removed = cap.diff()
             audit.record(
                 session, ks_id=ks.id, action="tbox.attach_isolated",
-                summary=f'Agent attached "{c["label"]}" ⊑ "{parent}"{" (new class)" if d["new"] else ""}',
+                summary=f'Agent attached "{c["label"]}" ⊑ "{parent}"{" (new class)" if created_new else ""}',
                 actor_id=None, actor_name="structure-agent",
-                detail={"class": c["iri"], "parent": parent, "new": d["new"], "reason": d["reason"], "confidence": conf, "agent": True},
+                detail={
+                    "class": c["iri"], "parent": parent, "new": created_new,
+                    "reason": d["reason"], "evidence": d["evidence"],
+                    "confidence": conf, "agent": True,
+                },
                 added=added, removed=removed,
             )
-            log.append(f'{c["label"]} ⊑ {parent}{" (new)" if d["new"] else ""} (auto {conf:.2f})')
+            log.append(f'{c["label"]} ⊑ {parent}{" (new)" if created_new else ""} (auto {conf:.2f})')
         session.commit()
         return log

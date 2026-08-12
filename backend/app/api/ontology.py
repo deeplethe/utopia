@@ -3,16 +3,30 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import delete, func
 from sqlmodel import Session, select
 
 from app import audit
 from app.api.conflicts import sync_conflicts
 from app.api.knowledge import refresh_ks_stats
 from app.db.database import get_session
-from app.db.models import AxiomProvenance, Chunk, Document, KnowledgeSystem, User
+from app.db.models import (
+    AboxProvenance,
+    AxiomProvenance,
+    Chunk,
+    Conflict,
+    Document,
+    EntityResolution,
+    ExtractionJob,
+    KnowledgeSystem,
+    TboxReconciliation,
+    TermProposal,
+    User,
+    ValidationDecision,
+)
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
-from app.ontology import editor, schema, store
+from app.ontology import editor, retrieval, schema, skos, statement_provenance, store
 
 router = APIRouter(prefix="/api/knowledge", tags=["ontology"])
 
@@ -65,6 +79,88 @@ class EditRequest(BaseModel):
     op: str
 
 
+class ResetOntologyRequest(BaseModel):
+    confirm: bool = False
+
+
+@router.post("/{ks_id}/ontology/reset")
+def reset_ontology(
+    body: ResetOntologyRequest,
+    ks: KnowledgeSystem = Depends(ks_writer),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Clear generated semantic state while retaining source documents and configuration."""
+    if extraction_active(session, ks.id):
+        raise HTTPException(status_code=409, detail="An extraction is in progress; try again after it finishes.")
+    if not body.confirm:
+        raise HTTPException(status_code=400, detail="confirm=true is required to reset extracted knowledge")
+
+    abox_iri = f"{ks.graph_iri.rstrip('/')}/abox"
+    vocabulary_iri = skos.graph_iri_for(ks)
+    graph_iris = (ks.graph_iri, abox_iri, vocabulary_iri)
+    row_models = (
+        AxiomProvenance,
+        AboxProvenance,
+        EntityResolution,
+        Conflict,
+        TermProposal,
+        TboxReconciliation,
+        ValidationDecision,
+    )
+    removed_rows = {
+        model.__tablename__: session.exec(
+            select(func.count(model.id)).where(model.knowledge_system_id == ks.id)
+        ).one()
+        for model in row_models
+    }
+
+    with store.capture(graph_iris[0], revert_on_error=True) as tbox_capture, \
+            store.capture(graph_iris[1], revert_on_error=True) as abox_capture, \
+            store.capture(graph_iris[2], revert_on_error=True) as vocabulary_capture:
+        for graph_iri in graph_iris:
+            store.clear_graph(graph_iri)
+
+    graph_diffs = (
+        ("ontology", graph_iris[0], tbox_capture.diff()),
+        ("instances", graph_iris[1], abox_capture.diff()),
+        ("vocabulary", graph_iris[2], vocabulary_capture.diff()),
+    )
+    for model in row_models:
+        session.exec(delete(model).where(model.knowledge_system_id == ks.id))
+    documents = session.exec(select(Document).where(Document.knowledge_system_id == ks.id)).all()
+    for document in documents:
+        document.tbox_extracted_at = None
+        document.abox_extracted_at = None
+        session.add(document)
+
+    retrieval.invalidate(ks.graph_iri)
+    refresh_ks_stats(session, ks)
+
+    import secrets
+    group_id = secrets.token_hex(8)
+    removed_triples: dict[str, int] = {}
+    for layer, graph_iri, (_, removed_nt) in graph_diffs:
+        removed_triples[layer] = len(store.load_triples(removed_nt)) if removed_nt else 0
+        audit.record(
+            session,
+            ks_id=ks.id,
+            action="ontology.reset",
+            summary=f"Reset extracted {layer} for clean re-extraction",
+            actor_id=user.id,
+            actor_name=user.username,
+            detail={"layer": layer, "removed_rows": removed_rows},
+            removed=removed_nt,
+            graph=graph_iri,
+            group_id=group_id,
+        )
+    return {
+        "removed_triples": removed_triples,
+        "removed_rows": removed_rows,
+        "documents_reset": len(documents),
+    }
+
+
 @router.post("/{ks_id}/ontology/edit")
 def edit_ontology(
     body: EditRequest,
@@ -95,10 +191,11 @@ def edit_ontology(
     open_conflicts = sync_conflicts(session, ks, semantic=False)
     import secrets
     gid = secrets.token_hex(8) if (a_added or a_removed) else None  # link the TBox + ABox events
-    audit.record(
+    tbox_event = audit.record(
         session, ks_id=ks.id, action="ontology.edit", summary=_edit_summary(op),
         actor_id=user.id, actor_name=user.username, detail=op, added=added_nt, removed=removed_nt, group_id=gid,
     )
+    statement_provenance.record_tbox_diff(session, ks.id, added_nt, removed_nt, tbox_event)
     if a_added or a_removed:  # the edit also touched instance data — record it as its own ABox event
         audit.record(
             session, ks_id=ks.id, action="ontology.edit", summary=f"{_edit_summary(op)} — cascaded to instances",
@@ -124,7 +221,6 @@ def get_sources(ks: KnowledgeSystem = Depends(ks_reader), session: Session = Dep
     if chunk_ids:
         for c in session.exec(select(Chunk).where(Chunk.id.in_(chunk_ids))).all():
             doc_by_chunk[c.id] = c.document_id
-
     axioms_by_doc: dict[int, set[str]] = {}
     chunks_by_doc: dict[int, set[int]] = {}
     for r in rows:
@@ -161,11 +257,23 @@ def get_provenance(ks: KnowledgeSystem = Depends(ks_reader), session: Session = 
     if chunk_ids:
         for c in session.exec(select(Chunk).where(Chunk.id.in_(chunk_ids))).all():
             doc_by_chunk[c.id] = c.document_id
+    job_ids = {row.job_id for row in rows if row.job_id is not None}
+    jobs = {
+        job.id: job for job in session.exec(select(ExtractionJob).where(ExtractionJob.id.in_(job_ids))).all()
+    } if job_ids else {}
 
     grouped: dict[str, dict] = {}
     for r in rows:
         g = grouped.setdefault(r.axiom_key, {"axiom_key": r.axiom_key, "sources": []})
-        g["sources"].append(
-            {"chunk_id": r.chunk_id, "document_id": doc_by_chunk.get(r.chunk_id), "job_id": r.job_id}
-        )
+        job = jobs.get(r.job_id)
+        g["sources"].append({
+            "chunk_id": r.chunk_id,
+            "document_id": doc_by_chunk.get(r.chunk_id),
+            "job_id": r.job_id,
+            "model": job.model if job else None,
+            "prompt_snapshot": job.prompt_snapshot if job else None,
+            "method": r.method,
+            "actor": r.actor_name or None,
+            "review": r.review_record or None,
+        })
     return list(grouped.values())

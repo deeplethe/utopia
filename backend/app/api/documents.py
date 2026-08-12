@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import os
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
 from app import audit
@@ -50,6 +51,25 @@ class ParseResponse(BaseModel):
     text_char_count: int | None
     chunk_count: int
     error: str | None = None
+
+
+class DocumentListResponse(BaseModel):
+    items: list[Document]
+    total: int
+    folders: list[str]
+
+
+class ParseBatchIn(BaseModel):
+    document_ids: list[int] = Field(default_factory=list, max_length=1000)
+    folders: list[str] = Field(default_factory=list, max_length=100)
+    recursive: bool = True
+
+
+class ParseBatchResponse(BaseModel):
+    items: list[ParseResponse]
+    total: int
+    parsed: int
+    failed: int
 
 
 @router.post("/{ks_id}/documents/upload", response_model=Document)
@@ -123,6 +143,45 @@ def list_documents(
     )
 
 
+@router.get("/{ks_id}/documents/page", response_model=DocumentListResponse)
+def list_documents_page(
+    folder: str | None = None,
+    q: str | None = None,
+    status: str | None = None,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    ks: KnowledgeSystem = Depends(ks_reader),
+    session: Session = Depends(get_session),
+) -> DocumentListResponse:
+    conditions = [Document.knowledge_system_id == ks.id]
+    if folder is not None:
+        conditions.append(Document.folder == _norm_folder(folder))
+    if q and q.strip():
+        conditions.append(Document.original_filename.ilike(f"%{q.strip()}%"))
+    if status:
+        conditions.append(Document.parse_status == status)
+
+    total = session.exec(select(func.count(Document.id)).where(*conditions)).one()
+    items = list(
+        session.exec(
+            select(Document)
+            .where(*conditions)
+            .order_by(Document.uploaded_at.desc(), Document.id.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
+    folders = list(
+        session.exec(
+            select(Document.folder)
+            .where(Document.knowledge_system_id == ks.id)
+            .distinct()
+            .order_by(Document.folder)
+        ).all()
+    )
+    return DocumentListResponse(items=items, total=total, folders=folders)
+
+
 @router.get("/{ks_id}/documents/{document_id}", response_model=Document)
 def get_document(
     document_id: int, ks: KnowledgeSystem = Depends(ks_reader), session: Session = Depends(get_session)
@@ -130,16 +189,8 @@ def get_document(
     return _doc_in_ks(session, ks, document_id)
 
 
-@router.post("/{ks_id}/documents/{document_id}/parse", response_model=ParseResponse)
-def parse_document(
-    document_id: int,
-    ks: KnowledgeSystem = Depends(ks_writer),
-    user: User = Depends(current_user),
-    session: Session = Depends(get_session),
-) -> ParseResponse:
-    """Parse a document to text and split into chunks (sync -> runs in FastAPI threadpool)."""
-    doc = _doc_in_ks(session, ks, document_id)
-
+def _parse_document(doc: Document, ks: KnowledgeSystem, user: User, session: Session) -> ParseResponse:
+    document_id = doc.id
     path = blobstore.abs_path(doc.storage_path)
     if not path.exists():
         raise HTTPException(status_code=410, detail="Blob missing on disk")
@@ -207,6 +258,75 @@ def parse_document(
         text_char_count=doc.text_char_count,
         chunk_count=doc.chunk_count,
     )
+
+
+@router.post("/{ks_id}/documents/parse-batch", response_model=ParseBatchResponse)
+def parse_documents_batch(
+    body: ParseBatchIn,
+    ks: KnowledgeSystem = Depends(ks_writer),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ParseBatchResponse:
+    if extraction_active(session, ks.id):
+        raise HTTPException(status_code=409, detail="An extraction is in progress; try again after it finishes.")
+
+    selectors = []
+    document_ids = sorted({document_id for document_id in body.document_ids if document_id > 0})
+    if document_ids:
+        selectors.append(Document.id.in_(document_ids))
+    for raw_folder in sorted({folder.strip() for folder in body.folders if folder.strip()}):
+        folder = _norm_folder(raw_folder)
+        if body.recursive:
+            prefix = "/" if folder == "/" else f"{folder}/"
+            selectors.append(or_(
+                Document.folder == folder,
+                Document.folder.startswith(prefix, autoescape=True),
+            ))
+        else:
+            selectors.append(Document.folder == folder)
+    if not selectors:
+        raise HTTPException(status_code=400, detail="Select at least one document or folder")
+
+    documents = list(
+        session.exec(
+            select(Document)
+            .where(Document.knowledge_system_id == ks.id, or_(*selectors))
+            .order_by(Document.uploaded_at.desc(), Document.id.desc())
+        ).all()
+    )
+    results: list[ParseResponse] = []
+    for doc in documents:
+        try:
+            results.append(_parse_document(doc, ks, user, session))
+        except HTTPException as exc:
+            results.append(ParseResponse(
+                document_id=doc.id,
+                parse_status="failed",
+                parser_backend=None,
+                text_char_count=None,
+                chunk_count=0,
+                error=str(exc.detail),
+            ))
+    parsed = sum(item.parse_status == "parsed" for item in results)
+    return ParseBatchResponse(
+        items=results,
+        total=len(results),
+        parsed=parsed,
+        failed=len(results) - parsed,
+    )
+
+
+@router.post("/{ks_id}/documents/{document_id}/parse", response_model=ParseResponse)
+def parse_document(
+    document_id: int,
+    ks: KnowledgeSystem = Depends(ks_writer),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ParseResponse:
+    """Parse a document to text and split into chunks (sync -> runs in FastAPI threadpool)."""
+    if extraction_active(session, ks.id):
+        raise HTTPException(status_code=409, detail="An extraction is in progress; try again after it finishes.")
+    return _parse_document(_doc_in_ks(session, ks, document_id), ks, user, session)
 
 
 @router.get("/{ks_id}/documents/{document_id}/chunks", response_model=list[Chunk])

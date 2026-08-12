@@ -1,0 +1,24 @@
+Pump operations reference
+
+Type: Asset
+An Asset is a managed physical or logical resource.
+
+Type: Equipment
+Every Equipment is an Asset and performs an operational function.
+
+Type: Pump
+Every Pump is Equipment that moves fluid.
+
+Type: Site
+A Site is a managed operational location.
+
+Asset: Pump P-101
+Type: Pump
+Serial number: P101-2026
+Flow rate: 125.5
+Installed at: North Plant
+
+Site: North Plant
+Type: Site
+
+Pump P-101 is installed at North Plant. Its current flow rate is 125.5 cubic metres per hour.

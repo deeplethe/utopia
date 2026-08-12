@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 import { ChevronLeft, ChevronRight, Crown, Loader2, Plus, Search, Shield, ShieldCheck, Trash2, UserPlus, X } from "lucide-react"
 import { api } from "@/lib/api"
+import { useI18n } from "@/lib/i18n"
+import { useConfirm } from "@/lib/confirm"
 import type { GrantableUser, Member, Role } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,16 +16,18 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import MemberDetailSheet from "@/components/MemberDetailSheet"
 
-const ROLE_LABEL: Record<Role, string> = { owner: "Owner", editor: "Editor", viewer: "Viewer" }
 const PAGE_SIZE = 15
 
 function RoleBadge({ role }: { role: Role }) {
-  if (role === "owner") return <Badge className="gap-1"><Crown className="h-3 w-3" /> Owner</Badge>
-  if (role === "editor") return <Badge variant="secondary" className="gap-1"><Shield className="h-3 w-3" /> Editor</Badge>
-  return <Badge variant="outline">Viewer</Badge>
+  const { t } = useI18n()
+  if (role === "owner") return <Badge className="gap-1"><Crown className="h-3 w-3" /> {t("common.owner")}</Badge>
+  if (role === "editor") return <Badge variant="secondary" className="gap-1"><Shield className="h-3 w-3" /> {t("common.editor")}</Badge>
+  return <Badge variant="outline">{t("common.viewer")}</Badge>
 }
 
 export default function MembersPanel({ ksId, canManage }: { ksId: number; canManage: boolean }) {
+  const { t } = useI18n()
+  const confirmAction = useConfirm()
   const [members, setMembers] = useState<Member[]>([])
   const [loading, setLoading] = useState(true)
   const [role, setRole] = useState<Role>("viewer")
@@ -45,24 +49,24 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
     const query = pickerQ.trim()
     if (!query) { setCandidates([]); setCandLoading(false); return }
     setCandLoading(true)
-    const t = setTimeout(async () => {
+    const timer = setTimeout(async () => {
       try { setCandidates(await api.grantableUsers(ksId, query)) }
-      catch (e) { toast.error(`Failed to load users: ${(e as Error).message}`) }
+      catch (e) { toast.error(t("members.loadUsersFailed", { error: (e as Error).message })) }
       finally { setCandLoading(false) }
     }, 200)
-    return () => clearTimeout(t)
-  }, [addOpen, pickerQ, ksId])
+    return () => clearTimeout(timer)
+  }, [addOpen, pickerQ, ksId, t])
 
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
       setMembers(await api.listMembers(ksId))
     } catch (e) {
-      toast.error(`Failed to load members: ${(e as Error).message}`)
+      toast.error(t("members.loadFailed", { error: (e as Error).message }))
     } finally {
       setLoading(false)
     }
-  }, [ksId])
+  }, [ksId, t])
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -71,25 +75,26 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
     setAdding(true)
     try {
       setMembers(await api.addMember(ksId, selected.username, role))
-      toast.success(`Granted "${selected.username}" ${ROLE_LABEL[role]} access`)
+      const roleLabel = role === "owner" ? t("common.owner") : role === "editor" ? t("common.editor") : t("common.viewer")
+      toast.success(t("members.granted", { name: selected.username, role: roleLabel }))
       setAddOpen(false)
     } catch (e) {
-      toast.error(`Failed to add: ${(e as Error).message.replace(/^\d+:\s*/, "")}`)
+      toast.error(t("members.addFailed", { error: (e as Error).message.replace(/^\d+:\s*/, "") }))
     } finally {
       setAdding(false)
     }
-  }, [ksId, selected, role])
+  }, [ksId, selected, role, t])
 
   const remove = useCallback(async (m: Member) => {
-    if (!confirm(`Remove access for member "${m.username}"?`)) return
+    if (!await confirmAction(t("members.removeConfirm", { name: m.username }), { destructive: true })) return
     try {
       await api.removeMember(ksId, m.user_id)
-      toast.success("Removed")
+      toast.success(t("members.removed"))
       refresh()
     } catch (e) {
-      toast.error(`Failed to remove: ${(e as Error).message}`)
+      toast.error(t("members.removeFailed", { error: (e as Error).message }))
     }
-  }, [ksId, refresh])
+  }, [confirmAction, ksId, refresh, t])
 
   const filtered = members.filter((m) => m.username.toLowerCase().includes(q.trim().toLowerCase()))
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
@@ -103,12 +108,12 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
           {members.length > 0 ? (
             <div className="relative">
               <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search members…" className="h-8 w-44 pl-7 text-sm" />
+              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t("members.search")} className="h-8 w-44 pl-7 text-sm" />
             </div>
           ) : <span />}
           {canManage && (
             <Button size="sm" onClick={() => { setPickerQ(""); setPickerOpen(false); setSelected(null); setRole("viewer"); setCandidates([]); setAddOpen(true) }}>
-              <UserPlus className="h-4 w-4" /> Add member
+              <UserPlus className="h-4 w-4" /> {t("members.add")}
             </Button>
           )}
         </div>
@@ -118,15 +123,15 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Username</TableHead><TableHead>Role</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
+              <TableHead>{t("common.username")}</TableHead><TableHead>{t("common.role")}</TableHead>
+              <TableHead className="text-right">{t("common.actions")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow><TableCell colSpan={3} className="h-16 text-center text-muted-foreground">Loading…</TableCell></TableRow>
+              <TableRow><TableCell colSpan={3} className="h-16 text-center text-muted-foreground">{t("common.loading")}</TableCell></TableRow>
             ) : shown.length === 0 ? (
-              <TableRow><TableCell colSpan={3} className="h-16 text-center text-muted-foreground">{q ? "No matching members." : "No members yet."}</TableCell></TableRow>
+              <TableRow><TableCell colSpan={3} className="h-16 text-center text-muted-foreground">{q ? t("members.noMatches") : t("members.empty")}</TableCell></TableRow>
             ) : shown.map((m) => (
               <TableRow key={m.user_id} className="cursor-pointer" onClick={() => setDetailUserId(m.user_id)}>
                 <TableCell className="font-medium">{m.username}</TableCell>
@@ -134,7 +139,7 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
                 <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                   {canManage && m.role !== "owner" ? (
                     <Button size="icon" variant="ghost" className="h-8 w-8 text-muted-foreground hover:text-destructive"
-                      title="Remove" onClick={() => remove(m)}>
+                      title={t("members.remove")} onClick={() => remove(m)}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   ) : <span className="text-xs text-muted-foreground">—</span>}
@@ -147,7 +152,7 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
 
       {filtered.length > PAGE_SIZE && (
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>{p * PAGE_SIZE + 1}–{Math.min(filtered.length, (p + 1) * PAGE_SIZE)} of {filtered.length}</span>
+          <span>{t("review.page", { start: p * PAGE_SIZE + 1, end: Math.min(filtered.length, (p + 1) * PAGE_SIZE), total: filtered.length })}</span>
           <div className="flex gap-1">
             <Button size="sm" variant="outline" className="h-7 w-7 p-0" disabled={p === 0} onClick={() => setPage(p - 1)}>
               <ChevronLeft className="h-4 w-4" />
@@ -161,7 +166,7 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
 
       {!canManage && (
         <p className="text-xs text-muted-foreground">
-          <Plus className="mr-1 inline h-3 w-3" />Only the owner can add or remove members.
+          <Plus className="mr-1 inline h-3 w-3" />{t("members.ownerOnly")}
         </p>
       )}
 
@@ -169,8 +174,8 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
       <Dialog open={addOpen} onOpenChange={setAddOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add member</DialogTitle>
-            <DialogDescription>Search an existing user and grant them access to this knowledge system.</DialogDescription>
+            <DialogTitle>{t("members.add")}</DialogTitle>
+            <DialogDescription>{t("members.addDescription")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-1">
             {/* Search combobox: matches pop in a dropdown as you type, and close once you pick one. */}
@@ -181,16 +186,16 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
                 onChange={(e) => { setPickerQ(e.target.value); setPickerOpen(true) }}
                 onFocus={() => setPickerOpen(true)}
                 onBlur={() => setTimeout(() => setPickerOpen(false), 150)}
-                placeholder="Search users by name…" className="pl-8" autoFocus
+                placeholder={t("members.searchUsers")} className="pl-8" autoFocus
               />
               {pickerOpen && pickerQ.trim() && (
                 <div className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
                   {candLoading ? (
                     <div className="flex h-14 items-center justify-center text-sm text-muted-foreground">
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Searching…
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" /> {t("members.searching")}
                     </div>
                   ) : candidates.length === 0 ? (
-                    <div className="flex h-14 items-center justify-center text-sm text-muted-foreground">No matching users.</div>
+                    <div className="flex h-14 items-center justify-center text-sm text-muted-foreground">{t("members.noUsers")}</div>
                   ) : candidates.map((u) => (
                     <button
                       key={u.id} type="button"
@@ -200,7 +205,7 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
                     >
                       <span className="truncate font-medium">{u.username}</span>
                       {u.is_admin && (
-                        <Badge variant="secondary" className="gap-1 text-[10px]"><ShieldCheck className="h-3 w-3" /> Admin</Badge>
+                        <Badge variant="secondary" className="gap-1 text-[10px]"><ShieldCheck className="h-3 w-3" /> {t("common.admin")}</Badge>
                       )}
                     </button>
                   ))}
@@ -215,10 +220,10 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
                   <UserPlus className="h-4 w-4 shrink-0 text-primary" />
                   <span className="truncate font-medium">{selected.username}</span>
                   {selected.is_admin && (
-                    <Badge variant="secondary" className="gap-1 text-[10px]"><ShieldCheck className="h-3 w-3" /> Admin</Badge>
+                    <Badge variant="secondary" className="gap-1 text-[10px]"><ShieldCheck className="h-3 w-3" /> {t("common.admin")}</Badge>
                   )}
                 </span>
-                <button type="button" onClick={() => setSelected(null)} title="Clear"
+                <button type="button" onClick={() => setSelected(null)} title={t("members.clear")}
                   className="shrink-0 text-muted-foreground hover:text-foreground">
                   <X className="h-4 w-4" />
                 </button>
@@ -226,20 +231,20 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
             )}
 
             <div className="flex items-center gap-2">
-              <Label className="text-sm">Role</Label>
+              <Label className="text-sm">{t("common.role")}</Label>
               <Select value={role} onValueChange={(v) => setRole(v as Role)}>
                 <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="viewer">Viewer</SelectItem>
-                  <SelectItem value="editor">Editor</SelectItem>
+                  <SelectItem value="viewer">{t("common.viewer")}</SelectItem>
+                  <SelectItem value="editor">{t("common.editor")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => setAddOpen(false)}>{t("common.cancel")}</Button>
             <Button onClick={add} disabled={adding || !selected}>
-              {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} Grant access
+              {adding ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />} {t("members.grantAccess")}
             </Button>
           </DialogFooter>
         </DialogContent>

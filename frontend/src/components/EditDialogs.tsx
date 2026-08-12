@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { toast } from "sonner"
 import { api } from "@/lib/api"
+import { useI18n, type Translate } from "@/lib/i18n"
 import type { EditOp, EditResult, OntologyClass, OntologyProperty } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import {
@@ -19,13 +20,13 @@ import { Combobox } from "@/components/ui/combobox"
 const NONE = "__none__"
 const DATATYPES = ["string", "integer", "decimal", "boolean", "date", "dateTime"]
 
-async function apply(ksId: number, op: EditOp, onSaved: (r: EditResult) => void, done: () => void) {
+async function apply(ksId: number, op: EditOp, onSaved: (r: EditResult) => void, done: () => void, t: Translate) {
   try {
     const res = await api.editOntology(ksId, op)
     onSaved(res)
     done()
   } catch (e) {
-    toast.error(`Operation failed: ${(e as Error).message}`)
+    toast.error(t("edit.operationFailed", { error: (e as Error).message }))
   }
 }
 
@@ -39,6 +40,7 @@ export function ClassDialog({
   onSaved: (r: EditResult) => void
   initial?: OntologyClass | null
 }) {
+  const { t } = useI18n()
   const [label, setLabel] = useState("")
   const [comment, setComment] = useState("")
   const [saving, setSaving] = useState(false)
@@ -56,27 +58,27 @@ export function ClassDialog({
     const op: EditOp = initial
       ? { op: "update_class", iri: initial.iri, label: label.trim(), comment }
       : { op: "add_class", label: label.trim(), comment }
-    await apply(ksId, op, onSaved, () => onOpenChange(false))
+    await apply(ksId, op, onSaved, () => onOpenChange(false), t)
     setSaving(false)
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{initial ? "Edit Class" : "Add Class"}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{initial ? t("edit.class.edit") : t("edit.class.add")}</DialogTitle></DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-2">
-            <Label>Label</Label>
-            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. Centrifugal Pump" />
+            <Label>{t("edit.label")}</Label>
+            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t("edit.class.placeholder")} />
           </div>
           <div className="space-y-2">
-            <Label>Description (optional)</Label>
+            <Label>{t("edit.descriptionOptional")}</Label>
             <Textarea value={comment} onChange={(e) => setComment(e.target.value)} />
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={save} disabled={saving || !label.trim()}>Save</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
+          <Button onClick={save} disabled={saving || !label.trim()}>{t("common.save")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -94,6 +96,7 @@ export function PropertyDialog({
   classes: OntologyClass[]
   initial?: (OntologyProperty & { kind: "object" | "data" }) | null
 }) {
+  const { t } = useI18n()
   const [kind, setKind] = useState<"object" | "data">("object")
   const [label, setLabel] = useState("")
   const [domain, setDomain] = useState(NONE)
@@ -125,7 +128,7 @@ export function PropertyDialog({
     else op.domain = domain
     if (range === NONE) op.clear_range = true
     else op.range = range
-    await apply(ksId, op, onSaved, () => onOpenChange(false))
+    await apply(ksId, op, onSaved, () => onOpenChange(false), t)
     setSaving(false)
   }
 
@@ -134,48 +137,48 @@ export function PropertyDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{initial ? "Edit Property" : "Add Property"}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{initial ? t("edit.property.edit") : t("edit.property.add")}</DialogTitle></DialogHeader>
         <div className="space-y-4 py-2">
           {!initial && (
             <div className="space-y-2">
-              <Label>Type</Label>
+              <Label>{t("common.type")}</Label>
               <Select value={kind} onValueChange={(v) => setKind(v as "object" | "data")}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="object">Object Property (Class → Class)</SelectItem>
-                  <SelectItem value="data">Data Property (Class → Literal)</SelectItem>
+                  <SelectItem value="object">{t("edit.objectProperty")}</SelectItem>
+                  <SelectItem value="data">{t("edit.dataProperty")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           )}
           <div className="space-y-2">
-            <Label>Label</Label>
-            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. contains / rated pressure" />
+            <Label>{t("edit.label")}</Label>
+            <Input value={label} onChange={(e) => setLabel(e.target.value)} placeholder={t("edit.property.placeholder")} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-2">
-              <Label>Domain</Label>
+              <Label>{t("entities.domain")}</Label>
               <Combobox
                 value={domain} onChange={setDomain}
-                options={[{ value: NONE, label: "(none)" }, ...classes.map((c) => ({ value: c.iri, label: c.label }))]}
-                searchPlaceholder="Search classes…"
+                options={[{ value: NONE, label: t("edit.none") }, ...classes.map((c) => ({ value: c.iri, label: c.label }))]}
+                searchPlaceholder={t("edit.searchClasses")}
               />
             </div>
             <div className="space-y-2">
-              <Label>Range</Label>
+              <Label>{t("entities.range")}</Label>
               <Combobox
                 value={range} onChange={setRange}
                 options={effectiveKind === "object"
-                  ? [{ value: NONE, label: "(none)" }, ...classes.map((c) => ({ value: c.iri, label: c.label }))]
-                  : [{ value: NONE, label: "(none)" }, ...DATATYPES.map((d) => ({ value: d, label: d }))]}
-                searchPlaceholder={effectiveKind === "object" ? "Search classes…" : "Search types…"}
+                  ? [{ value: NONE, label: t("edit.none") }, ...classes.map((c) => ({ value: c.iri, label: c.label }))]
+                  : [{ value: NONE, label: t("edit.none") }, ...DATATYPES.map((d) => ({ value: d, label: d }))]}
+                searchPlaceholder={effectiveKind === "object" ? t("edit.searchClasses") : t("edit.searchTypes")}
               />
             </div>
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={save} disabled={saving || !label.trim()}>Save</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
+          <Button onClick={save} disabled={saving || !label.trim()}>{t("common.save")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -192,6 +195,7 @@ export function AxiomDialog({
   onSaved: (r: EditResult) => void
   classes: OntologyClass[]
 }) {
+  const { t } = useI18n()
   const [type, setType] = useState<"subclass" | "disjoint" | "equivalent">("subclass")
   const [a, setA] = useState("")
   const [b, setB] = useState("")
@@ -207,26 +211,26 @@ export function AxiomDialog({
     const op: EditOp = type === "subclass"
       ? { op: "add_axiom", type, sub: a, super: b }
       : { op: "add_axiom", type, a, b }
-    await apply(ksId, op, onSaved, () => onOpenChange(false))
+    await apply(ksId, op, onSaved, () => onOpenChange(false), t)
     setSaving(false)
   }
 
-  const labelA = type === "subclass" ? "Subclass (sub)" : "Class A"
-  const labelB = type === "subclass" ? "Superclass (super)" : "Class B"
+  const labelA = type === "subclass" ? t("edit.subclass") : t("edit.classA")
+  const labelB = type === "subclass" ? t("edit.superclass") : t("edit.classB")
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogHeader><DialogTitle>Add Axiom</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{t("edit.axiom.add")}</DialogTitle></DialogHeader>
         <div className="space-y-4 py-2">
           <div className="space-y-2">
-            <Label>Relation Type</Label>
+            <Label>{t("edit.relationType")}</Label>
             <Select value={type} onValueChange={(v) => setType(v as typeof type)}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="subclass">Subclass (subClassOf) (A ⊑ B)</SelectItem>
-                <SelectItem value="disjoint">Disjoint (disjointWith) (A ⟂ B)</SelectItem>
-                <SelectItem value="equivalent">Equivalent (equivalentClass) (A ≡ B)</SelectItem>
+                <SelectItem value="subclass">{t("edit.axiom.subclass")}</SelectItem>
+                <SelectItem value="disjoint">{t("edit.axiom.disjoint")}</SelectItem>
+                <SelectItem value="equivalent">{t("edit.axiom.equivalent")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -234,23 +238,23 @@ export function AxiomDialog({
             <div className="space-y-2">
               <Label>{labelA}</Label>
               <Combobox
-                value={a} onChange={setA} placeholder="Select a class" searchPlaceholder="Search classes…"
+                value={a} onChange={setA} placeholder={t("edit.selectClass")} searchPlaceholder={t("edit.searchClasses")}
                 options={classes.map((c) => ({ value: c.iri, label: c.label }))}
               />
             </div>
             <div className="space-y-2">
               <Label>{labelB}</Label>
               <Combobox
-                value={b} onChange={setB} placeholder="Select a class" searchPlaceholder="Search classes…"
+                value={b} onChange={setB} placeholder={t("edit.selectClass")} searchPlaceholder={t("edit.searchClasses")}
                 options={classes.map((c) => ({ value: c.iri, label: c.label }))}
               />
             </div>
           </div>
-          {a && b && a === b && <p className="text-xs text-destructive">The two classes must be different.</p>}
+          {a && b && a === b && <p className="text-xs text-destructive">{t("edit.classesDifferent")}</p>}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={save} disabled={saving || !a || !b || a === b}>Save</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
+          <Button onClick={save} disabled={saving || !a || !b || a === b}>{t("common.save")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

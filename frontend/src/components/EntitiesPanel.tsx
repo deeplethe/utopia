@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { ChevronLeft, ChevronRight, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import type { OntologyClass, OntologyProperty, OntologyView } from "@/lib/types"
+import { useI18n } from "@/lib/i18n"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -19,12 +20,13 @@ export type AxiomGroup = {
 }
 
 function RowActions({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
+  const { t } = useI18n()
   return (
     <div className="flex justify-end gap-1">
-      <Button size="icon" variant="ghost" className="h-7 w-7" onClick={onEdit}>
+      <Button size="icon" variant="ghost" className="h-7 w-7" title={t("common.edit")} onClick={onEdit}>
         <Pencil className="h-3.5 w-3.5" />
       </Button>
-      <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={onDelete}>
+      <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" title={t("common.delete")} onClick={onDelete}>
         <Trash2 className="h-3.5 w-3.5" />
       </Button>
     </div>
@@ -60,6 +62,7 @@ export default function EntitiesPanel({
   selectedIri?: string | null
   onSelectEntity?: (iri: string) => void
 }) {
+  const { t } = useI18n()
   const [tab, setTab] = useState<Tab>(initialTab)
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(0)
@@ -90,10 +93,10 @@ export default function EntitiesPanel({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
           <TabsList>
-            <TabsTrigger value="classes">Classes ({view.classes.length})</TabsTrigger>
-            <TabsTrigger value="object">Object Properties ({view.object_properties.length})</TabsTrigger>
-            <TabsTrigger value="data">Data Properties ({view.data_properties.length})</TabsTrigger>
-            <TabsTrigger value="axioms">Axioms ({axiomCount})</TabsTrigger>
+            <TabsTrigger value="classes">{t("common.classes")} ({view.classes.length})</TabsTrigger>
+            <TabsTrigger value="object">{t("entities.objectProperties")} ({view.object_properties.length})</TabsTrigger>
+            <TabsTrigger value="data">{t("entities.dataProperties")} ({view.data_properties.length})</TabsTrigger>
+            <TabsTrigger value="axioms">{t("common.axioms")} ({axiomCount})</TabsTrigger>
           </TabsList>
         </Tabs>
         <div className="flex items-center gap-2">
@@ -101,18 +104,18 @@ export default function EntitiesPanel({
             <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               value={query} onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search…" className="h-8 w-44 pl-7 text-sm"
+              placeholder={t("common.search")} className="h-8 w-44 pl-7 text-sm"
             />
           </div>
           {canWrite && tab === "classes" && (
-            <Button size="sm" variant="outline" onClick={onAddClass}><Plus className="h-3.5 w-3.5" /> Add Class</Button>
+            <Button size="sm" variant="outline" onClick={onAddClass}><Plus className="h-3.5 w-3.5" /> {t("entities.addClass")}</Button>
           )}
           {canWrite && tab === "object" && (
-            <Button size="sm" variant="outline" onClick={onAddProperty}><Plus className="h-3.5 w-3.5" /> Add Property</Button>
+            <Button size="sm" variant="outline" onClick={onAddProperty}><Plus className="h-3.5 w-3.5" /> {t("entities.addProperty")}</Button>
           )}
           {canWrite && tab === "axioms" && (
             <Button size="sm" variant="outline" disabled={view.classes.length < 2} onClick={onAddAxiom}>
-              <Plus className="h-3.5 w-3.5" /> Add Axiom
+              <Plus className="h-3.5 w-3.5" /> {t("entities.addAxiom")}
             </Button>
           )}
         </div>
@@ -123,16 +126,16 @@ export default function EntitiesPanel({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-28">Type</TableHead>
-                <TableHead>Axiom</TableHead>
-                {canWrite && <TableHead className="w-16 text-right">Actions</TableHead>}
+                <TableHead className="w-28">{t("common.type")}</TableHead>
+                <TableHead>{t("entities.axiom")}</TableHead>
+                {canWrite && <TableHead className="w-16 text-right">{t("common.actions")}</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
               {axiomRows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={canWrite ? 3 : 2} className="h-24 text-center text-muted-foreground">
-                    {query ? "No matches." : "No axioms yet."}
+                    {query ? t("entities.noMatches") : t("entities.noAxioms")}
                   </TableCell>
                 </TableRow>
               ) : (
@@ -160,26 +163,26 @@ export default function EntitiesPanel({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Label</TableHead>
+                <TableHead>{t("entities.label")}</TableHead>
                 {tab === "classes" ? (
                   <>
-                    <TableHead>Superclasses</TableHead>
-                    <TableHead>Description</TableHead>
+                    <TableHead>{t("entities.superclasses")}</TableHead>
+                    <TableHead>{t("common.description")}</TableHead>
                   </>
                 ) : (
                   <>
-                    <TableHead>Domain</TableHead>
-                    <TableHead>Range</TableHead>
+                    <TableHead>{t("entities.domain")}</TableHead>
+                    <TableHead>{t("entities.range")}</TableHead>
                   </>
                 )}
-                {canWrite && <TableHead className="w-24 text-right">Actions</TableHead>}
+                {canWrite && <TableHead className="w-24 text-right">{t("common.actions")}</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={colSpan} className="h-24 text-center text-muted-foreground">
-                    {query ? "No matches." : "Nothing here yet."}
+                    {query ? t("entities.noMatches") : t("entities.empty")}
                   </TableCell>
                 </TableRow>
               ) : tab === "classes" ? (
@@ -224,7 +227,7 @@ export default function EntitiesPanel({
 
       {total > PAGE_SIZE && (
         <div className="flex items-center justify-between text-xs text-muted-foreground">
-          <span>{p * PAGE_SIZE + 1}–{Math.min(total, (p + 1) * PAGE_SIZE)} of {total}</span>
+          <span>{t("review.page", { start: p * PAGE_SIZE + 1, end: Math.min(total, (p + 1) * PAGE_SIZE), total })}</span>
           <div className="flex gap-1">
             <Button size="sm" variant="outline" className="h-7 w-7 p-0" disabled={p === 0} onClick={() => setPage(p - 1)}>
               <ChevronLeft className="h-4 w-4" />

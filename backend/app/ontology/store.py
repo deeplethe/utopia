@@ -7,9 +7,10 @@ quad add/remove/read/serialize; ontology-level semantics live in ``schema.py``.
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
 import threading
-from typing import Iterable
+from typing import Iterable, Iterator
 
 from pyoxigraph import BlankNode, Literal, NamedNode, Quad, RdfFormat, Store, parse, serialize
 
@@ -21,6 +22,10 @@ Triple = tuple[object, object, object]  # (subject, predicate, object) pyoxigrap
 
 _store: Store | None = None
 _lock = threading.Lock()
+_active_store: contextvars.ContextVar[Store | None] = contextvars.ContextVar(
+    "ontopilot_active_rdf_store",
+    default=None,
+)
 
 # --------------------------------------------------------------------------- #
 # Change capture — records the exact triples added/removed to a graph during a
@@ -125,6 +130,18 @@ def capture(graph_iri: str, *, revert_on_error: bool = False):
         lock.release()
 
 
+@contextlib.contextmanager
+def read_lock(graph_iri: str):
+    """Hold the graph writer lock while a release/export streams a consistent snapshot."""
+    lock = _graph_lock(graph_iri)
+    if not lock.acquire(timeout=_CAPTURE_TIMEOUT_S):
+        raise CaptureBusy(f"another operation is writing to {graph_iri}")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def dump_triples(triples: Iterable[Triple]) -> bytes:
     """Serialize triples to N-Triples (blank-node labels preserved for exact round-trip)."""
     quads = [Quad(s, p, o) for (s, p, o) in triples]
@@ -140,12 +157,25 @@ def load_triples(data: bytes) -> list[Triple]:
 
 
 def get_store() -> Store:
+    active = _active_store.get()
+    if active is not None:
+        return active
     global _store
     if _store is None:
         with _lock:
             if _store is None:
                 _store = Store(str(settings.oxigraph_dir))
     return _store
+
+
+@contextlib.contextmanager
+def use_store(rdf_store: Store):
+    """Route low-level RDF helpers to a request-local store."""
+    token = _active_store.set(rdf_store)
+    try:
+        yield
+    finally:
+        _active_store.reset(token)
 
 
 def add_triples(graph_iri: str, triples: Iterable[Triple]) -> int:
@@ -174,6 +204,27 @@ def read_triples(graph_iri: str) -> list[Triple]:
     g = NamedNode(graph_iri)
     store = get_store()
     return [(q.subject, q.predicate, q.object) for q in store.quads_for_pattern(None, None, None, g)]
+
+
+def iter_quads(graph_iri: str) -> Iterator[Quad]:
+    """Stream one named graph without materializing it in Python memory."""
+    graph = NamedNode(graph_iri)
+    yield from get_store().quads_for_pattern(None, None, None, graph)
+
+
+def count_graph(graph_iri: str) -> int:
+    return sum(1 for _ in iter_quads(graph_iri))
+
+
+def replace_graph(graph_iri: str, quads: Iterable[Quad]) -> None:
+    """Replace a graph using Oxigraph's native bulk path (used by release restore)."""
+    graph = NamedNode(graph_iri)
+    rdf_store = get_store()
+    rdf_store.clear_graph(graph)
+    rdf_store.bulk_extend(
+        Quad(quad.subject, quad.predicate, quad.object, graph)
+        for quad in quads
+    )
 
 
 def object_terms(graph_iri: str, s, p) -> list:
@@ -240,8 +291,12 @@ def _to_rdflib(term):
     if isinstance(term, BlankNode):
         return rdflib.BNode(term.value)
     if isinstance(term, Literal):
+        # Oxigraph exposes rdf:langString as the datatype of language-tagged literals.
+        # RDFLib correctly derives that datatype from ``lang`` and rejects receiving both.
+        if term.language:
+            return rdflib.Literal(term.value, lang=term.language)
         dt = rdflib.URIRef(term.datatype.value) if term.datatype else None
-        return rdflib.Literal(term.value, lang=term.language, datatype=dt)
+        return rdflib.Literal(term.value, datatype=dt)
     raise TypeError(f"Unexpected term type: {type(term)}")
 
 
@@ -255,6 +310,9 @@ def to_rdflib_graph(graph_iri: str):
     g.bind("owl", vocab.OWL)
     g.bind("rdfs", vocab.RDFS)
     g.bind("xsd", vocab.XSD)
+    g.bind("skos", "http://www.w3.org/2004/02/skos/core#")
+    g.bind("dcterms", "http://purl.org/dc/terms/")
+    g.bind("ontopilot", "http://ontopilot.local/vocab#")
     for s, p, o in read_triples(graph_iri):
         g.add((_to_rdflib(s), _to_rdflib(p), _to_rdflib(o)))
     return g

@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 
 from app.config import settings
 from app.db.database import get_session
-from app.db.models import AuthSession, KnowledgeSystem, KSGrant, User
+from app.db.models import AuthSession, KnowledgeSystem, KSGrant, McpUserToken, User
 from app.security import (
     create_session,
     current_user,
@@ -172,6 +172,8 @@ def update_user(
         if body.active is False:  # revoke live sessions on deactivation
             for s in session.exec(select(AuthSession).where(AuthSession.user_id == uid)).all():
                 session.delete(s)
+            for token in session.exec(select(McpUserToken).where(McpUserToken.user_id == uid)).all():
+                session.delete(token)
     session.add(user)
     session.commit()
     session.refresh(user)
@@ -198,6 +200,8 @@ def delete_user(
         session.delete(g)
     for s in session.exec(select(AuthSession).where(AuthSession.user_id == uid)).all():
         session.delete(s)
+    for token in session.exec(select(McpUserToken).where(McpUserToken.user_id == uid)).all():
+        session.delete(token)
     session.delete(user)
     session.commit()
     return {"deleted": uid}

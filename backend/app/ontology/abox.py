@@ -214,12 +214,13 @@ class ResolutionIndex:
     each method returns exactly what its scanning counterpart would, and add_individual / add_type
     reflect the only two mutations resolution makes that affect those queries."""
 
-    __slots__ = ("by_class", "labels", "known")
+    __slots__ = ("by_class", "labels", "known", "types")
 
     def __init__(self) -> None:
         self.by_class: dict[str, set[str]] = {}  # class_iri -> individual iris typed with it
         self.labels: dict[str, str] = {}         # individual iri -> rdfs:label
         self.known: set[str] = set()             # every individual iri (has some rdf:type)
+        self.types: dict[str, set[str]] = {}     # individual iri -> direct class iris
 
     def _lbl(self, iri: str) -> str:
         return self.labels.get(iri, iri.rsplit("ind-", 1)[-1])
@@ -229,10 +230,12 @@ class ResolutionIndex:
         if label:
             self.labels[iri] = label
         self.by_class.setdefault(class_iri, set()).add(iri)
+        self.types.setdefault(iri, set()).add(class_iri)
 
     def add_type(self, iri: str, class_iri: str) -> None:
         self.known.add(iri)
         self.by_class.setdefault(class_iri, set()).add(iri)
+        self.types.setdefault(iri, set()).add(class_iri)
 
     def individuals_of_class(self, class_iri: str) -> list[tuple[str, str]]:
         return [(iri, self._lbl(iri)) for iri in self.by_class.get(class_iri, ())]
@@ -250,6 +253,9 @@ class ResolutionIndex:
     def label_index(self) -> dict[str, str]:
         return self.labels
 
+    def types_of(self, iri: str) -> set[str]:
+        return set(self.types.get(iri, ()))
+
     def exists(self, iri: str) -> bool:
         return iri in self.known
 
@@ -264,6 +270,7 @@ def build_resolution_index(abox_iri: str) -> ResolutionIndex:
             idx.known.add(s.value)
             if o.value != vocab.OWL_NAMED_INDIVIDUAL.value:
                 idx.by_class.setdefault(o.value, set()).add(s.value)
+                idx.types.setdefault(s.value, set()).add(o.value)
         elif p.value == vocab.RDFS_LABEL.value and isinstance(o, Literal):
             idx.labels[s.value] = o.value
     return idx

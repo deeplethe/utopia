@@ -9,11 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import (
-    abox, auth, conflicts, documents, extraction, history, knowledge, ontology, providers, resolution,
-    settings_api,
+    abox, auth, conflicts, documents, external, extraction, history, knowledge, ontology, providers, published,
+    prompts, rdf_import, releases, resolution, settings_api, tokens, vocabulary,
 )
+from app.api import mcp_tokens as mcp_tokens_api
 from app.config import settings
 from app.db.database import init_db
+from app.mcp_server import mcp, mcp_app
 from app.ontology.store import CaptureBusy
 
 logging.basicConfig(level=logging.INFO)
@@ -52,6 +54,24 @@ def _bootstrap_admin() -> None:
                     session.add(ks)
                 session.commit()
                 logging.warning("assigned %d owner-less knowledge system(s) to admin %r", len(orphans), admin.username)
+
+
+def _seed_demo_data() -> None:
+    if not settings.seed_demo_data:
+        return
+    from sqlmodel import Session, select
+
+    from app.db.database import engine
+    from app.db.models import User
+    from app.demo import seed
+
+    with Session(engine) as session:
+        owner = session.exec(select(User).where(User.is_admin == True)).first()  # noqa: E712
+        if owner:
+            try:
+                seed(session, owner)
+            except ValueError:
+                return
 
 
 def _backfill_document_ks() -> None:
@@ -100,7 +120,7 @@ def _reset_stale_jobs() -> None:
     from sqlmodel import Session, select
 
     from app.db.database import engine
-    from app.db.models import ExtractionJob, utcnow
+    from app.db.models import ExportJob, ExtractionJob, OntologyRelease, ReleaseDeployment, utcnow
 
     with Session(engine) as session:
         stale = session.exec(
@@ -114,6 +134,76 @@ def _reset_stale_jobs() -> None:
         if stale:
             session.commit()
             logging.warning("reset %d stale extraction job(s) left running by a previous process", len(stale))
+        stale_exports = session.exec(
+            select(ExportJob).where(ExportJob.status.in_(("pending", "running")))
+        ).all()
+        for job in stale_exports:
+            job.status = "failed"
+            job.error = "Interrupted by a server restart"
+            job.finished_at = utcnow()
+            session.add(job)
+        releases = session.exec(select(OntologyRelease)).all()
+        changed_releases = 0
+        for release in releases:
+            if release.manifest.get("capture_status") in {"pending", "running"}:
+                release.manifest = {
+                    "capture_status": "failed",
+                    "error": "Interrupted by a server restart",
+                }
+                session.add(release)
+                changed_releases += 1
+        if stale_exports or changed_releases:
+            session.commit()
+        stale_deployments = session.exec(
+            select(ReleaseDeployment).where(
+                ReleaseDeployment.status.in_(("provisioning", "stopping"))
+            )
+        ).all()
+        for deployment in stale_deployments:
+            deployment.status = "failed" if deployment.status == "provisioning" else "stopped"
+            deployment.error = "Interrupted by a server restart"
+            deployment.stopped_at = utcnow()
+            session.add(deployment)
+        if stale_deployments:
+            session.commit()
+
+
+def _backfill_terminology() -> None:
+    """Bring existing ontologies onto the automatic controlled-terminology model."""
+    if not settings.automatic_terminology:
+        return
+    from sqlmodel import Session, select
+
+    from app import audit
+    from app.db.database import engine
+    from app.db.models import KnowledgeSystem
+    from app.ontology import skos, store, terminology_sync
+
+    with Session(engine) as session:
+        for ks in session.exec(select(KnowledgeSystem).order_by(KnowledgeSystem.id)).all():
+            graph_iri = skos.graph_iri_for(ks)
+            try:
+                with store.capture(graph_iri, revert_on_error=True) as capture:
+                    result = terminology_sync.sync_from_ontology(ks)
+                added, removed = capture.diff()
+                if added or removed:
+                    audit.record(
+                        session,
+                        ks_id=ks.id,
+                        action="terminology.sync",
+                        summary=(
+                            "Backfilled controlled terminology from the ontology: "
+                            f"+{result['terms_added']} terms / {result['terms_mapped']} mappings"
+                        ),
+                        actor_name="system",
+                        detail={"startup_backfill": True, **result},
+                        added=added,
+                        removed=removed,
+                        graph=graph_iri,
+                    )
+            except Exception:  # noqa: BLE001
+                session.rollback()
+                logging.exception("failed to backfill terminology for knowledge system %s", ks.id)
 
 
 @asynccontextmanager
@@ -129,16 +219,32 @@ async def lifespan(app: FastAPI):
         model_config.seed_default_provider(_s)  # upgrade: fold legacy/.env connection into a Provider
         model_config.refresh_runtime(_s)
     _bootstrap_admin()
+    _seed_demo_data()
     _backfill_document_ks()
     _reset_stale_jobs()
+    with _Session(_engine) as _s:
+        migrated_drafts = releases.normalize_unpublished_versions(_s)
+        if migrated_drafts:
+            logging.info("migrated %d unpublished release version(s) to draft identifiers", migrated_drafts)
     # Open the Oxigraph store eagerly so startup fails fast if the dir is locked.
-    from app.ontology import store
+    from app.ontology import release_service, store
 
     store.get_store()
-    yield
+    release_service.get_store()
+    release_service.cleanup_inactive()
+    _backfill_terminology()
+    async with mcp.session_manager.run():
+        yield
 
 
-app = FastAPI(title="OntoPilot API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="OntoPilot API",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -159,6 +265,14 @@ app.include_router(abox.router)
 app.include_router(resolution.router)
 app.include_router(settings_api.router)
 app.include_router(providers.router)
+app.include_router(tokens.router)
+app.include_router(external.router)
+app.include_router(published.router)
+app.include_router(rdf_import.router)
+app.include_router(vocabulary.router)
+app.include_router(prompts.router)
+app.include_router(releases.router)
+app.include_router(mcp_tokens_api.router)
 
 
 @app.exception_handler(CaptureBusy)
@@ -175,6 +289,12 @@ async def _capture_busy_handler(_: Request, exc: CaptureBusy) -> JSONResponse:
 def health() -> dict:
     return {
         "status": "ok",
+        "system_language": settings.system_language,
         "extract_model": settings.llm_extract_model,
         "has_llm_key": bool(settings.openrouter_api_key),
     }
+
+
+# Keep the MCP ASGI app last: its exact `/mcp` route remains available without a redirect while
+# all FastAPI governance/API routes above retain normal routing and OpenAPI generation.
+app.mount("/", mcp_app, name="mcp")

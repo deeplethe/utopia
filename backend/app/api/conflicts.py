@@ -5,19 +5,78 @@ import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
-from app import audit
+from app import audit, prompt_config
 from app.api.knowledge import refresh_ks_stats
 from app.db.database import get_session
-from app.db.models import Conflict, KnowledgeSystem, TboxReconciliation, User, utcnow
+from app.db.models import (
+    AxiomProvenance,
+    Chunk,
+    Conflict,
+    Document,
+    KnowledgeSystem,
+    TboxReconciliation,
+    User,
+    utcnow,
+)
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
 from app.ontology import conflicts as detector
-from app.ontology import editor, schema, store
+from app.ontology import editor, provenance, schema, store
 
 router = APIRouter(prefix="/api/knowledge", tags=["conflicts"])
+
+def _iri_local(iri: str) -> str:
+    return iri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+
+
+def _pair_key(kind: str, left: str, right: str) -> str:
+    return kind + "|" + "|".join(sorted((_iri_local(left), _iri_local(right))))
+
+
+def _conflict_axiom_keys(conflict: Conflict) -> set[str]:
+    """Canonical provenance keys directly involved in a detected conflict."""
+    payload = conflict.payload or {}
+    entities = payload.get("entities", [])
+    entity_iris = [entity.get("iri") for entity in entities if entity.get("iri")]
+    keys: set[str] = set()
+
+    if conflict.ctype == "duplicate":
+        keys.update(f"class|{_iri_local(iri)}" for iri in entity_iris)
+    elif conflict.ctype == "predicate_specialization":
+        for iri in entity_iris:
+            local = _iri_local(iri)
+            keys.update((f"objprop|{local}", f"dataprop|{local}"))
+
+    if conflict.ctype in ("domain_multi", "range_multi") and entity_iris:
+        slot = "domain" if conflict.ctype == "domain_multi" else "range"
+        prop_local = _iri_local(entity_iris[0])
+        keys.update(f"{slot}|{prop_local}|{_iri_local(value)}" for value in entity_iris[1:])
+
+    if conflict.ctype in ("disjoint_subclass", "disjoint_common") and len(entity_iris) >= 2:
+        disjoint = entity_iris[-2:]
+        keys.add(_pair_key("disjointWith", disjoint[0], disjoint[1]))
+    elif conflict.ctype == "equiv_disjoint" and len(entity_iris) >= 2:
+        keys.add(_pair_key("disjointWith", entity_iris[0], entity_iris[1]))
+        keys.add(_pair_key("equivalentClass", entity_iris[0], entity_iris[1]))
+
+    for resolution in payload.get("resolutions", []):
+        operation = resolution.get("op") or {}
+        if operation.get("op") != "delete_axiom":
+            continue
+        axiom_type = operation.get("type")
+        if axiom_type == "subclass" and operation.get("sub") and operation.get("super"):
+            keys.add(f"subClassOf|{_iri_local(operation['sub'])}|{_iri_local(operation['super'])}")
+        elif axiom_type in ("disjoint", "equivalent") and operation.get("a") and operation.get("b"):
+            kind = "disjointWith" if axiom_type == "disjoint" else "equivalentClass"
+            keys.add(_pair_key(kind, operation["a"], operation["b"]))
+    return keys
+
+
+def _evidence_text(text: str) -> str:
+    return text.strip()
 
 
 def sync_conflicts(session: Session, ks: KnowledgeSystem, *, semantic: bool = True) -> list[Conflict]:
@@ -82,7 +141,7 @@ async def detect_conflicts(
     from app.ontology import conflict_agent, structure_agent
 
     from app import model_config
-    with model_config.use_ks_connections(session, ks):
+    with model_config.use_ks_connections(session, ks), prompt_config.use_ks_prompts(session, ks.id):
         sync_conflicts(session, ks)
         # Triage the freshly detected auto-resolvable conflicts right here — the agent runs at
         # discovery time (extraction does the same), so there's no separate "run the agent" step.
@@ -109,6 +168,111 @@ def list_conflicts(
     if ctype:  # e.g. "duplicate" — the class-dedup decision history
         q = q.where(Conflict.ctype == ctype)
     return list(session.exec(q.order_by(Conflict.severity.desc(), Conflict.id)).all())
+
+
+@router.get("/{ks_id}/conflicts/{cid}")
+def get_conflict_context(
+    cid: int,
+    ks: KnowledgeSystem = Depends(ks_reader),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Return one conflict with the source axioms and text evidence needed for human review."""
+    conflict = session.get(Conflict, cid)
+    if not conflict or conflict.knowledge_system_id != ks.id:
+        raise HTTPException(status_code=404, detail="Conflict not found")
+
+    entities = (conflict.payload or {}).get("entities", [])
+    labels_by_local = {
+        _iri_local(entity["iri"]): entity.get("label") or _iri_local(entity["iri"])
+        for entity in entities if entity.get("iri")
+    }
+    entity_locals = list(labels_by_local)
+    exact_keys = _conflict_axiom_keys(conflict)
+    provenance_filters = []
+    if exact_keys:
+        provenance_filters.append(AxiomProvenance.axiom_key.in_(exact_keys))
+    structural_context = conflict.ctype in ("disjoint_subclass", "disjoint_common")
+    if structural_context:
+        provenance_filters.extend(
+            AxiomProvenance.axiom_key.contains(f"|{local}") for local in entity_locals
+        )
+    provenance_rows = list(session.exec(
+        select(AxiomProvenance).where(
+            AxiomProvenance.knowledge_system_id == ks.id,
+            or_(*provenance_filters),
+        )
+    ).all()) if provenance_filters else []
+
+    ranks: dict[str, int] = {}
+    entity_local_set = set(entity_locals)
+    for row in provenance_rows:
+        parts = set(row.axiom_key.split("|")[1:])
+        hits = parts & entity_local_set
+        if row.axiom_key in exact_keys:
+            ranks[row.axiom_key] = 0
+        elif structural_context and hits and row.axiom_key.startswith("subClassOf|"):
+            ranks.setdefault(row.axiom_key, 1)
+
+    ranked_keys = sorted(ranks, key=lambda key: (ranks[key], key))
+    ranked_key_set = set(ranked_keys)
+    relevant_rows = [row for row in provenance_rows if row.axiom_key in ranked_key_set]
+
+    chunk_ids = {row.chunk_id for row in relevant_rows if row.chunk_id is not None}
+    chunks = {
+        chunk.id: chunk
+        for chunk in session.exec(select(Chunk).where(Chunk.id.in_(chunk_ids))).all()
+    } if chunk_ids else {}
+    document_ids = {chunk.document_id for chunk in chunks.values()}
+    documents = {
+        document.id: document
+        for document in session.exec(select(Document).where(
+            Document.id.in_(document_ids),
+            Document.knowledge_system_id == ks.id,
+        )).all()
+    } if document_ids else {}
+
+    rows_by_key: dict[str, list[AxiomProvenance]] = {}
+    for row in relevant_rows:
+        rows_by_key.setdefault(row.axiom_key, []).append(row)
+
+    evidence = []
+    for axiom_key in ranked_keys:
+        axiom_rows = rows_by_key.get(axiom_key, [])
+        source_count = len({
+            row.chunk_id for row in axiom_rows
+            if row.chunk_id is not None and row.chunk_id in chunks
+        })
+        sources = []
+        seen_chunks: set[int] = set()
+        for row in axiom_rows:
+            if row.chunk_id is None or row.chunk_id in seen_chunks:
+                continue
+            chunk = chunks.get(row.chunk_id)
+            if not chunk:
+                continue
+            seen_chunks.add(row.chunk_id)
+            document = documents.get(chunk.document_id)
+            sources.append({
+                "chunk_id": chunk.id,
+                "chunk_index": chunk.idx,
+                "document_id": document.id if document else None,
+                "document": document.original_filename if document else None,
+                "folder": document.folder if document else None,
+                "job_id": row.job_id,
+                "snippet": _evidence_text(chunk.text),
+            })
+        if not sources:
+            continue
+        evidence.append({
+            "axiom_key": axiom_key,
+            "description": provenance.describe_axiom(
+                axiom_key, lambda local: labels_by_local.get(local, local)
+            ),
+            "source_count": source_count,
+            "sources": sources,
+        })
+
+    return {"conflict": conflict, "evidence": evidence}
 
 
 class ResolveRequest(BaseModel):

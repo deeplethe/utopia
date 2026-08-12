@@ -137,3 +137,110 @@
   opacity: 0;
   pointer-events: none;
 }
+
+@layer components {
+  .docs-markdown {
+    @apply min-w-0 max-w-5xl pb-16 text-[15px] leading-7 text-foreground;
+  }
+
+  .docs-markdown > :first-child {
+    @apply mt-0;
+  }
+
+  .docs-markdown h1 {
+    @apply mb-4 mt-0 border-b pb-5 text-3xl font-semibold leading-tight tracking-tight md:text-4xl;
+  }
+
+  .docs-markdown h2 {
+    @apply mb-3 mt-10 scroll-mt-20 text-2xl font-semibold leading-tight tracking-tight;
+  }
+
+  .docs-markdown h3 {
+    @apply mb-2 mt-7 scroll-mt-20 text-lg font-semibold leading-snug;
+  }
+
+  .docs-markdown h4 {
+    @apply mb-2 mt-6 text-base font-semibold;
+  }
+
+  .docs-markdown p {
+    @apply my-4 text-muted-foreground;
+  }
+
+  .docs-markdown strong {
+    @apply font-semibold text-foreground;
+  }
+
+  .docs-markdown ul {
+    @apply my-4 list-disc space-y-1.5 pl-6 text-muted-foreground;
+  }
+
+  .docs-markdown ol {
+    @apply my-4 list-decimal space-y-1.5 pl-6 text-muted-foreground;
+  }
+
+  .docs-markdown li::marker {
+    @apply text-primary;
+  }
+
+  .docs-markdown a {
+    @apply font-medium text-primary underline decoration-primary/30 underline-offset-4 hover:decoration-primary;
+  }
+
+  .docs-markdown blockquote {
+    @apply my-6 rounded-r-lg border-l-4 border-primary bg-primary/5 px-4 py-2 text-sm;
+  }
+
+  .docs-markdown blockquote p {
+    @apply my-1 text-foreground/80;
+  }
+
+  .docs-markdown code:not(pre code) {
+    @apply rounded-md bg-muted px-1.5 py-0.5 font-mono text-[0.88em] text-foreground;
+  }
+
+  .docs-markdown pre {
+    @apply relative my-6 overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-950 p-4 font-mono text-xs leading-6 text-zinc-100;
+  }
+
+  .docs-markdown pre[data-language]::before {
+    content: attr(data-language);
+    @apply absolute right-3 top-2 text-[10px] uppercase tracking-wider text-zinc-500;
+  }
+
+  .docs-markdown hr {
+    @apply my-10 border-border;
+  }
+
+  .docs-markdown table {
+    @apply w-full min-w-[40rem] border-collapse text-sm;
+  }
+
+  .docs-markdown table thead {
+    @apply bg-muted/60;
+  }
+
+  .docs-markdown th {
+    @apply border px-3 py-2 text-left font-semibold text-foreground;
+  }
+
+  .docs-markdown td {
+    @apply border px-3 py-2 align-top text-muted-foreground;
+  }
+
+  .docs-markdown .docs-table-scroll {
+    @apply my-6 max-w-full overflow-x-auto rounded-lg;
+  }
+
+  .docs-markdown .mermaid {
+    @apply my-7 overflow-x-auto rounded-xl border bg-card p-4 text-center;
+  }
+
+  .docs-markdown .mermaid svg {
+    @apply mx-auto h-auto max-w-full;
+  }
+
+  .docs-markdown .mermaid-error {
+    @apply border-destructive/40 bg-destructive/5 text-left font-mono text-xs whitespace-pre-wrap;
+  }
+}

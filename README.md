@@ -2,301 +2,427 @@
 
 # OntoPilot
 
-**Turn documents into reviewable, traceable ontologies.**
+**Human-governed ontology engineering from source documents.**
 
-OntoPilot is a local-first workbench for extracting, curating, validating, and publishing
-RDF/OWL knowledge models from documents with human-in-the-loop AI assistance.
+Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data from one self-hosted workspace.
 
-[English](README.md) · [简体中文](README.zh-CN.md)
+[简体中文](README.zh-CN.md) · [Documentation](#documentation) · [Architecture](docs/architecture.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md)
 
+[![License](https://img.shields.io/badge/license-Apache--2.0-007595)](LICENSE)
+![Release](https://img.shields.io/badge/status-pre--1.0-f59e0b)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
-![Status](https://img.shields.io/badge/status-private%20preview-6B7280)
+
+![OntoPilot turns documents into reviewed knowledge graphs and immutable releases](docs/images/ontopilot-hero-title.png)
 
 </div>
 
-## Overview
+> [!IMPORTANT]
+> OntoPilot is under active development and has not reached 1.0. Back up PostgreSQL, the OntoPilot data volume, and your token-encryption key before upgrades. Review release notes and validate migrations on a copy of production data.
 
-OntoPilot converts source documents into a curated ontology rather than a one-shot LLM output.
-It combines structure-aware document parsing, schema and instance extraction, semantic retrieval,
-specialized review agents, provenance tracking, manual editing, and reversible change history in
-one self-hosted application.
+<details>
+<summary><strong>Contents</strong></summary>
 
-The application stores documents, metadata, and ontology graphs locally. Selected document chunks
-and ontology context are sent only to the OpenAI-compatible model endpoints configured by the
-administrator.
+- [Why OntoPilot](#why-ontopilot)
+- [Capabilities](#capabilities)
+- [How It Works](#how-it-works)
+- [Architecture](#architecture)
+- [Quick Start with Docker](#quick-start-with-docker)
+- [MCP and Agent Integration](#mcp-and-agent-integration)
+- [APIs and Documentation](#apis-and-documentation)
+- [Configuration](#configuration)
+- [Source Development](#source-development)
+- [Testing and Benchmarks](#testing-and-benchmarks)
+- [Operations](#operations)
+- [Security and Privacy](#security-and-privacy)
+- [Roadmap](#roadmap)
+- [License](#license)
 
-## Highlights
+</details>
 
-| Area | Capabilities |
+## Why OntoPilot
+
+LLMs can propose ontology content quickly, but production ontology work also needs boundaries, evidence, review, access control, and stable delivery. OntoPilot treats model output as a governed proposal—not an unquestioned final artifact.
+
+- **TBox stays conceptual.** Independent role critics and domain-neutral guards keep named individuals and literal values out of the schema.
+- **ABox stays scalable.** Instances live in a separate graph and export asynchronously as checksummed N-Quads shards.
+- **Terminology stays governed.** OWL entities map to SKOS concepts; uncertain aliases, mappings, and hierarchy changes enter human review.
+- **Every decision stays traceable.** Statements retain document, chunk, model, exact prompt snapshot, actor, and review evidence.
+- **Published versions stay immutable.** Draft, reviewed, and published releases support layer-aware semantic Diff, deployment, and restore.
+- **Agents stay accountable.** Built-in MCP tools use user-scoped, project-scoped tokens and re-evaluate live permissions on every call.
+
+## Capabilities
+
+| Area | Included |
 | --- | --- |
-| Document ingestion | PDF, Word, Excel, Markdown, CSV, and text; content-addressed storage; virtual folders |
-| Structure-aware chunking | Native Docling hierarchy and table-aware chunking with lightweight parser fallbacks |
-| TBox extraction | Classes, subclass relations, object properties, data properties, domains, ranges, and axioms |
-| ABox extraction | Individuals, types, object assertions, data assertions, and source evidence |
-| Agentic assistance | Ontology retrieval, entity resolution, domain/range reconciliation, conflict triage, validation, and isolated-class attachment |
-| Human review | Dedicated queues for ontology conflicts, entity resolution, and datatype validation |
-| Provenance | Every extracted axiom and fact links back to its source document and chunk |
-| Ontology workbench | Hierarchy browser, focused neighborhood graph, full graph, inspectors, tables, and LaTeX-rendered axioms |
-| Governance | Per-knowledge-system owner/editor/viewer roles, audit history, and graph-scoped rollback |
-| Interoperability | RDF/OWL export as Turtle, RDF/XML, N-Triples, or JSON-LD |
+| Ingestion | PDF, Word, Excel, Markdown, CSV, and text; structure-aware chunking; folders; batch parsing |
+| Ontology extraction | Classes, properties, subclass, disjointness, equivalence, domain, range, and annotations |
+| Instance extraction | Individuals, types, object assertions, data assertions, and entity resolution |
+| Controlled terminology | SKOS schemes and concepts, multilingual labels, aliases, hierarchy, mappings, and proposals |
+| Human review | Conflict, entity-resolution, terminology, and ABox-validation queues with search and filters |
+| Governance | Project roles, editable prompts, prompt history, provenance, audit events, and rollback |
+| Release engineering | Draft → reviewed → published, immutable snapshots, semantic Diff, restore, and deployment |
+| Export | Separate TBox, terminology, and ABox exports; full bundles; asynchronous N-Quads sharding |
+| Serving | Project-scoped API tokens, version-pinned REST, RDF export, and bounded read-only SPARQL |
+| Agent integration | Automatically mounted Streamable HTTP MCP with read, propose, edit, review, and lifecycle tools |
+| Interoperability | RDF import with automatic TBox/ABox classification or explicit target-layer selection |
+| Internationalization | English and Simplified Chinese UI/docs; independently configurable backend prompt language |
 
-## Architecture
+## How It Works
 
 ```mermaid
 flowchart LR
-    UI["React + TypeScript UI"] -->|REST / JSON| API["FastAPI application"]
-    API --> META["SQLite metadata"]
-    API --> BLOB["SHA-256 blob store"]
-    API --> RDF["Embedded Oxigraph RDF store"]
-    API --> PARSE["Docling + fallback parsers"]
-    API --> MODEL["OpenAI-compatible LLM and embedding endpoints"]
-    PARSE --> API
-    MODEL --> API
+    SOURCE["Documents and RDF"] --> PARSE["Parse and chunk"]
+    PARSE --> EXTRACT["Grounded TBox / ABox extraction"]
+    EXTRACT --> GUARD["Role critics and deterministic guards"]
+    GUARD --> GRAPHS["TBox · SKOS · ABox"]
+    GRAPHS --> REVIEW["Four human review queues"]
+    REVIEW --> RELEASE["Immutable release"]
+    RELEASE --> SERVE["REST · RDF · SPARQL"]
+    AGENT["MCP agent"] -->|"read · preview · mutate"| GRAPHS
 ```
 
-Each knowledge system owns two Oxigraph named graphs:
+The release quality gate blocks approval while blocking conflicts, unresolved entities, pending terminology proposals, or ABox validation errors remain.
 
-- a **TBox graph** for classes, properties, and schema axioms;
-- an **ABox graph** for individuals and assertions.
+## Architecture
 
-SQLite stores relational metadata such as users, permissions, documents, chunks, extraction jobs,
-provenance, conflicts, learned review decisions, and audit events. Original files are stored once by
-SHA-256 under a sharded local blob directory.
+![OntoPilot high-level architecture](docs/images/ontopilot-architecture.png)
 
-## Typical Workflow
+The generated diagram above is a reading aid. The version-controlled diagram below is the authoritative high-level topology.
 
-1. Create a knowledge system and choose its model endpoints.
-2. Upload and organize source documents.
-3. Parse documents into structure-aware chunks.
-4. Extract the schema, instances, or both as a background job.
-5. Review conflicts, ambiguous entity matches, and validation findings.
-6. Explore and edit the ontology in the workbench.
-7. Trace entities and assertions back to their source documents.
-8. Export the curated graph or roll back a previous graph-changing event.
+```mermaid
+flowchart LR
+    WEB["React Web UI"] -->|"REST API"| API["FastAPI Backend"]
+    MCP["MCP Agent"] -->|"/mcp"| API
+    API <--> PG["PostgreSQL"]
+    API <--> RDF["Oxigraph RDF"]
+    API <--> ART["Artifact Storage"]
+    API <--> MODEL["Model Endpoints"]
+
+    subgraph LAYERS["Named RDF graphs"]
+      TBOX["TBox"]
+      SKOS["SKOS"]
+      ABOX["ABox"]
+    end
+
+    RDF --> LAYERS
+```
+
+| Component | Responsibility |
+| --- | --- |
+| React + TypeScript | Governance workspace, graph exploration, review, releases, settings, and documentation |
+| FastAPI | Authentication, project permissions, ingestion, extraction orchestration, review, release, REST, and MCP |
+| PostgreSQL | Users, roles, document/job metadata, prompt snapshots, provenance, review state, audit, and releases |
+| Oxigraph | Mutable TBox/SKOS/ABox graphs plus separate published-release projections |
+| Artifact storage | Source blobs, immutable release snapshots, manifests, provenance JSONL, and export shards |
+| Model endpoints | Administrator-configured OpenAI-compatible chat and embedding services with per-endpoint limits |
+
+SQLite is supported for single-process local development. PostgreSQL is the supported shared/Docker deployment path. See [the architecture guide](docs/architecture.md) for trust boundaries, graph separation, provenance, and export design.
 
 ## Quick Start with Docker
 
-### Prerequisites
+### Requirements
 
-- Docker Engine with Docker Compose
-- An OpenAI-compatible API key, such as an OpenRouter key
+- Docker Engine 27+ with Docker Compose v2
+- About 4 GB of free memory for a comfortable build and first start
+- An OpenAI-compatible API credential for extraction; the application can start without one
 
-### Start
+### 1. Configure
 
 ```bash
 git clone https://github.com/deeplethe/ontopilot.git
 cd ontopilot
+cp .env.example .env
 cp backend/.env.example backend/.env
 ```
 
-On PowerShell, use:
-
-```powershell
-Copy-Item backend/.env.example backend/.env
-```
-
-Edit `backend/.env` and set at least:
+Set at least these values:
 
 ```dotenv
+# .env
+POSTGRES_PASSWORD=replace-with-a-strong-random-password
+SYSTEM_LANGUAGE=en
+MCP_PUBLIC_URL=http://localhost:8080/mcp
+ONTOPILOT_BIND_ADDRESS=0.0.0.0
+ONTOPILOT_PORT=8080
+```
+
+```dotenv
+# backend/.env
 OPENROUTER_API_KEY=sk-or-v1-your-key
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=replace-with-a-strong-password
+COOKIE_SECURE=false
 ```
 
-Then start the application:
+`SYSTEM_LANGUAGE` controls built-in model prompts (`en` or `zh-CN`) and is independent of each user's frontend language. Project-specific prompt overrides continue to take precedence.
+
+### 2. Start and verify
 
 ```bash
 docker compose up -d --build
+docker compose ps
+curl --fail http://localhost:8080/api/health
 ```
 
-Open <http://localhost:8080> and sign in with the administrator account from `backend/.env`.
+Open <http://localhost:8080> and sign in with the configured administrator account. Container health can take a short time on the first start.
 
-To stop the services without deleting persisted data:
+For an isolated, loopback-only deployment:
+
+```dotenv
+ONTOPILOT_BIND_ADDRESS=127.0.0.1
+ONTOPILOT_PORT=18080
+MCP_PUBLIC_URL=http://127.0.0.1:18080/mcp
+```
+
+### 3. Stop
 
 ```bash
 docker compose down
 ```
 
-Runtime data is stored in the `ontopilot-data` Docker volume.
+This preserves named volumes. `docker compose down -v` permanently deletes the deployment's PostgreSQL and OntoPilot data volumes; use it only when you explicitly want a clean reset.
 
-The base Docker image uses the lightweight fallback parsers to keep the image compact. To enable
-Docling's hierarchy- and table-aware pipeline in Docker, add the optional Docling dependencies to a
-custom backend image before rebuilding.
+## First Governed Workflow
 
-## Local Development
+1. Open **Settings → Model endpoints**, configure chat/embedding services, set per-endpoint concurrency, and test them.
+2. Create a knowledge system and invite members as owner, editor, or viewer.
+3. Upload `examples/pump-operations.txt` under **Documents**, then parse it.
+4. Select parsed chunks and run **TBox**, **ABox**, or combined extraction.
+5. Inspect the ontology, controlled vocabulary, instances, source evidence, and extraction jobs.
+6. Clear the four review queues: conflicts, entity resolution, terminology, and validation.
+7. Create a release draft, pass the quality gate, approve, and publish it.
+8. Deploy the published projection or export the complete bundle for downstream use.
+
+Set `SEED_DEMO_DATA=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls. For an existing local source installation, run `python backend/scripts/seed_demo.py` from the repository root.
+
+## MCP and Agent Integration
+
+MCP is available by default at `/mcp` and starts inside the normal backend lifecycle—there is no separate MCP service to install or supervise. Each MCP token is bound to one user and one knowledge system. Token scopes and the user's live project role are intersected on every call.
+
+```json
+{
+  "mcpServers": {
+    "ontopilot": {
+      "type": "streamable-http",
+      "url": "http://localhost:8080/mcp",
+      "headers": {
+        "Authorization": "Bearer ${ONTOPILOT_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+| Scope | Minimum project role | Examples |
+| --- | --- | --- |
+| `mcp:read` | Viewer | Ontology, documents, vocabulary, instances, evidence, queues, history, releases, SPARQL |
+| `mcp:write` | Editor | Preview/apply TBox, ABox, and SKOS changes; decide reviews; start extraction |
+| `mcp:manage` | Owner | Publish/deploy/stop/delete releases and roll back audited changes |
+
+Mutation tools require an audit reason. Destructive operations require explicit confirmation parameters, and ontology edits can be previewed as exact RDF diffs before they are applied. Create short-lived MCP tokens in the project's API access area; never place a browser cookie or token inside prompts or source control.
+
+Read the complete [MCP guide](frontend/src/content/docs/en/mcp.md), including every registered tool and the recommended evidence → preview → approval → apply loop.
+
+## APIs and Documentation
+
+After sign-in, the documentation center is available at `/docs`; its left-hand tree loads a separate English or Chinese Markdown file for each topic and renders Mermaid diagrams with the project theme.
+
+| Resource | Default URL / file |
+| --- | --- |
+| Product and design documentation | <http://localhost:8080/docs> |
+| MCP guide | <http://localhost:8080/docs/mcp> |
+| OpenAPI UI | <http://localhost:8080/api/docs> |
+| ReDoc | <http://localhost:8080/api/redoc> |
+| OpenAPI JSON | <http://localhost:8080/api/openapi.json> |
+| Health check | <http://localhost:8080/api/health> |
+| External API guide | [docs/external-api.md](docs/external-api.md) |
+| RDF import guide | [docs/rdf-import.md](docs/rdf-import.md) |
+| Release and export guide | [docs/release-and-export.md](docs/release-and-export.md) |
+
+The browser governance API uses an HttpOnly session cookie. Downstream consumers use revocable project API tokens and versioned paths under `/api/v1/knowledge-systems/{public_id}`. Published consumers should pin a release version; `/published` intentionally follows the newest published release.
+
+## Release, Serving, and Export Model
+
+Drafts use internal identifiers and receive public `vN` versions only when publishing succeeds. Deleting an unpublished draft therefore does not consume the next public version.
+
+Every captured release freezes three RDF layers and provenance:
+
+```text
+release/
+├── manifest.json
+├── tbox-00001.nq
+├── vocabulary-00001.nq
+├── abox-00001.nq
+├── abox-00002.nq
+├── tbox-provenance.jsonl
+└── abox-provenance.jsonl
+```
+
+Artifacts are uncompressed by design, enabling HTTP Range delivery, line-oriented processing, independent shard verification, and object-storage/CDN replication. The manifest records SHA-256 checksums. A reverse proxy may still apply transport compression.
+
+## Configuration
+
+The checked-in [.env.example](.env.example) and [backend/.env.example](backend/.env.example) files are the configuration reference. Important values include:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POSTGRES_PASSWORD` | `ontopilot` Compose fallback | PostgreSQL password; always override outside disposable local use |
+| `SYSTEM_LANGUAGE` | `en` | Built-in backend prompt language (`en` or `zh-CN`), independent of UI locale |
+| `ONTOPILOT_BIND_ADDRESS` | `0.0.0.0` | Host interface exposed by the frontend container |
+| `ONTOPILOT_PORT` | `8080` | Host port exposed by the frontend container |
+| `DATABASE_URL` | local SQLite | SQLAlchemy URL; Compose injects PostgreSQL automatically |
+| `OPENROUTER_API_KEY` | empty | Initial compatible model credential; endpoints can also be managed in Settings |
+| `LLM_EXTRACT_MODEL` | `deepseek/deepseek-chat` | Initial extraction/agent model |
+| `EMBEDDING_MODEL` | `baai/bge-m3` | Initial embedding model |
+| `EXTRACTION_CONCURRENCY` | `10` | Legacy/fallback seed; each model endpoint has its own runtime limit |
+| `MCP_PUBLIC_URL` | `http://localhost:8000/mcp` | Public Streamable HTTP URL advertised by the backend |
+| `MCP_TOKEN_TTL_MINUTES` | `60` | Default delegated MCP-token lifetime |
+| `TOKEN_ENCRYPTION_KEY` | generated in data volume | Encryption key for revealable API-token secrets; back it up |
+| `COOKIE_SECURE` | `false` | Require HTTPS for browser-session cookies |
+| `SEED_DEMO_DATA` | `false` | Seed deterministic no-LLM demo data into an empty installation |
+| `RDF_IMPORT_MAX_BYTES` | `26214400` | Direct RDF upload ceiling |
+| `RDF_IMPORT_MAX_TRIPLES` | `250000` | Direct RDF parsed-statement ceiling |
+
+## Source Development
 
 ### Requirements
 
 - Python 3.12+
 - Node.js 22+
-- pnpm
-- An OpenAI-compatible API key
+- Corepack and pnpm 10.2.1 (pinned in `frontend/package.json`)
 
 ### Backend
 
-```powershell
+```bash
 cd backend
 python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+# POSIX: source .venv/bin/activate
+# PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+cp .env.example .env
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Docling is optional in the base environment. Install it for hierarchy- and table-aware parsing:
-
-```powershell
-pip install "docling>=2.118,<3" "docling-core[chunking]>=2.90,<3"
-```
-
-Copy and configure the environment file:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Start the API:
-
-```powershell
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-- Health check: <http://127.0.0.1:8000/api/health>
-- OpenAPI documentation: <http://127.0.0.1:8000/docs>
+When `DATABASE_URL` is empty, the backend stores local development data under `backend/data/` with SQLite and Oxigraph.
 
 ### Frontend
 
-```powershell
+```bash
 cd frontend
-pnpm install
+corepack enable
+pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-The development server runs at <http://localhost:5173> and proxies `/api` to the backend.
+Vite serves <http://localhost:5173> and proxies `/api` and `/mcp` to `http://127.0.0.1:8000`. Override the target for an isolated source deployment:
 
-### Validation Commands
+```bash
+VITE_BACKEND_PROXY_TARGET=http://127.0.0.1:18000 pnpm dev --host 127.0.0.1 --port 15173
+```
 
-```powershell
-# Backend syntax validation
+On PowerShell, set `$env:VITE_BACKEND_PROXY_TARGET` first and then run `pnpm dev`.
+
+## Testing and Benchmarks
+
+Run the core test, lint, build, and contract checks:
+
+```bash
 cd backend
-.venv\Scripts\python.exe -m compileall -q app
+pytest -q
+python scripts/check_tbox_guard.py
+python scripts/check_ontolearner_regression.py tests/gold/ontolearner_reference_result.json
 
-# Frontend validation
-cd ..\frontend
+cd ../frontend
 pnpm lint
 pnpm build
+
+cd ..
+docker compose config --quiet
 ```
 
-## Configuration
+The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. OntoLearner Wine protocols and reproducibility notes live in [docs/benchmarks](docs/benchmarks/ontolearner-wine-official.md). Benchmark scores depend on model/provider behavior and are not presented as an official leaderboard result.
 
-Configuration is loaded from `backend/.env`. Model endpoints can also be managed at runtime by an
-administrator and overridden per knowledge system.
+See [docs/acceptance.md](docs/acceptance.md) for the manual end-to-end acceptance path.
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `OPENROUTER_API_KEY` | empty | API key for the default OpenRouter connection |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Default OpenAI-compatible base URL |
-| `LLM_EXTRACT_MODEL` | `deepseek/deepseek-chat` | Default extraction and agent model |
-| `EMBEDDING_MODEL` | `baai/bge-m3` | Default multilingual embedding model |
-| `LLM_TEMPERATURE` | `0.1` | Model sampling temperature |
-| `LLM_MAX_TOKENS` | `4000` | Maximum completion tokens |
-| `CHUNK_SIZE_TOKENS` | `900` | Docling HybridChunker token budget |
-| `EXTRACTION_MODE` | `auto` | `rag`, `agentic`, or automatic selection |
-| `EXTRACTION_CONCURRENCY` | `5` | Maximum concurrent chunk extractions per job |
-| `ADMIN_USERNAME` | `admin` | Administrator seeded into an empty database |
-| `ADMIN_PASSWORD` | `admin` | Initial administrator password; always override it |
-| `COOKIE_SECURE` | `false` | Set to `true` behind HTTPS |
-| `CORS_ORIGINS` | local Vite origins | JSON list of allowed browser origins |
+## Operations
 
-See `backend/app/config.py` for all advanced agent and validation settings.
+### Back up
 
-## Extraction Modes
+Back up these as one consistent recovery set:
 
-- **RAG** retrieves relevant ontology entities and neighborhoods, then performs one extraction call.
-- **Agentic** allows the model to search the ontology and inspect neighborhoods through a bounded
-  tool loop before producing an ontology delta.
-- **Auto** uses agentic extraction once the ontology reaches the configured class threshold and RAG
-  for smaller graphs.
+- the `ontopilot-postgres` volume or a `pg_dump`;
+- the `ontopilot-data` volume containing documents, Oxigraph stores, releases, exports, and the generated token key;
+- deployment `.env` files through your secret-management system, not through Git.
 
-TBox chunks are processed concurrently. Graph writes are serialized so extraction remains atomic,
-progress stays queryable, and rollback diffs remain consistent.
+Test restores regularly. A database-only restore is incomplete because RDF and artifacts live outside PostgreSQL.
 
-## Provenance and Safe Deletion
+### Upgrade
 
-OntoPilot treats an ontology as a merged artifact. The same axiom or fact can be supported by
-multiple documents or by a manual edit.
-
-Before deleting a document, the application computes its impact and identifies facts supported only
-by that document. Users must confirm those retractions. Shared or manually created facts are kept.
-This prevents both accidental graph loss and unsupported orphan facts.
-
-## Data and Privacy
-
-Local runtime state lives under `backend/data/` during development:
-
-```text
-backend/data/
-├── blobs/          # content-addressed source files
-├── ontopilot.db    # SQLite metadata, users, jobs, provenance, and audit history
-└── oxigraph/       # persistent RDF named graphs
+```bash
+git pull --ff-only
+docker compose build --pull
+docker compose up -d
+docker compose ps
+curl --fail http://localhost:8080/api/health
 ```
 
-This directory and `backend/.env` are ignored by Git.
+Back up first, review changed example variables, and test pre-1.0 upgrades on a copy of production data.
 
-Important privacy considerations:
+### Reverse proxy checklist
 
-- selected source chunks and ontology context are sent to configured model providers;
-- provider API keys are stored server-side and are never returned unmasked by the API;
-- use HTTPS and `COOKIE_SECURE=true` for any non-local deployment;
-- back up SQLite, blobs, and Oxigraph together to preserve cross-store consistency.
+- terminate TLS and set `COOKIE_SECURE=true`;
+- set `MCP_PUBLIC_URL` to the externally reachable HTTPS `/mcp` URL;
+- preserve streaming and disable response buffering for `/mcp`;
+- define upload/body-size, request-rate, and timeout limits appropriate for document ingestion;
+- keep PostgreSQL and backend-only ports off the public network.
 
-## Deployment Scope
+### Troubleshooting
 
-The current release is designed for a single self-hosted backend instance. SQLite, embedded
-Oxigraph, in-process background jobs, and graph write locks are intentionally optimized for a
-local-first deployment. Horizontal scaling and durable distributed job execution are not yet
-supported.
+| Symptom | Check |
+| --- | --- |
+| Frontend starts but API calls fail | `docker compose ps`, backend health, and Nginx logs |
+| Source frontend calls port 8000 unexpectedly | Set `VITE_BACKEND_PROXY_TARGET` before starting Vite |
+| Extraction is unavailable | Test the selected model endpoint and verify its credential/model/concurrency settings |
+| MCP returns `401` | Use a non-expired `opm_...` token in the `Authorization: Bearer` header |
+| Login loops behind HTTPS | Set `COOKIE_SECURE=true` and verify proxy scheme/host forwarding |
+| Backend cannot open Oxigraph | Ensure only one backend process uses the same data directory and check volume ownership |
 
-## Repository Layout
+## Security and Privacy
 
-```text
-ontopilot/
-├── backend/
-│   ├── app/api/          # FastAPI routes
-│   ├── app/db/           # SQLModel metadata and migrations
-│   ├── app/llm/          # OpenAI-compatible model client
-│   ├── app/ontology/     # RDF storage, extraction, agents, validation, provenance
-│   ├── app/parsing/      # Docling integration and fallback chunking
-│   ├── app/storage/      # content-addressed blob store
-│   └── scripts/          # evaluation and stress utilities
-├── frontend/
-│   └── src/              # React application, pages, components, and typed API client
-└── docker-compose.yml
-```
+Selected source chunks and bounded ontology context are sent to administrator-configured model providers. Documents, RDF graphs, relational metadata, credentials, and release artifacts otherwise remain in the deployment unless an operator configures external storage or services.
+
+Before public exposure:
+
+- replace administrator and PostgreSQL defaults;
+- use HTTPS and secure cookies;
+- protect and back up token-encryption material;
+- scope and expire API/MCP tokens, then revoke unused credentials;
+- restrict provider endpoints and reverse-proxy body/rate limits;
+- review [SECURITY.md](SECURITY.md) and report vulnerabilities privately.
 
 ## Roadmap
 
-- Automated backend, frontend, and end-to-end test suites
-- Durable extraction workers and restartable jobs
-- Versioned database migrations
-- Stricter OWL-DL reasoning integration
-- Direct graph-edge authoring in the visual workbench
-- Reproducible Python dependency locking and published container images
+The roadmap is directional rather than a release promise. See [ROADMAP.md](ROADMAP.md) for goals, acceptance criteria, and non-goals.
 
-## Contributing
+- **Stabilize:** formal migrations and upgrade tests, backup/restore tooling, production observability, accessibility and browser coverage.
+- **Collaborate:** richer review assignment, comments/mentions, notifications, saved filters, and large-team audit workflows.
+- **Agent-assisted governance:** a first-party chat surface that uses short-lived user MCP tokens and always previews mutations before approval.
+- **Integrate:** object-storage adapters, webhooks/event delivery, identity-provider integration, and deployment recipes for common platforms.
+- **Scale and quality:** larger-corpus ingestion, incremental extraction, benchmark expansion, release reproducibility, and performance budgets.
+- **Reach 1.0:** stable public API/MCP/release contracts, documented compatibility policy, migrations, disaster-recovery verification, and security review.
 
-The repository is currently maintained as a private preview under the DeepLethe organization.
-Contribution guidelines, issue templates, and the public governance model will be added before the
-repository is opened to external contributors.
+## Project Policy
+
+- Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
+- Community participation follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+- Security reports must use the private process in [SECURITY.md](SECURITY.md), not public issues.
+- Public interchange changes require compatibility notes, migrations when needed, and regression tests.
+- AI-generated ontology changes remain subject to the same evidence, review, permission, and audit controls as human changes.
 
 ## License
 
-No public open-source license has been selected yet. The current repository is all-rights-reserved
-and must not be redistributed. Replace `LICENSE` with the selected open-source license before making
-the repository public.
+Copyright 2026 DeepLethe and OntoPilot contributors.
 
-## Acknowledgements
-
-OntoPilot builds on FastAPI, React, Docling, Oxigraph, RDFLib, pySHACL, and the broader RDF/OWL
-ecosystem.
+Licensed under the [Apache License 2.0](LICENSE). The repository includes a [NOTICE](NOTICE) file. Unless required by applicable law or agreed in writing, the software is provided **as is**, without warranties or conditions of any kind.

@@ -1,33 +1,38 @@
 import { useEffect, useState } from "react"
 import { NavLink, useLocation } from "react-router-dom"
 import {
-  ChevronLeft, ChevronRight, Database, FileText, Inbox, LayoutDashboard,
-  Network, ScrollText, Users,
+  ChevronLeft, ChevronRight, Database, FileText, Inbox, KeyRound, LayoutDashboard,
+  Network, PackageCheck, ScrollText, Tags, Users,
 } from "lucide-react"
 import { api } from "@/lib/api"
 import type { KnowledgeSystem, ReviewCounts } from "@/lib/types"
+import { useI18n, type MessageKey } from "@/lib/i18n"
 import {
   Sidebar, SidebarContent, SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem,
   SidebarMenuSub, SidebarMenuSubButton, SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
 
-const SECTIONS = [
-  { key: "overview", label: "Overview", icon: LayoutDashboard },
-  { key: "ontology", label: "Ontology", icon: Network },
-  { key: "instances", label: "Instances", icon: Database },
-  { key: "review", label: "Review", icon: Inbox },
-  { key: "documents", label: "Documents", icon: FileText },
-  { key: "history", label: "History", icon: ScrollText },
-  { key: "members", label: "Members", icon: Users },
+const SECTIONS: { key: string; label: MessageKey; icon: typeof LayoutDashboard; ownerOnly?: boolean }[] = [
+  { key: "overview", label: "sidebar.overview", icon: LayoutDashboard },
+  { key: "ontology", label: "sidebar.ontology", icon: Network },
+  { key: "vocabulary", label: "sidebar.vocabulary", icon: Tags },
+  { key: "instances", label: "sidebar.instances", icon: Database },
+  { key: "review", label: "sidebar.review", icon: Inbox },
+  { key: "releases", label: "sidebar.releases", icon: PackageCheck },
+  { key: "documents", label: "sidebar.documents", icon: FileText },
+  { key: "history", label: "sidebar.history", icon: ScrollText },
+  { key: "members", label: "sidebar.members", icon: Users },
+  { key: "api", label: "sidebar.apiAccess", icon: KeyRound, ownerOnly: true },
 ]
 
 // Review is a second-level menu; these are its sub-pages (/review/<key>). Each sub-page holds its
 // own queue AND its learned-decision memory (resolution decisions under Entity resolution;
 // reconciliation + duplicate-class decisions under Conflicts).
-const REVIEW_SUBS = [
-  { key: "conflicts", label: "Conflicts" },
-  { key: "resolution", label: "Entity resolution" },
-  { key: "validation", label: "Validation" },
+const REVIEW_SUBS: { key: string; label: MessageKey }[] = [
+  { key: "conflicts", label: "sidebar.conflicts" },
+  { key: "resolution", label: "sidebar.entityResolution" },
+  { key: "terminology", label: "sidebar.terminology" },
+  { key: "validation", label: "sidebar.validation" },
 ]
 
 /**
@@ -47,6 +52,7 @@ function Count({ n, className = "" }: { n?: number; className?: string }) {
 }
 
 export default function SideNav() {
+  const { t } = useI18n()
   const pathname = useLocation().pathname
   const seg = pathname.split("/").filter(Boolean)
   const ksId = seg[0] === "knowledge" && seg[1] != null ? Number(seg[1]) : null
@@ -70,8 +76,15 @@ export default function SideNav() {
   useEffect(() => {
     if (ksId == null) return
     let cancelled = false
-    api.reviewCounts(ksId).then((c) => { if (!cancelled) setCounts(c) }).catch(() => {})
-    return () => { cancelled = true }
+    const loadCounts = () => {
+      api.reviewCounts(ksId).then((next) => { if (!cancelled) setCounts(next) }).catch(() => {})
+    }
+    loadCounts()
+    window.addEventListener("ontopilot:review-counts-changed", loadCounts)
+    return () => {
+      cancelled = true
+      window.removeEventListener("ontopilot:review-counts-changed", loadCounts)
+    }
   }, [ksId, pathname])
 
   if (ksId == null) return null
@@ -84,7 +97,7 @@ export default function SideNav() {
       <SidebarHeader className="border-b py-3 pl-5 pr-3">
         <NavLink
           to="/"
-          aria-label="Back to all knowledge systems"
+          aria-label={t("sidebar.back")}
           className="group flex min-w-0 items-center gap-1.5"
         >
           <ChevronLeft className="h-4 w-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
@@ -96,12 +109,12 @@ export default function SideNav() {
 
       <SidebarContent className="px-3 py-2">
         <SidebarMenu>
-          {SECTIONS.map((s) =>
+          {SECTIONS.filter((s) => !s.ownerOnly || ks?.my_role === "owner").map((s) =>
             s.key === "review" ? (
               <SidebarMenuItem key={s.key}>
                 <SidebarMenuButton isActive={active === "review"} onClick={() => setReviewOpen((o) => !o)}>
                   <s.icon />
-                  <span>{s.label}</span>
+                  <span>{t(s.label)}</span>
                   <span className="ml-auto flex items-center gap-1.5">
                     {!reviewOpen && <Count n={counts?.total} />}
                     <ChevronRight className={`h-4 w-4 transition-transform ${reviewOpen ? "rotate-90" : ""}`} />
@@ -113,7 +126,7 @@ export default function SideNav() {
                       <SidebarMenuSubItem key={sub.key}>
                         <SidebarMenuSubButton asChild className="h-8 w-full data-active:font-medium" isActive={active === "review" && activeSub === sub.key}>
                           <NavLink to={`/knowledge/${ksId}/review/${sub.key}`}>
-                            <span>{sub.label}</span>
+                            <span>{t(sub.label)}</span>
                             <Count n={counts?.[sub.key as keyof ReviewCounts]} className="ml-auto" />
                           </NavLink>
                         </SidebarMenuSubButton>
@@ -127,7 +140,7 @@ export default function SideNav() {
                 <SidebarMenuButton asChild isActive={active === s.key}>
                   <NavLink to={`/knowledge/${ksId}/${s.key}`}>
                     <s.icon />
-                    <span>{s.label}</span>
+                    <span>{t(s.label)}</span>
                   </NavLink>
                 </SidebarMenuButton>
               </SidebarMenuItem>

@@ -2,6 +2,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 python-multipart>=0.0.9
+mcp>=1.29,<2
 
 # --- Config / settings ---
 pydantic-settings>=2.4
@@ -9,9 +10,11 @@ python-dotenv>=1.0
 
 # --- Relational metadata store ---
 sqlmodel>=0.0.22
+psycopg[binary]>=3.2
 
 # --- Auth (password hashing) ---
 bcrypt>=4.0
+cryptography>=43.0
 
 # --- LLM (OpenRouter) ---
 httpx>=0.27

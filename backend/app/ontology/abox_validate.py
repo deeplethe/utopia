@@ -1,6 +1,10 @@
 """ABox validation: lint individuals against the TBox's semantic constraints.
 
 Checks (computed on demand by scanning the ABox graph against the TBox):
+  - placeholder: a non-identifying label such as "Untitled" was stored as an individual (error)
+  - type_count : one individual accumulated an implausible number of direct types (error)
+  - role       : one individual was merged across incompatible semantic roles (error)
+  - unrelated_types: one individual has unrelated direct types with no shared identity role (warning)
   - disjoint  : an individual typed by two classes declared owl:disjointWith (error)
   - domain    : an individual uses a property whose domain class it isn't typed as (warning)
   - range     : an object-property target isn't typed as the property's range class (warning)
@@ -17,9 +21,11 @@ import re
 
 from pyoxigraph import Literal, NamedNode
 
-from app.ontology import schema, store, vocab
+from app.ontology import entity_roles, schema, store, vocab
+from app.ontology.abox_extract import _is_non_identifying_label
 
 MAX_VIOLATIONS = 500
+MAX_DIRECT_TYPES = 12
 
 
 def _sig(*parts: str) -> str:
@@ -59,6 +65,7 @@ def validate(graph_iri: str, abox_iri: str) -> dict:
     clabel = lambda iri: labels.get(iri, iri.rsplit("#", 1)[-1].rsplit("/", 1)[-1])  # noqa: E731
 
     supers = {c["iri"]: c["superclasses"] for c in view["classes"]}
+    roles_by_class = entity_roles.class_role_map(view)
     disjoint = [(r["a"], r["b"]) for r in view["axioms"]["disjoint_with"]]
     prop_dr: dict[str, dict] = {}
     for kind, props in (("object", view["object_properties"]), ("data", view["data_properties"])):
@@ -109,7 +116,87 @@ def validate(graph_iri: str, abox_iri: str) -> dict:
         seen_ids.add(v["id"])
         violations.append(v)
 
-    # 1) disjoint-type violations
+    # 1) identity-quality violations
+    for ind, direct in types.items():
+        label = ilabel(ind)
+        if _is_non_identifying_label(label):
+            add({
+                "id": _sig("placeholder", ind),
+                "type": "placeholder", "severity": "error",
+                "individual": {"iri": ind, "label": label},
+                "summary": f'"{label}" is a placeholder, not a stable individual identity.',
+                "fixes": [{
+                    "id": "delete", "label": "Delete this placeholder individual",
+                    "op": {"kind": "delete_individual", "iri": ind},
+                }],
+            })
+        if len(direct) > MAX_DIRECT_TYPES:
+            add({
+                "id": _sig("type_count", ind),
+                "type": "type_count", "severity": "error",
+                "individual": {"iri": ind, "label": label},
+                "summary": (
+                    f'"{label}" has {len(direct)} direct types, indicating that unrelated mentions '
+                    "were probably merged into one individual."
+                ),
+                "fixes": [{
+                    "id": "delete", "label": "Delete this over-merged individual",
+                    "op": {"kind": "delete_individual", "iri": ind},
+                }],
+            })
+
+        direct_roles: dict[str, list[str]] = {}
+        if len(direct) > 1:
+            for class_iri in direct:
+                for role in roles_by_class.get(class_iri, ()):
+                    direct_roles.setdefault(role, []).append(class_iri)
+        if len(direct_roles) > 1:
+            role_names = " / ".join(sorted(direct_roles))
+            add({
+                "id": _sig("role", ind, *sorted(direct_roles)),
+                "type": "role", "severity": "error",
+                "individual": {"iri": ind, "label": label},
+                "summary": (
+                    f'"{label}" is typed across incompatible roles ({role_names}); '
+                    "same-name entities were probably merged."
+                ),
+                "fixes": [],
+            })
+
+        if len(direct) > 1 and len(direct_roles) <= 1:
+            ordered = sorted(direct, key=clabel)
+            unrelated: set[str] = set()
+            for index, left in enumerate(ordered):
+                left_closure = _ancestors(supers, left)
+                left_roles = roles_by_class.get(left, frozenset())
+                for right in ordered[index + 1:]:
+                    right_closure = _ancestors(supers, right)
+                    right_roles = roles_by_class.get(right, frozenset())
+                    hierarchy_related = left in right_closure or right in left_closure
+                    shared_role = bool(left_roles & right_roles)
+                    if not hierarchy_related and not shared_role:
+                        unrelated.update((left, right))
+            if unrelated:
+                names = ", ".join(f'"{clabel(class_iri)}"' for class_iri in sorted(unrelated, key=clabel))
+                add({
+                    "id": _sig("unrelated_types", ind, *sorted(unrelated)),
+                    "type": "unrelated_types", "severity": "warning",
+                    "individual": {"iri": ind, "label": label},
+                    "summary": (
+                        f'"{label}" has unrelated direct types {names}; same-name mentions may '
+                        "have been merged into one individual."
+                    ),
+                    "fixes": [
+                        {
+                            "id": f"rm_{_sig(class_iri)}",
+                            "label": f'Remove type "{clabel(class_iri)}"',
+                            "op": {"kind": "remove_type", "iri": ind, "class_iri": class_iri},
+                        }
+                        for class_iri in sorted(unrelated, key=clabel)
+                    ],
+                })
+
+    # 2) disjoint-type violations
     for ind, direct in types.items():
         cl = closure(ind)
         for a, b in disjoint:
@@ -159,7 +246,7 @@ def validate(graph_iri: str, abox_iri: str) -> dict:
             return cls, conflicts[0]
         return None
 
-    # 2) domain/range CONTRADICTIONS (object assertions)
+    # 3) domain/range CONTRADICTIONS (object assertions)
     for s, p, o in obj_assert:
         dr = prop_dr.get(p)
         if not dr:
@@ -183,7 +270,7 @@ def validate(graph_iri: str, abox_iri: str) -> dict:
                            "op": {"kind": "remove_object_assertion", "subject": s, "prop": p, "target": o}}],
             })
 
-    # 3) domain CONTRADICTION + 4) datatype (data assertions)
+    # 4) domain CONTRADICTION + 5) datatype (data assertions)
     for s, p, value, dt in data_assert:
         dr = prop_dr.get(p)
         if not dr:
@@ -265,6 +352,8 @@ def apply_fix(abox_iri: str, op: dict) -> None:
     kind = op.get("kind")
     if kind == "remove_type":
         abox.remove_type(abox_iri, op["iri"], op["class_iri"])
+    elif kind == "delete_individual":
+        abox.delete_individual(abox_iri, op["iri"])
     elif kind == "add_type":
         abox.add_type(abox_iri, op["iri"], op["class_iri"])
     elif kind == "remove_object_assertion":

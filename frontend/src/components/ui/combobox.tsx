@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { Check, ChevronsUpDown, Search } from "lucide-react"
+import { Check, ChevronsUpDown, Loader2, Search } from "lucide-react"
 
 export type ComboboxOption = { value: string; label: string; hint?: string }
 
@@ -11,6 +11,7 @@ export type ComboboxOption = { value: string; label: string; hint?: string }
 export function Combobox({
   value, onChange, options, placeholder = "Select…", searchPlaceholder = "Search…",
   disabled, className = "", triggerClassName = "h-9", emptyText = "No matches.",
+  onSearchChange, loading = false, loadingText = "Loading…",
 }: {
   value: string | null
   onChange: (value: string) => void
@@ -21,18 +22,29 @@ export function Combobox({
   className?: string
   triggerClassName?: string
   emptyText?: string
+  onSearchChange?: (query: string) => void
+  loading?: boolean
+  loadingText?: string
 }) {
   const [open, setOpen] = useState(false)
   const [q, setQ] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (open) { setQ(""); setTimeout(() => inputRef.current?.focus(), 0) }
-  }, [open])
+    if (open) {
+      setQ("")
+      onSearchChange?.("")
+      setTimeout(() => inputRef.current?.focus(), 0)
+    }
+  }, [onSearchChange, open])
 
   const selected = options.find((o) => o.value === value)
   const term = q.trim().toLowerCase()
-  const matches = (term ? options.filter((o) => o.label.toLowerCase().includes(term)) : options).slice(0, 100)
+  const matches = (
+    onSearchChange
+      ? options
+      : term ? options.filter((o) => o.label.toLowerCase().includes(term)) : options
+  ).slice(0, 100)
 
   return (
     <div className={`relative ${className}`}>
@@ -51,13 +63,20 @@ export function Combobox({
             <div className="relative mb-1">
               <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <input
-                ref={inputRef} value={q} onChange={(e) => setQ(e.target.value)}
+                ref={inputRef} value={q} onChange={(e) => {
+                  setQ(e.target.value)
+                  onSearchChange?.(e.target.value)
+                }}
                 placeholder={searchPlaceholder}
                 className="h-8 w-full rounded-sm bg-transparent pl-7 pr-2 text-sm outline-none placeholder:text-muted-foreground"
               />
             </div>
             <div className="max-h-60 overflow-auto">
-              {matches.length === 0 ? (
+              {loading ? (
+                <div className="flex items-center justify-center gap-2 px-2 py-4 text-sm text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> {loadingText}
+                </div>
+              ) : matches.length === 0 ? (
                 <div className="px-2 py-4 text-center text-sm text-muted-foreground">{emptyText}</div>
               ) : matches.map((o) => (
                 <button

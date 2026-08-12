@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from sqlmodel import Session, select
 
-from app.db.models import AboxProvenance, Chunk, Document
+from app.db.models import AboxProvenance, Chunk, Document, ExtractionJob
 
 
 def ind_key(iri: str) -> str:
@@ -24,7 +24,14 @@ def obj_key(subject: str, prop: str, target: str) -> str:
     return f"obj|{subject}|{prop}|{target}"
 
 
-def rebuild_for_chunk(session: Session, ks_id: int, chunk_id: int, fact_keys: list[str], job_id: int | None = None) -> None:
+def rebuild_for_chunk(
+    session: Session,
+    ks_id: int,
+    chunk_id: int,
+    fact_keys: list[str],
+    job_id: int | None = None,
+    actor_name: str = "extraction-agent",
+) -> None:
     """Replace this chunk's provenance rows with `fact_keys` (deduped). Idempotent per chunk."""
     for row in session.exec(
         select(AboxProvenance).where(
@@ -33,7 +40,13 @@ def rebuild_for_chunk(session: Session, ks_id: int, chunk_id: int, fact_keys: li
     ).all():
         session.delete(row)
     for key in {k for k in fact_keys if k}:
-        session.add(AboxProvenance(knowledge_system_id=ks_id, fact_key=key, chunk_id=chunk_id, job_id=job_id))
+        session.add(AboxProvenance(
+            knowledge_system_id=ks_id,
+            fact_key=key,
+            chunk_id=chunk_id,
+            job_id=job_id,
+            actor_name=actor_name,
+        ))
 
 
 def sources_for(session: Session, ks_id: int, fact_keys: list[str], snippet_len: int = 240) -> dict[str, list[dict]]:
@@ -50,19 +63,31 @@ def sources_for(session: Session, ks_id: int, fact_keys: list[str], snippet_len:
     chunks = {c.id: c for c in session.exec(select(Chunk).where(Chunk.id.in_(chunk_ids))).all()} if chunk_ids else {}
     doc_ids = {c.document_id for c in chunks.values()}
     docs = {d.id: d for d in session.exec(select(Document).where(Document.id.in_(doc_ids))).all()} if doc_ids else {}
+    job_ids = {row.job_id for row in rows if row.job_id is not None}
+    jobs = {
+        job.id: job for job in session.exec(select(ExtractionJob).where(ExtractionJob.id.in_(job_ids))).all()
+    } if job_ids else {}
 
     out: dict[str, list[dict]] = {}
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, int | None, int | None]] = set()
     for r in rows:
         c = chunks.get(r.chunk_id)
-        if c is None or (r.fact_key, c.id) in seen:
+        identity = (r.fact_key, r.chunk_id, r.audit_event_id)
+        if identity in seen:
             continue
-        seen.add((r.fact_key, c.id))
-        d = docs.get(c.document_id)
+        seen.add(identity)
+        d = docs.get(c.document_id) if c else None
+        job = jobs.get(r.job_id)
         out.setdefault(r.fact_key, []).append({
-            "chunk_id": c.id,
-            "document_id": c.document_id,
+            "chunk_id": c.id if c else None,
+            "document_id": c.document_id if c else None,
             "document": d.original_filename if d else None,
-            "snippet": (c.text or "")[:snippet_len].strip(),
+            "snippet": (c.text or "")[:snippet_len].strip() if c else "",
+            "job_id": r.job_id,
+            "model": job.model if job else None,
+            "prompt_snapshot": job.prompt_snapshot if job else None,
+            "method": r.method,
+            "actor": r.actor_name or None,
+            "review": r.review_record or None,
         })
     return out

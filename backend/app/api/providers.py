@@ -1,4 +1,4 @@
-"""Model endpoints: a flat list of {name, kind, base_url, api_key, model} entries + a live test.
+"""Model endpoints: endpoint, credential, model, kind, and independent concurrency limit.
 
 Each entry bundles an OpenAI-compatible connection with a specific model and its kind
 (llm | embedding). The system default and each knowledge system just point at one llm entry + one
@@ -11,7 +11,7 @@ import time
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
 from app.config import settings
@@ -35,6 +35,7 @@ class ProviderOut(BaseModel):
     kind: str
     base_url: str
     model: str
+    concurrency_limit: int
     has_api_key: bool
     api_key_hint: str
     last_test_ok: bool | None
@@ -43,6 +44,7 @@ class ProviderOut(BaseModel):
 
 def _out(p: Provider) -> ProviderOut:
     return ProviderOut(id=p.id, name=p.name, kind=p.kind or "llm", base_url=p.base_url, model=p.model,
+                       concurrency_limit=max(1, min(64, int(p.concurrency_limit or 10))),
                        has_api_key=bool(p.api_key), api_key_hint=_mask(p.api_key),
                        last_test_ok=p.last_test_ok,
                        last_tested_at=p.last_tested_at.isoformat() if p.last_tested_at else None)
@@ -61,6 +63,7 @@ class ProviderIn(BaseModel):
     base_url: str = ""
     api_key: str = ""
     model: str = ""
+    concurrency_limit: int = Field(default=10, ge=1, le=64)
 
 
 @router.post("", response_model=ProviderOut)
@@ -69,7 +72,8 @@ def create_provider(body: ProviderIn, _: User = Depends(require_admin), session:
         raise HTTPException(status_code=400, detail="Name is required")
     kind = body.kind if body.kind in ("llm", "embedding") else "llm"
     p = Provider(name=body.name.strip(), kind=kind, base_url=body.base_url.strip(),
-                 api_key=body.api_key.strip(), model=body.model.strip())
+                 api_key=body.api_key.strip(), model=body.model.strip(),
+                 concurrency_limit=body.concurrency_limit)
     session.add(p)
     session.commit()
     session.refresh(p)
@@ -82,6 +86,7 @@ class ProviderPatch(BaseModel):
     base_url: str | None = None
     api_key: str | None = None  # None/"" = keep the stored key; a value replaces it
     model: str | None = None
+    concurrency_limit: int | None = Field(default=None, ge=1, le=64)
 
 
 @router.patch("/{pid}", response_model=ProviderOut)
@@ -100,6 +105,8 @@ def update_provider(pid: int, body: ProviderPatch, _: User = Depends(require_adm
         p.model = body.model.strip()
     if body.api_key:  # only overwrite when a new non-empty key is provided
         p.api_key = body.api_key.strip()
+    if body.concurrency_limit is not None:
+        p.concurrency_limit = body.concurrency_limit
     session.add(p)
     session.commit()
     refresh_runtime(session)  # a referenced entry's endpoint/key/model may have changed

@@ -13,6 +13,7 @@ import logging
 
 from sqlmodel import Session, select
 
+from app import prompt_config
 from app.config import settings
 from app.db.database import engine
 from app.db.models import KnowledgeSystem, ValidationDecision
@@ -53,6 +54,15 @@ Guidance: if MOST values are qualitative → relax; if only a few outliers among
 remove; if the property name implies a strict measurement but usage is mixed, prefer relax over
 losing data; when unsure → skip."""
 
+prompt_config.register(
+    key="abox.datatype_validation",
+    category="validation",
+    title="Datatype validation",
+    description="Decide whether qualitative values require a text range or should be removed as noise.",
+    default=_SYSTEM,
+    order=10,
+)
+
 
 def _decide(st: dict, model: str | None) -> dict | None:
     user = (
@@ -63,7 +73,11 @@ def _decide(st: dict, model: str | None) -> dict | None:
     )
     try:
         reply = openrouter.chat_sync(
-            [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}], model=model
+            [
+                {"role": "system", "content": prompt_config.get("abox.datatype_validation")},
+                {"role": "user", "content": user},
+            ],
+            model=model,
         )
         data = openrouter.extract_json(reply)
     except Exception as e:  # noqa: BLE001  (LLM hiccup → leave it for a human)

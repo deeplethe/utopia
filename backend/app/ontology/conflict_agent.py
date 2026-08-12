@@ -1,11 +1,9 @@
 """Agentic conflict triage.
 
-After conflict detection, an agent looks at the *auto-resolvable* TBox conflicts — duplicate
-classes and over-specialized predicates — and picks the best available resolution. When it is very
-confident it applies the resolution directly (recorded as a rollbackable ``conflict.resolve`` event
-by ``conflict-agent``); otherwise it attaches a recommendation to the conflict so a human can
-confirm with one click. Structural conflicts (cycles, disjoint contradictions) are never touched by
-the agent — those need human judgement.
+After conflict detection, an agent looks at duplicate classes and over-specialized predicates and
+picks the best available resolution. Semantic merges are lossy, so the agent only attaches a
+recommendation for human confirmation. Structural conflicts (cycles, disjoint contradictions) are
+never touched by the agent — those need human judgement.
 
 This is the conflict-queue analog of the resolution agent (which auto-resolves confident mentions
 and queues the ambiguous ones) and the reconcile agent (domain/range). Runs synchronously off the
@@ -18,6 +16,7 @@ import logging
 
 from sqlmodel import Session, select
 
+from app import prompt_config
 from app.config import settings
 from app.db.database import engine
 from app.db.models import Conflict, KnowledgeSystem, utcnow
@@ -28,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 # Conflict types the agent may triage. Structural conflicts are intentionally excluded.
 AUTO_TYPES = {"duplicate", "predicate_specialization"}
+AUTO_APPLY_TYPES: set[str] = set()
 
 _SYSTEM = """You resolve ONE ontology TBox conflict by choosing the best available resolution.
 
@@ -41,9 +41,18 @@ Guidance:
   resolution "skip".
 - Duplicate classes: merge the two only if they are truly the SAME concept (not a subtype); pick the
   direction that KEEPS the more standard/general label as the target.
-- Over-specialized predicates (e.g. 拥有井/拥有计量站): prefer merging into the general relation; only
-  make them sub-properties if the specializations carry genuinely distinct meaning; if unsure, skip.
+- Over-specialized predicates (e.g. 拥有井/拥有计量站): judge whether the relation meaning is truly
+  identical. These decisions require human confirmation even at high confidence.
 - Keep "reason" concise (<= 200 chars)."""
+
+prompt_config.register(
+    key="conflict.resolution",
+    category="review",
+    title="Conflict resolution",
+    description="Choose or recommend a safe resolution for an ontology conflict.",
+    default=_SYSTEM,
+    order=50,
+)
 
 
 def _decide(session: Session, graph_iri: str, model: str | None, c: Conflict) -> dict | None:
@@ -56,7 +65,10 @@ def _decide(session: Session, graph_iri: str, model: str | None, c: Conflict) ->
         f'Conflict type: {c.ctype}\n{c.title}: {c.detail}\n'
         f'Entities: {ents}\n\nResolutions:\n{opts}\n\nInspect if needed, then finish.'
     )
-    messages = [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}]
+    messages = [
+        {"role": "system", "content": prompt_config.get("conflict.resolution")},
+        {"role": "user", "content": user},
+    ]
     for _ in range(settings.conflict_agent_max_steps):
         try:
             reply = openrouter.chat_sync(messages, model=model)
@@ -107,7 +119,7 @@ def _resolve(session: Session, ks: KnowledgeSystem, model: str | None) -> list[s
         if not chosen:  # "skip" or an invalid id → leave for a human, untouched
             continue
 
-        if conf >= settings.conflict_auto_apply_floor:
+        if c.ctype in AUTO_APPLY_TYPES and conf >= settings.conflict_auto_apply_floor:
             abox_iri = f"{ks.graph_iri.rstrip('/')}/abox"
             try:
                 # capture the ABox too: a class/property merge retypes/repoints instance data.
@@ -142,7 +154,7 @@ def _resolve(session: Session, ks: KnowledgeSystem, model: str | None) -> list[s
                 )
             log.append(f'{c.title} → {chosen["label"]} (auto {conf:.2f})')
         else:
-            # Not confident enough to apply — attach the recommendation for a human to confirm.
+            # Low-confidence decisions and every lossy property merge require human confirmation.
             c.payload = {**c.payload, "recommendation": {"resolution_id": rid, "reason": reason, "confidence": conf}}
             session.add(c)
             log.append(f'{c.title} → recommend "{chosen["label"]}" ({conf:.2f})')

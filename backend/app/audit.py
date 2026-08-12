@@ -26,9 +26,8 @@ def record(
     removed: bytes | None = None,
     graph: str | None = None,
     group_id: str | None = None,
-) -> None:
-    session.add(
-        AuditEvent(
+) -> AuditEvent:
+    event = AuditEvent(
             knowledge_system_id=ks_id,
             actor_id=actor_id,
             actor_name=actor_name or "system",
@@ -40,5 +39,7 @@ def record(
             added=gzip.compress(added) if added else None,
             removed=gzip.compress(removed) if removed else None,
         )
-    )
+    session.add(event)
     session.commit()
+    session.refresh(event)
+    return event

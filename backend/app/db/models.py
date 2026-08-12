@@ -1,4 +1,4 @@
-"""SQLite metadata models (SQLModel).
+"""Relational metadata models (SQLModel; PostgreSQL or local SQLite).
 
 These tables hold *metadata only* — the raw file bytes live in the content-addressed
 blob store, and the ontology triples live in the Oxigraph RDF store. Everything here
@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
-from sqlalchemy import JSON, Column, LargeBinary, Text
+from sqlalchemy import JSON, Column, LargeBinary, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -108,6 +109,7 @@ class KnowledgeSystem(SQLModel, table=True):
     """A named ontology graph. Maps to one named graph (IRI) in the Oxigraph store."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    public_id: str = Field(default_factory=lambda: uuid4().hex, index=True, unique=True)
     name: str = Field(index=True)
     description: str = Field(default="", sa_column=Column(Text))
     owner_id: Optional[int] = Field(default=None, index=True, foreign_key="user.id")
@@ -129,6 +131,69 @@ class KnowledgeSystem(SQLModel, table=True):
     embedding_model: Optional[str] = None
 
 
+class KnowledgePromptOverride(SQLModel, table=True):
+    """Per-knowledge-system override for one registered model instruction prompt."""
+
+    __table_args__ = (
+        UniqueConstraint(
+            "knowledge_system_id",
+            "prompt_key",
+            name="uq_knowledge_prompt_override",
+        ),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    prompt_key: str = Field(index=True)
+    content: str = Field(sa_column=Column(Text))
+    updated_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    updated_by_name: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class KnowledgeApiToken(SQLModel, table=True):
+    """A revocable machine credential scoped to exactly one knowledge system.
+
+    Authentication uses the SHA-256 hash. New tokens also keep an encrypted copy so the owner can
+    explicitly reveal the credential again; legacy hash-only tokens remain non-recoverable.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    name: str = Field(index=True)
+    token_prefix: str
+    token_hash: str = Field(index=True, unique=True)
+    secret_ciphertext: Optional[str] = Field(default=None, sa_column=Column(Text))
+    scopes: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    created_by: Optional[int] = Field(default=None, foreign_key="user.id")
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: Optional[datetime] = None
+    last_used_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+
+
+class McpUserToken(SQLModel, table=True):
+    """Revocable user credential for the MCP transport, bound to one knowledge system.
+
+    The bearer secret is never stored. MCP tools resolve this row back to an active user and
+    re-evaluate the user's current KS role on every call, so membership changes take effect
+    immediately instead of being frozen into a long-lived token.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    user_id: int = Field(index=True, foreign_key="user.id")
+    name: str = Field(index=True)
+    token_prefix: str
+    token_hash: str = Field(index=True, unique=True)
+    scopes: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: datetime = Field(default_factory=utcnow)
+    last_used_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+
+
 class Provider(SQLModel, table=True):
     """One model endpoint entry: an OpenAI-compatible connection (base_url + api_key) bundled with a
     specific model and its kind (llm | embedding). A flat list of these is the whole config surface;
@@ -141,6 +206,7 @@ class Provider(SQLModel, table=True):
     api_key: str = ""
     model: str = ""
     kind: str = Field(default="llm")  # "llm" | "embedding"
+    concurrency_limit: int = Field(default=10, ge=1, le=64)
     last_test_ok: Optional[bool] = None       # result of the most recent connection test (persisted)
     last_tested_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=utcnow)
@@ -157,6 +223,8 @@ class SystemConfig(SQLModel, table=True):
     embedding_model: Optional[str] = None      # default embedding model; None -> settings.embedding_model
     llm_provider_id: Optional[int] = Field(default=None, foreign_key="provider.id")
     embedding_provider_id: Optional[int] = Field(default=None, foreign_key="provider.id")
+    # Legacy global limit retained only to migrate pre-provider-limit installations.
+    extraction_concurrency: Optional[int] = None
     # Legacy (pre-Provider) single-connection fields; seeded into the "Default" provider on upgrade.
     base_url: Optional[str] = None
     api_key: Optional[str] = None
@@ -174,6 +242,9 @@ class ExtractionJob(SQLModel, table=True):
     kind: str = Field(default="tbox", index=True)  # tbox | abox
     status: str = Field(default="pending", index=True)  # pending|running|completed|failed
     model: str = ""
+    # Immutable effective prompt contents used by this run. Provenance rows link to the job,
+    # making the exact model instructions recoverable even after a per-KS prompt is edited.
+    prompt_snapshot: dict = Field(default_factory=dict, sa_column=Column(JSON))
     chunk_ids: list[int] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
     finished_at: Optional[datetime] = None
@@ -196,6 +267,12 @@ class ExtractionJob(SQLModel, table=True):
     # Class labels the instance extractor referenced that don't exist in the TBox yet
     # ({label: times_seen}) — surfaced as "add these to your ontology" suggestions.
     unknown_classes: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    # Automatic terminology stage metrics.
+    phase: str = Field(default="", index=True)  # tbox | abox | terminology | finalizing
+    terms_added: int = 0
+    terms_mapped: int = 0
+    terminology_proposals: int = 0
+    terminology_error: Optional[str] = None
 
 
 class AxiomProvenance(SQLModel, table=True):
@@ -206,6 +283,10 @@ class AxiomProvenance(SQLModel, table=True):
     axiom_key: str = Field(index=True)  # canonical string, e.g. "subClassOf|dog|animal"
     chunk_id: Optional[int] = Field(default=None, foreign_key="chunk.id")
     job_id: Optional[int] = Field(default=None, foreign_key="extractionjob.id")
+    method: str = "extraction"
+    actor_name: str = ""
+    audit_event_id: Optional[int] = Field(default=None, foreign_key="auditevent.id")
+    review_record: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -220,6 +301,10 @@ class AboxProvenance(SQLModel, table=True):
     fact_key: str = Field(index=True)
     chunk_id: Optional[int] = Field(default=None, foreign_key="chunk.id")
     job_id: Optional[int] = Field(default=None, foreign_key="extractionjob.id")
+    method: str = "extraction"
+    actor_name: str = ""
+    audit_event_id: Optional[int] = Field(default=None, foreign_key="auditevent.id")
+    review_record: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -250,6 +335,88 @@ class AuditEvent(SQLModel, table=True):
     added: Optional[bytes] = Field(default=None, sa_column=Column(LargeBinary))
     removed: Optional[bytes] = Field(default=None, sa_column=Column(LargeBinary))
     created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class OntologyRelease(SQLModel, table=True):
+    """Immutable snapshot of the three governed layers for a knowledge system."""
+
+    __table_args__ = (
+        UniqueConstraint("knowledge_system_id", "version", name="uq_ontology_release_version"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    # Internal ``draft-<id>`` before publication; assigned a public version at publish time.
+    version: str = Field(index=True)
+    status: str = Field(default="draft", index=True)  # draft | reviewed | published | deleted
+    title: str = ""
+    notes: str = Field(default="", sa_column=Column(Text))
+    snapshot_dir: str = ""
+    manifest: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    created_by_name: str = ""
+    reviewed_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    reviewed_by_name: str = ""
+    published_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    published_by_name: str = ""
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    reviewed_at: Optional[datetime] = None
+    published_at: Optional[datetime] = None
+
+
+class ReleaseDeployment(SQLModel, table=True):
+    """Queryable read-only projection of one published release."""
+
+    __table_args__ = (
+        UniqueConstraint("release_id", name="uq_release_deployment_release"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    release_id: int = Field(index=True, foreign_key="ontologyrelease.id")
+    status: str = Field(default="provisioning", index=True)  # provisioning | active | stopping | stopped | failed
+    tbox_graph_iri: str = ""
+    vocabulary_graph_iri: str = ""
+    abox_graph_iri: str = ""
+    statement_count: int = 0
+    provenance_count: int = 0
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    activated_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+
+
+class ReleaseStatementProvenance(SQLModel, table=True):
+    """Release-fixed provenance index used by immutable service endpoints."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    release_id: int = Field(index=True, foreign_key="ontologyrelease.id")
+    layer: str = Field(index=True)  # tbox | abox
+    statement_key: str = Field(sa_column=Column(Text, index=True))
+    payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+
+class ExportJob(SQLModel, table=True):
+    """Asynchronous, stream-written export of one layer or a complete release bundle."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    release_id: Optional[int] = Field(default=None, index=True, foreign_key="ontologyrelease.id")
+    layer: str = Field(index=True)  # tbox | vocabulary | abox | bundle
+    format: str = "nquads"
+    status: str = Field(default="pending", index=True)  # pending | running | completed | failed
+    shard_size: int = 100_000
+    processed_statements: int = 0
+    total_statements: int = 0
+    output_dir: str = ""
+    files: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    created_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    created_by_name: str = ""
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
 
 
 class Conflict(SQLModel, table=True):
@@ -301,6 +468,34 @@ class EntityResolution(SQLModel, table=True):
     resolved_by: Optional[str] = None  # "agent" or a username
     source_chunk_id: Optional[int] = Field(default=None, foreign_key="chunk.id")
     context: dict = Field(default_factory=dict, sa_column=Column(JSON))  # candidates, evidence, notes
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    resolved_at: Optional[datetime] = None
+
+
+class TermProposal(SQLModel, table=True):
+    """Human-in-the-loop terminology governance proposal.
+
+    Approved terminology lives as SKOS RDF in the knowledge system's vocabulary graph. This
+    table stores only the review workflow and learned decision memory: what an agent proposed,
+    why, which evidence supported it, and how a human resolved it.
+    """
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    signature: str = Field(index=True)
+    action: str = Field(index=True)  # create | add_alias | update
+    term: str = Field(default="", index=True)
+    target_iri: Optional[str] = Field(default=None, index=True)
+    status: str = Field(default="pending", index=True)  # pending | accepted | rejected
+    payload: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    confidence: Optional[float] = None
+    reason: Optional[str] = Field(default=None, sa_column=Column(Text))
+    evidence: list = Field(default_factory=list, sa_column=Column(JSON))
+    source_chunk_ids: list = Field(default_factory=list, sa_column=Column(JSON))
+    extraction_job_id: Optional[int] = Field(default=None, index=True, foreign_key="extractionjob.id")
+    proposed_by: str = "terminology-agent"
+    resolved_by: Optional[str] = None
+    resolution_note: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utcnow, index=True)
     resolved_at: Optional[datetime] = None
 

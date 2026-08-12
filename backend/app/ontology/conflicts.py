@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 
 from pyoxigraph import BlankNode
 
+from app import prompt_config
 from app.config import settings
+from app.llm import openrouter
 from app.ontology import store
 from app.ontology.schema import _local
 
@@ -33,12 +35,32 @@ from app.ontology.vocab import (
     OWL_DISJOINT_WITH,
     OWL_EQUIVALENT_CLASS,
     OWL_OBJECT_PROPERTY,
+    OWL_UNION_OF,
+    RDF_FIRST,
+    RDF_NIL,
+    RDF_REST,
     RDF_TYPE,
     RDFS_DOMAIN,
     RDFS_LABEL,
     RDFS_RANGE,
     RDFS_SUBCLASSOF,
     norm_label,
+)
+
+_DUPLICATE_SYSTEM = (
+    "You compare pairs of class labels from ONE ontology. For each pair decide whether "
+    "the two labels are SYNONYMS naming the SAME class (should be merged) or DIFFERENT "
+    "classes. Treat siblings, part-of, general-vs-specific and merely-related terms as "
+    "DIFFERENT. Be conservative: answer SAME only for genuinely interchangeable names."
+)
+
+prompt_config.register(
+    key="conflict.duplicate_judge",
+    category="review",
+    title="Semantic duplicate judge",
+    description="Judge whether similar class labels are true synonyms that should be merged.",
+    default=_DUPLICATE_SYSTEM,
+    order=40,
 )
 
 DUP_THRESHOLD = 0.86
@@ -69,6 +91,45 @@ def _common_suffix(a: str, b: str) -> str:
     return a[len(a) - i:] if i else ""
 
 
+_UNINFORMATIVE_LATIN_STEMS = {
+    "be", "is", "are", "was", "were", "has", "have", "had", "with",
+}
+
+
+def _specialization_stem(property_label: str, range_label: str) -> str | None:
+    """Return a meaningful relation stem when the range name is a complete suffix.
+
+    Latin labels are matched by normalized tokens rather than raw characters.  The old
+    character suffix check treated ``has taint`` / ``Taint`` as stem ``has t`` because the
+    initial letter differed in case, and then grouped unrelated properties by that fragment.
+    CJK compounds keep the character-based behavior because a one-character range such as
+    ``井`` can legitimately be baked into a predicate such as ``拥有井``.
+    """
+    property_norm = norm_label(property_label)
+    range_norm = norm_label(range_label)
+    if not property_norm or not range_norm:
+        return None
+
+    property_tokens = property_norm.split()
+    range_tokens = range_norm.split()
+    latin_like = any(char.isascii() and char.isalpha() for char in property_norm + range_norm)
+    if latin_like:
+        if len(property_tokens) <= len(range_tokens):
+            return None
+        if property_tokens[-len(range_tokens):] != range_tokens:
+            return None
+        stem = " ".join(property_tokens[:-len(range_tokens)]).strip()
+        if stem in _UNINFORMATIVE_LATIN_STEMS:
+            return None
+        return stem or None
+
+    suffix = _common_suffix(property_norm, range_norm)
+    if not suffix or suffix != range_norm:
+        return None
+    stem = property_norm[:-len(suffix)].strip()
+    return stem if len(stem) >= 2 else None
+
+
 @dataclass
 class DetectedConflict:
     signature: str
@@ -85,6 +146,7 @@ class _GraphModel:
     classes: set[str] = field(default_factory=set)
     labels: dict[str, str] = field(default_factory=dict)
     props: dict[str, dict] = field(default_factory=dict)  # iri -> {kind, domains:set, ranges:set}
+    unions: dict[str, tuple[str, ...]] = field(default_factory=dict)
     subclass: list[tuple[str, str]] = field(default_factory=list)  # (sub, super)
     disjoint: set[frozenset] = field(default_factory=set)
     equivalent: set[frozenset] = field(default_factory=set)
@@ -92,6 +154,9 @@ class _GraphModel:
 
 def _read(graph_iri: str) -> _GraphModel:
     m = _GraphModel()
+    union_heads: dict[str, str] = {}
+    list_first: dict[str, str] = {}
+    list_rest: dict[str, str] = {}
     for s, p, o in store.read_triples(graph_iri):
         si, pi = s.value, p.value
         if pi == RDF_TYPE.value:
@@ -114,15 +179,47 @@ def _read(graph_iri: str) -> _GraphModel:
             m.disjoint.add(frozenset((si, o.value)))
         elif pi == OWL_EQUIVALENT_CLASS.value:
             m.equivalent.add(frozenset((si, o.value)))
+        elif pi == OWL_UNION_OF.value:
+            union_heads[si] = o.value
+        elif pi == RDF_FIRST.value:
+            list_first[si] = o.value
+        elif pi == RDF_REST.value:
+            list_rest[si] = o.value
+    for union_iri, head in union_heads.items():
+        members: list[str] = []
+        current = head
+        guard = 0
+        while current and current != RDF_NIL.value and guard < 1000:
+            member = list_first.get(current)
+            if member:
+                members.append(member)
+            current = list_rest.get(current)
+            guard += 1
+        if members:
+            m.unions[union_iri] = tuple(members)
     return m
 
 
 def _lbl(m: _GraphModel, iri: str) -> str:
+    if iri in m.unions:
+        return " ∪ ".join(_lbl(m, member) for member in m.unions[iri])
     return m.labels.get(iri) or _local(iri)
 
 
 def _ent(m: _GraphModel, iri: str) -> dict:
     return {"iri": iri, "label": _lbl(m, iri)}
+
+
+def _concrete_values(m: _GraphModel, values: list[str] | set[str]) -> list[str]:
+    concrete: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        members = m.unions.get(value, (value,))
+        for member in members:
+            if member not in seen:
+                seen.add(member)
+                concrete.append(member)
+    return concrete
 
 
 def _ancestors(subclass: list[tuple[str, str]]) -> dict[str, set[str]]:
@@ -191,32 +288,17 @@ def _llm_verify_duplicates(pairs: list[tuple[str, str]]) -> set[int]:
     SAME concept. Fail-closed (empty set on any error) so a flaky call adds no noise."""
     if not pairs:
         return set()
-    import httpx
-
-    from app.llm import openrouter
-
     lines = "\n".join(f'{i}. "{a}" | "{b}"' for i, (a, b) in enumerate(pairs))
-    system = (
-        "You compare pairs of class labels from ONE ontology. For each pair decide whether "
-        "the two labels are SYNONYMS naming the SAME class (should be merged) or DIFFERENT "
-        "classes. Treat siblings, part-of, general-vs-specific and merely-related terms as "
-        "DIFFERENT. Be conservative: answer SAME only for genuinely interchangeable names."
-    )
     user = f'Pairs:\n{lines}\n\nReturn ONLY JSON: {{"same": [indices that are synonyms]}}.'
     try:
-        url = settings.openrouter_base_url.rstrip("/") + "/chat/completions"
-        resp = httpx.post(
-            url,
-            headers={"Authorization": f"Bearer {settings.openrouter_api_key}",
-                     "Content-Type": "application/json"},
-            json={"model": settings.llm_extract_model,
-                  "messages": [{"role": "system", "content": system},
-                               {"role": "user", "content": user}],
-                  "temperature": 0, "max_tokens": 500},
-            timeout=settings.llm_timeout_s,
+        content = openrouter.chat_sync(
+            [
+                {"role": "system", "content": prompt_config.get("conflict.duplicate_judge")},
+                {"role": "user", "content": user},
+            ],
+            temperature=0,
+            max_tokens=500,
         )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
         data = openrouter.extract_json(content)
         same = data.get("same", []) if isinstance(data, dict) else []
         return {int(i) for i in same if str(i).lstrip("-").isdigit()}
@@ -349,16 +431,29 @@ def detect(graph_iri: str, *, semantic: bool = True) -> list[DetectedConflict]:
                 continue
             ctype = "domain_multi" if slot == "domain" else "range_multi"
             slot_cn = "domain" if slot == "domain" else "range"
-            res = [{
-                "id": f"keep-{_local(v)}",
-                "label": f"Keep only {slot_cn} = {_lbl(m, v)}",
-                "op": {"op": "update_property", "iri": iri, slot: v},
-            } for v in vals]
+            concrete_vals = _concrete_values(m, vals)
+            res = []
+            for value in vals:
+                operation = (
+                    {
+                        "op": "set_property_union",
+                        "iri": iri,
+                        "slot": slot,
+                        "members": list(m.unions[value]),
+                    }
+                    if value in m.unions
+                    else {"op": "update_property", "iri": iri, slot: value}
+                )
+                res.append({
+                    "id": f"keep-{_local(value)}",
+                    "label": f"Keep only {slot_cn} = {_lbl(m, value)}",
+                    "op": operation,
+                })
 
             # For class-valued slots (not XSD datatypes), offer semantically better fixes:
             # collapse to a shared superclass if one exists, or an owl:unionOf.
-            if all("XMLSchema#" not in v for v in vals):
-                common = set.intersection(*[anc.get(v, set()) for v in vals])
+            if all("XMLSchema#" not in value for value in concrete_vals):
+                common = set.intersection(*[anc.get(value, set()) for value in concrete_vals])
                 if common:
                     s_super = max(common, key=lambda s: len(anc.get(s, set())))
                     res.append({
@@ -368,8 +463,13 @@ def detect(graph_iri: str, *, semantic: bool = True) -> list[DetectedConflict]:
                     })
                 res.append({
                     "id": "union",
-                    "label": f"Use union {slot_cn} ({' ∪ '.join(_lbl(m, v) for v in vals)})",
-                    "op": {"op": "set_property_union", "iri": iri, "slot": slot, "members": vals},
+                    "label": f"Use union {slot_cn} ({' ∪ '.join(_lbl(m, value) for value in concrete_vals)})",
+                    "op": {
+                        "op": "set_property_union",
+                        "iri": iri,
+                        "slot": slot,
+                        "members": concrete_vals,
+                    },
                 })
 
             push(DetectedConflict(
@@ -394,10 +494,11 @@ def detect(graph_iri: str, *, semantic: bool = True) -> list[DetectedConflict]:
         label = _lbl(m, iri)
         best_stem, best_len = None, 0
         for r in d["ranges"]:
-            sfx = _common_suffix(label, _lbl(m, r))
-            if len(sfx) > best_len and len(label) - len(sfx) >= 2:  # leaves a ≥2-char verb stem
-                best_stem, best_len = label[: len(label) - len(sfx)].strip(), len(sfx)
-        if best_stem and len(best_stem) >= 2:
+            range_label = _lbl(m, r)
+            stem = _specialization_stem(label, range_label)
+            if stem and len(norm_label(range_label)) > best_len:
+                best_stem, best_len = stem, len(norm_label(range_label))
+        if best_stem:
             stem_of[iri] = best_stem
     families: dict[str, list[str]] = {}
     for iri, stem in stem_of.items():

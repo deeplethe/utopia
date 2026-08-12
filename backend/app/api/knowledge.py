@@ -11,11 +11,14 @@ from app import audit
 from app.db.database import get_session
 from app.db.models import (
     AboxProvenance, AuditEvent, AxiomProvenance, Chunk, Conflict, Document, EntityResolution,
-    ExtractionJob, KnowledgeSystem, KSGrant, TboxReconciliation, User, ValidationDecision, utcnow,
+    ExportJob, ExtractionJob, KnowledgeApiToken, KnowledgePromptOverride, KnowledgeSystem, KSGrant,
+    McpUserToken,
+    OntologyRelease, ReleaseDeployment, ReleaseStatementProvenance, TboxReconciliation, User,
+    TermProposal, ValidationDecision, utcnow,
 )
 from app.permissions import accessible_ks_ids, effective_role, ks_owner, ks_reader, ks_writer
 from app.security import current_user
-from app.ontology import abox_validate, retrieval, schema, store
+from app.ontology import abox_validate, release_service, retrieval, schema, store
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -35,6 +38,7 @@ class KSOut(BaseModel):
     gate write/manage controls without re-deriving permissions client-side."""
 
     id: int
+    public_id: str
     name: str
     description: str
     owner_id: int | None
@@ -54,7 +58,7 @@ class KSOut(BaseModel):
 
 def ks_out(session: Session, ks: KnowledgeSystem, user: User) -> KSOut:
     return KSOut(
-        id=ks.id, name=ks.name, description=ks.description, owner_id=ks.owner_id,
+        id=ks.id, public_id=ks.public_id, name=ks.name, description=ks.description, owner_id=ks.owner_id,
         graph_iri=ks.graph_iri, base_iri=ks.base_iri,
         created_at=ks.created_at, updated_at=ks.updated_at,
         class_count=ks.class_count, property_count=ks.property_count, axiom_count=ks.axiom_count,
@@ -133,7 +137,7 @@ def review_counts(
     ks: KnowledgeSystem = Depends(ks_reader), session: Session = Depends(get_session),
 ) -> dict:
     """Pending-item counts for the Review sidebar badges: open conflicts, the entity-resolution
-    queue, and current ABox validation violations."""
+    queue, terminology proposals, and current ABox validation violations."""
     from sqlalchemy import func
 
     conflicts = session.exec(
@@ -143,13 +147,22 @@ def review_counts(
         select(func.count(EntityResolution.id)).where(
             EntityResolution.knowledge_system_id == ks.id, EntityResolution.status == "pending")
     ).one()
+    terminology = session.exec(
+        select(func.count(TermProposal.id)).where(
+            TermProposal.knowledge_system_id == ks.id, TermProposal.status == "pending")
+    ).one()
     try:
         v = abox_validate.validate(ks.graph_iri, f"{GRAPH_ROOT}/{ks.id}/abox")
         validation = v["counts"]["error"] + v["counts"]["warning"]
     except Exception:  # noqa: BLE001  (never let a badge break the sidebar)
         validation = 0
-    return {"conflicts": conflicts, "resolution": resolution, "validation": validation,
-            "total": conflicts + resolution + validation}
+    return {
+        "conflicts": conflicts,
+        "resolution": resolution,
+        "terminology": terminology,
+        "validation": validation,
+        "total": conflicts + resolution + terminology + validation,
+    }
 
 
 @router.patch("/{ks_id}", response_model=KSOut)
@@ -190,11 +203,27 @@ def delete_ks(ks: KnowledgeSystem = Depends(ks_owner), session: Session = Depend
     from app.storage import blobstore
 
     ks_id = ks.id
-    # Both RDF graphs: the TBox (graph_iri) and the ABox (.../{id}/abox).
+    # All RDF graphs: TBox, ABox, and the SKOS controlled-vocabulary graph.
     if ks.graph_iri:
         store.clear_graph(ks.graph_iri)
         retrieval.invalidate(ks.graph_iri)  # drop cached entity vectors so a reused id can't inherit them
     store.clear_graph(f"{GRAPH_ROOT}/{ks_id}/abox")
+    store.clear_graph(f"{GRAPH_ROOT}/{ks_id}/vocabulary")
+    deployments = session.exec(
+        select(ReleaseDeployment).where(ReleaseDeployment.knowledge_system_id == ks_id)
+    ).all()
+    with store.use_store(release_service.get_store()):
+        from pyoxigraph import NamedNode
+
+        serving_store = store.get_store()
+        for deployment in deployments:
+            for graph_iri in (
+                deployment.tbox_graph_iri,
+                deployment.vocabulary_graph_iri,
+                deployment.abox_graph_iri,
+            ):
+                if graph_iri:
+                    serving_store.clear_graph(NamedNode(graph_iri))
 
     # Documents + chunks + content-addressed blobs (blob removed only if unreferenced elsewhere).
     docs = session.exec(select(Document).where(Document.knowledge_system_id == ks_id)).all()
@@ -211,13 +240,21 @@ def delete_ks(ks: KnowledgeSystem = Depends(ks_owner), session: Session = Depend
             blobstore.delete(storage_path)
 
     # All per-KS SQL rows.
-    for model in (AxiomProvenance, AboxProvenance, ExtractionJob, KSGrant, EntityResolution, Conflict, AuditEvent,
+    for model in (AxiomProvenance, AboxProvenance, ReleaseStatementProvenance, ReleaseDeployment,
+                  ExportJob, OntologyRelease, ExtractionJob, KSGrant, KnowledgeApiToken, McpUserToken,
+                  KnowledgePromptOverride, EntityResolution, TermProposal, Conflict, AuditEvent,
                   TboxReconciliation, ValidationDecision):
         for row in session.exec(select(model).where(model.knowledge_system_id == ks_id)).all():
             session.delete(row)
 
     session.delete(ks)
     session.commit()
+    import shutil
+    from app.config import settings
+
+    for root in (settings.release_dir / ks.public_id, settings.export_dir / ks.public_id):
+        if root.exists():
+            shutil.rmtree(root)
     return {"deleted": ks_id}
 
 

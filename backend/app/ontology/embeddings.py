@@ -25,6 +25,7 @@ def embed(texts: list[str]):
     if (not settings.enable_semantic_conflicts and not settings.agentic_resolution) or not texts:
         return None
     from app import model_config  # effective (base_url, key, model) for embeddings
+    from app.llm import capacity
 
     base_url, key, emodel = model_config.embed_conn()
     if not key:
@@ -35,12 +36,15 @@ def embed(texts: list[str]):
         import numpy as np
 
         url = base_url.rstrip("/") + "/embeddings"
-        resp = httpx.post(
-            url,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            json={"model": emodel, "input": texts},
-            timeout=settings.llm_timeout_s,
-        )
+        with capacity.sync_slot(
+            model_config.embedding_capacity_key(), model_config.embedding_concurrency(),
+        ):
+            resp = httpx.post(
+                url,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": emodel, "input": texts},
+                timeout=settings.llm_timeout_s,
+            )
         resp.raise_for_status()
         data = resp.json()["data"]
 

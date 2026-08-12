@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react"
 import { toast } from "sonner"
 import { Loader2, Sparkles } from "lucide-react"
 import { api } from "@/lib/api"
+import { useI18n } from "@/lib/i18n"
 import type { Chunk, DocumentMeta, ExtractionJob } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -20,12 +21,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 const SYS_MODEL = "__default__" // use the knowledge system's configured model
 
 type Mode = "tbox" | "abox" | "both"
-
-const MODE_LABEL: Record<Mode, string> = {
-  tbox: "Schema only (TBox)",
-  abox: "Instances only (ABox)",
-  both: "Schema + Instances",
-}
 
 export default function ExtractDialog({
   ksId,
@@ -46,6 +41,10 @@ export default function ExtractDialog({
   /** Opened from a document row: pre-select that doc and check all its chunks. */
   presetDocId?: number
 }) {
+  const { t } = useI18n()
+  const modeLabel: Record<Mode, string> = {
+    tbox: t("extract.mode.tbox"), abox: t("extract.mode.abox"), both: t("extract.mode.both"),
+  }
   const [activeMode, setActiveMode] = useState<Mode>(mode)
   const [docs, setDocs] = useState<DocumentMeta[]>([])
   const [docId, setDocId] = useState<number | null>(null)
@@ -65,21 +64,21 @@ export default function ExtractDialog({
       setDocId(presetDocId)
       api.getChunks(ksId, presetDocId)
         .then((cs) => { setChunks(cs); setSelected(new Set(cs.map((c) => c.id))) })
-        .catch((e) => toast.error(`Failed to load chunks: ${(e as Error).message}`))
+        .catch((e) => toast.error(t("extract.loadChunksFailed", { error: (e as Error).message })))
     } else {
       setDocId(null)
       setChunks([])
       setSelected(new Set())
     }
-  }, [open, mode, presetDocId, ksId])
+  }, [open, mode, presetDocId, ksId, t])
 
   useEffect(() => {
     if (!open) return
     api.listDocuments(ksId)
       .then((all) => setDocs(all.filter((d) => d.parse_status === "parsed" && d.chunk_count > 0)))
-      .catch((e) => toast.error(`Failed to load documents: ${(e as Error).message}`))
+      .catch((e) => toast.error(t("extract.loadDocumentsFailed", { error: (e as Error).message })))
     api.getModels().then((m) => setModels(m.models)).catch(() => {})
-  }, [open, ksId])
+  }, [open, ksId, t])
 
   const selectDoc = useCallback(async (id: number) => {
     setDocId(id)
@@ -87,14 +86,15 @@ export default function ExtractDialog({
     try {
       setChunks(await api.getChunks(ksId, id))
     } catch (e) {
-      toast.error(`Failed to load chunks: ${(e as Error).message}`)
+      toast.error(t("extract.loadChunksFailed", { error: (e as Error).message }))
     }
-  }, [ksId])
+  }, [ksId, t])
 
   const toggle = (id: number) =>
     setSelected((prev) => {
       const next = new Set(prev)
-      next.has(id) ? next.delete(id) : next.add(id)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
       return next
     })
 
@@ -113,66 +113,66 @@ export default function ExtractDialog({
         : activeMode === "both"
           ? await api.extractAll(ksId, ids, m)
           : await api.runExtraction(ksId, ids, m)
-      toast.info(`Extraction started, processing ${ids.length} chunks in the background…`)
+      toast.info(t("extract.started", { count: ids.length }))
       onStarted(job)
       onOpenChange(false)
     } catch (e) {
-      toast.error(`Failed to start extraction: ${(e as Error).message}`)
+      toast.error(t("extract.startFailed", { error: (e as Error).message }))
     } finally {
       setRunning(false)
     }
-  }, [selected, chunks, ksId, model, activeMode, onStarted, onOpenChange])
+  }, [selected, chunks, ksId, model, activeMode, onStarted, onOpenChange, t])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Extract from Documents</DialogTitle>
+          <DialogTitle>{t("extract.title")}</DialogTitle>
           <DialogDescription>
             {activeMode === "abox"
-              ? "An LLM extracts specific individuals typed by this ontology's classes, resolving each against existing instances (ambiguous ones go to the resolution queue)."
+              ? t("extract.description.abox")
               : activeMode === "both"
-                ? "An LLM first extracts the schema (TBox), then the specific individuals (ABox) that fit it — in one run."
-                : "An LLM extracts the ontology schema (classes, properties, axioms) and merges it into this knowledge system."}
+                ? t("extract.description.both")
+                : t("extract.description.tbox")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           {selectableModes && selectableModes.length > 1 && (
             <div className="space-y-1.5">
-              <Label className="text-xs">What to extract</Label>
+              <Label className="text-xs">{t("extract.what")}</Label>
               <Select value={activeMode} onValueChange={(v) => setActiveMode(v as Mode)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {selectableModes.map((m) => <SelectItem key={m} value={m}>{MODE_LABEL[m]}</SelectItem>)}
+                  {selectableModes.map((m) => <SelectItem key={m} value={m}>{modeLabel[m]}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
             <div className="min-w-0 space-y-1.5">
-              <Label className="text-xs">Document</Label>
+              <Label className="text-xs">{t("extract.document")}</Label>
               <Select value={docId ? String(docId) : ""} onValueChange={(v) => selectDoc(Number(v))}>
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select a parsed document" />
+                  <SelectValue placeholder={t("extract.selectDocument")} />
                 </SelectTrigger>
                 <SelectContent>
                   {docs.map((d) => (
                     <SelectItem key={d.id} value={String(d.id)}>
-                      {d.original_filename} ({d.chunk_count} chunks)
+                      {t("extract.documentOption", { name: d.original_filename, count: d.chunk_count })}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
             <div className="min-w-0 space-y-1.5">
-              <Label className="text-xs">Model</Label>
+              <Label className="text-xs">{t("extract.model")}</Label>
               <Select value={model} onValueChange={setModel}>
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={SYS_MODEL}>System default</SelectItem>
+                  <SelectItem value={SYS_MODEL}>{t("common.systemDefault")}</SelectItem>
                   {models.map((m) => (
                     <SelectItem key={m} value={m}>{m}</SelectItem>
                   ))}
@@ -183,7 +183,7 @@ export default function ExtractDialog({
 
           {docs.length === 0 && (
             <p className="text-sm text-muted-foreground">
-              This knowledge system has no parsed documents yet. Upload and parse them in the Documents tab first.
+              {t("extract.noDocuments")}
             </p>
           )}
 
@@ -192,7 +192,7 @@ export default function ExtractDialog({
               <div className="flex items-center gap-2 border-b px-3 py-2">
                 <Checkbox checked={allSelected} onCheckedChange={toggleAll} id="all" />
                 <Label htmlFor="all" className="text-xs font-medium">
-                  Select all ({selected.size}/{chunks.length} selected)
+                  {t("extract.selectAll", { selected: selected.size, total: chunks.length })}
                 </Label>
               </div>
               <ScrollArea className="h-64">
@@ -201,7 +201,7 @@ export default function ExtractDialog({
                     <label key={c.id} className="flex cursor-pointer items-start gap-2 px-3 py-2 hover:bg-muted/50">
                       <Checkbox checked={selected.has(c.id)} onCheckedChange={() => toggle(c.id)} className="mt-0.5" />
                       <div className="min-w-0">
-                        <div className="text-[10px] text-muted-foreground">#{c.idx} · ~{c.token_estimate} tokens</div>
+                        <div className="text-[10px] text-muted-foreground">{t("extract.chunkStats", { index: c.idx, tokens: c.token_estimate })}</div>
                         <div className="line-clamp-2 text-xs">{c.text}</div>
                       </div>
                     </label>
@@ -213,10 +213,10 @@ export default function ExtractDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>{t("common.cancel")}</Button>
           <Button onClick={run} disabled={running || selected.size === 0}>
             {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-            Extract {selected.size > 0 ? `(${selected.size})` : ""}
+            {t("extract.action")} {selected.size > 0 ? `(${selected.size})` : ""}
           </Button>
         </DialogFooter>
       </DialogContent>
