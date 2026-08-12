@@ -30,8 +30,6 @@ DEFAULT_GOLD = (
 )
 DEFAULT_MODELS = ("qwen/qwen3-8b", "deepseek/deepseek-chat")
 DEFAULT_RETRIEVER = "qwen/qwen3-embedding-8b"
-PUBLISHED_SAME_MODEL_F1 = 0.186
-PUBLISHED_BEST_LISTED_F1 = 0.250
 T_CRITICAL_95 = {
     1: 12.706,
     2: 4.303,
@@ -181,9 +179,8 @@ def completed_runs(
                 "result_path": str(result_path.resolve()),
                 "models": {
                     model: {
-                        "official_precision": result["models"][model]["official"]["precision"],
-                        "official_recall": result["models"][model]["official"]["recall"],
-                        "official_f1": result["models"][model]["official"]["f1_score"],
+                        "deduplicated_precision": result["models"][model]["deduplicated"]["precision"],
+                        "deduplicated_recall": result["models"][model]["deduplicated"]["recall"],
                         "deduplicated_f1": result["models"][model]["deduplicated"]["f1_score"],
                         "yes": result["models"][model]["answers"].get("yes", 0),
                         "invalid": result["models"][model]["answers"].get("invalid", 0),
@@ -204,38 +201,18 @@ def build_aggregate(
     runs = completed_runs(run_root, repeats, models, config.get("prompt_profile", "official"))
     model_stats: dict[str, Any] = {}
     for model in models:
-        official_values = [row["models"][model]["official_f1"] for row in runs]
         deduplicated_values = [row["models"][model]["deduplicated_f1"] for row in runs]
         model_stats[model] = {
-            "official_f1": summarize(official_values),
             "deduplicated_f1": summarize(deduplicated_values),
         }
 
     complete = len(runs) == repeats
     primary_model = "qwen/qwen3-8b" if "qwen/qwen3-8b" in models else models[0]
-    primary = model_stats[primary_model]["official_f1"]
-    ci_low = primary["ci95_low"]
-    all_above_same_model = complete and all(value > PUBLISHED_SAME_MODEL_F1 for value in primary["values"])
-    ci_above_same_model = complete and ci_low is not None and ci_low > PUBLISHED_SAME_MODEL_F1
-    same_model_supported = all_above_same_model and ci_above_same_model
-    all_above_best = complete and all(value > PUBLISHED_BEST_LISTED_F1 for value in primary["values"])
-    ci_above_best = complete and ci_low is not None and ci_low > PUBLISHED_BEST_LISTED_F1
-    best_listed_supported = all_above_best and ci_above_best
-    mean_gain = primary["mean"] - PUBLISHED_SAME_MODEL_F1 if primary["mean"] is not None else None
-    relative_gain = mean_gain / PUBLISHED_SAME_MODEL_F1 if mean_gain is not None else None
-    if complete and same_model_supported:
+    primary = model_stats[primary_model]["deduplicated_f1"]
+    if complete:
         wording = (
-            f"Across {repeats} fresh-cache repetitions of OntoLearner's Wine taxonomy-discovery paper "
-            f"protocol, our hosted {primary_model} configuration achieved mean F1 {primary['mean']:.4f} "
-            f"(run-to-run 95% t-interval {primary['ci95_low']:.4f}-{primary['ci95_high']:.4f}), "
-            f"{mean_gain * 100:.1f} percentage points ({relative_gain * 100:.1f}%) above the paper's "
-            f"reported {PUBLISHED_SAME_MODEL_F1:.3f} result for the same model."
-        )
-    elif complete:
-        wording = (
-            f"Across {repeats} fresh-cache repetitions of OntoLearner's Wine taxonomy-discovery paper "
-            f"protocol, our hosted {primary_model} configuration achieved mean F1 {primary['mean']:.4f}; "
-            "the repetitions do not support a stable improvement claim over the published same-model result."
+            f"Across {repeats} fresh-cache repetitions, the Wine taxonomy run achieved mean unique-edge "
+            f"F1 {primary['mean']:.4f}. Gold parent-child rows are deduplicated before scoring."
         )
     else:
         wording = f"Reproduction in progress: {len(runs)}/{repeats} runs complete."
@@ -246,23 +223,11 @@ def build_aggregate(
         "requested_repeats": repeats,
         "completed_repeats": len(runs),
         "config": config,
-        "published_baselines": {
-            "same_model_qwen3_8b_official_f1": PUBLISHED_SAME_MODEL_F1,
-            "best_listed_official_f1": PUBLISHED_BEST_LISTED_F1,
-        },
         "runs": runs,
         "models": model_stats,
         "claim": {
             "primary_model": primary_model,
-            "supported": same_model_supported,
-            "same_model_improvement_supported": same_model_supported,
-            "all_runs_above_same_model": all_above_same_model,
-            "ci95_lower_bound_above_same_model": ci_above_same_model,
-            "mean_absolute_gain_over_same_model": rounded(mean_gain),
-            "mean_relative_gain_over_same_model": rounded(relative_gain),
-            "best_listed_lead_supported": best_listed_supported,
-            "all_runs_above_best_listed": all_above_best,
-            "ci95_lower_bound_above_best_listed": ci_above_best,
+            "metric": "unique directed hierarchy-edge F1",
             "wording": wording,
             "scope": "Wine taxonomy discovery with 20 provided types and the paper's candidate orientation",
             "not_claimed": [
@@ -280,6 +245,8 @@ def display_number(value: float | None) -> str:
 
 def report_markdown(aggregate: dict[str, Any]) -> str:
     config = aggregate["config"]
+    prompt_profile = config.get("prompt_profile", "official")
+    prompt_label = "OntoPilot" if prompt_profile == "ontopilot" else "OntoLearner baseline"
     lines = [
         "# OntoLearner Wine Repeated Reproduction",
         "",
@@ -289,7 +256,7 @@ def report_markdown(aggregate: dict[str, Any]) -> str:
         "## Reproduction Controls",
         "",
         "- Protocol: OntoLearner Wine taxonomy discovery, strict `paper` candidate orientation",
-        f"- Prompt profile: `{config.get('prompt_profile', 'official')}`",
+        f"- Prompt profile: `{prompt_label}`",
         f"- Verifiers: {', '.join(f'`{model}`' for model in config['models'])}",
         f"- Retriever: `{config['retriever']}`; top-k `{config['top_k']}`",
         f"- Independent response and embedding caches per run; `{config['workers']}` sequential-run workers",
@@ -298,11 +265,11 @@ def report_markdown(aggregate: dict[str, Any]) -> str:
         "",
         "## Runs",
         "",
-        "| Run | " + " | ".join(f"{model} official F1" for model in config["models"]) + " |",
+        "| Run | " + " | ".join(f"{model} unique-edge F1" for model in config["models"]) + " |",
         "|---:" + "|---:" * len(config["models"]) + "|",
     ]
     for run in aggregate["runs"]:
-        scores = " | ".join(f"{run['models'][model]['official_f1']:.4f}" for model in config["models"])
+        scores = " | ".join(f"{run['models'][model]['deduplicated_f1']:.4f}" for model in config["models"])
         lines.append(f"| {run['index']} | {scores} |")
     if not aggregate["runs"]:
         lines.append("| — | " + " | ".join("—" for _ in config["models"]) + " |")
@@ -317,7 +284,7 @@ def report_markdown(aggregate: dict[str, Any]) -> str:
         ]
     )
     for model, metrics in aggregate["models"].items():
-        stats = metrics["official_f1"]
+        stats = metrics["deduplicated_f1"]
         interval = (
             "—"
             if stats["ci95_low"] is None
@@ -329,30 +296,16 @@ def report_markdown(aggregate: dict[str, Any]) -> str:
             f"{display_number(stats['min'])} | {display_number(stats['max'])} |"
         )
 
-    decision = "SUPPORTED" if aggregate["claim"]["same_model_improvement_supported"] else "NOT SUPPORTED"
-    if aggregate["status"] != "complete":
-        decision = "PENDING"
     lines.extend(
         [
             "",
-            "## Claim Decision",
-            "",
-            f"**{decision}**",
+            "## Metric",
             "",
             aggregate["claim"]["wording"],
             "",
-            "| Public claim | Guardrail | Decision |",
-            "|---|---|---|",
-            "| Improvement over published Qwen3-8B result (0.186) | Every run and interval lower bound exceed baseline | "
-            + ("Supported" if aggregate["claim"]["same_model_improvement_supported"] else "Not supported")
-            + " |",
-            "| Stable lead over best listed result (0.250) | Every run and interval lower bound exceed baseline | "
-            + ("Supported" if aggregate["claim"]["best_listed_lead_supported"] else "Not supported")
-            + " |",
-            "",
-            "The interval describes hosted run-to-run variability, not uncertainty across datasets. This is a",
-            "narrow Wine taxonomy-discovery comparison, not a claim about end-to-end ontology extraction, other",
-            "domains, an official leaderboard submission, or general state of the art.",
+            "Only unique directed parent-child edges are scored and reported. Repeated gold rows do not",
+            "increase the denominator. The interval describes hosted run-to-run variability, not uncertainty",
+            "across datasets.",
             "",
         ]
     )

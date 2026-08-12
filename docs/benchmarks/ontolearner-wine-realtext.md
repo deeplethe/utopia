@@ -1,7 +1,7 @@
 # OntoLearner Wine Real-Text Benchmark
 
 > This evaluates open ontology induction from public review text. For the separate OntoLearner
-> taxonomy-discovery RAG protocol, see `docs/benchmarks/ontolearner-wine-official.md`.
+> taxonomy-discovery RAG protocol, see `docs/benchmarks/ontolearner-wine.md`.
 
 This benchmark measures OntoPilot's ontology-learning pipeline on public, real prose while retaining
 an external ontology gold standard.

@@ -20,6 +20,13 @@ ontolearner = importlib.util.module_from_spec(ONTOLEARNER_SPEC)
 sys.modules[ONTOLEARNER_SPEC.name] = ontolearner
 ONTOLEARNER_SPEC.loader.exec_module(ontolearner)
 
+REPEATED_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_ontolearner_repeated.py"
+REPEATED_SPEC = importlib.util.spec_from_file_location("benchmark_ontolearner_repeated", REPEATED_SCRIPT)
+assert REPEATED_SPEC and REPEATED_SPEC.loader
+repeated = importlib.util.module_from_spec(REPEATED_SPEC)
+sys.modules[REPEATED_SPEC.name] = repeated
+REPEATED_SPEC.loader.exec_module(repeated)
+
 
 class FakeClient:
     def __init__(self) -> None:
@@ -97,7 +104,7 @@ def test_ontolearner_report_uses_dataset_name_and_generic_metric_note() -> None:
             "candidate_pairs": 20,
             "prompt_profile": {
                 "profile": "official",
-                "name": "OntoLearner official",
+                "name": "OntoLearner baseline",
                 "source": "upstream",
                 "sha256": "prompt-digest",
             },
@@ -124,9 +131,49 @@ def test_ontolearner_report_uses_dataset_name_and_generic_metric_note() -> None:
 
     report = ontolearner.report_markdown(result)
 
-    assert report.startswith("# OntoLearner OWL-Time Official-Protocol Baseline")
-    assert "Official-paper Wine comparison" not in report
-    assert "protocol comparability" in report
+    assert report.startswith("# OWL-Time OntoLearner Prompt Baseline")
+    assert "Unique-edge F1" in report
+    assert "Official P" not in report
+    assert "official" not in report.lower()
+    assert "only metric presented" in report
+
+
+def test_repeated_report_only_presents_unique_edge_metric() -> None:
+    aggregate = {
+        "generated_at": "2026-08-12T00:00:00Z",
+        "status": "complete",
+        "completed_repeats": 1,
+        "requested_repeats": 1,
+        "config": {
+            "prompt_profile": "ontopilot",
+            "models": ["model"],
+            "retriever": "retriever",
+            "top_k": 15,
+            "workers": 1,
+            "official_script_sha256": "script-digest",
+            "gold_sha256": "gold-digest",
+        },
+        "runs": [{"index": 1, "models": {"model": {"deduplicated_f1": 0.5}}}],
+        "models": {
+            "model": {
+                "deduplicated_f1": {
+                    "n": 1,
+                    "mean": 0.5,
+                    "sample_stddev": None,
+                    "ci95_low": None,
+                    "ci95_high": None,
+                    "min": 0.5,
+                    "max": 0.5,
+                }
+            }
+        },
+        "claim": {"wording": "Mean unique-edge F1 is 0.5000."},
+    }
+
+    report = repeated.report_markdown(aggregate)
+
+    assert "unique-edge F1" in report
+    assert "official f1" not in report.lower()
 
 
 def test_ontolearner_prompt_profiles_have_isolated_caches() -> None:

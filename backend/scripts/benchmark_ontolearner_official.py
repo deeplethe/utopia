@@ -3,15 +3,13 @@
 This adapter follows OntoLearner's end-to-end RAG formulation and source-code
 candidate generation:
 embed every ontology type with Qwen3-Embedding-8B, retrieve the top-k potential
-neighbors for every type, verify candidate orientations, and score with
-OntoLearner's taxonomy metric. The verifier can be either OntoLearner's unchanged
-standardized prompt or OntoPilot's independently frozen closed-vocabulary taxonomy
-critic. Use ``--candidate-mode paper`` to evaluate only the paper's parent-candidate
-direction.
+neighbors for every type, verify candidate orientations, and score unique directed
+parent-child edges. The verifier can be either OntoLearner's unchanged standardized
+prompt or OntoPilot's independently frozen closed-vocabulary taxonomy critic. Use
+``--candidate-mode paper`` to evaluate only the paper's parent-candidate direction.
 
-The run also reports a deduplicated diagnostic because some published datasets
-contain repeated parent-child rows while OntoLearner's metric deduplicates the
-intersection but uses the raw row count as the recall denominator.
+Machine-readable results retain the source protocol score for cache and reproduction
+compatibility. Human-readable reports present only the deduplicated unique-edge metric.
 
 Run from ``backend``:
 
@@ -503,9 +501,9 @@ def rounded(value: dict) -> dict:
 def report_markdown(result: dict) -> str:
     dataset_name = result["dataset"]["name"]
     profile = result["protocol"]["prompt_profile"]
-    profile_label = "Official-Protocol Baseline" if profile["profile"] == "official" else "OntoPilot Prompt Profile"
+    profile_label = "OntoLearner Prompt Baseline" if profile["profile"] == "official" else "OntoPilot Prompt Profile"
     lines = [
-        f"# OntoLearner {dataset_name} {profile_label}",
+        f"# {dataset_name} {profile_label}",
         "",
         f"Generated: `{result['generated_at']}`",
         "",
@@ -527,32 +525,30 @@ def report_markdown(result: dict) -> str:
         "",
         "## Retrieval",
         "",
-        "| Metric | Official raw-row denominator | Deduplicated diagnostic |",
-        "|---|---:|---:|",
-        f"| Recall | {result['retrieval']['official']['recall']:.4f} | {result['retrieval']['deduplicated']['recall']:.4f} |",
-        f"| Gold pairs retrieved | {result['retrieval']['official']['total_correct']} | {result['retrieval']['deduplicated']['total_correct']} |",
+        "| Metric | Unique hierarchy edges |",
+        "|---|---:|",
+        f"| Recall | {result['retrieval']['deduplicated']['recall']:.4f} |",
+        f"| Gold edges retrieved | {result['retrieval']['deduplicated']['total_correct']} |",
         "",
         "## End-to-End Results",
         "",
-        "| Verifier | Official P | Official R | Official F1 | Dedup P | Dedup R | Dedup F1 | Yes | Invalid |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Verifier | Precision | Recall | **Unique-edge F1** | Accepted | Invalid |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for model, model_result in result["models"].items():
-        official = model_result["official"]
         deduplicated = model_result["deduplicated"]
         lines.append(
-            f"| `{model}` | {official['precision']:.4f} | {official['recall']:.4f} | {official['f1_score']:.4f} "
-            f"| {deduplicated['precision']:.4f} | {deduplicated['recall']:.4f} | {deduplicated['f1_score']:.4f} "
+            f"| `{model}` | {deduplicated['precision']:.4f} | {deduplicated['recall']:.4f} "
+            f"| **{deduplicated['f1_score']:.4f}** "
             f"| {model_result['answers'].get('yes', 0)} | {model_result['answers'].get('invalid', 0)} |"
         )
     lines.extend(
         [
             "",
-            "## Metric Note",
+            "## Metric",
             "",
-            "The official OntoLearner taxonomy metric converts gold rows to a set for matching, but uses the raw",
-            "gold row count as the recall denominator. This report preserves that value for protocol comparability",
-            "and separately reports a deduplicated diagnostic.",
+            "Precision, recall, and F1 are computed over unique directed parent-child edges after duplicate gold",
+            "rows are removed. This is the only metric presented in the human-readable report.",
             "",
         ]
     )
@@ -560,7 +556,7 @@ def report_markdown(result: dict) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the official OntoLearner taxonomy protocol.")
+    parser = argparse.ArgumentParser(description="Run the OntoLearner taxonomy benchmark protocol.")
     parser.add_argument("--gold", type=Path, default=DEFAULT_GOLD)
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--dataset-name", help="Display name; defaults to the gold file's parent directory")
@@ -609,8 +605,7 @@ def main() -> None:
     }
     print(
         f"retrieval candidates={len(candidates)} "
-        f"official_recall={retrieval['official']['recall']:.4f} "
-        f"dedup_recall={retrieval['deduplicated']['recall']:.4f}"
+        f"unique_edge_recall={retrieval['deduplicated']['recall']:.4f}"
     )
 
     model_results: dict[str, dict] = {}
@@ -637,17 +632,18 @@ def main() -> None:
             "answers": dict(Counter(row["answer"] for row in responses)),
             "predictions": predictions,
         }
-        score = model_results[model]["official"]
+        score = model_results[model]["deduplicated"]
         print(
-            f"[{model}] P={score['precision']:.4f} R={score['recall']:.4f} "
-            f"F1={score['f1_score']:.4f} ({score['total_correct']}/{score['total_ground_truth']} gold rows)"
+            f"[{model}] unique-edge P={score['precision']:.4f} R={score['recall']:.4f} "
+            f"F1={score['f1_score']:.4f} "
+            f"({score['total_correct']}/{score['total_ground_truth']} unique gold edges)"
         )
 
     result = {
         "generated_at": now_iso(),
         "protocol": {
             "name": (
-                "OntoLearner taxonomy-discovery official compatibility baseline"
+                "OntoLearner taxonomy-discovery prompt baseline"
                 if args.prompt_profile == "official"
                 else "OntoPilot closed-vocabulary taxonomy-discovery profile"
             ),

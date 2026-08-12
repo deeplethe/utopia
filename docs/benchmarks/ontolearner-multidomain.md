@@ -1,55 +1,47 @@
 # OntoPilot × OntoLearner Taxonomy Benchmark
 
-Prompting is part of OntoPilot's learning kernel. This report therefore separates the primary
-**OntoPilot prompt-aware evaluation** from the six-dataset **OntoLearner official-prompt
-compatibility baseline**.
+This report uses one public taxonomy metric throughout: **Unique-edge F1**. Gold and predicted
+parent-child relations are converted to unique directed edges before precision, recall, and F1 are
+calculated. Duplicate source rows never increase the denominator.
 
-Neither evaluation ingests source documents. OntoLearner's distributed task provides type labels
-and gold edges, not an extraction corpus. This is a closed-vocabulary taxonomy test, not a substitute
-for OntoPilot's separate real-text end-to-end extraction benchmark.
+Prompts are part of OntoPilot's learning kernel. Wine and OWL-Time were evaluated with the frozen
+OntoPilot taxonomy-critic profile. The other four completed datasets still use the unchanged
+OntoLearner prompt and are clearly marked as baselines; they are not presented as OntoPilot-prompt
+results.
 
-## Primary Prompt-Aware Results
+Neither profile ingests source documents. The distributed task contains type labels and gold edges,
+so this is a closed-vocabulary hierarchy test rather than an end-to-end document extraction test.
 
-Run dates: 2026-08-12 and 2026-08-13
+## Six-Dataset Results
 
-| Dataset | Runs | Official P | Official R | **Official F1** | **Structure F1 (deduplicated)** | Invalid |
-|---|---:|---:|---:|---:|---:|---:|
-| Wine | 5 | 37.93% | 23.40% | **28.95%** | **50.00%** | 0 / 1,500 |
-| OWL-Time | 1 | 21.43% | 13.64% | **16.67%** | **32.14%** | 0 / 255 |
+Run dates: 2026-08-11 to 2026-08-13
 
-All five Wine fresh-response runs produced the same 28.9474% official F1 and 50.00% structure F1.
-The profile was frozen before the full run. A top-k 2 smoke test validated the JSON contract; after
-one truncated response, only the output budget was raised. No semantic rule changed before the full
-evaluation.
+| Domain | Dataset | Runs | Precision | Recall | **Unique-edge F1** | Prompt profile |
+|---|---|---:|---:|---:|---:|---|
+| Food and beverage | Wine | 5 | 37.93% | 73.33% | **50.00%** | **OntoPilot** |
+| Units and measurements | QUDV | 1 | 25.00% | 100.00% | **40.00%** | OntoLearner baseline |
+| Geography | GeoNames | 1 | 26.32% | 71.43% | **38.46%** | OntoLearner baseline |
+| Units and measurements | OWL-Time | 1 | 21.43% | 64.29% | **32.14%** | **OntoPilot** |
+| Geography | GTS | 1 | 19.15% | 64.29% | **29.51%** | OntoLearner baseline |
+| Geography | JUSO | 1 | 17.27% | 63.16% | **27.12%** | OntoLearner baseline |
+| **Macro average** | **6 datasets** | — | **24.52%** | **72.75%** | **36.21%** | Mixed; see each row |
 
-### Prompt contribution
+All five fresh-cache Wine runs reached 50.00% Unique-edge F1 with zero invalid responses. OWL-Time
+also completed with zero invalid responses. Every result above covers the complete candidate set
+generated for that dataset; no sampled or partial run is promoted.
 
-These comparisons fix Qwen3-Embedding-8B, Qwen3-8B, the paper candidate direction, temperature 0,
-seed 42, and the scorer. Only the prompt and response contract change.
+## Prompt Contribution
 
-| Dataset | OntoLearner unchanged prompt | OntoPilot frozen profile | Gain | Relative gain |
+These controlled comparisons hold the hosted Qwen3-8B verifier, Qwen3-Embedding-8B retriever, candidate
+direction, temperature, seed, and scorer constant. Only the prompt and response contract change.
+
+| Dataset | OntoLearner baseline | OntoPilot profile | Absolute gain | Relative gain |
 |---|---:|---:|---:|---:|
-| Wine · 5-run mean | 26.29% | **28.95%** | **+2.66 pp** | **+10.1%** |
-| OWL-Time | 14.08% | **16.67%** | **+2.58 pp** | **+18.3%** |
+| Wine · 5-run mean | 46.81% | **50.00%** | **+3.19 pp** | **+6.8%** |
+| OWL-Time | 22.22% | **32.14%** | **+9.92 pp** | **+44.6%** |
 
-Wine's structure F1 increases from 46.81% to 50.00% (+6.8% relative). OWL-Time's increases from
-22.22% to 32.14% (**+44.6% relative**).
-
-### Prompt and candidate ablation
-
-| Dataset / cell | Upstream source candidates | OntoPilot paper-direction candidates |
-|---|---:|---:|
-| Wine · OntoLearner prompt · 5-run mean | 25.97% (A) | 26.29% (B) |
-| Wine · OntoPilot prompt | 28.57% (C, paired run) | **28.95% (D, 5-run mean)** |
-| OWL-Time · OntoLearner prompt | 13.89% (A) | 14.08% (B) |
-| OWL-Time · OntoPilot prompt | not run | **16.67% (D)** |
-
-On Wine, B−A isolates candidate direction at +0.32 pp; the paired D−C check is +0.38 pp. D−B
-isolates the prompt profile at +2.66 pp. The complete OntoPilot cell D is +2.98 pp / +11.5%
-relative to source control A. On OWL-Time, D is +2.78 pp / +20.0% relative to A.
-
-The remaining four compatibility datasets were not rerun with the OntoPilot profile after the model
-evaluation budget was exhausted. Their status is explicitly **not run**; no partial score is reported.
+The OntoPilot profile has not yet been run on QUDV, GeoNames, GTS, or JUSO. Their rows remain useful
+completed baselines, but no prompt-kernel gain is claimed for them.
 
 ## Frozen OntoPilot Prompt Profile
 
@@ -58,91 +50,40 @@ evaluation budget was exhausted. Their status is explicitly **not run**; no part
 | Profile | `OntoPilot closed-vocabulary taxonomy critic v1` |
 | Prompt SHA-256 | `cca6fc094ab6cf2cef33bc7d1902b7211a11129b487e8a53bed4ba50da474d35` |
 | Source mapping | Production TBox boundary and subclass semantics in `backend/app/ontology/extract.py` |
-| Output | Exact directed endpoints, boolean `keep`, confidence, and reason in strict JSON |
+| Output contract | Exact directed endpoints, boolean `keep`, confidence, and reason in strict JSON |
 | Parsing | Fail closed on malformed JSON, missing boolean, or renamed/reversed endpoints |
-| Max output tokens | 768 |
+| Acceptance threshold | `0.85` |
+| Max output tokens | `768` |
 
-This profile is an explicit task adapter, not a claim that the evidence-grounded production prompt
-was used byte-for-byte. The production hierarchy critic requires source text and exact evidence;
-those inputs do not exist in OntoLearner's closed-label dataset. The adapter preserves OntoPilot's
-directed subclass substitution test, class-boundary assumption, non-taxonomic exclusions, ambiguity
-handling, structured output, and fail-closed parser, while openly enabling standard knowledge for
-the benchmark's evidence-free setting. Exact prompt text is frozen in
-`backend/scripts/benchmark_ontolearner_official.py` and embedded in each result with its hash.
+The profile is a task adapter derived from OntoPilot's production rules. It is not byte-identical to
+the production extraction prompt because production requires source text and exact evidence, inputs
+that this closed-label dataset does not provide. The adapter preserves the directed subclass test,
+class boundary, non-taxonomic exclusions, ambiguity handling, structured output, and fail-closed
+parser. Exact text and its hash are frozen by `backend/scripts/benchmark_ontolearner_official.py`
+and embedded in each result snapshot.
 
-## Official-Prompt Compatibility Baseline
+## Candidate-Direction Ablation
 
-Run dates: 2026-08-11 and 2026-08-12
+The reference source expands both directions for each retrieved neighbor pair. Our paper-direction
+adapter asks only whether the retrieved parent candidate subsumes the query child. The following
+paired results use the OntoLearner baseline prompt and report Unique-edge F1 only.
 
-| Domain | Dataset | Types | Candidates | Official P | Official R | **Official F1** | Deduplicated structure F1 |
-|---|---|---:|---:|---:|---:|---:|---:|
-| Food and beverage | Wine | 20 | 300 | — | — | **26.29%** | **46.81%** |
-| Units and measurements | OWL-Time | 17 | 255 | 13.16% | 15.15% | **14.08%** | **22.22%** |
-| Units and measurements | QUDV | 11 | 110 | 25.00% | 100.00% | **40.00%** | **40.00%** |
-| Geography | GeoNames | 11 | 110 | 26.32% | 27.78% | **27.03%** | **38.46%** |
-| Geography | GTS | 18 | 270 | 19.15% | 11.69% | **14.52%** | **29.51%** |
-| Geography | JUSO | 35 | 525 | 17.27% | 39.34% | **24.00%** | **27.12%** |
-| **Macro average** | **6 datasets** | **112** | **1,570** | — | — | **24.32%** | **34.02%** |
-
-Wine reports the mean of five independent fresh-cache runs. Its official precision and recall vary
-by run, so the table intentionally reports only the mean F1. Every other row is one complete run
-over every candidate generated by the frozen protocol; none is a sampled or truncated evaluation.
-
-The standout QUDV run recovered all nine gold taxonomy rows and reached **40.00% official F1**.
-All six complete ontologies ran successfully with the same retriever, verifier, candidate rule, and
-prompt. Because that prompt is OntoLearner's, this table measures compatibility rather than the
-primary OntoPilot prompt kernel.
-
-## Same-Model Published Comparison
-
-The OntoLearner paper reports 18.6% F1 for Qwen3-8B on Wine. The hosted official-prompt baseline
-averaged 26.29%, while the primary OntoPilot prompt profile averaged 28.95%:
-
-| Wine comparison | Official F1 |
-|---|---:|
-| OntoLearner paper · Qwen3-8B | 18.60% |
-| Official-prompt compatibility · five-run mean | 26.29% |
-| **OntoPilot prompt profile · five-run mean** | **28.95%** |
-| **OntoPilot gain over paper** | **+10.35 percentage points · +55.6% relative** |
-
-All five Wine prompt-aware runs exceeded the paper's same-model result. GeoNames is the paper's sole
-Geography ontology, so its official-prompt compatibility row is a direct protocol comparison:
-**27.03% versus 19.70%**, or +37.2%. It is not yet a prompt-aware OntoPilot result. See the
-[Wine repeated-run report](ontolearner-wine-official.md) for the per-run scores and confidence
-interval.
-
-The paper's Units & Measurements row averages OM and QUDT, rather than OWL-Time and QUDV. GTS and
-JUSO are also absent from the paper's selected ontology set. Their paper-table improvements therefore
-cannot be computed without comparing different datasets.
-
-## Fixed-Revision Source Control
-
-For every dataset, we additionally executed the candidate logic from OntoLearner revision
-`da7dd03c349ab8516518c5b0dee3bfed2deb8252`: `AutoRetrieverLearner._taxonomy_discovery` expands both
-directions of each retrieved neighbor pair. The control reuses the exact cached Qwen3 embeddings and
-shared-candidate Qwen3-8B answers from the corresponding adapter run, then evaluates the additional
-source candidates with the same hosted endpoint. Finally, the results are scored with the upstream
-`taxonomy_discovery_metrics` function. This paired design keeps dataset, model service, prompt,
-retrieval vectors, and metric fixed, making candidate orientation the only pipeline difference. It
-uses OntoLearner's prompt and therefore does not measure OntoPilot's prompt-kernel contribution.
-
-| Dataset | Paper-direction adapter | Upstream source control | Gain | Relative gain |
+| Dataset | Paper direction | Upstream source direction | Absolute gain | Relative gain |
 |---|---:|---:|---:|---:|
-| Wine · five-run mean | **26.29%** | 25.97% | **+0.32 pp** | **+1.2%** |
-| OWL-Time | **14.08%** | 13.89% | **+0.20 pp** | **+1.4%** |
-| QUDV | **40.00%** | 40.00% | 0.00 pp | 0.0% |
-| GeoNames | **27.03%** | 27.03% | 0.00 pp | 0.0% |
-| GTS | **14.52%** | 13.74% | **+0.78 pp** | **+5.6%** |
-| JUSO | **24.00%** | 21.95% | **+2.05 pp** | **+9.3%** |
-| **Macro average** | **24.32%** | 23.76% | **+0.56 pp** | **+2.3%** |
+| Wine · 5-run mean | **46.81%** | 42.73% | **+4.08 pp** | **+9.5%** |
+| OWL-Time | **22.22%** | 21.74% | **+0.48 pp** | **+2.2%** |
+| QUDV | 40.00% | 40.00% | 0.00 pp | 0.0% |
+| GeoNames | 38.46% | 38.46% | 0.00 pp | 0.0% |
+| GTS | **29.51%** | 26.47% | **+3.04 pp** | **+11.5%** |
+| JUSO | **27.12%** | 24.22% | **+2.90 pp** | **+12.0%** |
+| **Macro average** | **34.02%** | 32.27% | **+1.75 pp** | **+5.4%** |
 
-QUDV and GeoNames have only 11 types, so top-k 15 is bounded to 10 and already covers every possible
-directed pair; the two modes are necessarily identical. On larger ontologies, the paper direction
-usually improves precision by avoiding reverse candidates. The result is positive but modest—not a
-claim of universal large gains. One of the five paired Wine runs was 0.03 percentage points lower
-than the source control, while the five-run mean was higher.
+QUDV and GeoNames each contain 11 types, so top-k 15 is bounded to 10 and already covers every
+possible directed pair; both candidate modes are therefore identical. On Wine with the OntoPilot
+profile, paper direction reached **50.00%**, versus **46.15%** for the paired upstream source
+direction: **+3.85 pp / +8.3% relative**.
 
-## Frozen Compatibility Protocol
+## Evaluation Protocol
 
 | Setting | Value |
 |---|---|
@@ -150,24 +91,26 @@ than the source control, while the five-run mean was higher.
 | Retriever | `qwen/qwen3-embedding-8b` |
 | Verifier | `qwen/qwen3-8b` |
 | Candidate search | Full ontology type space, top-k 15 per child |
-| Candidate orientation | Paper parent-candidate direction; upstream source control uses both directions |
-| Prompt | Unmodified `StandardizedPrompting("taxonomy-discovery")` |
+| Primary candidate orientation | Paper parent-candidate direction |
+| Baseline prompt | Unmodified `StandardizedPrompting("taxonomy-discovery")` |
+| OntoPilot prompt | Frozen closed-vocabulary taxonomy critic v1 |
 | Temperature / seed | 0 / 42 |
 | Serving stack | OpenRouter hosted APIs |
+| Public metric | Precision, recall, and F1 over unique directed hierarchy edges |
 
-The six runs cover 112 dataset type entries and 1,570 verifier decisions. Top-k is automatically
-bounded to `type_count - 1` for ontologies with fewer than 16 types.
+The current six-dataset table covers 112 type entries and 1,570 verifier decisions. Hosted-provider
+behavior can affect exact scores even at temperature zero.
 
 ## Dataset Integrity
 
-| Dataset | Raw rows | Unique pairs | SHA-256 |
-|---|---:|---:|---|
-| Wine | 47 | 15 | `b71612525de75ccbcad83e731d2ea353216e886a7b2d140ec423f547d16bfae6` |
-| OWL-Time | 66 | 14 | `91961ab3f709b49aaaec126686f1c2695581e66eb4bce1fe9a71cf5653f1b774` |
-| QUDV | 9 | 9 | `0e0f41d6ad60864aa75d1e915066132666a1ebe041507f0ded4bdca56e498081` |
-| GeoNames | 18 | 7 | `d6bf4e5f1f4d8704793eadf48b8a6210be075e0e1f9606eea02817c80f0ac0ba` |
-| GTS | 77 | 14 | `f9a7143b667e20cfa30bb3bc2aebdb56645d1616d71aa5a502ba6cd35e55cd27` |
-| JUSO | 61 | 38 | `5fe26744838f8c920c8737b5907083b8b5a966b8ba740a2a0630c928c6611d63` |
+| Dataset | Types | Raw rows | Unique edges | SHA-256 |
+|---|---:|---:|---:|---|
+| Wine | 20 | 47 | 15 | `b71612525de75ccbcad83e731d2ea353216e886a7b2d140ec423f547d16bfae6` |
+| OWL-Time | 17 | 66 | 14 | `91961ab3f709b49aaaec126686f1c2695581e66eb4bce1fe9a71cf5653f1b774` |
+| QUDV | 11 | 9 | 9 | `0e0f41d6ad60864aa75d1e915066132666a1ebe041507f0ded4bdca56e498081` |
+| GeoNames | 11 | 18 | 7 | `d6bf4e5f1f4d8704793eadf48b8a6210be075e0e1f9606eea02817c80f0ac0ba` |
+| GTS | 18 | 77 | 14 | `f9a7143b667e20cfa30bb3bc2aebdb56645d1616d71aa5a502ba6cd35e55cd27` |
+| JUSO | 35 | 61 | 38 | `5fe26744838f8c920c8737b5907083b8b5a966b8ba740a2a0630c928c6611d63` |
 
 The source datasets are published by SciKnowOrg on Hugging Face:
 
@@ -177,55 +120,36 @@ The source datasets are published by SciKnowOrg on Hugging Face:
 
 ## Reproduction
 
-Run from `backend/` after configuring `OPENROUTER_API_KEY`. The adapter caches embeddings and
-pair-level responses in each run directory and resumes safely after an interrupted request.
+Run from `backend/` after configuring the model endpoint. Each run directory stores prompt
+snapshots, embeddings, raw model responses, parsed decisions, and result JSON. Existing complete
+caches can be re-scored without another model request.
 
 ```bash
 python scripts/benchmark_ontolearner_official.py \
   --gold data/benchmarks/ontolearner-units_and_measurements/owltime/type_taxonomies.json \
-  --run-dir data/benchmarks/ontolearner-owltime-paper \
-  --dataset-name OWL-Time --models qwen/qwen3-8b --candidate-mode paper \
-  --prompt-profile ontopilot
+  --run-dir data/benchmarks/ontopilot-prompt-owltime-paper-20260813 \
+  --dataset-name OWL-Time --models qwen/qwen3-8b \
+  --candidate-mode paper --prompt-profile ontopilot --top-k 15
 ```
 
-Use the corresponding dataset path and a fresh run directory for QUDV, GeoNames, GTS, or JUSO.
-For Wine's repeated result:
+For Wine's repeated OntoPilot-profile result:
 
 ```bash
 python scripts/benchmark_ontolearner_repeated.py \
+  --run-root data/benchmarks/ontopilot-prompt-wine-repeats-20260812 \
   --repeats 5 --models qwen/qwen3-8b --prompt-profile ontopilot
 ```
 
-To reproduce the fixed-revision source control, use the same dataset and caches with the upstream
-bidirectional candidate mode:
+Use the corresponding dataset path, an isolated run directory, and `--prompt-profile official` to
+reproduce an OntoLearner prompt baseline. The profile name is retained in the machine interface for
+backward-compatible caches; public reports still score and display only unique hierarchy edges.
 
-```bash
-python scripts/benchmark_ontolearner_official.py \
-  --gold data/benchmarks/ontolearner-geography/juso/type_taxonomies.json \
-  --run-dir data/benchmarks/ontolearner-juso-source-control \
-  --dataset-name JUSO --models qwen/qwen3-8b --candidate-mode source \
-  --prompt-profile official
-```
+## Interpretation and Limits
 
-Copy the embedding and response caches from the matching paper-direction run before execution to
-make shared candidate decisions paired; the adapter evaluates only newly introduced reverse
-candidates. Candidate sets from every control run were programmatically compared with
-`AutoRetrieverLearner._taxonomy_discovery` at the frozen revision and matched exactly.
-
-## Metric Interpretation
-
-The official OntoLearner metric converts gold rows to a set for matching but retains the raw row
-count as its recall denominator. Several source files repeat identical parent-child rows. The
-**official F1** column preserves this behavior for protocol comparability; the **deduplicated
-structure F1** column uses unique gold pairs and is included as a diagnostic of recovered graph
-structure.
-
-Both prompt profiles accept direct and indirect superclass relations, while a gold file may list only
-some edges. A semantically valid transitive relation can therefore count as a false positive. Hosted
-provider behavior can also cause exact scores to vary between runs, even with temperature zero.
-
-## Larger Ontologies
-
-QUDT, GEO, UO, and OM are not included in this table. Their complete paper-mode runs require 1,260,
-4,920, 8,430, and 11,970 verifier decisions respectively. They are reserved for a separately
-budgeted long-running suite; no partial result is presented as a full-dataset score.
+- Precision, recall, and F1 use sets of directed parent-child edges; repeated gold rows are removed.
+- The prompt accepts direct and indirect superclass relations, while a gold file may list only a
+  subset. A valid transitive relation can therefore count as a false positive.
+- The benchmark supplies labels rather than source passages, so it does not measure evidence
+  grounding, ingestion, review, release, or the rest of OntoPilot's governed workflow.
+- QUDT, GEO, UO, and OM are not included. Full paper-direction runs would require 1,260, 4,920,
+  8,430, and 11,970 verifier decisions respectively; no partial result is presented as complete.
