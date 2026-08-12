@@ -25,6 +25,7 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 <summary><strong>Contents</strong></summary>
 
 - [Why OntoPilot](#why-ontopilot)
+- [Benchmark Highlight](#benchmark-highlight)
 - [Capabilities](#capabilities)
 - [Product Interface](#product-interface)
 - [How It Works](#how-it-works)
@@ -52,6 +53,20 @@ LLMs can propose ontology content quickly, but production ontology work also nee
 - **Every decision stays traceable.** Statements retain document, chunk, model, exact prompt snapshot, actor, and review evidence.
 - **Published versions stay immutable.** Draft, reviewed, and published releases support layer-aware semantic Diff, deployment, and restore.
 - **Agents stay accountable.** Built-in MCP tools use user-scoped, project-scoped tokens and re-evaluate live permissions on every call.
+
+## Benchmark Highlight
+
+### 41.3% higher F1 than OntoLearner's same-model result
+
+On OntoLearner's Wine taxonomy-discovery paper protocol, the OntoPilot benchmark configuration delivered a **26.29% mean F1 across five fresh-cache runs with Qwen3-8B**—well above the **18.6%** reported by the OntoLearner paper for the same model.
+
+| Same-model comparison | F1 |
+| --- | ---: |
+| OntoLearner paper · Qwen3-8B | 18.60% |
+| OntoPilot benchmark · Qwen3-8B · 5-run mean | **26.29%** |
+| Improvement | **+7.69 points · +41.3% relative** |
+
+**All five runs beat the paper's same-model result**, with a best run of **29.73% F1**. The benchmark freezes OntoLearner 1.6.0's Wine dataset, candidate direction, and unmodified taxonomy-discovery prompt. See the [full protocol, per-run results, and reproduction guide](docs/benchmarks/ontolearner-wine-official.md).
 
 ## Capabilities
 
@@ -341,7 +356,7 @@ cd ..
 docker compose config --quiet
 ```
 
-The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. OntoLearner Wine protocols and reproducibility notes live in [docs/benchmarks](docs/benchmarks/ontolearner-wine-official.md). Benchmark scores depend on model/provider behavior and are not presented as an official leaderboard result.
+The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. In the frozen OntoLearner Wine protocol, our Qwen3-8B configuration averaged **26.29% F1 over five runs**, a **41.3% relative gain** over the paper's same-model result. Full settings, raw run summaries, metric caveats, and reproducibility notes are in the [benchmark report](docs/benchmarks/ontolearner-wine-official.md). Hosted-provider behavior can affect exact scores.
 
 See [docs/acceptance.md](docs/acceptance.md) for the manual end-to-end acceptance path.
 

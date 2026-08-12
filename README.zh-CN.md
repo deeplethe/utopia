@@ -25,6 +25,7 @@
 <summary><strong>目录</strong></summary>
 
 - [项目定位](#项目定位)
+- [Benchmark 亮点](#benchmark-亮点)
 - [核心能力](#核心能力)
 - [产品界面](#产品界面)
 - [工作流程](#工作流程)
@@ -52,6 +53,20 @@
 - **决策可追溯。** 语句保留文档、chunk、模型、完整提示词快照、操作者和审核证据。
 - **发布版本不可变。** 草稿、已审核和已发布版本支持分层语义 Diff、部署与恢复。
 - **Agent 权责明确。** 内置 MCP 使用“用户 + 知识体系”范围的 Token，并在每次调用时重新检查实时权限。
+
+## Benchmark 亮点
+
+### 相比 OntoLearner 同模型结果，F1 提升 41.3%
+
+在 OntoLearner Wine taxonomy-discovery 论文协议下，OntoPilot Benchmark 配置使用 Qwen3-8B 进行 5 次全新缓存运行，取得 **26.29% 的平均 F1**，显著超过 OntoLearner 论文中同模型的 **18.6%**。
+
+| 同模型对比 | F1 |
+| --- | ---: |
+| OntoLearner 论文 · Qwen3-8B | 18.60% |
+| OntoPilot Benchmark · Qwen3-8B · 5 次均值 | **26.29%** |
+| 提升 | **+7.69 个百分点 · 相对提升 41.3%** |
+
+**5 次运行全部超过论文同模型结果**，单次最高达到 **29.73% F1**。评测冻结 OntoLearner 1.6.0 Wine 数据集、候选方向和未经修改的 taxonomy-discovery 提示词。完整协议、逐次结果和复现方法见 [Benchmark 报告](docs/benchmarks/ontolearner-wine-official.md)。
 
 ## 核心能力
 
@@ -341,7 +356,7 @@ cd ..
 docker compose config --quiet
 ```
 
-项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。OntoLearner Wine 协议和可复现说明位于 [docs/benchmarks](docs/benchmarks/ontolearner-wine-official.md)。模型和供应商行为会影响得分，本项目不把该结果表述为官方排行榜成绩。
+项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。在冻结的 OntoLearner Wine 协议下，我们的 Qwen3-8B 配置 5 次运行平均取得 **26.29% F1**，相比论文同模型结果**相对提升 41.3%**。完整设置、逐次结果、指标注意事项和复现说明见 [Benchmark 报告](docs/benchmarks/ontolearner-wine-official.md)。托管模型服务的行为可能影响精确分数。
 
 完整人工端到端路径见 [docs/acceptance.md](docs/acceptance.md)。
 
