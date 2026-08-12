@@ -4,6 +4,8 @@
 
 **Human-governed ontology engineering from source documents.**
 
+`Evolves with every review · Learns from every decision`
+
 Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data from one self-hosted workspace.
 
 [简体中文](README.zh-CN.md) · [Documentation](#documentation) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md)
@@ -48,6 +50,7 @@ It goes beyond asking an LLM to “generate an ontology.” OntoPilot puts domai
 
 - **From documents to computable domain knowledge.** Convert scattered language into a connected TBox, SKOS terminology, and ABox while retaining the source behind every statement.
 - **Human–AI co-creation with governance built in.** Models propose; experts review, correct, and approve through focused queues instead of rebuilding machine output by hand.
+- **Every review makes the agent better.** Human decisions and review rationale become reusable memory, helping the agent resolve recurring ambiguity and improve the accuracy of future extraction and validation.
 - **From a promising draft to a production asset.** Semantic Diff, immutable releases, rollback, REST APIs, and MCP carry approved knowledge into business systems and agent workflows.
 - **Traceable by design, not by afterthought.** Every decision can be traced to its document chunk, model, prompt snapshot, actor, and review history.
 
