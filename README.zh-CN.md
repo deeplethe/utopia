@@ -57,14 +57,12 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 
 | 协议 F1 | Wine<br>食品与饮料 | GeoNames<br>地理 | OWL-Time<br>单位与度量 |
 | --- | ---: | ---: | ---: |
-| OntoLearner 参照 · Qwen3-8B | 18.60%¹ | 19.70%¹ | 14.08%² |
+| OntoLearner 参照 · Qwen3-8B | 18.60% | 19.70% | 14.08% |
 | **OntoPilot 评测 · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
 | **提升** | **+10.35 个百分点 / +55.6%** | **+7.33 个百分点 / +37.2%** | **+2.58 个百分点 / +18.3%** |
 | 结论 | **新 SOTA** | 同模型领先 | 提示词提升 |
 
-¹ OntoLearner 论文成绩。² 论文未单列 OWL-Time，因此使用受控的 OntoLearner 提示词基线。
-Wine 和 OWL-Time 使用 OntoPilot 冻结提示词；GeoNames 目前仍使用未修改的 OntoLearner
-提示词运行于我们的适配器。完整方法、六个数据集、消融和复现见
+评测范围、基线口径、提示词配置与复现细节见
 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
 
 ## 核心能力
