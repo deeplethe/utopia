@@ -56,14 +56,17 @@
 
 ## Benchmark 亮点
 
-### Wine taxonomy discovery 达到新 SOTA
+### 多项目 Benchmark 提升
 
-| Benchmark | OntoLearner 论文 · Qwen3-8B | **OntoPilot · Qwen3-8B** | 提升 |
-| --- | ---: | ---: | ---: |
-| Wine taxonomy discovery · 协议 F1 | 18.60% | **28.95%** | **+10.35 个百分点 / +55.6%** |
+| 唯一边 F1 | Wine | OWL-Time |
+| --- | ---: | ---: |
+| OntoLearner 提示词 | 46.81% | 22.22% |
+| **OntoPilot 提示词** | **50.00%** | **32.14%** |
+| **提升** | **+3.19 个百分点 / +6.8%** | **+9.92 个百分点 / +44.6%** |
 
-按照该 Benchmark 的公开评分协议，OntoPilot 在这一任务上取得了新的 SOTA。对比方法、六个数据集完整
-结果、提示词 profile、消融实验、限制和复现方式见 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
+在 Wine 上，OntoPilot 还以 **28.95% F1** 超过论文此前最佳的 25.00%，取得该论文协议下
+的**新 SOTA**；相比论文 Qwen3-8B 的 18.60% 提升 **55.6%**。完整对比方法、六个数据集、
+消融实验、限制和复现方式见 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
 
 ## 核心能力
 

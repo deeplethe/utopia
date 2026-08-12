@@ -1,29 +1,42 @@
 # OntoPilot vs. OntoLearner: Methodology and Full Taxonomy Results
 
-## Headline Comparison
+## Headline Prompt Comparison
 
-| Benchmark | OntoLearner | **OntoPilot** | Improvement |
+| Unique-edge F1 | Wine | OWL-Time |
+|---|---:|---:|
+| OntoLearner prompt baseline | 46.81% | 22.22% |
+| **OntoPilot frozen prompt** | **50.00%** | **32.14%** |
+| **Absolute gain** | **+3.19 pp** | **+9.92 pp** |
+| **Relative gain** | **+6.8%** | **+44.6%** |
+
+These are the two datasets completed with both prompt profiles. The comparison fixes model,
+retriever, candidate direction, temperature, seed, and scorer, isolating the prompt and response
+contract.
+
+### Paper-Protocol SOTA
+
+| Protocol F1 | Previous paper best | OntoLearner paper · Qwen3-8B | **OntoPilot · Qwen3-8B** |
 |---|---:|---:|---:|
-| Wine taxonomy discovery · protocol F1 | 18.60% | **28.95%** | **+10.35 pp / +55.6%** |
+| Wine taxonomy discovery | 25.00% | 18.60% | **28.95%** |
 
-OntoPilot's five-run mean exceeds both the [OntoLearner paper](https://arxiv.org/abs/2607.01977)
-Qwen3-8B result of 18.60% and its best listed Wine result of 25.00%. We therefore describe 28.95%
-as a new SOTA on the Wine closed-vocabulary taxonomy-discovery benchmark under the paper's scoring
-protocol. This is a scoped benchmark claim, not universal superiority across every ontology task.
+OntoPilot establishes a new SOTA on Wine under the [OntoLearner paper](https://arxiv.org/abs/2607.01977)
+Table 5 protocol. The result is **+3.95 pp / +15.8%** over the paper-wide best and **+10.35 pp /
++55.6%** over its Qwen3-8B row. The paper does not report OWL-Time, QUDV, GTS, or JUSO as
+individual rows. Its GeoNames best is 31.60%, above our 27.03% baseline-prompt run, so no additional
+SOTA claim is made without further evaluation.
 
 ## Comparison Method
 
-The comparison uses the Wine dataset and taxonomy-discovery scoring protocol reported by
-OntoLearner. Both headline rows use Qwen3-8B. OntoPilot uses Qwen3-Embedding-8B retrieval, the
-paper-direction candidate rule, temperature 0, seed 42, its frozen taxonomy-critic prompt, and a
-strict JSON response contract. Its 28.95% is the mean of five independent fresh-cache runs; all five
-runs produced the same score with zero invalid responses.
+The evaluation uses Qwen3-8B verification, Qwen3-Embedding-8B retrieval, the paper-direction
+candidate rule, temperature 0, and seed 42. OntoPilot uses its frozen taxonomy-critic prompt and
+strict JSON contract. Wine is the mean of five independent fresh-cache runs, all with zero invalid
+responses; OWL-Time is one complete run with zero invalid responses.
 
-This is a protocol-level comparison rather than a byte-identical runtime reproduction: the paper
-ran Hugging Face generation locally, while OntoPilot used hosted OpenRouter inference, and the
-OntoPilot prompt is deliberately part of the system being evaluated. The dataset, task, Qwen3-8B
-model family, candidate orientation, and scoring formula are aligned. Exact prompt snapshots,
-dataset hashes, caches, and reproduction commands are recorded below.
+The paper-SOTA comparison is protocol-level rather than a byte-identical runtime reproduction: the
+paper ran Hugging Face generation locally, while OntoPilot used hosted OpenRouter inference, and the
+OntoPilot prompt is deliberately part of the system being evaluated. The Wine dataset, task,
+Qwen3-8B model family, candidate orientation, and scoring formula are aligned. Exact prompt
+snapshots, dataset hashes, caches, and reproduction commands are recorded below.
 
 ### Why the headline differs from the unique-edge tables
 

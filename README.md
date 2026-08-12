@@ -56,15 +56,17 @@ LLMs can propose ontology content quickly, but production ontology work also nee
 
 ## Benchmark Highlight
 
-### New SOTA on Wine taxonomy discovery
+### Benchmark gains across evaluated projects
 
-| Benchmark | OntoLearner paper · Qwen3-8B | **OntoPilot · Qwen3-8B** | Improvement |
-| --- | ---: | ---: | ---: |
-| Wine taxonomy discovery · protocol F1 | 18.60% | **28.95%** | **+10.35 pp / +55.6%** |
+| Unique-edge F1 | Wine | OWL-Time |
+| --- | ---: | ---: |
+| OntoLearner prompt | 46.81% | 22.22% |
+| **OntoPilot prompt** | **50.00%** | **32.14%** |
+| **Improvement** | **+3.19 pp / +6.8%** | **+9.92 pp / +44.6%** |
 
-OntoPilot establishes a new SOTA result on this benchmark under its published scoring protocol. See the
-[benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md) for the
-controlled comparison, all six datasets, prompt profiles, ablations, limitations, and reproduction.
+On Wine, OntoPilot also establishes a **new SOTA under the paper's protocol**: **28.95% F1**, above
+the previous best of 25.00% and **55.6% higher** than the paper's Qwen3-8B result. See the
+[benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md).
 
 ## Capabilities
 
