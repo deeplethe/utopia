@@ -87,10 +87,6 @@ The release quality gate blocks approval while blocking conflicts, unresolved en
 
 ## Architecture
 
-![OntoPilot high-level architecture](docs/images/ontopilot-architecture.png)
-
-The generated diagram above is a reading aid. The version-controlled diagram below is the authoritative high-level topology.
-
 ```mermaid
 flowchart LR
     WEB["React Web UI"] -->|"REST API"| API["FastAPI Backend"]

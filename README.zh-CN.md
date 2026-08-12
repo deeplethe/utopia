@@ -87,10 +87,6 @@ flowchart LR
 
 ## 架构
 
-![OntoPilot 高层架构](docs/images/ontopilot-architecture.png)
-
-上图用于快速阅读；下面可版本管理的 Mermaid 是高层拓扑的事实来源。
-
 ```mermaid
 flowchart LR
     WEB["React Web UI"] -->|"REST API"| API["FastAPI Backend"]
