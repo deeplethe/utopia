@@ -8,6 +8,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+Before the first start, set a strong `POSTGRES_PASSWORD` in `.env` and an
+`ADMIN_PASSWORD` of at least 12 characters in `backend/.env`. Empty or published example
+credentials intentionally stop initialization instead of creating a weak administrator.
+
 ```mermaid
 flowchart LR
     U[Browser] --> F[Frontend]

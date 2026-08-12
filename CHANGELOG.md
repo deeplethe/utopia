@@ -16,5 +16,6 @@ Initial public release.
 - User- and knowledge-system-scoped REST and MCP access for read, proposal, edit, review, and lifecycle workflows.
 - English and Simplified Chinese interfaces, documentation, and independently configurable backend prompt languages.
 - Docker Compose deployment, source-development workflows, benchmark suites, and operator documentation.
+- Fail-closed first-run credentials, unified password validation, and automated dependency and static-security checks.
 
 [0.1.0]: https://github.com/deeplethe/ontopilot/releases/tag/v0.1.0

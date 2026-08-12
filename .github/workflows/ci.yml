@@ -51,6 +51,8 @@ jobs:
       - run: python -m pytest -q
       - run: python scripts/check_tbox_guard.py
       - run: python scripts/check_ontolearner_regression.py tests/gold/ontolearner_reference_result.json
+      - run: bandit -r app -ll -q
+      - run: pip-audit -r requirements.txt
 
   frontend:
     runs-on: ubuntu-latest
@@ -68,4 +70,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level=high
+      - run: pnpm lint
       - run: pnpm build

@@ -170,6 +170,9 @@ ADMIN_PASSWORD=replace-with-a-strong-password
 COOKIE_SECURE=false
 ```
 
+Both passwords are mandatory for a new installation. OntoPilot refuses to create the first
+administrator from an empty, common, or published example password; use at least 12 characters.
+
 `SYSTEM_LANGUAGE` controls built-in model prompts (`en` or `zh-CN`) and is independent of each user's frontend language. Project-specific prompt overrides continue to take precedence.
 
 ### 2. Start and verify
@@ -282,7 +285,7 @@ The checked-in [.env.example](.env.example) and [backend/.env.example](backend/.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `POSTGRES_PASSWORD` | `ontopilot` Compose fallback | PostgreSQL password; always override outside disposable local use |
+| `POSTGRES_PASSWORD` | required | PostgreSQL password; Compose refuses to start when it is empty |
 | `SYSTEM_LANGUAGE` | `en` | Built-in backend prompt language (`en` or `zh-CN`), independent of UI locale |
 | `ONTOPILOT_BIND_ADDRESS` | `0.0.0.0` | Host interface exposed by the frontend container |
 | `ONTOPILOT_PORT` | `8080` | Host port exposed by the frontend container |

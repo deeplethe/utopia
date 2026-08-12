@@ -29,7 +29,7 @@ MAX_DIRECT_TYPES = 12
 
 
 def _sig(*parts: str) -> str:
-    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16]
 
 
 def _ancestors(supers: dict[str, list[str]], iri: str) -> set[str]:
