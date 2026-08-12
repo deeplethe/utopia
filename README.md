@@ -50,7 +50,7 @@ It goes beyond asking an LLM to “generate an ontology.” OntoPilot puts domai
 
 - **From documents to computable domain knowledge.** Convert scattered language into a connected TBox, SKOS terminology, and ABox while retaining the source behind every statement.
 - **Human–AI co-creation with governance built in.** Models propose; experts review, correct, and approve through focused queues instead of rebuilding machine output by hand.
-- **Every review makes the agent better.** Human decisions and review rationale become reusable memory, helping the agent resolve recurring ambiguity and improve the accuracy of future extraction and validation.
+- **Every review makes the agent better.** Suppose one document says “Ocean Explorer One” and another says “OE-1.” Once an expert confirms they are the same vehicle—and records why—OntoPilot retains that decision as reusable resolution memory. The next occurrence can map to the right entity instead of creating a duplicate; new or conflicting variants still return to human review.
 - **From a promising draft to a production asset.** Semantic Diff, immutable releases, rollback, REST APIs, and MCP carry approved knowledge into business systems and agent workflows.
 - **Traceable by design, not by afterthought.** Every decision can be traced to its document chunk, model, prompt snapshot, actor, and review history.
 
