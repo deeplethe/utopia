@@ -1,0 +1,7 @@
+{
+  "protocol": "OntoLearner Wine taxonomy-discovery end-to-end RAG",
+  "source_revision": "da7dd03c349ab8516518c5b0dee3bfed2deb8252",
+  "minimum_deduplicated_f1": 0.42,
+  "minimum_deduplicated_recall": 0.70,
+  "note": "Regression floor derived from the first reproducible official-protocol run. Raising the floor requires a reviewed benchmark result."
+}

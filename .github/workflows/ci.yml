@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+
+jobs:
+  branch-flow:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate pull request branch flow
+        env:
+          BASE_BRANCH: ${{ github.base_ref }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if [[ "$BASE_BRANCH" == "dev" && "$HEAD_BRANCH" == feat/* ]]; then
+            echo "Valid feature flow: $HEAD_BRANCH -> $BASE_BRANCH"
+            exit 0
+          fi
+
+          if [[ "$BASE_BRANCH" == "main" && "$HEAD_BRANCH" == "dev" && "$PR_AUTHOR" == "WaylandYang" ]]; then
+            echo "Valid owner release flow: $HEAD_BRANCH -> $BASE_BRANCH"
+            exit 0
+          fi
+
+          echo "Invalid pull request branch flow: $HEAD_BRANCH -> $BASE_BRANCH"
+          echo "Allowed flows are feat/** -> dev and owner-authored dev -> main."
+          exit 1
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - run: python scripts/check_tbox_guard.py
+      - run: python scripts/check_ontolearner_regression.py tests/gold/ontolearner_reference_result.json
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build

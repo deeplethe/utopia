@@ -1,0 +1,27 @@
+{
+  "protocol": "OntoLearner Wine taxonomy-discovery end-to-end RAG",
+  "source_revision": "da7dd03c349ab8516518c5b0dee3bfed2deb8252",
+  "captured_at": "2026-08-11",
+  "models": {
+    "qwen/qwen3-8b": {
+      "deduplicated": {
+        "precision": 0.305556,
+        "recall": 0.733333,
+        "f1_score": 0.431373,
+        "total_correct": 11,
+        "total_predicted": 36,
+        "total_ground_truth": 15
+      }
+    },
+    "deepseek/deepseek-chat": {
+      "deduplicated": {
+        "precision": 0.323529,
+        "recall": 0.733333,
+        "f1_score": 0.44898,
+        "total_correct": 11,
+        "total_predicted": 34,
+        "total_ground_truth": 15
+      }
+    }
+  }
+}

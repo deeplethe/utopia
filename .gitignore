@@ -1,0 +1,26 @@
+# Python / backend
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+backend/data/
+backend/data_bak/
+backend/data*/
+backend/.env
+.env
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+.pnpm-store/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local runtime / acceptance artifacts
+*.log
+tmp/

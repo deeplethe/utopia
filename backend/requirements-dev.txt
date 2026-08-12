@@ -1,0 +1,3 @@
+-r requirements.txt
+beautifulsoup4>=4.12
+pytest>=8.3
