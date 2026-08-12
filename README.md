@@ -18,9 +18,6 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 
 </div>
 
-> [!IMPORTANT]
-> OntoPilot is under active development and has not reached 1.0. Back up PostgreSQL, the OntoPilot data volume, and your token-encryption key before upgrades. Review release notes and validate migrations on a copy of production data.
-
 <details>
 <summary><strong>Contents</strong></summary>
 

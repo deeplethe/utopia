@@ -18,9 +18,6 @@
 
 </div>
 
-> [!IMPORTANT]
-> OntoPilot 正在快速开发，尚未达到 1.0。升级前请备份 PostgreSQL、OntoPilot 数据卷和 Token 加密密钥，并先使用生产数据副本验证迁移。
-
 <details>
 <summary><strong>目录</strong></summary>
 
