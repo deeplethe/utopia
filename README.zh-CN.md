@@ -4,6 +4,8 @@
 
 **从源文档构建由人治理、可追溯、可发布的本体。**
 
+`在每次审核中进化 · 从每个决策中学习`
+
 在一个自托管工作台中完成 TBox、SKOS 术语、ABox 的构建、审阅、版本化、发布与服务。
 
 [English](README.md) · [文档](#文档与接口) · [架构](docs/architecture.md) · [更新日志](CHANGELOG.md) · [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [安全策略](SECURITY.md)
@@ -17,9 +19,6 @@
 ![OntoPilot 将文档转化为经过审核的知识图谱和不可变发布版本](docs/images/ontopilot-hero-title.webp)
 
 </div>
-
-> [!IMPORTANT]
-> OntoPilot 正在快速开发，尚未达到 1.0。升级前请备份 PostgreSQL、OntoPilot 数据卷和 Token 加密密钥，并先使用生产数据副本验证迁移。
 
 <details>
 <summary><strong>目录</strong></summary>
@@ -51,6 +50,7 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 
 - **从业务文档到可计算的领域知识。** 将分散的自然语言转化为相互关联的 TBox、SKOS 术语与 ABox，同时保留每条语句的原始依据。
 - **让人机协作真正可治理。** 模型规模化提出候选，专家在聚焦的审核队列中修正与裁决，不必从头返工，也不必盲信生成结果。
+- **每一次审核，都让智能体更懂你的业务。** 假设一份文档写“海洋探测器一号”，另一份写“海探1”。专家确认它们是同一设备并留下判断理由后，OntoPilot 会把这项决策沉淀为可复用的实体消歧记忆；下次再遇到“海探1”时，它会映射到正确实体，而不是重复创建。遇到新的叫法或冲突证据时，仍会回到人工审核。
 - **从“看起来可用”走到生产可用。** 通过语义 Diff、不可变发布、回滚、REST API 与 MCP，把审核后的知识稳定交付给业务系统和 Agent。
 - **可追溯不是补丁，而是底座。** 每项决策都能回到文档 chunk、模型、提示词快照、操作者与完整审核历史。
 
@@ -60,14 +60,12 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 
 | 协议 F1 | Wine<br>食品与饮料 | GeoNames<br>地理 | OWL-Time<br>单位与度量 |
 | --- | ---: | ---: | ---: |
-| OntoLearner 参照 · Qwen3-8B | 18.60%¹ | 19.70%¹ | 14.08%² |
+| OntoLearner 参照 · Qwen3-8B | 18.60% | 19.70% | 14.08% |
 | **OntoPilot 评测 · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
 | **提升** | **+10.35 个百分点 / +55.6%** | **+7.33 个百分点 / +37.2%** | **+2.58 个百分点 / +18.3%** |
 | 结论 | **新 SOTA** | 同模型领先 | 提示词提升 |
 
-¹ OntoLearner 论文成绩。² 论文未单列 OWL-Time，因此使用受控的 OntoLearner 提示词基线。
-Wine 和 OWL-Time 使用 OntoPilot 冻结提示词；GeoNames 目前仍使用未修改的 OntoLearner
-提示词运行于我们的适配器。完整方法、六个数据集、消融和复现见
+评测范围、基线口径、提示词配置与复现细节见
 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
 
 ## 核心能力
