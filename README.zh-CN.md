@@ -6,10 +6,10 @@
 
 在一个自托管工作台中完成 TBox、SKOS 术语、ABox 的构建、审阅、版本化、发布与服务。
 
-[English](README.md) · [文档](#文档与接口) · [架构](docs/architecture.md) · [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [安全策略](SECURITY.md)
+[English](README.md) · [文档](#文档与接口) · [架构](docs/architecture.md) · [更新日志](CHANGELOG.md) · [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [安全策略](SECURITY.md)
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-007595)](LICENSE)
-![Release](https://img.shields.io/badge/status-pre--1.0-f59e0b)
+[![Release](https://img.shields.io/badge/release-v0.1.0-2563eb)](CHANGELOG.md)
 ![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
@@ -24,7 +24,8 @@
 <details>
 <summary><strong>目录</strong></summary>
 
-- [项目定位](#项目定位)
+- [为什么选择 OntoPilot](#为什么选择-ontopilot)
+- [Benchmark 亮点](#benchmark-亮点)
 - [核心能力](#核心能力)
 - [产品界面](#产品界面)
 - [工作流程](#工作流程)
@@ -42,16 +43,32 @@
 
 </details>
 
-## 项目定位
+## 为什么选择 OntoPilot
 
-大模型可以快速提出本体候选，但真正可用于生产的本体工程还需要边界、证据、审阅、权限和稳定交付。OntoPilot 把模型输出视为“待治理提案”，而不是不经验证的最终结果。
+OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在制度、手册、产品资料、研究成果和业务文档中的知识，快速沉淀为结构化、可计算的本体数据。
 
-- **TBox 保持概念层。** 独立角色判定器和领域无关守卫阻止具体实例、字面量误入模式层。
-- **ABox 可扩展。** 实例位于独立图中，并异步导出为带校验和的 N-Quads 分片。
-- **术语可治理。** OWL 实体映射为 SKOS 概念；不确定的别名、映射和层级进入人工审核。
-- **决策可追溯。** 语句保留文档、chunk、模型、完整提示词快照、操作者和审核证据。
-- **发布版本不可变。** 草稿、已审核和已发布版本支持分层语义 Diff、部署与恢复。
-- **Agent 权责明确。** 内置 MCP 使用“用户 + 知识体系”范围的 Token，并在每次调用时重新检查实时权限。
+它不只是让大模型“生成一份本体”。OntoPilot 把领域专家、审核者与 Agent 放进同一条知识生产线：**AI 负责规模化阅读与起草，人负责消除歧义、校准和决策，平台负责证据、权限、版本与发布治理。** 最终交付的不是一次性的模型回答，而是一套能够被审核、被发布、被系统调用，并持续演进的企业知识资产。
+
+- **从业务文档到可计算的领域知识。** 将分散的自然语言转化为相互关联的 TBox、SKOS 术语与 ABox，同时保留每条语句的原始依据。
+- **让人机协作真正可治理。** 模型规模化提出候选，专家在聚焦的审核队列中修正与裁决，不必从头返工，也不必盲信生成结果。
+- **从“看起来可用”走到生产可用。** 通过语义 Diff、不可变发布、回滚、REST API 与 MCP，把审核后的知识稳定交付给业务系统和 Agent。
+- **可追溯不是补丁，而是底座。** 每项决策都能回到文档 chunk、模型、提示词快照、操作者与完整审核历史。
+
+## Benchmark 亮点
+
+### 在可直接对比项目上的提升
+
+| 协议 F1 | Wine<br>食品与饮料 | GeoNames<br>地理 | OWL-Time<br>单位与度量 |
+| --- | ---: | ---: | ---: |
+| OntoLearner 参照 · Qwen3-8B | 18.60%¹ | 19.70%¹ | 14.08%² |
+| **OntoPilot 评测 · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
+| **提升** | **+10.35 个百分点 / +55.6%** | **+7.33 个百分点 / +37.2%** | **+2.58 个百分点 / +18.3%** |
+| 结论 | **新 SOTA** | 同模型领先 | 提示词提升 |
+
+¹ OntoLearner 论文成绩。² 论文未单列 OWL-Time，因此使用受控的 OntoLearner 提示词基线。
+Wine 和 OWL-Time 使用 OntoPilot 冻结提示词；GeoNames 目前仍使用未修改的 OntoLearner
+提示词运行于我们的适配器。完整方法、六个数据集、消融和复现见
+[Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
 
 ## 核心能力
 
@@ -124,7 +141,7 @@ SQLite 适用于单进程本地开发；共享环境和 Docker 部署使用 Post
 ### 环境要求
 
 - Docker Engine 27+ 和 Docker Compose v2
-- 建议至少 4 GB 可用内存，以便顺利构建和首次启动
+- 至少 2 GB 可用内存；建议使用 4 GB，以便更顺畅地完成 Docker 构建和启动
 - 抽取时需要 OpenAI 兼容 API 凭据；没有凭据时应用仍可启动
 
 ### 1. 配置
@@ -341,7 +358,7 @@ cd ..
 docker compose config --quiet
 ```
 
-项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。OntoLearner Wine 协议和可复现说明位于 [docs/benchmarks](docs/benchmarks/ontolearner-wine-official.md)。模型和供应商行为会影响得分，本项目不把该结果表述为官方排行榜成绩。
+项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。Taxonomy 评测方法和复现说明统一维护在 [Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 中。
 
 完整人工端到端路径见 [docs/acceptance.md](docs/acceptance.md)。
 

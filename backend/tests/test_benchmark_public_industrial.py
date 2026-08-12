@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -11,6 +12,20 @@ assert SPEC and SPEC.loader
 benchmark = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = benchmark
 SPEC.loader.exec_module(benchmark)
+
+ONTOLEARNER_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_ontolearner_official.py"
+ONTOLEARNER_SPEC = importlib.util.spec_from_file_location("benchmark_ontolearner_official", ONTOLEARNER_SCRIPT)
+assert ONTOLEARNER_SPEC and ONTOLEARNER_SPEC.loader
+ontolearner = importlib.util.module_from_spec(ONTOLEARNER_SPEC)
+sys.modules[ONTOLEARNER_SPEC.name] = ontolearner
+ONTOLEARNER_SPEC.loader.exec_module(ontolearner)
+
+REPEATED_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_ontolearner_repeated.py"
+REPEATED_SPEC = importlib.util.spec_from_file_location("benchmark_ontolearner_repeated", REPEATED_SCRIPT)
+assert REPEATED_SPEC and REPEATED_SPEC.loader
+repeated = importlib.util.module_from_spec(REPEATED_SPEC)
+sys.modules[REPEATED_SPEC.name] = repeated
+REPEATED_SPEC.loader.exec_module(repeated)
 
 
 class FakeClient:
@@ -76,6 +91,157 @@ def test_structural_metrics_do_not_confuse_named_resource_with_class_label() -> 
     individuals = [{"iri": "urn:instance:hvac", "label": ":hvac_system"}]
     metrics = benchmark.structural_metrics(view, individuals)
     assert metrics["tbox_abox_label_collisions"] == []
+
+
+def test_ontolearner_report_uses_dataset_name_and_generic_metric_note() -> None:
+    result = {
+        "generated_at": "2026-08-12T00:00:00Z",
+        "protocol": {
+            "source_revision": "revision",
+            "retriever_model": "retriever",
+            "top_k": 10,
+            "candidate_mode": "paper",
+            "candidate_pairs": 20,
+            "prompt_profile": {
+                "profile": "official",
+                "name": "OntoLearner baseline",
+                "source": "upstream",
+                "sha256": "prompt-digest",
+            },
+        },
+        "dataset": {
+            "name": "OWL-Time",
+            "sha256": "digest",
+            "types": 3,
+            "raw_taxonomy_rows": 2,
+            "unique_taxonomy_pairs": 2,
+        },
+        "retrieval": {
+            "official": {"recall": 1.0, "total_correct": 2},
+            "deduplicated": {"recall": 1.0, "total_correct": 2},
+        },
+        "models": {
+            "model": {
+                "official": {"precision": 1.0, "recall": 1.0, "f1_score": 1.0},
+                "deduplicated": {"precision": 1.0, "recall": 1.0, "f1_score": 1.0},
+                "answers": {"yes": 2, "invalid": 0},
+            }
+        },
+    }
+
+    report = ontolearner.report_markdown(result)
+
+    assert report.startswith("# OWL-Time OntoLearner Prompt Baseline")
+    assert "Unique-edge F1" in report
+    assert "Official P" not in report
+    assert "official" not in report.lower()
+    assert "only metric presented" in report
+
+
+def test_repeated_report_only_presents_unique_edge_metric() -> None:
+    aggregate = {
+        "generated_at": "2026-08-12T00:00:00Z",
+        "status": "complete",
+        "completed_repeats": 1,
+        "requested_repeats": 1,
+        "config": {
+            "prompt_profile": "ontopilot",
+            "models": ["model"],
+            "retriever": "retriever",
+            "top_k": 15,
+            "workers": 1,
+            "official_script_sha256": "script-digest",
+            "gold_sha256": "gold-digest",
+        },
+        "runs": [{"index": 1, "models": {"model": {"deduplicated_f1": 0.5}}}],
+        "models": {
+            "model": {
+                "deduplicated_f1": {
+                    "n": 1,
+                    "mean": 0.5,
+                    "sample_stddev": None,
+                    "ci95_low": None,
+                    "ci95_high": None,
+                    "min": 0.5,
+                    "max": 0.5,
+                }
+            }
+        },
+        "claim": {"wording": "Mean unique-edge F1 is 0.5000."},
+    }
+
+    report = repeated.report_markdown(aggregate)
+
+    assert "unique-edge F1" in report
+    assert "official f1" not in report.lower()
+
+
+def test_ontolearner_prompt_profiles_have_isolated_caches() -> None:
+    types = ["Wine", "Beverage"]
+    official = ontolearner.cache_key("model", "Beverage", "Wine", "official", types)
+    ontopilot = ontolearner.cache_key("model", "Beverage", "Wine", "ontopilot", types)
+
+    assert official != ontopilot
+    assert ontolearner.prompt_snapshot("official")["sha256"] != ontolearner.prompt_snapshot("ontopilot")["sha256"]
+
+
+def test_ontopilot_prompt_parser_fails_closed_and_checks_direction() -> None:
+    valid = '{"sub":"Wine","super":"Beverage","keep":true,"confidence":0.95,"reason":"is-a"}'
+    low_confidence = '{"sub":"Wine","super":"Beverage","keep":true,"confidence":0.5,"reason":"uncertain"}'
+    reversed_edge = '{"sub":"Beverage","super":"Wine","keep":true,"confidence":0.95,"reason":"is-a"}'
+
+    assert ontolearner.map_ontopilot_answer(valid, "Beverage", "Wine")[0] == "yes"
+    assert ontolearner.map_ontopilot_answer(low_confidence, "Beverage", "Wine")[0] == "no"
+    assert ontolearner.map_ontopilot_answer(reversed_edge, "Beverage", "Wine")[0] == "invalid"
+    assert ontolearner.map_ontopilot_answer("yes", "Beverage", "Wine") == ("invalid", None)
+
+
+def test_ontolearner_run_lock_rejects_second_process(tmp_path) -> None:
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys,time; sys.path.insert(0, sys.argv[1]); "
+                "import benchmark_ontolearner_official as b; "
+                "b.acquire_run_lock(b.Path(sys.argv[2])); print('locked', flush=True); time.sleep(10)"
+            ),
+            str(ONTOLEARNER_SCRIPT.parent),
+            str(tmp_path),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "locked"
+        try:
+            ontolearner.acquire_run_lock(tmp_path)
+        except RuntimeError as error:
+            assert "already active" in str(error)
+        else:
+            raise AssertionError("second benchmark process unexpectedly acquired the run lock")
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
+
+
+def test_ontolearner_source_mode_matches_upstream_bidirectional_expansion() -> None:
+    types = ["A", "B", "C"]
+    vectors = [[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]]
+
+    paper = ontolearner.retrieve_candidates(types, vectors, top_k=1, candidate_mode="paper")
+    source = ontolearner.retrieve_candidates(types, vectors, top_k=1, candidate_mode="source")
+
+    paper_pairs = {(row["parent"], row["child"]) for row in paper}
+    source_pairs = {(row["parent"], row["child"]) for row in source}
+    assert paper_pairs == {("B", "A"), ("A", "B"), ("B", "C")}
+    assert source_pairs == {
+        ("B", "A"),
+        ("A", "B"),
+        ("B", "C"),
+        ("C", "B"),
+    }
 
 
 def test_score_round_skips_dataset_without_run_state(tmp_path, monkeypatch) -> None:
