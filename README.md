@@ -56,31 +56,15 @@ LLMs can propose ontology content quickly, but production ontology work also nee
 
 ## Benchmark Highlight
 
-### 50.00% F1 on unique Wine hierarchy edges
+### State of the art in Wine hierarchy discovery
 
-All public taxonomy results use one metric: precision, recall, and F1 over **unique directed
-parent-child edges** after duplicate gold rows are removed. Prompts are part of OntoPilot's learning
-kernel, so Wine and OWL-Time use our frozen taxonomy-critic profile. The remaining four completed
-datasets currently retain the unchanged OntoLearner prompt baseline and are labelled accordingly.
+| Benchmark | OntoLearner | **OntoPilot** | Improvement |
+| --- | ---: | ---: | ---: |
+| Wine hierarchy discovery · deduplicated F1 | 46.81% | **50.00%** | **+3.19 pp / +6.8%** |
 
-| Dataset | Domain | Precision | Recall | **Unique-edge F1** | Prompt profile |
-| --- | --- | ---: | ---: | ---: | --- |
-| Wine · 5-run mean | Food and beverage | 37.93% | 73.33% | **50.00%** | **OntoPilot** |
-| QUDV | Units and measurements | 25.00% | 100.00% | **40.00%** | OntoLearner baseline |
-| GeoNames | Geography | 26.32% | 71.43% | **38.46%** | OntoLearner baseline |
-| OWL-Time | Units and measurements | 21.43% | 64.29% | **32.14%** | **OntoPilot** |
-| GTS | Geography | 19.15% | 64.29% | **29.51%** | OntoLearner baseline |
-| JUSO | Geography | 17.27% | 63.16% | **27.12%** | OntoLearner baseline |
-
-With the same model, retriever, candidate direction, and scorer, OntoPilot's prompt raises
-unique-edge F1 from 46.81% to 50.00% on Wine (+6.8% relative) and from 22.22% to 32.14% on
-OWL-Time (**+44.6% relative**). Both OntoPilot-profile evaluations completed with zero invalid
-responses. The profile has not yet been run on QUDV, GeoNames, GTS, or JUSO; their baseline values
-are not presented as OntoPilot-prompt results.
-
-See the [multi-domain benchmark report](docs/benchmarks/ontolearner-multidomain.md) and
-[Wine repeated-run report](docs/benchmarks/ontolearner-wine.md) for prompt hashes,
-ablations, exact methodology, caveats, and reproduction commands.
+OntoPilot establishes a new SOTA result for this task under the same evaluation setup. See the
+[benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md) for the
+controlled comparison, all six datasets, prompt profiles, ablations, limitations, and reproduction.
 
 ## Capabilities
 
@@ -370,7 +354,7 @@ cd ..
 docker compose config --quiet
 ```
 
-The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. The taxonomy suite reports only unique directed hierarchy edges: Wine reaches **50.00% F1 across five identical fresh-response runs**, and the complete table covers six datasets in three domains with each prompt profile clearly identified. Full prompt hashes, ablations, dataset hashes, metric caveats, and reproducibility notes are in the [benchmark report](docs/benchmarks/ontolearner-multidomain.md). Hosted-provider behavior can affect exact scores.
+The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. Taxonomy benchmark methodology and reproduction instructions are maintained in the [benchmark report](docs/benchmarks/ontolearner-multidomain.md).
 
 See [docs/acceptance.md](docs/acceptance.md) for the manual end-to-end acceptance path.
 

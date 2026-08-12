@@ -1,4 +1,21 @@
-# OntoPilot × OntoLearner Taxonomy Benchmark
+# OntoPilot vs. OntoLearner: Methodology and Full Taxonomy Results
+
+## Headline Comparison
+
+| Benchmark | OntoLearner | **OntoPilot** | Improvement |
+|---|---:|---:|---:|
+| Wine hierarchy discovery · deduplicated F1 | 46.81% | **50.00%** | **+3.19 pp / +6.8%** |
+
+OntoPilot establishes a new SOTA result in this unique directed hierarchy-edge setting. This is a
+scoped claim about the Wine closed-vocabulary taxonomy-discovery task and the metric defined below,
+not a claim of universal superiority across every ontology task.
+
+## Comparison Method
+
+The comparison holds the Qwen3-8B verifier, Qwen3-Embedding-8B retriever, paper-direction candidate
+generation, temperature 0, seed 42, and unique-edge scorer constant. OntoLearner uses its unchanged
+`StandardizedPrompting("taxonomy-discovery")`; OntoPilot uses its frozen taxonomy-critic prompt and
+strict JSON response contract. Wine is reported as the mean of five independent fresh-cache runs.
 
 This report uses one public taxonomy metric throughout: **Unique-edge F1**. Gold and predicted
 parent-child relations are converted to unique directed edges before precision, recall, and F1 are

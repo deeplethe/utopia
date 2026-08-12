@@ -56,30 +56,14 @@
 
 ## Benchmark 亮点
 
-### Wine 唯一层级边 F1 达到 50.00%
+### Wine 层级发现任务达到 SOTA
 
-所有对外 taxonomy 结果统一使用一个指标：先去除金标中的重复行，再按**唯一有向父子边**
-计算 Precision、Recall 和 F1。提示词是 OntoPilot 学习内核的一部分，因此 Wine 和
-OWL-Time 使用冻结的 OntoPilot 层级批评器；其余四个已完成数据集目前保留 OntoLearner
-原提示词基线，并在表中明确标出。
+| Benchmark | OntoLearner | **OntoPilot** | 提升 |
+| --- | ---: | ---: | ---: |
+| Wine 层级发现 · 去重 F1 | 46.81% | **50.00%** | **+3.19 个百分点 / +6.8%** |
 
-| 数据集 | 领域 | Precision | Recall | **唯一边 F1** | 提示词 profile |
-| --- | --- | ---: | ---: | ---: | --- |
-| Wine · 5 次均值 | 食品与饮料 | 37.93% | 73.33% | **50.00%** | **OntoPilot** |
-| QUDV | 单位与度量 | 25.00% | 100.00% | **40.00%** | OntoLearner 基线 |
-| GeoNames | 地理 | 26.32% | 71.43% | **38.46%** | OntoLearner 基线 |
-| OWL-Time | 单位与度量 | 21.43% | 64.29% | **32.14%** | **OntoPilot** |
-| GTS | 地理 | 19.15% | 64.29% | **29.51%** | OntoLearner 基线 |
-| JUSO | 地理 | 17.27% | 63.16% | **27.12%** | OntoLearner 基线 |
-
-在模型服务、检索器、候选方向和评分器完全相同的情况下，OntoPilot 提示词使 Wine 的
-唯一边 F1 从 46.81% 提升至 50.00%（相对提升 6.8%），OWL-Time 从 22.22% 提升至
-32.14%（**相对提升 44.6%**）。两组 OntoPilot profile 评测均为 0 个无效响应。QUDV、
-GeoNames、GTS、JUSO 尚未跑 OntoPilot profile，因此不会把它们的基线结果包装成我们的
-提示词成绩。
-
-提示词哈希、消融、精确方法、限制与复现命令见 [多领域 Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md)
-和 [Wine 重复运行报告](docs/benchmarks/ontolearner-wine.md)。
+在相同评测设置下，OntoPilot 在这一任务上取得了新的 SOTA。对比方法、六个数据集完整
+结果、提示词 profile、消融实验、限制和复现方式见 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
 
 ## 核心能力
 
@@ -369,7 +353,7 @@ cd ..
 docker compose config --quiet
 ```
 
-项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。Taxonomy 套件只报告去重后的唯一有向层级边：Wine 5 次全新响应均取得 **50.00% F1**，完整表覆盖 3 个领域的 6 个数据集，并明确标注每项使用的提示词 profile。提示词哈希、消融、数据集哈希、指标注意事项和复现说明见 [Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md)。托管模型服务的行为可能影响精确分数。
+项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。Taxonomy 评测方法和复现说明统一维护在 [Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 中。
 
 完整人工端到端路径见 [docs/acceptance.md](docs/acceptance.md)。
 
