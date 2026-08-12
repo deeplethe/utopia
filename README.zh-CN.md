@@ -79,6 +79,8 @@
 
 所有评测均使用 Qwen3-Embedding-8B、Qwen3-8B、论文候选方向和未经修改的 taxonomy-discovery 提示词。Wine 为 5 次运行均值，其余为完整单次运行。数据集哈希、精确协议、指标口径和复现命令见 [多领域 Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 与 [Wine 重复运行报告](docs/benchmarks/ontolearner-wine-official.md)。
 
+目前有两层对照数据。与论文中可直接对应的同模型结果相比，OntoPilot 在 **Wine 上相对提升 41.3%**，在 **GeoNames 上相对提升 37.2%**。与新运行的固定 revision OntoLearner 源码对照相比，六个数据集的宏平均 F1 为 **+0.56 个百分点 / 相对提升 2.3%**；其中 JUSO 提升最大，为 **+2.05 个百分点 / +9.3%**，QUDV 与 GeoNames 因类型空间较小、已经枚举全部有向组合而持平。两套数字严格分开：论文对照包含其原始本地模型服务差异，源码对照则固定同一托管模型服务，只隔离候选方向差异。
+
 ## 核心能力
 
 | 领域 | 能力 |

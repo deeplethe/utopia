@@ -41,10 +41,41 @@ The OntoLearner paper reports 18.6% F1 for Qwen3-8B on Wine. OntoPilot's five-ru
 | OntoPilot benchmark · Qwen3-8B · five-run mean | **26.29%** |
 | Gain | **+7.69 percentage points · +41.3% relative** |
 
-All five Wine runs exceeded the paper's same-model result. See the
+All five Wine runs exceeded the paper's same-model result. GeoNames is the paper's sole Geography
+ontology, so its domain row is also a direct dataset-level comparison: **27.03% versus 19.70%**, a
+gain of **7.33 percentage points or 37.2% relative**. See the
 [Wine repeated-run report](ontolearner-wine-official.md) for the per-run scores and confidence
-interval. We do not claim the same relative gain for the other five datasets because the paper does
-not provide directly comparable per-dataset Qwen3-8B figures for those rows.
+interval.
+
+The paper's Units & Measurements row averages OM and QUDT, rather than OWL-Time and QUDV. GTS and
+JUSO are also absent from the paper's selected ontology set. Their paper-table improvements therefore
+cannot be computed without comparing different datasets.
+
+## Fixed-Revision Source Control
+
+For every dataset, we additionally executed the candidate logic from OntoLearner revision
+`da7dd03c349ab8516518c5b0dee3bfed2deb8252`: `AutoRetrieverLearner._taxonomy_discovery` expands both
+directions of each retrieved neighbor pair. The control reuses the exact cached Qwen3 embeddings and
+shared-candidate Qwen3-8B answers from the corresponding OntoPilot run, then evaluates the additional
+source candidates with the same hosted endpoint. Finally, the results are scored with the upstream
+`taxonomy_discovery_metrics` function. This paired design keeps dataset, model service, prompt,
+retrieval vectors, and metric fixed, making candidate orientation the only pipeline difference.
+
+| Dataset | OntoPilot paper direction | Upstream source control | Gain | Relative gain |
+|---|---:|---:|---:|---:|
+| Wine · five-run mean | **26.29%** | 25.97% | **+0.32 pp** | **+1.2%** |
+| OWL-Time | **14.08%** | 13.89% | **+0.20 pp** | **+1.4%** |
+| QUDV | **40.00%** | 40.00% | 0.00 pp | 0.0% |
+| GeoNames | **27.03%** | 27.03% | 0.00 pp | 0.0% |
+| GTS | **14.52%** | 13.74% | **+0.78 pp** | **+5.6%** |
+| JUSO | **24.00%** | 21.95% | **+2.05 pp** | **+9.3%** |
+| **Macro average** | **24.32%** | 23.76% | **+0.56 pp** | **+2.3%** |
+
+QUDV and GeoNames have only 11 types, so top-k 15 is bounded to 10 and already covers every possible
+directed pair; the two modes are necessarily identical. On larger ontologies, the paper direction
+usually improves precision by avoiding reverse candidates. The result is positive but modest—not a
+claim of universal large gains. One of the five paired Wine runs was 0.03 percentage points lower
+than the source control, while the five-run mean was higher.
 
 ## Frozen Protocol
 
@@ -54,7 +85,7 @@ not provide directly comparable per-dataset Qwen3-8B figures for those rows.
 | Retriever | `qwen/qwen3-embedding-8b` |
 | Verifier | `qwen/qwen3-8b` |
 | Candidate search | Full ontology type space, top-k 15 per child |
-| Candidate orientation | Paper parent-candidate direction |
+| Candidate orientation | Paper parent-candidate direction; upstream source control uses both directions |
 | Prompt | Unmodified `StandardizedPrompting("taxonomy-discovery")` |
 | Temperature / seed | 0 / 42 |
 | Serving stack | OpenRouter hosted APIs |
@@ -97,6 +128,21 @@ For Wine's repeated result:
 ```bash
 python scripts/benchmark_ontolearner_repeated.py --repeats 5
 ```
+
+To reproduce the fixed-revision source control, use the same dataset and caches with the upstream
+bidirectional candidate mode:
+
+```bash
+python scripts/benchmark_ontolearner_official.py \
+  --gold data/benchmarks/ontolearner-geography/juso/type_taxonomies.json \
+  --run-dir data/benchmarks/ontolearner-juso-source-control \
+  --dataset-name JUSO --models qwen/qwen3-8b --candidate-mode source
+```
+
+Copy the embedding and response caches from the matching paper-direction run before execution to
+make shared candidate decisions paired; the adapter evaluates only newly introduced reverse
+candidates. Candidate sets from every control run were programmatically compared with
+`AutoRetrieverLearner._taxonomy_discovery` at the frozen revision and matched exactly.
 
 ## Metric Interpretation
 

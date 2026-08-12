@@ -122,6 +122,24 @@ def test_ontolearner_report_uses_dataset_name_and_generic_metric_note() -> None:
     assert "protocol comparability" in report
 
 
+def test_ontolearner_source_mode_matches_upstream_bidirectional_expansion() -> None:
+    types = ["A", "B", "C"]
+    vectors = [[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]]
+
+    paper = ontolearner.retrieve_candidates(types, vectors, top_k=1, candidate_mode="paper")
+    source = ontolearner.retrieve_candidates(types, vectors, top_k=1, candidate_mode="source")
+
+    paper_pairs = {(row["parent"], row["child"]) for row in paper}
+    source_pairs = {(row["parent"], row["child"]) for row in source}
+    assert paper_pairs == {("B", "A"), ("A", "B"), ("B", "C")}
+    assert source_pairs == {
+        ("B", "A"),
+        ("A", "B"),
+        ("B", "C"),
+        ("C", "B"),
+    }
+
+
 def test_score_round_skips_dataset_without_run_state(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(benchmark, "RUNS_DIR", tmp_path)
     monkeypatch.setattr(benchmark, "OntoPilotClient", lambda *args: FakeClient())

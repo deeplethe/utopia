@@ -79,6 +79,8 @@ On OntoLearner's Wine taxonomy-discovery paper protocol, the OntoPilot benchmark
 
 Every row uses Qwen3-Embedding-8B, Qwen3-8B, the paper's candidate direction, and the unmodified taxonomy-discovery prompt. Wine is a five-run mean; the other rows are complete single runs. See the [multi-domain benchmark report](docs/benchmarks/ontolearner-multidomain.md) and [Wine repeated-run report](docs/benchmarks/ontolearner-wine-official.md) for dataset hashes, exact protocol, caveats, and reproduction commands.
 
+Two comparison layers are now available. Against the paper's directly comparable same-model rows, OntoPilot is **+41.3% on Wine** and **+37.2% on GeoNames**. Against a newly executed fixed-revision OntoLearner source control on all six datasets, the macro F1 gain is **+0.56 percentage points / +2.3% relative**; JUSO shows the largest source-control gain at **+2.05 points / +9.3%**, while QUDV and GeoNames tie because their small type spaces already enumerate every directed pair. These are kept separate because the paper comparison includes its original local-serving results, whereas the source control deliberately fixes the hosted model service and isolates candidate orientation.
+
 ## Capabilities
 
 | Area | Included |
