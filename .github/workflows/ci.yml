@@ -18,7 +18,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
       - run: pip install -r requirements-dev.txt
-      - run: pytest -q
+      - run: python -m pytest -q
       - run: python scripts/check_tbox_guard.py
       - run: python scripts/check_ontolearner_regression.py tests/gold/ontolearner_reference_result.json
 
