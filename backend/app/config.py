@@ -10,6 +10,7 @@ from pathlib import Path
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import URL
 
 # backend/ directory (this file lives at backend/app/config.py)
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -57,6 +58,11 @@ class Settings(BaseSettings):
     # --- Paths (all under backend/data) ---
     data_dir: Path = BACKEND_DIR / "data"
     database_url: str = ""
+    database_host: str = ""
+    database_port: int = 5432
+    database_name: str = "ontopilot"
+    database_user: str = "ontopilot"
+    database_password: str = ""
 
     # --- Chunking defaults ---
     chunk_size_chars: int = 1200
@@ -167,7 +173,7 @@ class Settings(BaseSettings):
     session_ttl_hours: int = 24 * 14  # 2 weeks
     cookie_secure: bool = False       # set True when served over HTTPS
     admin_username: str = "admin"     # seed account created on first boot (empty user table)
-    admin_password: str = "admin"     # CHANGE via backend/.env
+    admin_password: str = ""          # required only when bootstrapping an empty user database
     seed_demo_data: bool = False       # create a deterministic no-LLM demo KS on first boot
 
     @property
@@ -180,7 +186,18 @@ class Settings(BaseSettings):
 
     @property
     def db_url(self) -> str:
-        return self.database_url or f"sqlite:///{self.db_path.as_posix()}"
+        if self.database_url:
+            return self.database_url
+        if self.database_host:
+            return URL.create(
+                "postgresql+psycopg",
+                username=self.database_user,
+                password=self.database_password,
+                host=self.database_host,
+                port=self.database_port,
+                database=self.database_name,
+            ).render_as_string(hide_password=False)
+        return f"sqlite:///{self.db_path.as_posix()}"
 
     @property
     def oxigraph_dir(self) -> Path:

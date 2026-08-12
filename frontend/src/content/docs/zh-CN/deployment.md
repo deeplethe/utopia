@@ -10,7 +10,10 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-首次启动前应设置强随机 `POSTGRES_PASSWORD`、管理员密码和至少一个可用的模型端点。
+首次启动前，请在 `.env` 设置强 `POSTGRES_PASSWORD`，并在 `backend/.env` 设置至少 12 个
+字符的 `ADMIN_PASSWORD`。凭据为空或仍为公开示例值时，系统会主动终止初始化，不会创建弱口令管理员。
+
+还应配置至少一个可用的模型端点；未配置模型凭据时，界面与不依赖模型的功能仍可启动。
 
 ```mermaid
 flowchart LR

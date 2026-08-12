@@ -14,6 +14,7 @@ from app.security import (
     delete_session,
     hash_password,
     require_admin,
+    validate_new_password,
     verify_password,
 )
 
@@ -96,8 +97,10 @@ def update_me(
     if body.new_password is not None:
         if not verify_password(body.current_password or "", user.password_hash):
             raise HTTPException(status_code=403, detail="Current password is incorrect")
-        if len(body.new_password) < 6:
-            raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+        try:
+            validate_new_password(body.new_password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         user.password_hash = hash_password(body.new_password)
     session.add(user)
     session.commit()
@@ -133,8 +136,10 @@ def create_user(
     username = body.username.strip()
     if not username:
         raise HTTPException(status_code=400, detail="Username is required")
-    if not body.password:
-        raise HTTPException(status_code=400, detail="Password is required")
+    try:
+        validate_new_password(body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if session.exec(select(User).where(User.username == username)).first():
         raise HTTPException(status_code=409, detail="Username already exists")
     user = User(username=username, password_hash=hash_password(body.password), is_admin=body.is_admin)
@@ -163,7 +168,11 @@ def update_user(
     if body.active is False and user.id == admin.id:
         raise HTTPException(status_code=400, detail="You can't deactivate yourself")
 
-    if body.password:
+    if body.password is not None:
+        try:
+            validate_new_password(body.password)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         user.password_hash = hash_password(body.password)
     if body.is_admin is not None:
         user.is_admin = body.is_admin

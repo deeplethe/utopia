@@ -29,11 +29,18 @@ def _bootstrap_admin() -> None:
 
     from app.db.database import engine
     from app.db.models import KnowledgeSystem, User
-    from app.security import hash_password
+    from app.security import hash_password, validate_new_password
 
     with Session(engine) as session:
         admin = session.exec(select(User).where(User.is_admin == True)).first()  # noqa: E712
         if admin is None and session.exec(select(User)).first() is None:
+            try:
+                validate_new_password(settings.admin_password, bootstrap=True)
+            except ValueError as exc:
+                raise RuntimeError(
+                    "An empty installation requires a strong ADMIN_PASSWORD in backend/.env "
+                    f"before the first start: {exc}"
+                ) from exc
             admin = User(
                 username=settings.admin_username,
                 password_hash=hash_password(settings.admin_password),
@@ -42,7 +49,7 @@ def _bootstrap_admin() -> None:
             session.add(admin)
             session.commit()
             session.refresh(admin)
-            logging.warning("seeded admin user %r (change the password in backend/.env)", settings.admin_username)
+            logging.info("seeded initial admin user %r", settings.admin_username)
 
         if admin is not None:
             orphans = session.exec(

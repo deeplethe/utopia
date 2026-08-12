@@ -170,6 +170,9 @@ ADMIN_PASSWORD=替换为强密码
 COOKIE_SECURE=false
 ```
 
+全新安装必须设置这两个密码。若管理员密码为空、过短或仍是公开示例值，OntoPilot 会拒绝
+创建首个管理员；请使用至少 12 个字符的密码。
+
 `SYSTEM_LANGUAGE` 控制内置模型提示词（`en` 或 `zh-CN`），与每个用户选择的前端语言无关；知识体系级提示词覆盖始终优先。
 
 ### 2. 启动并检查
@@ -282,7 +285,7 @@ release/
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `POSTGRES_PASSWORD` | Compose 回退为 `ontopilot` | PostgreSQL 密码，非一次性本地环境必须修改 |
+| `POSTGRES_PASSWORD` | 必填 | PostgreSQL 密码；为空时 Compose 会拒绝启动 |
 | `SYSTEM_LANGUAGE` | `en` | 内置后端提示词语言（`en` / `zh-CN`），独立于前端语言 |
 | `ONTOPILOT_BIND_ADDRESS` | `0.0.0.0` | 前端容器映射到宿主机的监听地址 |
 | `ONTOPILOT_PORT` | `8080` | 前端容器映射到宿主机的端口 |
@@ -409,7 +412,7 @@ curl --fail http://localhost:8080/api/health
 
 公开部署前：
 
-- 修改管理员和 PostgreSQL 默认密码；
+- 配置强管理员密码和 PostgreSQL 密码；
 - 启用 HTTPS 和安全 Cookie；
 - 保护并备份 Token 加密材料；
 - 缩小 API/MCP Token Scope、设置有效期并及时吊销；

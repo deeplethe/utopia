@@ -12,6 +12,31 @@ from app.config import settings
 from app.db.database import get_session
 from app.db.models import AuthSession, User, utcnow
 
+PASSWORD_MIN_LENGTH = 12
+PASSWORD_MAX_BYTES = 72  # bcrypt's input limit
+_UNSAFE_BOOTSTRAP_PASSWORDS = {
+    "admin",
+    "admin123",
+    "change-me",
+    "changeme",
+    "password",
+    "replace-with-a-strong-password",
+}
+
+
+def validate_new_password(password: str, *, bootstrap: bool = False) -> None:
+    """Reject weak or bcrypt-incompatible passwords before hashing.
+
+    Existing password hashes remain valid; this applies only to newly seeded, created, or
+    changed credentials. Bootstrap validation additionally rejects published example values.
+    """
+    if bootstrap and password.strip().casefold() in _UNSAFE_BOOTSTRAP_PASSWORDS:
+        raise ValueError("ADMIN_PASSWORD must not use a published example or common default")
+    if len(password) < PASSWORD_MIN_LENGTH:
+        raise ValueError(f"Password must be at least {PASSWORD_MIN_LENGTH} characters")
+    if len(password.encode("utf-8")) > PASSWORD_MAX_BYTES:
+        raise ValueError(f"Password must be at most {PASSWORD_MAX_BYTES} UTF-8 bytes")
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")

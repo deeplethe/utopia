@@ -8,7 +8,7 @@ services:
     environment:
       POSTGRES_DB: ontopilot
       POSTGRES_USER: ontopilot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ontopilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
     volumes:
       - ontopilot-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +22,11 @@ services:
     build: ./backend
     env_file: ./backend/.env
     environment:
-      DATABASE_URL: postgresql+psycopg://ontopilot:${POSTGRES_PASSWORD:-ontopilot}@postgres:5432/ontopilot
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ontopilot
+      DATABASE_USER: ontopilot
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
       SYSTEM_LANGUAGE: ${SYSTEM_LANGUAGE:-en}
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8080/mcp}
     depends_on:
