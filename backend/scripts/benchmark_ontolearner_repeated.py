@@ -149,23 +149,31 @@ def summarize(values: list[float]) -> dict[str, Any]:
     }
 
 
-def validate_result(result: dict[str, Any], models: list[str]) -> None:
+def validate_result(result: dict[str, Any], models: list[str], prompt_profile: str = "official") -> None:
     protocol = result.get("protocol", {})
     if protocol.get("candidate_mode") != "paper":
         raise RuntimeError("Result does not use the strict paper candidate orientation")
+    actual_profile = protocol.get("prompt_profile", {}).get("profile", "official")
+    if actual_profile != prompt_profile:
+        raise RuntimeError(f"Result uses prompt profile {actual_profile!r}, expected {prompt_profile!r}")
     missing = [model for model in models if model not in result.get("models", {})]
     if missing:
         raise RuntimeError(f"Result is missing verifier models: {', '.join(missing)}")
 
 
-def completed_runs(run_root: Path, repeats: int, models: list[str]) -> list[dict[str, Any]]:
+def completed_runs(
+    run_root: Path,
+    repeats: int,
+    models: list[str],
+    prompt_profile: str = "official",
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index in range(1, repeats + 1):
         result_path = run_root / f"run-{index:02d}" / "result.json"
         if not result_path.exists():
             continue
         result = read_json(result_path)
-        validate_result(result, models)
+        validate_result(result, models, prompt_profile)
         rows.append(
             {
                 "index": index,
@@ -193,7 +201,7 @@ def build_aggregate(
     models: list[str],
     config: dict[str, Any],
 ) -> dict[str, Any]:
-    runs = completed_runs(run_root, repeats, models)
+    runs = completed_runs(run_root, repeats, models, config.get("prompt_profile", "official"))
     model_stats: dict[str, Any] = {}
     for model in models:
         official_values = [row["models"][model]["official_f1"] for row in runs]
@@ -281,6 +289,7 @@ def report_markdown(aggregate: dict[str, Any]) -> str:
         "## Reproduction Controls",
         "",
         "- Protocol: OntoLearner Wine taxonomy discovery, strict `paper` candidate orientation",
+        f"- Prompt profile: `{config.get('prompt_profile', 'official')}`",
         f"- Verifiers: {', '.join(f'`{model}`' for model in config['models'])}",
         f"- Retriever: `{config['retriever']}`; top-k `{config['top_k']}`",
         f"- Independent response and embedding caches per run; `{config['workers']}` sequential-run workers",
@@ -415,6 +424,7 @@ def prepare_snapshots(
         "retriever": args.retriever,
         "top_k": args.top_k,
         "candidate_mode": "paper",
+        "prompt_profile": args.prompt_profile,
         "workers": args.workers,
         "timeout": args.timeout,
     }
@@ -428,6 +438,7 @@ def prepare_snapshots(
             "retriever",
             "top_k",
             "candidate_mode",
+            "prompt_profile",
             "workers",
             "timeout",
         }
@@ -454,6 +465,7 @@ def main() -> None:
     parser.add_argument("--models", default=",".join(DEFAULT_MODELS))
     parser.add_argument("--retriever", default=DEFAULT_RETRIEVER)
     parser.add_argument("--top-k", type=int, default=15)
+    parser.add_argument("--prompt-profile", choices=("official", "ontopilot"), default="official")
     parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--run-attempts", type=int, default=8)
@@ -484,7 +496,7 @@ def main() -> None:
         run_dir = run_root / f"run-{index:02d}"
         result_path = run_dir / "result.json"
         if result_path.exists():
-            validate_result(read_json(result_path), models)
+            validate_result(read_json(result_path), models, args.prompt_profile)
             print(f"[repeat {index}/{args.repeats}] complete; skipping", flush=True)
             continue
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -508,6 +520,8 @@ def main() -> None:
             str(args.top_k),
             "--candidate-mode",
             "paper",
+            "--prompt-profile",
+            args.prompt_profile,
             "--workers",
             str(args.workers),
             "--timeout",
@@ -529,7 +543,7 @@ def main() -> None:
                 with aggregate_log.open("a", encoding="utf-8") as handle:
                     handle.write(message + "\n")
                 time.sleep(delay)
-        validate_result(read_json(result_path), models)
+        validate_result(read_json(result_path), models, args.prompt_profile)
         aggregate = write_aggregate(run_root, args.repeats, models, config)
         print(
             f"[repeat {index}/{args.repeats}] complete; "

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
 
 
@@ -94,6 +95,12 @@ def test_ontolearner_report_uses_dataset_name_and_generic_metric_note() -> None:
             "top_k": 10,
             "candidate_mode": "paper",
             "candidate_pairs": 20,
+            "prompt_profile": {
+                "profile": "official",
+                "name": "OntoLearner official",
+                "source": "upstream",
+                "sha256": "prompt-digest",
+            },
         },
         "dataset": {
             "name": "OWL-Time",
@@ -120,6 +127,56 @@ def test_ontolearner_report_uses_dataset_name_and_generic_metric_note() -> None:
     assert report.startswith("# OntoLearner OWL-Time Official-Protocol Baseline")
     assert "Official-paper Wine comparison" not in report
     assert "protocol comparability" in report
+
+
+def test_ontolearner_prompt_profiles_have_isolated_caches() -> None:
+    types = ["Wine", "Beverage"]
+    official = ontolearner.cache_key("model", "Beverage", "Wine", "official", types)
+    ontopilot = ontolearner.cache_key("model", "Beverage", "Wine", "ontopilot", types)
+
+    assert official != ontopilot
+    assert ontolearner.prompt_snapshot("official")["sha256"] != ontolearner.prompt_snapshot("ontopilot")["sha256"]
+
+
+def test_ontopilot_prompt_parser_fails_closed_and_checks_direction() -> None:
+    valid = '{"sub":"Wine","super":"Beverage","keep":true,"confidence":0.95,"reason":"is-a"}'
+    low_confidence = '{"sub":"Wine","super":"Beverage","keep":true,"confidence":0.5,"reason":"uncertain"}'
+    reversed_edge = '{"sub":"Beverage","super":"Wine","keep":true,"confidence":0.95,"reason":"is-a"}'
+
+    assert ontolearner.map_ontopilot_answer(valid, "Beverage", "Wine")[0] == "yes"
+    assert ontolearner.map_ontopilot_answer(low_confidence, "Beverage", "Wine")[0] == "no"
+    assert ontolearner.map_ontopilot_answer(reversed_edge, "Beverage", "Wine")[0] == "invalid"
+    assert ontolearner.map_ontopilot_answer("yes", "Beverage", "Wine") == ("invalid", None)
+
+
+def test_ontolearner_run_lock_rejects_second_process(tmp_path) -> None:
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys,time; sys.path.insert(0, sys.argv[1]); "
+                "import benchmark_ontolearner_official as b; "
+                "b.acquire_run_lock(b.Path(sys.argv[2])); print('locked', flush=True); time.sleep(10)"
+            ),
+            str(ONTOLEARNER_SCRIPT.parent),
+            str(tmp_path),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "locked"
+        try:
+            ontolearner.acquire_run_lock(tmp_path)
+        except RuntimeError as error:
+            assert "already active" in str(error)
+        else:
+            raise AssertionError("second benchmark process unexpectedly acquired the run lock")
+    finally:
+        holder.terminate()
+        holder.wait(timeout=5)
 
 
 def test_ontolearner_source_mode_matches_upstream_bidirectional_expansion() -> None:

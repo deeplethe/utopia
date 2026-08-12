@@ -56,30 +56,30 @@
 
 ## Benchmark 亮点
 
-### 相比 OntoLearner 同模型结果，F1 提升 41.3%
+### 使用 OntoPilot 自有提示词，Wine F1 相对提升 55.6%
 
-在 OntoLearner Wine taxonomy-discovery 论文协议下，OntoPilot Benchmark 配置使用 Qwen3-8B 进行 5 次全新缓存运行，取得 **26.29% 的平均 F1**，显著超过 OntoLearner 论文中同模型的 **18.6%**。
+提示词是 OntoPilot 学习内核的一部分，因此主成绩不再用 OntoLearner 的提示词替代我们的
+提示词。冻结 OntoPilot 闭集层级批评器后，Qwen3-8B 在 Wine 的 5 次全新响应运行中每次都
+达到 **28.95% Official F1 和 50.00% 去重结构 F1**。相比论文同模型的 18.60%，提升
+**10.35 个百分点 / 55.6%**。
 
-| 同模型对比 | F1 |
-| --- | ---: |
-| OntoLearner 论文 · Qwen3-8B | 18.60% |
-| OntoPilot Benchmark · Qwen3-8B · 5 次均值 | **26.29%** |
-| 提升 | **+7.69 个百分点 · 相对提升 41.3%** |
+| 区分提示词的对比 | Official F1 | 结构 F1（去重） |
+| --- | ---: | ---: |
+| OntoLearner 论文 · Qwen3-8B · Wine | 18.60% | — |
+| OntoLearner 提示词兼容基线 · Wine · 5 次均值 | 26.29% | 46.81% |
+| **OntoPilot 提示词 profile · Wine · 5 次均值** | **28.95%** | **50.00%** |
+| **OntoPilot 提示词 profile · OWL-Time** | **16.67%** | **32.14%** |
 
-**5 次运行全部超过论文同模型结果**，单次最高达到 **29.73% F1**。而且证据不再只有 Wine：同一套冻结配置现已跑完 **3 个领域、6 个完整数据集**，共执行 1,570 次候选验证，没有用抽样成绩代替全量结果。
+在模型服务、检索器、候选方向和评分器都相同的情况下，OntoPilot 提示词相对未修改的
+OntoLearner 提示词，在 Wine 提升 **+2.66 个百分点 / +10.1%**，在 OWL-Time 提升
+**+2.58 个百分点 / +18.3%**；OWL-Time 结构 F1 从 22.22% 提升至 32.14%，相对提升
+**44.6%**。两组 prompt-aware 评测均为 0 个无效响应。评测余额耗尽后，其余四个数据集
+未再运行这一 profile；不会把部分运行包装成完整结果。
 
-| 完整数据集评测 | 领域 | Official F1 | 结构 F1（去重） |
-| --- | --- | ---: | ---: |
-| Wine · 5 次均值 | 食品与饮料 | **26.29%** | **46.81%** |
-| QUDV | 单位与度量 | **40.00%** | **40.00%** |
-| OWL-Time | 单位与度量 | **14.08%** | **22.22%** |
-| GeoNames | 地理 | **27.03%** | **38.46%** |
-| GTS | 地理 | **14.52%** | **29.51%** |
-| JUSO | 地理 | **24.00%** | **27.12%** |
-
-所有评测均使用 Qwen3-Embedding-8B、Qwen3-8B、论文候选方向和未经修改的 taxonomy-discovery 提示词。Wine 为 5 次运行均值，其余为完整单次运行。数据集哈希、精确协议、指标口径和复现命令见 [多领域 Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 与 [Wine 重复运行报告](docs/benchmarks/ontolearner-wine-official.md)。
-
-目前有两层对照数据。与论文中可直接对应的同模型结果相比，OntoPilot 在 **Wine 上相对提升 41.3%**，在 **GeoNames 上相对提升 37.2%**。与新运行的固定 revision OntoLearner 源码对照相比，六个数据集的宏平均 F1 为 **+0.56 个百分点 / 相对提升 2.3%**；其中 JUSO 提升最大，为 **+2.05 个百分点 / +9.3%**，QUDV 与 GeoNames 因类型空间较小、已经枚举全部有向组合而持平。两套数字严格分开：论文对照包含其原始本地模型服务差异，源码对照则固定同一托管模型服务，只隔离候选方向差异。
+原有六数据集结果仍作为有价值的 **官方提示词协议兼容基线** 保留，但不再作为 OntoPilot
+提示词内核的主成绩。它使用 OntoLearner 未修改提示词，覆盖三个领域的六个完整数据集。
+冻结提示词全文和哈希、消融、精确指标、限制与复现命令见 [提示词与多领域 Benchmark
+报告](docs/benchmarks/ontolearner-multidomain.md) 和 [Wine 重复运行报告](docs/benchmarks/ontolearner-wine-official.md)。
 
 ## 核心能力
 
@@ -369,7 +369,7 @@ cd ..
 docker compose config --quiet
 ```
 
-项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。冻结的 OntoLearner 套件现已覆盖 **3 个领域的 6 个完整数据集**：Wine 的 5 次运行平均取得 **26.29% F1**，相比论文同模型结果**相对提升 41.3%**；QUDV 则以 **100% 金标行召回率取得 40.00% Official F1**。完整设置、数据集哈希、六组结果、指标注意事项和复现说明见 [多领域 Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md)。托管模型服务的行为可能影响精确分数。
+项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。区分提示词的套件中，Wine 5 次全新响应均取得 **28.95% F1（相比论文同模型结果 +55.6%）**，OWL-Time 为 16.67%；使用官方提示词的协议兼容套件则另行覆盖 3 个领域的 6 个完整数据集。提示词哈希、消融、数据集哈希、指标注意事项和复现说明见 [Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md)。托管模型服务的行为可能影响精确分数。
 
 完整人工端到端路径见 [docs/acceptance.md](docs/acceptance.md)。
 

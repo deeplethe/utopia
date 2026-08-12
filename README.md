@@ -56,30 +56,31 @@ LLMs can propose ontology content quickly, but production ontology work also nee
 
 ## Benchmark Highlight
 
-### 41.3% higher F1 than OntoLearner's same-model result
+### 55.6% higher Wine F1 with OntoPilot's own prompt profile
 
-On OntoLearner's Wine taxonomy-discovery paper protocol, the OntoPilot benchmark configuration delivered a **26.29% mean F1 across five fresh-cache runs with Qwen3-8B**—well above the **18.6%** reported by the OntoLearner paper for the same model.
+Prompts are part of OntoPilot's learning kernel, so the primary result no longer substitutes
+OntoLearner's prompt for ours. With an OntoPilot closed-vocabulary taxonomy critic frozen before the
+full evaluation and Qwen3-8B, Wine reached **28.95% official F1 and 50.00% deduplicated structure F1 in each of five
+fresh-response runs**. The same-model paper result is 18.60%: **+10.35 points / +55.6% relative**.
 
-| Same-model comparison | F1 |
-| --- | ---: |
-| OntoLearner paper · Qwen3-8B | 18.60% |
-| OntoPilot benchmark · Qwen3-8B · 5-run mean | **26.29%** |
-| Improvement | **+7.69 points · +41.3% relative** |
+| Prompt-aware comparison | Official F1 | Structure F1 (deduplicated) |
+| --- | ---: | ---: |
+| OntoLearner paper · Qwen3-8B · Wine | 18.60% | — |
+| OntoLearner prompt compatibility baseline · Wine · 5-run mean | 26.29% | 46.81% |
+| **OntoPilot prompt profile · Wine · 5-run mean** | **28.95%** | **50.00%** |
+| **OntoPilot prompt profile · OWL-Time** | **16.67%** | **32.14%** |
 
-**All five runs beat the paper's same-model result**, with a best run of **29.73% F1**. And Wine is no longer the only proof point: the same frozen configuration has now completed **six full datasets across three domains**, covering 1,570 verifier decisions without sampled substitutes.
+Against the same hosted model, retriever, candidate direction, and scorer, OntoPilot's prompt adds
+**+2.66 points / +10.1%** on Wine and **+2.58 points / +18.3%** on OWL-Time over the unchanged
+OntoLearner prompt. The OWL-Time structure F1 rises from 22.22% to 32.14% (**+44.6% relative**).
+Both prompt-aware datasets completed with zero invalid responses. The other four datasets remain
+unreported for this profile after the evaluation budget was exhausted; no partial run is promoted.
 
-| Full-dataset run | Domain | Official F1 | Structure F1 (deduplicated) |
-| --- | --- | ---: | ---: |
-| Wine · 5-run mean | Food and beverage | **26.29%** | **46.81%** |
-| QUDV | Units and measurements | **40.00%** | **40.00%** |
-| OWL-Time | Units and measurements | **14.08%** | **22.22%** |
-| GeoNames | Geography | **27.03%** | **38.46%** |
-| GTS | Geography | **14.52%** | **29.51%** |
-| JUSO | Geography | **24.00%** | **27.12%** |
-
-Every row uses Qwen3-Embedding-8B, Qwen3-8B, the paper's candidate direction, and the unmodified taxonomy-discovery prompt. Wine is a five-run mean; the other rows are complete single runs. See the [multi-domain benchmark report](docs/benchmarks/ontolearner-multidomain.md) and [Wine repeated-run report](docs/benchmarks/ontolearner-wine-official.md) for dataset hashes, exact protocol, caveats, and reproduction commands.
-
-Two comparison layers are now available. Against the paper's directly comparable same-model rows, OntoPilot is **+41.3% on Wine** and **+37.2% on GeoNames**. Against a newly executed fixed-revision OntoLearner source control on all six datasets, the macro F1 gain is **+0.56 percentage points / +2.3% relative**; JUSO shows the largest source-control gain at **+2.05 points / +9.3%**, while QUDV and GeoNames tie because their small type spaces already enumerate every directed pair. These are kept separate because the paper comparison includes its original local-serving results, whereas the source control deliberately fixes the hosted model service and isolates candidate orientation.
+The older six-dataset table remains valuable as an **official-prompt compatibility baseline**, not
+as the primary measure of OntoPilot's prompt kernel. It used OntoLearner's unchanged prompt and
+completed six datasets across three domains. See the [prompt-aware and multi-domain benchmark
+report](docs/benchmarks/ontolearner-multidomain.md) and [Wine repeated-run report](docs/benchmarks/ontolearner-wine-official.md)
+for frozen prompt text and hashes, ablations, exact metrics, caveats, and reproduction commands.
 
 ## Capabilities
 
@@ -369,7 +370,7 @@ cd ..
 docker compose config --quiet
 ```
 
-The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. The frozen OntoLearner suite now covers **six complete datasets in three domains**. Wine averaged **26.29% F1 over five runs**, a **41.3% relative gain** over the paper's same-model result, while QUDV reached **40.00% official F1 with 100% gold-row recall**. Full settings, dataset hashes, all six results, metric caveats, and reproducibility notes are in the [multi-domain report](docs/benchmarks/ontolearner-multidomain.md). Hosted-provider behavior can affect exact scores.
+The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. The prompt-aware suite records **28.95% Wine F1 across five identical fresh-response runs (+55.6% over the paper's same-model row)** and 16.67% on OWL-Time; its official-prompt compatibility suite separately covers six complete datasets in three domains. Full prompt hashes, ablations, dataset hashes, metric caveats, and reproducibility notes are in the [benchmark report](docs/benchmarks/ontolearner-multidomain.md). Hosted-provider behavior can affect exact scores.
 
 See [docs/acceptance.md](docs/acceptance.md) for the manual end-to-end acceptance path.
 
