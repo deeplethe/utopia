@@ -58,15 +58,17 @@ LLMs can propose ontology content quickly, but production ontology work also nee
 
 ### Gains across directly comparable projects
 
-| Protocol F1 | Wine | GeoNames |
-| --- | ---: | ---: |
-| OntoLearner paper · Qwen3-8B | 18.60% | 19.70% |
-| **OntoPilot evaluation · Qwen3-8B** | **28.95%** | **27.03%** |
-| **Improvement** | **+10.35 pp / +55.6%** | **+7.33 pp / +37.2%** |
+| Protocol F1 | Wine<br>Food & Beverage | GeoNames<br>Geography | OWL-Time<br>Units & Measurements |
+| --- | ---: | ---: | ---: |
+| OntoLearner reference · Qwen3-8B | 18.60%¹ | 19.70%¹ | 14.08%² |
+| **OntoPilot evaluation · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
+| **Improvement** | **+10.35 pp / +55.6%** | **+7.33 pp / +37.2%** | **+2.58 pp / +18.3%** |
+| Result | **New SOTA** | Same-model lead | Prompt gain |
 
-OntoPilot establishes a **new Wine SOTA under the paper's protocol**: 28.95% also exceeds the
-paper-wide best of 25.00%. GeoNames is a 37.2% same-model gain; its paper-wide best is 31.60%.
-See the [benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md).
+¹ OntoLearner paper result. ² Controlled OntoLearner-prompt baseline because the paper does not
+report OWL-Time individually. Wine and OWL-Time use OntoPilot's frozen prompt; GeoNames currently
+uses the unchanged OntoLearner prompt in our adapter. See the
+[benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md).
 
 ## Capabilities
 

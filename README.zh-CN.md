@@ -58,15 +58,17 @@
 
 ### 在可直接对比项目上的提升
 
-| 协议 F1 | Wine | GeoNames |
-| --- | ---: | ---: |
-| OntoLearner 论文 · Qwen3-8B | 18.60% | 19.70% |
-| **OntoPilot 评测 · Qwen3-8B** | **28.95%** | **27.03%** |
-| **提升** | **+10.35 个百分点 / +55.6%** | **+7.33 个百分点 / +37.2%** |
+| 协议 F1 | Wine<br>食品与饮料 | GeoNames<br>地理 | OWL-Time<br>单位与度量 |
+| --- | ---: | ---: | ---: |
+| OntoLearner 参照 · Qwen3-8B | 18.60%¹ | 19.70%¹ | 14.08%² |
+| **OntoPilot 评测 · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
+| **提升** | **+10.35 个百分点 / +55.6%** | **+7.33 个百分点 / +37.2%** | **+2.58 个百分点 / +18.3%** |
+| 结论 | **新 SOTA** | 同模型领先 | 提示词提升 |
 
-OntoPilot 在 Wine 上取得论文协议下的**新 SOTA**：28.95% 同样超过论文全部模型的最佳
-25.00%。GeoNames 相比同模型提升 37.2%，但论文全部模型最佳为 31.60%，因此不标为 SOTA。
-完整方法、六个数据集、消融和复现见 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
+¹ OntoLearner 论文成绩。² 论文未单列 OWL-Time，因此使用受控的 OntoLearner 提示词基线。
+Wine 和 OWL-Time 使用 OntoPilot 冻结提示词；GeoNames 目前仍使用未修改的 OntoLearner
+提示词运行于我们的适配器。完整方法、六个数据集、消融和复现见
+[Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
 
 ## 核心能力
 
