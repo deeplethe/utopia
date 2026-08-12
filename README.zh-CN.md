@@ -124,7 +124,7 @@ SQLite 适用于单进程本地开发；共享环境和 Docker 部署使用 Post
 ### 环境要求
 
 - Docker Engine 27+ 和 Docker Compose v2
-- 建议至少 4 GB 可用内存，以便顺利构建和首次启动
+- 至少 2 GB 可用内存；建议使用 4 GB，以便更顺畅地完成 Docker 构建和启动
 - 抽取时需要 OpenAI 兼容 API 凭据；没有凭据时应用仍可启动
 
 ### 1. 配置

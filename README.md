@@ -124,7 +124,7 @@ SQLite is supported for single-process local development. PostgreSQL is the supp
 ### Requirements
 
 - Docker Engine 27+ with Docker Compose v2
-- About 4 GB of free memory for a comfortable build and first start
+- At least 2 GB of available memory; 4 GB is recommended for smoother Docker builds and startup
 - An OpenAI-compatible API credential for extraction; the application can start without one
 
 ### 1. Configure
