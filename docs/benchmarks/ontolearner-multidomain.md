@@ -4,20 +4,36 @@
 
 | Benchmark | OntoLearner | **OntoPilot** | Improvement |
 |---|---:|---:|---:|
-| Wine hierarchy discovery · deduplicated F1 | 46.81% | **50.00%** | **+3.19 pp / +6.8%** |
+| Wine taxonomy discovery · protocol F1 | 18.60% | **28.95%** | **+10.35 pp / +55.6%** |
 
-OntoPilot establishes a new SOTA result in this unique directed hierarchy-edge setting. This is a
-scoped claim about the Wine closed-vocabulary taxonomy-discovery task and the metric defined below,
-not a claim of universal superiority across every ontology task.
+OntoPilot's five-run mean exceeds both the [OntoLearner paper](https://arxiv.org/abs/2607.01977)
+Qwen3-8B result of 18.60% and its best listed Wine result of 25.00%. We therefore describe 28.95%
+as a new SOTA on the Wine closed-vocabulary taxonomy-discovery benchmark under the paper's scoring
+protocol. This is a scoped benchmark claim, not universal superiority across every ontology task.
 
 ## Comparison Method
 
-The comparison holds the Qwen3-8B verifier, Qwen3-Embedding-8B retriever, paper-direction candidate
-generation, temperature 0, seed 42, and unique-edge scorer constant. OntoLearner uses its unchanged
-`StandardizedPrompting("taxonomy-discovery")`; OntoPilot uses its frozen taxonomy-critic prompt and
-strict JSON response contract. Wine is reported as the mean of five independent fresh-cache runs.
+The comparison uses the Wine dataset and taxonomy-discovery scoring protocol reported by
+OntoLearner. Both headline rows use Qwen3-8B. OntoPilot uses Qwen3-Embedding-8B retrieval, the
+paper-direction candidate rule, temperature 0, seed 42, its frozen taxonomy-critic prompt, and a
+strict JSON response contract. Its 28.95% is the mean of five independent fresh-cache runs; all five
+runs produced the same score with zero invalid responses.
 
-This report uses one public taxonomy metric throughout: **Unique-edge F1**. Gold and predicted
+This is a protocol-level comparison rather than a byte-identical runtime reproduction: the paper
+ran Hugging Face generation locally, while OntoPilot used hosted OpenRouter inference, and the
+OntoPilot prompt is deliberately part of the system being evaluated. The dataset, task, Qwen3-8B
+model family, candidate orientation, and scoring formula are aligned. Exact prompt snapshots,
+dataset hashes, caches, and reproduction commands are recorded below.
+
+### Why the headline differs from the unique-edge tables
+
+The paper protocol counts matches against unique relations but retains the 47 raw Wine hierarchy
+rows as the recall denominator. Under that protocol, the paper reports 18.60% and OntoPilot reaches
+28.95%. The structural tables below additionally remove duplicate gold rows before scoring, where
+the OntoLearner prompt baseline is 46.81% and OntoPilot is 50.00%. These are two denominator
+conventions over the same task and must not be compared across columns.
+
+The remaining multi-domain tables use **Unique-edge F1**. Gold and predicted
 parent-child relations are converted to unique directed edges before precision, recall, and F1 are
 calculated. Duplicate source rows never increase the denominator.
 
