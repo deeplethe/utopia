@@ -66,7 +66,18 @@ On OntoLearner's Wine taxonomy-discovery paper protocol, the OntoPilot benchmark
 | OntoPilot benchmark · Qwen3-8B · 5-run mean | **26.29%** |
 | Improvement | **+7.69 points · +41.3% relative** |
 
-**All five runs beat the paper's same-model result**, with a best run of **29.73% F1**. The benchmark freezes OntoLearner 1.6.0's Wine dataset, candidate direction, and unmodified taxonomy-discovery prompt. See the [full protocol, per-run results, and reproduction guide](docs/benchmarks/ontolearner-wine-official.md).
+**All five runs beat the paper's same-model result**, with a best run of **29.73% F1**. And Wine is no longer the only proof point: the same frozen configuration has now completed **six full datasets across three domains**, covering 1,570 verifier decisions without sampled substitutes.
+
+| Full-dataset run | Domain | Official F1 | Structure F1 (deduplicated) |
+| --- | --- | ---: | ---: |
+| Wine · 5-run mean | Food and beverage | **26.29%** | **46.81%** |
+| QUDV | Units and measurements | **40.00%** | **40.00%** |
+| OWL-Time | Units and measurements | **14.08%** | **22.22%** |
+| GeoNames | Geography | **27.03%** | **38.46%** |
+| GTS | Geography | **14.52%** | **29.51%** |
+| JUSO | Geography | **24.00%** | **27.12%** |
+
+Every row uses Qwen3-Embedding-8B, Qwen3-8B, the paper's candidate direction, and the unmodified taxonomy-discovery prompt. Wine is a five-run mean; the other rows are complete single runs. See the [multi-domain benchmark report](docs/benchmarks/ontolearner-multidomain.md) and [Wine repeated-run report](docs/benchmarks/ontolearner-wine-official.md) for dataset hashes, exact protocol, caveats, and reproduction commands.
 
 ## Capabilities
 
@@ -356,7 +367,7 @@ cd ..
 docker compose config --quiet
 ```
 
-The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. In the frozen OntoLearner Wine protocol, our Qwen3-8B configuration averaged **26.29% F1 over five runs**, a **41.3% relative gain** over the paper's same-model result. Full settings, raw run summaries, metric caveats, and reproducibility notes are in the [benchmark report](docs/benchmarks/ontolearner-wine-official.md). Hosted-provider behavior can affect exact scores.
+The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. The frozen OntoLearner suite now covers **six complete datasets in three domains**. Wine averaged **26.29% F1 over five runs**, a **41.3% relative gain** over the paper's same-model result, while QUDV reached **40.00% official F1 with 100% gold-row recall**. Full settings, dataset hashes, all six results, metric caveats, and reproducibility notes are in the [multi-domain report](docs/benchmarks/ontolearner-multidomain.md). Hosted-provider behavior can affect exact scores.
 
 See [docs/acceptance.md](docs/acceptance.md) for the manual end-to-end acceptance path.
 

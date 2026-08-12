@@ -4,6 +4,8 @@ This benchmark runs OntoPilot's configured verifier model through the official O
 taxonomy-discovery RAG protocol. It is intentionally separate from the real-text extraction
 benchmark: no documents are ingested and OntoPilot's extraction prompt is not used here.
 
+Wine is also part of the [six-dataset, three-domain benchmark](ontolearner-multidomain.md).
+
 ## Reproduction
 
 Run from `backend/`:

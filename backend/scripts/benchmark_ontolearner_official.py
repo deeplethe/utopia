@@ -1,4 +1,4 @@
-"""Run the OntoLearner Wine taxonomy-discovery protocol through OpenRouter.
+"""Run the OntoLearner taxonomy-discovery protocol through OpenRouter.
 
 This adapter follows OntoLearner's end-to-end RAG formulation and source-code
 candidate generation:
@@ -7,8 +7,8 @@ neighbors for every type, verify both source-code orientations with the official
 standardized yes/no prompt, and score with OntoLearner's taxonomy metric. Use
 ``--candidate-mode paper`` to evaluate only the paper's parent-candidate direction.
 
-The run also reports a deduplicated diagnostic because the published Wine JSON
-contains repeated parent-child rows while OntoLearner's metric deduplicates the
+The run also reports a deduplicated diagnostic because some published datasets
+contain repeated parent-child rows while OntoLearner's metric deduplicates the
 intersection but uses the raw row count as the recall denominator.
 
 Run from ``backend``:
@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -124,7 +125,7 @@ def post_json(url: str, api_key: str, payload: dict, timeout: float, retries: in
             detail = error.read().decode("utf-8", errors="replace")[:1000]
             if error.code not in {408, 409, 429, 500, 502, 503, 504} or attempt == retries - 1:
                 raise RuntimeError(f"OpenRouter HTTP {error.code}: {detail}") from error
-        except (TimeoutError, urllib.error.URLError) as error:
+        except (TimeoutError, urllib.error.URLError, http.client.RemoteDisconnected) as error:
             if attempt == retries - 1:
                 raise RuntimeError(f"OpenRouter request failed: {error}") from error
         time.sleep(min(30.0, 1.5 * (2**attempt)))
@@ -306,8 +307,9 @@ def rounded(value: dict) -> dict:
 
 
 def report_markdown(result: dict) -> str:
+    dataset_name = result["dataset"]["name"]
     lines = [
-        "# OntoLearner Wine Official-Protocol Baseline",
+        f"# OntoLearner {dataset_name} Official-Protocol Baseline",
         "",
         f"Generated: `{result['generated_at']}`",
         "",
@@ -323,7 +325,6 @@ def report_markdown(result: dict) -> str:
         f"- Candidate orientation: `{result['protocol']['candidate_mode']}`",
         f"- Candidate pairs: {result['protocol']['candidate_pairs']}",
         "- Verifier prompt: OntoLearner `StandardizedPrompting('taxonomy-discovery')`, unchanged",
-        "- Official-paper Wine comparison: Qwen3-8B 18.6% F1; best listed model 25.0% F1",
         "",
         "## Retrieval",
         "",
@@ -351,8 +352,8 @@ def report_markdown(result: dict) -> str:
             "## Metric Note",
             "",
             "The official OntoLearner taxonomy metric converts gold rows to a set for matching, but uses the raw",
-            "gold row count as the recall denominator. The Wine file repeats several identical relations, so this",
-            "report preserves that value for paper comparability and separately reports a deduplicated diagnostic.",
+            "gold row count as the recall denominator. This report preserves that value for protocol comparability",
+            "and separately reports a deduplicated diagnostic.",
             "",
         ]
     )
@@ -360,9 +361,10 @@ def report_markdown(result: dict) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the official OntoLearner Wine taxonomy protocol.")
+    parser = argparse.ArgumentParser(description="Run the official OntoLearner taxonomy protocol.")
     parser.add_argument("--gold", type=Path, default=DEFAULT_GOLD)
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
+    parser.add_argument("--dataset-name", help="Display name; defaults to the gold file's parent directory")
     parser.add_argument("--retriever", default=DEFAULT_RETRIEVER)
     parser.add_argument("--models", default=",".join(DEFAULT_MODELS))
     parser.add_argument("--top-k", type=int, default=15)
@@ -445,6 +447,7 @@ def main() -> None:
             "seed": 42,
         },
         "dataset": {
+            "name": args.dataset_name or args.gold.parent.name,
             "path": str(args.gold.resolve()),
             "sha256": sha256(args.gold),
             "types": len(types),

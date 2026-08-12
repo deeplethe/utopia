@@ -66,7 +66,18 @@
 | OntoPilot Benchmark · Qwen3-8B · 5 次均值 | **26.29%** |
 | 提升 | **+7.69 个百分点 · 相对提升 41.3%** |
 
-**5 次运行全部超过论文同模型结果**，单次最高达到 **29.73% F1**。评测冻结 OntoLearner 1.6.0 Wine 数据集、候选方向和未经修改的 taxonomy-discovery 提示词。完整协议、逐次结果和复现方法见 [Benchmark 报告](docs/benchmarks/ontolearner-wine-official.md)。
+**5 次运行全部超过论文同模型结果**，单次最高达到 **29.73% F1**。而且证据不再只有 Wine：同一套冻结配置现已跑完 **3 个领域、6 个完整数据集**，共执行 1,570 次候选验证，没有用抽样成绩代替全量结果。
+
+| 完整数据集评测 | 领域 | Official F1 | 结构 F1（去重） |
+| --- | --- | ---: | ---: |
+| Wine · 5 次均值 | 食品与饮料 | **26.29%** | **46.81%** |
+| QUDV | 单位与度量 | **40.00%** | **40.00%** |
+| OWL-Time | 单位与度量 | **14.08%** | **22.22%** |
+| GeoNames | 地理 | **27.03%** | **38.46%** |
+| GTS | 地理 | **14.52%** | **29.51%** |
+| JUSO | 地理 | **24.00%** | **27.12%** |
+
+所有评测均使用 Qwen3-Embedding-8B、Qwen3-8B、论文候选方向和未经修改的 taxonomy-discovery 提示词。Wine 为 5 次运行均值，其余为完整单次运行。数据集哈希、精确协议、指标口径和复现命令见 [多领域 Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 与 [Wine 重复运行报告](docs/benchmarks/ontolearner-wine-official.md)。
 
 ## 核心能力
 
@@ -356,7 +367,7 @@ cd ..
 docker compose config --quiet
 ```
 
-项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。在冻结的 OntoLearner Wine 协议下，我们的 Qwen3-8B 配置 5 次运行平均取得 **26.29% F1**，相比论文同模型结果**相对提升 41.3%**。完整设置、逐次结果、指标注意事项和复现说明见 [Benchmark 报告](docs/benchmarks/ontolearner-wine-official.md)。托管模型服务的行为可能影响精确分数。
+项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。冻结的 OntoLearner 套件现已覆盖 **3 个领域的 6 个完整数据集**：Wine 的 5 次运行平均取得 **26.29% F1**，相比论文同模型结果**相对提升 41.3%**；QUDV 则以 **100% 金标行召回率取得 40.00% Official F1**。完整设置、数据集哈希、六组结果、指标注意事项和复现说明见 [多领域 Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md)。托管模型服务的行为可能影响精确分数。
 
 完整人工端到端路径见 [docs/acceptance.md](docs/acceptance.md)。
 

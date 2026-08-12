@@ -12,6 +12,13 @@ benchmark = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = benchmark
 SPEC.loader.exec_module(benchmark)
 
+ONTOLEARNER_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_ontolearner_official.py"
+ONTOLEARNER_SPEC = importlib.util.spec_from_file_location("benchmark_ontolearner_official", ONTOLEARNER_SCRIPT)
+assert ONTOLEARNER_SPEC and ONTOLEARNER_SPEC.loader
+ontolearner = importlib.util.module_from_spec(ONTOLEARNER_SPEC)
+sys.modules[ONTOLEARNER_SPEC.name] = ontolearner
+ONTOLEARNER_SPEC.loader.exec_module(ontolearner)
+
 
 class FakeClient:
     def __init__(self) -> None:
@@ -76,6 +83,43 @@ def test_structural_metrics_do_not_confuse_named_resource_with_class_label() -> 
     individuals = [{"iri": "urn:instance:hvac", "label": ":hvac_system"}]
     metrics = benchmark.structural_metrics(view, individuals)
     assert metrics["tbox_abox_label_collisions"] == []
+
+
+def test_ontolearner_report_uses_dataset_name_and_generic_metric_note() -> None:
+    result = {
+        "generated_at": "2026-08-12T00:00:00Z",
+        "protocol": {
+            "source_revision": "revision",
+            "retriever_model": "retriever",
+            "top_k": 10,
+            "candidate_mode": "paper",
+            "candidate_pairs": 20,
+        },
+        "dataset": {
+            "name": "OWL-Time",
+            "sha256": "digest",
+            "types": 3,
+            "raw_taxonomy_rows": 2,
+            "unique_taxonomy_pairs": 2,
+        },
+        "retrieval": {
+            "official": {"recall": 1.0, "total_correct": 2},
+            "deduplicated": {"recall": 1.0, "total_correct": 2},
+        },
+        "models": {
+            "model": {
+                "official": {"precision": 1.0, "recall": 1.0, "f1_score": 1.0},
+                "deduplicated": {"precision": 1.0, "recall": 1.0, "f1_score": 1.0},
+                "answers": {"yes": 2, "invalid": 0},
+            }
+        },
+    }
+
+    report = ontolearner.report_markdown(result)
+
+    assert report.startswith("# OntoLearner OWL-Time Official-Protocol Baseline")
+    assert "Official-paper Wine comparison" not in report
+    assert "protocol comparability" in report
 
 
 def test_score_round_skips_dataset_without_run_state(tmp_path, monkeypatch) -> None:
