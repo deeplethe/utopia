@@ -1,0 +1,5 @@
+-r requirements.txt
+beautifulsoup4>=4.12
+pytest>=8.3
+bandit>=1.9
+pip-audit>=2.10

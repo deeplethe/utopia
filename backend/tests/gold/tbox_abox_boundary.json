@@ -1,0 +1,44 @@
+[
+  {
+    "name": "country instance is not a class",
+    "source": "Type: Country\nCountry: Argentina\nA country is a sovereign geographic entity.",
+    "classes": ["Country", "Argentina"],
+    "expected_classes": ["Country"],
+    "expected_rejected": ["Argentina"]
+  },
+  {
+    "name": "named region is an instance",
+    "source": "Type: Wine Region\nRegion: Southern Italy\nA wine region is a geographic area where wine is produced.",
+    "classes": ["Wine Region", "Southern Italy"],
+    "expected_classes": ["Wine Region"],
+    "expected_rejected": ["Southern Italy"]
+  },
+  {
+    "name": "named organization is an instance",
+    "source": "Type: Winery\nWinery: Blue Danube Wine Co.\nA winery is an organization that produces wine.",
+    "classes": ["Winery", "Blue Danube Wine Co."],
+    "expected_classes": ["Winery"],
+    "expected_rejected": ["Blue Danube Wine Co."]
+  },
+  {
+    "name": "named plugin is an instance",
+    "source": "Type: Admission Plugin\nPlugin: NodeRestriction admission plugin\nAn admission plugin intercepts Kubernetes API requests.",
+    "classes": ["Admission Plugin", "NodeRestriction admission plugin"],
+    "expected_classes": ["Admission Plugin"],
+    "expected_rejected": ["NodeRestriction admission plugin"]
+  },
+  {
+    "name": "reusable kubernetes kind is a class",
+    "source": "Kind: ConfigMap\nA ConfigMap is a Kubernetes object type used to store non-confidential key-value data.",
+    "classes": ["ConfigMap"],
+    "expected_classes": ["ConfigMap"],
+    "expected_rejected": []
+  },
+  {
+    "name": "xml schema datatype is never an owl class",
+    "source": "Type: Measurement\nRange: xsd:string\nA measurement records an observed value.",
+    "classes": ["Measurement", "xsd:string"],
+    "expected_classes": ["Measurement"],
+    "expected_rejected": ["xsd:string"]
+  }
+]
