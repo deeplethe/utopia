@@ -42,7 +42,7 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 
 </details>
 
-## Why OntoPilot
+## 💡 Why OntoPilot
 
 OntoPilot is an ontology production workspace for companies and domain teams that need to turn knowledge buried in policies, manuals, product specifications, research, and operational documents into structured ontology data—fast.
 
@@ -54,9 +54,7 @@ It goes beyond asking an LLM to “generate an ontology.” OntoPilot puts domai
 - **From a promising draft to a production asset.** Semantic Diff, immutable releases, rollback, REST APIs, and MCP carry approved knowledge into business systems and agent workflows.
 - **Traceable by design, not by afterthought.** Every decision can be traced to its document chunk, model, prompt snapshot, actor, and review history.
 
-## Benchmark Highlight
-
-### Gains across directly comparable projects
+## 🏆 Benchmark Highlight
 
 | Protocol F1 | Wine<br>Food & Beverage | GeoNames<br>Geography | OWL-Time<br>Units & Measurements |
 | --- | ---: | ---: | ---: |
@@ -68,7 +66,7 @@ It goes beyond asking an LLM to “generate an ontology.” OntoPilot puts domai
 See the [benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md)
 for evaluation scope, baselines, prompt profiles, and reproducibility details.
 
-## Capabilities
+## ✨ Capabilities
 
 | Area | Included |
 | --- | --- |
@@ -91,7 +89,7 @@ for evaluation scope, baselines, prompt profiles, and reproducibility details.
 
 The ontology workspace combines class navigation, an interactive relationship graph, and entity details in one view. The project sidebar keeps review queues, releases, documents, history, members, and API access within the same governed workflow.
 
-## How It Works
+## 🔄 How It Works
 
 ```mermaid
 flowchart LR
@@ -134,7 +132,7 @@ flowchart LR
 
 SQLite is supported for single-process local development. PostgreSQL is the supported shared/Docker deployment path. See [the architecture guide](docs/architecture.md) for trust boundaries, graph separation, provenance, and export design.
 
-## Quick Start with Docker
+## 🚀 Quick Start with Docker
 
 ### Requirements
 
@@ -214,7 +212,7 @@ This preserves named volumes. `docker compose down -v` permanently deletes the d
 
 Set `SEED_DEMO_DATA=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls. For an existing local source installation, run `python backend/scripts/seed_demo.py` from the repository root.
 
-## MCP and Agent Integration
+## 🤖 MCP and Agent Integration
 
 MCP is available by default at `/mcp` and starts inside the normal backend lifecycle—there is no separate MCP service to install or supervise. Each MCP token is bound to one user and one knowledge system. Token scopes and the user's live project role are intersected on every call.
 
@@ -244,40 +242,7 @@ Read the complete [MCP guide](frontend/src/content/docs/en/mcp.md), including ev
 
 ## APIs and Documentation
 
-After sign-in, the documentation center is available at `/docs`; its left-hand tree loads a separate English or Chinese Markdown file for each topic and renders Mermaid diagrams with the project theme.
-
-| Resource | Default URL / file |
-| --- | --- |
-| Product and design documentation | <http://localhost:8080/docs> |
-| MCP guide | <http://localhost:8080/docs/mcp> |
-| OpenAPI UI | <http://localhost:8080/api/docs> |
-| ReDoc | <http://localhost:8080/api/redoc> |
-| OpenAPI JSON | <http://localhost:8080/api/openapi.json> |
-| Health check | <http://localhost:8080/api/health> |
-| External API guide | [docs/external-api.md](docs/external-api.md) |
-| RDF import guide | [docs/rdf-import.md](docs/rdf-import.md) |
-| Release and export guide | [docs/release-and-export.md](docs/release-and-export.md) |
-
-The browser governance API uses an HttpOnly session cookie. Downstream consumers use revocable project API tokens and versioned paths under `/api/v1/knowledge-systems/{public_id}`. Published consumers should pin a release version; `/published` intentionally follows the newest published release.
-
-## Release, Serving, and Export Model
-
-Drafts use internal identifiers and receive public `vN` versions only when publishing succeeds. Deleting an unpublished draft therefore does not consume the next public version.
-
-Every captured release freezes three RDF layers and provenance:
-
-```text
-release/
-├── manifest.json
-├── tbox-00001.nq
-├── vocabulary-00001.nq
-├── abox-00001.nq
-├── abox-00002.nq
-├── tbox-provenance.jsonl
-└── abox-provenance.jsonl
-```
-
-Artifacts are uncompressed by design, enabling HTTP Range delivery, line-oriented processing, independent shard verification, and object-storage/CDN replication. The manifest records SHA-256 checksums. A reverse proxy may still apply transport compression.
+After deployment, sign in and open the [documentation center](http://localhost:8080/docs) for product design, workflows, MCP, APIs, import, release, and export guides.
 
 ## Configuration
 
@@ -419,17 +384,20 @@ Before public exposure:
 - restrict provider endpoints and reverse-proxy body/rate limits;
 - review [SECURITY.md](SECURITY.md) and report vulnerabilities privately.
 
-## Roadmap
+## 🗺️ Roadmap
 
-The roadmap is directional rather than a release promise. See [ROADMAP.md](ROADMAP.md) for goals, acceptance criteria, and non-goals.
+Checked items have shipped; unchecked items are planned, not release-date promises. See [ROADMAP.md](ROADMAP.md) for acceptance criteria and non-goals.
 
-- **Stabilize:** formal migrations and upgrade tests, backup/restore tooling, production observability, accessibility and browser coverage.
-- **Collaborate:** richer review assignment, comments/mentions, notifications, saved filters, and large-team audit workflows.
-- **Agent-assisted governance:** a first-party chat surface that uses short-lived user MCP tokens and always previews mutations before approval.
-- **Integrate:** object-storage adapters, webhooks/event delivery, identity-provider integration, and deployment recipes for common platforms.
-- **Scale and quality:** MinerU and other pluggable parsing frameworks, larger-corpus ingestion, incremental extraction, benchmark expansion, release reproducibility, and performance budgets.
-- **Model and simulate:** spatiotemporal modeling plus governed, versioned, and reproducible sandbox simulations for what-if analysis.
-- **Reach 1.0:** stable public API/MCP/release contracts, documented compatibility policy, migrations, disaster-recovery verification, and security review.
+- [x] **Governed ontology foundation:** TBox, SKOS terminology, and ABox extraction, review, audit, versioning, and release in one workspace.
+- [x] **Human review loop:** dedicated review queues, evidence, search and filters, comments, history, and reversible audited changes.
+- [x] **Agent integration foundation:** project-scoped MCP tokens plus read, propose, preview, edit, review, and release tools.
+- [ ] **Production hardening:** formal migration and upgrade tests, backup/restore tooling, observability, accessibility, and broader browser coverage.
+- [ ] **Team collaboration:** richer review assignment, mentions, notifications, saved filters, and large-team audit workflows.
+- [ ] **Agent-assisted governance:** a first-party chat experience using short-lived user MCP tokens and reviewable change previews before execution.
+- [ ] **Ecosystem integrations:** object storage, webhooks/events, identity providers, and deployment templates for common platforms.
+- [ ] **Scale and quality:** MinerU and other pluggable parsers, larger-corpus ingestion, incremental extraction, broader benchmarks, reproducible releases, and performance budgets.
+- [ ] **Model and simulate:** spatiotemporal modeling and governed, versioned, reproducible sandbox simulations for what-if analysis.
+- [ ] **Reach 1.0:** stable REST, MCP, and release contracts, compatibility policy, migrations, disaster-recovery verification, and security review.
 
 ## Project Policy
 
