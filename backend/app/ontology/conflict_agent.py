@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 
 from sqlmodel import Session, select
 
@@ -21,7 +22,7 @@ from app.config import settings
 from app.db.database import engine
 from app.db.models import Conflict, KnowledgeSystem, utcnow
 from app.llm import openrouter
-from app.ontology import editor, retrieval, store
+from app.ontology import editor, retrieval, statement_provenance, store, workbench
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,7 @@ def _resolve(session: Session, ks: KnowledgeSystem, model: str | None) -> list[s
         )
     ).all()
     log: list[str] = []
+    graph_changed = False
     for c in conflicts:
         d = _decide(session, ks.graph_iri, model, c)
         if not d:
@@ -122,43 +124,83 @@ def _resolve(session: Session, ks: KnowledgeSystem, model: str | None) -> list[s
         if c.ctype in AUTO_APPLY_TYPES and conf >= settings.conflict_auto_apply_floor:
             abox_iri = f"{ks.graph_iri.rstrip('/')}/abox"
             try:
-                # capture the ABox too: a class/property merge retypes/repoints instance data.
+                # The editor can cascade into instance data. Acquire the pair in the
+                # fixed TBox -> ABox order and keep both locks until SQL commits.
                 with store.capture(ks.graph_iri, revert_on_error=True) as cap, \
                         store.capture(abox_iri, revert_on_error=True) as acap:
-                    editor.apply_edit(ks.graph_iri, ks.base_iri, chosen["op"])
+                    baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+                    result = editor.apply_edit(ks.graph_iri, ks.base_iri, chosen["op"])
+                    new_errors = workbench.new_structural_errors(ks.graph_iri, baseline_errors)
+                    if new_errors:
+                        raise RuntimeError(
+                            "conflict resolution introduced structural errors: "
+                            + ", ".join(new_errors)
+                        )
+
+                    added, removed = cap.diff()
+                    a_added, a_removed = acap.diff()
+                    if not (added or removed or a_added or a_removed):
+                        # A stale/idempotent recommendation is not a resolution.
+                        continue
+
+                    gid = secrets.token_hex(8) if (a_added or a_removed) else None
+                    c.status = "resolved"
+                    c.resolution = rid
+                    c.resolved_at = utcnow()
+                    session.add(c)
+                    detail = {
+                        "conflict_id": c.id,
+                        "resolution": rid,
+                        "reason": reason,
+                        "confidence": conf,
+                        "agent": True,
+                        "op": chosen["op"],
+                    }
+                    event = audit.record(
+                        session, ks_id=ks.id, action="conflict.resolve",
+                        summary=f'Agent resolved "{c.title}": {chosen["label"]}',
+                        actor_id=None, actor_name="conflict-agent", detail=detail,
+                        added=added, removed=removed, group_id=gid, commit=False,
+                    )
+                    statement_provenance.record_tbox_diff(
+                        session, ks.id, added, removed, event, commit=False,
+                    )
+                    if a_added or a_removed:
+                        abox_event = audit.record(
+                            session, ks_id=ks.id, action="conflict.resolve",
+                            summary=f'Agent resolved "{c.title}" - cascaded to instances',
+                            actor_id=None, actor_name="conflict-agent", detail=detail,
+                            added=a_added, removed=a_removed, graph=abox_iri,
+                            group_id=gid, commit=False,
+                        )
+                        statement_provenance.record_abox_diff(
+                            session, ks.id, a_added, a_removed, abox_event,
+                            abox_iri=abox_iri,
+                            operations=[chosen["op"]], results=[result], commit=False,
+                        )
+                    session.commit()
             except Exception as e:  # noqa: BLE001  (stale/failed edit → leave the conflict open)
+                session.rollback()
                 logger.warning("conflict agent apply failed for %s: %s", c.id, e)
                 continue
-            added, removed = cap.diff()
-            a_added, a_removed = acap.diff()
-            import secrets
-            gid = secrets.token_hex(8) if (a_added or a_removed) else None  # link TBox + ABox events
-            c.status = "resolved"
-            c.resolution = rid
-            c.resolved_at = utcnow()
-            session.add(c)
-            audit.record(
-                session, ks_id=ks.id, action="conflict.resolve",
-                summary=f'Agent resolved "{c.title}": {chosen["label"]}',
-                actor_id=None, actor_name="conflict-agent",
-                detail={"conflict_id": c.id, "resolution": rid, "reason": reason, "confidence": conf, "agent": True},
-                added=added, removed=removed, group_id=gid,
-            )
-            if a_added or a_removed:
-                audit.record(
-                    session, ks_id=ks.id, action="conflict.resolve",
-                    summary=f'Agent resolved "{c.title}" — cascaded to instances',
-                    actor_id=None, actor_name="conflict-agent",
-                    detail={"conflict_id": c.id, "resolution": rid, "agent": True},
-                    added=a_added, removed=a_removed, graph=abox_iri, group_id=gid,
-                )
+            graph_changed = True
             log.append(f'{c.title} → {chosen["label"]} (auto {conf:.2f})')
         else:
             # Low-confidence decisions and every lossy property merge require human confirmation.
             c.payload = {**c.payload, "recommendation": {"resolution_id": rid, "reason": reason, "confidence": conf}}
             session.add(c)
+            try:
+                session.commit()
+            except Exception:  # noqa: BLE001
+                session.rollback()
+                logger.exception("conflict agent could not persist recommendation for %s", c.id)
+                continue
             log.append(f'{c.title} → recommend "{chosen["label"]}" ({conf:.2f})')
-    session.commit()
+    if graph_changed:
+        try:
+            retrieval.invalidate(ks.graph_iri)
+        except Exception:  # noqa: BLE001
+            logger.exception("conflict agent cache invalidation failed for %s", ks.graph_iri)
     return log
 
 

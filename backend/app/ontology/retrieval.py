@@ -119,4 +119,5 @@ def get_neighborhood(graph_iri: str, target: str) -> dict | None:
 
 
 def invalidate(graph_iri: str) -> None:
-    _cache.pop(graph_iri, None)
+    with _cache_lock:
+        _cache.pop(graph_iri, None)

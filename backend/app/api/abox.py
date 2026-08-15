@@ -4,28 +4,30 @@ mutation is captured into the change history and is graph-scoped rollbackable.
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import delete, func
 from sqlmodel import Session, select
 
 from app import audit
-from app.api.knowledge import GRAPH_ROOT
 from app.db.database import get_session
 from app.db.models import AboxProvenance, EntityResolution, KnowledgeSystem, User, ValidationDecision
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
 from app.ontology import (
-    abox, abox_provenance, abox_validate, editor, schema, statement_provenance, store,
-    validation_agent,
+    abox, abox_provenance, abox_validate, editor, retrieval, schema, statement_provenance,
+    store, validation_agent, workbench,
 )
 
 router = APIRouter(prefix="/api/knowledge", tags=["abox"])
+logger = logging.getLogger(__name__)
 
 
 def abox_iri_for(ks: KnowledgeSystem) -> str:
-    # Derive from the KS id so it is stable regardless of graph_iri formatting.
-    return f"{GRAPH_ROOT}/{ks.id}/abox"
+    # Keep one canonical pairing rule across the workbench, import, agents, and API.
+    return workbench.abox_iri_for(ks.graph_iri)
 
 
 def _labels(ks: KnowledgeSystem) -> tuple[dict[str, str], dict[str, str]]:
@@ -44,6 +46,20 @@ def _guard(session: Session, ks: KnowledgeSystem) -> None:
         raise HTTPException(status_code=409, detail="An extraction is in progress; try again after it finishes.")
 
 
+def _reject_new_structural_errors(ks: KnowledgeSystem, baseline: set[str]) -> None:
+    new_errors = workbench.new_structural_errors(ks.graph_iri, baseline)
+    if new_errors:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "ontology_structural_validation_failed",
+                "message": "The instance change introduces structural ontology errors.",
+                "new_error_count": len(new_errors),
+                "new_error_signatures": new_errors,
+            },
+        )
+
+
 class ResetAboxRequest(BaseModel):
     confirm: bool = False
 
@@ -59,24 +75,44 @@ def reset_abox(
     if not body.confirm:
         raise HTTPException(status_code=400, detail="confirm=true is required to reset all instances")
     abox_iri = abox_iri_for(ks)
-    provenance_rows = session.exec(
-        select(func.count(AboxProvenance.id)).where(AboxProvenance.knowledge_system_id == ks.id)
-    ).one()
-    resolution_rows = session.exec(
-        select(func.count(EntityResolution.id)).where(EntityResolution.knowledge_system_id == ks.id)
-    ).one()
-    with store.capture(abox_iri, revert_on_error=True) as cap:
-        store.clear_graph(abox_iri)
-    added_nt, removed_nt = cap.diff()
-    session.exec(delete(AboxProvenance).where(AboxProvenance.knowledge_system_id == ks.id))
-    session.exec(delete(EntityResolution).where(EntityResolution.knowledge_system_id == ks.id))
-    audit.record(
-        session, ks_id=ks.id, action="abox.reset", summary="Reset all instances for re-extraction",
-        actor_id=user.id, actor_name=user.username,
-        detail={"provenance_rows": provenance_rows, "resolution_rows": resolution_rows},
-        added=added_nt, removed=removed_nt, graph=abox_iri,
-    )
-    session.commit()
+    try:
+        # Lock the semantic pair in one fixed order.  SQL commits while both compensating
+        # captures are still active, so a SQL failure restores the RDF graph as well.
+        with store.capture(ks.graph_iri, revert_on_error=True), store.capture(
+            abox_iri, revert_on_error=True,
+        ) as cap:
+            provenance_rows = session.exec(
+                select(func.count(AboxProvenance.id)).where(
+                    AboxProvenance.knowledge_system_id == ks.id,
+                )
+            ).one()
+            resolution_rows = session.exec(
+                select(func.count(EntityResolution.id)).where(
+                    EntityResolution.knowledge_system_id == ks.id,
+                )
+            ).one()
+            baseline = workbench.structural_error_signatures(ks.graph_iri)
+            store.clear_graph(abox_iri)
+            _reject_new_structural_errors(ks, baseline)
+            added_nt, removed_nt = cap.diff()
+            if not (added_nt or removed_nt) and not provenance_rows and not resolution_rows:
+                return {
+                    "removed_triples": 0,
+                    "provenance_rows": provenance_rows,
+                    "resolution_rows": resolution_rows,
+                }
+            session.exec(delete(AboxProvenance).where(AboxProvenance.knowledge_system_id == ks.id))
+            session.exec(delete(EntityResolution).where(EntityResolution.knowledge_system_id == ks.id))
+            audit.record(
+                session, ks_id=ks.id, action="abox.reset", summary="Reset all instances for re-extraction",
+                actor_id=user.id, actor_name=user.username,
+                detail={"provenance_rows": provenance_rows, "resolution_rows": resolution_rows},
+                added=added_nt, removed=removed_nt, graph=abox_iri, commit=False,
+            )
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return {
         "removed_triples": len(store.load_triples(removed_nt)) if removed_nt else 0,
         "provenance_rows": provenance_rows,
@@ -153,23 +189,33 @@ def create_individual(
     session: Session = Depends(get_session),
 ) -> dict:
     _guard(session, ks)
-    class_labels, prop_labels = _labels(ks)
-    if body.class_iri not in class_labels:
-        raise HTTPException(status_code=400, detail="Unknown class")
     abox_iri = abox_iri_for(ks)
-    with store.capture(abox_iri, revert_on_error=True) as cap:
-        iri = abox.create_individual(abox_iri, ks.base_iri, body.label, body.class_iri)
-    added_nt, removed_nt = cap.diff()
-    event = audit.record(
-        session, ks_id=ks.id, action="abox.add_individual",
-        summary=f'Added individual "{body.label}" ({class_labels[body.class_iri]})',
-        actor_id=user.id, actor_name=user.username,
-        detail={"iri": iri, "class_iri": body.class_iri, "label": body.label},
-        added=added_nt, removed=removed_nt, graph=abox_iri,
-    )
-    statement_provenance.record_abox_fact(
-        session, ks.id, abox_provenance.ind_key(iri), event,
-    )
+    try:
+        with store.capture(ks.graph_iri, revert_on_error=True), store.capture(
+            abox_iri, revert_on_error=True,
+        ) as cap:
+            class_labels, prop_labels = _labels(ks)
+            if body.class_iri not in class_labels:
+                raise HTTPException(status_code=400, detail="Unknown class")
+            baseline = workbench.structural_error_signatures(ks.graph_iri)
+            iri = abox.create_individual(abox_iri, ks.base_iri, body.label, body.class_iri)
+            _reject_new_structural_errors(ks, baseline)
+            added_nt, removed_nt = cap.diff()
+            event = audit.record(
+                session, ks_id=ks.id, action="abox.add_individual",
+                summary=f'Added individual "{body.label}" ({class_labels[body.class_iri]})',
+                actor_id=user.id, actor_name=user.username,
+                detail={"iri": iri, "class_iri": body.class_iri, "label": body.label},
+                added=added_nt, removed=removed_nt, graph=abox_iri, commit=False,
+            )
+            statement_provenance.record_abox_diff(
+                session, ks.id, added_nt, removed_nt, event,
+                abox_iri=abox_iri, commit=False,
+            )
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return abox.get_individual(abox_iri, iri, class_labels, prop_labels)
 
 
@@ -185,31 +231,36 @@ def delete_individual(
     session: Session = Depends(get_session),
 ) -> dict:
     _guard(session, ks)
-    class_labels, prop_labels = _labels(ks)
     abox_iri = abox_iri_for(ks)
-    existing = abox.get_individual(abox_iri, body.iri, class_labels, prop_labels)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="Individual not found")
-    with store.capture(abox_iri, revert_on_error=True) as cap:
-        removed = abox.delete_individual(abox_iri, body.iri)
-    added_nt, removed_nt = cap.diff()
-    fact_keys = {abox_provenance.ind_key(body.iri)}
-    fact_keys.update(
-        abox_provenance.data_key(body.iri, item["prop"], item["value"])
-        for item in existing["data_assertions"]
-    )
-    fact_keys.update(
-        abox_provenance.obj_key(body.iri, item["prop"], item["target"])
-        for item in existing["object_assertions"]
-    )
-    audit.record(
-        session, ks_id=ks.id, action="abox.delete_individual",
-        summary=f'Deleted individual "{existing["label"]}"',
-        actor_id=user.id, actor_name=user.username,
-        detail={"iri": body.iri, "label": existing["label"], "triples_removed": removed},
-        added=added_nt, removed=removed_nt, graph=abox_iri,
-    )
-    statement_provenance.remove_abox_facts(session, ks.id, fact_keys)
+    try:
+        with store.capture(ks.graph_iri, revert_on_error=True), store.capture(
+            abox_iri, revert_on_error=True,
+        ) as cap:
+            class_labels, prop_labels = _labels(ks)
+            existing = abox.get_individual(abox_iri, body.iri, class_labels, prop_labels)
+            if existing is None:
+                raise HTTPException(status_code=404, detail="Individual not found")
+            baseline = workbench.structural_error_signatures(ks.graph_iri)
+            removed = abox.delete_individual(abox_iri, body.iri)
+            _reject_new_structural_errors(ks, baseline)
+            added_nt, removed_nt = cap.diff()
+            if not (added_nt or removed_nt):
+                raise HTTPException(status_code=409, detail="The individual no longer exists.")
+            event = audit.record(
+                session, ks_id=ks.id, action="abox.delete_individual",
+                summary=f'Deleted individual "{existing["label"]}"',
+                actor_id=user.id, actor_name=user.username,
+                detail={"iri": body.iri, "label": existing["label"], "triples_removed": removed},
+                added=added_nt, removed=removed_nt, graph=abox_iri, commit=False,
+            )
+            statement_provenance.record_abox_diff(
+                session, ks.id, added_nt, removed_nt, event,
+                abox_iri=abox_iri, commit=False,
+            )
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return {"removed": removed}
 
 
@@ -261,23 +312,30 @@ def add_assertion(
         raise HTTPException(status_code=400, detail="Unknown property for this knowledge system")
     if body.kind == "object" and body.target and not abox.exists(abox_iri, body.target):
         raise HTTPException(status_code=404, detail="Target individual not found")
-    with store.capture(abox_iri, revert_on_error=True) as cap:
-        _apply_assertion(abox_iri, body, remove=False)
-    added_nt, removed_nt = cap.diff()
-    event = audit.record(
-        session, ks_id=ks.id, action="abox.add_assertion",
-        summary=_assert_summary(body, prop_labels, subj["label"], "Asserted"),
-        actor_id=user.id, actor_name=user.username, detail=body.model_dump(),
-        added=added_nt, removed=removed_nt, graph=abox_iri,
-    )
-    statement_provenance.record_abox_fact(
-        session,
-        ks.id,
-        statement_provenance.assertion_key(
-            body.subject, body.prop, body.kind, body.target, body.value,
-        ),
-        event,
-    )
+    try:
+        with store.capture(ks.graph_iri, revert_on_error=True), store.capture(
+            abox_iri, revert_on_error=True,
+        ) as cap:
+            baseline = workbench.structural_error_signatures(ks.graph_iri)
+            _apply_assertion(abox_iri, body, remove=False)
+            _reject_new_structural_errors(ks, baseline)
+            added_nt, removed_nt = cap.diff()
+            if not (added_nt or removed_nt):
+                return abox.get_individual(abox_iri, body.subject, class_labels, prop_labels)
+            event = audit.record(
+                session, ks_id=ks.id, action="abox.add_assertion",
+                summary=_assert_summary(body, prop_labels, subj["label"], "Asserted"),
+                actor_id=user.id, actor_name=user.username, detail=body.model_dump(),
+                added=added_nt, removed=removed_nt, graph=abox_iri, commit=False,
+            )
+            statement_provenance.record_abox_diff(
+                session, ks.id, added_nt, removed_nt, event,
+                abox_iri=abox_iri, commit=False,
+            )
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return abox.get_individual(abox_iri, body.subject, class_labels, prop_labels)
 
 
@@ -294,19 +352,30 @@ def remove_assertion(
     subj = abox.get_individual(abox_iri, body.subject, class_labels, prop_labels)
     if subj is None:
         raise HTTPException(status_code=404, detail="Subject individual not found")
-    with store.capture(abox_iri, revert_on_error=True) as cap:
-        _apply_assertion(abox_iri, body, remove=True)
-    added_nt, removed_nt = cap.diff()
-    key = statement_provenance.assertion_key(
-        body.subject, body.prop, body.kind, body.target, body.value,
-    )
-    audit.record(
-        session, ks_id=ks.id, action="abox.remove_assertion",
-        summary=_assert_summary(body, prop_labels, subj["label"], "Removed"),
-        actor_id=user.id, actor_name=user.username, detail=body.model_dump(),
-        added=added_nt, removed=removed_nt, graph=abox_iri,
-    )
-    statement_provenance.remove_abox_facts(session, ks.id, {key})
+    try:
+        with store.capture(ks.graph_iri, revert_on_error=True), store.capture(
+            abox_iri, revert_on_error=True,
+        ) as cap:
+            baseline = workbench.structural_error_signatures(ks.graph_iri)
+            _apply_assertion(abox_iri, body, remove=True)
+            _reject_new_structural_errors(ks, baseline)
+            added_nt, removed_nt = cap.diff()
+            if not (added_nt or removed_nt):
+                return abox.get_individual(abox_iri, body.subject, class_labels, prop_labels)
+            event = audit.record(
+                session, ks_id=ks.id, action="abox.remove_assertion",
+                summary=_assert_summary(body, prop_labels, subj["label"], "Removed"),
+                actor_id=user.id, actor_name=user.username, detail=body.model_dump(),
+                added=added_nt, removed=removed_nt, graph=abox_iri, commit=False,
+            )
+            statement_provenance.record_abox_diff(
+                session, ks.id, added_nt, removed_nt, event,
+                abox_iri=abox_iri, commit=False,
+            )
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return abox.get_individual(abox_iri, body.subject, class_labels, prop_labels)
 
 
@@ -333,32 +402,71 @@ def fix_violation(
     _guard(session, ks)
     abox_iri = abox_iri_for(ks)
     op = body.op
+    tbox_changed = False
     try:
-        if op.get("kind") == "relax_range":
-            # A schema fix — relax a numeric data property's range to text. Lands on the TBox graph.
-            with store.capture(ks.graph_iri, revert_on_error=True) as cap:
+        # Validation sees both semantic layers, so every fix locks them in the same order.
+        # The SQL commit stays inside both captures and is compensated on failure.
+        with store.capture(ks.graph_iri, revert_on_error=True) as tcap, store.capture(
+            abox_iri, revert_on_error=True,
+        ) as acap:
+            baseline = workbench.structural_error_signatures(ks.graph_iri)
+            if op.get("kind") == "relax_range":
                 editor.apply_edit(ks.graph_iri, ks.base_iri,
                                   {"op": "update_property", "iri": op["prop"], "range": "string"})
-            graph = ks.graph_iri
-        else:
-            with store.capture(abox_iri, revert_on_error=True) as cap:
+                graph = ks.graph_iri
+                cap = tcap
+                tbox_changed = True
+            else:
                 abox_validate.apply_fix(abox_iri, op)
-            graph = abox_iri
+                graph = abox_iri
+                cap = acap
+            _reject_new_structural_errors(ks, baseline)
+            added_nt, removed_nt = cap.diff()
+            tbox_added, tbox_removed = tcap.diff()
+            abox_added, abox_removed = acap.diff()
+            unexpected_layer_change = (
+                bool(abox_added or abox_removed) if tbox_changed
+                else bool(tbox_added or tbox_removed)
+            )
+            if unexpected_layer_change:
+                raise RuntimeError("validation fix changed both ontology layers unexpectedly")
+            if not (added_nt or removed_nt):
+                return abox_validate.validate(ks.graph_iri, abox_iri)
+            event = audit.record(
+                session, ks_id=ks.id, action="abox.fix_violation",
+                summary=body.summary or f"Fixed instance violation ({op.get('kind')})",
+                actor_id=user.id, actor_name=user.username, detail=op,
+                added=added_nt, removed=removed_nt, graph=graph, commit=False,
+            )
+            if tbox_changed:
+                statement_provenance.record_tbox_diff(
+                    session, ks.id, added_nt, removed_nt, event, commit=False,
+                )
+                validation_agent.record_decision(
+                    session, ks.id, op["prop"], op.get("prop_label", ""), op.get("xsd"),
+                    "relax", "human relaxed the range to text", user.username,
+                )
+            else:
+                statement_provenance.record_abox_diff(
+                    session, ks.id, added_nt, removed_nt, event,
+                    abox_iri=abox_iri, commit=False,
+                )
+            session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
     except (KeyError, ValueError) as e:
+        session.rollback()
         raise HTTPException(status_code=400, detail=f"Invalid fix: {e}") from e
-    added_nt, removed_nt = cap.diff()
-    audit.record(
-        session, ks_id=ks.id, action="abox.fix_violation",
-        summary=body.summary or f"Fixed instance violation ({op.get('kind')})",
-        actor_id=user.id, actor_name=user.username, detail=op,
-        added=added_nt, removed=removed_nt, graph=graph,
-    )
-    if op.get("kind") == "relax_range":  # a human said this property is qualitative — remember it
-        validation_agent.record_decision(
-            session, ks.id, op["prop"], op.get("prop_label", ""), op.get("xsd"),
-            "relax", "human relaxed the range to text", user.username,
-        )
-        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+    if tbox_changed:
+        try:
+            retrieval.invalidate(ks.graph_iri)
+        except Exception:  # noqa: BLE001
+            logger.exception("ontology retrieval cache invalidation failed for %s", ks.graph_iri)
     return abox_validate.validate(ks.graph_iri, abox_iri)
 
 

@@ -131,20 +131,28 @@ def _to_op(d: dict, prop_iri: str, slot: str, vals: list[str], common_super: str
     return None, None
 
 
-def reconcile(ks_id: int, graph_iri: str, base_iri: str, model: str | None = None) -> list[str]:
+def reconcile(
+    ks_id: int,
+    graph_iri: str,
+    base_iri: str,
+    model: str | None = None,
+) -> tuple[list[str], list[TboxReconciliation]]:
     """Reconcile every property with multiple domain/range classes; record each decision.
-    Returns human-readable strings for the job log. Call inside the extraction ``store.capture``
-    so the schema edits land in the same (rollbackable) history event."""
+    Returns human-readable strings plus unpersisted learned-decision rows. The caller
+    owns the SQL transaction, graph capture, validation, and commit so RDF edits and
+    decisions are atomic. This function opens a read-only session only for experience
+    lookup; it never captures or commits independently."""
     if not settings.agentic_tbox_reconcile:
-        return []
+        return [], []
     view = schema.build_view(graph_iri)
     labels = view["labels"]
     lbl = lambda i: labels.get(i, i.rsplit("#", 1)[-1].rsplit("/", 1)[-1])  # noqa: E731
     l2i = {c["label"].strip().lower(): c["iri"] for c in view["classes"]}
     supers = {c["iri"]: set(c["superclasses"]) for c in view["classes"]}
     applied: list[str] = []
+    decisions: list[TboxReconciliation] = []
 
-    with Session(engine) as session:
+    with Session(engine) as lookup_session:
         for p in view["object_properties"] + view["data_properties"]:
             for slot, pred in (("domain", vocab.RDFS_DOMAIN), ("range", vocab.RDFS_RANGE)):
                 vals = sorted({o.value for o in store.object_terms(graph_iri, NamedNode(p["iri"]), pred)
@@ -162,19 +170,18 @@ def reconcile(ks_id: int, graph_iri: str, base_iri: str, model: str | None = Non
                     except Exception as e:  # noqa: BLE001
                         logger.warning("tbox reconcile subsume failed for %s: %s", p["iri"], e)
                         continue
-                    session.add(TboxReconciliation(
+                    decisions.append(TboxReconciliation(
                         knowledge_system_id=ks_id, slot=slot, property_label=lbl(p["iri"]),
                         property_iri=p["iri"], candidates=[lbl(v) for v in vals],
                         choice="subsume", chosen_label=lbl(reduced[0]),
                         reason="redundant — subsumed by the more general class", resolved_by="agent",
                     ))
-                    session.commit()
                     applied.append(f'{lbl(p["iri"])}.{slot} → {lbl(reduced[0])} (subsumed)')
                     continue
                 vals = reduced  # only genuinely unrelated classes remain — decide among these
                 common = set.intersection(*[({v} | _ancestors(supers, v)) for v in vals]) - set(vals)
                 common_super = max(common, key=lambda s: len(_ancestors(supers, s))) if common else None
-                d = _decide(session, ks_id, graph_iri, model, lbl(p["iri"]), slot,
+                d = _decide(lookup_session, ks_id, graph_iri, model, lbl(p["iri"]), slot,
                             [lbl(v) for v in vals], lbl(common_super) if common_super else None)
                 if not d:
                     continue
@@ -186,15 +193,14 @@ def reconcile(ks_id: int, graph_iri: str, base_iri: str, model: str | None = Non
                 except Exception as e:  # noqa: BLE001
                     logger.warning("tbox reconcile apply failed for %s: %s", p["iri"], e)
                     continue
-                session.add(TboxReconciliation(
+                decisions.append(TboxReconciliation(
                     knowledge_system_id=ks_id, slot=slot, property_label=lbl(p["iri"]),
                     property_iri=p["iri"], candidates=[lbl(v) for v in vals],
                     choice=d["choice"], chosen_label=(lbl(chosen) if chosen else "union"),
                     reason=d.get("reason"), resolved_by="agent",
                 ))
-                session.commit()
                 applied.append(f'{lbl(p["iri"])}.{slot} → {d["choice"]} ({lbl(chosen) if chosen else "union"})')
-    return applied
+    return applied, decisions
 
 
 def record_manual(ks_id: int, slot: str, property_label: str, property_iri: str | None,

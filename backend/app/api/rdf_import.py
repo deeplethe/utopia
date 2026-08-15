@@ -19,7 +19,17 @@ from app.db.database import get_session
 from app.db.models import Conflict, KnowledgeSystem, User
 from app.permissions import extraction_active, ks_writer
 from app.security import current_user
-from app.ontology import abox_validate, rdf_import, schema, skos, store, terminology_sync
+from app.ontology import (
+    abox_validate,
+    rdf_import,
+    retrieval,
+    schema,
+    skos,
+    statement_provenance,
+    store,
+    terminology_sync,
+    workbench,
+)
 
 router = APIRouter(prefix="/api/knowledge", tags=["rdf-import"])
 logger = logging.getLogger(__name__)
@@ -82,129 +92,134 @@ def import_rdf(
     touch_tbox = bool(partition.tbox) or (strategy == "replace" and target in {"auto", "tbox"})
     touch_abox = bool(partition.abox) or (strategy == "replace" and target in {"auto", "abox"})
     captures: dict[str, Any] = {}
-    with ExitStack() as stack:
-        if touch_tbox:
-            captures["tbox"] = stack.enter_context(store.capture(ks.graph_iri, revert_on_error=True))
-        if touch_abox:
-            captures["abox"] = stack.enter_context(store.capture(abox_iri, revert_on_error=True))
-
-        if strategy == "replace":
-            if touch_tbox:
-                store.clear_graph(ks.graph_iri)
-            if touch_abox:
-                store.clear_graph(abox_iri)
-        if partition.tbox:
-            store.add_triples(ks.graph_iri, partition.tbox)
-        if partition.abox:
-            store.add_triples(abox_iri, partition.abox)
-
-    tbox_added, tbox_removed = captures["tbox"].diff() if touch_tbox else (b"", b"")
-    abox_added, abox_removed = captures["abox"].diff() if touch_abox else (b"", b"")
-    tbox_changed = bool(tbox_added or tbox_removed)
-    abox_changed = bool(abox_added or abox_removed)
-
-    if tbox_changed:
-        refresh_ks_stats(session, ks)
-        open_conflicts = sync_conflicts(session, ks, semantic=False)
-    else:
-        open_conflicts = list(session.exec(
-            select(Conflict).where(
-                Conflict.knowledge_system_id == ks.id,
-                Conflict.status == "open",
-            ).order_by(Conflict.severity.desc(), Conflict.id)
-        ).all())
-
-    terminology = {
-        "terms_added": 0,
-        "terms_mapped": 0,
-        "terminology_error": None,
-    }
+    terminology = {"terms_added": 0, "terms_mapped": 0, "terminology_error": None}
     vocabulary_added = b""
     vocabulary_removed = b""
-    if tbox_changed and settings.automatic_terminology:
-        vocabulary_graph = skos.graph_iri_for(ks)
-        try:
-            with store.capture(vocabulary_graph, revert_on_error=True) as vocabulary_capture:
-                sync_result = terminology_sync.sync_from_ontology(ks)
-            vocabulary_added, vocabulary_removed = vocabulary_capture.diff()
-            terminology.update({
-                "terms_added": sync_result["terms_added"],
-                "terms_mapped": sync_result["terms_mapped"],
-            })
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("terminology sync failed after RDF import for KS %s", ks.id)
-            terminology["terminology_error"] = str(exc)
+    vocabulary_graph = skos.graph_iri_for(ks)
+    try:
+        with ExitStack() as stack:
+            # Lock both semantic layers even when only one is written: validation must compare
+            # one consistent TBox+ABox snapshot and no concurrent writer may slip between them.
+            captures["tbox"] = stack.enter_context(
+                store.capture(ks.graph_iri, revert_on_error=True)
+            )
+            captures["abox"] = stack.enter_context(
+                store.capture(abox_iri, revert_on_error=True)
+            )
+            baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
 
-    validation = abox_validate.validate(ks.graph_iri, abox_iri)
-    detail = {
-        "filename": filename,
-        "sha256": source_sha256,
-        "format": parsed.format,
-        "target": target,
-        "strategy": strategy,
-        "base_iri": effective_base_iri,
-        "parsed_triples": len(parsed.triples),
-        "tbox_triples": len(partition.tbox),
-        "abox_triples": len(partition.abox),
-    }
-    vocabulary_changed = bool(vocabulary_added or vocabulary_removed)
-    changed_graphs = int(tbox_changed) + int(abox_changed) + int(vocabulary_changed)
-    group_id = secrets.token_hex(8) if changed_graphs > 1 else None
+            if strategy == "replace":
+                if touch_tbox:
+                    store.clear_graph(ks.graph_iri)
+                if touch_abox:
+                    store.clear_graph(abox_iri)
+            if partition.tbox:
+                store.add_triples(ks.graph_iri, partition.tbox)
+            if partition.abox:
+                store.add_triples(abox_iri, partition.abox)
+
+            new_errors = workbench.new_structural_errors(ks.graph_iri, baseline_errors)
+            if new_errors:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "ontology_structural_validation_failed",
+                        "message": "The RDF import introduces structural ontology errors.",
+                        "new_error_count": len(new_errors),
+                        "new_error_signatures": new_errors,
+                    },
+                )
+
+            tbox_added, tbox_removed = captures["tbox"].diff()
+            abox_added, abox_removed = captures["abox"].diff()
+            tbox_changed = bool(tbox_added or tbox_removed)
+            abox_changed = bool(abox_added or abox_removed)
+            if tbox_changed:
+                refresh_ks_stats(session, ks, commit=False)
+                open_conflicts = sync_conflicts(session, ks, semantic=False, commit=False)
+            else:
+                open_conflicts = list(session.exec(
+                    select(Conflict).where(
+                        Conflict.knowledge_system_id == ks.id,
+                        Conflict.status == "open",
+                    ).order_by(Conflict.severity.desc(), Conflict.id)
+                ).all())
+
+            validation = abox_validate.validate(ks.graph_iri, abox_iri)
+            detail = {
+                "filename": filename,
+                "sha256": source_sha256,
+                "format": parsed.format,
+                "target": target,
+                "strategy": strategy,
+                "base_iri": effective_base_iri,
+                "parsed_triples": len(parsed.triples),
+                "tbox_triples": len(partition.tbox),
+                "abox_triples": len(partition.abox),
+            }
+            changed_graphs = int(tbox_changed) + int(abox_changed)
+            group_id = secrets.token_hex(8) if changed_graphs > 1 else None
+            if tbox_changed:
+                tbox_event = audit.record(
+                    session, ks_id=ks.id, action="rdf.import",
+                    summary=f'Imported RDF ontology from "{filename}"',
+                    actor_id=user.id, actor_name=user.username,
+                    detail={**detail, "graph_target": "tbox"},
+                    added=tbox_added, removed=tbox_removed, graph=ks.graph_iri,
+                    group_id=group_id, commit=False,
+                )
+                statement_provenance.record_tbox_diff(
+                    session, ks.id, tbox_added, tbox_removed, tbox_event, commit=False,
+                )
+            if abox_changed:
+                abox_event = audit.record(
+                    session, ks_id=ks.id, action="rdf.import",
+                    summary=f'Imported RDF instances from "{filename}"',
+                    actor_id=user.id, actor_name=user.username,
+                    detail={**detail, "graph_target": "abox"},
+                    added=abox_added, removed=abox_removed, graph=abox_iri,
+                    group_id=group_id, commit=False,
+                )
+                statement_provenance.record_abox_diff(
+                    session, ks.id, abox_added, abox_removed, abox_event, commit=False,
+                )
+            if changed_graphs:
+                session.commit()
+
+        # Terminology is derived from the committed TBox and intentionally isolated from the
+        # core import transaction. A sync failure is reported but cannot split TBox/ABox state.
+        if tbox_changed and settings.automatic_terminology:
+            try:
+                with store.capture(vocabulary_graph, revert_on_error=True) as vocabulary_capture:
+                    sync_result = terminology_sync.sync_from_ontology(ks)
+                    vocabulary_added, vocabulary_removed = vocabulary_capture.diff()
+                    if vocabulary_added or vocabulary_removed:
+                        audit.record(
+                            session, ks_id=ks.id, action="terminology.sync",
+                            summary=(
+                                f'Synchronized controlled terminology after RDF import "{filename}": '
+                                f'+{sync_result["terms_added"]} terms / {sync_result["terms_mapped"]} mappings'
+                            ),
+                            actor_id=user.id, actor_name=user.username,
+                            detail={**detail, **sync_result}, added=vocabulary_added,
+                            removed=vocabulary_removed, graph=vocabulary_graph,
+                        )
+                    terminology.update(sync_result)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("terminology sync failed after RDF import for KS %s", ks.id)
+                terminology["terminology_error"] = str(exc)
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception:
+        session.rollback()
+        raise
+
     if tbox_changed:
-        audit.record(
-            session,
-            ks_id=ks.id,
-            action="rdf.import",
-            summary=f'Imported RDF ontology from "{filename}"',
-            actor_id=user.id,
-            actor_name=user.username,
-            detail={**detail, "graph_target": "tbox"},
-            added=tbox_added,
-            removed=tbox_removed,
-            graph=ks.graph_iri,
-            group_id=group_id,
-        )
-    if abox_changed:
-        audit.record(
-            session,
-            ks_id=ks.id,
-            action="rdf.import",
-            summary=f'Imported RDF instances from "{filename}"',
-            actor_id=user.id,
-            actor_name=user.username,
-            detail={**detail, "graph_target": "abox"},
-            added=abox_added,
-            removed=abox_removed,
-            graph=abox_iri,
-            group_id=group_id,
-        )
-    if vocabulary_changed:
-        audit.record(
-            session,
-            ks_id=ks.id,
-            action="terminology.sync",
-            summary=(
-                f'Synchronized controlled terminology after RDF import "{filename}": '
-                f'+{terminology["terms_added"]} terms / {terminology["terms_mapped"]} mappings'
-            ),
-            actor_id=user.id,
-            actor_name=user.username,
-            detail={**detail, **terminology},
-            added=vocabulary_added,
-            removed=vocabulary_removed,
-            graph=skos.graph_iri_for(ks),
-            group_id=group_id,
-        )
-    if not changed_graphs:
-        audit.record(
-            session,
-            ks_id=ks.id,
-            action="rdf.import",
-            summary=f'RDF import from "{filename}" made no changes',
-            actor_id=user.id,
-            actor_name=user.username,
-            detail=detail,
-        )
+        try:
+            retrieval.invalidate(ks.graph_iri)
+        except Exception:  # noqa: BLE001
+            pass
 
     return {
         **detail,

@@ -4,8 +4,8 @@
 
 ## Branch flow
 
-- [ ] This PR is `feat/**` → `dev`, or `@WaylandYang`'s `dev` → `main` promotion PR.
-- [ ] This PR does not bypass the required integration path with a direct feature → `main` merge.
+- [ ] This PR is an allowed type-prefixed topic branch (`feat/**`, `fix/**`, `docs/**`, `refactor/**`, `test/**`, or `chore/**`) → `dev`, or `@WaylandYang`'s `dev` → `main` promotion PR.
+- [ ] This PR does not bypass the required integration path with a direct topic branch → `main` merge.
 
 ## Validation
 

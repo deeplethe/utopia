@@ -8,7 +8,7 @@
 
 在一个自托管工作台中完成 TBox、SKOS 术语、ABox 的构建、审阅、版本化、发布与服务。
 
-[English](README.md) · [文档](#文档与接口) · [架构](docs/architecture.md) · [更新日志](CHANGELOG.md) · [路线图](ROADMAP.md) · [参与贡献](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [安全策略](SECURITY.md)
+[English](README.md) · [文档](#文档与接口) · [架构](docs/architecture.md) · [更新日志](CHANGELOG.md) · [开发计划](ROADMAP.md) · [参与贡献](CONTRIBUTING.md) · [行为准则](CODE_OF_CONDUCT.md) · [安全策略](SECURITY.md)
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-007595)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.1.0-2563eb)](CHANGELOG.md)
@@ -37,12 +37,12 @@
 - [测试与 Benchmark](#测试与-benchmark)
 - [运维](#运维)
 - [安全与隐私](#安全与隐私)
-- [路线图](#路线图)
+- [开发计划](#开发计划)
 - [开源协议](#开源协议)
 
 </details>
 
-## 为什么选择 OntoPilot
+## 💡 为什么选择 OntoPilot
 
 OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在制度、手册、产品资料、研究成果和业务文档中的知识，快速沉淀为结构化、可计算的本体数据。
 
@@ -54,9 +54,7 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 - **从“看起来可用”走到生产可用。** 通过语义 Diff、不可变发布、回滚、REST API 与 MCP，把审核后的知识稳定交付给业务系统和 Agent。
 - **可追溯不是补丁，而是底座。** 每项决策都能回到文档 chunk、模型、提示词快照、操作者与完整审核历史。
 
-## Benchmark 亮点
-
-### 在可直接对比项目上的提升
+## 🏆 Benchmark 亮点
 
 | 协议 F1 | Wine<br>食品与饮料 | GeoNames<br>地理 | OWL-Time<br>单位与度量 |
 | --- | ---: | ---: | ---: |
@@ -68,7 +66,7 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 评测范围、基线口径、提示词配置与复现细节见
 [Benchmark 方法与完整报告](docs/benchmarks/ontolearner-multidomain.md)。
 
-## 核心能力
+## ✨ 核心能力
 
 | 领域 | 能力 |
 | --- | --- |
@@ -81,7 +79,8 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 | 发布工程 | 草稿 → 已审核 → 已发布、不可变快照、语义 Diff、恢复与部署 |
 | 导出 | TBox、术语、ABox 分层导出；完整包；异步 N-Quads 分片 |
 | 对外服务 | 知识体系 API Token、固定版本 REST、RDF 导出、受限只读 SPARQL |
-| Agent 集成 | 随后端自动启动的 Streamable HTTP MCP，覆盖读取、建议、修改、审核和生命周期 |
+| Agent 工作台 | 固定悬浮的第一方 Agent，自动感知页面与选中节点，通过 MCP 探索并生成可预检的修改建议 |
+| Agent / MCP 集成 | 随后端自动启动的 Streamable HTTP MCP，覆盖读取、建议、修改、审核和生命周期 |
 | 互操作 | RDF 直接导入，支持自动 TBox/ABox 分类或显式选择目标层 |
 | 国际化 | 中英文界面和文档；后端提示词系统语言独立配置 |
 
@@ -91,7 +90,7 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 
 本体工作台在同一视图中整合类导航、关系图谱和实体详情；项目侧边栏则将审核队列、发布、文档、历史、成员和 API 访问串联在统一的治理流程中。
 
-## 工作流程
+## 🔄 工作流程
 
 ```mermaid
 flowchart LR
@@ -134,7 +133,7 @@ flowchart LR
 
 SQLite 适用于单进程本地开发；共享环境和 Docker 部署使用 PostgreSQL。信任边界、图层隔离、溯源和导出设计详见[架构文档](docs/architecture.md)。
 
-## Docker 快速启动
+## 🚀 Docker 快速启动
 
 ### 环境要求
 
@@ -214,9 +213,11 @@ docker compose down
 
 首次启动后端前设置 `SEED_DEMO_DATA=true`，可以在不调用模型的情况下创建确定性的 Pump Operations 演示库。已有源码环境可在仓库根目录运行 `python backend/scripts/seed_demo.py`。
 
-## MCP 与 Agent 集成
+## 🤖 MCP 与 Agent 集成
 
 MCP 默认在 `/mcp` 提供服务，并与后端使用同一个生命周期自动启动，不需要额外安装或守护 MCP 进程。每个 MCP Token 绑定一个用户和一个知识体系；每次调用都取 Token Scope 与用户实时角色的交集。
+
+知识体系页面右下角内置第一方悬浮 Agent：它自动感知当前页面和选中的本体节点，并自主调用已注册的只读 MCP Tool 探索结构、实例、证据、审核和版本现状。它给出的修改建议会先通过服务端 Semantic Preview；用户检查 Diff 和影响范围，并明确确认后才会原子提交。Agent 不会直接写入本体。该内置链路使用当前登录用户的服务端可信委托，模型不会接触浏览器 Cookie 或 MCP Token。
 
 ```json
 {
@@ -244,40 +245,7 @@ MCP 默认在 `/mcp` 提供服务，并与后端使用同一个生命周期自�
 
 ## 文档与接口
 
-登录后通过 `/docs` 打开文档中心。左侧目录树中的每一项对应独立的中/英文 Markdown，右侧渲染 Markdown 和项目主题色 Mermaid 图。
-
-| 资源 | 默认地址 / 文件 |
-| --- | --- |
-| 产品与设计文档 | <http://localhost:8080/docs> |
-| MCP 指南 | <http://localhost:8080/docs/mcp> |
-| OpenAPI UI | <http://localhost:8080/api/docs> |
-| ReDoc | <http://localhost:8080/api/redoc> |
-| OpenAPI JSON | <http://localhost:8080/api/openapi.json> |
-| 健康检查 | <http://localhost:8080/api/health> |
-| 外部 API 指南 | [docs/external-api.zh-CN.md](docs/external-api.zh-CN.md) |
-| RDF 导入指南 | [docs/rdf-import.zh-CN.md](docs/rdf-import.zh-CN.md) |
-| 发布和导出指南 | [docs/release-and-export.md](docs/release-and-export.md) |
-
-浏览器治理 API 使用 HttpOnly Session Cookie。下游应用使用可吊销的知识体系 API Token，并访问 `/api/v1/knowledge-systems/{public_id}` 下的版本化接口。生产消费者应固定发布版本；`/published` 会有意跟随最新发布版本。
-
-## 发布、服务与导出
-
-草稿使用内部标识，只有发布成功才分配公开 `vN` 版本。因此删除未发布草稿不会消耗下一个公开版本号。
-
-每次发布固化三层 RDF 和溯源文件：
-
-```text
-release/
-├── manifest.json
-├── tbox-00001.nq
-├── vocabulary-00001.nq
-├── abox-00001.nq
-├── abox-00002.nq
-├── tbox-provenance.jsonl
-└── abox-provenance.jsonl
-```
-
-制品有意保持未压缩，以支持 HTTP Range、逐行处理、分片独立校验和对象存储/CDN 复制；清单记录 SHA-256。反向代理仍可启用传输压缩。
+部署后登录并打开[文档中心](http://localhost:8080/docs)，即可查看产品设计、工作流、MCP、API、导入、发布与导出指南。
 
 ## 配置
 
@@ -419,17 +387,20 @@ curl --fail http://localhost:8080/api/health
 - 限制模型端点、反向代理请求大小和频率；
 - 阅读 [SECURITY.md](SECURITY.md)，并通过私密渠道报告漏洞。
 
-## 路线图
+## 🗺️ 开发计划
 
-路线图表达方向，不构成发布日期承诺。目标、验收标准与非目标见 [ROADMAP.md](ROADMAP.md)。
+已勾选的能力已经交付；未勾选项是开发方向，不代表承诺发布日期。详细验收标准与非目标见 [ROADMAP.md](ROADMAP.md)。
 
-- **稳定性：** 正式迁移与升级测试、备份恢复工具、生产可观测性、无障碍和浏览器覆盖。
-- **协作：** 更完善的审核分配、评论/提及、通知、保存筛选条件和大团队审计流程。
-- **Agent 辅助治理：** 第一方对话页面，使用短期用户 MCP Token，并在执行前展示可审核变更预览。
-- **集成：** 对象存储适配、Webhook/事件、身份提供商集成和常用平台部署模板。
-- **规模与质量：** 增加 MinerU 等可插拔解析框架、更大语料接入、增量抽取、Benchmark 扩展、发布可复现和性能预算。
-- **建模与推演：** 时空建模，以及受治理、可版本化、可复现的沙盘推演和假设分析。
-- **达到 1.0：** 稳定 REST/MCP/发布契约、兼容性策略、迁移、灾难恢复验证和安全审查。
+- [x] **本体治理基础：** 在一个工作台中完成 TBox、SKOS 术语和 ABox 的抽取、审核、审计、版本化与发布。
+- [x] **人工审核闭环：** 专用审核队列、证据定位、搜索筛选、评论、历史记录，以及可回滚的审计变更。
+- [x] **Agent 接入基础：** 知识体系级 MCP Token，以及读取、提议、预览、修改、审核和发布 Tool。
+- [ ] **生产稳定性：** 正式迁移与升级测试、备份恢复工具、生产可观测性、无障碍和更完整的浏览器覆盖。
+- [ ] **团队协作：** 更完善的审核分配、提及、通知、保存筛选条件和大团队审计流程。
+- [x] **Agent 辅助治理：** 第一方悬浮 Agent，感知页面与选中节点，通过 MCP 自主探索，并在执行前提供可审核的预检变更建议。
+- [ ] **生态集成：** 对象存储、Webhook/事件、身份提供商和常用平台部署模板。
+- [ ] **规模与质量：** MinerU 等可插拔解析框架、更大语料接入、增量抽取、Benchmark 扩展、发布可复现和性能预算。
+- [ ] **建模与推演：** 时空建模，以及受治理、可版本化、可复现的沙盘推演和假设分析。
+- [ ] **达到 1.0：** 稳定 REST、MCP 和发布契约，完善兼容性策略、迁移、灾难恢复验证与安全审查。
 
 ## 项目规范
 

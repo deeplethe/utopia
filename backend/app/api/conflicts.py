@@ -24,12 +24,12 @@ from app.db.models import (
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
 from app.ontology import conflicts as detector
-from app.ontology import editor, provenance, schema, store
+from app.ontology import editor, provenance, retrieval, schema, statement_provenance, store, workbench
 
 router = APIRouter(prefix="/api/knowledge", tags=["conflicts"])
 
 def _iri_local(iri: str) -> str:
-    return iri.rsplit("#", 1)[-1].rsplit("/", 1)[-1]
+    return iri.rsplit("#", 1)[-1].rsplit("/", 1)[-1].rsplit(":", 1)[-1]
 
 
 def _pair_key(kind: str, left: str, right: str) -> str:
@@ -79,7 +79,13 @@ def _evidence_text(text: str) -> str:
     return text.strip()
 
 
-def sync_conflicts(session: Session, ks: KnowledgeSystem, *, semantic: bool = True) -> list[Conflict]:
+def sync_conflicts(
+    session: Session,
+    ks: KnowledgeSystem,
+    *,
+    semantic: bool = True,
+    commit: bool = True,
+) -> list[Conflict]:
     """Re-detect conflicts and reconcile with stored ones (upsert + auto-clear stale).
 
     - new signature            -> create as open
@@ -126,7 +132,10 @@ def sync_conflicts(session: Session, ks: KnowledgeSystem, *, semantic: bool = Tr
             c.resolution = "auto-cleared"
             session.add(c)
 
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     return list(session.exec(
         select(Conflict)
         .where(Conflict.knowledge_system_id == ks.id, Conflict.status == "open")
@@ -287,38 +296,114 @@ def resolve_conflict(
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> dict:
-    c = session.get(Conflict, cid)
-    if not c or c.knowledge_system_id != ks.id:
-        raise HTTPException(status_code=404, detail="Conflict not found")
-    if c.status != "open":
-        raise HTTPException(status_code=409, detail=f"Conflict already {c.status}")
-
-    resolutions = c.payload.get("resolutions", [])
-    chosen = next((r for r in resolutions if r["id"] == body.resolution_id), None)
-    if not chosen:
-        raise HTTPException(status_code=400, detail="Unknown resolution id")
-    if extraction_active(session, ks.id):
-        raise HTTPException(status_code=409, detail="An extraction is in progress; try again after it finishes.")
-
     # A resolution can cascade into the ABox (merge_classes retypes instances, merge_properties
     # repoints assertion predicates) — capture that graph too so the change is audited/rollbackable.
     abox_iri = f"{ks.graph_iri.rstrip('/')}/abox"
     try:
         with store.capture(ks.graph_iri, revert_on_error=True) as cap, \
                 store.capture(abox_iri, revert_on_error=True) as acap:
-            editor.apply_edit(ks.graph_iri, ks.base_iri, chosen["op"])
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Resolution failed: {e}") from e
-    added_nt, removed_nt = cap.diff()
-    a_added, a_removed = acap.diff()
-    import secrets
-    gid = secrets.token_hex(8) if (a_added or a_removed) else None  # link the TBox + ABox events
+            # The request may have waited for another graph writer. Lock and repopulate
+            # the row only now, then derive the chosen operation from that fresh payload;
+            # otherwise a concurrent resolve/dismiss or conflict refresh could make this
+            # decision stale while it was queued for the graph lock.
+            c = session.exec(
+                select(Conflict)
+                .where(Conflict.id == cid, Conflict.knowledge_system_id == ks.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).one_or_none()
+            if not c:
+                raise HTTPException(status_code=404, detail="Conflict not found")
+            if c.status != "open":
+                raise HTTPException(status_code=409, detail=f"Conflict already {c.status}")
+            resolutions = (c.payload or {}).get("resolutions", [])
+            chosen = next(
+                (
+                    resolution
+                    for resolution in resolutions
+                    if resolution.get("id") == body.resolution_id
+                ),
+                None,
+            )
+            if not chosen:
+                raise HTTPException(status_code=400, detail="Unknown resolution id")
+            if extraction_active(session, ks.id):
+                raise HTTPException(
+                    status_code=409,
+                    detail="An extraction is in progress; try again after it finishes.",
+                )
 
-    c.status = "resolved"
-    c.resolved_at = utcnow()
-    c.resolution = body.resolution_id
-    session.add(c)
-    session.commit()
+            baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+            edit_result = editor.apply_edit(ks.graph_iri, ks.base_iri, chosen["op"])
+            new_errors = workbench.new_structural_errors(ks.graph_iri, baseline_errors)
+            if new_errors:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "ontology_structural_validation_failed",
+                        "message": "The resolution introduces structural ontology errors.",
+                        "new_error_count": len(new_errors),
+                        "new_error_signatures": new_errors,
+                    },
+                )
+            added_nt, removed_nt = cap.diff()
+            a_added, a_removed = acap.diff()
+            if not (added_nt or removed_nt or a_added or a_removed):
+                raise HTTPException(
+                    status_code=409,
+                    detail="The selected resolution no longer changes the ontology.",
+                )
+
+            import secrets
+            gid = secrets.token_hex(8) if (a_added or a_removed) else None
+            c.status = "resolved"
+            c.resolved_at = utcnow()
+            c.resolution = body.resolution_id
+            session.add(c)
+            refresh_ks_stats(session, ks, commit=False)
+            open_conflicts = sync_conflicts(session, ks, semantic=False, commit=False)
+            detail = {"conflict_id": cid, "resolution": body.resolution_id, "op": chosen["op"]}
+            event = audit.record(
+                session, ks_id=ks.id, action="conflict.resolve",
+                summary=f'Resolved conflict "{c.title}" ({chosen["label"]})',
+                actor_id=user.id, actor_name=user.username, detail=detail,
+                added=added_nt, removed=removed_nt, group_id=gid, commit=False,
+            )
+            statement_provenance.record_tbox_diff(
+                session, ks.id, added_nt, removed_nt, event, commit=False,
+            )
+            if a_added or a_removed:
+                abox_event = audit.record(
+                    session, ks_id=ks.id, action="conflict.resolve",
+                    summary=f'Resolved conflict "{c.title}" - cascaded to instances',
+                    actor_id=user.id, actor_name=user.username, detail=detail,
+                    added=a_added, removed=a_removed, graph=abox_iri, group_id=gid,
+                    commit=False,
+                )
+                statement_provenance.record_abox_diff(
+                    session,
+                    ks.id,
+                    a_added,
+                    a_removed,
+                    abox_event,
+                    abox_iri=abox_iri,
+                    operations=[chosen["op"]],
+                    results=[edit_result],
+                    commit=False,
+                )
+            session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception as e:  # noqa: BLE001
+        session.rollback()
+        raise HTTPException(status_code=400, detail=f"Resolution failed: {e}") from e
+
+    try:
+        retrieval.invalidate(ks.graph_iri)
+    except Exception:  # noqa: BLE001
+        # Retrieval vectors are derived cache state; the next lookup can rebuild them.
+        pass
 
     # Record a domain/range reconciliation into the learned memory the TBox agent consults,
     # so a human's decision here teaches future automatic reconciliations.
@@ -342,26 +427,6 @@ def resolve_conflict(
             [e.get("label") for e in ents[1:]], choice, chosen_label, user.username,
         )
 
-    refresh_ks_stats(session, ks)
-    # Structural re-check only (fast, no API calls) — same as manual edits. The costly
-    # semantic duplicate pass (embeddings + LLM judge, ~10s) would block the UI on every
-    # resolve; it stays gated to extraction and the explicit "detect conflicts" action.
-    open_conflicts = sync_conflicts(session, ks, semantic=False)
-    audit.record(
-        session, ks_id=ks.id, action="conflict.resolve",
-        summary=f'Resolved conflict "{c.title}" ({chosen["label"]})',
-        actor_id=user.id, actor_name=user.username,
-        detail={"conflict_id": cid, "resolution": body.resolution_id, "op": chosen["op"]},
-        added=added_nt, removed=removed_nt, group_id=gid,
-    )
-    if a_added or a_removed:  # the resolution also touched instance data
-        audit.record(
-            session, ks_id=ks.id, action="conflict.resolve",
-            summary=f'Resolved conflict "{c.title}" — cascaded to instances',
-            actor_id=user.id, actor_name=user.username,
-            detail={"conflict_id": cid, "resolution": body.resolution_id, "op": chosen["op"]},
-            added=a_added, removed=a_removed, graph=abox_iri, group_id=gid,
-        )
     return {
         "resolved": cid,
         "open_conflicts": open_conflicts,
@@ -376,19 +441,33 @@ def dismiss_conflict(
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> Conflict:
-    c = session.get(Conflict, cid)
+    c = session.exec(
+        select(Conflict)
+        .where(Conflict.id == cid, Conflict.knowledge_system_id == ks.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
     if not c or c.knowledge_system_id != ks.id:
         raise HTTPException(status_code=404, detail="Conflict not found")
+    if c.status == "dismissed":
+        # Idempotent retry: preserve the original timestamp and do not fabricate a
+        # second audit event or SQL commit.
+        return c
     c.status = "dismissed"
     c.resolved_at = utcnow()
     c.resolution = "dismissed"
     session.add(c)
-    session.commit()
-    audit.record(
-        session, ks_id=ks.id, action="conflict.dismiss",
-        summary=f'Dismissed conflict "{c.title}"',
-        actor_id=user.id, actor_name=user.username, detail={"conflict_id": cid},
-    )
+    try:
+        audit.record(
+            session, ks_id=ks.id, action="conflict.dismiss",
+            summary=f'Dismissed conflict "{c.title}"',
+            actor_id=user.id, actor_name=user.username, detail={"conflict_id": cid},
+            commit=False,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     session.refresh(c)
     return c
 

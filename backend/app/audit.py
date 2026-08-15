@@ -26,6 +26,7 @@ def record(
     removed: bytes | None = None,
     graph: str | None = None,
     group_id: str | None = None,
+    commit: bool = True,
 ) -> AuditEvent:
     event = AuditEvent(
             knowledge_system_id=ks_id,
@@ -40,6 +41,11 @@ def record(
             removed=gzip.compress(removed) if removed else None,
         )
     session.add(event)
-    session.commit()
-    session.refresh(event)
+    if commit:
+        session.commit()
+        session.refresh(event)
+    else:
+        # Allocate the primary key for provenance references while leaving the caller in
+        # control of the surrounding SQL transaction.
+        session.flush()
     return event
