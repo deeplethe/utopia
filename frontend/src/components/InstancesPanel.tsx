@@ -145,16 +145,39 @@ export default function InstancesPanel({
   const addSuggestedClasses = useCallback(async () => {
     const labels = Object.keys(suggestions)
     setAddingClasses(true)
-    let ok = 0
-    for (const label of labels) {
-      try { await api.editOntology(ksId, { op: "add_class", label }); ok++ } catch { /* skip dups */ }
+    let added = 0
+    try {
+      let revision = view.revision
+      if (!revision) throw new Error(t("ontology.unknownError"))
+      // The atomic change-set API deliberately caps requests at 50 operations. Process
+      // larger extraction suggestion sets in revision-chained batches and remove only
+      // batches that the server actually committed, so a later failure is recoverable.
+      for (let offset = 0; offset < labels.length; offset += 50) {
+        const batch = labels.slice(offset, offset + 50)
+        const result = await api.commitOntologyChanges(
+          ksId,
+          batch.map((label) => ({ op: "add_class", label })),
+          revision,
+          t("instances.suggestionsAdded", { count: batch.length }),
+        )
+        revision = result.revision
+        added += batch.length
+        const committed = new Set(labels.slice(0, added))
+        setSuggestions((current) => Object.fromEntries(
+          Object.entries(current).filter(([label]) => !committed.has(label)),
+        ))
+      }
+      toast.success(t("instances.suggestionsAdded", { count: labels.length }))
+      setSuggestions({})
+      setDismissedJobId(suggestJobId)
+    } catch (error) {
+      if (added) toast.success(t("instances.suggestionsAdded", { count: added }))
+      toast.error((error as Error).message)
+    } finally {
+      if (added) onChanged?.()
+      setAddingClasses(false)
     }
-    setAddingClasses(false)
-    toast.success(t("instances.suggestionsAdded", { count: ok }))
-    setSuggestions({})
-    setDismissedJobId(suggestJobId)
-    onChanged?.()
-  }, [ksId, suggestions, suggestJobId, onChanged, t])
+  }, [ksId, suggestions, suggestJobId, onChanged, t, view.revision])
 
   // Poll the ABox extraction job until it finishes, then refresh.
   useEffect(() => {
@@ -197,7 +220,7 @@ export default function InstancesPanel({
     <div className="space-y-3">
       {showSuggestions && (
         <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
-          <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col items-start justify-between gap-3 sm:flex-row">
             <div className="min-w-0">
               <p className="text-sm font-medium">
                 {t("instances.unknownClassesTitle", { count: suggestionLabels.length })}
@@ -208,7 +231,7 @@ export default function InstancesPanel({
                 })}
               </p>
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex max-w-full flex-wrap items-center gap-1.5 sm:shrink-0">
               {canWrite && (
                 <Button size="sm" onClick={addSuggestedClasses} disabled={addingClasses}>
                   {addingClasses ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
@@ -223,9 +246,9 @@ export default function InstancesPanel({
         </div>
       )}
 
-      <div className="flex gap-4">
+      <div className="flex min-w-0 flex-col gap-4 lg:flex-row">
       {/* Left: classes with instance counts */}
-      <div className="w-56 shrink-0 space-y-2">
+      <div className="w-full min-w-0 space-y-2 lg:w-56 lg:shrink-0">
         <div className="flex items-center justify-between px-1">
           <span className="text-xs font-medium text-muted-foreground">{t("common.classes")}</span>
           <span className="text-xs text-muted-foreground">{total}</span>
@@ -236,7 +259,7 @@ export default function InstancesPanel({
             <Input value={classFilter} onChange={(e) => setClassFilter(e.target.value)} placeholder={t("instances.filterClasses")} className="h-8 pl-7 text-sm" />
           </div>
         )}
-        <ScrollArea className="h-[calc(100svh-13rem)] pr-2">
+        <ScrollArea className="h-52 pr-2 lg:h-[calc(100svh-13rem)]">
           <div className="space-y-0.5">
             <ClassRow label={t("instances.all")} count={total} active={selected === null} onClick={() => setSelected(null)} />
             {classes.filter((c) => c.label.toLowerCase().includes(classFilter.trim().toLowerCase())).map((c) => (
@@ -256,12 +279,12 @@ export default function InstancesPanel({
             <h2 className="truncate text-sm font-semibold" title={selectedLabel}>{selectedLabel}</h2>
             <p className="text-xs text-muted-foreground">{t(listTotal === 1 ? "instances.individual" : "instances.individuals", { count: listTotal })}</p>
           </div>
-          <div className="flex items-center gap-2">
-            <div className="relative">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+            <div className="relative min-w-0 flex-1 sm:flex-none">
               <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={q} onChange={(e) => setQ(e.target.value)}
-                placeholder={t("instances.search")} className="h-8 w-52 pl-7 text-sm"
+                placeholder={t("instances.search")} className="h-8 w-full pl-7 text-sm sm:w-52"
               />
             </div>
             {canWrite && (
@@ -295,7 +318,7 @@ export default function InstancesPanel({
           </div>
         )}
 
-        <div className="rounded-lg border">
+        <div className="max-w-full overflow-x-auto rounded-lg border">
           <Table>
             <TableHeader>
               <TableRow>

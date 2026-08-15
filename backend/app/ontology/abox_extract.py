@@ -13,6 +13,7 @@ SEQUENTIALLY because each chunk must see the individuals created by earlier chun
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import math
@@ -659,6 +660,9 @@ def _resolve_and_merge_chunk(
     roles_by_class: dict[str, frozenset[str]],
     res_index: "abox.ResolutionIndex", model: str | None, source_text: str, mentions: list[dict],
     agentic_resolution: bool,
+    *,
+    db_session: Session | None = None,
+    commit: bool = True,
 ) -> dict:
     """Resolve each mention to an individual, then apply its attribute/relation assertions.
     Runs in a worker thread (blocking embeddings + LLM + DB + graph writes); graph writes are
@@ -670,7 +674,14 @@ def _resolve_and_merge_chunk(
     local: dict[tuple[str, str], str] = {}  # (surface_lower, class_iri) -> individual iri
     by_label: dict[str, set[str]] = {}      # surface_lower -> resolved iris (relation-target lookup)
 
-    with Session(engine) as session:
+    # Extraction jobs pass their outer session with ``commit=False`` so every
+    # resolution row and provenance update commits together with the graph diff,
+    # document markers, job counters, and audit event.  Keeping the owned-session
+    # path preserves compatibility for callers that use this helper directly.
+    session_context = (
+        Session(engine) if db_session is None else contextlib.nullcontext(db_session)
+    )
+    with session_context as session:
         # A multi-step agent decides ambiguous candidate matches (embeddings only retrieve).
         agent = None
         if agentic_resolution:
@@ -794,7 +805,10 @@ def _resolve_and_merge_chunk(
         abox_provenance.rebuild_for_chunk(
             session, ks_id, chunk_id, prov, job_id=job_id, actor_name=actor_name,
         )
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
     counts["unknown"] = unknown
     return counts
 
@@ -808,14 +822,30 @@ def _database_is_locked(exc: BaseException) -> bool:
     return False
 
 
-async def _resolve_and_merge_with_retry(*args) -> dict:
+async def _resolve_and_merge_with_retry(
+    *args,
+    db_session: Session | None = None,
+    commit: bool = True,
+) -> dict:
     """Retry transient SQLite writer contention caused by parallel knowledge-system jobs."""
     attempts = 4
     for attempt in range(attempts):
         try:
-            return await asyncio.to_thread(_resolve_and_merge_chunk, *args)
+            return await asyncio.to_thread(
+                _resolve_and_merge_chunk,
+                *args,
+                db_session=db_session,
+                commit=commit,
+            )
         except OperationalError as exc:
-            if not _database_is_locked(exc) or attempt == attempts - 1:
+            # An externally-owned transaction cannot be retried piecemeal after a
+            # database error: earlier chunks and RDF writes belong to that same
+            # unit of work.  Let the job roll back the complete paired capture.
+            if (
+                db_session is not None
+                or not _database_is_locked(exc)
+                or attempt == attempts - 1
+            ):
                 raise
             delay = 0.5 * (2 ** attempt)
             logger.warning(
@@ -840,8 +870,19 @@ async def extract_instances_from_chunks(
     model: str | None = None,
     progress: ProgressCb = None,
     agentic_resolution: bool | None = None,
+    session: Session | None = None,
+    commit: bool = True,
+    fail_fast: bool = False,
 ) -> dict:
-    """Extract mentions concurrently, then resolve and merge them in source order."""
+    """Extract mentions concurrently, then resolve and merge them in source order.
+
+    ``session``/``commit=False`` lets an API job include all SQL side effects in
+    its outer transaction.  ``fail_fast=True`` is required for that atomic mode:
+    a failed merge must escape to the paired graph captures so both RDF and SQL
+    roll back.  Defaults retain the historical per-chunk standalone behaviour.
+    """
+    if not commit and session is None:
+        raise ValueError("commit=False requires an externally managed session")
     view = schema.build_view(graph_iri)
     if not view["classes"]:
         return {"created": 0, "matched": 0, "queued": 0, "assertions": 0,
@@ -908,6 +949,8 @@ async def extract_instances_from_chunks(
                 class_index, prop_index, class_labels, prop_labels, hierarchy,
                 ancestors, property_shapes,
                 roles_by_class, res_index, model, text, mentions, use_agentic_resolution,
+                db_session=session,
+                commit=commit,
             )
             res["rejected"] += role_rejected
             for lbl in res.pop("unknown", []):
@@ -924,6 +967,12 @@ async def extract_instances_from_chunks(
                 f"{res['rejected']} rejected / {res['assertions']} assertions"
             ))
         except Exception as e:  # noqa: BLE001  (one bad chunk shouldn't kill the job)
+            if fail_fast:
+                for task in mention_tasks[i + 1:]:
+                    task.cancel()
+                if i + 1 < len(mention_tasks):
+                    await asyncio.gather(*mention_tasks[i + 1:], return_exceptions=True)
+                raise
             entry["status"] = "error"
             entry["error"] = str(e)
             log_lines.append(f"chunk {chunk_id}: ERROR {e}")

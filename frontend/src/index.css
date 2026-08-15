@@ -5,6 +5,42 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@keyframes agent-status-sweep {
+    0%, 12% {
+        background-position: 100% 0;
+    }
+
+    82%, 100% {
+        background-position: 0 0;
+    }
+}
+
+.agent-status-sweep {
+    color: var(--muted-foreground);
+    background-image: linear-gradient(
+        90deg,
+        var(--muted-foreground) 0%,
+        var(--muted-foreground) 38%,
+        var(--foreground) 50%,
+        var(--muted-foreground) 62%,
+        var(--muted-foreground) 100%
+    );
+    background-position: 100% 0;
+    background-size: 250% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: agent-status-sweep 2.2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .agent-status-sweep {
+        background: none;
+        animation: none;
+        -webkit-text-fill-color: currentColor;
+    }
+}
+
 @theme inline {
     --font-heading: var(--font-sans);
     --font-sans: 'Manrope Variable', sans-serif;
@@ -139,6 +175,113 @@
 }
 
 @layer components {
+  .agent-markdown {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    contain: inline-size;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    @apply text-sm leading-relaxed text-foreground;
+  }
+
+  .agent-markdown > :first-child {
+    margin-top: 0;
+  }
+
+  .agent-markdown > :last-child {
+    margin-bottom: 0;
+  }
+
+  .agent-markdown p {
+    @apply my-2 text-foreground/90;
+  }
+
+  .agent-markdown h1,
+  .agent-markdown h2,
+  .agent-markdown h3,
+  .agent-markdown h4 {
+    @apply mb-1.5 mt-3 font-semibold leading-snug text-foreground;
+  }
+
+  .agent-markdown h1 {
+    @apply text-lg;
+  }
+
+  .agent-markdown h2 {
+    @apply text-base;
+  }
+
+  .agent-markdown h3,
+  .agent-markdown h4 {
+    @apply text-sm;
+  }
+
+  .agent-markdown ul {
+    @apply my-2 list-disc space-y-1 pl-5;
+  }
+
+  .agent-markdown ol {
+    @apply my-2 list-decimal space-y-1 pl-5;
+  }
+
+  .agent-markdown li,
+  .agent-markdown blockquote,
+  .agent-markdown a,
+  .agent-markdown code {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .agent-markdown a {
+    @apply font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary;
+  }
+
+  .agent-markdown blockquote {
+    @apply my-2 border-l-2 border-primary/50 pl-3 text-muted-foreground;
+  }
+
+  .agent-markdown code:not(pre code) {
+    @apply rounded bg-muted px-1 py-0.5 font-mono text-[0.9em];
+  }
+
+  .agent-markdown pre {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    @apply my-2 overflow-x-auto rounded-lg bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-100;
+  }
+
+  .agent-markdown pre code {
+    white-space: pre;
+    overflow-wrap: normal;
+  }
+
+  .agent-markdown table {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    @apply my-2 overflow-x-auto border-collapse text-xs;
+  }
+
+  .agent-markdown th,
+  .agent-markdown td {
+    max-width: 20rem;
+    overflow-wrap: anywhere;
+    @apply border px-2 py-1.5 text-left align-top;
+  }
+
+  .agent-markdown th {
+    @apply bg-muted/60 font-semibold;
+  }
+
+  .agent-markdown hr {
+    @apply my-3 border-border;
+  }
+
   .docs-markdown {
     @apply min-w-0 max-w-5xl pb-16 text-[15px] leading-7 text-foreground;
   }

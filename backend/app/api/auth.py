@@ -5,6 +5,7 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
+from app import agent_memory
 from app.config import settings
 from app.db.database import get_session
 from app.db.models import AuthSession, KnowledgeSystem, KSGrant, McpUserToken, User
@@ -211,6 +212,7 @@ def delete_user(
         session.delete(s)
     for token in session.exec(select(McpUserToken).where(McpUserToken.user_id == uid)).all():
         session.delete(token)
+    agent_memory.delete_scoped_conversations(session, user_id=uid, commit=False)
     session.delete(user)
     session.commit()
     return {"deleted": uid}

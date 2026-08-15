@@ -43,6 +43,8 @@ _PROMPT_MODULES = (
     "app.ontology.tbox_reconcile",
     "app.ontology.terminology_agent",
     "app.ontology.validation_agent",
+    "app.ontology.modeling_assistant",
+    "app.agent_runtime",
 )
 
 

@@ -7,6 +7,8 @@ next time. Also exposes the accumulated decision log (the learned resolution mem
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import func
@@ -15,12 +17,13 @@ from sqlmodel import Session, select
 from app import audit
 from app.api.abox import abox_iri_for
 from app.db.database import get_session
-from app.db.models import EntityResolution, KnowledgeSystem, User, utcnow
+from app.db.models import AboxProvenance, EntityResolution, KnowledgeSystem, User, utcnow
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
-from app.ontology import abox, abox_provenance, schema, statement_provenance, store
+from app.ontology import abox, abox_provenance, retrieval, schema, store, workbench
 
 router = APIRouter(prefix="/api/knowledge", tags=["resolution"])
+logger = logging.getLogger(__name__)
 
 
 def _class_labels(ks: KnowledgeSystem) -> dict[str, str]:
@@ -58,6 +61,43 @@ def _decision_individual_label(
                 and candidate.get("label")):
             return str(candidate["label"])
     return row.surface_form or None
+
+
+def _record_resolution_fact(
+    session: Session,
+    *,
+    ks_id: int,
+    fact_key: str,
+    event,
+    chunk_id: int | None,
+) -> None:
+    """Attach the reviewed source mention without committing the caller's transaction."""
+    provenance = session.exec(select(AboxProvenance).where(
+        AboxProvenance.knowledge_system_id == ks_id,
+        AboxProvenance.fact_key == fact_key,
+        AboxProvenance.chunk_id == chunk_id,
+    )).first()
+    review_record = {
+        "action": event.action,
+        "summary": event.summary,
+        "detail": event.detail,
+    }
+    if provenance is None:
+        provenance = AboxProvenance(
+            knowledge_system_id=ks_id,
+            fact_key=fact_key,
+            chunk_id=chunk_id,
+            method="review" if chunk_id is not None else "manual",
+            actor_name=event.actor_name,
+            audit_event_id=event.id,
+            review_record=review_record,
+        )
+    else:
+        provenance.method = "review" if chunk_id is not None else "manual"
+        provenance.actor_name = event.actor_name
+        provenance.audit_event_id = event.id
+        provenance.review_record = review_record
+    session.add(provenance)
 
 
 @router.get("/{ks_id}/resolution/queue")
@@ -219,66 +259,108 @@ def resolve(
     pending_attrs = ctx.get("pending_attributes", []) or []
     pending_rels = ctx.get("pending_relations", []) or []
     resolved_relations: list[tuple[str, str]] = []
+    replayed = 0
 
-    with store.capture(abox_iri) as cap:
-        subject_iri = (
-            abox.create_individual(abox_iri, ks.base_iri, row.surface_form, row.class_iri)
-            if is_new else body.individual_iri
-        )
-        # Replay the facts captured when this mention was queued, so they aren't lost.
-        for a in pending_attrs:
-            abox.add_data_assertion(abox_iri, subject_iri, a["prop"], a["value"], a.get("datatype"))
-        if pending_rels:
-            # Resolve each relation's target by label against existing individuals (best effort).
-            label_to_iri: dict[str, str] = {}
-            for iri, lbl in abox.label_index(abox_iri).items():
-                label_to_iri.setdefault(lbl.strip().lower(), iri)
-            for r in pending_rels:
-                tgt = label_to_iri.get(str(r.get("target_label", "")).strip().lower())
-                if tgt:
-                    abox.add_object_assertion(abox_iri, subject_iri, r["prop"], tgt)
-                    resolved_relations.append((r["prop"], tgt))
-    added_nt, removed_nt = cap.diff()
+    try:
+        # Resolution reads the TBox and mutates the paired ABox. Hold both
+        # captures in the global order until the SQL transaction is durable, so
+        # provenance/audit/commit failures restore the RDF graph as well.
+        with store.capture(ks.graph_iri, revert_on_error=True), store.capture(
+            abox_iri, revert_on_error=True,
+        ) as cap:
+            baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+            subject_iri = (
+                abox.create_individual(abox_iri, ks.base_iri, row.surface_form, row.class_iri)
+                if is_new else body.individual_iri
+            )
+            # Replay the facts captured when this mention was queued, so they aren't lost.
+            for item in pending_attrs:
+                if abox.add_data_assertion(
+                    abox_iri,
+                    subject_iri,
+                    item["prop"],
+                    item["value"],
+                    item.get("datatype"),
+                ):
+                    replayed += 1
+            if pending_rels:
+                # Resolve each target by label against existing individuals (best effort).
+                label_to_iri: dict[str, str] = {}
+                for iri, label in abox.label_index(abox_iri).items():
+                    label_to_iri.setdefault(label.strip().lower(), iri)
+                for relation in pending_rels:
+                    target = label_to_iri.get(
+                        str(relation.get("target_label", "")).strip().lower()
+                    )
+                    if target:
+                        added = abox.add_object_assertion(
+                            abox_iri, subject_iri, relation["prop"], target,
+                        )
+                        if added:
+                            replayed += 1
+                        resolved_relations.append((relation["prop"], target))
 
-    replayed = len(pending_attrs) + len(pending_rels)
-    row.status = "new" if is_new else "matched"
-    row.individual_iri = subject_iri
-    row.confidence = None if is_new else 1.0
-    row.resolved_by = user.username
-    row.resolved_at = utcnow()
-    session.add(row)
-    extra = f" (+{replayed} assertion(s))" if replayed else ""
-    event = audit.record(
-        session, ks_id=ks.id, action="abox.resolve",
-        summary=f'Resolved "{row.surface_form}" → {"new" if is_new else "existing"} individual{extra}',
-        actor_id=user.id, actor_name=user.username,
-        detail={"iri": subject_iri, "class_iri": row.class_iri, "from_resolution": row.id,
-                "action": body.action, "replayed": replayed},
-        added=added_nt, removed=removed_nt, graph=abox_iri,
-    )
-    statement_provenance.record_abox_fact(
-        session,
-        ks.id,
-        abox_provenance.ind_key(subject_iri),
-        event,
-        chunk_id=row.source_chunk_id,
-    )
-    for item in pending_attrs:
-        statement_provenance.record_abox_fact(
-            session,
-            ks.id,
-            abox_provenance.data_key(subject_iri, item["prop"], item["value"]),
-            event,
-            chunk_id=row.source_chunk_id,
-        )
-    for prop, target in resolved_relations:
-        statement_provenance.record_abox_fact(
-            session,
-            ks.id,
-            abox_provenance.obj_key(subject_iri, prop, target),
-            event,
-            chunk_id=row.source_chunk_id,
-        )
-    session.commit()
+            new_errors = workbench.new_structural_errors(ks.graph_iri, baseline_errors)
+            if new_errors:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "ontology_structural_validation_failed",
+                        "message": "The resolution introduces structural ontology errors.",
+                        "new_error_count": len(new_errors),
+                        "new_error_signatures": new_errors,
+                    },
+                )
+            added_nt, removed_nt = cap.diff()
+
+            row.status = "new" if is_new else "matched"
+            row.individual_iri = subject_iri
+            row.confidence = None if is_new else 1.0
+            row.resolved_by = user.username
+            row.resolved_at = utcnow()
+            session.add(row)
+            extra = f" (+{replayed} assertion(s))" if replayed else ""
+            event = audit.record(
+                session, ks_id=ks.id, action="abox.resolve",
+                summary=f'Resolved "{row.surface_form}" → {"new" if is_new else "existing"} individual{extra}',
+                actor_id=user.id, actor_name=user.username,
+                detail={"iri": subject_iri, "class_iri": row.class_iri, "from_resolution": row.id,
+                        "action": body.action, "replayed": replayed},
+                added=added_nt, removed=removed_nt, graph=abox_iri, commit=False,
+            )
+            _record_resolution_fact(
+                session,
+                ks_id=ks.id,
+                fact_key=abox_provenance.ind_key(subject_iri),
+                event=event,
+                chunk_id=row.source_chunk_id,
+            )
+            for item in pending_attrs:
+                _record_resolution_fact(
+                    session,
+                    ks_id=ks.id,
+                    fact_key=abox_provenance.data_key(
+                        subject_iri, item["prop"], item["value"],
+                    ),
+                    event=event,
+                    chunk_id=row.source_chunk_id,
+                )
+            for prop, target in resolved_relations:
+                _record_resolution_fact(
+                    session,
+                    ks_id=ks.id,
+                    fact_key=abox_provenance.obj_key(subject_iri, prop, target),
+                    event=event,
+                    chunk_id=row.source_chunk_id,
+                )
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+    try:
+        retrieval.invalidate(ks.graph_iri)
+    except Exception:  # noqa: BLE001
+        logger.exception("ontology retrieval cache invalidation failed for %s", ks.graph_iri)
     summary = f'Resolved "{row.surface_form}" → {"new" if is_new else "existing"} individual{extra}'
     return {"id": row.id, "status": row.status, "individual_iri": subject_iri, "summary": summary}

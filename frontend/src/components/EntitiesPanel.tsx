@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { ChevronLeft, ChevronRight, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import type { OntologyClass, OntologyProperty, OntologyView } from "@/lib/types"
 import { useI18n } from "@/lib/i18n"
@@ -33,6 +33,27 @@ function RowActions({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => 
   )
 }
 
+function propertyMemberLabels(
+  property: OntologyProperty,
+  slot: "domain" | "range",
+  labelOf: (iri: string) => string,
+) {
+  const members = property[`${slot}_members`]
+  if (members?.length) return members.map(labelOf)
+  const fallback = slot === "domain" ? property.domain_label : property.range_label?.replace(/^xsd:/, "")
+  return fallback ? [fallback] : []
+}
+
+function PropertyMembers({ values }: { values: string[] }) {
+  if (values.length === 0) return <span>—</span>
+  const text = values.join(" ∪ ")
+  return (
+    <span className="block max-w-72 truncate" title={text}>
+      {text}
+    </span>
+  )
+}
+
 /**
  * Classes, properties & axioms browser: a tab per category (Classes / Object properties /
  * Data properties / Axioms) with a search box and pagination for the entity tables, instead
@@ -42,6 +63,7 @@ function RowActions({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => 
  */
 export default function EntitiesPanel({
   view, canWrite, initialTab = "classes",
+  onTabChange,
   onAddClass, onEditClass, onDeleteClass,
   onAddProperty, onEditProperty, onDeleteProperty,
   axioms, onAddAxiom,
@@ -50,10 +72,11 @@ export default function EntitiesPanel({
   view: OntologyView
   canWrite: boolean
   initialTab?: Tab
+  onTabChange?: (tab: Tab) => void
   onAddClass: () => void
   onEditClass: (c: OntologyClass) => void
   onDeleteClass: (c: OntologyClass) => void
-  onAddProperty: () => void
+  onAddProperty: (kind?: "object" | "data") => void
   onEditProperty: (p: OntologyProperty, kind: "object" | "data") => void
   onDeleteProperty: (p: OntologyProperty) => void
   axioms: AxiomGroup[]
@@ -67,13 +90,24 @@ export default function EntitiesPanel({
   const [query, setQuery] = useState("")
   const [page, setPage] = useState(0)
 
+  useEffect(() => { setTab(initialTab) }, [initialTab])
   useEffect(() => { setPage(0) }, [tab, query])
 
-  const labelOf = (iri: string) => view.labels[iri] ?? iri.split(/[#/]/).pop() ?? iri
+  const labelOf = useCallback((iri: string) => view.labels[iri] ?? iri.split(/[#/]/).pop() ?? iri, [view.labels])
   const q = query.trim().toLowerCase()
 
   const entities = tab === "object" ? view.object_properties : tab === "data" ? view.data_properties : view.classes
-  const filteredEntities = useMemo(() => entities.filter((r) => r.label.toLowerCase().includes(q)), [entities, q])
+  const filteredEntities = useMemo(() => entities.filter((row) => {
+    const searchable = "superclasses" in row
+      ? [row.label, row.local, row.iri, row.comment, ...row.superclasses.map(labelOf)]
+      : [
+          row.label, row.local, row.iri, row.comment,
+          row.domain_label, row.range_label,
+          ...(row.domain_members ?? []).map(labelOf),
+          ...(row.range_members ?? []).map(labelOf),
+        ]
+    return searchable.some((value) => value?.toLowerCase().includes(q))
+  }), [entities, labelOf, q])
   const flatAxioms = useMemo(
     () => axioms.flatMap((g) => g.items.map((it) => ({ type: g.type, text: it.text, parts: it.parts, onDelete: it.onDelete }))),
     [axioms],
@@ -91,7 +125,11 @@ export default function EntitiesPanel({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+        <Tabs value={tab} onValueChange={(value) => {
+          const next = value as Tab
+          setTab(next)
+          onTabChange?.(next)
+        }}>
           <TabsList>
             <TabsTrigger value="classes">{t("common.classes")} ({view.classes.length})</TabsTrigger>
             <TabsTrigger value="object">{t("entities.objectProperties")} ({view.object_properties.length})</TabsTrigger>
@@ -110,8 +148,8 @@ export default function EntitiesPanel({
           {canWrite && tab === "classes" && (
             <Button size="sm" variant="outline" onClick={onAddClass}><Plus className="h-3.5 w-3.5" /> {t("entities.addClass")}</Button>
           )}
-          {canWrite && tab === "object" && (
-            <Button size="sm" variant="outline" onClick={onAddProperty}><Plus className="h-3.5 w-3.5" /> {t("entities.addProperty")}</Button>
+          {canWrite && (tab === "object" || tab === "data") && (
+            <Button size="sm" variant="outline" onClick={() => onAddProperty(tab)}><Plus className="h-3.5 w-3.5" /> {t("entities.addProperty")}</Button>
           )}
           {canWrite && tab === "axioms" && (
             <Button size="sm" variant="outline" disabled={view.classes.length < 2} onClick={onAddAxiom}>
@@ -146,7 +184,14 @@ export default function EntitiesPanel({
                     {canWrite && (
                       <TableCell className="text-right">
                         {a.onDelete && (
-                          <Button size="icon" variant="ghost" className="h-7 w-7 text-muted-foreground hover:text-destructive" onClick={a.onDelete}>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+                            aria-label={`${t("common.delete")}: ${a.text}`}
+                            title={t("common.delete")}
+                            onClick={a.onDelete}
+                          >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         )}
@@ -207,8 +252,12 @@ export default function EntitiesPanel({
                 (rows as OntologyProperty[]).map((prop) => (
                   <TableRow key={prop.iri}>
                     <TableCell className="font-medium">{prop.label}</TableCell>
-                    <TableCell className="text-muted-foreground">{prop.domain_label ?? "—"}</TableCell>
-                    <TableCell className="text-muted-foreground">{prop.range_label ? prop.range_label.replace(/^xsd:/, "") : "—"}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      <PropertyMembers values={propertyMemberLabels(prop, "domain", labelOf)} />
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      <PropertyMembers values={propertyMemberLabels(prop, "range", labelOf)} />
+                    </TableCell>
                     {canWrite && (
                       <TableCell className="text-right">
                         <RowActions
@@ -229,10 +278,26 @@ export default function EntitiesPanel({
         <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>{t("review.page", { start: p * PAGE_SIZE + 1, end: Math.min(total, (p + 1) * PAGE_SIZE), total })}</span>
           <div className="flex gap-1">
-            <Button size="sm" variant="outline" className="h-7 w-7 p-0" disabled={p === 0} onClick={() => setPage(p - 1)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 w-7 p-0"
+              aria-label={t("workbench.previousPage")}
+              title={t("workbench.previousPage")}
+              disabled={p === 0}
+              onClick={() => setPage(p - 1)}
+            >
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            <Button size="sm" variant="outline" className="h-7 w-7 p-0" disabled={p >= pageCount - 1} onClick={() => setPage(p + 1)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 w-7 p-0"
+              aria-label={t("workbench.nextPage")}
+              title={t("workbench.nextPage")}
+              disabled={p >= pageCount - 1}
+              onClick={() => setPage(p + 1)}
+            >
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>

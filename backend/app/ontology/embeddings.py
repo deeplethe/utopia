@@ -26,6 +26,7 @@ def embed(texts: list[str]):
         return None
     from app import model_config  # effective (base_url, key, model) for embeddings
     from app.llm import capacity
+    from app.llm.http_transport import trust_environment_proxy
 
     base_url, key, emodel = model_config.embed_conn()
     if not key:
@@ -44,6 +45,7 @@ def embed(texts: list[str]):
                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                 json={"model": emodel, "input": texts},
                 timeout=settings.llm_timeout_s,
+                trust_env=trust_environment_proxy(url),
             )
         resp.raise_for_status()
         data = resp.json()["data"]

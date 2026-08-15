@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import secrets
 import threading
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from fastapi import BackgroundTasks, HTTPException
@@ -32,12 +33,11 @@ from app.api import abox as abox_api
 from app.api import conflicts as conflicts_api
 from app.api import extraction as extraction_api
 from app.api import history as history_api
+from app.api import ontology as ontology_api
 from app.api import releases as releases_api
 from app.api import resolution as resolution_api
 from app.api import vocabulary as vocabulary_api
 from app.api.external import _FORBIDDEN_SPARQL, _query_form, _sparql_code, _term_json
-from app.api.knowledge import refresh_ks_stats
-from app.api.ontology import _edit_summary
 from app.config import settings
 from app.db.database import engine
 from app.db.models import (
@@ -52,7 +52,7 @@ from app.db.models import (
     User,
     utcnow,
 )
-from app.ontology import abox, abox_validate, editor, schema, skos, statement_provenance, store, vocab
+from app.ontology import abox, abox_validate, schema, skos, store, vocab, workbench
 from app.permissions import effective_role, extraction_active
 
 _ROLE_RANK = {"viewer": 1, "editor": 2, "owner": 3}
@@ -63,6 +63,18 @@ _DESTRUCTIVE_ONTOLOGY_OPS = {
     "merge_classes",
     "merge_properties",
 }
+
+
+@dataclass(frozen=True)
+class _InternalPrincipal:
+    user_id: int
+    knowledge_system_id: int
+    scopes: tuple[str, ...] = ("mcp:read",)
+
+
+_internal_principal: ContextVar[_InternalPrincipal | None] = ContextVar(
+    "ontopilot_internal_mcp_principal", default=None,
+)
 
 
 class OntoPilotTokenVerifier:
@@ -104,6 +116,20 @@ class OntoPilotTokenVerifier:
 
 @contextmanager
 def _principal(required_scope: str = "mcp:read", min_role: str = "viewer"):
+    delegated = _internal_principal.get()
+    if delegated is not None:
+        with Session(engine, expire_on_commit=False) as session:
+            user = session.get(User, delegated.user_id)
+            ks = session.get(KnowledgeSystem, delegated.knowledge_system_id)
+            if user is None or not user.active or ks is None:
+                raise ToolError("The delegated web user or knowledge system is no longer available")
+            if required_scope not in delegated.scopes:
+                raise ToolError(f'The delegated session lacks required scope "{required_scope}"')
+            role = effective_role(session, ks, user)
+            if role is None or _ROLE_RANK[role] < _ROLE_RANK[min_role]:
+                raise ToolError(f"This operation requires the {min_role} role")
+            yield session, user, ks, role, delegated
+        return
     access = get_access_token()
     claims = access.claims if access else None
     if access is None or not claims:
@@ -177,6 +203,29 @@ def _background(background: BackgroundTasks) -> None:
     threading.Thread(target=runner, name="ontopilot-mcp-background", daemon=True).start()
 
 
+async def call_internal_read_tool(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    user_id: int,
+    knowledge_system_id: int,
+) -> Any:
+    """Delegate one registered read-only MCP tool from an authenticated web request.
+
+    This deliberately goes through FastMCP's schema validation and the tool's normal
+    ``_principal`` authorization path.  No cookie or bearer secret is sent to the model.
+    """
+
+    tool = mcp._tool_manager.get_tool(name)
+    if tool is None or not tool.annotations or tool.annotations.readOnlyHint is not True:
+        raise ToolError(f"MCP tool {name!r} is not available for read-only delegation")
+    token = _internal_principal.set(_InternalPrincipal(user_id, knowledge_system_id))
+    try:
+        return await tool.run(arguments, convert_result=False)
+    finally:
+        _internal_principal.reset(token)
+
+
 _resource_url = settings.mcp_public_url.rstrip("/")
 _issuer_url = _resource_url.rsplit("/mcp", 1)[0] or _resource_url
 _public = urlparse(_resource_url)
@@ -200,9 +249,9 @@ mcp = FastMCP(
     "OntoPilot",
     instructions=(
         "Operate the knowledge system bound to the bearer token. Read evidence before proposing "
-        "changes, call preview_ontology_changes before apply_ontology_changes, and never represent "
-        "a mutable workspace edit as a published release. Destructive and lifecycle tools require "
-        "explicit confirmation."
+        "changes, call preview_ontology_changes before apply_ontology_changes, and pass its "
+        "base_revision back as expected_revision. Never represent a mutable workspace edit as a "
+        "published release. Destructive and lifecycle tools require explicit confirmation."
     ),
     token_verifier=OntoPilotTokenVerifier(),
     auth=AuthSettings(
@@ -279,9 +328,58 @@ def get_ontology() -> dict[str, Any]:
     """Read the current mutable TBox as structured classes, properties, axioms, and labels."""
 
     with _principal() as (_, _user, ks, _role, _token):
-        view = schema.build_view(ks.graph_iri)
-        view["knowledge_system"] = {"id": ks.id, "name": ks.name, "base_iri": ks.base_iri}
+        with store.read_lock(ks.graph_iri), store.read_lock(workbench.abox_iri_for(ks.graph_iri)):
+            view = schema.build_view(ks.graph_iri)
+            view["knowledge_system"] = {"id": ks.id, "name": ks.name, "base_iri": ks.base_iri}
+            view["revision"] = workbench.ontology_revision(ks.graph_iri)
         return _json(view)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    structured_output=True,
+)
+def get_ontology_neighborhood(iri: str) -> dict[str, Any]:
+    """Inspect one exact class/property IRI and its immediate ontology neighborhood."""
+
+    iri = iri.strip()
+    if not iri:
+        raise ToolError("iri is required")
+    with _principal() as (_, _user, ks, _role, _token):
+        view = schema.build_view(ks.graph_iri)
+        classes = {item["iri"]: item for item in view["classes"]}
+        object_properties = {item["iri"]: item for item in view["object_properties"]}
+        data_properties = {item["iri"]: item for item in view["data_properties"]}
+        if iri in classes:
+            item = classes[iri]
+            children = [
+                child for child in view["classes"] if iri in child.get("superclasses", [])
+            ]
+            properties = []
+            for kind, rows in (("object", view["object_properties"]), ("data", view["data_properties"])):
+                for prop in rows:
+                    slots = []
+                    if iri in prop.get("domain_members", []):
+                        slots.append("domain")
+                    if iri in prop.get("range_members", []):
+                        slots.append("range")
+                    if slots:
+                        properties.append({"kind": kind, "slots": slots, **prop})
+            return _json({
+                "kind": "class",
+                **item,
+                "superclasses": [classes.get(parent, {"iri": parent, "label": view["labels"].get(parent, parent)})
+                                 for parent in item.get("superclasses", [])],
+                "subclasses": children,
+                "properties": properties,
+                "disjoint_with": [row for row in view["axioms"]["disjoint_with"] if iri in row.values()],
+                "equivalent_class": [row for row in view["axioms"]["equivalent_class"] if iri in row.values()],
+            })
+        if iri in object_properties:
+            return _json({"kind": "object_property", **object_properties[iri]})
+        if iri in data_properties:
+            return _json({"kind": "data_property", **data_properties[iri]})
+        raise ToolError("Ontology entity not found")
 
 
 @mcp.tool(
@@ -485,13 +583,13 @@ def query_knowledge(sparql: str, max_rows: int = 100) -> dict[str, Any]:
     structured_output=True,
 )
 def list_review_items(
-    queue: str,
+    queue: Literal["conflicts", "entity_resolution", "terminology", "validation"],
     status: str = "all",
     query: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """List conflict, entity-resolution, terminology, or validation review items."""
+    """List review items. Use open for conflicts, pending for entity/terminology, all for validation."""
 
     limit = _bounded_limit(limit, 1000)
     if offset < 0:
@@ -501,7 +599,7 @@ def list_review_items(
             items = _call(conflicts_api.list_conflicts, status, None, ks, session)
             if query:
                 q = query.casefold()
-                items = [item for item in items if q in f"{item.title} {item.description}".casefold()]
+                items = [item for item in items if q in f"{item.title} {item.detail}".casefold()]
             return {"items": _json(items[offset:offset + limit]), "total": len(items)}
         if queue == "entity_resolution":
             if status in {"all", "pending"}:
@@ -521,6 +619,35 @@ def list_review_items(
                 items = [item for item in items if q in json.dumps(item, ensure_ascii=False).casefold()]
             return {"items": _json(items[offset:offset + limit]), "total": len(items)}
         raise ToolError("queue must be conflicts, entity_resolution, terminology, or validation")
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    structured_output=True,
+)
+def get_conflict_context(conflict_id: int) -> dict[str, Any]:
+    """Read one conflict, its entities, candidate resolutions, and source evidence."""
+
+    with _principal() as (session, _user, ks, _role, _token):
+        return _json(_call(conflicts_api.get_conflict_context, conflict_id, ks, session))
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
+    structured_output=True,
+)
+def get_conflicts_context(conflict_ids: list[int]) -> dict[str, Any]:
+    """Batch-read up to eight conflicts with candidate resolutions and source evidence."""
+
+    unique_ids = list(dict.fromkeys(conflict_ids))
+    if not unique_ids or len(unique_ids) > 8:
+        raise ToolError("conflict_ids must contain between 1 and 8 unique IDs")
+    with _principal() as (session, _user, ks, _role, _token):
+        items = [
+            _json(_call(conflicts_api.get_conflict_context, conflict_id, ks, session))
+            for conflict_id in unique_ids
+        ]
+        return {"items": items, "total": len(items)}
 
 
 @mcp.tool(
@@ -552,51 +679,31 @@ def list_releases() -> dict[str, Any]:
     annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True),
     structured_output=True,
 )
-def preview_ontology_changes(operations: list[dict[str, Any]]) -> dict[str, Any]:
-    """Validate a structured ontology change set and return its exact RDF diff without saving it."""
+def preview_ontology_changes(
+    operations: list[dict[str, Any]],
+    expected_revision: str,
+    include_rdf_diff: bool = True,
+) -> dict[str, Any]:
+    """Validate edits without saving them; optionally omit the exact RDF bodies."""
 
     operations = _operations(operations)
-    with _principal() as (session, _user, ks, role, _token):
-        if extraction_active(session, ks.id):
-            raise ToolError("An extraction is in progress")
-        abox_iri = abox_api.abox_iri_for(ks)
-        results: list[str] = []
-        added = removed = abox_added = abox_removed = b""
-        try:
-            with store.capture(ks.graph_iri, revert_on_error=True) as cap, store.capture(
-                abox_iri, revert_on_error=True
-            ) as acap:
-                try:
-                    results = [editor.apply_edit(ks.graph_iri, ks.base_iri, op) for op in operations]
-                    added, removed = cap.diff()
-                    abox_added, abox_removed = acap.diff()
-                    resulting_stats = schema.build_view(ks.graph_iri).get("stats", {})
-                finally:
-                    acap.revert()
-                    cap.revert()
-        except (editor.EditError, KeyError, ValueError) as exc:
-            raise ToolError(f"Change set is invalid: {exc}") from exc
-        destructive = [op["op"] for op in operations if op["op"] in _DESTRUCTIVE_ONTOLOGY_OPS]
+    with _principal() as (session, user, ks, role, _token):
+        response = _call(
+            ontology_api.change_ontology,
+            ontology_api.ChangeSetRequest(
+                operations=operations,
+                expected_revision=expected_revision,
+                dry_run=True,
+                include_rdf_diff=include_rdf_diff,
+            ),
+            ks,
+            user,
+            session,
+        )
         return {
             "valid": True,
             "actor_role": role,
-            "operations": operations,
-            "results": results,
-            "destructive_operations": destructive,
-            "requires_confirmation": bool(destructive),
-            "diff": {
-                "tbox_added": added.decode("utf-8"),
-                "tbox_removed": removed.decode("utf-8"),
-                "abox_added": abox_added.decode("utf-8"),
-                "abox_removed": abox_removed.decode("utf-8"),
-                "counts": {
-                    "tbox_added": len(store.load_triples(added)),
-                    "tbox_removed": len(store.load_triples(removed)),
-                    "abox_added": len(store.load_triples(abox_added)),
-                    "abox_removed": len(store.load_triples(abox_removed)),
-                },
-            },
-            "resulting_stats": resulting_stats,
+            **_json(response),
         }
 
 
@@ -607,9 +714,10 @@ def preview_ontology_changes(operations: list[dict[str, Any]]) -> dict[str, Any]
 def apply_ontology_changes(
     operations: list[dict[str, Any]],
     reason: str,
+    expected_revision: str,
     confirm_destructive: bool = False,
 ) -> dict[str, Any]:
-    """Atomically apply a previewed TBox change set to the mutable workspace and audit it."""
+    """Atomically apply previewed edits when expected_revision still matches their base revision."""
 
     operations = _operations(operations)
     reason = reason.strip()
@@ -619,60 +727,18 @@ def apply_ontology_changes(
     if destructive and not confirm_destructive:
         raise ToolError("confirm_destructive=true is required for delete or merge operations")
     with _principal("mcp:write", "editor") as (session, user, ks, _role, _token):
-        if extraction_active(session, ks.id):
-            raise ToolError("An extraction is in progress")
-        abox_iri = abox_api.abox_iri_for(ks)
-        try:
-            with store.capture(ks.graph_iri, revert_on_error=True) as cap, store.capture(
-                abox_iri, revert_on_error=True
-            ) as acap:
-                results = [editor.apply_edit(ks.graph_iri, ks.base_iri, op) for op in operations]
-            added, removed = cap.diff()
-            abox_added, abox_removed = acap.diff()
-        except (editor.EditError, KeyError, ValueError) as exc:
-            raise ToolError(f"Change set failed: {exc}") from exc
-        refresh_ks_stats(session, ks)
-        open_conflicts = conflicts_api.sync_conflicts(session, ks, semantic=False)
-        group_id = secrets.token_hex(8)
-        summary = (
-            _edit_summary(operations[0])
-            if len(operations) == 1
-            else f"Applied {len(operations)} ontology edits through MCP"
-        )
-        event = audit.record(
+        return _json(_call(
+            ontology_api.change_ontology,
+            ontology_api.ChangeSetRequest(
+                operations=operations,
+                expected_revision=expected_revision,
+                reason=reason,
+                confirm_destructive=confirm_destructive,
+            ),
+            ks,
+            user,
             session,
-            ks_id=ks.id,
-            action="mcp.ontology.change",
-            summary=summary,
-            actor_id=user.id,
-            actor_name=user.username,
-            detail={"source": "mcp", "reason": reason, "operations": operations},
-            added=added,
-            removed=removed,
-            group_id=group_id,
-        )
-        statement_provenance.record_tbox_diff(session, ks.id, added, removed, event)
-        if abox_added or abox_removed:
-            audit.record(
-                session,
-                ks_id=ks.id,
-                action="mcp.ontology.change",
-                summary=f"{summary} — cascaded to instances",
-                actor_id=user.id,
-                actor_name=user.username,
-                detail={"source": "mcp", "reason": reason, "operations": operations},
-                added=abox_added,
-                removed=abox_removed,
-                graph=abox_iri,
-                group_id=group_id,
-            )
-        return {
-            "applied": len(operations),
-            "results": results,
-            "audit_event_id": event.id,
-            "open_conflicts": len(open_conflicts),
-            "view": _json(schema.build_view(ks.graph_iri)),
-        }
+        ))
 
 
 @mcp.tool(

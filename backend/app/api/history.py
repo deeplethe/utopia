@@ -7,6 +7,8 @@ that operation. The rollback is itself recorded as a (reversible) event.
 from __future__ import annotations
 
 import gzip
+import secrets
+from contextlib import ExitStack
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_
@@ -19,7 +21,7 @@ from app.db.database import get_session
 from app.db.models import AuditEvent, KnowledgeSystem, User
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
-from app.ontology import schema, store
+from app.ontology import retrieval, schema, statement_provenance, store, workbench
 
 router = APIRouter(prefix="/api/knowledge", tags=["history"])
 
@@ -98,45 +100,124 @@ def rollback(
         .where(AuditEvent.knowledge_system_id == ks.id, AuditEvent.id >= cutoff)
         .order_by(AuditEvent.id.desc())
     ).all()
-    # A point-in-time revert must replay EVERY graph touched after the cutoff, not just the
-    # target's own graph — otherwise a *later* cascading (dual-graph) edit gets only its
-    # same-graph half undone, stranding the other graph (e.g. class restored on the TBox but its
-    # individuals left untyped in the ABox). Derive the graph set from the events being replayed.
-    graphs = {(e.graph or ks.graph_iri) for e in events if (e.added or e.removed)}
-
-    import secrets
-    rb_gid = secrets.token_hex(8) if len(graphs) > 1 else None  # keep a multi-graph rollback undoable as one
+    # Hold every affected graph lock at once so a multi-graph rollback is one RDF critical
+    # section. Always include the paired TBox/ABox locks because validation reads both layers even
+    # when the selected history range changed only one of them.
+    event_graphs = {(e.graph or ks.graph_iri) for e in events if (e.added or e.removed)}
+    abox_iri = workbench.abox_iri_for(ks.graph_iri)
+    lock_graphs = sorted(event_graphs | {ks.graph_iri, abox_iri})
+    captures: dict[str, object] = {}
+    changed: dict[str, tuple[bytes, bytes]] = {}
     undone = 0
+    open_conflicts: list = []
     tbox_changed = False
-    for g in graphs:
-        # Capture each graph's rollback diff so the rollback is itself reversible.
-        with store.capture(g) as cap:
-            for ev in events:
-                if not (ev.added or ev.removed) or (ev.graph or ks.graph_iri) != g:
-                    continue
-                if ev.added:  # this event added these -> remove them
-                    store.remove_triples(g, store.load_triples(gzip.decompress(ev.added)))
-                if ev.removed:  # this event removed these -> add them back
-                    store.add_triples(g, store.load_triples(gzip.decompress(ev.removed)))
-                undone += 1
-        added_nt, removed_nt = cap.diff()
-        if not (added_nt or removed_nt):
-            continue
-        if g == ks.graph_iri:
-            tbox_changed = True
-        audit.record(
-            session, ks_id=ks.id, action="system.rollback",
-            summary=f"Rolled back to before #{cutoff}" + (" (incl. cascaded instances)" if target.group_id else ""),
-            actor_id=user.id, actor_name=user.username,
-            detail={"target_event_id": event_id, "cutoff": cutoff},
-            added=added_nt, removed=removed_nt, graph=g, group_id=rb_gid,
-        )
+    undone_event_ids = {event.id for event in events if event.id is not None}
 
-    # TBox stats/conflicts only matter when the TBox graph itself changed.
-    open_conflicts = 0
+    try:
+        with ExitStack() as stack:
+            # Sorting gives every writer the same lock order and avoids cross-graph deadlocks.
+            for graph_iri in lock_graphs:
+                captures[graph_iri] = stack.enter_context(
+                    store.capture(graph_iri, revert_on_error=True)
+                )
+
+            baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+            for graph_iri in sorted(event_graphs):
+                for event in events:
+                    if not (event.added or event.removed):
+                        continue
+                    if (event.graph or ks.graph_iri) != graph_iri:
+                        continue
+                    if event.added:  # this event added these -> remove them
+                        store.remove_triples(
+                            graph_iri, store.load_triples(gzip.decompress(event.added))
+                        )
+                    if event.removed:  # this event removed these -> add them back
+                        store.add_triples(
+                            graph_iri, store.load_triples(gzip.decompress(event.removed))
+                        )
+                    undone += 1
+
+            new_errors = workbench.new_structural_errors(ks.graph_iri, baseline_errors)
+            if new_errors:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "code": "ontology_structural_validation_failed",
+                        "message": "The rollback would introduce structural ontology errors.",
+                        "new_error_count": len(new_errors),
+                        "new_error_signatures": new_errors,
+                    },
+                )
+
+            for graph_iri in sorted(event_graphs):
+                added_nt, removed_nt = captures[graph_iri].diff()
+                if added_nt or removed_nt:
+                    changed[graph_iri] = (added_nt, removed_nt)
+
+            if not changed:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "history_rollback_noop",
+                        "message": "The selected rollback no longer changes the ontology.",
+                    },
+                )
+
+            rb_gid = secrets.token_hex(8) if len(changed) > 1 else None
+            summary = (
+                f"Rolled back to before #{cutoff}"
+                + (" (incl. cascaded instances)" if target.group_id else "")
+            )
+            detail = {"target_event_id": event_id, "cutoff": cutoff}
+            for graph_iri, (added_nt, removed_nt) in changed.items():
+                rollback_event = audit.record(
+                    session,
+                    ks_id=ks.id,
+                    action="system.rollback",
+                    summary=summary,
+                    actor_id=user.id,
+                    actor_name=user.username,
+                    detail=detail,
+                    added=added_nt,
+                    removed=removed_nt,
+                    graph=graph_iri,
+                    group_id=rb_gid,
+                    commit=False,
+                )
+                if graph_iri == ks.graph_iri:
+                    tbox_changed = True
+                    statement_provenance.record_tbox_diff(
+                        session, ks.id, added_nt, removed_nt, rollback_event, commit=False,
+                    )
+                elif graph_iri == abox_iri:
+                    statement_provenance.record_abox_diff(
+                        session,
+                        ks.id,
+                        added_nt,
+                        removed_nt,
+                        rollback_event,
+                        abox_iri=abox_iri,
+                        reverse_event_ids=undone_event_ids,
+                        commit=False,
+                    )
+
+            if tbox_changed:
+                refresh_ks_stats(session, ks, commit=False)
+                open_conflicts = sync_conflicts(session, ks, semantic=False, commit=False)
+            session.commit()
+    except HTTPException:
+        session.rollback()
+        raise
+    except Exception:
+        session.rollback()
+        raise
+
     if tbox_changed:
-        refresh_ks_stats(session, ks)
-        open_conflicts = sync_conflicts(session, ks, semantic=False)
+        try:
+            retrieval.invalidate(ks.graph_iri)
+        except Exception:  # noqa: BLE001 - cache invalidation must not split committed state
+            pass
     return {
         "undone": undone,
         "view": schema.build_view(ks.graph_iri),

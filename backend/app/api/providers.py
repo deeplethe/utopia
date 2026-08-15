@@ -7,7 +7,9 @@ test endpoint makes a tiny live call so the UI can verify an entry actually work
 """
 from __future__ import annotations
 
+import json
 import time
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,6 +19,7 @@ from sqlmodel import Session, select
 from app.config import settings
 from app.db.database import get_session
 from app.db.models import KnowledgeSystem, Provider, User, utcnow
+from app.llm.http_transport import trust_environment_proxy
 from app.model_config import get_system_config, refresh_runtime
 from app.security import current_user, require_admin
 
@@ -140,9 +143,77 @@ class TestReq(BaseModel):
     kind: str | None = None  # "llm" | "embedding"
 
 
+def _endpoint_suffix(kind: str) -> str:
+    return "/embeddings" if kind == "embedding" else "/chat/completions"
+
+
+def _suggested_base_url(base_url: str, kind: str) -> str | None:
+    suffix = _endpoint_suffix(kind)
+    if base_url.casefold().endswith(suffix):
+        return base_url[:-len(suffix)].rstrip("/")
+    return None
+
+
+def _response_detail(response: httpx.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001
+        return response.text.strip()[:2000] or response.reason_phrase or "Empty response body"
+
+    detail: object = payload
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            detail = error["message"]
+        elif isinstance(error, str):
+            detail = error
+        elif payload.get("detail") is not None:
+            detail = payload["detail"]
+        elif payload.get("message") is not None:
+            detail = payload["message"]
+    if isinstance(detail, str):
+        return detail[:2000]
+    return json.dumps(detail, ensure_ascii=False, default=str)[:2000]
+
+
+def _diagnostic_codes(
+    *,
+    base_url: str,
+    kind: str,
+    status_code: int | None = None,
+    error: Exception | None = None,
+) -> list[str]:
+    codes: list[str] = []
+    parsed = urlsplit(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        codes.append("invalid_base_url")
+    # This is validation that rejects wildcard listener hosts; it does not bind a socket.
+    if parsed.hostname == "0.0.0.0":  # nosec B104
+        codes.append("wildcard_host")
+    if _suggested_base_url(base_url, kind) is not None:
+        codes.append("endpoint_path_in_base_url")
+    if status_code == 404:
+        codes.append("route_not_found")
+    elif status_code in {401, 403}:
+        codes.append("authentication_failed")
+    elif status_code == 429:
+        codes.append("rate_limited")
+    elif status_code is not None and status_code >= 500:
+        codes.append("upstream_error")
+    if isinstance(error, httpx.TimeoutException):
+        codes.append("timeout")
+    elif isinstance(error, httpx.ConnectError):
+        codes.append("connection_failed")
+    elif isinstance(error, (httpx.InvalidURL, httpx.UnsupportedProtocol)):
+        codes.append("invalid_base_url")
+    elif error is not None:
+        codes.append("request_failed")
+    return list(dict.fromkeys(codes))
+
+
 @router.post("/test")
 def test_provider(body: TestReq, _: User = Depends(require_admin), session: Session = Depends(get_session)) -> dict:
-    """Make a minimal live call to verify an entry (endpoint + key + model). Returns {ok, message, latency_ms}."""
+    """Make a minimal live call and return structured, credential-safe diagnostics."""
     base_url, api_key, model, kind = body.base_url, body.api_key, body.model, body.kind
     if body.provider_id:
         p = session.get(Provider, body.provider_id)
@@ -158,26 +229,63 @@ def test_provider(body: TestReq, _: User = Depends(require_admin), session: Sess
     if not (model or "").strip():
         raise HTTPException(status_code=400, detail="A model name is required to test")
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    url = f"{base_url}{_endpoint_suffix(kind)}"
+    suggested_base_url = _suggested_base_url(base_url, kind)
     t0 = time.perf_counter()
     try:
         if kind == "embedding":
-            r = httpx.post(f"{base_url}/embeddings", headers=headers,
-                           json={"model": model, "input": ["ping"]}, timeout=30.0)
+            r = httpx.post(url, headers=headers, json={"model": model, "input": ["ping"]},
+                           timeout=30.0, trust_env=trust_environment_proxy(url))
         else:
-            r = httpx.post(f"{base_url}/chat/completions", headers=headers,
+            r = httpx.post(url, headers=headers,
                            json={"model": model, "messages": [{"role": "user", "content": "ping"}],
-                                 "max_tokens": 1}, timeout=30.0)
+                                 "max_tokens": 1}, timeout=30.0,
+                           trust_env=trust_environment_proxy(url))
         dt = int((time.perf_counter() - t0) * 1000)
         if r.status_code == 200:
-            result = {"ok": True, "message": f"Connected in {dt} ms", "latency_ms": dt}
+            result = {
+                "ok": True,
+                "message": f"Connected in {dt} ms",
+                "latency_ms": dt,
+                "request_url": url,
+                "status_code": r.status_code,
+                "detail": None,
+                "error_type": None,
+                "diagnostic_codes": [],
+                "suggested_base_url": suggested_base_url,
+            }
         else:
-            try:
-                detail = (r.json().get("error") or {}).get("message") or r.text[:200]
-            except Exception:  # noqa: BLE001
-                detail = r.text[:200]
-            result = {"ok": False, "message": f"HTTP {r.status_code}: {detail}", "latency_ms": dt}
+            result = {
+                "ok": False,
+                "message": f"HTTP {r.status_code} {r.reason_phrase}".strip(),
+                "latency_ms": dt,
+                "request_url": url,
+                "status_code": r.status_code,
+                "detail": _response_detail(r),
+                "error_type": None,
+                "diagnostic_codes": _diagnostic_codes(
+                    base_url=base_url,
+                    kind=kind,
+                    status_code=r.status_code,
+                ),
+                "suggested_base_url": suggested_base_url,
+            }
     except Exception as e:  # noqa: BLE001
-        result = {"ok": False, "message": str(e)[:200], "latency_ms": int((time.perf_counter() - t0) * 1000)}
+        result = {
+            "ok": False,
+            "message": "Connection test failed",
+            "latency_ms": int((time.perf_counter() - t0) * 1000),
+            "request_url": url,
+            "status_code": None,
+            "detail": str(e)[:2000] or e.__class__.__name__,
+            "error_type": e.__class__.__name__,
+            "diagnostic_codes": _diagnostic_codes(
+                base_url=base_url,
+                kind=kind,
+                error=e,
+            ),
+            "suggested_base_url": suggested_base_url,
+        }
 
     # Persist the result on a saved entry so its status survives a page refresh.
     if body.provider_id:

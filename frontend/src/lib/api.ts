@@ -1,6 +1,12 @@
 // Thin typed API client. All calls go to /api which Vite proxies to the FastAPI backend.
 import type {
   AboxClassList,
+  AgentChatRequest,
+  AgentConversation,
+  AgentConversationDetail,
+  AgentConversationList,
+  AgentResponse,
+  AgentStreamEvent,
   ApiToken,
   ApiTokenCreated,
   ApiTokenRevealed,
@@ -29,6 +35,9 @@ import type {
   MemberDetail,
   ModelCatalog,
   OntologyView,
+  OntologyChangeSetResult,
+  OntologyImpactResponse,
+  OntologySuggestion,
   OntologyRelease,
   ParseResponse,
   ParseBatchResponse,
@@ -106,6 +115,317 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Some endpoints (logout) return trivial JSON; a 204 would have no body.
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
+}
+
+async function responseError(res: Response) {
+  if (res.status === 401 && onUnauthorized) onUnauthorized()
+  let detail: unknown = res.statusText
+  try {
+    const body = await res.json()
+    detail = body.detail ?? body
+  } catch {
+    /* ignore non-JSON error responses */
+  }
+  return new ApiError(res.status, detail)
+}
+
+function agentTraceStep(value: unknown): AgentResponse["trace"][number] | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.tool !== "string") return null
+  return {
+    tool: candidate.tool,
+    arguments: candidate.arguments && typeof candidate.arguments === "object" && !Array.isArray(candidate.arguments)
+      ? candidate.arguments as Record<string, unknown>
+      : {},
+    summary: typeof candidate.summary === "string" ? candidate.summary : "MCP tool completed",
+    reason: typeof candidate.reason === "string" ? candidate.reason : undefined,
+  }
+}
+
+function agentProposal(value: unknown): AgentResponse["proposal"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null
+  const candidate = value as Record<string, unknown>
+  return Array.isArray(candidate.operations) ? candidate as unknown as AgentResponse["proposal"] : null
+}
+
+function agentConversation(value: unknown, fallbackId?: unknown): AgentConversation | null {
+  const candidate = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+  const rawId = candidate.id ?? fallbackId
+  const id = typeof rawId === "number" ? rawId : Number(rawId)
+  if (!Number.isInteger(id) || id <= 0) return null
+  return {
+    id,
+    knowledge_system_id: typeof candidate.knowledge_system_id === "number"
+      ? candidate.knowledge_system_id
+      : undefined,
+    title: typeof candidate.title === "string" ? candidate.title : null,
+    first_user_message: typeof candidate.first_user_message === "string"
+      ? candidate.first_user_message
+      : undefined,
+    turn_count: typeof candidate.turn_count === "number" ? candidate.turn_count : undefined,
+    created_at: typeof candidate.created_at === "string" ? candidate.created_at : undefined,
+    updated_at: typeof candidate.updated_at === "string" ? candidate.updated_at : undefined,
+  }
+}
+
+function parseAgentStreamEvent(eventName: string, data: string): AgentStreamEvent | null {
+  if (!data || data === "[DONE]") return null
+
+  let payload: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(data) as unknown
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null
+    payload = parsed as Record<string, unknown>
+  } catch {
+    throw new Error("The agent returned a malformed stream event")
+  }
+
+  const type = eventName === "message" && typeof payload.type === "string"
+    ? payload.type
+    : eventName
+  if (type === "turn_started") {
+    const conversation = agentConversation(payload.conversation, payload.conversation_id)
+    if (!conversation) return null
+    return {
+      type,
+      conversation,
+      conversation_id: conversation.id,
+      user_turn_id: typeof payload.user_turn_id === "number" ? payload.user_turn_id : undefined,
+      assistant_turn_id: typeof payload.assistant_turn_id === "number" ? payload.assistant_turn_id : undefined,
+    }
+  }
+  if (type === "progress") {
+    return {
+      type,
+      phase: typeof payload.phase === "string" ? payload.phase : undefined,
+      title: typeof payload.title === "string" ? payload.title : undefined,
+      detail: typeof payload.detail === "string" ? payload.detail : undefined,
+      message: typeof payload.message === "string" ? payload.message : undefined,
+    }
+  }
+  if (type === "commentary") {
+    return typeof payload.text === "string" ? { type, text: payload.text } : null
+  }
+  if (type === "trace") {
+    const trace = agentTraceStep(payload.trace ?? payload)
+    return trace ? { type, trace } : null
+  }
+  if (type === "answer_reset") return { type }
+  if (type === "delta") {
+    return typeof payload.delta === "string" ? { type, delta: payload.delta } : null
+  }
+  if (type === "proposal") {
+    return { type, proposal: agentProposal(payload.proposal) }
+  }
+  if (type === "error") {
+    return {
+      type,
+      code: typeof payload.code === "string" ? payload.code : undefined,
+      message: typeof payload.message === "string" ? payload.message : "The agent stream failed",
+    }
+  }
+  if (type === "done") {
+    return {
+      type,
+      answer: typeof payload.answer === "string" ? payload.answer : "",
+      trace: Array.isArray(payload.trace)
+        ? payload.trace.map(agentTraceStep).filter((step): step is AgentResponse["trace"][number] => Boolean(step))
+        : [],
+      proposal: agentProposal(payload.proposal),
+      conversation: agentConversation(payload.conversation, payload.conversation_id) ?? undefined,
+    }
+  }
+  return null
+}
+
+async function streamAgentChat(
+  path: string,
+  body: AgentChatRequest,
+  onEvent: (event: AgentStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<AgentResponse> {
+  const res = await fetch(path, {
+    ...json(body),
+    credentials: "include",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream, application/json" },
+    signal,
+  })
+  if (!res.ok) throw await responseError(res)
+
+  const contentType = res.headers.get("content-type")?.toLowerCase() ?? ""
+  if (contentType.includes("application/json")) {
+    const event = parseAgentStreamEvent("done", await res.text())
+    if (!event || event.type !== "done") throw new Error("The agent returned an invalid final response")
+    onEvent(event)
+    return {
+      answer: event.answer,
+      trace: event.trace,
+      proposal: event.proposal,
+      conversation: event.conversation,
+    }
+  }
+  if (!res.body) throw new Error("The browser could not read the agent stream")
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  let accumulatedAnswer = ""
+  let latestTrace: AgentResponse["trace"] = []
+  let latestProposal: AgentResponse["proposal"] = null
+  let finalResult: AgentResponse | null = null
+  let receivedDone = false
+  let latestConversation: AgentConversation | undefined
+  let pendingDelta = ""
+  let deltaFlushTimer: number | null = null
+  const presentationIntervalMs = 32
+  const presentationChunkSize = 10
+
+  // Provider fragments can arrive several at a time in one network read. Updating React and
+  // re-rendering Markdown for every tiny fragment makes a real stream look like a burst (and is
+  // expensive for long answers). Keep the wire stream authoritative while presenting adjacent
+  // text at a steady ~25 fps, matching the event-consumption pattern used by Neurocircuits.
+  const clearDeltaTimer = () => {
+    if (deltaFlushTimer != null) {
+      window.clearTimeout(deltaFlushTimer)
+      deltaFlushTimer = null
+    }
+  }
+
+  const takePendingDelta = (maxCharacters: number) => {
+    if (!pendingDelta) return
+    const characters = Array.from(pendingDelta)
+    const delta = characters.slice(0, maxCharacters).join("")
+    pendingDelta = characters.slice(maxCharacters).join("")
+    onEvent({ type: "delta", delta })
+  }
+
+  const flushPendingDelta = () => {
+    clearDeltaTimer()
+    if (!pendingDelta) return
+    const delta = pendingDelta
+    pendingDelta = ""
+    onEvent({ type: "delta", delta })
+  }
+
+  const scheduleDeltaFlush = () => {
+    if (deltaFlushTimer != null) return
+    deltaFlushTimer = window.setTimeout(() => {
+      deltaFlushTimer = null
+      if (!pendingDelta) return
+      takePendingDelta(presentationChunkSize)
+      if (pendingDelta) scheduleDeltaFlush()
+    }, presentationIntervalMs)
+  }
+
+  const drainPendingDelta = async () => {
+    clearDeltaTimer()
+    if (!pendingDelta) return
+    // A validated answer may arrive as one buffered burst. Reveal it over a bounded number of
+    // frames so the user can follow the response without stretching long answers indefinitely.
+    const chunkSize = Math.max(
+      presentationChunkSize,
+      Math.ceil(Array.from(pendingDelta).length / 90),
+    )
+    while (pendingDelta) {
+      signal?.throwIfAborted()
+      takePendingDelta(chunkSize)
+      if (pendingDelta) {
+        await new Promise<void>((resolve) => window.setTimeout(resolve, presentationIntervalMs))
+      }
+    }
+  }
+
+  const discardPendingDelta = () => {
+    clearDeltaTimer()
+    pendingDelta = ""
+  }
+
+  const consumeFrame = async (frame: string) => {
+    signal?.throwIfAborted()
+    let eventName = "message"
+    const dataLines: string[] = []
+    for (const line of frame.split(/\r?\n/)) {
+      if (!line || line.startsWith(":")) continue
+      const separator = line.indexOf(":")
+      const field = separator === -1 ? line : line.slice(0, separator)
+      let value = separator === -1 ? "" : line.slice(separator + 1)
+      if (value.startsWith(" ")) value = value.slice(1)
+      if (field === "event") eventName = value
+      if (field === "data") dataLines.push(value)
+    }
+    if (!dataLines.length) return
+    const event = parseAgentStreamEvent(eventName, dataLines.join("\n"))
+    if (!event) return
+    if (event.type === "turn_started") latestConversation = event.conversation
+    if (event.type === "answer_reset") {
+      accumulatedAnswer = ""
+      // Text that has not reached the screen belongs to the discarded candidate and should
+      // never flash immediately before its reset event.
+      discardPendingDelta()
+    } else if (event.type === "delta") {
+      accumulatedAnswer += event.delta
+      pendingDelta += event.delta
+      scheduleDeltaFlush()
+      return
+    } else if (event.type === "done") {
+      await drainPendingDelta()
+    } else {
+      // Preserve chronological text → tool/proposal/done ordering.
+      flushPendingDelta()
+    }
+    if (event.type === "trace") latestTrace = [...latestTrace, event.trace]
+    if (event.type === "proposal") latestProposal = event.proposal
+    if (event.type === "error") {
+      // Deliver the terminal event before rejecting so the in-flight message can retain
+      // its streamed text and show the server-provided failure in the transcript.
+      onEvent(event)
+      throw new Error(event.message)
+    }
+    if (event.type === "done") {
+      receivedDone = true
+      finalResult = {
+        // Native deltas are the authoritative transcript. A server-provided final answer
+        // is only a fallback for JSON/non-streaming implementations.
+        answer: accumulatedAnswer || event.answer,
+        trace: event.trace.length ? event.trace : latestTrace,
+        proposal: event.proposal ?? latestProposal,
+        conversation: event.conversation ?? latestConversation,
+      }
+    }
+    onEvent(event)
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      let boundary = buffer.search(/\r?\n\r?\n/)
+      while (boundary !== -1) {
+        const match = buffer.slice(boundary).match(/^\r?\n\r?\n/)?.[0] ?? "\n\n"
+        await consumeFrame(buffer.slice(0, boundary))
+        buffer = buffer.slice(boundary + match.length)
+        boundary = buffer.search(/\r?\n\r?\n/)
+      }
+      if (done) break
+    }
+    if (buffer.trim()) await consumeFrame(buffer)
+    await drainPendingDelta()
+  } catch (error) {
+    flushPendingDelta()
+    await reader.cancel().catch(() => undefined)
+    throw error
+  } finally {
+    if (deltaFlushTimer != null) window.clearTimeout(deltaFlushTimer)
+    reader.releaseLock()
+  }
+  if (!receivedDone || !finalResult) {
+    throw new Error("The agent stream ended before the final response arrived")
+  }
+
+  return finalResult
 }
 
 const json = (body: unknown): RequestInit => ({
@@ -473,6 +793,73 @@ export const api = {
   // Manual editing
   editOntology: (ksId: number, op: EditOp) =>
     request<EditResult>(`/api/knowledge/${ksId}/ontology/edit`, json(op)),
+  ontologyImpact: (ksId: number, iri: string, kind: "class" | "property") => {
+    const qs = new URLSearchParams({ iri, kind })
+    return request<OntologyImpactResponse>(`/api/knowledge/${ksId}/ontology/impact?${qs.toString()}`)
+  },
+  previewOntologyChanges: (ksId: number, operations: EditOp[], expectedRevision?: string) =>
+    request<OntologyChangeSetResult>(
+      `/api/knowledge/${ksId}/ontology/changes`,
+      json({
+        operations,
+        expected_revision: expectedRevision,
+        dry_run: true,
+        include_rdf_diff: false,
+      }),
+    ),
+  commitOntologyChanges: (
+    ksId: number,
+    operations: EditOp[],
+    expectedRevision?: string,
+    reason?: string,
+  ) => request<OntologyChangeSetResult>(
+    `/api/knowledge/${ksId}/ontology/changes`,
+    json({
+      operations,
+      expected_revision: expectedRevision,
+      reason: reason ?? "",
+      confirm_destructive: operations.some((op) => op.op.startsWith("delete_") || op.op.startsWith("merge_")),
+      include_rdf_diff: false,
+    }),
+  ),
+  listAgentConversations: (ksId: number) =>
+    request<AgentConversationList>(`/api/knowledge/${ksId}/agent/conversations`),
+  createAgentConversation: (ksId: number, title?: string) =>
+    request<AgentConversation>(
+      `/api/knowledge/${ksId}/agent/conversations`,
+      json(title?.trim() ? { title: title.trim() } : {}),
+    ),
+  getAgentConversation: (ksId: number, conversationId: number) =>
+    request<AgentConversationDetail>(
+      `/api/knowledge/${ksId}/agent/conversations/${conversationId}`,
+    ),
+  renameAgentConversation: (ksId: number, conversationId: number, title: string) =>
+    request<AgentConversation>(
+      `/api/knowledge/${ksId}/agent/conversations/${conversationId}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+    ),
+  deleteAgentConversation: (ksId: number, conversationId: number) =>
+    request<{ deleted: boolean }>(
+      `/api/knowledge/${ksId}/agent/conversations/${conversationId}`,
+      { method: "DELETE" },
+    ),
+  chatWithAgent: (ksId: number, body: AgentChatRequest) =>
+    request<AgentResponse>(`/api/knowledge/${ksId}/agent/chat`, json(body)),
+  chatWithAgentStream: (
+    ksId: number,
+    body: AgentChatRequest,
+    onEvent: (event: AgentStreamEvent) => void,
+    signal?: AbortSignal,
+  ) => streamAgentChat(`/api/knowledge/${ksId}/agent/chat/stream`, body, onEvent, signal),
+  suggestOntologyChanges: (ksId: number, instruction: string, expectedRevision?: string) =>
+    request<OntologySuggestion>(
+      `/api/knowledge/${ksId}/ontology/suggest`,
+      json({ instruction, expected_revision: expectedRevision }),
+    ),
 
   // Conflicts
   detectConflicts: (ksId: number) =>

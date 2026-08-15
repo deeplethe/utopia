@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlmodel import Session, select
 
-from app import audit
+from app import agent_memory, audit
 from app.db.database import get_session
 from app.db.models import (
     AboxProvenance, AuditEvent, AxiomProvenance, Chunk, Conflict, Document, EntityResolution,
@@ -240,6 +240,11 @@ def delete_ks(ks: KnowledgeSystem = Depends(ks_owner), session: Session = Depend
             blobstore.delete(storage_path)
 
     # All per-KS SQL rows.
+    agent_memory.delete_scoped_conversations(
+        session,
+        knowledge_system_id=ks_id,
+        commit=False,
+    )
     for model in (AxiomProvenance, AboxProvenance, ReleaseStatementProvenance, ReleaseDeployment,
                   ExportJob, OntologyRelease, ExtractionJob, KSGrant, KnowledgeApiToken, McpUserToken,
                   KnowledgePromptOverride, EntityResolution, TermProposal, Conflict, AuditEvent,
@@ -406,7 +411,7 @@ def remove_member(
     return {"removed": user_id}
 
 
-def refresh_ks_stats(session: Session, ks: KnowledgeSystem) -> None:
+def refresh_ks_stats(session: Session, ks: KnowledgeSystem, *, commit: bool = True) -> None:
     """Recompute cached class/property/axiom counts from the RDF graph."""
     stats = schema.graph_stats(ks.graph_iri)
     ks.class_count = stats["class_count"]
@@ -414,4 +419,7 @@ def refresh_ks_stats(session: Session, ks: KnowledgeSystem) -> None:
     ks.axiom_count = stats["axiom_count"]
     ks.updated_at = utcnow()
     session.add(ks)
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
