@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { Navigate, useParams, useSearchParams } from "react-router-dom"
+import { Navigate, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 import { ChevronDown, Crown, Download, Eye, FileUp, Loader2, RefreshCw, Shield, ShieldAlert, Sparkles } from "lucide-react"
 import { api } from "@/lib/api"
 import { useI18n } from "@/lib/i18n"
-import { useConfirm } from "@/lib/confirm"
-import type { Conflict, EditOp, EditResult, ExtractionJob, KnowledgeSystem, OntologyProperty, OntologyView, Role, SourceDoc } from "@/lib/types"
+import type { AgentProposal, Conflict, EditOp, ExtractionJob, KnowledgeSystem, OntologyImpact, OntologyProperty, OntologyView, Role, SourceDoc } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import OntologyWorkbench from "@/components/OntologyWorkbench"
+import OntologyWorkbench, { type ExternalWorkbenchOperation } from "@/components/OntologyWorkbench"
 import ExtractDialog from "@/components/ExtractDialog"
 import InstancesPanel from "@/components/InstancesPanel"
 import ReviewPanel from "@/components/ReviewPanel"
@@ -22,7 +21,8 @@ import RdfImportDialog from "@/components/RdfImportDialog"
 import VocabularyPanel from "@/components/VocabularyPanel"
 import PromptSettingsPanel from "@/components/PromptSettingsPanel"
 import ReleasePanel from "@/components/ReleasePanel"
-import { AxiomDialog, ClassDialog, PropertyDialog } from "@/components/EditDialogs"
+import { AxiomDialog, ClassDialog, OntologyDeleteImpactDialog, PropertyDialog } from "@/components/EditDialogs"
+import AgentCopilot from "@/components/AgentCopilot"
 
 function RoleTag({ role }: { role: Role }) {
   const { t } = useI18n()
@@ -41,11 +41,18 @@ const EXPORT_FORMATS: { fmt: string; ext: string; label: string }[] = [
   { fmt: "jsonld", ext: "jsonld", label: "JSON-LD (.jsonld)" },
 ]
 
-export default function OntologyPage() {
+type OntologyPageProps = {
+  agentOpen: boolean
+  onAgentOpenChange: (open: boolean) => void
+  onAgentBusyChange: (busy: boolean) => void
+}
+
+export default function OntologyPage({ agentOpen, onAgentOpenChange, onAgentBusyChange }: OntologyPageProps) {
   const { locale, t } = useI18n()
-  const confirmAction = useConfirm()
+  const location = useLocation()
+  const navigate = useNavigate()
   const { id, section: sectionParam, sub: subParam } = useParams()
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const ksId = Number(id)
   const section = sectionParam ?? "overview"
   const REVIEW_SUBS = ["conflicts", "resolution", "terminology", "validation"]
@@ -61,19 +68,40 @@ export default function OntologyPage() {
   const [activeJob, setActiveJob] = useState<ExtractionJob | null>(null)
 
   const [classDialog, setClassDialog] = useState<{ open: boolean; initial: OntologyView["classes"][number] | null }>({ open: false, initial: null })
-  const [propDialog, setPropDialog] = useState<{ open: boolean; initial: PropWithKind | null }>({ open: false, initial: null })
+  const [propDialog, setPropDialog] = useState<{
+    open: boolean
+    initial: PropWithKind | null
+    initialKind: "object" | "data"
+  }>({ open: false, initial: null, initialKind: "object" })
   const [axiomOpen, setAxiomOpen] = useState(false)
+  const [previewRequestQueue, setPreviewRequestQueue] = useState<ExternalWorkbenchOperation[]>([])
+  const previewRequestId = useRef(1)
+  const queuedNavigationProposal = useRef<AgentProposal | null>(null)
+  const deleteImpactRequest = useRef(0)
+  const refreshGeneration = useRef(0)
+  const [deleteImpact, setDeleteImpact] = useState<{
+    open: boolean
+    kind: "class" | "property"
+    label: string
+    operation: EditOp | null
+    impact: OntologyImpact | null
+    revision: string | null
+    loading: boolean
+  }>({ open: false, kind: "class", label: "", operation: null, impact: null, revision: null, loading: false })
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current
     try {
       const [k, v, j, c, s] = await Promise.all([
         api.getKS(ksId), api.getOntology(ksId), api.listJobs(ksId), api.listConflicts(ksId), api.getSources(ksId),
       ])
+      if (generation !== refreshGeneration.current) return
       setKs(k); setView(v); setJobs(j); setConflicts(c); setSources(s)
     } catch (e) {
+      if (generation !== refreshGeneration.current) return
       toast.error(t("common.failedLoad", { error: (e as Error).message }))
     } finally {
-      setLoading(false)
+      if (generation === refreshGeneration.current) setLoading(false)
     }
   }, [ksId, t])
 
@@ -135,19 +163,113 @@ export default function OntologyPage() {
     return () => clearTimeout(timer)
   }, [activeJob, ksId, refresh, t])
 
-  const applyResult = (res: EditResult) => {
-    setView(res.view)
-    setConflicts(res.open_conflicts)
-  }
+  const queueExternalBatch = useCallback((
+    operations: EditOp[],
+    baseRevision?: string,
+    labels?: string[],
+    reviewItems?: AgentProposal["review_items"],
+    preview?: AgentProposal["preview"],
+  ) => {
+    if (operations.length === 0) return
+    const request: ExternalWorkbenchOperation = {
+      id: previewRequestId.current++,
+      operations: [...operations],
+      labels: labels ? [...labels] : undefined,
+      reviewItems: reviewItems?.map((item) => ({ ...item })),
+      baseRevision,
+      preview,
+    }
+    setPreviewRequestQueue((current) => [...current, request])
+  }, [])
 
-  const runEdit = useCallback(async (op: EditOp, successMsg?: string) => {
+  const requestChangePreview = useCallback((op: EditOp, operationLabel?: string, baseRevision?: string) => {
+    queueExternalBatch([op], baseRevision, operationLabel ? [operationLabel] : undefined)
+  }, [queueExternalBatch])
+
+  const requestAgentProposalPreview = useCallback((proposal: AgentProposal) => {
+    if (section === "ontology") {
+      queueExternalBatch(
+        proposal.operations,
+        proposal.revision,
+        undefined,
+        proposal.review_items,
+        proposal.preview,
+      )
+      return
+    }
+    navigate(`/knowledge/${ksId}/ontology`, { state: { agentProposal: proposal } })
+  }, [ksId, navigate, queueExternalBatch, section])
+
+  useEffect(() => {
+    if (section !== "ontology" || !ks) return
+    const state = location.state as { agentProposal?: AgentProposal } | null
+    const proposal = state?.agentProposal
+    if (!proposal) {
+      queuedNavigationProposal.current = null
+      return
+    }
+    // Development StrictMode may run an effect twice before the state-clearing
+    // navigation lands. Handle each navigation proposal only once.
+    if (queuedNavigationProposal.current === proposal) return
+    if (ks.my_role !== "owner" && ks.my_role !== "editor") {
+      queuedNavigationProposal.current = proposal
+      toast.error(locale === "zh-CN" ? "当前权限为只读，无法预览或提交修改" : "Your current access is read-only; changes cannot be reviewed or submitted.")
+      navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+      return
+    }
+    queuedNavigationProposal.current = proposal
+    queueExternalBatch(
+      proposal.operations,
+      proposal.revision,
+      undefined,
+      proposal.review_items,
+      proposal.preview,
+    )
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+  }, [ks, locale, location.pathname, location.search, location.state, navigate, queueExternalBatch, section])
+
+  const previewDelete = useCallback(async (
+    kind: "class" | "property",
+    iri: string,
+    entityLabel: string,
+  ) => {
+    const requestId = ++deleteImpactRequest.current
+    const operation: EditOp = { op: kind === "class" ? "delete_class" : "delete_property", iri }
+    setDeleteImpact({ open: true, kind, label: entityLabel, operation, impact: null, revision: null, loading: true })
     try {
-      applyResult(await api.editOntology(ksId, op))
-      if (successMsg) toast.success(successMsg)
-    } catch (e) {
-      toast.error(t("ontology.operationFailed", { error: (e as Error).message }))
+      const result = await api.ontologyImpact(ksId, iri, kind)
+      if (deleteImpactRequest.current !== requestId) return
+      setDeleteImpact((current) => current.open && current.operation === operation
+        ? { ...current, impact: result.impact, revision: result.revision, loading: false }
+        : current)
+    } catch (error) {
+      if (deleteImpactRequest.current !== requestId) return
+      setDeleteImpact((current) => ({ ...current, open: false, loading: false }))
+      toast.error(t("ontology.operationFailed", { error: (error as Error).message }))
     }
   }, [ksId, t])
+
+  const previewOperations = useCallback(
+    (operations: EditOp[], expectedRevision?: string) =>
+      api.previewOntologyChanges(ksId, operations, expectedRevision),
+    [ksId],
+  )
+
+  const commitOperations = useCallback(async (
+    operations: EditOp[],
+    expectedRevision?: string,
+    reason?: string,
+  ) => {
+    const result = await api.commitOntologyChanges(ksId, operations, expectedRevision, reason)
+    // Keep the workbench on the exact committed revision immediately. The broader
+    // refresh also updates knowledge-system statistics, conflicts and history-backed UI.
+    setView({ ...result.view, revision: result.revision })
+    window.dispatchEvent(new Event("ontopilot:review-counts-changed"))
+    // The commit already succeeded. Refresh related panels in the background so a
+    // transient follow-up read cannot be mistaken for a failed commit and retried.
+    void refresh()
+    return { revision: result.revision, view: result.view }
+  }, [ksId, refresh])
 
   const detect = useCallback(async () => {
     try {
@@ -191,6 +313,10 @@ export default function OntologyPage() {
 
   const canWrite = ks.my_role === "editor" || ks.my_role === "owner"
   const canManage = ks.my_role === "owner"
+  const requestedTab = searchParams.get("tab")
+  const initialOntologyTab = requestedTab === "object" || requestedTab === "data" || requestedTab === "axioms"
+    ? requestedTab
+    : "classes"
 
   const axiomGroups = [
     {
@@ -199,7 +325,7 @@ export default function OntologyPage() {
       items: view.axioms.subclass_of.map((r) => ({
         text: `${label(r.sub)} ⊑ ${label(r.super)}`,
         parts: { left: label(r.sub), op: "sub" as const, right: label(r.super) },
-        onDelete: canWrite ? () => runEdit({ op: "delete_axiom", type: "subclass", sub: r.sub, super: r.super }, t("common.deleted")) : undefined,
+        onDelete: canWrite ? () => requestChangePreview({ op: "delete_axiom", type: "subclass", sub: r.sub, super: r.super }) : undefined,
       })),
     },
     {
@@ -208,7 +334,7 @@ export default function OntologyPage() {
       items: view.axioms.disjoint_with.map((r) => ({
         text: `${label(r.a)} ⟂ ${label(r.b)}`,
         parts: { left: label(r.a), op: "disjoint" as const, right: label(r.b) },
-        onDelete: canWrite ? () => runEdit({ op: "delete_axiom", type: "disjoint", a: r.a, b: r.b }, t("common.deleted")) : undefined,
+        onDelete: canWrite ? () => requestChangePreview({ op: "delete_axiom", type: "disjoint", a: r.a, b: r.b }) : undefined,
       })),
     },
     {
@@ -217,7 +343,7 @@ export default function OntologyPage() {
       items: view.axioms.equivalent_class.map((r) => ({
         text: `${label(r.a)} ≡ ${label(r.b)}`,
         parts: { left: label(r.a), op: "equiv" as const, right: label(r.b) },
-        onDelete: canWrite ? () => runEdit({ op: "delete_axiom", type: "equivalent", a: r.a, b: r.b }, t("common.deleted")) : undefined,
+        onDelete: canWrite ? () => requestChangePreview({ op: "delete_axiom", type: "equivalent", a: r.a, b: r.b }) : undefined,
       })),
     },
   ]
@@ -295,30 +421,40 @@ export default function OntologyPage() {
       {section === "ontology" && (
         <div className="-m-4 md:-m-6">
           <OntologyWorkbench
-            key={`${searchParams.get("view") ?? "graph"}-${searchParams.get("tab") ?? ""}`}
+            key={ksId}
             view={view}
             canWrite={canWrite}
+            revision={view.revision}
             initialLens={searchParams.get("view") === "table" ? "table" : "graph"}
-            initialTab={searchParams.get("tab") === "axioms" ? "axioms" : "classes"}
+            initialTab={initialOntologyTab}
+            onLensChange={(lens) => {
+              const next = new URLSearchParams(searchParams)
+              if (lens === "graph") {
+                next.delete("view")
+              } else next.set("view", "table")
+              setSearchParams(next, { replace: true })
+            }}
+            onTabChange={(tab) => {
+              const next = new URLSearchParams(searchParams)
+              next.set("view", "table")
+              if (tab === "classes") next.delete("tab")
+              else next.set("tab", tab)
+              setSearchParams(next, { replace: true })
+            }}
             axioms={axiomGroups}
             onAddAxiom={() => setAxiomOpen(true)}
             onAddClass={() => setClassDialog({ open: true, initial: null })}
             onEditClass={(c) => setClassDialog({ open: true, initial: c })}
-            onDeleteClass={async (c) => {
-              let n = 0
-              try { n = (await api.aboxClasses(ksId)).classes.find((x) => x.iri === c.iri)?.count ?? 0 } catch { /* count is best-effort */ }
-              const msg = n > 0
-                ? t("ontology.deleteClassInstances", { name: c.label, count: n })
-                : t("ontology.deleteClass", { name: c.label })
-              if (await confirmAction(msg, { destructive: true })) runEdit({ op: "delete_class", iri: c.iri }, t("common.deleted"))
-            }}
-            onAddProperty={() => setPropDialog({ open: true, initial: null })}
-            onEditProperty={(p, kind) => setPropDialog({ open: true, initial: { ...p, kind } })}
-            onDeleteProperty={async (p) => {
-              if (await confirmAction(t("ontology.deleteProperty", { name: p.label }), { destructive: true })) {
-                runEdit({ op: "delete_property", iri: p.iri }, t("common.deleted"))
-              }
-            }}
+            onDeleteClass={(c) => previewDelete("class", c.iri, c.label)}
+            onAddProperty={(kind = "object") => setPropDialog({ open: true, initial: null, initialKind: kind })}
+            onEditProperty={(p, kind) => setPropDialog({ open: true, initial: { ...p, kind }, initialKind: kind })}
+            onDeleteProperty={(p) => previewDelete("property", p.iri, p.label)}
+            onPreviewOperations={previewOperations}
+            onCommitOperations={commitOperations}
+            onRevisionConflict={refresh}
+            externalOperation={previewRequestQueue[0] ?? null}
+            onExternalOperationConsumed={(id) => setPreviewRequestQueue((current) =>
+              current.filter((request) => request.id !== id))}
           />
         </div>
       )}
@@ -377,15 +513,51 @@ export default function OntologyPage() {
       />
       <ClassDialog
         ksId={ksId} open={classDialog.open} initial={classDialog.initial}
-        onOpenChange={(o) => setClassDialog((s) => ({ ...s, open: o }))} onSaved={applyResult}
+        onOpenChange={(o) => setClassDialog((s) => ({ ...s, open: o }))}
+        onSubmitOperation={requestChangePreview}
       />
       <PropertyDialog
-        ksId={ksId} open={propDialog.open} initial={propDialog.initial} classes={view.classes}
-        onOpenChange={(o) => setPropDialog((s) => ({ ...s, open: o }))} onSaved={applyResult}
+        ksId={ksId} open={propDialog.open} initial={propDialog.initial} initialKind={propDialog.initialKind} classes={view.classes}
+        onOpenChange={(o) => setPropDialog((s) => ({ ...s, open: o }))}
+        onSubmitOperation={requestChangePreview}
       />
       <AxiomDialog
         ksId={ksId} open={axiomOpen} classes={view.classes}
-        onOpenChange={setAxiomOpen} onSaved={applyResult}
+        onOpenChange={setAxiomOpen}
+        onSubmitOperation={requestChangePreview}
+      />
+      <OntologyDeleteImpactDialog
+        open={deleteImpact.open}
+        onOpenChange={(open) => {
+          if (!open) deleteImpactRequest.current += 1
+          setDeleteImpact((current) => ({ ...current, open }))
+        }}
+        kind={deleteImpact.kind}
+        label={deleteImpact.label}
+        impact={deleteImpact.impact}
+        loading={deleteImpact.loading}
+        onConfirm={() => {
+          if (deleteImpact.revision !== view.revision) {
+            toast.warning(locale === "zh-CN" ? "本体已发生变化，请重新查看删除影响" : "The ontology changed; review the deletion impact again")
+            if (deleteImpact.operation?.iri) {
+              void previewDelete(deleteImpact.kind, String(deleteImpact.operation.iri), deleteImpact.label)
+            }
+            return
+          }
+          if (deleteImpact.operation) {
+            requestChangePreview(deleteImpact.operation, undefined, deleteImpact.revision ?? undefined)
+          }
+          deleteImpactRequest.current += 1
+          setDeleteImpact((current) => ({ ...current, open: false }))
+        }}
+      />
+      <AgentCopilot
+        open={agentOpen}
+        onOpenChange={onAgentOpenChange}
+        onBusyChange={onAgentBusyChange}
+        ksId={ksId}
+        canWrite={canWrite}
+        onPreviewProposal={requestAgentProposalPreview}
       />
     </div>
   )

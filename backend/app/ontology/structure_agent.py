@@ -21,7 +21,15 @@ from app.config import settings
 from app.db.database import engine
 from app.db.models import Chunk, Document, KnowledgeSystem
 from app.llm import openrouter
-from app.ontology import editor, role_evidence, schema, store
+from app.ontology import (
+    editor,
+    retrieval,
+    role_evidence,
+    schema,
+    statement_provenance,
+    store,
+    workbench,
+)
 from app.ontology.vocab import norm_label
 
 logger = logging.getLogger(__name__)
@@ -218,6 +226,7 @@ def attach_isolated_bg(ks_id: int, model: str | None = None) -> list[str]:
         idx = schema.read_index(ks.graph_iri)
 
         log: list[str] = []
+        graph_changed = False
         # Pass 2 — apply the confident, non-suspicious suggestions.
         for c, d in proposals:
             parent = d["parent"]
@@ -239,28 +248,53 @@ def attach_isolated_bg(ks_id: int, model: str | None = None) -> list[str]:
                 continue  # agent named a non-existent "existing" class → don't invent it
             created_new = not p_iri
             try:
-                with store.capture(ks.graph_iri, revert_on_error=True) as cap:
+                abox_iri = workbench.abox_iri_for(ks.graph_iri)
+                # Validation reads both graphs. Lock them in the fixed TBox -> ABox
+                # order and keep the compensating captures live through SQL commit.
+                with store.capture(ks.graph_iri, revert_on_error=True) as cap, \
+                        store.capture(abox_iri, revert_on_error=True) as acap:
+                    baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
                     if created_new:
                         p_iri = editor.apply_edit(ks.graph_iri, ks.base_iri, {"op": "add_class", "label": parent})
                     editor.apply_edit(ks.graph_iri, ks.base_iri,
                                       {"op": "add_axiom", "type": "subclass", "sub": c["iri"], "super": p_iri})
+                    new_errors = workbench.new_structural_errors(ks.graph_iri, baseline_errors)
+                    if new_errors:
+                        raise RuntimeError(
+                            "structure repair introduced structural errors: "
+                            + ", ".join(new_errors)
+                        )
+                    added, removed = cap.diff()
+                    a_added, a_removed = acap.diff()
+                    if not (added or removed or a_added or a_removed):
+                        continue
+                    detail = {
+                        "class": c["iri"], "parent": parent, "new": created_new,
+                        "reason": d["reason"], "evidence": d["evidence"],
+                        "confidence": conf, "agent": True,
+                    }
+                    event = audit.record(
+                        session, ks_id=ks.id, action="tbox.attach_isolated",
+                        summary=f'Agent attached "{c["label"]}" ⊑ "{parent}"'
+                                f'{" (new class)" if created_new else ""}',
+                        actor_id=None, actor_name="structure-agent", detail=detail,
+                        added=added, removed=removed, commit=False,
+                    )
+                    statement_provenance.record_tbox_diff(
+                        session, ks.id, added, removed, event, commit=False,
+                    )
+                    session.commit()
             except Exception as e:  # noqa: BLE001
+                session.rollback()
                 logger.warning("structure agent attach failed for %s: %s", c["label"], e)
                 continue
             if created_new:  # keep the in-memory index in sync so a later proposal reuses this parent
                 idx.class_by_norm[norm_label(parent)] = p_iri
-            added, removed = cap.diff()
-            audit.record(
-                session, ks_id=ks.id, action="tbox.attach_isolated",
-                summary=f'Agent attached "{c["label"]}" ⊑ "{parent}"{" (new class)" if created_new else ""}',
-                actor_id=None, actor_name="structure-agent",
-                detail={
-                    "class": c["iri"], "parent": parent, "new": created_new,
-                    "reason": d["reason"], "evidence": d["evidence"],
-                    "confidence": conf, "agent": True,
-                },
-                added=added, removed=removed,
-            )
+            graph_changed = True
             log.append(f'{c["label"]} ⊑ {parent}{" (new)" if created_new else ""} (auto {conf:.2f})')
-        session.commit()
+        if graph_changed:
+            try:
+                retrieval.invalidate(ks.graph_iri)
+            except Exception:  # noqa: BLE001
+                logger.exception("structure agent cache invalidation failed for %s", ks.graph_iri)
         return log

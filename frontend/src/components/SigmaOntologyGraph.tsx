@@ -7,8 +7,10 @@ import Sigma from "sigma"
 import {
   EdgeArrowProgram,
   EdgeLineProgram,
+  drawDiscNodeLabel,
   type EdgeLabelDrawingFunction,
   type NodeHoverDrawingFunction,
+  type NodeLabelDrawingFunction,
 } from "sigma/rendering"
 import { useTheme } from "next-themes"
 import type { OntologyClass, OntologyView } from "@/lib/types"
@@ -37,6 +39,8 @@ type NodeAttributes = {
   color: string
   baseColor: string
   forceLabel: boolean
+  highlighted?: boolean
+  ringed?: boolean
 }
 
 type EdgeKind = "subclass" | "object" | "disjoint" | "equivalent"
@@ -64,6 +68,18 @@ const drawMinimalNodeHover: NodeHoverDrawingFunction<NodeAttributes, EdgeAttribu
   context.lineWidth = 2
   context.stroke()
   context.restore()
+}
+
+const drawSpacedNodeLabel: NodeLabelDrawingFunction<NodeAttributes, EdgeAttributes> = (
+  context,
+  data,
+  settings,
+) => {
+  drawDiscNodeLabel(
+    context,
+    data.ringed ? { ...data, x: data.x + 4 } : data,
+    settings,
+  )
 }
 
 const drawReadableEdgeLabel: EdgeLabelDrawingFunction<NodeAttributes, EdgeAttributes> = (
@@ -530,6 +546,7 @@ export default function SigmaOntologyGraph({
       defaultNodeColor: colors.node,
       defaultEdgeColor: colors.hierarchyEdge,
       defaultDrawEdgeLabel: drawReadableEdgeLabel,
+      defaultDrawNodeLabel: drawSpacedNodeLabel,
       defaultDrawNodeHover: drawMinimalNodeHover,
       edgeProgramClasses: { line: EdgeLineProgram, arrow: EdgeArrowProgram },
       hideEdgesOnMove: false,
@@ -541,7 +558,7 @@ export default function SigmaOntologyGraph({
       labelGridCellSize: mode === "full" ? 96 : 82,
       labelRenderedSizeThreshold: mode === "full" ? 6 : 3,
       labelSize: mode === "full" ? 13 : 15,
-      labelWeight: "600",
+      labelWeight: "400",
       edgeLabelColor: { color: colors.edgeLabel },
       edgeLabelFont: "Manrope, sans-serif",
       edgeLabelSize: 11,
@@ -554,6 +571,7 @@ export default function SigmaOntologyGraph({
       nodeReducer: (node, data) => {
         const selectedNode = selectedRef.current
         const isSelected = node === selectedNode
+        const ringed = isSelected || node === hoveredRef.current
         const active = hoveredRef.current
           ?? (emphasizeSelectedRef.current ? selectedNode : null)
         const emphasized = isSelected || node === focus || node === active
@@ -561,6 +579,7 @@ export default function SigmaOntologyGraph({
           return emphasized ? {
             ...data,
             highlighted: isSelected,
+            ringed,
             color: colors.node,
             forceLabel: true,
             size: data.baseSize * 1.22,
@@ -571,6 +590,7 @@ export default function SigmaOntologyGraph({
           return {
             ...data,
             highlighted: isSelected,
+            ringed,
             color: colors.node,
             forceLabel: true,
             size: data.baseSize * 1.3,
@@ -581,6 +601,7 @@ export default function SigmaOntologyGraph({
           return {
             ...data,
             highlighted: isSelected,
+            ringed,
             forceLabel: true,
             size: data.baseSize * 1.12,
             zIndex: 2,
@@ -590,13 +611,14 @@ export default function SigmaOntologyGraph({
           return {
             ...data,
             highlighted: true,
+            ringed: true,
             color: colors.node,
             forceLabel: true,
             size: data.baseSize * 1.22,
             zIndex: 2,
           }
         }
-        return { ...data, highlighted: false, color: colors.dimNode, label: null, zIndex: 0 }
+        return { ...data, highlighted: false, ringed: false, color: colors.dimNode, label: null, zIndex: 0 }
       },
       edgeReducer: (edge, data) => {
         const selectedNode = selectedRef.current
@@ -732,7 +754,7 @@ export default function SigmaOntologyGraph({
   }
 
   return (
-    <div className="relative h-full min-h-[360px] overflow-hidden bg-background/40">
+    <div className="relative h-full min-h-0 overflow-hidden bg-background/40">
       <div
         ref={containerRef}
         data-testid="sigma-ontology-graph"

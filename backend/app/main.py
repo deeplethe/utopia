@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api import (
-    abox, auth, conflicts, documents, external, extraction, history, knowledge, ontology, providers, published,
+    abox, agent, auth, conflicts, documents, external, extraction, history, knowledge, ontology, providers, published,
     prompts, rdf_import, releases, resolution, settings_api, tokens, vocabulary,
 )
 from app.api import mcp_tokens as mcp_tokens_api
@@ -127,9 +127,39 @@ def _reset_stale_jobs() -> None:
     from sqlmodel import Session, select
 
     from app.db.database import engine
-    from app.db.models import ExportJob, ExtractionJob, OntologyRelease, ReleaseDeployment, utcnow
+    from app.db.models import (
+        AgentConversation,
+        AgentTurn,
+        ExportJob,
+        ExtractionJob,
+        OntologyRelease,
+        ReleaseDeployment,
+        utcnow,
+    )
 
     with Session(engine) as session:
+        stale_agent_turns = session.exec(
+            select(AgentTurn).where(AgentTurn.status == "running")
+        ).all()
+        stale_conversation_ids: set[int] = set()
+        for turn in stale_agent_turns:
+            now = utcnow()
+            turn.status = "failed"
+            turn.error = "Interrupted by a server restart"
+            turn.updated_at = now
+            stale_conversation_ids.add(turn.conversation_id)
+            session.add(turn)
+        for conversation_id in stale_conversation_ids:
+            conversation = session.get(AgentConversation, conversation_id)
+            if conversation is not None:
+                conversation.updated_at = utcnow()
+                session.add(conversation)
+        if stale_agent_turns:
+            session.commit()
+            logging.warning(
+                "reset %d stale Agent turn(s) left running by a previous process",
+                len(stale_agent_turns),
+            )
         stale = session.exec(
             select(ExtractionJob).where(ExtractionJob.status.in_(("pending", "running")))
         ).all()
@@ -280,6 +310,7 @@ app.include_router(vocabulary.router)
 app.include_router(prompts.router)
 app.include_router(releases.router)
 app.include_router(mcp_tokens_api.router)
+app.include_router(agent.router)
 
 
 @app.exception_handler(CaptureBusy)

@@ -18,7 +18,9 @@ from app.config import settings
 from app.db.database import engine
 from app.db.models import KnowledgeSystem, ValidationDecision
 from app.llm import openrouter
-from app.ontology import abox, abox_validate, editor, store
+from app.ontology import (
+    abox, abox_validate, editor, retrieval, statement_provenance, store, workbench,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,10 @@ def record_decision(session: Session, ks_id: int, prop_iri: str, prop_label: str
         knowledge_system_id=ks_id, property_iri=prop_iri, property_label=prop_label,
         xsd_type=xsd, action=action, reason=reason, resolved_by=resolved_by,
     ))
+
+
+class StructuralValidationError(RuntimeError):
+    """An automatic fix would introduce a new error-level ontology violation."""
 
 _SYSTEM = """You fix a datatype violation on a data property. The property is declared numeric but
 some of its values are not numbers. Decide, from the value distribution, ONE of:
@@ -128,33 +134,86 @@ def triage_bg(ks_id: int, model: str | None = None) -> list[str]:
                 log.append(f'{st["label"]}: agent "{action}" ({conf:.2f}) below auto floor — left for a human')
                 continue
 
-            if action == "relax":
-                with store.capture(ks.graph_iri) as cap:
-                    editor.apply_edit(ks.graph_iri, ks.base_iri,
-                                      {"op": "update_property", "iri": st["prop"], "range": "string"})
-                added, removed = cap.diff()
-                audit.record(
-                    session, ks_id=ks.id, action="abox.fix_violation",
-                    summary=f'Agent relaxed "{st["label"]}" to text ({len(st["bad"])} qualitative value(s))',
-                    actor_id=None, actor_name="validation-agent",
-                    detail={"prop": st["prop"], "action": "relax", "reason": reason, "confidence": conf, "agent": True},
-                    added=added, removed=removed, graph=ks.graph_iri,
-                )
+            tbox_changed = action == "relax"
+            try:
+                with store.capture(ks.graph_iri, revert_on_error=True) as tcap, store.capture(
+                    abox_iri, revert_on_error=True,
+                ) as acap:
+                    baseline = workbench.structural_error_signatures(ks.graph_iri)
+                    if tbox_changed:
+                        editor.apply_edit(
+                            ks.graph_iri, ks.base_iri,
+                            {"op": "update_property", "iri": st["prop"], "range": "string"},
+                        )
+                        cap = tcap
+                        graph = ks.graph_iri
+                        summary = (
+                            f'Agent relaxed "{st["label"]}" to text '
+                            f'({len(st["bad"])} qualitative value(s))'
+                        )
+                    else:
+                        for bad in st["bad"]:
+                            abox.remove_data_assertion(
+                                abox_iri, bad["subject"], st["prop"], bad["value"],
+                                bad.get("datatype"),
+                            )
+                        cap = acap
+                        graph = abox_iri
+                        summary = f'Agent removed {len(st["bad"])} noisy value(s) of "{st["label"]}"'
+
+                    new_errors = workbench.new_structural_errors(ks.graph_iri, baseline)
+                    if new_errors:
+                        raise StructuralValidationError(
+                            "automatic fix introduced structural errors: " + ", ".join(new_errors)
+                        )
+                    added, removed = cap.diff()
+                    tbox_added, tbox_removed = tcap.diff()
+                    abox_added, abox_removed = acap.diff()
+                    unexpected_layer_change = (
+                        bool(abox_added or abox_removed) if tbox_changed
+                        else bool(tbox_added or tbox_removed)
+                    )
+                    if unexpected_layer_change:
+                        raise RuntimeError(
+                            "validation agent fix changed both ontology layers unexpectedly"
+                        )
+                    if not (added or removed):
+                        continue
+                    event = audit.record(
+                        session, ks_id=ks.id, action="abox.fix_violation",
+                        summary=summary, actor_id=None, actor_name="validation-agent",
+                        detail={
+                            "prop": st["prop"], "action": action, "reason": reason,
+                            "confidence": conf, "agent": True,
+                        },
+                        added=added, removed=removed, graph=graph, commit=False,
+                    )
+                    if tbox_changed:
+                        statement_provenance.record_tbox_diff(
+                            session, ks.id, added, removed, event, commit=False,
+                        )
+                    else:
+                        statement_provenance.record_abox_diff(
+                            session, ks.id, added, removed, event,
+                            abox_iri=abox_iri, commit=False,
+                        )
+                    if not learned:
+                        record_decision(
+                            session, ks.id, st["prop"], st["label"], st["xsd"],
+                            action, reason, "agent",
+                        )
+                    session.commit()
+            except Exception as exc:  # noqa: BLE001
+                session.rollback()
+                logger.warning("validation agent apply failed on %s: %s", st["label"], exc)
+                continue
+
+            if tbox_changed:
+                try:
+                    retrieval.invalidate(ks.graph_iri)
+                except Exception:  # noqa: BLE001
+                    logger.exception("ontology retrieval cache invalidation failed for %s", ks.graph_iri)
                 log.append(f'{st["label"]} → relaxed to text (auto {conf:.2f})')
-            else:  # remove the bad values only
-                with store.capture(abox_iri) as cap:
-                    for b in st["bad"]:
-                        abox.remove_data_assertion(abox_iri, b["subject"], st["prop"], b["value"], b.get("datatype"))
-                added, removed = cap.diff()
-                audit.record(
-                    session, ks_id=ks.id, action="abox.fix_violation",
-                    summary=f'Agent removed {len(st["bad"])} noisy value(s) of "{st["label"]}"',
-                    actor_id=None, actor_name="validation-agent",
-                    detail={"prop": st["prop"], "action": "remove", "reason": reason, "confidence": conf, "agent": True},
-                    added=added, removed=removed, graph=abox_iri,
-                )
+            else:
                 log.append(f'{st["label"]} → removed {len(st["bad"])} value(s) (auto {conf:.2f})')
-            if not learned:  # remember a freshly-judged decision for next time
-                record_decision(session, ks.id, st["prop"], st["label"], st["xsd"], action, reason, "agent")
-        session.commit()
         return log

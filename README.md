@@ -79,7 +79,8 @@ for evaluation scope, baselines, prompt profiles, and reproducibility details.
 | Release engineering | Draft → reviewed → published, immutable snapshots, semantic Diff, restore, and deployment |
 | Export | Separate TBox, terminology, and ABox exports; full bundles; asynchronous N-Quads sharding |
 | Serving | Project-scoped API tokens, version-pinned REST, RDF export, and bounded read-only SPARQL |
-| Agent integration | Automatically mounted Streamable HTTP MCP with read, propose, edit, review, and lifecycle tools |
+| Agent workbench | Fixed first-party agent overlay with page/node context, MCP exploration, and previewed change proposals |
+| Agent / MCP integration | Automatically mounted Streamable HTTP MCP with read, propose, edit, review, and lifecycle tools |
 | Interoperability | RDF import with automatic TBox/ABox classification or explicit target-layer selection |
 | Internationalization | English and Simplified Chinese UI/docs; independently configurable backend prompt language |
 
@@ -215,6 +216,8 @@ Set `SEED_DEMO_DATA=true` before the first backend start to create a determinist
 ## 🤖 MCP and Agent Integration
 
 MCP is available by default at `/mcp` and starts inside the normal backend lifecycle—there is no separate MCP service to install or supervise. Each MCP token is bound to one user and one knowledge system. Token scopes and the user's live project role are intersected on every call.
+
+A first-party floating agent is built into the lower-right corner of each knowledge-system page. It senses the current page and selected ontology node, then autonomously calls registered read-only MCP tools to inspect structure, instances, evidence, review state, and releases. Change proposals pass a server-side Semantic Preview; the user inspects the diff and impact, then explicitly confirms the atomic commit. The agent never writes directly. This built-in path uses trusted server delegation for the signed-in user, so the model never receives a browser cookie or MCP token.
 
 ```json
 {
@@ -393,7 +396,7 @@ Checked items have shipped; unchecked items are planned, not release-date promis
 - [x] **Agent integration foundation:** project-scoped MCP tokens plus read, propose, preview, edit, review, and release tools.
 - [ ] **Production hardening:** formal migration and upgrade tests, backup/restore tooling, observability, accessibility, and broader browser coverage.
 - [ ] **Team collaboration:** richer review assignment, mentions, notifications, saved filters, and large-team audit workflows.
-- [ ] **Agent-assisted governance:** a first-party chat experience using short-lived user MCP tokens and reviewable change previews before execution.
+- [x] **Agent-assisted governance:** a first-party floating agent with page/node context, autonomous MCP exploration, and reviewable previewed proposals before execution.
 - [ ] **Ecosystem integrations:** object storage, webhooks/events, identity providers, and deployment templates for common platforms.
 - [ ] **Scale and quality:** MinerU and other pluggable parsers, larger-corpus ingestion, incremental extraction, broader benchmarks, reproducible releases, and performance budgets.
 - [ ] **Model and simulate:** spatiotemporal modeling and governed, versioned, reproducible sandbox simulations for what-if analysis.

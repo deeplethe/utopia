@@ -194,6 +194,62 @@ class McpUserToken(SQLModel, table=True):
     revoked_at: Optional[datetime] = None
 
 
+# --------------------------------------------------------------------------- #
+# Agent conversations, turns, and append-only runtime events
+# --------------------------------------------------------------------------- #
+class AgentConversation(SQLModel, table=True):
+    """One private copilot conversation scoped to a user and knowledge system."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
+    user_id: int = Field(index=True, foreign_key="user.id")
+    title: str = Field(default="", sa_column=Column(Text))
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utcnow, index=True)
+
+
+class AgentTurn(SQLModel, table=True):
+    """A durable user or assistant turn within an agent conversation."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    conversation_id: int = Field(index=True, foreign_key="agentconversation.id")
+    role: str = Field(index=True)  # user | assistant
+    content: str = Field(default="", sa_column=Column(Text))
+    status: str = Field(default="done", index=True)  # running | done | failed | cancelled
+    trace: list[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    proposal: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    error: Optional[str] = Field(default=None, sa_column=Column(Text))
+    knowledge_revision: Optional[str] = Field(default=None, index=True)
+    model: Optional[str] = None
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class AgentEvent(SQLModel, table=True):
+    """Append-only ordered evidence and rendering events for one assistant turn.
+
+    ``data`` keeps the complete server-side payload. API serializers deliberately expose
+    only safe previews for tool results, while later turns can reuse the full evidence.
+    """
+
+    __table_args__ = (
+        UniqueConstraint("turn_id", "idx", name="uq_agent_event_turn_idx"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    turn_id: int = Field(index=True, foreign_key="agentturn.id")
+    idx: int = Field(index=True)
+    kind: str = Field(index=True)  # token | tool_call | tool_result | proposal | done | error
+    call_id: Optional[str] = Field(default=None, index=True)
+    tool_name: Optional[str] = Field(default=None, index=True)
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    fingerprint: Optional[str] = Field(default=None, index=True)
+    knowledge_revision: Optional[str] = Field(default=None, index=True)
+    result_hash: Optional[str] = Field(default=None, index=True)
+    cached_from_event_id: Optional[int] = Field(default=None, foreign_key="agentevent.id")
+    created_at: datetime = Field(default_factory=utcnow, index=True)
+
+
 class Provider(SQLModel, table=True):
     """One model endpoint entry: an OpenAI-compatible connection (base_url + api_key) bundled with a
     specific model and its kind (llm | embedding). A flat list of these is the whole config surface;

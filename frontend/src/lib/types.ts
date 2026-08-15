@@ -166,6 +166,12 @@ export interface TestResult {
   ok: boolean
   message: string
   latency_ms: number
+  request_url?: string
+  status_code?: number | null
+  detail?: string | null
+  error_type?: string | null
+  diagnostic_codes?: string[]
+  suggested_base_url?: string | null
 }
 
 export interface ModelCatalog {
@@ -195,6 +201,7 @@ export interface OntologyProperty {
 }
 
 export interface OntologyView {
+  revision?: string
   classes: OntologyClass[]
   object_properties: OntologyProperty[]
   data_properties: OntologyProperty[]
@@ -595,7 +602,193 @@ export interface EditResult {
   result: string
   view: OntologyView
   open_conflicts: Conflict[]
+  base_revision?: string
+  revision?: string
 }
+
+export interface OntologyImpact {
+  index?: number
+  op?: string
+  destructive?: boolean
+  kind: "class" | "property" | "axiom" | null
+  property_kind?: "object" | "data" | "property"
+  entity_iri: string | null
+  label?: string
+  exists: boolean
+  tbox_triples: number
+  referencing_axioms: number
+  references?: string[]
+  references_truncated?: boolean
+  subclasses: string[]
+  superclasses: string[]
+  properties_using_class: { iri: string; label: string; kind: string; slots: string[] }[]
+  abox_type_assertions: number
+  abox_property_assertions: number
+  abox_assertions: number
+  affected_individuals: string[]
+  affected_individual_count?: number
+  affected_individuals_truncated?: boolean
+  individuals_deleted: string[]
+  individuals_deleted_count?: number
+  individuals_deleted_truncated?: boolean
+  individuals_retyped: string[]
+  individuals_retyped_count?: number
+  individuals_retyped_truncated?: boolean
+  warnings?: string[]
+}
+
+export interface OntologyImpactResponse {
+  revision: string
+  impact: OntologyImpact
+}
+
+export interface OntologyChangeSetResult {
+  dry_run: boolean
+  applied: number
+  operations: EditOp[]
+  results: string[]
+  destructive_operations: string[]
+  requires_confirmation: boolean
+  base_revision: string
+  revision: string
+  diff: {
+    tbox_added?: string
+    tbox_removed?: string
+    abox_added?: string
+    abox_removed?: string
+    counts: Record<string, number>
+  }
+  impact: {
+    operations: OntologyImpact[]
+    totals: Record<string, number>
+  }
+  conflicts: unknown[]
+  abox_validation?: ValidationResult
+  structural_validation: {
+    valid: boolean
+    committable: boolean
+    error_count: number
+    warning_count: number
+    new_error_count: number
+    resolved_error_count: number
+    new_error_signatures: string[]
+  }
+  resulting_stats: OntologyView["stats"]
+  view: OntologyView
+  audit_event_id?: number
+  open_conflicts?: number
+}
+
+export interface OntologySuggestion {
+  operations: EditOp[]
+  summary?: string
+  reason?: string
+  revision?: string
+}
+
+export interface AgentTraceStep {
+  tool: string
+  arguments: Record<string, unknown>
+  summary: string
+  reason?: string
+}
+
+export interface AgentProposal {
+  summary: string
+  reason: string
+  operations: EditOp[]
+  revision: string
+  preview: Partial<OntologyChangeSetResult>
+  review_items?: AgentProposalReviewItem[]
+}
+
+export interface AgentProposalReviewItem {
+  operation_index: number
+  queue: string
+  item_id: string | number
+  content: string
+  information: string
+  decision: string
+  decision_id?: string
+  confidence?: number
+}
+
+export interface AgentResponse {
+  answer: string
+  trace: AgentTraceStep[]
+  proposal: AgentProposal | null
+  conversation?: AgentConversation
+}
+
+export interface AgentChatRequest {
+  message: string
+  conversation_id?: number | null
+}
+
+export interface AgentConversation {
+  id: number
+  knowledge_system_id?: number
+  title: string | null
+  first_user_message?: string
+  turn_count?: number
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface AgentConversationEvent {
+  id?: number
+  idx?: number
+  type?: string
+  kind?: string
+  data?: Record<string, unknown>
+  trace?: AgentTraceStep
+}
+
+export interface AgentConversationTurn {
+  id: number
+  role: "user" | "assistant"
+  content: string
+  status?: "running" | "done" | "failed" | "cancelled"
+  trace?: AgentTraceStep[]
+  tool_trace?: AgentTraceStep[]
+  proposal?: AgentProposal | null
+  events?: AgentConversationEvent[]
+  error?: string | null
+  fail_reason?: string | null
+  created_at?: string | null
+}
+
+export interface AgentConversationDetail extends AgentConversation {
+  turns: AgentConversationTurn[]
+}
+
+export interface AgentConversationList {
+  conversations: AgentConversation[]
+  next_cursor?: string | null
+}
+
+export type AgentStreamEvent =
+  | {
+      type: "turn_started"
+      conversation: AgentConversation
+      conversation_id: number
+      user_turn_id?: number
+      assistant_turn_id?: number
+    }
+  | {
+      type: "progress"
+      phase?: string
+      title?: string
+      detail?: string
+      message?: string
+    }
+  | { type: "commentary"; text: string }
+  | { type: "trace"; trace: AgentTraceStep }
+  | { type: "answer_reset" }
+  | { type: "delta"; delta: string }
+  | { type: "proposal"; proposal: AgentProposal | null }
+  | { type: "error"; code?: string; message: string }
+  | ({ type: "done" } & AgentResponse)
 
 export interface ResolveResult {
   resolved: number
