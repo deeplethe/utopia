@@ -206,6 +206,12 @@ class AgentConversation(SQLModel, table=True):
     title: str = Field(default="", sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utcnow, index=True)
     updated_at: datetime = Field(default_factory=utcnow, index=True)
+    # User deletion is deliberately reversible.  Turns/events stay append-only and normal
+    # conversation queries exclude tombstoned rows.  Physical purging is reserved for explicit
+    # parent-resource/user removal and a future retention job.
+    deleted_at: Optional[datetime] = Field(default=None, index=True)
+    deleted_by_id: Optional[int] = Field(default=None, foreign_key="user.id")
+    deleted_by_name: Optional[str] = None
 
 
 class AgentTurn(SQLModel, table=True):
@@ -338,6 +344,8 @@ class AxiomProvenance(SQLModel, table=True):
     knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
     axiom_key: str = Field(index=True)  # canonical string, e.g. "subClassOf|dog|animal"
     chunk_id: Optional[int] = Field(default=None, foreign_key="chunk.id")
+    source_document_id: Optional[int] = Field(default=None, index=True, foreign_key="document.id")
+    source_document_sha256: Optional[str] = Field(default=None, index=True)
     job_id: Optional[int] = Field(default=None, foreign_key="extractionjob.id")
     method: str = "extraction"
     actor_name: str = ""
@@ -356,6 +364,8 @@ class AboxProvenance(SQLModel, table=True):
     # "ind|<iri>" | "data|<subject>|<prop>|<value>" | "obj|<subject>|<prop>|<target>"
     fact_key: str = Field(index=True)
     chunk_id: Optional[int] = Field(default=None, foreign_key="chunk.id")
+    source_document_id: Optional[int] = Field(default=None, index=True, foreign_key="document.id")
+    source_document_sha256: Optional[str] = Field(default=None, index=True)
     job_id: Optional[int] = Field(default=None, foreign_key="extractionjob.id")
     method: str = "extraction"
     actor_name: str = ""
@@ -508,6 +518,8 @@ class EntityResolution(SQLModel, table=True):
       matched  — this surface form IS the existing individual ``individual_iri`` (alias)
       new      — this surface form is a distinct new individual (``individual_iri`` = the one created)
       distinct — recorded as NOT the same as ``individual_iri`` (a negative decision)
+      rejected — the extracted mention is invalid and writes no RDF
+      deferred — a reviewer explicitly postponed the decision
 
     ``surface_form`` + ``class_iri`` are the lookup key (scoped per KS). ``resolved_by`` is
     "agent" for automatic decisions above the confidence threshold, or a username for manual
@@ -518,14 +530,19 @@ class EntityResolution(SQLModel, table=True):
     knowledge_system_id: int = Field(index=True, foreign_key="knowledgesystem.id")
     surface_form: str = Field(index=True)
     class_iri: Optional[str] = Field(default=None, index=True)
-    status: str = Field(default="pending", index=True)  # pending|matched|new|distinct
+    status: str = Field(default="pending", index=True)  # pending|resolving|matched|new|distinct|rejected|deferred
     individual_iri: Optional[str] = None
     confidence: Optional[float] = None
     resolved_by: Optional[str] = None  # "agent" or a username
     source_chunk_id: Optional[int] = Field(default=None, foreign_key="chunk.id")
+    # Stable source scope.  Chunk ids are replaced by re-parse, while the document row/sha stays
+    # stable.  Resolution memory must therefore never use a chunk FK as its identity boundary.
+    source_document_id: Optional[int] = Field(default=None, index=True, foreign_key="document.id")
     context: dict = Field(default_factory=dict, sa_column=Column(JSON))  # candidates, evidence, notes
     created_at: datetime = Field(default_factory=utcnow, index=True)
     resolved_at: Optional[datetime] = None
+    review_after: Optional[datetime] = Field(default=None, index=True)
+    updated_at: datetime = Field(default_factory=utcnow, index=True)
 
 
 class TermProposal(SQLModel, table=True):

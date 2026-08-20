@@ -263,6 +263,8 @@ def _clone_abox_source(row: AboxProvenance, fact_key: str, records: list[dict]) 
         knowledge_system_id=row.knowledge_system_id,
         fact_key=fact_key,
         chunk_id=row.chunk_id,
+        source_document_id=row.source_document_id,
+        source_document_sha256=row.source_document_sha256,
         job_id=row.job_id,
         method=row.method,
         actor_name=row.actor_name,

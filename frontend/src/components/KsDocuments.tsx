@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import { toast } from "sonner"
 import {
-  Check, ChevronLeft, ChevronRight, FileText, FileUp, Folder, FolderInput, FolderPlus, ListChecks,
+  Check, ChevronLeft, ChevronRight, Eye, FileText, FileUp, Folder, FolderInput, FolderPlus, ListChecks,
   Loader2, Search, Sparkles, Trash2, Upload,
 } from "lucide-react"
 import { api } from "@/lib/api"
@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import DeleteImpactDialog from "@/components/DeleteImpactDialog"
 import ExtractDialog from "@/components/ExtractDialog"
+import DocumentContributionDialog from "@/components/DocumentContributionDialog"
 
 const PAGE_SIZE = 20
 
@@ -169,6 +170,7 @@ export default function KsDocuments({
   const [moveTarget, setMoveTarget] = useState("/")
   const [deleteDoc, setDeleteDoc] = useState<DocumentMeta | null>(null)
   const [extractDoc, setExtractDoc] = useState<DocumentMeta | null>(null)
+  const [contributionDoc, setContributionDoc] = useState<DocumentMeta | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const versionRef = useRef<HTMLInputElement>(null)
   const versionDoc = useRef<DocumentMeta | null>(null)
@@ -573,6 +575,11 @@ export default function KsDocuments({
                         <Sparkles className="h-3.5 w-3.5" /> {t("documents.extract")}
                       </Button>
                     )}
+                    {(doc.tbox_extracted_at || doc.abox_extracted_at) && (
+                      <Button size="icon" variant="ghost" className="h-8 w-8" title={t("documents.viewContribution")} onClick={() => setContributionDoc(doc)}>
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    )}
                     {canWrite && (
                       <>
                         <Button size="icon" variant="ghost" className="h-8 w-8" title={t("documents.uploadVersion")} onClick={() => startNewVersion(doc)}>
@@ -627,6 +634,13 @@ export default function KsDocuments({
           onStarted={() => { setExtractDoc(null); afterChange() }}
         />
       )}
+
+      <DocumentContributionDialog
+        ksId={ksId}
+        document={contributionDoc}
+        open={!!contributionDoc}
+        onOpenChange={(open) => { if (!open) setContributionDoc(null) }}
+      />
 
       {/* Move dialog */}
       <Dialog open={!!moveDoc} onOpenChange={(o) => !o && setMoveDoc(null)}>

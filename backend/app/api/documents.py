@@ -17,10 +17,13 @@ from app import audit
 from app.api.conflicts import sync_conflicts
 from app.api.knowledge import refresh_ks_stats
 from app.db.database import get_session
-from app.db.models import AboxProvenance, AxiomProvenance, Chunk, Document, KnowledgeSystem, User, utcnow
+from app.db.models import (
+    AboxProvenance, AxiomProvenance, Chunk, Document, EntityResolution, KnowledgeSystem,
+    User, utcnow,
+)
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
-from app.ontology import provenance, schema, store
+from app.ontology import abox, abox_provenance, provenance, schema, store, workbench
 from app.parsing import chunker, parser
 from app.storage import blobstore
 
@@ -199,28 +202,75 @@ def _parse_document(doc: Document, ks: KnowledgeSystem, user: User, session: Ses
         result = parser.parse_file(path, doc.ext)
         spans = chunker.chunk_document(result.text, result.structured_document)
 
-        # Replace any existing chunks (idempotent re-parse). Also drop provenance that
-        # referenced the old chunks, so re-parsing never leaves dangling provenance.
+        # Replace existing chunks while migrating every stable source reference.  Chunk ids are
+        # parser artifacts, not entity identity: unchanged spans retain their resolution memory
+        # and provenance through a deterministic content/position mapping.
         old_chunks = session.exec(select(Chunk).where(Chunk.document_id == document_id)).all()
         old_ids = [c.id for c in old_chunks]
+        new_chunks: list[Chunk] = []
+        for span in spans:
+            chunk = Chunk(
+                document_id=document_id,
+                idx=span.idx,
+                text=span.text,
+                char_start=span.char_start,
+                char_end=span.char_end,
+                token_estimate=span.token_estimate,
+            )
+            session.add(chunk)
+            new_chunks.append(chunk)
+        session.flush()
+
+        # Prefer exact position+content, then exact content (a parser may shift positions while
+        # preserving the source span).  Changed spans intentionally lose old provenance rather
+        # than falsely attributing facts to text that no longer supports them.
+        by_signature = {
+            (c.idx, c.text, c.char_start, c.char_end): c.id for c in new_chunks
+        }
+        by_text: dict[str, list[int]] = {}
+        for c in new_chunks:
+            by_text.setdefault(c.text, []).append(c.id)
+        used_new_ids: set[int] = set()
+        remap: dict[int, int] = {}
+        for old in sorted(old_chunks, key=lambda item: item.idx):
+            mapped = by_signature.get((old.idx, old.text, old.char_start, old.char_end))
+            if mapped in used_new_ids:
+                mapped = None
+            if mapped is None:
+                mapped = next((candidate for candidate in by_text.get(old.text, []) if candidate not in used_new_ids), None)
+            if mapped is not None:
+                remap[old.id] = mapped
+                used_new_ids.add(mapped)
+
         if old_ids:
-            for pr in session.exec(select(AxiomProvenance).where(AxiomProvenance.chunk_id.in_(old_ids))).all():
-                session.delete(pr)
-            for pr in session.exec(select(AboxProvenance).where(AboxProvenance.chunk_id.in_(old_ids))).all():
-                session.delete(pr)
+            for row in session.exec(select(EntityResolution).where(
+                EntityResolution.source_chunk_id.in_(old_ids)
+            )).all():
+                row.source_document_id = document_id
+                row.source_chunk_id = remap.get(row.source_chunk_id)
+                row.updated_at = utcnow()
+                ctx = dict(row.context or {})
+                ctx["source_document_sha256"] = doc.sha256
+                row.context = ctx
+                session.add(row)
+            for model in (AxiomProvenance, AboxProvenance):
+                for provenance_row in session.exec(select(model).where(model.chunk_id.in_(old_ids))).all():
+                    mapped = remap.get(provenance_row.chunk_id)
+                    if mapped is None:
+                        if model in (AxiomProvenance, AboxProvenance):
+                            provenance_row.chunk_id = None
+                            provenance_row.source_document_id = document_id
+                            provenance_row.source_document_sha256 = doc.sha256
+                            session.add(provenance_row)
+                    else:
+                        provenance_row.chunk_id = mapped
+                        if model in (AxiomProvenance, AboxProvenance):
+                            provenance_row.source_document_id = document_id
+                            provenance_row.source_document_sha256 = doc.sha256
+                        session.add(provenance_row)
+        session.flush()
         for old in old_chunks:
             session.delete(old)
-        for span in spans:
-            session.add(
-                Chunk(
-                    document_id=document_id,
-                    idx=span.idx,
-                    text=span.text,
-                    char_start=span.char_start,
-                    char_end=span.char_end,
-                    token_estimate=span.token_estimate,
-                )
-            )
 
         doc.parse_status = "parsed"
         doc.parser_backend = result.backend
@@ -343,33 +393,77 @@ def list_chunks(
 
 @router.get("/{ks_id}/documents/{document_id}/contribution")
 def document_contribution(
-    document_id: int, ks: KnowledgeSystem = Depends(ks_reader), session: Session = Depends(get_session)
+    document_id: int,
+    limit: int = Query(default=500, ge=1, le=2000),
+    ks: KnowledgeSystem = Depends(ks_reader),
+    session: Session = Depends(get_session),
 ) -> dict:
-    """What this document put into the ontology: distinct TBox axioms (via AxiomProvenance) and
-    distinct ABox individuals (via EntityResolution.source_chunk_id) traced to its chunks."""
-    from app.db.models import EntityResolution
-
-    _doc_in_ks(session, ks, document_id)
+    """Concrete TBox/ABox facts supported by this document, including shared-source status."""
+    doc = _doc_in_ks(session, ks, document_id)
     chunk_ids = [c.id for c in session.exec(select(Chunk).where(Chunk.document_id == document_id)).all()]
-    axioms: set[str] = set()
-    individuals: set[str] = set()
-    if chunk_ids:
-        for pr in session.exec(
-            select(AxiomProvenance).where(
-                AxiomProvenance.knowledge_system_id == ks.id, AxiomProvenance.chunk_id.in_(chunk_ids)
-            )
-        ).all():
-            axioms.add(pr.axiom_key)
-        for er in session.exec(
-            select(EntityResolution).where(
-                EntityResolution.knowledge_system_id == ks.id,
-                EntityResolution.source_chunk_id.in_(chunk_ids),
-                EntityResolution.status.in_(("new", "matched")),
-            )
-        ).all():
-            if er.individual_iri:
-                individuals.add(er.individual_iri)
-    return {"chunk_count": len(chunk_ids), "axiom_count": len(axioms), "individual_count": len(individuals)}
+    tbox_rows = list(session.exec(select(AxiomProvenance).where(
+        AxiomProvenance.knowledge_system_id == ks.id,
+        or_(
+            AxiomProvenance.chunk_id.in_(chunk_ids),
+            AxiomProvenance.source_document_id == document_id,
+        ),
+    )).all())
+    abox_rows = list(session.exec(select(AboxProvenance).where(
+        AboxProvenance.knowledge_system_id == ks.id,
+        or_(
+            AboxProvenance.chunk_id.in_(chunk_ids),
+            AboxProvenance.source_document_id == document_id,
+        ),
+    )).all())
+    tbox_keys = sorted({row.axiom_key for row in tbox_rows})
+    abox_keys = sorted({row.fact_key for row in abox_rows})
+    tbox_scope_ids = {row.id for row in tbox_rows}
+    abox_scope_ids = {row.id for row in abox_rows}
+    shared_tbox = {
+        row.axiom_key for row in session.exec(select(AxiomProvenance).where(
+            AxiomProvenance.knowledge_system_id == ks.id,
+            AxiomProvenance.axiom_key.in_(tbox_keys),
+        )).all() if row.id not in tbox_scope_ids
+    } if tbox_keys else set()
+    shared_abox = {
+        row.fact_key for row in session.exec(select(AboxProvenance).where(
+            AboxProvenance.knowledge_system_id == ks.id,
+            AboxProvenance.fact_key.in_(abox_keys),
+        )).all() if row.id not in abox_scope_ids
+    } if abox_keys else set()
+
+    view = schema.build_view(ks.graph_iri)
+    iri_labels = view["labels"]
+    local_labels = {_local(iri): label for iri, label in iri_labels.items()}
+    property_labels = {
+        item["iri"]: item.get("label") or item["iri"]
+        for item in view["object_properties"] + view["data_properties"]
+    }
+    individual_labels = abox.label_index(workbench.abox_iri_for(ks.graph_iri))
+    tbox_items = [{
+        "axiom_key": key,
+        "description": provenance.describe_axiom(key, lambda local: local_labels.get(local, local)),
+        "shared": key in shared_tbox,
+    } for key in tbox_keys[:limit]]
+    abox_items = [{
+        "fact_key": key,
+        "description": abox_provenance.describe_fact(key, individual_labels, property_labels),
+        "shared": key in shared_abox,
+    } for key in abox_keys[:limit]]
+    individuals = {key.split("|", 1)[1] for key in abox_keys if key.startswith("ind|")}
+    return {
+        "document_id": document_id,
+        "document_sha256": doc.sha256,
+        "chunk_count": len(chunk_ids),
+        "axiom_count": len(tbox_keys),
+        "abox_fact_count": len(abox_keys),
+        "individual_count": len(individuals),
+        "tbox_axioms": tbox_items,
+        "abox_facts": abox_items,
+        "truncated": len(tbox_keys) > limit or len(abox_keys) > limit,
+        "tbox_extracted_at": doc.tbox_extracted_at,
+        "abox_extracted_at": doc.abox_extracted_at,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -417,15 +511,15 @@ def _document_impact(session: Session, ks: KnowledgeSystem, doc: Document) -> li
     chunk_ids = [c.id for c in session.exec(select(Chunk).where(Chunk.document_id == doc.id)).all()]
     if not chunk_ids:
         return []
-    keys = {
-        p.axiom_key
-        for p in session.exec(
-            select(AxiomProvenance).where(
-                AxiomProvenance.knowledge_system_id == ks.id,
-                AxiomProvenance.chunk_id.in_(chunk_ids),
-            )
-        ).all()
-    }
+    scoped_rows = list(session.exec(select(AxiomProvenance).where(
+        AxiomProvenance.knowledge_system_id == ks.id,
+        or_(
+            AxiomProvenance.chunk_id.in_(chunk_ids),
+            AxiomProvenance.source_document_id == doc.id,
+        ),
+    )).all())
+    keys = {p.axiom_key for p in scoped_rows}
+    scoped_ids = {p.id for p in scoped_rows}
     if not keys:
         return []
 
@@ -437,13 +531,12 @@ def _document_impact(session: Session, ks: KnowledgeSystem, doc: Document) -> li
 
     sole = []
     for key in sorted(keys):
-        other = session.exec(
+        other = next((row for row in session.exec(
             select(AxiomProvenance).where(
                 AxiomProvenance.knowledge_system_id == ks.id,
                 AxiomProvenance.axiom_key == key,
-                AxiomProvenance.chunk_id.notin_(chunk_ids),
             )
-        ).first()
+        ).all() if row.id not in scoped_ids), None)
         if other is None:
             sole.append({"axiom_key": key, "description": provenance.describe_axiom(key, lblf)})
     if not sole:
@@ -478,18 +571,28 @@ def delete_document(
         for sys in _document_impact(session, ks, doc):
             keys = [a["axiom_key"] for a in sys["axioms"]]
             if keys:
-                provenance.retract_axioms(ks.graph_iri, ks.base_iri, keys)
+                provenance.retract_axioms(
+                    ks.graph_iri, ks.base_iri, keys,
+                    related_graphs=[workbench.abox_iri_for(ks.graph_iri)],
+                )
                 refresh_ks_stats(session, ks)
                 sync_conflicts(session, ks, semantic=False)
     added_nt, removed_nt = cap.diff()
 
     # 2) Remove provenance + chunks for this document.
     chunk_ids = [c.id for c in session.exec(select(Chunk).where(Chunk.document_id == document_id)).all()]
-    if chunk_ids:
-        for pr in session.exec(select(AxiomProvenance).where(AxiomProvenance.chunk_id.in_(chunk_ids))).all():
+    for model in (AxiomProvenance, AboxProvenance):
+        for pr in session.exec(select(model).where(or_(
+            model.chunk_id.in_(chunk_ids),
+            model.source_document_id == document_id,
+        ))).all():
             session.delete(pr)
-        for pr in session.exec(select(AboxProvenance).where(AboxProvenance.chunk_id.in_(chunk_ids))).all():
-            session.delete(pr)
+    for resolution in session.exec(select(EntityResolution).where(
+        EntityResolution.source_document_id == document_id,
+    )).all():
+        resolution.source_chunk_id = None
+        resolution.source_document_id = None
+        session.add(resolution)
     for c in session.exec(select(Chunk).where(Chunk.document_id == document_id)).all():
         session.delete(c)
 

@@ -52,7 +52,7 @@ def describe_axiom(key: str, label: Callable[[str], str]) -> str:
 _DECL_PREDS = {RDF_TYPE.value, RDFS_LABEL.value, RDFS_COMMENT.value}
 
 
-def _is_referenced(graph_iri: str, node: NamedNode) -> bool:
+def _is_referenced(graph_iri: str, node: NamedNode, related_graphs: list[str] | None = None) -> bool:
     """True if the node participates in any relation (i.e. is used beyond its own
     declaration): as a subject of a non-declaration predicate, or as any object."""
     for s, p, o in store.read_triples(graph_iri):
@@ -60,10 +60,20 @@ def _is_referenced(graph_iri: str, node: NamedNode) -> bool:
             return True
         if getattr(o, "value", None) == node.value and s.value != node.value:
             return True
+    for related_graph in related_graphs or []:
+        for s, _p, o in store.read_triples(related_graph):
+            if getattr(s, "value", None) == node.value or getattr(o, "value", None) == node.value:
+                return True
     return False
 
 
-def retract_axioms(graph_iri: str, base_iri: str, keys: list[str]) -> None:
+def retract_axioms(
+    graph_iri: str,
+    base_iri: str,
+    keys: list[str],
+    *,
+    related_graphs: list[str] | None = None,
+) -> None:
     """Remove the triples backing each axiom_key; GC chosen entity declarations that end
     up unreferenced (so no dangling class/property is left behind, and none in use is
     accidentally removed)."""
@@ -96,5 +106,5 @@ def retract_axioms(graph_iri: str, base_iri: str, keys: list[str]) -> None:
     # Remove chosen class/property declarations only if nothing references them anymore.
     for local in entity_locals:
         node = n(local)
-        if not _is_referenced(graph_iri, node):
+        if not _is_referenced(graph_iri, node, related_graphs):
             store.remove_entity(graph_iri, node.value)

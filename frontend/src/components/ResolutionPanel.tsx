@@ -84,8 +84,12 @@ export default function ResolutionPanel({
         classLabel: decision.class_label,
         decisionStatus: decision.status,
         status: decision.status === "matched" ? t("review.status.matched")
-          : decision.status === "new" ? t("review.status.new") : t("review.status.distinct"),
-        statusTone: decision.status === "distinct" ? "neutral" : "success",
+          : decision.status === "new" ? t("review.status.new")
+            : decision.status === "rejected" ? t("review.status.rejected")
+              : decision.status === "deferred" ? t("review.status.deferred")
+                : t("review.status.distinct"),
+        statusTone: decision.status === "deferred" ? "pending"
+          : decision.status === "rejected" || decision.status === "distinct" ? "neutral" : "success",
         pending: false,
         candidates: [],
         individualLabel: decision.individual_label,
@@ -107,16 +111,45 @@ export default function ResolutionPanel({
   }, [ksId, t])
   useEffect(() => { load() }, [load])
 
-  const resolve = async (id: number, action: "match" | "new", iri?: string) => {
+  const resolve = async (
+    item: ResolutionQueueItem,
+    action: "match" | "new" | "reject" | "defer",
+    options: { iri?: string; reason?: string; reviewAfter?: string } = {},
+  ) => {
+    const id = item.id
     setBusy(id)
     try {
-      const result = await api.resolveQueueItem(ksId, id, action, iri)
+      const result = await api.resolveQueueItem(ksId, id, {
+        action,
+        individual_iri: options.iri,
+        reason: options.reason,
+        review_after: options.reviewAfter || undefined,
+        expected_updated_at: item.updated_at,
+      })
       toast.success(result.summary)
       setSelected(null)
       await load()
       onChanged?.()
     } catch (error) {
       toast.error(t("review.resolveFailed", { error: (error as Error).message.replace(/^\d+:\s*/, "") }))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const merge = async (sourceIri: string, canonicalIri: string, reason: string) => {
+    if (!selected) return
+    setBusy(selected.id)
+    try {
+      await api.mergeIndividuals(
+        ksId, sourceIri, canonicalIri, reason, selected.id, selected.updated_at,
+      )
+      toast.success(t("review.resolution.mergeComplete"))
+      setSelected(null)
+      await load()
+      onChanged?.()
+    } catch (error) {
+      toast.error(t("review.resolveFailed", { error: (error as Error).message }))
     } finally {
       setBusy(null)
     }
@@ -255,11 +288,13 @@ export default function ResolutionPanel({
       <ReviewPagination page={safePage} total={filtered.length} onPageChange={setPage} />
 
       <ResolutionReviewSheet
+        ksId={ksId}
         item={selected}
         canWrite={canWrite}
         busy={selected ? busy === selected.id : false}
         onClose={() => setSelected(null)}
-        onResolve={(action, iri) => { if (selected) resolve(selected.id, action, iri) }}
+        onResolve={(action, options) => { if (selected) resolve(selected, action, options) }}
+        onMerge={merge}
       />
     </div>
   )

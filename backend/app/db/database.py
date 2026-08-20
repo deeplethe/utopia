@@ -67,6 +67,54 @@ def _migrate() -> None:
                         "UPDATE provider SET concurrency_limit = GREATEST(1, LEAST(64, COALESCE("
                         "(SELECT extraction_concurrency FROM systemconfig WHERE id = 1), :fallback)))"
                     ), {"fallback": settings.extraction_concurrency})
+                conn.execute(text(
+                    "ALTER TABLE agentconversation ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE agentconversation ADD COLUMN IF NOT EXISTS deleted_by_id INTEGER"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE agentconversation ADD COLUMN IF NOT EXISTS deleted_by_name TEXT"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE entityresolution ADD COLUMN IF NOT EXISTS source_document_id INTEGER"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE entityresolution ADD COLUMN IF NOT EXISTS review_after TIMESTAMPTZ"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE entityresolution ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE aboxprovenance ADD COLUMN IF NOT EXISTS source_document_id INTEGER"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE aboxprovenance ADD COLUMN IF NOT EXISTS source_document_sha256 TEXT"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE axiomprovenance ADD COLUMN IF NOT EXISTS source_document_id INTEGER"
+                ))
+                conn.execute(text(
+                    "ALTER TABLE axiomprovenance ADD COLUMN IF NOT EXISTS source_document_sha256 TEXT"
+                ))
+                conn.execute(text(
+                    "UPDATE entityresolution er SET source_document_id = c.document_id "
+                    "FROM chunk c WHERE er.source_document_id IS NULL AND er.source_chunk_id = c.id"
+                ))
+                conn.execute(text(
+                    "UPDATE entityresolution SET updated_at = COALESCE(resolved_at, created_at, NOW()) "
+                    "WHERE updated_at IS NULL"
+                ))
+                conn.execute(text(
+                    "UPDATE aboxprovenance ap SET source_document_id = c.document_id, "
+                    "source_document_sha256 = d.sha256 FROM chunk c JOIN document d ON d.id = c.document_id "
+                    "WHERE ap.chunk_id = c.id AND ap.source_document_id IS NULL"
+                ))
+                conn.execute(text(
+                    "UPDATE axiomprovenance ap SET source_document_id = c.document_id, "
+                    "source_document_sha256 = d.sha256 FROM chunk c JOIN document d ON d.id = c.document_id "
+                    "WHERE ap.chunk_id = c.id AND ap.source_document_id IS NULL"
+                ))
         return
 
     additions = {
@@ -93,12 +141,16 @@ def _migrate() -> None:
             ("actor_name", "TEXT NOT NULL DEFAULT ''"),
             ("audit_event_id", "INTEGER"),
             ("review_record", "JSON"),
+            ("source_document_id", "INTEGER"),
+            ("source_document_sha256", "TEXT"),
         ],
         "aboxprovenance": [
             ("method", "TEXT NOT NULL DEFAULT 'extraction'"),
             ("actor_name", "TEXT NOT NULL DEFAULT ''"),
             ("audit_event_id", "INTEGER"),
             ("review_record", "JSON"),
+            ("source_document_id", "INTEGER"),
+            ("source_document_sha256", "TEXT"),
         ],
         "termproposal": [
             ("extraction_job_id", "INTEGER"),
@@ -144,6 +196,16 @@ def _migrate() -> None:
         "knowledgeapitoken": [
             ("secret_ciphertext", "TEXT"),
         ],
+        "agentconversation": [
+            ("deleted_at", "TIMESTAMP"),
+            ("deleted_by_id", "INTEGER"),
+            ("deleted_by_name", "TEXT"),
+        ],
+        "entityresolution": [
+            ("source_document_id", "INTEGER"),
+            ("review_after", "TIMESTAMP"),
+            ("updated_at", "TIMESTAMP"),
+        ],
     }
     provider_limit_added = False
     with engine.begin() as conn:
@@ -170,6 +232,35 @@ def _migrate() -> None:
         conn.execute(text("UPDATE extractionjob SET prompt_snapshot = '{}' WHERE prompt_snapshot IS NULL"))
         conn.execute(text("UPDATE axiomprovenance SET review_record = '{}' WHERE review_record IS NULL"))
         conn.execute(text("UPDATE aboxprovenance SET review_record = '{}' WHERE review_record IS NULL"))
+        conn.execute(text(
+            "UPDATE entityresolution SET source_document_id = ("
+            "SELECT document_id FROM chunk WHERE chunk.id = entityresolution.source_chunk_id"
+            ") WHERE source_document_id IS NULL AND source_chunk_id IS NOT NULL"
+        ))
+        conn.execute(text(
+            "UPDATE entityresolution SET updated_at = COALESCE(resolved_at, created_at, CURRENT_TIMESTAMP) "
+            "WHERE updated_at IS NULL"
+        ))
+        conn.execute(text(
+            "UPDATE aboxprovenance SET source_document_id = ("
+            "SELECT document_id FROM chunk WHERE chunk.id = aboxprovenance.chunk_id"
+            ") WHERE source_document_id IS NULL AND chunk_id IS NOT NULL"
+        ))
+        conn.execute(text(
+            "UPDATE aboxprovenance SET source_document_sha256 = ("
+            "SELECT sha256 FROM document WHERE document.id = aboxprovenance.source_document_id"
+            ") WHERE source_document_sha256 IS NULL AND source_document_id IS NOT NULL"
+        ))
+        conn.execute(text(
+            "UPDATE axiomprovenance SET source_document_id = ("
+            "SELECT document_id FROM chunk WHERE chunk.id = axiomprovenance.chunk_id"
+            ") WHERE source_document_id IS NULL AND chunk_id IS NOT NULL"
+        ))
+        conn.execute(text(
+            "UPDATE axiomprovenance SET source_document_sha256 = ("
+            "SELECT sha256 FROM document WHERE document.id = axiomprovenance.source_document_id"
+            ") WHERE source_document_sha256 IS NULL AND source_document_id IS NOT NULL"
+        ))
 
         for row in conn.execute(text(
             "SELECT id FROM knowledgesystem WHERE public_id IS NULL OR public_id = ''"

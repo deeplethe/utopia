@@ -53,6 +53,7 @@ export default function ExtractDialog({
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState(SYS_MODEL)
   const [running, setRunning] = useState(false)
+  const [replaceExisting, setReplaceExisting] = useState(true)
 
   // Reset — or preset to a given document (per-row "Extract") — each time the dialog opens.
   useEffect(() => {
@@ -60,6 +61,7 @@ export default function ExtractDialog({
     setActiveMode(mode)
     setModel(SYS_MODEL)
     setRunning(false)
+    setReplaceExisting(true)
     if (presetDocId) {
       setDocId(presetDocId)
       api.getChunks(ksId, presetDocId)
@@ -109,10 +111,10 @@ export default function ExtractDialog({
       const ids = chunks.filter((c) => selected.has(c.id)).map((c) => c.id)
       const m = model === SYS_MODEL ? undefined : model
       const job = activeMode === "abox"
-        ? await api.extractInstances(ksId, ids, m)
+        ? await api.extractInstances(ksId, ids, m, replaceExisting)
         : activeMode === "both"
-          ? await api.extractAll(ksId, ids, m)
-          : await api.runExtraction(ksId, ids, m)
+          ? await api.extractAll(ksId, ids, m, replaceExisting)
+          : await api.runExtraction(ksId, ids, m, replaceExisting)
       toast.info(t("extract.started", { count: ids.length }))
       onStarted(job)
       onOpenChange(false)
@@ -121,7 +123,7 @@ export default function ExtractDialog({
     } finally {
       setRunning(false)
     }
-  }, [selected, chunks, ksId, model, activeMode, onStarted, onOpenChange, t])
+  }, [selected, chunks, ksId, model, activeMode, replaceExisting, onStarted, onOpenChange, t])
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -210,6 +212,13 @@ export default function ExtractDialog({
               </ScrollArea>
             </div>
           )}
+          <label className="flex items-start gap-2 rounded-md border bg-muted/20 p-3">
+            <Checkbox checked={replaceExisting} onCheckedChange={(value) => setReplaceExisting(value === true)} />
+            <span className="space-y-0.5">
+              <span className="block text-xs font-medium">{t("extract.replaceExisting")}</span>
+              <span className="block text-[11px] leading-relaxed text-muted-foreground">{t("extract.replaceExistingHelp")}</span>
+            </span>
+          </label>
         </div>
 
         <DialogFooter>

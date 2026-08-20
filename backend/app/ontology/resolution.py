@@ -45,10 +45,15 @@ def _record(
     individual_iri: str | None, confidence: float | None, resolved_by: str | None,
     chunk_id: int | None, context: dict | None = None,
 ) -> EntityResolution:
+    document_id = _document_id(session, chunk_id)
+    source_chunk = session.get(Chunk, chunk_id) if chunk_id is not None else None
     row = EntityResolution(
         knowledge_system_id=ks_id, surface_form=surface, class_iri=class_iri, status=status,
         individual_iri=individual_iri, confidence=confidence, resolved_by=resolved_by,
-        source_chunk_id=chunk_id, context=context or {},
+        source_chunk_id=chunk_id, source_document_id=document_id, context={
+            **(context or {}),
+            **({"source_chunk_idx": source_chunk.idx} if source_chunk is not None else {}),
+        },
         resolved_at=utcnow() if status != "pending" else None,
     )
     session.add(row)
@@ -87,7 +92,8 @@ def _prior(
     for row in rows:
         if chunk_id is not None and row.source_chunk_id == chunk_id:
             return row
-        if document_id is not None and _document_id(session, row.source_chunk_id) == document_id:
+        row_document_id = row.source_document_id or _document_id(session, row.source_chunk_id)
+        if document_id is not None and row_document_id == document_id:
             return row
     return None
 
@@ -356,8 +362,10 @@ def resolve_mention(
                        else abox.exists(abox_iri, prior.individual_iri))
             if _exists:
                 return prior.individual_iri, "matched"
-        if prior.status == "pending":
+        if prior.status in ("pending", "deferred"):
             return None, "pending"  # already queued; don't duplicate
+        if prior.status == "rejected":
+            return None, "skipped"  # invalid mention; do not materialize it on re-extraction
 
     if force_review_reason:
         _record(
@@ -372,6 +380,7 @@ def resolve_mention(
             chunk_id=chunk_id,
             context={
                 "reason": force_review_reason,
+                "evidence": evidence,
                 "review_kind": "entity_role",
                 **(pending_payload or {}),
             },
@@ -504,7 +513,8 @@ def resolve_mention(
                     _record(session, ks_id=ks_id, surface=surface, class_iri=class_iri, status="pending",
                             individual_iri=None, confidence=v.get("confidence"), resolved_by=None,
                             chunk_id=chunk_id,
-                            context={"candidates": cand_ctx, "reason": v.get("reason", ""), **(pending_payload or {})})
+                            context={"candidates": cand_ctx, "reason": v.get("reason", ""),
+                                     "evidence": evidence, **(pending_payload or {})})
                     return None, "pending"
                 if v.get("decision") == "new":
                     new_confidence = v.get("confidence")
@@ -529,6 +539,7 @@ def resolve_mention(
                         context={
                             "candidates": cand_ctx,
                             "reason": "same name and type found outside this source scope",
+                            "evidence": evidence,
                             **(pending_payload or {}),
                         },
                     )
@@ -547,9 +558,10 @@ def resolve_mention(
                 if score >= QUEUE_LOW:
                     _record(session, ks_id=ks_id, surface=surface, class_iri=class_iri, status="pending",
                             individual_iri=None, confidence=score, resolved_by=None, chunk_id=chunk_id,
-                            context={
-                                "candidates": cand_ctx,
-                                "reason": "candidate similarity requires human identity review",
+                        context={
+                            "candidates": cand_ctx,
+                            "reason": "candidate similarity requires human identity review",
+                            "evidence": evidence,
                                 **(pending_payload or {}),
                             })
                     return None, "pending"

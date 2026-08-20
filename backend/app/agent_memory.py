@@ -175,6 +175,7 @@ def owned_conversation(
             AgentConversation.id == conversation_id,
             AgentConversation.user_id == user_id,
             AgentConversation.knowledge_system_id == knowledge_system_id,
+            AgentConversation.deleted_at.is_(None),
         )
     ).first()
 
@@ -207,7 +208,24 @@ def list_conversations(
         select(AgentConversation).where(
             AgentConversation.user_id == user_id,
             AgentConversation.knowledge_system_id == knowledge_system_id,
+            AgentConversation.deleted_at.is_(None),
         ).order_by(AgentConversation.updated_at.desc(), AgentConversation.id.desc()).limit(100)
+    ).all())
+
+
+def list_deleted_conversations(
+    session: Session,
+    *,
+    user_id: int,
+    knowledge_system_id: int,
+) -> list[AgentConversation]:
+    """List recoverable tombstones for an explicit trash/recovery view."""
+    return list(session.exec(
+        select(AgentConversation).where(
+            AgentConversation.user_id == user_id,
+            AgentConversation.knowledge_system_id == knowledge_system_id,
+            AgentConversation.deleted_at.is_not(None),
+        ).order_by(AgentConversation.deleted_at.desc(), AgentConversation.id.desc()).limit(100)
     ).all())
 
 
@@ -235,6 +253,8 @@ def conversation_summary(session: Session, row: AgentConversation) -> dict[str, 
         "turn_count": len(turns),
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+        "deleted_at": row.deleted_at,
+        "deleted_by": row.deleted_by_name,
     }
 
 
@@ -267,6 +287,8 @@ def conversation_summaries(
             "turn_count": counts.get(row.id, 0),
             "created_at": row.created_at,
             "updated_at": row.updated_at,
+            "deleted_at": row.deleted_at,
+            "deleted_by": row.deleted_by_name,
         }
         for row in rows
     ]
@@ -340,8 +362,43 @@ def rename_conversation(session: Session, row: AgentConversation, title: str) ->
     return row
 
 
-def delete_conversation(session: Session, row: AgentConversation, *, commit: bool = True) -> None:
-    """Delete in FK-safe order; SQLite deployments cannot rely on ON DELETE CASCADE."""
+def delete_conversation(
+    session: Session,
+    row: AgentConversation,
+    *,
+    deleted_by_id: int | None = None,
+    deleted_by_name: str = "",
+    commit: bool = True,
+) -> None:
+    """Soft-delete a conversation while retaining its complete evidentiary history."""
+
+    if row.deleted_at is None:
+        row.deleted_at = utcnow()
+        row.deleted_by_id = deleted_by_id
+        row.deleted_by_name = deleted_by_name or None
+        row.updated_at = row.deleted_at
+        session.add(row)
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+
+
+def restore_conversation(session: Session, row: AgentConversation, *, commit: bool = True) -> None:
+    """Restore a soft-deleted conversation and its retained turns/events."""
+    row.deleted_at = None
+    row.deleted_by_id = None
+    row.deleted_by_name = None
+    row.updated_at = utcnow()
+    session.add(row)
+    if commit:
+        session.commit()
+    else:
+        session.flush()
+
+
+def purge_conversation(session: Session, row: AgentConversation, *, commit: bool = True) -> None:
+    """Physically remove a conversation for explicit parent/user teardown only."""
 
     turns = _turns(session, row.id)
     events_by_turn = {turn.id: _events(session, turn.id) for turn in turns}
@@ -390,7 +447,7 @@ def delete_scoped_conversations(
         statement = statement.where(AgentConversation.knowledge_system_id == knowledge_system_id)
     rows = list(session.exec(statement).all())
     for row in rows:
-        delete_conversation(session, row, commit=False)
+        purge_conversation(session, row, commit=False)
     if commit:
         session.commit()
     return len(rows)

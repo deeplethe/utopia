@@ -27,6 +27,7 @@ OWL_OBJECT_PROPERTY = NamedNode(OWL + "ObjectProperty")
 OWL_DATATYPE_PROPERTY = NamedNode(OWL + "DatatypeProperty")
 OWL_DISJOINT_WITH = NamedNode(OWL + "disjointWith")
 OWL_EQUIVALENT_CLASS = NamedNode(OWL + "equivalentClass")
+OWL_SAME_AS = NamedNode(OWL + "sameAs")
 OWL_UNION_OF = NamedNode(OWL + "unionOf")
 
 XSD_STRING = NamedNode(XSD + "string")

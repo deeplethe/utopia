@@ -9,14 +9,14 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from app import agent_memory, agent_runtime, model_config, prompt_config
+from app import agent_memory, agent_runtime, audit, model_config, prompt_config
 from app.db.database import get_session
-from app.db.models import AgentTurn, KnowledgeSystem, User
+from app.db.models import AgentConversation, AgentTurn, KnowledgeSystem, User
 from app.permissions import ks_reader
 from app.security import current_user
 
@@ -274,11 +274,16 @@ def _force_evidence_refresh(message: str) -> bool:
 
 @router.get("/{ks_id}/agent/conversations")
 def list_conversations(
+    deleted: bool = Query(default=False),
     ks: KnowledgeSystem = Depends(ks_reader),
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    rows = agent_memory.list_conversations(
+    list_fn = (
+        agent_memory.list_deleted_conversations if deleted
+        else agent_memory.list_conversations
+    )
+    rows = list_fn(
         session,
         user_id=user.id,
         knowledge_system_id=ks.id,
@@ -355,8 +360,55 @@ def delete_conversation(
         user=user,
         session=session,
     )
-    agent_memory.delete_conversation(session, row)
+    agent_memory.delete_conversation(
+        session,
+        row,
+        deleted_by_id=user.id,
+        deleted_by_name=user.username,
+        commit=False,
+    )
+    audit.record(
+        session,
+        ks_id=ks.id,
+        action="agent.conversation.delete",
+        summary="Deleted an agent conversation",
+        actor_id=user.id,
+        actor_name=user.username,
+        detail={"conversation_id": row.id, "retained": True},
+        commit=False,
+    )
+    session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{ks_id}/agent/conversations/{conversation_id}/restore")
+def restore_conversation(
+    conversation_id: int,
+    ks: KnowledgeSystem = Depends(ks_reader),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    row = session.exec(select(AgentConversation).where(
+        AgentConversation.id == conversation_id,
+        AgentConversation.user_id == user.id,
+        AgentConversation.knowledge_system_id == ks.id,
+        AgentConversation.deleted_at.is_not(None),
+    )).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Deleted conversation not found")
+    agent_memory.restore_conversation(session, row, commit=False)
+    audit.record(
+        session,
+        ks_id=ks.id,
+        action="agent.conversation.restore",
+        summary="Restored an agent conversation",
+        actor_id=user.id,
+        actor_name=user.username,
+        detail={"conversation_id": row.id},
+        commit=False,
+    )
+    session.commit()
+    return agent_memory.conversation_summary(session, row)
 
 
 @router.post("/{ks_id}/agent/chat", responses={502: {"description": "Model or MCP agent failure"}})
