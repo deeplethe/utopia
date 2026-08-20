@@ -8,19 +8,23 @@ next time. Also exposes the accumulated decision log (the learned resolution mem
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pyoxigraph import NamedNode
 from pydantic import BaseModel
-from sqlalchemy import func
+from sqlalchemy import func, update
 from sqlmodel import Session, select
 
 from app import audit
 from app.api.abox import abox_iri_for
 from app.db.database import get_session
-from app.db.models import AboxProvenance, EntityResolution, KnowledgeSystem, User, utcnow
+from app.db.models import (
+    AboxProvenance, Chunk, Document, EntityResolution, KnowledgeSystem, User, utcnow,
+)
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
-from app.ontology import abox, abox_provenance, retrieval, schema, store, workbench
+from app.ontology import abox, abox_provenance, retrieval, schema, store, vocab, workbench
 
 router = APIRouter(prefix="/api/knowledge", tags=["resolution"])
 logger = logging.getLogger(__name__)
@@ -32,15 +36,22 @@ def _class_labels(ks: KnowledgeSystem) -> dict[str, str]:
 
 
 def _queue_item(row: EntityResolution, class_labels: dict[str, str]) -> dict:
+    context = row.context or {}
     return {
         "id": row.id,
         "surface_form": row.surface_form,
         "class_iri": row.class_iri,
         "class_label": class_labels.get(row.class_iri or "", row.class_iri),
         "confidence": row.confidence,
-        "candidates": (row.context or {}).get("candidates", []),
+        "candidates": context.get("candidates", []),
+        "reason": context.get("reason") or None,
+        "evidence": context.get("evidence") or None,
+        "pending_attributes": context.get("pending_attributes", []) or [],
+        "pending_relations": context.get("pending_relations", []) or [],
         "source_chunk_id": row.source_chunk_id,
+        "source_document_id": row.source_document_id,
         "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
     }
 
 
@@ -72,6 +83,8 @@ def _record_resolution_fact(
     chunk_id: int | None,
 ) -> None:
     """Attach the reviewed source mention without committing the caller's transaction."""
+    chunk = session.get(Chunk, chunk_id) if chunk_id is not None else None
+    document = session.get(Document, chunk.document_id) if chunk is not None else None
     provenance = session.exec(select(AboxProvenance).where(
         AboxProvenance.knowledge_system_id == ks_id,
         AboxProvenance.fact_key == fact_key,
@@ -87,6 +100,8 @@ def _record_resolution_fact(
             knowledge_system_id=ks_id,
             fact_key=fact_key,
             chunk_id=chunk_id,
+            source_document_id=chunk.document_id if chunk is not None else None,
+            source_document_sha256=document.sha256 if document is not None else None,
             method="review" if chunk_id is not None else "manual",
             actor_name=event.actor_name,
             audit_event_id=event.id,
@@ -97,6 +112,9 @@ def _record_resolution_fact(
         provenance.actor_name = event.actor_name
         provenance.audit_event_id = event.id
         provenance.review_record = review_record
+        if chunk is not None:
+            provenance.source_document_id = chunk.document_id
+            provenance.source_document_sha256 = document.sha256 if document is not None else None
     session.add(provenance)
 
 
@@ -160,6 +178,7 @@ def get_decisions(
             "reason": (r.context or {}).get("reason") or None,
             "created_at": r.created_at.isoformat(),
             "resolved_at": r.resolved_at.isoformat() if r.resolved_at else None,
+            "review_after": r.review_after.isoformat() if r.review_after else None,
         })
     return {"items": items, "total": total}
 
@@ -224,8 +243,51 @@ def edit_decision_reason(
 
 
 class ResolveRequest(BaseModel):
-    action: str            # "match" | "new"
+    action: str            # match | new | reject | defer
     individual_iri: str | None = None   # required for "match"
+    reason: str = ""
+    review_after: datetime | None = None
+    expected_updated_at: datetime | None = None
+
+
+def _same_decision(row: EntityResolution, body: ResolveRequest) -> bool:
+    context = row.context or {}
+    action = context.get("decision_action")
+    if not action:
+        action = {"matched": "match", "new": "new", "rejected": "reject", "deferred": "defer"}.get(row.status)
+    return bool(
+        action == body.action
+        and (body.action != "match" or row.individual_iri == body.individual_iri)
+    )
+
+
+def _result(row: EntityResolution, summary: str, *, idempotent: bool = False) -> dict:
+    return {
+        "id": row.id,
+        "status": row.status,
+        "individual_iri": row.individual_iri,
+        "summary": summary,
+        "idempotent": idempotent,
+    }
+
+
+def _claim_pending(session: Session, row: EntityResolution, expected: datetime | None) -> None:
+    """Atomically claim one queue item so concurrent reviewers cannot overwrite a decision."""
+    now = utcnow()
+    conditions = [EntityResolution.id == row.id, EntityResolution.status == "pending"]
+    if expected is not None:
+        conditions.append(EntityResolution.updated_at == expected)
+    result = session.exec(
+        update(EntityResolution)
+        .where(*conditions)
+        .values(status="resolving", updated_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="This item was changed by another reviewer; refresh and try again.")
+    session.expire(row)
+    session.refresh(row)
 
 
 @router.post("/{ks_id}/resolution/{res_id}/resolve")
@@ -240,11 +302,45 @@ def resolve(
     if not row or row.knowledge_system_id != ks.id:
         raise HTTPException(status_code=404, detail="Queue item not found")
     if row.status != "pending":
-        raise HTTPException(status_code=400, detail="This item has already been resolved")
+        if _same_decision(row, body):
+            return _result(row, f'"{row.surface_form}" was already resolved.', idempotent=True)
+        raise HTTPException(status_code=409, detail="This item has already been resolved by another decision")
+    if body.action not in ("match", "new", "reject", "defer"):
+        raise HTTPException(status_code=400, detail="action must be 'match', 'new', 'reject', or 'defer'")
+
+    reason = (body.reason or "").strip()[:500]
+    if body.action in ("reject", "defer"):
+        if not reason:
+            raise HTTPException(status_code=400, detail=f"{body.action} requires a reason")
+        _claim_pending(session, row, body.expected_updated_at)
+        row.status = "rejected" if body.action == "reject" else "deferred"
+        row.individual_iri = None
+        row.resolved_by = user.username
+        row.resolved_at = utcnow()
+        row.review_after = body.review_after if body.action == "defer" else None
+        row.updated_at = row.resolved_at
+        row.context = {
+            **(row.context or {}),
+            "decision_action": body.action,
+            "reason": reason,
+        }
+        session.add(row)
+        summary = (
+            f'Rejected invalid mention "{row.surface_form}"'
+            if body.action == "reject"
+            else f'Deferred review of "{row.surface_form}"'
+        )
+        audit.record(
+            session, ks_id=ks.id, action=f"abox.resolution.{body.action}",
+            summary=summary, actor_id=user.id, actor_name=user.username,
+            detail={"resolution_id": row.id, "reason": reason,
+                    "review_after": row.review_after.isoformat() if row.review_after else None},
+            commit=False,
+        )
+        session.commit()
+        return _result(row, summary)
     if not row.class_iri:
         raise HTTPException(status_code=400, detail="Queue item has no class")
-    if body.action not in ("match", "new"):
-        raise HTTPException(status_code=400, detail="action must be 'match' or 'new'")
 
     abox_iri = abox_iri_for(ks)
     is_new = body.action == "new"
@@ -268,6 +364,7 @@ def resolve(
         with store.capture(ks.graph_iri, revert_on_error=True), store.capture(
             abox_iri, revert_on_error=True,
         ) as cap:
+            _claim_pending(session, row, body.expected_updated_at)
             baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
             subject_iri = (
                 abox.create_individual(abox_iri, ks.base_iri, row.surface_form, row.class_iri)
@@ -318,6 +415,12 @@ def resolve(
             row.confidence = None if is_new else 1.0
             row.resolved_by = user.username
             row.resolved_at = utcnow()
+            row.updated_at = row.resolved_at
+            row.context = {
+                **(row.context or {}),
+                "decision_action": body.action,
+                **({"reason": reason} if reason else {}),
+            }
             session.add(row)
             extra = f" (+{replayed} assertion(s))" if replayed else ""
             event = audit.record(
@@ -363,4 +466,157 @@ def resolve(
     except Exception:  # noqa: BLE001
         logger.exception("ontology retrieval cache invalidation failed for %s", ks.graph_iri)
     summary = f'Resolved "{row.surface_form}" → {"new" if is_new else "existing"} individual{extra}'
-    return {"id": row.id, "status": row.status, "individual_iri": subject_iri, "summary": summary}
+    return _result(row, summary)
+
+
+class MergeIndividualsRequest(BaseModel):
+    source_iri: str
+    canonical_iri: str
+    reason: str
+    resolution_id: int | None = None
+    expected_updated_at: datetime | None = None
+
+
+def _merged_fact_key(key: str, source: str, canonical: str) -> str:
+    if key == abox_provenance.ind_key(source):
+        return abox_provenance.ind_key(canonical)
+    if key.startswith("data|"):
+        parts = key.split("|", 3)
+        if len(parts) == 4 and parts[1] == source:
+            parts[1] = canonical
+            return "|".join(parts)
+    if key.startswith("obj|"):
+        parts = key.split("|", 3)
+        if len(parts) == 4:
+            if parts[1] == source:
+                parts[1] = canonical
+            if parts[3] == source:
+                parts[3] = canonical
+            return "|".join(parts)
+    return key
+
+
+@router.post("/{ks_id}/resolution/merge")
+def merge_individuals(
+    body: MergeIndividualsRequest,
+    ks: KnowledgeSystem = Depends(ks_writer),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Consolidate an existing duplicate into a canonical individual, preserving evidence."""
+    source = body.source_iri.strip()
+    canonical = body.canonical_iri.strip()
+    reason = body.reason.strip()[:500]
+    if not source or not canonical or source == canonical:
+        raise HTTPException(status_code=400, detail="Select two different existing individuals")
+    if not reason:
+        raise HTTPException(status_code=400, detail="merge requires a reason")
+    if extraction_active(session, ks.id):
+        raise HTTPException(status_code=409, detail="An extraction is in progress; try again after it finishes.")
+    abox_iri = abox_iri_for(ks)
+    queue_row = session.get(EntityResolution, body.resolution_id) if body.resolution_id else None
+    if body.resolution_id and (queue_row is None or queue_row.knowledge_system_id != ks.id):
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    if queue_row is not None and queue_row.status != "pending":
+        context = queue_row.context or {}
+        if (
+            context.get("decision_action") == "merge"
+            and context.get("merged_from_iri") == source
+            and queue_row.individual_iri == canonical
+        ):
+            return {"source_iri": source, "canonical_iri": canonical, "idempotent": True}
+        raise HTTPException(status_code=409, detail="This item has already been resolved by another decision")
+    source_exists = abox.exists(abox_iri, source)
+    canonical_exists = abox.exists(abox_iri, canonical)
+    if not canonical_exists:
+        raise HTTPException(status_code=400, detail="Canonical individual does not exist")
+    already_merged = not source_exists and store.has_triple(
+        abox_iri, NamedNode(source), vocab.OWL_SAME_AS, NamedNode(canonical),
+    )
+    if not source_exists and not already_merged:
+        raise HTTPException(status_code=404, detail="Source individual does not exist")
+    if already_merged and queue_row is None:
+        return {"source_iri": source, "canonical_iri": canonical, "idempotent": True}
+
+    try:
+        with store.capture(ks.graph_iri, revert_on_error=True), store.capture(
+            abox_iri, revert_on_error=True,
+        ) as cap:
+            if queue_row is not None:
+                _claim_pending(session, queue_row, body.expected_updated_at)
+            baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+            removed = 0 if already_merged else abox.merge_individual(abox_iri, source, canonical)
+            new_errors = workbench.new_structural_errors(ks.graph_iri, baseline_errors)
+            if new_errors:
+                raise HTTPException(status_code=422, detail={
+                    "code": "ontology_structural_validation_failed",
+                    "message": "The merge introduces structural ontology errors.",
+                    "new_error_count": len(new_errors),
+                    "new_error_signatures": new_errors,
+                })
+            added_nt, removed_nt = cap.diff()
+            event = audit.record(
+                session, ks_id=ks.id, action="abox.merge_individuals",
+                summary="Merged a duplicate individual into its canonical identity",
+                actor_id=user.id, actor_name=user.username,
+                detail={"source_iri": source, "canonical_iri": canonical,
+                        "reason": reason, "triples_rewritten": removed},
+                added=added_nt, removed=removed_nt, graph=abox_iri, commit=False,
+            )
+            for provenance in session.exec(select(AboxProvenance).where(
+                AboxProvenance.knowledge_system_id == ks.id
+            )).all():
+                rewritten = _merged_fact_key(provenance.fact_key, source, canonical)
+                if rewritten != provenance.fact_key:
+                    provenance.fact_key = rewritten
+                    review = dict(provenance.review_record or {})
+                    review.setdefault("identity_merges", []).append({
+                        "source_iri": source,
+                        "canonical_iri": canonical,
+                        "audit_event_id": event.id,
+                    })
+                    provenance.review_record = review
+                    session.add(provenance)
+            for resolution in session.exec(select(EntityResolution).where(
+                EntityResolution.knowledge_system_id == ks.id,
+                EntityResolution.individual_iri == source,
+            )).all():
+                resolution.individual_iri = canonical
+                resolution.updated_at = utcnow()
+                resolution.context = {
+                    **(resolution.context or {}),
+                    "merged_from_iri": source,
+                    "canonical_iri": canonical,
+                    "merge_audit_event_id": event.id,
+                }
+                session.add(resolution)
+            if queue_row is not None:
+                queue_row.status = "matched"
+                queue_row.individual_iri = canonical
+                queue_row.confidence = 1.0
+                queue_row.resolved_by = user.username
+                queue_row.resolved_at = utcnow()
+                queue_row.updated_at = queue_row.resolved_at
+                queue_row.context = {
+                    **(queue_row.context or {}),
+                    "decision_action": "merge",
+                    "reason": reason,
+                    "merged_from_iri": source,
+                    "canonical_iri": canonical,
+                    "merge_audit_event_id": event.id,
+                }
+                session.add(queue_row)
+            _record_resolution_fact(
+                session, ks_id=ks.id, fact_key=abox_provenance.ind_key(canonical),
+                event=event, chunk_id=None,
+            )
+            session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+    try:
+        retrieval.invalidate(ks.graph_iri)
+    except Exception:  # noqa: BLE001
+        logger.exception("ontology retrieval cache invalidation failed for %s", ks.graph_iri)
+    return {"source_iri": source, "canonical_iri": canonical, "idempotent": False}

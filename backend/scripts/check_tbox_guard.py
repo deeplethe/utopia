@@ -385,6 +385,7 @@ def _check_forced_role_review() -> None:
     assert recorded[0]["confidence"] == 0.72
     assert recorded[0]["context"] == {
         "reason": "identity is not established",
+        "evidence": "",
         "review_kind": "entity_role",
         "pending_attributes": [{"prop": "urn:prop:code", "value": "A"}],
     }

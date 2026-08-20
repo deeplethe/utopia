@@ -92,10 +92,37 @@ export class ApiError extends Error {
   readonly detail: unknown
 
   constructor(status: number, detail: unknown) {
-    super(`${status}: ${errorMessage(detail)}`)
+    // Keep the HTTP status as structured data.  User-facing callers should receive the backend's
+    // explanation, not an Axios-style status wrapper that hides the actionable message.
+    super(errorMessage(detail))
     this.name = "ApiError"
     this.status = status
     this.detail = detail
+  }
+}
+
+const EXTRACTION_CONFLICT = "An extraction is in progress; try again after it finishes."
+
+async function readErrorDetail(res: Response, path = ""): Promise<unknown> {
+  const fallback = res.status === 409 && (
+    path.includes("/documents/") || path.includes("/documents/parse-batch") || path.includes("/extract")
+  ) ? EXTRACTION_CONFLICT : (res.statusText || `HTTP ${res.status}`)
+  let raw = ""
+  try {
+    raw = await res.text()
+  } catch {
+    return fallback
+  }
+  if (!raw.trim()) return fallback
+  try {
+    const body = JSON.parse(raw) as unknown
+    if (body && typeof body === "object" && "detail" in body) {
+      return (body as { detail?: unknown }).detail ?? fallback
+    }
+    return body
+  } catch {
+    // Reverse proxies sometimes replace JSON with a plain-text explanation.  Preserve it.
+    return raw.trim() || fallback
   }
 }
 
@@ -103,13 +130,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "include", ...init })
   if (!res.ok) {
     if (res.status === 401 && onUnauthorized) onUnauthorized()
-    let detail: unknown = res.statusText
-    try {
-      const body = await res.json()
-      detail = body.detail ?? body
-    } catch {
-      /* ignore */
-    }
+    const detail = await readErrorDetail(res, path)
     throw new ApiError(res.status, detail)
   }
   // Some endpoints (logout) return trivial JSON; a 204 would have no body.
@@ -117,15 +138,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-async function responseError(res: Response) {
+async function responseError(res: Response, path = "") {
   if (res.status === 401 && onUnauthorized) onUnauthorized()
-  let detail: unknown = res.statusText
-  try {
-    const body = await res.json()
-    detail = body.detail ?? body
-  } catch {
-    /* ignore non-JSON error responses */
-  }
+  const detail = await readErrorDetail(res, path)
   return new ApiError(res.status, detail)
 }
 
@@ -749,8 +764,10 @@ export const api = {
   },
 
   // Extraction (starts a background job; poll it for progress)
-  runExtraction: (ksId: number, chunkIds: number[], model?: string) =>
-    request<ExtractionJob>(`/api/knowledge/${ksId}/extract`, json({ chunk_ids: chunkIds, model })),
+  runExtraction: (ksId: number, chunkIds: number[], model?: string, replaceExisting = true) =>
+    request<ExtractionJob>(`/api/knowledge/${ksId}/extract`, json({
+      chunk_ids: chunkIds, model, replace_existing: replaceExisting,
+    })),
   listJobs: (ksId: number) => request<ExtractionJob[]>(`/api/knowledge/${ksId}/jobs`),
   getJob: (ksId: number, jobId: number) =>
     request<ExtractionJob>(`/api/knowledge/${ksId}/jobs/${jobId}`),
@@ -822,8 +839,10 @@ export const api = {
       include_rdf_diff: false,
     }),
   ),
-  listAgentConversations: (ksId: number) =>
-    request<AgentConversationList>(`/api/knowledge/${ksId}/agent/conversations`),
+  listAgentConversations: (ksId: number, deleted = false) =>
+    request<AgentConversationList>(
+      `/api/knowledge/${ksId}/agent/conversations${deleted ? "?deleted=true" : ""}`,
+    ),
   createAgentConversation: (ksId: number, title?: string) =>
     request<AgentConversation>(
       `/api/knowledge/${ksId}/agent/conversations`,
@@ -846,6 +865,11 @@ export const api = {
     request<{ deleted: boolean }>(
       `/api/knowledge/${ksId}/agent/conversations/${conversationId}`,
       { method: "DELETE" },
+    ),
+  restoreAgentConversation: (ksId: number, conversationId: number) =>
+    request<AgentConversation>(
+      `/api/knowledge/${ksId}/agent/conversations/${conversationId}/restore`,
+      json({}),
     ),
   chatWithAgent: (ksId: number, body: AgentChatRequest) =>
     request<AgentResponse>(`/api/knowledge/${ksId}/agent/chat`, json(body)),
@@ -920,11 +944,15 @@ export const api = {
     request<Individual>(`/api/knowledge/${ksId}/abox/assertions/delete`, json(a)),
 
   // ABox instance extraction (background job; poll it like TBox extraction)
-  extractInstances: (ksId: number, chunkIds: number[], model?: string) =>
-    request<ExtractionJob>(`/api/knowledge/${ksId}/extract-instances`, json({ chunk_ids: chunkIds, model })),
+  extractInstances: (ksId: number, chunkIds: number[], model?: string, replaceExisting = true) =>
+    request<ExtractionJob>(`/api/knowledge/${ksId}/extract-instances`, json({
+      chunk_ids: chunkIds, model, replace_existing: replaceExisting,
+    })),
   // One-click schema + instances (TBox then ABox in a single job)
-  extractAll: (ksId: number, chunkIds: number[], model?: string) =>
-    request<ExtractionJob>(`/api/knowledge/${ksId}/extract-all`, json({ chunk_ids: chunkIds, model })),
+  extractAll: (ksId: number, chunkIds: number[], model?: string, replaceExisting = true) =>
+    request<ExtractionJob>(`/api/knowledge/${ksId}/extract-all`, json({
+      chunk_ids: chunkIds, model, replace_existing: replaceExisting,
+    })),
 
   // Entity resolution: manual queue + learned decision log
   getResolutionQueue: (ksId: number, params: { q?: string; limit?: number; offset?: number } = {}) => {
@@ -941,10 +969,38 @@ export const api = {
     qs.set("offset", String(params.offset ?? 0))
     return request<ResolutionDecisions>(`/api/knowledge/${ksId}/resolution/decisions?${qs.toString()}`)
   },
-  resolveQueueItem: (ksId: number, resId: number, action: "match" | "new", individualIri?: string) =>
-    request<{ id: number; status: string; individual_iri: string | null; summary: string }>(
+  resolveQueueItem: (
+    ksId: number,
+    resId: number,
+    decision: {
+      action: "match" | "new" | "reject" | "defer"
+      individual_iri?: string
+      reason?: string
+      review_after?: string
+      expected_updated_at?: string
+    },
+  ) =>
+    request<{ id: number; status: string; individual_iri: string | null; summary: string; idempotent: boolean }>(
       `/api/knowledge/${ksId}/resolution/${resId}/resolve`,
-      json({ action, individual_iri: individualIri }),
+      json(decision),
+    ),
+  mergeIndividuals: (
+    ksId: number,
+    sourceIri: string,
+    canonicalIri: string,
+    reason: string,
+    resolutionId?: number,
+    expectedUpdatedAt?: string,
+  ) =>
+    request<{ source_iri: string; canonical_iri: string; idempotent: boolean }>(
+      `/api/knowledge/${ksId}/resolution/merge`,
+      json({
+        source_iri: sourceIri,
+        canonical_iri: canonicalIri,
+        reason,
+        resolution_id: resolutionId,
+        expected_updated_at: expectedUpdatedAt,
+      }),
     ),
 
   // ABox validation (lint individuals against the TBox)

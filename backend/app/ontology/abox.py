@@ -41,6 +41,36 @@ def delete_individual(abox_iri: str, iri: str) -> int:
     return store.remove_entity(abox_iri, iri)
 
 
+def merge_individual(abox_iri: str, source_iri: str, canonical_iri: str) -> int:
+    """Rewrite every source/object reference to a canonical individual.
+
+    The canonical label wins, all types/attributes/relations survive, and the retired source IRI
+    remains as an untyped ``owl:sameAs`` tombstone for audit and external-reference repair.
+    """
+    if source_iri == canonical_iri:
+        return 0
+    source = _n(source_iri)
+    target = _n(canonical_iri)
+    triples = _all(abox_iri)
+    if not any(s == source for s, _p, _o in triples):
+        return 0
+    rewritten: list[tuple[object, object, object]] = []
+    for subject, predicate, obj in triples:
+        if subject != source and obj != source:
+            continue
+        # Preserve the canonical display label rather than creating two rdfs:labels.
+        if subject == source and predicate == vocab.RDFS_LABEL:
+            continue
+        new_subject = target if subject == source else subject
+        new_object = target if obj == source else obj
+        rewritten.append((new_subject, predicate, new_object))
+    if rewritten:
+        store.add_triples(abox_iri, rewritten)
+    removed = store.remove_entity(abox_iri, source_iri)
+    store.add_triples(abox_iri, [(source, vocab.OWL_SAME_AS, target)])
+    return removed
+
+
 def add_type(abox_iri: str, iri: str, class_iri: str) -> None:
     store.add_triples(abox_iri, [(_n(iri), vocab.RDF_TYPE, _n(class_iri))])
 

@@ -8,7 +8,7 @@ from sqlmodel import Session, SQLModel, create_engine, select
 from app import agent_memory
 from app.api import agent as agent_api
 from app.db.database import get_session
-from app.db.models import AgentConversation, AgentEvent, AgentTurn, Conflict, KnowledgeSystem, User
+from app.db.models import AuditEvent, AgentConversation, AgentEvent, AgentTurn, Conflict, KnowledgeSystem, User
 from app.security import current_user
 
 
@@ -281,7 +281,7 @@ def test_fresh_observations_restore_complete_successes_with_strict_scope() -> No
         ) == []
 
 
-def test_conversation_crud_api_is_private_and_deletes_children_in_order() -> None:
+def test_conversation_crud_api_is_private_and_soft_deletes_with_audit() -> None:
     database = _database()
     owner_id, other_id, first_ks_id, second_ks_id = _workspace(database)
     app = FastAPI()
@@ -363,9 +363,24 @@ def test_conversation_crud_api_is_private_and_deletes_children_in_order() -> Non
             assert deleted.status_code == 204
             assert deleted.content == b""
 
-        assert session.get(AgentConversation, conversation_id) is None
-        assert session.exec(select(AgentTurn)).all() == []
-        assert session.exec(select(AgentEvent)).all() == []
+        retained = session.get(AgentConversation, conversation_id)
+        assert retained is not None
+        assert retained.deleted_at is not None
+        assert retained.deleted_by_id == owner_id
+        assert retained.deleted_by_name == owner.username
+        assert len(session.exec(select(AgentTurn)).all()) == 2
+        assert len(session.exec(select(AgentEvent)).all()) == 2
+        assert agent_memory.owned_conversation(
+            session,
+            conversation_id=conversation_id,
+            user_id=owner_id,
+            knowledge_system_id=first_ks_id,
+        ) is None
+        deletion = session.exec(select(AuditEvent).where(
+            AuditEvent.action == "agent.conversation.delete"
+        )).one()
+        assert deletion.actor_id == owner_id
+        assert deletion.detail == {"conversation_id": conversation_id, "retained": True}
 
 
 def test_scoped_cleanup_never_deletes_another_user_or_knowledge_system() -> None:
@@ -391,6 +406,43 @@ def test_scoped_cleanup_never_deletes_another_user_or_knowledge_system() -> None
         assert session.get(AgentConversation, remove.id) is None
         assert session.get(AgentConversation, keep_other_user.id) is not None
         assert session.get(AgentConversation, keep_other_ks.id) is not None
+
+
+def test_soft_deleted_conversation_can_be_listed_and_restored() -> None:
+    database = _database()
+    owner_id, _, ks_id, _ = _workspace(database)
+    app = FastAPI()
+    app.include_router(agent_api.router)
+    with Session(database, expire_on_commit=False) as session:
+        owner = session.get(User, owner_id)
+        ks = session.get(KnowledgeSystem, ks_id)
+        app.dependency_overrides[get_session] = lambda: session
+        app.dependency_overrides[current_user] = lambda: owner
+        app.dependency_overrides[agent_api.ks_reader] = lambda: ks
+        with TestClient(app) as client:
+            created = client.post(
+                f"/api/knowledge/{ks_id}/agent/conversations", json={"title": "Recover me"},
+            ).json()
+            conversation_id = created["id"]
+            assert client.delete(
+                f"/api/knowledge/{ks_id}/agent/conversations/{conversation_id}"
+            ).status_code == 204
+            assert client.get(
+                f"/api/knowledge/{ks_id}/agent/conversations/{conversation_id}"
+            ).status_code == 404
+            trash = client.get(
+                f"/api/knowledge/{ks_id}/agent/conversations?deleted=true"
+            ).json()["conversations"]
+            assert trash[0]["id"] == conversation_id
+            assert trash[0]["deleted_at"] is not None
+            restored = client.post(
+                f"/api/knowledge/{ks_id}/agent/conversations/{conversation_id}/restore"
+            )
+            assert restored.status_code == 200
+            assert restored.json()["deleted_at"] is None
+            assert client.get(
+                f"/api/knowledge/{ks_id}/agent/conversations/{conversation_id}"
+            ).status_code == 200
 
 
 def test_evidence_revision_includes_queue_only_changes() -> None:

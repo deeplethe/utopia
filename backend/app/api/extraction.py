@@ -6,6 +6,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.exc import OperationalError
 from sqlmodel import Session, select
 
@@ -13,13 +14,17 @@ from app.api.conflicts import sync_conflicts
 from app.api.knowledge import refresh_ks_stats
 from app.config import settings
 from app.db.database import engine, get_session
-from app.db.models import AxiomProvenance, Chunk, Document, ExtractionJob, KnowledgeSystem, User, utcnow
+from app.db.models import (
+    AboxProvenance, AxiomProvenance, Chunk, Document, ExtractionJob, KnowledgeSystem, User,
+    utcnow,
+)
 from app.api.abox import abox_iri_for
 from app.permissions import extraction_active, ks_reader, ks_writer
 from app.security import current_user
 from app import audit, model_config, prompt_config
 from app.ontology import (
-    abox_extract, conflict_agent, extract, retrieval, schema, skos, store, structure_agent, tbox_reconcile,
+    abox_extract, abox_provenance, conflict_agent, extract, provenance, retrieval, schema, skos,
+    store, structure_agent, tbox_reconcile,
     terminology_agent, terminology_sync, validation_agent, workbench,
 )
 
@@ -118,6 +123,36 @@ def _mark_docs_extracted(
         session.commit()
     else:
         session.flush()
+
+
+def _record_tbox_provenance(
+    session: Session,
+    *,
+    ks_id: int,
+    rows: list[tuple[str, int]],
+    job_id: int,
+    actor_name: str,
+) -> None:
+    chunk_ids = {chunk_id for _key, chunk_id in rows}
+    chunks = {
+        chunk.id: chunk for chunk in session.exec(select(Chunk).where(Chunk.id.in_(chunk_ids))).all()
+    } if chunk_ids else {}
+    doc_ids = {chunk.document_id for chunk in chunks.values()}
+    docs = {
+        doc.id: doc for doc in session.exec(select(Document).where(Document.id.in_(doc_ids))).all()
+    } if doc_ids else {}
+    for axiom_key, chunk_id in rows:
+        chunk = chunks.get(chunk_id)
+        document = docs.get(chunk.document_id) if chunk is not None else None
+        session.add(AxiomProvenance(
+            knowledge_system_id=ks_id,
+            axiom_key=axiom_key,
+            chunk_id=chunk_id,
+            source_document_id=chunk.document_id if chunk is not None else None,
+            source_document_sha256=document.sha256 if document is not None else None,
+            job_id=job_id,
+            actor_name=actor_name,
+        ))
 
 
 def _sync_conflicts_bg(ks_id: int) -> None:
@@ -270,11 +305,87 @@ class ExtractRequest(BaseModel):
     chunk_ids: list[int]
     model: str | None = None
     agentic_resolution: bool | None = None
+    replace_existing: bool = True
+
+
+def _complete_document_ids(session: Session, chunk_ids: list[int]) -> set[int]:
+    selected = set(chunk_ids)
+    chunks = session.exec(select(Chunk).where(Chunk.id.in_(selected))).all() if selected else []
+    doc_ids = {chunk.document_id for chunk in chunks}
+    complete: set[int] = set()
+    for document_id in doc_ids:
+        current = set(session.exec(select(Chunk.id).where(
+            Chunk.document_id == document_id,
+        )).all())
+        if current and current <= selected:
+            complete.add(document_id)
+    return complete
+
+
+def _source_rows(session: Session, model, ks_id: int, chunk_ids: list[int]):
+    complete_docs = _complete_document_ids(session, chunk_ids)
+    conditions = [model.chunk_id.in_(chunk_ids)]
+    if complete_docs:
+        conditions.append(
+            (model.chunk_id.is_(None)) & (model.source_document_id.in_(complete_docs))
+        )
+    return list(session.exec(select(model).where(
+        model.knowledge_system_id == ks_id,
+        or_(*conditions),
+    )).all())
+
+
+def _replace_tbox_sources(
+    session: Session, ks: KnowledgeSystem, chunk_ids: list[int],
+) -> dict[str, object]:
+    rows = _source_rows(session, AxiomProvenance, ks.id, chunk_ids)
+    keys = {row.axiom_key for row in rows}
+    scoped_ids = {row.id for row in rows}
+    shared = {
+        row.axiom_key for row in session.exec(select(AxiomProvenance).where(
+            AxiomProvenance.knowledge_system_id == ks.id,
+            AxiomProvenance.axiom_key.in_(keys),
+        )).all() if row.id not in scoped_ids
+    } if keys else set()
+    exclusive = keys - shared
+    for row in rows:
+        session.delete(row)
+    if exclusive:
+        provenance.retract_axioms(
+            ks.graph_iri, ks.base_iri, sorted(exclusive),
+            related_graphs=[abox_iri_for(ks)],
+        )
+    session.flush()
+    return {
+        "sources_replaced": len(rows),
+        "facts_retracted": len(exclusive),
+        "exclusive_keys": sorted(exclusive),
+    }
+
+
+def _replace_abox_sources(
+    session: Session, ks: KnowledgeSystem, chunk_ids: list[int],
+) -> dict[str, int]:
+    rows = _source_rows(session, AboxProvenance, ks.id, chunk_ids)
+    keys = {row.fact_key for row in rows}
+    scoped_ids = {row.id for row in rows}
+    shared = {
+        row.fact_key for row in session.exec(select(AboxProvenance).where(
+            AboxProvenance.knowledge_system_id == ks.id,
+            AboxProvenance.fact_key.in_(keys),
+        )).all() if row.id not in scoped_ids
+    } if keys else set()
+    exclusive = keys - shared
+    for row in rows:
+        session.delete(row)
+    removed = abox_provenance.retract_fact_keys(abox_iri_for(ks), exclusive) if exclusive else 0
+    session.flush()
+    return {"sources_replaced": len(rows), "facts_retracted": removed}
 
 
 async def _run_extraction_job(
     job_id: int, ks_id: int, chunks: list[tuple[int, str]], model: str,
-    actor_id: int | None = None, actor_name: str = "system",
+    actor_id: int | None = None, actor_name: str = "system", replace_existing: bool = True,
 ) -> None:
     """Background worker: extract into the graph, updating progress in the job row."""
     with Session(engine) as session:
@@ -308,6 +419,9 @@ async def _run_extraction_job(
             with store.capture(ks.graph_iri, revert_on_error=True) as cap, \
                     store.capture(abox_iri, revert_on_error=True):
                 baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+                replacement = _replace_tbox_sources(
+                    session, ks, [chunk_id for chunk_id, _text in chunks],
+                ) if replace_existing else {"sources_replaced": 0, "facts_retracted": 0}
                 result = await extract.extract_tbox_from_chunks(
                     base_iri=ks.base_iri, graph_iri=ks.graph_iri, chunks=chunks, model=model,
                     progress=progress, terminology_aliases=terminology_aliases,
@@ -331,11 +445,10 @@ async def _run_extraction_job(
                 added_nt, removed_nt = cap.diff()
                 if recon:
                     result["log"] = (result.get("log", "") + "\nreconciled: " + "; ".join(recon)).strip()
-                for axiom_key, chunk_id in result["provenance"]:
-                    session.add(AxiomProvenance(
-                        knowledge_system_id=ks_id, axiom_key=axiom_key, chunk_id=chunk_id,
-                        job_id=job.id, actor_name=actor_name,
-                    ))
+                _record_tbox_provenance(
+                    session, ks_id=ks_id, rows=result["provenance"],
+                    job_id=job.id, actor_name=actor_name,
+                )
                 session.add_all(reconciliation_rows)
                 job.log = result["log"]
                 job.classes_added = result["classes_added"]
@@ -353,7 +466,8 @@ async def _run_extraction_job(
                         f"+{job.axioms_added} axioms"
                     ),
                     actor_id=actor_id, actor_name=actor_name,
-                    detail={"job_id": job.id, "model": model, "chunks": len(chunks)},
+                    detail={"job_id": job.id, "model": model, "chunks": len(chunks),
+                            "replace_existing": replace_existing, "replacement": replacement},
                     added=added_nt, removed=removed_nt, commit=False,
                 )
                 # RDF, provenance, learned decisions, document status, stats, and
@@ -418,7 +532,7 @@ async def _run_extraction_job(
 async def _run_abox_extraction_job(
     job_id: int, ks_id: int, chunks: list[tuple[int, str]], model: str,
     actor_id: int | None = None, actor_name: str = "system",
-    agentic_resolution: bool | None = None,
+    agentic_resolution: bool | None = None, replace_existing: bool = True,
 ) -> None:
     """Background worker: extract individuals + assertions into the ABox graph, resolving
     each mention. Recorded as a graph-scoped (``abox.extract``) history event."""
@@ -454,6 +568,9 @@ async def _run_abox_extraction_job(
                 abox_iri, revert_on_error=True,
             ) as cap:
                 baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+                replacement = _replace_abox_sources(
+                    session, ks, [chunk_id for chunk_id, _text in chunks],
+                ) if replace_existing else {"sources_replaced": 0, "facts_retracted": 0}
                 result = await abox_extract.extract_instances_from_chunks(
                     base_iri=ks.base_iri, graph_iri=ks.graph_iri, abox_iri=abox_iri,
                     ks_id=ks_id, chunks=chunks, job_id=job.id, actor_name=actor_name,
@@ -489,7 +606,8 @@ async def _run_abox_extraction_job(
                             f"{result['queued']} queued / {result['assertions']} assertions"
                         ),
                         actor_id=actor_id, actor_name=actor_name,
-                        detail={"job_id": job.id, "model": model, "chunks": len(chunks), **{
+                        detail={"job_id": job.id, "model": model, "chunks": len(chunks),
+                                "replace_existing": replace_existing, "replacement": replacement, **{
                             k: result[k] for k in ("created", "matched", "queued", "assertions")}},
                         added=added_nt, removed=removed_nt, graph=abox_iri, commit=False,
                     )
@@ -551,7 +669,7 @@ async def _run_abox_extraction_job(
 async def _run_combined_extraction_job(
     job_id: int, ks_id: int, chunks: list[tuple[int, str]], model: str,
     actor_id: int | None = None, actor_name: str = "system",
-    agentic_resolution: bool | None = None,
+    agentic_resolution: bool | None = None, replace_existing: bool = True,
 ) -> None:
     """Background worker for the one-click 'schema + instances' flow: run TBox extraction
     first, then ABox extraction over the SAME chunks (so instances type against the schema
@@ -596,6 +714,9 @@ async def _run_combined_extraction_job(
             with store.capture(ks.graph_iri, revert_on_error=True) as cap_t, \
                     store.capture(abox_iri, revert_on_error=True):
                 baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+                t_replacement = _replace_tbox_sources(
+                    session, ks, chunk_ids,
+                ) if replace_existing else {"sources_replaced": 0, "facts_retracted": 0}
                 tres = await extract.extract_tbox_from_chunks(
                     base_iri=ks.base_iri, graph_iri=ks.graph_iri, chunks=chunks, model=model,
                     progress=prog_tbox, terminology_aliases=terminology_aliases,
@@ -618,11 +739,10 @@ async def _run_combined_extraction_job(
                 t_add, t_rem = cap_t.diff()
                 if recon:
                     tres["log"] = (tres.get("log", "") + "\nreconciled: " + "; ".join(recon)).strip()
-                for axiom_key, chunk_id in tres["provenance"]:
-                    session.add(AxiomProvenance(
-                        knowledge_system_id=ks_id, axiom_key=axiom_key, chunk_id=chunk_id,
-                        job_id=job.id, actor_name=actor_name,
-                    ))
+                _record_tbox_provenance(
+                    session, ks_id=ks_id, rows=tres["provenance"],
+                    job_id=job.id, actor_name=actor_name,
+                )
                 session.add_all(reconciliation_rows)
                 job.classes_added = tres["classes_added"]
                 job.properties_added = tres["properties_added"]
@@ -635,7 +755,8 @@ async def _run_combined_extraction_job(
                     summary=(f"Extracted from {n} chunk(s) ({model}): +{tres['classes_added']} classes / "
                              f"+{tres['properties_added']} properties / +{tres['axioms_added']} axioms"),
                     actor_id=actor_id, actor_name=actor_name,
-                    detail={"job_id": job.id, "model": model, "chunks": n, "combined": True},
+                    detail={"job_id": job.id, "model": model, "chunks": n, "combined": True,
+                            "replace_existing": replace_existing, "replacement": t_replacement},
                     added=t_add, removed=t_rem, commit=False,
                 )
                 session.commit()
@@ -683,6 +804,21 @@ async def _run_combined_extraction_job(
                 abox_iri, revert_on_error=True,
             ) as cap_a:
                 baseline_errors = workbench.structural_error_signatures(ks.graph_iri)
+                a_replacement = _replace_abox_sources(
+                    session, ks, chunk_ids,
+                ) if replace_existing else {"sources_replaced": 0, "facts_retracted": 0}
+                stale_tbox_keys = [
+                    key for key in t_replacement.get("exclusive_keys", [])
+                    if session.exec(select(AxiomProvenance.id).where(
+                        AxiomProvenance.knowledge_system_id == ks.id,
+                        AxiomProvenance.axiom_key == key,
+                    )).first() is None
+                ]
+                if stale_tbox_keys:
+                    provenance.retract_axioms(
+                        ks.graph_iri, ks.base_iri, stale_tbox_keys,
+                        related_graphs=[abox_iri],
+                    )
                 ares = await abox_extract.extract_instances_from_chunks(
                     base_iri=ks.base_iri, graph_iri=ks.graph_iri, abox_iri=abox_iri,
                     ks_id=ks_id, chunks=chunks, job_id=job.id, actor_name=actor_name,
@@ -713,7 +849,8 @@ async def _run_combined_extraction_job(
                         summary=(f"Extracted instances from {n} chunk(s) ({model}): +{ares['created']} new / "
                                  f"{ares['matched']} linked / {ares['queued']} queued / {ares['assertions']} assertions"),
                         actor_id=actor_id, actor_name=actor_name,
-                        detail={"job_id": job.id, "model": model, "chunks": n, "combined": True, **{
+                        detail={"job_id": job.id, "model": model, "chunks": n, "combined": True,
+                                "replace_existing": replace_existing, "replacement": a_replacement, **{
                             k: ares[k] for k in ("created", "matched", "queued", "assertions")}},
                         added=a_add, removed=a_rem, graph=abox_iri, commit=False,
                     )
@@ -806,7 +943,10 @@ async def run_extraction(
     session.commit()
     session.refresh(job)
 
-    _spawn(_run_extraction_job(job.id, ks.id, chunks, model, actor_id=user.id, actor_name=user.username))
+    _spawn(_run_extraction_job(
+        job.id, ks.id, chunks, model, actor_id=user.id, actor_name=user.username,
+        replace_existing=body.replace_existing,
+    ))
     return job
 
 
@@ -844,6 +984,7 @@ async def run_instance_extraction(
     _spawn(_run_abox_extraction_job(
         job.id, ks.id, chunks, model, actor_id=user.id, actor_name=user.username,
         agentic_resolution=body.agentic_resolution,
+        replace_existing=body.replace_existing,
     ))
     return job
 
@@ -880,6 +1021,7 @@ async def run_combined_extraction(
     _spawn(_run_combined_extraction_job(
         job.id, ks.id, chunks, model, actor_id=user.id, actor_name=user.username,
         agentic_resolution=body.agentic_resolution,
+        replace_existing=body.replace_existing,
     ))
     return job
 

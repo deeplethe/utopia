@@ -83,9 +83,17 @@ export interface DocumentListResponse {
 }
 
 export interface DocumentContribution {
+  document_id: number
+  document_sha256: string
   chunk_count: number
   axiom_count: number
+  abox_fact_count: number
   individual_count: number
+  tbox_axioms: { axiom_key: string; description: string; shared: boolean }[]
+  abox_facts: { fact_key: string; description: string; shared: boolean }[]
+  truncated: boolean
+  tbox_extracted_at: string | null
+  abox_extracted_at: string | null
 }
 
 export interface Chunk {
@@ -733,6 +741,8 @@ export interface AgentConversation {
   turn_count?: number
   created_at?: string | null
   updated_at?: string | null
+  deleted_at?: string | null
+  deleted_by?: string | null
 }
 
 export interface AgentConversationEvent {
@@ -829,6 +839,7 @@ export interface AboxSource {
   chunk_id: number | null
   document_id: number | null
   document: string | null
+  document_sha256?: string | null
   snippet: string
   job_id?: number | null
   model?: string | null
@@ -886,15 +897,21 @@ export interface ResolutionQueueItem {
   class_label: string | null
   confidence: number | null
   candidates: ResolutionCandidate[]
+  reason: string | null
+  evidence: string | null
+  pending_attributes: Record<string, unknown>[]
+  pending_relations: Record<string, unknown>[]
   source_chunk_id: number | null
+  source_document_id: number | null
   created_at: string
+  updated_at: string
 }
 
 export interface ResolutionDecision {
   id: number
   surface_form: string
   class_label: string | null
-  status: "matched" | "new" | "distinct"
+  status: "matched" | "new" | "distinct" | "rejected" | "deferred"
   individual_iri: string | null
   individual_label: string | null
   individual_deleted: boolean
@@ -903,6 +920,7 @@ export interface ResolutionDecision {
   resolved_by: string | null
   created_at: string
   resolved_at: string | null
+  review_after: string | null
 }
 
 export interface ResolutionQueue {
