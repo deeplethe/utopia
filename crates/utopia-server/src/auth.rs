@@ -106,3 +106,64 @@ impl FromRequestParts<AppState> for AuthUser {
         Ok(AuthUser(user))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn claims_in(days: i64) -> Claims {
+        Claims {
+            sub: Uuid::now_v7(),
+            exp: (Utc::now() + chrono::Duration::days(days)).timestamp(),
+        }
+    }
+
+    /// JWT 校验的护栏：默认配置必须认自家签发的 HS256，且拒绝换密钥与过期。
+    /// 加于 jsonwebtoken 9 → 10 升级时（CVE-2026-25537：<10.3.0 的类型混淆可绕过授权）——
+    /// 库的默认校验语义是编译器看不见的那部分，回归靠这里兜。
+    #[test]
+    fn default_validation_accepts_own_token_and_rejects_the_rest() {
+        let secret = b"test-secret-not-a-real-key";
+        let claims = claims_in(7);
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(secret),
+        )
+        .expect("issuing must succeed");
+
+        let decoded = decode::<Claims>(
+            &token,
+            &DecodingKey::from_secret(secret),
+            &Validation::default(),
+        )
+        .expect("own token must verify under default validation");
+        assert_eq!(decoded.claims.sub, claims.sub, "sub must survive the trip");
+
+        assert!(
+            decode::<Claims>(
+                &token,
+                &DecodingKey::from_secret(b"a-different-secret"),
+                &Validation::default(),
+            )
+            .is_err(),
+            "a token signed with another key must not verify"
+        );
+
+        let expired = encode(
+            &Header::default(),
+            &claims_in(-1),
+            &EncodingKey::from_secret(secret),
+        )
+        .expect("issuing must succeed");
+        assert!(
+            decode::<Claims>(
+                &expired,
+                &DecodingKey::from_secret(secret),
+                &Validation::default(),
+            )
+            .is_err(),
+            "exp must be enforced by default"
+        );
+    }
+}
