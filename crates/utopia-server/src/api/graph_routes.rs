@@ -120,15 +120,9 @@ pub async fn extract(
 ) -> ApiResult<Json<serde_json::Value>> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
     require_kb(&state, &user, doc.kb_id, Role::Editor).await?;
-    // 手动触发 = 强制全量：清掉增量跳过标记，重抽每一块
-    utopia_store::documents::clear_extraction_marks(&state.pool, document_id).await?;
-    utopia_store::documents::set_graph_status(&state.pool, document_id, "queued").await?;
-    let job_id = utopia_store::jobs::enqueue(
-        &state.pool,
-        "extract_document",
-        json!({ "document_id": document_id }),
-    )
-    .await?;
+    // 手动触发 = 强制全量：清增量标记、解雇在跑的任务、置 queued、建任务，一个事务办完
+    let job_id = utopia_store::documents::queue_extraction_one(&state.pool, document_id).await?;
+    state.emit_document(doc.kb_id, document_id);
     Ok(Json(json!({ "job_id": job_id })))
 }
 

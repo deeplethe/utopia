@@ -393,10 +393,12 @@ pub async fn mark_chunk_extracted(pool: &PgPool, chunk_id: Uuid) -> AppResult<()
     Ok(())
 }
 
-/// 清除文档现行分块的抽取标记（手动 Extract = 强制全量重抽）。
-pub async fn clear_extraction_marks(pool: &PgPool, document_id: Uuid) -> AppResult<()> {
-    // 两条同事务：清了标记却没换到新 epoch，在跑的旧任务便察觉不到自己已被顶替，
-    // 会继续把刚清空的分块重抽一遍。
+/// 单篇排队重抽（手动 Extract = 强制全量）：清增量标记、解雇在跑的任务、置
+/// queued、建抽取任务——与 `queue_extraction` 同一套语义，只是作用于一篇。返回 job id。
+///
+/// 整体一个事务。分开做时任一步失败都会留下半截状态：清了标记却没换 epoch，
+/// 旧任务察觉不到自己已被顶替；或者置了 queued 却没建成任务，文档就此无人接手。
+pub async fn queue_extraction_one(pool: &PgPool, document_id: Uuid) -> AppResult<i64> {
     let mut tx = pool.begin().await?;
     sqlx::query(
         "UPDATE chunks SET extracted_at = NULL
@@ -405,13 +407,32 @@ pub async fn clear_extraction_marks(pool: &PgPool, document_id: Uuid) -> AppResu
     .bind(document_id)
     .execute(&mut *tx)
     .await?;
-    // 与批量重抽同理：自增 epoch 解雇可能正在跑的旧任务
-    sqlx::query("UPDATE documents SET extract_epoch = extract_epoch + 1 WHERE id = $1")
-        .bind(document_id)
-        .execute(&mut *tx)
-        .await?;
+    // 未开跑的旧任务顺手删掉：连点两次 Extract 不该攒出两个任务同抽一篇
+    sqlx::query(
+        "DELETE FROM jobs WHERE kind = 'extract_document' AND status = 'queued'
+           AND payload->>'document_id' = $1",
+    )
+    .bind(document_id.to_string())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE documents SET graph_status = 'queued', graph_error = NULL,
+                extract_epoch = extract_epoch + 1
+         WHERE id = $1",
+    )
+    .bind(document_id)
+    .execute(&mut *tx)
+    .await?;
+    let (job_id,): (i64,) = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload)
+         VALUES ('extract_document', jsonb_build_object('document_id', $1::text))
+         RETURNING id",
+    )
+    .bind(document_id)
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
-    Ok(())
+    Ok(job_id)
 }
 
 /// 文档查看器：全部分块（按顺序）。
