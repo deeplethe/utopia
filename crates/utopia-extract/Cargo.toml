@@ -1,0 +1,13 @@
+[package]
+name = "utopia-extract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+utopia-llm.workspace = true
+tracing.workspace = true

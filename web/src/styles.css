@@ -1,0 +1,657 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+@theme {
+  --font-display: "Geist", "Inter", "Noto Sans SC", system-ui, sans-serif;
+  --font-sans: "Geist", "Inter", "Noto Sans SC", system-ui, sans-serif;
+}
+
+/* ============================================================
+   Utopia design tokens — Vercel-style neutral dark + glass.
+   Chromatic color is reserved for DATA (graph entities, status);
+   the chrome itself is monochrome.
+   ============================================================ */
+:root {
+  font-family: var(--font-sans);
+  color-scheme: dark;
+
+  /* 品牌字：碑铭式衬线（Marcellus 仅 400，一字不粗） */
+  --font-brand: "Marcellus", "Georgia", "Times New Roman", serif;
+
+  --u-ground: #0a0a0a;
+  --u-text: #ededed;
+  --u-text-2: #a1a1a1;
+  --u-text-3: #6e6e6e;
+
+  /* 单色 chrome：accent 也是中性亮灰，彩色只属于数据（实体色/状态语义色） */
+  --u-accent: #d4d4d4;
+  --u-accent-deep: 255, 255, 255;
+
+  --u-ok: #4cc38a;
+  --u-warn: #f2b66d;
+  /* 浅玫瑰：深底上的危险"文字/描边/点"专用（够亮才可读） */
+  --u-danger: #ff9daf;
+  /* 深红：危险"实底按钮"专用（浅玫瑰做底会发粉；亮红在单色 chrome 上嗓门过大），配白字 */
+  --u-danger-solid: #c9353a;
+  --u-violet: #c4a5ff;
+
+  --u-line: rgba(255, 255, 255, 0.08);
+  --u-line-strong: rgba(255, 255, 255, 0.14);
+  --u-surface: rgba(255, 255, 255, 0.04);
+  --u-surface-strong: rgba(10, 10, 10, 0.72);
+}
+
+body {
+  background-color: var(--u-ground);
+  color: var(--u-text);
+  min-height: 100vh;
+}
+
+/* 选中态：中性白纱替掉浏览器默认蓝（零色偏原则同样管到这里）。
+   只设底色不改字色——半透明白纱下内容自身的颜色（代码令牌、实体色）仍透出 */
+::selection {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* 空间感：极克制的中性顶光 + 暗角，零色偏 */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(1000px 600px at 50% -20%, rgba(255, 255, 255, 0.045), transparent 60%),
+    var(--u-ground);
+}
+
+/* ---- surfaces ---- */
+.glass {
+  background: var(--u-surface);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--u-line);
+}
+
+.glass-strong {
+  background: var(--u-surface-strong);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--u-line);
+}
+
+/* 弹出层（下拉/取色器等 popover）：近实底——下层内容透出只会干扰，
+   毛玻璃留给带遮罩的大弹窗 */
+.u-pop {
+  background: rgba(16, 16, 16, 0.98);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid var(--u-line-strong);
+}
+
+/* 弹层入场：锚点为原点的缩放浮现（用户菜单/下拉共用）。
+   160ms + 出挑缓动（与 u-rise 同族），克制但有生气 */
+@keyframes u-pop-in-kf {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.u-pop-in {
+  transform-origin: top right;
+  animation: u-pop-in-kf 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.u-pop-in-tl {
+  transform-origin: top left;
+}
+/* 向上弹出的变体（composer 停靠底部时菜单开口朝上） */
+@keyframes u-pop-up-kf {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.u-pop-up {
+  transform-origin: bottom left;
+  animation: u-pop-up-kf 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 用户菜单：半透玻璃面（比 .u-pop 更透，加强模糊补偿可读性）。
+   原地变形动画在组件内用 FLIP 实现（首帧压到胶囊真实边界再展开），
+   CSS 只负责面板的皮 */
+.u-menu-glass {
+  background: rgba(14, 14, 16, 0.85);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .u-pop-in,
+  .u-pop-up {
+    animation: none;
+  }
+}
+
+.glass-hover {
+  transition: border-color 0.15s;
+}
+.glass-hover:hover {
+  border-color: var(--u-line-strong);
+}
+
+/* ---- form controls ---- */
+.input-dark {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--u-line-strong);
+  color: var(--u-text);
+  border-radius: 0.5rem;
+}
+.input-dark::placeholder {
+  color: var(--u-text-3);
+}
+.input-dark:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.4);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+select.input-dark option {
+  background: #111111;
+  color: var(--u-text);
+}
+
+/* mono 输入框的 placeholder 回默认字体（提示语不是代码） */
+.u-placeholder-sans::placeholder {
+  font-family: var(--font-sans);
+}
+
+/* 数字输入：去掉原生 spinner，保持纯净外观 */
+.u-input-plain::-webkit-outer-spin-button,
+.u-input-plain::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.u-input-plain {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* ---- buttons (Vercel: primary = white on black) ---- */
+.u-btn,
+.btn-primary,
+.btn-ghost {
+  border-radius: 0.5rem;
+  font-weight: 500;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.u-btn:disabled,
+.btn-primary:disabled,
+.btn-ghost:disabled {
+  opacity: 0.4;
+}
+.u-btn-primary,
+.btn-primary {
+  background: var(--u-text);
+  border: 1px solid var(--u-text);
+  color: #0a0a0a;
+  font-weight: 600;
+}
+.u-btn-primary:hover:not(:disabled),
+.btn-primary:hover:not(:disabled) {
+  background: #ffffff;
+  border-color: #ffffff;
+}
+.u-btn-ghost,
+.btn-ghost {
+  border: 1px solid var(--u-line-strong);
+  color: var(--u-text-2);
+  background: transparent;
+}
+.u-btn-ghost:hover:not(:disabled),
+.btn-ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--u-text);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+
+/* ---- chips ---- */
+.u-chip {
+  display: inline-block;
+  border-radius: 9999px;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+.u-chip-neutral {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--u-text-2);
+}
+.u-chip-info {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ededed;
+}
+.u-chip-success {
+  background: rgba(76, 195, 138, 0.12);
+  color: var(--u-ok);
+}
+.u-chip-warn {
+  background: rgba(242, 182, 109, 0.12);
+  color: var(--u-warn);
+}
+.u-chip-danger {
+  background: rgba(255, 157, 175, 0.12);
+  color: var(--u-danger);
+}
+.u-chip-violet {
+  background: rgba(196, 165, 255, 0.12);
+  color: var(--u-violet);
+}
+
+/* ---- graph canvas: 图纸式大小网格（细密小格 + 每 4 格一条更亮的主线） ---- */
+.u-grid-bg {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size:
+    104px 104px,
+    104px 104px,
+    26px 26px,
+    26px 26px;
+}
+
+/* ---- interactive accents ---- */
+.u-bubble-user {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.u-highlight {
+  border-color: rgba(255, 255, 255, 0.45) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+}
+.u-nav-active {
+  background: rgba(255, 255, 255, 0.09);
+  color: #ffffff;
+}
+
+/* 引用定位闪现：进场强光收敛到持有亮度（运动比静态边框更抓眼）。
+   fill-mode both 让 100% 帧在类存续期间保持；移除类后由元素自身的
+   transition 淡回普通卡片 */
+@keyframes u-flash-kf {
+  0% {
+    border-color: rgba(255, 255, 255, 0.9);
+    background-color: rgba(255, 255, 255, 0.14);
+    box-shadow:
+      0 0 0 3px rgba(255, 255, 255, 0.3),
+      0 0 36px rgba(255, 255, 255, 0.16);
+  }
+  100% {
+    border-color: rgba(255, 255, 255, 0.55);
+    background-color: rgba(255, 255, 255, 0.07);
+    box-shadow:
+      0 0 0 2px rgba(255, 255, 255, 0.16),
+      0 0 18px rgba(255, 255, 255, 0.06);
+  }
+}
+.u-flash {
+  animation: u-flash-kf 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .u-flash {
+    animation: none;
+    border-color: rgba(255, 255, 255, 0.55);
+    background-color: rgba(255, 255, 255, 0.07);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.16);
+  }
+}
+
+/* ---- text helpers ---- */
+.u-accent {
+  color: var(--u-accent);
+}
+.u-link {
+  color: var(--u-text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 255, 255, 0.3);
+}
+.u-link:hover {
+  text-decoration-color: rgba(255, 255, 255, 0.8);
+}
+.u-title {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #ffffff;
+}
+.brand-gradient {
+  color: #ffffff;
+  letter-spacing: -0.02em;
+}
+
+/* 登录卡：近实底，不用 backdrop-filter（对动画背景每帧重算模糊，代价高） */
+.u-card-opaque {
+  background: rgba(12, 12, 12, 0.92);
+  border: 1px solid var(--u-line);
+}
+
+/* ---- 入场动效（登录页等）：淡入上浮 ---- */
+@keyframes u-rise-kf {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.u-rise {
+  animation: u-rise-kf 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 登录成功谢幕：内容上浮淡出；巨构放大淡出（像穿过它进入系统） */
+@keyframes u-depart-kf {
+  to {
+    opacity: 0;
+    transform: translateY(-14px);
+  }
+}
+.u-depart {
+  animation: u-depart-kf 0.55s cubic-bezier(0.5, 0, 0.9, 0.4) forwards;
+}
+.u-scene-depart {
+  transition: transform 0.7s cubic-bezier(0.5, 0, 0.9, 0.5), opacity 0.7s ease-in;
+  transform: scale(1.16);
+  opacity: 0;
+}
+
+/* 登录后首屏入场：整体淡入，衔接登录页谢幕 */
+@keyframes u-arrive-kf {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.u-arrive {
+  animation: u-arrive-kf 0.45s ease both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .u-rise,
+  .u-depart,
+  .u-arrive {
+    animation: none;
+  }
+  .u-scene-depart {
+    transition: none;
+  }
+}
+
+/* Chrome 自动填充的蓝底与"零色偏"冲突：压回中性深灰 */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px #141414 inset;
+  -webkit-text-fill-color: var(--u-text);
+  caret-color: var(--u-text);
+}
+
+/* ---- 品牌字标：逐字母左→右淡入；hover 浮出外链箭头 ---- */
+@keyframes u-letter-kf {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.u-letter {
+  animation: u-letter-kf 0.5s ease both;
+}
+.u-mark-arrow {
+  position: absolute;
+  right: -0.6em;
+  top: -0.08em;
+  width: 0.5em;
+  height: 0.5em;
+  color: var(--u-text-2);
+  opacity: 0;
+  transform: translate(-3px, 3px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+a:hover > .u-mark-arrow {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .u-letter {
+    animation: none;
+  }
+  .u-mark-arrow {
+    transition: none;
+  }
+}
+
+/* toast 入场：复用淡入上浮关键帧，节奏更快 */
+.u-toast-in {
+  animation: u-rise-kf 0.25s ease both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .u-toast-in {
+    animation: none;
+  }
+}
+
+/* 多行居中的短句：两行长度均衡，避免孤词 */
+.u-balance {
+  text-wrap: balance;
+}
+
+/* ---- numbers in chrome: 默认字体（Geist）+ 等宽数字，不再用 mono ---- */
+.u-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- 全局滚动条：统一细条风格（Chromium 走 webkit 自绘；Firefox 走标准属性） ---- */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+  }
+}
+*::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* 面板内滚动区（滚动条样式已全局统一，这里只保留滚动隔离） */
+.u-scroll {
+  overscroll-behavior: contain;
+}
+
+/* ---- timeline scrubber ---- */
+.scrubber-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  cursor: ew-resize;
+}
+.scrubber-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 2px;
+  height: 28px;
+  border-radius: 1px;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
+  cursor: ew-resize;
+}
+.scrubber-range::-moz-range-thumb {
+  width: 2px;
+  height: 28px;
+  border: none;
+  border-radius: 1px;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
+  cursor: ew-resize;
+}
+.scrubber-range::-webkit-slider-runnable-track {
+  background: transparent;
+}
+.scrubber-range::-moz-range-track {
+  background: transparent;
+}
+
+/* ---- 代码高亮（rehype-highlight / hljs）：克制的粉彩令牌色，
+   与实体色板同族——颜色属于内容，chrome 保持无色 ---- */
+.u-chat-prose .hljs-comment,
+.u-chat-prose .hljs-quote {
+  color: #7d8590;
+  font-style: italic;
+}
+.u-chat-prose .hljs-keyword,
+.u-chat-prose .hljs-selector-tag,
+.u-chat-prose .hljs-meta {
+  color: #9fa8ff;
+}
+.u-chat-prose .hljs-string,
+.u-chat-prose .hljs-regexp,
+.u-chat-prose .hljs-addition {
+  color: #63e2b7;
+}
+.u-chat-prose .hljs-number,
+.u-chat-prose .hljs-literal,
+.u-chat-prose .hljs-symbol {
+  color: #ffd479;
+}
+.u-chat-prose .hljs-title,
+.u-chat-prose .hljs-title.function_,
+.u-chat-prose .hljs-section {
+  color: #7fd0ff;
+}
+.u-chat-prose .hljs-type,
+.u-chat-prose .hljs-built_in,
+.u-chat-prose .hljs-class .hljs-title {
+  color: #5fd4d0;
+}
+.u-chat-prose .hljs-attr,
+.u-chat-prose .hljs-attribute,
+.u-chat-prose .hljs-variable,
+.u-chat-prose .hljs-template-variable {
+  color: #c4a5ff;
+}
+.u-chat-prose .hljs-deletion {
+  color: #ff8a9e;
+}
+
+/* 对话气泡内的 markdown：紧凑排版，色彩服从气泡 */
+.u-chat-prose > :first-child {
+  margin-top: 0;
+}
+.u-chat-prose > :last-child {
+  margin-bottom: 0;
+}
+.u-chat-prose p {
+  margin: 0.4em 0;
+}
+.u-chat-prose ul,
+.u-chat-prose ol {
+  margin: 0.4em 0;
+  padding-left: 1.25em;
+}
+.u-chat-prose ul {
+  list-style: disc;
+}
+.u-chat-prose ol {
+  list-style: decimal;
+}
+.u-chat-prose li {
+  margin: 0.15em 0;
+}
+.u-chat-prose strong {
+  color: #ffffff;
+  font-weight: 600;
+}
+.u-chat-prose h1,
+.u-chat-prose h2,
+.u-chat-prose h3 {
+  font-weight: 600;
+  color: #ffffff;
+  margin: 0.7em 0 0.3em;
+  font-size: 1em;
+}
+/* 分割线（模型爱写 ---）：几乎隐形的发丝线，只当呼吸口，不当版面元素 */
+.u-chat-prose hr {
+  border: 0;
+  border-top: 1px solid var(--u-line);
+  margin: 1em 0;
+}
+.u-chat-prose code {
+  font-size: 0.85em;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.u-chat-prose pre {
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--u-line);
+  border-radius: 8px;
+  padding: 0.6em 0.8em;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.u-chat-prose pre code {
+  background: transparent;
+  padding: 0;
+}
+.u-chat-prose table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+  font-size: 0.9em;
+}
+.u-chat-prose th,
+.u-chat-prose td {
+  border: 1px solid var(--u-line-strong);
+  padding: 0.25em 0.6em;
+}
+.u-chat-prose a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.u-chat-prose blockquote {
+  border-left: 2px solid var(--u-line-strong);
+  padding-left: 0.75em;
+  color: var(--u-text-2);
+  margin: 0.4em 0;
+}

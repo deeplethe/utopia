@@ -1,0 +1,133 @@
+use axum::extract::{Path, Query, State};
+use axum::Json;
+use utopia_core::models::Role;
+use utopia_core::AppError;
+use serde::Deserialize;
+use serde_json::json;
+use uuid::Uuid;
+
+use crate::auth::AuthUser;
+use crate::error::ApiResult;
+use crate::state::AppState;
+
+pub(super) async fn require_kb(
+    state: &AppState,
+    user: &utopia_core::models::User,
+    kb_id: Uuid,
+    min: Role,
+) -> Result<utopia_core::models::KnowledgeBase, AppError> {
+    utopia_store::access::require_kb(&state.pool, user, kb_id, min).await
+}
+
+/// `at`：可选 as-of 日期（YYYY-MM-DD 或 RFC3339）——服务端时间旅行。
+fn parse_at(raw: Option<&str>) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+    let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Ok(Some(d.and_hms_opt(0, 0, 0).unwrap().and_utc()));
+    }
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|t| Some(t.with_timezone(&chrono::Utc)))
+        .map_err(|_| AppError::Validation("Invalid `at` (expected YYYY-MM-DD or RFC3339)".into()))
+}
+
+#[derive(Deserialize)]
+pub struct OverviewQuery {
+    #[serde(default)]
+    pub at: Option<String>,
+}
+
+pub async fn overview(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Query(q): Query<OverviewQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let at = parse_at(q.at.as_deref())?;
+    let (nodes, edges) = utopia_store::graph::overview(&state.pool, kb_id, 150, at).await?;
+    Ok(Json(json!({ "nodes": nodes, "edges": edges })))
+}
+
+#[derive(Deserialize)]
+pub struct NeighborhoodQuery {
+    pub entity: Uuid,
+    #[serde(default)]
+    pub hops: Option<u8>,
+    #[serde(default)]
+    pub at: Option<String>,
+}
+
+pub async fn neighborhood(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Query(q): Query<NeighborhoodQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let at = parse_at(q.at.as_deref())?;
+    let (nodes, edges) =
+        utopia_store::graph::neighborhood(&state.pool, kb_id, q.entity, q.hops.unwrap_or(2), at)
+            .await?;
+    Ok(Json(json!({ "nodes": nodes, "edges": edges })))
+}
+
+#[derive(Deserialize)]
+pub struct EntitySearchQuery {
+    pub q: String,
+}
+
+pub async fn search_entities(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Query(query): Query<EntitySearchQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    if query.q.trim().is_empty() {
+        return Ok(Json(json!({ "entities": [] })));
+    }
+    let entities = utopia_store::graph::search_entities(&state.pool, kb_id, &query.q, 10).await?;
+    Ok(Json(json!({ "entities": entities })))
+}
+
+pub async fn entity_detail(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, entity_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let (entity, facts) = utopia_store::graph::entity_detail(&state.pool, kb_id, entity_id).await?;
+    Ok(Json(json!({ "entity": entity, "facts": facts })))
+}
+
+pub async fn fact_evidence(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, fact_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let evidence = utopia_store::graph::fact_evidence(&state.pool, fact_id).await?;
+    Ok(Json(json!({ "evidence": evidence })))
+}
+
+/// 手动触发抽取（failed 重试 / 补配模型后补抽）。
+pub async fn extract(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(document_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let doc = utopia_store::documents::get(&state.pool, document_id).await?;
+    require_kb(&state, &user, doc.kb_id, Role::Editor).await?;
+    // 手动触发 = 强制全量：清掉增量跳过标记，重抽每一块
+    utopia_store::documents::clear_extraction_marks(&state.pool, document_id).await?;
+    utopia_store::documents::set_graph_status(&state.pool, document_id, "queued").await?;
+    let job_id = utopia_store::jobs::enqueue(
+        &state.pool,
+        "extract_document",
+        json!({ "document_id": document_id }),
+    )
+    .await?;
+    Ok(Json(json!({ "job_id": job_id })))
+}

@@ -1,0 +1,14 @@
+[package]
+name = "utopia-llm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+futures-util.workspace = true
+async-stream.workspace = true
+tracing.workspace = true

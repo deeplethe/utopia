@@ -1,0 +1,19 @@
+[package]
+name = "utopia-ingest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+text-splitter.workspace = true
+pdf-extract.workspace = true
+calamine.workspace = true
+scraper.workspace = true
+chardetng.workspace = true
+encoding_rs.workspace = true
+quick-xml.workspace = true
+zip.workspace = true
+csv.workspace = true
+infer.workspace = true
+tracing.workspace = true

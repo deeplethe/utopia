@@ -1,0 +1,38 @@
+services:
+  db:
+    # 拉不动 Docker Hub 时可用 UTOPIA_DB_IMAGE 覆盖为任何带 pgvector 的 PG16+ 镜像
+    image: ${UTOPIA_DB_IMAGE:-pgvector/pgvector:pg16}
+    environment:
+      POSTGRES_USER: utopia
+      POSTGRES_PASSWORD: utopia
+      POSTGRES_DB: utopia
+    ports:
+      - "5432:5432"
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U utopia -d utopia"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 完整部署：docker compose --profile app up -d
+  # 本地开发只起 db，应用用 cargo run 跑
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    profiles: ["app"]
+    environment:
+      UTOPIA_DATABASE_URL: postgres://utopia:utopia@db:5432/utopia
+      UTOPIA_BIND_ADDR: 0.0.0.0:8080
+      UTOPIA_JWT_SECRET: ${UTOPIA_JWT_SECRET:-please-change-me-in-production}
+      UTOPIA_WEB_DIST: /app/web-dist
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  dbdata:

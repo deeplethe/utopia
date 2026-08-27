@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+.env
+node_modules/
+web/dist/
+*.log
+.DS_Store
+/data
+/docs
+.claude/worktrees/

@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "utopia",
+      "runtimeExecutable": "target/debug/utopia-server.exe",
+      "runtimeArgs": [],
+      "port": 18080
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["-C", "web", "dev"],
+      "port": 5173,
+      "autoPort": true
+    }
+  ]
+}

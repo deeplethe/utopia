@@ -1,0 +1,172 @@
+//! KB 级访问判定 —— 全部 KB 作用域路由的唯一鉴权入口。
+//! 判定链：系统管理员 → 全通；kb_members 矩阵有记录 → 按矩阵角色；
+//! open 库 → 按部署角色（隐形 workspace 的 membership）；
+//! restricted 库无记录 → NotFound（不泄露库的存在）。
+
+use sqlx::PgPool;
+use utopia_core::models::{KbMemberView, KnowledgeBase, MyKbInfo, Role, User};
+use utopia_core::{AppError, AppResult};
+use uuid::Uuid;
+
+/// 用户在某 KB 的有效角色（None = 不可见）。
+pub async fn kb_role(pool: &PgPool, user: &User, kb: &KnowledgeBase) -> AppResult<Option<Role>> {
+    if user.is_admin {
+        return Ok(Some(Role::Owner));
+    }
+    let matrix: Option<(String,)> =
+        sqlx::query_as("SELECT role FROM kb_members WHERE kb_id = $1 AND user_id = $2")
+            .bind(kb.id)
+            .bind(user.id)
+            .fetch_optional(pool)
+            .await?;
+    if let Some((r,)) = matrix {
+        return Ok(Role::parse(&r));
+    }
+    if kb.visibility == "open" {
+        // open 库 = 部署内人人可读；写权限一律来自本库矩阵
+        //（系统管理员在链首已 Owner；部署角色不再向库内映射写权）
+        let ws: Option<(String,)> =
+            sqlx::query_as("SELECT role FROM memberships WHERE workspace_id = $1 AND user_id = $2")
+                .bind(kb.workspace_id)
+                .bind(user.id)
+                .fetch_optional(pool)
+                .await?;
+        return Ok(ws.map(|_| Role::Viewer));
+    }
+    Ok(None)
+}
+
+/// 要求对 KB 至少具备 `min` 角色，返回 KB。
+pub async fn require_kb(
+    pool: &PgPool,
+    user: &User,
+    kb_id: Uuid,
+    min: Role,
+) -> AppResult<KnowledgeBase> {
+    let kb = crate::kbs::get(pool, kb_id).await?;
+    match kb_role(pool, user, &kb).await? {
+        Some(r) if r >= min => Ok(kb),
+        Some(_) => Err(AppError::Forbidden),
+        None => Err(AppError::NotFound),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KB 成员矩阵
+// ---------------------------------------------------------------------------
+
+pub async fn kb_members(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<KbMemberView>> {
+    let rows: Vec<KbMemberView> = sqlx::query_as(
+        "SELECT m.user_id, u.email, u.display_name, m.role
+         FROM kb_members m JOIN users u ON u.id = m.user_id
+         WHERE m.kb_id = $1 ORDER BY u.display_name",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn set_kb_member(
+    pool: &PgPool,
+    kb_id: Uuid,
+    user_id: Uuid,
+    role: &str,
+    added_by: Option<Uuid>,
+) -> AppResult<()> {
+    if !matches!(role, "viewer" | "editor" | "admin") {
+        return Err(AppError::Validation("role must be viewer, editor or admin".into()));
+    }
+    // 改角色不改写最初邀请人（加入信息记录的是"谁引进来的"）
+    sqlx::query(
+        "INSERT INTO kb_members (kb_id, user_id, role, added_by) VALUES ($1, $2, $3, $4)
+         ON CONFLICT (kb_id, user_id)
+         DO UPDATE SET role = $3, added_by = COALESCE(kb_members.added_by, $4)",
+    )
+    .bind(kb_id)
+    .bind(user_id)
+    .bind(role)
+    .bind(added_by)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 我在各可见库的成员信息 + 概览统计（账户层 Knowledge bases 页）。
+pub async fn my_kb_infos(
+    pool: &PgPool,
+    kb_ids: &[Uuid],
+    user_id: Uuid,
+) -> AppResult<Vec<MyKbInfo>> {
+    let rows: Vec<MyKbInfo> = sqlx::query_as(
+        "SELECT k.id AS kb_id,
+                m.role AS member_role,
+                m.created_at AS joined_at,
+                inviter.display_name AS added_by_name,
+                (SELECT count(*) FROM documents d WHERE d.kb_id = k.id) AS doc_count,
+                (SELECT count(*) FROM kb_members mm WHERE mm.kb_id = k.id) AS member_count
+         FROM knowledge_bases k
+         LEFT JOIN kb_members m ON m.kb_id = k.id AND m.user_id = $2
+         LEFT JOIN users inviter ON inviter.id = m.added_by
+         WHERE k.id = ANY($1)",
+    )
+    .bind(kb_ids)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn remove_kb_member(pool: &PgPool, kb_id: Uuid, user_id: Uuid) -> AppResult<()> {
+    let res = sqlx::query("DELETE FROM kb_members WHERE kb_id = $1 AND user_id = $2")
+        .bind(kb_id)
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 部署配置
+// ---------------------------------------------------------------------------
+
+pub async fn open_registration(pool: &PgPool) -> AppResult<bool> {
+    let row: Option<(bool,)> =
+        sqlx::query_as("SELECT open_registration FROM deployment_settings LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(v,)| v).unwrap_or(true))
+}
+
+pub async fn set_open_registration(pool: &PgPool, value: bool) -> AppResult<()> {
+    sqlx::query("UPDATE deployment_settings SET open_registration = $1")
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 任务 worker 并发数（系统设置可改，改动即时生效——见 jobs::run_worker）。
+pub async fn worker_concurrency(pool: &PgPool) -> AppResult<i32> {
+    let row: Option<(i32,)> =
+        sqlx::query_as("SELECT worker_concurrency FROM deployment_settings LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(v,)| v).unwrap_or(4))
+}
+
+pub async fn set_worker_concurrency(pool: &PgPool, value: i32) -> AppResult<()> {
+    if !(1..=32).contains(&value) {
+        return Err(AppError::Validation(
+            "worker_concurrency must be between 1 and 32".into(),
+        ));
+    }
+    sqlx::query("UPDATE deployment_settings SET worker_concurrency = $1")
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}

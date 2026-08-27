@@ -1,0 +1,1570 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Link, useSearch } from "@tanstack/react-router";
+import Graphology from "graphology";
+import { circular, circlepack } from "graphology-layout";
+import forceAtlas2 from "graphology-layout-forceatlas2";
+import FA2Layout from "graphology-layout-forceatlas2/worker";
+import Sigma from "sigma";
+import { createNodeBorderProgram } from "@sigma/node-border";
+import { NodeSquareShellProgram } from "./squareShellProgram";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ChevronRight,
+  CircleDashed,
+  Grape,
+  Maximize2,
+  Orbit,
+  Pause,
+  Play,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
+import { api, type EntityFact, type Evidence, type GraphEdge, type GraphNode } from "../api";
+import { S } from "../i18n";
+import { useKb } from "../kb";
+
+/* 画布调色板 —— 结构取自 Semantica GraphWorkspace 源码；基色已中性化：
+   Semantica 原版是钢蓝系（#0B1320/#5A7A9E/#7A92AE），按"chrome 零色偏、
+   彩色只属于数据"的既定原则换成同明度纯灰，类型色混入比例不变 */
+const NODE_SHELL_BASE = "#121212"; // 节点外壳深底（原 #0B1320 的中性化）
+const NODE_CORE_BASE = "#767676"; // 节点核心灰（原 #5A7A9E 的中性化）
+const NODE_BORDER_BASE = "#909090"; // 节点描边（原 #7A92AE 的中性化）
+const NODE_TINT_MIX = 0.14; // 类型色只按 14% 混入外壳（高级感的关键）
+const NODE_CORE_MIX = 0.5; // 核心向类型色的混入比例
+const RING_SELECTED = "#E7C57C"; // 选中金环
+const RING_HOVERED = "#8FE7FF"; // 悬停冰青环
+const EDGE_COLOR = "rgba(163,163,163,0.2)"; // 纯灰（应用户要求，不用钢蓝）
+// 注意：sigma 边着色器在预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，
+// alpha 无法压暗边——暗度必须编码进 RGB（不透明近背景色）
+const EDGE_DIM = "#141414";
+const EDGE_FOCUS = "rgba(255,255,255,0.55)";
+const MUTED_SHELL = "#151515";
+const PILL_BG = "rgba(12,12,12,0.9)";
+const PILL_BORDER = "rgba(255,255,255,0.14)";
+const PILL_TEXT = "#ededed";
+const TRANSPARENT = "rgba(0,0,0,0)";
+const DAY_MS = 24 * 3600 * 1000;
+const MONTH_MS = 30 * DAY_MS;
+
+function hexToRgb(hex: string): [number, number, number] {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return [128, 128, 128];
+  const v = parseInt(m[1], 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+/** c1 向 c2 按 t 比例混色 */
+function mix(c1: string, c2: string, t: number): string {
+  const [r1, g1, b1] = hexToRgb(c1);
+  const [r2, g2, b2] = hexToRgb(c2);
+  const f = (a: number, b: number) => Math.round(a + (b - a) * t);
+  return `rgb(${f(r1, r2)},${f(g1, g2)},${f(b1, b2)})`;
+}
+
+/* 播放淡入：解析 hex / rgb / rgba（含 alpha）并线性插值 */
+function parseRgba(c: string): [number, number, number, number] {
+  if (c.startsWith("#")) {
+    const [r, g, b] = hexToRgb(c);
+    return [r, g, b, 1];
+  }
+  const m = c.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/);
+  if (!m) return [128, 128, 128, 1];
+  return [+m[1], +m[2], +m[3], m[4] !== undefined ? +m[4] : 1];
+}
+function lerpColor(from: string, to: string, t: number): string {
+  const a = parseRgba(from);
+  const b = parseRgba(to);
+  const f = (i: number) => a[i] + (b[i] - a[i]) * t;
+  return `rgba(${Math.round(f(0))},${Math.round(f(1))},${Math.round(f(2))},${f(3).toFixed(3)})`;
+}
+/** 播放中新元素的淡入时长 */
+const FADE_MS = 320;
+
+/* 世界坐标网格：随相机平移/缩放（Figma/tldraw 式无限画布惯例）。
+   4 倍细分 LOD：每层 alpha 随其屏幕间距连续淡入（13px 进场 → 52px 满亮 5.5%），
+   粗层与细层线重合处自然叠亮，形成"大小格"层次；无任何跳变。 */
+const GRID_BASE_WORLD = 24; // 基准世界格距（匹配 ~300 尺度的布局）
+const GRID_FADE_IN_PX = 13;
+const GRID_FULL_PX = 52;
+const GRID_MAX_LEVEL_PX = 480;
+const GRID_MAX_ALPHA = 0.055;
+
+function drawWorldGrid(canvas: HTMLCanvasElement, sigma: Sigma): void {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const { width, height } = sigma.getDimensions();
+  const dpr = window.devicePixelRatio || 1;
+  const pw = Math.round(width * dpr);
+  const ph = Math.round(height * dpr);
+  if (canvas.width !== pw || canvas.height !== ph) {
+    canvas.width = pw;
+    canvas.height = ph;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  if (width <= 0 || height <= 0) return;
+
+  // 世界→屏幕：两个探针点求每世界单位像素数与原点位置（无相机旋转场景）
+  const p0 = sigma.graphToViewport({ x: 0, y: 0 });
+  const p1 = sigma.graphToViewport({ x: 1, y: 0 });
+  const ppw = p1.x - p0.x;
+  if (!Number.isFinite(ppw) || ppw <= 0) return;
+
+  // 最细可见层级：屏幕间距 ≥ 淡入阈值的最小 4 幂格距
+  let spacing = GRID_BASE_WORLD;
+  while (spacing * ppw < GRID_FADE_IN_PX) spacing *= 4;
+  while (spacing * ppw >= GRID_FADE_IN_PX * 4) spacing /= 4;
+
+  for (let sp = spacing; sp * ppw < GRID_MAX_LEVEL_PX; sp *= 4) {
+    const ss = sp * ppw;
+    const t = Math.min(1, (ss - GRID_FADE_IN_PX) / (GRID_FULL_PX - GRID_FADE_IN_PX));
+    if (t <= 0) continue;
+    ctx.strokeStyle = `rgba(255,255,255,${(GRID_MAX_ALPHA * t).toFixed(4)})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const startX = ((p0.x % ss) + ss) % ss;
+    for (let x = startX; x <= width; x += ss) {
+      const px = Math.round(x) + 0.5;
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, height);
+    }
+    const startY = ((p0.y % ss) + ss) % ss;
+    for (let y = startY; y <= height; y += ss) {
+      const py = Math.round(y) + 0.5;
+      ctx.moveTo(0, py);
+      ctx.lineTo(width, py);
+    }
+    ctx.stroke();
+  }
+}
+
+/* 胶囊标签：深色圆角底 + 柔和文字（学 Semantica 的浮签风格） */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function drawPillLabel(ctx: CanvasRenderingContext2D, data: any, settings: any): void {
+  if (!data.label) return;
+  // hover 时悬浮卡（drawHoverCard）接管展示，底层 pill 隐去，避免双层标签
+  if (data.hideBaseLabel) return;
+  // Semantica chip: fontSize=clamp(10, size*0.25, 11), pad 6/3, radius 6, 位于节点上方，投影 blur 12
+  const size = Math.max(10, Math.min(11, data.size * 0.25));
+  ctx.font = `500 ${size}px Geist, Inter, "Noto Sans SC", sans-serif`;
+  ctx.textBaseline = "middle";
+  const padX = 6;
+  const padY = 3;
+  const w = ctx.measureText(data.label).width + padX * 2;
+  const h = size + padY * 2;
+  const x = data.x + Math.max(data.size * 0.7, 12);
+  const y = data.y - Math.max(data.size * 0.9, 10) - h;
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,0.6)";
+  ctx.shadowBlur = 12;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 6);
+  ctx.fillStyle = PILL_BG;
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = PILL_BORDER;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = PILL_TEXT;
+  ctx.fillText(data.label, x + padX, y + h / 2);
+  ctx.restore();
+}
+
+/* Hover 悬浮卡（Semantica hoverCard 规格）：径向柔光 + 名称 + 类型行 */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function drawHoverCard(ctx: CanvasRenderingContext2D, data: any, _settings: any): void {
+  if (!data.label) return;
+  ctx.save();
+
+  // 柔光: 半径 max(size*4.8, 16), 类型色 alpha 0.18 → 0
+  const glowR = Math.max(data.size * 4.8, 16);
+  const [r, g, b] = hexToRgb((data.typeColor as string) ?? "#888888");
+  const grad = ctx.createRadialGradient(data.x, data.y, 0, data.x, data.y, glowR);
+  grad.addColorStop(0, `rgba(${r},${g},${b},0.18)`);
+  grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(data.x, data.y, glowR, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 卡片: 标题 700/13 + 类型行 500/10 大写
+  const titleSize = 13;
+  const metaSize = 10;
+  const padX = 10;
+  const padY = 7;
+  const metaGap = 5;
+  const meta = String(data.typeLabel ?? "NODE").toUpperCase();
+  ctx.textBaseline = "top";
+  ctx.font = `700 ${titleSize}px Geist, Inter, "Noto Sans SC", sans-serif`;
+  const titleW = ctx.measureText(data.label).width;
+  ctx.font = `500 ${metaSize}px Geist, Inter, sans-serif`;
+  const metaW = ctx.measureText(meta).width;
+  const w = Math.max(titleW, metaW) + padX * 2;
+  const h = padY * 2 + titleSize + metaGap + metaSize;
+  const x = data.x + Math.max(data.size * 0.9, 16);
+  const y = data.y - Math.max(data.size * 1.1, 16) - h;
+
+  ctx.shadowColor = "rgba(0,0,0,0.62)";
+  ctx.shadowBlur = 15;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, 8);
+  ctx.fillStyle = "rgba(12,12,12,0.94)";
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.strokeStyle = "rgba(255,255,255,0.16)";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.fillStyle = "#f5f5f5";
+  ctx.font = `700 ${titleSize}px Geist, Inter, "Noto Sans SC", sans-serif`;
+  ctx.fillText(data.label, x + padX, y + padY);
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.font = `500 ${metaSize}px Geist, Inter, sans-serif`;
+  ctx.fillText(meta, x + padX, y + padY + titleSize + metaGap);
+  ctx.restore();
+}
+
+export function Graph() {
+  const { kb } = useKb();
+  // 深链入口：/graph?entity=… 直接聚焦并选中该实体（证据两跳可达的反向路径）
+  const { entity: entityParam } = useSearch({ from: "/app/graph" });
+  const [focusEntity, setFocusEntity] = useState<string | null>(entityParam ?? null);
+  const [selected, setSelected] = useState<string | null>(entityParam ?? null);
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQ, setSearchQ] = useState("");
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
+  /** null = 全时段；数值 = as-of 时刻(ms)。
+      默认 as-of 今天：时态平台的图谱默认呈现"现在的世界"，
+      已闭合的事实不该与现行事实无差别并列（All time 是显式选择） */
+  const [timeT, setTimeT] = useState<number | null>(() => Date.now());
+  const [activeCount, setActiveCount] = useState(0);
+  const [stabilizing, setStabilizing] = useState(false);
+  /* 播放态提升到此层：reducer 需区分"播放推进"（淡入）与"手动拖动"（瞬切） */
+  const [playing, setPlaying] = useState(false);
+  /* 布局模式：force = FA2 斥力；circular = 圆环；pack = 按类型圆填充聚簇 */
+  type LayoutMode = "force" | "circular" | "pack";
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
+  const layoutModeRef = useRef<LayoutMode>("force");
+  const layoutCtlRef = useRef<{ apply: (m: LayoutMode) => void } | null>(null);
+
+  const data = useQuery({
+    queryKey: ["graph", kb?.id, focusEntity],
+    queryFn: () =>
+      focusEntity ? api.graphNeighborhood(kb!.id, focusEntity) : api.graphOverview(kb!.id),
+    enabled: !!kb,
+  });
+
+  // 全图模式走全库实体搜索；子图模式只在已加载的子图内客户端过滤
+  const inSubgraph = !!focusEntity;
+  const candidates = useQuery({
+    queryKey: ["entitySearch", kb?.id, searchQ],
+    queryFn: () => api.searchEntities(kb!.id, searchQ),
+    enabled: !!kb && searchQ.length > 0 && !inSubgraph,
+  });
+  const subgraphHits = useMemo(() => {
+    if (!inSubgraph || !searchQ || !data.data) return [];
+    const q = searchQ.toLowerCase();
+    return data.data.nodes
+      .filter(
+        (n) =>
+          n.name.toLowerCase().includes(q) ||
+          n.disambiguator?.toLowerCase().includes(q),
+      )
+      .slice(0, 10);
+  }, [inSubgraph, searchQ, data.data]);
+  const searchHits = inSubgraph ? subgraphHits : (candidates.data?.entities ?? []);
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLCanvasElement>(null);
+  const sigmaRef = useRef<Sigma | null>(null);
+  /* 焦点 = hover 优先于选中；样式在 reducer 里统一处理 */
+  const selectedRef = useRef<string | null>(null);
+  const hoverRef = useRef<string | null>(null);
+  const filterRef = useRef<{
+    hiddenTypes: Set<string>;
+    activeNodes: Set<string> | null;
+    activeEdges: Set<string> | null;
+  }>({ hiddenTypes: new Set(), activeNodes: null, activeEdges: null });
+  const playingRef = useRef(false);
+  /* 播放淡入表：本轮新激活的节点/边 id → 激活时刻（rAF 循环驱动至到位） */
+  const fadeRef = useRef<Map<string, number>>(new Map());
+  const fadeRafRef = useRef(0);
+
+  const kickFade = useCallback(() => {
+    if (fadeRafRef.current) return;
+    const step = () => {
+      const now = performance.now();
+      for (const [id, start] of fadeRef.current)
+        if (now - start >= FADE_MS) fadeRef.current.delete(id);
+      sigmaRef.current?.refresh();
+      fadeRafRef.current = fadeRef.current.size ? requestAnimationFrame(step) : 0;
+    };
+    fadeRafRef.current = requestAnimationFrame(step);
+  }, []);
+
+  useEffect(() => {
+    playingRef.current = playing;
+    if (!playing) {
+      // 停止播放：未完成的淡入直接到位
+      fadeRef.current.clear();
+      sigmaRef.current?.refresh();
+    }
+  }, [playing]);
+
+  useEffect(() => () => cancelAnimationFrame(fadeRafRef.current), []);
+
+  const types = useMemo(() => {
+    const map = new Map<string, { label: string; color: string; shape: string }>();
+    for (const n of data.data?.nodes ?? []) {
+      if (!map.has(n.type_key))
+        map.set(n.type_key, { label: n.type_label, color: n.color, shape: n.shape });
+    }
+    return [...map.entries()];
+  }, [data.data]);
+
+  /* 时间过滤：计算 T 时刻的活跃边/节点集合 */
+  const recomputeActive = useCallback(
+    (t: number | null) => {
+      const d = data.data;
+      if (!d) return;
+      if (t === null) {
+        filterRef.current.activeNodes = null;
+        filterRef.current.activeEdges = null;
+        setActiveCount(d.edges.length);
+      } else {
+        const prevNodes = filterRef.current.activeNodes;
+        const prevEdges = filterRef.current.activeEdges;
+        const edges = new Set<string>();
+        const nodes = new Set<string>();
+        const touched = new Set<string>();
+        for (const e of d.edges) {
+          const vf = e.valid_from ? Date.parse(e.valid_from) : null;
+          const vt = e.valid_to ? Date.parse(e.valid_to) : null;
+          touched.add(e.source);
+          touched.add(e.target);
+          const active = vf === null ? true : vf <= t && (vt === null || vt > t);
+          if (active) {
+            edges.add(e.id);
+            nodes.add(e.source);
+            nodes.add(e.target);
+          }
+        }
+        // 没有任何边的孤立节点保持可见
+        for (const n of d.nodes) if (!touched.has(n.id)) nodes.add(n.id);
+        // 播放推进时新出现的元素淡入登场；手动拖动保持瞬时切换
+        if (playingRef.current) {
+          const now = performance.now();
+          for (const id of edges) if (prevEdges && !prevEdges.has(id)) fadeRef.current.set(id, now);
+          for (const id of nodes) if (prevNodes && !prevNodes.has(id)) fadeRef.current.set(id, now);
+          if (fadeRef.current.size) kickFade();
+        }
+        filterRef.current.activeNodes = nodes;
+        filterRef.current.activeEdges = edges;
+        setActiveCount(edges.size);
+      }
+      sigmaRef.current?.refresh();
+    },
+    [data.data, kickFade],
+  );
+
+  useEffect(() => {
+    filterRef.current.hiddenTypes = hiddenTypes;
+    sigmaRef.current?.refresh();
+  }, [hiddenTypes]);
+
+  useEffect(() => {
+    selectedRef.current = selected;
+    sigmaRef.current?.refresh();
+  }, [selected]);
+
+  useEffect(() => {
+    recomputeActive(timeT);
+  }, [timeT, recomputeActive]);
+
+  useEffect(() => {
+    if (!containerRef.current || !data.data) return;
+    const g = new Graphology({ multi: true });
+    for (const n of data.data.nodes) {
+      if (!g.hasNode(n.id)) {
+        g.addNode(n.id, {
+          label: n.name,
+          // Semantica 配方：深壳 + 14% 类型 tint，核心 50% tint，钢灰描边微 tint
+          color: mix(NODE_CORE_BASE, n.color, NODE_CORE_MIX),
+          shellColor: mix(NODE_SHELL_BASE, n.color, NODE_TINT_MIX),
+          borderColor: mix(NODE_BORDER_BASE, n.color, 0.3),
+          ringColor: TRANSPARENT,
+          typeColor: n.color,
+          typeLabel: n.type_label,
+          typeKey: n.type_key,
+          type: n.shape === "square" ? "square" : "shell",
+          size: 5 + Math.min(8, Math.sqrt(Number(n.degree)) * 1.6),
+        });
+      }
+    }
+    for (const e of data.data.edges) {
+      if (g.hasNode(e.source) && g.hasNode(e.target)) {
+        g.addEdgeWithKey(e.id, e.source, e.target, {
+          label: e.label.toUpperCase(),
+          size: 1,
+          color: EDGE_COLOR,
+          type: "line",
+        });
+      }
+    }
+    // 布局：先静态铺开，再用 worker 动画稳定 ~2.5s（Semantica 式 stabilizing）
+    let fa2: InstanceType<typeof FA2Layout> | null = null;
+    let stabilizeTimer: ReturnType<typeof setTimeout> | null = null;
+    // 拖拽状态先于 fa2 声明：outputReducer 闭包引用它们
+    let dragged: string | null = null;
+    let dragPos: { x: number; y: number } | null = null;
+    let fa2Settings: ReturnType<typeof forceAtlas2.inferSettings> | null = null;
+    if (g.order > 0) {
+      circular.assign(g, { scale: 300 });
+      const settings = {
+        ...forceAtlas2.inferSettings(g),
+        gravity: 0.35,
+        scalingRatio: 22,
+        outboundAttractionDistribution: true,
+      };
+      fa2Settings = settings;
+      forceAtlas2.assign(g, { iterations: 60, settings });
+      fa2 = new FA2Layout(g, {
+        settings,
+        // 关键：回写时把被拖节点钉回光标（不闪）；且提供 outputReducer 后
+        // supervisor 每帧 readGraphPositions —— 光标位置持续进入力模拟
+        outputReducer: (node, attr) => {
+          if (dragged && node === dragged && dragPos) {
+            attr.x = dragPos.x;
+            attr.y = dragPos.y;
+          }
+          return attr;
+        },
+      });
+      fa2.start();
+      setStabilizing(true);
+      stabilizeTimer = setTimeout(() => {
+        fa2?.stop();
+        setStabilizing(false);
+      }, 2500);
+    }
+
+    // 数据重建后布局回到 force（世界重新长出来）
+    setLayoutMode("force");
+    layoutModeRef.current = "force";
+
+    // 任意布局结果统一缩放到 FA2 同量级世界（±target），相机 reset 观感一致
+    const rescaleWorld = (target = 300) => {
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      g.forEachNode((_n, a) => {
+        minX = Math.min(minX, a.x as number);
+        maxX = Math.max(maxX, a.x as number);
+        minY = Math.min(minY, a.y as number);
+        maxY = Math.max(maxY, a.y as number);
+      });
+      const span = Math.max(maxX - minX, maxY - minY) || 1;
+      const k = (target * 2) / span;
+      const cx = (minX + maxX) / 2;
+      const cy = (minY + maxY) / 2;
+      g.updateEachNodeAttributes((_n, a) => ({ ...a, x: (a.x - cx) * k, y: (a.y - cy) * k }));
+    };
+
+    // 布局切换控制（挂到 ref 供组件层按钮调用；闭包内直握 g / fa2）
+    layoutCtlRef.current = {
+      apply: (mode) => {
+        if (g.order === 0) return;
+        if (stabilizeTimer) clearTimeout(stabilizeTimer);
+        fa2?.stop();
+        setStabilizing(false);
+        if (mode === "force") {
+          forceAtlas2.assign(g, { iterations: 60, settings: fa2Settings ?? undefined });
+          fa2?.start();
+          setStabilizing(true);
+          stabilizeTimer = setTimeout(() => {
+            fa2?.stop();
+            setStabilizing(false);
+          }, 2500);
+        } else if (mode === "circular") {
+          circular.assign(g, { scale: 300 });
+        } else {
+          // 按实体类型聚簇：同类型挤进同一个圆
+          circlepack.assign(g, { hierarchyAttributes: ["typeKey"] });
+          rescaleWorld(300);
+        }
+        sigma.setCustomBBox(null);
+        sigma.refresh();
+        sigma.getCamera().animatedReset({ duration: 300 });
+      },
+    };
+
+    sigmaRef.current?.kill();
+    const sigma = new Sigma(g, containerRef.current, {
+      allowInvalidContainer: true,
+      defaultNodeType: "shell",
+      nodeProgramClasses: {
+        // Semantica 节点解剖：状态环 → 描边 → 深色壳 → 微彩核心
+        shell: createNodeBorderProgram({
+          borders: [
+            { size: { value: 0.1 }, color: { attribute: "ringColor" } },
+            { size: { value: 0.07 }, color: { attribute: "borderColor" } },
+            { size: { value: 0.3 }, color: { attribute: "shellColor" } },
+            { size: { fill: true }, color: { attribute: "color" } },
+          ],
+        }),
+        square: NodeSquareShellProgram,
+      },
+      renderEdgeLabels: true,
+      defaultEdgeType: "line",
+      labelFont: '"Geist", "Inter", "Noto Sans SC", sans-serif',
+      labelSize: 11,
+      labelColor: { color: "#e5e5e5" },
+      labelRenderedSizeThreshold: 6,
+      labelDensity: 0.7,
+      labelGridCellSize: 140,
+      minCameraRatio: 0.04,
+      maxCameraRatio: 8,
+      edgeLabelSize: 9,
+      edgeLabelColor: { color: "#a1a1a1" },
+      edgeLabelFont: '"Geist", "Inter", sans-serif',
+      defaultDrawNodeLabel: drawPillLabel,
+      defaultDrawNodeHover: drawHoverCard,
+      nodeReducer: (node, attrs) => {
+        const f = filterRef.current;
+        const res = { ...attrs };
+        const base = attrs.size as number;
+        if (f.hiddenTypes.has(attrs.typeKey as string)) {
+          res.hidden = true;
+          return res;
+        }
+        // Semantica 状态表: muted { ×0.52, 全层压暗 }
+        const muteNode = () => {
+          res.size = base * 0.52;
+          res.color = mix(MUTED_SHELL, NODE_CORE_BASE, 0.3);
+          res.shellColor = MUTED_SHELL;
+          res.borderColor = TRANSPARENT;
+          res.ringColor = TRANSPARENT;
+          res.label = "";
+          res.zIndex = 0;
+        };
+        // hover 只提亮自身（不压暗全图）；压暗聚焦只属于点击选中
+        if (hoverRef.current === node) {
+          res.size = Math.max(base * 1.08, 10.4);
+          res.ringColor = RING_HOVERED;
+          // 悬浮卡接管标签展示；label 本身保留（悬浮卡靠它渲染标题）
+          res.hideBaseLabel = true;
+          res.zIndex = 4;
+          return res;
+        }
+        // 选中实体可能不在当前画布（侧栏跳转/邻域重载间隙）——不在则跳过聚焦压暗逻辑
+        const sel = selectedRef.current && g.hasNode(selectedRef.current) ? selectedRef.current : null;
+        if (sel) {
+          if (node === sel) {
+            res.size = Math.max(base * 1.02, 9.2);
+            res.ringColor = RING_SELECTED;
+            res.forceLabel = true;
+            res.zIndex = 3;
+            return res;
+          }
+          if (g.areNeighbors(sel, node)) {
+            // neighbor {×0.76, min 4, zIndex 2}
+            res.size = Math.max(base * 0.76, 4);
+            res.zIndex = 2;
+          } else {
+            muteNode();
+            return res;
+          }
+        } else {
+          // default {×0.7}
+          res.size = base * 0.7;
+        }
+        if (f.activeNodes && !f.activeNodes.has(node)) {
+          muteNode();
+          return res;
+        }
+        // 播放淡入：从 muted 形态渐变到本帧算出的正常形态
+        const fs = fadeRef.current.get(node);
+        if (fs !== undefined) {
+          const t = Math.min(1, (performance.now() - fs) / FADE_MS);
+          res.size = (res.size as number) * (0.55 + 0.45 * t);
+          res.color = lerpColor(MUTED_SHELL, String(res.color ?? NODE_CORE_BASE), t);
+          res.shellColor = lerpColor(MUTED_SHELL, String(res.shellColor ?? NODE_SHELL_BASE), t);
+          res.borderColor = lerpColor("rgba(0,0,0,0)", String(res.borderColor ?? NODE_BORDER_BASE), t);
+          if (t < 0.7) res.label = "";
+        }
+        return res;
+      },
+      edgeReducer: (edge, attrs) => {
+        const f = filterRef.current;
+        const res = { ...attrs };
+        const [s, t] = g.extremities(edge);
+        const sk = g.getNodeAttribute(s, "typeKey") as string;
+        const tk = g.getNodeAttribute(t, "typeKey") as string;
+        if (f.hiddenTypes.has(sk) || f.hiddenTypes.has(tk)) {
+          res.hidden = true;
+          return res;
+        }
+        // hover: 只提亮关联边；selected: 提亮关联边 + 压暗其余
+        const hov = hoverRef.current;
+        const sel =
+          selectedRef.current && g.hasNode(selectedRef.current) ? selectedRef.current : null;
+        const boost = () => {
+          res.color = EDGE_FOCUS;
+          res.size = Math.max((attrs.size as number) * 1.42, 1.85);
+          res.zIndex = 5;
+        };
+        if (hov && (s === hov || t === hov)) {
+          boost();
+        } else if (sel) {
+          if (s === sel || t === sel) {
+            boost();
+          } else {
+            res.color = EDGE_DIM;
+            res.size = (attrs.size as number) * 0.6;
+            res.label = "";
+            return res;
+          }
+        }
+        if (f.activeEdges && !f.activeEdges.has(edge)) {
+          res.color = EDGE_DIM;
+          res.label = "";
+          return res;
+        }
+        // 播放淡入：边从近背景色渐亮到常规色（alpha 同步插值）
+        const fs = fadeRef.current.get(edge);
+        if (fs !== undefined) {
+          const t = Math.min(1, (performance.now() - fs) / FADE_MS);
+          res.color = lerpColor(EDGE_DIM, String(res.color), t);
+          if (t < 0.8) res.label = "";
+        }
+        return res;
+      },
+    });
+    sigma.on("clickNode", ({ node }) => setSelected(node));
+    sigma.on("doubleClickNode", ({ node, event }) => {
+      event.preventSigmaDefault();
+      setFocusEntity(node);
+      setSelected(node);
+    });
+    sigma.on("clickStage", () => setSelected(null));
+    sigma.on("enterNode", ({ node }) => {
+      hoverRef.current = node;
+      sigma.refresh();
+    });
+    sigma.on("leaveNode", () => {
+      hoverRef.current = null;
+      sigma.refresh();
+    });
+    // 边标签只在放大后出现（默认视距下太密，Semantica 同样克制）
+    const updateEdgeLabels = () =>
+      sigma.setSetting("renderEdgeLabels", sigma.getCamera().ratio < 0.7);
+    sigma.getCamera().on("updated", updateEdgeLabels);
+    updateEdgeLabels();
+
+    // 世界坐标网格：相机变动/容器尺寸变动时重绘
+    const renderGrid = () => {
+      if (gridRef.current) drawWorldGrid(gridRef.current, sigma);
+    };
+    sigma.getCamera().on("updated", renderGrid);
+    sigma.on("resize", renderGrid);
+    renderGrid();
+
+    // 节点拖拽 + 活的力导反馈。按下只记候选：视口位移 >4px 才升格为拖拽
+    //（否则纯点选也会误启 FA2）；被拖节点由 fa2 的 outputReducer 钉在光标上（见上），
+    // 松手后稳定 ~1.2s 停机
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    let dragCandidate: string | null = null;
+    let downPoint: { x: number; y: number } | null = null;
+    sigma.on("downNode", (e) => {
+      dragCandidate = e.node;
+      downPoint = { x: e.event.x, y: e.event.y };
+    });
+    sigma.getMouseCaptor().on("mousemovebody", (e) => {
+      if (!dragCandidate) return;
+      if (!dragged) {
+        if (!downPoint || Math.hypot(e.x - downPoint.x, e.y - downPoint.y) < 4) return;
+        // 升格为拖拽
+        dragged = dragCandidate;
+        if (settleTimer) clearTimeout(settleTimer);
+        // 静态布局（circular/pack）下拖拽不唤醒力模拟——否则一碰就散架
+        if (layoutModeRef.current === "force" && fa2 && !fa2.isRunning()) fa2.start();
+        // 固定当前包围盒，避免拖拽时相机自动跟随缩放
+        if (!sigma.getCustomBBox()) sigma.setCustomBBox(sigma.getBBox());
+      }
+      const pos = sigma.viewportToGraph(e);
+      dragPos = pos;
+      g.setNodeAttribute(dragged, "x", pos.x);
+      g.setNodeAttribute(dragged, "y", pos.y);
+      // 阻止相机平移
+      e.preventSigmaDefault();
+      e.original.preventDefault();
+      e.original.stopPropagation();
+    });
+    const endDrag = () => {
+      dragCandidate = null;
+      downPoint = null;
+      if (!dragged) return;
+      dragged = null;
+      dragPos = null;
+      settleTimer = setTimeout(() => fa2?.stop(), 1200);
+    };
+    sigma.getMouseCaptor().on("mouseup", endDrag);
+    sigmaRef.current = sigma;
+    if (import.meta.env.DEV) {
+      // 调试句柄（仅 dev）：无头环境下检查 reducer 输出
+      (window as unknown as Record<string, unknown>).__g = g;
+      (window as unknown as Record<string, unknown>).__sigma = sigma;
+      (window as unknown as Record<string, unknown>).__sel = selectedRef;
+    }
+    recomputeActive(timeT);
+    return () => {
+      if (stabilizeTimer) clearTimeout(stabilizeTimer);
+      if (settleTimer) clearTimeout(settleTimer);
+      fa2?.kill();
+      setStabilizing(false);
+      sigma.kill();
+      sigmaRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.data]);
+
+  if (!kb) return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
+
+  const empty = data.isSuccess && data.data.nodes.length === 0;
+  const nodeCount = data.data?.nodes.length ?? 0;
+  const edgeCount = data.data?.edges.length ?? 0;
+
+  return (
+    <div className="h-full relative">
+      {/* 顶部悬浮条：搜索 + 图例 + 状态 */}
+      <div className="absolute top-3 left-3 right-3 z-10 flex items-start gap-2 pointer-events-none">
+        <div className="relative pointer-events-auto">
+          <input
+            className="input-dark w-60 px-3 py-1.5 text-sm shadow-lg"
+            placeholder={inSubgraph ? S.graph.searchInSubgraph : S.graph.searchEntity}
+            value={searchInput}
+            onChange={(e) => {
+              setSearchInput(e.target.value);
+              setSearchQ(e.target.value.trim());
+            }}
+          />
+          {searchQ && searchHits.length > 0 && (
+            <div className="glass-strong absolute mt-1 w-full rounded-lg shadow-xl overflow-hidden">
+              {searchHits.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => {
+                    // 子图内命中：只选中（已在视野里）；全图搜索：跳到该实体邻域
+                    if (!inSubgraph) setFocusEntity(c.id);
+                    setSelected(c.id);
+                    setSearchInput("");
+                    setSearchQ("");
+                  }}
+                  className="w-full px-3 py-1.5 text-left text-sm text-neutral-200 hover:bg-white/5 flex items-center gap-2"
+                >
+                  <span
+                    className="h-2.5 w-2.5 rounded-full shrink-0"
+                    style={{ background: c.color }}
+                  />
+                  <span className="truncate">{c.name}</span>
+                  {c.disambiguator && (
+                    <span className="text-xs text-neutral-500 truncate">· {c.disambiguator}</span>
+                  )}
+                  <span className="ml-auto text-xs text-neutral-500">{c.type_label}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {focusEntity && (
+          <button
+            onClick={() => setFocusEntity(null)}
+            className="u-btn u-btn-ghost glass-strong pointer-events-auto px-3 py-1.5 text-sm shadow-lg"
+          >
+            {S.graph.backToOverview}
+          </button>
+        )}
+
+        {/* 图例（点击切换类型显隐） */}
+        <div className="pointer-events-auto flex flex-wrap gap-1.5 pt-0.5">
+          {types.map(([key, t]) => (
+            <button
+              key={key}
+              onClick={() =>
+                setHiddenTypes((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(key)) next.delete(key);
+                  else next.add(key);
+                  return next;
+                })
+              }
+              className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
+                hiddenTypes.has(key) ? "opacity-35" : ""
+              }`}
+            >
+              <span
+                className={`h-2 w-2 ${t.shape === "square" ? "" : "rounded-full"}`}
+                style={{ background: t.color }}
+              />
+              <span className="text-neutral-300">{t.label}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="ml-auto pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
+          {stabilizing && <span className="text-neutral-400">{S.graph.stabilizing} · </span>}
+          {S.graph.stats(nodeCount, edgeCount, timeT === null ? edgeCount : activeCount)}
+        </div>
+      </div>
+
+      {/* 画布：世界坐标网格层（随相机动）垫在 sigma WebGL 层下（全出血，时间岛悬浮其上） */}
+      <div className="absolute inset-0">
+        <canvas ref={gridRef} className="absolute inset-0 h-full w-full" />
+        <div ref={containerRef} className="absolute inset-0" />
+      </div>
+
+      {/* 左下控件塔：布局切换 + 相机（右下归实体侧栏，底部中央归时间岛） */}
+      <div className="absolute bottom-4 left-3 z-10 flex flex-col gap-2">
+      <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+        {(
+          [
+            { key: "force", Icon: Orbit, label: S.graph.layoutForce },
+            { key: "circular", Icon: CircleDashed, label: S.graph.layoutCircular },
+            { key: "pack", Icon: Grape, label: S.graph.layoutPack },
+          ] as const
+        ).map(({ key, Icon, label }) => (
+          <button
+            key={key}
+            title={label}
+            onClick={() => {
+              setLayoutMode(key);
+              layoutModeRef.current = key;
+              layoutCtlRef.current?.apply(key);
+            }}
+            className={`p-2 transition-colors ${
+              layoutMode === key
+                ? "text-white bg-white/[0.1]"
+                : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
+            }`}
+          >
+            <Icon size={15} />
+          </button>
+        ))}
+      </div>
+      <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+        <button
+          title={S.graph.zoomIn}
+          onClick={() => sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })}
+          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+        >
+          <ZoomIn size={15} />
+        </button>
+        <button
+          title={S.graph.zoomOut}
+          onClick={() => sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })}
+          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+        >
+          <ZoomOut size={15} />
+        </button>
+        <div className="h-px bg-white/10 mx-1.5" />
+        <button
+          title={S.graph.fitView}
+          onClick={() => sigmaRef.current?.getCamera().animatedReset({ duration: 300 })}
+          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+        >
+          <Maximize2 size={15} />
+        </button>
+      </div>
+      </div>
+
+      {empty && (
+        <div className="absolute inset-0 grid place-items-center pointer-events-none">
+          <div className="text-center text-sm text-neutral-500 max-w-xs">
+            <div className="glass mx-auto mb-3 h-14 w-14 rounded-2xl grid place-items-center text-lg font-bold text-neutral-300">
+              {S.nav.graph}
+            </div>
+            {S.graph.emptyBody}
+          </div>
+        </div>
+      )}
+
+      {/* 底部居中悬浮时间岛 */}
+      {edgeCount > 0 && (
+        <TimeScrubber
+          edges={data.data!.edges}
+          value={timeT}
+          onChange={setTimeT}
+          playing={playing}
+          onPlayingChange={setPlaying}
+        />
+      )}
+
+      {/* 实体侧栏 */}
+      {selected && kb && (
+        <EntityPanel
+          kbId={kb.id}
+          entityId={selected}
+          onClose={() => setSelected(null)}
+          onNavigate={(id) => {
+            // 跳转目标可能不在当前画布：同时把图 refocus 到它的邻域（与搜索选择一致）
+            setFocusEntity(id);
+            setSelected(id);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============ 时间轴（底部居中悬浮岛：播放 + 密度带 + 拖动） ============ */
+
+/** 轨道 clientX → 对齐天步进的时间值（数据精度即 day，拖动求精细；播放仍按月推进求节奏）。 */
+function scrubValueAt(
+  clientX: number,
+  track: HTMLDivElement | null,
+  minTs: number,
+  maxTs: number,
+): number {
+  if (!track) return maxTs;
+  const rect = track.getBoundingClientRect();
+  // 布局未成形（宽度 0）时避免除零产出 NaN
+  if (rect.width < 1) return maxTs;
+  const frac = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  const raw = minTs + frac * (maxTs - minTs);
+  return Math.min(maxTs, minTs + Math.round((raw - minTs) / DAY_MS) * DAY_MS);
+}
+
+function TimeScrubber({
+  edges,
+  value,
+  onChange,
+  playing,
+  onPlayingChange,
+}: {
+  edges: GraphEdge[];
+  value: number | null;
+  onChange: (v: number | null) => void;
+  /* 播放态由 Graph 持有：渲染层要区分播放推进与手动拖动 */
+  playing: boolean;
+  onPlayingChange: (v: boolean) => void;
+}) {
+  const setPlaying = onPlayingChange;
+  const trackRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+
+  const { minTs, maxTs, bars } = useMemo(() => {
+    const now = Date.now();
+    const froms = edges
+      .map((e) => (e.valid_from ? Date.parse(e.valid_from) : NaN))
+      .filter((t) => !Number.isNaN(t));
+    const min = froms.length ? Math.min(...froms) : now - 5 * 365 * 24 * 3600 * 1000;
+    const minYear = new Date(min).getUTCFullYear();
+    const maxYear = new Date(now).getUTCFullYear();
+    const counts = new Map<number, number>();
+    for (const t of froms) {
+      const y = new Date(t).getUTCFullYear();
+      counts.set(y, (counts.get(y) ?? 0) + 1);
+    }
+    const peak = Math.max(1, ...counts.values());
+    const bars: { year: number; h: number }[] = [];
+    for (let y = minYear; y <= maxYear; y++) {
+      bars.push({ year: y, h: (counts.get(y) ?? 0) / peak });
+    }
+    return { minTs: Date.UTC(minYear, 0, 1), maxTs: now, bars };
+  }, [edges]);
+
+  // 播放按日推进（数据即 day 精度），日子快速翻过；整体节奏仍 ≈ 一个月/260ms。
+  // rAF 时间驱动：帧率无关，内部浮点累加避免取整漂移，值只在跨天时才下发
+  useEffect(() => {
+    if (!playing) return;
+    const SPEED = MONTH_MS / 260; // 每毫秒真实时间推进的时间线毫秒数
+    let raf = 0;
+    let last = performance.now();
+    let acc = value ?? minTs;
+    let lastSnapped = Number.NaN;
+    const step = (now: number) => {
+      acc += (now - last) * SPEED;
+      last = now;
+      if (acc >= maxTs) {
+        setPlaying(false);
+        onChange(null);
+        return;
+      }
+      const snapped = minTs + Math.round((acc - minTs) / DAY_MS) * DAY_MS;
+      if (snapped !== lastSnapped) {
+        lastSnapped = snapped;
+        onChange(snapped);
+      }
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+    // 只随播放开关重启：acc 在循环内自持，value 帧帧变不应重建循环
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing, minTs, maxTs]);
+
+  // 展示到日：与数据的 day 级 valid_precision 对齐
+  const label = (() => {
+    if (value === null) return S.graph.allTime;
+    const d = new Date(value);
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    return `${d.getUTCFullYear()}-${mm}-${dd}`;
+  })();
+
+  const minYear = bars[0]?.year;
+  const maxYear = bars[bars.length - 1]?.year;
+
+  return (
+    <div className="glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-[min(560px,calc(100%-4rem))] rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+      <button
+        onClick={() => {
+          if (!playing && value === null) onChange(minTs);
+          setPlaying(!playing);
+        }}
+        title={playing ? S.graph.pause : S.graph.play}
+        className="u-btn u-btn-ghost h-8 w-8 shrink-0 grid place-items-center rounded-lg"
+      >
+        {playing ? <Pause size={13} /> : <Play size={13} />}
+      </button>
+
+      <span className="shrink-0 u-num text-[10px] text-neutral-600">
+        {minYear}
+      </span>
+
+      {/* 密度带轨道：内嵌浅色井 + 每年事实量柱 */}
+      <div ref={trackRef} className="relative flex-1 h-9 rounded-lg bg-white/[0.04]">
+        <div className="absolute inset-x-1.5 top-1.5 bottom-1.5 flex items-end gap-[2px]">
+          {bars.map((b) => {
+            // 进入即亮（年初为判据）：播放头脚下的柱子即已覆盖——进度条通用语义
+            const barTs = Date.UTC(b.year, 0, 1);
+            const past = value !== null && barTs <= value;
+            return (
+              <div key={b.year} className="flex-1 flex items-end h-full" title={`${b.year}`}>
+                <div
+                  className="w-full rounded-[1px] transition-colors"
+                  style={{
+                    height: `${Math.max(10, b.h * 100)}%`,
+                    // 播放中已扫过的年份提亮，停止后回到常规亮度
+                    background:
+                      value !== null && past && playing
+                        ? "rgba(255,255,255,0.62)"
+                        : value === null || past
+                          ? "rgba(255,255,255,0.32)"
+                          : "rgba(255,255,255,0.09)",
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
+        <input
+          type="range"
+          className="scrubber-range"
+          min={minTs}
+          max={maxTs}
+          step={DAY_MS}
+          value={value ?? maxTs}
+          onChange={(e) => {
+            setPlaying(false);
+            onChange(Number(e.target.value));
+          }}
+          // 原生 range 的拖拽手势会被页面级鼠标监听（如图上拖节点）干扰——
+          // 自己用 pointer capture 驱动拖动，点击与拖拽都走同一条计算路径
+          onPointerDown={(e) => {
+            setPlaying(false);
+            draggingRef.current = true;
+            try {
+              e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {
+              /* 合成事件的 pointerId 可能无效，忽略 */
+            }
+            onChange(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
+          }}
+          onPointerMove={(e) => {
+            if (draggingRef.current)
+              onChange(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
+          }}
+          onPointerUp={() => {
+            draggingRef.current = false;
+          }}
+          onPointerCancel={() => {
+            draggingRef.current = false;
+          }}
+        />
+      </div>
+
+      <span className="shrink-0 u-num text-[10px] text-neutral-600">
+        {maxYear}
+      </span>
+
+      <div className="w-[5.6rem] shrink-0 text-center u-num text-xs text-neutral-200">
+        {label}
+      </div>
+
+      <div className="h-5 w-px shrink-0 bg-white/10" />
+
+      {/* 双锚点分段：所处锚点高亮、点击即跳；拖在中间某天时两者皆不亮 */}
+      <div className="flex shrink-0 rounded-lg overflow-hidden border border-white/10">
+        {(
+          [
+            { key: "all", label: S.graph.allTime, active: value === null, to: null },
+            {
+              key: "now",
+              label: S.graph.nowBtn,
+              active: value !== null && maxTs - value < DAY_MS,
+              to: maxTs,
+            },
+          ] as const
+        ).map((a) => (
+          <button
+            key={a.key}
+            onClick={() => {
+              setPlaying(false);
+              onChange(a.to);
+            }}
+            className={`px-2.5 py-1.5 text-xs transition-colors ${
+              a.active
+                ? "bg-white/10 text-neutral-100"
+                : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
+            }`}
+          >
+            {a.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============ 实体侧栏 ============ */
+
+function fmtTime(iso: string | null, precision: string): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  if (precision === "year") return `${y}`;
+  if (precision === "month") return `${y}-${m}`;
+  return `${y}-${m}-${day}`;
+}
+
+function fmtInterval(f: EntityFact): string {
+  if (f.temporal === "eternal") return "";
+  const from = fmtTime(f.valid_from, f.valid_precision);
+  const to = fmtTime(f.valid_to, f.valid_precision);
+  if (!from && !to) return "";
+  if (from && !to) return `${from} ~ ${S.graph.ongoing}`;
+  if (from && to) return `${from} ~ ${to}`;
+  return `~ ${to}`;
+}
+
+function EntityPanel({
+  kbId,
+  entityId,
+  onClose,
+  onNavigate,
+}: {
+  kbId: string;
+  entityId: string;
+  onClose: () => void;
+  onNavigate: (entityId: string) => void;
+}) {
+  const detail = useQuery({
+    queryKey: ["entity", kbId, entityId],
+    queryFn: () => api.entityDetail(kbId, entityId),
+  });
+  const [openFact, setOpenFact] = useState<string | null>(null);
+  // Relations = 按关系分组（查关系）；Timeline = 按时间摊开（读故事）
+  const [view, setView] = useState<"relations" | "timeline">("relations");
+
+  const e: GraphNode | undefined = detail.data?.entity;
+
+  // Relations = 当下有效的快照（as-of now）；已闭合的历史只出现在 Timeline。
+  // 按「方向 + 谓词」分组：实体自身名不再逐行重复，谓词只出现在小节标题里
+  const { groups, historicalCount } = useMemo(() => {
+    const all = detail.data?.facts ?? [];
+    const nowIso = new Date().toISOString();
+    const current = all.filter(
+      (f) => (!f.valid_from || f.valid_from <= nowIso) && (!f.valid_to || f.valid_to > nowIso),
+    );
+    const map = new Map<
+      string,
+      { key: string; label: string; direction: string; rows: EntityFact[] }
+    >();
+    for (const f of current) {
+      const k = `${f.direction}:${f.predicate_key}`;
+      if (!map.has(k))
+        map.set(k, { key: k, label: f.predicate_label, direction: f.direction, rows: [] });
+      map.get(k)!.rows.push(f);
+    }
+    const arr = [...map.values()];
+    for (const gr of arr)
+      gr.rows.sort((a, b) => ((a.valid_from ?? "9999") < (b.valid_from ?? "9999") ? -1 : 1));
+    arr.sort((a, b) => b.rows.length - a.rows.length || a.label.localeCompare(b.label));
+    return { groups: arr, historicalCount: all.length - current.length };
+  }, [detail.data]);
+
+  return (
+    <div className="glass-strong absolute top-14 right-3 bottom-20 w-80 z-10 rounded-xl shadow-2xl flex flex-col">
+      <div className="flex items-start justify-between px-4 py-3.5 border-b border-white/10">
+        <div>
+          {e && (
+            <>
+              <div className="flex items-center gap-2">
+                <span
+                  className="h-2.5 w-2.5 rounded-full shrink-0"
+                  style={{ background: e.color, boxShadow: `0 0 8px ${e.color}55` }}
+                />
+                <span
+                  className="text-[15px] font-semibold tracking-tight text-white"
+                  style={{ fontFamily: "var(--font-display)" }}
+                >
+                  {e.name}
+                </span>
+              </div>
+              <div className="mt-1 text-xs text-neutral-500">
+                {e.disambiguator ? `${e.disambiguator} · ` : ""}
+                {e.type_label} · {detail.data?.facts.length ?? 0} {S.graph.facts}
+              </div>
+            </>
+          )}
+        </div>
+        <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200 mt-0.5">
+          <X size={15} />
+        </button>
+      </div>
+
+      {/* 视图切换：Relations（分组）| Timeline（年表） */}
+      <div className="px-4 pt-2.5">
+        <div className="flex rounded-lg overflow-hidden border border-white/10 w-fit">
+          {(["relations", "timeline"] as const).map((v) => (
+            <button
+              key={v}
+              onClick={() => setView(v)}
+              className={`px-3 py-1 text-[11px] transition-colors ${
+                view === v
+                  ? "bg-white/10 text-neutral-100"
+                  : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
+              }`}
+            >
+              {v === "relations" ? S.graph.viewRelations : S.graph.viewTimeline}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="u-scroll flex-1 overflow-y-auto px-2 py-2">
+        {view === "relations" && historicalCount > 0 && (
+          <button
+            onClick={() => setView("timeline")}
+            className="mx-2 mb-2 mt-0.5 text-[11px] text-neutral-500 hover:text-neutral-300 underline-offset-2 hover:underline"
+          >
+            {S.graph.historicalNote(historicalCount)}
+          </button>
+        )}
+        {view === "relations" &&
+          groups.map((gr) => (
+            <div key={gr.key} className="mb-3 last:mb-1">
+              <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+                {gr.direction === "in" ? <ArrowLeft size={10} /> : <ArrowRight size={10} />}
+                {gr.label}
+                {gr.rows.length > 1 && <span className="text-neutral-600">{gr.rows.length}</span>}
+              </div>
+              <div>
+                {gr.rows.map((f) => (
+                  <FactRow
+                    key={f.id}
+                    kbId={kbId}
+                    fact={f}
+                    open={openFact === f.id}
+                    onToggle={() => setOpenFact(openFact === f.id ? null : f.id)}
+                    onNavigate={onNavigate}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        {view === "timeline" && (
+          <TimelineView
+            kbId={kbId}
+            facts={detail.data?.facts ?? []}
+            openFact={openFact}
+            onToggle={(id) => setOpenFact(openFact === id ? null : id)}
+            onNavigate={onNavigate}
+          />
+        )}
+        {detail.data?.facts.length === 0 && (
+          <p className="text-sm text-neutral-500 p-2">{S.graph.noFacts}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 年表视图：带区间的事实按起点摊开成竖直时间线；无时间的沉到底部 undated。 */
+function TimelineView({
+  kbId,
+  facts,
+  openFact,
+  onToggle,
+  onNavigate,
+}: {
+  kbId: string;
+  facts: EntityFact[];
+  openFact: string | null;
+  onToggle: (id: string) => void;
+  onNavigate: (entityId: string) => void;
+}) {
+  const dated = facts
+    .filter((f) => f.temporal !== "eternal" && (f.valid_from || f.valid_to))
+    .sort((a, b) =>
+      (a.valid_from ?? a.valid_to ?? "") < (b.valid_from ?? b.valid_to ?? "") ? -1 : 1,
+    );
+  const undated = facts.filter((f) => !dated.includes(f));
+
+  return (
+    <div className="px-2 pt-1">
+      <div className="relative ml-1.5 border-l border-white/15 pl-3 space-y-0.5">
+        {dated.map((f) => (
+          <div key={f.id} className="relative">
+            <span className="absolute -left-[17.5px] top-2.5 h-2 w-2 rounded-full bg-neutral-600 ring-2 ring-[#0f0f10]" />
+            <TimelineRow
+              kbId={kbId}
+              fact={f}
+              open={openFact === f.id}
+              onToggle={() => onToggle(f.id)}
+              onNavigate={onNavigate}
+            />
+          </div>
+        ))}
+        {dated.length === 0 && (
+          <p className="py-2 text-xs text-neutral-500">{S.graph.timelineEmpty}</p>
+        )}
+      </div>
+      {undated.length > 0 && (
+        <div className="mt-3">
+          <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-600">
+            {S.graph.undated}
+          </div>
+          {undated.map((f) => (
+            <FactRow
+              key={f.id}
+              kbId={kbId}
+              fact={f}
+              open={openFact === f.id}
+              onToggle={() => onToggle(f.id)}
+              onNavigate={onNavigate}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 年表条目：区间 + 闭合方式标记 + 开放事实的最后确认时间；点击展开证据。 */
+function TimelineRow({
+  kbId,
+  fact,
+  open,
+  onToggle,
+  onNavigate,
+}: {
+  kbId: string;
+  fact: EntityFact;
+  open: boolean;
+  onToggle: () => void;
+  onNavigate: (entityId: string) => void;
+}) {
+  const interval = fmtInterval(fact);
+  const isOpenEnded = !fact.valid_to;
+  const literal = fmtObjectValue(fact.object_value);
+  return (
+    <div
+      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"} ${
+        fact.stale ? "opacity-55" : ""
+      }`}
+      title={fact.stale ? S.graph.staleFactHint : undefined}
+    >
+      <button onClick={onToggle} className="w-full text-left px-2 py-1.5">
+        <div className="flex items-center gap-1.5 u-num text-[10.5px] text-neutral-500">
+          {interval || "—"}
+          {fact.corrected && (
+            <span className="text-neutral-600" title={S.graph.correctedHint}>
+              ⟲
+            </span>
+          )}
+          {isOpenEnded && fact.last_evidence_time && (
+            <span className="ml-auto text-neutral-600">
+              {S.graph.lastConfirmed(fact.last_evidence_time.slice(0, 10))}
+            </span>
+          )}
+        </div>
+        <div className="mt-0.5 flex items-center gap-1.5 text-[13px] text-neutral-200">
+          <span className="text-neutral-500 text-xs">
+            {fact.direction === "in" ? "←" : "→"} {fact.predicate_label}
+          </span>
+          {fact.other_id ? (
+            <span
+              role="link"
+              tabIndex={0}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                onNavigate(fact.other_id!);
+              }}
+              onKeyDown={(ev) => {
+                if (ev.key === "Enter") {
+                  ev.stopPropagation();
+                  onNavigate(fact.other_id!);
+                }
+              }}
+              className="truncate hover:text-white hover:underline underline-offset-2 decoration-white/30"
+            >
+              {fact.other_name ?? "?"}
+            </span>
+          ) : (
+            <span className="truncate">{fact.other_name ?? literal ?? "?"}</span>
+          )}
+          {fact.stale && (
+            <span className="u-chip u-chip-neutral shrink-0 !text-[10px] !px-1.5">
+              {S.graph.staleFactChip}
+            </span>
+          )}
+        </div>
+      </button>
+      {open && <EvidenceList kbId={kbId} fact={fact} />}
+    </div>
+  );
+}
+
+/** 字面值宾语的显示：属性 {value,unit} / 问数映射 {summary} / 其他 JSON 兜底。 */
+function fmtObjectValue(v: Record<string, unknown> | null): string | null {
+  if (!v) return null;
+  if (v.value !== undefined) {
+    const val = typeof v.value === "boolean" ? (v.value ? "✓" : "✗") : String(v.value);
+    return typeof v.unit === "string" && v.unit ? `${val} ${v.unit}` : val;
+  }
+  if (typeof v.summary === "string") return v.summary;
+  return JSON.stringify(v);
+}
+
+function FactRow({
+  kbId,
+  fact,
+  open,
+  onToggle,
+  onNavigate,
+}: {
+  kbId: string;
+  fact: EntityFact;
+  open: boolean;
+  onToggle: () => void;
+  onNavigate: (entityId: string) => void;
+}) {
+  const interval = fmtInterval(fact);
+  // 与 Review 的低置信口径一致：只有低到需要怀疑才挂 chip，常规置信保持沉默
+  const lowConfidence = fact.confidence < 0.75;
+
+  return (
+    <div
+      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"} ${
+        fact.stale ? "opacity-55" : ""
+      }`}
+      title={fact.stale ? S.graph.staleFactHint : undefined}
+    >
+      <button onClick={onToggle} className="w-full text-left px-2 py-1.5 flex items-center gap-1.5">
+        <ChevronRight
+          size={11}
+          className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        {fact.other_id ? (
+          <span
+            role="link"
+            tabIndex={0}
+            onClick={(ev) => {
+              ev.stopPropagation();
+              onNavigate(fact.other_id!);
+            }}
+            onKeyDown={(ev) => {
+              if (ev.key === "Enter") {
+                ev.stopPropagation();
+                onNavigate(fact.other_id!);
+              }
+            }}
+            className="truncate text-[13px] text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
+          >
+            {fact.other_name ?? "?"}
+          </span>
+        ) : (
+          <span className="truncate text-[13px] text-neutral-200">
+            {fact.other_name ?? fmtObjectValue(fact.object_value) ?? "?"}
+          </span>
+        )}
+        {lowConfidence && (
+          <span className="u-chip u-chip-warn shrink-0 !text-[10px] !px-1.5">
+            {Math.round(fact.confidence * 100)}%
+          </span>
+        )}
+        {fact.stale && (
+          <span className="u-chip u-chip-neutral shrink-0 !text-[10px] !px-1.5">
+            {S.graph.staleFactChip}
+          </span>
+        )}
+        {interval && (
+          <span className="ml-auto shrink-0 pl-2 u-num text-[10.5px] text-neutral-500">
+            {interval}
+          </span>
+        )}
+      </button>
+      {open && <EvidenceList kbId={kbId} fact={fact} />}
+    </div>
+  );
+}
+
+/** 证据展开区（FactRow 与 TimelineRow 共用）：quote + 跳原文 + 版本角标 + 置信。 */
+function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
+  const evidence = useQuery({
+    queryKey: ["evidence", fact.id],
+    queryFn: () => api.factEvidence(kbId, fact.id),
+  });
+  return (
+    <div className="mx-2 mb-2 mt-0.5 space-y-2 border-l border-white/15 pl-2.5">
+      {evidence.data?.evidence.map((ev: Evidence) => (
+        <Link
+          key={ev.chunk_id}
+          to="/doc/$docId"
+          params={{ docId: ev.document_id }}
+          search={{ chunk: ev.chunk_id }}
+          className="block text-xs text-neutral-500 hover:text-neutral-300"
+        >
+          <div className="line-clamp-2 italic">
+            {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
+          </div>
+          <div className="mt-0.5 text-neutral-400">
+            {S.graph.sectionRef(ev.filename, ev.seq + 1)}
+            {ev.stale && (
+              <span
+                className="ml-1.5 u-num text-[10px] text-neutral-600"
+                title={S.graph.staleEvidenceHint}
+              >
+                {S.graph.fromVersion(ev.doc_version)}
+              </span>
+            )}
+          </div>
+        </Link>
+      ))}
+      {evidence.data?.evidence.length === 0 && (
+        <p className="text-xs text-neutral-500">{S.graph.noEvidence}</p>
+      )}
+      {/* 置信度只在低到值得怀疑时说话（与 Review 低置信口径一致），常规不标 */}
+      {fact.confidence < 0.75 && (
+        <p className="text-[10px] text-[var(--u-warn)]">
+          {Math.round(fact.confidence * 100)}% {S.graph.confidence}
+        </p>
+      )}
+    </div>
+  );
+}

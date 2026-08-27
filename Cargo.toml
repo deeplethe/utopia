@@ -1,0 +1,80 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/utopia-core",
+    "crates/utopia-store",
+    "crates/utopia-server",
+    "crates/utopia-ingest",
+    "crates/utopia-extract",
+    "crates/utopia-graph",
+    "crates/utopia-reason",
+    "crates/utopia-search",
+    "crates/utopia-llm",
+    "crates/utopia-mcp",
+    "crates/utopia-connectors",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/deeplethe/utopia"
+
+[workspace.dependencies]
+utopia-core = { path = "crates/utopia-core" }
+utopia-store = { path = "crates/utopia-store" }
+
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["multipart"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+argon2 = { version = "0.5", features = ["std"] }
+jsonwebtoken = "9"
+figment = { version = "0.10", features = ["env"] }
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Phase 1: 摄入/检索/LLM
+utopia-ingest = { path = "crates/utopia-ingest" }
+utopia-search = { path = "crates/utopia-search" }
+utopia-llm = { path = "crates/utopia-llm" }
+tantivy = "0.26"
+tantivy-jieba = "0.20"
+text-splitter = "0.32"
+pdf-extract = "0.12"
+calamine = "0.36"
+pgvector = { version = "0.4", features = ["sqlx"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "rustls", "webpki-roots", "charset", "system-proxy"] }
+
+feed-rs = "2"
+cron = "0.12"
+infer = "0.22"
+sha2 = "0.11"
+scraper = "0.27"
+pulldown-cmark = { version = "0.13", default-features = false }
+chardetng = "1"
+encoding_rs = "0.8"
+quick-xml = "0.42"
+zip = { version = "6", default-features = false, features = ["deflate"] }
+csv = "1"
+async-stream = "0.3"
+futures-util = "0.3"
+tokio-stream = "0.1"
+tempfile = "3"
+
+[profile.dev]
+debug = 1
+
+[profile.release]
+lto = "thin"
+strip = true

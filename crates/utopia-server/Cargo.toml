@@ -1,0 +1,40 @@
+[package]
+name = "utopia-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "utopia-server"
+path = "src/main.rs"
+
+[dependencies]
+utopia-core.workspace = true
+utopia-store.workspace = true
+utopia-ingest.workspace = true
+utopia-search.workspace = true
+utopia-llm.workspace = true
+utopia-extract = { path = "../utopia-extract" }
+sha2.workspace = true
+futures-util.workspace = true
+async-stream.workspace = true
+tokio.workspace = true
+axum.workspace = true
+axum-extra.workspace = true
+tower-http.workspace = true
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+argon2.workspace = true
+jsonwebtoken.workspace = true
+dotenvy.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest.workspace = true
+
+feed-rs.workspace = true
+async-trait = "0.1.92"
+sqlparser = "0.62.0"
