@@ -3,8 +3,8 @@
 use sqlx::PgPool;
 use std::collections::HashSet;
 use utopia_core::models::{
-    ChunkFactView, EntityFact, EntityType, EvidenceView, FactReviewItem, GraphEdge, GraphNode,
-    RelationType,
+    ChunkFactView, EntityFact, EntityHistoryEvent, EntityType, EvidenceView, FactReviewItem,
+    GraphEdge, GraphNode, RelationType,
 };
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -692,4 +692,87 @@ pub async fn purge_graph(pool: &PgPool, kb_id: Uuid) -> AppResult<(i64, i64)> {
     }
     tx.commit().await?;
     Ok((entity_count, fact_count))
+}
+
+/// 实体的认知变更历史（记录时间轴）。
+///
+/// 与 entity_detail 的根本差别：那里 `invalidated_at IS NULL`，只答"现在认为是什么"；
+/// 这里不过滤，答"我们何时这么认为、又何时改了主意"。数据一直都在——账本
+/// append-only，修正是插新行 + 标旧行作废，从不覆盖。
+///
+/// 一行事实最多产出两个事件：写入（asserted / corrected）与作废（rejected）。
+/// 有后继修正行的作废不单独记——那次死亡已由后继那条 corrected 解释。
+///
+/// 归因：审计台账里 fact.close 的 target 是**被闭合的旧行**，而修正行是新插的另一行，
+/// 所以按 COALESCE(supersedes, id) 回查；冲突裁决的 target 是 conflict 行，再绕一跳。
+/// 查不到审计记录 = 引擎自动（抽取写入或时态对账），actor 为 NULL。
+pub async fn entity_history(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> AppResult<(Vec<EntityHistoryEvent>, i64)> {
+    const EVENTS: &str = "
+        WITH ef AS (
+            SELECT f.*,
+                   CASE WHEN f.subject_id = $2 THEN 'out' ELSE 'in' END AS direction,
+                   CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END AS other_id
+            FROM facts f
+            WHERE f.kb_id = $1 AND (f.subject_id = $2 OR f.object_id = $2)
+        ),
+        ev AS (
+            SELECT ef.*, ef.recorded_at AS at,
+                   CASE WHEN ef.supersedes IS NULL THEN 'asserted' ELSE 'corrected' END AS kind
+            FROM ef
+            UNION ALL
+            SELECT ef.*, ef.invalidated_at AS at, 'rejected' AS kind
+            FROM ef
+            WHERE ef.invalidated_at IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.supersedes = ef.id)
+        )";
+    let rows: Vec<EntityHistoryEvent> = sqlx::query_as(&format!(
+        "{EVENTS}
+         SELECT ev.id AS fact_id, ev.at, ev.kind, ev.direction,
+                r.label AS predicate_label, o.canonical_name AS other_name,
+                ev.object_value, ev.valid_from, ev.valid_to, ev.valid_precision,
+                ev.confidence, act.actor_name, act.action,
+                src.document_id, src.filename, src.quote
+         FROM ev
+         JOIN relation_types r ON r.id = ev.predicate_id
+         LEFT JOIN entities o ON o.id = ev.other_id
+         LEFT JOIN LATERAL (
+             SELECT u.display_name AS actor_name, a.action
+             FROM audit_events a
+             LEFT JOIN users u ON u.id = a.actor_id
+             WHERE a.kb_id = $1
+               AND (a.target_id = COALESCE(ev.supersedes, ev.id)
+                    OR a.target_id IN (SELECT c.id FROM fact_conflicts c
+                                       WHERE c.old_fact_id = COALESCE(ev.supersedes, ev.id)
+                                          OR c.new_fact_id = ev.id))
+             ORDER BY a.created_at DESC LIMIT 1
+         ) act ON true
+         LEFT JOIN LATERAL (
+             SELECT d.id AS document_id, d.filename, fe.quote
+             FROM fact_evidence fe
+             JOIN chunks c ON c.id = fe.chunk_id
+             JOIN documents d ON d.id = c.document_id
+             WHERE fe.fact_id = ev.id
+             ORDER BY fe.doc_version DESC NULLS LAST LIMIT 1
+         ) src ON true
+         ORDER BY ev.at DESC, ev.id
+         LIMIT $3 OFFSET $4"
+    ))
+    .bind(kb_id)
+    .bind(entity_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+    let (total,): (i64,) = sqlx::query_as(&format!("{EVENTS} SELECT count(*) FROM ev"))
+        .bind(kb_id)
+        .bind(entity_id)
+        .fetch_one(pool)
+        .await?;
+    Ok((rows, total))
 }

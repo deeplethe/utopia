@@ -165,6 +165,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(graph_routes::entity_detail),
         )
         .route(
+            "/kbs/{id}/entities/{entity_id}/history",
+            get(graph_routes::entity_history),
+        )
+        .route(
             "/kbs/{id}/facts/{fact_id}/evidence",
             get(graph_routes::fact_evidence),
         )

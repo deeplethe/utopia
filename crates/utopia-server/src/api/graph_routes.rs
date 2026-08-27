@@ -157,3 +157,31 @@ pub async fn rebuild(
         "entities_removed": entities, "facts_removed": facts, "queued": ids.len()
     })))
 }
+
+#[derive(Deserialize)]
+pub struct HistoryQuery {
+    #[serde(default)]
+    pub page: i64,
+    #[serde(default = "default_history_per")]
+    pub per: i64,
+}
+
+fn default_history_per() -> i64 {
+    30
+}
+
+/// 实体的认知变更历史（记录时间轴）：我们何时这么认为、又何时改了主意。
+/// 与 entity_detail（有效时间轴，只看现行）互补。
+pub async fn entity_history(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, entity_id)): Path<(Uuid, Uuid)>,
+    Query(q): Query<HistoryQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let per = q.per.clamp(1, 200);
+    let page = q.page.max(0);
+    let (events, total) =
+        utopia_store::graph::entity_history(&state.pool, kb_id, entity_id, per, page * per).await?;
+    Ok(Json(json!({ "events": events, "total": total })))
+}
