@@ -39,7 +39,10 @@ const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool)] = &[
     ("works_at", "works at", "state", false, false),
     ("leads", "leads", "state", false, true),
     ("reports_to", "reports to", "state", true, false),
-    ("part_of", "part of", "state", true, false),
+    // 多对多：一个项目既属于 Microsoft Learn 也属于 Microsoft，一个组件同时属于
+    // 多个系统；即便按严格层级理解，原文也会并列陈述父级与祖先。曾误标 functional，
+    // 真实语料上把这些并存关系全判成矛盾——28 篇企业新闻就积压了 59 条假冲突。
+    ("part_of", "part of", "state", false, false),
     ("participates_in", "participates in", "state", false, false),
     ("located_in", "located in", "state", false, false),
     ("produces", "produces", "state", false, false),
