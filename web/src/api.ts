@@ -569,6 +569,17 @@ export const api = {
       `/api/v1/kbs/${kbId}/entities/${entityId}`,
     ),
   /** 认知变更历史（记录时间轴）：服务端分页 */
+  /** 人工修正实体的类型或名字。同名不拦——返回的 same_name 供界面提示是否合并。 */
+  updateEntity: (
+    kbId: string,
+    entityId: string,
+    body: { type_id?: string; canonical_name?: string },
+  ) =>
+    request<{ entity: GraphNode; same_name: GraphNode[] }>(
+      `/api/v1/kbs/${kbId}/entities/${entityId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+
   entityHistory: (kbId: string, entityId: string, page: number, per = 30) =>
     request<{ events: EntityHistoryEvent[]; total: number }>(
       `/api/v1/kbs/${kbId}/entities/${entityId}/history?page=${page}&per=${per}`,

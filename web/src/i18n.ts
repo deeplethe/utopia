@@ -413,6 +413,20 @@ export const S = {
     staleFactHint:
       "All evidence for this fact comes from earlier versions of its source documents — " +
       "the current content no longer states it. It may still be true; review it under Review.",
+    /* 实体修正：抽取给的是初判，人可以推翻它 */
+    edit: "Edit",
+    editName: "Name",
+    editType: "Type",
+    editSave: "Save",
+    editCancel: "Cancel",
+    editSaved: "Entity updated",
+    editEmptyName: "Name cannot be empty",
+    /* 同名不是错误——两个张伟可以并存。只提示，不阻断 */
+    sameNameNote: (n: number) =>
+      n === 1
+        ? "One other entity shares this name."
+        : `${n} other entities share this name.`,
+    sameNameHint: "If they are the same thing, merge them under Review.",
     viewRelations: "Relations",
     viewTimeline: "Timeline",
     /* 第三视图：记录时间轴——不是"事情何时发生"，而是"我们何时这么认为" */

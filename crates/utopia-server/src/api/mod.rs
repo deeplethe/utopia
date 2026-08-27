@@ -162,7 +162,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/entities", get(graph_routes::search_entities))
         .route(
             "/kbs/{id}/entities/{entity_id}",
-            get(graph_routes::entity_detail),
+            get(graph_routes::entity_detail).patch(graph_routes::update_entity),
         )
         .route(
             "/kbs/{id}/entities/{entity_id}/history",
