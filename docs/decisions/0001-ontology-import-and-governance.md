@@ -235,6 +235,8 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 
 ### P5 · 推理机（远期）
 
+> **排期已由 [0002](0002-reasoning-engine.md) 取代**。本节列的"届时能消费什么"仍然成立，但顺序变了：0002 实测发现语料第一天就带 `part_of` 环（传递闭包在深度 5 起振荡不收敛），所以推理机的第一交付是**一致性检查**而非推导——同一套求值引擎反过来用，零风险，且现存 11 处矛盾立刻可查出。
+
 `utopia-reason` 目前是 3 行空壳。它上线后能消费的，正是 P2 保留而未投影的那些公理：
 
 - `TransitiveProperty` → "NVIDIA 名下所有东西"（现在只能靠 hops 逐跳猜）
