@@ -28,6 +28,12 @@ services:
       UTOPIA_BIND_ADDR: 0.0.0.0:8080
       UTOPIA_JWT_SECRET: ${UTOPIA_JWT_SECRET:-please-change-me-in-production}
       UTOPIA_WEB_DIST: /app/web-dist
+      UTOPIA_DATA_DIR: /app/data
+    volumes:
+      # 原始文件（files/）与全文索引（index/）。不挂出来的话，容器一重建
+      # 它们就没了，而库里的 documents 记录还在——引用全断且不报错。
+      # 备份 = 这个目录 + 数据库。
+      - ./data:/app/data
     ports:
       - "8080:8080"
     depends_on:
