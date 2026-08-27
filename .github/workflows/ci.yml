@@ -33,9 +33,9 @@ jobs:
         working-directory: web
     steps:
       - uses: actions/checkout@v4
+      # 版本来自 web/package.json 的 packageManager 字段——这里再写一次
+      # 就成了第二个事实来源，两边迟早分叉（镜像构建就是这么炸的）。
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 20
