@@ -441,3 +441,39 @@ pub async fn push(
         }
     }
 }
+
+/// 来源级全量重抽（增量语义）：该来源下所有 ready 文档重新过一遍抽取。
+/// 走正常管道——实体消解、事实去重、时态冲突照常，既有人工决策全部保留。
+pub async fn re_extract(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let source = utopia_store::sources::get(&state.pool, source_id).await?;
+    if source.kb_id != kb_id {
+        return Err(utopia_core::AppError::NotFound.into());
+    }
+    let ids =
+        utopia_store::documents::queue_extraction(&state.pool, kb_id, Some(source_id)).await?;
+    for id in &ids {
+        utopia_store::jobs::enqueue(
+            &state.pool,
+            "extract_document",
+            json!({ "document_id": id }),
+        )
+        .await?;
+        state.emit_document(kb_id, *id);
+    }
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "source.re_extract",
+        "source",
+        Some(source_id),
+        json!({ "name": source.name, "documents": ids.len() }),
+    )
+    .await;
+    Ok(Json(json!({ "queued": ids.len() })))
+}

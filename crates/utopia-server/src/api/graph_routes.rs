@@ -131,3 +131,40 @@ pub async fn extract(
     .await?;
     Ok(Json(json!({ "job_id": job_id })))
 }
+
+/// 图谱重建（清算语义，KB admin）：清空整个图层后全量重抽。
+/// 与来源级重抽的分工——重抽保留既有决策，重建放弃它们，换取
+/// "当前语料 × 当前本体"的确定性重演（早期脏抽取、本体大改后的收场手段）。
+/// 决策台账与裁决缓存刻意保留（见 store::graph::purge_graph）。
+pub async fn rebuild(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Admin).await?;
+    let (entities, facts) = utopia_store::graph::purge_graph(&state.pool, kb_id).await?;
+    let ids = utopia_store::documents::queue_extraction(&state.pool, kb_id, None).await?;
+    for id in &ids {
+        utopia_store::jobs::enqueue(
+            &state.pool,
+            "extract_document",
+            json!({ "document_id": id }),
+        )
+        .await?;
+        state.emit_document(kb_id, *id);
+    }
+    state.emit_review(kb_id);
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "graph.rebuild",
+        "kb",
+        Some(kb_id),
+        json!({ "entities_removed": entities, "facts_removed": facts, "documents": ids.len() }),
+    )
+    .await;
+    Ok(Json(json!({
+        "entities_removed": entities, "facts_removed": facts, "queued": ids.len()
+    })))
+}

@@ -521,3 +521,49 @@ pub async fn chunks_by_ids(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResul
         rows.into_iter().map(|c| (c.id, c)).collect();
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
+
+/// 批量排队全量重抽：ready 文档清增量标记 → graph_status=queued，返回待抽文档 id。
+/// `source_id` 给定则限定该来源，否则整库。同时清掉尚未开跑的 extract 任务，
+/// 避免旧任务与本次重抽赛跑（payload 用文本比较：历史脏 payload 无法转 uuid）。
+pub async fn queue_extraction(
+    pool: &PgPool,
+    kb_id: Uuid,
+    source_id: Option<Uuid>,
+) -> AppResult<Vec<Uuid>> {
+    let mut tx = pool.begin().await?;
+    let ids: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM documents
+         WHERE kb_id = $1 AND status = 'ready' AND ($2::uuid IS NULL OR source_id = $2)
+         ORDER BY created_at",
+    )
+    .bind(kb_id)
+    .bind(source_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let ids: Vec<Uuid> = ids.into_iter().map(|(id,)| id).collect();
+    if ids.is_empty() {
+        tx.commit().await?;
+        return Ok(ids);
+    }
+
+    sqlx::query(
+        "DELETE FROM jobs WHERE kind = 'extract_document' AND status = 'queued'
+           AND payload->>'document_id' = ANY($1)",
+    )
+    .bind(ids.iter().map(|i| i.to_string()).collect::<Vec<_>>())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE chunks SET extracted_at = NULL
+         WHERE document_id = ANY($1) AND superseded_at IS NULL",
+    )
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE documents SET graph_status = 'queued' WHERE id = ANY($1)")
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(ids)
+}

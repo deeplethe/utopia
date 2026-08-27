@@ -9,6 +9,7 @@ import {
   Search,
   Settings as SettingsIcon,
   Upload,
+  Waypoints,
   X,
 } from "lucide-react";
 import { api, type Doc, type SourceView } from "../api";
@@ -310,6 +311,8 @@ export function Library() {
   // api 来源密钥弹窗（随时可查看/轮换）
   const [tokenReveal, setTokenReveal] = useState<{ sourceId: string } | null>(null);
   const [cleaning, setCleaning] = useState(false);
+  const [reExtracting, setReExtracting] = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState("");
@@ -355,6 +358,34 @@ export function Library() {
   const reprocess = useMutation({
     mutationFn: (id: string) => api.reprocessDocument(id),
     onSuccess: invalidate,
+  });
+  // 本库角色：门控"重建图谱"入口（KB admin 起步，与 API 端一致）
+  const kbDetail = useQuery({
+    queryKey: ["kbOne", kb?.id],
+    queryFn: () => api.kbDetail(kb!.id),
+    enabled: !!kb,
+  });
+  const myRole = kbDetail.data?.my_role ?? "";
+  const canEdit = ["editor", "admin", "owner"].includes(myRole);
+  const canRebuild = ["admin", "owner"].includes(myRole);
+
+  const reExtractSource = useMutation({
+    mutationFn: (sourceId: string) => api.reExtractSource(kb!.id, sourceId),
+    onSuccess: (r) => {
+      toast.success(S.library.queuedDocs(r.queued));
+      setReExtracting(false);
+      invalidate();
+    },
+    onError: (e) => toast.error((e as Error).message),
+  });
+  const rebuildGraph = useMutation({
+    mutationFn: () => api.rebuildGraph(kb!.id),
+    onSuccess: (r) => {
+      toast.success(S.library.rebuildDone(r.entities_removed, r.facts_removed, r.queued));
+      setRebuilding(false);
+      invalidate();
+    },
+    onError: (e) => toast.error((e as Error).message),
   });
   const syncNow = useMutation({
     mutationFn: (sourceId: string) => api.syncSource(kb!.id, sourceId),
@@ -460,6 +491,16 @@ export function Library() {
                   </button>
                 )}
               </div>
+              {/* 全库重建：清算语义，仅 KB admin；放在 All documents 视图 */}
+              {selection === "all" && canRebuild && (
+                <button
+                  onClick={() => setRebuilding(true)}
+                  className="u-btn u-btn-ghost px-3 py-1.5 text-xs flex items-center gap-1.5 shrink-0 !text-[var(--u-danger)]"
+                >
+                  <RefreshCw size={12} />
+                  {S.library.rebuild}
+                </button>
+              )}
               {canUpload && (
                 <button
                   onClick={() => fileInput.current?.click()}
@@ -490,6 +531,7 @@ export function Library() {
               onSync={() => syncNow.mutate(selectedSource.id)}
               onEdit={() => setEditing(true)}
               onCleanup={() => setCleaning(true)}
+              onReExtract={canEdit ? () => setReExtracting(true) : undefined}
               onToken={() => setTokenReveal({ sourceId: selectedSource.id })}
             />
           )}
@@ -613,6 +655,37 @@ export function Library() {
           onCancel={() => setCleaning(false)}
         />
       )}
+      {/* 来源重抽：轻确认（不毁数据，只是费时费钱），无需打字解锁 */}
+      {reExtracting && selectedSource && (
+        <DangerConfirm
+          title={S.library.reExtractTitle}
+          hint={S.library.reExtractHint(
+            allDocs.filter((d) => d.source_id === selectedSource.id && d.status === "ready").length,
+            selectedSource.name,
+          )}
+          confirmLabel={S.library.reExtractConfirm}
+          cancelLabel={S.library.cancel}
+          busy={reExtractSource.isPending}
+          onConfirm={() => reExtractSource.mutate(selectedSource.id)}
+          onCancel={() => setReExtracting(false)}
+        />
+      )}
+      {/* 全库重建：打字级确认（清空图层不可逆） */}
+      {rebuilding && (
+        <DangerConfirm
+          title={S.library.rebuildTitle}
+          hint={S.library.rebuildHint(
+            allDocs.filter((d) => d.status === "ready").length,
+            kb.name,
+          )}
+          requireText={kb.name}
+          confirmLabel={S.library.rebuildConfirm}
+          cancelLabel={S.library.cancel}
+          busy={rebuildGraph.isPending}
+          onConfirm={() => rebuildGraph.mutate()}
+          onCancel={() => setRebuilding(false)}
+        />
+      )}
     </div>
   );
 }
@@ -627,6 +700,7 @@ function SourceBar({
   onSync,
   onEdit,
   onCleanup,
+  onReExtract,
   onToken,
 }: {
   kbId: string;
@@ -637,6 +711,8 @@ function SourceBar({
   onSync: () => void;
   onEdit: () => void;
   onCleanup: () => void;
+  /** 缺省 = 无编辑权限，不渲染重抽入口 */
+  onReExtract?: () => void;
   onToken: () => void;
 }) {
   const isPull = SYNCING_KINDS.has(source.kind);
@@ -741,6 +817,16 @@ function SourceBar({
             >
               <KeyRound size={11} />
               {S.library.viewToken}
+            </button>
+          )}
+          {/* 全量重抽本来源：所有类型都给（有文档就能重抽） */}
+          {onReExtract && source.doc_count > 0 && (
+            <button
+              onClick={onReExtract}
+              className="u-btn u-btn-ghost px-2.5 py-1 text-xs flex items-center gap-1.5"
+            >
+              <Waypoints size={11} />
+              {S.library.reExtractSource}
             </button>
           )}
           <button

@@ -204,6 +204,24 @@ export const S = {
     extract: "Extract",
     reExtract: "Re-extract",
     reprocess: "Reprocess",
+    // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
+    reExtractSource: "Re-extract",
+    reExtractTitle: "Re-extract this source?",
+    reExtractHint: (n: number, name: string) =>
+      `All ${n} ready document${n === 1 ? "" : "s"} in “${name}” go through the extraction model again. ` +
+      `Existing merges, review decisions and confirmed facts are preserved.`,
+    reExtractConfirm: "Re-extract",
+    queuedDocs: (n: number) => `${n} document${n === 1 ? "" : "s"} queued`,
+    // 全库重建：毁灭性——打字级确认
+    rebuild: "Rebuild graph",
+    rebuildTitle: "Rebuild the knowledge graph?",
+    rebuildHint: (docs: number, name: string) =>
+      `Type “${name}” to confirm. Every entity, fact, merge and pending review in this knowledge base ` +
+      `is permanently removed, then all ${docs} document${docs === 1 ? "" : "s"} are re-extracted from scratch. ` +
+      `Documents, search indexes and the ontology are untouched; the decision ledger is kept.`,
+    rebuildConfirm: "Rebuild permanently",
+    rebuildDone: (e: number, f: number, q: number) =>
+      `Cleared ${e} entities and ${f} facts · ${q} documents queued`,
     status: {
       pending: "Queued",
       parsing: "Parsing",
