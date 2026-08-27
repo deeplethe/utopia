@@ -456,10 +456,10 @@ pub async fn set_graph_status(pool: &PgPool, id: Uuid, status: &str) -> AppResul
         "UPDATE documents SET graph_status = $2, graph_error = NULL, updated_at = now()
          WHERE id = $1",
     )
-        .bind(id)
-        .bind(status)
-        .execute(pool)
-        .await?;
+    .bind(id)
+    .bind(status)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
