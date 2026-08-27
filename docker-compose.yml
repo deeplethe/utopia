@@ -25,7 +25,10 @@ services:
   # 这里只写 image 不写 build：两者并存时，本地没有镜像的 up 会去"构建"而不是
   # "拉取"，预构建镜像就白发了。要从源码起，叠加 docker-compose.build.yml。
   app:
-    image: ${UTOPIA_IMAGE:-ghcr.io/deeplethe/utopia:latest}
+    # 钉在已发布的具体版本。latest 只在 release.yml 见到 v* tag 时才打，而本仓库
+    # 至今没有 tag——默认值写 latest 的话，clone 下来照 README 跑第一条命令就是
+    # manifest unknown。发布 v0.1.0 后改这里（或改成 latest 让它自动跟随）。
+    image: ${UTOPIA_IMAGE:-ghcr.io/deeplethe/utopia:0.1.0-rc2}
     profiles: ["app"]
     environment:
       UTOPIA_DATABASE_URL: postgres://utopia:${UTOPIA_DB_PASSWORD:-utopia}@db:5432/utopia
