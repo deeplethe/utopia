@@ -4,10 +4,13 @@ services:
     image: ${UTOPIA_DB_IMAGE:-pgvector/pgvector:pg16}
     environment:
       POSTGRES_USER: utopia
-      POSTGRES_PASSWORD: utopia
+      POSTGRES_PASSWORD: ${UTOPIA_DB_PASSWORD:-utopia}
       POSTGRES_DB: utopia
     ports:
-      - "5432:5432"
+      # 只绑回环。app 走 compose 网络连库，这个映射纯粹是给本地开发用的
+      # （cargo run 时从宿主机连）——绑 0.0.0.0 等于把一个默认口令的数据库
+      # 挂到公网。宿主机端口被占时用 UTOPIA_DB_BIND 覆盖，如 127.0.0.1:15432。
+      - "${UTOPIA_DB_BIND:-127.0.0.1:5432}:5432"
     volumes:
       - dbdata:/var/lib/postgresql/data
     healthcheck:
@@ -25,7 +28,7 @@ services:
     image: ${UTOPIA_IMAGE:-ghcr.io/deeplethe/utopia:latest}
     profiles: ["app"]
     environment:
-      UTOPIA_DATABASE_URL: postgres://utopia:utopia@db:5432/utopia
+      UTOPIA_DATABASE_URL: postgres://utopia:${UTOPIA_DB_PASSWORD:-utopia}@db:5432/utopia
       UTOPIA_BIND_ADDR: 0.0.0.0:8080
       UTOPIA_JWT_SECRET: ${UTOPIA_JWT_SECRET:-please-change-me-in-production}
       UTOPIA_WEB_DIST: /app/web-dist
