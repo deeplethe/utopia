@@ -8,12 +8,18 @@ COPY web/ ./
 RUN pnpm build
 
 # ---- 后端构建 ----
-FROM rust:1-slim AS build
+# 发行版必须和运行阶段钉死在同一个：rust:1-slim 会跟着上游滚（现已是 trixie/glibc 2.41），
+# 编出的二进制便要求 GLIBC_2.38，而 bookworm 只有 2.36——镜像构建照样成功，
+# 容器一启动就 "version `GLIBC_2.38' not found"。
+FROM rust:1-slim-bookworm AS build
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
+# docs_corpus.rs 用 include_str! 把产品内文档编进二进制，所以它是后端的源码依赖，
+# 不只是前端资源——漏掉这行，cargo build 直接报 couldn't read。
+COPY web/src/docs/ web/src/docs/
 RUN cargo build --release -p utopia-server
 
 # ---- 运行 ----
