@@ -329,6 +329,18 @@ pub struct OntologyMiss {
     pub count: i32,
 }
 
+/// 抽取丢弃信号：事实抽出来了却没能落地，以及为什么。
+/// 与 `OntologyMiss` 分开——那个说"你的本体缺这些"（读者是本体维护者），
+/// 这个说"这些事实没落地"（读者是上传文档的人）。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ExtractionDrop {
+    pub document_id: Uuid,
+    pub reason: String,
+    pub detail: String,
+    pub count: i32,
+    pub example: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct RelationType {
     pub id: Uuid,

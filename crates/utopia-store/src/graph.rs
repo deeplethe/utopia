@@ -312,21 +312,30 @@ pub async fn confirmed_mappings(
     Ok(rows)
 }
 
+/// `surface`：模型在这一块里实际用的谓词说法。谓词命中本体时它等于 key，
+/// 词表外被降级成 related_to 时它是唯一还留着原意的东西——事实行上只剩
+/// "有关联"，原文说的"runs on"就靠这里活下来。
 pub async fn add_evidence(
     pool: &PgPool,
     fact_id: Uuid,
     chunk_id: Uuid,
     quote: Option<&str>,
+    surface: Option<&str>,
 ) -> AppResult<()> {
     // 证据落笔即记版本：出自哪份文档的第几版（S3 版本对账与"证据过期"判定的依据）
+    // 冲突时补写表层谓词而非整行跳过：重抽命中的多是已有的 (事实, 分块) 对，
+    // DO NOTHING 会让存量证据永远填不上这一列。只在原值为空时补，不覆盖——
+    // 同一分块的同一条事实，第一次记下的说法就是它的说法
     sqlx::query(
-        "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, doc_version)
-         SELECT $1, $2, $3, c.document_id, c.doc_version FROM chunks c WHERE c.id = $2
-         ON CONFLICT DO NOTHING",
+        "INSERT INTO fact_evidence (fact_id, chunk_id, quote, surface_predicate, document_id, doc_version)
+         SELECT $1, $2, $3, left($4, 120), c.document_id, c.doc_version FROM chunks c WHERE c.id = $2
+         ON CONFLICT (fact_id, chunk_id) DO UPDATE
+           SET surface_predicate = COALESCE(fact_evidence.surface_predicate, EXCLUDED.surface_predicate)",
     )
     .bind(fact_id)
     .bind(chunk_id)
     .bind(quote)
+    .bind(surface)
     .execute(pool)
     .await?;
     Ok(())
