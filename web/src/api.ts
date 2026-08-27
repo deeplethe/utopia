@@ -301,6 +301,28 @@ export interface EntityFact {
   last_evidence_time: string | null;
 }
 
+/** 实体的一次认知变更（记录时间轴上的事件，与 EntityFact 的有效时间轴正交）。 */
+export interface EntityHistoryEvent {
+  fact_id: string;
+  /** 记录时刻：写入 = recorded_at，作废 = invalidated_at */
+  at: string;
+  kind: "asserted" | "corrected" | "rejected";
+  direction: "out" | "in";
+  predicate_label: string;
+  other_name: string | null;
+  object_value: Record<string, unknown> | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  valid_precision: string;
+  confidence: number;
+  /** null = 引擎自动（抽取写入 / 时态对账闭合） */
+  actor_name: string | null;
+  action: string | null;
+  document_id: string | null;
+  filename: string | null;
+  quote: string | null;
+}
+
 export interface Evidence {
   quote: string | null;
   chunk_id: string;
@@ -545,6 +567,11 @@ export const api = {
   entityDetail: (kbId: string, entityId: string) =>
     request<{ entity: GraphNode; facts: EntityFact[] }>(
       `/api/v1/kbs/${kbId}/entities/${entityId}`,
+    ),
+  /** 认知变更历史（记录时间轴）：服务端分页 */
+  entityHistory: (kbId: string, entityId: string, page: number, per = 30) =>
+    request<{ events: EntityHistoryEvent[]; total: number }>(
+      `/api/v1/kbs/${kbId}/entities/${entityId}/history?page=${page}&per=${per}`,
     ),
   factEvidence: (kbId: string, factId: string) =>
     request<{ evidence: Evidence[] }>(`/api/v1/kbs/${kbId}/facts/${factId}/evidence`),

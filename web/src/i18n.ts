@@ -415,6 +415,20 @@ export const S = {
       "the current content no longer states it. It may still be true; review it under Review.",
     viewRelations: "Relations",
     viewTimeline: "Timeline",
+    /* 第三视图：记录时间轴——不是"事情何时发生"，而是"我们何时这么认为" */
+    viewHistory: "History",
+    historyHint: "How this entity's record changed — and who changed it.",
+    historyEmpty: "Nothing recorded for this entity yet.",
+    historyKind: {
+      asserted: "Recorded",
+      corrected: "Interval corrected",
+      rejected: "Withdrawn",
+    } as Record<string, string>,
+    historyEngine: "engine",
+    /* 有效区间的变化：修正后区间闭合到某个时点 */
+    historyClosedAt: (t: string) => `closed at ${t}`,
+    historyFrom: (t: string) => `from ${t}`,
+    historyOngoing: "open-ended",
     historicalNote: (n: number) =>
       `${n} past fact${n === 1 ? "" : "s"} not shown — see Timeline →`,
     undated: "Undated",
