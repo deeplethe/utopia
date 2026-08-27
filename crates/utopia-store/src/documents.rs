@@ -395,13 +395,22 @@ pub async fn mark_chunk_extracted(pool: &PgPool, chunk_id: Uuid) -> AppResult<()
 
 /// 清除文档现行分块的抽取标记（手动 Extract = 强制全量重抽）。
 pub async fn clear_extraction_marks(pool: &PgPool, document_id: Uuid) -> AppResult<()> {
+    // 两条同事务：清了标记却没换到新 epoch，在跑的旧任务便察觉不到自己已被顶替，
+    // 会继续把刚清空的分块重抽一遍。
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "UPDATE chunks SET extracted_at = NULL
          WHERE document_id = $1 AND superseded_at IS NULL",
     )
     .bind(document_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    // 与批量重抽同理：自增 epoch 解雇可能正在跑的旧任务
+    sqlx::query("UPDATE documents SET extract_epoch = extract_epoch + 1 WHERE id = $1")
+        .bind(document_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -445,12 +454,16 @@ pub async fn chunks_for_extraction(
     Ok(rows)
 }
 
+/// 推进抽取状态（顺带清空上一轮的失败原因——重跑即翻篇）。
 pub async fn set_graph_status(pool: &PgPool, id: Uuid, status: &str) -> AppResult<()> {
-    sqlx::query("UPDATE documents SET graph_status = $2, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(status)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE documents SET graph_status = $2, graph_error = NULL, updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(status)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -520,4 +533,94 @@ pub async fn chunks_by_ids(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResul
     let mut by_id: std::collections::HashMap<Uuid, ChunkView> =
         rows.into_iter().map(|c| (c.id, c)).collect();
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+/// 批量排队全量重抽：ready 文档清增量标记 → graph_status=queued → 建抽取任务，
+/// 返回待抽文档 id。`source_id` 给定则限定该来源，否则整库。
+///
+/// 正在抽取的文档一并重排——epoch 自增即"解雇"在跑的那个任务（见
+/// `extract_epoch`），不必跳过、也不会两个 worker 同抽一篇。
+/// 尚未开跑的 extract 任务顺手删掉（payload 用文本比较：历史脏 payload 无法转 uuid）。
+///
+/// 建任务与置状态同事务：分开做时，中途出错会留下一批 graph_status=queued
+/// 却没有任务的文档——不会有 worker 来接，界面上永远停在"排队中"。
+pub async fn queue_extraction(
+    pool: &PgPool,
+    kb_id: Uuid,
+    source_id: Option<Uuid>,
+) -> AppResult<Vec<Uuid>> {
+    let mut tx = pool.begin().await?;
+    let ids: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM documents
+         WHERE kb_id = $1 AND status = 'ready' AND ($2::uuid IS NULL OR source_id = $2)
+         ORDER BY created_at",
+    )
+    .bind(kb_id)
+    .bind(source_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let ids: Vec<Uuid> = ids.into_iter().map(|(id,)| id).collect();
+    if ids.is_empty() {
+        tx.commit().await?;
+        return Ok(ids);
+    }
+
+    sqlx::query(
+        "DELETE FROM jobs WHERE kind = 'extract_document' AND status = 'queued'
+           AND payload->>'document_id' = ANY($1)",
+    )
+    .bind(ids.iter().map(|i| i.to_string()).collect::<Vec<_>>())
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE chunks SET extracted_at = NULL
+         WHERE document_id = ANY($1) AND superseded_at IS NULL",
+    )
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "UPDATE documents SET graph_status = 'queued', graph_error = NULL,
+                extract_epoch = extract_epoch + 1
+         WHERE id = ANY($1)",
+    )
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?;
+    // payload 形状与 jobs::enqueue(json!({"document_id": id})) 一致：uuid 序列化为字符串
+    sqlx::query(
+        "INSERT INTO jobs (kind, payload)
+         SELECT 'extract_document', jsonb_build_object('document_id', id::text)
+         FROM unnest($1::uuid[]) AS t(id)",
+    )
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(ids)
+}
+
+/// 抽取失败：状态与原因一起落库，界面才有东西可展示。
+pub async fn set_graph_failed(pool: &PgPool, id: Uuid, error: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE documents SET graph_status = 'failed', graph_error = $2, updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 抽取任务的所有权凭证：每次"开始新一轮抽取"自增。
+///
+/// 单靠 graph_status 认领无效——旧任务回读时，接手的新任务可能已把状态写回
+/// extracting，旧任务会误判自己仍在岗。epoch 单调递增，旧任务一比即知已被接管。
+pub async fn extract_epoch(pool: &PgPool, id: Uuid) -> AppResult<i32> {
+    let (epoch,): (i32,) = sqlx::query_as("SELECT extract_epoch FROM documents WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    Ok(epoch)
 }

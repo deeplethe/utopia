@@ -653,3 +653,40 @@ pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<Eviden
     .await?;
     Ok(rows)
 }
+
+/// 清空 KB 的整个图层（Rebuild graph 的清算语义）：实体/事实/证据/待审/冲突/合并
+/// 记录全删，本体（类与关系定义）与文档/分块/嵌入保留。
+///
+/// 刻意保留两样：决策台账（audit_events，快照自包含，图没了记录仍可读）与裁决
+/// 缓存（resolution_verdicts，重建后同名对重现直接命中，省一批 LLM 调用）。
+/// 返回 (删除实体数, 删除事实数)。
+pub async fn purge_graph(pool: &PgPool, kb_id: Uuid) -> AppResult<(i64, i64)> {
+    let mut tx = pool.begin().await?;
+    let (entity_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM entities WHERE kb_id = $1")
+        .bind(kb_id)
+        .fetch_one(&mut *tx)
+        .await?;
+    let (fact_count,): (i64,) = sqlx::query_as("SELECT count(*) FROM facts WHERE kb_id = $1")
+        .bind(kb_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    // FK 多为 CASCADE，但两处自引用是 NO ACTION：先解引用再删，顺序显式写出
+    // （这段本身就是"图层由什么构成"的定义）
+    for sql in [
+        "DELETE FROM fact_conflicts WHERE kb_id = $1",
+        "DELETE FROM resolution_reviews WHERE kb_id = $1",
+        "DELETE FROM entity_merges WHERE kb_id = $1",
+        "UPDATE facts SET supersedes = NULL WHERE kb_id = $1",
+        "DELETE FROM fact_evidence WHERE fact_id IN (SELECT id FROM facts WHERE kb_id = $1)",
+        "DELETE FROM facts WHERE kb_id = $1",
+        "UPDATE entities SET merged_into = NULL WHERE kb_id = $1",
+        "DELETE FROM entities WHERE kb_id = $1",
+        // 未匹配统计由抽取重新累积
+        "DELETE FROM ontology_misses WHERE kb_id = $1",
+    ] {
+        sqlx::query(sql).bind(kb_id).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok((entity_count, fact_count))
+}

@@ -50,6 +50,8 @@ export interface Kb {
   visibility: "open" | "restricted";
   /** 部署的公共默认空间（第一个建的库）：永远 open、不可删除 */
   is_default: boolean;
+  /** 调用者在本库的角色（仅详情接口返回）：前端据此门控破坏性入口 */
+  my_role?: "viewer" | "editor" | "admin" | "owner" | null;
 }
 
 /** 账户层"我的知识库"行：库 + 我的角色 + 加入信息 + 概览统计。 */
@@ -89,7 +91,10 @@ export interface Doc {
   size_bytes: number;
   status: string;
   graph_status: string;
+  /** 摄入管道的失败原因 */
   error: string | null;
+  /** 图谱抽取管道的失败原因（与 error 分列：两条管道各存各的） */
+  graph_error: string | null;
   chunk_count: number;
   tags: string[];
   missing_since: string | null;
@@ -549,6 +554,17 @@ export const api = {
     request<{ job_id: number }>(`/api/v1/documents/${id}/extract`, { method: "POST" }),
   reprocessDocument: (id: string) =>
     request<{ job_id: number }>(`/api/v1/documents/${id}/reprocess`, { method: "POST" }),
+  /** 来源级全量重抽（增量语义：既有决策保留） */
+  reExtractSource: (kbId: string, sourceId: string) =>
+    request<{ queued: number }>(`/api/v1/kbs/${kbId}/sources/${sourceId}/re-extract`, {
+      method: "POST",
+    }),
+  /** 图谱重建（清算语义：清空图层后全量重抽；KB admin） */
+  rebuildGraph: (kbId: string) =>
+    request<{ entities_removed: number; facts_removed: number; queued: number }>(
+      `/api/v1/kbs/${kbId}/graph/rebuild`,
+      { method: "POST" },
+    ),
 
   ontology: (kbId: string) =>
     request<{

@@ -186,6 +186,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(sources_routes::runs),
         )
         .route(
+            "/kbs/{id}/sources/{source_id}/re-extract",
+            post(sources_routes::re_extract),
+        )
+        .route("/kbs/{id}/graph/rebuild", post(graph_routes::rebuild))
+        .route(
             "/kbs/{id}/sources/{source_id}/missing/cleanup",
             post(sources_routes::cleanup_missing),
         )

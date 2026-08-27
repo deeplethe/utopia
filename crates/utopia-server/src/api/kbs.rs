@@ -118,13 +118,18 @@ async fn kb_with_role(
     utopia_store::access::require_kb(&state.pool, user, kb_id, min).await
 }
 
+/// 详情附带调用者在本库的角色：前端据此门控破坏性操作（重建/删除）的入口，
+/// 不必让用户点到底才吃 403。
 pub async fn get_one(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(id): Path<Uuid>,
-) -> ApiResult<Json<KnowledgeBase>> {
+) -> ApiResult<Json<serde_json::Value>> {
     let kb = kb_with_role(&state, &user, id, Role::Viewer).await?;
-    Ok(Json(kb))
+    let role = utopia_store::access::kb_role(&state.pool, &user, &kb).await?;
+    let mut body = serde_json::to_value(&kb).map_err(|e| AppError::Other(e.into()))?;
+    body["my_role"] = json!(role.map(|r| r.as_str()));
+    Ok(Json(body))
 }
 
 /// 库设置（名称/描述/可见性）：库 admin 起步。
