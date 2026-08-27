@@ -96,6 +96,9 @@ pub struct Document {
     pub doc_time_source: String,
     /// 图谱抽取状态：none → queued → extracting → done | failed
     pub graph_status: String,
+    /// 抽取失败原因（失败时才有）。与 error 分列——那列归解析管道，
+    /// set_status 会清空它，两者共用一列会互相抹掉。
+    pub graph_error: Option<String>,
     pub text_len: i32,
     pub chunk_count: i32,
     pub tags: Vec<String>,

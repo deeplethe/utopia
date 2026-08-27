@@ -313,6 +313,12 @@ export function Library() {
   const [cleaning, setCleaning] = useState(false);
   const [reExtracting, setReExtracting] = useState(false);
   const [rebuilding, setRebuilding] = useState(false);
+  // 失败详情弹窗：{文件名, 哪条管道, 原文}
+  const [errorView, setErrorView] = useState<{
+    file: string;
+    kind: string;
+    text: string;
+  } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState("");
@@ -536,6 +542,32 @@ export function Library() {
             />
           )}
 
+          {/* 抽取进度：当前视图内聚合 graph_status，SSE 推动实时走条 */}
+          {(() => {
+            const pending = visibleDocs.filter((d) =>
+              ["queued", "extracting"].includes(d.graph_status),
+            ).length;
+            if (pending === 0) return null;
+            const total = visibleDocs.filter((d) => d.graph_status !== "none").length;
+            const done = total - pending;
+            return (
+              <div className="mb-3 glass rounded-xl px-4 py-2.5">
+                <div className="flex items-center justify-between text-xs text-neutral-400 mb-1.5">
+                  <span>{S.library.extractProgress(done, total)}</span>
+                  <span className="u-num text-neutral-600">
+                    {Math.round((done / Math.max(total, 1)) * 100)}%
+                  </span>
+                </div>
+                <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                  <div
+                    className="h-full bg-[var(--u-warn)] transition-[width] duration-500"
+                    style={{ width: `${(done / Math.max(total, 1)) * 100}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })()}
+
           {upload.isPending && (
             <div className="mb-3 text-sm text-[var(--u-warn)]">{S.library.uploading}</div>
           )}
@@ -578,6 +610,9 @@ export function Library() {
                       onDelete={() => remove.mutate(d.id)}
                       onExtract={() => extract.mutate(d.id)}
                       onReprocess={() => reprocess.mutate(d.id)}
+                      onShowError={(kind, text) =>
+                        setErrorView({ file: d.filename, kind, text })
+                      }
                     />
                   ))}
                 </tbody>
@@ -668,6 +703,14 @@ export function Library() {
           busy={reExtractSource.isPending}
           onConfirm={() => reExtractSource.mutate(selectedSource.id)}
           onCancel={() => setReExtracting(false)}
+        />
+      )}
+      {errorView && (
+        <ErrorModal
+          file={errorView.file}
+          kind={errorView.kind}
+          text={errorView.text}
+          onClose={() => setErrorView(null)}
         />
       )}
       {/* 全库重建：打字级确认（清空图层不可逆） */}
@@ -835,6 +878,69 @@ function SourceBar({
             className="u-btn u-btn-ghost px-2 py-1"
           >
             <SettingsIcon size={12} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 失败详情：完整原文，可复制。tooltip 装不下也拷不走，所以要弹窗。 */
+function ErrorModal({
+  file,
+  kind,
+  text,
+  onClose,
+}: {
+  file: string;
+  kind: string;
+  text: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="glass-strong w-[36rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl">
+        <div className="px-5 pt-4 pb-3 border-b border-white/10">
+          <div className="flex items-center justify-between">
+            <h2 className="u-title text-[15px]">{S.library.errorTitle}</h2>
+            <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200">
+              <X size={15} />
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-neutral-500 truncate" title={file}>
+            {file} · {kind}
+          </p>
+        </div>
+        <div className="px-5 py-4">
+          <pre className="u-scroll max-h-72 overflow-auto rounded-lg border border-white/10 bg-white/[0.03] p-3 text-[12px] leading-relaxed text-neutral-300 whitespace-pre-wrap break-words">
+            {text}
+          </pre>
+        </div>
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-white/10">
+          <button
+            className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs"
+            onClick={() =>
+              navigator.clipboard
+                .writeText(text)
+                .then(() => toast.success(S.library.errorCopied))
+                .catch(() => {})
+            }
+          >
+            {S.library.copyError}
+          </button>
+          <button className="u-btn u-btn-primary px-3.5 py-1.5 text-xs" onClick={onClose}>
+            {S.library.close}
           </button>
         </div>
       </div>
@@ -1453,6 +1559,7 @@ function DocRow({
   onDelete,
   onExtract,
   onReprocess,
+  onShowError,
 }: {
   doc: Doc;
   /** undefined = 不渲染来源列；null = Uploads（source_id 为空） */
@@ -1460,6 +1567,7 @@ function DocRow({
   onDelete: () => void;
   onExtract: () => void;
   onReprocess: () => void;
+  onShowError: (kind: string, text: string) => void;
 }) {
   const statusText =
     S.library.status[doc.status as keyof typeof S.library.status] ?? doc.status;
@@ -1488,9 +1596,17 @@ function DocRow({
         </td>
       )}
       <td className="px-4 py-2.5">
-        <Chip tone={STATUS_TONE[doc.status] ?? "neutral"} title={doc.error ?? ""}>
-          {statusText}
-        </Chip>
+        {/* 失败可点开看原文：tooltip 会截断、也没法复制 */}
+        {doc.status === "failed" && doc.error ? (
+          <button
+            onClick={() => onShowError(S.library.errorParse, doc.error!)}
+            className="align-middle"
+          >
+            <Chip tone="danger">{statusText}</Chip>
+          </button>
+        ) : (
+          <Chip tone={STATUS_TONE[doc.status] ?? "neutral"}>{statusText}</Chip>
+        )}
         {/* 解析管道失败：重跑 解析→索引→嵌入（解析器升级/瞬时故障重试） */}
         {doc.status === "failed" && (
           <button onClick={onReprocess} className="u-link ml-1.5 text-xs">
@@ -1506,6 +1622,13 @@ function DocRow({
       <td className="px-4 py-2.5">
         {doc.graph_status === "none" ? (
           <span className="text-xs text-neutral-600">{graphText}</span>
+        ) : doc.graph_status === "failed" && doc.graph_error ? (
+          <button
+            onClick={() => onShowError(S.library.errorGraph, doc.graph_error!)}
+            className="align-middle"
+          >
+            <Chip tone="danger">{graphText}</Chip>
+          </button>
         ) : (
           <Chip tone={GRAPH_TONE[doc.graph_status] ?? "neutral"}>{graphText}</Chip>
         )}

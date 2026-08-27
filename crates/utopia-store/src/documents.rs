@@ -402,6 +402,11 @@ pub async fn clear_extraction_marks(pool: &PgPool, document_id: Uuid) -> AppResu
     .bind(document_id)
     .execute(pool)
     .await?;
+    // 与批量重抽同理：自增 epoch 解雇可能正在跑的旧任务
+    sqlx::query("UPDATE documents SET extract_epoch = extract_epoch + 1 WHERE id = $1")
+        .bind(document_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -445,8 +450,12 @@ pub async fn chunks_for_extraction(
     Ok(rows)
 }
 
+/// 推进抽取状态（顺带清空上一轮的失败原因——重跑即翻篇）。
 pub async fn set_graph_status(pool: &PgPool, id: Uuid, status: &str) -> AppResult<()> {
-    sqlx::query("UPDATE documents SET graph_status = $2, updated_at = now() WHERE id = $1")
+    sqlx::query(
+        "UPDATE documents SET graph_status = $2, graph_error = NULL, updated_at = now()
+         WHERE id = $1",
+    )
         .bind(id)
         .bind(status)
         .execute(pool)
@@ -523,8 +532,11 @@ pub async fn chunks_by_ids(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResul
 }
 
 /// 批量排队全量重抽：ready 文档清增量标记 → graph_status=queued，返回待抽文档 id。
-/// `source_id` 给定则限定该来源，否则整库。同时清掉尚未开跑的 extract 任务，
-/// 避免旧任务与本次重抽赛跑（payload 用文本比较：历史脏 payload 无法转 uuid）。
+/// `source_id` 给定则限定该来源，否则整库。
+///
+/// 正在抽取的文档一并重排——epoch 自增即"解雇"在跑的那个任务（见
+/// `extract_epoch`），不必跳过、也不会两个 worker 同抽一篇。
+/// 尚未开跑的 extract 任务顺手删掉（payload 用文本比较：历史脏 payload 无法转 uuid）。
 pub async fn queue_extraction(
     pool: &PgPool,
     kb_id: Uuid,
@@ -560,10 +572,39 @@ pub async fn queue_extraction(
     .bind(&ids)
     .execute(&mut *tx)
     .await?;
-    sqlx::query("UPDATE documents SET graph_status = 'queued' WHERE id = ANY($1)")
-        .bind(&ids)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE documents SET graph_status = 'queued', graph_error = NULL,
+                extract_epoch = extract_epoch + 1
+         WHERE id = ANY($1)",
+    )
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(ids)
+}
+
+/// 抽取失败：状态与原因一起落库，界面才有东西可展示。
+pub async fn set_graph_failed(pool: &PgPool, id: Uuid, error: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE documents SET graph_status = 'failed', graph_error = $2, updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(id)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 抽取任务的所有权凭证：每次"开始新一轮抽取"自增。
+///
+/// 单靠 graph_status 认领无效——旧任务回读时，接手的新任务可能已把状态写回
+/// extracting，旧任务会误判自己仍在岗。epoch 单调递增，旧任务一比即知已被接管。
+pub async fn extract_epoch(pool: &PgPool, id: Uuid) -> AppResult<i32> {
+    let (epoch,): (i32,) = sqlx::query_as("SELECT extract_epoch FROM documents WHERE id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await?;
+    Ok(epoch)
 }

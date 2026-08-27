@@ -204,6 +204,14 @@ export const S = {
     extract: "Extract",
     reExtract: "Re-extract",
     reprocess: "Reprocess",
+    // 抽取进度（当前视图内聚合，SSE 推动刷新）
+    extractProgress: (done: number, total: number) => `Extracting · ${done} / ${total}`,
+    // 失败详情：chip 可点开，不再只有 tooltip
+    errorTitle: "Failure details",
+    errorParse: "Ingestion pipeline",
+    errorGraph: "Graph extraction",
+    copyError: "Copy",
+    errorCopied: "Error copied",
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",
     reExtractTitle: "Re-extract this source?",

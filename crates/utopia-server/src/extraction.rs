@@ -13,8 +13,13 @@ pub async fn extract_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     match run(state, document_id).await {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ =
-                utopia_store::documents::set_graph_status(&state.pool, document_id, "failed").await;
+            // 原因随状态落库：只进日志的错误等于没有错误
+            let _ = utopia_store::documents::set_graph_failed(
+                &state.pool,
+                document_id,
+                &format!("{e:#}"),
+            )
+            .await;
             if let Ok(doc) = utopia_store::documents::get(&state.pool, document_id).await {
                 state.emit_document(doc.kb_id, document_id);
             }
@@ -69,6 +74,8 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot extract"))?;
 
+    // 所有权凭证：重抽会自增 epoch，本任务据此察觉自己已被接管（见分块循环）
+    let my_epoch = utopia_store::documents::extract_epoch(&state.pool, document_id).await?;
     utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
     state.emit_document(doc.kb_id, document_id);
     utopia_store::graph::ensure_default_ontology(&state.pool, doc.kb_id).await?;
@@ -154,6 +161,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // 不设分块上限：静默截断等于丢知识，长文档的成本由部署者自己权衡
     // （成本优化走 prompt 前缀缓存与更新时 chunk 级跳过，而非丢数据）
     for chunk in chunks.iter() {
+        // 被接管则安静退场：不写 failed、不碰状态，舞台留给新任务。
+        // 检查放在调用 LLM 之前——取消粒度即一个分块，不必等整篇跑完
+        if utopia_store::documents::extract_epoch(&state.pool, document_id).await? != my_epoch {
+            tracing::info!(%document_id, "抽取任务已被新一轮接管，退出");
+            return Ok(());
+        }
         let ctx: Option<&[f32]> = chunk.embedding.as_ref().map(|v| v.as_slice());
         let messages = utopia_extract::build_messages(
             &type_pairs,

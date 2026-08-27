@@ -91,7 +91,10 @@ export interface Doc {
   size_bytes: number;
   status: string;
   graph_status: string;
+  /** 摄入管道的失败原因 */
   error: string | null;
+  /** 图谱抽取管道的失败原因（与 error 分列：两条管道各存各的） */
+  graph_error: string | null;
   chunk_count: number;
   tags: string[];
   missing_since: string | null;
