@@ -11,6 +11,15 @@ use uuid::Uuid;
 /// 单次同步的新文档上限（防超长 feed/URL 列表拖垮任务）
 const MAX_NEW_PER_SYNC: usize = 200;
 
+/// 抓取用的 User-Agent。reqwest 默认一个都不发，而维基百科明确拒绝匿名请求
+/// （403），Cloudflare 前置的站点也普遍如此——URL 与 RSS 两类来源因此对一大批
+/// 真实网站直接失效。自报家门也是爬虫礼节：站方能认出我们、能联系到我们。
+const UA: &str = concat!(
+    "Utopia/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://utopia.bi; self-hosted knowledge platform)"
+);
+
 /// 单次同步的产出统计（Moved/Unchanged 不计）。
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SyncStats {
@@ -281,6 +290,7 @@ async fn sync_urls(state: &AppState, source: &Source) -> anyhow::Result<SyncStat
 
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .user_agent(UA)
         .build()?;
     let mut stats = SyncStats::default();
     let mut last_err: Option<String> = None;
@@ -380,6 +390,7 @@ async fn sync_rss(state: &AppState, source: &Source) -> anyhow::Result<SyncStats
 
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        .user_agent(UA)
         .build()?;
     let resp = http.get(feed_url).send().await?;
     if !resp.status().is_success() {
@@ -468,7 +479,9 @@ async fn sync_custom(state: &AppState, source: &Source) -> anyhow::Result<SyncSt
             h.eq_ignore_ascii_case("localhost") || h == "127.0.0.1" || h == "::1" || h == "[::1]"
         })
         .unwrap_or(false);
-    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(UA);
     if loopback {
         builder = builder.no_proxy();
     }
