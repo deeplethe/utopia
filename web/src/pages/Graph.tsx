@@ -8,6 +8,7 @@ import FA2Layout from "graphology-layout-forceatlas2/worker";
 import Sigma from "sigma";
 import { createNodeBorderProgram } from "@sigma/node-border";
 import { NodeSquareShellProgram } from "./squareShellProgram";
+import { EntityHistory } from "./EntityHistory";
 import {
   ArrowLeft,
   ArrowRight,
@@ -1177,8 +1178,9 @@ function EntityPanel({
     queryFn: () => api.entityDetail(kbId, entityId),
   });
   const [openFact, setOpenFact] = useState<string | null>(null);
-  // Relations = 按关系分组（查关系）；Timeline = 按时间摊开（读故事）
-  const [view, setView] = useState<"relations" | "timeline">("relations");
+  // Relations = 按关系分组（查关系）；Timeline = 有效时间轴（事情何时成立）；
+  // History = 记录时间轴（我们何时这么认为、又何时改了主意）
+  const [view, setView] = useState<"relations" | "timeline" | "history">("relations");
 
   const e: GraphNode | undefined = detail.data?.entity;
 
@@ -1240,7 +1242,7 @@ function EntityPanel({
       {/* 视图切换：Relations（分组）| Timeline（年表） */}
       <div className="px-4 pt-2.5">
         <div className="flex rounded-lg overflow-hidden border border-white/10 w-fit">
-          {(["relations", "timeline"] as const).map((v) => (
+          {(["relations", "timeline", "history"] as const).map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -1250,7 +1252,11 @@ function EntityPanel({
                   : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
               }`}
             >
-              {v === "relations" ? S.graph.viewRelations : S.graph.viewTimeline}
+              {v === "relations"
+                ? S.graph.viewRelations
+                : v === "timeline"
+                  ? S.graph.viewTimeline
+                  : S.graph.viewHistory}
             </button>
           ))}
         </div>
@@ -1296,7 +1302,8 @@ function EntityPanel({
             onNavigate={onNavigate}
           />
         )}
-        {detail.data?.facts.length === 0 && (
+        {view === "history" && <EntityHistory kbId={kbId} entityId={entityId} />}
+        {view !== "history" && detail.data?.facts.length === 0 && (
           <p className="text-sm text-neutral-500 p-2">{S.graph.noFacts}</p>
         )}
       </div>

@@ -419,6 +419,35 @@ pub struct EntityFact {
     pub last_evidence_time: Option<DateTime<Utc>>,
 }
 
+/// 实体的一次认知变更（记录时间轴上的事件，与 EntityFact 的有效时间轴正交）。
+///
+/// 账本 append-only，所以"我们曾经怎么认为"全部留存：一条事实行最多产出两个
+/// 事件——写入（asserted / corrected）与作废（rejected，仅当没有后继修正行时；
+/// 有后继的话这次死亡已由那条 corrected 解释，不重复记）。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct EntityHistoryEvent {
+    pub fact_id: Uuid,
+    /// 事件发生的记录时刻（写入 = recorded_at，作废 = invalidated_at）
+    pub at: DateTime<Utc>,
+    /// asserted（首次断言）| corrected（区间被修正）| rejected（认知被推翻）
+    pub kind: String,
+    pub direction: String,
+    pub predicate_label: String,
+    pub other_name: Option<String>,
+    pub object_value: Option<serde_json::Value>,
+    pub valid_from: Option<DateTime<Utc>>,
+    pub valid_to: Option<DateTime<Utc>>,
+    pub valid_precision: String,
+    pub confidence: f32,
+    /// 人工操作者；NULL = 引擎自动（抽取写入 / 时态对账闭合）
+    pub actor_name: Option<String>,
+    /// 触发本次变更的审计动作（fact.close / conflict.close_old / fact.reject …）
+    pub action: Option<String>,
+    pub document_id: Option<Uuid>,
+    pub filename: Option<String>,
+    pub quote: Option<String>,
+}
+
 /// 消解审核项的一侧实体摘要。
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewSide {
