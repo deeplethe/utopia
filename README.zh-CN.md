@@ -46,10 +46,16 @@
 ```bash
 git clone https://github.com/deeplethe/utopia.git
 cd utopia
-docker compose --profile app up -d --build
+docker compose --profile app up -d
 ```
 
 打开 http://localhost:8080 注册 —— 第一个账号即管理员。然后在设置里填一个 OpenAI 兼容端点，建一个知识库，把文件拖进去。
+
+这会从 `ghcr.io/deeplethe/utopia` 拉预构建镜像。上传的原始文件与全文索引在 `./data`，备份时和数据库一起带上。改了代码、或者想跑未发布的版本，则从源码构建：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app up -d --build
+```
 
 ### 本地开发
 

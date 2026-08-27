@@ -46,10 +46,16 @@ Requirements: Docker (or Rust 1.85+, Node 20+ and pnpm for local development).
 ```bash
 git clone https://github.com/deeplethe/utopia.git
 cd utopia
-docker compose --profile app up -d --build
+docker compose --profile app up -d
 ```
 
 Open http://localhost:8080 and register — the first account becomes the administrator. Then add an OpenAI-compatible endpoint under Settings, create a knowledge base, and drop in some files.
+
+That pulls a prebuilt image from `ghcr.io/deeplethe/utopia`. Uploaded files and the search index live in `./data`, so back that up alongside the database. To build from source instead — after changing code, or to run an unreleased revision:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app up -d --build
+```
 
 ### Local development
 
