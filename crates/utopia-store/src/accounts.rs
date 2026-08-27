@@ -45,6 +45,7 @@ pub async fn register(
             .await?;
 
             insert_membership(&mut tx, user.id, workspace.id, Role::Owner).await?;
+            insert_general_kb(&mut tx, workspace.id, user.id).await?;
             (user, workspace)
         }
         Some((org_id,)) => {
@@ -130,6 +131,42 @@ async fn insert_membership(
         .bind(role.as_str())
         .execute(&mut **tx)
         .await?;
+    Ok(())
+}
+
+/// 部署的公共空间。首个用户注册即建，与组织和工作区同一个事务——不然新部署的
+/// 第一屏是个空壳：Graph 停在 Loading，切换器里无库可选，而"建第一个库"这件事
+/// 从没有人告诉过用户。
+///
+/// 名字是 General 而非 Public：可见性由 visibility 字段表达，名字再说一遍既冗余，
+/// 又会让自部署用户误读成"公开到互联网"。is_default 让它永远 open、不可删
+/// （0012 的 CHECK 是 DB 级双保险）。
+async fn insert_general_kb(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    workspace_id: Uuid,
+    owner_id: Uuid,
+) -> AppResult<()> {
+    let kb_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO knowledge_bases
+            (id, workspace_id, name, kind, description, is_default, visibility)
+         VALUES ($1, $2, 'General', 'knowledge', $3, TRUE, 'open')",
+    )
+    .bind(kb_id)
+    .bind(workspace_id)
+    .bind("Shared space for the whole deployment. Everyone can read it.")
+    .execute(&mut **tx)
+    .await?;
+    // 建库者记为本库 admin，与手动建库路径一致。首个用户本就是系统管理员、
+    // 无需此行也进得来，但系统管理员身份日后可以撤销，本库权限不该随之蒸发。
+    sqlx::query(
+        "INSERT INTO kb_members (kb_id, user_id, role, added_by)
+         VALUES ($1, $2, 'admin', $2)",
+    )
+    .bind(kb_id)
+    .bind(owner_id)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
