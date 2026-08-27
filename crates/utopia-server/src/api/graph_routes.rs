@@ -143,14 +143,9 @@ pub async fn rebuild(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Admin).await?;
     let (entities, facts) = utopia_store::graph::purge_graph(&state.pool, kb_id).await?;
+    // 任务由 queue_extraction 与状态同事务建好，这里只负责推送
     let ids = utopia_store::documents::queue_extraction(&state.pool, kb_id, None).await?;
     for id in &ids {
-        utopia_store::jobs::enqueue(
-            &state.pool,
-            "extract_document",
-            json!({ "document_id": id }),
-        )
-        .await?;
         state.emit_document(kb_id, *id);
     }
     state.emit_review(kb_id);

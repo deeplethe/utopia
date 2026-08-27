@@ -454,6 +454,13 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         utopia_store::resolution::refresh_disambiguators(&state.pool, doc.kb_id, name).await?;
     }
 
+    // 出口再验一次：接管可能发生在最后一个分块之后，那时循环里的检查已经跑完。
+    // 漏掉这里，被顶替的任务会把 done 写在一篇 extracted_at 刚被清空的文档上——
+    // 界面显示"已完成"，实则一条都没抽，要等新任务开跑才纠正回来。
+    if utopia_store::documents::extract_epoch(&state.pool, document_id).await? != my_epoch {
+        tracing::info!(%document_id, "抽取任务已被新一轮接管，收尾时退出");
+        return Ok(());
+    }
     utopia_store::documents::set_graph_status(&state.pool, document_id, "done").await?;
     state.emit_document(doc.kb_id, document_id);
 

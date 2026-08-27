@@ -454,15 +454,10 @@ pub async fn re_extract(
     if source.kb_id != kb_id {
         return Err(utopia_core::AppError::NotFound.into());
     }
+    // 任务由 queue_extraction 与状态同事务建好，这里只负责推送
     let ids =
         utopia_store::documents::queue_extraction(&state.pool, kb_id, Some(source_id)).await?;
     for id in &ids {
-        utopia_store::jobs::enqueue(
-            &state.pool,
-            "extract_document",
-            json!({ "document_id": id }),
-        )
-        .await?;
         state.emit_document(kb_id, *id);
     }
     let _ = utopia_store::audit::record(

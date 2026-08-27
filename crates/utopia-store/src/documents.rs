@@ -395,18 +395,22 @@ pub async fn mark_chunk_extracted(pool: &PgPool, chunk_id: Uuid) -> AppResult<()
 
 /// 清除文档现行分块的抽取标记（手动 Extract = 强制全量重抽）。
 pub async fn clear_extraction_marks(pool: &PgPool, document_id: Uuid) -> AppResult<()> {
+    // 两条同事务：清了标记却没换到新 epoch，在跑的旧任务便察觉不到自己已被顶替，
+    // 会继续把刚清空的分块重抽一遍。
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "UPDATE chunks SET extracted_at = NULL
          WHERE document_id = $1 AND superseded_at IS NULL",
     )
     .bind(document_id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     // 与批量重抽同理：自增 epoch 解雇可能正在跑的旧任务
     sqlx::query("UPDATE documents SET extract_epoch = extract_epoch + 1 WHERE id = $1")
         .bind(document_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -531,12 +535,15 @@ pub async fn chunks_by_ids(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResul
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
-/// 批量排队全量重抽：ready 文档清增量标记 → graph_status=queued，返回待抽文档 id。
-/// `source_id` 给定则限定该来源，否则整库。
+/// 批量排队全量重抽：ready 文档清增量标记 → graph_status=queued → 建抽取任务，
+/// 返回待抽文档 id。`source_id` 给定则限定该来源，否则整库。
 ///
 /// 正在抽取的文档一并重排——epoch 自增即"解雇"在跑的那个任务（见
 /// `extract_epoch`），不必跳过、也不会两个 worker 同抽一篇。
 /// 尚未开跑的 extract 任务顺手删掉（payload 用文本比较：历史脏 payload 无法转 uuid）。
+///
+/// 建任务与置状态同事务：分开做时，中途出错会留下一批 graph_status=queued
+/// 却没有任务的文档——不会有 worker 来接，界面上永远停在"排队中"。
 pub async fn queue_extraction(
     pool: &PgPool,
     kb_id: Uuid,
@@ -576,6 +583,15 @@ pub async fn queue_extraction(
         "UPDATE documents SET graph_status = 'queued', graph_error = NULL,
                 extract_epoch = extract_epoch + 1
          WHERE id = ANY($1)",
+    )
+    .bind(&ids)
+    .execute(&mut *tx)
+    .await?;
+    // payload 形状与 jobs::enqueue(json!({"document_id": id})) 一致：uuid 序列化为字符串
+    sqlx::query(
+        "INSERT INTO jobs (kind, payload)
+         SELECT 'extract_document', jsonb_build_object('document_id', id::text)
+         FROM unnest($1::uuid[]) AS t(id)",
     )
     .bind(&ids)
     .execute(&mut *tx)
