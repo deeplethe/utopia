@@ -40,9 +40,61 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
             type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
+      # 先只 load 到本地跑一遍。"镜像构建成功"证明不了"容器能起来"——
+      # glibc 跨发行版不匹配就是构建全绿、启动即死。
       # amd64 only：arm64 得走 QEMU，Rust release + LTO 会拖到一小时以上。
-      # 有人真需要再加，别让每次发版都等它。
-      - uses: docker/build-push-action@v6
+      - name: Build for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          load: true
+          tags: utopia:smoke
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test — boot it, migrate, register a user
+        run: |
+          set -euo pipefail
+          docker network create smoke
+          docker run -d --name pg --network smoke \
+            -e POSTGRES_USER=utopia -e POSTGRES_PASSWORD=utopia -e POSTGRES_DB=utopia \
+            pgvector/pgvector:pg16
+          # 轮询条件一律写进 if：set -e 下 `cmd && break` 在 cmd 失败时会终止整个
+          # 脚本，把"还没就绪"变成"构建失败"。
+          for _ in $(seq 1 40); do
+            if docker exec pg pg_isready -U utopia -d utopia >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          docker run -d --name app --network smoke -p 8080:8080 \
+            -e UTOPIA_DATABASE_URL=postgres://utopia:utopia@pg:5432/utopia \
+            -e UTOPIA_JWT_SECRET=smoke-test-secret \
+            utopia:smoke
+
+          # 必须打 /api/v1/health 并核对 JSON：健康检查挂在 nest("/api/v1") 里，
+          # 而镜像带 SPA fallback——请求 /health 会拿到 200 的 index.html，看着像通过。
+          ok=""
+          for _ in $(seq 1 40); do
+            if curl -sf -m 3 http://localhost:8080/api/v1/health -o /tmp/h.json \
+               && grep -q '"status":"ok"' /tmp/h.json; then ok=1; break; fi
+            sleep 2
+          done
+          if [ -z "$ok" ]; then echo "::error::container never became healthy"; docker logs app; exit 1; fi
+
+          # 注册一次，把迁移 + argon2 + JWT 签发整条链路真正走一遍
+          code=$(curl -s -o /tmp/reg.json -w '%{http_code}' -m 10 \
+            -X POST http://localhost:8080/api/v1/auth/register \
+            -H 'Content-Type: application/json' \
+            -d '{"email":"smoke@example.com","password":"smoke-password-123","display_name":"Smoke"}')
+          if [ "$code" != "200" ]; then
+            echo "::error::register returned $code"; cat /tmp/reg.json; docker logs app; exit 1
+          fi
+          grep -q '"token"' /tmp/reg.json || { echo "::error::no token issued"; cat /tmp/reg.json; exit 1; }
+          echo "smoke test passed: healthy, migrated, user registered, token issued"
+
+      # 冒烟通过才发布。缓存已热，这步基本是瞬间完成。
+      - name: Push
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
