@@ -38,7 +38,7 @@ anyhow = "1"
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 argon2 = { version = "0.5", features = ["std"] }
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 figment = { version = "0.10", features = ["env"] }
 dotenvy = "0.15"
 tracing = "0.1"
