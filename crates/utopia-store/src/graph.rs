@@ -746,6 +746,12 @@ pub async fn entity_history(
              FROM audit_events a
              LEFT JOIN users u ON u.id = a.actor_id
              WHERE a.kb_id = $1
+               -- 断言由抽取写入，从来不是人的决定：归因只问修正与推翻这两类事件，
+               -- 否则后发生的人工裁决会被错安到当初那条断言头上
+               AND ev.kind <> 'asserted'
+               AND a.action = ANY(CASE ev.kind
+                     WHEN 'corrected' THEN ARRAY['fact.close', 'conflict.close_old']
+                     ELSE ARRAY['fact.reject', 'conflict.reject_new'] END)
                AND (a.target_id = COALESCE(ev.supersedes, ev.id)
                     OR a.target_id IN (SELECT c.id FROM fact_conflicts c
                                        WHERE c.old_fact_id = COALESCE(ev.supersedes, ev.id)
