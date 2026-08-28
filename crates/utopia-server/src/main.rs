@@ -3,6 +3,7 @@ mod api;
 mod auth;
 mod blob;
 mod bootstrap_ontology;
+mod client_ctx;
 mod docs_corpus;
 mod error;
 mod extraction;
@@ -170,7 +171,8 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("同时监听 http://{v6_addr}");
                 let app_v6 = app.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = axum::serve(v6_listener, app_v6).await {
+                    let svc = app_v6.into_make_service_with_connect_info::<std::net::SocketAddr>();
+                    if let Err(e) = axum::serve(v6_listener, svc).await {
                         tracing::warn!(error = %e, "IPv6 监听退出");
                     }
                 });
@@ -179,6 +181,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    axum::serve(listener, app).await?;
+    // with_connect_info：审计需要真实的 TCP 对端地址。直连部署时它是唯一真值——
+    // X-Forwarded-For 那些头此时并不存在，且本就不可轻信。
+    let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
+    axum::serve(listener, svc).await?;
     Ok(())
 }
