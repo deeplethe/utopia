@@ -37,8 +37,11 @@ pub enum AttrNote {
     Datatype(&'static str),
     /// 会建成 text：没写 range，词汇表没做声明，text 是诚实的超集
     NoRange,
-    /// 不建：写了 range 但兑现不了。降级成 text 会把词汇表的声明扔掉且不留痕
-    UnmappableRange(String),
+    /// 会建成 text：range 是可读字面量但我们表达不了它的类型（`xsd:time` 等）。
+    /// 报出原 IRI，人可以改成更合适的类型；但值先落下来，不能因为类型糙就丢知识
+    DegradedToText(String),
+    /// 不建：range 的取值本就不该进图谱（二进制、XML 片段、XML 内部标识）
+    UnusableRange(String),
     /// 不建：没写 domain。属性必须挂在一个类上，这是 store 层的硬约束
     NoDomain,
     /// 不建：多个 domain，等 domain 关联表（0001 P2c）
@@ -108,7 +111,8 @@ fn attr_note(
     match ontology_rdf::map_range(&p.ranges) {
         ontology_rdf::RangeMapping::Datatype(dt) => AttrNote::Datatype(dt),
         ontology_rdf::RangeMapping::Absent => AttrNote::NoRange,
-        ontology_rdf::RangeMapping::Unmappable(iri) => AttrNote::UnmappableRange(iri),
+        ontology_rdf::RangeMapping::Degraded(iri) => AttrNote::DegradedToText(iri),
+        ontology_rdf::RangeMapping::Unusable(iri) => AttrNote::UnusableRange(iri),
     }
 }
 
@@ -117,8 +121,9 @@ fn attr_note(
 fn attr_datatype(note: &AttrNote) -> Option<&'static str> {
     match note {
         AttrNote::Datatype(dt) => Some(dt),
-        // 没写 range：只知道是字面量，text 是拦不住任何东西的诚实超集
-        AttrNote::NoRange => Some("text"),
+        // 没写 range，或写了但类型表达不了：值仍是字面量，
+        // text 是拦不住任何东西的诚实超集
+        AttrNote::NoRange | AttrNote::DegradedToText(_) => Some("text"),
         _ => None,
     }
 }
@@ -134,8 +139,10 @@ impl ImportPlan {
                 continue;
             }
             let reason = match a.attr.as_ref() {
-                Some(AttrNote::Datatype(_)) | Some(AttrNote::NoRange) => continue,
-                Some(AttrNote::UnmappableRange(_)) => "unmappable_range",
+                Some(AttrNote::Datatype(_))
+                | Some(AttrNote::NoRange)
+                | Some(AttrNote::DegradedToText(_)) => continue,
+                Some(AttrNote::UnusableRange(_)) => "unusable_range",
                 Some(AttrNote::NoDomain) => "no_domain",
                 Some(AttrNote::MultipleDomains(_)) => "multiple_domains",
                 Some(AttrNote::DomainSkipped(_)) => "domain_skipped",

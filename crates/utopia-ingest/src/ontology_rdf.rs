@@ -343,9 +343,13 @@ pub enum RangeMapping {
     /// 压根没写 range：词汇表没做任何声明，只知道是字面量。
     /// `text` 是诚实的超集（它接受任何字符串，从不拦），所以建、并在预览里列出
     Absent,
-    /// 写了 range 但兑现不了：**词汇表做了个明确声明**，悄悄降级成 text
-    /// 等于把那个声明扔掉且不留痕迹。跳过并报告，带上原 IRI
-    Unmappable(String),
+    /// 写了 range，值是**短的可读字面量**，但我们的四种类型表达不了它
+    ///（`time` 没有年、`duration` 是时长不是时点）。按 `text` 建**并报告**：
+    /// 只丢了排序语义，值还在；跳过则是这条知识彻底不会被捕获，那更糟
+    Degraded(String),
+    /// 写了 range，而那个取值**本就不该进图谱**：二进制块、XML 片段、
+    /// XML 内部标识。这些不是业务取值，建出来只会把大东西拖进图。跳过并报告
+    Unusable(String),
 }
 
 /// 数据属性的 `rdfs:range` → datatype。
@@ -353,17 +357,42 @@ pub enum RangeMapping {
 /// 按**完整 IRI** 匹配而不是局部名：自定义词汇表完全可能有个叫 `date` 的类，
 /// 按尾巴匹配会把它当成 `xsd:date`。
 ///
-/// 多条 range 一律 [`RangeMapping::Unmappable`]——RDFS 里那是**交集**语义
+/// 多条 range 一律 [`RangeMapping::Degraded`]——RDFS 里那是**交集**语义
 ///（"必须同时是两者"），几乎总是建模笔误，但规范如此，不猜。
 pub fn map_range(ranges: &[String]) -> RangeMapping {
     match ranges {
         [] => RangeMapping::Absent,
         [one] => match datatype_of(one) {
             Some(dt) => RangeMapping::Datatype(dt),
-            None => RangeMapping::Unmappable(one.clone()),
+            None if unusable(one) => RangeMapping::Unusable(one.clone()),
+            None => RangeMapping::Degraded(one.clone()),
         },
-        many => RangeMapping::Unmappable(many.join(" ∩ ")),
+        // 多条 range 是交集语义，不猜类型——但值仍是字面量，所以按 text 建
+        many => RangeMapping::Degraded(many.join(" ∩ ")),
     }
+}
+
+/// 取值不该进图谱的那些：二进制块与 XML 内部管道。
+/// **其余一律降级成 text**——一个存得下的值，宁可类型糙一点也别丢掉。
+fn unusable(iri: &str) -> bool {
+    if let Some(local) = iri.strip_prefix(XSD) {
+        return matches!(
+            local,
+            "base64Binary"
+                | "hexBinary"
+                | "QName"
+                | "NOTATION"
+                | "ID"
+                | "IDREF"
+                | "IDREFS"
+                | "ENTITY"
+                | "ENTITIES"
+        );
+    }
+    if let Some(local) = iri.strip_prefix(RDF_NS) {
+        return local == "XMLLiteral";
+    }
+    false
 }
 
 fn datatype_of(iri: &str) -> Option<&'static str> {
@@ -380,8 +409,9 @@ fn datatype_of(iri: &str) -> Option<&'static str> {
             "boolean" => Some("bool"),
             "string" | "normalizedString" | "token" | "language" | "Name" | "NCName"
             | "NMTOKEN" | "anyURI" => Some("text"),
-            // time / gMonth / gDay / gMonthDay 缺年，duration 系列是时长不是时点，
-            // 二进制与 XML 内部标识不是业务取值 —— 全部落到 None
+            // time / gMonth / gDay / gMonthDay 缺年，duration 系列是时长不是时点 ——
+            // 落到 None，再由 unusable() 分流：它们是可读字面量，降级成 text；
+            // 二进制与 XML 内部标识才是真的不收
             _ => None,
         };
     }
@@ -445,31 +475,37 @@ mod tests {
                 "{local}"
             );
         }
-        // 缺年的存不下 —— 我们的格式必须以年开头
+        // 缺年的进不了 date —— 但它们是可读字面量，降级成 text 而不是丢掉
         for local in ["gMonth", "gDay", "gMonthDay", "time"] {
             assert!(
                 matches!(
                     map_range(&[format!("{XSD}{local}")]),
-                    RangeMapping::Unmappable(_)
+                    RangeMapping::Degraded(_)
                 ),
-                "{local} 不该被映射"
+                "{local} 该降级成 text，不该丢"
             );
         }
     }
 
-    /// 声明在与不在，是两种不同的情形，不能都当成 text
+    /// 分界不是"能不能精确映射"，而是**"这个取值该不该进图谱"**。
+    /// 存得下的一律留下来——类型糙一点，好过这条知识彻底不被捕获。
     #[test]
-    fn absent_range_differs_from_an_unmappable_one() {
-        // 没写：没有声明可丢，text 是诚实的超集
+    fn a_value_we_can_store_is_kept_even_when_we_cannot_type_it() {
+        // 没写 range：没有声明可丢，text 是诚实的超集
         assert_eq!(map_range(&[]), RangeMapping::Absent);
-        // 写了但兑现不了：降级成 text 会把词汇表的声明扔掉且不留痕
+        // 写了但表达不了：时长是可读字面量，降级成 text 并报告
         assert!(matches!(
             map_range(&[format!("{XSD}duration")]),
-            RangeMapping::Unmappable(_)
+            RangeMapping::Degraded(_)
         ));
+        // 取值本就不该进图谱：二进制块与 XML 片段，这才是真的跳过
         assert!(matches!(
             map_range(&[format!("{XSD}base64Binary")]),
-            RangeMapping::Unmappable(_)
+            RangeMapping::Unusable(_)
+        ));
+        assert!(matches!(
+            map_range(&[format!("{RDF_NS}XMLLiteral")]),
+            RangeMapping::Unusable(_)
         ));
     }
 
@@ -479,8 +515,9 @@ mod tests {
     fn several_ranges_are_an_intersection_we_refuse_to_guess() {
         let m = map_range(&[format!("{XSD}string"), format!("{XSD}integer")]);
         match m {
-            RangeMapping::Unmappable(s) => assert!(s.contains('∩')),
-            other => panic!("多条 range 不该被映射: {other:?}"),
+            // 交集不猜类型，但值仍是字面量，所以按 text 落下来
+            RangeMapping::Degraded(s) => assert!(s.contains('∩')),
+            other => panic!("多条 range 不该被精确映射: {other:?}"),
         }
     }
 
@@ -489,7 +526,7 @@ mod tests {
     fn a_class_that_happens_to_be_called_date_is_not_a_date() {
         assert!(matches!(
             map_range(&["http://acme.example/hr#date".into()]),
-            RangeMapping::Unmappable(_)
+            RangeMapping::Degraded(_)
         ));
     }
 
