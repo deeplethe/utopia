@@ -420,14 +420,15 @@ pub async fn build_proposals(
          is not and which existing type those cases belong to. A type that arrives with a weak \
          description becomes the next dumping ground.\n\
          \n\
-         Language. Write \"label\" and \"description\" in {}: they become this knowledge \
-         base's own ontology, and the description is read by the extraction model while it \
-         reads documents written in that language. Write \"reason\" in {}: it is read by the \
-         person looking at this proposal. Keys stay lowercase ASCII either way.\n\
-         \n\
          Output exactly one JSON object:\n\
          {{\"entity_types\":[{{\"key\":\"snake_case\",\"label\":\"Display Name\",\"description\":\"what belongs here, and what does not\",\"reason\":\"why add it\"}}],\n\
-          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"description\":\"what this relation asserts, and what it does not\",\"reason\":\"why add it\"}}]}}",
+          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"description\":\"what this relation asserts, and what it does not\",\"reason\":\"why add it\"}}]}}\n\
+         \n\
+         Language, and it overrides the skeleton above — that skeleton is written in English \
+         only because these instructions are. Write every \"label\" and \"description\" in {}: \
+         they become this knowledge base's own ontology, and the description is read by the \
+         extraction model while it reads documents in that language. Write every \"reason\" \
+         in {}: a person reads it. \"key\" and \"forms\" stay lowercase ASCII either way.",
         current_et.join(", "),
         current_rt.join(", "),
         miss_lines.join("\n"),

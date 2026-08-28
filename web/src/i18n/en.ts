@@ -481,8 +481,12 @@ export const en = {
     evidence: "evidence",
     noEvidence: "No evidence recorded",
     noQuote: "(no quote)",
-    /* 原文说的谓词。词表外的词会被降级成 related to，原意只在这里活着 */
-    proposedPredicate: (p: string) => `the text said “${p}”`,
+    /* 抽取器从原文读出来的谓词，规范成了标识符。词表外的说法会被降级成
+       related to，原意只在这里活着。
+       **措辞不能宣称这是引文**：关系 key 只能是 [a-z0-9_]，所以中文语料里
+       「采购了」出来是 purchases——说"原文说的是 purchases"是假的。
+       逐字原句就在旁边的证据引文里，没丢。 */
+    proposedPredicate: (p: string) => `read from the text as “${p}”`,
     sectionRef: (filename: string, seq: number) =>
       `${filename} · section ${seq} →`,
     fromVersion: (v: number) => `v${v}`,

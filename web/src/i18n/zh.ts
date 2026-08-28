@@ -461,7 +461,7 @@ export const zh: Strings = {
     evidence: "证据",
     noEvidence: "没有记录证据",
     noQuote: "（无引文）",
-    proposedPredicate: (p: string) => `原文说的是「${p}」`,
+    proposedPredicate: (p: string) => `从原文读作「${p}」`,
     sectionRef: (filename: string, seq: number) =>
       `${filename} · 第 ${seq} 段 →`,
     fromVersion: (v: number) => `v${v}`,
