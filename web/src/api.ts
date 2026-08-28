@@ -9,7 +9,10 @@ export class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     credentials: "include",
-    headers: init?.body instanceof FormData ? {} : { "Content-Type": "application/json" },
+    headers:
+      init?.body instanceof FormData
+        ? {}
+        : { "Content-Type": "application/json" },
     ...init,
   });
   if (!res.ok) {
@@ -397,7 +400,12 @@ export interface OntologyMiss {
     "什么算这个类"的唯一依据；reason 只是给人看的"为什么该加"。喂错了这个类会成为
     下一个倾倒场——实测 technology 就是这么来的。 */
 export interface OntologyProposals {
-  entity_types: { key: string; label: string; description?: string; reason?: string }[];
+  entity_types: {
+    key: string;
+    label: string;
+    description?: string;
+    reason?: string;
+  }[];
   relation_types: {
     key: string;
     label: string;
@@ -415,6 +423,40 @@ export interface ProposedPredicate {
   form: string;
   fact_count: number;
   example: string | null;
+}
+
+/** 一个类/属性在这次导入里的去向。key_taken = key 被另一个 IRI 占着，报告但不动 */
+export interface PlannedItem {
+  iri: string;
+  key: string;
+  label: string;
+  has_description: boolean;
+  disposition: "create" | "update" | "key_taken";
+  functional?: boolean;
+  conflict_with?: string | null;
+}
+
+/** 预览与落库返回同一个计划：点确认之后发生的事就是刚看过的事 */
+export interface ImportPlan {
+  format: string;
+  triples: number;
+  classes: PlannedItem[];
+  relations: PlannedItem[];
+  attributes: PlannedItem[];
+  /** 出现过但今天不消费的公理 → 次数。不是已跳过，是暂未投影 */
+  unprojected: [string, number][];
+  classes_without_description: number;
+  functional_relations: number;
+}
+
+export interface OntologyImportView {
+  id: string;
+  filename: string;
+  format: string;
+  byte_size: number;
+  summary: Record<string, unknown>;
+  imported_by_name: string | null;
+  imported_at: string;
 }
 
 export interface Source {
@@ -457,7 +499,10 @@ export interface ConversationMessage {
 }
 
 export const api = {
-  health: () => request<{ status: string; name: string; version: string }>("/api/v1/health"),
+  health: () =>
+    request<{ status: string; name: string; version: string }>(
+      "/api/v1/health",
+    ),
   me: () => request<User>("/api/v1/auth/me"),
   login: (email: string, password: string) =>
     request<{ user: User }>("/api/v1/auth/login", {
@@ -469,7 +514,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password, display_name: displayName }),
     }),
-  logout: () => request<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }),
+  logout: () =>
+    request<{ ok: boolean }>("/api/v1/auth/logout", { method: "POST" }),
   updateMe: (displayName: string) =>
     request<User>("/api/v1/auth/me", {
       method: "PATCH",
@@ -478,11 +524,15 @@ export const api = {
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ ok: boolean }>("/api/v1/auth/password", {
       method: "POST",
-      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
     }),
   workspaces: () => request<Workspace[]>("/api/v1/workspaces"),
 
-  kbs: (workspaceId: string) => request<Kb[]>(`/api/v1/workspaces/${workspaceId}/kbs`),
+  kbs: (workspaceId: string) =>
+    request<Kb[]>(`/api/v1/workspaces/${workspaceId}/kbs`),
   kbAudit: (kbId: string) =>
     request<{ events: AuditEvent[] }>(`/api/v1/kbs/${kbId}/audit`),
   myKbs: (workspaceId: string) =>
@@ -498,17 +548,23 @@ export const api = {
 
   kbDetail: (kbId: string) => request<Kb>(`/api/v1/kbs/${kbId}`),
   updateKb: (kbId: string, body: Record<string, unknown>) =>
-    request<Kb>(`/api/v1/kbs/${kbId}`, { method: "PATCH", body: JSON.stringify(body) }),
+    request<Kb>(`/api/v1/kbs/${kbId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   deleteKb: (kbId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}`, { method: "DELETE" }),
-  kbMembers: (kbId: string) => request<{ members: KbMember[] }>(`/api/v1/kbs/${kbId}/members`),
+  kbMembers: (kbId: string) =>
+    request<{ members: KbMember[] }>(`/api/v1/kbs/${kbId}/members`),
   setKbMember: (kbId: string, userId: string, role: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/members/${userId}`, {
       method: "PUT",
       body: JSON.stringify({ role }),
     }),
   removeKbMember: (kbId: string, userId: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/members/${userId}`, { method: "DELETE" }),
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/members/${userId}`, {
+      method: "DELETE",
+    }),
 
   adminDeployment: () =>
     request<{
@@ -516,27 +572,42 @@ export const api = {
       /** 外层兜底，防任务无限堆积；真正的节流是按模型的限额 */
       worker_concurrency: number;
       default_model_concurrency: number;
-      model_limits: { base_url: string; model: string; max_concurrent: number }[];
+      model_limits: {
+        base_url: string;
+        model: string;
+        max_concurrent: number;
+      }[];
       models_in_use: { base_url: string; model: string; kind: string }[];
     }>("/api/v1/admin/deployment"),
   saveAdminDeployment: (
     openRegistration: boolean,
     workerConcurrency?: number,
     defaultModelConcurrency?: number,
-    modelLimit?: { base_url: string; model: string; max_concurrent: number | null },
+    modelLimit?: {
+      base_url: string;
+      model: string;
+      max_concurrent: number | null;
+    },
   ) =>
     request<{ ok: boolean }>("/api/v1/admin/deployment", {
       method: "PUT",
       body: JSON.stringify({
         open_registration: openRegistration,
-        ...(workerConcurrency !== undefined ? { worker_concurrency: workerConcurrency } : {}),
+        ...(workerConcurrency !== undefined
+          ? { worker_concurrency: workerConcurrency }
+          : {}),
         ...(defaultModelConcurrency !== undefined
           ? { default_model_concurrency: defaultModelConcurrency }
           : {}),
         ...(modelLimit ? { model_limit: modelLimit } : {}),
       }),
     }),
-  adminCreateUser: (body: { email: string; display_name: string; password: string; role: string }) =>
+  adminCreateUser: (body: {
+    email: string;
+    display_name: string;
+    password: string;
+    role: string;
+  }) =>
     request<{ user: User }>("/api/v1/admin/users", {
       method: "POST",
       body: JSON.stringify(body),
@@ -550,21 +621,36 @@ export const api = {
       body: JSON.stringify(body),
     }),
   adminDeleteDataSource: (id: string) =>
-    request<{ ok: boolean }>(`/api/v1/admin/data-sources/${id}`, { method: "DELETE" }),
-  adminTestDataSource: (id: string) =>
-    request<{ ok: boolean }>(`/api/v1/admin/data-sources/${id}/test`, { method: "POST" }),
-  kbDataSources: (kbId: string) =>
-    request<{ data_sources: DataSourceView[] }>(`/api/v1/kbs/${kbId}/data-sources`),
-  kbDataSourcesAvailable: (kbId: string) =>
-    request<{ data_sources: DataSourceView[] }>(`/api/v1/kbs/${kbId}/data-sources/available`),
-  mountDataSource: (kbId: string, dsId: string) =>
-    request<{ ok: boolean; schema_tables: number }>(`/api/v1/kbs/${kbId}/data-sources/${dsId}`, {
-      method: "PUT",
+    request<{ ok: boolean }>(`/api/v1/admin/data-sources/${id}`, {
+      method: "DELETE",
     }),
+  adminTestDataSource: (id: string) =>
+    request<{ ok: boolean }>(`/api/v1/admin/data-sources/${id}/test`, {
+      method: "POST",
+    }),
+  kbDataSources: (kbId: string) =>
+    request<{ data_sources: DataSourceView[] }>(
+      `/api/v1/kbs/${kbId}/data-sources`,
+    ),
+  kbDataSourcesAvailable: (kbId: string) =>
+    request<{ data_sources: DataSourceView[] }>(
+      `/api/v1/kbs/${kbId}/data-sources/available`,
+    ),
+  mountDataSource: (kbId: string, dsId: string) =>
+    request<{ ok: boolean; schema_tables: number }>(
+      `/api/v1/kbs/${kbId}/data-sources/${dsId}`,
+      {
+        method: "PUT",
+      },
+    ),
   unmountDataSource: (kbId: string, dsId: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/data-sources/${dsId}`, { method: "DELETE" }),
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/data-sources/${dsId}`, {
+      method: "DELETE",
+    }),
   exploreMappings: (kbId: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/data-sources/explore`, { method: "POST" }),
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/data-sources/explore`, {
+      method: "POST",
+    }),
   syncDataSourceSchema: (kbId: string, dsId: string) =>
     request<{ ok: boolean; schema_tables: number }>(
       `/api/v1/kbs/${kbId}/data-sources/${dsId}/sync-schema`,
@@ -574,7 +660,9 @@ export const api = {
   documents: (kbId: string) => request<Doc[]>(`/api/v1/kbs/${kbId}/documents`),
   /** 整库一次取回：行数按 (文档 × 原因 × 对象) 聚合后很小，避免逐行发请求 */
   extractionDrops: (kbId: string) =>
-    request<{ drops: ExtractionDrop[] }>(`/api/v1/kbs/${kbId}/extraction-drops`),
+    request<{ drops: ExtractionDrop[] }>(
+      `/api/v1/kbs/${kbId}/extraction-drops`,
+    ),
   upload: (kbId: string, files: File[], sourceId?: string) => {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);
@@ -601,7 +689,9 @@ export const api = {
       body: JSON.stringify(body),
     }),
   graphOverview: (kbId: string) =>
-    request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(`/api/v1/kbs/${kbId}/graph/overview`),
+    request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
+      `/api/v1/kbs/${kbId}/graph/overview`,
+    ),
   graphNeighborhood: (kbId: string, entityId: string) =>
     request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
       `/api/v1/kbs/${kbId}/graph/neighborhood?entity=${entityId}&hops=2`,
@@ -631,24 +721,34 @@ export const api = {
       `/api/v1/kbs/${kbId}/entities/${entityId}/history?page=${page}&per=${per}`,
     ),
   factEvidence: (kbId: string, factId: string) =>
-    request<{ evidence: Evidence[] }>(`/api/v1/kbs/${kbId}/facts/${factId}/evidence`),
+    request<{ evidence: Evidence[] }>(
+      `/api/v1/kbs/${kbId}/facts/${factId}/evidence`,
+    ),
   documentDetail: (id: string) =>
     request<{ document: Doc; chunks: ChunkFull[] }>(`/api/v1/documents/${id}`),
   extractDocument: (id: string) =>
-    request<{ job_id: number }>(`/api/v1/documents/${id}/extract`, { method: "POST" }),
-  reprocessDocument: (id: string) =>
-    request<{ job_id: number }>(`/api/v1/documents/${id}/reprocess`, { method: "POST" }),
-  /** 来源级全量重抽（增量语义：既有决策保留） */
-  reExtractSource: (kbId: string, sourceId: string) =>
-    request<{ queued: number }>(`/api/v1/kbs/${kbId}/sources/${sourceId}/re-extract`, {
+    request<{ job_id: number }>(`/api/v1/documents/${id}/extract`, {
       method: "POST",
     }),
+  reprocessDocument: (id: string) =>
+    request<{ job_id: number }>(`/api/v1/documents/${id}/reprocess`, {
+      method: "POST",
+    }),
+  /** 来源级全量重抽（增量语义：既有决策保留） */
+  reExtractSource: (kbId: string, sourceId: string) =>
+    request<{ queued: number }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/re-extract`,
+      {
+        method: "POST",
+      },
+    ),
   /** 图谱重建（清算语义：清空图层后全量重抽；KB admin） */
   rebuildGraph: (kbId: string) =>
-    request<{ entities_removed: number; facts_removed: number; queued: number }>(
-      `/api/v1/kbs/${kbId}/graph/rebuild`,
-      { method: "POST" },
-    ),
+    request<{
+      entities_removed: number;
+      facts_removed: number;
+      queued: number;
+    }>(`/api/v1/kbs/${kbId}/graph/rebuild`, { method: "POST" }),
 
   ontology: (kbId: string) =>
     request<{
@@ -662,16 +762,25 @@ export const api = {
       body: JSON.stringify(body),
     }),
   updateEntityType: (kbId: string, id: string, body: Record<string, unknown>) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/entity-types/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-    }),
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/ontology/entity-types/${id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      },
+    ),
   deleteEntityType: (kbId: string, id: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/entity-types/${id}`, {
-      method: "DELETE",
-    }),
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/ontology/entity-types/${id}`,
+      {
+        method: "DELETE",
+      },
+    ),
   typeEntities: (kbId: string, typeId: string, page: number, per = 12) =>
-    request<{ entities: { id: string; name: string; fact_count: number }[]; total: number }>(
+    request<{
+      entities: { id: string; name: string; fact_count: number }[];
+      total: number;
+    }>(
       `/api/v1/kbs/${kbId}/ontology/entity-types/${typeId}/entities?page=${page}&per=${per}`,
     ),
   createRelationType: (kbId: string, body: Record<string, unknown>) =>
@@ -679,25 +788,62 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  updateRelationType: (kbId: string, id: string, body: Record<string, unknown>) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/relation-types/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(body),
-    }),
+  updateRelationType: (
+    kbId: string,
+    id: string,
+    body: Record<string, unknown>,
+  ) =>
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/ontology/relation-types/${id}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      },
+    ),
   deleteRelationType: (kbId: string, id: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/relation-types/${id}`, {
-      method: "DELETE",
-    }),
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/ontology/relation-types/${id}`,
+      {
+        method: "DELETE",
+      },
+    ),
   dismissMiss: (kbId: string, kind: string, key: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/dismiss`, {
       method: "POST",
       body: JSON.stringify({ kind, key }),
     }),
   suggestOntology: (kbId: string) =>
-    request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/suggest`, { method: "POST" }),
+    request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/suggest`, {
+      method: "POST",
+    }),
+
+  /** 上传本体文件只算出计划，一个字节都不写库 */
+  previewOntologyImport: (kbId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return request<{ filename: string; plan: ImportPlan }>(
+      `/api/v1/kbs/${kbId}/ontology/imports/preview`,
+      { method: "POST", body: form },
+    );
+  },
+  /** 执行刚看过的那个计划——服务端重新算一遍，两条路径共用同一段代码 */
+  applyOntologyImport: (kbId: string, file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return request<{ import_id: string; plan: ImportPlan }>(
+      `/api/v1/kbs/${kbId}/ontology/imports`,
+      { method: "POST", body: form },
+    );
+  },
+  ontologyImports: (kbId: string) =>
+    request<{ imports: OntologyImportView[] }>(
+      `/api/v1/kbs/${kbId}/ontology/imports`,
+    ),
 
   proposedPredicates: (kbId: string) =>
-    request<{ forms: ProposedPredicate[] }>(`/api/v1/kbs/${kbId}/ontology/proposed-predicates`),
+    request<{ forms: ProposedPredicate[] }>(
+      `/api/v1/kbs/${kbId}/ontology/proposed-predicates`,
+    ),
   /** 最近一次自动扩本体做了什么，以及还能不能撤销（撤干净了返回 null） */
   lastAutoExtension: (kbId: string) =>
     request<{
@@ -751,23 +897,37 @@ export const api = {
       `/api/v1/kbs/${kbId}/sources/${sourceId}/rotate-token`,
       { method: "POST" },
     ),
-  updateSource: (kbId: string, sourceId: string, body: Record<string, unknown>) =>
+  updateSource: (
+    kbId: string,
+    sourceId: string,
+    body: Record<string, unknown>,
+  ) =>
     request<{ source: SourceView }>(`/api/v1/kbs/${kbId}/sources/${sourceId}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
   deleteSource: (kbId: string, sourceId: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/sources/${sourceId}`, { method: "DELETE" }),
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/sources/${sourceId}`, {
+      method: "DELETE",
+    }),
   cleanupMissing: (kbId: string, sourceId: string) =>
-    request<{ deleted: number }>(`/api/v1/kbs/${kbId}/sources/${sourceId}/missing/cleanup`, {
-      method: "POST",
-    }),
+    request<{ deleted: number }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/missing/cleanup`,
+      {
+        method: "POST",
+      },
+    ),
   syncSource: (kbId: string, sourceId: string) =>
-    request<{ queued: boolean }>(`/api/v1/kbs/${kbId}/sources/${sourceId}/sync`, {
-      method: "POST",
-    }),
+    request<{ queued: boolean }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/sync`,
+      {
+        method: "POST",
+      },
+    ),
   sourceRuns: (kbId: string, sourceId: string) =>
-    request<{ runs: SyncRun[] }>(`/api/v1/kbs/${kbId}/sources/${sourceId}/runs`),
+    request<{ runs: SyncRun[] }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/runs`,
+    ),
   documentExtractions: (docId: string) =>
     request<{ facts: ChunkFact[] }>(`/api/v1/documents/${docId}/extractions`),
 
@@ -799,27 +959,40 @@ export const api = {
       body: JSON.stringify({ action }),
     }),
   confirmFact: (kbId: string, factId: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/confirm`, { method: "POST" }),
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/confirm`, {
+      method: "POST",
+    }),
   rejectFact: (kbId: string, factId: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/reject`, { method: "POST" }),
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/reject`, {
+      method: "POST",
+    }),
   revertMerge: (kbId: string, mergeId: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/merges/${mergeId}/revert`, { method: "POST" }),
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/merges/${mergeId}/revert`, {
+      method: "POST",
+    }),
   reviewHistory: (kbId: string, page: number, per = 20) =>
     request<{ events: ReviewHistoryEvent[]; total: number }>(
       `/api/v1/kbs/${kbId}/review/history?page=${page}&per=${per}`,
     ),
 
-  members: (workspaceId: string) => request<Member[]>(`/api/v1/workspaces/${workspaceId}/members`),
+  members: (workspaceId: string) =>
+    request<Member[]>(`/api/v1/workspaces/${workspaceId}/members`),
   orgUsers: () => request<OrgUser[]>("/api/v1/users"),
   setMemberRole: (workspaceId: string, userId: string, role: string) =>
-    request<{ ok: boolean }>(`/api/v1/workspaces/${workspaceId}/members/${userId}`, {
-      method: "PUT",
-      body: JSON.stringify({ role }),
-    }),
+    request<{ ok: boolean }>(
+      `/api/v1/workspaces/${workspaceId}/members/${userId}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ role }),
+      },
+    ),
   removeMember: (workspaceId: string, userId: string) =>
-    request<{ ok: boolean }>(`/api/v1/workspaces/${workspaceId}/members/${userId}`, {
-      method: "DELETE",
-    }),
+    request<{ ok: boolean }>(
+      `/api/v1/workspaces/${workspaceId}/members/${userId}`,
+      {
+        method: "DELETE",
+      },
+    ),
 
   testSettings: (workspaceId: string) =>
     request<{
@@ -831,11 +1004,17 @@ export const api = {
 /** RAG 对话：SSE 流式。返回中止函数。 */
 export const conversationsApi = {
   list: (kbId: string) =>
-    request<{ conversations: ConversationRow[] }>(`/api/v1/kbs/${kbId}/conversations`),
+    request<{ conversations: ConversationRow[] }>(
+      `/api/v1/kbs/${kbId}/conversations`,
+    ),
   detail: (kbId: string, id: string) =>
-    request<{ messages: ConversationMessage[] }>(`/api/v1/kbs/${kbId}/conversations/${id}`),
+    request<{ messages: ConversationMessage[] }>(
+      `/api/v1/kbs/${kbId}/conversations/${id}`,
+    ),
   remove: (kbId: string, id: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/conversations/${id}`, { method: "DELETE" }),
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/conversations/${id}`, {
+      method: "DELETE",
+    }),
 };
 
 export function streamChat(
@@ -890,9 +1069,12 @@ export function streamChat(
           }
           if (event === "conversation")
             handlers.onConversation((JSON.parse(data) as { id: string }).id);
-          else if (event === "sources") handlers.onSources(JSON.parse(data || "[]"));
-          else if (event === "step") handlers.onStep(JSON.parse(data) as ChatStep);
-          else if (event === "delta") handlers.onDelta((JSON.parse(data) as { text: string }).text);
+          else if (event === "sources")
+            handlers.onSources(JSON.parse(data || "[]"));
+          else if (event === "step")
+            handlers.onStep(JSON.parse(data) as ChatStep);
+          else if (event === "delta")
+            handlers.onDelta((JSON.parse(data) as { text: string }).text);
           else if (event === "done") handlers.onDone();
           else if (event === "error") handlers.onError(data);
         }

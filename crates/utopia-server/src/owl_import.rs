@@ -66,8 +66,9 @@ pub async fn plan(
     bytes: &[u8],
 ) -> AppResult<(ImportPlan, OwlProjection, RdfFormat)> {
     let format = RdfFormat::detect(filename, bytes);
-    let proj = ontology_rdf::project(bytes, format)
-        .map_err(|e| utopia_core::AppError::Validation(format!("无法解析本体文件：{e}")))?;
+    let proj = ontology_rdf::project(bytes, format).map_err(|e| {
+        utopia_core::AppError::Validation(format!("Could not parse this ontology file: {e}"))
+    })?;
 
     // 现有本体：按 IRI 与按 key 各建一份索引，两种冲突分别判
     let etypes = utopia_store::graph::entity_types(&state.pool, kb_id).await?;
@@ -90,15 +91,9 @@ pub async fn plan(
         } else if let Some(existing) = e_by_key.get(c.key.as_str()) {
             // key 撞了但 IRI 不同：这是两个不同的东西争一个短标签。
             // 不自动加后缀——那会让重导入认不出自己上次建的是哪个
-            (
-                Disposition::KeyTaken,
-                Some(
-                    existing
-                        .iri
-                        .clone()
-                        .unwrap_or_else(|| "（手工建的）".into()),
-                ),
-            )
+            // 占位者可能是手工建的（没有 IRI）——那就返回 None，
+            // 由界面决定怎么措辞。服务端不产出展示文案
+            (Disposition::KeyTaken, existing.iri.clone())
         } else {
             (Disposition::Create, None)
         };
@@ -119,15 +114,7 @@ pub async fn plan(
         let (disposition, conflict_with) = if r_by_iri.contains_key(p.iri.as_str()) {
             (Disposition::Update, None)
         } else if let Some(existing) = r_by_key.get(p.key.as_str()) {
-            (
-                Disposition::KeyTaken,
-                Some(
-                    existing
-                        .iri
-                        .clone()
-                        .unwrap_or_else(|| "（内置或手工建的）".into()),
-                ),
-            )
+            (Disposition::KeyTaken, existing.iri.clone())
         } else {
             (Disposition::Create, None)
         };

@@ -665,7 +665,7 @@ async fn read_upload(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| AppError::Validation(format!("上传解析失败：{e}")))?
+        .map_err(|e| AppError::Validation(format!("Could not read the upload: {e}")))?
     {
         let Some(filename) = field.file_name().map(String::from) else {
             continue;
@@ -673,7 +673,7 @@ async fn read_upload(
         let bytes = field
             .bytes()
             .await
-            .map_err(|e| AppError::Validation(format!("读取上传内容失败：{e}")))?;
+            .map_err(|e| AppError::Validation(format!("Could not read the uploaded file: {e}")))?;
         if bytes.len() > MAX_ONTOLOGY_BYTES {
             return Err(AppError::Validation(
                 "Ontology file is too large (max 8 MB)".into(),
