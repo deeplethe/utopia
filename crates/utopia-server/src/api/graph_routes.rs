@@ -122,7 +122,7 @@ pub async fn update_entity(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     if req.type_id.is_none() && req.canonical_name.is_none() {
-        return Err(AppError::Validation("Nothing to update".into()).into());
+        return Err(AppError::invalid("nothing_to_update", "Nothing to update").into());
     }
     let (before, after) = utopia_store::graph::update_entity(
         &state.pool,

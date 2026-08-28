@@ -3,27 +3,43 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Lock, Plus, X } from "lucide-react";
 import { api } from "../api";
-import { S } from "../i18n";
+import { LANG_NAMES, S } from "../i18n";
 import { useKb } from "../kb";
 import { Members } from "./Members";
 
 /** 部署级配置：注册开关 + worker 并发。 */
 function DeploymentAdmin() {
   const queryClient = useQueryClient();
-  const dep = useQuery({ queryKey: ["deployment"], queryFn: api.adminDeployment });
+  const dep = useQuery({
+    queryKey: ["deployment"],
+    queryFn: api.adminDeployment,
+  });
   const [workers, setWorkers] = useState<number | null>(null);
   const shown = workers ?? dep.data?.worker_concurrency ?? 32;
   // 按模型的并发：缺省值 + 每个在用模型的覆盖
   const [modelDefault, setModelDefault] = useState<number | null>(null);
-  const shownDefault = modelDefault ?? dep.data?.default_model_concurrency ?? 10;
+  const shownDefault =
+    modelDefault ?? dep.data?.default_model_concurrency ?? 10;
   const [perModel, setPerModel] = useState<Record<string, number>>({});
   const save = useMutation({
     mutationFn: (v: {
       open: boolean;
       workers?: number;
       defaultModel?: number;
-      modelLimit?: { base_url: string; model: string; max_concurrent: number | null };
-    }) => api.saveAdminDeployment(v.open, v.workers, v.defaultModel, v.modelLimit),
+      modelLimit?: {
+        base_url: string;
+        model: string;
+        max_concurrent: number | null;
+      };
+      ontologyLang?: "en" | "zh";
+    }) =>
+      api.saveAdminDeployment(
+        v.open,
+        v.workers,
+        v.defaultModel,
+        v.modelLimit,
+        v.ontologyLang,
+      ),
     onSuccess: () => {
       setPerModel({});
       queryClient.invalidateQueries({ queryKey: ["deployment"] });
@@ -42,16 +58,49 @@ function DeploymentAdmin() {
           onChange={(e) => save.mutate({ open: e.target.checked })}
         />
         <span>
-          <span className="block text-sm text-neutral-200">{S.settings.deployment.openReg}</span>
+          <span className="block text-sm text-neutral-200">
+            {S.settings.deployment.openReg}
+          </span>
           <span className="block text-xs text-neutral-500 mt-0.5">
             {S.settings.deployment.openRegHint}
           </span>
         </span>
       </label>
 
+      {/* 新建库的本体语言。**不是界面语言**——界面语言是每个人自己在账户菜单里选的，
+          根本不经过后端（docs/decisions/0004）。说明里必须把这句讲出来 */}
       <div className="flex items-start justify-between gap-4 border-t border-white/10 pt-4">
         <div className="min-w-0">
-          <span className="block text-sm text-neutral-200">{S.settings.deployment.workers}</span>
+          <span className="block text-sm text-neutral-200">
+            {S.settings.deployment.ontologyLang}
+          </span>
+          <span className="block text-xs text-neutral-500 mt-0.5">
+            {S.settings.deployment.ontologyLangHint}
+          </span>
+        </div>
+        <div className="flex gap-1 rounded-lg bg-white/5 p-1 h-fit shrink-0">
+          {(["en", "zh"] as const).map((l) => (
+            <button
+              key={l}
+              disabled={dep.isPending || save.isPending}
+              onClick={() => save.mutate({ open, ontologyLang: l })}
+              className={`rounded-md px-3 py-1 text-[12px] font-medium transition-colors ${
+                (dep.data?.default_ontology_lang ?? "en") === l
+                  ? "bg-white/10 text-neutral-100"
+                  : "text-neutral-500 hover:text-neutral-300"
+              }`}
+            >
+              {LANG_NAMES[l]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-start justify-between gap-4 border-t border-white/10 pt-4">
+        <div className="min-w-0">
+          <span className="block text-sm text-neutral-200">
+            {S.settings.deployment.workers}
+          </span>
           <span className="block text-xs text-neutral-500 mt-0.5">
             {S.settings.deployment.workersHint}
           </span>
@@ -64,11 +113,17 @@ function DeploymentAdmin() {
             className="input-dark u-input-plain w-16 px-2 py-1.5 text-sm u-num text-center"
             value={shown}
             disabled={dep.isPending}
-            onChange={(e) => setWorkers(Math.max(1, Math.min(32, Number(e.target.value) || 1)))}
+            onChange={(e) =>
+              setWorkers(Math.max(1, Math.min(32, Number(e.target.value) || 1)))
+            }
           />
           <button
             className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
-            disabled={save.isPending || workers === null || workers === dep.data?.worker_concurrency}
+            disabled={
+              save.isPending ||
+              workers === null ||
+              workers === dep.data?.worker_concurrency
+            }
             onClick={() => save.mutate({ open, workers: shown })}
           >
             {S.settings.deployment.workersApply}
@@ -88,7 +143,9 @@ function DeploymentAdmin() {
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs text-neutral-500">{S.settings.deployment.modelDefault}</span>
+            <span className="text-xs text-neutral-500">
+              {S.settings.deployment.modelDefault}
+            </span>
             <input
               type="number"
               min={1}
@@ -97,7 +154,9 @@ function DeploymentAdmin() {
               value={shownDefault}
               disabled={dep.isPending}
               onChange={(e) =>
-                setModelDefault(Math.max(1, Math.min(256, Number(e.target.value) || 1)))
+                setModelDefault(
+                  Math.max(1, Math.min(256, Number(e.target.value) || 1)),
+                )
               }
             />
             <button
@@ -128,8 +187,12 @@ function DeploymentAdmin() {
                   <span className="u-chip u-chip-neutral !text-[10px] !px-1.5 shrink-0">
                     {m.kind}
                   </span>
-                  <span className="font-mono text-neutral-300 truncate">{m.model}</span>
-                  <span className="text-neutral-600 truncate hidden sm:inline">{m.base_url}</span>
+                  <span className="font-mono text-neutral-300 truncate">
+                    {m.model}
+                  </span>
+                  <span className="text-neutral-600 truncate hidden sm:inline">
+                    {m.base_url}
+                  </span>
                   <input
                     type="number"
                     min={1}
@@ -139,7 +202,10 @@ function DeploymentAdmin() {
                     onChange={(e) =>
                       setPerModel({
                         ...perModel,
-                        [key]: Math.max(1, Math.min(256, Number(e.target.value) || 1)),
+                        [key]: Math.max(
+                          1,
+                          Math.min(256, Number(e.target.value) || 1),
+                        ),
                       })
                     }
                   />
@@ -214,7 +280,9 @@ function KbsAdmin() {
           <div key={kb.id} className="px-4 py-3 flex items-center gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-sm text-neutral-200 truncate">{kb.name}</span>
+                <span className="text-sm text-neutral-200 truncate">
+                  {kb.name}
+                </span>
                 {kb.is_default && (
                   <span className="u-chip u-chip-neutral !text-[10px]">
                     {S.settings.kbs.defaultChip}
@@ -228,7 +296,9 @@ function KbsAdmin() {
                 )}
               </div>
               <div className="mt-0.5 text-xs text-neutral-500">
-                <span className="u-num">{S.account.kbStats(doc_count, member_count)}</span>
+                <span className="u-num">
+                  {S.account.kbStats(doc_count, member_count)}
+                </span>
               </div>
             </div>
             <button
@@ -260,7 +330,9 @@ function KbsAdmin() {
           workspaceId={workspace.id}
           onDone={(id) => {
             setCreating(false);
-            queryClient.invalidateQueries({ queryKey: ["myKbs", workspace.id] });
+            queryClient.invalidateQueries({
+              queryKey: ["myKbs", workspace.id],
+            });
             queryClient.invalidateQueries({ queryKey: ["kbs", workspace.id] });
             // 建完直达库设置：下一步几乎总是邀人/配置
             if (id) {
@@ -306,7 +378,10 @@ function NewKbModal({
       <div className="glass-strong w-[24rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl p-5">
         <div className="flex items-center justify-between mb-4">
           <h2 className="u-title text-[15px]">{S.settings.kbs.newKb}</h2>
-          <button onClick={() => onDone()} className="text-neutral-500 hover:text-neutral-200">
+          <button
+            onClick={() => onDone()}
+            className="text-neutral-500 hover:text-neutral-200"
+          >
             <X size={15} />
           </button>
         </div>
@@ -332,10 +407,15 @@ function NewKbModal({
           {S.settings.kbs.visRestricted}
         </label>
         {create.isError && (
-          <p className="text-xs text-rose-400 mb-2">{(create.error as Error).message}</p>
+          <p className="text-xs text-rose-400 mb-2">
+            {(create.error as Error).message}
+          </p>
         )}
         <div className="flex justify-end gap-2">
-          <button className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs" onClick={() => onDone()}>
+          <button
+            className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs"
+            onClick={() => onDone()}
+          >
             {S.library.cancel}
           </button>
           <button
@@ -354,13 +434,21 @@ function NewKbModal({
 /** 系统层数据源注册（问数）：凭据只进不出，列表只显示 host:port/db 摘要。 */
 function DataSourcesAdmin() {
   const queryClient = useQueryClient();
-  const list = useQuery({ queryKey: ["dataSources"], queryFn: api.adminDataSources });
+  const list = useQuery({
+    queryKey: ["dataSources"],
+    queryFn: api.adminDataSources,
+  });
   const [name, setName] = useState("");
   const [conn, setConn] = useState("");
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["dataSources"] });
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["dataSources"] });
 
   const create = useMutation({
-    mutationFn: () => api.adminCreateDataSource({ name: name.trim(), conn_string: conn.trim() }),
+    mutationFn: () =>
+      api.adminCreateDataSource({
+        name: name.trim(),
+        conn_string: conn.trim(),
+      }),
     onSuccess: () => {
       setName("");
       setConn("");
@@ -385,7 +473,9 @@ function DataSourcesAdmin() {
           <div key={d.id} className="px-4 py-3 flex items-center gap-3">
             <div className="min-w-0 flex-1">
               <div className="text-sm text-neutral-200">{d.name}</div>
-              <div className="text-xs text-neutral-500 font-mono truncate">{d.summary}</div>
+              <div className="text-xs text-neutral-500 font-mono truncate">
+                {d.summary}
+              </div>
             </div>
             <span
               className={`u-chip shrink-0 ${
@@ -445,7 +535,9 @@ function DataSourcesAdmin() {
             {S.settings.datasources.add}
           </button>
           {create.isError && (
-            <span className="text-xs text-rose-400">{(create.error as Error).message}</span>
+            <span className="text-xs text-rose-400">
+              {(create.error as Error).message}
+            </span>
           )}
         </div>
       </div>
@@ -492,9 +584,9 @@ const PRESETS: Record<
 export function Settings() {
   const { workspace } = useKb();
   const { tab: tabParam } = useSearch({ from: "/account/admin" });
-  const [tab, setTab] = useState<"models" | "members" | "kbs" | "datasources" | "deployment">(
-    tabParam ?? "models",
-  );
+  const [tab, setTab] = useState<
+    "models" | "members" | "kbs" | "datasources" | "deployment"
+  >(tabParam ?? "models");
   const queryClient = useQueryClient();
   const settings = useQuery({
     queryKey: ["settings", workspace?.id],
@@ -525,24 +617,30 @@ export function Settings() {
 
   const save = useMutation({
     mutationFn: () => api.saveSettings(workspace!.id, form),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["settings", workspace?.id] }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["settings", workspace?.id] }),
   });
 
-  const test = useMutation({ mutationFn: () => api.testSettings(workspace!.id) });
+  const test = useMutation({
+    mutationFn: () => api.testSettings(workspace!.id),
+  });
 
-  if (!workspace) return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
+  if (!workspace)
+    return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
 
-  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm({ ...form, [k]: e.target.value });
+  const set =
+    (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      setForm({ ...form, [k]: e.target.value });
 
-  const input =
-    "input-dark w-full px-3 py-2 text-sm";
+  const input = "input-dark w-full px-3 py-2 text-sm";
   const label = "block text-xs font-medium text-neutral-400 mb-1";
 
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="max-w-xl">
-        <h2 className="text-lg font-bold text-neutral-100 mb-3">{S.settings.title}</h2>
+        <h2 className="text-lg font-bold text-neutral-100 mb-3">
+          {S.settings.title}
+        </h2>
         <div className="flex gap-1 mb-5 bg-white/5 rounded-lg p-1 w-fit">
           {(
             [
@@ -574,7 +672,9 @@ export function Settings() {
 
         {tab === "models" && (
           <>
-            <p className="text-sm text-neutral-400 mb-4">{S.settings.modelsIntro}</p>
+            <p className="text-sm text-neutral-400 mb-4">
+              {S.settings.modelsIntro}
+            </p>
 
             <div className="mb-5 flex flex-wrap gap-2">
               {Object.entries(PRESETS).map(([name, p]) => (
@@ -597,7 +697,9 @@ export function Settings() {
             </div>
 
             <div className="glass rounded-xl p-5 space-y-4">
-              <h3 className="text-sm font-bold text-neutral-200">{S.settings.chatModel}</h3>
+              <h3 className="text-sm font-bold text-neutral-200">
+                {S.settings.chatModel}
+              </h3>
               <div>
                 <label className={label}>{S.settings.baseUrl}</label>
                 <input
@@ -621,7 +723,9 @@ export function Settings() {
                   <label className={label}>
                     {S.settings.apiKey}{" "}
                     {settings.data?.has_chat_key && (
-                      <span className="text-[var(--u-accent)]">{S.settings.keyConfigured}</span>
+                      <span className="text-[var(--u-accent)]">
+                        {S.settings.keyConfigured}
+                      </span>
                     )}
                   </label>
                   <input
@@ -634,7 +738,9 @@ export function Settings() {
                 </div>
               </div>
 
-              <h3 className="text-sm font-bold text-neutral-200 pt-2">{S.settings.embedModel}</h3>
+              <h3 className="text-sm font-bold text-neutral-200 pt-2">
+                {S.settings.embedModel}
+              </h3>
               <div>
                 <label className={label}>{S.settings.baseUrl}</label>
                 <input
@@ -658,7 +764,9 @@ export function Settings() {
                   <label className={label}>
                     {S.settings.apiKey}{" "}
                     {settings.data?.has_embed_key && (
-                      <span className="text-[var(--u-accent)]">{S.settings.keyConfigured}</span>
+                      <span className="text-[var(--u-accent)]">
+                        {S.settings.keyConfigured}
+                      </span>
                     )}
                   </label>
                   <input
@@ -687,19 +795,37 @@ export function Settings() {
                 </button>
               </div>
 
-              {save.isSuccess && <p className="text-sm text-[var(--u-accent)]">{S.settings.saved}</p>}
+              {save.isSuccess && (
+                <p className="text-sm text-[var(--u-accent)]">
+                  {S.settings.saved}
+                </p>
+              )}
               {save.isError && (
-                <p className="text-sm text-rose-400">{(save.error as Error).message}</p>
+                <p className="text-sm text-rose-400">
+                  {(save.error as Error).message}
+                </p>
               )}
               {test.data && (
                 <div className="text-sm space-y-1 pt-1">
-                  <p className={test.data.chat.ok ? "text-[var(--u-accent)]" : "text-rose-400"}>
+                  <p
+                    className={
+                      test.data.chat.ok
+                        ? "text-[var(--u-accent)]"
+                        : "text-rose-400"
+                    }
+                  >
                     {S.settings.chatLabel}:{" "}
                     {test.data.chat.ok
                       ? S.settings.ok(test.data.chat.reply ?? "OK")
                       : test.data.chat.error}
                   </p>
-                  <p className={test.data.embed.ok ? "text-[var(--u-accent)]" : "text-neutral-400"}>
+                  <p
+                    className={
+                      test.data.embed.ok
+                        ? "text-[var(--u-accent)]"
+                        : "text-neutral-400"
+                    }
+                  >
                     {S.settings.embedLabel}:{" "}
                     {test.data.embed.ok
                       ? S.settings.okDim(test.data.embed.dim ?? 0)

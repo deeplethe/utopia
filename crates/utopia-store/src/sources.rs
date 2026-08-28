@@ -17,13 +17,16 @@ pub fn validate_cron(expr: &str) -> AppResult<String> {
     let normalized = expr.split_whitespace().collect::<Vec<_>>().join(" ");
     let fields = normalized.split(' ').count();
     if fields != 5 {
-        return Err(AppError::Validation(format!(
-            "Cron expression must have 5 fields (minute hour day month weekday), got {fields}"
-        )));
+        return Err(AppError::invalid_detail(
+            "bad_cron_fields",
+            "Cron expression must have 5 fields (minute hour day month weekday)",
+            format!("got {fields}"),
+        ));
     }
     use std::str::FromStr;
-    cron::Schedule::from_str(&format!("0 {normalized}"))
-        .map_err(|e| AppError::Validation(format!("Invalid cron expression: {e}")))?;
+    cron::Schedule::from_str(&format!("0 {normalized}")).map_err(|e| {
+        AppError::invalid_detail("bad_cron", "Invalid cron expression", e.to_string())
+    })?;
     Ok(normalized)
 }
 
@@ -81,7 +84,10 @@ pub async fn create(
         )));
     }
     if name.trim().is_empty() {
-        return Err(AppError::Validation("Source name is required".into()));
+        return Err(AppError::invalid(
+            "source_name_required",
+            "Source name is required",
+        ));
     }
     // 互斥：cron 优先（UI 只会传其一）
     let cron_norm = sync_cron.map(validate_cron).transpose()?;

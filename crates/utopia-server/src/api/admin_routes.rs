@@ -26,11 +26,13 @@ pub async fn get_deployment(
     require_admin(&user)?;
     let open = utopia_store::access::open_registration(&state.pool).await?;
     let workers = utopia_store::access::worker_concurrency(&state.pool).await?;
+    let onto_lang = utopia_store::access::default_ontology_lang(&state.pool).await?;
     let (limits, dflt) = utopia_store::model_limits::list(&state.pool).await?;
     let in_use = utopia_store::model_limits::models_in_use(&state.pool).await?;
     Ok(Json(json!({
         "open_registration": open,
         "worker_concurrency": workers,
+        "default_ontology_lang": onto_lang,
         "model_limits": limits,
         "default_model_concurrency": dflt,
         "models_in_use": in_use.into_iter().map(|(b, m, k)| json!({"base_url": b, "model": m, "kind": k})).collect::<Vec<_>>(),
@@ -50,6 +52,9 @@ pub struct DeploymentReq {
     /// 单个模型的并发；`max_concurrent` 为 null 表示删掉专属配置、回落到缺省
     #[serde(default)]
     pub model_limit: Option<ModelLimitReq>,
+    /// 新建知识库时本体用哪种语言播种。**不是界面语言**——那个在客户端
+    #[serde(default)]
+    pub default_ontology_lang: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -74,6 +79,9 @@ pub async fn put_deployment(
             .store(n as usize, std::sync::atomic::Ordering::Relaxed);
     }
     // 按模型的限额即时生效：闸门每次调用前读库，发现限额变了就换一把新信号量
+    if let Some(l) = &req.default_ontology_lang {
+        utopia_store::access::set_default_ontology_lang(&state.pool, l).await?;
+    }
     if let Some(n) = req.default_model_concurrency {
         utopia_store::model_limits::set_default(&state.pool, n).await?;
     }
@@ -102,13 +110,19 @@ pub async fn create_user(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&user)?;
     if !req.email.contains('@') || req.email.len() > 254 {
-        return Err(AppError::Validation("Invalid email address".into()).into());
+        return Err(AppError::invalid("bad_email", "Invalid email address").into());
     }
     if req.password.chars().count() < 8 {
-        return Err(AppError::Validation("Password must be at least 8 characters".into()).into());
+        return Err(AppError::invalid(
+            "password_too_short",
+            "Password must be at least 8 characters",
+        )
+        .into());
     }
     if req.display_name.trim().is_empty() || req.display_name.chars().count() > 64 {
-        return Err(AppError::Validation("Display name must be 1-64 characters".into()).into());
+        return Err(
+            AppError::invalid("bad_display_name", "Display name must be 1-64 characters").into(),
+        );
     }
     let role = match req.role.as_deref().unwrap_or("editor") {
         "admin" => Role::Admin,

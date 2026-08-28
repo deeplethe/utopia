@@ -67,7 +67,11 @@ pub async fn plan(
 ) -> AppResult<(ImportPlan, OwlProjection, RdfFormat)> {
     let format = RdfFormat::detect(filename, bytes);
     let proj = ontology_rdf::project(bytes, format).map_err(|e| {
-        utopia_core::AppError::Validation(format!("Could not parse this ontology file: {e}"))
+        utopia_core::AppError::invalid_detail(
+            "bad_ontology_file",
+            "Could not parse this ontology file",
+            e.to_string(),
+        )
     })?;
 
     // 现有本体：按 IRI 与按 key 各建一份索引，两种冲突分别判

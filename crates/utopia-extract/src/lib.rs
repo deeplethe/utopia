@@ -50,8 +50,16 @@ pub fn build_messages(
     attributes: &[String],
     doc_time: Option<&str>,
     filename: &str,
+    // 本文档前面几块已经认下的 (类型 key, 实体名)，按首次出现排序。
+    // 第一块为空——那时还没有"前面"
+    known: &[(String, String)],
     chunk_text: &str,
 ) -> Vec<ChatMessage> {
+    // **有描述时不送 label**。label 是给人看的显示名，而且它跟界面无关、
+    // 跟这个库的语料语言走——中文库里 person 的 label 是"人物"。
+    // `- person (人物): 有名有姓的具体的人…` 里那个"人物"相对 key 近乎零信息量，
+    // 却让提示词在语料语言与标识符之间来回跳。描述为空时才拿它兜底：
+    // 光一个 key 太单薄。见 docs/decisions/0004
     let fmt_list = |items: &[(String, String, String)]| {
         items
             .iter()
@@ -60,7 +68,7 @@ pub fn build_messages(
                 if d.is_empty() {
                     format!("- {k} ({l})")
                 } else {
-                    format!("- {k} ({l}): {d}")
+                    format!("- {k}: {d}")
                 }
             })
             .collect::<Vec<_>>()
@@ -115,7 +123,10 @@ pub fn build_messages(
          \n\
          Rules:\n\
          1. Use the canonical full name as written in the text, in the text's original language; \
-            list each entity once.\n\
+            list each entity once. Text introduces a full name and then shortens it — \
+            \"星云科技上海研究院\" becomes \"上海研究院\", \"Nebula Technologies Inc.\" becomes \
+            \"Nebula\" — and both forms mean one entity, listed once under the fuller form. \
+            Two names are two entities only when the text is talking about two things.\n\
          2. Every fact's subject/object must appear in entities.\n\
          3. Dates must be \"YYYY\", \"YYYY-MM\", \"YYYY-MM-DD\", or null. If a relation is still \
             ongoing, valid_to is null. If the text states no date, use null — never invent dates.\n\
@@ -133,7 +144,11 @@ pub fn build_messages(
          {attr_rules}"
     );
 
-    let user = format!("Source file: \"{filename}\"\n\nText:\n{chunk_text}");
+    // 已知实体紧挨着正文：服从性靠位置，理由见 known_block 的注释
+    let user = format!(
+        "Source file: \"{filename}\"\n{}\nText:\n{chunk_text}",
+        known_block(known)
+    );
 
     vec![
         ChatMessage {
@@ -145,6 +160,60 @@ pub fn build_messages(
             content: user,
         },
     ]
+}
+
+/// 已在本文档中出现过的实体，放进提示词的字符预算。
+///
+/// 超出就截断（保留先出现的）。中文商业文本先出全称、主角先出场，所以
+/// **首次出现顺序天然偏向那些后面会被简称的名字**。
+const KNOWN_BUDGET_CHARS: usize = 1200;
+
+/// 把「本文档已经认下的实体」排版成提示词里的一段。空则返回空串。
+///
+/// **为什么在正文之前、指令贴着清单**：抽象规则打不过挨着它的具体块——本体建议
+/// 那次，语言要求就输给了紧随其后的英文 JSON 骨架，挪到骨架之后并点名它才生效。
+/// 服从性靠位置，所以指令挨着它管的数据放，两者一起挨着正文。
+///
+/// **顺带一条与放哪条消息无关的规矩：逐块变化的内容一律放最后。** 前缀缓存匹配的是
+/// token 前缀，而消息按 system→user 拼接，所以「system 末尾」与「user 开头」几乎等价；
+/// 真正会打碎缓存的是把它塞在**中间**（本体之后、规则之前），那会把规则挤出前缀。
+/// 缓存本身不归我们管——供应商开不开、报不报都由它，本部署实测 `cached=0`——
+/// 我们只负责别把它弄碎。自部署 vLLM 默认开着自动前缀缓存，那省的是算力不是钱。
+fn known_block(known: &[(String, String)]) -> String {
+    if known.is_empty() {
+        return String::new();
+    }
+    // 按类型分组：更紧凑，而且顺带压住跨块类型漂移
+    //（同一个"沧海"在一块里是 product、另一块里是 project）
+    let mut by_type: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut used = 0usize;
+    for (type_key, name) in known {
+        used += name.chars().count() + 2;
+        if used > KNOWN_BUDGET_CHARS {
+            break;
+        }
+        match by_type.iter_mut().find(|(k, _)| *k == type_key.as_str()) {
+            Some((_, names)) => names.push(name),
+            None => by_type.push((type_key, vec![name])),
+        }
+    }
+    if by_type.is_empty() {
+        return String::new();
+    }
+    let lines = by_type
+        .iter()
+        .map(|(k, names)| format!("  {k}: {}", names.join(", ")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\nAlready recorded from earlier parts of this same document:\n{lines}\n\
+         \n\
+         If something in the text below refers to one of these, write that exact string as \
+         the name, and give it that same type — documents abbreviate after first mention \
+         (\"星云科技上海研究院\" later becomes \"上海研究院\"), and the shortened form must \
+         not become a second entity. If it is a different thing, name it as the text does; \
+         do not force it onto this list.\n"
+    )
 }
 
 /// 从 LLM 回复中稳健地取出 JSON 块（容忍代码围栏与前后废话）。
@@ -210,6 +279,14 @@ pub fn build_adjudication_messages(pairs: &[AdjudicationPair]) -> Vec<ChatMessag
         and connected entities. Identical names alone are NEVER sufficient evidence of sameness. \
         Contradictory affiliations in overlapping time periods indicate different entities \
         (but people do change jobs — non-overlapping periods can belong to one person).\n\
+        \n\
+        One name containing the other is a different case, and the rule above does not apply \
+        to it: \"星云科技上海研究院\" against \"上海研究院\", \"Nebula Technologies Inc.\" \
+        against \"Nebula\". Documents drop the qualifier after first mention, so the shorter \
+        form is usually the longer one abbreviated — treat the containment as evidence FOR \
+        sameness and let the facts settle it. Shared people, parent or location confirm one \
+        entity; a different parent or conflicting leadership means the shorter name belongs \
+        to something else.\n\
         \n\
         Output exactly one JSON object and nothing else:\n\
         {\"verdicts\":[{\"i\":0,\"verdict\":\"same|different|unsure\",\"confidence\":0.9}]}\n\
@@ -324,6 +401,67 @@ pub fn parse_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod prompt_shape_tests {
+    use super::*;
+
+    /// 已知实体必须落在 **user** 消息里、紧挨着正文。
+    ///
+    /// 理由是服从性不是缓存：抽象规则打不过挨着它的具体块。清单放进 system 的
+    /// 规则区，就会隔着输出格式、十条规则、文件名，离它要管的正文最远。
+    #[test]
+    fn known_entities_stay_out_of_the_system_message() {
+        // 用一个规则 1 的例子里没有的名字：规则 1 也提"星云科技上海研究院"，
+        // 拿它断言等于测不出清单到底在哪条消息里
+        let known = vec![(
+            "organization".to_string(),
+            "华瑞集团智能制造研究院".to_string(),
+        )];
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &known, "text");
+        assert_eq!(msgs[0].role, "system");
+        assert!(!msgs[0].content.contains("Already recorded"));
+        assert!(!msgs[0].content.contains("华瑞集团智能制造研究院"));
+        assert!(msgs[1]
+            .content
+            .contains("organization: 华瑞集团智能制造研究院"));
+    }
+
+    /// 第一块没有"前面"，那一段应当完全不出现——成本为零，而不是一段空标题
+    #[test]
+    fn the_first_chunk_carries_no_block() {
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        assert!(!msgs[1].content.contains("Already recorded"));
+    }
+
+    /// 反向护栏必须在：给了参照物就会有人硬套（`concept` 那次的教训）
+    #[test]
+    fn the_block_tells_the_model_not_to_force_a_match() {
+        let known = vec![("person".to_string(), "陈立".to_string())];
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &known, "text");
+        assert!(msgs[1].content.contains("do not force it onto this list"));
+    }
+
+    /// 有描述就不送 label——中文库的 label 是中文，混进提示词只会让
+    /// 标识符与语料语言来回跳，而它相对 key 近乎零信息量。
+    #[test]
+    fn described_types_drop_the_label() {
+        let types = vec![
+            (
+                "person".into(),
+                "人物".into(),
+                "有名有姓的具体的人。".into(),
+            ),
+            ("event".into(), "事件".into(), String::new()),
+        ];
+        let msgs = build_messages(&types, &[], &[], None, "a.txt", &[], "text");
+        let prompt = format!("{:?}", msgs);
+        assert!(prompt.contains("- person: 有名有姓的具体的人。"));
+        assert!(!prompt.contains("person (人物)"));
+        // 描述为空时 label 仍是唯一的额外线索，留着
+        assert!(prompt.contains("- event (事件)"));
+    }
 }
 
 #[cfg(test)]

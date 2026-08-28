@@ -50,9 +50,9 @@ pub async fn register(
         }
         Some((org_id,)) => {
             if !open_registration {
-                return Err(AppError::Validation(
-                    "Registration is closed for this deployment. Contact your administrator."
-                        .into(),
+                return Err(AppError::invalid(
+                    "registration_closed",
+                    "Registration is closed for this deployment. Contact your administrator.",
                 ));
             }
             let user =

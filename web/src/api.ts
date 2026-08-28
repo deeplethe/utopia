@@ -1,8 +1,13 @@
+import { S, lang } from "./i18n";
+
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** 服务端给的稳定错误码（没有则是尚未转换的契约守卫，message 已是英文原句） */
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -16,14 +21,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
+    // 措辞在这一个收口点定：22 个文件里的 toast.error(e.message) 一处都不用改。
+    // 有 code 就查 i18n，没有（或这一条还没进表）就退回服务端的英文原句——
+    // 服务端永远说英文，因为界面语言在客户端（docs/decisions/0004）
     let message = res.statusText;
+    let code: string | undefined;
     try {
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json()) as {
+        error?: string;
+        code?: string;
+        detail?: string;
+      };
       if (body.error) message = body.error;
+      code = body.code;
+      // code 来自网络，不是字面量——这一处 cast 换来 err 表本身的全量类型检查
+      const worded = code
+        ? (S.err as Record<string, string | undefined>)[code]
+        : undefined;
+      if (worded) message = worded;
+      if (body.detail) message = S.errDetail(message, body.detail);
     } catch {
       // 非 JSON 响应体，保留 statusText
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, code);
   }
   return res.json() as Promise<T>;
 }
@@ -56,6 +76,9 @@ export interface Kb {
   /** 抽取遇到本体外的说法时，是否允许系统自动补进本体并改写等它的事实。
       关掉不影响"留意"：未匹配统计照常累积可见，只是变成你点一下的提案 */
   auto_extend_ontology: boolean;
+  /** 内置本体按哪种语言播种、新描述写哪种语言。**跟语料走，不跟界面走**
+      （界面语言在客户端，见 docs/decisions/0004） */
+  ontology_lang: "en" | "zh";
   /** 调用者在本库的角色（仅详情接口返回）：前端据此门控破坏性入口 */
   my_role?: "viewer" | "editor" | "admin" | "owner" | null;
 }
@@ -572,6 +595,8 @@ export const api = {
       /** 外层兜底，防任务无限堆积；真正的节流是按模型的限额 */
       worker_concurrency: number;
       default_model_concurrency: number;
+      /** 新建知识库的本体语言默认值。**不是界面语言**——那个在客户端 */
+      default_ontology_lang: "en" | "zh";
       model_limits: {
         base_url: string;
         model: string;
@@ -588,6 +613,7 @@ export const api = {
       model: string;
       max_concurrent: number | null;
     },
+    defaultOntologyLang?: "en" | "zh",
   ) =>
     request<{ ok: boolean }>("/api/v1/admin/deployment", {
       method: "PUT",
@@ -600,6 +626,9 @@ export const api = {
           ? { default_model_concurrency: defaultModelConcurrency }
           : {}),
         ...(modelLimit ? { model_limit: modelLimit } : {}),
+        ...(defaultOntologyLang
+          ? { default_ontology_lang: defaultOntologyLang }
+          : {}),
       }),
     }),
   adminCreateUser: (body: {
@@ -812,9 +841,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, key }),
     }),
+  /** reason 只给人看，而人就在这次请求的另一端——所以语言由调用方说，
+      不是后端的设置（docs/decisions/0004）。description 的语言跟知识库走，服务端自己知道 */
   suggestOntology: (kbId: string) =>
     request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/suggest`, {
       method: "POST",
+      body: JSON.stringify({ locale: lang }),
     }),
 
   /** 上传本体文件只算出计划，一个字节都不写库 */

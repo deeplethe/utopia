@@ -26,7 +26,7 @@ pub async fn search(
 ) -> ApiResult<Json<serde_json::Value>> {
     let q = req.q.trim();
     if q.is_empty() {
-        return Err(AppError::Validation("Search query cannot be empty".into()).into());
+        return Err(AppError::invalid("empty_query", "Search query cannot be empty").into());
     }
     let kb = utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
 
