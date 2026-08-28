@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub database_url: String,
+    /// 跑迁移用的连接串。迁移要建表建触发器，运行时不需要那些权限——分开之后
+    /// 应用可以用一个只读写业务表、对台账只增不改的受限角色连库。
+    /// 不设则回落到 `database_url`：既有部署无需改动即可照常升级。
+    pub migration_url: Option<String>,
     pub bind_addr: String,
     pub jwt_secret: String,
     /// 前端构建产物目录；存在时由服务端托管 SPA（history fallback）。
@@ -26,6 +30,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             database_url: "postgres://utopia:utopia@localhost:5432/utopia".into(),
+            migration_url: None,
             bind_addr: "0.0.0.0:8080".into(),
             jwt_secret: "dev-secret-change-me".into(),
             web_dist: "web/dist".into(),
@@ -42,5 +47,12 @@ impl AppConfig {
             .merge(Env::prefixed("UTOPIA_"))
             .extract()?;
         Ok(cfg)
+    }
+}
+
+impl AppConfig {
+    /// 迁移连接串：未单独配置时用运行时那一个。
+    pub fn migration_url(&self) -> &str {
+        self.migration_url.as_deref().unwrap_or(&self.database_url)
     }
 }
