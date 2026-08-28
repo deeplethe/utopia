@@ -33,13 +33,20 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(pool: PgPool, cfg: &AppConfig, search: Arc<SearchIndex>) -> Self {
+    /// `jwt_secret` 由入口解析：环境变量给了就是它，否则是库里那条（首启时生成）。
+    /// 不从 cfg 里取，是因为到这一步它必须已经是确定的一个值，而不是 Option。
+    pub fn new(
+        pool: PgPool,
+        cfg: &AppConfig,
+        search: Arc<SearchIndex>,
+        jwt_secret: String,
+    ) -> Self {
         let (events, _) = broadcast::channel(256);
         let data_dir = PathBuf::from(&cfg.data_dir);
         let blob = Arc::new(crate::blob::LocalBlobStore::new(data_dir.join("files")));
         Self {
             pool,
-            jwt_secret: cfg.jwt_secret.clone(),
+            jwt_secret,
             search,
             docs: Arc::new(crate::docs_corpus::build_index()),
             blob,

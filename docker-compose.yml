@@ -42,7 +42,9 @@ services:
       UTOPIA_DATABASE_URL: ${UTOPIA_DATABASE_URL:-postgres://utopia:${UTOPIA_DB_PASSWORD:-utopia}@db:5432/utopia}
       UTOPIA_MIGRATION_URL: ${UTOPIA_MIGRATION_URL:-}
       UTOPIA_BIND_ADDR: 0.0.0.0:1516
-      UTOPIA_JWT_SECRET: ${UTOPIA_JWT_SECRET:-please-change-me-in-production}
+      # 留空：首次启动自动生成一条存进 deployment_settings。这里若给缺省值，
+      # 自动生成就永远走不到，所有部署又会共用同一个人人皆知的密钥。
+      UTOPIA_JWT_SECRET: ${UTOPIA_JWT_SECRET:-}
       UTOPIA_WEB_DIST: /app/web-dist
       UTOPIA_DATA_DIR: /app/data
       # 连接池上限。缺省 32，与 worker 并发的缺省对齐；池子小于并发时症状是

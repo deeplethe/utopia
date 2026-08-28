@@ -64,7 +64,23 @@ async fn main() -> anyhow::Result<()> {
     let search = Arc::new(SearchIndex::open(&index_dir)?);
     tracing::info!("全文索引就绪: {}", index_dir.display());
 
-    let state = AppState::new(pool.clone(), &cfg, search);
+    // JWT 密钥：环境变量优先（轮换、多实例显式对齐走这条），否则用库里那条；
+    // 库里也没有就现生成一条存进去。生成放在这里而不是 store 里，是因为
+    // OsRng 已经随 argon2 在 server 的依赖里，store 不必为此多一个依赖。
+    // 空串按未设置处理：compose 里写 ${UTOPIA_JWT_SECRET:-} 时环境变量是存在但为空的，
+    // 照字面读会得到 Some("")——一个所有部署都相同的空密钥，比默认值更糟。
+    let jwt_secret = match cfg.jwt_secret.clone().filter(|s| !s.trim().is_empty()) {
+        Some(s) => s,
+        None => {
+            let secret =
+                utopia_store::access::ensure_jwt_secret(&pool, &auth::generate_jwt_secret())
+                    .await?;
+            tracing::info!("JWT 密钥取自部署设置（未显式配置 UTOPIA_JWT_SECRET）");
+            secret
+        }
+    };
+
+    let state = AppState::new(pool.clone(), &cfg, search, jwt_secret);
 
     // worker 并发数：系统设置持久化，启动时装载；运行中经同一 AtomicUsize 热调
     let n = utopia_store::access::worker_concurrency(&pool)

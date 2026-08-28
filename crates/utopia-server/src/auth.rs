@@ -107,6 +107,18 @@ impl FromRequestParts<AppState> for AuthUser {
     }
 }
 
+/// 生成一条 JWT 签名密钥：32 字节 CSPRNG，hex 编码成 64 个字符。
+///
+/// 长度取 32 字节是因为 HS256 的 HMAC 块就是 32 字节——再长会被先哈希一遍，
+/// 并不增加强度。hex 而非 base64：这个值会出现在日志、环境变量和运维的复制粘贴里，
+/// 不带 +/= 省去一整类转义问题。
+pub fn generate_jwt_secret() -> String {
+    use argon2::password_hash::rand_core::RngCore;
+    let mut buf = [0u8; 32];
+    OsRng.fill_bytes(&mut buf);
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

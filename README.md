@@ -78,7 +78,7 @@ Everything is an environment variable prefixed with `UTOPIA_`; copy [.env.exampl
 |---|---|---|
 | `UTOPIA_DATABASE_URL` | `postgres://utopia:utopia@localhost:5432/utopia` | Postgres connection string |
 | `UTOPIA_BIND_ADDR` | `0.0.0.0:1516` | Listen address |
-| `UTOPIA_JWT_SECRET` | `dev-secret-change-me` | **Change this in production** |
+| `UTOPIA_JWT_SECRET` | _auto-generated_ | Leave unset; generated on first start and stored in the database |
 | `UTOPIA_WEB_DIST` | `web/dist` | Built frontend; served as an SPA when present |
 | `UTOPIA_DATA_DIR` | `data` | Original files and the full-text index |
 | `UTOPIA_OPEN_REGISTRATION` | `true` | When false, only the first account may self-register |

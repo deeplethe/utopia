@@ -14,7 +14,10 @@ pub struct AppConfig {
     /// 不设则回落到 `database_url`：既有部署无需改动即可照常升级。
     pub migration_url: Option<String>,
     pub bind_addr: String,
-    pub jwt_secret: String,
+    /// JWT 签名密钥。留空则首次启动时自动生成并存进 deployment_settings——
+    /// 要求部署者手填一个随机串，现实中的结果是默认值原样上生产。
+    /// 显式给出时优先于库里那条：密钥轮换与多实例显式对齐走这条路。
+    pub jwt_secret: Option<String>,
     /// 前端构建产物目录；存在时由服务端托管 SPA（history fallback）。
     pub web_dist: String,
     /// 数据目录：原始文件（files/）与 Tantivy 索引（index/）。
@@ -32,7 +35,7 @@ impl Default for AppConfig {
             database_url: "postgres://utopia:utopia@localhost:5432/utopia".into(),
             migration_url: None,
             bind_addr: "0.0.0.0:1516".into(),
-            jwt_secret: "dev-secret-change-me".into(),
+            jwt_secret: None,
             web_dist: "web/dist".into(),
             data_dir: "data".into(),
             db_max_connections: None,

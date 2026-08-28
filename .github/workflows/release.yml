@@ -66,9 +66,10 @@ jobs:
             if docker exec pg pg_isready -U utopia -d utopia >/dev/null 2>&1; then break; fi
             sleep 2
           done
+          # 故意不给 UTOPIA_JWT_SECRET：让这一跑覆盖自动生成那条路径。
+          # 下面的注册请求会签发并携带 token，密钥没生成好就过不了。
           docker run -d --name app --network smoke -p 1516:1516 \
             -e UTOPIA_DATABASE_URL=postgres://utopia:utopia@pg:5432/utopia \
-            -e UTOPIA_JWT_SECRET=smoke-test-secret \
             utopia:smoke
 
           # 必须打 /api/v1/health 并核对 JSON：健康检查挂在 nest("/api/v1") 里，
