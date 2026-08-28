@@ -91,7 +91,7 @@
 
 **推理与派生：**规则以时态 Datalog 表达，通过前向链驱动事实不断演绎。派生出的事实与抽取事实一样带有效时间与来源，并可展开完整的推导路径——每一条结论都能追问「为什么」，一路回溯到最初的原文。本体公理（类型继承、关系层级、传递、对称、互逆、互斥、基数）同样编译为规则参与推理，约束违例进入冲突队列。
 
-**基于本体的智能问数：**在系统层注册一次 Postgres 连接，再挂载到知识库，对话就可以同时查询文档和数据库。这条路线的方法（[Ontology2SQL](https://github.com/deeplethe/ontology2sql)）在 BIRD Mini-Dev 上取得 SQLite 70.20 / PostgreSQL 65.80，两项均为当前 SOTA（[榜单提交](https://github.com/bird-bench/bird-bench.github.io/pull/218)）。
+**基于本体的智能问数：**在系统层注册一次 Postgres 连接，再挂载到知识库，对话就可以同时查询文档和数据库。这条路线的方法（[Ontology2SQL](https://github.com/deeplethe/ontology2sql)）在 BIRD Mini-Dev 上取得 SQLite 70.20 / PostgreSQL 65.80，两项均为当前 SOTA，分别领先第二名 12.2 与 9.0 分（[榜单提交](https://github.com/bird-bench/bird-bench.github.io/pull/218)）。
 
 **多知识库：**采用「组织 → 工作区 → 知识库」三级结构，支持知识库级成员管理、角色权限和审计流水。部署后的第一个知识库是公共空间 `General`，默认对所有人可读。
 
