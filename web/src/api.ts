@@ -339,7 +339,7 @@ export interface EntityHistoryEvent {
 
 export interface Evidence {
   /** 模型在这一块里实际用的谓词说法。词表外谓词降级成 related_to 后，原意只剩这里 */
-  surface_predicate: string | null;
+  proposed_predicate: string | null;
   quote: string | null;
   chunk_id: string;
   document_id: string;
@@ -393,13 +393,17 @@ export interface OntologyMiss {
   count: number;
 }
 
+/** `description` 与 `reason` 不是一回事：description 逐字进抽取提示词，是模型判断
+    "什么算这个类"的唯一依据；reason 只是给人看的"为什么该加"。喂错了这个类会成为
+    下一个倾倒场——实测 technology 就是这么来的。 */
 export interface OntologyProposals {
-  entity_types: { key: string; label: string; reason?: string }[];
+  entity_types: { key: string; label: string; description?: string; reason?: string }[];
   relation_types: {
     key: string;
     label: string;
     temporal?: string;
     functional?: boolean;
+    description?: string;
     reason?: string;
     /** 这条关系归并了哪些表层说法。有它才谈得上把等待的事实改写过去 */
     forms?: string[];
@@ -407,7 +411,7 @@ export interface OntologyProposals {
 }
 
 /** 原文说过、本体没有、事实降级成了 related_to 的谓词。 */
-export interface SurfacePredicate {
+export interface ProposedPredicate {
   form: string;
   fact_count: number;
   example: string | null;
@@ -507,15 +511,29 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/members/${userId}`, { method: "DELETE" }),
 
   adminDeployment: () =>
-    request<{ open_registration: boolean; worker_concurrency: number }>(
-      "/api/v1/admin/deployment",
-    ),
-  saveAdminDeployment: (openRegistration: boolean, workerConcurrency?: number) =>
+    request<{
+      open_registration: boolean;
+      /** 外层兜底，防任务无限堆积；真正的节流是按模型的限额 */
+      worker_concurrency: number;
+      default_model_concurrency: number;
+      model_limits: { base_url: string; model: string; max_concurrent: number }[];
+      models_in_use: { base_url: string; model: string; kind: string }[];
+    }>("/api/v1/admin/deployment"),
+  saveAdminDeployment: (
+    openRegistration: boolean,
+    workerConcurrency?: number,
+    defaultModelConcurrency?: number,
+    modelLimit?: { base_url: string; model: string; max_concurrent: number | null },
+  ) =>
     request<{ ok: boolean }>("/api/v1/admin/deployment", {
       method: "PUT",
       body: JSON.stringify({
         open_registration: openRegistration,
         ...(workerConcurrency !== undefined ? { worker_concurrency: workerConcurrency } : {}),
+        ...(defaultModelConcurrency !== undefined
+          ? { default_model_concurrency: defaultModelConcurrency }
+          : {}),
+        ...(modelLimit ? { model_limit: modelLimit } : {}),
       }),
     }),
   adminCreateUser: (body: { email: string; display_name: string; password: string; role: string }) =>
@@ -678,8 +696,8 @@ export const api = {
   suggestOntology: (kbId: string) =>
     request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/suggest`, { method: "POST" }),
 
-  surfacePredicates: (kbId: string) =>
-    request<{ forms: SurfacePredicate[] }>(`/api/v1/kbs/${kbId}/ontology/surface-predicates`),
+  proposedPredicates: (kbId: string) =>
+    request<{ forms: ProposedPredicate[] }>(`/api/v1/kbs/${kbId}/ontology/proposed-predicates`),
   /** 最近一次自动扩本体做了什么，以及还能不能撤销（撤干净了返回 null） */
   lastAutoExtension: (kbId: string) =>
     request<{
@@ -699,6 +717,7 @@ export const api = {
       label: string;
       temporal?: string;
       functional?: boolean;
+      description?: string;
       forms: string[];
     },
   ) =>

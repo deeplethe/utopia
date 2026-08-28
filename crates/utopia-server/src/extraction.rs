@@ -114,7 +114,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // 逃生舱——模型读到说不清的关系时不会去写原文说法，直接挑这个万能选项，
     // 而它什么都没说。实测 359 条 related_to 里只有 38 条是词表外降级，
     // 其余 321 条是模型自己挑的。撤掉之后模型要么用真关系、要么写出原文说法，
-    // 兜底改由下面的代码执行，原词落进 fact_evidence.surface_predicate 留待消解。
+    // 兜底改由下面的代码执行，原词落进 fact_evidence.proposed_predicate 留待消解。
     let rel_pairs: Vec<(String, String, String)> = rtypes
         .iter()
         .filter(|r| r.kind != "attribute" && r.key != FALLBACK_RELATION_KEY)
@@ -206,6 +206,8 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             &doc.filename,
             &chunk.text,
         );
+        // 按模型限流：许可持有到调用结束，超出限额的分块在这里排队而不是打爆供应商
+        let _permit = llm_util::acquire_chat(state, &settings).await;
         let reply = match client.chat(&messages).await {
             Ok(r) => r,
             Err(e) => {
@@ -230,6 +232,10 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             if name.is_empty() || name.chars().count() > 100 {
                 continue;
             }
+            // 降级时记住模型提议的那个词：本体装不下不等于它说错了。
+            // 只留计数的话，日后想加 model 类就找不出那 43 个实体——它们混在
+            // concept 里面，唯一的出路是整库重抽
+            let mut proposed: Option<&str> = None;
             let type_id = match type_ids.get(e.type_key.as_str()) {
                 Some(id) => *id,
                 None => {
@@ -242,6 +248,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                         Some(name),
                     )
                     .await;
+                    proposed = Some(e.type_key.as_str());
                     concept_type
                 }
             };
@@ -255,6 +262,9 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 &mut needs_adjudication,
             )
             .await?;
+            if let Some(p) = proposed {
+                let _ = utopia_store::resolution::set_proposed_type(&state.pool, id, p).await;
+            }
             entity_ids.insert(name.to_string(), id);
             entity_type_of.insert(name.to_string(), type_id);
         }
@@ -461,7 +471,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 continue;
             }
             // 未知关系降级为 related_to，并记入未匹配统计。
-            // 降级会把原意抹平成"有关联"——原词写进证据行的 surface_predicate，
+            // 降级会把原意抹平成"有关联"——原词写进证据行的 proposed_predicate，
             // 是这条事实身上唯一还留着原意的地方（谓词消解据此把它映射回本体）
             let predicate_id = match rel_ids.get(f.predicate.as_str()) {
                 Some(id) => *id,

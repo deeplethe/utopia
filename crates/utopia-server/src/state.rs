@@ -27,6 +27,8 @@ pub struct AppState {
     pub open_registration: bool,
     /// worker 并发数：调度循环每轮热读——系统设置改动即时生效
     pub worker_concurrency: Arc<std::sync::atomic::AtomicUsize>,
+    /// 按模型的并发闸门：后台任务调 LLM 前取许可。限额存库，改完即时生效
+    pub model_gates: Arc<crate::llm_util::ModelGates>,
     pub events: broadcast::Sender<AppEvent>,
 }
 
@@ -42,7 +44,8 @@ impl AppState {
             docs: Arc::new(crate::docs_corpus::build_index()),
             blob,
             open_registration: cfg.open_registration,
-            worker_concurrency: Arc::new(std::sync::atomic::AtomicUsize::new(4)),
+            worker_concurrency: Arc::new(std::sync::atomic::AtomicUsize::new(32)),
+            model_gates: Arc::new(crate::llm_util::ModelGates::default()),
             events,
         }
     }

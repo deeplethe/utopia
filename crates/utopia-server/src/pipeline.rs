@@ -58,6 +58,10 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             utopia_store::documents::chunks_pending_embedding(&state.pool, document_id).await?;
         for batch in pending.chunks(EMBED_BATCH) {
             let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
+            let _permit = match settings.as_ref() {
+                Some(s) => llm_util::acquire_embed(state, s).await,
+                None => None,
+            };
             let embeddings = client.embed(&texts).await?;
             if embeddings.len() != batch.len() {
                 anyhow::bail!("Embedding 返回数量不匹配");
@@ -99,6 +103,10 @@ pub async fn memory_ingest(state: &AppState, document_id: Uuid) -> anyhow::Resul
             utopia_store::documents::chunks_pending_embedding(&state.pool, document_id).await?;
         for batch in pending.chunks(EMBED_BATCH) {
             let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
+            let _permit = match settings.as_ref() {
+                Some(s) => llm_util::acquire_embed(state, s).await,
+                None => None,
+            };
             let embeddings = client.embed(&texts).await?;
             if embeddings.len() != batch.len() {
                 anyhow::bail!("Embedding 返回数量不匹配");

@@ -421,7 +421,7 @@ export const S = {
     noEvidence: "No evidence recorded",
     noQuote: "(no quote)",
     /* 原文说的谓词。词表外的词会被降级成 related to，原意只在这里活着 */
-    surfacePredicate: (p: string) => `the text said “${p}”`,
+    proposedPredicate: (p: string) => `the text said “${p}”`,
     sectionRef: (filename: string, seq: number) => `${filename} · section ${seq} →`,
     fromVersion: (v: number) => `v${v}`,
     staleEvidenceHint:
@@ -505,9 +505,20 @@ export const S = {
         "When off, the sign-up form is closed and only admins can create accounts here.",
       workers: "Background workers",
       workersHint:
-        "How many ingestion and extraction jobs run in parallel (1–32). More workers process " +
-        "documents faster but issue more concurrent model calls. Takes effect immediately.",
+        "An outer ceiling on how many jobs run at once (1–256), there to stop work piling up " +
+        "without bound. The real throttle is the per-model limit below, so keep this comfortably " +
+        "above the sum of those. Takes effect immediately.",
       workersApply: "Apply",
+      /* 真正的节流：约束来自供应商的速率限制，而那是按模型算的 */
+      modelConcurrency: "Model concurrency",
+      modelConcurrencyHint:
+        "How many calls a model will take at once. The limit that matters belongs to the " +
+        "provider and is per model — a local Ollama may manage two, a hosted API fifty. " +
+        "Background work (extraction, resolution, indexing) waits for a slot; chat and search " +
+        "never do. Takes effect immediately.",
+      modelDefault: "Default",
+      modelReset: "Reset",
+      modelResetHint: "Drop this model's own limit and fall back to the default.",
     },
     datasources: {
       tab: "Data sources",

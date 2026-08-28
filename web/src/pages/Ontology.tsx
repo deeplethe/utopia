@@ -1110,8 +1110,8 @@ function MissesPanel({
   });
   // 待认领的表层谓词：提案的影响面（"将改写 57 条"）从这里算
   const surface = useQuery({
-    queryKey: ["surface-predicates", kbId],
-    queryFn: () => api.surfacePredicates(kbId),
+    queryKey: ["proposed-predicates", kbId],
+    queryFn: () => api.proposedPredicates(kbId),
   });
   const factsWaiting = (forms: string[]) => {
     const byForm = new Map((surface.data?.forms ?? []).map((f) => [f.form, f.fact_count]));
@@ -1130,8 +1130,8 @@ function MissesPanel({
     onError,
   });
   const approveEntity = useMutation({
-    mutationFn: (p: { key: string; label: string }) =>
-      api.createEntityType(kbId, { key: p.key, label: p.label }),
+    mutationFn: (p: { key: string; label: string; description?: string }) =>
+      api.createEntityType(kbId, { key: p.key, label: p.label, description: p.description }),
     onSuccess: (_data, p) => {
       // 已采纳：从提案列表移除，并顺带清掉对应的未匹配统计 chip（本体已覆盖）
       toast.success(S.toast.added);
@@ -1152,6 +1152,7 @@ function MissesPanel({
       label: string;
       temporal?: string;
       functional?: boolean;
+      description?: string;
       forms?: string[];
     }) =>
       p.forms?.length
@@ -1160,6 +1161,7 @@ function MissesPanel({
             label: p.label,
             temporal: p.temporal ?? "state",
             functional: p.functional ?? false,
+            description: p.description,
             forms: p.forms,
           })
         : api.createRelationType(kbId, {
@@ -1167,6 +1169,7 @@ function MissesPanel({
             label: p.label,
             temporal: p.temporal ?? "state",
             functional: p.functional ?? false,
+            description: p.description,
           }),
     onSuccess: (data, p) => {
       const d = data as { remapped?: number; batch?: string };
@@ -1206,6 +1209,7 @@ function MissesPanel({
               label: p.label,
               temporal: p.temporal ?? "state",
               functional: p.functional ?? false,
+              description: p.description,
               forms: p.forms,
             });
             moved += r.remapped;
@@ -1216,6 +1220,7 @@ function MissesPanel({
               label: p.label,
               temporal: p.temporal ?? "state",
               functional: p.functional ?? false,
+              description: p.description,
             });
           }
         } catch {

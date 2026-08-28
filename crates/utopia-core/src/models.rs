@@ -333,7 +333,7 @@ pub struct OntologyMiss {
 /// related_to。与 `OntologyMiss` 的纯计数不同，它连着具体事实——所以采纳时
 /// 能说清"将重新归类 57 条"，并真的去改。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-pub struct SurfacePredicate {
+pub struct ProposedPredicate {
     pub form: String,
     /// 有多少条 live 的 related_to 事实由这个说法而来
     pub fact_count: i64,
@@ -341,6 +341,26 @@ pub struct SurfacePredicate {
     /// 组织的词汇——自动扩展据此设门槛，人工提案只作参考不拦
     pub doc_count: i64,
     /// 一条样例（"Dino Crisis (Steam) → GeForce NOW"），让人一眼判断这是什么关系
+    pub example: Option<String>,
+}
+
+/// 一个模型的并发上限。约束来自供应商的速率限制，那是按 (base_url, model) 算的——
+/// 本地 Ollama 与托管 API 用同一个数字本来就不对。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ModelLimit {
+    pub base_url: String,
+    pub model: String,
+    pub max_concurrent: i32,
+}
+
+/// 一个待认领的实体类型：模型提议过、本体没有、实体因此降级成了 concept。
+/// 与 `ProposedPredicate` 对称——它连着具体实体，所以采纳时能说清"将重新归类
+/// 43 个"并真的去改，而不是只建一个空类。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ProposedType {
+    pub form: String,
+    pub entity_count: i64,
+    /// 一个样例名字，让人一眼判断这是什么类
     pub example: Option<String>,
 }
 
@@ -532,7 +552,7 @@ pub struct FactReviewItem {
 pub struct EvidenceView {
     /// 模型在这一块里实际用的谓词说法。词表外谓词被降级成 related_to 后，
     /// 事实行上只剩"有关联"——原意只在这里
-    pub surface_predicate: Option<String>,
+    pub proposed_predicate: Option<String>,
     pub quote: Option<String>,
     pub chunk_id: Uuid,
     pub document_id: Uuid,

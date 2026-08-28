@@ -147,8 +147,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         )
         .route("/kbs/{id}/ontology/suggest", post(ontology_routes::suggest))
         .route(
-            "/kbs/{id}/ontology/surface-predicates",
-            get(ontology_routes::surface_predicates),
+            "/kbs/{id}/ontology/proposed-predicates",
+            get(ontology_routes::proposed_predicates),
         )
         .route(
             "/kbs/{id}/ontology/auto-extension",

@@ -14,6 +14,7 @@ pub mod jobs;
 pub mod kbs;
 pub mod members;
 pub mod memory;
+pub mod model_limits;
 pub mod ontology;
 pub mod resolution;
 pub mod settings;

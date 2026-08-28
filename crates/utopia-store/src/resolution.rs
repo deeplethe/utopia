@@ -1351,3 +1351,46 @@ mod tests {
         assert!(cosine(&[0.0, 0.0], &[1.0, 1.0]).is_none());
     }
 }
+
+/// 记下模型提议、但本体装不下的类型。
+///
+/// **只写第一次**：同一实体会被多篇文档提到，第一次的提议就算它的提议；
+/// 后来的覆盖会让"哪些实体在等 model 类"随最后一篇文档抖动。
+/// 采纳了对应的类之后由改写流程清空——那时它已经不是"提议"而是既成事实。
+pub async fn set_proposed_type(pool: &PgPool, entity_id: Uuid, proposed: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE entities SET proposed_type = left($2, 60)
+         WHERE id = $1 AND proposed_type IS NULL",
+    )
+    .bind(entity_id)
+    .bind(proposed)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 待认领的实体类型：模型提议过、本体没有、实体因此降级成了 concept。
+///
+/// 与谓词那边的 `graph::proposed_predicates` 对称——连着具体实体，所以采纳时
+/// 能说清"将重新归类 43 个"并真的去改，而不是只建一个空类。
+pub async fn proposed_types(
+    pool: &PgPool,
+    kb_id: Uuid,
+) -> AppResult<Vec<utopia_core::models::ProposedType>> {
+    Ok(sqlx::query_as(
+        "SELECT e.proposed_type AS form,
+                count(*) AS entity_count,
+                (array_agg(e.canonical_name ORDER BY e.created_at))[1] AS example
+         FROM entities e
+         WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.proposed_type IS NOT NULL
+           -- 用户拒绝过的类型不再出现在候选里
+           AND NOT EXISTS (SELECT 1 FROM ontology_misses m
+                           WHERE m.kb_id = $1 AND m.kind = 'entity_type'
+                             AND m.key = e.proposed_type AND m.dismissed_at IS NOT NULL)
+         GROUP BY e.proposed_type
+         ORDER BY entity_count DESC, form",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?)
+}

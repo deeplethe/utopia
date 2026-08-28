@@ -93,7 +93,7 @@ pub fn build_messages(
     let attr_rules = if attributes.is_empty() {
         String::new()
     } else {
-        "\n9. Attribute facts carry \"value\" (no \"object\"): number = plain number without \
+        "\n10. Attribute facts carry \"value\" (no \"object\"): number = plain number without \
          thousands separators or unit symbols; date = \"YYYY[-MM[-DD]]\"; bool = true/false; \
          text = a short string. Only attach an attribute to a subject of its listed class. \
          valid_from = when this value took effect, if the text says so."
@@ -103,7 +103,7 @@ pub fn build_messages(
         "You are a knowledge-graph extraction engine. Extract entities and factual relations \
          from the given text. Output exactly one JSON object and nothing else.\n\
          \n\
-         Entity types (use only these keys):\n{type_list}\n\
+         Entity types (prefer these keys):\n{type_list}\n\
          \n\
          Relation types (prefer these keys):\n{rel_list}\n\
          {attr_section}\
@@ -125,7 +125,11 @@ pub fn build_messages(
          7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.\n\
          8. If no listed relation fits, do not force the nearest one — write the predicate the \
             text itself uses, in snake_case (e.g. \"available_on\", \"runs_on\"). A relation \
-            named after the text is worth more than a listed one that says something false.\
+            named after the text is worth more than a listed one that says something false.\n\
+         9. The same holds for entity types: if none of the listed types fits, write the type \
+            the text implies, in snake_case (e.g. \"model\", \"technology\"). Do not fall back \
+            to a broad listed type such as \"concept\" merely because nothing specific matched \
+            — that hides the gap instead of reporting it.\
          {attr_rules}"
     );
 
