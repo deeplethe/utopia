@@ -66,7 +66,7 @@ jobs:
             if docker exec pg pg_isready -U utopia -d utopia >/dev/null 2>&1; then break; fi
             sleep 2
           done
-          docker run -d --name app --network smoke -p 8080:8080 \
+          docker run -d --name app --network smoke -p 1516:1516 \
             -e UTOPIA_DATABASE_URL=postgres://utopia:utopia@pg:5432/utopia \
             -e UTOPIA_JWT_SECRET=smoke-test-secret \
             utopia:smoke
@@ -75,7 +75,7 @@ jobs:
           # 而镜像带 SPA fallback——请求 /health 会拿到 200 的 index.html，看着像通过。
           ok=""
           for _ in $(seq 1 40); do
-            if curl -sf -m 3 http://localhost:8080/api/v1/health -o /tmp/h.json \
+            if curl -sf -m 3 http://localhost:1516/api/v1/health -o /tmp/h.json \
                && grep -q '"status":"ok"' /tmp/h.json; then ok=1; break; fi
             sleep 2
           done
@@ -83,7 +83,7 @@ jobs:
 
           # 注册一次，把迁移 + argon2 + JWT 签发整条链路真正走一遍
           code=$(curl -s -o /tmp/reg.json -w '%{http_code}' -m 10 \
-            -X POST http://localhost:8080/api/v1/auth/register \
+            -X POST http://localhost:1516/api/v1/auth/register \
             -H 'Content-Type: application/json' \
             -d '{"email":"smoke@example.com","password":"smoke-password-123","display_name":"Smoke"}')
           if [ "$code" != "200" ]; then

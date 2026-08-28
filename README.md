@@ -49,7 +49,7 @@ cd utopia
 docker compose --profile app up -d
 ```
 
-Open http://localhost:8080 and register — the first account becomes the administrator. Then add an OpenAI-compatible endpoint under Settings, create a knowledge base, and drop in some files.
+Open http://localhost:1516 and register — the first account becomes the administrator. Then add an OpenAI-compatible endpoint under Settings, create a knowledge base, and drop in some files.
 
 That pulls a prebuilt image from `ghcr.io/deeplethe/utopia`. Uploaded files and the search index live in `./data`, so back that up alongside the database. To build from source instead — after changing code, or to run an unreleased revision:
 
@@ -63,7 +63,7 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app u
 # 1. Postgres with pgvector
 docker compose up -d db
 
-# 2. Backend on :8080 — runs migrations on startup
+# 2. Backend on :1516 — runs migrations on startup
 cargo run -p utopia-server
 
 # 3. Frontend on :5173, proxying /api to the backend
@@ -77,7 +77,7 @@ Everything is an environment variable prefixed with `UTOPIA_`; copy [.env.exampl
 | Variable | Default | Purpose |
 |---|---|---|
 | `UTOPIA_DATABASE_URL` | `postgres://utopia:utopia@localhost:5432/utopia` | Postgres connection string |
-| `UTOPIA_BIND_ADDR` | `0.0.0.0:8080` | Listen address |
+| `UTOPIA_BIND_ADDR` | `0.0.0.0:1516` | Listen address |
 | `UTOPIA_JWT_SECRET` | `dev-secret-change-me` | **Change this in production** |
 | `UTOPIA_WEB_DIST` | `web/dist` | Built frontend; served as an SPA when present |
 | `UTOPIA_DATA_DIR` | `data` | Original files and the full-text index |
