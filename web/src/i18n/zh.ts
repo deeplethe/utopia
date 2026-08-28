@@ -760,6 +760,11 @@ export const zh: Strings = {
       escalate_no_verdict: "裁决没有给出结论",
       escalate_entity_changed: "裁决过程中实体发生了变化",
       escalate_unsure: "裁决的把握不够",
+      contains: "一个名字包含另一个",
+      ambiguous_name: "同名，但上下文没能定夺",
+      type_drift: "同名，但类型不同",
+      auto_merged: "AI 裁决已自动合并",
+      kept_apart: "AI 裁决认为不是同一个",
     } as Record<string, string>,
     duplicates: "可能重复",
     duplicatesHint:

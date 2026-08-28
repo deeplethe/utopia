@@ -280,6 +280,14 @@ pub fn build_adjudication_messages(pairs: &[AdjudicationPair]) -> Vec<ChatMessag
         Contradictory affiliations in overlapping time periods indicate different entities \
         (but people do change jobs — non-overlapping periods can belong to one person).\n\
         \n\
+        One name containing the other is a different case, and the rule above does not apply \
+        to it: \"星云科技上海研究院\" against \"上海研究院\", \"Nebula Technologies Inc.\" \
+        against \"Nebula\". Documents drop the qualifier after first mention, so the shorter \
+        form is usually the longer one abbreviated — treat the containment as evidence FOR \
+        sameness and let the facts settle it. Shared people, parent or location confirm one \
+        entity; a different parent or conflicting leadership means the shorter name belongs \
+        to something else.\n\
+        \n\
         Output exactly one JSON object and nothing else:\n\
         {\"verdicts\":[{\"i\":0,\"verdict\":\"same|different|unsure\",\"confidence\":0.9}]}\n\
         \n\

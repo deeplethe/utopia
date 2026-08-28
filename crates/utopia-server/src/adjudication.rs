@@ -151,7 +151,7 @@ async fn apply_verdict(
             let (target, source) =
                 utopia_store::resolution::merge_direction(&state.pool, item.left.id, item.right.id)
                     .await?;
-            let reason = format!("auto-merge: {via} same (confidence {conf:.2})");
+            let reason = format!("auto_merged|{via} {conf:.2}");
             match utopia_store::resolution::merge_entities(
                 &state.pool,
                 kb_id,
@@ -202,7 +202,7 @@ async fn apply_verdict(
                 &state.pool,
                 item.id,
                 "kept",
-                &format!("{via} different (confidence {conf:.2})"),
+                &format!("kept_apart|{via} {conf:.2}"),
             )
             .await?;
             let _ = utopia_store::audit::record_opt(

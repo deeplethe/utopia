@@ -834,6 +834,12 @@ export const en = {
       escalate_no_verdict: "The adjudicator returned no verdict",
       escalate_entity_changed: "The entity changed while being adjudicated",
       escalate_unsure: "The adjudicator was not confident enough",
+      /* 名字互相包含：等值召回看不见，简称会静默变成第二个实体 */
+      contains: "One name contains the other",
+      ambiguous_name: "Same name, context did not settle it",
+      type_drift: "Same name arrived under a different type",
+      auto_merged: "Merged by the AI adjudicator",
+      kept_apart: "The AI adjudicator judged these different",
     } as Record<string, string>,
     duplicates: "Possible duplicates",
     duplicatesHint:

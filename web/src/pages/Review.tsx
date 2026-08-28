@@ -355,7 +355,7 @@ function MergeRow({
             : S.review.mergedByAi}
           {" · "}
           {merge.created_at.slice(0, 10)}
-          {merge.reason ? ` · ${merge.reason}` : ""}
+          {merge.reason ? ` · ${escalationText(merge.reason)}` : ""}
         </div>
       </div>
       {merge.reverted_at ? (
