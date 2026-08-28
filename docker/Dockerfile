@@ -29,5 +29,5 @@ WORKDIR /app
 COPY --from=build /src/target/release/utopia-server /usr/local/bin/utopia-server
 COPY --from=web /src/dist /app/web-dist
 ENV UTOPIA_WEB_DIST=/app/web-dist
-EXPOSE 8080
+EXPOSE 1516
 CMD ["utopia-server"]

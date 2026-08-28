@@ -31,7 +31,7 @@ impl Default for AppConfig {
         Self {
             database_url: "postgres://utopia:utopia@localhost:5432/utopia".into(),
             migration_url: None,
-            bind_addr: "0.0.0.0:8080".into(),
+            bind_addr: "0.0.0.0:1516".into(),
             jwt_secret: "dev-secret-change-me".into(),
             web_dist: "web/dist".into(),
             data_dir: "data".into(),

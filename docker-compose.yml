@@ -41,7 +41,7 @@ services:
       # 是因为那种嵌套替换没人读得懂，出错了也查不出来。
       UTOPIA_DATABASE_URL: ${UTOPIA_DATABASE_URL:-postgres://utopia:${UTOPIA_DB_PASSWORD:-utopia}@db:5432/utopia}
       UTOPIA_MIGRATION_URL: ${UTOPIA_MIGRATION_URL:-}
-      UTOPIA_BIND_ADDR: 0.0.0.0:8080
+      UTOPIA_BIND_ADDR: 0.0.0.0:1516
       UTOPIA_JWT_SECRET: ${UTOPIA_JWT_SECRET:-please-change-me-in-production}
       UTOPIA_WEB_DIST: /app/web-dist
       UTOPIA_DATA_DIR: /app/data
@@ -55,7 +55,7 @@ services:
       # 备份 = 这个目录 + 数据库。
       - ./data:/app/data
     ports:
-      - "8080:8080"
+      - "1516:1516"
     depends_on:
       db:
         condition: service_healthy

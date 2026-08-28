@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # 端到端冒烟测试：注册 → 登录态 → 工作区 → 知识库 → 权限 → 任务队列
-# 用法: ./scripts/smoke.sh [BASE_URL]  (默认 http://localhost:8080)
+# 用法: ./scripts/smoke.sh [BASE_URL]  (默认 http://localhost:1516)
 # JSON body 走临时文件，避免 Windows shell 的编码转换问题。
 set -euo pipefail
 
-BASE="${1:-http://localhost:8080}"
+BASE="${1:-http://localhost:1516}"
 EMAIL="smoke-$(date +%s)@test.local"
 JAR="$(mktemp)"
 BODY="$(mktemp)"
