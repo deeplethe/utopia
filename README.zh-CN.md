@@ -136,7 +136,7 @@ cd utopia
 docker compose --profile app up -d
 ```
 
-打开 http://localhost:1516 注册 —— 第一个账户自动成为管理员，同时系统会创建所有人可读的公共知识库。摄入文档前，请先在系统设置里配置模型端点（chat 与 embedding：推荐 DeepSeek-V3 与 bge-m3）。
+打开 http://localhost:1516 注册 —— 第一个账户自动成为管理员，同时系统会创建所有人可读的公共知识库。摄入文档前，请先在系统设置里配置模型端点（chat 与 embedding）。
 
 或者从源码构建：
 
@@ -159,19 +159,26 @@ cd web && pnpm install && pnpm dev
 
 ## 架构
 
-```
-React + Vite + Tailwind + TanStack
-              │  /api/v1
-        ┌─────┴─────┐
-        │  axum     │  utopia-server   HTTP · 认证 · 任务
-        └─────┬─────┘
-   ┌──────────┼──────────┬────────────┐
-utopia-ingest  utopia-search  utopia-extract  utopia-llm
-  解析/分块      tantivy+RRF     实体/事实      OpenAI 兼容
-   └──────────┴──────────┴────────────┘
-                   utopia-store
-                        │
-              PostgreSQL + pgvector
+```mermaid
+flowchart TB
+    web["<b>web</b><br/>React · Vite · Tailwind · TanStack"]
+    server["<b>utopia-server</b> · axum<br/>认证 · 路由 · 任务调度"]
+
+    subgraph crates ["领域 crate"]
+        direction LR
+        ingest["<b>ingest</b><br/>解析 · 分块"]
+        extract["<b>extract</b><br/>本体引导抽取"]
+        search["<b>search</b><br/>tantivy · RRF"]
+        llm["<b>llm</b><br/>OpenAI 兼容"]
+    end
+
+    store["<b>utopia-store</b> · sqlx"]
+    db[("PostgreSQL + pgvector<br/>唯一的外部服务")]
+
+    web -- "/api/v1" --> server
+    server --> crates
+    crates --> store
+    store --> db
 ```
 
 ## 路线图
