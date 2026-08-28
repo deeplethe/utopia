@@ -32,7 +32,7 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            database_url: "postgres://utopia:utopia@localhost:5432/utopia".into(),
+            database_url: "postgres://utopia:utopia@localhost:1517/utopia".into(),
             migration_url: None,
             bind_addr: "0.0.0.0:1516".into(),
             jwt_secret: None,
