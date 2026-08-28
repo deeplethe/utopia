@@ -50,6 +50,9 @@ pub fn build_messages(
     attributes: &[String],
     doc_time: Option<&str>,
     filename: &str,
+    // 本文档前面几块已经认下的 (类型 key, 实体名)，按首次出现排序。
+    // 第一块为空——那时还没有"前面"
+    known: &[(String, String)],
     chunk_text: &str,
 ) -> Vec<ChatMessage> {
     // **有描述时不送 label**。label 是给人看的显示名，而且它跟界面无关、
@@ -120,7 +123,10 @@ pub fn build_messages(
          \n\
          Rules:\n\
          1. Use the canonical full name as written in the text, in the text's original language; \
-            list each entity once.\n\
+            list each entity once. Text introduces a full name and then shortens it — \
+            \"星云科技上海研究院\" becomes \"上海研究院\", \"Nebula Technologies Inc.\" becomes \
+            \"Nebula\" — and both forms mean one entity, listed once under the fuller form. \
+            Two names are two entities only when the text is talking about two things.\n\
          2. Every fact's subject/object must appear in entities.\n\
          3. Dates must be \"YYYY\", \"YYYY-MM\", \"YYYY-MM-DD\", or null. If a relation is still \
             ongoing, valid_to is null. If the text states no date, use null — never invent dates.\n\
@@ -138,7 +144,12 @@ pub fn build_messages(
          {attr_rules}"
     );
 
-    let user = format!("Source file: \"{filename}\"\n\nText:\n{chunk_text}");
+    // 已知实体进 user 消息：system（本体+规则+文档日期）在一篇文档内逐块完全相同，
+    // 整条吃前缀缓存。这份清单逐块变化，放进 system 会把缓存边界推到它之前
+    let user = format!(
+        "Source file: \"{filename}\"\n{}\nText:\n{chunk_text}",
+        known_block(known)
+    );
 
     vec![
         ChatMessage {
@@ -150,6 +161,57 @@ pub fn build_messages(
             content: user,
         },
     ]
+}
+
+/// 已在本文档中出现过的实体，放进提示词的字符预算。
+///
+/// 超出就截断（保留先出现的）。中文商业文本先出全称、主角先出场，所以
+/// **首次出现顺序天然偏向那些后面会被简称的名字**。
+const KNOWN_BUDGET_CHARS: usize = 1200;
+
+/// 把「本文档已经认下的实体」排版成提示词里的一段。空则返回空串。
+///
+/// **为什么在 user 消息里而不是 system**：system 消息（本体 + 规则 + 文档日期）
+/// 在一篇文档内逐块**完全相同**，整条命中供应商的前缀缓存。这份清单逐块变化，
+/// 塞进 system 就把缓存边界推到清单之前，后面整段本体每块重新计费。
+///
+/// **为什么指令贴着清单**：抽象规则打不过挨着它的具体块（本体建议那次，
+/// 语言要求就输给了紧随其后的英文 JSON 骨架）。所以指令挨着它管的数据放。
+fn known_block(known: &[(String, String)]) -> String {
+    if known.is_empty() {
+        return String::new();
+    }
+    // 按类型分组：更紧凑，而且顺带压住跨块类型漂移
+    //（同一个"沧海"在一块里是 product、另一块里是 project）
+    let mut by_type: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut used = 0usize;
+    for (type_key, name) in known {
+        used += name.chars().count() + 2;
+        if used > KNOWN_BUDGET_CHARS {
+            break;
+        }
+        match by_type.iter_mut().find(|(k, _)| *k == type_key.as_str()) {
+            Some((_, names)) => names.push(name),
+            None => by_type.push((type_key, vec![name])),
+        }
+    }
+    if by_type.is_empty() {
+        return String::new();
+    }
+    let lines = by_type
+        .iter()
+        .map(|(k, names)| format!("  {k}: {}", names.join(", ")))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\nAlready recorded from earlier parts of this same document:\n{lines}\n\
+         \n\
+         If something in the text below refers to one of these, write that exact string as \
+         the name, and give it that same type — documents abbreviate after first mention \
+         (\"星云科技上海研究院\" later becomes \"上海研究院\"), and the shortened form must \
+         not become a second entity. If it is a different thing, name it as the text does; \
+         do not force it onto this list.\n"
+    )
 }
 
 /// 从 LLM 回复中稳健地取出 JSON 块（容忍代码围栏与前后废话）。
@@ -335,6 +397,40 @@ pub fn parse_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
 mod prompt_shape_tests {
     use super::*;
 
+    /// 已知实体必须落在 **user** 消息里。放进 system 会把前缀缓存的边界
+    /// 推到清单之前——一篇文档的 system 消息逐块完全相同，那是它能被缓存的全部理由。
+    #[test]
+    fn known_entities_stay_out_of_the_system_message() {
+        // 用一个规则 1 的例子里没有的名字：规则 1 也提"星云科技上海研究院"，
+        // 拿它断言等于测不出清单到底在哪条消息里
+        let known = vec![(
+            "organization".to_string(),
+            "华瑞集团智能制造研究院".to_string(),
+        )];
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &known, "text");
+        assert_eq!(msgs[0].role, "system");
+        assert!(!msgs[0].content.contains("Already recorded"));
+        assert!(!msgs[0].content.contains("华瑞集团智能制造研究院"));
+        assert!(msgs[1]
+            .content
+            .contains("organization: 华瑞集团智能制造研究院"));
+    }
+
+    /// 第一块没有"前面"，那一段应当完全不出现——成本为零，而不是一段空标题
+    #[test]
+    fn the_first_chunk_carries_no_block() {
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        assert!(!msgs[1].content.contains("Already recorded"));
+    }
+
+    /// 反向护栏必须在：给了参照物就会有人硬套（`concept` 那次的教训）
+    #[test]
+    fn the_block_tells_the_model_not_to_force_a_match() {
+        let known = vec![("person".to_string(), "陈立".to_string())];
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &known, "text");
+        assert!(msgs[1].content.contains("do not force it onto this list"));
+    }
+
     /// 有描述就不送 label——中文库的 label 是中文，混进提示词只会让
     /// 标识符与语料语言来回跳，而它相对 key 近乎零信息量。
     #[test]
@@ -347,7 +443,7 @@ mod prompt_shape_tests {
             ),
             ("event".into(), "事件".into(), String::new()),
         ];
-        let msgs = build_messages(&types, &[], &[], None, "a.txt", "text");
+        let msgs = build_messages(&types, &[], &[], None, "a.txt", &[], "text");
         let prompt = format!("{:?}", msgs);
         assert!(prompt.contains("- person: 有名有姓的具体的人。"));
         assert!(!prompt.contains("person (人物)"));
