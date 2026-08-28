@@ -4,7 +4,7 @@
 
 **人类首个开源的企业世界模型。**
 
-[世界观](#这个项目是什么) · [快速开始](#快速开始) · [功能](#功能) · [配置](#配置) · [路线图](#路线图) · [English](README.md)
+[世界观](#项目的世界观) · [快速开始](#快速开始) · [功能](#功能) · [配置](#配置) · [路线图](#路线图) · [English](README.md)
 
 [![CI](https://github.com/deeplethe/utopia/actions/workflows/ci.yml/badge.svg)](https://github.com/deeplethe/utopia/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 ---
 
-## 这个项目是什么？
+## 项目的世界观
 
 > 这一章讲的是「乌托邦」的世界观与设计理念。
 > **我们强烈建议阅读本章节**，约 5 分钟。
