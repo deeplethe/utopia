@@ -26,6 +26,43 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
+  # 迁移得真的在库上跑一遍。此前 CI 只有 fmt/clippy/test/build，于是两个 PR
+  # 各带一个 0025、各自通过，合进 main 之后服务直接起不来——sqlx 按版本号索引，
+  # 而**合并后的状态从来没有被任何一次 CI 跑过**。
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: utopia
+          POSTGRES_PASSWORD: utopia
+          POSTGRES_DB: utopia
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      # 撞号在文件层面不是冲突，git 合得干干净净——只能显式查
+      - name: 版本号不得重复
+        run: |
+          dupes=$(ls migrations/ | cut -d_ -f1 | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "::error::迁移版本号重复：$dupes"
+            ls migrations/
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 装 sqlx-cli
+        run: cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
+      - name: 全新库上跑一遍
+        run: sqlx migrate run --database-url postgres://utopia:utopia@localhost:5432/utopia
+      # 第二遍必须也过：迁移改号后要能在已经跑过旧号的库上安全重放
+      - name: 再跑一遍
+        run: sqlx migrate run --database-url postgres://utopia:utopia@localhost:5432/utopia
+
   web:
     runs-on: ubuntu-latest
     defaults:

@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let cfg = AppConfig::load()?;
-    let pool = utopia_store::db::connect(&cfg.database_url).await?;
+    let pool = utopia_store::db::connect(&cfg.database_url, cfg.db_max_connections).await?;
     utopia_store::db::migrate(&pool).await?;
     tracing::info!("数据库迁移完成");
 
