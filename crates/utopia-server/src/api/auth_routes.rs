@@ -1,6 +1,7 @@
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::Json;
-use axum_extra::extract::cookie::{Cookie, CookieJar};
+use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use serde_json::json;
 use utopia_core::models::{User, Workspace};
@@ -43,6 +44,7 @@ fn validate_register(req: &RegisterReq) -> Result<(), AppError> {
 
 pub async fn register(
     State(state): State<AppState>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(req): Json<RegisterReq>,
 ) -> ApiResult<(CookieJar, Json<serde_json::Value>)> {
@@ -69,7 +71,8 @@ pub async fn register(
     .await?;
 
     let token = auth::issue_token(&state, user.id)?;
-    let jar = jar.add(auth::auth_cookie(token.clone()));
+    let secure = auth::behind_tls(&headers, state.cookie_secure);
+    let jar = jar.add(auth::auth_cookie(token.clone(), secure));
     let _ = utopia_store::audit::record(
         &state.pool,
         None,
@@ -105,6 +108,7 @@ async fn record_login_failure(state: &AppState, email: &str, reason: &str) {
 
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     jar: CookieJar,
     Json(req): Json<LoginReq>,
 ) -> ApiResult<(CookieJar, Json<serde_json::Value>)> {
@@ -118,7 +122,8 @@ pub async fn login(
         return Err(AppError::Unauthorized.into());
     }
     let token = auth::issue_token(&state, user.id)?;
-    let jar = jar.add(auth::auth_cookie(token.clone()));
+    let secure = auth::behind_tls(&headers, state.cookie_secure);
+    let jar = jar.add(auth::auth_cookie(token.clone(), secure));
     let _ = utopia_store::audit::record(
         &state.pool,
         None,
@@ -136,6 +141,7 @@ pub async fn login(
 /// 死会话上。所以这里自己解 token 取身份，解不出就只清 cookie 不留痕。
 pub async fn logout(
     State(state): State<AppState>,
+    headers: HeaderMap,
     jar: CookieJar,
 ) -> (CookieJar, Json<serde_json::Value>) {
     if let Some(user_id) = jar
@@ -153,7 +159,8 @@ pub async fn logout(
         )
         .await;
     }
-    let jar = jar.remove(Cookie::from(auth::COOKIE_NAME));
+    let secure = auth::behind_tls(&headers, state.cookie_secure);
+    let jar = jar.remove(auth::clear_auth_cookie(secure));
     (jar, Json(json!({ "ok": true })))
 }
 

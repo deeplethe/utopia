@@ -25,6 +25,9 @@ pub struct AppConfig {
     /// 数据库连接池上限。缺省 32，与 worker 并发的缺省对齐——池子小于并发时
     /// 症状是请求变慢而不是任何一处说"池子不够"，所以它必须可调。
     pub db_max_connections: Option<u32>,
+    /// 强制给会话 cookie 打 Secure。缺省 false：由请求的 X-Forwarded-Proto 判定，
+    /// 走 TLS 才打。只有代理不发那个头时才需要在这里强制打开。
+    pub cookie_secure: bool,
     /// 是否开放注册。false 时仅首个用户（引导部署）可注册，其余需管理员开放。
     pub open_registration: bool,
 }
@@ -39,6 +42,7 @@ impl Default for AppConfig {
             web_dist: "web/dist".into(),
             data_dir: "data".into(),
             db_max_connections: None,
+            cookie_secure: false,
             open_registration: true,
         }
     }
