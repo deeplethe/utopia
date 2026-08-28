@@ -27,6 +27,26 @@ pub async fn record(
     .await
 }
 
+/// 请求的来源信息。由 HTTP 层在每个请求外层 scope 进 [`CLIENT`]，`record_opt`
+/// 自行读取——否则 25 个调用点每一个都要多带两个与业务无关的参数。
+///
+/// 后台任务（攒批裁决、定时同步）不在任何请求之内，读到的是 None，本就该如此：
+/// 那些动作确实没有客户端。
+#[derive(Debug, Clone, Default)]
+pub struct ClientContext {
+    pub ip: Option<String>,
+    pub user_agent: Option<String>,
+}
+
+tokio::task_local! {
+    pub static CLIENT: ClientContext;
+}
+
+/// 取当前请求的来源；不在请求上下文中（后台任务）时返回全空。
+fn client_context() -> ClientContext {
+    CLIENT.try_with(|c| c.clone()).unwrap_or_default()
+}
+
 /// 无人类操作者的系统事件（如 AI 裁决自动合并）走这里：actor 为 NULL。
 pub async fn record_opt(
     pool: &PgPool,
@@ -37,9 +57,23 @@ pub async fn record_opt(
     target_id: Option<Uuid>,
     detail: serde_json::Value,
 ) -> AppResult<()> {
+    let ctx = client_context();
+    // 身份快照：用户日后被删除时（0025 之后行会留下），台账仍认得出是谁，而不是
+    // 只剩一串 UUID。此刻查是可靠的——操作正在发生，人还在。
+    let actor_label: Option<String> = match actor_id {
+        Some(id) => sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
     sqlx::query(
-        "INSERT INTO audit_events (id, kb_id, actor_id, action, target_kind, target_id, detail)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        "INSERT INTO audit_events
+            (id, kb_id, actor_id, action, target_kind, target_id, detail,
+             client_ip, user_agent, actor_label)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(Uuid::now_v7())
     .bind(kb_id)
@@ -48,6 +82,9 @@ pub async fn record_opt(
     .bind(target_kind)
     .bind(target_id)
     .bind(detail)
+    .bind(ctx.ip)
+    .bind(ctx.user_agent)
+    .bind(actor_label)
     .execute(pool)
     .await?;
     Ok(())

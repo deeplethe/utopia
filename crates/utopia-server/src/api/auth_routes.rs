@@ -70,10 +70,37 @@ pub async fn register(
 
     let token = auth::issue_token(&state, user.id)?;
     let jar = jar.add(auth::auth_cookie(token.clone()));
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "auth.register",
+        "user",
+        Some(user.id),
+        json!({ "email": user.email, "is_admin": user.is_admin }),
+    )
+    .await;
     Ok((
         jar,
         Json(json!({ "user": user, "workspace": workspace, "token": token })),
     ))
+}
+
+/// 登录失败留痕：没有账号可归属，actor 记 NULL，尝试的邮箱进 detail。
+/// 区分「邮箱不存在」与「密码不对」——同一 IP 上大量前者是邮箱枚举，
+/// 集中在一个账号上的后者是撞库，两种攻击的形状不一样。台账仅管理员可读，
+/// 不存在借此探测账号是否注册的问题。
+async fn record_login_failure(state: &AppState, email: &str, reason: &str) {
+    let _ = utopia_store::audit::record_opt(
+        &state.pool,
+        None,
+        None,
+        "auth.login_failed",
+        "user",
+        None,
+        json!({ "email": email, "reason": reason }),
+    )
+    .await;
 }
 
 pub async fn login(
@@ -81,18 +108,51 @@ pub async fn login(
     jar: CookieJar,
     Json(req): Json<LoginReq>,
 ) -> ApiResult<(CookieJar, Json<serde_json::Value>)> {
-    let user = utopia_store::accounts::find_user_by_email(&state.pool, req.email.trim())
-        .await?
-        .ok_or(AppError::Unauthorized)?;
+    let email = req.email.trim();
+    let Some(user) = utopia_store::accounts::find_user_by_email(&state.pool, email).await? else {
+        record_login_failure(&state, email, "unknown_email").await;
+        return Err(AppError::Unauthorized.into());
+    };
     if !auth::verify_password(&req.password, &user.password_hash) {
+        record_login_failure(&state, email, "bad_password").await;
         return Err(AppError::Unauthorized.into());
     }
     let token = auth::issue_token(&state, user.id)?;
     let jar = jar.add(auth::auth_cookie(token.clone()));
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "auth.login",
+        "user",
+        Some(user.id),
+        json!({}),
+    )
+    .await;
     Ok((jar, Json(json!({ "user": user, "token": token }))))
 }
 
-pub async fn logout(jar: CookieJar) -> (CookieJar, Json<serde_json::Value>) {
+/// 登出不要求有效会话——cookie 过期时也必须能清掉它，否则前端就卡在一个
+/// 死会话上。所以这里自己解 token 取身份，解不出就只清 cookie 不留痕。
+pub async fn logout(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> (CookieJar, Json<serde_json::Value>) {
+    if let Some(user_id) = jar
+        .get(auth::COOKIE_NAME)
+        .and_then(|c| auth::decode_user_id(&state, c.value()).ok())
+    {
+        let _ = utopia_store::audit::record(
+            &state.pool,
+            None,
+            user_id,
+            "auth.logout",
+            "user",
+            Some(user_id),
+            json!({}),
+        )
+        .await;
+    }
     let jar = jar.remove(Cookie::from(auth::COOKIE_NAME));
     (jar, Json(json!({ "ok": true })))
 }
@@ -140,5 +200,15 @@ pub async fn change_password(
     }
     let hash = auth::hash_password(&req.new_password)?;
     utopia_store::accounts::update_password(&state.pool, user.id, &hash).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "auth.password_changed",
+        "user",
+        Some(user.id),
+        json!({}),
+    )
+    .await;
     Ok(Json(json!({ "ok": true })))
 }

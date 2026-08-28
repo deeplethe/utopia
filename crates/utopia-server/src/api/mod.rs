@@ -290,7 +290,9 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         tracing::info!("已托管前端产物: {}", cfg.web_dist);
     }
 
+    // 最外层：先把请求来源放进 task-local，之后任何一层写审计都读得到
     app.layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(crate::client_ctx::capture))
 }
 
 async fn health() -> Json<serde_json::Value> {

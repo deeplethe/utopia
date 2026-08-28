@@ -65,7 +65,7 @@ pub fn auth_cookie(token: String) -> Cookie<'static> {
         .build()
 }
 
-fn decode_user_id(state: &AppState, token: &str) -> Result<Uuid, AppError> {
+pub(crate) fn decode_user_id(state: &AppState, token: &str) -> Result<Uuid, AppError> {
     let data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
