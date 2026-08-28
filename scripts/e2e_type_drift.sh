@@ -18,7 +18,7 @@ echo "--- 构建 utopia-server"
 cargo build -p utopia-server
 
 echo "--- 启动 server (127.0.0.1:$PORT, db=$DB_NAME)"
-UTOPIA_DATABASE_URL="postgres://utopia:utopia@localhost:5432/$DB_NAME" \
+UTOPIA_DATABASE_URL="postgres://utopia:utopia@localhost:1517/$DB_NAME" \
 UTOPIA_BIND_ADDR="127.0.0.1:$PORT" \
 UTOPIA_DATA_DIR="$DATA_DIR" \
   ./target/debug/utopia-server &

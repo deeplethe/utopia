@@ -74,7 +74,8 @@ export const S = {
     signOut: "Sign out",
     docs: "Docs",
     loading: "Loading…",
-    serverUnreachable: "Punishment 500: Utopia has gone quiet — it isn't answering.",
+    serverUnreachable:
+      "Punishment 500: Utopia has gone quiet — it isn't answering.",
     notFound: "Punishment 404: You are lost in Utopia.",
     returnHome: "Return home",
     reportIssue: "Report an issue",
@@ -190,7 +191,8 @@ export const S = {
     uploading: "Uploading…",
     uploadFailed: "Upload failed",
     dropHint: "Drag files here, or click “Upload files”",
-    formats: "PDF · Word · Excel · PowerPoint · Markdown · HTML · TXT · CSV and more",
+    formats:
+      "PDF · Word · Excel · PowerPoint · Markdown · HTML · TXT · CSV and more",
     emptyPull: "No documents yet — they arrive when this source syncs.",
     filterPlaceholder: "Filter by name",
     filterNoMatch: "No documents match your filter.",
@@ -205,7 +207,8 @@ export const S = {
     reExtract: "Re-extract",
     reprocess: "Reprocess",
     // 抽取进度（当前视图内聚合，SSE 推动刷新）
-    extractProgress: (done: number, total: number) => `Extracting · ${done} / ${total}`,
+    extractProgress: (done: number, total: number) =>
+      `Extracting · ${done} / ${total}`,
     // 失败详情：chip 可点开，不再只有 tooltip
     errorTitle: "Failure details",
     errorParse: "Ingestion pipeline",
@@ -322,7 +325,8 @@ export const S = {
     feedUrl: "Feed URL",
     interval: "Sync schedule",
     intervalManual: "Manual only",
-    intervalEvery: (m: number) => (m < 60 ? `Every ${m} min` : `Every ${m / 60} h`),
+    intervalEvery: (m: number) =>
+      m < 60 ? `Every ${m} min` : `Every ${m / 60} h`,
     schedule: {
       manual: "Manual",
       interval: "Interval",
@@ -345,7 +349,8 @@ export const S = {
     deleteSourceHint: "Documents are kept and move to Uploads.",
     newSourceTitle: "New source",
     iconLabel: "Icon",
-    pageOf: (from: number, to: number, total: number) => `${from}–${to} of ${total}`,
+    pageOf: (from: number, to: number, total: number) =>
+      `${from}–${to} of ${total}`,
     syncHistory: "History",
     runNew: (n: number) => `+${n} new`,
     runUpdated: (n: number) => `~${n} updated`,
@@ -398,7 +403,8 @@ export const S = {
     noConversations: "No conversations yet.",
     deleteConversation: "Delete conversation",
     deleteTitle: "Delete conversation?",
-    deleteHint: (name: string) => `“${name}” and its messages will be permanently removed.`,
+    deleteHint: (name: string) =>
+      `“${name}” and its messages will be permanently removed.`,
     deleteBtn: "Delete",
     cancel: "Cancel",
   },
@@ -422,7 +428,8 @@ export const S = {
     noQuote: "(no quote)",
     /* 原文说的谓词。词表外的词会被降级成 related to，原意只在这里活着 */
     proposedPredicate: (p: string) => `the text said “${p}”`,
-    sectionRef: (filename: string, seq: number) => `${filename} · section ${seq} →`,
+    sectionRef: (filename: string, seq: number) =>
+      `${filename} · section ${seq} →`,
     fromVersion: (v: number) => `v${v}`,
     staleEvidenceHint:
       "This evidence comes from an earlier version of the document. " +
@@ -518,7 +525,8 @@ export const S = {
         "never do. Takes effect immediately.",
       modelDefault: "Default",
       modelReset: "Reset",
-      modelResetHint: "Drop this model's own limit and fall back to the default.",
+      modelResetHint:
+        "Drop this model's own limit and fall back to the default.",
     },
     datasources: {
       tab: "Data sources",
@@ -619,6 +627,63 @@ export const S = {
     save: "Save",
     delete: "Delete",
     deleteBlocked: "In use — cannot delete",
+    /* ---- OWL / RDFS 导入 ---- */
+    importShort: "Import",
+    importTitle: "Import an ontology",
+    importHint:
+      "Load an OWL or RDFS file (.owl, .rdf, .ttl). Classes and properties are matched by IRI, so re-importing a newer version of the same vocabulary updates what it already created instead of duplicating it.",
+    importPick: "Choose file",
+    importChange: "Choose another",
+    importReading: "Reading…",
+    importApplying: "Importing…",
+    importApply: "Import",
+    importCancel: "Cancel",
+    importParsed: (fmt: string, triples: number) =>
+      `${fmt === "rdfxml" ? "RDF/XML" : "Turtle"} · ${triples.toLocaleString()} triples`,
+    importNothing:
+      "Nothing to import — no classes or properties found in this file.",
+    /* 计划三列：新建 / 更新 / key 被占 */
+    importWillCreate: (n: number) => `${n} new`,
+    importWillUpdate: (n: number) => `${n} updated`,
+    importKeyTaken: (n: number) => `${n} skipped`,
+    importClasses: "Classes",
+    importRelations: "Relations",
+    importAttributes: "Attributes",
+    /* 属性还落不了库：它们要 domain，而 domain 要等类先建好并解析 IRI */
+    importAttributesLater:
+      "Parsed, but not created yet — attributes need a class to hang from, which lands in the next step.",
+    /* 预览必须警告的第一件事：functional 会让时序引擎自动关掉旧事实。
+       part_of 那次一个错误的唯一性声明造了 59 条假冲突 */
+    warnFunctional: (n: number) =>
+      `${n} ${n === 1 ? "relation declares" : "relations declare"} itself functional`,
+    warnFunctionalBody:
+      "A functional relation may hold one value at a time, so a new fact automatically closes the previous one. When the vocabulary claims uniqueness your data does not keep, that shows up as a queue of conflicts. Review these after importing.",
+    /* 第二件事：description 逐字进抽取提示词，没有它的类抽得明显差 */
+    warnNoDescription: (n: number) =>
+      `${n} ${n === 1 ? "class arrives" : "classes arrive"} with no description`,
+    warnNoDescriptionBody:
+      "A class description goes verbatim into the extraction prompt — it is the only thing telling the model what belongs there. Write one for these, or they will quietly under-extract.",
+    /* key 撞了：报告不解决。自动加后缀会让下次重导入认不出自己上次建的是哪个 */
+    warnKeyTaken: (n: number) =>
+      `${n} ${n === 1 ? "key is" : "keys are"} already taken`,
+    warnKeyTakenBody:
+      "Something else already holds this key under a different identity. These are left alone — rename the existing one first if you want the imported version instead.",
+    /* 占位者没有 IRI = 这库里手工建的或内置的，那句话比一个空 IRI 有用 */
+    importTakenBy: (iri: string | null) =>
+      iri
+        ? `taken by ${iri}`
+        : "taken by an entry defined in this knowledge base",
+    /* 出现过但今天不投影的公理，按名字与次数列出——"暂未投影"不是"已跳过" */
+    importUnprojected: "Not projected yet",
+    importUnprojectedBody:
+      "Axioms this file uses that Utopia does not consume yet. Nothing is lost: the source file is stored as uploaded, so a later version can project them.",
+    importDone: (created: number, updated: number) =>
+      `Imported — ${created} classes created, ${updated} updated.`,
+    importHistory: "Previous imports",
+    importNoHistory: "No imports yet.",
+    importBy: (who: string, when: string) => `${who} · ${when}`,
+    importSize: (bytes: number) =>
+      bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(0)} KB`,
     misses: "Unmatched from extraction",
     missesHint:
       "The extractor produced these outside your ontology (they fell back to concept / related to). They are signals for extending the ontology.",
@@ -632,7 +697,9 @@ export const S = {
     willRemap: (n: number) =>
       n === 1 ? "reclassifies 1 fact" : `reclassifies ${n} facts`,
     adopted: (n: number) =>
-      n === 1 ? "Added — 1 fact reclassified" : `Added — ${n} facts reclassified`,
+      n === 1
+        ? "Added — 1 fact reclassified"
+        : `Added — ${n} facts reclassified`,
     /* 撤销：采纳改写了成批事实，没有回头路的话没人敢点第一下 */
     undoAdopt: (key: string, n: number) =>
       `${key} added, ${n} fact${n === 1 ? "" : "s"} reclassified`,
@@ -776,9 +843,11 @@ export const S = {
     dataExplore: "Explore mappings",
     dataExploreHint:
       "An agent reads the schemas and proposes metric/dimension definitions — review them in Review before Chat uses them.",
-    dataExploreQueued: "Exploration queued — proposals will appear in Review shortly.",
+    dataExploreQueued:
+      "Exploration queued — proposals will appear in Review shortly.",
     dataNone: "No data sources mounted.",
-    dataNoneAvailable: "No data sources registered yet — ask a deployment admin to register one.",
+    dataNoneAvailable:
+      "No data sources registered yet — ask a deployment admin to register one.",
     dataNewConn: "Register a new connection",
     activity: "Activity",
     activityHint:
@@ -799,6 +868,7 @@ export const S = {
       "source.updated": "updated source",
       "source.deleted": "deleted a source",
       "document.deleted": "deleted document",
+      "ontology.imported": "imported an ontology",
     } as Record<string, string>,
     membersHint:
       "Everyone in the deployment can read an open KB; write access is granted here " +
@@ -811,7 +881,8 @@ export const S = {
     saved: "Saved",
     danger: "Danger zone",
     deleteKb: "Delete this knowledge base",
-    deleteHint: (name: string) => `Type “${name}” to confirm. Documents, graph and sources are permanently removed.`,
+    deleteHint: (name: string) =>
+      `Type “${name}” to confirm. Documents, graph and sources are permanently removed.`,
     deleteBtn: "Delete permanently",
     deleteRowTitle: "Delete this knowledge base",
     deleteRowHint: "Documents, graph and sources are removed permanently.",
@@ -823,7 +894,8 @@ export const S = {
     remove: "Remove",
     pickUser: "Select a user to add…",
     add: "Add",
-    allAdded: "Everyone in this deployment is already a member. New signups will appear here.",
+    allAdded:
+      "Everyone in this deployment is already a member. New signups will appear here.",
     roles: {
       owner: "Owner",
       admin: "Admin",

@@ -172,3 +172,24 @@ pub async fn set_worker_concurrency(pool: &PgPool, value: i32) -> AppResult<()> 
         .await?;
     Ok(())
 }
+
+/// 落库自动生成的 JWT 密钥，返回最终生效的那一个。
+///
+/// `COALESCE` 让并发启动的多个实例收敛到同一个值：谁先写谁赢，后来者拿回的是
+/// 库里已有的那条而不是自己刚生成的。分成「先读、没有再写」两步做不到这一点——
+/// 两个实例会同时读到 NULL，各写各的，先写的那个从此在用一个已经不在库里的密钥，
+/// 它签发的 token 到另一个实例上全部失效。
+pub async fn ensure_jwt_secret(pool: &PgPool, generated: &str) -> AppResult<String> {
+    let (secret,): (Option<String>,) = sqlx::query_as(
+        "UPDATE deployment_settings SET jwt_secret = COALESCE(jwt_secret, $1)
+         RETURNING jwt_secret",
+    )
+    .bind(generated)
+    .fetch_one(pool)
+    .await?;
+    secret.ok_or_else(|| {
+        AppError::Other(anyhow::anyhow!(
+            "deployment_settings 没有单例行，JWT 密钥无处落库"
+        ))
+    })
+}

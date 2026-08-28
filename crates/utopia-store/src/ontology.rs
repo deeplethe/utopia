@@ -1,7 +1,9 @@
 //! 本体编辑器仓储：类型/关系 CRUD（带使用量与删除保护）+ 未匹配统计。
 
 use sqlx::PgPool;
-use utopia_core::models::{EntityInstance, EntityTypeView, OntologyMiss, RelationTypeView};
+use utopia_core::models::{
+    EntityInstance, EntityTypeView, OntologyImportView, OntologyMiss, RelationTypeView,
+};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
@@ -400,4 +402,124 @@ pub async fn clear_miss(pool: &PgPool, kb_id: Uuid, kind: &str, key: &str) -> Ap
         .execute(pool)
         .await?;
     Ok(())
+}
+
+/* ---- OWL 导入 ---- */
+
+/// 建一个带 IRI 的类。IRI 是全局身份，重导入据它匹配（见 0001 P2）。
+pub async fn create_entity_type_with_iri(
+    pool: &PgPool,
+    kb_id: Uuid,
+    key: &str,
+    label: &str,
+    description: &str,
+    iri: &str,
+) -> AppResult<Uuid> {
+    validate_key(key)?;
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description, iri)
+         VALUES ($1, $2, $3, $4, '#8ea5bd', 'circle', $5, $6)",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .bind(key)
+    .bind(label)
+    .bind(description)
+    .bind(iri)
+    .execute(pool)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => {
+            AppError::Conflict(format!("Type key '{key}' already exists"))
+        }
+        _ => AppError::Db(e),
+    })?;
+    Ok(id)
+}
+
+/// 重导入时按 IRI 更新标签与描述。**key 不动**——它可能已经被抽取出的实体
+/// 和提示词引用，改它等于把已有数据的引用打断；上游改 label 是常态，
+/// 而 IRI 才是身份。
+pub async fn update_type_from_import(
+    pool: &PgPool,
+    kb_id: Uuid,
+    iri: &str,
+    label: &str,
+    description: &str,
+) -> AppResult<Option<Uuid>> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "UPDATE entity_types
+         SET label = $3,
+             -- 空描述不覆盖已有的：上游可能没写 rdfs:comment，而本地可能
+             -- 已经被人按自己的语料调过，那份调整比空值有价值
+             description = CASE WHEN $4 = '' THEN description ELSE $4 END
+         WHERE kb_id = $1 AND iri = $2 RETURNING id",
+    )
+    .bind(kb_id)
+    .bind(iri)
+    .bind(label)
+    .bind(description)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id,)| id))
+}
+
+/// 设父类。自环与已是该父类的情形静默跳过。
+pub async fn set_parent(pool: &PgPool, kb_id: Uuid, child: Uuid, parent: Uuid) -> AppResult<()> {
+    if child == parent {
+        return Ok(());
+    }
+    sqlx::query("UPDATE entity_types SET parent_id = $3 WHERE kb_id = $1 AND id = $2")
+        .bind(kb_id)
+        .bind(child)
+        .bind(parent)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 记一次导入。原文已按内容寻址存进 blob，这里只记账。
+#[allow(clippy::too_many_arguments)]
+pub async fn record_import(
+    pool: &PgPool,
+    kb_id: Uuid,
+    sha256: &str,
+    filename: &str,
+    format: &str,
+    byte_size: i64,
+    summary: &serde_json::Value,
+    actor: Uuid,
+) -> AppResult<Uuid> {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO ontology_imports
+            (id, kb_id, sha256, filename, format, byte_size, summary, imported_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .bind(sha256)
+    .bind(filename)
+    .bind(format)
+    .bind(byte_size)
+    .bind(summary)
+    .bind(actor)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+/// 一个库的导入历史（带导入人显示名；删号后为 NULL）。
+pub async fn list_imports(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<OntologyImportView>> {
+    Ok(sqlx::query_as(
+        "SELECT i.id, i.filename, i.format, i.byte_size, i.summary, i.imported_at,
+                u.display_name AS imported_by_name
+         FROM ontology_imports i
+         LEFT JOIN users u ON u.id = i.imported_by
+         WHERE i.kb_id = $1 ORDER BY i.imported_at DESC LIMIT 50",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?)
 }

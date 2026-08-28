@@ -67,6 +67,12 @@ encoding_rs = "0.8"
 quick-xml = "0.42"
 zip = { version = "6", default-features = false, features = ["deflate"] }
 csv = "1"
+
+# 本体导入：Oxigraph 拆出来的小而专的解析器，只解析不推理——
+# 我们不需要 horned-owl 那套 OWL 推理机，投影只消费 RDF 三元组
+oxttl = "0.2"
+oxrdfxml = "0.2"
+oxrdf = "0.3"
 async-stream = "0.3"
 futures-util = "0.3"
 tokio-stream = "0.1"
