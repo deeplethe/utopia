@@ -4,7 +4,7 @@
 
 **一个被动演化的企业世界模型。**
 
-[这是什么](#这个项目是什么) · [快速开始](#快速开始) · [功能](#功能) · [配置](#配置) · [路线图](#路线图) · [English](README.md)
+[理想国](#这个项目是什么) · [快速开始](#快速开始) · [功能](#功能) · [配置](#配置) · [路线图](#路线图) · [English](README.md)
 
 [![CI](https://github.com/deeplethe/utopia/actions/workflows/ci.yml/badge.svg)](https://github.com/deeplethe/utopia/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
