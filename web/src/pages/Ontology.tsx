@@ -19,6 +19,7 @@ import {
   Button,
   Chip,
   ColorPicker,
+  DangerConfirm,
   Dropdown,
   Input,
   Loading,
@@ -1098,6 +1099,15 @@ function MissesPanel({
   } | null>(
     null,
   );
+  // 撤销要二次确认：一次改回成批事实
+  const [confirmUndo, setConfirmUndo] = useState<{ batches: string[]; moved: number } | null>(
+    null,
+  );
+  // 系统自动扩过本体没有——横幅要据此显示，撤干净了后端返回 null
+  const autoRun = useQuery({
+    queryKey: ["auto-extension", kbId],
+    queryFn: () => api.lastAutoExtension(kbId),
+  });
   // 待认领的表层谓词：提案的影响面（"将改写 57 条"）从这里算
   const surface = useQuery({
     queryKey: ["surface-predicates", kbId],
@@ -1217,7 +1227,8 @@ function MissesPanel({
     onSuccess: (r) => {
       if (r.failed.length) toast.error(S.ontology.addAllPartial(r.failed));
       else toast.success(S.ontology.adopted(r.moved));
-      if (r.batches.length) setLastAdopt({ batches: r.batches, key: S.ontology.addAllLabel, moved: r.moved });
+      if (r.batches.length)
+        setLastAdopt({ batches: r.batches, key: S.ontology.addAllLabel, moved: r.moved });
       setProposals(null);
       onChanged();
     },
@@ -1233,6 +1244,8 @@ function MissesPanel({
     onSuccess: (r) => {
       toast.success(S.ontology.reverted(r.reverted));
       setLastAdopt(null);
+      setConfirmUndo(null);
+      autoRun.refetch();
       onChanged();
     },
     onError,
@@ -1275,6 +1288,38 @@ function MissesPanel({
           ))}
         </div>
       )}
+      {/* 系统自己动了本体，必须让人看见——只记在审计台账里不算可见。
+          默认开启的前提是它的动作可见且可退，这条横幅是"可见"那一半 */}
+      {autoRun.data?.run && !lastAdopt && (
+        <div className="mt-3 rounded-lg border border-[var(--u-accent)]/25 bg-[var(--u-accent)]/[0.06] px-3 py-2.5">
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-neutral-200">{S.ontology.autoRanTitle}</p>
+              <p className="mt-0.5 text-[11px] text-neutral-400">
+                {S.ontology.autoRanBody(
+                  autoRun.data.run.relations ?? [],
+                  autoRun.data.run.facts_remapped ?? 0,
+                )}
+              </p>
+              <p className="mt-0.5 text-[11px] text-neutral-600">{S.ontology.autoRanOff}</p>
+            </div>
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={unadopt.isPending}
+              onClick={() =>
+                setConfirmUndo({
+                  batches: autoRun.data!.run!.batches,
+                  moved: autoRun.data!.run!.facts_remapped ?? 0,
+                })
+              }
+            >
+              {S.ontology.undoAdoptBtn}
+            </Button>
+          </div>
+        </div>
+      )}
+
 
       {/* 采纳改写了成批事实——没有回头路的话没人敢点第一下 */}
       {lastAdopt && (
@@ -1288,13 +1333,27 @@ function MissesPanel({
             variant="ghost"
             className="ml-auto"
             disabled={unadopt.isPending}
-            onClick={() => unadopt.mutate(lastAdopt.batches)}
+            onClick={() =>
+              setConfirmUndo({ batches: lastAdopt.batches, moved: lastAdopt.moved })
+            }
           >
             {S.ontology.undoAdoptBtn}
           </Button>
         </div>
       )}
 
+      {/* 撤销一次改回成批事实：轻确认——它本身也是可逆的，不必打字解锁 */}
+      {confirmUndo && (
+        <DangerConfirm
+          title={S.ontology.undoTitle}
+          hint={S.ontology.undoHint(confirmUndo.moved)}
+          confirmLabel={S.ontology.undoConfirm}
+          cancelLabel={S.ontology.undoCancel}
+          busy={unadopt.isPending}
+          onConfirm={() => unadopt.mutate(confirmUndo.batches)}
+          onCancel={() => setConfirmUndo(null)}
+        />
+      )}
       {proposals && (
         <div className="mt-4 border-t border-white/10 pt-3">
           <div className="mb-2 flex items-center gap-2">

@@ -590,10 +590,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     if needs_adjudication || conflicts_found {
         state.emit_review(doc.kb_id);
     }
-    // 冷启动自动扩本体：本体没被人碰过、且这一批都抽完了，由最后一篇触发。
-    // 逐篇触发是错的——先到的那篇的词汇会独占本体。并发下可能入队两次，
-    // 任务自己会重查一遍，先跑的建出关系后另一个就是 no-op
-    if utopia_store::graph::ontology_untouched(&state.pool, doc.kb_id).await?
+    // 自动扩本体：开关开着、且这一批都抽完了，由最后一篇触发。
+    // 判据是显式开关而不是"本体有没有被碰过"——后者是从行为推断意图，
+    // 推错的后果很荒唐（在提案上点一次 Add 就永久关掉建议），而且一旦为假
+    // 就永不再真，本体会冻结在第一批文档碰巧包含的词汇上。
+    // 并发下可能入队两次，任务自己会重查开关与状态
+    if kb.auto_extend_ontology
         && utopia_store::documents::extraction_idle(&state.pool, doc.kb_id).await?
     {
         utopia_store::jobs::enqueue(

@@ -44,6 +44,7 @@ export function KbSettings() {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [visibility, setVisibility] = useState<"open" | "restricted">("open");
+  const [autoExtend, setAutoExtend] = useState(true);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +53,7 @@ export function KbSettings() {
       setName(kb.data.name);
       setDesc(kb.data.description ?? "");
       setVisibility(kb.data.visibility);
+      setAutoExtend(kb.data.auto_extend_ontology);
     }
   }, [kb.data]);
 
@@ -62,7 +64,12 @@ export function KbSettings() {
 
   const save = useMutation({
     mutationFn: () =>
-      api.updateKb(kbId!, { name: name.trim(), description: desc.trim() || null, visibility }),
+      api.updateKb(kbId!, {
+        name: name.trim(),
+        description: desc.trim() || null,
+        visibility,
+        auto_extend_ontology: autoExtend,
+      }),
     onSuccess: () => {
       setError(null);
       invalidate();
@@ -183,6 +190,22 @@ export function KbSettings() {
                   onChange={(e) => setDesc(e.target.value)}
                 />
               </div>
+              {/* 自动扩本体：默认开，因为新库的十个默认关系不是任何人选的。
+                  说明里要讲清关掉之后失去的**只是**代劳，不是留意 */}
+              <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-[var(--u-accent)]"
+                  checked={autoExtend}
+                  onChange={(e) => setAutoExtend(e.target.checked)}
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm text-neutral-200">{S.kbset.autoExtend}</span>
+                  <span className="block text-xs leading-relaxed text-neutral-500">
+                    {S.kbset.autoExtendNote}
+                  </span>
+                </span>
+              </label>
               <div className="flex items-center gap-3">
                 <button
                   className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
