@@ -1089,6 +1089,15 @@ function MissesPanel({
   onError: (e: unknown) => void;
 }) {
   const [proposals, setProposals] = useState<OntologyProposals | null>(null);
+  // 待认领的表层谓词：提案的影响面（"将改写 57 条"）从这里算
+  const surface = useQuery({
+    queryKey: ["surface-predicates", kbId],
+    queryFn: () => api.surfacePredicates(kbId),
+  });
+  const factsWaiting = (forms: string[]) => {
+    const byForm = new Map((surface.data?.forms ?? []).map((f) => [f.form, f.fact_count]));
+    return forms.reduce((n, f) => n + (byForm.get(f) ?? 0), 0);
+  };
 
   const suggest = useMutation({
     mutationFn: () => api.suggestOntology(kbId),
@@ -1117,15 +1126,32 @@ function MissesPanel({
     onError,
   });
   const approveRelation = useMutation({
-    mutationFn: (p: { key: string; label: string; temporal?: string; functional?: boolean }) =>
-      api.createRelationType(kbId, {
-        key: p.key,
-        label: p.label,
-        temporal: p.temporal ?? "state",
-        functional: p.functional ?? false,
-      }),
-    onSuccess: (_data, p) => {
-      toast.success(S.toast.added);
+    // 带 forms 的提案走 adopt：建关系顺带把等着它的 related_to 事实改写过去。
+    // 只建关系的话本体长大了、图没变好——那些事实会继续是"有关联"
+    mutationFn: (p: {
+      key: string;
+      label: string;
+      temporal?: string;
+      functional?: boolean;
+      forms?: string[];
+    }) =>
+      p.forms?.length
+        ? api.adoptPredicate(kbId, {
+            key: p.key,
+            label: p.label,
+            temporal: p.temporal ?? "state",
+            functional: p.functional ?? false,
+            forms: p.forms,
+          })
+        : api.createRelationType(kbId, {
+            key: p.key,
+            label: p.label,
+            temporal: p.temporal ?? "state",
+            functional: p.functional ?? false,
+          }),
+    onSuccess: (data, p) => {
+      const moved = (data as { remapped?: number }).remapped ?? 0;
+      toast.success(moved > 0 ? S.ontology.adopted(moved) : S.toast.added);
       setProposals(
         (prev) =>
           prev && { ...prev, relation_types: prev.relation_types.filter((x) => x.key !== p.key) },
@@ -1200,6 +1226,16 @@ function MissesPanel({
                 <span className="font-mono text-neutral-300">{p.key}</span>
                 <span className="text-neutral-200">{p.label}</span>
                 {p.temporal && <Chip tone="neutral">{p.temporal}</Chip>}
+                {/* 影响面：采纳后会改写多少条、归并了哪些写法。没有这个，
+                    "approve" 就只是凭空多一个空关系 */}
+                {!!p.forms?.length && (
+                  <span
+                    className="text-xs text-[var(--u-accent)]"
+                    title={p.forms.join(" · ")}
+                  >
+                    {S.ontology.willRemap(factsWaiting(p.forms))}
+                  </span>
+                )}
                 {p.reason && <span className="text-xs text-neutral-500 truncate">{p.reason}</span>}
                 <Button
                   size="sm"

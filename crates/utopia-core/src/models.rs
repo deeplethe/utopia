@@ -329,6 +329,18 @@ pub struct OntologyMiss {
     pub count: i32,
 }
 
+/// 一个待认领的表层谓词：原文这么说过，但本体里没有对应关系，事实降级成了
+/// related_to。与 `OntologyMiss` 的纯计数不同，它连着具体事实——所以采纳时
+/// 能说清"将重新归类 57 条"，并真的去改。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct SurfacePredicate {
+    pub form: String,
+    /// 有多少条 live 的 related_to 事实由这个说法而来
+    pub fact_count: i64,
+    /// 一条样例（"Dino Crisis (Steam) → GeForce NOW"），让人一眼判断这是什么关系
+    pub example: Option<String>,
+}
+
 /// 抽取丢弃信号：事实抽出来了却没能落地，以及为什么。
 /// 与 `OntologyMiss` 分开——那个说"你的本体缺这些"（读者是本体维护者），
 /// 这个说"这些事实没落地"（读者是上传文档的人）。

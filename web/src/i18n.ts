@@ -614,6 +614,12 @@ export const S = {
     suggesting: "Analyzing…",
     noMisses: "No unmatched types — the ontology covers your corpus.",
     approve: "Add",
+    /* 影响面：采纳一个提案会把多少条 related_to 事实改写过去。
+       没有这一句，"Add" 只是凭空多一个空关系 */
+    willRemap: (n: number) =>
+      n === 1 ? "reclassifies 1 fact" : `reclassifies ${n} facts`,
+    adopted: (n: number) =>
+      n === 1 ? "Added — 1 fact reclassified" : `Added — ${n} facts reclassified`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
   },

@@ -398,7 +398,16 @@ export interface OntologyProposals {
     temporal?: string;
     functional?: boolean;
     reason?: string;
+    /** 这条关系归并了哪些表层说法。有它才谈得上把等待的事实改写过去 */
+    forms?: string[];
   }[];
+}
+
+/** 原文说过、本体没有、事实降级成了 related_to 的谓词。 */
+export interface SurfacePredicate {
+  form: string;
+  fact_count: number;
+  example: string | null;
 }
 
 export interface Source {
@@ -665,6 +674,24 @@ export const api = {
     }),
   suggestOntology: (kbId: string) =>
     request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/suggest`, { method: "POST" }),
+
+  surfacePredicates: (kbId: string) =>
+    request<{ forms: SurfacePredicate[] }>(`/api/v1/kbs/${kbId}/ontology/surface-predicates`),
+  /** 建关系 **并**把等着它的 related_to 事实改写过去——后半句才是收益 */
+  adoptPredicate: (
+    kbId: string,
+    body: {
+      key: string;
+      label: string;
+      temporal?: string;
+      functional?: boolean;
+      forms: string[];
+    },
+  ) =>
+    request<{ id: string; remapped: number }>(`/api/v1/kbs/${kbId}/ontology/adopt-predicate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   sources: (kbId: string) =>
     request<{ sources: SourceView[] }>(`/api/v1/kbs/${kbId}/sources`),

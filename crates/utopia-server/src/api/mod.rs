@@ -146,6 +146,14 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(ontology_routes::dismiss_miss),
         )
         .route("/kbs/{id}/ontology/suggest", post(ontology_routes::suggest))
+        .route(
+            "/kbs/{id}/ontology/surface-predicates",
+            get(ontology_routes::surface_predicates),
+        )
+        .route(
+            "/kbs/{id}/ontology/adopt-predicate",
+            post(ontology_routes::adopt_predicate),
+        )
         .route("/kbs/{id}/search", post(search_routes::search))
         .route("/kbs/{id}/chat", post(chat::chat))
         .route("/kbs/{id}/conversations", get(chat::list_conversations))

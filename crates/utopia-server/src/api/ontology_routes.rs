@@ -334,7 +334,9 @@ pub async fn suggest(
     let entity_types = utopia_store::ontology::entity_type_views(&state.pool, kb_id).await?;
     let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
     let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
-    if misses.is_empty() {
+    // 表层谓词比 misses 多一样东西：它连着具体事实，所以提案能承诺"改写 N 条"
+    let forms = utopia_store::graph::surface_predicates(&state.pool, kb_id).await?;
+    if misses.is_empty() && forms.is_empty() {
         return Ok(Json(json!({ "entity_types": [], "relation_types": [] })));
     }
 
@@ -353,6 +355,20 @@ pub async fn suggest(
         })
         .collect();
 
+    // 表层谓词行带上事实数与样例：模型据此判断这是不是一个真关系，
+    // 而 forms 字段让采纳时知道该改写哪些事实
+    let form_lines: Vec<String> = forms
+        .iter()
+        .map(|f| {
+            format!(
+                "- \"{}\" on {} fact(s), e.g. {}",
+                f.form,
+                f.fact_count,
+                f.example.as_deref().unwrap_or("-")
+            )
+        })
+        .collect();
+
     let prompt = format!(
         "You are an ontology engineer. A knowledge graph has this ontology:\n\
          Entity type keys: {}\n\
@@ -360,13 +376,25 @@ pub async fn suggest(
          \n\
          During extraction, the LLM repeatedly produced types/relations OUTSIDE this ontology:\n{}\n\
          \n\
-         Propose ontology extensions that would cover these misses. Merge near-duplicates. \
-         Only propose what is clearly warranted by the misses. Output exactly one JSON object:\n\
+         These predicates were taken from the source text because nothing in the ontology fit. \
+         Their facts are currently filed under \"related_to\", which says nothing:\n{}\n\
+         \n\
+         Propose ontology extensions. Rules:\n\
+         - Merge near-duplicates into ONE relation and list every spelling it covers in \
+           \"forms\" (e.g. available_on / available_from / \"available through\" are one relation).\n\
+         - Skip generic verbs that carry no domain meaning (is, has, includes, provides, brings).\n\
+         - A relation is worth adding when the ontology genuinely lacks that meaning, not merely \
+           because a word was frequent.\n\
+         - \"functional\" must be false unless the relation truly permits at most one object per \
+           subject at a time. Getting this wrong makes the temporal engine manufacture conflicts.\n\
+         \n\
+         Output exactly one JSON object:\n\
          {{\"entity_types\":[{{\"key\":\"snake_case\",\"label\":\"Display Name\",\"reason\":\"...\"}}],\n\
-          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"reason\":\"...\"}}]}}",
+          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"reason\":\"...\"}}]}}",
         current_et.join(", "),
         current_rt.join(", "),
-        miss_lines.join("\n")
+        miss_lines.join("\n"),
+        form_lines.join("\n")
     );
 
     let reply = client
@@ -380,4 +408,85 @@ pub async fn suggest(
     let proposals: serde_json::Value =
         serde_json::from_str(&block).map_err(|e| AppError::Other(e.into()))?;
     Ok(Json(proposals))
+}
+
+#[derive(Deserialize)]
+pub struct AdoptReq {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "default_temporal")]
+    pub temporal: String,
+    /// 缺省 false，且刻意不由建议方决定——本体声明的唯一性会驱动时态引擎自动
+    /// 闭合事实，猜错就是成批的假冲突（part_of 就这么烧过一次）
+    #[serde(default)]
+    pub functional: bool,
+    #[serde(default)]
+    pub inverse_functional: bool,
+    /// 归入这个关系的表层说法（"available_on"、"available through"…）
+    pub forms: Vec<String>,
+}
+
+/// 采纳一个表层谓词：建关系类型 **并把等着它的 related_to 事实改写过去**。
+///
+/// 与单纯 create 的区别就在后半句。只建类型的话本体长大了、图没变好——
+/// 那 57 条事实会继续是"有关联"。改写走追加（新行 + supersedes），
+/// 实体历史里读得到"先记成 related to，后精化成 available on"。
+pub async fn adopt_predicate(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Json(req): Json<AdoptReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let key = req.key.trim();
+    if req.forms.is_empty() {
+        return Err(AppError::Validation("forms cannot be empty".into()).into());
+    }
+    let predicate_id = utopia_store::ontology::create_relation_type(
+        &state.pool,
+        kb_id,
+        key,
+        req.label.trim(),
+        &req.temporal,
+        req.functional,
+        req.inverse_functional,
+        req.description.as_deref().unwrap_or("").trim(),
+        "relation",
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let remapped =
+        utopia_store::graph::adopt_surface_predicates(&state.pool, kb_id, predicate_id, &req.forms)
+            .await?;
+    // 采纳同时清掉对应的未匹配统计——本体已经覆盖它们了
+    for form in &req.forms {
+        let _ = utopia_store::ontology::clear_miss(&state.pool, kb_id, "relation_type", form).await;
+    }
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "ontology.predicate_adopted",
+        "relation_type",
+        Some(predicate_id),
+        json!({ "key": key, "label": req.label, "forms": req.forms, "facts_remapped": remapped }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok(Json(json!({ "id": predicate_id, "remapped": remapped })))
+}
+
+/// 待认领的表层谓词：原文说过、本体没有、事实降级成了 related_to。
+pub async fn surface_predicates(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let forms = utopia_store::graph::surface_predicates(&state.pool, kb_id).await?;
+    Ok(Json(json!({ "forms": forms })))
 }

@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use std::collections::HashSet;
 use utopia_core::models::{
     ChunkFactView, EntityFact, EntityHistoryEvent, EntityType, EvidenceView, FactReviewItem,
-    GraphEdge, GraphNode, RelationType,
+    GraphEdge, GraphNode, RelationType, SurfacePredicate,
 };
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -15,6 +15,10 @@ type FactSpanRow = (
     Option<chrono::DateTime<chrono::Utc>>,
     Option<chrono::DateTime<chrono::Utc>>,
 );
+
+/// 词表外谓词的代码层兜底：抽取器降级到它，谓词消解从它改写出去。
+/// 两边必须认同一个 key，所以定义在这里而不是各自的模块。
+pub const FALLBACK_RELATION_KEY: &str = "related_to";
 
 /// 内置本体模板：(key, label, color, shape)
 // 低饱和粉彩色系（深色画布上柔和发光，不刺眼）；组织/产品用方形区分"机构/制品"
@@ -246,8 +250,9 @@ async fn insert_fact_inner(
             .execute(pool)
             .await?;
         sqlx::query(
-            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, doc_version)
-             SELECT $1, chunk_id, quote, document_id, doc_version
+            // 表层谓词随证据一起搬：精化的是时间，不是原文说了什么
+            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, surface_predicate, document_id, doc_version)
+             SELECT $1, chunk_id, quote, surface_predicate, document_id, doc_version
              FROM fact_evidence WHERE fact_id = $2
              ON CONFLICT DO NOTHING",
         )
@@ -860,12 +865,20 @@ pub async fn entity_history(
                -- 否则后发生的人工裁决会被错安到当初那条断言头上
                AND ev.kind <> 'asserted'
                AND a.action = ANY(CASE ev.kind
-                     WHEN 'corrected' THEN ARRAY['fact.close', 'conflict.close_old']
+                     WHEN 'corrected' THEN
+                       ARRAY['fact.close', 'conflict.close_old', 'ontology.predicate_adopted']
                      ELSE ARRAY['fact.reject', 'conflict.reject_new'] END)
                AND (a.target_id = COALESCE(ev.supersedes, ev.id)
                     OR a.target_id IN (SELECT c.id FROM fact_conflicts c
                                        WHERE c.old_fact_id = COALESCE(ev.supersedes, ev.id)
-                                          OR c.new_fact_id = ev.id))
+                                          OR c.new_fact_id = ev.id)
+                    -- 采纳表层谓词记在关系类型上，一次动作改写成批事实。
+                    -- 时间窗把它限定在那次采纳产生的修正上，否则同一关系
+                    -- 日后的任何修正都会被记到当初点头的人名下
+                    OR (a.action = 'ontology.predicate_adopted'
+                        AND a.target_id = ev.predicate_id
+                        AND ev.at BETWEEN a.created_at - interval '1 min'
+                                      AND a.created_at + interval '10 min'))
              ORDER BY a.created_at DESC LIMIT 1
          ) act ON true
          LEFT JOIN LATERAL (
@@ -891,4 +904,139 @@ pub async fn entity_history(
         .fetch_one(pool)
         .await?;
     Ok((rows, total))
+}
+
+// ---------------------------------------------------------------------------
+// 谓词消解：把降级成 related_to 的事实认领回本体
+// ---------------------------------------------------------------------------
+
+// 视图类型 SurfacePredicate 定义在 utopia-core::models（store 不直接依赖 serde）
+
+/// 降级成 related_to 的事实上，原文用过哪些说法。
+///
+/// 这是本体扩展建议的证据基础——比 `ontology_misses` 的纯计数强的地方在于：
+/// 它连着具体事实，所以采纳一个说法时能直接说"将重新归类 57 条"并真的去改。
+pub async fn surface_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SurfacePredicate>> {
+    Ok(sqlx::query_as(
+        "SELECT fe.surface_predicate AS form,
+                count(DISTINCT f.id) AS fact_count,
+                (SELECT s.canonical_name || ' → ' || o.canonical_name
+                 FROM fact_evidence e2
+                 JOIN facts f2 ON f2.id = e2.fact_id
+                 JOIN entities s ON s.id = f2.subject_id
+                 JOIN entities o ON o.id = f2.object_id
+                 WHERE e2.surface_predicate = fe.surface_predicate
+                   AND f2.kb_id = $1 AND f2.predicate_id = rt.id AND f2.invalidated_at IS NULL
+                 LIMIT 1) AS example
+         FROM fact_evidence fe
+         JOIN facts f ON f.id = fe.fact_id
+         JOIN relation_types rt ON rt.id = f.predicate_id
+         WHERE f.kb_id = $1 AND rt.kb_id = $1 AND rt.key = $2
+           AND f.invalidated_at IS NULL AND fe.surface_predicate IS NOT NULL
+         GROUP BY fe.surface_predicate, rt.id
+         ORDER BY fact_count DESC, form",
+    )
+    .bind(kb_id)
+    .bind(FALLBACK_RELATION_KEY)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 把由 `forms` 降级而来的 related_to 事实改写到 `predicate_id`。返回改写条数。
+///
+/// **追加而非原地改**：插入带 `supersedes` 的新行并作废旧行，与人工纠正、
+/// 时态闭合走同一条路——认知变更本身是信息，实体历史里读得到
+/// "先记成 related to，后精化成 available on"。
+///
+/// 只改写说法**全部**落在 `forms` 内的事实：一条事实可能积累多种说法
+/// （甲块 "runs on"、乙块 "optimized for"），只认领了其中一种就改写等于替
+/// 另一种也做了决定。实测这类事实占比不到 1%，宁可漏也不猜。
+pub async fn adopt_surface_predicates(
+    pool: &PgPool,
+    kb_id: Uuid,
+    predicate_id: Uuid,
+    forms: &[String],
+) -> AppResult<u32> {
+    if forms.is_empty() {
+        return Ok(0);
+    }
+    let targets: Vec<(Uuid, Uuid, Option<Uuid>)> = sqlx::query_as(
+        "SELECT f.id, f.subject_id, f.object_id
+         FROM facts f
+         JOIN relation_types rt ON rt.id = f.predicate_id
+         WHERE f.kb_id = $1 AND rt.key = $2 AND f.invalidated_at IS NULL
+           AND EXISTS (SELECT 1 FROM fact_evidence e
+                       WHERE e.fact_id = f.id AND e.surface_predicate = ANY($3))
+           AND NOT EXISTS (SELECT 1 FROM fact_evidence e
+                           WHERE e.fact_id = f.id AND e.surface_predicate IS NOT NULL
+                             AND NOT (e.surface_predicate = ANY($3)))
+         ORDER BY f.recorded_at",
+    )
+    .bind(kb_id)
+    .bind(FALLBACK_RELATION_KEY)
+    .bind(forms)
+    .fetch_all(pool)
+    .await?;
+
+    let mut moved = 0u32;
+    for (old_id, subject_id, object_id) in targets {
+        let mut tx = pool.begin().await?;
+        // 目标断言可能已存在（同主宾已有一条真关系）：那就并进去，别造重复
+        let existing: Option<(Uuid,)> = sqlx::query_as(
+            "SELECT id FROM facts
+             WHERE kb_id = $1 AND subject_id = $2 AND predicate_id = $3
+               AND object_id IS NOT DISTINCT FROM $4 AND invalidated_at IS NULL",
+        )
+        .bind(kb_id)
+        .bind(subject_id)
+        .bind(predicate_id)
+        .bind(object_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+        let new_id = match existing {
+            Some((id,)) => id,
+            None => {
+                let id = Uuid::now_v7();
+                let inserted: Option<(Uuid,)> = sqlx::query_as(
+                    "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
+                                        valid_from, valid_to, valid_precision, confidence, supersedes)
+                     SELECT $1, kb_id, subject_id, $3, object_id, object_value,
+                            valid_from, valid_to, valid_precision, confidence, id
+                     FROM facts WHERE id = $2 AND invalidated_at IS NULL
+                     RETURNING id",
+                )
+                .bind(id)
+                .bind(old_id)
+                .bind(predicate_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                // 已被并发改写：不重复动手
+                let Some((id,)) = inserted else {
+                    tx.rollback().await?;
+                    continue;
+                };
+                id
+            }
+        };
+
+        // 证据整体搬过去，表层谓词一并保留——它是这次改写的依据，不该在改写中丢失
+        sqlx::query(
+            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, surface_predicate, document_id, doc_version)
+             SELECT $1, chunk_id, quote, surface_predicate, document_id, doc_version
+             FROM fact_evidence WHERE fact_id = $2
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(new_id)
+        .bind(old_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
+            .bind(old_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        moved += 1;
+    }
+    Ok(moved)
 }
