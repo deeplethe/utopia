@@ -102,6 +102,73 @@ pub async fn entity_detail(
     Ok(Json(json!({ "entity": entity, "facts": facts })))
 }
 
+#[derive(Deserialize)]
+pub struct EntityPatch {
+    #[serde(default)]
+    pub type_id: Option<Uuid>,
+    #[serde(default)]
+    pub canonical_name: Option<String>,
+}
+
+/// 人工修正实体的类型或名字。抽取给的是初判，此前判错只能整库重抽。
+///
+/// 改名撞上同名实体不拦（两个张伟是"宁分勿合"的正当产物），改完把同名的报回去，
+/// 由界面提示是否合并——判定它们是否真是同一个，是人的事。
+pub async fn update_entity(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, entity_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<EntityPatch>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    if req.type_id.is_none() && req.canonical_name.is_none() {
+        return Err(AppError::Validation("Nothing to update".into()).into());
+    }
+    let (before, after) = utopia_store::graph::update_entity(
+        &state.pool,
+        kb_id,
+        entity_id,
+        req.type_id,
+        req.canonical_name.as_deref(),
+    )
+    .await?;
+
+    // 台账快照自包含：类型以后被删掉，这条记录仍然读得懂。
+    // P4 要按 from/to 聚合"一个月里 37 个实体从 Product 挪到 Concept"，所以分开记两个动作。
+    if before.type_key != after.type_key {
+        let _ = utopia_store::audit::record(
+            &state.pool,
+            Some(kb_id),
+            user.id,
+            "entity.retyped",
+            "entity",
+            Some(entity_id),
+            json!({
+                "name": after.name,
+                "from": { "key": before.type_key, "label": before.type_label },
+                "to": { "key": after.type_key, "label": after.type_label },
+            }),
+        )
+        .await;
+    }
+    if before.name != after.name {
+        let _ = utopia_store::audit::record(
+            &state.pool,
+            Some(kb_id),
+            user.id,
+            "entity.renamed",
+            "entity",
+            Some(entity_id),
+            json!({ "from": before.name, "to": after.name, "type": after.type_label }),
+        )
+        .await;
+    }
+
+    let peers = utopia_store::graph::same_name_peers(&state.pool, kb_id, entity_id).await?;
+    state.emit_review(kb_id);
+    Ok(Json(json!({ "entity": after, "same_name": peers })))
+}
+
 pub async fn fact_evidence(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,

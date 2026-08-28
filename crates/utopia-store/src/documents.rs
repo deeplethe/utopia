@@ -645,3 +645,18 @@ pub async fn extract_epoch(pool: &PgPool, id: Uuid) -> AppResult<i32> {
         .await?;
     Ok(epoch)
 }
+
+/// 这个库还有没有在排队或正在跑的抽取。
+///
+/// 冷启动自动扩本体要等一批文档都抽完再动手：只看第一篇的话，
+/// 先到的那篇的词汇会独占本体。最后一篇跑完的任务负责触发。
+pub async fn extraction_idle(pool: &PgPool, kb_id: Uuid) -> AppResult<bool> {
+    let (pending,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM documents
+         WHERE kb_id = $1 AND graph_status IN ('queued', 'extracting')",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(pending == 0)
+}

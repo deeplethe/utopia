@@ -101,6 +101,17 @@ export interface Doc {
   created_at: string;
 }
 
+/** 一类抽取丢弃在一篇文档里的聚合：事实抽出来了，却没能落地。 */
+export interface ExtractionDrop {
+  document_id: string;
+  /** 稳定的原因码，前端按它查文案（attr_domain_mismatch / low_confidence / ...） */
+  reason: string;
+  /** 该原因下的具体对象（属性 key、谓词名、"salary@organization"） */
+  detail: string;
+  count: number;
+  example: string | null;
+}
+
 export interface SourceView {
   id: string;
   kind: "folder" | "url" | "rss" | "api" | "custom" | "memory" | "upload";
@@ -324,6 +335,8 @@ export interface EntityHistoryEvent {
 }
 
 export interface Evidence {
+  /** 模型在这一块里实际用的谓词说法。词表外谓词降级成 related_to 后，原意只剩这里 */
+  surface_predicate: string | null;
   quote: string | null;
   chunk_id: string;
   document_id: string;
@@ -385,7 +398,16 @@ export interface OntologyProposals {
     temporal?: string;
     functional?: boolean;
     reason?: string;
+    /** 这条关系归并了哪些表层说法。有它才谈得上把等待的事实改写过去 */
+    forms?: string[];
   }[];
+}
+
+/** 原文说过、本体没有、事实降级成了 related_to 的谓词。 */
+export interface SurfacePredicate {
+  form: string;
+  fact_count: number;
+  example: string | null;
 }
 
 export interface Source {
@@ -529,6 +551,9 @@ export const api = {
     ),
 
   documents: (kbId: string) => request<Doc[]>(`/api/v1/kbs/${kbId}/documents`),
+  /** 整库一次取回：行数按 (文档 × 原因 × 对象) 聚合后很小，避免逐行发请求 */
+  extractionDrops: (kbId: string) =>
+    request<{ drops: ExtractionDrop[] }>(`/api/v1/kbs/${kbId}/extraction-drops`),
   upload: (kbId: string, files: File[], sourceId?: string) => {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);
@@ -569,6 +594,17 @@ export const api = {
       `/api/v1/kbs/${kbId}/entities/${entityId}`,
     ),
   /** 认知变更历史（记录时间轴）：服务端分页 */
+  /** 人工修正实体的类型或名字。同名不拦——返回的 same_name 供界面提示是否合并。 */
+  updateEntity: (
+    kbId: string,
+    entityId: string,
+    body: { type_id?: string; canonical_name?: string },
+  ) =>
+    request<{ entity: GraphNode; same_name: GraphNode[] }>(
+      `/api/v1/kbs/${kbId}/entities/${entityId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+
   entityHistory: (kbId: string, entityId: string, page: number, per = 30) =>
     request<{ events: EntityHistoryEvent[]; total: number }>(
       `/api/v1/kbs/${kbId}/entities/${entityId}/history?page=${page}&per=${per}`,
@@ -638,6 +674,30 @@ export const api = {
     }),
   suggestOntology: (kbId: string) =>
     request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/suggest`, { method: "POST" }),
+
+  surfacePredicates: (kbId: string) =>
+    request<{ forms: SurfacePredicate[] }>(`/api/v1/kbs/${kbId}/ontology/surface-predicates`),
+  /** 建关系 **并**把等着它的 related_to 事实改写过去——后半句才是收益 */
+  adoptPredicate: (
+    kbId: string,
+    body: {
+      key: string;
+      label: string;
+      temporal?: string;
+      functional?: boolean;
+      forms: string[];
+    },
+  ) =>
+    request<{ id: string; remapped: number; batch: string }>(
+      `/api/v1/kbs/${kbId}/ontology/adopt-predicate`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  /** 撤销一次采纳：新写的行作废、旧行复活。关系类型留着 */
+  unadoptPredicate: (kbId: string, batchId: string) =>
+    request<{ reverted: number }>(
+      `/api/v1/kbs/${kbId}/ontology/adopt-predicate/${batchId}`,
+      { method: "DELETE" },
+    ),
 
   sources: (kbId: string) =>
     request<{ sources: SourceView[] }>(`/api/v1/kbs/${kbId}/sources`),

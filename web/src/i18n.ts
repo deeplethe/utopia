@@ -212,6 +212,22 @@ export const S = {
     errorGraph: "Graph extraction",
     copyError: "Copy",
     errorCopied: "Error copied",
+    /* 抽取丢弃：事实抽出来了却没能落地。此前完全无声——图里少了东西，没人说得出少了什么 */
+    dropsChip: (n: number) => `${n} dropped`,
+    dropsTitle: "Facts that did not land",
+    dropsNote:
+      "These were extracted from the document but blocked on the way in. " +
+      "Each line says why, and how many.",
+    dropsExample: "e.g.",
+    dropReason: {
+      attr_domain_mismatch: "Attribute on the wrong class",
+      subject_not_declared: "Subject type unknown",
+      attr_no_value: "Attribute had no value",
+      attr_datatype: "Value did not match the datatype",
+      low_confidence: "Below the confidence threshold",
+      object_missing: "Relation had no object",
+      fallback_relation_missing: "No fallback relation in the ontology",
+    } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",
     reExtractTitle: "Re-extract this source?",
@@ -404,6 +420,8 @@ export const S = {
     evidence: "evidence",
     noEvidence: "No evidence recorded",
     noQuote: "(no quote)",
+    /* 原文说的谓词。词表外的词会被降级成 related to，原意只在这里活着 */
+    surfacePredicate: (p: string) => `the text said “${p}”`,
     sectionRef: (filename: string, seq: number) => `${filename} · section ${seq} →`,
     fromVersion: (v: number) => `v${v}`,
     staleEvidenceHint:
@@ -413,6 +431,20 @@ export const S = {
     staleFactHint:
       "All evidence for this fact comes from earlier versions of its source documents — " +
       "the current content no longer states it. It may still be true; review it under Review.",
+    /* 实体修正：抽取给的是初判，人可以推翻它 */
+    edit: "Edit",
+    editName: "Name",
+    editType: "Type",
+    editSave: "Save",
+    editCancel: "Cancel",
+    editSaved: "Entity updated",
+    editEmptyName: "Name cannot be empty",
+    /* 同名不是错误——两个张伟可以并存。只提示，不阻断 */
+    sameNameNote: (n: number) =>
+      n === 1
+        ? "One other entity shares this name."
+        : `${n} other entities share this name.`,
+    sameNameHint: "If they are the same thing, merge them under Review.",
     viewRelations: "Relations",
     viewTimeline: "Timeline",
     /* 第三视图：记录时间轴——不是"事情何时发生"，而是"我们何时这么认为" */
@@ -423,6 +455,8 @@ export const S = {
       asserted: "Recorded",
       corrected: "Interval corrected",
       rejected: "Withdrawn",
+      /* 并入另一条断言：内容一字未少，不是撤回 */
+      merged: "Merged into an existing fact",
     } as Record<string, string>,
     historyEngine: "engine",
     /* 有效区间的变化：修正后区间闭合到某个时点 */
@@ -582,6 +616,25 @@ export const S = {
     suggesting: "Analyzing…",
     noMisses: "No unmatched types — the ontology covers your corpus.",
     approve: "Add",
+    /* 影响面：采纳一个提案会把多少条 related_to 事实改写过去。
+       没有这一句，"Add" 只是凭空多一个空关系 */
+    willRemap: (n: number) =>
+      n === 1 ? "reclassifies 1 fact" : `reclassifies ${n} facts`,
+    adopted: (n: number) =>
+      n === 1 ? "Added — 1 fact reclassified" : `Added — ${n} facts reclassified`,
+    /* 撤销：采纳改写了成批事实，没有回头路的话没人敢点第一下 */
+    undoAdopt: (key: string, n: number) =>
+      `${key} added, ${n} fact${n === 1 ? "" : "s"} reclassified`,
+    undoAdoptBtn: "Undo",
+    reverted: (n: number) =>
+      n === 1 ? "Reverted — 1 fact restored" : `Reverted — ${n} facts restored`,
+    undoKeepsRelation: "The relation stays; only the facts move back.",
+    /* 批量：常见情形是"这些都对"，一条条点是把一个决定拆成八个 */
+    addAll: (n: number) => `Add all ${n}`,
+    addingAll: "Adding…",
+    addAllLabel: "batch",
+    addAllPartial: (keys: string[]) =>
+      `Some could not be added: ${keys.join(", ")} — the rest went through.`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
   },

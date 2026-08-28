@@ -7,7 +7,7 @@ mod events_routes;
 mod graph_routes;
 mod kbs;
 mod members_routes;
-mod ontology_routes;
+pub(crate) mod ontology_routes;
 mod review_routes;
 mod search_routes;
 mod settings_routes;
@@ -115,6 +115,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
                 .post(documents_routes::upload)
                 .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
+        .route(
+            "/kbs/{id}/extraction-drops",
+            get(documents_routes::extraction_drops),
+        )
         .route("/kbs/{id}/ontology", get(ontology_routes::get))
         .route(
             "/kbs/{id}/ontology/entity-types",
@@ -142,6 +146,18 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(ontology_routes::dismiss_miss),
         )
         .route("/kbs/{id}/ontology/suggest", post(ontology_routes::suggest))
+        .route(
+            "/kbs/{id}/ontology/surface-predicates",
+            get(ontology_routes::surface_predicates),
+        )
+        .route(
+            "/kbs/{id}/ontology/adopt-predicate",
+            post(ontology_routes::adopt_predicate),
+        )
+        .route(
+            "/kbs/{id}/ontology/adopt-predicate/{batch_id}",
+            axum::routing::delete(ontology_routes::unadopt_predicate),
+        )
         .route("/kbs/{id}/search", post(search_routes::search))
         .route("/kbs/{id}/chat", post(chat::chat))
         .route("/kbs/{id}/conversations", get(chat::list_conversations))
@@ -162,7 +178,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/entities", get(graph_routes::search_entities))
         .route(
             "/kbs/{id}/entities/{entity_id}",
-            get(graph_routes::entity_detail),
+            get(graph_routes::entity_detail).patch(graph_routes::update_entity),
         )
         .route(
             "/kbs/{id}/entities/{entity_id}/history",
