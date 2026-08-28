@@ -12,8 +12,9 @@ import type { Strings } from "./en";
 export const zh: Strings = {
   app: {
     name: "Utopia",
-    /* 标语与 Utopia / Persona / Charter 同类：品牌的一部分，不是界面词汇，所以不译 */
-    tagline: "The living memory of your organization",
+    /* 标语与出处都与 Utopia / Persona / Charter 同类：品牌的一部分，两种语言同值 */
+    tagline: "We rather wish than hope to see.",
+    taglineSource: "— Thomas More, 1516",
     siteUrl: "https://utopia.bi",
     docsUrl: "https://utopia.bi/docs",
   },

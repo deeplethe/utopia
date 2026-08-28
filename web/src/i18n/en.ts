@@ -5,7 +5,12 @@
 export const en = {
   app: {
     name: "Utopia",
-    tagline: "The living memory of your organization",
+    // 化用《乌托邦》全书最后一句（Burnet 1684 译本）：
+    // "there are many things in the commonwealth of Utopia that I rather wish,
+    //  than hope, to see followed in our governments."
+    // 改 I 为 We、去掉插入语逗号、留白 to see 的宾语。
+    tagline: "We rather wish than hope to see.",
+    taglineSource: "— Thomas More, 1516",
     siteUrl: "https://utopia.bi",
     docsUrl: "https://utopia.bi/docs",
   },
