@@ -101,6 +101,17 @@ export interface Doc {
   created_at: string;
 }
 
+/** 一类抽取丢弃在一篇文档里的聚合：事实抽出来了，却没能落地。 */
+export interface ExtractionDrop {
+  document_id: string;
+  /** 稳定的原因码，前端按它查文案（attr_domain_mismatch / low_confidence / ...） */
+  reason: string;
+  /** 该原因下的具体对象（属性 key、谓词名、"salary@organization"） */
+  detail: string;
+  count: number;
+  example: string | null;
+}
+
 export interface SourceView {
   id: string;
   kind: "folder" | "url" | "rss" | "api" | "custom" | "memory" | "upload";
@@ -324,6 +335,8 @@ export interface EntityHistoryEvent {
 }
 
 export interface Evidence {
+  /** 模型在这一块里实际用的谓词说法。词表外谓词降级成 related_to 后，原意只剩这里 */
+  surface_predicate: string | null;
   quote: string | null;
   chunk_id: string;
   document_id: string;
@@ -529,6 +542,9 @@ export const api = {
     ),
 
   documents: (kbId: string) => request<Doc[]>(`/api/v1/kbs/${kbId}/documents`),
+  /** 整库一次取回：行数按 (文档 × 原因 × 对象) 聚合后很小，避免逐行发请求 */
+  extractionDrops: (kbId: string) =>
+    request<{ drops: ExtractionDrop[] }>(`/api/v1/kbs/${kbId}/extraction-drops`),
   upload: (kbId: string, files: File[], sourceId?: string) => {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);

@@ -93,7 +93,7 @@ pub fn build_messages(
     let attr_rules = if attributes.is_empty() {
         String::new()
     } else {
-        "\n8. Attribute facts carry \"value\" (no \"object\"): number = plain number without \
+        "\n9. Attribute facts carry \"value\" (no \"object\"): number = plain number without \
          thousands separators or unit symbols; date = \"YYYY[-MM[-DD]]\"; bool = true/false; \
          text = a short string. Only attach an attribute to a subject of its listed class. \
          valid_from = when this value took effect, if the text says so."
@@ -105,7 +105,7 @@ pub fn build_messages(
          \n\
          Entity types (use only these keys):\n{type_list}\n\
          \n\
-         Relation types (use only these keys):\n{rel_list}\n\
+         Relation types (prefer these keys):\n{rel_list}\n\
          {attr_section}\
          \n\
          Output format:\n\
@@ -122,7 +122,11 @@ pub fn build_messages(
          4. {time_ctx}\n\
          5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
-         7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.{attr_rules}"
+         7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.\n\
+         8. If no listed relation fits, do not force the nearest one — write the predicate the \
+            text itself uses, in snake_case (e.g. \"available_on\", \"runs_on\"). A relation \
+            named after the text is worth more than a listed one that says something false.\
+         {attr_rules}"
     );
 
     let user = format!("Source file: \"{filename}\"\n\nText:\n{chunk_text}");

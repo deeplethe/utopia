@@ -190,3 +190,16 @@ pub async fn reprocess(
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// 抽取丢弃信号：哪些事实抽出来了却没能落地。整库一次取回——按
+/// (文档 × 原因 × 具体对象) 聚合后行数很小，Library 既算总数又展开详情，
+/// 不必逐行发请求。
+pub async fn extraction_drops(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
+    let drops = utopia_store::extraction_drops::for_kb(&state.pool, kb_id).await?;
+    Ok(Json(json!({ "drops": drops })))
+}

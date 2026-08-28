@@ -8,6 +8,7 @@ pub mod conversations;
 pub mod datasources;
 pub mod db;
 pub mod documents;
+pub mod extraction_drops;
 pub mod graph;
 pub mod jobs;
 pub mod kbs;
