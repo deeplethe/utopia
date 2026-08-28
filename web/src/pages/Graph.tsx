@@ -1701,6 +1701,13 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
           search={{ chunk: ev.chunk_id }}
           className="block text-xs text-neutral-500 hover:text-neutral-300"
         >
+          {/* 原文说的谓词，只在它与本体谓词不同时显示——词表外的词被降级成
+              "related to" 后，事实行上只剩"有关联"，原意仅存于此。相同则是噪声 */}
+          {ev.surface_predicate && ev.surface_predicate !== fact.predicate_key && (
+            <div className="mb-0.5 text-[11px] text-neutral-400">
+              {S.graph.surfacePredicate(ev.surface_predicate)}
+            </div>
+          )}
           <div className="line-clamp-2 italic">
             {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
           </div>

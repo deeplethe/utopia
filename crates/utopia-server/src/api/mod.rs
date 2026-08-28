@@ -115,6 +115,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
                 .post(documents_routes::upload)
                 .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
+        .route(
+            "/kbs/{id}/extraction-drops",
+            get(documents_routes::extraction_drops),
+        )
         .route("/kbs/{id}/ontology", get(ontology_routes::get))
         .route(
             "/kbs/{id}/ontology/entity-types",

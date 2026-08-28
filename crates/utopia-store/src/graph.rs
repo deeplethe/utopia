@@ -751,7 +751,7 @@ pub async fn document_extractions(
 /// stale = 证据版本落后于文档当前版本（UI 标 "from v{n}"）。
 pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<EvidenceView>> {
     let rows: Vec<EvidenceView> = sqlx::query_as(
-        "SELECT fe.quote, fe.chunk_id, c.document_id, d.filename, c.seq,
+        "SELECT fe.quote, fe.surface_predicate, fe.chunk_id, c.document_id, d.filename, c.seq,
                 c.doc_version,
                 c.doc_version < COALESCE(
                     (SELECT MAX(version) FROM document_versions dv

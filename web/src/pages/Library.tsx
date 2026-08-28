@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
 import {
@@ -12,7 +12,7 @@ import {
   Waypoints,
   X,
 } from "lucide-react";
-import { api, type Doc, type SourceView } from "../api";
+import { api, type Doc, type ExtractionDrop, type SourceView } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
@@ -319,6 +319,10 @@ export function Library() {
     kind: string;
     text: string;
   } | null>(null);
+  // 丢弃详情弹窗：这篇文档抽出来却没落地的事实
+  const [dropsView, setDropsView] = useState<{ file: string; rows: ExtractionDrop[] } | null>(
+    null,
+  );
   const [showHistory, setShowHistory] = useState(false);
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState("");
@@ -343,10 +347,27 @@ export function Library() {
     queryFn: () => api.sources(kb!.id),
     enabled: !!kb,
   });
+  // 整库一次取回后按文档分组：抽取丢弃的行数很小，好过每行发一个请求
+  const drops = useQuery({
+    queryKey: ["extraction-drops", kb?.id],
+    queryFn: () => api.extractionDrops(kb!.id),
+    enabled: !!kb,
+  });
+  const dropsByDoc = useMemo(() => {
+    const m = new Map<string, ExtractionDrop[]>();
+    for (const d of drops.data?.drops ?? []) {
+      const list = m.get(d.document_id);
+      if (list) list.push(d);
+      else m.set(d.document_id, [d]);
+    }
+    return m;
+  }, [drops.data]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["documents", kb?.id] });
     queryClient.invalidateQueries({ queryKey: ["sources", kb?.id] });
+    // 重抽会重写这篇文档的丢弃信号，跟着文档一起失效
+    queryClient.invalidateQueries({ queryKey: ["extraction-drops", kb?.id] });
   };
 
   const upload = useMutation({
@@ -613,6 +634,8 @@ export function Library() {
                       onShowError={(kind, text) =>
                         setErrorView({ file: d.filename, kind, text })
                       }
+                      drops={dropsByDoc.get(d.id)}
+                      onShowDrops={(rows) => setDropsView({ file: d.filename, rows })}
                     />
                   ))}
                 </tbody>
@@ -711,6 +734,13 @@ export function Library() {
           kind={errorView.kind}
           text={errorView.text}
           onClose={() => setErrorView(null)}
+        />
+      )}
+      {dropsView && (
+        <DropsModal
+          file={dropsView.file}
+          rows={dropsView.rows}
+          onClose={() => setDropsView(null)}
         />
       )}
       {/* 全库重建：打字级确认（清空图层不可逆） */}
@@ -886,6 +916,70 @@ function SourceBar({
 }
 
 /** 失败详情：完整原文，可复制。tooltip 装不下也拷不走，所以要弹窗。 */
+/** 抽取丢弃详情：抽出来了、被挡掉了，这里说清楚挡在哪、丢了多少。 */
+function DropsModal({
+  file,
+  rows,
+  onClose,
+}: {
+  file: string;
+  rows: ExtractionDrop[];
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="glass-strong w-[36rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl">
+        <div className="px-5 pt-4 pb-3 border-b border-white/10">
+          <div className="flex items-center justify-between">
+            <h2 className="u-title text-[15px]">{S.library.dropsTitle}</h2>
+            <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200">
+              <X size={15} />
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-neutral-500 truncate" title={file}>
+            {file}
+          </p>
+          <p className="mt-1.5 text-xs text-neutral-500">{S.library.dropsNote}</p>
+        </div>
+        <div className="u-scroll max-h-80 overflow-y-auto px-5 py-3">
+          {rows.map((r) => (
+            <div
+              key={`${r.reason}:${r.detail}`}
+              className="border-b border-white/5 py-2.5 last:border-0"
+            >
+              <div className="flex items-baseline gap-2">
+                <span className="text-sm text-neutral-200">
+                  {S.library.dropReason[r.reason] ?? r.reason}
+                </span>
+                <span className="u-num ml-auto text-xs text-neutral-500">×{r.count}</span>
+              </div>
+              <div className="mt-0.5 font-mono text-[11px] text-neutral-400 break-all">
+                {r.detail}
+              </div>
+              {r.example && (
+                <div className="mt-0.5 text-[11px] text-neutral-600 break-all">
+                  {S.library.dropsExample} {r.example}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ErrorModal({
   file,
   kind,
@@ -1560,6 +1654,8 @@ function DocRow({
   onExtract,
   onReprocess,
   onShowError,
+  drops,
+  onShowDrops,
 }: {
   doc: Doc;
   /** undefined = 不渲染来源列；null = Uploads（source_id 为空） */
@@ -1568,7 +1664,11 @@ function DocRow({
   onExtract: () => void;
   onReprocess: () => void;
   onShowError: (kind: string, text: string) => void;
+  /** 这篇文档抽出来却没落地的事实；undefined = 一条都没有 */
+  drops?: ExtractionDrop[];
+  onShowDrops: (rows: ExtractionDrop[]) => void;
 }) {
+  const dropTotal = drops?.reduce((n, d) => n + d.count, 0) ?? 0;
   const statusText =
     S.library.status[doc.status as keyof typeof S.library.status] ?? doc.status;
   const graphText =
@@ -1631,6 +1731,13 @@ function DocRow({
           </button>
         ) : (
           <Chip tone={GRAPH_TONE[doc.graph_status] ?? "neutral"}>{graphText}</Chip>
+        )}
+        {/* 抽出来却没落地的事实。抽取成功不代表全须全尾，所以这个 chip 与
+            graph_status 并列而不是替代它——"done" 和 "3 dropped" 同时为真 */}
+        {dropTotal > 0 && drops && (
+          <button onClick={() => onShowDrops(drops)} className="ml-1.5 align-middle">
+            <Chip tone="warn">{S.library.dropsChip(dropTotal)}</Chip>
+          </button>
         )}
         {/* done 也可重抽：本体（描述/新类）调整后强制全量重抽正是常规操作 */}
         {doc.status === "ready" && ["none", "failed", "done"].includes(doc.graph_status) && (

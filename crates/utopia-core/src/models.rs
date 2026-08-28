@@ -515,6 +515,9 @@ pub struct FactReviewItem {
 /// 事实的证据（引句 + 原文定位）。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct EvidenceView {
+    /// 模型在这一块里实际用的谓词说法。词表外谓词被降级成 related_to 后，
+    /// 事实行上只剩"有关联"——原意只在这里
+    pub surface_predicate: Option<String>,
     pub quote: Option<String>,
     pub chunk_id: Uuid,
     pub document_id: Uuid,

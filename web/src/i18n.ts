@@ -212,6 +212,22 @@ export const S = {
     errorGraph: "Graph extraction",
     copyError: "Copy",
     errorCopied: "Error copied",
+    /* 抽取丢弃：事实抽出来了却没能落地。此前完全无声——图里少了东西，没人说得出少了什么 */
+    dropsChip: (n: number) => `${n} dropped`,
+    dropsTitle: "Facts that did not land",
+    dropsNote:
+      "These were extracted from the document but blocked on the way in. " +
+      "Each line says why, and how many.",
+    dropsExample: "e.g.",
+    dropReason: {
+      attr_domain_mismatch: "Attribute on the wrong class",
+      subject_not_declared: "Subject type unknown",
+      attr_no_value: "Attribute had no value",
+      attr_datatype: "Value did not match the datatype",
+      low_confidence: "Below the confidence threshold",
+      object_missing: "Relation had no object",
+      fallback_relation_missing: "No fallback relation in the ontology",
+    } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",
     reExtractTitle: "Re-extract this source?",
@@ -404,6 +420,8 @@ export const S = {
     evidence: "evidence",
     noEvidence: "No evidence recorded",
     noQuote: "(no quote)",
+    /* 原文说的谓词。词表外的词会被降级成 related to，原意只在这里活着 */
+    surfacePredicate: (p: string) => `the text said “${p}”`,
     sectionRef: (filename: string, seq: number) => `${filename} · section ${seq} →`,
     fromVersion: (v: number) => `v${v}`,
     staleEvidenceHint:

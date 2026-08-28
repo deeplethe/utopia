@@ -65,22 +65,12 @@ pub async fn clear_for_document(pool: &PgPool, document_id: Uuid) -> AppResult<(
     Ok(())
 }
 
-/// 一篇文档的全部丢弃信号。
-pub async fn for_document(pool: &PgPool, document_id: Uuid) -> AppResult<Vec<ExtractionDrop>> {
+/// 一个 KB 的全部丢弃信号。行数按 (文档 × 原因 × 具体对象) 聚合后很小，
+/// 一次取回让 Library 既能算每篇的总数、又能直接展开详情，不必逐行发请求。
+pub async fn for_kb(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<ExtractionDrop>> {
     Ok(sqlx::query_as(
         "SELECT document_id, reason, detail, count, example FROM extraction_drops
-         WHERE document_id = $1 ORDER BY count DESC, reason",
-    )
-    .bind(document_id)
-    .fetch_all(pool)
-    .await?)
-}
-
-/// 每篇文档的丢弃总数——Library 列表一次查完，不必逐行发请求。
-pub async fn totals_by_document(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<(Uuid, i64)>> {
-    Ok(sqlx::query_as(
-        "SELECT document_id, sum(count)::bigint FROM extraction_drops
-         WHERE kb_id = $1 GROUP BY document_id",
+         WHERE kb_id = $1 ORDER BY count DESC, reason LIMIT 2000",
     )
     .bind(kb_id)
     .fetch_all(pool)
