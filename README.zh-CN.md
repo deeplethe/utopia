@@ -93,7 +93,7 @@
 
 **基于本体的智能问数：**在系统层注册一次 Postgres 连接，再挂载到知识库，对话就可以同时查询文档和数据库。这条路线的方法（[Ontology2SQL](https://github.com/deeplethe/ontology2sql)）在 BIRD Mini-Dev 上取得 SQLite 70.20 / PostgreSQL 65.80，两项均为当前 SOTA，分别领先第二名 12.2 与 9.0 分（[榜单提交](https://github.com/bird-bench/bird-bench.github.io/pull/218)）。
 
-**多用户与权限：**权限以知识库为单位——每个库有自己的成员与角色，私有库只有成员进得来，公共库对部署内所有人可读。部署后的第一个知识库是公共空间 `General`，默认对所有人开放。所有操作留审计流水。
+**多用户与权限：**权限以知识库为单位，每个库有自己的成员与角色，公共库对部署内所有人可读，私有库仅受邀用户可访问。部署后会自动建立全员可读的公共空间（General Knowledge Base）。
 
 ## 快速开始
 
