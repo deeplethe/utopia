@@ -144,8 +144,7 @@ pub fn build_messages(
          {attr_rules}"
     );
 
-    // 已知实体进 user 消息：system（本体+规则+文档日期）在一篇文档内逐块完全相同，
-    // 整条吃前缀缓存。这份清单逐块变化，放进 system 会把缓存边界推到它之前
+    // 已知实体紧挨着正文：服从性靠位置，理由见 known_block 的注释
     let user = format!(
         "Source file: \"{filename}\"\n{}\nText:\n{chunk_text}",
         known_block(known)
