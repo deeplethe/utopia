@@ -629,6 +629,12 @@ export const S = {
     reverted: (n: number) =>
       n === 1 ? "Reverted — 1 fact restored" : `Reverted — ${n} facts restored`,
     undoKeepsRelation: "The relation stays; only the facts move back.",
+    /* 批量：常见情形是"这些都对"，一条条点是把一个决定拆成八个 */
+    addAll: (n: number) => `Add all ${n}`,
+    addingAll: "Adding…",
+    addAllLabel: "batch",
+    addAllPartial: (keys: string[]) =>
+      `Some could not be added: ${keys.join(", ")} — the rest went through.`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
   },

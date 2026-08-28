@@ -1128,3 +1128,19 @@ pub async fn unadopt(pool: &PgPool, kb_id: Uuid, batch_id: Uuid) -> AppResult<u3
     tx.commit().await?;
     Ok(reverted)
 }
+
+/// 本体是否从没被人碰过：只有内置类型、没有任何自建或导入的。
+///
+/// 冷启动自动扩本体的判定依据。**没有精心建立的词表时，坚持人工审批保护的
+/// 是个还不存在的东西**——而默认那 10 个关系不是任何人选的，是种子数据。
+/// 一旦有人加过或导入过，这里就为 false，自动扩本体从此不再触发。
+pub async fn ontology_untouched(pool: &PgPool, kb_id: Uuid) -> AppResult<bool> {
+    let (custom,): (i64,) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM entity_types WHERE kb_id = $1 AND NOT builtin)
+              + (SELECT count(*) FROM relation_types WHERE kb_id = $1 AND NOT builtin)",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(custom == 0)
+}

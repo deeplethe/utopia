@@ -1091,7 +1091,11 @@ function MissesPanel({
   const [proposals, setProposals] = useState<OntologyProposals | null>(null);
   // 最近一次采纳，供撤销。只留最近一次——旧批次要撤销走审计台账，
   // 那里本来就记着每次采纳动了哪个关系、多少条
-  const [lastAdopt, setLastAdopt] = useState<{ batch: string; key: string; moved: number } | null>(
+  const [lastAdopt, setLastAdopt] = useState<{
+    batches: string[];
+    key: string;
+    moved: number;
+  } | null>(
     null,
   );
   // 待认领的表层谓词：提案的影响面（"将改写 57 条"）从这里算
@@ -1159,7 +1163,7 @@ function MissesPanel({
       const moved = d.remapped ?? 0;
       toast.success(moved > 0 ? S.ontology.adopted(moved) : S.toast.added);
       // 撤销的把手：采纳改写了成批事实，没有回头路的话没人敢点第一下
-      if (moved > 0 && d.batch) setLastAdopt({ batch: d.batch, key: p.key, moved });
+      if (moved > 0 && d.batch) setLastAdopt({ batches: [d.batch], key: p.key, moved });
       setProposals(
         (prev) =>
           prev && { ...prev, relation_types: prev.relation_types.filter((x) => x.key !== p.key) },
@@ -1170,8 +1174,62 @@ function MissesPanel({
     onError,
   });
 
+  // 逐条串行而不是加个批量端点：每个谓词各有自己的批次和撤销粒度，
+  // 而且部分失败能如实报告（"5 个成功，1 个 key 已存在"）而不是整批回滚
+  const addAll = useMutation({
+    mutationFn: async (all: OntologyProposals) => {
+      const batches: string[] = [];
+      let moved = 0;
+      const failed: string[] = [];
+      for (const p of all.entity_types) {
+        try {
+          await api.createEntityType(kbId, { key: p.key, label: p.label });
+        } catch {
+          failed.push(p.key);
+        }
+      }
+      for (const p of all.relation_types) {
+        try {
+          if (p.forms?.length) {
+            const r = await api.adoptPredicate(kbId, {
+              key: p.key,
+              label: p.label,
+              temporal: p.temporal ?? "state",
+              functional: p.functional ?? false,
+              forms: p.forms,
+            });
+            moved += r.remapped;
+            if (r.remapped > 0) batches.push(r.batch);
+          } else {
+            await api.createRelationType(kbId, {
+              key: p.key,
+              label: p.label,
+              temporal: p.temporal ?? "state",
+              functional: p.functional ?? false,
+            });
+          }
+        } catch {
+          failed.push(p.key);
+        }
+      }
+      return { batches, moved, failed };
+    },
+    onSuccess: (r) => {
+      if (r.failed.length) toast.error(S.ontology.addAllPartial(r.failed));
+      else toast.success(S.ontology.adopted(r.moved));
+      if (r.batches.length) setLastAdopt({ batches: r.batches, key: S.ontology.addAllLabel, moved: r.moved });
+      setProposals(null);
+      onChanged();
+    },
+    onError,
+  });
+
   const unadopt = useMutation({
-    mutationFn: (batch: string) => api.unadoptPredicate(kbId, batch),
+    mutationFn: async (batches: string[]) => {
+      let reverted = 0;
+      for (const b of batches) reverted += (await api.unadoptPredicate(kbId, b)).reverted;
+      return { reverted };
+    },
     onSuccess: (r) => {
       toast.success(S.ontology.reverted(r.reverted));
       setLastAdopt(null);
@@ -1230,7 +1288,7 @@ function MissesPanel({
             variant="ghost"
             className="ml-auto"
             disabled={unadopt.isPending}
-            onClick={() => unadopt.mutate(lastAdopt.batch)}
+            onClick={() => unadopt.mutate(lastAdopt.batches)}
           >
             {S.ontology.undoAdoptBtn}
           </Button>
@@ -1239,7 +1297,25 @@ function MissesPanel({
 
       {proposals && (
         <div className="mt-4 border-t border-white/10 pt-3">
-          <h4 className="text-xs font-bold text-neutral-400 mb-2">{S.ontology.proposals}</h4>
+          <div className="mb-2 flex items-center gap-2">
+            <h4 className="text-xs font-bold text-neutral-400">{S.ontology.proposals}</h4>
+            {/* 常见情形是"这些都对"——一条条点是把一个决定拆成八个 */}
+            {proposals.relation_types.length + proposals.entity_types.length > 1 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                disabled={addAll.isPending}
+                onClick={() => addAll.mutate(proposals)}
+              >
+                {addAll.isPending
+                  ? S.ontology.addingAll
+                  : S.ontology.addAll(
+                      proposals.relation_types.length + proposals.entity_types.length,
+                    )}
+              </Button>
+            )}
+          </div>
           <div className="space-y-1.5">
             {proposals.entity_types.map((p) => (
               <div key={p.key} className="flex items-center gap-2 text-sm">

@@ -324,7 +324,14 @@ pub async fn suggest(
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let kb = require_kb(&state, &user, kb_id, Role::Editor).await?;
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    Ok(Json(build_proposals(&state, kb_id).await?))
+}
+
+/// 生成本体扩展提案。人工点 Suggest 与冷启动自动扩本体走同一条路——
+/// 自动那条不该是另一套判断，只是少了点头那一步。
+pub async fn build_proposals(state: &AppState, kb_id: Uuid) -> Result<serde_json::Value, AppError> {
+    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
         .ok_or_else(|| AppError::Validation("Chat model not configured".into()))?;
@@ -337,7 +344,7 @@ pub async fn suggest(
     // 表层谓词比 misses 多一样东西：它连着具体事实，所以提案能承诺"改写 N 条"
     let forms = utopia_store::graph::surface_predicates(&state.pool, kb_id).await?;
     if misses.is_empty() && forms.is_empty() {
-        return Ok(Json(json!({ "entity_types": [], "relation_types": [] })));
+        return Ok(json!({ "entity_types": [], "relation_types": [] }));
     }
 
     let current_et: Vec<String> = entity_types.iter().map(|t| t.key.clone()).collect();
@@ -407,7 +414,7 @@ pub async fn suggest(
     let block = utopia_extract::json_block(&reply).map_err(AppError::Other)?;
     let proposals: serde_json::Value =
         serde_json::from_str(&block).map_err(|e| AppError::Other(e.into()))?;
-    Ok(Json(proposals))
+    Ok(proposals)
 }
 
 #[derive(Deserialize)]

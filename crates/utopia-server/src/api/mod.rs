@@ -7,7 +7,7 @@ mod events_routes;
 mod graph_routes;
 mod kbs;
 mod members_routes;
-mod ontology_routes;
+pub(crate) mod ontology_routes;
 mod review_routes;
 mod search_routes;
 mod settings_routes;
