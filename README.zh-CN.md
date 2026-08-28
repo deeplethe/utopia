@@ -37,14 +37,14 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 但真正维护起来才会发现：建立一个世界并不难，难的是让它长期、稳定而可信地运转下去。要维持一个理想国度，需要一些伟大的制度。于是有了下面这些属于「乌托邦」的法则。
 
-| | 法则 | |
-|:---:|---|---|
-| 🧓🏻 | **宙斯之律**<br/>Zeus's Law | 善待每一条来到这个世界的知识 |
-| 📜 | **历史法则**<br/>Law of History | 知识不是一张静止的事实表，而是一段不断发生的历史 |
-| ⛵ | **理想演绎**<br/>Law of Deduction | 从「理解现在」，进一步走向「推演未来」 |
-| ⚖️ | **世界铁律**<br/>The Iron Gate | 让规则托住智能，让逻辑约束行动 |
+| 法则 | |
+|---|---|
+| **宙斯之律**<br/>Zeus's Law | 善待每一条来到这个世界的知识 |
+| **历史法则**<br/>Law of History | 知识不是一张静止的事实表，而是一段不断发生的历史 |
+| **理想演绎**<br/>Law of Deduction | 从「理解现在」，进一步走向「推演未来」 |
+| **世界铁律**<br/>The Iron Gate | 让规则托住智能，让逻辑约束行动 |
 
-### 🧓🏻 宙斯之律（Zeus's Law）
+### 宙斯之律（Zeus's Law）
 
 > **善待每一条来到这个世界的知识。**
 
@@ -58,7 +58,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 这是「乌托邦」的宙斯之律：善待每一条来到这个世界的知识。
 
-### 📜 历史法则（Law of History）
+### 历史法则（Law of History）
 
 > **知识不是一张静止的事实表，而是一段不断发生的历史。**
 
@@ -80,7 +80,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 只有保存这些变化，知识才能真正参与历史进程的演绎。在工程上，我们称之为**双时态知识图谱（Bitemporal Knowledge Graph）**。
 
-### ⛵ 理想演绎（Law of Deduction）
+### 理想演绎（Law of Deduction）
 
 > **从「理解现在」，进一步走向「推演未来」。**
 
@@ -88,7 +88,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 在我们的「乌托邦」中，我们试图以一种工程化的方式逼近这一理想：通过前向链（Forward Chaining）驱动事实不断演绎，以符号系统表达规则、状态与因果关系，再辅以大语言模型处理难以被完全形式化的推理过程。如果能够掌握足够多的事实、规则与因果关系，我们或许可以让系统从「理解现在」，进一步走向「推演未来」。
 
-### ⚖️ 世界铁律（The Iron Gate）
+### 世界铁律（The Iron Gate）
 
 > **让规则托住智能，让逻辑约束行动。**
 
@@ -157,42 +157,26 @@ cargo run -p utopia-server
 cd web && pnpm install && pnpm dev
 ```
 
-## 架构
-
-```mermaid
-flowchart TB
-    web["<b>web</b><br/>React · Vite · Tailwind · TanStack"]
-    server["<b>utopia-server</b> · axum<br/>认证 · 路由 · 任务调度"]
-
-    subgraph crates ["领域 crate"]
-        direction LR
-        ingest["<b>ingest</b><br/>解析 · 分块"]
-        extract["<b>extract</b><br/>本体引导抽取"]
-        search["<b>search</b><br/>tantivy · RRF"]
-        llm["<b>llm</b><br/>OpenAI 兼容"]
-    end
-
-    store["<b>utopia-store</b> · sqlx"]
-    db[("PostgreSQL + pgvector<br/>唯一的外部服务")]
-
-    web -- "/api/v1" --> server
-    server --> crates
-    crates --> store
-    store --> db
-```
-
 ## 路线图
 
-- **执行校验层** —— 「世界铁律」所说的闸门：Agent 的每一次调用在执行前先过本体规则与符号逻辑，通不过就不许落地。
-- **MCP 上的 Agent 记忆** —— 记忆空间的数据模型已经就位，补齐 episodes 写入、retrieve 端点与 MCP 服务器。
-- **更多连接器** —— S3/WebDAV、Notion、飞书。
-- **OIDC SSO**、备份恢复命令、10 万文档级别的性能基准。
+- [ ] **推演引擎**：情景叠加不写进账本，算出差异与违反的约束
+- [ ] **执行校验层**：Agent 的每一次调用先过本体规则与符号逻辑，通不过不落地
+- [ ] **数据湖仓**：Iceberg / Delta Lake，以及 Databricks、Snowflake、MaxCompute
+- [ ] **更多数据源**：MySQL、ClickHouse、Doris 驱动，S3、WebDAV、Notion、飞书连接器
+- [ ] **MCP 上的 Agent 记忆**：补齐 episodes 写入、retrieve 端点与 MCP 服务器
+- [ ] **企业化**：OIDC SSO、备份恢复命令、10 万文档级别的性能基准
 
 ## 当前状态
 
 Utopia 仍处于 **v0.1**。数据库 schema 会随版本演进，迁移只前滚、不提供回退 —— 生产环境请用 `UTOPIA_IMAGE` 锁定具体版本，并在升级前备份数据库与 `data` 目录。
 
-部署到公网之前请读一下 [SECURITY.md](SECURITY.md)。欢迎 issue 和 PR。
+部署到公网之前请读一下 [SECURITY.md](SECURITY.md)。
+
+## 社区
+
+- 💬 [Discussions](https://github.com/deeplethe/utopia/discussions) —— 提问、聊设计、说说你拿它做了什么
+- 🐛 [Issues](https://github.com/deeplethe/utopia/issues) —— 报 bug、提需求
+- 🔌 [Ontology2SQL](https://github.com/deeplethe/ontology2sql) —— 本体驱动的 Text-to-SQL，「基于本体的智能问数」背后的方法
 
 ## License
 
