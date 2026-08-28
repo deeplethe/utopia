@@ -11,6 +11,7 @@
 use chrono::{DateTime, Utc};
 use pgvector::Vector;
 use sqlx::PgPool;
+use std::collections::HashSet;
 use utopia_core::models::{MergeLogView, ReviewItem, ReviewSide};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -1305,6 +1306,169 @@ pub async fn proposed_types(
     .bind(kb_id)
     .fetch_all(pool)
     .await?)
+}
+
+/// 把提议过 `forms` 里那些类型的实体改到 `type_id` 上。返回 (批次 id, 改动数)。
+///
+/// 与谓词那边的 `graph::adopt_proposed_predicates` 对称：**只建类型不动实体，
+/// 本体长大了、图没变好**——提议过 model 的实体会继续挂在 concept 下。
+///
+/// 实体是可变行（P0 的 PATCH 就直接改），所以这里就是 UPDATE，撤销靠账本
+/// 记下改之前的类型，而不是靠 supersedes 链。
+pub async fn adopt_proposed_types(
+    pool: &PgPool,
+    kb_id: Uuid,
+    type_id: Uuid,
+    forms: &[String],
+) -> AppResult<(Uuid, u32)> {
+    let batch_id = Uuid::now_v7();
+    if forms.is_empty() {
+        return Ok((batch_id, 0));
+    }
+    // 已经在目标类上的不算改动，也不进账本——撤销时不该把它们推回去
+    let targets: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT id, type_id, canonical_name FROM entities
+         WHERE kb_id = $1 AND merged_into IS NULL
+           AND proposed_type = ANY($2) AND type_id <> $3",
+    )
+    .bind(kb_id)
+    .bind(forms)
+    .bind(type_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut names: HashSet<String> = HashSet::new();
+    let mut moved = 0u32;
+    for (entity_id, from_type, name) in targets {
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "UPDATE entities SET type_id = $2, proposed_type = NULL, updated_at = now()
+             WHERE id = $1",
+        )
+        .bind(entity_id)
+        .bind(type_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO entity_retypes (batch_id, kb_id, entity_id, from_type_id, to_type_id)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(batch_id)
+        .bind(kb_id)
+        .bind(entity_id)
+        .bind(from_type)
+        .bind(type_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        names.insert(name);
+        moved += 1;
+    }
+    // 消歧后缀的兜底值就是类型标签，改了类就得重算（同 P0 的实体改类）
+    for n in &names {
+        refresh_disambiguators(pool, kb_id, n).await?;
+    }
+    Ok((batch_id, moved))
+}
+
+/// 撤销一次实体改类：把它们放回原来的类型。
+///
+/// 类型本身不删——与谓词那边同一条理由：有实体指向过它，而"它存在过"是历史。
+/// `proposed_type` 也一并恢复，否则撤销之后那些实体就再也认领不回来了。
+pub async fn unadopt_types(pool: &PgPool, kb_id: Uuid, batch_id: Uuid) -> AppResult<u32> {
+    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT r.entity_id, r.from_type_id, t.key
+         FROM entity_retypes r JOIN entity_types t ON t.id = r.to_type_id
+         WHERE r.batch_id = $1 AND r.kb_id = $2 AND r.reverted_at IS NULL",
+    )
+    .bind(batch_id)
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Err(AppError::NotFound);
+    }
+    let mut names: Vec<String> = Vec::new();
+    let mut tx = pool.begin().await?;
+    let mut reverted = 0u32;
+    for (entity_id, from_type, adopted_key) in &rows {
+        let row: Option<(String,)> = sqlx::query_as(
+            "UPDATE entities SET type_id = $2, proposed_type = $3, updated_at = now()
+             WHERE id = $1 RETURNING canonical_name",
+        )
+        .bind(entity_id)
+        .bind(from_type)
+        .bind(adopted_key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some((name,)) = row {
+            names.push(name);
+        }
+        reverted += 1;
+    }
+    sqlx::query(
+        "UPDATE entity_retypes SET reverted_at = now()
+         WHERE batch_id = $1 AND kb_id = $2 AND reverted_at IS NULL",
+    )
+    .bind(batch_id)
+    .bind(kb_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    for n in &names {
+        refresh_disambiguators(pool, kb_id, n).await?;
+    }
+    Ok(reverted)
+}
+
+/// 把提议的类型规整成 key 的形状：小写、非字母数字换下划线、压缩重复。
+/// "AI Model" → "ai_model"，与 validate_key 允许的字符集对齐。
+fn normalize_type_key(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_us = true; // 前导下划线也算重复
+    for c in s.trim().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            last_us = false;
+        } else if !last_us {
+            out.push('_');
+            last_us = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out.chars().take(40).collect()
+}
+
+/// 认领那些"类型已经在本体里、实体却还挂在 concept 下"的实体。
+///
+/// `adopt_proposed_types` 只在**建类的那一刻**被调用，于是类先建好、实体后被
+/// 抽出来的情形就永远等不到搬运——而这恰恰是常态：本体第一轮建好，后续文档
+/// 继续产出提议。这个扫描把它们收尾。
+///
+/// 只做**规整后精确同名**的匹配，不做近似——猜错就是把实体放进错的类，
+/// 而"再等一轮"的代价接近零。
+pub async fn sweep_proposed_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<(Uuid, u32)>> {
+    let pending = proposed_types(pool, kb_id).await?;
+    let existing: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, key FROM entity_types WHERE kb_id = $1")
+            .bind(kb_id)
+            .fetch_all(pool)
+            .await?;
+    let mut out = Vec::new();
+    for p in &pending {
+        let norm = normalize_type_key(&p.form);
+        let Some((type_id, _)) = existing.iter().find(|(_, k)| *k == norm) else {
+            continue;
+        };
+        let (batch, n) =
+            adopt_proposed_types(pool, kb_id, *type_id, std::slice::from_ref(&p.form)).await?;
+        if n > 0 {
+            out.push((batch, n));
+        }
+    }
+    Ok(out)
 }
 #[cfg(test)]
 mod tests {

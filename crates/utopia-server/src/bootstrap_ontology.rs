@@ -22,8 +22,9 @@ use uuid::Uuid;
 use crate::api::ontology_routes;
 use crate::state::AppState;
 
-/// 少于这么多个够格的说法就不折腾——凑不出像样的提案，白烧一次 LLM 调用。
-const MIN_FORMS: usize = 3;
+/// 少于这么多个够格的信号（谓词 + 类型）就不折腾——凑不出像样的提案，
+/// 白烧一次 LLM 调用。
+const MIN_SIGNALS: usize = 3;
 /// 只采纳出现在这么多篇文档里的说法。**只在一篇里出现过的是那篇文档的用词，
 /// 不是这个组织的词汇**——而本体会反馈进抽取提示词，一次偶然会变成长期指令。
 /// 副作用正好：只有一篇文档时什么都够不着门槛，于是什么也不做，下一篇再试。
@@ -36,13 +37,20 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         tracing::debug!(%kb_id, "自动扩本体已关闭，跳过");
         return Ok(());
     }
+    // 门槛看的是"够不够一次 LLM 调用的量"，**谓词与类型合起来算**。
+    // 此前只数谓词，于是一个只缺实体类型、不缺关系的语料会被整个跳过——
+    // proposed_type 里明明堆着 platform ×2、inference_engine ×2 在等。
     let forms: Vec<_> = utopia_store::graph::proposed_predicates(&state.pool, kb_id)
         .await?
         .into_iter()
         .filter(|f| f.doc_count >= MIN_DOCS)
         .collect();
-    if forms.len() < MIN_FORMS {
-        tracing::debug!(%kb_id, n = forms.len(), "够格的说法太少，跳过自动扩本体");
+    let types = utopia_store::resolution::proposed_types(&state.pool, kb_id).await?;
+    if forms.len() + types.len() < MIN_SIGNALS {
+        tracing::debug!(
+            %kb_id, predicates = forms.len(), types = types.len(),
+            "够格的信号太少，跳过自动扩本体"
+        );
         return Ok(());
     }
 
@@ -82,7 +90,42 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         )
         .await
         {
-            Ok(_) => added_classes.push(key.to_string()),
+            Ok(type_id) => {
+                added_classes.push(key.to_string());
+                // 建类之后要把等它的实体搬过去——只建类型不动实体，
+                // 本体长大了图没变好，那些提议过 model 的实体继续挂在 concept 下
+                let forms: Vec<String> = p
+                    .get("forms")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s.as_str().map(String::from))
+                            .collect()
+                    })
+                    // 提案没给 forms 时，至少认领与 key 同名的那些提议
+                    .unwrap_or_else(|| vec![key.to_string()]);
+                match utopia_store::resolution::adopt_proposed_types(
+                    &state.pool,
+                    kb_id,
+                    type_id,
+                    &forms,
+                )
+                .await
+                {
+                    Ok((batch, n)) => {
+                        moved_total += n;
+                        if n > 0 {
+                            batches.push(batch);
+                        }
+                    }
+                    Err(e) => tracing::warn!(%kb_id, key, error = %e, "实体改类失败"),
+                }
+                for form in &forms {
+                    let _ =
+                        utopia_store::ontology::clear_miss(&state.pool, kb_id, "entity_type", form)
+                            .await;
+                }
+            }
             // key 撞车之类的：跳过这一条，别带垮整批
             Err(e) => tracing::warn!(%kb_id, key, error = %e, "冷启动建类失败"),
         }
@@ -149,7 +192,18 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         }
     }
 
-    if added_relations.is_empty() && added_classes.is_empty() {
+    // 类先建好、实体后抽出来是常态：把等着已存在类型的那些也收走
+    match utopia_store::resolution::sweep_proposed_types(&state.pool, kb_id).await {
+        Ok(swept) => {
+            for (batch, n) in swept {
+                moved_total += n;
+                batches.push(batch);
+            }
+        }
+        Err(e) => tracing::warn!(%kb_id, error = %e, "已有类型的实体收尾失败"),
+    }
+
+    if added_relations.is_empty() && added_classes.is_empty() && moved_total == 0 {
         return Ok(());
     }
     // actor 为 NULL：这是系统的动作，不是谁的决定。台账里查得到做了什么、

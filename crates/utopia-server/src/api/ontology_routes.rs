@@ -520,6 +520,23 @@ pub async fn unadopt_predicate(
     .fetch_optional(&state.pool)
     .await
     .map_err(utopia_core::AppError::Db)?;
+    // 一次采纳可能同时产生事实改写与实体改类的批次，调用方拿到的是一串
+    // 不分种类的批次号——这里两边都试，谁认领谁生效
+    if predicate_id.is_none() {
+        let n = utopia_store::resolution::unadopt_types(&state.pool, kb_id, batch_id).await?;
+        let _ = utopia_store::audit::record(
+            &state.pool,
+            Some(kb_id),
+            user.id,
+            "ontology.adoption_reverted",
+            "kb",
+            Some(kb_id),
+            json!({ "batch": batch_id, "entities_reverted": n }),
+        )
+        .await;
+        state.emit_review(kb_id);
+        return Ok(Json(json!({ "reverted": n })));
+    }
     let reverted = utopia_store::graph::unadopt(&state.pool, kb_id, batch_id).await?;
     let _ = utopia_store::audit::record(
         &state.pool,
