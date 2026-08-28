@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearch } from "@tanstack/react-router";
 import Graphology from "graphology";
 import { circular, circlepack } from "graphology-layout";
@@ -18,6 +18,7 @@ import {
   Maximize2,
   Orbit,
   Pause,
+  Pencil,
   Play,
   X,
   ZoomIn,
@@ -26,6 +27,7 @@ import {
 import { api, type EntityFact, type Evidence, type GraphEdge, type GraphNode } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
+import { toast } from "../toast";
 
 /* 画布调色板 —— 结构取自 Semantica GraphWorkspace 源码；基色已中性化：
    Semantica 原版是钢蓝系（#0B1320/#5A7A9E/#7A92AE），按"chrome 零色偏、
@@ -1184,6 +1186,58 @@ function EntityPanel({
 
   const e: GraphNode | undefined = detail.data?.entity;
 
+  // 实体修正：抽取给的是初判，判错此前只能整库重抽
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [draftType, setDraftType] = useState("");
+  const [sameName, setSameName] = useState<GraphNode[]>([]);
+  // 类型下拉要的是全量本体，不是当前视图里出现过的那几个
+  const ontology = useQuery({
+    queryKey: ["ontology", kbId],
+    queryFn: () => api.ontology(kbId),
+    enabled: editing,
+  });
+  const types = ontology.data?.entity_types ?? [];
+
+  const openEdit = () => {
+    if (!e) return;
+    setDraftName(e.name);
+    setDraftType(types.find((t) => t.key === e.type_key)?.id ?? "");
+    setSameName([]);
+    setEditing(true);
+  };
+  // 本体是异步来的：它到齐时把类型下拉对到当前类型上
+  useEffect(() => {
+    if (editing && !draftType && e)
+      setDraftType(types.find((t) => t.key === e.type_key)?.id ?? "");
+  }, [editing, draftType, e, types]);
+
+  const save = useMutation({
+    mutationFn: () => {
+      const body: { type_id?: string; canonical_name?: string } = {};
+      if (draftName.trim() && draftName.trim() !== e?.name) body.canonical_name = draftName.trim();
+      const curId = types.find((t) => t.key === e?.type_key)?.id;
+      if (draftType && draftType !== curId) body.type_id = draftType;
+      return api.updateEntity(kbId, entityId, body);
+    },
+    onSuccess: (r) => {
+      setEditing(false);
+      setSameName(r.same_name);
+      toast.success(S.graph.editSaved);
+      // 改了类型/名字，图谱节点与本体计数都要跟着动
+      qc.invalidateQueries({ queryKey: ["entity", kbId, entityId] });
+      qc.invalidateQueries({ queryKey: ["graph", kbId] });
+      qc.invalidateQueries({ queryKey: ["ontology", kbId] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  const dirty =
+    !!e &&
+    (draftName.trim() !== e.name ||
+      draftType !== (types.find((t) => t.key === e.type_key)?.id ?? ""));
+
   // Relations = 当下有效的快照（as-of now）；已闭合的历史只出现在 Timeline。
   // 按「方向 + 谓词」分组：实体自身名不再逐行重复，谓词只出现在小节标题里
   const { groups, historicalCount } = useMemo(() => {
@@ -1227,17 +1281,117 @@ function EntityPanel({
                   {e.name}
                 </span>
               </div>
+              {/* 消歧后缀找不到关联事实时兜底成类型标签，那就与后面的类型重复了 */}
               <div className="mt-1 text-xs text-neutral-500">
-                {e.disambiguator ? `${e.disambiguator} · ` : ""}
+                {e.disambiguator && e.disambiguator !== e.type_label
+                  ? `${e.disambiguator} · `
+                  : ""}
                 {e.type_label} · {detail.data?.facts.length ?? 0} {S.graph.facts}
               </div>
             </>
           )}
         </div>
-        <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200 mt-0.5">
-          <X size={15} />
-        </button>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          {e && !editing && (
+            <button
+              onClick={openEdit}
+              title={S.graph.edit}
+              className="text-neutral-500 hover:text-neutral-200"
+            >
+              <Pencil size={13} />
+            </button>
+          )}
+          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200">
+            <X size={15} />
+          </button>
+        </div>
       </div>
+
+      {editing && e && (
+        <div className="px-4 py-3 border-b border-white/10 space-y-2.5">
+          <label className="block">
+            <span className="text-[10px] uppercase tracking-[0.08em] text-neutral-500">
+              {S.graph.editName}
+            </span>
+            <input
+              autoFocus
+              value={draftName}
+              onChange={(ev) => setDraftName(ev.target.value)}
+              onKeyDown={(ev) => {
+                if (ev.key === "Enter" && dirty && draftName.trim()) save.mutate();
+                if (ev.key === "Escape") setEditing(false);
+              }}
+              className="mt-1 w-full bg-white/[0.04] border border-white/10 rounded px-2 py-1 text-sm text-neutral-100 focus:outline-none focus:border-white/25"
+            />
+          </label>
+          <label className="block">
+            <span className="text-[10px] uppercase tracking-[0.08em] text-neutral-500">
+              {S.graph.editType}
+            </span>
+            <select
+              value={draftType}
+              onChange={(ev) => setDraftType(ev.target.value)}
+              className="mt-1 w-full bg-white/[0.04] border border-white/10 rounded px-2 py-1 text-sm text-neutral-100 focus:outline-none focus:border-white/25"
+            >
+              {types.map((t) => (
+                <option key={t.id} value={t.id} className="bg-neutral-900">
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex items-center gap-2 pt-0.5">
+            <button
+              disabled={!dirty || !draftName.trim() || save.isPending}
+              onClick={() => save.mutate()}
+              className="u-pop px-2.5 py-1 text-xs rounded bg-white/10 text-neutral-100 hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {S.graph.editSave}
+            </button>
+            <button
+              onClick={() => setEditing(false)}
+              className="px-2.5 py-1 text-xs rounded text-neutral-500 hover:text-neutral-300"
+            >
+              {S.graph.editCancel}
+            </button>
+            {!draftName.trim() && (
+              <span className="text-[11px] text-[var(--u-danger)]">{S.graph.editEmptyName}</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 同名不是错误——两个张伟可以并存。只提示，判定是不是同一个是人的事 */}
+      {sameName.length > 0 && !editing && (
+        <div className="mx-4 mt-2.5 rounded border border-white/10 bg-white/[0.03] px-2.5 py-2">
+          <div className="flex items-start justify-between gap-2">
+            <p className="text-[11px] text-neutral-400">
+              {S.graph.sameNameNote(sameName.length)}{" "}
+              <span className="text-neutral-500">{S.graph.sameNameHint}</span>
+            </p>
+            <button
+              onClick={() => setSameName([])}
+              className="text-neutral-600 hover:text-neutral-300 shrink-0"
+            >
+              <X size={11} />
+            </button>
+          </div>
+          <div className="mt-1.5 flex flex-wrap gap-1">
+            {sameName.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => onNavigate(p.id)}
+                className="text-[11px] px-1.5 py-0.5 rounded bg-white/[0.06] text-neutral-300 hover:bg-white/10"
+              >
+                {p.type_label}
+                {p.disambiguator && p.disambiguator !== p.type_label
+                  ? ` · ${p.disambiguator}`
+                  : ""}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 视图切换：Relations（分组）| Timeline（年表） */}
       <div className="px-4 pt-2.5">
@@ -1511,7 +1665,7 @@ function FactRow({
           </span>
         )}
         {lowConfidence && (
-          <span className="u-chip u-chip-warn shrink-0 !text-[10px] !px-1.5">
+          <span className="shrink-0 u-num u-meta-warn text-[10.5px]">
             {Math.round(fact.confidence * 100)}%
           </span>
         )}
@@ -1547,6 +1701,13 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
           search={{ chunk: ev.chunk_id }}
           className="block text-xs text-neutral-500 hover:text-neutral-300"
         >
+          {/* 原文说的谓词，只在它与本体谓词不同时显示——词表外的词被降级成
+              "related to" 后，事实行上只剩"有关联"，原意仅存于此。相同则是噪声 */}
+          {ev.surface_predicate && ev.surface_predicate !== fact.predicate_key && (
+            <div className="mb-0.5 text-[11px] text-neutral-400">
+              {S.graph.surfacePredicate(ev.surface_predicate)}
+            </div>
+          )}
           <div className="line-clamp-2 italic">
             {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
           </div>

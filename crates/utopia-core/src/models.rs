@@ -329,6 +329,33 @@ pub struct OntologyMiss {
     pub count: i32,
 }
 
+/// 一个待认领的表层谓词：原文这么说过，但本体里没有对应关系，事实降级成了
+/// related_to。与 `OntologyMiss` 的纯计数不同，它连着具体事实——所以采纳时
+/// 能说清"将重新归类 57 条"，并真的去改。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct SurfacePredicate {
+    pub form: String,
+    /// 有多少条 live 的 related_to 事实由这个说法而来
+    pub fact_count: i64,
+    /// 出现在多少篇文档里。只在一篇里出现过的是那篇文档的用词，不是这个
+    /// 组织的词汇——自动扩展据此设门槛，人工提案只作参考不拦
+    pub doc_count: i64,
+    /// 一条样例（"Dino Crisis (Steam) → GeForce NOW"），让人一眼判断这是什么关系
+    pub example: Option<String>,
+}
+
+/// 抽取丢弃信号：事实抽出来了却没能落地，以及为什么。
+/// 与 `OntologyMiss` 分开——那个说"你的本体缺这些"（读者是本体维护者），
+/// 这个说"这些事实没落地"（读者是上传文档的人）。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ExtractionDrop {
+    pub document_id: Uuid,
+    pub reason: String,
+    pub detail: String,
+    pub count: i32,
+    pub example: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct RelationType {
     pub id: Uuid,
@@ -503,6 +530,9 @@ pub struct FactReviewItem {
 /// 事实的证据（引句 + 原文定位）。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct EvidenceView {
+    /// 模型在这一块里实际用的谓词说法。词表外谓词被降级成 related_to 后，
+    /// 事实行上只剩"有关联"——原意只在这里
+    pub surface_predicate: Option<String>,
     pub quote: Option<String>,
     pub chunk_id: Uuid,
     pub document_id: Uuid,
@@ -554,6 +584,10 @@ pub struct KnowledgeBase {
     pub visibility: String,
     /// 部署的公共默认空间（第一个建的库）：永远 open、不可删除
     pub is_default: bool,
+    /// 抽取遇到本体外的说法时，是否允许系统自动把它补进本体并改写等它的事实。
+    /// 缺省开——新库的十个默认关系不是任何人选的，等人手工补齐之前图基本没法用。
+    /// 关掉不影响"留意"：未匹配统计照常累积、照常可见，只是变成你点一下的提案。
+    pub auto_extend_ontology: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

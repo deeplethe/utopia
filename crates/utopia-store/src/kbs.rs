@@ -74,6 +74,7 @@ pub async fn update(
     name: Option<&str>,
     description: Option<&str>,
     visibility: Option<&str>,
+    auto_extend_ontology: Option<bool>,
 ) -> AppResult<KnowledgeBase> {
     if let Some(v) = visibility {
         if !matches!(v, "open" | "restricted") {
@@ -96,6 +97,7 @@ pub async fn update(
          SET name = COALESCE($2, name),
              description = COALESCE($3, description),
              visibility = COALESCE($4, visibility),
+             auto_extend_ontology = COALESCE($5, auto_extend_ontology),
              updated_at = now()
          WHERE id = $1 RETURNING *",
     )
@@ -103,6 +105,7 @@ pub async fn update(
     .bind(name)
     .bind(description)
     .bind(visibility)
+    .bind(auto_extend_ontology)
     .fetch_optional(pool)
     .await?
     .ok_or(AppError::NotFound)

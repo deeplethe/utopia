@@ -5,9 +5,31 @@
 use crate::llm_util;
 use crate::state::AppState;
 use std::collections::HashMap;
+use utopia_store::graph::FALLBACK_RELATION_KEY;
 use uuid::Uuid;
 
 const MIN_CONFIDENCE: f32 = 0.6;
+
+/// 记一条丢弃信号。抽取器有七处 `continue`，每一处都是"事实抽出来了、被挡掉、
+/// 什么都不说"。信号写失败绝不能带垮整篇文档的抽取，所以这里吞掉错误。
+async fn drop_signal(
+    state: &AppState,
+    kb_id: Uuid,
+    document_id: Uuid,
+    reason: &str,
+    detail: &str,
+    example: Option<&str>,
+) {
+    let _ = utopia_store::extraction_drops::record(
+        &state.pool,
+        kb_id,
+        document_id,
+        reason,
+        detail,
+        example,
+    )
+    .await;
+}
 
 pub async fn extract_document(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     match run(state, document_id).await {
@@ -86,10 +108,16 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         .iter()
         .map(|t| (t.key.clone(), t.label.clone(), t.description.clone()))
         .collect();
-    // 关系与属性分道：属性走字面值通道，不进关系清单
+    // 关系与属性分道：属性走字面值通道，不进关系清单。
+    //
+    // related_to 刻意不列给模型：它在本体里是代码层的兜底，但摆进提示词就成了
+    // 逃生舱——模型读到说不清的关系时不会去写原文说法，直接挑这个万能选项，
+    // 而它什么都没说。实测 359 条 related_to 里只有 38 条是词表外降级，
+    // 其余 321 条是模型自己挑的。撤掉之后模型要么用真关系、要么写出原文说法，
+    // 兜底改由下面的代码执行，原词落进 fact_evidence.surface_predicate 留待消解。
     let rel_pairs: Vec<(String, String, String)> = rtypes
         .iter()
-        .filter(|r| r.kind != "attribute")
+        .filter(|r| r.kind != "attribute" && r.key != FALLBACK_RELATION_KEY)
         .map(|r| (r.key.clone(), r.label.clone(), r.description.clone()))
         .collect();
     let type_ids: HashMap<&str, Uuid> = etypes.iter().map(|t| (t.key.as_str(), t.id)).collect();
@@ -149,7 +177,9 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let concept_type = *type_ids
         .get("concept")
         .ok_or_else(|| anyhow::anyhow!("Ontology missing the 'concept' type"))?;
-    let related_rel = rel_ids.get("related_to").copied();
+    let related_rel = rel_ids.get(FALLBACK_RELATION_KEY).copied();
+    // 本轮要从头讲一遍这篇文档的故事，旧信号先清掉（重抽自动作数）
+    let _ = utopia_store::extraction_drops::clear_for_document(&state.pool, document_id).await;
 
     let doc_time = doc.doc_time.map(|t| t.format("%Y-%m-%d").to_string());
     let chunks = utopia_store::documents::chunks_for_extraction(&state.pool, document_id).await?;
@@ -232,6 +262,16 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         for f in &extraction.facts {
             let confidence = f.confidence.unwrap_or(0.7).clamp(0.0, 1.0);
             if confidence < MIN_CONFIDENCE {
+                // 设计上的阈值，但用户同样无从知道"抽到了，只是不够自信"
+                drop_signal(
+                    state,
+                    doc.kb_id,
+                    document_id,
+                    utopia_store::extraction_drops::reason::LOW_CONFIDENCE,
+                    &f.predicate,
+                    Some(&format!("{} ({:.0}%)", f.subject, confidence * 100.0)),
+                )
+                .await;
                 continue;
             }
             let from = f.valid_from.as_deref().and_then(utopia_extract::parse_time);
@@ -248,16 +288,41 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             });
             if let Some(attr) = attr_hit {
                 let subject_name = f.subject.trim();
+                // 主语没在 entities 里声明：类型不明，domain 无从校验，属性不落。
+                // 关系路径遇到同样的缺失会兜底按 concept 消解——这里学不来，
+                // 按 concept 解出来 domain 照样不匹配，只是从这里掉进下面那一档
                 let Some((&subject_id, &subject_type)) = entity_ids
                     .get(subject_name)
                     .zip(entity_type_of.get(subject_name))
                 else {
-                    continue; // 主语没在 entities 里声明：类型不明，属性不落
+                    drop_signal(
+                        state,
+                        doc.kb_id,
+                        document_id,
+                        utopia_store::extraction_drops::reason::SUBJECT_NOT_DECLARED,
+                        &attr.key,
+                        Some(subject_name),
+                    )
+                    .await;
+                    continue;
                 };
+                // 不可达：store 层强制 attribute 必有 domain，且 kind/domain 不可改，
+                // 无 domain 的属性连提示词都进不去。留着是防御，不需要信号
                 let Some(domain) = attr.domain_type_id else {
                     continue;
                 };
                 if !type_matches_domain(subject_type, domain) {
+                    let subj_key = type_key_by_id.get(&subject_type).copied().unwrap_or("?");
+                    let dom_key = type_key_by_id.get(&domain).copied().unwrap_or("?");
+                    drop_signal(
+                        state,
+                        doc.kb_id,
+                        document_id,
+                        utopia_store::extraction_drops::reason::ATTR_DOMAIN_MISMATCH,
+                        &format!("{}@{subj_key} (wants {dom_key})", attr.key),
+                        Some(subject_name),
+                    )
+                    .await;
                     continue;
                 }
                 let raw = match (&f.value, &f.object) {
@@ -266,11 +331,31 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     (None, Some(o)) if !o.trim().is_empty() => {
                         serde_json::Value::String(o.trim().to_string())
                     }
-                    _ => continue,
+                    _ => {
+                        drop_signal(
+                            state,
+                            doc.kb_id,
+                            document_id,
+                            utopia_store::extraction_drops::reason::ATTR_NO_VALUE,
+                            &attr.key,
+                            Some(subject_name),
+                        )
+                        .await;
+                        continue;
+                    }
                 };
                 let datatype = attr.datatype.as_deref().unwrap_or("text");
                 let Some(normalized) = utopia_extract::normalize_attr_value(datatype, &raw) else {
                     tracing::debug!(%document_id, attr = attr.key, ?raw, "属性值不合 datatype，跳过");
+                    drop_signal(
+                        state,
+                        doc.kb_id,
+                        document_id,
+                        utopia_store::extraction_drops::reason::ATTR_DATATYPE,
+                        &format!("{} ({datatype})", attr.key),
+                        Some(&format!("{subject_name} → {raw}")),
+                    )
+                    .await;
                     continue;
                 };
                 let mut object_value = serde_json::json!({ "value": normalized });
@@ -290,11 +375,14 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     confidence,
                 )
                 .await?;
+                // 属性谓词也留原词：模型偶尔照抄 "person.salary" 全限定名，
+                // 命中的是剥掉前缀后的 key，原样是什么值得留着
                 utopia_store::graph::add_evidence(
                     &state.pool,
                     fact_id,
                     chunk.id,
                     f.quote.as_deref(),
+                    Some(f.predicate.as_str()),
                 )
                 .await?;
                 if !created {
@@ -327,6 +415,15 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             // 关系事实：宾语必填
             let Some(object_name) = f.object.as_deref().map(str::trim).filter(|s| !s.is_empty())
             else {
+                drop_signal(
+                    state,
+                    doc.kb_id,
+                    document_id,
+                    utopia_store::extraction_drops::reason::OBJECT_MISSING,
+                    &f.predicate,
+                    Some(f.subject.trim()),
+                )
+                .await;
                 continue;
             };
             // 主宾未在 entities 中声明时，按 concept 兜底消解（模型偶尔漏报）
@@ -363,7 +460,9 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             if subject_id == object_id {
                 continue;
             }
-            // 未知关系降级为 related_to，并记入未匹配统计
+            // 未知关系降级为 related_to，并记入未匹配统计。
+            // 降级会把原意抹平成"有关联"——原词写进证据行的 surface_predicate，
+            // 是这条事实身上唯一还留着原意的地方（谓词消解据此把它映射回本体）
             let predicate_id = match rel_ids.get(f.predicate.as_str()) {
                 Some(id) => *id,
                 None => {
@@ -377,7 +476,19 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     .await;
                     match related_rel {
                         Some(id) => id,
-                        None => continue,
+                        // 本体里连兜底关系都被删了 → 整条事实消失，这个必须说出来
+                        None => {
+                            drop_signal(
+                                state,
+                                doc.kb_id,
+                                document_id,
+                                utopia_store::extraction_drops::reason::FALLBACK_RELATION_MISSING,
+                                &f.predicate,
+                                Some(&format!("{} → {object_name}", f.subject)),
+                            )
+                            .await;
+                            continue;
+                        }
                     }
                 }
             };
@@ -395,12 +506,15 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     confidence,
                 )
                 .await?;
-                // 重复观察也要挂证据：多来源相互印证，任一来源删除后事实不孤儿化
+                // 重复观察也要挂证据：多来源相互印证，任一来源删除后事实不孤儿化。
+                // 表层谓词随每次观察落笔——甲块说 "runs on"、乙块说 "optimized for"
+                // 会并进同一条事实，放事实上就是先写者胜，放证据上两个都留着
                 utopia_store::graph::add_evidence(
                     &state.pool,
                     fact_id,
                     chunk.id,
                     f.quote.as_deref(),
+                    Some(f.predicate.as_str()),
                 )
                 .await?;
                 if !created {
@@ -475,6 +589,21 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     }
     if needs_adjudication || conflicts_found {
         state.emit_review(doc.kb_id);
+    }
+    // 自动扩本体：开关开着、且这一批都抽完了，由最后一篇触发。
+    // 判据是显式开关而不是"本体有没有被碰过"——后者是从行为推断意图，
+    // 推错的后果很荒唐（在提案上点一次 Add 就永久关掉建议），而且一旦为假
+    // 就永不再真，本体会冻结在第一批文档碰巧包含的词汇上。
+    // 并发下可能入队两次，任务自己会重查开关与状态
+    if kb.auto_extend_ontology
+        && utopia_store::documents::extraction_idle(&state.pool, doc.kb_id).await?
+    {
+        utopia_store::jobs::enqueue(
+            &state.pool,
+            "bootstrap_ontology",
+            serde_json::json!({ "kb_id": doc.kb_id }),
+        )
+        .await?;
     }
 
     tracing::info!(%document_id, facts = fact_count, "图谱抽取完成");

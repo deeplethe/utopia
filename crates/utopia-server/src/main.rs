@@ -2,6 +2,7 @@ mod adjudication;
 mod api;
 mod auth;
 mod blob;
+mod bootstrap_ontology;
 mod docs_corpus;
 mod error;
 mod extraction;
@@ -90,6 +91,15 @@ async fn main() -> anyhow::Result<()> {
                     "extract_document" => {
                         let id = payload_document_id(&job.payload)?;
                         extraction::extract_document(&st, id).await
+                    }
+                    "bootstrap_ontology" => {
+                        let kb_id: Uuid = job
+                            .payload
+                            .get("kb_id")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse().ok())
+                            .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+                        bootstrap_ontology::bootstrap_ontology(&st, kb_id).await
                     }
                     "adjudicate_entities" => {
                         let kb_id: Uuid = job

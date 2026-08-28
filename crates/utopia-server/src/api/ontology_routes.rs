@@ -314,7 +314,7 @@ pub async fn dismiss_miss(
     Json(req): Json<DismissMissReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    utopia_store::ontology::clear_miss(&state.pool, kb_id, &req.kind, &req.key).await?;
+    utopia_store::ontology::dismiss_miss(&state.pool, kb_id, &req.kind, &req.key).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -324,7 +324,14 @@ pub async fn suggest(
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let kb = require_kb(&state, &user, kb_id, Role::Editor).await?;
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    Ok(Json(build_proposals(&state, kb_id).await?))
+}
+
+/// 生成本体扩展提案。人工点 Suggest 与冷启动自动扩本体走同一条路——
+/// 自动那条不该是另一套判断，只是少了点头那一步。
+pub async fn build_proposals(state: &AppState, kb_id: Uuid) -> Result<serde_json::Value, AppError> {
+    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
         .ok_or_else(|| AppError::Validation("Chat model not configured".into()))?;
@@ -334,8 +341,10 @@ pub async fn suggest(
     let entity_types = utopia_store::ontology::entity_type_views(&state.pool, kb_id).await?;
     let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
     let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
-    if misses.is_empty() {
-        return Ok(Json(json!({ "entity_types": [], "relation_types": [] })));
+    // 表层谓词比 misses 多一样东西：它连着具体事实，所以提案能承诺"改写 N 条"
+    let forms = utopia_store::graph::surface_predicates(&state.pool, kb_id).await?;
+    if misses.is_empty() && forms.is_empty() {
+        return Ok(json!({ "entity_types": [], "relation_types": [] }));
     }
 
     let current_et: Vec<String> = entity_types.iter().map(|t| t.key.clone()).collect();
@@ -353,6 +362,20 @@ pub async fn suggest(
         })
         .collect();
 
+    // 表层谓词行带上事实数与样例：模型据此判断这是不是一个真关系，
+    // 而 forms 字段让采纳时知道该改写哪些事实
+    let form_lines: Vec<String> = forms
+        .iter()
+        .map(|f| {
+            format!(
+                "- \"{}\" on {} fact(s), e.g. {}",
+                f.form,
+                f.fact_count,
+                f.example.as_deref().unwrap_or("-")
+            )
+        })
+        .collect();
+
     let prompt = format!(
         "You are an ontology engineer. A knowledge graph has this ontology:\n\
          Entity type keys: {}\n\
@@ -360,13 +383,25 @@ pub async fn suggest(
          \n\
          During extraction, the LLM repeatedly produced types/relations OUTSIDE this ontology:\n{}\n\
          \n\
-         Propose ontology extensions that would cover these misses. Merge near-duplicates. \
-         Only propose what is clearly warranted by the misses. Output exactly one JSON object:\n\
+         These predicates were taken from the source text because nothing in the ontology fit. \
+         Their facts are currently filed under \"related_to\", which says nothing:\n{}\n\
+         \n\
+         Propose ontology extensions. Rules:\n\
+         - Merge near-duplicates into ONE relation and list every spelling it covers in \
+           \"forms\" (e.g. available_on / available_from / \"available through\" are one relation).\n\
+         - Skip generic verbs that carry no domain meaning (is, has, includes, provides, brings).\n\
+         - A relation is worth adding when the ontology genuinely lacks that meaning, not merely \
+           because a word was frequent.\n\
+         - \"functional\" must be false unless the relation truly permits at most one object per \
+           subject at a time. Getting this wrong makes the temporal engine manufacture conflicts.\n\
+         \n\
+         Output exactly one JSON object:\n\
          {{\"entity_types\":[{{\"key\":\"snake_case\",\"label\":\"Display Name\",\"reason\":\"...\"}}],\n\
-          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"reason\":\"...\"}}]}}",
+          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"reason\":\"...\"}}]}}",
         current_et.join(", "),
         current_rt.join(", "),
-        miss_lines.join("\n")
+        miss_lines.join("\n"),
+        form_lines.join("\n")
     );
 
     let reply = client
@@ -379,5 +414,176 @@ pub async fn suggest(
     let block = utopia_extract::json_block(&reply).map_err(AppError::Other)?;
     let proposals: serde_json::Value =
         serde_json::from_str(&block).map_err(|e| AppError::Other(e.into()))?;
-    Ok(Json(proposals))
+    Ok(proposals)
+}
+
+#[derive(Deserialize)]
+pub struct AdoptReq {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "default_temporal")]
+    pub temporal: String,
+    /// 缺省 false，且刻意不由建议方决定——本体声明的唯一性会驱动时态引擎自动
+    /// 闭合事实，猜错就是成批的假冲突（part_of 就这么烧过一次）
+    #[serde(default)]
+    pub functional: bool,
+    #[serde(default)]
+    pub inverse_functional: bool,
+    /// 归入这个关系的表层说法（"available_on"、"available through"…）
+    pub forms: Vec<String>,
+}
+
+/// 采纳一个表层谓词：建关系类型 **并把等着它的 related_to 事实改写过去**。
+///
+/// 与单纯 create 的区别就在后半句。只建类型的话本体长大了、图没变好——
+/// 那 57 条事实会继续是"有关联"。改写走追加（新行 + supersedes），
+/// 实体历史里读得到"先记成 related to，后精化成 available on"。
+pub async fn adopt_predicate(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Json(req): Json<AdoptReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let key = req.key.trim();
+    if req.forms.is_empty() {
+        return Err(AppError::Validation("forms cannot be empty".into()).into());
+    }
+    let predicate_id = utopia_store::ontology::create_relation_type(
+        &state.pool,
+        kb_id,
+        key,
+        req.label.trim(),
+        &req.temporal,
+        req.functional,
+        req.inverse_functional,
+        req.description.as_deref().unwrap_or("").trim(),
+        "relation",
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let (batch_id, remapped) =
+        utopia_store::graph::adopt_surface_predicates(&state.pool, kb_id, predicate_id, &req.forms)
+            .await?;
+    // 采纳同时清掉对应的未匹配统计——本体已经覆盖它们了
+    for form in &req.forms {
+        let _ = utopia_store::ontology::clear_miss(&state.pool, kb_id, "relation_type", form).await;
+    }
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "ontology.predicate_adopted",
+        "relation_type",
+        Some(predicate_id),
+        json!({
+            "key": key, "label": req.label, "forms": req.forms,
+            "facts_remapped": remapped, "batch": batch_id,
+        }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok(Json(
+        json!({ "id": predicate_id, "remapped": remapped, "batch": batch_id }),
+    ))
+}
+
+/// 撤销一次采纳：新写的行作废、旧行复活。关系类型留着（有事实指向过它，
+/// 而且一个没人用的关系是惰性的）。
+pub async fn unadopt_predicate(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, batch_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    // 归因要按关系类型找回这次撤销，所以先拿到它
+    let predicate_id: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT predicate_id FROM fact_adoptions WHERE batch_id = $1 AND kb_id = $2 LIMIT 1",
+    )
+    .bind(batch_id)
+    .bind(kb_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(utopia_core::AppError::Db)?;
+    let reverted = utopia_store::graph::unadopt(&state.pool, kb_id, batch_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "ontology.adoption_reverted",
+        "relation_type",
+        predicate_id.map(|(id,)| id),
+        json!({ "batch": batch_id, "facts_reverted": reverted }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok(Json(json!({ "reverted": reverted })))
+}
+
+/// 待认领的表层谓词：原文说过、本体没有、事实降级成了 related_to。
+pub async fn surface_predicates(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let forms = utopia_store::graph::surface_predicates(&state.pool, kb_id).await?;
+    Ok(Json(json!({ "forms": forms })))
+}
+
+/// 最近一次自动扩本体做了什么，以及还能不能撤销。
+///
+/// 默认开启的前提是它的动作**可见且可退**。只记在审计台账里不算可见——
+/// 那是查证用的，不是通知用的。这里给 Ontology 页一条明确的横幅。
+pub async fn last_auto_extension(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let row: Option<(serde_json::Value, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT detail, created_at FROM audit_events
+         WHERE kb_id = $1 AND action = 'ontology.bootstrapped'
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(kb_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Db)?;
+    let Some((detail, at)) = row else {
+        return Ok(Json(json!({ "run": null })));
+    };
+    // 已经被撤销干净的就不再提示——那一轮已经没有任何痕迹留在图上了
+    let batches: Vec<Uuid> = detail
+        .get("batches")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().and_then(|x| x.parse().ok()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (live,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM fact_adoptions
+         WHERE kb_id = $1 AND batch_id = ANY($2) AND reverted_at IS NULL",
+    )
+    .bind(kb_id)
+    .bind(&batches)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Db)?;
+    if live == 0 {
+        return Ok(Json(json!({ "run": null })));
+    }
+    Ok(Json(json!({ "run": {
+        "at": at,
+        "relations": detail.get("relations"),
+        "classes": detail.get("classes"),
+        "facts_remapped": detail.get("facts_remapped"),
+        "batches": batches,
+    }})))
 }

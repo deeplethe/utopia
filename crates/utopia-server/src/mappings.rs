@@ -172,11 +172,13 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
             .await?
             {
                 let rationale = p["rationale"].as_str().unwrap_or("");
+                // 谓词是代码写死的 mapped_to，不是模型给的说法，没有表层形式可留
                 utopia_store::graph::add_evidence(
                     &state.pool,
                     fact_id,
                     chunk_id,
                     (!rationale.is_empty()).then_some(rationale),
+                    None,
                 )
                 .await?;
             }
