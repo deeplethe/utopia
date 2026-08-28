@@ -615,3 +615,74 @@ pub async fn last_auto_extension(
         "batches": batches,
     }})))
 }
+
+/// OWL 导入：先看会发生什么，确认了才落库。
+///
+/// **绝不让上传一个文件就不可逆地改掉本体**——预览与落库走同一个 plan，
+/// 两条独立路径迟早分叉，而分叉的后果是确认之后发生的事与刚看过的不一样。
+pub async fn preview_import(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    multipart: axum::extract::Multipart,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let (filename, bytes) = read_upload(multipart).await?;
+    let (plan, _, _) = crate::owl_import::plan(&state, kb_id, &filename, &bytes).await?;
+    Ok(Json(json!({ "filename": filename, "plan": plan })))
+}
+
+pub async fn apply_import(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    multipart: axum::extract::Multipart,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let (filename, bytes) = read_upload(multipart).await?;
+    let (import_id, plan) =
+        crate::owl_import::apply(&state, kb_id, user.id, &filename, &bytes).await?;
+    Ok(Json(json!({ "import_id": import_id, "plan": plan })))
+}
+
+pub async fn list_imports(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let imports = utopia_store::ontology::list_imports(&state.pool, kb_id).await?;
+    Ok(Json(json!({ "imports": imports })))
+}
+
+/// 取 multipart 里的第一个文件。上限 8 MB——FOAF 44 KB、DCTerms 48 KB，
+/// FIBO 那种大部头分模块也在几百 KB 量级；再大多半是传错了东西。
+const MAX_ONTOLOGY_BYTES: usize = 8 * 1024 * 1024;
+
+async fn read_upload(
+    mut multipart: axum::extract::Multipart,
+) -> Result<(String, Vec<u8>), AppError> {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Validation(format!("上传解析失败：{e}")))?
+    {
+        let Some(filename) = field.file_name().map(String::from) else {
+            continue;
+        };
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::Validation(format!("读取上传内容失败：{e}")))?;
+        if bytes.len() > MAX_ONTOLOGY_BYTES {
+            return Err(AppError::Validation(
+                "Ontology file is too large (max 8 MB)".into(),
+            ));
+        }
+        if bytes.is_empty() {
+            return Err(AppError::Validation("Ontology file is empty".into()));
+        }
+        return Ok((filename, bytes.to_vec()));
+    }
+    Err(AppError::Validation("No file in the upload".into()))
+}

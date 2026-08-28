@@ -274,6 +274,9 @@ pub struct EntityType {
     pub builtin: bool,
     /// subClassOf 层级（公理推理 P4 点亮，编辑器先维护数据）
     pub parent_id: Option<Uuid>,
+    /// OWL 导入的全局身份。手工建的类为 NULL；重导入按它匹配，不按 key——
+    /// 上游改一次 rdfs:label 派生的 key 就变了，按 key 匹配会把同一个类当新类建
+    pub iri: Option<String>,
     /// 语义指引：注入抽取 prompt（什么算这个类，举例）
     pub description: String,
 }
@@ -344,6 +347,20 @@ pub struct ProposedPredicate {
     pub example: Option<String>,
 }
 
+/// 一次 OWL 导入的记录。原文按内容寻址存在 blob 里，这行只是账。
+/// `summary` 记下那次投影做了什么，包括**暂未投影**的公理——将来补上消费者
+/// 时据此知道哪些导入值得重跑。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct OntologyImportView {
+    pub id: Uuid,
+    pub filename: String,
+    pub format: String,
+    pub byte_size: i64,
+    pub summary: serde_json::Value,
+    pub imported_at: DateTime<Utc>,
+    pub imported_by_name: Option<String>,
+}
+
 /// 一个模型的并发上限。约束来自供应商的速率限制，那是按 (base_url, model) 算的——
 /// 本地 Ollama 与托管 API 用同一个数字本来就不对。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -391,6 +408,9 @@ pub struct RelationType {
     pub builtin: bool,
     /// 语义指引：注入抽取 prompt
     pub description: String,
+    /// OWL 导入的全局身份；手工建的为 NULL。重导入按它匹配，不按 key——
+    /// 上游改一次 rdfs:label 派生的 key 就变了，按 key 匹配会把同一个当成新的
+    pub iri: Option<String>,
     /// relation（宾语是实体）| attribute（宾语是字面值，走 facts.object_value）
     pub kind: String,
     /// attribute 专用：属性挂在哪个类下
