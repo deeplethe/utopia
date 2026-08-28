@@ -503,6 +503,107 @@ pub async fn entity_detail(
     Ok((node, facts))
 }
 
+/// 人工修正实体的类型或名字。返回 (改前快照, 改后状态)——调用方据此记审计台账。
+///
+/// 类型判错、名字抽歪，此前只能整库重抽这把大锤。抽取给的是初判，不是定论。
+///
+/// 同名不拦：同类同名的两个实体是"宁分勿合"的正当产物（两个张伟），
+/// 拦下来就录不进第二个。碰撞由调用方查出后提示合并，见 `same_name_peers`。
+pub async fn update_entity(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    type_id: Option<Uuid>,
+    canonical_name: Option<&str>,
+) -> AppResult<(GraphNode, GraphNode)> {
+    let before: GraphNode = sqlx::query_as(&format!(
+        "{NODE_SQL} WHERE e.kb_id = $1 AND e.id = $2 AND e.merged_into IS NULL"
+    ))
+    .bind(kb_id)
+    .bind(entity_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+
+    let new_name = match canonical_name {
+        Some(raw) => {
+            let n = raw.trim();
+            if n.is_empty() {
+                return Err(AppError::Validation("Name cannot be empty".into()));
+            }
+            // 与抽取侧同一上限：越过这条线的多半是整句被当成了名字
+            if n.chars().count() > 100 {
+                return Err(AppError::Validation("Name is too long (max 100)".into()));
+            }
+            Some(n)
+        }
+        None => None,
+    };
+
+    if let Some(t) = type_id {
+        let exists: Option<(Uuid,)> =
+            sqlx::query_as("SELECT id FROM entity_types WHERE id = $1 AND kb_id = $2")
+                .bind(t)
+                .bind(kb_id)
+                .fetch_optional(pool)
+                .await?;
+        if exists.is_none() {
+            return Err(AppError::Validation(
+                "No such entity type in this KB".into(),
+            ));
+        }
+    }
+
+    sqlx::query(
+        "UPDATE entities
+         SET type_id = COALESCE($3, type_id),
+             canonical_name = COALESCE($4, canonical_name),
+             updated_at = now()
+         WHERE id = $1 AND kb_id = $2 AND merged_into IS NULL",
+    )
+    .bind(entity_id)
+    .bind(kb_id)
+    .bind(type_id)
+    .bind(new_name)
+    .execute(pool)
+    .await?;
+
+    // 消歧后缀依赖名字分组与类型标签（类型标签是它的兜底值），两者都刚被改过。
+    // 改名要刷两组：旧名那组可能掉到 1 个（后缀该清掉），新名那组可能涨到 2 个。
+    if let Some(n) = new_name.filter(|n| !n.eq_ignore_ascii_case(&before.name)) {
+        crate::resolution::refresh_disambiguators(pool, kb_id, &before.name).await?;
+        crate::resolution::refresh_disambiguators(pool, kb_id, n).await?;
+    } else if type_id.is_some() {
+        crate::resolution::refresh_disambiguators(pool, kb_id, &before.name).await?;
+    }
+
+    let after: GraphNode = sqlx::query_as(&format!("{NODE_SQL} WHERE e.kb_id = $1 AND e.id = $2"))
+        .bind(kb_id)
+        .bind(entity_id)
+        .fetch_one(pool)
+        .await?;
+    Ok((before, after))
+}
+
+/// 与给定实体同名（不区分大小写）的其他存活实体——用于改名后提示"是否合并"。
+/// 只报告，不阻断：判定它们是否真是同一个，是人的事。
+pub async fn same_name_peers(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+) -> AppResult<Vec<GraphNode>> {
+    sqlx::query_as(&format!(
+        "{NODE_SQL} WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
+           AND lower(e.canonical_name) = (SELECT lower(canonical_name) FROM entities WHERE id = $2)
+         ORDER BY degree DESC LIMIT 10"
+    ))
+    .bind(kb_id)
+    .bind(entity_id)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
 /// 低置信 live 事实（审核页）。
 pub async fn low_confidence_facts(
     pool: &PgPool,
