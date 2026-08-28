@@ -45,12 +45,8 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
         let items =
             utopia_store::resolution::pending_adjudications(&state.pool, kb_id, 500).await?;
         for item in items {
-            utopia_store::resolution::escalate_review(
-                &state.pool,
-                item.id,
-                "escalate_no_model",
-            )
-            .await?;
+            utopia_store::resolution::escalate_review(&state.pool, item.id, "escalate_no_model")
+                .await?;
         }
         state.emit_review(kb_id);
         return Ok(());

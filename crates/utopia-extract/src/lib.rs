@@ -52,6 +52,11 @@ pub fn build_messages(
     filename: &str,
     chunk_text: &str,
 ) -> Vec<ChatMessage> {
+    // **有描述时不送 label**。label 是给人看的显示名，而且它跟界面无关、
+    // 跟这个库的语料语言走——中文库里 person 的 label 是"人物"。
+    // `- person (人物): 有名有姓的具体的人…` 里那个"人物"相对 key 近乎零信息量，
+    // 却让提示词在语料语言与标识符之间来回跳。描述为空时才拿它兜底：
+    // 光一个 key 太单薄。见 docs/decisions/0004
     let fmt_list = |items: &[(String, String, String)]| {
         items
             .iter()
@@ -60,7 +65,7 @@ pub fn build_messages(
                 if d.is_empty() {
                     format!("- {k} ({l})")
                 } else {
-                    format!("- {k} ({l}): {d}")
+                    format!("- {k}: {d}")
                 }
             })
             .collect::<Vec<_>>()
@@ -324,6 +329,31 @@ pub fn parse_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod prompt_shape_tests {
+    use super::*;
+
+    /// 有描述就不送 label——中文库的 label 是中文，混进提示词只会让
+    /// 标识符与语料语言来回跳，而它相对 key 近乎零信息量。
+    #[test]
+    fn described_types_drop_the_label() {
+        let types = vec![
+            (
+                "person".into(),
+                "人物".into(),
+                "有名有姓的具体的人。".into(),
+            ),
+            ("event".into(), "事件".into(), String::new()),
+        ];
+        let msgs = build_messages(&types, &[], &[], None, "a.txt", "text");
+        let prompt = format!("{:?}", msgs);
+        assert!(prompt.contains("- person: 有名有姓的具体的人。"));
+        assert!(!prompt.contains("person (人物)"));
+        // 描述为空时 label 仍是唯一的额外线索，留着
+        assert!(prompt.contains("- event (事件)"));
+    }
 }
 
 #[cfg(test)]

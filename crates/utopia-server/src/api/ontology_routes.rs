@@ -30,7 +30,8 @@ pub async fn get(
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    utopia_store::graph::ensure_default_ontology(&state.pool, kb_id).await?;
+    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
+    utopia_store::graph::ensure_default_ontology(&state.pool, kb_id, &kb.ontology_lang).await?;
     let entity_types = utopia_store::ontology::entity_type_views(&state.pool, kb_id).await?;
     let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
     let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;

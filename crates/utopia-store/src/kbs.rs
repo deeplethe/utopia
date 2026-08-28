@@ -44,10 +44,15 @@ pub async fn create(
     description: Option<&str>,
 ) -> AppResult<KnowledgeBase> {
     // 部署的第一个库自动成为默认库：公共空间,永远 open、不可删（API 强制 + DB CHECK）
+    //
+    // ontology_lang 取部署默认值：中文部署不该每建一个库就手动选一次。
+    // 之后按库可改——同一个部署里完全可能一个库读中文合同、另一个读英文论文
     let kb = sqlx::query_as(
-        "INSERT INTO knowledge_bases (id, workspace_id, name, kind, description, is_default)
+        "INSERT INTO knowledge_bases
+             (id, workspace_id, name, kind, description, is_default, ontology_lang)
          VALUES ($1, $2, $3, $4, $5,
-                 NOT EXISTS (SELECT 1 FROM knowledge_bases WHERE workspace_id = $2))
+                 NOT EXISTS (SELECT 1 FROM knowledge_bases WHERE workspace_id = $2),
+                 COALESCE((SELECT default_ontology_lang FROM deployment_settings LIMIT 1), 'en'))
          RETURNING *",
     )
     .bind(Uuid::now_v7())
@@ -75,7 +80,15 @@ pub async fn update(
     description: Option<&str>,
     visibility: Option<&str>,
     auto_extend_ontology: Option<bool>,
+    ontology_lang: Option<&str>,
 ) -> AppResult<KnowledgeBase> {
+    // 改语言不回头重写已有的类——它们已经是这个库的数据，可能有人手工调过。
+    // 这一列往后管的是**新**描述（自动扩本体、AI 建议）写成什么语言
+    if let Some(l) = ontology_lang {
+        if !matches!(l, "en" | "zh") {
+            return Err(AppError::invalid("bad_lang", "language must be en or zh"));
+        }
+    }
     if let Some(v) = visibility {
         if !matches!(v, "open" | "restricted") {
             return Err(AppError::Validation(
@@ -99,6 +112,7 @@ pub async fn update(
              description = COALESCE($3, description),
              visibility = COALESCE($4, visibility),
              auto_extend_ontology = COALESCE($5, auto_extend_ontology),
+             ontology_lang = COALESCE($6, ontology_lang),
              updated_at = now()
          WHERE id = $1 RETURNING *",
     )
@@ -107,6 +121,7 @@ pub async fn update(
     .bind(description)
     .bind(visibility)
     .bind(auto_extend_ontology)
+    .bind(ontology_lang)
     .fetch_optional(pool)
     .await?
     .ok_or(AppError::NotFound)

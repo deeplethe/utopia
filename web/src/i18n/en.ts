@@ -578,6 +578,13 @@ export const en = {
         "provider and is per model — a local Ollama may manage two, a hosted API fifty. " +
         "Background work (extraction, resolution, indexing) waits for a slot; chat and search " +
         "never do. Takes effect immediately.",
+      /* 部署级默认值：新建库时用。名字刻意不叫"系统语言" */
+      ontologyLang: "Default ontology language",
+      ontologyLangHint:
+        "The language new knowledge bases start their ontology in — class descriptions go " +
+        "into the extraction prompt, so this follows the documents you expect, not the " +
+        "interface. Each knowledge base can change its own afterwards. " +
+        "Interface language is a per-reader choice in the account menu.",
       modelDefault: "Default",
       modelReset: "Reset",
       modelResetHint:
@@ -887,6 +894,13 @@ export const en = {
       "facts that were waiting for it. Every change is listed and can be undone. Turning this " +
       "off does not stop Utopia from noticing — the phrases still collect under Unmatched, they " +
       "just wait for you to approve them.",
+    /* 语料语言。措辞要把"这不是界面语言"讲清楚，否则一定有人当成界面开关 */
+    ontologyLang: "Language of this ontology",
+    ontologyLangNote:
+      "Which language class and relation descriptions are written in. Those go straight " +
+      "into the extraction prompt, so the reader is the model while it reads your documents — " +
+      "match your documents, not your interface. Changing this does not rewrite what is " +
+      "already here; it decides the language of descriptions written from now on.",
     defaultOpenLabel: "Open to everyone",
     defaultOpenNote:
       "This is the deployment's default knowledge base, so visibility is locked: every member " +

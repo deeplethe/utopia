@@ -100,7 +100,10 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let my_epoch = utopia_store::documents::extract_epoch(&state.pool, document_id).await?;
     utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
     state.emit_document(doc.kb_id, document_id);
-    utopia_store::graph::ensure_default_ontology(&state.pool, doc.kb_id).await?;
+    let kb_lang = utopia_store::kbs::get(&state.pool, doc.kb_id)
+        .await?
+        .ontology_lang;
+    utopia_store::graph::ensure_default_ontology(&state.pool, doc.kb_id, &kb_lang).await?;
 
     let etypes = utopia_store::graph::entity_types(&state.pool, doc.kb_id).await?;
     let rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;

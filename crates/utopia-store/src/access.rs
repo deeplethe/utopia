@@ -151,6 +151,29 @@ pub async fn set_open_registration(pool: &PgPool, value: bool) -> AppResult<()> 
     Ok(())
 }
 
+/// 新建知识库时 `ontology_lang` 的默认值。
+///
+/// **刻意不叫"系统语言"**：叫那个名字的话，迟早有人试图把界面语言挂上来，
+/// 然后发现挂不上（界面语言在客户端）。名字本身就该把误用挡住。见 docs/decisions/0004。
+pub async fn default_ontology_lang(pool: &PgPool) -> AppResult<String> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT default_ontology_lang FROM deployment_settings LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(v,)| v).unwrap_or_else(|| "en".into()))
+}
+
+pub async fn set_default_ontology_lang(pool: &PgPool, value: &str) -> AppResult<()> {
+    if !matches!(value, "en" | "zh") {
+        return Err(AppError::invalid("bad_lang", "language must be en or zh"));
+    }
+    sqlx::query("UPDATE deployment_settings SET default_ontology_lang = $1")
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// 任务 worker 并发数（系统设置可改，改动即时生效——见 jobs::run_worker）。
 pub async fn worker_concurrency(pool: &PgPool) -> AppResult<i32> {
     let row: Option<(i32,)> =

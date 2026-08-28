@@ -15,9 +15,15 @@ import {
   Users,
 } from "lucide-react";
 import { api, type AuditEvent } from "../api";
-import { S } from "../i18n";
+import { LANG_NAMES, S } from "../i18n";
 import { useKb } from "../kb";
-import { DangerConfirm, Dropdown, Loading, RAIL_CLS, SearchSelect } from "../ui";
+import {
+  DangerConfirm,
+  Dropdown,
+  Loading,
+  RAIL_CLS,
+  SearchSelect,
+} from "../ui";
 
 const KB_ROLES = [
   { value: "viewer", label: S.kbset.roles.viewer },
@@ -45,6 +51,7 @@ export function KbSettings() {
   const [desc, setDesc] = useState("");
   const [visibility, setVisibility] = useState<"open" | "restricted">("open");
   const [autoExtend, setAutoExtend] = useState(true);
+  const [ontoLang, setOntoLang] = useState<"en" | "zh">("en");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +61,7 @@ export function KbSettings() {
       setDesc(kb.data.description ?? "");
       setVisibility(kb.data.visibility);
       setAutoExtend(kb.data.auto_extend_ontology);
+      setOntoLang(kb.data.ontology_lang);
     }
   }, [kb.data]);
 
@@ -69,6 +77,7 @@ export function KbSettings() {
         description: desc.trim() || null,
         visibility,
         auto_extend_ontology: autoExtend,
+        ontology_lang: ontoLang,
       }),
     onSuccess: () => {
       setError(null);
@@ -88,14 +97,23 @@ export function KbSettings() {
 
   if (!kbId || kb.isPending) return <Loading>{S.nav.loading}</Loading>;
   if (kb.isError)
-    return <div className="p-8 text-sm text-rose-400">{(kb.error as Error).message}</div>;
+    return (
+      <div className="p-8 text-sm text-rose-400">
+        {(kb.error as Error).message}
+      </div>
+    );
 
   const lbl = "block text-xs font-medium text-neutral-500 mb-1";
   const rail =
     "w-full flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-left transition-colors";
 
   const isDefault = kb.data.is_default;
-  const sections: { key: Section; label: string; Icon: typeof Settings2; danger?: boolean }[] = [
+  const sections: {
+    key: Section;
+    label: string;
+    Icon: typeof Settings2;
+    danger?: boolean;
+  }[] = [
     { key: "general", label: S.kbset.general, Icon: Settings2 },
     { key: "members", label: S.kbset.members, Icon: Users },
     { key: "data", label: S.kbset.data, Icon: Database },
@@ -103,7 +121,14 @@ export function KbSettings() {
     // 默认库不可删除：danger 节整个不出现
     ...(isDefault
       ? []
-      : [{ key: "danger" as Section, label: S.kbset.danger, Icon: TriangleAlert, danger: true }]),
+      : [
+          {
+            key: "danger" as Section,
+            label: S.kbset.danger,
+            Icon: TriangleAlert,
+            danger: true,
+          },
+        ]),
   ];
 
   return (
@@ -200,12 +225,39 @@ export function KbSettings() {
                   onChange={(e) => setAutoExtend(e.target.checked)}
                 />
                 <span className="min-w-0">
-                  <span className="block text-sm text-neutral-200">{S.kbset.autoExtend}</span>
+                  <span className="block text-sm text-neutral-200">
+                    {S.kbset.autoExtend}
+                  </span>
                   <span className="block text-xs leading-relaxed text-neutral-500">
                     {S.kbset.autoExtendNote}
                   </span>
                 </span>
               </label>
+              {/* 语料语言。**不是界面语言**——类描述逐字进抽取提示词，
+                  读者是正在读这些文档的模型，所以它跟文档走不跟读者走 */}
+              <div className="pt-1">
+                <span className="block text-sm text-neutral-200">
+                  {S.kbset.ontologyLang}
+                </span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-neutral-500">
+                  {S.kbset.ontologyLangNote}
+                </span>
+                <div className="mt-2 flex gap-1 rounded-lg bg-white/5 p-1 w-fit">
+                  {(["en", "zh"] as const).map((l) => (
+                    <button
+                      key={l}
+                      onClick={() => setOntoLang(l)}
+                      className={`rounded-md px-3 py-1 text-[12px] font-medium transition-colors ${
+                        ontoLang === l
+                          ? "bg-white/10 text-neutral-100"
+                          : "text-neutral-500 hover:text-neutral-300"
+                      }`}
+                    >
+                      {LANG_NAMES[l]}
+                    </button>
+                  ))}
+                </div>
+              </div>
               <div className="flex items-center gap-3">
                 <button
                   className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
@@ -215,7 +267,9 @@ export function KbSettings() {
                   {S.kbset.save}
                 </button>
                 {save.isSuccess && (
-                  <span className="text-xs text-neutral-400">{S.kbset.saved}</span>
+                  <span className="text-xs text-neutral-400">
+                    {S.kbset.saved}
+                  </span>
                 )}
               </div>
             </div>
@@ -232,11 +286,16 @@ export function KbSettings() {
                 <div className="text-sm font-medium text-neutral-200">
                   {S.kbset.deleteRowTitle}
                 </div>
-                <div className="mt-0.5 text-xs text-neutral-500">{S.kbset.deleteRowHint}</div>
+                <div className="mt-0.5 text-xs text-neutral-500">
+                  {S.kbset.deleteRowHint}
+                </div>
               </div>
               <button
                 className="u-btn px-3.5 py-1.5 text-xs font-semibold shrink-0"
-                style={{ background: "var(--u-danger-solid)", color: "#ffffff" }}
+                style={{
+                  background: "var(--u-danger-solid)",
+                  color: "#ffffff",
+                }}
                 onClick={() => setConfirmingDelete(true)}
               >
                 {S.kbset.deleteRowBtn}
@@ -289,7 +348,10 @@ function KbActivity({ kbId }: { kbId: string }) {
       ) : (
         <div className="space-y-0.5">
           {events.map((e) => (
-            <div key={e.id} className="flex items-baseline gap-3 py-1.5 text-[13px]">
+            <div
+              key={e.id}
+              className="flex items-baseline gap-3 py-1.5 text-[13px]"
+            >
               <span className="u-num shrink-0 text-[11px] text-neutral-600">
                 {e.created_at.slice(0, 16).replace("T", " ")}
               </span>
@@ -301,7 +363,10 @@ function KbActivity({ kbId }: { kbId: string }) {
                   {S.kbset.auditActions[e.action] ?? e.action}
                 </span>
                 {auditDetailName(e) && (
-                  <span className="text-neutral-300"> “{auditDetailName(e)}”</span>
+                  <span className="text-neutral-300">
+                    {" "}
+                    “{auditDetailName(e)}”
+                  </span>
                 )}
               </span>
             </div>
@@ -328,7 +393,8 @@ function KbDataSources({ kbId }: { kbId: string }) {
   });
   const [picked, setPicked] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["kbDataSources", kbId] });
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["kbDataSources", kbId] });
 
   const mount = useMutation({
     mutationFn: (dsId: string) => api.mountDataSource(kbId, dsId),
@@ -351,8 +417,12 @@ function KbDataSources({ kbId }: { kbId: string }) {
     onSuccess: () => setNotice(S.kbset.dataExploreQueued),
   });
 
-  const mountedIds = new Set((mounted.data?.data_sources ?? []).map((d) => d.id));
-  const mountable = (available.data?.data_sources ?? []).filter((d) => !mountedIds.has(d.id));
+  const mountedIds = new Set(
+    (mounted.data?.data_sources ?? []).map((d) => d.id),
+  );
+  const mountable = (available.data?.data_sources ?? []).filter(
+    (d) => !mountedIds.has(d.id),
+  );
 
   return (
     <div className="space-y-4">
@@ -363,7 +433,9 @@ function KbDataSources({ kbId }: { kbId: string }) {
           <div key={d.id} className="px-4 py-3 flex items-center gap-3">
             <div className="min-w-0 flex-1">
               <div className="text-sm text-neutral-200">{d.name}</div>
-              <div className="text-xs text-neutral-500 font-mono truncate">{d.summary}</div>
+              <div className="text-xs text-neutral-500 font-mono truncate">
+                {d.summary}
+              </div>
             </div>
             <button
               className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
@@ -382,7 +454,9 @@ function KbDataSources({ kbId }: { kbId: string }) {
           </div>
         ))}
         {mounted.data?.data_sources.length === 0 && (
-          <p className="px-4 py-6 text-sm text-neutral-500">{S.kbset.dataNone}</p>
+          <p className="px-4 py-6 text-sm text-neutral-500">
+            {S.kbset.dataNone}
+          </p>
         )}
       </div>
 
@@ -391,7 +465,11 @@ function KbDataSources({ kbId }: { kbId: string }) {
           <SearchSelect
             className="flex-1"
             value={picked}
-            options={mountable.map((d) => ({ value: d.id, label: d.name, hint: d.summary }))}
+            options={mountable.map((d) => ({
+              value: d.id,
+              label: d.name,
+              hint: d.summary,
+            }))}
             onChange={setPicked}
             placeholder={S.kbset.dataMount + "…"}
           />
@@ -408,7 +486,9 @@ function KbDataSources({ kbId }: { kbId: string }) {
       {me.data?.is_admin ? (
         <button
           className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-300 transition-colors"
-          onClick={() => navigate({ to: "/admin", search: { tab: "datasources" } })}
+          onClick={() =>
+            navigate({ to: "/admin", search: { tab: "datasources" } })
+          }
         >
           <Plus size={12} />
           {S.kbset.dataNewConn}
@@ -417,12 +497,16 @@ function KbDataSources({ kbId }: { kbId: string }) {
         mountable.length === 0 &&
         available.data &&
         (mounted.data?.data_sources.length ?? 0) === 0 && (
-          <p className="text-xs text-neutral-600">{S.kbset.dataNoneAvailable}</p>
+          <p className="text-xs text-neutral-600">
+            {S.kbset.dataNoneAvailable}
+          </p>
         )
       )}
       {(mounted.data?.data_sources.length ?? 0) > 0 && (
         <div className="glass rounded-xl px-4 py-3 flex items-center gap-3">
-          <p className="text-xs text-neutral-500 flex-1">{S.kbset.dataExploreHint}</p>
+          <p className="text-xs text-neutral-500 flex-1">
+            {S.kbset.dataExploreHint}
+          </p>
           <button
             className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
             disabled={explore.isPending}
@@ -452,7 +536,8 @@ function KbMembers({ kbId }: { kbId: string }) {
   const [addUserId, setAddUserId] = useState("");
   const [addRole, setAddRole] = useState("viewer");
 
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["kbMembers", kbId] });
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["kbMembers", kbId] });
 
   const setMember = useMutation({
     mutationFn: ({ userId, role }: { userId: string; role: string }) =>
@@ -514,11 +599,18 @@ function KbMembers({ kbId }: { kbId: string }) {
               hint: u.email,
             }))}
           />
-          <Dropdown className="w-24" value={addRole} onChange={setAddRole} options={KB_ROLES} />
+          <Dropdown
+            className="w-24"
+            value={addRole}
+            onChange={setAddRole}
+            options={KB_ROLES}
+          />
           <button
             className="u-btn u-btn-primary px-3 py-1.5 text-xs"
             disabled={!addUserId || setMember.isPending}
-            onClick={() => setMember.mutate({ userId: addUserId, role: addRole })}
+            onClick={() =>
+              setMember.mutate({ userId: addUserId, role: addRole })
+            }
           >
             {S.members.add}
           </button>

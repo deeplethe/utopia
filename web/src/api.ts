@@ -76,6 +76,9 @@ export interface Kb {
   /** 抽取遇到本体外的说法时，是否允许系统自动补进本体并改写等它的事实。
       关掉不影响"留意"：未匹配统计照常累积可见，只是变成你点一下的提案 */
   auto_extend_ontology: boolean;
+  /** 内置本体按哪种语言播种、新描述写哪种语言。**跟语料走，不跟界面走**
+      （界面语言在客户端，见 docs/decisions/0004） */
+  ontology_lang: "en" | "zh";
   /** 调用者在本库的角色（仅详情接口返回）：前端据此门控破坏性入口 */
   my_role?: "viewer" | "editor" | "admin" | "owner" | null;
 }
@@ -592,6 +595,8 @@ export const api = {
       /** 外层兜底，防任务无限堆积；真正的节流是按模型的限额 */
       worker_concurrency: number;
       default_model_concurrency: number;
+      /** 新建知识库的本体语言默认值。**不是界面语言**——那个在客户端 */
+      default_ontology_lang: "en" | "zh";
       model_limits: {
         base_url: string;
         model: string;
@@ -608,6 +613,7 @@ export const api = {
       model: string;
       max_concurrent: number | null;
     },
+    defaultOntologyLang?: "en" | "zh",
   ) =>
     request<{ ok: boolean }>("/api/v1/admin/deployment", {
       method: "PUT",
@@ -620,6 +626,9 @@ export const api = {
           ? { default_model_concurrency: defaultModelConcurrency }
           : {}),
         ...(modelLimit ? { model_limit: modelLimit } : {}),
+        ...(defaultOntologyLang
+          ? { default_ontology_lang: defaultOntologyLang }
+          : {}),
       }),
     }),
   adminCreateUser: (body: {
