@@ -2,6 +2,7 @@
 //! 原则：文本层 Rust 原生解决（快、零依赖）；扫描件/复杂版式后续走 docling sidecar。
 
 mod chunker;
+pub mod ontology_rdf;
 mod parsers;
 
 pub use chunker::{chunk_text, ChunkPiece};
