@@ -1,6 +1,8 @@
-// i18n shell: all UI strings live here, English-only for now.
-// Later: swap this module for a real i18n runtime (i18next) without touching components.
-export const S = {
+// 英文语言包。这一份是**结构的权威**：`Strings = typeof en`，其余语言包按它定型，
+// 漏一条就编译不过（见 docs/decisions/0004）。
+//
+// 加新文案时先加在这里，再补其余语言包——顺序反了会得到一个类型错误，那正是本意。
+export const en = {
   app: {
     name: "Utopia",
     tagline: "The living memory of your organization",
@@ -32,6 +34,7 @@ export const S = {
     changePassword: "Update password",
     passwordChanged: "Password updated",
     avatarHint: "Avatars are generated from your name for now.",
+    language: "Language",
     kbsNav: "Knowledge bases",
     kbsTitle: "Knowledge bases",
     kbOpen: "Open",
@@ -903,4 +906,7 @@ export const S = {
       viewer: "Viewer",
     },
   },
-} as const;
+};
+
+/** 语言包的结构契约。其余语言包写成 `const zh: Strings = {…}`，漏一条即编译失败 */
+export type Strings = typeof en;
