@@ -346,12 +346,14 @@ pub async fn record_miss(
     example: Option<&str>,
 ) -> AppResult<()> {
     sqlx::query(
+        // 已被用户拒绝的不再累加：否则计数会把"不要"重新顶成一个待处理信号
         "INSERT INTO ontology_misses (kb_id, kind, key, example)
          VALUES ($1, $2, left($3, 80), left($4, 200))
          ON CONFLICT (kb_id, kind, key)
          DO UPDATE SET count = ontology_misses.count + 1,
                        example = COALESCE(EXCLUDED.example, ontology_misses.example),
-                       updated_at = now()",
+                       updated_at = now()
+         WHERE ontology_misses.dismissed_at IS NULL",
     )
     .bind(kb_id)
     .bind(kind)
@@ -365,13 +367,31 @@ pub async fn record_miss(
 pub async fn list_misses(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<OntologyMiss>> {
     Ok(sqlx::query_as(
         "SELECT kind, key, example, count FROM ontology_misses
-         WHERE kb_id = $1 ORDER BY count DESC, updated_at DESC LIMIT 50",
+         WHERE kb_id = $1 AND dismissed_at IS NULL
+         ORDER BY count DESC, updated_at DESC LIMIT 50",
     )
     .bind(kb_id)
     .fetch_all(pool)
     .await?)
 }
 
+/// 用户说"不要这个"。**标记而非删除**——删掉的话下一次抽取遇到同一个词
+/// 原样插回来，用户的拒绝活不过一轮抽取。自动扩展路径也据此绕开。
+pub async fn dismiss_miss(pool: &PgPool, kb_id: Uuid, kind: &str, key: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE ontology_misses SET dismissed_at = now()
+         WHERE kb_id = $1 AND kind = $2 AND key = $3 AND dismissed_at IS NULL",
+    )
+    .bind(kb_id)
+    .bind(kind)
+    .bind(key)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 本体已经覆盖了这个说法（采纳时调用）：与"用户拒绝"不同，这条真的可以清掉，
+/// 下次抽取它会命中本体，不再是未匹配。
 pub async fn clear_miss(pool: &PgPool, kb_id: Uuid, kind: &str, key: &str) -> AppResult<()> {
     sqlx::query("DELETE FROM ontology_misses WHERE kb_id = $1 AND kind = $2 AND key = $3")
         .bind(kb_id)

@@ -50,6 +50,9 @@ export interface Kb {
   visibility: "open" | "restricted";
   /** 部署的公共默认空间（第一个建的库）：永远 open、不可删除 */
   is_default: boolean;
+  /** 抽取遇到本体外的说法时，是否允许系统自动补进本体并改写等它的事实。
+      关掉不影响"留意"：未匹配统计照常累积可见，只是变成你点一下的提案 */
+  auto_extend_ontology: boolean;
   /** 调用者在本库的角色（仅详情接口返回）：前端据此门控破坏性入口 */
   my_role?: "viewer" | "editor" | "admin" | "owner" | null;
 }
@@ -677,6 +680,17 @@ export const api = {
 
   surfacePredicates: (kbId: string) =>
     request<{ forms: SurfacePredicate[] }>(`/api/v1/kbs/${kbId}/ontology/surface-predicates`),
+  /** 最近一次自动扩本体做了什么，以及还能不能撤销（撤干净了返回 null） */
+  lastAutoExtension: (kbId: string) =>
+    request<{
+      run: {
+        at: string;
+        relations: string[] | null;
+        classes: string[] | null;
+        facts_remapped: number | null;
+        batches: string[];
+      } | null;
+    }>(`/api/v1/kbs/${kbId}/ontology/auto-extension`),
   /** 建关系 **并**把等着它的 related_to 事实改写过去——后半句才是收益 */
   adoptPredicate: (
     kbId: string,

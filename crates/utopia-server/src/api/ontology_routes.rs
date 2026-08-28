@@ -314,7 +314,7 @@ pub async fn dismiss_miss(
     Json(req): Json<DismissMissReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    utopia_store::ontology::clear_miss(&state.pool, kb_id, &req.kind, &req.key).await?;
+    utopia_store::ontology::dismiss_miss(&state.pool, kb_id, &req.kind, &req.key).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -533,4 +533,57 @@ pub async fn surface_predicates(
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
     let forms = utopia_store::graph::surface_predicates(&state.pool, kb_id).await?;
     Ok(Json(json!({ "forms": forms })))
+}
+
+/// 最近一次自动扩本体做了什么，以及还能不能撤销。
+///
+/// 默认开启的前提是它的动作**可见且可退**。只记在审计台账里不算可见——
+/// 那是查证用的，不是通知用的。这里给 Ontology 页一条明确的横幅。
+pub async fn last_auto_extension(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let row: Option<(serde_json::Value, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT detail, created_at FROM audit_events
+         WHERE kb_id = $1 AND action = 'ontology.bootstrapped'
+         ORDER BY id DESC LIMIT 1",
+    )
+    .bind(kb_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Db)?;
+    let Some((detail, at)) = row else {
+        return Ok(Json(json!({ "run": null })));
+    };
+    // 已经被撤销干净的就不再提示——那一轮已经没有任何痕迹留在图上了
+    let batches: Vec<Uuid> = detail
+        .get("batches")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str().and_then(|x| x.parse().ok()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let (live,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM fact_adoptions
+         WHERE kb_id = $1 AND batch_id = ANY($2) AND reverted_at IS NULL",
+    )
+    .bind(kb_id)
+    .bind(&batches)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(AppError::Db)?;
+    if live == 0 {
+        return Ok(Json(json!({ "run": null })));
+    }
+    Ok(Json(json!({ "run": {
+        "at": at,
+        "relations": detail.get("relations"),
+        "classes": detail.get("classes"),
+        "facts_remapped": detail.get("facts_remapped"),
+        "batches": batches,
+    }})))
 }

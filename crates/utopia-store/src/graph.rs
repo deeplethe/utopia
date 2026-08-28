@@ -937,6 +937,7 @@ pub async fn surface_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Sur
     Ok(sqlx::query_as(
         "SELECT fe.surface_predicate AS form,
                 count(DISTINCT f.id) AS fact_count,
+                count(DISTINCT fe.document_id) AS doc_count,
                 (SELECT s.canonical_name || ' → ' || o.canonical_name
                  FROM fact_evidence e2
                  JOIN facts f2 ON f2.id = e2.fact_id
@@ -950,6 +951,10 @@ pub async fn surface_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Sur
          JOIN relation_types rt ON rt.id = f.predicate_id
          WHERE f.kb_id = $1 AND rt.kb_id = $1 AND rt.key = $2
            AND f.invalidated_at IS NULL AND fe.surface_predicate IS NOT NULL
+           -- 用户拒绝过的说法不再出现在候选里（人工与自动两条路都据此绕开）
+           AND NOT EXISTS (SELECT 1 FROM ontology_misses m
+                           WHERE m.kb_id = $1 AND m.kind = 'relation_type'
+                             AND m.key = fe.surface_predicate AND m.dismissed_at IS NOT NULL)
          GROUP BY fe.surface_predicate, rt.id
          ORDER BY fact_count DESC, form",
     )
@@ -1127,20 +1132,4 @@ pub async fn unadopt(pool: &PgPool, kb_id: Uuid, batch_id: Uuid) -> AppResult<u3
     .await?;
     tx.commit().await?;
     Ok(reverted)
-}
-
-/// 本体是否从没被人碰过：只有内置类型、没有任何自建或导入的。
-///
-/// 冷启动自动扩本体的判定依据。**没有精心建立的词表时，坚持人工审批保护的
-/// 是个还不存在的东西**——而默认那 10 个关系不是任何人选的，是种子数据。
-/// 一旦有人加过或导入过，这里就为 false，自动扩本体从此不再触发。
-pub async fn ontology_untouched(pool: &PgPool, kb_id: Uuid) -> AppResult<bool> {
-    let (custom,): (i64,) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM entity_types WHERE kb_id = $1 AND NOT builtin)
-              + (SELECT count(*) FROM relation_types WHERE kb_id = $1 AND NOT builtin)",
-    )
-    .bind(kb_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(custom == 0)
 }

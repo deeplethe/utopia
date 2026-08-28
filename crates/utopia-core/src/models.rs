@@ -337,6 +337,9 @@ pub struct SurfacePredicate {
     pub form: String,
     /// 有多少条 live 的 related_to 事实由这个说法而来
     pub fact_count: i64,
+    /// 出现在多少篇文档里。只在一篇里出现过的是那篇文档的用词，不是这个
+    /// 组织的词汇——自动扩展据此设门槛，人工提案只作参考不拦
+    pub doc_count: i64,
     /// 一条样例（"Dino Crisis (Steam) → GeForce NOW"），让人一眼判断这是什么关系
     pub example: Option<String>,
 }
@@ -581,6 +584,10 @@ pub struct KnowledgeBase {
     pub visibility: String,
     /// 部署的公共默认空间（第一个建的库）：永远 open、不可删除
     pub is_default: bool,
+    /// 抽取遇到本体外的说法时，是否允许系统自动把它补进本体并改写等它的事实。
+    /// 缺省开——新库的十个默认关系不是任何人选的，等人手工补齐之前图基本没法用。
+    /// 关掉不影响"留意"：未匹配统计照常累积、照常可见，只是变成你点一下的提案。
+    pub auto_extend_ontology: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

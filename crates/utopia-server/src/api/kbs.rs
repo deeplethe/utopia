@@ -26,6 +26,9 @@ pub struct UpdateKbReq {
     pub name: Option<String>,
     pub description: Option<String>,
     pub visibility: Option<String>,
+    /// 自动扩本体开关（缺省开；关掉不影响"留意"，只是变成你点一下的提案）
+    #[serde(default)]
+    pub auto_extend_ontology: Option<bool>,
 }
 
 /// 用户可见的 KB 列表（restricted 库仅矩阵成员与系统管理员可见）。
@@ -73,7 +76,7 @@ pub async fn create(
     )
     .await?;
     if let Some(v) = req.visibility.as_deref() {
-        utopia_store::kbs::update(&state.pool, kb.id, None, None, Some(v)).await?;
+        utopia_store::kbs::update(&state.pool, kb.id, None, None, Some(v), None).await?;
     }
     utopia_store::access::set_kb_member(&state.pool, kb.id, user.id, "admin", Some(user.id))
         .await?;
@@ -146,6 +149,7 @@ pub async fn update(
         req.name.as_deref().map(str::trim),
         req.description.as_deref(),
         req.visibility.as_deref(),
+        req.auto_extend_ontology,
     )
     .await?;
     // 审计只记不阻断

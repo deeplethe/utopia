@@ -151,6 +151,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(ontology_routes::surface_predicates),
         )
         .route(
+            "/kbs/{id}/ontology/auto-extension",
+            get(ontology_routes::last_auto_extension),
+        )
+        .route(
             "/kbs/{id}/ontology/adopt-predicate",
             post(ontology_routes::adopt_predicate),
         )
