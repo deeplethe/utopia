@@ -224,10 +224,20 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 先建好并解析 IRI → id"——**那个映射 `id_of: HashMap<IRI, Uuid>` 在 P2b 里
 已经为解析父类建好了**。真正缺的是三小件：
 
-- **`rdfs:range` → `datatype` 的映射**：`xsd:string`→text，
-  `xsd:integer|decimal|float|double`→number，`xsd:date|dateTime`→date，
-  `xsd:boolean`→bool。**其余一律跳过并报告**，不猜成 text——一个类型错的属性
-  会让所有取值在写入时被 `attr_datatype` 挡掉，比没有这个属性更糟。
+- **`rdfs:range` → `datatype`，三路而不是两路**：
+
+  | 情形 | 处置 |
+  |---|---|
+  | range 能映射 | 照映射建。number 收 `decimal` `integer` 及其全部有界/无符号变体、`double` `float`、`owl:real` `owl:rational`；date 收 `date` `dateTime` `dateTimeStamp` `gYear` `gYearMonth`（我们的日期格式本就是 `YYYY[-MM[-DD]]`，逐级可省）；bool 收 `boolean`；text 收 `string` 及其派生、`anyURI`、`rdf:langString`、`rdfs:Literal` |
+  | **没写 range** | 建成 `text`，在预览里列出。词汇表没做声明，我们只知道是字面量，`text` 是诚实的超集 |
+  | range 存在但映射不了 | **跳过并报告**：`time` `gMonth` `gDay` `gMonthDay`（缺年）、`duration` 系列（时长不是时点）、`hexBinary` `base64Binary`、`rdf:XMLLiteral`、`QName` 等 XML 内部标识、带 `withRestrictions` 的自定义类型，以及多条 `rdfs:range`（同 domain 的交集陷阱） |
+
+  > **修订**：初稿把「不猜成 text」的理由写成「类型错的属性会让取值在写入时被
+  > `attr_datatype` 挡掉」。查 `normalize_attr_value` 后这条不成立——**`text` 接受任何
+  > 字符串，从不拦**，会拦的是 number/date/bool。真正的理由是另一条：**range 存在**
+  > 意味着词汇表做了一个明确声明，悄悄降级成 text 是把那个声明扔掉且不留痕迹；
+  > 而 range 缺席时没有声明可扔，宽松默认就是对的。区别在有没有东西被丢掉，
+  > 不在会不会被拦。
 - **domain 指向没被导入的类**（外部词汇表里的类）：跳过 + 计入预览，不静默。
 - **多个 `rdfs:domain`**：存不下。这一条才真的要等关联表。
 
