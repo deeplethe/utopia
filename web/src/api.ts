@@ -1,4 +1,4 @@
-import { S } from "./i18n";
+import { S, lang } from "./i18n";
 
 export class ApiError extends Error {
   status: number;
@@ -841,9 +841,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ kind, key }),
     }),
+  /** reason 只给人看，而人就在这次请求的另一端——所以语言由调用方说，
+      不是后端的设置（docs/decisions/0004）。description 的语言跟知识库走，服务端自己知道 */
   suggestOntology: (kbId: string) =>
     request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/suggest`, {
       method: "POST",
+      body: JSON.stringify({ locale: lang }),
     }),
 
   /** 上传本体文件只算出计划，一个字节都不写库 */

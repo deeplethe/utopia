@@ -320,18 +320,35 @@ pub async fn dismiss_miss(
 }
 
 /// LLM 本体扩展建议：现有本体 + 未匹配统计 → 提案（人审后经 create 端点合入）。
+/// `locale` 是**调用方**说的，不是后端的设置。reason 只给人看，而人就在这次请求的
+/// 另一端；界面语言在客户端（docs/decisions/0004），所以它只能这样传进来。
+#[derive(Deserialize, Default)]
+pub struct SuggestReq {
+    #[serde(default)]
+    pub locale: Option<String>,
+}
+
 pub async fn suggest(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
+    body: Option<Json<SuggestReq>>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    Ok(Json(build_proposals(&state, kb_id).await?))
+    let locale = body
+        .and_then(|Json(b)| b.locale)
+        .filter(|l| matches!(l.as_str(), "en" | "zh"))
+        .unwrap_or_else(|| "en".into());
+    Ok(Json(build_proposals(&state, kb_id, &locale).await?))
 }
 
 /// 生成本体扩展提案。人工点 Suggest 与冷启动自动扩本体走同一条路——
 /// 自动那条不该是另一套判断，只是少了点头那一步。
-pub async fn build_proposals(state: &AppState, kb_id: Uuid) -> Result<serde_json::Value, AppError> {
+pub async fn build_proposals(
+    state: &AppState,
+    kb_id: Uuid,
+    reason_lang: &str,
+) -> Result<serde_json::Value, AppError> {
     let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
@@ -403,13 +420,20 @@ pub async fn build_proposals(state: &AppState, kb_id: Uuid) -> Result<serde_json
          is not and which existing type those cases belong to. A type that arrives with a weak \
          description becomes the next dumping ground.\n\
          \n\
+         Language. Write \"label\" and \"description\" in {}: they become this knowledge \
+         base's own ontology, and the description is read by the extraction model while it \
+         reads documents written in that language. Write \"reason\" in {}: it is read by the \
+         person looking at this proposal. Keys stay lowercase ASCII either way.\n\
+         \n\
          Output exactly one JSON object:\n\
          {{\"entity_types\":[{{\"key\":\"snake_case\",\"label\":\"Display Name\",\"description\":\"what belongs here, and what does not\",\"reason\":\"why add it\"}}],\n\
           \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"description\":\"what this relation asserts, and what it does not\",\"reason\":\"why add it\"}}]}}",
         current_et.join(", "),
         current_rt.join(", "),
         miss_lines.join("\n"),
-        form_lines.join("\n")
+        form_lines.join("\n"),
+        lang_name(&kb.ontology_lang),
+        lang_name(reason_lang)
     );
 
     let reply = client
@@ -688,4 +712,12 @@ async fn read_upload(
         return Ok((filename, bytes.to_vec()));
     }
     Err(AppError::invalid("no_files", "No file in the upload"))
+}
+
+/// 语言代码 → 提示词里写给模型看的名字。模型认得懂 "Chinese"，未必认得懂 "zh"。
+fn lang_name(code: &str) -> &'static str {
+    match code {
+        "zh" => "Chinese",
+        _ => "English",
+    }
 }
