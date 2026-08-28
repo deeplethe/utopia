@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/banner.webp" alt="Utopia" width="100%">
+<img src="assets/banner.webp" alt="Utopia" width="820">
 
 **人类首个开源的企业世界模型。**
 
