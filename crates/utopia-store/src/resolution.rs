@@ -299,7 +299,11 @@ const MIN_CONTAIN_CHARS: i32 = 4;
 
 /// 单次最多产出的包含关系审阅对。与 `MAX_DRIFT_REVIEWS` 同理：
 /// 一个通名可能包含在几十个实体里，全放进去就把队列淹了。
-const MAX_CONTAIN_REVIEWS: i64 = 4;
+const MAX_CONTAIN_REVIEWS: usize = 4;
+
+/// SQL 侧多取几行：类型硬互斥的在 Rust 侧才筛得掉，
+/// 只取 4 行的话可能 4 行全是互斥类型，真正那一对反而被 LIMIT 切掉。
+const CONTAIN_SCAN_LIMIT: i64 = 16;
 
 /// 新建实体之后，找出**名字互相包含**的既有实体，作为审阅候选。
 ///
@@ -336,30 +340,44 @@ async fn containment_reviews(
     if lower.chars().count() < MIN_CONTAIN_CHARS as usize {
         return Ok(Vec::new());
     }
-    let rows: Vec<(Uuid, String, Option<Vector>)> = sqlx::query_as(
-        "SELECT e.id, e.canonical_name, e.profile_embedding
-         FROM entities e
-         WHERE e.kb_id = $1 AND e.type_id = $2 AND e.merged_into IS NULL
-           AND e.id <> $3
-           AND lower(e.canonical_name) <> $4
-           AND char_length(e.canonical_name) >= $5
-           AND (lower(e.canonical_name) LIKE '%' || $4 || '%'
-                OR $4 LIKE '%' || lower(e.canonical_name) || '%')
+    let (mention_key,): (String,) = sqlx::query_as("SELECT key FROM entity_types WHERE id = $1")
+        .bind(type_id)
+        .fetch_one(pool)
+        .await?;
+    // **不按类型过滤**：简称经常掉进 concept 兜底，而全称是具体类型
+    //（实测 上海研究院→concept vs 星云科技上海研究院→organization，
+    //  启明 X7 加速卡→concept vs 启明 X7 推理加速卡→product），
+    //  按类型相等去查，这两对一个都捞不到。相容性交给下面的 classify_type_drift。
+    //  多取一些行，因为硬互斥的会在 Rust 侧被筛掉
+    let rows: Vec<(Uuid, String, String, Option<Vector>)> = sqlx::query_as(
+        "SELECT e.id, e.canonical_name, t.key, e.profile_embedding
+         FROM entities e JOIN entity_types t ON t.id = e.type_id
+         WHERE e.kb_id = $1 AND e.merged_into IS NULL
+           AND e.id <> $2
+           AND lower(e.canonical_name) <> $3
+           AND char_length(e.canonical_name) >= $4
+           AND (lower(e.canonical_name) LIKE '%' || $3 || '%'
+                OR $3 LIKE '%' || lower(e.canonical_name) || '%')
          ORDER BY char_length(e.canonical_name)
-         LIMIT $6",
+         LIMIT $5",
     )
     .bind(kb_id)
-    .bind(type_id)
     .bind(new_id)
     .bind(&lower)
     .bind(MIN_CONTAIN_CHARS)
-    .bind(MAX_CONTAIN_REVIEWS)
+    .bind(CONTAIN_SCAN_LIMIT)
     .fetch_all(pool)
     .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, other_name, emb)| {
+        // 哪些类型对可能指同一个东西，既有规则已经想清楚了，别另发明一套：
+        // person vs organization 永不合并，concept 兜底与谁都可能是一个
+        .filter(|(_, _, type_key, _)| {
+            classify_type_drift(&mention_key, type_key) != TypeDrift::Disjoint
+        })
+        .take(MAX_CONTAIN_REVIEWS)
+        .map(|(id, other_name, _, emb)| {
             // 分数只是给队列排序用的参考，**不参与是否合并的判断**——
             // 那个判断本来就不在这条路上
             let score = ctx

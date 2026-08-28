@@ -12,7 +12,8 @@ import type { Strings } from "./en";
 export const zh: Strings = {
   app: {
     name: "Utopia",
-    tagline: "你的组织，活着的记忆",
+    /* 标语与 Utopia / Persona / Charter 同类：品牌的一部分，不是界面词汇，所以不译 */
+    tagline: "The living memory of your organization",
     siteUrl: "https://utopia.bi",
     docsUrl: "https://utopia.bi/docs",
   },
@@ -72,7 +73,7 @@ export const zh: Strings = {
     adminChip: "管理员",
     backToApp: "← 返回",
     profileTitle: "个人资料",
-    displayName: "显示名",
+    displayName: "显示名称",
     email: "邮箱",
     save: "保存",
     passwordTitle: "修改密码",
@@ -132,7 +133,7 @@ export const zh: Strings = {
   login: {
     signIn: "登录",
     signUp: "注册",
-    displayName: "显示名",
+    displayName: "显示名称",
     email: "邮箱",
     password: "密码（至少 8 位）",
     submitting: "稍候…",

@@ -287,6 +287,11 @@ pub fn build_adjudication_messages(pairs: &[AdjudicationPair]) -> Vec<ChatMessag
         sameness and let the facts settle it. Shared people, parent or location confirm one \
         entity; a different parent or conflicting leadership means the shorter name belongs \
         to something else.\n\
+        Abbreviation removes a qualifier from the FRONT. It never adds a noun or a \
+        prepositional phrase at the end, so those are different entities however much text \
+        they share: \"the operator library for the Canghai Platform\" is not the Canghai \
+        Platform, \"Qiming X7 programme\" is not the Qiming X7, and \"沧海平台项目\" is not \
+        \"沧海平台\" — a project, a programme, a team or a component is its own record.\n\
         \n\
         Output exactly one JSON object and nothing else:\n\
         {\"verdicts\":[{\"i\":0,\"verdict\":\"same|different|unsure\",\"confidence\":0.9}]}\n\
