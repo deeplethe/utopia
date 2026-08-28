@@ -7,7 +7,7 @@ mod events_routes;
 mod graph_routes;
 mod kbs;
 mod members_routes;
-mod ontology_routes;
+pub(crate) mod ontology_routes;
 mod review_routes;
 mod search_routes;
 mod settings_routes;
@@ -146,6 +146,18 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(ontology_routes::dismiss_miss),
         )
         .route("/kbs/{id}/ontology/suggest", post(ontology_routes::suggest))
+        .route(
+            "/kbs/{id}/ontology/surface-predicates",
+            get(ontology_routes::surface_predicates),
+        )
+        .route(
+            "/kbs/{id}/ontology/adopt-predicate",
+            post(ontology_routes::adopt_predicate),
+        )
+        .route(
+            "/kbs/{id}/ontology/adopt-predicate/{batch_id}",
+            axum::routing::delete(ontology_routes::unadopt_predicate),
+        )
         .route("/kbs/{id}/search", post(search_routes::search))
         .route("/kbs/{id}/chat", post(chat::chat))
         .route("/kbs/{id}/conversations", get(chat::list_conversations))

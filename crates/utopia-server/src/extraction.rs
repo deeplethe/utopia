@@ -5,11 +5,10 @@
 use crate::llm_util;
 use crate::state::AppState;
 use std::collections::HashMap;
+use utopia_store::graph::FALLBACK_RELATION_KEY;
 use uuid::Uuid;
 
 const MIN_CONFIDENCE: f32 = 0.6;
-/// 词表外谓词的代码层兜底。刻意不进提示词——理由见 rel_pairs 的注释。
-const FALLBACK_RELATION_KEY: &str = "related_to";
 
 /// 记一条丢弃信号。抽取器有七处 `continue`，每一处都是"事实抽出来了、被挡掉、
 /// 什么都不说"。信号写失败绝不能带垮整篇文档的抽取，所以这里吞掉错误。
@@ -590,6 +589,19 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     }
     if needs_adjudication || conflicts_found {
         state.emit_review(doc.kb_id);
+    }
+    // 冷启动自动扩本体：本体没被人碰过、且这一批都抽完了，由最后一篇触发。
+    // 逐篇触发是错的——先到的那篇的词汇会独占本体。并发下可能入队两次，
+    // 任务自己会重查一遍，先跑的建出关系后另一个就是 no-op
+    if utopia_store::graph::ontology_untouched(&state.pool, doc.kb_id).await?
+        && utopia_store::documents::extraction_idle(&state.pool, doc.kb_id).await?
+    {
+        utopia_store::jobs::enqueue(
+            &state.pool,
+            "bootstrap_ontology",
+            serde_json::json!({ "kb_id": doc.kb_id }),
+        )
+        .await?;
     }
 
     tracing::info!(%document_id, facts = fact_count, "图谱抽取完成");

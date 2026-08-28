@@ -455,6 +455,8 @@ export const S = {
       asserted: "Recorded",
       corrected: "Interval corrected",
       rejected: "Withdrawn",
+      /* 并入另一条断言：内容一字未少，不是撤回 */
+      merged: "Merged into an existing fact",
     } as Record<string, string>,
     historyEngine: "engine",
     /* 有效区间的变化：修正后区间闭合到某个时点 */
@@ -614,6 +616,25 @@ export const S = {
     suggesting: "Analyzing…",
     noMisses: "No unmatched types — the ontology covers your corpus.",
     approve: "Add",
+    /* 影响面：采纳一个提案会把多少条 related_to 事实改写过去。
+       没有这一句，"Add" 只是凭空多一个空关系 */
+    willRemap: (n: number) =>
+      n === 1 ? "reclassifies 1 fact" : `reclassifies ${n} facts`,
+    adopted: (n: number) =>
+      n === 1 ? "Added — 1 fact reclassified" : `Added — ${n} facts reclassified`,
+    /* 撤销：采纳改写了成批事实，没有回头路的话没人敢点第一下 */
+    undoAdopt: (key: string, n: number) =>
+      `${key} added, ${n} fact${n === 1 ? "" : "s"} reclassified`,
+    undoAdoptBtn: "Undo",
+    reverted: (n: number) =>
+      n === 1 ? "Reverted — 1 fact restored" : `Reverted — ${n} facts restored`,
+    undoKeepsRelation: "The relation stays; only the facts move back.",
+    /* 批量：常见情形是"这些都对"，一条条点是把一个决定拆成八个 */
+    addAll: (n: number) => `Add all ${n}`,
+    addingAll: "Adding…",
+    addAllLabel: "batch",
+    addAllPartial: (keys: string[]) =>
+      `Some could not be added: ${keys.join(", ")} — the rest went through.`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
   },

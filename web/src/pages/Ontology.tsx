@@ -1089,6 +1089,24 @@ function MissesPanel({
   onError: (e: unknown) => void;
 }) {
   const [proposals, setProposals] = useState<OntologyProposals | null>(null);
+  // 最近一次采纳，供撤销。只留最近一次——旧批次要撤销走审计台账，
+  // 那里本来就记着每次采纳动了哪个关系、多少条
+  const [lastAdopt, setLastAdopt] = useState<{
+    batches: string[];
+    key: string;
+    moved: number;
+  } | null>(
+    null,
+  );
+  // 待认领的表层谓词：提案的影响面（"将改写 57 条"）从这里算
+  const surface = useQuery({
+    queryKey: ["surface-predicates", kbId],
+    queryFn: () => api.surfacePredicates(kbId),
+  });
+  const factsWaiting = (forms: string[]) => {
+    const byForm = new Map((surface.data?.forms ?? []).map((f) => [f.form, f.fact_count]));
+    return forms.reduce((n, f) => n + (byForm.get(f) ?? 0), 0);
+  };
 
   const suggest = useMutation({
     mutationFn: () => api.suggestOntology(kbId),
@@ -1117,20 +1135,104 @@ function MissesPanel({
     onError,
   });
   const approveRelation = useMutation({
-    mutationFn: (p: { key: string; label: string; temporal?: string; functional?: boolean }) =>
-      api.createRelationType(kbId, {
-        key: p.key,
-        label: p.label,
-        temporal: p.temporal ?? "state",
-        functional: p.functional ?? false,
-      }),
-    onSuccess: (_data, p) => {
-      toast.success(S.toast.added);
+    // 带 forms 的提案走 adopt：建关系顺带把等着它的 related_to 事实改写过去。
+    // 只建关系的话本体长大了、图没变好——那些事实会继续是"有关联"
+    mutationFn: (p: {
+      key: string;
+      label: string;
+      temporal?: string;
+      functional?: boolean;
+      forms?: string[];
+    }) =>
+      p.forms?.length
+        ? api.adoptPredicate(kbId, {
+            key: p.key,
+            label: p.label,
+            temporal: p.temporal ?? "state",
+            functional: p.functional ?? false,
+            forms: p.forms,
+          })
+        : api.createRelationType(kbId, {
+            key: p.key,
+            label: p.label,
+            temporal: p.temporal ?? "state",
+            functional: p.functional ?? false,
+          }),
+    onSuccess: (data, p) => {
+      const d = data as { remapped?: number; batch?: string };
+      const moved = d.remapped ?? 0;
+      toast.success(moved > 0 ? S.ontology.adopted(moved) : S.toast.added);
+      // 撤销的把手：采纳改写了成批事实，没有回头路的话没人敢点第一下
+      if (moved > 0 && d.batch) setLastAdopt({ batches: [d.batch], key: p.key, moved });
       setProposals(
         (prev) =>
           prev && { ...prev, relation_types: prev.relation_types.filter((x) => x.key !== p.key) },
       );
       api.dismissMiss(kbId, "relation_type", p.key).catch(() => {});
+      onChanged();
+    },
+    onError,
+  });
+
+  // 逐条串行而不是加个批量端点：每个谓词各有自己的批次和撤销粒度，
+  // 而且部分失败能如实报告（"5 个成功，1 个 key 已存在"）而不是整批回滚
+  const addAll = useMutation({
+    mutationFn: async (all: OntologyProposals) => {
+      const batches: string[] = [];
+      let moved = 0;
+      const failed: string[] = [];
+      for (const p of all.entity_types) {
+        try {
+          await api.createEntityType(kbId, { key: p.key, label: p.label });
+        } catch {
+          failed.push(p.key);
+        }
+      }
+      for (const p of all.relation_types) {
+        try {
+          if (p.forms?.length) {
+            const r = await api.adoptPredicate(kbId, {
+              key: p.key,
+              label: p.label,
+              temporal: p.temporal ?? "state",
+              functional: p.functional ?? false,
+              forms: p.forms,
+            });
+            moved += r.remapped;
+            if (r.remapped > 0) batches.push(r.batch);
+          } else {
+            await api.createRelationType(kbId, {
+              key: p.key,
+              label: p.label,
+              temporal: p.temporal ?? "state",
+              functional: p.functional ?? false,
+            });
+          }
+        } catch {
+          failed.push(p.key);
+        }
+      }
+      return { batches, moved, failed };
+    },
+    onSuccess: (r) => {
+      if (r.failed.length) toast.error(S.ontology.addAllPartial(r.failed));
+      else toast.success(S.ontology.adopted(r.moved));
+      if (r.batches.length) setLastAdopt({ batches: r.batches, key: S.ontology.addAllLabel, moved: r.moved });
+      setProposals(null);
+      onChanged();
+    },
+    onError,
+  });
+
+  const unadopt = useMutation({
+    mutationFn: async (batches: string[]) => {
+      let reverted = 0;
+      for (const b of batches) reverted += (await api.unadoptPredicate(kbId, b)).reverted;
+      return { reverted };
+    },
+    onSuccess: (r) => {
+      toast.success(S.ontology.reverted(r.reverted));
+      setLastAdopt(null);
       onChanged();
     },
     onError,
@@ -1174,9 +1276,46 @@ function MissesPanel({
         </div>
       )}
 
+      {/* 采纳改写了成批事实——没有回头路的话没人敢点第一下 */}
+      {lastAdopt && (
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+          <span className="text-xs text-neutral-300">
+            {S.ontology.undoAdopt(lastAdopt.key, lastAdopt.moved)}
+          </span>
+          <span className="text-[11px] text-neutral-600">{S.ontology.undoKeepsRelation}</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto"
+            disabled={unadopt.isPending}
+            onClick={() => unadopt.mutate(lastAdopt.batches)}
+          >
+            {S.ontology.undoAdoptBtn}
+          </Button>
+        </div>
+      )}
+
       {proposals && (
         <div className="mt-4 border-t border-white/10 pt-3">
-          <h4 className="text-xs font-bold text-neutral-400 mb-2">{S.ontology.proposals}</h4>
+          <div className="mb-2 flex items-center gap-2">
+            <h4 className="text-xs font-bold text-neutral-400">{S.ontology.proposals}</h4>
+            {/* 常见情形是"这些都对"——一条条点是把一个决定拆成八个 */}
+            {proposals.relation_types.length + proposals.entity_types.length > 1 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                disabled={addAll.isPending}
+                onClick={() => addAll.mutate(proposals)}
+              >
+                {addAll.isPending
+                  ? S.ontology.addingAll
+                  : S.ontology.addAll(
+                      proposals.relation_types.length + proposals.entity_types.length,
+                    )}
+              </Button>
+            )}
+          </div>
           <div className="space-y-1.5">
             {proposals.entity_types.map((p) => (
               <div key={p.key} className="flex items-center gap-2 text-sm">
@@ -1200,6 +1339,16 @@ function MissesPanel({
                 <span className="font-mono text-neutral-300">{p.key}</span>
                 <span className="text-neutral-200">{p.label}</span>
                 {p.temporal && <Chip tone="neutral">{p.temporal}</Chip>}
+                {/* 影响面：采纳后会改写多少条、归并了哪些写法。没有这个，
+                    "approve" 就只是凭空多一个空关系 */}
+                {!!p.forms?.length && (
+                  <span
+                    className="text-xs text-[var(--u-accent)]"
+                    title={p.forms.join(" · ")}
+                  >
+                    {S.ontology.willRemap(factsWaiting(p.forms))}
+                  </span>
+                )}
                 {p.reason && <span className="text-xs text-neutral-500 truncate">{p.reason}</span>}
                 <Button
                   size="sm"
