@@ -4,7 +4,7 @@
 
 **人类首个开源的企业世界模型。**
 
-[世界观](#项目的世界观) · [快速开始](#快速开始) · [功能](#功能) · [配置](#配置) · [路线图](#路线图) · [English](README.md)
+[世界观](#项目的世界观) · [快速开始](#快速开始) · [功能](#功能) · [路线图](#路线图) · [English](README.md)
 
 [![CI](https://github.com/deeplethe/utopia/actions/workflows/ci.yml/badge.svg)](https://github.com/deeplethe/utopia/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -113,7 +113,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 | | |
 |---|---|
-| **摄入** | 支持 PDF、DOCX、PPTX、XLSX/XLS/ODS、CSV/TSV、Markdown、HTML 和纯文本，自动识别中文编码。网页和 RSS 可按 cron 定时同步，也可以通过来源级 ingest token 从任何地方推送文档。解析失败的文档可以原地重处理，无需重新上传；整个来源或整个知识库也可以批量重抽。 |
+| **知识摄入** | 支持 PDF、DOCX、PPTX、XLSX/XLS/ODS、CSV/TSV、Markdown、HTML 和纯文本，自动识别中文编码。网页和 RSS 可按 cron 定时同步，也可以通过来源级 ingest token 从任何地方推送文档。解析失败的文档可以原地重处理，无需重新上传；整个来源或整个知识库也可以批量重抽。 |
 | **搜索与对话** | 混合检索采用 Tantivy 全文搜索和 pgvector 向量搜索，并通过 RRF 融合结果；中文全文检索使用 jieba 分词。回答支持流式输出和引用角标，点击引用可直接跳到原文段落。LLM 走 OpenAI 兼容协议，DeepSeek、Qwen、GLM、Ollama、vLLM 都可以接入，整套系统也可以运行在完全内网环境。 |
 | **本体与冷启动** | 建库即自带一套内置本体（人、组织、项目、产品、事件、概念、地点，及其间的关系），无需先设计模型就能开始摄入。抽取过程中遇到本体之外的类型与谓语，会被记录并计数；高频项可由模型给出扩充建议，确认后并入本体。本体因此随语料生长，而不是要求你在第一天就把世界定义完整。 |
 | **双时态图谱** | 基于可编辑的本体进行 LLM 抽取，生成实体与事实。每条事实都带有效区间与对应的证据行。修正事实时不会覆盖旧版本，而是闭合旧事实并链上新版本。图谱与邻域查询都可以指定任意历史时点回读。实体面板同时展示两条时间线：一件事在现实中何时成立，以及系统何时形成这一判断、又何时改变判断。 |
@@ -128,15 +128,17 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 依赖：Docker（本地开发另需 Rust 1.85+、Node 20+、pnpm）。
 
+通过预构建镜像快速启动：
+
 ```bash
 git clone https://github.com/deeplethe/utopia.git
 cd utopia
 docker compose --profile app up -d
 ```
 
-打开 http://localhost:1516 注册 —— 第一个账号即管理员，公共知识库 `General` 会一并建好。然后在设置里填一个 OpenAI 兼容端点，把文件拖进去。
+打开 http://localhost:1516 注册 —— 第一个账户自动成为管理员，同时系统会创建所有人可读的公共知识库。摄入文档前，请先在系统设置里配置模型端点（chat 与 embedding：推荐 DeepSeek-V3 与 bge-m3）。
 
-这会从 `ghcr.io/deeplethe/utopia` 拉预构建镜像。上传的原始文件与全文索引在 `./data`，备份时和数据库一起带上。改了代码、或者想跑未发布的版本，则从源码构建：
+或者从源码构建：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app up -d --build
@@ -155,21 +157,6 @@ cargo run -p utopia-server
 cd web && pnpm install && pnpm dev
 ```
 
-## 配置
-
-所有配置都是 `UTOPIA_` 前缀的环境变量，复制 [.env.example](.env.example) 为 `.env` 即可开始。
-
-| 变量 | 默认值 | 用途 |
-|---|---|---|
-| `UTOPIA_DATABASE_URL` | `postgres://utopia:utopia@localhost:5432/utopia` | Postgres 连接串 |
-| `UTOPIA_BIND_ADDR` | `0.0.0.0:1516` | 监听地址 |
-| `UTOPIA_JWT_SECRET` | `dev-secret-change-me` | **生产环境必须修改** |
-| `UTOPIA_WEB_DIST` | `web/dist` | 前端构建产物；存在时由服务端托管 SPA |
-| `UTOPIA_DATA_DIR` | `data` | 原始文件与全文索引 |
-| `UTOPIA_OPEN_REGISTRATION` | `true` | 为 false 时仅首个账号可自助注册 |
-
-LLM 的端点、模型和 API Key 在界面里配置，不走环境变量。
-
 ## 架构
 
 ```
@@ -187,8 +174,6 @@ utopia-ingest  utopia-search  utopia-extract  utopia-llm
               PostgreSQL + pgvector
 ```
 
-Rust（axum · sqlx · tokio · tantivy）+ PostgreSQL/pgvector 作为唯一外部依赖。后台任务走 `SKIP LOCKED` 任务表，启动时自动接管孤儿任务。
-
 ## 路线图
 
 - **执行校验层** —— 「世界铁律」所说的闸门：Agent 的每一次调用在执行前先过本体规则与符号逻辑，通不过就不许落地。
@@ -198,13 +183,9 @@ Rust（axum · sqlx · tokio · tantivy）+ PostgreSQL/pgvector 作为唯一外�
 
 ## 当前状态
 
-Utopia 目前是 **v0.1**，由一名维护者在持续开发。可用，但 schema 在版本之间仍会变化。部署前有三件事值得知道：
+Utopia 仍处于 **v0.1**。数据库 schema 会随版本演进，迁移只前滚、不提供回退 —— 生产环境请用 `UTOPIA_IMAGE` 锁定具体版本，并在升级前备份数据库与 `data` 目录。
 
-- 界面里录入的凭据 —— LLM API Key 和数据库连接串 —— 在 Postgres 里是**明文存储**的。静态加密是 1.0 前的硬化项，请部署在可信网络内。
-- 登录 Cookie 目前不带 `Secure` 标志，明文 HTTP 下传输的 token 会暴露。请放在反向代理之后并启用 TLS。
-- 暂不保证升级路径。迁移会自动前滚，但如果在意数据，请锁定版本。
-
-欢迎 issue 和 PR。
+部署到公网之前请读一下 [SECURITY.md](SECURITY.md)。欢迎 issue 和 PR。
 
 ## License
 
