@@ -100,7 +100,10 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let my_epoch = utopia_store::documents::extract_epoch(&state.pool, document_id).await?;
     utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
     state.emit_document(doc.kb_id, document_id);
-    utopia_store::graph::ensure_default_ontology(&state.pool, doc.kb_id).await?;
+    let kb_lang = utopia_store::kbs::get(&state.pool, doc.kb_id)
+        .await?
+        .ontology_lang;
+    utopia_store::graph::ensure_default_ontology(&state.pool, doc.kb_id, &kb_lang).await?;
 
     let etypes = utopia_store::graph::entity_types(&state.pool, doc.kb_id).await?;
     let rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;
@@ -185,6 +188,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let chunks = utopia_store::documents::chunks_for_extraction(&state.pool, document_id).await?;
 
     let mut doc_cache: HashMap<(Uuid, String), Uuid> = HashMap::new();
+    // 本文档已经认下的实体，按首次出现排序，送进后续分块的提示词。
+    //
+    // **按 entity_id 去重，不按名字**：第 3 块写"上海研究院"若消解到了第 1 块的
+    // "星云科技上海研究院"，那它不该以第二个名字进清单——清单里每个实体只有
+    // 一个展示形态，就是这篇文档第一次用的那个。中文里全称先出现，所以这也是较全的那个。
+    let mut doc_entities: Vec<(Uuid, String, String)> = Vec::new();
     let mut needs_adjudication = false;
     let mut conflicts_found = false;
     let mut fact_count = 0usize;
@@ -198,12 +207,17 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             return Ok(());
         }
         let ctx: Option<&[f32]> = chunk.embedding.as_ref().map(|v| v.as_slice());
+        let known: Vec<(String, String)> = doc_entities
+            .iter()
+            .map(|(_, k, n)| (k.clone(), n.clone()))
+            .collect();
         let messages = utopia_extract::build_messages(
             &type_pairs,
             &rel_pairs,
             &attr_lines,
             doc_time.as_deref(),
             &doc.filename,
+            &known,
             &chunk.text,
         );
         // 按模型限流：许可持有到调用结束，超出限额的分块在这里排队而不是打爆供应商
@@ -264,6 +278,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             .await?;
             if let Some(p) = proposed {
                 let _ = utopia_store::resolution::set_proposed_type(&state.pool, id, p).await;
+            }
+            // 只记模型自己声明过类型的：主宾兜底那条路一律按 concept 消解，
+            // 把一个猜出来的类型放进清单等于让后续分块照着猜的抄
+            if !doc_entities.iter().any(|(eid, _, _)| *eid == id) {
+                let tk = type_key_by_id.get(&type_id).copied().unwrap_or("concept");
+                doc_entities.push((id, tk.to_string(), name.to_string()));
             }
             entity_ids.insert(name.to_string(), id);
             entity_type_of.insert(name.to_string(), type_id);

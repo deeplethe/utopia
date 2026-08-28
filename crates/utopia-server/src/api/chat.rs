@@ -237,9 +237,9 @@ pub async fn chat(
     const NO_MODEL: &str = "Chat model not configured. Go to Settings → Models.";
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
-        .ok_or_else(|| AppError::Validation(NO_MODEL.into()))?;
-    let client =
-        llm_util::chat_client(&settings).ok_or_else(|| AppError::Validation(NO_MODEL.into()))?;
+        .ok_or_else(|| AppError::invalid("no_chat_model", NO_MODEL))?;
+    let client = llm_util::chat_client(&settings)
+        .ok_or_else(|| AppError::invalid("no_chat_model", NO_MODEL))?;
 
     let query = req.message.trim().to_string();
     if query.is_empty() {

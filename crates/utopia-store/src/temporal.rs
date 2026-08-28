@@ -358,8 +358,9 @@ pub async fn resolve_conflict(
     let stored = match resolution {
         "close" => {
             let at = close_at.or(new_from).ok_or_else(|| {
-                utopia_core::AppError::Validation(
-                    "close_at is required when the new fact has no start time".into(),
+                utopia_core::AppError::invalid(
+                    "close_at_required",
+                    "close_at is required when the new fact has no start time",
                 )
             })?;
             close_superseded(pool, old_fact_id, at).await?;

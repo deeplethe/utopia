@@ -22,9 +22,10 @@
 
 | | 文档 | 状态 |
 |---|---|---|
-| 0001 | [本体导入与治理路线](0001-ontology-import-and-governance.md) | 进行中 · P0/P1 已建成，P2–P5 未开工 |
+| 0001 | [本体导入与治理路线](0001-ontology-import-and-governance.md) | 进行中 · P0/P1/P2 已建成，P2c 与 P3–P5 未开工 |
 | 0002 | [推理机](0002-reasoning-engine.md) | 规划中 · 取代 0001 P5 的排期 |
 | 0003 | [本体从语料里长出来，人站在哪一环](0003-ontology-growth-loop.md) | 已建成 · 含三次判断变化的留痕 |
+| 0004 | [语言：哪些字跟着看的人走，哪些跟着语料走](0004-language-and-localization.md) | 规划中 · L0–L3 |
 
 ## 不放这里的东西
 

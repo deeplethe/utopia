@@ -45,12 +45,8 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
         let items =
             utopia_store::resolution::pending_adjudications(&state.pool, kb_id, 500).await?;
         for item in items {
-            utopia_store::resolution::escalate_review(
-                &state.pool,
-                item.id,
-                "chat model not configured — needs human review",
-            )
-            .await?;
+            utopia_store::resolution::escalate_review(&state.pool, item.id, "escalate_no_model")
+                .await?;
         }
         state.emit_review(kb_id);
         return Ok(());
@@ -130,7 +126,7 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
                     utopia_store::resolution::escalate_review(
                         &state.pool,
                         item.id,
-                        "adjudicator returned no verdict — needs human review",
+                        "escalate_no_verdict",
                     )
                     .await?;
                 }
@@ -155,7 +151,7 @@ async fn apply_verdict(
             let (target, source) =
                 utopia_store::resolution::merge_direction(&state.pool, item.left.id, item.right.id)
                     .await?;
-            let reason = format!("auto-merge: {via} same (confidence {conf:.2})");
+            let reason = format!("auto_merged|{via} {conf:.2}");
             match utopia_store::resolution::merge_entities(
                 &state.pool,
                 kb_id,
@@ -194,7 +190,7 @@ async fn apply_verdict(
                     utopia_store::resolution::escalate_review(
                         &state.pool,
                         item.id,
-                        "entity changed during adjudication — needs human review",
+                        "escalate_entity_changed",
                     )
                     .await?;
                 }
@@ -206,7 +202,7 @@ async fn apply_verdict(
                 &state.pool,
                 item.id,
                 "kept",
-                &format!("{via} different (confidence {conf:.2})"),
+                &format!("kept_apart|{via} {conf:.2}"),
             )
             .await?;
             let _ = utopia_store::audit::record_opt(
@@ -227,7 +223,7 @@ async fn apply_verdict(
             utopia_store::resolution::escalate_review(
                 &state.pool,
                 item.id,
-                &format!("{via} unsure (confidence {conf:.2}) — needs human review"),
+                &format!("escalate_unsure|{via} {conf:.2}"),
             )
             .await?;
         }

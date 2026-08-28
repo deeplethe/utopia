@@ -29,6 +29,9 @@ pub struct UpdateKbReq {
     /// 自动扩本体开关（缺省开；关掉不影响"留意"，只是变成你点一下的提案）
     #[serde(default)]
     pub auto_extend_ontology: Option<bool>,
+    /// 本体语言（`en` | `zh`）：跟语料走，不跟界面走。见 docs/decisions/0004
+    #[serde(default)]
+    pub ontology_lang: Option<String>,
 }
 
 /// 用户可见的 KB 列表（restricted 库仅矩阵成员与系统管理员可见）。
@@ -53,7 +56,7 @@ pub async fn create(
 ) -> ApiResult<Json<KnowledgeBase>> {
     let name = req.name.trim();
     if name.is_empty() || name.chars().count() > 64 {
-        return Err(AppError::Validation("Name must be 1-64 characters".into()).into());
+        return Err(AppError::invalid("bad_name", "Name must be 1-64 characters").into());
     }
     let kind = req.kind.as_deref().unwrap_or("knowledge");
     if !matches!(kind, "knowledge" | "memory") {
@@ -76,7 +79,7 @@ pub async fn create(
     )
     .await?;
     if let Some(v) = req.visibility.as_deref() {
-        utopia_store::kbs::update(&state.pool, kb.id, None, None, Some(v), None).await?;
+        utopia_store::kbs::update(&state.pool, kb.id, None, None, Some(v), None, None).await?;
     }
     utopia_store::access::set_kb_member(&state.pool, kb.id, user.id, "admin", Some(user.id))
         .await?;
@@ -150,6 +153,7 @@ pub async fn update(
         req.description.as_deref(),
         req.visibility.as_deref(),
         req.auto_extend_ontology,
+        req.ontology_lang.as_deref(),
     )
     .await?;
     // 审计只记不阻断

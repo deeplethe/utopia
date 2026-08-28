@@ -27,16 +27,18 @@ pub struct LoginReq {
 
 fn validate_register(req: &RegisterReq) -> Result<(), AppError> {
     if !req.email.contains('@') || req.email.len() > 254 {
-        return Err(AppError::Validation("Invalid email address".into()));
+        return Err(AppError::invalid("bad_email", "Invalid email address"));
     }
     if req.password.chars().count() < 8 {
-        return Err(AppError::Validation(
-            "Password must be at least 8 characters".into(),
+        return Err(AppError::invalid(
+            "password_too_short",
+            "Password must be at least 8 characters",
         ));
     }
     if req.display_name.trim().is_empty() || req.display_name.chars().count() > 64 {
-        return Err(AppError::Validation(
-            "Display name must be 1-64 characters".into(),
+        return Err(AppError::invalid(
+            "bad_display_name",
+            "Display name must be 1-64 characters",
         ));
     }
     Ok(())
@@ -181,7 +183,9 @@ pub async fn update_me(
 ) -> ApiResult<Json<User>> {
     let name = req.display_name.trim();
     if name.is_empty() || name.chars().count() > 64 {
-        return Err(AppError::Validation("Display name must be 1-64 characters".into()).into());
+        return Err(
+            AppError::invalid("bad_display_name", "Display name must be 1-64 characters").into(),
+        );
     }
     let updated = utopia_store::accounts::update_display_name(&state.pool, user.id, name).await?;
     Ok(Json(updated))
@@ -200,10 +204,14 @@ pub async fn change_password(
     Json(req): Json<ChangePasswordReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     if !auth::verify_password(&req.current_password, &user.password_hash) {
-        return Err(AppError::Validation("Current password is incorrect".into()).into());
+        return Err(AppError::invalid("wrong_password", "Current password is incorrect").into());
     }
     if req.new_password.chars().count() < 8 {
-        return Err(AppError::Validation("Password must be at least 8 characters".into()).into());
+        return Err(AppError::invalid(
+            "password_too_short",
+            "Password must be at least 8 characters",
+        )
+        .into());
     }
     let hash = auth::hash_password(&req.new_password)?;
     utopia_store::accounts::update_password(&state.pool, user.id, &hash).await?;

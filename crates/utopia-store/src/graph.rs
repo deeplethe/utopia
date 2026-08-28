@@ -215,10 +215,132 @@ const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool, &str)] = &[
     ),
 ];
 
+/// 内置本体的中文措辞：`key → (label, description)`。
+///
+/// **只覆盖 label 与 description**。颜色、形状、时态、函数性与语言无关，
+/// 在上面那两张表里只有一份——复制一遍迟早会漂移。
+///
+/// 两条写法上的规矩，都不是文风问题：
+///
+/// 1. **描述里提到其它类型时用 key，不用 label。** 中文库的 label 是「人物」，
+///    但模型必须输出 `person`。描述逐字进提示词，写「那些属于人物」等于教模型
+///    输出一个不存在的类型。
+/// 2. **负面例子是干活的那半。** 模型的错误集中在相邻类的边界上，不在类的中心；
+///    "什么不算" 比 "什么算" 更能改变结果（`product` 加上 GPU 那句反例后，
+///    真实语料上误标从 37.2% 降到 8.6%）。所以这不是翻译，是用中文重写一遍。
+const ENTITY_TEXT_ZH: &[(&str, &str, &str)] = &[
+    (
+        "person",
+        "人物",
+        "有名有姓的具体的人。**不是**职务、头衔或团队——那些属于 concept 或 organization。",
+    ),
+    (
+        "organization",
+        "组织",
+        "作为一个整体行动的人的集合：公司、机构、政府部门、团队。包括事业部与有名字的小组。\
+         **不包括它做出来的产品**。",
+    ),
+    (
+        "project",
+        "项目",
+        "有起点也有终点的、有名字的计划、工程或一批工作。**不是**已经发布的产品，\
+         也不是承担它的那个 organization。",
+    ),
+    (
+        "metric",
+        "指标",
+        "可度量、可聚合的量——营收、时延、人数。指**被数的那个东西本身**，\
+         不是某一次量出来的具体数值。",
+    ),
+    (
+        "dimension",
+        "维度",
+        "指标可以被拆开看的那个轴——地区、渠道、产品线。指**轴本身**，不是轴上的某个取值。",
+    ),
+    (
+        "product",
+        "产品",
+        "可以购买、下载、游玩或订阅的**具体**产物：一台设备、一个模型、一项服务、\
+         一个应用或一部作品。**泛指的能力、品类或技术是 concept，不是 product**——\
+         「GeForce RTX 5090」是 product，「GPU」是 concept。",
+    ),
+    (
+        "event",
+        "事件",
+        "在某个时间点发生或将要发生的事——发布、收购、大会、故障。\
+         **不是**这件事发生在谁身上的那个「谁」。",
+    ),
+    (
+        "concept",
+        "概念",
+        "一个想法、能力、品类、标准、技术或领域——泛指而非特指。\
+         用于「推理」「GPU」「零信任」这类。**不要拿它当兜底**：\
+         原文若点名了具体的产品、组织或人，就用那个类型；\
+         若点的是本体里没有对应类型的东西，直说没有，别往这里塞（见类型规则）。",
+    ),
+    (
+        "location",
+        "地点",
+        "一个地方——国家、地区、城市、园区、场所。**不是**总部设在那里的那个 organization。",
+    ),
+];
+
+/// 关系的中文措辞。label 是**动词短语**，读起来要能接上主宾：
+/// 「张三 —任职于→ 星云科技」。
+const RELATION_TEXT_ZH: &[(&str, &str, &str)] = &[
+    ("works_at", "任职于", "一个人受雇于某个组织，或隶属于它。"),
+    ("leads", "领导", "一个人领导一个组织、项目或团队。"),
+    ("reports_to", "汇报给", "组织架构里一个人的直属上级。"),
+    (
+        "part_of",
+        "属于",
+        "主语是宾语的组成部分或成员——系统的一个模块、公司内部的一个团队。\
+         **不是「可以在……上用」**：一款游戏能在某个服务上玩，不等于它属于那个服务。\
+         也不是泛泛的「有关联」。",
+    ),
+    ("participates_in", "参与", "主语参与某个事件、计划或行动。"),
+    ("located_in", "位于", "主语在物理上处在某个地方。"),
+    ("produces", "出品", "一个组织或项目制造、发布或推出了宾语。"),
+    (
+        "alias_of",
+        "别名",
+        "同一个东西的两个名字——缩写、代号或曾用名。",
+    ),
+    (
+        "related_to",
+        "相关",
+        "代码层面的兜底，给本体表达不了的谓词用。**刻意不出现在抽取提示词里**：\
+         给了兜底选项，模型就会去拿它，而不去说原文究竟说了什么。",
+    ),
+    (
+        "mapped_to",
+        "映射到",
+        "一个业务概念映射到一份具体的数据资产——语义层里「这个东西怎么算」的定义。",
+    ),
+];
+
+/// 取某个 key 在给定语言下的 (label, description)；没有该语言的措辞就回落到英文。
+///
+/// 回落是必须的：中文表漏了一条不该让建库失败，只该让那一条是英文。
+fn localized(
+    table: &'static [(&'static str, &'static str, &'static str)],
+    key: &str,
+    lang: &str,
+    fallback: (&'static str, &'static str),
+) -> (&'static str, &'static str) {
+    if lang == "zh" {
+        if let Some((_, label, description)) = table.iter().find(|(k, _, _)| *k == key) {
+            return (label, description);
+        }
+    }
+    fallback
+}
+
 /// 建库时铺内置本体。**已存在的行只补空描述，不覆盖人写过的**——种子里的描述是
 /// 缺省值不是权威，用户按自己的语料调过之后不该被下一次调用抹掉。
-pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid) -> AppResult<()> {
-    for (key, label, color, shape, description) in DEFAULT_ENTITY_TYPES {
+pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid, lang: &str) -> AppResult<()> {
+    for (key, en_label, color, shape, en_description) in DEFAULT_ENTITY_TYPES {
+        let (label, description) = localized(ENTITY_TEXT_ZH, key, lang, (en_label, en_description));
         sqlx::query(
             "INSERT INTO entity_types (id, kb_id, key, label, color, shape, builtin, description)
              VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7)
@@ -236,9 +358,11 @@ pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid) -> AppResult<()
         .execute(pool)
         .await?;
     }
-    for (key, label, temporal, functional, inverse_functional, description) in
+    for (key, en_label, temporal, functional, inverse_functional, en_description) in
         DEFAULT_RELATION_TYPES
     {
+        let (label, description) =
+            localized(RELATION_TEXT_ZH, key, lang, (en_label, en_description));
         sqlx::query(
             "INSERT INTO relation_types
                 (id, kb_id, key, label, temporal, functional, inverse_functional, builtin,
@@ -713,11 +837,17 @@ pub async fn update_entity(
         Some(raw) => {
             let n = raw.trim();
             if n.is_empty() {
-                return Err(AppError::Validation("Name cannot be empty".into()));
+                return Err(AppError::invalid(
+                    "entity_name_required",
+                    "Name cannot be empty",
+                ));
             }
             // 与抽取侧同一上限：越过这条线的多半是整句被当成了名字
             if n.chars().count() > 100 {
-                return Err(AppError::Validation("Name is too long (max 100)".into()));
+                return Err(AppError::invalid(
+                    "entity_name_too_long",
+                    "Name is too long (max 100)",
+                ));
             }
             Some(n)
         }
@@ -732,8 +862,9 @@ pub async fn update_entity(
                 .fetch_optional(pool)
                 .await?;
         if exists.is_none() {
-            return Err(AppError::Validation(
-                "No such entity type in this KB".into(),
+            return Err(AppError::invalid(
+                "unknown_entity_type",
+                "No such entity type in this KB",
             ));
         }
     }

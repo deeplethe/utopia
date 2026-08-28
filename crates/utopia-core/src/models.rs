@@ -628,6 +628,10 @@ pub struct KnowledgeBase {
     /// 缺省开——新库的十个默认关系不是任何人选的，等人手工补齐之前图基本没法用。
     /// 关掉不影响"留意"：未匹配统计照常累积、照常可见，只是变成你点一下的提案。
     pub auto_extend_ontology: bool,
+    /// 内置本体按哪种语言播种，以及新的类/关系描述写成哪种语言（`en` | `zh`）。
+    /// **跟语料走，不跟界面走**——description 的读者是正在读这些文档的模型。
+    /// 见 docs/decisions/0004。
+    pub ontology_lang: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

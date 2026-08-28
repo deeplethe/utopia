@@ -231,9 +231,11 @@ pub async fn delete(
     // Memory 来源常驻：记忆空间不因来源整理而蒸发（记忆文档本身可在 Library 删除）
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
     if source.kind == utopia_store::memory::MEMORY_SOURCE_KIND {
-        return Err(
-            utopia_core::AppError::Validation("The Memory source is permanent.".into()).into(),
-        );
+        return Err(utopia_core::AppError::invalid(
+            "memory_source_permanent",
+            "The Memory source is permanent.",
+        )
+        .into());
     }
     utopia_store::sources::delete(&state.pool, source_id).await?;
     state.emit_source(kb_id);

@@ -54,7 +54,9 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         return Ok(());
     }
 
-    let proposals = ontology_routes::build_proposals(state, kb_id).await?;
+    // 自动那条路没有人类调用者，reason 也不会被展示（lastAutoExtension 不回它），
+    // 所以 reason 的语言无所谓——description 的语言才要紧，那个跟库走
+    let proposals = ontology_routes::build_proposals(state, kb_id, "en").await?;
     let relations = proposals
         .get("relation_types")
         .and_then(|v| v.as_array())

@@ -1,12 +1,66 @@
-// i18n shell: all UI strings live here, English-only for now.
-// Later: swap this module for a real i18n runtime (i18next) without touching components.
-export const S = {
+// 英文语言包。这一份是**结构的权威**：`Strings = typeof en`，其余语言包按它定型，
+// 漏一条就编译不过（见 docs/decisions/0004）。
+//
+// 加新文案时先加在这里，再补其余语言包——顺序反了会得到一个类型错误，那正是本意。
+export const en = {
   app: {
     name: "Utopia",
     tagline: "The living memory of your organization",
     siteUrl: "https://utopia.bi",
     docsUrl: "https://utopia.bi/docs",
   },
+  /** 服务端校验错误的措辞。key = 服务端给的 code；缺一条就退回英文原句，不会崩。
+      契约守卫（调错接口才碰得到）刻意不在这里——它们的读者是开发者 */
+  err: {
+    bad_email: "That doesn't look like an email address.",
+    password_too_short: "Password must be at least 8 characters.",
+    bad_display_name: "Display name must be 1-64 characters.",
+    wrong_password: "Current password is incorrect.",
+    registration_closed:
+      "Sign-up is closed on this deployment — ask an administrator for an account.",
+    no_chat_model:
+      "No chat model configured yet. Set one under Settings → Models.",
+    bad_upload: "That upload could not be read.",
+    upload_read_failed: "The file could not be read to the end.",
+    no_files: "No file was attached.",
+    upload_needs_folder: "Files can only be uploaded into a folder source.",
+    empty_file: "That file is empty.",
+    file_too_large: "That file is too large — the limit is 8 MB.",
+    bad_ontology_file: "That is not a readable OWL or RDFS file.",
+    bad_name: "Name must be 1-64 characters.",
+    default_kb_open:
+      "The default knowledge base stays open to everyone — create a separate one for private work.",
+    default_kb_undeletable: "The default knowledge base cannot be deleted.",
+    last_owner_demote: "This is the last owner — promote someone else first.",
+    last_owner_remove: "This is the last owner — hand ownership over first.",
+    key_required: "A key is required.",
+    forms_required: "Pick at least one phrase this relation covers.",
+    bad_key:
+      "Keys are lowercase, letters digits and underscores only, up to 40 characters.",
+    self_parent: "A class cannot be its own parent.",
+    attr_needs_class: "An attribute has to belong to a class.",
+    entity_name_required: "Name cannot be empty.",
+    entity_name_too_long: "Name is too long — 100 characters at most.",
+    unknown_entity_type: "That class is not in this ontology.",
+    nothing_to_update: "Nothing to change.",
+    self_merge: "An entity cannot be merged into itself.",
+    close_at_required:
+      "Pick the date this fact ended — the new one does not say when it started.",
+    empty_query: "Type something to search for.",
+    no_data_sources: "No databases are mounted on this knowledge base.",
+    memory_source_permanent:
+      "The Memory source is part of the knowledge base and stays.",
+    source_name_required: "Give this source a name.",
+    bad_cron: "That cron expression could not be parsed.",
+    bad_cron_fields:
+      "A cron expression has five fields: minute hour day month weekday.",
+    ds_name_required: "Give this data source a name.",
+    only_postgres: "Only PostgreSQL is supported for now.",
+    bad_conn_string: "A connection string starts with postgres://",
+    concurrency_range: "Pick a number between 1 and 256.",
+  },
+  /** 机器给的补充（cron 解析器的原话之类）缀在措辞后面 */
+  errDetail: (msg: string, detail: string) => `${msg} (${detail})`,
   toast: {
     saved: "Saved",
     created: "Created",
@@ -32,6 +86,7 @@ export const S = {
     changePassword: "Update password",
     passwordChanged: "Password updated",
     avatarHint: "Avatars are generated from your name for now.",
+    language: "Language",
     kbsNav: "Knowledge bases",
     kbsTitle: "Knowledge bases",
     kbOpen: "Open",
@@ -426,8 +481,12 @@ export const S = {
     evidence: "evidence",
     noEvidence: "No evidence recorded",
     noQuote: "(no quote)",
-    /* 原文说的谓词。词表外的词会被降级成 related to，原意只在这里活着 */
-    proposedPredicate: (p: string) => `the text said “${p}”`,
+    /* 抽取器从原文读出来的谓词，规范成了标识符。词表外的说法会被降级成
+       related to，原意只在这里活着。
+       **措辞不能宣称这是引文**：关系 key 只能是 [a-z0-9_]，所以中文语料里
+       「采购了」出来是 purchases——说"原文说的是 purchases"是假的。
+       逐字原句就在旁边的证据引文里，没丢。 */
+    proposedPredicate: (p: string) => `read from the text as “${p}”`,
     sectionRef: (filename: string, seq: number) =>
       `${filename} · section ${seq} →`,
     fromVersion: (v: number) => `v${v}`,
@@ -523,6 +582,13 @@ export const S = {
         "provider and is per model — a local Ollama may manage two, a hosted API fifty. " +
         "Background work (extraction, resolution, indexing) waits for a slot; chat and search " +
         "never do. Takes effect immediately.",
+      /* 部署级默认值：新建库时用。名字刻意不叫"系统语言" */
+      ontologyLang: "Default ontology language",
+      ontologyLangHint:
+        "The language new knowledge bases start their ontology in — class descriptions go " +
+        "into the extraction prompt, so this follows the documents you expect, not the " +
+        "interface. Each knowledge base can change its own afterwards. " +
+        "Interface language is a per-reader choice in the account menu.",
       modelDefault: "Default",
       modelReset: "Reset",
       modelResetHint:
@@ -762,6 +828,19 @@ export const S = {
       "merge.revert": "Reverted merge",
       "merge.manual": "Merged manually",
     } as Record<string, string>,
+    /** 升格给人裁决的原因。服务端存 code（可选 |detail），措辞在这里 */
+    escalated: {
+      escalate_no_model: "No chat model — the adjudicator could not run",
+      escalate_no_verdict: "The adjudicator returned no verdict",
+      escalate_entity_changed: "The entity changed while being adjudicated",
+      escalate_unsure: "The adjudicator was not confident enough",
+      /* 名字互相包含：等值召回看不见，简称会静默变成第二个实体 */
+      contains: "One name contains the other",
+      ambiguous_name: "Same name, context did not settle it",
+      type_drift: "Same name arrived under a different type",
+      auto_merged: "Merged by the AI adjudicator",
+      kept_apart: "The AI adjudicator judged these different",
+    } as Record<string, string>,
     duplicates: "Possible duplicates",
     duplicatesHint:
       "Same name, different context. The AI adjudicates clear cases in the background; the rest wait for you. Merging is always reversible.",
@@ -825,6 +904,13 @@ export const S = {
       "facts that were waiting for it. Every change is listed and can be undone. Turning this " +
       "off does not stop Utopia from noticing — the phrases still collect under Unmatched, they " +
       "just wait for you to approve them.",
+    /* 语料语言。措辞要把"这不是界面语言"讲清楚，否则一定有人当成界面开关 */
+    ontologyLang: "Language of this ontology",
+    ontologyLangNote:
+      "Which language class and relation descriptions are written in. Those go straight " +
+      "into the extraction prompt, so the reader is the model while it reads your documents — " +
+      "match your documents, not your interface. Changing this does not rewrite what is " +
+      "already here; it decides the language of descriptions written from now on.",
     defaultOpenLabel: "Open to everyone",
     defaultOpenNote:
       "This is the deployment's default knowledge base, so visibility is locked: every member " +
@@ -903,4 +989,7 @@ export const S = {
       viewer: "Viewer",
     },
   },
-} as const;
+};
+
+/** 语言包的结构契约。其余语言包写成 `const zh: Strings = {…}`，漏一条即编译失败 */
+export type Strings = typeof en;

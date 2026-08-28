@@ -98,6 +98,7 @@ impl LlmClient {
         if !status.is_success() {
             anyhow::bail!("LLM request failed ({status}): {}", err_detail(&body));
         }
+        log_usage(&self.model, &body);
         body["choices"][0]["message"]["content"]
             .as_str()
             .map(String::from)
@@ -330,6 +331,30 @@ impl LlmClient {
         }
         Ok(out)
     }
+}
+
+/// 记一次调用的 token 开销。**缓存命中数是这里最重要的一列**：抽取靠
+/// "system 消息在一篇文档内逐块完全相同" 吃供应商的前缀缓存，
+/// 往 system 里塞逐块变化的内容会让它悄悄归零——只有这个数看得见。
+///
+/// 字段名各家不一：OpenAI 用 prompt_tokens_details.cached_tokens，
+/// DeepSeek 用 prompt_cache_hit_tokens。两个都读，谁在读谁。
+fn log_usage(model: &str, body: &serde_json::Value) {
+    let u = &body["usage"];
+    if u.is_null() {
+        return;
+    }
+    let n = |k: &str| u[k].as_u64();
+    let cached = u["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .or_else(|| n("prompt_cache_hit_tokens"));
+    tracing::info!(
+        model,
+        prompt = n("prompt_tokens"),
+        completion = n("completion_tokens"),
+        cached,
+        "llm usage"
+    );
 }
 
 fn err_detail(body: &serde_json::Value) -> String {

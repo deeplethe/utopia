@@ -273,21 +273,105 @@ pub async fn resolve_mention(
     // 走到这里：所有候选都有画像且最高分 < ATTACH → 新建实体（同名不同人）
     let id = create_entity(pool, kb_id, type_id, &name, context).await?;
     refresh_disambiguators(pool, kb_id, &name).await?;
-    let reviews = best_scored
+    let mut reviews = best_scored
         .filter(|(_, sim)| *sim >= SIM_NEW)
         .map(|(c, sim)| {
             vec![ReviewRequest {
                 other_id: c.id,
                 score: sim,
-                reason: format!("ambiguous name match (context similarity {sim:.2})"),
+                reason: format!("ambiguous_name|{sim:.2}"),
             }]
         })
         .unwrap_or_default();
+    // 名字互相包含的既有实体：等值召回看不见它们（前缀枚举不完），
+    // 于是简称会静默变成第二个实体。只入队，不合并
+    reviews.extend(containment_reviews(pool, kb_id, type_id, &name, id, context).await?);
     Ok(Resolution {
         entity_id: id,
         created: true,
         reviews,
     })
+}
+
+/// 包含关系候选的最短边：两个名字里**较短的那个**至少这么长才算数。
+/// 低于它的多是「研究院」「中心」这类通名，配对没有信息量，只会刷爆队列。
+const MIN_CONTAIN_CHARS: i32 = 4;
+
+/// 单次最多产出的包含关系审阅对。与 `MAX_DRIFT_REVIEWS` 同理：
+/// 一个通名可能包含在几十个实体里，全放进去就把队列淹了。
+const MAX_CONTAIN_REVIEWS: i64 = 4;
+
+/// 新建实体之后，找出**名字互相包含**的既有实体，作为审阅候选。
+///
+/// 中文商业文本在一篇之内就会全称转简称（「星云科技上海研究院」→「上海研究院」），
+/// 而 [`recall_keys`] 是等值查：它靠枚举泛用后缀命中反向，可前缀是任意组织名，
+/// **枚举不完**。于是这三类全部漏网，静默变成第二个实体：
+///
+/// ```text
+/// 上海研究院       ⊂ 星云科技上海研究院      后缀被限定
+/// 启明 X7 加速卡   ~ 启明 X7 推理加速卡      中间插词（靠 LIKE 覆盖不到，见下）
+/// 沧海             ⊂ 沧海分布式推理平台 2.0  前缀被扩展
+/// ```
+///
+/// **只出候选，永不自动合并。** 同名候选那条路在相似度 ≥ [`SIM_ATTACH`] 时直接归并，
+/// 包含关系绝不能走它：`华瑞集团技术中心` 与 `星云科技技术中心` 都含「技术中心」，
+/// 同一篇文档里上下文相似度很容易过线，而它们是两个部门。宁分勿合。
+///
+/// **已知不覆盖**：中间插词（`启明 X7 加速卡` 与 `启明 X7 推理加速卡` 谁也不含谁）。
+/// 那要三元组相似度，而 `CREATE EXTENSION pg_trgm` 需要超级权限——本仓库刚改成
+/// 受限角色连库（迁移 0031），装扩展会在部署上失败。留给需要时再说。
+///
+/// **性能**：反向那半（新名字包含旧名字）用不上任何索引，所以这里靠
+/// `kb_id + type_id` 收窄行集并设上限，且只在**新建实体时**跑一次，不是每条 mention。
+/// 大库上如果不够，正解是建一张「后缀键」表走等值查，而不是加模糊索引。
+async fn containment_reviews(
+    pool: &PgPool,
+    kb_id: Uuid,
+    type_id: Uuid,
+    name: &str,
+    new_id: Uuid,
+    ctx: Option<&[f32]>,
+) -> AppResult<Vec<ReviewRequest>> {
+    let lower = name.to_lowercase();
+    if lower.chars().count() < MIN_CONTAIN_CHARS as usize {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(Uuid, String, Option<Vector>)> = sqlx::query_as(
+        "SELECT e.id, e.canonical_name, e.profile_embedding
+         FROM entities e
+         WHERE e.kb_id = $1 AND e.type_id = $2 AND e.merged_into IS NULL
+           AND e.id <> $3
+           AND lower(e.canonical_name) <> $4
+           AND char_length(e.canonical_name) >= $5
+           AND (lower(e.canonical_name) LIKE '%' || $4 || '%'
+                OR $4 LIKE '%' || lower(e.canonical_name) || '%')
+         ORDER BY char_length(e.canonical_name)
+         LIMIT $6",
+    )
+    .bind(kb_id)
+    .bind(type_id)
+    .bind(new_id)
+    .bind(&lower)
+    .bind(MIN_CONTAIN_CHARS)
+    .bind(MAX_CONTAIN_REVIEWS)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, other_name, emb)| {
+            // 分数只是给队列排序用的参考，**不参与是否合并的判断**——
+            // 那个判断本来就不在这条路上
+            let score = ctx
+                .and_then(|x| emb.as_ref().and_then(|p| cosine(p.as_slice(), x)))
+                .unwrap_or(0.0);
+            ReviewRequest {
+                other_id: id,
+                score,
+                reason: format!("contains|{other_name}"),
+            }
+        })
+        .collect())
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -299,12 +383,12 @@ struct CrossCandidate {
     profile_n: i32,
 }
 
+/// `reason` 存 code，措辞归界面（docs/decisions/0004）——这一列不该一半 code
+/// 一半英文句子，那样中文界面上就是一半能翻一半不能。
 fn drift_reason(mention_key: &str, other_key: &str, sim: Option<f32>) -> String {
     match sim {
-        Some(s) => format!("type drift: {mention_key} vs {other_key} (context similarity {s:.2})"),
-        None => {
-            format!("type drift: {mention_key} vs {other_key} (same name, no context to compare)")
-        }
+        Some(s) => format!("type_drift|{mention_key} vs {other_key} {s:.2}"),
+        None => format!("type_drift|{mention_key} vs {other_key}"),
     }
 }
 
@@ -431,6 +515,8 @@ async fn resolve_type_drift(
         }
     }
     reviews.truncate(MAX_DRIFT_REVIEWS);
+    // 漂移这条路一样会新建实体，包含关系照查
+    reviews.extend(containment_reviews(pool, kb_id, type_id, name, id, context).await?);
     Ok(Resolution {
         entity_id: id,
         created: true,
@@ -747,6 +833,10 @@ pub async fn pending_adjudications(
 }
 
 /// LLM 不确定 / 未配模型 → 转人工。
+/// `reason` 存的是 **code**，可选地跟 `|detail`——不是给人看的句子。
+///
+/// 界面语言在客户端（见 docs/decisions/0004），服务端没有 locale 可用来措辞；
+/// 写进这一列的英文散文会永久留在中文界面上。措辞归 i18n，这里只留稳定的 code。
 pub async fn escalate_review(pool: &PgPool, review_id: Uuid, reason: &str) -> AppResult<()> {
     sqlx::query(
         "UPDATE resolution_reviews SET stage = 'human', reason = $2
@@ -891,8 +981,9 @@ pub async fn merge_entities(
     reason: &str,
 ) -> AppResult<Uuid> {
     if source_id == target_id {
-        return Err(AppError::Validation(
-            "Cannot merge an entity into itself".into(),
+        return Err(AppError::invalid(
+            "self_merge",
+            "Cannot merge an entity into itself",
         ));
     }
     let source = entity_full(pool, kb_id, source_id).await?;

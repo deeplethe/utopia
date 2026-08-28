@@ -3,9 +3,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { BookMarked, LogOut, ShieldCheck, UserRound } from "lucide-react";
+import {
+  BookMarked,
+  Check,
+  Languages,
+  LogOut,
+  ShieldCheck,
+  UserRound,
+} from "lucide-react";
 import { api, type User } from "../api";
-import { S } from "../i18n";
+import { LANGS, LANG_NAMES, S, lang, setLang } from "../i18n";
 
 /** 首字母头像：中性灰底（chrome 零色偏），拉丁取词首两枚，CJK 取前两字。 */
 export function Avatar({ name, size = 24 }: { name: string; size?: number }) {
@@ -66,7 +73,11 @@ export function UserMenu({ user }: { user: User }) {
     const panel = panelRef.current;
     const chip = chipRef.current;
     if (closingRef.current) return;
-    if (!panel || !chip || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (
+      !panel ||
+      !chip ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
       setOpen(false);
       return;
     }
@@ -87,7 +98,8 @@ export function UserMenu({ user }: { user: User }) {
   useEffect(() => {
     if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) close();
+      if (rootRef.current && !rootRef.current.contains(e.target as Node))
+        close();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
@@ -151,7 +163,9 @@ export function UserMenu({ user }: { user: User }) {
                   </span>
                 )}
               </div>
-              <div className="truncate text-[11px] text-neutral-500">{user.email}</div>
+              <div className="truncate text-[11px] text-neutral-500">
+                {user.email}
+              </div>
             </div>
           </div>
 
@@ -173,8 +187,30 @@ export function UserMenu({ user }: { user: User }) {
             )}
           </div>
 
+          {/* 界面语言：看的人自己定，不经过后端（docs/decisions/0004）。
+              每个选项用**它自己的语言**写——看不懂英文的人才认得出"中文" */}
           <div className="border-t border-white/10">
-            <button onClick={logout} className={`${item} !text-[var(--u-danger)]`}>
+            <div className="flex items-center gap-2.5 px-3.5 pt-2.5 pb-1 text-[11px] text-neutral-500">
+              <Languages size={13} className="text-neutral-500" />
+              {S.account.language}
+            </div>
+            {LANGS.map((l) => (
+              <button key={l} onClick={() => setLang(l)} className={item}>
+                <span className="w-[13px] shrink-0">
+                  {l === lang && (
+                    <Check size={13} className="text-neutral-400" />
+                  )}
+                </span>
+                {LANG_NAMES[l]}
+              </button>
+            ))}
+          </div>
+
+          <div className="border-t border-white/10">
+            <button
+              onClick={logout}
+              className={`${item} !text-[var(--u-danger)]`}
+            >
               <LogOut size={13} />
               {S.nav.signOut}
             </button>

@@ -17,7 +17,19 @@ pub type ApiResult<T> = Result<T, ApiErr>;
 
 impl IntoResponse for ApiErr {
     fn into_response(self) -> Response {
+        // code 与 detail 只有 Invalid 才有；其余保持原样，转换可以一条条推进
+        let mut code: Option<&'static str> = None;
+        let mut detail: Option<String> = None;
         let (status, message) = match &self.0 {
+            AppError::Invalid {
+                code: c,
+                message,
+                detail: d,
+            } => {
+                code = Some(c);
+                detail.clone_from(d);
+                (StatusCode::UNPROCESSABLE_ENTITY, message.clone())
+            }
             AppError::NotFound => (StatusCode::NOT_FOUND, self.0.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.0.to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, self.0.to_string()),
@@ -38,6 +50,13 @@ impl IntoResponse for ApiErr {
                 )
             }
         };
-        (status, Json(json!({ "error": message }))).into_response()
+        let mut body = json!({ "error": message });
+        if let Some(c) = code {
+            body["code"] = json!(c);
+        }
+        if let Some(d) = detail {
+            body["detail"] = json!(d);
+        }
+        (status, Json(body)).into_response()
     }
 }
