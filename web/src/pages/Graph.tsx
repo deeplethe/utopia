@@ -1511,7 +1511,7 @@ function FactRow({
           </span>
         )}
         {lowConfidence && (
-          <span className="u-chip u-chip-warn shrink-0 !text-[10px] !px-1.5">
+          <span className="shrink-0 u-num u-meta-warn text-[10.5px]">
             {Math.round(fact.confidence * 100)}%
           </span>
         )}

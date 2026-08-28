@@ -255,6 +255,14 @@ select.input-dark option {
   color: var(--u-violet);
 }
 
+/* 浏览态里的程度标注：同一个警示色，但没有填充、没有药丸形状。
+   chip 是"停下来看这个"，用在审核队列上是对的；而在图谱列表里，
+   主角是实体名，置信度和右侧的时间区间同属元信息——不该是整屏
+   唯一有填充色的东西。 */
+.u-meta-warn {
+  color: rgba(242, 182, 109, 0.55);
+}
+
 /* ---- graph canvas: 图纸式大小网格（细密小格 + 每 4 格一条更亮的主线） ---- */
 .u-grid-bg {
   background-image:
