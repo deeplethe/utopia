@@ -4,11 +4,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ChevronRight, Inbox, Plus, Search } from "lucide-react";
+import { ChevronRight, Inbox, Plus, Search, Upload } from "lucide-react";
 import {
   api,
   type EntityTypeView,
+  type ImportPlan,
   type OntologyMiss,
+  type PlannedItem,
   type OntologyProposals,
   type RelationTypeView,
 } from "../api";
@@ -46,6 +48,7 @@ type Sel =
   | { kind: "new-class"; parentId: string | null }
   | { kind: "new-relation" }
   | { kind: "misses" }
+  | { kind: "import" }
   | null;
 
 export function Ontology() {
@@ -62,7 +65,9 @@ export function Ontology() {
     const el = listRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      setRailRows(Math.max(5, Math.floor((el.clientHeight - RAIL_RESERVED) / RAIL_ROW_H)));
+      setRailRows(
+        Math.max(5, Math.floor((el.clientHeight - RAIL_RESERVED) / RAIL_ROW_H)),
+      );
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -74,7 +79,8 @@ export function Ontology() {
     enabled: !!kb,
   });
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["ontology", kb?.id] });
+  const refresh = () =>
+    queryClient.invalidateQueries({ queryKey: ["ontology", kb?.id] });
   // 错误统一走全局 toast，不再用页面内嵌错误行
   const onError = (e: unknown) => toast.error((e as Error).message);
 
@@ -86,9 +92,13 @@ export function Ontology() {
   // 属性不进 Properties 列表：它们挂在类下，在类详情区编辑
   const relations = relation_types.filter((r) => r.kind !== "attribute");
   const selectedClass =
-    sel?.kind === "class" ? (entity_types.find((t) => t.id === sel.id) ?? null) : null;
+    sel?.kind === "class"
+      ? (entity_types.find((t) => t.id === sel.id) ?? null)
+      : null;
   const selectedProp =
-    sel?.kind === "relation" ? (relation_types.find((r) => r.id === sel.id) ?? null) : null;
+    sel?.kind === "relation"
+      ? (relation_types.find((r) => r.id === sel.id) ?? null)
+      : null;
 
   return (
     <div className="h-full flex">
@@ -131,7 +141,10 @@ export function Ontology() {
             </button>
           ))}
         </div>
-        <div ref={listRef} className="flex-1 min-h-0 overflow-hidden px-2 pt-1.5 pb-2 flex flex-col">
+        <div
+          ref={listRef}
+          className="flex-1 min-h-0 overflow-hidden px-2 pt-1.5 pb-2 flex flex-col"
+        >
           {/* 新建行置顶：随当前段建类/建关系 */}
           {!filter.trim() && (
             <button
@@ -143,7 +156,9 @@ export function Ontology() {
               className="w-full flex items-center gap-1.5 rounded-lg px-2 py-2 mb-0.5 text-[13px] text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-200 transition-colors"
             >
               <Plus size={13} />
-              {railTab === "classes" ? S.ontology.newClass : S.ontology.newProperty}
+              {railTab === "classes"
+                ? S.ontology.newClass
+                : S.ontology.newProperty}
             </button>
           )}
           {filter.trim() ? (
@@ -196,6 +211,19 @@ export function Ontology() {
             />
           )}
         </div>
+        {/* 底部常驻：两个"关于本体"的入口——从外部拿一份本体，或看抽取顶回来的信号 */}
+        <button
+          onClick={() => setSel({ kind: "import" })}
+          className={cn(
+            "shrink-0 border-t border-white/10 px-4 py-2.5 flex items-center gap-2 text-[13px] transition-colors",
+            sel?.kind === "import"
+              ? "u-nav-active"
+              : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
+          )}
+        >
+          <Upload size={14} className="text-neutral-500" />
+          <span>{S.ontology.importShort}</span>
+        </button>
         {/* 底部常驻：抽取未匹配信号（有存量时带数量徽标） */}
         <button
           onClick={() => setSel({ kind: "misses" })}
@@ -220,9 +248,18 @@ export function Ontology() {
       <div className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
         {/* 放宽到 6xl 供三列铺开；misses/关系/概览各自带 max-w-xl 内衬不受影响 */}
         <div className="max-w-6xl">
-          {sel?.kind === "misses" ? (
+          {sel?.kind === "import" ? (
             <div className="max-w-xl">
-              <MissesPanel kbId={kb.id} misses={misses} onChanged={refresh} onError={onError} />
+              <ImportPanel kbId={kb.id} onChanged={refresh} onError={onError} />
+            </div>
+          ) : sel?.kind === "misses" ? (
+            <div className="max-w-xl">
+              <MissesPanel
+                kbId={kb.id}
+                misses={misses}
+                onChanged={refresh}
+                onError={onError}
+              />
             </div>
           ) : sel?.kind === "new-class" || selectedClass ? (
             /* lg 两列（表单 | 属性+实例堆叠）；xl 三列并排（包装器 xl:contents 解散入栅格） */
@@ -230,23 +267,32 @@ export function Ontology() {
               <div className="glass rounded-xl p-4">
                 <ClassForm
                   key={
-                    selectedClass?.id ?? `new-${sel?.kind === "new-class" ? sel.parentId : "root"}`
+                    selectedClass?.id ??
+                    `new-${sel?.kind === "new-class" ? sel.parentId : "root"}`
                   }
                   kbId={kb.id}
                   existing={selectedClass}
                   parentId={
-                    sel?.kind === "new-class" ? sel.parentId : (selectedClass?.parent_id ?? null)
+                    sel?.kind === "new-class"
+                      ? sel.parentId
+                      : (selectedClass?.parent_id ?? null)
                   }
                   allTypes={entity_types}
                   onNewSub={
                     selectedClass
-                      ? () => setSel({ kind: "new-class", parentId: selectedClass.id })
+                      ? () =>
+                          setSel({
+                            kind: "new-class",
+                            parentId: selectedClass.id,
+                          })
                       : undefined
                   }
                   onDone={(createdId) => {
                     // 新建成功即选中它：立刻能看到、能继续编辑
                     if (sel?.kind === "new-class")
-                      setSel(createdId ? { kind: "class", id: createdId } : null);
+                      setSel(
+                        createdId ? { kind: "class", id: createdId } : null,
+                      );
                     refresh();
                   }}
                   onError={onError}
@@ -259,7 +305,9 @@ export function Ontology() {
                     kbId={kb.id}
                     type={selectedClass}
                     attributes={relation_types.filter(
-                      (r) => r.kind === "attribute" && r.domain_type_id === selectedClass.id,
+                      (r) =>
+                        r.kind === "attribute" &&
+                        r.domain_type_id === selectedClass.id,
                     )}
                     onChanged={refresh}
                     onError={onError}
@@ -276,7 +324,9 @@ export function Ontology() {
                 existing={selectedProp}
                 onDone={(createdId) => {
                   if (sel?.kind === "new-relation")
-                    setSel(createdId ? { kind: "relation", id: createdId } : null);
+                    setSel(
+                      createdId ? { kind: "relation", id: createdId } : null,
+                    );
                   refresh();
                 }}
                 onError={onError}
@@ -287,9 +337,14 @@ export function Ontology() {
             <div className="glass rounded-xl p-6 max-w-xl">
               <PageTitle className="mb-1">{S.ontology.title}</PageTitle>
               <p className="text-xs text-neutral-500 u-num">
-                {S.ontology.overviewStats(entity_types.length, relations.length)}
+                {S.ontology.overviewStats(
+                  entity_types.length,
+                  relations.length,
+                )}
               </p>
-              <p className="mt-3 text-sm text-neutral-400">{S.ontology.overviewHint}</p>
+              <p className="mt-3 text-sm text-neutral-400">
+                {S.ontology.overviewHint}
+              </p>
             </div>
           )}
         </div>
@@ -315,7 +370,9 @@ function InstancesCard({ kbId, type }: { kbId: string; type: EntityTypeView }) {
   return (
     <div className="glass rounded-xl p-4">
       <div className="mb-1.5 flex items-baseline gap-2">
-        <h3 className="text-sm font-bold text-neutral-200">{S.ontology.instances}</h3>
+        <h3 className="text-sm font-bold text-neutral-200">
+          {S.ontology.instances}
+        </h3>
         <span className="u-num text-xs text-neutral-500">{total}</span>
       </div>
       <div className="divide-y divide-white/[0.06]">
@@ -364,12 +421,18 @@ function AttributesCard({
   return (
     <div className="glass rounded-xl p-4">
       <div className="mb-1 flex items-baseline gap-2">
-        <h3 className="text-sm font-bold text-neutral-200">{S.ontology.attributes}</h3>
+        <h3 className="text-sm font-bold text-neutral-200">
+          {S.ontology.attributes}
+        </h3>
         {attributes.length > 0 && (
-          <span className="u-num text-xs text-neutral-500">{attributes.length}</span>
+          <span className="u-num text-xs text-neutral-500">
+            {attributes.length}
+          </span>
         )}
       </div>
-      <p className="text-xs text-neutral-500 mb-2">{S.ontology.attributesHint}</p>
+      <p className="text-xs text-neutral-500 mb-2">
+        {S.ontology.attributesHint}
+      </p>
       <div className="divide-y divide-white/[0.06]">
         {attributes.map((a) =>
           editing === a.id ? (
@@ -392,8 +455,14 @@ function AttributesCard({
               className="w-full flex items-center gap-2 py-1.5 text-sm text-left text-neutral-300 hover:text-white"
             >
               <span className="truncate">{a.label}</span>
-              <Chip tone="neutral">{S.ontology.datatypeNames[a.datatype ?? "text"]}</Chip>
-              {a.unit && <span className="text-xs text-neutral-500 shrink-0">{a.unit}</span>}
+              <Chip tone="neutral">
+                {S.ontology.datatypeNames[a.datatype ?? "text"]}
+              </Chip>
+              {a.unit && (
+                <span className="text-xs text-neutral-500 shrink-0">
+                  {a.unit}
+                </span>
+              )}
               {a.functional && <Chip tone="info">1:1</Chip>}
               <span className="ml-auto shrink-0 u-num text-[10.5px] text-neutral-600">
                 {S.ontology.usage(a.usage)}
@@ -507,14 +576,22 @@ function AttributeForm({
           </div>
           <div className="flex-1">
             <label className={lbl}>{S.ontology.label}</label>
-            <Input value={label} onChange={(e) => setLabel(e.target.value)} className="w-full" />
+            <Input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              className="w-full"
+            />
           </div>
         </div>
       )}
       {existing && (
         <div>
           <label className={lbl}>{S.ontology.label}</label>
-          <Input value={label} onChange={(e) => setLabel(e.target.value)} className="w-full" />
+          <Input
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            className="w-full"
+          />
         </div>
       )}
       <div className="flex gap-2">
@@ -533,13 +610,23 @@ function AttributeForm({
         <div className="flex-1">
           <label className={lbl}>
             {S.ontology.attrUnit}{" "}
-            <span className="text-neutral-600">({S.ontology.attrUnitHint})</span>
+            <span className="text-neutral-600">
+              ({S.ontology.attrUnitHint})
+            </span>
           </label>
-          <Input value={unit} onChange={(e) => setUnit(e.target.value)} className="w-full" />
+          <Input
+            value={unit}
+            onChange={(e) => setUnit(e.target.value)}
+            className="w-full"
+          />
         </div>
       </div>
       <label className="flex items-center gap-2 text-[13px] text-neutral-300">
-        <input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} />
+        <input
+          type="checkbox"
+          checked={single}
+          onChange={(e) => setSingle(e.target.checked)}
+        />
         {S.ontology.attrSingle}
       </label>
       <div>
@@ -554,7 +641,9 @@ function AttributeForm({
         <Button
           size="sm"
           onClick={() => save.mutate()}
-          disabled={save.isPending || !label.trim() || (!existing && !key.trim())}
+          disabled={
+            save.isPending || !label.trim() || (!existing && !key.trim())
+          }
         >
           {S.ontology.save}
         </Button>
@@ -604,7 +693,11 @@ function ClassTree({
     if (q) {
       // filter 模式：拍平命中项（label/key 都参与匹配）
       return types
-        .filter((t) => t.label.toLowerCase().includes(q) || t.key.toLowerCase().includes(q))
+        .filter(
+          (t) =>
+            t.label.toLowerCase().includes(q) ||
+            t.key.toLowerCase().includes(q),
+        )
         .map((t) => ({ t, depth: 0, hasChildren: false }));
     }
     const children = new Map<string | null, EntityTypeView[]>();
@@ -613,7 +706,8 @@ function ClassTree({
       if (!children.has(p)) children.set(p, []);
       children.get(p)!.push(t);
     }
-    const out: { t: EntityTypeView; depth: number; hasChildren: boolean }[] = [];
+    const out: { t: EntityTypeView; depth: number; hasChildren: boolean }[] =
+      [];
     const walk = (parent: string | null, depth: number) => {
       for (const t of children.get(parent) ?? []) {
         const kids = children.get(t.id) ?? [];
@@ -655,7 +749,10 @@ function ClassTree({
             >
               <ChevronRight
                 size={12}
-                className={cn("transition-transform", !collapsed.has(t.id) && "rotate-90")}
+                className={cn(
+                  "transition-transform",
+                  !collapsed.has(t.id) && "rotate-90",
+                )}
               />
             </span>
           ) : (
@@ -670,7 +767,12 @@ function ClassTree({
           <span className="truncate">{t.label}</span>
         </button>
       ))}
-      <Pager total={rows.length} pageSize={pageSize} page={safe} onPage={setPage} />
+      <Pager
+        total={rows.length}
+        pageSize={pageSize}
+        page={safe}
+        onPage={setPage}
+      />
     </div>
   );
 }
@@ -693,7 +795,8 @@ function PropertyList({
   const q = filter.trim().toLowerCase();
   const rows = q
     ? relations.filter(
-        (r) => r.label.toLowerCase().includes(q) || r.key.toLowerCase().includes(q),
+        (r) =>
+          r.label.toLowerCase().includes(q) || r.key.toLowerCase().includes(q),
       )
     : relations;
   // 半屏分页：过滤词变化回第一页
@@ -720,7 +823,12 @@ function PropertyList({
           {r.functional && <Chip tone="info">1:1</Chip>}
         </button>
       ))}
-      <Pager total={rows.length} pageSize={pageSize} page={safe} onPage={setPage} />
+      <Pager
+        total={rows.length}
+        pageSize={pageSize}
+        page={safe}
+        onPage={setPage}
+      />
     </div>
   );
 }
@@ -787,7 +895,9 @@ function ClassForm({
   const [key, setKey] = useState(existing?.key ?? "");
   const [label, setLabel] = useState(existing?.label ?? "");
   const [color, setColor] = useState(existing?.color ?? "#8ea5bd");
-  const [shape, setShape] = useState<"circle" | "square">(existing?.shape ?? "circle");
+  const [shape, setShape] = useState<"circle" | "square">(
+    existing?.shape ?? "circle",
+  );
   const [parent, setParent] = useState<string>(parentId ?? "");
   const [description, setDescription] = useState(existing?.description ?? "");
 
@@ -834,11 +944,15 @@ function ClassForm({
           className={`h-3 w-3 ${shape === "square" ? "" : "rounded-full"}`}
           style={{ background: color }}
         />
-        <span className="font-bold text-neutral-100">{existing?.label ?? S.ontology.newClass}</span>
+        <span className="font-bold text-neutral-100">
+          {existing?.label ?? S.ontology.newClass}
+        </span>
         {/* key 是纯技术标识：已存在时干脆不展示，只在创建时输入 */}
         {existing?.builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
         {existing && (
-          <span className="ml-auto text-xs text-neutral-500">{S.ontology.usage(existing.usage)}</span>
+          <span className="ml-auto text-xs text-neutral-500">
+            {S.ontology.usage(existing.usage)}
+          </span>
         )}
       </div>
       {!existing && (
@@ -857,7 +971,11 @@ function ClassForm({
       )}
       <div>
         <label className={lbl}>{S.ontology.label}</label>
-        <Input value={label} onChange={(e) => setLabel(e.target.value)} className="w-full" />
+        <Input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          className="w-full"
+        />
       </div>
       <div>
         <label className={lbl}>{S.ontology.shapeColor}</label>
@@ -906,10 +1024,16 @@ function ClassForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        <p className="mt-1 text-[10.5px] text-neutral-600">{S.ontology.descriptionHint}</p>
+        <p className="mt-1 text-[10.5px] text-neutral-600">
+          {S.ontology.descriptionHint}
+        </p>
       </div>
       <div className="flex gap-2 pt-1">
-        <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending || !label.trim()}>
+        <Button
+          size="sm"
+          onClick={() => save.mutate()}
+          disabled={save.isPending || !label.trim()}
+        >
           {S.ontology.save}
         </Button>
         {onNewSub && (
@@ -997,7 +1121,9 @@ function PropertyForm({
         </span>
         {existing?.builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
         {existing && (
-          <span className="ml-auto text-xs text-neutral-500">{S.ontology.usage(existing.usage)}</span>
+          <span className="ml-auto text-xs text-neutral-500">
+            {S.ontology.usage(existing.usage)}
+          </span>
         )}
       </div>
       {!existing && (
@@ -1016,7 +1142,11 @@ function PropertyForm({
       )}
       <div>
         <label className={lbl}>{S.ontology.label}</label>
-        <Input value={label} onChange={(e) => setLabel(e.target.value)} className="w-full" />
+        <Input
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          className="w-full"
+        />
       </div>
       <div>
         <label className={lbl}>{S.ontology.temporal}</label>
@@ -1054,10 +1184,16 @@ function PropertyForm({
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        <p className="mt-1 text-[10.5px] text-neutral-600">{S.ontology.descriptionHint}</p>
+        <p className="mt-1 text-[10.5px] text-neutral-600">
+          {S.ontology.descriptionHint}
+        </p>
       </div>
       <div className="flex gap-2 pt-1">
-        <Button size="sm" onClick={() => save.mutate()} disabled={save.isPending || !label.trim()}>
+        <Button
+          size="sm"
+          onClick={() => save.mutate()}
+          disabled={save.isPending || !label.trim()}
+        >
           {S.ontology.save}
         </Button>
         {existing && !existing.builtin && (
@@ -1096,13 +1232,12 @@ function MissesPanel({
     batches: string[];
     key: string;
     moved: number;
-  } | null>(
-    null,
-  );
+  } | null>(null);
   // 撤销要二次确认：一次改回成批事实
-  const [confirmUndo, setConfirmUndo] = useState<{ batches: string[]; moved: number } | null>(
-    null,
-  );
+  const [confirmUndo, setConfirmUndo] = useState<{
+    batches: string[];
+    moved: number;
+  } | null>(null);
   // 系统自动扩过本体没有——横幅要据此显示，撤干净了后端返回 null
   const autoRun = useQuery({
     queryKey: ["auto-extension", kbId],
@@ -1114,7 +1249,9 @@ function MissesPanel({
     queryFn: () => api.proposedPredicates(kbId),
   });
   const factsWaiting = (forms: string[]) => {
-    const byForm = new Map((surface.data?.forms ?? []).map((f) => [f.form, f.fact_count]));
+    const byForm = new Map(
+      (surface.data?.forms ?? []).map((f) => [f.form, f.fact_count]),
+    );
     return forms.reduce((n, f) => n + (byForm.get(f) ?? 0), 0);
   };
 
@@ -1131,13 +1268,20 @@ function MissesPanel({
   });
   const approveEntity = useMutation({
     mutationFn: (p: { key: string; label: string; description?: string }) =>
-      api.createEntityType(kbId, { key: p.key, label: p.label, description: p.description }),
+      api.createEntityType(kbId, {
+        key: p.key,
+        label: p.label,
+        description: p.description,
+      }),
     onSuccess: (_data, p) => {
       // 已采纳：从提案列表移除，并顺带清掉对应的未匹配统计 chip（本体已覆盖）
       toast.success(S.toast.added);
       setProposals(
         (prev) =>
-          prev && { ...prev, entity_types: prev.entity_types.filter((x) => x.key !== p.key) },
+          prev && {
+            ...prev,
+            entity_types: prev.entity_types.filter((x) => x.key !== p.key),
+          },
       );
       api.dismissMiss(kbId, "entity_type", p.key).catch(() => {});
       onChanged();
@@ -1176,10 +1320,14 @@ function MissesPanel({
       const moved = d.remapped ?? 0;
       toast.success(moved > 0 ? S.ontology.adopted(moved) : S.toast.added);
       // 撤销的把手：采纳改写了成批事实，没有回头路的话没人敢点第一下
-      if (moved > 0 && d.batch) setLastAdopt({ batches: [d.batch], key: p.key, moved });
+      if (moved > 0 && d.batch)
+        setLastAdopt({ batches: [d.batch], key: p.key, moved });
       setProposals(
         (prev) =>
-          prev && { ...prev, relation_types: prev.relation_types.filter((x) => x.key !== p.key) },
+          prev && {
+            ...prev,
+            relation_types: prev.relation_types.filter((x) => x.key !== p.key),
+          },
       );
       api.dismissMiss(kbId, "relation_type", p.key).catch(() => {});
       onChanged();
@@ -1233,7 +1381,11 @@ function MissesPanel({
       if (r.failed.length) toast.error(S.ontology.addAllPartial(r.failed));
       else toast.success(S.ontology.adopted(r.moved));
       if (r.batches.length)
-        setLastAdopt({ batches: r.batches, key: S.ontology.addAllLabel, moved: r.moved });
+        setLastAdopt({
+          batches: r.batches,
+          key: S.ontology.addAllLabel,
+          moved: r.moved,
+        });
       setProposals(null);
       onChanged();
     },
@@ -1243,7 +1395,8 @@ function MissesPanel({
   const unadopt = useMutation({
     mutationFn: async (batches: string[]) => {
       let reverted = 0;
-      for (const b of batches) reverted += (await api.unadoptPredicate(kbId, b)).reverted;
+      for (const b of batches)
+        reverted += (await api.unadoptPredicate(kbId, b)).reverted;
       return { reverted };
     },
     onSuccess: (r) => {
@@ -1259,9 +1412,16 @@ function MissesPanel({
   return (
     <div className="glass rounded-xl p-4">
       <div className="flex items-center gap-3 mb-1">
-        <h3 className="text-sm font-bold text-neutral-200">{S.ontology.misses}</h3>
+        <h3 className="text-sm font-bold text-neutral-200">
+          {S.ontology.misses}
+        </h3>
         {misses.length > 0 && (
-          <Button size="sm" variant="ghost" onClick={() => suggest.mutate()} disabled={suggest.isPending}>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => suggest.mutate()}
+            disabled={suggest.isPending}
+          >
             {suggest.isPending ? S.ontology.suggesting : S.ontology.suggest}
           </Button>
         )}
@@ -1299,14 +1459,18 @@ function MissesPanel({
         <div className="mt-3 rounded-lg border border-[var(--u-accent)]/25 bg-[var(--u-accent)]/[0.06] px-3 py-2.5">
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-neutral-200">{S.ontology.autoRanTitle}</p>
+              <p className="text-xs text-neutral-200">
+                {S.ontology.autoRanTitle}
+              </p>
               <p className="mt-0.5 text-[11px] text-neutral-400">
                 {S.ontology.autoRanBody(
                   autoRun.data.run.relations ?? [],
                   autoRun.data.run.facts_remapped ?? 0,
                 )}
               </p>
-              <p className="mt-0.5 text-[11px] text-neutral-600">{S.ontology.autoRanOff}</p>
+              <p className="mt-0.5 text-[11px] text-neutral-600">
+                {S.ontology.autoRanOff}
+              </p>
             </div>
             <Button
               size="sm"
@@ -1325,21 +1489,25 @@ function MissesPanel({
         </div>
       )}
 
-
       {/* 采纳改写了成批事实——没有回头路的话没人敢点第一下 */}
       {lastAdopt && (
         <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
           <span className="text-xs text-neutral-300">
             {S.ontology.undoAdopt(lastAdopt.key, lastAdopt.moved)}
           </span>
-          <span className="text-[11px] text-neutral-600">{S.ontology.undoKeepsRelation}</span>
+          <span className="text-[11px] text-neutral-600">
+            {S.ontology.undoKeepsRelation}
+          </span>
           <Button
             size="sm"
             variant="ghost"
             className="ml-auto"
             disabled={unadopt.isPending}
             onClick={() =>
-              setConfirmUndo({ batches: lastAdopt.batches, moved: lastAdopt.moved })
+              setConfirmUndo({
+                batches: lastAdopt.batches,
+                moved: lastAdopt.moved,
+              })
             }
           >
             {S.ontology.undoAdoptBtn}
@@ -1362,9 +1530,12 @@ function MissesPanel({
       {proposals && (
         <div className="mt-4 border-t border-white/10 pt-3">
           <div className="mb-2 flex items-center gap-2">
-            <h4 className="text-xs font-bold text-neutral-400">{S.ontology.proposals}</h4>
+            <h4 className="text-xs font-bold text-neutral-400">
+              {S.ontology.proposals}
+            </h4>
             {/* 常见情形是"这些都对"——一条条点是把一个决定拆成八个 */}
-            {proposals.relation_types.length + proposals.entity_types.length > 1 && (
+            {proposals.relation_types.length + proposals.entity_types.length >
+              1 && (
               <Button
                 size="sm"
                 variant="ghost"
@@ -1375,7 +1546,8 @@ function MissesPanel({
                 {addAll.isPending
                   ? S.ontology.addingAll
                   : S.ontology.addAll(
-                      proposals.relation_types.length + proposals.entity_types.length,
+                      proposals.relation_types.length +
+                        proposals.entity_types.length,
                     )}
               </Button>
             )}
@@ -1386,7 +1558,11 @@ function MissesPanel({
                 <Chip tone="info">C</Chip>
                 <span className="font-mono text-neutral-300">{p.key}</span>
                 <span className="text-neutral-200">{p.label}</span>
-                {p.reason && <span className="text-xs text-neutral-500 truncate">{p.reason}</span>}
+                {p.reason && (
+                  <span className="text-xs text-neutral-500 truncate">
+                    {p.reason}
+                  </span>
+                )}
                 <Button
                   size="sm"
                   className="ml-auto"
@@ -1413,7 +1589,11 @@ function MissesPanel({
                     {S.ontology.willRemap(factsWaiting(p.forms))}
                   </span>
                 )}
-                {p.reason && <span className="text-xs text-neutral-500 truncate">{p.reason}</span>}
+                {p.reason && (
+                  <span className="text-xs text-neutral-500 truncate">
+                    {p.reason}
+                  </span>
+                )}
                 <Button
                   size="sm"
                   className="ml-auto"
@@ -1424,12 +1604,366 @@ function MissesPanel({
                 </Button>
               </div>
             ))}
-            {proposals.entity_types.length === 0 && proposals.relation_types.length === 0 && (
-              <p className="text-sm text-neutral-500">—</p>
-            )}
+            {proposals.entity_types.length === 0 &&
+              proposals.relation_types.length === 0 && (
+                <p className="text-sm text-neutral-500">—</p>
+              )}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------- 本体导入：上传 → 预览计划 → 确认落库 ---------- */
+/* 预览与落库共用服务端同一个 plan。这个面板的全部工作是把计划里
+   **会咬人的三件事**放到人点确认之前：函数性关系（错误的唯一性声明会造出
+   成队假冲突）、没有描述的类（description 逐字进抽取提示词，缺了就静默抽差）、
+   key 撞车（报告不解决——自动改名会让下次重导入认不出自己上次建的是哪个）。 */
+
+function ImportPanel({
+  kbId,
+  onChanged,
+  onError,
+}: {
+  kbId: string;
+  onChanged: () => void;
+  onError: (e: unknown) => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const pick = useRef<HTMLInputElement>(null);
+  const queryClient = useQueryClient();
+
+  const history = useQuery({
+    queryKey: ["ontology-imports", kbId],
+    queryFn: () => api.ontologyImports(kbId),
+  });
+
+  const preview = useMutation({
+    mutationFn: (f: File) => api.previewOntologyImport(kbId, f),
+    onError: (e) => {
+      setFile(null);
+      onError(e);
+    },
+  });
+
+  const apply = useMutation({
+    mutationFn: (f: File) => api.applyOntologyImport(kbId, f),
+    onSuccess: (res) => {
+      const p = res.plan;
+      toast.success(
+        S.ontology.importDone(
+          p.classes.filter((c) => c.disposition === "create").length,
+          p.classes.filter((c) => c.disposition === "update").length,
+        ),
+      );
+      setFile(null);
+      preview.reset();
+      queryClient.invalidateQueries({ queryKey: ["ontology-imports", kbId] });
+      onChanged();
+    },
+    onError,
+  });
+
+  const choose = (f: File | undefined) => {
+    if (!f) return;
+    setFile(f);
+    preview.mutate(f);
+  };
+
+  const plan = preview.data?.plan ?? null;
+  const busy = preview.isPending || apply.isPending;
+  const empty =
+    plan &&
+    plan.classes.length === 0 &&
+    plan.relations.length === 0 &&
+    plan.attributes.length === 0;
+
+  return (
+    <div className="glass rounded-xl p-4">
+      <h3 className="text-sm font-bold text-neutral-200 mb-1">
+        {S.ontology.importTitle}
+      </h3>
+      <p className="text-xs text-neutral-500 mb-3">{S.ontology.importHint}</p>
+
+      <input
+        ref={pick}
+        type="file"
+        accept=".owl,.rdf,.ttl,.xml,.n3"
+        className="hidden"
+        onChange={(e) => {
+          choose(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={busy}
+          onClick={() => pick.current?.click()}
+        >
+          {file ? S.ontology.importChange : S.ontology.importPick}
+        </Button>
+        {file && (
+          <span className="text-xs text-neutral-400 truncate">
+            <span className="font-mono">{file.name}</span>
+            <span className="text-neutral-600">
+              {" "}
+              · {S.ontology.importSize(file.size)}
+            </span>
+          </span>
+        )}
+        {preview.isPending && (
+          <span className="text-xs text-neutral-500">
+            {S.ontology.importReading}
+          </span>
+        )}
+      </div>
+
+      {plan && (
+        <div className="mt-4">
+          <p className="text-[11px] uppercase tracking-[0.08em] text-neutral-600 u-num">
+            {S.ontology.importParsed(plan.format, plan.triples)}
+          </p>
+
+          {empty ? (
+            <p className="mt-2 text-sm text-neutral-500">
+              {S.ontology.importNothing}
+            </p>
+          ) : (
+            <>
+              {/* 三条警告在计数之前：人只会读第一屏 */}
+              <Warning
+                show={plan.functional_relations > 0}
+                tone="warn"
+                title={S.ontology.warnFunctional(plan.functional_relations)}
+                body={S.ontology.warnFunctionalBody}
+                items={plan.relations
+                  .filter((r) => r.functional)
+                  .map((r) => r.key)}
+              />
+              <Warning
+                show={plan.classes_without_description > 0}
+                tone="warn"
+                title={S.ontology.warnNoDescription(
+                  plan.classes_without_description,
+                )}
+                body={S.ontology.warnNoDescriptionBody}
+                items={plan.classes
+                  .filter((c) => !c.has_description)
+                  .map((c) => c.key)}
+              />
+              <Warning
+                show={takenCount(plan) > 0}
+                tone="danger"
+                title={S.ontology.warnKeyTaken(takenCount(plan))}
+                body={S.ontology.warnKeyTakenBody}
+                items={[...plan.classes, ...plan.relations, ...plan.attributes]
+                  .filter((i) => i.disposition === "key_taken")
+                  .map(
+                    (i) =>
+                      `${i.key} — ${S.ontology.importTakenBy(i.conflict_with ?? null)}`,
+                  )}
+              />
+
+              <div className="mt-3 grid gap-2">
+                <PlanRow
+                  label={S.ontology.importClasses}
+                  items={plan.classes}
+                />
+                <PlanRow
+                  label={S.ontology.importRelations}
+                  items={plan.relations}
+                />
+                <PlanRow
+                  label={S.ontology.importAttributes}
+                  items={plan.attributes}
+                  note={
+                    plan.attributes.length > 0
+                      ? S.ontology.importAttributesLater
+                      : undefined
+                  }
+                />
+              </div>
+
+              {plan.unprojected.length > 0 && (
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-xs text-neutral-500 hover:text-neutral-300">
+                    {S.ontology.importUnprojected} ({plan.unprojected.length})
+                  </summary>
+                  <p className="mt-1.5 text-[11px] text-neutral-600">
+                    {S.ontology.importUnprojectedBody}
+                  </p>
+                  <ul className="mt-1.5 space-y-0.5">
+                    {plan.unprojected.map(([iri, n]) => (
+                      <li key={iri} className="flex gap-2 text-[11px]">
+                        <span
+                          className="font-mono text-neutral-500 truncate"
+                          title={iri}
+                        >
+                          {shortIri(iri)}
+                        </span>
+                        <span className="u-num text-neutral-600 shrink-0">
+                          ×{n}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+
+              <div className="mt-4 flex items-center gap-2">
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => file && apply.mutate(file)}
+                >
+                  {apply.isPending
+                    ? S.ontology.importApplying
+                    : S.ontology.importApply}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy}
+                  onClick={() => {
+                    setFile(null);
+                    preview.reset();
+                  }}
+                >
+                  {S.ontology.importCancel}
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* 导入历史：谁在什么时候拿哪个文件动过本体。原文按 sha256 存着 */}
+      <div className="mt-5 border-t border-white/10 pt-3">
+        <h4 className="text-xs font-medium text-neutral-400 mb-2">
+          {S.ontology.importHistory}
+        </h4>
+        {!history.data?.imports.length ? (
+          <p className="text-xs text-neutral-600">
+            {S.ontology.importNoHistory}
+          </p>
+        ) : (
+          <ul className="space-y-1.5">
+            {history.data.imports.map((im) => (
+              <li key={im.id} className="flex items-baseline gap-2 text-xs">
+                <span className="font-mono text-neutral-300 truncate">
+                  {im.filename}
+                </span>
+                <span className="u-num text-neutral-600 shrink-0">
+                  {S.ontology.importSize(im.byte_size)}
+                </span>
+                <span className="ml-auto text-[11px] text-neutral-600 shrink-0">
+                  {S.ontology.importBy(
+                    im.imported_by_name ?? "—",
+                    new Date(im.imported_at).toLocaleDateString(),
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function takenCount(p: ImportPlan) {
+  return [...p.classes, ...p.relations, ...p.attributes].filter(
+    (i) => i.disposition === "key_taken",
+  ).length;
+}
+
+/** IRI 尾巴才是人认得出的部分，前缀在列表里只占宽度 */
+function shortIri(iri: string) {
+  const i = Math.max(iri.lastIndexOf("#"), iri.lastIndexOf("/"));
+  return i < 0 ? iri : iri.slice(i + 1);
+}
+
+/** 一条警告：标题给数，正文一句给后果，条目折在 details 里 */
+function Warning({
+  show,
+  tone,
+  title,
+  body,
+  items,
+}: {
+  show: boolean;
+  tone: "warn" | "danger";
+  title: string;
+  body: string;
+  items: string[];
+}) {
+  if (!show) return null;
+  return (
+    <div
+      className={cn(
+        "mt-3 rounded-lg border px-3 py-2.5",
+        tone === "danger"
+          ? "border-rose-500/25 bg-rose-500/[0.06]"
+          : "border-amber-500/25 bg-amber-500/[0.06]",
+      )}
+    >
+      <p className="text-xs text-neutral-200">{title}</p>
+      <p className="mt-0.5 text-[11px] text-neutral-400">{body}</p>
+      {items.length > 0 && (
+        <details className="mt-1.5">
+          <summary className="cursor-pointer text-[11px] text-neutral-500 hover:text-neutral-300">
+            {items.length > 1 ? `${items.length} items` : "1 item"}
+          </summary>
+          <ul className="mt-1 space-y-0.5">
+            {items.map((it) => (
+              <li key={it} className="font-mono text-[11px] text-neutral-400">
+                {it}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** 一段的去向计数：新建 / 更新 / 跳过，零的不显示 */
+function PlanRow({
+  label,
+  items,
+  note,
+}: {
+  label: string;
+  items: PlannedItem[];
+  note?: string;
+}) {
+  if (items.length === 0) return null;
+  const n = (d: PlannedItem["disposition"]) =>
+    items.filter((i) => i.disposition === d).length;
+  return (
+    <div className="rounded-lg bg-white/[0.03] px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-neutral-300">{label}</span>
+        <span className="ml-auto flex items-center gap-1.5">
+          {n("create") > 0 && (
+            <Chip tone="success">
+              {S.ontology.importWillCreate(n("create"))}
+            </Chip>
+          )}
+          {n("update") > 0 && (
+            <Chip tone="info">{S.ontology.importWillUpdate(n("update"))}</Chip>
+          )}
+          {n("key_taken") > 0 && (
+            <Chip tone="neutral">
+              {S.ontology.importKeyTaken(n("key_taken"))}
+            </Chip>
+          )}
+        </span>
+      </div>
+      {note && <p className="mt-1 text-[11px] text-neutral-600">{note}</p>}
     </div>
   );
 }

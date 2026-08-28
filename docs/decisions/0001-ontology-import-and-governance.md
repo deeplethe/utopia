@@ -177,6 +177,39 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 
 **依赖**：`oxttl` + `oxrdfxml`（Oxigraph 那套小而专的 crate）。不引 `horned-owl`，我们不需要推理。工作区目前无任何 RDF 依赖。
 
+> **修订记录 · P2a + P2b 已落地**（`feat/owl-import`）
+>
+> 落地的是三层里的前两层与整条预览流程：解析（`utopia-ingest/src/ontology_rdf.rs`）、
+> 计划与执行（`utopia-server/src/owl_import.rs`，预览与落库**共用同一个 `plan()`**）、
+> 界面（本体页左栏底部 Import 入口 → 选文件 → 计划 → 确认）。
+> `ontology_imports` 表与 `entity_types.iri` / `relation_types.iri` 见迁移 0031。
+>
+> **对着真实词汇表验证，不是自己写的样例**。FOAF（RDF/XML，635 三元组）：
+> 15 类 + 89 属性，`functional` / `inverse_functional` / domain / range 全部读出；
+> DCTerms（Turtle，700 三元组）：22 类 + 55 属性。**自己手写的样例文件全部通过，
+> 而真实的 FOAF 在第一行就死了**——格式判定写反了，而且文件开头的 `<!--` 注释把
+> `<rdf:` 推出了嗅探窗口。现在扩展名是强信号，内容只在明显是 Turtle 时才推翻它。
+>
+> **预览多报一件本文没写的事：key 撞车**。FOAF 的 `Person` 与我们内置的 `person`
+> 同名不同身份。当时想的是自动加后缀，但那会让**下一次重导入认不出自己上次建的是
+> 哪个**——这正是本文论证 IRI 必要性时用的那个例子，只是换了个方向出现。所以：
+> 报告，不解决。想要导入的那份，先给现有的改名。
+>
+> **暂未落地，按依赖顺序**：
+> - **属性（DatatypeProperty）解析了但不建**——store 层要求属性挂在一个类的 domain 上，
+>   而 domain 要等类先建好并解析 IRI → id。FOAF 那 54 个属性在预览里明说了"还没建"，
+>   不是静默丢掉。
+> - **domain / range 关联表**与随之而来的**提示词类型签名**——本文说它是最高性价比的
+>   十行，仍然是，但它要先有表。
+> - **多继承 DAG**：现在只投影第一个父类。少一个父分支不会静默出错（那分支的属性
+>   domain 判定暂时够不到），但 `type_matches_domain` 的静默失配问题还在，随关联表一起补。
+>
+> **一个自己犯的错值得记**：`OntologyImportView` 的字段叫 `imported_at`，前端类型
+> 写成了 `created_at`。TypeScript 一声不吭——类型是我声明的，它只保证代码内部自洽，
+> 不保证与服务端一致。界面上显示成 `Invalid Date` 才发现。同一次还有服务端往
+> `conflict_with` 里塞了中文兜底文案 `（手工建的）`，直接漏进英文界面。
+> 两件事同一个教训：**服务端不产出展示文案**，措辞归界面；跨语言的边界要用真数据看一眼。
+
 ---
 
 ### P3 · 类型消解 —— 让大本体可用

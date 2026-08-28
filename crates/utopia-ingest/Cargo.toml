@@ -16,4 +16,7 @@ quick-xml.workspace = true
 zip.workspace = true
 csv.workspace = true
 infer.workspace = true
+oxttl.workspace = true
+oxrdfxml.workspace = true
+oxrdf.workspace = true
 tracing.workspace = true
