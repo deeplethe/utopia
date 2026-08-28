@@ -1,13 +1,19 @@
 <div align="center">
 
-# Utopia
+<img src="assets/banner.webp" alt="Utopia" width="100%">
 
 **人类首个开源的企业世界模型。**
 
-[世界观](#这个项目是什么) · [快速开始](#快速开始) · [功能](#功能) · [配置](#配置) · [路线图](#路线图) · [English](README.md)
+[世界观](#项目的世界观) · [快速开始](#快速开始) · [功能](#功能) · [路线图](#路线图)
 
-[![CI](https://github.com/deeplethe/utopia/actions/workflows/ci.yml/badge.svg)](https://github.com/deeplethe/utopia/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Official site](https://img.shields.io/badge/OFFICIAL-UTOPIA.BI-8A6D1F?style=flat-square&labelColor=161B22)](https://utopia.bi)
+[![License](https://img.shields.io/badge/LICENSE-APACHE%202.0-1F4B3F?style=flat-square&labelColor=161B22)](LICENSE)
+[![Rust](https://img.shields.io/badge/BUILT%20WITH-RUST-6B3524?style=flat-square&labelColor=161B22&logo=rust&logoColor=C9D1D9)](https://www.rust-lang.org)
+[![Container](https://img.shields.io/badge/GHCR-DEEPLETHE%2FUTOPIA-1E3A5F?style=flat-square&labelColor=161B22&logo=docker&logoColor=C9D1D9)](https://github.com/deeplethe/utopia/pkgs/container/utopia)
+
+[![Discussions](https://img.shields.io/badge/DISCUSSIONS-3B2A52?style=flat-square&labelColor=161B22&logo=github&logoColor=C9D1D9)](https://github.com/deeplethe/utopia/discussions)
+[![Built by DeepLethe](https://img.shields.io/badge/BUILT%20BY-DEEPLETHE-2D333B?style=flat-square&labelColor=161B22)](https://github.com/deeplethe)
+[![English](https://img.shields.io/badge/LANG-ENGLISH-5C2A2A?style=flat-square&labelColor=161B22)](README.md)
 
 </div>
 
@@ -25,27 +31,26 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 ---
 
-## 这个项目是什么？
+## 项目的世界观
 
-> 这一章讲的是「乌托邦」的世界观与设计理念。
 > **我们强烈建议阅读本章节**，约 5 分钟。
 
 **一个 Agent Memory？又一个 Graph RAG？或者，又一套 DAG？** 都可以是，但又不止于此。
 
-我们想搭建的，是一个属于企业自己的世界模型：它知道企业里有哪些人、哪些事、哪些规则与关系；知道什么正在发生，什么曾经发生；知道一件事为什么成立，又会因为什么而失效。记忆、知识、规则、时间、推理与行动，都只是它的一部分。
+我们想搭建的，是一个属于企业自己的世界模型：它理解企业中的人、事、规则与关系，也理解它们如何随时间变化、为何成立、何时失效。记忆、知识、规则、推理与行动，都是这个世界模型的一部分。
 
-所以我们给它取了一个稍显浪漫的名字：**乌托邦（Utopia）**。工程上的说法则是：一个被动演化的企业世界模型——它不凭空创造世界，而是持续观察现实、吸收事实、记录变化，在一次次事件之后重新理解自己所处的世界。
+所以我们给它取了一个稍显浪漫的名字：**乌托邦（Utopia）**。工程上的说法则是：一个被动演化的企业世界模型——**知识的枢纽，决策的基座，受控执行的闸门，推演未来的试验场。**
 
 但真正维护起来才会发现：建立一个世界并不难，难的是让它长期、稳定而可信地运转下去。要维持一个理想国度，需要一些伟大的制度。于是有了下面这些属于「乌托邦」的法则。
 
-| | 法则 | |
-|:---:|---|---|
-| 🧓🏻 | **宙斯之律**<br/>Zeus's Law | 善待每一条来到这个世界的知识 |
-| 📜 | **历史法则**<br/>Law of History | 知识不是一张静止的事实表，而是一段不断发生的历史 |
-| ⛵ | **理想演绎**<br/>Law of Deduction | 从「理解现在」，进一步走向「推演未来」 |
-| ⚖️ | **世界铁律**<br/>The Iron Law | 让规则托住智能，让逻辑约束行动 |
+| 法则 | |
+|---|---|
+| **宙斯之律**<br/>Zeus's Law | 善待每一条来到这个世界的知识 |
+| **历史法则**<br/>Law of History | 知识不是一张静止的事实表，而是一段不断发生的历史 |
+| **理想演绎**<br/>Law of Deduction | 从「理解现在」，进一步走向「推演未来」 |
+| **世界铁律**<br/>The Iron Gate | 让规则托住智能，让逻辑约束行动 |
 
-### 🧓🏻 宙斯之律（Zeus's Law）
+### 宙斯之律（Zeus's Law）
 
 > **善待每一条来到这个世界的知识。**
 
@@ -59,7 +64,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 这是「乌托邦」的宙斯之律：善待每一条来到这个世界的知识。
 
-### 📜 历史法则（Law of History）
+### 历史法则（Law of History）
 
 > **知识不是一张静止的事实表，而是一段不断发生的历史。**
 
@@ -81,7 +86,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 只有保存这些变化，知识才能真正参与历史进程的演绎。在工程上，我们称之为**双时态知识图谱（Bitemporal Knowledge Graph）**。
 
-### ⛵ 理想演绎（Law of Deduction）
+### 理想演绎（Law of Deduction）
 
 > **从「理解现在」，进一步走向「推演未来」。**
 
@@ -89,7 +94,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 在我们的「乌托邦」中，我们试图以一种工程化的方式逼近这一理想：通过前向链（Forward Chaining）驱动事实不断演绎，以符号系统表达规则、状态与因果关系，再辅以大语言模型处理难以被完全形式化的推理过程。如果能够掌握足够多的事实、规则与因果关系，我们或许可以让系统从「理解现在」，进一步走向「推演未来」。
 
-### ⚖️ 世界铁律（The Iron Law）
+### 世界铁律（The Iron Gate）
 
 > **让规则托住智能，让逻辑约束行动。**
 
@@ -110,11 +115,11 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 ## 功能
 
-系统的主体是一个二进制文件加一个 Postgres。我们通过引入 pgvector 和队列表设计，减轻了技术栈和服务依赖的负担 —— 部署时可以松口气。
+系统的主体为单个二进制文件加 Postgres 服务。我们通过引入 pgvector 和队列表设计减轻了技术栈和服务依赖的负担 —— 咻的一下就部署好。
 
 | | |
 |---|---|
-| **摄入** | 支持 PDF、DOCX、PPTX、XLSX/XLS/ODS、CSV/TSV、Markdown、HTML 和纯文本，自动识别中文编码。网页和 RSS 可按 cron 定时同步，也可以通过来源级 ingest token 从任何地方推送文档。解析失败的文档可以原地重处理，无需重新上传；整个来源或整个知识库也可以批量重抽。 |
+| **知识摄入** | 支持 PDF、DOCX、PPTX、XLSX/XLS/ODS、CSV/TSV、Markdown、HTML 和纯文本，自动识别中文编码。网页和 RSS 可按 cron 定时同步，也可以通过来源级 ingest token 从任何地方推送文档。解析失败的文档可以原地重处理，无需重新上传；整个来源或整个知识库也可以批量重抽。 |
 | **搜索与对话** | 混合检索采用 Tantivy 全文搜索和 pgvector 向量搜索，并通过 RRF 融合结果；中文全文检索使用 jieba 分词。回答支持流式输出和引用角标，点击引用可直接跳到原文段落。LLM 走 OpenAI 兼容协议，DeepSeek、Qwen、GLM、Ollama、vLLM 都可以接入，整套系统也可以运行在完全内网环境。 |
 | **本体与冷启动** | 建库即自带一套内置本体（人、组织、项目、产品、事件、概念、地点，及其间的关系），无需先设计模型就能开始摄入。抽取过程中遇到本体之外的类型与谓语，会被记录并计数；高频项可由模型给出扩充建议，确认后并入本体。本体因此随语料生长，而不是要求你在第一天就把世界定义完整。 |
 | **双时态图谱** | 基于可编辑的本体进行 LLM 抽取，生成实体与事实。每条事实都带有效区间与对应的证据行。修正事实时不会覆盖旧版本，而是闭合旧事实并链上新版本。图谱与邻域查询都可以指定任意历史时点回读。实体面板同时展示两条时间线：一件事在现实中何时成立，以及系统何时形成这一判断、又何时改变判断。 |
@@ -129,15 +134,17 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 依赖：Docker（本地开发另需 Rust 1.85+、Node 20+、pnpm）。
 
+通过预构建镜像快速启动：
+
 ```bash
 git clone https://github.com/deeplethe/utopia.git
 cd utopia
 docker compose --profile app up -d
 ```
 
-打开 http://localhost:1516 注册 —— 第一个账号即管理员，公共知识库 `General` 会一并建好。然后在设置里填一个 OpenAI 兼容端点，把文件拖进去。
+打开 http://localhost:1516 注册 —— 第一个账户自动成为管理员，同时系统会创建所有人可读的公共知识库。摄入文档前，请先在系统设置里配置模型端点（chat 与 embedding）。
 
-这会从 `ghcr.io/deeplethe/utopia` 拉预构建镜像。上传的原始文件与全文索引在 `./data`，备份时和数据库一起带上。改了代码、或者想跑未发布的版本，则从源码构建：
+或者从源码构建：
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app up -d --build
@@ -156,56 +163,26 @@ cargo run -p utopia-server
 cd web && pnpm install && pnpm dev
 ```
 
-## 配置
-
-所有配置都是 `UTOPIA_` 前缀的环境变量，复制 [.env.example](.env.example) 为 `.env` 即可开始。
-
-| 变量 | 默认值 | 用途 |
-|---|---|---|
-| `UTOPIA_DATABASE_URL` | `postgres://utopia:utopia@localhost:5432/utopia` | Postgres 连接串 |
-| `UTOPIA_BIND_ADDR` | `0.0.0.0:1516` | 监听地址 |
-| `UTOPIA_JWT_SECRET` | `dev-secret-change-me` | **生产环境必须修改** |
-| `UTOPIA_WEB_DIST` | `web/dist` | 前端构建产物；存在时由服务端托管 SPA |
-| `UTOPIA_DATA_DIR` | `data` | 原始文件与全文索引 |
-| `UTOPIA_OPEN_REGISTRATION` | `true` | 为 false 时仅首个账号可自助注册 |
-
-LLM 的端点、模型和 API Key 在界面里配置，不走环境变量。
-
-## 架构
-
-```
-React + Vite + Tailwind + TanStack
-              │  /api/v1
-        ┌─────┴─────┐
-        │  axum     │  utopia-server   HTTP · 认证 · 任务
-        └─────┬─────┘
-   ┌──────────┼──────────┬────────────┐
-utopia-ingest  utopia-search  utopia-extract  utopia-llm
-  解析/分块      tantivy+RRF     实体/事实      OpenAI 兼容
-   └──────────┴──────────┴────────────┘
-                   utopia-store
-                        │
-              PostgreSQL + pgvector
-```
-
-Rust（axum · sqlx · tokio · tantivy）+ PostgreSQL/pgvector 作为唯一外部依赖。后台任务走 `SKIP LOCKED` 任务表，启动时自动接管孤儿任务。
-
 ## 路线图
 
-- **执行校验层** —— 「世界铁律」所说的闸门：Agent 的每一次调用在执行前先过本体规则与符号逻辑，通不过就不许落地。
-- **MCP 上的 Agent 记忆** —— 记忆空间的数据模型已经就位，补齐 episodes 写入、retrieve 端点与 MCP 服务器。
-- **更多连接器** —— S3/WebDAV、Notion、飞书。
-- **OIDC SSO**、备份恢复命令、10 万文档级别的性能基准。
+- [ ] **推演引擎**：情景叠加不写进账本，算出差异与违反的约束
+- [ ] **执行校验层**：Agent 的每一次调用先过本体规则与符号逻辑，通不过不落地
+- [ ] **数据湖仓**：Iceberg / Delta Lake，以及 Databricks、Snowflake、MaxCompute
+- [ ] **更多数据源**：MySQL、ClickHouse、Doris 驱动，S3、WebDAV、Notion、飞书连接器
+- [ ] **MCP 上的 Agent 记忆**：补齐 episodes 写入、retrieve 端点与 MCP 服务器
+- [ ] **企业化**：OIDC SSO、备份恢复命令、10 万文档级别的性能基准
 
 ## 当前状态
 
-Utopia 目前是 **v0.1**，由一名维护者在持续开发。可用，但 schema 在版本之间仍会变化。部署前有三件事值得知道：
+Utopia 仍处于 **v0.1**。数据库 schema 会随版本演进，迁移只前滚、不提供回退 —— 生产环境请用 `UTOPIA_IMAGE` 锁定具体版本，并在升级前备份数据库与 `data` 目录。
 
-- 界面里录入的凭据 —— LLM API Key 和数据库连接串 —— 在 Postgres 里是**明文存储**的。静态加密是 1.0 前的硬化项，请部署在可信网络内。
-- 登录 Cookie 目前不带 `Secure` 标志，明文 HTTP 下传输的 token 会暴露。请放在反向代理之后并启用 TLS。
-- 暂不保证升级路径。迁移会自动前滚，但如果在意数据，请锁定版本。
+部署到公网之前请读一下 [SECURITY.md](SECURITY.md)。
 
-欢迎 issue 和 PR。
+## 社区
+
+- 💬 [Discussions](https://github.com/deeplethe/utopia/discussions) —— 提问、聊设计、说说你拿它做了什么
+- 🐛 [Issues](https://github.com/deeplethe/utopia/issues) —— 报 bug、提需求
+- 🔌 [Ontology2SQL](https://github.com/deeplethe/ontology2sql) —— 本体驱动的 Text-to-SQL，「基于本体的智能问数」背后的方法
 
 ## License
 
