@@ -97,7 +97,7 @@ pub async fn create_entity_type(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::Validation("key is required".into()))?;
+        .ok_or_else(|| AppError::invalid("key_required", "key is required"))?;
     let id = utopia_store::ontology::create_entity_type(
         &state.pool,
         kb_id,
@@ -216,7 +216,7 @@ pub async fn create_relation_type(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| AppError::Validation("key is required".into()))?;
+        .ok_or_else(|| AppError::invalid("key_required", "key is required"))?;
     let kind = req.kind.as_deref().unwrap_or("relation");
     let id = utopia_store::ontology::create_relation_type(
         &state.pool,
@@ -334,9 +334,9 @@ pub async fn build_proposals(state: &AppState, kb_id: Uuid) -> Result<serde_json
     let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
-        .ok_or_else(|| AppError::Validation("Chat model not configured".into()))?;
+        .ok_or_else(|| AppError::invalid("no_chat_model", "Chat model not configured"))?;
     let client = llm_util::chat_client(&settings)
-        .ok_or_else(|| AppError::Validation("Chat model not configured".into()))?;
+        .ok_or_else(|| AppError::invalid("no_chat_model", "Chat model not configured"))?;
 
     let entity_types = utopia_store::ontology::entity_type_views(&state.pool, kb_id).await?;
     let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
@@ -456,7 +456,7 @@ pub async fn adopt_predicate(
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let key = req.key.trim();
     if req.forms.is_empty() {
-        return Err(AppError::Validation("forms cannot be empty".into()).into());
+        return Err(AppError::invalid("forms_required", "forms cannot be empty").into());
     }
     let predicate_id = utopia_store::ontology::create_relation_type(
         &state.pool,
@@ -662,27 +662,29 @@ const MAX_ONTOLOGY_BYTES: usize = 8 * 1024 * 1024;
 async fn read_upload(
     mut multipart: axum::extract::Multipart,
 ) -> Result<(String, Vec<u8>), AppError> {
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| AppError::Validation(format!("Could not read the upload: {e}")))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        AppError::invalid_detail("bad_upload", "Could not read the upload", e.to_string())
+    })? {
         let Some(filename) = field.file_name().map(String::from) else {
             continue;
         };
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|e| AppError::Validation(format!("Could not read the uploaded file: {e}")))?;
+        let bytes = field.bytes().await.map_err(|e| {
+            AppError::invalid_detail(
+                "upload_read_failed",
+                "Could not read the uploaded file",
+                e.to_string(),
+            )
+        })?;
         if bytes.len() > MAX_ONTOLOGY_BYTES {
-            return Err(AppError::Validation(
-                "Ontology file is too large (max 8 MB)".into(),
+            return Err(AppError::invalid(
+                "file_too_large",
+                "Ontology file is too large (max 8 MB)",
             ));
         }
         if bytes.is_empty() {
-            return Err(AppError::Validation("Ontology file is empty".into()));
+            return Err(AppError::invalid("empty_file", "Ontology file is empty"));
         }
         return Ok((filename, bytes.to_vec()));
     }
-    Err(AppError::Validation("No file in the upload".into()))
+    Err(AppError::invalid("no_files", "No file in the upload"))
 }

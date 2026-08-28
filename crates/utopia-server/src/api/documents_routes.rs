@@ -31,8 +31,9 @@ pub async fn upload(
         Some(sid) => {
             let src = utopia_store::sources::get(&state.pool, sid).await?;
             if src.kb_id != kb_id || src.kind != "folder" {
-                return Err(AppError::Validation(
-                    "Uploads can only target a folder source in this knowledge base".into(),
+                return Err(AppError::invalid(
+                    "upload_needs_folder",
+                    "Uploads can only target a folder source in this knowledge base",
                 )
                 .into());
             }
@@ -47,7 +48,7 @@ pub async fn upload(
     while let Some(field) = multipart
         .next_field()
         .await
-        .map_err(|e| AppError::Validation(format!("Malformed upload: {e}")))?
+        .map_err(|e| AppError::invalid_detail("bad_upload", "Malformed upload", e.to_string()))?
     {
         let Some(filename) = field.file_name().map(String::from) else {
             continue;
@@ -56,10 +57,9 @@ pub async fn upload(
             .content_type()
             .unwrap_or("application/octet-stream")
             .to_string();
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|e| AppError::Validation(format!("Failed to read upload: {e}")))?;
+        let bytes = field.bytes().await.map_err(|e| {
+            AppError::invalid_detail("upload_read_failed", "Failed to read upload", e.to_string())
+        })?;
         if bytes.is_empty() {
             skipped.push(json!({ "filename": filename, "reason": "empty file" }));
             continue;
@@ -102,7 +102,7 @@ pub async fn upload(
     }
 
     if created.is_empty() && skipped.is_empty() {
-        return Err(AppError::Validation("No files received".into()).into());
+        return Err(AppError::invalid("no_files", "No files received").into());
     }
     Ok(Json(json!({ "created": created, "skipped": skipped })))
 }

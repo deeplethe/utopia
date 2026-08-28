@@ -20,6 +20,14 @@ const CONFLICT_PAGE = 8;
 
 const ym = (iso: string | null) => (iso ? iso.slice(0, 7) : null);
 
+/** `code` 或 `code|detail`。查不到就原样显示——存量行里还是旧的英文散文 */
+function escalationText(reason: string): string {
+  const [code, detail] = reason.split("|");
+  const worded = S.review.escalated[code];
+  if (!worded) return reason;
+  return detail ? S.errDetail(worded, detail) : worded;
+}
+
 function dateRange(from: string | null, to: string | null): string | null {
   if (!from && !to) return null;
   return `${ym(from) ?? "…"} → ${ym(to) ?? S.review.ongoing}`;
@@ -33,9 +41,13 @@ function SideCard({ side }: { side: ReviewSide }) {
           className="h-2.5 w-2.5 rounded-full shrink-0"
           style={{ backgroundColor: side.color }}
         />
-        <span className="text-sm font-medium text-white truncate">{side.name}</span>
+        <span className="text-sm font-medium text-white truncate">
+          {side.name}
+        </span>
         {side.disambiguator && (
-          <span className="text-xs text-neutral-500 truncate">· {side.disambiguator}</span>
+          <span className="text-xs text-neutral-500 truncate">
+            · {side.disambiguator}
+          </span>
         )}
       </div>
       <div className="text-xs text-neutral-500 mb-2">
@@ -76,13 +88,17 @@ function DuplicateCard({
         <span
           className={`u-chip ${item.stage === "human" ? "u-chip-warn" : "u-chip-neutral"}`}
         >
-          {item.stage === "human" ? S.review.stageHuman : S.review.stageAdjudicating}
+          {item.stage === "human"
+            ? S.review.stageHuman
+            : S.review.stageAdjudicating}
         </span>
         <span className="text-xs text-neutral-500">
           {S.review.similarity(Math.round(item.score * 100))}
         </span>
         {item.reason && (
-          <span className="text-xs text-neutral-600 truncate min-w-0">{item.reason}</span>
+          <span className="text-xs text-neutral-600 truncate min-w-0">
+            {escalationText(item.reason)}
+          </span>
         )}
         <div className="ml-auto flex gap-2 shrink-0">
           <button
@@ -120,16 +136,24 @@ function FactRow({
   return (
     <div className="glass rounded-xl p-4">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-sm font-medium text-white">{fact.subject_name}</span>
-        <span className="text-xs text-neutral-500">— {fact.predicate_label} →</span>
-        <span className="text-sm font-medium text-white">{fact.object_name ?? "?"}</span>
+        <span className="text-sm font-medium text-white">
+          {fact.subject_name}
+        </span>
+        <span className="text-xs text-neutral-500">
+          — {fact.predicate_label} →
+        </span>
+        <span className="text-sm font-medium text-white">
+          {fact.object_name ?? "?"}
+        </span>
         {range && <span className="text-xs text-neutral-500">({range})</span>}
         <span className="u-chip u-chip-warn ml-auto">
           {S.review.confidence(Math.round(fact.confidence * 100))}
         </span>
       </div>
       {fact.quote && (
-        <p className="mt-2 text-xs text-neutral-500 italic line-clamp-2">“{fact.quote}”</p>
+        <p className="mt-2 text-xs text-neutral-500 italic line-clamp-2">
+          “{fact.quote}”
+        </p>
       )}
       <div className="mt-3 flex gap-2 justify-end">
         <button
@@ -159,7 +183,10 @@ function ConflictRow({
 }: {
   conflict: ConflictItem;
   busy: boolean;
-  onResolve: (action: "close" | "keep" | "reject_new", closeAt?: string) => void;
+  onResolve: (
+    action: "close" | "keep" | "reject_new",
+    closeAt?: string,
+  ) => void;
 }) {
   const [closeAt, setCloseAt] = useState("");
   const c = conflict;
@@ -173,8 +200,12 @@ function ConflictRow({
     <div className="glass rounded-xl p-4">
       <div className="flex items-center gap-2 flex-wrap">
         <span className="text-sm font-medium text-white">{c.old_subject}</span>
-        <span className="text-xs text-neutral-500">— {c.predicate_label} →</span>
-        <span className="text-sm font-medium text-white">{c.old_object ?? "?"}</span>
+        <span className="text-xs text-neutral-500">
+          — {c.predicate_label} →
+        </span>
+        <span className="text-sm font-medium text-white">
+          {c.old_object ?? "?"}
+        </span>
         {c.old_valid_from && (
           <span className="u-num text-xs text-neutral-500">
             ({S.review.conflictSince(c.old_valid_from.slice(0, 10))})
@@ -182,8 +213,12 @@ function ConflictRow({
         )}
         <span className="text-xs text-neutral-600">{S.review.conflictVs}</span>
         <span className="text-sm font-medium text-white">{c.new_subject}</span>
-        <span className="text-xs text-neutral-500">— {c.predicate_label} →</span>
-        <span className="text-sm font-medium text-white">{c.new_object ?? "?"}</span>
+        <span className="text-xs text-neutral-500">
+          — {c.predicate_label} →
+        </span>
+        <span className="text-sm font-medium text-white">
+          {c.new_object ?? "?"}
+        </span>
         {c.new_valid_from && (
           <span className="u-num text-xs text-neutral-500">
             ({S.review.conflictSince(c.new_valid_from.slice(0, 10))})
@@ -251,13 +286,23 @@ function UnconfirmedRow({
   return (
     <div className="glass rounded-xl p-4">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-sm font-medium text-white">{fact.subject_name}</span>
-        <span className="text-xs text-neutral-500">— {fact.predicate_label} →</span>
-        <span className="text-sm font-medium text-white">{fact.object_name ?? "?"}</span>
-        {range && <span className="u-num text-xs text-neutral-500">({range})</span>}
+        <span className="text-sm font-medium text-white">
+          {fact.subject_name}
+        </span>
+        <span className="text-xs text-neutral-500">
+          — {fact.predicate_label} →
+        </span>
+        <span className="text-sm font-medium text-white">
+          {fact.object_name ?? "?"}
+        </span>
+        {range && (
+          <span className="u-num text-xs text-neutral-500">({range})</span>
+        )}
       </div>
       {fact.quote && (
-        <p className="mt-2 text-xs text-neutral-500 italic line-clamp-2">“{fact.quote}”</p>
+        <p className="mt-2 text-xs text-neutral-500 italic line-clamp-2">
+          “{fact.quote}”
+        </p>
       )}
       <div className="mt-3 flex items-center gap-2 justify-end">
         <button
@@ -278,7 +323,9 @@ function UnconfirmedRow({
           disabled={busy || !closeAtIso}
           onClick={() => closeAtIso && onClose(closeAtIso)}
         >
-          {closeAt.trim() ? S.review.closeFactAt(closeAt.trim()) : S.review.closeFact}
+          {closeAt.trim()
+            ? S.review.closeFactAt(closeAt.trim())
+            : S.review.closeFact}
         </button>
       </div>
     </div>
@@ -303,14 +350,18 @@ function MergeRow({
           <span className="text-white">{merge.target_name}</span>
         </div>
         <div className="text-xs text-neutral-500 truncate">
-          {merge.merged_by_name ? S.review.mergedBy(merge.merged_by_name) : S.review.mergedByAi}
+          {merge.merged_by_name
+            ? S.review.mergedBy(merge.merged_by_name)
+            : S.review.mergedByAi}
           {" · "}
           {merge.created_at.slice(0, 10)}
           {merge.reason ? ` · ${merge.reason}` : ""}
         </div>
       </div>
       {merge.reverted_at ? (
-        <span className="u-chip u-chip-neutral shrink-0">{S.review.reverted}</span>
+        <span className="u-chip u-chip-neutral shrink-0">
+          {S.review.reverted}
+        </span>
       ) : (
         <button
           className="u-btn u-btn-ghost px-3 py-1.5 text-xs shrink-0"
@@ -380,9 +431,20 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
 
 /* ---------- 页面：左栏分类 + 单类内容区 ---------- */
 
-type Sel = "duplicates" | "conflicts" | "unconfirmed" | "lowconf" | "decisions" | "merges";
+type Sel =
+  | "duplicates"
+  | "conflicts"
+  | "unconfirmed"
+  | "lowconf"
+  | "decisions"
+  | "merges";
 
-const QUEUE_ORDER: Sel[] = ["duplicates", "conflicts", "unconfirmed", "lowconf"];
+const QUEUE_ORDER: Sel[] = [
+  "duplicates",
+  "conflicts",
+  "unconfirmed",
+  "lowconf",
+];
 const PAGE_SIZE: Record<Sel, number> = {
   duplicates: DUP_PAGE,
   conflicts: CONFLICT_PAGE,
@@ -416,7 +478,9 @@ function RailItem({
       onClick={onClick}
       className={cn(
         "w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors",
-        active ? "u-nav-active" : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
+        active
+          ? "u-nav-active"
+          : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
       )}
     >
       <span className="truncate">{label}</span>
@@ -465,8 +529,16 @@ export function Review() {
     onSettled: invalidate,
   });
   const factAction = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: "confirm" | "reject" }) =>
-      action === "confirm" ? api.confirmFact(kb!.id, id) : api.rejectFact(kb!.id, id),
+    mutationFn: ({
+      id,
+      action,
+    }: {
+      id: string;
+      action: "confirm" | "reject";
+    }) =>
+      action === "confirm"
+        ? api.confirmFact(kb!.id, id)
+        : api.rejectFact(kb!.id, id),
     onSettled: invalidate,
   });
   const revert = useMutation({
@@ -505,7 +577,8 @@ export function Review() {
 
   // 首批数据到达：定位到第一个非空队列（全空落在 duplicates 显示"干净"文案）
   useEffect(() => {
-    if (sel === null && data) setSel(QUEUE_ORDER.find((k) => counts[k] > 0) ?? "duplicates");
+    if (sel === null && data)
+      setSel(QUEUE_ORDER.find((k) => counts[k] > 0) ?? "duplicates");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
@@ -520,8 +593,14 @@ export function Review() {
   const SECTION: Record<Sel, { title: string; hint: string | null }> = {
     duplicates: { title: S.review.duplicates, hint: S.review.duplicatesHint },
     conflicts: { title: S.review.conflicts, hint: S.review.conflictsHint },
-    unconfirmed: { title: S.review.unconfirmed, hint: S.review.unconfirmedHint },
-    lowconf: { title: S.review.lowConfidence, hint: S.review.lowConfidenceHint },
+    unconfirmed: {
+      title: S.review.unconfirmed,
+      hint: S.review.unconfirmedHint,
+    },
+    lowconf: {
+      title: S.review.lowConfidence,
+      hint: S.review.lowConfidenceHint,
+    },
     decisions: { title: S.review.decisionsTitle, hint: S.review.decisionsHint },
     merges: { title: S.review.mergeHistory, hint: null },
   };
@@ -577,9 +656,13 @@ export function Review() {
       {/* 右侧：一次只显示选中的一类，单一分页 */}
       <div className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
         <div className="max-w-4xl">
-          {review.isPending && <p className="text-sm text-neutral-500">{S.nav.loading}</p>}
+          {review.isPending && (
+            <p className="text-sm text-neutral-500">{S.nav.loading}</p>
+          )}
           {review.isError && (
-            <p className="text-sm text-rose-400">{(review.error as Error).message}</p>
+            <p className="text-sm text-rose-400">
+              {(review.error as Error).message}
+            </p>
           )}
 
           {data && (
@@ -587,7 +670,9 @@ export function Review() {
               {/* 页级标题：与 Library/KB Settings 同级（text-lg），不是卡片头 */}
               <h2 className="u-title text-lg mb-1">{SECTION[active].title}</h2>
               {SECTION[active].hint && (
-                <p className="text-xs text-neutral-500 mb-3">{SECTION[active].hint}</p>
+                <p className="text-xs text-neutral-500 mb-3">
+                  {SECTION[active].hint}
+                </p>
               )}
 
               {/* 空态：整个待办全清 vs 单类清空 */}
@@ -603,8 +688,12 @@ export function Review() {
                     <DuplicateCard
                       key={item.id}
                       item={item}
-                      busy={decide.isPending && decide.variables?.id === item.id}
-                      onDecide={(action) => decide.mutate({ id: item.id, action })}
+                      busy={
+                        decide.isPending && decide.variables?.id === item.id
+                      }
+                      onDecide={(action) =>
+                        decide.mutate({ id: item.id, action })
+                      }
                     />
                   ))}
                 </div>
@@ -612,33 +701,46 @@ export function Review() {
 
               {active === "conflicts" && counts.conflicts > 0 && (
                 <div className="space-y-3">
-                  {pageSlice(data.conflicts, page, CONFLICT_PAGE).rows.map((c) => (
-                    <ConflictRow
-                      key={c.id}
-                      conflict={c}
-                      busy={conflictAction.isPending && conflictAction.variables?.id === c.id}
-                      onResolve={(action, closeAt) =>
-                        conflictAction.mutate({ id: c.id, action, closeAt })
-                      }
-                    />
-                  ))}
+                  {pageSlice(data.conflicts, page, CONFLICT_PAGE).rows.map(
+                    (c) => (
+                      <ConflictRow
+                        key={c.id}
+                        conflict={c}
+                        busy={
+                          conflictAction.isPending &&
+                          conflictAction.variables?.id === c.id
+                        }
+                        onResolve={(action, closeAt) =>
+                          conflictAction.mutate({ id: c.id, action, closeAt })
+                        }
+                      />
+                    ),
+                  )}
                 </div>
               )}
 
               {active === "unconfirmed" && counts.unconfirmed > 0 && (
                 <div className="space-y-3">
-                  {pageSlice(data.unconfirmed, page, FACT_PAGE).rows.map((fact) => (
-                    <UnconfirmedRow
-                      key={fact.id}
-                      fact={fact}
-                      busy={
-                        (factAction.isPending && factAction.variables?.id === fact.id) ||
-                        (closeFactAction.isPending && closeFactAction.variables?.id === fact.id)
-                      }
-                      onReject={() => factAction.mutate({ id: fact.id, action: "reject" })}
-                      onClose={(validTo) => closeFactAction.mutate({ id: fact.id, validTo })}
-                    />
-                  ))}
+                  {pageSlice(data.unconfirmed, page, FACT_PAGE).rows.map(
+                    (fact) => (
+                      <UnconfirmedRow
+                        key={fact.id}
+                        fact={fact}
+                        busy={
+                          (factAction.isPending &&
+                            factAction.variables?.id === fact.id) ||
+                          (closeFactAction.isPending &&
+                            closeFactAction.variables?.id === fact.id)
+                        }
+                        onReject={() =>
+                          factAction.mutate({ id: fact.id, action: "reject" })
+                        }
+                        onClose={(validTo) =>
+                          closeFactAction.mutate({ id: fact.id, validTo })
+                        }
+                      />
+                    ),
+                  )}
                 </div>
               )}
 
@@ -648,9 +750,16 @@ export function Review() {
                     <FactRow
                       key={fact.id}
                       fact={fact}
-                      busy={factAction.isPending && factAction.variables?.id === fact.id}
-                      onConfirm={() => factAction.mutate({ id: fact.id, action: "confirm" })}
-                      onReject={() => factAction.mutate({ id: fact.id, action: "reject" })}
+                      busy={
+                        factAction.isPending &&
+                        factAction.variables?.id === fact.id
+                      }
+                      onConfirm={() =>
+                        factAction.mutate({ id: fact.id, action: "confirm" })
+                      }
+                      onReject={() =>
+                        factAction.mutate({ id: fact.id, action: "reject" })
+                      }
                     />
                   ))}
                 </div>

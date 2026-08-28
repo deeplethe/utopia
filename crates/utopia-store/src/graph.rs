@@ -713,11 +713,17 @@ pub async fn update_entity(
         Some(raw) => {
             let n = raw.trim();
             if n.is_empty() {
-                return Err(AppError::Validation("Name cannot be empty".into()));
+                return Err(AppError::invalid(
+                    "entity_name_required",
+                    "Name cannot be empty",
+                ));
             }
             // 与抽取侧同一上限：越过这条线的多半是整句被当成了名字
             if n.chars().count() > 100 {
-                return Err(AppError::Validation("Name is too long (max 100)".into()));
+                return Err(AppError::invalid(
+                    "entity_name_too_long",
+                    "Name is too long (max 100)",
+                ));
             }
             Some(n)
         }
@@ -732,8 +738,9 @@ pub async fn update_entity(
                 .fetch_optional(pool)
                 .await?;
         if exists.is_none() {
-            return Err(AppError::Validation(
-                "No such entity type in this KB".into(),
+            return Err(AppError::invalid(
+                "unknown_entity_type",
+                "No such entity type in this KB",
             ));
         }
     }

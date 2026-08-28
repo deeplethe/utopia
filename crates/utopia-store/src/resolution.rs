@@ -747,6 +747,10 @@ pub async fn pending_adjudications(
 }
 
 /// LLM 不确定 / 未配模型 → 转人工。
+/// `reason` 存的是 **code**，可选地跟 `|detail`——不是给人看的句子。
+///
+/// 界面语言在客户端（见 docs/decisions/0004），服务端没有 locale 可用来措辞；
+/// 写进这一列的英文散文会永久留在中文界面上。措辞归 i18n，这里只留稳定的 code。
 pub async fn escalate_review(pool: &PgPool, review_id: Uuid, reason: &str) -> AppResult<()> {
     sqlx::query(
         "UPDATE resolution_reviews SET stage = 'human', reason = $2
@@ -891,8 +895,9 @@ pub async fn merge_entities(
     reason: &str,
 ) -> AppResult<Uuid> {
     if source_id == target_id {
-        return Err(AppError::Validation(
-            "Cannot merge an entity into itself".into(),
+        return Err(AppError::invalid(
+            "self_merge",
+            "Cannot merge an entity into itself",
         ));
     }
     let source = entity_full(pool, kb_id, source_id).await?;

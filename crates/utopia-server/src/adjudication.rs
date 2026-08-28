@@ -48,7 +48,7 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
             utopia_store::resolution::escalate_review(
                 &state.pool,
                 item.id,
-                "chat model not configured — needs human review",
+                "escalate_no_model",
             )
             .await?;
         }
@@ -130,7 +130,7 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
                     utopia_store::resolution::escalate_review(
                         &state.pool,
                         item.id,
-                        "adjudicator returned no verdict — needs human review",
+                        "escalate_no_verdict",
                     )
                     .await?;
                 }
@@ -194,7 +194,7 @@ async fn apply_verdict(
                     utopia_store::resolution::escalate_review(
                         &state.pool,
                         item.id,
-                        "entity changed during adjudication — needs human review",
+                        "escalate_entity_changed",
                     )
                     .await?;
                 }
@@ -227,7 +227,7 @@ async fn apply_verdict(
             utopia_store::resolution::escalate_review(
                 &state.pool,
                 item.id,
-                &format!("{via} unsure (confidence {conf:.2}) — needs human review"),
+                &format!("escalate_unsure|{via} {conf:.2}"),
             )
             .await?;
         }

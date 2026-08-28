@@ -83,8 +83,9 @@ fn validate_key(key: &str) -> AppResult<()> {
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
     if !ok {
-        return Err(AppError::Validation(
-            "Key must be lowercase snake_case (a-z, 0-9, _), max 40 chars".into(),
+        return Err(AppError::invalid(
+            "bad_key",
+            "Key must be lowercase snake_case (a-z, 0-9, _), max 40 chars",
         ));
     }
     Ok(())
@@ -139,8 +140,9 @@ pub async fn update_entity_type(
     description: &str,
 ) -> AppResult<()> {
     if parent_id == Some(id) {
-        return Err(AppError::Validation(
-            "A class cannot be its own parent".into(),
+        return Err(AppError::invalid(
+            "self_parent",
+            "A class cannot be its own parent",
         ));
     }
     validate_shape(shape)?;
@@ -197,8 +199,9 @@ fn validate_attribute_fields(
         "relation" => Ok(()),
         "attribute" => {
             if domain_type_id.is_none() {
-                return Err(AppError::Validation(
-                    "An attribute needs a class (domain)".into(),
+                return Err(AppError::invalid(
+                    "attr_needs_class",
+                    "An attribute needs a class (domain)",
                 ));
             }
             if !matches!(datatype, Some("text" | "number" | "date" | "bool")) {

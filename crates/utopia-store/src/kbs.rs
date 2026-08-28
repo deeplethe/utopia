@@ -86,8 +86,9 @@ pub async fn update(
         if v == "restricted" {
             let current = get(pool, id).await?;
             if current.is_default {
-                return Err(AppError::Validation(
-                    "The default knowledge base stays open to everyone.".into(),
+                return Err(AppError::invalid(
+                    "default_kb_open",
+                    "The default knowledge base stays open to everyone.",
                 ));
             }
         }
@@ -114,8 +115,9 @@ pub async fn update(
 pub async fn delete(pool: &PgPool, id: Uuid) -> AppResult<()> {
     let current = get(pool, id).await?;
     if current.is_default {
-        return Err(AppError::Validation(
-            "The default knowledge base cannot be deleted.".into(),
+        return Err(AppError::invalid(
+            "default_kb_undeletable",
+            "The default knowledge base cannot be deleted.",
         ));
     }
     let res = sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")

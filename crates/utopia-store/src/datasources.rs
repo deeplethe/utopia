@@ -66,16 +66,21 @@ pub async fn create(
     created_by: Uuid,
 ) -> AppResult<Uuid> {
     if name.trim().is_empty() {
-        return Err(AppError::Validation("Data source name is required".into()));
+        return Err(AppError::invalid(
+            "ds_name_required",
+            "Data source name is required",
+        ));
     }
     if engine != "postgres" {
-        return Err(AppError::Validation(
-            "Only the postgres engine is supported for now".into(),
+        return Err(AppError::invalid(
+            "only_postgres",
+            "Only the postgres engine is supported for now",
         ));
     }
     if !conn_string.starts_with("postgres://") && !conn_string.starts_with("postgresql://") {
-        return Err(AppError::Validation(
-            "Connection string must start with postgres://".into(),
+        return Err(AppError::invalid(
+            "bad_conn_string",
+            "Connection string must start with postgres://",
         ));
     }
     let id = Uuid::now_v7();

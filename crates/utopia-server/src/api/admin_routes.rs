@@ -102,13 +102,19 @@ pub async fn create_user(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&user)?;
     if !req.email.contains('@') || req.email.len() > 254 {
-        return Err(AppError::Validation("Invalid email address".into()).into());
+        return Err(AppError::invalid("bad_email", "Invalid email address").into());
     }
     if req.password.chars().count() < 8 {
-        return Err(AppError::Validation("Password must be at least 8 characters".into()).into());
+        return Err(AppError::invalid(
+            "password_too_short",
+            "Password must be at least 8 characters",
+        )
+        .into());
     }
     if req.display_name.trim().is_empty() || req.display_name.chars().count() > 64 {
-        return Err(AppError::Validation("Display name must be 1-64 characters".into()).into());
+        return Err(
+            AppError::invalid("bad_display_name", "Display name must be 1-64 characters").into(),
+        );
     }
     let role = match req.role.as_deref().unwrap_or("editor") {
         "admin" => Role::Admin,

@@ -18,7 +18,10 @@ pub struct NameReq {
 fn validate_name(name: &str) -> Result<&str, AppError> {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 64 {
-        return Err(AppError::Validation("Name must be 1-64 characters".into()));
+        return Err(AppError::invalid(
+            "bad_name",
+            "Name must be 1-64 characters",
+        ));
     }
     Ok(name)
 }

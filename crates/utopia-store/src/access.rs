@@ -162,8 +162,9 @@ pub async fn worker_concurrency(pool: &PgPool) -> AppResult<i32> {
 
 pub async fn set_worker_concurrency(pool: &PgPool, value: i32) -> AppResult<()> {
     if !(1..=256).contains(&value) {
-        return Err(AppError::Validation(
-            "worker_concurrency must be between 1 and 256".into(),
+        return Err(AppError::invalid(
+            "concurrency_range",
+            "worker_concurrency must be between 1 and 256",
         ));
     }
     sqlx::query("UPDATE deployment_settings SET worker_concurrency = $1")

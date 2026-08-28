@@ -58,8 +58,9 @@ pub async fn set(
     match max_concurrent {
         Some(n) => {
             if !(1..=256).contains(&n) {
-                return Err(utopia_core::AppError::Validation(
-                    "max_concurrent must be between 1 and 256".into(),
+                return Err(utopia_core::AppError::invalid(
+                    "concurrency_range",
+                    "max_concurrent must be between 1 and 256",
                 ));
             }
             sqlx::query(
@@ -88,8 +89,9 @@ pub async fn set(
 /// 部署缺省并发（未单独配置的模型都走它）。
 pub async fn set_default(pool: &PgPool, value: i32) -> AppResult<()> {
     if !(1..=256).contains(&value) {
-        return Err(utopia_core::AppError::Validation(
-            "default_model_concurrency must be between 1 and 256".into(),
+        return Err(utopia_core::AppError::invalid(
+            "concurrency_range",
+            "default_model_concurrency must be between 1 and 256",
         ));
     }
     sqlx::query("UPDATE deployment_settings SET default_model_concurrency = $1")

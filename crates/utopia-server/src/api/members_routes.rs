@@ -67,7 +67,7 @@ pub async fn set_role(
         && new_role != Role::Owner
         && utopia_store::members::owner_count(&state.pool, workspace_id).await? <= 1
     {
-        return Err(AppError::Validation("Cannot demote the last owner".into()).into());
+        return Err(AppError::invalid("last_owner_demote", "Cannot demote the last owner").into());
     }
 
     utopia_store::members::set_role(&state.pool, workspace_id, target_id, new_role).await?;
@@ -91,7 +91,9 @@ pub async fn remove(
             return Err(AppError::Forbidden.into());
         }
         if utopia_store::members::owner_count(&state.pool, workspace_id).await? <= 1 {
-            return Err(AppError::Validation("Cannot remove the last owner".into()).into());
+            return Err(
+                AppError::invalid("last_owner_remove", "Cannot remove the last owner").into(),
+            );
         }
     }
 

@@ -161,7 +161,7 @@ pub async fn explore(
         .await?
         .is_empty()
     {
-        return Err(AppError::Validation("No data sources mounted".into()).into());
+        return Err(AppError::invalid("no_data_sources", "No data sources mounted").into());
     }
     utopia_store::jobs::enqueue(&state.pool, "explore_mappings", json!({ "kb_id": kb_id })).await?;
     Ok(Json(json!({ "ok": true })))

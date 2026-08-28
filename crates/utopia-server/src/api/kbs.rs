@@ -53,7 +53,7 @@ pub async fn create(
 ) -> ApiResult<Json<KnowledgeBase>> {
     let name = req.name.trim();
     if name.is_empty() || name.chars().count() > 64 {
-        return Err(AppError::Validation("Name must be 1-64 characters".into()).into());
+        return Err(AppError::invalid("bad_name", "Name must be 1-64 characters").into());
     }
     let kind = req.kind.as_deref().unwrap_or("knowledge");
     if !matches!(kind, "knowledge" | "memory") {

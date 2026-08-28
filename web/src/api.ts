@@ -1,8 +1,13 @@
+import { S } from "./i18n";
+
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /** 服务端给的稳定错误码（没有则是尚未转换的契约守卫，message 已是英文原句） */
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -16,14 +21,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
+    // 措辞在这一个收口点定：22 个文件里的 toast.error(e.message) 一处都不用改。
+    // 有 code 就查 i18n，没有（或这一条还没进表）就退回服务端的英文原句——
+    // 服务端永远说英文，因为界面语言在客户端（docs/decisions/0004）
     let message = res.statusText;
+    let code: string | undefined;
     try {
-      const body = (await res.json()) as { error?: string };
+      const body = (await res.json()) as {
+        error?: string;
+        code?: string;
+        detail?: string;
+      };
       if (body.error) message = body.error;
+      code = body.code;
+      // code 来自网络，不是字面量——这一处 cast 换来 err 表本身的全量类型检查
+      const worded = code
+        ? (S.err as Record<string, string | undefined>)[code]
+        : undefined;
+      if (worded) message = worded;
+      if (body.detail) message = S.errDetail(message, body.detail);
     } catch {
       // 非 JSON 响应体，保留 statusText
     }
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, message, code);
   }
   return res.json() as Promise<T>;
 }
