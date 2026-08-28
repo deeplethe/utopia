@@ -6,7 +6,7 @@
 //! 匹配按 **IRI** 不按 key：上游改一次 `rdfs:label`，派生出的 key 就变了，
 //! 按 key 匹配会把同一个类当新类建出来，实体全留在孤儿上（见 0001 P2）。
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use utopia_core::AppResult;
 use utopia_ingest::ontology_rdf::{self, OwlProjection, RdfFormat};
@@ -26,6 +26,30 @@ pub enum Disposition {
     KeyTaken,
 }
 
+/// 一个属性在这次导入里会不会被建出来，以及为什么。
+///
+/// **预览必须说得出为什么**。上一版只报了"解析到 54 个属性"，读者无从判断
+/// 那是"都会建"还是"一个都不建"——而实际上是后者。
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "outcome", content = "detail")]
+pub enum AttrNote {
+    /// 会建，用这个 datatype
+    Datatype(&'static str),
+    /// 会建成 text：没写 range，词汇表没做声明，text 是诚实的超集
+    NoRange,
+    /// 不建：写了 range 但兑现不了。降级成 text 会把词汇表的声明扔掉且不留痕
+    UnmappableRange(String),
+    /// 不建：没写 domain。属性必须挂在一个类上，这是 store 层的硬约束
+    NoDomain,
+    /// 不建：多个 domain，等 domain 关联表（0001 P2c）
+    MultipleDomains(usize),
+    /// 不建：domain 指向的类**在这个文件里，但被跳过了**（多半是 key 撞车）。
+    /// 与 UnknownDomain 分开报，因为处置不同：这个能通过给现有的类改名解开
+    DomainSkipped(String),
+    /// 不建：domain 指向一个这个文件里压根没有的类（外部词汇表）
+    UnknownDomain(String),
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PlannedItem {
     pub iri: String,
@@ -38,6 +62,9 @@ pub struct PlannedItem {
     pub functional: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict_with: Option<String>,
+    /// 属性专用：会以什么 datatype 建，或为什么建不了
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attr: Option<AttrNote>,
 }
 
 /// 一次导入的完整计划。预览返回它，落库也执行它。
@@ -56,6 +83,69 @@ pub struct ImportPlan {
     /// 声明为函数性的关系数。**这是 part_of 那个坑的企业版**：本体声明唯一，
     /// 数据不遵守，导完就是一队假冲突
     pub functional_relations: usize,
+}
+
+/// 属性的去向。**domain 先判**：没有 domain 的属性根本建不出来，
+/// 这时它的 range 是什么已经不重要了。
+fn attr_note(
+    p: &ontology_rdf::OwlProperty,
+    resolvable: &HashSet<&str>,
+    in_file: &HashSet<&str>,
+) -> AttrNote {
+    match p.domains.as_slice() {
+        [] => return AttrNote::NoDomain,
+        [one] => {
+            if !resolvable.contains(one.as_str()) {
+                return if in_file.contains(one.as_str()) {
+                    AttrNote::DomainSkipped(one.clone())
+                } else {
+                    AttrNote::UnknownDomain(one.clone())
+                };
+            }
+        }
+        many => return AttrNote::MultipleDomains(many.len()),
+    }
+    match ontology_rdf::map_range(&p.ranges) {
+        ontology_rdf::RangeMapping::Datatype(dt) => AttrNote::Datatype(dt),
+        ontology_rdf::RangeMapping::Absent => AttrNote::NoRange,
+        ontology_rdf::RangeMapping::Unmappable(iri) => AttrNote::UnmappableRange(iri),
+    }
+}
+
+/// 属性会不会被建出来，以及用什么 datatype。落库与统计共用它，
+/// 免得"预览说会建"和"实际建了"两处各判一次而分叉。
+fn attr_datatype(note: &AttrNote) -> Option<&'static str> {
+    match note {
+        AttrNote::Datatype(dt) => Some(dt),
+        // 没写 range：只知道是字面量，text 是拦不住任何东西的诚实超集
+        AttrNote::NoRange => Some("text"),
+        _ => None,
+    }
+}
+
+impl ImportPlan {
+    /// 建不出来的属性，按原因分组计数。**预览里报总数是不够的**——
+    /// "54 个属性"读不出那是都会建还是一个都不建，而实际上取决于原因。
+    pub fn attr_skips(&self) -> BTreeMap<&str, usize> {
+        let mut out: BTreeMap<&str, usize> = BTreeMap::new();
+        for a in &self.attributes {
+            if a.disposition == Disposition::KeyTaken {
+                *out.entry("key_taken").or_default() += 1;
+                continue;
+            }
+            let reason = match a.attr.as_ref() {
+                Some(AttrNote::Datatype(_)) | Some(AttrNote::NoRange) => continue,
+                Some(AttrNote::UnmappableRange(_)) => "unmappable_range",
+                Some(AttrNote::NoDomain) => "no_domain",
+                Some(AttrNote::MultipleDomains(_)) => "multiple_domains",
+                Some(AttrNote::DomainSkipped(_)) => "domain_skipped",
+                Some(AttrNote::UnknownDomain(_)) => "unknown_domain",
+                None => continue,
+            };
+            *out.entry(reason).or_default() += 1;
+        }
+        out
+    }
 }
 
 /// 解析文件并对着现有本体算出计划。不写任何东西。
@@ -88,9 +178,19 @@ pub async fn plan(
         .collect();
     let r_by_key: HashMap<&str, &_> = rtypes.iter().map(|t| (t.key.as_str(), t)).collect();
 
+    // 这次结束后能解析出 id 的类 IRI：文件里新建或更新的，加上库里已有同 IRI 的。
+    // key 撞车被跳过的**不在其列**——它不会被建出来，挂在它上面的属性也就无处可挂
+    // 本次导入内部也会撞 key：不同 IRI 派生出同一个短标签
+    //（FOAF 的 familyName 与 family_name 都成了 family_name）。
+    // 只对着库里查是不够的——那样第二个在预览里显示"会新建"，
+    // 落库时被 ON CONFLICT 悄悄丢掉，预览就说了假话
+    let mut claimed: HashMap<&str, &str> = HashMap::new();
+
     let mut classes = Vec::new();
     for c in &proj.classes {
-        let (disposition, conflict_with) = if e_by_iri.contains_key(c.iri.as_str()) {
+        let (disposition, conflict_with) = if let Some(prev) = claimed.get(c.key.as_str()) {
+            (Disposition::KeyTaken, Some((*prev).to_string()))
+        } else if e_by_iri.contains_key(c.iri.as_str()) {
             (Disposition::Update, None)
         } else if let Some(existing) = e_by_key.get(c.key.as_str()) {
             // key 撞了但 IRI 不同：这是两个不同的东西争一个短标签。
@@ -101,6 +201,9 @@ pub async fn plan(
         } else {
             (Disposition::Create, None)
         };
+        if disposition != Disposition::KeyTaken {
+            claimed.insert(c.key.as_str(), c.iri.as_str());
+        }
         classes.push(PlannedItem {
             iri: c.iri.clone(),
             key: c.key.clone(),
@@ -109,20 +212,35 @@ pub async fn plan(
             disposition,
             functional: false,
             conflict_with,
+            attr: None,
         });
     }
+
+    // 文件里出现过的类（含被跳过的）——用来区分它被跳过了与它压根不在这个文件里
+    let in_file: HashSet<&str> = proj.classes.iter().map(|c| c.iri.as_str()).collect();
+    let resolvable: HashSet<&str> = classes
+        .iter()
+        .filter(|c| c.disposition != Disposition::KeyTaken)
+        .map(|c| c.iri.as_str())
+        .chain(e_by_iri.keys().copied())
+        .collect();
 
     let mut relations = Vec::new();
     let mut attributes = Vec::new();
     for p in &proj.properties {
-        let (disposition, conflict_with) = if r_by_iri.contains_key(p.iri.as_str()) {
+        let (disposition, conflict_with) = if let Some(prev) = claimed.get(p.key.as_str()) {
+            (Disposition::KeyTaken, Some((*prev).to_string()))
+        } else if r_by_iri.contains_key(p.iri.as_str()) {
             (Disposition::Update, None)
         } else if let Some(existing) = r_by_key.get(p.key.as_str()) {
             (Disposition::KeyTaken, existing.iri.clone())
         } else {
             (Disposition::Create, None)
         };
-        let item = PlannedItem {
+        if disposition != Disposition::KeyTaken {
+            claimed.insert(p.key.as_str(), p.iri.as_str());
+        }
+        let mut item = PlannedItem {
             iri: p.iri.clone(),
             key: p.key.clone(),
             label: p.label.clone(),
@@ -130,8 +248,10 @@ pub async fn plan(
             disposition,
             functional: p.functional,
             conflict_with,
+            attr: None,
         };
         if p.is_datatype {
+            item.attr = Some(attr_note(p, &resolvable, &in_file));
             attributes.push(item);
         } else {
             relations.push(item);
@@ -158,8 +278,9 @@ pub async fn plan(
     Ok((plan, proj, format))
 }
 
-/// 执行计划。**属性暂不落库**：它们需要 domain 才能存（store 层强制），
-/// 而 domain 要等类先建好并解析 IRI → id，那是下一层的事。
+/// 执行计划。属性在类之后落库——它们要挂在 domain 上，而 domain 要等
+/// 类先建好并解析 IRI → id（就是下面那个 `id_of`）。
+/// 多 domain 的仍然跳过，那要等 domain 关联表（0001 P2c）。
 pub async fn apply(
     state: &AppState,
     kb_id: Uuid,
@@ -233,12 +354,55 @@ pub async fn apply(
         }
     }
 
+    // 属性：类建完、id_of 填好之后才轮到它们。计划里已经算出了每个属性的去向，
+    // **这里只执行，不重新判断**——两处各判一次就会分叉，而分叉意味着
+    // 预览说的和实际做的不是一回事
+    let by_prop_iri: HashMap<&str, &_> = proj
+        .properties
+        .iter()
+        .map(|p| (p.iri.as_str(), p))
+        .collect();
+    let mut created_attrs = 0usize;
+    for item in &plan.attributes {
+        if item.disposition == Disposition::KeyTaken {
+            continue;
+        }
+        let (Some(note), Some(p)) = (item.attr.as_ref(), by_prop_iri.get(item.iri.as_str())) else {
+            continue;
+        };
+        let (Some(dt), Some(domain_iri)) = (attr_datatype(note), p.domains.first()) else {
+            continue;
+        };
+        let Some(&domain_id) = id_of.get(domain_iri) else {
+            // 计划阶段判为可解析，落库时却没有 id：类被跳过或更新失败。
+            // 计划已经报告过它，这里安静略过而不是造一个挂空的属性
+            continue;
+        };
+        if utopia_store::ontology::create_attribute_with_iri(
+            &state.pool,
+            kb_id,
+            &p.key,
+            &p.label,
+            &p.description,
+            &p.iri,
+            domain_id,
+            dt,
+        )
+        .await?
+        .is_some()
+        {
+            created_attrs += 1;
+        }
+    }
+
     let summary = serde_json::json!({
         "classes_created": created_classes,
         "classes_updated": updated_classes,
         "classes_key_taken": plan.classes.iter().filter(|c| c.disposition == Disposition::KeyTaken).count(),
         "relations_seen": plan.relations.len(),
         "attributes_seen": plan.attributes.len(),
+        "attributes_created": created_attrs,
+        "attributes_skipped": plan.attr_skips(),
         "classes_without_description": plan.classes_without_description,
         "functional_relations": plan.functional_relations,
         "unprojected": plan.unprojected.iter().take(30).collect::<Vec<_>>(),

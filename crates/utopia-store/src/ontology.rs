@@ -469,6 +469,49 @@ pub async fn update_type_from_import(
 }
 
 /// 设父类。自环与已是该父类的情形静默跳过。
+/// 从导入建一个属性（`kind='attribute'`），带 IRI。
+///
+/// 与 [`create_relation_type`] 的区别只在多了 `iri` 与 key 冲突的处置：
+/// 导入按 IRI 认身份，key 撞了是"两个不同的东西争一个短标签"，
+/// 由调用方在计划阶段报告并跳过，到这里不该再撞——所以冲突时返回 None
+/// 而不是覆盖，让调用方把它计进"跳过"。
+///
+/// `temporal` 固定 `state`：属性是随时间变化的取值（薪资、人数），
+/// 新值闭合旧值正是我们要的。OWL 里没有对应概念，猜 event 或 eternal 都更差。
+#[allow(clippy::too_many_arguments)]
+pub async fn create_attribute_with_iri(
+    pool: &PgPool,
+    kb_id: Uuid,
+    key: &str,
+    label: &str,
+    description: &str,
+    iri: &str,
+    domain_type_id: Uuid,
+    datatype: &str,
+) -> AppResult<Option<Uuid>> {
+    validate_key(key)?;
+    let id = Uuid::now_v7();
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "INSERT INTO relation_types
+             (id, kb_id, key, label, temporal, functional, inverse_functional,
+              description, kind, domain_type_id, datatype, iri)
+         VALUES ($1, $2, $3, $4, 'state', FALSE, FALSE, $5, 'attribute', $6, $7, $8)
+         ON CONFLICT (kb_id, key) DO NOTHING
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .bind(key)
+    .bind(label)
+    .bind(description)
+    .bind(domain_type_id)
+    .bind(datatype)
+    .bind(iri)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id,)| id))
+}
+
 pub async fn set_parent(pool: &PgPool, kb_id: Uuid, child: Uuid, parent: Uuid) -> AppResult<()> {
     if child == parent {
         return Ok(());

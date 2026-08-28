@@ -261,7 +261,11 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             iri: iri.clone(),
         });
     }
-    for iri in obj_props.iter().chain(data_props.iter()) {
+    // **并集去重，不是两个集合首尾相接**：词汇表常把同一个属性既声明为
+    // rdf:Property 又声明为 owl:DatatypeProperty（FOAF 的 name、age、nick… 都这样），
+    // 两个集合各收一次，chain 就会把它吐两遍。分类看 data_props 就够了。
+    let all_props: BTreeSet<&String> = obj_props.iter().chain(data_props.iter()).collect();
+    for iri in all_props {
         proj.properties.push(OwlProperty {
             key: key_from_iri(iri),
             label: pick_lang(labels.get(iri))
@@ -328,9 +332,166 @@ pub fn key_from_iri(iri: &str) -> String {
     out.chars().take(40).collect()
 }
 
+const XSD: &str = "http://www.w3.org/2001/XMLSchema#";
+const RDF_NS: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#";
+
+/// `rdfs:range` 映射到我们的四种 datatype 的结果。**三路，不是两路**。
+#[derive(Debug, Clone, PartialEq)]
+pub enum RangeMapping {
+    /// 能映射到 `text` / `number` / `date` / `bool`
+    Datatype(&'static str),
+    /// 压根没写 range：词汇表没做任何声明，只知道是字面量。
+    /// `text` 是诚实的超集（它接受任何字符串，从不拦），所以建、并在预览里列出
+    Absent,
+    /// 写了 range 但兑现不了：**词汇表做了个明确声明**，悄悄降级成 text
+    /// 等于把那个声明扔掉且不留痕迹。跳过并报告，带上原 IRI
+    Unmappable(String),
+}
+
+/// 数据属性的 `rdfs:range` → datatype。
+///
+/// 按**完整 IRI** 匹配而不是局部名：自定义词汇表完全可能有个叫 `date` 的类，
+/// 按尾巴匹配会把它当成 `xsd:date`。
+///
+/// 多条 range 一律 [`RangeMapping::Unmappable`]——RDFS 里那是**交集**语义
+///（"必须同时是两者"），几乎总是建模笔误，但规范如此，不猜。
+pub fn map_range(ranges: &[String]) -> RangeMapping {
+    match ranges {
+        [] => RangeMapping::Absent,
+        [one] => match datatype_of(one) {
+            Some(dt) => RangeMapping::Datatype(dt),
+            None => RangeMapping::Unmappable(one.clone()),
+        },
+        many => RangeMapping::Unmappable(many.join(" ∩ ")),
+    }
+}
+
+fn datatype_of(iri: &str) -> Option<&'static str> {
+    if let Some(local) = iri.strip_prefix(XSD) {
+        return match local {
+            // 有界与无符号变体全部收进 number：区别在取值范围，不在语义
+            "decimal" | "integer" | "int" | "long" | "short" | "byte" | "nonNegativeInteger"
+            | "positiveInteger" | "nonPositiveInteger" | "negativeInteger" | "unsignedLong"
+            | "unsignedInt" | "unsignedShort" | "unsignedByte" | "double" | "float" => {
+                Some("number")
+            }
+            // 我们的日期格式本就是 YYYY[-MM[-DD]]，逐级可省，所以 gYear / gYearMonth 装得下
+            "date" | "dateTime" | "dateTimeStamp" | "gYear" | "gYearMonth" => Some("date"),
+            "boolean" => Some("bool"),
+            "string" | "normalizedString" | "token" | "language" | "Name" | "NCName"
+            | "NMTOKEN" | "anyURI" => Some("text"),
+            // time / gMonth / gDay / gMonthDay 缺年，duration 系列是时长不是时点，
+            // 二进制与 XML 内部标识不是业务取值 —— 全部落到 None
+            _ => None,
+        };
+    }
+    if let Some(local) = iri.strip_prefix(RDF_NS) {
+        // XMLLiteral 是 XML 片段，不收
+        return matches!(local, "PlainLiteral" | "langString").then_some("text");
+    }
+    if let Some(local) = iri.strip_prefix(RDFS) {
+        return (local == "Literal").then_some("text");
+    }
+    if let Some(local) = iri.strip_prefix(OWL) {
+        return matches!(local, "real" | "rational").then_some("number");
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn range_maps_every_numeric_variant() {
+        for local in [
+            "decimal",
+            "integer",
+            "int",
+            "long",
+            "short",
+            "byte",
+            "nonNegativeInteger",
+            "positiveInteger",
+            "nonPositiveInteger",
+            "negativeInteger",
+            "unsignedLong",
+            "unsignedInt",
+            "unsignedShort",
+            "unsignedByte",
+            "double",
+            "float",
+        ] {
+            assert_eq!(
+                map_range(&[format!("{XSD}{local}")]),
+                RangeMapping::Datatype("number"),
+                "{local}"
+            );
+        }
+        // owl:real / owl:rational 也在 OWL 2 的 datatype map 里
+        assert_eq!(
+            map_range(&[format!("{OWL}rational")]),
+            RangeMapping::Datatype("number")
+        );
+    }
+
+    /// 我们的日期格式是 YYYY[-MM[-DD]]，逐级可省，所以只缺低位的 g 类型装得下
+    #[test]
+    fn partial_dates_fit_only_when_the_year_is_there() {
+        for local in ["date", "dateTime", "dateTimeStamp", "gYear", "gYearMonth"] {
+            assert_eq!(
+                map_range(&[format!("{XSD}{local}")]),
+                RangeMapping::Datatype("date"),
+                "{local}"
+            );
+        }
+        // 缺年的存不下 —— 我们的格式必须以年开头
+        for local in ["gMonth", "gDay", "gMonthDay", "time"] {
+            assert!(
+                matches!(
+                    map_range(&[format!("{XSD}{local}")]),
+                    RangeMapping::Unmappable(_)
+                ),
+                "{local} 不该被映射"
+            );
+        }
+    }
+
+    /// 声明在与不在，是两种不同的情形，不能都当成 text
+    #[test]
+    fn absent_range_differs_from_an_unmappable_one() {
+        // 没写：没有声明可丢，text 是诚实的超集
+        assert_eq!(map_range(&[]), RangeMapping::Absent);
+        // 写了但兑现不了：降级成 text 会把词汇表的声明扔掉且不留痕
+        assert!(matches!(
+            map_range(&[format!("{XSD}duration")]),
+            RangeMapping::Unmappable(_)
+        ));
+        assert!(matches!(
+            map_range(&[format!("{XSD}base64Binary")]),
+            RangeMapping::Unmappable(_)
+        ));
+    }
+
+    /// 多条 range 在 RDFS 里是**交集**（"必须同时是两者"），不是并集。
+    /// 几乎总是建模笔误，但规范如此 —— 不猜。
+    #[test]
+    fn several_ranges_are_an_intersection_we_refuse_to_guess() {
+        let m = map_range(&[format!("{XSD}string"), format!("{XSD}integer")]);
+        match m {
+            RangeMapping::Unmappable(s) => assert!(s.contains('∩')),
+            other => panic!("多条 range 不该被映射: {other:?}"),
+        }
+    }
+
+    /// 按完整 IRI 匹配：自定义词汇表里叫 date 的**类**不是 xsd:date
+    #[test]
+    fn a_class_that_happens_to_be_called_date_is_not_a_date() {
+        assert!(matches!(
+            map_range(&["http://acme.example/hr#date".into()]),
+            RangeMapping::Unmappable(_)
+        ));
+    }
 
     const TTL: &str = r#"
         @prefix owl: <http://www.w3.org/2002/07/owl#> .
