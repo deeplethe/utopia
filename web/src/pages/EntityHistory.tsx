@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { FileText, PencilLine, Undo2 } from "lucide-react";
+import { FileText, Merge, PencilLine, Undo2 } from "lucide-react";
 import { api, type EntityHistoryEvent } from "../api";
 import { S } from "../i18n";
 import { Pager } from "../ui";
@@ -17,12 +17,15 @@ const KIND_ICON = {
   asserted: FileText,
   corrected: PencilLine,
   rejected: Undo2,
+  // 并入不是撤回：内容一字未少地进了另一条断言
+  merged: Merge,
 } as const;
 
 const KIND_TONE: Record<string, string> = {
   asserted: "text-neutral-500",
   corrected: "text-[var(--u-warn)]",
   rejected: "text-[var(--u-danger)]",
+  merged: "text-neutral-500",
 };
 
 const ymd = (iso: string) => iso.slice(0, 10);

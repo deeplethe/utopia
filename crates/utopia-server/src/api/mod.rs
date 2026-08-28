@@ -154,6 +154,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/ontology/adopt-predicate",
             post(ontology_routes::adopt_predicate),
         )
+        .route(
+            "/kbs/{id}/ontology/adopt-predicate/{batch_id}",
+            axum::routing::delete(ontology_routes::unadopt_predicate),
+        )
         .route("/kbs/{id}/search", post(search_routes::search))
         .route("/kbs/{id}/chat", post(chat::chat))
         .route("/kbs/{id}/conversations", get(chat::list_conversations))

@@ -688,10 +688,16 @@ export const api = {
       forms: string[];
     },
   ) =>
-    request<{ id: string; remapped: number }>(`/api/v1/kbs/${kbId}/ontology/adopt-predicate`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    request<{ id: string; remapped: number; batch: string }>(
+      `/api/v1/kbs/${kbId}/ontology/adopt-predicate`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  /** 撤销一次采纳：新写的行作废、旧行复活。关系类型留着 */
+  unadoptPredicate: (kbId: string, batchId: string) =>
+    request<{ reverted: number }>(
+      `/api/v1/kbs/${kbId}/ontology/adopt-predicate/${batchId}`,
+      { method: "DELETE" },
+    ),
 
   sources: (kbId: string) =>
     request<{ sources: SourceView[] }>(`/api/v1/kbs/${kbId}/sources`),

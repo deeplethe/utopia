@@ -20,6 +20,12 @@ type FactSpanRow = (
 /// 两边必须认同一个 key，所以定义在这里而不是各自的模块。
 pub const FALLBACK_RELATION_KEY: &str = "related_to";
 
+/// 采纳时旧事实的去向（`fact_adoptions.mode`）：新写一行取代它。
+const ADOPT_SUPERSEDED: &str = "superseded";
+/// 目标断言已存在 → 并进去。旧行被作废且没有后继，实体历史必须据此把它
+/// 读成"并入"而不是"撤回"，否则界面会宣称一件没发生的事。
+const ADOPT_MERGED: &str = "merged";
+
 /// 内置本体模板：(key, label, color, shape)
 // 低饱和粉彩色系（深色画布上柔和发光，不刺眼）；组织/产品用方形区分"机构/制品"
 const DEFAULT_ENTITY_TYPES: &[(&str, &str, &str, &str)] = &[
@@ -841,7 +847,13 @@ pub async fn entity_history(
                    CASE WHEN ef.supersedes IS NULL THEN 'asserted' ELSE 'corrected' END AS kind
             FROM ef
             UNION ALL
-            SELECT ef.*, ef.invalidated_at AS at, 'rejected' AS kind
+            -- 作废且无后继 = 被推翻……除非它是被并进了另一条断言。那种情形下
+            -- 内容一字未少，说成「撤回」就是界面在陈述一件没发生的事
+            SELECT ef.*, ef.invalidated_at AS at,
+                   CASE WHEN EXISTS (SELECT 1 FROM fact_adoptions fa
+                                     WHERE fa.old_fact_id = ef.id AND fa.mode = 'merged'
+                                       AND fa.reverted_at IS NULL)
+                        THEN 'merged' ELSE 'rejected' END AS kind
             FROM ef
             WHERE ef.invalidated_at IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.supersedes = ef.id)
@@ -867,18 +879,23 @@ pub async fn entity_history(
                AND a.action = ANY(CASE ev.kind
                      WHEN 'corrected' THEN
                        ARRAY['fact.close', 'conflict.close_old', 'ontology.predicate_adopted']
-                     ELSE ARRAY['fact.reject', 'conflict.reject_new'] END)
+                     -- 并入只可能由采纳造成，不会是 Review 里的拒绝
+                     WHEN 'merged' THEN ARRAY['ontology.predicate_adopted']
+                     ELSE ARRAY['fact.reject', 'conflict.reject_new',
+                                'ontology.adoption_reverted'] END)
                AND (a.target_id = COALESCE(ev.supersedes, ev.id)
                     OR a.target_id IN (SELECT c.id FROM fact_conflicts c
                                        WHERE c.old_fact_id = COALESCE(ev.supersedes, ev.id)
                                           OR c.new_fact_id = ev.id)
-                    -- 采纳表层谓词记在关系类型上，一次动作改写成批事实。
-                    -- 时间窗把它限定在那次采纳产生的修正上，否则同一关系
-                    -- 日后的任何修正都会被记到当初点头的人名下
-                    OR (a.action = 'ontology.predicate_adopted'
-                        AND a.target_id = ev.predicate_id
-                        AND ev.at BETWEEN a.created_at - interval '1 min'
-                                      AND a.created_at + interval '10 min'))
+                    -- 采纳与撤销都记在关系类型上、一次动作改一批事实，
+                    -- 靠 fact_adoptions 精确关联到具体哪几条（corrected 事件
+                    -- 是新行、merged 是旧行，两头都认）
+                    OR (a.action IN ('ontology.predicate_adopted',
+                                     'ontology.adoption_reverted')
+                        AND EXISTS (SELECT 1 FROM fact_adoptions fa
+                                    WHERE fa.predicate_id = a.target_id
+                                      AND (fa.new_fact_id = ev.id
+                                           OR fa.old_fact_id = ev.id))))
              ORDER BY a.created_at DESC LIMIT 1
          ) act ON true
          LEFT JOIN LATERAL (
@@ -942,7 +959,8 @@ pub async fn surface_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Sur
     .await?)
 }
 
-/// 把由 `forms` 降级而来的 related_to 事实改写到 `predicate_id`。返回改写条数。
+/// 把由 `forms` 降级而来的 related_to 事实改写到 `predicate_id`。
+/// 返回 (批次 id, 改写条数)——批次 id 是撤销的把手。
 ///
 /// **追加而非原地改**：插入带 `supersedes` 的新行并作废旧行，与人工纠正、
 /// 时态闭合走同一条路——认知变更本身是信息，实体历史里读得到
@@ -951,14 +969,20 @@ pub async fn surface_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Sur
 /// 只改写说法**全部**落在 `forms` 内的事实：一条事实可能积累多种说法
 /// （甲块 "runs on"、乙块 "optimized for"），只认领了其中一种就改写等于替
 /// 另一种也做了决定。实测这类事实占比不到 1%，宁可漏也不猜。
+///
+/// 每条去向都写进 `fact_adoptions`。`supersedes` 一个指针不够用——目标断言
+/// 已存在时走的是"并入"，旧行被作废却没有后继，于是既撤不回来、实体历史
+/// 又会把它判成 rejected 而对外宣称"这条被撤回了"（它其实一字未少地并进了
+/// 另一条）。
 pub async fn adopt_surface_predicates(
     pool: &PgPool,
     kb_id: Uuid,
     predicate_id: Uuid,
     forms: &[String],
-) -> AppResult<u32> {
+) -> AppResult<(Uuid, u32)> {
+    let batch_id = Uuid::now_v7();
     if forms.is_empty() {
-        return Ok(0);
+        return Ok((batch_id, 0));
     }
     let targets: Vec<(Uuid, Uuid, Option<Uuid>)> = sqlx::query_as(
         "SELECT f.id, f.subject_id, f.object_id
@@ -994,8 +1018,8 @@ pub async fn adopt_surface_predicates(
         .fetch_optional(&mut *tx)
         .await?;
 
-        let new_id = match existing {
-            Some((id,)) => id,
+        let (new_id, mode) = match existing {
+            Some((id,)) => (id, ADOPT_MERGED),
             None => {
                 let id = Uuid::now_v7();
                 let inserted: Option<(Uuid,)> = sqlx::query_as(
@@ -1016,7 +1040,7 @@ pub async fn adopt_surface_predicates(
                     tx.rollback().await?;
                     continue;
                 };
-                id
+                (id, ADOPT_SUPERSEDED)
             }
         };
 
@@ -1035,8 +1059,72 @@ pub async fn adopt_surface_predicates(
             .bind(old_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "INSERT INTO fact_adoptions
+                (batch_id, kb_id, predicate_id, old_fact_id, new_fact_id, mode)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(batch_id)
+        .bind(kb_id)
+        .bind(predicate_id)
+        .bind(old_id)
+        .bind(new_id)
+        .bind(mode)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         moved += 1;
     }
-    Ok(moved)
+    Ok((batch_id, moved))
+}
+
+/// 撤销一次采纳：新写的行作废、旧行复活。
+///
+/// 关系类型**不删**——已有事实指向过它（`delete_relation_type` 也会拒绝），
+/// 而按 append-only 的规矩"它存在过"本身是历史；一个没人用的关系是惰性的。
+/// 证据也不清：新行已作废，其证据随之惰性，删掉反而抹掉"我们曾经这么认为"。
+///
+/// 并入那种（mode = merged）只复活旧行，不动被并入的目标——它本来就在，
+/// 复制过去的证据留着无害（`ON CONFLICT DO NOTHING` 本就可能是它自己的）。
+pub async fn unadopt(pool: &PgPool, kb_id: Uuid, batch_id: Uuid) -> AppResult<u32> {
+    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT old_fact_id, new_fact_id, mode FROM fact_adoptions
+         WHERE batch_id = $1 AND kb_id = $2 AND reverted_at IS NULL",
+    )
+    .bind(batch_id)
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Err(AppError::NotFound);
+    }
+
+    let mut tx = pool.begin().await?;
+    let mut reverted = 0u32;
+    for (old_id, new_id, mode) in &rows {
+        if mode == ADOPT_SUPERSEDED {
+            sqlx::query(
+                "UPDATE facts SET invalidated_at = now() WHERE id = $1 AND invalidated_at IS NULL",
+            )
+            .bind(new_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        sqlx::query("UPDATE facts SET invalidated_at = NULL WHERE id = $1")
+            .bind(old_id)
+            .execute(&mut *tx)
+            .await?;
+        reverted += 1;
+    }
+    // 标记而不是删除：这次采纳发生过，撤销也发生过，两件都是历史
+    sqlx::query(
+        "UPDATE fact_adoptions SET reverted_at = now()
+         WHERE batch_id = $1 AND kb_id = $2 AND reverted_at IS NULL",
+    )
+    .bind(batch_id)
+    .bind(kb_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(reverted)
 }

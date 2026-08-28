@@ -1089,6 +1089,11 @@ function MissesPanel({
   onError: (e: unknown) => void;
 }) {
   const [proposals, setProposals] = useState<OntologyProposals | null>(null);
+  // 最近一次采纳，供撤销。只留最近一次——旧批次要撤销走审计台账，
+  // 那里本来就记着每次采纳动了哪个关系、多少条
+  const [lastAdopt, setLastAdopt] = useState<{ batch: string; key: string; moved: number } | null>(
+    null,
+  );
   // 待认领的表层谓词：提案的影响面（"将改写 57 条"）从这里算
   const surface = useQuery({
     queryKey: ["surface-predicates", kbId],
@@ -1150,13 +1155,26 @@ function MissesPanel({
             functional: p.functional ?? false,
           }),
     onSuccess: (data, p) => {
-      const moved = (data as { remapped?: number }).remapped ?? 0;
+      const d = data as { remapped?: number; batch?: string };
+      const moved = d.remapped ?? 0;
       toast.success(moved > 0 ? S.ontology.adopted(moved) : S.toast.added);
+      // 撤销的把手：采纳改写了成批事实，没有回头路的话没人敢点第一下
+      if (moved > 0 && d.batch) setLastAdopt({ batch: d.batch, key: p.key, moved });
       setProposals(
         (prev) =>
           prev && { ...prev, relation_types: prev.relation_types.filter((x) => x.key !== p.key) },
       );
       api.dismissMiss(kbId, "relation_type", p.key).catch(() => {});
+      onChanged();
+    },
+    onError,
+  });
+
+  const unadopt = useMutation({
+    mutationFn: (batch: string) => api.unadoptPredicate(kbId, batch),
+    onSuccess: (r) => {
+      toast.success(S.ontology.reverted(r.reverted));
+      setLastAdopt(null);
       onChanged();
     },
     onError,
@@ -1197,6 +1215,25 @@ function MissesPanel({
               </button>
             </span>
           ))}
+        </div>
+      )}
+
+      {/* 采纳改写了成批事实——没有回头路的话没人敢点第一下 */}
+      {lastAdopt && (
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
+          <span className="text-xs text-neutral-300">
+            {S.ontology.undoAdopt(lastAdopt.key, lastAdopt.moved)}
+          </span>
+          <span className="text-[11px] text-neutral-600">{S.ontology.undoKeepsRelation}</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto"
+            disabled={unadopt.isPending}
+            onClick={() => unadopt.mutate(lastAdopt.batch)}
+          >
+            {S.ontology.undoAdoptBtn}
+          </Button>
         </div>
       )}
 

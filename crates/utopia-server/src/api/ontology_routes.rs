@@ -459,7 +459,7 @@ pub async fn adopt_predicate(
         None,
     )
     .await?;
-    let remapped =
+    let (batch_id, remapped) =
         utopia_store::graph::adopt_surface_predicates(&state.pool, kb_id, predicate_id, &req.forms)
             .await?;
     // 采纳同时清掉对应的未匹配统计——本体已经覆盖它们了
@@ -473,11 +473,48 @@ pub async fn adopt_predicate(
         "ontology.predicate_adopted",
         "relation_type",
         Some(predicate_id),
-        json!({ "key": key, "label": req.label, "forms": req.forms, "facts_remapped": remapped }),
+        json!({
+            "key": key, "label": req.label, "forms": req.forms,
+            "facts_remapped": remapped, "batch": batch_id,
+        }),
     )
     .await;
     state.emit_review(kb_id);
-    Ok(Json(json!({ "id": predicate_id, "remapped": remapped })))
+    Ok(Json(
+        json!({ "id": predicate_id, "remapped": remapped, "batch": batch_id }),
+    ))
+}
+
+/// 撤销一次采纳：新写的行作废、旧行复活。关系类型留着（有事实指向过它，
+/// 而且一个没人用的关系是惰性的）。
+pub async fn unadopt_predicate(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, batch_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    // 归因要按关系类型找回这次撤销，所以先拿到它
+    let predicate_id: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT predicate_id FROM fact_adoptions WHERE batch_id = $1 AND kb_id = $2 LIMIT 1",
+    )
+    .bind(batch_id)
+    .bind(kb_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(utopia_core::AppError::Db)?;
+    let reverted = utopia_store::graph::unadopt(&state.pool, kb_id, batch_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "ontology.adoption_reverted",
+        "relation_type",
+        predicate_id.map(|(id,)| id),
+        json!({ "batch": batch_id, "facts_reverted": reverted }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok(Json(json!({ "reverted": reverted })))
 }
 
 /// 待认领的表层谓词：原文说过、本体没有、事实降级成了 related_to。
