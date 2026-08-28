@@ -548,7 +548,9 @@ pub async fn update_entity(
                 .fetch_optional(pool)
                 .await?;
         if exists.is_none() {
-            return Err(AppError::Validation("No such entity type in this KB".into()));
+            return Err(AppError::Validation(
+                "No such entity type in this KB".into(),
+            ));
         }
     }
 
