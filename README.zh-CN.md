@@ -82,7 +82,7 @@
 
 ## 功能
 
-一个二进制，加一个 Postgres。不需要 Elasticsearch，不需要向量服务，也不需要消息队列。
+整套系统只有一个二进制文件和一个 Postgres，不需要 Elasticsearch，不需要向量数据库，也不需要消息队列。
 
 **摄入：**支持 PDF、DOCX、PPTX、XLSX/XLS/ODS、CSV/TSV、Markdown、HTML 和纯文本，自动识别中文编码。网页和 RSS 可按 cron 定时同步，也可以通过来源级 ingest token 从任何地方推送文档。解析失败的文档可以原地重处理，无需重新上传；整个来源或整个知识库也可以批量重抽。
 
