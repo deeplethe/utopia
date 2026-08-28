@@ -96,6 +96,11 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
             .collect();
         let messages = utopia_extract::build_adjudication_messages(&pairs);
         // 调用/解析失败 → 任务按退避重试；重试耗尽后行停留在队列里，人工仍可定夺
+        let _permit = settings.as_ref().map(|s| llm_util::acquire_chat(state, s));
+        let _permit = match _permit {
+            Some(f) => f.await,
+            None => None,
+        };
         let reply = client.chat(&messages).await?;
         let verdicts = utopia_extract::parse_adjudication(&reply)?;
         let by_i: HashMap<usize, &utopia_extract::AdjudicationVerdict> =

@@ -12,11 +12,22 @@ function DeploymentAdmin() {
   const queryClient = useQueryClient();
   const dep = useQuery({ queryKey: ["deployment"], queryFn: api.adminDeployment });
   const [workers, setWorkers] = useState<number | null>(null);
-  const shown = workers ?? dep.data?.worker_concurrency ?? 4;
+  const shown = workers ?? dep.data?.worker_concurrency ?? 32;
+  // 按模型的并发：缺省值 + 每个在用模型的覆盖
+  const [modelDefault, setModelDefault] = useState<number | null>(null);
+  const shownDefault = modelDefault ?? dep.data?.default_model_concurrency ?? 10;
+  const [perModel, setPerModel] = useState<Record<string, number>>({});
   const save = useMutation({
-    mutationFn: (v: { open: boolean; workers?: number }) =>
-      api.saveAdminDeployment(v.open, v.workers),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["deployment"] }),
+    mutationFn: (v: {
+      open: boolean;
+      workers?: number;
+      defaultModel?: number;
+      modelLimit?: { base_url: string; model: string; max_concurrent: number | null };
+    }) => api.saveAdminDeployment(v.open, v.workers, v.defaultModel, v.modelLimit),
+    onSuccess: () => {
+      setPerModel({});
+      queryClient.invalidateQueries({ queryKey: ["deployment"] });
+    },
   });
   const open = dep.data?.open_registration ?? true;
 
@@ -64,6 +75,116 @@ function DeploymentAdmin() {
           </button>
         </div>
       </div>
+      {/* 按模型的并发才是真正的节流：约束来自供应商的速率限制，而那是按模型算的。
+          上面那个 worker 并发只是外层兜底，防任务无限堆积 */}
+      <div className="border-t border-white/10 pt-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <span className="block text-sm text-neutral-200">
+              {S.settings.deployment.modelConcurrency}
+            </span>
+            <span className="block text-xs text-neutral-500 mt-0.5">
+              {S.settings.deployment.modelConcurrencyHint}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-xs text-neutral-500">{S.settings.deployment.modelDefault}</span>
+            <input
+              type="number"
+              min={1}
+              max={256}
+              className="input-dark u-input-plain w-16 px-2 py-1.5 text-sm u-num text-center"
+              value={shownDefault}
+              disabled={dep.isPending}
+              onChange={(e) =>
+                setModelDefault(Math.max(1, Math.min(256, Number(e.target.value) || 1)))
+              }
+            />
+            <button
+              className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+              disabled={
+                save.isPending ||
+                modelDefault === null ||
+                modelDefault === dep.data?.default_model_concurrency
+              }
+              onClick={() => save.mutate({ open, defaultModel: shownDefault })}
+            >
+              {S.settings.deployment.workersApply}
+            </button>
+          </div>
+        </div>
+
+        {!!dep.data?.models_in_use?.length && (
+          <div className="mt-3 space-y-1.5">
+            {dep.data.models_in_use.map((m) => {
+              const cur =
+                dep.data?.model_limits?.find(
+                  (l) => l.base_url === m.base_url && l.model === m.model,
+                )?.max_concurrent ?? null;
+              const key = `${m.base_url}|${m.model}`;
+              const val = perModel[key] ?? cur ?? shownDefault;
+              return (
+                <div key={key} className="flex items-center gap-2 text-xs">
+                  <span className="u-chip u-chip-neutral !text-[10px] !px-1.5 shrink-0">
+                    {m.kind}
+                  </span>
+                  <span className="font-mono text-neutral-300 truncate">{m.model}</span>
+                  <span className="text-neutral-600 truncate hidden sm:inline">{m.base_url}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={256}
+                    className="input-dark u-input-plain ml-auto w-14 px-1.5 py-1 text-xs u-num text-center shrink-0"
+                    value={val}
+                    onChange={(e) =>
+                      setPerModel({
+                        ...perModel,
+                        [key]: Math.max(1, Math.min(256, Number(e.target.value) || 1)),
+                      })
+                    }
+                  />
+                  <button
+                    className="u-btn u-btn-ghost px-2 py-1 text-[11px] shrink-0"
+                    disabled={save.isPending || perModel[key] === undefined}
+                    onClick={() =>
+                      save.mutate({
+                        open,
+                        modelLimit: {
+                          base_url: m.base_url,
+                          model: m.model,
+                          max_concurrent: val,
+                        },
+                      })
+                    }
+                  >
+                    {S.settings.deployment.workersApply}
+                  </button>
+                  {cur !== null && (
+                    <button
+                      className="u-btn u-btn-ghost px-2 py-1 text-[11px] shrink-0 text-neutral-500"
+                      disabled={save.isPending}
+                      title={S.settings.deployment.modelResetHint}
+                      onClick={() =>
+                        save.mutate({
+                          open,
+                          modelLimit: {
+                            base_url: m.base_url,
+                            model: m.model,
+                            max_concurrent: null,
+                          },
+                        })
+                      }
+                    >
+                      {S.settings.deployment.modelReset}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {save.isError && (
         <p className="text-xs text-rose-400">{(save.error as Error).message}</p>
       )}

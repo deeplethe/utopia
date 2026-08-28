@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use std::collections::HashSet;
 use utopia_core::models::{
     ChunkFactView, EntityFact, EntityHistoryEvent, EntityType, EvidenceView, FactReviewItem,
-    GraphEdge, GraphNode, RelationType, SurfacePredicate,
+    GraphEdge, GraphNode, ProposedPredicate, RelationType,
 };
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -26,49 +26,205 @@ const ADOPT_SUPERSEDED: &str = "superseded";
 /// 读成"并入"而不是"撤回"，否则界面会宣称一件没发生的事。
 const ADOPT_MERGED: &str = "merged";
 
-/// 内置本体模板：(key, label, color, shape)
+/// 内置本体模板：(key, label, color, shape, description)
+///
+/// **描述是承重的**：它逐字进抽取提示词，是模型区分 product 与 concept 的唯一依据。
+/// 此前这一列在种子里是空的，于是提示词只有 `- product (Product)`——模型只能从
+/// 标签猜，实测 `product` 吃下 37% 的实体，里面混着 GPU、accelerator 这类概念。
+///
+/// 写法：先说这个类**是什么**，再说**它不是什么**并指向该去的类。反例比正例管用——
+/// 模型的错误集中在相邻类的边界上，不在类的中心。
 // 低饱和粉彩色系（深色画布上柔和发光，不刺眼）；组织/产品用方形区分"机构/制品"
-const DEFAULT_ENTITY_TYPES: &[(&str, &str, &str, &str)] = &[
-    ("person", "Person", "#7fd0ff", "circle"),
-    ("organization", "Organization", "#4cc38a", "square"),
-    ("project", "Project", "#f2b66d", "circle"),
+const DEFAULT_ENTITY_TYPES: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "person",
+        "Person",
+        "#7fd0ff",
+        "circle",
+        "A named individual human being. Not a role, title or team — those are concepts \
+         or organizations.",
+    ),
+    (
+        "organization",
+        "Organization",
+        "#4cc38a",
+        "square",
+        "A company, institution, agency, team or other body of people that acts as one. \
+         Includes divisions and named groups. Not the products it makes.",
+    ),
+    (
+        "project",
+        "Project",
+        "#f2b66d",
+        "circle",
+        "A named initiative, programme or body of work with a beginning and an end. \
+         Not a shipped product, and not the organization running it.",
+    ),
     // 问数语义层：可问的量与可切的维度（BI 语义层标准抽象），映射经 mapped_to 指向数据资产
-    ("metric", "Metric", "#ffd580", "square"),
-    ("dimension", "Dimension", "#9adcc6", "square"),
-    ("product", "Product", "#c4a5ff", "square"),
-    ("event", "Event", "#ff9daf", "circle"),
-    ("concept", "Concept", "#8ea5bd", "circle"),
-    ("location", "Location", "#5fd4d0", "circle"),
+    (
+        "metric",
+        "Metric",
+        "#ffd580",
+        "square",
+        "A quantity that can be measured and aggregated — revenue, latency, headcount. \
+         The thing being counted, not a particular measured value.",
+    ),
+    (
+        "dimension",
+        "Dimension",
+        "#9adcc6",
+        "square",
+        "An axis a metric can be broken down by — region, channel, product line. \
+         The axis itself, not one of its values.",
+    ),
+    (
+        "product",
+        "Product",
+        "#c4a5ff",
+        "square",
+        "A specific named offering that can be bought, downloaded, played or subscribed to: \
+         a device, model, service, application or title. **A general capability, category or \
+         piece of technology is a concept, not a product** — \"GeForce RTX 5090\" is a product, \
+         \"GPU\" is a concept.",
+    ),
+    (
+        "event",
+        "Event",
+        "#ff9daf",
+        "circle",
+        "Something that happened or is scheduled to happen at a point in time — a launch, \
+         acquisition, conference, outage. Not the thing it happened to.",
+    ),
+    (
+        "concept",
+        "Concept",
+        "#8ea5bd",
+        "circle",
+        "An idea, capability, category, standard, technique or field — the general rather \
+         than the particular. Use it for things like \"inference\", \"GPU\", \"zero trust\". \
+         **Do not use it as a catch-all**: if the text names a specific product, organization \
+         or person, use that type; if it names a kind of thing this ontology has no type for, \
+         say so rather than filing it here (see the type rule).",
+    ),
+    (
+        "location",
+        "Location",
+        "#5fd4d0",
+        "circle",
+        "A place — country, region, city, campus, facility. Not the organization based there.",
+    ),
 ];
 
-/// (key, label, temporal, functional, inverse_functional)
+/// (key, label, temporal, functional, inverse_functional, description)
+///
 /// functional = 同一时刻一个主语至多一个宾语（张三同时只 reports_to 一人）；
 /// inverse_functional = 同一时刻一个宾语至多一个主语（一个项目同时只有一个 leads 它的人）。
-/// 两者都是时态冲突检测（自动闭合 valid_to）的触发依据。
-const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool)] = &[
-    ("works_at", "works at", "state", false, false),
-    ("leads", "leads", "state", false, true),
-    ("reports_to", "reports to", "state", true, false),
+/// 两者都是时态冲突检测（自动闭合 valid_to）的触发依据——**标错就成批制造假冲突**，
+/// 所以自动扩本体永远把它们置 false，由人显式开启。
+const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool, &str)] = &[
+    (
+        "works_at",
+        "works at",
+        "state",
+        false,
+        false,
+        "A person is employed by or affiliated with an organization.",
+    ),
+    (
+        "leads",
+        "leads",
+        "state",
+        false,
+        true,
+        "A person heads an organization, project or team.",
+    ),
+    (
+        "reports_to",
+        "reports to",
+        "state",
+        true,
+        false,
+        "A person's direct manager in an org chart.",
+    ),
     // 多对多：一个项目既属于 Microsoft Learn 也属于 Microsoft，一个组件同时属于
     // 多个系统；即便按严格层级理解，原文也会并列陈述父级与祖先。曾误标 functional，
     // 真实语料上把这些并存关系全判成矛盾——28 篇企业新闻就积压了 59 条假冲突。
-    ("part_of", "part of", "state", false, false),
-    ("participates_in", "participates in", "state", false, false),
-    ("located_in", "located in", "state", false, false),
-    ("produces", "produces", "state", false, false),
-    ("alias_of", "alias of", "eternal", false, false),
-    ("related_to", "related to", "state", false, false),
+    (
+        "part_of",
+        "part of",
+        "state",
+        false,
+        false,
+        "The subject is a component or member of the object — a module of a system, a team \
+         inside a company. **Not availability**: a game playable on a service is not part of \
+         it. Not mere association.",
+    ),
+    (
+        "participates_in",
+        "participates in",
+        "state",
+        false,
+        false,
+        "The subject takes part in an event, programme or initiative.",
+    ),
+    (
+        "located_in",
+        "located in",
+        "state",
+        false,
+        false,
+        "The subject is physically situated in a place.",
+    ),
+    (
+        "produces",
+        "produces",
+        "state",
+        false,
+        false,
+        "An organization or project makes, publishes or releases the object.",
+    ),
+    (
+        "alias_of",
+        "alias of",
+        "eternal",
+        false,
+        false,
+        "Two names for the same thing — an abbreviation, codename or former name.",
+    ),
+    (
+        "related_to",
+        "related to",
+        "state",
+        false,
+        false,
+        "Code-level fallback for predicates this ontology cannot express. Deliberately not \
+         offered in the extraction prompt: given a catch-all the model reaches for it instead \
+         of saying what the text said.",
+    ),
     // 问数语义层：概念 → 数据资产定义（object_value 宾语：{source, table?, expr?, sql?,
     // derived?, unit?, summary}）。多源=多条并存；同源口径演变由确认流程显式闭合，
     // 不靠引擎盲判（唯一性粒度是 (概念,源)，在 object_value 内部，引擎不感知）
-    ("mapped_to", "mapped to", "state", false, false),
+    (
+        "mapped_to",
+        "mapped to",
+        "state",
+        false,
+        false,
+        "A business concept maps to a concrete data asset — the semantic layer's definition \
+         of how to compute it.",
+    ),
 ];
 
+/// 建库时铺内置本体。**已存在的行只补空描述，不覆盖人写过的**——种子里的描述是
+/// 缺省值不是权威，用户按自己的语料调过之后不该被下一次调用抹掉。
 pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid) -> AppResult<()> {
-    for (key, label, color, shape) in DEFAULT_ENTITY_TYPES {
+    for (key, label, color, shape, description) in DEFAULT_ENTITY_TYPES {
         sqlx::query(
-            "INSERT INTO entity_types (id, kb_id, key, label, color, shape, builtin)
-             VALUES ($1, $2, $3, $4, $5, $6, TRUE) ON CONFLICT (kb_id, key) DO NOTHING",
+            "INSERT INTO entity_types (id, kb_id, key, label, color, shape, builtin, description)
+             VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7)
+             ON CONFLICT (kb_id, key) DO UPDATE
+               SET description = EXCLUDED.description
+               WHERE entity_types.description = ''",
         )
         .bind(Uuid::now_v7())
         .bind(kb_id)
@@ -76,14 +232,21 @@ pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid) -> AppResult<()
         .bind(label)
         .bind(color)
         .bind(shape)
+        .bind(description)
         .execute(pool)
         .await?;
     }
-    for (key, label, temporal, functional, inverse_functional) in DEFAULT_RELATION_TYPES {
+    for (key, label, temporal, functional, inverse_functional, description) in
+        DEFAULT_RELATION_TYPES
+    {
         sqlx::query(
             "INSERT INTO relation_types
-                (id, kb_id, key, label, temporal, functional, inverse_functional, builtin)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE) ON CONFLICT (kb_id, key) DO NOTHING",
+                (id, kb_id, key, label, temporal, functional, inverse_functional, builtin,
+                 description)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8)
+             ON CONFLICT (kb_id, key) DO UPDATE
+               SET description = EXCLUDED.description
+               WHERE relation_types.description = ''",
         )
         .bind(Uuid::now_v7())
         .bind(kb_id)
@@ -92,6 +255,7 @@ pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid) -> AppResult<()
         .bind(temporal)
         .bind(functional)
         .bind(inverse_functional)
+        .bind(description)
         .execute(pool)
         .await?;
     }
@@ -257,8 +421,8 @@ async fn insert_fact_inner(
             .await?;
         sqlx::query(
             // 表层谓词随证据一起搬：精化的是时间，不是原文说了什么
-            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, surface_predicate, document_id, doc_version)
-             SELECT $1, chunk_id, quote, surface_predicate, document_id, doc_version
+            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version)
+             SELECT $1, chunk_id, quote, proposed_predicate, document_id, doc_version
              FROM fact_evidence WHERE fact_id = $2
              ON CONFLICT DO NOTHING",
         )
@@ -323,7 +487,7 @@ pub async fn confirmed_mappings(
     Ok(rows)
 }
 
-/// `surface`：模型在这一块里实际用的谓词说法。谓词命中本体时它等于 key，
+/// `proposed`：模型在这一块里实际提议的谓词。命中本体时它等于 key，
 /// 词表外被降级成 related_to 时它是唯一还留着原意的东西——事实行上只剩
 /// "有关联"，原文说的"runs on"就靠这里活下来。
 pub async fn add_evidence(
@@ -331,22 +495,22 @@ pub async fn add_evidence(
     fact_id: Uuid,
     chunk_id: Uuid,
     quote: Option<&str>,
-    surface: Option<&str>,
+    proposed: Option<&str>,
 ) -> AppResult<()> {
     // 证据落笔即记版本：出自哪份文档的第几版（S3 版本对账与"证据过期"判定的依据）
     // 冲突时补写表层谓词而非整行跳过：重抽命中的多是已有的 (事实, 分块) 对，
     // DO NOTHING 会让存量证据永远填不上这一列。只在原值为空时补，不覆盖——
     // 同一分块的同一条事实，第一次记下的说法就是它的说法
     sqlx::query(
-        "INSERT INTO fact_evidence (fact_id, chunk_id, quote, surface_predicate, document_id, doc_version)
+        "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version)
          SELECT $1, $2, $3, left($4, 120), c.document_id, c.doc_version FROM chunks c WHERE c.id = $2
          ON CONFLICT (fact_id, chunk_id) DO UPDATE
-           SET surface_predicate = COALESCE(fact_evidence.surface_predicate, EXCLUDED.surface_predicate)",
+           SET proposed_predicate = COALESCE(fact_evidence.proposed_predicate, EXCLUDED.proposed_predicate)",
     )
     .bind(fact_id)
     .bind(chunk_id)
     .bind(quote)
-    .bind(surface)
+    .bind(proposed)
     .execute(pool)
     .await?;
     Ok(())
@@ -762,7 +926,7 @@ pub async fn document_extractions(
 /// stale = 证据版本落后于文档当前版本（UI 标 "from v{n}"）。
 pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<EvidenceView>> {
     let rows: Vec<EvidenceView> = sqlx::query_as(
-        "SELECT fe.quote, fe.surface_predicate, fe.chunk_id, c.document_id, d.filename, c.seq,
+        "SELECT fe.quote, fe.proposed_predicate, fe.chunk_id, c.document_id, d.filename, c.seq,
                 c.doc_version,
                 c.doc_version < COALESCE(
                     (SELECT MAX(version) FROM document_versions dv
@@ -927,15 +1091,15 @@ pub async fn entity_history(
 // 谓词消解：把降级成 related_to 的事实认领回本体
 // ---------------------------------------------------------------------------
 
-// 视图类型 SurfacePredicate 定义在 utopia-core::models（store 不直接依赖 serde）
+// 视图类型 ProposedPredicate 定义在 utopia-core::models（store 不直接依赖 serde）
 
 /// 降级成 related_to 的事实上，原文用过哪些说法。
 ///
 /// 这是本体扩展建议的证据基础——比 `ontology_misses` 的纯计数强的地方在于：
 /// 它连着具体事实，所以采纳一个说法时能直接说"将重新归类 57 条"并真的去改。
-pub async fn surface_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SurfacePredicate>> {
+pub async fn proposed_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<ProposedPredicate>> {
     Ok(sqlx::query_as(
-        "SELECT fe.surface_predicate AS form,
+        "SELECT fe.proposed_predicate AS form,
                 count(DISTINCT f.id) AS fact_count,
                 count(DISTINCT fe.document_id) AS doc_count,
                 (SELECT s.canonical_name || ' → ' || o.canonical_name
@@ -943,19 +1107,19 @@ pub async fn surface_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Sur
                  JOIN facts f2 ON f2.id = e2.fact_id
                  JOIN entities s ON s.id = f2.subject_id
                  JOIN entities o ON o.id = f2.object_id
-                 WHERE e2.surface_predicate = fe.surface_predicate
+                 WHERE e2.proposed_predicate = fe.proposed_predicate
                    AND f2.kb_id = $1 AND f2.predicate_id = rt.id AND f2.invalidated_at IS NULL
                  LIMIT 1) AS example
          FROM fact_evidence fe
          JOIN facts f ON f.id = fe.fact_id
          JOIN relation_types rt ON rt.id = f.predicate_id
          WHERE f.kb_id = $1 AND rt.kb_id = $1 AND rt.key = $2
-           AND f.invalidated_at IS NULL AND fe.surface_predicate IS NOT NULL
+           AND f.invalidated_at IS NULL AND fe.proposed_predicate IS NOT NULL
            -- 用户拒绝过的说法不再出现在候选里（人工与自动两条路都据此绕开）
            AND NOT EXISTS (SELECT 1 FROM ontology_misses m
                            WHERE m.kb_id = $1 AND m.kind = 'relation_type'
-                             AND m.key = fe.surface_predicate AND m.dismissed_at IS NOT NULL)
-         GROUP BY fe.surface_predicate, rt.id
+                             AND m.key = fe.proposed_predicate AND m.dismissed_at IS NOT NULL)
+         GROUP BY fe.proposed_predicate, rt.id
          ORDER BY fact_count DESC, form",
     )
     .bind(kb_id)
@@ -979,7 +1143,7 @@ pub async fn surface_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Sur
 /// 已存在时走的是"并入"，旧行被作废却没有后继，于是既撤不回来、实体历史
 /// 又会把它判成 rejected 而对外宣称"这条被撤回了"（它其实一字未少地并进了
 /// 另一条）。
-pub async fn adopt_surface_predicates(
+pub async fn adopt_proposed_predicates(
     pool: &PgPool,
     kb_id: Uuid,
     predicate_id: Uuid,
@@ -995,10 +1159,10 @@ pub async fn adopt_surface_predicates(
          JOIN relation_types rt ON rt.id = f.predicate_id
          WHERE f.kb_id = $1 AND rt.key = $2 AND f.invalidated_at IS NULL
            AND EXISTS (SELECT 1 FROM fact_evidence e
-                       WHERE e.fact_id = f.id AND e.surface_predicate = ANY($3))
+                       WHERE e.fact_id = f.id AND e.proposed_predicate = ANY($3))
            AND NOT EXISTS (SELECT 1 FROM fact_evidence e
-                           WHERE e.fact_id = f.id AND e.surface_predicate IS NOT NULL
-                             AND NOT (e.surface_predicate = ANY($3)))
+                           WHERE e.fact_id = f.id AND e.proposed_predicate IS NOT NULL
+                             AND NOT (e.proposed_predicate = ANY($3)))
          ORDER BY f.recorded_at",
     )
     .bind(kb_id)
@@ -1051,8 +1215,8 @@ pub async fn adopt_surface_predicates(
 
         // 证据整体搬过去，表层谓词一并保留——它是这次改写的依据，不该在改写中丢失
         sqlx::query(
-            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, surface_predicate, document_id, doc_version)
-             SELECT $1, chunk_id, quote, surface_predicate, document_id, doc_version
+            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version)
+             SELECT $1, chunk_id, quote, proposed_predicate, document_id, doc_version
              FROM fact_evidence WHERE fact_id = $2
              ON CONFLICT DO NOTHING",
         )

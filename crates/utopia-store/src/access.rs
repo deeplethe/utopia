@@ -157,13 +157,13 @@ pub async fn worker_concurrency(pool: &PgPool) -> AppResult<i32> {
         sqlx::query_as("SELECT worker_concurrency FROM deployment_settings LIMIT 1")
             .fetch_optional(pool)
             .await?;
-    Ok(row.map(|(v,)| v).unwrap_or(4))
+    Ok(row.map(|(v,)| v).unwrap_or(32))
 }
 
 pub async fn set_worker_concurrency(pool: &PgPool, value: i32) -> AppResult<()> {
-    if !(1..=32).contains(&value) {
+    if !(1..=256).contains(&value) {
         return Err(AppError::Validation(
-            "worker_concurrency must be between 1 and 32".into(),
+            "worker_concurrency must be between 1 and 256".into(),
         ));
     }
     sqlx::query("UPDATE deployment_settings SET worker_concurrency = $1")

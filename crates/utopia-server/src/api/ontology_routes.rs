@@ -342,7 +342,7 @@ pub async fn build_proposals(state: &AppState, kb_id: Uuid) -> Result<serde_json
     let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
     let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
     // 表层谓词比 misses 多一样东西：它连着具体事实，所以提案能承诺"改写 N 条"
-    let forms = utopia_store::graph::surface_predicates(&state.pool, kb_id).await?;
+    let forms = utopia_store::graph::proposed_predicates(&state.pool, kb_id).await?;
     if misses.is_empty() && forms.is_empty() {
         return Ok(json!({ "entity_types": [], "relation_types": [] }));
     }
@@ -395,9 +395,16 @@ pub async fn build_proposals(state: &AppState, kb_id: Uuid) -> Result<serde_json
          - \"functional\" must be false unless the relation truly permits at most one object per \
            subject at a time. Getting this wrong makes the temporal engine manufacture conflicts.\n\
          \n\
+         Every proposal needs a \"description\" as well as a \"reason\", and they are not the \
+         same thing. The reason argues for adding it and is read by a person. **The description \
+         is injected verbatim into the extraction prompt and is the only thing telling the model \
+         what belongs here** — write it as a definition: say what the type is, then say what it \
+         is not and which existing type those cases belong to. A type that arrives with a weak \
+         description becomes the next dumping ground.\n\
+         \n\
          Output exactly one JSON object:\n\
-         {{\"entity_types\":[{{\"key\":\"snake_case\",\"label\":\"Display Name\",\"reason\":\"...\"}}],\n\
-          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"reason\":\"...\"}}]}}",
+         {{\"entity_types\":[{{\"key\":\"snake_case\",\"label\":\"Display Name\",\"description\":\"what belongs here, and what does not\",\"reason\":\"why add it\"}}],\n\
+          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"description\":\"what this relation asserts, and what it does not\",\"reason\":\"why add it\"}}]}}",
         current_et.join(", "),
         current_rt.join(", "),
         miss_lines.join("\n"),
@@ -466,9 +473,13 @@ pub async fn adopt_predicate(
         None,
     )
     .await?;
-    let (batch_id, remapped) =
-        utopia_store::graph::adopt_surface_predicates(&state.pool, kb_id, predicate_id, &req.forms)
-            .await?;
+    let (batch_id, remapped) = utopia_store::graph::adopt_proposed_predicates(
+        &state.pool,
+        kb_id,
+        predicate_id,
+        &req.forms,
+    )
+    .await?;
     // 采纳同时清掉对应的未匹配统计——本体已经覆盖它们了
     for form in &req.forms {
         let _ = utopia_store::ontology::clear_miss(&state.pool, kb_id, "relation_type", form).await;
@@ -525,13 +536,13 @@ pub async fn unadopt_predicate(
 }
 
 /// 待认领的表层谓词：原文说过、本体没有、事实降级成了 related_to。
-pub async fn surface_predicates(
+pub async fn proposed_predicates(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let forms = utopia_store::graph::surface_predicates(&state.pool, kb_id).await?;
+    let forms = utopia_store::graph::proposed_predicates(&state.pool, kb_id).await?;
     Ok(Json(json!({ "forms": forms })))
 }
 

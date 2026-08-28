@@ -36,7 +36,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         tracing::debug!(%kb_id, "自动扩本体已关闭，跳过");
         return Ok(());
     }
-    let forms: Vec<_> = utopia_store::graph::surface_predicates(&state.pool, kb_id)
+    let forms: Vec<_> = utopia_store::graph::proposed_predicates(&state.pool, kb_id)
         .await?
         .into_iter()
         .filter(|f| f.doc_count >= MIN_DOCS)
@@ -75,7 +75,10 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             "#8ea5bd",
             "circle",
             None,
-            str_of(p, "reason").unwrap_or(""),
+            // 描述进抽取提示词，reason 只是给人看的理由——喂错了这个类就成新的倾倒场
+            str_of(p, "description")
+                .or_else(|| str_of(p, "reason"))
+                .unwrap_or(""),
         )
         .await
         {
@@ -108,7 +111,10 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             // 建议方不替时态引擎做决定，见文件头
             false,
             false,
-            str_of(p, "reason").unwrap_or(""),
+            // 描述进抽取提示词，reason 只是给人看的理由——喂错了这个类就成新的倾倒场
+            str_of(p, "description")
+                .or_else(|| str_of(p, "reason"))
+                .unwrap_or(""),
             "relation",
             None,
             None,
@@ -124,7 +130,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         };
         added_relations.push(key.to_string());
         if !forms.is_empty() {
-            let (batch, moved) = utopia_store::graph::adopt_surface_predicates(
+            let (batch, moved) = utopia_store::graph::adopt_proposed_predicates(
                 &state.pool,
                 kb_id,
                 predicate_id,

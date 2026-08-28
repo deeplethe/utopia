@@ -53,9 +53,9 @@ async fn main() -> anyhow::Result<()> {
     // worker 并发数：系统设置持久化，启动时装载；运行中经同一 AtomicUsize 热调
     let n = utopia_store::access::worker_concurrency(&pool)
         .await
-        .unwrap_or(4);
+        .unwrap_or(32);
     state.worker_concurrency.store(
-        n.clamp(1, 32) as usize,
+        n.clamp(1, 256) as usize,
         std::sync::atomic::Ordering::Relaxed,
     );
 

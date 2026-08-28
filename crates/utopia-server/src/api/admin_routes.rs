@@ -26,17 +26,37 @@ pub async fn get_deployment(
     require_admin(&user)?;
     let open = utopia_store::access::open_registration(&state.pool).await?;
     let workers = utopia_store::access::worker_concurrency(&state.pool).await?;
-    Ok(Json(
-        json!({ "open_registration": open, "worker_concurrency": workers }),
-    ))
+    let (limits, dflt) = utopia_store::model_limits::list(&state.pool).await?;
+    let in_use = utopia_store::model_limits::models_in_use(&state.pool).await?;
+    Ok(Json(json!({
+        "open_registration": open,
+        "worker_concurrency": workers,
+        "model_limits": limits,
+        "default_model_concurrency": dflt,
+        "models_in_use": in_use.into_iter().map(|(b, m, k)| json!({"base_url": b, "model": m, "kind": k})).collect::<Vec<_>>(),
+    })))
 }
 
 #[derive(Deserialize)]
 pub struct DeploymentReq {
     pub open_registration: bool,
-    /// 任务 worker 并发数（1-32）；缺省不改
+    /// 任务 worker 并发（1-256）：**外层兜底**，防任务无限堆积。
+    /// 真正的节流是按模型的限额，这个值应当明显大于各模型限额之和
     #[serde(default)]
     pub worker_concurrency: Option<i32>,
+    /// 未单独配置的模型走的并发缺省
+    #[serde(default)]
+    pub default_model_concurrency: Option<i32>,
+    /// 单个模型的并发；`max_concurrent` 为 null 表示删掉专属配置、回落到缺省
+    #[serde(default)]
+    pub model_limit: Option<ModelLimitReq>,
+}
+
+#[derive(Deserialize)]
+pub struct ModelLimitReq {
+    pub base_url: String,
+    pub model: String,
+    pub max_concurrent: Option<i32>,
 }
 
 pub async fn put_deployment(
@@ -52,6 +72,14 @@ pub async fn put_deployment(
         state
             .worker_concurrency
             .store(n as usize, std::sync::atomic::Ordering::Relaxed);
+    }
+    // 按模型的限额即时生效：闸门每次调用前读库，发现限额变了就换一把新信号量
+    if let Some(n) = req.default_model_concurrency {
+        utopia_store::model_limits::set_default(&state.pool, n).await?;
+    }
+    if let Some(m) = req.model_limit {
+        utopia_store::model_limits::set(&state.pool, &m.base_url, &m.model, m.max_concurrent)
+            .await?;
     }
     Ok(Json(json!({ "ok": true })))
 }

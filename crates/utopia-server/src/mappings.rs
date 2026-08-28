@@ -87,6 +87,7 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
         schema_txt
     );
 
+    let _permit = llm_util::acquire_chat(state, &settings).await;
     let reply = client
         .chat(&[utopia_llm::ChatMessage {
             role: "user".into(),
