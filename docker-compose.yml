@@ -6,6 +6,8 @@ services:
       POSTGRES_USER: utopia
       POSTGRES_PASSWORD: ${UTOPIA_DB_PASSWORD:-utopia}
       POSTGRES_DB: utopia
+      # 应用运行时用的受限角色口令。设了才建角色，不设则应用仍以 owner 身份跑。
+      UTOPIA_APP_DB_PASSWORD: ${UTOPIA_APP_DB_PASSWORD:-}
     ports:
       # 只绑回环。app 走 compose 网络连库，这个映射纯粹是给本地开发用的
       # （cargo run 时从宿主机连）——绑 0.0.0.0 等于把一个默认口令的数据库
@@ -13,6 +15,9 @@ services:
       - "${UTOPIA_DB_BIND:-127.0.0.1:5432}:5432"
     volumes:
       - dbdata:/var/lib/postgresql/data
+      # 首次初始化时建受限角色；数据目录已存在的部署不会执行，需手动建一次
+      # （见 README 的升级说明）。权限由迁移 0031 授予，不在这里给。
+      - ./docker/init-app-role.sh:/docker-entrypoint-initdb.d/10-app-role.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U utopia -d utopia"]
       interval: 5s
@@ -31,7 +36,11 @@ services:
     image: ${UTOPIA_IMAGE:-ghcr.io/deeplethe/utopia:0.1.0-rc2}
     profiles: ["app"]
     environment:
-      UTOPIA_DATABASE_URL: postgres://utopia:${UTOPIA_DB_PASSWORD:-utopia}@db:5432/utopia
+      # 默认以 owner 身份运行。要启用受限角色（业务表随便读写、台账只增不改），
+      # 在 .env 里同时给出这两条——见 .env.example。分开写而不做条件拼接，
+      # 是因为那种嵌套替换没人读得懂，出错了也查不出来。
+      UTOPIA_DATABASE_URL: ${UTOPIA_DATABASE_URL:-postgres://utopia:${UTOPIA_DB_PASSWORD:-utopia}@db:5432/utopia}
+      UTOPIA_MIGRATION_URL: ${UTOPIA_MIGRATION_URL:-}
       UTOPIA_BIND_ADDR: 0.0.0.0:1516
       UTOPIA_JWT_SECRET: ${UTOPIA_JWT_SECRET:-please-change-me-in-production}
       UTOPIA_WEB_DIST: /app/web-dist
