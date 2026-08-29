@@ -121,6 +121,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         )
         .route("/kbs/{id}/ontology", get(ontology_routes::get))
         .route(
+            "/kbs/{id}/ontology/type-resolution/preview",
+            post(ontology_routes::type_resolution_preview),
+        )
+        .route(
             "/kbs/{id}/ontology/entity-types",
             post(ontology_routes::create_entity_type),
         )

@@ -1671,3 +1671,107 @@ mod tests {
         assert!(cosine(&[0.0, 0.0], &[1.0, 1.0]).is_none());
     }
 }
+
+/// 一个等着精化类型的实体，连同用来判断它是什么的全部材料。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct TypeCandidateSubject {
+    pub id: Uuid,
+    pub canonical_name: String,
+    pub aliases: Vec<String>,
+    /// 现在挂着的粗类。**它是地板**：精化只往它的后代走，够不着就原地不动
+    pub coarse_key: String,
+    pub coarse_id: Uuid,
+    /// 抽取时模型自己报的类型名。词表里没有才会留在这儿——
+    /// 也正因如此它是最强的信号：不是"读懂这是什么"，是"本体里哪个类叫这个"
+    pub proposed_type: Option<String>,
+    /// 它参与的谓词，连着对方的名字（`produces 深蓝`、`leads by 张伟`）。
+    /// **跨文档累积**，这正是抽取当场没有的东西
+    pub roles: Vec<String>,
+    /// 证据引文，最多几句。抽取看的是同一批句子，但那一次要同时做实体识别、
+    /// 关系判断、时态解析、JSON 格式化，还要跟几十个别的实体抢注意力
+    /// 证据引文，**只取它当主语的那些**。宾语位的引文讲的是主语：
+    /// 「上海浦东新区」是 located_in 的宾语，引文却是"星云科技（上海）
+    /// 有限公司是一家注册于上海浦东新区的股份有限公司"，整句重心在
+    /// "股份有限公司"上——实测那一版检索给出的候选全是 corporation 一类
+    pub quotes: Vec<String>,
+    pub fact_count: i64,
+}
+
+/// 值得送去精化类型的实体：挂在倾倒场类下的，或者模型报过一个词表外类型的。
+///
+/// 类型化得已经很具体的实体不动——重判一次只有下降风险，没有上升空间。
+pub async fn entities_for_type_resolution(
+    pool: &PgPool,
+    kb_id: Uuid,
+    dumping_ground: &str,
+    limit: i64,
+) -> AppResult<Vec<TypeCandidateSubject>> {
+    Ok(sqlx::query_as(
+        "SELECT e.id, e.canonical_name, e.aliases, t.key AS coarse_key, t.id AS coarse_id,
+                e.proposed_type,
+                -- 对方写**名字**，不写它的类型 key。
+                -- 写 key 是自毁：查询里出现 organization / product / event 这些词，
+                -- 而检索的目标正是这些类自己，于是候选就是画像里那几个词。
+                -- 实测「张伟」的画像是 leads→organization … works_at→organization，
+                -- 回来的候选是 corporation、organization、business_entity_type——
+                -- 检索到的是画像自己，不是这个人是什么
+                ARRAY(
+                  SELECT DISTINCT rt.key || CASE WHEN f.subject_id = e.id THEN ' ' ELSE ' by ' END
+                                  || coalesce(oe.canonical_name, 'a value')
+                  FROM facts f
+                  JOIN relation_types rt ON rt.id = f.predicate_id
+                  LEFT JOIN entities oe ON oe.id = CASE WHEN f.subject_id = e.id
+                                                       THEN f.object_id ELSE f.subject_id END
+                  WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+                    AND (f.subject_id = e.id OR f.object_id = e.id)
+                  LIMIT 12
+                ) AS roles,
+                ARRAY(
+                  SELECT DISTINCT ev.quote FROM fact_evidence ev
+                  JOIN facts f2 ON f2.id = ev.fact_id
+                  WHERE f2.kb_id = $1 AND f2.invalidated_at IS NULL
+                    AND f2.subject_id = e.id
+                    AND ev.quote IS NOT NULL
+                  LIMIT 3
+                ) AS quotes,
+                (SELECT count(*) FROM facts f3
+                 WHERE f3.kb_id = $1 AND f3.invalidated_at IS NULL
+                   AND (f3.subject_id = e.id OR f3.object_id = e.id)) AS fact_count
+         FROM entities e
+         JOIN entity_types t ON t.id = e.type_id
+         WHERE e.kb_id = $1 AND e.merged_into IS NULL
+           -- 值得看的三种：挂在倾倒场下的、模型报过词表外类型的、
+           -- **以及粗类本身还有子类的**。第三种是主力：抽取只认基类之后，
+           -- organization 下面挂着 167 个更具体的类，那才是导进来的本体
+           -- 唯一的用武之地。只看前两种就把它整个漏掉了
+           AND (t.key = $2 OR e.proposed_type IS NOT NULL
+                OR EXISTS (SELECT 1 FROM entity_type_parents p WHERE p.parent_id = t.id))
+         ORDER BY fact_count DESC, e.created_at
+         LIMIT $3",
+    )
+    .bind(kb_id)
+    .bind(dumping_ground)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 某个类的全部后代（含自身）。精化只能往粗类的后代走。
+///
+/// **递归而不是一层**：本体是 DAG，`software_application ⊂ creative_work ⊂ thing`，
+/// 只查一层就把绝大多数正确答案挡在门外了。
+pub async fn descendants_of(pool: &PgPool, kb_id: Uuid, root: Uuid) -> AppResult<Vec<Uuid>> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "WITH RECURSIVE d(id) AS (
+             SELECT $2::uuid
+             UNION
+             SELECT p.child_id FROM entity_type_parents p JOIN d ON d.id = p.parent_id
+         )
+         SELECT d.id FROM d JOIN entity_types t ON t.id = d.id WHERE t.kb_id = $1",
+    )
+    .bind(kb_id)
+    .bind(root)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}

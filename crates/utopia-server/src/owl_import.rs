@@ -208,11 +208,20 @@ pub async fn plan(
         } else if e_by_iri.contains_key(c.iri.as_str()) {
             (Disposition::Update, None)
         } else if let Some(existing) = e_by_key.get(c.key.as_str()) {
-            // key 撞了但 IRI 不同：这是两个不同的东西争一个短标签。
-            // 不自动加后缀——那会让重导入认不出自己上次建的是哪个
-            // 占位者可能是手工建的（没有 IRI）——那就返回 None，
-            // 由界面决定怎么措辞。服务端不产出展示文案
-            (Disposition::KeyTaken, existing.iri.clone())
+            match existing.iri.as_deref() {
+                // **占位者没有 IRI：认领它。**
+                //
+                // 没有 IRI 意味着这个类是本地起的名字（种子本体、或者手工建的），
+                // 不是另一个词汇表的同名词。导入说的是"这个 IRI 就是那个类"，
+                // 而这一步不做，整棵树就是断的：schema.org 的 Organization
+                // 撞上内置的 organization 被跳过，于是 Corporation 的父类指向
+                // 一个没建出来的东西——内置那几个基类一个子类都挂不上，
+                // 类型精化无从谈起。
+                None => (Disposition::Update, None),
+                // 已经有一个**不同的** IRI：两个词汇表争同一个短标签，
+                // 这是真冲突。不自动加后缀——那会让重导入认不出自己上次建的是哪个
+                Some(_) => (Disposition::KeyTaken, existing.iri.clone()),
+            }
         } else {
             (Disposition::Create, None)
         };
@@ -338,15 +347,29 @@ pub async fn apply(
                 created_classes += 1;
             }
             Disposition::Update => {
-                if let Some(id) = utopia_store::ontology::update_type_from_import(
+                // 两种 Update：这个 IRI 上次导过（按 IRI 找得到），
+                // 或者它要认领一个同名的本地类（按 key 找，且那一行还没有 IRI）
+                let updated = utopia_store::ontology::update_type_from_import(
                     &state.pool,
                     kb_id,
                     &c.iri,
                     &c.label,
                     &c.description,
                 )
-                .await?
-                {
+                .await?;
+                let id = match updated {
+                    Some(id) => Some(id),
+                    None => {
+                        utopia_store::ontology::adopt_iri_onto_key(
+                            &state.pool,
+                            kb_id,
+                            &c.key,
+                            &c.iri,
+                        )
+                        .await?
+                    }
+                };
+                if let Some(id) = id {
                     id_of.insert(c.iri.clone(), id);
                     updated_classes += 1;
                 }
@@ -517,6 +540,16 @@ pub async fn apply(
         summary,
     )
     .await;
+    // 本体刚变过，向量都是陈的。**排任务而不是就地跑**：这一趟要嵌几千行，
+    // 放在导入请求里，用户点完确认要多等六到八分钟。排不上也不要紧——
+    // 索引是自愈的，下一个用到检索的人会补上
+    let _ = utopia_store::jobs::enqueue(
+        &state.pool,
+        "embed_ontology",
+        serde_json::json!({ "kb_id": kb_id }),
+    )
+    .await;
+
     Ok((import_id, plan))
 }
 

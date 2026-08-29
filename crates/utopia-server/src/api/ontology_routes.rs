@@ -1239,6 +1239,21 @@ pub(crate) async fn adopt_attribute_auto(
     Ok((done.batch_id, done.remapped))
 }
 
+/// 类型消解的**只算不写**那一步：每个待精化实体的画像与候选类。
+///
+/// 跟本体导入同一个模式：先看计划，再决定落不落。在这里它还多一层用处——
+/// 检索找不着的时候，回执里带着"我们拿什么去找的"，第一眼就知道该改画像
+/// 还是该改类的描述。
+pub async fn type_resolution_preview(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let items = crate::type_resolution::preview(&state, kb_id).await?;
+    Ok(Json(json!({ "items": items })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{normalize_name, resolve_map_targets};

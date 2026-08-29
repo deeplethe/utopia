@@ -16,6 +16,7 @@ mod pipeline;
 mod query_engine;
 mod retrieval;
 mod state;
+mod type_resolution;
 
 use state::AppState;
 use std::sync::Arc;
@@ -134,6 +135,18 @@ async fn main() -> anyhow::Result<()> {
                             .and_then(|s| s.parse().ok())
                             .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
                         bootstrap_ontology::bootstrap_ontology(&st, kb_id).await
+                    }
+                    // 本体向量索引：**后台建，不卡请求**。
+                    // 一份 965 类的本体首次要嵌 2600 行，六到八分钟；放在
+                    // 交互请求里就是导入完之后第一个用到检索的人干等
+                    "embed_ontology" => {
+                        let kb_id: Uuid = job
+                            .payload
+                            .get("kb_id")
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse().ok())
+                            .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+                        ontology_index::refresh(&st, kb_id).await.map(|_| ())
                     }
                     "adjudicate_entities" => {
                         let kb_id: Uuid = job
