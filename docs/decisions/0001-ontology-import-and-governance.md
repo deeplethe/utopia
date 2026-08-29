@@ -195,20 +195,118 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 > 哪个**——这正是本文论证 IRI 必要性时用的那个例子，只是换了个方向出现。所以：
 > 报告，不解决。想要导入的那份，先给现有的改名。
 >
-> **暂未落地，按依赖顺序**：
-> - **属性（DatatypeProperty）解析了但不建**——store 层要求属性挂在一个类的 domain 上，
->   而 domain 要等类先建好并解析 IRI → id。FOAF 那 54 个属性在预览里明说了"还没建"，
->   不是静默丢掉。
-> - **domain / range 关联表**与随之而来的**提示词类型签名**——本文说它是最高性价比的
->   十行，仍然是，但它要先有表。
-> - **多继承 DAG**：现在只投影第一个父类。少一个父分支不会静默出错（那分支的属性
->   domain 判定暂时够不到），但 `type_matches_domain` 的静默失配问题还在，随关联表一起补。
+> **暂未落地的三件**——属性落库、domain/range 关联表与类型签名、多继承 DAG——
+> 照着 P2b 的产物重新算过账，独立成节：见下方 **P2c**。初稿在这里写的依赖顺序
+> 有一处高估了（属性落库要等的那个映射，P2b 里已经建好了），那节里就地留痕。
 >
 > **一个自己犯的错值得记**：`OntologyImportView` 的字段叫 `imported_at`，前端类型
 > 写成了 `created_at`。TypeScript 一声不吭——类型是我声明的，它只保证代码内部自洽，
 > 不保证与服务端一致。界面上显示成 `Invalid Date` 才发现。同一次还有服务端往
 > `conflict_with` 里塞了中文兜底文案 `（手工建的）`，直接漏进英文界面。
 > 两件事同一个教训：**服务端不产出展示文案**，措辞归界面；跨语言的边界要用真数据看一眼。
+
+---
+
+### P2c · 属性落库、domain/range、类型签名、多继承
+
+> 这一节是 P2a/P2b 落地后照着代码重新算的账。三件事的依赖顺序与初稿不同，
+> **其中一件比初稿估计的近**——原文说属性落库要等 domain 解析，而那个映射
+> 在 P2b 里已经建好了。
+
+#### 一、属性落库：单域的现在就能做
+
+属性在产品里早已完整：`relation_types` 一表两用（`kind='attribute'`），
+`domain_type_id` 指明挂在哪个类下，`datatype` / `unit` 描述取值，值走
+`facts.object_value`，时态、证据、审阅全套复用（迁移 0004）。
+
+缺的只是**导入器不建它们**。FOAF 的 54 个 `owl:DatatypeProperty` 解析出来了、
+预览里报了数，但 `apply()` 跳过。初稿把原因记成"要 domain，而 domain 要等类
+先建好并解析 IRI → id"——**那个映射 `id_of: HashMap<IRI, Uuid>` 在 P2b 里
+已经为解析父类建好了**。真正缺的是三小件：
+
+- **`rdfs:range` → `datatype`，三路而不是两路**：
+
+  | 情形 | 处置 |
+  |---|---|
+  | range 能映射 | 照映射建。number 收 `decimal` `integer` 及其全部有界/无符号变体、`double` `float`、`owl:real` `owl:rational`；date 收 `date` `dateTime` `dateTimeStamp` `gYear` `gYearMonth`（我们的日期格式本就是 `YYYY[-MM[-DD]]`，逐级可省）；bool 收 `boolean`；text 收 `string` 及其派生、`anyURI`、`rdf:langString`、`rdfs:Literal` |
+  | **没写 range** | 建成 `text`，在预览里列出。词汇表没做声明，我们只知道是字面量，`text` 是诚实的超集 |
+  | range 存在但映射不了 | **跳过并报告**：`time` `gMonth` `gDay` `gMonthDay`（缺年）、`duration` 系列（时长不是时点）、`hexBinary` `base64Binary`、`rdf:XMLLiteral`、`QName` 等 XML 内部标识、带 `withRestrictions` 的自定义类型，以及多条 `rdfs:range`（同 domain 的交集陷阱） |
+
+  > **修订**：初稿把「不猜成 text」的理由写成「类型错的属性会让取值在写入时被
+  > `attr_datatype` 挡掉」。查 `normalize_attr_value` 后这条不成立——**`text` 接受任何
+  > 字符串，从不拦**，会拦的是 number/date/bool。真正的理由是另一条：**range 存在**
+  > 意味着词汇表做了一个明确声明，悄悄降级成 text 是把那个声明扔掉且不留痕迹；
+  > 而 range 缺席时没有声明可扔，宽松默认就是对的。区别在有没有东西被丢掉，
+  > 不在会不会被拦。
+- **domain 指向没被导入的类**（外部词汇表里的类）：跳过 + 计入预览，不静默。
+- **多个 `rdfs:domain`**：存不下。这一条才真的要等关联表。
+
+所以顺序是：**先落单域属性**（P2b 的产物已经够用），多域的随关联表一起。
+
+#### 二、关联表：多值 domain/range
+
+```sql
+relation_type_domains(relation_type_id, entity_type_id)   -- 谁能当主语
+relation_type_ranges (relation_type_id, entity_type_id)   -- 谁能当宾语
+```
+
+OWL 里一个属性有多个 domain 是常态。`datatype` 仍留在 `relation_types` 行上——
+数据属性的 range 是字面量类型不是类，`ranges` 表只服务对象属性。
+
+**规范上的坑（前文已述，此处只标处置）**：同一属性的多条 `rdfs:domain` 在 RDFS 里
+是**交集**不是并集。一者是另一者的子类则取更具体的；互不包含则报"暂未投影"，不猜。
+
+#### 三、提示词类型签名
+
+关系行 `- works_at: 描述` 变成 `- works_at (person → organization): 描述`。
+
+**它是签名不是闸门**——在生成那一刻减少"Alice works_at 西雅图"，而不是等错了再拦。
+事后校验面对的是既成事实（丢掉可惜、留着是脏数据），签名是在写出来之前掰正。
+本体写错时模型看到原文说了别的仍可覆盖；硬闸门会系统性丢数据，`part_of` 烧我们
+的正是那种方式。
+
+> **新增约束（来自 0004 的语言工作）：签名里必须用 key，不能用 label。**
+> 中文库里 `person` 的 label 是「人物」，写成 `(人物 → 组织)` 等于教模型输出
+> 一个不存在的类型。这与"描述里引用其它类型一律用 key"是同一条理由，
+> 而且今天已经把 label 整个撤出了提示词（有描述时不送），签名不该把它请回来。
+
+#### 四、多继承 DAG
+
+`entity_types.parent_id` 是单列（迁移 0005），只能表达树。而多继承在真实词汇表里
+是常态——FOAF 的 `Person` 同时是 `foaf:Agent` 与 `geo:SpatialThing`，两个方向，
+不是同一根链上的祖孙。P2b 目前**只投影第一个父类**。
+
+丢掉一支的后果：`type_matches_domain`（`extraction.rs`）沿存下来的那条单链上溯，
+所以 domain 在另一支上的属性判定不过——`latitude` 的 domain 是 `SpatialThing`，
+而 `person` 只挂在 `agent` 下，这条事实抽出来了却被挡掉。
+
+> **修订**：初稿把这个后果写成"静默失配"。#41 之后不再静默——
+> `extraction.rs` 会发 `attr_domain_mismatch` 丢弃信号，在文库里显示成
+> "属性挂在了错误的类上"。仍然是错的（那条事实本该落地），但看得见。
+> 严重度因此从"无声丢知识"降到"可见地少一条"，优先级相应后移。
+
+改动落在四处：
+
+| | 现在 | 之后 |
+|---|---|---|
+| 存储 | `parent_id` 单列 | `entity_type_parents(child_id, parent_id)` 关联表 |
+| 上溯 | 单链循环 10 次 | 广度优先 + **访问集**（菱形继承会重复到达同一祖先） |
+| 建/改类 | 无环风险 | **必须查环**：A→B→A 会让上溯死循环 |
+| 左栏 | 直接是树 | 仍按**主父**展示成树 |
+
+最后一行是产品判断：**存储是 DAG，展示是树**。左栏若如实画 DAG，`person` 会同时
+出现在 `agent` 和 `spatial_thing` 底下，用户点哪个都对，但会以为是两个东西。
+所以保留"主父"专供展示——它不再是唯一的父，只是画树时选的那一支。
+
+#### 顺序与理由
+
+1. **单域属性落库** —— 只欠 range→datatype 映射，把一个自陈的洞补完
+2. **domain/range 关联表** —— 解锁多域属性，且是签名的前提
+3. **提示词类型签名** —— 十行，本文认定的最高性价比项
+4. **多继承 DAG** —— 独立于前三项，但因为不再静默而排在最后
+
+前三项是一条链，第四项可以并行。
+
 
 ---
 
