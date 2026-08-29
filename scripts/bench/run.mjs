@@ -79,11 +79,32 @@ function psql(sql) {
 const num = (sql) => Number(psql(sql) || 0);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function until(fn, everyMs, capMs) {
-  const deadline = Date.now() + (capMs || 900000);
+/// **卡住才算超时，慢不算。**
+///
+/// 从前这里是「总时长上限 15 分钟」，于是 348 块的语料每次都在文档抽完之前
+/// 被判死——三组都这样，结果 JSON 一份也没拿到，而服务端其实一直跑得好好的
+///（任务在服务端排队，驱动脚本死掉不影响它们）。台子把跑成功的组报成失败，
+/// 比不报还坏。
+///
+/// 而这个上限没法拍一个数：单块要一分钟，20 块的语料三分钟跑完，348 块要
+/// 七十五分钟，一个总时长上限伺候不了两边。所以改成看**进展**——
+/// `fn` 每次回报一个进度值，只要它在动就把闹钟往后推。
+///
+/// `fn` 返回 true 表示完成；返回数字表示"还没完成，当前进度是这个"。
+async function until(fn, everyMs, stallMs) {
+  const stall = stallMs || 900000;
+  let deadline = Date.now() + stall;
+  let last = null;
   for (;;) {
-    if (await fn()) return;
-    if (Date.now() > deadline) throw new Error("等超时");
+    const r = await fn();
+    if (r === true) return;
+    if (typeof r === "number" && r !== last) {
+      last = r;
+      deadline = Date.now() + stall;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`等超时：${Math.round(stall / 60000)} 分钟没有任何进展`);
+    }
     await sleep(everyMs || 5000);
   }
 }
@@ -170,7 +191,8 @@ async function main() {
             "'",
         );
         if (left) process.stderr.write("  类向量还差 " + left + "\n");
-        return left === 0;
+        // 返回剩余数当进度：它在减就说明没卡住（until 看的是"有没有动"）
+        return left === 0 ? true : left;
       },
       10000,
       2400000,
@@ -226,14 +248,19 @@ async function main() {
   for (const [filename, content] of corpus.docs) {
     await api("POST", "/api/v1/kbs/" + kb + "/ingest", { filename, content });
   }
-  await until(
-    async () =>
-      num(
-        "SELECT count(*) FROM documents WHERE kb_id='" +
-          kb +
-          "' AND graph_status='done'",
-      ) >= corpus.docs.length,
-  );
+  // 进度按**块**数，不按文档数。文档数是个很粗的刻度：一篇 73 块的文档要跑
+  // 一个多小时，期间文档数一动不动，看着就像卡死了
+  await until(async () => {
+    const done = num(
+      "SELECT count(*) FROM documents WHERE kb_id='" + kb + "' AND graph_status='done'",
+    );
+    if (done >= corpus.docs.length) return true;
+    const chunks = num(
+      "SELECT count(*) FROM chunks WHERE kb_id='" + kb + "' AND extracted_at IS NOT NULL",
+    );
+    process.stderr.write(`  抽取 ${chunks} 块 / ${done} 篇完成\n`);
+    return chunks;
+  }, 15000);
   const extractMs = Date.now() - t0;
 
   if (!ontologyFirst) importMs = await importOntology();
