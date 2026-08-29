@@ -18,7 +18,7 @@
 [![Official site](https://img.shields.io/badge/OFFICIAL-UTOPIA.BI-FFFFFF?style=flat-square&labelColor=161B22&logo=safari&logoColor=FFFFFF)](https://utopia.bi)
 [![Container](https://img.shields.io/badge/GHCR-DEEPLETHE%2FUTOPIA-2496ED?style=flat-square&labelColor=161B22&logo=docker&logoColor=FFFFFF)](https://github.com/deeplethe/utopia/pkgs/container/utopia)
 [![Discussions](https://img.shields.io/badge/DISCUSSIONS-8957E5?style=flat-square&labelColor=161B22&logo=github&logoColor=FFFFFF)](https://github.com/deeplethe/utopia/discussions)
-[![Built by DeepLethe](https://img.shields.io/badge/BUILT%20BY-DEEPLETHE-2D333B?style=flat-square&labelColor=161B22)](https://github.com/deeplethe)
+[![Built by DeepLethe](https://img.shields.io/badge/BUILT%20BY-DEEPLETHE-2D333B?style=flat-square&labelColor=161B22&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0iI0ZGRkZGRiIgY2xhc3M9ImJpIGJpLWJhbmsiIHZpZXdCb3g9IjAgMCAxNiAxNiI%2BCiAgPHBhdGggZD0ibTggMCA2LjYxIDNoLjg5YS41LjUgMCAwIDEgLjUuNXYyYS41LjUgMCAwIDEtLjUuNUgxNXY3YS41LjUgMCAwIDEgLjQ4NS4zOGwuNSAyYS40OTguNDk4IDAgMCAxLS40ODUuNjJILjVhLjQ5OC40OTggMCAwIDEtLjQ4NS0uNjJsLjUtMkEuNS41IDAgMCAxIDEgMTNWNkguNWEuNS41IDAgMCAxLS41LS41di0yQS41LjUgMCAwIDEgLjUgM2guODl6TTMuNzc3IDNoOC40NDdMOCAxek0yIDZ2N2gxVjZ6bTIgMHY3aDIuNVY2em0zLjUgMHY3aDFWNnptMiAwdjdIMTJWNnpNMTMgNnY3aDFWNnptMi0xVjRIMXYxem0tLjM5IDlIMS4zOWwtLjI1IDFoMTMuNzJ6Ii8%2BCjwvc3ZnPg%3D%3D)](https://github.com/deeplethe)
 [![English](https://img.shields.io/badge/LANG-ENGLISH-DA3633?style=flat-square&labelColor=161B22)](README.md)
 
 </div>
