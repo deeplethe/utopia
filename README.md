@@ -40,9 +40,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 ## Philosophy
 
-What we set out to build is a knowledge world model: it understands the people, events, rules and relations inside a company, how they change over time, why they hold and when they cease to, how each decision came about and what it returned, cause and effect, all of it. So we gave it a somewhat romantic name — **Utopia**: a hub for knowledge, a foundation for decisions, a gate for controlled execution, a proving ground for reasoning about what comes next.
-
-Keeping an ideal world running takes some serious design, and there is room here for only one of them — the system's sense of time. Ptolemy's geocentric model was long held to be a reasonable account of cosmic order, then revised and displaced step by step by Copernicus, Kepler, Galileo and Newton. Notice that what we keep is not merely "ah, heliocentrism is the right one"; it is the whole arc along which understanding moved, a history in full.
+We gave it a somewhat romantic name — **Utopia**. Keeping an ideal world running takes some serious design, and there is room here for only one of them — the system's sense of time. Ptolemy's geocentric model was long held to be a reasonable account of cosmic order, then revised and displaced step by step by Copernicus, Kepler, Galileo and Newton. Notice that what we keep is not merely "ah, heliocentrism is the right one"; it is the whole arc along which understanding moved, a history in full.
 
 Here a piece of knowledge is never overwritten because a new fact turned up. The system records when it was ingested, when it changed, the span over which it held, a chronological chain of revisions and of how our reading of it shifted, which is what makes a decision genuinely traceable: review an approval a year on, and what comes back is the full course and grounds of that decision chain as it stood at the time. In engineering terms, a bitemporal knowledge graph. To make it hold up in practice, we have iterated at length against public corpora spanning enterprise records, education, finance, law and research.
 
