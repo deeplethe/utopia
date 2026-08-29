@@ -7,7 +7,7 @@
 // 「已读」逐人——一个人读过不代表别人也该从未读里消失。
 import { type Ref, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, Search } from "lucide-react";
+import { Bell, Search, X } from "lucide-react";
 
 import { api, type AlertGroup } from "../api";
 import { S } from "../i18n";
@@ -94,7 +94,13 @@ function AlertRow({
   );
 }
 
-function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
+function Panel({
+  panelRef,
+  onClose,
+}: {
+  panelRef: Ref<HTMLDivElement>;
+  onClose: () => void;
+}) {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const qc = useQueryClient();
@@ -136,15 +142,20 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
       ref={panelRef}
       className="u-menu-glass absolute right-0 top-0 w-[420px] rounded-xl shadow-2xl z-50 overflow-hidden"
     >
-      <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-white/10">
+      {/* 面板盖在铃铛**原位**（FLIP 从那里长出来），所以点开之后光标正停在
+          右上角这个位置。那儿必须是"再点一下关掉"——放一个"全部标为已读"
+          就是把误触做成了默认动作，而它一下清掉的是所有库的所有告警 */}
+      <div className="flex items-center gap-2 pl-3.5 pr-2 py-2 border-b border-white/10">
         <span className="text-[13px] font-medium text-neutral-100">
           {S.alerts.title}
         </span>
         <button
-          className="ml-auto text-[11.5px] text-neutral-500 hover:text-neutral-200 transition-colors"
-          onClick={() => readAll.mutate()}
+          onClick={onClose}
+          title={S.alerts.close}
+          aria-label={S.alerts.close}
+          className="ml-auto grid h-[26px] w-[26px] place-items-center rounded-lg text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.06] transition-colors"
         >
-          {S.alerts.markAllRead}
+          <X size={14} />
         </button>
       </div>
 
@@ -181,9 +192,24 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
         )}
       </div>
 
-      {total > PAGE && (
-        <div className="px-3.5 pb-2.5">
-          <Pager total={total} pageSize={PAGE} page={page} onPage={setPage} />
+      {/* 底栏：整张列表级的动作跟翻页放一起，离光标最远 */}
+      {groups.length > 0 && (
+        <div className="flex items-center gap-3 px-3.5 py-2 border-t border-white/[0.06]">
+          {groups.some((g) => g.unread > 0) && (
+            <button
+              className="text-[11.5px] text-neutral-500 hover:text-neutral-200 transition-colors"
+              onClick={() => readAll.mutate()}
+            >
+              {S.alerts.markAllRead}
+            </button>
+          )}
+          <Pager
+            className="ml-auto"
+            total={total}
+            pageSize={PAGE}
+            page={page}
+            onPage={setPage}
+          />
         </div>
       )}
     </div>
@@ -224,7 +250,7 @@ export function AlertBell() {
           <span className="absolute top-0.5 right-1 h-1.5 w-1.5 rounded-full bg-rose-500" />
         )}
       </button>
-      {open && <Panel panelRef={panelRef} />}
+      {open && <Panel panelRef={panelRef} onClose={close} />}
     </div>
   );
 }

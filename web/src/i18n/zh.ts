@@ -117,6 +117,7 @@ export const zh: Strings = {
     empty: "没有需要处理的",
     emptyHint: "摄入、同步、模型端点出问题时会出现在这里，而不是只留在日志里。",
     markAllRead: "全部标为已读",
+    close: "关闭",
     searchPlaceholder: "搜索来源、知识库、报错",
     noMatch: "没有匹配的",
     andMore: (n: number) => `还有 ${n} 条`,

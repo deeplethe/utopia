@@ -634,17 +634,21 @@ export function Pager({
   pageSize,
   page,
   onPage,
+  /** 覆盖默认的上边距。默认 `mt-3` 适合跟在列表后面；
+      放进一个已经有内边距的底栏时传 `""` 去掉它 */
+  className = "mt-3",
 }: {
   total: number;
   pageSize: number;
   page: number;
   onPage: (p: number) => void;
+  className?: string;
 }) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const safe = Math.min(page, pageCount - 1);
   if (total <= pageSize) return null;
   return (
-    <div className="mt-3 flex items-center justify-end gap-2 text-xs text-neutral-500">
+    <div className={cn("flex items-center justify-end gap-2 text-xs text-neutral-500", className)}>
       <span className="u-num">
         {S.library.pageOf(
           safe * pageSize + 1,
