@@ -79,8 +79,53 @@ body::before {
   border: 1px solid var(--u-line);
 }
 
-/* 弹出层（下拉/取色器等 popover）：近实底——下层内容透出只会干扰，
-   毛玻璃留给带遮罩的大弹窗 */
+/* 模态对话框的面：**近实底**。
+   毛玻璃本来留给"带遮罩的大弹窗"，但确认框不是那种——它要人读一句话然后
+   做一个不可逆的决定，下层正文透上来是直接的干扰（实测删除对话的确认框，
+   身后的回答文字清晰可辨，标题几乎读不出）。
+   遮罩也一并加深：0.6 的黑压不住一屏白字。 */
+.u-modal-panel {
+  background: rgba(12, 12, 14, 0.97);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--u-line-strong);
+}
+
+/* 确认框入场：遮罩淡入 + 面板浮起。
+   时长与缓动跟 u-pop-in 同族——同一套动作语汇，不另发明一种。
+   模态比下拉重一点（0.18s / 位移 8px），因为它要求人停下来看。 */
+@keyframes u-modal-scrim-kf {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes u-modal-panel-kf {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.u-modal-scrim {
+  animation: u-modal-scrim-kf 0.14s ease-out both;
+}
+.u-modal-in {
+  animation: u-modal-panel-kf 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+/* 系统设了减少动效就只留淡入：位移与缩放是装饰，可读性不是 */
+@media (prefers-reduced-motion: reduce) {
+  .u-modal-in {
+    animation: u-modal-scrim-kf 0.14s ease-out both;
+  }
+}
+
+/* 弹出层（下拉/取色器等 popover）：近实底——下层内容透出只会干扰 */
 .u-pop {
   background: rgba(16, 16, 16, 0.98);
   backdrop-filter: blur(8px);

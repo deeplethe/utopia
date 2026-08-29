@@ -12,6 +12,12 @@ web/dist/
 !/docs/decisions/
 .claude/
 
-# 测量台的运行产物
-_bench_*.json
-_bench.err
+# 测量台与临时脚本的运行产物。**按前缀整段忽略**：
+# 先前只列了 _bench_*，结果 _holmes2.json 混进了一次提交
+_*.json
+_*.err
+_*.sse
+_*.tmp
+_*.out
+_*.sh
+_*.txt

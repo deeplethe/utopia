@@ -719,12 +719,12 @@ export function DangerConfirm({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center bg-black/80 backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
     >
-      <div className="glass-strong w-[24rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl p-5">
+      <div className="u-modal-panel u-modal-in w-[24rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl p-5">
         <h2 className="text-[15px] font-semibold text-[var(--u-danger)] mb-2">
           {title}
         </h2>
