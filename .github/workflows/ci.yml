@@ -62,6 +62,13 @@ jobs:
       # 第二遍必须也过：迁移改号后要能在已经跑过旧号的库上安全重放
       - name: 再跑一遍
         run: sqlx migrate run --database-url postgres://utopia:utopia@localhost:5432/utopia
+      # 连库的测试只有这个 job 跑得动——rust job 没有数据库，那些测试在那边
+      # 会跳过并显示绿色。不在这里跑一遍，等于写了测试却永远没执行过，
+      # 比没写更糟：它会让人以为 SQL 有覆盖
+      - name: 连库测试
+        run: cargo test -p utopia-store --test graph_changes
+        env:
+          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
 
   web:
     runs-on: ubuntu-latest
