@@ -789,6 +789,9 @@ export const en = {
       n === 1
         ? "Added — 1 fact reclassified"
         : `Added — ${n} facts reclassified`,
+    /* 一部分值换不动这个类型就没被改写。只报改写了多少条是报喜不报忧 */
+    adoptedPartly: (moved: number, left: number) =>
+      `Added — ${moved} reclassified, ${left} left behind (value did not fit the type)`,
     /* 撤销：采纳改写了成批事实，没有回头路的话没人敢点第一下 */
     undoAdopt: (key: string, n: number) =>
       `${key} added, ${n} fact${n === 1 ? "" : "s"} reclassified`,

@@ -373,19 +373,18 @@ pub async fn build_proposals(
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| AppError::invalid("no_chat_model", "Chat model not configured"))?;
 
-    // 只取这一遍**产得出提案**的那两类。attribute_type 的信号（未知谓词带字面值）
-    // 也在这张表里，但下面的 JSON 骨架只有 entity_types / relation_types——
-    // 把属性信号喂进去，模型只会照着建一个关系，而那正是它不该是的东西。
-    // 属性提案归本体消解那一遍（0001 P3），不在这里凑合
-    let misses: Vec<_> = utopia_store::ontology::list_misses(&state.pool, kb_id)
-        .await?
-        .into_iter()
-        .filter(|m| m.kind != "attribute_type")
-        .collect();
-    // 表层谓词比 misses 多一样东西：它连着具体事实，所以提案能承诺"改写 N 条"
+    let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
+    // 表层谓词比 misses 多一样东西：它连着具体事实，所以提案能承诺"改写 N 条"。
+    //
+    // **两条线严格分开**，按宾语是实体还是字面值：`收购` 要的是一条关系，
+    // `founding_date = "2015"` 要的是一个属性。混起来的后果具体——后者会被
+    // 提成关系，于是长出一条指向「2015」这个假实体的边
     let forms = utopia_store::graph::proposed_predicates(&state.pool, kb_id).await?;
-    if misses.is_empty() && forms.is_empty() {
-        return Ok(json!({ "entity_types": [], "relation_types": [] }));
+    let value_forms = utopia_store::graph::proposed_attributes(&state.pool, kb_id).await?;
+    if misses.is_empty() && forms.is_empty() && value_forms.is_empty() {
+        return Ok(json!({
+            "entity_types": [], "relation_types": [], "attribute_types": [], "map_to": []
+        }));
     }
 
     // **本体的相关切片，不是它的全文。**
@@ -437,12 +436,44 @@ pub async fn build_proposals(
     )
     .await
     .unwrap_or_default();
+    // 属性那一路：只在属性里找。这里若不限 kind，"成立日期"最近的往往是
+    // 某条关系，模型就会把一个字面值映射到一条边上去
+    let attr_probes: Vec<String> = value_forms
+        .iter()
+        .map(|f| match f.example.as_deref() {
+            Some(ex) if !ex.is_empty() => format!("{} = {ex}", f.form),
+            _ => f.form.clone(),
+        })
+        .chain(
+            misses
+                .iter()
+                .filter(|m| m.kind == "attribute_type")
+                .map(|m| m.key.clone()),
+        )
+        .collect();
+    let per_attr = crate::ontology_index::nearest_for_each(
+        state,
+        kb_id,
+        &attr_probes,
+        CANDIDATES_PER_PROBE,
+        crate::ontology_index::Target::Predicate(Some("attribute")),
+    )
+    .await
+    .unwrap_or_default();
     // 并集去重：几个说法常常指向同一个候选，逐个说法各列一遍是白费令牌
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut candidate_lines: Vec<String> = Vec::new();
     // 模型抄回来的 key 要能对回本体：候选表同时按 key、归一化 key、标签建索引
     let mut by_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for c in per_pred.iter().chain(per_class.iter()).flatten() {
+    // 每个候选是关系还是属性。映射到已有类型时，采纳走哪条改写路径由它定
+    let mut kind_of_key: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for c in per_pred
+        .iter()
+        .chain(per_class.iter())
+        .chain(per_attr.iter())
+        .flatten()
+    {
         if !seen.insert(c.key.clone()) {
             continue;
         }
@@ -450,6 +481,7 @@ pub async fn build_proposals(
         by_name.insert(normalize_name(&c.label), c.key.clone());
         // 关系行自带 relation / attribute，类行没有 kind
         let kind = c.kind.as_deref().unwrap_or("entity type");
+        kind_of_key.insert(c.key.clone(), kind.to_string());
         let d = c.description.trim();
         // **标签只在它确实多说了点什么的时候才写。**
         // 导进来的本体里 label 常常只是 key 的驼峰写法（acquired_from /
@@ -504,6 +536,26 @@ pub async fn build_proposals(
         })
         .collect();
 
+    // 字面值那一路多带两样：一条样例值（模型据此判断该是 number 还是 date），
+    // 和这个说法实际挂在哪些类上。后者不是给模型看的，是采纳时直接拿来当
+    // domain 的——属性的 domain 猜错，主语类型对不上就整条丢弃
+    let value_lines: Vec<String> = value_forms
+        .iter()
+        .map(|f| {
+            format!(
+                "- \"{}\" on {} fact(s), value e.g. {}, seen on: {}",
+                f.form,
+                f.fact_count,
+                f.example.as_deref().unwrap_or("-"),
+                if f.domain_keys.is_empty() {
+                    "-".to_string()
+                } else {
+                    f.domain_keys.join(", ")
+                }
+            )
+        })
+        .collect();
+
     let prompt = format!(
         "You are an ontology engineer.\n\
          \n\
@@ -515,6 +567,14 @@ pub async fn build_proposals(
          \n\
          These predicates were taken from the source text because nothing in the ontology fit. \
          Their facts are currently filed under \"related_to\", which says nothing:\n{}\n\
+         \n\
+         These carried a literal VALUE rather than pointing at another entity, so each one \
+         wants an attribute, never a relation. Turning one into a relation manufactures an \
+         entity out of the value — a node named \"2015\" that stands for nothing:\n{}\n\
+         \n\
+         Each wording gets exactly ONE answer. Do not both map it and propose for it, and do \
+         not propose it as a relation and as an attribute — a wording listed above as carrying \
+         a value is an attribute, full stop.\n\
          \n\
          For each wording, decide one of two things.\n\
          \n\
@@ -533,6 +593,9 @@ pub async fn build_proposals(
            because a word was frequent.\n\
          - \"functional\" must be false unless the relation truly permits at most one object per \
            subject at a time. Getting this wrong makes the temporal engine manufacture conflicts.\n\
+         - An attribute needs a \"datatype\": text, number, date or bool. Read it off the example \
+           value. Choose text when unsure — a value that will not convert to the declared type \
+           is dropped, and a date stored as text is still the value.\n\
          \n\
          Every proposal needs a \"description\" as well as a \"reason\", and they are not the \
          same thing. The reason argues for adding it and is read by a person. **The description \
@@ -544,6 +607,7 @@ pub async fn build_proposals(
          Output exactly one JSON object:\n\
          {{\"entity_types\":[{{\"key\":\"snake_case\",\"label\":\"Display Name\",\"description\":\"what belongs here, and what does not\",\"reason\":\"why add it\"}}],\n\
           \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"description\":\"what this relation asserts, and what it does not\",\"reason\":\"why add it\"}}],\n\
+          \"attribute_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"datatype\":\"text|number|date|bool\",\"unit\":\"optional, e.g. CNY\",\"forms\":[\"surface spellings this covers\"],\"description\":\"what this attribute records, and what it does not\",\"reason\":\"why add it\"}}],\n\
           \"map_to\":[{{\"key\":\"an existing key, copied from the candidate list above\",\"forms\":[\"surface spellings that mean it\"],\"reason\":\"why these are the same thing\"}}]}}\n\
          \n\
          Language, and it overrides the skeleton above — that skeleton is written in English \
@@ -554,6 +618,7 @@ pub async fn build_proposals(
         candidates_block,
         miss_lines.join("\n"),
         form_lines.join("\n"),
+        value_lines.join("\n"),
         lang_name(&kb.ontology_lang),
         lang_name(reason_lang)
     );
@@ -568,7 +633,15 @@ pub async fn build_proposals(
     let block = utopia_extract::json_block(&reply).map_err(AppError::Other)?;
     let mut proposals: serde_json::Value =
         serde_json::from_str(&block).map_err(|e| AppError::Other(e.into()))?;
-    resolve_map_targets(&mut proposals, &by_name);
+    resolve_map_targets(&mut proposals, &by_name, &kind_of_key);
+    // 说法归哪一档，服务端说了算——它手里有事实。实测模型会把同一个
+    // \"founded_in\" 既提成关系又提成属性，两条都采纳就是同一批事实被抢两次
+    let value_only: std::collections::HashSet<&str> =
+        value_forms.iter().map(|f| f.form.as_str()).collect();
+    let entity_only: std::collections::HashSet<&str> =
+        forms.iter().map(|f| f.form.as_str()).collect();
+    keep_forms(&mut proposals, "relation_types", &entity_only, &value_only);
+    keep_forms(&mut proposals, "attribute_types", &value_only, &entity_only);
     Ok(proposals)
 }
 
@@ -578,9 +651,12 @@ pub async fn build_proposals(
 /// 而不是 `acquired_from`。**这一步必须在服务端做**：界面上那个"用已有的"
 /// 按钮承诺的是把一批事实挂到某个已有谓词上，key 对不上时它只会报错，
 /// 而承诺已经说出去了。对不上就不该显示这条。
+/// 顺带标上目标是关系还是属性：采纳时两条路的改写不一样，而模型答的是
+/// 一个 key，看不出这个 key 落在哪张表的哪一档。
 fn resolve_map_targets(
     proposals: &mut serde_json::Value,
     by_name: &std::collections::HashMap<String, String>,
+    kind_of_key: &std::collections::HashMap<String, String>,
 ) {
     let Some(items) = proposals.get_mut("map_to").and_then(|v| v.as_array_mut()) else {
         return;
@@ -591,6 +667,10 @@ fn resolve_map_targets(
         };
         match by_name.get(&normalize_name(raw)) {
             Some(real) => {
+                m["kind"] = json!(kind_of_key
+                    .get(real)
+                    .map(String::as_str)
+                    .unwrap_or("relation"));
                 m["key"] = json!(real);
                 true
             }
@@ -599,6 +679,37 @@ fn resolve_map_targets(
                 false
             }
         }
+    });
+}
+
+/// 只保留说法确实属于这一档的提案，并把不属于的那些说法从 `forms` 里剔掉。
+///
+/// **判据在服务端手里**：一个说法带的是字面值还是实体宾语，事实里写着，
+/// 不必问模型。实测模型会把同一个 `founded_in` 既提成关系又提成属性——
+/// 两条都采纳的话，同一批事实被抢两次，先跑的那条赢，结果取决于循环顺序。
+///
+/// `forms` 全被剔光的提案整条丢掉：它承诺的"改写 N 条"已经是零了。
+fn keep_forms(
+    proposals: &mut serde_json::Value,
+    section: &str,
+    mine: &std::collections::HashSet<&str>,
+    theirs: &std::collections::HashSet<&str>,
+) {
+    let Some(items) = proposals.get_mut(section).and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    items.retain_mut(|p| {
+        let Some(forms) = p.get_mut("forms").and_then(|v| v.as_array_mut()) else {
+            // 没有 forms 的提案只是"加一个类型"，不改写事实，与归档无关
+            return true;
+        };
+        forms.retain(|f| {
+            let Some(s) = f.as_str() else { return false };
+            // 另一档明确认领的才剔掉。两边都不认识的说法（比如来自 misses
+            // 而不是表层谓词）原样留着——剔掉它等于替模型否决了一条提案
+            !theirs.contains(s) || mine.contains(s)
+        });
+        !forms.is_empty()
     });
 }
 
@@ -640,6 +751,17 @@ pub struct AdoptReq {
     pub inverse_functional: bool,
     /// 归入这个关系的表层说法（"available_on"、"available through"…）
     pub forms: Vec<String>,
+    /// `relation`（缺省）或 `attribute`。
+    ///
+    /// 属性走另一条改写路径：宾语是字面值，要按 datatype 换算过才能落到
+    /// 新属性上；domain 也不由请求带，从事实的主语类型里取
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// 属性专用：text | number | date | bool
+    #[serde(default)]
+    pub datatype: Option<String>,
+    #[serde(default)]
+    pub unit: Option<String>,
 }
 
 /// 采纳一个表层谓词：建关系类型 **并把等着它的 related_to 事实改写过去**。
@@ -660,6 +782,9 @@ pub async fn adopt_predicate(
     let key = req.key.trim();
     if req.forms.is_empty() {
         return Err(AppError::invalid("forms_required", "forms cannot be empty").into());
+    }
+    if req.kind.as_deref() == Some("attribute") {
+        return adopt_attribute(&state, &user, kb_id, &req).await;
     }
     let predicate_id = if req.existing {
         // 按 key 找已有的那一条。找不到就报错而不是退回新建——
@@ -912,11 +1037,213 @@ fn lang_name(code: &str) -> &'static str {
     }
 }
 
+/// 采纳一个**字面值**说法：建（或指向已有的）属性，并把等着它的事实改挂过去。
+///
+/// 跟关系那条路有三处不同，每一处都是属性特有的：
+///
+/// 1. **domain 从数据里取，不由请求带。** 属性必须声明能挂在哪些类下，而猜错
+///    的代价是硬的——主语类型对不上就整条丢弃（`attr_domain_mismatch`）。
+///    这些事实的主语现在是什么类是事实不是判断，直接读。
+/// 2. **值要按 datatype 换算。** 库里存的是抽取当时的原样（字符串 "2015"），
+///    落到一个 date 属性上得先变成日期。
+/// 3. **换不出来的不改写。** 宁可让它继续挂在兜底谓词上等下一次，也不把
+///    一个换不动的值硬塞进类型化的属性里——那是"宁缺勿脏"的同一条。
+async fn adopt_attribute(
+    state: &AppState,
+    user: &utopia_core::models::User,
+    kb_id: Uuid,
+    req: &AdoptReq,
+) -> ApiResult<Json<serde_json::Value>> {
+    let spec = AttributeAdoption {
+        key: req.key.trim(),
+        label: req.label.trim(),
+        description: req.description.as_deref().unwrap_or("").trim(),
+        datatype: req.datatype.as_deref().unwrap_or("text"),
+        unit: req.unit.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        forms: &req.forms,
+        existing: req.existing,
+    };
+    let done = adopt_attribute_core(state, kb_id, &spec).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "ontology.attribute_adopted",
+        "relation_type",
+        Some(done.attribute_id),
+        json!({ "key": spec.key, "forms": req.forms, "existing": req.existing,
+                "remapped": done.remapped, "unconvertible": done.unconvertible }),
+    )
+    .await;
+    // unconvertible 要回给调用方：改写了 3 条、丢下 2 条，界面得说得出后半句
+    Ok(Json(json!({
+        "id": done.attribute_id, "batch": done.batch_id,
+        "remapped": done.remapped, "unconvertible": done.unconvertible
+    })))
+}
+
+/// 一次属性采纳要的全部输入。
+pub(crate) struct AttributeAdoption<'a> {
+    pub key: &'a str,
+    pub label: &'a str,
+    pub description: &'a str,
+    pub datatype: &'a str,
+    pub unit: Option<&'a str>,
+    pub forms: &'a [String],
+    /// true = key 指的是已有属性，只改写、不新建
+    pub existing: bool,
+}
+
+pub(crate) struct AttributeAdopted {
+    pub attribute_id: Uuid,
+    pub batch_id: Uuid,
+    pub remapped: u32,
+    /// 值换不动那个 datatype、因而**没有**被改写的条数。
+    /// 必须往上传：改写了 3 条、丢下 2 条，只报前半句就是报喜不报忧
+    pub unconvertible: usize,
+}
+
+/// 建（或指向已有的）属性，并把等着它的字面值事实改挂过去。人工与自动共用。
+pub(crate) async fn adopt_attribute_core(
+    state: &AppState,
+    kb_id: Uuid,
+    spec: &AttributeAdoption<'_>,
+) -> Result<AttributeAdopted, AppError> {
+    // 先把待改写的事实取出来：它既定 domain，也定值换不换得动
+    let facts = utopia_store::graph::value_facts_for_forms(&state.pool, kb_id, spec.forms).await?;
+    let attribute_id = if spec.existing {
+        utopia_store::ontology::relation_type_id_by_key(&state.pool, kb_id, spec.key)
+            .await?
+            .ok_or_else(|| {
+                AppError::invalid("unknown_relation_key", "no relation type with that key")
+            })?
+    } else {
+        // **domain 从数据里取。** 属性必须声明能挂在哪些类下，猜错的代价是硬的：
+        // 主语类型对不上就整条丢弃。这些事实的主语现在是什么类是事实，不是判断
+        let mut domains: Vec<Uuid> = facts.iter().map(|(_, type_id, _)| *type_id).collect();
+        domains.sort_unstable();
+        domains.dedup();
+        if domains.is_empty() {
+            return Err(AppError::invalid(
+                "no_facts_for_forms",
+                "nothing is waiting on those wordings",
+            ));
+        }
+        utopia_store::ontology::create_relation_type(
+            &state.pool,
+            kb_id,
+            spec.key,
+            spec.label,
+            "state",
+            // 建议方不替时态引擎做决定：functional 会驱动它自动闭合旧值
+            false,
+            false,
+            spec.description,
+            "attribute",
+            &domains,
+            &[],
+            Some(spec.datatype),
+            spec.unit,
+        )
+        .await?
+    };
+
+    // 换算按**库里那一条**的 datatype，不按请求——指向已有属性时请求里根本
+    // 没有 datatype，而即便有，也该听本体的
+    let datatype = utopia_store::ontology::relation_type_datatype(&state.pool, attribute_id)
+        .await?
+        .unwrap_or_else(|| "text".to_string());
+    let mut rewrites: Vec<(Uuid, serde_json::Value)> = Vec::new();
+    let mut unconvertible = 0usize;
+    for (fact_id, _, object_value) in &facts {
+        // 抽取写进去的形状是 {"value": …}，取里面那一层来换算
+        let raw = object_value.get("value").unwrap_or(object_value);
+        match utopia_extract::normalize_attr_value(&datatype, raw) {
+            Some(v) => rewrites.push((*fact_id, json!({ "value": v }))),
+            // 换不动的**不改写**：宁可让它继续挂在兜底谓词上等下一次，
+            // 也不把一个换不动的值硬塞进类型化的属性里
+            None => unconvertible += 1,
+        }
+    }
+    let (batch_id, remapped) =
+        utopia_store::graph::adopt_value_facts(&state.pool, kb_id, attribute_id, &rewrites).await?;
+    for form in spec.forms {
+        let _ =
+            utopia_store::ontology::clear_miss(&state.pool, kb_id, "attribute_type", form).await;
+    }
+    Ok(AttributeAdopted {
+        attribute_id,
+        batch_id,
+        remapped,
+        unconvertible,
+    })
+}
+
+/// 映射到**已有属性**：不建东西，只把这些说法的字面值事实挂过去。
+pub(crate) async fn adopt_attribute_existing(
+    state: &AppState,
+    kb_id: Uuid,
+    key: &str,
+    forms: &[String],
+) -> Result<(Uuid, u32), AppError> {
+    let done = adopt_attribute_core(
+        state,
+        kb_id,
+        &AttributeAdoption {
+            key,
+            label: "",
+            description: "",
+            datatype: "text",
+            unit: None,
+            forms,
+            existing: true,
+        },
+    )
+    .await?;
+    Ok((done.batch_id, done.remapped))
+}
+
+/// 自动扩本体那条路的入口。参数摊开而不是传 `AdoptReq`——那个结构是 HTTP
+/// 请求体，自动路径没有请求。
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn adopt_attribute_auto(
+    state: &AppState,
+    kb_id: Uuid,
+    key: &str,
+    label: &str,
+    description: &str,
+    datatype: &str,
+    unit: Option<&str>,
+    forms: &[String],
+) -> Result<(Uuid, u32), AppError> {
+    let done = adopt_attribute_core(
+        state,
+        kb_id,
+        &AttributeAdoption {
+            key,
+            label,
+            description,
+            datatype,
+            unit,
+            forms,
+            existing: false,
+        },
+    )
+    .await?;
+    if done.unconvertible > 0 {
+        tracing::info!(
+            %kb_id, key, dropped = done.unconvertible,
+            "有值换不动这个 datatype，那些事实留在兜底谓词上"
+        );
+    }
+    Ok((done.batch_id, done.remapped))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{normalize_name, resolve_map_targets};
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn names_align_across_spellings() {
@@ -953,7 +1280,7 @@ mod tests {
             // 连 key 都没有
             {"forms": ["x"]},
         ]});
-        resolve_map_targets(&mut p, &by_name);
+        resolve_map_targets(&mut p, &by_name, &HashMap::new());
         let items = p["map_to"].as_array().unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0]["key"], "acquired_from");
@@ -963,7 +1290,53 @@ mod tests {
     #[test]
     fn proposals_without_a_map_to_section_are_left_alone() {
         let mut p = json!({"entity_types": [], "relation_types": []});
-        resolve_map_targets(&mut p, &HashMap::new());
+        resolve_map_targets(&mut p, &HashMap::new(), &HashMap::new());
         assert!(p.get("map_to").is_none());
+    }
+
+    #[test]
+    fn a_wording_that_carries_a_value_cannot_also_become_a_relation() {
+        // 实测过的形状：模型把同一个 founded_in 既提成关系又提成属性。
+        // 两条都采纳的话同一批事实被抢两次，谁先跑谁赢
+        let value_only: HashSet<&str> = ["founded_in", "registered_capital"].into_iter().collect();
+        let entity_only: HashSet<&str> = ["acquires"].into_iter().collect();
+        let mut p = json!({
+            "relation_types": [
+                {"key": "founded", "forms": ["founded_in", "founding date"]},
+                {"key": "acquires", "forms": ["acquires"]}
+            ],
+            "attribute_types": [
+                {"key": "founding_year", "forms": ["founded_in"]},
+                {"key": "registered_capital", "forms": ["registered_capital"]}
+            ]
+        });
+        super::keep_forms(&mut p, "relation_types", &entity_only, &value_only);
+        super::keep_forms(&mut p, "attribute_types", &value_only, &entity_only);
+
+        let rels = p["relation_types"].as_array().unwrap();
+        // founded 只剩 "founding date"——那个说法两边都不认识，不该替模型否决
+        assert_eq!(rels.len(), 2);
+        assert_eq!(rels[0]["forms"].as_array().unwrap().len(), 1);
+        assert_eq!(rels[0]["forms"][0], "founding date");
+        assert_eq!(rels[1]["key"], "acquires");
+        // 属性那边一条不动
+        assert_eq!(p["attribute_types"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_proposal_left_with_no_wordings_is_dropped() {
+        // forms 被剔光 = 它承诺的"改写 N 条"已经是零，留着只会让人点一下什么也没发生
+        let value_only: HashSet<&str> = ["founded_in"].into_iter().collect();
+        let mut p = json!({"relation_types": [{"key": "founded", "forms": ["founded_in"]}]});
+        super::keep_forms(&mut p, "relation_types", &HashSet::new(), &value_only);
+        assert!(p["relation_types"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_type_proposal_without_wordings_is_left_alone() {
+        // 没有 forms 的提案只是"加一个类型"，不改写任何事实，与归档无关
+        let mut p = json!({"entity_types": [{"key": "platform", "label": "Platform"}]});
+        super::keep_forms(&mut p, "entity_types", &HashSet::new(), &HashSet::new());
+        assert_eq!(p["entity_types"].as_array().unwrap().len(), 1);
     }
 }

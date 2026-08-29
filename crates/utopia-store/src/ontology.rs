@@ -973,3 +973,16 @@ pub async fn relation_type_id_by_key(
             .await?;
     Ok(row.map(|(id,)| id))
 }
+
+/// 一个属性声明的 datatype。改写字面值事实时要按它换算。
+///
+/// 以**库里这一条**为准而不是以请求为准：指向已有属性时请求里根本没有
+/// datatype，而即便有，本体说了算。
+pub async fn relation_type_datatype(pool: &PgPool, id: Uuid) -> AppResult<Option<String>> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT datatype FROM relation_types WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.and_then(|(d,)| d))
+}

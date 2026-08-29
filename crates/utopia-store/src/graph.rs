@@ -1301,27 +1301,80 @@ pub async fn adopt_proposed_predicates(
     predicate_id: Uuid,
     forms: &[String],
 ) -> AppResult<(Uuid, u32)> {
+    adopt(pool, kb_id, predicate_id, AdoptTargets::ByForm(forms)).await
+}
+
+/// 要改写哪些事实，以及新行的宾语从哪来。
+pub enum AdoptTargets<'a> {
+    /// 关系那一路：按表层说法去找，宾语原样搬走。
+    ByForm(&'a [String]),
+    /// 属性那一路：调用方已经挑好事实、并把值按 datatype 归一化过。
+    ///
+    /// **归一化必须在调用方做**：那套规则（"2015" → 日期、"1,200" → 数字）
+    /// 住在抽取模块，store 够不着也不该够得着。更要紧的是它会**失败**——
+    /// 一个换算不出来的值不该硬塞进一个日期属性里，那条事实宁可继续挂在
+    /// 兜底谓词上。所以由调用方筛完再交回来。
+    WithValues(&'a [(Uuid, serde_json::Value)]),
+}
+
+async fn adopt(
+    pool: &PgPool,
+    kb_id: Uuid,
+    predicate_id: Uuid,
+    targets: AdoptTargets<'_>,
+) -> AppResult<(Uuid, u32)> {
     let batch_id = Uuid::now_v7();
-    if forms.is_empty() {
-        return Ok((batch_id, 0));
-    }
-    let targets: Vec<(Uuid, Uuid, Option<Uuid>, Option<serde_json::Value>)> = sqlx::query_as(
-        "SELECT f.id, f.subject_id, f.object_id, f.object_value
-         FROM facts f
-         JOIN relation_types rt ON rt.id = f.predicate_id
-         WHERE f.kb_id = $1 AND rt.key = $2 AND f.invalidated_at IS NULL
-           AND EXISTS (SELECT 1 FROM fact_evidence e
-                       WHERE e.fact_id = f.id AND e.proposed_predicate = ANY($3))
-           AND NOT EXISTS (SELECT 1 FROM fact_evidence e
-                           WHERE e.fact_id = f.id AND e.proposed_predicate IS NOT NULL
-                             AND NOT (e.proposed_predicate = ANY($3)))
-         ORDER BY f.recorded_at",
-    )
-    .bind(kb_id)
-    .bind(FALLBACK_RELATION_KEY)
-    .bind(forms)
-    .fetch_all(pool)
-    .await?;
+    let targets: Vec<(Uuid, Uuid, Option<Uuid>, Option<serde_json::Value>)> = match targets {
+        AdoptTargets::ByForm(forms) => {
+            if forms.is_empty() {
+                return Ok((batch_id, 0));
+            }
+            sqlx::query_as(
+                "SELECT f.id, f.subject_id, f.object_id, f.object_value
+                 FROM facts f
+                 JOIN relation_types rt ON rt.id = f.predicate_id
+                 WHERE f.kb_id = $1 AND rt.key = $2 AND f.invalidated_at IS NULL
+                   -- **只碰宾语是实体的。** 同一个说法可能既有指向实体的事实
+                   -- 又有带字面值的（location 两种都用），后者归属性那条路：
+                   -- 把它改挂到一条关系上，那个值就再也不是值了
+                   AND f.object_id IS NOT NULL
+                   AND EXISTS (SELECT 1 FROM fact_evidence e
+                               WHERE e.fact_id = f.id AND e.proposed_predicate = ANY($3))
+                   AND NOT EXISTS (SELECT 1 FROM fact_evidence e
+                                   WHERE e.fact_id = f.id AND e.proposed_predicate IS NOT NULL
+                                     AND NOT (e.proposed_predicate = ANY($3)))
+                 ORDER BY f.recorded_at",
+            )
+            .bind(kb_id)
+            .bind(FALLBACK_RELATION_KEY)
+            .bind(forms)
+            .fetch_all(pool)
+            .await?
+        }
+        AdoptTargets::WithValues(items) => {
+            if items.is_empty() {
+                return Ok((batch_id, 0));
+            }
+            // 主语要从库里读回来（调用方给的是 fact_id 与新值），顺带确认这些
+            // 事实还活着——挑选与采纳之间可能隔着一次重抽
+            let ids: Vec<Uuid> = items.iter().map(|(id, _)| *id).collect();
+            let live: Vec<(Uuid, Uuid)> = sqlx::query_as(
+                "SELECT id, subject_id FROM facts
+                 WHERE kb_id = $1 AND id = ANY($2) AND invalidated_at IS NULL",
+            )
+            .bind(kb_id)
+            .bind(&ids)
+            .fetch_all(pool)
+            .await?;
+            let subject_of: std::collections::HashMap<Uuid, Uuid> = live.into_iter().collect();
+            items
+                .iter()
+                .filter_map(|(id, value)| {
+                    Some((*id, *subject_of.get(id)?, None, Some(value.clone())))
+                })
+                .collect()
+        }
+    };
 
     let mut moved = 0u32;
     for (old_id, subject_id, object_id, object_value) in targets {
@@ -1350,10 +1403,13 @@ pub async fn adopt_proposed_predicates(
             Some((id,)) => (id, ADOPT_MERGED),
             None => {
                 let id = Uuid::now_v7();
+                // 宾语显式绑定而不是从旧行复制：属性那一路的新值是归一化过的
+                //（"2015" → 日期），照抄旧行就等于把没换算的原值塞进去。
+                // 关系那一路绑的就是旧行的值，行为一字不变
                 let inserted: Option<(Uuid,)> = sqlx::query_as(
                     "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                                         valid_from, valid_to, valid_precision, confidence, supersedes)
-                     SELECT $1, kb_id, subject_id, $3, object_id, object_value,
+                     SELECT $1, kb_id, subject_id, $3, $4, $5,
                             valid_from, valid_to, valid_precision, confidence, id
                      FROM facts WHERE id = $2 AND invalidated_at IS NULL
                      RETURNING id",
@@ -1361,6 +1417,8 @@ pub async fn adopt_proposed_predicates(
                 .bind(id)
                 .bind(old_id)
                 .bind(predicate_id)
+                .bind(object_id)
+                .bind(&object_value)
                 .fetch_optional(&mut *tx)
                 .await?;
                 // 已被并发改写：不重复动手
@@ -1455,4 +1513,101 @@ pub async fn unadopt(pool: &PgPool, kb_id: Uuid, batch_id: Uuid) -> AppResult<u3
     .await?;
     tx.commit().await?;
     Ok(reverted)
+}
+
+/// 词表外的**字面值**说法：还挂在兜底谓词上、宾语是值而不是实体的那些。
+///
+/// 跟 [`proposed_predicates`] 互补，两边用 `object_id` 是否为空严格分开。
+/// 混在一起提案就会把 `founding_date` 提成一条关系，而那正是这条路要修掉的。
+pub async fn proposed_attributes(
+    pool: &PgPool,
+    kb_id: Uuid,
+) -> AppResult<Vec<utopia_core::models::ProposedAttribute>> {
+    Ok(sqlx::query_as(
+        "SELECT fe.proposed_predicate AS form,
+                count(DISTINCT f.id) AS fact_count,
+                count(DISTINCT fe.document_id) AS doc_count,
+                (SELECT f2.object_value::text
+                 FROM fact_evidence e2
+                 JOIN facts f2 ON f2.id = e2.fact_id
+                 WHERE e2.proposed_predicate = fe.proposed_predicate
+                   AND f2.kb_id = $1 AND f2.predicate_id = rt.id
+                   AND f2.object_id IS NULL AND f2.invalidated_at IS NULL
+                 LIMIT 1) AS example,
+                -- 主语实际是什么类：属性的 domain 从这里来，不靠猜
+                ARRAY(SELECT DISTINCT t.key
+                      FROM fact_evidence e3
+                      JOIN facts f3 ON f3.id = e3.fact_id
+                      JOIN entities s ON s.id = f3.subject_id
+                      JOIN entity_types t ON t.id = s.type_id
+                      WHERE e3.proposed_predicate = fe.proposed_predicate
+                        AND f3.kb_id = $1 AND f3.predicate_id = rt.id
+                        AND f3.object_id IS NULL AND f3.invalidated_at IS NULL) AS domain_keys
+         FROM fact_evidence fe
+         JOIN facts f ON f.id = fe.fact_id
+         JOIN relation_types rt ON rt.id = f.predicate_id
+         WHERE f.kb_id = $1 AND rt.kb_id = $1 AND rt.key = $2
+           AND f.invalidated_at IS NULL AND fe.proposed_predicate IS NOT NULL
+           AND f.object_id IS NULL
+           -- 拒绝过的说法不再出现在候选里
+           AND NOT EXISTS (SELECT 1 FROM ontology_misses m
+                           WHERE m.kb_id = $1 AND m.kind = 'attribute_type'
+                             AND m.key = fe.proposed_predicate AND m.dismissed_at IS NOT NULL)
+         GROUP BY fe.proposed_predicate, rt.id
+         ORDER BY fact_count DESC, form",
+    )
+    .bind(kb_id)
+    .bind(FALLBACK_RELATION_KEY)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 某几个字面值说法当前挂着的事实：id、主语的类型、原始值。
+///
+/// 给采纳那一步用。**归一化不在这里做**——它按 datatype 把 "2015" 变成日期、
+/// 把 "1,200" 变成数字，那套规则住在抽取模块，store 够不着也不该够得着。
+/// 调用方归一化完，把结果原样交回来。
+pub async fn value_facts_for_forms(
+    pool: &PgPool,
+    kb_id: Uuid,
+    forms: &[String],
+) -> AppResult<Vec<(Uuid, Uuid, serde_json::Value)>> {
+    if forms.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(sqlx::query_as(
+        "SELECT DISTINCT f.id, s.type_id, f.object_value
+         FROM facts f
+         JOIN entities s ON s.id = f.subject_id
+         JOIN relation_types rt ON rt.id = f.predicate_id
+         WHERE f.kb_id = $1 AND rt.key = $2 AND f.invalidated_at IS NULL
+           AND f.object_id IS NULL AND f.object_value IS NOT NULL
+           AND EXISTS (SELECT 1 FROM fact_evidence e
+                       WHERE e.fact_id = f.id AND e.proposed_predicate = ANY($3))",
+    )
+    .bind(kb_id)
+    .bind(FALLBACK_RELATION_KEY)
+    .bind(forms)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 采纳一批**字面值**说法：把它们的事实改挂到某个属性上。
+///
+/// 与 [`adopt_proposed_predicates`] 共用改写、批次与撤销——对图做的事是同一件，
+/// 只有"新宾语从哪来"不同：这里的值由调用方按属性的 datatype 归一化过，
+/// 换算不出来的那些根本不会传进来（它们继续挂在兜底谓词上等下一次）。
+pub async fn adopt_value_facts(
+    pool: &PgPool,
+    kb_id: Uuid,
+    attribute_id: Uuid,
+    rewrites: &[(Uuid, serde_json::Value)],
+) -> AppResult<(Uuid, u32)> {
+    adopt(
+        pool,
+        kb_id,
+        attribute_id,
+        AdoptTargets::WithValues(rewrites),
+    )
+    .await
 }

@@ -1403,18 +1403,74 @@ function MissesPanel({
 
   // 逐条串行而不是加个批量端点：每个谓词各有自己的批次和撤销粒度，
   // 而且部分失败能如实报告（"5 个成功，1 个 key 已存在"）而不是整批回滚
-  // 映射到已有类型：不建东西，只把这些说法的事实挂过去。
-  // 跟新建走同一个采纳入口，因为它对图做的事一模一样——也因此同样可撤销
-  const approveMapping = useMutation({
-    mutationFn: (p: { key: string; forms?: string[] }) =>
+  // 属性提案：宾语是字面值的那些。走同一个采纳入口，但值要按 datatype
+  // 换算，换不动的不改写——所以回执里的 unconvertible 必须说出来
+  const approveAttribute = useMutation({
+    mutationFn: (p: {
+      key: string;
+      label: string;
+      datatype?: string;
+      unit?: string;
+      description?: string;
+      forms?: string[];
+    }) =>
       api.adoptPredicate(kbId, {
         key: p.key,
-        existing: true,
+        kind: "attribute",
+        label: p.label,
+        datatype: p.datatype ?? "text",
+        unit: p.unit,
+        description: p.description,
         forms: p.forms ?? [],
       }),
     onSuccess: (data, p) => {
       const moved = data.remapped ?? 0;
-      toast.success(moved > 0 ? S.ontology.adopted(moved) : S.toast.saved);
+      const left = data.unconvertible ?? 0;
+      toast.success(
+        left > 0
+          ? S.ontology.adoptedPartly(moved, left)
+          : moved > 0
+            ? S.ontology.adopted(moved)
+            : S.toast.added,
+      );
+      if (moved > 0 && data.batch)
+        setLastAdopt({ batches: [data.batch], key: p.key, moved });
+      setProposals(
+        (prev) =>
+          prev && {
+            ...prev,
+            attribute_types: (prev.attribute_types ?? []).filter(
+              (x) => x.key !== p.key,
+            ),
+          },
+      );
+      for (const form of p.forms ?? [])
+        api.dismissMiss(kbId, "attribute_type", form).catch(() => {});
+      onChanged();
+    },
+    onError,
+  });
+  // 映射到已有类型：不建东西，只把这些说法的事实挂过去。
+  // 跟新建走同一个采纳入口，因为它对图做的事一模一样——也因此同样可撤销
+  const approveMapping = useMutation({
+    mutationFn: (p: { key: string; kind?: string; forms?: string[] }) =>
+      api.adoptPredicate(kbId, {
+        key: p.key,
+        existing: true,
+        // 目标是属性时值要按它的 datatype 换算，服务端据此分道
+        kind: p.kind === "attribute" ? "attribute" : "relation",
+        forms: p.forms ?? [],
+      }),
+    onSuccess: (data, p) => {
+      const moved = data.remapped ?? 0;
+      const left = data.unconvertible ?? 0;
+      toast.success(
+        left > 0
+          ? S.ontology.adoptedPartly(moved, left)
+          : moved > 0
+            ? S.ontology.adopted(moved)
+            : S.toast.saved,
+      );
       if (moved > 0 && data.batch)
         setLastAdopt({ batches: [data.batch], key: p.key, moved });
       setProposals(
@@ -1468,12 +1524,31 @@ function MissesPanel({
           failed.push(p.key);
         }
       }
+      for (const p of all.attribute_types ?? []) {
+        if (!p.forms?.length) continue;
+        try {
+          const r = await api.adoptPredicate(kbId, {
+            key: p.key,
+            kind: "attribute",
+            label: p.label,
+            datatype: p.datatype ?? "text",
+            unit: p.unit,
+            description: p.description,
+            forms: p.forms,
+          });
+          moved += r.remapped;
+          if (r.remapped > 0) batches.push(r.batch);
+        } catch {
+          failed.push(p.key);
+        }
+      }
       for (const p of all.map_to ?? []) {
         if (!p.forms?.length) continue;
         try {
           const r = await api.adoptPredicate(kbId, {
             key: p.key,
             existing: true,
+            kind: p.kind === "attribute" ? "attribute" : "relation",
             forms: p.forms,
           });
           moved += r.remapped;
@@ -1643,6 +1718,7 @@ function MissesPanel({
             {/* 常见情形是"这些都对"——一条条点是把一个决定拆成八个 */}
             {proposals.relation_types.length +
               proposals.entity_types.length +
+              (proposals.attribute_types?.length ?? 0) +
               (proposals.map_to?.length ?? 0) >
               1 && (
               <Button
@@ -1657,6 +1733,7 @@ function MissesPanel({
                   : S.ontology.addAll(
                       proposals.relation_types.length +
                         proposals.entity_types.length +
+                        (proposals.attribute_types?.length ?? 0) +
                         (proposals.map_to?.length ?? 0),
                     )}
               </Button>
@@ -1748,8 +1825,40 @@ function MissesPanel({
                 </Button>
               </div>
             ))}
+            {(proposals.attribute_types ?? []).map((p) => (
+              <div key={`attr-${p.key}`} className="flex items-center gap-2 text-sm">
+                {/* A 而不是 P：字面值那一档跟关系是两回事，界面上分得清 */}
+                <Chip tone="warn">A</Chip>
+                <span className="font-mono text-neutral-300">{p.key}</span>
+                <span className="text-neutral-200">{p.label}</span>
+                <Chip tone="neutral">{p.datatype ?? "text"}</Chip>
+                {p.unit && <Chip tone="neutral">{p.unit}</Chip>}
+                {!!p.forms?.length && (
+                  <span
+                    className="text-xs text-[var(--u-accent)]"
+                    title={p.forms.join(" · ")}
+                  >
+                    {S.ontology.willRemap(factsWaiting(p.forms))}
+                  </span>
+                )}
+                {p.reason && (
+                  <span className="text-xs text-neutral-500 truncate">
+                    {p.reason}
+                  </span>
+                )}
+                <Button
+                  size="sm"
+                  className="ml-auto"
+                  onClick={() => approveAttribute.mutate(p)}
+                  disabled={approveAttribute.isPending}
+                >
+                  {S.ontology.approve}
+                </Button>
+              </div>
+            ))}
             {proposals.entity_types.length === 0 &&
               proposals.relation_types.length === 0 &&
+              !proposals.attribute_types?.length &&
               !proposals.map_to?.length && (
                 <p className="text-sm text-neutral-500">—</p>
               )}

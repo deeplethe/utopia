@@ -197,6 +197,56 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         }
     }
 
+    // 属性那一档：宾语是字面值的说法。
+    //
+    // domain 不从提案里读——它从这些事实的主语类型里取，见 adopt_attribute。
+    // 值换不动的那些不改写，继续挂在兜底谓词上等下一次
+    let attrs = proposals
+        .get("attribute_types")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for p in &attrs {
+        let (Some(key), Some(label)) = (str_of(p, "key"), str_of(p, "label")) else {
+            continue;
+        };
+        let forms: Vec<String> = p
+            .get("forms")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if forms.is_empty() {
+            continue;
+        }
+        match ontology_routes::adopt_attribute_auto(
+            state,
+            kb_id,
+            key,
+            label,
+            str_of(p, "description")
+                .or_else(|| str_of(p, "reason"))
+                .unwrap_or(""),
+            str_of(p, "datatype").unwrap_or("text"),
+            str_of(p, "unit"),
+            &forms,
+        )
+        .await
+        {
+            Ok((batch, moved)) => {
+                added_relations.push(key.to_string());
+                moved_total += moved;
+                if moved > 0 {
+                    batches.push(batch);
+                }
+            }
+            Err(e) => tracing::warn!(%kb_id, key, error = %e, "冷启动建属性失败"),
+        }
+    }
+
     // **映射到已有类型**：本体里已经有这个意思了，只改写事实、不动本体。
     //
     // 自动执行是安全的一档：它不让本体长大，只把一批 related_to 挂到一个
@@ -222,6 +272,20 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             })
             .unwrap_or_default();
         if forms.is_empty() {
+            continue;
+        }
+        // 目标是属性时改写走另一条路：值要按它的 datatype 换算。
+        // kind 由服务端在解析提案时标上（模型只答得出一个 key）
+        if str_of(m, "kind") == Some("attribute") {
+            match ontology_routes::adopt_attribute_existing(state, kb_id, key, &forms).await {
+                Ok((batch, moved)) => {
+                    moved_total += moved;
+                    if moved > 0 {
+                        batches.push(batch);
+                    }
+                }
+                Err(e) => tracing::warn!(%kb_id, key, error = %e, "映射到已有属性失败"),
+            }
             continue;
         }
         // 模型偶尔会把候选清单之外的 key 抄进来（或者干脆编一个）。

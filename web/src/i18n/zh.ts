@@ -715,6 +715,8 @@ export const zh: Strings = {
     mapOver: "用已有的",
     willRemap: (n: number) => `将重新归类 ${n} 条事实`,
     adopted: (n: number) => `已加入——${n} 条事实已重新归类`,
+    adoptedPartly: (moved: number, left: number) =>
+      `已加入——${moved} 条已重新归类，${left} 条留在原处（值与类型对不上）`,
     undoAdopt: (key: string, n: number) =>
       `已加入 ${key}，${n} 条事实已重新归类`,
     undoAdoptBtn: "撤销",

@@ -684,3 +684,24 @@ pub struct TypeCandidate {
     pub kind: Option<String>,
     pub distance: f32,
 }
+
+/// 一个被记下来、但本体里没有对应属性的**字面值**说法。
+///
+/// 跟 [`ProposedPredicate`] 是一对：那个是宾语指向实体的（"收购"），
+/// 这个是宾语是字面值的（"成立日期 = 2015"）。两者不能混——提案要产出的东西
+/// 不一样（关系 vs 属性），而混起来的后果具体：一条 `founding_date` 会变成
+/// 一条指向「2015」这个假实体的边。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ProposedAttribute {
+    pub form: String,
+    pub fact_count: i64,
+    pub doc_count: i64,
+    /// 一条样例值（`"2015"`、`1200`），让人一眼看出这是什么类型的数
+    pub example: Option<String>,
+    /// 这个说法**实际挂在哪些类上**（主语的类型）。
+    ///
+    /// 属性必须声明 domain，而 domain 猜错的代价是硬的：主语类型对不上
+    /// 就整条丢弃（`attr_domain_mismatch`）。所以不问模型，直接从数据里取——
+    /// 事实已经在那儿了，它们的主语是什么类是事实，不是判断
+    pub domain_keys: Vec<String>,
+}

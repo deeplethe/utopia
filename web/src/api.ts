@@ -446,6 +446,22 @@ export interface OntologyProposals {
     forms?: string[];
   }[];
   /**
+   * 宾语是字面值的说法（"成立日期 = 2015"）。
+   *
+   * 跟 relation_types 分开是因为它们要的东西不一样：属性有 datatype，
+   * 而把它当关系建出来，那个值就会变成一个假实体。domain 不在这里——
+   * 服务端从事实的主语类型里取，猜错会让整条被丢弃
+   */
+  attribute_types?: {
+    key: string;
+    label: string;
+    datatype?: string;
+    unit?: string;
+    description?: string;
+    reason?: string;
+    forms?: string[];
+  }[];
+  /**
    * 本体里**已经有**这个意思，只需把说法挂过去。
    *
    * 跟 relation_types 的区别是不建东西：同一个意思长出第二个 key，
@@ -453,6 +469,9 @@ export interface OntologyProposals {
    */
   map_to?: {
     key: string;
+    /** 服务端标的：目标落在关系还是属性上。两条改写路径不一样，
+        而模型只答得出一个 key，看不出它在哪一档 */
+    kind?: string;
     forms?: string[];
     reason?: string;
   }[];
@@ -911,6 +930,10 @@ export const api = {
       key: string;
       /** true = key 指的是已有的关系/属性，只改写事实，不建新类型 */
       existing?: boolean;
+      /** attribute 走另一条改写路径：值要按 datatype 换算 */
+      kind?: "relation" | "attribute";
+      datatype?: string;
+      unit?: string;
       label?: string;
       temporal?: string;
       functional?: boolean;
@@ -918,8 +941,14 @@ export const api = {
       forms: string[];
     },
   ) =>
-    request<{ id: string; remapped: number; batch: string }>(
-      `/api/v1/kbs/${kbId}/ontology/adopt-predicate`,
+    request<{
+      id: string;
+      remapped: number;
+      batch: string;
+      /** 值换不动那个 datatype、因而没被改写的条数。改写了 3 条丢下 2 条，
+          只报前半句就是报喜不报忧 */
+      unconvertible?: number;
+    }>(`/api/v1/kbs/${kbId}/ontology/adopt-predicate`,
       { method: "POST", body: JSON.stringify(body) },
     ),
   /** 撤销一次采纳：新写的行作废、旧行复活。关系类型留着 */
