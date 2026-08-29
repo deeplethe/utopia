@@ -29,7 +29,6 @@ import {
   Pager,
   PageTitle,
   RAIL_CLS,
-  SearchSelect,
   cn,
   pageSlice,
 } from "../ui";
@@ -276,7 +275,7 @@ export function Ontology() {
                   parentId={
                     sel?.kind === "new-class"
                       ? sel.parentId
-                      : (selectedClass?.parent_id ?? null)
+                      : (selectedClass?.primary_parent ?? null)
                   }
                   allTypes={entity_types}
                   onNewSub={
@@ -704,7 +703,7 @@ function ClassTree({
     }
     const children = new Map<string | null, EntityTypeView[]>();
     for (const t of types) {
-      const p = t.parent_id ?? null;
+      const p = t.primary_parent ?? null;
       if (!children.has(p)) children.set(p, []);
       children.get(p)!.push(t);
     }
@@ -850,7 +849,7 @@ function parentOptions(
     while (grew) {
       grew = false;
       for (const t of allTypes) {
-        if (t.parent_id && excluded.has(t.parent_id) && !excluded.has(t.id)) {
+        if (t.parents.some((p) => excluded.has(p)) && !excluded.has(t.id)) {
           excluded.add(t.id);
           grew = true;
         }
@@ -859,7 +858,7 @@ function parentOptions(
   }
   const children = new Map<string | null, EntityTypeView[]>();
   for (const t of allTypes) {
-    const p = t.parent_id ?? null;
+    const p = t.primary_parent ?? null;
     if (!children.has(p)) children.set(p, []);
     children.get(p)!.push(t);
   }
@@ -900,10 +899,13 @@ function ClassForm({
   const [shape, setShape] = useState<"circle" | "square">(
     existing?.shape ?? "circle",
   );
-  const [parent, setParent] = useState<string>(parentId ?? "");
+  const [parents, setParents] = useState<string[]>(
+    existing?.parents ?? (parentId ? [parentId] : []),
+  );
   const [description, setDescription] = useState(existing?.description ?? "");
 
-  useEffect(() => setParent(parentId ?? ""), [parentId]);
+  // 从左栏点"+ 子类"进来时预填那个父。多父下它是第一个，也就是主父
+  useEffect(() => setParents(parentId ? [parentId] : []), [parentId]);
 
   const save = useMutation({
     mutationFn: async (): Promise<unknown> =>
@@ -912,7 +914,7 @@ function ClassForm({
             label,
             color,
             shape,
-            parent_id: parent || null,
+            parents,
             description,
           })
         : api.createEntityType(kbId, {
@@ -920,7 +922,7 @@ function ClassForm({
             label,
             color,
             shape,
-            parent_id: parent || null,
+            parents,
             description,
           }),
     onSuccess: (res) => {
@@ -1006,17 +1008,26 @@ function ClassForm({
           </div>
         </div>
       </div>
+      {/* 多父：subClassOf 可以有多条。左栏按树画，一个类只能出现一次——
+          所以第一个当主父。界面说明这条，不另加一个"选主父"的控件 */}
       <div>
         <label className={lbl}>{S.ontology.parent}</label>
-        <SearchSelect
-          value={parent}
-          onChange={setParent}
-          className="w-full"
-          options={[
-            { value: "", label: S.ontology.noParent },
-            ...parentOptions(allTypes, existing?.id),
-          ]}
+        <MultiSearchSelect
+          values={parents}
+          options={parentOptions(allTypes, existing?.id)}
+          onToggle={(id) =>
+            setParents((v) =>
+              v.includes(id) ? v.filter((x) => x !== id) : [...v, id],
+            )
+          }
+          placeholder={S.ontology.searchTypes}
+          emptyHint={S.ontology.noParent}
         />
+        {parents.length > 1 && (
+          <p className="mt-1 text-[11px] text-neutral-600">
+            {S.ontology.primaryParentHint}
+          </p>
+        )}
       </div>
       <div>
         <label className={lbl}>{S.ontology.description}</label>

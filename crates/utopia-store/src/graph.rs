@@ -388,10 +388,20 @@ pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid, lang: &str) -> 
 
 pub async fn entity_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<EntityType>> {
     Ok(
-        sqlx::query_as("SELECT * FROM entity_types WHERE kb_id = $1 ORDER BY created_at")
-            .bind(kb_id)
-            .fetch_all(pool)
-            .await?,
+        // 又一次 SELECT *：parents 在关联表里，`*` 取不到。
+        // 这是同一个陷阱的第三次——SQL 在字符串里，cargo check 全绿，
+        // 第一个请求才报 no column found
+        sqlx::query_as(
+            "SELECT t.*,
+                    ARRAY(SELECT p.parent_id FROM entity_type_parents p
+                          WHERE p.child_id = t.id) AS parents,
+                    (SELECT p.parent_id FROM entity_type_parents p
+                      WHERE p.child_id = t.id AND p.is_primary) AS primary_parent
+             FROM entity_types t WHERE t.kb_id = $1 ORDER BY t.created_at",
+        )
+        .bind(kb_id)
+        .fetch_all(pool)
+        .await?,
     )
 }
 

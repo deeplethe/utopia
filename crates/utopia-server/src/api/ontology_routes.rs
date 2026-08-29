@@ -79,8 +79,10 @@ pub struct EntityTypeReq {
     /// circle | square
     #[serde(default)]
     pub shape: Option<String>,
+    /// 全部父类，**第一个当主父**（左栏画在那一支下）。
+    /// 界面上写明了这条，所以不额外给一个"选主父"的控件
     #[serde(default)]
-    pub parent_id: Option<Uuid>,
+    pub parents: Vec<Uuid>,
     /// 语义指引，注入抽取 prompt
     #[serde(default)]
     pub description: Option<String>,
@@ -106,7 +108,7 @@ pub async fn create_entity_type(
         req.label.trim(),
         req.color.as_deref().unwrap_or("#8ea5bd"),
         req.shape.as_deref().unwrap_or("circle"),
-        req.parent_id,
+        &req.parents,
         req.description.as_deref().unwrap_or("").trim(),
     )
     .await?;
@@ -138,7 +140,7 @@ pub async fn update_entity_type(
         req.label.trim(),
         req.color.as_deref().unwrap_or("#8ea5bd"),
         req.shape.as_deref().unwrap_or("circle"),
-        req.parent_id,
+        &req.parents,
         req.description.as_deref().unwrap_or("").trim(),
     )
     .await?;

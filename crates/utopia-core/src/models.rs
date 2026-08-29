@@ -273,7 +273,10 @@ pub struct EntityType {
     pub shape: String,
     pub builtin: bool,
     /// subClassOf 层级（公理推理 P4 点亮，编辑器先维护数据）
-    pub parent_id: Option<Uuid>,
+    /// 全部父类（subClassOf 可以有多个：FOAF 的 Person 同时是 Agent 与 SpatialThing）
+    pub parents: Vec<Uuid>,
+    /// 左栏画树时挂在哪一支下。不参与语义，只管展示
+    pub primary_parent: Option<Uuid>,
     /// OWL 导入的全局身份。手工建的类为 NULL；重导入按它匹配，不按 key——
     /// 上游改一次 rdfs:label 派生的 key 就变了，按 key 匹配会把同一个类当新类建
     pub iri: Option<String>,
@@ -298,7 +301,10 @@ pub struct EntityTypeView {
     pub color: String,
     pub shape: String,
     pub builtin: bool,
-    pub parent_id: Option<Uuid>,
+    /// 全部父类（subClassOf 可以有多个：FOAF 的 Person 同时是 Agent 与 SpatialThing）
+    pub parents: Vec<Uuid>,
+    /// 左栏画树时挂在哪一支下。不参与语义，只管展示
+    pub primary_parent: Option<Uuid>,
     pub description: String,
     pub usage: i64,
 }

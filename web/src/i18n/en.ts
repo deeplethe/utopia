@@ -43,6 +43,9 @@ export const en = {
     bad_key:
       "Keys are lowercase, letters digits and underscores only, up to 40 characters.",
     self_parent: "A class cannot be its own parent.",
+    parent_cycle:
+      "That class is already below this one — the hierarchy would loop.",
+    bad_lang: "Pick a supported language.",
     attr_needs_class: "An attribute has to belong to a class.",
     entity_name_required: "Name cannot be empty.",
     entity_name_too_long: "Name is too long — 100 characters at most.",
@@ -687,6 +690,8 @@ export const en = {
     shapeColor: "Shape & color",
     parent: "Parent class",
     noParent: "(top level)",
+    /* 多父时左栏只能画一处，说明画在哪一支下 */
+    primaryParentHint: "Shown in the tree under the first one.",
     /* 类型签名。措辞要说清它是引导不是闸门——本体写错时模型仍可覆盖 */
     signature: "Type signature",
     signatureHint:

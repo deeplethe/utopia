@@ -9,7 +9,11 @@ use uuid::Uuid;
 
 pub async fn entity_type_views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<EntityTypeView>> {
     Ok(sqlx::query_as(
-        "SELECT t.id, t.key, t.label, t.color, t.shape, t.builtin, t.parent_id, t.description,
+        "SELECT t.id, t.key, t.label, t.color, t.shape, t.builtin, t.description,
+                ARRAY(SELECT p.parent_id FROM entity_type_parents p
+                      WHERE p.child_id = t.id) AS parents,
+                (SELECT p.parent_id FROM entity_type_parents p
+                  WHERE p.child_id = t.id AND p.is_primary) AS primary_parent,
                 (SELECT count(*) FROM entities e
                  WHERE e.type_id = t.id AND e.merged_into IS NULL) AS usage
          FROM entity_types t WHERE t.kb_id = $1 ORDER BY lower(t.label)",
@@ -103,15 +107,15 @@ pub async fn create_entity_type(
     label: &str,
     color: &str,
     shape: &str,
-    parent_id: Option<Uuid>,
+    parents: &[Uuid],
     description: &str,
 ) -> AppResult<Uuid> {
     validate_key(key)?;
     validate_shape(shape)?;
     let id = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO entity_types (id, kb_id, key, label, color, shape, parent_id, description)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(id)
     .bind(kb_id)
@@ -119,7 +123,6 @@ pub async fn create_entity_type(
     .bind(label)
     .bind(color)
     .bind(shape)
-    .bind(parent_id)
     .bind(description)
     .execute(pool)
     .await
@@ -129,6 +132,7 @@ pub async fn create_entity_type(
         }
         _ => AppError::Db(e),
     })?;
+    set_parents(pool, kb_id, id, parents).await?;
     Ok(id)
 }
 
@@ -140,19 +144,13 @@ pub async fn update_entity_type(
     label: &str,
     color: &str,
     shape: &str,
-    parent_id: Option<Uuid>,
+    parents: &[Uuid],
     description: &str,
 ) -> AppResult<()> {
-    if parent_id == Some(id) {
-        return Err(AppError::invalid(
-            "self_parent",
-            "A class cannot be its own parent",
-        ));
-    }
     validate_shape(shape)?;
     let res = sqlx::query(
-        "UPDATE entity_types SET label = $3, color = $4, shape = $5, parent_id = $6,
-                description = $7
+        "UPDATE entity_types SET label = $3, color = $4, shape = $5,
+                description = $6
          WHERE id = $2 AND kb_id = $1",
     )
     .bind(kb_id)
@@ -160,13 +158,71 @@ pub async fn update_entity_type(
     .bind(label)
     .bind(color)
     .bind(shape)
-    .bind(parent_id)
     .bind(description)
     .execute(pool)
     .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    set_parents(pool, kb_id, id, parents).await?;
+    Ok(())
+}
+
+/// 把 `parents` 设成这个类的全部父类，第一个当主父（左栏画在那一支下）。
+///
+/// **先查环再写**。单父时代只需要挡自环，一条链天然不会成环；DAG 里 A→B→A
+/// 完全可能，而 `type_matches_domain` 沿父链上溯，成环就是死循环。
+/// SQL 拦不住这个——外键只挡自环，更长的要应用来查。
+pub async fn set_parents(
+    pool: &PgPool,
+    kb_id: Uuid,
+    child: Uuid,
+    parents: &[Uuid],
+) -> AppResult<()> {
+    if parents.contains(&child) {
+        return Err(AppError::invalid(
+            "self_parent",
+            "A class cannot be its own parent",
+        ));
+    }
+    if !parents.is_empty() {
+        // 候选父类的全部祖先里出现 child，就说明这条边会成环
+        let (cycles,): (i64,) = sqlx::query_as(
+            "WITH RECURSIVE up(id) AS (
+                 SELECT unnest($2::uuid[])
+                 UNION
+                 SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+             )
+             SELECT count(*) FROM up WHERE id = $1",
+        )
+        .bind(child)
+        .bind(parents)
+        .fetch_one(pool)
+        .await?;
+        if cycles > 0 {
+            return Err(AppError::invalid(
+                "parent_cycle",
+                "That parent is already a subclass of this one",
+            ));
+        }
+    }
+    sqlx::query("DELETE FROM entity_type_parents WHERE child_id = $1")
+        .bind(child)
+        .execute(pool)
+        .await?;
+    for (i, p) in parents.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO entity_type_parents (child_id, parent_id, is_primary)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(child)
+        .bind(p)
+        // 第一个当主父：界面上说明了"画在第一个下面"，不再多一个控件
+        .bind(i == 0)
+        .execute(pool)
+        .await?;
+    }
+    let _ = kb_id;
     Ok(())
 }
 
@@ -673,19 +729,6 @@ pub async fn update_relation_from_import(
     };
     set_domains_ranges(pool, id, domains, ranges).await?;
     Ok(true)
-}
-
-pub async fn set_parent(pool: &PgPool, kb_id: Uuid, child: Uuid, parent: Uuid) -> AppResult<()> {
-    if child == parent {
-        return Ok(());
-    }
-    sqlx::query("UPDATE entity_types SET parent_id = $3 WHERE kb_id = $1 AND id = $2")
-        .bind(kb_id)
-        .bind(child)
-        .bind(parent)
-        .execute(pool)
-        .await?;
-    Ok(())
 }
 
 /// 记一次导入。原文已按内容寻址存进 blob，这里只记账。

@@ -390,7 +390,10 @@ export interface EntityTypeView {
   color: string;
   shape: "circle" | "square";
   builtin: boolean;
-  parent_id: string | null;
+  /** 全部父类（subClassOf 可以有多个） */
+  parents: string[];
+  /** 左栏画树时挂在哪一支下。不参与语义，只管展示 */
+  primary_parent: string | null;
   description: string;
   usage: number;
 }

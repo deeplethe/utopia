@@ -41,6 +41,8 @@ export const zh: Strings = {
     forms_required: "至少选一个这个关系涵盖的说法。",
     bad_key: "key 只能用小写字母、数字和下划线，最长 40 个字符。",
     self_parent: "一个类不能是自己的父类。",
+    parent_cycle: "那个类已经在这个类下面了——层级会成环。",
+    bad_lang: "选一个支持的语言。",
     attr_needs_class: "属性必须挂在某个类上。",
     entity_name_required: "名称不能为空。",
     entity_name_too_long: "名称太长了——最多 100 个字符。",
@@ -640,6 +642,7 @@ export const zh: Strings = {
     shapeColor: "形状与颜色",
     parent: "父类",
     noParent: "（顶层）",
+    primaryParentHint: "左栏的树里挂在第一个下面。",
     signature: "类型签名",
     signatureHint:
       "这个关系连接哪些类。它作为提示进抽取提示词，不是闸门——" +

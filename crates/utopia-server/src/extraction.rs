@@ -4,7 +4,7 @@
 
 use crate::llm_util;
 use crate::state::AppState;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utopia_store::graph::FALLBACK_RELATION_KEY;
 use uuid::Uuid;
 
@@ -169,8 +169,10 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         .collect();
     // 属性元数据（按 key 查）与提示词清单（"person.salary (number, CNY): 月薪"）。
     // 没定义属性时清单为空，提示词一字不变
-    let type_parent: HashMap<Uuid, Option<Uuid>> =
-        etypes.iter().map(|t| (t.id, t.parent_id)).collect();
+    let type_parents: HashMap<Uuid, &[Uuid]> = etypes
+        .iter()
+        .map(|t| (t.id, t.parents.as_slice()))
+        .collect();
     let attr_meta: HashMap<&str, &utopia_core::models::RelationType> = rtypes
         .iter()
         .filter(|r| r.kind == "attribute")
@@ -198,14 +200,24 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         })
         .collect();
     // 属性 domain 允许子类：主语类型沿 parent 链上溯命中 domain 即可
-    let type_matches_domain = |mut ty: Uuid, domain: Uuid| -> bool {
-        for _ in 0..10 {
-            if ty == domain {
+    // 沿 subClassOf 上溯。**广度优先 + 访问集**，不是单链循环：
+    // 一个类可以有多个父（FOAF 的 Person 同时是 Agent 与 SpatialThing），
+    // 而菱形继承会从两条路到达同一个祖先，没有访问集就会重复展开。
+    //
+    // 深度上限换成了访问集：写入侧 set_parents 已经查环，这里再靠"最多走十层"
+    // 兜底既挡不住宽的图，也会悄悄放过深的层级。
+    let type_matches_domain = |ty: Uuid, domain: Uuid| -> bool {
+        let mut seen: HashSet<Uuid> = HashSet::new();
+        let mut queue = vec![ty];
+        while let Some(cur) = queue.pop() {
+            if cur == domain {
                 return true;
             }
-            match type_parent.get(&ty).copied().flatten() {
-                Some(p) => ty = p,
-                None => return false,
+            if !seen.insert(cur) {
+                continue;
+            }
+            if let Some(ps) = type_parents.get(&cur) {
+                queue.extend(ps.iter().copied());
             }
         }
         false

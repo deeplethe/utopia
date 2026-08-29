@@ -351,13 +351,21 @@ pub async fn apply(
 
     // 父类第二遍解析：第一遍时父类可能还没建出来
     for c in &proj.classes {
-        let (Some(&child), Some(parent_iri)) = (id_of.get(&c.iri), c.parents.first()) else {
+        let Some(&child) = id_of.get(&c.iri) else {
             continue;
         };
-        // 多继承暂只投影主父（第一个）——`entity_type_parents` 关联表是下一层。
-        // 少投影一个父分支不会静默出错，只是那分支的属性 domain 判定暂时够不到
-        if let Some(&parent) = id_of.get(parent_iri) {
-            let _ = utopia_store::ontology::set_parent(&state.pool, kb_id, child, parent).await;
+        // **全部父类**，不再只取第一个。FOAF 的 Person 同时是 Agent 与
+        // SpatialThing，丢掉后一支就让 domain 在那支上的属性判定不过。
+        // 指向没被建出来的类的那些父自然落选——少一支比整条不挂强
+        let parents: Vec<Uuid> = c
+            .parents
+            .iter()
+            .filter_map(|iri| id_of.get(iri).copied())
+            .collect();
+        if !parents.is_empty() {
+            // 成环时报错而不是中断整次导入：环是上游词汇表的问题，
+            // 而这一次导入的其余部分仍然值得落地
+            let _ = utopia_store::ontology::set_parents(&state.pool, kb_id, child, &parents).await;
         }
     }
 

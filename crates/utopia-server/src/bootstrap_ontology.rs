@@ -84,7 +84,8 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             label,
             "#8ea5bd",
             "circle",
-            None,
+            // 冷启动建的类不挂父：提案里没有层级信息，猜一个父类比不挂更糟
+            &[],
             // 描述进抽取提示词，reason 只是给人看的理由——喂错了这个类就成新的倾倒场
             str_of(p, "description")
                 .or_else(|| str_of(p, "reason"))
