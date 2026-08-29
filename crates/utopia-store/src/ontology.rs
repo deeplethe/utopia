@@ -66,7 +66,11 @@ fn validate_shape(shape: &str) -> AppResult<()> {
 pub async fn relation_type_views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<RelationTypeView>> {
     Ok(sqlx::query_as(
         "SELECT r.id, r.key, r.label, r.temporal, r.functional, r.inverse_functional, r.builtin, r.description,
-                r.kind, r.domain_type_id, r.datatype, r.unit,
+                r.kind, r.datatype, r.unit,
+                ARRAY(SELECT d.entity_type_id FROM relation_type_domains d
+                      WHERE d.relation_type_id = r.id) AS domains,
+                ARRAY(SELECT g.entity_type_id FROM relation_type_ranges g
+                      WHERE g.relation_type_id = r.id) AS ranges,
                 (SELECT count(*) FROM facts f
                  WHERE f.predicate_id = r.id AND f.invalidated_at IS NULL) AS usage
          FROM relation_types r WHERE r.kb_id = $1 ORDER BY lower(r.label)",
@@ -176,6 +180,21 @@ pub async fn delete_entity_type(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResu
             "Cannot delete: {usage} entities use this type"
         )));
     }
+    // 只剩这一个 domain 的属性随类一起走：属性必须挂在类上，
+    // 留一个没有 domain 的属性等于留一个不会出现在任何地方的死行。
+    // 还挂在别的类上的则只掉一条关联（外键 CASCADE 负责）
+    sqlx::query(
+        "DELETE FROM relation_types r
+         WHERE r.kind = 'attribute' AND r.kb_id = $1
+           AND EXISTS (SELECT 1 FROM relation_type_domains d
+                       WHERE d.relation_type_id = r.id AND d.entity_type_id = $2)
+           AND NOT EXISTS (SELECT 1 FROM relation_type_domains d
+                           WHERE d.relation_type_id = r.id AND d.entity_type_id <> $2)",
+    )
+    .bind(kb_id)
+    .bind(id)
+    .execute(pool)
+    .await?;
     let res = sqlx::query("DELETE FROM entity_types WHERE id = $2 AND kb_id = $1 AND NOT builtin")
         .bind(kb_id)
         .bind(id)
@@ -192,13 +211,13 @@ pub async fn delete_entity_type(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResu
 /// 属性字段校验：attribute 必须有所属类和合法 datatype；relation 三者强制为空。
 fn validate_attribute_fields(
     kind: &str,
-    domain_type_id: Option<Uuid>,
+    domains: &[Uuid],
     datatype: Option<&str>,
 ) -> AppResult<()> {
     match kind {
         "relation" => Ok(()),
         "attribute" => {
-            if domain_type_id.is_none() {
+            if domains.is_empty() {
                 return Err(AppError::invalid(
                     "attr_needs_class",
                     "An attribute needs a class (domain)",
@@ -228,7 +247,8 @@ pub async fn create_relation_type(
     inverse_functional: bool,
     description: &str,
     kind: &str,
-    domain_type_id: Option<Uuid>,
+    domains: &[Uuid],
+    ranges: &[Uuid],
     datatype: Option<&str>,
     unit: Option<&str>,
 ) -> AppResult<Uuid> {
@@ -238,13 +258,13 @@ pub async fn create_relation_type(
             "temporal must be state / event / eternal".into(),
         ));
     }
-    validate_attribute_fields(kind, domain_type_id, datatype)?;
+    validate_attribute_fields(kind, domains, datatype)?;
     let is_attr = kind == "attribute";
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO relation_types (id, kb_id, key, label, temporal, functional, inverse_functional, description,
-                                     kind, domain_type_id, datatype, unit)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                                     kind, datatype, unit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(id)
     .bind(kb_id)
@@ -255,7 +275,6 @@ pub async fn create_relation_type(
     .bind(inverse_functional)
     .bind(description)
     .bind(kind)
-    .bind(is_attr.then_some(domain_type_id).flatten())
     .bind(is_attr.then_some(datatype).flatten())
     .bind(is_attr.then_some(unit).flatten())
     .execute(pool)
@@ -266,7 +285,42 @@ pub async fn create_relation_type(
         }
         _ => AppError::Db(e),
     })?;
+    // attribute 不写 range：它的值域是字面量类型，落在 datatype 上
+    set_domains_ranges(pool, id, domains, if is_attr { &[] } else { ranges }).await?;
     Ok(id)
+}
+
+/// 覆盖式写入 domain / range。**先删后插**，所以它既能用于新建也能用于重导入，
+/// 且不会留下上一轮的残余。
+async fn set_domains_ranges(
+    pool: &PgPool,
+    relation_type_id: Uuid,
+    domains: &[Uuid],
+    ranges: &[Uuid],
+) -> AppResult<()> {
+    for (table, ids) in [
+        ("relation_type_domains", domains),
+        ("relation_type_ranges", ranges),
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE relation_type_id = $1"))
+            .bind(relation_type_id)
+            .execute(pool)
+            .await?;
+        if ids.is_empty() {
+            continue;
+        }
+        // unnest 一次插完，省去逐条往返
+        sqlx::query(&format!(
+            "INSERT INTO {table} (relation_type_id, entity_type_id)
+             SELECT $1, x FROM unnest($2::uuid[]) AS x
+             ON CONFLICT DO NOTHING"
+        ))
+        .bind(relation_type_id)
+        .bind(ids)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -486,7 +540,7 @@ pub async fn create_attribute_with_iri(
     label: &str,
     description: &str,
     iri: &str,
-    domain_type_id: Uuid,
+    domains: &[Uuid],
     datatype: &str,
 ) -> AppResult<Option<Uuid>> {
     validate_key(key)?;
@@ -494,8 +548,8 @@ pub async fn create_attribute_with_iri(
     let row: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO relation_types
              (id, kb_id, key, label, temporal, functional, inverse_functional,
-              description, kind, domain_type_id, datatype, iri)
-         VALUES ($1, $2, $3, $4, 'state', FALSE, FALSE, $5, 'attribute', $6, $7, $8)
+              description, kind, datatype, iri)
+         VALUES ($1, $2, $3, $4, 'state', FALSE, FALSE, $5, 'attribute', $6, $7)
          ON CONFLICT (kb_id, key) DO NOTHING
          RETURNING id",
     )
@@ -504,12 +558,15 @@ pub async fn create_attribute_with_iri(
     .bind(key)
     .bind(label)
     .bind(description)
-    .bind(domain_type_id)
     .bind(datatype)
     .bind(iri)
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|(id,)| id))
+    let Some((new_id,)) = row else {
+        return Ok(None);
+    };
+    set_domains_ranges(pool, new_id, domains, &[]).await?;
+    Ok(Some(new_id))
 }
 
 pub async fn set_parent(pool: &PgPool, kb_id: Uuid, child: Uuid, parent: Uuid) -> AppResult<()> {

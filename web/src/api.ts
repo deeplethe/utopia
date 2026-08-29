@@ -406,7 +406,10 @@ export interface RelationTypeView {
   description: string;
   /** relation（宾语是实体）| attribute（宾语是字面值） */
   kind: "relation" | "attribute";
-  domain_type_id: string | null;
+  /** 可以当主语的类。attribute 至少一个；relation 留空 = 不限 */
+  domains: string[];
+  /** 可以当宾语的类。只对 relation 有意义——attribute 的值域是 datatype */
+  ranges: string[];
   datatype: "text" | "number" | "date" | "bool" | null;
   unit: string | null;
   usage: number;

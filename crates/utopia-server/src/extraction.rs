@@ -146,11 +146,14 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         .filter(|r| r.kind == "attribute")
         .map(|r| (r.key.as_str(), r))
         .collect();
+    // 一个属性挂在多个类下时，**每个类各排一行**：模型读到的是
+    // "store.opens_at" 而不是一个要它自己去分配的类清单
     let attr_lines: Vec<String> = rtypes
         .iter()
         .filter(|r| r.kind == "attribute")
-        .filter_map(|r| {
-            let class_key = type_key_by_id.get(&r.domain_type_id?)?;
+        .flat_map(|r| r.domains.iter().map(move |d| (r, d)))
+        .filter_map(|(r, domain_id)| {
+            let class_key = type_key_by_id.get(domain_id)?;
             let dt = r.datatype.as_deref().unwrap_or("text");
             let spec = match &r.unit {
                 Some(u) if !u.is_empty() => format!("{dt}, {u}"),
@@ -336,14 +339,24 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     .await;
                     continue;
                 };
-                // 不可达：store 层强制 attribute 必有 domain，且 kind/domain 不可改，
+                // 不可达：store 层强制 attribute 必有 domain，且 domain 不可改，
                 // 无 domain 的属性连提示词都进不去。留着是防御，不需要信号
-                let Some(domain) = attr.domain_type_id else {
+                if attr.domains.is_empty() {
                     continue;
-                };
-                if !type_matches_domain(subject_type, domain) {
+                }
+                // **任一 domain 命中即可**：属性挂在多个类下时，主语属于其中之一就算数
+                if !attr
+                    .domains
+                    .iter()
+                    .any(|d| type_matches_domain(subject_type, *d))
+                {
                     let subj_key = type_key_by_id.get(&subject_type).copied().unwrap_or("?");
-                    let dom_key = type_key_by_id.get(&domain).copied().unwrap_or("?");
+                    let dom_key = attr
+                        .domains
+                        .iter()
+                        .filter_map(|d| type_key_by_id.get(d).copied())
+                        .collect::<Vec<_>>()
+                        .join("|");
                     drop_signal(
                         state,
                         doc.kb_id,

@@ -315,8 +315,11 @@ pub struct RelationTypeView {
     pub description: String,
     /// relation（宾语是实体）| attribute（宾语是字面值）
     pub kind: String,
-    /// attribute 专用：挂在哪个类下
-    pub domain_type_id: Option<Uuid>,
+    /// 可以当主语的类。attribute 至少一个；relation 可空（未声明 = 不限）
+    pub domains: Vec<Uuid>,
+    /// 可以当宾语的类。**只对 relation 有意义**——attribute 的值域是字面量类型，
+    /// 落在 datatype 上
+    pub ranges: Vec<Uuid>,
     /// attribute 专用：text | number | date | bool
     pub datatype: Option<String>,
     pub unit: Option<String>,
@@ -413,8 +416,10 @@ pub struct RelationType {
     pub iri: Option<String>,
     /// relation（宾语是实体）| attribute（宾语是字面值，走 facts.object_value）
     pub kind: String,
-    /// attribute 专用：属性挂在哪个类下
-    pub domain_type_id: Option<Uuid>,
+    /// 可以当主语的类（多值：OWL 里一个属性有多个 rdfs:domain 是常态）
+    pub domains: Vec<Uuid>,
+    /// 可以当宾语的类。只对 relation 有意义
+    pub ranges: Vec<Uuid>,
     /// attribute 专用：text | number | date | bool
     pub datatype: Option<String>,
     pub unit: Option<String>,

@@ -45,8 +45,7 @@ pub enum AttrNote {
     UnusableRange(String),
     /// 不建：没写 domain。属性必须挂在一个类上，这是 store 层的硬约束
     NoDomain,
-    /// 不建：多个 domain，等 domain 关联表（0001 P2c）
-    MultipleDomains(usize),
+
     /// 不建：domain 指向的类**在这个文件里，但被跳过了**（多半是 key 撞车）。
     /// 与 UnknownDomain 分开报，因为处置不同：这个能通过给现有的类改名解开
     DomainSkipped(String),
@@ -96,18 +95,19 @@ fn attr_note(
     resolvable: &HashSet<&str>,
     in_file: &HashSet<&str>,
 ) -> AttrNote {
-    match p.domains.as_slice() {
-        [] => return AttrNote::NoDomain,
-        [one] => {
-            if !resolvable.contains(one.as_str()) {
-                return if in_file.contains(one.as_str()) {
-                    AttrNote::DomainSkipped(one.clone())
-                } else {
-                    AttrNote::UnknownDomain(one.clone())
-                };
-            }
-        }
-        many => return AttrNote::MultipleDomains(many.len()),
+    if p.domains.is_empty() {
+        return AttrNote::NoDomain;
+    }
+    // **一个都解析不出来才算失败**：多个 domain 里有一部分被跳过时，
+    // 属性仍然建，只是少挂几个类——比整条丢掉强，而被跳过的那些类
+    // 在计划里各自报告过 key 撞车
+    if !p.domains.iter().any(|d| resolvable.contains(d.as_str())) {
+        let first = &p.domains[0];
+        return if in_file.contains(first.as_str()) {
+            AttrNote::DomainSkipped(first.clone())
+        } else {
+            AttrNote::UnknownDomain(first.clone())
+        };
     }
     match ontology_rdf::map_range(&p.ranges) {
         ontology_rdf::RangeMapping::Datatype(dt) => AttrNote::Datatype(dt),
@@ -145,7 +145,6 @@ impl ImportPlan {
                 | Some(AttrNote::DegradedToText(_)) => continue,
                 Some(AttrNote::UnusableRange(_)) => "unusable_range",
                 Some(AttrNote::NoDomain) => "no_domain",
-                Some(AttrNote::MultipleDomains(_)) => "multiple_domains",
                 Some(AttrNote::DomainSkipped(_)) => "domain_skipped",
                 Some(AttrNote::UnknownDomain(_)) => "unknown_domain",
                 None => continue,
@@ -378,14 +377,19 @@ pub async fn apply(
         let (Some(note), Some(p)) = (item.attr.as_ref(), by_prop_iri.get(item.iri.as_str())) else {
             continue;
         };
-        let (Some(dt), Some(domain_iri)) = (attr_datatype(note), p.domains.first()) else {
+        let Some(dt) = attr_datatype(note) else {
             continue;
         };
-        let Some(&domain_id) = id_of.get(domain_iri) else {
-            // 计划阶段判为可解析，落库时却没有 id：类被跳过或更新失败。
-            // 计划已经报告过它，这里安静略过而不是造一个挂空的属性
+        // 计划阶段判为可解析、落库时却没有 id 的（类被跳过或更新失败）自然落选；
+        // 全落选就不建，而不是造一个挂空的属性
+        let domain_ids: Vec<Uuid> = p
+            .domains
+            .iter()
+            .filter_map(|iri| id_of.get(iri).copied())
+            .collect();
+        if domain_ids.is_empty() {
             continue;
-        };
+        }
         if utopia_store::ontology::create_attribute_with_iri(
             &state.pool,
             kb_id,
@@ -393,7 +397,7 @@ pub async fn apply(
             &p.label,
             &p.description,
             &p.iri,
-            domain_id,
+            &domain_ids,
             dt,
         )
         .await?

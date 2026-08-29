@@ -396,12 +396,19 @@ pub async fn entity_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<EntityTyp
 }
 
 pub async fn relation_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<RelationType>> {
-    Ok(
-        sqlx::query_as("SELECT * FROM relation_types WHERE kb_id = $1 ORDER BY created_at")
-            .bind(kb_id)
-            .fetch_all(pool)
-            .await?,
+    // 不用 SELECT *：domain/range 在关联表里，`*` 取不到，
+    // 而且 sqlx 要到运行时才会说 "no column found" —— 编译器看不见 SQL 字符串
+    Ok(sqlx::query_as(
+        "SELECT r.*,
+                ARRAY(SELECT d.entity_type_id FROM relation_type_domains d
+                      WHERE d.relation_type_id = r.id) AS domains,
+                ARRAY(SELECT g.entity_type_id FROM relation_type_ranges g
+                      WHERE g.relation_type_id = r.id) AS ranges
+         FROM relation_types r WHERE r.kb_id = $1 ORDER BY r.created_at",
     )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?)
 }
 
 /// 写入事实。返回 (事实 id, 是否新建)。

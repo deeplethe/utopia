@@ -191,9 +191,12 @@ pub struct RelationTypeReq {
     /// relation | attribute（创建时定死，更新时忽略）
     #[serde(default)]
     pub kind: Option<String>,
-    /// attribute 专用：所属类
+    /// 可以当主语的类。attribute 至少一个；relation 留空 = 不限
     #[serde(default)]
-    pub domain_type_id: Option<Uuid>,
+    pub domains: Vec<Uuid>,
+    /// 可以当宾语的类。只对 relation 有意义
+    #[serde(default)]
+    pub ranges: Vec<Uuid>,
     /// attribute 专用：text | number | date | bool
     #[serde(default)]
     pub datatype: Option<String>,
@@ -229,7 +232,8 @@ pub async fn create_relation_type(
         req.inverse_functional,
         req.description.as_deref().unwrap_or("").trim(),
         kind,
-        req.domain_type_id,
+        &req.domains,
+        &req.ranges,
         req.datatype.as_deref(),
         req.unit.as_deref().map(str::trim).filter(|s| !s.is_empty()),
     )
@@ -494,7 +498,9 @@ pub async fn adopt_predicate(
         req.inverse_functional,
         req.description.as_deref().unwrap_or("").trim(),
         "relation",
-        None,
+        // 提案与冷启动只建关系，不声明 domain/range —— 留空 = 不限主宾类型
+        &[],
+        &[],
         None,
         None,
     )

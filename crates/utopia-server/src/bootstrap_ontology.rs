@@ -161,7 +161,9 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
                 .or_else(|| str_of(p, "reason"))
                 .unwrap_or(""),
             "relation",
-            None,
+            // 提案与冷启动只建关系，不声明 domain/range —— 留空 = 不限主宾类型
+            &[],
+            &[],
             None,
             None,
         )

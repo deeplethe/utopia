@@ -307,7 +307,7 @@ export function Ontology() {
                     attributes={relation_types.filter(
                       (r) =>
                         r.kind === "attribute" &&
-                        r.domain_type_id === selectedClass.id,
+                        r.domains.includes(selectedClass.id),
                     )}
                     onChanged={refresh}
                     onError={onError}
@@ -537,7 +537,7 @@ function AttributeForm({
             key,
             label,
             kind: "attribute",
-            domain_type_id: typeId,
+            domains: [typeId],
             temporal: "state",
             functional: single,
             inverse_functional: false,
