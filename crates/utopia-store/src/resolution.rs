@@ -1180,12 +1180,48 @@ pub async fn merge_entities(
         .execute(&mut *tx)
         .await?;
 
-    // 其余涉及 source 的 pending 审核项关闭（合并后过时；疑点若仍在会由后续 mention 重新提起）。
+    // 其余涉及 source 的 pending 审核项：**改指到合并目标，不是关掉**。
+    //
+    // 这里原本一律关掉，理由写的是"疑点若仍在会由后续 mention 重新提起"。
+    // **那句是错的**：包含关系召回只在**新建实体时**跑一次，而这些实体早就存在了，
+    // 不会再被新建，也就没有"后续 mention"来重提。关掉就是永远关掉。
+    //
+    // 实测：`Mr. Holmes` 跟 `Holmes` 配对入队（0.70），随后 `Holmes` 并入
+    // `Sherlock Holmes`，这一对被关成 superseded by merge——而
+    // `Mr. Holmes` vs `Sherlock Holmes` 这个仍然成立的问题，再没人问过。
+    //
+    // 先关掉两类真正过时的：重定向后会变成自环的，和目标对已经在队列里的。
+    sqlx::query(
+        "UPDATE resolution_reviews AS r
+         SET status = 'kept', reason = 'superseded by merge', decided_at = now()
+         WHERE r.kb_id = $1 AND r.status = 'pending'
+           AND (r.left_id = $2 OR r.right_id = $2)
+           AND NOT (least(r.left_id, r.right_id) = least($2, $3)
+                    AND greatest(r.left_id, r.right_id) = greatest($2, $3))
+           AND (
+             (CASE WHEN r.left_id = $2 THEN r.right_id ELSE r.left_id END) = $3
+             OR EXISTS (
+               SELECT 1 FROM resolution_reviews d
+               WHERE d.kb_id = $1 AND d.status = 'pending' AND d.id <> r.id
+                 AND least(d.left_id, d.right_id)
+                     = least($3, CASE WHEN r.left_id = $2 THEN r.right_id ELSE r.left_id END)
+                 AND greatest(d.left_id, d.right_id)
+                     = greatest($3, CASE WHEN r.left_id = $2 THEN r.right_id ELSE r.left_id END))
+           )",
+    )
+    .bind(kb_id)
+    .bind(source_id)
+    .bind(target_id)
+    .execute(&mut *tx)
+    .await?;
+    // 剩下的改指到目标，问题继续挂在队列上等裁决。
     // (source, target) 这一对本身除外——它正是本次合并的裁决对象，由调用方标记 merged，
-    // 在这里扫掉会让它在历史里错误地显示为"保持分开"
+    // 在这里动它会让它在历史里错误地显示为"保持分开"
     sqlx::query(
         "UPDATE resolution_reviews
-         SET status = 'kept', reason = 'superseded by merge', decided_at = now()
+         SET left_id = CASE WHEN left_id = $2 THEN $3 ELSE left_id END,
+             right_id = CASE WHEN right_id = $2 THEN $3 ELSE right_id END,
+             reason = reason || '|redirected'
          WHERE kb_id = $1 AND status = 'pending' AND (left_id = $2 OR right_id = $2)
            AND NOT (least(left_id, right_id) = least($2, $3)
                     AND greatest(left_id, right_id) = greatest($2, $3))",
