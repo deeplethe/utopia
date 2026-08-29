@@ -14,6 +14,7 @@ mod mappings;
 mod ontology_index;
 mod owl_import;
 mod pipeline;
+mod predicate_match;
 mod query_engine;
 mod retrieval;
 mod state;

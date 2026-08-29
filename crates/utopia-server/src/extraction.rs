@@ -3,6 +3,7 @@
 //! 消解灰区只入审核队列并触发独立的攒批裁决任务——LLM 裁决永不阻塞本任务。
 
 use crate::llm_util;
+use crate::predicate_match::PredicateIndex;
 use crate::state::AppState;
 use std::collections::{HashMap, HashSet};
 use utopia_store::graph::FALLBACK_RELATION_KEY;
@@ -123,6 +124,13 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         .collect();
     let type_ids: HashMap<&str, Uuid> = etypes.iter().map(|t| (t.key.as_str(), t.id)).collect();
     let rel_ids: HashMap<&str, Uuid> = rtypes.iter().map(|r| (r.key.as_str(), r.id)).collect();
+    // 模型说出的谓词往本体已有关系上落：写法、时态、被动都对齐（见 predicate_match）。
+    // 没有它的时候，`produces` 明明在词表里，模型写 `produced_by` 就被降级扔了
+    let pred_index = PredicateIndex::build(&rtypes);
+    // 「本体认不认识这个说法」——字面值那一档与关系那一档必须用同一个判据。
+    // 分开写的话，模糊匹配得上的谓词会先被字面值那一档当成属性分流走，
+    // 同一个词在两条路上得到相反的回答
+    let known_predicate = |p: &str| rel_ids.contains_key(p) || pred_index.lookup(p).is_some();
     // 时态对账只对带唯一性约束的状态关系生效（本体元数据）：(functional, inverse_functional, temporal)
     let rel_meta: HashMap<Uuid, (bool, bool, String)> = rtypes
         .iter()
@@ -500,12 +508,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             // 文本值的属性（schema.org 里 323 个）在这一档仍会变成实体——
             // 那里没有可靠判据，猜错会吃掉真实体，不猜
             let literal = match (&f.value, f.object.as_deref().map(str::trim)) {
-                (Some(v), None | Some("")) if !rel_ids.contains_key(f.predicate.as_str()) => {
+                (Some(v), None | Some("")) if !known_predicate(f.predicate.as_str()) => {
                     Some(v.clone())
                 }
                 (_, Some(o))
                     if !o.is_empty()
-                        && !rel_ids.contains_key(f.predicate.as_str())
+                        && !known_predicate(f.predicate.as_str())
                         && !entity_ids.contains_key(o)
                         && looks_literal(o) =>
                 {
@@ -622,11 +630,11 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             if subject_id == object_id {
                 continue;
             }
-            // 未知关系降级为 related_to，并记入未匹配统计。
-            // 降级会把原意抹平成"有关联"——原词写进证据行的 proposed_predicate，
-            // 是这条事实身上唯一还留着原意的地方（谓词消解据此把它映射回本体）
-            let predicate_id = match rel_ids.get(f.predicate.as_str()) {
-                Some(id) => *id,
+            // 先尽量落到本体已有的关系上（写法/时态/被动），**落不上才降级**为 related_to
+            // 并记入未匹配统计。降级会把原意抹平成"有关联"——原词写进证据行的
+            // proposed_predicate，是这条事实身上唯一还留着原意的地方（谓词消解据此映射回本体）
+            let (predicate_id, swap) = match pred_index.lookup(f.predicate.as_str()) {
+                Some(hit) => hit,
                 None => {
                     let _ = utopia_store::ontology::record_miss(
                         &state.pool,
@@ -637,7 +645,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     )
                     .await;
                     match related_rel {
-                        Some(id) => id,
+                        Some(id) => (id, false),
                         // 本体里连兜底关系都被删了 → 整条事实消失，这个必须说出来
                         None => {
                             drop_signal(
@@ -653,6 +661,14 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                         }
                     }
                 }
+            };
+            // 被动说法命中的是同一条边的反向：`ChatGPT produced_by OpenAI` 与
+            // `OpenAI produces ChatGPT` 是同一条边，存的时候要按本体的方向来，
+            // 否则它跟已有的那 130 条 produces 各存各的，图上是两条相反的箭头
+            let (subject_id, object_id) = if swap {
+                (object_id, subject_id)
+            } else {
+                (subject_id, object_id)
             };
 
             {
