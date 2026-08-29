@@ -778,6 +778,9 @@ export const en = {
     suggesting: "Analyzing…",
     noMisses: "No unmatched types — the ontology covers your corpus.",
     approve: "Add",
+    /* 映射那一档的按钮。刻意不叫 Add——它不加东西，本体里已经有了。
+       两个按钮都写 Add 的话，"已经有了"这件事在界面上就消失了 */
+    mapOver: "Use existing",
     /* 影响面：采纳一个提案会把多少条 related_to 事实改写过去。
        没有这一句，"Add" 只是凭空多一个空关系 */
     willRemap: (n: number) =>

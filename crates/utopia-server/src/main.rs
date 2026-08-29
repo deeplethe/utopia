@@ -10,6 +10,7 @@ mod extraction;
 mod ingest_sources;
 mod llm_util;
 mod mappings;
+mod ontology_index;
 mod owl_import;
 mod pipeline;
 mod query_engine;

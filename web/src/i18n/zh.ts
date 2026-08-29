@@ -712,6 +712,7 @@ export const zh: Strings = {
     suggesting: "分析中…",
     noMisses: "没有未匹配的类型——本体覆盖了你的语料。",
     approve: "加入",
+    mapOver: "用已有的",
     willRemap: (n: number) => `将重新归类 ${n} 条事实`,
     adopted: (n: number) => `已加入——${n} 条事实已重新归类`,
     undoAdopt: (key: string, n: number) =>

@@ -1403,6 +1403,33 @@ function MissesPanel({
 
   // 逐条串行而不是加个批量端点：每个谓词各有自己的批次和撤销粒度，
   // 而且部分失败能如实报告（"5 个成功，1 个 key 已存在"）而不是整批回滚
+  // 映射到已有类型：不建东西，只把这些说法的事实挂过去。
+  // 跟新建走同一个采纳入口，因为它对图做的事一模一样——也因此同样可撤销
+  const approveMapping = useMutation({
+    mutationFn: (p: { key: string; forms?: string[] }) =>
+      api.adoptPredicate(kbId, {
+        key: p.key,
+        existing: true,
+        forms: p.forms ?? [],
+      }),
+    onSuccess: (data, p) => {
+      const moved = data.remapped ?? 0;
+      toast.success(moved > 0 ? S.ontology.adopted(moved) : S.toast.saved);
+      if (moved > 0 && data.batch)
+        setLastAdopt({ batches: [data.batch], key: p.key, moved });
+      setProposals(
+        (prev) =>
+          prev && {
+            ...prev,
+            map_to: (prev.map_to ?? []).filter((x) => x.key !== p.key),
+          },
+      );
+      for (const form of p.forms ?? [])
+        api.dismissMiss(kbId, "relation_type", form).catch(() => {});
+      onChanged();
+    },
+    onError,
+  });
   const addAll = useMutation({
     mutationFn: async (all: OntologyProposals) => {
       const batches: string[] = [];
@@ -1437,6 +1464,20 @@ function MissesPanel({
               description: p.description,
             });
           }
+        } catch {
+          failed.push(p.key);
+        }
+      }
+      for (const p of all.map_to ?? []) {
+        if (!p.forms?.length) continue;
+        try {
+          const r = await api.adoptPredicate(kbId, {
+            key: p.key,
+            existing: true,
+            forms: p.forms,
+          });
+          moved += r.remapped;
+          if (r.remapped > 0) batches.push(r.batch);
         } catch {
           failed.push(p.key);
         }
@@ -1600,7 +1641,9 @@ function MissesPanel({
               {S.ontology.proposals}
             </h4>
             {/* 常见情形是"这些都对"——一条条点是把一个决定拆成八个 */}
-            {proposals.relation_types.length + proposals.entity_types.length >
+            {proposals.relation_types.length +
+              proposals.entity_types.length +
+              (proposals.map_to?.length ?? 0) >
               1 && (
               <Button
                 size="sm"
@@ -1613,12 +1656,47 @@ function MissesPanel({
                   ? S.ontology.addingAll
                   : S.ontology.addAll(
                       proposals.relation_types.length +
-                        proposals.entity_types.length,
+                        proposals.entity_types.length +
+                        (proposals.map_to?.length ?? 0),
                     )}
               </Button>
             )}
           </div>
           <div className="space-y-1.5">
+            {/* 排在最前：它说的是"本体已经有了"，而这正是最该先看见的一句。
+                排在新建后面的话，人一路点下来就把重复建出来了 */}
+            {(proposals.map_to ?? []).map((p) => (
+              <div key={`map-${p.key}`} className="flex items-center gap-2 text-sm">
+                <Chip tone="success">=</Chip>
+                <span className="font-mono text-neutral-300">{p.key}</span>
+                {!!p.forms?.length && (
+                  <span
+                    className="text-xs text-neutral-400 truncate"
+                    title={p.forms.join(" · ")}
+                  >
+                    {p.forms.join(" · ")}
+                  </span>
+                )}
+                {!!p.forms?.length && (
+                  <span className="text-xs text-[var(--u-accent)]">
+                    {S.ontology.willRemap(factsWaiting(p.forms))}
+                  </span>
+                )}
+                {p.reason && (
+                  <span className="text-xs text-neutral-500 truncate">
+                    {p.reason}
+                  </span>
+                )}
+                <Button
+                  size="sm"
+                  className="ml-auto"
+                  onClick={() => approveMapping.mutate(p)}
+                  disabled={approveMapping.isPending}
+                >
+                  {S.ontology.mapOver}
+                </Button>
+              </div>
+            ))}
             {proposals.entity_types.map((p) => (
               <div key={p.key} className="flex items-center gap-2 text-sm">
                 <Chip tone="info">C</Chip>
@@ -1671,7 +1749,8 @@ function MissesPanel({
               </div>
             ))}
             {proposals.entity_types.length === 0 &&
-              proposals.relation_types.length === 0 && (
+              proposals.relation_types.length === 0 &&
+              !proposals.map_to?.length && (
                 <p className="text-sm text-neutral-500">—</p>
               )}
           </div>

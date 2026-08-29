@@ -355,6 +355,12 @@ pub async fn suggest(
 
 /// 生成本体扩展提案。人工点 Suggest 与冷启动自动扩本体走同一条路——
 /// 自动那条不该是另一套判断，只是少了点头那一步。
+/// 每个说法检索几个候选。
+///
+/// 小是刻意的：候选是给模型判断"是不是已经有了"用的，不是让它挑一个最像的凑合。
+/// 开大了只会让它在一堆勉强相关的条目里硬选一个映射过去。
+const CANDIDATES_PER_PROBE: i64 = 5;
+
 pub async fn build_proposals(
     state: &AppState,
     kb_id: Uuid,
@@ -367,8 +373,6 @@ pub async fn build_proposals(
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| AppError::invalid("no_chat_model", "Chat model not configured"))?;
 
-    let entity_types = utopia_store::ontology::entity_type_views(&state.pool, kb_id).await?;
-    let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
     // 只取这一遍**产得出提案**的那两类。attribute_type 的信号（未知谓词带字面值）
     // 也在这张表里，但下面的 JSON 骨架只有 entity_types / relation_types——
     // 把属性信号喂进去，模型只会照着建一个关系，而那正是它不该是的东西。
@@ -384,8 +388,95 @@ pub async fn build_proposals(
         return Ok(json!({ "entity_types": [], "relation_types": [] }));
     }
 
-    let current_et: Vec<String> = entity_types.iter().map(|t| t.key.clone()).collect();
-    let current_rt: Vec<String> = relation_types.iter().map(|r| r.key.clone()).collect();
+    // **本体的相关切片，不是它的全文。**
+    //
+    // 从前这里内联两串全量 key。两个毛病：一份 965 类的本体就是 1949 个 key
+    // 的提示词；而且只有 key 没有描述，模型据此判断不了"这个说法是不是某个
+    // 已有类型的同义"，于是它只会新建，本体里就稳定长出重复。
+    //
+    // 现在按每个说法各检索几个最近的候选，带着描述给它看。提示词大小从此
+    // 与本体规模无关，而"已经有一个了"这件事第一次变得可判断。
+    let _ = crate::ontology_index::refresh(state, kb_id).await;
+    // 谓词那一路：表层说法 + 关系类的 miss。样例给向量更多着落——
+    // 光一个 acquires 太短，带上"星云科技 → 深蓝存储"就有了语境
+    let pred_probes: Vec<String> = forms
+        .iter()
+        .map(|f| match f.example.as_deref() {
+            Some(ex) if !ex.is_empty() => format!("{} — {ex}", f.form),
+            _ => f.form.clone(),
+        })
+        .chain(
+            misses
+                .iter()
+                .filter(|m| m.kind == "relation_type")
+                .map(|m| m.key.clone()),
+        )
+        .collect();
+    // 类那一路。**必须分开检索**：两张表的描述写的是完全不同的东西，
+    // 拿一个词表外的类名去关系里找，回来的一定是勉强相关的关系
+    let class_probes: Vec<String> = misses
+        .iter()
+        .filter(|m| m.kind == "entity_type")
+        .map(|m| m.key.clone())
+        .collect();
+    let per_pred = crate::ontology_index::nearest_for_each(
+        state,
+        kb_id,
+        &pred_probes,
+        CANDIDATES_PER_PROBE,
+        crate::ontology_index::Target::Predicate(None),
+    )
+    .await
+    .unwrap_or_default();
+    let per_class = crate::ontology_index::nearest_for_each(
+        state,
+        kb_id,
+        &class_probes,
+        CANDIDATES_PER_PROBE,
+        crate::ontology_index::Target::Class,
+    )
+    .await
+    .unwrap_or_default();
+    // 并集去重：几个说法常常指向同一个候选，逐个说法各列一遍是白费令牌
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut candidate_lines: Vec<String> = Vec::new();
+    // 模型抄回来的 key 要能对回本体：候选表同时按 key、归一化 key、标签建索引
+    let mut by_name: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for c in per_pred.iter().chain(per_class.iter()).flatten() {
+        if !seen.insert(c.key.clone()) {
+            continue;
+        }
+        by_name.insert(normalize_name(&c.key), c.key.clone());
+        by_name.insert(normalize_name(&c.label), c.key.clone());
+        // 关系行自带 relation / attribute，类行没有 kind
+        let kind = c.kind.as_deref().unwrap_or("entity type");
+        let d = c.description.trim();
+        // **标签只在它确实多说了点什么的时候才写。**
+        // 导进来的本体里 label 常常只是 key 的驼峰写法（acquired_from /
+        // acquiredFrom），两个几乎一样的名字并排摆着，模型抄走的就是错的那个。
+        // 中文标签配英文 key 那种才是标签有信息量的情形，那时才留
+        let name = if normalize_name(&c.label) == normalize_name(&c.key) {
+            String::new()
+        } else {
+            format!(" ({})", c.label)
+        };
+        candidate_lines.push(if d.is_empty() {
+            format!("- {} [{kind}]{name}", c.key)
+        } else {
+            format!("- {} [{kind}]{name}: {d}", c.key)
+        });
+    }
+    // 一个候选都没有（没配嵌入模型，或本体是空的）时如实说，别让模型
+    // 以为"本体里什么都没有"从而放开手建
+    let candidates_block = if candidate_lines.is_empty() {
+        "(no candidates retrieved — the ontology may be empty, or embeddings are unavailable)"
+            .to_string()
+    } else {
+        candidate_lines.join(
+            "
+",
+        )
+    };
     let miss_lines: Vec<String> = misses
         .iter()
         .map(|m| {
@@ -414,16 +505,27 @@ pub async fn build_proposals(
         .collect();
 
     let prompt = format!(
-        "You are an ontology engineer. A knowledge graph has this ontology:\n\
-         Entity type keys: {}\n\
-         Relation type keys: {}\n\
+        "You are an ontology engineer.\n\
+         \n\
+         Below are the ontology entries closest in meaning to the unmatched wordings that \
+         follow. This is a retrieved slice, not the whole ontology, so \"not in this list\" \
+         does not mean \"not in the ontology\" — it means nothing close to it was found:\n{}\n\
          \n\
          During extraction, the LLM repeatedly produced types/relations OUTSIDE this ontology:\n{}\n\
          \n\
          These predicates were taken from the source text because nothing in the ontology fit. \
          Their facts are currently filed under \"related_to\", which says nothing:\n{}\n\
          \n\
-         Propose ontology extensions. Rules:\n\
+         For each wording, decide one of two things.\n\
+         \n\
+         **If one of the candidates above already means it, map to it** — name that \
+         candidate's key in \"map_to\". Do this whenever the meaning matches even though the \
+         spelling differs (\"founding date\" is founding_date; \"headquartered in\" is \
+         location). Adding a second entry for a meaning the ontology already carries is the \
+         worst outcome available here: it splits the same facts across two keys permanently, \
+         and nothing downstream can tell they were the same.\n\
+         \n\
+         **Otherwise propose a new entry.** Rules:\n\
          - Merge near-duplicates into ONE relation and list every spelling it covers in \
            \"forms\" (e.g. available_on / available_from / \"available through\" are one relation).\n\
          - Skip generic verbs that carry no domain meaning (is, has, includes, provides, brings).\n\
@@ -441,15 +543,15 @@ pub async fn build_proposals(
          \n\
          Output exactly one JSON object:\n\
          {{\"entity_types\":[{{\"key\":\"snake_case\",\"label\":\"Display Name\",\"description\":\"what belongs here, and what does not\",\"reason\":\"why add it\"}}],\n\
-          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"description\":\"what this relation asserts, and what it does not\",\"reason\":\"why add it\"}}]}}\n\
+          \"relation_types\":[{{\"key\":\"snake_case\",\"label\":\"display label\",\"temporal\":\"state|event|eternal\",\"functional\":false,\"forms\":[\"surface spellings this covers\"],\"description\":\"what this relation asserts, and what it does not\",\"reason\":\"why add it\"}}],\n\
+          \"map_to\":[{{\"key\":\"an existing key, copied from the candidate list above\",\"forms\":[\"surface spellings that mean it\"],\"reason\":\"why these are the same thing\"}}]}}\n\
          \n\
          Language, and it overrides the skeleton above — that skeleton is written in English \
          only because these instructions are. Write every \"label\" and \"description\" in {}: \
          they become this knowledge base's own ontology, and the description is read by the \
          extraction model while it reads documents in that language. Write every \"reason\" \
          in {}: a person reads it. \"key\" and \"forms\" stay lowercase ASCII either way.",
-        current_et.join(", "),
-        current_rt.join(", "),
+        candidates_block,
         miss_lines.join("\n"),
         form_lines.join("\n"),
         lang_name(&kb.ontology_lang),
@@ -464,14 +566,67 @@ pub async fn build_proposals(
         .await
         .map_err(AppError::Other)?;
     let block = utopia_extract::json_block(&reply).map_err(AppError::Other)?;
-    let proposals: serde_json::Value =
+    let mut proposals: serde_json::Value =
         serde_json::from_str(&block).map_err(|e| AppError::Other(e.into()))?;
+    resolve_map_targets(&mut proposals, &by_name);
     Ok(proposals)
+}
+
+/// 把 `map_to` 里的 key 对回本体真正的 key，对不上的整条丢掉。
+///
+/// 模型抄错很常见，而且抄的往往是候选行里挨着的那个标签——`acquiredFrom`
+/// 而不是 `acquired_from`。**这一步必须在服务端做**：界面上那个"用已有的"
+/// 按钮承诺的是把一批事实挂到某个已有谓词上，key 对不上时它只会报错，
+/// 而承诺已经说出去了。对不上就不该显示这条。
+fn resolve_map_targets(
+    proposals: &mut serde_json::Value,
+    by_name: &std::collections::HashMap<String, String>,
+) {
+    let Some(items) = proposals.get_mut("map_to").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    items.retain_mut(|m| {
+        let Some(raw) = m.get("key").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        match by_name.get(&normalize_name(raw)) {
+            Some(real) => {
+                m["key"] = json!(real);
+                true
+            }
+            None => {
+                tracing::debug!(key = raw, "map_to 指向了候选之外的 key，丢弃");
+                false
+            }
+        }
+    });
+}
+
+/// key 与标签的比较形式：小写，只留字母数字。
+///
+/// **分隔符整个扔掉**，因为要对齐的正是分隔符的差异：`acquiredFrom`、
+/// `acquired_from`、`Acquired From` 都归到 `acquiredfrom`。折成下划线是不够的
+/// ——驼峰里根本没有分隔符可折。
+///
+/// 只做写法对齐，不做同义判断——那是检索与模型的活。
+fn normalize_name(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 #[derive(Deserialize)]
 pub struct AdoptReq {
     pub key: String,
+    /// true = 这个 key 指的是**已有**的关系/属性，别再建一个。
+    ///
+    /// 这一位是本体消解的落点：检索告诉模型本体里已经有 `founding_date` 了，
+    /// 模型说"这些说法就是它"，采纳时只做改写那一半。少了这一位，同一个意思
+    /// 会长出第二个 key，往后这批事实就永久分在两处。
+    #[serde(default)]
+    pub existing: bool,
+    #[serde(default)]
     pub label: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -492,6 +647,9 @@ pub struct AdoptReq {
 /// 与单纯 create 的区别就在后半句。只建类型的话本体长大了、图没变好——
 /// 那 57 条事实会继续是"有关联"。改写走追加（新行 + supersedes），
 /// 实体历史里读得到"先记成 related to，后精化成 available on"。
+///
+/// `existing` 为真时跳过前半句：本体里已经有这个意思了，这一次只做改写。
+/// 这是消解与增长的分界——同一个入口，因为对图做的事完全一样。
 pub async fn adopt_predicate(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -503,23 +661,33 @@ pub async fn adopt_predicate(
     if req.forms.is_empty() {
         return Err(AppError::invalid("forms_required", "forms cannot be empty").into());
     }
-    let predicate_id = utopia_store::ontology::create_relation_type(
-        &state.pool,
-        kb_id,
-        key,
-        req.label.trim(),
-        &req.temporal,
-        req.functional,
-        req.inverse_functional,
-        req.description.as_deref().unwrap_or("").trim(),
-        "relation",
-        // 提案与冷启动只建关系，不声明 domain/range —— 留空 = 不限主宾类型
-        &[],
-        &[],
-        None,
-        None,
-    )
-    .await?;
+    let predicate_id = if req.existing {
+        // 按 key 找已有的那一条。找不到就报错而不是退回新建——
+        // 前端说的是"映射到已有的"，静默改成新建就是它最不想要的结果
+        utopia_store::ontology::relation_type_id_by_key(&state.pool, kb_id, key)
+            .await?
+            .ok_or_else(|| {
+                AppError::invalid("unknown_relation_key", "no relation type with that key")
+            })?
+    } else {
+        utopia_store::ontology::create_relation_type(
+            &state.pool,
+            kb_id,
+            key,
+            req.label.trim(),
+            &req.temporal,
+            req.functional,
+            req.inverse_functional,
+            req.description.as_deref().unwrap_or("").trim(),
+            "relation",
+            // 提案与冷启动只建关系，不声明 domain/range —— 留空 = 不限主宾类型
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await?
+    };
     let (batch_id, remapped) = utopia_store::graph::adopt_proposed_predicates(
         &state.pool,
         kb_id,
@@ -741,5 +909,61 @@ fn lang_name(code: &str) -> &'static str {
     match code {
         "zh" => "Chinese",
         _ => "English",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_name, resolve_map_targets};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    #[test]
+    fn names_align_across_spellings() {
+        // 导进来的本体里 label 常常只是 key 的驼峰写法，两者必须归到一起
+        assert_eq!(
+            normalize_name("acquiredFrom"),
+            normalize_name("acquired_from")
+        );
+        assert_eq!(
+            normalize_name("Acquired From"),
+            normalize_name("acquired_from")
+        );
+        // 不同的名字仍然不同——这一步只对齐写法，不做同义判断
+        assert_ne!(normalize_name("acquired_from"), normalize_name("acquires"));
+        // 中文标签原样保留（去不掉也不该去）
+        assert_eq!(normalize_name("员工数"), "员工数");
+    }
+
+    #[test]
+    fn a_map_target_outside_the_candidates_is_dropped() {
+        let by_name: HashMap<String, String> = [
+            ("acquiredfrom".to_string(), "acquired_from".to_string()),
+            ("员工数".to_string(), "headcount".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let mut p = json!({"map_to": [
+            // 抄的是标签而不是 key —— 实测里模型就是这么干的，要能对回去
+            {"key": "acquiredFrom", "forms": ["acquired from"]},
+            // 按中文标签抄的，同样对得回去
+            {"key": "员工数", "forms": ["员工总数"]},
+            // 候选表里没有：界面上那个按钮会承诺一件做不到的事，所以整条丢掉
+            {"key": "invented_key", "forms": ["whatever"]},
+            // 连 key 都没有
+            {"forms": ["x"]},
+        ]});
+        resolve_map_targets(&mut p, &by_name);
+        let items = p["map_to"].as_array().unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["key"], "acquired_from");
+        assert_eq!(items[1]["key"], "headcount");
+    }
+
+    #[test]
+    fn proposals_without_a_map_to_section_are_left_alone() {
+        let mut p = json!({"entity_types": [], "relation_types": []});
+        resolve_map_targets(&mut p, &HashMap::new());
+        assert!(p.get("map_to").is_none());
     }
 }

@@ -197,6 +197,58 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         }
     }
 
+    // **映射到已有类型**：本体里已经有这个意思了，只改写事实、不动本体。
+    //
+    // 自动执行是安全的一档：它不让本体长大，只把一批 related_to 挂到一个
+    // 早就存在的谓词上，而且跟新建那条路走同一个批次机制，同样可撤销。
+    // 反过来说，漏掉这一档才是危险的——检索告诉模型"已经有 founding_date 了"，
+    // 模型答"这些说法就是它"，我们却什么都不做，那批事实继续是"有关联"。
+    let mapped = proposals
+        .get("map_to")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for m in &mapped {
+        let Some(key) = str_of(m, "key") else {
+            continue;
+        };
+        let forms: Vec<String> = m
+            .get("forms")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if forms.is_empty() {
+            continue;
+        }
+        // 模型偶尔会把候选清单之外的 key 抄进来（或者干脆编一个）。
+        // 找不到就跳过——**不新建**：这条路的前提就是"它已经存在"
+        let Some(predicate_id) =
+            utopia_store::ontology::relation_type_id_by_key(&state.pool, kb_id, key).await?
+        else {
+            tracing::warn!(%kb_id, key, "映射目标不在本体里，跳过");
+            continue;
+        };
+        let (batch, moved) = utopia_store::graph::adopt_proposed_predicates(
+            &state.pool,
+            kb_id,
+            predicate_id,
+            &forms,
+        )
+        .await?;
+        moved_total += moved;
+        if moved > 0 {
+            batches.push(batch);
+        }
+        for form in &forms {
+            let _ =
+                utopia_store::ontology::clear_miss(&state.pool, kb_id, "relation_type", form).await;
+        }
+    }
+
     // 类先建好、实体后抽出来是常态：把等着已存在类型的那些也收走
     match utopia_store::resolution::sweep_proposed_types(&state.pool, kb_id).await {
         Ok(swept) => {

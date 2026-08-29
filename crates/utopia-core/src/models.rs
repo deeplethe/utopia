@@ -669,3 +669,18 @@ pub struct DataSourceView {
     pub last_test_at: Option<DateTime<Utc>>,
     pub last_test_ok: Option<bool>,
 }
+
+/// 向量检索出来的一个候选本体行（类 / 关系 / 属性）。
+///
+/// `distance` 是余弦距离，越小越近。原样带给调用方而不是先折成"相似度"：
+/// 阈值该定在哪由消费者按自己的数据定，这里不替它归一化。
+#[derive(Debug, Clone, Serialize)]
+pub struct TypeCandidate {
+    pub id: Uuid,
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    /// 关系行才有：`relation` 或 `attribute`
+    pub kind: Option<String>,
+    pub distance: f32,
+}

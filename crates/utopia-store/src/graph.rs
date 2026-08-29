@@ -1305,8 +1305,8 @@ pub async fn adopt_proposed_predicates(
     if forms.is_empty() {
         return Ok((batch_id, 0));
     }
-    let targets: Vec<(Uuid, Uuid, Option<Uuid>)> = sqlx::query_as(
-        "SELECT f.id, f.subject_id, f.object_id
+    let targets: Vec<(Uuid, Uuid, Option<Uuid>, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT f.id, f.subject_id, f.object_id, f.object_value
          FROM facts f
          JOIN relation_types rt ON rt.id = f.predicate_id
          WHERE f.kb_id = $1 AND rt.key = $2 AND f.invalidated_at IS NULL
@@ -1324,18 +1324,25 @@ pub async fn adopt_proposed_predicates(
     .await?;
 
     let mut moved = 0u32;
-    for (old_id, subject_id, object_id) in targets {
+    for (old_id, subject_id, object_id, object_value) in targets {
         let mut tx = pool.begin().await?;
-        // 目标断言可能已存在（同主宾已有一条真关系）：那就并进去，别造重复
+        // 目标断言可能已存在（同主宾已有一条真关系）：那就并进去，别造重复。
+        //
+        // **宾语两侧都要比。** 字面值事实的 object_id 都是 NULL，只比它就等于
+        // 把同主同谓的所有值当成同一条断言——(星云科技, founding_date, 2015) 与
+        // (星云科技, founding_date, 2016) 会被并成一条，后一个值静默消失
         let existing: Option<(Uuid,)> = sqlx::query_as(
             "SELECT id FROM facts
              WHERE kb_id = $1 AND subject_id = $2 AND predicate_id = $3
-               AND object_id IS NOT DISTINCT FROM $4 AND invalidated_at IS NULL",
+               AND object_id IS NOT DISTINCT FROM $4
+               AND object_value IS NOT DISTINCT FROM $5
+               AND invalidated_at IS NULL",
         )
         .bind(kb_id)
         .bind(subject_id)
         .bind(predicate_id)
         .bind(object_id)
+        .bind(&object_value)
         .fetch_optional(&mut *tx)
         .await?;
 

@@ -1,8 +1,10 @@
 //! 本体编辑器仓储：类型/关系 CRUD（带使用量与删除保护）+ 未匹配统计。
 
+use pgvector::Vector;
 use sqlx::PgPool;
 use utopia_core::models::{
     EntityInstance, EntityTypeView, OntologyImportView, OntologyMiss, RelationTypeView,
+    TypeCandidate,
 };
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -774,4 +776,200 @@ pub async fn list_imports(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<OntologyI
     .bind(kb_id)
     .fetch_all(pool)
     .await?)
+}
+
+/// 一条待嵌入的本体行。`text` 是要送去嵌入的那段字，`kind` 决定回写哪张表。
+#[derive(Debug, Clone)]
+pub struct TypeToEmbed {
+    pub id: Uuid,
+    pub kind: TypeKind,
+    pub text: String,
+}
+
+/// 本体行属于哪张表。类进 `entity_types`，关系与属性同住 `relation_types`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeKind {
+    Entity,
+    Relation,
+}
+
+/// 嵌入用的那段字：标签在前、描述在后。
+///
+/// **key 不进去。** key 是模型读写的令牌（`founding_date`），描述才是这个类型
+/// 的意思所在。把 key 混进来，检索会被"两个 key 长得像"带偏——而
+/// `position`（列表位次）与 `position`（职位）正是长得一模一样的两回事。
+fn embed_text(label: &str, description: &str) -> String {
+    let d = description.trim();
+    if d.is_empty() {
+        label.trim().to_string()
+    } else {
+        format!("{}\n{}", label.trim(), d)
+    }
+}
+
+/// 哪些本体行的向量是陈的（没嵌过、描述改了、或换了嵌入模型）。
+///
+/// 判据是**比对当时嵌的原文与模型名**，不是看时间戳：描述改了、模型换了，
+/// 时间戳一样看不出来。这样也不必在每个改描述的写入点挂钩子——漏一个就悄悄烂掉。
+pub async fn types_needing_embedding(
+    pool: &PgPool,
+    kb_id: Uuid,
+    model: &str,
+) -> AppResult<Vec<TypeToEmbed>> {
+    let mut out = Vec::new();
+    let ents: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT id, label, coalesce(description, '') FROM entity_types
+         WHERE kb_id = $1
+           AND (embedding IS NULL
+                OR embedded_model IS DISTINCT FROM $2
+                OR embedded_text IS DISTINCT FROM
+                   CASE WHEN coalesce(btrim(description), '') = '' THEN btrim(label)
+                        ELSE btrim(label) || E'\n' || btrim(description) END)",
+    )
+    .bind(kb_id)
+    .bind(model)
+    .fetch_all(pool)
+    .await?;
+    out.extend(ents.into_iter().map(|(id, label, desc)| TypeToEmbed {
+        id,
+        kind: TypeKind::Entity,
+        text: embed_text(&label, &desc),
+    }));
+    let rels: Vec<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT id, label, coalesce(description, '') FROM relation_types
+         WHERE kb_id = $1
+           AND (embedding IS NULL
+                OR embedded_model IS DISTINCT FROM $2
+                OR embedded_text IS DISTINCT FROM
+                   CASE WHEN coalesce(btrim(description), '') = '' THEN btrim(label)
+                        ELSE btrim(label) || E'\n' || btrim(description) END)",
+    )
+    .bind(kb_id)
+    .bind(model)
+    .fetch_all(pool)
+    .await?;
+    out.extend(rels.into_iter().map(|(id, label, desc)| TypeToEmbed {
+        id,
+        kind: TypeKind::Relation,
+        text: embed_text(&label, &desc),
+    }));
+    Ok(out)
+}
+
+/// 回写向量，连同"嵌的是哪段字、用的哪个模型"。三者必须同一次写入——
+/// 只写向量而不写来源，下一轮就会认为它还是陈的，从此每轮重嵌。
+pub async fn set_type_embeddings(
+    pool: &PgPool,
+    model: &str,
+    items: &[(TypeToEmbed, Vec<f32>)],
+) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
+    for (item, emb) in items {
+        let table = match item.kind {
+            TypeKind::Entity => "entity_types",
+            TypeKind::Relation => "relation_types",
+        };
+        sqlx::query(&format!(
+            "UPDATE {table} SET embedding = $2, embedded_text = $3, embedded_model = $4
+             WHERE id = $1"
+        ))
+        .bind(item.id)
+        .bind(Vector::from(emb.clone()))
+        .bind(&item.text)
+        .bind(model)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 与给定向量最近的 k 个实体类型。
+pub async fn nearest_entity_types(
+    pool: &PgPool,
+    kb_id: Uuid,
+    embedding: &[f32],
+    limit: i64,
+) -> AppResult<Vec<TypeCandidate>> {
+    let rows: Vec<(Uuid, String, String, String, f64)> = sqlx::query_as(
+        "SELECT id, key, label, coalesce(description, ''), (embedding <=> $2)::float8
+         FROM entity_types
+         WHERE kb_id = $1 AND embedding IS NOT NULL
+         ORDER BY embedding <=> $2
+         LIMIT $3",
+    )
+    .bind(kb_id)
+    .bind(Vector::from(embedding.to_vec()))
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, key, label, description, distance)| TypeCandidate {
+            id,
+            key,
+            label,
+            description,
+            kind: None,
+            distance: distance as f32,
+        })
+        .collect())
+}
+
+/// 与给定向量最近的 k 个关系/属性。
+///
+/// `only_kind` 分道：字面值宾语的事实要找的是属性，实体宾语的要找的是关系。
+/// 不分道就会把 `founding_date` 这种属性推给一条关系事实，反过来也一样。
+pub async fn nearest_relation_types(
+    pool: &PgPool,
+    kb_id: Uuid,
+    embedding: &[f32],
+    limit: i64,
+    only_kind: Option<&str>,
+) -> AppResult<Vec<TypeCandidate>> {
+    let rows: Vec<(Uuid, String, String, String, String, f64)> = sqlx::query_as(
+        "SELECT id, key, label, coalesce(description, ''), kind, (embedding <=> $2)::float8
+         FROM relation_types
+         WHERE kb_id = $1 AND embedding IS NOT NULL
+           AND ($4::text IS NULL OR kind = $4)
+         ORDER BY embedding <=> $2
+         LIMIT $3",
+    )
+    .bind(kb_id)
+    .bind(Vector::from(embedding.to_vec()))
+    .bind(limit)
+    .bind(only_kind)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, key, label, description, kind, distance)| TypeCandidate {
+                id,
+                key,
+                label,
+                description,
+                kind: Some(kind),
+                distance: distance as f32,
+            },
+        )
+        .collect())
+}
+
+/// 按 key 找关系/属性的 id。给"映射到已有类型"那条路用。
+///
+/// 不区分 kind：属性与关系同住一张表且共用 key 命名空间，调用方拿到 id 之后
+/// 该怎么用它自己清楚（改写事实时谓词就是谓词）。
+pub async fn relation_type_id_by_key(
+    pool: &PgPool,
+    kb_id: Uuid,
+    key: &str,
+) -> AppResult<Option<Uuid>> {
+    let row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM relation_types WHERE kb_id = $1 AND key = $2")
+            .bind(kb_id)
+            .bind(key)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(id,)| id))
 }

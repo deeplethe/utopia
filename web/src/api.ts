@@ -445,6 +445,17 @@ export interface OntologyProposals {
     /** 这条关系归并了哪些表层说法。有它才谈得上把等待的事实改写过去 */
     forms?: string[];
   }[];
+  /**
+   * 本体里**已经有**这个意思，只需把说法挂过去。
+   *
+   * 跟 relation_types 的区别是不建东西：同一个意思长出第二个 key，
+   * 这批事实就永久分在两处，谁也认不出它们本是一回事。
+   */
+  map_to?: {
+    key: string;
+    forms?: string[];
+    reason?: string;
+  }[];
 }
 
 /** 原文说过、本体没有、事实降级成了 related_to 的谓词。 */
@@ -898,7 +909,9 @@ export const api = {
     kbId: string,
     body: {
       key: string;
-      label: string;
+      /** true = key 指的是已有的关系/属性，只改写事实，不建新类型 */
+      existing?: boolean;
+      label?: string;
       temporal?: string;
       functional?: boolean;
       description?: string;
