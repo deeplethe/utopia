@@ -497,6 +497,95 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 continue;
             }
 
+            // **词表外的字面值：既不丢，也不给它编一个实体。**
+            //
+            // 走到这里说明谓词既不是已知属性也还没查关系表。它带着字面值时
+            // 有两种走法，从前两种都不好：
+            //   value 有而 object 空 → 掉进下面的"宾语必填"，整条静默消失；
+            //   object 里塞着字面值 → 按 concept 消解，凭空造出一个叫「2015」
+            //     的实体，图里多一个假节点，事后再修还得改事实的形状。
+            // 现在都存成 object_value 挂在兜底谓词上：值在图里、有证据、有时态，
+            // 原词进 proposed_predicate，消解那一遍只需换谓词，形状已经是对的。
+            //
+            // object 里的东西算不算字面值，判据从严：**模型没把它声明成实体**，
+            // 且**它本身解得出数字或日期**。"杭州"两条都不满足，"2015"都满足。
+            // 文本值的属性（schema.org 里 323 个）在这一档仍会变成实体——
+            // 那里没有可靠判据，猜错会吃掉真实体，不猜
+            let literal = match (&f.value, f.object.as_deref().map(str::trim)) {
+                (Some(v), None | Some("")) if !rel_ids.contains_key(f.predicate.as_str()) => {
+                    Some(v.clone())
+                }
+                (_, Some(o))
+                    if !o.is_empty()
+                        && !rel_ids.contains_key(f.predicate.as_str())
+                        && !entity_ids.contains_key(o)
+                        && looks_literal(o) =>
+                {
+                    Some(serde_json::Value::String(o.to_string()))
+                }
+                _ => None,
+            };
+            if let Some(value) = literal {
+                let subject_name = f.subject.trim();
+                let Some(&subject_id) = entity_ids.get(subject_name) else {
+                    drop_signal(
+                        state,
+                        doc.kb_id,
+                        document_id,
+                        utopia_store::extraction_drops::reason::SUBJECT_NOT_DECLARED,
+                        &f.predicate,
+                        Some(subject_name),
+                    )
+                    .await;
+                    continue;
+                };
+                // 兜底谓词被删掉时就地报出来——跟关系那一档同理
+                let Some(fallback) = related_rel else {
+                    drop_signal(
+                        state,
+                        doc.kb_id,
+                        document_id,
+                        utopia_store::extraction_drops::reason::FALLBACK_RELATION_MISSING,
+                        &f.predicate,
+                        Some(subject_name),
+                    )
+                    .await;
+                    continue;
+                };
+                let _ = utopia_store::ontology::record_miss(
+                    &state.pool,
+                    doc.kb_id,
+                    "attribute_type",
+                    &f.predicate,
+                    Some(&format!("{subject_name} → {value}")),
+                )
+                .await;
+                let (fact_id, created) = utopia_store::graph::insert_value_fact(
+                    &state.pool,
+                    doc.kb_id,
+                    subject_id,
+                    fallback,
+                    &serde_json::json!({ "value": value }),
+                    from.map(|(t, _)| t),
+                    to.map(|(t, _)| t),
+                    precision,
+                    confidence,
+                )
+                .await?;
+                utopia_store::graph::add_evidence(
+                    &state.pool,
+                    fact_id,
+                    chunk.id,
+                    f.quote.as_deref(),
+                    Some(f.predicate.as_str()),
+                )
+                .await?;
+                if created {
+                    fact_count += 1;
+                }
+                continue;
+            }
+
             // 关系事实：宾语必填
             let Some(object_name) = f.object.as_deref().map(str::trim).filter(|s| !s.is_empty())
             else {
@@ -693,4 +782,52 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
 
     tracing::info!(%document_id, facts = fact_count, "图谱抽取完成");
     Ok(())
+}
+
+/// 宾语位上的这串东西，是不是一个字面值而不是实体的名字。
+///
+/// **只认数字与日期。** 这是个会吃掉真实体的判断，所以宁可漏认：
+/// 漏了不过是维持今天的行为（造一个 concept 实体），认错了却是把一个
+/// 真实体降成一段文本，图里少一个节点。
+///
+/// "2015"、"2023-03"、"6" 认；"杭州"、"首席技术官"、"3M"、"V3" 不认。
+/// 调用方还额外要求模型**没有**把它声明成实体——两道门一起过才算数。
+fn looks_literal(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() {
+        return false;
+    }
+    // 纯数字（含小数与正负号）。用 f64 解而不是自己扫字符：
+    // "3M"、"V3"、"２０１５"（全角）都会失败，正是想要的
+    if s.parse::<f64>().is_ok() {
+        return true;
+    }
+    // 日期：复用抽取侧那个解析器，它认 2015 / 2015-03 / 2015-03-01 等
+    utopia_extract::parse_time(s).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_literal;
+
+    #[test]
+    fn only_numbers_and_dates_count_as_literals() {
+        // 认：这些出现在宾语位上时是值，不是实体
+        for yes in ["2015", "2023-03", "2024-01-15", "1200", "62.5", "-3"] {
+            assert!(looks_literal(yes), "{yes} 该认成字面值");
+        }
+        // 不认：判错的代价是把一个真实体降成一段文本，所以宁可漏
+        for no in [
+            "杭州",
+            "首席技术官",
+            "3M",
+            "V3",
+            "深蓝存储",
+            "",
+            "   ",
+            "２０１５", // 全角数字：不是我们要处理的形态，交给实体路径
+        ] {
+            assert!(!looks_literal(no), "{no} 不该认成字面值");
+        }
+    }
 }

@@ -1263,6 +1263,10 @@ pub async fn proposed_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Pr
          JOIN relation_types rt ON rt.id = f.predicate_id
          WHERE f.kb_id = $1 AND rt.kb_id = $1 AND rt.key = $2
            AND f.invalidated_at IS NULL AND fe.proposed_predicate IS NOT NULL
+           -- 字面值宾语的不算：它们也挂在兜底谓词上、也带表层谓词，但要的是
+           -- 一个属性而不是一个关系。混进来提案就会照着建关系，然后
+           -- `founding_date` 变成一条指向「2015」的边——正是这条路要修掉的东西
+           AND f.object_id IS NOT NULL
            -- 用户拒绝过的说法不再出现在候选里（人工与自动两条路都据此绕开）
            AND NOT EXISTS (SELECT 1 FROM ontology_misses m
                            WHERE m.kb_id = $1 AND m.kind = 'relation_type'

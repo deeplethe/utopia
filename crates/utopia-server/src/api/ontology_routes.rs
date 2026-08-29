@@ -369,7 +369,15 @@ pub async fn build_proposals(
 
     let entity_types = utopia_store::ontology::entity_type_views(&state.pool, kb_id).await?;
     let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
-    let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
+    // 只取这一遍**产得出提案**的那两类。attribute_type 的信号（未知谓词带字面值）
+    // 也在这张表里，但下面的 JSON 骨架只有 entity_types / relation_types——
+    // 把属性信号喂进去，模型只会照着建一个关系，而那正是它不该是的东西。
+    // 属性提案归本体消解那一遍（0001 P3），不在这里凑合
+    let misses: Vec<_> = utopia_store::ontology::list_misses(&state.pool, kb_id)
+        .await?
+        .into_iter()
+        .filter(|m| m.kind != "attribute_type")
+        .collect();
     // 表层谓词比 misses 多一样东西：它连着具体事实，所以提案能承诺"改写 N 条"
     let forms = utopia_store::graph::proposed_predicates(&state.pool, kb_id).await?;
     if misses.is_empty() && forms.is_empty() {
