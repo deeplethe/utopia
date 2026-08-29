@@ -20,6 +20,10 @@ use crate::llm_util;
 use crate::retrieval;
 use crate::state::AppState;
 
+/// 回放几个已认下的实体。上限是因为长会话会攒出几十个，全贴回去就把
+/// 省下来的上下文又花掉了；按首次出现排序，早认下的通常是这场对话的主角。
+const KNOWN_ENTITY_LIMIT: usize = 20;
+
 const MAX_HISTORY: usize = 20;
 const MAX_ROUNDS: usize = 6;
 const SEARCH_TOP_K: usize = 6;
@@ -262,9 +266,10 @@ pub async fn chat(
         &query,
         &json!([]),
         &json!([]),
+        &json!([]),
     )
     .await?;
-    let history: Vec<(String, String)> = utopia_store::conversations::recent_context(
+    let (history, known_entities) = utopia_store::conversations::recent_context(
         &state.pool,
         conversation_id,
         MAX_HISTORY as i64,
@@ -301,6 +306,37 @@ pub async fn chat(
         for (role, content) in &history {
             msgs.push(json!({ "role": role, "content": content }));
         }
+        // **前几轮已经认下的实体，连 id 一起交回去。**
+        //
+        // 少了这一段，模型只看得见上一轮的最终答案文字，不知道自己搜过什么、
+        // 拿到过哪些 id，于是从名字重搜一遍。更隐蔽的是同名歧义时两轮可能落到
+        // **不同的实体**上，前后两个答案讲的不是同一个节点。
+        //
+        // 贴在历史之后、当前问题之前——位置就是服从性，跟抽取里 known_block
+        // 紧挨正文是同一条理由。
+        if !known_entities.is_empty() {
+            let lines: Vec<String> = known_entities
+                .iter()
+                .take(KNOWN_ENTITY_LIMIT)
+                .map(|e| {
+                    format!(
+                        "{} | {} | {}",
+                        e["id"].as_str().unwrap_or("?"),
+                        e["name"].as_str().unwrap_or("?"),
+                        e["type"].as_str().unwrap_or("?")
+                    )
+                })
+                .collect();
+            msgs.push(json!({
+                "role": "user",
+                "content": format!(
+                    "Entities already identified earlier in this conversation                      (id | name | type). Call entity_facts with these ids directly;                      do not look them up by name again:
+    {}",
+                    lines.join("
+    ")
+                )
+            }));
+        }
 
         // 会话 id 先行下发（新会话由此告知前端）
         yield Ok(Event::default()
@@ -313,6 +349,9 @@ pub async fn chat(
         // 落库累积：assistant 全文与行动轨迹（历史回放用）
         let mut answer_acc = String::new();
         let mut steps_acc: Vec<serde_json::Value> = Vec::new();
+        // 这一轮认下的实体，落库供下一轮回放。**只记身份不记正文**——
+        // 工具结果里是 chunk 全文，每轮重复堆进上下文几轮就把窗口吃光
+        let mut resolved_acc: Vec<serde_json::Value> = Vec::new();
 
         let mut rounds = 0usize;
         loop {
@@ -335,6 +374,7 @@ pub async fn chat(
                             &state.pool, conversation_id, "assistant", &answer_acc,
                             &serde_json::Value::Array(steps_acc.clone()),
                             &serde_json::Value::Array(sources.clone()),
+                            &serde_json::Value::Array(resolved_acc.clone()),
                         ).await;
                         yield done_event();
                     }
@@ -381,6 +421,7 @@ pub async fn chat(
                                     &state.pool, conversation_id, "assistant", &answer_acc,
                                     &serde_json::Value::Array(steps_acc.clone()),
                                     &serde_json::Value::Array(legacy_sources.clone()),
+                                    &serde_json::Value::Array(resolved_acc.clone()),
                                 ).await;
                                 yield done_event();
                             }
@@ -422,6 +463,7 @@ pub async fn chat(
                         &state.pool, conversation_id, "assistant", &answer_acc,
                         &serde_json::Value::Array(steps_acc.clone()),
                         &serde_json::Value::Array(sources.clone()),
+                        &serde_json::Value::Array(resolved_acc.clone()),
                     ).await;
                     yield done_event();
                 }
@@ -520,6 +562,11 @@ pub async fn chat(
                                 .collect::<Vec<_>>()
                                 .join("\n")
                         };
+                        for n in &hits {
+                            resolved_acc.push(json!({
+                                "id": n.id.to_string(), "name": n.name, "type": n.type_label
+                            }));
+                        }
                         (text, json!({ "kind": "entity", "label": name, "detail": format!("{} matches", hits.len()) }))
                     }
                     "entity_facts" => {
