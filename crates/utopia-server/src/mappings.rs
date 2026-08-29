@@ -155,7 +155,8 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
             &definition,
             None,
             None,
-            "day",
+            // 问数映射不带时间，所以也没有精度
+            None,
             PROPOSAL_CONFIDENCE,
         )
         .await?;

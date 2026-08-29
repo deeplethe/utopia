@@ -1104,7 +1104,8 @@ mod tests {
             object_value: None,
             valid_from: None,
             valid_to: None,
-            valid_precision: "day".to_string(),
+            // 两端都没日期就没有精度——夹具也得守这条不变量（迁移 0045）
+            valid_precision: None,
             confidence: 0.9,
             document_id: None,
             filename: None,

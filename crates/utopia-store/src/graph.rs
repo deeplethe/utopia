@@ -447,7 +447,7 @@ pub async fn insert_fact(
     object_id: Uuid,
     valid_from: Option<chrono::DateTime<chrono::Utc>>,
     valid_to: Option<chrono::DateTime<chrono::Utc>>,
-    valid_precision: &str,
+    valid_precision: Option<&str>,
     confidence: f32,
 ) -> AppResult<(Uuid, bool)> {
     insert_fact_inner(
@@ -473,7 +473,7 @@ async fn insert_fact_inner(
     object: FactObject<'_>,
     valid_from: Option<chrono::DateTime<chrono::Utc>>,
     valid_to: Option<chrono::DateTime<chrono::Utc>>,
-    valid_precision: &str,
+    valid_precision: Option<&str>,
     confidence: f32,
 ) -> AppResult<(Uuid, bool)> {
     let same_sql = match object {
@@ -586,7 +586,7 @@ pub async fn insert_value_fact(
     object_value: &serde_json::Value,
     valid_from: Option<chrono::DateTime<chrono::Utc>>,
     valid_to: Option<chrono::DateTime<chrono::Utc>>,
-    valid_precision: &str,
+    valid_precision: Option<&str>,
     confidence: f32,
 ) -> AppResult<(Uuid, bool)> {
     insert_fact_inner(

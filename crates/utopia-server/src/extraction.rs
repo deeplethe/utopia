@@ -382,7 +382,11 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             }
             let from = f.valid_from.as_deref().and_then(utopia_extract::parse_time);
             let to = f.valid_to.as_deref().and_then(utopia_extract::parse_time);
-            let precision = from.map(|(_, p)| p).unwrap_or("day");
+            // **两端都没日期就没有精度可言。** 从前这里 unwrap_or("day")，
+            // 于是一条完全没有时间的事实也带着"精确到日"落库——实测这类活行
+            // ai-timeline 有 843 条、国情咨文 728 条，全在说假话（迁移 0045）。
+            // 起始那端优先；只有结束日期时（"直到 2023 年"）精度描述的是它
+            let precision = from.map(|(_, p)| p).or_else(|| to.map(|(_, p)| p));
 
             // 属性事实：谓词命中属性 → 字面值通道。datatype 校验失败宁缺勿脏；
             // domain 校验（含子类上溯）挡住"把 salary 挂到 Organization"这类张冠李戴。
