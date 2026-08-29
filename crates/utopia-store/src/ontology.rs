@@ -335,6 +335,10 @@ pub async fn update_relation_type(
     description: &str,
     datatype: Option<&str>,
     unit: Option<&str>,
+    // None = 不动。不管 domain 的调用方（属性表单）传 None，
+    // 否则一次不相干的改名就会把属性的 domain 清空
+    domains: Option<&[Uuid]>,
+    ranges: Option<&[Uuid]>,
 ) -> AppResult<()> {
     if !matches!(temporal, "state" | "event" | "eternal") {
         return Err(AppError::Validation(
@@ -346,7 +350,8 @@ pub async fn update_relation_type(
             "datatype must be text / number / date / bool".into(),
         ));
     }
-    // kind 与 domain 不可变（改 kind 会让存量事实语义错乱；挪类=删了重建）；
+    // kind 不可变（改它会让存量事实语义错乱）。domain/range 可改——
+    // 它们是签名不是身份，"这个属性也适用于承包商" 是个正当的编辑。
     // datatype/unit 只对 attribute 行生效，datatype 缺省保持原值
     let res = sqlx::query(
         "UPDATE relation_types SET label = $3, temporal = $4, functional = $5, inverse_functional = $6, description = $7,
@@ -367,6 +372,26 @@ pub async fn update_relation_type(
     .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
+    }
+    if domains.is_some() || ranges.is_some() {
+        let (kind,): (String,) = sqlx::query_as("SELECT kind FROM relation_types WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await?;
+        let next_domains = domains.unwrap_or(&[]);
+        if kind == "attribute" && next_domains.is_empty() {
+            return Err(AppError::invalid(
+                "attr_needs_class",
+                "An attribute needs a class (domain)",
+            ));
+        }
+        // 属性没有 range：它的值域是字面量类型，落在 datatype 上
+        let next_ranges: &[Uuid] = if kind == "attribute" {
+            &[]
+        } else {
+            ranges.unwrap_or(&[])
+        };
+        set_domains_ranges(pool, id, next_domains, next_ranges).await?;
     }
     Ok(())
 }
@@ -567,6 +592,87 @@ pub async fn create_attribute_with_iri(
     };
     set_domains_ranges(pool, new_id, domains, &[]).await?;
     Ok(Some(new_id))
+}
+
+/// 从导入建一个关系（`kind='relation'`），带 IRI。
+///
+/// `temporal` 固定 `state`：OWL 没有对应概念，而 state（有区间）是三者里唯一
+/// 不丢信息的——event 会把区间压成时点，eternal 会宣称它永不改变。
+///
+/// **`functional` / `inverse_functional` 照词汇表写**。它们驱动时态引擎自动闭合
+/// 旧事实，猜错就成批造假冲突（`part_of` 那次 59 条）。预览已经把声明为函数性的
+/// 关系单独列出来让人过目，所以这里不再自作主张改成 false。
+#[allow(clippy::too_many_arguments)]
+pub async fn create_relation_with_iri(
+    pool: &PgPool,
+    kb_id: Uuid,
+    key: &str,
+    label: &str,
+    description: &str,
+    iri: &str,
+    functional: bool,
+    inverse_functional: bool,
+    domains: &[Uuid],
+    ranges: &[Uuid],
+) -> AppResult<Option<Uuid>> {
+    validate_key(key)?;
+    let id = Uuid::now_v7();
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "INSERT INTO relation_types
+             (id, kb_id, key, label, temporal, functional, inverse_functional,
+              description, kind, iri)
+         VALUES ($1, $2, $3, $4, 'state', $5, $6, $7, 'relation', $8)
+         ON CONFLICT (kb_id, key) DO NOTHING
+         RETURNING id",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .bind(key)
+    .bind(label)
+    .bind(functional)
+    .bind(inverse_functional)
+    .bind(description)
+    .bind(iri)
+    .fetch_optional(pool)
+    .await?;
+    let Some((new_id,)) = row else {
+        return Ok(None);
+    };
+    set_domains_ranges(pool, new_id, domains, ranges).await?;
+    Ok(Some(new_id))
+}
+
+/// 重导入时更新一个已按 IRI 认下的关系。
+///
+/// **key 不动**（它可能已被事实引用），**空描述不覆盖**（人写过的比上游的准），
+/// **domain/range 整体重写**——它们是上游声明的结构，不是人调过的措辞。
+pub async fn update_relation_from_import(
+    pool: &PgPool,
+    kb_id: Uuid,
+    iri: &str,
+    label: &str,
+    description: &str,
+    domains: &[Uuid],
+    ranges: &[Uuid],
+) -> AppResult<bool> {
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "UPDATE relation_types
+            SET label = $3,
+                description = CASE WHEN $4 = '' THEN description ELSE $4 END
+          WHERE kb_id = $1 AND iri = $2
+          RETURNING id",
+    )
+    .bind(kb_id)
+    .bind(iri)
+    .bind(label)
+    .bind(description)
+    .fetch_optional(pool)
+    .await?;
+    let Some((id,)) = row else {
+        return Ok(false);
+    };
+    set_domains_ranges(pool, id, domains, ranges).await?;
+    Ok(true)
 }
 
 pub async fn set_parent(pool: &PgPool, kb_id: Uuid, child: Uuid, parent: Uuid) -> AppResult<()> {

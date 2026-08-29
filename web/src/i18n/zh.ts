@@ -640,6 +640,13 @@ export const zh: Strings = {
     shapeColor: "形状与颜色",
     parent: "父类",
     noParent: "（顶层）",
+    signature: "类型签名",
+    signatureHint:
+      "这个关系连接哪些类。它作为提示进抽取提示词，不是闸门——" +
+      "它在模型落笔那一刻引导，而本体写错时原文仍然说了算。",
+    domainLabel: "主语",
+    rangeLabel: "宾语",
+    anyType: "不限类型",
     temporal: "时态语义",
     temporalState: "状态（有区间）",
     temporalEvent: "事件（时间点）",

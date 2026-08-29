@@ -687,6 +687,15 @@ export const en = {
     shapeColor: "Shape & color",
     parent: "Parent class",
     noParent: "(top level)",
+    /* 类型签名。措辞要说清它是引导不是闸门——本体写错时模型仍可覆盖 */
+    signature: "Type signature",
+    signatureHint:
+      "Which classes this relation connects. It goes into the extraction prompt as a hint, " +
+      "not a gate: it steers the model as it writes, and the text still wins when the " +
+      "ontology is wrong.",
+    domainLabel: "Subject",
+    rangeLabel: "Object",
+    anyType: "Any type",
     temporal: "Temporal semantics",
     temporalState: "State (has interval)",
     temporalEvent: "Event (point in time)",

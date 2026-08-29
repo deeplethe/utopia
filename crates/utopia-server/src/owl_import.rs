@@ -361,14 +361,72 @@ pub async fn apply(
         }
     }
 
-    // 属性：类建完、id_of 填好之后才轮到它们。计划里已经算出了每个属性的去向，
-    // **这里只执行，不重新判断**——两处各判一次就会分叉，而分叉意味着
-    // 预览说的和实际做的不是一回事
     let by_prop_iri: HashMap<&str, &_> = proj
         .properties
         .iter()
         .map(|p| (p.iri.as_str(), p))
         .collect();
+    // 关系。此前 apply 完全跳过它们——预览却在关系那行写着"N new"，
+    // 承诺了不会发生的事。这与今天修掉的 key 撞车缺陷是同一种。
+    //
+    // **functional / inverse_functional 照词汇表的声明写下去**：它们是时态引擎
+    // 自动闭合事实的依据，猜错会成批造假冲突（part_of 那次 59 条）。所以不猜——
+    // 词汇表说是就是，预览已经把它们单独列出来让人过目。
+    let mut created_rels = 0usize;
+    let mut updated_rels = 0usize;
+    for item in &plan.relations {
+        if item.disposition == Disposition::KeyTaken {
+            continue;
+        }
+        let Some(p) = by_prop_iri.get(item.iri.as_str()) else {
+            continue;
+        };
+        // domain/range 指向没被建出来的类时只丢那一个，不丢整条关系：
+        // 关系不像属性那样必须挂在类上，没有 domain 就是"不限主语类型"
+        let resolve = |iris: &[String]| -> Vec<Uuid> {
+            iris.iter().filter_map(|i| id_of.get(i).copied()).collect()
+        };
+        let domains = resolve(&p.domains);
+        let ranges = resolve(&p.ranges);
+
+        if item.disposition == Disposition::Update {
+            if utopia_store::ontology::update_relation_from_import(
+                &state.pool,
+                kb_id,
+                &p.iri,
+                &p.label,
+                &p.description,
+                &domains,
+                &ranges,
+            )
+            .await?
+            {
+                updated_rels += 1;
+            }
+            continue;
+        }
+        if utopia_store::ontology::create_relation_with_iri(
+            &state.pool,
+            kb_id,
+            &p.key,
+            &p.label,
+            &p.description,
+            &p.iri,
+            p.functional,
+            p.inverse_functional,
+            &domains,
+            &ranges,
+        )
+        .await?
+        .is_some()
+        {
+            created_rels += 1;
+        }
+    }
+
+    // 属性：类建完、id_of 填好之后才轮到它们。计划里已经算出了每个属性的去向，
+    // **这里只执行，不重新判断**——两处各判一次就会分叉，而分叉意味着
+    // 预览说的和实际做的不是一回事
     let mut created_attrs = 0usize;
     for item in &plan.attributes {
         if item.disposition == Disposition::KeyTaken {
@@ -412,6 +470,8 @@ pub async fn apply(
         "classes_updated": updated_classes,
         "classes_key_taken": plan.classes.iter().filter(|c| c.disposition == Disposition::KeyTaken).count(),
         "relations_seen": plan.relations.len(),
+        "relations_created": created_rels,
+        "relations_updated": updated_rels,
         "attributes_seen": plan.attributes.len(),
         "attributes_created": created_attrs,
         "attributes_skipped": plan.attr_skips(),

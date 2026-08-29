@@ -191,12 +191,14 @@ pub struct RelationTypeReq {
     /// relation | attribute（创建时定死，更新时忽略）
     #[serde(default)]
     pub kind: Option<String>,
-    /// 可以当主语的类。attribute 至少一个；relation 留空 = 不限
+    /// 可以当主语的类。attribute 至少一个；relation 留空 = 不限。
+    /// **更新时缺省 = 不动**，所以是 Option 而不是 Vec——不管 domain 的
+    /// 调用方（属性表单）不该因为一次改名就把 domain 清空
     #[serde(default)]
-    pub domains: Vec<Uuid>,
+    pub domains: Option<Vec<Uuid>>,
     /// 可以当宾语的类。只对 relation 有意义
     #[serde(default)]
-    pub ranges: Vec<Uuid>,
+    pub ranges: Option<Vec<Uuid>>,
     /// attribute 专用：text | number | date | bool
     #[serde(default)]
     pub datatype: Option<String>,
@@ -232,8 +234,8 @@ pub async fn create_relation_type(
         req.inverse_functional,
         req.description.as_deref().unwrap_or("").trim(),
         kind,
-        &req.domains,
-        &req.ranges,
+        req.domains.as_deref().unwrap_or(&[]),
+        req.ranges.as_deref().unwrap_or(&[]),
         req.datatype.as_deref(),
         req.unit.as_deref().map(str::trim).filter(|s| !s.is_empty()),
     )
@@ -269,6 +271,9 @@ pub async fn update_relation_type(
         req.description.as_deref().unwrap_or("").trim(),
         req.datatype.as_deref(),
         req.unit.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        // 请求里没带这两个字段就不动它们——属性表单不管 domain
+        req.domains.as_deref(),
+        req.ranges.as_deref(),
     )
     .await?;
     let _ = utopia_store::audit::record(
