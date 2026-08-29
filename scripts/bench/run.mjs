@@ -121,8 +121,19 @@ async function main() {
       name: "bench " + label + " " + stamp,
     })
   ).id;
-  // 自动扩本体会在测量中途改本体，那样两组比的就不是同一件事了
-  psql("UPDATE knowledge_bases SET auto_extend_ontology=FALSE WHERE id='" + kb + "'");
+  // **自动扩本体默认关掉**：它会在测量中途改本体，那样两组比的就不是同一件事了。
+  //
+  // 但关掉它也就意味着**冷启动从来没被量过**——新建的库只有 10 个默认关系，
+  // 产品的答案是抽取完自动补本体（bootstrap_ontology，列默认值 true），
+  // 而这里一律 FALSE，于是台子报出来的 related_to 占比一直是「机制被关掉之后」
+  // 的数字。拿它去说产品冷启动有多糟，是拿自己的开关当结论。
+  //
+  // 所以给它一个开关。开着跑量的是**产品的实际行为**，关着跑量的是**单一变量**，
+  // 两者都要，别只留一个。
+  const autoExtend = "auto-extend" in args;
+  if (!autoExtend) {
+    psql("UPDATE knowledge_bases SET auto_extend_ontology=FALSE WHERE id='" + kb + "'");
+  }
   await sleep(6000);
 
   // **导入与灌语料的先后次序，量的是两件不同的事。**
@@ -286,6 +297,9 @@ async function main() {
         ontology: args.ontology ? path.basename(args.ontology) : null,
         kb_id: kb,
         order: ontologyFirst ? "ontology-first" : "documents-first",
+        // 开关写进结果里而不是靠人记得——上一个没写进去的前提（本体规模是
+        // 什么时候量的）已经害我得出过一个错结论
+        auto_extend_ontology: autoExtend,
         // **两份，各自标明什么时候量的。** 只报一份就会被读成"抽取用的提示词
         // 有这么大"，而先灌后导时抽取根本没见过它——这个误读已经发生过一次
         ontology_at_extraction: atExtraction,
