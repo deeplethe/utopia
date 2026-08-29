@@ -319,7 +319,8 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
         let grown: Vec<String> = parents
             .iter()
             .filter(|(child, ps)| {
-                !datatype_classes.contains(*child) && ps.iter().any(|p| datatype_classes.contains(p))
+                !datatype_classes.contains(*child)
+                    && ps.iter().any(|p| datatype_classes.contains(p))
             })
             .map(|(child, _)| child.clone())
             .collect();
@@ -843,7 +844,15 @@ schema:knows a rdf:Property ;
         let keys: Vec<&str> = p.classes.iter().map(|c| c.key.as_str()).collect();
         // Text / Number / Date / Time 声明的是 `a rdfs:Class, schema:DataType`，
         // 只看前半截就会建出叫 text、number 的实体类型来
-        for gone in ["text", "number", "date", "time", "url", "integer", "data_type"] {
+        for gone in [
+            "text",
+            "number",
+            "date",
+            "time",
+            "url",
+            "integer",
+            "data_type",
+        ] {
             assert!(!keys.contains(&gone), "{gone} 不该是实体类型：{keys:?}");
         }
         assert!(keys.contains(&"organization") && keys.contains(&"person"));
