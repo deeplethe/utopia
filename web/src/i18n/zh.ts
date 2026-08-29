@@ -111,6 +111,36 @@ export const zh: Strings = {
     searchPlaceholder: "搜索文档…",
     noResults: "没有匹配。",
   },
+  alerts: {
+    title: "告警",
+    badgeLabel: "告警",
+    empty: "没有需要处理的",
+    emptyHint: "摄入、同步、模型端点出问题时会出现在这里，而不是只留在日志里。",
+    markAllRead: "全部标为已读",
+    showResolved: "显示已解决",
+    hideResolved: "隐藏已解决",
+    resolved: "已解决",
+    system: "系统",
+    unread: "未读",
+    kinds: {
+      "source.sync_failed": {
+        title: (n: number) => `${n} 个来源同步失败`,
+        resolved: "来源已恢复同步",
+        hint: "它们没有带进新内容。去来源设置里看一下。",
+      },
+      "llm.unreachable": {
+        title: () => "模型端点没有给出可用的回答",
+        resolved: "模型端点已恢复",
+        hint: "抽取与向量化已停摆。去系统设置里检查端点地址。",
+      },
+    } as Record<
+      string,
+      { title: (n: number) => string; resolved: string; hint: string } | undefined
+    >,
+    unknownKind: (kind: string, n: number) =>
+      n > 0 ? `${kind}（${n}）` : kind,
+  },
+
   nav: {
     workspaceLabel: "工作区",
     kbLabel: "知识库",
@@ -458,7 +488,7 @@ export const zh: Strings = {
     searchInSubgraph: "在子图中搜索…",
     backToOverview: "← 全图",
     emptyBody:
-      "图谱是空的。上传文档并在「设置」里配置对话模型——实体与关系会被自动抽取。",
+      "图谱是空的。请先在「设置」里配置对话模型，然后在「文库」中上传文档——实体与关系会被自动抽取。",
     facts: "条事实",
     noFacts: "这个实体还没有事实",
     confidence: "置信度",

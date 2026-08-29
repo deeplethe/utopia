@@ -262,7 +262,7 @@ pub async fn finish_sync(
         // 内容类告警给 editor，不只给 admin：管理员需要知道"该修连接了"，
         // 但**配这个源的人**更需要知道"你的东西没进来"
         Some(msg) => {
-            let (_, is_new) = crate::alerts::raise(
+            let (_, changed) = crate::alerts::raise(
                 pool,
                 crate::alerts::NewAlert {
                     kb_id: Some(kb_id),
@@ -276,7 +276,7 @@ pub async fn finish_sync(
                 },
             )
             .await?;
-            Ok(is_new)
+            Ok(changed)
         }
         // 自愈：这个源好了就从聚合里摘掉。同库另外两个源还失败着的话
         // 告警继续亮，只是少了一个对象

@@ -38,10 +38,10 @@ pub async fn observe_job_failure(state: &AppState, err: &anyhow::Error) {
     )
     .await
     {
-        Ok((_, is_new)) => {
-            // 只在**第一次**推：端点断了之后每个任务都会撞上，
+        Ok((_, changed)) => {
+            // 只在**有变化**时推：端点断了之后每个任务都会撞上，
             // 每次都点亮所有人的角标等于把这条告警变成噪音
-            if is_new {
+            if changed {
                 state.emit_alert();
             }
         }

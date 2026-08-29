@@ -557,12 +557,40 @@ export interface ConversationMessage {
   created_at: string;
 }
 
+/** 告警中心的一条（0005）。跨库：`kb_id` 为空是系统级。 */
+export type Alert = {
+  id: string;
+  kb_id: string | null;
+  /** 系统级告警没有库名 */
+  kb_name: string | null;
+  severity: "info" | "warning" | "error";
+  /** `source.sync_failed` / `llm.unreachable` —— 措辞在 i18n 里按这个查 */
+  kind: string;
+  subject_type: string | null;
+  subject_ids: string[];
+  /** 按 subject id 索引的详情；系统级的是 `{ error }` */
+  detail: Record<string, unknown>;
+  first_seen: string;
+  last_seen: string;
+  /** 落下了 = 自愈或人工关闭，对所有人同时消失 */
+  resolved_at: string | null;
+  /** **我**读没读过。别人读过不影响这一位 */
+  read: boolean;
+};
+
 export const api = {
   health: () =>
     request<{ status: string; name: string; version: string }>(
       "/api/v1/health",
     ),
   me: () => request<User>("/api/v1/auth/me"),
+  alerts: (includeResolved = false) =>
+    request<Alert[]>(`/api/v1/alerts?include_resolved=${includeResolved}`),
+  alertsUnread: () => request<{ unread: number }>("/api/v1/alerts/unread"),
+  alertRead: (id: string) =>
+    request<{ ok: boolean }>(`/api/v1/alerts/${id}/read`, { method: "POST" }),
+  alertsReadAll: () =>
+    request<{ ok: boolean }>("/api/v1/alerts/read-all", { method: "POST" }),
   login: (email: string, password: string) =>
     request<{ user: User }>("/api/v1/auth/login", {
       method: "POST",

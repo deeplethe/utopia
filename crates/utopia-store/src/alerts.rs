@@ -20,11 +20,8 @@ pub mod kind {
     pub const LLM_UNREACHABLE: &str = "llm.unreachable";
 }
 
-/// 上报一条。同 `(kb_id, kind)` 已有未解决的就**并进去**：追加 subject、
-/// 推 `last_seen`、合并 detail，不插新行也不改 `first_seen`。
-///
-/// 返回 `(alert_id, is_new)`。`is_new` 给调用方决定要不要推事件——
-/// 一个源每 5 分钟失败一次，不该每次都把所有人的角标点亮。
+/// 一次上报的内容。打包成结构体不只是为了参数个数——调用点写
+/// `severity: "error"` 比"第三个位置参数是 error"好读得多，而告警源只会越来越多。
 pub struct NewAlert<'a> {
     /// None = 系统级
     pub kb_id: Option<Uuid>,
@@ -40,6 +37,16 @@ pub struct NewAlert<'a> {
     pub detail: serde_json::Value,
 }
 
+/// 上报一条。同 `(kb_id, kind)` 已有未解决的就**并进去**：追加 subject、
+/// 推 `last_seen`、合并 detail，不插新行也不改 `first_seen`。
+///
+/// **有新对象加入时清掉这条的已读。** 不这么做的话，"3 个源失败"读过之后
+/// 第 4 个源坏了没有任何信号——聚合就成了藏信息。反过来，同一个对象反复失败
+/// 不清已读，否则一个抖动的源能把角标刷成常亮，而那是通往"学会无视"的路。
+/// 分界线是**有没有新东西**，不是**有没有新事件**。
+///
+/// 返回 `(alert_id, changed)`。`changed` = 新建的，或者有新对象加入——
+/// 调用方据此决定要不要推事件。
 pub async fn raise(pool: &PgPool, a: NewAlert<'_>) -> AppResult<(Uuid, bool)> {
     let NewAlert {
         kb_id,
@@ -50,25 +57,41 @@ pub async fn raise(pool: &PgPool, a: NewAlert<'_>) -> AppResult<(Uuid, bool)> {
         subject,
         detail,
     } = a;
-    // 冲突目标是那个 COALESCE 表达式索引，所以 ON CONFLICT 也得写成表达式。
-    // xmax = 0 是"这一行是本次 INSERT 插进去的"的判据——ON CONFLICT DO UPDATE
-    // 无论走哪条路都 RETURNING，光看返回值分不出新旧
-    let row: (Uuid, bool) = sqlx::query_as(
-        "INSERT INTO alerts
-             (id, kb_id, severity, kind, min_role, subject_type, subject_ids, detail)
-         VALUES ($1, $2, $3, $4, $5, $6,
-                 CASE WHEN $7::uuid IS NULL THEN '{}'::uuid[] ELSE ARRAY[$7::uuid] END,
-                 $8)
-         ON CONFLICT (COALESCE(kb_id, '00000000-0000-0000-0000-000000000000'::uuid), kind)
-             WHERE resolved_at IS NULL
-         DO UPDATE SET
-             last_seen = now(),
-             severity  = EXCLUDED.severity,
-             detail    = alerts.detail || EXCLUDED.detail,
-             -- 数组去重合并：同一个源反复失败不该在 subject_ids 里堆一串重复
-             subject_ids = ARRAY(
-                 SELECT DISTINCT unnest(alerts.subject_ids || EXCLUDED.subject_ids))
-         RETURNING id, (xmax = 0)",
+    // CTE 里的 prev 看到的是语句执行**前**的快照，所以能拿到旧的 subject_ids——
+    // ON CONFLICT DO UPDATE 的 RETURNING 只给得到新值。
+    // xmax = 0 是"这一行是本次 INSERT 插进去的"的判据：走哪条路都会 RETURNING，
+    // 光看返回值分不出新旧
+    let row: (Uuid, bool, bool) = sqlx::query_as(
+        "WITH prev AS (
+             SELECT subject_ids FROM alerts
+             WHERE kind = $4 AND resolved_at IS NULL
+               AND COALESCE(kb_id, '00000000-0000-0000-0000-000000000000'::uuid)
+                 = COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)
+         ),
+         up AS (
+             INSERT INTO alerts
+                 (id, kb_id, severity, kind, min_role, subject_type, subject_ids, detail)
+             VALUES ($1, $2, $3, $4, $5, $6,
+                     CASE WHEN $7::uuid IS NULL THEN '{}'::uuid[] ELSE ARRAY[$7::uuid] END,
+                     $8)
+             ON CONFLICT (COALESCE(kb_id, '00000000-0000-0000-0000-000000000000'::uuid), kind)
+                 WHERE resolved_at IS NULL
+             DO UPDATE SET
+                 last_seen = now(),
+                 severity  = EXCLUDED.severity,
+                 detail    = alerts.detail || EXCLUDED.detail,
+                 -- 数组去重合并：同一个源反复失败不该在 subject_ids 里堆一串重复
+                 subject_ids = ARRAY(
+                     SELECT DISTINCT unnest(alerts.subject_ids || EXCLUDED.subject_ids))
+             RETURNING id, (xmax = 0) AS is_new
+         )
+         SELECT up.id, up.is_new,
+                -- `= ANY(子查询)` 会被当成集合形式，拿 uuid 去比 uuid[]。
+                -- 要的是这个 id 在不在那一行的数组里，所以走 EXISTS 加数组版 ANY
+                $7::uuid IS NOT NULL
+                AND NOT EXISTS (SELECT 1 FROM prev WHERE $7::uuid = ANY(prev.subject_ids))
+                AS subject_added
+         FROM up",
     )
     .bind(Uuid::now_v7())
     .bind(kb_id)
@@ -80,7 +103,15 @@ pub async fn raise(pool: &PgPool, a: NewAlert<'_>) -> AppResult<(Uuid, bool)> {
     .bind(detail)
     .fetch_one(pool)
     .await?;
-    Ok(row)
+    let (id, is_new, subject_added) = row;
+    if subject_added && !is_new {
+        // 有新东西坏了，所有人都该重新看一眼
+        sqlx::query("DELETE FROM alert_reads WHERE alert_id = $1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+    }
+    Ok((id, is_new || subject_added))
 }
 
 /// 某个对象好了。**不是整条告警好了**——一个库里三个源一起失败聚成一条，

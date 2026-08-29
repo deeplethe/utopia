@@ -121,6 +121,44 @@ export const en = {
     searchPlaceholder: "Search the docs…",
     noResults: "No matches.",
   },
+  // 告警的措辞在客户端，按 kind 查——服务端只发 kind 与 detail，
+  // 不产出展示文案（docs/decisions/0004）
+  alerts: {
+    title: "Alerts",
+    badgeLabel: "Alerts",
+    empty: "Nothing needs attention",
+    emptyHint:
+      "Ingestion, sync and model failures show up here instead of only in the logs.",
+    markAllRead: "Mark all read",
+    showResolved: "Show resolved",
+    hideResolved: "Hide resolved",
+    resolved: "Resolved",
+    system: "System",
+    unread: "Unread",
+    // kind → 一句说清出了什么事。第二句说该做什么——这才是告警比日志多出来的东西
+    kinds: {
+      "source.sync_failed": {
+        title: (n: number) =>
+          n === 1 ? "A source failed to sync" : `${n} sources failed to sync`,
+        // 解决了的告警对象数必然是 0——那正是它解决的原因。
+        // 拿它算数量会写出"0 sources failed to sync"，所以已解决态另说一句
+        resolved: "Sources are syncing again",
+        hint: "Nothing new came in from them. Check the source's settings.",
+      },
+      "llm.unreachable": {
+        title: () => "The model endpoint gave no usable answer",
+        resolved: "The model endpoint is answering again",
+        hint: "Extraction and embedding are stopped. Check the endpoint URL in system settings.",
+      },
+    } as Record<
+      string,
+      { title: (n: number) => string; resolved: string; hint: string } | undefined
+    >,
+    // 没见过的 kind 也要能显示：新告警源上线时前端可能还没更新
+    unknownKind: (kind: string, n: number) =>
+      n > 0 ? `${kind} (${n})` : kind,
+  },
+
   nav: {
     workspaceLabel: "Workspace",
     kbLabel: "Knowledge base",
@@ -481,8 +519,10 @@ export const en = {
     searchEntity: "Search entities…",
     searchInSubgraph: "Search in subgraph…",
     backToOverview: "← Full graph",
+    // 顺序不是随便排的：模型没配好之前，上传的文档只会排队等着，
+    // 一个实体也抽不出来。先配模型，再传文档
     emptyBody:
-      "The graph is empty. Upload documents and configure a chat model in Settings — entities and relations are extracted automatically.",
+      "The graph is empty. Configure a chat model in Settings first, then upload documents in the Library — entities and relations are extracted automatically.",
     facts: "facts",
     noFacts: "No facts for this entity yet",
     confidence: "confidence",

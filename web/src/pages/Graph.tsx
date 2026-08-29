@@ -883,10 +883,9 @@ export function Graph() {
 
       {empty && (
         <div className="absolute inset-0 grid place-items-center pointer-events-none">
+          {/* 不放标题方块：页面本身就是图谱页，tab 条上也写着，
+              第三遍写"图谱"两个字不带任何信息。空状态该说的是下一步做什么 */}
           <div className="text-center text-sm text-neutral-500 max-w-xs">
-            <div className="glass mx-auto mb-3 h-14 w-14 rounded-2xl grid place-items-center text-lg font-bold text-neutral-300">
-              {S.nav.graph}
-            </div>
             {S.graph.emptyBody}
           </div>
         </div>

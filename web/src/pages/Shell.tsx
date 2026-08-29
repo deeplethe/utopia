@@ -14,8 +14,10 @@ import { api, ApiError } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
 import { Dropdown, GithubMark, Wordmark } from "../ui";
+import { AlertBell } from "./AlertBell";
 import { UserMenu } from "./UserMenu";
 import { ServerDown } from "./ServerDown";
+import { useAlertEvents } from "../useAlertEvents";
 import { useKbEvents } from "../useKbEvents";
 import { usePageTitle } from "../useTitle";
 
@@ -45,6 +47,8 @@ export function Shell() {
   usePageTitle(S.app.name, tabLabel);
   // 全局唯一的 KB 事件流连接：文档/审核状态实时刷新（替轮询）
   useKbEvents(kb?.id);
+  // 告警流是全局的：角标跨库，而系统级告警根本没有库
+  useAlertEvents();
 
   if (me.isPending) {
     return (
@@ -104,6 +108,9 @@ export function Shell() {
               <span className="u-num text-[11px]">v{health.data.version}</span>
             )}
           </a>
+          {/* 告警角标：跨库的未读数。失败此前只留在日志与 jobs.last_error 里，
+              界面上一份文档也不会变颜色（0005） */}
+          <AlertBell />
           {/* 用户菜单：个人信息 / 系统管理（仅管理员）/ 登出 */}
           <div className="ml-1.5">
             <UserMenu user={me.data} />
