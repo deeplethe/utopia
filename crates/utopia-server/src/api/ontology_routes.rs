@@ -1274,7 +1274,7 @@ pub async fn type_resolution_apply(
         "knowledge_base",
         Some(kb_id),
         json!({ "retyped": outcome.retyped, "for_review": outcome.for_review.len(),
-                "left_alone": outcome.left_alone, "batch": outcome.batch }),
+                "left_alone": outcome.left_alone.len(), "batch": outcome.batch }),
     )
     .await;
     Ok(Json(json!(outcome)))

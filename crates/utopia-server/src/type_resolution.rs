@@ -49,6 +49,10 @@ pub struct TypeSuggestion {
     pub candidates: Vec<utopia_core::models::TypeCandidate>,
     /// 第二路候选：语境相似的已定类实体，按类投票
     pub neighbours: Vec<NeighbourVote>,
+    /// 粗类的全部后代。裁决据此分档：选中的类在里面 = 往下走一格，
+    /// 不在 = 换了分类轴。**不序列化**——它是给分档用的，不是给人看的
+    #[serde(skip)]
+    pub descendants: std::collections::HashSet<Uuid>,
 }
 
 /// 近邻投出来的一个类。
@@ -183,6 +187,7 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
             profile: profiles[i].clone(),
             candidates,
             neighbours,
+            descendants,
         });
     }
     Ok(out)
@@ -239,11 +244,12 @@ struct VerdictReply {
     verdicts: Vec<Verdict>,
 }
 
-/// 高于这条线才自动改类，其余进提案让人点。
+/// 低于这条线的一律进人工，无论它落在哪。
 ///
-/// 定在 0.85 而不是更低：改类**不进时间轴**（它是 entities 上的一次 UPDATE 加
-/// 一行账），所以错了不会在实体历史里留下一条刺眼的记录，也就没那么容易被
-/// 发现。可撤销不等于会被撤销——没人看见的错不会有人去撤。
+/// **它不是灰区的主判据**：实测模型自报的 confidence 是双峰的——15 条全 ≥0.85、
+/// 4 条 null，中间一个都没有。自报置信度是文风不是概率，模型挑的是一个
+/// 跟自己语气相称的数字。拿它当闸门，闸门什么也拦不住。
+/// 真正分档的是下面那条"跨没跨分类轴"，这条只兜住偶尔出现的低分。
 const AUTO_THRESHOLD: f32 = 0.85;
 
 /// 一次消解的结果，给调用方交代清楚三档各去了哪里。
@@ -252,11 +258,26 @@ pub struct ResolutionOutcome {
     pub batch: Option<Uuid>,
     /// 自动改掉的
     pub retyped: u32,
-    /// 有候选但置信度不够，留给人的
+    /// 跨了分类轴、或置信度不够，留给人的
     pub for_review: Vec<ReviewItem>,
-    /// 裁决说"都不是"的。**这一档必须报出来**：它跟"没跑"长得一样，
-    /// 而两者的含义完全相反
-    pub left_alone: usize,
+    /// 裁决说"都不是"的，**连同它给的理由**。
+    ///
+    /// 只报一个数是不够的：这一步的整个设计押在"选择都不是是个体面答案"上，
+    /// 而那就是最大的一档——不记理由，最大的那一档就是不透明的。
+    /// 跟本体导入预览那条"必须说得出为什么"是同一条。
+    pub left_alone: Vec<DeclineNote>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct DeclineNote {
+    pub name: String,
+    pub coarse: String,
+    pub specific_type: Option<String>,
+    /// 模型给的理由；它压根没提到这个实体时为空
+    pub reason: Option<String>,
+    /// 检索给的头一个候选。理由说不通时，看这个就知道是检索没找着
+    /// 还是裁决没看上
+    pub top_candidate: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -267,6 +288,8 @@ pub struct ReviewItem {
     pub choice: String,
     pub confidence: f32,
     pub reason: Option<String>,
+    /// 选中的类**不在**粗类的子树里——它换的是分类轴，不是往下走一格
+    pub crosses_axis: bool,
 }
 
 /// 跑一遍类型消解：检索候选 → 裁决 → 三档处置。
@@ -281,7 +304,7 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
             batch: None,
             retyped: 0,
             for_review: Vec::new(),
-            left_alone: 0,
+            left_alone: Vec::new(),
         });
     }
 
@@ -309,23 +332,42 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
         items.iter().map(|i| (i.name.as_str(), i)).collect();
     let mut picks: Vec<(Uuid, Uuid)> = Vec::new();
     let mut for_review: Vec<ReviewItem> = Vec::new();
-    let mut left_alone = 0usize;
+    let mut left_alone: Vec<DeclineNote> = Vec::new();
+    let mut decided: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let decline = |item: &TypeSuggestion, reason: Option<String>| DeclineNote {
+        name: item.name.clone(),
+        coarse: item.coarse.clone(),
+        specific_type: item.specific_type.clone(),
+        reason,
+        top_candidate: item.candidates.first().map(|c| c.key.clone()),
+    };
     for v in &parsed.verdicts {
         let Some(item) = by_name.get(v.name.as_str()) else {
             continue;
         };
+        decided.insert(item.name.as_str());
         let Some(choice) = v.choice.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
-            left_alone += 1;
+            left_alone.push(decline(item, v.reason.clone()));
             continue;
         };
         // 只认候选清单里的 key。清单之外的答案不是"更好的判断"，
         // 是模型在凭记忆写一个 schema.org 里的名字——本体里未必有
         let Some(target) = item.candidates.iter().find(|c| c.key == choice) else {
-            left_alone += 1;
+            left_alone.push(decline(
+                item,
+                Some(format!("chose {choice}, which is not among the candidates")),
+            ));
             continue;
         };
         let confidence = v.confidence.unwrap_or(0.0);
-        if confidence >= AUTO_THRESHOLD {
+        // **分档看跨没跨分类轴，不看模型自报的那个数字。**
+        //
+        // 在粗类的子树里 = 往下走一格，抽取的判断没被推翻，自动改。
+        // 不在 = 换了一条分类轴（判成 product 的东西落到了 CreativeWork 底下），
+        // 那是重新分类而不是精化，值得一个人看一眼。实测那一轮唯一明确的错
+        //（《中国数据智能》→ publication_issue）正是这一类。
+        let crosses_axis = !item.descendants.contains(&target.id);
+        if confidence >= AUTO_THRESHOLD && !crosses_axis {
             picks.push((item.entity_id, target.id));
         } else {
             for_review.push(ReviewItem {
@@ -335,17 +377,16 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
                 choice: choice.to_string(),
                 confidence,
                 reason: v.reason.clone(),
+                crosses_axis,
             });
         }
     }
     // 裁决压根没提到的实体也算"没动"，否则三档加起来对不上总数
-    left_alone += items.len().saturating_sub(
-        parsed
-            .verdicts
-            .iter()
-            .filter(|v| by_name.contains_key(v.name.as_str()))
-            .count(),
-    );
+    for item in &items {
+        if !decided.contains(item.name.as_str()) {
+            left_alone.push(decline(item, None));
+        }
+    }
 
     let (batch, retyped) = if picks.is_empty() {
         (None, 0)
@@ -414,6 +455,13 @@ fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
          \n\
          confidence is your own 0~1: use above 0.85 only when the candidate's definition \
          plainly describes this entity, not when it is merely the closest of a weak list.\n\
+         \n\
+         reason is required on every verdict, including the nulls — especially the nulls. \
+         When you choose null, say which candidate came closest and what it got wrong \
+         (\"nearest was publication_issue, but that is one issue of a journal, not the \
+         journal\"). A refusal without a reason cannot be acted on: nobody can tell whether \
+         the ontology is missing the class, or the search failed to surface it, or you read \
+         the entity differently.\n\
          \n\
          {}\n\
          \n\
