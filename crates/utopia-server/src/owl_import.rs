@@ -40,7 +40,8 @@ pub enum AttrNote {
     /// 会建成 text：range 是可读字面量但我们表达不了它的类型（`xsd:time` 等）。
     /// 报出原 IRI，人可以改成更合适的类型；但值先落下来，不能因为类型糙就丢知识
     DegradedToText(String),
-    /// 不建：range 的取值本就不该进图谱（二进制、XML 片段、XML 内部标识）
+    /// 不建：抽取器不可能从散文里读出这种值（二进制、XML 片段、XML 内部标识）。
+    /// 建了也永远填不上，只会给每个文本块的提示词多一行死噪音
     UnusableRange(String),
     /// 不建：没写 domain。属性必须挂在一个类上，这是 store 层的硬约束
     NoDomain,
