@@ -192,11 +192,18 @@ pub async fn plan(
     //（FOAF 的 familyName 与 family_name 都成了 family_name）。
     // 只对着库里查是不够的——那样第二个在预览里显示"会新建"，
     // 落库时被 ON CONFLICT 悄悄丢掉，预览就说了假话
-    let mut claimed: HashMap<&str, &str> = HashMap::new();
+    //
+    // **两个命名空间，不是一个**：类进 entity_types、关系与属性进 relation_types，
+    // 各有各的 (kb_id, key) 唯一约束。合成一张表就是凭空多出一条约束——
+    // 而且代价具体：schema.org 的 location / address 是属性，却先被
+    // OMG Commons 的 Location / Address 两个**类**占了名字（类先处理），
+    // 于是抽取时模型点名要 location，库里偏偏没有
+    let mut claimed_class: HashMap<&str, &str> = HashMap::new();
+    let mut claimed_prop: HashMap<&str, &str> = HashMap::new();
 
     let mut classes = Vec::new();
     for c in &proj.classes {
-        let (disposition, conflict_with) = if let Some(prev) = claimed.get(c.key.as_str()) {
+        let (disposition, conflict_with) = if let Some(prev) = claimed_class.get(c.key.as_str()) {
             (Disposition::KeyTaken, Some((*prev).to_string()))
         } else if e_by_iri.contains_key(c.iri.as_str()) {
             (Disposition::Update, None)
@@ -210,7 +217,7 @@ pub async fn plan(
             (Disposition::Create, None)
         };
         if disposition != Disposition::KeyTaken {
-            claimed.insert(c.key.as_str(), c.iri.as_str());
+            claimed_class.insert(c.key.as_str(), c.iri.as_str());
         }
         classes.push(PlannedItem {
             iri: c.iri.clone(),
@@ -236,7 +243,7 @@ pub async fn plan(
     let mut relations = Vec::new();
     let mut attributes = Vec::new();
     for p in &proj.properties {
-        let (disposition, conflict_with) = if let Some(prev) = claimed.get(p.key.as_str()) {
+        let (disposition, conflict_with) = if let Some(prev) = claimed_prop.get(p.key.as_str()) {
             (Disposition::KeyTaken, Some((*prev).to_string()))
         } else if r_by_iri.contains_key(p.iri.as_str()) {
             (Disposition::Update, None)
@@ -246,7 +253,7 @@ pub async fn plan(
             (Disposition::Create, None)
         };
         if disposition != Disposition::KeyTaken {
-            claimed.insert(p.key.as_str(), p.iri.as_str());
+            claimed_prop.insert(p.key.as_str(), p.iri.as_str());
         }
         let mut item = PlannedItem {
             iri: p.iri.clone(),

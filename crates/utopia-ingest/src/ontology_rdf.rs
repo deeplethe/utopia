@@ -386,7 +386,55 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             iri: iri.clone(),
         });
     }
+    order_by_home_namespace(&mut proj);
     Ok(proj)
+}
+
+/// 把**这份文件自己的**词汇表排到前面。
+///
+/// 撞 key 时调用方是先到先得（`owl_import::plan` 里那个 `claimed`），而"先"
+/// 此前来自 IRI 的字典序——于是 `http://` 排在 `https://` 前面，被引用的
+/// 小词汇表系统性地压过主词汇表。schema.org 那份文件里合了 50 个命名空间，
+/// 主词汇表声明了其中 94% 的词，却输掉了 141 场撞车里的 114 场：
+/// `location` 输给 OMG Commons、`country` 输给 unece.org、
+/// `organization` 输给 purl.org。丢的正是最该用的那批词。
+///
+/// 判据是**声明得最多的那个命名空间就是文件的主人**——不认 schema.org
+/// 这个名字，任何词汇表都适用。同数时取字典序小的，保证可重复。
+fn order_by_home_namespace(proj: &mut OwlProjection) {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for iri in proj
+        .classes
+        .iter()
+        .map(|c| c.iri.as_str())
+        .chain(proj.properties.iter().map(|p| p.iri.as_str()))
+    {
+        *counts.entry(namespace_of(iri)).or_insert(0) += 1;
+    }
+    // max_by_key 取的是最后一个最大值，而 BTreeMap 按 key 升序——
+    // 于是同数时拿到字典序最大的那个。要的是最小的，所以自己比
+    let Some(home) = counts
+        .into_iter()
+        .fold(None::<(&str, usize)>, |best, (ns, n)| match best {
+            Some((_, bn)) if bn >= n => best,
+            _ => Some((ns, n)),
+        })
+        .map(|(ns, _)| ns.to_string())
+    else {
+        return;
+    };
+    // 稳定排序：只把主词汇表提到前面，其余保持原有的字典序
+    proj.classes.sort_by_key(|c| namespace_of(&c.iri) != home);
+    proj.properties
+        .sort_by_key(|p| namespace_of(&p.iri) != home);
+}
+
+/// IRI 去掉局部名剩下的那段（含结尾的 `#` 或 `/`）。
+fn namespace_of(iri: &str) -> &str {
+    match iri.rfind(['#', '/']) {
+        Some(i) => &iri[..=i],
+        None => iri,
+    }
 }
 
 /// 数据类型 IRI → 我们的四种。自身叫得上名就用自身，否则沿 `rdfs:subClassOf`
@@ -944,5 +992,40 @@ schema:knows a rdf:Property ;
                 p.unprojected
             );
         }
+    }
+
+    /// 一份文件里合了两个词汇表，主词汇表的 IRI 用 https、被引用的用 http——
+    /// 字典序下 http 在前，主词汇表就输了。这是 schema.org 那份文件的形状。
+    const TWO_VOCABS: &str = r#"
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix home: <https://home.example/> .
+@prefix cited: <http://cited.example/> .
+
+home:Location a rdfs:Class ; rdfs:label "Location" .
+home:Country a rdfs:Class ; rdfs:label "Country" .
+home:Person a rdfs:Class ; rdfs:label "Person" .
+home:Organization a rdfs:Class ; rdfs:label "Organization" .
+cited:Location a rdfs:Class ; rdfs:label "Location (cited)" .
+
+home:worksAt a rdf:Property ; rdfs:label "worksAt" .
+home:knows a rdf:Property ; rdfs:label "knows" .
+cited:worksAt a rdf:Property ; rdfs:label "worksAt (cited)" .
+"#;
+
+    #[test]
+    fn the_files_own_vocabulary_wins_a_key_collision() {
+        let p = project(TWO_VOCABS.as_bytes(), RdfFormat::Turtle).unwrap();
+        // 撞车由调用方先到先得地裁决，所以顺序就是裁决。
+        // 主词汇表声明得最多，它必须排在前面——否则 `http://` < `https://`
+        // 这条字典序会让被引用的词汇表赢走 location、country、organization
+        let first_location = p.classes.iter().find(|c| c.key == "location").unwrap();
+        assert!(
+            first_location.iri.starts_with("https://home.example/"),
+            "输给了 {}",
+            first_location.iri
+        );
+        let first_works = p.properties.iter().find(|x| x.key == "works_at").unwrap();
+        assert!(first_works.iri.starts_with("https://home.example/"));
     }
 }
