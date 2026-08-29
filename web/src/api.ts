@@ -864,6 +864,8 @@ export const api = {
       entity_types: EntityTypeView[];
       relation_types: RelationTypeView[];
       misses: OntologyMiss[];
+      /** 已忽略的，连同它此后继续累积的计数。抑制照旧，只是看得见 */
+      dismissed_misses: OntologyMiss[];
     }>(`/api/v1/kbs/${kbId}/ontology`),
   createEntityType: (kbId: string, body: Record<string, unknown>) =>
     request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/entity-types`, {
@@ -918,6 +920,11 @@ export const api = {
     ),
   dismissMiss: (kbId: string, kind: string, key: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/dismiss`, {
+      method: "POST",
+      body: JSON.stringify({ kind, key }),
+    }),
+  restoreMiss: (kbId: string, kind: string, key: string) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/restore`, {
       method: "POST",
       body: JSON.stringify({ kind, key }),
     }),

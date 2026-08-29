@@ -168,6 +168,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/ontology/misses/dismiss",
             post(ontology_routes::dismiss_miss),
         )
+        .route(
+            "/kbs/{id}/ontology/misses/restore",
+            post(ontology_routes::restore_miss),
+        )
         .route("/kbs/{id}/ontology/suggest", post(ontology_routes::suggest))
         // OWL 导入：预览与落库分开两个端点，绝不让上传即改本体。
         // 两者跑同一个 plan——分开的代码路径会分叉，而分叉意味着确认之后

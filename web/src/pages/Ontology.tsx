@@ -88,7 +88,7 @@ export function Ontology() {
   if (data.isPending) return <Loading>{S.nav.loading}</Loading>;
   if (data.isError) return <Loading>{(data.error as Error).message}</Loading>;
 
-  const { entity_types, relation_types, misses } = data.data;
+  const { entity_types, relation_types, misses, dismissed_misses } = data.data;
   // 属性不进 Properties 列表：它们挂在类下，在类详情区编辑
   const relations = relation_types.filter((r) => r.kind !== "attribute");
   const selectedClass =
@@ -257,6 +257,7 @@ export function Ontology() {
               <MissesPanel
                 kbId={kb.id}
                 misses={misses}
+                dismissedMisses={dismissed_misses ?? []}
                 onChanged={refresh}
                 onError={onError}
               />
@@ -1283,14 +1284,18 @@ function PropertyForm({
 function MissesPanel({
   kbId,
   misses,
+  dismissedMisses,
   onChanged,
   onError,
 }: {
   kbId: string;
   misses: OntologyMiss[];
+  dismissedMisses: OntologyMiss[];
   onChanged: () => void;
   onError: (e: unknown) => void;
 }) {
+  // 默认收起：已忽略的是**背景信息**，不该跟待处理的挤在一起抢注意力
+  const [showDismissed, setShowDismissed] = useState(false);
   const [proposals, setProposals] = useState<OntologyProposals | null>(null);
   // 最近一次采纳，供撤销。只留最近一次——旧批次要撤销走审计台账，
   // 那里本来就记着每次采纳动了哪个关系、多少条
@@ -1329,6 +1334,12 @@ function MissesPanel({
   const dismiss = useMutation({
     mutationFn: ({ kind, key }: { kind: string; key: string }) =>
       api.dismissMiss(kbId, kind, key),
+    onSuccess: onChanged,
+    onError,
+  });
+  const restore = useMutation({
+    mutationFn: ({ kind, key }: { kind: string; key: string }) =>
+      api.restoreMiss(kbId, kind, key),
     onSuccess: onChanged,
     onError,
   });
@@ -1633,6 +1644,47 @@ function MissesPanel({
               </button>
             </span>
           ))}
+        </div>
+      )}
+      {dismissedMisses.length > 0 && (
+        <div className="mt-3 border-t border-white/5 pt-3">
+          <button
+            onClick={() => setShowDismissed((v) => !v)}
+            className="text-xs text-neutral-500 hover:text-neutral-300"
+          >
+            {showDismissed ? "▾" : "▸"} {S.ontology.dismissed(dismissedMisses.length)}
+          </button>
+          {showDismissed && (
+            <>
+              <p className="text-xs text-neutral-600 mt-1.5 mb-2">
+                {S.ontology.dismissedHint}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {dismissedMisses.map((m) => (
+                  <span
+                    key={`d:${m.kind}:${m.key}`}
+                    className="glass rounded-full px-2.5 py-1 text-xs flex items-center gap-1.5 opacity-60"
+                    title={m.example ?? ""}
+                  >
+                    <Chip tone={m.kind === "entity_type" ? "info" : "violet"}>
+                      {m.kind === "entity_type" ? "C" : "P"}
+                    </Chip>
+                    <span className="font-mono text-neutral-400 line-through">
+                      {m.key}
+                    </span>
+                    <span className="text-neutral-500">×{m.count}</span>
+                    <button
+                      onClick={() => restore.mutate({ kind: m.kind, key: m.key })}
+                      className="text-neutral-600 hover:text-neutral-200"
+                      title={S.ontology.restore}
+                    >
+                      ↺
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
       {/* 系统自己动了本体，必须让人看见——只记在审计台账里不算可见。

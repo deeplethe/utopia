@@ -488,14 +488,24 @@ pub async fn record_miss(
     example: Option<&str>,
 ) -> AppResult<()> {
     sqlx::query(
-        // 已被用户拒绝的不再累加：否则计数会把"不要"重新顶成一个待处理信号
+        // **被拒绝过的照样累加。**
+        //
+        // 从前这里带着 `WHERE dismissed_at IS NULL`，理由是"否则计数会把'不要'
+        // 重新顶成一个待处理信号"。那个理由针对的是**呈现**，用的手段却是
+        // **停止计数**——两件事被绑在一起了，代价是一次点击变成永久失明：
+        // 第一篇里出现一次的说法被忽略掉，后面二十篇都在用它，计数仍停在 1，
+        // 谁也不知道当初那个判断已经不成立，那批事实永远留在兜底谓词上。
+        //
+        // 用户是对**当时看得见的证据**做的判断，不是对所有时间。所以计数照记，
+        // 抑制交给读取侧：`list_misses` 仍然只返回未忽略的，提案与自动扩本体
+        // 一步没变；已忽略的连同更新后的计数走 `list_dismissed_misses`，
+        // 在面板上单列一处，人看见涨到 40 了可以自己撤回
         "INSERT INTO ontology_misses (kb_id, kind, key, example)
          VALUES ($1, $2, left($3, 80), left($4, 200))
          ON CONFLICT (kb_id, kind, key)
          DO UPDATE SET count = ontology_misses.count + 1,
                        example = COALESCE(EXCLUDED.example, ontology_misses.example),
-                       updated_at = now()
-         WHERE ontology_misses.dismissed_at IS NULL",
+                       updated_at = now()",
     )
     .bind(kb_id)
     .bind(kind)
@@ -517,8 +527,40 @@ pub async fn list_misses(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<OntologyMi
     .await?)
 }
 
+/// 已被忽略的说法，连同**它此后继续累积的计数**。
+///
+/// 存在的理由是忽略这个动作曾经是单向门：点下去之后既不再呈现、也不再计数，
+/// 于是"当时只出现过一次"这个判断依据一旦过期，没有任何人看得见。
+/// 这个列表是那扇门上的窗——抑制照旧，但看得见抑制掉的是什么、现在有多重。
+pub async fn list_dismissed_misses(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<OntologyMiss>> {
+    Ok(sqlx::query_as(
+        "SELECT kind, key, example, count FROM ontology_misses
+         WHERE kb_id = $1 AND dismissed_at IS NOT NULL
+         ORDER BY count DESC, updated_at DESC LIMIT 50",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 撤回一次忽略：这个说法重新进入提案与自动扩本体。
+pub async fn restore_miss(pool: &PgPool, kb_id: Uuid, kind: &str, key: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE ontology_misses SET dismissed_at = NULL, updated_at = now()
+         WHERE kb_id = $1 AND kind = $2 AND key = $3 AND dismissed_at IS NOT NULL",
+    )
+    .bind(kb_id)
+    .bind(kind)
+    .bind(key)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// 用户说"不要这个"。**标记而非删除**——删掉的话下一次抽取遇到同一个词
 /// 原样插回来，用户的拒绝活不过一轮抽取。自动扩展路径也据此绕开。
+///
+/// 可撤回（见 [`restore_miss`]），且撤回之后计数是连续的——忽略期间照样在记。
 pub async fn dismiss_miss(pool: &PgPool, kb_id: Uuid, kind: &str, key: &str) -> AppResult<()> {
     sqlx::query(
         "UPDATE ontology_misses SET dismissed_at = now()

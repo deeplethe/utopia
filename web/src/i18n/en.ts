@@ -808,6 +808,12 @@ export const en = {
     missesHint:
       "The extractor produced these outside your ontology (they fell back to concept / related to). They are signals for extending the ontology.",
     dismiss: "Dismiss",
+    dismissed: (n: number) => `Dismissed (${n})`,
+    /* 数字是**忽略之后**还在涨的那个——这一行的全部意义就在于此：
+       当初"只出现过一次"的判断依据可能早就不成立了 */
+    dismissedHint:
+      "Still counted, but kept out of suggestions. If one has grown since you dismissed it, restore it.",
+    restore: "Restore",
     suggest: "Suggest with AI",
     suggesting: "Analyzing…",
     noMisses: "No unmatched types — the ontology covers your corpus.",

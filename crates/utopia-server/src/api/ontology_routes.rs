@@ -35,10 +35,15 @@ pub async fn get(
     let entity_types = utopia_store::ontology::entity_type_views(&state.pool, kb_id).await?;
     let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
     let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
+    // 已忽略的单列一路：抑制照旧（提案与自动扩本体只看上面那份），
+    // 但让人看得见抑制掉了什么、现在涨到多少
+    let dismissed_misses =
+        utopia_store::ontology::list_dismissed_misses(&state.pool, kb_id).await?;
     Ok(Json(json!({
         "entity_types": entity_types,
         "relation_types": relation_types,
         "misses": misses,
+        "dismissed_misses": dismissed_misses,
     })))
 }
 
@@ -327,6 +332,17 @@ pub async fn dismiss_miss(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     utopia_store::ontology::dismiss_miss(&state.pool, kb_id, &req.kind, &req.key).await?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+pub async fn restore_miss(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Json(req): Json<DismissMissReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    utopia_store::ontology::restore_miss(&state.pool, kb_id, &req.kind, &req.key).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

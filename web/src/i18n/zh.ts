@@ -732,6 +732,9 @@ export const zh: Strings = {
     missesHint:
       "抽取器产出了这些，但它们不在你的本体里（于是降级成了 concept / related to）。它们是扩展本体的信号。",
     dismiss: "忽略",
+    dismissed: (n: number) => `已忽略（${n}）`,
+    dismissedHint: "仍在计数，只是不进建议。如果某一个在你忽略之后涨了，可以撤回。",
+    restore: "撤回忽略",
     suggest: "用 AI 建议",
     suggesting: "分析中…",
     noMisses: "没有未匹配的类型——本体覆盖了你的语料。",
