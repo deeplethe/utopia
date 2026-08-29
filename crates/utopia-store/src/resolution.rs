@@ -334,13 +334,20 @@ const CONTAIN_SCAN_LIMIT: i64 = 16;
 /// 包含关系绝不能走它：`华瑞集团技术中心` 与 `星云科技技术中心` 都含「技术中心」，
 /// 同一篇文档里上下文相似度很容易过线，而它们是两个部门。宁分勿合。
 ///
-/// **已知不覆盖**：中间插词（`启明 X7 加速卡` 与 `启明 X7 推理加速卡` 谁也不含谁）。
-/// 那要三元组相似度，而 `CREATE EXTENSION pg_trgm` 需要超级权限——本仓库刚改成
-/// 受限角色连库（迁移 0031），装扩展会在部署上失败。留给需要时再说。
+/// **别名一并参与**：合并会把名字搬进 `aliases`，只查 `canonical_name` 的话，
+/// 每成功合并一次就少一条召回的桥——`Holmes` 并入 `Sherlock Holmes` 之后，
+/// 后来的 `Mr. Holmes` 就再也搭不上了（它跟 `Sherlock Holmes` 谁也不含谁）。
+/// 合并越成功、漏得越多，是个会自我加剧的洞。
 ///
-/// **性能**：反向那半（新名字包含旧名字）用不上任何索引，所以这里靠
-/// `kb_id + type_id` 收窄行集并设上限，且只在**新建实体时**跑一次，不是每条 mention。
-/// 大库上如果不够，正解是建一张「后缀键」表走等值查，而不是加模糊索引。
+/// **已知不覆盖**：两个名字既不互相包含、又没有共同别名做桥的情形
+///（`启明 X7 加速卡` 与 `启明 X7 推理加速卡`）。那要三元组相似度，而
+/// `CREATE EXTENSION pg_trgm` 需要超级权限——本仓库是受限角色连库（迁移 0031），
+/// 装扩展会在部署上失败。留给需要时再说。
+///
+/// **性能**：反向那半（新名字包含旧名字）用不上任何索引，别名那半同样，
+/// 所以这里靠 `kb_id` 收窄行集并设上限，且只在**新建实体时**跑一次，
+/// 不是每条 mention。大库上如果不够，正解是建一张「后缀键」表走等值查，
+/// 而不是加模糊索引。
 async fn containment_reviews(
     pool: &PgPool,
     kb_id: Uuid,
@@ -368,9 +375,25 @@ async fn containment_reviews(
          WHERE e.kb_id = $1 AND e.merged_into IS NULL
            AND e.id <> $2
            AND lower(e.canonical_name) <> $3
-           AND char_length(e.canonical_name) >= $4
-           AND (lower(e.canonical_name) LIKE '%' || $3 || '%'
-                OR $3 LIKE '%' || lower(e.canonical_name) || '%')
+           AND (
+             (char_length(e.canonical_name) >= $4
+              AND (lower(e.canonical_name) LIKE '%' || $3 || '%'
+                   OR $3 LIKE '%' || lower(e.canonical_name) || '%'))
+             -- **别名也要参与召回，否则每合并一次就少一条桥。**
+             --
+             -- 合并把名字搬进 aliases：Holmes 并入 Sherlock Holmes 之后，
+             -- Holmes 那一行 merged_into 非空、被上面第一个条件滤掉了。可十分钟后
+             -- 出现的 Mr. Holmes 跟 Sherlock Holmes 谁也不含谁——本来正是靠
+             -- Holmes 才桥得上。实测就是这么漏的：同类型那个 bug 修好、Holmes
+             -- 正确合并之后，Mr. Holmes 反而永远进不了队列。
+             --
+             -- 合并越成功，桥拆得越多。这个洞会自我加剧。
+             OR EXISTS (
+               SELECT 1 FROM unnest(e.aliases) AS alias
+               WHERE char_length(alias) >= $4
+                 AND (lower(alias) LIKE '%' || $3 || '%'
+                      OR $3 LIKE '%' || lower(alias) || '%'))
+           )
          ORDER BY char_length(e.canonical_name)
          LIMIT $5",
     )
