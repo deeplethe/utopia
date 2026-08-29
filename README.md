@@ -10,14 +10,16 @@
 
 [Philosophy](#philosophy) · [Quick start](#quick-start) · [Features](#features) · [Roadmap](#roadmap)
 
-[![Official site](https://img.shields.io/badge/OFFICIAL-UTOPIA.BI-8A6D1F?style=flat-square&labelColor=161B22)](https://utopia.bi)
-[![License](https://img.shields.io/badge/LICENSE-APACHE%202.0-1F4B3F?style=flat-square&labelColor=161B22)](LICENSE)
-[![Rust](https://img.shields.io/badge/BUILT%20WITH-RUST-6B3524?style=flat-square&labelColor=161B22&logo=rust&logoColor=C9D1D9)](https://www.rust-lang.org)
-[![Container](https://img.shields.io/badge/GHCR-DEEPLETHE%2FUTOPIA-1E3A5F?style=flat-square&labelColor=161B22&logo=docker&logoColor=C9D1D9)](https://github.com/deeplethe/utopia/pkgs/container/utopia)
+[![Stars](https://img.shields.io/github/stars/deeplethe/utopia?style=flat-square&label=STARS&labelColor=161B22&color=FFC220&logo=github&logoColor=FFFFFF)](https://github.com/deeplethe/utopia/stargazers)
+[![Forks](https://img.shields.io/github/forks/deeplethe/utopia?style=flat-square&label=FORKS&labelColor=161B22&color=39C5CF&logo=github&logoColor=FFFFFF)](https://github.com/deeplethe/utopia/forks)
+[![License](https://img.shields.io/badge/LICENSE-APACHE%202.0-3FB950?style=flat-square&labelColor=161B22)](LICENSE)
+[![Rust](https://img.shields.io/badge/BUILT%20WITH-RUST-F74C00?style=flat-square&labelColor=161B22&logo=rust&logoColor=FFFFFF)](https://www.rust-lang.org)
 
-[![Discussions](https://img.shields.io/badge/DISCUSSIONS-3B2A52?style=flat-square&labelColor=161B22&logo=github&logoColor=C9D1D9)](https://github.com/deeplethe/utopia/discussions)
+[![Official site](https://img.shields.io/badge/OFFICIAL-UTOPIA.BI-FFFFFF?style=flat-square&labelColor=161B22&logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI%2BPHBhdGggZmlsbD0iY3VycmVudENvbG9yIiBkPSJNMTIgMmExMCAxMCAwIDEwMCAyMCAxMCAxMCAwIDAwMC0yMHptMCAyYzEuMyAwIDIuNSAxLjkgMy4xIDQuNkg4LjlDOS41IDUuOSAxMC43IDQgMTIgNHpNNyA4LjZINC42QTggOCAwIDAxOC44IDQuM0M4IDUuMiA3LjQgNi43IDcgOC42em0xMCAwYy0uNC0xLjktMS0zLjQtMS44LTQuM2E4IDggMCAwMTQuMiA0LjNIMTd6TTQuMSAxMC42aDIuNmEyNCAyNCAwIDAwMCAyLjhINC4xYTggOCAwIDAxMC0yLjh6bTQuNiAwaDYuNmEyMiAyMiAwIDAxMCAyLjhIOC43YTIyIDIyIDAgMDEwLTIuOHptOC42IDBoMi42YTggOCAwIDAxMCAyLjhoLTIuNmEyNCAyNCAwIDAwMC0yLjh6TTcgMTUuNGMuNCAxLjkgMSAzLjQgMS44IDQuM2E4IDggMCAwMS00LjItNC4zSDd6bTEuOSAwaDYuMmMtLjYgMi43LTEuOCA0LjYtMy4xIDQuNnMtMi41LTEuOS0zLjEtNC42em04LjEgMGgyLjRhOCA4IDAgMDEtNC4yIDQuM2MuOC0uOSAxLjQtMi40IDEuOC00LjN6Ii8%2BPC9zdmc%2BCg%3D%3D&logoColor=FFFFFF)](https://utopia.bi)
+[![Container](https://img.shields.io/badge/GHCR-DEEPLETHE%2FUTOPIA-2496ED?style=flat-square&labelColor=161B22&logo=docker&logoColor=FFFFFF)](https://github.com/deeplethe/utopia/pkgs/container/utopia)
+[![Discussions](https://img.shields.io/badge/DISCUSSIONS-8957E5?style=flat-square&labelColor=161B22&logo=github&logoColor=FFFFFF)](https://github.com/deeplethe/utopia/discussions)
 [![Built by DeepLethe](https://img.shields.io/badge/BUILT%20BY-DEEPLETHE-2D333B?style=flat-square&labelColor=161B22)](https://github.com/deeplethe)
-[![中文](https://img.shields.io/badge/LANG-%E4%B8%AD%E6%96%87-5C2A2A?style=flat-square&labelColor=161B22)](README.zh-CN.md)
+[![中文](https://img.shields.io/badge/LANG-%E4%B8%AD%E6%96%87-DA3633?style=flat-square&labelColor=161B22)](README.zh-CN.md)
 
 </div>
 
