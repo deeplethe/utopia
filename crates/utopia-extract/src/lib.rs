@@ -40,13 +40,29 @@ pub struct ExtractedFact {
     pub quote: Option<String>,
 }
 
-/// 构造抽取提示词。`types`/`relations` 为 (key, label, description) 三元组；
+/// 提示词里的一条关系。
+///
+/// 比类多一样东西：**类型签名**。它是给模型的签名，不是闸门——在模型落笔那一刻
+/// 减少"Alice works_at 西雅图"，而不是等错了再拦。事后校验面对的是既成事实
+///（丢掉可惜、留着是脏数据），签名是在写出来之前掰正。本体写错时模型看到原文
+/// 说了别的仍可覆盖；硬闸门会系统性丢数据，`part_of` 烧我们的正是那种方式。
+pub struct PromptRelation {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    /// 形如 `person|organization → vendor`，`*` 表示那一侧不限。空串 = 两侧都不限。
+    /// **一律用 key**：模型要输出的就是 key，中文库里 person 的 label 是"人物"，
+    /// 写进签名等于教它输出一个不存在的类型（docs/decisions/0004）
+    pub signature: String,
+}
+
+/// 构造抽取提示词。`types` 为 (key, label, description) 三元组；
 /// description 非空时按行列出——本体里的语义指引直接决定抽取质量。
 /// `attributes` 为调用方预排版的属性行（"person.salary (number, CNY): 月薪"）；
 /// 为空时提示词一字不变——没定义属性的库零成本。
 pub fn build_messages(
     types: &[(String, String, String)],
-    relations: &[(String, String, String)],
+    relations: &[PromptRelation],
     attributes: &[String],
     doc_time: Option<&str>,
     filename: &str,
@@ -75,7 +91,37 @@ pub fn build_messages(
             .join("\n")
     };
     let type_list = fmt_list(types);
-    let rel_list = fmt_list(relations);
+    // 关系行：有签名时括号里放签名，没有才退回 label。
+    // `- works_at (person → organization): 一个人受雇于某个组织。`
+    let rel_list = relations
+        .iter()
+        .map(|r| {
+            let d = r.description.trim();
+            let paren = if !r.signature.is_empty() {
+                r.signature.clone()
+            } else if d.is_empty() {
+                r.label.clone()
+            } else {
+                String::new()
+            };
+            match (paren.is_empty(), d.is_empty()) {
+                (false, false) => format!("- {} ({paren}): {d}", r.key),
+                (false, true) => format!("- {} ({paren})", r.key),
+                (true, false) => format!("- {}: {d}", r.key),
+                (true, true) => format!("- {}", r.key),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // 记号只在真有签名时解释一次；没有签名的库，提示词一字不变。
+    // 说明用英文——提示词的**指令语言**是英文，只有 description 跟语料走
+    let sig_note = if relations.iter().any(|r| !r.signature.is_empty()) {
+        ". A parenthesis after the key is the type signature, subject then object; \
+         \"|\" means or, \"*\" means unconstrained. It is a hint, not a rule — \
+         when the text says otherwise, write what the text says"
+    } else {
+        ""
+    };
     let time_ctx = doc_time
         .map(|t| {
             format!(
@@ -113,7 +159,7 @@ pub fn build_messages(
          \n\
          Entity types (prefer these keys):\n{type_list}\n\
          \n\
-         Relation types (prefer these keys):\n{rel_list}\n\
+         Relation types (prefer these keys){sig_note}:\n{rel_list}\n\
          {attr_section}\
          \n\
          Output format:\n\
@@ -411,6 +457,54 @@ pub fn parse_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
 #[cfg(test)]
 mod prompt_shape_tests {
     use super::*;
+
+    fn rel(key: &str, description: &str, signature: &str) -> PromptRelation {
+        PromptRelation {
+            key: key.into(),
+            label: key.replace('_', " "),
+            description: description.into(),
+            signature: signature.into(),
+        }
+    }
+
+    /// 签名进括号，而且**一律是 key**：中文库的 label 是"人物"，
+    /// 写进提示词等于教模型输出一个不存在的类型。
+    #[test]
+    fn a_signature_takes_the_parenthesis_and_uses_keys() {
+        let rels = vec![rel("works_at", "受雇于某个组织。", "person → organization")];
+        let msgs = build_messages(&[], &rels, &[], None, "a.txt", &[], "text");
+        assert!(msgs[0]
+            .content
+            .contains("- works_at (person → organization): 受雇于某个组织。"));
+    }
+
+    /// 多值用 `|`，空的一侧用 `*` —— 都是 key 层面的记号，不是类型名
+    #[test]
+    fn several_classes_join_with_a_pipe_and_an_empty_side_is_a_star() {
+        let rels = vec![rel("buys_from", "", "employee|team → *")];
+        let msgs = build_messages(&[], &rels, &[], None, "a.txt", &[], "text");
+        assert!(msgs[0].content.contains("- buys_from (employee|team → *)"));
+    }
+
+    /// **没有签名的库，提示词一字不变**：记号说明也不出现。
+    /// 大多数库不会声明 domain/range，不该为此付每块的 token
+    #[test]
+    fn a_base_without_signatures_pays_nothing() {
+        let rels = vec![rel("works_at", "受雇于某个组织。", "")];
+        let msgs = build_messages(&[], &rels, &[], None, "a.txt", &[], "text");
+        assert!(msgs[0].content.contains("- works_at: 受雇于某个组织。"));
+        assert!(!msgs[0].content.contains("type signature"));
+        assert!(!msgs[0].content.contains('→'));
+    }
+
+    /// 签名是提示不是闸门。这句话必须在提示词里 —— 少了它，
+    /// 模型会把签名当硬规则，本体写错时就系统性丢数据（part_of 那种方式）
+    #[test]
+    fn the_prompt_says_the_signature_is_a_hint() {
+        let rels = vec![rel("works_at", "d", "person → organization")];
+        let msgs = build_messages(&[], &rels, &[], None, "a.txt", &[], "text");
+        assert!(msgs[0].content.contains("hint, not a rule"));
+    }
 
     /// 已知实体必须落在 **user** 消息里、紧挨着正文。
     ///

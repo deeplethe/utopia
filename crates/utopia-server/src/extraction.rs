@@ -118,10 +118,42 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // 而它什么都没说。实测 359 条 related_to 里只有 38 条是词表外降级，
     // 其余 321 条是模型自己挑的。撤掉之后模型要么用真关系、要么写出原文说法，
     // 兜底改由下面的代码执行，原词落进 fact_evidence.proposed_predicate 留待消解。
-    let rel_pairs: Vec<(String, String, String)> = rtypes
+    let type_key_by_id: HashMap<Uuid, &str> =
+        etypes.iter().map(|t| (t.id, t.key.as_str())).collect();
+    // 类型签名：`person|organization → vendor`，一侧为空写 `*`。
+    // **两侧都为空就不给签名**——那不是"没填"，是"不限"，硬写一个 `* → *`
+    // 只会给每个文本块的提示词加一行噪音
+    let sig_of = |ids: &[Uuid]| -> String {
+        if ids.is_empty() {
+            return "*".into();
+        }
+        let mut keys: Vec<&str> = ids
+            .iter()
+            .filter_map(|id| type_key_by_id.get(id).copied())
+            .collect();
+        keys.sort_unstable();
+        if keys.is_empty() {
+            "*".into()
+        } else {
+            keys.join("|")
+        }
+    };
+    let rel_pairs: Vec<utopia_extract::PromptRelation> = rtypes
         .iter()
         .filter(|r| r.kind != "attribute" && r.key != FALLBACK_RELATION_KEY)
-        .map(|r| (r.key.clone(), r.label.clone(), r.description.clone()))
+        .map(|r| {
+            let signature = if r.domains.is_empty() && r.ranges.is_empty() {
+                String::new()
+            } else {
+                format!("{} → {}", sig_of(&r.domains), sig_of(&r.ranges))
+            };
+            utopia_extract::PromptRelation {
+                key: r.key.clone(),
+                label: r.label.clone(),
+                description: r.description.clone(),
+                signature,
+            }
+        })
         .collect();
     let type_ids: HashMap<&str, Uuid> = etypes.iter().map(|t| (t.key.as_str(), t.id)).collect();
     let rel_ids: HashMap<&str, Uuid> = rtypes.iter().map(|r| (r.key.as_str(), r.id)).collect();
@@ -137,8 +169,6 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         .collect();
     // 属性元数据（按 key 查）与提示词清单（"person.salary (number, CNY): 月薪"）。
     // 没定义属性时清单为空，提示词一字不变
-    let type_key_by_id: HashMap<Uuid, &str> =
-        etypes.iter().map(|t| (t.id, t.key.as_str())).collect();
     let type_parent: HashMap<Uuid, Option<Uuid>> =
         etypes.iter().map(|t| (t.id, t.parent_id)).collect();
     let attr_meta: HashMap<&str, &utopia_core::models::RelationType> = rtypes
