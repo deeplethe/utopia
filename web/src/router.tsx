@@ -17,7 +17,6 @@ import { KbSettings } from "./pages/KbSettings";
 import { MyKbs } from "./pages/MyKbs";
 import { NotFound } from "./pages/ServerDown";
 import { Ontology } from "./pages/Ontology";
-import { Alerts } from "./pages/Alerts";
 import { Review } from "./pages/Review";
 import { Search } from "./pages/Search";
 import { Settings } from "./pages/Settings";
@@ -110,13 +109,6 @@ const ontologyRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/ontology",
   component: Ontology,
-});
-
-// 告警中心：跨库，所以不带 kb 参数。挂在 appRoute 下只是为了拿到外壳
-const alertsRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/alerts",
-  component: Alerts,
 });
 
 const reviewRoute = createRoute({
@@ -212,7 +204,6 @@ const routeTree = rootRoute.addChildren([
     docRoute,
     libraryRoute,
     reviewRoute,
-    alertsRoute,
     ontologyRoute,
     kbSettingsRoute,
   ]),

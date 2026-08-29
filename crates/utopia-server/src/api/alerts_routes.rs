@@ -7,7 +7,7 @@ use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
 use futures_util::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::convert::Infallible;
 use tokio::sync::broadcast;
@@ -18,29 +18,55 @@ use crate::auth::AuthUser;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
-/// 一次最多回多少条。已解决的会一直堆着，但列表页只是给人看的，
-/// 上限比分页简单，而告警本身是聚合过的——正常部署到不了这个量级
-const LIST_LIMIT: i64 = 200;
+/// 一页几条。弹窗里放得下的量——再多就该翻页，而不是让人滚一屏。
+const PAGE: i64 = 8;
+/// 一页最多能要多少：防的是有人把 limit 写成 100000 让服务端去数全表
+const MAX_PAGE: i64 = 50;
 
 #[derive(Deserialize)]
 pub struct ListQuery {
     /// 默认只看未解决的。自愈是这个功能的核心，已解决的默认不该占位置
     #[serde(default)]
     pub include_resolved: bool,
+    /// 搜库名、对象详情、kind 代号。**搜不到界面上那句标题**——
+    /// 措辞在客户端，服务端没有它（见 store 里 SEARCH 的注释）
+    #[serde(default)]
+    pub q: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+#[derive(Serialize)]
+pub struct ListResponse {
+    pub items: Vec<AlertView>,
+    pub total: i64,
 }
 
 pub async fn list(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Query(q): Query<ListQuery>,
-) -> ApiResult<Json<Vec<AlertView>>> {
-    let rows =
-        utopia_store::alerts::list_for_user(&state.pool, &user, q.include_resolved, LIST_LIMIT)
-            .await?;
-    Ok(Json(rows))
+) -> ApiResult<Json<ListResponse>> {
+    let limit = q.limit.unwrap_or(PAGE).clamp(1, MAX_PAGE);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let page = utopia_store::alerts::list_for_user(
+        &state.pool,
+        &user,
+        q.include_resolved,
+        q.q.as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+    Ok(Json(ListResponse {
+        items: page.items,
+        total: page.total,
+    }))
 }
 
-/// 角标。单独一条路由而不是从列表里数：这个每开一页都要请求。
+/// 角标。单独一条路由而不是从列表里数：这个每开一页都要。
 pub async fn unread(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -51,15 +77,14 @@ pub async fn unread(
 
 /// 标记已读。**逐人**——读过不等于解决了，别人的未读列表不受影响。
 ///
-/// 先按可见性取一遍：不能让人靠猜 id 把一条自己看不见的告警标成已读
+/// 先查可见性：不能让人靠猜 id 把一条自己看不见的告警标成已读
 ///（本身无害，但那会在 alert_reads 里留下一条他本不该有的记录）。
 pub async fn mark_read(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(alert_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let visible = utopia_store::alerts::list_for_user(&state.pool, &user, true, LIST_LIMIT).await?;
-    if !visible.iter().any(|a| a.id == alert_id) {
+    if !utopia_store::alerts::is_visible(&state.pool, &user, alert_id).await? {
         return Err(utopia_core::AppError::NotFound.into());
     }
     utopia_store::alerts::mark_read(&state.pool, alert_id, user.id).await?;
@@ -71,11 +96,8 @@ pub async fn mark_all_read(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let rows = utopia_store::alerts::list_for_user(&state.pool, &user, false, LIST_LIMIT).await?;
-    for a in rows.iter().filter(|a| !a.read) {
-        utopia_store::alerts::mark_read(&state.pool, a.id, user.id).await?;
-    }
-    Ok(Json(json!({ "ok": true })))
+    let n = utopia_store::alerts::mark_all_read(&state.pool, &user).await?;
+    Ok(Json(json!({ "marked": n })))
 }
 
 /// 全局事件流。KB 那条是 `/kbs/{id}/events`，按库过滤；角标是跨库的，

@@ -198,7 +198,25 @@ const VISIBLE: &str = "
                     ELSE 3 END)
     END";
 
-/// 这个人能看见的告警。
+/// 一页告警，外加符合条件的总数。
+pub struct AlertPage {
+    pub items: Vec<AlertView>,
+    /// 满足过滤条件的总数，不受 limit/offset 影响——翻页控件要靠它
+    pub total: i64,
+}
+
+/// 搜索匹配的是**库名、对象详情、kind 代号**，不是界面上那句标题。
+///
+/// 标题的措辞在客户端（0004：服务端不产出展示文案），所以服务端搜不到它。
+/// 这不是将就：人会去搜的是来源名、库名、报错原文——那些语言中立、
+/// 而且就在 detail 里。按类别找东西该用筛选，不是搜索框。
+const SEARCH: &str = "
+    ($5::text IS NULL
+     OR a.kind ILIKE '%' || $5 || '%'
+     OR COALESCE(k.name, '') ILIKE '%' || $5 || '%'
+     OR a.detail::text ILIKE '%' || $5 || '%')";
+
+/// 这个人能看见的告警，一页。
 ///
 /// 可见性判定**一次做完**：系统级看 `is_admin`，库级看 `visible_kb_roles`
 /// 给出的有效角色够不够 `min_role`。推送那一路不判权限（它不带数据），
@@ -207,9 +225,14 @@ pub async fn list_for_user(
     pool: &PgPool,
     user: &User,
     include_resolved: bool,
+    q: Option<&str>,
     limit: i64,
-) -> AppResult<Vec<AlertView>> {
+    offset: i64,
+) -> AppResult<AlertPage> {
     let (kb_ids, kb_roles) = visible(pool, user).await?;
+    // 空串当没搜：前端清空搜索框时不该变成"搜一个空字符串"
+    let q = q.map(str::trim).filter(|s| !s.is_empty());
+    let where_ = format!("({VISIBLE}) AND ({SEARCH}) AND ($6::bool OR a.resolved_at IS NULL)");
     let sql = format!(
         "SELECT a.id, a.kb_id, k.name AS kb_name, a.severity, a.kind,
                 a.subject_type, a.subject_ids, a.detail,
@@ -218,21 +241,55 @@ pub async fn list_for_user(
          FROM alerts a
          LEFT JOIN knowledge_bases k ON k.id = a.kb_id
          LEFT JOIN alert_reads r ON r.alert_id = a.id AND r.user_id = $1
-         WHERE ({VISIBLE})
-           AND ($5::bool OR a.resolved_at IS NULL)
+         WHERE {where_}
          ORDER BY (a.resolved_at IS NULL) DESC, a.last_seen DESC
-         LIMIT $6"
+         LIMIT $7 OFFSET $8"
     );
-    let rows: Vec<AlertView> = sqlx::query_as(&sql)
+    let items: Vec<AlertView> = sqlx::query_as(&sql)
         .bind(user.id)
         .bind(user.is_admin)
         .bind(&kb_ids)
         .bind(&kb_roles)
+        .bind(q)
         .bind(include_resolved)
         .bind(limit)
+        .bind(offset)
         .fetch_all(pool)
         .await?;
-    Ok(rows)
+    // 总数单独查：翻页控件要知道有几页，而 LIMIT 之后就数不出来了。
+    // 条件必须跟上面一模一样，所以 where_ 是同一个字符串
+    let count_sql = format!(
+        "SELECT count(*) FROM alerts a
+         LEFT JOIN knowledge_bases k ON k.id = a.kb_id
+         LEFT JOIN alert_reads r ON r.alert_id = a.id AND r.user_id = $1
+         WHERE {where_}"
+    );
+    let (total,): (i64,) = sqlx::query_as(&count_sql)
+        .bind(user.id)
+        .bind(user.is_admin)
+        .bind(&kb_ids)
+        .bind(&kb_roles)
+        .bind(q)
+        .bind(include_resolved)
+        .fetch_one(pool)
+        .await?;
+    Ok(AlertPage { items, total })
+}
+
+/// 某一条在不在这个人的可见范围内。标记已读之前查一次——
+/// 不能让人靠猜 id 在 `alert_reads` 里留下一条他本不该有的记录。
+pub async fn is_visible(pool: &PgPool, user: &User, alert_id: Uuid) -> AppResult<bool> {
+    let (kb_ids, kb_roles) = visible(pool, user).await?;
+    let sql = format!("SELECT 1 FROM alerts a WHERE a.id = $5 AND ({VISIBLE})");
+    let row: Option<(i32,)> = sqlx::query_as(&sql)
+        .bind(user.id)
+        .bind(user.is_admin)
+        .bind(&kb_ids)
+        .bind(&kb_roles)
+        .bind(alert_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
 }
 
 /// 我的未读数：可见的、未解决的、我没读过的。
@@ -273,6 +330,29 @@ fn rank(r: Role) -> i32 {
         Role::Admin => 2,
         Role::Owner => 3,
     }
+}
+
+/// 把我能看见的、未解决的全标已读。
+///
+/// 一条 SQL 而不是逐条 insert：逐条要先把列表取回来，而"能看见什么"
+/// 已经在 [`VISIBLE`] 里写过一遍了，取回来再遍历等于把同一条规则用两次。
+/// 已解决的不动——它们本来就不在未读里。
+pub async fn mark_all_read(pool: &PgPool, user: &User) -> AppResult<u64> {
+    let (kb_ids, kb_roles) = visible(pool, user).await?;
+    let sql = format!(
+        "INSERT INTO alert_reads (alert_id, user_id)
+         SELECT a.id, $1 FROM alerts a
+         WHERE ({VISIBLE}) AND a.resolved_at IS NULL
+         ON CONFLICT DO NOTHING"
+    );
+    let n = sqlx::query(&sql)
+        .bind(user.id)
+        .bind(user.is_admin)
+        .bind(&kb_ids)
+        .bind(&kb_roles)
+        .execute(pool)
+        .await?;
+    Ok(n.rows_affected())
 }
 
 pub async fn mark_read(pool: &PgPool, alert_id: Uuid, user_id: Uuid) -> AppResult<()> {

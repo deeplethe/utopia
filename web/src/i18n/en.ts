@@ -130,6 +130,11 @@ export const en = {
     emptyHint:
       "Ingestion, sync and model failures show up here instead of only in the logs.",
     markAllRead: "Mark all read",
+    // 说清搜的是什么：标题的措辞在客户端，服务端搜不到它，
+    // 所以别让人以为输入"sync failed"会有结果
+    searchPlaceholder: "Search sources, knowledge bases, errors",
+    noMatch: "Nothing matches",
+    andMore: (n: number) => `and ${n} more`,
     showResolved: "Show resolved",
     hideResolved: "Hide resolved",
     resolved: "Resolved",

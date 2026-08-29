@@ -584,8 +584,21 @@ export const api = {
       "/api/v1/health",
     ),
   me: () => request<User>("/api/v1/auth/me"),
-  alerts: (includeResolved = false) =>
-    request<Alert[]>(`/api/v1/alerts?include_resolved=${includeResolved}`),
+  alerts: (o: {
+    q?: string;
+    includeResolved?: boolean;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const p = new URLSearchParams();
+    if (o.q?.trim()) p.set("q", o.q.trim());
+    if (o.includeResolved) p.set("include_resolved", "true");
+    if (o.limit != null) p.set("limit", String(o.limit));
+    if (o.offset) p.set("offset", String(o.offset));
+    return request<{ items: Alert[]; total: number }>(
+      `/api/v1/alerts?${p}`,
+    );
+  },
   alertsUnread: () => request<{ unread: number }>("/api/v1/alerts/unread"),
   alertRead: (id: string) =>
     request<{ ok: boolean }>(`/api/v1/alerts/${id}/read`, { method: "POST" }),
