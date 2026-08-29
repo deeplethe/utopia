@@ -48,10 +48,16 @@ async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
 }
 
 async fn mark_done(pool: &PgPool, id: i64) -> AppResult<()> {
-    sqlx::query("UPDATE jobs SET status = 'done', updated_at = now() WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
+    // **成功要把上一次的错清掉。** 重试成功后 last_error 仍留着失败那次的原文，
+    // 于是任务表里出现 status='done' 配着一条错误信息——查问题的人读到的是
+    // 一个已经不成立的原因。实测就这么误导过一次：bootstrap 明明跑成了，
+    // 表上还挂着 "column relation_type does not exist"。
+    sqlx::query(
+        "UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now() WHERE id = $1",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
