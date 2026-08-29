@@ -20,6 +20,12 @@ CREATE TABLE conversation_messages (
     -- 行动轨迹（工具调用步骤）与引用清单（历史回放；与 SSE step/sources 同构）
     steps           JSONB NOT NULL DEFAULT '[]',
     sources         JSONB NOT NULL DEFAULT '[]',
+    -- 这一轮认下了哪些实体（id、名字、类型），下一轮回放它。
+    -- **不回放整段工具结果**：那里面是 chunk 正文，每轮重复堆进上下文，几轮就
+    -- 把窗口吃光。要回放的是身份——有了 id，下一轮直接调 entity_facts，不必从
+    -- 名字重查；顺带治掉一个更隐蔽的毛病：同名歧义时两轮可能查到不同的实体，
+    -- 于是前后两个答案讲的不是同一个节点
+    resolved        JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX conversation_messages_conv_idx

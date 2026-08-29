@@ -23,6 +23,11 @@ CREATE TABLE deployment_settings (
     open_registration BOOLEAN NOT NULL DEFAULT TRUE,
     -- 任务 worker 并发数（系统设置可改；调度循环热读，改动即时生效）
     worker_concurrency INT NOT NULL DEFAULT 4
-        CHECK (worker_concurrency BETWEEN 1 AND 32)
+        CHECK (worker_concurrency BETWEEN 1 AND 32),
+    -- 本体铺进抽取提示词的字符预算，超了就改成按分块检索候选。
+    -- 放部署设置而不是环境变量：这一档要能不重启就改——定它需要每个本体规模
+    -- 下全量内联与按块检索各一组对照，靠重启服务改一档的话，那条曲线不会有人
+    -- 跑第二遍。24000 字符（约 6000 token）是拍的，正等那条曲线来定
+    ontology_prompt_budget INTEGER NOT NULL DEFAULT 24000
 );
 INSERT INTO deployment_settings DEFAULT VALUES;

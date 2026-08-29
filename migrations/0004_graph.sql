@@ -81,6 +81,14 @@ CREATE INDEX facts_open_pair_idx ON facts (kb_id, subject_id, predicate_id)
     WHERE valid_to IS NULL AND invalidated_at IS NULL;
 CREATE INDEX facts_open_obj_pair_idx ON facts (kb_id, object_id, predicate_id)
     WHERE valid_to IS NULL AND invalidated_at IS NULL;
+-- 认知轴。上面那几个索引全在世界轴上、且都只认活行，服务的是"某时刻什么为真"；
+-- 这两个服务的是另一个问题——**什么时候写进来的、什么时候被推翻的**
+--（"上个季度我们的认知有哪些变化"，见 chat 的 changes 工具）。
+-- 作废那条是部分索引且条件取反：活行的 invalidated_at 全是 NULL，
+-- 把它们收进来只会让索引跟表一样大，而被推翻的事实天然是少数
+CREATE INDEX facts_recorded_idx ON facts (kb_id, recorded_at DESC);
+CREATE INDEX facts_invalidated_idx ON facts (kb_id, invalidated_at DESC)
+    WHERE invalidated_at IS NOT NULL;
 
 -- 证据链：事实 ↔ 原文分块（溯源一等公民）
 CREATE TABLE fact_evidence (
