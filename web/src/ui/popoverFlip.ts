@@ -37,15 +37,30 @@ export function usePopoverFlip<A extends HTMLElement, P extends HTMLElement>() {
     panel.style.transform = `scale(${a.width / p.width}, ${a.height / p.height})`;
     panel.style.borderRadius = "999px";
     panel.style.opacity = "0.35";
+    let done: number | undefined;
     const raf = requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         panel.style.transition = `transform ${OPEN_MS}ms cubic-bezier(0.16,1,0.3,1), border-radius ${OPEN_MS}ms cubic-bezier(0.16,1,0.3,1), opacity 0.18s ease`;
         panel.style.transform = "scale(1, 1)";
         panel.style.borderRadius = "12px";
         panel.style.opacity = "1";
+        // 动画完把行内样式**清干净**，别留一个 `scale(1,1)`。
+        // 恒等变换看着无害，但它照样生成合成层，于是面板里绝对定位的子元素
+        // 会按设备像素吸附一次——在 DPR 1.5 上就是 0.67px 的偏移，
+        // 而关闭按钮要跟触发它的那个按钮**原位重合**，差一个物理像素也看得出来
+        done = window.setTimeout(() => {
+          panel.style.transition = "";
+          panel.style.transform = "";
+          panel.style.borderRadius = "";
+          panel.style.opacity = "";
+          panel.style.transformOrigin = "";
+        }, OPEN_MS + 20);
       }),
     );
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      if (done !== undefined) window.clearTimeout(done);
+    };
   }, [open]);
 
   const close = () => {

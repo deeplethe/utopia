@@ -94,13 +94,7 @@ function AlertRow({
   );
 }
 
-function Panel({
-  panelRef,
-  onClose,
-}: {
-  panelRef: Ref<HTMLDivElement>;
-  onClose: () => void;
-}) {
+function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const qc = useQueryClient();
@@ -142,31 +136,35 @@ function Panel({
       ref={panelRef}
       className="u-menu-glass absolute right-0 top-0 w-[420px] rounded-xl shadow-2xl z-50 overflow-hidden"
     >
-      {/* 面板盖在铃铛**原位**（FLIP 从那里长出来），所以点开之后光标正停在
-          右上角这个位置。那儿必须是"再点一下关掉"——放一个"全部标为已读"
-          就是把误触做成了默认动作，而它一下清掉的是所有库的所有告警 */}
-      <div className="flex items-center gap-2 pl-3.5 pr-2 py-2 border-b border-white/10">
+      <div className="flex items-center gap-2 pl-3.5 pr-10 py-2.5 border-b border-white/10">
         <span className="text-[13px] font-medium text-neutral-100">
           {S.alerts.title}
         </span>
-        <button
-          onClick={onClose}
-          title={S.alerts.close}
-          aria-label={S.alerts.close}
-          className="ml-auto grid h-[26px] w-[26px] place-items-center rounded-lg text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.06] transition-colors"
-        >
-          <X size={14} />
-        </button>
       </div>
 
-      <div className="flex items-center gap-2 px-3.5 py-2 border-b border-white/[0.06]">
-        <Search size={13} className="text-neutral-600 shrink-0" />
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder={S.alerts.searchPlaceholder}
-          className="w-full bg-transparent text-[12.5px] text-neutral-200 placeholder:text-neutral-600 outline-none"
-        />
+      {/* 跟文库的过滤框同一套：input-dark + 左侧图标 + 有值时右侧清除、Esc 清空 */}
+      <div className="px-3.5 py-2.5 border-b border-white/[0.06]">
+        <div className="relative">
+          <Search
+            size={13}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none"
+          />
+          <input
+            className="input-dark w-full pl-8 pr-7 py-1.5 text-[13px]"
+            placeholder={S.alerts.searchPlaceholder}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => e.key === "Escape" && setQ("")}
+          />
+          {q && (
+            <button
+              onClick={() => setQ("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-200"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="max-h-[420px] overflow-y-auto">
@@ -236,8 +234,10 @@ export function AlertBell() {
         title={S.alerts.badgeLabel}
         aria-label={S.alerts.badgeLabel}
         aria-expanded={open}
+        // h-7 w-7 正方形：只装一个图标的按钮不该是长方形。
+        // 关闭按钮用同一组尺寸绝对定位在面板的 right-0 top-0，两者严丝合缝
         className={cn(
-          "relative flex items-center rounded-lg px-2 py-1 transition-colors",
+          "relative grid h-7 w-7 place-items-center rounded-lg transition-colors",
           open
             ? "text-neutral-200 bg-white/[0.06]"
             : "text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.05]",
@@ -247,10 +247,30 @@ export function AlertBell() {
         {/* 角标也是个点，不是数字。"有事没看"是二元的，具体几条打开就知道；
             数字还会随重试一路往上跳，跳到三位数就把铃铛撑变形了 */}
         {n > 0 && (
-          <span className="absolute top-0.5 right-1 h-1.5 w-1.5 rounded-full bg-rose-500" />
+          <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-rose-500" />
         )}
       </button>
-      {open && <Panel panelRef={panelRef} onClose={close} />}
+      {open && (
+        <>
+          <Panel panelRef={panelRef} />
+          {/* 关闭按钮是面板的**兄弟**，不是它的孩子：放里面的话 `right-0 top-0`
+              相对的是面板的内边距盒，而 u-menu-glass 有一条 0.667px 的发丝边框
+              （DPR 1.5 上的一个物理像素），永远差那么一点。放在这里，定位祖先
+              就是裹着铃铛的这个 div，跟铃铛同一个盒子——重合是构造出来的。
+
+              光标点开面板之后正停在这个位置，所以这儿必须是"再点一下关掉"。
+              放"全部标为已读"等于把误触做成默认动作，而它一下清掉的是
+              所有库的所有告警 */}
+          <button
+            onClick={close}
+            title={S.alerts.close}
+            aria-label={S.alerts.close}
+            className="absolute right-0 top-0 z-[60] grid h-7 w-7 place-items-center rounded-lg text-neutral-500 hover:text-neutral-200 transition-colors"
+          >
+            <X size={15} />
+          </button>
+        </>
+      )}
     </div>
   );
 }
