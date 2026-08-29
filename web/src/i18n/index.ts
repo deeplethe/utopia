@@ -22,11 +22,13 @@ function detect(): Lang {
     const saved = localStorage.getItem(KEY);
     if (saved && (LANGS as readonly string[]).includes(saved))
       return saved as Lang;
-    // 只在首次访问猜一次；人一旦选过就以人选的为准
-    if (navigator.language?.toLowerCase().startsWith("zh")) return "zh";
   } catch {
     // 隐私模式下 localStorage 会抛——回落到英文，别让首屏挂掉
   }
+  // **不跟随浏览器语言**。中文包还在跟着英文包后面追，猜错语言的代价是
+  // 一个中文用户看到半成品，而不是看到完整的英文。等 zh 追平了再把
+  // navigator.language 那一句加回来——那是一行代码的事。
+  // 人自己选过的仍然作数（上面那段），切换器照常在用户菜单里
   return "en";
 }
 

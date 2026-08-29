@@ -119,29 +119,18 @@ export const zh: Strings = {
     markAllRead: "全部标为已读",
     searchPlaceholder: "搜索来源、知识库、报错",
     noMatch: "没有匹配的",
-    andMore: (n: number) => `还有 ${n} 条`,
-    showResolved: "显示已解决",
-    hideResolved: "隐藏已解决",
-    resolved: "已解决",
     system: "系统",
-    unread: "未读",
     kinds: {
       "source.sync_failed": {
-        title: (n: number) => `${n} 个来源同步失败`,
-        resolved: "来源已恢复同步",
-        hint: "它们没有带进新内容。去来源设置里看一下。",
+        title: "来源同步失败",
+        hint: "它没有带进新内容。去来源设置里看一下。",
       },
       "llm.unreachable": {
-        title: () => "模型端点没有给出可用的回答",
-        resolved: "模型端点已恢复",
+        title: "模型端点没有给出可用的回答",
         hint: "抽取与向量化已停摆。去系统设置里检查端点地址。",
       },
-    } as Record<
-      string,
-      { title: (n: number) => string; resolved: string; hint: string } | undefined
-    >,
-    unknownKind: (kind: string, n: number) =>
-      n > 0 ? `${kind}（${n}）` : kind,
+    } as Record<string, { title: string; hint: string } | undefined>,
+    unknownKind: (kind: string) => kind,
   },
 
   nav: {

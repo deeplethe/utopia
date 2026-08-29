@@ -557,7 +557,7 @@ export interface ConversationMessage {
   created_at: string;
 }
 
-/** 告警中心的一条（0005）。跨库：`kb_id` 为空是系统级。 */
+/** 告警中心的一条（0005）：**一次故障**，写完不再变。跨库；`kb_id` 为空是系统级。 */
 export type Alert = {
   id: string;
   kb_id: string | null;
@@ -567,13 +567,10 @@ export type Alert = {
   /** `source.sync_failed` / `llm.unreachable` —— 措辞在 i18n 里按这个查 */
   kind: string;
   subject_type: string | null;
-  subject_ids: string[];
-  /** 按 subject id 索引的详情；系统级的是 `{ error }` */
+  subject_id: string | null;
+  /** 名字与报错原文。名字在服务端存过一份，所以对象删了也显示得出来 */
   detail: Record<string, unknown>;
-  first_seen: string;
-  last_seen: string;
-  /** 落下了 = 自愈或人工关闭，对所有人同时消失 */
-  resolved_at: string | null;
+  created_at: string;
   /** **我**读没读过。别人读过不影响这一位 */
   read: boolean;
 };
@@ -584,15 +581,9 @@ export const api = {
       "/api/v1/health",
     ),
   me: () => request<User>("/api/v1/auth/me"),
-  alerts: (o: {
-    q?: string;
-    includeResolved?: boolean;
-    limit?: number;
-    offset?: number;
-  }) => {
+  alerts: (o: { q?: string; limit?: number; offset?: number }) => {
     const p = new URLSearchParams();
     if (o.q?.trim()) p.set("q", o.q.trim());
-    if (o.includeResolved) p.set("include_resolved", "true");
     if (o.limit != null) p.set("limit", String(o.limit));
     if (o.offset) p.set("offset", String(o.offset));
     return request<{ items: Alert[]; total: number }>(

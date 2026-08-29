@@ -3,141 +3,91 @@
 // **弹窗不是页面**：告警是"顺手瞄一眼"的东西，不是一个要专门去逛的地方。
 // 做成页面会逼人离开手头的事，而离开的代价就是没人去看。
 //
-// 角标数是**我的未读**：可见的、未解决的、我没读过的。
-// 「已读」逐人，「已解决」全局——一个人读过不代表事情解决了。
-import { useEffect, useRef, useState } from "react";
+// 一条告警 = 一次故障，写完不再变，没有"已解决"。
+// 「已读」逐人——一个人读过不代表别人也该从未读里消失。
+import { type Ref, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  AlertTriangle,
-  Bell,
-  CheckCircle2,
-  Info,
-  Search,
-  XCircle,
-} from "lucide-react";
+import { Bell, Search } from "lucide-react";
 
 import { api, type Alert } from "../api";
 import { S } from "../i18n";
 import { Chip, Pager, cn } from "../ui";
+import { usePopoverFlip } from "../ui/popoverFlip";
 
 const PAGE = 8;
 
-/** 详情最多列几条——一条告警可以聚合上百个对象，面板里塞不下也不该塞 */
-const MAX_LINES = 4;
-
-const ICON: Record<Alert["severity"], typeof Info> = {
-  info: Info,
-  warning: AlertTriangle,
-  error: XCircle,
-};
-
-/** 每条详情一行。系统级的 detail 是 `{ error }`，库级的按 subject id 索引 */
-function detailLines(a: Alert): string[] {
-  const out: string[] = [];
-  for (const [k, v] of Object.entries(a.detail)) {
-    if (k === "error" && typeof v === "string") {
-      out.push(v);
-      continue;
-    }
-    const row = v as { name?: string; error?: string } | null;
-    if (!row || typeof row !== "object") continue;
-    out.push([row.name, row.error].filter(Boolean).join(" — "));
-  }
-  return out;
-}
-
-function heading(a: Alert): { title: string; hint: string | null } {
-  const n = a.subject_ids.length;
-  const worded = S.alerts.kinds[a.kind];
-  // 没见过的 kind 也得显示得出来：新告警源上线时前端可能还没跟上，
-  // 而"有条告警但我不认识它"远好过"什么都不显示"
-  if (!worded) return { title: S.alerts.unknownKind(a.kind, n), hint: null };
-  // 已解决的不报数量：对象清空正是它解决的原因，n 恒为 0
-  if (a.resolved_at) return { title: worded.resolved, hint: null };
-  return { title: worded.title(n), hint: worded.hint };
+/** 详情里给人看的那一行：对象名 — 报错原文 */
+function detailLine(a: Alert): string | null {
+  const d = a.detail as { name?: string; error?: string; job?: string };
+  const parts = [d.name ?? d.job, d.error].filter(Boolean);
+  return parts.length ? parts.join(" — ") : null;
 }
 
 function AlertRow({ a, onRead }: { a: Alert; onRead: (id: string) => void }) {
-  const { title, hint } = heading(a);
-  const Icon = a.resolved_at ? CheckCircle2 : ICON[a.severity];
-  const lines = detailLines(a);
-  const shown = lines.slice(0, MAX_LINES);
-  const rest = lines.length - shown.length;
+  // 没见过的 kind 也得显示得出来：新告警源上线时前端可能还没跟上，
+  // 而"有条告警但我不认识它"远好过"什么都不显示"
+  const worded = S.alerts.kinds[a.kind];
+  const line = detailLine(a);
   return (
-    <div
-      // 未读靠左侧一道竖线，不靠底色——底色会让面板在告警多时变成一片红
-      className={cn(
-        "flex gap-2.5 px-3.5 py-3 border-b border-white/[0.06] last:border-b-0",
-        !a.read && !a.resolved_at && "border-l-2 border-l-rose-500/70",
-        a.resolved_at && "opacity-55",
-      )}
-      onMouseEnter={() => {
+    <button
+      type="button"
+      // **点击才算读过**，不是划过。鼠标经过一列告警不代表看过它们，
+      // 而已读一旦落下就再也不会自己回来
+      onClick={() => {
         if (!a.read) onRead(a.id);
       }}
+      className="w-full text-left flex gap-2.5 px-3.5 py-3 border-b border-white/[0.06] last:border-b-0 hover:bg-white/[0.03] transition-colors"
     >
-      <Icon
-        size={14}
+      {/* 未读就是一个红点。整行描边或底色会让面板在告警多时变成一片红，
+          而红点只占它该占的那一点地方，读过就没了 */}
+      <span
         className={cn(
-          "mt-0.5 shrink-0",
-          a.resolved_at
-            ? "text-emerald-400/70"
-            : a.severity === "error"
-              ? "text-rose-400"
-              : "text-amber-400",
+          "mt-[7px] h-1.5 w-1.5 rounded-full shrink-0",
+          a.read ? "bg-transparent" : "bg-rose-500",
         )}
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[13px] font-medium text-white">{title}</span>
+          <span
+            className={cn(
+              "text-[13px]",
+              a.read ? "text-neutral-400" : "font-medium text-white",
+            )}
+          >
+            {worded?.title ?? S.alerts.unknownKind(a.kind)}
+          </span>
           <Chip tone={a.kb_name ? "neutral" : "violet"}>
             {a.kb_name ?? S.alerts.system}
           </Chip>
-          {a.resolved_at && <Chip tone="success">{S.alerts.resolved}</Chip>}
         </div>
-        {hint && <p className="mt-0.5 text-[11.5px] text-neutral-500">{hint}</p>}
-        {shown.length > 0 && (
-          <ul className="mt-1.5 space-y-0.5">
-            {shown.map((l, i) => (
-              <li key={i} className="text-[11px] text-neutral-400 break-words">
-                {l}
-              </li>
-            ))}
-            {rest > 0 && (
-              <li className="text-[11px] text-neutral-600">
-                {S.alerts.andMore(rest)}
-              </li>
-            )}
-          </ul>
+        {worded && (
+          <p className="mt-0.5 text-[11.5px] text-neutral-500">{worded.hint}</p>
+        )}
+        {line && (
+          <p className="mt-1 text-[11px] text-neutral-400 break-words">{line}</p>
         )}
         <p className="u-num mt-1.5 text-[10.5px] text-neutral-600">
-          {new Date(a.last_seen).toLocaleString()}
+          {new Date(a.created_at).toLocaleString()}
         </p>
       </div>
-    </div>
+    </button>
   );
 }
 
-function Panel() {
+function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
-  const [showResolved, setShowResolved] = useState(false);
   const qc = useQueryClient();
 
-  // 搜索或切筛选后回第一页：停在第 4 页看一个只有 2 页的结果，
+  // 搜索后回第一页：停在第 4 页看一个只有 2 页的结果，
   // 面板会显示空白，而人会读成"没有告警"
   useEffect(() => {
     setPage(0);
-  }, [q, showResolved]);
+  }, [q]);
 
   const list = useQuery({
-    queryKey: ["alerts", "list", q, showResolved, page],
-    queryFn: () =>
-      api.alerts({
-        q,
-        includeResolved: showResolved,
-        limit: PAGE,
-        offset: page * PAGE,
-      }),
+    queryKey: ["alerts", "list", q, page],
+    queryFn: () => api.alerts({ q, limit: PAGE, offset: page * PAGE }),
     // 翻页时留着上一页，免得面板高度塌一下再弹回来
     placeholderData: (prev) => prev,
   });
@@ -155,25 +105,21 @@ function Panel() {
   const total = list.data?.total ?? 0;
 
   return (
-    <div className="u-menu-glass absolute right-0 top-9 w-[420px] rounded-xl shadow-2xl z-50 overflow-hidden">
+    // top-0 而不是 top-9：面板要从铃铛**原位**长出来，右上角对齐
+    <div
+      ref={panelRef}
+      className="u-menu-glass absolute right-0 top-0 w-[420px] rounded-xl shadow-2xl z-50 overflow-hidden"
+    >
       <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-white/10">
         <span className="text-[13px] font-medium text-neutral-100">
           {S.alerts.title}
         </span>
-        <div className="ml-auto flex items-center gap-2.5">
-          <button
-            className="text-[11.5px] text-neutral-500 hover:text-neutral-200 transition-colors"
-            onClick={() => setShowResolved((v) => !v)}
-          >
-            {showResolved ? S.alerts.hideResolved : S.alerts.showResolved}
-          </button>
-          <button
-            className="text-[11.5px] text-neutral-500 hover:text-neutral-200 transition-colors"
-            onClick={() => readAll.mutate()}
-          >
-            {S.alerts.markAllRead}
-          </button>
-        </div>
+        <button
+          className="ml-auto text-[11.5px] text-neutral-500 hover:text-neutral-200 transition-colors"
+          onClick={() => readAll.mutate()}
+        >
+          {S.alerts.markAllRead}
+        </button>
       </div>
 
       <div className="flex items-center gap-2 px-3.5 py-2 border-b border-white/[0.06]">
@@ -215,8 +161,9 @@ function Panel() {
 }
 
 export function AlertBell() {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
+  // 跟用户菜单同一份原地变形：两个面板紧挨着，动画差一点点来回点两下就看得出来
+  const { open, setOpen, close, rootRef, anchorRef, panelRef } =
+    usePopoverFlip<HTMLButtonElement, HTMLDivElement>();
   const unread = useQuery({
     queryKey: ["alerts", "unread"],
     queryFn: () => api.alertsUnread(),
@@ -225,27 +172,11 @@ export function AlertBell() {
   });
   const n = unread.data?.unread ?? 0;
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node))
-        setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
   return (
     <div ref={rootRef} className="relative">
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={anchorRef}
+        onClick={() => (open ? close() : setOpen(true))}
         title={S.alerts.badgeLabel}
         aria-label={S.alerts.badgeLabel}
         aria-expanded={open}
@@ -257,14 +188,13 @@ export function AlertBell() {
         )}
       >
         <Bell size={15} />
+        {/* 角标也是个点，不是数字。"有事没看"是二元的，具体几条打开就知道；
+            数字还会随重试一路往上跳，跳到三位数就把铃铛撑变形了 */}
         {n > 0 && (
-          // 99+ 而不是真数字：三位数会把角标撑变形，而到这个量级"多少条"已经不重要
-          <span className="u-num absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-1 rounded-full bg-rose-500/90 text-[10px] leading-[15px] text-white text-center">
-            {n > 99 ? "99+" : n}
-          </span>
+          <span className="absolute top-0.5 right-1 h-1.5 w-1.5 rounded-full bg-rose-500" />
         )}
       </button>
-      {open && <Panel />}
+      {open && <Panel panelRef={panelRef} />}
     </div>
   );
 }

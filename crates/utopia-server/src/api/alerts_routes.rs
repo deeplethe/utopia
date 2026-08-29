@@ -25,9 +25,6 @@ const MAX_PAGE: i64 = 50;
 
 #[derive(Deserialize)]
 pub struct ListQuery {
-    /// 默认只看未解决的。自愈是这个功能的核心，已解决的默认不该占位置
-    #[serde(default)]
-    pub include_resolved: bool,
     /// 搜库名、对象详情、kind 代号。**搜不到界面上那句标题**——
     /// 措辞在客户端，服务端没有它（见 store 里 SEARCH 的注释）
     #[serde(default)]
@@ -51,15 +48,9 @@ pub async fn list(
 ) -> ApiResult<Json<ListResponse>> {
     let limit = q.limit.unwrap_or(PAGE).clamp(1, MAX_PAGE);
     let offset = q.offset.unwrap_or(0).max(0);
-    let page = utopia_store::alerts::list_for_user(
-        &state.pool,
-        &user,
-        q.include_resolved,
-        q.q.as_deref(),
-        limit,
-        offset,
-    )
-    .await?;
+    let page =
+        utopia_store::alerts::list_for_user(&state.pool, &user, q.q.as_deref(), limit, offset)
+            .await?;
     Ok(Json(ListResponse {
         items: page.items,
         total: page.total,
@@ -91,7 +82,7 @@ pub async fn mark_read(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// 全部已读。只清**当前可见且未解决**的那些——已解决的本来就不在未读里。
+/// 全部已读。
 pub async fn mark_all_read(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,

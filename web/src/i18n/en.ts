@@ -131,37 +131,24 @@ export const en = {
       "Ingestion, sync and model failures show up here instead of only in the logs.",
     markAllRead: "Mark all read",
     // 说清搜的是什么：标题的措辞在客户端，服务端搜不到它，
-    // 所以别让人以为输入"sync failed"会有结果
+    // 所以别让人以为输入 "sync failed" 会有结果
     searchPlaceholder: "Search sources, knowledge bases, errors",
     noMatch: "Nothing matches",
-    andMore: (n: number) => `and ${n} more`,
-    showResolved: "Show resolved",
-    hideResolved: "Hide resolved",
-    resolved: "Resolved",
     system: "System",
-    unread: "Unread",
-    // kind → 一句说清出了什么事。第二句说该做什么——这才是告警比日志多出来的东西
+    // kind → 一句说清出了什么事。第二句说该做什么——这才是告警比日志多出来的东西。
+    // **一条告警就是一次故障**，所以标题里没有数量
     kinds: {
       "source.sync_failed": {
-        title: (n: number) =>
-          n === 1 ? "A source failed to sync" : `${n} sources failed to sync`,
-        // 解决了的告警对象数必然是 0——那正是它解决的原因。
-        // 拿它算数量会写出"0 sources failed to sync"，所以已解决态另说一句
-        resolved: "Sources are syncing again",
-        hint: "Nothing new came in from them. Check the source's settings.",
+        title: "A source failed to sync",
+        hint: "Nothing new came in from it. Check the source's settings.",
       },
       "llm.unreachable": {
-        title: () => "The model endpoint gave no usable answer",
-        resolved: "The model endpoint is answering again",
+        title: "The model endpoint gave no usable answer",
         hint: "Extraction and embedding are stopped. Check the endpoint URL in system settings.",
       },
-    } as Record<
-      string,
-      { title: (n: number) => string; resolved: string; hint: string } | undefined
-    >,
+    } as Record<string, { title: string; hint: string } | undefined>,
     // 没见过的 kind 也要能显示：新告警源上线时前端可能还没更新
-    unknownKind: (kind: string, n: number) =>
-      n > 0 ? `${kind} (${n})` : kind,
+    unknownKind: (kind: string) => kind,
   },
 
   nav: {

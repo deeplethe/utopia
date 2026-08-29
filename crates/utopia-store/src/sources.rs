@@ -232,11 +232,10 @@ pub async fn mark_running(pool: &PgPool, id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
-/// 一次同步收尾。**告警的升报与自愈都在这一个地方**，不在两个调用方那里——
-/// 分开写迟早有一路只记了失败没记恢复，而那正好是最难发现的错：
-/// 告警一直亮着，用户学会无视它。
+/// 一次同步收尾。失败时记一条告警，成功时什么都不做——
+/// **"现在好了没有"不是告警中心该回答的问题**，来源页面上就写着。
 ///
-/// 返回值是"告警状态变了没有"，调用方据此决定要不要推事件。
+/// 返回值是"记了没有"，调用方据此决定要不要推事件。
 pub async fn finish_sync(
     pool: &PgPool,
     id: Uuid,
@@ -258,38 +257,26 @@ pub async fn finish_sync(
     let Some((kb_id, name)) = row else {
         return Ok(false);
     };
-    match error {
-        // 内容类告警给 editor，不只给 admin：管理员需要知道"该修连接了"，
-        // 但**配这个源的人**更需要知道"你的东西没进来"
-        Some(msg) => {
-            let (_, changed) = crate::alerts::raise(
-                pool,
-                crate::alerts::NewAlert {
-                    kb_id: Some(kb_id),
-                    severity: "error",
-                    kind: crate::alerts::kind::SOURCE_SYNC_FAILED,
-                    // 内容类给 editor：配这个源的人比管理员更需要知道东西没进来
-                    min_role: Role::Editor,
-                    subject_type: Some("source"),
-                    subject: Some(id),
-                    detail: serde_json::json!({ id.to_string(): { "name": name, "error": msg } }),
-                },
-            )
-            .await?;
-            Ok(changed)
-        }
-        // 自愈：这个源好了就从聚合里摘掉。同库另外两个源还失败着的话
-        // 告警继续亮，只是少了一个对象
-        None => {
-            crate::alerts::clear_subject(
-                pool,
-                Some(kb_id),
-                crate::alerts::kind::SOURCE_SYNC_FAILED,
-                id,
-            )
-            .await
-        }
-    }
+    let Some(msg) = error else {
+        return Ok(false);
+    };
+    crate::alerts::raise(
+        pool,
+        crate::alerts::NewAlert {
+            kb_id: Some(kb_id),
+            severity: "error",
+            kind: crate::alerts::kind::SOURCE_SYNC_FAILED,
+            // 内容类给 editor，不只给 admin：管理员需要知道该修连接了，
+            // 但**配这个源的人**更需要知道你的东西没进来
+            min_role: Role::Editor,
+            subject_type: Some("source"),
+            subject_id: Some(id),
+            // 名字存一份：源被删之后 subject_id 解析不出名字，而告警该留得住
+            detail: serde_json::json!({ "name": name, "error": msg }),
+        },
+    )
+    .await?;
+    Ok(true)
 }
 
 /// 文档打标签（整组替换）。

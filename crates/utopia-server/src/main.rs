@@ -106,14 +106,14 @@ async fn main() -> anyhow::Result<()> {
                 // 而现在它只会留在 jobs.last_error 里，没有任何界面看得到
                 let result = dispatch(&st, &job).await;
                 if let Err(e) = &result {
-                    alerting::observe_job_failure(&st, e).await;
+                    alerting::observe_job_failure(&st, &job, e).await;
                 }
                 result
             }
         },
     ));
 
-    alerting::spawn_llm_probe(state.clone());
+    alerting::spawn_retention_sweep(state.clone());
 
     // 定时摄入调度器：每分钟扫一次到期来源，入队同步任务
     let sched_state = state.clone();
