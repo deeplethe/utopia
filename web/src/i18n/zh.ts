@@ -647,6 +647,7 @@ export const zh: Strings = {
     domainLabel: "主语",
     rangeLabel: "宾语",
     anyType: "不限类型",
+    searchTypes: "搜索类…",
     temporal: "时态语义",
     temporalState: "状态（有区间）",
     temporalEvent: "事件（时间点）",

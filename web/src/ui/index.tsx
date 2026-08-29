@@ -1,6 +1,10 @@
 /* Utopia UI 组件库 — 页面只用这里的组件与 styles.css 语义类，不写颜色字面量。 */
 import { useEffect, useRef, useState } from "react";
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+import type {
+  ButtonHTMLAttributes,
+  InputHTMLAttributes,
+  ReactNode,
+} from "react";
 import {
   ArrowUpRight,
   Check,
@@ -28,7 +32,11 @@ export function Wordmark({ className }: { className?: string }) {
       style={{ fontFamily: "var(--font-brand)", letterSpacing: "0.06em" }}
     >
       {[...S.app.name].map((ch, i) => (
-        <span key={i} className="u-letter" style={{ animationDelay: `${80 + i * 65}ms` }}>
+        <span
+          key={i}
+          className="u-letter"
+          style={{ animationDelay: `${80 + i * 65}ms` }}
+        >
           {ch}
         </span>
       ))}
@@ -47,7 +55,12 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   size?: "sm" | "md";
 };
 
-export function Button({ variant = "primary", size = "md", className, ...props }: ButtonProps) {
+export function Button({
+  variant = "primary",
+  size = "md",
+  className,
+  ...props
+}: ButtonProps) {
   return (
     <button
       className={cn(
@@ -62,8 +75,16 @@ export function Button({ variant = "primary", size = "md", className, ...props }
 }
 
 /* ---------- Input / Select ---------- */
-export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className={cn("input-dark px-3 py-2 text-sm", className)} {...props} />;
+export function Input({
+  className,
+  ...props
+}: InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input
+      className={cn("input-dark px-3 py-2 text-sm", className)}
+      {...props}
+    />
+  );
 }
 
 /* ---------- Dropdown（自制下拉，替代原生 select：原生弹层无法主题化） ---------- */
@@ -124,15 +145,23 @@ export function Dropdown({
         type="button"
         onClick={() => setOpen(!open)}
         title={menuLabel}
-        className={cn("input-dark w-full flex items-center gap-2 text-left", pad)}
+        className={cn(
+          "input-dark w-full flex items-center gap-2 text-left",
+          pad,
+        )}
       >
         {icon && <span className="shrink-0 text-neutral-500">{icon}</span>}
         <span className="flex-1 min-w-0 truncate">
-          {current?.label ?? <span className="text-neutral-600">{placeholder ?? ""}</span>}
+          {current?.label ?? (
+            <span className="text-neutral-600">{placeholder ?? ""}</span>
+          )}
         </span>
         <ChevronDown
           size={12}
-          className={cn("shrink-0 text-neutral-500 transition-transform", open && "rotate-180")}
+          className={cn(
+            "shrink-0 text-neutral-500 transition-transform",
+            open && "rotate-180",
+          )}
         />
       </button>
       {open && (
@@ -161,12 +190,17 @@ export function Dropdown({
                 )}
               >
                 <span className="flex-1 min-w-0 truncate">{o.label}</span>
-                {o.value === value && <Check size={12} className="shrink-0 text-neutral-400" />}
+                {o.value === value && (
+                  <Check size={12} className="shrink-0 text-neutral-400" />
+                )}
               </button>
             ))}
           </div>
           {footer && (
-            <div className="border-t border-white/10" onClick={() => setOpen(false)}>
+            <div
+              className="border-t border-white/10"
+              onClick={() => setOpen(false)}
+            >
               {footer}
             </div>
           )}
@@ -214,7 +248,9 @@ export function SearchSelect({
   const current = options.find((o) => o.value === value);
   const q = query.trim().toLowerCase();
   const matches = q
-    ? options.filter((o) => `${o.label} ${o.hint ?? ""}`.toLowerCase().includes(q))
+    ? options.filter((o) =>
+        `${o.label} ${o.hint ?? ""}`.toLowerCase().includes(q),
+      )
     : options;
   const visible = matches.slice(0, maxVisible);
   const hidden = matches.length - visible.length;
@@ -226,7 +262,8 @@ export function SearchSelect({
     inputRef.current?.blur();
   };
 
-  const pad = size === "sm" ? "pl-7 pr-2.5 py-1 text-xs" : "pl-8 pr-3 py-1.5 text-sm";
+  const pad =
+    size === "sm" ? "pl-7 pr-2.5 py-1 text-xs" : "pl-8 pr-3 py-1.5 text-sm";
   const rowPad = size === "sm" ? "px-2.5 py-1 text-xs" : "px-3 py-1.5 text-sm";
 
   return (
@@ -280,7 +317,9 @@ export function SearchSelect({
               className={cn(
                 "w-full flex items-center gap-2 text-left",
                 rowPad,
-                i === active ? "bg-white/[0.08] text-white" : "text-neutral-300",
+                i === active
+                  ? "bg-white/[0.08] text-white"
+                  : "text-neutral-300",
               )}
             >
               {!q && !!o.indent && (
@@ -288,9 +327,13 @@ export function SearchSelect({
               )}
               <span className="min-w-0 flex-1 truncate">
                 {o.label}
-                {o.hint && <span className="ml-2 text-neutral-500">{o.hint}</span>}
+                {o.hint && (
+                  <span className="ml-2 text-neutral-500">{o.hint}</span>
+                )}
               </span>
-              {o.value === value && <Check size={12} className="shrink-0 text-neutral-400" />}
+              {o.value === value && (
+                <Check size={12} className="shrink-0 text-neutral-400" />
+              )}
             </button>
           ))}
           {visible.length === 0 && (
@@ -312,12 +355,186 @@ export function SearchSelect({
   );
 }
 
+/* ---------- MultiSearchSelect（多选版 SearchSelect） ---------- */
+
+/**
+ * 多选 + 搜索。与 [`SearchSelect`] 同一套语汇与键盘操作，三处不同：
+ *
+ * - **已选的显示在输入框上方**，各带一个移除按钮。不显示在下拉里的原因是
+ *   下拉一关就看不见了，而"我到底选了哪些"是随时要看的
+ * - **选完不关**：多选多半要连点几个，每次都重新聚焦是折磨
+ * - 已选项在列表里带勾，再点一次是取消
+ *
+ * 选项多到几百个时（大本体就是这个量级）它仍然可用——这正是它取代芯片墙的理由：
+ * 芯片墙的高度随类数线性增长，搜索框不随。
+ */
+export function MultiSearchSelect({
+  values,
+  options,
+  onToggle,
+  placeholder,
+  emptyHint,
+  className,
+  maxVisible = 8,
+}: {
+  values: string[];
+  options: SearchSelectOption[];
+  onToggle: (v: string) => void;
+  placeholder?: string;
+  /** 一个都没选时显示的话。多选留空往往是有意义的（"不限"），不是没填 */
+  emptyHint?: string;
+  className?: string;
+  maxVisible?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const q = query.trim().toLowerCase();
+  const matches = q
+    ? options.filter((o) =>
+        `${o.label} ${o.hint ?? ""}`.toLowerCase().includes(q),
+      )
+    : options;
+  const visible = matches.slice(0, maxVisible);
+  const hidden = matches.length - visible.length;
+  const picked = values
+    .map((v) => options.find((o) => o.value === v))
+    .filter((o): o is SearchSelectOption => !!o);
+
+  const toggle = (v: string) => {
+    onToggle(v);
+    setQuery("");
+    setActive(0);
+    inputRef.current?.focus();
+  };
+
+  return (
+    <div className={cn("relative", className)}>
+      {picked.length > 0 && (
+        <div className="mb-1 flex flex-wrap gap-1">
+          {picked.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => onToggle(o.value)}
+              className="group flex items-center gap-1 rounded-full bg-white/[0.10] px-2 py-0.5 text-[11px] text-neutral-200 hover:bg-white/[0.16] transition-colors"
+              title={o.hint ?? o.label}
+            >
+              {o.label}
+              <span className="text-neutral-500 group-hover:text-neutral-200">
+                ✕
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {picked.length === 0 && emptyHint && (
+        <p className="mb-1 text-[11px] text-neutral-600">{emptyHint}</p>
+      )}
+      <SearchIcon
+        size={11}
+        className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-600 pointer-events-none"
+        style={{ top: undefined }}
+      />
+      <input
+        ref={inputRef}
+        className="input-dark w-full pl-7 pr-2.5 py-1 text-xs"
+        value={query}
+        placeholder={placeholder}
+        onFocus={() => {
+          setOpen(true);
+          setActive(0);
+        }}
+        onBlur={() => setOpen(false)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setActive(0);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            setOpen(false);
+            inputRef.current?.blur();
+          } else if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setActive((a) => Math.min(a + 1, visible.length - 1));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setActive((a) => Math.max(a - 1, 0));
+          } else if (e.key === "Enter" && visible[active]) {
+            e.preventDefault();
+            toggle(visible[active].value);
+          } else if (e.key === "Backspace" && !query && picked.length) {
+            // 空输入时退格删掉最后一个 —— 与各家 token 输入框一致
+            onToggle(picked[picked.length - 1].value);
+          }
+        }}
+      />
+      {open && (
+        <div className="u-pop u-pop-in u-pop-in-tl absolute z-50 mt-1 w-full rounded-lg shadow-xl overflow-hidden">
+          {visible.map((o, i) => (
+            <button
+              key={o.value}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => toggle(o.value)}
+              onMouseEnter={() => setActive(i)}
+              className={cn(
+                "w-full flex items-center gap-2 text-left px-2.5 py-1 text-xs",
+                i === active
+                  ? "bg-white/[0.08] text-white"
+                  : "text-neutral-300",
+              )}
+            >
+              {!q && !!o.indent && (
+                <span className="shrink-0" style={{ width: o.indent * 14 }} />
+              )}
+              <span className="min-w-0 flex-1 truncate">
+                {o.label}
+                {o.hint && (
+                  <span className="ml-2 text-neutral-500">{o.hint}</span>
+                )}
+              </span>
+              {values.includes(o.value) && (
+                <Check size={12} className="shrink-0 text-neutral-400" />
+              )}
+            </button>
+          ))}
+          {visible.length === 0 && (
+            <p className="px-2.5 py-1 text-xs text-neutral-600">
+              {S.ui.noMatches}
+            </p>
+          )}
+          {hidden > 0 && (
+            <div className="px-2.5 py-1 text-[11px] text-neutral-600 border-t border-white/5">
+              {S.ui.keepTyping(hidden)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- ColorPicker（精选粉彩色板 + hex 兜底；实体色刻意不开放全色域） ---------- */
 export const ENTITY_PALETTE = [
-  "#7fd0ff", "#5fa8ff", "#5fd4d0", "#63e2b7",
-  "#4cc38a", "#a8d878", "#ffd479", "#f2b66d",
-  "#ff9d76", "#ff8a9e", "#ff9daf", "#e797d8",
-  "#c4a5ff", "#9fa8ff", "#8ea5bd", "#b3b9c4",
+  "#7fd0ff",
+  "#5fa8ff",
+  "#5fd4d0",
+  "#63e2b7",
+  "#4cc38a",
+  "#a8d878",
+  "#ffd479",
+  "#f2b66d",
+  "#ff9d76",
+  "#ff8a9e",
+  "#ff9daf",
+  "#e797d8",
+  "#c4a5ff",
+  "#9fa8ff",
+  "#8ea5bd",
+  "#b3b9c4",
 ];
 
 export function ColorPicker({
@@ -429,7 +646,11 @@ export function Pager({
   return (
     <div className="mt-3 flex items-center justify-end gap-2 text-xs text-neutral-500">
       <span className="u-num">
-        {S.library.pageOf(safe * pageSize + 1, Math.min((safe + 1) * pageSize, total), total)}
+        {S.library.pageOf(
+          safe * pageSize + 1,
+          Math.min((safe + 1) * pageSize, total),
+          total,
+        )}
       </span>
       <button
         onClick={() => onPage(safe - 1)}
@@ -450,7 +671,11 @@ export function Pager({
 }
 
 /** 分页切片辅助：返回当前页数据与安全页号。 */
-export function pageSlice<T>(items: T[], page: number, pageSize: number): { rows: T[]; safe: number } {
+export function pageSlice<T>(
+  items: T[],
+  page: number,
+  pageSize: number,
+): { rows: T[]; safe: number } {
   const pageCount = Math.max(1, Math.ceil(items.length / pageSize));
   const safe = Math.min(page, pageCount - 1);
   return { rows: items.slice(safe * pageSize, (safe + 1) * pageSize), safe };
@@ -496,7 +721,9 @@ export function DangerConfirm({
       }}
     >
       <div className="glass-strong w-[24rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl p-5">
-        <h2 className="text-[15px] font-semibold text-[var(--u-danger)] mb-2">{title}</h2>
+        <h2 className="text-[15px] font-semibold text-[var(--u-danger)] mb-2">
+          {title}
+        </h2>
         <p className="text-xs text-neutral-400 leading-relaxed mb-4">{hint}</p>
         {requireText && (
           <input
@@ -508,7 +735,10 @@ export function DangerConfirm({
           />
         )}
         <div className="flex justify-end gap-2">
-          <button className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs" onClick={onCancel}>
+          <button
+            className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs"
+            onClick={onCancel}
+          >
             {cancelLabel}
           </button>
           <button
@@ -536,12 +766,17 @@ export function Panel({
   children: ReactNode;
 }) {
   return (
-    <div className={cn(strong ? "glass-strong" : "glass", "rounded-xl", className)}>{children}</div>
+    <div
+      className={cn(strong ? "glass-strong" : "glass", "rounded-xl", className)}
+    >
+      {children}
+    </div>
   );
 }
 
 /* ---------- Chip（状态胶囊） ---------- */
-export type ChipTone = "neutral" | "info" | "success" | "warn" | "danger" | "violet";
+export type ChipTone =
+  "neutral" | "info" | "success" | "warn" | "danger" | "violet";
 
 export function Chip({
   tone = "neutral",
@@ -562,18 +797,32 @@ export function Chip({
 }
 
 /* ---------- PageTitle ---------- */
-export function PageTitle({ className, children }: { className?: string; children: ReactNode }) {
+export function PageTitle({
+  className,
+  children,
+}: {
+  className?: string;
+  children: ReactNode;
+}) {
   return <h2 className={cn("u-title text-lg", className)}>{children}</h2>;
 }
 
 /* ---------- EmptyState ---------- */
-export function EmptyState({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+export function EmptyState({
+  icon,
+  children,
+}: {
+  icon: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <div className="text-center">
       <div className="glass mx-auto mb-4 h-14 w-14 rounded-2xl grid place-items-center text-xl font-bold text-neutral-300">
         {icon}
       </div>
-      <div className="text-sm text-neutral-500 whitespace-pre-line">{children}</div>
+      <div className="text-sm text-neutral-500 whitespace-pre-line">
+        {children}
+      </div>
     </div>
   );
 }
@@ -590,7 +839,13 @@ export function ErrorText({ children }: { children: ReactNode }) {
 /* ---------- GithubMark（lucide 无品牌图标，官方 mark 内联） ---------- */
 export function GithubMark({ size = 16 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden
+    >
       <path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12" />
     </svg>
   );
@@ -607,7 +862,11 @@ export function SectionMark({ text, title }: { text: string; title: string }) {
       style={{ fontFamily: "var(--font-brand)", letterSpacing: "0.06em" }}
     >
       {[...text].map((ch, i) => (
-        <span key={i} className="u-letter" style={{ animationDelay: `${80 + i * 45}ms` }}>
+        <span
+          key={i}
+          className="u-letter"
+          style={{ animationDelay: `${80 + i * 45}ms` }}
+        >
           {/* inline-flex 会折叠纯空格 span——换不折叠空格 */}
           {ch === " " ? " " : ch}
         </span>

@@ -25,6 +25,7 @@ import {
   Dropdown,
   Input,
   Loading,
+  MultiSearchSelect,
   Pager,
   PageTitle,
   RAIL_CLS,
@@ -1060,58 +1061,6 @@ function ClassForm({
 
 /* ---------- 关系表单 ---------- */
 
-/** 多选类。**留空 = 不限**，而不是"没选" —— 关系不必声明主宾类型。 */
-function TypePicker({
-  label,
-  all,
-  selected,
-  onToggle,
-}: {
-  label: string;
-  all: EntityTypeView[];
-  selected: string[];
-  onToggle: (id: string) => void;
-}) {
-  return (
-    <div className="min-w-0">
-      <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-1">
-        {label}
-      </div>
-      <div className="flex flex-wrap gap-1 max-h-28 overflow-y-auto u-scroll">
-        {all.length === 0 && (
-          <span className="text-[11px] text-neutral-600">
-            {S.ontology.anyType}
-          </span>
-        )}
-        {all.map((t) => {
-          const on = selected.includes(t.id);
-          return (
-            <button
-              key={t.id}
-              type="button"
-              onClick={() => onToggle(t.id)}
-              className={cn(
-                "rounded-full px-2 py-0.5 text-[11px] font-mono transition-colors",
-                on
-                  ? "bg-white/[0.12] text-neutral-100"
-                  : "bg-white/[0.04] text-neutral-500 hover:text-neutral-300",
-              )}
-              title={t.label}
-            >
-              {t.key}
-            </button>
-          );
-        })}
-      </div>
-      {selected.length === 0 && all.length > 0 && (
-        <div className="mt-1 text-[11px] text-neutral-600">
-          {S.ontology.anyType}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function PropertyForm({
   kbId,
   existing,
@@ -1135,6 +1084,17 @@ function PropertyForm({
   const [description, setDescription] = useState(existing?.description ?? "");
   const [domains, setDomains] = useState<string[]>(existing?.domains ?? []);
   const [ranges, setRanges] = useState<string[]>(existing?.ranges ?? []);
+  // 显示标签，不显示 key。**进提示词的 key 由服务端从库里取**，与界面显示什么无关；
+  // 而类树、属性列表也都显示标签，这里没有理由例外——中文库里用户该看到
+  // "发票记录" 而不是 invoice_record
+  const typeOpts = useMemo(
+    () => parentOptions(allTypes, undefined),
+    [allTypes],
+  );
+  const toggle = (
+    set: React.Dispatch<React.SetStateAction<string[]>>,
+    id: string,
+  ) => set((v) => (v.includes(id) ? v.filter((x) => x !== id) : [...v, id]));
 
   const save = useMutation({
     mutationFn: async (): Promise<unknown> =>
@@ -1209,35 +1169,38 @@ function PropertyForm({
           className="w-full"
         />
       </div>
-      {/* 类型签名。进抽取提示词的是 **key**（`person → organization`），
-          不是这里显示的标签——中文库里 person 的标签是"人物"，
-          写进提示词会教模型输出一个不存在的类型（docs/decisions/0004） */}
+      {/* 类型签名。界面显示标签，而进提示词的是 key —— 那一步在服务端，
+          与这里显示什么无关（docs/decisions/0004 定的是提示词里必须用 key） */}
       <div>
         <label className={lbl}>{S.ontology.signature}</label>
         <p className="text-[11px] leading-relaxed text-neutral-600 mb-1.5">
           {S.ontology.signatureHint}
         </p>
-        <div className="grid grid-cols-2 gap-2">
-          <TypePicker
-            label={S.ontology.domainLabel}
-            all={allTypes}
-            selected={domains}
-            onToggle={(id) =>
-              setDomains((v) =>
-                v.includes(id) ? v.filter((x) => x !== id) : [...v, id],
-              )
-            }
-          />
-          <TypePicker
-            label={S.ontology.rangeLabel}
-            all={allTypes}
-            selected={ranges}
-            onToggle={(id) =>
-              setRanges((v) =>
-                v.includes(id) ? v.filter((x) => x !== id) : [...v, id],
-              )
-            }
-          />
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-1">
+              {S.ontology.domainLabel}
+            </div>
+            <MultiSearchSelect
+              values={domains}
+              options={typeOpts}
+              onToggle={(id) => toggle(setDomains, id)}
+              placeholder={S.ontology.searchTypes}
+              emptyHint={S.ontology.anyType}
+            />
+          </div>
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-1">
+              {S.ontology.rangeLabel}
+            </div>
+            <MultiSearchSelect
+              values={ranges}
+              options={typeOpts}
+              onToggle={(id) => toggle(setRanges, id)}
+              placeholder={S.ontology.searchTypes}
+              emptyHint={S.ontology.anyType}
+            />
+          </div>
         </div>
       </div>
       <div>

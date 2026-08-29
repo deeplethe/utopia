@@ -696,6 +696,7 @@ export const en = {
     domainLabel: "Subject",
     rangeLabel: "Object",
     anyType: "Any type",
+    searchTypes: "Search classes…",
     temporal: "Temporal semantics",
     temporalState: "State (has interval)",
     temporalEvent: "Event (point in time)",
