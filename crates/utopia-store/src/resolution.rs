@@ -129,6 +129,19 @@ enum TypeDrift {
 }
 
 fn classify_type_drift(a: &str, b: &str) -> TypeDrift {
+    // **同一个类型当然可能是同一个东西。**
+    //
+    // 这一档原本不存在，因为这个函数生来只服务"类型漂移"——同名被抽成两种
+    // 类型——那里两边相同根本不会发生。后来 containment_reviews 借它当相容性
+    // 判据，而那里**两边相同才是最常见的情形**，于是 person 对 person 落进了
+    // 最后那行 Disjoint，被读成"永不可能是同一个东西"。
+    //
+    // 代价是全文最明显的同指关系一对都进不了队列：福尔摩斯前六篇里
+    // Sherlock Holmes 与 Holmes 是两个实体，488 个实体只合并掉 14 个。
+    // 原有的 12 个单元测试全在测跨类型，一个都没测相同类型。
+    if a == b {
+        return TypeDrift::Recall;
+    }
     if a == FALLBACK_TYPE_KEY || b == FALLBACK_TYPE_KEY {
         return TypeDrift::Recall;
     }
@@ -1959,4 +1972,39 @@ pub async fn approve_refinement(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod same_type_tests {
+    use super::{classify_type_drift, TypeDrift};
+
+    /// **相同类型是最常见的情形，而它曾经落在 Disjoint 上。**
+    ///
+    /// 这个函数生来服务"类型漂移"（同名被抽成两种类型），那里两边相同不会发生；
+    /// 后来被 `containment_reviews` 借去当相容性判据，那里两边相同是常态。
+    /// 结果是 `Sherlock Holmes` 与 `Holmes` 一对都进不了审阅队列。
+    #[test]
+    fn the_same_type_is_a_recall_candidate() {
+        for k in [
+            "person",
+            "location",
+            "organization",
+            "product",
+            "event",
+            "concept",
+        ] {
+            assert_eq!(
+                classify_type_drift(k, k),
+                TypeDrift::Recall,
+                "{k} 对 {k} 必须可召回"
+            );
+        }
+        // 自定义类型同样——这里判的是"两边是不是同一种东西"，不是"它在不在白名单里"
+        assert_eq!(classify_type_drift("drug", "drug"), TypeDrift::Recall);
+        // 跨类型的老结论一条都不变
+        assert_eq!(
+            classify_type_drift("person", "organization"),
+            TypeDrift::Disjoint
+        );
+    }
 }

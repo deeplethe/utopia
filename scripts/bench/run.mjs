@@ -92,9 +92,13 @@ async function main() {
   const corpus = JSON.parse(
     fs.readFileSync(path.join(HERE, "corpora", corpusName + ".json"), "utf8"),
   );
-  const truth = JSON.parse(
-    fs.readFileSync(path.join(HERE, "truth", corpusName + ".json"), "utf8"),
-  ).expect;
+  // 答案键是**可选的**。有些语料不是准确性基准：holmes 那份是 demo 空镜与
+  // 实体消解夹具，模型早就读过它，量类型准确性量到的是记忆而不是这条流水线。
+  // 没有答案键就只报规模、耗时与图的形状，不打分——比编一份假答案诚实
+  const truthPath = path.join(HERE, "truth", corpusName + ".json");
+  const truth = fs.existsSync(truthPath)
+    ? JSON.parse(fs.readFileSync(truthPath, "utf8")).expect
+    : null;
 
   try {
     await api("POST", "/api/v1/auth/register", {
@@ -251,7 +255,7 @@ async function main() {
   let wronglyChanged = 0;
   let absent = 0;
   const notes = [];
-  for (const [frag, accept] of Object.entries(truth)) {
+  for (const [frag, accept] of Object.entries(truth ?? {})) {
     // 按片段匹配而不是全等：抽取给的名字每次略有出入
     //（"星云科技" / "星云科技(上海)有限公司"），全等会把这种变化算成失败
     const found = rows.filter(([name]) => name.includes(frag));
@@ -303,7 +307,9 @@ async function main() {
           for_review: outcome.for_review.length,
           left_alone: outcome.left_alone.length,
         },
-        score: { hit, miss, correctlyLeft, wronglyChanged, absent, notes },
+        score: truth
+          ? { hit, miss, correctlyLeft, wronglyChanged, absent, notes }
+          : "无答案键，不打分",
         ms: { extract: extractMs, import: importMs, resolve: resolveMs },
       },
       null,
