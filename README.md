@@ -39,89 +39,17 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 ## Philosophy
 
-> **We strongly recommend reading this chapter.** About 5 minutes.
+What we set out to build is a knowledge world model: it understands the people, events, rules and relations inside a company, how they change over time, why they hold and when they cease to, how each decision came about and what it returned, cause and effect, all of it. So we gave it a somewhat romantic name — **Utopia**: a hub for knowledge, a foundation for decisions, a gate for controlled execution, a proving ground for reasoning about what comes next.
 
-**An agent memory? Another Graph RAG? Or one more DAG?** It can be any of those, and it doesn't stop there.
+Keeping an ideal world running takes some serious design, and there is room here for only one of them — the system's sense of time. Ptolemy's geocentric model was long held to be a reasonable account of cosmic order, then revised and displaced step by step by Copernicus, Kepler, Galileo and Newton. Notice that what we keep is not merely "ah, heliocentrism is the right one"; it is the whole arc along which understanding moved, a history in full.
 
-What we set out to build is a world model that belongs to your company: it understands the people, events, rules and relations inside it, and equally how they change over time, why they hold, and when they cease to. Memory, knowledge, rules, reasoning and action are each only a part of it.
+Here a piece of knowledge is never overwritten because a new fact turned up. The system records when it was ingested, when it changed, the span over which it held, a chronological chain of revisions and of how our reading of it shifted, which is what makes a decision genuinely traceable: review an approval a year on, and what comes back is the full course and grounds of that decision chain as it stood at the time. In engineering terms, a bitemporal knowledge graph. To make it hold up in practice, we have iterated at length against public corpora spanning enterprise records, education, finance, law and research.
 
-So we gave it a somewhat romantic name: **Utopia**. Put in engineering terms, it is a passively evolving enterprise world model — **a hub for knowledge, a foundation for decisions, a gate for controlled execution, a proving ground for reasoning about what comes next.**
-
-But you find out on maintaining it that building a world is not the hard part; keeping it running for years, steadily and credibly, is. An ideal state needs great institutions. Hence the laws that follow.
-
-| Law | |
-|---|---|
-| **Zeus's Law** | Treat every piece of knowledge that arrives well |
-| **Law of History** | Knowledge is not a static table of facts but a history still unfolding |
-| **Law of Deduction** | From understanding the present toward reasoning about the future |
-| **The Iron Gate** | Let rules hold up intelligence; let logic bound action |
-
-### Zeus's Law
-
-> **Treat every piece of knowledge that arrives well.**
-
-In ancient Greece, Zeus guarded strangers and travellers. Wherever they came from, they were to be received before they were known. Utopia hopes to treat every piece of knowledge entering this world the same way.
-
-It may come from a document, or from a database, a warehouse, a web page, a running subscription; it may be fully structured, or it may be nothing more than a new way of putting something. We will not turn it away merely because it does not yet fit an existing shape.
-
-The system tries to recognise entities, facts and relations within it, forming its own ontology through the cold-start phase. New predicates may appear; old ones are not casually discarded; and when a fact changes, the trace of what it once was is kept along with the chain of that change.
-
-Treating knowledge well does not mean understanding everything at any cost. We aim for a four-way balance between accuracy, extraction throughput, cost, and human involvement.
-
-This is Utopia's Law of Zeus: treat well every piece of knowledge that comes into this world.
-
-### Law of History
-
-> **Knowledge is not a static table of facts but a history still unfolding.**
-
-Knowledge graphs have tended to record settled facts, forever pursuing which knowledge is *correct*. Yet whether something is correct is at times a question only time can answer.
-
-Ptolemy's geocentric system was long held to be a reasonable account of cosmic order; then Copernicus proposed the heliocentric one, Kepler corrected the model of planetary motion, Galileo brought new observational evidence, and Newton reinterpreted celestial movement under a unified mechanics. Today we of course know that geocentrism is no longer the correct model of the solar system.
-
-And yet we remember it.
-
-We remember not only that geocentrism existed, but why it was believed, in what age it was accepted, and how observation, theory and evidence revised and displaced it step by step. Because a truthful world needs to record more than *what is correct*; it needs to record what we once believed, and how we got from there to here.
-
-So in Utopia a piece of knowledge is not simply overwritten or deleted because a new fact appeared. The system records when it was ingested, when it changed, the span over which it held in the real world, and the moment we learned of that change. We can therefore ask not only "what is true now?" but also:
-
-```
-"What did we believe was true at the time?"
-"When did this begin to hold?"
-"And when did we learn that it had changed?"
-```
-
-Only by preserving these changes can knowledge take real part in the unfolding of history. In engineering terms we call it a **bitemporal knowledge graph**.
-
-### Law of Deduction
-
-> **From understanding the present toward reasoning about the future.**
-
-Laplace imagined an intellect vast enough to know, at a single moment, the state of every particle in the universe together with all the laws governing their motion; in principle it could then derive the entire past and future. Which is to say it could predict not only the courses of the stars, but what the one writing this README is thinking, and what thought will arise in you reading it a second from now.
-
-In Utopia we try to approach that ideal by engineering: forward chaining drives facts to keep deriving, a symbolic system expresses rules, states and causal relations, and a language model handles the reasoning that resists full formalisation. Given enough facts, rules and causes, perhaps the system can move from understanding the present toward reasoning about the future.
-
-### The Iron Gate
-
-> **Let rules hold up intelligence; let logic bound action.**
-
-An ideal state does not mean doing as one pleases. Quite the opposite: here every action should run within law, rule and boundary. What we least want to see is a model's hallucination, a human oversight or a flaw in reasoning turning into a logical error, an overreach of authority, or worse, an irreversible action.
-
-So in Utopia an agent's judgement is not by itself an action. Every call to a downstream service must, before it actually runs, pass a joint check by ontology rules, constraints and symbolic logic:
-
-```
-Does it agree with the facts?     Are its preconditions met?
-Does it hold the authority?       Does it cross a set boundary?
-        Is its outcome consistent with the current state of the world?
-```
-
-Only through these rules can reasoning become action. A model may think boldly, but execution must be restrained; an agent may explore the unknown, but it may not cross the iron law of this world.
-
-> Go on, agent.
-> Catch every task steadily, and hold every boundary just as steadily.
+Time is only one such design. Others centre on how knowledge is taken in, how the future is reasoned about, and how logic bounds action: [utopia.bi/philosophy](https://utopia.bi/philosophy)
 
 ## Features
 
-The whole system is a crab and an elephant. By bringing in pgvector and a queue-table design, we cut the weight of the stack and its service dependencies — deployment is over in a blink.
+The whole system is a Rust binary and a Postgres service. By bringing in pgvector and a queue-table design, we cut the weight of the stack and its service dependencies — deployment is over in a blink.
 
 | | |
 |---|---|
