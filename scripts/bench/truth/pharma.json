@@ -1,0 +1,28 @@
+{
+  "note": "期望的 schema.org 类。key 是实体名的一个足以认出它的片段（抽取给的名字每次略有出入，全等匹配会把变化算成失败）；值是可接受的类 key，任一命中即算对。",
+  "note2": "空数组 = 本体里没有对得上的类，此时**正确行为是不动它**——改了反而算错。",
+  "expect": {
+    "仁和医药集团": ["corporation", "organization"],
+    "仁和制药厂": ["corporation", "organization"],
+    "仁和堂连锁药房": ["pharmacy"],
+    "浙江大学医学院附属第一医院": ["hospital"],
+    "国家药监局": ["government_organization"],
+    "中华医学会": ["medical_organization"],
+    "苯磺酸氨氯地平片": ["drug"],
+    "浙江大学药学院": ["college_or_university", "educational_organization"],
+    "中华心血管病杂志": ["periodical"],
+    "三期临床试验": ["medical_trial"],
+    "原发性高血压": ["medical_condition"],
+    "头痛": ["medical_symptom", "medical_sign_or_symptom"],
+    "踝部水肿": ["medical_symptom", "medical_sign_or_symptom"],
+    "杭州": ["city"],
+    "绍兴": ["city"],
+    "乌镇": ["city"],
+    "杭州拱墅区": ["administrative_area"],
+    "心血管健康论坛": ["business_event", "event_series", "conference_event"],
+    "慢病管理小程序": ["software_application", "mobile_application"],
+    "周敏": [],
+    "陈国华": [],
+    "仿制药一致性评价": []
+  }
+}

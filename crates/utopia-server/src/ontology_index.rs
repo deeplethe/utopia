@@ -28,7 +28,11 @@ pub async fn refresh_scoped(
     kb_id: Uuid,
     only: Option<utopia_store::ontology::TypeKind>,
 ) -> anyhow::Result<usize> {
-    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
+    // 库可能已经被删了——任务是导入时排的，中间隔着几分钟。
+    // 这不是失败，是没事可做；当成错误的话它还要重试三次才放弃
+    let Ok(kb) = utopia_store::kbs::get(&state.pool, kb_id).await else {
+        return Ok(0);
+    };
     let Some(settings) = utopia_store::settings::get(&state.pool, kb.workspace_id).await? else {
         return Ok(0);
     };
