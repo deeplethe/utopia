@@ -121,22 +121,19 @@ async function main() {
   psql("UPDATE knowledge_bases SET auto_extend_ontology=FALSE WHERE id='" + kb + "'");
   await sleep(6000);
 
-  const t0 = Date.now();
-  for (const [filename, content] of corpus.docs) {
-    await api("POST", "/api/v1/kbs/" + kb + "/ingest", { filename, content });
-  }
-  await until(
-    async () =>
-      num(
-        "SELECT count(*) FROM documents WHERE kb_id='" +
-          kb +
-          "' AND graph_status='done'",
-      ) >= corpus.docs.length,
-  );
-  const extractMs = Date.now() - t0;
+  // **导入与灌语料的先后次序，量的是两件不同的事。**
+  //
+  // 先灌后导（默认）：抽取只看得见种子本体，大本体只作用于事后消解。
+  // 先导后灌（--ontology-first）：抽取当场就看得见大本体，量的是提示词。
+  //
+  // 这条曾经害我得出一个错结论：默认次序下报了 108k 的本体段，就说"108k 的
+  // 提示词吃掉了 5 个实体"——而那一组抽取时提示词里只有 9 个种子类，两组的
+  // 抽取输入根本一样，25 vs 18 是跑次方差。所以下面两处 ontology_size 都记，
+  // 各自标明是什么时候量的。
+  const ontologyFirst = "ontology-first" in args;
 
-  let importMs = 0;
-  if (args.ontology) {
+  async function importOntology() {
+    if (!args.ontology) return 0;
     const t1 = Date.now();
     const form = new FormData();
     form.append(
@@ -163,28 +160,71 @@ async function main() {
       10000,
       2400000,
     );
-    importMs = Date.now() - t1;
+    return Date.now() - t1;
   }
 
-  const classChars = num(
-    "SELECT coalesce(sum(length('- '||key||coalesce(': '||nullif(description,''),''))+1),0)" +
-      " FROM entity_types WHERE kb_id='" +
-      kb +
-      "'",
+  const sizeNow = () => {
+    const c = num(
+      "SELECT coalesce(sum(length('- '||key||coalesce(': '||nullif(description,''),''))+1),0)" +
+        " FROM entity_types WHERE kb_id='" +
+        kb +
+        "'",
+    );
+    const r = num(
+      "SELECT coalesce(sum(length('- '||key||' (x)'||coalesce(': '||nullif(description,''),''))+1),0)" +
+        " FROM relation_types WHERE kb_id='" +
+        kb +
+        "' AND kind<>'attribute'",
+    );
+    const a = num(
+      "SELECT coalesce(sum((length('- '||r.key||' (text)'||coalesce(': '||nullif(r.description,''),''))+1)" +
+        " * greatest(1,(SELECT count(*) FROM relation_type_domains d WHERE d.relation_type_id=r.id))),0)" +
+        " FROM relation_types r WHERE r.kb_id='" +
+        kb +
+        "' AND r.kind='attribute'",
+    );
+    return {
+      classes: num("SELECT count(*) FROM entity_types WHERE kb_id='" + kb + "'"),
+      relations: num(
+        "SELECT count(*) FROM relation_types WHERE kb_id='" + kb + "' AND kind<>'attribute'",
+      ),
+      attributes: num(
+        "SELECT count(*) FROM relation_types WHERE kb_id='" + kb + "' AND kind='attribute'",
+      ),
+      prompt_chars: c + r + a,
+      prompt_tokens_est: Math.round((c + r + a) / CHARS_PER_TOKEN),
+    };
+  };
+
+  let importMs = 0;
+  if (ontologyFirst) importMs = await importOntology();
+
+  // **抽取当时本体有多大**——这一份才是提示词看到的那个规模。
+  //
+  // 先摸一次本体：种子类是**惰性建**的（第一次读本体或抽取时才落库），
+  // 不先摸就量到导入进来那些、漏掉 9 个种子。第一版就漏了，表现是
+  // 抽取时 24 类、消解时 32 类，看着像中途有人改了本体
+  await api("GET", "/api/v1/kbs/" + kb + "/ontology");
+  const atExtraction = sizeNow();
+
+  const t0 = Date.now();
+  for (const [filename, content] of corpus.docs) {
+    await api("POST", "/api/v1/kbs/" + kb + "/ingest", { filename, content });
+  }
+  await until(
+    async () =>
+      num(
+        "SELECT count(*) FROM documents WHERE kb_id='" +
+          kb +
+          "' AND graph_status='done'",
+      ) >= corpus.docs.length,
   );
-  const relChars = num(
-    "SELECT coalesce(sum(length('- '||key||' (x)'||coalesce(': '||nullif(description,''),''))+1),0)" +
-      " FROM relation_types WHERE kb_id='" +
-      kb +
-      "' AND kind<>'attribute'",
-  );
-  const attrChars = num(
-    "SELECT coalesce(sum((length('- '||r.key||' (text)'||coalesce(': '||nullif(r.description,''),''))+1)" +
-      " * greatest(1,(SELECT count(*) FROM relation_type_domains d WHERE d.relation_type_id=r.id))),0)" +
-      " FROM relation_types r WHERE r.kb_id='" +
-      kb +
-      "' AND r.kind='attribute'",
-  );
+  const extractMs = Date.now() - t0;
+
+  if (!ontologyFirst) importMs = await importOntology();
+
+  // 消解时本体有多大（先灌后导时它跟抽取当时不同）
+  const atResolution = sizeNow();
 
   const t2 = Date.now();
   const outcome = await api("POST", "/api/v1/kbs/" + kb + "/ontology/type-resolution");
@@ -241,23 +281,11 @@ async function main() {
         corpus: corpusName,
         ontology: args.ontology ? path.basename(args.ontology) : null,
         kb_id: kb,
-        ontology_size: {
-          classes: num("SELECT count(*) FROM entity_types WHERE kb_id='" + kb + "'"),
-          relations: num(
-            "SELECT count(*) FROM relation_types WHERE kb_id='" +
-              kb +
-              "' AND kind<>'attribute'",
-          ),
-          attributes: num(
-            "SELECT count(*) FROM relation_types WHERE kb_id='" +
-              kb +
-              "' AND kind='attribute'",
-          ),
-          prompt_chars: classChars + relChars + attrChars,
-          prompt_tokens_est: Math.round(
-            (classChars + relChars + attrChars) / CHARS_PER_TOKEN,
-          ),
-        },
+        order: ontologyFirst ? "ontology-first" : "documents-first",
+        // **两份，各自标明什么时候量的。** 只报一份就会被读成"抽取用的提示词
+        // 有这么大"，而先灌后导时抽取根本没见过它——这个误读已经发生过一次
+        ontology_at_extraction: atExtraction,
+        ontology_at_resolution: atResolution,
         graph: {
           entities: num(
             "SELECT count(*) FROM entities WHERE kb_id='" +

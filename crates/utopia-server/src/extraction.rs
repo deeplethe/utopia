@@ -107,10 +107,6 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
 
     let etypes = utopia_store::graph::entity_types(&state.pool, doc.kb_id).await?;
     let rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;
-    let type_pairs: Vec<(String, String, String)> = etypes
-        .iter()
-        .map(|t| (t.key.clone(), t.label.clone(), t.description.clone()))
-        .collect();
     // 关系与属性分道：属性走字面值通道，不进关系清单。
     //
     // related_to 刻意不列给模型：它在本体里是代码层的兜底，但摆进提示词就成了
@@ -120,40 +116,10 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // 兜底改由下面的代码执行，原词落进 fact_evidence.proposed_predicate 留待消解。
     let type_key_by_id: HashMap<Uuid, &str> =
         etypes.iter().map(|t| (t.id, t.key.as_str())).collect();
-    // 类型签名：`person|organization → vendor`，一侧为空写 `*`。
-    // **两侧都为空就不给签名**——那不是"没填"，是"不限"，硬写一个 `* → *`
-    // 只会给每个文本块的提示词加一行噪音
-    let sig_of = |ids: &[Uuid]| -> String {
-        if ids.is_empty() {
-            return "*".into();
-        }
-        let mut keys: Vec<&str> = ids
-            .iter()
-            .filter_map(|id| type_key_by_id.get(id).copied())
-            .collect();
-        keys.sort_unstable();
-        if keys.is_empty() {
-            "*".into()
-        } else {
-            keys.join("|")
-        }
-    };
-    let rel_pairs: Vec<utopia_extract::PromptRelation> = rtypes
+    let attr_meta: HashMap<&str, &utopia_core::models::RelationType> = rtypes
         .iter()
-        .filter(|r| r.kind != "attribute" && r.key != FALLBACK_RELATION_KEY)
-        .map(|r| {
-            let signature = if r.domains.is_empty() && r.ranges.is_empty() {
-                String::new()
-            } else {
-                format!("{} → {}", sig_of(&r.domains), sig_of(&r.ranges))
-            };
-            utopia_extract::PromptRelation {
-                key: r.key.clone(),
-                label: r.label.clone(),
-                description: r.description.clone(),
-                signature,
-            }
-        })
+        .filter(|r| r.kind == "attribute")
+        .map(|r| (r.key.as_str(), r))
         .collect();
     let type_ids: HashMap<&str, Uuid> = etypes.iter().map(|t| (t.key.as_str(), t.id)).collect();
     let rel_ids: HashMap<&str, Uuid> = rtypes.iter().map(|r| (r.key.as_str(), r.id)).collect();
@@ -167,38 +133,33 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             )
         })
         .collect();
-    // 属性元数据（按 key 查）与提示词清单（"person.salary (number, CNY): 月薪"）。
-    // 没定义属性时清单为空，提示词一字不变
     let type_parents: HashMap<Uuid, &[Uuid]> = etypes
         .iter()
         .map(|t| (t.id, t.parents.as_slice()))
         .collect();
-    let attr_meta: HashMap<&str, &utopia_core::models::RelationType> = rtypes
-        .iter()
-        .filter(|r| r.kind == "attribute")
-        .map(|r| (r.key.as_str(), r))
-        .collect();
-    // 一个属性挂在多个类下时，**每个类各排一行**：模型读到的是
-    // "store.opens_at" 而不是一个要它自己去分配的类清单
-    let attr_lines: Vec<String> = rtypes
-        .iter()
-        .filter(|r| r.kind == "attribute")
-        .flat_map(|r| r.domains.iter().map(move |d| (r, d)))
-        .filter_map(|(r, domain_id)| {
-            let class_key = type_key_by_id.get(domain_id)?;
-            let dt = r.datatype.as_deref().unwrap_or("text");
-            let spec = match &r.unit {
-                Some(u) if !u.is_empty() => format!("{dt}, {u}"),
-                _ => dt.to_string(),
-            };
-            let d = r.description.trim();
-            Some(if d.is_empty() {
-                format!("- {class_key}.{} ({spec})", r.key)
-            } else {
-                format!("- {class_key}.{} ({spec}): {d}", r.key)
-            })
-        })
-        .collect();
+
+    // **本体全铺还是按分块检索。**
+    //
+    // 全铺是今天的行为，小本体下它对且便宜：40 个类约 2k 字符，检索反而是多余的
+    // 往返。大本体下它是灾难——schema.org 实测每个分块 108k tokens，而同一份语料
+    // 只给种子类时抽到 25 个实体、给全量时只剩 18 个。**多给的那 959 个类
+    // 吃掉了 7 个实体。**
+    //
+    // 所以按预算切换：装得下就全铺，装不下就每块检索。判据量的是**实际要排的
+    // 那段字**（build_lists 自己数），不是另写一个估算公式——公式会跟排版分叉。
+    let full = build_lists(&etypes, &rtypes, None, None);
+    let budget = utopia_store::access::ontology_prompt_budget(&state.pool).await?;
+    let retrieve_per_chunk = full.chars() > budget;
+    if retrieve_per_chunk {
+        tracing::info!(
+            %document_id, chars = full.chars(), budget,
+            classes = etypes.len(),
+            "本体超出提示词预算，改为按分块检索候选"
+        );
+    }
+    // 内置类恒在：检索漏掉的分块仍要有地方落脚，否则模型无类可选
+    let seed_classes: HashSet<Uuid> = etypes.iter().filter(|t| t.builtin).map(|t| t.id).collect();
+
     // 属性 domain 允许子类：主语类型沿 parent 链上溯命中 domain 即可
     // 沿 subClassOf 上溯。**广度优先 + 访问集**，不是单链循环：
     // 一个类可以有多个父（FOAF 的 Person 同时是 Agent 与 SpatialThing），
@@ -252,14 +213,29 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             return Ok(());
         }
         let ctx: Option<&[f32]> = chunk.embedding.as_ref().map(|v| v.as_slice());
+        // 本体装得下就用全量那份；装不下就拿**这一块自己的向量**检索候选。
+        // 向量是现成的——实体消解本来就在用它（上面那个 ctx），检索一次
+        // 嵌入都不用加。检索不出来（没配嵌入模型、或这块没向量）就退回全量：
+        // 提示词大是慢，没有类可选是抽不出东西
+        let lists = if retrieve_per_chunk {
+            match ctx {
+                Some(v) => chunk_lists(state, doc.kb_id, v, &etypes, &rtypes, &seed_classes)
+                    .await
+                    .unwrap_or(None),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let lists = lists.as_ref().unwrap_or(&full);
         let known: Vec<(String, String)> = doc_entities
             .iter()
             .map(|(_, k, n)| (k.clone(), n.clone()))
             .collect();
         let messages = utopia_extract::build_messages(
-            &type_pairs,
-            &rel_pairs,
-            &attr_lines,
+            &lists.types,
+            &lists.relations,
+            &lists.attributes,
             doc_time.as_deref(),
             &doc.filename,
             &known,
@@ -816,6 +792,183 @@ fn looks_literal(s: &str) -> bool {
     }
     // 日期：复用抽取侧那个解析器，它认 2015 / 2015-03 / 2015-03-01 等
     utopia_extract::parse_time(s).is_some()
+}
+
+/// 提示词里那三段清单：类、关系、属性。
+///
+/// **抽出来是为了让"全给"和"按分块检索"共用同一段排版逻辑。**两条路各排一份
+/// 的话迟早分叉，而分叉在这里的后果是提示词说的与代码认的不是一回事。
+struct PromptLists {
+    types: Vec<(String, String, String)>,
+    relations: Vec<utopia_extract::PromptRelation>,
+    attributes: Vec<String>,
+}
+
+impl PromptLists {
+    /// 这三段铺进提示词有多长。budget 判据用它——**量的是实际要排的那段字**，
+    /// 不是另写一个估算公式（公式会跟排版分叉）。
+    fn chars(&self) -> usize {
+        self.types
+            .iter()
+            .map(|(k, l, d)| k.len() + l.len() + d.len() + 6)
+            .sum::<usize>()
+            + self
+                .relations
+                .iter()
+                .map(|r| r.key.len() + r.label.len() + r.description.len() + r.signature.len() + 8)
+                .sum::<usize>()
+            + self.attributes.iter().map(|a| a.len() + 1).sum::<usize>()
+    }
+}
+
+/// 从一个**选择集**排出三段清单。`None` = 全给（本体小于预算时的老路）。
+///
+/// 三处细节都是选择带来的，全给时它们不会触发：
+///
+/// 1. **签名只能提到选中的类**。`works_at (person → organization)` 里那两个 key
+///    必须是模型看得见的——写一个没铺出去的类名，等于教它输出一个不存在的类型。
+///    整侧都没选中就退回 `*`。
+/// 2. **属性跟着 domain 走**。属性行是 `class.attr`，它的类没铺出去这行就没意义。
+///    这也顺带解决了属性段（占提示词 28%）的裁剪，不用单独处理。
+/// 3. **内置类恒在**。检索漏掉的分块仍然要有地方落脚，否则模型无类可选。
+fn build_lists(
+    etypes: &[utopia_core::models::EntityType],
+    rtypes: &[utopia_core::models::RelationType],
+    classes: Option<&HashSet<Uuid>>,
+    rels: Option<&HashSet<Uuid>>,
+) -> PromptLists {
+    let picked_class = |id: &Uuid| classes.is_none_or(|s| s.contains(id));
+    let picked_rel = |id: &Uuid| rels.is_none_or(|s| s.contains(id));
+    let key_of: HashMap<Uuid, &str> = etypes
+        .iter()
+        .filter(|t| picked_class(&t.id))
+        .map(|t| (t.id, t.key.as_str()))
+        .collect();
+
+    let types = etypes
+        .iter()
+        .filter(|t| picked_class(&t.id))
+        .map(|t| (t.key.clone(), t.label.clone(), t.description.clone()))
+        .collect();
+
+    // 一侧的类一个都没铺出去就写 `*`：签名是导向，指向看不见的类只会误导
+    let sig_of = |ids: &[Uuid]| -> String {
+        let mut keys: Vec<&str> = ids
+            .iter()
+            .filter_map(|id| key_of.get(id).copied())
+            .collect();
+        if keys.is_empty() {
+            return "*".into();
+        }
+        keys.sort_unstable();
+        keys.join("|")
+    };
+    let relations = rtypes
+        .iter()
+        .filter(|r| r.kind != "attribute" && r.key != FALLBACK_RELATION_KEY)
+        .filter(|r| picked_rel(&r.id))
+        .map(|r| {
+            let signature = if r.domains.is_empty() && r.ranges.is_empty() {
+                String::new()
+            } else {
+                format!("{} → {}", sig_of(&r.domains), sig_of(&r.ranges))
+            };
+            utopia_extract::PromptRelation {
+                key: r.key.clone(),
+                label: r.label.clone(),
+                description: r.description.clone(),
+                signature,
+            }
+        })
+        .collect();
+
+    let attributes = rtypes
+        .iter()
+        .filter(|r| r.kind == "attribute" && picked_rel(&r.id))
+        .flat_map(|r| r.domains.iter().map(move |d| (r, d)))
+        .filter_map(|(r, domain_id)| {
+            let class_key = key_of.get(domain_id)?;
+            let dt = r.datatype.as_deref().unwrap_or("text");
+            let spec = match &r.unit {
+                Some(u) if !u.is_empty() => format!("{dt}, {u}"),
+                _ => dt.to_string(),
+            };
+            let d = r.description.trim();
+            Some(if d.is_empty() {
+                format!("- {class_key}.{} ({spec})", r.key)
+            } else {
+                format!("- {class_key}.{} ({spec}): {d}", r.key)
+            })
+        })
+        .collect();
+
+    PromptLists {
+        types,
+        relations,
+        attributes,
+    }
+}
+
+/// 每块检索多少个类 / 关系 / 属性。**待测**——跟预算一样，定它们要那条曲线。
+const PER_CHUNK_CLASSES: i64 = 40;
+const PER_CHUNK_RELATIONS: i64 = 30;
+const PER_CHUNK_ATTRIBUTES: i64 = 30;
+
+/// 按这一块的向量检索候选，排出这一块专用的三段清单。
+///
+/// 检索失败返回 `Ok(None)` 而不是错误：调用方会退回全量。提示词大是慢，
+/// 没有类可选是抽不出东西——两者之间选前者。
+async fn chunk_lists(
+    state: &AppState,
+    kb_id: Uuid,
+    embedding: &[f32],
+    etypes: &[utopia_core::models::EntityType],
+    rtypes: &[utopia_core::models::RelationType],
+    seed_classes: &HashSet<Uuid>,
+) -> anyhow::Result<Option<PromptLists>> {
+    let mut classes: HashSet<Uuid> = seed_classes.clone();
+    classes.extend(
+        utopia_store::ontology::nearest_entity_type_ids(
+            &state.pool,
+            kb_id,
+            embedding,
+            PER_CHUNK_CLASSES,
+        )
+        .await?,
+    );
+    let mut rels: HashSet<Uuid> = HashSet::new();
+    // 关系与属性分开检索：两段在提示词里是分开的，混在一起取会让其中一段
+    // 被另一段挤空
+    rels.extend(
+        utopia_store::ontology::nearest_relation_type_ids(
+            &state.pool,
+            kb_id,
+            embedding,
+            PER_CHUNK_RELATIONS,
+            Some("relation"),
+        )
+        .await?,
+    );
+    rels.extend(
+        utopia_store::ontology::nearest_relation_type_ids(
+            &state.pool,
+            kb_id,
+            embedding,
+            PER_CHUNK_ATTRIBUTES,
+            Some("attribute"),
+        )
+        .await?,
+    );
+    // 一个候选都没检索到 = 索引还没建好，退回全量而不是给一份空清单
+    if classes.len() <= seed_classes.len() && rels.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(build_lists(
+        etypes,
+        rtypes,
+        Some(&classes),
+        Some(&rels),
+    )))
 }
 
 #[cfg(test)]

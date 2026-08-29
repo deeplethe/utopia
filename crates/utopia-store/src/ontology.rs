@@ -1035,3 +1035,51 @@ pub async fn adopt_iri_onto_key(
     .await?;
     Ok(row.map(|(id,)| id))
 }
+
+/// 与给定向量最近的若干**类 id**（只回 id，调用方手里已有类的全量数据）。
+///
+/// 给抽取用：分块向量在抽取循环里本来就有（实体消解在用），拿它检索出这一块
+/// 可能用得上的类，只把这些铺进提示词。
+pub async fn nearest_entity_type_ids(
+    pool: &PgPool,
+    kb_id: Uuid,
+    embedding: &[f32],
+    limit: i64,
+) -> AppResult<Vec<Uuid>> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM entity_types
+         WHERE kb_id = $1 AND embedding IS NOT NULL
+         ORDER BY embedding <=> $2
+         LIMIT $3",
+    )
+    .bind(kb_id)
+    .bind(Vector::from(embedding.to_vec()))
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// 同上，关系与属性。`only_kind` 分道：关系清单与属性清单在提示词里是两段。
+pub async fn nearest_relation_type_ids(
+    pool: &PgPool,
+    kb_id: Uuid,
+    embedding: &[f32],
+    limit: i64,
+    only_kind: Option<&str>,
+) -> AppResult<Vec<Uuid>> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM relation_types
+         WHERE kb_id = $1 AND embedding IS NOT NULL
+           AND ($4::text IS NULL OR kind = $4)
+         ORDER BY embedding <=> $2
+         LIMIT $3",
+    )
+    .bind(kb_id)
+    .bind(Vector::from(embedding.to_vec()))
+    .bind(limit)
+    .bind(only_kind)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
