@@ -121,7 +121,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 ## 功能
 
-系统的主体为单个二进制文件加 Postgres 服务。我们通过引入 pgvector 和队列表设计减轻了技术栈和服务依赖的负担 —— 咻的一下就部署好。
+一只螃蟹和一头大象。我们通过引入 pgvector 和队列表设计减轻了技术栈和服务依赖的负担 —— 咻的一下就部署好。
 
 | | |
 |---|---|

@@ -121,7 +121,7 @@ Only through these rules can reasoning become action. A model may think boldly, 
 
 ## Features
 
-The system is a single binary plus a Postgres service. By bringing in pgvector and a queue-table design, we cut the weight of the stack and its service dependencies — deployment is over in a blink.
+A crab and an elephant. By bringing in pgvector and a queue-table design, we cut the weight of the stack and its service dependencies — deployment is over in a blink.
 
 | | |
 |---|---|
