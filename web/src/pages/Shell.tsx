@@ -87,34 +87,39 @@ export function Shell() {
           onChange={setKb}
           options={kbs.map((k) => ({ value: k.id, label: k.name }))}
         />
-        <div className="ml-auto flex items-center gap-1.5">
+        {/* 三组：项目入口 / 告警 / 身份。**组间 gap-3，组内 gap-1.5**——
+            间距由结构表达，而不是给某一个元素补一次性的 ml。
+            此前用户菜单挂着一个 ml-1.5（当初它紧挨 GitHub 胶囊时调的），
+            铃铛插进两者之间以后就成了左 6px 右 12px */}
+        <div className="ml-auto flex items-center gap-3">
           {/* 项目入口：Docs + [GitHub·版本] 胶囊（版本取自后端 health，与部署一致）。
-              版本并入 GitHub 胶囊：两个等高元素，视觉平衡 */}
-          <Link
-            to="/docs"
-            className="px-2 py-1 rounded-lg text-[12.5px] text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.05] transition-colors"
-          >
-            {S.nav.docs}
-          </Link>
-          <a
-            href={S.login.githubUrl}
-            target="_blank"
-            rel="noreferrer"
-            title="GitHub"
-            className="flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-neutral-500 hover:text-neutral-200 hover:border-white/25 transition-colors"
-          >
-            <GithubMark size={13} />
-            {health.data && (
-              <span className="u-num text-[11px]">v{health.data.version}</span>
-            )}
-          </a>
+              版本并入 GitHub 胶囊：两个等高元素，视觉平衡。
+              这两个是一对，所以彼此贴得比组间近 */}
+          <div className="flex items-center gap-1.5">
+            <Link
+              to="/docs"
+              className="px-2 py-1 rounded-lg text-[12.5px] text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.05] transition-colors"
+            >
+              {S.nav.docs}
+            </Link>
+            <a
+              href={S.login.githubUrl}
+              target="_blank"
+              rel="noreferrer"
+              title="GitHub"
+              className="flex items-center gap-1.5 rounded-full border border-white/10 px-2.5 py-1 text-neutral-500 hover:text-neutral-200 hover:border-white/25 transition-colors"
+            >
+              <GithubMark size={13} />
+              {health.data && (
+                <span className="u-num text-[11px]">v{health.data.version}</span>
+              )}
+            </a>
+          </div>
           {/* 告警角标：跨库的未读数。失败此前只留在日志与 jobs.last_error 里，
               界面上一份文档也不会变颜色（0005） */}
           <AlertBell />
           {/* 用户菜单：个人信息 / 系统管理（仅管理员）/ 登出 */}
-          <div className="ml-1.5">
-            <UserMenu user={me.data} />
-          </div>
+          <UserMenu user={me.data} />
         </div>
       </header>
 
