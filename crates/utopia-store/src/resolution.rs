@@ -1678,9 +1678,13 @@ pub struct TypeCandidateSubject {
     pub id: Uuid,
     pub canonical_name: String,
     pub aliases: Vec<String>,
-    /// 现在挂着的粗类。**它是地板**：精化只往它的后代走，够不着就原地不动
+    /// 现在挂着的类。名字里的"粗"是历史——抽取现在也可能直接给一个细类，
+    /// 而且可能给错（实测 `绍兴 → address`），所以这里也可能是要被**纠正**的那个
     pub coarse_key: String,
     pub coarse_id: Uuid,
+    /// 现类的描述。裁决要判"现在这个类对不对"，光看 key 不够——
+    /// 导入本体的 key 常常自解释不了（`entry_point` 是什么？）
+    pub coarse_description: String,
     /// 抽取时模型自己报的类型名，**词表里没有**才会留在这儿
     pub proposed_type: Option<String>,
     /// 模型对它自己的说法，每个实体都有。
@@ -1713,6 +1717,7 @@ pub async fn entities_for_type_resolution(
 ) -> AppResult<Vec<TypeCandidateSubject>> {
     Ok(sqlx::query_as(
         "SELECT e.id, e.canonical_name, e.aliases, t.key AS coarse_key, t.id AS coarse_id,
+                coalesce(t.description, '') AS coarse_description,
                 e.proposed_type, e.specific_type,
                 -- 对方写**名字**，不写它的类型 key。
                 -- 写 key 是自毁：查询里出现 organization / product / event 这些词，

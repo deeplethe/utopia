@@ -148,10 +148,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // 所以按预算切换：装得下就全铺，装不下就每块检索。判据量的是**实际要排的
     // 那段字**（build_lists 自己数），不是另写一个估算公式——公式会跟排版分叉。
     let full = build_lists(&etypes, &rtypes, None, None);
-    let budget = std::env::var("UTOPIA_ONTOLOGY_PROMPT_BUDGET")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(ONTOLOGY_PROMPT_BUDGET);
+    let budget = utopia_store::access::ontology_prompt_budget(&state.pool).await?;
     let retrieve_per_chunk = full.chars() > budget;
     if retrieve_per_chunk {
         tracing::info!(
@@ -912,17 +909,7 @@ fn build_lists(
     }
 }
 
-/// 本体铺进提示词的字符预算。超了就改成按分块检索候选。
-///
-/// 24,000 字符约合 6,000 token。**这个数字是拍的，还没测过**——真正该定它的
-/// 是一条曲线：内联多少个候选时抽取开始掉东西。`UTOPIA_ONTOLOGY_PROMPT_BUDGET`
-/// 就是给那次测量用的旋钮（`scripts/bench/`）。
-///
-/// 定得偏小是刻意的：超预算走检索，最坏情况是某一块检索得不好；不超预算
-/// 走全量，最坏情况是每一块都付 108k token 并且**抽不到实体**（实测同一份
-/// 语料，全量比只给种子类少抽了 7 个实体）。两边的坏结果不对称。
-const ONTOLOGY_PROMPT_BUDGET: usize = 24_000;
-/// 每块检索多少个类 / 关系 / 属性。同样待测。
+/// 每块检索多少个类 / 关系 / 属性。**待测**——跟预算一样，定它们要那条曲线。
 const PER_CHUNK_CLASSES: i64 = 40;
 const PER_CHUNK_RELATIONS: i64 = 30;
 const PER_CHUNK_ATTRIBUTES: i64 = 30;

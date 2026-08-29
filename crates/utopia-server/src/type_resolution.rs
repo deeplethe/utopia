@@ -1,4 +1,12 @@
-//! 类型消解：把挂在倾倒场类下的实体，精化到本体里具体的类。
+//! 类型消解：把实体的类型改对——**往细里走，也把走错的掰回来**。
+//!
+//! 起初只有前半句：抽取给粗类，消解往它的后代精化。抽取开始按分块检索候选
+//! 之后，它自己就会挑细类，也就会挑错（实测 `绍兴 → address`、
+//! `慢病管理小程序 → entry_point`）。而正确答案是错类的**兄弟**不是它的后代，
+//! 于是被"候选必须更细"那条规则挡在门外——那条规则是我自己写进提示词的。
+//!
+//! 现在两个方向都认。纠正天然判为跨轴，所以一定进人工：推翻抽取的判断比
+//! 细化它风险大，不该自动发生。
 //!
 //! **为什么能事后做，而谓词不能**（0001 的那个不对称）：类型是挂在节点上的
 //! 注解，可以等证据攒够了再贴；谓词就是事实本身，`(NVIDIA, ?, Mellanox)`
@@ -39,6 +47,8 @@ pub struct TypeSuggestion {
     pub entity_id: Uuid,
     pub name: String,
     pub coarse: String,
+    /// 现类的描述。裁决要判"现在这个类对不对"，光看 key 不够
+    pub coarse_description: String,
     /// 粗类的 id。裁决要拿它跟目标类配成一对，去查"这一对人认可过没有"
     #[serde(skip)]
     pub coarse_id: Uuid,
@@ -228,6 +238,7 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
             entity_id: s.id,
             name: s.canonical_name.clone(),
             coarse: s.coarse_key.clone(),
+            coarse_description: s.coarse_description.clone(),
             coarse_id: s.coarse_id,
             proposed_type: s.proposed_type.clone(),
             specific_type: s.specific_type.clone(),
@@ -428,6 +439,10 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
         // 不在 = 换了一条分类轴（判成 product 的东西落到了 CreativeWork 底下），
         // 那是重新分类而不是精化，值得一个人看一眼。实测那一轮唯一明确的错
         //（《中国数据智能》→ publication_issue）正是这一类。
+        //
+        // **纠正也走这里，而且天然如此**：抽取挑错细类之后（绍兴 → address），
+        // 正确答案是它的兄弟而不是它的后代，所以一定判为跨轴、一定进人工。
+        // 这正是想要的——推翻抽取的判断比细化它风险大，不该自动发生。
         let crosses_axis = !item.descendants.contains(&target.id)
             && !approved.contains(&(item.coarse_id, target.id));
         if confidence >= AUTO_THRESHOLD && !crosses_axis {
@@ -476,10 +491,17 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
 fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
     let mut blocks = Vec::new();
     for it in items {
+        // 现类连描述一起给：要判"现在这个类对不对"，光看 key 不够——
+        // 导入本体的 key 常常自解释不了（`entry_point` 是什么？）
+        let current = if it.coarse_description.trim().is_empty() {
+            it.coarse.clone()
+        } else {
+            format!("{} ({})", it.coarse, it.coarse_description.trim())
+        };
         let mut lines = vec![format!(
             "### {}\ncurrently: {}\nthe extractor called it: {}\nseen as: {}",
             it.name,
-            it.coarse,
+            current,
             it.specific_type.as_deref().unwrap_or("-"),
             it.profile.chars().take(200).collect::<String>()
         )];
@@ -504,19 +526,30 @@ fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
         blocks.push(lines.join("\n"));
     }
     format!(
-        "You are refining entity types in a knowledge graph. Each entity below already has a \
-         broad type and a list of candidate narrower types retrieved from the ontology.\n\
+        "You are fixing entity types in a knowledge graph. Each entity below has a type it was \
+         given during extraction, and a list of candidate types retrieved from the ontology.\n\
          \n\
-         For each entity choose ONE candidate key, or null.\n\
+         For each entity choose ONE candidate key, or null. There are two reasons to choose \
+         a candidate, and they are different:\n\
+         \n\
+         **Narrowing** — the current type is right but broad, and a candidate says the same \
+         thing more precisely (organization → hospital).\n\
+         \n\
+         **Correcting** — the current type is simply wrong, and a candidate is right. This \
+         happens because extraction picks from a retrieved shortlist and can pick badly: a city \
+         typed as an address, an app typed as an entry point. A correcting candidate is \
+         usually a sibling of the current type rather than a narrower version of it, so do not \
+         withhold it on the grounds that it is not more specific. Say plainly in the reason \
+         that the current type is wrong; a person will see this one before it is applied.\n\
          \n\
          Choose null whenever any of these hold, and expect null to be a common answer:\n\
          - no candidate actually means the thing (the list is retrieved by similarity, so it \
            usually contains near-misses and sometimes contains nothing right at all);\n\
-         - the candidate is not narrower than what it already has;\n\
+         - the current type is already right and no candidate is more precise;\n\
          - the entity is not a thing of that kind at all — a quantity, a capability, a phrase.\n\
-         Keeping the broad type loses nothing: the entity and its facts stay exactly as they \
-         are, merely less specific. Picking a wrong narrow type is worse than picking none, \
-         because it reads as a decided fact.\n\
+         Keeping the current type loses nothing: the entity and its facts stay exactly as they \
+         are. Picking a wrong type is worse than picking none, because it reads as a decided \
+         fact.\n\
          \n\
          confidence is your own 0~1: use above 0.85 only when the candidate's definition \
          plainly describes this entity, not when it is merely the closest of a weak list.\n\

@@ -260,3 +260,16 @@ pub async fn ensure_jwt_secret(pool: &PgPool, generated: &str) -> AppResult<Stri
         ))
     })
 }
+
+/// 本体铺进抽取提示词的字符预算。超了改成按分块检索候选。
+///
+/// **放设置而不是常量**，是因为定死它需要一条曲线：每个本体规模下，全量内联
+/// 与按块检索各测一次，看它们在哪里交叉。要重启一次服务才测得了一档的话，
+/// 那条曲线不会有人跑第二遍。
+pub async fn ontology_prompt_budget(pool: &PgPool) -> AppResult<usize> {
+    let row: Option<(i32,)> =
+        sqlx::query_as("SELECT ontology_prompt_budget FROM deployment_settings LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(v,)| v.max(0) as usize).unwrap_or(24_000))
+}
