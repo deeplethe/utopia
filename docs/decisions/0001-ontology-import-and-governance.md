@@ -256,6 +256,24 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 
 所以顺序是：**先落单域属性**（P2b 的产物已经够用），多域的随关联表一起。
 
+> **顺带查明的一件事：属性抽取这条路此前是死的。**
+>
+> 代码是全的——提示词里有属性段与规则 10，`ExtractedFact` 有 `value`，
+> `normalize_attr_value` 按 datatype 校验，值落 `facts.object_value`，证据/时态/审阅全套复用。
+> 但**内置本体一个属性都没有**，所以 `attr_lines` 一直是空的，整段属性提示词从未出现过。
+> 除非有人手工建属性，这条路从落地起就没被执行过。
+>
+> OWL 导入开始建属性，它就变成活的了。端到端验过一遍（三个 datatype 各一个）：
+>
+> ```
+> floor_area  {"value": 860}          number，不是字符串
+> opened_on   {"value": "2024-09-01"} date
+> opens_at    {"value": "10:00"}      text（降级的 xsd:time）
+> ```
+>
+> 证据、置信度、界面渲染都对，零丢弃信号。**`opens_at` 那两条在旧的跳过规则下
+> 根本不会存在**——这是存得下就别丢那个决定的直接证据。
+
 #### 二、关联表：多值 domain/range
 
 ```sql
