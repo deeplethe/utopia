@@ -29,12 +29,19 @@ pub struct OwlProperty {
     pub key: String,
     pub label: String,
     pub description: String,
-    /// true = owl:DatatypeProperty（字面值），false = 对象属性
+    /// true = 走属性通道（字面值），false = 走关系通道。
+    /// 来源有二：显式的 `owl:DatatypeProperty`，或者 range 全是数据类型
     pub is_datatype: bool,
     pub functional: bool,
     pub inverse_functional: bool,
     pub domains: Vec<String>,
     pub ranges: Vec<String>,
+    /// **多条 range 是并集还是交集**。`rdfs:range` 写多条是交集
+    ///（"必须同时是两者"），`schema:rangeIncludes` 写多条是并集
+    ///（"哪个都行"）。倒进同一个 Vec 而不记这一位，
+    /// `author rangeIncludes Organization, Person` 就会被读成
+    /// "必须既是组织又是人"，然后降级成 text——一条边就这么没了
+    pub ranges_union: bool,
 }
 
 /// 一次解析的结果。`unprojected` 是**报告**不是错误——见模块文档。
@@ -46,11 +53,32 @@ pub struct OwlProjection {
     pub unprojected: BTreeMap<String, usize>,
     /// 三元组总数，让人对"这个文件有多大"有个数
     pub triples: usize,
+    /// **这份文件自己声明为数据类型的那些 IRI** → 我们的四种之一。
+    /// schema.org 把 Text/Number/Date… 声明成 `a rdfs:Class, schema:DataType`，
+    /// 只看 `rdfs:Class` 会把它们当成实体类建出来（`text`、`boolean` 成了实体类型）
+    pub vocab_datatypes: VocabDatatypes,
 }
+
+/// 词汇表自己声明的数据类型 IRI → 我们的四种（`text`/`number`/`date`/`bool`）。
+pub type VocabDatatypes = BTreeMap<String, &'static str>;
 
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
+
+/// schema.org 自己那套 domain/range。**不是标准词汇**，所以写死在这里，
+/// 但值得认：schema.org 及派生词汇表一个 `rdfs:domain` 都没有，
+/// 不认这两个谓词就等于把它整个类型系统当成没看见——1600 多个属性
+/// 会全变成无约束的关系。
+/// 两种 scheme 都收：同一份词汇表的新旧版本分别用 https 与 http 发布。
+const SCHEMA_NS: [&str; 2] = ["https://schema.org/", "http://schema.org/"];
+
+/// 谓词/类是不是 schema.org 那个名字下的某一个。
+fn is_schema(iri: &str, local: &str) -> bool {
+    SCHEMA_NS.iter().any(|ns| {
+        iri.len() == ns.len() + local.len() && iri.starts_with(ns) && iri.ends_with(local)
+    })
+}
 
 /// 支持的输入格式。v1 只做这两个——Protégé 导出的绝大多数是它们，
 /// OWL/XML 与 Manchester 语法刻意砍掉（见 0001 P2 的 "v1 砍掉"）。
@@ -168,6 +196,8 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let mut data_props: BTreeSet<String> = BTreeSet::new();
     let mut functional: BTreeSet<String> = BTreeSet::new();
     let mut inverse_functional: BTreeSet<String> = BTreeSet::new();
+    let mut plain_props: BTreeSet<String> = BTreeSet::new();
+    let mut datatype_roots: BTreeSet<String> = BTreeSet::new();
     for t in &triples {
         if t.predicate != RDF_TYPE {
             continue;
@@ -185,16 +215,26 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             x if x == format!("{OWL}DatatypeProperty") => {
                 data_props.insert(t.subject.clone());
             }
-            // rdf:Property 没说是对象还是数据 —— 按对象属性处理，
-            // 因为宾语是 IRI 的三元组远多于字面值，猜错的代价也只是分错通道
+            // rdf:Property **没说**是对象还是数据。跟显式 owl:ObjectProperty
+            // 分开存：那个是"说了"，不该被 range 改判；这个是"没说"，
+            // 下面按 range 定通道，range 也没有才兜底当关系
             "http://www.w3.org/1999/02/22-rdf-syntax-ns#Property" => {
-                obj_props.insert(t.subject.clone());
+                plain_props.insert(t.subject.clone());
             }
             x if x == format!("{OWL}FunctionalProperty") => {
                 functional.insert(t.subject.clone());
             }
             x if x == format!("{OWL}InverseFunctionalProperty") => {
                 inverse_functional.insert(t.subject.clone());
+            }
+            // 词汇表自报的数据类型。这里只收显式声明的那几个根，
+            // 子类（Integer ⊂ Number、URL ⊂ Text）等父类图收完再往下传。
+            // **标记类自己也收**：schema:DataType 的声明是 `a rdfs:Class`，
+            // 不收就会剩下一个叫 data_type 的实体类型；顺带让
+            // `rdfs:subClassOf schema:DataType` 这种写法也落进闭包
+            x if is_schema(x, "DataType") => {
+                datatype_roots.insert(t.subject.clone());
+                datatype_roots.insert(x.to_string());
             }
             _ => {}
         }
@@ -206,6 +246,8 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let mut parents: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut domains: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut ranges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // rangeIncludes 用过的属性，它的 range 按并集读
+    let mut union_ranged: BTreeSet<String> = BTreeSet::new();
     let known = |p: &str| {
         p == RDF_TYPE
             || p == format!("{RDFS}label")
@@ -214,6 +256,8 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             || p == format!("{RDFS}subPropertyOf")
             || p == format!("{RDFS}domain")
             || p == format!("{RDFS}range")
+            || is_schema(p, "domainIncludes")
+            || is_schema(p, "rangeIncludes")
     };
     for t in &triples {
         let p = t.predicate.as_str();
@@ -246,13 +290,57 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             if let Some(o) = &t.object_iri {
                 ranges.entry(t.subject.clone()).or_default().push(o.clone());
             }
+        } else if is_schema(p, "domainIncludes") {
+            // domainIncludes 是并集（"可以用在这些类型上"），而我们的 domain
+            // 列表本来就是并集语义（签名 `person|organization`），直接进
+            if let Some(o) = &t.object_iri {
+                domains
+                    .entry(t.subject.clone())
+                    .or_default()
+                    .push(o.clone());
+            }
+        } else if is_schema(p, "rangeIncludes") {
+            if let Some(o) = &t.object_iri {
+                ranges.entry(t.subject.clone()).or_default().push(o.clone());
+                union_ranged.insert(t.subject.clone());
+            }
         } else if !known(p) {
             // 报告而不是丢弃：预览页要能说清"这个文件里还有什么我们没消费"
             *proj.unprojected.entry(p.to_string()).or_insert(0) += 1;
         }
     }
 
+    // 数据类型闭包：根是显式 `a schema:DataType` 的那几个，子类沿 subClassOf
+    // 往下传（Integer ⊂ Number、URL ⊂ Text）。
+    // **哪些 IRI 是数据类型由文件自己说**，写死的只有"这个数据类型算我们四种里的
+    // 哪一种"——那一半是命名约定，RDF 里推不出来
+    let mut datatype_classes = datatype_roots.clone();
+    loop {
+        let grown: Vec<String> = parents
+            .iter()
+            .filter(|(child, ps)| {
+                !datatype_classes.contains(*child) && ps.iter().any(|p| datatype_classes.contains(p))
+            })
+            .map(|(child, _)| child.clone())
+            .collect();
+        if grown.is_empty() {
+            break;
+        }
+        datatype_classes.extend(grown);
+    }
+    for iri in &datatype_classes {
+        if let Some(dt) = name_datatype(iri, &parents, &datatype_classes) {
+            proj.vocab_datatypes.insert(iri.clone(), dt);
+        }
+    }
+
     for iri in &classes {
+        // **数据类型不是实体类型。** schema:Text 声明的是
+        // `a rdfs:Class, schema:DataType`，只看前半截就会建出叫
+        // `text`、`number`、`boolean` 的实体类型来
+        if datatype_classes.contains(iri) {
+            continue;
+        }
         proj.classes.push(OwlClass {
             key: key_from_iri(iri),
             label: pick_lang(labels.get(iri)).unwrap_or_else(|| local_name(iri).to_string()),
@@ -264,22 +352,92 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     // **并集去重，不是两个集合首尾相接**：词汇表常把同一个属性既声明为
     // rdf:Property 又声明为 owl:DatatypeProperty（FOAF 的 name、age、nick… 都这样），
     // 两个集合各收一次，chain 就会把它吐两遍。分类看 data_props 就够了。
-    let all_props: BTreeSet<&String> = obj_props.iter().chain(data_props.iter()).collect();
+    let all_props: BTreeSet<&String> = obj_props
+        .iter()
+        .chain(data_props.iter())
+        .chain(plain_props.iter())
+        .collect();
     for iri in all_props {
+        let rs = ranges.get(iri).cloned().unwrap_or_default();
+        // 走属性通道还是关系通道。显式声明说了算；没说的看 range：
+        // **全是数据类型才算属性**。并集里只要有一个类就走关系——
+        // `address` 的 range 是 `PostalAddress|Text`，判成属性就把那条边
+        // 永久丢了，而关系总能给一个新实体起名字。富的那一侧可回退，
+        // 穷的那一侧回不去
+        let is_datatype = if data_props.contains(iri) {
+            true
+        } else if obj_props.contains(iri) {
+            false
+        } else {
+            !rs.is_empty() && rs.iter().all(|r| datatype_classes.contains(r))
+        };
         proj.properties.push(OwlProperty {
             key: key_from_iri(iri),
             label: pick_lang(labels.get(iri))
                 .unwrap_or_else(|| local_name(iri).replace('_', " ").to_string()),
             description: pick_lang(comments.get(iri)).unwrap_or_default(),
-            is_datatype: data_props.contains(iri),
+            is_datatype,
             functional: functional.contains(iri),
             inverse_functional: inverse_functional.contains(iri),
             domains: domains.get(iri).cloned().unwrap_or_default(),
-            ranges: ranges.get(iri).cloned().unwrap_or_default(),
+            ranges: rs,
+            ranges_union: union_ranged.contains(iri),
             iri: iri.clone(),
         });
     }
     Ok(proj)
+}
+
+/// 数据类型 IRI → 我们的四种。自身叫得上名就用自身，否则沿 `rdfs:subClassOf`
+/// 上溯（Integer → Number、URL → Text）。
+///
+/// 叫不上名的返回 `None`——比如 `schema:Time`，它只有时刻没有日期，
+/// 跟 `xsd:time` 同样待遇：由 [`map_range`] 走 [`RangeMapping::Degraded`]，
+/// 按 text 建**并报告**。
+fn name_datatype(
+    iri: &str,
+    parents: &BTreeMap<String, Vec<String>>,
+    datatypes: &BTreeSet<String>,
+) -> Option<&'static str> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    let mut stack: Vec<&str> = vec![iri];
+    while let Some(cur) = stack.pop() {
+        if !seen.insert(cur) {
+            continue;
+        }
+        if let Some(dt) = well_known_datatype(cur) {
+            return Some(dt);
+        }
+        // 只沿数据类型往上走：数据类型的父类可能是普通的 rdfs:Class
+        //（schema:DataType ⊂ rdfs:Class），越过去就走进整个类层次了
+        for p in parents.get(cur).into_iter().flatten() {
+            if datatypes.contains(p) {
+                stack.push(p);
+            }
+        }
+    }
+    None
+}
+
+/// 写死的那一半：数据类型的**名字**对应我们哪一种。
+///
+/// 这从 RDF 里推不出来——文件说得出"Integer 是个数据类型"，
+/// 说不出"它是数字不是日期"。表里只放根，子类靠 subClassOf 上溯够到。
+///
+/// 这里按局部名匹配是安全的，跟 [`datatype_of`] 那条"必须按完整 IRI 匹配"
+/// 不冲突：能走到这儿的 IRI，是**这份文件自己**声明成数据类型的，
+/// 一个文件说 "Date 是数据类型" 就不会同时拿 Date 当实体类。
+fn well_known_datatype(iri: &str) -> Option<&'static str> {
+    [
+        ("Text", "text"),
+        ("Number", "number"),
+        ("Date", "date"),
+        ("DateTime", "date"),
+        ("Boolean", "bool"),
+    ]
+    .into_iter()
+    .find(|(local, _)| is_schema(iri, local))
+    .map(|(_, dt)| dt)
 }
 
 /// 多语言标签里挑一个：优先 en / zh，其次无语言标记，最后第一个。
@@ -361,14 +519,39 @@ pub enum RangeMapping {
 /// 多条 range 一律 [`RangeMapping::Degraded`]——RDFS 里那是**交集**语义
 ///（"必须同时是两者"），几乎总是建模笔误，但规范如此，不猜。
 pub fn map_range(ranges: &[String]) -> RangeMapping {
+    resolve_range(ranges, false, &VocabDatatypes::new())
+}
+
+/// 按属性**自己的** range 语义来解。
+///
+/// `rdfs:range` 写多条是交集，`schema:rangeIncludes` 写多条是并集，两者都落在
+/// 同一个 `ranges` 里——不看 [`OwlProperty::ranges_union`] 这一位就会把
+/// `author rangeIncludes Organization, Person` 读成"必须既是组织又是人"。
+pub fn map_range_of(p: &OwlProperty, vocab: &VocabDatatypes) -> RangeMapping {
+    resolve_range(&p.ranges, p.ranges_union, vocab)
+}
+
+fn resolve_range(ranges: &[String], union: bool, vocab: &VocabDatatypes) -> RangeMapping {
+    // 词汇表自报的数据类型先查（schema:Text → text），查不到再走 xsd/owl 那套标准的
+    let named = |iri: &String| vocab.get(iri).copied().or_else(|| datatype_of(iri));
     match ranges {
         [] => RangeMapping::Absent,
-        [one] => match datatype_of(one) {
+        [one] => match named(one) {
             Some(dt) => RangeMapping::Datatype(dt),
             None if unusable(one) => RangeMapping::Unusable(one.clone()),
             None => RangeMapping::Degraded(one.clone()),
         },
-        // 多条 range 是交集语义，不猜类型——但值仍是字面量，所以按 text 建
+        many if union => {
+            // 并集：全指向同一种就是那一种（Text ∪ URL 都是 text）。
+            // 不一致则降级成 text 并报告——text 是任意并集的诚实上界
+            let dts: Vec<Option<&'static str>> = many.iter().map(named).collect();
+            match dts[0] {
+                Some(dt) if dts.iter().all(|d| *d == Some(dt)) => RangeMapping::Datatype(dt),
+                _ if many.iter().all(|r| unusable(r)) => RangeMapping::Unusable(many.join(" ∪ ")),
+                _ => RangeMapping::Degraded(many.join(" ∪ ")),
+            }
+        }
+        // rdfs:range 写多条是交集语义，不猜类型——但值仍是字面量，所以按 text 建
         many => RangeMapping::Degraded(many.join(" ∩ ")),
     }
 }
@@ -606,5 +789,151 @@ mod tests {
         assert_eq!(key_from_iri("http://x/hr#hasEmployee"), "has_employee");
         assert_eq!(key_from_iri("http://x/ns/Person"), "person");
         assert_eq!(key_from_iri("http://x#HTTP_Server"), "http_server");
+    }
+
+    /// schema.org 那一套的最小复刻：数据类型自报家门，属性用
+    /// domainIncludes / rangeIncludes，全部只声明成 rdf:Property。
+    const SCHEMA_ISH: &str = r#"
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix schema: <https://schema.org/> .
+
+schema:DataType a rdfs:Class .
+schema:Text a rdfs:Class, schema:DataType .
+schema:Number a rdfs:Class, schema:DataType .
+schema:Date a rdfs:Class, schema:DataType .
+schema:Time a rdfs:Class, schema:DataType .
+schema:URL a rdfs:Class ; rdfs:subClassOf schema:Text .
+schema:Integer a rdfs:Class ; rdfs:subClassOf schema:Number .
+
+schema:Organization a rdfs:Class ; rdfs:label "Organization" .
+schema:Person a rdfs:Class ; rdfs:label "Person" .
+schema:PostalAddress a rdfs:Class ; rdfs:label "PostalAddress" .
+
+schema:foundingDate a rdf:Property ;
+    schema:domainIncludes schema:Organization ;
+    schema:rangeIncludes schema:Date .
+schema:author a rdf:Property ;
+    schema:domainIncludes schema:Organization ;
+    schema:rangeIncludes schema:Organization, schema:Person .
+schema:address a rdf:Property ;
+    schema:domainIncludes schema:Organization ;
+    schema:rangeIncludes schema:PostalAddress, schema:Text .
+schema:homepage a rdf:Property ;
+    schema:domainIncludes schema:Person ;
+    schema:rangeIncludes schema:Text, schema:URL .
+schema:opens a rdf:Property ;
+    schema:domainIncludes schema:Organization ;
+    schema:rangeIncludes schema:Time .
+schema:knows a rdf:Property ;
+    schema:domainIncludes schema:Person .
+"#;
+
+    fn schema_ish() -> OwlProjection {
+        project(SCHEMA_ISH.as_bytes(), RdfFormat::Turtle).unwrap()
+    }
+
+    fn prop<'a>(p: &'a OwlProjection, key: &str) -> &'a OwlProperty {
+        p.properties.iter().find(|x| x.key == key).unwrap()
+    }
+
+    #[test]
+    fn schema_org_datatypes_are_not_entity_types() {
+        let p = schema_ish();
+        let keys: Vec<&str> = p.classes.iter().map(|c| c.key.as_str()).collect();
+        // Text / Number / Date / Time 声明的是 `a rdfs:Class, schema:DataType`，
+        // 只看前半截就会建出叫 text、number 的实体类型来
+        for gone in ["text", "number", "date", "time", "url", "integer", "data_type"] {
+            assert!(!keys.contains(&gone), "{gone} 不该是实体类型：{keys:?}");
+        }
+        assert!(keys.contains(&"organization") && keys.contains(&"person"));
+    }
+
+    #[test]
+    fn domain_includes_feeds_the_signature() {
+        let p = schema_ish();
+        // 不认 schema:domainIncludes 的话这里是空的，签名就成了 (* → *)
+        assert_eq!(
+            prop(&p, "founding_date").domains,
+            vec!["https://schema.org/Organization".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_union_range_of_classes_stays_a_relation() {
+        let p = schema_ish();
+        // rangeIncludes Organization, Person —— 并集，两个都是类
+        assert!(!prop(&p, "author").is_datatype);
+        // rangeIncludes PostalAddress, Text —— schema.org 的常见写法，
+        // Text 是"懒得建实体就写个字符串"。判成属性就把这条边永久丢了
+        assert!(!prop(&p, "address").is_datatype);
+    }
+
+    #[test]
+    fn a_union_range_of_datatypes_becomes_an_attribute() {
+        let p = schema_ish();
+        let fd = prop(&p, "founding_date");
+        assert!(fd.is_datatype);
+        assert_eq!(
+            map_range_of(fd, &p.vocab_datatypes),
+            RangeMapping::Datatype("date")
+        );
+        // Text ∪ URL：URL ⊂ Text，两个都解到 text，所以不用降级也不用报告
+        let hp = prop(&p, "homepage");
+        assert!(hp.is_datatype);
+        assert_eq!(
+            map_range_of(hp, &p.vocab_datatypes),
+            RangeMapping::Datatype("text")
+        );
+    }
+
+    #[test]
+    fn a_union_is_not_an_intersection() {
+        let p = schema_ish();
+        // 这是整件事最容易错的一步：两个 range 倒进同一个 Vec 之后，
+        // 不看 ranges_union 就会当成 rdfs:range 的交集语义
+        assert!(prop(&p, "author").ranges_union);
+        assert_eq!(prop(&p, "author").ranges.len(), 2);
+        // 而 rdfs:range 写两条仍然是交集
+        assert!(matches!(
+            map_range(&[format!("{XSD}string"), format!("{XSD}integer")]),
+            RangeMapping::Degraded(ref s) if s.contains('∩')
+        ));
+    }
+
+    #[test]
+    fn an_unnamed_datatype_degrades_and_is_reported() {
+        let p = schema_ish();
+        // schema:Time 只有时刻没有日期，跟 xsd:time 一个待遇：是数据类型
+        //（所以走属性通道、不当实体类型），但叫不上名 → 按 text 建**并报告**
+        let o = prop(&p, "opens");
+        assert!(o.is_datatype);
+        assert!(matches!(
+            map_range_of(o, &p.vocab_datatypes),
+            RangeMapping::Degraded(ref s) if s.ends_with("Time")
+        ));
+    }
+
+    #[test]
+    fn a_bare_rdf_property_without_range_is_still_a_relation() {
+        let p = schema_ish();
+        // 没有 range 就没有判据，兜底仍是关系——宾语是 IRI 的远多于字面值
+        let k = prop(&p, "knows");
+        assert!(!k.is_datatype);
+        assert!(k.ranges.is_empty());
+    }
+
+    #[test]
+    fn schema_predicates_are_consumed_not_reported_as_unprojected() {
+        let p = schema_ish();
+        // 认了就不该再出现在"暂未投影"里，否则预览页会说
+        // "还有 2312 条 domainIncludes 没消费"，而其实消费了
+        for consumed in ["domainIncludes", "rangeIncludes"] {
+            assert!(
+                !p.unprojected.keys().any(|k| k.ends_with(consumed)),
+                "{consumed} 应已消费：{:?}",
+                p.unprojected
+            );
+        }
     }
 }

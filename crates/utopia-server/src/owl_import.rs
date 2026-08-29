@@ -92,6 +92,7 @@ pub struct ImportPlan {
 /// 这时它的 range 是什么已经不重要了。
 fn attr_note(
     p: &ontology_rdf::OwlProperty,
+    vocab: &ontology_rdf::VocabDatatypes,
     resolvable: &HashSet<&str>,
     in_file: &HashSet<&str>,
 ) -> AttrNote {
@@ -109,7 +110,7 @@ fn attr_note(
             AttrNote::UnknownDomain(first.clone())
         };
     }
-    match ontology_rdf::map_range(&p.ranges) {
+    match ontology_rdf::map_range_of(p, vocab) {
         ontology_rdf::RangeMapping::Datatype(dt) => AttrNote::Datatype(dt),
         ontology_rdf::RangeMapping::Absent => AttrNote::NoRange,
         ontology_rdf::RangeMapping::Degraded(iri) => AttrNote::DegradedToText(iri),
@@ -258,7 +259,7 @@ pub async fn plan(
             attr: None,
         };
         if p.is_datatype {
-            item.attr = Some(attr_note(p, &resolvable, &in_file));
+            item.attr = Some(attr_note(p, &proj.vocab_datatypes, &resolvable, &in_file));
             attributes.push(item);
         } else {
             relations.push(item);
@@ -287,7 +288,6 @@ pub async fn plan(
 
 /// 执行计划。属性在类之后落库——它们要挂在 domain 上，而 domain 要等
 /// 类先建好并解析 IRI → id（就是下面那个 `id_of`）。
-/// 多 domain 的仍然跳过，那要等 domain 关联表（0001 P2c）。
 pub async fn apply(
     state: &AppState,
     kb_id: Uuid,
