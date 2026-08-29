@@ -887,13 +887,17 @@ export const zh: Strings = {
       "document.deleted": "删除了文档",
       "ontology.imported": "导入了一份本体",
     },
-    membersHint:
-      "本部署内的所有人都能读公开知识库；写权限在这里授予" +
-      "（部署管理员始终拥有）。受邀制的知识库只有这里列出的人能看到。",
+    membersHintOpen:
+      "本部署内的所有人已经能读这个知识库，所以没有「查看者」可授——" +
+      "在这里列出某个人，只是为了给他写权限。部署管理员始终拥有。",
+    membersHintRestricted:
+      "只有这里列出的人能看到这个知识库，角色决定他能改什么。" +
+      "部署管理员始终有访问权。",
     addMember: "添加…",
     roles: { viewer: "只读", editor: "编辑者", admin: "管理员" },
     remove: "移除",
     noMembers: "没有设置任何库内角色。",
+    noWriters: "还没有给任何人写权限。",
     save: "保存",
     saved: "已保存",
     danger: "危险操作",
@@ -911,7 +915,6 @@ export const zh: Strings = {
     remove: "移除",
     pickUser: "选择要添加的用户…",
     add: "添加",
-    allAdded: "本部署内的所有人都已是成员。新注册的用户会出现在这里。",
     roles: {
       owner: "所有者",
       admin: "管理员",

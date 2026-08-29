@@ -112,8 +112,9 @@ export function Members({ workspaceId }: { workspaceId: string }) {
         />
       </div>
 
-      {addable.length > 0 ? (
-        <div className="flex gap-2 items-center">
+      {/* picker 常驻。理由同 KbSettings 里那段：控件消失读作"坏了"，
+          而不是"没人可加"；空列表 SearchSelect 自己会说 */}
+      <div className="flex gap-2 items-center">
           <SearchSelect
             className="flex-1"
             value={addUserId}
@@ -138,10 +139,7 @@ export function Members({ workspaceId }: { workspaceId: string }) {
           >
             {S.members.add}
           </button>
-        </div>
-      ) : (
-        <p className="text-xs text-neutral-500">{S.members.allAdded}</p>
-      )}
+      </div>
 
       {me.data?.is_admin && <CreateUser onCreated={refresh} />}
     </div>

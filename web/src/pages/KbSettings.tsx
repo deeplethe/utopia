@@ -31,6 +31,20 @@ const KB_ROLES = [
   { value: "admin", label: S.kbset.roles.admin },
 ];
 
+/**
+ * 这个库能授予哪些角色。
+ *
+ * **open 库没有 viewer 可授**：`access::kb_role` 对 open 库直接给部署内每个人
+ * Viewer，所以写一行 `role=viewer` 什么都没多给——一条空操作的记录，
+ * 还占着成员名单一行让人以为它起了作用。列在这里的意义只剩"给写权限"。
+ *
+ * 历史数据里可能存着 open 库的 viewer 行，但那些行在名单里已经不显示了
+ *（见 `listed`），所以这里不必为"当前值不在选项里"兜底。
+ */
+function rolesFor(isOpen: boolean) {
+  return isOpen ? KB_ROLES.filter((r) => r.value !== "viewer") : KB_ROLES;
+}
+
 type Section = "general" | "members" | "data" | "activity" | "danger";
 
 export function KbSettings() {
@@ -275,7 +289,9 @@ export function KbSettings() {
             </div>
           )}
 
-          {section === "members" && <KbMembers kbId={kbId} />}
+          {section === "members" && (
+            <KbMembers kbId={kbId} isOpen={kb.data.visibility === "open"} />
+          )}
           {section === "data" && <KbDataSources kbId={kbId} />}
 
           {section === "activity" && <KbActivity kbId={kbId} />}
@@ -526,7 +542,7 @@ function KbDataSources({ kbId }: { kbId: string }) {
   );
 }
 
-function KbMembers({ kbId }: { kbId: string }) {
+function KbMembers({ kbId, isOpen }: { kbId: string; isOpen: boolean }) {
   const queryClient = useQueryClient();
   const members = useQuery({
     queryKey: ["kbMembers", kbId],
@@ -534,7 +550,8 @@ function KbMembers({ kbId }: { kbId: string }) {
   });
   const orgUsers = useQuery({ queryKey: ["orgUsers"], queryFn: api.orgUsers });
   const [addUserId, setAddUserId] = useState("");
-  const [addRole, setAddRole] = useState("viewer");
+  // open 库连 viewer 这个选项都没有，默认值得跟着走
+  const [addRole, setAddRole] = useState(isOpen ? "editor" : "viewer");
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["kbMembers", kbId] });
@@ -552,19 +569,32 @@ function KbMembers({ kbId }: { kbId: string }) {
     onSuccess: invalidate,
   });
 
-  const memberIds = new Set(members.data?.members.map((m) => m.user_id));
+  // open 库里 `role=viewer` 的一行**等价于没有这一行**：读权限本来人人都有，
+  // 那条记录什么都没授予。所以名单里只留真正拿到写权限的人。
+  //
+  // **不算进 memberIds 是配套的一半**，不能只藏不放：留在里面的话，
+  // 那个人会从添加选择器里消失，于是再也授不了 editor——
+  // 一条本该无意义的记录反而把人锁住了
+  const listed = (members.data?.members ?? []).filter(
+    (m) => !isOpen || m.role !== "viewer",
+  );
+  const memberIds = new Set(listed.map((m) => m.user_id));
   const addable = orgUsers.data?.filter((u) => !memberIds.has(u.id)) ?? [];
 
   if (members.isError) return null;
 
   return (
     <div className="glass rounded-xl p-4">
-      <p className="text-xs text-neutral-500 mb-3">{S.kbset.membersHint}</p>
+      <p className="text-xs text-neutral-500 mb-3">
+        {isOpen ? S.kbset.membersHintOpen : S.kbset.membersHintRestricted}
+      </p>
 
-      {members.data?.members.length === 0 && (
-        <p className="text-xs text-neutral-600 mb-3">{S.kbset.noMembers}</p>
+      {members.data && listed.length === 0 && (
+        <p className="text-xs text-neutral-600 mb-3">
+          {isOpen ? S.kbset.noWriters : S.kbset.noMembers}
+        </p>
       )}
-      {members.data?.members.map((m) => (
+      {listed.map((m) => (
         <div key={m.user_id} className="flex items-center gap-3 py-1.5">
           <div className="min-w-0 flex-1">
             <span className="text-sm text-neutral-200">{m.display_name}</span>
@@ -575,7 +605,7 @@ function KbMembers({ kbId }: { kbId: string }) {
             className="w-24"
             value={m.role}
             onChange={(role) => setMember.mutate({ userId: m.user_id, role })}
-            options={KB_ROLES}
+            options={rolesFor(isOpen)}
           />
           <button
             onClick={() => remove.mutate(m.user_id)}
@@ -586,8 +616,11 @@ function KbMembers({ kbId }: { kbId: string }) {
         </div>
       ))}
 
-      {addable.length > 0 && (
-        <div className="mt-3 flex gap-2 items-center border-t border-white/5 pt-3">
+      {/* **picker 常驻**，不按"有没有人可加"来显示或隐藏。
+          一个时有时无的控件比一个空着的控件更让人困惑——不见了的第一反应是
+          功能坏了，而不是"没人可加"。空列表由 SearchSelect 自己说
+          （它有 noMatches 空态），这里不必再加一句话 */}
+      <div className="mt-3 flex gap-2 items-center border-t border-white/5 pt-3">
           <SearchSelect
             className="flex-1"
             value={addUserId}
@@ -603,7 +636,7 @@ function KbMembers({ kbId }: { kbId: string }) {
             className="w-24"
             value={addRole}
             onChange={setAddRole}
-            options={KB_ROLES}
+            options={rolesFor(isOpen)}
           />
           <button
             className="u-btn u-btn-primary px-3 py-1.5 text-xs"
@@ -614,8 +647,7 @@ function KbMembers({ kbId }: { kbId: string }) {
           >
             {S.members.add}
           </button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

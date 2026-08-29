@@ -982,13 +982,18 @@ export const en = {
       "document.deleted": "deleted document",
       "ontology.imported": "imported an ontology",
     } as Record<string, string>,
-    membersHint:
-      "Everyone in the deployment can read an open KB; write access is granted here " +
-      "(deployment admins always have it). On an invited-only KB, only people listed here can see it.",
+    membersHintOpen:
+      "Everyone in this deployment can already read this knowledge base, so there is no " +
+      "viewer role to grant — list someone here only to give them write access. " +
+      "Deployment admins always have it.",
+    membersHintRestricted:
+      "Only the people listed here can see this knowledge base, and their role decides " +
+      "what they can change. Deployment admins always have access.",
     addMember: "Add…",
     roles: { viewer: "Viewer", editor: "Editor", admin: "Admin" },
     remove: "Remove",
     noMembers: "No per-KB roles set.",
+    noWriters: "Nobody has been given write access yet.",
     save: "Save",
     saved: "Saved",
     danger: "Danger zone",
@@ -1006,8 +1011,6 @@ export const en = {
     remove: "Remove",
     pickUser: "Select a user to add…",
     add: "Add",
-    allAdded:
-      "Everyone in this deployment is already a member. New signups will appear here.",
     roles: {
       owner: "Owner",
       admin: "Admin",
