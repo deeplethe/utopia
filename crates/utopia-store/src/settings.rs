@@ -11,6 +11,19 @@ pub async fn get(pool: &PgPool, workspace_id: Uuid) -> AppResult<Option<LlmSetti
     Ok(row)
 }
 
+/// 任取一个配了对话模型的工作区设置。给端点探针用：端点地址是部署共用的，
+/// 从哪个工作区的配置读到的都是同一个地方，而探针没有"当前工作区"这个上下文。
+pub async fn any_with_chat(pool: &PgPool) -> AppResult<Option<LlmSettings>> {
+    let row = sqlx::query_as(
+        "SELECT * FROM llm_settings
+         WHERE chat_base_url IS NOT NULL AND chat_model IS NOT NULL
+         ORDER BY workspace_id LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 /// upsert；api_key 传 None 表示保留旧值（前端不回传密钥）。
 #[allow(clippy::too_many_arguments)]
 pub async fn upsert(

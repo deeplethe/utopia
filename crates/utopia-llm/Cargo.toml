@@ -12,3 +12,7 @@ anyhow.workspace = true
 futures-util.workspace = true
 async-stream.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

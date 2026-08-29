@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use utopia_core::models::{Source, SourceView, SyncRun};
+use utopia_core::models::{Role, Source, SourceView, SyncRun};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
@@ -232,24 +232,64 @@ pub async fn mark_running(pool: &PgPool, id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
+/// 一次同步收尾。**告警的升报与自愈都在这一个地方**，不在两个调用方那里——
+/// 分开写迟早有一路只记了失败没记恢复，而那正好是最难发现的错：
+/// 告警一直亮着，用户学会无视它。
+///
+/// 返回值是"告警状态变了没有"，调用方据此决定要不要推事件。
 pub async fn finish_sync(
     pool: &PgPool,
     id: Uuid,
     error: Option<&str>,
     added: i32,
-) -> AppResult<()> {
-    sqlx::query(
+) -> AppResult<bool> {
+    let row: Option<(Uuid, String)> = sqlx::query_as(
         "UPDATE sources SET last_sync_status = $2, last_sync_error = $3,
                 last_sync_added = $4, last_sync_at = now()
-         WHERE id = $1",
+         WHERE id = $1
+         RETURNING kb_id, name",
     )
     .bind(id)
     .bind(if error.is_some() { "failed" } else { "ok" })
     .bind(error)
     .bind(added)
-    .execute(pool)
+    .fetch_optional(pool)
     .await?;
-    Ok(())
+    let Some((kb_id, name)) = row else {
+        return Ok(false);
+    };
+    match error {
+        // 内容类告警给 editor，不只给 admin：管理员需要知道"该修连接了"，
+        // 但**配这个源的人**更需要知道"你的东西没进来"
+        Some(msg) => {
+            let (_, is_new) = crate::alerts::raise(
+                pool,
+                crate::alerts::NewAlert {
+                    kb_id: Some(kb_id),
+                    severity: "error",
+                    kind: crate::alerts::kind::SOURCE_SYNC_FAILED,
+                    // 内容类给 editor：配这个源的人比管理员更需要知道东西没进来
+                    min_role: Role::Editor,
+                    subject_type: Some("source"),
+                    subject: Some(id),
+                    detail: serde_json::json!({ id.to_string(): { "name": name, "error": msg } }),
+                },
+            )
+            .await?;
+            Ok(is_new)
+        }
+        // 自愈：这个源好了就从聚合里摘掉。同库另外两个源还失败着的话
+        // 告警继续亮，只是少了一个对象
+        None => {
+            crate::alerts::clear_subject(
+                pool,
+                Some(kb_id),
+                crate::alerts::kind::SOURCE_SYNC_FAILED,
+                id,
+            )
+            .await
+        }
+    }
 }
 
 /// 文档打标签（整组替换）。

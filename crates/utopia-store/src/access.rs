@@ -36,6 +36,49 @@ pub async fn kb_role(pool: &PgPool, user: &User, kb: &KnowledgeBase) -> AppResul
     Ok(None)
 }
 
+/// `kb_role` 的集合版：这个人**在所有工作区里**能看见的每个 KB → 有效角色。
+///
+/// **改上面那个函数就必须改这个**。之所以不用循环调 `kb_role` 拼出来：
+/// 告警列表是跨库的，逐条一次查询就是 N+1，而告警数会随部署规模长。
+/// 三条分支与 `kb_role` 一一对应，顺序也一致：
+///   1. is_admin → 全部 KB，Owner
+///   2. kb_members 有记录 → 矩阵角色
+///   3. open 库 + 该工作区的 membership → Viewer
+///
+/// 第 3 条这里显式查了 `memberships`，而 `kbs::list_visible` 没查——
+/// 那个函数已被工作区路由限定过范围，这个没有。
+pub async fn visible_kb_roles(pool: &PgPool, user: &User) -> AppResult<Vec<(Uuid, Role)>> {
+    if user.is_admin {
+        let ids: Vec<(Uuid,)> = sqlx::query_as("SELECT id FROM knowledge_bases")
+            .fetch_all(pool)
+            .await?;
+        return Ok(ids.into_iter().map(|(id,)| (id, Role::Owner)).collect());
+    }
+    let rows: Vec<(Uuid, Option<String>, bool)> = sqlx::query_as(
+        "SELECT k.id,
+                m.role,
+                (k.visibility = 'open'
+                 AND EXISTS (SELECT 1 FROM memberships ws
+                             WHERE ws.workspace_id = k.workspace_id AND ws.user_id = $1))
+         FROM knowledge_bases k
+         LEFT JOIN kb_members m ON m.kb_id = k.id AND m.user_id = $1",
+    )
+    .bind(user.id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, matrix, open_member)| {
+            // 矩阵优先于 open——跟 kb_role 一样，矩阵有记录就不再看 visibility
+            match matrix {
+                Some(r) => Role::parse(&r).map(|r| (id, r)),
+                None if open_member => Some((id, Role::Viewer)),
+                None => None,
+            }
+        })
+        .collect())
+}
+
 /// 要求对 KB 至少具备 `min` 角色，返回 KB。
 pub async fn require_kb(
     pool: &PgPool,

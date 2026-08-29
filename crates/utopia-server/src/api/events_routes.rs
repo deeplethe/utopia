@@ -24,7 +24,7 @@ pub async fn kb_events(
     let stream = async_stream::stream! {
         loop {
             match rx.recv().await {
-                Ok(ev) if ev.kb_id == kb_id => {
+                Ok(ev) if ev.kb_id == Some(kb_id) => {
                     yield Ok(Event::default()
                         .event(ev.kind)
                         .data(serde_json::to_string(&ev).unwrap_or_else(|_| "{}".into())));

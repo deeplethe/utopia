@@ -1,4 +1,5 @@
 mod adjudication;
+mod alerting;
 mod api;
 mod auth;
 mod blob;
@@ -101,76 +102,18 @@ async fn main() -> anyhow::Result<()> {
         move |job| {
             let st = worker_state.clone();
             async move {
-                match job.kind.as_str() {
-                    "noop" => {
-                        tracing::info!(job_id = job.id, "noop 任务执行成功");
-                        Ok(())
-                    }
-                    "process_document" => {
-                        let id = payload_document_id(&job.payload)?;
-                        pipeline::process_document(&st, id).await
-                    }
-                    "memory_ingest" => {
-                        let id = payload_document_id(&job.payload)?;
-                        pipeline::memory_ingest(&st, id).await
-                    }
-                    "explore_mappings" => {
-                        let kb_id: Uuid = job
-                            .payload
-                            .get("kb_id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse().ok())
-                            .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-                        mappings::explore_mappings(&st, kb_id).await
-                    }
-                    "extract_document" => {
-                        let id = payload_document_id(&job.payload)?;
-                        extraction::extract_document(&st, id).await
-                    }
-                    "bootstrap_ontology" => {
-                        let kb_id: Uuid = job
-                            .payload
-                            .get("kb_id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse().ok())
-                            .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-                        bootstrap_ontology::bootstrap_ontology(&st, kb_id).await
-                    }
-                    // 本体向量索引：**后台建，不卡请求**。
-                    // 一份 965 类的本体首次要嵌 2600 行，六到八分钟；放在
-                    // 交互请求里就是导入完之后第一个用到检索的人干等
-                    "embed_ontology" => {
-                        let kb_id: Uuid = job
-                            .payload
-                            .get("kb_id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse().ok())
-                            .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-                        ontology_index::refresh(&st, kb_id).await.map(|_| ())
-                    }
-                    "adjudicate_entities" => {
-                        let kb_id: Uuid = job
-                            .payload
-                            .get("kb_id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse().ok())
-                            .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-                        adjudication::adjudicate_entities(&st, kb_id).await
-                    }
-                    "sync_source" => {
-                        let source_id: Uuid = job
-                            .payload
-                            .get("source_id")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| s.parse().ok())
-                            .ok_or_else(|| anyhow::anyhow!("payload 缺少 source_id"))?;
-                        ingest_sources::sync_source(&st, source_id).await
-                    }
-                    other => anyhow::bail!("未知任务类型: {other}"),
+                // 任务失败时看一眼是不是模型端点连不上——那是系统级故障，
+                // 而现在它只会留在 jobs.last_error 里，没有任何界面看得到
+                let result = dispatch(&st, &job).await;
+                if let Err(e) = &result {
+                    alerting::observe_job_failure(&st, e).await;
                 }
+                result
             }
         },
     ));
+
+    alerting::spawn_llm_probe(state.clone());
 
     // 定时摄入调度器：每分钟扫一次到期来源，入队同步任务
     let sched_state = state.clone();
@@ -232,4 +175,78 @@ async fn main() -> anyhow::Result<()> {
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     axum::serve(listener, svc).await?;
     Ok(())
+}
+
+/// 任务分发：新任务类型在这里注册。
+///
+/// 单拎成函数而不是内联在闭包里，是为了让失败**有一个统一的出口**——
+/// 上面那层要在每次失败时看一眼错误链，内联的话每个分支都得自己记得。
+async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow::Result<()> {
+    match job.kind.as_str() {
+        "noop" => {
+            tracing::info!(job_id = job.id, "noop 任务执行成功");
+            Ok(())
+        }
+        "process_document" => {
+            let id = payload_document_id(&job.payload)?;
+            pipeline::process_document(st, id).await
+        }
+        "memory_ingest" => {
+            let id = payload_document_id(&job.payload)?;
+            pipeline::memory_ingest(st, id).await
+        }
+        "explore_mappings" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            mappings::explore_mappings(st, kb_id).await
+        }
+        "extract_document" => {
+            let id = payload_document_id(&job.payload)?;
+            extraction::extract_document(st, id).await
+        }
+        "bootstrap_ontology" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            bootstrap_ontology::bootstrap_ontology(st, kb_id).await
+        }
+        // 本体向量索引：**后台建，不卡请求**。
+        // 一份 965 类的本体首次要嵌 2600 行，六到八分钟；放在
+        // 交互请求里就是导入完之后第一个用到检索的人干等
+        "embed_ontology" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            ontology_index::refresh(st, kb_id).await.map(|_| ())
+        }
+        "adjudicate_entities" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            adjudication::adjudicate_entities(st, kb_id).await
+        }
+        "sync_source" => {
+            let source_id: Uuid = job
+                .payload
+                .get("source_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 source_id"))?;
+            ingest_sources::sync_source(st, source_id).await
+        }
+        other => anyhow::bail!("未知任务类型: {other}"),
+    }
 }

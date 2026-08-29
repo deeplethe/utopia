@@ -1,4 +1,5 @@
 mod admin_routes;
+mod alerts_routes;
 mod auth_routes;
 mod chat;
 mod datasource_routes;
@@ -34,6 +35,12 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/auth/register", post(auth_routes::register))
         .route("/auth/login", post(auth_routes::login))
         .route("/auth/logout", post(auth_routes::logout))
+        // 告警中心：跨库，不挂在 /kbs/{id} 下面
+        .route("/alerts", get(alerts_routes::list))
+        .route("/alerts/unread", get(alerts_routes::unread))
+        .route("/alerts/read-all", post(alerts_routes::mark_all_read))
+        .route("/alerts/{id}/read", post(alerts_routes::mark_read))
+        .route("/alerts/events", get(alerts_routes::stream))
         .route(
             "/auth/me",
             get(auth_routes::me).patch(auth_routes::update_me),

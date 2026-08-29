@@ -623,6 +623,45 @@ pub struct ChunkFull {
     pub text: String,
 }
 
+/// 一条告警（0005）。**聚合体**：同一 `(kb_id, kind)` 未解决的只有一行，
+/// 新实例往 `subject_ids` 追加并推 `last_seen`，不插新行。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct Alert {
+    pub id: Uuid,
+    /// None = 系统级，仅 `is_admin` 可见
+    pub kb_id: Option<Uuid>,
+    pub severity: String,
+    pub kind: String,
+    pub min_role: String,
+    pub subject_type: Option<String>,
+    pub subject_ids: Vec<Uuid>,
+    pub detail: serde_json::Value,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+/// 列表行：告警本体 + **这个人**读没读过。
+///
+/// `read` 逐人，`resolved_at` 全局——两者分开是 0005 的第三个决定：
+/// 一个人读过不代表事情解决了，没有人能替别人把一件事读掉。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct AlertView {
+    pub id: Uuid,
+    pub kb_id: Option<Uuid>,
+    /// 展示用；库被删时告警随之级联删除，所以有 kb_id 就一定有名字
+    pub kb_name: Option<String>,
+    pub severity: String,
+    pub kind: String,
+    pub subject_type: Option<String>,
+    pub subject_ids: Vec<Uuid>,
+    pub detail: serde_json::Value,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+    pub read: bool,
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct KnowledgeBase {
     pub id: Uuid,

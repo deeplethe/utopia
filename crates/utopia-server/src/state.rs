@@ -9,8 +9,10 @@ use uuid::Uuid;
 /// 服务内事件（SSE 推送给前端做局部刷新）。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct AppEvent {
-    pub kb_id: Uuid,
-    /// document = 文档摄入/抽取状态变化；review = 审核队列变化
+    /// None = 不属于任何库。告警的角标是跨库的，而系统级告警根本没有库
+    pub kb_id: Option<Uuid>,
+    /// document = 文档摄入/抽取状态变化；review = 审核队列变化；
+    /// alert = 告警中心有变动
     pub kind: &'static str,
     pub document_id: Option<Uuid>,
 }
@@ -63,7 +65,7 @@ impl AppState {
     /// 无订阅者时 send 返回 Err——正常情况，静默忽略。
     pub fn emit_document(&self, kb_id: Uuid, document_id: Uuid) {
         let _ = self.events.send(AppEvent {
-            kb_id,
+            kb_id: Some(kb_id),
             kind: "document",
             document_id: Some(document_id),
         });
@@ -71,7 +73,7 @@ impl AppState {
 
     pub fn emit_review(&self, kb_id: Uuid) {
         let _ = self.events.send(AppEvent {
-            kb_id,
+            kb_id: Some(kb_id),
             kind: "review",
             document_id: None,
         });
@@ -79,8 +81,21 @@ impl AppState {
 
     pub fn emit_source(&self, kb_id: Uuid) {
         let _ = self.events.send(AppEvent {
-            kb_id,
+            kb_id: Some(kb_id),
             kind: "source",
+            document_id: None,
+        });
+    }
+
+    /// 告警有变动。**不带任何数据，也不判权限**——收到的人一律重取列表，
+    /// 而"谁能看见什么"在列表查询里判且只判一次。
+    ///
+    /// 代价是没权限的人也会被叫醒重取一次，拿到的仍是空。换来的是推送这条路上
+    /// 一行权限逻辑都没有，不存在"推送和列表判得不一样"这种漏。
+    pub fn emit_alert(&self) {
+        let _ = self.events.send(AppEvent {
+            kb_id: None,
+            kind: "alert",
             document_id: None,
         });
     }
