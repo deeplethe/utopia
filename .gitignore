@@ -11,3 +11,7 @@ web/dist/
 /docs/*
 !/docs/decisions/
 .claude/
+
+# 测量台的运行产物
+_bench_*.json
+_bench.err

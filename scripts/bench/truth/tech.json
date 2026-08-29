@@ -1,0 +1,21 @@
+{
+  "note": "见 pharma.json 的说明。",
+  "expect": {
+    "星云科技": ["corporation"],
+    "上海研究院": ["research_organization"],
+    "清华大学计算机系": ["college_or_university", "educational_organization"],
+    "上海市政府": ["government_organization"],
+    "深蓝向量数据库": ["software_application"],
+    "Milvus": ["software_application"],
+    "深蓝 3.0": ["software_application"],
+    "Linux": ["operating_system", "software_application"],
+    "中国数据智能": ["periodical"],
+    "世界人工智能大会": ["business_event", "event_series"],
+    "大会主论坛": ["conference_event", "event"],
+    "上海": ["city"],
+    "上海浦东新区": ["administrative_area"],
+    "杭州西湖区": ["administrative_area"],
+    "张伟": [],
+    "李娜": []
+  }
+}
