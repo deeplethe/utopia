@@ -121,7 +121,7 @@ Only through these rules can reasoning become action. A model may think boldly, 
 
 ## Features
 
-A crab and an elephant. By bringing in pgvector and a queue-table design, we cut the weight of the stack and its service dependencies — deployment is over in a blink.
+The whole system is a crab and an elephant. By bringing in pgvector and a queue-table design, we cut the weight of the stack and its service dependencies — deployment is over in a blink.
 
 | | |
 |---|---|
