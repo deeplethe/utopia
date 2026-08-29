@@ -623,27 +623,6 @@ pub struct ChunkFull {
     pub text: String,
 }
 
-/// 列表行：一次故障 + **这个人**读没读过。
-///
-/// 一次故障一行，写完不再改——没有"已解决"，没有聚合。见 `utopia_store::alerts`
-/// 的模块文档。`read` 逐人：一个人读过不代表别人也该从未读里消失。
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-pub struct AlertView {
-    pub id: Uuid,
-    /// None = 系统级，仅 `is_admin` 可见
-    pub kb_id: Option<Uuid>,
-    /// 展示用；库被删时告警随之级联删除，所以有 kb_id 就一定有名字
-    pub kb_name: Option<String>,
-    pub severity: String,
-    pub kind: String,
-    pub subject_type: Option<String>,
-    pub subject_id: Option<Uuid>,
-    /// 名字与报错原文。**名字在这里存过一份**，所以对象删了也显示得出来
-    pub detail: serde_json::Value,
-    pub created_at: DateTime<Utc>,
-    pub read: bool,
-}
-
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct KnowledgeBase {
     pub id: Uuid,

@@ -15,7 +15,7 @@
 //! 靠 [`purge_older_than`] 收尾。
 
 use sqlx::PgPool;
-use utopia_core::models::{AlertView, Role, User};
+use utopia_core::models::{Role, User};
 use utopia_core::AppResult;
 use uuid::Uuid;
 
@@ -107,46 +107,91 @@ const SEARCH: &str = "
      OR COALESCE(k.name, '') ILIKE '%' || $5 || '%'
      OR a.detail::text ILIKE '%' || $5 || '%')";
 
-/// 一页告警，外加符合条件的总数。
-pub struct AlertPage {
-    pub items: Vec<AlertView>,
-    /// 满足过滤条件的总数，不受 limit/offset 影响——翻页控件要靠它
+/// 一组：**连着的**、同 `(kb, kind)` 的几次故障。
+///
+/// 存储是原子的（一次故障一行），折叠只影响读。分组在服务端做而不是前端，
+/// 是因为**分页得按组分**：前端折叠的话一页只能取固定行数，一段连续故障
+/// 跨了页边界就会断成两组，点一下也只标到边界为止。
+#[derive(sqlx::FromRow)]
+pub struct AlertGroup {
+    pub kb_id: Option<Uuid>,
+    pub kb_name: Option<String>,
+    pub kind: String,
+    /// 组里最重的那一档
+    pub severity: String,
+    /// 这一组几次
+    pub count: i64,
+    /// 其中我没读过的几次
+    pub unread: i64,
+    /// 组里最新与最早的时刻。**标已读按这个区间圈**，不用把 id 列表发给前端——
+    /// 一组可能有几百条
+    pub latest_at: chrono::DateTime<chrono::Utc>,
+    pub earliest_at: chrono::DateTime<chrono::Utc>,
+    /// 明细，最多 [`GROUP_LINES`] 条，新的在前
+    pub lines: Vec<serde_json::Value>,
+}
+
+/// 一组里最多带回几条明细。面板里列不下更多，而一组可能有几百条——
+/// 全发过来只是让首屏更慢
+const GROUP_LINES: i64 = 5;
+
+/// 一页分组，外加总组数。
+pub struct GroupPage {
+    pub items: Vec<AlertGroup>,
     pub total: i64,
 }
 
-/// 这个人能看见的告警，一页，**按时间倒序**。
+/// 相邻同类折叠：两个 `row_number()` 相减（gaps and islands）。
 ///
-/// 只有这一种排序。分组是界面的事：面板把连着的同 `(kb, kind)` 折成一条
-/// 「12 份文档没有文本层」。服务端不分组，因为分组一旦进了分页就得按组分页，
-/// 而那要么把一整组的明细全发过来，要么再开一个"取某组明细"的端点——
-/// 为了一个折叠效果不值得。
-///
-/// 可见性判定**一次做完**：系统级看 `is_admin`，库级看 `visible_kb_roles`
-/// 给出的有效角色够不够 `min_role`。推送那一路不判权限（它不带数据），
-/// 全部落在这里一处。
-pub async fn list_for_user(
+/// 全局序号减去"同 (kb, kind) 内的序号"，连着的同类会得到同一个差值，
+/// 中间插进别的故障就会让差值变化——于是差值就是组号。
+/// `PARTITION BY kb_id` 把 NULL 当作相等，所以系统级告警自然归成一组。
+const ISLANDS: &str = "
+    SELECT v.*,
+           row_number() OVER (ORDER BY v.created_at DESC, v.id DESC)
+         - row_number() OVER (PARTITION BY v.kb_id, v.kind
+                              ORDER BY v.created_at DESC, v.id DESC) AS grp
+    FROM v";
+
+/// 这个人能看见的告警，**按组分页**，时间倒序。
+pub async fn list_groups(
     pool: &PgPool,
     user: &User,
     q: Option<&str>,
     limit: i64,
     offset: i64,
-) -> AppResult<AlertPage> {
+) -> AppResult<GroupPage> {
     let (kb_ids, kb_roles) = visible(pool, user).await?;
     // 空串当没搜：前端清空搜索框时不该变成"搜一个空字符串"
     let q = q.map(str::trim).filter(|s| !s.is_empty());
-    let where_ = format!("({VISIBLE}) AND ({SEARCH})");
+    let base = format!(
+        "WITH v AS (
+             SELECT a.id, a.kb_id, k.name AS kb_name, a.severity, a.kind,
+                    a.detail, a.created_at, (r.user_id IS NOT NULL) AS read
+             FROM alerts a
+             LEFT JOIN knowledge_bases k ON k.id = a.kb_id
+             LEFT JOIN alert_reads r ON r.alert_id = a.id AND r.user_id = $1
+             WHERE ({VISIBLE}) AND ({SEARCH})
+         ),
+         isl AS ({ISLANDS})"
+    );
     let sql = format!(
-        "SELECT a.id, a.kb_id, k.name AS kb_name, a.severity, a.kind,
-                a.subject_type, a.subject_id, a.detail, a.created_at,
-                (r.user_id IS NOT NULL) AS read
-         FROM alerts a
-         LEFT JOIN knowledge_bases k ON k.id = a.kb_id
-         LEFT JOIN alert_reads r ON r.alert_id = a.id AND r.user_id = $1
-         WHERE {where_}
-         ORDER BY a.created_at DESC
+        "{base}
+         SELECT kb_id, max(kb_name) AS kb_name, kind,
+                -- severity 按轻重取最大，不能按字典序：那样 warning 会压过 error
+                CASE max(CASE severity WHEN 'error' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END)
+                    WHEN 3 THEN 'error' WHEN 2 THEN 'warning' ELSE 'info' END AS severity,
+                count(*) AS count,
+                count(*) FILTER (WHERE NOT read) AS unread,
+                max(created_at) AS latest_at,
+                min(created_at) AS earliest_at,
+                (array_agg(detail ORDER BY created_at DESC))[1:{GROUP_LINES}] AS lines
+         FROM isl
+         GROUP BY kb_id, kind, grp
+         ORDER BY max(created_at) DESC
          LIMIT $6 OFFSET $7"
     );
-    let items: Vec<AlertView> = sqlx::query_as(&sql)
+    let items: Vec<AlertGroup> = sqlx::query_as(&sql)
         .bind(user.id)
         .bind(user.is_admin)
         .bind(&kb_ids)
@@ -156,13 +201,9 @@ pub async fn list_for_user(
         .bind(offset)
         .fetch_all(pool)
         .await?;
-    // 总数单独查：翻页控件要知道有几页，而 LIMIT 之后就数不出来了。
-    // 条件必须跟上面一模一样，所以 where_ 是同一个字符串
-    let count_sql = format!(
-        "SELECT count(*) FROM alerts a
-         LEFT JOIN knowledge_bases k ON k.id = a.kb_id
-         WHERE {where_}"
-    );
+    // 总**组**数，不是总行数——翻页控件数的是组
+    let count_sql =
+        format!("{base} SELECT count(*) FROM (SELECT 1 FROM isl GROUP BY kb_id, kind, grp) g");
     let (total,): (i64,) = sqlx::query_as(&count_sql)
         .bind(user.id)
         .bind(user.is_admin)
@@ -171,23 +212,44 @@ pub async fn list_for_user(
         .bind(q)
         .fetch_one(pool)
         .await?;
-    Ok(AlertPage { items, total })
+    Ok(GroupPage { items, total })
 }
 
-/// 某一条在不在这个人的可见范围内。标记已读之前查一次——
-/// 不能让人靠猜 id 在 `alert_reads` 里留下一条他本不该有的记录。
-pub async fn is_visible(pool: &PgPool, user: &User, alert_id: Uuid) -> AppResult<bool> {
+/// 把一整组标已读。**按时间区间圈**，不按 id 列表——一组可能有几百条，
+/// 把 id 全发给前端再发回来只是白跑一趟。
+///
+/// 可见性照查：不能让人靠猜 kind 把看不见的告警标掉。
+pub async fn mark_group_read(
+    pool: &PgPool,
+    user: &User,
+    kb_id: Option<Uuid>,
+    kind: &str,
+    from: chrono::DateTime<chrono::Utc>,
+    to: chrono::DateTime<chrono::Utc>,
+) -> AppResult<u64> {
     let (kb_ids, kb_roles) = visible(pool, user).await?;
-    let sql = format!("SELECT 1 FROM alerts a WHERE a.id = $5 AND ({VISIBLE})");
-    let row: Option<(i32,)> = sqlx::query_as(&sql)
+    let sql = format!(
+        "INSERT INTO alert_reads (alert_id, user_id)
+         SELECT a.id, $1 FROM alerts a
+         WHERE ({VISIBLE})
+           AND a.kind = $5
+           -- IS NOT DISTINCT FROM：系统级告警的 kb_id 是 NULL，= 比不出来
+           AND a.kb_id IS NOT DISTINCT FROM $6
+           AND a.created_at BETWEEN $7 AND $8
+         ON CONFLICT DO NOTHING"
+    );
+    let n = sqlx::query(&sql)
         .bind(user.id)
         .bind(user.is_admin)
         .bind(&kb_ids)
         .bind(&kb_roles)
-        .bind(alert_id)
-        .fetch_optional(pool)
+        .bind(kind)
+        .bind(kb_id)
+        .bind(from)
+        .bind(to)
+        .execute(pool)
         .await?;
-    Ok(row.is_some())
+    Ok(n.rows_affected())
 }
 
 /// 我的未读数。
@@ -206,19 +268,6 @@ pub async fn unread_count(pool: &PgPool, user: &User) -> AppResult<i64> {
         .fetch_one(pool)
         .await?;
     Ok(n)
-}
-
-/// 标记已读。行写完不再变，所以已读也是一次性的：读过就是读过。
-pub async fn mark_read(pool: &PgPool, alert_id: Uuid, user_id: Uuid) -> AppResult<()> {
-    sqlx::query(
-        "INSERT INTO alert_reads (alert_id, user_id) VALUES ($1, $2)
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(alert_id)
-    .bind(user_id)
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 /// 把我能看见的全标已读。

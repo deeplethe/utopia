@@ -39,7 +39,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/alerts", get(alerts_routes::list))
         .route("/alerts/unread", get(alerts_routes::unread))
         .route("/alerts/read-all", post(alerts_routes::mark_all_read))
-        .route("/alerts/{id}/read", post(alerts_routes::mark_read))
+        .route("/alerts/read-group", post(alerts_routes::mark_group_read))
         .route("/alerts/events", get(alerts_routes::stream))
         .route(
             "/auth/me",

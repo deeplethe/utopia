@@ -557,22 +557,26 @@ export interface ConversationMessage {
   created_at: string;
 }
 
-/** 告警中心的一条（0005）：**一次故障**，写完不再变。跨库；`kb_id` 为空是系统级。 */
-export type Alert = {
-  id: string;
+/** 告警中心的一组（0005）：**连着的、同类的几次故障**。
+ *
+ * 存储那边仍是一次故障一行，折叠在服务端读的时候做——这样翻页数的是组，
+ * 一段连续故障不会被页边界切断。 */
+export type AlertGroup = {
   kb_id: string | null;
   /** 系统级告警没有库名 */
   kb_name: string | null;
-  severity: "info" | "warning" | "error";
   /** `source.sync_failed` / `llm.unreachable` —— 措辞在 i18n 里按这个查 */
   kind: string;
-  subject_type: string | null;
-  subject_id: string | null;
-  /** 名字与报错原文。名字在服务端存过一份，所以对象删了也显示得出来 */
-  detail: Record<string, unknown>;
-  created_at: string;
-  /** **我**读没读过。别人读过不影响这一位 */
-  read: boolean;
+  severity: "info" | "warning" | "error";
+  /** 这一组几次 */
+  count: number;
+  /** 其中我没读过的几次 */
+  unread: number;
+  latest_at: string;
+  /** 跟 latest_at 一起圈出这一组，标已读时原样发回去 */
+  earliest_at: string;
+  /** 明细，最多几条，新的在前 */
+  lines: { name?: string; error?: string; job?: string }[];
 };
 
 export const api = {
@@ -586,13 +590,21 @@ export const api = {
     if (o.q?.trim()) p.set("q", o.q.trim());
     if (o.limit != null) p.set("limit", String(o.limit));
     if (o.offset) p.set("offset", String(o.offset));
-    return request<{ items: Alert[]; total: number }>(
+    return request<{ items: AlertGroup[]; total: number }>(
       `/api/v1/alerts?${p}`,
     );
   },
   alertsUnread: () => request<{ unread: number }>("/api/v1/alerts/unread"),
-  alertRead: (id: string) =>
-    request<{ ok: boolean }>(`/api/v1/alerts/${id}/read`, { method: "POST" }),
+  alertReadGroup: (g: {
+    kb_id: string | null;
+    kind: string;
+    from: string;
+    to: string;
+  }) =>
+    request<{ marked: number }>("/api/v1/alerts/read-group", {
+      method: "POST",
+      body: JSON.stringify(g),
+    }),
   alertsReadAll: () =>
     request<{ ok: boolean }>("/api/v1/alerts/read-all", { method: "POST" }),
   login: (email: string, password: string) =>

@@ -1,24 +1,24 @@
-//! 告警中心（0005）。**跨库**：一个列表页 + 顶栏角标，不挂在某个 KB 下面。
+//! 告警中心（0005）。**跨库**：一个顶栏面板，不挂在某个 KB 下面。
 //!
-//! 可见性不在这里判——它在 `utopia_store::alerts` 的那条 SQL 里判且只判一次。
+//! 可见性不在这里判——它在 `utopia_store::alerts` 的那几条 SQL 里判且只判一次。
 //! 路由层只负责取当前用户。
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
+use chrono::{DateTime, Utc};
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::convert::Infallible;
 use tokio::sync::broadcast;
-use utopia_core::models::AlertView;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
-/// 一页几条。弹窗里放得下的量——再多就该翻页，而不是让人滚一屏。
+/// 一页几组。弹窗里放得下的量——再多就该翻页，而不是让人滚一屏。
 const PAGE: i64 = 8;
 /// 一页最多能要多少：防的是有人把 limit 写成 100000 让服务端去数全表
 const MAX_PAGE: i64 = 50;
@@ -35,9 +35,26 @@ pub struct ListQuery {
     pub offset: Option<i64>,
 }
 
+/// 一组连着的同类故障。折叠是**读**出来的，存储那边仍是一次故障一行。
+#[derive(Serialize)]
+pub struct GroupView {
+    pub kb_id: Option<Uuid>,
+    pub kb_name: Option<String>,
+    pub kind: String,
+    pub severity: String,
+    pub count: i64,
+    pub unread: i64,
+    pub latest_at: DateTime<Utc>,
+    /// 跟 `latest_at` 一起圈出这一组，标已读时原样发回来
+    pub earliest_at: DateTime<Utc>,
+    /// 明细，最多几条，新的在前
+    pub lines: Vec<serde_json::Value>,
+}
+
 #[derive(Serialize)]
 pub struct ListResponse {
-    pub items: Vec<AlertView>,
+    pub items: Vec<GroupView>,
+    /// 总**组**数——翻页控件数的是组，不是行
     pub total: i64,
 }
 
@@ -48,11 +65,24 @@ pub async fn list(
 ) -> ApiResult<Json<ListResponse>> {
     let limit = q.limit.unwrap_or(PAGE).clamp(1, MAX_PAGE);
     let offset = q.offset.unwrap_or(0).max(0);
-    let page =
-        utopia_store::alerts::list_for_user(&state.pool, &user, q.q.as_deref(), limit, offset)
-            .await?;
+    let page = utopia_store::alerts::list_groups(&state.pool, &user, q.q.as_deref(), limit, offset)
+        .await?;
     Ok(Json(ListResponse {
-        items: page.items,
+        items: page
+            .items
+            .into_iter()
+            .map(|g| GroupView {
+                kb_id: g.kb_id,
+                kb_name: g.kb_name,
+                kind: g.kind,
+                severity: g.severity,
+                count: g.count,
+                unread: g.unread,
+                latest_at: g.latest_at,
+                earliest_at: g.earliest_at,
+                lines: g.lines,
+            })
+            .collect(),
         total: page.total,
     }))
 }
@@ -66,20 +96,28 @@ pub async fn unread(
     Ok(Json(json!({ "unread": n })))
 }
 
-/// 标记已读。**逐人**——读过不等于解决了，别人的未读列表不受影响。
+#[derive(Deserialize)]
+pub struct ReadGroupBody {
+    pub kb_id: Option<Uuid>,
+    pub kind: String,
+    /// 组的时间区间，原样来自列表返回的 `earliest_at` / `latest_at`
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+}
+
+/// 把一整组标已读。**逐人**——读过不等于问题没了，别人的未读不受影响。
 ///
-/// 先查可见性：不能让人靠猜 id 把一条自己看不见的告警标成已读
-///（本身无害，但那会在 alert_reads 里留下一条他本不该有的记录）。
-pub async fn mark_read(
+/// 按时间区间圈而不是发 id 列表：一组可能有几百条。可见性在 store 里照查，
+/// 所以猜一个 kind 也标不掉自己看不见的东西。
+pub async fn mark_group_read(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
-    Path(alert_id): Path<Uuid>,
+    Json(b): Json<ReadGroupBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    if !utopia_store::alerts::is_visible(&state.pool, &user, alert_id).await? {
-        return Err(utopia_core::AppError::NotFound.into());
-    }
-    utopia_store::alerts::mark_read(&state.pool, alert_id, user.id).await?;
-    Ok(Json(json!({ "ok": true })))
+    let n =
+        utopia_store::alerts::mark_group_read(&state.pool, &user, b.kb_id, &b.kind, b.from, b.to)
+            .await?;
+    Ok(Json(json!({ "marked": n })))
 }
 
 /// 全部已读。

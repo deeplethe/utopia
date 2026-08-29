@@ -9,63 +9,39 @@ import { type Ref, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bell, Search } from "lucide-react";
 
-import { api, type Alert } from "../api";
+import { api, type AlertGroup } from "../api";
 import { S } from "../i18n";
 import { Chip, Pager, cn } from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 
 const PAGE = 8;
 
-/** 详情里给人看的那一行：对象名 — 报错原文 */
-function detailLine(a: Alert): string | null {
-  const d = a.detail as { name?: string; error?: string; job?: string };
+/** 明细里给人看的那一行：对象名 — 报错原文 */
+function line(d: AlertGroup["lines"][number]): string | null {
   const parts = [d.name ?? d.job, d.error].filter(Boolean);
   return parts.length ? parts.join(" — ") : null;
 }
 
-/** 一组：连着的、同 `(kb, kind)` 的几次故障。 */
-type Group = { key: string; items: Alert[] };
-
-/**
- * 把**连着的**同类折成一组。
- *
- * 存储是原子的（一次故障一行），但一屏里连着五条"来源同步失败"读起来是噪音。
- * 折叠只在显示层做，且只折**相邻**的——列表按时间倒序，同一批坏掉的东西
- * 本来就挨在一起，而中间隔了别的故障就说明那是另一段时间的事，不该并进来。
- *
- * 代价：一段跨了分页边界的会显示成两组。这是按行分页换来的——按组分页要么
- * 把整组明细全发过来，要么再开一个"取某组明细"的端点。
- */
-function groupAdjacent(rows: Alert[]): Group[] {
-  const out: Group[] = [];
-  for (const a of rows) {
-    const key = `${a.kb_id ?? "system"}|${a.kind}`;
-    const last = out[out.length - 1];
-    if (last && last.key === key) last.items.push(a);
-    else out.push({ key, items: [a] });
-  }
-  return out;
-}
-
-/** 明细最多列几条，多的收成一句"还有 N 条" */
-const MAX_LINES = 4;
-
-function AlertRow({ g, onRead }: { g: Group; onRead: (ids: string[]) => void }) {
+function AlertRow({
+  g,
+  onRead,
+}: {
+  g: AlertGroup;
+  onRead: (g: AlertGroup) => void;
+}) {
   // 没见过的 kind 也得显示得出来：新告警源上线时前端可能还没跟上，
   // 而"有条告警但我不认识它"远好过"什么都不显示"
-  const head = g.items[0];
-  const worded = S.alerts.kinds[head.kind];
-  const unread = g.items.filter((a) => !a.read);
-  const lines = g.items.map(detailLine).filter((l): l is string => !!l);
-  const shown = lines.slice(0, MAX_LINES);
-  const rest = lines.length - shown.length;
+  const worded = S.alerts.kinds[g.kind];
+  const lines = g.lines.map(line).filter((l): l is string => !!l);
+  // count 数的是整组，lines 只带回前几条——差额是"还有 N 条"
+  const rest = g.count - lines.length;
   return (
     <button
       type="button"
       // **点击才算读过**，不是划过。鼠标经过一列告警不代表看过它们，
-      // 而已读一旦落下就再也不会自己回来。点一组就是把这一组都读了
+      // 而已读一旦落下就再也不会自己回来。点一下把这一组整个标掉
       onClick={() => {
-        if (unread.length) onRead(unread.map((a) => a.id));
+        if (g.unread > 0) onRead(g);
       }}
       className="w-full text-left flex gap-2.5 px-3.5 py-3 border-b border-white/[0.06] last:border-b-0 hover:bg-white/[0.03] transition-colors"
     >
@@ -74,7 +50,7 @@ function AlertRow({ g, onRead }: { g: Group; onRead: (ids: string[]) => void }) 
       <span
         className={cn(
           "mt-[7px] h-1.5 w-1.5 rounded-full shrink-0",
-          unread.length ? "bg-rose-500" : "bg-transparent",
+          g.unread > 0 ? "bg-rose-500" : "bg-transparent",
         )}
       />
       <div className="min-w-0 flex-1">
@@ -82,22 +58,22 @@ function AlertRow({ g, onRead }: { g: Group; onRead: (ids: string[]) => void }) 
           <span
             className={cn(
               "text-[13px]",
-              unread.length ? "font-medium text-white" : "text-neutral-400",
+              g.unread > 0 ? "font-medium text-white" : "text-neutral-400",
             )}
           >
-            {worded?.title ?? S.alerts.unknownKind(head.kind)}
+            {worded?.title ?? S.alerts.unknownKind(g.kind)}
           </span>
-          {g.items.length > 1 && <Chip tone="neutral">{g.items.length}</Chip>}
-          <Chip tone={head.kb_name ? "neutral" : "violet"}>
-            {head.kb_name ?? S.alerts.system}
+          {g.count > 1 && <Chip tone="neutral">{g.count}</Chip>}
+          <Chip tone={g.kb_name ? "neutral" : "violet"}>
+            {g.kb_name ?? S.alerts.system}
           </Chip>
         </div>
         {worded && (
           <p className="mt-0.5 text-[11.5px] text-neutral-500">{worded.hint}</p>
         )}
-        {shown.length > 0 && (
+        {lines.length > 0 && (
           <ul className="mt-1 space-y-0.5">
-            {shown.map((l, i) => (
+            {lines.map((l, i) => (
               <li key={i} className="text-[11px] text-neutral-400 break-words">
                 {l}
               </li>
@@ -109,9 +85,9 @@ function AlertRow({ g, onRead }: { g: Group; onRead: (ids: string[]) => void }) 
             )}
           </ul>
         )}
-        {/* 时间取组里最新的那一条——列表按时间倒序，所以就是第一条 */}
+        {/* 时间取组里最新的那一次 */}
         <p className="u-num mt-1.5 text-[10.5px] text-neutral-600">
-          {new Date(head.created_at).toLocaleString()}
+          {new Date(g.latest_at).toLocaleString()}
         </p>
       </div>
     </button>
@@ -137,7 +113,13 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
   });
 
   const read = useMutation({
-    mutationFn: (ids: string[]) => Promise.all(ids.map((id) => api.alertRead(id))),
+    mutationFn: (g: AlertGroup) =>
+      api.alertReadGroup({
+        kb_id: g.kb_id,
+        kind: g.kind,
+        from: g.earliest_at,
+        to: g.latest_at,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["alerts"] }),
   });
   const readAll = useMutation({
@@ -145,9 +127,8 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["alerts"] }),
   });
 
-  const rows = list.data?.items ?? [];
+  const groups = list.data?.items ?? [];
   const total = list.data?.total ?? 0;
-  const groups = groupAdjacent(rows);
 
   return (
     // top-0 而不是 top-9：面板要从铃铛**原位**长出来，右上角对齐
@@ -178,7 +159,7 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
       </div>
 
       <div className="max-h-[420px] overflow-y-auto">
-        {rows.length === 0 ? (
+        {groups.length === 0 ? (
           <div className="px-3.5 py-8 text-center">
             <p className="text-[13px] text-neutral-300">
               {q ? S.alerts.noMatch : S.alerts.empty}
@@ -192,9 +173,9 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
         ) : (
           groups.map((g) => (
             <AlertRow
-              key={g.items[0].id}
+              key={`${g.kb_id ?? "system"}|${g.kind}|${g.latest_at}`}
               g={g}
-              onRead={(ids) => read.mutate(ids)}
+              onRead={(x) => read.mutate(x)}
             />
           ))
         )}
