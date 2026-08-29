@@ -1914,3 +1914,44 @@ pub async fn retype_entities(
     }
     Ok((batch_id, moved))
 }
+
+/// 人认可过的"粗类 → 细类"配对。
+///
+/// 待人工那一档由"跨没跨分类轴"触发，而那条判据测的常常是**种子类跟导入词汇表
+/// 连没连上**，不是风险：schema.org 的 Place 另起 key，内置 location 零子类，
+/// 于是每个城市都要问一遍。配对是类与类之间的事，实体只是碰巧撞上它——
+/// 认可一次就该一直算数。
+pub async fn approved_refinements(
+    pool: &PgPool,
+    kb_id: Uuid,
+) -> AppResult<std::collections::HashSet<(Uuid, Uuid)>> {
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT from_type_id, to_type_id FROM type_refinement_pairs WHERE kb_id = $1",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// 记下一个被认可的配对。重复认可是幂等的。
+pub async fn approve_refinement(
+    pool: &PgPool,
+    kb_id: Uuid,
+    from_type_id: Uuid,
+    to_type_id: Uuid,
+    by: Uuid,
+) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO type_refinement_pairs (kb_id, from_type_id, to_type_id, approved_by)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (kb_id, from_type_id, to_type_id) DO NOTHING",
+    )
+    .bind(kb_id)
+    .bind(from_type_id)
+    .bind(to_type_id)
+    .bind(by)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

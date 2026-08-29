@@ -39,6 +39,9 @@ pub struct TypeSuggestion {
     pub entity_id: Uuid,
     pub name: String,
     pub coarse: String,
+    /// 粗类的 id。裁决要拿它跟目标类配成一对，去查"这一对人认可过没有"
+    #[serde(skip)]
+    pub coarse_id: Uuid,
     pub proposed_type: Option<String>,
     pub specific_type: Option<String>,
     pub fact_count: i64,
@@ -98,11 +101,35 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
     if subjects.is_empty() {
         return Ok(Vec::new());
     }
+    // **每个实体两个查询，不是一个。**
+    //
+    // 画像里模型自己的说法排在最前，但后面整段是语境，一样进向量。实测
+    //「杭州拱墅区」的画像是 `district. 杭州拱墅区. located_in by 仁和堂连锁药房.
+    // 仁和堂连锁药房在杭州拱墅区开设了第 40 家门店`——整段讲的是药房，
+    // 于是候选给回 pharmacy、store，而 administrative_area 一次都没上来。
+    // 名字被稀释进了段落。
+    //
+    // 所以名字单独发一次：短查询对短标签，正是这个索引擅长的形状；
+    // 画像那一次仍然发，它照顾没有 specific_type 的实体和需要语境才判得出的。
+    // 两次结果取并集——多一次嵌入，换掉一整类漏检。
     let profiles: Vec<String> = subjects.iter().map(profile_of).collect();
-    let per_entity = ontology_index::nearest_for_each(
+    let names: Vec<Option<String>> = subjects.iter().map(name_query_of).collect();
+    let mut queries: Vec<String> = Vec::with_capacity(subjects.len() * 2);
+    // 每个实体在 queries 里占的下标：(画像, 名字)
+    let mut slots: Vec<(usize, Option<usize>)> = Vec::with_capacity(subjects.len());
+    for (p, n) in profiles.iter().zip(&names) {
+        let pi = queries.len();
+        queries.push(p.clone());
+        let ni = n.as_ref().map(|q| {
+            queries.push(q.clone());
+            queries.len() - 1
+        });
+        slots.push((pi, ni));
+    }
+    let hits = ontology_index::nearest_for_each(
         state,
         kb_id,
-        &profiles,
+        &queries,
         // 多取一些再按祖先过滤：过滤在检索之后，所以要留出被滤掉的余量
         CANDIDATES * 4,
         ontology_index::Target::Class,
@@ -126,14 +153,34 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
                 .await?
                 .into_iter()
                 .collect();
-        let mut ranked: Vec<_> = per_entity
-            .get(i)
-            .cloned()
-            .unwrap_or_default()
+        // **两路交替取，不按距离合并。**
+        //
+        // 距离在两路之间不可比：短查询（"医药集团"）产生的距离系统性地小于
+        // 一整段画像，按距离排就等于让名字那一路独占前几名。实测这么做之后
+        // 仁和医药集团、国家药监局、中华医学会全被挤掉了正确候选——
+        // 上一轮它们是自动通过的。跟 A/B 两路那条"取并集不合分数"同一条，
+        // 我在这儿违反了它。
+        //
+        // 交替之后两路各占一半席位，谁的距离数值大小不再影响谁被看见。
+        let (pi, ni) = slots[i];
+        let lists: Vec<Vec<_>> = [Some(pi), ni]
             .into_iter()
-            .filter(|c| c.id != s.coarse_id)
+            .flatten()
+            .map(|idx| hits.get(idx).cloned().unwrap_or_default())
             .collect();
-        // 稳定排序：后代提前，同一档内保持检索给的距离序
+        let mut seen_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        let mut ranked: Vec<utopia_core::models::TypeCandidate> = Vec::new();
+        let longest = lists.iter().map(Vec::len).max().unwrap_or(0);
+        for rank in 0..longest {
+            for list in &lists {
+                let Some(c) = list.get(rank) else { continue };
+                if c.id == s.coarse_id || !seen_ids.insert(c.id) {
+                    continue;
+                }
+                ranked.push(c.clone());
+            }
+        }
+        // 稳定排序：后代提前，同一档内保持距离序
         ranked.sort_by_key(|c| !descendants.contains(&c.id));
         let candidates: Vec<_> = ranked.into_iter().take(CANDIDATES as usize).collect();
         // 第二路：语境相似的已定类实体，按类投票
@@ -181,6 +228,7 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
             entity_id: s.id,
             name: s.canonical_name.clone(),
             coarse: s.coarse_key.clone(),
+            coarse_id: s.coarse_id,
             proposed_type: s.proposed_type.clone(),
             specific_type: s.specific_type.clone(),
             fact_count: s.fact_count,
@@ -199,6 +247,8 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
 /// `label + description`——一个类名对一段类定义，比一串谓词对一段类定义近得多。
 ///
 /// 名字、别名其次；谓词与引文垫后当语境。
+///
+/// 这一段是**语境查询**，跟 [`name_query_of`] 那个短查询各发一次、结果取并集。
 fn profile_of(s: &utopia_store::resolution::TypeCandidateSubject) -> String {
     let mut parts: Vec<String> = Vec::new();
     // 模型自己的说法放最前面，两个都有就都写。它们是**名字**，而检索的目标
@@ -285,6 +335,9 @@ pub struct ReviewItem {
     pub entity_id: Uuid,
     pub name: String,
     pub coarse: String,
+    /// 配对的两端。认可这一条时认可的是**这一对类**，不是这一个实体
+    pub from_type_id: Uuid,
+    pub to_type_id: Uuid,
     pub choice: String,
     pub confidence: f32,
     pub reason: Option<String>,
@@ -330,6 +383,9 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
     // 候选之外的 key（本体里可能根本没有），那种不该落库
     let by_name: std::collections::HashMap<&str, &TypeSuggestion> =
         items.iter().map(|i| (i.name.as_str(), i)).collect();
+    // 人认可过的配对：同一对不再进人工。跨轴是类与类之间的事，
+    // 实体只是碰巧撞上它——第二个城市不该再问一遍
+    let approved = utopia_store::resolution::approved_refinements(&state.pool, kb_id).await?;
     let mut picks: Vec<(Uuid, Uuid)> = Vec::new();
     let mut for_review: Vec<ReviewItem> = Vec::new();
     let mut left_alone: Vec<DeclineNote> = Vec::new();
@@ -346,7 +402,13 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
             continue;
         };
         decided.insert(item.name.as_str());
-        let Some(choice) = v.choice.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+        // **字符串 "null" 也是 null。** 模型时而给 JSON null、时而给这四个字母，
+        // 而当成 key 去查候选必然查不到，于是这条被记成"选了个候选之外的 key"——
+        // 一条编造的拒绝理由盖掉了模型真正给的那条。拒绝的理由是这一步最要紧的
+        // 输出，被自己的解析弄脏比没有更糟
+        let Some(choice) = v.choice.as_deref().map(str::trim).filter(|c| {
+            !c.is_empty() && !c.eq_ignore_ascii_case("null") && !c.eq_ignore_ascii_case("none")
+        }) else {
             left_alone.push(decline(item, v.reason.clone()));
             continue;
         };
@@ -366,7 +428,8 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
         // 不在 = 换了一条分类轴（判成 product 的东西落到了 CreativeWork 底下），
         // 那是重新分类而不是精化，值得一个人看一眼。实测那一轮唯一明确的错
         //（《中国数据智能》→ publication_issue）正是这一类。
-        let crosses_axis = !item.descendants.contains(&target.id);
+        let crosses_axis = !item.descendants.contains(&target.id)
+            && !approved.contains(&(item.coarse_id, target.id));
         if confidence >= AUTO_THRESHOLD && !crosses_axis {
             picks.push((item.entity_id, target.id));
         } else {
@@ -374,6 +437,8 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
                 entity_id: item.entity_id,
                 name: item.name.clone(),
                 coarse: item.coarse.clone(),
+                from_type_id: item.coarse_id,
+                to_type_id: target.id,
                 choice: choice.to_string(),
                 confidence,
                 reason: v.reason.clone(),
@@ -469,4 +534,23 @@ fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
          {{\"verdicts\":[{{\"name\":\"entity name exactly as given\",\"choice\":\"candidate key or null\",\"confidence\":0.0,\"reason\":\"one short clause\"}}]}}",
         blocks.join("\n\n")
     )
+}
+
+/// 只有名字的那个查询：模型自己的说法，别的一概不放。
+///
+/// **分开发的理由是稀释。** 语境查询里这几个词排在最前，但后面整段一样进向量，
+/// 而语境讲的往往是别人：「杭州拱墅区」的引文在讲一家药房，于是候选回来的是
+/// pharmacy、store。短查询对短标签没有这个问题——检索目标（类的 label）
+/// 本来就是名字。
+///
+/// 两个说法都没有就返回 `None`：只剩实体名的查询跟语境查询的开头一模一样，
+/// 再发一次是白花一次嵌入。
+fn name_query_of(s: &utopia_store::resolution::TypeCandidateSubject) -> Option<String> {
+    let parts: Vec<&str> = [s.specific_type.as_deref(), s.proposed_type.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(". "))
 }

@@ -129,6 +129,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(ontology_routes::type_resolution_apply),
         )
         .route(
+            "/kbs/{id}/ontology/type-resolution/approve",
+            post(ontology_routes::approve_refinement),
+        )
+        .route(
             "/kbs/{id}/ontology/type-resolution/{batch_id}",
             axum::routing::delete(ontology_routes::type_resolution_undo),
         )

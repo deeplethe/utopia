@@ -1301,6 +1301,60 @@ pub async fn type_resolution_undo(
     Ok(Json(json!({ "reverted": reverted })))
 }
 
+#[derive(Deserialize)]
+pub struct ApproveRefinementReq {
+    pub from_type_id: Uuid,
+    pub to_type_id: Uuid,
+    /// 这一次要一并改掉的实体。**认可的是类对，改的是实体**——
+    /// 两件事分开，所以调用方可以只认可规则而暂不动任何实体
+    #[serde(default)]
+    pub entity_ids: Vec<Uuid>,
+}
+
+/// 认可一个"粗类 → 细类"的配对，并把随请求带来的实体改过去。
+///
+/// 待人工那一档由"跨没跨分类轴"触发，而实测那条判据测的往往是**种子类跟导入
+/// 词汇表连没连上**，不是风险——schema.org 的 Place 另起 key，于是每个城市都
+/// 要问一遍。配对认可一次就不再问：那是类与类之间的判断，实体只是碰巧撞上它。
+pub async fn approve_refinement(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Json(req): Json<ApproveRefinementReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    utopia_store::resolution::approve_refinement(
+        &state.pool,
+        kb_id,
+        req.from_type_id,
+        req.to_type_id,
+        user.id,
+    )
+    .await?;
+    let picks: Vec<(Uuid, Uuid)> = req
+        .entity_ids
+        .iter()
+        .map(|id| (*id, req.to_type_id))
+        .collect();
+    let (batch, moved) = if picks.is_empty() {
+        (None, 0)
+    } else {
+        let (b, n) = utopia_store::resolution::retype_entities(&state.pool, kb_id, &picks).await?;
+        (Some(b), n)
+    };
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "ontology.refinement_approved",
+        "entity_type",
+        Some(req.to_type_id),
+        json!({ "from": req.from_type_id, "to": req.to_type_id, "moved": moved }),
+    )
+    .await;
+    Ok(Json(json!({ "moved": moved, "batch": batch })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{normalize_name, resolve_map_targets};
