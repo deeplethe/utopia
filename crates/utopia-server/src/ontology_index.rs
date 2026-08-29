@@ -18,6 +18,16 @@ const BATCH: usize = 64;
 /// 把这个库里陈掉的本体向量补齐。没配嵌入模型就直接返回 `Ok(0)`——
 /// 检索是增强，不该拦住没配模型的部署。
 pub async fn refresh(state: &AppState, kb_id: Uuid) -> anyhow::Result<usize> {
+    refresh_scoped(state, kb_id, None).await
+}
+
+/// 只补一半。调用方清楚自己要哪一半时用它——类型消解只用类，
+/// 等关系嵌完是白等。补漏的那一半有后台任务兜着。
+pub async fn refresh_scoped(
+    state: &AppState,
+    kb_id: Uuid,
+    only: Option<utopia_store::ontology::TypeKind>,
+) -> anyhow::Result<usize> {
     let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let Some(settings) = utopia_store::settings::get(&state.pool, kb.workspace_id).await? else {
         return Ok(0);
@@ -29,7 +39,8 @@ pub async fn refresh(state: &AppState, kb_id: Uuid) -> anyhow::Result<usize> {
         return Ok(0);
     };
 
-    let stale = utopia_store::ontology::types_needing_embedding(&state.pool, kb_id, model).await?;
+    let stale =
+        utopia_store::ontology::types_needing_embedding(&state.pool, kb_id, model, only).await?;
     if stale.is_empty() {
         return Ok(0);
     }

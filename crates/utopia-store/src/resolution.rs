@@ -1850,3 +1850,67 @@ pub async fn nearest_typed_entities(
     .fetch_all(pool)
     .await?)
 }
+
+/// 按实体逐个改类，写进同一本账。返回 (批次 id, 改动数)。
+///
+/// 与 [`adopt_proposed_types`] 的区别只在挑选方式：那个按 `proposed_type` 这个
+/// **说法**认领一批，这个由调用方点名——类型消解裁决出来的是"这个实体是那个类"，
+/// 不是"叫这个说法的都是那个类"。
+///
+/// 账本格式一字不差，所以 [`unadopt_types`] 原样能撤。
+pub async fn retype_entities(
+    pool: &PgPool,
+    kb_id: Uuid,
+    picks: &[(Uuid, Uuid)],
+) -> AppResult<(Uuid, u32)> {
+    let batch_id = Uuid::now_v7();
+    let mut moved = 0u32;
+    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for (entity_id, type_id) in picks {
+        let mut tx = pool.begin().await?;
+        // 已经在目标类上的不算改动，也不进账本——撤销时不该把它们推回去。
+        //
+        // **旧类型要从 CTE 里读**：`UPDATE … RETURNING` 给的是新值，而账本要记的
+        // 是改之前那个。直接 RETURNING type_id 拿到的就是刚写进去的那一个，
+        // 撤销时等于把实体"放回"它现在的位置——账本看着满满当当，实际什么都撤不了。
+        // 条件也一并放进 CTE：这一行还在、没被合并、且确实要变
+        let row: Option<(Uuid, String)> = sqlx::query_as(
+            "WITH before AS (
+                 SELECT id, type_id, canonical_name FROM entities
+                 WHERE id = $1 AND kb_id = $3 AND merged_into IS NULL AND type_id <> $2
+             )
+             UPDATE entities e SET type_id = $2, updated_at = now()
+             FROM before
+             WHERE e.id = before.id
+             RETURNING before.type_id, before.canonical_name",
+        )
+        .bind(entity_id)
+        .bind(type_id)
+        .bind(kb_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some((from_type, name)) = row else {
+            tx.rollback().await?;
+            continue;
+        };
+        sqlx::query(
+            "INSERT INTO entity_retypes (batch_id, kb_id, entity_id, from_type_id, to_type_id)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(batch_id)
+        .bind(kb_id)
+        .bind(entity_id)
+        .bind(from_type)
+        .bind(type_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        names.insert(name);
+        moved += 1;
+    }
+    // 消歧后缀的兜底值就是类型标签，改了类就得重算
+    for n in &names {
+        refresh_disambiguators(pool, kb_id, n).await?;
+    }
+    Ok((batch_id, moved))
+}

@@ -811,12 +811,20 @@ fn embed_text(label: &str, description: &str) -> String {
 ///
 /// 判据是**比对当时嵌的原文与模型名**，不是看时间戳：描述改了、模型换了，
 /// 时间戳一样看不出来。这样也不必在每个改描述的写入点挂钩子——漏一个就悄悄烂掉。
+///
+/// `only` 限定只补一半。类型消解只用类，让它等 1633 个关系嵌完是白等六分钟；
+/// 而后台那个补齐任务不限，两边补的是同一批行，谁先跑到都算数。
 pub async fn types_needing_embedding(
     pool: &PgPool,
     kb_id: Uuid,
     model: &str,
+    only: Option<TypeKind>,
 ) -> AppResult<Vec<TypeToEmbed>> {
     let mut out = Vec::new();
+    if only == Some(TypeKind::Relation) {
+        // 类型消解只用类，等 1633 个关系嵌完是白等六分钟
+        return relations_needing_embedding(pool, kb_id, model).await;
+    }
     let ents: Vec<(Uuid, String, String)> = sqlx::query_as(
         "SELECT id, label, coalesce(description, '') FROM entity_types
          WHERE kb_id = $1
@@ -835,6 +843,19 @@ pub async fn types_needing_embedding(
         kind: TypeKind::Entity,
         text: embed_text(&label, &desc),
     }));
+    if only == Some(TypeKind::Entity) {
+        return Ok(out);
+    }
+    out.extend(relations_needing_embedding(pool, kb_id, model).await?);
+    Ok(out)
+}
+
+async fn relations_needing_embedding(
+    pool: &PgPool,
+    kb_id: Uuid,
+    model: &str,
+) -> AppResult<Vec<TypeToEmbed>> {
+    let mut out = Vec::new();
     let rels: Vec<(Uuid, String, String)> = sqlx::query_as(
         "SELECT id, label, coalesce(description, '') FROM relation_types
          WHERE kb_id = $1

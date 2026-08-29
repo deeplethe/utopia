@@ -20,8 +20,8 @@
 //! （schema.org 把软件挂在 CreativeWork 下，而抽取给的粗类是 product）。
 //! 该说不的是裁决那一步，它看得到描述也看得到粗类。
 
-use crate::{ontology_index, AppState};
-use utopia_core::AppResult;
+use crate::{llm_util, ontology_index, AppState};
+use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
 /// 倾倒场类的 key。挂在它下面的实体是"没判出来"，不是"判成了这个"。
@@ -77,7 +77,13 @@ pub struct NeighbourVote {
 /// 独立成一步是有意的——在花力气建裁决之前，先回答"检索到底找不找得到"。
 /// 找不到的话，裁决做得再好也没有用。
 pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggestion>> {
-    let _ = ontology_index::refresh(state, kb_id).await;
+    // 只补类那一半：这一步用不到关系，而一份大本体的关系有一千多条
+    let _ = ontology_index::refresh_scoped(
+        state,
+        kb_id,
+        Some(utopia_store::ontology::TypeKind::Entity),
+    )
+    .await;
     let subjects = utopia_store::resolution::entities_for_type_resolution(
         &state.pool,
         kb_id,
@@ -211,4 +217,208 @@ fn profile_of(s: &utopia_store::resolution::TypeCandidateSubject) -> String {
         parts.push(q.chars().take(120).collect());
     }
     parts.join(". ")
+}
+
+/// 一条裁决结果。
+#[derive(Debug, serde::Deserialize)]
+struct Verdict {
+    /// 实体名，用来对回 preview 里的那一条
+    name: String,
+    /// 选中的类 key；判不出来时为空
+    #[serde(default)]
+    choice: Option<String>,
+    #[serde(default)]
+    confidence: Option<f32>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VerdictReply {
+    #[serde(default)]
+    verdicts: Vec<Verdict>,
+}
+
+/// 高于这条线才自动改类，其余进提案让人点。
+///
+/// 定在 0.85 而不是更低：改类**不进时间轴**（它是 entities 上的一次 UPDATE 加
+/// 一行账），所以错了不会在实体历史里留下一条刺眼的记录，也就没那么容易被
+/// 发现。可撤销不等于会被撤销——没人看见的错不会有人去撤。
+const AUTO_THRESHOLD: f32 = 0.85;
+
+/// 一次消解的结果，给调用方交代清楚三档各去了哪里。
+#[derive(Debug, serde::Serialize)]
+pub struct ResolutionOutcome {
+    pub batch: Option<Uuid>,
+    /// 自动改掉的
+    pub retyped: u32,
+    /// 有候选但置信度不够，留给人的
+    pub for_review: Vec<ReviewItem>,
+    /// 裁决说"都不是"的。**这一档必须报出来**：它跟"没跑"长得一样，
+    /// 而两者的含义完全相反
+    pub left_alone: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ReviewItem {
+    pub entity_id: Uuid,
+    pub name: String,
+    pub coarse: String,
+    pub choice: String,
+    pub confidence: f32,
+    pub reason: Option<String>,
+}
+
+/// 跑一遍类型消解：检索候选 → 裁决 → 三档处置。
+pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutcome> {
+    let items = preview(state, kb_id).await?;
+    let items: Vec<_> = items
+        .into_iter()
+        .filter(|i| !i.candidates.is_empty() || !i.neighbours.is_empty())
+        .collect();
+    if items.is_empty() {
+        return Ok(ResolutionOutcome {
+            batch: None,
+            retyped: 0,
+            for_review: Vec::new(),
+            left_alone: 0,
+        });
+    }
+
+    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
+    let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
+        .await?
+        .ok_or_else(|| AppError::invalid("no_chat_model", "Chat model not configured"))?;
+    let client = llm_util::chat_client(&settings)
+        .ok_or_else(|| AppError::invalid("no_chat_model", "Chat model not configured"))?;
+
+    let reply = client
+        .chat(&[utopia_llm::ChatMessage {
+            role: "user".into(),
+            content: adjudication_prompt(&items),
+        }])
+        .await
+        .map_err(AppError::Other)?;
+    let block = utopia_extract::json_block(&reply).map_err(AppError::Other)?;
+    let parsed: VerdictReply =
+        serde_json::from_str(&block).map_err(|e| AppError::Other(e.into()))?;
+
+    // 名字对回实体，同时把每个实体允许的 key 收起来——模型偶尔会答一个
+    // 候选之外的 key（本体里可能根本没有），那种不该落库
+    let by_name: std::collections::HashMap<&str, &TypeSuggestion> =
+        items.iter().map(|i| (i.name.as_str(), i)).collect();
+    let mut picks: Vec<(Uuid, Uuid)> = Vec::new();
+    let mut for_review: Vec<ReviewItem> = Vec::new();
+    let mut left_alone = 0usize;
+    for v in &parsed.verdicts {
+        let Some(item) = by_name.get(v.name.as_str()) else {
+            continue;
+        };
+        let Some(choice) = v.choice.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
+            left_alone += 1;
+            continue;
+        };
+        // 只认候选清单里的 key。清单之外的答案不是"更好的判断"，
+        // 是模型在凭记忆写一个 schema.org 里的名字——本体里未必有
+        let Some(target) = item.candidates.iter().find(|c| c.key == choice) else {
+            left_alone += 1;
+            continue;
+        };
+        let confidence = v.confidence.unwrap_or(0.0);
+        if confidence >= AUTO_THRESHOLD {
+            picks.push((item.entity_id, target.id));
+        } else {
+            for_review.push(ReviewItem {
+                entity_id: item.entity_id,
+                name: item.name.clone(),
+                coarse: item.coarse.clone(),
+                choice: choice.to_string(),
+                confidence,
+                reason: v.reason.clone(),
+            });
+        }
+    }
+    // 裁决压根没提到的实体也算"没动"，否则三档加起来对不上总数
+    left_alone += items.len().saturating_sub(
+        parsed
+            .verdicts
+            .iter()
+            .filter(|v| by_name.contains_key(v.name.as_str()))
+            .count(),
+    );
+
+    let (batch, retyped) = if picks.is_empty() {
+        (None, 0)
+    } else {
+        let (b, n) = utopia_store::resolution::retype_entities(&state.pool, kb_id, &picks).await?;
+        (Some(b), n)
+    };
+    Ok(ResolutionOutcome {
+        batch,
+        retyped,
+        for_review,
+        left_alone,
+    })
+}
+
+/// 裁决提示词。
+///
+/// **"都不是"必须是个体面的答案。** 这跟 `related_to` 那个逃生舱正好相反：
+/// 那里兜底选项销毁信息，所以撤掉；这里保持粗类什么也不损失——实体照样在图上、
+/// 事实照样挂着，只是没变得更具体。硬逼模型从候选里挑一个，换来的是一批
+/// 自信的错误，而且它们不进时间轴、不容易被看见。
+fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
+    let mut blocks = Vec::new();
+    for it in items {
+        let mut lines = vec![format!(
+            "### {}\ncurrently: {}\nthe extractor called it: {}\nseen as: {}",
+            it.name,
+            it.coarse,
+            it.specific_type.as_deref().unwrap_or("-"),
+            it.profile.chars().take(200).collect::<String>()
+        )];
+        lines.push("candidates:".into());
+        for c in &it.candidates {
+            let d = c.description.trim();
+            lines.push(if d.is_empty() {
+                format!("- {} ({})", c.key, c.label)
+            } else {
+                format!("- {}: {d}", c.key)
+            });
+        }
+        if !it.neighbours.is_empty() {
+            let n: Vec<String> = it
+                .neighbours
+                .iter()
+                .take(3)
+                .map(|n| format!("{} (like {})", n.key, n.examples.join(", ")))
+                .collect();
+            lines.push(format!("similar entities are typed: {}", n.join("; ")));
+        }
+        blocks.push(lines.join("\n"));
+    }
+    format!(
+        "You are refining entity types in a knowledge graph. Each entity below already has a \
+         broad type and a list of candidate narrower types retrieved from the ontology.\n\
+         \n\
+         For each entity choose ONE candidate key, or null.\n\
+         \n\
+         Choose null whenever any of these hold, and expect null to be a common answer:\n\
+         - no candidate actually means the thing (the list is retrieved by similarity, so it \
+           usually contains near-misses and sometimes contains nothing right at all);\n\
+         - the candidate is not narrower than what it already has;\n\
+         - the entity is not a thing of that kind at all — a quantity, a capability, a phrase.\n\
+         Keeping the broad type loses nothing: the entity and its facts stay exactly as they \
+         are, merely less specific. Picking a wrong narrow type is worse than picking none, \
+         because it reads as a decided fact.\n\
+         \n\
+         confidence is your own 0~1: use above 0.85 only when the candidate's definition \
+         plainly describes this entity, not when it is merely the closest of a weak list.\n\
+         \n\
+         {}\n\
+         \n\
+         Output exactly one JSON object:\n\
+         {{\"verdicts\":[{{\"name\":\"entity name exactly as given\",\"choice\":\"candidate key or null\",\"confidence\":0.0,\"reason\":\"one short clause\"}}]}}",
+        blocks.join("\n\n")
+    )
 }

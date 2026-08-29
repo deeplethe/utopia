@@ -1254,6 +1254,53 @@ pub async fn type_resolution_preview(
     Ok(Json(json!({ "items": items })))
 }
 
+/// 跑一遍类型消解并落库：检索候选 → 裁决 → 三档处置。
+///
+/// 与 preview 分开是本仓库既有的形状（本体导入也是先看计划再落库）。这里还多
+/// 一层理由：改类**不进时间轴**，所以它不像事实改写那样在实体历史里自己显形，
+/// 先看一眼再动是唯一能看见它的时机。
+pub async fn type_resolution_apply(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let outcome = crate::type_resolution::resolve(&state, kb_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "ontology.types_resolved",
+        "knowledge_base",
+        Some(kb_id),
+        json!({ "retyped": outcome.retyped, "for_review": outcome.for_review.len(),
+                "left_alone": outcome.left_alone, "batch": outcome.batch }),
+    )
+    .await;
+    Ok(Json(json!(outcome)))
+}
+
+/// 撤销一次类型消解：把那一批实体放回原来的类。
+pub async fn type_resolution_undo(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, batch_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let reverted = utopia_store::resolution::unadopt_types(&state.pool, kb_id, batch_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "ontology.types_resolution_reverted",
+        "knowledge_base",
+        Some(kb_id),
+        json!({ "batch": batch_id, "reverted": reverted }),
+    )
+    .await;
+    Ok(Json(json!({ "reverted": reverted })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{normalize_name, resolve_map_targets};

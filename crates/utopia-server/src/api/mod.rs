@@ -125,6 +125,14 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(ontology_routes::type_resolution_preview),
         )
         .route(
+            "/kbs/{id}/ontology/type-resolution",
+            post(ontology_routes::type_resolution_apply),
+        )
+        .route(
+            "/kbs/{id}/ontology/type-resolution/{batch_id}",
+            axum::routing::delete(ontology_routes::type_resolution_undo),
+        )
+        .route(
             "/kbs/{id}/ontology/entity-types",
             post(ontology_routes::create_entity_type),
         )
