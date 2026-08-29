@@ -119,6 +119,7 @@ export const zh: Strings = {
     markAllRead: "全部标为已读",
     searchPlaceholder: "搜索来源、知识库、报错",
     noMatch: "没有匹配的",
+    andMore: (n: number) => `还有 ${n} 条`,
     system: "系统",
     kinds: {
       "source.sync_failed": {

@@ -134,6 +134,7 @@ export const en = {
     // 所以别让人以为输入 "sync failed" 会有结果
     searchPlaceholder: "Search sources, knowledge bases, errors",
     noMatch: "Nothing matches",
+    andMore: (n: number) => `and ${n} more`,
     system: "System",
     // kind → 一句说清出了什么事。第二句说该做什么——这才是告警比日志多出来的东西。
     // **一条告警就是一次故障**，所以标题里没有数量
