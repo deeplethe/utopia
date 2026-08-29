@@ -119,6 +119,26 @@ fn stems(words: &[String]) -> Vec<String> {
     words.iter().map(|w| inflect_base(w)).collect()
 }
 
+/// 一个说法的**归并键**：同一个关系的不同时态落到同一个键上。
+///
+/// 给本体采纳那条路用的。抽取时说法要跟**已有**关系比对（上面那套三段匹配），
+/// 采纳时要做的是另一件事——把彼此之间是同一个意思的说法先并起来再算票数。
+///
+/// 不并就要吃亏，而且吃得见：ai-timeline 跑完后还压在兜底谓词上的说法里，
+/// `sued` 与 `sues` 是两条（各 11 和 5）、`integrated_with` 与 `integrates_with`
+/// 是两条（各 5）、`announced`/`announces`、`supported`/`supports`、
+/// `developed`/`develops` 都是。各自算票，各自够不着「出现在 ≥2 篇」的门槛；
+/// 并起来之后够格的候选从 70 组涨到 85 组、281 条涨到 355 条。
+///
+/// **介词不并**：`integrated_with` 与 `integrated_into` 保持两组。`works_at` 与
+/// `works_in` 确实可能是两回事，这里宁可漏。
+///
+/// **`_by` 也不并**（暂时）：`founded_by` 与 `founded` 是同一条边的两个方向，
+/// 并起来必须把主宾对调，而采纳路径现在从旧行原样复制主语。留给下一步。
+pub fn merge_key(form: &str) -> Vec<String> {
+    stems(&words(form))
+}
+
 /// 撞车即作废：同一个形式落到两个不同的关系上，选谁都是猜。
 fn insert<K: std::hash::Hash + Eq>(map: &mut HashMap<K, Option<Uuid>>, key: K, id: Uuid) {
     map.entry(key)

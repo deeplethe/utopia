@@ -1378,6 +1378,41 @@ pub async fn proposed_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Pr
     .await?)
 }
 
+/// 每个待认领说法出现在**哪些文档**里。
+///
+/// [`proposed_predicates`] 已经给了 `doc_count`，但采纳那条路要先按屈折基把说法
+/// 归并（`sued` 与 `sues` 是一个关系），归并之后的篇数是**并集**而不是相加——
+/// 同一篇文档完全可能两种写法都用过，相加就成了重复计数，一篇文档能把一个说法
+/// 顶过「≥2 篇」的门槛。
+///
+/// **不筛兜底谓词。** 这条查询与 [`proposed_predicates`] 回答的是两个问题：
+/// 那条问「还有哪些说法等着被采纳」，看的是积压；这条问「这个说法有多普遍」，
+/// 看的是全量证据，条件与它内部那个 `spread` CTE 一致。
+///
+/// 第一版照抄了 `rt.key = 'related_to'`，理由写的是「两处条件要一致」——错的。
+/// 那样数出来的还是残渣：说法一旦被采纳、被谓词匹配接住、或被修正作废，
+/// 它的行就离开积压，篇数随之下降。一篇一篇往里灌的库因此永远攒不够两篇。
+/// 测试当场抓住了（两篇里只回来一篇）。
+pub async fn proposed_predicate_documents(
+    pool: &PgPool,
+    kb_id: Uuid,
+) -> AppResult<Vec<(String, Uuid)>> {
+    Ok(sqlx::query_as(
+        "SELECT DISTINCT fe.proposed_predicate, fe.document_id
+         FROM fact_evidence fe
+         JOIN facts f ON f.id = fe.fact_id
+         WHERE f.kb_id = $1
+           AND fe.proposed_predicate IS NOT NULL
+           AND fe.document_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM ontology_misses m
+                           WHERE m.kb_id = $1 AND m.kind = 'relation_type'
+                             AND m.key = fe.proposed_predicate AND m.dismissed_at IS NOT NULL)",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?)
+}
+
 /// 把由 `forms` 降级而来的 related_to 事实改写到 `predicate_id`。
 /// 返回 (批次 id, 改写条数)——批次 id 是撤销的把手。
 ///

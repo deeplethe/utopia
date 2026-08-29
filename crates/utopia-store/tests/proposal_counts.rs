@@ -160,3 +160,34 @@ async fn spread_counts_all_evidence_while_rewrite_count_stays_on_the_backlog() -
     assert_eq!(row.doc_count, 2, "doc_count 应该数全量证据");
     Ok(())
 }
+
+/// 采纳那条路要按屈折基归并，归并后的篇数得算**并集**——所以它不看
+/// `doc_count`，改问「这个说法出现在哪些文档里」。那是另一条 SQL，
+/// 于是也得另有一个真跑一遍的测试：它一度把 `'relation_type'` 的引号
+/// 丢了（`m.kind = relation_type`），clippy 全绿，任务在运行时才炸。
+#[tokio::test]
+async fn document_ids_come_back_for_each_wording() -> anyhow::Result<()> {
+    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
+        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let kb = seed(&pool).await?;
+
+    let got = utopia_store::graph::proposed_predicate_documents(&pool, kb).await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+
+    let rows = got?;
+    let docs: std::collections::HashSet<_> = rows
+        .iter()
+        .filter(|(form, _)| form == "acquired")
+        .map(|(_, doc)| *doc)
+        .collect();
+    // 两篇文档都用过这个说法，尽管只有一篇那条还压在兜底谓词上
+    assert_eq!(docs.len(), 2, "两篇都该回来，跟事实落在哪个谓词上无关");
+    Ok(())
+}

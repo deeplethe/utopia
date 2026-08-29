@@ -17,9 +17,11 @@
 //! 唯独 `functional` 永不自动，开关开着也不行：它驱动时态引擎自动闭合事实、
 //! 生成冲突，等发现时那些闭合本身已是一串 supersede 链——不属于"错了很便宜"那类。
 
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::api::ontology_routes;
+use crate::predicate_match::merge_key;
 use crate::state::AppState;
 
 /// 少于这么多个够格的信号（谓词 + 类型）就不折腾——凑不出像样的提案，
@@ -29,6 +31,67 @@ const MIN_SIGNALS: usize = 3;
 /// 不是这个组织的词汇**——而本体会反馈进抽取提示词，一次偶然会变成长期指令。
 /// 副作用正好：只有一篇文档时什么都够不着门槛，于是什么也不做，下一篇再试。
 const MIN_DOCS: i64 = 2;
+
+/// 一组按屈折基归并的说法——采纳后它们是同一个关系。
+struct RelationGroup {
+    /// 规范 key：组里事实最多的那个说法。**不问模型取名**——组里每个说法都是
+    /// 原文真实出现过的措辞，挑最常见的那个比编一个新词更贴语料
+    key: String,
+    /// 组里全部说法，采纳时一并改写
+    forms: Vec<String>,
+    facts: i64,
+    docs: usize,
+}
+
+/// 按票数决定采纳哪些关系。**不调模型。**
+///
+/// 三步：把说法按屈折基归并（`sued` 与 `sues` 是同一个关系）、算文档并集、过门槛。
+///
+/// 并集不能用相加：同一篇文档完全可能两种写法都用过，相加会让一篇文档把一个说法
+/// 顶过「≥2 篇」。所以要 `proposed_predicate_documents` 拿到真正的文档 id。
+///
+/// 输出**排过序**——这条路的价值有一半在于确定性，而 HashMap 的遍历顺序不是。
+async fn counted_relation_groups(
+    state: &AppState,
+    kb_id: Uuid,
+) -> anyhow::Result<Vec<RelationGroup>> {
+    let forms = utopia_store::graph::proposed_predicates(&state.pool, kb_id).await?;
+    let pairs = utopia_store::graph::proposed_predicate_documents(&state.pool, kb_id).await?;
+
+    let mut docs_of: HashMap<String, HashSet<Uuid>> = HashMap::new();
+    for (form, doc) in pairs {
+        docs_of.entry(form).or_default().insert(doc);
+    }
+
+    let mut grouped: HashMap<Vec<String>, Vec<utopia_core::models::ProposedPredicate>> =
+        HashMap::new();
+    for f in forms {
+        grouped.entry(merge_key(&f.form)).or_default().push(f);
+    }
+
+    let mut out = Vec::new();
+    for (_, mut members) in grouped {
+        // 事实多的在前，同数按字典序——规范 key 的选取不能依赖 HashMap 顺序
+        members.sort_by(|a, b| b.fact_count.cmp(&a.fact_count).then(a.form.cmp(&b.form)));
+        let mut docs: HashSet<Uuid> = HashSet::new();
+        for m in &members {
+            if let Some(d) = docs_of.get(&m.form) {
+                docs.extend(d);
+            }
+        }
+        if (docs.len() as i64) < MIN_DOCS {
+            continue;
+        }
+        out.push(RelationGroup {
+            key: members[0].form.clone(),
+            facts: members.iter().map(|m| m.fact_count).sum(),
+            forms: members.into_iter().map(|m| m.form).collect(),
+            docs: docs.len(),
+        });
+    }
+    out.sort_by(|a, b| b.facts.cmp(&a.facts).then(a.key.cmp(&b.key)));
+    Ok(out)
+}
 
 pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
     // 并发的两个抽取任务可能都看到"空闲"而各入队一次；开关也可能刚被关掉
@@ -54,16 +117,20 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         return Ok(());
     }
 
-    // 自动那条路没有人类调用者，reason 也不会被展示（lastAutoExtension 不回它），
-    // 所以 reason 的语言无所谓——description 的语言才要紧，那个跟库走
-    // **门槛要传下去**，不能只用来数上面那个 len()。不传的话 build_proposals
-    // 会重查一遍全量，把单篇出现的一次性措辞一并交给模型——门槛算了却没生效
+    // **关系不问模型，按票数采纳。**
+    //
+    // 从前这一步把候选交给 LLM，让它回答"哪些值得建成关系"。那个问题数据已经
+    // 答了——`runs_on` 出现在 8 篇文档、13 条事实里，不是判断题。而模型实测答错：
+    // 它漏掉了 `runs_on`，却采纳了只在一篇里出现过的 `pledged_capital`。
+    //
+    // 换成计数还有一个副作用是关键的：**这一段变成确定性的**。同一份语料重跑得到
+    // 同一个本体，测量台第一次能对它做对照。之前 B 与 B3 两组差 3 个百分点，
+    // 到底是修复起了作用还是跑次方差，答不上来，就因为中间夹着一次 LLM 调用。
+    //
+    // 模型没有被撤走，只是换了个问题：见下方的同义归并——"这批新关系里哪些跟
+    // 已有的是同一个意思"。那个才需要理解意义，且答错了 unadopt 一键回退。
+    let counted = counted_relation_groups(state, kb_id).await?;
     let proposals = ontology_routes::build_proposals(state, kb_id, "en", MIN_DOCS).await?;
-    let relations = proposals
-        .get("relation_types")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
     let classes = proposals
         .get("entity_types")
         .and_then(|v| v.as_array())
@@ -136,35 +203,26 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         }
     }
 
-    for p in &relations {
-        let (Some(key), Some(label)) = (str_of(p, "key"), str_of(p, "label")) else {
-            continue;
-        };
-        let forms: Vec<String> = p
-            .get("forms")
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|s| s.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let temporal = str_of(p, "temporal").unwrap_or("state");
+    // 关系：按票数采纳，一组一个关系。
+    //
+    // key 与 label 都来自语料自己的措辞，description 留空——它进抽取提示词当语义
+    // 指引，而这里没有可信的来源可写。编一句反而是往提示词里塞一个没人负责的断言，
+    // 而 key 本身（`runs_on`、`available_on`）已经说清楚了。
+    //
+    // temporal 一律 state：它只在 functional / inverse_functional 为真时驱动时态
+    // 引擎，而这条路**永不**自动设那两位（见文件头），所以此处它没有行为后果。
+    for g in &counted {
+        let label = g.key.replace('_', " ");
         let predicate_id = match utopia_store::ontology::create_relation_type(
             &state.pool,
             kb_id,
-            key,
-            label,
-            temporal,
-            // 建议方不替时态引擎做决定，见文件头
+            &g.key,
+            &label,
+            "state",
             false,
             false,
-            // 描述进抽取提示词，reason 只是给人看的理由——喂错了这个类就成新的倾倒场
-            str_of(p, "description")
-                .or_else(|| str_of(p, "reason"))
-                .unwrap_or(""),
+            "",
             "relation",
-            // 提案与冷启动只建关系，不声明 domain/range —— 留空 = 不限主宾类型
             &[],
             &[],
             None,
@@ -174,28 +232,29 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         {
             Ok(id) => id,
             Err(e) => {
-                tracing::warn!(%kb_id, key, error = %e, "冷启动建关系失败");
+                tracing::warn!(%kb_id, key = %g.key, error = %e, "冷启动建关系失败");
                 continue;
             }
         };
-        added_relations.push(key.to_string());
-        if !forms.is_empty() {
-            let (batch, moved) = utopia_store::graph::adopt_proposed_predicates(
-                &state.pool,
-                kb_id,
-                predicate_id,
-                &forms,
-            )
-            .await?;
-            moved_total += moved;
-            if moved > 0 {
-                batches.push(batch);
-            }
-            for form in &forms {
-                let _ =
-                    utopia_store::ontology::clear_miss(&state.pool, kb_id, "relation_type", form)
-                        .await;
-            }
+        added_relations.push(g.key.clone());
+        let (batch, moved) = utopia_store::graph::adopt_proposed_predicates(
+            &state.pool,
+            kb_id,
+            predicate_id,
+            &g.forms,
+        )
+        .await?;
+        tracing::info!(
+            %kb_id, key = %g.key, forms = ?g.forms, docs = g.docs, facts = g.facts, moved,
+            "按票数采纳关系"
+        );
+        moved_total += moved;
+        if moved > 0 {
+            batches.push(batch);
+        }
+        for form in &g.forms {
+            let _ =
+                utopia_store::ontology::clear_miss(&state.pool, kb_id, "relation_type", form).await;
         }
     }
 
