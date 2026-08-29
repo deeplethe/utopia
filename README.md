@@ -2,7 +2,11 @@
 
 <img src="assets/banner.webp" alt="Utopia" width="820">
 
-**The world's first open-source enterprise world model.**
+</div>
+
+# Utopia
+
+<div align="center">
 
 [Philosophy](#philosophy) · [Quick start](#quick-start) · [Features](#features) · [Roadmap](#roadmap)
 
@@ -16,6 +20,8 @@
 [![中文](https://img.shields.io/badge/LANG-%E4%B8%AD%E6%96%87-5C2A2A?style=flat-square&labelColor=161B22)](README.zh-CN.md)
 
 </div>
+
+**The enterprise world model built by [DeepLethe](https://deeplethe.com).** It's the world's first substrate for knowledge engineering that learns passively and governs itself — it puts time and ontology in the base layer, revises that ontology as new material arrives, remembers how its own understanding changed, settles conflicts by axiom, and replays the world as it was understood at any past moment. Run it on your corporate network, on a cloud server, or on the laptop in front of you — as a company's knowledge foundation, as the decision core your agents can trust, or as a chronicle of your own.
 
 ---
 

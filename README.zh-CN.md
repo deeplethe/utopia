@@ -2,7 +2,11 @@
 
 <img src="assets/banner.webp" alt="Utopia" width="820">
 
-**人类首个开源的企业世界模型。**
+</div>
+
+# Utopia
+
+<div align="center">
 
 [世界观](#项目的世界观) · [快速开始](#快速开始) · [功能](#功能) · [路线图](#路线图)
 
@@ -16,6 +20,8 @@
 [![English](https://img.shields.io/badge/LANG-ENGLISH-5C2A2A?style=flat-square&labelColor=161B22)](README.md)
 
 </div>
+
+**由 [DeepLethe 深纪元](https://deeplethe.com) 构建的企业世界模型。** 它是人类首个被动学习、自我治理的知识工程基座——把时态与本体一起做进底层，语料涌入时迭代本体定义，记忆认知变化的历程，依据公理解决冲突，回溯任意时刻的世界观。可以跑在企业内网里，可以跑在云服务器上，也可以就跑在你的笔记本上——拿它建企业的知识基座、智能体的可信决策中枢，或者属于你个人的史诗。
 
 ---
 
