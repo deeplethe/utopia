@@ -6,10 +6,11 @@ web/dist/
 *.log
 .DS_Store
 /data
-# docs/ 是本地草稿区；只有决策记录入库。
+# docs/ 是本地草稿区；只有决策记录与流水线参考入库。
 # 必须写成 /docs/* 而非 /docs——父目录被忽略时，子路径无法用 ! 重新纳入。
 /docs/*
 !/docs/decisions/
+!/docs/pipeline.md
 .claude/
 
 # 测量台与临时脚本的运行产物。**按前缀整段忽略**：
