@@ -18,6 +18,14 @@ pub struct ExtractedEntity {
     pub name: String,
     #[serde(rename = "type")]
     pub type_key: String,
+    /// 模型自己的说法：它认为这最具体是个什么。**不校验、不入本体**。
+    ///
+    /// 存在的理由是清单里总有个"差不多"的：本体有 product，模型觉得够用就选了，
+    /// 心里那个"向量数据库软件"就此丢失。实测 17 个实体的 proposed_type
+    /// 全是空的，正是这个原因——而事后消解最需要的恰是这个名字：
+    /// 短名字对短标签，比拿一段中文散文去匹配 "A software application." 近得多。
+    #[serde(default)]
+    pub specific_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,7 +171,7 @@ pub fn build_messages(
          {attr_section}\
          \n\
          Output format:\n\
-         {{\"entities\":[{{\"name\":\"entity name\",\"type\":\"type key\"}}],\n\
+         {{\"entities\":[{{\"name\":\"entity name\",\"type\":\"type key\",\"specific_type\":\"what you would call it\"}}],\n\
           \"facts\":[{{\"subject\":\"subject entity name\",\"predicate\":\"relation key\",\"object\":\"object entity name\",\n\
                      \"valid_from\":\"2023-01\",\"valid_to\":null,\"confidence\":0.9,\"quote\":\"verbatim supporting quote\"}}]}}\n\
          \n\
@@ -186,7 +194,12 @@ pub fn build_messages(
          9. The same holds for entity types: if none of the listed types fits, write the type \
             the text implies, in snake_case (e.g. \"model\", \"technology\"). Do not fall back \
             to a broad listed type such as \"concept\" merely because nothing specific matched \
-            — that hides the gap instead of reporting it.\
+            — that hides the gap instead of reporting it.\n\
+         10. specific_type is required on every entity and is never checked against the list. \
+            Name the most specific kind the thing is, in the words you would use for it. Write \
+            it even when \"type\" already fits, and make it narrower than \"type\" wherever the \
+            text supports it — type \"product\", specific_type \"vector database software\". \
+            Repeat the listed type only when the text genuinely says nothing more precise.\
          {attr_rules}"
     );
 
@@ -617,5 +630,21 @@ mod tests {
         let e = parse_response(raw).unwrap();
         assert_eq!(e.entities.len(), 1);
         assert_eq!(e.entities[0].type_key, "person");
+    }
+
+    /// specific_type 在骨架里、也在规则里，且两处都说"永远要填"。
+    ///
+    /// 只写进骨架是不够的：**规则与骨架冲突时骨架赢**（语言那条就栽过一次）。
+    /// 这里两边一致，所以要一起钉住。
+    #[test]
+    fn every_entity_is_asked_for_its_own_words() {
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        let sys = &msgs[0].content;
+        assert!(sys.contains("\"specific_type\":\"what you would call it\""));
+        assert!(sys.contains("required on every entity"));
+        // 关键的一句：不校验。校验它就等于又造了一个词表
+        assert!(sys.contains("never checked against the list"));
+        // 与 type 的关系必须说清楚，否则模型会把粗类抄一遍
+        assert!(sys.contains("narrower than"));
     }
 }

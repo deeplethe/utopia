@@ -1681,9 +1681,14 @@ pub struct TypeCandidateSubject {
     /// 现在挂着的粗类。**它是地板**：精化只往它的后代走，够不着就原地不动
     pub coarse_key: String,
     pub coarse_id: Uuid,
-    /// 抽取时模型自己报的类型名。词表里没有才会留在这儿——
-    /// 也正因如此它是最强的信号：不是"读懂这是什么"，是"本体里哪个类叫这个"
+    /// 抽取时模型自己报的类型名，**词表里没有**才会留在这儿
     pub proposed_type: Option<String>,
+    /// 模型对它自己的说法，每个实体都有。
+    ///
+    /// 这是最强的信号，因为它把任务从"读懂这是什么"换回"本体里哪个类叫这个"
+    /// ——短名字对短标签。实测的失败正出在另一头：拿一段中文画像去匹配
+    /// schema.org 的 "A software application."，两边形状根本不对等
+    pub specific_type: Option<String>,
     /// 它参与的谓词，连着对方的名字（`produces 深蓝`、`leads by 张伟`）。
     /// **跨文档累积**，这正是抽取当场没有的东西
     pub roles: Vec<String>,
@@ -1708,7 +1713,7 @@ pub async fn entities_for_type_resolution(
 ) -> AppResult<Vec<TypeCandidateSubject>> {
     Ok(sqlx::query_as(
         "SELECT e.id, e.canonical_name, e.aliases, t.key AS coarse_key, t.id AS coarse_id,
-                e.proposed_type,
+                e.proposed_type, e.specific_type,
                 -- 对方写**名字**，不写它的类型 key。
                 -- 写 key 是自毁：查询里出现 organization / product / event 这些词，
                 -- 而检索的目标正是这些类自己，于是候选就是画像里那几个词。
@@ -1744,7 +1749,7 @@ pub async fn entities_for_type_resolution(
            -- **以及粗类本身还有子类的**。第三种是主力：抽取只认基类之后，
            -- organization 下面挂着 167 个更具体的类，那才是导进来的本体
            -- 唯一的用武之地。只看前两种就把它整个漏掉了
-           AND (t.key = $2 OR e.proposed_type IS NOT NULL
+           AND (t.key = $2 OR e.proposed_type IS NOT NULL OR e.specific_type IS NOT NULL
                 OR EXISTS (SELECT 1 FROM entity_type_parents p WHERE p.parent_id = t.id))
          ORDER BY fact_count DESC, e.created_at
          LIMIT $3",
@@ -1774,4 +1779,74 @@ pub async fn descendants_of(pool: &PgPool, kb_id: Uuid, root: Uuid) -> AppResult
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// 记下模型对这个实体自己的说法。
+///
+/// **后写者不覆盖先写者**（`IS NULL` 才写），与 `set_proposed_type` 同一条：
+/// 同一个实体会被多个分块提到，第一次的说法通常出自最完整的那句话，
+/// 后面的分块往往只是顺带一提。
+pub async fn set_specific_type(pool: &PgPool, entity_id: Uuid, value: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE entities SET specific_type = left($2, 80)
+         WHERE id = $1 AND specific_type IS NULL",
+    )
+    .bind(entity_id)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 跟这个实体最像的**已定类**实体，连同它们的类。
+///
+/// 类型消解的第二个候选来源。第一个是拿画像去搜类的描述，它的软肋实测很清楚：
+/// 中文画像对 schema.org 的 "A software application."，两边形状根本不对等。
+/// 这一条绕开了那道坎——**名字对名字、同语言**，而且库越大越准：
+/// 「深蓝向量数据库」像「Milvus」，而 Milvus 已经标成 software_application。
+///
+/// 比的是双方的 `profile_embedding`（出现语境的滑动平均），**同一种向量对同一种
+/// 向量**，不是拿文本画像去比语境向量。代价是零——这个向量实体消解本来就在维护。
+///
+/// 已知弱点：只出现在一篇文档里的实体，语境向量就是那一块的向量，同文档的实体
+/// 会互相成为近邻。调用方要看得到 `same_document`，别把它当成类型证据。
+pub async fn nearest_typed_entities(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    dumping_ground: &str,
+    limit: i64,
+) -> AppResult<Vec<(String, Uuid, String, f64, bool)>> {
+    Ok(sqlx::query_as(
+        "WITH me AS (
+             SELECT profile_embedding AS v FROM entities WHERE id = $2 AND kb_id = $1
+         ),
+         my_docs AS (
+             SELECT DISTINCT ev.document_id FROM fact_evidence ev
+             JOIN facts f ON f.id = ev.fact_id
+             WHERE f.kb_id = $1 AND (f.subject_id = $2 OR f.object_id = $2)
+         )
+         SELECT e.canonical_name, t.id, t.key,
+                (e.profile_embedding <=> (SELECT v FROM me))::float8 AS distance,
+                EXISTS (SELECT 1 FROM fact_evidence ev2
+                        JOIN facts f2 ON f2.id = ev2.fact_id
+                        WHERE f2.kb_id = $1 AND (f2.subject_id = e.id OR f2.object_id = e.id)
+                          AND ev2.document_id IN (SELECT document_id FROM my_docs))
+                AS same_document
+         FROM entities e
+         JOIN entity_types t ON t.id = e.type_id
+         WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
+           AND e.profile_embedding IS NOT NULL
+           AND (SELECT v FROM me) IS NOT NULL
+           -- 倾倒场类不是答案，拿它当邻居的证据只会把没判出来的传染开
+           AND t.key <> $3
+         ORDER BY e.profile_embedding <=> (SELECT v FROM me)
+         LIMIT $4",
+    )
+    .bind(kb_id)
+    .bind(entity_id)
+    .bind(dumping_ground)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
 }

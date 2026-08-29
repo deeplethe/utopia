@@ -324,6 +324,18 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             if let Some(p) = proposed {
                 let _ = utopia_store::resolution::set_proposed_type(&state.pool, id, p).await;
             }
+            // 模型自己的说法。**跟 proposed_type 分开存**：那一列的含义是
+            // "本体里没有"，增长回路靠它的稀有性设门槛；这一列每个实体都有。
+            // 与粗类同名的不记——那不是更具体的说法，只是把清单抄了一遍
+            if let Some(st) = e
+                .specific_type
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .filter(|s| !s.eq_ignore_ascii_case(&e.type_key))
+            {
+                let _ = utopia_store::resolution::set_specific_type(&state.pool, id, st).await;
+            }
             // 只记模型自己声明过类型的：主宾兜底那条路一律按 concept 消解，
             // 把一个猜出来的类型放进清单等于让后续分块照着猜的抄
             if !doc_entities.iter().any(|(eid, _, _)| *eid == id) {
