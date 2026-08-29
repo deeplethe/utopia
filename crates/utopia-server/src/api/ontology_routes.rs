@@ -350,7 +350,9 @@ pub async fn suggest(
         .and_then(|Json(b)| b.locale)
         .filter(|l| matches!(l.as_str(), "en" | "zh"))
         .unwrap_or_else(|| "en".into());
-    Ok(Json(build_proposals(&state, kb_id, &locale).await?))
+    // 人工那条路 min_docs = 0：面板上「出现在 1 篇」这个数字是显示给人看的，
+    // 他自己判断得了。替他滤掉，只是让他少一条信息
+    Ok(Json(build_proposals(&state, kb_id, &locale, 0).await?))
 }
 
 /// 生成本体扩展提案。人工点 Suggest 与冷启动自动扩本体走同一条路——
@@ -361,10 +363,22 @@ pub async fn suggest(
 /// 开大了只会让它在一堆勉强相关的条目里硬选一个映射过去。
 const CANDIDATES_PER_PROBE: i64 = 5;
 
+/// `min_docs`：**只把出现在这么多篇文档里的说法交给模型**。0 = 全给。
+///
+/// 这一位存在的理由是它曾经不存在。`ProposedPredicate.doc_count` 的注释写着
+/// 「自动扩展据此设门槛，人工提案只作参考不拦」，但接线没接完：
+/// `bootstrap_ontology` 把门槛算出来只用于 `forms.len()` 判断值不值得跑一次
+/// LLM，随后调这个函数时只传 kb_id，于是这里重查一遍**没过滤的**全量。
+///
+/// 实测后果（ai-timeline，348 块）：交给模型 526 个说法，其中 456 个只在一篇
+/// 里出现过——**86.7% 是噪声**。模型从这堆里只挑出 9 个，`runs_on`（8 篇都有）
+/// 和 `founded_by`（4 篇）没被挑中，275 条事实继续压在兜底谓词上。反方向也漏：
+/// 5 个单篇说法被采纳了，其中两个还建成了新属性，门槛形同虚设。
 pub async fn build_proposals(
     state: &AppState,
     kb_id: Uuid,
     reason_lang: &str,
+    min_docs: i64,
 ) -> Result<serde_json::Value, AppError> {
     let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
@@ -373,14 +387,25 @@ pub async fn build_proposals(
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| AppError::invalid("no_chat_model", "Chat model not configured"))?;
 
-    let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
+    let mut misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
     // 表层谓词比 misses 多一样东西：它连着具体事实，所以提案能承诺"改写 N 条"。
     //
     // **两条线严格分开**，按宾语是实体还是字面值：`收购` 要的是一条关系，
     // `founding_date = "2015"` 要的是一个属性。混起来的后果具体——后者会被
     // 提成关系，于是长出一条指向「2015」这个假实体的边
-    let forms = utopia_store::graph::proposed_predicates(&state.pool, kb_id).await?;
-    let value_forms = utopia_store::graph::proposed_attributes(&state.pool, kb_id).await?;
+    let mut forms = utopia_store::graph::proposed_predicates(&state.pool, kb_id).await?;
+    let mut value_forms = utopia_store::graph::proposed_attributes(&state.pool, kb_id).await?;
+    if min_docs > 0 {
+        forms.retain(|f| f.doc_count >= min_docs);
+        value_forms.retain(|f| f.doc_count >= min_docs);
+        // **三份清单都要滤，滤一份等于没滤。** 同一个说法在提示词里出现两次：
+        // miss 行（"seen N times"）和表层谓词行（"on N fact(s)"）。
+        // `OntologyMiss` 没有文档维度，所以按活下来的说法集合筛——留下的是
+        // 那些既跨了篇、又还压在兜底谓词上的。类那一路不动：`ProposedType`
+        // 同样没有 doc_count，硬滤等于按另一个判据拦，而不是按这个
+        let kept: std::collections::HashSet<&str> = forms.iter().map(|f| f.form.as_str()).collect();
+        misses.retain(|m| m.kind != "relation_type" || kept.contains(m.key.as_str()));
+    }
     if misses.is_empty() && forms.is_empty() && value_forms.is_empty() {
         return Ok(json!({
             "entity_types": [], "relation_types": [], "attribute_types": [], "map_to": []
