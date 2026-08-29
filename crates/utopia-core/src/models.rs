@@ -526,6 +526,34 @@ pub struct EntityHistoryEvent {
     pub quote: Option<String>,
 }
 
+/// 一段**记录时间**窗口里，整个库上发生的认知变更。
+///
+/// 跟 `EntityHistoryEvent` 是同一批事件，两处不同：
+/// 1. 开窗在**认知轴**上（recorded_at / invalidated_at），不锁定单个实体——
+///    "上季度有什么变了"这种问题没有一个先验的实体可问；
+/// 2. 主宾都写全（`direction` 是"以某实体为中心"才有的概念，这里没有中心）。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct GraphChange {
+    pub fact_id: Uuid,
+    /// 事件落在认知轴上的时刻（写入 = recorded_at，作废 = invalidated_at）
+    pub at: DateTime<Utc>,
+    /// asserted（新断言）| corrected（订正了前一条）| rejected（被推翻）| merged（并入他条）
+    pub kind: String,
+    pub subject_id: Uuid,
+    pub subject_name: String,
+    pub predicate_label: String,
+    pub object_name: Option<String>,
+    pub object_value: Option<serde_json::Value>,
+    /// 这条断言说的是**世界轴**上的哪一段——与 `at` 正交，别读混
+    pub valid_from: Option<DateTime<Utc>>,
+    pub valid_to: Option<DateTime<Utc>>,
+    pub valid_precision: String,
+    pub confidence: f32,
+    pub document_id: Option<Uuid>,
+    pub filename: Option<String>,
+    pub quote: Option<String>,
+}
+
 /// 消解审核项的一侧实体摘要。
 #[derive(Debug, Clone, Serialize)]
 pub struct ReviewSide {

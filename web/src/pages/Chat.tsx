@@ -14,6 +14,7 @@ import {
   Check,
   ChevronDown,
   Database,
+  GitCompareArrows,
   History,
   Search as SearchIcon,
   Square,
@@ -459,6 +460,9 @@ function stepIcon(kind: ChatStep["kind"]) {
   if (kind === "docs") return <BookOpen size={11} />;
   if (kind === "entity") return <Waypoints size={11} />;
   if (kind === "facts") return <History size={11} />;
+  // facts 读世界轴、changes 读认知轴，两个图谱工具给不同的图标——
+  // 用户看步骤条时该看得出问的是哪根轴
+  if (kind === "changes") return <GitCompareArrows size={11} />;
   if (kind === "query") return <Database size={11} />;
   return <Wrench size={11} />;
 }
@@ -467,7 +471,7 @@ function stepIcon(kind: ChatStep["kind"]) {
 function orbState(kind?: ChatStep["kind"]): OrbState {
   if (kind === "search" || kind === "docs") return "searching";
   if (kind === "entity") return "connecting";
-  if (kind === "facts") return "solving";
+  if (kind === "facts" || kind === "changes") return "solving";
   if (kind === "query" || kind === "tool") return "working";
   return "listening"; // 尚无步骤：刚接到消息
 }

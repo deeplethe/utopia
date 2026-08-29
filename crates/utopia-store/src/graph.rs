@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use std::collections::HashSet;
 use utopia_core::models::{
     ChunkFactView, EntityFact, EntityHistoryEvent, EntityType, EvidenceView, FactReviewItem,
-    GraphEdge, GraphNode, ProposedPredicate, RelationType,
+    GraphChange, GraphEdge, GraphNode, ProposedPredicate, RelationType,
 };
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -1233,6 +1233,81 @@ pub async fn entity_history(
         .fetch_one(pool)
         .await?;
     Ok((rows, total))
+}
+
+/// 一段记录时间窗口里，全库的认知变更。
+///
+/// **窗口开在认知轴上**：`since`/`until` 比的是 recorded_at 与 invalidated_at，
+/// 不是 valid_from/valid_to。这是与 `entity_facts(at)` 唯一也是全部的区别——
+/// 那个问"某时刻世界什么样"，这个问"某段时间里我们改了什么主意"。两者查同一张表、
+/// 用不同的列，混起来会安静地给出一个看着合理的错答案。
+///
+/// 事件推导与 `entity_history` 同源（见那里的注释）：一条事实行最多产出两个事件，
+/// 且已被后继修正的死亡不重复记。
+pub async fn graph_changes(
+    pool: &PgPool,
+    kb_id: Uuid,
+    since: chrono::DateTime<chrono::Utc>,
+    until: chrono::DateTime<chrono::Utc>,
+    entity_id: Option<Uuid>,
+    kinds: Option<&[String]>,
+    limit: i64,
+) -> AppResult<Vec<GraphChange>> {
+    // 两个分支各自按**自己那根时间列**开窗，而不是先union再过滤：
+    // 一条 2 月写入、8 月被推翻的事实，在"3–4 月"窗口里两个事件都不该出现
+    const EVENTS: &str = "
+        WITH ev AS (
+            SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value,
+                   f.valid_from, f.valid_to, f.valid_precision, f.confidence,
+                   f.recorded_at AS at,
+                   CASE WHEN f.supersedes IS NULL THEN 'asserted' ELSE 'corrected' END AS kind
+            FROM facts f
+            WHERE f.kb_id = $1 AND f.recorded_at >= $2 AND f.recorded_at < $3
+              AND ($4::uuid IS NULL OR f.subject_id = $4 OR f.object_id = $4)
+            UNION ALL
+            SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value,
+                   f.valid_from, f.valid_to, f.valid_precision, f.confidence,
+                   f.invalidated_at AS at,
+                   CASE WHEN EXISTS (SELECT 1 FROM fact_adoptions fa
+                                     WHERE fa.old_fact_id = f.id AND fa.mode = 'merged'
+                                       AND fa.reverted_at IS NULL)
+                        THEN 'merged' ELSE 'rejected' END AS kind
+            FROM facts f
+            WHERE f.kb_id = $1 AND f.invalidated_at >= $2 AND f.invalidated_at < $3
+              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.supersedes = f.id)
+              AND ($4::uuid IS NULL OR f.subject_id = $4 OR f.object_id = $4)
+        )";
+    Ok(sqlx::query_as(&format!(
+        "{EVENTS}
+         SELECT ev.id AS fact_id, ev.at, ev.kind,
+                ev.subject_id, s.canonical_name AS subject_name,
+                r.label AS predicate_label, o.canonical_name AS object_name,
+                ev.object_value, ev.valid_from, ev.valid_to, ev.valid_precision,
+                ev.confidence, src.document_id, src.filename, src.quote
+         FROM ev
+         JOIN relation_types r ON r.id = ev.predicate_id
+         JOIN entities s ON s.id = ev.subject_id
+         LEFT JOIN entities o ON o.id = ev.object_id
+         LEFT JOIN LATERAL (
+             SELECT d.id AS document_id, d.filename, fe.quote
+             FROM fact_evidence fe
+             JOIN chunks c ON c.id = fe.chunk_id
+             JOIN documents d ON d.id = c.document_id
+             WHERE fe.fact_id = ev.id
+             ORDER BY fe.doc_version DESC NULLS LAST LIMIT 1
+         ) src ON true
+         WHERE $5::text[] IS NULL OR ev.kind = ANY($5)
+         ORDER BY ev.at DESC, ev.id
+         LIMIT $6"
+    ))
+    .bind(kb_id)
+    .bind(since)
+    .bind(until)
+    .bind(entity_id)
+    .bind(kinds)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
 }
 
 // ---------------------------------------------------------------------------

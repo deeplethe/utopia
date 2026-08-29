@@ -533,7 +533,7 @@ export interface Source {
 
 /** Agentic 对话的行动轨迹（工具调用一步一条）。 */
 export interface ChatStep {
-  kind: "search" | "docs" | "entity" | "facts" | "query" | "tool";
+  kind: "search" | "docs" | "entity" | "facts" | "changes" | "query" | "tool";
   label: string;
   detail: string;
 }
