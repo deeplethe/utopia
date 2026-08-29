@@ -34,6 +34,12 @@ node scripts/bench/run.mjs --corpus pharma --ontology /tmp/schemaorg.ttl --label
 - `for_review` 按**没改**算进 miss。它确实还没改——算成命中就是把人的活记在机器账上。
 - `absent` = 标准答案里有、但抽取压根没抽出这个实体。它不是消解的错，单独一栏。
 
+## 标准答案会写错
+
+第一次跑就写窄了一个：`心血管健康论坛` 只写了 `business_event|event_series`，
+而系统给的 `conference_event` 是对的。**答案错了要改答案**——但要在结果出来之后
+才改、且写清楚为什么，否则这份答案就变成了"系统这次答了什么"的记录，量不出任何东西。
+
 ## 加一个语料
 
 两个文件：`corpora/x.json` 与 `truth/x.json`。语料换行业是有意的——同一套判断在

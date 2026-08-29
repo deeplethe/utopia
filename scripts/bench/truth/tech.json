@@ -10,7 +10,7 @@
     "深蓝 3.0": ["software_application"],
     "Linux": ["operating_system", "software_application"],
     "中国数据智能": ["periodical"],
-    "世界人工智能大会": ["business_event", "event_series"],
+    "世界人工智能大会": ["business_event", "event_series", "conference_event"],
     "大会主论坛": ["conference_event", "event"],
     "上海": ["city"],
     "上海浦东新区": ["administrative_area"],
