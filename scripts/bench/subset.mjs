@@ -25,15 +25,30 @@ const lines = text.split("\n");
 const prefixEnd = lines.findIndex((l) => l.startsWith("@prefix") === false && l.trim() && !l.startsWith("#"));
 const prefixes = lines.slice(0, prefixEnd).join("\n");
 
-// TTL 的块结构很规整：`subject a …` 起头，以行尾的 `.` 收尾
+// 按空行分块，但**必须知道自己在不在三引号字符串里**。
+//
+// 前两版都栽在这上面。按 `/\.\s*$/` 收尾不行：schema.org 的 rdfs:comment 里
+// 有以句点结尾的行，块从描述中间被劈开（导入报 `Accountancy is not a valid
+// subject`）。改按空行也不行：`"""…"""` 里也有真正的空行，同样劈开
+//（`A is not a valid subject`，"A" 是 BreadcrumbList 那段描述的第一个词）。
+//
+// TTL 里没有词法上下文就切不动这个文件——数一下 `"""` 出现过几次，
+// 偶数才算在字符串外面。
 const blocks = [];
-let cur = [];
-for (const line of lines.slice(prefixEnd)) {
-  cur.push(line);
-  if (/\.\s*$/.test(line) && !/^\s*@/.test(line)) {
-    blocks.push(cur.join("\n"));
-    cur = [];
+{
+  let cur = [];
+  let inLiteral = false;
+  for (const line of lines.slice(prefixEnd)) {
+    const quotes = (line.match(/"""/g) || []).length;
+    if (!inLiteral && quotes % 2 === 0 && !line.trim() && cur.length) {
+      blocks.push(cur.join("\n").trim());
+      cur = [];
+      continue;
+    }
+    cur.push(line);
+    if (quotes % 2 === 1) inLiteral = !inLiteral;
   }
+  if (cur.length) blocks.push(cur.join("\n").trim());
 }
 
 const subjectOf = (b) => (b.match(/^\s*(\S+)\s+a\s/m) || [])[1] || "";

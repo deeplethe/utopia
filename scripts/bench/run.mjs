@@ -199,7 +199,12 @@ async function main() {
   let importMs = 0;
   if (ontologyFirst) importMs = await importOntology();
 
-  // **抽取当时本体有多大**——这一份才是提示词看到的那个规模
+  // **抽取当时本体有多大**——这一份才是提示词看到的那个规模。
+  //
+  // 先摸一次本体：种子类是**惰性建**的（第一次读本体或抽取时才落库），
+  // 不先摸就量到导入进来那些、漏掉 9 个种子。第一版就漏了，表现是
+  // 抽取时 24 类、消解时 32 类，看着像中途有人改了本体
+  await api("GET", "/api/v1/kbs/" + kb + "/ontology");
   const atExtraction = sizeNow();
 
   const t0 = Date.now();
