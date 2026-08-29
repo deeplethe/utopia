@@ -32,6 +32,30 @@ async fn drop_signal(
     .await;
 }
 
+/// 自动扩本体的唯一入队点。**成功与失败两条路都要走到它。**
+///
+/// 开关在这里重读，而不是沿用调用方手上那份：失败路径压根没加载过 kb，
+/// 而成功路径那份是文档**开抽时**读的——一篇 73 块的文档要跑一个多小时，
+/// 期间有人在设置里关掉了开关，沿用旧值就是拿一小时前的意图办事。
+async fn enqueue_bootstrap(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
+    if !utopia_store::kbs::get(&state.pool, kb_id)
+        .await?
+        .auto_extend_ontology
+    {
+        return Ok(());
+    }
+    if !utopia_store::documents::extraction_idle(&state.pool, kb_id).await? {
+        return Ok(());
+    }
+    utopia_store::jobs::enqueue(
+        &state.pool,
+        "bootstrap_ontology",
+        serde_json::json!({ "kb_id": kb_id }),
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn extract_document(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     match run(state, document_id).await {
         Ok(()) => Ok(()),
@@ -45,6 +69,17 @@ pub async fn extract_document(state: &AppState, document_id: Uuid) -> anyhow::Re
             .await;
             if let Ok(doc) = utopia_store::documents::get(&state.pool, document_id).await {
                 state.emit_document(doc.kb_id, document_id);
+                // **失败也要触发自动扩本体。**
+                //
+                // 入队从前只写在成功路径上，于是这一串会把知识库永久卡住：
+                // 前 14 篇成功（每篇都看到还有别的在飞，不触发），第 15 篇重试
+                // 耗尽变 failed —— 这时 extraction_idle 恰好为真（failed 不算
+                // queued/extracting），可**再没有任何一篇文档会完成来做这次检查**。
+                // 结果是提案堆在池子里、本体永远停在种子那几个关系、半张图永远是
+                // 兜底谓词，而界面上没有任何东西说这件事发生过。
+                //
+                // 任务本身幂等且会重查开关与门槛，所以这里多入队一次是安全的。
+                let _ = enqueue_bootstrap(state, doc.kb_id).await;
             }
             Err(e)
         }
@@ -773,16 +808,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // 推错的后果很荒唐（在提案上点一次 Add 就永久关掉建议），而且一旦为假
     // 就永不再真，本体会冻结在第一批文档碰巧包含的词汇上。
     // 并发下可能入队两次，任务自己会重查开关与状态
-    if kb.auto_extend_ontology
-        && utopia_store::documents::extraction_idle(&state.pool, doc.kb_id).await?
-    {
-        utopia_store::jobs::enqueue(
-            &state.pool,
-            "bootstrap_ontology",
-            serde_json::json!({ "kb_id": doc.kb_id }),
-        )
-        .await?;
-    }
+    enqueue_bootstrap(state, doc.kb_id).await?;
 
     tracing::info!(%document_id, facts = fact_count, "图谱抽取完成");
     Ok(())
