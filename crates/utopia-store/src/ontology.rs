@@ -968,7 +968,11 @@ pub async fn set_type_embeddings(
         // 两份向量各写各的列（0050）。列名前缀不同，其余一模一样
         let (vec_col, text_col, model_col) = match item.field {
             EmbedField::Full => ("embedding", "embedded_text", "embedded_model"),
-            EmbedField::Label => ("label_embedding", "label_embedded_text", "label_embedded_model"),
+            EmbedField::Label => (
+                "label_embedding",
+                "label_embedded_text",
+                "label_embedded_model",
+            ),
         };
         sqlx::query(&format!(
             "UPDATE {table} SET {vec_col} = $2, {text_col} = $3, {model_col} = $4
