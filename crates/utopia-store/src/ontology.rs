@@ -1251,6 +1251,13 @@ pub struct BulkRelation {
     pub datatype: Option<String>,
     pub functional: bool,
     pub inverse_functional: bool,
+    /// OWL 属性公理,一致性检查的判定依据（0002 R0）。
+    /// 同样必须照词汇表写下去——`alias_of` 双向是对的、`produces` 双向是错的,
+    /// 分开这两者的只能是本体
+    pub transitive: bool,
+    pub symmetric: bool,
+    pub asymmetric: bool,
+    pub irreflexive: bool,
 }
 
 /// 一次插完一批关系或属性，返回 key → id。语义同 [`create_entity_types_bulk`]。
@@ -1277,13 +1284,20 @@ pub async fn create_relation_types_bulk(
     let dts: Vec<Option<&str>> = rows.iter().map(|r| r.datatype.as_deref()).collect();
     let funcs: Vec<bool> = rows.iter().map(|r| r.functional).collect();
     let invs: Vec<bool> = rows.iter().map(|r| r.inverse_functional).collect();
+    let trans: Vec<bool> = rows.iter().map(|r| r.transitive).collect();
+    let syms: Vec<bool> = rows.iter().map(|r| r.symmetric).collect();
+    let asyms: Vec<bool> = rows.iter().map(|r| r.asymmetric).collect();
+    let irrefs: Vec<bool> = rows.iter().map(|r| r.irreflexive).collect();
     let out: Vec<(Uuid, String)> = sqlx::query_as(
         "INSERT INTO relation_types
              (id, kb_id, key, label, temporal, functional, inverse_functional,
-              description, kind, datatype, iri)
-         SELECT gen_random_uuid(), $1, k, l, 'state', FALSE, FALSE, d, kind, dt, i
-         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
-              AS t(k, l, d, i, kind, dt)
+              description, kind, datatype, iri,
+              is_transitive, is_symmetric, is_asymmetric, is_irreflexive)
+         SELECT gen_random_uuid(), $1, k, l, 'state', fu, iv, d, kind, dt, i,
+                tr, sy, asym, irr
+         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[],
+                     $8::bool[], $9::bool[], $10::bool[], $11::bool[], $12::bool[], $13::bool[])
+              AS t(k, l, d, i, kind, dt, fu, iv, tr, sy, asym, irr)
          ON CONFLICT (kb_id, key) DO NOTHING
          RETURNING id, key",
     )
@@ -1296,6 +1310,10 @@ pub async fn create_relation_types_bulk(
     .bind(&dts)
     .bind(&funcs)
     .bind(&invs)
+    .bind(&trans)
+    .bind(&syms)
+    .bind(&asyms)
+    .bind(&irrefs)
     .fetch_all(pool)
     .await?;
     Ok(out.into_iter().map(|(id, k)| (k, id)).collect())
@@ -1356,6 +1374,38 @@ pub async fn set_parents_bulk(pool: &PgPool, pairs: &[(Uuid, Uuid)]) -> AppResul
     )
     .bind(&children)
     .bind(&parents)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 类互斥落库（迁移 0054）。语义同 [`set_parents_bulk`]。
+///
+/// **两个方向都写。** 解析侧已经把 `owl:disjointWith` 的对称性展开成两条,
+/// 这里照写即可——查"A 与 B 互斥吗"因此不必关心从哪一头问。
+///
+/// `a <> b` 挡自指:自己跟自己互斥是无意义的声明，而它会让一致性检查
+/// 把每个实体都报成矛盾。表上也有同样的 CHECK，两道都留着——
+/// 约束是最后一道，过滤在这里是为了不让一整批插入因为一条脏数据整个失败。
+pub async fn set_disjoint_bulk(
+    pool: &PgPool,
+    kb_id: Uuid,
+    pairs: &[(Uuid, Uuid)],
+) -> AppResult<()> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let a: Vec<Uuid> = pairs.iter().map(|p| p.0).collect();
+    let b: Vec<Uuid> = pairs.iter().map(|p| p.1).collect();
+    sqlx::query(
+        "INSERT INTO entity_type_disjoint (kb_id, a_id, b_id)
+         SELECT $1, x, y FROM UNNEST($2::uuid[], $3::uuid[]) AS t(x, y)
+         WHERE x <> y
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(kb_id)
+    .bind(&a)
+    .bind(&b)
     .execute(pool)
     .await?;
     Ok(())

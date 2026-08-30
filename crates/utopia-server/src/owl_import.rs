@@ -461,6 +461,21 @@ pub async fn apply(
     // 换一个"发现得早一点"，不划算
     utopia_store::ontology::set_parents_bulk(&state.pool, &parent_edges).await?;
 
+    // 类互斥同理攒一批（0054）。指向没被建出来的类的那些自然落选——
+    // 一条互斥声明的两端都得在这个库里,才谈得上拿它判矛盾
+    let mut disjoint_edges: Vec<(Uuid, Uuid)> = Vec::new();
+    for c in &proj.classes {
+        let Some(&a) = id_of.get(&c.iri) else {
+            continue;
+        };
+        for other in &c.disjoint_with {
+            if let Some(&b) = id_of.get(other) {
+                disjoint_edges.push((a, b));
+            }
+        }
+    }
+    utopia_store::ontology::set_disjoint_bulk(&state.pool, kb_id, &disjoint_edges).await?;
+
     let by_prop_iri: HashMap<&str, &_> = proj
         .properties
         .iter()
@@ -518,6 +533,10 @@ pub async fn apply(
             datatype: None,
             functional: p.functional,
             inverse_functional: p.inverse_functional,
+            transitive: p.transitive,
+            symmetric: p.symmetric,
+            asymmetric: p.asymmetric,
+            irreflexive: p.irreflexive,
         });
         pending_links.push((p.key.clone(), domains, ranges));
     }
@@ -570,9 +589,14 @@ pub async fn apply(
             iri: p.iri.clone(),
             kind: "attribute",
             datatype: Some(dt.to_string()),
-            // 属性不参与时态闭合，这两位对它没有意义
+            // 属性不参与时态闭合，也不参与一致性检查：那几类判定都是关于
+            // **实体之间**的边,而属性的宾语是字面值
             functional: false,
             inverse_functional: false,
+            transitive: false,
+            symmetric: false,
+            asymmetric: false,
+            irreflexive: false,
         });
         pending_attr_domains.push((p.key.clone(), domain_ids));
     }
