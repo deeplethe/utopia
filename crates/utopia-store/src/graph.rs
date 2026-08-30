@@ -794,9 +794,17 @@ pub async fn update_entity(
     }
 
     sqlx::query(
+        // 改了类型才标 human——这个端点也用来改名字，只改名不该顺手把类型
+        // 的来源盖成人工。`$3 IS NULL` 在这个接口里表示「本次没提供类型」，
+        // 不是「把类型清空」：路由层要求两个字段至少给一个，给不出三态。
+        //
+        // 于是有一件今天做不到的事：0009 之后「没有类型」可能是人的决定
+        //（看过了，本体里没有合适的类），而这个接口表达不了它。要补得让
+        // 请求体区分「未提供」与「显式置空」，那是另一件事
         "UPDATE entities
          SET type_id = COALESCE($3, type_id),
              canonical_name = COALESCE($4, canonical_name),
+             type_source = CASE WHEN $3::uuid IS NULL THEN type_source ELSE 'human' END,
              updated_at = now()
          WHERE id = $1 AND kb_id = $2 AND merged_into IS NULL",
     )

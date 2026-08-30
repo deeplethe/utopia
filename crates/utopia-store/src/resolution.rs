@@ -442,6 +442,8 @@ struct CrossCandidate {
     canonical_name: String,
     // None = 这个候选还没判出类型（0009）
     type_key: Option<String>,
+    // 抽取升格要看它：人说过「就是没有类型」时，那也是一个决定
+    type_source: String,
     profile_embedding: Option<Vector>,
     profile_n: i32,
 }
@@ -505,7 +507,8 @@ async fn resolve_type_drift(
         None => None,
     };
     let cross: Vec<CrossCandidate> = sqlx::query_as(
-        "SELECT e.id, e.canonical_name, t.key AS type_key, e.profile_embedding, e.profile_n
+        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_source,
+                e.profile_embedding, e.profile_n
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          -- IS DISTINCT FROM 而不是 <>：后者遇 NULL 返回 NULL，被 WHERE 当假，
          -- 未分类实体会被整个漏掉（0009）
@@ -544,9 +547,15 @@ async fn resolve_type_drift(
                 update_profile(pool, best.id, best.profile_n, ctx).await?;
                 // 候选还没判出类型而这次抽取判出来了 → 升格。
                 // 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回
-                if best.type_key.is_none() && type_id.is_some() {
+                //
+                // **人说过的「没有类型」不算「还没判出来」。** 0009 之后两者都是
+                // NULL，只看 type_key.is_none() 分不出——于是一个人看过、认为
+                // 本体里没有合适类的实体，会在下一次抽取时被安上一个类型
+                if best.type_key.is_none() && best.type_source != "human" && type_id.is_some() {
                     sqlx::query(
-                        "UPDATE entities SET type_id = $2, updated_at = now() WHERE id = $1",
+                        "UPDATE entities
+                         SET type_id = $2, type_source = 'extracted', updated_at = now()
+                         WHERE id = $1",
                     )
                     .bind(best.id)
                     .bind(type_id)
@@ -1540,6 +1549,9 @@ pub async fn adopt_proposed_types(
     let targets: Vec<(Uuid, Option<Uuid>, String)> = sqlx::query_as(
         "SELECT id, type_id, canonical_name FROM entities
          WHERE kb_id = $1 AND merged_into IS NULL
+           -- 人拍过板的不认领。**这一行顺带让 unadopt 天然正确**：human 行
+           -- 永远不进采纳批次，撤销时也就不会遇到它们，不必额外还原 type_source
+           AND type_source <> 'human'
            AND proposed_type = ANY($2) AND type_id IS DISTINCT FROM $3",
     )
     .bind(kb_id)
@@ -1553,11 +1565,16 @@ pub async fn adopt_proposed_types(
     for (entity_id, from_type, name) in targets {
         let mut tx = pool.begin().await?;
         sqlx::query(
-            "UPDATE entities SET type_id = $2, proposed_type = NULL, updated_at = now()
+            // actor 有值 = 人在界面上点的批准，他背书了这个类型 → 受保护。
+            // 无值 = 本体长出新类之后的收尾认领，没人在按
+            "UPDATE entities
+                SET type_id = $2, proposed_type = NULL, updated_at = now(),
+                    type_source = CASE WHEN $3::uuid IS NULL THEN 'inferred' ELSE 'human' END
              WHERE id = $1",
         )
         .bind(entity_id)
         .bind(type_id)
+        .bind(actor)
         .execute(&mut *tx)
         .await?;
         sqlx::query(
@@ -1864,6 +1881,15 @@ pub async fn entities_for_type_resolution(
          FROM entities e
          LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.kb_id = $1 AND e.merged_into IS NULL
+           -- **人拍过板的不再重判。**
+           --
+           -- 少了这一行，下面第三种条件会把它们全都捞回来：一个人工定成
+           -- organization 的实体，只要 organization 有子类就够格，于是引擎
+           -- 每一轮都去重新裁决一遍人已经决定过的事，而账本事后才看得出是谁改的。
+           --
+           -- 「不落库」不等于「不许说话」：引擎若认为人定错了，该走 Review 队列，
+           -- 而不是直接改掉。憋着不说和直接改掉都是失真，只是方向相反
+           AND e.type_source <> 'human'
            -- 值得看的三种：**还没有类的**、模型报过词表外类型的、
            -- **以及现类本身还有子类的**。第三种是主力：抽取只认基类之后，
            -- organization 下面挂着一大批更具体的类，那才是导进来的本体
@@ -2010,7 +2036,8 @@ pub async fn retype_entities(
                  WHERE id = $1 AND kb_id = $3 AND merged_into IS NULL
                    AND type_id IS DISTINCT FROM $2
              )
-             UPDATE entities e SET type_id = $2, updated_at = now()
+             UPDATE entities e SET type_id = $2, updated_at = now(),
+                    type_source = CASE WHEN $4::uuid IS NULL THEN 'inferred' ELSE 'human' END
              FROM before
              WHERE e.id = before.id
              RETURNING before.type_id, before.canonical_name",
@@ -2018,6 +2045,7 @@ pub async fn retype_entities(
         .bind(entity_id)
         .bind(type_id)
         .bind(kb_id)
+        .bind(actor)
         .fetch_optional(&mut *tx)
         .await?;
         let Some((from_type, name)) = row else {
