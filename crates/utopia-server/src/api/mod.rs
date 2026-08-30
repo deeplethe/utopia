@@ -306,6 +306,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(review_routes::decide_violation),
         )
         .route(
+            "/kbs/{id}/review/defects/{defect_id}",
+            post(review_routes::decide_defect),
+        )
+        // R1 物化推导。受 KB 上的 materialize_inferences 开关约束
+        .route(
+            "/kbs/{id}/inference/run",
+            post(review_routes::run_inference),
+        )
+        .route(
             "/kbs/{id}/facts/{fact_id}/confirm",
             post(review_routes::confirm_fact),
         )

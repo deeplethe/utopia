@@ -412,18 +412,35 @@ async fn edges_among(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
+    // **派生边显式 UNION 进来。** 它们住在 `derived_facts`，不在 `facts` 里——
+    // 所以每一个想看到推理结果的读路径都得像这里一样写出来。忘了写的后果是
+    // 看不见派生，而不是把它们当成谁的断言（那正是分表买到的东西）。
+    //
+    // 图要它们，因为「这条边是推出来的」正是用户该看见的信息之一；`derived`
+    // 那一位让界面画得出区别，也让人整体过滤掉。
     let edges: Vec<GraphEdge> = sqlx::query_as(
         "SELECT f.id, f.subject_id AS source, f.object_id AS target,
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS label,
-                r.id IS NULL AS inferred,
+                r.id IS NULL AS inferred, FALSE AS derived,
                 f.valid_from, f.valid_to, f.confidence
          FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
            AND f.subject_id = ANY($2) AND f.object_id = ANY($2)
            AND ($3::timestamptz IS NULL
                 OR ((f.valid_from IS NULL OR f.valid_from <= $3)
-                    AND (f.valid_to IS NULL OR f.valid_to > $3)))",
+                    AND (f.valid_to IS NULL OR f.valid_to > $3)))
+         UNION ALL
+         SELECT d.id, d.subject_id AS source, d.object_id AS target,
+                r.key AS predicate, r.label AS label,
+                FALSE AS inferred, TRUE AS derived,
+                d.valid_from, d.valid_to, d.confidence
+         FROM derived_facts d JOIN relation_types r ON r.id = d.predicate_id
+         WHERE d.kb_id = $1 AND d.invalidated_at IS NULL
+           AND d.subject_id = ANY($2) AND d.object_id = ANY($2)
+           AND ($3::timestamptz IS NULL
+                OR ((d.valid_from IS NULL OR d.valid_from <= $3)
+                    AND (d.valid_to IS NULL OR d.valid_to > $3)))",
     )
     .bind(kb_id)
     .bind(ids)

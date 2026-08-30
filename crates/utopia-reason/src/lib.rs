@@ -12,6 +12,9 @@
 //! 没声明就不查——不报矛盾比猜一个公理出来安全。所以一个没装本体包的库跑出来
 //! 是零，那是实情不是故障。
 
+pub mod derive;
+pub mod ontology;
+
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 

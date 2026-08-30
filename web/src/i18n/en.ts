@@ -66,6 +66,9 @@ export const en = {
     only_postgres: "Only PostgreSQL is supported for now.",
     bad_conn_string: "A connection string starts with postgres://",
     concurrency_range: "Pick a number between 1 and 256.",
+    inference_off:
+      "Materialized inference is off for this knowledge base. Turn it on in Settings.",
+    bad_resolution: "That is not a valid decision.",
   },
   /** 机器给的补充（cron 解析器的原话之类）缀在措辞后面 */
   errDetail: (msg: string, detail: string) => `${msg} (${detail})`,
@@ -890,6 +893,7 @@ export const en = {
     railLowConfidence: "Low confidence",
     railMappings: "Semantic layer",
     railViolations: "Axioms",
+    railDefects: "Ontology",
     railDecisions: "Decisions",
     railMerges: "Merges",
     categoryEmpty: "This queue is clear.",
@@ -935,6 +939,26 @@ export const en = {
     merge: "Merge",
     keep: "Keep separate",
     lowConfidence: "Low-confidence facts",
+    defects: "Ontology contradicts itself",
+    defectsHint:
+      "Problems in the definitions themselves — no facts involved. These come first: while a definition contradicts itself, every fact-level finding that rests on it is suspect.",
+    defectSymAsym: "Declared both symmetric and asymmetric",
+    defectTransFunc: "Transitive and functional at once",
+    defectCycle: "subClassOf runs in a circle",
+    defectDisjointAncestor: "Disjoint with its own ancestor",
+    defectInheritsDisjoint: "Inherits from two disjoint classes",
+    defectNeverInstantiable: "no instance can ever satisfy it",
+    defectFixed: "I fixed the ontology",
+    defectAccepted: "Leave it",
+    runInference: "Run inference",
+    inferring: "Inferring…",
+    inferenceNoRules:
+      "No transitive or symmetric property is declared, so there is no rule to run.",
+    inferenceAdded: (n: number) => `${n} facts derived`,
+    inferenceRetracted: (n: number) => `${n} retracted`,
+    inferenceNothing: "Nothing new to derive",
+    inferenceCapped: (n: number) =>
+      `${n} predicate(s) hit the per-predicate limit and were not closed fully`,
     violations: "Axiom violations",
     violationsHint:
       "Facts that contradict axioms your ontology declares. Nothing here is a guess — a predicate that declares no axioms is never checked.",
@@ -1014,6 +1038,9 @@ export const en = {
       "facts that were waiting for it. Every change is listed and can be undone. Turning this " +
       "off does not stop Utopia from noticing — the phrases still collect under Unmatched, they " +
       "just wait for you to approve them.",
+    materialize: "Materialize inferences",
+    materializeNote:
+      "Write facts the ontology entails into the ledger — transitive chains and symmetric pairs. Off by default: a declaration can be wrong, and this one changes the graph. Derived facts are marked and can be taken back.",
     /* 语料语言。措辞要把"这不是界面语言"讲清楚，否则一定有人当成界面开关 */
     ontologyLang: "Language of this ontology",
     ontologyLangNote:

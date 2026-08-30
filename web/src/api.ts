@@ -85,6 +85,9 @@ export interface Kb {
   /** 抽取遇到本体外的说法时，是否允许系统自动补进本体并改写等它的事实。
       关掉不影响"留意"：未匹配统计照常累积可见，只是变成你点一下的提案 */
   auto_extend_ontology: boolean;
+  /** 把推出来的事实写进账本（R1）。**缺省关**——推理往图里加东西，
+   *  而声明可能是错的，不该在用户没表态时就按它改图 */
+  materialize_inferences: boolean;
   /** 内置本体按哪种语言播种、新描述写哪种语言。**跟语料走，不跟界面走**
       （界面语言在客户端，见 docs/decisions/0004） */
   ontology_lang: "en" | "zh";
@@ -305,6 +308,21 @@ export interface AxiomViolation {
   path_len: number;
   detected_at: string;
 }
+/** 本体自己的一处自相矛盾。**与 AxiomViolation 不是一回事**：那个说
+ *  「事实与定义抵触」，这个说「定义自己站不住」，后者更根本 */
+export interface OntologyDefect {
+  id: string;
+  kind:
+    | "symmetric_and_asymmetric"
+    | "transitive_and_functional"
+    | "subclass_cycle"
+    | "disjoint_with_ancestor"
+    | "inherits_disjoint";
+  subject_label: string | null;
+  other_label: string | null;
+  path_labels: string[];
+  detected_at: string;
+}
 export interface FactReviewItem {
   id: string;
   subject_name: string;
@@ -365,6 +383,9 @@ export interface GraphEdge {
   label: string | null;
   /** true = 这条边的名字来自原文，不是本体认下的关系 */
   inferred: boolean;
+  /** true = 这条边是**推出来的**，不是任何人断言的（R1）。
+   *  与 `inferred` 不是一回事：那个说「名字来自原文」，这个说「不是谁说的」 */
+  derived: boolean;
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
@@ -1172,6 +1193,7 @@ export const api = {
       unconfirmed: FactReviewItem[];
       mappings: ConceptMapping[];
       violations: AxiomViolation[];
+      defects: OntologyDefect[];
     }>(`/api/v1/kbs/${kbId}/review`),
   closeFact: (kbId: string, factId: string, validTo: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/close`, {
@@ -1207,7 +1229,34 @@ export const api = {
       found: number;
       inserted: number;
       cleared: number;
+      classes: number;
+      /** 本体自己的矛盾**单独回**，不加进 found：两个数不是一类东西 */
+      defects_found: number;
+      defects_new: number;
     }>(`/api/v1/kbs/${kbId}/consistency/check`, { method: "POST" }),
+  /** 对一处本体缺陷表态。**两个出路**——它压根没看数据，没有「数据错了」这条 */
+  decideDefect: (
+    kbId: string,
+    defectId: string,
+    resolution: "fixed" | "accepted",
+  ) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/review/defects/${defectId}`, {
+      method: "POST",
+      body: JSON.stringify({ resolution }),
+    }),
+  /** 跑一遍推理（R1）。开关关着时后端回 inference_off */
+  runInference: (kbId: string) =>
+    request<{
+      /** 编译出来的规则条数。为零时是「没有规则」而不是「推不出东西」 */
+      rules: number;
+      edges: number;
+      derived: number;
+      inserted: number;
+      /** 前提没了、跟着作废的 */
+      invalidated: number;
+      /** 撞上单谓词上限、没推完的谓词个数 */
+      capped: number;
+    }>(`/api/v1/kbs/${kbId}/inference/run`, { method: "POST" }),
   /** 对一处公理违规表态。三个出路——第三个是这一档独有的：可能是定义错了 */
   decideViolation: (
     kbId: string,

@@ -476,6 +476,11 @@ pub struct GraphEdge {
     pub label: Option<String>,
     /// true = 这条边的名字来自原文，不是本体认下的关系。界面要显示得看得出区别
     pub inferred: bool,
+    /// true = 这条边是**推出来的**，不是任何人断言的（R1，住在 `derived_facts`）。
+    ///
+    /// **与 `inferred` 不是一回事**，尽管两个词很近：那一位说的是「名字来自原文
+    /// 而不是本体」，这一位说的是「这条边根本不是谁说的，是引擎推的」
+    pub derived: bool,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confidence: f32,
@@ -714,6 +719,10 @@ pub struct KnowledgeBase {
     /// 内置本体按哪种语言播种，以及新的类/关系描述写成哪种语言（`en` | `zh`）。
     /// **跟语料走，不跟界面走**——description 的读者是正在读这些文档的模型。
     /// 见 docs/decisions/0004。
+    /// 是否把推出来的事实写进账本（R1）。**缺省关**——这一步往图里加东西，
+    /// 而 0001 判据 2 说「本体是引导不是执法」：声明可能是错的，不该在用户
+    /// 没表态时就按它改图
+    pub materialize_inferences: bool,
     pub ontology_lang: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -823,5 +832,24 @@ pub struct AxiomViolation {
     pub right_text: String,
     /// 环的长度（含首尾）。其余三类为 0——前端据此决定要不要显示「查看路径」
     pub path_len: i32,
+    pub detected_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 本体自己的一处自相矛盾（见 `ontology_defects`）。
+///
+/// **与 [`AxiomViolation`] 不是一回事**：那个说「事实与定义抵触」，这个说
+/// 「定义自己站不住」。后者更根本——一个自相矛盾的本体会让前者的结论全部可疑。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct OntologyDefect {
+    pub id: Uuid,
+    /// symmetric_and_asymmetric | transitive_and_functional | subclass_cycle
+    /// | disjoint_with_ancestor | inherits_disjoint
+    pub kind: String,
+    /// 出问题那个对象的标签（类或谓词）。查不到就是它已经被删了
+    pub subject_label: Option<String>,
+    /// 另一方：互斥的那个类
+    pub other_label: Option<String>,
+    /// 环上类的标签，按顺序
+    pub path_labels: Vec<String>,
     pub detected_at: chrono::DateTime<chrono::Utc>,
 }

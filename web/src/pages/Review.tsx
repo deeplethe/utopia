@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   type AxiomViolation,
+  type OntologyDefect,
   type ConceptMapping,
   type ConflictItem,
   type FactReviewItem,
@@ -444,6 +445,68 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
  *
  * 展示的重点是**「这个数怎么算」**——SQL / 表达式 / 表名按这个优先级取一个，
  * 因为人要判断的正是它对不对。概念名与源是身份，unit 是答里必须带的量纲。 */
+/** 本体自己的一处自相矛盾。**两个按钮而不是三个**——这一档压根没看数据，
+ *  所以没有「数据错了」这条出路，只能是「我去改了本体」或「先放着」。 */
+function DefectRow({
+  defect: d,
+  busy,
+  onDecide,
+}: {
+  defect: OntologyDefect;
+  busy: boolean;
+  onDecide: (resolution: "fixed" | "accepted") => void;
+}) {
+  const what = {
+    symmetric_and_asymmetric: S.review.defectSymAsym,
+    transitive_and_functional: S.review.defectTransFunc,
+    subclass_cycle: S.review.defectCycle,
+    disjoint_with_ancestor: S.review.defectDisjointAncestor,
+    inherits_disjoint: S.review.defectInheritsDisjoint,
+  }[d.kind];
+  // 后两类的后果值得写出来：不可满足的类不会报错，它只是永远空着
+  const unsatisfiable =
+    d.kind === "disjoint_with_ancestor" || d.kind === "inherits_disjoint";
+  return (
+    <div className="glass rounded-xl p-3">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-sm text-[var(--u-danger)]">{what}</span>
+        {d.subject_label && (
+          <span className="text-xs text-neutral-300">{d.subject_label}</span>
+        )}
+        {d.other_label && (
+          <span className="text-xs text-neutral-500">↔ {d.other_label}</span>
+        )}
+      </div>
+      {d.path_labels.length > 0 && (
+        <div className="mt-1 text-xs text-neutral-400">
+          {d.path_labels.join(" → ")} → {d.path_labels[0]}
+        </div>
+      )}
+      {unsatisfiable && (
+        <p className="mt-1 text-xs text-neutral-500">
+          {S.review.defectNeverInstantiable}
+        </p>
+      )}
+      <div className="mt-2 flex gap-1.5">
+        <button
+          className="u-btn text-xs"
+          disabled={busy}
+          onClick={() => onDecide("accepted")}
+        >
+          {S.review.defectAccepted}
+        </button>
+        <button
+          className="u-btn u-btn-primary text-xs"
+          disabled={busy}
+          onClick={() => onDecide("fixed")}
+        >
+          {S.review.defectFixed}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 /** 一处公理违规。**三个按钮而不是两个**——第三个是这一档独有的出路：
  *  矛盾可能出在定义上（用户导的本体把某个属性声明成反对称，而他的语料里
  *  那关系其实双向），这时该改的是本体，不是二十条事实。 */
@@ -574,6 +637,8 @@ type Sel =
   // 公理违规（0002 R0）。**与 conflicts 分开**：那一档问「哪条对」，
   // 这一档还可能答「公理写错了」——出路不同
   | "violations"
+  // 本体自己的自相矛盾。**与 violations 分开**：那一档看事实，这一档只看定义
+  | "defects"
   | "decisions"
   | "merges";
 
@@ -584,6 +649,7 @@ const QUEUE_ORDER: Sel[] = [
   "lowconf",
   "mappings",
   "violations",
+  "defects",
 ];
 const PAGE_SIZE: Record<Sel, number> = {
   duplicates: DUP_PAGE,
@@ -592,6 +658,7 @@ const PAGE_SIZE: Record<Sel, number> = {
   lowconf: FACT_PAGE,
   mappings: FACT_PAGE,
   violations: FACT_PAGE,
+  defects: FACT_PAGE,
   merges: MERGE_PAGE,
   decisions: 20,
 };
@@ -693,6 +760,16 @@ export function Review() {
     }) => api.decideMapping(kb!.id, id, status),
     onSettled: invalidate,
   });
+  const defectAction = useMutation({
+    mutationFn: ({
+      id,
+      resolution,
+    }: {
+      id: string;
+      resolution: "fixed" | "accepted";
+    }) => api.decideDefect(kb!.id, id, resolution),
+    onSettled: invalidate,
+  });
   const violationAction = useMutation({
     mutationFn: ({
       id,
@@ -740,6 +817,7 @@ export function Review() {
     lowconf: data?.facts.length ?? 0,
     mappings: data?.mappings?.length ?? 0,
     violations: data?.violations?.length ?? 0,
+    defects: data?.defects?.length ?? 0,
     merges: data?.merges.length ?? 0,
     decisions: history.data?.total ?? 0,
   };
@@ -776,6 +854,7 @@ export function Review() {
       title: S.review.violations,
       hint: S.review.violationsHint,
     },
+    defects: { title: S.review.defects, hint: S.review.defectsHint },
     decisions: { title: S.review.decisionsTitle, hint: S.review.decisionsHint },
     merges: { title: S.review.mergeHistory, hint: null },
   };
@@ -822,6 +901,12 @@ export function Review() {
             count={counts.violations}
             onClick={() => select("violations")}
           />
+          <RailItem
+            active={active === "defects"}
+            label={S.review.railDefects}
+            count={counts.defects}
+            onClick={() => select("defects")}
+          />
         </div>
         <RailHeader label={S.review.tabHistory} />
         <div className="px-2 space-y-0.5">
@@ -864,7 +949,10 @@ export function Review() {
 
               {/* 空态：整个待办全清 vs 单类清空。**公理这一档除外**——它自己那句要
                   分清「查过、没矛盾」和「还没查过」，通用空态说不出这个差别 */}
-              {isQueueSel && active !== "violations" && counts[active] === 0 && (
+              {isQueueSel &&
+                active !== "violations" &&
+                active !== "defects" &&
+                counts[active] === 0 && (
                 <div className="glass rounded-xl p-10 text-center text-sm text-neutral-500">
                   {queueEmpty ? S.review.empty : S.review.categoryEmpty}
                 </div>
@@ -966,6 +1054,31 @@ export function Review() {
                         }
                         onDecide={(status) =>
                           mappingAction.mutate({ id: m.id, status })
+                        }
+                      />
+                    ),
+                  )}
+                </div>
+              )}
+
+              {active === "defects" && (
+                <div className="space-y-3">
+                  {counts.defects === 0 && (
+                    <div className="glass rounded-xl p-10 text-center text-sm text-neutral-500">
+                      {S.review.categoryEmpty}
+                    </div>
+                  )}
+                  {pageSlice(data.defects ?? [], page, FACT_PAGE).rows.map(
+                    (d) => (
+                      <DefectRow
+                        key={d.id}
+                        defect={d}
+                        busy={
+                          defectAction.isPending &&
+                          defectAction.variables?.id === d.id
+                        }
+                        onDecide={(resolution) =>
+                          defectAction.mutate({ id: d.id, resolution })
                         }
                       />
                     ),

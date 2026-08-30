@@ -73,6 +73,7 @@ pub async fn get(pool: &PgPool, id: Uuid) -> AppResult<KnowledgeBase> {
         .ok_or(AppError::NotFound)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn update(
     pool: &PgPool,
     id: Uuid,
@@ -81,6 +82,7 @@ pub async fn update(
     visibility: Option<&str>,
     auto_extend_ontology: Option<bool>,
     ontology_lang: Option<&str>,
+    materialize_inferences: Option<bool>,
 ) -> AppResult<KnowledgeBase> {
     // 改语言不回头重写已有的类——它们已经是这个库的数据，可能有人手工调过。
     // 这一列往后管的是**新**描述（自动扩本体、AI 建议）写成什么语言
@@ -113,6 +115,7 @@ pub async fn update(
              visibility = COALESCE($4, visibility),
              auto_extend_ontology = COALESCE($5, auto_extend_ontology),
              ontology_lang = COALESCE($6, ontology_lang),
+             materialize_inferences = COALESCE($7, materialize_inferences),
              updated_at = now()
          WHERE id = $1 RETURNING *",
     )
@@ -122,6 +125,7 @@ pub async fn update(
     .bind(visibility)
     .bind(auto_extend_ontology)
     .bind(ontology_lang)
+    .bind(materialize_inferences)
     .fetch_optional(pool)
     .await?
     .ok_or(AppError::NotFound)

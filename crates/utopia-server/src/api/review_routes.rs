@@ -60,10 +60,13 @@ pub async fn list(
     // 公理违规（0002 R0）。**不与 conflicts 合并**：那一档问「哪条对」，
     // 这一档还可能答「公理写错了」——出路不同，前端也就分开显示
     let violations = utopia_store::reasoning::open_violations(&state.pool, kb_id, 100).await?;
+    // 本体自己的自相矛盾。**排在违规前面给人看**：定义站不住时，据它报出来的
+    // 每一条事实违规都建立在一个本来就不成立的前提上
+    let defects = utopia_store::reasoning::open_defects(&state.pool, kb_id, 100).await?;
     Ok(Json(json!({
         "reviews": reviews, "facts": facts, "merges": merges,
         "conflicts": conflicts, "unconfirmed": unconfirmed,
-        "mappings": mappings, "violations": violations
+        "mappings": mappings, "violations": violations, "defects": defects
     })))
 }
 
@@ -496,6 +499,9 @@ pub async fn run_consistency_check(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let report = utopia_store::reasoning::run(&state.pool, kb_id).await?;
+    // 本体自洽性一并算。两者判据同源（都是本体声明的公理），分两个按钮
+    // 只会让人点两次
+    let onto = utopia_store::reasoning::check_ontology(&state.pool, kb_id).await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -509,6 +515,7 @@ pub async fn run_consistency_check(
             "found": report.found,
             "inserted": report.inserted,
             "cleared": report.cleared,
+            "defects_found": onto.found,
         }),
     )
     .await;
@@ -519,5 +526,104 @@ pub async fn run_consistency_check(
         "found": report.found,
         "inserted": report.inserted,
         "cleared": report.cleared,
+        // 本体自己那一档单独回。**不加进 found**：两个数不是一类东西，
+        // 加起来之后「3 处矛盾」既可能是三条事实抵触，也可能是本体自己写反了三处
+        "classes": onto.classes,
+        "defects_found": onto.found,
+        "defects_new": onto.inserted,
+    })))
+}
+
+#[derive(Deserialize)]
+pub struct DecideDefectReq {
+    /// fixed | accepted
+    pub resolution: String,
+}
+
+/// 人对一处本体缺陷表态。
+///
+/// **两个出路而不是三个**：本体缺陷压根没看数据，所以没有「数据错了」这一条。
+pub async fn decide_defect(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, defect_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideDefectReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    if !matches!(req.resolution.as_str(), "fixed" | "accepted") {
+        return Err(utopia_core::AppError::invalid(
+            "bad_resolution",
+            "resolution 只能是 fixed 或 accepted",
+        )
+        .into());
+    }
+    utopia_store::reasoning::decide_defect(&state.pool, kb_id, defect_id, &req.resolution, user.id)
+        .await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "defect.decided",
+        "ontology_defect",
+        Some(defect_id),
+        json!({ "resolution": req.resolution }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 跑一遍推理（R1）。
+///
+/// **受 `materialize_inferences` 开关约束。** 默认关，因为这一步往图里加东西，
+/// 而 0001 判据 2 说「本体是引导不是执法」——声明可能是错的，不该在用户没表态时
+/// 就按它改图。开关关着时不静默跳过：回一个明确的错，界面才说得出为什么没动。
+///
+/// 同步跑，与一致性检查同一个理由：纯计算，没有模型调用也没有网络。
+pub async fn run_inference(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let on: bool =
+        sqlx::query_scalar("SELECT materialize_inferences FROM knowledge_bases WHERE id = $1")
+            .bind(kb_id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(utopia_core::AppError::Db)?;
+    if !on {
+        return Err(utopia_core::AppError::invalid(
+            "inference_off",
+            "materialized inference is off for this knowledge base",
+        )
+        .into());
+    }
+    let report = utopia_store::reasoning::materialize(&state.pool, kb_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "inference.materialized",
+        "knowledge_base",
+        Some(kb_id),
+        json!({
+            "rules": report.rules,
+            "edges": report.edges,
+            "derived": report.derived,
+            "inserted": report.inserted,
+            "invalidated": report.invalidated,
+            "capped": report.capped,
+        }),
+    )
+    .await;
+    state.emit_graph(kb_id);
+    Ok(Json(json!({
+        "rules": report.rules,
+        "edges": report.edges,
+        "derived": report.derived,
+        "inserted": report.inserted,
+        "invalidated": report.invalidated,
+        "capped": report.capped,
     })))
 }

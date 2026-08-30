@@ -79,6 +79,16 @@ impl AppState {
         });
     }
 
+    /// 图变了。推理往图里加过边之后要发一次——它不经过文档管道，
+    /// 而 `document` 那条事件是文档管道专用的
+    pub fn emit_graph(&self, kb_id: Uuid) {
+        let _ = self.events.send(AppEvent {
+            kb_id: Some(kb_id),
+            kind: "graph",
+            document_id: None,
+        });
+    }
+
     pub fn emit_source(&self, kb_id: Uuid) {
         let _ = self.events.send(AppEvent {
             kb_id: Some(kb_id),

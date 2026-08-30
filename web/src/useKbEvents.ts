@@ -13,6 +13,9 @@ export function useKbEvents(kbId: string | undefined) {
       queryClient.invalidateQueries({ queryKey: ["documents", kbId] });
       queryClient.invalidateQueries({ queryKey: ["graph"] });
     });
+    es.addEventListener("graph", () => {
+      queryClient.invalidateQueries({ queryKey: ["graph"] });
+    });
     es.addEventListener("review", () => {
       queryClient.invalidateQueries({ queryKey: ["review", kbId] });
     });

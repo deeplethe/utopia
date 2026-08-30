@@ -38,6 +38,9 @@ pub struct UpdateKbReq {
     /// 本体语言（`en` | `zh`）：跟语料走，不跟界面走。见 docs/decisions/0004
     #[serde(default)]
     pub ontology_lang: Option<String>,
+    /// 物化推理开关（缺省关）。见 docs/decisions/0002 R1
+    #[serde(default)]
+    pub materialize_inferences: Option<bool>,
 }
 
 /// 用户可见的 KB 列表（restricted 库仅矩阵成员与系统管理员可见）。
@@ -85,7 +88,8 @@ pub async fn create(
     )
     .await?;
     if let Some(v) = req.visibility.as_deref() {
-        utopia_store::kbs::update(&state.pool, kb.id, None, None, Some(v), None, None).await?;
+        utopia_store::kbs::update(&state.pool, kb.id, None, None, Some(v), None, None, None)
+            .await?;
     }
     utopia_store::access::set_kb_member(&state.pool, kb.id, user.id, "admin", Some(user.id))
         .await?;
@@ -161,6 +165,7 @@ pub async fn update(
         req.visibility.as_deref(),
         req.auto_extend_ontology,
         req.ontology_lang.as_deref(),
+        req.materialize_inferences,
     )
     .await?;
     // 审计只记不阻断

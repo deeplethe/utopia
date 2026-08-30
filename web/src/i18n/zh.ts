@@ -60,6 +60,8 @@ export const zh: Strings = {
     only_postgres: "目前只支持 PostgreSQL。",
     bad_conn_string: "连接串要以 postgres:// 开头",
     concurrency_range: "填一个 1 到 256 之间的数。",
+    inference_off: "这个库没有打开物化推理。到设置里开。",
+    bad_resolution: "这不是一个有效的裁决。",
   },
   errDetail: (msg: string, detail: string) => `${msg}（${detail}）`,
   toast: {
@@ -793,6 +795,7 @@ export const zh: Strings = {
     railLowConfidence: "低置信度",
     railMappings: "语义层",
     railViolations: "公理",
+    railDefects: "本体",
     railDecisions: "决定",
     railMerges: "合并",
     categoryEmpty: "这个队列是空的。",
@@ -835,6 +838,24 @@ export const zh: Strings = {
     merge: "合并",
     keep: "保持分开",
     lowConfidence: "低置信度事实",
+    defects: "本体自相矛盾",
+    defectsHint:
+      "定义本身的问题，没有牵涉任何事实。这一档排在前面：定义站不住的时候，据它报出来的每一条事实级结论都可疑。",
+    defectSymAsym: "同时声明了对称与反对称",
+    defectTransFunc: "传递与函数性并存",
+    defectCycle: "subClassOf 绕成了环",
+    defectDisjointAncestor: "与自己的祖先互斥",
+    defectInheritsDisjoint: "继承了两个互斥的类",
+    defectNeverInstantiable: "这个类永远不可能有实例",
+    defectFixed: "已去本体里改了",
+    defectAccepted: "先放着",
+    runInference: "跑一遍推理",
+    inferring: "推理中…",
+    inferenceNoRules: "本体没有声明传递或对称属性，编不出规则。",
+    inferenceAdded: (n: number) => `推出 ${n} 条`,
+    inferenceRetracted: (n: number) => `作废 ${n} 条`,
+    inferenceNothing: "没有新的可推",
+    inferenceCapped: (n: number) => `${n} 个谓词撞上单谓词上限，没有推完`,
     violations: "公理违规",
     violationsHint:
       "与本体自己声明的公理相抵触的事实。这里没有猜测——谓词没声明公理就不查。",
@@ -909,6 +930,9 @@ export const zh: Strings = {
       "当抽取遇到这个本体里没有的关系时，把它加进来，并把一直等着它的那些事实重新归类。" +
       "每一次变更都会列出，并且可以撤销。关掉它并不会让 Utopia 不再留意——" +
       "那些说法仍然会汇集到「未匹配」下，只是要等你点头。",
+    materialize: "物化推理",
+    materializeNote:
+      "把本体蕴含的事实写进账本——传递链与对称对。默认关：声明可能是错的，而这一步会改图。派生事实带标记，也随时可以撤回。",
     ontologyLang: "本体的语言",
     ontologyLangNote:
       "类与关系的描述用哪种语言写。它们会被原样送进抽取提示词，" +

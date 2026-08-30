@@ -65,6 +65,8 @@ export function KbSettings() {
   const [desc, setDesc] = useState("");
   const [visibility, setVisibility] = useState<"open" | "restricted">("open");
   const [autoExtend, setAutoExtend] = useState(true);
+  // **默认关**，与上面那个相反：推理往账本里写事实，而声明可能是错的
+  const [materialize, setMaterialize] = useState(false);
   const [ontoLang, setOntoLang] = useState<"en" | "zh">("en");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +77,7 @@ export function KbSettings() {
       setDesc(kb.data.description ?? "");
       setVisibility(kb.data.visibility);
       setAutoExtend(kb.data.auto_extend_ontology);
+      setMaterialize(kb.data.materialize_inferences);
       setOntoLang(kb.data.ontology_lang);
     }
   }, [kb.data]);
@@ -91,6 +94,7 @@ export function KbSettings() {
         description: desc.trim() || null,
         visibility,
         auto_extend_ontology: autoExtend,
+        materialize_inferences: materialize,
         ontology_lang: ontoLang,
       }),
     onSuccess: () => {
@@ -244,6 +248,24 @@ export function KbSettings() {
                   </span>
                   <span className="block text-xs leading-relaxed text-neutral-500">
                     {S.kbset.autoExtendNote}
+                  </span>
+                </span>
+              </label>
+              {/* 物化推理：**默认关**，与上面那个相反。自动扩本体动的是词表，
+                  这个动的是账本——它按公理往图里写事实，而声明可能是错的 */}
+              <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-[var(--u-accent)]"
+                  checked={materialize}
+                  onChange={(e) => setMaterialize(e.target.checked)}
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm text-neutral-200">
+                    {S.kbset.materialize}
+                  </span>
+                  <span className="block text-xs leading-relaxed text-neutral-500">
+                    {S.kbset.materializeNote}
                   </span>
                 </span>
               </label>
