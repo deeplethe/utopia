@@ -31,7 +31,7 @@
 | 0007 | [谁来决定一个说法值不值得成为关系](0007-who-decides-what-becomes-a-relation.md) | 已建成 · 采纳改由计数决定 · 含五条走过的死路 · **叙述动词待解** |
 | 0008 | [预制本体包作为冷启动](0008-ontology-packs-as-cold-start.md) | 规划中 · 建库仍只发种子关系 |
 | 0009 | [「还没判出来」不该是一个类](0009-no-type-is-a-type.md) | 已实施 · `entities.type_id` 改为可空 |
-| 0010 | [「说不出是什么关系」不该是一个关系](0010-no-relation-is-no-relation.md) | 已实施 · `facts.predicate_id` 改为可空 · 0009 在关系侧的孪生 |
+| 0010 | [「说不出是什么关系」不该是一个关系](0010-no-relation-is-no-relation.md) | 已实施 · `facts.predicate_id` 改为可空 · 0009 在关系侧的孪生 · **含一次七分钟后长回来的修订** |
 
 ## 不是决策记录的那些
 

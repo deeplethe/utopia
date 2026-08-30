@@ -158,6 +158,11 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
+    // **开跑前先扫地。** 断言 panic 会跳过下面的 teardown（它只接住 Err 那条路），
+    // 于是一次失败的跑会给下一次留下垃圾。清干净比把每条断言改成返回 Err 便宜
+    sqlx::query("DELETE FROM organizations WHERE name = 'no-predicate-test'")
+        .execute(&pool)
+        .await?;
     let f = seed(&pool).await?;
 
     let run = async {
@@ -231,15 +236,27 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
         assert!(c.is_some(), "变更流漏掉了没有谓词的事实");
         assert_eq!(c.unwrap().predicate_label.as_deref(), Some("acquired"));
 
-        // 7. 对照组：0052 删掉的是**内置**的 related_to。
-        // 只查 builtin：谁想自己建一个叫 related_to 的关系是他的自由，
-        // 而且并行跑的其它测试也可能建，全库计数会被它们污染
-        let leftover: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM relation_types WHERE key = 'related_to' AND builtin",
-        )
-        .fetch_one(&pool)
-        .await?;
-        assert_eq!(leftover, 0, "内置的 related_to 该在 0052 里被删掉");
+        // 7. **种子不能把它长回来。**
+        //
+        // 这一条第一版是空的：只 `SELECT count(*) … WHERE key='related_to' AND builtin`，
+        // 而上面的夹具是裸 SQL 建的库，从没调用过 `ensure_default_ontology`——
+        // 种子一次都没种下，断言在一片空地上成立。真实情况是 0052 删完七分钟，
+        // 代码就把行种回来了（见 0053）。**对照组必须先把种子种下去。**
+        utopia_store::graph::ensure_default_ontology(&pool, f.kb, "en").await?;
+        let seeded: Vec<String> =
+            sqlx::query_scalar("SELECT key FROM relation_types WHERE kb_id = $1 AND builtin")
+                .bind(f.kb)
+                .fetch_all(&pool)
+                .await?;
+        assert!(!seeded.is_empty(), "种子一个都没种下，这一条又成了空断言");
+        assert!(
+            !seeded.iter().any(|k| k == "related_to"),
+            "种子表把 related_to 长回来了：{seeded:?}"
+        );
+
+        // 只按 kb 查，不查全库：全库计数会被并行跑的其它测试和上一轮的残留污染，
+        // 那是条会无故变红的断言。这一条已经守住了要守的东西——
+        // 种子表种下之后，本体里没有一个"什么都没说"的关系可供模型挑选
 
         Ok::<(), anyhow::Error>(())
     }

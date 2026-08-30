@@ -98,16 +98,6 @@ const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool, &str)] = &[
         false,
         "Two names for the same thing — an abbreviation, codename or former name.",
     ),
-    (
-        "related_to",
-        "related to",
-        "state",
-        false,
-        false,
-        "Code-level fallback for predicates this ontology cannot express. Deliberately not \
-         offered in the extraction prompt: given a catch-all the model reaches for it instead \
-         of saying what the text said.",
-    ),
     // 问数语义层：概念 → 数据资产定义（object_value 宾语：{source, table?, expr?, sql?,
     // derived?, unit?, summary}）。多源=多条并存；同源口径演变由确认流程显式闭合，
     // 不靠引擎盲判（唯一性粒度是 (概念,源)，在 object_value 内部，引擎不感知）
@@ -153,12 +143,6 @@ const RELATION_TEXT_ZH: &[(&str, &str, &str)] = &[
         "alias_of",
         "别名",
         "同一个东西的两个名字——缩写、代号或曾用名。",
-    ),
-    (
-        "related_to",
-        "相关",
-        "代码层面的兜底，给本体表达不了的谓词用。**刻意不出现在抽取提示词里**：\
-         给了兜底选项，模型就会去拿它，而不去说原文究竟说了什么。",
     ),
     (
         "mapped_to",
@@ -527,7 +511,7 @@ pub async fn confirmed_mappings(
 }
 
 /// `proposed`：模型在这一块里实际提议的谓词。命中本体时它等于 key，
-/// 词表外被降级成 related_to 时它是唯一还留着原意的东西——事实行上只剩
+/// 本体外的谓词不落到关系上时，它是唯一还留着原意的东西——事实行上只剩
 /// "有关联"，原文说的"runs on"就靠这里活下来。
 pub async fn add_evidence(
     pool: &PgPool,
@@ -1270,12 +1254,12 @@ pub async fn graph_changes(
 }
 
 // ---------------------------------------------------------------------------
-// 谓词消解：把降级成 related_to 的事实认领回本体
+// 谓词消解：把没有谓词的事实认领回本体
 // ---------------------------------------------------------------------------
 
 // 视图类型 ProposedPredicate 定义在 utopia-core::models（store 不直接依赖 serde）
 
-/// 降级成 related_to 的事实上，原文用过哪些说法。
+/// 没有谓词的事实上，原文用过哪些说法。
 ///
 /// 这是本体扩展建议的证据基础——比 `ontology_misses` 的纯计数强的地方在于：
 /// 它连着具体事实，所以采纳一个说法时能直接说"将重新归类 57 条"并真的去改。
@@ -1346,7 +1330,7 @@ pub async fn proposed_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Pr
 /// 那条问「还有哪些说法等着被采纳」，看的是积压；这条问「这个说法有多普遍」，
 /// 看的是全量证据，条件与它内部那个 `spread` CTE 一致。
 ///
-/// 第一版照抄了 `rt.key = 'related_to'`，理由写的是「两处条件要一致」——错的。
+/// 第一版照抄了 `rt.key = 'related_to'`（当时还有那个兜底关系），理由写的是「两处条件要一致」——错的。
 /// 那样数出来的还是残渣：说法一旦被采纳、被谓词匹配接住、或被修正作废，
 /// 它的行就离开积压，篇数随之下降。一篇一篇往里灌的库因此永远攒不够两篇。
 /// 测试当场抓住了（两篇里只回来一篇）。
@@ -1370,7 +1354,7 @@ pub async fn proposed_predicate_documents(
     .await?)
 }
 
-/// 把由 `forms` 降级而来的 related_to 事实改写到 `predicate_id`。
+/// 把由 `forms` 认出来的无谓词事实改写到 `predicate_id`。
 /// 返回 (批次 id, 改写条数)——批次 id 是撤销的把手。
 ///
 /// **追加而非原地改**：插入带 `supersedes` 的新行并作废旧行，与人工纠正、

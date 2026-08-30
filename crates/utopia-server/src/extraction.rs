@@ -183,6 +183,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // 从前这里是一个叫 related_to 的兜底关系，且刻意不列给模型——它摆进提示词就成了
     // 逃生舱，模型读到说不清的关系时不去写原文说法，直接挑这个万能选项。
     // 现在它连行都没有了，逃生舱和"记得别列它"这两件事一起消失。
+    //
+    // **这两件事必须一起做，缺一件比都不做更糟。** 0052 只删了库里的行，没删
+    // `DEFAULT_RELATION_TYPES` 里的种子——而这里的排除过滤已经跟着删了。于是
+    // `ensure_default_ontology` 七分钟后把行种回来，`related_to` 第一次被**列进
+    // 提示词给模型看**。0001 量过：359 次使用里 321 次是模型从清单上挑的。
+    // 谁要往种子表里加回一个兜底关系，先看 0010。
     let type_key_by_id: HashMap<Uuid, &str> =
         etypes.iter().map(|t| (t.id, t.key.as_str())).collect();
     let attr_meta: HashMap<&str, &utopia_core::models::RelationType> = rtypes
