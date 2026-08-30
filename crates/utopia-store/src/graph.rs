@@ -22,82 +22,28 @@ const ADOPT_SUPERSEDED: &str = "superseded";
 /// 读成"并入"而不是"撤回"，否则界面会宣称一件没发生的事。
 const ADOPT_MERGED: &str = "merged";
 
-/// (key, label, temporal, functional, inverse_functional, description)
+/// 建库时铺的关系。**只剩 `mapped_to` 一条，而它也是暂留。**
 ///
-/// functional = 同一时刻一个主语至多一个宾语（张三同时只 reports_to 一人）；
-/// inverse_functional = 同一时刻一个宾语至多一个主语（一个项目同时只有一个 leads 它的人）。
-/// 两者都是时态冲突检测（自动闭合 valid_to）的触发依据——**标错就成批制造假冲突**，
-/// 所以自动扩本体永远把它们置 false，由人显式开启。
+/// 从前这里有九个（works_at、part_of、produces…）。删掉它们的理由跟 0009 删掉
+/// 内置实体类是同一条，只是晚了一步：
+///
+/// - **零个带签名。** 那九条一个 domain / range 都没设，方向只能靠散文写——
+///   与 0009 记的「零个带类型签名」一字不差。
+/// - **装了本体包也不会被顶替。** 实体类那边至少还能按 key 撞名被认领
+///   （`schema:Person` 接管 `person`），关系这边连这个都没有：schema.org 叫
+///   `worksFor`、`isPartOf`，key 与 `works_at`、`part_of` 对不上，于是**并存**——
+///   同一件事在图上成了两条边。`location` 割断地理子树那次就是这么来的。
+/// - **它们挡在公理前面。** 一致性检查（0002 R0）要 `is_transitive` /
+///   `is_asymmetric` / `is_symmetric` 这些位，而种子是代码里写死的六元组，
+///   没有这些列，于是**公理位恒为 false**。真词表带着公理（IOF 的 13 条传递属性、
+///   FOAF 的互斥声明），种子只会往里掺一批永远查不出矛盾的关系。
+///
+/// **`mapped_to` 暂留，但它也不该在这里。** 它是「怎么从数据库算出这个数」，
+/// 不是「世界上有什么」——按上面同一条理由，它属于语义层而不是本体。
+/// 现在不动它，因为搬走要一并重做三样今天白拿的东西：低置信事实的 Review
+/// 流（`review_routes` 按置信度捞，Confirm/Reject 零新 UI）、口径演变的双时态
+/// 历史、以及证据链。那是独立的一刀，配一篇自己的决策记录。
 const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool, &str)] = &[
-    (
-        "works_at",
-        "works at",
-        "state",
-        false,
-        false,
-        "A person is employed by or affiliated with an organization.",
-    ),
-    (
-        "leads",
-        "leads",
-        "state",
-        false,
-        true,
-        "A person heads an organization, project or team.",
-    ),
-    (
-        "reports_to",
-        "reports to",
-        "state",
-        true,
-        false,
-        "A person's direct manager in an org chart.",
-    ),
-    // 多对多：一个项目既属于 Microsoft Learn 也属于 Microsoft，一个组件同时属于
-    // 多个系统；即便按严格层级理解，原文也会并列陈述父级与祖先。曾误标 functional，
-    // 真实语料上把这些并存关系全判成矛盾——28 篇企业新闻就积压了 59 条假冲突。
-    (
-        "part_of",
-        "part of",
-        "state",
-        false,
-        false,
-        "The subject is a component or member of the object — a module of a system, a team \
-         inside a company. **Not availability**: a game playable on a service is not part of \
-         it. Not mere association.",
-    ),
-    (
-        "participates_in",
-        "participates in",
-        "state",
-        false,
-        false,
-        "The subject takes part in an event, programme or initiative.",
-    ),
-    (
-        "located_in",
-        "located in",
-        "state",
-        false,
-        false,
-        "The subject is physically situated in a place.",
-    ),
-    (
-        "produces",
-        "produces",
-        "state",
-        false,
-        false,
-        "An organization or project makes, publishes or releases the object.",
-    ),
-    (
-        "alias_of",
-        "alias of",
-        "eternal",
-        false,
-        false,
-        "Two names for the same thing — an abbreviation, codename or former name.",
-    ),
     // 问数语义层：概念 → 数据资产定义（object_value 宾语：{source, table?, expr?, sql?,
     // derived?, unit?, summary}）。多源=多条并存；同源口径演变由确认流程显式闭合，
     // 不靠引擎盲判（唯一性粒度是 (概念,源)，在 object_value 内部，引擎不感知）
@@ -125,31 +71,11 @@ const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool, &str)] = &[
 ///    输出一个不存在的类型。
 /// 2. **负面例子是干活的那半。** 模型的错误集中在相邻类的边界上，不在类的中心；
 ///    "什么不算" 比 "什么算" 更能改变结果。所以这不是翻译，是用中文重写一遍。
-const RELATION_TEXT_ZH: &[(&str, &str, &str)] = &[
-    ("works_at", "任职于", "一个人受雇于某个组织，或隶属于它。"),
-    ("leads", "领导", "一个人领导一个组织、项目或团队。"),
-    ("reports_to", "汇报给", "组织架构里一个人的直属上级。"),
-    (
-        "part_of",
-        "属于",
-        "主语是宾语的组成部分或成员——系统的一个模块、公司内部的一个团队。\
-         **不是「可以在……上用」**：一款游戏能在某个服务上玩，不等于它属于那个服务。\
-         也不是泛泛的「有关联」。",
-    ),
-    ("participates_in", "参与", "主语参与某个事件、计划或行动。"),
-    ("located_in", "位于", "主语在物理上处在某个地方。"),
-    ("produces", "出品", "一个组织或项目制造、发布或推出了宾语。"),
-    (
-        "alias_of",
-        "别名",
-        "同一个东西的两个名字——缩写、代号或曾用名。",
-    ),
-    (
-        "mapped_to",
-        "映射到",
-        "一个业务概念映射到一份具体的数据资产——语义层里「这个东西怎么算」的定义。",
-    ),
-];
+const RELATION_TEXT_ZH: &[(&str, &str, &str)] = &[(
+    "mapped_to",
+    "映射到",
+    "一个业务概念映射到一份具体的数据资产——语义层里「这个东西怎么算」的定义。",
+)];
 
 /// 取某个 key 在给定语言下的 (label, description)；没有该语言的措辞就回落到英文。
 ///
