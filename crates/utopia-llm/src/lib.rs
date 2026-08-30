@@ -4,6 +4,7 @@
 use futures_util::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -90,10 +91,51 @@ pub struct LlmClient {
     pub model: String,
 }
 
+/// 建连多久算失败。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// **多久没有新字节算这个请求死了。**
+///
+/// 不能用 `Client::timeout`（请求总时长）：`chat_tools_stream` 是真流式，
+/// 一次长对话正当地跑几分钟，总时长封顶会把它拦腰砍断。而 `read_timeout`
+/// 量的是**沉默**——流式下 token 持续到达，永远碰不到它；非流式下它兜住的
+/// 正是「请求发出去就石沉大海」。
+///
+/// 为什么是 300 秒而不是 60：非流式调用的首字节要等模型把整段生成完，
+/// 大提示词的抽取正常就要 60–120 秒，服务端排队时更久。设小了会把正常请求
+/// 判死，而这条路上「误杀」比「晚 5 分钟发现」贵得多——它会让本来能成的抽取失败。
+///
+/// **没有它的代价实测过**：`reqwest::Client::new()` 默认不设任何超时，
+/// 32 路并发打同一个账号时请求全部挂住，32 个 worker 槽被永久占满，
+/// 流水线停摆而**一条错误都不报**（jobs 的孤儿回收只在进程启动时跑一次，
+/// 进程活着就永远收不了尸）。7459 块的一次灌入死在第 55 块上。
+const READ_TIMEOUT: Duration = Duration::from_secs(300);
+
 impl LlmClient {
     pub fn new(base_url: &str, api_key: Option<&str>, model: &str) -> Self {
+        Self::with_timeouts(base_url, api_key, model, CONNECT_TIMEOUT, READ_TIMEOUT)
+    }
+
+    /// 超时可注入，只为**测得动**——生产走 [`LlmClient::new`]。
+    /// 拿 300 秒去测一次挂死要跑 5 分钟，那样的测试没人会留着。
+    pub fn with_timeouts(
+        base_url: &str,
+        api_key: Option<&str>,
+        model: &str,
+        connect: Duration,
+        read: Duration,
+    ) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .connect_timeout(connect)
+                .read_timeout(read)
+                .build()
+                // 只在 TLS 后端起不来时失败，那种情况下退回默认客户端也没有意义，
+                // 但也不该让整个进程崩在这里
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "HTTP 客户端建不起来，退回无超时的默认客户端");
+                    reqwest::Client::new()
+                }),
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.map(String::from),
             model: model.to_string(),
@@ -407,6 +449,59 @@ mod tests {
             .send()
             .await
             .expect_err("端口 1 不该连得上")
+    }
+
+    /// **接了连接却一个字节都不回**的服务端。
+    ///
+    /// 这是生产上真正发生的形态，也是最难发现的一种：TCP 连得上、TLS 握得成、
+    /// 请求发得出去，然后没了。连接错误会立刻报，这种不会——没有超时的话
+    /// `send().await` 就永远停在那里，而调用它的 worker 槽再也不释放。
+    async fn a_server_that_never_answers() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            // 收下连接就攥着不放。**必须持有 socket**：一 drop 就是 FIN，
+            // 那样测的又变成了连接被关闭，不是沉默
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        addr
+    }
+
+    /// 请求挂住时必须**报错返回**，而不是永远等下去。
+    ///
+    /// 没有这条守着，回归的样子是：一次灌入死在第 55 块，32 个 worker 槽被
+    /// 永久占满，jobs 表里全是 running，而日志和界面上一个字都没有。
+    #[tokio::test]
+    async fn a_silent_server_ends_in_an_error_not_a_hang() {
+        let addr = a_server_that_never_answers().await;
+        let client = LlmClient::with_timeouts(
+            &format!("http://{addr}"),
+            None,
+            "m",
+            Duration::from_secs(5),
+            Duration::from_millis(300),
+        );
+        let started = tokio::time::Instant::now();
+        let out = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.chat(&[ChatMessage {
+                role: "user".into(),
+                content: "hi".into(),
+            }]),
+        )
+        .await;
+
+        // 外层 timeout 触发 = 客户端自己没有把它掐掉，正是要修的那个 bug
+        let inner = out.expect("客户端没有超时，请求一直挂着");
+        assert!(inner.is_err(), "沉默的服务端不该被当成成功");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "read_timeout 没生效：等了 {:?}",
+            started.elapsed()
+        );
     }
 
     /// **判定必须穿透 context 层。**
