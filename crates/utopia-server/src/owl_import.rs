@@ -356,25 +356,44 @@ pub async fn apply(
     // IRI → 本体里的 id，父类解析要用
     let mut id_of: HashMap<String, Uuid> = HashMap::new();
 
+    // **新建的类一次插完，不逐条来。**
+    //
+    // 逐条 `execute(pool)` 每条各自提交，schema.org 那种量级（968 个类加约
+    // 1500 个属性）是五千次 fsync——实测导入 45 秒。同样的行数放进一条
+    // UNNEST 语句是 536 毫秒。Update 与 Aligned 留在下面逐条走：它们在
+    // 空库上是个位数，而且各自要读一次现状，批不起来。
+    let new_classes: Vec<(String, String, String, String)> = plan
+        .classes
+        .iter()
+        .filter(|i| i.disposition == Disposition::Create)
+        .filter_map(|i| by_iri.get(i.iri.as_str()).map(|c| (i, *c)))
+        // key 用 item 的：对齐表判为同名不同义时它是改过的那个
+        .map(|(i, c)| {
+            (
+                i.key.clone(),
+                c.label.clone(),
+                c.description.clone(),
+                c.iri.clone(),
+            )
+        })
+        .collect();
+    let created_ids =
+        utopia_store::ontology::create_entity_types_bulk(&state.pool, kb_id, &new_classes).await?;
+    for (key, label, _, iri) in &new_classes {
+        let _ = label;
+        if let Some(id) = created_ids.get(key) {
+            id_of.insert(iri.clone(), *id);
+            created_classes += 1;
+        }
+    }
+
     for item in &plan.classes {
         let Some(c) = by_iri.get(item.iri.as_str()) else {
             continue;
         };
         match item.disposition {
-            Disposition::Create => {
-                let id = utopia_store::ontology::create_entity_type_with_iri(
-                    &state.pool,
-                    kb_id,
-                    // **不是 `c.key`**：对齐表判为同名不同义时用的是改过的那个
-                    &item.key,
-                    &c.label,
-                    &c.description,
-                    &c.iri,
-                )
-                .await?;
-                id_of.insert(c.iri.clone(), id);
-                created_classes += 1;
-            }
+            // 上面已经批量建好了
+            Disposition::Create => {}
             Disposition::Update => {
                 // 两种 Update：这个 IRI 上次导过（按 IRI 找得到），
                 // 或者它要认领一个同名的本地类（按 key 找，且那一行还没有 IRI）
@@ -418,6 +437,8 @@ pub async fn apply(
     }
 
     // 父类第二遍解析：第一遍时父类可能还没建出来
+    // (子, 父) 边先攒着，一次插完
+    let mut parent_edges: Vec<(Uuid, Uuid)> = Vec::new();
     for c in &proj.classes {
         let Some(&child) = id_of.get(&c.iri) else {
             continue;
@@ -430,12 +451,15 @@ pub async fn apply(
             .iter()
             .filter_map(|iri| id_of.get(iri).copied())
             .collect();
-        if !parents.is_empty() {
-            // 成环时报错而不是中断整次导入：环是上游词汇表的问题，
-            // 而这一次导入的其余部分仍然值得落地
-            let _ = utopia_store::ontology::set_parents(&state.pool, kb_id, child, &parents).await;
-        }
+        parent_edges.extend(parents.into_iter().map(|p| (child, p)));
     }
+    // 一次插完。单条版每次都跑一个递归 CTE 查环，schema.org 有 975 条父类边，
+    // 就是 975 次递归查询加 975 次提交。
+    //
+    // **批量版不查环。** 单条版对成环的处置本来也只是跳过那一条（`let _ =`），
+    // 不中断导入；而导入完之后本体页仍然能发现并让人处理。用九百多次递归查询
+    // 换一个"发现得早一点"，不划算
+    utopia_store::ontology::set_parents_bulk(&state.pool, &parent_edges).await?;
 
     let by_prop_iri: HashMap<&str, &_> = proj
         .properties
@@ -450,6 +474,9 @@ pub async fn apply(
     // 词汇表说是就是，预览已经把它们单独列出来让人过目。
     let mut created_rels = 0usize;
     let mut updated_rels = 0usize;
+    let mut new_rels: Vec<utopia_store::ontology::BulkRelation> = Vec::new();
+    // (key, domains, ranges)：关系 id 要等批量插完才有，先按 key 记着
+    let mut pending_links: Vec<(String, Vec<Uuid>, Vec<Uuid>)> = Vec::new();
     for item in &plan.relations {
         if item.disposition == Disposition::KeyTaken {
             continue;
@@ -481,29 +508,41 @@ pub async fn apply(
             }
             continue;
         }
-        if utopia_store::ontology::create_relation_with_iri(
-            &state.pool,
-            kb_id,
-            &p.key,
-            &p.label,
-            &p.description,
-            &p.iri,
-            p.functional,
-            p.inverse_functional,
-            &domains,
-            &ranges,
-        )
-        .await?
-        .is_some()
-        {
-            created_rels += 1;
-        }
+        // 新建的攒起来一次插——理由同上面的类
+        new_rels.push(utopia_store::ontology::BulkRelation {
+            key: p.key.clone(),
+            label: p.label.clone(),
+            description: p.description.clone(),
+            iri: p.iri.clone(),
+            kind: "relation",
+            datatype: None,
+            functional: p.functional,
+            inverse_functional: p.inverse_functional,
+        });
+        pending_links.push((p.key.clone(), domains, ranges));
     }
+    let rel_ids =
+        utopia_store::ontology::create_relation_types_bulk(&state.pool, kb_id, &new_rels).await?;
+    created_rels += rel_ids.len();
+    // 关联行也摊平：单条版对每条关系跑 4 句（两张表各一次 DELETE 一次 INSERT），
+    // 一千五百条关系就是六千次提交
+    let mut link_d: Vec<(Uuid, Uuid)> = Vec::new();
+    let mut link_r: Vec<(Uuid, Uuid)> = Vec::new();
+    for (key, domains, ranges) in &pending_links {
+        let Some(rid) = rel_ids.get(key) else {
+            continue;
+        };
+        link_d.extend(domains.iter().map(|d| (*rid, *d)));
+        link_r.extend(ranges.iter().map(|r| (*rid, *r)));
+    }
+    utopia_store::ontology::link_domains_ranges_bulk(&state.pool, &link_d, &link_r).await?;
 
     // 属性：类建完、id_of 填好之后才轮到它们。计划里已经算出了每个属性的去向，
     // **这里只执行，不重新判断**——两处各判一次就会分叉，而分叉意味着
     // 预览说的和实际做的不是一回事
     let mut created_attrs = 0usize;
+    let mut new_attrs: Vec<utopia_store::ontology::BulkRelation> = Vec::new();
+    let mut pending_attr_domains: Vec<(String, Vec<Uuid>)> = Vec::new();
     for item in &plan.attributes {
         if item.disposition == Disposition::KeyTaken {
             continue;
@@ -524,22 +563,30 @@ pub async fn apply(
         if domain_ids.is_empty() {
             continue;
         }
-        if utopia_store::ontology::create_attribute_with_iri(
-            &state.pool,
-            kb_id,
-            &p.key,
-            &p.label,
-            &p.description,
-            &p.iri,
-            &domain_ids,
-            dt,
-        )
-        .await?
-        .is_some()
-        {
-            created_attrs += 1;
-        }
+        new_attrs.push(utopia_store::ontology::BulkRelation {
+            key: p.key.clone(),
+            label: p.label.clone(),
+            description: p.description.clone(),
+            iri: p.iri.clone(),
+            kind: "attribute",
+            datatype: Some(dt.to_string()),
+            // 属性不参与时态闭合，这两位对它没有意义
+            functional: false,
+            inverse_functional: false,
+        });
+        pending_attr_domains.push((p.key.clone(), domain_ids));
     }
+    let attr_ids =
+        utopia_store::ontology::create_relation_types_bulk(&state.pool, kb_id, &new_attrs).await?;
+    created_attrs += attr_ids.len();
+    let mut attr_links: Vec<(Uuid, Uuid)> = Vec::new();
+    for (key, domains) in &pending_attr_domains {
+        let Some(aid) = attr_ids.get(key) else {
+            continue;
+        };
+        attr_links.extend(domains.iter().map(|d| (*aid, *d)));
+    }
+    utopia_store::ontology::link_domains_ranges_bulk(&state.pool, &attr_links, &[]).await?;
 
     let summary = serde_json::json!({
         "classes_created": created_classes,

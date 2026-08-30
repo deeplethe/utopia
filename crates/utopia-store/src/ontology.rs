@@ -1125,3 +1125,171 @@ pub async fn nearest_relation_type_ids(
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
+
+/// 一次插完一批类，返回 key → id。
+///
+/// **存在的理由是 fsync。** 逐条 `execute(pool)` 每条各自提交，导入 schema.org
+/// 那种量级（968 个类加约 1500 个属性）是五千次 fsync，实测 45 秒；同样的行数
+/// 放进一条语句是 536 毫秒。差的不是往返，是提交。
+///
+/// `ON CONFLICT DO NOTHING` 而不是报错：撞 key 的处置在计划阶段已经判过了
+/// （[`crate::ontology::create_entity_type_with_iri`] 的注释讲了为什么不覆盖），
+/// 这里只是把计划落地，撞上说明计划与库不同步，跳过并让调用方从返回的 map 里
+/// 发现少了谁。
+pub async fn create_entity_types_bulk(
+    pool: &PgPool,
+    kb_id: Uuid,
+    rows: &[(String, String, String, String)],
+) -> AppResult<std::collections::HashMap<String, Uuid>> {
+    if rows.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    for (key, ..) in rows {
+        validate_key(key)?;
+    }
+    let keys: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+    let labels: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+    let descs: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
+    let iris: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
+    let out: Vec<(Uuid, String)> = sqlx::query_as(
+        "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description, iri)
+         SELECT gen_random_uuid(), $1, k, l, '#8ea5bd', 'circle', d, i
+         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[]) AS t(k, l, d, i)
+         ON CONFLICT (kb_id, key) DO NOTHING
+         RETURNING id, key",
+    )
+    .bind(kb_id)
+    .bind(&keys)
+    .bind(&labels)
+    .bind(&descs)
+    .bind(&iris)
+    .fetch_all(pool)
+    .await?;
+    Ok(out.into_iter().map(|(id, k)| (k, id)).collect())
+}
+
+/// 批量建关系/属性时的一行。
+///
+/// **`functional` / `inverse_functional` 必须照词汇表写下去，不能默认 false。**
+/// 它们是时态引擎自动闭合事实的依据，猜错会成批造假冲突——`part_of` 被误标成
+/// functional 那次积了 59 条。
+pub struct BulkRelation {
+    pub key: String,
+    pub label: String,
+    pub description: String,
+    pub iri: String,
+    /// `relation` 或 `attribute`
+    pub kind: &'static str,
+    /// 只对属性有意义，关系传 `None`
+    pub datatype: Option<String>,
+    pub functional: bool,
+    pub inverse_functional: bool,
+}
+
+/// 一次插完一批关系或属性，返回 key → id。语义同 [`create_entity_types_bulk`]。
+///
+/// `kind` 决定走关系通道还是属性通道；`datatype` 只对属性有意义，关系传 `None`。
+/// `temporal` 固定 `state`——OWL 里没有对应概念，猜 event 或 eternal 都更差
+/// （与单条版的判断一致）。
+pub async fn create_relation_types_bulk(
+    pool: &PgPool,
+    kb_id: Uuid,
+    rows: &[BulkRelation],
+) -> AppResult<std::collections::HashMap<String, Uuid>> {
+    if rows.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    for r in rows {
+        validate_key(&r.key)?;
+    }
+    let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
+    let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+    let descs: Vec<&str> = rows.iter().map(|r| r.description.as_str()).collect();
+    let iris: Vec<&str> = rows.iter().map(|r| r.iri.as_str()).collect();
+    let kinds: Vec<&str> = rows.iter().map(|r| r.kind).collect();
+    let dts: Vec<Option<&str>> = rows.iter().map(|r| r.datatype.as_deref()).collect();
+    let funcs: Vec<bool> = rows.iter().map(|r| r.functional).collect();
+    let invs: Vec<bool> = rows.iter().map(|r| r.inverse_functional).collect();
+    let out: Vec<(Uuid, String)> = sqlx::query_as(
+        "INSERT INTO relation_types
+             (id, kb_id, key, label, temporal, functional, inverse_functional,
+              description, kind, datatype, iri)
+         SELECT gen_random_uuid(), $1, k, l, 'state', FALSE, FALSE, d, kind, dt, i
+         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+              AS t(k, l, d, i, kind, dt)
+         ON CONFLICT (kb_id, key) DO NOTHING
+         RETURNING id, key",
+    )
+    .bind(kb_id)
+    .bind(&keys)
+    .bind(&labels)
+    .bind(&descs)
+    .bind(&iris)
+    .bind(&kinds)
+    .bind(&dts)
+    .bind(&funcs)
+    .bind(&invs)
+    .fetch_all(pool)
+    .await?;
+    Ok(out.into_iter().map(|(id, k)| (k, id)).collect())
+}
+
+/// 一次写完一批关系的 domain / range。
+///
+/// 单条版 [`set_domains_ranges`] 内部已经用 unnest 省了往返，但它对**每条关系**
+/// 都要跑 4 条语句（两张表各一次 DELETE 一次 INSERT）。1500 条关系就是 6000 次
+/// 独立提交，而提交才是代价。这里把所有关系的关联行摊平成两条语句。
+///
+/// **不 DELETE**：调用方是刚建出来的新关系，关联表上不可能有旧行。
+/// 更新既有关系仍然走单条版。
+pub async fn link_domains_ranges_bulk(
+    pool: &PgPool,
+    domains: &[(Uuid, Uuid)],
+    ranges: &[(Uuid, Uuid)],
+) -> AppResult<()> {
+    for (table, pairs) in [
+        ("relation_type_domains", domains),
+        ("relation_type_ranges", ranges),
+    ] {
+        if pairs.is_empty() {
+            continue;
+        }
+        let rels: Vec<Uuid> = pairs.iter().map(|p| p.0).collect();
+        let types: Vec<Uuid> = pairs.iter().map(|p| p.1).collect();
+        sqlx::query(&format!(
+            "INSERT INTO {table} (relation_type_id, entity_type_id)
+             SELECT r, t FROM UNNEST($1::uuid[], $2::uuid[]) AS x(r, t)
+             ON CONFLICT DO NOTHING"
+        ))
+        .bind(&rels)
+        .bind(&types)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// 一次设完一批类的父类。语义同 [`set_parents`]，但**不查环**。
+///
+/// 单条版每次都要跑一个递归 CTE 查环，一千个类就是一千次递归查询。
+/// 这里只用于导入新建的类：环是上游词汇表的问题，而 `set_parents` 对环的处置
+/// 本来也只是跳过那一条（`let _ =`），不是中断导入。导入完之后本体页
+/// 仍然能发现并让人处理。
+pub async fn set_parents_bulk(pool: &PgPool, pairs: &[(Uuid, Uuid)]) -> AppResult<()> {
+    if pairs.is_empty() {
+        return Ok(());
+    }
+    let children: Vec<Uuid> = pairs.iter().map(|p| p.0).collect();
+    let parents: Vec<Uuid> = pairs.iter().map(|p| p.1).collect();
+    sqlx::query(
+        "INSERT INTO entity_type_parents (child_id, parent_id)
+         SELECT c, p FROM UNNEST($1::uuid[], $2::uuid[]) AS x(c, p)
+         WHERE c <> p
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(&children)
+    .bind(&parents)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
