@@ -32,6 +32,38 @@ async fn drop_signal(
     .await;
 }
 
+/// 这一轮抽完了没有——没抽完就给出**要写进 graph_error 的那句话**。
+///
+/// 判据是「全抽完」而不是某个比例：任何比例都是拍的，而这里本来就有一个不需要拍的
+/// 判据——每一块都成了才叫抽完。
+///
+/// `attempted` 是**本轮取到的分块数**，不是文档总块数：重试只取
+/// `extracted_at IS NULL` 的块，所以第二轮的分母天然更小。措辞里说「本轮」，
+/// 别让读的人以为文档只有那么几块。
+fn incomplete_reason(unextracted: &[(i32, String)], attempted: usize) -> Option<String> {
+    if unextracted.is_empty() {
+        return None;
+    }
+    // 只举前三个：原因往往同一个（供应商不通就是所有块都不通），
+    // 全列出来只是把同一句话抄二十遍
+    let sample: Vec<String> = unextracted
+        .iter()
+        .take(3)
+        .map(|(seq, why)| format!("#{seq} {why}"))
+        .collect();
+    let more = unextracted.len().saturating_sub(sample.len());
+    let tail = if more > 0 {
+        format!("；另有 {more} 个")
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "本轮 {attempted} 个分块里 {} 个没能抽取：{}{tail}",
+        unextracted.len(),
+        sample.join("；")
+    ))
+}
+
 /// 自动扩本体的唯一入队点。**成功与失败两条路都要走到它。**
 ///
 /// 开关在这里重读，而不是沿用调用方手上那份：失败路径压根没加载过 kb，
@@ -243,6 +275,8 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // "星云科技上海研究院"，那它不该以第二个名字进清单——清单里每个实体只有
     // 一个展示形态，就是这篇文档第一次用的那个。中文里全称先出现，所以这也是较全的那个。
     let mut doc_entities: Vec<(Uuid, String, String)> = Vec::new();
+    // 整块没抽成的：(seq, 原因)。收尾时据此拒绝把这篇文档标成 done
+    let mut unextracted: Vec<(i32, String)> = Vec::new();
     let mut needs_adjudication = false;
     let mut conflicts_found = false;
     let mut fact_count = 0usize;
@@ -286,10 +320,13 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         );
         // 按模型限流：许可持有到调用结束，超出限额的分块在这里排队而不是打爆供应商
         let _permit = llm_util::acquire_chat(state, &settings).await;
+        // 这两处 continue 跳过的是**整个分块**——它一条事实都没产出。
+        // 记下来，收尾时据此决定这篇文档算不算抽完（见循环之后）
         let reply = match client.chat(&messages).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "抽取调用失败，跳过该分块");
+                unextracted.push((chunk.seq, format!("调用失败：{e}")));
                 continue;
             }
         };
@@ -297,6 +334,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "抽取结果解析失败，跳过该分块");
+                unextracted.push((chunk.seq, format!("结果解析失败：{e}")));
                 continue;
             }
         };
@@ -798,6 +836,23 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         tracing::info!(%document_id, "抽取任务已被新一轮接管，收尾时退出");
         return Ok(());
     }
+
+    // **有分块没抽成就不许标 done。**
+    //
+    // 从前这里无条件写 done：一次网络抖动让六篇文档 60 块里只抽成 12 块，
+    // 六篇全部显示"抽取完成"，八成的内容没进图，而界面上没有任何东西说出来。
+    // 失败只进了日志，而只进日志的错误等于没有错误。
+    //
+    // 返回 Err 之后这条链是完整的：`extract_document` 落 graph_failed + 原因，
+    // 界面上那篇文档变成可点开看错误的 failed；任务按 30s×attempts² 退避重试，
+    // 而已抽成的分块带着 extracted_at 会被跳过——所以重试很便宜，网络恢复就自愈。
+    // 重试耗尽才留在 failed，那时它说的是实话。
+    //
+    // 判据是"全抽完"而不是某个比例：任何比例都是拍的，而这里本来就有一个
+    // 不需要拍的判据——**每一块都成了才叫抽完**。
+    if let Some(msg) = incomplete_reason(&unextracted, chunks.len()) {
+        return Err(anyhow::anyhow!(msg));
+    }
     utopia_store::documents::set_graph_status(&state.pool, document_id, "done").await?;
     state.emit_document(doc.kb_id, document_id);
 
@@ -1025,7 +1080,7 @@ async fn chunk_lists(
 
 #[cfg(test)]
 mod tests {
-    use super::looks_literal;
+    use super::{incomplete_reason, looks_literal};
 
     #[test]
     fn only_numbers_and_dates_count_as_literals() {
@@ -1046,5 +1101,35 @@ mod tests {
         ] {
             assert!(!looks_literal(no), "{no} 不该认成字面值");
         }
+    }
+
+    /// 这条判据存在的理由：一次网络抖动让六篇文档 60 块里只抽成 12 块，
+    /// 六篇**全部显示"抽取完成"**，八成的内容没进图，界面上没有任何东西说出来。
+    #[test]
+    fn a_document_with_a_skipped_chunk_is_not_complete() {
+        assert_eq!(incomplete_reason(&[], 23), None, "全抽完才算完成");
+        let one = [(7, "调用失败：timeout".to_string())];
+        let msg = incomplete_reason(&one, 23).expect("有块没抽成就不该算完成");
+        assert!(msg.contains("23"), "分母要说出来：{msg}");
+        assert!(msg.contains("#7"), "得指得出是哪一块：{msg}");
+    }
+
+    /// 原因往往是同一个（供应商不通就是所有块都不通），举三个够了，
+    /// 但**剩下多少必须说**——否则读的人会以为只坏了三块。
+    #[test]
+    fn many_failures_are_summarised_without_hiding_the_count() {
+        let many: Vec<(i32, String)> = (1..=20).map(|i| (i, "调用失败".into())).collect();
+        let msg = incomplete_reason(&many, 60).unwrap();
+        assert!(msg.contains("20"), "总数要在：{msg}");
+        assert!(msg.contains("另有 17 个"), "省略掉的数量要说出来：{msg}");
+        assert_eq!(msg.matches("调用失败").count(), 3, "只举三个");
+    }
+
+    /// 重试时 `chunks_for_extraction` 只取还没抽的块，所以分母是**本轮**的数，
+    /// 不是文档总块数。措辞里说清楚，别让人以为文档只有这么几块。
+    #[test]
+    fn the_denominator_is_this_rounds_chunks_not_the_document() {
+        let msg = incomplete_reason(&[(2, "x".into())], 3).unwrap();
+        assert!(msg.starts_with("本轮 3 个分块"), "{msg}");
     }
 }
