@@ -22,121 +22,20 @@ const ADOPT_SUPERSEDED: &str = "superseded";
 /// 读成"并入"而不是"撤回"，否则界面会宣称一件没发生的事。
 const ADOPT_MERGED: &str = "merged";
 
-/// 建库时铺的关系。**只剩 `mapped_to` 一条，而它也是暂留。**
-///
-/// 从前这里有九个（works_at、part_of、produces…）。删掉它们的理由跟 0009 删掉
-/// 内置实体类是同一条，只是晚了一步：
-///
-/// - **零个带签名。** 那九条一个 domain / range 都没设，方向只能靠散文写——
-///   与 0009 记的「零个带类型签名」一字不差。
-/// - **装了本体包也不会被顶替。** 实体类那边至少还能按 key 撞名被认领
-///   （`schema:Person` 接管 `person`），关系这边连这个都没有：schema.org 叫
-///   `worksFor`、`isPartOf`，key 与 `works_at`、`part_of` 对不上，于是**并存**——
-///   同一件事在图上成了两条边。`location` 割断地理子树那次就是这么来的。
-/// - **它们挡在公理前面。** 一致性检查（0002 R0）要 `is_transitive` /
-///   `is_asymmetric` / `is_symmetric` 这些位，而种子是代码里写死的六元组，
-///   没有这些列，于是**公理位恒为 false**。真词表带着公理（IOF 的 13 条传递属性、
-///   FOAF 的互斥声明），种子只会往里掺一批永远查不出矛盾的关系。
-///
-/// **`mapped_to` 暂留，但它也不该在这里。** 它是「怎么从数据库算出这个数」，
-/// 不是「世界上有什么」——按上面同一条理由，它属于语义层而不是本体。
-/// 现在不动它，因为搬走要一并重做三样今天白拿的东西：低置信事实的 Review
-/// 流（`review_routes` 按置信度捞，Confirm/Reject 零新 UI）、口径演变的双时态
-/// 历史、以及证据链。那是独立的一刀，配一篇自己的决策记录。
-const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool, &str)] = &[
-    // 问数语义层：概念 → 数据资产定义（object_value 宾语：{source, table?, expr?, sql?,
-    // derived?, unit?, summary}）。多源=多条并存；同源口径演变由确认流程显式闭合，
-    // 不靠引擎盲判（唯一性粒度是 (概念,源)，在 object_value 内部，引擎不感知）
-    (
-        "mapped_to",
-        "mapped to",
-        "state",
-        false,
-        false,
-        "A business concept maps to a concrete data asset — the semantic layer's definition \
-         of how to compute it.",
-    ),
-];
-
-/// 关系的中文措辞：`key → (label, description)`。label 是**动词短语**，
-/// 读起来要能接上主宾：「张三 —任职于→ 星云科技」。
-///
-/// **只覆盖 label 与 description**。时态与函数性跟语言无关，在上面那张表里
-/// 只有一份——复制一遍迟早会漂移。
-///
-/// 两条写法上的规矩，都不是文风问题：
-///
-/// 1. **描述里提到类型时用 key，不用 label。** 中文库的 label 是「人物」，
-///    但模型必须输出 `person`。描述逐字进提示词，写「那些属于人物」等于教模型
-///    输出一个不存在的类型。
-/// 2. **负面例子是干活的那半。** 模型的错误集中在相邻类的边界上，不在类的中心；
-///    "什么不算" 比 "什么算" 更能改变结果。所以这不是翻译，是用中文重写一遍。
-const RELATION_TEXT_ZH: &[(&str, &str, &str)] = &[(
-    "mapped_to",
-    "映射到",
-    "一个业务概念映射到一份具体的数据资产——语义层里「这个东西怎么算」的定义。",
-)];
-
-/// 取某个 key 在给定语言下的 (label, description)；没有该语言的措辞就回落到英文。
-///
-/// 回落是必须的：中文表漏了一条不该让建库失败，只该让那一条是英文。
-fn localized(
-    table: &'static [(&'static str, &'static str, &'static str)],
-    key: &str,
-    lang: &str,
-    fallback: (&'static str, &'static str),
-) -> (&'static str, &'static str) {
-    if lang == "zh" {
-        if let Some((_, label, description)) = table.iter().find(|(k, _, _)| *k == key) {
-            return (label, description);
-        }
-    }
-    fallback
-}
-
-/// 建库时铺内置本体——**只有关系，没有实体类**（见 `docs/decisions/0009`）。
-/// 已存在的行只补空描述，
-/// 不覆盖人写过的：种子里的描述是缺省值不是权威，用户按自己的语料调过之后
-/// 不该被下一次调用抹掉。
-///
-///
-/// 从前这里有九个（person、organization、location…）。通病是**零个带类型签名**，
-/// 方向只能靠散文写；而装了 schema.org 之后它们又会被同名的真类顶替，
-/// 等于从头到尾只是个占位。`location` 是反例中的反例——schema.org 里它叫 `Place`，
-/// key 对不上于是不被认领，`City` 挂到另建的 `place` 底下，
-/// 一个我们自己起的名字把整条地理子树割断了。
-///
-/// 兜底类 `concept` 一并退场：「还没判出来」现在由 `entities.type_id IS NULL` 表达。
-/// 哨兵有名字，有名字就会撞——`skos:Concept` 派生出的 key 正是 `concept`，
-/// 而哨兵没有 IRI，导入的「占位者没有 IRI 就认领它」会让它直接接管。
-pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid, lang: &str) -> AppResult<()> {
-    for (key, en_label, temporal, functional, inverse_functional, en_description) in
-        DEFAULT_RELATION_TYPES
-    {
-        let (label, description) =
-            localized(RELATION_TEXT_ZH, key, lang, (en_label, en_description));
-        sqlx::query(
-            "INSERT INTO relation_types
-                (id, kb_id, key, label, temporal, functional, inverse_functional, builtin,
-                 description)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, $8)
-             ON CONFLICT (kb_id, key) DO UPDATE
-               SET description = EXCLUDED.description
-               WHERE relation_types.description = ''",
-        )
-        .bind(Uuid::now_v7())
-        .bind(kb_id)
-        .bind(key)
-        .bind(label)
-        .bind(temporal)
-        .bind(functional)
-        .bind(inverse_functional)
-        .bind(description)
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
-}
+// 建库不再播种任何关系，也不再有 `ensure_default_ontology`。
+//
+// 这里曾经有十条种子关系、一张中文措辞表、一个按语言取措辞的 `localized`，
+// 以及一个在建库 / 首次读本体 / 每次抽取前都会跑一遍的播种函数。它们分三次退场：
+//
+// - `related_to`（0010）：代码层面的兜底，摆进提示词就成了逃生舱
+// - 另外八条（`#125`）：零个带签名、装了本体包也不会被同名顶替
+//   （`worksFor` 与 `works_at` 的 key 对不上，于是并存成两条边）、
+//   而且公理位恒为 false，一致性检查在它们上面永远查不出矛盾
+// - `mapped_to`（0011）：它是「这个数怎么算」不是「世界上有什么」，
+//   已搬去 `concept_mappings`
+//
+// 剩下的那个函数于是只是在遍历一张空表。**本体从建库第一天起就只有
+// 用户自己导入的词表**——与 0009 删掉内置实体类是同一件事的下半段。
 
 pub async fn entity_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<EntityType>> {
     Ok(

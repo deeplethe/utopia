@@ -89,14 +89,7 @@ pub async fn create(
     }
     utopia_store::access::set_kb_member(&state.pool, kb.id, user.id, "admin", Some(user.id))
         .await?;
-    install_packs(
-        &state,
-        kb.id,
-        user.id,
-        &kb.ontology_lang,
-        &req.ontology_packs,
-    )
-    .await?;
+    install_packs(&state, kb.id, user.id, &req.ontology_packs).await?;
     let kb = utopia_store::kbs::get(&state.pool, kb.id).await?;
     Ok(Json(kb))
 }
@@ -276,12 +269,12 @@ pub async fn audit_log(
     let events = utopia_store::audit::list_for_kb(&state.pool, id, 100).await?;
     Ok(Json(json!({ "events": events })))
 }
-
 /// 建库时装选中的本体包。
 ///
-/// **种子本体先落地**：包里的类要认领同名的种子类（`schema:Organization` 接管
-/// `organization`），而认领的前提是那一行已经存在。`ensure_default_ontology`
-/// 平时是懒调的（首次读本体或首次抽取时），这里必须显式先跑一次。
+/// 从前这里要先跑一次 `ensure_default_ontology`：包里的类要认领同名的种子类
+/// （`schema:Organization` 接管 `organization`），而认领的前提是那一行已经存在。
+/// **现在没有种子可认领了**——0009 删掉内置实体类、0010 与 `#125` 删掉种子关系、
+/// 0011 把 `mapped_to` 搬去语义层之后，播种函数本身也退场了。包直接落进空库。
 ///
 /// **一个包失败不回滚已装的**：本体是加法，装了一半的库仍然可用，
 /// 而回滚要撤已经建好的类——那正是 0008 决定不做导入撤销的理由。
@@ -290,13 +283,11 @@ async fn install_packs(
     state: &AppState,
     kb_id: Uuid,
     actor: Uuid,
-    lang: &str,
     pack_ids: &[String],
 ) -> ApiResult<()> {
     if pack_ids.is_empty() {
         return Ok(());
     }
-    utopia_store::graph::ensure_default_ontology(&state.pool, kb_id, lang).await?;
     for id in pack_ids {
         let pack = crate::ontology_packs::get(id)
             .ok_or_else(|| AppError::invalid("unknown_pack", format!("未知的本体包：{id}")))?;

@@ -168,11 +168,6 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let my_epoch = utopia_store::documents::extract_epoch(&state.pool, document_id).await?;
     utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
     state.emit_document(doc.kb_id, document_id);
-    let kb_lang = utopia_store::kbs::get(&state.pool, doc.kb_id)
-        .await?
-        .ontology_lang;
-    utopia_store::graph::ensure_default_ontology(&state.pool, doc.kb_id, &kb_lang).await?;
-
     let etypes = utopia_store::graph::entity_types(&state.pool, doc.kb_id).await?;
     let rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;
     // 关系与属性分道：属性走字面值通道，不进关系清单。
@@ -188,7 +183,8 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     // `DEFAULT_RELATION_TYPES` 里的种子——而这里的排除过滤已经跟着删了。于是
     // `ensure_default_ontology` 七分钟后把行种回来，`related_to` 第一次被**列进
     // 提示词给模型看**。0001 量过：359 次使用里 321 次是模型从清单上挑的。
-    // 谁要往种子表里加回一个兜底关系，先看 0010。
+    // 谁要往种子表里加回一个兜底关系，先看 0010——不过那张表现在已经没有了
+    // （`#128`），连播种函数一起退场。
     let type_key_by_id: HashMap<Uuid, &str> =
         etypes.iter().map(|t| (t.id, t.key.as_str())).collect();
     let attr_meta: HashMap<&str, &utopia_core::models::RelationType> = rtypes

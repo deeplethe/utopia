@@ -236,22 +236,25 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
         assert!(c.is_some(), "变更流漏掉了没有谓词的事实");
         assert_eq!(c.unwrap().predicate_label.as_deref(), Some("acquired"));
 
-        // 7. **种子不能把它长回来。**
+        // 7. **不再有任何机制能把它长回来。**
         //
-        // 这一条第一版是空的：只 `SELECT count(*) … WHERE key='related_to' AND builtin`，
-        // 而上面的夹具是裸 SQL 建的库，从没调用过 `ensure_default_ontology`——
-        // 种子一次都没种下，断言在一片空地上成立。真实情况是 0052 删完七分钟，
-        // 代码就把行种回来了（见 0053）。**对照组必须先把种子种下去。**
-        utopia_store::graph::ensure_default_ontology(&pool, f.kb, "en").await?;
+        // 这一条的历史值得留着：第一版是空断言（只 `SELECT … WHERE builtin`，
+        // 而夹具是裸 SQL 建的库、从没播种过，于是断言在一片空地上成立）；
+        // 第二版补了对照组——先调 `ensure_default_ontology` 把种子种下去，
+        // 再确认 `related_to` 不在其中。因为 0052 删完七分钟，代码就把行种回来了（0053）。
+        //
+        // 现在**连播种函数都没有了**：0009 删内置实体类、0010 与 `#125` 删种子关系、
+        // 0011 把 `mapped_to` 搬去 `concept_mappings`，`ensure_default_ontology`
+        // 随之退场。所以这里改守更强的那条性质：**建库路径上不存在任何
+        // 代码硬塞的关系**，`builtin` 那一列在新库里恒为空。
         let seeded: Vec<String> =
             sqlx::query_scalar("SELECT key FROM relation_types WHERE kb_id = $1 AND builtin")
                 .bind(f.kb)
                 .fetch_all(&pool)
                 .await?;
-        assert!(!seeded.is_empty(), "种子一个都没种下，这一条又成了空断言");
         assert!(
-            !seeded.iter().any(|k| k == "related_to"),
-            "种子表把 related_to 长回来了：{seeded:?}"
+            seeded.is_empty(),
+            "本体里不该有代码硬塞进去的关系，实得 {seeded:?}"
         );
 
         // 只按 kb 查，不查全库：全库计数会被并行跑的其它测试和上一轮的残留污染，
