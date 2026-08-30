@@ -40,11 +40,7 @@ https://github.com/user-attachments/assets/PLACEHOLDER
 
 ## Philosophy
 
-We gave it a somewhat romantic name — **Utopia**. Keeping an ideal world running takes some serious design, and there is room here for only one of them — the system's sense of time. Ptolemy's geocentric model was long held to be a reasonable account of cosmic order, then revised and displaced step by step by Copernicus, Kepler, Galileo and Newton. Notice that what we keep is not merely "ah, heliocentrism is the right one"; it is the whole arc along which understanding moved, a history in full.
-
-Here a piece of knowledge is never overwritten because a new fact turned up. The system records when it was ingested, when it changed, the span over which it held, a chronological chain of revisions and of how our reading of it shifted, which is what makes a decision genuinely traceable: review an approval a year on, and what comes back is the full course and grounds of that decision chain as it stood at the time. In engineering terms, a bitemporal knowledge graph. To make it hold up in practice, we have iterated at length against public corpora spanning enterprise records, education, finance, law and research.
-
-Time is only one such design. Others centre on how knowledge is taken in, how the future is reasoned about, and how logic bounds action: [utopia.bi/philosophy](https://utopia.bi/philosophy)
+We gave it a somewhat romantic name — **Utopia**. Ptolemy's geocentric model was long held to be a reasonable account of cosmic order, then revised and displaced step by step by Copernicus, Kepler, Galileo and Newton. Notice that what we keep is not merely "ah, heliocentrism is the right one"; it is the whole arc along which understanding moved, a history in full. This is one of the things that set Utopia apart from a conventional knowledge graph: facts are organised into a replayable chain of revisions — engineered as a **bitemporal knowledge graph**. Review an action later and the full course and grounds of the decision come back with it. To make it hold up in practice, we have iterated at length against public corpora spanning enterprise records, education, finance, law and research. Temporality is only one facet — for how knowledge is taken in, how the future is reasoned about, and how logic bounds action, see [utopia.bi/philosophy](https://utopia.bi/philosophy).
 
 ## Features
 
