@@ -55,7 +55,11 @@ text-splitter = "0.32"
 pdf-extract = "0.12"
 calamine = "0.36"
 pgvector = { version = "0.4", features = ["sqlx"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "rustls", "webpki-roots", "charset", "system-proxy"] }
+# `gzip` 不是可选项：一次嵌入回 64×1024 个浮点数，写成 JSON 文本每个数字占
+# 21 字节而信息量只有 4 字节，一次响应 1.33 MB。实测同一条链路上不压缩 62 秒、
+# gzip 21 秒（429 KB）——服务端算完只用 1 秒，其余全在传。
+# `default-features = false` 把它一并关掉了，这里补回来。
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "http2", "rustls", "webpki-roots", "charset", "system-proxy", "gzip"] }
 
 feed-rs = "2"
 cron = "0.12"

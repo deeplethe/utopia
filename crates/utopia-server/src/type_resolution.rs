@@ -39,8 +39,14 @@ use uuid::Uuid;
 
 /// 一轮看多少个实体。够一次人工过目，也够看出检索准不准。
 const BATCH: i64 = 60;
-/// 每个实体检索几个候选。给裁决看的，不是让它在一堆勉强相关里硬挑一个。
-const CANDIDATES: i64 = 8;
+/// 每个实体检索几个候选。
+///
+/// **检索的活是端候选,说不是裁决的活。** 所以宁可多端两个——裁决看得到描述、
+/// 看得到现类,能说出"这些都不是";而检索漏掉的,裁决再好也够不着。0001 P3a
+/// 实测的失败正是全在检索一侧(`administrative_area`、`periodical` 从没被端上来)。
+///
+/// 从 8 加到 10:两路交替各占五席。代价是提示词里多两行类定义,而漏检没有退路。
+const CANDIDATES: i64 = 10;
 /// 看几个已定类的近邻。少了凑不出票数，多了尾巴上全是噪音。
 const NEIGHBOURS: i64 = 10;
 
@@ -123,28 +129,42 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
     // 两次结果取并集——多一次嵌入，换掉一整类漏检。
     let profiles: Vec<String> = subjects.iter().map(profile_of).collect();
     let names: Vec<Option<String>> = subjects.iter().map(name_query_of).collect();
-    let mut queries: Vec<String> = Vec::with_capacity(subjects.len() * 2);
-    // 每个实体在 queries 里占的下标：(画像, 名字)
+    // **两路各查各的索引**（0050）。从前两路共用整段索引，于是短说法那一路
+    // 被同义反复的类接管：`district. place` 回来的是 Map / Park / Country /
+    // Museum，四个赢家的嵌入原文全是 `X\nAn X.` 一行话，而带一百字定义的
+    // AdministrativeArea 排不进前八。短对短、长对长，这才是可比的
+    let name_queries: Vec<String> = names.iter().flatten().cloned().collect();
+    let (profile_hits, name_hits) = tokio::join!(
+        ontology_index::nearest_for_each(
+            state,
+            kb_id,
+            &profiles,
+            // 多取一些再按祖先过滤：过滤在检索之后，所以要留出被滤掉的余量
+            CANDIDATES * 4,
+            ontology_index::Target::Class,
+        ),
+        ontology_index::nearest_for_each(
+            state,
+            kb_id,
+            &name_queries,
+            CANDIDATES * 4,
+            ontology_index::Target::ClassLabel,
+        )
+    );
+    let profile_hits = profile_hits.unwrap_or_default();
+    let name_hits = name_hits.unwrap_or_default();
+    // 每个实体在两份结果里各占的下标：(画像, 名字)。名字那一路只有给得出
+    // 说法的实体才发了查询，所以下标要单独数
     let mut slots: Vec<(usize, Option<usize>)> = Vec::with_capacity(subjects.len());
-    for (p, n) in profiles.iter().zip(&names) {
-        let pi = queries.len();
-        queries.push(p.clone());
-        let ni = n.as_ref().map(|q| {
-            queries.push(q.clone());
-            queries.len() - 1
+    let mut ni = 0usize;
+    for (pi, n) in names.iter().enumerate() {
+        let slot = n.as_ref().map(|_| {
+            let k = ni;
+            ni += 1;
+            k
         });
-        slots.push((pi, ni));
+        slots.push((pi, slot));
     }
-    let hits = ontology_index::nearest_for_each(
-        state,
-        kb_id,
-        &queries,
-        // 多取一些再按祖先过滤：过滤在检索之后，所以要留出被滤掉的余量
-        CANDIDATES * 4,
-        ontology_index::Target::Class,
-    )
-    .await
-    .unwrap_or_default();
 
     let mut out = Vec::with_capacity(subjects.len());
     for (i, s) in subjects.iter().enumerate() {
@@ -176,11 +196,10 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
         //
         // 交替之后两路各占一半席位，谁的距离数值大小不再影响谁被看见。
         let (pi, ni) = slots[i];
-        let lists: Vec<Vec<_>> = [Some(pi), ni]
-            .into_iter()
-            .flatten()
-            .map(|idx| hits.get(idx).cloned().unwrap_or_default())
-            .collect();
+        let mut lists: Vec<Vec<_>> = vec![profile_hits.get(pi).cloned().unwrap_or_default()];
+        if let Some(k) = ni {
+            lists.push(name_hits.get(k).cloned().unwrap_or_default());
+        }
         let mut seen_ids: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let mut ranked: Vec<utopia_core::models::TypeCandidate> = Vec::new();
         let longest = lists.iter().map(Vec::len).max().unwrap_or(0);

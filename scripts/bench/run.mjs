@@ -178,8 +178,12 @@ async function main() {
     // 分钟，分不清是在跑还是卡死了。
     await until(
       async () => {
+        // **两份向量都要等**（0050）。只等 `embedding` 的话，label 那份还没补完
+        // 就开跑，短说法那一路一条都检索不到——测出来的是个半成品，而且看不出来
         const left = num(
-          "SELECT count(*) FILTER (WHERE embedding IS NULL) FROM entity_types WHERE kb_id='" +
+          "SELECT count(*) FILTER (WHERE embedding IS NULL)" +
+            " + count(*) FILTER (WHERE label_embedding IS NULL)" +
+            " FROM entity_types WHERE kb_id='" +
             kb +
             "'",
         );

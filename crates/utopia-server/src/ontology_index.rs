@@ -9,11 +9,32 @@
 //! 而对比原文不会。
 
 use crate::{llm_util, AppState};
+use futures_util::{stream, StreamExt};
 use utopia_store::ontology::TypeToEmbed;
 use uuid::Uuid;
 
-/// 一次送多少条去嵌入。跟文档分块那边同量级，够摊平往返又不至于把请求撑爆。
+/// 一次送多少条去嵌入。
+///
+/// **64 是实测站得住的那个数。** 曾经改成 16，理由是拿合成短文本量出来的
+/// "每条更快"——而真实的类文本平均 151 字符，那组数据不作数。改小之后请求数
+/// 翻四倍、每个都付约 2.5 秒固定开销，整体吞吐反而掉了一半。
+///
+/// 换批大小之前先拿**真实的 `embedded_text`** 去量，别拿造出来的短句。
+
 const BATCH: usize = 64;
+/// 同时在飞的嵌入批数上限。
+///
+/// **关键不是快，是不能把闸门占死。** 这是个后台补齐任务，而嵌入模型的并发闸门
+/// （`model_concurrency`，缺省 10）是全局共享的——文档分块入库也要走它。
+///
+/// 从前这里串行，一次一张许可证、每批之间释放，文档处理插得进来。改成
+/// `join_all` 一次挂 31 个批次之后，它变成一个常驻的 10 深队列，每个批次握着
+/// 许可证 60 秒：**5 篇文档全卡在 `embedding` 状态，抽取 15 分钟零进展**。
+/// 不是 API 挂了，是这个任务把共享资源占满了。
+///
+/// 所以这里的上限必须**明显小于**闸门，给别的活留出位置。4 是实测能跑满
+/// 吞吐又留有余量的：4 个 16 条并发，墙钟 18.5 秒（串行要 50 秒）。
+const EMBED_JOBS: usize = 4;
 
 /// 把这个库里陈掉的本体向量补齐。没配嵌入模型就直接返回 `Ok(0)`——
 /// 检索是增强，不该拦住没配模型的部署。
@@ -38,31 +59,61 @@ pub async fn refresh_scoped(
     };
     let (Some(client), Some(model)) = (
         llm_util::embed_client(&settings),
-        settings.embed_model.as_deref(),
+        // 取拥有的一份:下面那些 future 要把 settings 挪进 Arc,借着它就动不了了
+        settings.embed_model.clone(),
     ) else {
         return Ok(0);
     };
 
     let stale =
-        utopia_store::ontology::types_needing_embedding(&state.pool, kb_id, model, only).await?;
+        utopia_store::ontology::types_needing_embedding(&state.pool, kb_id, &model, only).await?;
     if stale.is_empty() {
         return Ok(0);
     }
     let mut done = 0usize;
-    for batch in stale.chunks(BATCH) {
-        let texts: Vec<String> = batch.iter().map(|t| t.text.clone()).collect();
-        let _permit = llm_util::acquire_embed(state, &settings).await;
-        let vectors = client.embed(&texts).await?;
-        // 数量对不上就整批放弃：按位置配对，错位会把 person 的向量写到
-        // organization 上，而这种错一旦落库就再也看不出来了
-        if vectors.len() != batch.len() {
-            anyhow::bail!("嵌入返回 {} 条，送去的是 {} 条", vectors.len(), batch.len());
+    let mut failed = 0usize;
+    // **全部用拥有的数据**：这些 future 要跨 await 被并发驱动，借用过不了 Send 边界
+    let client = std::sync::Arc::new(client);
+    let model = std::sync::Arc::new(model);
+    let settings = std::sync::Arc::new(settings);
+    let batches: Vec<Vec<TypeToEmbed>> = stale.chunks(BATCH).map(<[_]>::to_vec).collect();
+    let mut jobs = stream::iter(batches.into_iter().map(|batch| {
+        let (client, model, settings) = (client.clone(), model.clone(), settings.clone());
+        let state = state;
+        async move {
+            let texts: Vec<String> = batch.iter().map(|t| t.text.clone()).collect();
+            let _permit = llm_util::acquire_embed(state, &settings).await;
+            let vectors = client.embed(&texts).await?;
+            // 数量对不上就整批放弃：按位置配对，错位会把 person 的向量写到
+            // organization 上，而这种错一旦落库就再也看不出来了
+            if vectors.len() != batch.len() {
+                anyhow::bail!("嵌入返回 {} 条，送去的是 {} 条", vectors.len(), batch.len());
+            }
+            let n = batch.len();
+            let items: Vec<(TypeToEmbed, Vec<f32>)> = batch.into_iter().zip(vectors).collect();
+            utopia_store::ontology::set_type_embeddings(&state.pool, &model, &items).await?;
+            Ok::<usize, anyhow::Error>(n)
         }
-        let items: Vec<(TypeToEmbed, Vec<f32>)> = batch.iter().cloned().zip(vectors).collect();
-        utopia_store::ontology::set_type_embeddings(&state.pool, model, &items).await?;
-        done += batch.len();
+    }))
+    .buffer_unordered(EMBED_JOBS);
+    // **一批失败不拖垮其余**：这是补齐任务，缺的下一轮自愈（判据是"当时嵌的
+    // 原文对不对得上"，不是时间戳）。整个 bail 掉等于把已经嵌好的也白跑一遍
+    while let Some(r) = jobs.next().await {
+        match r {
+            Ok(n) => done += n,
+            Err(e) => {
+                failed += 1;
+                tracing::warn!(%kb_id, error = %e, "一批本体向量没嵌上，留给下一轮");
+            }
+        }
     }
-    tracing::info!(%kb_id, count = done, "本体向量已补齐");
+    // **失败数要出现在这一行。** 从前它只报补齐了多少,于是 24 批全挂的那次
+    // 日志照样写着"已补齐",看日志的人以为没事
+    if failed > 0 {
+        tracing::warn!(%kb_id, count = done, failed, "本体向量补了一部分，其余留给下一轮");
+    } else {
+        tracing::info!(%kb_id, count = done, "本体向量已补齐");
+    }
     Ok(done)
 }
 
@@ -101,7 +152,12 @@ pub async fn nearest_for_each(
     for v in &vectors {
         out.push(match target {
             Target::Class => {
-                utopia_store::ontology::nearest_entity_types(&state.pool, kb_id, v, limit).await?
+                utopia_store::ontology::nearest_entity_types(&state.pool, kb_id, v, limit, false)
+                    .await?
+            }
+            Target::ClassLabel => {
+                utopia_store::ontology::nearest_entity_types(&state.pool, kb_id, v, limit, true)
+                    .await?
             }
             Target::Predicate(kind) => {
                 utopia_store::ontology::nearest_relation_types(&state.pool, kb_id, v, limit, kind)
@@ -119,7 +175,12 @@ pub async fn nearest_for_each(
 /// 拿一个词表外的类名去关系里检索，回来的一定是勉强相关的关系。
 #[derive(Debug, Clone, Copy)]
 pub enum Target {
+    /// 整段索引（label + 描述）。长画像走这一路
     Class,
+    /// **只有 label 的索引**（0050）。短说法（`district. place`）走这一路。
+    /// 短说法比整段索引会被同义反复的类接管——`Map` 那一行的描述就是
+    /// "A map."，赢在长度不在语义
+    ClassLabel,
     /// `Some("attribute")` 只找属性、`Some("relation")` 只找关系、`None` 都找。
     /// 字面值宾语的事实要的是属性，实体宾语的要的是关系
     Predicate(Option<&'static str>),

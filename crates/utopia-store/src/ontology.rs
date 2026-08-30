@@ -826,6 +826,17 @@ pub struct TypeToEmbed {
     pub id: Uuid,
     pub kind: TypeKind,
     pub text: String,
+    /// 写进哪一组列。类有两份向量：整段（label + 描述）与只有 label 的那份，
+    /// 分别服务长画像与短说法两种查询（见迁移 0050）
+    pub field: EmbedField,
+}
+
+/// 同一行的两份向量。**短查询比 Label，长画像比 Full**——查询分了两种形状，
+/// 文档也得分两种，否则短查询会被同义反复的类接管（`Map\nA map.` 那一类）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbedField {
+    Full,
+    Label,
 }
 
 /// 本体行属于哪张表。类进 `entity_types`，关系与属性同住 `relation_types`。
@@ -884,6 +895,26 @@ pub async fn types_needing_embedding(
         id,
         kind: TypeKind::Entity,
         text: embed_text(&label, &desc),
+        field: EmbedField::Full,
+    }));
+    // 只嵌 label 的那一份（0050）。短查询走这个索引——查询分了两种形状，
+    // 文档也得分两种，否则短查询被同义反复的类接管
+    let labels: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, label FROM entity_types
+         WHERE kb_id = $1
+           AND (label_embedding IS NULL
+                OR label_embedded_model IS DISTINCT FROM $2
+                OR label_embedded_text IS DISTINCT FROM btrim(label))",
+    )
+    .bind(kb_id)
+    .bind(model)
+    .fetch_all(pool)
+    .await?;
+    out.extend(labels.into_iter().map(|(id, label)| TypeToEmbed {
+        id,
+        kind: TypeKind::Entity,
+        text: label.trim().to_string(),
+        field: EmbedField::Label,
     }));
     if only == Some(TypeKind::Entity) {
         return Ok(out);
@@ -915,6 +946,8 @@ async fn relations_needing_embedding(
         id,
         kind: TypeKind::Relation,
         text: embed_text(&label, &desc),
+        // 关系没有短查询那一路,只有整段这一份
+        field: EmbedField::Full,
     }));
     Ok(out)
 }
@@ -932,8 +965,13 @@ pub async fn set_type_embeddings(
             TypeKind::Entity => "entity_types",
             TypeKind::Relation => "relation_types",
         };
+        // 两份向量各写各的列（0050）。列名前缀不同，其余一模一样
+        let (vec_col, text_col, model_col) = match item.field {
+            EmbedField::Full => ("embedding", "embedded_text", "embedded_model"),
+            EmbedField::Label => ("label_embedding", "label_embedded_text", "label_embedded_model"),
+        };
         sqlx::query(&format!(
-            "UPDATE {table} SET embedding = $2, embedded_text = $3, embedded_model = $4
+            "UPDATE {table} SET {vec_col} = $2, {text_col} = $3, {model_col} = $4
              WHERE id = $1"
         ))
         .bind(item.id)
@@ -967,17 +1005,25 @@ pub async fn nearest_entity_types(
     kb_id: Uuid,
     embedding: &[f32],
     limit: i64,
+    // true = 比只有 label 的那份向量（0050）。短说法走这一路：**短对短**，
+    // 否则 `district. place` 会被 `Map\nA map.` 这类同义反复的一行话赢过去
+    by_label: bool,
 ) -> AppResult<Vec<TypeCandidate>> {
-    let rows: Vec<(Uuid, String, String, String, f64)> = sqlx::query_as(
-        "SELECT id, key, label, coalesce(description, ''), (embedding <=> $2)::float8
+    let col = if by_label {
+        "label_embedding"
+    } else {
+        "embedding"
+    };
+    let rows: Vec<(Uuid, String, String, String, f64)> = sqlx::query_as(&format!(
+        "SELECT id, key, label, coalesce(description, ''), ({col} <=> $2)::float8
          FROM entity_types t
-         WHERE t.kb_id = $1 AND t.embedding IS NOT NULL
+         WHERE t.kb_id = $1 AND t.{col} IS NOT NULL
            AND (coalesce(btrim(t.description), '') <> ''
                 OR EXISTS (SELECT 1 FROM entity_type_parents p
                            WHERE p.child_id = t.id OR p.parent_id = t.id))
-         ORDER BY embedding <=> $2
-         LIMIT $3",
-    )
+         ORDER BY {col} <=> $2
+         LIMIT $3"
+    ))
     .bind(kb_id)
     .bind(Vector::from(embedding.to_vec()))
     .bind(limit)
