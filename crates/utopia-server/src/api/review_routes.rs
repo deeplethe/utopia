@@ -87,7 +87,8 @@ pub async fn close_fact(
         return Err(utopia_core::AppError::NotFound.into());
     }
     let snap = fact_snapshot(&state, kb_id, fact_id).await;
-    utopia_store::temporal::close_superseded(&state.pool, fact_id, body.valid_to).await?;
+    // 人在界面上选的是一个日期，所以闭合点按日
+    utopia_store::temporal::close_superseded(&state.pool, fact_id, body.valid_to, "day").await?;
     if let Some(mut d) = snap {
         d["valid_to"] = json!(body.valid_to.to_rfc3339());
         let _ = utopia_store::audit::record(

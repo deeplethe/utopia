@@ -488,7 +488,11 @@ pub struct EntityFact {
     pub valid_to: Option<DateTime<Utc>>,
     /// 精度描述的是这条事实**有的那些日期**的粒度。两端都没有日期时为 None——
     /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（迁移 0045）
-    pub valid_precision: Option<String>,
+    /// 起始端的粒度：year | month | day。没有 valid_from 时为 None
+    pub valid_from_precision: Option<String>,
+    /// 结束端的粒度，外加一个 `unknown`——**原文说它结束了，但没说哪天**。
+    /// `valid_to` 与它都为 None 才是「仍在持续」（迁移 0046）
+    pub valid_to_precision: Option<String>,
     pub confidence: f32,
     pub evidence_count: i64,
     /// 证据全部停留在来源文档的旧版（未被现行内容确认；不代表事实失效）
@@ -519,7 +523,11 @@ pub struct EntityHistoryEvent {
     pub valid_to: Option<DateTime<Utc>>,
     /// 精度描述的是这条事实**有的那些日期**的粒度。两端都没有日期时为 None——
     /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（迁移 0045）
-    pub valid_precision: Option<String>,
+    /// 起始端的粒度：year | month | day。没有 valid_from 时为 None
+    pub valid_from_precision: Option<String>,
+    /// 结束端的粒度，外加一个 `unknown`——**原文说它结束了，但没说哪天**。
+    /// `valid_to` 与它都为 None 才是「仍在持续」（迁移 0046）
+    pub valid_to_precision: Option<String>,
     pub confidence: f32,
     /// 人工操作者；NULL = 引擎自动（抽取写入 / 时态对账闭合）
     pub actor_name: Option<String>,
@@ -553,7 +561,11 @@ pub struct GraphChange {
     pub valid_to: Option<DateTime<Utc>>,
     /// 精度描述的是这条事实**有的那些日期**的粒度。两端都没有日期时为 None——
     /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（迁移 0045）
-    pub valid_precision: Option<String>,
+    /// 起始端的粒度：year | month | day。没有 valid_from 时为 None
+    pub valid_from_precision: Option<String>,
+    /// 结束端的粒度，外加一个 `unknown`——**原文说它结束了，但没说哪天**。
+    /// `valid_to` 与它都为 None 才是「仍在持续」（迁移 0046）
+    pub valid_to_precision: Option<String>,
     pub confidence: f32,
     pub document_id: Option<Uuid>,
     pub filename: Option<String>,

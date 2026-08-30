@@ -1105,7 +1105,9 @@ mod tests {
             valid_from: None,
             valid_to: None,
             // 两端都没日期就没有精度——夹具也得守这条不变量（迁移 0045）
-            valid_precision: None,
+            // 两端都没日期，所以两端都没有精度（迁移 0045 / 0046）
+            valid_from_precision: None,
+            valid_to_precision: None,
             confidence: 0.9,
             document_id: None,
             filename: None,

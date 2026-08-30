@@ -153,10 +153,8 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
             resolved.entity_id,
             mapped_to,
             &definition,
-            None,
-            None,
-            // 问数映射不带时间，所以也没有精度
-            None,
+            // 问数映射不带时间：两端都空
+            utopia_store::graph::Validity::default(),
             PROPOSAL_CONFIDENCE,
         )
         .await?;

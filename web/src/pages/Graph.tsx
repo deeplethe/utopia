@@ -1142,7 +1142,7 @@ function TimeScrubber({
 
 /* ============ 实体侧栏 ============ */
 
-function fmtTime(iso: string | null, precision: string): string | null {
+function fmtTime(iso: string | null, precision: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   const y = d.getUTCFullYear();
@@ -1155,12 +1155,14 @@ function fmtTime(iso: string | null, precision: string): string | null {
 
 function fmtInterval(f: EntityFact): string {
   if (f.temporal === "eternal") return "";
-  const from = fmtTime(f.valid_from, f.valid_precision);
-  const to = fmtTime(f.valid_to, f.valid_precision);
-  if (!from && !to) return "";
-  if (from && !to) return `${from} ~ ${S.graph.ongoing}`;
-  if (from && to) return `${from} ~ ${to}`;
-  return `~ ${to}`;
+  const from = fmtTime(f.valid_from, f.valid_from_precision);
+  const to = fmtTime(f.valid_to, f.valid_to_precision);
+  // **「结束了但不知哪天」绝不能显示成「至今」。** 那是这条改动要修的正脸：
+  // 原文明说 "former CEO of Weta Digital"，界面却告诉读者他还在任
+  const endedUnknown = !f.valid_to && f.valid_to_precision === "unknown";
+  if (!from && !to && !endedUnknown) return "";
+  const end = to ?? (endedUnknown ? S.graph.endedUnknown : S.graph.ongoing);
+  return from ? `${from} ~ ${end}` : `~ ${end}`;
 }
 
 function EntityPanel({

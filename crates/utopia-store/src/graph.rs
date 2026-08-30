@@ -445,9 +445,7 @@ pub async fn insert_fact(
     subject_id: Uuid,
     predicate_id: Uuid,
     object_id: Uuid,
-    valid_from: Option<chrono::DateTime<chrono::Utc>>,
-    valid_to: Option<chrono::DateTime<chrono::Utc>>,
-    valid_precision: Option<&str>,
+    validity: Validity<'_>,
     confidence: f32,
 ) -> AppResult<(Uuid, bool)> {
     insert_fact_inner(
@@ -456,12 +454,67 @@ pub async fn insert_fact(
         subject_id,
         predicate_id,
         FactObject::Entity(object_id),
-        valid_from,
-        valid_to,
-        valid_precision,
+        validity,
         confidence,
     )
     .await
+}
+
+/// 一条事实在**世界轴**上的位置：两端各自的时刻与粒度。
+///
+/// 打包成结构而不是四个平行参数：`Option<DateTime>` 和 `Option<&str>` 各有两个，
+/// 相邻同型的参数写反了编译器一声不吭，而这里写反的后果是一条事实的起止颠倒。
+///
+/// 结束端的三种状态（数据库的 `facts_to_precision_matches_date` 约束在挡）：
+///
+/// | 语义 | `to` | `to_precision` |
+/// |---|---|---|
+/// | 仍在持续 | `None` | `None` |
+/// | **结束了，不知哪天** | `None` | `Some("unknown")` |
+/// | 某时结束 | `Some(t)` | `Some("year"/"month"/"day")` |
+///
+/// 第二行是 0046 加的。在它之前 `to = None` 同时承载「还在持续」和「不知何时
+/// 结束」，于是 "former CEO of Weta Digital" 这种**结束明确、日期缺失**的句子
+/// 只能写成前者，图会断言一件原文说已经结束的事。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Validity<'a> {
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    pub from_precision: Option<&'a str>,
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+    pub to_precision: Option<&'a str>,
+}
+
+/// `valid_to_precision` 表示「结束了，但不知道是哪天」。
+pub const ENDED_UNKNOWN: &str = "unknown";
+
+impl<'a> Validity<'a> {
+    /// 起始端已知、结束端未知或不适用。
+    pub fn starting(
+        from: Option<chrono::DateTime<chrono::Utc>>,
+        from_precision: Option<&'a str>,
+    ) -> Self {
+        Self {
+            from,
+            from_precision,
+            to: None,
+            to_precision: None,
+        }
+    }
+
+    /// 原文说它结束了，但没说哪天。
+    pub fn ended_when_unknown(mut self) -> Self {
+        self.to = None;
+        self.to_precision = Some(ENDED_UNKNOWN);
+        self
+    }
+
+    /// 这条断言是否已经不再成立——**两种结束都算**。
+    ///
+    /// 判据写在这里而不是散在各处的 `valid_to.is_some()`：那种写法会把
+    /// 「结束了但不知哪天」漏成「仍在持续」，而那正是 0046 要修的东西。
+    pub fn has_ended(&self) -> bool {
+        self.to.is_some() || self.to_precision == Some(ENDED_UNKNOWN)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -471,9 +524,7 @@ async fn insert_fact_inner(
     subject_id: Uuid,
     predicate_id: Uuid,
     object: FactObject<'_>,
-    valid_from: Option<chrono::DateTime<chrono::Utc>>,
-    valid_to: Option<chrono::DateTime<chrono::Utc>>,
-    valid_precision: Option<&str>,
+    validity: Validity<'_>,
     confidence: f32,
 ) -> AppResult<(Uuid, bool)> {
     let same_sql = match object {
@@ -498,11 +549,11 @@ async fn insert_fact_inner(
     };
     let same: Vec<FactSpanRow> = q.fetch_all(pool).await?;
     // 精确重复：同 valid_from → 复用
-    if let Some((existing, _, _)) = same.iter().find(|(_, vf, _)| *vf == valid_from) {
+    if let Some((existing, _, _)) = same.iter().find(|(_, vf, _)| *vf == validity.from) {
         return Ok((*existing, false));
     }
     // 弱化陈述：新观察无时间，同断言已有开放行 → 并入（取起点最新的开放行）
-    if valid_from.is_none() && valid_to.is_none() {
+    if validity.from.is_none() && !validity.has_ended() {
         if let Some((existing, _, _)) = same
             .iter()
             .filter(|(_, _, vt)| vt.is_none())
@@ -512,7 +563,7 @@ async fn insert_fact_inner(
         }
     }
     // 时间精化候选：已有无时无终的裸行，本次观察带了起点 → 落库后作废裸行并链上
-    let refine_target = if valid_from.is_some() {
+    let refine_target = if validity.from.is_some() {
         same.iter()
             .find(|(_, vf, vt)| vf.is_none() && vt.is_none())
             .map(|(id, _, _)| *id)
@@ -524,13 +575,15 @@ async fn insert_fact_inner(
     let insert_sql = match object {
         FactObject::Entity(_) => {
             "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id,
-                                valid_from, valid_to, valid_precision, confidence)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                                valid_from, valid_from_precision,
+                                valid_to, valid_to_precision, confidence)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
         }
         FactObject::Value(_) => {
             "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_value,
-                                valid_from, valid_to, valid_precision, confidence)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                                valid_from, valid_from_precision,
+                                valid_to, valid_to_precision, confidence)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
         }
     };
     let mut ins = sqlx::query(insert_sql)
@@ -542,9 +595,10 @@ async fn insert_fact_inner(
         FactObject::Entity(oid) => ins.bind(oid),
         FactObject::Value(v) => ins.bind(v),
     };
-    ins.bind(valid_from)
-        .bind(valid_to)
-        .bind(valid_precision)
+    ins.bind(validity.from)
+        .bind(validity.from_precision)
+        .bind(validity.to)
+        .bind(validity.to_precision)
         .bind(confidence)
         .execute(pool)
         .await?;
@@ -584,9 +638,7 @@ pub async fn insert_value_fact(
     subject_id: Uuid,
     predicate_id: Uuid,
     object_value: &serde_json::Value,
-    valid_from: Option<chrono::DateTime<chrono::Utc>>,
-    valid_to: Option<chrono::DateTime<chrono::Utc>>,
-    valid_precision: Option<&str>,
+    validity: Validity<'_>,
     confidence: f32,
 ) -> AppResult<(Uuid, bool)> {
     insert_fact_inner(
@@ -595,9 +647,7 @@ pub async fn insert_value_fact(
         subject_id,
         predicate_id,
         FactObject::Value(object_value),
-        valid_from,
-        valid_to,
-        valid_precision,
+        validity,
         confidence,
     )
     .await
@@ -801,7 +851,7 @@ pub async fn entity_detail(
                 r.key AS predicate_key, r.label AS predicate_label, r.temporal,
                 CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END AS other_id,
                 o.canonical_name AS other_name, f.object_value,
-                f.valid_from, f.valid_to, f.valid_precision, f.confidence,
+                f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision, f.confidence,
                 (SELECT count(*) FROM fact_evidence fe WHERE fe.fact_id = f.id) AS evidence_count,
                 (EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
                  AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
@@ -1174,7 +1224,8 @@ pub async fn entity_history(
         "{EVENTS}
          SELECT ev.id AS fact_id, ev.at, ev.kind, ev.direction,
                 r.label AS predicate_label, o.canonical_name AS other_name,
-                ev.object_value, ev.valid_from, ev.valid_to, ev.valid_precision,
+                ev.object_value, ev.valid_from, ev.valid_from_precision,
+                ev.valid_to, ev.valid_to_precision,
                 ev.confidence, act.actor_name, act.action,
                 src.document_id, src.filename, src.quote
          FROM ev
@@ -1258,7 +1309,7 @@ pub async fn graph_changes(
     const EVENTS: &str = "
         WITH ev AS (
             SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value,
-                   f.valid_from, f.valid_to, f.valid_precision, f.confidence,
+                   f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision, f.confidence,
                    f.recorded_at AS at,
                    CASE WHEN f.supersedes IS NULL THEN 'asserted' ELSE 'corrected' END AS kind
             FROM facts f
@@ -1266,7 +1317,7 @@ pub async fn graph_changes(
               AND ($4::uuid IS NULL OR f.subject_id = $4 OR f.object_id = $4)
             UNION ALL
             SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value,
-                   f.valid_from, f.valid_to, f.valid_precision, f.confidence,
+                   f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision, f.confidence,
                    f.invalidated_at AS at,
                    CASE WHEN EXISTS (SELECT 1 FROM fact_adoptions fa
                                      WHERE fa.old_fact_id = f.id AND fa.mode = 'merged'
@@ -1282,7 +1333,8 @@ pub async fn graph_changes(
          SELECT ev.id AS fact_id, ev.at, ev.kind,
                 ev.subject_id, s.canonical_name AS subject_name,
                 r.label AS predicate_label, o.canonical_name AS object_name,
-                ev.object_value, ev.valid_from, ev.valid_to, ev.valid_precision,
+                ev.object_value, ev.valid_from, ev.valid_from_precision,
+                ev.valid_to, ev.valid_to_precision,
                 ev.confidence, src.document_id, src.filename, src.quote
          FROM ev
          JOIN relation_types r ON r.id = ev.predicate_id
@@ -1541,9 +1593,11 @@ async fn adopt(
                 // 关系那一路绑的就是旧行的值，行为一字不变
                 let inserted: Option<(Uuid,)> = sqlx::query_as(
                     "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
-                                        valid_from, valid_to, valid_precision, confidence, supersedes)
+                                        valid_from, valid_from_precision,
+                                        valid_to, valid_to_precision, confidence, supersedes)
                      SELECT $1, kb_id, subject_id, $3, $4, $5,
-                            valid_from, valid_to, valid_precision, confidence, id
+                            valid_from, valid_from_precision,
+                            valid_to, valid_to_precision, confidence, id
                      FROM facts WHERE id = $2 AND invalidated_at IS NULL
                      RETURNING id",
                 )

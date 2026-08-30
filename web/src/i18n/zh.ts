@@ -531,6 +531,7 @@ export const zh: Strings = {
       "这个区间是被调和过程闭合的（自动接续或一次审阅决定），并非文档里逐字这么写。" +
       "被取代的那条断言仍留在台账里。",
     ongoing: "至今",
+    endedUnknown: "已结束（时间不详）",
     stats: (n: number, e: number, active: number) =>
       `${n} 个实体 · ${e} 条事实 · ${active} 条现行`,
     stabilizing: "布局收敛中",

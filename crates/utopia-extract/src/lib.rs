@@ -182,8 +182,13 @@ pub fn build_messages(
             \"Nebula\" — and both forms mean one entity, listed once under the fuller form. \
             Two names are two entities only when the text is talking about two things.\n\
          2. Every fact's subject/object must appear in entities.\n\
-         3. Dates must be \"YYYY\", \"YYYY-MM\", \"YYYY-MM-DD\", or null. If a relation is still \
-            ongoing, valid_to is null. If the text states no date, use null — never invent dates.\n\
+         3. Dates must be \"YYYY\", \"YYYY-MM\", \"YYYY-MM-DD\", or null — never invent dates.\n\
+         3a. valid_to takes a third value: \"unknown\". Use it when the text says the relation \
+            has ended but does not say when — \"former CEO of X\", \"stepped down\", \"left the \
+            company\", \"no longer available\", \"until recently\". Use null only for something \
+            still going on. These are not interchangeable: null asserts it still holds, and \
+            writing null for a relation the text says is over makes us claim the opposite of \
+            the source.\n\
          4. {time_ctx}\n\
          5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\

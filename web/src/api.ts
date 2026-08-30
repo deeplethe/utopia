@@ -339,7 +339,9 @@ export interface EntityFact {
   object_value: Record<string, unknown> | null;
   valid_from: string | null;
   valid_to: string | null;
-  valid_precision: string;
+  valid_from_precision: string | null;
+  /** year | month | day，外加 unknown = 原文说它结束了但没说哪天 */
+  valid_to_precision: string | null;
   confidence: number;
   evidence_count: number;
   /** 证据全部停留在来源文档的旧版（未被现行内容确认；不代表事实失效） */
@@ -362,7 +364,9 @@ export interface EntityHistoryEvent {
   object_value: Record<string, unknown> | null;
   valid_from: string | null;
   valid_to: string | null;
-  valid_precision: string;
+  valid_from_precision: string | null;
+  /** year | month | day，外加 unknown = 原文说它结束了但没说哪天 */
+  valid_to_precision: string | null;
   confidence: number;
   /** null = 引擎自动（抽取写入 / 时态对账闭合） */
   actor_name: string | null;

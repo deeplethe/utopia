@@ -21,6 +21,8 @@ const AUTO_CLOSE_MIN_CONFIDENCE: f32 = 0.75;
 struct OpenFact {
     id: Uuid,
     valid_from: Option<DateTime<Utc>>,
+    /// 闭合别人的区间时要用它当那个时刻的粒度
+    valid_from_precision: Option<String>,
 }
 
 /// 唯一性方向：functional = 主语侧（张三同时只 reports_to 一人）；
@@ -55,13 +57,12 @@ pub async fn reconcile_new_fact(
     object_id: Option<Uuid>,
     object_value: Option<&serde_json::Value>,
     direction: Uniqueness,
-    new_valid_from: Option<DateTime<Utc>>,
-    new_valid_to: Option<DateTime<Utc>>,
+    new_validity: crate::graph::Validity<'_>,
     new_confidence: f32,
 ) -> AppResult<ReconcileReport> {
     // 已闭区间的新事实是历史陈述，不威胁"开放期唯一"不变量——不触发任何改写
     // （闭区间之间的重叠矛盾是更细的区间代数，暂不自动裁，留给 Review 的人眼）
-    if new_valid_to.is_some() {
+    if new_validity.has_ended() {
         return Ok(ReconcileReport::default());
     }
     // 宾语侧唯一性只对实体宾语有意义（字面值不"被占用"）
@@ -71,16 +72,18 @@ pub async fn reconcile_new_fact(
     // 不变量点查：主语侧 = 同 (kb, S, P) 宾语不同；宾语侧 = 同 (kb, P, O) 主语不同
     let sql = match direction {
         Uniqueness::SubjectSide => {
-            "SELECT id, valid_from FROM facts
+            "SELECT id, valid_from, valid_from_precision FROM facts
              WHERE kb_id = $1 AND subject_id = $2 AND predicate_id = $3
-               AND valid_to IS NULL AND invalidated_at IS NULL
+               AND valid_to IS NULL AND valid_to_precision IS NULL
+               AND invalidated_at IS NULL
                AND id <> $4
                AND (object_id IS DISTINCT FROM $5 OR object_value IS DISTINCT FROM $6)"
         }
         Uniqueness::ObjectSide => {
-            "SELECT id, valid_from FROM facts
+            "SELECT id, valid_from, valid_from_precision FROM facts
              WHERE kb_id = $1 AND object_id = $5 AND predicate_id = $3
-               AND valid_to IS NULL AND invalidated_at IS NULL
+               AND valid_to IS NULL AND valid_to_precision IS NULL
+               AND invalidated_at IS NULL
                AND id <> $4 AND subject_id IS DISTINCT FROM $2"
         }
     };
@@ -100,7 +103,7 @@ pub async fn reconcile_new_fact(
 
     let mut report = ReconcileReport::default();
     for old in open {
-        match (old.valid_from, new_valid_from) {
+        match (old.valid_from, new_validity.from) {
             // 新事实没有世界时间：闭合点无从谈起 → 人裁
             (_, None) => {
                 record_conflict(pool, kb_id, old.id, new_fact_id, "no_time").await?;
@@ -117,9 +120,15 @@ pub async fn reconcile_new_fact(
                     record_conflict(pool, kb_id, old.id, new_fact_id, "low_confidence").await?;
                     report.conflicts += 1;
                 } else {
-                    report
-                        .corrected
-                        .push(close_superseded(pool, new_fact_id, of).await?);
+                    report.corrected.push(
+                        close_superseded(
+                            pool,
+                            new_fact_id,
+                            of,
+                            old.valid_from_precision.as_deref().unwrap_or("day"),
+                        )
+                        .await?,
+                    );
                 }
             }
             // 常规接替：旧事实闭合在新事实的开始（旧事实无起点也适用——起点未知但已结束）
@@ -128,9 +137,15 @@ pub async fn reconcile_new_fact(
                     record_conflict(pool, kb_id, old.id, new_fact_id, "low_confidence").await?;
                     report.conflicts += 1;
                 } else {
-                    report
-                        .corrected
-                        .push(close_superseded(pool, old.id, nf).await?);
+                    report.corrected.push(
+                        close_superseded(
+                            pool,
+                            old.id,
+                            nf,
+                            new_validity.from_precision.unwrap_or("day"),
+                        )
+                        .await?,
+                    );
                 }
             }
         }
@@ -161,12 +176,14 @@ pub async fn reconcile_moved_facts(
         object_id: Option<Uuid>,
         object_value: Option<serde_json::Value>,
         valid_from: Option<DateTime<Utc>>,
+        valid_from_precision: Option<String>,
         confidence: f32,
         functional: bool,
         inverse_functional: bool,
     }
     let rows: Vec<MovedFact> = sqlx::query_as(
-        "SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value, f.valid_from,
+        "SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value,
+                f.valid_from, f.valid_from_precision,
                 f.confidence, r.functional, r.inverse_functional
          FROM facts f JOIN relation_types r ON r.id = f.predicate_id
          WHERE f.kb_id = $1 AND f.id = ANY($2)
@@ -213,8 +230,7 @@ pub async fn reconcile_moved_facts(
                 f.object_id,
                 f.object_value.as_ref(),
                 dir,
-                f.valid_from,
-                None,
+                crate::graph::Validity::starting(f.valid_from, f.valid_from_precision.as_deref()),
                 f.confidence,
             )
             .await?;
@@ -231,20 +247,23 @@ pub async fn close_superseded(
     pool: &PgPool,
     fact_id: Uuid,
     valid_to: DateTime<Utc>,
+    valid_to_precision: &str,
 ) -> AppResult<Uuid> {
     let mut tx = pool.begin().await?;
     let corrected = Uuid::now_v7();
     let inserted: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
-                            valid_from, valid_to, valid_precision, confidence, supersedes)
+                            valid_from, valid_from_precision,
+                            valid_to, valid_to_precision, confidence, supersedes)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
-                valid_from, $3, valid_precision, confidence, id
+                valid_from, valid_from_precision, $3, $4, confidence, id
          FROM facts WHERE id = $2 AND invalidated_at IS NULL
          RETURNING id",
     )
     .bind(corrected)
     .bind(fact_id)
     .bind(valid_to)
+    .bind(valid_to_precision)
     .fetch_optional(&mut *tx)
     .await?;
     // 已被并发修正过：不重复动手
@@ -363,7 +382,7 @@ pub async fn resolve_conflict(
                     "close_at is required when the new fact has no start time",
                 )
             })?;
-            close_superseded(pool, old_fact_id, at).await?;
+            close_superseded(pool, old_fact_id, at, "day").await?;
             "closed"
         }
         "keep" => "kept_both",

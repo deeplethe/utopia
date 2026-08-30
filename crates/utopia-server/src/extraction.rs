@@ -382,11 +382,25 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             }
             let from = f.valid_from.as_deref().and_then(utopia_extract::parse_time);
             let to = f.valid_to.as_deref().and_then(utopia_extract::parse_time);
-            // **两端都没日期就没有精度可言。** 从前这里 unwrap_or("day")，
-            // 于是一条完全没有时间的事实也带着"精确到日"落库——实测这类活行
-            // ai-timeline 有 843 条、国情咨文 728 条，全在说假话（迁移 0045）。
-            // 起始那端优先；只有结束日期时（"直到 2023 年"）精度描述的是它
-            let precision = from.map(|(_, p)| p).or_else(|| to.map(|(_, p)| p));
+            // **两端各记各的粒度**（迁移 0046）。从前一个精度列描述两个端点，
+            // 于是「2020 年开始、2023-05-06 结束」这种只能共用一个值。
+            //
+            // 模型给的 valid_to = "unknown" 表示**原文说它结束了、但没说哪天**。
+            // parse_time 解不出它（本来就不是日期），落在这里显式认掉——
+            // 不认的话它退化成 None，那条事实就又变回"仍在持续"了
+            let ended_unknown = f
+                .valid_to
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| v.eq_ignore_ascii_case(utopia_store::graph::ENDED_UNKNOWN));
+            let validity = utopia_store::graph::Validity {
+                from: from.map(|(t, _)| t),
+                from_precision: from.map(|(_, p)| p),
+                to: to.map(|(t, _)| t),
+                to_precision: to
+                    .map(|(_, p)| p)
+                    .or(ended_unknown.then_some(utopia_store::graph::ENDED_UNKNOWN)),
+            };
 
             // 属性事实：谓词命中属性 → 字面值通道。datatype 校验失败宁缺勿脏；
             // domain 校验（含子类上溯）挡住"把 salary 挂到 Organization"这类张冠李戴。
@@ -489,9 +503,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     subject_id,
                     attr.id,
                     &object_value,
-                    from.map(|(t, _)| t),
-                    to.map(|(t, _)| t),
-                    precision,
+                    validity,
                     confidence,
                 )
                 .await?;
@@ -520,8 +532,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                         None,
                         Some(&object_value),
                         utopia_store::temporal::Uniqueness::SubjectSide,
-                        from.map(|(t, _)| t),
-                        to.map(|(t, _)| t),
+                        validity,
                         confidence,
                     )
                     .await?;
@@ -601,9 +612,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     subject_id,
                     fallback,
                     &serde_json::json!({ "value": value }),
-                    from.map(|(t, _)| t),
-                    to.map(|(t, _)| t),
-                    precision,
+                    validity,
                     confidence,
                 )
                 .await?;
@@ -717,9 +726,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     subject_id,
                     predicate_id,
                     object_id,
-                    from.map(|(t, _)| t),
-                    to.map(|(t, _)| t),
-                    precision,
+                    validity,
                     confidence,
                 )
                 .await?;
@@ -759,8 +766,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                                 Some(object_id),
                                 None,
                                 dir,
-                                from.map(|(t, _)| t),
-                                to.map(|(t, _)| t),
+                                validity,
                                 confidence,
                             )
                             .await?;

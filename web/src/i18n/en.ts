@@ -580,6 +580,9 @@ export const en = {
       "This interval was closed by reconciliation (automatic succession or a review decision), " +
       "not stated verbatim in a document. The superseded assertion remains in the ledger.",
     ongoing: "now",
+    /* 必须跟 ongoing 看得出区别：混淆这两个正是迁移 0046 要修的东西——
+       原文说 "former CEO"，界面却显示 now */
+    endedUnknown: "ended, date unknown",
     stats: (n: number, e: number, active: number) =>
       `${n} entities · ${e} facts · ${active} active`,
     stabilizing: "Stabilizing layout",
