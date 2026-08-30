@@ -790,6 +790,7 @@ export const zh: Strings = {
     railConflicts: "冲突",
     railUnconfirmed: "未确认",
     railLowConfidence: "低置信度",
+    railMappings: "语义层",
     railDecisions: "决定",
     railMerges: "合并",
     categoryEmpty: "这个队列是空的。",
@@ -832,6 +833,10 @@ export const zh: Strings = {
     merge: "合并",
     keep: "保持分开",
     lowConfidence: "低置信度事实",
+    mappings: "语义层",
+    mappingsHint:
+      "从业务概念到「这个数怎么算」的提议。确认之后问数直接用这个口径，而不是每次从 schema 猜。",
+    mappingDerived: "派生",
     lowConfidenceHint:
       "抽取时置信度低于 75%。确认表示采信，驳回表示从图谱移除（台账仍留有记录）。",
     confirm: "确认",

@@ -777,3 +777,31 @@ pub struct ProposedAttribute {
     /// 事实已经在那儿了，它们的主语是什么类是事实，不是判断
     pub domain_keys: Vec<String>,
 }
+
+/// 语义层的一条映射：业务概念 → 数据资产定义（见 `docs/decisions/0011`）。
+///
+/// **字段是列，不是 JSON 里的键。** 从前它是一条 `mapped_to` 事实，
+/// 这几样全塞在 `object_value` 里——于是「哪些概念映射到了 orders 这张表」
+/// 要扒 JSON，而「同一个概念同一个源只该有一条」这条约束数据库管不到。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ConceptMapping {
+    pub id: Uuid,
+    pub concept_id: Uuid,
+    /// 概念的名字。读的一侧总要它（问数 prompt、Review 列表），
+    /// 每次再查一遍实体表是白跑
+    pub concept_name: String,
+    /// 挂载的数据源。同一个概念在不同源上可以有不同定义，这是有意支持的
+    pub source: String,
+    pub table_name: Option<String>,
+    pub expr: Option<String>,
+    pub sql: Option<String>,
+    pub unit: Option<String>,
+    pub summary: Option<String>,
+    /// 派生指标（「转化率 = 成交数 / 访问数」）：算出来的，不是表里的列
+    pub derived: bool,
+    /// proposed | confirmed | rejected
+    ///
+    /// **状态而不是置信度。** 从前借事实的 confidence 表达「提议 0.6 / 确认 1.0」，
+    /// 那是把二值状态编码成浮点数，还顺带让它落进「低置信事实」那一档
+    pub status: String,
+}

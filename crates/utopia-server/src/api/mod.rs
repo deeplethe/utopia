@@ -283,6 +283,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/review", get(review_routes::list))
         .route("/kbs/{id}/review/history", get(review_routes::history))
         .route("/kbs/{id}/review/{review_id}", post(review_routes::decide))
+        // 语义层映射的表态（0011）。跟消解审核并排——都是「引擎提议、人裁决」
+        .route(
+            "/kbs/{id}/review/mappings/{mapping_id}",
+            post(review_routes::decide_mapping),
+        )
         .route(
             "/kbs/{id}/facts/{fact_id}/confirm",
             post(review_routes::confirm_fact),

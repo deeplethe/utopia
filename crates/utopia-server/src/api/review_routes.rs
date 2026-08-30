@@ -53,9 +53,14 @@ pub async fn list(
     let merges = utopia_store::resolution::list_merges(&state.pool, kb_id, 30).await?;
     let conflicts = utopia_store::temporal::list_conflicts(&state.pool, kb_id).await?;
     let unconfirmed = utopia_store::graph::stale_facts(&state.pool, kb_id, 100).await?;
+    // 语义层的待表态映射（0011）。从前它借「低置信事实」那一档露面——
+    // 靠 confidence 0.6 混进去,而它根本不是一条关于世界的断言。
+    // 现在自成一档,前端也据此分组显示
+    let mappings = utopia_store::mappings::proposed(&state.pool, kb_id, 100).await?;
     Ok(Json(json!({
         "reviews": reviews, "facts": facts, "merges": merges,
-        "conflicts": conflicts, "unconfirmed": unconfirmed
+        "conflicts": conflicts, "unconfirmed": unconfirmed,
+        "mappings": mappings
     })))
 }
 
@@ -384,4 +389,44 @@ pub async fn history(
     let (events, total) =
         utopia_store::audit::review_history(&state.pool, kb_id, per, page * per).await?;
     Ok(Json(json!({ "events": events, "total": total })))
+}
+
+#[derive(Deserialize)]
+pub struct DecideMappingReq {
+    /// confirmed | rejected
+    pub status: String,
+}
+
+/// 对一条语义层映射表态（0011）。
+///
+/// **改状态不删行**：确认发生过、拒绝也发生过。而拒绝留痕当下就有用——
+/// 下一轮探索会再次算出被拒绝过的那条，`propose` 的 `WHERE status = 'proposed'`
+/// 据此不把它刷回待看。
+pub async fn decide_mapping(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, mapping_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideMappingReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    if !matches!(req.status.as_str(), "confirmed" | "rejected") {
+        return Err(utopia_core::AppError::invalid(
+            "bad_status",
+            "status 只能是 confirmed 或 rejected",
+        )
+        .into());
+    }
+    utopia_store::mappings::decide(&state.pool, kb_id, mapping_id, &req.status, user.id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "mapping.decided",
+        "concept_mapping",
+        Some(mapping_id),
+        json!({ "status": req.status }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok(Json(json!({ "ok": true })))
 }

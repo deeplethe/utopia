@@ -273,12 +273,15 @@ pub async fn chat(
     // 写工具跟人走：editor 及以上的对话才带 remember，viewer 纯只读
     // 挂载的数据源决定 query_data 是否入列（问数是读，viewer 亦可用）
     let mounted_sources = utopia_store::datasources::mounted(&state.pool, kb_id).await?;
-    // 语义层：人确认过的 指标/维度 → 数据资产 映射（置信 ≥0.75，与 Review 阈值互补），
-    // 直接进 system prompt——问数优先用确认口径，而不是每次从 schema 猜
+    // 语义层：人确认过的 指标/维度 → 数据资产 映射，直接进 system prompt——
+    // 问数优先用确认口径，而不是每次从 schema 猜。
+    //
+    // 从前这里按 `confidence >= 0.75` 捞事实,而那个阈值是拿浮点数编码一个
+    // 二值状态(提议 0.6 / 确认 1.0)。现在读 `status = confirmed`(0011)
     let mappings = if mounted_sources.is_empty() {
         Vec::new()
     } else {
-        utopia_store::graph::confirmed_mappings(&state.pool, kb_id, 0.75, 30).await?
+        utopia_store::mappings::confirmed(&state.pool, kb_id, 30).await?
     };
     let can_write = utopia_store::access::kb_role(&state.pool, &user, &kb)
         .await?
@@ -342,8 +345,30 @@ pub async fn chat(
                 system_prompt.push_str(
                     "\nSemantic layer (confirmed definitions — use these instead of guessing from schema):",
                 );
-                for (name, def) in &mappings {
-                    system_prompt.push_str(&format!("\n- {name}: {def}"));
+                // 从前这里直接把整份 JSON 打进去。现在字段是列，只挑问数用得上的
+                // 那几样铺开——`sql` 与 `expr` 是「怎么算」，`unit` 是答里必须带的
+                // 量纲，`summary` 是给模型的一句人话
+                for m in &mappings {
+                    let how = m
+                        .sql
+                        .as_deref()
+                        .or(m.expr.as_deref())
+                        .or(m.table_name.as_deref())
+                        .unwrap_or("-");
+                    let unit = m
+                        .unit
+                        .as_deref()
+                        .map(|u| format!(" [{u}]"))
+                        .unwrap_or_default();
+                    let note = m
+                        .summary
+                        .as_deref()
+                        .map(|s| format!(" — {s}"))
+                        .unwrap_or_default();
+                    system_prompt.push_str(&format!(
+                        "\n- {} ({}){unit}: {how}{note}",
+                        m.concept_name, m.source
+                    ));
                 }
             }
         }

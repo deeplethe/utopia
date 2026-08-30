@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  type ConceptMapping,
   type ConflictItem,
   type FactReviewItem,
   type MergeLog,
@@ -437,6 +438,58 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
   );
 }
 
+
+/** 一条待表态的语义层映射（0011）。
+ *
+ * 展示的重点是**「这个数怎么算」**——SQL / 表达式 / 表名按这个优先级取一个，
+ * 因为人要判断的正是它对不对。概念名与源是身份，unit 是答里必须带的量纲。 */
+function MappingRow({
+  mapping: m,
+  busy,
+  onDecide,
+}: {
+  mapping: ConceptMapping;
+  busy: boolean;
+  onDecide: (status: "confirmed" | "rejected") => void;
+}) {
+  const how = m.sql ?? m.expr ?? m.table_name ?? "—";
+  return (
+    <div className="glass rounded-xl p-3">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-sm text-neutral-200">{m.concept_name}</span>
+        <span className="text-[11px] text-neutral-500">{m.source}</span>
+        {m.unit && (
+          <span className="text-[11px] text-neutral-500">[{m.unit}]</span>
+        )}
+        {m.derived && (
+          <span className="text-[11px] text-[var(--u-warn)]">
+            {S.review.mappingDerived}
+          </span>
+        )}
+      </div>
+      <div className="mt-1 u-num text-xs text-neutral-400 break-all">{how}</div>
+      {m.summary && (
+        <p className="mt-1 text-xs text-neutral-500">{m.summary}</p>
+      )}
+      <div className="mt-2 flex gap-1.5">
+        <button
+          className="u-btn text-xs"
+          disabled={busy}
+          onClick={() => onDecide("rejected")}
+        >
+          {S.review.reject}
+        </button>
+        <button
+          className="u-btn u-btn-primary text-xs"
+          disabled={busy}
+          onClick={() => onDecide("confirmed")}
+        >
+          {S.review.confirm}
+        </button>
+      </div>
+    </div>
+  );
+}
 /* ---------- 页面：左栏分类 + 单类内容区 ---------- */
 
 type Sel =
@@ -444,6 +497,9 @@ type Sel =
   | "conflicts"
   | "unconfirmed"
   | "lowconf"
+  // 语义层的待表态映射（0011）。从前它借「低置信事实」那一档露面——
+  // 靠 0.6 的置信度混进去,而它根本不是一条关于世界的断言
+  | "mappings"
   | "decisions"
   | "merges";
 
@@ -452,12 +508,14 @@ const QUEUE_ORDER: Sel[] = [
   "conflicts",
   "unconfirmed",
   "lowconf",
+  "mappings",
 ];
 const PAGE_SIZE: Record<Sel, number> = {
   duplicates: DUP_PAGE,
   conflicts: CONFLICT_PAGE,
   unconfirmed: FACT_PAGE,
   lowconf: FACT_PAGE,
+  mappings: FACT_PAGE,
   merges: MERGE_PAGE,
   decisions: 20,
 };
@@ -549,6 +607,16 @@ export function Review() {
         : api.rejectFact(kb!.id, id),
     onSettled: invalidate,
   });
+  const mappingAction = useMutation({
+    mutationFn: ({
+      id,
+      status,
+    }: {
+      id: string;
+      status: "confirmed" | "rejected";
+    }) => api.decideMapping(kb!.id, id, status),
+    onSettled: invalidate,
+  });
   const revert = useMutation({
     mutationFn: (mergeId: string) => api.revertMerge(kb!.id, mergeId),
     onSettled: invalidate,
@@ -578,6 +646,7 @@ export function Review() {
     conflicts: data?.conflicts?.length ?? 0,
     unconfirmed: data?.unconfirmed?.length ?? 0,
     lowconf: data?.facts.length ?? 0,
+    mappings: data?.mappings?.length ?? 0,
     merges: data?.merges.length ?? 0,
     decisions: history.data?.total ?? 0,
   };
@@ -609,6 +678,7 @@ export function Review() {
       title: S.review.lowConfidence,
       hint: S.review.lowConfidenceHint,
     },
+    mappings: { title: S.review.mappings, hint: S.review.mappingsHint },
     decisions: { title: S.review.decisionsTitle, hint: S.review.decisionsHint },
     merges: { title: S.review.mergeHistory, hint: null },
   };
@@ -642,6 +712,12 @@ export function Review() {
             label={S.review.railLowConfidence}
             count={counts.lowconf}
             onClick={() => select("lowconf")}
+          />
+          <RailItem
+            active={active === "mappings"}
+            label={S.review.railMappings}
+            count={counts.mappings}
+            onClick={() => select("mappings")}
           />
         </div>
         <RailHeader label={S.review.tabHistory} />
@@ -770,6 +846,26 @@ export function Review() {
                       }
                     />
                   ))}
+                </div>
+              )}
+
+              {active === "mappings" && counts.mappings > 0 && (
+                <div className="space-y-3">
+                  {pageSlice(data.mappings ?? [], page, FACT_PAGE).rows.map(
+                    (m) => (
+                      <MappingRow
+                        key={m.id}
+                        mapping={m}
+                        busy={
+                          mappingAction.isPending &&
+                          mappingAction.variables?.id === m.id
+                        }
+                        onDecide={(status) =>
+                          mappingAction.mutate({ id: m.id, status })
+                        }
+                      />
+                    ),
+                  )}
                 </div>
               )}
 

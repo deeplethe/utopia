@@ -270,6 +270,26 @@ export interface ReviewItem {
   right: ReviewSide;
 }
 
+
+/** 语义层的一条映射：业务概念 → 数据资产定义（见 docs/decisions/0011）。
+ *
+ * 字段是列而不是 JSON 里的键——从前它是一条 `mapped_to` 事实，
+ * 这几样全塞在 `object_value` 里。 */
+export interface ConceptMapping {
+  id: string;
+  concept_id: string;
+  concept_name: string;
+  /** 挂载的数据源。同一概念在不同源上可以有不同定义 */
+  source: string;
+  table_name: string | null;
+  expr: string | null;
+  sql: string | null;
+  unit: string | null;
+  summary: string | null;
+  /** 派生指标：算出来的，不是表里的列 */
+  derived: boolean;
+  status: "proposed" | "confirmed" | "rejected";
+}
 export interface FactReviewItem {
   id: string;
   subject_name: string;
@@ -1130,6 +1150,7 @@ export const api = {
       merges: MergeLog[];
       conflicts: ConflictItem[];
       unconfirmed: FactReviewItem[];
+      mappings: ConceptMapping[];
     }>(`/api/v1/kbs/${kbId}/review`),
   closeFact: (kbId: string, factId: string, validTo: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/close`, {
@@ -1149,6 +1170,12 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/review/${reviewId}`, {
       method: "POST",
       body: JSON.stringify({ action }),
+    }),
+  /** 对一条语义层映射表态（0011）。改状态不删行——拒绝留痕，下一轮探索不再提议它 */
+  decideMapping: (kbId: string, mappingId: string, status: "confirmed" | "rejected") =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/review/mappings/${mappingId}`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
     }),
   confirmFact: (kbId: string, factId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/confirm`, {

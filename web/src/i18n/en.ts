@@ -887,6 +887,7 @@ export const en = {
     railConflicts: "Conflicts",
     railUnconfirmed: "Unconfirmed",
     railLowConfidence: "Low confidence",
+    railMappings: "Semantic layer",
     railDecisions: "Decisions",
     railMerges: "Merges",
     categoryEmpty: "This queue is clear.",
@@ -932,6 +933,10 @@ export const en = {
     merge: "Merge",
     keep: "Keep separate",
     lowConfidence: "Low-confidence facts",
+    mappings: "Semantic layer",
+    mappingsHint:
+      "Proposed mappings from a business concept to how it is computed. Confirm one and Ask uses it instead of guessing from the schema.",
+    mappingDerived: "derived",
     lowConfidenceHint:
       "Extracted with confidence below 75%. Confirm to trust, reject to remove from the graph (the ledger keeps the record).",
     confirm: "Confirm",

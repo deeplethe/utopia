@@ -1,15 +1,18 @@
 //! 问数语义映射的 Agentic 探索：读挂载源的 schema + KB 既有概念，让 LLM 提议
 //! "业务概念（Metric/Dimension 实体）→ 数据资产定义" 的映射。
 //!
-//! 提议以低置信（0.6）mapped_to 事实落库 → 自动流入 Review 的低置信区，
-//! Confirm/Reject 零新 UI；确认（置信提满）后的映射注入问数 prompt。
+//! 提议写进 `concept_mappings`（status = proposed）→ Review 页自成一档，
+//! Confirm / Reject 之后 status 变 confirmed，问数只读确认过的那些。
+//!
+//! **从前它是一条 0.6 置信的 `mapped_to` 事实**,借「低置信事实」那一档露面。
+//! 搬出来的理由见 0011:它不是关于世界的断言,是配置——而「确认」这个动作
+//! 当时是 `UPDATE facts SET confidence = 1.0`,原地改一张不许原地改的表。
 //! agent 只提议，口径生效权在人——与消解"宁分勿合"同一哲学。
 
 use crate::llm_util;
 use crate::state::AppState;
 use uuid::Uuid;
 
-const PROPOSAL_CONFIDENCE: f32 = 0.6;
 const MAX_SCHEMA_CHARS: usize = 12_000;
 
 pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
@@ -133,61 +136,35 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
         )
         .await?;
 
-        // 定义带 source + summary（Review 与 prompt 展示都靠 summary）
-        let mut definition = p["definition"].clone();
-        if !definition.is_object() {
+        // 定义拆成列写进 concept_mappings（0011）。从前它是一份塞进
+        // `object_value` 的 JSON，宾语挂在一条叫 mapped_to 的关系上——
+        // 而那条关系是本体里的一行，跟 works_at 并列。**它不是关于世界的
+        // 断言，是配置**，所以搬去自己的表
+        let def = &p["definition"];
+        if !def.is_object() {
             continue;
         }
-        definition["source"] = serde_json::json!(source);
-        if let Some(s) = p["summary"].as_str() {
-            definition["summary"] = serde_json::json!(s);
-        }
-
-        let mapped_to: Option<(Uuid,)> =
-            sqlx::query_as("SELECT id FROM relation_types WHERE kb_id = $1 AND key = 'mapped_to'")
-                .bind(kb_id)
-                .fetch_optional(&state.pool)
-                .await?;
-        let Some((mapped_to,)) = mapped_to else {
-            continue;
+        let s = |k: &str| {
+            def[k]
+                .as_str()
+                .filter(|x| !x.is_empty())
+                .map(str::to_string)
         };
-
-        let (fact_id, created) = utopia_store::graph::insert_value_fact(
+        utopia_store::mappings::propose(
             &state.pool,
             kb_id,
             resolved.entity_id,
-            Some(mapped_to),
-            &definition,
-            // 问数映射不带时间：两端都空
-            utopia_store::graph::Validity::default(),
-            PROPOSAL_CONFIDENCE,
+            source,
+            s("table").as_deref(),
+            s("expr").as_deref(),
+            s("sql").as_deref(),
+            s("unit").as_deref(),
+            // summary 是给人看的那句：Review 列表与问数 prompt 都靠它
+            p["summary"].as_str().or(def["summary"].as_str()),
+            def["derived"].as_bool().unwrap_or(false),
         )
         .await?;
-        if created {
-            accepted += 1;
-            // 证据挂 schema 文档的首个 live chunk（rationale 作 quote）
-            if let Some((chunk_id,)) = sqlx::query_as::<_, (Uuid,)>(
-                "SELECT c.id FROM chunks c JOIN documents d ON d.id = c.document_id
-                 WHERE d.kb_id = $1 AND d.external_key LIKE 'datasource:%:schema'
-                   AND c.superseded_at IS NULL
-                 ORDER BY c.seq LIMIT 1",
-            )
-            .bind(kb_id)
-            .fetch_optional(&state.pool)
-            .await?
-            {
-                let rationale = p["rationale"].as_str().unwrap_or("");
-                // 谓词是代码写死的 mapped_to，不是模型给的说法，没有表层形式可留
-                utopia_store::graph::add_evidence(
-                    &state.pool,
-                    fact_id,
-                    chunk_id,
-                    (!rationale.is_empty()).then_some(rationale),
-                    None,
-                )
-                .await?;
-            }
-        }
+        accepted += 1;
     }
 
     tracing::info!(%kb_id, proposals = accepted, "映射探索完成，提议已入审核队列");
