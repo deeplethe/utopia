@@ -19,6 +19,12 @@ pub struct CreateKbReq {
     pub description: Option<String>,
     #[serde(default)]
     pub visibility: Option<String>,
+    /// 起点本体包的 id，按给定顺序装。空 = 只有十个种子。
+    ///
+    /// **顺序有意义**：第一个包的类会认领同名的种子类（它们没有 IRI），
+    /// 后面的包撞名时查对齐表。schema.org 放第一个，别的包才对得上。
+    #[serde(default)]
+    pub ontology_packs: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -83,6 +89,14 @@ pub async fn create(
     }
     utopia_store::access::set_kb_member(&state.pool, kb.id, user.id, "admin", Some(user.id))
         .await?;
+    install_packs(
+        &state,
+        kb.id,
+        user.id,
+        &kb.ontology_lang,
+        &req.ontology_packs,
+    )
+    .await?;
     let kb = utopia_store::kbs::get(&state.pool, kb.id).await?;
     Ok(Json(kb))
 }
@@ -261,4 +275,53 @@ pub async fn audit_log(
     kb_with_role(&state, &user, id, Role::Admin).await?;
     let events = utopia_store::audit::list_for_kb(&state.pool, id, 100).await?;
     Ok(Json(json!({ "events": events })))
+}
+
+/// 建库时装选中的本体包。
+///
+/// **种子本体先落地**：包里的类要认领同名的种子类（`schema:Organization` 接管
+/// `organization`），而认领的前提是那一行已经存在。`ensure_default_ontology`
+/// 平时是懒调的（首次读本体或首次抽取时），这里必须显式先跑一次。
+///
+/// **一个包失败不回滚已装的**：本体是加法，装了一半的库仍然可用，
+/// 而回滚要撤已经建好的类——那正是 0008 决定不做导入撤销的理由。
+/// 失败信息里带上是哪个包，让人知道从哪补。
+async fn install_packs(
+    state: &AppState,
+    kb_id: Uuid,
+    actor: Uuid,
+    lang: &str,
+    pack_ids: &[String],
+) -> ApiResult<()> {
+    if pack_ids.is_empty() {
+        return Ok(());
+    }
+    utopia_store::graph::ensure_default_ontology(&state.pool, kb_id, lang).await?;
+    for id in pack_ids {
+        let pack = crate::ontology_packs::get(id)
+            .ok_or_else(|| AppError::invalid("unknown_pack", format!("未知的本体包：{id}")))?;
+        let bytes = crate::ontology_packs::bytes(pack)?;
+        crate::owl_import::apply(state, kb_id, actor, pack.filename, &bytes)
+            .await
+            .map_err(|e| AppError::Other(anyhow::anyhow!("装本体包 {} 失败：{e}", pack.id)))?;
+    }
+    Ok(())
+}
+
+/// 可选的本体包清单，给建库界面。不需要登录之外的权限——它是静态数据。
+pub async fn list_packs(AuthUser(_): AuthUser) -> ApiResult<Json<serde_json::Value>> {
+    let packs: Vec<_> = crate::ontology_packs::PACKS
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.id,
+                "name": p.name,
+                "summary": p.summary,
+                "classes": p.classes,
+                "properties": p.properties,
+                "overlaps": p.overlaps,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "packs": packs })))
 }

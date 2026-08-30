@@ -4806,6 +4806,7 @@ dependencies = [
  "chrono",
  "dotenvy",
  "feed-rs",
+ "flate2",
  "futures-util",
  "jsonwebtoken",
  "reqwest",

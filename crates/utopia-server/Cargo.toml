@@ -33,6 +33,7 @@ jsonwebtoken.workspace = true
 dotenvy.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+flate2.workspace = true
 reqwest.workspace = true
 
 feed-rs.workspace = true

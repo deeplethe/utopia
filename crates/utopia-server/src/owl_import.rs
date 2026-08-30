@@ -24,6 +24,9 @@ pub enum Disposition {
     Update,
     /// key 被另一个 IRI 占着 → 跳过并报告，不悄悄改名也不覆盖
     KeyTaken,
+    /// key 被另一个 IRI 占着，但对齐表说那两个是**同一个东西** → 跳过且不算冲突。
+    /// 与 KeyTaken 分开，是因为它不需要人裁：少建一个重复的类正是想要的结果
+    Aligned,
 }
 
 /// 一个属性在这次导入里会不会被建出来，以及为什么。
@@ -203,6 +206,8 @@ pub async fn plan(
 
     let mut classes = Vec::new();
     for c in &proj.classes {
+        // 对齐表判为"同名不同义"时，用它声明的 key 顶替派生出来的那个
+        let mut renamed_key: Option<&'static str> = None;
         let (disposition, conflict_with) = if let Some(prev) = claimed_class.get(c.key.as_str()) {
             (Disposition::KeyTaken, Some((*prev).to_string()))
         } else if e_by_iri.contains_key(c.iri.as_str()) {
@@ -218,19 +223,35 @@ pub async fn plan(
                 // 一个没建出来的东西——内置那几个基类一个子类都挂不上，
                 // 类型精化无从谈起。
                 None => (Disposition::Update, None),
-                // 已经有一个**不同的** IRI：两个词汇表争同一个短标签，
-                // 这是真冲突。不自动加后缀——那会让重导入认不出自己上次建的是哪个
-                Some(_) => (Disposition::KeyTaken, existing.iri.clone()),
+                // 已经有一个**不同的** IRI：两个词汇表争同一个短标签。
+                // 先查预制包的对齐表——那是**声明**的处置，重导入结果一样，
+                // 所以下面那条"不自动加后缀"的理由对它不适用
+                Some(other) => match crate::pack_alignment::lookup(&c.iri, other) {
+                    // 同义：已有的那个就是它，少建一个重复的类正是想要的
+                    Some(crate::pack_alignment::Alignment::SameAs) => {
+                        (Disposition::Aligned, existing.iri.clone())
+                    }
+                    // 同名不同义：换一个声明好的 key 建出来
+                    Some(crate::pack_alignment::Alignment::Rename(k)) => {
+                        renamed_key = Some(k);
+                        (Disposition::Create, None)
+                    }
+                    // 表里没有：这是真冲突。不自动加后缀——那会让重导入
+                    // 认不出自己上次建的是哪个
+                    None => (Disposition::KeyTaken, existing.iri.clone()),
+                },
             }
         } else {
             (Disposition::Create, None)
         };
-        if disposition != Disposition::KeyTaken {
-            claimed_class.insert(c.key.as_str(), c.iri.as_str());
+        // 改名与原名都是借用（前者 'static，后者借自 proj），统一成一个引用用完再落地
+        let key: &str = renamed_key.unwrap_or(c.key.as_str());
+        if !matches!(disposition, Disposition::KeyTaken | Disposition::Aligned) {
+            claimed_class.insert(key, c.iri.as_str());
         }
         classes.push(PlannedItem {
             iri: c.iri.clone(),
-            key: c.key.clone(),
+            key: key.to_string(),
             label: c.label.clone(),
             has_description: !c.description.trim().is_empty(),
             disposition,
@@ -323,6 +344,13 @@ pub async fn apply(
         .map_err(utopia_core::AppError::Other)?;
 
     let by_iri: HashMap<&str, &_> = proj.classes.iter().map(|c| (c.iri.as_str(), c)).collect();
+    // 已在库里的类：IRI → id。Aligned 要靠它把"同义的那个"接上父类引用
+    let existing_by_iri: HashMap<String, Uuid> =
+        utopia_store::graph::entity_types(&state.pool, kb_id)
+            .await?
+            .into_iter()
+            .filter_map(|t| t.iri.clone().map(|i| (i, t.id)))
+            .collect();
     let mut created_classes = 0usize;
     let mut updated_classes = 0usize;
     // IRI → 本体里的 id，父类解析要用
@@ -337,7 +365,8 @@ pub async fn apply(
                 let id = utopia_store::ontology::create_entity_type_with_iri(
                     &state.pool,
                     kb_id,
-                    &c.key,
+                    // **不是 `c.key`**：对齐表判为同名不同义时用的是改过的那个
+                    &item.key,
                     &c.label,
                     &c.description,
                     &c.iri,
@@ -375,6 +404,15 @@ pub async fn apply(
                 }
             }
             // key 被占：报告过了，不动
+            // 同义：不建。但要把 IRI 指向已有那个类的 id，否则以它为父类的
+            // 子类会解析不到，整棵树在这里断掉
+            Disposition::Aligned => {
+                if let Some(target) = item.conflict_with.as_deref() {
+                    if let Some(id) = existing_by_iri.get(target) {
+                        id_of.insert(c.iri.clone(), *id);
+                    }
+                }
+            }
             Disposition::KeyTaken => {}
         }
     }

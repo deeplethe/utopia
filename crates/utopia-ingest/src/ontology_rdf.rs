@@ -167,14 +167,26 @@ fn read_triples(bytes: &[u8], format: RdfFormat) -> anyhow::Result<Vec<Triple>> 
             object_lit,
         });
     };
+    // **相对 IRI 需要 base 才能解析。** 从字节读没有文档 URL，而 Turtle 规范说
+    // base 默认取文档自身的地址。给一个占位符：本体文件里的相对 IRI 几乎都是
+    // 文档级元数据（PROV-O 的 `<#> a owl:Ontology`），我们不消费 owl:Ontology 节点，
+    // 解析得过去就行。不给的话整个文件在第一个 `<#>` 上报
+    // "No scheme found in an absolute IRI" 而全军覆没
+    const BASE: &str = "urn:utopia:import";
     match format {
         RdfFormat::Turtle => {
-            for r in oxttl::TurtleParser::new().for_reader(bytes) {
+            let p = oxttl::TurtleParser::new()
+                .with_base_iri(BASE)
+                .map_err(|e| anyhow::anyhow!("base IRI 无效：{e}"))?;
+            for r in p.for_reader(bytes) {
                 push(r?);
             }
         }
         RdfFormat::RdfXml => {
-            for r in oxrdfxml::RdfXmlParser::new().for_reader(bytes) {
+            let p = oxrdfxml::RdfXmlParser::new()
+                .with_base_iri(BASE)
+                .map_err(|e| anyhow::anyhow!("base IRI 无效：{e}"))?;
+            for r in p.for_reader(bytes) {
                 push(r?);
             }
         }

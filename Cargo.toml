@@ -43,6 +43,7 @@ figment = { version = "0.10", features = ["env"] }
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+flate2 = "1"
 
 # Phase 1: 摄入/检索/LLM
 utopia-ingest = { path = "crates/utopia-ingest" }
