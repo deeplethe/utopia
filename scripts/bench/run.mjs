@@ -133,6 +133,9 @@ async function main() {
   const kb = (
     await api("POST", "/api/v1/workspaces/" + ws + "/kbs", {
       name: "bench " + label + " " + stamp,
+      // --packs schema-org,prov-o：走**产品实际的冷启动路径**（建库当场装包）。
+      // 与 --ontology 不是一回事：那个是建完库再导一个文件，只量得到提示词开销
+      ontology_packs: args.packs ? args.packs.split(",").map((x) => x.trim()) : [],
     })
   ).id;
   // **自动扩本体默认关掉**：它会在测量中途改本体，那样两组比的就不是同一件事了。
@@ -242,8 +245,13 @@ async function main() {
   const atExtraction = sizeNow();
 
   const t0 = Date.now();
-  for (const [filename, content] of corpus.docs) {
-    await api("POST", "/api/v1/kbs/" + kb + "/ingest", { filename, content });
+  for (const [filename, content, docTime] of corpus.docs) {
+    // 第三个元素是 doc_time（历史快照语料才有；旧语料只有两个元素，这里是 undefined）。
+    // 它同时进两处：抽取提示词（extraction.rs 按 %Y-%m-%d 塞进去，文内相对日期才解得开）
+    // 与 documents.doc_time（时间线按它排）。少了它，247 张快照会挤成同一刻录入
+    const body = { filename, content };
+    if (docTime) body.doc_time = docTime;
+    await api("POST", "/api/v1/kbs/" + kb + "/ingest", body);
   }
   // 进度按**块**数，不按文档数。文档数是个很粗的刻度：一篇 73 块的文档要跑
   // 一个多小时，期间文档数一动不动，看着就像卡死了

@@ -25,3 +25,9 @@ _*.tmp
 _*.out
 _*.sh
 _*.txt
+
+# wiki-history 是跑测用的语料，正文与清单都不进仓库：正文约 7MB 的 CC BY-SA 文本，
+# 清单是一次采样的产物。要复现就跑 fetch-wiki-history.mjs——`--manifest` 写清单，
+# `--from-manifest` 按清单逐字节重建（action=parse&oldid 不可变）。
+/scripts/bench/corpora/wiki-history.json
+/scripts/bench/corpora/wiki-history.manifest.json
