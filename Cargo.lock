@@ -4813,6 +4813,9 @@ version = "0.1.0"
 [[package]]
 name = "utopia-reason"
 version = "0.1.0"
+dependencies = [
+ "uuid",
+]
 
 [[package]]
 name = "utopia-search"
