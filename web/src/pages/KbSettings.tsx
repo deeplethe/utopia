@@ -67,6 +67,7 @@ export function KbSettings() {
   const [autoExtend, setAutoExtend] = useState(true);
   // **默认关**，与上面那个相反：推理往账本里写事实，而声明可能是错的
   const [materialize, setMaterialize] = useState(false);
+  const [inferMins, setInferMins] = useState(60);
   const [ontoLang, setOntoLang] = useState<"en" | "zh">("en");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +79,7 @@ export function KbSettings() {
       setVisibility(kb.data.visibility);
       setAutoExtend(kb.data.auto_extend_ontology);
       setMaterialize(kb.data.materialize_inferences);
+      setInferMins(kb.data.inference_interval_minutes);
       setOntoLang(kb.data.ontology_lang);
     }
   }, [kb.data]);
@@ -95,6 +97,7 @@ export function KbSettings() {
         visibility,
         auto_extend_ontology: autoExtend,
         materialize_inferences: materialize,
+        inference_interval_minutes: inferMins,
         ontology_lang: ontoLang,
       }),
     onSuccess: () => {
@@ -269,6 +272,33 @@ export function KbSettings() {
                   </span>
                 </span>
               </label>
+              {/* 重推间隔。**只在开着的时候露出来**——关着时它不影响任何事，
+                  摆在那里只会让人以为设了就会推 */}
+              {materialize && (
+                <div className="pl-6 flex items-center gap-2">
+                  <label className="text-xs text-neutral-500">
+                    {S.kbset.inferEvery}
+                  </label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={10080}
+                    className="input-dark w-24 px-2 py-1 text-xs u-num"
+                    value={inferMins}
+                    onChange={(e) => setInferMins(Number(e.target.value))}
+                  />
+                  <span className="text-xs text-neutral-500">
+                    {S.kbset.minutes}
+                  </span>
+                  {kb.data.last_inference_at && (
+                    <span className="text-[11px] text-neutral-600">
+                      {S.kbset.lastInference(
+                        new Date(kb.data.last_inference_at).toLocaleString(),
+                      )}
+                    </span>
+                  )}
+                </div>
+              )}
               {/* 语料语言。**不是界面语言**——类描述逐字进抽取提示词，
                   读者是正在读这些文档的模型，所以它跟文档走不跟读者走 */}
               <div className="pt-1">

@@ -99,7 +99,14 @@ pub async fn entity_detail(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
     let (entity, facts) = utopia_store::graph::entity_detail(&state.pool, kb_id, entity_id).await?;
-    Ok(Json(json!({ "entity": entity, "facts": facts })))
+    // 推出来的那些**单独回一个键**，不掺进 `facts`。前端据此给它们自己的一档：
+    // 一条派生边跟一条断言边混在同一个列表里，用户看不出「这条是文档里写的」
+    // 和「这条是引擎推的」的区别，而那正是推理会污染知识的样子
+    let derived =
+        utopia_store::reasoning::derived_for_entity(&state.pool, kb_id, entity_id).await?;
+    Ok(Json(
+        json!({ "entity": entity, "facts": facts, "derived": derived }),
+    ))
 }
 
 #[derive(Deserialize)]

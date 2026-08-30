@@ -150,6 +150,39 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // 定时推理调度器（0002 R1）。
+    //
+    // **必须定时，不能只靠手点**：事实是持续变的——每篇文档抽取都在加边——而
+    // 派生只在跑的那一刻算。不定时的话，下一篇文档进来之后图上的派生就是缺的，
+    // 而这种缺失界面上看不出来（不是错，是新链没推）。
+    //
+    // 与来源同步共用一个节拍：每分钟扫一遍，到期的入队。真正的推导在任务里跑，
+    // 不在这个循环里——一个大库全量重推可能要几秒，卡在调度循环里会拖住别的库
+    let infer_state = state.clone();
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            match utopia_store::reasoning::due_for_inference(&infer_state.pool).await {
+                Ok(due) => {
+                    for kb_id in due {
+                        if let Err(e) = utopia_store::jobs::enqueue(
+                            &infer_state.pool,
+                            "materialize_inferences",
+                            serde_json::json!({ "kb_id": kb_id }),
+                        )
+                        .await
+                        {
+                            tracing::warn!(kb_id = %kb_id, error = %e, "推理任务入队失败");
+                        }
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "扫描到期推理失败"),
+            }
+        }
+    });
+
     let app = api::router(state, &cfg);
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await?;
     tracing::info!("Utopia 服务启动于 http://{}", cfg.bind_addr);
@@ -206,6 +239,40 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
             mappings::explore_mappings(st, kb_id).await
+        }
+        // 定时重推（0002 R1）。**先记时间再推**——推导抛错时也不该让这个库
+        // 在下一分钟被重新扫起来，那会变成一个每分钟失败一次的循环
+        "materialize_inferences" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            utopia_store::reasoning::mark_inference_ran(&st.pool, kb_id).await?;
+            let report = utopia_store::reasoning::materialize(&st.pool, kb_id).await?;
+            // **到点对比**：`materialize` 本来就在拿这一轮算出来的对上库里现有的，
+            // 所以「对比」不是新机制。这里只把那次对比的结果留下来给人看——
+            // 没有变化时不写，免得台账被每小时一条「什么都没变」淹掉
+            if report.inserted > 0 || report.invalidated > 0 {
+                let _ = utopia_store::audit::record(
+                    &st.pool,
+                    Some(kb_id),
+                    Uuid::nil(),
+                    "inference.materialized",
+                    "knowledge_base",
+                    Some(kb_id),
+                    serde_json::json!({
+                        "scheduled": true,
+                        "inserted": report.inserted,
+                        "invalidated": report.invalidated,
+                        "rules": report.rules,
+                    }),
+                )
+                .await;
+                st.emit_graph(kb_id);
+            }
+            Ok(())
         }
         "extract_document" => {
             let id = payload_document_id(&job.payload)?;

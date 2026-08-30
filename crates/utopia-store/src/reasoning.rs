@@ -14,7 +14,7 @@
 
 use sqlx::PgPool;
 use std::collections::HashMap;
-use utopia_core::models::{AxiomViolation, OntologyDefect};
+use utopia_core::models::{AxiomViolation, DerivedFactView, OntologyDefect};
 /// 规则种类的字面量。用 &'static str 而不是枚举:它直接进 SQL 也直接做键
 type RuleKind = &'static str;
 use utopia_core::AppResult;
@@ -675,4 +675,77 @@ pub async fn decide_defect(
         return Err(utopia_core::AppError::NotFound);
     }
     Ok(())
+}
+
+/// 到点该重推的库。
+///
+/// 与来源同步同一个形状：一个间隔 + 一个上次时间。**从没推过的算到期**——
+/// 刚打开开关的库不该等一个周期才第一次推。
+pub async fn due_for_inference(pool: &PgPool) -> AppResult<Vec<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM knowledge_bases
+          WHERE materialize_inferences
+            AND (last_inference_at IS NULL
+                 OR last_inference_at < now()
+                    - make_interval(mins => inference_interval_minutes))",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 记下这一轮推完的时间。
+///
+/// **推完就记，哪怕什么都没变**：这一列答的是「上次看过没有」，不是「上次改过
+/// 没有」。不记的话没变化的库会每分钟被扫起来重算一遍。
+pub async fn mark_inference_ran(pool: &PgPool, kb_id: Uuid) -> AppResult<()> {
+    sqlx::query("UPDATE knowledge_bases SET last_inference_at = now() WHERE id = $1")
+        .bind(kb_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 一条派生事实，配好展示与证明所需的文本（实体面板的「推出来的」那一档）。
+///
+/// **证明一起取回来**：这一档存在的理由就是「这条边不是谁说的，是这么推出来的」，
+/// 而不给出前提的话它跟一条普通的边看不出区别——那正是用户担心的污染。
+pub async fn derived_for_entity(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+) -> AppResult<Vec<DerivedFactView>> {
+    Ok(sqlx::query_as(
+        "SELECT d.id,
+                d.subject_id, s.canonical_name AS subject,
+                d.object_id,  o.canonical_name AS object,
+                r.label AS predicate,
+                ru.kind AS rule,
+                d.valid_from, d.valid_to, d.confidence, d.derived_at,
+                COALESCE(
+                    (SELECT array_agg(
+                                ps.canonical_name || ' · '
+                                || COALESCE(pr.label, '?') || ' · '
+                                || COALESCE(po.canonical_name, '?')
+                                ORDER BY fd.seq)
+                       FROM fact_derivations fd
+                       JOIN facts pf       ON pf.id = fd.premise_fact_id
+                       JOIN entities ps    ON ps.id = pf.subject_id
+                       LEFT JOIN relation_types pr ON pr.id = pf.predicate_id
+                       LEFT JOIN entities po ON po.id = pf.object_id
+                      WHERE fd.derived_fact_id = d.id),
+                    ARRAY[]::text[]
+                ) AS premises
+           FROM derived_facts d
+           JOIN entities s ON s.id = d.subject_id
+           JOIN entities o ON o.id = d.object_id
+           JOIN relation_types r ON r.id = d.predicate_id
+           JOIN rules ru ON ru.id = d.rule_id
+          WHERE d.kb_id = $1 AND d.invalidated_at IS NULL
+            AND (d.subject_id = $2 OR d.object_id = $2)
+          ORDER BY d.derived_at DESC",
+    )
+    .bind(kb_id)
+    .bind(entity_id)
+    .fetch_all(pool)
+    .await?)
 }

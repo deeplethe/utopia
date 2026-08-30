@@ -723,6 +723,10 @@ pub struct KnowledgeBase {
     /// 而 0001 判据 2 说「本体是引导不是执法」：声明可能是错的，不该在用户
     /// 没表态时就按它改图
     pub materialize_inferences: bool,
+    /// 多久重推一次（分钟）。见 `knowledge_bases.inference_interval_minutes`
+    pub inference_interval_minutes: i32,
+    /// 上次推完的时间。**答的是「上次看过没有」，不是「上次改过没有」**
+    pub last_inference_at: Option<DateTime<Utc>>,
     pub ontology_lang: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -852,4 +856,26 @@ pub struct OntologyDefect {
     /// 环上类的标签，按顺序
     pub path_labels: Vec<String>,
     pub detected_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 一条推出来的事实，连同它的证明（实体面板的「推出来的」那一档）。
+///
+/// **`premises` 是这一档存在的理由**：不给出前提的话，一条派生边跟一条普通的边
+/// 在界面上看不出区别，而那正是「推理污染知识」的样子。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct DerivedFactView {
+    pub id: Uuid,
+    pub subject_id: Uuid,
+    pub subject: String,
+    pub object_id: Uuid,
+    pub object: String,
+    pub predicate: String,
+    /// transitive | symmetric——靠哪条规则推的
+    pub rule: String,
+    pub valid_from: Option<DateTime<Utc>>,
+    pub valid_to: Option<DateTime<Utc>>,
+    pub confidence: f32,
+    pub derived_at: DateTime<Utc>,
+    /// 直接前提，按推导顺序展开成三元组文本
+    pub premises: Vec<String>,
 }

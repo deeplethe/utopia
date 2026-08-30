@@ -24,7 +24,14 @@ import {
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
-import { api, type EntityFact, type Evidence, type GraphEdge, type GraphNode } from "../api";
+import {
+  api,
+  type DerivedFact,
+  type EntityFact,
+  type Evidence,
+  type GraphEdge,
+  type GraphNode,
+} from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
@@ -42,6 +49,16 @@ const RING_HOVERED = "#8FE7FF"; // 悬停冰青环
 const EDGE_COLOR = "rgba(163,163,163,0.2)"; // 纯灰（应用户要求，不用钢蓝）
 // 本体没认下的关系：同色更淡。名字来自原文，不该跟词表里的关系看着一样重
 const EDGE_COLOR_INFERRED = "rgba(163,163,163,0.1)";
+// 推出来的边（R1）。**跟上面两者说的不是一件事**：那两个说「这条边的名字从哪来」，
+// 这个说「这条边根本不是谁说的，是引擎推的」。所以给它自己的色相而不是再淡一档灰——
+// 用户要在余光里就分得出「文档里写的」和「推出来的」
+const EDGE_COLOR_DERIVED = "rgba(231,197,124,0.42)";
+const EDGE_COLOR_DERIVED_DIM = "rgba(231,197,124,0.14)";
+// 呼吸周期。动画不是为了好看，是因为静态的一个色差在几百条边里根本注意不到
+const DERIVED_PULSE_MS = 2200;
+// 超过这个数就只上色不动画。**写出来而不是悄悄降级**：每帧重算几千条边的颜色，
+// 换来的是拖不动图，而那时候用户要的是能拖得动
+const DERIVED_ANIMATE_MAX = 400;
 // 注意：sigma 边着色器在预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，
 // alpha 无法压暗边——暗度必须编码进 RGB（不透明近背景色）
 const EDGE_DIM = "#141414";
@@ -241,6 +258,8 @@ export function Graph() {
   const [searchInput, setSearchInput] = useState("");
   const [searchQ, setSearchQ] = useState("");
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
+  // 推出来的边显不显示。默认显示——推理默认关着，有派生就意味着用户开过开关
+  const [showDerived, setShowDerived] = useState(true);
   /** null = 全时段；数值 = as-of 时刻(ms)。
       默认 as-of 今天：时态平台的图谱默认呈现"现在的世界"，
       已闭合的事实不该与现行事实无差别并列（All time 是显式选择） */
@@ -292,7 +311,15 @@ export function Graph() {
     hiddenTypes: Set<string>;
     activeNodes: Set<string> | null;
     activeEdges: Set<string> | null;
-  }>({ hiddenTypes: new Set(), activeNodes: null, activeEdges: null });
+    /** 推出来的边显不显示。**默认显示**——推理默认是关的，所以有派生边就意味着
+     *  用户主动开过开关；但要能一键藏起来，看「只有人说过的那张图」长什么样 */
+    showDerived: boolean;
+  }>({
+    hiddenTypes: new Set(),
+    activeNodes: null,
+    activeEdges: null,
+    showDerived: true,
+  });
   const playingRef = useRef(false);
   /* 播放淡入表：本轮新激活的节点/边 id → 激活时刻（rAF 循环驱动至到位） */
   const fadeRef = useRef<Map<string, number>>(new Map());
@@ -336,6 +363,13 @@ export function Graph() {
     }
     return [...map.entries()];
   }, [data.data]);
+
+  // 有几条推出来的边。**为零时那个开关整个不出现**——一个没开推理的库不该
+  // 看到一个永远切换不出任何变化的按钮
+  const derivedCount = useMemo(
+    () => (data.data?.edges ?? []).filter((e) => e.derived).length,
+    [data.data],
+  );
 
   /* 时间过滤：计算 T 时刻的活跃边/节点集合 */
   const recomputeActive = useCallback(
@@ -384,8 +418,19 @@ export function Graph() {
 
   useEffect(() => {
     filterRef.current.hiddenTypes = hiddenTypes;
+    filterRef.current.showDerived = showDerived;
     sigmaRef.current?.refresh();
-  }, [hiddenTypes]);
+  }, [hiddenTypes, showDerived]);
+
+  // 派生边的呼吸。**只在有派生边、且开着显示、且数量不多时才转**——
+  // 一个没开推理的库不该为这件事每两秒重画一次
+  useEffect(() => {
+    const n = derivedCount;
+    if (!showDerived || n === 0 || n > DERIVED_ANIMATE_MAX) return;
+    // 与 sigma 的重绘同频即可，不必每帧：呼吸是慢动作，30 fps 看不出差别
+    const timer = setInterval(() => sigmaRef.current?.refresh(), 1000 / 30);
+    return () => clearInterval(timer);
+  }, [showDerived, derivedCount]);
 
   useEffect(() => {
     selectedRef.current = selected;
@@ -421,8 +466,14 @@ export function Graph() {
         g.addEdgeWithKey(e.id, e.source, e.target, {
           label: e.label?.toUpperCase() ?? "",
           size: 1,
-          color: e.inferred ? EDGE_COLOR_INFERRED : EDGE_COLOR,
+          color: e.derived
+            ? EDGE_COLOR_DERIVED
+            : e.inferred
+              ? EDGE_COLOR_INFERRED
+              : EDGE_COLOR,
           type: "line",
+          // reducer 每帧读它：决定要不要藏、要不要呼吸
+          derived: e.derived,
         });
       }
     }
@@ -616,6 +667,21 @@ export function Graph() {
         if (f.hiddenTypes.has(sk) || f.hiddenTypes.has(tk)) {
           res.hidden = true;
           return res;
+        }
+        // 推出来的边：先看藏不藏，再决定呼吸到哪一档。
+        // **放在最前面**——藏起来的边不必再算后面那些提亮/压暗
+        const isDerived = attrs.derived === true;
+        if (isDerived) {
+          if (!f.showDerived) {
+            res.hidden = true;
+            return res;
+          }
+          res.color = lerpColor(
+            EDGE_COLOR_DERIVED_DIM,
+            EDGE_COLOR_DERIVED,
+            // 三角波而不是正弦：两端各停一瞬，看起来是「呼吸」不是「闪」
+            Math.abs(((performance.now() % DERIVED_PULSE_MS) / DERIVED_PULSE_MS) * 2 - 1),
+          );
         }
         // hover: 只提亮关联边；selected: 提亮关联边 + 压暗其余
         const hov = hoverRef.current;
@@ -822,6 +888,25 @@ export function Graph() {
               <span className="text-neutral-300">{t.label}</span>
             </button>
           ))}
+          {/* 推出来的边：与类型图例同一条，因为它们是同一种动作——决定图上
+              显示什么。为零时不出现 */}
+          {derivedCount > 0 && (
+            <button
+              onClick={() => setShowDerived((v) => !v)}
+              title={S.graph.derivedHint}
+              className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
+                showDerived ? "" : "opacity-35"
+              }`}
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ background: "rgba(231,197,124,0.9)" }}
+              />
+              <span className="text-neutral-300">
+                {S.graph.derivedEdges(derivedCount)}
+              </span>
+            </button>
+          )}
         </div>
 
         <div className="ml-auto pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
@@ -1174,6 +1259,56 @@ function fmtInterval(f: EntityFact): string {
   return from ? `${from} ~ ${end}` : `~ ${end}`;
 }
 
+/** 一条推出来的事实，**证明摊开在下面**。
+ *
+ * 不做折叠：这一档存在的全部理由就是「这条边不是谁说的，是这么来的」，
+ * 把前提藏在一次点击后面等于把理由藏起来。链最长十二条，摊开也不长。 */
+function DerivedRow({
+  d,
+  onNavigate,
+}: {
+  d: DerivedFact;
+  onNavigate: (entityId: string) => void;
+}) {
+  return (
+    <div className="glass rounded-xl p-3">
+      <div className="flex items-baseline gap-1.5 flex-wrap text-sm">
+        <button
+          className="text-neutral-100 hover:text-white underline-offset-2 hover:underline"
+          onClick={() => onNavigate(d.subject_id)}
+        >
+          {d.subject}
+        </button>
+        <span className="text-xs text-neutral-500">{d.predicate}</span>
+        <button
+          className="text-neutral-100 hover:text-white underline-offset-2 hover:underline"
+          onClick={() => onNavigate(d.object_id)}
+        >
+          {d.object}
+        </button>
+        <span className="ml-auto text-[10px] text-[var(--u-warn)]">
+          {d.rule === "transitive"
+            ? S.graph.ruleTransitive
+            : S.graph.ruleSymmetric}
+        </span>
+      </div>
+      {/* 证明：前提按推导顺序，缩进一格。看得出链是怎么走的 */}
+      <ol className="mt-2 space-y-0.5 border-l border-[var(--u-line)] pl-2.5">
+        {d.premises.map((p, i) => (
+          <li key={i} className="text-[11px] text-neutral-400">
+            {p}
+          </li>
+        ))}
+      </ol>
+      {d.premises.length === 0 && (
+        <p className="mt-1 text-[11px] text-neutral-600">
+          {S.graph.derivedNoProof}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function EntityPanel({
   kbId,
   entityId,
@@ -1190,9 +1325,14 @@ function EntityPanel({
     queryFn: () => api.entityDetail(kbId, entityId),
   });
   const [openFact, setOpenFact] = useState<string | null>(null);
+  // 推出来的那些。**单独一个键，不掺进 facts**——混在一个列表里，用户看不出
+  // 「文档里写的」和「引擎推的」的区别
+  const derived = detail.data?.derived ?? [];
   // Relations = 按关系分组（查关系）；Timeline = 有效时间轴（事情何时成立）；
   // History = 记录时间轴（我们何时这么认为、又何时改了主意）
-  const [view, setView] = useState<"relations" | "timeline" | "history">("relations");
+  const [view, setView] = useState<
+    "relations" | "timeline" | "history" | "derived"
+  >("relations");
 
   const e: GraphNode | undefined = detail.data?.entity;
 
@@ -1416,7 +1556,13 @@ function EntityPanel({
       {/* 视图切换：Relations（分组）| Timeline（年表） */}
       <div className="px-4 pt-2.5">
         <div className="flex rounded-lg overflow-hidden border border-white/10 w-fit">
-          {(["relations", "timeline", "history"] as const).map((v) => (
+          {(
+            ["relations", "timeline", "history", "derived"] as const
+          )
+            // 推出来的那一档：**没有派生就不出现**。一个没开推理的库不该看到
+            // 一个永远是空的标签页
+            .filter((v) => v !== "derived" || derived.length > 0)
+            .map((v) => (
             <button
               key={v}
               onClick={() => setView(v)}
@@ -1430,7 +1576,9 @@ function EntityPanel({
                 ? S.graph.viewRelations
                 : v === "timeline"
                   ? S.graph.viewTimeline
-                  : S.graph.viewHistory}
+                  : v === "history"
+                    ? S.graph.viewHistory
+                    : S.graph.viewDerived}
             </button>
           ))}
         </div>
@@ -1482,9 +1630,21 @@ function EntityPanel({
           />
         )}
         {view === "history" && <EntityHistory kbId={kbId} entityId={entityId} />}
-        {view !== "history" && detail.data?.facts.length === 0 && (
-          <p className="text-sm text-neutral-500 p-2">{S.graph.noFacts}</p>
+        {view === "derived" && (
+          <div className="space-y-2">
+            <p className="px-2 pb-1 text-[11px] leading-relaxed text-neutral-500">
+              {S.graph.derivedHint}
+            </p>
+            {derived.map((d) => (
+              <DerivedRow key={d.id} d={d} onNavigate={onNavigate} />
+            ))}
+          </div>
         )}
+        {view !== "history" &&
+          view !== "derived" &&
+          detail.data?.facts.length === 0 && (
+            <p className="text-sm text-neutral-500 p-2">{S.graph.noFacts}</p>
+          )}
       </div>
     </div>
   );

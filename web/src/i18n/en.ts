@@ -565,6 +565,13 @@ export const en = {
     viewTimeline: "Timeline",
     /* 第三视图：记录时间轴——不是"事情何时发生"，而是"我们何时这么认为" */
     viewHistory: "History",
+    viewDerived: "Derived",
+    derivedEdges: (n: number) => `${n} derived`,
+    derivedHint:
+      "Edges no one asserted — the engine worked them out from axioms your ontology declares. Each one shows the premises it came from.",
+    derivedNoProof: "The premises are gone.",
+    ruleTransitive: "transitive",
+    ruleSymmetric: "symmetric",
     historyHint: "How this entity's record changed — and who changed it.",
     historyEmpty: "Nothing recorded for this entity yet.",
     historyKind: {
@@ -1041,6 +1048,9 @@ export const en = {
     materialize: "Materialize inferences",
     materializeNote:
       "Write facts the ontology entails into the ledger — transitive chains and symmetric pairs. Off by default: a declaration can be wrong, and this one changes the graph. Derived facts are marked and can be taken back.",
+    inferEvery: "Re-derive every",
+    minutes: "minutes",
+    lastInference: (when: string) => `last run ${when}`,
     /* 语料语言。措辞要把"这不是界面语言"讲清楚，否则一定有人当成界面开关 */
     ontologyLang: "Language of this ontology",
     ontologyLangNote:

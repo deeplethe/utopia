@@ -519,6 +519,13 @@ export const zh: Strings = {
     viewRelations: "关系",
     viewTimeline: "时间线",
     viewHistory: "记录历史",
+    viewDerived: "推出来的",
+    derivedEdges: (n: number) => `推出来的 ${n}`,
+    derivedHint:
+      "没有人断言过的边——引擎按本体声明的公理推出来的。每一条都附着它用到的前提。",
+    derivedNoProof: "前提已经不在了。",
+    ruleTransitive: "传递",
+    ruleSymmetric: "对称",
     historyHint: "这个实体的记录如何变化——以及是谁改的。",
     historyEmpty: "这个实体还没有记录。",
     historyKind: {
@@ -933,6 +940,9 @@ export const zh: Strings = {
     materialize: "物化推理",
     materializeNote:
       "把本体蕴含的事实写进账本——传递链与对称对。默认关：声明可能是错的，而这一步会改图。派生事实带标记，也随时可以撤回。",
+    inferEvery: "每隔",
+    minutes: "分钟重推",
+    lastInference: (when: string) => `上次 ${when}`,
     ontologyLang: "本体的语言",
     ontologyLangNote:
       "类与关系的描述用哪种语言写。它们会被原样送进抽取提示词，" +

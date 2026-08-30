@@ -144,3 +144,19 @@ CREATE INDEX fact_derivations_premise_idx ON fact_derivations (premise_fact_id);
 -- 该不该推是按库不同的。
 ALTER TABLE knowledge_bases
     ADD COLUMN materialize_inferences BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- 多久重推一次。**必须定时,不能只靠手点**：事实是持续变的（每篇文档抽取都在
+-- 加边），而派生只在跑的那一刻算。不定时的话，下一篇文档进来之后图上的派生就
+-- 是**缺的**——不是错的（前提还在），是新链没推出来，而这种缺失界面上看不出来。
+--
+-- 跟来源同步同一个形状：一个间隔 + 一个上次时间，调度器每分钟扫一遍到期的。
+-- 60 分钟是拍的：推导是纯计算不花钱，但在增量维护（0002 R3）做出来之前每次都是
+-- 全库重算，所以也不该太密。
+ALTER TABLE knowledge_bases
+    ADD COLUMN inference_interval_minutes INT NOT NULL DEFAULT 60
+        CHECK (inference_interval_minutes BETWEEN 5 AND 10080);
+
+-- 上次推完的时间。**到点对比就是拿这一次的结果跟库里现有的比**——
+-- `materialize` 本来就在做这件事（算出来的对上现有的，多的插、少的作废），
+-- 所以「对比」不是新机制，是把那次对比的结果记下来给人看
+ALTER TABLE knowledge_bases ADD COLUMN last_inference_at TIMESTAMPTZ;

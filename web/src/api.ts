@@ -88,6 +88,10 @@ export interface Kb {
   /** 把推出来的事实写进账本（R1）。**缺省关**——推理往图里加东西，
    *  而声明可能是错的，不该在用户没表态时就按它改图 */
   materialize_inferences: boolean;
+  /** 多久重推一次（分钟）。事实持续在变，只靠手点会让派生一直是缺的 */
+  inference_interval_minutes: number;
+  /** 上次推完的时间 */
+  last_inference_at: string | null;
   /** 内置本体按哪种语言播种、新描述写哪种语言。**跟语料走，不跟界面走**
       （界面语言在客户端，见 docs/decisions/0004） */
   ontology_lang: "en" | "zh";
@@ -250,6 +254,27 @@ export interface ChunkFact {
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
+}
+
+/** 一条推出来的事实，连同它的证明（实体面板的「推出来的」那一档）。
+ *
+ * `premises` 是这一档存在的理由：不给出前提的话，一条派生边跟一条普通的边
+ * 在界面上看不出区别，而那正是「推理污染知识」的样子。 */
+export interface DerivedFact {
+  id: string;
+  subject_id: string;
+  subject: string;
+  object_id: string;
+  object: string;
+  predicate: string;
+  /** 靠哪条规则推的 */
+  rule: "transitive" | "symmetric";
+  valid_from: string | null;
+  valid_to: string | null;
+  confidence: number;
+  derived_at: string;
+  /** 直接前提，按推导顺序 */
+  premises: string[];
 }
 
 export interface ReviewSide {
@@ -918,9 +943,13 @@ export const api = {
       `/api/v1/kbs/${kbId}/entities?q=${encodeURIComponent(q)}`,
     ),
   entityDetail: (kbId: string, entityId: string) =>
-    request<{ entity: GraphNode; facts: EntityFact[] }>(
-      `/api/v1/kbs/${kbId}/entities/${entityId}`,
-    ),
+    request<{
+      entity: GraphNode;
+      facts: EntityFact[];
+      /** 推出来的那些**单独一个键**，不掺进 facts：混在同一个列表里，
+       *  用户看不出「文档里写的」和「引擎推的」的区别 */
+      derived: DerivedFact[];
+    }>(`/api/v1/kbs/${kbId}/entities/${entityId}`),
   /** 认知变更历史（记录时间轴）：服务端分页 */
   /** 人工修正实体的类型或名字。同名不拦——返回的 same_name 供界面提示是否合并。 */
   updateEntity: (
