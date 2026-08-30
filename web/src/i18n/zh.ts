@@ -957,6 +957,11 @@ export const zh: Strings = {
     title: "部署用户",
     systemAdmin: "系统管理员",
     remove: "移除",
+    deactivate: "停用账号",
+    deactivateHint:
+      "断掉整个系统的访问——登录与已签发的 token 都失效。他做过的事仍然记在他名下。",
+    deactivateConfirm: (name: string) =>
+      `停用 ${name}？他将无法再登录任何地方，但过往的决定仍然留痕。`,
     pickUser: "选择要添加的用户…",
     add: "添加",
     roles: {

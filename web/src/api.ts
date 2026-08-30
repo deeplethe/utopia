@@ -789,6 +789,11 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /** 停用一个账号（软删除）。归因照旧查得到——审计、合并日志、改类账本都靠它 */
+  adminDeactivateUser: (userId: string) =>
+    request<{ ok: boolean }>(`/api/v1/admin/users/${userId}`, {
+      method: "DELETE",
+    }),
   adminDataSources: () =>
     request<{ data_sources: DataSourceView[] }>("/api/v1/admin/data-sources"),
   adminCreateDataSource: (body: { name: string; conn_string: string }) =>

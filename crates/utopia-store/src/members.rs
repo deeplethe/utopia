@@ -7,7 +7,9 @@ pub async fn list(pool: &PgPool, workspace_id: Uuid) -> AppResult<Vec<MemberView
     let rows = sqlx::query_as(
         "SELECT m.user_id, u.email, u.display_name, m.role, u.is_admin
          FROM memberships m JOIN users u ON u.id = m.user_id
-         WHERE m.workspace_id = $1
+         -- 停用的人不再出现在成员列表里（0056）。成员关系那一行留着——
+         -- 恢复账号时不必重新加回每一个工作区
+         WHERE m.workspace_id = $1 AND u.deactivated_at IS NULL
          ORDER BY m.created_at",
     )
     .bind(workspace_id)
@@ -20,7 +22,7 @@ pub async fn list(pool: &PgPool, workspace_id: Uuid) -> AppResult<Vec<MemberView
 pub async fn org_users(pool: &PgPool, org_id: Uuid) -> AppResult<Vec<OrgUser>> {
     let rows = sqlx::query_as(
         "SELECT id, email, display_name, is_admin FROM users
-         WHERE org_id = $1 ORDER BY created_at",
+         WHERE org_id = $1 AND deactivated_at IS NULL ORDER BY created_at",
     )
     .bind(org_id)
     .fetch_all(pool)
@@ -53,11 +55,14 @@ pub async fn set_role(
     user_id: Uuid,
     role: Role,
 ) -> AppResult<()> {
-    // 目标用户必须存在于本组织
-    let exists: Option<(Uuid,)> = sqlx::query_as("SELECT id FROM users WHERE id = $1")
-        .bind(user_id)
-        .fetch_optional(pool)
-        .await?;
+    // 目标用户必须存在于本组织,**而且在职**——否则能把一个已停用的账号
+    // 加进工作区,它在成员列表里又看不见（那条查询过滤了停用的）,
+    // 于是成了一条谁也发现不了的授权
+    let exists: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM users WHERE id = $1 AND deactivated_at IS NULL")
+            .bind(user_id)
+            .fetch_optional(pool)
+            .await?;
     if exists.is_none() {
         return Err(AppError::NotFound);
     }

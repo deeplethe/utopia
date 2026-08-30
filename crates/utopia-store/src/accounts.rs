@@ -197,16 +197,27 @@ pub async fn admin_create_user(
     Ok(user)
 }
 
+/// 按 email 找账号——**只找在职的**。
+///
+/// 这一句 `deactivated_at IS NULL` 同时管两件事：停用的人登不进来，以及
+/// 「一个 email 在停用账号里可能重复」时不会随机返回其中一条（唯一索引
+/// 现在是部分的，只约束在职账号，见迁移 0056）。
 pub async fn find_user_by_email(pool: &PgPool, email: &str) -> AppResult<Option<User>> {
-    let user = sqlx::query_as("SELECT * FROM users WHERE email = $1")
+    let user = sqlx::query_as("SELECT * FROM users WHERE email = $1 AND deactivated_at IS NULL")
         .bind(email)
         .fetch_optional(pool)
         .await?;
     Ok(user)
 }
 
+/// 按 id 找账号——**只找在职的**。
+///
+/// 会话校验走这里，所以停用**立即生效**，不必等 token 过期：已经签发出去的
+/// token 下一次请求就查不到人。这是软删除唯一必须挡住的路径，其余读 users 的
+/// 地方（审计、合并日志、改类账本）**要照旧查得到**——事情是他做的，人停用了
+/// 不等于那件事没发生。
 pub async fn find_user_by_id(pool: &PgPool, id: Uuid) -> AppResult<Option<User>> {
-    let user = sqlx::query_as("SELECT * FROM users WHERE id = $1")
+    let user = sqlx::query_as("SELECT * FROM users WHERE id = $1 AND deactivated_at IS NULL")
         .bind(id)
         .fetch_optional(pool)
         .await?;
@@ -230,5 +241,78 @@ pub async fn update_password(pool: &PgPool, id: Uuid, password_hash: &str) -> Ap
         .bind(password_hash)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+/// 停用一个账号（软删除，见迁移 0056）。
+///
+/// **不删行。** 审计事件、合并日志、改类账本、口径确认的 `actor_id` 都指着这个人，
+/// 而那些是审计材料——人走了仍然要能回答「当时是谁做的」。停用只断访问。
+///
+/// **不能停用自己**：管理员把自己停掉之后就没人能把他放回来了（这个系统没有
+/// 「超级管理员」这一层）。挡在这里而不是只挡在界面上——界面挡得住误点，
+/// 挡不住直接调接口。
+///
+/// **最后一个管理员不能停用**：否则这个组织从此没人能管成员。同样的理由。
+pub async fn deactivate_user(pool: &PgPool, target: Uuid, actor: Uuid) -> AppResult<()> {
+    if target == actor {
+        return Err(AppError::Validation("不能停用自己的账号".into()));
+    }
+    let mut tx = pool.begin().await?;
+    let victim: Option<(bool, Uuid, Option<chrono::DateTime<chrono::Utc>>)> =
+        sqlx::query_as("SELECT is_admin, org_id, deactivated_at FROM users WHERE id = $1")
+            .bind(target)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((is_admin, org_id, already)) = victim else {
+        tx.rollback().await?;
+        return Err(AppError::NotFound);
+    };
+    if already.is_some() {
+        // 幂等：重复停用不是错误，也不该把 deactivated_by 改成第二个人
+        tx.rollback().await?;
+        return Ok(());
+    }
+    if is_admin {
+        let (others,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM users
+              WHERE org_id = $1 AND is_admin AND deactivated_at IS NULL AND id <> $2",
+        )
+        .bind(org_id)
+        .bind(target)
+        .fetch_one(&mut *tx)
+        .await?;
+        if others == 0 {
+            tx.rollback().await?;
+            return Err(AppError::Validation(
+                "这是组织里最后一个管理员，停用之后没人能管成员".into(),
+            ));
+        }
+    }
+    sqlx::query("UPDATE users SET deactivated_at = now(), deactivated_by = $2 WHERE id = $1")
+        .bind(target)
+        .bind(actor)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 把停用的账号放回来。
+///
+/// **可能失败,而且失败得有道理**：停用期间有人用同一个 email 建了新账号，
+/// 那个部分唯一索引会挡住这次恢复。这时该做的是让管理员看见冲突，而不是
+/// 悄悄让两个在职账号共用一个 email。
+pub async fn reactivate_user(pool: &PgPool, target: Uuid) -> AppResult<()> {
+    let res = sqlx::query(
+        "UPDATE users SET deactivated_at = NULL, deactivated_by = NULL
+          WHERE id = $1 AND deactivated_at IS NOT NULL",
+    )
+    .bind(target)
+    .execute(pool)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
     Ok(())
 }

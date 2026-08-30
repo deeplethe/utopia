@@ -40,6 +40,11 @@ export function Members({ workspaceId }: { workspaceId: string }) {
     onSuccess: refresh,
     onError,
   });
+  const deactivate = useMutation({
+    mutationFn: (userId: string) => api.adminDeactivateUser(userId),
+    onSuccess: refresh,
+    onError,
+  });
 
   const memberIds = new Set(members.data?.map((m) => m.user_id));
   const addable = orgUsers.data?.filter((u) => !memberIds.has(u.id)) ?? [];
@@ -91,13 +96,28 @@ export function Members({ workspaceId }: { workspaceId: string }) {
                   options={ROLE_OPTIONS}
                 />
               </td>
-              <td className="py-2 text-right">
+              <td className="py-2 text-right whitespace-nowrap">
                 <button
                   onClick={() => remove.mutate(m.user_id)}
                   className="text-xs text-neutral-500 hover:text-rose-400"
                 >
                   {S.members.remove}
                 </button>
+                {/* 停用账号跟「移出工作区」是两件事：前者断掉整个系统的访问，
+                    后者只是这个工作区不再有他。所以分开两个按钮，而且停用
+                    只给管理员看——它的影响面大得多 */}
+                {me.data?.is_admin && me.data.id !== m.user_id && (
+                  <button
+                    onClick={() => {
+                      if (confirm(S.members.deactivateConfirm(m.display_name)))
+                        deactivate.mutate(m.user_id);
+                    }}
+                    className="ml-3 text-xs text-neutral-600 hover:text-rose-400"
+                    title={S.members.deactivateHint}
+                  >
+                    {S.members.deactivate}
+                  </button>
+                )}
               </td>
             </tr>
           ))}

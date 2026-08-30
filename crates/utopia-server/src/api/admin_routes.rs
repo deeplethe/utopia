@@ -1,6 +1,6 @@
 //! 系统管理 API（仅系统管理员）：部署配置 + 代开账号。
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
@@ -10,6 +10,7 @@ use utopia_core::AppError;
 use crate::auth::{self, AuthUser};
 use crate::error::ApiResult;
 use crate::state::AppState;
+use uuid::Uuid;
 
 fn require_admin(user: &User) -> Result<(), AppError> {
     if user.is_admin {
@@ -142,4 +143,58 @@ pub async fn create_user(
     )
     .await?;
     Ok(Json(json!({ "user": created })))
+}
+
+/// 停用一个账号（软删除，见迁移 0056）。
+///
+/// **不是 DELETE。** 审计事件、合并日志、改类账本、口径确认的 `actor_id` 都指着
+/// 这个人，那些是审计材料——人走了仍然要能回答「当时是谁做的」。停用只断访问：
+/// 登录查不到人，已签发的 token 下一次请求也查不到（会话校验走同一个函数），
+/// 成员列表里不再出现，而所有归因照旧。
+///
+/// 两条护栏在 store 层而不是这里：不能停用自己、不能停用最后一个管理员。
+/// 放在下面是因为界面挡得住误点，挡不住直接调接口。
+pub async fn deactivate_user(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(target): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    utopia_store::accounts::deactivate_user(&state.pool, target, user.id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "user.deactivated",
+        "user",
+        Some(target),
+        serde_json::json!({}),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// 把停用的账号放回来。
+///
+/// **可能失败**：停用期间有人用同一个 email 建了新账号，那个部分唯一索引
+/// （`users_email_active_idx`）会挡住恢复。让管理员看见冲突，好过悄悄让两个
+/// 在职账号共用一个 email。
+pub async fn reactivate_user(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(target): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    utopia_store::accounts::reactivate_user(&state.pool, target).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "user.reactivated",
+        "user",
+        Some(target),
+        serde_json::json!({}),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }

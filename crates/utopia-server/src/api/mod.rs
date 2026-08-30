@@ -89,6 +89,13 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(admin_routes::get_deployment).put(admin_routes::put_deployment),
         )
         .route("/admin/users", post(admin_routes::create_user))
+        // 停用 / 恢复账号（0056）。DELETE 的语义是「这个人不再有访问权」,
+        // 而不是「这一行没了」——归因照旧查得到
+        .route(
+            "/admin/users/{id}",
+            axum::routing::delete(admin_routes::deactivate_user)
+                .post(admin_routes::reactivate_user),
+        )
         .route(
             "/admin/data-sources",
             get(datasource_routes::list).post(datasource_routes::create),

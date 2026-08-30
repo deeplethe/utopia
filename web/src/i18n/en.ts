@@ -1068,6 +1068,11 @@ export const en = {
     title: "Deployment users",
     systemAdmin: "System admin",
     remove: "Remove",
+    deactivate: "Deactivate",
+    deactivateHint:
+      "Cuts off access everywhere — sign-in and any token already issued. What they did stays attributed to them.",
+    deactivateConfirm: (name: string) =>
+      `Deactivate ${name}? They lose access everywhere. Their past decisions stay on record.`,
     pickUser: "Select a user to add…",
     add: "Add",
     roles: {
