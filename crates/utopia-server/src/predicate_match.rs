@@ -133,8 +133,13 @@ fn stems(words: &[String]) -> Vec<String> {
 /// **介词不并**：`integrated_with` 与 `integrated_into` 保持两组。`works_at` 与
 /// `works_in` 确实可能是两回事，这里宁可漏。
 ///
-/// **`_by` 也不并**（暂时）：`founded_by` 与 `founded` 是同一条边的两个方向，
-/// 并起来必须把主宾对调，而采纳路径现在从旧行原样复制主语。留给下一步。
+/// **`_by` 也不并**（待做）：`founded_by` 与 `founded` 是同一条边的两个方向。
+///
+/// 当初不并的理由是「采纳路径从旧行原样复制主语，对调不了」——**那个理由已经
+/// 不成立**（#109 让 `adopt` 显式绑定主语并支持交换）。现在缺口只剩一处：
+/// 两边都还不在本体里时（`founded_by` 42 条、`founded` 4 条，都够票），
+/// 采纳前的 `PredicateIndex` 查询谁也匹配不上，于是各建一个、方向相反。
+/// 补法是把 `_by` 折进同一组并把整组标成需对调，不再有阻碍。
 pub fn merge_key(form: &str) -> Vec<String> {
     stems(&words(form))
 }

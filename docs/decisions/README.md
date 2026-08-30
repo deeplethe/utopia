@@ -22,13 +22,15 @@
 
 | | 文档 | 状态 |
 |---|---|---|
-| 0001 | [本体导入与治理路线](0001-ontology-import-and-governance.md) | 进行中 · P0/P1/P2 已建成；P2c 已排期，P3–P5 未开工 |
+| 0001 | [本体导入与治理路线](0001-ontology-import-and-governance.md) | 进行中 · P0–P2c 已建成；P3a 已建成（检索命中率见下）、P3b 部分；P4a 已建成，**P4b/P4c 待做**；P5 由 0002 取代 |
 | 0002 | [推理机](0002-reasoning-engine.md) | 规划中 · 取代 0001 P5 的排期 |
 | 0003 | [本体从语料里长出来，人站在哪一环](0003-ontology-growth-loop.md) | 已建成 · 含三次判断变化的留痕 |
 | 0004 | [语言：哪些字跟着看的人走，哪些跟着语料走](0004-language-and-localization.md) | 已建成 · L0–L3 全部落地 |
 | 0005 | [告警中心](0005-alert-center.md) | 第一刀已建成 · 三个决定推翻两个（就地留痕） |
 | 0006 | [本体规模与抽取提示词](0006-ontology-scale-and-the-prompt.md) | 已建成 · 含可重跑的实测数字与一次撤回 |
-| 0007 | [谁来决定一个说法值不值得成为关系](0007-who-decides-what-becomes-a-relation.md) | 已建成 · 采纳改由计数决定 · 含五条走过的死路 |
+| 0007 | [谁来决定一个说法值不值得成为关系](0007-who-decides-what-becomes-a-relation.md) | 已建成 · 采纳改由计数决定 · 含五条走过的死路 · **叙述动词待解** |
+| 0008 | [预制本体包作为冷启动](0008-ontology-packs-as-cold-start.md) | 规划中 · 建库仍只发种子关系 |
+| 0009 | [「还没判出来」不该是一个类](0009-no-type-is-a-type.md) | 已实施 · `entities.type_id` 改为可空 |
 
 ## 不是决策记录的那些
 
