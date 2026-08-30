@@ -212,8 +212,21 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
                 ranked.push(c.clone());
             }
         }
-        // 稳定排序：后代提前，同一档内保持距离序
-        ranked.sort_by_key(|c| !descendants.contains(&c.id));
+        // **不再把后代无条件提前。**
+        //
+        // 从前这里是 `ranked.sort_by_key(|c| !descendants.contains(&c.id))`：key 是
+        // 布尔,于是候选被切成"后代"与"非后代"两堆,前者整堆压过后者,**距离完全
+        // 不参与**。实测「深蓝向量数据库」(现类 product,specific = vector database
+        // software):正确答案 `software_application` 在检索里排**第 1**,却被
+        // product_collection(0.437)、some_products(0.440) 这五个不相关的 product
+        // 后代挤出候选——它们上来只因为出身,不因为像。
+        //
+        // 这个偏好本来就表达了三遍:这行排序、提示词里 narrowing/correcting 的分辨、
+        // 以及 `crosses_axis` 分档。删掉最不讲证据的那一遍,另外两遍照旧——换轴的
+        // 改动仍然不自动落库,仍然进人工,风险面没有变。
+        //
+        // 剩下的顺序就是两路交替的检索序:检索决定端什么上去,裁决决定它是什么,
+        // `crosses_axis` 决定要不要人看。一层一件事。
         let candidates: Vec<_> = ranked.into_iter().take(CANDIDATES as usize).collect();
         // 第二路：语境相似的已定类实体，按类投票
         let raw =
