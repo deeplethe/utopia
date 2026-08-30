@@ -428,29 +428,33 @@ function NewKbModal({
           <p className="text-[11px] leading-relaxed text-neutral-500 mb-2">
             {S.settings.kbs.packsHint}
           </p>
-          <div className="max-h-56 overflow-y-auto rounded-lg border border-white/10 divide-y divide-white/5">
+          <div className="grid grid-cols-2 gap-1.5">
             {available.data?.packs.map((p) => {
               const on = packs.includes(p.id);
               return (
                 <label
                   key={p.id}
-                  className="flex gap-2.5 px-3 py-2 cursor-pointer hover:bg-white/5"
+                  // 选中态靠边框与底色，勾选框藏起来：五个并排时
+                  // 一排勾选框比内容本身还抢眼
+                  className={
+                    "cursor-pointer rounded-lg border px-2.5 py-2 transition-colors " +
+                    (on
+                      ? "border-white/25 bg-white/[0.07]"
+                      : "border-white/10 hover:bg-white/5")
+                  }
                 >
                   <input
                     type="checkbox"
-                    className="mt-0.5"
+                    className="sr-only"
                     checked={on}
                     onChange={() => toggle(p.id)}
                   />
-                  <span className="min-w-0">
-                    <span className="block text-xs text-neutral-200">{p.name}</span>
-                    <span className="block text-[11px] leading-snug text-neutral-500">
-                      {p.summary}
-                      <span className="text-neutral-600">
-                        {" · "}
-                        {S.settings.kbs.packsCount(p.classes, p.properties)}
-                      </span>
-                    </span>
+                  <span className="block text-xs text-neutral-200">{p.name}</span>
+                  <span className="block text-[11px] leading-snug text-neutral-500">
+                    {p.summary}
+                  </span>
+                  <span className="mt-0.5 block text-[10px] text-neutral-600">
+                    {S.settings.kbs.packsCount(p.classes, p.properties)}
                   </span>
                 </label>
               );

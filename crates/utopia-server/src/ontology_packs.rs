@@ -31,7 +31,7 @@ pub const PACKS: &[Pack] = &[
     Pack {
         id: "schema-org",
         name: "schema.org",
-        summary: "通用词表：人、组织、产品、事件、创作。97.8% 的属性带类型签名。",
+        summary: "People, organizations, products, events, creative works",
         filename: "schema-org.ttl",
         classes: 1010,
         properties: 1676,
@@ -40,7 +40,7 @@ pub const PACKS: &[Pack] = &[
     Pack {
         id: "w3c-org",
         name: "W3C Org",
-        summary: "组织架构：部门、职位、任期、汇报关系。补 schema.org 最弱的一块。",
+        summary: "Departments, posts, memberships, reporting lines",
         filename: "w3c-org.ttl",
         classes: 13,
         properties: 34,
@@ -49,7 +49,7 @@ pub const PACKS: &[Pack] = &[
     Pack {
         id: "prov-o",
         name: "PROV-O",
-        summary: "溯源：某个结论由谁、在何时、依据什么产出。W3C 标准词汇。",
+        summary: "Provenance: who produced what, when, from which source",
         filename: "prov-o.ttl",
         classes: 49,
         properties: 69,
@@ -58,7 +58,7 @@ pub const PACKS: &[Pack] = &[
     Pack {
         id: "foaf",
         name: "FOAF",
-        summary: "人与社交关系。核心概念 schema.org 已覆盖，按需选用。",
+        summary: "People and social relations",
         filename: "foaf.rdf",
         classes: 12,
         properties: 62,
@@ -67,7 +67,7 @@ pub const PACKS: &[Pack] = &[
     Pack {
         id: "iof-core",
         name: "IOF Core",
-        summary: "工业制造：Industry Ontology Foundry 的核心层。",
+        summary: "Industrial manufacturing",
         filename: "iof-core.rdf",
         classes: 294,
         properties: 75,
