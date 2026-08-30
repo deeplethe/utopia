@@ -224,7 +224,10 @@ pub async fn worker_concurrency(pool: &PgPool) -> AppResult<i32> {
         sqlx::query_as("SELECT worker_concurrency FROM deployment_settings LIMIT 1")
             .fetch_optional(pool)
             .await?;
-    Ok(row.map(|(v,)| v).unwrap_or(32))
+    // 与 `deployment_settings.worker_concurrency` 的列缺省保持一致（迁移 0011）。
+    // 两处分开写是因为一处在 SQL、一处在 Rust，改一处不会带上另一处——
+    // `the_backstop_can_be_raised` 那条测试盯着这件事
+    Ok(row.map(|(v,)| v).unwrap_or(64))
 }
 
 pub async fn set_worker_concurrency(pool: &PgPool, value: i32) -> AppResult<()> {
