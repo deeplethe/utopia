@@ -451,11 +451,6 @@ function NewKbModal({
                         {S.settings.kbs.packsCount(p.classes, p.properties)}
                       </span>
                     </span>
-                    {p.overlaps && (
-                      <span className="block text-[11px] text-amber-500/80">
-                        {p.overlaps}
-                      </span>
-                    )}
                   </span>
                 </label>
               );

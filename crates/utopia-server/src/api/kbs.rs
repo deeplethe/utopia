@@ -19,7 +19,7 @@ pub struct CreateKbReq {
     pub description: Option<String>,
     #[serde(default)]
     pub visibility: Option<String>,
-    /// 起点本体包的 id，按给定顺序装。空 = 只有十个种子。
+    /// 预置本体包的 id，按给定顺序装。空 = 只有十个种子。
     ///
     /// **顺序有意义**：第一个包的类会认领同名的种子类（它们没有 IRI），
     /// 后面的包撞名时查对齐表。schema.org 放第一个，别的包才对得上。
@@ -319,7 +319,6 @@ pub async fn list_packs(AuthUser(_): AuthUser) -> ApiResult<Json<serde_json::Val
                 "summary": p.summary,
                 "classes": p.classes,
                 "properties": p.properties,
-                "overlaps": p.overlaps,
             })
         })
         .collect();

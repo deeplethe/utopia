@@ -1,4 +1,4 @@
-//! 预制本体包：建库时可选的起点。
+//! 预置本体包：建库时可选的起点。
 //!
 //! 十个种子关系一个类型签名都没有（`graph.rs` 的 `DEFAULT_RELATION_TYPES`），
 //! 而抽取提示词是支持签名的——`- buys_from (employee|team → *)`。没有签名，方向
@@ -11,7 +11,7 @@
 
 use utopia_core::{AppError, AppResult};
 
-/// 一个可选的起点本体。
+/// 一个可选的预置本体。
 ///
 /// `classes` / `properties` 是**抓取当天数过的展示数字**，给建库界面用；
 /// 真正建了多少以导入返回的 plan 为准——投影只覆盖当下能消费的构造。
@@ -24,8 +24,6 @@ pub struct Pack {
     pub filename: &'static str,
     pub classes: u32,
     pub properties: u32,
-    /// 与已选包重叠时给用户的提示；`None` = 与其他包基本不重叠
-    pub overlaps: Option<&'static str>,
     gz: &'static [u8],
 }
 
@@ -37,7 +35,6 @@ pub const PACKS: &[Pack] = &[
         filename: "schema-org.ttl",
         classes: 1010,
         properties: 1676,
-        overlaps: None,
         gz: include_bytes!("../packs/schema-org.ttl.gz"),
     },
     Pack {
@@ -47,7 +44,6 @@ pub const PACKS: &[Pack] = &[
         filename: "w3c-org.ttl",
         classes: 13,
         properties: 34,
-        overlaps: Some("与 schema.org 撞名 6 处，已预先对齐"),
         gz: include_bytes!("../packs/w3c-org.ttl.gz"),
     },
     Pack {
@@ -57,7 +53,6 @@ pub const PACKS: &[Pack] = &[
         filename: "prov-o.ttl",
         classes: 49,
         properties: 69,
-        overlaps: Some("与 schema.org 撞名 4 处，已预先对齐"),
         gz: include_bytes!("../packs/prov-o.ttl.gz"),
     },
     Pack {
@@ -67,7 +62,6 @@ pub const PACKS: &[Pack] = &[
         filename: "foaf.rdf",
         classes: 12,
         properties: 62,
-        overlaps: Some("与 schema.org 重叠 21%，是候选里最高的"),
         gz: include_bytes!("../packs/foaf.rdf.gz"),
     },
     Pack {
@@ -77,7 +71,6 @@ pub const PACKS: &[Pack] = &[
         filename: "iof-core.rdf",
         classes: 294,
         properties: 75,
-        overlaps: None,
         gz: include_bytes!("../packs/iof-core.rdf.gz"),
     },
 ];

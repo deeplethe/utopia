@@ -64,15 +64,13 @@ export interface Workspace {
   created_at: string;
 }
 
-/** 建库时可选的起点本体包（`GET /ontology-packs`）。 */
+/** 建库时可选的预置本体包（`GET /ontology-packs`）。 */
 export type OntologyPack = {
   id: string;
   name: string;
   summary: string;
   classes: number;
   properties: number;
-  /** 与已有包重叠时的提示；null = 基本不重叠 */
-  overlaps: string | null;
 };
 
 export interface Kb {
@@ -657,7 +655,7 @@ export const api = {
       name: string;
       description?: string | null;
       visibility?: string;
-      /** 起点本体包 id，顺序有意义：第一个会认领同名的种子类 */
+      /** 预置本体包 id，顺序有意义：第一个会认领同名的种子类 */
       ontology_packs?: string[];
     },
   ) =>
