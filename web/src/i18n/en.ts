@@ -889,6 +889,7 @@ export const en = {
     railUnconfirmed: "Unconfirmed",
     railLowConfidence: "Low confidence",
     railMappings: "Semantic layer",
+    railViolations: "Axioms",
     railDecisions: "Decisions",
     railMerges: "Merges",
     categoryEmpty: "This queue is clear.",
@@ -934,6 +935,29 @@ export const en = {
     merge: "Merge",
     keep: "Keep separate",
     lowConfidence: "Low-confidence facts",
+    violations: "Axiom violations",
+    violationsHint:
+      "Facts that contradict axioms your ontology declares. Nothing here is a guess — a predicate that declares no axioms is never checked.",
+    violationSelfLoop: "Points at itself",
+    violationAsymmetry: "Both directions asserted",
+    violationCycle: "Cycle through the transitive chain",
+    violationFunctional: "Should hold one value, holds two",
+    violationVia: (p: string) => `via ${p}`,
+    violationPath: (n: number) => `${n} facts in the cycle`,
+    retractFact: "Data is wrong",
+    relaxAxiom: "Axiom is wrong",
+    acceptBoth: "Both are right",
+    runCheck: "Run check",
+    checkNeverRun:
+      "Not checked yet. Contradictions are found by asking your ontology, so a run here only reports what its axioms actually say.",
+    checking: "Checking…",
+    checkNoAxioms:
+      "No axioms declared, so nothing could be checked. Import an ontology that declares them.",
+    checkFound: (n: number) => `${n} new`,
+    /** 算出来了，但都是已经在队列里或已被裁决过的——说「3 处矛盾」而列表只有
+     *  一条会让人以为界面漏了东西 */
+    checkNothingNew: "Nothing new",
+    checkClean: (n: number) => `${n} facts checked, no contradictions`,
     mappings: "Semantic layer",
     mappingsHint:
       "Proposed mappings from a business concept to how it is computed. Confirm one and Ask uses it instead of guessing from the schema.",

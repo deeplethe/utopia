@@ -43,7 +43,9 @@ impl Axioms {
     }
 }
 
-/// 查出来的一处矛盾。`reason` 直接进 `fact_conflicts.reason`。
+/// 查出来的一处矛盾。落库在 `axiom_violations`——**不进 `fact_conflicts`**：
+/// 那张表问的是「哪条对」，而公理违规问的是「错在数据还是错在定义」，
+/// 后者的出路可能是去改本体。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Violation {
     pub kind: Kind,

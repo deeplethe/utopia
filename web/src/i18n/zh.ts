@@ -792,6 +792,7 @@ export const zh: Strings = {
     railUnconfirmed: "未确认",
     railLowConfidence: "低置信度",
     railMappings: "语义层",
+    railViolations: "公理",
     railDecisions: "决定",
     railMerges: "合并",
     categoryEmpty: "这个队列是空的。",
@@ -834,6 +835,28 @@ export const zh: Strings = {
     merge: "合并",
     keep: "保持分开",
     lowConfidence: "低置信度事实",
+    violations: "公理违规",
+    violationsHint:
+      "与本体自己声明的公理相抵触的事实。这里没有猜测——谓词没声明公理就不查。",
+    violationSelfLoop: "指向了自己",
+    violationAsymmetry: "两个方向都断言了",
+    violationCycle: "传递链绕成了环",
+    violationFunctional: "该只有一个值，却有两个",
+    violationVia: (p: string) => `依据 ${p}`,
+    violationPath: (n: number) => `环上 ${n} 条事实`,
+    retractFact: "数据错了",
+    relaxAxiom: "公理错了",
+    acceptBoth: "两边都对",
+    runCheck: "跑一遍检查",
+    checkNeverRun:
+      "还没查过。矛盾是拿本体自己声明的公理量出来的——跑一遍只会报公理确实说了的那些。",
+    checking: "检查中…",
+    checkNoAxioms: "本体没有声明任何公理，无从判起。先导一份带公理的本体。",
+    checkFound: (n: number) => `新增 ${n} 处`,
+    /** 算出来了，但都是已经在队列里或已被裁决过的——说「3 处矛盾」而列表只有
+     *  一条会让人以为界面漏了东西 */
+    checkNothingNew: "没有新的",
+    checkClean: (n: number) => `查了 ${n} 条事实，没有矛盾`,
     mappings: "语义层",
     mappingsHint:
       "从业务概念到「这个数怎么算」的提议。确认之后问数直接用这个口径，而不是每次从 schema 猜。",

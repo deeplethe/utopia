@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  type AxiomViolation,
   type ConceptMapping,
   type ConflictItem,
   type FactReviewItem,
@@ -443,6 +444,76 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
  *
  * 展示的重点是**「这个数怎么算」**——SQL / 表达式 / 表名按这个优先级取一个，
  * 因为人要判断的正是它对不对。概念名与源是身份，unit 是答里必须带的量纲。 */
+/** 一处公理违规。**三个按钮而不是两个**——第三个是这一档独有的出路：
+ *  矛盾可能出在定义上（用户导的本体把某个属性声明成反对称，而他的语料里
+ *  那关系其实双向），这时该改的是本体，不是二十条事实。 */
+function ViolationRow({
+  violation: v,
+  busy,
+  onDecide,
+}: {
+  violation: AxiomViolation;
+  busy: boolean;
+  onDecide: (
+    resolution: "fact_retracted" | "axiom_relaxed" | "accepted",
+  ) => void;
+}) {
+  const what = {
+    self_loop: S.review.violationSelfLoop,
+    asymmetry: S.review.violationAsymmetry,
+    cycle: S.review.violationCycle,
+    functional: S.review.violationFunctional,
+  }[v.kind];
+  // 自反那一类两条事实是同一条——显示一遍就够，显示两遍像个 bug
+  const single = v.left_fact === v.right_fact;
+  return (
+    <div className="glass rounded-xl p-3">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-sm text-[var(--u-warn)]">{what}</span>
+        {v.predicate && (
+          <span className="text-[11px] text-neutral-500">
+            {S.review.violationVia(v.predicate)}
+          </span>
+        )}
+        {v.path_len > 0 && (
+          <span className="text-[11px] text-neutral-500">
+            {S.review.violationPath(v.path_len)}
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 space-y-1">
+        <div className="text-xs text-neutral-300">{v.left_text}</div>
+        {!single && (
+          <div className="text-xs text-neutral-300">{v.right_text}</div>
+        )}
+      </div>
+      <div className="mt-2 flex gap-1.5 flex-wrap">
+        <button
+          className="u-btn text-xs"
+          disabled={busy}
+          onClick={() => onDecide("accepted")}
+        >
+          {S.review.acceptBoth}
+        </button>
+        <button
+          className="u-btn text-xs"
+          disabled={busy}
+          onClick={() => onDecide("axiom_relaxed")}
+        >
+          {S.review.relaxAxiom}
+        </button>
+        <button
+          className="u-btn u-btn-primary text-xs"
+          disabled={busy}
+          onClick={() => onDecide("fact_retracted")}
+        >
+          {S.review.retractFact}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function MappingRow({
   mapping: m,
   busy,
@@ -500,6 +571,9 @@ type Sel =
   // 语义层的待表态映射（0011）。从前它借「低置信事实」那一档露面——
   // 靠 0.6 的置信度混进去,而它根本不是一条关于世界的断言
   | "mappings"
+  // 公理违规（0002 R0）。**与 conflicts 分开**：那一档问「哪条对」，
+  // 这一档还可能答「公理写错了」——出路不同
+  | "violations"
   | "decisions"
   | "merges";
 
@@ -509,6 +583,7 @@ const QUEUE_ORDER: Sel[] = [
   "unconfirmed",
   "lowconf",
   "mappings",
+  "violations",
 ];
 const PAGE_SIZE: Record<Sel, number> = {
   duplicates: DUP_PAGE,
@@ -516,6 +591,7 @@ const PAGE_SIZE: Record<Sel, number> = {
   unconfirmed: FACT_PAGE,
   lowconf: FACT_PAGE,
   mappings: FACT_PAGE,
+  violations: FACT_PAGE,
   merges: MERGE_PAGE,
   decisions: 20,
 };
@@ -617,6 +693,22 @@ export function Review() {
     }) => api.decideMapping(kb!.id, id, status),
     onSettled: invalidate,
   });
+  const violationAction = useMutation({
+    mutationFn: ({
+      id,
+      resolution,
+    }: {
+      id: string;
+      resolution: "fact_retracted" | "axiom_relaxed" | "accepted";
+    }) => api.decideViolation(kb!.id, id, resolution),
+    onSettled: invalidate,
+  });
+  // 检查是同步的纯计算,所以直接 mutate 不排队。跑完把报告留在按钮旁边——
+  // **零和零不一样**：没有公理时要说「无从判起」,不能说「未发现矛盾」
+  const runCheck = useMutation({
+    mutationFn: () => api.runConsistencyCheck(kb!.id),
+    onSettled: invalidate,
+  });
   const revert = useMutation({
     mutationFn: (mergeId: string) => api.revertMerge(kb!.id, mergeId),
     onSettled: invalidate,
@@ -647,6 +739,7 @@ export function Review() {
     unconfirmed: data?.unconfirmed?.length ?? 0,
     lowconf: data?.facts.length ?? 0,
     mappings: data?.mappings?.length ?? 0,
+    violations: data?.violations?.length ?? 0,
     merges: data?.merges.length ?? 0,
     decisions: history.data?.total ?? 0,
   };
@@ -679,6 +772,10 @@ export function Review() {
       hint: S.review.lowConfidenceHint,
     },
     mappings: { title: S.review.mappings, hint: S.review.mappingsHint },
+    violations: {
+      title: S.review.violations,
+      hint: S.review.violationsHint,
+    },
     decisions: { title: S.review.decisionsTitle, hint: S.review.decisionsHint },
     merges: { title: S.review.mergeHistory, hint: null },
   };
@@ -718,6 +815,12 @@ export function Review() {
             label={S.review.railMappings}
             count={counts.mappings}
             onClick={() => select("mappings")}
+          />
+          <RailItem
+            active={active === "violations"}
+            label={S.review.railViolations}
+            count={counts.violations}
+            onClick={() => select("violations")}
           />
         </div>
         <RailHeader label={S.review.tabHistory} />
@@ -759,8 +862,9 @@ export function Review() {
                 </p>
               )}
 
-              {/* 空态：整个待办全清 vs 单类清空 */}
-              {isQueueSel && counts[active] === 0 && (
+              {/* 空态：整个待办全清 vs 单类清空。**公理这一档除外**——它自己那句要
+                  分清「查过、没矛盾」和「还没查过」，通用空态说不出这个差别 */}
+              {isQueueSel && active !== "violations" && counts[active] === 0 && (
                 <div className="glass rounded-xl p-10 text-center text-sm text-neutral-500">
                   {queueEmpty ? S.review.empty : S.review.categoryEmpty}
                 </div>
@@ -862,6 +966,58 @@ export function Review() {
                         }
                         onDecide={(status) =>
                           mappingAction.mutate({ id: m.id, status })
+                        }
+                      />
+                    ),
+                  )}
+                </div>
+              )}
+
+              {active === "violations" && (
+                <div className="space-y-3">
+                  {/* 按钮在这一档里，不在页头：只有看这一档的人才想重跑。
+                      报告留在按钮旁边——空结果要说清是「没矛盾」还是「没判据」 */}
+                  <div className="flex items-center gap-3">
+                    <button
+                      className="u-btn u-btn-primary text-xs"
+                      disabled={runCheck.isPending}
+                      onClick={() => runCheck.mutate()}
+                    >
+                      {runCheck.isPending
+                        ? S.review.checking
+                        : S.review.runCheck}
+                    </button>
+                    {runCheck.data && (
+                      <span className="text-xs text-neutral-500">
+                        {/* 三种结果说三句话。**`found` 不是要报的数**：
+                            重跑会把已裁决的那些重新算出来，说「3 处矛盾」而
+                            列表只剩一条，看起来像界面漏了东西 */}
+                        {runCheck.data.predicates_with_axioms === 0
+                          ? S.review.checkNoAxioms
+                          : runCheck.data.inserted > 0
+                            ? S.review.checkFound(runCheck.data.inserted)
+                            : runCheck.data.found > 0
+                              ? S.review.checkNothingNew
+                              : S.review.checkClean(runCheck.data.edges)}
+                      </span>
+                    )}
+                  </div>
+                  {counts.violations === 0 && !runCheck.data && (
+                    <div className="glass rounded-xl p-10 text-center text-sm text-neutral-500">
+                      {S.review.checkNeverRun}
+                    </div>
+                  )}
+                  {pageSlice(data.violations ?? [], page, FACT_PAGE).rows.map(
+                    (v) => (
+                      <ViolationRow
+                        key={v.id}
+                        violation={v}
+                        busy={
+                          violationAction.isPending &&
+                          violationAction.variables?.id === v.id
+                        }
+                        onDecide={(resolution) =>
+                          violationAction.mutate({ id: v.id, resolution })
                         }
                       />
                     ),

@@ -295,6 +295,16 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/review/mappings/{mapping_id}",
             post(review_routes::decide_mapping),
         )
+        // 一致性检查（0002 R0）：跑一遍，与裁决一处违规。
+        // 检查本身是纯计算,同步跑
+        .route(
+            "/kbs/{id}/consistency/check",
+            post(review_routes::run_consistency_check),
+        )
+        .route(
+            "/kbs/{id}/review/violations/{violation_id}",
+            post(review_routes::decide_violation),
+        )
         .route(
             "/kbs/{id}/facts/{fact_id}/confirm",
             post(review_routes::confirm_fact),

@@ -57,10 +57,13 @@ pub async fn list(
     // 靠 confidence 0.6 混进去,而它根本不是一条关于世界的断言。
     // 现在自成一档,前端也据此分组显示
     let mappings = utopia_store::mappings::proposed(&state.pool, kb_id, 100).await?;
+    // 公理违规（0002 R0）。**不与 conflicts 合并**：那一档问「哪条对」，
+    // 这一档还可能答「公理写错了」——出路不同，前端也就分开显示
+    let violations = utopia_store::reasoning::open_violations(&state.pool, kb_id, 100).await?;
     Ok(Json(json!({
         "reviews": reviews, "facts": facts, "merges": merges,
         "conflicts": conflicts, "unconfirmed": unconfirmed,
-        "mappings": mappings
+        "mappings": mappings, "violations": violations
     })))
 }
 
@@ -429,4 +432,92 @@ pub async fn decide_mapping(
     .await;
     state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct DecideViolationReq {
+    /// fact_retracted | axiom_relaxed | accepted
+    pub resolution: String,
+}
+
+/// 人裁决一处公理违规。
+///
+/// **三个出路而不是两个。** `axiom_relaxed` 是这一档独有的：矛盾可能出在定义
+/// 而不是数据——用户导的本体把某个属性声明成反对称，而他自己的语料里那关系
+/// 其实双向。这时该改的是本体，不是二十条事实。
+///
+/// 端点只记决定，不替人执行。撤事实走 `reject_fact`，改公理走本体页——
+/// 那两个动作各有自己的权限与台账，塞进这里会变成一个什么都能干的端点。
+pub async fn decide_violation(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, violation_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideViolationReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    if !matches!(
+        req.resolution.as_str(),
+        "fact_retracted" | "axiom_relaxed" | "accepted"
+    ) {
+        return Err(utopia_core::AppError::invalid(
+            "bad_resolution",
+            "resolution 只能是 fact_retracted、axiom_relaxed 或 accepted",
+        )
+        .into());
+    }
+    utopia_store::reasoning::decide(&state.pool, kb_id, violation_id, &req.resolution, user.id)
+        .await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "violation.decided",
+        "axiom_violation",
+        Some(violation_id),
+        json!({ "resolution": req.resolution }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 手动跑一遍一致性检查。
+///
+/// **同步跑而不是排任务**：这是纯计算，没有模型调用也没有网络——一个几万条
+/// 事实的库跑下来是毫秒级。排进任务队列只会让人点完按钮盯着一个"排队中"，
+/// 而队列真正要解决的是"这活儿要跑几分钟"。
+///
+/// `predicates_with_axioms` 一并回给前端：**零和零的含义不同**。没有公理时
+/// 结论是"没有判据"，界面该说"先导一份带公理的本体"，而不是"未发现矛盾"。
+pub async fn run_consistency_check(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let report = utopia_store::reasoning::run(&state.pool, kb_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "consistency.checked",
+        "knowledge_base",
+        Some(kb_id),
+        json!({
+            "edges": report.edges,
+            "predicates_with_axioms": report.predicates_with_axioms,
+            "found": report.found,
+            "inserted": report.inserted,
+            "cleared": report.cleared,
+        }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok(Json(json!({
+        "edges": report.edges,
+        "predicates_with_axioms": report.predicates_with_axioms,
+        "found": report.found,
+        "inserted": report.inserted,
+        "cleared": report.cleared,
+    })))
 }

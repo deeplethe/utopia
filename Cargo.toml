@@ -47,6 +47,7 @@ flate2 = "1"
 
 # Phase 1: 摄入/检索/LLM
 utopia-ingest = { path = "crates/utopia-ingest" }
+utopia-reason = { path = "crates/utopia-reason" }
 utopia-search = { path = "crates/utopia-search" }
 utopia-llm = { path = "crates/utopia-llm" }
 tantivy = "0.26"

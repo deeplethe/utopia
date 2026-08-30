@@ -290,6 +290,21 @@ export interface ConceptMapping {
   derived: boolean;
   status: "proposed" | "confirmed" | "rejected";
 }
+/** 一处公理违规（0002 R0）。判据来自本体自己声明的公理，没声明就不报 */
+export interface AxiomViolation {
+  id: string;
+  kind: "self_loop" | "asymmetry" | "cycle" | "functional";
+  /** 判据来自哪条关系。判「公理写错了」时从这里进本体去改 */
+  predicate: string | null;
+  left_fact: string;
+  left_text: string;
+  /** 自反那一类与 left 相同——一条事实跟自己矛盾 */
+  right_fact: string;
+  right_text: string;
+  /** 环的长度；其余三类为 0 */
+  path_len: number;
+  detected_at: string;
+}
 export interface FactReviewItem {
   id: string;
   subject_name: string;
@@ -1156,6 +1171,7 @@ export const api = {
       conflicts: ConflictItem[];
       unconfirmed: FactReviewItem[];
       mappings: ConceptMapping[];
+      violations: AxiomViolation[];
     }>(`/api/v1/kbs/${kbId}/review`),
   closeFact: (kbId: string, factId: string, validTo: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/close`, {
@@ -1182,6 +1198,26 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ status }),
     }),
+  /** 跑一遍一致性检查。同步返回——纯计算，没有模型调用也没有网络 */
+  runConsistencyCheck: (kbId: string) =>
+    request<{
+      edges: number;
+      /** **零和零不一样**：没有公理时结论是「没有判据」，不是「未发现矛盾」 */
+      predicates_with_axioms: number;
+      found: number;
+      inserted: number;
+      cleared: number;
+    }>(`/api/v1/kbs/${kbId}/consistency/check`, { method: "POST" }),
+  /** 对一处公理违规表态。三个出路——第三个是这一档独有的：可能是定义错了 */
+  decideViolation: (
+    kbId: string,
+    violationId: string,
+    resolution: "fact_retracted" | "axiom_relaxed" | "accepted",
+  ) =>
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/review/violations/${violationId}`,
+      { method: "POST", body: JSON.stringify({ resolution }) },
+    ),
   confirmFact: (kbId: string, factId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/confirm`, {
       method: "POST",

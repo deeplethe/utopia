@@ -1113,7 +1113,20 @@ pub async fn apply_import(
     let (filename, bytes) = read_upload(multipart).await?;
     let (import_id, plan) =
         crate::owl_import::apply(&state, kb_id, user.id, &filename, &bytes).await?;
-    Ok(Json(json!({ "import_id": import_id, "plan": plan })))
+    // 公理刚变，这是最该重算一致性的时刻——用户导进来的正是判据本身。
+    // 失败不影响导入本身：本体已经落库了，检查跑不动是另一件事，
+    // Review 页那个按钮还能再跑一次
+    let violations = match utopia_store::reasoning::run(&state.pool, kb_id).await {
+        Ok(r) => r.found,
+        Err(e) => {
+            tracing::warn!(?e, "导入后的一致性检查没跑成");
+            0
+        }
+    };
+    state.emit_review(kb_id);
+    Ok(Json(
+        json!({ "import_id": import_id, "plan": plan, "violations": violations }),
+    ))
 }
 
 pub async fn list_imports(
