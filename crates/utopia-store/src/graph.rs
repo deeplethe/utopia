@@ -1076,15 +1076,36 @@ pub async fn entity_history(
             FROM ef
             WHERE ef.invalidated_at IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.supersedes = ef.id)
+        ),
+        -- 改类不是事实：没有谓词、没有对方、没有方向。它来自 entity_retypes，
+        -- 一行最多产出两个事件——改动本身，以及撤销。
+        --
+        -- **撤销过的照样显示。** 读成「改过、又撤了」，不是没发生过。同一类错
+        -- 这仓库栽过两次（#37；并入被读成撤回），所以这不是防御性编程
+        rt AS (
+            SELECT r.created_at AS at, 'retyped' AS kind, r.actor_id,
+                   tf.label AS from_type_label, tt.label AS to_type_label
+            FROM entity_retypes r
+            LEFT JOIN entity_types tf ON tf.id = r.from_type_id
+            JOIN entity_types tt ON tt.id = r.to_type_id
+            WHERE r.kb_id = $1 AND r.entity_id = $2
+            UNION ALL
+            SELECT r.reverted_at, 'retype_reverted', r.actor_id, tf.label, tt.label
+            FROM entity_retypes r
+            LEFT JOIN entity_types tf ON tf.id = r.from_type_id
+            JOIN entity_types tt ON tt.id = r.to_type_id
+            WHERE r.kb_id = $1 AND r.entity_id = $2 AND r.reverted_at IS NOT NULL
         )";
     let rows: Vec<EntityHistoryEvent> = sqlx::query_as(&format!(
         "{EVENTS}
+         SELECT * FROM (
          SELECT ev.id AS fact_id, ev.at, ev.kind, ev.direction,
                 r.label AS predicate_label, o.canonical_name AS other_name,
                 ev.object_value, ev.valid_from, ev.valid_from_precision,
                 ev.valid_to, ev.valid_to_precision,
                 ev.confidence, act.actor_name, act.action,
-                src.document_id, src.filename, src.quote
+                src.document_id, src.filename, src.quote,
+                NULL::text AS from_type_label, NULL::text AS to_type_label
          FROM ev
          JOIN relation_types r ON r.id = ev.predicate_id
          LEFT JOIN entities o ON o.id = ev.other_id
@@ -1126,7 +1147,17 @@ pub async fn entity_history(
              WHERE fe.fact_id = ev.id
              ORDER BY fe.doc_version DESC NULLS LAST LIMIT 1
          ) src ON true
-         ORDER BY ev.at DESC, ev.id
+         UNION ALL
+         SELECT NULL::uuid, rt.at, rt.kind, NULL::text,
+                NULL::text, NULL::text,
+                NULL::jsonb, NULL::timestamptz, NULL::text,
+                NULL::timestamptz, NULL::text,
+                NULL::real, u.display_name, NULL::text,
+                NULL::uuid, NULL::text, NULL::text,
+                rt.from_type_label, rt.to_type_label
+         FROM rt LEFT JOIN users u ON u.id = rt.actor_id
+         ) x
+         ORDER BY x.at DESC, x.fact_id
          LIMIT $3 OFFSET $4"
     ))
     .bind(kb_id)
@@ -1135,11 +1166,14 @@ pub async fn entity_history(
     .bind(offset)
     .fetch_all(pool)
     .await?;
-    let (total,): (i64,) = sqlx::query_as(&format!("{EVENTS} SELECT count(*) FROM ev"))
-        .bind(kb_id)
-        .bind(entity_id)
-        .fetch_one(pool)
-        .await?;
+    // 总数把改类那一支也算上，否则分页会少一截
+    let (total,): (i64,) = sqlx::query_as(&format!(
+        "{EVENTS} SELECT (SELECT count(*) FROM ev) + (SELECT count(*) FROM rt)"
+    ))
+    .bind(kb_id)
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await?;
     Ok((rows, total))
 }
 

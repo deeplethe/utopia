@@ -364,7 +364,12 @@ pub struct ReviewItem {
 }
 
 /// 跑一遍类型消解：检索候选 → 裁决 → 三档处置。
-pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutcome> {
+pub async fn resolve(
+    state: &AppState,
+    kb_id: Uuid,
+    // 落库那一步记在谁头上。这条路是人在界面上按的,所以有人
+    actor: Option<Uuid>,
+) -> AppResult<ResolutionOutcome> {
     let items = preview(state, kb_id).await?;
     let items: Vec<_> = items
         .into_iter()
@@ -499,7 +504,8 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
     let (batch, retyped) = if picks.is_empty() {
         (None, 0)
     } else {
-        let (b, n) = utopia_store::resolution::retype_entities(&state.pool, kb_id, &picks).await?;
+        let (b, n) =
+            utopia_store::resolution::retype_entities(&state.pool, kb_id, &picks, actor).await?;
         (Some(b), n)
     };
     Ok(ResolutionOutcome {

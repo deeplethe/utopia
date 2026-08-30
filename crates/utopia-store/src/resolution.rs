@@ -1525,6 +1525,8 @@ pub async fn adopt_proposed_types(
     kb_id: Uuid,
     type_id: Uuid,
     forms: &[String],
+    // None = 引擎自动（本体长出新类之后的收尾认领没有人在按）
+    actor: Option<Uuid>,
 ) -> AppResult<(Uuid, u32)> {
     let batch_id = Uuid::now_v7();
     if forms.is_empty() {
@@ -1559,14 +1561,16 @@ pub async fn adopt_proposed_types(
         .execute(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO entity_retypes (batch_id, kb_id, entity_id, from_type_id, to_type_id)
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO entity_retypes
+                (batch_id, kb_id, entity_id, from_type_id, to_type_id, actor_id)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(batch_id)
         .bind(kb_id)
         .bind(entity_id)
         .bind(from_type)
         .bind(type_id)
+        .bind(actor)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1660,7 +1664,11 @@ fn normalize_type_key(s: &str) -> String {
 ///
 /// 只做**规整后精确同名**的匹配，不做近似——猜错就是把实体放进错的类，
 /// 而"再等一轮"的代价接近零。
-pub async fn sweep_proposed_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<(Uuid, u32)>> {
+pub async fn sweep_proposed_types(
+    pool: &PgPool,
+    kb_id: Uuid,
+    actor: Option<Uuid>,
+) -> AppResult<Vec<(Uuid, u32)>> {
     let pending = proposed_types(pool, kb_id).await?;
     let existing: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id, key FROM entity_types WHERE kb_id = $1")
@@ -1674,7 +1682,8 @@ pub async fn sweep_proposed_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<(
             continue;
         };
         let (batch, n) =
-            adopt_proposed_types(pool, kb_id, *type_id, std::slice::from_ref(&p.form)).await?;
+            adopt_proposed_types(pool, kb_id, *type_id, std::slice::from_ref(&p.form), actor)
+                .await?;
         if n > 0 {
             out.push((batch, n));
         }
@@ -1969,6 +1978,9 @@ pub async fn retype_entities(
     pool: &PgPool,
     kb_id: Uuid,
     picks: &[(Uuid, Uuid)],
+    // None = 引擎自动裁决。跟 entity_merges.merged_by 一个约定,
+    // 实体历史据此区分"某某某改的"与"高置信自动改的"
+    actor: Option<Uuid>,
 ) -> AppResult<(Uuid, u32)> {
     let batch_id = Uuid::now_v7();
     let mut moved = 0u32;
@@ -2013,14 +2025,16 @@ pub async fn retype_entities(
             continue;
         };
         sqlx::query(
-            "INSERT INTO entity_retypes (batch_id, kb_id, entity_id, from_type_id, to_type_id)
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO entity_retypes
+                (batch_id, kb_id, entity_id, from_type_id, to_type_id, actor_id)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(batch_id)
         .bind(kb_id)
         .bind(entity_id)
         .bind(from_type)
         .bind(type_id)
+        .bind(actor)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

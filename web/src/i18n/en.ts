@@ -567,6 +567,9 @@ export const en = {
       rejected: "Withdrawn",
       /* 并入另一条断言：内容一字未少，不是撤回 */
       merged: "Merged into an existing fact",
+      /* 改的是节点上的类,一条事实都没动 */
+      retyped: "Type changed",
+      retype_reverted: "Type change undone",
     } as Record<string, string>,
     historyEngine: "engine",
     /* 有效区间的变化：修正后区间闭合到某个时点 */

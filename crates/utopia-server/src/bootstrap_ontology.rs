@@ -200,6 +200,8 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
                     kb_id,
                     type_id,
                     &forms,
+                    // 系统的动作,不是谁的决定——与本文件下方审计写 NULL 同一条
+                    None,
                 )
                 .await
                 {
@@ -408,7 +410,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
     }
 
     // 类先建好、实体后抽出来是常态：把等着已存在类型的那些也收走
-    match utopia_store::resolution::sweep_proposed_types(&state.pool, kb_id).await {
+    match utopia_store::resolution::sweep_proposed_types(&state.pool, kb_id, None).await {
         Ok(swept) => {
             for (batch, n) in swept {
                 moved_total += n;

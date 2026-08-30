@@ -354,14 +354,24 @@ export interface EntityFact {
   last_evidence_time: string | null;
 }
 
-/** 实体的一次认知变更（记录时间轴上的事件，与 EntityFact 的有效时间轴正交）。 */
+/** 实体的一次认知变更（记录时间轴上的事件，与 EntityFact 的有效时间轴正交）。
+ *
+ * 不是每个事件都来自一条事实：retyped / retype_reverted 来自改类账本，
+ * 没有谓词、没有对方、没有方向。 */
 export interface EntityHistoryEvent {
-  fact_id: string;
-  /** 记录时刻：写入 = recorded_at，作废 = invalidated_at */
+  /** 事实事件才有；改类事件为 null */
+  fact_id: string | null;
+  /** 记录时刻：写入 = recorded_at，作废 = invalidated_at，改类 = 改类那一刻 */
   at: string;
-  kind: "asserted" | "corrected" | "rejected";
-  direction: "out" | "in";
-  predicate_label: string;
+  kind:
+    | "asserted"
+    | "corrected"
+    | "rejected"
+    | "merged"
+    | "retyped"
+    | "retype_reverted";
+  direction: "out" | "in" | null;
+  predicate_label: string | null;
   other_name: string | null;
   object_value: Record<string, unknown> | null;
   valid_from: string | null;
@@ -369,13 +379,16 @@ export interface EntityHistoryEvent {
   valid_from_precision: string | null;
   /** year | month | day，外加 unknown = 原文说它结束了但没说哪天 */
   valid_to_precision: string | null;
-  confidence: number;
-  /** null = 引擎自动（抽取写入 / 时态对账闭合） */
+  confidence: number | null;
+  /** null = 引擎自动（抽取写入 / 时态对账闭合 / 高置信自动改类） */
   actor_name: string | null;
   action: string | null;
   document_id: string | null;
   filename: string | null;
   quote: string | null;
+  /** 改类事件的两端。起点为 null = 从「未分类」改过来（0009 之后最常见的一种） */
+  from_type_label: string | null;
+  to_type_label: string | null;
 }
 
 export interface Evidence {

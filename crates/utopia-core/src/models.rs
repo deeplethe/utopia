@@ -512,15 +512,23 @@ pub struct EntityFact {
 /// 账本 append-only，所以"我们曾经怎么认为"全部留存：一条事实行最多产出两个
 /// 事件——写入（asserted / corrected）与作废（rejected，仅当没有后继修正行时；
 /// 有后继的话这次死亡已由那条 corrected 解释，不重复记）。
+///
+/// **不是每个事件都来自一条事实。** 改类（`retyped` / `retype_reverted`）来自
+/// `entity_retypes`：它没有谓词、没有对方、没有方向，那几个字段因此可空。
+/// 从前这里只有事实事件，于是「改了类」在实体历史里完全不显形——0001 P3a 记着
+/// 「可撤销不等于会被撤销」，错了不会自己冒出来。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct EntityHistoryEvent {
-    pub fact_id: Uuid,
-    /// 事件发生的记录时刻（写入 = recorded_at，作废 = invalidated_at）
+    /// 事实事件才有。改类事件为 None
+    pub fact_id: Option<Uuid>,
+    /// 事件发生的记录时刻（写入 = recorded_at，作废 = invalidated_at，
+    /// 改类 = entity_retypes.created_at / reverted_at）
     pub at: DateTime<Utc>,
     /// asserted（首次断言）| corrected（区间被修正）| rejected（认知被推翻）
+    /// | merged（并进了另一条断言）| retyped（改了类）| retype_reverted（改类被撤销）
     pub kind: String,
-    pub direction: String,
-    pub predicate_label: String,
+    pub direction: Option<String>,
+    pub predicate_label: Option<String>,
     pub other_name: Option<String>,
     pub object_value: Option<serde_json::Value>,
     pub valid_from: Option<DateTime<Utc>>,
@@ -532,14 +540,17 @@ pub struct EntityHistoryEvent {
     /// 结束端的粒度，外加一个 `unknown`——**原文说它结束了，但没说哪天**。
     /// `valid_to` 与它都为 None 才是「仍在持续」（迁移 0046）
     pub valid_to_precision: Option<String>,
-    pub confidence: f32,
-    /// 人工操作者；NULL = 引擎自动（抽取写入 / 时态对账闭合）
+    pub confidence: Option<f32>,
+    /// 人工操作者；NULL = 引擎自动（抽取写入 / 时态对账闭合 / 高置信改类）
     pub actor_name: Option<String>,
     /// 触发本次变更的审计动作（fact.close / conflict.close_old / fact.reject …）
     pub action: Option<String>,
     pub document_id: Option<Uuid>,
     pub filename: Option<String>,
     pub quote: Option<String>,
+    /// 改类事件的两端。起点可空——0009 之后「从没有类到有类」是最常见的一次改类
+    pub from_type_label: Option<String>,
+    pub to_type_label: Option<String>,
 }
 
 /// 一段**记录时间**窗口里，整个库上发生的认知变更。

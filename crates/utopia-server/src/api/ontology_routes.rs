@@ -1313,7 +1313,7 @@ pub async fn type_resolution_apply(
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    let outcome = crate::type_resolution::resolve(&state, kb_id).await?;
+    let outcome = crate::type_resolution::resolve(&state, kb_id, Some(user.id)).await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -1387,7 +1387,9 @@ pub async fn approve_refinement(
     let (batch, moved) = if picks.is_empty() {
         (None, 0)
     } else {
-        let (b, n) = utopia_store::resolution::retype_entities(&state.pool, kb_id, &picks).await?;
+        let (b, n) =
+            utopia_store::resolution::retype_entities(&state.pool, kb_id, &picks, Some(user.id))
+                .await?;
         (Some(b), n)
     };
     let _ = utopia_store::audit::record(

@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { FileText, Merge, PencilLine, Undo2 } from "lucide-react";
+import { FileText, Merge, PencilLine, Tag, Undo2 } from "lucide-react";
 import { api, type EntityHistoryEvent } from "../api";
 import { S } from "../i18n";
 import { Pager } from "../ui";
@@ -19,6 +19,9 @@ const KIND_ICON = {
   rejected: Undo2,
   // 并入不是撤回：内容一字未少地进了另一条断言
   merged: Merge,
+  // 改类不是事实变更：图上的节点换了个类，事实一条没动
+  retyped: Tag,
+  retype_reverted: Undo2,
 } as const;
 
 const KIND_TONE: Record<string, string> = {
@@ -26,6 +29,8 @@ const KIND_TONE: Record<string, string> = {
   corrected: "text-[var(--u-warn)]",
   rejected: "text-[var(--u-danger)]",
   merged: "text-neutral-500",
+  retyped: "text-neutral-500",
+  retype_reverted: "text-[var(--u-warn)]",
 };
 
 const ymd = (iso: string) => iso.slice(0, 10);
@@ -64,14 +69,25 @@ function EventRow({ e }: { e: EntityHistoryEvent }) {
           </span>
           {note && <span className="u-num text-[11px] text-neutral-500">{note}</span>}
         </div>
-        <div className="mt-0.5 text-[12.5px] text-neutral-400 truncate">
-          <span className="text-neutral-500">
-            {e.direction === "in" ? "← " : ""}
-            {e.predicate_label}
-            {e.direction === "in" ? "" : " →"}
-          </span>{" "}
-          <span className="text-neutral-200">{objectText(e)}</span>
-        </div>
+        {/* 改类事件没有谓词也没有宾语，正文换成类的两端。
+            起点为空 = 从「未分类」改过来，0009 之后最常见的一种 */}
+        {e.kind === "retyped" || e.kind === "retype_reverted" ? (
+          <div className="mt-0.5 text-[12.5px] text-neutral-400 truncate">
+            <span className="text-neutral-500">
+              {e.from_type_label ?? S.graph.untyped} →{" "}
+            </span>
+            <span className="text-neutral-200">{e.to_type_label}</span>
+          </div>
+        ) : (
+          <div className="mt-0.5 text-[12.5px] text-neutral-400 truncate">
+            <span className="text-neutral-500">
+              {e.direction === "in" ? "← " : ""}
+              {e.predicate_label}
+              {e.direction === "in" ? "" : " →"}
+            </span>{" "}
+            <span className="text-neutral-200">{objectText(e)}</span>
+          </div>
+        )}
         <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-neutral-600">
           <span className="u-num">{ymd(e.at)}</span>
           <span>·</span>
@@ -115,8 +131,9 @@ export function EntityHistory({ kbId, entityId }: { kbId: string; entityId: stri
     <div>
       <p className="px-2 pb-1.5 text-[11px] text-neutral-600">{S.graph.historyHint}</p>
       <div className="divide-y divide-white/[0.06]">
+        {/* key 里用 fact_id ?? at：改类事件没有 fact_id */}
         {(q.data?.events ?? []).map((e) => (
-          <EventRow key={`${e.fact_id}-${e.kind}`} e={e} />
+          <EventRow key={`${e.fact_id ?? e.at}-${e.kind}`} e={e} />
         ))}
       </div>
       <Pager total={total} pageSize={PER} page={page} onPage={setPage} />

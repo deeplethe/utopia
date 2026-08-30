@@ -519,6 +519,8 @@ export const zh: Strings = {
       corrected: "区间被修正",
       rejected: "已撤回",
       merged: "并入了已有事实",
+      retyped: "改了类",
+      retype_reverted: "改类被撤销",
     },
     historyEngine: "引擎",
     historyClosedAt: (t: string) => `闭合于 ${t}`,
