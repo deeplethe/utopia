@@ -1297,6 +1297,26 @@ function MissesPanel({
   // 默认收起：已忽略的是**背景信息**，不该跟待处理的挤在一起抢注意力
   const [showDismissed, setShowDismissed] = useState(false);
   const [proposals, setProposals] = useState<OntologyProposals | null>(null);
+  // 上次算出来、还没人表态的那些：刷新页面之后从库里捞回来（0049）。
+  //
+  // 从前这里只有上面那个 useState——刷新一次、切走一次，整批提议就没了，
+  // 想再看只能重跑一次模型，而重跑未必给出同一批归并。归并了哪些说法正是
+  // 唯一能查证过并的东西（0003 的 optimized_for → runs_on 就是这么抓出来的）
+  const storedProposals = useQuery({
+    queryKey: ["storedProposals", kbId],
+    queryFn: () => api.storedProposals(kbId),
+  });
+  useEffect(() => {
+    // 只在还没有本地结果时回填。刚点完 Suggest 的那一批更新，不该被覆盖
+    if (proposals === null && storedProposals.data) {
+      const d = storedProposals.data;
+      const empty =
+        !d.entity_types?.length &&
+        !d.relation_types?.length &&
+        !d.attribute_types?.length;
+      if (!empty) setProposals(d);
+    }
+  }, [storedProposals.data, proposals]);
   // 最近一次采纳，供撤销。只留最近一次——旧批次要撤销走审计台账，
   // 那里本来就记着每次采纳动了哪个关系、多少条
   const [lastAdopt, setLastAdopt] = useState<{
@@ -1361,6 +1381,8 @@ function MissesPanel({
           },
       );
       api.dismissMiss(kbId, "entity_type", p.key).catch(() => {});
+      // 提案表态落库（0049）：下一轮 Suggest 不会把它刷回待看
+      api.decideProposal(kbId, "entity_types", p.key, "adopted").catch(() => {});
       onChanged();
     },
     onError,
@@ -1407,6 +1429,7 @@ function MissesPanel({
           },
       );
       api.dismissMiss(kbId, "relation_type", p.key).catch(() => {});
+      api.decideProposal(kbId, "relation_types", p.key, "adopted").catch(() => {});
       onChanged();
     },
     onError,
@@ -1457,6 +1480,7 @@ function MissesPanel({
       );
       for (const form of p.forms ?? [])
         api.dismissMiss(kbId, "attribute_type", form).catch(() => {});
+      api.decideProposal(kbId, "attribute_types", p.key, "adopted").catch(() => {});
       onChanged();
     },
     onError,

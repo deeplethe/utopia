@@ -368,7 +368,92 @@ pub async fn suggest(
         .unwrap_or_else(|| "en".into());
     // 人工那条路 min_docs = 0：面板上「出现在 1 篇」这个数字是显示给人看的，
     // 他自己判断得了。替他滤掉，只是让他少一条信息
-    Ok(Json(build_proposals(&state, kb_id, &locale, 0).await?))
+    let proposals = build_proposals(&state, kb_id, &locale, 0).await?;
+    // 算完就写下来（0049）。从前这批结果只回给前端、存进一个 useState，
+    // 刷新一次就没了——而重算要再调一次模型，且未必给出同一批归并
+    persist_proposals(&state, kb_id, &proposals).await;
+    Ok(Json(proposals))
+}
+
+/// 四个小节里的每一条都记一行。**失败不拦住返回**——提案已经算出来了，
+/// 存不下只是下次要重算，把整个请求判失败反而把算出来的也丢了。
+async fn persist_proposals(state: &AppState, kb_id: Uuid, proposals: &serde_json::Value) {
+    const SECTIONS: [&str; 4] = [
+        "entity_types",
+        "relation_types",
+        "attribute_types",
+        "map_to",
+    ];
+    let mut rows: Vec<(String, String, serde_json::Value)> = Vec::new();
+    for section in SECTIONS {
+        let Some(items) = proposals.get(section).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for it in items {
+            // key 是这一条的身份（迁移里的唯一约束用的就是它）。没有 key 的
+            // 存不了，也没法在采纳时对回来——跳过而不是编一个
+            let Some(key) = it.get("key").and_then(|k| k.as_str()) else {
+                continue;
+            };
+            rows.push((section.to_string(), key.to_string(), it.clone()));
+        }
+    }
+    if let Err(e) = utopia_store::ontology::save_proposals(&state.pool, kb_id, &rows).await {
+        tracing::warn!(%kb_id, error = %e, "本体提案落库失败，这一批只在本次响应里");
+    }
+}
+
+/// 还等着人看的提案，按接口原来的形状拼回去。
+///
+/// 前端因此不必区分「刚算出来的」与「上次存下的」——两者同一个类型、同一套渲染。
+pub async fn stored_proposals(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let stored = utopia_store::ontology::open_proposals(&state.pool, kb_id).await?;
+    let mut out = json!({
+        "entity_types": [], "relation_types": [], "attribute_types": [], "map_to": []
+    });
+    for p in stored {
+        if let Some(arr) = out.get_mut(&p.section).and_then(|v| v.as_array_mut()) {
+            arr.push(p.payload);
+        }
+    }
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+pub struct DecideProposalReq {
+    pub section: String,
+    pub key: String,
+    /// adopted | rejected
+    pub status: String,
+}
+
+/// 一条提案有人表态了。**改状态不删行**：采纳发生过、拒绝也发生过，
+/// 而拒绝留痕正是下一轮 Suggest 不再把它刷回待看的依据。
+pub async fn decide_proposal(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Json(req): Json<DecideProposalReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    if !matches!(req.status.as_str(), "adopted" | "rejected") {
+        return Err(AppError::invalid("bad_status", "status 只能是 adopted 或 rejected").into());
+    }
+    utopia_store::ontology::decide_proposal(
+        &state.pool,
+        kb_id,
+        &req.section,
+        &req.key,
+        &req.status,
+        user.id,
+    )
+    .await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// 生成本体扩展提案。人工点 Suggest 与冷启动自动扩本体走同一条路——

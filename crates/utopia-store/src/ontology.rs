@@ -1310,3 +1310,96 @@ pub async fn set_parents_bulk(pool: &PgPool, pairs: &[(Uuid, Uuid)]) -> AppResul
     .await?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// 本体提案（见迁移 0049）
+// ---------------------------------------------------------------------------
+
+/// 一条落库的提案。`payload` 是接口原样返回的那一条。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct StoredProposal {
+    pub section: String,
+    pub key: String,
+    pub payload: serde_json::Value,
+}
+
+/// 把一轮 Suggest 的结果写下来。
+///
+/// **已经有人表过态的不动。** `WHERE status = 'open'` 那一句是这个函数的全部要点：
+/// 重跑 Suggest 会再次算出被拒绝过的那条提案（原材料还在 `ontology_misses` 里），
+/// 不加这句它就会被刷回 open——等于每跑一次都把人的否决抹掉一次。
+pub async fn save_proposals(
+    pool: &PgPool,
+    kb_id: Uuid,
+    items: &[(String, String, serde_json::Value)],
+) -> AppResult<()> {
+    for (section, key, payload) in items {
+        sqlx::query(
+            "INSERT INTO ontology_proposals (id, kb_id, section, key, payload)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (kb_id, section, key) DO UPDATE
+               SET payload = EXCLUDED.payload, created_at = now()
+               WHERE ontology_proposals.status = 'open'",
+        )
+        .bind(Uuid::now_v7())
+        .bind(kb_id)
+        .bind(section)
+        .bind(key)
+        .bind(payload)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// 还等着人看的提案。新的排前面——旧的那批已经被看过好几眼了。
+pub async fn open_proposals(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<StoredProposal>> {
+    Ok(sqlx::query_as(
+        "SELECT section, key, payload FROM ontology_proposals
+         WHERE kb_id = $1 AND status = 'open'
+         ORDER BY created_at DESC, key",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 一条提案被采纳或拒绝了。
+///
+/// **改状态而不是删行**：采纳发生过、拒绝也发生过。跟 `fact_adoptions`、
+/// `entity_retypes` 同一条路。拒绝留痕还有个当下就用得着的作用——下一轮
+/// Suggest 不会把它刷回待看。
+pub async fn decide_proposal(
+    pool: &PgPool,
+    kb_id: Uuid,
+    section: &str,
+    key: &str,
+    status: &str,
+    actor: Uuid,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE ontology_proposals
+            SET status = $4, decided_by = $5, decided_at = now()
+          WHERE kb_id = $1 AND section = $2 AND key = $3 AND status = 'open'",
+    )
+    .bind(kb_id)
+    .bind(section)
+    .bind(key)
+    .bind(status)
+    .bind(actor)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 还有多少条等着看。0003 的缺口：关掉自动扩展开关之后没有「自上次以来有 N 条」
+/// 的提醒，信号在面板里但没人主动看——有了这张表，提醒就是这一句。
+pub async fn open_proposal_count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM ontology_proposals WHERE kb_id = $1 AND status = 'open'",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}

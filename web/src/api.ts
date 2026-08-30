@@ -955,6 +955,20 @@ export const api = {
         method: "DELETE",
       },
     ),
+  /** 上次算出来、还没人表态的提案（0049）。刷新页面靠它，不必重跑模型 */
+  storedProposals: (kbId: string) =>
+    request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/proposals`),
+  /** 一条提案有人表态了。改状态不删行——拒绝留痕，下一轮 Suggest 不再刷回待看 */
+  decideProposal: (
+    kbId: string,
+    section: string,
+    key: string,
+    status: "adopted" | "rejected",
+  ) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/proposals`, {
+      method: "POST",
+      body: JSON.stringify({ section, key, status }),
+    }),
   dismissMiss: (kbId: string, kind: string, key: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/dismiss`, {
       method: "POST",
