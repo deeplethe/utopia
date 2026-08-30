@@ -357,6 +357,19 @@ function NewKbModal({
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [restricted, setRestricted] = useState(true);
+  const [packs, setPacks] = useState<string[]>([]);
+
+  const available = useQuery({
+    queryKey: ["ontologyPacks"],
+    queryFn: api.ontologyPacks,
+  });
+
+  // 勾选顺序即安装顺序：第一个包的类会认领同名的种子类，
+  // 后面的撞名才查得到对齐表。所以取消再勾会排到末尾——这是对的
+  const toggle = (id: string) =>
+    setPacks((prev) =>
+      prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
+    );
 
   const create = useMutation({
     mutationFn: () =>
@@ -364,6 +377,7 @@ function NewKbModal({
         name: name.trim(),
         description: desc.trim() || null,
         visibility: restricted ? "restricted" : "open",
+        ontology_packs: packs,
       }),
     onSuccess: (kb) => onDone(kb.id),
   });
@@ -406,6 +420,53 @@ function NewKbModal({
           />
           {S.settings.kbs.visRestricted}
         </label>
+
+        <div className="mb-4">
+          <div className="text-xs text-neutral-300 mb-1">
+            {S.settings.kbs.packsLabel}
+          </div>
+          <p className="text-[11px] leading-relaxed text-neutral-500 mb-2">
+            {S.settings.kbs.packsHint}
+          </p>
+          <div className="max-h-56 overflow-y-auto rounded-lg border border-white/10 divide-y divide-white/5">
+            {available.data?.packs.map((p) => {
+              const on = packs.includes(p.id);
+              return (
+                <label
+                  key={p.id}
+                  className="flex gap-2.5 px-3 py-2 cursor-pointer hover:bg-white/5"
+                >
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={on}
+                    onChange={() => toggle(p.id)}
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-xs text-neutral-200">{p.name}</span>
+                    <span className="block text-[11px] leading-snug text-neutral-500">
+                      {p.summary}
+                      <span className="text-neutral-600">
+                        {" · "}
+                        {S.settings.kbs.packsCount(p.classes, p.properties)}
+                      </span>
+                    </span>
+                    {p.overlaps && (
+                      <span className="block text-[11px] text-amber-500/80">
+                        {p.overlaps}
+                      </span>
+                    )}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+          {packs.length === 0 && (
+            <p className="text-[11px] text-neutral-500 mt-1.5">
+              {S.settings.kbs.packsNone}
+            </p>
+          )}
+        </div>
         {create.isError && (
           <p className="text-xs text-rose-400 mb-2">
             {(create.error as Error).message}

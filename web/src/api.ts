@@ -64,6 +64,17 @@ export interface Workspace {
   created_at: string;
 }
 
+/** 建库时可选的起点本体包（`GET /ontology-packs`）。 */
+export type OntologyPack = {
+  id: string;
+  name: string;
+  summary: string;
+  classes: number;
+  properties: number;
+  /** 与已有包重叠时的提示；null = 基本不重叠 */
+  overlaps: string | null;
+};
+
 export interface Kb {
   id: string;
   workspace_id: string;
@@ -642,12 +653,21 @@ export const api = {
     request<{ kbs: MyKb[] }>(`/api/v1/workspaces/${workspaceId}/my-kbs`),
   createKb: (
     workspaceId: string,
-    body: { name: string; description?: string | null; visibility?: string },
+    body: {
+      name: string;
+      description?: string | null;
+      visibility?: string;
+      /** 起点本体包 id，顺序有意义：第一个会认领同名的种子类 */
+      ontology_packs?: string[];
+    },
   ) =>
     request<Kb>(`/api/v1/workspaces/${workspaceId}/kbs`, {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  ontologyPacks: () =>
+    request<{ packs: OntologyPack[] }>("/api/v1/ontology-packs"),
 
   kbDetail: (kbId: string) => request<Kb>(`/api/v1/kbs/${kbId}`),
   updateKb: (kbId: string, body: Record<string, unknown>) =>
