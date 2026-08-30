@@ -1480,13 +1480,18 @@ pub async fn proposed_predicate_documents(
 /// 已存在时走的是"并入"，旧行被作废却没有后继，于是既撤不回来、实体历史
 /// 又会把它判成 rejected 而对外宣称"这条被撤回了"（它其实一字未少地并进了
 /// 另一条）。
+/// `swap = true`：这些说法是目标关系的**被动形**，改写时主宾要对调。
+///
+/// `X produced_by Y` 与 `Y produces X` 是同一条边。不对调就会在图上多出一条
+/// 反着的箭头，而且它跟正向那些永远合不到一起——同一件事分在两个方向上。
 pub async fn adopt_proposed_predicates(
     pool: &PgPool,
     kb_id: Uuid,
     predicate_id: Uuid,
     forms: &[String],
+    swap: bool,
 ) -> AppResult<(Uuid, u32)> {
-    adopt(pool, kb_id, predicate_id, AdoptTargets::ByForm(forms)).await
+    adopt(pool, kb_id, predicate_id, AdoptTargets::ByForm(forms), swap).await
 }
 
 /// 要改写哪些事实，以及新行的宾语从哪来。
@@ -1507,6 +1512,7 @@ async fn adopt(
     kb_id: Uuid,
     predicate_id: Uuid,
     targets: AdoptTargets<'_>,
+    swap: bool,
 ) -> AppResult<(Uuid, u32)> {
     let batch_id = Uuid::now_v7();
     let targets: Vec<(Uuid, Uuid, Option<Uuid>, Option<serde_json::Value>)> = match targets {
@@ -1563,6 +1569,12 @@ async fn adopt(
 
     let mut moved = 0u32;
     for (old_id, subject_id, object_id, object_value) in targets {
+        // 被动形改写：主宾对调。字面值宾语的事实换不了（值不能当主语），
+        // 而 ByForm 那条查询本来就只取 object_id 非空的，所以这里只可能是实体宾语
+        let (subject_id, object_id) = match (swap, object_id) {
+            (true, Some(o)) => (o, Some(subject_id)),
+            _ => (subject_id, object_id),
+        };
         let mut tx = pool.begin().await?;
         // 目标断言可能已存在（同主宾已有一条真关系）：那就并进去，别造重复。
         //
@@ -1595,7 +1607,7 @@ async fn adopt(
                     "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                                         valid_from, valid_from_precision,
                                         valid_to, valid_to_precision, confidence, supersedes)
-                     SELECT $1, kb_id, subject_id, $3, $4, $5,
+                     SELECT $1, kb_id, $6, $3, $4, $5,
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, id
                      FROM facts WHERE id = $2 AND invalidated_at IS NULL
@@ -1606,6 +1618,10 @@ async fn adopt(
                 .bind(predicate_id)
                 .bind(object_id)
                 .bind(&object_value)
+                // 主语也显式绑定，不再从旧行复制——被动形改写要的正是换掉它。
+                // 第一版漏了这一处：局部变量换了、SQL 里还写着 subject_id，
+                // 于是宾语换了、主语没换，凭空造出一条 `OpenAI produces OpenAI`
+                .bind(subject_id)
                 .fetch_optional(&mut *tx)
                 .await?;
                 // 已被并发改写：不重复动手
@@ -1801,11 +1817,13 @@ pub async fn adopt_value_facts(
     attribute_id: Uuid,
     rewrites: &[(Uuid, serde_json::Value)],
 ) -> AppResult<(Uuid, u32)> {
+    // 属性那一路没有对调可言：宾语是字面值，值不能当主语
     adopt(
         pool,
         kb_id,
         attribute_id,
         AdoptTargets::WithValues(rewrites),
+        false,
     )
     .await
 }

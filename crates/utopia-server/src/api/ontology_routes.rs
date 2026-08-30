@@ -854,11 +854,18 @@ pub async fn adopt_predicate(
         )
         .await?
     };
+    // **人工路径不对调主宾。**
+    //
+    // 不是因为它不需要——把 `produced_by` 映射到 `produces` 同样该对调——而是
+    // 这里的 forms 是人在面板上勾的，完全可能同时勾了 `produced` 和 `produced_by`，
+    // 而一个 swap 标志伺候不了混合。自动那条路不存在这个问题：同组说法共享屈折基，
+    // 结尾有没有 `by` 必然一致。真要修得让 adopt 逐条判方向，那是另一件事。
     let (batch_id, remapped) = utopia_store::graph::adopt_proposed_predicates(
         &state.pool,
         kb_id,
         predicate_id,
         &req.forms,
+        false,
     )
     .await?;
     // 采纳同时清掉对应的未匹配统计——本体已经覆盖它们了

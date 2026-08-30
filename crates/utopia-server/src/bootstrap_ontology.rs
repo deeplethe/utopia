@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::api::ontology_routes;
-use crate::predicate_match::merge_key;
+use crate::predicate_match::{merge_key, PredicateIndex};
 use crate::state::AppState;
 
 /// 少于这么多个够格的信号（谓词 + 类型）就不折腾——凑不出像样的提案，
@@ -41,6 +41,9 @@ struct RelationGroup {
     forms: Vec<String>,
     facts: i64,
     docs: usize,
+    /// 本体里已经有等价关系时的落点：`(关系 id, 主宾要不要对调)`。
+    /// `None` = 本体里确实没有，按票数新建
+    existing: Option<(Uuid, bool)>,
 }
 
 /// 按票数决定采纳哪些关系。**不调模型。**
@@ -57,6 +60,17 @@ async fn counted_relation_groups(
 ) -> anyhow::Result<Vec<RelationGroup>> {
     let forms = utopia_store::graph::proposed_predicates(&state.pool, kb_id).await?;
     let pairs = utopia_store::graph::proposed_predicate_documents(&state.pool, kb_id).await?;
+    // **建之前先问本体。**
+    //
+    // 少了这一步，采纳只按票数建，从不检查「是不是已经有等价的了」。实测后果：
+    // demo-b3 那个库里 `produced_by` 与 `produces`、`developed_by` 与 `develops`
+    // 各成一个关系，同一件事的两个方向永久分家。
+    //
+    // 而 `produces` 有 265 条、`produced_by` 只有 15 条——票多的先进本体，
+    // 票少的那个本该被 `predicate_match` 的 `_by` 规则接住，却因为**采纳路径压根
+    // 没走匹配器**而长成了独立关系。匹配器只在抽取时用过，这里是它缺席的第二处。
+    let rtypes = utopia_store::graph::relation_types(&state.pool, kb_id).await?;
+    let index = PredicateIndex::build(&rtypes);
 
     let mut docs_of: HashMap<String, HashSet<Uuid>> = HashMap::new();
     for (form, doc) in pairs {
@@ -82,11 +96,16 @@ async fn counted_relation_groups(
         if (docs.len() as i64) < MIN_DOCS {
             continue;
         }
+        // 组里任一说法能落到本体已有关系上，整组就落过去。同组说法共享屈折基，
+        // 结尾有没有 `by` 也必然一致（`produced_by` 与 `produces` 不同组），
+        // 所以「要不要对调」是**整组一致**的，不必逐条判
+        let existing = members.iter().find_map(|m| index.lookup(&m.form));
         out.push(RelationGroup {
             key: members[0].form.clone(),
             facts: members.iter().map(|m| m.fact_count).sum(),
             forms: members.into_iter().map(|m| m.form).collect(),
             docs: docs.len(),
+            existing,
         });
     }
     out.sort_by(|a, b| b.facts.cmp(&a.facts).then(a.key.cmp(&b.key)));
@@ -212,40 +231,51 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
     // temporal 一律 state：它只在 functional / inverse_functional 为真时驱动时态
     // 引擎，而这条路**永不**自动设那两位（见文件头），所以此处它没有行为后果。
     for g in &counted {
-        let label = g.key.replace('_', " ");
-        let predicate_id = match utopia_store::ontology::create_relation_type(
-            &state.pool,
-            kb_id,
-            &g.key,
-            &label,
-            "state",
-            false,
-            false,
-            "",
-            "relation",
-            &[],
-            &[],
-            None,
-            None,
-        )
-        .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!(%kb_id, key = %g.key, error = %e, "冷启动建关系失败");
-                continue;
+        // 本体里已经有等价关系就不新建，直接把事实改写过去。
+        // 被动形（`produced_by` 对上 `produces`）改写时主宾对调
+        let (predicate_id, swap) = match g.existing {
+            Some(hit) => hit,
+            None => {
+                let label = g.key.replace('_', " ");
+                match utopia_store::ontology::create_relation_type(
+                    &state.pool,
+                    kb_id,
+                    &g.key,
+                    &label,
+                    "state",
+                    false,
+                    false,
+                    "",
+                    "relation",
+                    &[],
+                    &[],
+                    None,
+                    None,
+                )
+                .await
+                {
+                    Ok(id) => {
+                        added_relations.push(g.key.clone());
+                        (id, false)
+                    }
+                    Err(e) => {
+                        tracing::warn!(%kb_id, key = %g.key, error = %e, "冷启动建关系失败");
+                        continue;
+                    }
+                }
             }
         };
-        added_relations.push(g.key.clone());
         let (batch, moved) = utopia_store::graph::adopt_proposed_predicates(
             &state.pool,
             kb_id,
             predicate_id,
             &g.forms,
+            swap,
         )
         .await?;
         tracing::info!(
             %kb_id, key = %g.key, forms = ?g.forms, docs = g.docs, facts = g.facts, moved,
+            reused = g.existing.is_some(), swap,
             "按票数采纳关系"
         );
         moved_total += moved;
@@ -357,11 +387,14 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             tracing::warn!(%kb_id, key, "映射目标不在本体里，跳过");
             continue;
         };
+        // LLM 的 map_to 提案同样可能混着主动与被动，一个 swap 标志伺候不了
+        //（同人工路径，见 ontology_routes 里那段注释）
         let (batch, moved) = utopia_store::graph::adopt_proposed_predicates(
             &state.pool,
             kb_id,
             predicate_id,
             &forms,
+            false,
         )
         .await?;
         moved_total += moved;
