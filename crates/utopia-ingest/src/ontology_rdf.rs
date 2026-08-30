@@ -20,6 +20,9 @@ pub struct OwlClass {
     pub description: String,
     /// `rdfs:subClassOf` 的全部父类 IRI（多继承在这里是常态）
     pub parents: Vec<String>,
+    /// `owl:disjointWith` 的对端 IRI。**两个方向都收**——公理是对称的,
+    /// 而词表通常只写一遍
+    pub disjoint_with: Vec<String>,
 }
 
 /// 投影出来的一个属性（对象属性 → 关系，数据属性 → 属性）。
@@ -34,6 +37,12 @@ pub struct OwlProperty {
     pub is_datatype: bool,
     pub functional: bool,
     pub inverse_functional: bool,
+    /// OWL 属性公理。一致性检查(0002 R0)的判定依据:没有它们,
+    /// `A part_of B` 与 `B part_of A` 同时存在到底是矛盾还是正常,无从判起
+    pub transitive: bool,
+    pub symmetric: bool,
+    pub asymmetric: bool,
+    pub irreflexive: bool,
     pub domains: Vec<String>,
     pub ranges: Vec<String>,
     /// **多条 range 是并集还是交集**。`rdfs:range` 写多条是交集
@@ -208,6 +217,10 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let mut data_props: BTreeSet<String> = BTreeSet::new();
     let mut functional: BTreeSet<String> = BTreeSet::new();
     let mut inverse_functional: BTreeSet<String> = BTreeSet::new();
+    let mut transitive: BTreeSet<String> = BTreeSet::new();
+    let mut symmetric: BTreeSet<String> = BTreeSet::new();
+    let mut asymmetric: BTreeSet<String> = BTreeSet::new();
+    let mut irreflexive: BTreeSet<String> = BTreeSet::new();
     let mut plain_props: BTreeSet<String> = BTreeSet::new();
     let mut datatype_roots: BTreeSet<String> = BTreeSet::new();
     for t in &triples {
@@ -239,6 +252,25 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             x if x == format!("{OWL}InverseFunctionalProperty") => {
                 inverse_functional.insert(t.subject.clone());
             }
+            // 属性公理:R0 的一致性检查靠它们才谈得上判定。
+            //
+            // **五个随包词表只覆盖了其中一半**(TransitiveProperty 14 条、
+            // SymmetricProperty 1 条,而 Asymmetric 与 Irreflexive 一条没有),
+            // 但那五个只是冷启动的底座。这条线的终点是把**企业自己的本体**
+            // 导进来(0001 开篇:FIBO、行业标准、Protégé 自建),那些里
+            // 反对称与非自反是常见声明。按 OWL 收全,而不是按手上这几个包收。
+            x if x == format!("{OWL}TransitiveProperty") => {
+                transitive.insert(t.subject.clone());
+            }
+            x if x == format!("{OWL}SymmetricProperty") => {
+                symmetric.insert(t.subject.clone());
+            }
+            x if x == format!("{OWL}AsymmetricProperty") => {
+                asymmetric.insert(t.subject.clone());
+            }
+            x if x == format!("{OWL}IrreflexiveProperty") => {
+                irreflexive.insert(t.subject.clone());
+            }
             // 词汇表自报的数据类型。这里只收显式声明的那几个根，
             // 子类（Integer ⊂ Number、URL ⊂ Text）等父类图收完再往下传。
             // **标记类自己也收**：schema:DataType 的声明是 `a rdfs:Class`，
@@ -256,6 +288,7 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let mut labels: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
     let mut comments: BTreeMap<String, Vec<(String, Option<String>)>> = BTreeMap::new();
     let mut parents: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut disjoint: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut domains: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut ranges: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // rangeIncludes 用过的属性，它的 range 按并集读
@@ -270,6 +303,7 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             || p == format!("{RDFS}range")
             || is_schema(p, "domainIncludes")
             || is_schema(p, "rangeIncludes")
+            || p == format!("{OWL}disjointWith")
     };
     for t in &triples {
         let p = t.predicate.as_str();
@@ -283,6 +317,20 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
                     .entry(t.subject.clone())
                     .or_default()
                     .push(l.clone());
+            }
+        } else if p == format!("{OWL}disjointWith") {
+            // **两个方向都记。** `owl:disjointWith` 是对称的,而词表通常只写一遍
+            // (W3C Org 的 Role/Membership/Site/ChangeEvent 四者两两互斥,只写了六行)。
+            // 只按写的方向存,查"A 与 B 互斥吗"就得看调用方碰巧从哪一头问
+            if let Some(o) = &t.object_iri {
+                disjoint
+                    .entry(t.subject.clone())
+                    .or_default()
+                    .push(o.clone());
+                disjoint
+                    .entry(o.clone())
+                    .or_default()
+                    .push(t.subject.clone());
             }
         } else if p == format!("{RDFS}subClassOf") {
             if let Some(o) = &t.object_iri {
@@ -359,6 +407,13 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             label: pick_lang(labels.get(iri)).unwrap_or_else(|| local_name(iri).to_string()),
             description: pick_lang(comments.get(iri)).unwrap_or_default(),
             parents: parents.get(iri).cloned().unwrap_or_default(),
+            disjoint_with: {
+                // 去重:两个方向都收之后,词表若两边都写过就会重复
+                let mut d = disjoint.get(iri).cloned().unwrap_or_default();
+                d.sort();
+                d.dedup();
+                d
+            },
             iri: iri.clone(),
         });
     }
@@ -392,6 +447,10 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             is_datatype,
             functional: functional.contains(iri),
             inverse_functional: inverse_functional.contains(iri),
+            transitive: transitive.contains(iri),
+            symmetric: symmetric.contains(iri),
+            asymmetric: asymmetric.contains(iri),
+            irreflexive: irreflexive.contains(iri),
             domains: domains.get(iri).cloned().unwrap_or_default(),
             ranges: rs,
             ranges_union: union_ranged.contains(iri),
@@ -798,6 +857,7 @@ mod tests {
             rdfs:range ex:Person .
         ex:salary a owl:DatatypeProperty ; rdfs:domain ex:Employee .
         ex:Employee owl:disjointWith ex:Contractor .
+        ex:Employee owl:equivalentClass ex:Staff .
     "#;
 
     #[test]
@@ -820,10 +880,13 @@ mod tests {
         let sal = p.properties.iter().find(|x| x.key == "salary").unwrap();
         assert!(sal.is_datatype);
 
-        // 消费不了的公理进报告，不是丢弃也不是报错
+        // 消费不了的公理进报告，不是丢弃也不是报错。
+        //
+        // `disjointWith` 曾经在这份名单上,现在被消费了(它是一致性检查的判定
+        // 依据)——所以这里改用一个仍然消费不了的公理来守这条性质本身
         assert!(p
             .unprojected
-            .contains_key("http://www.w3.org/2002/07/owl#disjointWith"));
+            .contains_key("http://www.w3.org/2002/07/owl#equivalentClass"));
     }
 
     #[test]
@@ -1039,5 +1102,150 @@ cited:worksAt a rdf:Property ; rdfs:label "worksAt (cited)" .
         );
         let first_works = p.properties.iter().find(|x| x.key == "works_at").unwrap();
         assert!(first_works.iri.starts_with("https://home.example/"));
+    }
+}
+
+#[cfg(test)]
+mod axioms {
+    use super::*;
+
+    /// OWL 的属性公理与类互斥都要投影出来——它们是一致性检查（0002 R0）的**判定
+    /// 依据**。没有它们，`A part_of B` 与 `B part_of A` 同时成立到底是矛盾还是
+    /// 正常，无从判起：`alias_of` 双向是对的，`produces` 双向几乎肯定是错的，
+    /// 而区分这两者的东西只能来自本体。
+    const AX: &str = r#"
+        @prefix owl: <http://www.w3.org/2002/07/owl#> .
+        @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+        @prefix ex: <http://acme.example/ax#> .
+
+        ex:Person a owl:Class ; owl:disjointWith ex:Organization .
+        ex:Organization a owl:Class .
+        ex:Document a owl:Class .
+
+        ex:partOf   a owl:ObjectProperty, owl:TransitiveProperty, owl:AsymmetricProperty .
+        ex:aliasOf  a owl:ObjectProperty, owl:SymmetricProperty .
+        ex:reportsTo a owl:ObjectProperty, owl:IrreflexiveProperty .
+        ex:plain    a owl:ObjectProperty .
+    "#;
+
+    fn proj() -> OwlProjection {
+        project(AX.as_bytes(), RdfFormat::Turtle).unwrap()
+    }
+
+    #[test]
+    fn property_axioms_survive_the_projection() {
+        let p = proj();
+        let by = |k: &str| p.properties.iter().find(|x| x.key == k).unwrap().clone();
+
+        let part_of = by("part_of");
+        assert!(part_of.transitive, "TransitiveProperty 要落到属性上");
+        assert!(part_of.asymmetric, "AsymmetricProperty 同上");
+        assert!(!part_of.symmetric);
+
+        assert!(
+            by("alias_of").symmetric,
+            "对称属性双向出现是正确的，不是矛盾"
+        );
+        assert!(by("reports_to").irreflexive, "非自反：自己汇报给自己是矛盾");
+
+        // 没声明的一律为假——**默认不是"未知"而是"没这条公理"**。
+        // OWL 是开放世界，但一致性检查只能按写下来的判：没写就是没有依据，
+        // 而没有依据时不报矛盾，比猜一个公理出来安全
+        let plain = by("plain");
+        assert!(!plain.transitive && !plain.symmetric);
+        assert!(!plain.asymmetric && !plain.irreflexive);
+    }
+
+    /// **两个方向都要有。** 词表通常只写一遍（W3C Org 把四个类两两互斥写成六行），
+    /// 只按书写方向存，查"A 与 B 互斥吗"就取决于调用方碰巧从哪一头问。
+    #[test]
+    fn disjointness_is_recorded_from_both_ends() {
+        let p = proj();
+        let d = |k: &str| {
+            p.classes
+                .iter()
+                .find(|c| c.key == k)
+                .unwrap()
+                .disjoint_with
+                .clone()
+        };
+        assert_eq!(d("person"), vec!["http://acme.example/ax#Organization"]);
+        assert_eq!(d("organization"), vec!["http://acme.example/ax#Person"]);
+        assert!(d("document").is_empty(), "没声明互斥的类不该凭空多出来");
+    }
+}
+
+/// 拿**真包**验一遍,而不只是夹具。
+///
+/// 先例在 `pack_alignment::against_real_packs`:那一版靠真包抓出了四个凭记忆
+/// 写错的 IRI。夹具只能证明"我写的 Turtle 我自己解析得了",真包能证明
+/// "官方文件里那些写法我们接得住"——两者不是一回事。
+#[cfg(test)]
+mod against_real_packs {
+    use super::*;
+    use std::io::Read;
+
+    fn load(name: &str) -> Vec<u8> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../utopia-server/packs/");
+        let f = std::fs::File::open(format!("{path}{name}")).expect("包文件在");
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(f)
+            .read_to_end(&mut out)
+            .expect("解压");
+        out
+    }
+
+    /// W3C Org 把 Organization / Role / Membership / Site / ChangeEvent 五者两两
+    /// 互斥,官方文件里每对只写一次。**五个类每个都该看到四个对端**——只按书写
+    /// 方向存的话,先被写到的那几个会缺对端,而缺哪个取决于文件里的行序。
+    ///
+    /// (写这条断言时我按 grep 目测数成了"四者",真包当场纠正:`Organization`
+    /// 也在互斥集里。夹具证明不了这种事。)
+    #[test]
+    fn w3c_org_declares_four_mutually_disjoint_classes() {
+        let p = project(&load("w3c-org.ttl.gz"), RdfFormat::Turtle).unwrap();
+        for key in ["organization", "role", "membership", "site", "change_event"] {
+            let c = p
+                .classes
+                .iter()
+                .find(|c| c.key == key)
+                .unwrap_or_else(|| panic!("{key} 该被投影出来"));
+            assert_eq!(
+                c.disjoint_with.len(),
+                4,
+                "{key} 该与另外四个互斥,实得 {:?}",
+                c.disjoint_with
+            );
+        }
+    }
+
+    /// IOF Core 声明了一批传递属性(before/after/occursDuring…)。
+    /// 这是 R0 环检测唯一有真实依据的地方
+    #[test]
+    fn iof_core_declares_transitive_properties() {
+        let p = project(&load("iof-core.rdf.gz"), RdfFormat::RdfXml).unwrap();
+        let n = p.properties.iter().filter(|x| x.transitive).count();
+        assert!(n >= 8, "IOF 该有一批传递属性,实得 {n}");
+    }
+
+    /// FOAF 的 Person ⊥ Organization / Document —— **最常撞的那一对**。
+    /// `classify_type_drift` 里那张手写表(person vs organization 判 Disjoint)
+    /// 想表达的就是它,注释里也写着"公理落库后这张表应改从本体读"
+    #[test]
+    fn foaf_says_a_person_is_not_an_organization() {
+        let p = project(&load("foaf.rdf.gz"), RdfFormat::RdfXml).unwrap();
+        let person = p
+            .classes
+            .iter()
+            .find(|c| c.key == "person")
+            .expect("foaf:Person");
+        assert!(
+            person
+                .disjoint_with
+                .iter()
+                .any(|d| d.ends_with("Organization")),
+            "foaf:Person 该与 Organization 互斥,实得 {:?}",
+            person.disjoint_with
+        );
     }
 }

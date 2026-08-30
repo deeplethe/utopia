@@ -20,3 +20,7 @@ oxttl.workspace = true
 oxrdfxml.workspace = true
 oxrdf.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+# 只给 against_real_packs 用：包是 gz 存的，测试要解开它们
+flate2.workspace = true

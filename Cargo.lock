@@ -4778,6 +4778,7 @@ dependencies = [
  "chardetng",
  "csv",
  "encoding_rs",
+ "flate2",
  "infer",
  "oxrdf",
  "oxrdfxml",
