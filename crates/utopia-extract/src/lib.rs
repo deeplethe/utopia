@@ -198,8 +198,8 @@ pub fn build_messages(
             named after the text is worth more than a listed one that says something false.\n\
          9. The same holds for entity types: if none of the listed types fits, write the type \
             the text implies, in snake_case (e.g. \"model\", \"technology\"). Do not fall back \
-            to a broad listed type such as \"concept\" merely because nothing specific matched \
-            — that hides the gap instead of reporting it.\n\
+            to a broad listed type such as \"thing\" or \"creative_work\" merely because \
+            nothing specific matched — that hides the gap instead of reporting it.\n\
          10. specific_type is required on every entity and is never checked against the list. \
             Name the most specific kind the thing is, in the words you would use for it. Write \
             it even when \"type\" already fits, and make it narrower than \"type\" wherever the \

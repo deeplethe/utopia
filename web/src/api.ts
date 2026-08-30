@@ -213,8 +213,9 @@ export interface DataSourceView {
 export interface GraphNode {
   id: string;
   name: string;
-  type_key: string;
-  type_label: string;
+  // 没判出类型时为 null（0009）
+  type_key: string | null;
+  type_label: string | null;
   color: string;
   shape: "circle" | "square";
   degree: number;
@@ -248,7 +249,8 @@ export interface ChunkFact {
 export interface ReviewSide {
   id: string;
   name: string;
-  type_label: string;
+  // 没判出类型时为 null（0009）
+  type_label: string | null;
   color: string;
   disambiguator: string | null;
   degree: number;

@@ -435,7 +435,9 @@ pub struct RelationType {
 pub struct Entity {
     pub id: Uuid,
     pub kb_id: Uuid,
-    pub type_id: Uuid,
+    /// `None` = 还没判出来。见 `docs/decisions/0009`——它不是一个类，
+    /// 是「抽取器抽到了东西，但本体里没有对应的类」这个状态
+    pub type_id: Option<Uuid>,
     pub canonical_name: String,
     pub aliases: Vec<String>,
     pub merged_into: Option<Uuid>,
@@ -448,8 +450,10 @@ pub struct Entity {
 pub struct GraphNode {
     pub id: Uuid,
     pub name: String,
-    pub type_key: String,
-    pub type_label: String,
+    /// 类型 key。**可能没有**（0009：没判出来就是 NULL），
+    /// 前端据此显示"未分类"而不是编一个名字
+    pub type_key: Option<String>,
+    pub type_label: Option<String>,
     pub color: String,
     /// 类型形状：circle | square
     pub shape: String,
@@ -577,7 +581,8 @@ pub struct GraphChange {
 pub struct ReviewSide {
     pub id: Uuid,
     pub name: String,
-    pub type_label: String,
+    /// 没判出类型时为 None（0009）。颜色另有缺省值——它是画布必须拿到的
+    pub type_label: Option<String>,
     pub color: String,
     pub disambiguator: Option<String>,
     pub degree: i64,

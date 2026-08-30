@@ -51,7 +51,7 @@ function SideCard({ side }: { side: ReviewSide }) {
         )}
       </div>
       <div className="text-xs text-neutral-500 mb-2">
-        {side.type_label} · {S.review.factsCount(side.degree)}
+        {side.type_label ?? S.graph.untyped} · {S.review.factsCount(side.degree)}
       </div>
       {side.top_facts.length > 0 ? (
         <ul className="space-y-1">

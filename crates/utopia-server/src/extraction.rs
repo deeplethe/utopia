@@ -123,10 +123,11 @@ pub async fn extract_document(state: &AppState, document_id: Uuid) -> anyhow::Re
 async fn resolve(
     state: &AppState,
     kb_id: Uuid,
-    type_id: Uuid,
+    // None = 模型给的类型不在本体里，或这个库根本还没有类（0009）
+    type_id: Option<Uuid>,
     name: &str,
     ctx: Option<&[f32]>,
-    doc_cache: &mut HashMap<(Uuid, String), Uuid>,
+    doc_cache: &mut HashMap<(Option<Uuid>, String), Uuid>,
     needs_adjudication: &mut bool,
 ) -> anyhow::Result<Uuid> {
     let key = (
@@ -258,9 +259,6 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         }
         false
     };
-    let concept_type = *type_ids
-        .get("concept")
-        .ok_or_else(|| anyhow::anyhow!("Ontology missing the 'concept' type"))?;
     let related_rel = rel_ids.get(FALLBACK_RELATION_KEY).copied();
     // 本轮要从头讲一遍这篇文档的故事，旧信号先清掉（重抽自动作数）
     let _ = utopia_store::extraction_drops::clear_for_document(&state.pool, document_id).await;
@@ -268,7 +266,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let doc_time = doc.doc_time.map(|t| t.format("%Y-%m-%d").to_string());
     let chunks = utopia_store::documents::chunks_for_extraction(&state.pool, document_id).await?;
 
-    let mut doc_cache: HashMap<(Uuid, String), Uuid> = HashMap::new();
+    let mut doc_cache: HashMap<(Option<Uuid>, String), Uuid> = HashMap::new();
     // 本文档已经认下的实体，按首次出现排序，送进后续分块的提示词。
     //
     // **按 entity_id 去重，不按名字**：第 3 块写"上海研究院"若消解到了第 1 块的
@@ -342,7 +340,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         // 实体消解：名称 → 实体 id（本分块的事实按原文名字连线）
         let mut entity_ids: HashMap<String, Uuid> = HashMap::new();
         // 名称 → 声明类型（属性 domain 校验用：salary 不能挂在 Organization 上）
-        let mut entity_type_of: HashMap<String, Uuid> = HashMap::new();
+        let mut entity_type_of: HashMap<String, Option<Uuid>> = HashMap::new();
         for e in &extraction.entities {
             let name = e.name.trim();
             if name.is_empty() || name.chars().count() > 100 {
@@ -353,9 +351,13 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             // concept 里面，唯一的出路是整库重抽
             let mut proposed: Option<&str> = None;
             let type_id = match type_ids.get(e.type_key.as_str()) {
-                Some(id) => *id,
+                Some(id) => Some(*id),
                 None => {
-                    // 白名单外类型：降级 concept，并记入未匹配统计（本体扩展的信号）
+                    // 白名单外类型：**留空**，并记入未匹配统计（本体扩展的信号）。
+                    //
+                    // 从前这里降级到 concept 那行哨兵。现在「还没判出来」就是
+                    // `type_id IS NULL`（0009）——实体照常建、事实照常落、证据照常有，
+                    // 只是暂时没有类型。之后装一个包再跑类型消解，它会被重新分配
                     let _ = utopia_store::ontology::record_miss(
                         &state.pool,
                         doc.kb_id,
@@ -365,7 +367,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     )
                     .await;
                     proposed = Some(e.type_key.as_str());
-                    concept_type
+                    None
                 }
             };
             let id = resolve(
@@ -393,10 +395,17 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             {
                 let _ = utopia_store::resolution::set_specific_type(&state.pool, id, st).await;
             }
-            // 只记模型自己声明过类型的：主宾兜底那条路一律按 concept 消解，
-            // 把一个猜出来的类型放进清单等于让后续分块照着猜的抄
+            // 只记模型自己声明过类型的：主宾兜底那条路没有类型可依，
+            // 把一个猜出来的类型放进清单等于让后续分块照着猜的抄。
+            //
+            // 本体装不下那个类时用模型自己的说法（proposed）：这份清单是给后文
+            // 认人用的，"同一个名字别写成两个实体"才是它的活。从前这里只能写死
+            // concept，反倒把几个不同的词抹平成同一个标签
             if !doc_entities.iter().any(|(eid, _, _)| *eid == id) {
-                let tk = type_key_by_id.get(&type_id).copied().unwrap_or("concept");
+                let tk = type_id
+                    .and_then(|t| type_key_by_id.get(&t).copied())
+                    .or(proposed)
+                    .unwrap_or("?");
                 doc_entities.push((id, tk.to_string(), name.to_string()));
             }
             entity_ids.insert(name.to_string(), id);
@@ -477,9 +486,11 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 if !attr
                     .domains
                     .iter()
-                    .any(|d| type_matches_domain(subject_type, *d))
+                    .any(|d| subject_type.is_some_and(|t| type_matches_domain(t, *d)))
                 {
-                    let subj_key = type_key_by_id.get(&subject_type).copied().unwrap_or("?");
+                    let subj_key = subject_type
+                        .and_then(|t| type_key_by_id.get(&t).copied())
+                        .unwrap_or("?");
                     let dom_key = attr
                         .domains
                         .iter()
@@ -682,14 +693,15 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 .await;
                 continue;
             };
-            // 主宾未在 entities 中声明时，按 concept 兜底消解（模型偶尔漏报）
+            // 主宾未在 entities 中声明时先建出来（模型偶尔漏报）。没有 entities 那条
+            // 记录就没有类型可依，留空即可——0009 之前这里只能塞 concept
             let subject_id = match entity_ids.get(f.subject.trim()) {
                 Some(id) => *id,
                 None => {
                     resolve(
                         state,
                         doc.kb_id,
-                        concept_type,
+                        None,
                         f.subject.trim(),
                         ctx,
                         &mut doc_cache,
@@ -704,7 +716,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     resolve(
                         state,
                         doc.kb_id,
-                        concept_type,
+                        None,
                         object_name,
                         ctx,
                         &mut doc_cache,

@@ -504,6 +504,8 @@ export const en = {
     cancel: "Cancel",
   },
   graph: {
+    // 还没判出类型的实体（0009）。不是一个类，是"这一格还空着"
+    untyped: "Untyped",
     zoomIn: "Zoom in",
     zoomOut: "Zoom out",
     fitView: "Fit view",

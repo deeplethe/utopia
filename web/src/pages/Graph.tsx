@@ -322,8 +322,15 @@ export function Graph() {
   const types = useMemo(() => {
     const map = new Map<string, { label: string; color: string; shape: string }>();
     for (const n of data.data?.nodes ?? []) {
-      if (!map.has(n.type_key))
-        map.set(n.type_key, { label: n.type_label, color: n.color, shape: n.shape });
+      // 没判出类型的归到空 key 一档（0009）。真实 key 由 IRI 派生，不可能为空，
+      // 所以它撞不着任何一个类；标签走 i18n，别把 null 画到图例上
+      const key = n.type_key ?? "";
+      if (!map.has(key))
+        map.set(key, {
+          label: n.type_label ?? S.graph.untyped,
+          color: n.color,
+          shape: n.shape,
+        });
     }
     return [...map.entries()];
   }, [data.data]);
@@ -400,8 +407,8 @@ export function Graph() {
           borderColor: mix(NODE_BORDER_BASE, n.color, 0.3),
           ringColor: TRANSPARENT,
           typeColor: n.color,
-          typeLabel: n.type_label,
-          typeKey: n.type_key,
+          typeLabel: n.type_label ?? S.graph.untyped,
+          typeKey: n.type_key ?? "",
           type: n.shape === "square" ? "square" : "shell",
           size: 5 + Math.min(8, Math.sqrt(Number(n.degree)) * 1.6),
         });
@@ -1287,7 +1294,8 @@ function EntityPanel({
                 {e.disambiguator && e.disambiguator !== e.type_label
                   ? `${e.disambiguator} · `
                   : ""}
-                {e.type_label} · {detail.data?.facts.length ?? 0} {S.graph.facts}
+                {e.type_label ?? S.graph.untyped} · {detail.data?.facts.length ?? 0}{" "}
+                {S.graph.facts}
               </div>
             </>
           )}
@@ -1384,7 +1392,7 @@ function EntityPanel({
                 onClick={() => onNavigate(p.id)}
                 className="text-[11px] px-1.5 py-0.5 rounded bg-white/[0.06] text-neutral-300 hover:bg-white/10"
               >
-                {p.type_label}
+                {p.type_label ?? S.graph.untyped}
                 {p.disambiguator && p.disambiguator !== p.type_label
                   ? ` · ${p.disambiguator}`
                   : ""}

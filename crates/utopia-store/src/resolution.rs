@@ -101,12 +101,8 @@ pub fn recall_keys(name: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// 类型漂移：同名实体被抽成了不同类型（"Orion platform team" ↔ organization/project/concept）
+// 类型漂移：同名实体被抽成了不同类型（"Orion platform team" ↔ organization/project）
 // ---------------------------------------------------------------------------
-
-/// 抽取兜底类型：白名单外类型与漏报的主宾都降级到 concept（见 extraction），
-/// 因此 concept ↔ 具体类型 的同名大概率是同一实体的类型漂移，按召回候选参与画像分层。
-pub const FALLBACK_TYPE_KEY: &str = "concept";
 
 /// 易混具体类型：抽取常在这几类间摇摆（一个团队算组织还是项目？平台算项目还是产品？）。
 /// 同名跨这组类型 → 照建实体（宁分勿合），但入队审核对交 LLM/人工裁决。
@@ -128,7 +124,7 @@ enum TypeDrift {
     Disjoint,
 }
 
-fn classify_type_drift(a: &str, b: &str) -> TypeDrift {
+fn classify_type_drift(a: Option<&str>, b: Option<&str>) -> TypeDrift {
     // **同一个类型当然可能是同一个东西。**
     //
     // 这一档原本不存在，因为这个函数生来只服务"类型漂移"——同名被抽成两种
@@ -142,9 +138,13 @@ fn classify_type_drift(a: &str, b: &str) -> TypeDrift {
     if a == b {
         return TypeDrift::Recall;
     }
-    if a == FALLBACK_TYPE_KEY || b == FALLBACK_TYPE_KEY {
+    // **一侧还没判出来** → 当召回候选，走画像相似度分层。
+    // 从前比的是 `== FALLBACK_TYPE_KEY`，那个 key 已经没有了：
+    // 「还没判出来」现在由 `None` 表达（0009）。两边都是 None
+    // 已经被上面 `a == b` 那行接住
+    let (Some(a), Some(b)) = (a, b) else {
         return TypeDrift::Recall;
-    }
+    };
     if CONFUSABLE_TYPE_KEYS.contains(&a) && CONFUSABLE_TYPE_KEYS.contains(&b) {
         return TypeDrift::Review;
     }
@@ -197,7 +197,8 @@ pub struct ReviewRequest {
 pub async fn resolve_mention(
     pool: &PgPool,
     kb_id: Uuid,
-    type_id: Uuid,
+    // None = 抽取器给的类型不在本体里，或库里根本没有类（0009）
+    type_id: Option<Uuid>,
     raw_name: &str,
     context: Option<&[f32]>,
 ) -> AppResult<Resolution> {
@@ -351,7 +352,8 @@ const CONTAIN_SCAN_LIMIT: i64 = 16;
 async fn containment_reviews(
     pool: &PgPool,
     kb_id: Uuid,
-    type_id: Uuid,
+    // None = 抽取器给的类型不在本体里，或库里根本没有类（0009）
+    type_id: Option<Uuid>,
     name: &str,
     new_id: Uuid,
     ctx: Option<&[f32]>,
@@ -360,18 +362,24 @@ async fn containment_reviews(
     if lower.chars().count() < MIN_CONTAIN_CHARS as usize {
         return Ok(Vec::new());
     }
-    let (mention_key,): (String,) = sqlx::query_as("SELECT key FROM entity_types WHERE id = $1")
-        .bind(type_id)
-        .fetch_one(pool)
-        .await?;
+    // 实体可能还没判出类型（0009），那时没有 key 可查
+    let mention_key: Option<String> = match type_id {
+        Some(t) => sqlx::query_as::<_, (String,)>("SELECT key FROM entity_types WHERE id = $1")
+            .bind(t)
+            .fetch_optional(pool)
+            .await?
+            .map(|(k,)| k),
+        None => None,
+    };
     // **不按类型过滤**：简称经常掉进 concept 兜底，而全称是具体类型
     //（实测 上海研究院→concept vs 星云科技上海研究院→organization，
     //  启明 X7 加速卡→concept vs 启明 X7 推理加速卡→product），
     //  按类型相等去查，这两对一个都捞不到。相容性交给下面的 classify_type_drift。
     //  多取一些行，因为硬互斥的会在 Rust 侧被筛掉
-    let rows: Vec<(Uuid, String, String, Option<Vector>)> = sqlx::query_as(
+    // 第三列可空：未分类实体也要参与包含关系扫描（0009）
+    let rows: Vec<(Uuid, String, Option<String>, Option<Vector>)> = sqlx::query_as(
         "SELECT e.id, e.canonical_name, t.key, e.profile_embedding
-         FROM entities e JOIN entity_types t ON t.id = e.type_id
+         FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.kb_id = $1 AND e.merged_into IS NULL
            AND e.id <> $2
            AND lower(e.canonical_name) <> $3
@@ -410,7 +418,7 @@ async fn containment_reviews(
         // 哪些类型对可能指同一个东西，既有规则已经想清楚了，别另发明一套：
         // person vs organization 永不合并，concept 兜底与谁都可能是一个
         .filter(|(_, _, type_key, _)| {
-            classify_type_drift(&mention_key, type_key) != TypeDrift::Disjoint
+            classify_type_drift(mention_key.as_deref(), type_key.as_deref()) != TypeDrift::Disjoint
         })
         .take(MAX_CONTAIN_REVIEWS)
         .map(|(id, other_name, _, emb)| {
@@ -432,22 +440,28 @@ async fn containment_reviews(
 struct CrossCandidate {
     id: Uuid,
     canonical_name: String,
-    type_key: String,
+    // None = 这个候选还没判出类型（0009）
+    type_key: Option<String>,
     profile_embedding: Option<Vector>,
     profile_n: i32,
 }
 
 /// `reason` 存 code，措辞归界面（docs/decisions/0004）——这一列不该一半 code
 /// 一半英文句子，那样中文界面上就是一半能翻一半不能。
-fn drift_reason(mention_key: &str, other_key: &str, sim: Option<f32>) -> String {
+fn drift_reason(mention_key: Option<&str>, other_key: Option<&str>, sim: Option<f32>) -> String {
+    // 未分类的一侧写成 `(untyped)`。这一列存 code 供界面翻译，
+    // 留空会让 `a vs b` 变成 `a vs `，读起来像被截断而不像"没有"
+    let a = mention_key.unwrap_or("(untyped)");
+    let b = other_key.unwrap_or("(untyped)");
     match sim {
-        Some(s) => format!("type_drift|{mention_key} vs {other_key} {s:.2}"),
-        None => format!("type_drift|{mention_key} vs {other_key}"),
+        Some(s) => format!("type_drift|{a} vs {b} {s:.2}"),
+        None => format!("type_drift|{a} vs {b}"),
     }
 }
 
 fn confusable_reviews(
-    mention_key: &str,
+    // None = 这一侧还没判出类型（0009）
+    mention_key: Option<&str>,
     cands: &[&CrossCandidate],
     ctx: Option<&[f32]>,
 ) -> Vec<ReviewRequest> {
@@ -462,7 +476,7 @@ fn confusable_reviews(
             ReviewRequest {
                 other_id: c.id,
                 score: sim.unwrap_or(0.0),
-                reason: drift_reason(mention_key, &c.type_key, sim),
+                reason: drift_reason(mention_key, c.type_key.as_deref(), sim),
             }
         })
         .collect()
@@ -475,19 +489,27 @@ fn confusable_reviews(
 async fn resolve_type_drift(
     pool: &PgPool,
     kb_id: Uuid,
-    type_id: Uuid,
+    // None = 抽取器给的类型不在本体里，或库里根本没有类（0009）
+    type_id: Option<Uuid>,
     name: &str,
     keys: &[String],
     context: Option<&[f32]>,
 ) -> AppResult<Resolution> {
-    let (mention_key,): (String,) = sqlx::query_as("SELECT key FROM entity_types WHERE id = $1")
-        .bind(type_id)
-        .fetch_one(pool)
-        .await?;
+    // 这一侧也可能还没判出类型（0009），那时没有 key 可查
+    let mention_key: Option<String> = match type_id {
+        Some(t) => sqlx::query_as::<_, (String,)>("SELECT key FROM entity_types WHERE id = $1")
+            .bind(t)
+            .fetch_optional(pool)
+            .await?
+            .map(|(k,)| k),
+        None => None,
+    };
     let cross: Vec<CrossCandidate> = sqlx::query_as(
         "SELECT e.id, e.canonical_name, t.key AS type_key, e.profile_embedding, e.profile_n
-         FROM entities e JOIN entity_types t ON t.id = e.type_id
-         WHERE e.kb_id = $1 AND e.type_id <> $2 AND e.merged_into IS NULL
+         FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
+         -- IS DISTINCT FROM 而不是 <>：后者遇 NULL 返回 NULL，被 WHERE 当假，
+         -- 未分类实体会被整个漏掉（0009）
+         WHERE e.kb_id = $1 AND e.type_id IS DISTINCT FROM $2 AND e.merged_into IS NULL
            AND (lower(e.canonical_name) = ANY($3)
                 OR EXISTS (SELECT 1 FROM unnest(e.aliases) a WHERE lower(a) = ANY($3)))",
     )
@@ -500,7 +522,7 @@ async fn resolve_type_drift(
     let mut recall_cands: Vec<&CrossCandidate> = Vec::new();
     let mut review_cands: Vec<&CrossCandidate> = Vec::new();
     for c in &cross {
-        match classify_type_drift(&mention_key, &c.type_key) {
+        match classify_type_drift(mention_key.as_deref(), c.type_key.as_deref()) {
             TypeDrift::Recall => recall_cands.push(c),
             TypeDrift::Review => review_cands.push(c),
             TypeDrift::Disjoint => {}
@@ -520,9 +542,9 @@ async fn resolve_type_drift(
         if let Some((best, sim)) = best {
             if sim >= SIM_ATTACH {
                 update_profile(pool, best.id, best.profile_n, ctx).await?;
-                if best.type_key == FALLBACK_TYPE_KEY && mention_key != FALLBACK_TYPE_KEY {
-                    // concept 只是"没认出来"，具体类型是更强的判断 → 升格。
-                    // 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回。
+                // 候选还没判出类型而这次抽取判出来了 → 升格。
+                // 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回
+                if best.type_key.is_none() && type_id.is_some() {
                     sqlx::query(
                         "UPDATE entities SET type_id = $2, updated_at = now() WHERE id = $1",
                     )
@@ -534,7 +556,8 @@ async fn resolve_type_drift(
                     refresh_disambiguators(pool, kb_id, &best.canonical_name).await?;
                 }
                 // mention 已定居到召回实体；同名易混类型实体的疑点仍在 → 照常入队
-                let mut reviews = confusable_reviews(&mention_key, &review_cands, Some(ctx));
+                let mut reviews =
+                    confusable_reviews(mention_key.as_deref(), &review_cands, Some(ctx));
                 reviews.truncate(MAX_DRIFT_REVIEWS);
                 return Ok(Resolution {
                     entity_id: best.id,
@@ -550,7 +573,7 @@ async fn resolve_type_drift(
         // 跨类型同名并存：消歧后缀按名字分组（不分类型），需要刷新
         refresh_disambiguators(pool, kb_id, name).await?;
     }
-    let mut reviews = confusable_reviews(&mention_key, &review_cands, context);
+    let mut reviews = confusable_reviews(mention_key.as_deref(), &review_cands, context);
     for c in &recall_cands {
         let sim = context.and_then(|ctx| {
             c.profile_embedding
@@ -564,7 +587,7 @@ async fn resolve_type_drift(
             _ => reviews.push(ReviewRequest {
                 other_id: c.id,
                 score: sim.unwrap_or(0.0),
-                reason: drift_reason(&mention_key, &c.type_key, sim),
+                reason: drift_reason(mention_key.as_deref(), c.type_key.as_deref(), sim),
             }),
         }
     }
@@ -581,7 +604,8 @@ async fn resolve_type_drift(
 async fn create_entity(
     pool: &PgPool,
     kb_id: Uuid,
-    type_id: Uuid,
+    // None = 抽取器给的类型不在本体里，或库里根本没有类（0009）
+    type_id: Option<Uuid>,
     name: &str,
     context: Option<&[f32]>,
 ) -> AppResult<Uuid> {
@@ -680,18 +704,18 @@ pub async fn refresh_disambiguators(pool: &PgPool, kb_id: Uuid, name: &str) -> A
         .bind(id)
         .fetch_optional(pool)
         .await?;
-        let disambiguator = match label {
-            Some((l,)) => l,
-            None => {
-                let (type_label,): (String,) = sqlx::query_as(
-                    "SELECT t.label FROM entities e JOIN entity_types t ON t.id = e.type_id
+        // 关联事实找不着就退到类型标签；**类型也可能没有**（0009），
+        // 那就没有可写的后缀——留 NULL，界面按同名并列显示，别编一个出来
+        let disambiguator: Option<String> = match label {
+            Some((l,)) => Some(l),
+            None => sqlx::query_as::<_, (String,)>(
+                "SELECT t.label FROM entities e JOIN entity_types t ON t.id = e.type_id
                      WHERE e.id = $1",
-                )
-                .bind(id)
-                .fetch_one(pool)
-                .await?;
-                type_label
-            }
+            )
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .map(|(l,)| l),
         };
         sqlx::query("UPDATE entities SET disambiguator = $2 WHERE id = $1")
             .bind(id)
@@ -749,17 +773,20 @@ async fn review_side(pool: &PgPool, kb_id: Uuid, entity_id: Uuid) -> AppResult<R
     struct SideRow {
         id: Uuid,
         name: String,
-        type_label: String,
+        type_label: Option<String>,
         color: String,
         disambiguator: Option<String>,
         degree: i64,
     }
     let row: SideRow = sqlx::query_as(
-        "SELECT e.id, e.canonical_name AS name, t.label AS type_label, t.color, e.disambiguator,
+        "SELECT e.id, e.canonical_name AS name, t.label AS type_label,
+                coalesce(t.color, '#94a3b8') AS color, e.disambiguator,
                 (SELECT count(*) FROM facts f
                  WHERE (f.subject_id = e.id OR f.object_id = e.id)
                    AND f.invalidated_at IS NULL) AS degree
-         FROM entities e JOIN entity_types t ON t.id = e.type_id
+         -- LEFT JOIN：没判出类型的实体照样要能进审核（0009）。
+         -- 内连接会让它整条审核项取不出来，而漂移审核恰恰最常发生在它们身上
+         FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.kb_id = $1 AND e.id = $2",
     )
     .bind(kb_id)
@@ -1004,7 +1031,8 @@ pub async fn merge_direction(pool: &PgPool, a: Uuid, b: Uuid) -> AppResult<(Uuid
 
 #[derive(Debug, sqlx::FromRow)]
 struct EntityFull {
-    type_id: Uuid,
+    // None = 还没判出来（0009）
+    type_id: Option<Uuid>,
     canonical_name: String,
     aliases: Vec<String>,
     profile_embedding: Option<Vector>,
@@ -1147,21 +1175,12 @@ pub async fn merge_entities(
         (None, None) => (None, 0),
     };
 
-    // 类型调和：concept 是抽取兜底而非类型判断，被并侧带具体类型时目标升格；
-    // 两个具体类型相并（易混对被裁"same"）保留 target（存活方）的类型。
-    let concept_type: Option<Uuid> =
-        sqlx::query_as::<_, (Uuid,)>("SELECT id FROM entity_types WHERE kb_id = $1 AND key = $2")
-            .bind(kb_id)
-            .bind(FALLBACK_TYPE_KEY)
-            .fetch_optional(&mut *tx)
-            .await?
-            .map(|(id,)| id);
-    let new_type_id =
-        if concept_type == Some(target.type_id) && concept_type != Some(source.type_id) {
-            source.type_id
-        } else {
-            target.type_id
-        };
+    // 类型调和：**没有类型的一侧让位**。存活方还没判出来而被并方判出来了，
+    // 就把那个类型带过来；否则保留存活方的。
+    //
+    // 从前这里要先查库找出 concept 那行的 id 再跟两侧比对。「还没判出来」
+    // 现在是 `None`（0009），一个 `or` 就说完了，那次查询也省了
+    let new_type_id = target.type_id.or(source.type_id);
 
     sqlx::query(
         "UPDATE entities SET aliases = $2, profile_embedding = $3, profile_n = $4,
@@ -1511,11 +1530,15 @@ pub async fn adopt_proposed_types(
     if forms.is_empty() {
         return Ok((batch_id, 0));
     }
-    // 已经在目标类上的不算改动，也不进账本——撤销时不该把它们推回去
-    let targets: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+    // 已经在目标类上的不算改动，也不进账本——撤销时不该把它们推回去。
+    //
+    // **`IS DISTINCT FROM` 而不是 `<>`**：0009 之后 type_id 可能是 NULL，而
+    // `NULL <> uuid` 求值为 NULL 不是 true，那一行会被悄悄滤掉——偏偏带着
+    // proposed_type 的几乎全是还没判出类型的实体，整个认领功能会一声不响地空转
+    let targets: Vec<(Uuid, Option<Uuid>, String)> = sqlx::query_as(
         "SELECT id, type_id, canonical_name FROM entities
          WHERE kb_id = $1 AND merged_into IS NULL
-           AND proposed_type = ANY($2) AND type_id <> $3",
+           AND proposed_type = ANY($2) AND type_id IS DISTINCT FROM $3",
     )
     .bind(kb_id)
     .bind(forms)
@@ -1562,7 +1585,9 @@ pub async fn adopt_proposed_types(
 /// 类型本身不删——与谓词那边同一条理由：有实体指向过它，而"它存在过"是历史。
 /// `proposed_type` 也一并恢复，否则撤销之后那些实体就再也认领不回来了。
 pub async fn unadopt_types(pool: &PgPool, kb_id: Uuid, batch_id: Uuid) -> AppResult<u32> {
-    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+    // from_type_id 可能是 NULL：0009 之后最常见的一次改类正是"从没有类到有类"，
+    // 撤销就是把它推回没有类。解成 Uuid 会在这里当场崩
+    let rows: Vec<(Uuid, Option<Uuid>, String)> = sqlx::query_as(
         "SELECT r.entity_id, r.from_type_id, t.key
          FROM entity_retypes r JOIN entity_types t ON t.id = r.to_type_id
          WHERE r.batch_id = $1 AND r.kb_id = $2 AND r.reverted_at IS NULL",
@@ -1699,38 +1724,46 @@ mod tests {
 
     #[test]
     fn type_drift_classes() {
-        // 兜底型任意一侧 → 召回候选
+        // 还没判出类型的那一侧 → 召回候选。0009 之前这一档比的是 `concept`
+        // 这个 key，现在比的是"有没有类"本身
         assert_eq!(
-            classify_type_drift("concept", "organization"),
+            classify_type_drift(None, Some("organization")),
             TypeDrift::Recall
         );
-        assert_eq!(classify_type_drift("project", "concept"), TypeDrift::Recall);
-        assert_eq!(classify_type_drift("concept", "person"), TypeDrift::Recall);
+        assert_eq!(
+            classify_type_drift(Some("project"), None),
+            TypeDrift::Recall
+        );
+        // 两边都还没判出来：也归召回，由画像相似度说话
+        assert_eq!(classify_type_drift(None, None), TypeDrift::Recall);
         // 易混具体类型两两 → 审核对
         assert_eq!(
-            classify_type_drift("organization", "project"),
+            classify_type_drift(Some("organization"), Some("project")),
             TypeDrift::Review
         );
-        assert_eq!(classify_type_drift("project", "product"), TypeDrift::Review);
         assert_eq!(
-            classify_type_drift("product", "organization"),
+            classify_type_drift(Some("project"), Some("product")),
+            TypeDrift::Review
+        );
+        assert_eq!(
+            classify_type_drift(Some("product"), Some("organization")),
             TypeDrift::Review
         );
         // 硬互斥与未知自定义类型 → 完全分开
         assert_eq!(
-            classify_type_drift("person", "organization"),
+            classify_type_drift(Some("person"), Some("organization")),
             TypeDrift::Disjoint
         );
         assert_eq!(
-            classify_type_drift("person", "project"),
+            classify_type_drift(Some("person"), Some("project")),
             TypeDrift::Disjoint
         );
         assert_eq!(
-            classify_type_drift("event", "location"),
+            classify_type_drift(Some("event"), Some("location")),
             TypeDrift::Disjoint
         );
         assert_eq!(
-            classify_type_drift("team", "organization"),
+            classify_type_drift(Some("team"), Some("organization")),
             TypeDrift::Disjoint
         );
     }
@@ -1750,13 +1783,14 @@ pub struct TypeCandidateSubject {
     pub id: Uuid,
     pub canonical_name: String,
     pub aliases: Vec<String>,
-    /// 现在挂着的类。名字里的"粗"是历史——抽取现在也可能直接给一个细类，
-    /// 而且可能给错（实测 `绍兴 → address`），所以这里也可能是要被**纠正**的那个
-    pub coarse_key: String,
-    pub coarse_id: Uuid,
+    /// 现在挂着的类，**可能没有**（0009：没判出来就是 NULL）。名字里的"粗"
+    /// 是历史——抽取现在也可能直接给一个细类，而且可能给错（实测
+    /// `绍兴 → address`），所以这里也可能是要被**纠正**的那个
+    pub coarse_key: Option<String>,
+    pub coarse_id: Option<Uuid>,
     /// 现类的描述。裁决要判"现在这个类对不对"，光看 key 不够——
     /// 导入本体的 key 常常自解释不了（`entry_point` 是什么？）
-    pub coarse_description: String,
+    pub coarse_description: Option<String>,
     /// 抽取时模型自己报的类型名，**词表里没有**才会留在这儿
     pub proposed_type: Option<String>,
     /// 模型对它自己的说法，每个实体都有。
@@ -1778,18 +1812,17 @@ pub struct TypeCandidateSubject {
     pub fact_count: i64,
 }
 
-/// 值得送去精化类型的实体：挂在倾倒场类下的，或者模型报过一个词表外类型的。
+/// 值得送去精化类型的实体：**还没有类的**，或者模型报过一个词表外类型的。
 ///
 /// 类型化得已经很具体的实体不动——重判一次只有下降风险，没有上升空间。
 pub async fn entities_for_type_resolution(
     pool: &PgPool,
     kb_id: Uuid,
-    dumping_ground: &str,
     limit: i64,
 ) -> AppResult<Vec<TypeCandidateSubject>> {
     Ok(sqlx::query_as(
         "SELECT e.id, e.canonical_name, e.aliases, t.key AS coarse_key, t.id AS coarse_id,
-                coalesce(t.description, '') AS coarse_description,
+                t.description AS coarse_description,
                 e.proposed_type, e.specific_type,
                 -- 对方写**名字**，不写它的类型 key。
                 -- 写 key 是自毁：查询里出现 organization / product / event 这些词，
@@ -1820,19 +1853,18 @@ pub async fn entities_for_type_resolution(
                  WHERE f3.kb_id = $1 AND f3.invalidated_at IS NULL
                    AND (f3.subject_id = e.id OR f3.object_id = e.id)) AS fact_count
          FROM entities e
-         JOIN entity_types t ON t.id = e.type_id
+         LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.kb_id = $1 AND e.merged_into IS NULL
-           -- 值得看的三种：挂在倾倒场下的、模型报过词表外类型的、
-           -- **以及粗类本身还有子类的**。第三种是主力：抽取只认基类之后，
-           -- organization 下面挂着 167 个更具体的类，那才是导进来的本体
+           -- 值得看的三种：**还没有类的**、模型报过词表外类型的、
+           -- **以及现类本身还有子类的**。第三种是主力：抽取只认基类之后，
+           -- organization 下面挂着一大批更具体的类，那才是导进来的本体
            -- 唯一的用武之地。只看前两种就把它整个漏掉了
-           AND (t.key = $2 OR e.proposed_type IS NOT NULL OR e.specific_type IS NOT NULL
+           AND (e.type_id IS NULL OR e.proposed_type IS NOT NULL OR e.specific_type IS NOT NULL
                 OR EXISTS (SELECT 1 FROM entity_type_parents p WHERE p.parent_id = t.id))
          ORDER BY fact_count DESC, e.created_at
-         LIMIT $3",
+         LIMIT $2",
     )
     .bind(kb_id)
-    .bind(dumping_ground)
     .bind(limit)
     .fetch_all(pool)
     .await?)
@@ -1891,7 +1923,6 @@ pub async fn nearest_typed_entities(
     pool: &PgPool,
     kb_id: Uuid,
     entity_id: Uuid,
-    dumping_ground: &str,
     limit: i64,
 ) -> AppResult<Vec<(String, Uuid, String, f64, bool)>> {
     Ok(sqlx::query_as(
@@ -1910,19 +1941,18 @@ pub async fn nearest_typed_entities(
                         WHERE f2.kb_id = $1 AND (f2.subject_id = e.id OR f2.object_id = e.id)
                           AND ev2.document_id IN (SELECT document_id FROM my_docs))
                 AS same_document
+         -- 内连接就是那道门：没判出类型的实体（type_id IS NULL）不是答案，
+         -- 拿它当邻居的证据只会把「没判出来」传染开
          FROM entities e
          JOIN entity_types t ON t.id = e.type_id
          WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
            AND e.profile_embedding IS NOT NULL
            AND (SELECT v FROM me) IS NOT NULL
-           -- 倾倒场类不是答案，拿它当邻居的证据只会把没判出来的传染开
-           AND t.key <> $3
          ORDER BY e.profile_embedding <=> (SELECT v FROM me)
-         LIMIT $4",
+         LIMIT $3",
     )
     .bind(kb_id)
     .bind(entity_id)
-    .bind(dumping_ground)
     .bind(limit)
     .fetch_all(pool)
     .await?)
@@ -1951,10 +1981,15 @@ pub async fn retype_entities(
         // 是改之前那个。直接 RETURNING type_id 拿到的就是刚写进去的那一个，
         // 撤销时等于把实体"放回"它现在的位置——账本看着满满当当，实际什么都撤不了。
         // 条件也一并放进 CTE：这一行还在、没被合并、且确实要变
-        let row: Option<(Uuid, String)> = sqlx::query_as(
+        //
+        // **`IS DISTINCT FROM` 而不是 `<>`**：0009 之后起点常常是 NULL，而
+        // `NULL <> uuid` 是 NULL 不是 true——CTE 会空掉，UPDATE 一行不动，
+        // 于是"给没有类的实体定类"这个最主要的场景整个变成空操作
+        let row: Option<(Option<Uuid>, String)> = sqlx::query_as(
             "WITH before AS (
                  SELECT id, type_id, canonical_name FROM entities
-                 WHERE id = $1 AND kb_id = $3 AND merged_into IS NULL AND type_id <> $2
+                 WHERE id = $1 AND kb_id = $3 AND merged_into IS NULL
+                   AND type_id IS DISTINCT FROM $2
              )
              UPDATE entities e SET type_id = $2, updated_at = now()
              FROM before
@@ -2044,25 +2079,21 @@ mod same_type_tests {
     /// 结果是 `Sherlock Holmes` 与 `Holmes` 一对都进不了审阅队列。
     #[test]
     fn the_same_type_is_a_recall_candidate() {
-        for k in [
-            "person",
-            "location",
-            "organization",
-            "product",
-            "event",
-            "concept",
-        ] {
+        for k in ["person", "location", "organization", "product", "event"] {
             assert_eq!(
-                classify_type_drift(k, k),
+                classify_type_drift(Some(k), Some(k)),
                 TypeDrift::Recall,
                 "{k} 对 {k} 必须可召回"
             );
         }
         // 自定义类型同样——这里判的是"两边是不是同一种东西"，不是"它在不在白名单里"
-        assert_eq!(classify_type_drift("drug", "drug"), TypeDrift::Recall);
+        assert_eq!(
+            classify_type_drift(Some("drug"), Some("drug")),
+            TypeDrift::Recall
+        );
         // 跨类型的老结论一条都不变
         assert_eq!(
-            classify_type_drift("person", "organization"),
+            classify_type_drift(Some("person"), Some("organization")),
             TypeDrift::Disjoint
         );
     }

@@ -124,9 +124,14 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
         let Some((type_id,)) = type_id else { continue };
 
         // 概念实体：走消解（同名归并；无向量上下文按 v1 兼容归并）
-        let resolved =
-            utopia_store::resolution::resolve_mention(&state.pool, kb_id, type_id, name, None)
-                .await?;
+        let resolved = utopia_store::resolution::resolve_mention(
+            &state.pool,
+            kb_id,
+            Some(type_id),
+            name,
+            None,
+        )
+        .await?;
 
         // 定义带 source + summary（Review 与 prompt 展示都靠 summary）
         let mut definition = p["definition"].clone();

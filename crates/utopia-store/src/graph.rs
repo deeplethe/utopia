@@ -26,95 +26,6 @@ const ADOPT_SUPERSEDED: &str = "superseded";
 /// 读成"并入"而不是"撤回"，否则界面会宣称一件没发生的事。
 const ADOPT_MERGED: &str = "merged";
 
-/// 内置本体模板：(key, label, color, shape, description)
-///
-/// **描述是承重的**：它逐字进抽取提示词，是模型区分 product 与 concept 的唯一依据。
-/// 此前这一列在种子里是空的，于是提示词只有 `- product (Product)`——模型只能从
-/// 标签猜，实测 `product` 吃下 37% 的实体，里面混着 GPU、accelerator 这类概念。
-///
-/// 写法：先说这个类**是什么**，再说**它不是什么**并指向该去的类。反例比正例管用——
-/// 模型的错误集中在相邻类的边界上，不在类的中心。
-// 低饱和粉彩色系（深色画布上柔和发光，不刺眼）；组织/产品用方形区分"机构/制品"
-const DEFAULT_ENTITY_TYPES: &[(&str, &str, &str, &str, &str)] = &[
-    (
-        "person",
-        "Person",
-        "#7fd0ff",
-        "circle",
-        "A named individual human being. Not a role, title or team — those are concepts \
-         or organizations.",
-    ),
-    (
-        "organization",
-        "Organization",
-        "#4cc38a",
-        "square",
-        "A company, institution, agency, team or other body of people that acts as one. \
-         Includes divisions and named groups. Not the products it makes.",
-    ),
-    (
-        "project",
-        "Project",
-        "#f2b66d",
-        "circle",
-        "A named initiative, programme or body of work with a beginning and an end. \
-         Not a shipped product, and not the organization running it.",
-    ),
-    // 问数语义层：可问的量与可切的维度（BI 语义层标准抽象），映射经 mapped_to 指向数据资产
-    (
-        "metric",
-        "Metric",
-        "#ffd580",
-        "square",
-        "A quantity that can be measured and aggregated — revenue, latency, headcount. \
-         The thing being counted, not a particular measured value.",
-    ),
-    (
-        "dimension",
-        "Dimension",
-        "#9adcc6",
-        "square",
-        "An axis a metric can be broken down by — region, channel, product line. \
-         The axis itself, not one of its values.",
-    ),
-    (
-        "product",
-        "Product",
-        "#c4a5ff",
-        "square",
-        "A specific named offering that can be bought, downloaded, played or subscribed to: \
-         a device, model, service, application or title. **A general capability, category or \
-         piece of technology is a concept, not a product** — \"GeForce RTX 5090\" is a product, \
-         \"GPU\" is a concept.",
-    ),
-    (
-        "event",
-        "Event",
-        "#ff9daf",
-        "circle",
-        "Something that happened or is scheduled to happen at a point in time — a launch, \
-         acquisition, conference, outage. Not the thing it happened to.",
-    ),
-    (
-        "concept",
-        "Concept",
-        "#8ea5bd",
-        "circle",
-        "An idea, capability, category, standard, technique or field — the general rather \
-         than the particular. Use it for things like \"inference\", \"GPU\", \"zero trust\". \
-         **Do not use it as a catch-all**: if the text names a specific product, organization \
-         or person, use that type; if it names a kind of thing this ontology has no type for, \
-         say so rather than filing it here (see the type rule).",
-    ),
-    (
-        "location",
-        "Location",
-        "#5fd4d0",
-        "circle",
-        "A place — country, region, city, campus, facility. Not the organization based there.",
-    ),
-];
-
 /// (key, label, temporal, functional, inverse_functional, description)
 ///
 /// functional = 同一时刻一个主语至多一个宾语（张三同时只 reports_to 一人）；
@@ -215,78 +126,19 @@ const DEFAULT_RELATION_TYPES: &[(&str, &str, &str, bool, bool, &str)] = &[
     ),
 ];
 
-/// 内置本体的中文措辞：`key → (label, description)`。
+/// 关系的中文措辞：`key → (label, description)`。label 是**动词短语**，
+/// 读起来要能接上主宾：「张三 —任职于→ 星云科技」。
 ///
-/// **只覆盖 label 与 description**。颜色、形状、时态、函数性与语言无关，
-/// 在上面那两张表里只有一份——复制一遍迟早会漂移。
+/// **只覆盖 label 与 description**。时态与函数性跟语言无关，在上面那张表里
+/// 只有一份——复制一遍迟早会漂移。
 ///
 /// 两条写法上的规矩，都不是文风问题：
 ///
-/// 1. **描述里提到其它类型时用 key，不用 label。** 中文库的 label 是「人物」，
+/// 1. **描述里提到类型时用 key，不用 label。** 中文库的 label 是「人物」，
 ///    但模型必须输出 `person`。描述逐字进提示词，写「那些属于人物」等于教模型
 ///    输出一个不存在的类型。
 /// 2. **负面例子是干活的那半。** 模型的错误集中在相邻类的边界上，不在类的中心；
-///    "什么不算" 比 "什么算" 更能改变结果（`product` 加上 GPU 那句反例后，
-///    真实语料上误标从 37.2% 降到 8.6%）。所以这不是翻译，是用中文重写一遍。
-const ENTITY_TEXT_ZH: &[(&str, &str, &str)] = &[
-    (
-        "person",
-        "人物",
-        "有名有姓的具体的人。**不是**职务、头衔或团队——那些属于 concept 或 organization。",
-    ),
-    (
-        "organization",
-        "组织",
-        "作为一个整体行动的人的集合：公司、机构、政府部门、团队。包括事业部与有名字的小组。\
-         **不包括它做出来的产品**。",
-    ),
-    (
-        "project",
-        "项目",
-        "有起点也有终点的、有名字的计划、工程或一批工作。**不是**已经发布的产品，\
-         也不是承担它的那个 organization。",
-    ),
-    (
-        "metric",
-        "指标",
-        "可度量、可聚合的量——营收、时延、人数。指**被数的那个东西本身**，\
-         不是某一次量出来的具体数值。",
-    ),
-    (
-        "dimension",
-        "维度",
-        "指标可以被拆开看的那个轴——地区、渠道、产品线。指**轴本身**，不是轴上的某个取值。",
-    ),
-    (
-        "product",
-        "产品",
-        "可以购买、下载、游玩或订阅的**具体**产物：一台设备、一个模型、一项服务、\
-         一个应用或一部作品。**泛指的能力、品类或技术是 concept，不是 product**——\
-         「GeForce RTX 5090」是 product，「GPU」是 concept。",
-    ),
-    (
-        "event",
-        "事件",
-        "在某个时间点发生或将要发生的事——发布、收购、大会、故障。\
-         **不是**这件事发生在谁身上的那个「谁」。",
-    ),
-    (
-        "concept",
-        "概念",
-        "一个想法、能力、品类、标准、技术或领域——泛指而非特指。\
-         用于「推理」「GPU」「零信任」这类。**不要拿它当兜底**：\
-         原文若点名了具体的产品、组织或人，就用那个类型；\
-         若点的是本体里没有对应类型的东西，直说没有，别往这里塞（见类型规则）。",
-    ),
-    (
-        "location",
-        "地点",
-        "一个地方——国家、地区、城市、园区、场所。**不是**总部设在那里的那个 organization。",
-    ),
-];
-
-/// 关系的中文措辞。label 是**动词短语**，读起来要能接上主宾：
-/// 「张三 —任职于→ 星云科技」。
+///    "什么不算" 比 "什么算" 更能改变结果。所以这不是翻译，是用中文重写一遍。
 const RELATION_TEXT_ZH: &[(&str, &str, &str)] = &[
     ("works_at", "任职于", "一个人受雇于某个组织，或隶属于它。"),
     ("leads", "领导", "一个人领导一个组织、项目或团队。"),
@@ -336,28 +188,22 @@ fn localized(
     fallback
 }
 
-/// 建库时铺内置本体。**已存在的行只补空描述，不覆盖人写过的**——种子里的描述是
-/// 缺省值不是权威，用户按自己的语料调过之后不该被下一次调用抹掉。
+/// 建库时铺内置本体——**只有关系，没有实体类**（见 `docs/decisions/0009`）。
+/// 已存在的行只补空描述，
+/// 不覆盖人写过的：种子里的描述是缺省值不是权威，用户按自己的语料调过之后
+/// 不该被下一次调用抹掉。
+///
+///
+/// 从前这里有九个（person、organization、location…）。通病是**零个带类型签名**，
+/// 方向只能靠散文写；而装了 schema.org 之后它们又会被同名的真类顶替，
+/// 等于从头到尾只是个占位。`location` 是反例中的反例——schema.org 里它叫 `Place`，
+/// key 对不上于是不被认领，`City` 挂到另建的 `place` 底下，
+/// 一个我们自己起的名字把整条地理子树割断了。
+///
+/// 兜底类 `concept` 一并退场：「还没判出来」现在由 `entities.type_id IS NULL` 表达。
+/// 哨兵有名字，有名字就会撞——`skos:Concept` 派生出的 key 正是 `concept`，
+/// 而哨兵没有 IRI，导入的「占位者没有 IRI 就认领它」会让它直接接管。
 pub async fn ensure_default_ontology(pool: &PgPool, kb_id: Uuid, lang: &str) -> AppResult<()> {
-    for (key, en_label, color, shape, en_description) in DEFAULT_ENTITY_TYPES {
-        let (label, description) = localized(ENTITY_TEXT_ZH, key, lang, (en_label, en_description));
-        sqlx::query(
-            "INSERT INTO entity_types (id, kb_id, key, label, color, shape, builtin, description)
-             VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7)
-             ON CONFLICT (kb_id, key) DO UPDATE
-               SET description = EXCLUDED.description
-               WHERE entity_types.description = ''",
-        )
-        .bind(Uuid::now_v7())
-        .bind(kb_id)
-        .bind(key)
-        .bind(label)
-        .bind(color)
-        .bind(shape)
-        .bind(description)
-        .execute(pool)
-        .await?;
-    }
     for (key, en_label, temporal, functional, inverse_functional, en_description) in
         DEFAULT_RELATION_TYPES
     {
@@ -707,11 +553,22 @@ pub async fn add_evidence(
     Ok(())
 }
 
+/// 所有图查询共用的取节点语句。
+///
+/// **LEFT JOIN，不是 JOIN**（0009）。没判出类型的实体照样是图上的节点：它有名字、
+/// 有事实、有证据，缺的只是一个标签。内连接会让它整个消失——事实还在库里，
+/// 图上却查无此人，那是最难发现的一种数据丢失。
+///
+/// key 与 label 留 NULL，**颜色和形状给缺省值**：前者是身份，没有就该说没有；
+/// 后者是画布必须拿到的东西，编不出来就没法渲染。灰色圆点正是「还没定」的样子
 const NODE_SQL: &str = "SELECT e.id, e.canonical_name AS name, t.key AS type_key,
-        t.label AS type_label, t.color, t.shape, e.disambiguator,
+        t.label AS type_label,
+        coalesce(t.color, '#94a3b8') AS color,
+        coalesce(t.shape, 'circle') AS shape,
+        e.disambiguator,
         (SELECT count(*) FROM facts f
          WHERE (f.subject_id = e.id OR f.object_id = e.id) AND f.invalidated_at IS NULL) AS degree
-     FROM entities e JOIN entity_types t ON t.id = e.type_id";
+     FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id";
 
 /// 全图概览：按度数取 top N 实体及其间的边。
 /// `at`：服务端 as-of——只返回 T 时刻有效的边（起点不晚于 T 或未知，终点晚于 T 或开放）。

@@ -602,7 +602,12 @@ pub async fn chat(
                                         .unwrap_or_default();
                                     format!(
                                         "{} | {}{} | {} | {} facts",
-                                        n.id, n.name, dis, n.type_label, n.degree
+                                        n.id,
+                                        n.name,
+                                        dis,
+                                        // 没判出类型的实体照样能被搜到、被引用（0009）
+                                        n.type_label.as_deref().unwrap_or("untyped"),
+                                        n.degree
                                     )
                                 })
                                 .collect::<Vec<_>>()

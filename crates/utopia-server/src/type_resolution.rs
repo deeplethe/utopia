@@ -8,6 +8,11 @@
 //! 现在两个方向都认。纠正天然判为跨轴，所以一定进人工：推翻抽取的判断比
 //! 细化它风险大，不该自动发生。
 //!
+//! 0009 之后还有第三种输入，而且是最常见的那种：**根本还没有类**。删掉兜底类
+//! 之后，本体装不下的实体不再被塞进 `concept`，而是 `type_id IS NULL`。这一档
+//! 身上没有"抽取的判断"要推翻，给它定类是补齐不是重新分类，所以**不判跨轴**、
+//! 高置信度直接落库——否则删掉哨兵的代价就是每个实体都要人看一眼。
+//!
 //! **为什么能事后做，而谓词不能**（0001 的那个不对称）：类型是挂在节点上的
 //! 注解，可以等证据攒够了再贴；谓词就是事实本身，`(NVIDIA, ?, Mellanox)`
 //! 根本不是一条事实。所以谓词走"先记原词、后映射"，类型走"先粗后精"。
@@ -32,8 +37,6 @@ use crate::{llm_util, ontology_index, AppState};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
-/// 倾倒场类的 key。挂在它下面的实体是"没判出来"，不是"判成了这个"。
-const DUMPING_GROUND: &str = "concept";
 /// 一轮看多少个实体。够一次人工过目，也够看出检索准不准。
 const BATCH: i64 = 60;
 /// 每个实体检索几个候选。给裁决看的，不是让它在一堆勉强相关里硬挑一个。
@@ -46,12 +49,13 @@ const NEIGHBOURS: i64 = 10;
 pub struct TypeSuggestion {
     pub entity_id: Uuid,
     pub name: String,
-    pub coarse: String,
+    /// 现在挂着的类，**可能没有**（0009）
+    pub coarse: Option<String>,
     /// 现类的描述。裁决要判"现在这个类对不对"，光看 key 不够
-    pub coarse_description: String,
+    pub coarse_description: Option<String>,
     /// 粗类的 id。裁决要拿它跟目标类配成一对，去查"这一对人认可过没有"
     #[serde(skip)]
-    pub coarse_id: Uuid,
+    pub coarse_id: Option<Uuid>,
     pub proposed_type: Option<String>,
     pub specific_type: Option<String>,
     pub fact_count: i64,
@@ -101,13 +105,8 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
         Some(utopia_store::ontology::TypeKind::Entity),
     )
     .await;
-    let subjects = utopia_store::resolution::entities_for_type_resolution(
-        &state.pool,
-        kb_id,
-        DUMPING_GROUND,
-        BATCH,
-    )
-    .await?;
+    let subjects =
+        utopia_store::resolution::entities_for_type_resolution(&state.pool, kb_id, BATCH).await?;
     if subjects.is_empty() {
         return Ok(Vec::new());
     }
@@ -158,11 +157,15 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
         // **签名是导向，不是闸门**；系统性丢数据比偶尔判错贵得多。
         //
         // 该说不的是裁决那一步：它看得到描述、看得到粗类，能说出"这不是"。
-        let descendants: std::collections::HashSet<_> =
-            utopia_store::resolution::descendants_of(&state.pool, kb_id, s.coarse_id)
+        // 还没有类的实体没有"粗类的后代"这个轴可用（0009），整张类表都是候选，
+        // 排序就纯按检索顺序来
+        let descendants: std::collections::HashSet<_> = match s.coarse_id {
+            Some(c) => utopia_store::resolution::descendants_of(&state.pool, kb_id, c)
                 .await?
                 .into_iter()
-                .collect();
+                .collect(),
+            None => std::collections::HashSet::new(),
+        };
         // **两路交替取，不按距离合并。**
         //
         // 距离在两路之间不可比：短查询（"医药集团"）产生的距离系统性地小于
@@ -184,7 +187,7 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
         for rank in 0..longest {
             for list in &lists {
                 let Some(c) = list.get(rank) else { continue };
-                if c.id == s.coarse_id || !seen_ids.insert(c.id) {
+                if Some(c.id) == s.coarse_id || !seen_ids.insert(c.id) {
                     continue;
                 }
                 ranked.push(c.clone());
@@ -194,14 +197,9 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
         ranked.sort_by_key(|c| !descendants.contains(&c.id));
         let candidates: Vec<_> = ranked.into_iter().take(CANDIDATES as usize).collect();
         // 第二路：语境相似的已定类实体，按类投票
-        let raw = utopia_store::resolution::nearest_typed_entities(
-            &state.pool,
-            kb_id,
-            s.id,
-            DUMPING_GROUND,
-            NEIGHBOURS,
-        )
-        .await?;
+        let raw =
+            utopia_store::resolution::nearest_typed_entities(&state.pool, kb_id, s.id, NEIGHBOURS)
+                .await?;
         let mut votes: std::collections::BTreeMap<String, (usize, f64, Vec<String>, bool)> =
             std::collections::BTreeMap::new();
         for (name, _tid, key, distance, same_doc) in raw {
@@ -217,7 +215,7 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
         }
         let mut neighbours: Vec<NeighbourVote> = votes
             .into_iter()
-            .filter(|(key, _)| *key != s.coarse_key)
+            .filter(|(key, _)| Some(key) != s.coarse_key.as_ref())
             .map(
                 |(key, (votes, best_distance, examples, same_document_only))| NeighbourVote {
                     key,
@@ -332,7 +330,7 @@ pub struct ResolutionOutcome {
 #[derive(Debug, serde::Serialize)]
 pub struct DeclineNote {
     pub name: String,
-    pub coarse: String,
+    pub coarse: Option<String>,
     pub specific_type: Option<String>,
     /// 模型给的理由；它压根没提到这个实体时为空
     pub reason: Option<String>,
@@ -345,9 +343,10 @@ pub struct DeclineNote {
 pub struct ReviewItem {
     pub entity_id: Uuid,
     pub name: String,
-    pub coarse: String,
-    /// 配对的两端。认可这一条时认可的是**这一对类**，不是这一个实体
-    pub from_type_id: Uuid,
+    pub coarse: Option<String>,
+    /// 配对的两端。认可这一条时认可的是**这一对类**，不是这一个实体。
+    /// 起点可能没有（0009）——那时没有"一对类"可认可，只能一个个改
+    pub from_type_id: Option<Uuid>,
     pub to_type_id: Uuid,
     pub choice: String,
     pub confidence: f32,
@@ -443,8 +442,16 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
         // **纠正也走这里，而且天然如此**：抽取挑错细类之后（绍兴 → address），
         // 正确答案是它的兄弟而不是它的后代，所以一定判为跨轴、一定进人工。
         // 这正是想要的——推翻抽取的判断比细化它风险大，不该自动发生。
-        let crosses_axis = !item.descendants.contains(&target.id)
-            && !approved.contains(&(item.coarse_id, target.id));
+        //
+        // **还没有类的实体不算跨轴**（0009）：它身上没有一个"抽取的判断"要被
+        // 推翻，第一次给它定类是补齐而不是重新分类。这里若判成跨轴，等于
+        // 删掉兜底类之后每一个实体都要人看一遍，整条自动化就废了
+        let crosses_axis = match item.coarse_id {
+            Some(from) => {
+                !item.descendants.contains(&target.id) && !approved.contains(&(from, target.id))
+            }
+            None => false,
+        };
         if confidence >= AUTO_THRESHOLD && !crosses_axis {
             picks.push((item.entity_id, target.id));
         } else {
@@ -493,10 +500,13 @@ fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
     for it in items {
         // 现类连描述一起给：要判"现在这个类对不对"，光看 key 不够——
         // 导入本体的 key 常常自解释不了（`entry_point` 是什么？）
-        let current = if it.coarse_description.trim().is_empty() {
-            it.coarse.clone()
-        } else {
-            format!("{} ({})", it.coarse, it.coarse_description.trim())
+        //
+        // 没有类的实体直说没有（0009）。这一行从前一定填着 concept，模型读到的是
+        // 「它已经是个概念」——一个错误的先验；现在读到的是「还没定」，正是实情
+        let current = match (&it.coarse, it.coarse_description.as_deref().map(str::trim)) {
+            (Some(k), Some(d)) if !d.is_empty() => format!("{k} ({d})"),
+            (Some(k), _) => k.clone(),
+            (None, _) => "not yet typed".into(),
         };
         let mut lines = vec![format!(
             "### {}\ncurrently: {}\nthe extractor called it: {}\nseen as: {}",

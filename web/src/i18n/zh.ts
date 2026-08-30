@@ -472,6 +472,7 @@ export const zh: Strings = {
     cancel: "取消",
   },
   graph: {
+    untyped: "未分类",
     zoomIn: "放大",
     zoomOut: "缩小",
     fitView: "适应视图",

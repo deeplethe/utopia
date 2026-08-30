@@ -21,7 +21,8 @@ fn pair_key(item: &ReviewItem) -> String {
         format!(
             "{}|{}|{}",
             s.name.to_lowercase(),
-            s.type_label,
+            // 没判出类型的一侧照样要能缓存（0009）
+            s.type_label.as_deref().unwrap_or("untyped"),
             s.top_facts.join(";")
         )
     };
@@ -80,12 +81,20 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
             .map(|(item, _)| utopia_extract::AdjudicationPair {
                 left: utopia_extract::AdjudicationSide {
                     name: item.left.name.clone(),
-                    type_label: item.left.type_label.clone(),
+                    type_label: item
+                        .left
+                        .type_label
+                        .clone()
+                        .unwrap_or_else(|| "untyped".into()),
                     facts: item.left.top_facts.clone(),
                 },
                 right: utopia_extract::AdjudicationSide {
                     name: item.right.name.clone(),
-                    type_label: item.right.type_label.clone(),
+                    type_label: item
+                        .right
+                        .type_label
+                        .clone()
+                        .unwrap_or_else(|| "untyped".into()),
                     facts: item.right.top_facts.clone(),
                 },
             })
