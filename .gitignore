@@ -5,7 +5,10 @@ node_modules/
 web/dist/
 *.log
 .DS_Store
-/data
+# 运行产物（上传原文 + Tantivy 索引）。**不写前导斜杠**：`/data` 只匹配仓库根，
+# 而服务在哪个目录起就在哪儿建 data/——`web/data` 就是这么漏进来的（30 个文件，
+# 含两份上传的测试文档）。跟 `_bench_*` 漏掉 `_holmes2.json` 是同一类错
+data/
 # docs/ 是本地草稿区；只有决策记录与流水线参考入库。
 # 必须写成 /docs/* 而非 /docs——父目录被忽略时，子路径无法用 ! 重新纳入。
 /docs/*
