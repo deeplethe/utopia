@@ -382,13 +382,27 @@ pub struct ReviewItem {
     pub crosses_axis: bool,
 }
 
-/// 跑一遍类型消解：检索候选 → 裁决 → 三档处置。
-pub async fn resolve(
-    state: &AppState,
-    kb_id: Uuid,
-    // 落库那一步记在谁头上。这条路是人在界面上按的,所以有人
-    actor: Option<Uuid>,
-) -> AppResult<ResolutionOutcome> {
+/// 跑一轮类型消解并落库。
+///
+/// **落库时不带 actor,尽管是人点的运行。** `retype_entities` 的 actor 参数
+/// 现在有两重身份:账本里记"谁改的",而 0051 之后它还决定 `type_source`——
+/// 有 actor 就是 `human`,而 `human` 意味着**引擎从此不再碰这个实体**。
+///
+/// 这两个问题不是一回事:
+///
+/// | | 谁发起 | 谁判定这个实体是什么 |
+/// |---|---|---|
+/// | 手工改实体类型 | 人 | 人 |
+/// | 认可类对 + 点名实体 | 人 | 人 |
+/// | **跑一轮消解** | 人点了运行 | **引擎** |
+///
+/// 第三行传了 user 就等于宣称"这个类是人判的",于是**跑过一次消解的实体
+/// 从此永远不再被消解**。实测:一个没有任何人工 PATCH 记录（`entity.retyped`
+/// 审计 0 条）的库,跑完消解后每个实体都成了 `type_source = human`,
+/// 下一次预览返回空列表。
+///
+/// 谁点的运行记在 `ontology.types_resolved` 审计里,带批次 id,查得到。
+pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutcome> {
     let items = preview(state, kb_id).await?;
     let items: Vec<_> = items
         .into_iter()
@@ -524,7 +538,7 @@ pub async fn resolve(
         (None, 0)
     } else {
         let (b, n) =
-            utopia_store::resolution::retype_entities(&state.pool, kb_id, &picks, actor).await?;
+            utopia_store::resolution::retype_entities(&state.pool, kb_id, &picks, None).await?;
         (Some(b), n)
     };
     Ok(ResolutionOutcome {

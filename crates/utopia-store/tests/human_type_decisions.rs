@@ -310,3 +310,58 @@ async fn who_approved_a_retype_decides_whether_it_is_protected() -> anyhow::Resu
         .await?;
     run
 }
+
+/// **引擎改过的实体,下一轮还要捞得回来。**
+///
+/// 这一条守的是一个真出过的事故:类型消解落库时把「点运行的那个人」当成了
+/// `retype_entities` 的 actor,而 0051 之后有 actor 就写 `type_source = 'human'`。
+/// 于是**跑过一次消解的实体从此永远不再被消解**——一个没有任何人工 PATCH 记录
+/// 的库,跑完一轮之后预览返回空列表,而且没有任何报错。
+///
+/// 「谁点的运行」与「谁判定这个实体是什么」是两件事。前者记在
+/// `ontology.types_resolved` 审计里,后者才该决定 `type_source`。
+#[tokio::test]
+async fn an_engine_retype_does_not_lock_the_entity_out_of_the_next_round() -> anyhow::Result<()> {
+    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
+        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        let e = entity(&pool, &f, "Initech", Some(f.org_type), "extracted").await?;
+        // 留一个 specific_type:让它在「取材条件」上始终够格,这样落选与否
+        // 只取决于 type_source——否则改成叶子类之后它本来就该落选,测不出东西
+        sqlx::query("UPDATE entities SET specific_type = 'startup company' WHERE id = $1")
+            .bind(e)
+            .execute(&pool)
+            .await?;
+        // 引擎自动裁决:没有人为这一条背书
+        utopia_store::resolution::retype_entities(&pool, f.kb, &[(e, f.sub_type)], None).await?;
+
+        assert_eq!(
+            source_of(&pool, e).await?,
+            "inferred",
+            "引擎裁决不是人的背书"
+        );
+
+        let picked = utopia_store::resolution::entities_for_type_resolution(&pool, f.kb, 100)
+            .await?
+            .into_iter()
+            .map(|c| c.id)
+            .collect::<std::collections::HashSet<_>>();
+        assert!(
+            picked.contains(&e),
+            "引擎改过一次不该把实体锁死——本体还会长大,它还得能被重判"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    run
+}

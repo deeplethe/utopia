@@ -1398,7 +1398,7 @@ pub async fn type_resolution_apply(
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    let outcome = crate::type_resolution::resolve(&state, kb_id, Some(user.id)).await?;
+    let outcome = crate::type_resolution::resolve(&state, kb_id).await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
