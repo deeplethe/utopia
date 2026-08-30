@@ -186,7 +186,7 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 > 落地的是三层里的前两层与整条预览流程：解析（`utopia-ingest/src/ontology_rdf.rs`）、
 > 计划与执行（`utopia-server/src/owl_import.rs`，预览与落库**共用同一个 `plan()`**）、
 > 界面（本体页左栏底部 Import 入口 → 选文件 → 计划 → 确认）。
-> `ontology_imports` 表与 `entity_types.iri` / `relation_types.iri` 见迁移 0015。
+> `ontology_imports` 表与 `entity_types.iri` / `relation_types.iri` 见 `ontology_imports` 的建表注释。
 >
 > **对着真实词汇表验证，不是自己写的样例**。FOAF（RDF/XML，635 三元组）：
 > 15 类 + 89 属性，`functional` / `inverse_functional` / domain / range 全部读出；

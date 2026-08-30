@@ -1,4 +1,4 @@
--- 0004: 图谱层 —— 轻量本体 + 实体 + 双时态事实账本 + 证据链
+-- 图谱层：本体词表 + 实体 + 双时态事实账本 + 证据链。
 -- 设计见 docs/DESIGN.md §3：事实 append-only；抽取错误设 invalidated_at，事实变化闭合 valid_to。
 
 -- 类。**两个向量不是冗余**：类型消解发两种查询（见 `type_resolution.rs`），
@@ -345,3 +345,87 @@ LANGUAGE sql STABLE AS $$
      ORDER BY count(*) DESC, e.proposed_predicate
      LIMIT 1
 $$;
+
+-- 采纳一个实体类型时，哪些实体被改了类。
+--
+-- 与 fact_adoptions 对称，理由也一样：只建类型不动实体的话，本体长大了、图没变好。
+-- 而改完必须能撤销，否则没人敢让系统自动建类。
+--
+-- 实体不是 append-only 的（它是可变行，P0 的 PATCH 就直接改），所以撤销靠记下
+-- 改之前的类型，而不是靠 supersedes 链。
+CREATE TABLE entity_retypes (
+    batch_id     UUID NOT NULL,
+    kb_id        UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+    entity_id    UUID NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    -- **可空**：0009 之后最常见的一次改类正是「从没有类到有类」，而这张表是
+    -- 撤销的唯一依据。非空的话第一次赋类就写不进账，那批改动不可撤
+    from_type_id UUID REFERENCES entity_types(id) ON DELETE CASCADE,
+    to_type_id   UUID NOT NULL REFERENCES entity_types(id) ON DELETE CASCADE,
+    -- 与 fact_adoptions 一致：撤销标记而非删除，采纳发生过、撤销也发生过
+    reverted_at  TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- 谁改的。可空 = 引擎自动裁决，跟 `entity_merges.merged_by` 一个约定。
+    --
+    -- **它只回答「谁发起了这次改动」**，不回答「这个类是不是人判的」——
+    -- 那两件事被混为一谈过一次：类型消解把点「运行」的人传了下来，于是每个
+    -- 被引擎裁决的实体都成了 `type_source = human`，从此再不被消解（见 #117）
+    actor_id     UUID REFERENCES users(id),
+    PRIMARY KEY (batch_id, entity_id)
+);
+
+CREATE INDEX entity_retypes_kb_idx ON entity_retypes (kb_id, created_at DESC);
+
+-- 采纳表层谓词时，哪条事实被改写成了哪条。
+--
+-- 没有这张表时改写只留下 facts.supersedes 一个指针，而它覆盖不了"并入已存在
+-- 事实"那种情形：旧行被作废、没有任何后继指向它。后果有两个——撤销时找不回
+-- 它去了哪，以及实体历史把"已作废且无后继"判成 rejected，于是界面会说
+-- "这条记录被撤回了"，而它其实原封不动地并进了另一条断言。
+--
+-- 顺带补上治理要求的那一半：审计行此前只记了"改写 49 条"这个总数，
+-- 答不出"具体哪 49 条"。
+CREATE TABLE fact_adoptions (
+    -- 一次采纳动作的批次；撤销以它为单位
+    batch_id     UUID NOT NULL,
+    kb_id        UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+    predicate_id UUID NOT NULL REFERENCES relation_types(id) ON DELETE CASCADE,
+    old_fact_id  UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    new_fact_id  UUID NOT NULL REFERENCES facts(id) ON DELETE CASCADE,
+    -- superseded = 新写一行取代旧行；merged = 并入已存在的行
+    mode         TEXT NOT NULL,
+    -- 撤销不删行：抹掉"发生过什么"与账本的规矩相反，而且撤销本身也是
+    -- 一次人的决定，实体历史要据此归因
+    reverted_at  TIMESTAMPTZ,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (batch_id, old_fact_id)
+);
+
+-- 实体历史逐条问"这条是不是被并走了"，走这个索引
+CREATE INDEX fact_adoptions_old_idx ON fact_adoptions (old_fact_id);
+-- 按库列出可撤销的批次
+CREATE INDEX fact_adoptions_kb_idx ON fact_adoptions (kb_id, created_at DESC);
+
+-- 被挡掉的事实不留痕。抽取器有七处 `continue`：主语类型不明、属性 domain
+-- 不匹配、值不合 datatype、置信度不够……事实抽出来了、被挡掉、什么都不说，
+-- 用户只看到图里少了东西。与"账本 append-only、每条事实都有证据、不确定性
+-- 浮到人面前"三条原则直接冲突。
+
+-- 按 document 归集：既能算单篇的"多少条没落地"，也能在 KB 层聚合。
+-- 同时天然修好生命周期——ontology_misses 只在整库重建时清（graph.rs），
+-- 来源级重抽不清，会攒陈旧计数；按 document 清则每次重抽自动作数。
+CREATE TABLE extraction_drops (
+    kb_id       UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    -- 机器可聚合的原因码（attr_domain_mismatch / low_confidence / ...）
+    reason      TEXT NOT NULL,
+    -- 该原因下的具体对象（属性 key、谓词名、"salary@organization"）
+    detail      TEXT NOT NULL,
+    count       INT NOT NULL DEFAULT 1,
+    -- 一个样例，让人一眼看出丢的是什么（"Acme Corp → salary"）
+    example     TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (kb_id, document_id, reason, detail)
+);
+
+CREATE INDEX extraction_drops_doc_idx ON extraction_drops (document_id);
+

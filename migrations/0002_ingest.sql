@@ -1,4 +1,4 @@
--- 0002: 摄入管道（来源/文档/分块）+ 工作区 LLM 设置
+-- 摄入管道：来源、文档、分块、版本与同步记录。
 
 -- 来源即文件夹：source 是 Library 中的容器，挂着它摄入的文档，可定时同步。
 -- kind: upload（手动上传的虚拟归属，通常 source_id 为 NULL）| watch_folder | url | rss | api。
@@ -97,18 +97,6 @@ CREATE INDEX chunks_document_idx ON chunks (document_id, seq);
 CREATE INDEX chunks_kb_idx ON chunks (kb_id);
 CREATE INDEX chunks_live_idx ON chunks (document_id) WHERE superseded_at IS NULL;
 
--- 工作区级 LLM 设置（对话与 embedding 分开配置，OpenAI 兼容协议）
-CREATE TABLE llm_settings (
-    workspace_id   UUID PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
-    chat_base_url  TEXT,
-    chat_api_key   TEXT,
-    chat_model     TEXT,
-    embed_base_url TEXT,
-    embed_api_key  TEXT,
-    embed_model    TEXT,
-    embed_dim      INT,
-    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
-);
 
 CREATE UNIQUE INDEX documents_source_key_idx
     ON documents (source_id, external_key) WHERE external_key IS NOT NULL;
@@ -123,3 +111,17 @@ CREATE TABLE document_versions (
     ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (document_id, version)
 );
+
+-- 每次同步一行（时间/状态/产出/错误），渠道的可审计历史。
+-- 每来源仅保留最近 50 条（finish_run 时修剪）
+CREATE TABLE source_sync_runs (
+    id           UUID PRIMARY KEY,
+    source_id    UUID NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    started_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at  TIMESTAMPTZ,
+    status       TEXT NOT NULL DEFAULT 'running' CHECK (status IN ('running', 'ok', 'failed')),
+    created_docs INTEGER NOT NULL DEFAULT 0,
+    updated_docs INTEGER NOT NULL DEFAULT 0,
+    error        TEXT
+);
+CREATE INDEX source_sync_runs_source_idx ON source_sync_runs (source_id, started_at DESC);

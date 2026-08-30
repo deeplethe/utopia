@@ -153,7 +153,7 @@ kb_id 有值      知识库级：解析失败、抽取失败、源同步失败
 > 以及一个 `WHERE resolved_at IS NULL` 的部分唯一索引。随上面前两条决定一起作废。
 > **不在这里重抄一份 schema** —— 一份和迁移不一致的草案比没有草案更坏。
 
-真实定义见 [`migrations/0017_alerts.sql`](../../migrations/0017_alerts.sql)。形状是：
+真实定义见 [`migrations/0009_alerts.sql`](../../migrations/0009_alerts.sql)。形状是：
 
 - `alerts` 一次故障一行，写完不再改。`subject_id` 是**单列**不是数组 ——
   一行只讲一个对象，`detail` 里存一份当时的名字，所以对象被删了这条告警仍然显示得出来。

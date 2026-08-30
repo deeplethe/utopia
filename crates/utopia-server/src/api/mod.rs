@@ -182,7 +182,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(ontology_routes::restore_miss),
         )
         .route("/kbs/{id}/ontology/suggest", post(ontology_routes::suggest))
-        // 上次算出来、还没人表态的那些（迁移 0018）。刷新页面靠它，不必重跑模型
+        // 上次算出来、还没人表态的那些（见 `ontology_proposals`）。刷新页面靠它，不必重跑模型
         .route(
             "/kbs/{id}/ontology/proposals",
             get(ontology_routes::stored_proposals).post(ontology_routes::decide_proposal),

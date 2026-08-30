@@ -367,7 +367,7 @@ pub async fn suggest(
     // 人工那条路 min_docs = 0：面板上「出现在 1 篇」这个数字是显示给人看的，
     // 他自己判断得了。替他滤掉，只是让他少一条信息
     let proposals = build_proposals(&state, kb_id, &locale, 0).await?;
-    // 算完就写下来（迁移 0018）。从前这批结果只回给前端、存进一个 useState，
+    // 算完就写下来（见 `ontology_proposals`）。从前这批结果只回给前端、存进一个 useState，
     // 刷新一次就没了——而重算要再调一次模型，且未必给出同一批归并
     persist_proposals(&state, kb_id, &proposals).await;
     Ok(Json(proposals))
