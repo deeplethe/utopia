@@ -130,7 +130,9 @@ criticizes/criticized 6 · published/publishes 6 · accused/accuses 6
 换一个语料就失效。
 
 暂不处理：`related_to` 从 55.5% 降到 25.8% 已经是大改善，而叙述关系至少还带着
-原文措辞，比"有关联"多说了东西。
+原文措辞，比"有关联"多说了东西。〔**后续**：剩下那 25.8% 也不再显示成"有关联"了——
+`related_to` 已整个删掉，见 [0010](0010-no-relation-is-no-relation.md)。这条未决项本身仍然成立：
+叙述动词进本体的问题与谓词兜底无关。〕
 
 ## 走过的死路
 

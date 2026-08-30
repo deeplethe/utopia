@@ -491,6 +491,10 @@ export const zh: Strings = {
     noEvidence: "没有记录证据",
     noQuote: "（无引文）",
     proposedPredicate: (p: string) => `从原文读作「${p}」`,
+    /* 本体没认下这条关系：显示的词来自原文，不是词表里的关系 */
+    inferredPredicate: "本体里没有这个关系，这是原文的说法",
+    /* 连原文说法都没留下的老数据（0052 之前）。不编一个「有关联」出来 */
+    unknownPredicate: "说不出是什么关系",
     sectionRef: (filename: string, seq: number) =>
       `${filename} · 第 ${seq} 段 →`,
     fromVersion: (v: number) => `v${v}`,

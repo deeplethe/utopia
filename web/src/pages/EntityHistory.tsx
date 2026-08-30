@@ -82,7 +82,9 @@ function EventRow({ e }: { e: EntityHistoryEvent }) {
           <div className="mt-0.5 text-[12.5px] text-neutral-400 truncate">
             <span className="text-neutral-500">
               {e.direction === "in" ? "← " : ""}
-              {e.predicate_label}
+              <span className={e.predicate_label === null ? "italic text-neutral-600" : undefined}>
+                {e.predicate_label ?? S.graph.unknownPredicate}
+              </span>
               {e.direction === "in" ? "" : " →"}
             </span>{" "}
             <span className="text-neutral-200">{objectText(e)}</span>

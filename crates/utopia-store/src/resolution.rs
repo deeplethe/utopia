@@ -832,14 +832,16 @@ pub async fn entity_fact_lines(
     }
     let rows: Vec<Line> = sqlx::query_as(
         "SELECT CASE WHEN f.subject_id = $2 THEN 'out' ELSE 'in' END AS direction,
-                r.label AS predicate_label, o.canonical_name AS other_name,
+                COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
+                o.canonical_name AS other_name,
                 f.valid_from, f.valid_to
          FROM facts f
-         JOIN relation_types r ON r.id = f.predicate_id
+         LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o
            ON o.id = CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
            AND (f.subject_id = $2 OR f.object_id = $2)
+           AND COALESCE(r.label, fact_surface_predicate(f.id)) IS NOT NULL
          ORDER BY f.confidence DESC, f.recorded_at DESC
          LIMIT $3",
     )
@@ -1857,14 +1859,16 @@ pub async fn entities_for_type_resolution(
                 -- 回来的候选是 corporation、organization、business_entity_type——
                 -- 检索到的是画像自己，不是这个人是什么
                 ARRAY(
-                  SELECT DISTINCT rt.key || CASE WHEN f.subject_id = e.id THEN ' ' ELSE ' by ' END
+                  SELECT DISTINCT COALESCE(rt.key, fact_surface_predicate(f.id))
+                                  || CASE WHEN f.subject_id = e.id THEN ' ' ELSE ' by ' END
                                   || coalesce(oe.canonical_name, 'a value')
                   FROM facts f
-                  JOIN relation_types rt ON rt.id = f.predicate_id
+                  LEFT JOIN relation_types rt ON rt.id = f.predicate_id
                   LEFT JOIN entities oe ON oe.id = CASE WHEN f.subject_id = e.id
                                                        THEN f.object_id ELSE f.subject_id END
                   WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
                     AND (f.subject_id = e.id OR f.object_id = e.id)
+                    AND COALESCE(rt.key, fact_surface_predicate(f.id)) IS NOT NULL
                   LIMIT 12
                 ) AS roles,
                 ARRAY(

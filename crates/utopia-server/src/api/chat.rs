@@ -878,10 +878,13 @@ async fn run_query(state: &AppState, ds_id: Uuid, sql: &str) -> anyhow::Result<S
 
 fn fact_line(f: &EntityFact) -> String {
     let other = f.other_name.as_deref().unwrap_or("?");
+    // 本体没认下、原文说法也没留下时用 "?"——与 other 同一个约定。
+    // 不编一个"相关"出来：那正是 0052 删掉 related_to 要消灭的东西
+    let pred = f.predicate_label.as_deref().unwrap_or("?");
     let core = if f.direction == "out" {
-        format!("{} → {}", f.predicate_label, other)
+        format!("{pred} → {other}")
     } else {
-        format!("{} ← {}", f.predicate_label, other)
+        format!("{pred} ← {other}")
     };
     let range = match (&f.valid_from, &f.valid_to) {
         (Some(from), Some(to)) => {
@@ -967,7 +970,7 @@ fn change_line(c: &GraphChange) -> String {
         c.at.format("%Y-%m-%d"),
         c.kind,
         c.subject_name,
-        c.predicate_label,
+        c.predicate_label.as_deref().unwrap_or("?"),
         object,
         range,
         src
@@ -1104,7 +1107,7 @@ mod tests {
             kind: kind.to_string(),
             subject_id: Uuid::nil(),
             subject_name: "Acme".to_string(),
-            predicate_label: "founded in".to_string(),
+            predicate_label: Some("founded in".to_string()),
             object_name: None,
             object_value: None,
             valid_from: None,
@@ -1140,7 +1143,7 @@ mod tests {
     fn the_record_time_and_the_valid_range_do_not_read_as_one_date_run() {
         let mut c = change("corrected");
         c.object_name = Some("Berlin".to_string());
-        c.predicate_label = "headquartered in".to_string();
+        c.predicate_label = Some("headquartered in".to_string());
         c.valid_from = Some(t("2019-01-01T00:00:00Z"));
         let line = change_line(&c);
         assert!(line.starts_with("2026-08-28 corrected: "), "{line}");

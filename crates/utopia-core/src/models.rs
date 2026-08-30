@@ -157,7 +157,9 @@ pub struct ChunkFactView {
     pub fact_id: Uuid,
     pub subject_id: Uuid,
     pub subject: String,
-    pub predicate: String,
+    /// 本体没认下这条关系时回落到原文说法；两者都拿不出时为 None（0052 之前的老数据）
+    pub predicate: Option<String>,
+    pub inferred: bool,
     pub object_id: Option<Uuid>,
     pub object: Option<String>,
     pub valid_from: Option<DateTime<Utc>>,
@@ -468,8 +470,12 @@ pub struct GraphEdge {
     pub id: Uuid,
     pub source: Uuid,
     pub target: Uuid,
-    pub predicate: String,
-    pub label: String,
+    /// 本体里没有对应关系时回落到原文说法（迁移 0052）。
+    /// 两个来源都拿不出时为 None——那是 add_evidence 记录原文说法之前的老数据
+    pub predicate: Option<String>,
+    pub label: Option<String>,
+    /// true = 这条边的名字来自原文，不是本体认下的关系。界面要显示得看得出区别
+    pub inferred: bool,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confidence: f32,
@@ -481,9 +487,13 @@ pub struct EntityFact {
     pub id: Uuid,
     /// out = 该实体为主语；in = 为宾语
     pub direction: String,
-    pub predicate_key: String,
-    pub predicate_label: String,
-    pub temporal: String,
+    /// 本体没认下这条关系时回落到原文说法；两者都拿不出时为 None（0052 之前的老数据）
+    pub predicate_key: Option<String>,
+    pub predicate_label: Option<String>,
+    /// true = 这条事实的名字来自原文，不是本体认下的关系。界面要显示得看得出区别
+    pub inferred: bool,
+    /// 关系的时态类别（point/state/eternal）。没有谓词就无从谈起，为 None
+    pub temporal: Option<String>,
     pub other_id: Option<Uuid>,
     pub other_name: Option<String>,
     /// 字面值宾语（属性事实/问数映射）：{"value":…,"unit":…} 或 {"summary":…}
@@ -568,7 +578,7 @@ pub struct GraphChange {
     pub kind: String,
     pub subject_id: Uuid,
     pub subject_name: String,
-    pub predicate_label: String,
+    pub predicate_label: Option<String>,
     pub object_name: Option<String>,
     pub object_value: Option<serde_json::Value>,
     /// 这条断言说的是**世界轴**上的哪一段——与 `at` 正交，别读混
@@ -631,7 +641,7 @@ pub struct MergeLogView {
 pub struct FactReviewItem {
     pub id: Uuid,
     pub subject_name: String,
-    pub predicate_label: String,
+    pub predicate_label: Option<String>,
     pub object_name: Option<String>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,

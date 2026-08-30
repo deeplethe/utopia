@@ -140,7 +140,11 @@ function FactRow({
           {fact.subject_name}
         </span>
         <span className="text-xs text-neutral-500">
-          — {fact.predicate_label} →
+          —{" "}
+          <span className={fact.predicate_label === null ? "italic text-neutral-600" : undefined}>
+            {fact.predicate_label ?? S.graph.unknownPredicate}
+          </span>{" "}
+          →
         </span>
         <span className="text-sm font-medium text-white">
           {fact.object_name ?? "?"}
@@ -290,7 +294,11 @@ function UnconfirmedRow({
           {fact.subject_name}
         </span>
         <span className="text-xs text-neutral-500">
-          — {fact.predicate_label} →
+          —{" "}
+          <span className={fact.predicate_label === null ? "italic text-neutral-600" : undefined}>
+            {fact.predicate_label ?? S.graph.unknownPredicate}
+          </span>{" "}
+          →
         </span>
         <span className="text-sm font-medium text-white">
           {fact.object_name ?? "?"}
@@ -397,7 +405,7 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
   let text: string;
   if (e.action.startsWith("review.")) text = `${d.left} ≟ ${d.right}`;
   else if (e.action.startsWith("fact."))
-    text = `${d.subject} — ${d.predicate} → ${d.object ?? "?"}`;
+    text = `${d.subject} — ${d.predicate ?? "?"} → ${d.object ?? "?"}`;
   else if (e.action.startsWith("conflict."))
     text = `${d.old_subject} — ${d.predicate} → ${d.old_object ?? "?"} · vs · ${
       d.new_object ?? d.new_subject

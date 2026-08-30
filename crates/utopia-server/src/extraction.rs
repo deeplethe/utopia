@@ -6,7 +6,6 @@ use crate::llm_util;
 use crate::predicate_match::PredicateIndex;
 use crate::state::AppState;
 use std::collections::{HashMap, HashSet};
-use utopia_store::graph::FALLBACK_RELATION_KEY;
 use uuid::Uuid;
 
 const MIN_CONFIDENCE: f32 = 0.6;
@@ -178,11 +177,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;
     // 关系与属性分道：属性走字面值通道，不进关系清单。
     //
-    // related_to 刻意不列给模型：它在本体里是代码层的兜底，但摆进提示词就成了
-    // 逃生舱——模型读到说不清的关系时不会去写原文说法，直接挑这个万能选项，
-    // 而它什么都没说。实测 359 条 related_to 里只有 38 条是词表外降级，
-    // 其余 321 条是模型自己挑的。撤掉之后模型要么用真关系、要么写出原文说法，
-    // 兜底改由下面的代码执行，原词落进 fact_evidence.proposed_predicate 留待消解。
+    // **本体里没有对应关系时就没有谓词**（迁移 0052）。原词落进
+    // fact_evidence.proposed_predicate，显示时由 fact_surface_predicate() 取回。
+    //
+    // 从前这里是一个叫 related_to 的兜底关系，且刻意不列给模型——它摆进提示词就成了
+    // 逃生舱，模型读到说不清的关系时不去写原文说法，直接挑这个万能选项。
+    // 现在它连行都没有了，逃生舱和"记得别列它"这两件事一起消失。
     let type_key_by_id: HashMap<Uuid, &str> =
         etypes.iter().map(|t| (t.id, t.key.as_str())).collect();
     let attr_meta: HashMap<&str, &utopia_core::models::RelationType> = rtypes
@@ -259,7 +259,6 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         }
         false
     };
-    let related_rel = rel_ids.get(FALLBACK_RELATION_KEY).copied();
     // 本轮要从头讲一遍这篇文档的故事，旧信号先清掉（重抽自动作数）
     let _ = utopia_store::extraction_drops::clear_for_document(&state.pool, document_id).await;
 
@@ -550,7 +549,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     &state.pool,
                     doc.kb_id,
                     subject_id,
-                    attr.id,
+                    Some(attr.id),
                     &object_value,
                     validity,
                     confidence,
@@ -599,7 +598,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             //   value 有而 object 空 → 掉进下面的"宾语必填"，整条静默消失；
             //   object 里塞着字面值 → 按 concept 消解，凭空造出一个叫「2015」
             //     的实体，图里多一个假节点，事后再修还得改事实的形状。
-            // 现在都存成 object_value 挂在兜底谓词上：值在图里、有证据、有时态，
+            // 现在都存成 object_value 且没有谓词：值在图里、有证据、有时态，
             // 原词进 proposed_predicate，消解那一遍只需换谓词，形状已经是对的。
             //
             // object 里的东西算不算字面值，判据从严：**模型没把它声明成实体**，
@@ -634,19 +633,6 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     .await;
                     continue;
                 };
-                // 兜底谓词被删掉时就地报出来——跟关系那一档同理
-                let Some(fallback) = related_rel else {
-                    drop_signal(
-                        state,
-                        doc.kb_id,
-                        document_id,
-                        utopia_store::extraction_drops::reason::FALLBACK_RELATION_MISSING,
-                        &f.predicate,
-                        Some(subject_name),
-                    )
-                    .await;
-                    continue;
-                };
                 let _ = utopia_store::ontology::record_miss(
                     &state.pool,
                     doc.kb_id,
@@ -659,7 +645,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     &state.pool,
                     doc.kb_id,
                     subject_id,
-                    fallback,
+                    None,
                     &serde_json::json!({ "value": value }),
                     validity,
                     confidence,
@@ -732,7 +718,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             // 并记入未匹配统计。降级会把原意抹平成"有关联"——原词写进证据行的
             // proposed_predicate，是这条事实身上唯一还留着原意的地方（谓词消解据此映射回本体）
             let (predicate_id, swap) = match pred_index.lookup(f.predicate.as_str()) {
-                Some(hit) => hit,
+                Some((id, swap)) => (Some(id), swap),
                 None => {
                     let _ = utopia_store::ontology::record_miss(
                         &state.pool,
@@ -742,22 +728,11 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                         Some(&format!("{} → {}", f.subject, object_name)),
                     )
                     .await;
-                    match related_rel {
-                        Some(id) => (id, false),
-                        // 本体里连兜底关系都被删了 → 整条事实消失，这个必须说出来
-                        None => {
-                            drop_signal(
-                                state,
-                                doc.kb_id,
-                                document_id,
-                                utopia_store::extraction_drops::reason::FALLBACK_RELATION_MISSING,
-                                &f.predicate,
-                                Some(&format!("{} → {object_name}", f.subject)),
-                            )
-                            .await;
-                            continue;
-                        }
-                    }
+                    // 本体里没有对应的关系 → **就是没有谓词**（迁移 0052）。
+                    // 原意留在证据的 proposed_predicate 里，显示时取回。
+                    // 从前这里落到 related_to 上，还要额外担心"兜底关系被删了"——
+                    // 那条失败模式连同它的 continue 一起消失了
+                    (None, false)
                 }
             };
             // 被动说法命中的是同一条边的反向：`ChatGPT produced_by OpenAI` 与
@@ -797,7 +772,11 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 fact_count += 1;
                 // 时态对账：带唯一性约束的状态关系落新事实即检测矛盾（纯规则点查，
                 // 自动闭合走"作废+改写"，拿不准进 fact_conflicts 人裁）
-                if let Some((func, inv_func, temporal)) = rel_meta.get(&predicate_id) {
+                // 没有谓词就没有关系元数据，也就不参与时态对账——
+                // 一条说不出是什么关系的边，本来就不可能带唯一性约束
+                if let Some((pid, (func, inv_func, temporal))) =
+                    predicate_id.and_then(|id| rel_meta.get(&id).map(|m| (id, m)))
+                {
                     if temporal == "state" {
                         let mut directions = Vec::new();
                         if *func {
@@ -812,7 +791,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                                 doc.kb_id,
                                 fact_id,
                                 subject_id,
-                                predicate_id,
+                                pid,
                                 Some(object_id),
                                 None,
                                 dir,
@@ -984,7 +963,7 @@ fn build_lists(
     };
     let relations = rtypes
         .iter()
-        .filter(|r| r.kind != "attribute" && r.key != FALLBACK_RELATION_KEY)
+        .filter(|r| r.kind != "attribute")
         .filter(|r| picked_rel(&r.id))
         .map(|r| {
             let signature = if r.domains.is_empty() && r.ranges.is_empty() {

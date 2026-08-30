@@ -16,10 +16,6 @@ type FactSpanRow = (
     Option<chrono::DateTime<chrono::Utc>>,
 );
 
-/// 词表外谓词的代码层兜底：抽取器降级到它，谓词消解从它改写出去。
-/// 两边必须认同一个 key，所以定义在这里而不是各自的模块。
-pub const FALLBACK_RELATION_KEY: &str = "related_to";
-
 /// 采纳时旧事实的去向（`fact_adoptions.mode`）：新写一行取代它。
 const ADOPT_SUPERSEDED: &str = "superseded";
 /// 目标断言已存在 → 并进去。旧行被作废且没有后继，实体历史必须据此把它
@@ -289,7 +285,9 @@ pub async fn insert_fact(
     pool: &PgPool,
     kb_id: Uuid,
     subject_id: Uuid,
-    predicate_id: Uuid,
+    // None = 本体里没有对应的关系。原意不丢——它在证据的 proposed_predicate 里，
+    // 显示时由 fact_surface_predicate() 取回（迁移 0052）
+    predicate_id: Option<Uuid>,
     object_id: Uuid,
     validity: Validity<'_>,
     confidence: f32,
@@ -368,7 +366,9 @@ async fn insert_fact_inner(
     pool: &PgPool,
     kb_id: Uuid,
     subject_id: Uuid,
-    predicate_id: Uuid,
+    // None = 本体里没有对应的关系。原意不丢——它在证据的 proposed_predicate 里，
+    // 显示时由 fact_surface_predicate() 取回（迁移 0052）
+    predicate_id: Option<Uuid>,
     object: FactObject<'_>,
     validity: Validity<'_>,
     confidence: f32,
@@ -482,7 +482,9 @@ pub async fn insert_value_fact(
     pool: &PgPool,
     kb_id: Uuid,
     subject_id: Uuid,
-    predicate_id: Uuid,
+    // None = 本体里没有对应的关系。原意不丢——它在证据的 proposed_predicate 里，
+    // 显示时由 fact_surface_predicate() 取回（迁移 0052）
+    predicate_id: Option<Uuid>,
     object_value: &serde_json::Value,
     validity: Validity<'_>,
     confidence: f32,
@@ -602,9 +604,12 @@ async fn edges_among(
         return Ok(Vec::new());
     }
     let edges: Vec<GraphEdge> = sqlx::query_as(
-        "SELECT f.id, f.subject_id AS source, f.object_id AS target, r.key AS predicate,
-                r.label, f.valid_from, f.valid_to, f.confidence
-         FROM facts f JOIN relation_types r ON r.id = f.predicate_id
+        "SELECT f.id, f.subject_id AS source, f.object_id AS target,
+                COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate,
+                COALESCE(r.label, fact_surface_predicate(f.id)) AS label,
+                r.id IS NULL AS inferred,
+                f.valid_from, f.valid_to, f.confidence
+         FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
            AND f.subject_id = ANY($2) AND f.object_id = ANY($2)
            AND ($3::timestamptz IS NULL
@@ -705,7 +710,9 @@ pub async fn entity_detail(
     let facts: Vec<EntityFact> = sqlx::query_as(
         "SELECT f.id,
                 CASE WHEN f.subject_id = $2 THEN 'out' ELSE 'in' END AS direction,
-                r.key AS predicate_key, r.label AS predicate_label, r.temporal,
+                COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate_key,
+                COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
+                r.id IS NULL AS inferred, r.temporal,
                 CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END AS other_id,
                 o.canonical_name AS other_name, f.object_value,
                 f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision, f.confidence,
@@ -720,7 +727,7 @@ pub async fn entity_detail(
                  FROM fact_evidence fe JOIN documents d ON d.id = fe.document_id
                  WHERE fe.fact_id = f.id) AS last_evidence_time
          FROM facts f
-         JOIN relation_types r ON r.id = f.predicate_id
+         LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o
            ON o.id = CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
@@ -859,7 +866,7 @@ pub async fn low_confidence_facts(
     limit: i64,
 ) -> AppResult<Vec<FactReviewItem>> {
     let rows: Vec<FactReviewItem> = sqlx::query_as(
-        "SELECT f.id, s.canonical_name AS subject_name, r.label AS predicate_label,
+        "SELECT f.id, s.canonical_name AS subject_name, COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
                 COALESCE(o.canonical_name, f.object_value->>'summary') AS object_name,
                 f.valid_from, f.valid_to, f.confidence,
                 (SELECT count(*) FROM fact_evidence fe WHERE fe.fact_id = f.id) AS evidence_count,
@@ -867,7 +874,7 @@ pub async fn low_confidence_facts(
                  WHERE fe.fact_id = f.id AND fe.quote IS NOT NULL LIMIT 1) AS quote
          FROM facts f
          JOIN entities s ON s.id = f.subject_id
-         JOIN relation_types r ON r.id = f.predicate_id
+         LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o ON o.id = f.object_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.confidence < $2
          ORDER BY f.confidence, f.recorded_at DESC
@@ -886,7 +893,7 @@ pub async fn low_confidence_facts(
 /// 绝不自动删除（没再提 ≠ 不成立），删除/闭合权在 Review 的人手里。
 pub async fn stale_facts(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<FactReviewItem>> {
     let rows: Vec<FactReviewItem> = sqlx::query_as(
-        "SELECT f.id, s.canonical_name AS subject_name, r.label AS predicate_label,
+        "SELECT f.id, s.canonical_name AS subject_name, COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
                 COALESCE(o.canonical_name, f.object_value->>'summary') AS object_name,
                 f.valid_from, f.valid_to, f.confidence,
                 (SELECT count(*) FROM fact_evidence fe WHERE fe.fact_id = f.id) AS evidence_count,
@@ -894,7 +901,7 @@ pub async fn stale_facts(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Ve
                  WHERE fe.fact_id = f.id AND fe.quote IS NOT NULL LIMIT 1) AS quote
          FROM facts f
          JOIN entities s ON s.id = f.subject_id
-         JOIN relation_types r ON r.id = f.predicate_id
+         LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o ON o.id = f.object_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
            AND EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
@@ -967,7 +974,8 @@ pub async fn document_extractions(
     let rows: Vec<ChunkFactView> = sqlx::query_as(
         "SELECT fe.chunk_id, f.id AS fact_id,
                 f.subject_id, s.canonical_name AS subject,
-                r.label AS predicate,
+                COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate,
+                r.id IS NULL AS inferred,
                 f.object_id, o.canonical_name AS object,
                 f.valid_from, f.valid_to, f.confidence
          FROM fact_evidence fe
@@ -975,7 +983,7 @@ pub async fn document_extractions(
               AND c.superseded_at IS NULL
          JOIN facts f ON f.id = fe.fact_id AND f.invalidated_at IS NULL
          JOIN entities s ON s.id = f.subject_id
-         JOIN relation_types r ON r.id = f.predicate_id
+         LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o ON o.id = f.object_id
          ORDER BY c.seq, f.recorded_at",
     )
@@ -1108,14 +1116,14 @@ pub async fn entity_history(
         "{EVENTS}
          SELECT * FROM (
          SELECT ev.id AS fact_id, ev.at, ev.kind, ev.direction,
-                r.label AS predicate_label, o.canonical_name AS other_name,
+                COALESCE(r.label, fact_surface_predicate(ev.id)) AS predicate_label, o.canonical_name AS other_name,
                 ev.object_value, ev.valid_from, ev.valid_from_precision,
                 ev.valid_to, ev.valid_to_precision,
                 ev.confidence, act.actor_name, act.action,
                 src.document_id, src.filename, src.quote,
                 NULL::text AS from_type_label, NULL::text AS to_type_label
          FROM ev
-         JOIN relation_types r ON r.id = ev.predicate_id
+         LEFT JOIN relation_types r ON r.id = ev.predicate_id
          LEFT JOIN entities o ON o.id = ev.other_id
          LEFT JOIN LATERAL (
              SELECT u.display_name AS actor_name, a.action
@@ -1231,12 +1239,12 @@ pub async fn graph_changes(
         "{EVENTS}
          SELECT ev.id AS fact_id, ev.at, ev.kind,
                 ev.subject_id, s.canonical_name AS subject_name,
-                r.label AS predicate_label, o.canonical_name AS object_name,
+                COALESCE(r.label, fact_surface_predicate(ev.id)) AS predicate_label, o.canonical_name AS object_name,
                 ev.object_value, ev.valid_from, ev.valid_from_precision,
                 ev.valid_to, ev.valid_to_precision,
                 ev.confidence, src.document_id, src.filename, src.quote
          FROM ev
-         JOIN relation_types r ON r.id = ev.predicate_id
+         LEFT JOIN relation_types r ON r.id = ev.predicate_id
          JOIN entities s ON s.id = ev.subject_id
          LEFT JOIN entities o ON o.id = ev.object_id
          LEFT JOIN LATERAL (
@@ -1304,15 +1312,14 @@ pub async fn proposed_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Pr
                  JOIN entities s ON s.id = f2.subject_id
                  JOIN entities o ON o.id = f2.object_id
                  WHERE e2.proposed_predicate = fe.proposed_predicate
-                   AND f2.kb_id = $1 AND f2.predicate_id = rt.id AND f2.invalidated_at IS NULL
+                   AND f2.kb_id = $1 AND f2.predicate_id IS NULL AND f2.invalidated_at IS NULL
                  LIMIT 1) AS example
          FROM fact_evidence fe
          JOIN facts f ON f.id = fe.fact_id
-         JOIN relation_types rt ON rt.id = f.predicate_id
          JOIN spread sp ON sp.form = fe.proposed_predicate
-         WHERE f.kb_id = $1 AND rt.kb_id = $1 AND rt.key = $2
+         WHERE f.kb_id = $1 AND f.predicate_id IS NULL
            AND f.invalidated_at IS NULL AND fe.proposed_predicate IS NOT NULL
-           -- 字面值宾语的不算：它们也挂在兜底谓词上、也带表层谓词，但要的是
+           -- 字面值宾语的不算：它们同样没有谓词、也带原文说法，但要的是
            -- 一个属性而不是一个关系。混进来提案就会照着建关系，然后
            -- `founding_date` 变成一条指向「2015」的边——正是这条路要修掉的东西
            AND f.object_id IS NOT NULL
@@ -1320,11 +1327,10 @@ pub async fn proposed_predicates(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Pr
            AND NOT EXISTS (SELECT 1 FROM ontology_misses m
                            WHERE m.kb_id = $1 AND m.kind = 'relation_type'
                              AND m.key = fe.proposed_predicate AND m.dismissed_at IS NOT NULL)
-         GROUP BY fe.proposed_predicate, rt.id
+         GROUP BY fe.proposed_predicate
          ORDER BY fact_count DESC, form",
     )
     .bind(kb_id)
-    .bind(FALLBACK_RELATION_KEY)
     .fetch_all(pool)
     .await?)
 }
@@ -1422,21 +1428,19 @@ async fn adopt(
             sqlx::query_as(
                 "SELECT f.id, f.subject_id, f.object_id, f.object_value
                  FROM facts f
-                 JOIN relation_types rt ON rt.id = f.predicate_id
-                 WHERE f.kb_id = $1 AND rt.key = $2 AND f.invalidated_at IS NULL
+                 WHERE f.kb_id = $1 AND f.predicate_id IS NULL AND f.invalidated_at IS NULL
                    -- **只碰宾语是实体的。** 同一个说法可能既有指向实体的事实
                    -- 又有带字面值的（location 两种都用），后者归属性那条路：
                    -- 把它改挂到一条关系上，那个值就再也不是值了
                    AND f.object_id IS NOT NULL
                    AND EXISTS (SELECT 1 FROM fact_evidence e
-                               WHERE e.fact_id = f.id AND e.proposed_predicate = ANY($3))
+                               WHERE e.fact_id = f.id AND e.proposed_predicate = ANY($2))
                    AND NOT EXISTS (SELECT 1 FROM fact_evidence e
                                    WHERE e.fact_id = f.id AND e.proposed_predicate IS NOT NULL
-                                     AND NOT (e.proposed_predicate = ANY($3)))
+                                     AND NOT (e.proposed_predicate = ANY($2)))
                  ORDER BY f.recorded_at",
             )
             .bind(kb_id)
-            .bind(FALLBACK_RELATION_KEY)
             .bind(forms)
             .fetch_all(pool)
             .await?
@@ -1643,7 +1647,7 @@ pub async fn proposed_attributes(
                  FROM fact_evidence e2
                  JOIN facts f2 ON f2.id = e2.fact_id
                  WHERE e2.proposed_predicate = fe.proposed_predicate
-                   AND f2.kb_id = $1 AND f2.predicate_id = rt.id
+                   AND f2.kb_id = $1 AND f2.predicate_id IS NULL
                    AND f2.object_id IS NULL AND f2.invalidated_at IS NULL
                  LIMIT 1) AS example,
                 -- 主语实际是什么类：属性的 domain 从这里来，不靠猜
@@ -1653,24 +1657,22 @@ pub async fn proposed_attributes(
                       JOIN entities s ON s.id = f3.subject_id
                       JOIN entity_types t ON t.id = s.type_id
                       WHERE e3.proposed_predicate = fe.proposed_predicate
-                        AND f3.kb_id = $1 AND f3.predicate_id = rt.id
+                        AND f3.kb_id = $1 AND f3.predicate_id IS NULL
                         AND f3.object_id IS NULL AND f3.invalidated_at IS NULL) AS domain_keys
          FROM fact_evidence fe
          JOIN facts f ON f.id = fe.fact_id
-         JOIN relation_types rt ON rt.id = f.predicate_id
          JOIN spread sp ON sp.form = fe.proposed_predicate
-         WHERE f.kb_id = $1 AND rt.kb_id = $1 AND rt.key = $2
+         WHERE f.kb_id = $1 AND f.predicate_id IS NULL
            AND f.invalidated_at IS NULL AND fe.proposed_predicate IS NOT NULL
            AND f.object_id IS NULL
            -- 拒绝过的说法不再出现在候选里
            AND NOT EXISTS (SELECT 1 FROM ontology_misses m
                            WHERE m.kb_id = $1 AND m.kind = 'attribute_type'
                              AND m.key = fe.proposed_predicate AND m.dismissed_at IS NOT NULL)
-         GROUP BY fe.proposed_predicate, rt.id
+         GROUP BY fe.proposed_predicate
          ORDER BY fact_count DESC, form",
     )
     .bind(kb_id)
-    .bind(FALLBACK_RELATION_KEY)
     .fetch_all(pool)
     .await?)
 }
@@ -1692,14 +1694,12 @@ pub async fn value_facts_for_forms(
         "SELECT DISTINCT f.id, s.type_id, f.object_value
          FROM facts f
          JOIN entities s ON s.id = f.subject_id
-         JOIN relation_types rt ON rt.id = f.predicate_id
-         WHERE f.kb_id = $1 AND rt.key = $2 AND f.invalidated_at IS NULL
+         WHERE f.kb_id = $1 AND f.predicate_id IS NULL AND f.invalidated_at IS NULL
            AND f.object_id IS NULL AND f.object_value IS NOT NULL
            AND EXISTS (SELECT 1 FROM fact_evidence e
-                       WHERE e.fact_id = f.id AND e.proposed_predicate = ANY($3))",
+                       WHERE e.fact_id = f.id AND e.proposed_predicate = ANY($2))",
     )
     .bind(kb_id)
-    .bind(FALLBACK_RELATION_KEY)
     .bind(forms)
     .fetch_all(pool)
     .await?)
@@ -1709,7 +1709,7 @@ pub async fn value_facts_for_forms(
 ///
 /// 与 [`adopt_proposed_predicates`] 共用改写、批次与撤销——对图做的事是同一件，
 /// 只有"新宾语从哪来"不同：这里的值由调用方按属性的 datatype 归一化过，
-/// 换算不出来的那些根本不会传进来（它们继续挂在兜底谓词上等下一次）。
+/// 换算不出来的那些根本不会传进来（它们继续没有谓词，等下一次）。
 pub async fn adopt_value_facts(
     pool: &PgPool,
     kb_id: Uuid,

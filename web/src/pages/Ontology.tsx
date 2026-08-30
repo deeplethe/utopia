@@ -1388,7 +1388,7 @@ function MissesPanel({
     onError,
   });
   const approveRelation = useMutation({
-    // 带 forms 的提案走 adopt：建关系顺带把等着它的 related_to 事实改写过去。
+    // 带 forms 的提案走 adopt：建关系顺带把等着它的无谓词事实认过去。
     // 只建关系的话本体长大了、图没变好——那些事实会继续是"有关联"
     mutationFn: (p: {
       key: string;

@@ -137,7 +137,21 @@ export function DocViewer() {
                               >
                                 {f.subject}
                               </Link>
-                              <span className="text-neutral-600"> {f.predicate} </span>
+                              <span
+                                className={
+                                  f.predicate === null
+                                    ? "italic text-neutral-700"
+                                    : "text-neutral-600"
+                                }
+                                title={
+                                  f.predicate && f.inferred
+                                    ? S.graph.inferredPredicate
+                                    : undefined
+                                }
+                              >
+                                {" "}
+                                {f.predicate ?? S.graph.unknownPredicate}{" "}
+                              </span>
                               {f.object_id ? (
                                 <Link
                                   to="/graph"

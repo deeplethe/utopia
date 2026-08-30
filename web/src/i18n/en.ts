@@ -531,6 +531,8 @@ export const en = {
        「采购了」出来是 purchases——说"原文说的是 purchases"是假的。
        逐字原句就在旁边的证据引文里，没丢。 */
     proposedPredicate: (p: string) => `read from the text as “${p}”`,
+    inferredPredicate: "not a relation in the ontology, this is the source's wording",
+    unknownPredicate: "no relation stated",
     sectionRef: (filename: string, seq: number) =>
       `${filename} · section ${seq} →`,
     fromVersion: (v: number) => `v${v}`,
@@ -833,7 +835,7 @@ export const en = {
     /* 映射那一档的按钮。刻意不叫 Add——它不加东西，本体里已经有了。
        两个按钮都写 Add 的话，"已经有了"这件事在界面上就消失了 */
     mapOver: "Use existing",
-    /* 影响面：采纳一个提案会把多少条 related_to 事实改写过去。
+    /* 影响面：采纳一个提案会把多少条无谓词事实认过去。
        没有这一句，"Add" 只是凭空多一个空关系 */
     willRemap: (n: number) =>
       n === 1 ? "reclassifies 1 fact" : `reclassifies ${n} facts`,

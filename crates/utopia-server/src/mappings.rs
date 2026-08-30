@@ -156,7 +156,7 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
             &state.pool,
             kb_id,
             resolved.entity_id,
-            mapped_to,
+            Some(mapped_to),
             &definition,
             // 问数映射不带时间：两端都空
             utopia_store::graph::Validity::default(),

@@ -21,13 +21,13 @@ type ConflictSnapshot = (String, Option<String>, String, Option<String>, String)
 /// 一律在动作执行前取。
 async fn fact_snapshot(state: &AppState, kb_id: Uuid, fact_id: Uuid) -> Option<serde_json::Value> {
     // 宾语可能是实体或字面值；结构化字面值优先取 summary（与队列卡片同一显示口径）
-    let row: Option<(String, String, Option<String>, f32)> = sqlx::query_as(
-        "SELECT s.canonical_name, r.label,
+    let row: Option<(String, Option<String>, Option<String>, f32)> = sqlx::query_as(
+        "SELECT s.canonical_name, COALESCE(r.label, fact_surface_predicate(f.id)),
                 COALESCE(o.canonical_name, f.object_value ->> 'summary',
                          f.object_value #>> '{}'), f.confidence
          FROM facts f
          JOIN entities s ON s.id = f.subject_id
-         JOIN relation_types r ON r.id = f.predicate_id
+         LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o ON o.id = f.object_id
          WHERE f.id = $1 AND f.kb_id = $2",
     )

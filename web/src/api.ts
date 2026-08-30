@@ -238,7 +238,10 @@ export interface ChunkFact {
   fact_id: string;
   subject_id: string;
   subject: string;
-  predicate: string;
+  /** 本体没认下这条关系时是原文说法；两者都拿不出时为 null */
+  predicate: string | null;
+  /** true = 名字来自原文，不是本体认下的关系 */
+  inferred: boolean;
   object_id: string | null;
   object: string | null;
   valid_from: string | null;
@@ -270,7 +273,7 @@ export interface ReviewItem {
 export interface FactReviewItem {
   id: string;
   subject_name: string;
-  predicate_label: string;
+  predicate_label: string | null;
   object_name: string | null;
   valid_from: string | null;
   valid_to: string | null;
@@ -322,8 +325,11 @@ export interface GraphEdge {
   id: string;
   source: string;
   target: string;
-  predicate: string;
-  label: string;
+  /** 本体没认下这条关系时是原文说法；两者都拿不出时为 null（0052 之前的老数据） */
+  predicate: string | null;
+  label: string | null;
+  /** true = 这条边的名字来自原文，不是本体认下的关系 */
+  inferred: boolean;
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
@@ -332,9 +338,13 @@ export interface GraphEdge {
 export interface EntityFact {
   id: string;
   direction: "out" | "in";
-  predicate_key: string;
-  predicate_label: string;
-  temporal: string;
+  /** 同 GraphEdge：本体外的关系回落到原文说法，两者都没有时为 null */
+  predicate_key: string | null;
+  predicate_label: string | null;
+  /** true = 名字来自原文，不是本体认下的关系 */
+  inferred: boolean;
+  /** 关系的时态类别。没有谓词就无从谈起，为 null */
+  temporal: string | null;
   other_id: string | null;
   other_name: string | null;
   /** 字面值宾语（属性事实/问数映射）：{"value":…} 或 {"summary":…} */
@@ -392,7 +402,7 @@ export interface EntityHistoryEvent {
 }
 
 export interface Evidence {
-  /** 模型在这一块里实际用的谓词说法。词表外谓词降级成 related_to 后，原意只剩这里 */
+  /** 模型在这一块里实际用的谓词说法。本体外的谓词不落到关系上，界面显示的就是这里 */
   proposed_predicate: string | null;
   quote: string | null;
   chunk_id: string;
@@ -505,7 +515,7 @@ export interface OntologyProposals {
   }[];
 }
 
-/** 原文说过、本体没有、事实降级成了 related_to 的谓词。 */
+/** 原文说过、本体里没有、因而事实没有谓词的说法。 */
 export interface ProposedPredicate {
   form: string;
   fact_count: number;
@@ -1025,7 +1035,7 @@ export const api = {
         batches: string[];
       } | null;
     }>(`/api/v1/kbs/${kbId}/ontology/auto-extension`),
-  /** 建关系 **并**把等着它的 related_to 事实改写过去——后半句才是收益 */
+  /** 建关系 **并**把等着它的无谓词事实认过去——后半句才是收益 */
   adoptPredicate: (
     kbId: string,
     body: {

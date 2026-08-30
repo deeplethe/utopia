@@ -293,7 +293,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
     // 属性那一档：宾语是字面值的说法。
     //
     // domain 不从提案里读——它从这些事实的主语类型里取，见 adopt_attribute。
-    // 值换不动的那些不改写，继续挂在兜底谓词上等下一次
+    // 值换不动的那些不改写，继续没有谓词，等下一次
     let attrs = proposals
         .get("attribute_types")
         .and_then(|v| v.as_array())

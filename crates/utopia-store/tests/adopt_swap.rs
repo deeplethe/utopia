@@ -19,7 +19,7 @@ async fn adopting_a_passive_wording_flips_subject_and_object() -> anyhow::Result
     let pool = PgPool::connect(&url).await?;
     let (org, ws, kb) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let etype = Uuid::now_v7();
-    let (fallback, produces) = (Uuid::now_v7(), Uuid::now_v7());
+    let produces = Uuid::now_v7();
     let (openai, chatgpt) = (Uuid::now_v7(), Uuid::now_v7());
     let (doc, chunk, fact) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
 
@@ -46,14 +46,12 @@ async fn adopting_a_passive_wording_flips_subject_and_object() -> anyhow::Result
     .bind(kb)
     .execute(&pool)
     .await?;
-    for (id, key) in [(fallback, "related_to"), (produces, "produces")] {
-        sqlx::query("INSERT INTO relation_types (id, kb_id, key, label) VALUES ($1, $2, $3, $3)")
-            .bind(id)
-            .bind(kb)
-            .bind(key)
-            .execute(&pool)
-            .await?;
-    }
+    sqlx::query("INSERT INTO relation_types (id, kb_id, key, label) VALUES ($1, $2, $3, $3)")
+        .bind(produces)
+        .bind(kb)
+        .bind("produces")
+        .execute(&pool)
+        .await?;
     for (id, name) in [(openai, "OpenAI"), (chatgpt, "ChatGPT")] {
         sqlx::query(
             "INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES ($1,$2,$3,$4)",
@@ -76,15 +74,15 @@ async fn adopting_a_passive_wording_flips_subject_and_object() -> anyhow::Result
         .bind(doc)
         .execute(&pool)
         .await?;
-    // 原文说的是 "ChatGPT produced_by OpenAI"，降级落在兜底谓词上
+    // 原文说的是 "ChatGPT produced_by OpenAI"，本体里没有这个关系，
+    // 于是这条事实**没有谓词**——0052 之后兜底谓词不存在了
     sqlx::query(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id)
-         VALUES ($1, $2, $3, $4, $5)",
+         VALUES ($1, $2, $3, NULL, $4)",
     )
     .bind(fact)
     .bind(kb)
     .bind(chatgpt)
-    .bind(fallback)
     .bind(openai)
     .execute(&pool)
     .await?;

@@ -239,7 +239,7 @@ async fn ledger_events_are_derived_as_specified() -> anyhow::Result<()> {
     // 6. 主宾与谓词都拼了出来，不是一堆 uuid
     let sample = all.iter().find(|c| c.kind == "corrected").unwrap();
     assert_eq!(sample.subject_name, "Acme");
-    assert_eq!(sample.predicate_label, "located in");
+    assert_eq!(sample.predicate_label.as_deref(), Some("located in"));
     assert_eq!(sample.object_name.as_deref(), Some("Berlin"));
 
     // 拆台：facts/entities/… 全是 ON DELETE CASCADE

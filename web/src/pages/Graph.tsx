@@ -40,6 +40,8 @@ const NODE_CORE_MIX = 0.5; // 核心向类型色的混入比例
 const RING_SELECTED = "#E7C57C"; // 选中金环
 const RING_HOVERED = "#8FE7FF"; // 悬停冰青环
 const EDGE_COLOR = "rgba(163,163,163,0.2)"; // 纯灰（应用户要求，不用钢蓝）
+// 本体没认下的关系：同色更淡。名字来自原文，不该跟词表里的关系看着一样重
+const EDGE_COLOR_INFERRED = "rgba(163,163,163,0.1)";
 // 注意：sigma 边着色器在预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，
 // alpha 无法压暗边——暗度必须编码进 RGB（不透明近背景色）
 const EDGE_DIM = "#141414";
@@ -417,9 +419,9 @@ export function Graph() {
     for (const e of data.data.edges) {
       if (g.hasNode(e.source) && g.hasNode(e.target)) {
         g.addEdgeWithKey(e.id, e.source, e.target, {
-          label: e.label.toUpperCase(),
+          label: e.label?.toUpperCase() ?? "",
           size: 1,
-          color: EDGE_COLOR,
+          color: e.inferred ? EDGE_COLOR_INFERRED : EDGE_COLOR,
           type: "line",
         });
       }
@@ -1256,18 +1258,27 @@ function EntityPanel({
     );
     const map = new Map<
       string,
-      { key: string; label: string; direction: string; rows: EntityFact[] }
+      { key: string; label: string | null; inferred: boolean; direction: string; rows: EntityFact[] }
     >();
     for (const f of current) {
-      const k = `${f.direction}:${f.predicate_key}`;
+      // 谓词为空的事实归到同一组：它们的共同点就是「说不出是什么关系」
+      const k = `${f.direction}:${f.predicate_key ?? ""}`;
       if (!map.has(k))
-        map.set(k, { key: k, label: f.predicate_label, direction: f.direction, rows: [] });
+        map.set(k, {
+          key: k,
+          label: f.predicate_label,
+          inferred: f.inferred,
+          direction: f.direction,
+          rows: [],
+        });
       map.get(k)!.rows.push(f);
     }
     const arr = [...map.values()];
     for (const gr of arr)
       gr.rows.sort((a, b) => ((a.valid_from ?? "9999") < (b.valid_from ?? "9999") ? -1 : 1));
-    arr.sort((a, b) => b.rows.length - a.rows.length || a.label.localeCompare(b.label));
+    arr.sort(
+      (a, b) => b.rows.length - a.rows.length || (a.label ?? "").localeCompare(b.label ?? ""),
+    );
     return { groups: arr, historicalCount: all.length - current.length };
   }, [detail.data]);
 
@@ -1439,7 +1450,12 @@ function EntityPanel({
             <div key={gr.key} className="mb-3 last:mb-1">
               <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
                 {gr.direction === "in" ? <ArrowLeft size={10} /> : <ArrowRight size={10} />}
-                {gr.label}
+                <span
+                  className={gr.label === null ? "italic text-neutral-600" : undefined}
+                  title={gr.label && gr.inferred ? S.graph.inferredPredicate : undefined}
+                >
+                  {gr.label ?? S.graph.unknownPredicate}
+                </span>
                 {gr.rows.length > 1 && <span className="text-neutral-600">{gr.rows.length}</span>}
               </div>
               <div>
@@ -1575,7 +1591,13 @@ function TimelineRow({
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[13px] text-neutral-200">
           <span className="text-neutral-500 text-xs">
-            {fact.direction === "in" ? "←" : "→"} {fact.predicate_label}
+            {fact.direction === "in" ? "←" : "→"}{" "}
+            <span
+              className={fact.predicate_label === null ? "italic text-neutral-600" : undefined}
+              title={fact.predicate_label && fact.inferred ? S.graph.inferredPredicate : undefined}
+            >
+              {fact.predicate_label ?? S.graph.unknownPredicate}
+            </span>
           </span>
           {fact.other_id ? (
             <span
@@ -1710,8 +1732,9 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
           search={{ chunk: ev.chunk_id }}
           className="block text-xs text-neutral-500 hover:text-neutral-300"
         >
-          {/* 原文说的谓词，只在它与本体谓词不同时显示——词表外的词被降级成
-              "related to" 后，事实行上只剩"有关联"，原意仅存于此。相同则是噪声 */}
+          {/* 原文说的谓词，只在它与事实行上显示的不同时才写出来。本体外的谓词
+              事实行上已经显示原文说法（0052），相同的话再写一遍是噪声；
+              一条事实有多种说法时（占 3%）这里才有话说 */}
           {ev.proposed_predicate && ev.proposed_predicate !== fact.predicate_key && (
             <div className="mb-0.5 text-[11px] text-neutral-400">
               {S.graph.proposedPredicate(ev.proposed_predicate)}

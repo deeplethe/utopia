@@ -473,7 +473,7 @@ const CANDIDATES_PER_PROBE: i64 = 5;
 ///
 /// 实测后果（ai-timeline，348 块）：交给模型 526 个说法，其中 456 个只在一篇
 /// 里出现过——**86.7% 是噪声**。模型从这堆里只挑出 9 个，`runs_on`（8 篇都有）
-/// 和 `founded_by`（4 篇）没被挑中，275 条事实继续压在兜底谓词上。反方向也漏：
+/// 和 `founded_by`（4 篇）没被挑中，275 条事实继续没有谓词。反方向也漏：
 /// 5 个单篇说法被采纳了，其中两个还建成了新属性，门槛形同虚设。
 pub async fn build_proposals(
     state: &AppState,
@@ -502,7 +502,7 @@ pub async fn build_proposals(
         // **三份清单都要滤，滤一份等于没滤。** 同一个说法在提示词里出现两次：
         // miss 行（"seen N times"）和表层谓词行（"on N fact(s)"）。
         // `OntologyMiss` 没有文档维度，所以按活下来的说法集合筛——留下的是
-        // 那些既跨了篇、又还压在兜底谓词上的。类那一路不动：`ProposedType`
+        // 那些既跨了篇、又还没有谓词的。类那一路不动：`ProposedType`
         // 同样没有 doc_count，硬滤等于按另一个判据拦，而不是按这个
         let kept: std::collections::HashSet<&str> = forms.iter().map(|f| f.form.as_str()).collect();
         misses.retain(|m| m.kind != "relation_type" || kept.contains(m.key.as_str()));
@@ -1179,7 +1179,7 @@ fn lang_name(code: &str) -> &'static str {
 ///    这些事实的主语现在是什么类是事实不是判断，直接读。
 /// 2. **值要按 datatype 换算。** 库里存的是抽取当时的原样（字符串 "2015"），
 ///    落到一个 date 属性上得先变成日期。
-/// 3. **换不出来的不改写。** 宁可让它继续挂在兜底谓词上等下一次，也不把
+/// 3. **换不出来的不改写。** 宁可让它继续没有谓词，等下一次，也不把
 ///    一个换不动的值硬塞进类型化的属性里——那是"宁缺勿脏"的同一条。
 async fn adopt_attribute(
     state: &AppState,
@@ -1293,7 +1293,7 @@ pub(crate) async fn adopt_attribute_core(
         let raw = object_value.get("value").unwrap_or(object_value);
         match utopia_extract::normalize_attr_value(&datatype, raw) {
             Some(v) => rewrites.push((*fact_id, json!({ "value": v }))),
-            // 换不动的**不改写**：宁可让它继续挂在兜底谓词上等下一次，
+            // 换不动的**不改写**：宁可让它继续没有谓词，等下一次，
             // 也不把一个换不动的值硬塞进类型化的属性里
             None => unconvertible += 1,
         }
@@ -1366,7 +1366,7 @@ pub(crate) async fn adopt_attribute_auto(
     if done.unconvertible > 0 {
         tracing::info!(
             %kb_id, key, dropped = done.unconvertible,
-            "有值换不动这个 datatype，那些事实留在兜底谓词上"
+            "有值换不动这个 datatype，那些事实继续没有谓词"
         );
     }
     Ok((done.batch_id, done.remapped))
