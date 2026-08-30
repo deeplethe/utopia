@@ -1973,7 +1973,14 @@ pub async fn retype_entities(
     let batch_id = Uuid::now_v7();
     let mut moved = 0u32;
     let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 一个实体在一批里只改一次。账本主键是 (batch_id, entity_id)，同一个 id
+    // 来两次会撞——而调用方拿到的是 500,整批一个都没落。这里挡住比在那边
+    // 追每一条产生 picks 的路子可靠:重复的第二条本来也没有意义
+    let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
     for (entity_id, type_id) in picks {
+        if !seen.insert(*entity_id) {
+            continue;
+        }
         let mut tx = pool.begin().await?;
         // 已经在目标类上的不算改动，也不进账本——撤销时不该把它们推回去。
         //

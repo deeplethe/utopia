@@ -948,6 +948,20 @@ pub async fn set_type_embeddings(
 }
 
 /// 与给定向量最近的 k 个实体类型。
+///
+/// **既没有描述、又不在分类树上的类不参加。** 导入一份词表时，凡被
+/// domainIncludes / rangeIncludes / equivalentClass 引用到的外部 IRI 都会建成一行
+/// （OMG、UNECE、GS1…），它们没有标签正文、没有父也没有子——不是词汇，是悬空引用。
+///
+/// 它们偏偏很能赢：`embed_text` 在描述为空时退化成只嵌标签，于是这一行嵌的
+/// 就是 "Location" 一个词。短的那一侧距离系统性地更小（同一条规律在这个文件
+/// 和类型消解里已经栽过三次），于是一个空壳压过了带 83 字定义的
+/// `administrative_area`——实测 `杭州拱墅区` 正是这么丢的。
+///
+/// 而且就算端上去也判不了：裁决看到的是 `- location (location)`，没有定义可依。
+/// 装 schema.org 的库里这样的行有 50 个，43 个连一条继承边都没有。
+///
+/// **只是不当候选，不删行**：domain / range 仍然指着它们，删了会断引用。
 pub async fn nearest_entity_types(
     pool: &PgPool,
     kb_id: Uuid,
@@ -956,8 +970,11 @@ pub async fn nearest_entity_types(
 ) -> AppResult<Vec<TypeCandidate>> {
     let rows: Vec<(Uuid, String, String, String, f64)> = sqlx::query_as(
         "SELECT id, key, label, coalesce(description, ''), (embedding <=> $2)::float8
-         FROM entity_types
-         WHERE kb_id = $1 AND embedding IS NOT NULL
+         FROM entity_types t
+         WHERE t.kb_id = $1 AND t.embedding IS NOT NULL
+           AND (coalesce(btrim(t.description), '') <> ''
+                OR EXISTS (SELECT 1 FROM entity_type_parents p
+                           WHERE p.child_id = t.id OR p.parent_id = t.id))
          ORDER BY embedding <=> $2
          LIMIT $3",
     )

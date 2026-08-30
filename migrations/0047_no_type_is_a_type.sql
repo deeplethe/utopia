@@ -28,6 +28,22 @@ DELETE FROM entity_type_parents
 WHERE parent_id IN (SELECT id FROM entity_types WHERE builtin)
    OR child_id  IN (SELECT id FROM entity_types WHERE builtin);
 
+
+-- 合并回滚快照同样要松手。`entity_merges.target_type_before` 记的是"合并时目标
+-- 实体原本是什么类"，而它对 entity_types 的外键是 NO ACTION——**不置空就删不掉类**，
+-- 迁移会在这里整条回滚。
+--
+-- 空库测不出来：没有合并历史就没有这一行。这条是在一个真有合并记录的库上撞出来的。
+--
+-- 置空而不是保留：这一列的原意是「concept 目标被具体类型升格」的回滚快照（见 0006），
+-- 而升格的起点在 0009 之后就是「没有类」。撤销这类合并本来就该还原成没有类。
+UPDATE entity_merges SET target_type_before = NULL
+WHERE target_type_before IN (SELECT id FROM entity_types WHERE builtin);
+
+-- 其余指向 entity_types 的外键都是 ON DELETE CASCADE，下面那条 DELETE 会顺手带走：
+-- entity_retypes 里起点或终点是内置类的改类记录、type_refinement_pairs 里涉及
+-- 内置类的认可配对。**都该走**——它们引用的类不存在了，留着也撤不回去。
+-- 写在这里是因为级联删除不会有任何提示，而这是一张账本表。
 DELETE FROM entity_types WHERE builtin;
 
 -- 唯一索引里 type_id 现在可能是 NULL，而 Postgres 里 NULL <> NULL——

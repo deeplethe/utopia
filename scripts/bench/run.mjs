@@ -30,19 +30,12 @@ const PASSWORD = process.env.BENCH_PASSWORD || "benchbench123";
 // 抽取提示词的真实 token 数拿不到——它在 LLM 客户端里，穿出来要改一路签名。
 // 本体段字符数与它稳定成比例，而这里要量的正是"本体规模"，够用且不动客户端。
 const CHARS_PER_TOKEN = 4.0;
-
-// 种子本体的类。判断"本不该改的有没有被改"要用它：留在种子类上就是没动。
-const SEED = [
-  "concept",
-  "dimension",
-  "event",
-  "location",
-  "metric",
-  "organization",
-  "person",
-  "product",
-  "project",
-];
+// 「没动过」的样子。0009 删掉内置类之后，本体装不下的实体就停在 `type_id IS NULL`，
+// 取数时写成 `-`——**它才是判断"本不该改的有没有被改"的基准**。
+//
+// 从前这里是九个内置类名（concept/person/organization…）。那套种子已经不存在，
+// 留着它会让每一个未分类实体都被判成"被改动过"，wronglyChanged 直接虚高。
+const UNTOUCHED = "-";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -273,9 +266,13 @@ async function main() {
   const resolveMs = Date.now() - t2;
 
   // 打分。**待人工的按"没改"算**——它确实还没改，算成命中就是把人的活记在机器账上。
+  //
+  // **LEFT JOIN，且没有类时写 `-`**（0009）。内连接会让未分类实体整个不出现，
+  // 于是它们被算进 absent——"抽取压根没抽出来"——而实际是抽出来了、只是没定类。
+  // 两种失败的修法完全不同，混在一栏里这张表就白做了。
   const rows = psql(
-    "SELECT e.canonical_name || '|' || t.key FROM entities e" +
-      " JOIN entity_types t ON t.id=e.type_id" +
+    "SELECT e.canonical_name || '|' || coalesce(t.key, '-') FROM entities e" +
+      " LEFT JOIN entity_types t ON t.id=e.type_id" +
       " WHERE e.kb_id='" +
       kb +
       "' AND e.merged_into IS NULL",
@@ -304,7 +301,7 @@ async function main() {
     const keys = found.map((r) => r[1]);
     if (accept.length === 0) {
       // 本体里没有对得上的类：正确行为是**不动**，动了才算错
-      if (keys.some((k) => !SEED.includes(k))) {
+      if (keys.some((k) => k !== UNTOUCHED)) {
         wronglyChanged += 1;
         notes.push(frag + "：本不该改，却成了 " + keys.join("/"));
       } else correctlyLeft += 1;

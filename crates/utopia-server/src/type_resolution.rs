@@ -286,7 +286,15 @@ fn profile_of(s: &utopia_store::resolution::TypeCandidateSubject) -> String {
 /// 一条裁决结果。
 #[derive(Debug, serde::Deserialize)]
 struct Verdict {
-    /// 实体名，用来对回 preview 里的那一条
+    /// 提示词里那条的编号——**对回 preview 的钥匙**。
+    ///
+    /// 从前是靠 `name`。0009 之后同名的未分类实体可以并存（NULL ≠ NULL，见该篇
+    /// 的唯一索引一节），实测一个库里 4 个「张伟」：按名字对回来会把它们塌成
+    /// 同一条，同一个 entity_id 被推进 picks 四次,落库时撞 (batch_id, entity_id)
+    /// 主键；而另外三个永远不会被定类——它们对这条路根本不可见
+    #[serde(default)]
+    id: Option<usize>,
+    /// 实体名。模型漏给 id 时的退路,且名字不重复时它足够
     name: String,
     /// 选中的类 key；判不出来时为空
     #[serde(default)]
@@ -389,17 +397,20 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
     let parsed: VerdictReply =
         serde_json::from_str(&block).map_err(|e| AppError::Other(e.into()))?;
 
-    // 名字对回实体，同时把每个实体允许的 key 收起来——模型偶尔会答一个
-    // 候选之外的 key（本体里可能根本没有），那种不该落库
-    let by_name: std::collections::HashMap<&str, &TypeSuggestion> =
-        items.iter().map(|i| (i.name.as_str(), i)).collect();
+    // 名字 → 下标**列表**，不是单条。同名的未分类实体可以并存（0009），
+    // 塌成一条会让其中几个永远拿不到裁决。裁决优先按 id 对回来，
+    // 名字只是模型漏给 id 时的退路
+    let mut by_name: std::collections::HashMap<&str, Vec<usize>> = std::collections::HashMap::new();
+    for (i, it) in items.iter().enumerate() {
+        by_name.entry(it.name.as_str()).or_default().push(i);
+    }
     // 人认可过的配对：同一对不再进人工。跨轴是类与类之间的事，
     // 实体只是碰巧撞上它——第二个城市不该再问一遍
     let approved = utopia_store::resolution::approved_refinements(&state.pool, kb_id).await?;
     let mut picks: Vec<(Uuid, Uuid)> = Vec::new();
     let mut for_review: Vec<ReviewItem> = Vec::new();
     let mut left_alone: Vec<DeclineNote> = Vec::new();
-    let mut decided: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut decided: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let decline = |item: &TypeSuggestion, reason: Option<String>| DeclineNote {
         name: item.name.clone(),
         coarse: item.coarse.clone(),
@@ -408,10 +419,20 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
         top_candidate: item.candidates.first().map(|c| c.key.clone()),
     };
     for v in &parsed.verdicts {
-        let Some(item) = by_name.get(v.name.as_str()) else {
+        // id 优先；漏给时退回名字，取该名字下**还没裁决过的**第一条。
+        // 越界的 id 当没给——模型偶尔会编一个
+        let idx = v.id.filter(|i| *i < items.len()).or_else(|| {
+            by_name
+                .get(v.name.as_str())
+                .and_then(|ids| ids.iter().find(|i| !decided.contains(i)).copied())
+        });
+        let Some(idx) = idx else { continue };
+        // 同一条只认第一份裁决。模型重复作答时，第二份会把同一个 entity_id
+        // 再推进 picks 一次，落库撞主键
+        if !decided.insert(idx) {
             continue;
-        };
-        decided.insert(item.name.as_str());
+        }
+        let item = &items[idx];
         // **字符串 "null" 也是 null。** 模型时而给 JSON null、时而给这四个字母，
         // 而当成 key 去查候选必然查不到，于是这条被记成"选了个候选之外的 key"——
         // 一条编造的拒绝理由盖掉了模型真正给的那条。拒绝的理由是这一步最要紧的
@@ -469,8 +490,8 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
         }
     }
     // 裁决压根没提到的实体也算"没动"，否则三档加起来对不上总数
-    for item in &items {
-        if !decided.contains(item.name.as_str()) {
+    for (i, item) in items.iter().enumerate() {
+        if !decided.contains(&i) {
             left_alone.push(decline(item, None));
         }
     }
@@ -497,7 +518,9 @@ pub async fn resolve(state: &AppState, kb_id: Uuid) -> AppResult<ResolutionOutco
 /// 自信的错误，而且它们不进时间轴、不容易被看见。
 fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
     let mut blocks = Vec::new();
-    for it in items {
+    // **编号是钥匙,名字不是**（0009）。同名的未分类实体可以并存,一个库里
+    // 实测有 4 个「张伟」——按名字对回来会把它们塌成同一条
+    for (i, it) in items.iter().enumerate() {
         // 现类连描述一起给：要判"现在这个类对不对"，光看 key 不够——
         // 导入本体的 key 常常自解释不了（`entry_point` 是什么？）
         //
@@ -509,7 +532,8 @@ fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
             (None, _) => "not yet typed".into(),
         };
         let mut lines = vec![format!(
-            "### {}\ncurrently: {}\nthe extractor called it: {}\nseen as: {}",
+            "### [{}] {}\ncurrently: {}\nthe extractor called it: {}\nseen as: {}",
+            i,
             it.name,
             current,
             it.specific_type.as_deref().unwrap_or("-"),
@@ -573,8 +597,13 @@ fn adjudication_prompt(items: &[TypeSuggestion]) -> String {
          \n\
          {}\n\
          \n\
+         id is the number in the heading, and it is what identifies the verdict — not the \
+         name. Two entries can carry the same name and still be different things (two people \
+         called Zhang Wei, each with their own facts); judge each one on its own block and \
+         give one verdict per id you answer. Never merge two ids into one verdict.\n\
+         \n\
          Output exactly one JSON object:\n\
-         {{\"verdicts\":[{{\"name\":\"entity name exactly as given\",\"choice\":\"candidate key or null\",\"confidence\":0.0,\"reason\":\"one short clause\"}}]}}",
+         {{\"verdicts\":[{{\"id\":0,\"name\":\"entity name exactly as given\",\"choice\":\"candidate key or null\",\"confidence\":0.0,\"reason\":\"one short clause\"}}]}}",
         blocks.join("\n\n")
     )
 }
