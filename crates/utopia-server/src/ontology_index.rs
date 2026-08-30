@@ -20,7 +20,6 @@ use uuid::Uuid;
 /// 翻四倍、每个都付约 2.5 秒固定开销，整体吞吐反而掉了一半。
 ///
 /// 换批大小之前先拿**真实的 `embedded_text`** 去量，别拿造出来的短句。
-
 const BATCH: usize = 64;
 /// 同时在飞的嵌入批数上限。
 ///
@@ -79,7 +78,6 @@ pub async fn refresh_scoped(
     let batches: Vec<Vec<TypeToEmbed>> = stale.chunks(BATCH).map(<[_]>::to_vec).collect();
     let mut jobs = stream::iter(batches.into_iter().map(|batch| {
         let (client, model, settings) = (client.clone(), model.clone(), settings.clone());
-        let state = state;
         async move {
             let texts: Vec<String> = batch.iter().map(|t| t.text.clone()).collect();
             let _permit = llm_util::acquire_embed(state, &settings).await;
