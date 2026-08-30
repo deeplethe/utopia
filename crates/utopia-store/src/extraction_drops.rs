@@ -26,8 +26,10 @@ pub mod reason {
     pub const LOW_CONFIDENCE: &str = "low_confidence";
     /// 关系事实缺宾语
     pub const OBJECT_MISSING: &str = "object_missing";
-    /// 词表外谓词本该降级，但本体里连兜底关系都没有 → 整条消失
-    pub const FALLBACK_RELATION_MISSING: &str = "fallback_relation_missing";
+    /// 模型给的这一条不合结构（缺 predicate 之类）→ 只跳这一条，不牵连整块
+    pub const MALFORMED_ITEM: &str = "malformed_item";
+    /// 模型输出被截断（撞上 max_tokens）→ 已完整的那些留下，尾巴丢掉
+    pub const TRUNCATED_REPLY: &str = "truncated_reply";
 }
 
 pub async fn record(

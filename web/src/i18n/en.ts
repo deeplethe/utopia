@@ -324,7 +324,8 @@ export const en = {
       attr_datatype: "Value did not match the datatype",
       low_confidence: "Below the confidence threshold",
       object_missing: "Relation had no object",
-      fallback_relation_missing: "No fallback relation in the ontology",
+      malformed_item: "The model's item did not fit the schema",
+      truncated_reply: "The model's reply was cut off",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",

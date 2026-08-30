@@ -11,6 +11,15 @@ pub struct Extraction {
     pub entities: Vec<ExtractedEntity>,
     #[serde(default)]
     pub facts: Vec<ExtractedFact>,
+    /// 逐项解析时被跳过的条目数。**必须报给调用方**——不报就是一次静默丢弃，
+    /// 与 #108「部分抽取报告成完成」同一类错
+    #[serde(skip)]
+    pub skipped_entities: usize,
+    #[serde(skip)]
+    pub skipped_facts: usize,
+    /// 模型的输出被截断，这里是修补后解析的
+    #[serde(skip)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -296,11 +305,116 @@ pub fn json_block(raw: &str) -> anyhow::Result<String> {
     }
 }
 
+/// 把 head 后面缺的括号补上。字符串字面量里的括号不算——`"a[b"` 不是一个开括号。
+///
+/// 返回 None = 结构本身就不对（比如括号已经多了），不是"没写完"。
+fn close_brackets(head: &str) -> Option<String> {
+    let mut stack: Vec<char> = Vec::new();
+    let (mut in_str, mut esc) = (false, false);
+    for c in head.chars() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '[' | '{' => stack.push(c),
+            // 不写成两条带守卫的分支：那样 stack.pop() 的副作用藏在守卫里，
+            // 碰巧是对的，但读的人不会预期守卫会改状态
+            ']' | '}' => {
+                let want = if c == ']' { '[' } else { '{' };
+                if stack.pop() != Some(want) {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    if in_str {
+        return None; // 断在字符串中间，这一截不可用
+    }
+    let mut out = String::from(head);
+    for c in stack.iter().rev() {
+        out.push(if *c == '[' { ']' } else { '}' });
+    }
+    Some(out)
+}
+
+/// 输出被截断时，退到**最后一个完整对象**的结尾再把括号补齐。
+///
+/// 模型写到一半没了（撞上 max_tokens）时，前面那些对象是完整且正确的。
+/// 整块作废等于把已经抽对的十几条事实一起扔掉——实测 246 次调用里 4 次是这种。
+fn repair_truncated(json: &str) -> Option<String> {
+    let mut cut = json.len();
+    for _ in 0..64 {
+        let idx = json[..cut].rfind('}')?;
+        if let Some(closed) = close_brackets(&json[..=idx]) {
+            if serde_json::from_str::<serde_json::Value>(&closed).is_ok() {
+                return Some(closed);
+            }
+        }
+        cut = idx;
+    }
+    None
+}
+
+/// **一条坏记录不该毁掉一整块。**
+///
+/// 从前这里是 `serde_json::from_str::<Extraction>`——全有或全无。一个缺 `predicate`
+/// 的对象、或者一次输出截断，整块的实体和事实一起作废，而一块里常有二十条好事实。
+/// 实测 246 次调用里 5 次这样丢掉（2%），并且会让整个 `extract_document` 任务失败、
+/// 走重试，三次之后文档标记失败。
+///
+/// 现在：先解成 `Value`（截断就先补齐括号），再逐项 `from_value`，好的收下、
+/// 坏的计数。**计数必须往外传**——静默跳过就是另一种"报告成完成"。
 pub fn parse_response(raw: &str) -> anyhow::Result<Extraction> {
     let json_str = json_block(raw)?;
-    let extraction: Extraction = serde_json::from_str(&json_str)
-        .map_err(|e| anyhow::anyhow!("Failed to parse extraction JSON: {e}"))?;
-    Ok(extraction)
+    let (value, truncated) = match serde_json::from_str::<serde_json::Value>(&json_str) {
+        Ok(v) => (v, false),
+        Err(e) => match repair_truncated(&json_str) {
+            Some(fixed) => (
+                serde_json::from_str::<serde_json::Value>(&fixed)
+                    .map_err(|e| anyhow::anyhow!("Failed to parse extraction JSON: {e}"))?,
+                true,
+            ),
+            // 补不回来才是真解析失败：连一个完整对象都没有
+            None => anyhow::bail!("Failed to parse extraction JSON: {e}"),
+        },
+    };
+
+    fn take<T: serde::de::DeserializeOwned>(
+        value: &serde_json::Value,
+        key: &str,
+    ) -> (Vec<T>, usize) {
+        let Some(arr) = value.get(key).and_then(|v| v.as_array()) else {
+            return (Vec::new(), 0);
+        };
+        let mut out = Vec::with_capacity(arr.len());
+        let mut skipped = 0;
+        for item in arr {
+            match serde_json::from_value::<T>(item.clone()) {
+                Ok(v) => out.push(v),
+                Err(_) => skipped += 1,
+            }
+        }
+        (out, skipped)
+    }
+
+    let (entities, skipped_entities) = take::<ExtractedEntity>(&value, "entities");
+    let (facts, skipped_facts) = take::<ExtractedFact>(&value, "facts");
+    Ok(Extraction {
+        entities,
+        facts,
+        skipped_entities,
+        skipped_facts,
+        truncated,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -627,6 +741,62 @@ mod tests {
             Some(json!("CTO"))
         );
         assert_eq!(normalize_attr_value("text", &json!([1])), None);
+    }
+
+    /// **一条坏记录不该毁掉一整块。**
+    ///
+    /// 形态取自真实日志：`missing field \`predicate\``。模型偶尔会漏写这个字段
+    /// （`related_to` 退场后它没有万能选项可挑），从前 serde 会让整块作废，
+    /// 而这一块里另外两条事实是好的。
+    #[test]
+    fn one_malformed_fact_does_not_take_the_whole_chunk() {
+        let raw = r#"{
+          "entities": [{"name": "OpenAI", "type": "organization"}],
+          "facts": [
+            {"subject": "OpenAI", "predicate": "produces", "object": "GPT-4"},
+            {"subject": "OpenAI", "object": "ChatGPT"},
+            {"subject": "Sam Altman", "predicate": "leads", "object": "OpenAI"}
+          ]
+        }"#;
+        let x = parse_response(raw).unwrap();
+        assert_eq!(x.facts.len(), 2, "好的两条该留下");
+        assert_eq!(x.skipped_facts, 1, "跳过的那条要报出来，不能静默");
+        assert_eq!(x.entities.len(), 1);
+        assert!(!x.truncated);
+    }
+
+    /// **输出被截断时，已经完整的那些要救回来。**
+    ///
+    /// 撞上 max_tokens 时模型写到一半就没了（真实日志：`EOF while parsing a list`）。
+    /// 前面的对象是完整且正确的，整块作废等于把抽对的十几条一起扔掉。
+    #[test]
+    fn a_cut_off_reply_keeps_what_was_complete() {
+        let raw = r#"{
+          "entities": [{"name": "Anthropic", "type": "organization"}],
+          "facts": [
+            {"subject": "Anthropic", "predicate": "produces", "object": "Claude"},
+            {"subject": "Dario Amodei", "predicate": "leads", "object": "Anthropic"},
+            {"subject": "Anthropic", "predicate": "loca"#;
+        let x = parse_response(raw).unwrap();
+        assert!(x.truncated, "截断要标出来");
+        assert_eq!(x.facts.len(), 2, "断点之前的两条是完整的");
+        assert_eq!(x.entities.len(), 1);
+    }
+
+    /// 括号出现在字符串里不算结构——`"a[b"` 不是一个开括号。
+    #[test]
+    fn brackets_inside_strings_are_not_structure() {
+        let raw =
+            r#"{"entities": [], "facts": [{"subject": "a[b{c", "predicate": "p", "object": "o"}]}"#;
+        let x = parse_response(raw).unwrap();
+        assert_eq!(x.facts.len(), 1);
+        assert!(!x.truncated, "结构完整，不该判成截断");
+    }
+
+    /// 连一个完整对象都没有时，仍然要报失败——**容错不是把空结果说成成功**。
+    #[test]
+    fn a_reply_with_nothing_complete_still_fails() {
+        assert!(parse_response(r#"{"facts": [{"subject": "a"#).is_err());
     }
 
     #[test]

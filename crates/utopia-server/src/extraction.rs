@@ -337,6 +337,41 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 continue;
             }
         };
+        // **跳过了什么必须说出来。** 逐项解析救回了整块，但被跳过的那几条
+        // 如果不落信号，就成了另一种「部分抽取报告成完成」（#108 修过一次）
+        if extraction.truncated {
+            drop_signal(
+                state,
+                doc.kb_id,
+                document_id,
+                utopia_store::extraction_drops::reason::TRUNCATED_REPLY,
+                &format!("分块 #{} 的输出被截断", chunk.seq),
+                None,
+            )
+            .await;
+        }
+        let skipped = extraction.skipped_entities + extraction.skipped_facts;
+        if skipped > 0 {
+            tracing::warn!(
+                %document_id,
+                seq = chunk.seq,
+                entities = extraction.skipped_entities,
+                facts = extraction.skipped_facts,
+                "跳过了结构不合的条目"
+            );
+            drop_signal(
+                state,
+                doc.kb_id,
+                document_id,
+                utopia_store::extraction_drops::reason::MALFORMED_ITEM,
+                &format!(
+                    "分块 #{} 跳过 {} 个实体 / {} 条事实",
+                    chunk.seq, extraction.skipped_entities, extraction.skipped_facts
+                ),
+                None,
+            )
+            .await;
+        }
 
         // 实体消解：名称 → 实体 id（本分块的事实按原文名字连线）
         let mut entity_ids: HashMap<String, Uuid> = HashMap::new();
