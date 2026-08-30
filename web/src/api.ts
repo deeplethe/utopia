@@ -152,9 +152,25 @@ export interface ExtractionDrop {
 
 export interface SourceView {
   id: string;
-  kind: "folder" | "url" | "rss" | "api" | "custom" | "memory" | "upload";
+  kind:
+    | "folder"
+    | "url"
+    | "rss"
+    | "api"
+    | "custom"
+    | "github_issues"
+    | "memory"
+    | "upload";
   name: string;
-  config: { urls?: string[]; feed_url?: string; endpoint?: string } | null;
+  config: {
+    urls?: string[];
+    feed_url?: string;
+    endpoint?: string;
+    /** github_issues：owner/name */
+    repo?: string;
+    /** github_issues：PR 在 GitHub 模型里也是工单，默认不收 */
+    include_pull_requests?: boolean;
+  } | null;
   icon: string | null;
   sync_interval_minutes: number | null;
   sync_cron: string | null;

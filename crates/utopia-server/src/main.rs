@@ -8,6 +8,7 @@ mod client_ctx;
 mod docs_corpus;
 mod error;
 mod extraction;
+mod github_issues;
 mod ingest_sources;
 mod llm_util;
 mod mappings;

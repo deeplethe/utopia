@@ -370,12 +370,17 @@ export const en = {
       rss: "RSS feed",
       api: "API",
       custom: "Custom",
+      github_issues: "GitHub issues",
     },
     sourceKindHints: {
       folder:
         "A plain folder. Select it and upload (or drag) files straight into it — nothing is watched or synced.",
       url: "Fetches the listed web pages; changed pages update the same document.",
       rss: "Subscribes to a feed; each entry becomes a document dated by its publish time.",
+      github_issues:
+        "Syncs a repository's issues. **Each ticket, together with its state history**, becomes " +
+        "one document — when it was opened, closed, relabelled, reassigned, all dated. " +
+        "Without a token GitHub allows only 60 requests an hour.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       custom:
         "Polls a URL you control on a schedule — your service returns JSON items and Utopia keeps them in sync.",
@@ -419,6 +424,9 @@ export const en = {
     sourceName: "Name",
     urlsField: "Page URLs (one per line)",
     feedUrl: "Feed URL",
+    repoField: "Repository (owner/name)",
+    tokenField: "GitHub token (optional, never shown again)",
+    includePullRequests: "Treat pull requests as tickets too",
     interval: "Sync schedule",
     intervalManual: "Manual only",
     intervalEvery: (m: number) =>
