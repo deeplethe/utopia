@@ -145,7 +145,7 @@ pub async fn create_user(
     Ok(Json(json!({ "user": created })))
 }
 
-/// 停用一个账号（软删除，见迁移 0056）。
+/// 停用一个账号（软删除，见 `users.deactivated_at`）。
 ///
 /// **不是 DELETE。** 审计事件、合并日志、改类账本、口径确认的 `actor_id` 都指着
 /// 这个人，那些是审计材料——人走了仍然要能回答「当时是谁做的」。停用只断访问：

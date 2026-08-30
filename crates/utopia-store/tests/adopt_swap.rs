@@ -75,7 +75,7 @@ async fn adopting_a_passive_wording_flips_subject_and_object() -> anyhow::Result
         .execute(&pool)
         .await?;
     // 原文说的是 "ChatGPT produced_by OpenAI"，本体里没有这个关系，
-    // 于是这条事实**没有谓词**——0052 之后兜底谓词不存在了
+    // 于是这条事实**没有谓词**——兜底谓词已经不存在了
     sqlx::query(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id)
          VALUES ($1, $2, $3, NULL, $4)",

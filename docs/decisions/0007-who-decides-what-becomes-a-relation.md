@@ -49,7 +49,7 @@
 
 **六、没有日期的事实自称精确到日。** `valid_precision` 是 `NOT NULL DEFAULT 'day'`，
 于是每一条两端都没有日期的事实都带着 `'day'` 落库（实测两个库分别 728 和 843 条活行）。
-→ 迁移 0045：可空 + `CHECK ((valid_from IS NULL AND valid_to IS NULL) = (valid_precision IS NULL))`。
+→ 改成可空 + 「有日期才有精度」的 CHECK（见 `facts.valid_from_precision`）。
 
 ## 决定
 

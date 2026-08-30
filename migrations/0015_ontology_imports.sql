@@ -24,10 +24,3 @@ CREATE TABLE ontology_imports (
 
 CREATE INDEX ontology_imports_kb_idx ON ontology_imports (kb_id, imported_at DESC);
 
--- IRI 是全局身份，key 是给模型读的短标签（见 0001 P2 的"IRI 与 key 的分工"）。
--- 重导入按 IRI 匹配已有行——按 key 匹配会因为上游改了 rdfs:label 导致 key 变化
--- 而把同一个类当成新类建出来，实体全留在孤儿上。
-ALTER TABLE entity_types   ADD COLUMN iri TEXT;
-ALTER TABLE relation_types ADD COLUMN iri TEXT;
-CREATE UNIQUE INDEX entity_types_iri_idx   ON entity_types   (kb_id, iri) WHERE iri IS NOT NULL;
-CREATE UNIQUE INDEX relation_types_iri_idx ON relation_types (kb_id, iri) WHERE iri IS NOT NULL;

@@ -157,7 +157,7 @@ pub struct ChunkFactView {
     pub fact_id: Uuid,
     pub subject_id: Uuid,
     pub subject: String,
-    /// 本体没认下这条关系时回落到原文说法；两者都拿不出时为 None（0052 之前的老数据）
+    /// 本体没认下这条关系时回落到原文说法；两者都拿不出时为 None（更早的历史数据长这样）
     pub predicate: Option<String>,
     pub inferred: bool,
     pub object_id: Option<Uuid>,
@@ -470,7 +470,7 @@ pub struct GraphEdge {
     pub id: Uuid,
     pub source: Uuid,
     pub target: Uuid,
-    /// 本体里没有对应关系时回落到原文说法（迁移 0052）。
+    /// 本体里没有对应关系时回落到原文说法（见 `facts.predicate_id`）。
     /// 两个来源都拿不出时为 None——那是 add_evidence 记录原文说法之前的老数据
     pub predicate: Option<String>,
     pub label: Option<String>,
@@ -487,7 +487,7 @@ pub struct EntityFact {
     pub id: Uuid,
     /// out = 该实体为主语；in = 为宾语
     pub direction: String,
-    /// 本体没认下这条关系时回落到原文说法；两者都拿不出时为 None（0052 之前的老数据）
+    /// 本体没认下这条关系时回落到原文说法；两者都拿不出时为 None（更早的历史数据长这样）
     pub predicate_key: Option<String>,
     pub predicate_label: Option<String>,
     /// true = 这条事实的名字来自原文，不是本体认下的关系。界面要显示得看得出区别
@@ -501,11 +501,11 @@ pub struct EntityFact {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     /// 精度描述的是这条事实**有的那些日期**的粒度。两端都没有日期时为 None——
-    /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（迁移 0045）
+    /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（见 `facts.valid_from_precision`）
     /// 起始端的粒度：year | month | day。没有 valid_from 时为 None
     pub valid_from_precision: Option<String>,
     /// 结束端的粒度，外加一个 `unknown`——**原文说它结束了，但没说哪天**。
-    /// `valid_to` 与它都为 None 才是「仍在持续」（迁移 0046）
+    /// `valid_to` 与它都为 None 才是「仍在持续」（见 `facts.valid_to_precision`）
     pub valid_to_precision: Option<String>,
     pub confidence: f32,
     pub evidence_count: i64,
@@ -544,11 +544,11 @@ pub struct EntityHistoryEvent {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     /// 精度描述的是这条事实**有的那些日期**的粒度。两端都没有日期时为 None——
-    /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（迁移 0045）
+    /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（见 `facts.valid_from_precision`）
     /// 起始端的粒度：year | month | day。没有 valid_from 时为 None
     pub valid_from_precision: Option<String>,
     /// 结束端的粒度，外加一个 `unknown`——**原文说它结束了，但没说哪天**。
-    /// `valid_to` 与它都为 None 才是「仍在持续」（迁移 0046）
+    /// `valid_to` 与它都为 None 才是「仍在持续」（见 `facts.valid_to_precision`）
     pub valid_to_precision: Option<String>,
     pub confidence: Option<f32>,
     /// 人工操作者；NULL = 引擎自动（抽取写入 / 时态对账闭合 / 高置信改类）
@@ -585,11 +585,11 @@ pub struct GraphChange {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     /// 精度描述的是这条事实**有的那些日期**的粒度。两端都没有日期时为 None——
-    /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（迁移 0045）
+    /// 从前这里是 NOT NULL DEFAULT day，于是没日期的事实也自称精确到日（见 `facts.valid_from_precision`）
     /// 起始端的粒度：year | month | day。没有 valid_from 时为 None
     pub valid_from_precision: Option<String>,
     /// 结束端的粒度，外加一个 `unknown`——**原文说它结束了，但没说哪天**。
-    /// `valid_to` 与它都为 None 才是「仍在持续」（迁移 0046）
+    /// `valid_to` 与它都为 None 才是「仍在持续」（见 `facts.valid_to_precision`）
     pub valid_to_precision: Option<String>,
     pub confidence: f32,
     pub document_id: Option<Uuid>,

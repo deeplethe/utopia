@@ -2,16 +2,7 @@
 -- 设计见 docs/DESIGN.md §4：名字只是候选召回线索，身份由上下文（画像向量 + 关系兼容性）决定；
 -- 宁分勿合，灰区先落审核队列，LLM 攒批裁决在后台跑，人工终审兜底。
 
--- 名字不再是身份：拆掉同名唯一索引，同名实体允许并存；保留普通索引做候选召回
-DROP INDEX entities_kb_type_name_idx;
-CREATE INDEX entities_kb_type_name_idx
-    ON entities (kb_id, type_id, lower(canonical_name)) WHERE merged_into IS NULL;
 
--- 实体画像：证据分块向量的增量质心（上下文相似度判定用；复用摄入阶段已算好的 chunk embedding）
-ALTER TABLE entities ADD COLUMN profile_embedding vector;
-ALTER TABLE entities ADD COLUMN profile_n INTEGER NOT NULL DEFAULT 0;
--- 同名并存时的展示消歧后缀（如 张三 · Platform Engineering）
-ALTER TABLE entities ADD COLUMN disambiguator TEXT;
 
 -- 消解审核队列：疑似同一实体的灰区对。
 -- stage: adjudicating = 等 LLM 攒批裁决；human = LLM 不确定/未配模型，等人工终审。

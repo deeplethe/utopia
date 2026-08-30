@@ -201,7 +201,7 @@ pub async fn admin_create_user(
 ///
 /// 这一句 `deactivated_at IS NULL` 同时管两件事：停用的人登不进来，以及
 /// 「一个 email 在停用账号里可能重复」时不会随机返回其中一条（唯一索引
-/// 现在是部分的，只约束在职账号，见迁移 0056）。
+/// 现在是部分的，只约束在职账号，见 `users.deactivated_at`）。
 pub async fn find_user_by_email(pool: &PgPool, email: &str) -> AppResult<Option<User>> {
     let user = sqlx::query_as("SELECT * FROM users WHERE email = $1 AND deactivated_at IS NULL")
         .bind(email)
@@ -244,7 +244,7 @@ pub async fn update_password(pool: &PgPool, id: Uuid, password_hash: &str) -> Ap
     Ok(())
 }
 
-/// 停用一个账号（软删除，见迁移 0056）。
+/// 停用一个账号（软删除，见 `users.deactivated_at`）。
 ///
 /// **不删行。** 审计事件、合并日志、改类账本、口径确认的 `actor_id` 都指着这个人，
 /// 而那些是审计材料——人走了仍然要能回答「当时是谁做的」。停用只断访问。

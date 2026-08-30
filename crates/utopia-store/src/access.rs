@@ -102,7 +102,7 @@ pub async fn kb_members(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<KbMemberVie
     let rows: Vec<KbMemberView> = sqlx::query_as(
         "SELECT m.user_id, u.email, u.display_name, m.role
          FROM kb_members m JOIN users u ON u.id = m.user_id
-         -- 停用的人不出现在成员列表里（0056）；成员关系那一行留着
+         -- 停用的人不出现在成员列表里（见 `users.deactivated_at`）；成员关系那一行留着
          WHERE m.kb_id = $1 AND u.deactivated_at IS NULL ORDER BY u.display_name",
     )
     .bind(kb_id)

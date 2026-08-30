@@ -179,7 +179,15 @@ fn cycles(edges: &[Edge]) -> Vec<Violation> {
     for start in nodes {
         let mut path: Vec<&Edge> = Vec::new();
         let mut on_path: HashSet<Uuid> = HashSet::new();
-        walk(start, start, &adj, &mut path, &mut on_path, &mut reported, &mut out);
+        walk(
+            start,
+            start,
+            &adj,
+            &mut path,
+            &mut on_path,
+            &mut reported,
+            &mut out,
+        );
     }
     out
 }
@@ -231,11 +239,7 @@ fn walk<'a>(
 ///
 /// `functional` 与 `inverse_functional` 是同一个判断的两个方向，所以共用这一个
 /// 函数，由调用方决定哪一端是键。
-fn too_many(
-    edges: &[Edge],
-    key: fn(&Edge) -> Uuid,
-    val: fn(&Edge) -> Uuid,
-) -> Vec<Violation> {
+fn too_many(edges: &[Edge], key: fn(&Edge) -> Uuid, val: fn(&Edge) -> Uuid) -> Vec<Violation> {
     let mut by_key: HashMap<Uuid, Vec<&Edge>> = HashMap::new();
     for e in edges {
         by_key.entry(key(e)).or_default().push(e);
@@ -306,8 +310,21 @@ mod tests {
     #[test]
     fn a_self_loop_needs_irreflexive_to_be_a_problem() {
         let edges = [e(1, 1, 1)];
-        assert!(check(&edges, &with(Axioms { transitive: true, ..Default::default() })).is_empty());
-        let v = check(&edges, &with(Axioms { irreflexive: true, ..Default::default() }));
+        assert!(check(
+            &edges,
+            &with(Axioms {
+                transitive: true,
+                ..Default::default()
+            })
+        )
+        .is_empty());
+        let v = check(
+            &edges,
+            &with(Axioms {
+                irreflexive: true,
+                ..Default::default()
+            }),
+        );
         assert_eq!(kinds(&v), vec![Kind::SelfLoop]);
         // 只有一条事实：两列填同一个 id
         assert_eq!(v[0].left, v[0].right);
@@ -320,7 +337,11 @@ mod tests {
         let edges = [e(1, 1, 1)];
         let v = check(
             &edges,
-            &with(Axioms { irreflexive: true, asymmetric: true, ..Default::default() }),
+            &with(Axioms {
+                irreflexive: true,
+                asymmetric: true,
+                ..Default::default()
+            }),
         );
         assert_eq!(kinds(&v), vec![Kind::SelfLoop]);
     }
@@ -328,10 +349,22 @@ mod tests {
     #[test]
     fn a_pair_pointing_both_ways_needs_asymmetric() {
         let edges = [e(1, 1, 2), e(2, 2, 1)];
-        assert!(check(&edges, &with(Axioms { transitive: true, ..Default::default() }))
-            .iter()
-            .all(|v| v.kind != Kind::Asymmetry));
-        let v = check(&edges, &with(Axioms { asymmetric: true, ..Default::default() }));
+        assert!(check(
+            &edges,
+            &with(Axioms {
+                transitive: true,
+                ..Default::default()
+            })
+        )
+        .iter()
+        .all(|v| v.kind != Kind::Asymmetry));
+        let v = check(
+            &edges,
+            &with(Axioms {
+                asymmetric: true,
+                ..Default::default()
+            }),
+        );
         assert_eq!(kinds(&v), vec![Kind::Asymmetry]);
         assert_eq!((v[0].left, v[0].right), (f(1), f(2)));
     }
@@ -340,7 +373,13 @@ mod tests {
     #[test]
     fn a_long_cycle_reports_the_whole_path() {
         let edges = [e(1, 1, 2), e(2, 2, 3), e(3, 3, 4), e(4, 4, 1)];
-        let v = check(&edges, &with(Axioms { transitive: true, ..Default::default() }));
+        let v = check(
+            &edges,
+            &with(Axioms {
+                transitive: true,
+                ..Default::default()
+            }),
+        );
         assert_eq!(v.len(), 1, "一个环只报一次");
         assert_eq!(v[0].path.len(), 4, "四条边都该在路径里");
     }
@@ -350,7 +389,13 @@ mod tests {
     #[test]
     fn one_cycle_is_one_finding_however_many_ways_in() {
         let edges = [e(1, 1, 2), e(2, 2, 3), e(3, 3, 1)];
-        let v = check(&edges, &with(Axioms { transitive: true, ..Default::default() }));
+        let v = check(
+            &edges,
+            &with(Axioms {
+                transitive: true,
+                ..Default::default()
+            }),
+        );
         assert_eq!(v.len(), 1);
     }
 
@@ -358,7 +403,13 @@ mod tests {
     #[test]
     fn separate_cycles_stay_separate() {
         let edges = [e(1, 1, 2), e(2, 2, 1), e(3, 5, 6), e(4, 6, 5)];
-        let v = check(&edges, &with(Axioms { transitive: true, ..Default::default() }));
+        let v = check(
+            &edges,
+            &with(Axioms {
+                transitive: true,
+                ..Default::default()
+            }),
+        );
         assert_eq!(v.len(), 2);
     }
 
@@ -371,7 +422,13 @@ mod tests {
     fn a_chain_longer_than_the_limit_still_terminates() {
         let mut edges: Vec<Edge> = (0..30).map(|i| e(i, i, i + 1)).collect();
         edges.push(e(60, 30, 0));
-        let v = check(&edges, &with(Axioms { transitive: true, ..Default::default() }));
+        let v = check(
+            &edges,
+            &with(Axioms {
+                transitive: true,
+                ..Default::default()
+            }),
+        );
         // 断言的是"跑完了"，长度不作要求
         assert!(v.len() <= 1);
     }
@@ -381,19 +438,44 @@ mod tests {
         // 同一个主语指了两个宾语
         let out = [e(1, 1, 2), e(2, 1, 3)];
         assert_eq!(
-            kinds(&check(&out, &with(Axioms { functional: true, ..Default::default() }))),
+            kinds(&check(
+                &out,
+                &with(Axioms {
+                    functional: true,
+                    ..Default::default()
+                })
+            )),
             vec![Kind::Functional]
         );
-        assert!(check(&out, &with(Axioms { inverse_functional: true, ..Default::default() }))
-            .is_empty());
+        assert!(check(
+            &out,
+            &with(Axioms {
+                inverse_functional: true,
+                ..Default::default()
+            })
+        )
+        .is_empty());
 
         // 同一个宾语被两个主语指
         let inn = [e(1, 2, 1), e(2, 3, 1)];
         assert_eq!(
-            kinds(&check(&inn, &with(Axioms { inverse_functional: true, ..Default::default() }))),
+            kinds(&check(
+                &inn,
+                &with(Axioms {
+                    inverse_functional: true,
+                    ..Default::default()
+                })
+            )),
             vec![Kind::Functional]
         );
-        assert!(check(&inn, &with(Axioms { functional: true, ..Default::default() })).is_empty());
+        assert!(check(
+            &inn,
+            &with(Axioms {
+                functional: true,
+                ..Default::default()
+            })
+        )
+        .is_empty());
     }
 
     /// 同一个主语指五个宾语只报一对。报十对（两两组合）是把同一件事说十遍——
@@ -401,7 +483,13 @@ mod tests {
     #[test]
     fn one_finding_per_conflicting_key_not_one_per_pair() {
         let edges = [e(1, 1, 2), e(2, 1, 3), e(3, 1, 4), e(4, 1, 5), e(5, 1, 6)];
-        let v = check(&edges, &with(Axioms { functional: true, ..Default::default() }));
+        let v = check(
+            &edges,
+            &with(Axioms {
+                functional: true,
+                ..Default::default()
+            }),
+        );
         assert_eq!(v.len(), 1);
     }
 
@@ -409,18 +497,47 @@ mod tests {
     #[test]
     fn saying_the_same_thing_twice_is_not_a_contradiction() {
         let edges = [e(1, 1, 2), e(2, 1, 2)];
-        assert!(check(&edges, &with(Axioms { functional: true, ..Default::default() })).is_empty());
+        assert!(check(
+            &edges,
+            &with(Axioms {
+                functional: true,
+                ..Default::default()
+            })
+        )
+        .is_empty());
     }
 
     /// **公理挂在谓词上，跨谓词的边之间没有可比性。**
     /// `A p B` 与 `B q A` 同时成立不是矛盾，哪怕 p 声明了反对称。
     #[test]
     fn axioms_do_not_leak_across_predicates() {
-        let a = Edge { fact: f(1), predicate: n(90), subject: n(1), object: n(2) };
-        let b = Edge { fact: f(2), predicate: n(91), subject: n(2), object: n(1) };
+        let a = Edge {
+            fact: f(1),
+            predicate: n(90),
+            subject: n(1),
+            object: n(2),
+        };
+        let b = Edge {
+            fact: f(2),
+            predicate: n(91),
+            subject: n(2),
+            object: n(1),
+        };
         let ax = HashMap::from([
-            (n(90), Axioms { asymmetric: true, ..Default::default() }),
-            (n(91), Axioms { asymmetric: true, ..Default::default() }),
+            (
+                n(90),
+                Axioms {
+                    asymmetric: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                n(91),
+                Axioms {
+                    asymmetric: true,
+                    ..Default::default()
+                },
+            ),
         ]);
         assert!(check(&[a, b], &ax).is_empty());
     }

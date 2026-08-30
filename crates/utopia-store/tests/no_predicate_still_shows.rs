@@ -1,6 +1,6 @@
-//! 没有谓词的事实**不能从读路径上消失**（迁移 0052）。
+//! 没有谓词的事实**不能从读路径上消失**（见 `facts.predicate_id`）。
 //!
-//! 为什么非要连库：0052 把 `facts.predicate_id` 改成可空之后，二十条读查询里的
+//! 为什么非要连库：`facts.predicate_id` 改成可空之后，二十条读查询里的
 //! `JOIN relation_types` 全都变成了静默的过滤器——内连接丢掉 NULL 行不报错、
 //! 不告警，`cargo check` 和 clippy 一个字都看不见。这与 0009 的
 //! `NULL <> uuid` 是同一个陷阱的两副面孔：三值逻辑下"没有值"被当成"不匹配"。
@@ -22,7 +22,7 @@ struct Fixture {
     doc: Uuid,
     /// 没有谓词、但证据里留了原文说法的事实
     surfaced: Uuid,
-    /// 没有谓词、连原文说法也没有的事实（0052 之前的历史遗留长这样）
+    /// 没有谓词、连原文说法也没有的事实（更早的历史遗留长这样）
     mute: Uuid,
 }
 
@@ -101,7 +101,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         .await?;
     }
 
-    // 两条事实都没有谓词——本体里没有对应的关系，这正是 0052 要表达的状态
+    // 两条事实都没有谓词——本体里没有对应的关系，这正是可空谓词要表达的状态
     for (id, from) in [
         (surfaced, "2020-01-01T00:00:00Z"),
         (mute, "2021-01-01T00:00:00Z"),
@@ -241,7 +241,7 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
         // 这一条的历史值得留着：第一版是空断言（只 `SELECT … WHERE builtin`，
         // 而夹具是裸 SQL 建的库、从没播种过，于是断言在一片空地上成立）；
         // 第二版补了对照组——先调 `ensure_default_ontology` 把种子种下去，
-        // 再确认 `related_to` 不在其中。因为 0052 删完七分钟，代码就把行种回来了（0053）。
+        // 再确认 `related_to` 不在其中。因为删完七分钟，代码就把行种回来过一次。
         //
         // 现在**连播种函数都没有了**：0009 删内置实体类、0010 与 `#125` 删种子关系、
         // 0011 把 `mapped_to` 搬去 `concept_mappings`，`ensure_default_ontology`

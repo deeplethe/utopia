@@ -175,7 +175,7 @@ pub async fn nearest_for_each(
 pub enum Target {
     /// 整段索引（label + 描述）。长画像走这一路
     Class,
-    /// **只有 label 的索引**（0050）。短说法（`district. place`）走这一路。
+    /// **只有 label 的索引**（见 `entity_types.label_embedding`）。短说法（`district. place`）走这一路。
     /// 短说法比整段索引会被同义反复的类接管——`Map` 那一行的描述就是
     /// "A map."，赢在长度不在语义
     ClassLabel,

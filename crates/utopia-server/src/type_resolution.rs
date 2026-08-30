@@ -129,7 +129,7 @@ pub async fn preview(state: &AppState, kb_id: Uuid) -> AppResult<Vec<TypeSuggest
     // 两次结果取并集——多一次嵌入，换掉一整类漏检。
     let profiles: Vec<String> = subjects.iter().map(profile_of).collect();
     let names: Vec<Option<String>> = subjects.iter().map(name_query_of).collect();
-    // **两路各查各的索引**（0050）。从前两路共用整段索引，于是短说法那一路
+    // **两路各查各的索引**（见 `entity_types.label_embedding`）。从前两路共用整段索引，于是短说法那一路
     // 被同义反复的类接管：`district. place` 回来的是 Map / Park / Country /
     // Museum，四个赢家的嵌入原文全是 `X\nAn X.` 一行话，而带一百字定义的
     // AdministrativeArea 排不进前八。短对短、长对长，这才是可比的
@@ -398,7 +398,7 @@ pub struct ReviewItem {
 /// 跑一轮类型消解并落库。
 ///
 /// **落库时不带 actor,尽管是人点的运行。** `retype_entities` 的 actor 参数
-/// 现在有两重身份:账本里记"谁改的",而 0051 之后它还决定 `type_source`——
+/// 现在有两重身份:账本里记"谁改的",而它现在还决定 `type_source`——
 /// 有 actor 就是 `human`,而 `human` 意味着**引擎从此不再碰这个实体**。
 ///
 /// 这两个问题不是一回事:

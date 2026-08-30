@@ -89,7 +89,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(admin_routes::get_deployment).put(admin_routes::put_deployment),
         )
         .route("/admin/users", post(admin_routes::create_user))
-        // 停用 / 恢复账号（0056）。DELETE 的语义是「这个人不再有访问权」,
+        // 停用 / 恢复账号（见 `users.deactivated_at`）。DELETE 的语义是「这个人不再有访问权」,
         // 而不是「这一行没了」——归因照旧查得到
         .route(
             "/admin/users/{id}",
@@ -182,7 +182,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(ontology_routes::restore_miss),
         )
         .route("/kbs/{id}/ontology/suggest", post(ontology_routes::suggest))
-        // 上次算出来、还没人表态的那些（0049）。刷新页面靠它，不必重跑模型
+        // 上次算出来、还没人表态的那些（迁移 0018）。刷新页面靠它，不必重跑模型
         .route(
             "/kbs/{id}/ontology/proposals",
             get(ontology_routes::stored_proposals).post(ontology_routes::decide_proposal),

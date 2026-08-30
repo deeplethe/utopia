@@ -172,14 +172,14 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;
     // 关系与属性分道：属性走字面值通道，不进关系清单。
     //
-    // **本体里没有对应关系时就没有谓词**（迁移 0052）。原词落进
+    // **本体里没有对应关系时就没有谓词**（见 `facts.predicate_id`）。原词落进
     // fact_evidence.proposed_predicate，显示时由 fact_surface_predicate() 取回。
     //
     // 从前这里是一个叫 related_to 的兜底关系，且刻意不列给模型——它摆进提示词就成了
     // 逃生舱，模型读到说不清的关系时不去写原文说法，直接挑这个万能选项。
     // 现在它连行都没有了，逃生舱和"记得别列它"这两件事一起消失。
     //
-    // **这两件事必须一起做，缺一件比都不做更糟。** 0052 只删了库里的行，没删
+    // **这两件事必须一起做，缺一件比都不做更糟。** 只删库里的行不够，还要删
     // `DEFAULT_RELATION_TYPES` 里的种子——而这里的排除过滤已经跟着删了。于是
     // `ensure_default_ontology` 七分钟后把行种回来，`related_to` 第一次被**列进
     // 提示词给模型看**。0001 量过：359 次使用里 321 次是模型从清单上挑的。
@@ -465,7 +465,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             }
             let from = f.valid_from.as_deref().and_then(utopia_extract::parse_time);
             let to = f.valid_to.as_deref().and_then(utopia_extract::parse_time);
-            // **两端各记各的粒度**（迁移 0046）。从前一个精度列描述两个端点，
+            // **两端各记各的粒度**（见 `facts.valid_to_precision`）。从前一个精度列描述两个端点，
             // 于是「2020 年开始、2023-05-06 结束」这种只能共用一个值。
             //
             // 模型给的 valid_to = "unknown" 表示**原文说它结束了、但没说哪天**。
@@ -765,7 +765,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                         Some(&format!("{} → {}", f.subject, object_name)),
                     )
                     .await;
-                    // 本体里没有对应的关系 → **就是没有谓词**（迁移 0052）。
+                    // 本体里没有对应的关系 → **就是没有谓词**（见 `facts.predicate_id`）。
                     // 原意留在证据的 proposed_predicate 里，显示时取回。
                     // 从前这里落到 related_to 上，还要额外担心"兜底关系被删了"——
                     // 那条失败模式连同它的 continue 一起消失了

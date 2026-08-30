@@ -904,7 +904,7 @@ async fn run_query(state: &AppState, ds_id: Uuid, sql: &str) -> anyhow::Result<S
 fn fact_line(f: &EntityFact) -> String {
     let other = f.other_name.as_deref().unwrap_or("?");
     // 本体没认下、原文说法也没留下时用 "?"——与 other 同一个约定。
-    // 不编一个"相关"出来：那正是 0052 删掉 related_to 要消灭的东西
+    // 不编一个"相关"出来：那正是删掉 related_to 要消灭的东西
     let pred = f.predicate_label.as_deref().unwrap_or("?");
     let core = if f.direction == "out" {
         format!("{pred} → {other}")
@@ -1137,8 +1137,8 @@ mod tests {
             object_value: None,
             valid_from: None,
             valid_to: None,
-            // 两端都没日期就没有精度——夹具也得守这条不变量（迁移 0045）
-            // 两端都没日期，所以两端都没有精度（迁移 0045 / 0046）
+            // 两端都没日期就没有精度——夹具也得守这条不变量（见 `facts.valid_from_precision`）
+            // 两端都没日期，所以两端都没有精度（见 facts 的两个精度列）
             valid_from_precision: None,
             valid_to_precision: None,
             confidence: 0.9,

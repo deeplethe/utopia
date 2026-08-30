@@ -827,7 +827,7 @@ pub struct TypeToEmbed {
     pub kind: TypeKind,
     pub text: String,
     /// 写进哪一组列。类有两份向量：整段（label + 描述）与只有 label 的那份，
-    /// 分别服务长画像与短说法两种查询（见迁移 0050）
+    /// 分别服务长画像与短说法两种查询（见 `entity_types.label_embedding`）
     pub field: EmbedField,
 }
 
@@ -897,7 +897,7 @@ pub async fn types_needing_embedding(
         text: embed_text(&label, &desc),
         field: EmbedField::Full,
     }));
-    // 只嵌 label 的那一份（0050）。短查询走这个索引——查询分了两种形状，
+    // 只嵌 label 的那一份（见 `entity_types.label_embedding`）。短查询走这个索引——查询分了两种形状，
     // 文档也得分两种，否则短查询被同义反复的类接管
     let labels: Vec<(Uuid, String)> = sqlx::query_as(
         "SELECT id, label FROM entity_types
@@ -965,7 +965,7 @@ pub async fn set_type_embeddings(
             TypeKind::Entity => "entity_types",
             TypeKind::Relation => "relation_types",
         };
-        // 两份向量各写各的列（0050）。列名前缀不同，其余一模一样
+        // 两份向量各写各的列（见 `entity_types.label_embedding`）。列名前缀不同，其余一模一样
         let (vec_col, text_col, model_col) = match item.field {
             EmbedField::Full => ("embedding", "embedded_text", "embedded_model"),
             EmbedField::Label => (
@@ -1009,7 +1009,7 @@ pub async fn nearest_entity_types(
     kb_id: Uuid,
     embedding: &[f32],
     limit: i64,
-    // true = 比只有 label 的那份向量（0050）。短说法走这一路：**短对短**，
+    // true = 比只有 label 的那份向量（见 `entity_types.label_embedding`）。短说法走这一路：**短对短**，
     // 否则 `district. place` 会被 `Map\nA map.` 这类同义反复的一行话赢过去
     by_label: bool,
 ) -> AppResult<Vec<TypeCandidate>> {
@@ -1379,7 +1379,7 @@ pub async fn set_parents_bulk(pool: &PgPool, pairs: &[(Uuid, Uuid)]) -> AppResul
     Ok(())
 }
 
-/// 类互斥落库（迁移 0054）。语义同 [`set_parents_bulk`]。
+/// 类互斥落库（见 `relation_types` 的公理列）。语义同 [`set_parents_bulk`]。
 ///
 /// **两个方向都写。** 解析侧已经把 `owl:disjointWith` 的对称性展开成两条,
 /// 这里照写即可——查"A 与 B 互斥吗"因此不必关心从哪一头问。
@@ -1412,7 +1412,7 @@ pub async fn set_disjoint_bulk(
 }
 
 // ---------------------------------------------------------------------------
-// 本体提案（见迁移 0049）
+// 本体提案（迁移 0018）
 // ---------------------------------------------------------------------------
 
 /// 一条落库的提案。`payload` 是接口原样返回的那一条。

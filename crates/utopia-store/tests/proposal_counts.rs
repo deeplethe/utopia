@@ -60,7 +60,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Uuid> {
     .bind(kb)
     .execute(pool)
     .await?;
-    // 积压的那条不挂任何关系——查询按 predicate_id IS NULL 筛（0052）
+    // 积压的那条不挂任何关系——查询按 predicate_id IS NULL 筛（见 `facts.predicate_id`）
     sqlx::query("INSERT INTO relation_types (id, kb_id, key, label) VALUES ($1, $2, $3, $3)")
         .bind(real)
         .bind(kb)

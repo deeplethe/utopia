@@ -314,7 +314,7 @@ async fn who_approved_a_retype_decides_whether_it_is_protected() -> anyhow::Resu
 /// **引擎改过的实体,下一轮还要捞得回来。**
 ///
 /// 这一条守的是一个真出过的事故:类型消解落库时把「点运行的那个人」当成了
-/// `retype_entities` 的 actor,而 0051 之后有 actor 就写 `type_source = 'human'`。
+/// `retype_entities` 的 actor,而有 actor 就写 `type_source = 'human'`。
 /// 于是**跑过一次消解的实体从此永远不再被消解**——一个没有任何人工 PATCH 记录
 /// 的库,跑完一轮之后预览返回空列表,而且没有任何报错。
 ///

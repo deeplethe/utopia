@@ -7,7 +7,7 @@ pub async fn list(pool: &PgPool, workspace_id: Uuid) -> AppResult<Vec<MemberView
     let rows = sqlx::query_as(
         "SELECT m.user_id, u.email, u.display_name, m.role, u.is_admin
          FROM memberships m JOIN users u ON u.id = m.user_id
-         -- 停用的人不再出现在成员列表里（0056）。成员关系那一行留着——
+         -- 停用的人不再出现在成员列表里（见 `users.deactivated_at`）。成员关系那一行留着——
          -- 恢复账号时不必重新加回每一个工作区
          WHERE m.workspace_id = $1 AND u.deactivated_at IS NULL
          ORDER BY m.created_at",

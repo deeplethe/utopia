@@ -186,7 +186,7 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 > 落地的是三层里的前两层与整条预览流程：解析（`utopia-ingest/src/ontology_rdf.rs`）、
 > 计划与执行（`utopia-server/src/owl_import.rs`，预览与落库**共用同一个 `plan()`**）、
 > 界面（本体页左栏底部 Import 入口 → 选文件 → 计划 → 确认）。
-> `ontology_imports` 表与 `entity_types.iri` / `relation_types.iri` 见迁移 0031。
+> `ontology_imports` 表与 `entity_types.iri` / `relation_types.iri` 见迁移 0015。
 >
 > **对着真实词汇表验证，不是自己写的样例**。FOAF（RDF/XML，635 三元组）：
 > 15 类 + 89 属性，`functional` / `inverse_functional` / domain / range 全部读出；
@@ -221,7 +221,7 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 
 属性在产品里早已完整：`relation_types` 一表两用（`kind='attribute'`），
 `domain_type_id` 指明挂在哪个类下，`datatype` / `unit` 描述取值，值走
-`facts.object_value`，时态、证据、审阅全套复用（迁移 0004）。
+`facts.object_value`，时态、证据、审阅全套复用（见 `relation_types.kind`）。
 
 缺的只是**导入器不建它们**。FOAF 的 54 个 `owl:DatatypeProperty` 解析出来了、
 预览里报了数，但 `apply()` 跳过。初稿把原因记成"要 domain，而 domain 要等类
@@ -307,7 +307,7 @@ OWL 里一个属性有多个 domain 是常态。`datatype` 仍留在 `relation_t
 
 #### 四、多继承 DAG
 
-`entity_types.parent_id` 是单列（迁移 0005），只能表达树。而多继承在真实词汇表里
+`entity_types.parent_id` 曾是单列，只能表达树。而多继承在真实词汇表里
 是常态——FOAF 的 `Person` 同时是 `foaf:Agent` 与 `geo:SpatialThing`，两个方向，
 不是同一根链上的祖孙。P2b 目前**只投影第一个父类**。
 
@@ -496,7 +496,7 @@ related_to 事实  359 条
 
 **顺序不能反**：先有 P0 的编辑能力，才有"人工决策"可保护、可学习。
 
-1. **决策不可被遗忘（正确性，不是功能）** —— **已建成**（迁移 0051 · #114）。
+1. **决策不可被遗忘（正确性，不是功能）** —— **已建成**（`entities.type_source` · #114）。
    `entities.type_source`（extracted / human / inferred），四条路径各有守卫：
    类型消解取材、本体新类认领、抽取升格、改类落库（`actor` 有值即 `human`）。
 

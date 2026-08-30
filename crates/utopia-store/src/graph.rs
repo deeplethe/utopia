@@ -95,7 +95,7 @@ pub async fn insert_fact(
     kb_id: Uuid,
     subject_id: Uuid,
     // None = 本体里没有对应的关系。原意不丢——它在证据的 proposed_predicate 里，
-    // 显示时由 fact_surface_predicate() 取回（迁移 0052）
+    // 显示时由 fact_surface_predicate() 取回（见 `facts.predicate_id`）
     predicate_id: Option<Uuid>,
     object_id: Uuid,
     validity: Validity<'_>,
@@ -126,7 +126,7 @@ pub async fn insert_fact(
 /// | **结束了，不知哪天** | `None` | `Some("unknown")` |
 /// | 某时结束 | `Some(t)` | `Some("year"/"month"/"day")` |
 ///
-/// 第二行是 0046 加的。在它之前 `to = None` 同时承载「还在持续」和「不知何时
+/// 第二行是后加的。在它之前 `to = None` 同时承载「还在持续」和「不知何时
 /// 结束」，于是 "former CEO of Weta Digital" 这种**结束明确、日期缺失**的句子
 /// 只能写成前者，图会断言一件原文说已经结束的事。
 #[derive(Debug, Clone, Copy, Default)]
@@ -164,7 +164,7 @@ impl<'a> Validity<'a> {
     /// 这条断言是否已经不再成立——**两种结束都算**。
     ///
     /// 判据写在这里而不是散在各处的 `valid_to.is_some()`：那种写法会把
-    /// 「结束了但不知哪天」漏成「仍在持续」，而那正是 0046 要修的东西。
+    /// 「结束了但不知哪天」漏成「仍在持续」，而那正是两端各记精度要修的东西。
     pub fn has_ended(&self) -> bool {
         self.to.is_some() || self.to_precision == Some(ENDED_UNKNOWN)
     }
@@ -176,7 +176,7 @@ async fn insert_fact_inner(
     kb_id: Uuid,
     subject_id: Uuid,
     // None = 本体里没有对应的关系。原意不丢——它在证据的 proposed_predicate 里，
-    // 显示时由 fact_surface_predicate() 取回（迁移 0052）
+    // 显示时由 fact_surface_predicate() 取回（见 `facts.predicate_id`）
     predicate_id: Option<Uuid>,
     object: FactObject<'_>,
     validity: Validity<'_>,
@@ -292,7 +292,7 @@ pub async fn insert_value_fact(
     kb_id: Uuid,
     subject_id: Uuid,
     // None = 本体里没有对应的关系。原意不丢——它在证据的 proposed_predicate 里，
-    // 显示时由 fact_surface_predicate() 取回（迁移 0052）
+    // 显示时由 fact_surface_predicate() 取回（见 `facts.predicate_id`）
     predicate_id: Option<Uuid>,
     object_value: &serde_json::Value,
     validity: Validity<'_>,

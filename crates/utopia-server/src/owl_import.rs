@@ -461,7 +461,7 @@ pub async fn apply(
     // 换一个"发现得早一点"，不划算
     utopia_store::ontology::set_parents_bulk(&state.pool, &parent_edges).await?;
 
-    // 类互斥同理攒一批（0054）。指向没被建出来的类的那些自然落选——
+    // 类互斥同理攒一批（见 `relation_types` 的公理列）。指向没被建出来的类的那些自然落选——
     // 一条互斥声明的两端都得在这个库里,才谈得上拿它判矛盾
     let mut disjoint_edges: Vec<(Uuid, Uuid)> = Vec::new();
     for c in &proj.classes {

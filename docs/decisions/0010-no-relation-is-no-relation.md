@@ -1,6 +1,6 @@
 # 「说不出是什么关系」不该是一个关系
 
-**状态**：已实施 · `facts.predicate_id` 改为可空 · 迁移 0052
+**状态**：已实施 · `facts.predicate_id` 改为可空
 
 这是 [0009](0009-no-type-is-a-type.md) 在关系侧的孪生。那一篇讲的是
 `concept`——一个"还没判出来"被写成了一个类；这一篇讲 `related_to`——
@@ -124,7 +124,7 @@
 
 ## 修订：删了数据，没删代码，七分钟后它长回来了
 
-**状态**：迁移 0053 · 与 0052 同一篇的直接后续
+**状态**：已实施 · 与上一节同一篇的直接后续
 
 0052 只删了 `relation_types` 里的**行**。种子关系是**代码**——`graph.rs` 的
 `DEFAULT_RELATION_TYPES` 里那一条还在，而 `ensure_default_ontology` 在建库、
