@@ -553,6 +553,8 @@ export const en = {
     nodeBudgetLess: "Draw fewer",
     legendSearch: "Filter classes",
     legendNone: "No class matches",
+    legendOnly: "Only",
+    legendShowAll: (n: number) => `Show all (${n} hidden)`,
     legendAllHint:
       "Every class on screen, most common first. Click to show or hide.",
     searchMore: (n: number) => `${n} more — load 20`,

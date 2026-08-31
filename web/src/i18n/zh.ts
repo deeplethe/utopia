@@ -518,6 +518,8 @@ export const zh: Strings = {
     nodeBudgetLess: "少画一些",
     legendSearch: "筛选类",
     legendNone: "没有匹配的类",
+    legendOnly: "只看",
+    legendShowAll: (n: number) => `显示全部（隐藏了 ${n} 个）`,
     legendAllHint: "画面上的全部类，按出现次数排。点一下显示或隐藏。",
     searchMore: (n: number) => `还有 ${n} 个——再加载 20`,
     zoomIn: "放大",

@@ -1090,6 +1090,17 @@ export function Graph() {
             </button>
           ))}
 
+          {/* 复位。**只要存在隐藏就给一步到位的出口**——「只看」很容易把
+              画面收得很窄，没有这个就得挨个点回来 */}
+          {hiddenTypes.size > 0 && (
+            <button
+              onClick={() => setHiddenTypes(new Set())}
+              className="glass rounded-full px-2.5 py-1 text-[11px] text-neutral-400 transition-colors hover:text-neutral-100"
+            >
+              {S.graph.legendShowAll(hiddenTypes.size)}
+            </button>
+          )}
+
           {legendRest.length > 0 && (
             <div className="relative">
               <button
@@ -1124,38 +1135,61 @@ export function Graph() {
                         t.label.toLowerCase().includes(legendQ.toLowerCase()),
                       )
                       .map(([key, t]) => (
-                        <button
+                        /* **一行两个按钮，不是一个按钮循环三态。**
+                           单键循环的代价是：不看当前状态就不知道下一次点击
+                           会发生什么，而且从「只看」回到正常必须路过「排除」
+                           ——想清空却得先让画面变成另一个错的样子。
+                           拆开之后每个手势含义固定 */
+                        <div
                           key={key}
-                          onClick={() =>
-                            setHiddenTypes((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(key)) next.delete(key);
-                              else next.add(key);
-                              return next;
-                            })
-                          }
-                          className="flex items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-white/5"
+                          className="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-white/5"
                         >
-                          <span
-                            className={`h-2 w-2 shrink-0 ${t.shape === "square" ? "" : "rounded-full"}`}
-                            style={{
-                              background: t.color,
-                              opacity: hiddenTypes.has(key) ? 0.35 : 1,
-                            }}
-                          />
-                          <span
-                            className={`truncate text-[12px] ${
-                              hiddenTypes.has(key)
-                                ? "text-neutral-500 line-through"
-                                : "text-neutral-200"
-                            }`}
+                          <button
+                            onClick={() =>
+                              setHiddenTypes((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(key)) next.delete(key);
+                                else next.add(key);
+                                return next;
+                              })
+                            }
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
                           >
-                            {t.label}
-                          </span>
-                          <span className="u-num ml-auto shrink-0 text-[11px] text-neutral-500">
+                            <span
+                              className={`h-2 w-2 shrink-0 ${t.shape === "square" ? "" : "rounded-full"}`}
+                              style={{
+                                background: t.color,
+                                opacity: hiddenTypes.has(key) ? 0.35 : 1,
+                              }}
+                            />
+                            <span
+                              className={`truncate text-[12px] ${
+                                hiddenTypes.has(key)
+                                  ? "text-neutral-500 line-through"
+                                  : "text-neutral-200"
+                              }`}
+                            >
+                              {t.label}
+                            </span>
+                          </button>
+                          {/* 「只看这个」：类一多时最想要的动作。**给显式按钮而不是
+                              修饰键**——alt+点击没人猜得到，这里横向有地方 */}
+                          <button
+                            onClick={() =>
+                              setHiddenTypes(
+                                new Set(
+                                  types.map(([k]) => k).filter((k) => k !== key),
+                                ),
+                              )
+                            }
+                            className="shrink-0 rounded px-1 text-[10px] text-neutral-500 opacity-0 transition-opacity hover:text-white focus:opacity-100 group-hover:opacity-100"
+                          >
+                            {S.graph.legendOnly}
+                          </button>
+                          <span className="u-num shrink-0 text-[11px] text-neutral-500">
                             {t.count}
                           </span>
-                        </button>
+                        </div>
                       ))}
                     {types.every(
                       ([, t]) =>
