@@ -277,6 +277,30 @@ export interface DerivedFact {
   premises: string[];
 }
 
+/** 审核页的分档。**与服务端的 queue 参数是同一组字面量**——拼错会拿到
+ *  一个明确的 unknown_queue 错误，而不是悄悄的空列表。 */
+export type ReviewQueue =
+  | "duplicates"
+  | "conflicts"
+  | "unconfirmed"
+  | "lowconf"
+  | "mappings"
+  | "violations"
+  | "defects"
+  | "merges";
+
+/** 各档的真实条数。左栏的徽标读它，不读列表长度 */
+export interface ReviewCounts {
+  duplicates: number;
+  conflicts: number;
+  unconfirmed: number;
+  lowconf: number;
+  mappings: number;
+  violations: number;
+  defects: number;
+  merges: number;
+}
+
 export interface ReviewSide {
   id: string;
   name: string;
@@ -755,8 +779,34 @@ export const api = {
 
   kbs: (workspaceId: string) =>
     request<Kb[]>(`/api/v1/workspaces/${workspaceId}/kbs`),
-  kbAudit: (kbId: string) =>
-    request<{ events: AuditEvent[] }>(`/api/v1/kbs/${kbId}/audit`),
+  /** 审计台账。**分页 + 筛选**——台账是合规材料，只看最近 100 条等于查不了历史。
+   *  `action` 是前缀：`entity.` 捞出 entity.retyped / entity.renamed 一族。 */
+  kbAudit: (
+    kbId: string,
+    opts: {
+      action?: string;
+      actor?: string;
+      since?: string;
+      until?: string;
+      limit: number;
+      offset: number;
+    },
+  ) => {
+    const p = new URLSearchParams({
+      limit: String(opts.limit),
+      offset: String(opts.offset),
+    });
+    if (opts.action) p.set("action", opts.action);
+    if (opts.actor) p.set("actor", opts.actor);
+    if (opts.since) p.set("since", opts.since);
+    if (opts.until) p.set("until", opts.until);
+    return request<{
+      events: AuditEvent[];
+      total: number;
+      /** 这个库实际发生过的动作，筛选下拉按它填 */
+      actions: string[];
+    }>(`/api/v1/kbs/${kbId}/audit?${p}`);
+  },
   myKbs: (workspaceId: string) =>
     request<{ kbs: MyKb[] }>(`/api/v1/workspaces/${workspaceId}/my-kbs`),
   createKb: (
@@ -931,13 +981,23 @@ export const api = {
       body: JSON.stringify(body),
     }),
   graphOverview: (kbId: string) =>
-    request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
-      `/api/v1/kbs/${kbId}/graph/overview`,
-    ),
+    request<{
+      nodes: GraphNode[];
+      edges: GraphEdge[];
+      /** 库里一共有多少。**与 nodes.length 不是一回事**——画布只画度数最高的
+       *  那一批，把上限当成规模显示是这个接口从前最误导人的地方 */
+      total_nodes?: number;
+      total_edges?: number;
+    }>(`/api/v1/kbs/${kbId}/graph/overview`),
+  /** 邻域视图**没有总数**：它本来就只是一小片，说「共 325 个」没有意义。
+   *  两个字段声明成可选，好让调用方与总览共用一个类型 */
   graphNeighborhood: (kbId: string, entityId: string) =>
-    request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
-      `/api/v1/kbs/${kbId}/graph/neighborhood?entity=${entityId}&hops=2`,
-    ),
+    request<{
+      nodes: GraphNode[];
+      edges: GraphEdge[];
+      total_nodes?: number;
+      total_edges?: number;
+    }>(`/api/v1/kbs/${kbId}/graph/neighborhood?entity=${entityId}&hops=2`),
   searchEntities: (kbId: string, q: string) =>
     request<{ entities: GraphNode[] }>(
       `/api/v1/kbs/${kbId}/entities?q=${encodeURIComponent(q)}`,
@@ -1213,17 +1273,22 @@ export const api = {
   documentExtractions: (docId: string) =>
     request<{ facts: ChunkFact[] }>(`/api/v1/documents/${docId}/extractions`),
 
-  review: (kbId: string) =>
+  /** 审核队列的各档**真实条数**。与列表分开取——列表有一页的上限，数数没有。
+   *  从前徽标读的是数组长度，而接口固定只回 100 条，于是 164 条写成 100。 */
+  review: (
+    kbId: string,
+    queue: ReviewQueue,
+    limit: number,
+    offset: number,
+  ) =>
     request<{
-      reviews: ReviewItem[];
-      facts: FactReviewItem[];
-      merges: MergeLog[];
-      conflicts: ConflictItem[];
-      unconfirmed: FactReviewItem[];
-      mappings: ConceptMapping[];
-      violations: AxiomViolation[];
-      defects: OntologyDefect[];
-    }>(`/api/v1/kbs/${kbId}/review`),
+      counts: ReviewCounts;
+      queue: ReviewQueue;
+      /** 只有当前这一档的一页。类型按档不同，调用处按 queue 收窄 */
+      items: unknown[];
+    }>(
+      `/api/v1/kbs/${kbId}/review?queue=${queue}&limit=${limit}&offset=${offset}`,
+    ),
   closeFact: (kbId: string, factId: string, validTo: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/close`, {
       method: "POST",

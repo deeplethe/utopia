@@ -524,6 +524,22 @@ export const zh: Strings = {
     derivedHint:
       "没有人断言过的边——引擎按本体声明的公理推出来的。每一条都附着它用到的前提。",
     derivedNoProof: "前提已经不在了。",
+    derivedPanel: "推理",
+    derivedCountLabel: "推出来的边",
+    derivedStateLabel: "定时",
+    derivedLastLabel: "上次推理",
+    derivedOn: (mins: number) => `每 ${mins} 分钟`,
+    derivedOff: "已关闭",
+    derivedNever: "从未",
+    derivedAgo: (mins: number) =>
+      mins < 1 ? "刚刚" : mins < 60 ? `${mins} 分钟前` : `${Math.round(mins / 60)} 小时前`,
+    derivedRun: "现在跑一遍",
+    derivedRunning: "推理中…",
+    derivedNoChange: "没有变化。",
+    derivedChanged: (added: number, gone: number) =>
+      `新增 ${added} · 作废 ${gone}`,
+    derivedCapped: (n: number) => `${n} 个谓词没推完`,
+    close: "关闭",
     ruleTransitive: "传递",
     ruleSymmetric: "对称",
     historyHint: "这个实体的记录如何变化——以及是谁改的。",
@@ -551,6 +567,10 @@ export const zh: Strings = {
     endedUnknown: "已结束（时间不详）",
     stats: (n: number, e: number, active: number) =>
       `${n} 个实体 · ${e} 条事实 · ${active} 条现行`,
+    statsCapped: (shown: number, total: number, e: number, active: number) =>
+      `已画 ${shown} / 共 ${total} 个实体 · ${e} 条事实 · ${active} 条现行`,
+    cappedHint: (shown: number, total: number) =>
+      `画布只画连接最密的 ${shown} 个，库里共 ${total} 个。其余的用搜索找。`,
     stabilizing: "布局收敛中",
     allTime: "全部时间",
     nowBtn: "现在",
@@ -971,6 +991,11 @@ export const zh: Strings = {
     dataNewConn: "登记新连接",
     activity: "活动",
     activityHint: "谁在这个知识库里改了什么。纯审计——记录只追加。",
+    auditAllActions: "全部动作",
+    auditSince: "起始日期",
+    auditUntil: "截止日期",
+    auditClear: "清除筛选",
+    auditTotal: (n: number) => `共 ${n} 条`,
     activityEmpty: "还没有记录。",
     deletedUser: "一位已移除的用户",
     auditActions: {

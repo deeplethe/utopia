@@ -892,14 +892,21 @@ async fn assemble_reviews(
 }
 
 /// 全部待处理审核项（LLM 裁决中 + 等人工的都展示，人工可随时抢先定夺）。
-pub async fn list_reviews(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<ReviewItem>> {
+pub async fn list_reviews(
+    pool: &PgPool,
+    kb_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<ReviewItem>> {
     let rows: Vec<ReviewRow> = sqlx::query_as(
         "SELECT id, left_id, right_id, score, reason, stage, created_at
          FROM resolution_reviews
          WHERE kb_id = $1 AND status = 'pending'
-         ORDER BY created_at DESC LIMIT 100",
+         ORDER BY created_at DESC LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
     assemble_reviews(pool, kb_id, rows).await
@@ -1420,7 +1427,12 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
 }
 
 /// 合并日志（审核页历史区）。
-pub async fn list_merges(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<MergeLogView>> {
+pub async fn list_merges(
+    pool: &PgPool,
+    kb_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<MergeLogView>> {
     let rows: Vec<MergeLogView> = sqlx::query_as(
         "SELECT m.id, s.canonical_name AS source_name, t.canonical_name AS target_name,
                 u.display_name AS merged_by_name, m.reason, m.created_at, m.reverted_at
@@ -1429,10 +1441,11 @@ pub async fn list_merges(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Ve
          JOIN entities t ON t.id = m.target_id
          LEFT JOIN users u ON u.id = m.merged_by
          WHERE m.kb_id = $1
-         ORDER BY m.created_at DESC LIMIT $2",
+         ORDER BY m.created_at DESC LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
     Ok(rows)

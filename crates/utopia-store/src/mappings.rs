@@ -77,7 +77,12 @@ pub async fn propose(
 }
 
 /// 还等着人表态的。Review 页读它。
-pub async fn proposed(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<ConceptMapping>> {
+pub async fn proposed(
+    pool: &PgPool,
+    kb_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<ConceptMapping>> {
     Ok(sqlx::query_as(
         "SELECT m.id, m.concept_id, e.canonical_name AS concept_name, m.source,
                 m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status
@@ -85,10 +90,11 @@ pub async fn proposed(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<C
          JOIN entities e ON e.id = m.concept_id
          WHERE m.kb_id = $1 AND m.status = 'proposed'
          ORDER BY e.canonical_name, m.source
-         LIMIT $2",
+         LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?)
 }

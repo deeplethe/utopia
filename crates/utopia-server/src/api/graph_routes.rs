@@ -32,6 +32,10 @@ fn parse_at(raw: Option<&str>) -> Result<Option<chrono::DateTime<chrono::Utc>>, 
         .map_err(|_| AppError::Validation("Invalid `at` (expected YYYY-MM-DD or RFC3339)".into()))
 }
 
+/// 总览一次画多少个节点。**上限本身是合理的**——画一万个点没人看得懂；
+/// 骗人的是把它当成规模显示，所以接口同时回总数
+const GRAPH_NODE_CAP: i64 = 150;
+
 #[derive(Deserialize)]
 pub struct OverviewQuery {
     #[serde(default)]
@@ -46,8 +50,14 @@ pub async fn overview(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
     let at = parse_at(q.at.as_deref())?;
-    let (nodes, edges) = utopia_store::graph::overview(&state.pool, kb_id, 150, at).await?;
-    Ok(Json(json!({ "nodes": nodes, "edges": edges })))
+    // 画多少个是渲染的事，库里有多少是知识库的事——两个数都回，界面才说得出
+    // 「画了 150 个，共 325 个」而不是把上限说成规模
+    let (nodes, edges, total_nodes, total_edges) =
+        utopia_store::graph::overview(&state.pool, kb_id, GRAPH_NODE_CAP, at).await?;
+    Ok(Json(json!({
+        "nodes": nodes, "edges": edges,
+        "total_nodes": total_nodes, "total_edges": total_edges,
+    })))
 }
 
 #[derive(Deserialize)]

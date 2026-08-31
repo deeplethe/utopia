@@ -384,12 +384,18 @@ const NODE_SQL: &str = "SELECT e.id, e.canonical_name AS name, t.key AS type_key
 /// 全图概览：按度数取 top N 实体及其间的边。
 /// `at`：服务端 as-of——只返回 T 时刻有效的边（起点不晚于 T 或未知，终点晚于 T 或开放）。
 /// 前端时间滑杆走本地过滤不传此参数；这是给 API/MCP 消费者的时间旅行入口。
+/// 图谱总览：度数最高的 `limit` 个节点，以及它们之间的边。
+///
+/// **一并回总数。** 画多少个是渲染的事，库里有多少是知识库的事，两者从前
+/// 在界面上被同一个数字表示——一个上万实体的库，右上角永远写着 150，而那
+/// 是上限不是规模。渲染上限本身是合理的（画一万个点没人看得懂），骗人的是
+/// 把它说成总数。
 pub async fn overview(
     pool: &PgPool,
     kb_id: Uuid,
     limit: i64,
     at: Option<chrono::DateTime<chrono::Utc>>,
-) -> AppResult<(Vec<GraphNode>, Vec<GraphEdge>)> {
+) -> AppResult<(Vec<GraphNode>, Vec<GraphEdge>, i64, i64)> {
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
         "{NODE_SQL} WHERE e.kb_id = $1 AND e.merged_into IS NULL ORDER BY degree DESC, e.created_at LIMIT $2"
     ))
@@ -400,7 +406,26 @@ pub async fn overview(
 
     let ids: Vec<Uuid> = nodes.iter().map(|n| n.id).collect();
     let edges = edges_among(pool, kb_id, &ids, at).await?;
-    Ok((nodes, edges))
+
+    // 总数按与画布同一套口径数：合并掉的实体不算，作废的事实不算，
+    // 属性事实（宾语是字面值）画不出边所以也不算。口径不同的话，
+    // 「150 / 325」里那个 325 会跟用户在别处看到的数对不上
+    let total_nodes: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM entities WHERE kb_id = $1 AND merged_into IS NULL",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    let total_edges: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM facts
+                  WHERE kb_id = $1 AND invalidated_at IS NULL AND object_id IS NOT NULL)
+              + (SELECT count(*) FROM derived_facts
+                  WHERE kb_id = $1 AND invalidated_at IS NULL)",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((nodes, edges, total_nodes, total_edges))
 }
 
 async fn edges_among(
@@ -690,6 +715,7 @@ pub async fn low_confidence_facts(
     kb_id: Uuid,
     below: f32,
     limit: i64,
+    offset: i64,
 ) -> AppResult<Vec<FactReviewItem>> {
     let rows: Vec<FactReviewItem> = sqlx::query_as(
         "SELECT f.id, s.canonical_name AS subject_name, COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
@@ -704,11 +730,12 @@ pub async fn low_confidence_facts(
          LEFT JOIN entities o ON o.id = f.object_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.confidence < $2
          ORDER BY f.confidence, f.recorded_at DESC
-         LIMIT $3",
+         LIMIT $3 OFFSET $4",
     )
     .bind(kb_id)
     .bind(below)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -717,7 +744,12 @@ pub async fn low_confidence_facts(
 /// "证据全部停留在旧版"的现行事实（S3 第三刀：文档新版没再确认的知识）。
 /// 判定纯派生自 chunk 存活性——认领机制保证未变段落的证据不被误伤；
 /// 绝不自动删除（没再提 ≠ 不成立），删除/闭合权在 Review 的人手里。
-pub async fn stale_facts(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<FactReviewItem>> {
+pub async fn stale_facts(
+    pool: &PgPool,
+    kb_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<FactReviewItem>> {
     let rows: Vec<FactReviewItem> = sqlx::query_as(
         "SELECT f.id, s.canonical_name AS subject_name, COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
                 COALESCE(o.canonical_name, f.object_value->>'summary') AS object_name,
@@ -735,10 +767,11 @@ pub async fn stale_facts(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Ve
                            JOIN chunks c ON c.id = fe.chunk_id
                            WHERE fe.fact_id = f.id AND c.superseded_at IS NULL)
          ORDER BY f.recorded_at DESC
-         LIMIT $2",
+         LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
     Ok(rows)

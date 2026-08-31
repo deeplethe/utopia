@@ -570,6 +570,22 @@ export const en = {
     derivedHint:
       "Edges no one asserted — the engine worked them out from axioms your ontology declares. Each one shows the premises it came from.",
     derivedNoProof: "The premises are gone.",
+    derivedPanel: "Inference",
+    derivedCountLabel: "Edges derived",
+    derivedStateLabel: "Schedule",
+    derivedLastLabel: "Last run",
+    derivedOn: (mins: number) => `every ${mins} min`,
+    derivedOff: "off",
+    derivedNever: "never",
+    derivedAgo: (mins: number) =>
+      mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`,
+    derivedRun: "Run now",
+    derivedRunning: "Running…",
+    derivedNoChange: "Nothing changed.",
+    derivedChanged: (added: number, gone: number) =>
+      `${added} added · ${gone} retracted`,
+    derivedCapped: (n: number) => `${n} predicate(s) not closed fully`,
+    close: "Close",
     ruleTransitive: "transitive",
     ruleSymmetric: "symmetric",
     historyHint: "How this entity's record changed — and who changed it.",
@@ -603,6 +619,12 @@ export const en = {
     endedUnknown: "ended, date unknown",
     stats: (n: number, e: number, active: number) =>
       `${n} entities · ${e} facts · ${active} active`,
+    /** 画布只画度数最高的一批。**说清楚画了多少、共多少**——从前这里写的是
+     *  上限，一个上万实体的库右上角永远是 150 */
+    statsCapped: (shown: number, total: number, e: number, active: number) =>
+      `showing ${shown} of ${total} entities · ${e} facts · ${active} active`,
+    cappedHint: (shown: number, total: number) =>
+      `The canvas draws the ${shown} best-connected entities of ${total}. Search to reach the rest.`,
     stabilizing: "Stabilizing layout",
     allTime: "All time",
     nowBtn: "Now",
@@ -1085,6 +1107,11 @@ export const en = {
     activity: "Activity",
     activityHint:
       "Who changed what in this knowledge base. Pure audit — records are append-only.",
+    auditAllActions: "All actions",
+    auditSince: "From this date",
+    auditUntil: "Up to this date",
+    auditClear: "Clear filters",
+    auditTotal: (n: number) => `${n} events`,
     activityEmpty: "Nothing recorded yet.",
     deletedUser: "a removed user",
     auditActions: {

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   type AxiomViolation,
+  type ReviewQueue,
   type OntologyDefect,
   type ConceptMapping,
   type ConflictItem,
@@ -14,7 +15,7 @@ import {
 } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
-import { Chip, type ChipTone, Pager, RAIL_CLS, pageSlice, cn } from "../ui";
+import { Chip, type ChipTone, Pager, RAIL_CLS, cn } from "../ui";
 
 const DUP_PAGE = 6;
 const FACT_PAGE = 10;
@@ -642,6 +643,18 @@ type Sel =
   | "decisions"
   | "merges";
 
+/** 走服务端分页的那几档（决策台账另有自己的接口） */
+const QUEUE_FETCHED: ReviewQueue[] = [
+  "duplicates",
+  "conflicts",
+  "unconfirmed",
+  "lowconf",
+  "mappings",
+  "violations",
+  "defects",
+  "merges",
+];
+
 const QUEUE_ORDER: Sel[] = [
   "duplicates",
   "conflicts",
@@ -713,11 +726,22 @@ export function Review() {
   const [sel, setSel] = useState<Sel | null>(null);
   const [page, setPage] = useState(0);
 
-  // 队列变化经 SSE 事件流推送（useKbEvents 挂在 Shell），无需轮询
+  // 队列变化经 SSE 事件流推送（useKbEvents 挂在 Shell），无需轮询。
+  //
+  // **按分档 + 页码取**：从前一次把八个队列全端回来、每档 100 条、客户端分页，
+  // 于是左栏的徽标是截断后的数字，第十一页之后的东西界面上不存在。现在计数
+  // 每次都回（服务端 COUNT，不受一页多少条影响），内容只回当前这一档的一页。
+  const queueSel: ReviewQueue = QUEUE_FETCHED.includes(
+    (sel ?? "duplicates") as ReviewQueue,
+  )
+    ? ((sel ?? "duplicates") as ReviewQueue)
+    : "duplicates";
   const review = useQuery({
-    queryKey: ["review", kb?.id],
-    queryFn: () => api.review(kb!.id),
+    queryKey: ["review", kb?.id, queueSel, page],
+    queryFn: () => api.review(kb!.id, queueSel, PAGE_SIZE[queueSel], page * PAGE_SIZE[queueSel]),
     enabled: !!kb,
+    // 翻页时别把上一页闪成空白——计数与骨架都还在，只有条目在换
+    placeholderData: (prev) => prev,
   });
   // 决策台账：服务端分页，仅选中时拉取
   const history = useQuery({
@@ -809,26 +833,38 @@ export function Review() {
     onSettled: invalidate,
   });
 
-  const data = review.data;
+  // **徽标读服务端的 COUNT，不读列表长度。** 这是从前那个「库里 164、界面写
+  // 100」的根源：数组长度反映的是一页多少条，不是库里有多少条。
+  const c = review.data?.counts;
   const counts: Record<Sel, number> = {
-    duplicates: data?.reviews.length ?? 0,
-    conflicts: data?.conflicts?.length ?? 0,
-    unconfirmed: data?.unconfirmed?.length ?? 0,
-    lowconf: data?.facts.length ?? 0,
-    mappings: data?.mappings?.length ?? 0,
-    violations: data?.violations?.length ?? 0,
-    defects: data?.defects?.length ?? 0,
-    merges: data?.merges.length ?? 0,
+    duplicates: c?.duplicates ?? 0,
+    conflicts: c?.conflicts ?? 0,
+    unconfirmed: c?.unconfirmed ?? 0,
+    lowconf: c?.lowconf ?? 0,
+    mappings: c?.mappings ?? 0,
+    violations: c?.violations ?? 0,
+    defects: c?.defects ?? 0,
+    merges: c?.merges ?? 0,
     decisions: history.data?.total ?? 0,
   };
+  // 当前这一档的一页。**服务端已经切好了**，这里只按档收窄类型——
+  // 收窄错了会在渲染时露馅，而不是悄悄显示空列表
+  const rows = review.data?.queue === queueSel ? (review.data.items ?? []) : [];
+  const asDuplicates = () => rows as ReviewItem[];
+  const asFacts = () => rows as FactReviewItem[];
+  const asConflicts = () => rows as ConflictItem[];
+  const asMappings = () => rows as ConceptMapping[];
+  const asViolations = () => rows as AxiomViolation[];
+  const asDefects = () => rows as OntologyDefect[];
+  const asMerges = () => rows as MergeLog[];
   const queueEmpty = QUEUE_ORDER.every((k) => counts[k] === 0);
 
   // 首批数据到达：定位到第一个非空队列（全空落在 duplicates 显示"干净"文案）
   useEffect(() => {
-    if (sel === null && data)
+    if (sel === null && c)
       setSel(QUEUE_ORDER.find((k) => counts[k] > 0) ?? "duplicates");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
+  }, [c]);
 
   const select = (s: Sel) => {
     setSel(s);
@@ -937,7 +973,7 @@ export function Review() {
             </p>
           )}
 
-          {data && (
+          {review.data && (
             <section>
               {/* 页级标题：与 Library/KB Settings 同级（text-lg），不是卡片头 */}
               <h2 className="u-title text-lg mb-1">{SECTION[active].title}</h2>
@@ -960,7 +996,7 @@ export function Review() {
 
               {active === "duplicates" && counts.duplicates > 0 && (
                 <div className="space-y-3">
-                  {pageSlice(data.reviews, page, DUP_PAGE).rows.map((item) => (
+                  {asDuplicates().map((item) => (
                     <DuplicateCard
                       key={item.id}
                       item={item}
@@ -977,7 +1013,7 @@ export function Review() {
 
               {active === "conflicts" && counts.conflicts > 0 && (
                 <div className="space-y-3">
-                  {pageSlice(data.conflicts, page, CONFLICT_PAGE).rows.map(
+                  {asConflicts().map(
                     (c) => (
                       <ConflictRow
                         key={c.id}
@@ -997,7 +1033,7 @@ export function Review() {
 
               {active === "unconfirmed" && counts.unconfirmed > 0 && (
                 <div className="space-y-3">
-                  {pageSlice(data.unconfirmed, page, FACT_PAGE).rows.map(
+                  {asFacts().map(
                     (fact) => (
                       <UnconfirmedRow
                         key={fact.id}
@@ -1022,7 +1058,7 @@ export function Review() {
 
               {active === "lowconf" && counts.lowconf > 0 && (
                 <div className="space-y-3">
-                  {pageSlice(data.facts, page, FACT_PAGE).rows.map((fact) => (
+                  {asFacts().map((fact) => (
                     <FactRow
                       key={fact.id}
                       fact={fact}
@@ -1043,7 +1079,7 @@ export function Review() {
 
               {active === "mappings" && counts.mappings > 0 && (
                 <div className="space-y-3">
-                  {pageSlice(data.mappings ?? [], page, FACT_PAGE).rows.map(
+                  {asMappings().map(
                     (m) => (
                       <MappingRow
                         key={m.id}
@@ -1068,7 +1104,7 @@ export function Review() {
                       {S.review.categoryEmpty}
                     </div>
                   )}
-                  {pageSlice(data.defects ?? [], page, FACT_PAGE).rows.map(
+                  {asDefects().map(
                     (d) => (
                       <DefectRow
                         key={d.id}
@@ -1120,7 +1156,7 @@ export function Review() {
                       {S.review.checkNeverRun}
                     </div>
                   )}
-                  {pageSlice(data.violations ?? [], page, FACT_PAGE).rows.map(
+                  {asViolations().map(
                     (v) => (
                       <ViolationRow
                         key={v.id}
@@ -1145,7 +1181,7 @@ export function Review() {
                   </div>
                 ) : (
                   <div className="space-y-2">
-                    {pageSlice(data.merges, page, MERGE_PAGE).rows.map((m) => (
+                    {asMerges().map((m) => (
                       <MergeRow
                         key={m.id}
                         merge={m}

@@ -20,6 +20,7 @@ pub mod model_limits;
 pub mod ontology;
 pub mod reasoning;
 pub mod resolution;
+pub mod review;
 pub mod settings;
 pub mod sources;
 pub mod temporal;

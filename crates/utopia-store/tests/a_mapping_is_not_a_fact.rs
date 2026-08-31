@@ -71,7 +71,7 @@ async fn one_concept_one_source_one_mapping() -> anyhow::Result<()> {
         let b = p("orders_v2").await?;
         assert_eq!(a, b, "同一个 (概念, 源) 该是同一行，不是两行");
 
-        let got = utopia_store::mappings::proposed(&pool, kb, 100).await?;
+        let got = utopia_store::mappings::proposed(&pool, kb, 100, 0).await?;
         assert_eq!(got.len(), 1, "只该有一条");
         assert_eq!(
             got[0].table_name.as_deref(),
@@ -94,7 +94,7 @@ async fn one_concept_one_source_one_mapping() -> anyhow::Result<()> {
         )
         .await?;
         assert_eq!(
-            utopia_store::mappings::proposed(&pool, kb, 100)
+            utopia_store::mappings::proposed(&pool, kb, 100, 0)
                 .await?
                 .len(),
             2,
@@ -164,7 +164,7 @@ async fn a_rejected_mapping_does_not_come_back() -> anyhow::Result<()> {
         )
         .await?;
         assert!(
-            utopia_store::mappings::proposed(&pool, kb, 100)
+            utopia_store::mappings::proposed(&pool, kb, 100, 0)
                 .await?
                 .is_empty(),
             "拒绝过的不该重新排队"

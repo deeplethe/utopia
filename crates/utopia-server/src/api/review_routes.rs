@@ -12,7 +12,8 @@ use crate::auth::AuthUser;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
-const LOW_CONFIDENCE_BELOW: f32 = 0.75;
+/// 一页多少条。**服务端的默认，不是上限**——前端可以要更少，多则被 clamp 挡住
+const REVIEW_PAGE: i64 = 10;
 
 /// 冲突双方的三元组快照：(旧主语, 旧宾语, 新主语, 新宾语, 谓词标签)。
 type ConflictSnapshot = (String, Option<String>, String, Option<String>, String);
@@ -40,33 +41,88 @@ async fn fact_snapshot(state: &AppState, kb_id: Uuid, fact_id: Uuid) -> Option<s
     row.map(|(s, p, o, c)| json!({ "subject": s, "predicate": p, "object": o, "confidence": c }))
 }
 
+#[derive(Deserialize)]
+pub struct ReviewQuery {
+    /// 要看哪一档。缺省 duplicates
+    #[serde(default)]
+    pub queue: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// 审核队列：**计数与内容分开取**。
+///
+/// 从前一次把八个队列全端回来，每个固定 100 条，前端再客户端分页——于是左栏
+/// 的徽标是截断后的数字（库里 164 条低置信事实，界面写 100），而第十一页之后
+/// 的东西界面上不存在。
+///
+/// 现在：计数每次都回（八个 COUNT 一条查询，走的是与列表同一套 WHERE），
+/// 内容只回当前那一档的一页。切换分档或翻页各发一次请求，代价是多几次往返，
+/// 换来的是**数字不再骗人**，而且一个有十万条待办的库也翻得到底。
 pub async fn list(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
+    Query(q): Query<ReviewQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let reviews = utopia_store::resolution::list_reviews(&state.pool, kb_id).await?;
-    let facts =
-        utopia_store::graph::low_confidence_facts(&state.pool, kb_id, LOW_CONFIDENCE_BELOW, 100)
-            .await?;
-    let merges = utopia_store::resolution::list_merges(&state.pool, kb_id, 30).await?;
-    let conflicts = utopia_store::temporal::list_conflicts(&state.pool, kb_id).await?;
-    let unconfirmed = utopia_store::graph::stale_facts(&state.pool, kb_id, 100).await?;
-    // 语义层的待表态映射（0011）。从前它借「低置信事实」那一档露面——
-    // 靠 confidence 0.6 混进去,而它根本不是一条关于世界的断言。
-    // 现在自成一档,前端也据此分组显示
-    let mappings = utopia_store::mappings::proposed(&state.pool, kb_id, 100).await?;
-    // 公理违规（0002 R0）。**不与 conflicts 合并**：那一档问「哪条对」，
-    // 这一档还可能答「公理写错了」——出路不同，前端也就分开显示
-    let violations = utopia_store::reasoning::open_violations(&state.pool, kb_id, 100).await?;
-    // 本体自己的自相矛盾。**排在违规前面给人看**：定义站不住时，据它报出来的
-    // 每一条事实违规都建立在一个本来就不成立的前提上
-    let defects = utopia_store::reasoning::open_defects(&state.pool, kb_id, 100).await?;
+    let counts = utopia_store::review::counts(&state.pool, kb_id).await?;
+    let queue = q.queue.as_deref().unwrap_or("duplicates");
+    // 上限挡住「limit=1000000 把库拖垮」，同时留出足够一页的余量
+    let limit = q.limit.unwrap_or(REVIEW_PAGE).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+
+    let items = match queue {
+        "duplicates" => {
+            json!(utopia_store::resolution::list_reviews(&state.pool, kb_id, limit, offset).await?)
+        }
+        "conflicts" => {
+            json!(utopia_store::temporal::list_conflicts(&state.pool, kb_id, limit, offset).await?)
+        }
+        "unconfirmed" => {
+            json!(utopia_store::graph::stale_facts(&state.pool, kb_id, limit, offset).await?)
+        }
+        "lowconf" => json!(
+            utopia_store::graph::low_confidence_facts(
+                &state.pool,
+                kb_id,
+                utopia_store::review::LOW_CONFIDENCE_BELOW,
+                limit,
+                offset,
+            )
+            .await?
+        ),
+        "mappings" => {
+            json!(utopia_store::mappings::proposed(&state.pool, kb_id, limit, offset).await?)
+        }
+        "violations" => {
+            json!(
+                utopia_store::reasoning::open_violations(&state.pool, kb_id, limit, offset).await?
+            )
+        }
+        "defects" => {
+            json!(utopia_store::reasoning::open_defects(&state.pool, kb_id, limit, offset).await?)
+        }
+        "merges" => {
+            json!(utopia_store::resolution::list_merges(&state.pool, kb_id, limit, offset).await?)
+        }
+        // 认不出的档名当成契约错误报出来，而不是悄悄回空——悄悄回空会让前端
+        // 拼错一个字母之后看到「这一档清空了」
+        other => {
+            return Err(utopia_core::AppError::invalid(
+                "unknown_queue",
+                &format!("no review queue named {other}"),
+            )
+            .into())
+        }
+    };
+
     Ok(Json(json!({
-        "reviews": reviews, "facts": facts, "merges": merges,
-        "conflicts": conflicts, "unconfirmed": unconfirmed,
-        "mappings": mappings, "violations": violations, "defects": defects
+        "counts": counts,
+        "queue": queue,
+        "items": items,
     })))
 }
 

@@ -191,6 +191,7 @@ pub async fn open_violations(
     pool: &PgPool,
     kb_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> AppResult<Vec<AxiomViolation>> {
     Ok(sqlx::query_as(
         "WITH triple AS (
@@ -216,10 +217,11 @@ pub async fn open_violations(
            JOIN triple rt ON rt.id = v.right_fact
           WHERE v.kb_id = $1 AND v.status = 'open'
           ORDER BY v.detected_at DESC
-          LIMIT $2",
+          LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?)
 }
@@ -623,6 +625,7 @@ pub async fn open_defects(
     pool: &PgPool,
     kb_id: Uuid,
     limit: i64,
+    offset: i64,
 ) -> AppResult<Vec<OntologyDefect>> {
     Ok(sqlx::query_as(
         "SELECT d.id, d.kind,
@@ -641,10 +644,11 @@ pub async fn open_defects(
            LEFT JOIN entity_types   ot ON ot.id = d.other
           WHERE d.kb_id = $1 AND d.status = 'open'
           ORDER BY d.detected_at DESC
-          LIMIT $2",
+          LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?)
 }

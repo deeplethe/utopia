@@ -21,6 +21,7 @@ import {
   DangerConfirm,
   Dropdown,
   Loading,
+  Pager,
   RAIL_CLS,
   SearchSelect,
 } from "../ui";
@@ -399,16 +400,87 @@ function auditDetailName(e: AuditEvent): string {
   return typeof hit === "string" ? hit : "";
 }
 
+const AUDIT_PAGE = 50;
+
 function KbActivity({ kbId }: { kbId: string }) {
+  // 筛选按真实查法来：查一类动作、查一个人、查一段时间。
+  // 动作前缀匹配——`entity.` 就能把 retyped / renamed 一族一起捞出来
+  const [action, setAction] = useState("");
+  const [since, setSince] = useState("");
+  const [until, setUntil] = useState("");
+  const [page, setPage] = useState(0);
   const audit = useQuery({
-    queryKey: ["kbAudit", kbId],
-    queryFn: () => api.kbAudit(kbId),
+    queryKey: ["kbAudit", kbId, action, since, until, page],
+    queryFn: () =>
+      api.kbAudit(kbId, {
+        action: action || undefined,
+        since: since || undefined,
+        until: until || undefined,
+        limit: AUDIT_PAGE,
+        offset: page * AUDIT_PAGE,
+      }),
+    placeholderData: (prev) => prev,
   });
   const events = audit.data?.events ?? [];
+  const total = audit.data?.total ?? 0;
+  // 下拉按这个库实际发生过的动作填，不是硬编码清单
+  const actions = audit.data?.actions ?? [];
+  const filtered = !!(action || since || until);
+
+  const reset = (fn: () => void) => {
+    fn();
+    setPage(0);
+  };
 
   return (
     <div className="glass rounded-xl p-4">
       <p className="text-xs text-neutral-500 mb-3">{S.kbset.activityHint}</p>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <select
+          className="input-dark px-2 py-1 text-xs"
+          value={action}
+          onChange={(e) => reset(() => setAction(e.target.value))}
+        >
+          <option value="">{S.kbset.auditAllActions}</option>
+          {actions.map((a) => (
+            <option key={a} value={a}>
+              {a}
+            </option>
+          ))}
+        </select>
+        <input
+          type="date"
+          className="input-dark px-2 py-1 text-xs u-num"
+          value={since}
+          title={S.kbset.auditSince}
+          onChange={(e) => reset(() => setSince(e.target.value))}
+        />
+        <span className="text-xs text-neutral-600">→</span>
+        <input
+          type="date"
+          className="input-dark px-2 py-1 text-xs u-num"
+          value={until}
+          title={S.kbset.auditUntil}
+          onChange={(e) => reset(() => setUntil(e.target.value))}
+        />
+        {filtered && (
+          <button
+            className="u-btn u-btn-ghost px-2 py-1 text-xs"
+            onClick={() =>
+              reset(() => {
+                setAction("");
+                setSince("");
+                setUntil("");
+              })
+            }
+          >
+            {S.kbset.auditClear}
+          </button>
+        )}
+        <span className="ml-auto u-num text-[11px] text-neutral-500">
+          {S.kbset.auditTotal(total)}
+        </span>
+      </div>
       {audit.isPending ? (
         <p className="text-xs text-neutral-600">{S.nav.loading}</p>
       ) : events.length === 0 ? (
@@ -441,6 +513,12 @@ function KbActivity({ kbId }: { kbId: string }) {
           ))}
         </div>
       )}
+      <Pager
+        total={total}
+        pageSize={AUDIT_PAGE}
+        page={page}
+        onPage={setPage}
+      />
     </div>
   );
 }

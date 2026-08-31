@@ -118,16 +118,73 @@ pub async fn review_history(
     Ok((rows, total))
 }
 
-pub async fn list_for_kb(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<AuditEventView>> {
-    let rows: Vec<AuditEventView> = sqlx::query_as(
+/// 一个知识库的审计台账，**带分页与筛选**。
+///
+/// 从前是固定最近 100 条、无分页无筛选——而台账是合规材料，「只看得到最近
+/// 一百条」等于查不了历史。三个筛选是按真实的查法挑的：
+///
+/// - `action`：查一类动作（「谁改过类型」「有哪些拒绝」）。前缀匹配而不是
+///   全等，因为动作名本身分层（`entity.retyped` / `entity.renamed`），
+///   传 `entity.` 就能把一族捞出来
+/// - `actor`：查一个人做过什么。合规审计最常见的问题
+/// - `since` / `until`：查一段时间。事故复盘要的就是这个
+///
+/// 一并回总数，否则分页器不知道有几页——而「不知道有几页」正是这一档
+/// 从前那个 100 的翻版。
+#[allow(clippy::too_many_arguments)]
+pub async fn list_for_kb(
+    pool: &PgPool,
+    kb_id: Uuid,
+    action: Option<&str>,
+    actor: Option<Uuid>,
+    since: Option<chrono::DateTime<chrono::Utc>>,
+    until: Option<chrono::DateTime<chrono::Utc>>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<(Vec<AuditEventView>, i64)> {
+    // 四个筛选都写成「参数为空就不生效」，这样一条 SQL 覆盖全部组合——
+    // 拼字符串会在这里长出十六个分支，而每个分支都是一次注入面
+    const WHERE: &str = "WHERE e.kb_id = $1
+           AND ($2::text IS NULL OR e.action LIKE $2 || '%')
+           AND ($3::uuid IS NULL OR e.actor_id = $3)
+           AND ($4::timestamptz IS NULL OR e.created_at >= $4)
+           AND ($5::timestamptz IS NULL OR e.created_at < $5)";
+
+    let rows: Vec<AuditEventView> = sqlx::query_as(&format!(
         "SELECT e.id, e.action, e.target_kind, e.target_id, e.detail,
                 u.display_name AS actor_name, e.created_at
          FROM audit_events e LEFT JOIN users u ON u.id = e.actor_id
-         WHERE e.kb_id = $1 ORDER BY e.created_at DESC LIMIT $2",
-    )
+         {WHERE}
+         ORDER BY e.created_at DESC LIMIT $6 OFFSET $7"
+    ))
     .bind(kb_id)
+    .bind(action)
+    .bind(actor)
+    .bind(since)
+    .bind(until)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
-    Ok(rows)
+
+    let (total,): (i64,) = sqlx::query_as(&format!("SELECT count(*) FROM audit_events e {WHERE}"))
+        .bind(kb_id)
+        .bind(action)
+        .bind(actor)
+        .bind(since)
+        .bind(until)
+        .fetch_one(pool)
+        .await?;
+    Ok((rows, total))
+}
+
+/// 这个库的台账里出现过哪些动作。**筛选下拉要按实际有的填**——列一个
+/// 全部动作的硬编码清单，用户会看到一堆这个库从来没发生过的选项。
+pub async fn actions_for_kb(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT DISTINCT action FROM audit_events WHERE kb_id = $1 ORDER BY 1")
+            .bind(kb_id)
+            .fetch_all(pool)
+            .await?,
+    )
 }

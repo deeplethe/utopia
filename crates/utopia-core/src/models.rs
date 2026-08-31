@@ -879,3 +879,20 @@ pub struct DerivedFactView {
     /// 直接前提，按推导顺序展开成三元组文本
     pub premises: Vec<String>,
 }
+
+/// 审核队列各档的**真实条数**。
+///
+/// 与列表分开取是有意的：列表有上限（一页十条），数数没有。从前左栏读的是
+/// 数组长度，而接口固定只回 100 条——一个有 164 条待办的库，界面写着 100，
+/// 清完还会再冒出来。
+#[derive(Debug, Clone, Copy, Default, Serialize, sqlx::FromRow)]
+pub struct ReviewCounts {
+    pub duplicates: i64,
+    pub conflicts: i64,
+    pub unconfirmed: i64,
+    pub lowconf: i64,
+    pub mappings: i64,
+    pub violations: i64,
+    pub defects: i64,
+    pub merges: i64,
+}

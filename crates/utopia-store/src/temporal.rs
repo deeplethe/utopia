@@ -315,7 +315,12 @@ async fn record_conflict(
 /// Review 页的冲突列表（双方事实带名字与区间）。
 /// 惰性清理：任一方已被作废（被驳回/被别的闭合改写）的冲突已无意义，
 /// 自动出队标 stale——防止在僵尸冲突上误裁（如把 Eve 闭合在已驳回的 Ivan 上）。
-pub async fn list_conflicts(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<ConflictView>> {
+pub async fn list_conflicts(
+    pool: &PgPool,
+    kb_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<ConflictView>> {
     sqlx::query(
         "UPDATE fact_conflicts c
          SET status = 'resolved', resolution = 'stale', resolved_at = now()
@@ -344,9 +349,11 @@ pub async fn list_conflicts(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Conflic
          LEFT JOIN entities no_ ON no_.id = fn_.object_id
          WHERE c.kb_id = $1 AND c.status = 'open'
          ORDER BY c.created_at DESC
-         LIMIT 200",
+         LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)
+    .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
     Ok(rows)

@@ -260,6 +260,8 @@ export function Graph() {
   const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set());
   // 推出来的边显不显示。默认显示——推理默认关着，有派生就意味着用户开过开关
   const [showDerived, setShowDerived] = useState(true);
+  // 信息窗默认收起：它答的是「什么时候推的」，那是偶尔才问的问题
+  const [derivedPanel, setDerivedPanel] = useState(false);
   /** null = 全时段；数值 = as-of 时刻(ms)。
       默认 as-of 今天：时态平台的图谱默认呈现"现在的世界"，
       已闭合的事实不该与现行事实无差别并列（All time 是显式选择） */
@@ -812,6 +814,11 @@ export function Graph() {
   const empty = data.isSuccess && data.data.nodes.length === 0;
   const nodeCount = data.data?.nodes.length ?? 0;
   const edgeCount = data.data?.edges.length ?? 0;
+  // 库里一共有多少。**与画上去的不是一回事**——邻域视图没有总数（它本来就只
+  // 是一小片），所以缺省回落到画上去的那个数，不会显示成「共 0 个」
+  const totalNodes = data.data?.total_nodes ?? nodeCount;
+  const totalEdges = data.data?.total_edges ?? edgeCount;
+  const capped = totalNodes > nodeCount;
 
   return (
     <div className="h-full relative">
@@ -891,27 +898,62 @@ export function Graph() {
           {/* 推出来的边：与类型图例同一条，因为它们是同一种动作——决定图上
               显示什么。为零时不出现 */}
           {derivedCount > 0 && (
-            <button
-              onClick={() => setShowDerived((v) => !v)}
-              title={S.graph.derivedHint}
-              className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
-                showDerived ? "" : "opacity-35"
-              }`}
-            >
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{ background: "rgba(231,197,124,0.9)" }}
-              />
-              <span className="text-neutral-300">
-                {S.graph.derivedEdges(derivedCount)}
-              </span>
-            </button>
+            <div className="relative flex items-center gap-1">
+              <button
+                onClick={() => setShowDerived((v) => !v)}
+                title={S.graph.derivedHint}
+                className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
+                  showDerived ? "" : "opacity-35"
+                }`}
+              >
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: "rgba(231,197,124,0.9)" }}
+                />
+                <span className="text-neutral-300">
+                  {S.graph.derivedEdges(derivedCount)}
+                </span>
+              </button>
+              {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
+                  **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
+                  是偶尔才问的，合成一个会让常用动作多一步 */}
+              <button
+                onClick={() => setDerivedPanel((v) => !v)}
+                title={S.graph.derivedPanel}
+                aria-expanded={derivedPanel}
+                className={`glass rounded-full h-[22px] w-[22px] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
+                  derivedPanel ? "text-neutral-100" : ""
+                }`}
+              >
+                ⋯
+              </button>
+              {derivedPanel && kb && (
+                <DerivedPanel
+                  kbId={kb.id}
+                  count={derivedCount}
+                  onClose={() => setDerivedPanel(false)}
+                />
+              )}
+            </div>
           )}
         </div>
 
         <div className="ml-auto pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
           {stabilizing && <span className="text-neutral-400">{S.graph.stabilizing} · </span>}
-          {S.graph.stats(nodeCount, edgeCount, timeT === null ? edgeCount : activeCount)}
+          {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
+              一个上万实体的库右上角永远写着 150 */}
+          {capped ? (
+            <span title={S.graph.cappedHint(nodeCount, totalNodes)}>
+              {S.graph.statsCapped(
+                nodeCount,
+                totalNodes,
+                totalEdges,
+                timeT === null ? edgeCount : activeCount,
+              )}
+            </span>
+          ) : (
+            S.graph.stats(nodeCount, edgeCount, timeT === null ? edgeCount : activeCount)
+          )}
         </div>
       </div>
 
@@ -1263,6 +1305,97 @@ function fmtInterval(f: EntityFact): string {
  *
  * 不做折叠：这一档存在的全部理由就是「这条边不是谁说的，是这么来的」，
  * 把前提藏在一次点击后面等于把理由藏起来。链最长十二条，摊开也不长。 */
+/** 派生开关旁边那个小窗：**这批边是什么时候、按什么推出来的，以及现在还准不准**。
+ *
+ * 存在的理由是「新鲜度看不见」。派生每小时重推一次，而事实每篇文档进来都在变——
+ * 一条派生边看上去和它刚推出来的时候一模一样，可它依据的前提可能三分钟前刚被撤掉。
+ * 光有开关答不了「我现在看到的是什么时候的结论」。
+ *
+ * 手动按钮留在这里而不是别处：想重推的人正是刚看完这三行、觉得数字太旧的那个人。
+ */
+function DerivedPanel({
+  kbId,
+  count,
+  onClose,
+}: {
+  kbId: string;
+  count: number;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const kb = useQuery({
+    queryKey: ["kbOne", kbId],
+    queryFn: () => api.kbDetail(kbId),
+  });
+  const run = useMutation({
+    mutationFn: () => api.runInference(kbId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["graph"] });
+      qc.invalidateQueries({ queryKey: ["kbOne", kbId] });
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const on = kb.data?.materialize_inferences ?? false;
+  const last = kb.data?.last_inference_at;
+  // 「多久以前」比一个时间戳好读——问题是「新不新」，不是「几点」
+  const age = last ? Math.round((Date.now() - new Date(last).getTime()) / 60000) : null;
+
+  return (
+    <div className="glass-strong pointer-events-auto absolute left-0 top-8 z-20 w-72 rounded-xl p-3 shadow-xl">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[13px] text-neutral-100">{S.graph.derivedPanel}</span>
+        <button
+          className="ml-auto text-neutral-500 hover:text-neutral-200"
+          onClick={onClose}
+          aria-label={S.graph.close}
+        >
+          ×
+        </button>
+      </div>
+
+      <dl className="mt-2 space-y-1 text-[11px]">
+        <div className="flex justify-between gap-3">
+          <dt className="text-neutral-500">{S.graph.derivedCountLabel}</dt>
+          <dd className="u-num text-neutral-200">{count}</dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-neutral-500">{S.graph.derivedStateLabel}</dt>
+          <dd className={on ? "text-neutral-200" : "text-[var(--u-warn)]"}>
+            {on ? S.graph.derivedOn(kb.data!.inference_interval_minutes) : S.graph.derivedOff}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-3">
+          <dt className="text-neutral-500">{S.graph.derivedLastLabel}</dt>
+          <dd className="u-num text-neutral-200">
+            {age === null ? S.graph.derivedNever : S.graph.derivedAgo(age)}
+          </dd>
+        </div>
+      </dl>
+
+      {/* 上一次手动跑的结果留在这儿。**推出多少、作废多少要分开说**——
+          「什么都没变」和「换掉了三十条」是两件很不一样的事 */}
+      {run.data && (
+        <p className="mt-2 text-[11px] text-neutral-400">
+          {run.data.inserted === 0 && run.data.invalidated === 0
+            ? S.graph.derivedNoChange
+            : S.graph.derivedChanged(run.data.inserted, run.data.invalidated)}
+          {run.data.capped > 0 && ` · ${S.graph.derivedCapped(run.data.capped)}`}
+        </p>
+      )}
+
+      <button
+        className="u-btn u-btn-primary mt-2.5 w-full py-1 text-[11px]"
+        disabled={!on || run.isPending}
+        title={on ? undefined : S.err.inference_off}
+        onClick={() => run.mutate()}
+      >
+        {run.isPending ? S.graph.derivedRunning : S.graph.derivedRun}
+      </button>
+    </div>
+  );
+}
+
 function DerivedRow({
   d,
   onNavigate,
