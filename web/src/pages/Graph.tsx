@@ -59,6 +59,9 @@ const DERIVED_PULSE_MS = 2200;
 // 超过这个数就只上色不动画。**写出来而不是悄悄降级**：每帧重算几千条边的颜色，
 // 换来的是拖不动图，而那时候用户要的是能拖得动
 const DERIVED_ANIMATE_MAX = 400;
+// 开关的淡入淡出时长。**比 FADE_MS(320) 略长**：播放淡入是一批边陆续到位，
+// 这个是一整批边同时进出，走慢一点才看得清「那批金线是一起退场的」
+const DERIVED_TOGGLE_MS = 420;
 // 注意：sigma 边着色器在预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，
 // alpha 无法压暗边——暗度必须编码进 RGB（不透明近背景色）
 const EDGE_DIM = "#141414";
@@ -463,6 +466,53 @@ export function Graph() {
     sigmaRef.current?.refresh();
   }, [hiddenTypes, showDerived]);
 
+  /* 开关的淡入淡出：{ 起始时刻, 朝哪个方向 }；null = 没有过渡在飞 */
+  const derivedToggleRef = useRef<{ at: number; on: boolean } | null>(null);
+  const derivedRafRef = useRef(0);
+  /* 上一次的开关值。**判「是不是真的切换了」只能靠它**——effect 的依赖里
+     还有 derivedCount，而「Run now 推出新边」会改 count 却没碰开关；
+     只看 effect 触发就淡一次，那是一次没人要求的动画 */
+  const prevShowDerived = useRef(showDerived);
+
+  // 切换时走一段渐变，而不是瞬间消失。**得自己驱动重绘**——关掉时下面那个
+  // 呼吸定时器不转了，没人推 sigma 重画，淡出就会卡在第一帧
+  useEffect(() => {
+    const changed = prevShowDerived.current !== showDerived;
+    prevShowDerived.current = showDerived;
+    // 首次挂载与「只有 count 变了」都不是切换：
+    // 进页面时、以及推理跑完刷新计数时，都不该看到一段莫名其妙的淡入
+    if (!changed) return;
+    // 数量太多时不淡：与呼吸同一条线——每帧重算几千条边的颜色换来的是卡顿。
+    // **写出来而不是悄悄降级**
+    if (derivedCount > DERIVED_ANIMATE_MAX) return;
+
+    const now = performance.now();
+    const prev = derivedToggleRef.current;
+    // 半途反向（用户连点两下）：从当前进度接着走，而不是从头开始——
+    // 否则会看见一次亮度的跳变
+    const at =
+      prev && prev.on !== showDerived
+        ? now - Math.max(0, DERIVED_TOGGLE_MS - (now - prev.at))
+        : now;
+    derivedToggleRef.current = { at, on: showDerived };
+
+    const step = () => {
+      const tr = derivedToggleRef.current;
+      const done = !tr || performance.now() - tr.at >= DERIVED_TOGGLE_MS;
+      if (done) derivedToggleRef.current = null;
+      sigmaRef.current?.refresh();
+      derivedRafRef.current = done ? 0 : requestAnimationFrame(step);
+    };
+    cancelAnimationFrame(derivedRafRef.current);
+    derivedRafRef.current = requestAnimationFrame(step);
+    // **不在这里挂清理**：清理会在依赖变化时也跑一遍，而依赖里有 derivedCount
+    // ——推理恰好在这 420ms 中途跑完，动画就被掐在半路（画面停在一半亮度，
+    // 要等下一次任意重绘才归位）。循环自己会终止；取消只该发生在卸载时
+  }, [showDerived, derivedCount]);
+
+  // 卸载时收掉可能在飞的那一帧
+  useEffect(() => () => cancelAnimationFrame(derivedRafRef.current), []);
+
   // 派生边的呼吸。**只在有派生边、且开着显示、且数量不多时才转**——
   // 一个没开推理的库不该为这件事每两秒重画一次
   useEffect(() => {
@@ -738,11 +788,23 @@ export function Graph() {
         // **放在最前面**——藏起来的边不必再算后面那些提亮/压暗
         const isDerived = attrs.derived === true;
         if (isDerived) {
+          const tr = derivedToggleRef.current;
+          const k = tr
+            ? Math.min(1, (performance.now() - tr.at) / DERIVED_TOGGLE_MS)
+            : 1;
+          // 关掉了：只有「淡出尚未走完」这一种情况还留着不藏
           if (!f.showDerived) {
-            res.hidden = true;
+            if (!tr || tr.on || k >= 1) {
+              res.hidden = true;
+              return res;
+            }
+            // 由金渐灭到近背景色。**暗度必须编码进 RGB**（见 EDGE_DIM 处的注释：
+            // 预乘混合下 alpha 压不暗边），所以是往 EDGE_DIM 混而不是降 alpha
+            res.color = lerpColor(EDGE_COLOR_DERIVED, EDGE_DIM, k);
+            res.label = "";
             return res;
           }
-          res.color = lerpColor(
+          const pulse = lerpColor(
             EDGE_COLOR_DERIVED_DIM,
             EDGE_COLOR_DERIVED,
             // 三角波而不是正弦：两端各停一瞬，看起来是「呼吸」不是「闪」
@@ -751,6 +813,9 @@ export function Graph() {
                 1,
             ),
           );
+          // 打开：从近背景色亮起来，接上呼吸
+          res.color =
+            tr && tr.on && k < 1 ? lerpColor(EDGE_DIM, pulse, k) : pulse;
         }
         // hover: 只提亮关联边；selected: 提亮关联边 + 压暗其余
         const hov = hoverRef.current;
@@ -992,69 +1057,105 @@ export function Graph() {
         {/* 推出来的边：**自成一组，不进类型图例。**
             图例回答「显示哪些类」，一排全是本体里的类；这个回答的是
             「显不显示推出来的边」——不是同一个问题，混进那一排它就像是
-            多出来的一个类。为零时整组不出现 */}
-        {derivedCount > 0 && (
-          <div className="pointer-events-auto relative flex items-center gap-1 pt-0.5 pl-1 ml-1 border-l border-white/10">
-            <button
-              onClick={() => setShowDerived((v) => !v)}
-              title={S.graph.derivedHint}
-              className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
-                showDerived ? "" : "opacity-35"
-              }`}
-            >
-              <span
-                className="h-2 w-2 rounded-full"
-                style={{ background: "rgba(231,197,124,0.9)" }}
-              />
-              <span className="text-neutral-300">
-                {S.graph.derivedEdges(derivedCount)}
+            多出来的一个类。为零时整组不出现。
+
+            **这个意图曾经只写在这条注释里，没落到像素上**：它当初就排在图例
+            末尾，长着同样的 glass 胶囊、同样的色点、同样的字号，唯一的区隔是
+            一条 `border-white/10` 的竖线——在这个底色上等于没有。结果就是
+            没人找得到它。所以现在做两件事，缺一件都不够：
+
+            1. **挪到顶栏最右**，与统计文字为邻——那段本来就是「你在看什么」
+               的地盘。但别指望位置本身能解决问题：类胶囊那一排很占地方，
+               实测 1600px 宽下它与最后一个类之间只剩 69px，**不是大片空白**。
+            2. **换成开关形态**（轨道+滑块），这一条才是决定性的。只要还长得
+               像胶囊，它就仍会被当成第 10 个类——类胶囊是「筛掉哪些类」的
+               滤镜，这个是开关，形状就该不一样。 */}
+        {/* 右侧组：开关 + 统计。**必须是一个容器整体靠右，不能各给一个
+            `ml-auto`**——flex 里多个 auto 左边距是**平分**剩余空间的，不是
+            第一个吃光。实测过：两边各分到 35.8px，开关就卡在图例与统计中间，
+            既没贴右也没贴左，反而更难找。包一层，两个都到最右；
+            且派生组不渲染时，统计仍然靠右 */}
+        <div className="ml-auto flex items-start gap-3">
+          {derivedCount > 0 && (
+            <div className="pointer-events-auto relative flex items-center gap-1 pt-0.5">
+              <button
+                onClick={() => setShowDerived((v) => !v)}
+                role="switch"
+                aria-checked={showDerived}
+                title={S.graph.derivedHint}
+                className={`glass rounded-full py-1 pl-1 pr-2.5 text-[11px] flex items-center gap-1.5 border transition-colors ${
+                  showDerived
+                    ? "border-[rgba(231,197,124,0.45)]"
+                    : "border-white/10 opacity-60"
+                }`}
+              >
+                {/* 轨道+滑块。开时上金色——金是派生边自己的色相，
+                    开关与它管的那批边是同一个颜色，不用读字也对得上 */}
+                <span
+                  className={`relative h-[14px] w-[24px] rounded-full transition-colors ${
+                    showDerived ? "bg-[rgba(231,197,124,0.3)]" : "bg-white/10"
+                  }`}
+                >
+                  <span
+                    className={`absolute top-[2px] h-[10px] w-[10px] rounded-full transition-all ${
+                      showDerived
+                        ? "left-[12px] bg-[rgba(231,197,124,0.95)]"
+                        : "left-[2px] bg-neutral-500"
+                    }`}
+                  />
+                </span>
+                <span
+                  className={showDerived ? "text-neutral-200" : "text-neutral-400"}
+                >
+                  {S.graph.derivedEdges(derivedCount)}
+                </span>
+              </button>
+              {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
+                  **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
+                  是偶尔才问的，合成一个会让常用动作多一步 */}
+              <button
+                onClick={() => setDerivedPanel((v) => !v)}
+                title={S.graph.derivedPanel}
+                aria-expanded={derivedPanel}
+                className={`glass rounded-full h-[22px] w-[22px] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
+                  derivedPanel ? "text-neutral-100" : ""
+                }`}
+              >
+                ⋯
+              </button>
+              {derivedPanel && kb && (
+                <DerivedPanel
+                  kbId={kb.id}
+                  count={derivedCount}
+                  onClose={() => setDerivedPanel(false)}
+                />
+              )}
+            </div>
+          )}
+
+          <div className="pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
+            {stabilizing && (
+              <span className="text-neutral-400">{S.graph.stabilizing} · </span>
+            )}
+            {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
+                一个上万实体的库右上角永远写着 150 */}
+            {capped ? (
+              <span title={S.graph.cappedHint(nodeCount, totalNodes)}>
+                {S.graph.statsCapped(
+                  nodeCount,
+                  totalNodes,
+                  totalEdges,
+                  timeT === null ? edgeCount : activeCount,
+                )}
               </span>
-            </button>
-            {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
-                **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
-                是偶尔才问的，合成一个会让常用动作多一步 */}
-            <button
-              onClick={() => setDerivedPanel((v) => !v)}
-              title={S.graph.derivedPanel}
-              aria-expanded={derivedPanel}
-              className={`glass rounded-full h-[22px] w-[22px] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
-                derivedPanel ? "text-neutral-100" : ""
-              }`}
-            >
-              ⋯
-            </button>
-            {derivedPanel && kb && (
-              <DerivedPanel
-                kbId={kb.id}
-                count={derivedCount}
-                onClose={() => setDerivedPanel(false)}
-              />
+            ) : (
+              S.graph.stats(
+                nodeCount,
+                edgeCount,
+                timeT === null ? edgeCount : activeCount,
+              )
             )}
           </div>
-        )}
-
-        <div className="ml-auto pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
-          {stabilizing && (
-            <span className="text-neutral-400">{S.graph.stabilizing} · </span>
-          )}
-          {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
-              一个上万实体的库右上角永远写着 150 */}
-          {capped ? (
-            <span title={S.graph.cappedHint(nodeCount, totalNodes)}>
-              {S.graph.statsCapped(
-                nodeCount,
-                totalNodes,
-                totalEdges,
-                timeT === null ? edgeCount : activeCount,
-              )}
-            </span>
-          ) : (
-            S.graph.stats(
-              nodeCount,
-              edgeCount,
-              timeT === null ? edgeCount : activeCount,
-            )
-          )}
         </div>
       </div>
 
@@ -1468,8 +1569,10 @@ function DerivedPanel({
     ? Math.round((Date.now() - new Date(last).getTime()) / 60000)
     : null;
 
+  // **right-0 而不是 left-0**：这一组现在贴着顶栏右缘，
+  // 左对齐的 w-72 会整块溢出到视口外
   return (
-    <div className="glass-strong pointer-events-auto absolute left-0 top-8 z-20 w-72 rounded-xl p-3 shadow-xl">
+    <div className="glass-strong pointer-events-auto absolute right-0 top-8 z-20 w-72 rounded-xl p-3 shadow-xl">
       <div className="flex items-baseline gap-2">
         <span className="text-[13px] text-neutral-100">
           {S.graph.derivedPanel}
