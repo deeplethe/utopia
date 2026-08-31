@@ -10,6 +10,63 @@ use uuid::Uuid;
 
 const MIN_CONFIDENCE: f32 = 0.6;
 
+/// 这串字**是不是一个东西的名字**。
+///
+/// 判据是**词数**不是字符数。字符数分不开真假：
+/// `US District Court for the Northern District of California`（57 字符）是真实体，
+/// 而 `removal was driven by growing discontent and distrust with Altman`（65 字符）
+/// 是一整个从句——两者字符数相近，词数也相近（9 vs 10），但后者带着**限定动词**。
+///
+/// 所以两条一起看：词数封顶挡住长句，而**句中的限定动词**挡住那些不长的从句。
+/// 机构名会长（"US District Court for the Northern District of California"），
+/// 但不会出现 "was driven by"、"showed"、"giving off" 这种谓语。
+///
+/// 上限取 12 个词：实测真实体里最长的机构名是 9 个词，留三个词的余量。
+/// 而被挡下的那些平均 14 个词。
+const MAX_NAME_WORDS: usize = 12;
+
+/// 句子里的谓语标志。**只列限定形式**——`used`、`flying` 这类分词在名词短语里
+/// 完全正常（"equipment used by X"），列进去会误伤真实体。
+const CLAUSE_MARKERS: &[&str] = &[
+    "was", "were", "is", "are", "has", "have", "had", "will", "would", "showed", "said", "says",
+    "became", "went", "came", "did", "does", "gave", "took", "made",
+];
+
+fn is_entity_name(name: &str) -> bool {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 100 {
+        return false;
+    }
+    let words: Vec<String> = name
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .collect();
+    if words.len() > MAX_NAME_WORDS {
+        return false;
+    }
+    // 一个词的名字不可能是从句，别让 "Is" 这种专名被误伤
+    if words.len() > 2 && words.iter().any(|w| CLAUSE_MARKERS.contains(&w.as_str())) {
+        return false;
+    }
+    // 部分格：`745 of OpenAI's 770 employees` 是一个数量描述，不是一个东西。
+    // 它没有限定动词，词数也不多，上面两条都接不住它。
+    //
+    // 判据收得很窄——**首词是纯数字且第二词是 of**。真实体里以数字开头的
+    //（`3M`、`7-Eleven`、`23andMe`）首词不是纯数字；`2023 Nobel Prize` 首词是纯数字，
+    // 但第二个词不是 `of`。宽一格就会误伤它们。
+    if words.len() >= 3
+        && words[1] == "of"
+        && !words[0].is_empty()
+        && words[0].chars().all(|c| c.is_ascii_digit())
+    {
+        return false;
+    }
+    true
+}
+
 /// 记一条丢弃信号。抽取器有七处 `continue`，每一处都是"事实抽出来了、被挡掉、
 /// 什么都不说"。信号写失败绝不能带垮整篇文档的抽取，所以这里吞掉错误。
 async fn drop_signal(
@@ -379,7 +436,18 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         let mut entity_type_of: HashMap<String, Option<Uuid>> = HashMap::new();
         for e in &extraction.entities {
             let name = e.name.trim();
-            if name.is_empty() || name.chars().count() > 100 {
+            if !is_entity_name(name) {
+                // 从前这里是静默 `continue`——正是 `drop_signal` 当初为之而建的
+                // 那种"抽出来了、被挡掉、什么都不说"
+                drop_signal(
+                    state,
+                    doc.kb_id,
+                    document_id,
+                    utopia_store::extraction_drops::reason::NOT_AN_ENTITY_NAME,
+                    &e.type_key,
+                    Some(name),
+                )
+                .await;
                 continue;
             }
             // 降级时记住模型提议的那个词：本体装不下不等于它说错了。
@@ -716,6 +784,34 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 .await;
                 continue;
             };
+            // **未声明的主宾也要过同一道判据。**
+            //
+            // 从前守卫只装在上面那条声明实体的路上，而这里绕过了它：模型把一整句话
+            // 写进 `object`、那句话没出现在 entities 里，这里就转头把它造成了实体。
+            // 实测（ai-timeline-ends × schema.org）421 个实体里 76 个无类型，
+            // 最长的那个 111 字符——"thermal-imaging equipment used by volunteers
+            // flying over the site showed at least 33 generators giving off heat"，
+            // 那是一整个从句，不是一个东西。**守卫拦住了前门，后门是开的。**
+            //
+            // 这类实体的害处不止于此：它们永远匹配不到别处的任何提及，
+            // 在图上是孤点（实测 59 个），还会拖累消解——每一个都要跟已有实体比一遍。
+            if !is_entity_name(f.subject.trim()) || !is_entity_name(object_name) {
+                drop_signal(
+                    state,
+                    doc.kb_id,
+                    document_id,
+                    utopia_store::extraction_drops::reason::NOT_AN_ENTITY_NAME,
+                    &f.predicate,
+                    Some(if is_entity_name(f.subject.trim()) {
+                        object_name
+                    } else {
+                        f.subject.trim()
+                    }),
+                )
+                .await;
+                continue;
+            }
+
             // 主宾未在 entities 中声明时先建出来（模型偶尔漏报）。没有 entities 那条
             // 记录就没有类型可依，留空即可——0009 之前这里只能塞 concept
             let subject_id = match entity_ids.get(f.subject.trim()) {
@@ -1232,6 +1328,61 @@ async fn chunk_lists(
         Some(&classes),
         Some(&rels),
     )))
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::is_entity_name;
+
+    /// 样本全部取自实跑出来的库（ai-timeline-ends × schema.org），不是编的。
+    #[test]
+    fn a_clause_is_not_a_thing() {
+        for s in [
+            "thermal-imaging equipment used by volunteers flying over the site showed at least 33 generators giving off heat",
+            "about the same amount of power as the Tennessee Valley Authority's large gas-fired power plant nearby",
+            "removal was driven by growing discontent and distrust with Altman",
+            "a risk of developing cancer at four times the national average in 2013",
+            "745 of OpenAI's 770 employees",
+        ] {
+            assert!(!is_entity_name(s), "这是一句话，不该当成实体名：{s}");
+        }
+    }
+
+    /// **真实体会长，但不带谓语。** 判据是词数 + 限定动词，不是字符数——
+    /// 下面第一个 57 字符，比上面那条 65 字符的从句还短不了多少
+    #[test]
+    fn a_long_name_is_still_a_name() {
+        for s in [
+            "US District Court for the Northern District of California",
+            "United States District Court for the District of Delaware",
+            "OpenAI's board of directors",
+            "Safe Superintelligence Inc.",
+            "École Polytechnique",
+            "GPT-4",
+        ] {
+            assert!(is_entity_name(s), "这是真实体，不该被挡：{s}");
+        }
+    }
+
+    /// 分词在名词短语里完全正常，列进标志词会误伤。
+    #[test]
+    fn a_participle_is_not_a_predicate() {
+        assert!(is_entity_name("equipment used by volunteers"));
+        assert!(is_entity_name("Gas-Burning Turbines"));
+    }
+
+    /// 短名字不做从句判断：`Is` 之类可能是专名的一部分。
+    #[test]
+    fn a_short_name_is_never_a_clause() {
+        assert!(is_entity_name("Was"));
+        assert!(is_entity_name("Is Elon"));
+    }
+
+    #[test]
+    fn an_empty_name_is_not_a_name() {
+        assert!(!is_entity_name(""));
+        assert!(!is_entity_name("   "));
+    }
 }
 
 #[cfg(test)]
