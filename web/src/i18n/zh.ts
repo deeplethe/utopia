@@ -513,6 +513,9 @@ export const zh: Strings = {
   graph: {
     untyped: "未分类",
     legendMore: (n: number) => `+${n} 个类`,
+    nodeBudget: "画多少个实体",
+    nodeBudgetMore: "多画一些",
+    nodeBudgetLess: "少画一些",
     legendSearch: "筛选类",
     legendNone: "没有匹配的类",
     legendAllHint: "画面上的全部类，按出现次数排。点一下显示或隐藏。",

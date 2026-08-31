@@ -20,6 +20,7 @@ import {
   Pause,
   Pencil,
   Play,
+  Sparkles,
   X,
   ZoomIn,
   ZoomOut,
@@ -66,10 +67,19 @@ const DERIVED_TOGGLE_MS = 420;
 // 类一多就会换行、把画布顶到下面去**；而且十几个同样的胶囊排开，
 // 谁也读不出哪个重要。收起来的那些从「+N」里搜得到
 const LEGEND_MAX = 6;
+/* 画多少个节点的可选档位。**给档位而不是给输入框**：这个数没有「精确」可言
+   ——它只影响看得清还是拖得动，用户要的是「多点/少点」，不是 237 这个数。
+   最大值与后端 GRAPH_NODE_CAP_MAX 对齐；再高先垮的是拖动，不是清晰度 */
+const NODE_BUDGETS: number[] = [150, 300, 600, 1000];
 // 注意：sigma 边着色器在预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，
 // alpha 无法压暗边——暗度必须编码进 RGB（不透明近背景色）
 const EDGE_DIM = "#141414";
 const EDGE_FOCUS = "rgba(255,255,255,0.55)";
+// 选中/悬停时的派生边。**不能跟着走白**：选中恰恰是看得最仔细的时候，
+// 而这时候「这条边是推出来的、没人写过」比任何时候都该说清楚。
+// 从前一律 EDGE_FOCUS，一选中金线就变白，等于把来历抹掉了。
+// 比常态的金更亮更实——它同样要表达「被选中了」
+const EDGE_FOCUS_DERIVED = "rgba(255,214,140,0.95)";
 const MUTED_SHELL = "#151515";
 const PILL_BG = "rgba(12,12,12,0.9)";
 const PILL_BORDER = "rgba(255,255,255,0.14)";
@@ -307,12 +317,16 @@ export function Graph() {
   const layoutModeRef = useRef<LayoutMode>("force");
   const layoutCtlRef = useRef<{ apply: (m: LayoutMode) => void } | null>(null);
 
+  /* 画多少个。**进 queryKey**——不进的话调了档位不会重新取数，
+     界面看着变了实际还是老数据 */
+  const [nodeBudget, setNodeBudget] = useState<number>(NODE_BUDGETS[0]);
+
   const data = useQuery({
-    queryKey: ["graph", kb?.id, focusEntity],
+    queryKey: ["graph", kb?.id, focusEntity, nodeBudget],
     queryFn: () =>
       focusEntity
         ? api.graphNeighborhood(kb!.id, focusEntity)
-        : api.graphOverview(kb!.id),
+        : api.graphOverview(kb!.id, nodeBudget),
     enabled: !!kb,
   });
 
@@ -845,7 +859,7 @@ export function Graph() {
             ? selectedRef.current
             : null;
         const boost = () => {
-          res.color = EDGE_FOCUS;
+          res.color = isDerived ? EDGE_FOCUS_DERIVED : EDGE_FOCUS;
           res.size = Math.max((attrs.size as number) * 1.42, 1.85);
           res.zIndex = 5;
         };
@@ -1158,111 +1172,65 @@ export function Graph() {
           )}
         </div>
 
-        {/* 推出来的边：**自成一组，不进类型图例。**
-            图例回答「显示哪些类」，一排全是本体里的类；这个回答的是
-            「显不显示推出来的边」——不是同一个问题，混进那一排它就像是
-            多出来的一个类。为零时整组不出现。
-
-            **这个意图曾经只写在这条注释里，没落到像素上**：它当初就排在图例
-            末尾，长着同样的 glass 胶囊、同样的色点、同样的字号，唯一的区隔是
-            一条 `border-white/10` 的竖线——在这个底色上等于没有。结果就是
-            没人找得到它。所以现在做两件事，缺一件都不够：
-
-            1. **挪到顶栏最右**，与统计文字为邻——那段本来就是「你在看什么」
-               的地盘。但别指望位置本身能解决问题：类胶囊那一排很占地方，
-               实测 1600px 宽下它与最后一个类之间只剩 69px，**不是大片空白**。
-            2. **换成开关形态**（轨道+滑块），这一条才是决定性的。只要还长得
-               像胶囊，它就仍会被当成第 10 个类——类胶囊是「筛掉哪些类」的
-               滤镜，这个是开关，形状就该不一样。 */}
-        {/* 右侧组：开关 + 统计。**必须是一个容器整体靠右，不能各给一个
-            `ml-auto`**——flex 里多个 auto 左边距是**平分**剩余空间的，不是
-            第一个吃光。实测过：两边各分到 35.8px，开关就卡在图例与统计中间，
-            既没贴右也没贴左，反而更难找。包一层，两个都到最右；
-            且派生组不渲染时，统计仍然靠右 */}
-        <div className="ml-auto flex items-start gap-3">
-          {derivedCount > 0 && (
-            <div className="pointer-events-auto relative flex items-center gap-1 pt-0.5">
-              <button
-                onClick={() => setShowDerived((v) => !v)}
-                role="switch"
-                aria-checked={showDerived}
-                title={S.graph.derivedHint}
-                /* **形状语言要跟类胶囊分家**：那一排全是 rounded-full 的
-                   中性玻璃椭圆；只要这个还长成同样的胶囊，挪到哪儿都会被当成
-                   第 10 个类（用户看过一版就是这么说的）。所以这里是方角、
-                   带金色底、不用 glass——一眼就不是同一族东西 */
-                className={`rounded-md py-1 pl-1 pr-2.5 text-[11px] flex items-center gap-1.5 border transition-colors ${
-                  showDerived
-                    ? "border-[rgba(231,197,124,0.5)] bg-[rgba(231,197,124,0.14)]"
-                    : "border-white/10 bg-white/[0.03] opacity-70"
-                }`}
-              >
-                {/* 轨道+滑块。开时上金色——金是派生边自己的色相，
-                    开关与它管的那批边是同一个颜色，不用读字也对得上 */}
-                <span
-                  className={`relative h-[14px] w-[24px] rounded-full transition-colors ${
-                    showDerived ? "bg-[rgba(231,197,124,0.3)]" : "bg-white/10"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-[2px] h-[10px] w-[10px] rounded-full transition-all ${
-                      showDerived
-                        ? "left-[12px] bg-[rgba(231,197,124,0.95)]"
-                        : "left-[2px] bg-neutral-500"
-                    }`}
-                  />
-                </span>
-                <span
-                  className={showDerived ? "text-neutral-200" : "text-neutral-400"}
-                >
-                  {S.graph.derivedEdges(derivedCount)}
-                </span>
-              </button>
-              {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
-                  **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
-                  是偶尔才问的，合成一个会让常用动作多一步 */}
-              <button
-                onClick={() => setDerivedPanel((v) => !v)}
-                title={S.graph.derivedPanel}
-                aria-expanded={derivedPanel}
-                className={`rounded-md h-[22px] w-[22px] border border-white/10 bg-white/[0.03] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
-                  derivedPanel ? "text-neutral-100" : ""
-                }`}
-              >
-                ⋯
-              </button>
-              {derivedPanel && kb && (
-                <DerivedPanel
-                  kbId={kb.id}
-                  count={derivedCount}
-                  onClose={() => setDerivedPanel(false)}
-                />
-              )}
-            </div>
-          )}
-
+        {/* 右上：能调「画多少个」+ 统计。**统计说的正是这个数**
+            （「画了 150 个，共 548 个」），把调节放在它旁边，改的是谁一目了然。
+            外壳保持中性——这一片是 chrome，彩色只属于数据 */}
+        <div className="ml-auto flex items-start gap-2">
+          <div className="pointer-events-auto flex items-center overflow-hidden rounded-md border border-white/10">
+            <button
+              title={S.graph.nodeBudgetLess}
+              disabled={nodeBudget <= NODE_BUDGETS[0]}
+              onClick={() =>
+                setNodeBudget(
+                  (b) => NODE_BUDGETS[Math.max(0, NODE_BUDGETS.indexOf(b) - 1)],
+                )
+              }
+              className="px-1.5 py-[3px] text-[11px] leading-none text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-neutral-400"
+            >
+              −
+            </button>
+            {/* **画满了就别再给「多画」**：库里一共就这么多，再调高什么也不会变，
+                而一个点了没反应的按钮比没有这个按钮更糟 */}
+            <button
+              title={S.graph.nodeBudgetMore}
+              disabled={
+                !capped || nodeBudget >= NODE_BUDGETS[NODE_BUDGETS.length - 1]
+              }
+              onClick={() =>
+                setNodeBudget(
+                  (b) =>
+                    NODE_BUDGETS[
+                      Math.min(NODE_BUDGETS.length - 1, NODE_BUDGETS.indexOf(b) + 1)
+                    ],
+                )
+              }
+              className="px-1.5 py-[3px] text-[11px] leading-none text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-neutral-400"
+            >
+              +
+            </button>
+          </div>
           <div className="pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
-            {stabilizing && (
-              <span className="text-neutral-400">{S.graph.stabilizing} · </span>
-            )}
-            {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
-                一个上万实体的库右上角永远写着 150 */}
-            {capped ? (
-              <span title={S.graph.cappedHint(nodeCount, totalNodes)}>
-                {S.graph.statsCapped(
-                  nodeCount,
-                  totalNodes,
-                  totalEdges,
-                  timeT === null ? edgeCount : activeCount,
-                )}
-              </span>
-            ) : (
-              S.graph.stats(
+          {stabilizing && (
+            <span className="text-neutral-400">{S.graph.stabilizing} · </span>
+          )}
+          {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
+              一个上万实体的库右上角永远写着 150 */}
+          {capped ? (
+            <span title={S.graph.cappedHint(nodeCount, totalNodes)}>
+              {S.graph.statsCapped(
                 nodeCount,
-                edgeCount,
+                totalNodes,
+                totalEdges,
                 timeT === null ? edgeCount : activeCount,
-              )
-            )}
+              )}
+            </span>
+          ) : (
+            S.graph.stats(
+              nodeCount,
+              edgeCount,
+              timeT === null ? edgeCount : activeCount,
+            )
+          )}
           </div>
         </div>
       </div>
@@ -1273,8 +1241,68 @@ export function Graph() {
         <div ref={containerRef} className="absolute inset-0" />
       </div>
 
-      {/* 左下控件塔：布局切换 + 相机（右下归实体侧栏，底部中央归时间岛） */}
+      {/* 左下控件塔：推出来的边 + 布局切换 + 相机（右下归实体侧栏，底部中央归时间岛） */}
       <div className="absolute bottom-4 left-3 z-10 flex flex-col gap-2">
+        {/* 推出来的边：**自成一组，也不进类型图例。**
+            图例回答「显示哪些类」，一排全是本体里的类；这个回答的是
+            「显不显示推出来的边」——不是同一个问题。为零时整组不出现。
+
+            **摆到这座塔上，是绕开一对矛盾走的**：放在顶栏图例旁边，它长得
+            像第 10 个类；想靠颜色把它区分开，又撞上这文件开头那条既定原则
+            ——「chrome 零色偏、彩色只属于数据」（见调色板那段注释）。
+            往框架里塞一块高饱和金底，是整个界面唯一的彩色色块，扎眼且不成体系。
+
+            这座塔本来就是「视图怎么看」的地盘（布局、缩放），
+            「显不显示推出来的边」正是同一族问题。外壳保持中性，
+            金色只出现在图标本身——与色点用在类胶囊上是同一个做法。 */}
+        {derivedCount > 0 && (
+          /* **两层**：外层只负责定位，内层才有 overflow-hidden。
+             那个类是给按钮堆裁圆角的，可面板是同一个盒子的子元素——
+             合成一层的话面板会被一起裁掉，实测只剩塔本身那 32px 宽 */
+          <div className="relative">
+            <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+            <button
+              onClick={() => setShowDerived((v) => !v)}
+              role="switch"
+              aria-checked={showDerived}
+              title={`${S.graph.derivedEdges(derivedCount)} · ${S.graph.derivedHint}`}
+              className={`p-2 transition-colors ${
+                showDerived
+                  ? "bg-white/[0.1]"
+                  : "text-neutral-500 hover:bg-white/[0.06]"
+              }`}
+              style={
+                showDerived ? { color: "rgba(231,197,124,0.95)" } : undefined
+              }
+            >
+              <Sparkles size={15} />
+            </button>
+            <div className="h-px bg-white/10 mx-1.5" />
+            {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
+                **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
+                是偶尔才问的，合成一个会让常用动作多一步 */}
+            <button
+              onClick={() => setDerivedPanel((v) => !v)}
+              title={S.graph.derivedPanel}
+              aria-expanded={derivedPanel}
+              className={`p-2 text-[11px] leading-none transition-colors ${
+                derivedPanel
+                  ? "text-white bg-white/[0.1]"
+                  : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
+              }`}
+            >
+              ⋯
+            </button>
+            </div>
+            {derivedPanel && kb && (
+              <DerivedPanel
+                kbId={kb.id}
+                count={derivedCount}
+                onClose={() => setDerivedPanel(false)}
+              />
+            )}
+          </div>
+        )}
         <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
           {(
             [
@@ -1677,10 +1705,10 @@ function DerivedPanel({
     ? Math.round((Date.now() - new Date(last).getTime()) / 60000)
     : null;
 
-  // **right-0 而不是 left-0**：这一组现在贴着顶栏右缘，
-  // 左对齐的 w-72 会整块溢出到视口外
+  // **从塔的右侧展开**：塔在左下角贴着边，往下或往左都出视口；
+  // bottom-0 对齐让面板与那一组齐底，不会盖住下面的缩放按钮
   return (
-    <div className="glass-strong pointer-events-auto absolute right-0 top-8 z-20 w-72 rounded-xl p-3 shadow-xl">
+    <div className="glass-strong pointer-events-auto absolute bottom-0 left-full z-20 ml-2 w-72 rounded-xl p-3 shadow-xl">
       <div className="flex items-baseline gap-2">
         <span className="text-[13px] text-neutral-100">
           {S.graph.derivedPanel}

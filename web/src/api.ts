@@ -1174,7 +1174,7 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
-  graphOverview: (kbId: string) =>
+  graphOverview: (kbId: string, limit?: number) =>
     request<{
       nodes: GraphNode[];
       edges: GraphEdge[];
@@ -1182,7 +1182,9 @@ export const api = {
        *  那一批，把上限当成规模显示是这个接口从前最误导人的地方 */
       total_nodes?: number;
       total_edges?: number;
-    }>(`/api/v1/kbs/${kbId}/graph/overview`),
+    }>(
+      `/api/v1/kbs/${kbId}/graph/overview${limit ? `?limit=${limit}` : ""}`,
+    ),
   /** 邻域视图**没有总数**：它本来就只是一小片，说「共 325 个」没有意义。
    *  两个字段声明成可选，好让调用方与总览共用一个类型 */
   graphNeighborhood: (kbId: string, entityId: string) =>
