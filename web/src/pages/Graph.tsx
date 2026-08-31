@@ -104,6 +104,11 @@ const EDGE_FOCUS = "rgba(255,255,255,0.55)";
 // 比常态的金更亮更实——它同样要表达「被选中了」
 const EDGE_FOCUS_DERIVED = "rgba(255,214,140,0.95)";
 const MUTED_SHELL = "#151515";
+/* 悬停时其余的压暗程度。**比选中轻**（选中是压到底）：
+   悬停是随鼠标走的、每划过一个节点就换一次，压到底会让整张画布不停明灭；
+   而且两者压得一样重的话，"我只是路过"和"我选中了它"就成了同一个画面。
+   轻一档：看得出焦点，也看得出这只是路过 */
+const HOVER_MUTE = 0.55;
 const PILL_BG = "rgba(12,12,12,0.9)";
 const PILL_BORDER = "rgba(255,255,255,0.14)";
 const PILL_TEXT = "#ededed";
@@ -906,7 +911,25 @@ export function Graph() {
           res.label = "";
           res.zIndex = 0;
         };
-        // hover 只提亮自身（不压暗全图）；压暗聚焦只属于点击选中
+        /* 悬停时其余的按 HOVER_MUTE 压一档（选中是压到底）。
+           邻居不压——悬停要回答的是"它连着谁"，把邻居也压掉就等于没回答 */
+        const softMute = () => {
+          res.size = base * (1 - 0.48 * HOVER_MUTE);
+          res.color = lerpColor(
+            String(attrs.color ?? NODE_CORE_BASE),
+            mix(MUTED_SHELL, NODE_CORE_BASE, 0.3),
+            HOVER_MUTE,
+          );
+          res.shellColor = lerpColor(
+            String(attrs.shellColor ?? NODE_SHELL_BASE),
+            MUTED_SHELL,
+            HOVER_MUTE,
+          );
+          res.borderColor = TRANSPARENT;
+          res.ringColor = TRANSPARENT;
+          res.label = "";
+          res.zIndex = 0;
+        };
         if (hoverRef.current === node) {
           res.size = Math.max(base * 1.08, 10.4);
           res.ringColor = mix(ownColor, "#ffffff", RING_HOVER_MIX);
@@ -915,6 +938,7 @@ export function Graph() {
           res.zIndex = 4;
           return res;
         }
+        const hov = hoverRef.current;
         // 选中实体可能不在当前画布（侧栏跳转/邻域重载间隙）——不在则跳过聚焦压暗逻辑
         const sel =
           selectedRef.current && g.hasNode(selectedRef.current)
@@ -936,6 +960,11 @@ export function Graph() {
             muteNode();
             return res;
           }
+        } else if (hov && hov !== node && !g.areNeighbors(hov, node)) {
+          // **悬停也压暗其余**，只是比选中轻一档（见 HOVER_MUTE）。
+          // 邻居留着：悬停要回答的正是"它连着谁"
+          softMute();
+          return res;
         } else {
           // default {×0.7}
           res.size = base * 0.7;
@@ -998,9 +1027,26 @@ export function Graph() {
               res.hidden = true;
               return res;
             }
-            // 由金渐灭到近背景色。**暗度必须编码进 RGB**（见 EDGE_DIM 处的注释：
-            // 预乘混合下 alpha 压不暗边），所以是往 EDGE_DIM 混而不是降 alpha
-            res.color = lerpColor(EDGE_COLOR_DERIVED, EDGE_DIM, k);
+            /* 由当前颜色渐灭到近背景色。**暗度必须编码进 RGB**
+               （见 EDGE_DIM 处的注释：预乘混合下 alpha 压不暗边），
+               所以是往 EDGE_DIM 混而不是降 alpha。
+
+               **起点不能一律写死成满亮的金**：这个分支在悬停/选中的压暗逻辑
+               之前就 return 了，于是一条本来被压成暗色的无关派生边，
+               会先跳回满亮再淡出——那一跳就是"关派生时无关的边闪一下"。
+               起点得取它此刻本来的样子 */
+            const selNow =
+              selectedRef.current && g.hasNode(selectedRef.current)
+                ? selectedRef.current
+                : null;
+            const hovNow = hoverRef.current;
+            const focused = selNow ?? hovNow;
+            const from = !focused
+              ? EDGE_COLOR_DERIVED
+              : s === focused || t === focused
+                ? EDGE_FOCUS_DERIVED
+                : EDGE_DIM;
+            res.color = lerpColor(from, EDGE_DIM, k);
             res.label = "";
             return res;
           }
@@ -1030,6 +1076,13 @@ export function Graph() {
         };
         if (hov && (s === hov || t === hov)) {
           boost();
+        } else if (hov && !sel) {
+          // 悬停时其余的边也退下去，但**只退一半**——与节点那边同一个 HOVER_MUTE。
+          // 压到底是选中才有的待遇
+          res.color = lerpColor(String(res.color), EDGE_DIM, HOVER_MUTE);
+          res.size = (attrs.size as number) * (1 - 0.4 * HOVER_MUTE);
+          res.label = "";
+          return res;
         } else if (sel) {
           if (s === sel || t === sel) {
             boost();
