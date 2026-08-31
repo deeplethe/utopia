@@ -98,6 +98,7 @@ cd web && pnpm install && pnpm dev
 - [ ] **执行校验层**：Agent 的每一次调用先过本体规则与符号逻辑，通不过不落地
 - [ ] **数据湖仓**：Iceberg / Delta Lake，以及 Databricks、Snowflake、MaxCompute
 - [ ] **更多数据源**：MySQL、ClickHouse、Doris 驱动，S3、WebDAV、Notion、飞书连接器
+- [ ] **精确到时刻**：在年 / 月 / 日之外加一档 `instant` 精度，给那些本来就带时间戳的来源——现在连接器按 UTC 截到天，跨午夜的事件会差一天
 - [ ] **MCP 上的 Agent 记忆**：补齐 episodes 写入、retrieve 端点与 MCP 服务器
 - [ ] **企业化**：OIDC SSO、备份恢复命令、10 万文档级别的性能基准
 

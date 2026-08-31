@@ -97,6 +97,7 @@ cd web && pnpm install && pnpm dev
 - [ ] **Execution gate**: every downstream call an agent makes passes ontology rules and symbolic logic first; what fails does not land
 - [ ] **Lakehouse**: Iceberg / Delta Lake, plus Databricks, Snowflake and MaxCompute
 - [ ] **More sources**: MySQL, ClickHouse and Doris drivers; S3, WebDAV, Notion and Feishu connectors
+- [ ] **Time to the moment**: an `instant` precision beside year / month / day, for sources that carry a real timestamp — today a connector rounds it to a UTC day, which can shift an event across midnight by one day
 - [ ] **Agent memory over MCP**: episode writes, the retrieve endpoint, and the MCP server
 - [ ] **Enterprise**: OIDC SSO, backup and restore commands, benchmarks at 100k documents
 
