@@ -859,7 +859,10 @@ export function Review() {
   return (
     <div className="h-full flex">
       {/* 左栏：队列分类 + 历史，各带实时计数（SSE 推动刷新） */}
-      <aside className={`${RAIL_CLS} flex flex-col`}>
+      {/* `overflow-y-auto`：矮窗口下这一栏的内容比它高，而底部那条是「去别处办」
+          的出口——没有滚动它会被裁掉且够不着。`mt-auto` 只在有富余空间时把它
+          压到底，两者要一起给 */}
+      <aside className={`${RAIL_CLS} flex flex-col overflow-y-auto u-scroll`}>
         <RailHeader label={S.review.tabQueue} />
         <div className="px-2 space-y-0.5">
           <RailItem
@@ -885,16 +888,6 @@ export function Review() {
             label={S.review.railLowConfidence}
             count={counts.lowconf}
             onClick={() => select("lowconf")}
-          />
-          {/* 口径审批搬去了「数据映射」页：判断一条口径对不对要看得见表结构，
-              而那在那一页。**计数留在这里**——收件箱该说「有几条等你」，
-              但活要在有上下文的地方干 */}
-          <RailItem
-            active={false}
-            label={S.review.railMappings}
-            count={counts.mappings}
-            onClick={() => navigate({ to: "/mappings" })}
-            external
           />
           <RailItem
             active={active === "violations"}
@@ -922,6 +915,22 @@ export function Review() {
             label={S.review.railMerges}
             count={counts.merges}
             onClick={() => select("merges")}
+          />
+        </div>
+
+        {/* 数据映射：**两组都不属于，所以压在底部单独一条。**
+            上面那七档问的都是「这条知识对不对」，而口径问的是「这个数怎么算」
+            （0011 已经在数据层把它分出去了）；下面那两档是本页办过的事的流水，
+            而口径的决定从来不进 `review_history`（它只捞 review./fact./
+            conflict./merge.，口径记的是 mapping.decided）。
+            **计数留着**——收件箱该说「有几条等你」，但活在有上下文的那一页干 */}
+        <div className="mt-auto border-t border-white/5 px-2 py-2">
+          <RailItem
+            active={false}
+            label={S.review.railMappings}
+            count={counts.mappings}
+            onClick={() => navigate({ to: "/mappings" })}
+            external
           />
         </div>
       </aside>
