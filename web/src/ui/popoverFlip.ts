@@ -18,7 +18,12 @@ function reduced(): boolean {
  * `close()` 会先播收回动画再卸载；要立刻关（比如导航走了）直接 `setOpen(false)`。
  * 面板外点击与 Esc 已经接好，挂在 `rootRef` 上。
  */
-export function usePopoverFlip<A extends HTMLElement, P extends HTMLElement>() {
+export function usePopoverFlip<A extends HTMLElement, P extends HTMLElement>(
+  /** 变形的锚点角。**面板贴哪边就写哪边**：顶栏右侧的面板贴右上角，
+   *  贴左边的面板（比如图例的「+N 个类」）要写 "top left"，
+   *  否则它会从右边缘往左长出来，看着像从别处飞过来的 */
+  origin: "top right" | "top left" = "top right",
+) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const anchorRef = useRef<A>(null);
@@ -33,7 +38,7 @@ export function usePopoverFlip<A extends HTMLElement, P extends HTMLElement>() {
     const a = anchor.getBoundingClientRect();
     const p = panel.getBoundingClientRect();
     if (p.width < 1 || p.height < 1) return;
-    panel.style.transformOrigin = "top right";
+    panel.style.transformOrigin = origin;
     panel.style.transform = `scale(${a.width / p.width}, ${a.height / p.height})`;
     panel.style.borderRadius = "999px";
     panel.style.opacity = "0.35";
@@ -61,7 +66,7 @@ export function usePopoverFlip<A extends HTMLElement, P extends HTMLElement>() {
       cancelAnimationFrame(raf);
       if (done !== undefined) window.clearTimeout(done);
     };
-  }, [open]);
+  }, [open, origin]);
 
   const close = () => {
     const panel = panelRef.current;
@@ -72,6 +77,7 @@ export function usePopoverFlip<A extends HTMLElement, P extends HTMLElement>() {
       return;
     }
     closingRef.current = true;
+    panel.style.transformOrigin = origin;
     const a = anchor.getBoundingClientRect();
     // offsetWidth/Height 是布局尺寸，不受当前 transform 影响——
     // 用 getBoundingClientRect 会拿到已经缩过的值，越缩越小

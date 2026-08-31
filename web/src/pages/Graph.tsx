@@ -35,6 +35,7 @@ import {
   type GraphNode,
 } from "../api";
 import { S } from "../i18n";
+import { usePopoverFlip } from "../ui/popoverFlip";
 import { useKb } from "../kb";
 import { toast } from "../toast";
 
@@ -312,7 +313,11 @@ export function Graph() {
   const [showDerived, setShowDerived] = useState(true);
   // 信息窗默认收起：它答的是「什么时候推的」，那是偶尔才问的问题
   const [derivedPanel, setDerivedPanel] = useState(false);
-  const [legendPanel, setLegendPanel] = useState(false);
+  /* 「+N 个类」用与通知/用户卡片同一套原地展开：面板压到 chip 的真实边界
+     （圆角 999px）再长成卡片。**贴左边，所以锚点角是 top left** */
+  const legendPop = usePopoverFlip<HTMLButtonElement, HTMLDivElement>(
+    "top left",
+  );
   const [legendQ, setLegendQ] = useState("");
   /** null = 全时段；数值 = as-of 时刻(ms)。
       默认 as-of 今天：时态平台的图谱默认呈现"现在的世界"，
@@ -1115,13 +1120,16 @@ export function Graph() {
           )}
 
           {legendRest.length > 0 && (
-            <div className="relative">
+            <div className="relative" ref={legendPop.rootRef}>
               <button
-                onClick={() => setLegendPanel((v) => !v)}
+                ref={legendPop.anchorRef}
+                onClick={() =>
+                  legendPop.open ? legendPop.close() : legendPop.setOpen(true)
+                }
                 title={S.graph.legendAllHint}
-                aria-expanded={legendPanel}
+                aria-expanded={legendPop.open}
                 className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-colors ${
-                  legendPanel ? "text-neutral-100" : "text-neutral-400"
+                  legendPop.open ? "text-neutral-100" : "text-neutral-400"
                 } hover:text-neutral-100`}
               >
                 {S.graph.legendMore(legendRest.length)}
@@ -1131,8 +1139,21 @@ export function Graph() {
                   <span className="h-1.5 w-1.5 rounded-full bg-neutral-300" />
                 )}
               </button>
-              {legendPanel && (
-                <div className="glass-strong absolute left-0 top-8 z-20 w-64 rounded-xl p-2 shadow-xl">
+              {legendPop.open && (
+                <div
+                  ref={legendPop.panelRef}
+                  className="u-menu-glass absolute left-0 top-0 z-50 w-64 overflow-hidden rounded-xl p-2 shadow-2xl"
+                >
+                  {/* 面板盖在 chip 原位，所以**第一行就长成那个 chip 的样子**，
+                      点它收回去——「哪儿展开的就从哪儿收回去」，
+                      与通知/用户卡片的关闭键跟触发键原位重合是同一个道理 */}
+                  <button
+                    onClick={() => legendPop.close()}
+                    className="mb-1.5 flex w-full items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-neutral-300 transition-colors hover:text-neutral-100"
+                  >
+                    {S.graph.legendMore(legendRest.length)}
+                    <X size={11} className="ml-auto text-neutral-500" />
+                  </button>
                   <input
                     autoFocus
                     value={legendQ}
