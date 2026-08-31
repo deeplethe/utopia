@@ -1474,7 +1474,27 @@ function EntityPanel({
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [draftType, setDraftType] = useState("");
-  const [sameName, setSameName] = useState<GraphNode[]>([]);
+  // 同名的其他实体：详情接口打开就给。改名之后再用响应里的那份覆盖——
+  // 改完名可能撞上一批新的同名，那时候的答案比打开时的新
+  const [renamedPeers, setRenamedPeers] = useState<GraphNode[] | null>(null);
+  const sameName = renamedPeers ?? detail.data?.same_name ?? [];
+  const setSameName = setRenamedPeers;
+  // 手动合并：把同名的那个并进**当前这个**。方向写死是有意的——
+  // 用户正在看的就是他判断为「主」的那一个
+  const merge = useMutation({
+    mutationFn: (source: string) => api.mergeEntities(kbId, source, entityId),
+    onSuccess: () => {
+      toast.success(S.toast.saved);
+      // 本地把并掉的那个摘掉，别等重取——它已经不存在了，留着会让人再点一次
+      setSameName((prev) =>
+        (prev ?? sameName).filter((p) => p.id !== merge.variables),
+      );
+      qc.invalidateQueries({ queryKey: ["entity", kbId, entityId] });
+      qc.invalidateQueries({ queryKey: ["graph"] });
+      qc.invalidateQueries({ queryKey: ["review", kbId] });
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
   // 类型下拉要的是全量本体，不是当前视图里出现过的那几个
   const ontology = useQuery({
     queryKey: ["ontology", kbId],
@@ -1669,18 +1689,33 @@ function EntityPanel({
               <X size={11} />
             </button>
           </div>
-          <div className="mt-1.5 flex flex-wrap gap-1">
+          {/* 每个同名的给两个动作：去看它，或者把它并进来。
+              **方向写死成「并进当前这个」**——合并有方向（源消失、事实搬到目标上），
+              而当前打开的这个就是用户正在看、正在判断的那一个 */}
+          <div className="mt-1.5 space-y-1">
             {sameName.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => onNavigate(p.id)}
-                className="text-[11px] px-1.5 py-0.5 rounded bg-white/[0.06] text-neutral-300 hover:bg-white/10"
-              >
-                {p.type_label ?? S.graph.untyped}
-                {p.disambiguator && p.disambiguator !== p.type_label
-                  ? ` · ${p.disambiguator}`
-                  : ""}
-              </button>
+              <div key={p.id} className="flex items-center gap-1">
+                <button
+                  onClick={() => onNavigate(p.id)}
+                  className="min-w-0 flex-1 truncate text-left text-[11px] px-1.5 py-0.5 rounded bg-white/[0.06] text-neutral-300 hover:bg-white/10"
+                >
+                  {p.type_label ?? S.graph.untyped}
+                  {p.disambiguator && p.disambiguator !== p.type_label
+                    ? ` · ${p.disambiguator}`
+                    : ""}
+                </button>
+                <button
+                  className="shrink-0 text-[11px] px-1.5 py-0.5 rounded text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
+                  disabled={merge.isPending}
+                  title={S.graph.mergeIntoHint}
+                  onClick={() => {
+                    if (confirm(S.graph.mergeConfirm(p.name, e?.name ?? "")))
+                      merge.mutate(p.id);
+                  }}
+                >
+                  {S.graph.mergeInto}
+                </button>
+              </div>
             ))}
           </div>
         </div>

@@ -113,7 +113,7 @@ pub async fn list(
         other => {
             return Err(utopia_core::AppError::invalid(
                 "unknown_queue",
-                &format!("no review queue named {other}"),
+                format!("no review queue named {other}"),
             )
             .into())
         }

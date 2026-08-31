@@ -4,7 +4,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ChevronRight, Inbox, Plus, Search, Upload } from "lucide-react";
+import {
+  ChevronRight,
+  Inbox,
+  Plus,
+  Search,
+  Upload,
+  Wand2,
+} from "lucide-react";
 import {
   api,
   type EntityTypeView,
@@ -12,6 +19,8 @@ import {
   type OntologyMiss,
   type PlannedItem,
   type OntologyProposals,
+  type ResolutionOutcome,
+  type TypeSuggestion,
   type RelationTypeView,
 } from "../api";
 import { S } from "../i18n";
@@ -48,6 +57,8 @@ type Sel =
   | { kind: "new-class"; parentId: string | null }
   | { kind: "new-relation" }
   | { kind: "misses" }
+  // 类型消解：把「大致对」的类换成更具体的那个
+  | { kind: "refine" }
   | { kind: "import" }
   | null;
 
@@ -224,6 +235,21 @@ export function Ontology() {
           <Upload size={14} className="text-neutral-500" />
           <span>{S.ontology.importShort}</span>
         </button>
+        {/* 类型消解：把「大致对」的类换成更具体的那个。**紧挨着未匹配**——
+            两者都是「本体与数据对不齐」的处置，只是方向相反：那个是本体缺东西，
+            这个是本体有更好的选项没被用上 */}
+        <button
+          onClick={() => setSel({ kind: "refine" })}
+          className={cn(
+            "shrink-0 border-t border-white/10 px-4 py-2.5 flex items-center gap-2 text-[13px] transition-colors",
+            sel?.kind === "refine"
+              ? "u-nav-active"
+              : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
+          )}
+        >
+          <Wand2 size={14} className="text-neutral-500" />
+          <span>{S.ontology.refineShort}</span>
+        </button>
         {/* 底部常驻：抽取未匹配信号（有存量时带数量徽标） */}
         <button
           onClick={() => setSel({ kind: "misses" })}
@@ -251,6 +277,10 @@ export function Ontology() {
           {sel?.kind === "import" ? (
             <div className="max-w-xl">
               <ImportPanel kbId={kb.id} onChanged={refresh} onError={onError} />
+            </div>
+          ) : sel?.kind === "refine" ? (
+            <div className="max-w-2xl">
+              <RefinePanel kbId={kb.id} onChanged={refresh} onError={onError} />
             </div>
           ) : sel?.kind === "misses" ? (
             <div className="max-w-xl">
@@ -1281,6 +1311,248 @@ function PropertyForm({
 
 /* ---------- 未匹配信号 + AI 建议 ---------- */
 
+
+/** 类型消解：把「大致对」的类换成更具体的那个。
+ *
+ * **两步走，跟本体导入同一个形状**：先看一遍会发生什么，再决定落不落。这里还多
+ * 一层理由——改类不进时间轴，不像事实改写那样在实体历史里自己显形，所以
+ * 「先看一眼」是唯一能看见它的时机。
+ *
+ * 跑完分三档，各有各的处置：自动改掉的（可整批撤销）、跨了分类轴留给人的、
+ * 裁决说「都不是」的。**最后那一档带着理由**——这一步押在「选择都不是是个
+ * 体面答案」上，不记理由，最大的那一档就是不透明的。
+ */
+function RefinePanel({
+  kbId,
+  onChanged,
+  onError,
+}: {
+  kbId: string;
+  onChanged: () => void;
+  onError: (e: Error) => void;
+}) {
+  const [preview, setPreview] = useState<TypeSuggestion[] | null>(null);
+  const [outcome, setOutcome] = useState<ResolutionOutcome | null>(null);
+
+  const look = useMutation({
+    mutationFn: () => api.typeResolutionPreview(kbId),
+    onSuccess: (d) => {
+      setPreview(d.items);
+      setOutcome(null);
+    },
+    onError,
+  });
+  const run = useMutation({
+    mutationFn: () => api.typeResolutionApply(kbId),
+    onSuccess: (d) => {
+      setOutcome(d);
+      setPreview(null);
+      onChanged();
+    },
+    onError,
+  });
+  const approve = useMutation({
+    mutationFn: (v: {
+      from_type_id: string;
+      to_type_id: string;
+      entity_ids: string[];
+    }) => api.approveRefinement(kbId, v),
+    onSuccess: () => {
+      toast.success(S.toast.saved);
+      onChanged();
+    },
+    onError,
+  });
+  const undo = useMutation({
+    mutationFn: (batch: string) => api.typeResolutionUndo(kbId, batch),
+    onSuccess: (d) => {
+      toast.success(S.ontology.refineUndone(d.reverted));
+      setOutcome(null);
+      onChanged();
+    },
+    onError,
+  });
+
+  const busy = look.isPending || run.isPending;
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="u-title text-lg mb-1">{S.ontology.refineTitle}</h3>
+        <p className="text-xs leading-relaxed text-neutral-500 max-w-xl">
+          {S.ontology.refineHint}
+        </p>
+      </div>
+
+      <div className="flex gap-2">
+        <button
+          className="u-btn text-xs"
+          disabled={busy}
+          onClick={() => look.mutate()}
+        >
+          {look.isPending ? S.ontology.refineLooking : S.ontology.refinePreview}
+        </button>
+        <button
+          className="u-btn u-btn-primary text-xs"
+          disabled={busy}
+          onClick={() => run.mutate()}
+        >
+          {run.isPending ? S.ontology.refineRunning : S.ontology.refineRun}
+        </button>
+      </div>
+
+      {/* ---- 只算不写的那一步 */}
+      {preview && (
+        <div className="space-y-2">
+          <p className="text-xs text-neutral-500">
+            {preview.length === 0
+              ? S.ontology.refineNothing
+              : S.ontology.refineCandidates(preview.length)}
+          </p>
+          {preview.map((s) => (
+            <div key={s.entity_id} className="glass rounded-xl p-3">
+              <div className="flex items-baseline gap-2 flex-wrap">
+                <span className="text-sm text-neutral-100">{s.name}</span>
+                <span className="text-[11px] text-neutral-500">
+                  {s.coarse ?? S.graph.untyped}
+                </span>
+                {s.specific_type && (
+                  <span className="text-[11px] text-[var(--u-warn)]">
+                    {S.ontology.refineModelSays(s.specific_type)}
+                  </span>
+                )}
+                <span className="ml-auto u-num text-[10.5px] text-neutral-600">
+                  {S.review.factsCount(s.fact_count)}
+                </span>
+              </div>
+              {/* **把送去检索的那段字显示出来**：找不着的时候，第一个要看的
+                  就是我们拿什么去找的，而不是猜画像还是类描述的问题 */}
+              <p className="mt-1 text-[11px] text-neutral-500 line-clamp-2">
+                {s.profile}
+              </p>
+              <div className="mt-1.5 flex flex-wrap gap-1">
+                {s.candidates.slice(0, 6).map((c) => (
+                  <span
+                    key={c.id}
+                    title={c.description}
+                    className="u-chip u-chip-neutral u-num text-[10.5px]"
+                  >
+                    {c.label} {c.distance.toFixed(2)}
+                  </span>
+                ))}
+                {s.candidates.length === 0 && (
+                  <span className="text-[11px] text-neutral-600">
+                    {S.ontology.refineNoCandidates}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* ---- 落库之后的三档 */}
+      {outcome && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-neutral-300">
+              {S.ontology.refineRetyped(outcome.retyped)}
+            </span>
+            {outcome.batch && outcome.retyped > 0 && (
+              <button
+                className="u-btn u-btn-ghost text-xs"
+                disabled={undo.isPending}
+                onClick={() => undo.mutate(outcome.batch!)}
+              >
+                {S.ontology.refineUndo}
+              </button>
+            )}
+          </div>
+
+          {outcome.for_review.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs text-neutral-500">
+                {S.ontology.refineForReview(outcome.for_review.length)}
+              </p>
+              {outcome.for_review.map((r) => (
+                <div key={r.entity_id} className="glass rounded-xl p-3">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="text-sm text-neutral-100">{r.name}</span>
+                    <span className="text-[11px] text-neutral-500">
+                      {r.coarse ?? S.graph.untyped} → {r.choice}
+                    </span>
+                    {r.crosses_axis && (
+                      <span className="u-chip u-chip-warn text-[10.5px]">
+                        {S.ontology.refineCrossesAxis}
+                      </span>
+                    )}
+                    <span className="ml-auto u-num text-[10.5px] text-neutral-600">
+                      {Math.round(r.confidence * 100)}%
+                    </span>
+                  </div>
+                  {r.reason && (
+                    <p className="mt-1 text-[11px] text-neutral-500">
+                      {r.reason}
+                    </p>
+                  )}
+                  {/* **认可的是这一对类，不是这一个实体。** 认可一次，
+                      之后同一对不再进人工——那正是这一档大部分条目的成因 */}
+                  {r.from_type_id && (
+                    <button
+                      className="u-btn u-btn-primary mt-2 text-xs"
+                      disabled={approve.isPending}
+                      onClick={() =>
+                        approve.mutate({
+                          from_type_id: r.from_type_id!,
+                          to_type_id: r.to_type_id,
+                          entity_ids: [r.entity_id],
+                        })
+                      }
+                    >
+                      {S.ontology.refineApprovePair}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {outcome.left_alone.length > 0 && (
+            <div className="space-y-1.5">
+              <p className="text-xs text-neutral-500">
+                {S.ontology.refineLeftAlone(outcome.left_alone.length)}
+              </p>
+              {outcome.left_alone.map((d, i) => (
+                <div key={i} className="glass rounded-xl px-3 py-2">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="text-[13px] text-neutral-200">
+                      {d.name}
+                    </span>
+                    <span className="text-[11px] text-neutral-500">
+                      {d.coarse ?? S.graph.untyped}
+                    </span>
+                  </div>
+                  {/* 理由与头一个候选一起给：理由说不通时，看候选就知道是
+                      检索没找着还是裁决没看上 */}
+                  {d.reason && (
+                    <p className="mt-0.5 text-[11px] text-neutral-500">
+                      {d.reason}
+                    </p>
+                  )}
+                  {d.top_candidate && (
+                    <p className="mt-0.5 text-[11px] text-neutral-600">
+                      {S.ontology.refineTopCandidate(d.top_candidate)}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 function MissesPanel({
   kbId,
   misses,

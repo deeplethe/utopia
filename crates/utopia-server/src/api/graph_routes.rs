@@ -114,9 +114,16 @@ pub async fn entity_detail(
     // 和「这条是引擎推的」的区别，而那正是推理会污染知识的样子
     let derived =
         utopia_store::reasoning::derived_for_entity(&state.pool, kb_id, entity_id).await?;
-    Ok(Json(
-        json!({ "entity": entity, "facts": facts, "derived": derived }),
-    ))
+    // 同名的那些**打开面板时就给**，不是等改名之后才回。
+    //
+    // 从前它只随 `update_entity` 的响应回来，于是「把同名的合并进来」这个动作
+    // 只有先改一次名才够得着——而两个张伟并存是「宁分勿合」的正当产物，不是
+    // 改名改出来的。合并入口该长在能看见同名的地方。
+    let same_name = utopia_store::graph::same_name_peers(&state.pool, kb_id, entity_id).await?;
+    Ok(Json(json!({
+        "entity": entity, "facts": facts,
+        "derived": derived, "same_name": same_name,
+    })))
 }
 
 #[derive(Deserialize)]

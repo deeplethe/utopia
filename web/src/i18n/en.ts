@@ -561,6 +561,11 @@ export const en = {
         ? "One other entity shares this name."
         : `${n} other entities share this name.`,
     sameNameHint: "If they are the same thing, merge them under Review.",
+    mergeInto: "Merge in",
+    mergeIntoHint:
+      "Fold that entity into this one. Its facts move here; merges can be reverted.",
+    mergeConfirm: (from: string, into: string) =>
+      `Merge “${from}” into “${into}”? Its facts move here. You can revert this from Review.`,
     viewRelations: "Relations",
     viewTimeline: "Timeline",
     /* 第三视图：记录时间轴——不是"事情何时发生"，而是"我们何时这么认为" */
@@ -742,6 +747,26 @@ export const en = {
     newProperty: "New property",
     filter: "Filter…",
     missesShort: "Unmatched",
+    refineShort: "Refine types",
+    refineTitle: "Refine types",
+    refineHint:
+      "Entities whose class is roughly right but not the most specific one available. Look first, then apply — retyping does not appear on any timeline, so this is the only place you get to see it before it happens.",
+    refinePreview: "Look first",
+    refineLooking: "Looking…",
+    refineRun: "Run and apply",
+    refineRunning: "Running…",
+    refineNothing: "Nothing to refine.",
+    refineCandidates: (n: number) => `${n} entities would be considered`,
+    refineNoCandidates: "Retrieval found no class for this one.",
+    refineModelSays: (t: string) => `the model called it “${t}”`,
+    refineRetyped: (n: number) => `${n} retyped automatically`,
+    refineUndo: "Undo this batch",
+    refineUndone: (n: number) => `${n} put back`,
+    refineForReview: (n: number) => `${n} need your call`,
+    refineCrossesAxis: "different axis",
+    refineApprovePair: "Approve this class pair",
+    refineLeftAlone: (n: number) => `${n} left alone`,
+    refineTopCandidate: (c: string) => `closest class was ${c}`,
     instances: "Instances",
     instanceFacts: (n: number) => `${n} facts`,
     description: "Description",

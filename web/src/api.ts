@@ -301,6 +301,55 @@ export interface ReviewCounts {
   merges: number;
 }
 
+/** 类型消解的一条建议：一个待精化的实体、送去检索的画像、以及候选类。
+ *
+ * `profile` 回给调用方是有意的——检索找不着的时候，第一个要看的就是
+ * 「我们拿什么去找的」，而不是猜是画像不对还是类的描述不对。 */
+export interface TypeSuggestion {
+  entity_id: string;
+  name: string;
+  /** 现在挂着的类，可能没有（0009） */
+  coarse: string | null;
+  coarse_description: string | null;
+  proposed_type: string | null;
+  specific_type: string | null;
+  fact_count: number;
+  profile: string;
+  candidates: {
+    id: string;
+    key: string;
+    label: string;
+    description: string;
+    distance: number;
+  }[];
+}
+
+/** 跑完一轮的结果。**三档分开报**：自动改了的、留给人的、裁决说「都不是」的。
+ *  最后那一档带着理由——这一步押在「选择都不是是个体面答案」上，
+ *  不记理由，最大的那一档就是不透明的。 */
+export interface ResolutionOutcome {
+  batch: string | null;
+  retyped: number;
+  for_review: {
+    entity_id: string;
+    name: string;
+    coarse: string | null;
+    from_type_id: string | null;
+    to_type_id: string;
+    choice: string;
+    confidence: number;
+    reason: string | null;
+    /** 选中的类不在粗类的子树里——换的是分类轴，不是往下走一格 */
+    crosses_axis: boolean;
+  }[];
+  left_alone: {
+    name: string;
+    coarse: string | null;
+    specific_type: string | null;
+    reason: string | null;
+    top_candidate: string | null;
+  }[];
+}
 export interface ReviewSide {
   id: string;
   name: string;
@@ -1009,6 +1058,9 @@ export const api = {
       /** 推出来的那些**单独一个键**，不掺进 facts：混在同一个列表里，
        *  用户看不出「文档里写的」和「引擎推的」的区别 */
       derived: DerivedFact[];
+      /** 同名的其他实体。**打开面板就给**——合并入口要长在能看见同名的地方，
+       *  而不是藏在「改一次名」之后 */
+      same_name: GraphNode[];
     }>(`/api/v1/kbs/${kbId}/entities/${entityId}`),
   /** 认知变更历史（记录时间轴）：服务端分页 */
   /** 人工修正实体的类型或名字。同名不拦——返回的 same_name 供界面提示是否合并。 */
@@ -1339,6 +1391,41 @@ export const api = {
       body: JSON.stringify({ resolution }),
     }),
   /** 跑一遍推理（R1）。开关关着时后端回 inference_off */
+  /** 类型消解：**只算不写**。回执里带着送去检索的画像——检索找不着时，
+   *  第一个要看的就是「我们拿什么去找的」 */
+  /** 手动合并：把 source 并进 target。**方向要紧**——source 消失，
+   *  它的事实搬到 target 上；合并可整体回滚（entity_merges 记着快照） */
+  mergeEntities: (kbId: string, source: string, target: string) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/entities/merge`, {
+      method: "POST",
+      body: JSON.stringify({ source, target }),
+    }),
+  typeResolutionPreview: (kbId: string) =>
+    request<{ items: TypeSuggestion[] }>(
+      `/api/v1/kbs/${kbId}/ontology/type-resolution/preview`,
+      { method: "POST" },
+    ),
+  /** 跑一遍并落库。三档分开回：自动改的、留给人的、说「都不是」的 */
+  typeResolutionApply: (kbId: string) =>
+    request<ResolutionOutcome>(`/api/v1/kbs/${kbId}/ontology/type-resolution`, {
+      method: "POST",
+    }),
+  /** 认可一个「粗类 → 细类」的配对，并把带上的实体改过去。
+   *  **认可的是类对，改的是实体**——认可一次，之后同一对不再进人工 */
+  approveRefinement: (
+    kbId: string,
+    body: { from_type_id: string; to_type_id: string; entity_ids: string[] },
+  ) =>
+    request<{ retyped: number }>(
+      `/api/v1/kbs/${kbId}/ontology/type-resolution/approve`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  /** 撤销一整批：把那批实体放回原来的类 */
+  typeResolutionUndo: (kbId: string, batchId: string) =>
+    request<{ reverted: number }>(
+      `/api/v1/kbs/${kbId}/ontology/type-resolution/${batchId}`,
+      { method: "DELETE" },
+    ),
   runInference: (kbId: string) =>
     request<{
       /** 编译出来的规则条数。为零时是「没有规则」而不是「推不出东西」 */
