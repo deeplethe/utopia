@@ -962,8 +962,11 @@ export function Graph() {
           }
         } else if (hov && hov !== node && !g.areNeighbors(hov, node)) {
           // **悬停也压暗其余**，只是比选中轻一档（见 HOVER_MUTE）。
-          // 邻居留着：悬停要回答的正是"它连着谁"
-          softMute();
+          // 邻居留着：悬停要回答的正是"它连着谁"。
+          // **此刻还不存在的节点直接压到底**：这个分支会提前 return，
+          // 绕过下面那道时间过滤，只压一半的话它反而比不 hover 时更亮
+          if (f.activeNodes && !f.activeNodes.has(node)) muteNode();
+          else softMute();
           return res;
         } else {
           // default {×0.7}
@@ -1074,12 +1077,19 @@ export function Graph() {
           res.size = Math.max((attrs.size as number) * 1.42, 1.85);
           res.zIndex = 5;
         };
-        if (hov && (s === hov || t === hov)) {
+        /* **时间轴停在某一刻时，这条边此刻存不存在**。
+           悬停的两条分支都会提前 return，绕过下面那道时间过滤——
+           不带上它的话，一 hover，所有"还没长出来"的边会从近背景色
+           跳到常态色的 45%，看起来是被点亮了。实测就是这么亮的 */
+        const liveNow = !f.activeEdges || f.activeEdges.has(edge);
+        if (hov && (s === hov || t === hov) && liveNow) {
           boost();
         } else if (hov && !sel) {
           // 悬停时其余的边也退下去，但**只退一半**——与节点那边同一个 HOVER_MUTE。
-          // 压到底是选中才有的待遇
-          res.color = lerpColor(String(res.color), EDGE_DIM, HOVER_MUTE);
+          // 压到底是选中才有的待遇。此刻不存在的边**本来就该是暗的**，
+          // 从 EDGE_DIM 起混等于原地不动
+          const from = liveNow ? String(res.color) : EDGE_DIM;
+          res.color = lerpColor(from, EDGE_DIM, HOVER_MUTE);
           res.size = (attrs.size as number) * (1 - 0.4 * HOVER_MUTE);
           res.label = "";
           return res;
