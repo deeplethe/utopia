@@ -225,6 +225,11 @@ pub fn build_messages(
          5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
          7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.\n\
+         7a. Every entity you list must take part in at least one fact. If the text says \
+            nothing relatable about a thing, leave it out of entities entirely — a name with \
+            no fact attached tells the reader nothing. Before you finish, check each entity \
+            against your facts: an entity that appears in none of them means you either \
+            missed a relation the text states about it, or should not have listed it.\n\
          8. If no listed relation fits, do not force the nearest one — write the predicate the \
             text itself uses, in snake_case (e.g. \"available_on\", \"runs_on\"). A relation \
             named after the text is worth more than a listed one that says something false.\n\
