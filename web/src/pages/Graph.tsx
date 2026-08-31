@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import Graphology from "graphology";
 import { circular, circlepack } from "graphology-layout";
 import forceAtlas2 from "graphology-layout-forceatlas2";
@@ -300,10 +300,15 @@ function drawHoverCard(
 
 export function Graph() {
   const { kb } = useKb();
-  // 深链入口：/graph?entity=… 直接聚焦并选中该实体（证据两跳可达的反向路径）
-  const { entity: entityParam } = useSearch({ from: "/app/graph" });
+  /* 地址栏与画面**双向**同步。
+     从前只有"进"这一半：`?entity=` 在挂载时读一次就再不管了——
+     别人给的链接能用，而你自己看到的东西却没法分享，因为地址栏一直停在
+     光秃秃的 /graph。 */
+  const search = useSearch({ from: "/app/graph" });
+  const navigate = useNavigate();
+  const entityParam = search.entity;
   const [focusEntity, setFocusEntity] = useState<string | null>(
-    entityParam ?? null,
+    search.focus ?? entityParam ?? null,
   );
   const [selected, setSelected] = useState<string | null>(entityParam ?? null);
   const [searchInput, setSearchInput] = useState("");
@@ -337,11 +342,65 @@ export function Graph() {
   /** null = 全时段；数值 = as-of 时刻(ms)。
       默认 as-of 今天：时态平台的图谱默认呈现"现在的世界"，
       已闭合的事实不该与现行事实无差别并列（All time 是显式选择） */
-  const [timeT, setTimeT] = useState<number | null>(() => Date.now());
+  /* 时间轴。URL 里带了就用它：`all` = 全时段，否则按 YYYY-MM-DD 解析
+     （与数据的 day 级精度一致，也比一串毫秒好读） */
+  const [timeT, setTimeT] = useState<number | null>(() => {
+    if (search.at === "all") return null;
+    if (search.at) {
+      const t = Date.parse(search.at);
+      if (!Number.isNaN(t)) return t;
+    }
+    return Date.now();
+  });
   const [activeCount, setActiveCount] = useState(0);
   const [stabilizing, setStabilizing] = useState(false);
   /* 播放态提升到此层：reducer 需区分"播放推进"（淡入）与"手动拖动"（瞬切） */
   const [playing, setPlaying] = useState(false);
+
+  /* 画面 → 地址栏。**replace 不是 push**：点节点是浏览不是导航，
+     堆进历史会把「后退」变成逐个撤销点击。
+     播放中整段跳过——每帧写一次 URL 是灾难 */
+  useEffect(() => {
+    if (playing) return;
+    const at =
+      timeT === null
+        ? "all"
+        : // 停在「现在」就不写。否则每次打开都在地址栏拖一串今天的日期，
+          // 而那本来就是默认值
+          Math.abs(timeT - Date.now()) < DAY_MS
+          ? undefined
+          : new Date(timeT).toISOString().slice(0, 10);
+    const next = {
+      entity: selected ?? undefined,
+      focus: focusEntity ?? undefined,
+      at,
+    };
+    if (
+      next.entity === search.entity &&
+      next.focus === search.focus &&
+      next.at === search.at
+    )
+      return;
+    navigate({ to: "/graph", search: next, replace: true });
+  }, [
+    selected,
+    focusEntity,
+    timeT,
+    playing,
+    search.entity,
+    search.focus,
+    search.at,
+    navigate,
+  ]);
+
+  /* 地址栏 → 画面。**这一半是给后退/前进用的**：没有它，浏览器回退
+     只改地址不改画面，看起来像后退失灵。两个方向都先比较再动手，所以不会打架 */
+  useEffect(() => {
+    const e = search.entity ?? null;
+    const f = search.focus ?? null;
+    setSelected((cur) => (cur === e ? cur : e));
+    setFocusEntity((cur) => (cur === f ? cur : f));
+  }, [search.entity, search.focus]);
   /* 布局模式：force = FA2 斥力；circular = 圆环；pack = 按类型圆填充聚簇 */
   type LayoutMode = "force" | "circular" | "pack";
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
@@ -643,25 +702,14 @@ export function Graph() {
     let fa2Settings: ReturnType<typeof forceAtlas2.inferSettings> | null = null;
     if (g.order > 0) {
       circular.assign(g, { scale: 300 });
-      /* 力的大小随规模走。**原来是两个写死的常量（gravity 0.35 / scalingRatio 22），
-         那是画布上限还钉在 150 个节点时调的**——现在右上角能把上限调到 1000，
-         同样的力落在几百个节点上就过猛：斥力把外圈甩得很开，重力又往回拽，
-         两股劲对着使，画面在收敛期一直在弹。
-
-         三个数各管一件事：
-         - scalingRatio 是**斥力**。节点多了要调小，否则外圈会被甩出视野。
-         - gravity 是**往中心的拉力**。它只负责别让孤立点飘走，不该跟斥力较劲。
-         - slowDown 是**阻尼**，从前完全没管（吃 inferSettings 的 1+ln(n)）。
-           "力气太大"最直接的解法其实是这个：同样的力，走慢一点就不弹。
-
-         参照：graphology 对这个规模推断出的默认值约是 gravity 0.1 / scalingRatio 10，
-         我们仍略高于它——这张图要的是"散得开、看得清"，不是最紧凑的那种排布 */
-      const big = g.order > 400;
+      /* 试过按规模缩放（gravity 0.12–0.22 / scalingRatio 11–16 + 加大阻尼），
+         拿真实的图一看就否了：散是散开了，但那种"被推开"的张力没了，
+         整张图显得瘫。**这一组是既有的、刻意偏大的**——要的是节点之间
+         互相顶着的感觉，不是最省力的排布 */
       const settings = {
         ...forceAtlas2.inferSettings(g),
-        gravity: big ? 0.12 : 0.22,
-        scalingRatio: big ? 11 : 16,
-        slowDown: (1 + Math.log(Math.max(2, g.order))) * 1.8,
+        gravity: 0.35,
+        scalingRatio: 22,
         outboundAttractionDistribution: true,
       };
       fa2Settings = settings;
@@ -1595,7 +1643,7 @@ function TimeScrubber({
   const setPlaying = onPlayingChange;
   /* 默认年：**大多数库跨度都以年计**，一进来先给能一眼看全的那一档 */
   const [unit, setUnit] = useState<ScrubUnit>("year");
-  /* 回到起点的次数。**拿它当 key**——同一个元素上重复触发同一个动画不会重播，
+  /* 走完整条的次数。**拿它当 key**——同一个元素上重复触发同一个动画不会重播，
      换 key 让它重新挂载才会 */
   const [sweep, setSweep] = useState(0);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -1667,6 +1715,9 @@ function TimeScrubber({
       if (acc >= maxTs) {
         setPlaying(false);
         onChange(null);
+        // 走到头了扫一道光。**这是个收尾**——播放停下、时间跳回全时段，
+        // 没有交代的话看着像中途断了；一道光扫过说明"这条走完了"
+        setSweep((n) => n + 1);
         return;
       }
       // **连续推进，不按桶跳。** 从前按 `bucketStart` 取整下发，年单位下
@@ -1721,10 +1772,8 @@ function TimeScrubber({
           if (
             !playing &&
             (value === null || value >= maxTs - (maxTs - minTs) * 0.02)
-          ) {
+          )
             onChange(minTs);
-            setSweep((s) => s + 1);
-          }
           setPlaying(!playing);
         }}
         title={playing ? S.graph.pause : S.graph.play}
@@ -1988,7 +2037,7 @@ function DerivedPanel({
   return (
     <div
       ref={panelRef}
-      className="u-menu-glass pointer-events-auto absolute bottom-0 left-0 z-50 w-72 overflow-hidden rounded-xl p-3 shadow-2xl"
+      className="u-menu-glass pointer-events-auto absolute bottom-0 left-0 z-50 w-72 overflow-hidden rounded-xl px-3 pb-3 pt-2.5 shadow-2xl"
     >
       {/* items-center 而不是 baseline：标题旁边站着一个按钮和一个关闭键，
           按基线对齐会让那两个看着往上飘 */}
@@ -2009,8 +2058,10 @@ function DerivedPanel({
             {run.isPending ? S.graph.derivedRunning : S.graph.derivedRun}
           </button>
         )}
+        {/* 固定 18px 方格：**别让关闭键撑起标题行的高**——一撑高，
+            行里最矮的标题就被居中挤出上下空当，看着像上边距过大 */}
         <button
-          className={armed ? "ml-auto text-neutral-500 hover:text-neutral-200" : "text-neutral-500 hover:text-neutral-200"}
+          className={`${armed ? "ml-auto " : ""}grid h-[18px] w-[18px] place-items-center rounded text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-200`}
           onClick={onClose}
           aria-label={S.graph.close}
         >

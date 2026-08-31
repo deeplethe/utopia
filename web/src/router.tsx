@@ -82,8 +82,19 @@ const searchRoute = createRoute({
 const graphRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/graph",
-  validateSearch: (search: Record<string, unknown>): { entity?: string } => ({
+  /* 图谱页的可分享状态。**三个都是"你在看什么"，不是"你怎么看"**——
+     所以档位（画多少个）刻意不进 URL：那是本地观感，换台机器不该跟着走。
+
+     - entity：选中了谁
+     - focus：是否处在某个实体的邻域（与"在全图里选中"是两个画面）
+     - at：时间轴停在哪一刻。**这条最不能少**——这产品的卖点就是
+       "看某个时刻的世界"，不带时刻的链接把最有意思的那部分丢了 */
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { entity?: string; focus?: string; at?: string } => ({
     entity: typeof search.entity === "string" ? search.entity : undefined,
+    focus: typeof search.focus === "string" ? search.focus : undefined,
+    at: typeof search.at === "string" ? search.at : undefined,
   }),
   component: Graph,
 });
