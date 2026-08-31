@@ -34,6 +34,7 @@
 | 0010 | [「说不出是什么关系」不该是一个关系](0010-no-relation-is-no-relation.md) | 已实施 · `facts.predicate_id` 改为可空 · 0009 在关系侧的孪生 · **含一次七分钟后长回来的修订** |
 | 0011 | [「怎么算」不是「有什么」](0011-a-mapping-is-not-a-fact.md) | 规划中 · 语义层映射搬出本体 · 0009/0010 那条线的最后一段 |
 | 0012 | [本体是一份契约，不只是一份建议](0012-the-ontology-is-a-contract-not-a-suggestion.md) | 已实施 · 五轮对照实验 · 违反率 57%→4%、反向 39→0 · 首次拿真语料问 0008 那个问题 |
+| 0013 | [一个来源该交出它的历史，不是它的现状](0013-a-source-should-hand-over-its-history.md) | 已实施两个（GitHub / Jira 工单）· **文档协作类待做** |
 
 ## 不是决策记录的那些
 
