@@ -22,7 +22,7 @@ export function usePopoverFlip<A extends HTMLElement, P extends HTMLElement>(
   /** 变形的锚点角。**面板贴哪边就写哪边**：顶栏右侧的面板贴右上角，
    *  贴左边的面板（比如图例的「+N 个类」）要写 "top left"，
    *  否则它会从右边缘往左长出来，看着像从别处飞过来的 */
-  origin: "top right" | "top left" = "top right",
+  origin: "top right" | "top left" | "bottom left" = "top right",
 ) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);

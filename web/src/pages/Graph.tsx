@@ -312,7 +312,11 @@ export function Graph() {
   // 推出来的边显不显示。默认显示——推理默认关着，有派生就意味着用户开过开关
   const [showDerived, setShowDerived] = useState(true);
   // 信息窗默认收起：它答的是「什么时候推的」，那是偶尔才问的问题
-  const [derivedPanel, setDerivedPanel] = useState(false);
+  /* Inference 也用原地展开，与「+N 个类」、通知、用户菜单同一套。
+     **贴左下角**：塔在画布左下，面板要从那个 ⋯ 按钮往右上长开 */
+  const derivedPop = usePopoverFlip<HTMLButtonElement, HTMLDivElement>(
+    "bottom left",
+  );
   /* 「+N 个类」用与通知/用户卡片同一套原地展开：面板压到 chip 的真实边界
      （圆角 999px）再长成卡片。**贴左边，所以锚点角是 top left** */
   const legendPop = usePopoverFlip<HTMLButtonElement, HTMLDivElement>(
@@ -1344,7 +1348,7 @@ export function Graph() {
           /* **两层**：外层只负责定位，内层才有 overflow-hidden。
              那个类是给按钮堆裁圆角的，可面板是同一个盒子的子元素——
              合成一层的话面板会被一起裁掉，实测只剩塔本身那 32px 宽 */
-          <div className="relative">
+          <div className="relative" ref={derivedPop.rootRef}>
             <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
             <button
               onClick={() => setShowDerived((v) => !v)}
@@ -1368,11 +1372,14 @@ export function Graph() {
                 **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
                 是偶尔才问的，合成一个会让常用动作多一步 */}
             <button
-              onClick={() => setDerivedPanel((v) => !v)}
+              ref={derivedPop.anchorRef}
+              onClick={() =>
+                derivedPop.open ? derivedPop.close() : derivedPop.setOpen(true)
+              }
               title={S.graph.derivedPanel}
-              aria-expanded={derivedPanel}
+              aria-expanded={derivedPop.open}
               className={`flex items-center p-2 text-[11px] leading-none transition-colors ${
-                derivedPanel
+                derivedPop.open
                   ? "text-white bg-white/[0.1]"
                   : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
               }`}
@@ -1383,11 +1390,12 @@ export function Graph() {
               <span className="u-tower-label">{S.graph.derivedPanel}</span>
             </button>
             </div>
-            {derivedPanel && kb && (
+            {derivedPop.open && kb && (
               <DerivedPanel
+                panelRef={derivedPop.panelRef}
                 kbId={kb.id}
                 count={derivedCount}
-                onClose={() => setDerivedPanel(false)}
+                onClose={() => derivedPop.close()}
               />
             )}
           </div>
@@ -1620,7 +1628,7 @@ function TimeScrubber({
     let raf = 0;
     let last = performance.now();
     let acc = value ?? minTs;
-    let lastSnapped = Number.NaN;
+    let lastPushed = 0;
     const step = (now: number) => {
       acc += (now - last) * SPEED;
       last = now;
@@ -1629,10 +1637,15 @@ function TimeScrubber({
         onChange(null);
         return;
       }
-      const snapped = bucketStart(acc, unit);
-      if (snapped !== lastSnapped) {
-        lastSnapped = snapped;
-        onChange(snapped);
+      // **连续推进，不按桶跳。** 从前按 `bucketStart` 取整下发，年单位下
+      // 一次就是一年——播放头一格一格蹦，看着像卡顿而不是在走。
+      // 单位现在只管**显示**（标签精度、柱子跨度），不再管推进的步长。
+      //
+      // 代价是下发变密（每帧一次），而每次下发都要重算全图的现行边，
+      // 所以限到 ~30fps：肉眼看不出与 60fps 的差别，重算量减半
+      if (now - lastPushed >= 33) {
+        lastPushed = now;
+        onChange(Math.round(acc));
       }
       raf = requestAnimationFrame(step);
     };
@@ -1744,13 +1757,17 @@ function TimeScrubber({
                   className="w-full rounded-[1px] transition-colors"
                   style={{
                     height: `${Math.max(10, b.h * 100)}%`,
-                    // 播放中已扫过的年份提亮，停止后回到常规亮度
+                    // 播放中已扫过的提亮，停止后回到常规亮度。
+                    // **还没走到的压到近乎不可见**：它们本来是 0.09，
+                    // 在这个底色上仍看得清，于是播放头右边跟左边一样"亮着"，
+                    // 走到哪儿就看不出来了。留一点点而不是归零——
+                    // 归零等于假装那段没有数据，而它只是还没到
                     background:
                       value !== null && past && playing
                         ? "rgba(255,255,255,0.62)"
                         : value === null || past
                           ? "rgba(255,255,255,0.32)"
-                          : "rgba(255,255,255,0.09)",
+                          : "rgba(255,255,255,0.04)",
                   }}
                 />
               </div>
@@ -1879,10 +1896,12 @@ function fmtInterval(f: EntityFact): string {
  * 手动按钮留在这里而不是别处：想重推的人正是刚看完这三行、觉得数字太旧的那个人。
  */
 function DerivedPanel({
+  panelRef,
   kbId,
   count,
   onClose,
 }: {
+  panelRef: React.Ref<HTMLDivElement>;
   kbId: string;
   count: number;
   onClose: () => void;
@@ -1908,10 +1927,13 @@ function DerivedPanel({
     ? Math.round((Date.now() - new Date(last).getTime()) / 60000)
     : null;
 
-  // **从塔的右侧展开**：塔在左下角贴着边，往下或往左都出视口；
-  // bottom-0 对齐让面板与那一组齐底，不会盖住下面的缩放按钮
+  // **盖在触发器原位往右上长开**（bottom-0 left-0），而不是在旁边挂一扇窗。
+  // 面与圆角跟通知/用户卡片对齐：u-menu-glass + rounded-xl
   return (
-    <div className="glass-strong pointer-events-auto absolute bottom-0 left-full z-20 ml-2 w-72 rounded-xl p-3 shadow-xl">
+    <div
+      ref={panelRef}
+      className="u-menu-glass pointer-events-auto absolute bottom-0 left-0 z-50 w-72 overflow-hidden rounded-xl p-3 shadow-2xl"
+    >
       <div className="flex items-baseline gap-2">
         <span className="text-[13px] text-neutral-100">
           {S.graph.derivedPanel}
