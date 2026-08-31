@@ -323,6 +323,17 @@ export function Graph() {
     "top left",
   );
   const [legendQ, setLegendQ] = useState("");
+  /* 正在退场的实体。**面板不能一取消选中就卸载**——那样它是瞬间消失的。
+     先留在原地演完退场，再真的移除。用 selectedRef 取当前值而不是把
+     setState 写成带副作用的 updater：那种写法在 StrictMode 下会跑两遍 */
+  const [exiting, setExiting] = useState<string | null>(null);
+  const deselect = useCallback(() => {
+    const cur = selectedRef.current;
+    if (!cur) return;
+    setExiting(cur);
+    setSelected(null);
+    window.setTimeout(() => setExiting(null), 170);
+  }, []);
   /** null = 全时段；数值 = as-of 时刻(ms)。
       默认 as-of 今天：时态平台的图谱默认呈现"现在的世界"，
       已闭合的事实不该与现行事实无差别并列（All time 是显式选择） */
@@ -632,10 +643,25 @@ export function Graph() {
     let fa2Settings: ReturnType<typeof forceAtlas2.inferSettings> | null = null;
     if (g.order > 0) {
       circular.assign(g, { scale: 300 });
+      /* 力的大小随规模走。**原来是两个写死的常量（gravity 0.35 / scalingRatio 22），
+         那是画布上限还钉在 150 个节点时调的**——现在右上角能把上限调到 1000，
+         同样的力落在几百个节点上就过猛：斥力把外圈甩得很开，重力又往回拽，
+         两股劲对着使，画面在收敛期一直在弹。
+
+         三个数各管一件事：
+         - scalingRatio 是**斥力**。节点多了要调小，否则外圈会被甩出视野。
+         - gravity 是**往中心的拉力**。它只负责别让孤立点飘走，不该跟斥力较劲。
+         - slowDown 是**阻尼**，从前完全没管（吃 inferSettings 的 1+ln(n)）。
+           "力气太大"最直接的解法其实是这个：同样的力，走慢一点就不弹。
+
+         参照：graphology 对这个规模推断出的默认值约是 gravity 0.1 / scalingRatio 10，
+         我们仍略高于它——这张图要的是"散得开、看得清"，不是最紧凑的那种排布 */
+      const big = g.order > 400;
       const settings = {
         ...forceAtlas2.inferSettings(g),
-        gravity: 0.35,
-        scalingRatio: 22,
+        gravity: big ? 0.12 : 0.22,
+        scalingRatio: big ? 11 : 16,
+        slowDown: (1 + Math.log(Math.max(2, g.order))) * 1.8,
         outboundAttractionDistribution: true,
       };
       fa2Settings = settings;
@@ -918,7 +944,7 @@ export function Graph() {
       setFocusEntity(node);
       setSelected(node);
     });
-    sigma.on("clickStage", () => setSelected(null));
+    sigma.on("clickStage", () => deselect());
     sigma.on("enterNode", ({ node }) => {
       hoverRef.current = node;
       sigma.refresh();
@@ -1489,12 +1515,13 @@ export function Graph() {
         />
       )}
 
-      {/* 实体侧栏 */}
-      {selected && kb && (
+      {/* 实体侧栏。**取消选中之后还要多留 170ms**：那段时间它在演退场 */}
+      {(selected || exiting) && kb && (
         <EntityPanel
           kbId={kb.id}
-          entityId={selected}
-          onClose={() => setSelected(null)}
+          entityId={(selected ?? exiting)!}
+          exiting={!selected}
+          onClose={deselect}
           onNavigate={(id) => {
             // 跳转目标可能不在当前画布：同时把图 refocus 到它的邻域（与搜索选择一致）
             setFocusEntity(id);
@@ -1568,6 +1595,9 @@ function TimeScrubber({
   const setPlaying = onPlayingChange;
   /* 默认年：**大多数库跨度都以年计**，一进来先给能一眼看全的那一档 */
   const [unit, setUnit] = useState<ScrubUnit>("year");
+  /* 回到起点的次数。**拿它当 key**——同一个元素上重复触发同一个动画不会重播，
+     换 key 让它重新挂载才会 */
+  const [sweep, setSweep] = useState(0);
   const trackRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 
@@ -1688,8 +1718,13 @@ function TimeScrubber({
         onClick={() => {
           // 已经在末端（`Now`）时按播放要从头来。**否则第一下等于没反应**：
           // acc 起点就是终点，循环第一帧就判定播完，只把位置清成 All time
-          if (!playing && (value === null || value >= maxTs - (maxTs - minTs) * 0.02))
+          if (
+            !playing &&
+            (value === null || value >= maxTs - (maxTs - minTs) * 0.02)
+          ) {
             onChange(minTs);
+            setSweep((s) => s + 1);
+          }
           setPlaying(!playing);
         }}
         title={playing ? S.graph.pause : S.graph.play}
@@ -1733,8 +1768,15 @@ function TimeScrubber({
       {/* 密度带轨道：内嵌浅色井 + 每年事实量柱 */}
       <div
         ref={trackRef}
-        className="relative h-9 min-w-[150px] flex-1 rounded-lg bg-white/[0.04]"
+        className="relative h-9 min-w-[150px] flex-1 overflow-hidden rounded-lg bg-white/[0.04]"
       >
+        {sweep > 0 && (
+          <span
+            key={sweep}
+            className="u-sweep"
+            onAnimationEnd={(e) => e.currentTarget.remove()}
+          />
+        )}
         {/* **间隙必须随密度收**：写死 2px 时，日单位下 216 根柱子有 215 个间隙
             ≈ 430px，而轨道内宽才 ~455px——柱子被挤成 0.1px，整条看起来是空的。
             实测就是这么丢的。柱子稀疏时留 2px 好数，密了就贴在一起当密度带看 */}
@@ -2120,11 +2162,14 @@ function DerivedRow({
 function EntityPanel({
   kbId,
   entityId,
+  exiting,
   onClose,
   onNavigate,
 }: {
   kbId: string;
   entityId: string;
+  /** 正在演退场：还挂在 DOM 上，但已经不接受点击 */
+  exiting: boolean;
   onClose: () => void;
   onNavigate: (entityId: string) => void;
 }) {
@@ -2291,7 +2336,9 @@ function EntityPanel({
   }, [detail.data]);
 
   return (
-    <div className="u-dock-in glass-strong absolute top-14 right-3 bottom-20 w-80 z-10 rounded-xl shadow-2xl flex flex-col">
+    <div
+      className={`${exiting ? "u-dock-out" : "u-dock-in"} glass-strong absolute top-14 right-3 bottom-20 w-80 z-10 rounded-xl shadow-2xl flex flex-col`}
+    >
       <div className="flex items-start justify-between px-4 py-3.5 border-b border-white/10">
         <div>
           {e && (
