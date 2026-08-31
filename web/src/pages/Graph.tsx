@@ -1593,9 +1593,14 @@ function TimeScrubber({
     }
     const peak = Math.max(1, ...cells.map((c) => c.n));
 
-    // 单位越大 → 桶越少 → 轨道越短；越小 → 越长越密。上下都夹住：
-    // 太短点不准，太长会顶到画布两边
-    const w = Math.min(760, Math.max(320, cells.length * 3 + 120));
+    // 单位越大 → 桶越少 → 岛越短；越小 → 越长。**但下限要抬得够高**：
+    // 岛里那排固定控件（播放键 + 单位选择器 + 两个年份 + 日期 + All time/Now）
+    // 本身就要四百多像素，岛只有 320 时 flex-1 的轨道被压成 0——
+    // 实测柱子一根都看不见，整条是空的。
+    //
+    // 抬高之后单位主要改变的是**每根柱子的粗细**：同一条轨道，
+    // 年是十几根粗块，日是两百多根细线。这比整条伸缩更说明问题
+    const w = Math.min(780, Math.max(660, 380 + cells.length * 2));
 
     return {
       minTs: start,
@@ -1710,7 +1715,7 @@ function TimeScrubber({
       {/* 密度带轨道：内嵌浅色井 + 每年事实量柱 */}
       <div
         ref={trackRef}
-        className="relative flex-1 h-9 rounded-lg bg-white/[0.04]"
+        className="relative h-9 min-w-[150px] flex-1 rounded-lg bg-white/[0.04]"
       >
         {/* **间隙必须随密度收**：写死 2px 时，日单位下 216 根柱子有 215 个间隙
             ≈ 430px，而轨道内宽才 ~455px——柱子被挤成 0.1px，整条看起来是空的。
