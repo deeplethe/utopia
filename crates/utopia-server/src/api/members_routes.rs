@@ -36,6 +36,23 @@ pub async fn org_users(
     ))
 }
 
+/// 已停用的账号。**仅管理员**——它是一份「谁被停了」的名单，
+/// 而恢复本来就是管理员动作。
+///
+/// 没有这个接口的时候，恢复是一条死路：停用的人从每一个列表里消失，
+/// 管理员拿不到 id，而 `POST /admin/users/{id}` 要的正是那个 id。
+pub async fn deactivated_users(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<Json<Vec<OrgUser>>> {
+    if !user.is_admin {
+        return Err(utopia_core::AppError::Forbidden.into());
+    }
+    Ok(Json(
+        utopia_store::members::deactivated_users(&state.pool, user.org_id).await?,
+    ))
+}
+
 #[derive(Deserialize)]
 pub struct SetRoleReq {
     pub role: String,

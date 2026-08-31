@@ -747,6 +747,21 @@ export const zh: Strings = {
     temporalEternal: "恒常（无时间）",
     functional: "函数性（同一时刻只有一个值）",
     inverseFunctional: "反函数性（同一时刻一个宾语只对一个主语）",
+    axioms: "公理",
+    axiomsHint:
+      "这条关系保证什么。**它们不是描述，是会改变系统行为的声明**：时态引擎据此闭合旧值，推理机据此往图里加边。",
+    functionalHint: "同一主语同一时刻只有一个值。新值会闭合旧值。",
+    inverseFunctionalHint: "同一宾语只有一个主语。一个项目一个负责人。",
+    transitive: "传递",
+    transitiveHint: "A→B 且 B→C 就有 A→C。引擎会把那些边推出来。",
+    symmetric: "对称",
+    symmetricHint: "A→B 就有 B→A。引擎会把反方向补上。",
+    asymmetric: "反对称",
+    asymmetricHint: "有 A→B 就不该有 B→A。两个方向并存会被报成矛盾。",
+    irreflexive: "自反禁止",
+    irreflexiveHint: "任何东西不能通过这条关系指向自己。",
+    axiomConflict:
+      "对称与反对称同时成立，只对一条事实都没有的关系为真——两者必有一个写错了。",
     usage: (n: number) => `${n} 处在用`,
     builtin: "内置",
     save: "保存",
@@ -1067,6 +1082,10 @@ export const zh: Strings = {
     deactivate: "停用账号",
     deactivateHint:
       "断掉整个系统的访问——登录与已签发的 token 都失效。他做过的事仍然记在他名下。",
+    deactivatedTitle: "已停用的账号",
+    deactivatedHint:
+      "他们登不进来，也不出现在任何成员列表里。做过的事仍然算在他们名下——账号被保留而不是删除，正是为了这个。",
+    reactivate: "恢复",
     deactivateConfirm: (name: string) =>
       `停用 ${name}？他将无法再登录任何地方，但过往的决定仍然留痕。`,
     pickUser: "选择要添加的用户…",

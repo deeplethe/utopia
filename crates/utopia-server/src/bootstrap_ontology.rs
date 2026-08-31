@@ -245,8 +245,8 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
                     &g.key,
                     &label,
                     "state",
-                    false,
-                    false,
+                    // 冷启动不替人声明任何公理：推理机的判据必须是人写下来的
+                    Default::default(),
                     "",
                     "relation",
                     &[],

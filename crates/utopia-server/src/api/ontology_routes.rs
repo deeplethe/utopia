@@ -191,6 +191,20 @@ pub struct RelationTypeReq {
     pub functional: bool,
     #[serde(default)]
     pub inverse_functional: bool,
+    /// 其余四条 OWL 公理。**必须能在界面上编**——推理机（0002）的判据全部
+    /// 来自这几位，而它们从前只能靠导入 OWL 文件带进来：一个在界面上手工建
+    /// 本体的用户，永远开不了那台机器。
+    ///
+    /// 与 `functional` / `inverse_functional` 并排，因为它们本来就是同一族，
+    /// 只是那两个先落库了
+    #[serde(default)]
+    pub is_transitive: bool,
+    #[serde(default)]
+    pub is_symmetric: bool,
+    #[serde(default)]
+    pub is_asymmetric: bool,
+    #[serde(default)]
+    pub is_irreflexive: bool,
     #[serde(default)]
     pub description: Option<String>,
     /// relation | attribute（创建时定死，更新时忽略）
@@ -209,6 +223,20 @@ pub struct RelationTypeReq {
     pub datatype: Option<String>,
     #[serde(default)]
     pub unit: Option<String>,
+}
+
+impl RelationTypeReq {
+    /// 六位公理打包。**散着传迟早传错顺序**——它们都是 bool，编译器帮不上忙。
+    fn axioms(&self) -> utopia_core::models::RelationAxioms {
+        utopia_core::models::RelationAxioms {
+            functional: self.functional,
+            inverse_functional: self.inverse_functional,
+            transitive: self.is_transitive,
+            symmetric: self.is_symmetric,
+            asymmetric: self.is_asymmetric,
+            irreflexive: self.is_irreflexive,
+        }
+    }
 }
 
 fn default_temporal() -> String {
@@ -235,8 +263,7 @@ pub async fn create_relation_type(
         key,
         req.label.trim(),
         &req.temporal,
-        req.functional,
-        req.inverse_functional,
+        req.axioms(),
         req.description.as_deref().unwrap_or("").trim(),
         kind,
         req.domains.as_deref().unwrap_or(&[]),
@@ -271,8 +298,7 @@ pub async fn update_relation_type(
         id,
         req.label.trim(),
         &req.temporal,
-        req.functional,
-        req.inverse_functional,
+        req.axioms(),
         req.description.as_deref().unwrap_or("").trim(),
         req.datatype.as_deref(),
         req.unit.as_deref().map(str::trim).filter(|s| !s.is_empty()),
@@ -925,8 +951,14 @@ pub async fn adopt_predicate(
             key,
             req.label.trim(),
             &req.temporal,
-            req.functional,
-            req.inverse_functional,
+            // 采纳一个提案不替人声明公理。**functional 是唯一的例外**，
+            // 因为它是这个表单本来就问过的一项；其余四条要人去关系页显式勾——
+            // 推理机的判据必须是人写下来的，不是采纳时顺手带上的
+            utopia_core::models::RelationAxioms {
+                functional: req.functional,
+                inverse_functional: req.inverse_functional,
+                ..Default::default()
+            },
             req.description.as_deref().unwrap_or("").trim(),
             "relation",
             // 提案与冷启动只建关系，不声明 domain/range —— 留空 = 不限主宾类型
@@ -1279,9 +1311,9 @@ pub(crate) async fn adopt_attribute_core(
             spec.key,
             spec.label,
             "state",
-            // 建议方不替时态引擎做决定：functional 会驱动它自动闭合旧值
-            false,
-            false,
+            // 建议方不替时态引擎做决定：functional 会驱动它自动闭合旧值，
+            // 而其余公理会驱动推理机——两者都该由人显式声明
+            Default::default(),
             spec.description,
             "attribute",
             &domains,

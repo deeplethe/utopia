@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { S } from "../i18n";
+import { toast } from "../toast";
 import { Dropdown, Pager, pageSlice, SearchSelect } from "../ui";
 
 const ROLES = ["owner", "admin", "editor", "viewer"] as const;
@@ -162,10 +163,68 @@ export function Members({ workspaceId }: { workspaceId: string }) {
       </div>
 
       {me.data?.is_admin && <CreateUser onCreated={refresh} />}
+      {me.data?.is_admin && <DeactivatedUsers onChanged={refresh} />}
     </div>
   );
 }
 
+
+/** 已停用的账号，以及恢复它们。
+ *
+ * **这一块存在的理由是「否则恢复够不着」**：停用之后那个人从成员表、选人器、
+ * 每一个列表里消失，管理员拿不到他的 id，而恢复接口要的正是那个 id。
+ *
+ * 一个都没有时整块不出现——没有停用过的部署不该看到一个永远空的区块。
+ */
+function DeactivatedUsers({ onChanged }: { onChanged: () => void }) {
+  const list = useQuery({
+    queryKey: ["deactivatedUsers"],
+    queryFn: api.deactivatedUsers,
+  });
+  const queryClient = useQueryClient();
+  const revive = useMutation({
+    mutationFn: (userId: string) => api.adminReactivateUser(userId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["deactivatedUsers"] });
+      onChanged();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const users = list.data ?? [];
+  if (users.length === 0) return null;
+
+  return (
+    <div className="mt-6">
+      <h4 className="text-[13px] text-neutral-300">
+        {S.members.deactivatedTitle}
+      </h4>
+      <p className="mt-0.5 text-[11px] leading-relaxed text-neutral-500">
+        {S.members.deactivatedHint}
+      </p>
+      <div className="mt-2 space-y-1">
+        {users.map((u) => (
+          <div
+            key={u.id}
+            className="flex items-center gap-2 rounded border border-white/10 px-2.5 py-1.5"
+          >
+            <span className="text-[13px] text-neutral-300">
+              {u.display_name}
+            </span>
+            <span className="text-[11px] text-neutral-600">{u.email}</span>
+            <button
+              className="ml-auto u-btn u-btn-ghost px-2 py-0.5 text-xs"
+              disabled={revive.isPending}
+              onClick={() => revive.mutate(u.id)}
+            >
+              {S.members.reactivate}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 /** 管理员代开账号（注册关闭后的唯一入口）。 */
 function CreateUser({ onCreated }: { onCreated: () => void }) {
   const queryClient = useQueryClient();

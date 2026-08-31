@@ -319,6 +319,12 @@ pub struct RelationTypeView {
     pub temporal: String,
     pub functional: bool,
     pub inverse_functional: bool,
+    /// 其余四条 OWL 公理。**推理机的判据全在这里**（0002）——它们从前只能
+    /// 靠导入 OWL 带进来，在界面上建本体的人永远开不了那台机器
+    pub is_transitive: bool,
+    pub is_symmetric: bool,
+    pub is_asymmetric: bool,
+    pub is_irreflexive: bool,
     pub builtin: bool,
     pub description: String,
     /// relation（宾语是实体）| attribute（宾语是字面值）
@@ -895,4 +901,25 @@ pub struct ReviewCounts {
     pub violations: i64,
     pub defects: i64,
     pub merges: i64,
+}
+
+/// 一个关系声明了哪些 OWL 公理。
+///
+/// **六位打包成一个东西传，不是六个参数。** 它们本来就是同一族——推理机
+/// （0002）拿它们当判据，界面上也该并排出现；散成参数表里的六个 bool，
+/// 调用点迟早传错顺序，而 `bool` 之间编译器帮不上忙。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelationAxioms {
+    /// 主语侧唯一（一个人一个出生地）
+    pub functional: bool,
+    /// 宾语侧唯一（一个项目一个 leader）
+    pub inverse_functional: bool,
+    /// A→B ∧ B→C ⟹ A→C
+    pub transitive: bool,
+    /// A→B ⟹ B→A
+    pub symmetric: bool,
+    /// A→B ⟹ 不存在 B→A
+    pub asymmetric: bool,
+    /// 不存在 A→A
+    pub irreflexive: bool,
 }

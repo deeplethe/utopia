@@ -89,3 +89,20 @@ pub async fn remove(pool: &PgPool, workspace_id: Uuid, user_id: Uuid) -> AppResu
     }
     Ok(())
 }
+
+/// 已停用的账号。**没有这一条，恢复就够不着**——停用的人从所有列表里消失，
+/// 管理员拿不到他的 id，而恢复接口要的正是那个 id。
+///
+/// 与 [`org_users`] 分成两个查询而不是加一个「含停用」的开关：读的人不一样
+/// （那个喂选人器，这个喂管理页的一小块），而一个布尔参数会让两处的调用点
+/// 都得先想一下自己要哪一种。
+pub async fn deactivated_users(pool: &PgPool, org_id: Uuid) -> AppResult<Vec<OrgUser>> {
+    Ok(sqlx::query_as(
+        "SELECT id, email, display_name, is_admin FROM users
+         WHERE org_id = $1 AND deactivated_at IS NOT NULL
+         ORDER BY deactivated_at DESC",
+    )
+    .bind(org_id)
+    .fetch_all(pool)
+    .await?)
+}

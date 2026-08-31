@@ -814,6 +814,21 @@ export const en = {
     temporalEternal: "Eternal (timeless)",
     functional: "Functional (single value at a time)",
     inverseFunctional: "Inverse functional (one subject per object at a time)",
+    axioms: "Axioms",
+    axiomsHint:
+      "What this relation guarantees. These are not descriptions — they change what the system does: the temporal engine closes old values, and the reasoning engine adds edges to the graph.",
+    functionalHint: "One subject, one value at a time. A new value closes the old one.",
+    inverseFunctionalHint: "One object, one subject. A project has one lead.",
+    transitive: "Transitive",
+    transitiveHint: "A→B and B→C means A→C. The engine will add those edges.",
+    symmetric: "Symmetric",
+    symmetricHint: "A→B means B→A. The engine will add the other direction.",
+    asymmetric: "Asymmetric",
+    asymmetricHint: "A→B rules out B→A. Both directions get reported as a contradiction.",
+    irreflexive: "Irreflexive",
+    irreflexiveHint: "Nothing can point at itself through this relation.",
+    axiomConflict:
+      "Symmetric and asymmetric together hold only for a relation with no facts at all — one of the two is wrong.",
     usage: (n: number) => `${n} in use`,
     builtin: "built-in",
     save: "Save",
@@ -1185,6 +1200,10 @@ export const en = {
     deactivate: "Deactivate",
     deactivateHint:
       "Cuts off access everywhere — sign-in and any token already issued. What they did stays attributed to them.",
+    deactivatedTitle: "Deactivated accounts",
+    deactivatedHint:
+      "They cannot sign in and do not appear in any member list. What they did is still attributed to them — that is why the account is kept rather than deleted.",
+    reactivate: "Restore",
     deactivateConfirm: (name: string) =>
       `Deactivate ${name}? They lose access everywhere. Their past decisions stay on record.`,
     pickUser: "Select a user to add…",

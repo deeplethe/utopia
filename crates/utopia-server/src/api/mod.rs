@@ -74,6 +74,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             axum::routing::put(members_routes::set_role).delete(members_routes::remove),
         )
         .route("/users", get(members_routes::org_users))
+        // 已停用的账号：没有这一条，恢复就够不着（那个人从所有列表里消失）
+        .route("/users/deactivated", get(members_routes::deactivated_users))
         .route(
             "/kbs/{id}",
             patch(kbs::update).get(kbs::get_one).delete(kbs::delete),

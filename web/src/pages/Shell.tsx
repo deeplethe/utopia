@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
@@ -50,6 +51,13 @@ export function Shell() {
   // 告警流是全局的：角标跨库，而系统级告警根本没有库
   useAlertEvents();
 
+  // 未登录就去登录页。**副作用要在 effect 里**，理由见下面 401 那一支
+  const unauthorized =
+    me.isError && me.error instanceof ApiError && me.error.status === 401;
+  useEffect(() => {
+    if (unauthorized) navigate({ to: "/login" });
+  }, [unauthorized, navigate]);
+
   if (me.isPending) {
     return (
       <div className="min-h-screen flex items-center justify-center text-neutral-500 text-sm">
@@ -59,8 +67,11 @@ export function Shell() {
   }
 
   if (me.isError) {
+    // **跳转在 effect 里做，不在渲染里。** 渲染期间调 `navigate` 是在别人渲染
+    // 的过程中改路由器的状态，React 会常驻一条「Cannot update a component
+    // while rendering a different component」的警告。今天不出错，但它是
+    // 「渲染顺序依赖」的味道——改布局时最容易在这种地方变成真 bug
     if (me.error instanceof ApiError && me.error.status === 401) {
-      navigate({ to: "/login" });
       return null;
     }
     return <ServerDown />;

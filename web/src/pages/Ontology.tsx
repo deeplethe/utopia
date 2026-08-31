@@ -1123,6 +1123,14 @@ function PropertyForm({
   const [inverseFunctional, setInverseFunctional] = useState(
     existing?.inverse_functional ?? false,
   );
+  // 其余四条 OWL 公理。**推理机的判据全在这里**——从前只能靠导入 OWL 带进来，
+  // 在界面上手工建本体的人永远开不了那台机器（0002）
+  const [transitive, setTransitive] = useState(existing?.is_transitive ?? false);
+  const [symmetric, setSymmetric] = useState(existing?.is_symmetric ?? false);
+  const [asymmetric, setAsymmetric] = useState(existing?.is_asymmetric ?? false);
+  const [irreflexive, setIrreflexive] = useState(
+    existing?.is_irreflexive ?? false,
+  );
   const [description, setDescription] = useState(existing?.description ?? "");
   const [domains, setDomains] = useState<string[]>(existing?.domains ?? []);
   const [ranges, setRanges] = useState<string[]>(existing?.ranges ?? []);
@@ -1146,6 +1154,10 @@ function PropertyForm({
             temporal,
             functional,
             inverse_functional: inverseFunctional,
+            is_transitive: transitive,
+            is_symmetric: symmetric,
+            is_asymmetric: asymmetric,
+            is_irreflexive: irreflexive,
             description,
             domains,
             ranges,
@@ -1156,6 +1168,10 @@ function PropertyForm({
             temporal,
             functional,
             inverse_functional: inverseFunctional,
+            is_transitive: transitive,
+            is_symmetric: symmetric,
+            is_asymmetric: asymmetric,
+            is_irreflexive: irreflexive,
             description,
             domains,
             ranges,
@@ -1258,22 +1274,61 @@ function PropertyForm({
           ]}
         />
       </div>
-      <label className="flex items-center gap-2 text-sm text-neutral-300">
-        <input
-          type="checkbox"
-          checked={functional}
-          onChange={(e) => setFunctional(e.target.checked)}
-        />
-        {S.ontology.functional}
-      </label>
-      <label className="flex items-center gap-2 text-sm text-neutral-300">
-        <input
-          type="checkbox"
-          checked={inverseFunctional}
-          onChange={(e) => setInverseFunctional(e.target.checked)}
-        />
-        {S.ontology.inverseFunctional}
-      </label>
+      {/* 六条公理并成一组。**它们本来就是同一族**——推理机（0002）拿它们当
+          判据，散在表单各处会让人以为前两条和后四条是两回事。
+          每一条底下写清「勾了会发生什么」：这些开关不是描述，是会改变系统行为的
+          声明——`functional` 让时态引擎自动闭合旧值，`transitive` 让推理机往图里
+          加边。看不出后果的开关，人只会照着直觉乱勾。 */}
+      <div>
+        <label className={lbl}>{S.ontology.axioms}</label>
+        <p className="text-[11px] leading-relaxed text-neutral-600 mb-1.5">
+          {S.ontology.axiomsHint}
+        </p>
+        <div className="space-y-1.5">
+          {(
+            [
+              [functional, setFunctional, S.ontology.functional, S.ontology.functionalHint],
+              [
+                inverseFunctional,
+                setInverseFunctional,
+                S.ontology.inverseFunctional,
+                S.ontology.inverseFunctionalHint,
+              ],
+              [transitive, setTransitive, S.ontology.transitive, S.ontology.transitiveHint],
+              [symmetric, setSymmetric, S.ontology.symmetric, S.ontology.symmetricHint],
+              [asymmetric, setAsymmetric, S.ontology.asymmetric, S.ontology.asymmetricHint],
+              [
+                irreflexive,
+                setIrreflexive,
+                S.ontology.irreflexive,
+                S.ontology.irreflexiveHint,
+              ],
+            ] as const
+          ).map(([on, set, title, hint], i) => (
+            <label key={i} className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-0.5 accent-[var(--u-accent)]"
+                checked={on}
+                onChange={(e) => set(e.target.checked)}
+              />
+              <span className="min-w-0">
+                <span className="block text-[13px] text-neutral-200">{title}</span>
+                <span className="block text-[11px] leading-relaxed text-neutral-500">
+                  {hint}
+                </span>
+              </span>
+            </label>
+          ))}
+        </div>
+        {/* 对称与反对称同时勾是自相矛盾的（只对空关系成立）。本体自洽性检查
+            会报出来，但在这里当场说一句比让人跑一遍检查再发现要快 */}
+        {symmetric && asymmetric && (
+          <p className="mt-1.5 text-[11px] text-[var(--u-danger)]">
+            {S.ontology.axiomConflict}
+          </p>
+        )}
+      </div>
       <div>
         <label className={lbl}>{S.ontology.description}</label>
         <textarea

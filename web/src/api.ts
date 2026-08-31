@@ -597,6 +597,11 @@ export interface RelationTypeView {
   temporal: string;
   functional: boolean;
   inverse_functional: boolean;
+  /** 其余四条 OWL 公理。**推理机的判据全在这里** */
+  is_transitive: boolean;
+  is_symmetric: boolean;
+  is_asymmetric: boolean;
+  is_irreflexive: boolean;
   builtin: boolean;
   description: string;
   /** relation（宾语是实体）| attribute（宾语是字面值） */
@@ -949,6 +954,15 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /** 已停用的账号。**没有它恢复就够不着**——那个人从所有列表里消失，
+   *  而恢复接口要的正是他的 id */
+  deactivatedUsers: () =>
+    request<OrgUser[]>("/api/v1/users/deactivated"),
+  /** 恢复一个停用的账号 */
+  adminReactivateUser: (userId: string) =>
+    request<{ ok: boolean }>(`/api/v1/admin/users/${userId}`, {
+      method: "POST",
+    }),
   /** 停用一个账号（软删除）。归因照旧查得到——审计、合并日志、改类账本都靠它 */
   adminDeactivateUser: (userId: string) =>
     request<{ ok: boolean }>(`/api/v1/admin/users/${userId}`, {
