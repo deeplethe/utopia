@@ -39,6 +39,15 @@
   --u-line-strong: rgba(255, 255, 255, 0.14);
   --u-surface: rgba(255, 255, 255, 0.04);
   --u-surface-strong: rgba(10, 10, 10, 0.72);
+  /* 指针停在面上时的实底。**毛玻璃是给"没在看它"的时候用的**——
+     半透让浮层不至于把画布切断；可一旦人把指针移进来，他要读的就是面板本身，
+     这时候背后的图反而是噪声。所以这两档不是审美偏好，是同一块面在
+     "余光里"和"正在读"两种状态下该有的样子。
+     统一在这里定义，改一处四处都跟着：顶栏、导航、时间岛、控件塔、
+     以及所有 u-menu-glass 的弹出面板 */
+  --u-surface-strong-hover: rgba(10, 10, 10, 0.94);
+  --u-menu-surface: rgba(14, 14, 14, 0.85);
+  --u-menu-surface-hover: rgba(14, 14, 14, 0.97);
 }
 
 body {
@@ -77,6 +86,36 @@ body::before {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--u-line);
+  /* 基态上的时长是**离开**时用的：慢一点，指针擦过边缘不会闪。
+     进入的时长写在 :hover 里，更快，为的是跟手 */
+  transition: background-color 260ms ease;
+}
+.glass-strong:hover {
+  background: var(--u-surface-strong-hover);
+  transition-duration: 120ms;
+}
+/* 正在工作时也按下去，与 hover 同一档。**这比在轨道上循环扫光更准**：
+   它说的是"这块面正在工作"，而不是"在等一件不知道多久的事"——
+   循环微光是不确定进度的语言，而时间轴是确定的。
+   播放中人本来就盯着它看，半透的毛玻璃这时候只是噪声 */
+/* 时间岛：宽度随单位变，所以它要**同时**过渡背景与宽度。
+   不能只挂 Tailwind 的 `transition-[width]`——上面 .glass-strong 用的是
+   `transition` 简写，会把 transition-property 整个覆盖掉，而自定义 CSS
+   不在 utilities 层里、胜过那个工具类。实测：岛的计算过渡只剩
+   background-color，宽度变成瞬变。要过渡两样就得写在同一条声明里 */
+.u-scrub-island {
+  transition:
+    background-color 260ms ease,
+    width 300ms ease;
+}
+.u-scrub-island:hover,
+.u-scrub-island.u-solid {
+  transition-duration: 120ms, 300ms;
+}
+
+.glass-strong.u-solid {
+  background: var(--u-surface-strong-hover);
+  transition-duration: 120ms;
 }
 
 /* 模态对话框的面：**近实底**。
@@ -85,7 +124,10 @@ body::before {
    身后的回答文字清晰可辨，标题几乎读不出）。
    遮罩也一并加深：0.6 的黑压不住一屏白字。 */
 .u-modal-panel {
-  background: rgba(12, 12, 14, 0.97);
+  /* **中性，不掺色相**：原本是 rgba(12,12,14)，蓝比红绿高 2——
+     在大面积深底上肉眼看得出偏冷。这产品的既定原则是
+     「chrome 零色偏、彩色只属于数据」，这里也照办 */
+  background: rgba(12, 12, 12, 0.97);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--u-line-strong);
@@ -152,6 +194,72 @@ body::before {
 .u-pop-in-tl {
   transform-origin: top left;
 }
+/* 走到终点时扫一道光：从左到右扫过整条轨道。
+   **它说的是"这条走完了"**——播放停下、时间跳回全时段，
+   没有任何交代的话看着像中途断了。方向与刚刚走过的方向一致。
+   只演一次，走完就卸载；轨道自身 overflow-hidden，光不会溢出圆角 */
+@keyframes u-sweep-kf {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+.u-sweep {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.18),
+    transparent
+  );
+  animation: u-sweep-kf 720ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+/* 停靠面板的入场：从它停靠的那条边滑进来。
+   **不用 u-pop-in 那种缩放**——那是给锚在某个按钮上的弹出菜单的，
+   它有明确的"从哪儿长出来"；侧栏是贴着右边缘停的一块面，该从边缘进来。
+   只在打开时演一次：在实体之间切换时面板留在原地只换内容，
+   每点一个节点就抖一下反而吵 */
+@keyframes u-dock-in-kf {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.u-dock-in {
+  animation: u-dock-in-kf 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+/* 退场。**比入场快、缓动相反**：进来要"落位"（减速停住），
+   出去要"离开"（加速甩出）。同一条曲线两头用会让关闭显得拖沓。
+   退场期间不再接受点击——它已经在走了，这时候点上去只会让人困惑 */
+@keyframes u-dock-out-kf {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+}
+.u-dock-out {
+  animation: u-dock-out-kf 0.15s cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
 /* 向上弹出的变体（composer 停靠底部时菜单开口朝上） */
 @keyframes u-pop-up-kf {
   from {
@@ -172,15 +280,27 @@ body::before {
    原地变形动画在组件内用 FLIP 实现（首帧压到胶囊真实边界再展开），
    CSS 只负责面板的皮 */
 .u-menu-glass {
-  background: rgba(14, 14, 16, 0.85);
+  /* 中性，不掺色相：原本 rgba(14,14,16) 蓝比红绿高 2。这个面同时用在
+     通知、用户菜单、图例的「+N 个类」和 Inference 面板上，一处偏色四处都偏 */
+  background: var(--u-menu-surface);
+  /* 基态上的时长是**离开**时用的：慢一点，指针擦过边缘不会闪。
+     进入的时长写在 :hover 里，更快，为的是跟手 */
+  transition: background-color 260ms ease;
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid rgba(255, 255, 255, 0.14);
 }
+.u-menu-glass:hover {
+  background: var(--u-menu-surface-hover);
+  transition-duration: 120ms;
+}
 
 @media (prefers-reduced-motion: reduce) {
   .u-pop-in,
-  .u-pop-up {
+  .u-pop-up,
+  .u-dock-in,
+  .u-dock-out,
+  .u-sweep {
     animation: none;
   }
 }
@@ -707,4 +827,46 @@ a:hover > .u-mark-arrow {
   padding-left: 0.75em;
   color: var(--u-text-2);
   margin: 0.4em 0;
+}
+
+/* 左下控件塔：**整组一起展开**，不是逐个按钮。
+   一组是一个语义单元（派生 / 布局 / 相机），鼠标进了这一组，
+   这一组的名字就都该出来——逐个展开的话，名字会随指针跳来跳去，
+   而人想知道的往往正是"旁边那个是什么"。
+
+   用 max-width 而不是 width 做过渡：名字长短不一，写死宽度要么截断
+   要么留白，max-width 让每个按钮按自己的内容收放。
+   overflow-hidden 已经在组容器上了，收起时不会漏字。 */
+.u-tower-label {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  font-size: 11px;
+  line-height: 1;
+  /* 图标与文字之间的空当用 **margin**，既不能用按钮上的 gap，也不能用 padding：
+     gap 对宽度为 0 的项目照样生效；而 padding 不会被 max-width 压缩
+     （border-box 下宽度最小就等于那点 padding）——两种写法都会让收起态
+     凭空多出 8px，方块就不方了。实测 39x31，改成 margin 后才是 31x31 */
+  margin-left: 0;
+  transition:
+    max-width 220ms ease,
+    margin-left 220ms ease,
+    opacity 160ms ease;
+}
+.u-tower:hover .u-tower-label {
+  max-width: 9rem;
+  margin-left: 0.5rem;
+  opacity: 1;
+}
+/* 键盘走焦点时也要出来：只认 hover 的话，用键盘的人永远看不到名字 */
+.u-tower:focus-within .u-tower-label {
+  max-width: 9rem;
+  margin-left: 0.5rem;
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .u-tower-label {
+    transition: none;
+  }
 }

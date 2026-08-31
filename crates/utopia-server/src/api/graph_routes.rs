@@ -32,14 +32,22 @@ fn parse_at(raw: Option<&str>) -> Result<Option<chrono::DateTime<chrono::Utc>>, 
         .map_err(|_| AppError::Validation("Invalid `at` (expected YYYY-MM-DD or RFC3339)".into()))
 }
 
-/// 总览一次画多少个节点。**上限本身是合理的**——画一万个点没人看得懂；
+/// 总览一次画多少个节点的**默认值**。上限本身是合理的——画一万个点没人看得懂；
 /// 骗人的是把它当成规模显示，所以接口同时回总数
 const GRAPH_NODE_CAP: i64 = 150;
+/// 调得再高也得有个天花板。**这个数不是拍的**：节点按度数降序取，越往后越是
+/// 边缘节点，而力导布局是 O(n²) 量级的——超过这个数，先垮的是「拖得动」
+/// 而不是「看得清」。要真看上万个点，那是另一种视图，不是把这个调大
+const GRAPH_NODE_CAP_MAX: i64 = 1000;
 
 #[derive(Deserialize)]
 pub struct OverviewQuery {
     #[serde(default)]
     pub at: Option<String>,
+    /// 画多少个。不给就用默认值；给了也钳在 [10, GRAPH_NODE_CAP_MAX]——
+    /// 界面上的按钮只给几档，但接口是公开的，别让一个 `limit=999999` 把库拖垮
+    #[serde(default)]
+    pub limit: Option<i64>,
 }
 
 pub async fn overview(
@@ -52,8 +60,12 @@ pub async fn overview(
     let at = parse_at(q.at.as_deref())?;
     // 画多少个是渲染的事，库里有多少是知识库的事——两个数都回，界面才说得出
     // 「画了 150 个，共 325 个」而不是把上限说成规模
+    let limit = q
+        .limit
+        .unwrap_or(GRAPH_NODE_CAP)
+        .clamp(10, GRAPH_NODE_CAP_MAX);
     let (nodes, edges, total_nodes, total_edges) =
-        utopia_store::graph::overview(&state.pool, kb_id, GRAPH_NODE_CAP, at).await?;
+        utopia_store::graph::overview(&state.pool, kb_id, limit, at).await?;
     Ok(Json(json!({
         "nodes": nodes, "edges": edges,
         "total_nodes": total_nodes, "total_edges": total_edges,

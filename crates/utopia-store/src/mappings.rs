@@ -8,7 +8,7 @@
 //! append-only，改之前的那一版进 `concept_mapping_revisions` 留痕即可。
 
 use sqlx::PgPool;
-use utopia_core::models::ConceptMapping;
+use utopia_core::models::{ConceptMapping, MappingRevision};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
@@ -204,4 +204,94 @@ pub async fn revise(
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// 数据映射页读的：一页口径，可按状态与关键词筛。
+///
+/// **`proposed` 与 `confirmed` 那两条查询都不够用**——前者只捞待表态的，
+/// 后者是给问数拼 prompt 的（无分页、无筛选、限 30 条）。人要看的是全部，
+/// 包括被自己拒绝过的那些：拒绝留了痕，就该看得见，否则「为什么这个概念
+/// 没被映射」永远答不上来。
+pub async fn page(
+    pool: &PgPool,
+    kb_id: Uuid,
+    status: Option<&str>,
+    q: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<(Vec<ConceptMapping>, i64)> {
+    // 概念名与数据源名都可搜：人记得住的是「GMV」，也可能是「那个接了 orders 的」
+    const WHERE: &str = "WHERE m.kb_id = $1
+           AND ($2::text IS NULL OR m.status = $2)
+           AND ($3::text IS NULL
+                OR e.canonical_name ILIKE '%' || $3 || '%'
+                OR m.source ILIKE '%' || $3 || '%'
+                OR m.table_name ILIKE '%' || $3 || '%')";
+    let rows: Vec<ConceptMapping> = sqlx::query_as(&format!(
+        "SELECT m.id, m.concept_id, e.canonical_name AS concept_name, m.source,
+                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status
+         FROM concept_mappings m
+         JOIN entities e ON e.id = m.concept_id
+         {WHERE}
+         ORDER BY e.canonical_name, m.source
+         LIMIT $4 OFFSET $5"
+    ))
+    .bind(kb_id)
+    .bind(status)
+    .bind(q)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+    let (total,): (i64,) = sqlx::query_as(&format!(
+        "SELECT count(*) FROM concept_mappings m
+         JOIN entities e ON e.id = m.concept_id {WHERE}"
+    ))
+    .bind(kb_id)
+    .bind(status)
+    .bind(q)
+    .fetch_one(pool)
+    .await?;
+    Ok((rows, total))
+}
+
+/// 每种状态各多少。页面的筛选条要显示计数，分三次查是三次全表扫。
+pub async fn status_counts(pool: &PgPool, kb_id: Uuid) -> AppResult<(i64, i64, i64)> {
+    let row: (i64, i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE status = 'proposed'),
+                count(*) FILTER (WHERE status = 'confirmed'),
+                count(*) FILTER (WHERE status = 'rejected')
+           FROM concept_mappings WHERE kb_id = $1",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row)
+}
+
+/// 一条口径改过几次、每次改之前是什么样。
+///
+/// `revise` 从建表起就在写 `concept_mapping_revisions`，而**在此之前没有任何
+/// 地方读它**——留痕留了个寂寞。0006 说留痕是为了「问数回溯历史报表时答得出
+/// 『上季度这个数是怎么算的』」，那就得有人看得见。
+pub async fn revisions(
+    pool: &PgPool,
+    kb_id: Uuid,
+    mapping_id: Uuid,
+) -> AppResult<Vec<MappingRevision>> {
+    // kb_id 走 JOIN 校验归属：revisions 表自己没有 kb_id，
+    // 不校验就能拿别的库的口径历史
+    Ok(sqlx::query_as(
+        "SELECT r.id, r.before, u.display_name AS changed_by_name, r.changed_at
+           FROM concept_mapping_revisions r
+           JOIN concept_mappings m ON m.id = r.mapping_id
+           LEFT JOIN users u ON u.id = r.changed_by
+          WHERE r.mapping_id = $2 AND m.kb_id = $1
+          ORDER BY r.changed_at DESC
+          LIMIT 50",
+    )
+    .bind(kb_id)
+    .bind(mapping_id)
+    .fetch_all(pool)
+    .await?)
 }

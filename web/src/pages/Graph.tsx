@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useSearch } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import Graphology from "graphology";
 import { circular, circlepack } from "graphology-layout";
 import forceAtlas2 from "graphology-layout-forceatlas2";
@@ -15,11 +15,13 @@ import {
   ChevronRight,
   CircleDashed,
   Grape,
+  Loader2,
   Maximize2,
   Orbit,
   Pause,
   Pencil,
   Play,
+  Waypoints,
   X,
   ZoomIn,
   ZoomOut,
@@ -33,7 +35,8 @@ import {
   type GraphNode,
 } from "../api";
 import { S } from "../i18n";
-import { useKb } from "../kb";
+import { usePopoverFlip } from "../ui/popoverFlip";
+import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
 
 /* 画布调色板 —— 结构取自 Semantica GraphWorkspace 源码；基色已中性化：
@@ -44,8 +47,19 @@ const NODE_CORE_BASE = "#767676"; // 节点核心灰（原 #5A7A9E 的中性化�
 const NODE_BORDER_BASE = "#909090"; // 节点描边（原 #7A92AE 的中性化）
 const NODE_TINT_MIX = 0.14; // 类型色只按 14% 混入外壳（高级感的关键）
 const NODE_CORE_MIX = 0.5; // 核心向类型色的混入比例
-const RING_SELECTED = "#E7C57C"; // 选中金环
-const RING_HOVERED = "#8FE7FF"; // 悬停冰青环
+/* 状态环取**节点自己的类型色**，不是两个写死的色相。
+
+   换掉的直接原因是一次撞色：原来的选中金环 `#E7C57C` 就是
+   `rgb(231,197,124)`，与 `EDGE_COLOR_DERIVED` 逐位相同——「这个节点被选中了」
+   和「这条边是推出来的」用同一个颜色说话，而这两件事毫无关系。
+   金色现在专属于「推出来的」。
+
+   往白里混而不是直接用原色：环画在节点自己身上，同色同亮度就看不出是个环。
+   **悬停混得更白、选中混得更少**——悬停时全图不压暗，环要在一片乱线里
+   立刻跳出来；选中时其余都压暗了，节点本来就孤立着，这时候环该说的是
+   「它是谁」，所以更贴近它自己的颜色。 */
+const RING_HOVER_MIX = 0.7; // 悬停：偏白，为的是跳出来
+const RING_SELECT_MIX = 0.35; // 选中：偏本色，为的是认得出
 const EDGE_COLOR = "rgba(163,163,163,0.2)"; // 纯灰（应用户要求，不用钢蓝）
 // 本体没认下的关系：同色更淡。名字来自原文，不该跟词表里的关系看着一样重
 const EDGE_COLOR_INFERRED = "rgba(163,163,163,0.1)";
@@ -59,17 +73,48 @@ const DERIVED_PULSE_MS = 2200;
 // 超过这个数就只上色不动画。**写出来而不是悄悄降级**：每帧重算几千条边的颜色，
 // 换来的是拖不动图，而那时候用户要的是能拖得动
 const DERIVED_ANIMATE_MAX = 400;
+// 开关的淡入淡出时长。**比 FADE_MS(320) 略长**：播放淡入是一批边陆续到位，
+// 这个是一整批边同时进出，走慢一点才看得清「那批金线是一起退场的」
+const DERIVED_TOGGLE_MS = 420;
+/* 推出来的边**比事实晚一点进来**，然后整体淡入。
+
+   试过把推导过程演出来：前提按顺序点亮、最后点亮结论。做了两版都读不懂——
+   第一版前提闪一下就灭，等结论出现时前提早暗了；第二版改成整组同亮同收，
+   仍然是几十组在图上此起彼伏，谁属于谁根本分不出。
+   **一张几百条边的图不是讲因果链的地方**——那件事侧栏的 Derived 页
+   一条一条写着，看得清楚得多。这里只需要交代一件事：这些边是后来的、
+   跟别人写下的不是一回事。晚一点进来 + 自己的颜色，已经说完了。 */
+const DERIVE_SETTLE_MS = 500; // 事实落位之后，隔多久轮到推出来的
+const DERIVE_FADE_MS = 620; // 整体淡入的时长，比开关那一档慢，是"入场"不是"切换"
+// 图例最多摆几个胶囊，其余收进「+N 个类」。**这一排是横向排布的，
+// 类一多就会换行、把画布顶到下面去**；而且十几个同样的胶囊排开，
+// 谁也读不出哪个重要。收起来的那些从「+N」里搜得到
+const LEGEND_MAX = 6;
+/* 画多少个节点的可选档位。**给档位而不是给输入框**：这个数没有「精确」可言
+   ——它只影响看得清还是拖得动，用户要的是「多点/少点」，不是 237 这个数。
+   最大值与后端 GRAPH_NODE_CAP_MAX 对齐；再高先垮的是拖动，不是清晰度 */
+const NODE_BUDGETS: number[] = [150, 300, 600, 1000];
 // 注意：sigma 边着色器在预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，
 // alpha 无法压暗边——暗度必须编码进 RGB（不透明近背景色）
 const EDGE_DIM = "#141414";
 const EDGE_FOCUS = "rgba(255,255,255,0.55)";
+// 选中/悬停时的派生边。**不能跟着走白**：选中恰恰是看得最仔细的时候，
+// 而这时候「这条边是推出来的、没人写过」比任何时候都该说清楚。
+// 从前一律 EDGE_FOCUS，一选中金线就变白，等于把来历抹掉了。
+// 比常态的金更亮更实——它同样要表达「被选中了」
+const EDGE_FOCUS_DERIVED = "rgba(255,214,140,0.95)";
 const MUTED_SHELL = "#151515";
+/* 悬停时其余的压暗程度。**比选中轻**（选中是压到底）：
+   悬停是随鼠标走的、每划过一个节点就换一次，压到底会让整张画布不停明灭；
+   而且两者压得一样重的话，"我只是路过"和"我选中了它"就成了同一个画面。
+   所以留一档差：压得深，但不到底——看得出焦点，也看得出这只是路过。
+   （试过 0.55，太浅，焦点不够跳）*/
+const HOVER_MUTE = 0.78;
 const PILL_BG = "rgba(12,12,12,0.9)";
 const PILL_BORDER = "rgba(255,255,255,0.14)";
 const PILL_TEXT = "#ededed";
 const TRANSPARENT = "rgba(0,0,0,0)";
 const DAY_MS = 24 * 3600 * 1000;
-const MONTH_MS = 30 * DAY_MS;
 
 function hexToRgb(hex: string): [number, number, number] {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);
@@ -92,7 +137,9 @@ function parseRgba(c: string): [number, number, number, number] {
     const [r, g, b] = hexToRgb(c);
     return [r, g, b, 1];
   }
-  const m = c.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/);
+  const m = c.match(
+    /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/,
+  );
   if (!m) return [128, 128, 128, 1];
   return [+m[1], +m[2], +m[3], m[4] !== undefined ? +m[4] : 1];
 }
@@ -142,7 +189,10 @@ function drawWorldGrid(canvas: HTMLCanvasElement, sigma: Sigma): void {
 
   for (let sp = spacing; sp * ppw < GRID_MAX_LEVEL_PX; sp *= 4) {
     const ss = sp * ppw;
-    const t = Math.min(1, (ss - GRID_FADE_IN_PX) / (GRID_FULL_PX - GRID_FADE_IN_PX));
+    const t = Math.min(
+      1,
+      (ss - GRID_FADE_IN_PX) / (GRID_FULL_PX - GRID_FADE_IN_PX),
+    );
     if (t <= 0) continue;
     ctx.strokeStyle = `rgba(255,255,255,${(GRID_MAX_ALPHA * t).toFixed(4)})`;
     ctx.lineWidth = 1;
@@ -165,7 +215,11 @@ function drawWorldGrid(canvas: HTMLCanvasElement, sigma: Sigma): void {
 
 /* 胶囊标签：深色圆角底 + 柔和文字（学 Semantica 的浮签风格） */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function drawPillLabel(ctx: CanvasRenderingContext2D, data: any, settings: any): void {
+function drawPillLabel(
+  ctx: CanvasRenderingContext2D,
+  data: any,
+  settings: any,
+): void {
   if (!data.label) return;
   // hover 时悬浮卡（drawHoverCard）接管展示，底层 pill 隐去，避免双层标签
   if (data.hideBaseLabel) return;
@@ -197,14 +251,25 @@ function drawPillLabel(ctx: CanvasRenderingContext2D, data: any, settings: any):
 
 /* Hover 悬浮卡（Semantica hoverCard 规格）：径向柔光 + 名称 + 类型行 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function drawHoverCard(ctx: CanvasRenderingContext2D, data: any, _settings: any): void {
+function drawHoverCard(
+  ctx: CanvasRenderingContext2D,
+  data: any,
+  _settings: any,
+): void {
   if (!data.label) return;
   ctx.save();
 
   // 柔光: 半径 max(size*4.8, 16), 类型色 alpha 0.18 → 0
   const glowR = Math.max(data.size * 4.8, 16);
   const [r, g, b] = hexToRgb((data.typeColor as string) ?? "#888888");
-  const grad = ctx.createRadialGradient(data.x, data.y, 0, data.x, data.y, glowR);
+  const grad = ctx.createRadialGradient(
+    data.x,
+    data.y,
+    0,
+    data.x,
+    data.y,
+    glowR,
+  );
   grad.addColorStop(0, `rgba(${r},${g},${b},0.18)`);
   grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
   ctx.fillStyle = grad;
@@ -250,10 +315,18 @@ function drawHoverCard(ctx: CanvasRenderingContext2D, data: any, _settings: any)
 }
 
 export function Graph() {
+  const kbId = useKbId();
   const { kb } = useKb();
-  // 深链入口：/graph?entity=… 直接聚焦并选中该实体（证据两跳可达的反向路径）
-  const { entity: entityParam } = useSearch({ from: "/app/graph" });
-  const [focusEntity, setFocusEntity] = useState<string | null>(entityParam ?? null);
+  /* 地址栏与画面**双向**同步。
+     从前只有"进"这一半：`?entity=` 在挂载时读一次就再不管了——
+     别人给的链接能用，而你自己看到的东西却没法分享，因为地址栏一直停在
+     光秃秃的 /graph。 */
+  const search = useSearch({ from: "/app/kb/$kbId/graph" });
+  const navigate = useNavigate();
+  const entityParam = search.entity;
+  const [focusEntity, setFocusEntity] = useState<string | null>(
+    search.focus ?? entityParam ?? null,
+  );
   const [selected, setSelected] = useState<string | null>(entityParam ?? null);
   const [searchInput, setSearchInput] = useState("");
   const [searchQ, setSearchQ] = useState("");
@@ -261,25 +334,115 @@ export function Graph() {
   // 推出来的边显不显示。默认显示——推理默认关着，有派生就意味着用户开过开关
   const [showDerived, setShowDerived] = useState(true);
   // 信息窗默认收起：它答的是「什么时候推的」，那是偶尔才问的问题
-  const [derivedPanel, setDerivedPanel] = useState(false);
+  /* Inference 也用原地展开，与「+N 个类」、通知、用户菜单同一套。
+     **贴左下角**：塔在画布左下，面板要从那个 ⋯ 按钮往右上长开 */
+  const derivedPop = usePopoverFlip<HTMLButtonElement, HTMLDivElement>(
+    "bottom left",
+  );
+  /* 「+N 个类」用与通知/用户卡片同一套原地展开：面板压到 chip 的真实边界
+     （圆角 999px）再长成卡片。**贴左边，所以锚点角是 top left** */
+  const legendPop = usePopoverFlip<HTMLButtonElement, HTMLDivElement>(
+    "top left",
+  );
+  const [legendQ, setLegendQ] = useState("");
+  /* 正在退场的实体。**面板不能一取消选中就卸载**——那样它是瞬间消失的。
+     先留在原地演完退场，再真的移除。用 selectedRef 取当前值而不是把
+     setState 写成带副作用的 updater：那种写法在 StrictMode 下会跑两遍 */
+  const [exiting, setExiting] = useState<string | null>(null);
+  const deselect = useCallback(() => {
+    const cur = selectedRef.current;
+    if (!cur) return;
+    setExiting(cur);
+    setSelected(null);
+    window.setTimeout(() => setExiting(null), 170);
+  }, []);
   /** null = 全时段；数值 = as-of 时刻(ms)。
       默认 as-of 今天：时态平台的图谱默认呈现"现在的世界"，
       已闭合的事实不该与现行事实无差别并列（All time 是显式选择） */
-  const [timeT, setTimeT] = useState<number | null>(() => Date.now());
+  /* 时间轴。URL 里带了就用它：`all` = 全时段，否则按 YYYY-MM-DD 解析
+     （与数据的 day 级精度一致，也比一串毫秒好读） */
+  const [timeT, setTimeT] = useState<number | null>(() => {
+    if (search.at === "all") return null;
+    if (search.at) {
+      const t = Date.parse(search.at);
+      if (!Number.isNaN(t)) return t;
+    }
+    return Date.now();
+  });
   const [activeCount, setActiveCount] = useState(0);
   const [stabilizing, setStabilizing] = useState(false);
   /* 播放态提升到此层：reducer 需区分"播放推进"（淡入）与"手动拖动"（瞬切） */
   const [playing, setPlaying] = useState(false);
+
+  /* 画面 → 地址栏。**replace 不是 push**：点节点是浏览不是导航，
+     堆进历史会把「后退」变成逐个撤销点击。
+     播放中整段跳过——每帧写一次 URL 是灾难 */
+  useEffect(() => {
+    if (playing) return;
+    const at =
+      timeT === null
+        ? "all"
+        : // 停在「现在」就不写。否则每次打开都在地址栏拖一串今天的日期，
+          // 而那本来就是默认值
+          Math.abs(timeT - Date.now()) < DAY_MS
+          ? undefined
+          : new Date(timeT).toISOString().slice(0, 10);
+    const next = {
+      entity: selected ?? undefined,
+      // **与 entity 相同就不写**：点搜索结果会同时设这两个，
+      // 照直写出来地址栏里就是同一串 UUID 出现两遍。
+      // 只有"聚焦在 A 的邻域、却选中了 B"时它才带信息
+      focus:
+        focusEntity && focusEntity !== selected ? focusEntity : undefined,
+      at,
+    };
+    if (
+      next.entity === search.entity &&
+      next.focus === search.focus &&
+      next.at === search.at
+    )
+      return;
+    navigate({
+      to: "/kb/$kbId/graph",
+      params: { kbId },
+      search: next,
+      replace: true,
+    });
+  }, [
+    selected,
+    focusEntity,
+    timeT,
+    playing,
+    search.entity,
+    search.focus,
+    search.at,
+    navigate,
+  ]);
+
+  /* 地址栏 → 画面。**这一半是给后退/前进用的**：没有它，浏览器回退
+     只改地址不改画面，看起来像后退失灵。两个方向都先比较再动手，所以不会打架 */
+  useEffect(() => {
+    const e = search.entity ?? null;
+    const f = search.focus ?? null;
+    setSelected((cur) => (cur === e ? cur : e));
+    setFocusEntity((cur) => (cur === f ? cur : f));
+  }, [search.entity, search.focus]);
   /* 布局模式：force = FA2 斥力；circular = 圆环；pack = 按类型圆填充聚簇 */
   type LayoutMode = "force" | "circular" | "pack";
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("force");
   const layoutModeRef = useRef<LayoutMode>("force");
   const layoutCtlRef = useRef<{ apply: (m: LayoutMode) => void } | null>(null);
 
+  /* 画多少个。**进 queryKey**——不进的话调了档位不会重新取数，
+     界面看着变了实际还是老数据 */
+  const [nodeBudget, setNodeBudget] = useState<number>(NODE_BUDGETS[0]);
+
   const data = useQuery({
-    queryKey: ["graph", kb?.id, focusEntity],
+    queryKey: ["graph", kb?.id, focusEntity, nodeBudget],
     queryFn: () =>
-      focusEntity ? api.graphNeighborhood(kb!.id, focusEntity) : api.graphOverview(kb!.id),
+      focusEntity
+        ? api.graphNeighborhood(kb!.id, focusEntity)
+        : api.graphOverview(kb!.id, nodeBudget),
     enabled: !!kb,
   });
 
@@ -306,7 +469,9 @@ export function Graph() {
       )
       .slice(0, 10);
   }, [inSubgraph, searchQ, data.data]);
-  const searchHits = inSubgraph ? subgraphHits : (candidates.data?.entities ?? []);
+  const searchHits = inSubgraph
+    ? subgraphHits
+    : (candidates.data?.entities ?? []);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLCanvasElement>(null);
@@ -339,7 +504,9 @@ export function Graph() {
       for (const [id, start] of fadeRef.current)
         if (now - start >= FADE_MS) fadeRef.current.delete(id);
       sigmaRef.current?.refresh();
-      fadeRafRef.current = fadeRef.current.size ? requestAnimationFrame(step) : 0;
+      fadeRafRef.current = fadeRef.current.size
+        ? requestAnimationFrame(step)
+        : 0;
     };
     fadeRafRef.current = requestAnimationFrame(step);
   }, []);
@@ -356,20 +523,38 @@ export function Graph() {
   useEffect(() => () => cancelAnimationFrame(fadeRafRef.current), []);
 
   const types = useMemo(() => {
-    const map = new Map<string, { label: string; color: string; shape: string }>();
+    const map = new Map<
+      string,
+      { label: string; color: string; shape: string; count: number }
+    >();
     for (const n of data.data?.nodes ?? []) {
       // 没判出类型的归到空 key 一档（0009）。真实 key 由 IRI 派生，不可能为空，
       // 所以它撞不着任何一个类；标签走 i18n，别把 null 画到图例上
       const key = n.type_key ?? "";
-      if (!map.has(key))
+      const cur = map.get(key);
+      if (cur) cur.count++;
+      else
         map.set(key, {
           label: n.type_label ?? S.graph.untyped,
           color: n.color,
           shape: n.shape,
+          count: 1,
         });
     }
-    return [...map.entries()];
+    // **按出现次数排，不是按遇到的先后**。图例只摆得下几个，那几个位置该给
+    // 画面上最多的类；从前是节点到达顺序，等于随机。次数相同按标签排——
+    // 否则同样的数据每次刷新顺序都在抖
+    return [...map.entries()].sort(
+      (a, b) => b[1].count - a[1].count || a[1].label.localeCompare(b[1].label),
+    );
   }, [data.data]);
+
+  /* 摆得下的 / 收起来的。收起来的那些仍然可以在「+N」里搜到并切换 */
+  const legendShown = types.slice(0, LEGEND_MAX);
+  const legendRest = types.slice(LEGEND_MAX);
+  // 被收起来的类里有没有正被隐藏的。**没有这个标记就是无声过滤**——
+  // 在面板里关掉一个类、把面板一收，界面上再没有任何东西说它被关了
+  const hiddenInRest = legendRest.filter(([k]) => hiddenTypes.has(k)).length;
 
   // 有几条推出来的边。**为零时那个开关整个不出现**——一个没开推理的库不该
   // 看到一个永远切换不出任何变化的按钮
@@ -398,7 +583,8 @@ export function Graph() {
           const vt = e.valid_to ? Date.parse(e.valid_to) : null;
           touched.add(e.source);
           touched.add(e.target);
-          const active = vf === null ? true : vf <= t && (vt === null || vt > t);
+          const active =
+            vf === null ? true : vf <= t && (vt === null || vt > t);
           if (active) {
             edges.add(e.id);
             nodes.add(e.source);
@@ -410,8 +596,10 @@ export function Graph() {
         // 播放推进时新出现的元素淡入登场；手动拖动保持瞬时切换
         if (playingRef.current) {
           const now = performance.now();
-          for (const id of edges) if (prevEdges && !prevEdges.has(id)) fadeRef.current.set(id, now);
-          for (const id of nodes) if (prevNodes && !prevNodes.has(id)) fadeRef.current.set(id, now);
+          for (const id of edges)
+            if (prevEdges && !prevEdges.has(id)) fadeRef.current.set(id, now);
+          for (const id of nodes)
+            if (prevNodes && !prevNodes.has(id)) fadeRef.current.set(id, now);
           if (fadeRef.current.size) kickFade();
         }
         filterRef.current.activeNodes = nodes;
@@ -428,6 +616,96 @@ export function Graph() {
     filterRef.current.showDerived = showDerived;
     sigmaRef.current?.refresh();
   }, [hiddenTypes, showDerived]);
+
+  const deriveRafRef = useRef(0);
+  /* 演完之前派生边不出现。**开关是"要不要显示"，这个是"演到了没有"**——
+     两件事，混成一个会让关掉再打开时少演一遍 */
+  const [derivedRevealed, setDerivedRevealed] = useState(false);
+  /* reducer 是每帧跑的闭包，读 state 会读到旧值——它只认 ref */
+  const derivedRevealedRef = useRef(false);
+  useEffect(() => {
+    derivedRevealedRef.current = derivedRevealed;
+    sigmaRef.current?.refresh();
+  }, [derivedRevealed]);
+
+  const revealDerived = useCallback(() => {
+    setDerivedRevealed(true);
+    // 复用开关那套淡入：方向为"开"，从近背景色亮到常态
+    derivedToggleRef.current = { at: performance.now(), on: true };
+    const step = () => {
+      const tr = derivedToggleRef.current;
+      const done = !tr || performance.now() - tr.at >= DERIVE_FADE_MS;
+      if (done) derivedToggleRef.current = null;
+      sigmaRef.current?.refresh();
+      deriveRafRef.current = done ? 0 : requestAnimationFrame(step);
+    };
+    cancelAnimationFrame(deriveRafRef.current);
+    deriveRafRef.current = requestAnimationFrame(step);
+  }, []);
+
+  useEffect(() => () => cancelAnimationFrame(deriveRafRef.current), []);
+
+  /* 开关的淡入淡出：{ 起始时刻, 朝哪个方向 }；null = 没有过渡在飞 */
+  const derivedToggleRef = useRef<{ at: number; on: boolean } | null>(null);
+  const derivedRafRef = useRef(0);
+  /* 上一次的开关值。**判「是不是真的切换了」只能靠它**——effect 的依赖里
+     还有 derivedCount，而「Run now 推出新边」会改 count 却没碰开关；
+     只看 effect 触发就淡一次，那是一次没人要求的动画 */
+  const prevShowDerived = useRef(showDerived);
+
+  // 切换时走一段渐变，而不是瞬间消失。**得自己驱动重绘**——关掉时下面那个
+  // 呼吸定时器不转了，没人推 sigma 重画，淡出就会卡在第一帧
+  useEffect(() => {
+    const changed = prevShowDerived.current !== showDerived;
+    prevShowDerived.current = showDerived;
+    // 首次挂载与「只有 count 变了」都不是切换：
+    // 进页面时、以及推理跑完刷新计数时，都不该看到一段莫名其妙的淡入
+    if (!changed) return;
+    // 数量太多时不淡：与呼吸同一条线——每帧重算几千条边的颜色换来的是卡顿。
+    // **写出来而不是悄悄降级**
+    if (derivedCount > DERIVED_ANIMATE_MAX) return;
+
+    const now = performance.now();
+    const prev = derivedToggleRef.current;
+    // 半途反向（用户连点两下）：从当前进度接着走，而不是从头开始——
+    // 否则会看见一次亮度的跳变
+    const at =
+      prev && prev.on !== showDerived
+        ? now - Math.max(0, DERIVED_TOGGLE_MS - (now - prev.at))
+        : now;
+    derivedToggleRef.current = { at, on: showDerived };
+
+    const step = () => {
+      const tr = derivedToggleRef.current;
+      const done = !tr || performance.now() - tr.at >= DERIVED_TOGGLE_MS;
+      if (done) derivedToggleRef.current = null;
+      sigmaRef.current?.refresh();
+      derivedRafRef.current = done ? 0 : requestAnimationFrame(step);
+    };
+    cancelAnimationFrame(derivedRafRef.current);
+    derivedRafRef.current = requestAnimationFrame(step);
+    // **不在这里挂清理**：清理会在依赖变化时也跑一遍，而依赖里有 derivedCount
+    // ——推理恰好在这 420ms 中途跑完，动画就被掐在半路（画面停在一半亮度，
+    // 要等下一次任意重绘才归位）。循环自己会终止；取消只该发生在卸载时
+  }, [showDerived, derivedCount]);
+
+  // 卸载时收掉可能在飞的那一帧
+  useEffect(() => () => cancelAnimationFrame(derivedRafRef.current), []);
+
+  /* 什么时候进场。两个入口共用一段延时：进页面、以及手动打开开关。
+     **不等布局收敛**——收敛要 2.5 秒，等完人早就在看别处了。
+
+     **顺序本身是内容**：先落位的是人写下的边，然后才轮到推出来的。
+     一起出现就分不清谁在前 */
+  useEffect(() => {
+    if (!showDerived || !data.data) {
+      if (!showDerived) setDerivedRevealed(false);
+      return;
+    }
+    if (derivedRevealed) return;
+    const t = window.setTimeout(revealDerived, DERIVE_SETTLE_MS);
+    return () => window.clearTimeout(t);
+  }, [showDerived, data.data, derivedRevealed, revealDerived]);
 
   // 派生边的呼吸。**只在有派生边、且开着显示、且数量不多时才转**——
   // 一个没开推理的库不该为这件事每两秒重画一次
@@ -493,6 +771,10 @@ export function Graph() {
     let fa2Settings: ReturnType<typeof forceAtlas2.inferSettings> | null = null;
     if (g.order > 0) {
       circular.assign(g, { scale: 300 });
+      /* 试过按规模缩放（gravity 0.12–0.22 / scalingRatio 11–16 + 加大阻尼），
+         拿真实的图一看就否了：散是散开了，但那种"被推开"的张力没了，
+         整张图显得瘫。**这一组是既有的、刻意偏大的**——要的是节点之间
+         互相顶着的感觉，不是最省力的排布 */
       const settings = {
         ...forceAtlas2.inferSettings(g),
         gravity: 0.35,
@@ -527,7 +809,10 @@ export function Graph() {
 
     // 任意布局结果统一缩放到 FA2 同量级世界（±target），相机 reset 观感一致
     const rescaleWorld = (target = 300) => {
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      let minX = Infinity,
+        maxX = -Infinity,
+        minY = Infinity,
+        maxY = -Infinity;
       g.forEachNode((_n, a) => {
         minX = Math.min(minX, a.x as number);
         maxX = Math.max(maxX, a.x as number);
@@ -538,7 +823,11 @@ export function Graph() {
       const k = (target * 2) / span;
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      g.updateEachNodeAttributes((_n, a) => ({ ...a, x: (a.x - cx) * k, y: (a.y - cy) * k }));
+      g.updateEachNodeAttributes((_n, a) => ({
+        ...a,
+        x: (a.x - cx) * k,
+        y: (a.y - cy) * k,
+      }));
     };
 
     // 布局切换控制（挂到 ref 供组件层按钮调用；闭包内直握 g / fa2）
@@ -549,7 +838,10 @@ export function Graph() {
         fa2?.stop();
         setStabilizing(false);
         if (mode === "force") {
-          forceAtlas2.assign(g, { iterations: 60, settings: fa2Settings ?? undefined });
+          forceAtlas2.assign(g, {
+            iterations: 60,
+            settings: fa2Settings ?? undefined,
+          });
           fa2?.start();
           setStabilizing(true);
           stabilizeTimer = setTimeout(() => {
@@ -604,6 +896,8 @@ export function Graph() {
         const f = filterRef.current;
         const res = { ...attrs };
         const base = attrs.size as number;
+        // 状态环取节点自己的类型色（见 RING_*_MIX 处的理由）
+        const ownColor = (attrs.typeColor as string) ?? NODE_CORE_BASE;
         if (f.hiddenTypes.has(attrs.typeKey as string)) {
           res.hidden = true;
           return res;
@@ -618,21 +912,43 @@ export function Graph() {
           res.label = "";
           res.zIndex = 0;
         };
-        // hover 只提亮自身（不压暗全图）；压暗聚焦只属于点击选中
+        /* 悬停时其余的按 HOVER_MUTE 压一档（选中是压到底）。
+           邻居不压——悬停要回答的是"它连着谁"，把邻居也压掉就等于没回答 */
+        const softMute = () => {
+          res.size = base * (1 - 0.48 * HOVER_MUTE);
+          res.color = lerpColor(
+            String(attrs.color ?? NODE_CORE_BASE),
+            mix(MUTED_SHELL, NODE_CORE_BASE, 0.3),
+            HOVER_MUTE,
+          );
+          res.shellColor = lerpColor(
+            String(attrs.shellColor ?? NODE_SHELL_BASE),
+            MUTED_SHELL,
+            HOVER_MUTE,
+          );
+          res.borderColor = TRANSPARENT;
+          res.ringColor = TRANSPARENT;
+          res.label = "";
+          res.zIndex = 0;
+        };
         if (hoverRef.current === node) {
           res.size = Math.max(base * 1.08, 10.4);
-          res.ringColor = RING_HOVERED;
+          res.ringColor = mix(ownColor, "#ffffff", RING_HOVER_MIX);
           // 悬浮卡接管标签展示；label 本身保留（悬浮卡靠它渲染标题）
           res.hideBaseLabel = true;
           res.zIndex = 4;
           return res;
         }
+        const hov = hoverRef.current;
         // 选中实体可能不在当前画布（侧栏跳转/邻域重载间隙）——不在则跳过聚焦压暗逻辑
-        const sel = selectedRef.current && g.hasNode(selectedRef.current) ? selectedRef.current : null;
+        const sel =
+          selectedRef.current && g.hasNode(selectedRef.current)
+            ? selectedRef.current
+            : null;
         if (sel) {
           if (node === sel) {
             res.size = Math.max(base * 1.02, 9.2);
-            res.ringColor = RING_SELECTED;
+            res.ringColor = mix(ownColor, "#ffffff", RING_SELECT_MIX);
             res.forceLabel = true;
             res.zIndex = 3;
             return res;
@@ -645,6 +961,14 @@ export function Graph() {
             muteNode();
             return res;
           }
+        } else if (hov && hov !== node && !g.areNeighbors(hov, node)) {
+          // **悬停也压暗其余**，只是比选中轻一档（见 HOVER_MUTE）。
+          // 邻居留着：悬停要回答的正是"它连着谁"。
+          // **此刻还不存在的节点直接压到底**：这个分支会提前 return，
+          // 绕过下面那道时间过滤，只压一半的话它反而比不 hover 时更亮
+          if (f.activeNodes && !f.activeNodes.has(node)) muteNode();
+          else softMute();
+          return res;
         } else {
           // default {×0.7}
           res.size = base * 0.7;
@@ -658,9 +982,21 @@ export function Graph() {
         if (fs !== undefined) {
           const t = Math.min(1, (performance.now() - fs) / FADE_MS);
           res.size = (res.size as number) * (0.55 + 0.45 * t);
-          res.color = lerpColor(MUTED_SHELL, String(res.color ?? NODE_CORE_BASE), t);
-          res.shellColor = lerpColor(MUTED_SHELL, String(res.shellColor ?? NODE_SHELL_BASE), t);
-          res.borderColor = lerpColor("rgba(0,0,0,0)", String(res.borderColor ?? NODE_BORDER_BASE), t);
+          res.color = lerpColor(
+            MUTED_SHELL,
+            String(res.color ?? NODE_CORE_BASE),
+            t,
+          );
+          res.shellColor = lerpColor(
+            MUTED_SHELL,
+            String(res.shellColor ?? NODE_SHELL_BASE),
+            t,
+          );
+          res.borderColor = lerpColor(
+            "rgba(0,0,0,0)",
+            String(res.borderColor ?? NODE_BORDER_BASE),
+            t,
+          );
           if (t < 0.7) res.label = "";
         }
         return res;
@@ -678,29 +1014,86 @@ export function Graph() {
         // 推出来的边：先看藏不藏，再决定呼吸到哪一档。
         // **放在最前面**——藏起来的边不必再算后面那些提亮/压暗
         const isDerived = attrs.derived === true;
+
         if (isDerived) {
-          if (!f.showDerived) {
+          // 还没轮到它进场：先不画。**事实先落位，推出来的后到**
+          if (!derivedRevealedRef.current) {
             res.hidden = true;
             return res;
           }
-          res.color = lerpColor(
+          const tr = derivedToggleRef.current;
+          const k = tr
+            ? Math.min(1, (performance.now() - tr.at) / DERIVED_TOGGLE_MS)
+            : 1;
+          // 关掉了：只有「淡出尚未走完」这一种情况还留着不藏
+          if (!f.showDerived) {
+            if (!tr || tr.on || k >= 1) {
+              res.hidden = true;
+              return res;
+            }
+            /* 由当前颜色渐灭到近背景色。**暗度必须编码进 RGB**
+               （见 EDGE_DIM 处的注释：预乘混合下 alpha 压不暗边），
+               所以是往 EDGE_DIM 混而不是降 alpha。
+
+               **起点不能一律写死成满亮的金**：这个分支在悬停/选中的压暗逻辑
+               之前就 return 了，于是一条本来被压成暗色的无关派生边，
+               会先跳回满亮再淡出——那一跳就是"关派生时无关的边闪一下"。
+               起点得取它此刻本来的样子 */
+            const selNow =
+              selectedRef.current && g.hasNode(selectedRef.current)
+                ? selectedRef.current
+                : null;
+            const hovNow = hoverRef.current;
+            const focused = selNow ?? hovNow;
+            const from = !focused
+              ? EDGE_COLOR_DERIVED
+              : s === focused || t === focused
+                ? EDGE_FOCUS_DERIVED
+                : EDGE_DIM;
+            res.color = lerpColor(from, EDGE_DIM, k);
+            res.label = "";
+            return res;
+          }
+          const pulse = lerpColor(
             EDGE_COLOR_DERIVED_DIM,
             EDGE_COLOR_DERIVED,
             // 三角波而不是正弦：两端各停一瞬，看起来是「呼吸」不是「闪」
-            Math.abs(((performance.now() % DERIVED_PULSE_MS) / DERIVED_PULSE_MS) * 2 - 1),
+            Math.abs(
+              ((performance.now() % DERIVED_PULSE_MS) / DERIVED_PULSE_MS) * 2 -
+                1,
+            ),
           );
+          // 打开：从近背景色亮起来，接上呼吸
+          res.color =
+            tr && tr.on && k < 1 ? lerpColor(EDGE_DIM, pulse, k) : pulse;
         }
         // hover: 只提亮关联边；selected: 提亮关联边 + 压暗其余
         const hov = hoverRef.current;
         const sel =
-          selectedRef.current && g.hasNode(selectedRef.current) ? selectedRef.current : null;
+          selectedRef.current && g.hasNode(selectedRef.current)
+            ? selectedRef.current
+            : null;
         const boost = () => {
-          res.color = EDGE_FOCUS;
+          res.color = isDerived ? EDGE_FOCUS_DERIVED : EDGE_FOCUS;
           res.size = Math.max((attrs.size as number) * 1.42, 1.85);
           res.zIndex = 5;
         };
-        if (hov && (s === hov || t === hov)) {
+        /* **时间轴停在某一刻时，这条边此刻存不存在**。
+           悬停的两条分支都会提前 return，绕过下面那道时间过滤——
+           不带上它的话，一 hover，所有"还没长出来"的边会从近背景色
+           跳到常态色的 45%，看起来是被点亮了。实测就是这么亮的 */
+        const liveNow = !f.activeEdges || f.activeEdges.has(edge);
+        if (hov && (s === hov || t === hov) && liveNow) {
           boost();
+        } else if (hov && !sel) {
+          // 悬停时其余的边也退下去，但**只退一半**——与节点那边同一个 HOVER_MUTE。
+          // 压到底是选中才有的待遇。此刻不存在的边**本来就该是暗的**，
+          // 从 EDGE_DIM 起混等于原地不动
+          const from = liveNow ? String(res.color) : EDGE_DIM;
+          res.color = lerpColor(from, EDGE_DIM, HOVER_MUTE);
+          res.size = (attrs.size as number) * (1 - 0.4 * HOVER_MUTE);
+          res.label = "";
+          return res;
         } else if (sel) {
           if (s === sel || t === sel) {
             boost();
@@ -732,7 +1125,7 @@ export function Graph() {
       setFocusEntity(node);
       setSelected(node);
     });
-    sigma.on("clickStage", () => setSelected(null));
+    sigma.on("clickStage", () => deselect());
     sigma.on("enterNode", ({ node }) => {
       hoverRef.current = node;
       sigma.refresh();
@@ -768,12 +1161,14 @@ export function Graph() {
     sigma.getMouseCaptor().on("mousemovebody", (e) => {
       if (!dragCandidate) return;
       if (!dragged) {
-        if (!downPoint || Math.hypot(e.x - downPoint.x, e.y - downPoint.y) < 4) return;
+        if (!downPoint || Math.hypot(e.x - downPoint.x, e.y - downPoint.y) < 4)
+          return;
         // 升格为拖拽
         dragged = dragCandidate;
         if (settleTimer) clearTimeout(settleTimer);
         // 静态布局（circular/pack）下拖拽不唤醒力模拟——否则一碰就散架
-        if (layoutModeRef.current === "force" && fa2 && !fa2.isRunning()) fa2.start();
+        if (layoutModeRef.current === "force" && fa2 && !fa2.isRunning())
+          fa2.start();
         // 固定当前包围盒，避免拖拽时相机自动跟随缩放
         if (!sigma.getCustomBBox()) sigma.setCustomBBox(sigma.getBBox());
       }
@@ -814,7 +1209,8 @@ export function Graph() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.data]);
 
-  if (!kb) return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
+  if (!kb)
+    return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
 
   const empty = data.isSuccess && data.data.nodes.length === 0;
   const nodeCount = data.data?.nodes.length ?? 0;
@@ -832,7 +1228,9 @@ export function Graph() {
         <div className="relative pointer-events-auto">
           <input
             className="input-dark w-60 px-3 py-1.5 text-sm shadow-lg"
-            placeholder={inSubgraph ? S.graph.searchInSubgraph : S.graph.searchEntity}
+            placeholder={
+              inSubgraph ? S.graph.searchInSubgraph : S.graph.searchEntity
+            }
             value={searchInput}
             onChange={(e) => {
               setSearchInput(e.target.value);
@@ -859,9 +1257,13 @@ export function Graph() {
                   />
                   <span className="truncate">{c.name}</span>
                   {c.disambiguator && (
-                    <span className="text-xs text-neutral-500 truncate">· {c.disambiguator}</span>
+                    <span className="text-xs text-neutral-500 truncate">
+                      · {c.disambiguator}
+                    </span>
                   )}
-                  <span className="ml-auto text-xs text-neutral-500">{c.type_label}</span>
+                  <span className="ml-auto text-xs text-neutral-500">
+                    {c.type_label}
+                  </span>
                 </button>
               ))}
               {/* 还有更多没显示。**说清剩多少**——从前固定十条，想找的那个
@@ -890,9 +1292,11 @@ export function Graph() {
           </button>
         )}
 
-        {/* 图例（点击切换类型显隐） */}
+        {/* 图例（点击切换类型显隐）。**只摆前 LEGEND_MAX 个**，其余收进
+            「+N 个类」——那一排横着长，类一多就换行把画布顶下去；而且十几个
+            一模一样的胶囊排开，谁重要也读不出来 */}
         <div className="pointer-events-auto flex flex-wrap gap-1.5 pt-0.5">
-          {types.map(([key, t]) => (
+          {legendShown.map(([key, t]) => (
             <button
               key={key}
               onClick={() =>
@@ -914,64 +1318,214 @@ export function Graph() {
               <span className="text-neutral-300">{t.label}</span>
             </button>
           ))}
-          {/* 推出来的边：与类型图例同一条，因为它们是同一种动作——决定图上
-              显示什么。为零时不出现 */}
-          {derivedCount > 0 && (
-            <div className="relative flex items-center gap-1">
+
+          {/* chip 上的数是**全部类**，不是被收起来的那几个——
+              点开看到的就是全部（搜得到任何一个），写「+3」等于承诺了另一件事 */}
+          {/* 复位。**只要存在隐藏就给一步到位的出口**——「只看」很容易把
+              画面收得很窄，没有这个就得挨个点回来 */}
+          {hiddenTypes.size > 0 && (
+            <button
+              onClick={() => setHiddenTypes(new Set())}
+              className="glass rounded-full px-2.5 py-1 text-[11px] text-neutral-400 transition-colors hover:text-neutral-100"
+            >
+              {S.graph.legendShowAll(hiddenTypes.size)}
+            </button>
+          )}
+
+          {legendRest.length > 0 && (
+            <div className="relative" ref={legendPop.rootRef}>
               <button
-                onClick={() => setShowDerived((v) => !v)}
-                title={S.graph.derivedHint}
-                className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
-                  showDerived ? "" : "opacity-35"
-                }`}
+                ref={legendPop.anchorRef}
+                onClick={() =>
+                  legendPop.open ? legendPop.close() : legendPop.setOpen(true)
+                }
+                title={S.graph.legendAllHint}
+                aria-expanded={legendPop.open}
+                className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-colors ${
+                  legendPop.open ? "text-neutral-100" : "text-neutral-400"
+                } hover:text-neutral-100`}
               >
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ background: "rgba(231,197,124,0.9)" }}
-                />
-                <span className="text-neutral-300">
-                  {S.graph.derivedEdges(derivedCount)}
-                </span>
+                {S.graph.legendMore(types.length)}
+                {/* 收起来的类里有正被隐藏的就点一下。**不点就是无声过滤**：
+                    在面板里关掉一个类、把面板一收，界面上再没有任何东西说它被关了 */}
+                {hiddenInRest > 0 && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-neutral-300" />
+                )}
               </button>
-              {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
-                  **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
-                  是偶尔才问的，合成一个会让常用动作多一步 */}
-              <button
-                onClick={() => setDerivedPanel((v) => !v)}
-                title={S.graph.derivedPanel}
-                aria-expanded={derivedPanel}
-                className={`glass rounded-full h-[22px] w-[22px] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
-                  derivedPanel ? "text-neutral-100" : ""
-                }`}
-              >
-                ⋯
-              </button>
-              {derivedPanel && kb && (
-                <DerivedPanel
-                  kbId={kb.id}
-                  count={derivedCount}
-                  onClose={() => setDerivedPanel(false)}
-                />
+              {legendPop.open && (
+                <div
+                  ref={legendPop.panelRef}
+                  className="u-menu-glass absolute left-0 top-0 z-50 w-64 overflow-hidden rounded-xl p-2 shadow-2xl"
+                >
+                  {/* 面板盖在 chip 原位，所以**第一行就长成那个 chip 的样子**，
+                      点它收回去——「哪儿展开的就从哪儿收回去」，
+                      与通知/用户卡片的关闭键跟触发键原位重合是同一个道理 */}
+                  <button
+                    onClick={() => legendPop.close()}
+                    className="mb-1.5 flex w-full items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-neutral-300 transition-colors hover:text-neutral-100"
+                  >
+                    {S.graph.legendMore(types.length)}
+                    <X size={11} className="ml-auto text-neutral-500" />
+                  </button>
+                  <input
+                    autoFocus
+                    value={legendQ}
+                    onChange={(e) => setLegendQ(e.target.value)}
+                    placeholder={S.graph.legendSearch}
+                    className="input-dark mb-1.5 w-full px-2 py-1 text-[12px]"
+                  />
+                  {/* **列的是全部类，不只是收起来的那些**：想找一个类的时候，
+                      没人记得它是不是恰好排进了前几个 */}
+                  <div className="flex max-h-64 flex-col overflow-y-auto">
+                    {types
+                      .filter(([, t]) =>
+                        t.label.toLowerCase().includes(legendQ.toLowerCase()),
+                      )
+                      .map(([key, t]) => (
+                        /* **一行两个按钮，不是一个按钮循环三态。**
+                           单键循环的代价是：不看当前状态就不知道下一次点击
+                           会发生什么，而且从「只看」回到正常必须路过「排除」
+                           ——想清空却得先让画面变成另一个错的样子。
+                           拆开之后每个手势含义固定 */
+                        <div
+                          key={key}
+                          className="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-white/5"
+                        >
+                          <button
+                            onClick={() =>
+                              setHiddenTypes((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(key)) next.delete(key);
+                                else next.add(key);
+                                return next;
+                              })
+                            }
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          >
+                            <span
+                              className={`h-2 w-2 shrink-0 ${t.shape === "square" ? "" : "rounded-full"}`}
+                              style={{
+                                background: t.color,
+                                opacity: hiddenTypes.has(key) ? 0.35 : 1,
+                              }}
+                            />
+                            <span
+                              className={`truncate text-[12px] ${
+                                hiddenTypes.has(key)
+                                  ? "text-neutral-500 line-through"
+                                  : "text-neutral-200"
+                              }`}
+                            >
+                              {t.label}
+                            </span>
+                          </button>
+                          {/* 「只看这个」：类一多时最想要的动作。**给显式按钮而不是
+                              修饰键**——alt+点击没人猜得到，这里横向有地方 */}
+                          <button
+                            onClick={() =>
+                              setHiddenTypes(
+                                new Set(
+                                  types.map(([k]) => k).filter((k) => k !== key),
+                                ),
+                              )
+                            }
+                            className="shrink-0 rounded px-1 text-[10px] text-neutral-500 opacity-0 transition-opacity hover:text-white focus:opacity-100 group-hover:opacity-100"
+                          >
+                            {S.graph.legendOnly}
+                          </button>
+                          <span className="u-num shrink-0 text-[11px] text-neutral-500">
+                            {t.count}
+                          </span>
+                        </div>
+                      ))}
+                    {types.every(
+                      ([, t]) =>
+                        !t.label.toLowerCase().includes(legendQ.toLowerCase()),
+                    ) && (
+                      <div className="px-1.5 py-2 text-[12px] text-neutral-500">
+                        {S.graph.legendNone}
+                      </div>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
           )}
         </div>
 
-        <div className="ml-auto pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
-          {stabilizing && <span className="text-neutral-400">{S.graph.stabilizing} · </span>}
+        {/* 右上：能调「画多少个」+ 统计。**统计说的正是这个数**
+            （「画了 150 个，共 548 个」），把调节放在它旁边，改的是谁一目了然。
+            外壳保持中性——这一片是 chrome，彩色只属于数据 */}
+        <div className="ml-auto flex flex-col items-end gap-1">
+          <div className="flex items-start gap-2">
+            <div className="pointer-events-auto flex items-center overflow-hidden rounded-md border border-white/10">
+            <button
+              title={S.graph.nodeBudgetLess}
+              disabled={nodeBudget <= NODE_BUDGETS[0]}
+              onClick={() =>
+                setNodeBudget(
+                  (b) => NODE_BUDGETS[Math.max(0, NODE_BUDGETS.indexOf(b) - 1)],
+                )
+              }
+              className="px-1.5 py-[3px] text-[11px] leading-none text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-neutral-400"
+            >
+              −
+            </button>
+            {/* **画满了就别再给「多画」**：库里一共就这么多，再调高什么也不会变，
+                而一个点了没反应的按钮比没有这个按钮更糟 */}
+            <button
+              title={S.graph.nodeBudgetMore}
+              disabled={
+                !capped || nodeBudget >= NODE_BUDGETS[NODE_BUDGETS.length - 1]
+              }
+              onClick={() =>
+                setNodeBudget(
+                  (b) =>
+                    NODE_BUDGETS[
+                      Math.min(NODE_BUDGETS.length - 1, NODE_BUDGETS.indexOf(b) + 1)
+                    ],
+                )
+              }
+              className="px-1.5 py-[3px] text-[11px] leading-none text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-neutral-400"
+            >
+              +
+            </button>
+          </div>
+          <div className="pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
           {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
               一个上万实体的库右上角永远写着 150 */}
           {capped ? (
             <span title={S.graph.cappedHint(nodeCount, totalNodes)}>
+              {/* **事实也用「已画 / 共」的口径**：从前这里给的是库里的总数，
+                  而实体给的是「画了多少 / 共多少」——同一句话里两套口径，
+                  于是调档位时实体数在变、事实数纹丝不动，看着像坏了。
+                  没有时间筛选时 active 恒等于已画条数，那就不说 */}
               {S.graph.statsCapped(
                 nodeCount,
                 totalNodes,
+                edgeCount,
                 totalEdges,
-                timeT === null ? edgeCount : activeCount,
+                timeT === null ? null : activeCount,
               )}
             </span>
           ) : (
-            S.graph.stats(nodeCount, edgeCount, timeT === null ? edgeCount : activeCount)
+            S.graph.stats(
+              nodeCount,
+              edgeCount,
+              timeT === null ? null : activeCount,
+            )
+          )}
+            </div>
+          </div>
+          {/* **单独一行，不做统计文字的前缀。**
+              当前缀时它一出现就把整块撑宽，而这一块是靠右的——
+              于是每次重新布局，左边的档位按钮都会被挤着跳一下。
+              自己占一行，第一行的宽度就不再随它变 */}
+          {stabilizing && (
+            <div className="flex items-center gap-1.5 text-[11px] text-neutral-400">
+              <Loader2 size={11} className="animate-spin" />
+              {S.graph.stabilizing}
+            </div>
           )}
         </div>
       </div>
@@ -982,58 +1536,143 @@ export function Graph() {
         <div ref={containerRef} className="absolute inset-0" />
       </div>
 
-      {/* 左下控件塔：布局切换 + 相机（右下归实体侧栏，底部中央归时间岛） */}
-      <div className="absolute bottom-4 left-3 z-10 flex flex-col gap-2">
-      <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
-        {(
-          [
-            { key: "force", Icon: Orbit, label: S.graph.layoutForce },
-            { key: "circular", Icon: CircleDashed, label: S.graph.layoutCircular },
-            { key: "pack", Icon: Grape, label: S.graph.layoutPack },
-          ] as const
-        ).map(({ key, Icon, label }) => (
+      {/* 左下控件塔：推出来的边 + 布局切换 + 相机（右下归实体侧栏，底部中央归时间岛） */}
+      {/* **items-start**：列内项目默认 stretch，一组展开就会把其余几组
+          一起拉到同宽——那几组的字还收着，于是看着是几个莫名其妙的空白长条。
+          各自按内容收放，才是「一组一组展开，不牵连别人」 */}
+      <div className="absolute bottom-4 left-3 z-10 flex flex-col items-start gap-2">
+        {/* 推出来的边：**自成一组，也不进类型图例。**
+            图例回答「显示哪些类」，一排全是本体里的类；这个回答的是
+            「显不显示推出来的边」——不是同一个问题。为零时整组不出现。
+
+            **摆到这座塔上，是绕开一对矛盾走的**：放在顶栏图例旁边，它长得
+            像第 10 个类；想靠颜色把它区分开，又撞上这文件开头那条既定原则
+            ——「chrome 零色偏、彩色只属于数据」（见调色板那段注释）。
+            往框架里塞一块高饱和金底，是整个界面唯一的彩色色块，扎眼且不成体系。
+
+            这座塔本来就是「视图怎么看」的地盘（布局、缩放），
+            「显不显示推出来的边」正是同一族问题。外壳保持中性，
+            金色只出现在图标本身——与色点用在类胶囊上是同一个做法。 */}
+        {derivedCount > 0 && (
+          /* **两层**：外层只负责定位，内层才有 overflow-hidden。
+             那个类是给按钮堆裁圆角的，可面板是同一个盒子的子元素——
+             合成一层的话面板会被一起裁掉，实测只剩塔本身那 32px 宽 */
+          <div className="relative" ref={derivedPop.rootRef}>
+            <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+            <button
+              onClick={() => setShowDerived((v) => !v)}
+              role="switch"
+              aria-checked={showDerived}
+              title={`${S.graph.derivedEdges(derivedCount)} · ${S.graph.derivedHint}`}
+              className={`flex items-center p-2 transition-colors ${
+                showDerived
+                  ? "bg-white/[0.1]"
+                  : "text-neutral-500 hover:bg-white/[0.06]"
+              }`}
+              style={
+                showDerived ? { color: "rgba(231,197,124,0.95)" } : undefined
+              }
+            >
+              <Waypoints size={15} />
+              <span className="u-tower-label">{S.graph.viewDerived}</span>
+            </button>
+            <div className="h-px bg-white/10 mx-1.5" />
+            {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
+                **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
+                是偶尔才问的，合成一个会让常用动作多一步 */}
+            <button
+              ref={derivedPop.anchorRef}
+              onClick={() =>
+                derivedPop.open ? derivedPop.close() : derivedPop.setOpen(true)
+              }
+              title={S.graph.derivedPanel}
+              aria-expanded={derivedPop.open}
+              className={`flex items-center p-2 text-[11px] leading-none transition-colors ${
+                derivedPop.open
+                  ? "text-white bg-white/[0.1]"
+                  : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
+              }`}
+            >
+              <span className="grid h-[15px] w-[15px] shrink-0 place-items-center leading-none">
+                ⋯
+              </span>
+              <span className="u-tower-label">{S.graph.derivedPanel}</span>
+            </button>
+            </div>
+            {derivedPop.open && kb && (
+              <DerivedPanel
+                panelRef={derivedPop.panelRef}
+                kbId={kb.id}
+                count={derivedCount}
+                onClose={() => derivedPop.close()}
+              />
+            )}
+          </div>
+        )}
+        <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+          {(
+            [
+              { key: "force", Icon: Orbit, label: S.graph.layoutForce },
+              {
+                key: "circular",
+                Icon: CircleDashed,
+                label: S.graph.layoutCircular,
+              },
+              { key: "pack", Icon: Grape, label: S.graph.layoutPack },
+            ] as const
+          ).map(({ key, Icon, label }) => (
+            <button
+              key={key}
+              title={label}
+              onClick={() => {
+                setLayoutMode(key);
+                layoutModeRef.current = key;
+                layoutCtlRef.current?.apply(key);
+              }}
+              className={`flex items-center p-2 transition-colors ${
+                layoutMode === key
+                  ? "text-white bg-white/[0.1]"
+                  : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
+              }`}
+            >
+              <Icon size={15} />
+              <span className="u-tower-label">{label}</span>
+            </button>
+          ))}
+        </div>
+        <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
           <button
-            key={key}
-            title={label}
-            onClick={() => {
-              setLayoutMode(key);
-              layoutModeRef.current = key;
-              layoutCtlRef.current?.apply(key);
-            }}
-            className={`p-2 transition-colors ${
-              layoutMode === key
-                ? "text-white bg-white/[0.1]"
-                : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
-            }`}
+            title={S.graph.zoomIn}
+            onClick={() =>
+              sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })
+            }
+            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
-            <Icon size={15} />
+            <ZoomIn size={15} />
+            <span className="u-tower-label">{S.graph.zoomIn}</span>
           </button>
-        ))}
-      </div>
-      <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
-        <button
-          title={S.graph.zoomIn}
-          onClick={() => sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })}
-          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-        >
-          <ZoomIn size={15} />
-        </button>
-        <button
-          title={S.graph.zoomOut}
-          onClick={() => sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })}
-          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-        >
-          <ZoomOut size={15} />
-        </button>
-        <div className="h-px bg-white/10 mx-1.5" />
-        <button
-          title={S.graph.fitView}
-          onClick={() => sigmaRef.current?.getCamera().animatedReset({ duration: 300 })}
-          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-        >
-          <Maximize2 size={15} />
-        </button>
-      </div>
+          <button
+            title={S.graph.zoomOut}
+            onClick={() =>
+              sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })
+            }
+            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+          >
+            <ZoomOut size={15} />
+            <span className="u-tower-label">{S.graph.zoomOut}</span>
+          </button>
+          <div className="h-px bg-white/10 mx-1.5" />
+          <button
+            title={S.graph.fitView}
+            onClick={() =>
+              sigmaRef.current?.getCamera().animatedReset({ duration: 300 })
+            }
+            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+          >
+            <Maximize2 size={15} />
+            <span className="u-tower-label">{S.graph.fitView}</span>
+          </button>
+        </div>
       </div>
 
       {empty && (
@@ -1057,12 +1696,13 @@ export function Graph() {
         />
       )}
 
-      {/* 实体侧栏 */}
-      {selected && kb && (
+      {/* 实体侧栏。**取消选中之后还要多留 170ms**：那段时间它在演退场 */}
+      {(selected || exiting) && kb && (
         <EntityPanel
           kbId={kb.id}
-          entityId={selected}
-          onClose={() => setSelected(null)}
+          entityId={(selected ?? exiting)!}
+          exiting={!selected}
+          onClose={deselect}
           onNavigate={(id) => {
             // 跳转目标可能不在当前画布：同时把图 refocus 到它的邻域（与搜索选择一致）
             setFocusEntity(id);
@@ -1092,6 +1732,33 @@ function scrubValueAt(
   return Math.min(maxTs, minTs + Math.round((raw - minTs) / DAY_MS) * DAY_MS);
 }
 
+/** 播放/柱子的步长。**这两件事本来就该是同一个单位**——从前柱子按年、
+ *  播放按天，界面上没有任何地方说得出「一格是多久」。 */
+type ScrubUnit = "year" | "month" | "day";
+
+/** 一根柱子最多画多少根。超过就把相邻的桶并起来画——**只影响画，不影响
+ *  播放步长**：日单位下 15 年有五千多个桶，一根一像素也画不下，
+ *  但播放仍然是一天一步。并了几个会在提示里说出来，不闷着 */
+const SCRUB_MAX_BARS = 220;
+/** 整条轨走完的目标时长。**与单位无关**——单位换的是颗粒度与密度，
+ *  不该顺带把「等多久」也换掉：日单位若按「一天一拍」走，15 年要放二十分钟 */
+const SCRUB_PLAY_MS = 18000;
+
+function bucketStart(ts: number, unit: ScrubUnit): number {
+  const d = new Date(ts);
+  if (unit === "year") return Date.UTC(d.getUTCFullYear(), 0, 1);
+  if (unit === "month")
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+function bucketNext(ts: number, unit: ScrubUnit): number {
+  const d = new Date(ts);
+  if (unit === "year") return Date.UTC(d.getUTCFullYear() + 1, 0, 1);
+  if (unit === "month")
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+  return ts + DAY_MS;
+}
+
 function TimeScrubber({
   edges,
   value,
@@ -1107,51 +1774,111 @@ function TimeScrubber({
   onPlayingChange: (v: boolean) => void;
 }) {
   const setPlaying = onPlayingChange;
+  /* 默认年：**大多数库跨度都以年计**，一进来先给能一眼看全的那一档 */
+  const [unit, setUnit] = useState<ScrubUnit>("year");
+  /* 走完整条的次数。**拿它当 key**——同一个元素上重复触发同一个动画不会重播，
+     换 key 让它重新挂载才会 */
+  const [sweep, setSweep] = useState(0);
+  /* 指针在轨道上时，已走过的那段提亮。**它回答的是"我走到哪了"**——
+     不播的时候整条都是同一档灰，看不出进度停在哪；而这正是人把指针
+     移上来想知道的事 */
+  const [trackHover, setTrackHover] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  /* 拖动落点。**播放循环有自己的浮点累加器**，不读 value——否则每帧的取整
+     误差会积起来。所以光改 value 是没用的，下一帧就被原样覆盖回去。
+     拖动把落点放进这里，循环下一帧接手，从新位置继续走 */
+  const seekRef = useRef<number | null>(null);
+  const seek = (v: number) => {
+    seekRef.current = v;
+    onChange(v);
+  };
 
-  const { minTs, maxTs, bars } = useMemo(() => {
+  const { minTs, maxTs, bars, merged, trackW } = useMemo(() => {
     const now = Date.now();
     const froms = edges
       .map((e) => (e.valid_from ? Date.parse(e.valid_from) : NaN))
       .filter((t) => !Number.isNaN(t));
-    const min = froms.length ? Math.min(...froms) : now - 5 * 365 * 24 * 3600 * 1000;
-    const minYear = new Date(min).getUTCFullYear();
-    const maxYear = new Date(now).getUTCFullYear();
+    const min = froms.length
+      ? Math.min(...froms)
+      : now - 5 * 365 * 24 * 3600 * 1000;
+    // 起点对齐到单位边界：否则第一根柱子是半格，读起来像数据缺了一块
+    const start = bucketStart(min, unit);
+
     const counts = new Map<number, number>();
     for (const t of froms) {
-      const y = new Date(t).getUTCFullYear();
-      counts.set(y, (counts.get(y) ?? 0) + 1);
+      const k = bucketStart(t, unit);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
     }
-    const peak = Math.max(1, ...counts.values());
-    const bars: { year: number; h: number }[] = [];
-    for (let y = minYear; y <= maxYear; y++) {
-      bars.push({ year: y, h: (counts.get(y) ?? 0) / peak });
+    const raw: { ts: number; n: number }[] = [];
+    for (let t = start; t <= now; t = bucketNext(t, unit))
+      raw.push({ ts: t, n: counts.get(t) ?? 0 });
+
+    // 画不下就并桶。**并的是画，不是步长**
+    const group = Math.max(1, Math.ceil(raw.length / SCRUB_MAX_BARS));
+    const cells: { ts: number; n: number }[] = [];
+    for (let i = 0; i < raw.length; i += group) {
+      const slice = raw.slice(i, i + group);
+      cells.push({
+        ts: slice[0].ts,
+        n: slice.reduce((a, b) => a + b.n, 0),
+      });
     }
-    return { minTs: Date.UTC(minYear, 0, 1), maxTs: now, bars };
-  }, [edges]);
+    const peak = Math.max(1, ...cells.map((c) => c.n));
+
+    // 单位越大 → 桶越少 → 岛越短；越小 → 越长。**但下限要抬得够高**：
+    // 岛里那排固定控件（播放键 + 单位选择器 + 两个年份 + 日期 + All time/Now）
+    // 本身就要四百多像素，岛只有 320 时 flex-1 的轨道被压成 0——
+    // 实测柱子一根都看不见，整条是空的。
+    //
+    // 抬高之后单位主要改变的是**每根柱子的粗细**：同一条轨道，
+    // 年是十几根粗块，日是两百多根细线。这比整条伸缩更说明问题
+    const w = Math.min(780, Math.max(660, 380 + cells.length * 2));
+
+    return {
+      minTs: start,
+      maxTs: now,
+      bars: cells.map((c) => ({ ts: c.ts, h: c.n / peak, n: c.n })),
+      merged: group,
+      trackW: w,
+    };
+  }, [edges, unit]);
 
   // 播放按日推进（数据即 day 精度），日子快速翻过；整体节奏仍 ≈ 一个月/260ms。
   // rAF 时间驱动：帧率无关，内部浮点累加避免取整漂移，值只在跨天时才下发
   useEffect(() => {
     if (!playing) return;
-    const SPEED = MONTH_MS / 260; // 每毫秒真实时间推进的时间线毫秒数
+    // 整条走完约 SCRUB_PLAY_MS，与单位无关；单位只决定落点取整到哪一格
+    const SPEED = (maxTs - minTs) / SCRUB_PLAY_MS;
     let raf = 0;
     let last = performance.now();
     let acc = value ?? minTs;
-    let lastSnapped = Number.NaN;
+    let lastPushed = 0;
     const step = (now: number) => {
+      // 有人拖过了：从落点接着走，而不是沿原来的轨迹
+      if (seekRef.current !== null) {
+        acc = seekRef.current;
+        seekRef.current = null;
+      }
       acc += (now - last) * SPEED;
       last = now;
       if (acc >= maxTs) {
         setPlaying(false);
         onChange(null);
+        // 走到头了扫一道光。**这是个收尾**——播放停下、时间跳回全时段，
+        // 没有交代的话看着像中途断了；一道光扫过说明"这条走完了"
+        setSweep((n) => n + 1);
         return;
       }
-      const snapped = minTs + Math.round((acc - minTs) / DAY_MS) * DAY_MS;
-      if (snapped !== lastSnapped) {
-        lastSnapped = snapped;
-        onChange(snapped);
+      // **连续推进，不按桶跳。** 从前按 `bucketStart` 取整下发，年单位下
+      // 一次就是一年——播放头一格一格蹦，看着像卡顿而不是在走。
+      // 单位现在只管**显示**（标签精度、柱子跨度），不再管推进的步长。
+      //
+      // 代价是下发变密（每帧一次），而每次下发都要重算全图的现行边，
+      // 所以限到 ~30fps：肉眼看不出与 60fps 的差别，重算量减半
+      if (now - lastPushed >= 33) {
+        lastPushed = now;
+        onChange(Math.round(acc));
       }
       raf = requestAnimationFrame(step);
     };
@@ -1159,7 +1886,7 @@ function TimeScrubber({
     return () => cancelAnimationFrame(raf);
     // 只随播放开关重启：acc 在循环内自持，value 帧帧变不应重建循环
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, minTs, maxTs]);
+  }, [playing, minTs, maxTs, unit]);
 
   // 展示到日：与数据的 day 级 valid_precision 对齐
   const label = (() => {
@@ -1167,17 +1894,36 @@ function TimeScrubber({
     const d = new Date(value);
     const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
     const dd = String(d.getUTCDate()).padStart(2, "0");
+    // 精度跟着单位：年单位下写出「2019-01-01」是假精确
+    if (unit === "year") return `${d.getUTCFullYear()}`;
+    if (unit === "month") return `${d.getUTCFullYear()}-${mm}`;
     return `${d.getUTCFullYear()}-${mm}-${dd}`;
   })();
 
-  const minYear = bars[0]?.year;
-  const maxYear = bars[bars.length - 1]?.year;
+  const minYear = bars.length
+    ? new Date(bars[0].ts).getUTCFullYear()
+    : undefined;
+  const maxYear = bars.length
+    ? new Date(bars[bars.length - 1].ts).getUTCFullYear()
+    : undefined;
 
   return (
-    <div className="glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-[min(560px,calc(100%-4rem))] rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+    /* 宽度随单位变：单位大 → 桶少 → 短；单位小 → 桶多 → 长而密。
+       仍夹在视口内（calc 那一项），窄屏不会顶出去。
+       实测宽度：年 320 / 月 648 / 日 760。 */
+    <div
+      className={`glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)] u-scrub-island${playing ? " u-solid" : ""}`}
+      style={{ width: `min(${trackW}px, calc(100vw - 4rem))` }}
+    >
       <button
         onClick={() => {
-          if (!playing && value === null) onChange(minTs);
+          // 已经在末端（`Now`）时按播放要从头来。**否则第一下等于没反应**：
+          // acc 起点就是终点，循环第一帧就判定播完，只把位置清成 All time
+          if (
+            !playing &&
+            (value === null || value >= maxTs - (maxTs - minTs) * 0.02)
+          )
+            onChange(minTs);
           setPlaying(!playing);
         }}
         title={playing ? S.graph.pause : S.graph.play}
@@ -1186,30 +1932,96 @@ function TimeScrubber({
         {playing ? <Pause size={13} /> : <Play size={13} />}
       </button>
 
+      {/* 步长。**播放与柱子共用它**——从前柱子按年、播放按天，
+          界面上没有一处说得出「一格是多久」 */}
+      <div
+        title={S.graph.scrubUnitHint}
+        /* **与播放键同高同圆角**：那个键是 h-8 / rounded-lg，
+           而这里从前是 py-[3px] 撑出来的 20px 高、rounded-md——
+           并排放着两个尺寸和圆角都不一样的东西，看着不像一套 */
+        className="flex h-8 shrink-0 items-center overflow-hidden rounded-lg border border-white/10"
+      >
+        {(["year", "month", "day"] as const).map((u) => (
+          <button
+            key={u}
+            onClick={() => setUnit(u)}
+            className={`grid h-full place-items-center px-2 text-[10px] leading-none transition-colors ${
+              unit === u
+                ? "bg-white/[0.08] text-neutral-100"
+                : "text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-300"
+            }`}
+          >
+            {u === "year"
+              ? S.graph.scrubUnitYear
+              : u === "month"
+                ? S.graph.scrubUnitMonth
+                : S.graph.scrubUnitDay}
+          </button>
+        ))}
+      </div>
+
       <span className="shrink-0 u-num text-[10px] text-neutral-600">
         {minYear}
       </span>
 
       {/* 密度带轨道：内嵌浅色井 + 每年事实量柱 */}
-      <div ref={trackRef} className="relative flex-1 h-9 rounded-lg bg-white/[0.04]">
-        <div className="absolute inset-x-1.5 top-1.5 bottom-1.5 flex items-end gap-[2px]">
+      <div
+        ref={trackRef}
+        onMouseEnter={() => setTrackHover(true)}
+        onMouseLeave={() => setTrackHover(false)}
+        className="relative h-9 min-w-[150px] flex-1 overflow-hidden rounded-lg bg-white/[0.04]"
+      >
+        {/* 演完由 **React** 卸载，**别自己 `remove()`**。
+            从前是 `onAnimationEnd={(e) => e.currentTarget.remove()}`——
+            把 React 管着的节点从 DOM 里抠走，它自己并不知道。下一次扫光时
+            key 变了，React 去移除"旧节点"，而那个节点已经不在父节点里，
+            removeChild 抛 NotFoundError，未捕获的错误让整棵树卸载重挂：
+            现象就是**连播两轮之后界面像刷新了一次** */}
+        {sweep > 0 && (
+          <span
+            key={sweep}
+            className="u-sweep"
+            onAnimationEnd={() => setSweep(0)}
+          />
+        )}
+        {/* **间隙必须随密度收**：写死 2px 时，日单位下 216 根柱子有 215 个间隙
+            ≈ 430px，而轨道内宽才 ~455px——柱子被挤成 0.1px，整条看起来是空的。
+            实测就是这么丢的。柱子稀疏时留 2px 好数，密了就贴在一起当密度带看 */}
+        <div
+          className="absolute inset-x-1.5 top-1.5 bottom-1.5 flex items-end"
+          style={{ gap: bars.length > 120 ? 0 : bars.length > 40 ? 1 : 2 }}
+        >
           {bars.map((b) => {
-            // 进入即亮（年初为判据）：播放头脚下的柱子即已覆盖——进度条通用语义
-            const barTs = Date.UTC(b.year, 0, 1);
-            const past = value !== null && barTs <= value;
+            // 进入即亮（桶起点为判据）：播放头脚下的柱子即已覆盖——进度条通用语义
+            const past = value !== null && b.ts <= value;
+            const d = new Date(b.ts);
+            const stamp =
+              unit === "year"
+                ? `${d.getUTCFullYear()}`
+                : unit === "month"
+                  ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`
+                  : d.toISOString().slice(0, 10);
             return (
-              <div key={b.year} className="flex-1 flex items-end h-full" title={`${b.year}`}>
+              <div
+                key={b.ts}
+                className="flex-1 flex items-end h-full"
+                title={`${stamp} · ${b.n}${merged > 1 ? ` · ${S.graph.scrubBarMerged(merged)}` : ""}`}
+              >
                 <div
                   className="w-full rounded-[1px] transition-colors"
                   style={{
                     height: `${Math.max(10, b.h * 100)}%`,
-                    // 播放中已扫过的年份提亮，停止后回到常规亮度
+                    // 播放中已扫过的提亮，停止后回到常规亮度。
+                    // **还没走到的压到近乎不可见**：它们本来是 0.09，
+                    // 在这个底色上仍看得清，于是播放头右边跟左边一样"亮着"，
+                    // 走到哪儿就看不出来了。留一点点而不是归零——
+                    // 归零等于假装那段没有数据，而它只是还没到
                     background:
-                      value !== null && past && playing
+                      value !== null && past && (playing || trackHover)
                         ? "rgba(255,255,255,0.62)"
                         : value === null || past
                           ? "rgba(255,255,255,0.32)"
-                          : "rgba(255,255,255,0.09)",
+                          : "rgba(255,255,255,0.04)",
                   }}
                 />
               </div>
@@ -1223,25 +2035,24 @@ function TimeScrubber({
           max={maxTs}
           step={DAY_MS}
           value={value ?? maxTs}
-          onChange={(e) => {
-            setPlaying(false);
-            onChange(Number(e.target.value));
-          }}
+          /* **拖动不停播**：拖是"我要看那一段"，不是"我要停下"——
+             松手之后应该从新位置继续走到底。
+             （`All time` / `Now` 那两个按钮仍然停：那是明确的跳转，不是擦洗） */
+          onChange={(e) => seek(Number(e.target.value))}
           // 原生 range 的拖拽手势会被页面级鼠标监听（如图上拖节点）干扰——
           // 自己用 pointer capture 驱动拖动，点击与拖拽都走同一条计算路径
           onPointerDown={(e) => {
-            setPlaying(false);
             draggingRef.current = true;
             try {
               e.currentTarget.setPointerCapture(e.pointerId);
             } catch {
               /* 合成事件的 pointerId 可能无效，忽略 */
             }
-            onChange(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
+            seek(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
           }}
           onPointerMove={(e) => {
             if (draggingRef.current)
-              onChange(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
+              seek(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
           }}
           onPointerUp={() => {
             draggingRef.current = false;
@@ -1266,7 +2077,12 @@ function TimeScrubber({
       <div className="flex shrink-0 rounded-lg overflow-hidden border border-white/10">
         {(
           [
-            { key: "all", label: S.graph.allTime, active: value === null, to: null },
+            {
+              key: "all",
+              label: S.graph.allTime,
+              active: value === null,
+              to: null,
+            },
             {
               key: "now",
               label: S.graph.nowBtn,
@@ -1297,6 +2113,13 @@ function TimeScrubber({
 
 /* ============ 实体侧栏 ============ */
 
+/** 世界时间（这件事何时成立）→ 文本。**一律按 UTC 读，不转本地。**
+ *
+ *  `valid_from` / `valid_to` 来自文档里的陈述（"2019 年 5 月 2 日就任"），
+ *  是**日历日期不是时刻**，本来就没有时区；存的是那一天的 UTC 午夜。
+ *  按本地渲染会让 UTC-5 的读者看到 2019-05-01——凭空差一天，而且差的方向
+ *  还随读者所在地变。记录时间（我们何时这么认为）是另一回事，那个该按本地，
+ *  见 EntityHistory 里 ymd 的注释。 */
 function fmtTime(iso: string | null, precision: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
@@ -1333,10 +2156,12 @@ function fmtInterval(f: EntityFact): string {
  * 手动按钮留在这里而不是别处：想重推的人正是刚看完这三行、觉得数字太旧的那个人。
  */
 function DerivedPanel({
+  panelRef,
   kbId,
   count,
   onClose,
 }: {
+  panelRef: React.Ref<HTMLDivElement>;
   kbId: string;
   count: number;
   onClose: () => void;
@@ -1346,6 +2171,15 @@ function DerivedPanel({
     queryKey: ["kbOne", kbId],
     queryFn: () => api.kbDetail(kbId),
   });
+  /* 重跑要确认，但**确认的第二下必须落在另一个按钮上**。
+     这产品的手势约定是「同一个控件连点两下 = 收回去」——开关、⋯、图例胶囊
+     都是这么用的。把「再点一次就执行」压在同一个按钮上，等于让同一个手势
+     在这里意外地变成了「执行」，而别处它一直是「取消」。
+     所以点一下只是**问一句**，问句下面给 取消 / 跑 两个目标。
+
+     也没有用全站的 DangerConfirm：那是红标题、可要求逐字输入的危险级，
+     留给删库那类不可逆操作。重跑推理重但可重复，够不上那一档 */
+  const [armed, setArmed] = useState(false);
   const run = useMutation({
     mutationFn: () => api.runInference(kbId),
     onSuccess: () => {
@@ -1358,20 +2192,74 @@ function DerivedPanel({
   const on = kb.data?.materialize_inferences ?? false;
   const last = kb.data?.last_inference_at;
   // 「多久以前」比一个时间戳好读——问题是「新不新」，不是「几点」
-  const age = last ? Math.round((Date.now() - new Date(last).getTime()) / 60000) : null;
+  const age = last
+    ? Math.round((Date.now() - new Date(last).getTime()) / 60000)
+    : null;
 
+  // **盖在触发器原位往右上长开**（bottom-0 left-0），而不是在旁边挂一扇窗。
+  // 面与圆角跟通知/用户卡片对齐：u-menu-glass + rounded-xl
   return (
-    <div className="glass-strong pointer-events-auto absolute left-0 top-8 z-20 w-72 rounded-xl p-3 shadow-xl">
-      <div className="flex items-baseline gap-2">
-        <span className="text-[13px] text-neutral-100">{S.graph.derivedPanel}</span>
+    <div
+      ref={panelRef}
+      className="u-menu-glass pointer-events-auto absolute bottom-0 left-0 z-50 w-72 overflow-hidden rounded-xl px-3 pb-3 pt-2.5 shadow-2xl"
+    >
+      {/* items-center 而不是 baseline：标题旁边站着一个按钮和一个关闭键，
+          按基线对齐会让那两个看着往上飘 */}
+      <div className="flex items-center gap-2">
+        <span className="text-[13px] text-neutral-100">
+          {S.graph.derivedPanel}
+        </span>
+        {!armed && (
+          <button
+            /* **要长得像个按钮**：从前是一段灰色幽灵文字夹在标题与 × 之间，
+               读起来像第三个标题而不是一个动作。加边框 + 内距，
+               与右上角那个档位加减器同一档次要控件的样子 */
+            className="ml-auto rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 transition-colors hover:border-white/20 hover:text-neutral-100"
+            disabled={!on || run.isPending}
+            title={on ? undefined : S.err.inference_off}
+            onClick={() => setArmed(true)}
+          >
+            {run.isPending ? S.graph.derivedRunning : S.graph.derivedRun}
+          </button>
+        )}
+        {/* 固定 18px 方格：**别让关闭键撑起标题行的高**——一撑高，
+            行里最矮的标题就被居中挤出上下空当，看着像上边距过大 */}
         <button
-          className="ml-auto text-neutral-500 hover:text-neutral-200"
+          className={`${armed ? "ml-auto " : ""}grid h-[18px] w-[18px] place-items-center rounded text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-200`}
           onClick={onClose}
           aria-label={S.graph.close}
         >
           ×
         </button>
       </div>
+
+      {/* 问句 + 两个目标。**取消排在前面**：从「跑」那一下移过来最先碰到的
+          是取消，误触的代价小的那个该更近 */}
+      {armed && (
+        <div className="mt-2 rounded-lg bg-white/[0.04] p-2">
+          <p className="text-[11px] leading-relaxed text-neutral-300">
+            {S.graph.derivedRunAsk}
+          </p>
+          <div className="mt-1.5 flex gap-1.5">
+            <button
+              className="rounded px-2 py-0.5 text-[11px] text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-neutral-100"
+              onClick={() => setArmed(false)}
+            >
+              {S.graph.derivedRunCancel}
+            </button>
+            <button
+              className="rounded bg-white/10 px-2 py-0.5 text-[11px] text-neutral-100 transition-colors hover:bg-white/[0.16]"
+              disabled={run.isPending}
+              onClick={() => {
+                setArmed(false);
+                run.mutate();
+              }}
+            >
+              {S.graph.derivedRunGo}
+            </button>
+          </div>
+        </div>
+      )}
 
       <dl className="mt-2 space-y-1 text-[11px]">
         <div className="flex justify-between gap-3">
@@ -1381,7 +2269,9 @@ function DerivedPanel({
         <div className="flex justify-between gap-3">
           <dt className="text-neutral-500">{S.graph.derivedStateLabel}</dt>
           <dd className={on ? "text-neutral-200" : "text-[var(--u-warn)]"}>
-            {on ? S.graph.derivedOn(kb.data!.inference_interval_minutes) : S.graph.derivedOff}
+            {on
+              ? S.graph.derivedOn(kb.data!.inference_interval_minutes)
+              : S.graph.derivedOff}
           </dd>
         </div>
         <div className="flex justify-between gap-3">
@@ -1399,63 +2289,86 @@ function DerivedPanel({
           {run.data.inserted === 0 && run.data.invalidated === 0
             ? S.graph.derivedNoChange
             : S.graph.derivedChanged(run.data.inserted, run.data.invalidated)}
-          {run.data.capped > 0 && ` · ${S.graph.derivedCapped(run.data.capped)}`}
+          {run.data.capped > 0 &&
+            ` · ${S.graph.derivedCapped(run.data.capped)}`}
         </p>
       )}
 
-      <button
-        className="u-btn u-btn-primary mt-2.5 w-full py-1 text-[11px]"
-        disabled={!on || run.isPending}
-        title={on ? undefined : S.err.inference_off}
-        onClick={() => run.mutate()}
-      >
-        {run.isPending ? S.graph.derivedRunning : S.graph.derivedRun}
-      </button>
     </div>
   );
 }
 
+/** 推出来的一条边。**行式样与 FactRow 对齐**：同样的圆角行、同样的
+ *  chevron 展开、同样的 role="link" 跳转（避免按钮套按钮）。
+ *
+ *  从前这里是一张 `glass rounded-xl p-3` 卡片、证明常驻展开——在一列
+ *  Relations/Timeline/History 的紧凑行里显得是另一个产品的东西，而且十几条
+ *  推导堆起来是一面墙。证明是「问了才看」的东西，收进展开区正合适。 */
 function DerivedRow({
   d,
+  otherId,
+  otherName,
+  open,
+  onToggle,
   onNavigate,
 }: {
   d: DerivedFact;
+  otherId: string;
+  otherName: string;
+  open: boolean;
+  onToggle: () => void;
   onNavigate: (entityId: string) => void;
 }) {
   return (
-    <div className="glass rounded-xl p-3">
-      <div className="flex items-baseline gap-1.5 flex-wrap text-sm">
-        <button
-          className="text-neutral-100 hover:text-white underline-offset-2 hover:underline"
-          onClick={() => onNavigate(d.subject_id)}
+    <div
+      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"}`}
+    >
+      <button
+        onClick={onToggle}
+        className="w-full text-left px-2 py-1.5 flex items-center gap-1.5"
+      >
+        <ChevronRight
+          size={11}
+          className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        <span
+          role="link"
+          tabIndex={0}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onNavigate(otherId);
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter") {
+              ev.stopPropagation();
+              onNavigate(otherId);
+            }
+          }}
+          className="truncate text-[13px] text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
         >
-          {d.subject}
-        </button>
-        <span className="text-xs text-neutral-500">{d.predicate}</span>
-        <button
-          className="text-neutral-100 hover:text-white underline-offset-2 hover:underline"
-          onClick={() => onNavigate(d.object_id)}
-        >
-          {d.object}
-        </button>
-        <span className="ml-auto text-[10px] text-[var(--u-warn)]">
-          {d.rule === "transitive"
-            ? S.graph.ruleTransitive
-            : S.graph.ruleSymmetric}
+          {otherName}
         </span>
-      </div>
-      {/* 证明：前提按推导顺序，缩进一格。看得出链是怎么走的 */}
-      <ol className="mt-2 space-y-0.5 border-l border-[var(--u-line)] pl-2.5">
-        {d.premises.map((p, i) => (
-          <li key={i} className="text-[11px] text-neutral-400">
-            {p}
-          </li>
-        ))}
-      </ol>
-      {d.premises.length === 0 && (
-        <p className="mt-1 text-[11px] text-neutral-600">
-          {S.graph.derivedNoProof}
-        </p>
+        <span className="ml-auto shrink-0 pl-2 text-[10.5px] text-neutral-600">
+          {d.premises.length}
+        </span>
+      </button>
+      {/* 证明：前提按推导顺序。**边框与 EvidenceList 同一档**——
+          两者是同一件事的两种形态：一个给出处，一个给推理链 */}
+      {open && (
+        <div className="mx-2 mb-2 mt-0.5 border-l border-white/15 pl-2.5">
+          <ol className="space-y-0.5">
+            {d.premises.map((p, i) => (
+              <li key={i} className="text-[11px] text-neutral-400">
+                {p}
+              </li>
+            ))}
+          </ol>
+          {d.premises.length === 0 && (
+            <p className="text-[11px] text-neutral-600">
+              {S.graph.derivedNoProof}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1464,11 +2377,14 @@ function DerivedRow({
 function EntityPanel({
   kbId,
   entityId,
+  exiting,
   onClose,
   onNavigate,
 }: {
   kbId: string;
   entityId: string;
+  /** 正在演退场：还挂在 DOM 上，但已经不接受点击 */
+  exiting: boolean;
   onClose: () => void;
   onNavigate: (entityId: string) => void;
 }) {
@@ -1480,6 +2396,33 @@ function EntityPanel({
   // 推出来的那些。**单独一个键，不掺进 facts**——混在一个列表里，用户看不出
   // 「文档里写的」和「引擎推的」的区别
   const derived = detail.data?.derived ?? [];
+  /* 按「方向 + 谓词 + 规则」分组，骨架与 Relations 的 groups 一致。
+     规则挂在组上而不是每一行：它对整组都成立，逐行重复既冗余，
+     那个琥珀色小字还会跟派生边抢色相 */
+  const derivedGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        direction: "in" | "out";
+        predicate: string;
+        rule: string;
+        rows: DerivedFact[];
+      }
+    >();
+    for (const d of derived) {
+      const direction = d.subject_id === entityId ? "out" : "in";
+      const rule =
+        d.rule === "transitive"
+          ? S.graph.ruleTransitive
+          : S.graph.ruleSymmetric;
+      const key = `${direction}|${d.predicate}|${d.rule}`;
+      const cur = map.get(key);
+      if (cur) cur.rows.push(d);
+      else map.set(key, { key, direction, predicate: d.predicate, rule, rows: [d] });
+    }
+    return [...map.values()];
+  }, [derived, entityId]);
   // Relations = 按关系分组（查关系）；Timeline = 有效时间轴（事情何时成立）；
   // History = 记录时间轴（我们何时这么认为、又何时改了主意）
   const [view, setView] = useState<
@@ -1538,7 +2481,8 @@ function EntityPanel({
   const save = useMutation({
     mutationFn: () => {
       const body: { type_id?: string; canonical_name?: string } = {};
-      if (draftName.trim() && draftName.trim() !== e?.name) body.canonical_name = draftName.trim();
+      if (draftName.trim() && draftName.trim() !== e?.name)
+        body.canonical_name = draftName.trim();
       const curId = types.find((t) => t.key === e?.type_key)?.id;
       if (draftType && draftType !== curId) body.type_id = draftType;
       return api.updateEntity(kbId, entityId, body);
@@ -1566,11 +2510,19 @@ function EntityPanel({
     const all = detail.data?.facts ?? [];
     const nowIso = new Date().toISOString();
     const current = all.filter(
-      (f) => (!f.valid_from || f.valid_from <= nowIso) && (!f.valid_to || f.valid_to > nowIso),
+      (f) =>
+        (!f.valid_from || f.valid_from <= nowIso) &&
+        (!f.valid_to || f.valid_to > nowIso),
     );
     const map = new Map<
       string,
-      { key: string; label: string | null; inferred: boolean; direction: string; rows: EntityFact[] }
+      {
+        key: string;
+        label: string | null;
+        inferred: boolean;
+        direction: string;
+        rows: EntityFact[];
+      }
     >();
     for (const f of current) {
       // 谓词为空的事实归到同一组：它们的共同点就是「说不出是什么关系」
@@ -1587,15 +2539,21 @@ function EntityPanel({
     }
     const arr = [...map.values()];
     for (const gr of arr)
-      gr.rows.sort((a, b) => ((a.valid_from ?? "9999") < (b.valid_from ?? "9999") ? -1 : 1));
+      gr.rows.sort((a, b) =>
+        (a.valid_from ?? "9999") < (b.valid_from ?? "9999") ? -1 : 1,
+      );
     arr.sort(
-      (a, b) => b.rows.length - a.rows.length || (a.label ?? "").localeCompare(b.label ?? ""),
+      (a, b) =>
+        b.rows.length - a.rows.length ||
+        (a.label ?? "").localeCompare(b.label ?? ""),
     );
     return { groups: arr, historicalCount: all.length - current.length };
   }, [detail.data]);
 
   return (
-    <div className="glass-strong absolute top-14 right-3 bottom-20 w-80 z-10 rounded-xl shadow-2xl flex flex-col">
+    <div
+      className={`${exiting ? "u-dock-out" : "u-dock-in"} glass-strong absolute top-14 right-3 bottom-20 w-80 z-10 rounded-xl shadow-2xl flex flex-col`}
+    >
       <div className="flex items-start justify-between px-4 py-3.5 border-b border-white/10">
         <div>
           {e && (
@@ -1603,7 +2561,10 @@ function EntityPanel({
               <div className="flex items-center gap-2">
                 <span
                   className="h-2.5 w-2.5 rounded-full shrink-0"
-                  style={{ background: e.color, boxShadow: `0 0 8px ${e.color}55` }}
+                  style={{
+                    background: e.color,
+                    boxShadow: `0 0 8px ${e.color}55`,
+                  }}
                 />
                 <span
                   className="text-[15px] font-semibold tracking-tight text-white"
@@ -1617,8 +2578,8 @@ function EntityPanel({
                 {e.disambiguator && e.disambiguator !== e.type_label
                   ? `${e.disambiguator} · `
                   : ""}
-                {e.type_label ?? S.graph.untyped} · {detail.data?.facts.length ?? 0}{" "}
-                {S.graph.facts}
+                {e.type_label ?? S.graph.untyped} ·{" "}
+                {detail.data?.facts.length ?? 0} {S.graph.facts}
               </div>
             </>
           )}
@@ -1633,7 +2594,10 @@ function EntityPanel({
               <Pencil size={13} />
             </button>
           )}
-          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200">
+          <button
+            onClick={onClose}
+            className="text-neutral-500 hover:text-neutral-200"
+          >
             <X size={15} />
           </button>
         </div>
@@ -1650,7 +2614,8 @@ function EntityPanel({
               value={draftName}
               onChange={(ev) => setDraftName(ev.target.value)}
               onKeyDown={(ev) => {
-                if (ev.key === "Enter" && dirty && draftName.trim()) save.mutate();
+                if (ev.key === "Enter" && dirty && draftName.trim())
+                  save.mutate();
                 if (ev.key === "Escape") setEditing(false);
               }}
               className="mt-1 w-full bg-white/[0.04] border border-white/10 rounded px-2 py-1 text-sm text-neutral-100 focus:outline-none focus:border-white/25"
@@ -1687,7 +2652,9 @@ function EntityPanel({
               {S.graph.editCancel}
             </button>
             {!draftName.trim() && (
-              <span className="text-[11px] text-[var(--u-danger)]">{S.graph.editEmptyName}</span>
+              <span className="text-[11px] text-[var(--u-danger)]">
+                {S.graph.editEmptyName}
+              </span>
             )}
           </div>
         </div>
@@ -1743,31 +2710,29 @@ function EntityPanel({
       {/* 视图切换：Relations（分组）| Timeline（年表） */}
       <div className="px-4 pt-2.5">
         <div className="flex rounded-lg overflow-hidden border border-white/10 w-fit">
-          {(
-            ["relations", "timeline", "history", "derived"] as const
-          )
+          {(["relations", "timeline", "history", "derived"] as const)
             // 推出来的那一档：**没有派生就不出现**。一个没开推理的库不该看到
             // 一个永远是空的标签页
             .filter((v) => v !== "derived" || derived.length > 0)
             .map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-3 py-1 text-[11px] transition-colors ${
-                view === v
-                  ? "bg-white/10 text-neutral-100"
-                  : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-              }`}
-            >
-              {v === "relations"
-                ? S.graph.viewRelations
-                : v === "timeline"
-                  ? S.graph.viewTimeline
-                  : v === "history"
-                    ? S.graph.viewHistory
-                    : S.graph.viewDerived}
-            </button>
-          ))}
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-3 py-1 text-[11px] transition-colors ${
+                  view === v
+                    ? "bg-white/10 text-neutral-100"
+                    : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
+                }`}
+              >
+                {v === "relations"
+                  ? S.graph.viewRelations
+                  : v === "timeline"
+                    ? S.graph.viewTimeline
+                    : v === "history"
+                      ? S.graph.viewHistory
+                      : S.graph.viewDerived}
+              </button>
+            ))}
         </div>
       </div>
 
@@ -1784,14 +2749,26 @@ function EntityPanel({
           groups.map((gr) => (
             <div key={gr.key} className="mb-3 last:mb-1">
               <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
-                {gr.direction === "in" ? <ArrowLeft size={10} /> : <ArrowRight size={10} />}
+                {gr.direction === "in" ? (
+                  <ArrowLeft size={10} />
+                ) : (
+                  <ArrowRight size={10} />
+                )}
                 <span
-                  className={gr.label === null ? "italic text-neutral-600" : undefined}
-                  title={gr.label && gr.inferred ? S.graph.inferredPredicate : undefined}
+                  className={
+                    gr.label === null ? "italic text-neutral-600" : undefined
+                  }
+                  title={
+                    gr.label && gr.inferred
+                      ? S.graph.inferredPredicate
+                      : undefined
+                  }
                 >
                   {gr.label ?? S.graph.unknownPredicate}
                 </span>
-                {gr.rows.length > 1 && <span className="text-neutral-600">{gr.rows.length}</span>}
+                {gr.rows.length > 1 && (
+                  <span className="text-neutral-600">{gr.rows.length}</span>
+                )}
               </div>
               <div>
                 {gr.rows.map((f) => (
@@ -1800,7 +2777,9 @@ function EntityPanel({
                     kbId={kbId}
                     fact={f}
                     open={openFact === f.id}
-                    onToggle={() => setOpenFact(openFact === f.id ? null : f.id)}
+                    onToggle={() =>
+                      setOpenFact(openFact === f.id ? null : f.id)
+                    }
                     onNavigate={onNavigate}
                   />
                 ))}
@@ -1816,16 +2795,55 @@ function EntityPanel({
             onNavigate={onNavigate}
           />
         )}
-        {view === "history" && <EntityHistory kbId={kbId} entityId={entityId} />}
-        {view === "derived" && (
-          <div className="space-y-2">
-            <p className="px-2 pb-1 text-[11px] leading-relaxed text-neutral-500">
+        {view === "history" && (
+          <EntityHistory kbId={kbId} entityId={entityId} />
+        )}
+{view === "derived" && (
+          <>
+            <p className="px-2 pb-1.5 pt-0.5 text-[11px] leading-relaxed text-neutral-500">
               {S.graph.derivedHint}
             </p>
-            {derived.map((d) => (
-              <DerivedRow key={d.id} d={d} onNavigate={onNavigate} />
+            {/* **与 Relations 同一个骨架**：方向箭头 + 谓词 + 条数的小标题，
+                底下是紧凑行。规则（传递/对称）并进标题——它对整组都成立，
+                挂在每一行上是重复，而且那个 `--u-warn` 琥珀色又是一处
+                与派生边抢色相的地方 */}
+            {derivedGroups.map((gr) => (
+              <div key={gr.key} className="mb-3 last:mb-1">
+                <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+                  {gr.direction === "in" ? (
+                    <ArrowLeft size={10} />
+                  ) : (
+                    <ArrowRight size={10} />
+                  )}
+                  <span>{gr.predicate}</span>
+                  <span className="text-neutral-600">{gr.rule}</span>
+                  {gr.rows.length > 1 && (
+                    <span className="ml-auto text-neutral-600">
+                      {gr.rows.length}
+                    </span>
+                  )}
+                </div>
+                <div>
+                  {gr.rows.map((d) => {
+                    const out = d.subject_id === entityId;
+                    return (
+                      <DerivedRow
+                        key={d.id}
+                        d={d}
+                        otherId={out ? d.object_id : d.subject_id}
+                        otherName={out ? d.object : d.subject}
+                        open={openFact === d.id}
+                        onToggle={() =>
+                          setOpenFact(openFact === d.id ? null : d.id)
+                        }
+                        onNavigate={onNavigate}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
             ))}
-          </div>
+          </>
         )}
         {view !== "history" &&
           view !== "derived" &&
@@ -1854,7 +2872,9 @@ function TimelineView({
   const dated = facts
     .filter((f) => f.temporal !== "eternal" && (f.valid_from || f.valid_to))
     .sort((a, b) =>
-      (a.valid_from ?? a.valid_to ?? "") < (b.valid_from ?? b.valid_to ?? "") ? -1 : 1,
+      (a.valid_from ?? a.valid_to ?? "") < (b.valid_from ?? b.valid_to ?? "")
+        ? -1
+        : 1,
     );
   const undated = facts.filter((f) => !dated.includes(f));
 
@@ -1863,7 +2883,7 @@ function TimelineView({
       <div className="relative ml-1.5 border-l border-white/15 pl-3 space-y-0.5">
         {dated.map((f) => (
           <div key={f.id} className="relative">
-            <span className="absolute -left-[17.5px] top-2.5 h-2 w-2 rounded-full bg-neutral-600 ring-2 ring-[#0f0f10]" />
+            <span className="absolute -left-[17.5px] top-2.5 h-2 w-2 rounded-full bg-neutral-600 ring-2 ring-[#0f0f0f]" />
             <TimelineRow
               kbId={kbId}
               fact={f}
@@ -1874,7 +2894,9 @@ function TimelineView({
           </div>
         ))}
         {dated.length === 0 && (
-          <p className="py-2 text-xs text-neutral-500">{S.graph.timelineEmpty}</p>
+          <p className="py-2 text-xs text-neutral-500">
+            {S.graph.timelineEmpty}
+          </p>
         )}
       </div>
       {undated.length > 0 && (
@@ -1940,8 +2962,16 @@ function TimelineRow({
           <span className="text-neutral-500 text-xs">
             {fact.direction === "in" ? "←" : "→"}{" "}
             <span
-              className={fact.predicate_label === null ? "italic text-neutral-600" : undefined}
-              title={fact.predicate_label && fact.inferred ? S.graph.inferredPredicate : undefined}
+              className={
+                fact.predicate_label === null
+                  ? "italic text-neutral-600"
+                  : undefined
+              }
+              title={
+                fact.predicate_label && fact.inferred
+                  ? S.graph.inferredPredicate
+                  : undefined
+              }
             >
               {fact.predicate_label ?? S.graph.unknownPredicate}
             </span>
@@ -1965,7 +2995,9 @@ function TimelineRow({
               {fact.other_name ?? "?"}
             </span>
           ) : (
-            <span className="truncate">{fact.other_name ?? literal ?? "?"}</span>
+            <span className="truncate">
+              {fact.other_name ?? literal ?? "?"}
+            </span>
           )}
           {fact.stale && (
             <span className="u-chip u-chip-neutral shrink-0 !text-[10px] !px-1.5">
@@ -1983,7 +3015,8 @@ function TimelineRow({
 function fmtObjectValue(v: Record<string, unknown> | null): string | null {
   if (!v) return null;
   if (v.value !== undefined) {
-    const val = typeof v.value === "boolean" ? (v.value ? "✓" : "✗") : String(v.value);
+    const val =
+      typeof v.value === "boolean" ? (v.value ? "✓" : "✗") : String(v.value);
     return typeof v.unit === "string" && v.unit ? `${val} ${v.unit}` : val;
   }
   if (typeof v.summary === "string") return v.summary;
@@ -2014,7 +3047,10 @@ function FactRow({
       }`}
       title={fact.stale ? S.graph.staleFactHint : undefined}
     >
-      <button onClick={onToggle} className="w-full text-left px-2 py-1.5 flex items-center gap-1.5">
+      <button
+        onClick={onToggle}
+        className="w-full text-left px-2 py-1.5 flex items-center gap-1.5"
+      >
         <ChevronRight
           size={11}
           className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
@@ -2074,19 +3110,20 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
       {evidence.data?.evidence.map((ev: Evidence) => (
         <Link
           key={ev.chunk_id}
-          to="/doc/$docId"
-          params={{ docId: ev.document_id }}
+          to="/kb/$kbId/doc/$docId"
+          params={{ kbId, docId: ev.document_id }}
           search={{ chunk: ev.chunk_id }}
           className="block text-xs text-neutral-500 hover:text-neutral-300"
         >
           {/* 原文说的谓词，只在它与事实行上显示的不同时才写出来。本体外的谓词
               事实行上已经显示原文说法（0052），相同的话再写一遍是噪声；
               一条事实有多种说法时（占 3%）这里才有话说 */}
-          {ev.proposed_predicate && ev.proposed_predicate !== fact.predicate_key && (
-            <div className="mb-0.5 text-[11px] text-neutral-400">
-              {S.graph.proposedPredicate(ev.proposed_predicate)}
-            </div>
-          )}
+          {ev.proposed_predicate &&
+            ev.proposed_predicate !== fact.predicate_key && (
+              <div className="mb-0.5 text-[11px] text-neutral-400">
+                {S.graph.proposedPredicate(ev.proposed_predicate)}
+              </div>
+            )}
           <div className="line-clamp-2 italic">
             {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
           </div>

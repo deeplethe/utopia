@@ -4,19 +4,16 @@
    context）遮蔽的层级 bug。 */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useParams, useNavigate } from "@tanstack/react-router";
 import {
-  Database,
   History as HistoryIcon,
   Lock,
-  Plus,
   Settings2,
   TriangleAlert,
   Users,
 } from "lucide-react";
 import { api, type AuditEvent } from "../api";
 import { LANG_NAMES, S } from "../i18n";
-import { useKb } from "../kb";
 import {
   DangerConfirm,
   Dropdown,
@@ -46,14 +43,14 @@ function rolesFor(isOpen: boolean) {
   return isOpen ? KB_ROLES.filter((r) => r.value !== "viewer") : KB_ROLES;
 }
 
-type Section = "general" | "members" | "data" | "activity" | "danger";
+type Section = "general" | "members" | "activity" | "danger";
 
 export function KbSettings() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { kb: currentKb } = useKb();
-  const { kb: kbParam } = useSearch({ from: "/app/kb-settings" });
-  const kbId = kbParam ?? currentKb?.id;
+  /* 库 id 来自路径。**从前是 `?kb=`**——那是这套路由改造之前唯一
+     带着库走的地方，现在整片都在 /kb/$kbId 之下，它就不必自成一格了 */
+  const { kbId } = useParams({ from: "/app/kb/$kbId/settings" });
 
   const kb = useQuery({
     queryKey: ["kbOne", kbId],
@@ -112,7 +109,7 @@ export function KbSettings() {
     mutationFn: () => api.deleteKb(kbId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["kbs"] });
-      navigate({ to: "/library", search: {} });
+      navigate({ to: "/kb/$kbId/library", params: { kbId } });
     },
     onError: (e) => setError((e as Error).message),
   });
@@ -138,7 +135,6 @@ export function KbSettings() {
   }[] = [
     { key: "general", label: S.kbset.general, Icon: Settings2 },
     { key: "members", label: S.kbset.members, Icon: Users },
-    { key: "data", label: S.kbset.data, Icon: Database },
     { key: "activity", label: S.kbset.activity, Icon: HistoryIcon },
     // 默认库不可删除：danger 节整个不出现
     ...(isDefault
@@ -345,7 +341,6 @@ export function KbSettings() {
           {section === "members" && (
             <KbMembers kbId={kbId} isOpen={kb.data.visibility === "open"} />
           )}
-          {section === "data" && <KbDataSources kbId={kbId} />}
 
           {section === "activity" && <KbActivity kbId={kbId} />}
 
@@ -513,161 +508,7 @@ function KbActivity({ kbId }: { kbId: string }) {
           ))}
         </div>
       )}
-      <Pager
-        total={total}
-        pageSize={AUDIT_PAGE}
-        page={page}
-        onPage={setPage}
-      />
-    </div>
-  );
-}
-
-/** 知识库层数据源挂载：从系统已注册的源里挑选;挂载即摄取 schema。
-    注册新连接是部署级动作：管理员从这里深链去 Deployment settings 的 Data sources。 */
-function KbDataSources({ kbId }: { kbId: string }) {
-  const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
-  const mounted = useQuery({
-    queryKey: ["kbDataSources", kbId],
-    queryFn: () => api.kbDataSources(kbId),
-  });
-  const available = useQuery({
-    queryKey: ["kbDataSourcesAvail", kbId],
-    queryFn: () => api.kbDataSourcesAvailable(kbId),
-  });
-  const [picked, setPicked] = useState("");
-  const [notice, setNotice] = useState<string | null>(null);
-  const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: ["kbDataSources", kbId] });
-
-  const mount = useMutation({
-    mutationFn: (dsId: string) => api.mountDataSource(kbId, dsId),
-    onSuccess: (r) => {
-      setPicked("");
-      setNotice(S.kbset.dataSchemaSynced(r.schema_tables));
-      invalidate();
-    },
-  });
-  const unmount = useMutation({
-    mutationFn: (dsId: string) => api.unmountDataSource(kbId, dsId),
-    onSettled: invalidate,
-  });
-  const sync = useMutation({
-    mutationFn: (dsId: string) => api.syncDataSourceSchema(kbId, dsId),
-    onSuccess: (r) => setNotice(S.kbset.dataSchemaSynced(r.schema_tables)),
-  });
-  const explore = useMutation({
-    mutationFn: () => api.exploreMappings(kbId),
-    onSuccess: () => setNotice(S.kbset.dataExploreQueued),
-  });
-
-  const mountedIds = new Set(
-    (mounted.data?.data_sources ?? []).map((d) => d.id),
-  );
-  const mountable = (available.data?.data_sources ?? []).filter(
-    (d) => !mountedIds.has(d.id),
-  );
-
-  return (
-    <div className="space-y-4">
-      <p className="text-xs text-neutral-500">{S.kbset.dataHint}</p>
-
-      <div className="glass rounded-xl divide-y divide-white/5">
-        {(mounted.data?.data_sources ?? []).map((d) => (
-          <div key={d.id} className="px-4 py-3 flex items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="text-sm text-neutral-200">{d.name}</div>
-              <div className="text-xs text-neutral-500 font-mono truncate">
-                {d.summary}
-              </div>
-            </div>
-            <button
-              className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
-              disabled={sync.isPending}
-              onClick={() => sync.mutate(d.id)}
-            >
-              {S.kbset.dataSyncSchema}
-            </button>
-            <button
-              className="text-xs text-neutral-500 hover:text-[var(--u-danger)] shrink-0"
-              disabled={unmount.isPending}
-              onClick={() => unmount.mutate(d.id)}
-            >
-              {S.kbset.dataUnmount}
-            </button>
-          </div>
-        ))}
-        {mounted.data?.data_sources.length === 0 && (
-          <p className="px-4 py-6 text-sm text-neutral-500">
-            {S.kbset.dataNone}
-          </p>
-        )}
-      </div>
-
-      {mountable.length > 0 && (
-        <div className="flex items-center gap-2">
-          <SearchSelect
-            className="flex-1"
-            value={picked}
-            options={mountable.map((d) => ({
-              value: d.id,
-              label: d.name,
-              hint: d.summary,
-            }))}
-            onChange={setPicked}
-            placeholder={S.kbset.dataMount + "…"}
-          />
-          <button
-            className="u-btn u-btn-primary px-3.5 py-1.5 text-xs shrink-0"
-            disabled={!picked || mount.isPending}
-            onClick={() => mount.mutate(picked)}
-          >
-            {S.kbset.dataMount}
-          </button>
-        </div>
-      )}
-      {/* 连接注册在部署层：管理员给直达入口，其他人指路找管理员 */}
-      {me.data?.is_admin ? (
-        <button
-          className="flex items-center gap-1.5 text-xs text-neutral-500 hover:text-neutral-300 transition-colors"
-          onClick={() =>
-            navigate({ to: "/admin", search: { tab: "datasources" } })
-          }
-        >
-          <Plus size={12} />
-          {S.kbset.dataNewConn}
-        </button>
-      ) : (
-        mountable.length === 0 &&
-        available.data &&
-        (mounted.data?.data_sources.length ?? 0) === 0 && (
-          <p className="text-xs text-neutral-600">
-            {S.kbset.dataNoneAvailable}
-          </p>
-        )
-      )}
-      {(mounted.data?.data_sources.length ?? 0) > 0 && (
-        <div className="glass rounded-xl px-4 py-3 flex items-center gap-3">
-          <p className="text-xs text-neutral-500 flex-1">
-            {S.kbset.dataExploreHint}
-          </p>
-          <button
-            className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
-            disabled={explore.isPending}
-            onClick={() => explore.mutate()}
-          >
-            {S.kbset.dataExplore}
-          </button>
-        </div>
-      )}
-      {notice && <p className="text-xs text-[var(--u-ok)]">{notice}</p>}
-      {(mount.isError || sync.isError || explore.isError) && (
-        <p className="text-xs text-rose-400">
-          {((mount.error ?? sync.error ?? explore.error) as Error).message}
-        </p>
-      )}
+      <Pager total={total} pageSize={AUDIT_PAGE} page={page} onPage={setPage} />
     </div>
   );
 }
@@ -751,32 +592,30 @@ function KbMembers({ kbId, isOpen }: { kbId: string; isOpen: boolean }) {
           功能坏了，而不是"没人可加"。空列表由 SearchSelect 自己说
           （它有 noMatches 空态），这里不必再加一句话 */}
       <div className="mt-3 flex gap-2 items-center border-t border-white/5 pt-3">
-          <SearchSelect
-            className="flex-1"
-            value={addUserId}
-            onChange={setAddUserId}
-            placeholder={S.kbset.addMember}
-            options={addable.map((u) => ({
-              value: u.id,
-              label: u.display_name,
-              hint: u.email,
-            }))}
-          />
-          <Dropdown
-            className="w-24"
-            value={addRole}
-            onChange={setAddRole}
-            options={rolesFor(isOpen)}
-          />
-          <button
-            className="u-btn u-btn-primary px-3 py-1.5 text-xs"
-            disabled={!addUserId || setMember.isPending}
-            onClick={() =>
-              setMember.mutate({ userId: addUserId, role: addRole })
-            }
-          >
-            {S.members.add}
-          </button>
+        <SearchSelect
+          className="flex-1"
+          value={addUserId}
+          onChange={setAddUserId}
+          placeholder={S.kbset.addMember}
+          options={addable.map((u) => ({
+            value: u.id,
+            label: u.display_name,
+            hint: u.email,
+          }))}
+        />
+        <Dropdown
+          className="w-24"
+          value={addRole}
+          onChange={setAddRole}
+          options={rolesFor(isOpen)}
+        />
+        <button
+          className="u-btn u-btn-primary px-3 py-1.5 text-xs"
+          disabled={!addUserId || setMember.isPending}
+          onClick={() => setMember.mutate({ userId: addUserId, role: addRole })}
+        >
+          {S.members.add}
+        </button>
       </div>
     </div>
   );

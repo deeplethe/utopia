@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { api, type Doc, type ExtractionDrop, type SourceView } from "../api";
 import { S } from "../i18n";
-import { useKb } from "../kb";
+import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
 import { Chip, type ChipTone, DangerConfirm, Loading, Pager } from "../ui";
 import {
@@ -303,7 +303,7 @@ export function Library() {
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
   // 从文档查看页的来源栏跳回时带 ?src= 定位到对应文件夹
-  const { src } = useSearch({ from: "/app/library" });
+  const { src } = useSearch({ from: "/app/kb/$kbId/library" });
   const [dragging, setDragging] = useState(false);
   const [selection, setSelection] = useState<LibrarySelection>(src ?? "all");
   const [adding, setAdding] = useState(false);
@@ -1879,6 +1879,7 @@ function DocRow({
   drops?: ExtractionDrop[];
   onShowDrops: (rows: ExtractionDrop[]) => void;
 }) {
+  const kbId = useKbId();
   const dropTotal = drops?.reduce((n, d) => n + d.count, 0) ?? 0;
   const statusText =
     S.library.status[doc.status as keyof typeof S.library.status] ?? doc.status;
@@ -1890,8 +1891,8 @@ function DocRow({
     <tr className="border-b border-white/5 hover:bg-white/[0.03]">
       <td className="px-4 py-2.5 max-w-xs truncate" title={doc.filename}>
         <Link
-          to="/doc/$docId"
-          params={{ docId: doc.id }}
+          to="/kb/$kbId/doc/$docId"
+          params={{ kbId, docId: doc.id }}
           search={{}}
           className="text-neutral-200 hover:text-[var(--u-accent)]"
         >

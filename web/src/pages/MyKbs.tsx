@@ -35,7 +35,7 @@ export function MyKbs() {
   const rows = mine.data?.kbs ?? [];
   const openKb = (id: string) => {
     setKb(id);
-    navigate({ to: "/graph" });
+    navigate({ to: "/kb/$kbId/graph", params: { kbId: id } });
   };
 
   return (
@@ -91,7 +91,7 @@ export function MyKbs() {
                     <button
                       onClick={() => {
                         setKb(row.kb.id);
-                        navigate({ to: "/kb-settings", search: { kb: row.kb.id } });
+                        navigate({ to: "/kb/$kbId/settings", params: { kbId: row.kb.id } });
                       }}
                       className="u-btn u-btn-ghost px-2.5 py-1 text-xs"
                     >

@@ -43,7 +43,7 @@ export function AccountShell() {
         <SectionMark text={S.account.brand} title={S.docs.backTitle} />
         <div className="ml-auto flex items-center gap-1.5">
           <Link
-            to="/graph"
+            to="/"
             className="px-2 py-1 rounded-lg text-[12.5px] text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.05] transition-colors"
           >
             {S.account.backToApp}

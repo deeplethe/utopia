@@ -1,8 +1,18 @@
 // 当前工作区/知识库上下文：均可切换且 localStorage 记忆；工作区无 KB 时自动创建 "General"。
 import { useSyncExternalStore } from "react";
+import { useParams } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Kb, type Workspace } from "./api";
 import { kbStore, wsStore } from "./wsStore";
+
+/** 当前路径里的知识库 id。**页面都在 /kb/$kbId 之下，所以直接从路径取**——
+ *  不必等库列表加载完，链接里写的是谁就是谁。不在作用域内（账户页等）时
+ *  回落到记忆里的那个。 */
+export function useKbId(): string {
+  const params = useParams({ strict: false }) as { kbId?: string };
+  const { kb } = useKb();
+  return params.kbId ?? kb?.id ?? "";
+}
 
 export function useKb(): {
   kb: Kb | null;
@@ -39,7 +49,13 @@ export function useKb(): {
   });
 
   const kbList = kbs.data ?? [];
-  const kb = kbList.find((k) => k.id === selectedKbId) ?? kbList[0] ?? null;
+  /* **URL 里有就以 URL 为准**：两者回答的不是同一个问题——地址栏说的是
+     "这个链接指向什么"，localStorage 说的是"我上次在看什么"。
+     别人分享的链接必须赢过我自己的记忆，否则打开看到的是我的库、
+     数据不同而界面一模一样 */
+  const routeParams = useParams({ strict: false }) as { kbId?: string };
+  const wantedKbId = routeParams.kbId ?? selectedKbId;
+  const kb = kbList.find((k) => k.id === wantedKbId) ?? kbList[0] ?? null;
 
   return {
     kb,

@@ -13,10 +13,12 @@ import { Graph } from "./pages/Graph";
 import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Privacy, Terms } from "./pages/Legal";
+import { KbRedirect, KbScope } from "./pages/KbScope";
 import { KbSettings } from "./pages/KbSettings";
 import { MyKbs } from "./pages/MyKbs";
 import { NotFound } from "./pages/ServerDown";
 import { Ontology } from "./pages/Ontology";
+import { Mappings } from "./pages/Mappings";
 import { Review } from "./pages/Review";
 import { Search } from "./pages/Search";
 import { Settings } from "./pages/Settings";
@@ -58,9 +60,18 @@ const indexRoute = createRoute({
   },
 });
 
-const chatRoute = createRoute({
+/* 知识库作用域。**库是容器不是筛选条件**——底下这些页面全都属于某一个库，
+   路径表达包含关系，路由器也就替我们兜住了「忘了带库」这类错误：
+   `/kb/$kbId/search` 没有 id 根本构造不出来。理由详见 pages/KbScope.tsx */
+const kbRoute = createRoute({
   getParentRoute: () => appRoute,
-  path: "/chat",
+  path: "/kb/$kbId",
+  component: KbScope,
+});
+
+const chatRoute = createRoute({
+  getParentRoute: () => kbRoute,
+  path: "chat",
   component: Chat,
 });
 
@@ -73,23 +84,34 @@ const chatConversationRoute = createRoute({
 });
 
 const searchRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/search",
+  getParentRoute: () => kbRoute,
+  path: "search",
   component: Search,
 });
 
 const graphRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/graph",
-  validateSearch: (search: Record<string, unknown>): { entity?: string } => ({
+  getParentRoute: () => kbRoute,
+  path: "graph",
+  /* 图谱页的可分享状态。**三个都是"你在看什么"，不是"你怎么看"**——
+     所以档位（画多少个）刻意不进 URL：那是本地观感，换台机器不该跟着走。
+
+     - entity：选中了谁
+     - focus：是否处在某个实体的邻域（与"在全图里选中"是两个画面）
+     - at：时间轴停在哪一刻。**这条最不能少**——这产品的卖点就是
+       "看某个时刻的世界"，不带时刻的链接把最有意思的那部分丢了 */
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { entity?: string; focus?: string; at?: string } => ({
     entity: typeof search.entity === "string" ? search.entity : undefined,
+    focus: typeof search.focus === "string" ? search.focus : undefined,
+    at: typeof search.at === "string" ? search.at : undefined,
   }),
   component: Graph,
 });
 
 const docRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/doc/$docId",
+  getParentRoute: () => kbRoute,
+  path: "doc/$docId",
   validateSearch: (search: Record<string, unknown>): { chunk?: string } => ({
     chunk: typeof search.chunk === "string" ? search.chunk : undefined,
   }),
@@ -97,8 +119,8 @@ const docRoute = createRoute({
 });
 
 const libraryRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/library",
+  getParentRoute: () => kbRoute,
+  path: "library",
   validateSearch: (search: Record<string, unknown>): { src?: string } => ({
     src: typeof search.src === "string" ? search.src : undefined,
   }),
@@ -106,14 +128,20 @@ const libraryRoute = createRoute({
 });
 
 const ontologyRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/ontology",
+  getParentRoute: () => kbRoute,
+  path: "ontology",
   component: Ontology,
 });
 
+const mappingsRoute = createRoute({
+  getParentRoute: () => kbRoute,
+  path: "mappings",
+  component: Mappings,
+});
+
 const reviewRoute = createRoute({
-  getParentRoute: () => appRoute,
-  path: "/review",
+  getParentRoute: () => kbRoute,
+  path: "review",
   component: Review,
 });
 
@@ -180,12 +208,55 @@ const settingsRoute = createRoute({
 });
 
 const kbSettingsRoute = createRoute({
+  getParentRoute: () => kbRoute,
+  path: "settings",
+  component: KbSettings,
+});
+
+/* 旧路径兼容：`/graph` 这类不带库的地址仍然可用，解析出该去哪个库再跳。
+   **不做成 beforeLoad 重定向**——那时候库列表还没取回来，localStorage 里
+   也可能什么都没有（新设备、清过缓存），只能等 useKb 解析出来 */
+/* **逐条写出来，不用工厂函数**：工厂里的 path 是 string，类型系统认不出
+   字面量，别处 `redirect({ to: "/graph" })` 就通不过。啰嗦换类型安全 */
+const legacyGraphRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/graph",
+  component: () => <KbRedirect page="graph" />,
+});
+const legacySearchRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/search",
+  component: () => <KbRedirect page="search" />,
+});
+const legacyChatRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/chat",
+  component: () => <KbRedirect page="chat" />,
+});
+const legacyLibraryRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/library",
+  component: () => <KbRedirect page="library" />,
+});
+const legacyOntologyRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/ontology",
+  component: () => <KbRedirect page="ontology" />,
+});
+const legacyMappingsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/mappings",
+  component: () => <KbRedirect page="mappings" />,
+});
+const legacyReviewRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/review",
+  component: () => <KbRedirect page="review" />,
+});
+const legacyKbSettingsRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/kb-settings",
-  validateSearch: (search: Record<string, unknown>): { kb?: string } => ({
-    kb: typeof search.kb === "string" ? search.kb : undefined,
-  }),
-  component: KbSettings,
+  component: () => <KbRedirect page="settings" />,
 });
 
 const routeTree = rootRoute.addChildren([
@@ -198,14 +269,25 @@ const routeTree = rootRoute.addChildren([
   accountShellRoute.addChildren([accountRoute, myKbsRoute, adminRoute]),
   appRoute.addChildren([
     indexRoute,
-    chatRoute.addChildren([chatConversationRoute]),
-    searchRoute,
-    graphRoute,
-    docRoute,
-    libraryRoute,
-    reviewRoute,
-    ontologyRoute,
-    kbSettingsRoute,
+    legacyGraphRoute,
+    legacySearchRoute,
+    legacyChatRoute,
+    legacyLibraryRoute,
+    legacyOntologyRoute,
+    legacyMappingsRoute,
+    legacyReviewRoute,
+    legacyKbSettingsRoute,
+    kbRoute.addChildren([
+      chatRoute.addChildren([chatConversationRoute]),
+      searchRoute,
+      graphRoute,
+      docRoute,
+      libraryRoute,
+      reviewRoute,
+      ontologyRoute,
+      mappingsRoute,
+      kbSettingsRoute,
+    ]),
   ]),
 ]);
 

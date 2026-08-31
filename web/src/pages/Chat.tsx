@@ -33,7 +33,7 @@ import {
 } from "../api";
 import { S } from "../i18n";
 import { toast } from "../toast";
-import { useKb } from "../kb";
+import { useKb, useKbId } from "../kb";
 import { DangerConfirm, RAIL_CLS } from "../ui";
 
 interface Turn {
@@ -49,6 +49,7 @@ const lastKey = (kbId: string) => `chat:last:${kbId}`;
 const DRAFT_KEY = "chat:draft";
 
 export function Chat() {
+  const kbId = useKbId();
   const { kb, kbs, setKb } = useKb();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -126,7 +127,7 @@ export function Chat() {
       activeIdRef.current = null;
       setActiveId(null);
       setTurns([]);
-      navigate({ to: "/chat", replace: true });
+      navigate({ to: "/kb/$kbId/chat", params: { kbId }, replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kb?.id]);
@@ -138,8 +139,8 @@ export function Chat() {
       const last = sessionStorage.getItem(lastKey(kb.id));
       if (last) {
         navigate({
-          to: "/chat/$conversationId",
-          params: { conversationId: last },
+          to: "/kb/$kbId/chat/$conversationId",
+          params: { kbId, conversationId: last },
           replace: true,
         });
       }
@@ -164,7 +165,10 @@ export function Chat() {
 
   /** 列表点击只改 URL，装载由路由同步 effect 负责 */
   const openConversation = (id: string) =>
-    navigate({ to: "/chat/$conversationId", params: { conversationId: id } });
+    navigate({
+      to: "/kb/$kbId/chat/$conversationId",
+      params: { kbId, conversationId: id },
+    });
 
   const loadConversation = async (id: string) => {
     if (streaming) abortRef.current?.();
@@ -188,7 +192,7 @@ export function Chat() {
       activeIdRef.current = null;
       setActiveId(null);
       setTurns([]);
-      navigate({ to: "/chat", replace: true });
+      navigate({ to: "/kb/$kbId/chat", params: { kbId }, replace: true });
     }
   };
 
@@ -199,7 +203,7 @@ export function Chat() {
     activeIdRef.current = null;
     setActiveId(null);
     setTurns([]);
-    navigate({ to: "/chat" });
+    navigate({ to: "/kb/$kbId/chat", params: { kbId } });
     inputRef.current?.focus();
   };
 
@@ -231,8 +235,8 @@ export function Chat() {
           setActiveId(id);
           sessionStorage.setItem(lastKey(kb.id), id);
           navigate({
-            to: "/chat/$conversationId",
-            params: { conversationId: id },
+            to: "/kb/$kbId/chat/$conversationId",
+            params: { kbId, conversationId: id },
             replace: true,
           });
           invalidateList();
@@ -580,6 +584,7 @@ function Thinking({ step }: { step?: ChatStep }) {
 }
 
 function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
+  const kbId = useKbId();
   if (turn.role === "user") {
     return (
       <div className="flex justify-end">
@@ -646,8 +651,8 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
             ) : (
               <Link
                 key={s.n}
-                to="/doc/$docId"
-                params={{ docId: s.document_id! }}
+                to="/kb/$kbId/doc/$docId"
+                params={{ kbId, docId: s.document_id! }}
                 search={{ chunk: s.chunk_id }}
                 title={s.excerpt}
                 className="block text-xs text-neutral-500 glass rounded-lg px-3 py-1.5 glass-hover hover:text-neutral-300"

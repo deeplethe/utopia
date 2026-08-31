@@ -143,19 +143,23 @@ pub async fn create_entity_type(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 改一个实体类。
+///
+/// **`color: None` = 保持原色**，不是重置。从前这里是 `&str`，调用方不给就
+/// 写死一个默认灰蓝，于是任何一次不带颜色的改名都会抹掉用户挑过的颜色。
 pub async fn update_entity_type(
     pool: &PgPool,
     kb_id: Uuid,
     id: Uuid,
     label: &str,
-    color: &str,
+    color: Option<&str>,
     shape: &str,
     parents: &[Uuid],
     description: &str,
 ) -> AppResult<()> {
     validate_shape(shape)?;
     let res = sqlx::query(
-        "UPDATE entity_types SET label = $3, color = $4, shape = $5,
+        "UPDATE entity_types SET label = $3, color = COALESCE($4, color), shape = $5,
                 description = $6
          WHERE id = $2 AND kb_id = $1",
     )
@@ -618,7 +622,7 @@ pub async fn create_entity_type_with_iri(
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description, iri)
-         VALUES ($1, $2, $3, $4, '#8ea5bd', 'circle', $5, $6)",
+         VALUES ($1, $2, $3, $4, $7, $8, $5, $6)",
     )
     .bind(id)
     .bind(kb_id)
@@ -626,6 +630,10 @@ pub async fn create_entity_type_with_iri(
     .bind(label)
     .bind(description)
     .bind(iri)
+    // 按 key 取色而不是所有类一个灰蓝——导入一个大本体进来才有得看
+    .bind(crate::palette::color_for_key(key))
+    // 形状说明来历：这条路带 IRI，就是词表声明的
+    .bind(crate::palette::shape_for(iri))
     .execute(pool)
     .await
     .map_err(|e| match &e {
@@ -1136,10 +1144,18 @@ pub async fn relation_type_datatype(pool: &PgPool, id: Uuid) -> AppResult<Option
 
 /// 把一个 IRI 认到已有的**本地**类上（原本没有 IRI 的那种）。
 ///
-/// **只写 IRI，不动 label 与 description。** 认领要解决的是"这棵树是断的"，
-/// 不是"用词汇表的说法覆盖用户的说法"：种子类的描述是照着抽取调过的、
-/// 且跟库的语言走，而 schema.org 的描述是英文样板。覆盖它等于悄悄换掉
-/// 抽取提示词里最承重的那一句。
+/// **只写 IRI 与形状，不动 label、description、颜色。** 认领要解决的是
+/// "这棵树是断的"，不是"用词汇表的说法覆盖用户的说法"：种子类的描述是照着
+/// 抽取调过的、且跟库的语言走，而 schema.org 的描述是英文样板。覆盖它等于
+/// 悄悄换掉抽取提示词里最承重的那一句。
+///
+/// **形状要跟着改，因为形状说的就是来历**（方=词表声明的，圆=语料里长的）。
+/// 一个类被认领成"词表声明的"却还画成圆，画面就在说谎。实测过这个缝：
+/// 往一个已有 `person` / `organization` 的库里导 schema.org，
+/// 那几个类拿到了 IRI 却仍是圆的——有 IRI 却是圆的，自相矛盾。
+///
+/// 颜色不动：颜色是**身份**（同一个 key 永远同一个色），认领不改变它是谁。
+/// 形状是**来历**，认领恰恰改变了这一点。
 ///
 /// 只在 `iri IS NULL` 时写，所以重复导入是幂等的，也绝不会抢走另一个
 /// 词汇表已经认领的类。
@@ -1150,7 +1166,7 @@ pub async fn adopt_iri_onto_key(
     iri: &str,
 ) -> AppResult<Option<Uuid>> {
     let row: Option<(Uuid,)> = sqlx::query_as(
-        "UPDATE entity_types SET iri = $3
+        "UPDATE entity_types SET iri = $3, shape = 'square'
          WHERE kb_id = $1 AND key = $2 AND iri IS NULL
          RETURNING id",
     )
@@ -1235,10 +1251,18 @@ pub async fn create_entity_types_bulk(
     let labels: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
     let descs: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
     let iris: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
+    // 颜色在 Rust 侧按 key 算好，跟着 UNNEST 一起进去——
+    // SQL 里调不到 Rust 函数，而这一批正是导入大本体走的路
+    let colours: Vec<&str> = keys
+        .iter()
+        .map(|k| crate::palette::color_for_key(k))
+        .collect();
+    let shapes: Vec<&str> = iris.iter().map(|i| crate::palette::shape_for(i)).collect();
     let out: Vec<(Uuid, String)> = sqlx::query_as(
         "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description, iri)
-         SELECT gen_random_uuid(), $1, k, l, '#8ea5bd', 'circle', d, i
-         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[]) AS t(k, l, d, i)
+         SELECT gen_random_uuid(), $1, k, l, c, s, d, i
+         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+              AS t(k, l, d, i, c, s)
          ON CONFLICT (kb_id, key) DO NOTHING
          RETURNING id, key",
     )
@@ -1247,6 +1271,8 @@ pub async fn create_entity_types_bulk(
     .bind(&labels)
     .bind(&descs)
     .bind(&iris)
+    .bind(&colours)
+    .bind(&shapes)
     .fetch_all(pool)
     .await?;
     Ok(out.into_iter().map(|(id, k)| (k, id)).collect())

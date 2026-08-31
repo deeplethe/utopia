@@ -5,7 +5,108 @@ import { Lock, Plus, X } from "lucide-react";
 import { api } from "../api";
 import { LANG_NAMES, S } from "../i18n";
 import { useKb } from "../kb";
+import { toast } from "../toast";
+import { SearchSelect } from "../ui";
 import { Members } from "./Members";
+
+/** 一个源授权给了哪些工作区（0014）。
+ *
+ * **授权与挂载是两层**：这里说「这个源可以给谁用」，KB 管理员再在授权过的
+ * 集合里挑挂不挂。从前没有这一层——可挂载列表返回全部署每一个源，于是任何
+ * 库的管理员都能把任意生产库挂进自己库。
+ *
+ * 两层都是多对多：一个源可授权给多个工作区，一个工作区可拿到多个源。 */
+function SourceGrants({ sourceId }: { sourceId: string }) {
+  const queryClient = useQueryClient();
+  const [picked, setPicked] = useState("");
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const grants = useQuery({
+    queryKey: ["dataSourceGrants", sourceId],
+    queryFn: () => api.dataSourceGrants(sourceId),
+  });
+  const workspaces = useQuery({
+    queryKey: ["workspaces"],
+    queryFn: api.workspaces,
+  });
+  const invalidate = () =>
+    queryClient.invalidateQueries({ queryKey: ["dataSourceGrants", sourceId] });
+
+  const grant = useMutation({
+    mutationFn: (wsId: string) => api.grantDataSource(sourceId, wsId),
+    onSuccess: () => {
+      setPicked("");
+      setNotice(null);
+      invalidate();
+    },
+    onError: (e: unknown) => toast.error((e as Error).message),
+  });
+  const revoke = useMutation({
+    mutationFn: (wsId: string) => api.revokeDataSource(sourceId, wsId),
+    // 卸了几个要说出来：收回授权会顺带断掉正在用的挂载，
+    // 悄悄断比断本身更糟
+    onSuccess: (r) => {
+      setNotice(S.settings.datasources.grantRevoked(r.unmounted));
+      invalidate();
+    },
+    onError: (e: unknown) => toast.error((e as Error).message),
+  });
+
+  const granted = grants.data?.workspaces ?? [];
+  const grantedIds = new Set(granted.map((w) => w.id));
+  const grantable = (workspaces.data ?? []).filter(
+    (w) => !grantedIds.has(w.id),
+  );
+
+  return (
+    <div className="border-t border-white/5 pt-3 space-y-2">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[11px] text-neutral-500">
+          {S.settings.datasources.grants}
+        </span>
+        {granted.length === 0 ? (
+          <span className="text-[11px] text-neutral-600">
+            {S.settings.datasources.grantsNone}
+          </span>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {granted.map((w) => (
+              <span
+                key={w.id}
+                className="u-chip u-chip-neutral text-[11px] flex items-center gap-1"
+              >
+                {w.name}
+                <button
+                  className="text-neutral-500 hover:text-[var(--u-danger)]"
+                  title={S.settings.datasources.grantRevoke}
+                  disabled={revoke.isPending}
+                  onClick={() => revoke.mutate(w.id)}
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+      {grantable.length > 0 && (
+        <div className="flex items-center gap-2">
+          <SearchSelect
+            className="flex-1"
+            value={picked}
+            options={grantable.map((w) => ({ value: w.id, label: w.name }))}
+            onChange={(v) => {
+              setPicked(v);
+              if (v) grant.mutate(v);
+            }}
+            placeholder={S.settings.datasources.grantAdd}
+          />
+        </div>
+      )}
+      {notice && <p className="text-[11px] text-neutral-500">{notice}</p>}
+    </div>
+  );
+}
 
 /** 部署级配置：注册开关 + worker 并发。 */
 function DeploymentAdmin() {
@@ -305,7 +406,7 @@ function KbsAdmin() {
               className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
               onClick={() => {
                 setKb(kb.id);
-                navigate({ to: "/kb-settings", search: { kb: kb.id } });
+                navigate({ to: "/kb/$kbId/settings", params: { kbId: kb.id } });
               }}
             >
               {S.settings.kbs.openSettings}
@@ -337,7 +438,7 @@ function KbsAdmin() {
             // 建完直达库设置：下一步几乎总是邀人/配置
             if (id) {
               setKb(id);
-              navigate({ to: "/kb-settings", search: { kb: id } });
+              navigate({ to: "/kb/$kbId/settings", params: { kbId: id } });
             }
           }}
         />
@@ -452,7 +553,9 @@ function NewKbModal({
                     checked={on}
                     onChange={() => toggle(p.id)}
                   />
-                  <span className="block text-xs text-neutral-200">{p.name}</span>
+                  <span className="block text-xs text-neutral-200">
+                    {p.name}
+                  </span>
                   <span className="block text-[11px] leading-snug text-neutral-500">
                     {p.summary}
                   </span>
@@ -533,42 +636,45 @@ function DataSourcesAdmin() {
 
       <div className="glass rounded-xl divide-y divide-white/5">
         {(list.data?.data_sources ?? []).map((d) => (
-          <div key={d.id} className="px-4 py-3 flex items-center gap-3">
-            <div className="min-w-0 flex-1">
-              <div className="text-sm text-neutral-200">{d.name}</div>
-              <div className="text-xs text-neutral-500 font-mono truncate">
-                {d.summary}
+          <div key={d.id} className="px-4 py-3 space-y-3">
+            <div className="flex items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm text-neutral-200">{d.name}</div>
+                <div className="text-xs text-neutral-500 font-mono truncate">
+                  {d.summary}
+                </div>
               </div>
-            </div>
-            <span
-              className={`u-chip shrink-0 ${
-                d.last_test_ok === true
-                  ? "u-chip-success"
+              <span
+                className={`u-chip shrink-0 ${
+                  d.last_test_ok === true
+                    ? "u-chip-success"
+                    : d.last_test_ok === false
+                      ? "u-chip-danger"
+                      : "u-chip-neutral"
+                }`}
+              >
+                {d.last_test_ok === true
+                  ? S.settings.datasources.testOk
                   : d.last_test_ok === false
-                    ? "u-chip-danger"
-                    : "u-chip-neutral"
-              }`}
-            >
-              {d.last_test_ok === true
-                ? S.settings.datasources.testOk
-                : d.last_test_ok === false
-                  ? S.settings.datasources.testFail
-                  : S.settings.datasources.neverTested}
-            </span>
-            <button
-              className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
-              disabled={test.isPending}
-              onClick={() => test.mutate(d.id)}
-            >
-              {S.settings.datasources.test}
-            </button>
-            <button
-              className="text-xs text-neutral-500 hover:text-[var(--u-danger)] shrink-0"
-              disabled={remove.isPending}
-              onClick={() => remove.mutate(d.id)}
-            >
-              {S.settings.datasources.remove}
-            </button>
+                    ? S.settings.datasources.testFail
+                    : S.settings.datasources.neverTested}
+              </span>
+              <button
+                className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
+                disabled={test.isPending}
+                onClick={() => test.mutate(d.id)}
+              >
+                {S.settings.datasources.test}
+              </button>
+              <button
+                className="text-xs text-neutral-500 hover:text-[var(--u-danger)] shrink-0"
+                disabled={remove.isPending}
+                onClick={() => remove.mutate(d.id)}
+              >
+                {S.settings.datasources.remove}
+              </button>
+            </div>
+            <SourceGrants sourceId={d.id} />
           </div>
         ))}
         {list.data?.data_sources.length === 0 && (

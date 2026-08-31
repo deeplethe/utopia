@@ -52,6 +52,9 @@ export const zh: Strings = {
     close_at_required: "选一个这条事实结束的日期——新的那条没说自己何时开始。",
     empty_query: "输入点什么再检索。",
     no_data_sources: "这个知识库没有挂载任何数据库。",
+    // 授权是逐工作区的（0014）：源没授权给本库所属的工作区
+    source_not_granted:
+      "这个数据源没有授权给本工作区。请部署管理员在「系统设置 → 数据源」里授权。",
     memory_source_permanent: "「记忆」是知识库自带的来源，会一直在。",
     source_name_required: "给这个来源起个名字。",
     bad_cron: "这个 cron 表达式解析不了。",
@@ -129,6 +132,10 @@ export const zh: Strings = {
         title: "来源同步失败",
         hint: "它没有带进新内容。去来源设置里看一下。",
       },
+      "data_source.schema_sync_failed": {
+        title: "数据源挂上了，库表结构没进来",
+        hint: "问数看不见有哪些表，只能猜列名。检查连接串，然后点「刷新结构」。",
+      },
       "llm.unreachable": {
         title: "模型端点没有给出可用的回答",
         hint: "抽取与向量化已停摆。去系统设置里检查端点地址。",
@@ -137,6 +144,14 @@ export const zh: Strings = {
     unknownKind: (kind: string) => kind,
   },
 
+  kbScope: {
+    deniedTitle: "你没有这个知识库的权限",
+    deniedBody:
+      "链接指向的库你打不开。找分享给你的人开通权限，或者回到自己的库。",
+    missingTitle: "这个知识库不在了",
+    missingBody: "它已被删除，或者链接抄错了。下面是你自己的库。",
+    myKbs: "我的知识库",
+  },
   nav: {
     workspaceLabel: "工作区",
     kbLabel: "知识库",
@@ -505,6 +520,15 @@ export const zh: Strings = {
   },
   graph: {
     untyped: "未分类",
+    legendMore: (n: number) => `全部 ${n} 个类`,
+    nodeBudget: "画多少个实体",
+    nodeBudgetMore: "多画一些",
+    nodeBudgetLess: "少画一些",
+    legendSearch: "筛选类",
+    legendNone: "没有匹配的类",
+    legendOnly: "只看",
+    legendShowAll: (n: number) => `显示全部（隐藏了 ${n} 个）`,
+    legendAllHint: "画面上的全部类，按出现次数排。点一下显示或隐藏。",
     searchMore: (n: number) => `还有 ${n} 个——再加载 20`,
     zoomIn: "放大",
     zoomOut: "缩小",
@@ -559,6 +583,9 @@ export const zh: Strings = {
       "没有人断言过的边——引擎按本体声明的公理推出来的。每一条都附着它用到的前提。",
     derivedNoProof: "前提已经不在了。",
     derivedPanel: "推理",
+    derivedRunAsk: "对整个库重跑一遍推理？",
+    derivedRunGo: "跑",
+    derivedRunCancel: "取消",
     derivedCountLabel: "推出来的边",
     derivedStateLabel: "定时",
     derivedLastLabel: "上次推理",
@@ -566,7 +593,11 @@ export const zh: Strings = {
     derivedOff: "已关闭",
     derivedNever: "从未",
     derivedAgo: (mins: number) =>
-      mins < 1 ? "刚刚" : mins < 60 ? `${mins} 分钟前` : `${Math.round(mins / 60)} 小时前`,
+      mins < 1
+        ? "刚刚"
+        : mins < 60
+          ? `${mins} 分钟前`
+          : `${Math.round(mins / 60)} 小时前`,
     derivedRun: "现在跑一遍",
     derivedRunning: "推理中…",
     derivedNoChange: "没有变化。",
@@ -599,13 +630,24 @@ export const zh: Strings = {
       "被取代的那条断言仍留在台账里。",
     ongoing: "至今",
     endedUnknown: "已结束（时间不详）",
-    stats: (n: number, e: number, active: number) =>
-      `${n} 个实体 · ${e} 条事实 · ${active} 条现行`,
-    statsCapped: (shown: number, total: number, e: number, active: number) =>
-      `已画 ${shown} / 共 ${total} 个实体 · ${e} 条事实 · ${active} 条现行`,
+    stats: (n: number, e: number, active: number | null) =>
+      `${n} 个实体 · ${e} 条事实${active === null ? "" : ` · ${active} 条现行`}`,
+    statsCapped: (
+      shown: number,
+      total: number,
+      shownE: number,
+      totalE: number,
+      active: number | null,
+    ) =>
+      `已画 ${shown} / 共 ${total} 个实体 · ${shownE} / 共 ${totalE} 条事实${active === null ? "" : ` · ${active} 条现行`}`,
     cappedHint: (shown: number, total: number) =>
       `画布只画连接最密的 ${shown} 个，库里共 ${total} 个。其余的用搜索找。`,
     stabilizing: "布局收敛中",
+    scrubUnitHint: "播放的步长，也是每根柱子的跨度",
+    scrubUnitYear: "年",
+    scrubUnitMonth: "月",
+    scrubUnitDay: "日",
+    scrubBarMerged: (n: number) => `每根柱子含 ${n} 步`,
     allTime: "全部时间",
     nowBtn: "现在",
     play: "播放时间线",
@@ -666,6 +708,15 @@ export const zh: Strings = {
       testFail: "失败",
       neverTested: "未测试",
       remove: "移除",
+      grants: "可用于",
+      grantsHint:
+        "授权哪些工作区可以用这个源。**授权之后，那些工作区的知识库管理员自己挑挂不挂**——" +
+        "这里管的是「能不能拿到」，不是「挂没挂」。",
+      grantsNone: "还没授权给任何工作区——现在没有知识库挂得上它。",
+      grantAdd: "授权工作区…",
+      grantRevoke: "收回",
+      grantRevoked: (n: number) =>
+        n === 0 ? "已收回。" : `已收回，顺带卸掉了 ${n} 个知识库上的挂载。`,
     },
     kbs: {
       hint:
@@ -674,7 +725,8 @@ export const zh: Strings = {
       defaultChip: "默认",
       newKb: "新建知识库",
       packsLabel: "预置本体",
-      packsHint: "可不选。包里的谓语带方向声明，主宾颠倒进不来。之后还能再导入。",
+      packsHint:
+        "可不选。包里的谓语带方向声明，主宾颠倒进不来。之后还能再导入。",
       packsNone: "不选 —— 从十个种子关系起步",
       packsCount: (c: number, p: number) => `${c} 个类 · ${p} 个属性`,
       name: "名称",
@@ -850,7 +902,8 @@ export const zh: Strings = {
       "抽取器产出了这些，但它们不在你的本体里（于是降级成了 concept / related to）。它们是扩展本体的信号。",
     dismiss: "忽略",
     dismissed: (n: number) => `已忽略（${n}）`,
-    dismissedHint: "仍在计数，只是不进建议。如果某一个在你忽略之后涨了，可以撤回。",
+    dismissedHint:
+      "仍在计数，只是不进建议。如果某一个在你忽略之后涨了，可以撤回。",
     restore: "撤回忽略",
     suggest: "用 AI 建议",
     suggesting: "分析中…",
@@ -884,6 +937,68 @@ export const zh: Strings = {
     proposals: "AI 提案",
     keyHint: "小写下划线命名",
   },
+  mapping: {
+    title: "数据映射",
+    hint: "业务概念在数据库里对应什么、怎么算。问数只按确认过的口径回答。",
+    tabDefinitions: "口径",
+    tabSources: "数据源",
+    filterAll: "全部",
+    filterProposed: "待审批",
+    filterConfirmed: "已确认",
+    filterRejected: "已拒绝",
+    searchPlaceholder: "搜概念、数据源或表名…",
+    total: (n: number) => `共 ${n} 条`,
+    range: (from: number, to: number, total: number) =>
+      `第 ${from}–${to} 条，共 ${total} 条`,
+    prev: "上一页",
+    next: "下一页",
+    empty: "还没有口径。挂上数据源后点「探查映射」，让智能体先提一批。",
+    emptyFiltered: "没有符合条件的口径。",
+    rejectedHint:
+      "拒绝过的也列在这里——否则「这个概念为什么没被映射」永远答不上来。",
+    colConcept: "概念",
+    colSource: "数据源",
+    colDefinition: "怎么算",
+    colStatus: "状态",
+    derivedBadge: "派生",
+    noDefinition: "（未填）",
+    approve: "确认",
+    reject: "拒绝",
+    edit: "编辑",
+    editTitle: "改口径",
+    fieldTable: "表",
+    fieldExpr: "表达式",
+    fieldSql: "SQL",
+    fieldUnit: "单位",
+    fieldSummary: "说明",
+    fieldDerived: "派生指标（算出来的，不是表里的列）",
+    save: "保存",
+    cancel: "取消",
+    needOne: "表、表达式、SQL 至少填一个。",
+    history: "改版历史",
+    historyHint:
+      "改之前那一版的整版快照。留着是为了答得出「上季度这个数是怎么算的」。",
+    historyEmpty: "还没有改过。",
+    historyBy: (who: string) => `由 ${who} 修改`,
+    historyUnknown: "一位已移除的用户",
+    sourcesHint:
+      "已挂载的只读数据库。挂载会摄入库表结构，问数写 SQL 前才知道有哪些表。",
+    mount: "挂载",
+    unmount: "卸载",
+    syncSchema: "刷新结构",
+    schemaSynced: (n: number) => `结构已摄入（${n} 张表）`,
+    // 挂载成了、结构没成。**别说成失败**——源是真挂上的
+    schemaFailed:
+      "数据源已挂载，但库表结构没能摄入——问数看不见有哪些表。已报进告警中心；" +
+      "检查连接串后点「刷新结构」重试。",
+    explore: "探查映射",
+    exploreHint:
+      "一个智能体读这些库表结构，提出指标／维度的口径。提出来的落在「待审批」，确认之后问数才会用。",
+    exploreQueued: "探查已排队——提案稍后出现在「待审批」。",
+    sourcesEmpty: "没有挂载任何数据源。",
+    sourcesNoneAvailable: "还没有登记数据源——请部署管理员登记一个。",
+    newConn: "登记新连接",
+  },
   review: {
     title: "审阅",
     hint: "重复项与低置信度事实",
@@ -895,7 +1010,7 @@ export const zh: Strings = {
     railConflicts: "冲突",
     railUnconfirmed: "未确认",
     railLowConfidence: "低置信度",
-    railMappings: "语义层",
+    railMappings: "数据映射",
     railViolations: "公理",
     railDefects: "本体",
     railDecisions: "决定",
@@ -980,7 +1095,7 @@ export const zh: Strings = {
      *  一条会让人以为界面漏了东西 */
     checkNothingNew: "没有新的",
     checkClean: (n: number) => `查了 ${n} 条事实，没有矛盾`,
-    mappings: "语义层",
+    mappings: "数据映射",
     mappingsHint:
       "从业务概念到「这个数怎么算」的提议。确认之后问数直接用这个口径，而不是每次从 schema 猜。",
     mappingDerived: "派生",

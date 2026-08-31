@@ -35,6 +35,25 @@ pub fn conn_summary(conn: &str) -> String {
         .unwrap_or_else(|| "(unparsed)".into())
 }
 
+/// 行 → 视图。**连接串在这里换成无凭据摘要**，是它不外流的那道关口；
+/// 四条查询共用一份，免得哪天新加一条忘了换
+fn row_to_view(
+    (id, name, engine, conn, created_at, last_test_at, last_test_ok): DataSourceRow,
+) -> DataSourceView {
+    DataSourceView {
+        id,
+        name,
+        engine,
+        summary: conn_summary(&conn),
+        created_at,
+        last_test_at,
+        last_test_ok,
+    }
+}
+
+/// 部署里全部的源。**只给系统管理员的注册台用。**
+/// 从前可挂载列表也走它，那是 0014 关掉的门——KB 侧现在走
+/// `granted_to_workspace`。
 pub async fn list(pool: &PgPool) -> AppResult<Vec<DataSourceView>> {
     let rows: Vec<DataSourceRow> = sqlx::query_as(
         "SELECT id, name, engine, conn_string, created_at, last_test_at, last_test_ok
@@ -42,20 +61,7 @@ pub async fn list(pool: &PgPool) -> AppResult<Vec<DataSourceView>> {
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, name, engine, conn, created_at, last_test_at, last_test_ok)| DataSourceView {
-                id,
-                name,
-                engine,
-                summary: conn_summary(&conn),
-                created_at,
-                last_test_at,
-                last_test_ok,
-            },
-        )
-        .collect())
+    Ok(rows.into_iter().map(row_to_view).collect())
 }
 
 pub async fn create(
@@ -163,20 +169,7 @@ pub async fn mounted(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<DataSourceView
     .bind(kb_id)
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(
-            |(id, name, engine, conn, created_at, last_test_at, last_test_ok)| DataSourceView {
-                id,
-                name,
-                engine,
-                summary: conn_summary(&conn),
-                created_at,
-                last_test_at,
-                last_test_ok,
-            },
-        )
-        .collect())
+    Ok(rows.into_iter().map(row_to_view).collect())
 }
 
 /// (engine, conn_string)：查询执行/测试/拉 schema 用（凭据不出服务端）。
@@ -187,4 +180,102 @@ pub async fn engine_and_conn(pool: &PgPool, id: Uuid) -> AppResult<(String, Stri
             .fetch_optional(pool)
             .await?;
     row.ok_or(AppError::NotFound)
+}
+
+/// 这个工作区被授权用哪些源（0014）。
+///
+/// **可挂载列表从此走这里，不再走 `list`。** 从前那条路给 KB 管理员看的是
+/// `datasources::list(pool)`——全部署每一个源，不过滤。于是任何库的管理员
+/// 都能把任意生产库挂进自己库，而挂上之后该库每个 Viewer 都能对它跑只读 SQL。
+pub async fn granted_to_workspace(
+    pool: &PgPool,
+    workspace_id: Uuid,
+) -> AppResult<Vec<DataSourceView>> {
+    let rows: Vec<DataSourceRow> = sqlx::query_as(
+        "SELECT d.id, d.name, d.engine, d.conn_string, d.created_at,
+                d.last_test_at, d.last_test_ok
+           FROM data_source_grants g JOIN data_sources d ON d.id = g.data_source_id
+          WHERE g.workspace_id = $1 ORDER BY d.name",
+    )
+    .bind(workspace_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(row_to_view).collect())
+}
+
+/// 这个源授权给了哪些工作区。管理台读它。
+pub async fn grants_for_source(
+    pool: &PgPool,
+    data_source_id: Uuid,
+) -> AppResult<Vec<(Uuid, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT w.id, w.name FROM data_source_grants g
+           JOIN workspaces w ON w.id = g.workspace_id
+          WHERE g.data_source_id = $1 ORDER BY w.name",
+    )
+    .bind(data_source_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 授权一个工作区用这个源。幂等。
+pub async fn grant(
+    pool: &PgPool,
+    data_source_id: Uuid,
+    workspace_id: Uuid,
+    actor: Uuid,
+) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO data_source_grants (data_source_id, workspace_id, granted_by)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(data_source_id)
+    .bind(workspace_id)
+    .bind(actor)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 收回授权，**连同该工作区里已经挂上的那些一起卸掉**。
+///
+/// 只删授权行不够：`mounted` 读的是 `kb_data_sources`，问数也读它。留着挂载
+/// 就等于收回了授权而访问照旧——一个不生效的权限撤销比没有还危险。
+///
+/// 一个事务里做完：两条 DELETE 之间如果崩了，留下的正是「无授权却挂着」那种
+/// 状态，而那恰恰是这条迁移要消灭的东西。
+pub async fn revoke(pool: &PgPool, data_source_id: Uuid, workspace_id: Uuid) -> AppResult<u64> {
+    let mut tx = pool.begin().await?;
+    let unmounted = sqlx::query(
+        "DELETE FROM kb_data_sources
+          WHERE data_source_id = $1
+            AND kb_id IN (SELECT id FROM knowledge_bases WHERE workspace_id = $2)",
+    )
+    .bind(data_source_id)
+    .bind(workspace_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    sqlx::query("DELETE FROM data_source_grants WHERE data_source_id = $1 AND workspace_id = $2")
+        .bind(data_source_id)
+        .bind(workspace_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(unmounted)
+}
+
+/// 这个源对这个知识库是不是授权过的。**挂载前必查**——守卫不能只在列表那一侧：
+/// 列表过滤挡的是「看得见」，而挂载端点是照着 id 调的，谁都能自己拼一个。
+pub async fn is_granted(pool: &PgPool, kb_id: Uuid, data_source_id: Uuid) -> AppResult<bool> {
+    let found: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM data_source_grants g
+           JOIN knowledge_bases kb ON kb.workspace_id = g.workspace_id
+          WHERE kb.id = $1 AND g.data_source_id = $2",
+    )
+    .bind(kb_id)
+    .bind(data_source_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(found.is_some())
 }

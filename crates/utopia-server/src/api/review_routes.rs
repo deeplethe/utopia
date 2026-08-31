@@ -474,7 +474,7 @@ pub async fn decide_mapping(
     if !matches!(req.status.as_str(), "confirmed" | "rejected") {
         return Err(utopia_core::AppError::invalid(
             "bad_status",
-            "status 只能是 confirmed 或 rejected",
+            "status must be confirmed or rejected",
         )
         .into());
     }
