@@ -1015,6 +1015,23 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/admin/data-sources/${id}/test`, {
       method: "POST",
     }),
+  /** 这个源授权给了哪些工作区（0014）。授权与挂载是两层：
+   *  授权由系统管理员写，挂载由 KB 管理员在授权过的集合里挑 */
+  dataSourceGrants: (id: string) =>
+    request<{ workspaces: { id: string; name: string }[] }>(
+      `/api/v1/admin/data-sources/${id}/grants`,
+    ),
+  grantDataSource: (id: string, workspaceId: string) =>
+    request<{ ok: boolean }>(
+      `/api/v1/admin/data-sources/${id}/grants/${workspaceId}`,
+      { method: "PUT" },
+    ),
+  /** 收回授权。**连同该工作区里已挂上的一起卸掉**，返回卸了几个 */
+  revokeDataSource: (id: string, workspaceId: string) =>
+    request<{ ok: boolean; unmounted: number }>(
+      `/api/v1/admin/data-sources/${id}/grants/${workspaceId}`,
+      { method: "DELETE" },
+    ),
 
   /** 一页口径。**Viewer 就能看**——问数的答案直接由口径决定，
    *  看得见答案却看不见口径，等于要人信一个不给看的算法 */

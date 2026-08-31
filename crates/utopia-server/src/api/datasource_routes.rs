@@ -103,15 +103,19 @@ pub async fn mounted(
     Ok(Json(json!({ "data_sources": mounted })))
 }
 
-/// 库 admin 从系统已注册的源里挑选挂载（列表给 name/summary，不含凭据）。
+/// 库 admin 能挂哪些（列表给 name/summary，不含凭据）。
+///
+/// **只列授权给本工作区的（0014）。** 从前这里返回 `datasources::list`——
+/// 全部署每一个源，于是任何库的管理员都看得见并挂得上任意生产库。
 pub async fn mountable(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Admin).await?;
-    let all = utopia_store::datasources::list(&state.pool).await?;
-    Ok(Json(json!({ "data_sources": all })))
+    let kb = require_kb(&state, &user, kb_id, Role::Admin).await?;
+    let granted =
+        utopia_store::datasources::granted_to_workspace(&state.pool, kb.workspace_id).await?;
+    Ok(Json(json!({ "data_sources": granted })))
 }
 
 pub async fn mount(
@@ -120,6 +124,15 @@ pub async fn mount(
     Path((kb_id, ds_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Admin).await?;
+    // **列表过滤不是守卫。** 那只挡「看得见」，而这个端点是照着 id 调的——
+    // 谁都能自己拼一个 uuid 打过来。授权在这里再查一次
+    if !utopia_store::datasources::is_granted(&state.pool, kb_id, ds_id).await? {
+        return Err(AppError::invalid(
+            "source_not_granted",
+            "This data source is not available to this workspace",
+        )
+        .into());
+    }
     utopia_store::datasources::mount(&state.pool, kb_id, ds_id).await?;
     // 挂载即摄取 schema：Chat 写 SQL 前能检索到表结构
     let synced = sync_schema_doc(&state, kb_id, ds_id)
@@ -246,4 +259,71 @@ async fn sync_schema_doc(state: &AppState, kb_id: Uuid, ds_id: Uuid) -> anyhow::
     .await?;
     state.emit_source(kb_id);
     Ok(tables)
+}
+
+// ---------------------------------------------------------------------------
+// 系统层：授权（0014）
+//
+// 授权与挂载是两层，各有各的主人：
+//   授权 = 系统管理员说「这个源可以给哪些工作区用」  ← 这里
+//   挂载 = KB 管理员说「我这个库挂哪几个」          ← 上面那组
+// 两层都是多对多。挂载只能在授权过的集合里挑。
+// ---------------------------------------------------------------------------
+
+/// 这个源授权给了哪些工作区。
+pub async fn grants(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    let rows = utopia_store::datasources::grants_for_source(&state.pool, id).await?;
+    let workspaces: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(id, name)| json!({ "id": id, "name": name }))
+        .collect();
+    Ok(Json(json!({ "workspaces": workspaces })))
+}
+
+pub async fn grant(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((id, workspace_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    utopia_store::datasources::grant(&state.pool, id, workspace_id, user.id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "data_source.granted",
+        "data_source",
+        Some(id),
+        json!({ "workspace_id": workspace_id }),
+    )
+    .await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 收回授权。**连同该工作区里已挂上的一起卸掉**——只删授权行的话，
+/// 问数读的还是 `kb_data_sources`，撤销就不生效。返回卸掉了几个，
+/// 好让界面说得出「顺带卸了 3 个库」而不是悄悄断人家的连接。
+pub async fn revoke(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((id, workspace_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    let unmounted = utopia_store::datasources::revoke(&state.pool, id, workspace_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "data_source.revoked",
+        "data_source",
+        Some(id),
+        json!({ "workspace_id": workspace_id, "unmounted": unmounted }),
+    )
+    .await;
+    Ok(Json(json!({ "ok": true, "unmounted": unmounted })))
 }

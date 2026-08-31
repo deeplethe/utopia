@@ -52,6 +52,9 @@ export const zh: Strings = {
     close_at_required: "选一个这条事实结束的日期——新的那条没说自己何时开始。",
     empty_query: "输入点什么再检索。",
     no_data_sources: "这个知识库没有挂载任何数据库。",
+    // 授权是逐工作区的（0014）：源没授权给本库所属的工作区
+    source_not_granted:
+      "这个数据源没有授权给本工作区。请部署管理员在「系统设置 → 数据源」里授权。",
     memory_source_permanent: "「记忆」是知识库自带的来源，会一直在。",
     source_name_required: "给这个来源起个名字。",
     bad_cron: "这个 cron 表达式解析不了。",
@@ -670,6 +673,15 @@ export const zh: Strings = {
       testFail: "失败",
       neverTested: "未测试",
       remove: "移除",
+      grants: "可用于",
+      grantsHint:
+        "授权哪些工作区可以用这个源。**授权之后，那些工作区的知识库管理员自己挑挂不挂**——" +
+        "这里管的是「能不能拿到」，不是「挂没挂」。",
+      grantsNone: "还没授权给任何工作区——现在没有知识库挂得上它。",
+      grantAdd: "授权工作区…",
+      grantRevoke: "收回",
+      grantRevoked: (n: number) =>
+        n === 0 ? "已收回。" : `已收回，顺带卸掉了 ${n} 个知识库上的挂载。`,
     },
     kbs: {
       hint:

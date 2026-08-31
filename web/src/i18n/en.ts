@@ -56,6 +56,9 @@ export const en = {
       "Pick the date this fact ended — the new one does not say when it started.",
     empty_query: "Type something to search for.",
     no_data_sources: "No databases are mounted on this knowledge base.",
+    // 授权是逐工作区的（0014）：源没授权给本库所属的工作区
+    source_not_granted:
+      "This data source is not granted to this workspace. Ask a deployment admin to grant it in System settings → Data sources.",
     memory_source_permanent:
       "The Memory source is part of the knowledge base and stays.",
     source_name_required: "Give this source a name.",
@@ -734,6 +737,18 @@ export const en = {
       testFail: "Failed",
       neverTested: "Untested",
       remove: "Remove",
+      grants: "Available to",
+      grantsHint:
+        "Which workspaces may use this source. **Once granted, KB admins in those workspaces choose whether to mount it** — " +
+        "this controls what they can reach, not what they have mounted.",
+      grantsNone:
+        "Not granted to any workspace — no knowledge base can mount it.",
+      grantAdd: "Grant a workspace…",
+      grantRevoke: "Revoke",
+      grantRevoked: (n: number) =>
+        n === 0
+          ? "Revoked."
+          : `Revoked, and unmounted it from ${n} knowledge base(s).`,
     },
     kbs: {
       hint:
