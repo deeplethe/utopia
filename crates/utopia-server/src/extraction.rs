@@ -781,6 +781,72 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 (subject_id, object_id)
             };
 
+            // **主语违反 domain、而宾语符合时，按本体声明的方向把它掰正。**
+            //
+            // 先试过提示词，三轮都没赢：违反率从 57% 压到 35%，但压下去的全是
+            // 类型判错那一半；**真·反向纹丝不动**（22.7% → 17.1% → 17.6%，
+            // 后两个在噪声里）。模型看得见 `employee (organization → person)`，
+            // 就是不照做——英语的 "X is an employee of Y" 太强。
+            //
+            // 这不是新原则：`produced_by` 命中 `produces` 时（见上面那个 `swap`）
+            // 早就在自动翻转主宾了，区别只在触发条件是**措辞**还是**签名**。
+            //
+            // 当初反对自动对调的理由是实体类型不可靠——实测 Elon Musk 被判成
+            // `researcher`。那个前提已经不成立：祖先地板与签名类恒在修好之后，
+            // 同一批人判成了 `person`。而判据本身很窄——**主语违反且宾语符合**，
+            // 两侧都要对上才动。
+            //
+            // **但绝不静默。** 掰正要留信号：0001 反对的是「用可能错的声明驱动
+            // 自动动作」，而看得见、可复查、可反悔的动作不属于那一类。
+            let (subject_id, object_id) = if let Some(pid) = predicate_id {
+                // 类型**从库里的实体读**，不用抽取器手上那份 `entity_type_of`：
+                // 那份只覆盖模型在这一块里声明过的实体，而宾语常是别处已存在的实体，
+                // 这一块没重新声明它，于是查不到、判不了、掰不动。实测差别不小——
+                // 用声明那份时反向只降到 7.0%，剩下的正是宾语类型查不到的那些
+                let s_fits =
+                    utopia_store::ontology::entity_fits_domain(&state.pool, pid, subject_id).await;
+                if let Ok(Some(false)) = s_fits {
+                    let o_fits =
+                        utopia_store::ontology::entity_fits_domain(&state.pool, pid, object_id)
+                            .await;
+                    if let Ok(Some(true)) = o_fits {
+                        drop_signal(
+                            state,
+                            doc.kb_id,
+                            document_id,
+                            utopia_store::extraction_drops::reason::DIRECTION_CORRECTED,
+                            &f.predicate,
+                            Some(&format!(
+                                "{} → {} 按签名掰正为 {} → {}",
+                                f.subject,
+                                f.object.as_deref().unwrap_or("?"),
+                                f.object.as_deref().unwrap_or("?"),
+                                f.subject
+                            )),
+                        )
+                        .await;
+                        (object_id, subject_id)
+                    } else {
+                        // 对调也不合法：这是选错了关系或类型判错，不是方向问题。
+                        // 照原样落库 + 记信号，交给人看——**不猜**
+                        drop_signal(
+                            state,
+                            doc.kb_id,
+                            document_id,
+                            utopia_store::extraction_drops::reason::DOMAIN_MISMATCH,
+                            &f.predicate,
+                            Some(&format!("{} — {} →", f.subject, f.predicate)),
+                        )
+                        .await;
+                        (subject_id, object_id)
+                    }
+                } else {
+                    (subject_id, object_id)
+                }
+            } else {
+                (subject_id, object_id)
+            };
+
             {
                 let (fact_id, created) = utopia_store::graph::insert_fact(
                     &state.pool,
@@ -1071,6 +1137,30 @@ async fn chunk_lists(
         )
         .await?,
     );
+    // **命中什么，就把它的祖先一起铺出去。**
+    //
+    // 向量检索天然偏爱字面出现在正文里的叶子类。实测一个讲 Sutskever 的分块，
+    // 976 个类按距离排：`researcher` 第 4、`corporation` 第 27，
+    // 而 `organization` 第 177、`person` 第 359——**前 40 名里一个泛化基类都没有**。
+    // 正文写的是 "a researcher at"、"the corporation"，从不写 "person"。
+    //
+    // 两个症状，同一个根因：
+    //
+    // - 实体判成 `researcher`（schema.org 里它是 `Audience` 的子类，不是人），
+    //   于是 `works_for (domain=person)` 全成了违规
+    // - `employee (organization → person)` 的签名**退化成 `(* → *)`**——`sig_of`
+    //   只认铺出去的类，一侧没铺就写 `*`。模型根本没见过那个方向约束
+    //
+    // 从前这道地板由 `seed_classes`（`builtin` 的类）兜着，`build_lists` 的注释写着
+    // 「内置类恒在：检索漏掉的分块仍然要有地方落脚」。种子退场后（#128）判据就悬空了——
+    // 它当初碰巧等价，只因为种子类正好是那几个通用类。
+    //
+    // 用祖先补这道地板，比维护一张"通用类"清单好：**继承链本来就是本体自己声明的
+    // 泛化关系**，谁是谁的上位不需要我们再判断一次。代价是每块多铺几层祖先。
+    if !classes.is_empty() {
+        let picked: Vec<Uuid> = classes.iter().copied().collect();
+        classes.extend(utopia_store::ontology::ancestors_of(&state.pool, &picked).await?);
+    }
     let mut rels: HashSet<Uuid> = HashSet::new();
     // 关系与属性分开检索：两段在提示词里是分开的，混在一起取会让其中一段
     // 被另一段挤空
@@ -1094,6 +1184,29 @@ async fn chunk_lists(
         )
         .await?,
     );
+    // **一个关系被铺出去，它签名点名的类就得跟着铺。**
+    //
+    // 类与关系是各自独立检索的，而签名依赖两者的交集——`sig_of` 只认铺出去的类，
+    // 一侧没铺就写 `*`。于是常出现这种局面：`employee` 跟正文语义相近被捞了进来，
+    // 而它的 `organization`（第 795 名）与 `person`（第 630 名）离正文字面很远，
+    // 一个都没捞到，签名退化成 `(* → *)`——**方向约束整个消失**，模型按英语直觉
+    // 写 `Musk --employee--> Microsoft`，而 schema.org 声明的是 organization → person。
+    //
+    // 上面那道祖先地板治不了这种块：它从"命中的叶子"往上长，而这里一个相关的
+    // 叶子都没命中，没有叶子也就没有祖先。
+    //
+    // `sig_of` 的注释说「签名指向看不见的类只会误导」——顾虑是对的，但抹掉签名
+    // 是拿丢失方向来换。**把类拉进来**两头都保住：模型看得见那个类，签名也排得出。
+    // 顺带还对：这些类正是模型马上要用来判类型的那些，`employee` 在场就说明
+    // 这一块讲的是雇佣，`organization`/`person` 本来就该在候选里——
+    // 按字面相似度捞不到它们，但**本体的结构知道**。
+    let sig_classes: HashSet<Uuid> = rtypes
+        .iter()
+        .filter(|r| rels.contains(&r.id))
+        .flat_map(|r| r.domains.iter().chain(r.ranges.iter()).copied())
+        .collect();
+    classes.extend(sig_classes);
+
     // 一个候选都没检索到 = 索引还没建好，退回全量而不是给一份空清单
     if classes.len() <= seed_classes.len() && rels.is_empty() {
         return Ok(None);

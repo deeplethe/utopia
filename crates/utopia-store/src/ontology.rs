@@ -1562,3 +1562,93 @@ pub async fn open_proposal_count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
     .await?;
     Ok(n)
 }
+
+/// 主语的类型合不合这个关系声明的 domain。沿继承链往上找。
+///
+/// **只回答，不动数据。** 0001 已经判过：签名是提示不是闸门，
+/// 「用可能错的声明驱动自动动作风险高」。而实体类型本身也是模型判出来的
+/// （实测里 Elon Musk 被判成 `researcher`），拿它去翻转事实方向，
+/// 是两层不确定叠在一起还静默改写。所以这里的结果只用来落一条信号。
+///
+/// 三种回答，别混成两种：
+/// - `Some(true)`  合
+/// - `Some(false)` 不合——**这才是信号**
+/// - `None`        没得判（关系没声明 domain，或实体还没有类型）
+pub async fn subject_fits_domain(
+    pool: &PgPool,
+    relation_type_id: Uuid,
+    subject_type_id: Option<Uuid>,
+) -> AppResult<Option<bool>> {
+    let Some(subject_type_id) = subject_type_id else {
+        return Ok(None);
+    };
+    let (declared, ok): (i64, i64) = sqlx::query_as(
+        "WITH RECURSIVE up(id) AS (
+             SELECT $2::uuid
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+         )
+         SELECT (SELECT count(*) FROM relation_type_domains WHERE relation_type_id = $1),
+                (SELECT count(*) FROM relation_type_domains d
+                   JOIN up ON up.id = d.entity_type_id
+                  WHERE d.relation_type_id = $1)",
+    )
+    .bind(relation_type_id)
+    .bind(subject_type_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((declared > 0).then_some(ok > 0))
+}
+
+/// 这些类的全部祖先（不含自己）。沿 `subClassOf` 上溯，多继承与菱形都走得通。
+///
+/// 给按块检索的候选补地板用：向量检索偏爱字面出现在正文里的叶子类，
+/// 泛化基类排得很后（实测 `person` 在 976 个类里排第 359），于是提示词里
+/// 没有它们——实体无处落脚，关系签名也退化成 `*`。祖先是本体自己声明的
+/// 泛化关系，拿它补比维护一张「通用类」清单可靠。
+pub async fn ancestors_of(pool: &PgPool, ids: &[Uuid]) -> AppResult<Vec<Uuid>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 递归项里 UNION 去重，菱形继承不会把同一个祖先展开两次
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "WITH RECURSIVE up(id) AS (
+             SELECT unnest($1::uuid[])
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+         )
+         SELECT id FROM up WHERE id <> ALL($1::uuid[])",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// 同 [`subject_fits_domain`]，但类型**从库里的实体读**，不靠调用方手上那份。
+///
+/// 抽取器手上的 `entity_type_of` 只覆盖模型在这一块里声明过的实体；宾语常常
+/// 是别处已经存在的实体，这一块没重新声明它的类型，于是查不到、判不了。
+/// 而消解已经把它连到了库里那一行——那里有类型，用它才判得全。
+pub async fn entity_fits_domain(
+    pool: &PgPool,
+    relation_type_id: Uuid,
+    entity_id: Uuid,
+) -> AppResult<Option<bool>> {
+    let (declared, ok): (i64, i64) = sqlx::query_as(
+        "WITH RECURSIVE up(id) AS (
+             SELECT type_id FROM entities WHERE id = $2
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+         )
+         SELECT (SELECT count(*) FROM relation_type_domains WHERE relation_type_id = $1),
+                (SELECT count(*) FROM relation_type_domains d
+                   JOIN up ON up.id = d.entity_type_id
+                  WHERE d.relation_type_id = $1)",
+    )
+    .bind(relation_type_id)
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((declared > 0).then_some(ok > 0))
+}
