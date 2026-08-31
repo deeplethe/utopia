@@ -170,7 +170,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             kb_id,
             key,
             label,
-            "#8ea5bd",
+            utopia_store::palette::color_for_key(key),
             "circle",
             // 冷启动建的类不挂父：提案里没有层级信息，猜一个父类比不挂更糟
             &[],

@@ -143,19 +143,23 @@ pub async fn create_entity_type(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 改一个实体类。
+///
+/// **`color: None` = 保持原色**，不是重置。从前这里是 `&str`，调用方不给就
+/// 写死一个默认灰蓝，于是任何一次不带颜色的改名都会抹掉用户挑过的颜色。
 pub async fn update_entity_type(
     pool: &PgPool,
     kb_id: Uuid,
     id: Uuid,
     label: &str,
-    color: &str,
+    color: Option<&str>,
     shape: &str,
     parents: &[Uuid],
     description: &str,
 ) -> AppResult<()> {
     validate_shape(shape)?;
     let res = sqlx::query(
-        "UPDATE entity_types SET label = $3, color = $4, shape = $5,
+        "UPDATE entity_types SET label = $3, color = COALESCE($4, color), shape = $5,
                 description = $6
          WHERE id = $2 AND kb_id = $1",
     )
@@ -618,7 +622,7 @@ pub async fn create_entity_type_with_iri(
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description, iri)
-         VALUES ($1, $2, $3, $4, '#8ea5bd', 'circle', $5, $6)",
+         VALUES ($1, $2, $3, $4, $7, $8, $5, $6)",
     )
     .bind(id)
     .bind(kb_id)
@@ -626,6 +630,10 @@ pub async fn create_entity_type_with_iri(
     .bind(label)
     .bind(description)
     .bind(iri)
+    // 按 key 取色而不是所有类一个灰蓝——导入一个大本体进来才有得看
+    .bind(crate::palette::color_for_key(key))
+    // 形状说明来历：这条路带 IRI，就是词表声明的
+    .bind(crate::palette::shape_for(iri))
     .execute(pool)
     .await
     .map_err(|e| match &e {
@@ -1235,10 +1243,18 @@ pub async fn create_entity_types_bulk(
     let labels: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
     let descs: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
     let iris: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
+    // 颜色在 Rust 侧按 key 算好，跟着 UNNEST 一起进去——
+    // SQL 里调不到 Rust 函数，而这一批正是导入大本体走的路
+    let colours: Vec<&str> = keys
+        .iter()
+        .map(|k| crate::palette::color_for_key(k))
+        .collect();
+    let shapes: Vec<&str> = iris.iter().map(|i| crate::palette::shape_for(i)).collect();
     let out: Vec<(Uuid, String)> = sqlx::query_as(
         "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description, iri)
-         SELECT gen_random_uuid(), $1, k, l, '#8ea5bd', 'circle', d, i
-         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[]) AS t(k, l, d, i)
+         SELECT gen_random_uuid(), $1, k, l, c, s, d, i
+         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+              AS t(k, l, d, i, c, s)
          ON CONFLICT (kb_id, key) DO NOTHING
          RETURNING id, key",
     )
@@ -1247,6 +1263,8 @@ pub async fn create_entity_types_bulk(
     .bind(&labels)
     .bind(&descs)
     .bind(&iris)
+    .bind(&colours)
+    .bind(&shapes)
     .fetch_all(pool)
     .await?;
     Ok(out.into_iter().map(|(id, k)| (k, id)).collect())
