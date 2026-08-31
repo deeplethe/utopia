@@ -170,4 +170,28 @@ day 精度，时刻在入库前就没了。
 3. **"变更史"在这里是什么。** 工单的变更史是事件流；文档的变更史是**版本序列**，
    更接近 #122 那份语料的做法——可能要按"变了多少"采样，而不是每个版本都取。
 
-已开 [issue #136](https://github.com/deeplethe/utopia/issues/136) 请人认领——那里写清了骨架、三条硬要求与验收标准。
+### 照着走的骨架
+
+两个已有实现是同一个形状，抄它就行：`github_issues.rs`（三次拉取 + 逐工单事件）、
+`jira_issues.rs`（一次调用取全，`expand=changelog`）。
+
+1. **纯函数 `render()`** 把一条记录排成 Markdown——不联网，于是测得动
+2. **`fetch_all()`** 负责分页与鉴权
+3. `ingest_sources.rs` 里加一个 `sync_*` 分支，调 `ingest_item()`——身份、
+   sha256 去重、版本记录都由它负责
+4. `sources::KINDS` 白名单 **加前端三处**（`api.ts` 的 `SourceView["kind"]`、
+   `Library.tsx` 的建来源对话框、`SourcesRail.tsx` 的图标与 `SYNCING_KINDS`）
+
+第 4 步最容易漏，症状是**界面上选得到、建的时候报 `kind must be one of…`**——
+单元测试与 tsc 都看不见，只有端到端会撞上（#134 就是这么撞的）。
+
+另外注意凭据只进不出：编辑来源时留空 = 保留库里原值，写法见 `sync_custom`。
+
+### 验收
+
+- 单元测试覆盖 `render()`（含"空评论不留空节"这类边界）
+- 拿得到真实响应就加夹具测试；**拿不到就在 PR 里明说未经真实实例验证**
+- 端到端：建来源 → 同步 → 文档带版本/变更信息 → 二次同步幂等（新增 0）
+- `cargo clippy --workspace --all-targets` 与 `npm run typecheck` 干净
+
+Confluence / Notion 是同一类，上面第 2 条未知三家共通。
