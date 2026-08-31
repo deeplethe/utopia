@@ -163,6 +163,15 @@ export const en = {
     unknownKind: (kind: string) => kind,
   },
 
+  kbScope: {
+    deniedTitle: "You don't have access to this knowledge base",
+    deniedBody:
+      "The link points at a base you can't open. Ask whoever shared it to grant you access, or pick one of your own.",
+    missingTitle: "This knowledge base is gone",
+    missingBody:
+      "It was deleted, or the link was mistyped. Your own bases are listed below.",
+    myKbs: "My knowledge bases",
+  },
   nav: {
     workspaceLabel: "Workspace",
     kbLabel: "Knowledge base",

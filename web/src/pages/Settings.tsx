@@ -406,7 +406,7 @@ function KbsAdmin() {
               className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
               onClick={() => {
                 setKb(kb.id);
-                navigate({ to: "/kb-settings", search: { kb: kb.id } });
+                navigate({ to: "/kb/$kbId/settings", params: { kbId: kb.id } });
               }}
             >
               {S.settings.kbs.openSettings}
@@ -438,7 +438,7 @@ function KbsAdmin() {
             // 建完直达库设置：下一步几乎总是邀人/配置
             if (id) {
               setKb(id);
-              navigate({ to: "/kb-settings", search: { kb: id } });
+              navigate({ to: "/kb/$kbId/settings", params: { kbId: id } });
             }
           }}
         />

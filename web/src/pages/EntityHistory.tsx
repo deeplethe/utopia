@@ -8,6 +8,7 @@ import { Link } from "@tanstack/react-router";
 import { FileText, Merge, PencilLine, Tag, Undo2 } from "lucide-react";
 import { api, type EntityHistoryEvent } from "../api";
 import { S } from "../i18n";
+import { useKbId } from "../kb";
 import { Pager } from "../ui";
 
 const PER = 20;
@@ -57,6 +58,7 @@ function intervalNote(e: EntityHistoryEvent): string | null {
 }
 
 function EventRow({ e }: { e: EntityHistoryEvent }) {
+  const kbId = useKbId();
   const Icon = KIND_ICON[e.kind] ?? FileText;
   const note = intervalNote(e);
   return (
@@ -99,8 +101,8 @@ function EventRow({ e }: { e: EntityHistoryEvent }) {
             <>
               <span>·</span>
               <Link
-                to="/doc/$docId"
-                params={{ docId: e.document_id }}
+                to="/kb/$kbId/doc/$docId"
+                params={{ kbId, docId: e.document_id }}
                 search={{}}
                 className="truncate hover:text-neutral-300"
                 title={e.quote ?? e.filename}

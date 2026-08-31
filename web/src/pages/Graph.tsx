@@ -36,7 +36,7 @@ import {
 } from "../api";
 import { S } from "../i18n";
 import { usePopoverFlip } from "../ui/popoverFlip";
-import { useKb } from "../kb";
+import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
 
 /* 画布调色板 —— 结构取自 Semantica GraphWorkspace 源码；基色已中性化：
@@ -299,12 +299,13 @@ function drawHoverCard(
 }
 
 export function Graph() {
+  const kbId = useKbId();
   const { kb } = useKb();
   /* 地址栏与画面**双向**同步。
      从前只有"进"这一半：`?entity=` 在挂载时读一次就再不管了——
      别人给的链接能用，而你自己看到的东西却没法分享，因为地址栏一直停在
      光秃秃的 /graph。 */
-  const search = useSearch({ from: "/app/graph" });
+  const search = useSearch({ from: "/app/kb/$kbId/graph" });
   const navigate = useNavigate();
   const entityParam = search.entity;
   const [focusEntity, setFocusEntity] = useState<string | null>(
@@ -381,7 +382,12 @@ export function Graph() {
       next.at === search.at
     )
       return;
-    navigate({ to: "/graph", search: next, replace: true });
+    navigate({
+      to: "/kb/$kbId/graph",
+      params: { kbId },
+      search: next,
+      replace: true,
+    });
   }, [
     selected,
     focusEntity,
@@ -2946,8 +2952,8 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
       {evidence.data?.evidence.map((ev: Evidence) => (
         <Link
           key={ev.chunk_id}
-          to="/doc/$docId"
-          params={{ docId: ev.document_id }}
+          to="/kb/$kbId/doc/$docId"
+          params={{ kbId, docId: ev.document_id }}
           search={{ chunk: ev.chunk_id }}
           className="block text-xs text-neutral-500 hover:text-neutral-300"
         >

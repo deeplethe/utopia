@@ -4,7 +4,7 @@
    context）遮蔽的层级 bug。 */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useParams, useNavigate } from "@tanstack/react-router";
 import {
   History as HistoryIcon,
   Lock,
@@ -14,7 +14,6 @@ import {
 } from "lucide-react";
 import { api, type AuditEvent } from "../api";
 import { LANG_NAMES, S } from "../i18n";
-import { useKb } from "../kb";
 import {
   DangerConfirm,
   Dropdown,
@@ -49,9 +48,9 @@ type Section = "general" | "members" | "activity" | "danger";
 export function KbSettings() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { kb: currentKb } = useKb();
-  const { kb: kbParam } = useSearch({ from: "/app/kb-settings" });
-  const kbId = kbParam ?? currentKb?.id;
+  /* 库 id 来自路径。**从前是 `?kb=`**——那是这套路由改造之前唯一
+     带着库走的地方，现在整片都在 /kb/$kbId 之下，它就不必自成一格了 */
+  const { kbId } = useParams({ from: "/app/kb/$kbId/settings" });
 
   const kb = useQuery({
     queryKey: ["kbOne", kbId],
@@ -110,7 +109,7 @@ export function KbSettings() {
     mutationFn: () => api.deleteKb(kbId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["kbs"] });
-      navigate({ to: "/library", search: {} });
+      navigate({ to: "/kb/$kbId/library", params: { kbId } });
     },
     onError: (e) => setError((e as Error).message),
   });

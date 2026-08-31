@@ -3,12 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { api } from "../api";
 import { S } from "../i18n";
-import { useKb } from "../kb";
+import { useKb, useKbId } from "../kb";
 import { Pager, pageSlice } from "../ui";
 
 const RESULT_PAGE = 10;
 
 export function Search() {
+  const kbId = useKbId();
   const { kb } = useKb();
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
@@ -60,8 +61,8 @@ export function Search() {
           {pageSlice(results.data?.results ?? [], page, RESULT_PAGE).rows.map((r) => (
             <Link
               key={r.id}
-              to="/doc/$docId"
-              params={{ docId: r.document_id }}
+              to="/kb/$kbId/doc/$docId"
+              params={{ kbId, docId: r.document_id }}
               search={{ chunk: r.id }}
               className="block glass rounded-xl p-4 glass-hover"
             >

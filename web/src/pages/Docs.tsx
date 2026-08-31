@@ -225,7 +225,7 @@ export function DocsPage() {
         {/* 右侧：显式返回（与字标双路回城）+ GitHub·版本胶囊 + 登录态 */}
         <div className="ml-auto flex items-center gap-1.5">
           <Link
-            to="/graph"
+            to="/"
             className="px-2 py-1 rounded-lg text-[12.5px] text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.05] transition-colors"
           >
             {S.account.backToApp}

@@ -15,7 +15,7 @@ import {
   type ReviewSide,
 } from "../api";
 import { S } from "../i18n";
-import { useKb } from "../kb";
+import { useKb, useKbId } from "../kb";
 import { Chip, type ChipTone, Pager, RAIL_CLS, cn } from "../ui";
 
 const DUP_PAGE = 6;
@@ -685,6 +685,7 @@ function RailItem({
 }
 
 export function Review() {
+  const kbId = useKbId();
   const { kb } = useKb();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -893,7 +894,7 @@ export function Review() {
             active={false}
             label={S.review.railMappings}
             count={counts.mappings}
-            onClick={() => navigate({ to: "/mappings" })}
+            onClick={() => navigate({ to: "/kb/$kbId/mappings", params: { kbId } })}
             external
           />
           <RailItem

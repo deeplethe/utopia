@@ -885,7 +885,7 @@ import { Link as RouterLink } from "@tanstack/react-router";
 export function SectionMark({ text, title }: { text: string; title: string }) {
   return (
     <RouterLink
-      to="/graph"
+      to="/"
       title={title}
       className="relative inline-flex text-white text-[17px]"
       style={{ fontFamily: "var(--font-brand)", letterSpacing: "0.06em" }}

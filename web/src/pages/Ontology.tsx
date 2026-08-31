@@ -412,7 +412,8 @@ function InstancesCard({ kbId, type }: { kbId: string; type: EntityTypeView }) {
         {rows.map((e) => (
           <Link
             key={e.id}
-            to="/graph"
+            to="/kb/$kbId/graph"
+            params={{ kbId }}
             search={{ entity: e.id }}
             className="flex items-center gap-2 py-1.5 text-sm text-neutral-300 hover:text-white"
           >

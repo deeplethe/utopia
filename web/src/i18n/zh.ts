@@ -144,6 +144,14 @@ export const zh: Strings = {
     unknownKind: (kind: string) => kind,
   },
 
+  kbScope: {
+    deniedTitle: "你没有这个知识库的权限",
+    deniedBody:
+      "链接指向的库你打不开。找分享给你的人开通权限，或者回到自己的库。",
+    missingTitle: "这个知识库不在了",
+    missingBody: "它已被删除，或者链接抄错了。下面是你自己的库。",
+    myKbs: "我的知识库",
+  },
   nav: {
     workspaceLabel: "工作区",
     kbLabel: "知识库",

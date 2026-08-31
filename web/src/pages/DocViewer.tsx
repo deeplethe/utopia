@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { api, type ChunkFact } from "../api";
 import { S } from "../i18n";
+import { useKbId } from "../kb";
 import { Pager, pageSlice } from "../ui";
 import { SourcesRail } from "./SourcesRail";
 
@@ -16,8 +17,9 @@ function factRange(f: ChunkFact): string | null {
 }
 
 export function DocViewer() {
-  const { docId } = useParams({ from: "/app/doc/$docId" });
-  const { chunk } = useSearch({ from: "/app/doc/$docId" });
+  const kbId = useKbId();
+  const { docId } = useParams({ from: "/app/kb/$kbId/doc/$docId" });
+  const { chunk } = useSearch({ from: "/app/kb/$kbId/doc/$docId" });
   const navigate = useNavigate();
 
   const detail = useQuery({
@@ -75,7 +77,7 @@ export function DocViewer() {
       <SourcesRail
         kbId={doc.kb_id}
         active={doc.source_id ?? "uploads"}
-        onSelect={(sel) => navigate({ to: "/library", search: { src: sel } })}
+        onSelect={(sel) => navigate({ to: "/kb/$kbId/library", params: { kbId }, search: { src: sel } })}
       />
       <div className="flex-1 min-w-0 overflow-y-auto u-scroll">
         <div className="max-w-4xl mx-auto p-6">
@@ -87,7 +89,7 @@ export function DocViewer() {
               {new Date(doc.created_at).toLocaleDateString()}
             </p>
           </div>
-          <Link to="/library" className="shrink-0 text-sm text-[var(--u-accent)] hover:underline">
+          <Link to="/kb/$kbId/library" params={{ kbId }} className="shrink-0 text-sm text-[var(--u-accent)] hover:underline">
             {S.doc.backToLibrary}
           </Link>
         </div>
@@ -131,7 +133,8 @@ export function DocViewer() {
                           <div key={f.fact_id} className="text-xs leading-snug">
                             <div>
                               <Link
-                                to="/graph"
+                                to="/kb/$kbId/graph"
+                                params={{ kbId }}
                                 search={{ entity: f.subject_id }}
                                 className="text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
                               >
@@ -154,7 +157,8 @@ export function DocViewer() {
                               </span>
                               {f.object_id ? (
                                 <Link
-                                  to="/graph"
+                                  to="/kb/$kbId/graph"
+                                  params={{ kbId }}
                                   search={{ entity: f.object_id }}
                                   className="text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
                                 >

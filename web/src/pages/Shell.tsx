@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { api, ApiError } from "../api";
 import { S } from "../i18n";
-import { useKb } from "../kb";
+import { useKb, useKbId } from "../kb";
 import { Dropdown, GithubMark, Wordmark } from "../ui";
 import { AlertBell } from "./AlertBell";
 import { UserMenu } from "./UserMenu";
@@ -30,20 +30,21 @@ import { usePageTitle } from "../useTitle";
 
 const TABS = [
   // 图谱是门面，排第一；两种查询方式（Search/Ask）随后
-  { to: "/graph", label: S.nav.graph, Icon: Waypoints },
-  { to: "/search", label: S.nav.search, Icon: SearchIcon },
-  { to: "/chat", label: S.nav.ask, Icon: MessagesSquare },
-  { to: "/library", label: S.nav.library, Icon: LibraryIcon },
-  { to: "/review", label: S.review.title, Icon: ListChecks },
-  { to: "/ontology", label: S.ontology.title, Icon: Shapes },
+  { to: "/kb/$kbId/graph", label: S.nav.graph, Icon: Waypoints },
+  { to: "/kb/$kbId/search", label: S.nav.search, Icon: SearchIcon },
+  { to: "/kb/$kbId/chat", label: S.nav.ask, Icon: MessagesSquare },
+  { to: "/kb/$kbId/library", label: S.nav.library, Icon: LibraryIcon },
+  { to: "/kb/$kbId/review", label: S.review.title, Icon: ListChecks },
+  { to: "/kb/$kbId/ontology", label: S.ontology.title, Icon: Shapes },
   // 本体说「世界上有什么」，数据映射说「这个数在库里怎么算」——挨着放
-  { to: "/mappings", label: S.mapping.title, Icon: Database },
+  { to: "/kb/$kbId/mappings", label: S.mapping.title, Icon: Database },
   // 库设置与其它 tab 同为"当前知识库作用域"，并列于内容导航
-  { to: "/kb-settings", label: S.nav.settings, Icon: SettingsIcon },
+  { to: "/kb/$kbId/settings", label: S.nav.settings, Icon: SettingsIcon },
 ] as const;
 
 export function Shell() {
   const navigate = useNavigate();
+  const kbId = useKbId();
 
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
   const health = useQuery({
@@ -154,6 +155,7 @@ export function Shell() {
           <Link
             key={to}
             to={to}
+            params={{ kbId }}
             className="flex items-center gap-2 px-3.5 py-2.5 text-[13.5px] font-medium text-neutral-400 border-b-2 border-transparent hover:text-neutral-200"
             activeProps={{
               className:

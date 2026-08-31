@@ -39,7 +39,7 @@ export function Login() {
     onSuccess: () => {
       // 谢幕：卡片上浮淡出、巨构放大穿越，再进入图谱首页
       setLeaving(true);
-      window.setTimeout(() => navigate({ to: "/graph" }), 650);
+      window.setTimeout(() => navigate({ to: "/" }), 650);
     },
   });
 
