@@ -92,7 +92,9 @@ function parseRgba(c: string): [number, number, number, number] {
     const [r, g, b] = hexToRgb(c);
     return [r, g, b, 1];
   }
-  const m = c.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/);
+  const m = c.match(
+    /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?/,
+  );
   if (!m) return [128, 128, 128, 1];
   return [+m[1], +m[2], +m[3], m[4] !== undefined ? +m[4] : 1];
 }
@@ -142,7 +144,10 @@ function drawWorldGrid(canvas: HTMLCanvasElement, sigma: Sigma): void {
 
   for (let sp = spacing; sp * ppw < GRID_MAX_LEVEL_PX; sp *= 4) {
     const ss = sp * ppw;
-    const t = Math.min(1, (ss - GRID_FADE_IN_PX) / (GRID_FULL_PX - GRID_FADE_IN_PX));
+    const t = Math.min(
+      1,
+      (ss - GRID_FADE_IN_PX) / (GRID_FULL_PX - GRID_FADE_IN_PX),
+    );
     if (t <= 0) continue;
     ctx.strokeStyle = `rgba(255,255,255,${(GRID_MAX_ALPHA * t).toFixed(4)})`;
     ctx.lineWidth = 1;
@@ -165,7 +170,11 @@ function drawWorldGrid(canvas: HTMLCanvasElement, sigma: Sigma): void {
 
 /* 胶囊标签：深色圆角底 + 柔和文字（学 Semantica 的浮签风格） */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function drawPillLabel(ctx: CanvasRenderingContext2D, data: any, settings: any): void {
+function drawPillLabel(
+  ctx: CanvasRenderingContext2D,
+  data: any,
+  settings: any,
+): void {
   if (!data.label) return;
   // hover 时悬浮卡（drawHoverCard）接管展示，底层 pill 隐去，避免双层标签
   if (data.hideBaseLabel) return;
@@ -197,14 +206,25 @@ function drawPillLabel(ctx: CanvasRenderingContext2D, data: any, settings: any):
 
 /* Hover 悬浮卡（Semantica hoverCard 规格）：径向柔光 + 名称 + 类型行 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function drawHoverCard(ctx: CanvasRenderingContext2D, data: any, _settings: any): void {
+function drawHoverCard(
+  ctx: CanvasRenderingContext2D,
+  data: any,
+  _settings: any,
+): void {
   if (!data.label) return;
   ctx.save();
 
   // 柔光: 半径 max(size*4.8, 16), 类型色 alpha 0.18 → 0
   const glowR = Math.max(data.size * 4.8, 16);
   const [r, g, b] = hexToRgb((data.typeColor as string) ?? "#888888");
-  const grad = ctx.createRadialGradient(data.x, data.y, 0, data.x, data.y, glowR);
+  const grad = ctx.createRadialGradient(
+    data.x,
+    data.y,
+    0,
+    data.x,
+    data.y,
+    glowR,
+  );
   grad.addColorStop(0, `rgba(${r},${g},${b},0.18)`);
   grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
   ctx.fillStyle = grad;
@@ -253,7 +273,9 @@ export function Graph() {
   const { kb } = useKb();
   // 深链入口：/graph?entity=… 直接聚焦并选中该实体（证据两跳可达的反向路径）
   const { entity: entityParam } = useSearch({ from: "/app/graph" });
-  const [focusEntity, setFocusEntity] = useState<string | null>(entityParam ?? null);
+  const [focusEntity, setFocusEntity] = useState<string | null>(
+    entityParam ?? null,
+  );
   const [selected, setSelected] = useState<string | null>(entityParam ?? null);
   const [searchInput, setSearchInput] = useState("");
   const [searchQ, setSearchQ] = useState("");
@@ -279,7 +301,9 @@ export function Graph() {
   const data = useQuery({
     queryKey: ["graph", kb?.id, focusEntity],
     queryFn: () =>
-      focusEntity ? api.graphNeighborhood(kb!.id, focusEntity) : api.graphOverview(kb!.id),
+      focusEntity
+        ? api.graphNeighborhood(kb!.id, focusEntity)
+        : api.graphOverview(kb!.id),
     enabled: !!kb,
   });
 
@@ -306,7 +330,9 @@ export function Graph() {
       )
       .slice(0, 10);
   }, [inSubgraph, searchQ, data.data]);
-  const searchHits = inSubgraph ? subgraphHits : (candidates.data?.entities ?? []);
+  const searchHits = inSubgraph
+    ? subgraphHits
+    : (candidates.data?.entities ?? []);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLCanvasElement>(null);
@@ -339,7 +365,9 @@ export function Graph() {
       for (const [id, start] of fadeRef.current)
         if (now - start >= FADE_MS) fadeRef.current.delete(id);
       sigmaRef.current?.refresh();
-      fadeRafRef.current = fadeRef.current.size ? requestAnimationFrame(step) : 0;
+      fadeRafRef.current = fadeRef.current.size
+        ? requestAnimationFrame(step)
+        : 0;
     };
     fadeRafRef.current = requestAnimationFrame(step);
   }, []);
@@ -356,7 +384,10 @@ export function Graph() {
   useEffect(() => () => cancelAnimationFrame(fadeRafRef.current), []);
 
   const types = useMemo(() => {
-    const map = new Map<string, { label: string; color: string; shape: string }>();
+    const map = new Map<
+      string,
+      { label: string; color: string; shape: string }
+    >();
     for (const n of data.data?.nodes ?? []) {
       // 没判出类型的归到空 key 一档（0009）。真实 key 由 IRI 派生，不可能为空，
       // 所以它撞不着任何一个类；标签走 i18n，别把 null 画到图例上
@@ -398,7 +429,8 @@ export function Graph() {
           const vt = e.valid_to ? Date.parse(e.valid_to) : null;
           touched.add(e.source);
           touched.add(e.target);
-          const active = vf === null ? true : vf <= t && (vt === null || vt > t);
+          const active =
+            vf === null ? true : vf <= t && (vt === null || vt > t);
           if (active) {
             edges.add(e.id);
             nodes.add(e.source);
@@ -410,8 +442,10 @@ export function Graph() {
         // 播放推进时新出现的元素淡入登场；手动拖动保持瞬时切换
         if (playingRef.current) {
           const now = performance.now();
-          for (const id of edges) if (prevEdges && !prevEdges.has(id)) fadeRef.current.set(id, now);
-          for (const id of nodes) if (prevNodes && !prevNodes.has(id)) fadeRef.current.set(id, now);
+          for (const id of edges)
+            if (prevEdges && !prevEdges.has(id)) fadeRef.current.set(id, now);
+          for (const id of nodes)
+            if (prevNodes && !prevNodes.has(id)) fadeRef.current.set(id, now);
           if (fadeRef.current.size) kickFade();
         }
         filterRef.current.activeNodes = nodes;
@@ -527,7 +561,10 @@ export function Graph() {
 
     // 任意布局结果统一缩放到 FA2 同量级世界（±target），相机 reset 观感一致
     const rescaleWorld = (target = 300) => {
-      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      let minX = Infinity,
+        maxX = -Infinity,
+        minY = Infinity,
+        maxY = -Infinity;
       g.forEachNode((_n, a) => {
         minX = Math.min(minX, a.x as number);
         maxX = Math.max(maxX, a.x as number);
@@ -538,7 +575,11 @@ export function Graph() {
       const k = (target * 2) / span;
       const cx = (minX + maxX) / 2;
       const cy = (minY + maxY) / 2;
-      g.updateEachNodeAttributes((_n, a) => ({ ...a, x: (a.x - cx) * k, y: (a.y - cy) * k }));
+      g.updateEachNodeAttributes((_n, a) => ({
+        ...a,
+        x: (a.x - cx) * k,
+        y: (a.y - cy) * k,
+      }));
     };
 
     // 布局切换控制（挂到 ref 供组件层按钮调用；闭包内直握 g / fa2）
@@ -549,7 +590,10 @@ export function Graph() {
         fa2?.stop();
         setStabilizing(false);
         if (mode === "force") {
-          forceAtlas2.assign(g, { iterations: 60, settings: fa2Settings ?? undefined });
+          forceAtlas2.assign(g, {
+            iterations: 60,
+            settings: fa2Settings ?? undefined,
+          });
           fa2?.start();
           setStabilizing(true);
           stabilizeTimer = setTimeout(() => {
@@ -628,7 +672,10 @@ export function Graph() {
           return res;
         }
         // 选中实体可能不在当前画布（侧栏跳转/邻域重载间隙）——不在则跳过聚焦压暗逻辑
-        const sel = selectedRef.current && g.hasNode(selectedRef.current) ? selectedRef.current : null;
+        const sel =
+          selectedRef.current && g.hasNode(selectedRef.current)
+            ? selectedRef.current
+            : null;
         if (sel) {
           if (node === sel) {
             res.size = Math.max(base * 1.02, 9.2);
@@ -658,9 +705,21 @@ export function Graph() {
         if (fs !== undefined) {
           const t = Math.min(1, (performance.now() - fs) / FADE_MS);
           res.size = (res.size as number) * (0.55 + 0.45 * t);
-          res.color = lerpColor(MUTED_SHELL, String(res.color ?? NODE_CORE_BASE), t);
-          res.shellColor = lerpColor(MUTED_SHELL, String(res.shellColor ?? NODE_SHELL_BASE), t);
-          res.borderColor = lerpColor("rgba(0,0,0,0)", String(res.borderColor ?? NODE_BORDER_BASE), t);
+          res.color = lerpColor(
+            MUTED_SHELL,
+            String(res.color ?? NODE_CORE_BASE),
+            t,
+          );
+          res.shellColor = lerpColor(
+            MUTED_SHELL,
+            String(res.shellColor ?? NODE_SHELL_BASE),
+            t,
+          );
+          res.borderColor = lerpColor(
+            "rgba(0,0,0,0)",
+            String(res.borderColor ?? NODE_BORDER_BASE),
+            t,
+          );
           if (t < 0.7) res.label = "";
         }
         return res;
@@ -687,13 +746,18 @@ export function Graph() {
             EDGE_COLOR_DERIVED_DIM,
             EDGE_COLOR_DERIVED,
             // 三角波而不是正弦：两端各停一瞬，看起来是「呼吸」不是「闪」
-            Math.abs(((performance.now() % DERIVED_PULSE_MS) / DERIVED_PULSE_MS) * 2 - 1),
+            Math.abs(
+              ((performance.now() % DERIVED_PULSE_MS) / DERIVED_PULSE_MS) * 2 -
+                1,
+            ),
           );
         }
         // hover: 只提亮关联边；selected: 提亮关联边 + 压暗其余
         const hov = hoverRef.current;
         const sel =
-          selectedRef.current && g.hasNode(selectedRef.current) ? selectedRef.current : null;
+          selectedRef.current && g.hasNode(selectedRef.current)
+            ? selectedRef.current
+            : null;
         const boost = () => {
           res.color = EDGE_FOCUS;
           res.size = Math.max((attrs.size as number) * 1.42, 1.85);
@@ -768,12 +832,14 @@ export function Graph() {
     sigma.getMouseCaptor().on("mousemovebody", (e) => {
       if (!dragCandidate) return;
       if (!dragged) {
-        if (!downPoint || Math.hypot(e.x - downPoint.x, e.y - downPoint.y) < 4) return;
+        if (!downPoint || Math.hypot(e.x - downPoint.x, e.y - downPoint.y) < 4)
+          return;
         // 升格为拖拽
         dragged = dragCandidate;
         if (settleTimer) clearTimeout(settleTimer);
         // 静态布局（circular/pack）下拖拽不唤醒力模拟——否则一碰就散架
-        if (layoutModeRef.current === "force" && fa2 && !fa2.isRunning()) fa2.start();
+        if (layoutModeRef.current === "force" && fa2 && !fa2.isRunning())
+          fa2.start();
         // 固定当前包围盒，避免拖拽时相机自动跟随缩放
         if (!sigma.getCustomBBox()) sigma.setCustomBBox(sigma.getBBox());
       }
@@ -814,7 +880,8 @@ export function Graph() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.data]);
 
-  if (!kb) return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
+  if (!kb)
+    return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
 
   const empty = data.isSuccess && data.data.nodes.length === 0;
   const nodeCount = data.data?.nodes.length ?? 0;
@@ -832,7 +899,9 @@ export function Graph() {
         <div className="relative pointer-events-auto">
           <input
             className="input-dark w-60 px-3 py-1.5 text-sm shadow-lg"
-            placeholder={inSubgraph ? S.graph.searchInSubgraph : S.graph.searchEntity}
+            placeholder={
+              inSubgraph ? S.graph.searchInSubgraph : S.graph.searchEntity
+            }
             value={searchInput}
             onChange={(e) => {
               setSearchInput(e.target.value);
@@ -859,9 +928,13 @@ export function Graph() {
                   />
                   <span className="truncate">{c.name}</span>
                   {c.disambiguator && (
-                    <span className="text-xs text-neutral-500 truncate">· {c.disambiguator}</span>
+                    <span className="text-xs text-neutral-500 truncate">
+                      · {c.disambiguator}
+                    </span>
                   )}
-                  <span className="ml-auto text-xs text-neutral-500">{c.type_label}</span>
+                  <span className="ml-auto text-xs text-neutral-500">
+                    {c.type_label}
+                  </span>
                 </button>
               ))}
               {/* 还有更多没显示。**说清剩多少**——从前固定十条，想找的那个
@@ -914,51 +987,56 @@ export function Graph() {
               <span className="text-neutral-300">{t.label}</span>
             </button>
           ))}
-          {/* 推出来的边：与类型图例同一条，因为它们是同一种动作——决定图上
-              显示什么。为零时不出现 */}
-          {derivedCount > 0 && (
-            <div className="relative flex items-center gap-1">
-              <button
-                onClick={() => setShowDerived((v) => !v)}
-                title={S.graph.derivedHint}
-                className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
-                  showDerived ? "" : "opacity-35"
-                }`}
-              >
-                <span
-                  className="h-2 w-2 rounded-full"
-                  style={{ background: "rgba(231,197,124,0.9)" }}
-                />
-                <span className="text-neutral-300">
-                  {S.graph.derivedEdges(derivedCount)}
-                </span>
-              </button>
-              {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
-                  **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
-                  是偶尔才问的，合成一个会让常用动作多一步 */}
-              <button
-                onClick={() => setDerivedPanel((v) => !v)}
-                title={S.graph.derivedPanel}
-                aria-expanded={derivedPanel}
-                className={`glass rounded-full h-[22px] w-[22px] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
-                  derivedPanel ? "text-neutral-100" : ""
-                }`}
-              >
-                ⋯
-              </button>
-              {derivedPanel && kb && (
-                <DerivedPanel
-                  kbId={kb.id}
-                  count={derivedCount}
-                  onClose={() => setDerivedPanel(false)}
-                />
-              )}
-            </div>
-          )}
         </div>
 
+        {/* 推出来的边：**自成一组，不进类型图例。**
+            图例回答「显示哪些类」，一排全是本体里的类；这个回答的是
+            「显不显示推出来的边」——不是同一个问题，混进那一排它就像是
+            多出来的一个类。为零时整组不出现 */}
+        {derivedCount > 0 && (
+          <div className="pointer-events-auto relative flex items-center gap-1 pt-0.5 pl-1 ml-1 border-l border-white/10">
+            <button
+              onClick={() => setShowDerived((v) => !v)}
+              title={S.graph.derivedHint}
+              className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
+                showDerived ? "" : "opacity-35"
+              }`}
+            >
+              <span
+                className="h-2 w-2 rounded-full"
+                style={{ background: "rgba(231,197,124,0.9)" }}
+              />
+              <span className="text-neutral-300">
+                {S.graph.derivedEdges(derivedCount)}
+              </span>
+            </button>
+            {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
+                **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
+                是偶尔才问的，合成一个会让常用动作多一步 */}
+            <button
+              onClick={() => setDerivedPanel((v) => !v)}
+              title={S.graph.derivedPanel}
+              aria-expanded={derivedPanel}
+              className={`glass rounded-full h-[22px] w-[22px] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
+                derivedPanel ? "text-neutral-100" : ""
+              }`}
+            >
+              ⋯
+            </button>
+            {derivedPanel && kb && (
+              <DerivedPanel
+                kbId={kb.id}
+                count={derivedCount}
+                onClose={() => setDerivedPanel(false)}
+              />
+            )}
+          </div>
+        )}
+
         <div className="ml-auto pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
-          {stabilizing && <span className="text-neutral-400">{S.graph.stabilizing} · </span>}
+          {stabilizing && (
+            <span className="text-neutral-400">{S.graph.stabilizing} · </span>
+          )}
           {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
               一个上万实体的库右上角永远写着 150 */}
           {capped ? (
@@ -971,7 +1049,11 @@ export function Graph() {
               )}
             </span>
           ) : (
-            S.graph.stats(nodeCount, edgeCount, timeT === null ? edgeCount : activeCount)
+            S.graph.stats(
+              nodeCount,
+              edgeCount,
+              timeT === null ? edgeCount : activeCount,
+            )
           )}
         </div>
       </div>
@@ -984,56 +1066,66 @@ export function Graph() {
 
       {/* 左下控件塔：布局切换 + 相机（右下归实体侧栏，底部中央归时间岛） */}
       <div className="absolute bottom-4 left-3 z-10 flex flex-col gap-2">
-      <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
-        {(
-          [
-            { key: "force", Icon: Orbit, label: S.graph.layoutForce },
-            { key: "circular", Icon: CircleDashed, label: S.graph.layoutCircular },
-            { key: "pack", Icon: Grape, label: S.graph.layoutPack },
-          ] as const
-        ).map(({ key, Icon, label }) => (
+        <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+          {(
+            [
+              { key: "force", Icon: Orbit, label: S.graph.layoutForce },
+              {
+                key: "circular",
+                Icon: CircleDashed,
+                label: S.graph.layoutCircular,
+              },
+              { key: "pack", Icon: Grape, label: S.graph.layoutPack },
+            ] as const
+          ).map(({ key, Icon, label }) => (
+            <button
+              key={key}
+              title={label}
+              onClick={() => {
+                setLayoutMode(key);
+                layoutModeRef.current = key;
+                layoutCtlRef.current?.apply(key);
+              }}
+              className={`p-2 transition-colors ${
+                layoutMode === key
+                  ? "text-white bg-white/[0.1]"
+                  : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
+              }`}
+            >
+              <Icon size={15} />
+            </button>
+          ))}
+        </div>
+        <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
           <button
-            key={key}
-            title={label}
-            onClick={() => {
-              setLayoutMode(key);
-              layoutModeRef.current = key;
-              layoutCtlRef.current?.apply(key);
-            }}
-            className={`p-2 transition-colors ${
-              layoutMode === key
-                ? "text-white bg-white/[0.1]"
-                : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
-            }`}
+            title={S.graph.zoomIn}
+            onClick={() =>
+              sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })
+            }
+            className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
-            <Icon size={15} />
+            <ZoomIn size={15} />
           </button>
-        ))}
-      </div>
-      <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
-        <button
-          title={S.graph.zoomIn}
-          onClick={() => sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })}
-          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-        >
-          <ZoomIn size={15} />
-        </button>
-        <button
-          title={S.graph.zoomOut}
-          onClick={() => sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })}
-          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-        >
-          <ZoomOut size={15} />
-        </button>
-        <div className="h-px bg-white/10 mx-1.5" />
-        <button
-          title={S.graph.fitView}
-          onClick={() => sigmaRef.current?.getCamera().animatedReset({ duration: 300 })}
-          className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-        >
-          <Maximize2 size={15} />
-        </button>
-      </div>
+          <button
+            title={S.graph.zoomOut}
+            onClick={() =>
+              sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })
+            }
+            className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+          >
+            <ZoomOut size={15} />
+          </button>
+          <div className="h-px bg-white/10 mx-1.5" />
+          <button
+            title={S.graph.fitView}
+            onClick={() =>
+              sigmaRef.current?.getCamera().animatedReset({ duration: 300 })
+            }
+            className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+          >
+            <Maximize2 size={15} />
+          </button>
+        </div>
       </div>
 
       {empty && (
@@ -1115,7 +1207,9 @@ function TimeScrubber({
     const froms = edges
       .map((e) => (e.valid_from ? Date.parse(e.valid_from) : NaN))
       .filter((t) => !Number.isNaN(t));
-    const min = froms.length ? Math.min(...froms) : now - 5 * 365 * 24 * 3600 * 1000;
+    const min = froms.length
+      ? Math.min(...froms)
+      : now - 5 * 365 * 24 * 3600 * 1000;
     const minYear = new Date(min).getUTCFullYear();
     const maxYear = new Date(now).getUTCFullYear();
     const counts = new Map<number, number>();
@@ -1191,14 +1285,21 @@ function TimeScrubber({
       </span>
 
       {/* 密度带轨道：内嵌浅色井 + 每年事实量柱 */}
-      <div ref={trackRef} className="relative flex-1 h-9 rounded-lg bg-white/[0.04]">
+      <div
+        ref={trackRef}
+        className="relative flex-1 h-9 rounded-lg bg-white/[0.04]"
+      >
         <div className="absolute inset-x-1.5 top-1.5 bottom-1.5 flex items-end gap-[2px]">
           {bars.map((b) => {
             // 进入即亮（年初为判据）：播放头脚下的柱子即已覆盖——进度条通用语义
             const barTs = Date.UTC(b.year, 0, 1);
             const past = value !== null && barTs <= value;
             return (
-              <div key={b.year} className="flex-1 flex items-end h-full" title={`${b.year}`}>
+              <div
+                key={b.year}
+                className="flex-1 flex items-end h-full"
+                title={`${b.year}`}
+              >
                 <div
                   className="w-full rounded-[1px] transition-colors"
                   style={{
@@ -1266,7 +1367,12 @@ function TimeScrubber({
       <div className="flex shrink-0 rounded-lg overflow-hidden border border-white/10">
         {(
           [
-            { key: "all", label: S.graph.allTime, active: value === null, to: null },
+            {
+              key: "all",
+              label: S.graph.allTime,
+              active: value === null,
+              to: null,
+            },
             {
               key: "now",
               label: S.graph.nowBtn,
@@ -1358,12 +1464,16 @@ function DerivedPanel({
   const on = kb.data?.materialize_inferences ?? false;
   const last = kb.data?.last_inference_at;
   // 「多久以前」比一个时间戳好读——问题是「新不新」，不是「几点」
-  const age = last ? Math.round((Date.now() - new Date(last).getTime()) / 60000) : null;
+  const age = last
+    ? Math.round((Date.now() - new Date(last).getTime()) / 60000)
+    : null;
 
   return (
     <div className="glass-strong pointer-events-auto absolute left-0 top-8 z-20 w-72 rounded-xl p-3 shadow-xl">
       <div className="flex items-baseline gap-2">
-        <span className="text-[13px] text-neutral-100">{S.graph.derivedPanel}</span>
+        <span className="text-[13px] text-neutral-100">
+          {S.graph.derivedPanel}
+        </span>
         <button
           className="ml-auto text-neutral-500 hover:text-neutral-200"
           onClick={onClose}
@@ -1381,7 +1491,9 @@ function DerivedPanel({
         <div className="flex justify-between gap-3">
           <dt className="text-neutral-500">{S.graph.derivedStateLabel}</dt>
           <dd className={on ? "text-neutral-200" : "text-[var(--u-warn)]"}>
-            {on ? S.graph.derivedOn(kb.data!.inference_interval_minutes) : S.graph.derivedOff}
+            {on
+              ? S.graph.derivedOn(kb.data!.inference_interval_minutes)
+              : S.graph.derivedOff}
           </dd>
         </div>
         <div className="flex justify-between gap-3">
@@ -1399,12 +1511,15 @@ function DerivedPanel({
           {run.data.inserted === 0 && run.data.invalidated === 0
             ? S.graph.derivedNoChange
             : S.graph.derivedChanged(run.data.inserted, run.data.invalidated)}
-          {run.data.capped > 0 && ` · ${S.graph.derivedCapped(run.data.capped)}`}
+          {run.data.capped > 0 &&
+            ` · ${S.graph.derivedCapped(run.data.capped)}`}
         </p>
       )}
 
+      {/* **不是实心白。** `u-btn-primary` 是全站主操作那一档，用在一个悬浮小窗里
+          的次要动作上，整块面板会被这一个按钮压住 */}
       <button
-        className="u-btn u-btn-primary mt-2.5 w-full py-1 text-[11px]"
+        className="u-btn u-btn-ghost mt-2.5 w-full py-1 text-[11px]"
         disabled={!on || run.isPending}
         title={on ? undefined : S.err.inference_off}
         onClick={() => run.mutate()}
@@ -1538,7 +1653,8 @@ function EntityPanel({
   const save = useMutation({
     mutationFn: () => {
       const body: { type_id?: string; canonical_name?: string } = {};
-      if (draftName.trim() && draftName.trim() !== e?.name) body.canonical_name = draftName.trim();
+      if (draftName.trim() && draftName.trim() !== e?.name)
+        body.canonical_name = draftName.trim();
       const curId = types.find((t) => t.key === e?.type_key)?.id;
       if (draftType && draftType !== curId) body.type_id = draftType;
       return api.updateEntity(kbId, entityId, body);
@@ -1566,11 +1682,19 @@ function EntityPanel({
     const all = detail.data?.facts ?? [];
     const nowIso = new Date().toISOString();
     const current = all.filter(
-      (f) => (!f.valid_from || f.valid_from <= nowIso) && (!f.valid_to || f.valid_to > nowIso),
+      (f) =>
+        (!f.valid_from || f.valid_from <= nowIso) &&
+        (!f.valid_to || f.valid_to > nowIso),
     );
     const map = new Map<
       string,
-      { key: string; label: string | null; inferred: boolean; direction: string; rows: EntityFact[] }
+      {
+        key: string;
+        label: string | null;
+        inferred: boolean;
+        direction: string;
+        rows: EntityFact[];
+      }
     >();
     for (const f of current) {
       // 谓词为空的事实归到同一组：它们的共同点就是「说不出是什么关系」
@@ -1587,9 +1711,13 @@ function EntityPanel({
     }
     const arr = [...map.values()];
     for (const gr of arr)
-      gr.rows.sort((a, b) => ((a.valid_from ?? "9999") < (b.valid_from ?? "9999") ? -1 : 1));
+      gr.rows.sort((a, b) =>
+        (a.valid_from ?? "9999") < (b.valid_from ?? "9999") ? -1 : 1,
+      );
     arr.sort(
-      (a, b) => b.rows.length - a.rows.length || (a.label ?? "").localeCompare(b.label ?? ""),
+      (a, b) =>
+        b.rows.length - a.rows.length ||
+        (a.label ?? "").localeCompare(b.label ?? ""),
     );
     return { groups: arr, historicalCount: all.length - current.length };
   }, [detail.data]);
@@ -1603,7 +1731,10 @@ function EntityPanel({
               <div className="flex items-center gap-2">
                 <span
                   className="h-2.5 w-2.5 rounded-full shrink-0"
-                  style={{ background: e.color, boxShadow: `0 0 8px ${e.color}55` }}
+                  style={{
+                    background: e.color,
+                    boxShadow: `0 0 8px ${e.color}55`,
+                  }}
                 />
                 <span
                   className="text-[15px] font-semibold tracking-tight text-white"
@@ -1617,8 +1748,8 @@ function EntityPanel({
                 {e.disambiguator && e.disambiguator !== e.type_label
                   ? `${e.disambiguator} · `
                   : ""}
-                {e.type_label ?? S.graph.untyped} · {detail.data?.facts.length ?? 0}{" "}
-                {S.graph.facts}
+                {e.type_label ?? S.graph.untyped} ·{" "}
+                {detail.data?.facts.length ?? 0} {S.graph.facts}
               </div>
             </>
           )}
@@ -1633,7 +1764,10 @@ function EntityPanel({
               <Pencil size={13} />
             </button>
           )}
-          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200">
+          <button
+            onClick={onClose}
+            className="text-neutral-500 hover:text-neutral-200"
+          >
             <X size={15} />
           </button>
         </div>
@@ -1650,7 +1784,8 @@ function EntityPanel({
               value={draftName}
               onChange={(ev) => setDraftName(ev.target.value)}
               onKeyDown={(ev) => {
-                if (ev.key === "Enter" && dirty && draftName.trim()) save.mutate();
+                if (ev.key === "Enter" && dirty && draftName.trim())
+                  save.mutate();
                 if (ev.key === "Escape") setEditing(false);
               }}
               className="mt-1 w-full bg-white/[0.04] border border-white/10 rounded px-2 py-1 text-sm text-neutral-100 focus:outline-none focus:border-white/25"
@@ -1687,7 +1822,9 @@ function EntityPanel({
               {S.graph.editCancel}
             </button>
             {!draftName.trim() && (
-              <span className="text-[11px] text-[var(--u-danger)]">{S.graph.editEmptyName}</span>
+              <span className="text-[11px] text-[var(--u-danger)]">
+                {S.graph.editEmptyName}
+              </span>
             )}
           </div>
         </div>
@@ -1743,31 +1880,29 @@ function EntityPanel({
       {/* 视图切换：Relations（分组）| Timeline（年表） */}
       <div className="px-4 pt-2.5">
         <div className="flex rounded-lg overflow-hidden border border-white/10 w-fit">
-          {(
-            ["relations", "timeline", "history", "derived"] as const
-          )
+          {(["relations", "timeline", "history", "derived"] as const)
             // 推出来的那一档：**没有派生就不出现**。一个没开推理的库不该看到
             // 一个永远是空的标签页
             .filter((v) => v !== "derived" || derived.length > 0)
             .map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`px-3 py-1 text-[11px] transition-colors ${
-                view === v
-                  ? "bg-white/10 text-neutral-100"
-                  : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-              }`}
-            >
-              {v === "relations"
-                ? S.graph.viewRelations
-                : v === "timeline"
-                  ? S.graph.viewTimeline
-                  : v === "history"
-                    ? S.graph.viewHistory
-                    : S.graph.viewDerived}
-            </button>
-          ))}
+              <button
+                key={v}
+                onClick={() => setView(v)}
+                className={`px-3 py-1 text-[11px] transition-colors ${
+                  view === v
+                    ? "bg-white/10 text-neutral-100"
+                    : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
+                }`}
+              >
+                {v === "relations"
+                  ? S.graph.viewRelations
+                  : v === "timeline"
+                    ? S.graph.viewTimeline
+                    : v === "history"
+                      ? S.graph.viewHistory
+                      : S.graph.viewDerived}
+              </button>
+            ))}
         </div>
       </div>
 
@@ -1784,14 +1919,26 @@ function EntityPanel({
           groups.map((gr) => (
             <div key={gr.key} className="mb-3 last:mb-1">
               <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
-                {gr.direction === "in" ? <ArrowLeft size={10} /> : <ArrowRight size={10} />}
+                {gr.direction === "in" ? (
+                  <ArrowLeft size={10} />
+                ) : (
+                  <ArrowRight size={10} />
+                )}
                 <span
-                  className={gr.label === null ? "italic text-neutral-600" : undefined}
-                  title={gr.label && gr.inferred ? S.graph.inferredPredicate : undefined}
+                  className={
+                    gr.label === null ? "italic text-neutral-600" : undefined
+                  }
+                  title={
+                    gr.label && gr.inferred
+                      ? S.graph.inferredPredicate
+                      : undefined
+                  }
                 >
                   {gr.label ?? S.graph.unknownPredicate}
                 </span>
-                {gr.rows.length > 1 && <span className="text-neutral-600">{gr.rows.length}</span>}
+                {gr.rows.length > 1 && (
+                  <span className="text-neutral-600">{gr.rows.length}</span>
+                )}
               </div>
               <div>
                 {gr.rows.map((f) => (
@@ -1800,7 +1947,9 @@ function EntityPanel({
                     kbId={kbId}
                     fact={f}
                     open={openFact === f.id}
-                    onToggle={() => setOpenFact(openFact === f.id ? null : f.id)}
+                    onToggle={() =>
+                      setOpenFact(openFact === f.id ? null : f.id)
+                    }
                     onNavigate={onNavigate}
                   />
                 ))}
@@ -1816,7 +1965,9 @@ function EntityPanel({
             onNavigate={onNavigate}
           />
         )}
-        {view === "history" && <EntityHistory kbId={kbId} entityId={entityId} />}
+        {view === "history" && (
+          <EntityHistory kbId={kbId} entityId={entityId} />
+        )}
         {view === "derived" && (
           <div className="space-y-2">
             <p className="px-2 pb-1 text-[11px] leading-relaxed text-neutral-500">
@@ -1854,7 +2005,9 @@ function TimelineView({
   const dated = facts
     .filter((f) => f.temporal !== "eternal" && (f.valid_from || f.valid_to))
     .sort((a, b) =>
-      (a.valid_from ?? a.valid_to ?? "") < (b.valid_from ?? b.valid_to ?? "") ? -1 : 1,
+      (a.valid_from ?? a.valid_to ?? "") < (b.valid_from ?? b.valid_to ?? "")
+        ? -1
+        : 1,
     );
   const undated = facts.filter((f) => !dated.includes(f));
 
@@ -1874,7 +2027,9 @@ function TimelineView({
           </div>
         ))}
         {dated.length === 0 && (
-          <p className="py-2 text-xs text-neutral-500">{S.graph.timelineEmpty}</p>
+          <p className="py-2 text-xs text-neutral-500">
+            {S.graph.timelineEmpty}
+          </p>
         )}
       </div>
       {undated.length > 0 && (
@@ -1940,8 +2095,16 @@ function TimelineRow({
           <span className="text-neutral-500 text-xs">
             {fact.direction === "in" ? "←" : "→"}{" "}
             <span
-              className={fact.predicate_label === null ? "italic text-neutral-600" : undefined}
-              title={fact.predicate_label && fact.inferred ? S.graph.inferredPredicate : undefined}
+              className={
+                fact.predicate_label === null
+                  ? "italic text-neutral-600"
+                  : undefined
+              }
+              title={
+                fact.predicate_label && fact.inferred
+                  ? S.graph.inferredPredicate
+                  : undefined
+              }
             >
               {fact.predicate_label ?? S.graph.unknownPredicate}
             </span>
@@ -1965,7 +2128,9 @@ function TimelineRow({
               {fact.other_name ?? "?"}
             </span>
           ) : (
-            <span className="truncate">{fact.other_name ?? literal ?? "?"}</span>
+            <span className="truncate">
+              {fact.other_name ?? literal ?? "?"}
+            </span>
           )}
           {fact.stale && (
             <span className="u-chip u-chip-neutral shrink-0 !text-[10px] !px-1.5">
@@ -1983,7 +2148,8 @@ function TimelineRow({
 function fmtObjectValue(v: Record<string, unknown> | null): string | null {
   if (!v) return null;
   if (v.value !== undefined) {
-    const val = typeof v.value === "boolean" ? (v.value ? "✓" : "✗") : String(v.value);
+    const val =
+      typeof v.value === "boolean" ? (v.value ? "✓" : "✗") : String(v.value);
     return typeof v.unit === "string" && v.unit ? `${val} ${v.unit}` : val;
   }
   if (typeof v.summary === "string") return v.summary;
@@ -2014,7 +2180,10 @@ function FactRow({
       }`}
       title={fact.stale ? S.graph.staleFactHint : undefined}
     >
-      <button onClick={onToggle} className="w-full text-left px-2 py-1.5 flex items-center gap-1.5">
+      <button
+        onClick={onToggle}
+        className="w-full text-left px-2 py-1.5 flex items-center gap-1.5"
+      >
         <ChevronRight
           size={11}
           className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
@@ -2082,11 +2251,12 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
           {/* 原文说的谓词，只在它与事实行上显示的不同时才写出来。本体外的谓词
               事实行上已经显示原文说法（0052），相同的话再写一遍是噪声；
               一条事实有多种说法时（占 3%）这里才有话说 */}
-          {ev.proposed_predicate && ev.proposed_predicate !== fact.predicate_key && (
-            <div className="mb-0.5 text-[11px] text-neutral-400">
-              {S.graph.proposedPredicate(ev.proposed_predicate)}
-            </div>
-          )}
+          {ev.proposed_predicate &&
+            ev.proposed_predicate !== fact.predicate_key && (
+              <div className="mb-0.5 text-[11px] text-neutral-400">
+                {S.graph.proposedPredicate(ev.proposed_predicate)}
+              </div>
+            )}
           <div className="line-clamp-2 italic">
             {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
           </div>

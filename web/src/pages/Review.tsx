@@ -503,14 +503,14 @@ function DefectRow({
       )}
       <div className="mt-2 flex gap-1.5">
         <button
-          className="u-btn text-xs"
+          className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
           disabled={busy}
           onClick={() => onDecide("accepted")}
         >
           {S.review.defectAccepted}
         </button>
         <button
-          className="u-btn u-btn-primary text-xs"
+          className="u-btn u-btn-primary px-3 py-1.5 text-xs"
           disabled={busy}
           onClick={() => onDecide("fixed")}
         >
@@ -566,21 +566,21 @@ function ViolationRow({
       </div>
       <div className="mt-2 flex gap-1.5 flex-wrap">
         <button
-          className="u-btn text-xs"
+          className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
           disabled={busy}
           onClick={() => onDecide("accepted")}
         >
           {S.review.acceptBoth}
         </button>
         <button
-          className="u-btn text-xs"
+          className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
           disabled={busy}
           onClick={() => onDecide("axiom_relaxed")}
         >
           {S.review.relaxAxiom}
         </button>
         <button
-          className="u-btn u-btn-primary text-xs"
+          className="u-btn u-btn-primary px-3 py-1.5 text-xs"
           disabled={busy}
           onClick={() => onDecide("fact_retracted")}
         >
@@ -1066,8 +1066,11 @@ export function Review() {
                   {/* 按钮在这一档里，不在页头：只有看这一档的人才想重跑。
                       报告留在按钮旁边——空结果要说清是「没矛盾」还是「没判据」 */}
                   <div className="flex items-center gap-3">
+                    {/* ghost 而不是实心白：这和「探查映射」是同一种东西——
+                        手动触发一次分析，不是这一页的主操作。留一个实心白给
+                        真正的决定（确认 / 合并） */}
                     <button
-                      className="u-btn u-btn-primary text-xs"
+                      className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
                       disabled={runCheck.isPending}
                       onClick={() => runCheck.mutate()}
                     >

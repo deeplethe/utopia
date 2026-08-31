@@ -92,13 +92,18 @@ export function Mappings() {
         <p className="mt-1 text-xs text-neutral-500">{S.mapping.hint}</p>
       </div>
 
-      <div className="flex gap-1.5">
+      {/* 分段控件用全站那一套（`bg-white/10` 选中 + 静默的未选中），
+          不是 `u-btn-primary`——那是主操作的实心白，用在这里每个标签都像
+          一个行动号召 */}
+      <div className="flex w-fit rounded-lg overflow-hidden border border-white/10">
         {(["definitions", "sources"] as const).map((t) => (
           <button
             key={t}
             className={cn(
-              "u-btn px-3 py-1 text-xs",
-              tab === t && "u-btn-primary",
+              "px-3 py-1.5 text-xs transition-colors",
+              tab === t
+                ? "bg-white/10 text-neutral-100"
+                : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300",
             )}
             onClick={() => setTab(t)}
           >
@@ -114,22 +119,37 @@ export function Mappings() {
       ) : (
         <>
           <div className="flex items-center gap-2 flex-wrap">
-            {FILTERS.map((f) => (
-              <button
-                key={f.key}
-                className={cn(
-                  "u-btn px-2.5 py-1 text-xs",
-                  status === f.key && "u-btn-primary",
-                )}
-                onClick={() => {
-                  setStatus(f.key);
-                  setPage(0);
-                }}
-              >
-                {f.label}
-                {f.n != null && <span className="u-num ml-1.5">{f.n}</span>}
-              </button>
-            ))}
+            <div className="flex rounded-lg overflow-hidden border border-white/10">
+              {FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  className={cn(
+                    "px-2.5 py-1.5 text-xs transition-colors flex items-center gap-1.5",
+                    status === f.key
+                      ? "bg-white/10 text-neutral-100"
+                      : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300",
+                  )}
+                  onClick={() => {
+                    setStatus(f.key);
+                    setPage(0);
+                  }}
+                >
+                  {f.label}
+                  {f.n != null && (
+                    <span
+                      className={cn(
+                        "u-num",
+                        status === f.key
+                          ? "text-neutral-300"
+                          : "text-neutral-600",
+                      )}
+                    >
+                      {f.n}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
             <input
               className="u-input flex-1 min-w-40 px-3 py-1 text-xs"
               placeholder={S.mapping.searchPlaceholder}
@@ -247,14 +267,14 @@ function MappingCard({
           {m.status === "proposed" && (
             <>
               <button
-                className="u-btn text-xs"
+                className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
                 disabled={decide.isPending}
                 onClick={() => decide.mutate("rejected")}
               >
                 {S.mapping.reject}
               </button>
               <button
-                className="u-btn u-btn-primary text-xs"
+                className="u-btn u-btn-primary px-3 py-1.5 text-xs"
                 disabled={decide.isPending}
                 onClick={() => decide.mutate("confirmed")}
               >
@@ -358,11 +378,14 @@ function EditForm({
         <p className="text-xs text-[var(--u-danger)]">{S.mapping.needOne}</p>
       )}
       <div className="flex gap-1.5">
-        <button className="u-btn text-xs" onClick={onCancel}>
+        <button
+          className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+          onClick={onCancel}
+        >
           {S.mapping.cancel}
         </button>
         <button
-          className="u-btn u-btn-primary text-xs"
+          className="u-btn u-btn-primary px-3 py-1.5 text-xs"
           disabled={nothing || save.isPending}
           onClick={() => save.mutate()}
         >
@@ -589,9 +612,7 @@ function DataSources({
         </div>
       )}
       {notice && <p className="text-xs text-[var(--u-ok)]">{notice}</p>}
-      {warning && (
-        <p className="text-xs text-[var(--u-warn)]">{warning}</p>
-      )}
+      {warning && <p className="text-xs text-[var(--u-warn)]">{warning}</p>}
     </div>
   );
 }
