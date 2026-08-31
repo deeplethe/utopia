@@ -690,6 +690,11 @@ export const en = {
     cappedHint: (shown: number, total: number) =>
       `The canvas draws the ${shown} best-connected entities of ${total}. Search to reach the rest.`,
     stabilizing: "Stabilizing layout",
+    scrubUnitHint: "Step size for playback and for each bar",
+    scrubUnitYear: "Yr",
+    scrubUnitMonth: "Mo",
+    scrubUnitDay: "Dy",
+    scrubBarMerged: (n: number) => `each bar covers ${n} steps`,
     allTime: "All time",
     nowBtn: "Now",
     play: "Play timeline",

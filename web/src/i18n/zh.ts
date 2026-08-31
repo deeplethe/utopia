@@ -632,6 +632,11 @@ export const zh: Strings = {
     cappedHint: (shown: number, total: number) =>
       `画布只画连接最密的 ${shown} 个，库里共 ${total} 个。其余的用搜索找。`,
     stabilizing: "布局收敛中",
+    scrubUnitHint: "播放的步长，也是每根柱子的跨度",
+    scrubUnitYear: "年",
+    scrubUnitMonth: "月",
+    scrubUnitDay: "日",
+    scrubBarMerged: (n: number) => `每根柱子含 ${n} 步`,
     allTime: "全部时间",
     nowBtn: "现在",
     play: "播放时间线",

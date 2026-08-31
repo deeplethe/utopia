@@ -98,7 +98,6 @@ const PILL_BORDER = "rgba(255,255,255,0.14)";
 const PILL_TEXT = "#ededed";
 const TRANSPARENT = "rgba(0,0,0,0)";
 const DAY_MS = 24 * 3600 * 1000;
-const MONTH_MS = 30 * DAY_MS;
 
 function hexToRgb(hex: string): [number, number, number] {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex);
@@ -1483,6 +1482,33 @@ function scrubValueAt(
   return Math.min(maxTs, minTs + Math.round((raw - minTs) / DAY_MS) * DAY_MS);
 }
 
+/** 播放/柱子的步长。**这两件事本来就该是同一个单位**——从前柱子按年、
+ *  播放按天，界面上没有任何地方说得出「一格是多久」。 */
+type ScrubUnit = "year" | "month" | "day";
+
+/** 一根柱子最多画多少根。超过就把相邻的桶并起来画——**只影响画，不影响
+ *  播放步长**：日单位下 15 年有五千多个桶，一根一像素也画不下，
+ *  但播放仍然是一天一步。并了几个会在提示里说出来，不闷着 */
+const SCRUB_MAX_BARS = 220;
+/** 整条轨走完的目标时长。**与单位无关**——单位换的是颗粒度与密度，
+ *  不该顺带把「等多久」也换掉：日单位若按「一天一拍」走，15 年要放二十分钟 */
+const SCRUB_PLAY_MS = 18000;
+
+function bucketStart(ts: number, unit: ScrubUnit): number {
+  const d = new Date(ts);
+  if (unit === "year") return Date.UTC(d.getUTCFullYear(), 0, 1);
+  if (unit === "month")
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+}
+function bucketNext(ts: number, unit: ScrubUnit): number {
+  const d = new Date(ts);
+  if (unit === "year") return Date.UTC(d.getUTCFullYear() + 1, 0, 1);
+  if (unit === "month")
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+  return ts + DAY_MS;
+}
+
 function TimeScrubber({
   edges,
   value,
@@ -1498,10 +1524,12 @@ function TimeScrubber({
   onPlayingChange: (v: boolean) => void;
 }) {
   const setPlaying = onPlayingChange;
+  /* 默认年：**大多数库跨度都以年计**，一进来先给能一眼看全的那一档 */
+  const [unit, setUnit] = useState<ScrubUnit>("year");
   const trackRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 
-  const { minTs, maxTs, bars } = useMemo(() => {
+  const { minTs, maxTs, bars, merged, trackW } = useMemo(() => {
     const now = Date.now();
     const froms = edges
       .map((e) => (e.valid_from ? Date.parse(e.valid_from) : NaN))
@@ -1509,26 +1537,49 @@ function TimeScrubber({
     const min = froms.length
       ? Math.min(...froms)
       : now - 5 * 365 * 24 * 3600 * 1000;
-    const minYear = new Date(min).getUTCFullYear();
-    const maxYear = new Date(now).getUTCFullYear();
+    // 起点对齐到单位边界：否则第一根柱子是半格，读起来像数据缺了一块
+    const start = bucketStart(min, unit);
+
     const counts = new Map<number, number>();
     for (const t of froms) {
-      const y = new Date(t).getUTCFullYear();
-      counts.set(y, (counts.get(y) ?? 0) + 1);
+      const k = bucketStart(t, unit);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
     }
-    const peak = Math.max(1, ...counts.values());
-    const bars: { year: number; h: number }[] = [];
-    for (let y = minYear; y <= maxYear; y++) {
-      bars.push({ year: y, h: (counts.get(y) ?? 0) / peak });
+    const raw: { ts: number; n: number }[] = [];
+    for (let t = start; t <= now; t = bucketNext(t, unit))
+      raw.push({ ts: t, n: counts.get(t) ?? 0 });
+
+    // 画不下就并桶。**并的是画，不是步长**
+    const group = Math.max(1, Math.ceil(raw.length / SCRUB_MAX_BARS));
+    const cells: { ts: number; n: number }[] = [];
+    for (let i = 0; i < raw.length; i += group) {
+      const slice = raw.slice(i, i + group);
+      cells.push({
+        ts: slice[0].ts,
+        n: slice.reduce((a, b) => a + b.n, 0),
+      });
     }
-    return { minTs: Date.UTC(minYear, 0, 1), maxTs: now, bars };
-  }, [edges]);
+    const peak = Math.max(1, ...cells.map((c) => c.n));
+
+    // 单位越大 → 桶越少 → 轨道越短；越小 → 越长越密。上下都夹住：
+    // 太短点不准，太长会顶到画布两边
+    const w = Math.min(760, Math.max(320, cells.length * 3 + 120));
+
+    return {
+      minTs: start,
+      maxTs: now,
+      bars: cells.map((c) => ({ ts: c.ts, h: c.n / peak, n: c.n })),
+      merged: group,
+      trackW: w,
+    };
+  }, [edges, unit]);
 
   // 播放按日推进（数据即 day 精度），日子快速翻过；整体节奏仍 ≈ 一个月/260ms。
   // rAF 时间驱动：帧率无关，内部浮点累加避免取整漂移，值只在跨天时才下发
   useEffect(() => {
     if (!playing) return;
-    const SPEED = MONTH_MS / 260; // 每毫秒真实时间推进的时间线毫秒数
+    // 整条走完约 SCRUB_PLAY_MS，与单位无关；单位只决定落点取整到哪一格
+    const SPEED = (maxTs - minTs) / SCRUB_PLAY_MS;
     let raf = 0;
     let last = performance.now();
     let acc = value ?? minTs;
@@ -1541,7 +1592,7 @@ function TimeScrubber({
         onChange(null);
         return;
       }
-      const snapped = minTs + Math.round((acc - minTs) / DAY_MS) * DAY_MS;
+      const snapped = bucketStart(acc, unit);
       if (snapped !== lastSnapped) {
         lastSnapped = snapped;
         onChange(snapped);
@@ -1552,7 +1603,7 @@ function TimeScrubber({
     return () => cancelAnimationFrame(raf);
     // 只随播放开关重启：acc 在循环内自持，value 帧帧变不应重建循环
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playing, minTs, maxTs]);
+  }, [playing, minTs, maxTs, unit]);
 
   // 展示到日：与数据的 day 级 valid_precision 对齐
   const label = (() => {
@@ -1560,17 +1611,37 @@ function TimeScrubber({
     const d = new Date(value);
     const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
     const dd = String(d.getUTCDate()).padStart(2, "0");
+    // 精度跟着单位：年单位下写出「2019-01-01」是假精确
+    if (unit === "year") return `${d.getUTCFullYear()}`;
+    if (unit === "month") return `${d.getUTCFullYear()}-${mm}`;
     return `${d.getUTCFullYear()}-${mm}-${dd}`;
   })();
 
-  const minYear = bars[0]?.year;
-  const maxYear = bars[bars.length - 1]?.year;
+  const minYear = bars.length
+    ? new Date(bars[0].ts).getUTCFullYear()
+    : undefined;
+  const maxYear = bars.length
+    ? new Date(bars[bars.length - 1].ts).getUTCFullYear()
+    : undefined;
 
   return (
-    <div className="glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 w-[min(560px,calc(100%-4rem))] rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+    /* 宽度随单位变：单位大 → 桶少 → 短；单位小 → 桶多 → 长而密。
+       仍夹在视口内（calc 那一项），窄屏不会顶出去。
+
+       **别给它加 `transition-[width]`**：加了之后宽度会卡在旧值上一直不动，
+       连 `width: …px !important` 都推不动（同一容器里放个同宽的探针 div 却是对的）。
+       这组件每秒重渲很多次，过渡似乎每帧都被重新起头。实测：去掉过渡后
+       年 320 / 月 648 / 日 760，立刻就对。 */
+    <div
+      className="glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
+      style={{ width: `min(${trackW}px, calc(100vw - 4rem))` }}
+    >
       <button
         onClick={() => {
-          if (!playing && value === null) onChange(minTs);
+          // 已经在末端（`Now`）时按播放要从头来。**否则第一下等于没反应**：
+          // acc 起点就是终点，循环第一帧就判定播完，只把位置清成 All time
+          if (!playing && (value === null || value >= maxTs - (maxTs - minTs) * 0.02))
+            onChange(minTs);
           setPlaying(!playing);
         }}
         title={playing ? S.graph.pause : S.graph.play}
@@ -1578,6 +1649,31 @@ function TimeScrubber({
       >
         {playing ? <Pause size={13} /> : <Play size={13} />}
       </button>
+
+      {/* 步长。**播放与柱子共用它**——从前柱子按年、播放按天，
+          界面上没有一处说得出「一格是多久」 */}
+      <div
+        title={S.graph.scrubUnitHint}
+        className="flex shrink-0 items-center overflow-hidden rounded-md border border-white/10"
+      >
+        {(["year", "month", "day"] as const).map((u) => (
+          <button
+            key={u}
+            onClick={() => setUnit(u)}
+            className={`px-1.5 py-[3px] text-[10px] leading-none transition-colors ${
+              unit === u
+                ? "bg-white/10 text-neutral-100"
+                : "text-neutral-500 hover:bg-white/[0.06] hover:text-neutral-300"
+            }`}
+          >
+            {u === "year"
+              ? S.graph.scrubUnitYear
+              : u === "month"
+                ? S.graph.scrubUnitMonth
+                : S.graph.scrubUnitDay}
+          </button>
+        ))}
+      </div>
 
       <span className="shrink-0 u-num text-[10px] text-neutral-600">
         {minYear}
@@ -1590,14 +1686,20 @@ function TimeScrubber({
       >
         <div className="absolute inset-x-1.5 top-1.5 bottom-1.5 flex items-end gap-[2px]">
           {bars.map((b) => {
-            // 进入即亮（年初为判据）：播放头脚下的柱子即已覆盖——进度条通用语义
-            const barTs = Date.UTC(b.year, 0, 1);
-            const past = value !== null && barTs <= value;
+            // 进入即亮（桶起点为判据）：播放头脚下的柱子即已覆盖——进度条通用语义
+            const past = value !== null && b.ts <= value;
+            const d = new Date(b.ts);
+            const stamp =
+              unit === "year"
+                ? `${d.getUTCFullYear()}`
+                : unit === "month"
+                  ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`
+                  : d.toISOString().slice(0, 10);
             return (
               <div
-                key={b.year}
+                key={b.ts}
                 className="flex-1 flex items-end h-full"
-                title={`${b.year}`}
+                title={`${stamp} · ${b.n}${merged > 1 ? ` · ${S.graph.scrubBarMerged(merged)}` : ""}`}
               >
                 <div
                   className="w-full rounded-[1px] transition-colors"
