@@ -547,6 +547,11 @@ export const en = {
   graph: {
     // 还没判出类型的实体（0009）。不是一个类，是"这一格还空着"
     untyped: "Untyped",
+    legendMore: (n: number) => `+${n} classes`,
+    legendSearch: "Filter classes",
+    legendNone: "No class matches",
+    legendAllHint:
+      "Every class on screen, most common first. Click to show or hide.",
     searchMore: (n: number) => `${n} more — load 20`,
     zoomIn: "Zoom in",
     zoomOut: "Zoom out",

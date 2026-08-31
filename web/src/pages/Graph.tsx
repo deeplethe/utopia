@@ -62,6 +62,10 @@ const DERIVED_ANIMATE_MAX = 400;
 // 开关的淡入淡出时长。**比 FADE_MS(320) 略长**：播放淡入是一批边陆续到位，
 // 这个是一整批边同时进出，走慢一点才看得清「那批金线是一起退场的」
 const DERIVED_TOGGLE_MS = 420;
+// 图例最多摆几个胶囊，其余收进「+N 个类」。**这一排是横向排布的，
+// 类一多就会换行、把画布顶到下面去**；而且十几个同样的胶囊排开，
+// 谁也读不出哪个重要。收起来的那些从「+N」里搜得到
+const LEGEND_MAX = 6;
 // 注意：sigma 边着色器在预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，
 // alpha 无法压暗边——暗度必须编码进 RGB（不透明近背景色）
 const EDGE_DIM = "#141414";
@@ -287,6 +291,8 @@ export function Graph() {
   const [showDerived, setShowDerived] = useState(true);
   // 信息窗默认收起：它答的是「什么时候推的」，那是偶尔才问的问题
   const [derivedPanel, setDerivedPanel] = useState(false);
+  const [legendPanel, setLegendPanel] = useState(false);
+  const [legendQ, setLegendQ] = useState("");
   /** null = 全时段；数值 = as-of 时刻(ms)。
       默认 as-of 今天：时态平台的图谱默认呈现"现在的世界"，
       已闭合的事实不该与现行事实无差别并列（All time 是显式选择） */
@@ -389,21 +395,36 @@ export function Graph() {
   const types = useMemo(() => {
     const map = new Map<
       string,
-      { label: string; color: string; shape: string }
+      { label: string; color: string; shape: string; count: number }
     >();
     for (const n of data.data?.nodes ?? []) {
       // 没判出类型的归到空 key 一档（0009）。真实 key 由 IRI 派生，不可能为空，
       // 所以它撞不着任何一个类；标签走 i18n，别把 null 画到图例上
       const key = n.type_key ?? "";
-      if (!map.has(key))
+      const cur = map.get(key);
+      if (cur) cur.count++;
+      else
         map.set(key, {
           label: n.type_label ?? S.graph.untyped,
           color: n.color,
           shape: n.shape,
+          count: 1,
         });
     }
-    return [...map.entries()];
+    // **按出现次数排，不是按遇到的先后**。图例只摆得下几个，那几个位置该给
+    // 画面上最多的类；从前是节点到达顺序，等于随机。次数相同按标签排——
+    // 否则同样的数据每次刷新顺序都在抖
+    return [...map.entries()].sort(
+      (a, b) => b[1].count - a[1].count || a[1].label.localeCompare(b[1].label),
+    );
   }, [data.data]);
+
+  /* 摆得下的 / 收起来的。收起来的那些仍然可以在「+N」里搜到并切换 */
+  const legendShown = types.slice(0, LEGEND_MAX);
+  const legendRest = types.slice(LEGEND_MAX);
+  // 被收起来的类里有没有正被隐藏的。**没有这个标记就是无声过滤**——
+  // 在面板里关掉一个类、把面板一收，界面上再没有任何东西说它被关了
+  const hiddenInRest = legendRest.filter(([k]) => hiddenTypes.has(k)).length;
 
   // 有几条推出来的边。**为零时那个开关整个不出现**——一个没开推理的库不该
   // 看到一个永远切换不出任何变化的按钮
@@ -1028,9 +1049,11 @@ export function Graph() {
           </button>
         )}
 
-        {/* 图例（点击切换类型显隐） */}
+        {/* 图例（点击切换类型显隐）。**只摆前 LEGEND_MAX 个**，其余收进
+            「+N 个类」——那一排横着长，类一多就换行把画布顶下去；而且十几个
+            一模一样的胶囊排开，谁重要也读不出来 */}
         <div className="pointer-events-auto flex flex-wrap gap-1.5 pt-0.5">
-          {types.map(([key, t]) => (
+          {legendShown.map(([key, t]) => (
             <button
               key={key}
               onClick={() =>
@@ -1052,6 +1075,87 @@ export function Graph() {
               <span className="text-neutral-300">{t.label}</span>
             </button>
           ))}
+
+          {legendRest.length > 0 && (
+            <div className="relative">
+              <button
+                onClick={() => setLegendPanel((v) => !v)}
+                title={S.graph.legendAllHint}
+                aria-expanded={legendPanel}
+                className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-colors ${
+                  legendPanel ? "text-neutral-100" : "text-neutral-400"
+                } hover:text-neutral-100`}
+              >
+                {S.graph.legendMore(legendRest.length)}
+                {/* 收起来的类里有正被隐藏的就点一下。**不点就是无声过滤**：
+                    在面板里关掉一个类、把面板一收，界面上再没有任何东西说它被关了 */}
+                {hiddenInRest > 0 && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-neutral-300" />
+                )}
+              </button>
+              {legendPanel && (
+                <div className="glass-strong absolute left-0 top-8 z-20 w-64 rounded-xl p-2 shadow-xl">
+                  <input
+                    autoFocus
+                    value={legendQ}
+                    onChange={(e) => setLegendQ(e.target.value)}
+                    placeholder={S.graph.legendSearch}
+                    className="input-dark mb-1.5 w-full px-2 py-1 text-[12px]"
+                  />
+                  {/* **列的是全部类，不只是收起来的那些**：想找一个类的时候，
+                      没人记得它是不是恰好排进了前几个 */}
+                  <div className="flex max-h-64 flex-col overflow-y-auto">
+                    {types
+                      .filter(([, t]) =>
+                        t.label.toLowerCase().includes(legendQ.toLowerCase()),
+                      )
+                      .map(([key, t]) => (
+                        <button
+                          key={key}
+                          onClick={() =>
+                            setHiddenTypes((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(key)) next.delete(key);
+                              else next.add(key);
+                              return next;
+                            })
+                          }
+                          className="flex items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-white/5"
+                        >
+                          <span
+                            className={`h-2 w-2 shrink-0 ${t.shape === "square" ? "" : "rounded-full"}`}
+                            style={{
+                              background: t.color,
+                              opacity: hiddenTypes.has(key) ? 0.35 : 1,
+                            }}
+                          />
+                          <span
+                            className={`truncate text-[12px] ${
+                              hiddenTypes.has(key)
+                                ? "text-neutral-500 line-through"
+                                : "text-neutral-200"
+                            }`}
+                          >
+                            {t.label}
+                          </span>
+                          <span className="u-num ml-auto shrink-0 text-[11px] text-neutral-500">
+                            {t.count}
+                          </span>
+                        </button>
+                      ))}
+                    {types.every(
+                      ([, t]) =>
+                        !t.label.toLowerCase().includes(legendQ.toLowerCase()),
+                    ) && (
+                      <div className="px-1.5 py-2 text-[12px] text-neutral-500">
+                        {S.graph.legendNone}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* 推出来的边：**自成一组，不进类型图例。**
@@ -1083,10 +1187,14 @@ export function Graph() {
                 role="switch"
                 aria-checked={showDerived}
                 title={S.graph.derivedHint}
-                className={`glass rounded-full py-1 pl-1 pr-2.5 text-[11px] flex items-center gap-1.5 border transition-colors ${
+                /* **形状语言要跟类胶囊分家**：那一排全是 rounded-full 的
+                   中性玻璃椭圆；只要这个还长成同样的胶囊，挪到哪儿都会被当成
+                   第 10 个类（用户看过一版就是这么说的）。所以这里是方角、
+                   带金色底、不用 glass——一眼就不是同一族东西 */
+                className={`rounded-md py-1 pl-1 pr-2.5 text-[11px] flex items-center gap-1.5 border transition-colors ${
                   showDerived
-                    ? "border-[rgba(231,197,124,0.45)]"
-                    : "border-white/10 opacity-60"
+                    ? "border-[rgba(231,197,124,0.5)] bg-[rgba(231,197,124,0.14)]"
+                    : "border-white/10 bg-white/[0.03] opacity-70"
                 }`}
               >
                 {/* 轨道+滑块。开时上金色——金是派生边自己的色相，
@@ -1117,7 +1225,7 @@ export function Graph() {
                 onClick={() => setDerivedPanel((v) => !v)}
                 title={S.graph.derivedPanel}
                 aria-expanded={derivedPanel}
-                className={`glass rounded-full h-[22px] w-[22px] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
+                className={`rounded-md h-[22px] w-[22px] border border-white/10 bg-white/[0.03] text-[11px] leading-none text-neutral-400 hover:text-neutral-100 transition-colors ${
                   derivedPanel ? "text-neutral-100" : ""
                 }`}
               >
