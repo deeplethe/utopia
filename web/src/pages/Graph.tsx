@@ -79,11 +79,18 @@ const DERIVED_TOGGLE_MS = 420;
 /* 推演动画：把「这条边是怎么推出来的」在图上演一遍——前提按推导顺序
    依次亮起，最后点亮结论。**这是这产品最难讲清的一件事**：一条没人写过的边
    凭什么在这儿。静态地画成金色只说了"它是推的"，说不了"从哪推的"。 */
-const DERIVE_STEP_MS = 300; // 一条前提亮多久
-const DERIVE_STAGGER_MS = 90; // 相邻两条推导错开多少，避免几十条同时闪
-/* 普通边先落位、稍等一会再开演。**顺序本身是内容**：先有人写下的，
-   然后才有推出来的——一起出现就分不清谁在前 */
-const DERIVE_SETTLE_MS = 450;
+const DERIVE_STEP_MS = 260; // 同一组里，前一条前提亮到后一条亮，隔多久
+/* 结论落下之后，整组再挂多久才收。**前提必须挂到结论出现**——
+   第一版是"亮一下就灭"，等结论现身时前提早暗了，于是最关键的那一瞬
+   ——两条前提与结论同时亮着——根本没出现过，看起来只是一片乱闪 */
+const DERIVE_HOLD_MS = 420;
+const DERIVE_FADE_MS = 260; // 整组收起来的时长
+/* 相邻两组错开多少。**必须比一组的长度短、又不能短太多**：短了几组糊在一起
+   分不清谁属于谁（第一版 90ms 就是这么糊的），长了整段拖得没人看完 */
+const DERIVE_STAGGER_MS = 240;
+/* 开演前的等待。**不等布局收敛**——节点还在走位时演也无妨，
+   要的只是让人先看见"人写下的边"这一层 */
+const DERIVE_SETTLE_MS = 350;
 // 图例最多摆几个胶囊，其余收进「+N 个类」。**这一排是横向排布的，
 // 类一多就会换行、把画布顶到下面去**；而且十几个同样的胶囊排开，
 // 谁也读不出哪个重要。收起来的那些从「+N」里搜得到
@@ -616,7 +623,7 @@ export function Graph() {
   const deriveRef = useRef<{
     start: number;
     end: number;
-    lit: Map<string, number>;
+    lit: Map<string, { on: number; off: number }>;
     reveal: Map<string, number>;
   } | null>(null);
   const deriveRafRef = useRef(0);
@@ -640,7 +647,7 @@ export function Graph() {
       setDerivedRevealed(true);
       return;
     }
-    const lit = new Map<string, number>();
+    const lit = new Map<string, { on: number; off: number }>();
     const reveal = new Map<string, number>();
     let end = 0;
     derived.forEach((e, i) => {
@@ -648,14 +655,21 @@ export function Graph() {
       const premises = (g.getEdgeAttribute(e, "premises") as string[]).filter(
         (p) => g.hasEdge(p),
       );
-      premises.forEach((p, j) => {
-        const t = base + j * DERIVE_STEP_MS;
-        // 一条边可能是好几处推导的前提：取**最早**那次，别让它反复闪
-        if (!lit.has(p) || lit.get(p)! > t) lit.set(p, t);
-      });
+      // 结论紧接在最后一条前提之后落下
       const at = base + premises.length * DERIVE_STEP_MS;
+      const off = at + DERIVE_HOLD_MS;
+      premises.forEach((p, j) => {
+        const on = base + j * DERIVE_STEP_MS;
+        const cur = lit.get(p);
+        // 一条边可能是好几处推导的前提：取**最早亮、最晚收**的并集，
+        // 别让它在两组之间闪来闪去
+        lit.set(p, {
+          on: cur ? Math.min(cur.on, on) : on,
+          off: cur ? Math.max(cur.off, off) : off,
+        });
+      });
       reveal.set(e, at);
-      end = Math.max(end, at + DERIVE_STEP_MS);
+      end = Math.max(end, off + DERIVE_FADE_MS);
     });
     deriveRef.current = { start: performance.now(), end, lit, reveal };
     setDerivedRevealed(true);
@@ -725,20 +739,21 @@ export function Graph() {
   useEffect(() => () => cancelAnimationFrame(derivedRafRef.current), []);
 
   /* 什么时候开演。两个入口共用一段延时：
-     - 刚进页面：等布局收敛完（stabilizing 落下）再等 DERIVE_SETTLE_MS
+     - 刚进页面：数据到齐后等 DERIVE_SETTLE_MS。**不等布局收敛**——
+       节点还在走位时演也无妨，何况收敛要 2.5 秒，等完人早就在看别处了
      - 手动打开开关：同样缓一下再演
 
      **顺序本身是内容**：先落位的是人写下的边，然后才轮到推出来的。
      一起出现就分不清谁在前，而"谁在前"正是这动画要讲的事 */
   useEffect(() => {
-    if (!showDerived || stabilizing || !data.data) {
+    if (!showDerived || !data.data) {
       if (!showDerived) setDerivedRevealed(false);
       return;
     }
     if (derivedRevealed) return;
     const t = window.setTimeout(runDerivation, DERIVE_SETTLE_MS);
     return () => window.clearTimeout(t);
-  }, [showDerived, stabilizing, data.data, derivedRevealed, runDerivation]);
+  }, [showDerived, data.data, derivedRevealed, runDerivation]);
 
   // 派生边的呼吸。**只在有派生边、且开着显示、且数量不多时才转**——
   // 一个没开推理的库不该为这件事每两秒重画一次
@@ -1033,17 +1048,25 @@ export function Graph() {
         // 前提边：轮到它的那一瞬提亮，然后落回常态。**三角波**——
         // 上去再下来，看起来是"被点了一下"，不是"从此变了个颜色"
         if (!isDerived && plan) {
-          const at = plan.lit.get(edge);
+          const w = plan.lit.get(edge);
           // **此刻不成立的前提不参演**：时间轴停在某一刻时，
           // 那些还没生效或已失效的边本来就该是暗的。点亮它等于演了一个
           // 此刻并不成立的推导——比不演更糟
           const activeNow = !f.activeEdges || f.activeEdges.has(edge);
-          if (at !== undefined && activeNow) {
-            const dt = performance.now() - plan.start - at;
-            if (dt >= 0 && dt <= DERIVE_STEP_MS) {
-              const k = 1 - Math.abs((dt / DERIVE_STEP_MS) * 2 - 1);
+          if (w !== undefined && activeNow) {
+            const now = performance.now() - plan.start;
+            if (now >= w.on && now <= w.off + DERIVE_FADE_MS) {
+              // 快速亮起 → 一直挂着 → 与结论一起收。
+              // **挂着的那一段才是重点**：那时候前提与结论同时亮，
+              // 一条链看得完整
+              const k =
+                now < w.on + 140
+                  ? (now - w.on) / 140
+                  : now <= w.off
+                    ? 1
+                    : 1 - (now - w.off) / DERIVE_FADE_MS;
               res.color = lerpColor(EDGE_COLOR, EDGE_FOCUS_DERIVED, k);
-              res.size = Math.max((attrs.size as number) * (1 + k * 0.8), 1.4);
+              res.size = Math.max((attrs.size as number) * (1 + k * 0.9), 1.4);
               res.zIndex = 4;
               return res;
             }
@@ -1060,8 +1083,8 @@ export function Graph() {
                 res.hidden = true;
                 return res;
               }
-              if (dt <= DERIVE_STEP_MS) {
-                const k = dt / DERIVE_STEP_MS;
+              if (dt <= DERIVE_FADE_MS) {
+                const k = dt / DERIVE_FADE_MS;
                 res.color = lerpColor(EDGE_DIM, EDGE_FOCUS_DERIVED, k);
                 res.size = Math.max((attrs.size as number) * (1 + k * 0.6), 1.4);
                 res.zIndex = 5;
