@@ -1144,10 +1144,18 @@ pub async fn relation_type_datatype(pool: &PgPool, id: Uuid) -> AppResult<Option
 
 /// 把一个 IRI 认到已有的**本地**类上（原本没有 IRI 的那种）。
 ///
-/// **只写 IRI，不动 label 与 description。** 认领要解决的是"这棵树是断的"，
-/// 不是"用词汇表的说法覆盖用户的说法"：种子类的描述是照着抽取调过的、
-/// 且跟库的语言走，而 schema.org 的描述是英文样板。覆盖它等于悄悄换掉
-/// 抽取提示词里最承重的那一句。
+/// **只写 IRI 与形状，不动 label、description、颜色。** 认领要解决的是
+/// "这棵树是断的"，不是"用词汇表的说法覆盖用户的说法"：种子类的描述是照着
+/// 抽取调过的、且跟库的语言走，而 schema.org 的描述是英文样板。覆盖它等于
+/// 悄悄换掉抽取提示词里最承重的那一句。
+///
+/// **形状要跟着改，因为形状说的就是来历**（方=词表声明的，圆=语料里长的）。
+/// 一个类被认领成"词表声明的"却还画成圆，画面就在说谎。实测过这个缝：
+/// 往一个已有 `person` / `organization` 的库里导 schema.org，
+/// 那几个类拿到了 IRI 却仍是圆的——有 IRI 却是圆的，自相矛盾。
+///
+/// 颜色不动：颜色是**身份**（同一个 key 永远同一个色），认领不改变它是谁。
+/// 形状是**来历**，认领恰恰改变了这一点。
 ///
 /// 只在 `iri IS NULL` 时写，所以重复导入是幂等的，也绝不会抢走另一个
 /// 词汇表已经认领的类。
@@ -1158,7 +1166,7 @@ pub async fn adopt_iri_onto_key(
     iri: &str,
 ) -> AppResult<Option<Uuid>> {
     let row: Option<(Uuid,)> = sqlx::query_as(
-        "UPDATE entity_types SET iri = $3
+        "UPDATE entity_types SET iri = $3, shape = 'square'
          WHERE kb_id = $1 AND key = $2 AND iri IS NULL
          RETURNING id",
     )
