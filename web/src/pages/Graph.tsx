@@ -2102,6 +2102,13 @@ function TimeScrubber({
 
 /* ============ 实体侧栏 ============ */
 
+/** 世界时间（这件事何时成立）→ 文本。**一律按 UTC 读，不转本地。**
+ *
+ *  `valid_from` / `valid_to` 来自文档里的陈述（"2019 年 5 月 2 日就任"），
+ *  是**日历日期不是时刻**，本来就没有时区；存的是那一天的 UTC 午夜。
+ *  按本地渲染会让 UTC-5 的读者看到 2019-05-01——凭空差一天，而且差的方向
+ *  还随读者所在地变。记录时间（我们何时这么认为）是另一回事，那个该按本地，
+ *  见 EntityHistory 里 ymd 的注释。 */
 function fmtTime(iso: string | null, precision: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);

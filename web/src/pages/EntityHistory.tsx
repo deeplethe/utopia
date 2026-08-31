@@ -34,7 +34,22 @@ const KIND_TONE: Record<string, string> = {
   retype_reverted: "text-[var(--u-warn)]",
 };
 
-const ymd = (iso: string) => iso.slice(0, 10);
+/* 这两个函数**故意不一样**，别"统一一下"——它们渲染的是两种时间。
+
+   `ymd` 给的是**记录时刻**（我们何时这么认为）：那是一个真实时刻，
+   该按看的人所在的时区显示。从前这里也是切 ISO 字符串，等于按 UTC 显示——
+   UTC+8 的人在早上八点前做的修订，历史里会显示成前一天。
+
+   `ym` 给的是**世界时间**（这件事何时成立）：它来自文档里的陈述
+   （"2019 年 5 月就任"），是**日历日期不是时刻**，本来就没有时区。
+   切 ISO 字符串正是按 UTC 读回存进去的那一天；转成本地反而会让
+   UTC-5 的读者看到前一个月。 */
+const ymd = (iso: string) => {
+  const d = new Date(iso);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+};
 const ym = (iso: string | null) => (iso ? iso.slice(0, 7) : null);
 
 /** 宾语：实体名优先，其次字面值（属性事实）的摘要/值 */
