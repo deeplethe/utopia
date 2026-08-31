@@ -115,7 +115,24 @@ fn inflect_base(w: &str) -> String {
     s
 }
 
+/// 领头的轻动词：`has_funding` 与 `funding` 是同一个关系，前缀是命名习惯不是意思。
+///
+/// 实测（ai-timeline-ends × schema.org）：空谓词事实的原文说法里
+/// `has_funding` ×4 落空，而本体里就有 `funding`；`product` ×2 落空，而本体里有
+/// `has_product`——**差的只是这一个前缀**。
+///
+/// 只在还剩词的时候剥：`has` 单独一个词是它自己，不能剥成空。
+/// 过度归并不会造成错配——`insert` 遇到一个键落到两个关系上就作废（撞车即作废），
+/// 所以最坏情况是退回"匹配不上"，而不是匹配到错的那个。
+const LEADING_AUX: &[&str] = &[
+    "has", "have", "had", "is", "are", "was", "were", "be", "been",
+];
+
 fn stems(words: &[String]) -> Vec<String> {
+    let words = match words.split_first() {
+        Some((head, rest)) if !rest.is_empty() && LEADING_AUX.contains(&head.as_str()) => rest,
+        _ => words,
+    };
     words.iter().map(|w| inflect_base(w)).collect()
 }
 
@@ -218,6 +235,54 @@ impl PredicateIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `has_funding` 与 `funding` 是同一个关系，前缀是命名习惯不是意思。
+    ///
+    /// 实测里这两组各自落空：本体有 `funding`、模型写 `has_funding`（×4）；
+    /// 本体有 `has_product`、模型写 `product`（×2）。差的只是这一个前缀。
+    #[test]
+    fn a_leading_auxiliary_does_not_make_a_different_relation() {
+        let rels = vec![rel("funding"), rel("has_product")];
+        let idx = PredicateIndex::build(&rels);
+        assert!(
+            idx.lookup("has_funding").is_some(),
+            "has_funding 该落到 funding 上"
+        );
+        assert!(
+            idx.lookup("product").is_some(),
+            "product 该落到 has_product 上"
+        );
+        // 两个方向都要通
+        assert!(idx.lookup("funding").is_some());
+        assert!(idx.lookup("has_product").is_some());
+    }
+
+    /// **只在还剩词的时候剥。** `has` 单独一个词是它自己，剥成空就什么都匹配了。
+    #[test]
+    fn a_bare_auxiliary_is_still_a_word() {
+        let rels = vec![rel("has")];
+        let idx = PredicateIndex::build(&rels);
+        assert!(idx.lookup("has").is_some(), "has 自己该匹配得上");
+        assert!(idx.lookup("owns").is_none(), "剥成空会让不相干的词也匹配上");
+    }
+
+    /// 撞车仍然作废：本体同时有 `funding` 与 `has_funding` 时，选谁都是猜。
+    /// 过度归并的最坏结果是「匹配不上」，不是「匹配到错的那个」。
+    #[test]
+    fn folding_the_prefix_never_produces_a_wrong_match() {
+        let rels = vec![rel("funding"), rel("has_funding")];
+        let idx = PredicateIndex::build(&rels);
+        // 精确 key 仍然直达
+        assert!(idx.lookup("funding").is_some());
+        assert!(idx.lookup("has_funding").is_some());
+        // 撞车在**词干**那一层：`funding` 与 `has_funding` 剥掉前缀后都是 ["funding"]。
+        // 要测它就得给一个走不到写法对齐、只能落到词干的形式——
+        // `has_fundings` 拼起来是 hasfundings，本体里没有，于是往下走到词干，撞车作废
+        assert!(
+            idx.lookup("has_fundings").is_none(),
+            "词干层撞车了却还是选了一个"
+        );
+    }
 
     fn rel(key: &str) -> RelationType {
         RelationType {

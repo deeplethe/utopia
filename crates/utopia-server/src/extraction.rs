@@ -798,7 +798,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             //
             // **但绝不静默。** 掰正要留信号：0001 反对的是「用可能错的声明驱动
             // 自动动作」，而看得见、可复查、可反悔的动作不属于那一类。
-            let (subject_id, object_id) = if let Some(pid) = predicate_id {
+            let (predicate_id, subject_id, object_id) = if let Some(pid) = predicate_id {
                 // 类型**从库里的实体读**，不用抽取器手上那份 `entity_type_of`：
                 // 那份只覆盖模型在这一块里声明过的实体，而宾语常是别处已存在的实体，
                 // 这一块没重新声明它，于是查不到、判不了、掰不动。实测差别不小——
@@ -825,26 +825,41 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                             )),
                         )
                         .await;
-                        (object_id, subject_id)
+                        (Some(pid), object_id, subject_id)
                     } else {
-                        // 对调也不合法：这是选错了关系或类型判错，不是方向问题。
-                        // 照原样落库 + 记信号，交给人看——**不猜**
+                        // **对调也不合法 → 退回没有谓词。**
+                        //
+                        // 这不是方向问题，是这个关系压根不适用：schema.org 的
+                        // `affectedBy` 是医学检验用的，模型要表达「受……影响」时按名字
+                        // 撞了上来；`amount` 属于融资工具而不是公司，模型没造那个中间
+                        // 节点就把边挂到了公司上。
+                        //
+                        // 从前照原样落库，等于**用本体的名义说一件本体不同意的事**——
+                        // 图上写着 "OpenAI affectedBy …"，读者会以为那是一条医学断言。
+                        // 这是自信的错误，比空谓词严重得多。
+                        //
+                        // 退回空谓词不丢信息：原词落进 `fact_evidence.proposed_predicate`，
+                        // 显示时由 `fact_surface_predicate()` 取回（0010）。主宾、时间、
+                        // 证据全都留着，只是不再冒认一个本体关系。**诚实的沉默。**
                         drop_signal(
                             state,
                             doc.kb_id,
                             document_id,
                             utopia_store::extraction_drops::reason::DOMAIN_MISMATCH,
                             &f.predicate,
-                            Some(&format!("{} — {} →", f.subject, f.predicate)),
+                            Some(&format!(
+                                "{} — {} → 主宾都对不上，退回原文说法",
+                                f.subject, f.predicate
+                            )),
                         )
                         .await;
-                        (subject_id, object_id)
+                        (None, subject_id, object_id)
                     }
                 } else {
-                    (subject_id, object_id)
+                    (Some(pid), subject_id, object_id)
                 }
             } else {
-                (subject_id, object_id)
+                (predicate_id, subject_id, object_id)
             };
 
             {
