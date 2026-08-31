@@ -98,6 +98,21 @@ body::before {
    它说的是"这块面正在工作"，而不是"在等一件不知道多久的事"——
    循环微光是不确定进度的语言，而时间轴是确定的。
    播放中人本来就盯着它看，半透的毛玻璃这时候只是噪声 */
+/* 时间岛：宽度随单位变，所以它要**同时**过渡背景与宽度。
+   不能只挂 Tailwind 的 `transition-[width]`——上面 .glass-strong 用的是
+   `transition` 简写，会把 transition-property 整个覆盖掉，而自定义 CSS
+   不在 utilities 层里、胜过那个工具类。实测：岛的计算过渡只剩
+   background-color，宽度变成瞬变。要过渡两样就得写在同一条声明里 */
+.u-scrub-island {
+  transition:
+    background-color 260ms ease,
+    width 300ms ease;
+}
+.u-scrub-island:hover,
+.u-scrub-island.u-solid {
+  transition-duration: 120ms, 300ms;
+}
+
 .glass-strong.u-solid {
   background: var(--u-surface-strong-hover);
   transition-duration: 120ms;
