@@ -15,6 +15,7 @@ import {
   ChevronRight,
   CircleDashed,
   Grape,
+  Loader2,
   Maximize2,
   Orbit,
   Pause,
@@ -45,8 +46,19 @@ const NODE_CORE_BASE = "#767676"; // 节点核心灰（原 #5A7A9E 的中性化�
 const NODE_BORDER_BASE = "#909090"; // 节点描边（原 #7A92AE 的中性化）
 const NODE_TINT_MIX = 0.14; // 类型色只按 14% 混入外壳（高级感的关键）
 const NODE_CORE_MIX = 0.5; // 核心向类型色的混入比例
-const RING_SELECTED = "#E7C57C"; // 选中金环
-const RING_HOVERED = "#8FE7FF"; // 悬停冰青环
+/* 状态环取**节点自己的类型色**，不是两个写死的色相。
+
+   换掉的直接原因是一次撞色：原来的选中金环 `#E7C57C` 就是
+   `rgb(231,197,124)`，与 `EDGE_COLOR_DERIVED` 逐位相同——「这个节点被选中了」
+   和「这条边是推出来的」用同一个颜色说话，而这两件事毫无关系。
+   金色现在专属于「推出来的」。
+
+   往白里混而不是直接用原色：环画在节点自己身上，同色同亮度就看不出是个环。
+   **悬停混得更白、选中混得更少**——悬停时全图不压暗，环要在一片乱线里
+   立刻跳出来；选中时其余都压暗了，节点本来就孤立着，这时候环该说的是
+   「它是谁」，所以更贴近它自己的颜色。 */
+const RING_HOVER_MIX = 0.7; // 悬停：偏白，为的是跳出来
+const RING_SELECT_MIX = 0.35; // 选中：偏本色，为的是认得出
 const EDGE_COLOR = "rgba(163,163,163,0.2)"; // 纯灰（应用户要求，不用钢蓝）
 // 本体没认下的关系：同色更淡。名字来自原文，不该跟词表里的关系看着一样重
 const EDGE_COLOR_INFERRED = "rgba(163,163,163,0.1)";
@@ -733,6 +745,8 @@ export function Graph() {
         const f = filterRef.current;
         const res = { ...attrs };
         const base = attrs.size as number;
+        // 状态环取节点自己的类型色（见 RING_*_MIX 处的理由）
+        const ownColor = (attrs.typeColor as string) ?? NODE_CORE_BASE;
         if (f.hiddenTypes.has(attrs.typeKey as string)) {
           res.hidden = true;
           return res;
@@ -750,7 +764,7 @@ export function Graph() {
         // hover 只提亮自身（不压暗全图）；压暗聚焦只属于点击选中
         if (hoverRef.current === node) {
           res.size = Math.max(base * 1.08, 10.4);
-          res.ringColor = RING_HOVERED;
+          res.ringColor = mix(ownColor, "#ffffff", RING_HOVER_MIX);
           // 悬浮卡接管标签展示；label 本身保留（悬浮卡靠它渲染标题）
           res.hideBaseLabel = true;
           res.zIndex = 4;
@@ -764,7 +778,7 @@ export function Graph() {
         if (sel) {
           if (node === sel) {
             res.size = Math.max(base * 1.02, 9.2);
-            res.ringColor = RING_SELECTED;
+            res.ringColor = mix(ownColor, "#ffffff", RING_SELECT_MIX);
             res.forceLabel = true;
             res.zIndex = 3;
             return res;
@@ -1209,8 +1223,9 @@ export function Graph() {
         {/* 右上：能调「画多少个」+ 统计。**统计说的正是这个数**
             （「画了 150 个，共 548 个」），把调节放在它旁边，改的是谁一目了然。
             外壳保持中性——这一片是 chrome，彩色只属于数据 */}
-        <div className="ml-auto flex items-start gap-2">
-          <div className="pointer-events-auto flex items-center overflow-hidden rounded-md border border-white/10">
+        <div className="ml-auto flex flex-col items-end gap-1">
+          <div className="flex items-start gap-2">
+            <div className="pointer-events-auto flex items-center overflow-hidden rounded-md border border-white/10">
             <button
               title={S.graph.nodeBudgetLess}
               disabled={nodeBudget <= NODE_BUDGETS[0]}
@@ -1244,9 +1259,6 @@ export function Graph() {
             </button>
           </div>
           <div className="pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
-          {stabilizing && (
-            <span className="text-neutral-400">{S.graph.stabilizing} · </span>
-          )}
           {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
               一个上万实体的库右上角永远写着 150 */}
           {capped ? (
@@ -1265,7 +1277,18 @@ export function Graph() {
               timeT === null ? edgeCount : activeCount,
             )
           )}
+            </div>
           </div>
+          {/* **单独一行，不做统计文字的前缀。**
+              当前缀时它一出现就把整块撑宽，而这一块是靠右的——
+              于是每次重新布局，左边的档位按钮都会被挤着跳一下。
+              自己占一行，第一行的宽度就不再随它变 */}
+          {stabilizing && (
+            <div className="flex items-center gap-1.5 text-[11px] text-neutral-400">
+              <Loader2 size={11} className="animate-spin" />
+              {S.graph.stabilizing}
+            </div>
+          )}
         </div>
       </div>
 
