@@ -619,10 +619,16 @@ export const zh: Strings = {
       "被取代的那条断言仍留在台账里。",
     ongoing: "至今",
     endedUnknown: "已结束（时间不详）",
-    stats: (n: number, e: number, active: number) =>
-      `${n} 个实体 · ${e} 条事实 · ${active} 条现行`,
-    statsCapped: (shown: number, total: number, e: number, active: number) =>
-      `已画 ${shown} / 共 ${total} 个实体 · ${e} 条事实 · ${active} 条现行`,
+    stats: (n: number, e: number, active: number | null) =>
+      `${n} 个实体 · ${e} 条事实${active === null ? "" : ` · ${active} 条现行`}`,
+    statsCapped: (
+      shown: number,
+      total: number,
+      shownE: number,
+      totalE: number,
+      active: number | null,
+    ) =>
+      `已画 ${shown} / 共 ${total} 个实体 · ${shownE} / 共 ${totalE} 条事实${active === null ? "" : ` · ${active} 条现行`}`,
     cappedHint: (shown: number, total: number) =>
       `画布只画连接最密的 ${shown} 个，库里共 ${total} 个。其余的用搜索找。`,
     stabilizing: "布局收敛中",

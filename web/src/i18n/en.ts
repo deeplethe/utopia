@@ -675,12 +675,18 @@ export const en = {
     /* 必须跟 ongoing 看得出区别：混淆这两个正是迁移 0046 要修的东西——
        原文说 "former CEO"，界面却显示 now */
     endedUnknown: "ended, date unknown",
-    stats: (n: number, e: number, active: number) =>
-      `${n} entities · ${e} facts · ${active} active`,
+    stats: (n: number, e: number, active: number | null) =>
+      `${n} entities · ${e} facts${active === null ? "" : ` · ${active} active`}`,
     /** 画布只画度数最高的一批。**说清楚画了多少、共多少**——从前这里写的是
      *  上限，一个上万实体的库右上角永远是 150 */
-    statsCapped: (shown: number, total: number, e: number, active: number) =>
-      `showing ${shown} of ${total} entities · ${e} facts · ${active} active`,
+    statsCapped: (
+      shown: number,
+      total: number,
+      shownE: number,
+      totalE: number,
+      active: number | null,
+    ) =>
+      `showing ${shown} of ${total} entities · ${shownE} of ${totalE} facts${active === null ? "" : ` · ${active} active`}`,
     cappedHint: (shown: number, total: number) =>
       `The canvas draws the ${shown} best-connected entities of ${total}. Search to reach the rest.`,
     stabilizing: "Stabilizing layout",

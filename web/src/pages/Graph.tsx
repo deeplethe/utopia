@@ -21,7 +21,7 @@ import {
   Pause,
   Pencil,
   Play,
-  Sparkles,
+  Waypoints,
   X,
   ZoomIn,
   ZoomOut,
@@ -1263,18 +1263,23 @@ export function Graph() {
               一个上万实体的库右上角永远写着 150 */}
           {capped ? (
             <span title={S.graph.cappedHint(nodeCount, totalNodes)}>
+              {/* **事实也用「已画 / 共」的口径**：从前这里给的是库里的总数，
+                  而实体给的是「画了多少 / 共多少」——同一句话里两套口径，
+                  于是调档位时实体数在变、事实数纹丝不动，看着像坏了。
+                  没有时间筛选时 active 恒等于已画条数，那就不说 */}
               {S.graph.statsCapped(
                 nodeCount,
                 totalNodes,
+                edgeCount,
                 totalEdges,
-                timeT === null ? edgeCount : activeCount,
+                timeT === null ? null : activeCount,
               )}
             </span>
           ) : (
             S.graph.stats(
               nodeCount,
               edgeCount,
-              timeT === null ? edgeCount : activeCount,
+              timeT === null ? null : activeCount,
             )
           )}
             </div>
@@ -1332,7 +1337,7 @@ export function Graph() {
                 showDerived ? { color: "rgba(231,197,124,0.95)" } : undefined
               }
             >
-              <Sparkles size={15} />
+              <Waypoints size={15} />
             </button>
             <div className="h-px bg-white/10 mx-1.5" />
             {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
@@ -1826,47 +1831,77 @@ function DerivedPanel({
   );
 }
 
+/** 推出来的一条边。**行式样与 FactRow 对齐**：同样的圆角行、同样的
+ *  chevron 展开、同样的 role="link" 跳转（避免按钮套按钮）。
+ *
+ *  从前这里是一张 `glass rounded-xl p-3` 卡片、证明常驻展开——在一列
+ *  Relations/Timeline/History 的紧凑行里显得是另一个产品的东西，而且十几条
+ *  推导堆起来是一面墙。证明是「问了才看」的东西，收进展开区正合适。 */
 function DerivedRow({
   d,
+  otherId,
+  otherName,
+  open,
+  onToggle,
   onNavigate,
 }: {
   d: DerivedFact;
+  otherId: string;
+  otherName: string;
+  open: boolean;
+  onToggle: () => void;
   onNavigate: (entityId: string) => void;
 }) {
   return (
-    <div className="glass rounded-xl p-3">
-      <div className="flex items-baseline gap-1.5 flex-wrap text-sm">
-        <button
-          className="text-neutral-100 hover:text-white underline-offset-2 hover:underline"
-          onClick={() => onNavigate(d.subject_id)}
+    <div
+      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"}`}
+    >
+      <button
+        onClick={onToggle}
+        className="w-full text-left px-2 py-1.5 flex items-center gap-1.5"
+      >
+        <ChevronRight
+          size={11}
+          className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        <span
+          role="link"
+          tabIndex={0}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onNavigate(otherId);
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter") {
+              ev.stopPropagation();
+              onNavigate(otherId);
+            }
+          }}
+          className="truncate text-[13px] text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
         >
-          {d.subject}
-        </button>
-        <span className="text-xs text-neutral-500">{d.predicate}</span>
-        <button
-          className="text-neutral-100 hover:text-white underline-offset-2 hover:underline"
-          onClick={() => onNavigate(d.object_id)}
-        >
-          {d.object}
-        </button>
-        <span className="ml-auto text-[10px] text-[var(--u-warn)]">
-          {d.rule === "transitive"
-            ? S.graph.ruleTransitive
-            : S.graph.ruleSymmetric}
+          {otherName}
         </span>
-      </div>
-      {/* 证明：前提按推导顺序，缩进一格。看得出链是怎么走的 */}
-      <ol className="mt-2 space-y-0.5 border-l border-[var(--u-line)] pl-2.5">
-        {d.premises.map((p, i) => (
-          <li key={i} className="text-[11px] text-neutral-400">
-            {p}
-          </li>
-        ))}
-      </ol>
-      {d.premises.length === 0 && (
-        <p className="mt-1 text-[11px] text-neutral-600">
-          {S.graph.derivedNoProof}
-        </p>
+        <span className="ml-auto shrink-0 pl-2 text-[10.5px] text-neutral-600">
+          {d.premises.length}
+        </span>
+      </button>
+      {/* 证明：前提按推导顺序。**边框与 EvidenceList 同一档**——
+          两者是同一件事的两种形态：一个给出处，一个给推理链 */}
+      {open && (
+        <div className="mx-2 mb-2 mt-0.5 border-l border-white/15 pl-2.5">
+          <ol className="space-y-0.5">
+            {d.premises.map((p, i) => (
+              <li key={i} className="text-[11px] text-neutral-400">
+                {p}
+              </li>
+            ))}
+          </ol>
+          {d.premises.length === 0 && (
+            <p className="text-[11px] text-neutral-600">
+              {S.graph.derivedNoProof}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
@@ -1891,6 +1926,33 @@ function EntityPanel({
   // 推出来的那些。**单独一个键，不掺进 facts**——混在一个列表里，用户看不出
   // 「文档里写的」和「引擎推的」的区别
   const derived = detail.data?.derived ?? [];
+  /* 按「方向 + 谓词 + 规则」分组，骨架与 Relations 的 groups 一致。
+     规则挂在组上而不是每一行：它对整组都成立，逐行重复既冗余，
+     那个琥珀色小字还会跟派生边抢色相 */
+  const derivedGroups = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        key: string;
+        direction: "in" | "out";
+        predicate: string;
+        rule: string;
+        rows: DerivedFact[];
+      }
+    >();
+    for (const d of derived) {
+      const direction = d.subject_id === entityId ? "out" : "in";
+      const rule =
+        d.rule === "transitive"
+          ? S.graph.ruleTransitive
+          : S.graph.ruleSymmetric;
+      const key = `${direction}|${d.predicate}|${d.rule}`;
+      const cur = map.get(key);
+      if (cur) cur.rows.push(d);
+      else map.set(key, { key, direction, predicate: d.predicate, rule, rows: [d] });
+    }
+    return [...map.values()];
+  }, [derived, entityId]);
   // Relations = 按关系分组（查关系）；Timeline = 有效时间轴（事情何时成立）；
   // History = 记录时间轴（我们何时这么认为、又何时改了主意）
   const [view, setView] = useState<
@@ -2264,15 +2326,52 @@ function EntityPanel({
         {view === "history" && (
           <EntityHistory kbId={kbId} entityId={entityId} />
         )}
-        {view === "derived" && (
-          <div className="space-y-2">
-            <p className="px-2 pb-1 text-[11px] leading-relaxed text-neutral-500">
+{view === "derived" && (
+          <>
+            <p className="px-2 pb-1.5 pt-0.5 text-[11px] leading-relaxed text-neutral-500">
               {S.graph.derivedHint}
             </p>
-            {derived.map((d) => (
-              <DerivedRow key={d.id} d={d} onNavigate={onNavigate} />
+            {/* **与 Relations 同一个骨架**：方向箭头 + 谓词 + 条数的小标题，
+                底下是紧凑行。规则（传递/对称）并进标题——它对整组都成立，
+                挂在每一行上是重复，而且那个 `--u-warn` 琥珀色又是一处
+                与派生边抢色相的地方 */}
+            {derivedGroups.map((gr) => (
+              <div key={gr.key} className="mb-3 last:mb-1">
+                <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+                  {gr.direction === "in" ? (
+                    <ArrowLeft size={10} />
+                  ) : (
+                    <ArrowRight size={10} />
+                  )}
+                  <span>{gr.predicate}</span>
+                  <span className="text-neutral-600">{gr.rule}</span>
+                  {gr.rows.length > 1 && (
+                    <span className="ml-auto text-neutral-600">
+                      {gr.rows.length}
+                    </span>
+                  )}
+                </div>
+                <div>
+                  {gr.rows.map((d) => {
+                    const out = d.subject_id === entityId;
+                    return (
+                      <DerivedRow
+                        key={d.id}
+                        d={d}
+                        otherId={out ? d.object_id : d.subject_id}
+                        otherName={out ? d.object : d.subject}
+                        open={openFact === d.id}
+                        onToggle={() =>
+                          setOpenFact(openFact === d.id ? null : d.id)
+                        }
+                        onNavigate={onNavigate}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
             ))}
-          </div>
+          </>
         )}
         {view !== "history" &&
           view !== "derived" &&
