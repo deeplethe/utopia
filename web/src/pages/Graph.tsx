@@ -1321,13 +1321,13 @@ export function Graph() {
              那个类是给按钮堆裁圆角的，可面板是同一个盒子的子元素——
              合成一层的话面板会被一起裁掉，实测只剩塔本身那 32px 宽 */
           <div className="relative">
-            <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+            <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
             <button
               onClick={() => setShowDerived((v) => !v)}
               role="switch"
               aria-checked={showDerived}
               title={`${S.graph.derivedEdges(derivedCount)} · ${S.graph.derivedHint}`}
-              className={`p-2 transition-colors ${
+              className={`flex items-center gap-2 p-2 transition-colors ${
                 showDerived
                   ? "bg-white/[0.1]"
                   : "text-neutral-500 hover:bg-white/[0.06]"
@@ -1337,6 +1337,7 @@ export function Graph() {
               }
             >
               <Waypoints size={15} />
+              <span className="u-tower-label">{S.graph.viewDerived}</span>
             </button>
             <div className="h-px bg-white/10 mx-1.5" />
             {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
@@ -1346,13 +1347,16 @@ export function Graph() {
               onClick={() => setDerivedPanel((v) => !v)}
               title={S.graph.derivedPanel}
               aria-expanded={derivedPanel}
-              className={`p-2 text-[11px] leading-none transition-colors ${
+              className={`flex items-center gap-2 p-2 text-[11px] leading-none transition-colors ${
                 derivedPanel
                   ? "text-white bg-white/[0.1]"
                   : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
               }`}
             >
-              ⋯
+              <span className="grid h-[15px] w-[15px] shrink-0 place-items-center leading-none">
+                ⋯
+              </span>
+              <span className="u-tower-label">{S.graph.derivedPanel}</span>
             </button>
             </div>
             {derivedPanel && kb && (
@@ -1364,7 +1368,7 @@ export function Graph() {
             )}
           </div>
         )}
-        <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+        <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
           {(
             [
               { key: "force", Icon: Orbit, label: S.graph.layoutForce },
@@ -1384,34 +1388,37 @@ export function Graph() {
                 layoutModeRef.current = key;
                 layoutCtlRef.current?.apply(key);
               }}
-              className={`p-2 transition-colors ${
+              className={`flex items-center gap-2 p-2 transition-colors ${
                 layoutMode === key
                   ? "text-white bg-white/[0.1]"
                   : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
               }`}
             >
               <Icon size={15} />
+              <span className="u-tower-label">{label}</span>
             </button>
           ))}
         </div>
-        <div className="glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+        <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
           <button
             title={S.graph.zoomIn}
             onClick={() =>
               sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })
             }
-            className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+            className="flex items-center gap-2 p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
             <ZoomIn size={15} />
+            <span className="u-tower-label">{S.graph.zoomIn}</span>
           </button>
           <button
             title={S.graph.zoomOut}
             onClick={() =>
               sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })
             }
-            className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+            className="flex items-center gap-2 p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
             <ZoomOut size={15} />
+            <span className="u-tower-label">{S.graph.zoomOut}</span>
           </button>
           <div className="h-px bg-white/10 mx-1.5" />
           <button
@@ -1419,9 +1426,10 @@ export function Graph() {
             onClick={() =>
               sigmaRef.current?.getCamera().animatedReset({ duration: 300 })
             }
-            className="p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+            className="flex items-center gap-2 p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
             <Maximize2 size={15} />
+            <span className="u-tower-label">{S.graph.fitView}</span>
           </button>
         </div>
       </div>
@@ -1627,13 +1635,9 @@ function TimeScrubber({
   return (
     /* 宽度随单位变：单位大 → 桶少 → 短；单位小 → 桶多 → 长而密。
        仍夹在视口内（calc 那一项），窄屏不会顶出去。
-
-       **别给它加 `transition-[width]`**：加了之后宽度会卡在旧值上一直不动，
-       连 `width: …px !important` 都推不动（同一容器里放个同宽的探针 div 却是对的）。
-       这组件每秒重渲很多次，过渡似乎每帧都被重新起头。实测：去掉过渡后
-       年 320 / 月 648 / 日 760，立刻就对。 */
+       实测宽度：年 320 / 月 648 / 日 760。 */
     <div
-      className="glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
+      className="glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)] transition-[width] duration-300"
       style={{ width: `min(${trackW}px, calc(100vw - 4rem))` }}
     >
       <button
@@ -1684,7 +1688,13 @@ function TimeScrubber({
         ref={trackRef}
         className="relative flex-1 h-9 rounded-lg bg-white/[0.04]"
       >
-        <div className="absolute inset-x-1.5 top-1.5 bottom-1.5 flex items-end gap-[2px]">
+        {/* **间隙必须随密度收**：写死 2px 时，日单位下 216 根柱子有 215 个间隙
+            ≈ 430px，而轨道内宽才 ~455px——柱子被挤成 0.1px，整条看起来是空的。
+            实测就是这么丢的。柱子稀疏时留 2px 好数，密了就贴在一起当密度带看 */}
+        <div
+          className="absolute inset-x-1.5 top-1.5 bottom-1.5 flex items-end"
+          style={{ gap: bars.length > 120 ? 0 : bars.length > 40 ? 1 : 2 }}
+        >
           {bars.map((b) => {
             // 进入即亮（桶起点为判据）：播放头脚下的柱子即已覆盖——进度条通用语义
             const past = value !== null && b.ts <= value;

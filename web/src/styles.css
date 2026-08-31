@@ -708,3 +708,37 @@ a:hover > .u-mark-arrow {
   color: var(--u-text-2);
   margin: 0.4em 0;
 }
+
+/* 左下控件塔：**整组一起展开**，不是逐个按钮。
+   一组是一个语义单元（派生 / 布局 / 相机），鼠标进了这一组，
+   这一组的名字就都该出来——逐个展开的话，名字会随指针跳来跳去，
+   而人想知道的往往正是"旁边那个是什么"。
+
+   用 max-width 而不是 width 做过渡：名字长短不一，写死宽度要么截断
+   要么留白，max-width 让每个按钮按自己的内容收放。
+   overflow-hidden 已经在组容器上了，收起时不会漏字。 */
+.u-tower-label {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  font-size: 11px;
+  line-height: 1;
+  transition:
+    max-width 220ms ease,
+    opacity 160ms ease;
+}
+.u-tower:hover .u-tower-label {
+  max-width: 9rem;
+  opacity: 1;
+}
+/* 键盘走焦点时也要出来：只认 hover 的话，用键盘的人永远看不到名字 */
+.u-tower:focus-within .u-tower-label {
+  max-width: 9rem;
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .u-tower-label {
+    transition: none;
+  }
+}
