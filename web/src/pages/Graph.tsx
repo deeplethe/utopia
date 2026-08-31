@@ -373,7 +373,11 @@ export function Graph() {
           : new Date(timeT).toISOString().slice(0, 10);
     const next = {
       entity: selected ?? undefined,
-      focus: focusEntity ?? undefined,
+      // **与 entity 相同就不写**：点搜索结果会同时设这两个，
+      // 照直写出来地址栏里就是同一串 UUID 出现两遍。
+      // 只有"聚焦在 A 的邻域、却选中了 B"时它才带信息
+      focus:
+        focusEntity && focusEntity !== selected ? focusEntity : undefined,
       at,
     };
     if (
@@ -1652,8 +1656,20 @@ function TimeScrubber({
   /* 走完整条的次数。**拿它当 key**——同一个元素上重复触发同一个动画不会重播，
      换 key 让它重新挂载才会 */
   const [sweep, setSweep] = useState(0);
+  /* 指针在轨道上时，已走过的那段提亮。**它回答的是"我走到哪了"**——
+     不播的时候整条都是同一档灰，看不出进度停在哪；而这正是人把指针
+     移上来想知道的事 */
+  const [trackHover, setTrackHover] = useState(false);
   const trackRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  /* 拖动落点。**播放循环有自己的浮点累加器**，不读 value——否则每帧的取整
+     误差会积起来。所以光改 value 是没用的，下一帧就被原样覆盖回去。
+     拖动把落点放进这里，循环下一帧接手，从新位置继续走 */
+  const seekRef = useRef<number | null>(null);
+  const seek = (v: number) => {
+    seekRef.current = v;
+    onChange(v);
+  };
 
   const { minTs, maxTs, bars, merged, trackW } = useMemo(() => {
     const now = Date.now();
@@ -1716,6 +1732,11 @@ function TimeScrubber({
     let acc = value ?? minTs;
     let lastPushed = 0;
     const step = (now: number) => {
+      // 有人拖过了：从落点接着走，而不是沿原来的轨迹
+      if (seekRef.current !== null) {
+        acc = seekRef.current;
+        seekRef.current = null;
+      }
       acc += (now - last) * SPEED;
       last = now;
       if (acc >= maxTs) {
@@ -1823,6 +1844,8 @@ function TimeScrubber({
       {/* 密度带轨道：内嵌浅色井 + 每年事实量柱 */}
       <div
         ref={trackRef}
+        onMouseEnter={() => setTrackHover(true)}
+        onMouseLeave={() => setTrackHover(false)}
         className="relative h-9 min-w-[150px] flex-1 overflow-hidden rounded-lg bg-white/[0.04]"
       >
         {sweep > 0 && (
@@ -1865,7 +1888,7 @@ function TimeScrubber({
                     // 走到哪儿就看不出来了。留一点点而不是归零——
                     // 归零等于假装那段没有数据，而它只是还没到
                     background:
-                      value !== null && past && playing
+                      value !== null && past && (playing || trackHover)
                         ? "rgba(255,255,255,0.62)"
                         : value === null || past
                           ? "rgba(255,255,255,0.32)"
@@ -1883,25 +1906,24 @@ function TimeScrubber({
           max={maxTs}
           step={DAY_MS}
           value={value ?? maxTs}
-          onChange={(e) => {
-            setPlaying(false);
-            onChange(Number(e.target.value));
-          }}
+          /* **拖动不停播**：拖是"我要看那一段"，不是"我要停下"——
+             松手之后应该从新位置继续走到底。
+             （`All time` / `Now` 那两个按钮仍然停：那是明确的跳转，不是擦洗） */
+          onChange={(e) => seek(Number(e.target.value))}
           // 原生 range 的拖拽手势会被页面级鼠标监听（如图上拖节点）干扰——
           // 自己用 pointer capture 驱动拖动，点击与拖拽都走同一条计算路径
           onPointerDown={(e) => {
-            setPlaying(false);
             draggingRef.current = true;
             try {
               e.currentTarget.setPointerCapture(e.pointerId);
             } catch {
               /* 合成事件的 pointerId 可能无效，忽略 */
             }
-            onChange(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
+            seek(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
           }}
           onPointerMove={(e) => {
             if (draggingRef.current)
-              onChange(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
+              seek(scrubValueAt(e.clientX, trackRef.current, minTs, maxTs));
           }}
           onPointerUp={() => {
             draggingRef.current = false;
