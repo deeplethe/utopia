@@ -30,6 +30,7 @@ import {
   Button,
   Chip,
   ColorPicker,
+  colorForKey,
   DangerConfirm,
   Dropdown,
   Input,
@@ -926,7 +927,12 @@ function ClassForm({
 }) {
   const [key, setKey] = useState(existing?.key ?? "");
   const [label, setLabel] = useState(existing?.label ?? "");
-  const [color, setColor] = useState(existing?.color ?? "#8ea5bd");
+  // 新建时颜色跟着 key 走（与后端 color_for_key 同一个规则），不是一个固定默认值。
+  // 用户当然可以改；但**不改的话，手动建的类和导入建的类配色体系一致**
+  const [color, setColor] = useState(
+    existing?.color ?? colorForKey(existing?.key ?? ""),
+  );
+  const [colorTouched, setColorTouched] = useState(Boolean(existing?.color));
   const [shape, setShape] = useState<"circle" | "square">(
     existing?.shape ?? "circle",
   );
@@ -1003,7 +1009,11 @@ function ClassForm({
           </label>
           <Input
             value={key}
-            onChange={(e) => setKey(e.target.value)}
+            onChange={(e) => {
+              setKey(e.target.value);
+              // 用户没自己挑过色，就让颜色跟着 key 走——与后端同一个规则
+              if (!colorTouched) setColor(colorForKey(e.target.value));
+            }}
             className="w-full"
             placeholder="contract"
           />
@@ -1020,7 +1030,7 @@ function ClassForm({
       <div>
         <label className={lbl}>{S.ontology.shapeColor}</label>
         <div className="flex items-center gap-2">
-          <ColorPicker value={color} onChange={setColor} shape={shape} />
+          <ColorPicker value={color} onChange={(c: string) => { setColor(c); setColorTouched(true); }} shape={shape} />
           {/* 形状：与图谱节点渲染一一对应（circle=四层圆 / square=四层方） */}
           <div className="flex rounded-lg overflow-hidden border border-white/10">
             {(["circle", "square"] as const).map((sh) => (

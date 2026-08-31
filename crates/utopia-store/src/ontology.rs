@@ -143,19 +143,23 @@ pub async fn create_entity_type(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 改一个实体类。
+///
+/// **`color: None` = 保持原色**，不是重置。从前这里是 `&str`，调用方不给就
+/// 写死一个默认灰蓝，于是任何一次不带颜色的改名都会抹掉用户挑过的颜色。
 pub async fn update_entity_type(
     pool: &PgPool,
     kb_id: Uuid,
     id: Uuid,
     label: &str,
-    color: &str,
+    color: Option<&str>,
     shape: &str,
     parents: &[Uuid],
     description: &str,
 ) -> AppResult<()> {
     validate_shape(shape)?;
     let res = sqlx::query(
-        "UPDATE entity_types SET label = $3, color = $4, shape = $5,
+        "UPDATE entity_types SET label = $3, color = COALESCE($4, color), shape = $5,
                 description = $6
          WHERE id = $2 AND kb_id = $1",
     )
@@ -618,7 +622,7 @@ pub async fn create_entity_type_with_iri(
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description, iri)
-         VALUES ($1, $2, $3, $4, '#8ea5bd', 'circle', $5, $6)",
+         VALUES ($1, $2, $3, $4, $7, $8, $5, $6)",
     )
     .bind(id)
     .bind(kb_id)
@@ -626,6 +630,10 @@ pub async fn create_entity_type_with_iri(
     .bind(label)
     .bind(description)
     .bind(iri)
+    // 按 key 取色而不是所有类一个灰蓝——导入一个大本体进来才有得看
+    .bind(crate::palette::color_for_key(key))
+    // 形状说明来历：这条路带 IRI，就是词表声明的
+    .bind(crate::palette::shape_for(iri))
     .execute(pool)
     .await
     .map_err(|e| match &e {
@@ -1235,10 +1243,18 @@ pub async fn create_entity_types_bulk(
     let labels: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
     let descs: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
     let iris: Vec<&str> = rows.iter().map(|r| r.3.as_str()).collect();
+    // 颜色在 Rust 侧按 key 算好，跟着 UNNEST 一起进去——
+    // SQL 里调不到 Rust 函数，而这一批正是导入大本体走的路
+    let colours: Vec<&str> = keys
+        .iter()
+        .map(|k| crate::palette::color_for_key(k))
+        .collect();
+    let shapes: Vec<&str> = iris.iter().map(|i| crate::palette::shape_for(i)).collect();
     let out: Vec<(Uuid, String)> = sqlx::query_as(
         "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description, iri)
-         SELECT gen_random_uuid(), $1, k, l, '#8ea5bd', 'circle', d, i
-         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[]) AS t(k, l, d, i)
+         SELECT gen_random_uuid(), $1, k, l, c, s, d, i
+         FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[])
+              AS t(k, l, d, i, c, s)
          ON CONFLICT (kb_id, key) DO NOTHING
          RETURNING id, key",
     )
@@ -1247,6 +1263,8 @@ pub async fn create_entity_types_bulk(
     .bind(&labels)
     .bind(&descs)
     .bind(&iris)
+    .bind(&colours)
+    .bind(&shapes)
     .fetch_all(pool)
     .await?;
     Ok(out.into_iter().map(|(id, k)| (k, id)).collect())
@@ -1561,4 +1579,94 @@ pub async fn open_proposal_count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
     .fetch_one(pool)
     .await?;
     Ok(n)
+}
+
+/// 主语的类型合不合这个关系声明的 domain。沿继承链往上找。
+///
+/// **只回答，不动数据。** 0001 已经判过：签名是提示不是闸门，
+/// 「用可能错的声明驱动自动动作风险高」。而实体类型本身也是模型判出来的
+/// （实测里 Elon Musk 被判成 `researcher`），拿它去翻转事实方向，
+/// 是两层不确定叠在一起还静默改写。所以这里的结果只用来落一条信号。
+///
+/// 三种回答，别混成两种：
+/// - `Some(true)`  合
+/// - `Some(false)` 不合——**这才是信号**
+/// - `None`        没得判（关系没声明 domain，或实体还没有类型）
+pub async fn subject_fits_domain(
+    pool: &PgPool,
+    relation_type_id: Uuid,
+    subject_type_id: Option<Uuid>,
+) -> AppResult<Option<bool>> {
+    let Some(subject_type_id) = subject_type_id else {
+        return Ok(None);
+    };
+    let (declared, ok): (i64, i64) = sqlx::query_as(
+        "WITH RECURSIVE up(id) AS (
+             SELECT $2::uuid
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+         )
+         SELECT (SELECT count(*) FROM relation_type_domains WHERE relation_type_id = $1),
+                (SELECT count(*) FROM relation_type_domains d
+                   JOIN up ON up.id = d.entity_type_id
+                  WHERE d.relation_type_id = $1)",
+    )
+    .bind(relation_type_id)
+    .bind(subject_type_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((declared > 0).then_some(ok > 0))
+}
+
+/// 这些类的全部祖先（不含自己）。沿 `subClassOf` 上溯，多继承与菱形都走得通。
+///
+/// 给按块检索的候选补地板用：向量检索偏爱字面出现在正文里的叶子类，
+/// 泛化基类排得很后（实测 `person` 在 976 个类里排第 359），于是提示词里
+/// 没有它们——实体无处落脚，关系签名也退化成 `*`。祖先是本体自己声明的
+/// 泛化关系，拿它补比维护一张「通用类」清单可靠。
+pub async fn ancestors_of(pool: &PgPool, ids: &[Uuid]) -> AppResult<Vec<Uuid>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    // 递归项里 UNION 去重，菱形继承不会把同一个祖先展开两次
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "WITH RECURSIVE up(id) AS (
+             SELECT unnest($1::uuid[])
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+         )
+         SELECT id FROM up WHERE id <> ALL($1::uuid[])",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// 同 [`subject_fits_domain`]，但类型**从库里的实体读**，不靠调用方手上那份。
+///
+/// 抽取器手上的 `entity_type_of` 只覆盖模型在这一块里声明过的实体；宾语常常
+/// 是别处已经存在的实体，这一块没重新声明它的类型，于是查不到、判不了。
+/// 而消解已经把它连到了库里那一行——那里有类型，用它才判得全。
+pub async fn entity_fits_domain(
+    pool: &PgPool,
+    relation_type_id: Uuid,
+    entity_id: Uuid,
+) -> AppResult<Option<bool>> {
+    let (declared, ok): (i64, i64) = sqlx::query_as(
+        "WITH RECURSIVE up(id) AS (
+             SELECT type_id FROM entities WHERE id = $2
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+         )
+         SELECT (SELECT count(*) FROM relation_type_domains WHERE relation_type_id = $1),
+                (SELECT count(*) FROM relation_type_domains d
+                   JOIN up ON up.id = d.entity_type_id
+                  WHERE d.relation_type_id = $1)",
+    )
+    .bind(relation_type_id)
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((declared > 0).then_some(ok > 0))
 }

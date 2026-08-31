@@ -337,6 +337,9 @@ export const en = {
       object_missing: "Relation had no object",
       malformed_item: "The model's item did not fit the schema",
       truncated_reply: "The model's reply was cut off",
+      domain_mismatch: "The subject does not fit the relation, and swapping would not help",
+      not_an_entity_name: "That name is a sentence, not a thing",
+      direction_corrected: "Subject and object were swapped to match the signature",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",

@@ -28,6 +28,15 @@ pub mod reason {
     pub const OBJECT_MISSING: &str = "object_missing";
     /// 模型给的这一条不合结构（缺 predicate 之类）→ 只跳这一条，不牵连整块
     pub const MALFORMED_ITEM: &str = "malformed_item";
+    /// 主语的类型对不上关系声明的 domain，**且对调也不合法**——那是选错了关系
+    /// 或类型判错，不是方向问题。照原样落库 + 记信号，交给人看，不猜
+    pub const DOMAIN_MISMATCH: &str = "domain_mismatch";
+    /// 模型给的"实体名"其实是一整句话或从句——不是一个东西的名字。
+    /// 这类东西永远匹配不到别处的提及，在图上是孤点，还会拖累消解
+    pub const NOT_AN_ENTITY_NAME: &str = "not_an_entity_name";
+    /// 主语违反 domain 而宾语符合，已按本体声明的方向把主宾掰正。
+    /// **动作必须留痕**：自动的、看不见的改写才是 0001 反对的那种
+    pub const DIRECTION_CORRECTED: &str = "direction_corrected";
     /// 模型输出被截断（撞上 max_tokens）→ 已完整的那些留下，尾巴丢掉
     pub const TRUNCATED_REPLY: &str = "truncated_reply";
 }

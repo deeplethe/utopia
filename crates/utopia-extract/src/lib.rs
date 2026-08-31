@@ -132,10 +132,33 @@ pub fn build_messages(
         .join("\n");
     // 记号只在真有签名时解释一次；没有签名的库，提示词一字不变。
     // 说明用英文——提示词的**指令语言**是英文，只有 description 跟语料走
+    //
+    // **签名管两件事，而它们的可覆盖性不同。** 第一版把两件事混成了一句
+    // "It is a hint, not a rule — when the text says otherwise, write what the
+    // text says"，于是模型连参数顺序也一并按原文的说法写：
+    //
+    //     Elon Musk (person) --employee--> Microsoft
+    //
+    // 而 schema.org 声明的是 employee (organization → person)。实测一次跑里
+    // 130 条可校验的事实有 102 条这样反着落库——**恰恰是本体包最主要的卖点失效**，
+    // 选 schema.org 的理由就是「方向是声明的不是描述的」。
+    //
+    // 两件事分开说：
+    //
+    // - **哪些类型能参与**：提示不是闸门。本体可能写错，原文说西雅图就写西雅图。
+    //   0001 的判断在这里不变——硬闸门会系统性丢数据，part_of 烧我们的正是那样。
+    // - **参数顺序**：由签名定。顺序不是关于世界的断言，是这个 key 的编码约定；
+    //   原文从来没有「说了别的方向」，它只说两个实体之间存在某种关系。
+    //   反着说时该交换主宾，而不是反过来用这个关系。
     let sig_note = if relations.iter().any(|r| !r.signature.is_empty()) {
         ". A parenthesis after the key is the type signature, subject then object; \
-         \"|\" means or, \"*\" means unconstrained. It is a hint, not a rule — \
-         when the text says otherwise, write what the text says"
+         \"|\" means or, \"*\" means unconstrained. Which kinds of things may take part \
+         is a hint, not a rule — when the text says otherwise, write what the text says. \
+         The order is not a hint: the signature fixes which side is the subject. If the \
+         text puts them the other way round, swap subject and object so that the subject \
+         matches the left side — do not reverse the relation. For example, given \
+         \"employee (organization → person)\" and a text saying \"X is an employee of Y\", \
+         write Y as the subject and X as the object"
     } else {
         ""
     };
@@ -636,6 +659,30 @@ mod prompt_shape_tests {
         let rels = vec![rel("works_at", "d", "person → organization")];
         let msgs = build_messages(&[], &rels, &[], None, "a.txt", &[], "text");
         assert!(msgs[0].content.contains("hint, not a rule"));
+    }
+
+    /// **但顺序不是提示。**
+    ///
+    /// 两句话必须同时在场，少哪一句都退回一种老毛病：少了「提示不是闸门」，
+    /// 本体写错时系统性丢数据（part_of 那种方式）；少了「顺序由签名定」，
+    /// 模型按英语直觉写 `Musk --employee--> Microsoft`，而 schema.org 声明的是
+    /// `employee (organization → person)`——实测一次跑里 130 条可校验的事实
+    /// 有 102 条这样反着落库。
+    #[test]
+    fn the_prompt_says_the_order_is_not_a_hint() {
+        let rels = vec![rel("employee", "d", "organization → person")];
+        let msgs = build_messages(&[], &rels, &[], None, "a.txt", &[], "text");
+        let c = &msgs[0].content;
+        assert!(c.contains("hint, not a rule"), "类型那句丢了");
+        assert!(c.contains("The order is not a hint"), "顺序那句丢了");
+        assert!(
+            c.contains("swap subject and object"),
+            "只说了顺序重要，没说反着写时该怎么办"
+        );
+        assert!(
+            c.contains("do not reverse the relation"),
+            "少了这句，模型可能去找一个反向关系而不是交换主宾"
+        );
     }
 
     /// 已知实体必须落在 **user** 消息里、紧挨着正文。
