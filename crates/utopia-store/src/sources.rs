@@ -284,7 +284,8 @@ pub async fn finish_sync(
 /// **零调用，故意留着**：没有路由，界面上也没有入口。标签会是文档上唯一
 /// 「人自己贴的」维度——来源是它从哪来的，名字与状态是系统给的，三者都表达
 /// 不了「这批要脱敏」这种横跨来源、只有人知道的分组。要不要有这个维度，
-/// 等外部意见（见 GitHub Discussions），别当死代码删掉。
+/// 悬而未决——完整的两面之辞写在 `migrations/0002_ingest.sql` 的 `tags` 列上，
+/// 别当死代码删掉。
 pub async fn set_document_tags(
     pool: &PgPool,
     kb_id: Uuid,
