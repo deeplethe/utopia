@@ -724,17 +724,25 @@ a:hover > .u-mark-arrow {
   opacity: 0;
   font-size: 11px;
   line-height: 1;
+  /* 图标与文字之间的空当用 **margin**，既不能用按钮上的 gap，也不能用 padding：
+     gap 对宽度为 0 的项目照样生效；而 padding 不会被 max-width 压缩
+     （border-box 下宽度最小就等于那点 padding）——两种写法都会让收起态
+     凭空多出 8px，方块就不方了。实测 39x31，改成 margin 后才是 31x31 */
+  margin-left: 0;
   transition:
     max-width 220ms ease,
+    margin-left 220ms ease,
     opacity 160ms ease;
 }
 .u-tower:hover .u-tower-label {
   max-width: 9rem;
+  margin-left: 0.5rem;
   opacity: 1;
 }
 /* 键盘走焦点时也要出来：只认 hover 的话，用键盘的人永远看不到名字 */
 .u-tower:focus-within .u-tower-label {
   max-width: 9rem;
+  margin-left: 0.5rem;
   opacity: 1;
 }
 @media (prefers-reduced-motion: reduce) {

@@ -1324,7 +1324,10 @@ export function Graph() {
       </div>
 
       {/* 左下控件塔：推出来的边 + 布局切换 + 相机（右下归实体侧栏，底部中央归时间岛） */}
-      <div className="absolute bottom-4 left-3 z-10 flex flex-col gap-2">
+      {/* **items-start**：列内项目默认 stretch，一组展开就会把其余几组
+          一起拉到同宽——那几组的字还收着，于是看着是几个莫名其妙的空白长条。
+          各自按内容收放，才是「一组一组展开，不牵连别人」 */}
+      <div className="absolute bottom-4 left-3 z-10 flex flex-col items-start gap-2">
         {/* 推出来的边：**自成一组，也不进类型图例。**
             图例回答「显示哪些类」，一排全是本体里的类；这个回答的是
             「显不显示推出来的边」——不是同一个问题。为零时整组不出现。
@@ -1348,7 +1351,7 @@ export function Graph() {
               role="switch"
               aria-checked={showDerived}
               title={`${S.graph.derivedEdges(derivedCount)} · ${S.graph.derivedHint}`}
-              className={`flex items-center gap-2 p-2 transition-colors ${
+              className={`flex items-center p-2 transition-colors ${
                 showDerived
                   ? "bg-white/[0.1]"
                   : "text-neutral-500 hover:bg-white/[0.06]"
@@ -1368,7 +1371,7 @@ export function Graph() {
               onClick={() => setDerivedPanel((v) => !v)}
               title={S.graph.derivedPanel}
               aria-expanded={derivedPanel}
-              className={`flex items-center gap-2 p-2 text-[11px] leading-none transition-colors ${
+              className={`flex items-center p-2 text-[11px] leading-none transition-colors ${
                 derivedPanel
                   ? "text-white bg-white/[0.1]"
                   : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
@@ -1409,7 +1412,7 @@ export function Graph() {
                 layoutModeRef.current = key;
                 layoutCtlRef.current?.apply(key);
               }}
-              className={`flex items-center gap-2 p-2 transition-colors ${
+              className={`flex items-center p-2 transition-colors ${
                 layoutMode === key
                   ? "text-white bg-white/[0.1]"
                   : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
@@ -1426,7 +1429,7 @@ export function Graph() {
             onClick={() =>
               sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })
             }
-            className="flex items-center gap-2 p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
             <ZoomIn size={15} />
             <span className="u-tower-label">{S.graph.zoomIn}</span>
@@ -1436,7 +1439,7 @@ export function Graph() {
             onClick={() =>
               sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })
             }
-            className="flex items-center gap-2 p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
             <ZoomOut size={15} />
             <span className="u-tower-label">{S.graph.zoomOut}</span>
@@ -1447,7 +1450,7 @@ export function Graph() {
             onClick={() =>
               sigmaRef.current?.getCamera().animatedReset({ duration: 300 })
             }
-            className="flex items-center gap-2 p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
+            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
           >
             <Maximize2 size={15} />
             <span className="u-tower-label">{S.graph.fitView}</span>
