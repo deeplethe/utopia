@@ -371,12 +371,17 @@ export const en = {
       api: "API",
       custom: "Custom",
       github_issues: "GitHub issues",
+      jira_issues: "Jira issues",
     },
     sourceKindHints: {
       folder:
         "A plain folder. Select it and upload (or drag) files straight into it — nothing is watched or synced.",
       url: "Fetches the listed web pages; changed pages update the same document.",
       rss: "Subscribes to a feed; each entry becomes a document dated by its publish time.",
+      jira_issues:
+        "Syncs a Jira project's issues. **Each ticket, together with its field-level change " +
+        "history**, becomes one document — what changed from what to what, and when. " +
+        "One call fetches everything; no per-ticket round trips.",
       github_issues:
         "Syncs a repository's issues. **Each ticket, together with its state history**, becomes " +
         "one document — when it was opened, closed, relabelled, reassigned, all dated. " +
@@ -425,6 +430,8 @@ export const en = {
     urlsField: "Page URLs (one per line)",
     feedUrl: "Feed URL",
     repoField: "Repository (owner/name)",
+    jiraUrlField: "Jira site URL",
+    jiraProjectField: "Project key",
     tokenField: "GitHub token (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     interval: "Sync schedule",

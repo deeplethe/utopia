@@ -10,6 +10,7 @@ mod error;
 mod extraction;
 mod github_issues;
 mod ingest_sources;
+mod jira_issues;
 mod llm_util;
 mod mappings;
 mod ontology_index;

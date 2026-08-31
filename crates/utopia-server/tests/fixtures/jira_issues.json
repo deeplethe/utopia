@@ -1,0 +1,372 @@
+{
+ "note": "取自 issues.apache.org（匿名可读，Jira Server API v2），字段已裁到我们声明的那些。",
+ "total": 14506,
+ "issues": [
+  {
+   "key": "KAFKA-20979",
+   "fields": {
+    "summary": "Potential data loss caused by time index truncation",
+    "description": "On broker startup, I see these lines for many partitions:\r\n\r\n{noformat}\r\n[LocalLog partition=TOPIC-0, dir=LOG_DIR/TOPIC-0] Rolled new log segment at offset 83461 in 0 ms.\r\n[UnifiedLog partition=TOPIC-0, dir=LOG_DIR] Incremented log start offset to 83461 due to segment deletion\r\n[UnifiedLog partition",
+    "created": "2026-08-24T10:49:20.000+0000",
+    "updated": "2026-08-29T01:42:46.000+0000",
+    "resolutiondate": "2026-08-28T10:45:31.000+0000",
+    "status": {
+     "name": "Resolved"
+    },
+    "issuetype": {
+     "name": "Bug"
+    },
+    "priority": {
+     "name": "Major"
+    },
+    "assignee": {
+     "displayName": "Mickael Maison"
+    },
+    "reporter": {
+     "displayName": "Mickael Maison"
+    },
+    "labels": [],
+    "comment": {
+     "comments": [
+      {
+       "author": {
+        "displayName": "Luke Chen"
+       },
+       "created": "2026-08-24T11:00:50.520+0000",
+       "body": "Given this issue will cause data loss for the impacted partitions, I think we should include this fix in v4.4.0."
+      },
+      {
+       "author": {
+        "displayName": "Gaurav Narula"
+       },
+       "created": "2026-08-24T11:01:08.145+0000",
+       "body": "[~mimaison] Which version was this observed in? In the past, IOException emitted by {{TimeIndex#close}} were swallowed and this was fixed with KAFKA-19221\r\n\r\n \r\n\r\nI've also raised KAFKA-19200 before t"
+      }
+     ]
+    }
+   },
+   "changelog": {
+    "histories": [
+     {
+      "created": "2026-08-24T11:11:52.944+0000",
+      "author": {
+       "displayName": "Mickael Maison"
+      },
+      "items": [
+       {
+        "field": "Version",
+        "fromString": null,
+        "toString": "4.1.0"
+       }
+      ]
+     },
+     {
+      "created": "2026-08-24T13:47:12.000+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": null,
+        "toString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-24T19:52:18.531+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-25T01:44:17.716+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-26T09:16:22.571+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-26T10:41:20.396+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23258 (Web Link)\""
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "key": "KAFKA-20992",
+   "fields": {
+    "summary": "Remove hamcrest from org.apache.kafka.test package",
+    "description": "MockApiFixedKeyProcessor",
+    "created": "2026-08-26T16:07:58.000+0000",
+    "updated": "2026-08-28T19:46:33.000+0000",
+    "resolutiondate": "2026-08-28T19:46:33.000+0000",
+    "status": {
+     "name": "Resolved"
+    },
+    "issuetype": {
+     "name": "Sub-task"
+    },
+    "priority": {
+     "name": "Major"
+    },
+    "assignee": {
+     "displayName": "Hung-Yau Su"
+    },
+    "reporter": {
+     "displayName": "Chia-Ping Tsai"
+    },
+    "labels": [],
+    "comment": {
+     "comments": []
+    }
+   },
+   "changelog": {
+    "histories": [
+     {
+      "created": "2026-08-26T16:27:00.509+0000",
+      "author": {
+       "displayName": "Hung-Yau Su"
+      },
+      "items": [
+       {
+        "field": "assignee",
+        "fromString": "Chia-Ping Tsai",
+        "toString": "HungYau Su"
+       }
+      ]
+     },
+     {
+      "created": "2026-08-26T21:02:35.220+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": null,
+        "toString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-27T01:37:22.934+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-27T01:59:34.817+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-27T12:26:39.880+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-27T18:21:14.861+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23287 (Web Link)\""
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "key": "KAFKA-20920",
+   "fields": {
+    "summary": "Document new group coordinator executor metrics",
+    "description": "We forgot to update docs/operations/monitoring.md in KAFKA-20211.",
+    "created": "2026-08-11T05:45:35.000+0000",
+    "updated": "2026-08-28T16:31:21.000+0000",
+    "resolutiondate": "2026-08-28T16:31:21.000+0000",
+    "status": {
+     "name": "Resolved"
+    },
+    "issuetype": {
+     "name": "Sub-task"
+    },
+    "priority": {
+     "name": "Major"
+    },
+    "assignee": {
+     "displayName": "Sean Quah"
+    },
+    "reporter": {
+     "displayName": "Sean Quah"
+    },
+    "labels": [],
+    "comment": {
+     "comments": [
+      {
+       "author": {
+        "displayName": "Omnia Ibrahim"
+       },
+       "created": "2026-08-13T14:31:26.632+0000",
+       "body": "Moving to 4.5 as we are now in 4.4.0 code freeze\r\n "
+      }
+     ]
+    }
+   },
+   "changelog": {
+    "histories": [
+     {
+      "created": "2026-08-11T05:46:35.379+0000",
+      "author": {
+       "displayName": "Sean Quah"
+      },
+      "items": [
+       {
+        "field": "Fix Version",
+        "fromString": null,
+        "toString": "4.4.0"
+       }
+      ]
+     },
+     {
+      "created": "2026-08-11T05:46:45.890+0000",
+      "author": {
+       "displayName": "Sean Quah"
+      },
+      "items": [
+       {
+        "field": "Fix Version",
+        "fromString": null,
+        "toString": "4.3.2"
+       }
+      ]
+     },
+     {
+      "created": "2026-08-11T06:08:10.727+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": null,
+        "toString": "This issue links to \"GitHub Pull Request #23127 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-11T06:10:34.357+0000",
+      "author": {
+       "displayName": "ASF GitHub Bot"
+      },
+      "items": [
+       {
+        "field": "RemoteIssueLink",
+        "fromString": "This issue links to \"GitHub Pull Request #23127 (Web Link)\"",
+        "toString": "This issue links to \"GitHub Pull Request #23127 (Web Link)\""
+       }
+      ]
+     },
+     {
+      "created": "2026-08-11T06:37:48.208+0000",
+      "author": {
+       "displayName": "Sean Quah"
+      },
+      "items": [
+       {
+        "field": "assignee",
+        "fromString": null,
+        "toString": "Sean Quah"
+       }
+      ]
+     },
+     {
+      "created": "2026-08-13T14:31:36.515+0000",
+      "author": {
+       "displayName": "Omnia Ibrahim"
+      },
+      "items": [
+       {
+        "field": "Fix Version",
+        "fromString": null,
+        "toString": "4.5.0"
+       },
+       {
+        "field": "Fix Version",
+        "fromString": "4.4.0",
+        "toString": null
+       },
+       {
+        "field": "Fix Version",
+        "fromString": "4.3.2",
+        "toString": null
+       }
+      ]
+     }
+    ]
+   }
+  }
+ ]
+}

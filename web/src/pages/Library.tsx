@@ -1203,7 +1203,13 @@ function SourceModal({
   onDone: (id?: string, isApi?: boolean) => void;
 }) {
   const [kind, setKind] = useState<
-    "folder" | "url" | "rss" | "custom" | "api" | "github_issues"
+    | "folder"
+    | "url"
+    | "rss"
+    | "custom"
+    | "api"
+    | "github_issues"
+    | "jira_issues"
   >("folder");
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<string | null>(null);
@@ -1212,6 +1218,8 @@ function SourceModal({
   const [endpoint, setEndpoint] = useState("");
   const [authHeader, setAuthHeader] = useState("");
   const [repo, setRepo] = useState("");
+  const [jiraUrl, setJiraUrl] = useState("");
+  const [jiraProject, setJiraProject] = useState("");
   // PR 在 GitHub 的模型里也是工单。默认不收——问「工单」要的是工单；
   // 但有些仓库的决策记录实际写在 PR 描述里，所以给个开关
   const [includePrs, setIncludePrs] = useState(false);
@@ -1221,7 +1229,11 @@ function SourceModal({
   });
   // folder = 纯容器、api = 推送型：都没有同步日程
   const syncing =
-    kind === "url" || kind === "rss" || kind === "custom" || kind === "github_issues";
+    kind === "url" ||
+    kind === "rss" ||
+    kind === "custom" ||
+    kind === "github_issues" ||
+    kind === "jira_issues";
 
   const create = useMutation({
     mutationFn: () => {
@@ -1241,7 +1253,13 @@ function SourceModal({
                     ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
                     ...(includePrs ? { include_pull_requests: true } : {}),
                   }
-                : {};
+                : kind === "jira_issues"
+                  ? {
+                      base_url: jiraUrl.trim(),
+                      project: jiraProject.trim(),
+                      ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
+                    }
+                  : {};
       return api.createSource(kbId, {
         kind,
         name: name.trim(),
@@ -1292,7 +1310,17 @@ function SourceModal({
         <div className="px-5 py-4">
           {/* 类型 */}
           <div className="flex gap-2 mb-2">
-            {(["folder", "url", "rss", "github_issues", "api", "custom"] as const).map((k) => {
+            {(
+              [
+                "folder",
+                "url",
+                "rss",
+                "github_issues",
+                "jira_issues",
+                "api",
+                "custom",
+              ] as const
+            ).map((k) => {
               const Icon = KIND_ICON[k];
               return (
                 <button
@@ -1400,6 +1428,38 @@ function SourceModal({
                 onChange={(e) => setFeedUrl(e.target.value)}
               />,
             )}
+          {kind === "jira_issues" && (
+            <>
+              {field(
+                S.library.jiraUrlField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  placeholder="https://jira.example.com"
+                  value={jiraUrl}
+                  onChange={(e) => setJiraUrl(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.jiraProjectField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  placeholder="KAFKA"
+                  value={jiraProject}
+                  onChange={(e) => setJiraProject(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.tokenField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  type="password"
+                  placeholder="Basic dXNlcjp0b2tlbg=="
+                  value={authHeader}
+                  onChange={(e) => setAuthHeader(e.target.value)}
+                />,
+              )}
+            </>
+          )}
           {kind === "github_issues" && (
             <>
               {field(

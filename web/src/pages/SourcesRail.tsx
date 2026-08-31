@@ -23,6 +23,7 @@ import {
   Rocket,
   Rss,
   Server,
+  SquareKanban,
   Upload,
   Users,
   Webhook,
@@ -65,12 +66,19 @@ export const KIND_ICON = {
   api: Webhook,
   custom: Puzzle,
   github_issues: CircleDot,
+  jira_issues: SquareKanban,
   memory: Brain,
   upload: Upload,
 } as const;
 
 /** 有拉取/同步语义的来源类型（folder/api 无同步概念） */
-export const SYNCING_KINDS = new Set(["url", "rss", "custom", "github_issues"]);
+export const SYNCING_KINDS = new Set([
+  "url",
+  "rss",
+  "custom",
+  "github_issues",
+  "jira_issues",
+]);
 
 export const SYNC_DOT: Record<SourceView["last_sync_status"], string> = {
   never: "bg-neutral-600",

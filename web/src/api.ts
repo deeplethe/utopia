@@ -159,6 +159,7 @@ export interface SourceView {
     | "api"
     | "custom"
     | "github_issues"
+    | "jira_issues"
     | "memory"
     | "upload";
   name: string;
@@ -170,6 +171,10 @@ export interface SourceView {
     repo?: string;
     /** github_issues：PR 在 GitHub 模型里也是工单，默认不收 */
     include_pull_requests?: boolean;
+    /** jira_issues：站点地址，如 https://issues.apache.org/jira */
+    base_url?: string;
+    /** jira_issues：项目 key，如 KAFKA */
+    project?: string;
   } | null;
   icon: string | null;
   sync_interval_minutes: number | null;
