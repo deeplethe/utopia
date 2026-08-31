@@ -1914,10 +1914,14 @@ function DerivedPanel({
     queryKey: ["kbOne", kbId],
     queryFn: () => api.kbDetail(kbId),
   });
-  /* 重跑要点两下。**面板正是从左下那个 ⋯ 按钮长出来的**，
-     所以指针点完 ⋯ 就停在面板的左下角——而重跑从前是一条通栏大按钮
-     铺在最下面，展开的下一下就误触了。挪到最远的那一角、缩到次要动作的尺寸，
-     再加一道确认：这个动作会重算全库的推理 */
+  /* 重跑要确认，但**确认的第二下必须落在另一个按钮上**。
+     这产品的手势约定是「同一个控件连点两下 = 收回去」——开关、⋯、图例胶囊
+     都是这么用的。把「再点一次就执行」压在同一个按钮上，等于让同一个手势
+     在这里意外地变成了「执行」，而别处它一直是「取消」。
+     所以点一下只是**问一句**，问句下面给 取消 / 跑 两个目标。
+
+     也没有用全站的 DangerConfirm：那是红标题、可要求逐字输入的危险级，
+     留给删库那类不可逆操作。重跑推理重但可重复，够不上那一档 */
   const [armed, setArmed] = useState(false);
   const run = useMutation({
     mutationFn: () => api.runInference(kbId),
@@ -1946,37 +1950,52 @@ function DerivedPanel({
         <span className="text-[13px] text-neutral-100">
           {S.graph.derivedPanel}
         </span>
+        {!armed && (
+          <button
+            className="ml-auto rounded px-1.5 py-0.5 text-[11px] text-neutral-500 transition-colors hover:text-neutral-200"
+            disabled={!on || run.isPending}
+            title={on ? undefined : S.err.inference_off}
+            onClick={() => setArmed(true)}
+          >
+            {run.isPending ? S.graph.derivedRunning : S.graph.derivedRun}
+          </button>
+        )}
         <button
-          className={`ml-auto rounded px-1.5 py-0.5 text-[11px] transition-colors ${
-            armed
-              ? "bg-white/10 text-neutral-100"
-              : "text-neutral-500 hover:text-neutral-200"
-          }`}
-          disabled={!on || run.isPending}
-          title={on ? undefined : S.err.inference_off}
-          onClick={() => {
-            if (!armed) {
-              setArmed(true);
-              return;
-            }
-            setArmed(false);
-            run.mutate();
-          }}
-        >
-          {run.isPending
-            ? S.graph.derivedRunning
-            : armed
-              ? S.graph.derivedRunConfirm
-              : S.graph.derivedRun}
-        </button>
-        <button
-          className="text-neutral-500 hover:text-neutral-200"
+          className={armed ? "ml-auto text-neutral-500 hover:text-neutral-200" : "text-neutral-500 hover:text-neutral-200"}
           onClick={onClose}
           aria-label={S.graph.close}
         >
           ×
         </button>
       </div>
+
+      {/* 问句 + 两个目标。**取消排在前面**：从「跑」那一下移过来最先碰到的
+          是取消，误触的代价小的那个该更近 */}
+      {armed && (
+        <div className="mt-2 rounded-lg bg-white/[0.04] p-2">
+          <p className="text-[11px] leading-relaxed text-neutral-300">
+            {S.graph.derivedRunAsk}
+          </p>
+          <div className="mt-1.5 flex gap-1.5">
+            <button
+              className="rounded px-2 py-0.5 text-[11px] text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-neutral-100"
+              onClick={() => setArmed(false)}
+            >
+              {S.graph.derivedRunCancel}
+            </button>
+            <button
+              className="rounded bg-white/10 px-2 py-0.5 text-[11px] text-neutral-100 transition-colors hover:bg-white/[0.16]"
+              disabled={run.isPending}
+              onClick={() => {
+                setArmed(false);
+                run.mutate();
+              }}
+            >
+              {S.graph.derivedRunGo}
+            </button>
+          </div>
+        </div>
+      )}
 
       <dl className="mt-2 space-y-1 text-[11px]">
         <div className="flex justify-between gap-3">
