@@ -76,6 +76,14 @@ const DERIVED_ANIMATE_MAX = 400;
 // 开关的淡入淡出时长。**比 FADE_MS(320) 略长**：播放淡入是一批边陆续到位，
 // 这个是一整批边同时进出，走慢一点才看得清「那批金线是一起退场的」
 const DERIVED_TOGGLE_MS = 420;
+/* 推演动画：把「这条边是怎么推出来的」在图上演一遍——前提按推导顺序
+   依次亮起，最后点亮结论。**这是这产品最难讲清的一件事**：一条没人写过的边
+   凭什么在这儿。静态地画成金色只说了"它是推的"，说不了"从哪推的"。 */
+const DERIVE_STEP_MS = 300; // 一条前提亮多久
+const DERIVE_STAGGER_MS = 90; // 相邻两条推导错开多少，避免几十条同时闪
+/* 普通边先落位、稍等一会再开演。**顺序本身是内容**：先有人写下的，
+   然后才有推出来的——一起出现就分不清谁在前 */
+const DERIVE_SETTLE_MS = 450;
 // 图例最多摆几个胶囊，其余收进「+N 个类」。**这一排是横向排布的，
 // 类一多就会换行、把画布顶到下面去**；而且十几个同样的胶囊排开，
 // 谁也读不出哪个重要。收起来的那些从「+N」里搜得到
@@ -601,6 +609,74 @@ export function Graph() {
     sigmaRef.current?.refresh();
   }, [hiddenTypes, showDerived]);
 
+  /* 推演动画的排期。null = 没在演。
+     - `lit`：每条前提边什么时候亮（相对开演时刻的毫秒）
+     - `reveal`：每条派生边什么时候现身
+     排期一次算好，rAF 只负责推帧——每帧重算排期既费又会抖 */
+  const deriveRef = useRef<{
+    start: number;
+    end: number;
+    lit: Map<string, number>;
+    reveal: Map<string, number>;
+  } | null>(null);
+  const deriveRafRef = useRef(0);
+  /* 演完之前派生边不出现。**开关是"要不要显示"，这个是"演到了没有"**——
+     两件事，混成一个会让关掉再打开时少演一遍 */
+  const [derivedRevealed, setDerivedRevealed] = useState(false);
+  /* reducer 是每帧跑的闭包，读 state 会读到旧值——它只认 ref */
+  const derivedRevealedRef = useRef(false);
+  useEffect(() => {
+    derivedRevealedRef.current = derivedRevealed;
+    sigmaRef.current?.refresh();
+  }, [derivedRevealed]);
+
+  const runDerivation = useCallback(() => {
+    const sigma = sigmaRef.current;
+    const g = sigma?.getGraph();
+    if (!g || !sigma) return;
+    const derived = g.edges().filter((e) => g.getEdgeAttribute(e, "derived"));
+    // 数量太多就不演，与呼吸、淡入同一条线：每帧重算几千条边的颜色换来的是卡顿
+    if (derived.length === 0 || derived.length > DERIVED_ANIMATE_MAX) {
+      setDerivedRevealed(true);
+      return;
+    }
+    const lit = new Map<string, number>();
+    const reveal = new Map<string, number>();
+    let end = 0;
+    derived.forEach((e, i) => {
+      const base = i * DERIVE_STAGGER_MS;
+      const premises = (g.getEdgeAttribute(e, "premises") as string[]).filter(
+        (p) => g.hasEdge(p),
+      );
+      premises.forEach((p, j) => {
+        const t = base + j * DERIVE_STEP_MS;
+        // 一条边可能是好几处推导的前提：取**最早**那次，别让它反复闪
+        if (!lit.has(p) || lit.get(p)! > t) lit.set(p, t);
+      });
+      const at = base + premises.length * DERIVE_STEP_MS;
+      reveal.set(e, at);
+      end = Math.max(end, at + DERIVE_STEP_MS);
+    });
+    deriveRef.current = { start: performance.now(), end, lit, reveal };
+    setDerivedRevealed(true);
+
+    const step = () => {
+      const plan = deriveRef.current;
+      if (!plan) {
+        deriveRafRef.current = 0;
+        return;
+      }
+      const done = performance.now() - plan.start >= plan.end;
+      if (done) deriveRef.current = null;
+      sigmaRef.current?.refresh();
+      deriveRafRef.current = done ? 0 : requestAnimationFrame(step);
+    };
+    cancelAnimationFrame(deriveRafRef.current);
+    deriveRafRef.current = requestAnimationFrame(step);
+  }, []);
+
+  useEffect(() => () => cancelAnimationFrame(deriveRafRef.current), []);
+
   /* 开关的淡入淡出：{ 起始时刻, 朝哪个方向 }；null = 没有过渡在飞 */
   const derivedToggleRef = useRef<{ at: number; on: boolean } | null>(null);
   const derivedRafRef = useRef(0);
@@ -647,6 +723,22 @@ export function Graph() {
 
   // 卸载时收掉可能在飞的那一帧
   useEffect(() => () => cancelAnimationFrame(derivedRafRef.current), []);
+
+  /* 什么时候开演。两个入口共用一段延时：
+     - 刚进页面：等布局收敛完（stabilizing 落下）再等 DERIVE_SETTLE_MS
+     - 手动打开开关：同样缓一下再演
+
+     **顺序本身是内容**：先落位的是人写下的边，然后才轮到推出来的。
+     一起出现就分不清谁在前，而"谁在前"正是这动画要讲的事 */
+  useEffect(() => {
+    if (!showDerived || stabilizing || !data.data) {
+      if (!showDerived) setDerivedRevealed(false);
+      return;
+    }
+    if (derivedRevealed) return;
+    const t = window.setTimeout(runDerivation, DERIVE_SETTLE_MS);
+    return () => window.clearTimeout(t);
+  }, [showDerived, stabilizing, data.data, derivedRevealed, runDerivation]);
 
   // 派生边的呼吸。**只在有派生边、且开着显示、且数量不多时才转**——
   // 一个没开推理的库不该为这件事每两秒重画一次
@@ -700,6 +792,7 @@ export function Graph() {
           type: "line",
           // reducer 每帧读它：决定要不要藏、要不要呼吸
           derived: e.derived,
+          premises: e.premises ?? [],
         });
       }
     }
@@ -927,8 +1020,60 @@ export function Graph() {
         }
         // 推出来的边：先看藏不藏，再决定呼吸到哪一档。
         // **放在最前面**——藏起来的边不必再算后面那些提亮/压暗
+        /* **过了排期就当演完**，哪怕驱动它的 rAF 一帧没跑。
+           后台标签页里 rAF 是暂停的——只靠循环去清排期的话，
+           切回来会看到派生边永远藏着。时间自己会走，读时间就自愈 */
+        const plan =
+          deriveRef.current &&
+          performance.now() - deriveRef.current.start <= deriveRef.current.end
+            ? deriveRef.current
+            : null;
         const isDerived = attrs.derived === true;
+
+        // 前提边：轮到它的那一瞬提亮，然后落回常态。**三角波**——
+        // 上去再下来，看起来是"被点了一下"，不是"从此变了个颜色"
+        if (!isDerived && plan) {
+          const at = plan.lit.get(edge);
+          // **此刻不成立的前提不参演**：时间轴停在某一刻时，
+          // 那些还没生效或已失效的边本来就该是暗的。点亮它等于演了一个
+          // 此刻并不成立的推导——比不演更糟
+          const activeNow = !f.activeEdges || f.activeEdges.has(edge);
+          if (at !== undefined && activeNow) {
+            const dt = performance.now() - plan.start - at;
+            if (dt >= 0 && dt <= DERIVE_STEP_MS) {
+              const k = 1 - Math.abs((dt / DERIVE_STEP_MS) * 2 - 1);
+              res.color = lerpColor(EDGE_COLOR, EDGE_FOCUS_DERIVED, k);
+              res.size = Math.max((attrs.size as number) * (1 + k * 0.8), 1.4);
+              res.zIndex = 4;
+              return res;
+            }
+          }
+        }
+
         if (isDerived) {
+          // 还没演到它就先不出现——结论要在前提之后才落下
+          if (plan) {
+            const at = plan.reveal.get(edge);
+            if (at !== undefined) {
+              const dt = performance.now() - plan.start - at;
+              if (dt < 0) {
+                res.hidden = true;
+                return res;
+              }
+              if (dt <= DERIVE_STEP_MS) {
+                const k = dt / DERIVE_STEP_MS;
+                res.color = lerpColor(EDGE_DIM, EDGE_FOCUS_DERIVED, k);
+                res.size = Math.max((attrs.size as number) * (1 + k * 0.6), 1.4);
+                res.zIndex = 5;
+                return res;
+              }
+            }
+          }
+          // 排期还没算出来（等着开演）时，派生边一律不画
+          if (!derivedRevealedRef.current) {
+            res.hidden = true;
+            return res;
+          }
           const tr = derivedToggleRef.current;
           const k = tr
             ? Math.min(1, (performance.now() - tr.at) / DERIVED_TOGGLE_MS)

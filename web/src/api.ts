@@ -518,6 +518,8 @@ export interface GraphEdge {
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
+  /** 推出来的边才有：它的**前提边**，按推导顺序。图上照这个次序一段段点亮 */
+  premises?: string[];
 }
 
 export interface EntityFact {
