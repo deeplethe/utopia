@@ -17,6 +17,7 @@ import { KbSettings } from "./pages/KbSettings";
 import { MyKbs } from "./pages/MyKbs";
 import { NotFound } from "./pages/ServerDown";
 import { Ontology } from "./pages/Ontology";
+import { Mappings } from "./pages/Mappings";
 import { Review } from "./pages/Review";
 import { Search } from "./pages/Search";
 import { Settings } from "./pages/Settings";
@@ -109,6 +110,12 @@ const ontologyRoute = createRoute({
   getParentRoute: () => appRoute,
   path: "/ontology",
   component: Ontology,
+});
+
+const mappingsRoute = createRoute({
+  getParentRoute: () => appRoute,
+  path: "/mappings",
+  component: Mappings,
 });
 
 const reviewRoute = createRoute({
@@ -205,6 +212,7 @@ const routeTree = rootRoute.addChildren([
     libraryRoute,
     reviewRoute,
     ontologyRoute,
+    mappingsRoute,
     kbSettingsRoute,
   ]),
 ]);

@@ -1,8 +1,14 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
+import {
+  Link,
+  Outlet,
+  useNavigate,
+  useRouterState,
+} from "@tanstack/react-router";
 import {
   BookMarked,
+  Database,
   Library as LibraryIcon,
   ListChecks,
   MessagesSquare,
@@ -30,6 +36,8 @@ const TABS = [
   { to: "/library", label: S.nav.library, Icon: LibraryIcon },
   { to: "/review", label: S.review.title, Icon: ListChecks },
   { to: "/ontology", label: S.ontology.title, Icon: Shapes },
+  // 本体说「世界上有什么」，数据映射说「这个数在库里怎么算」——挨着放
+  { to: "/mappings", label: S.mapping.title, Icon: Database },
   // 库设置与其它 tab 同为"当前知识库作用域"，并列于内容导航
   { to: "/kb-settings", label: S.nav.settings, Icon: SettingsIcon },
 ] as const;
@@ -38,7 +46,11 @@ export function Shell() {
   const navigate = useNavigate();
 
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
-  const health = useQuery({ queryKey: ["health"], queryFn: api.health, staleTime: Infinity });
+  const health = useQuery({
+    queryKey: ["health"],
+    queryFn: api.health,
+    staleTime: Infinity,
+  });
   const { kb, kbs, setKb } = useKb();
   // 标题跟随当前 tab：`Graph · Utopia`；文档查看页归入 Library
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -122,7 +134,9 @@ export function Shell() {
             >
               <GithubMark size={13} />
               {health.data && (
-                <span className="u-num text-[11px]">v{health.data.version}</span>
+                <span className="u-num text-[11px]">
+                  v{health.data.version}
+                </span>
               )}
             </a>
           </div>
@@ -158,4 +172,3 @@ export function Shell() {
     </div>
   );
 }
-

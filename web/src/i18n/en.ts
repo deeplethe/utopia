@@ -563,7 +563,8 @@ export const en = {
        「采购了」出来是 purchases——说"原文说的是 purchases"是假的。
        逐字原句就在旁边的证据引文里，没丢。 */
     proposedPredicate: (p: string) => `read from the text as “${p}”`,
-    inferredPredicate: "not a relation in the ontology, this is the source's wording",
+    inferredPredicate:
+      "not a relation in the ontology, this is the source's wording",
     unknownPredicate: "no relation stated",
     sectionRef: (filename: string, seq: number) =>
       `${filename} · section ${seq} →`,
@@ -611,7 +612,11 @@ export const en = {
     derivedOff: "off",
     derivedNever: "never",
     derivedAgo: (mins: number) =>
-      mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)} h ago`,
+      mins < 1
+        ? "just now"
+        : mins < 60
+          ? `${mins} min ago`
+          : `${Math.round(mins / 60)} h ago`,
     derivedRun: "Run now",
     derivedRunning: "Running…",
     derivedNoChange: "Nothing changed.",
@@ -735,7 +740,8 @@ export const en = {
       defaultChip: "Default",
       newKb: "New knowledge base",
       packsLabel: "Bundled ontologies",
-      packsHint: "Optional. Packs declare direction, so subject and object cannot come out reversed. More can be imported later.",
+      packsHint:
+        "Optional. Packs declare direction, so subject and object cannot come out reversed. More can be imported later.",
       packsNone: "None — start from the ten seed relations",
       packsCount: (c: number, p: number) => `${c} classes · ${p} properties`,
       name: "Name",
@@ -851,14 +857,16 @@ export const en = {
     axioms: "Axioms",
     axiomsHint:
       "What this relation guarantees. These are not descriptions — they change what the system does: the temporal engine closes old values, and the reasoning engine adds edges to the graph.",
-    functionalHint: "One subject, one value at a time. A new value closes the old one.",
+    functionalHint:
+      "One subject, one value at a time. A new value closes the old one.",
     inverseFunctionalHint: "One object, one subject. A project has one lead.",
     transitive: "Transitive",
     transitiveHint: "A→B and B→C means A→C. The engine will add those edges.",
     symmetric: "Symmetric",
     symmetricHint: "A→B means B→A. The engine will add the other direction.",
     asymmetric: "Asymmetric",
-    asymmetricHint: "A→B rules out B→A. Both directions get reported as a contradiction.",
+    asymmetricHint:
+      "A→B rules out B→A. Both directions get reported as a contradiction.",
     irreflexive: "Irreflexive",
     irreflexiveHint: "Nothing can point at itself through this relation.",
     axiomConflict:
@@ -982,6 +990,66 @@ export const en = {
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
   },
+  mapping: {
+    title: "Data mapping",
+    hint: "What business concepts point at in the database, and how they are computed. Ask only answers using confirmed definitions.",
+    tabDefinitions: "Definitions",
+    tabSources: "Data sources",
+    filterAll: "All",
+    filterProposed: "Pending",
+    filterConfirmed: "Confirmed",
+    filterRejected: "Rejected",
+    searchPlaceholder: "Search concept, source or table…",
+    total: (n: number) => `${n} total`,
+    range: (from: number, to: number, total: number) =>
+      `${from}–${to} of ${total}`,
+    prev: "Previous",
+    next: "Next",
+    empty:
+      "No definitions yet. Mount a data source, then run Explore to have an agent propose a first batch.",
+    emptyFiltered: "No definitions match.",
+    rejectedHint:
+      "Rejected ones are listed too — otherwise “why was this concept never mapped?” has no answer.",
+    colConcept: "Concept",
+    colSource: "Source",
+    colDefinition: "How it is computed",
+    colStatus: "Status",
+    derivedBadge: "Derived",
+    noDefinition: "(empty)",
+    approve: "Confirm",
+    reject: "Reject",
+    edit: "Edit",
+    editTitle: "Revise definition",
+    fieldTable: "Table",
+    fieldExpr: "Expression",
+    fieldSql: "SQL",
+    fieldUnit: "Unit",
+    fieldSummary: "Summary",
+    fieldDerived: "Derived metric (computed, not a column)",
+    save: "Save",
+    cancel: "Cancel",
+    needOne: "Fill in at least one of table, expression or SQL.",
+    history: "Revision history",
+    historyHint:
+      "A full snapshot of the version before each change. Kept so “how was this number computed last quarter?” has an answer.",
+    historyEmpty: "Never revised.",
+    historyBy: (who: string) => `Revised by ${who}`,
+    historyUnknown: "a removed user",
+    sourcesHint:
+      "Read-only databases mounted here. Mounting ingests the schema so Ask knows which tables exist before writing SQL.",
+    mount: "Mount",
+    unmount: "Unmount",
+    syncSchema: "Refresh schema",
+    schemaSynced: (n: number) => `Schema ingested (${n} tables)`,
+    explore: "Explore mappings",
+    exploreHint:
+      "An agent reads these schemas and proposes metric and dimension definitions. Proposals land in Pending; Ask uses them only once confirmed.",
+    exploreQueued: "Exploration queued — proposals will appear under Pending.",
+    sourcesEmpty: "No data sources mounted.",
+    sourcesNoneAvailable:
+      "No data sources registered yet — ask a deployment admin to register one.",
+    newConn: "Register a new connection",
+  },
   review: {
     title: "Review",
     hint: "Duplicates & low-confidence facts",
@@ -994,7 +1062,7 @@ export const en = {
     railConflicts: "Conflicts",
     railUnconfirmed: "Unconfirmed",
     railLowConfidence: "Low confidence",
-    railMappings: "Semantic layer",
+    railMappings: "Data mapping",
     railViolations: "Axioms",
     railDefects: "Ontology",
     railDecisions: "Decisions",
@@ -1085,7 +1153,7 @@ export const en = {
      *  一条会让人以为界面漏了东西 */
     checkNothingNew: "Nothing new",
     checkClean: (n: number) => `${n} facts checked, no contradictions`,
-    mappings: "Semantic layer",
+    mappings: "Data mapping",
     mappingsHint:
       "Proposed mappings from a business concept to how it is computed. Confirm one and Ask uses it instead of guessing from the schema.",
     mappingDerived: "derived",

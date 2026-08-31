@@ -394,8 +394,7 @@ export interface ReviewItem {
   right: ReviewSide;
 }
 
-
-/** 语义层的一条映射：业务概念 → 数据资产定义（见 docs/decisions/0011）。
+/** 数据映射的一条口径：业务概念 → 数据资产定义（见 docs/decisions/0011）。
  *
  * 字段是列而不是 JSON 里的键——从前它是一条 `mapped_to` 事实，
  * 这几样全塞在 `object_value` 里。 */
@@ -413,6 +412,15 @@ export interface ConceptMapping {
   /** 派生指标：算出来的，不是表里的列 */
   derived: boolean;
   status: "proposed" | "confirmed" | "rejected";
+}
+/** 一条口径改动之前的样子。**整版快照而不是差异**（0006）：
+ *  读的时候要回答的是「当时是什么」，差异得从头重放才答得出来 */
+export interface MappingRevision {
+  id: string;
+  before: Record<string, unknown>;
+  /** 改的人；用户是软删除的，所以归因不会因为人离职而丢 */
+  changed_by_name: string | null;
+  changed_at: string;
 }
 /** 一处公理违规（0002 R0）。判据来自本体自己声明的公理，没声明就不报 */
 export interface AxiomViolation {
@@ -981,8 +989,7 @@ export const api = {
 
   /** 已停用的账号。**没有它恢复就够不着**——那个人从所有列表里消失，
    *  而恢复接口要的正是他的 id */
-  deactivatedUsers: () =>
-    request<OrgUser[]>("/api/v1/users/deactivated"),
+  deactivatedUsers: () => request<OrgUser[]>("/api/v1/users/deactivated"),
   /** 恢复一个停用的账号 */
   adminReactivateUser: (userId: string) =>
     request<{ ok: boolean }>(`/api/v1/admin/users/${userId}`, {
@@ -1008,6 +1015,51 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/admin/data-sources/${id}/test`, {
       method: "POST",
     }),
+
+  /** 一页口径。**Viewer 就能看**——问数的答案直接由口径决定，
+   *  看得见答案却看不见口径，等于要人信一个不给看的算法 */
+  mappings: (
+    kbId: string,
+    opts: {
+      status?: "proposed" | "confirmed" | "rejected";
+      q?: string;
+      limit?: number;
+      offset?: number;
+    } = {},
+  ) => {
+    const p = new URLSearchParams();
+    if (opts.status) p.set("status", opts.status);
+    if (opts.q) p.set("q", opts.q);
+    if (opts.limit != null) p.set("limit", String(opts.limit));
+    if (opts.offset != null) p.set("offset", String(opts.offset));
+    const qs = p.toString();
+    return request<{
+      items: ConceptMapping[];
+      total: number;
+      counts: { proposed: number; confirmed: number; rejected: number };
+    }>(`/api/v1/kbs/${kbId}/mappings${qs ? `?${qs}` : ""}`);
+  },
+  /** 改一条口径。改之前那一版自动进 revisions */
+  reviseMapping: (
+    kbId: string,
+    mappingId: string,
+    body: {
+      table_name?: string | null;
+      expr?: string | null;
+      sql?: string | null;
+      unit?: string | null;
+      summary?: string | null;
+      derived: boolean;
+    },
+  ) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/mappings/${mappingId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  mappingRevisions: (kbId: string, mappingId: string) =>
+    request<{ revisions: MappingRevision[] }>(
+      `/api/v1/kbs/${kbId}/mappings/${mappingId}/revisions`,
+    ),
   kbDataSources: (kbId: string) =>
     request<{ data_sources: DataSourceView[] }>(
       `/api/v1/kbs/${kbId}/data-sources`,
@@ -1337,9 +1389,10 @@ export const api = {
       /** 值换不动那个 datatype、因而没被改写的条数。改写了 3 条丢下 2 条，
           只报前半句就是报喜不报忧 */
       unconvertible?: number;
-    }>(`/api/v1/kbs/${kbId}/ontology/adopt-predicate`,
-      { method: "POST", body: JSON.stringify(body) },
-    ),
+    }>(`/api/v1/kbs/${kbId}/ontology/adopt-predicate`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   /** 撤销一次采纳：新写的行作废、旧行复活。关系类型留着 */
   unadoptPredicate: (kbId: string, batchId: string) =>
     request<{ reverted: number }>(
@@ -1402,12 +1455,7 @@ export const api = {
 
   /** 审核队列的各档**真实条数**。与列表分开取——列表有一页的上限，数数没有。
    *  从前徽标读的是数组长度，而接口固定只回 100 条，于是 164 条写成 100。 */
-  review: (
-    kbId: string,
-    queue: ReviewQueue,
-    limit: number,
-    offset: number,
-  ) =>
+  review: (kbId: string, queue: ReviewQueue, limit: number, offset: number) =>
     request<{
       counts: ReviewCounts;
       queue: ReviewQueue;
@@ -1435,12 +1483,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ action }),
     }),
-  /** 对一条语义层映射表态（0011）。改状态不删行——拒绝留痕，下一轮探索不再提议它 */
-  decideMapping: (kbId: string, mappingId: string, status: "confirmed" | "rejected") =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/review/mappings/${mappingId}`, {
-      method: "POST",
-      body: JSON.stringify({ status }),
-    }),
+  /** 对一条数据映射口径表态（0011）。改状态不删行——拒绝留痕，下一轮探索不再提议它 */
+  decideMapping: (
+    kbId: string,
+    mappingId: string,
+    status: "confirmed" | "rejected",
+  ) =>
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/review/mappings/${mappingId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ status }),
+      },
+    ),
   /** 跑一遍一致性检查。同步返回——纯计算，没有模型调用也没有网络 */
   runConsistencyCheck: (kbId: string) =>
     request<{
