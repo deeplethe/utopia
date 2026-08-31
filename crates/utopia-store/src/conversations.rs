@@ -19,22 +19,82 @@ pub async fn create(pool: &PgPool, kb_id: Uuid, user_id: Uuid, title: &str) -> A
     Ok(id)
 }
 
-/// 本人在本 KB 的会话列表（新→旧）。
-pub async fn list(pool: &PgPool, kb_id: Uuid, user_id: Uuid) -> AppResult<Vec<ConversationView>> {
-    let rows: Vec<ConversationView> = sqlx::query_as(
-        "SELECT id, title, created_at, updated_at,
+/// 我在这个库里的会话。**可搜、可翻页**——标题会重（同一个问题问两次就重了），
+/// 而固定一百条之后的会话界面上根本不存在。
+///
+/// 搜的是标题与消息正文两处：人记得住的往往是「我问过那个关于 Q3 的」，
+/// 而那句话在正文里，标题可能被截成了别的样子。
+pub async fn list(
+    pool: &PgPool,
+    kb_id: Uuid,
+    user_id: Uuid,
+    q: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<(Vec<ConversationView>, i64)> {
+    const WHERE: &str = "WHERE c.kb_id = $1 AND c.user_id = $2
+           AND ($3::text IS NULL
+                OR c.title ILIKE '%' || $3 || '%'
+                OR EXISTS (SELECT 1 FROM conversation_messages m
+                            WHERE m.conversation_id = c.id
+                              AND m.content ILIKE '%' || $3 || '%'))";
+    let rows: Vec<ConversationView> = sqlx::query_as(&format!(
+        "SELECT c.id, c.title, c.created_at, c.updated_at,
                 (SELECT count(*) FROM conversation_messages m
                  WHERE m.conversation_id = c.id) AS message_count
          FROM conversations c
-         WHERE kb_id = $1 AND user_id = $2
-         ORDER BY updated_at DESC
-         LIMIT 100",
+         {WHERE}
+         ORDER BY c.updated_at DESC
+         LIMIT $4 OFFSET $5"
+    ))
+    .bind(kb_id)
+    .bind(user_id)
+    .bind(q)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+    let (total,): (i64,) = sqlx::query_as(&format!("SELECT count(*) FROM conversations c {WHERE}"))
+        .bind(kb_id)
+        .bind(user_id)
+        .bind(q)
+        .fetch_one(pool)
+        .await?;
+    Ok((rows, total))
+}
+
+/// 改一个会话的标题。
+///
+/// **标题本来是从第一句话自动取的**，而那句话往往不是它后来变成的样子——
+/// 一段对话跑偏是常态，改名让人能按自己记得的方式找回它。
+pub async fn rename(
+    pool: &PgPool,
+    kb_id: Uuid,
+    user_id: Uuid,
+    conversation_id: Uuid,
+    title: &str,
+) -> AppResult<()> {
+    let title = title.trim();
+    if title.is_empty() || title.chars().count() > 120 {
+        return Err(AppError::invalid(
+            "bad_title",
+            "Title must be 1-120 characters",
+        ));
+    }
+    let res = sqlx::query(
+        "UPDATE conversations SET title = $4
+          WHERE id = $3 AND kb_id = $1 AND user_id = $2",
     )
     .bind(kb_id)
     .bind(user_id)
-    .fetch_all(pool)
+    .bind(conversation_id)
+    .bind(title)
+    .execute(pool)
     .await?;
-    Ok(rows)
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
 }
 
 /// 归属校验：会话必须属于本 KB 本人。

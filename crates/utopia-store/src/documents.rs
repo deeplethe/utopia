@@ -765,3 +765,26 @@ pub async fn extraction_idle(pool: &PgPool, kb_id: Uuid) -> AppResult<bool> {
     .await?;
     Ok(pending == 0)
 }
+
+/// 全库分块，按文档分组，供检索索引重建用。
+///
+/// **一次全取**：这条只在启动发现索引落空时跑，那时候要的正是全部；
+/// 而它跑完之后就再也不跑了。
+pub async fn all_chunks_for_index(pool: &PgPool) -> AppResult<Vec<(Uuid, Uuid, Uuid, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT kb_id, document_id, id, text FROM chunks
+          WHERE superseded_at IS NULL
+          ORDER BY document_id, seq",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 库里一共有多少条在用的分块。启动时拿它跟索引对账。
+pub async fn live_chunk_count(pool: &PgPool) -> AppResult<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM chunks WHERE superseded_at IS NULL")
+            .fetch_one(pool)
+            .await?,
+    )
+}

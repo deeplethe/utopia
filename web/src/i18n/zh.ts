@@ -477,6 +477,10 @@ export const zh: Strings = {
     untitled: "未命名",
     noConversations: "还没有对话。",
     deleteConversation: "删除对话",
+    searchConversations: "搜索会话",
+    moreActions: "更多",
+    rename: "重命名",
+    copyTitle: "复制标题",
     deleteTitle: "删除这个对话？",
     deleteHint: (name: string) => `「${name}」及其消息将被永久移除。`,
     deleteBtn: "删除",
@@ -484,6 +488,7 @@ export const zh: Strings = {
   },
   graph: {
     untyped: "未分类",
+    searchMore: (n: number) => `还有 ${n} 个——再加载 20`,
     zoomIn: "放大",
     zoomOut: "缩小",
     fitView: "适应视图",

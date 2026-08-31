@@ -526,23 +526,36 @@ pub async fn neighborhood(
     Ok((nodes, edges))
 }
 
+/// 按名字找实体。**一并回总数**——「宁分勿合」本来就会造出一堆同名，
+/// 固定十条的时候，想找的那个可能根本不在这十条里而界面上看不出来。
 pub async fn search_entities(
     pool: &PgPool,
     kb_id: Uuid,
     q: &str,
     limit: i64,
-) -> AppResult<Vec<GraphNode>> {
+    offset: i64,
+) -> AppResult<(Vec<GraphNode>, i64)> {
     let pattern = format!("%{}%", q.trim());
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
         "{NODE_SQL} WHERE e.kb_id = $1 AND e.merged_into IS NULL
-         AND e.canonical_name ILIKE $2 ORDER BY degree DESC LIMIT $3"
+         AND e.canonical_name ILIKE $2
+         ORDER BY degree DESC, e.canonical_name LIMIT $3 OFFSET $4"
     ))
     .bind(kb_id)
-    .bind(pattern)
+    .bind(&pattern)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?;
-    Ok(nodes)
+    let (total,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM entities e
+          WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.canonical_name ILIKE $2",
+    )
+    .bind(kb_id)
+    .bind(&pattern)
+    .fetch_one(pool)
+    .await?;
+    Ok((nodes, total))
 }
 
 /// 实体详情：节点信息 + 事实时间线。

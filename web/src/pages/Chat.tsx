@@ -2,7 +2,7 @@
    会话持久化：左栏会话列表;上下文由服务端拼,前端只发 conversation_id + 新消息;
    行动轨迹(steps)与引用(sources)随消息落库,历史回放与实时流共用渲染。 */
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -19,7 +19,7 @@ import {
   Search as SearchIcon,
   Square,
   SquarePen,
-  Trash2,
+  MoreHorizontal,
   Waypoints,
   Wrench,
 } from "lucide-react";
@@ -32,6 +32,7 @@ import {
   type Source,
 } from "../api";
 import { S } from "../i18n";
+import { toast } from "../toast";
 import { useKb } from "../kb";
 import { DangerConfirm, RAIL_CLS } from "../ui";
 
@@ -64,6 +65,10 @@ export function Chat() {
   const [streaming, setStreaming] = useState(false);
   const [scopeOpen, setScopeOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ConversationRow | null>(null);
+  // 会话搜索。**搜标题也搜正文**——人记得住的往往是问过的那句话
+  const [convSearch, setConvSearch] = useState("");
+  // 三点菜单展开的是哪一条。同时只开一个
+  const [menuFor, setMenuFor] = useState<string | null>(null);
   const abortRef = useRef<(() => void) | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -87,9 +92,22 @@ export function Chat() {
   }, [scopeOpen]);
 
   const convs = useQuery({
-    queryKey: ["conversations", kb?.id],
-    queryFn: () => conversationsApi.list(kb!.id),
+    queryKey: ["conversations", kb?.id, convSearch],
+    queryFn: () => conversationsApi.list(kb!.id, convSearch),
     enabled: !!kb,
+    placeholderData: (prev) => prev,
+  });
+  // 改标题：**就地编辑**，不弹对话框——改一个名字不值得打断整页
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const rename = useMutation({
+    mutationFn: (v: { id: string; title: string }) =>
+      conversationsApi.rename(kb!.id, v.id, v.title),
+    onSuccess: () => {
+      setRenamingId(null);
+      queryClient.invalidateQueries({ queryKey: ["conversations", kb?.id] });
+    },
+    onError: (e: Error) => toast.error(e.message),
   });
 
   // 直落底部（instant）：平滑滚动在流式追加下会一路慢爬
@@ -368,6 +386,17 @@ export function Chat() {
             {S.ask.newChat}
           </button>
         </div>
+        {/* 搜索。**标题重是常态**（同一个问题问两次就重了），而正文里那句话
+            才是人记得住的——所以服务端两处都搜 */}
+        <div className="px-2 pb-2">
+          <input
+            className="input-dark w-full px-2.5 py-1.5 text-[12.5px]"
+            placeholder={S.ask.searchConversations}
+            value={convSearch}
+            onChange={(e) => setConvSearch(e.target.value)}
+            onKeyDown={(e) => e.key === "Escape" && setConvSearch("")}
+          />
+        </div>
         <div className="u-scroll flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
           {(convs.data?.conversations ?? []).map((c: ConversationRow) => (
             <div
@@ -377,25 +406,85 @@ export function Chat() {
               }`}
             >
               {/* 单行标题；删除键悬停浮现（弹确认，不直接删） */}
-              <button
-                onClick={() => openConversation(c.id)}
-                className="w-full text-left px-2.5 py-2"
-              >
-                <span
-                  className={`block truncate pr-5 text-[13px] ${
-                    c.id === activeId ? "text-white" : "text-neutral-300"
-                  }`}
+              {renamingId === c.id ? (
+                /* 就地编辑：Enter 保存、Esc 取消。改一个名字不值得弹对话框 */
+                <input
+                  autoFocus
+                  className="input-dark w-full px-2 py-1.5 text-[13px]"
+                  value={renameDraft}
+                  onChange={(e) => setRenameDraft(e.target.value)}
+                  onBlur={() => setRenamingId(null)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && renameDraft.trim())
+                      rename.mutate({ id: c.id, title: renameDraft });
+                    if (e.key === "Escape") setRenamingId(null);
+                  }}
+                />
+              ) : (
+                <button
+                  onClick={() => openConversation(c.id)}
+                  className="w-full text-left px-2.5 py-2"
                 >
-                  {c.title || S.ask.untitled}
-                </span>
-              </button>
-              <button
-                onClick={() => setPendingDelete(c)}
-                title={S.ask.deleteConversation}
-                className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover:block text-neutral-600 hover:text-[var(--u-danger)]"
-              >
-                <Trash2 size={13} />
-              </button>
+                  <span
+                    className={`block truncate pr-5 text-[13px] ${
+                      c.id === activeId ? "text-white" : "text-neutral-300"
+                    }`}
+                  >
+                    {c.title || S.ask.untitled}
+                  </span>
+                </button>
+              )}
+              {/* 三点菜单：**一个入口装下所有动作**。从前右边直接是删除，
+                  而删除是这里最不该一步到位的那个 */}
+              {renamingId !== c.id && (
+                <button
+                  onClick={() => setMenuFor(menuFor === c.id ? null : c.id)}
+                  title={S.ask.moreActions}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover:block text-neutral-600 hover:text-neutral-200"
+                >
+                  <MoreHorizontal size={14} />
+                </button>
+              )}
+              {menuFor === c.id && (
+                <>
+                  {/* 点别处就关。铺满全屏而不是监听 document：不必在卸载时
+                      记得摘监听器 */}
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setMenuFor(null)}
+                  />
+                  <div className="glass-strong absolute right-2 top-8 z-20 w-32 rounded-lg py-1 shadow-xl">
+                    <button
+                      className="w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-white/5"
+                      onClick={() => {
+                        setRenameDraft(c.title || "");
+                        setRenamingId(c.id);
+                        setMenuFor(null);
+                      }}
+                    >
+                      {S.ask.rename}
+                    </button>
+                    <button
+                      className="w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-white/5"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(c.title || "");
+                        setMenuFor(null);
+                      }}
+                    >
+                      {S.ask.copyTitle}
+                    </button>
+                    <button
+                      className="w-full px-3 py-1.5 text-left text-xs text-[var(--u-danger)] hover:bg-white/5"
+                      onClick={() => {
+                        setPendingDelete(c);
+                        setMenuFor(null);
+                      }}
+                    >
+                      {S.ask.deleteConversation}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           ))}
           {convs.data?.conversations.length === 0 && (

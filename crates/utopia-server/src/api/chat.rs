@@ -2,7 +2,7 @@
 //! 事件序列：step*（行动轨迹）| sources（引用清单，随检索增量更新）| delta*（增量文本）→ done | error。
 //! 模型不支持 tool-calling 时自动降级为一次性 RAG 注入。
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
 use futures_util::{Stream, StreamExt};
@@ -612,7 +612,8 @@ pub async fn chat(
                     }
                     "find_entities" => {
                         let name = args["name"].as_str().unwrap_or("").to_string();
-                        let hits = utopia_store::graph::search_entities(&state.pool, kb_id, &name, 8)
+                        let (hits, _) =
+                            utopia_store::graph::search_entities(&state.pool, kb_id, &name, 8, 0)
                             .await
                             .unwrap_or_default();
                         let text = if hits.is_empty() {
@@ -1045,14 +1046,57 @@ fn truncate(text: &str, max_chars: usize) -> String {
 // 会话管理（列表 / 回放 / 删除）
 // ---------------------------------------------------------------------------
 
+#[derive(serde::Deserialize)]
+pub struct ConversationsQuery {
+    /// 搜标题与消息正文两处：人记得住的往往是问过的那句话，不是标题
+    #[serde(default)]
+    pub q: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
 pub async fn list_conversations(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
+    Query(q): Query<ConversationsQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
-    let conversations = utopia_store::conversations::list(&state.pool, kb_id, user.id).await?;
-    Ok(Json(json!({ "conversations": conversations })))
+    let (conversations, total) = utopia_store::conversations::list(
+        &state.pool,
+        kb_id,
+        user.id,
+        q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        q.limit.unwrap_or(30).clamp(1, 100),
+        q.offset.unwrap_or(0).max(0),
+    )
+    .await?;
+    Ok(Json(
+        json!({ "conversations": conversations, "total": total }),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+pub struct RenameConversationReq {
+    pub title: String,
+}
+
+/// 改会话标题。
+///
+/// **标题本来是从第一句话自动取的**，而一段对话跑偏是常态——改名让人能按
+/// 自己记得的方式找回它。
+pub async fn rename_conversation(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, conversation_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<RenameConversationReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
+    utopia_store::conversations::rename(&state.pool, kb_id, user.id, conversation_id, &req.title)
+        .await?;
+    Ok(Json(json!({ "ok": true })))
 }
 
 /// 历史回放：消息含落库的行动轨迹（steps）与引用（sources）。

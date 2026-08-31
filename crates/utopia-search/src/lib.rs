@@ -110,6 +110,17 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// 索引里有多少条分块。**启动时拿它跟库里的数对账**——索引目录是独立于
+    /// 数据库的一份文件（换机器、卷没挂上、损坏都可能让它落空），而落空之后
+    /// 检索只会静默回零，界面上看不出任何异样。
+    pub fn len(&self) -> usize {
+        self.reader.searcher().num_docs() as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// BM25 检索（限定 kb）。
     /// 查询用与索引完全一致的 jieba analyzer 切词后按 OR 组合——
     /// 不能走 QueryParser：CJK 整句会被当成短语查询（要求词连续出现），召回归零。

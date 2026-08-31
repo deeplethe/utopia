@@ -509,6 +509,10 @@ export const en = {
     untitled: "Untitled",
     noConversations: "No conversations yet.",
     deleteConversation: "Delete conversation",
+    searchConversations: "Search chats",
+    moreActions: "More",
+    rename: "Rename",
+    copyTitle: "Copy title",
     deleteTitle: "Delete conversation?",
     deleteHint: (name: string) =>
       `“${name}” and its messages will be permanently removed.`,
@@ -518,6 +522,7 @@ export const en = {
   graph: {
     // 还没判出类型的实体（0009）。不是一个类，是"这一格还空着"
     untyped: "Untyped",
+    searchMore: (n: number) => `${n} more — load 20`,
     zoomIn: "Zoom in",
     zoomOut: "Zoom out",
     fitView: "Fit view",

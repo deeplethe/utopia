@@ -1097,9 +1097,11 @@ export const api = {
       total_nodes?: number;
       total_edges?: number;
     }>(`/api/v1/kbs/${kbId}/graph/neighborhood?entity=${entityId}&hops=2`),
-  searchEntities: (kbId: string, q: string) =>
-    request<{ entities: GraphNode[] }>(
-      `/api/v1/kbs/${kbId}/entities?q=${encodeURIComponent(q)}`,
+  /** 按名字找实体。**一并回总数**——「宁分勿合」会造出一堆同名，
+   *  固定十条时想找的那个可能根本不在这十条里 */
+  searchEntities: (kbId: string, q: string, limit = 10) =>
+    request<{ entities: GraphNode[]; total: number }>(
+      `/api/v1/kbs/${kbId}/entities?q=${encodeURIComponent(q)}&limit=${limit}`,
     ),
   entityDetail: (kbId: string, entityId: string) =>
     request<{
@@ -1543,10 +1545,25 @@ export const api = {
 
 /** RAG 对话：SSE 流式。返回中止函数。 */
 export const conversationsApi = {
-  list: (kbId: string) =>
-    request<{ conversations: ConversationRow[] }>(
-      `/api/v1/kbs/${kbId}/conversations`,
-    ),
+  /** **可搜可翻页**：标题会重（同一个问题问两次就重了），而固定一百条之后的
+   *  会话界面上根本不存在。搜的是标题与消息正文两处——人记得住的往往是
+   *  问过的那句话，不是标题 */
+  list: (kbId: string, q = "", limit = 30, offset = 0) => {
+    const p = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (q.trim()) p.set("q", q.trim());
+    return request<{ conversations: ConversationRow[]; total: number }>(
+      `/api/v1/kbs/${kbId}/conversations?${p}`,
+    );
+  },
+  /** 改标题。标题本来是从第一句话自动取的，而一段对话跑偏是常态 */
+  rename: (kbId: string, id: string, title: string) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/conversations/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    }),
   detail: (kbId: string, id: string) =>
     request<{ messages: ConversationMessage[] }>(
       `/api/v1/kbs/${kbId}/conversations/${id}`,

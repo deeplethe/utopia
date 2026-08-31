@@ -86,6 +86,10 @@ pub async fn neighborhood(
 #[derive(Deserialize)]
 pub struct EntitySearchQuery {
     pub q: String,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
 }
 
 pub async fn search_entities(
@@ -96,10 +100,19 @@ pub async fn search_entities(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
     if query.q.trim().is_empty() {
-        return Ok(Json(json!({ "entities": [] })));
+        return Ok(Json(json!({ "entities": [], "total": 0 })));
     }
-    let entities = utopia_store::graph::search_entities(&state.pool, kb_id, &query.q, 10).await?;
-    Ok(Json(json!({ "entities": entities })))
+    // 一并回总数：「宁分勿合」本来就会造出一堆同名，固定十条时想找的那个
+    // 可能根本不在这十条里，而界面上看不出来
+    let (entities, total) = utopia_store::graph::search_entities(
+        &state.pool,
+        kb_id,
+        &query.q,
+        query.limit.unwrap_or(10).clamp(1, 100),
+        query.offset.unwrap_or(0).max(0),
+    )
+    .await?;
+    Ok(Json(json!({ "entities": entities, "total": total })))
 }
 
 pub async fn entity_detail(

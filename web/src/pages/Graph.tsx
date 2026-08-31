@@ -285,10 +285,15 @@ export function Graph() {
 
   // 全图模式走全库实体搜索；子图模式只在已加载的子图内客户端过滤
   const inSubgraph = !!focusEntity;
+  // 搜到的条数上限。**「加载更多」而不是翻页**：这是个下拉建议框，
+  // 用户在找一个具体的实体，翻页会让他丢掉刚才扫过的那几条
+  const [searchLimit, setSearchLimit] = useState(10);
+  useEffect(() => setSearchLimit(10), [searchQ]);
   const candidates = useQuery({
-    queryKey: ["entitySearch", kb?.id, searchQ],
-    queryFn: () => api.searchEntities(kb!.id, searchQ),
+    queryKey: ["entitySearch", kb?.id, searchQ, searchLimit],
+    queryFn: () => api.searchEntities(kb!.id, searchQ, searchLimit),
     enabled: !!kb && searchQ.length > 0 && !inSubgraph,
+    placeholderData: (prev) => prev,
   });
   const subgraphHits = useMemo(() => {
     if (!inSubgraph || !searchQ || !data.data) return [];
@@ -859,6 +864,20 @@ export function Graph() {
                   <span className="ml-auto text-xs text-neutral-500">{c.type_label}</span>
                 </button>
               ))}
+              {/* 还有更多没显示。**说清剩多少**——从前固定十条，想找的那个
+                  不在这十条里的时候，界面上一点线索都没有。子图内搜索是客户端
+                  过滤，没有「更多」这回事 */}
+              {!inSubgraph &&
+                (candidates.data?.total ?? 0) > searchHits.length && (
+                  <button
+                    onClick={() => setSearchLimit((n) => n + 20)}
+                    className="w-full border-t border-white/10 px-3 py-1.5 text-left text-xs text-neutral-400 hover:bg-white/5 hover:text-neutral-200"
+                  >
+                    {S.graph.searchMore(
+                      candidates.data!.total - searchHits.length,
+                    )}
+                  </button>
+                )}
             </div>
           )}
         </div>

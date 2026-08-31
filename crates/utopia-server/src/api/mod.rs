@@ -228,7 +228,9 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/conversations", get(chat::list_conversations))
         .route(
             "/kbs/{id}/conversations/{conversation_id}",
-            get(chat::conversation_detail).delete(chat::delete_conversation),
+            get(chat::conversation_detail)
+                .patch(chat::rename_conversation)
+                .delete(chat::delete_conversation),
         )
         .route(
             "/documents/{id}",
