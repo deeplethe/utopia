@@ -53,7 +53,18 @@ CREATE TABLE documents (
     -- 抽取慢慢跑
     graph_status    TEXT NOT NULL DEFAULT 'none'
                     CHECK (graph_status IN ('none', 'queued', 'extracting', 'done', 'failed')),
-    -- 文档标签（过滤与批量组织；不做实体文件夹）
+    -- 文档标签（过滤与批量组织；不做实体文件夹）。
+    --
+    -- **今天四层皆空，而且是故意留着的。** 没有任何地方写它、读它、露出它——
+    -- `set_document_tags` 零调用，前端连字段名都没提过。它穿过了 53 → 19 → 10
+    -- 三轮迁移折叠，没有一轮有人想起它。
+    --
+    -- 留着不是忘了删：**标签会是这张表上唯一「人自己贴的」维度**。来源是文档
+    -- 从哪来的，名字与状态是系统给的，三者都不表达「这批要脱敏」「Q3 那一包」
+    -- 这种横跨来源的、只有人知道的分组。要不要有这个维度、还是让图去承担，
+    -- 等外部意见再定（见 GitHub Discussions）。
+    --
+    -- 下一个想清理死代码的人：先去那条讨论看看有没有结论，别直接删。
     tags            TEXT[] NOT NULL DEFAULT '{}',
     -- 来源内的逻辑身份（watch_folder 相对路径 / url / rss guid / api external_id）。
     -- 摄入据此做三路判定：新增 / 变更 / 未变——内容变了原地替换文档而不是堆积

@@ -141,6 +141,7 @@ export interface Doc {
   /** 图谱抽取管道的失败原因（与 error 分列：两条管道各存各的） */
   graph_error: string | null;
   chunk_count: number;
+  /** 文档标签。**今天没有任何界面用它**——留着等外部意见，见 GitHub Discussions */
   tags: string[];
   missing_since: string | null;
   created_at: string;
