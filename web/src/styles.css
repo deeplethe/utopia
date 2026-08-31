@@ -94,6 +94,14 @@ body::before {
   background: var(--u-surface-strong-hover);
   transition-duration: 120ms;
 }
+/* 正在工作时也按下去，与 hover 同一档。**这比在轨道上循环扫光更准**：
+   它说的是"这块面正在工作"，而不是"在等一件不知道多久的事"——
+   循环微光是不确定进度的语言，而时间轴是确定的。
+   播放中人本来就盯着它看，半透的毛玻璃这时候只是噪声 */
+.glass-strong.u-solid {
+  background: var(--u-surface-strong-hover);
+  transition-duration: 120ms;
+}
 
 /* 模态对话框的面：**近实底**。
    毛玻璃本来留给"带遮罩的大弹窗"，但确认框不是那种——它要人读一句话然后
