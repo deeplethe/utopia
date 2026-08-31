@@ -171,6 +171,25 @@ body::before {
 .u-pop-in-tl {
   transform-origin: top left;
 }
+/* 停靠面板的入场：从它停靠的那条边滑进来。
+   **不用 u-pop-in 那种缩放**——那是给锚在某个按钮上的弹出菜单的，
+   它有明确的"从哪儿长出来"；侧栏是贴着右边缘停的一块面，该从边缘进来。
+   只在打开时演一次：在实体之间切换时面板留在原地只换内容，
+   每点一个节点就抖一下反而吵 */
+@keyframes u-dock-in-kf {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.u-dock-in {
+  animation: u-dock-in-kf 0.18s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 /* 向上弹出的变体（composer 停靠底部时菜单开口朝上） */
 @keyframes u-pop-up-kf {
   from {
@@ -208,7 +227,8 @@ body::before {
 
 @media (prefers-reduced-motion: reduce) {
   .u-pop-in,
-  .u-pop-up {
+  .u-pop-up,
+  .u-dock-in {
     animation: none;
   }
 }

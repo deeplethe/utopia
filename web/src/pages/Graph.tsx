@@ -2291,7 +2291,7 @@ function EntityPanel({
   }, [detail.data]);
 
   return (
-    <div className="glass-strong absolute top-14 right-3 bottom-20 w-80 z-10 rounded-xl shadow-2xl flex flex-col">
+    <div className="u-dock-in glass-strong absolute top-14 right-3 bottom-20 w-80 z-10 rounded-xl shadow-2xl flex flex-col">
       <div className="flex items-start justify-between px-4 py-3.5 border-b border-white/10">
         <div>
           {e && (
