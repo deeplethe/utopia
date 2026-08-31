@@ -39,6 +39,15 @@
   --u-line-strong: rgba(255, 255, 255, 0.14);
   --u-surface: rgba(255, 255, 255, 0.04);
   --u-surface-strong: rgba(10, 10, 10, 0.72);
+  /* 指针停在面上时的实底。**毛玻璃是给"没在看它"的时候用的**——
+     半透让浮层不至于把画布切断；可一旦人把指针移进来，他要读的就是面板本身，
+     这时候背后的图反而是噪声。所以这两档不是审美偏好，是同一块面在
+     "余光里"和"正在读"两种状态下该有的样子。
+     统一在这里定义，改一处四处都跟着：顶栏、导航、时间岛、控件塔、
+     以及所有 u-menu-glass 的弹出面板 */
+  --u-surface-strong-hover: rgba(10, 10, 10, 0.94);
+  --u-menu-surface: rgba(14, 14, 14, 0.85);
+  --u-menu-surface-hover: rgba(14, 14, 14, 0.97);
 }
 
 body {
@@ -77,6 +86,13 @@ body::before {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--u-line);
+  /* 基态上的时长是**离开**时用的：慢一点，指针擦过边缘不会闪。
+     进入的时长写在 :hover 里，更快，为的是跟手 */
+  transition: background-color 260ms ease;
+}
+.glass-strong:hover {
+  background: var(--u-surface-strong-hover);
+  transition-duration: 120ms;
 }
 
 /* 模态对话框的面：**近实底**。
@@ -175,12 +191,19 @@ body::before {
    原地变形动画在组件内用 FLIP 实现（首帧压到胶囊真实边界再展开），
    CSS 只负责面板的皮 */
 .u-menu-glass {
-  /* 同上：原本 rgba(14,14,16) 偏蓝。这个面同时用在通知、用户菜单、
-     图例的「+N 个类」和 Inference 面板上，一处偏色四处都偏 */
-  background: rgba(14, 14, 14, 0.85);
+  /* 中性，不掺色相：原本 rgba(14,14,16) 蓝比红绿高 2。这个面同时用在
+     通知、用户菜单、图例的「+N 个类」和 Inference 面板上，一处偏色四处都偏 */
+  background: var(--u-menu-surface);
+  /* 基态上的时长是**离开**时用的：慢一点，指针擦过边缘不会闪。
+     进入的时长写在 :hover 里，更快，为的是跟手 */
+  transition: background-color 260ms ease;
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid rgba(255, 255, 255, 0.14);
+}
+.u-menu-glass:hover {
+  background: var(--u-menu-surface-hover);
+  transition-duration: 120ms;
 }
 
 @media (prefers-reduced-motion: reduce) {

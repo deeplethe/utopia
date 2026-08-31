@@ -547,7 +547,7 @@ export const en = {
   graph: {
     // 还没判出类型的实体（0009）。不是一个类，是"这一格还空着"
     untyped: "Untyped",
-    legendMore: (n: number) => `+${n} classes`,
+    legendMore: (n: number) => `All ${n} classes`,
     nodeBudget: "How many entities to draw",
     nodeBudgetMore: "Draw more",
     nodeBudgetLess: "Draw fewer",

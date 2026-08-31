@@ -1112,6 +1112,8 @@ export function Graph() {
             </button>
           ))}
 
+          {/* chip 上的数是**全部类**，不是被收起来的那几个——
+              点开看到的就是全部（搜得到任何一个），写「+3」等于承诺了另一件事 */}
           {/* 复位。**只要存在隐藏就给一步到位的出口**——「只看」很容易把
               画面收得很窄，没有这个就得挨个点回来 */}
           {hiddenTypes.size > 0 && (
@@ -1136,7 +1138,7 @@ export function Graph() {
                   legendPop.open ? "text-neutral-100" : "text-neutral-400"
                 } hover:text-neutral-100`}
               >
-                {S.graph.legendMore(legendRest.length)}
+                {S.graph.legendMore(types.length)}
                 {/* 收起来的类里有正被隐藏的就点一下。**不点就是无声过滤**：
                     在面板里关掉一个类、把面板一收，界面上再没有任何东西说它被关了 */}
                 {hiddenInRest > 0 && (
@@ -1155,7 +1157,7 @@ export function Graph() {
                     onClick={() => legendPop.close()}
                     className="mb-1.5 flex w-full items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-neutral-300 transition-colors hover:text-neutral-100"
                   >
-                    {S.graph.legendMore(legendRest.length)}
+                    {S.graph.legendMore(types.length)}
                     <X size={11} className="ml-auto text-neutral-500" />
                   </button>
                   <input
@@ -1946,13 +1948,18 @@ function DerivedPanel({
       ref={panelRef}
       className="u-menu-glass pointer-events-auto absolute bottom-0 left-0 z-50 w-72 overflow-hidden rounded-xl p-3 shadow-2xl"
     >
-      <div className="flex items-baseline gap-2">
+      {/* items-center 而不是 baseline：标题旁边站着一个按钮和一个关闭键，
+          按基线对齐会让那两个看着往上飘 */}
+      <div className="flex items-center gap-2">
         <span className="text-[13px] text-neutral-100">
           {S.graph.derivedPanel}
         </span>
         {!armed && (
           <button
-            className="ml-auto rounded px-1.5 py-0.5 text-[11px] text-neutral-500 transition-colors hover:text-neutral-200"
+            /* **要长得像个按钮**：从前是一段灰色幽灵文字夹在标题与 × 之间，
+               读起来像第三个标题而不是一个动作。加边框 + 内距，
+               与右上角那个档位加减器同一档次要控件的样子 */
+            className="ml-auto rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 transition-colors hover:border-white/20 hover:text-neutral-100"
             disabled={!on || run.isPending}
             title={on ? undefined : S.err.inference_off}
             onClick={() => setArmed(true)}
