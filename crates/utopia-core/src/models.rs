@@ -493,12 +493,6 @@ pub struct GraphEdge {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confidence: f32,
-    /// 这条边是推出来的话，它的**前提边**（按推导顺序）。普通边为空。
-    ///
-    /// 只给 id 不给正文：界面拿它把推导过程在图上演一遍——前提依次亮起、
-    /// 最后点亮结论。正文那份（人读的句子）在实体侧栏的 Derived 页里，
-    /// 两处要的东西不一样，别混成一个字段
-    pub premises: Vec<Uuid>,
 }
 
 /// 实体详情页的事实行（时间线）。

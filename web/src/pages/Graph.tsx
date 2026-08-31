@@ -76,21 +76,16 @@ const DERIVED_ANIMATE_MAX = 400;
 // 开关的淡入淡出时长。**比 FADE_MS(320) 略长**：播放淡入是一批边陆续到位，
 // 这个是一整批边同时进出，走慢一点才看得清「那批金线是一起退场的」
 const DERIVED_TOGGLE_MS = 420;
-/* 推演动画：把「这条边是怎么推出来的」在图上演一遍——前提按推导顺序
-   依次亮起，最后点亮结论。**这是这产品最难讲清的一件事**：一条没人写过的边
-   凭什么在这儿。静态地画成金色只说了"它是推的"，说不了"从哪推的"。 */
-const DERIVE_STEP_MS = 260; // 同一组里，前一条前提亮到后一条亮，隔多久
-/* 结论落下之后，整组再挂多久才收。**前提必须挂到结论出现**——
-   第一版是"亮一下就灭"，等结论现身时前提早暗了，于是最关键的那一瞬
-   ——两条前提与结论同时亮着——根本没出现过，看起来只是一片乱闪 */
-const DERIVE_HOLD_MS = 420;
-const DERIVE_FADE_MS = 260; // 整组收起来的时长
-/* 相邻两组错开多少。**必须比一组的长度短、又不能短太多**：短了几组糊在一起
-   分不清谁属于谁（第一版 90ms 就是这么糊的），长了整段拖得没人看完 */
-const DERIVE_STAGGER_MS = 240;
-/* 开演前的等待。**不等布局收敛**——节点还在走位时演也无妨，
-   要的只是让人先看见"人写下的边"这一层 */
-const DERIVE_SETTLE_MS = 350;
+/* 推出来的边**比事实晚一点进来**，然后整体淡入。
+
+   试过把推导过程演出来：前提按顺序点亮、最后点亮结论。做了两版都读不懂——
+   第一版前提闪一下就灭，等结论出现时前提早暗了；第二版改成整组同亮同收，
+   仍然是几十组在图上此起彼伏，谁属于谁根本分不出。
+   **一张几百条边的图不是讲因果链的地方**——那件事侧栏的 Derived 页
+   一条一条写着，看得清楚得多。这里只需要交代一件事：这些边是后来的、
+   跟别人写下的不是一回事。晚一点进来 + 自己的颜色，已经说完了。 */
+const DERIVE_SETTLE_MS = 500; // 事实落位之后，隔多久轮到推出来的
+const DERIVE_FADE_MS = 620; // 整体淡入的时长，比开关那一档慢，是"入场"不是"切换"
 // 图例最多摆几个胶囊，其余收进「+N 个类」。**这一排是横向排布的，
 // 类一多就会换行、把画布顶到下面去**；而且十几个同样的胶囊排开，
 // 谁也读不出哪个重要。收起来的那些从「+N」里搜得到
@@ -616,16 +611,6 @@ export function Graph() {
     sigmaRef.current?.refresh();
   }, [hiddenTypes, showDerived]);
 
-  /* 推演动画的排期。null = 没在演。
-     - `lit`：每条前提边什么时候亮（相对开演时刻的毫秒）
-     - `reveal`：每条派生边什么时候现身
-     排期一次算好，rAF 只负责推帧——每帧重算排期既费又会抖 */
-  const deriveRef = useRef<{
-    start: number;
-    end: number;
-    lit: Map<string, { on: number; off: number }>;
-    reveal: Map<string, number>;
-  } | null>(null);
   const deriveRafRef = useRef(0);
   /* 演完之前派生边不出现。**开关是"要不要显示"，这个是"演到了没有"**——
      两件事，混成一个会让关掉再打开时少演一遍 */
@@ -637,51 +622,14 @@ export function Graph() {
     sigmaRef.current?.refresh();
   }, [derivedRevealed]);
 
-  const runDerivation = useCallback(() => {
-    const sigma = sigmaRef.current;
-    const g = sigma?.getGraph();
-    if (!g || !sigma) return;
-    const derived = g.edges().filter((e) => g.getEdgeAttribute(e, "derived"));
-    // 数量太多就不演，与呼吸、淡入同一条线：每帧重算几千条边的颜色换来的是卡顿
-    if (derived.length === 0 || derived.length > DERIVED_ANIMATE_MAX) {
-      setDerivedRevealed(true);
-      return;
-    }
-    const lit = new Map<string, { on: number; off: number }>();
-    const reveal = new Map<string, number>();
-    let end = 0;
-    derived.forEach((e, i) => {
-      const base = i * DERIVE_STAGGER_MS;
-      const premises = (g.getEdgeAttribute(e, "premises") as string[]).filter(
-        (p) => g.hasEdge(p),
-      );
-      // 结论紧接在最后一条前提之后落下
-      const at = base + premises.length * DERIVE_STEP_MS;
-      const off = at + DERIVE_HOLD_MS;
-      premises.forEach((p, j) => {
-        const on = base + j * DERIVE_STEP_MS;
-        const cur = lit.get(p);
-        // 一条边可能是好几处推导的前提：取**最早亮、最晚收**的并集，
-        // 别让它在两组之间闪来闪去
-        lit.set(p, {
-          on: cur ? Math.min(cur.on, on) : on,
-          off: cur ? Math.max(cur.off, off) : off,
-        });
-      });
-      reveal.set(e, at);
-      end = Math.max(end, off + DERIVE_FADE_MS);
-    });
-    deriveRef.current = { start: performance.now(), end, lit, reveal };
+  const revealDerived = useCallback(() => {
     setDerivedRevealed(true);
-
+    // 复用开关那套淡入：方向为"开"，从近背景色亮到常态
+    derivedToggleRef.current = { at: performance.now(), on: true };
     const step = () => {
-      const plan = deriveRef.current;
-      if (!plan) {
-        deriveRafRef.current = 0;
-        return;
-      }
-      const done = performance.now() - plan.start >= plan.end;
-      if (done) deriveRef.current = null;
+      const tr = derivedToggleRef.current;
+      const done = !tr || performance.now() - tr.at >= DERIVE_FADE_MS;
+      if (done) derivedToggleRef.current = null;
       sigmaRef.current?.refresh();
       deriveRafRef.current = done ? 0 : requestAnimationFrame(step);
     };
@@ -738,22 +686,20 @@ export function Graph() {
   // 卸载时收掉可能在飞的那一帧
   useEffect(() => () => cancelAnimationFrame(derivedRafRef.current), []);
 
-  /* 什么时候开演。两个入口共用一段延时：
-     - 刚进页面：数据到齐后等 DERIVE_SETTLE_MS。**不等布局收敛**——
-       节点还在走位时演也无妨，何况收敛要 2.5 秒，等完人早就在看别处了
-     - 手动打开开关：同样缓一下再演
+  /* 什么时候进场。两个入口共用一段延时：进页面、以及手动打开开关。
+     **不等布局收敛**——收敛要 2.5 秒，等完人早就在看别处了。
 
      **顺序本身是内容**：先落位的是人写下的边，然后才轮到推出来的。
-     一起出现就分不清谁在前，而"谁在前"正是这动画要讲的事 */
+     一起出现就分不清谁在前 */
   useEffect(() => {
     if (!showDerived || !data.data) {
       if (!showDerived) setDerivedRevealed(false);
       return;
     }
     if (derivedRevealed) return;
-    const t = window.setTimeout(runDerivation, DERIVE_SETTLE_MS);
+    const t = window.setTimeout(revealDerived, DERIVE_SETTLE_MS);
     return () => window.clearTimeout(t);
-  }, [showDerived, data.data, derivedRevealed, runDerivation]);
+  }, [showDerived, data.data, derivedRevealed, revealDerived]);
 
   // 派生边的呼吸。**只在有派生边、且开着显示、且数量不多时才转**——
   // 一个没开推理的库不该为这件事每两秒重画一次
@@ -807,7 +753,6 @@ export function Graph() {
           type: "line",
           // reducer 每帧读它：决定要不要藏、要不要呼吸
           derived: e.derived,
-          premises: e.premises ?? [],
         });
       }
     }
@@ -1035,64 +980,10 @@ export function Graph() {
         }
         // 推出来的边：先看藏不藏，再决定呼吸到哪一档。
         // **放在最前面**——藏起来的边不必再算后面那些提亮/压暗
-        /* **过了排期就当演完**，哪怕驱动它的 rAF 一帧没跑。
-           后台标签页里 rAF 是暂停的——只靠循环去清排期的话，
-           切回来会看到派生边永远藏着。时间自己会走，读时间就自愈 */
-        const plan =
-          deriveRef.current &&
-          performance.now() - deriveRef.current.start <= deriveRef.current.end
-            ? deriveRef.current
-            : null;
         const isDerived = attrs.derived === true;
 
-        // 前提边：轮到它的那一瞬提亮，然后落回常态。**三角波**——
-        // 上去再下来，看起来是"被点了一下"，不是"从此变了个颜色"
-        if (!isDerived && plan) {
-          const w = plan.lit.get(edge);
-          // **此刻不成立的前提不参演**：时间轴停在某一刻时，
-          // 那些还没生效或已失效的边本来就该是暗的。点亮它等于演了一个
-          // 此刻并不成立的推导——比不演更糟
-          const activeNow = !f.activeEdges || f.activeEdges.has(edge);
-          if (w !== undefined && activeNow) {
-            const now = performance.now() - plan.start;
-            if (now >= w.on && now <= w.off + DERIVE_FADE_MS) {
-              // 快速亮起 → 一直挂着 → 与结论一起收。
-              // **挂着的那一段才是重点**：那时候前提与结论同时亮，
-              // 一条链看得完整
-              const k =
-                now < w.on + 140
-                  ? (now - w.on) / 140
-                  : now <= w.off
-                    ? 1
-                    : 1 - (now - w.off) / DERIVE_FADE_MS;
-              res.color = lerpColor(EDGE_COLOR, EDGE_FOCUS_DERIVED, k);
-              res.size = Math.max((attrs.size as number) * (1 + k * 0.9), 1.4);
-              res.zIndex = 4;
-              return res;
-            }
-          }
-        }
-
         if (isDerived) {
-          // 还没演到它就先不出现——结论要在前提之后才落下
-          if (plan) {
-            const at = plan.reveal.get(edge);
-            if (at !== undefined) {
-              const dt = performance.now() - plan.start - at;
-              if (dt < 0) {
-                res.hidden = true;
-                return res;
-              }
-              if (dt <= DERIVE_FADE_MS) {
-                const k = dt / DERIVE_FADE_MS;
-                res.color = lerpColor(EDGE_DIM, EDGE_FOCUS_DERIVED, k);
-                res.size = Math.max((attrs.size as number) * (1 + k * 0.6), 1.4);
-                res.zIndex = 5;
-                return res;
-              }
-            }
-          }
-          // 排期还没算出来（等着开演）时，派生边一律不画
+          // 还没轮到它进场：先不画。**事实先落位，推出来的后到**
           if (!derivedRevealedRef.current) {
             res.hidden = true;
             return res;

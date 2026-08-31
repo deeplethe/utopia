@@ -448,8 +448,7 @@ async fn edges_among(
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS label,
                 r.id IS NULL AS inferred, FALSE AS derived,
-                f.valid_from, f.valid_to, f.confidence,
-                ARRAY[]::uuid[] AS premises
+                f.valid_from, f.valid_to, f.confidence
          FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
            AND f.subject_id = ANY($2) AND f.object_id = ANY($2)
@@ -460,14 +459,7 @@ async fn edges_among(
          SELECT d.id, d.subject_id AS source, d.object_id AS target,
                 r.key AS predicate, r.label AS label,
                 FALSE AS inferred, TRUE AS derived,
-                d.valid_from, d.valid_to, d.confidence,
-                -- 前提**按推导顺序**：界面要照这个次序一段段点亮。
-                -- COALESCE 兜住没有推导记录的老数据，别让整条边变成 NULL
-                COALESCE((
-                    SELECT array_agg(fd.premise_fact_id ORDER BY fd.seq)
-                    FROM fact_derivations fd
-                    WHERE fd.derived_fact_id = d.id
-                ), ARRAY[]::uuid[]) AS premises
+                d.valid_from, d.valid_to, d.confidence
          FROM derived_facts d JOIN relation_types r ON r.id = d.predicate_id
          WHERE d.kb_id = $1 AND d.invalidated_at IS NULL
            AND d.subject_id = ANY($2) AND d.object_id = ANY($2)
