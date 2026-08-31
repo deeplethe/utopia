@@ -85,7 +85,10 @@ body::before {
    身后的回答文字清晰可辨，标题几乎读不出）。
    遮罩也一并加深：0.6 的黑压不住一屏白字。 */
 .u-modal-panel {
-  background: rgba(12, 12, 14, 0.97);
+  /* **中性，不掺色相**：原本是 rgba(12,12,14)，蓝比红绿高 2——
+     在大面积深底上肉眼看得出偏冷。这产品的既定原则是
+     「chrome 零色偏、彩色只属于数据」，这里也照办 */
+  background: rgba(12, 12, 12, 0.97);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--u-line-strong);
@@ -172,7 +175,9 @@ body::before {
    原地变形动画在组件内用 FLIP 实现（首帧压到胶囊真实边界再展开），
    CSS 只负责面板的皮 */
 .u-menu-glass {
-  background: rgba(14, 14, 16, 0.85);
+  /* 同上：原本 rgba(14,14,16) 偏蓝。这个面同时用在通知、用户菜单、
+     图例的「+N 个类」和 Inference 面板上，一处偏色四处都偏 */
+  background: rgba(14, 14, 14, 0.85);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid rgba(255, 255, 255, 0.14);

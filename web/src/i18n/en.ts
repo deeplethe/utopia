@@ -625,6 +625,7 @@ export const en = {
       "Edges no one asserted — the engine worked them out from axioms your ontology declares. Each one shows the premises it came from.",
     derivedNoProof: "The premises are gone.",
     derivedPanel: "Inference",
+    derivedRunConfirm: "Confirm?",
     derivedCountLabel: "Edges derived",
     derivedStateLabel: "Schedule",
     derivedLastLabel: "Last run",

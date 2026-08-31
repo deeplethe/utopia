@@ -1700,16 +1700,19 @@ function TimeScrubber({
           界面上没有一处说得出「一格是多久」 */}
       <div
         title={S.graph.scrubUnitHint}
-        className="flex shrink-0 items-center overflow-hidden rounded-md border border-white/10"
+        /* **与播放键同高同圆角**：那个键是 h-8 / rounded-lg，
+           而这里从前是 py-[3px] 撑出来的 20px 高、rounded-md——
+           并排放着两个尺寸和圆角都不一样的东西，看着不像一套 */
+        className="flex h-8 shrink-0 items-center overflow-hidden rounded-lg border border-white/10"
       >
         {(["year", "month", "day"] as const).map((u) => (
           <button
             key={u}
             onClick={() => setUnit(u)}
-            className={`px-1.5 py-[3px] text-[10px] leading-none transition-colors ${
+            className={`grid h-full place-items-center px-2 text-[10px] leading-none transition-colors ${
               unit === u
-                ? "bg-white/10 text-neutral-100"
-                : "text-neutral-500 hover:bg-white/[0.06] hover:text-neutral-300"
+                ? "bg-white/[0.08] text-neutral-100"
+                : "text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-300"
             }`}
           >
             {u === "year"
@@ -1911,6 +1914,11 @@ function DerivedPanel({
     queryKey: ["kbOne", kbId],
     queryFn: () => api.kbDetail(kbId),
   });
+  /* 重跑要点两下。**面板正是从左下那个 ⋯ 按钮长出来的**，
+     所以指针点完 ⋯ 就停在面板的左下角——而重跑从前是一条通栏大按钮
+     铺在最下面，展开的下一下就误触了。挪到最远的那一角、缩到次要动作的尺寸，
+     再加一道确认：这个动作会重算全库的推理 */
+  const [armed, setArmed] = useState(false);
   const run = useMutation({
     mutationFn: () => api.runInference(kbId),
     onSuccess: () => {
@@ -1939,7 +1947,30 @@ function DerivedPanel({
           {S.graph.derivedPanel}
         </span>
         <button
-          className="ml-auto text-neutral-500 hover:text-neutral-200"
+          className={`ml-auto rounded px-1.5 py-0.5 text-[11px] transition-colors ${
+            armed
+              ? "bg-white/10 text-neutral-100"
+              : "text-neutral-500 hover:text-neutral-200"
+          }`}
+          disabled={!on || run.isPending}
+          title={on ? undefined : S.err.inference_off}
+          onClick={() => {
+            if (!armed) {
+              setArmed(true);
+              return;
+            }
+            setArmed(false);
+            run.mutate();
+          }}
+        >
+          {run.isPending
+            ? S.graph.derivedRunning
+            : armed
+              ? S.graph.derivedRunConfirm
+              : S.graph.derivedRun}
+        </button>
+        <button
+          className="text-neutral-500 hover:text-neutral-200"
           onClick={onClose}
           aria-label={S.graph.close}
         >
@@ -1980,16 +2011,6 @@ function DerivedPanel({
         </p>
       )}
 
-      {/* **不是实心白。** `u-btn-primary` 是全站主操作那一档，用在一个悬浮小窗里
-          的次要动作上，整块面板会被这一个按钮压住 */}
-      <button
-        className="u-btn u-btn-ghost mt-2.5 w-full py-1 text-[11px]"
-        disabled={!on || run.isPending}
-        title={on ? undefined : S.err.inference_off}
-        onClick={() => run.mutate()}
-      >
-        {run.isPending ? S.graph.derivedRunning : S.graph.derivedRun}
-      </button>
     </div>
   );
 }
@@ -2574,7 +2595,7 @@ function TimelineView({
       <div className="relative ml-1.5 border-l border-white/15 pl-3 space-y-0.5">
         {dated.map((f) => (
           <div key={f.id} className="relative">
-            <span className="absolute -left-[17.5px] top-2.5 h-2 w-2 rounded-full bg-neutral-600 ring-2 ring-[#0f0f10]" />
+            <span className="absolute -left-[17.5px] top-2.5 h-2 w-2 rounded-full bg-neutral-600 ring-2 ring-[#0f0f0f]" />
             <TimelineRow
               kbId={kbId}
               fact={f}

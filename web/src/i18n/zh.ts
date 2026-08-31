@@ -575,6 +575,7 @@ export const zh: Strings = {
       "没有人断言过的边——引擎按本体声明的公理推出来的。每一条都附着它用到的前提。",
     derivedNoProof: "前提已经不在了。",
     derivedPanel: "推理",
+    derivedRunConfirm: "确认重跑？",
     derivedCountLabel: "推出来的边",
     derivedStateLabel: "定时",
     derivedLastLabel: "上次推理",
