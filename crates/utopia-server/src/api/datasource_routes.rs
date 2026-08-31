@@ -135,10 +135,33 @@ pub async fn mount(
     }
     utopia_store::datasources::mount(&state.pool, kb_id, ds_id).await?;
     // 挂载即摄取 schema：Chat 写 SQL 前能检索到表结构
-    let synced = sync_schema_doc(&state, kb_id, ds_id)
+    //
+    // **这一步失败不能回报成挂载失败。** 上面那行已经写进 kb_data_sources 了，
+    // 源是真挂着的；从前这里 `?` 出去回 500，人以为没挂上，实际挂上了——
+    // 而问数看不见它有哪些表。改成：照实说挂载成了，schema 没成，并且
+    // 报进告警中心，因为那之后就是一个静默的缺失状态（0009）
+    match sync_schema_doc(&state, kb_id, ds_id).await {
+        Ok(synced) => Ok(Json(json!({ "ok": true, "schema_tables": synced }))),
+        Err(e) => {
+            let name = source_name(&state, ds_id).await;
+            crate::alerting::observe_schema_sync_failure(&state, kb_id, ds_id, &name, &e).await;
+            Ok(Json(json!({
+                "ok": true,
+                "schema_tables": 0,
+                "schema_error": e.to_string(),
+            })))
+        }
+    }
+}
+
+/// 告警要留住名字：源被删之后 `subject_id` 就解析不出名字了。查不到时给占位符
+/// 而不是让告警本身失败——**报警路径上的失败不该淹掉它要报的那件事**。
+async fn source_name(state: &AppState, ds_id: Uuid) -> String {
+    utopia_store::datasources::list(&state.pool)
         .await
-        .map_err(AppError::Other)?;
-    Ok(Json(json!({ "ok": true, "schema_tables": synced })))
+        .ok()
+        .and_then(|all| all.into_iter().find(|d| d.id == ds_id).map(|d| d.name))
+        .unwrap_or_else(|| ds_id.to_string())
 }
 
 pub async fn unmount(
@@ -151,16 +174,25 @@ pub async fn unmount(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// 手动刷新结构。
+///
+/// **这里照旧把错误回给调用方**——点按钮的人正看着，而且什么都没半途发生。
+/// 但同样报一条告警：留下的后果与挂载失败时一模一样（源挂着、表结构是旧的
+/// 或空的），而点按钮的人未必是需要知道这件事的人。
 pub async fn sync_schema(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path((kb_id, ds_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Admin).await?;
-    let synced = sync_schema_doc(&state, kb_id, ds_id)
-        .await
-        .map_err(AppError::Other)?;
-    Ok(Json(json!({ "ok": true, "schema_tables": synced })))
+    match sync_schema_doc(&state, kb_id, ds_id).await {
+        Ok(synced) => Ok(Json(json!({ "ok": true, "schema_tables": synced }))),
+        Err(e) => {
+            let name = source_name(&state, ds_id).await;
+            crate::alerting::observe_schema_sync_failure(&state, kb_id, ds_id, &name, &e).await;
+            Err(AppError::Other(e).into())
+        }
+    }
 }
 
 /// Agentic 探索：后台任务读挂载源 schema，提议 指标/维度→字段 映射（低置信入 Review）。

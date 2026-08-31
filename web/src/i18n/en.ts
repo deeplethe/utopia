@@ -150,6 +150,10 @@ export const en = {
         title: "A source failed to sync",
         hint: "Nothing new came in from it. Check the source's settings.",
       },
+      "data_source.schema_sync_failed": {
+        title: "A data source is mounted, but its schema is not",
+        hint: "Ask cannot see which tables exist, so it will guess column names. Check the connection, then use Refresh schema.",
+      },
       "llm.unreachable": {
         title: "The model endpoint gave no usable answer",
         hint: "Extraction and embedding are stopped. Check the endpoint URL in system settings.",
@@ -1059,6 +1063,10 @@ export const en = {
     unmount: "Unmount",
     syncSchema: "Refresh schema",
     schemaSynced: (n: number) => `Schema ingested (${n} tables)`,
+    // Mounted, schema did not. **Do not call this a failed mount** — the source is mounted
+    schemaFailed:
+      "The data source is mounted, but its schema could not be ingested — Ask cannot see which tables exist. " +
+      "This is in the alert centre; check the connection, then use Refresh schema.",
     explore: "Explore mappings",
     exploreHint:
       "An agent reads these schemas and proposes metric and dimension definitions. Proposals land in Pending; Ask uses them only once confirmed.",

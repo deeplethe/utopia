@@ -450,14 +450,21 @@ function DataSources({
   });
   const [picked, setPicked] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
+  // 与 notice 分开：一个是「成了」，一个是「成了一半」，配色也不同
+  const [warning, setWarning] = useState<string | null>(null);
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["kbDataSources", kbId] });
 
   const mount = useMutation({
     mutationFn: (dsId: string) => api.mountDataSource(kbId, dsId),
+    // **挂载成了、schema 没成，是两件事。** 服务端此时回的是 ok（源确实挂上了），
+    // 所以不能照着 `schema_tables: 0` 说「已摄入 0 张表」——那等于说成功了。
+    // 说清楚半成的是哪一半，同一件事也进了告警中心
     onSuccess: (r) => {
       setPicked("");
-      setNotice(S.mapping.schemaSynced(r.schema_tables));
+      setNotice(null);
+      setWarning(r.schema_error ? S.mapping.schemaFailed : null);
+      if (!r.schema_error) setNotice(S.mapping.schemaSynced(r.schema_tables));
       invalidate();
     },
     onError: (e: unknown) => toast.error((e as Error).message),
@@ -582,6 +589,9 @@ function DataSources({
         </div>
       )}
       {notice && <p className="text-xs text-[var(--u-ok)]">{notice}</p>}
+      {warning && (
+        <p className="text-xs text-[var(--u-warn)]">{warning}</p>
+      )}
     </div>
   );
 }

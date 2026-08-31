@@ -1085,13 +1085,16 @@ export const api = {
     request<{ data_sources: DataSourceView[] }>(
       `/api/v1/kbs/${kbId}/data-sources/available`,
     ),
+  /** 挂载。**`schema_error` 非空时挂载仍然成了**——源是真挂上的，只是它的
+   *  库表结构没摄进来，问数看不见有哪些表。同一件事会进告警中心 */
   mountDataSource: (kbId: string, dsId: string) =>
-    request<{ ok: boolean; schema_tables: number }>(
-      `/api/v1/kbs/${kbId}/data-sources/${dsId}`,
-      {
-        method: "PUT",
-      },
-    ),
+    request<{
+      ok: boolean;
+      schema_tables: number;
+      schema_error?: string | null;
+    }>(`/api/v1/kbs/${kbId}/data-sources/${dsId}`, {
+      method: "PUT",
+    }),
   unmountDataSource: (kbId: string, dsId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/data-sources/${dsId}`, {
       method: "DELETE",

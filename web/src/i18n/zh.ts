@@ -132,6 +132,10 @@ export const zh: Strings = {
         title: "来源同步失败",
         hint: "它没有带进新内容。去来源设置里看一下。",
       },
+      "data_source.schema_sync_failed": {
+        title: "数据源挂上了，库表结构没进来",
+        hint: "问数看不见有哪些表，只能猜列名。检查连接串，然后点「刷新结构」。",
+      },
       "llm.unreachable": {
         title: "模型端点没有给出可用的回答",
         hint: "抽取与向量化已停摆。去系统设置里检查端点地址。",
@@ -952,6 +956,10 @@ export const zh: Strings = {
     unmount: "卸载",
     syncSchema: "刷新结构",
     schemaSynced: (n: number) => `结构已摄入（${n} 张表）`,
+    // 挂载成了、结构没成。**别说成失败**——源是真挂上的
+    schemaFailed:
+      "数据源已挂载，但库表结构没能摄入——问数看不见有哪些表。已报进告警中心；" +
+      "检查连接串后点「刷新结构」重试。",
     explore: "探查映射",
     exploreHint:
       "一个智能体读这些库表结构，提出指标／维度的口径。提出来的落在「待审批」，确认之后问数才会用。",

@@ -71,3 +71,44 @@ pub fn spawn_retention_sweep(state: AppState) {
         }
     });
 }
+
+/// 数据源挂上了，库表结构却没摄进来。
+///
+/// **报的不是那次失败，是它留下的状态。** 挂载分两步：写 `kb_data_sources`，
+/// 再把 schema 生成文档摄进库。第一步成了、第二步没成的时候，源是真挂着的——
+/// `query_data` 会入列，而模型检索不到任何表结构，只能瞎猜列名。
+///
+/// 挂载那一刻的报错只有点按钮的人看得见。此后这个库就一直静默地缺着，
+/// 而这正是 0009 说的那件事：真正伤人的不是失败，是失败无声。
+pub async fn observe_schema_sync_failure(
+    state: &AppState,
+    kb_id: uuid::Uuid,
+    source_id: uuid::Uuid,
+    source_name: &str,
+    err: &anyhow::Error,
+) {
+    if let Err(e) = alerts::raise(
+        &state.pool,
+        alerts::NewAlert {
+            kb_id: Some(kb_id),
+            severity: "warning",
+            kind: alerts::kind::SCHEMA_SYNC_FAILED,
+            // 配置类：要修的是连接串或网络，不是内容。找 admin
+            min_role: Role::Admin,
+            subject_type: Some("data_source"),
+            subject_id: Some(source_id),
+            // 名字在这里存一份——源被删掉之后 subject_id 解析不出名字，
+            // 而告警该留得住
+            detail: serde_json::json!({
+                "source": source_name,
+                "error": err.to_string(),
+            }),
+        },
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "上报 data_source.schema_sync_failed 失败");
+        return;
+    }
+    state.emit_alert();
+}

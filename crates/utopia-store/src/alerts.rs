@@ -27,6 +27,12 @@ pub mod kind {
     /// 系统级：模型端点没给出可用的回答——连不上，或者连上了但回来的不是这个 API。
     /// 端点干净地回 4xx 不算：那说明它就是模型 API，只是密钥或配额不对
     pub const LLM_UNREACHABLE: &str = "llm.unreachable";
+    /// 库级：数据源挂上了，它的库表结构却没摄进来。`min_role = admin`
+    ///
+    /// **这一条描述的不是那次失败，是它留下的状态**：源挂着，而问数看不见它有
+    /// 哪些表——`query_data` 照样入列，模型却只能瞎猜列名。挂载那一刻的报错
+    /// 只有点按钮的人看得见，此后这个库就一直这样静默地缺着。
+    pub const SCHEMA_SYNC_FAILED: &str = "data_source.schema_sync_failed";
 }
 
 /// 一次故障。打包成结构体不只是为了参数个数——调用点写 `severity: "error"`
