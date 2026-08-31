@@ -1,28 +1,66 @@
-# 安全说明
+# Security
 
-Utopia 目前是 v0.1。下面这些是**已知的、尚未解决的**限制 —— 不是漏洞报告，是设计上还没走到的地方。把它们写在这里，是因为一个卖点是「每条结论都可追溯」的项目，没有理由对自己的短板含糊。
+*[中文版](SECURITY.zh-CN.md)*
 
-## 部署到公网之前
+Utopia is at v0.1. What follows are the **known, unresolved** limits — not a vulnerability
+report, but the places the design has not reached yet. They are written down because a
+project whose selling point is "every conclusion is traceable" has no business being vague
+about its own weak spots.
 
-### 凭据在数据库里是明文的
+## Before you put this on a public network
 
-界面里录入的 LLM API Key、以及问数功能注册的数据库连接串，都以明文存在 Postgres 里。
+### Credentials are stored in the database in the clear
 
-能读到库的人就能拿到它们。静态加密是 1.0 之前的硬化项 —— 在那之前，请把这套系统和它的数据库部署在可信网络内，并且给数据库单独的访问控制。
+The LLM API keys entered in the UI, and the database connection strings registered for
+Ask-the-Data, are stored as plain text in Postgres — see `llm_settings.chat_api_key` and
+`data_sources.conn_string`.
 
-### 数据库默认口令
+Anyone who can read the database can read them. Encryption at rest is a hardening item
+before 1.0. Until then, deploy this system and its database inside a trusted network, and
+give the database its own access control.
 
-compose 里数据库默认口令是 `utopia`。默认配置下端口只绑回环（`127.0.0.1:1517`），外网连不上，所以这不是紧急问题；但如果你改了 `UTOPIA_DB_BIND` 把它暴露出去，先换掉 `.env` 里的 `UTOPIA_DB_PASSWORD`。
+### Default database password
 
-## 已经做了的
+The default database password in compose is `utopia`. Under the default configuration the
+port is bound to loopback only (`127.0.0.1:1517`), so nothing outside the host can connect
+and this is not urgent. But if you change `UTOPIA_DB_BIND` to expose it, change
+`UTOPIA_DB_PASSWORD` in `.env` first.
 
-- **JWT 签名密钥自动生成**：首次启动生成 32 字节 CSPRNG 存入数据库，不再有「所有部署共用同一个默认密钥」这回事。
-- **会话 cookie 在 TLS 后面自动打 Secure**：按请求的 `X-Forwarded-Proto` 判定，走 HTTPS 就打上，浏览器不会再把 token 经明文链路发出去。没有反向代理时不打，本地 HTTP 开发照常。代理不发那个头的话，用 `UTOPIA_COOKIE_SECURE=true` 强制打开。
-- **数据库端口只绑回环**：`127.0.0.1:1517`，app 走 compose 内网连库，那个映射只服务本地开发。
-- **可选的受限运行角色**：配置 `UTOPIA_APP_DB_PASSWORD` 与 `UTOPIA_MIGRATION_URL` 后，应用以只读写业务表、对台账只增不改的角色连库，迁移另走 owner 身份。
-- **问数 SQL 只读闸**：解析白名单、只读事务、强制行数上限。
-- **口令哈希用 argon2**。
+### A data source's credentials are as strong as its grants
 
-## 报告漏洞
+Registering a data source is a deployment-level action, but the connection string it carries
+reaches every workspace it is granted to. Grant a source only to the workspaces that should
+see that database, and prefer a read-only database role in the connection string itself —
+the SQL gate below is defense in depth, not a substitute for least privilege at the source.
 
-发现了上面没有列出的问题，请开一个 issue。如果涉及可被利用的细节，先只写复现的最小信息，我们再私下沟通完整内容。
+## What is in place
+
+- **JWT signing key is generated on first start.** 32 bytes from a CSPRNG, stored in the
+  database. There is no such thing as "every deployment shares the same default key".
+- **Session cookies get `Secure` automatically behind TLS.** Decided from the request's
+  `X-Forwarded-Proto`: set over HTTPS, so the browser will not send the token over a
+  cleartext hop. Not set when there is no reverse proxy, so local HTTP development still
+  works. If your proxy does not send that header, force it with `UTOPIA_COOKIE_SECURE=true`.
+- **The database port binds to loopback.** `127.0.0.1:1517`; the app reaches the database
+  over the compose network, and that mapping only serves local development.
+- **Optional least-privilege runtime role.** Set `UTOPIA_APP_DB_PASSWORD` and
+  `UTOPIA_MIGRATION_URL` and the application connects as a role that can only read and write
+  business tables and can only append to the ledger, while migrations run under the owner
+  identity.
+- **Data sources reach only the workspaces they were granted to.** A registered database is
+  not visible deployment-wide: it is mounted into a knowledge base only where an explicit
+  grant exists. Before this existed, any knowledge-base admin could list every registered
+  data source in the deployment and mount any of them — and every Viewer of that base could
+  then run read-only SQL against it. On a multi-workspace deployment that crossed tenants.
+- **Ask-the-Data runs behind a read-only gate.** A parser allowlist, a read-only transaction,
+  and an enforced row limit — three layers, so a statement that slips past the parser still
+  cannot write and still cannot run the database out of resources.
+- **Accounts are deactivated, not deleted.** `users.deactivated_at` blocks sign-in and
+  authentication while everything that person decided stays attributable in the ledger —
+  removing the row would rewrite history, which is the one thing this system must not do.
+- **Passwords are hashed with argon2.**
+
+## Reporting a vulnerability
+
+If you find something not listed above, open an issue. If it involves exploitable detail,
+start with the minimum needed to reproduce it and we will follow up privately for the rest.
