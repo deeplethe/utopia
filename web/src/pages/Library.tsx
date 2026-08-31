@@ -854,7 +854,10 @@ function SourceBar({
   // 历史数据的 config 可能是 jsonb null（缺省 Value::Null 落库所致）——防御性兜底
   const cfg = source.config ?? {};
   const configSummary =
-    cfg.feed_url ?? cfg.endpoint ?? (cfg.urls ? `${cfg.urls.length} URLs` : "");
+    cfg.feed_url ??
+    cfg.endpoint ??
+    cfg.repo ??
+    (cfg.urls ? `${cfg.urls.length} URLs` : "");
 
   return (
     <div className="glass rounded-xl mb-3">
@@ -1259,19 +1262,38 @@ function SourceModal({
   /** isApi=true 时父级紧接着打开密钥弹窗 */
   onDone: (id?: string, isApi?: boolean) => void;
 }) {
-  const [kind, setKind] = useState<"folder" | "url" | "rss" | "custom" | "api">("folder");
+  const [kind, setKind] = useState<
+    | "folder"
+    | "url"
+    | "rss"
+    | "custom"
+    | "api"
+    | "github_issues"
+    | "jira_issues"
+  >("folder");
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<string | null>(null);
   const [urls, setUrls] = useState("");
   const [feedUrl, setFeedUrl] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [authHeader, setAuthHeader] = useState("");
+  const [repo, setRepo] = useState("");
+  const [jiraUrl, setJiraUrl] = useState("");
+  const [jiraProject, setJiraProject] = useState("");
+  // PR 在 GitHub 的模型里也是工单。默认不收——问「工单」要的是工单；
+  // 但有些仓库的决策记录实际写在 PR 描述里，所以给个开关
+  const [includePrs, setIncludePrs] = useState(false);
   const [schedule, setSchedule] = useState<ScheduleValue>({
     sync_interval_minutes: null,
     sync_cron: null,
   });
   // folder = 纯容器、api = 推送型：都没有同步日程
-  const syncing = kind === "url" || kind === "rss" || kind === "custom";
+  const syncing =
+    kind === "url" ||
+    kind === "rss" ||
+    kind === "custom" ||
+    kind === "github_issues" ||
+    kind === "jira_issues";
 
   const create = useMutation({
     mutationFn: () => {
@@ -1285,7 +1307,19 @@ function SourceModal({
                   endpoint: endpoint.trim(),
                   ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
                 }
-              : {};
+              : kind === "github_issues"
+                ? {
+                    repo: repo.trim(),
+                    ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
+                    ...(includePrs ? { include_pull_requests: true } : {}),
+                  }
+                : kind === "jira_issues"
+                  ? {
+                      base_url: jiraUrl.trim(),
+                      project: jiraProject.trim(),
+                      ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
+                    }
+                  : {};
       return api.createSource(kbId, {
         kind,
         name: name.trim(),
@@ -1336,7 +1370,17 @@ function SourceModal({
         <div className="px-5 py-4">
           {/* 类型 */}
           <div className="flex gap-2 mb-2">
-            {(["folder", "url", "rss", "api", "custom"] as const).map((k) => {
+            {(
+              [
+                "folder",
+                "url",
+                "rss",
+                "github_issues",
+                "jira_issues",
+                "api",
+                "custom",
+              ] as const
+            ).map((k) => {
               const Icon = KIND_ICON[k];
               return (
                 <button
@@ -1444,6 +1488,69 @@ function SourceModal({
                 onChange={(e) => setFeedUrl(e.target.value)}
               />,
             )}
+          {kind === "jira_issues" && (
+            <>
+              {field(
+                S.library.jiraUrlField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  placeholder="https://jira.example.com"
+                  value={jiraUrl}
+                  onChange={(e) => setJiraUrl(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.jiraProjectField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  placeholder="KAFKA"
+                  value={jiraProject}
+                  onChange={(e) => setJiraProject(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.tokenField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  type="password"
+                  placeholder="Basic dXNlcjp0b2tlbg=="
+                  value={authHeader}
+                  onChange={(e) => setAuthHeader(e.target.value)}
+                />,
+              )}
+            </>
+          )}
+          {kind === "github_issues" && (
+            <>
+              {field(
+                S.library.repoField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  placeholder="owner/name"
+                  value={repo}
+                  onChange={(e) => setRepo(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.tokenField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  type="password"
+                  placeholder="Bearer ghp_…"
+                  value={authHeader}
+                  onChange={(e) => setAuthHeader(e.target.value)}
+                />,
+              )}
+              <label className="mb-4 flex items-center gap-2 text-[11px] text-neutral-400">
+                <input
+                  type="checkbox"
+                  checked={includePrs}
+                  onChange={(e) => setIncludePrs(e.target.checked)}
+                />
+                {S.library.includePullRequests}
+              </label>
+            </>
+          )}
 
           {syncing && field(S.library.interval, <SchedulePicker onChange={setSchedule} />)}
 
@@ -1489,6 +1596,8 @@ function SourceEditModal({
   const [feedUrl, setFeedUrl] = useState(cfg.feed_url ?? "");
   const [endpoint, setEndpoint] = useState(cfg.endpoint ?? "");
   const [authHeader, setAuthHeader] = useState("");
+  const [repo, setRepo] = useState(cfg.repo ?? "");
+  const [includePrs, setIncludePrs] = useState(Boolean(cfg.include_pull_requests));
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [schedule, setSchedule] = useState<ScheduleValue>({
     sync_interval_minutes: source.sync_interval_minutes,
@@ -1501,7 +1610,11 @@ function SourceEditModal({
   const ingestChanged =
     (kind === "url" && urls.trim() !== (cfg.urls ?? []).join("\n").trim()) ||
     (kind === "rss" && feedUrl.trim() !== (cfg.feed_url ?? "")) ||
-    (kind === "custom" && endpoint.trim() !== (cfg.endpoint ?? ""));
+    (kind === "custom" && endpoint.trim() !== (cfg.endpoint ?? "")) ||
+    // 换仓库或改收不收 PR，两者都会换掉这个来源里文档的集合
+    (kind === "github_issues" &&
+      (repo.trim() !== (cfg.repo ?? "") ||
+        includePrs !== Boolean(cfg.include_pull_requests)));
 
   const save = useMutation({
     mutationFn: () => {
@@ -1516,7 +1629,14 @@ function SourceEditModal({
                   // 留空 = 后端保留库里原值（凭据只进不出）
                   ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
                 }
-              : undefined;
+              : kind === "github_issues"
+                ? {
+                    repo: repo.trim(),
+                    // 留空 = 后端保留库里原值（凭据只进不出）
+                    ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
+                    include_pull_requests: includePrs,
+                  }
+                : undefined;
       return api.updateSource(kbId, source.id, {
         name: name.trim(),
         ...(kind === "custom" && icon ? { icon } : {}),
@@ -1615,6 +1735,37 @@ function SourceEditModal({
                 onChange={(e) => setFeedUrl(e.target.value)}
               />,
             )}
+          {kind === "github_issues" && (
+            <>
+              {field(
+                S.library.repoField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  placeholder="owner/name"
+                  value={repo}
+                  onChange={(e) => setRepo(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.tokenField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  type="password"
+                  placeholder="Bearer ghp_…"
+                  value={authHeader}
+                  onChange={(e) => setAuthHeader(e.target.value)}
+                />,
+              )}
+              <label className="mb-4 flex items-center gap-2 text-[11px] text-neutral-400">
+                <input
+                  type="checkbox"
+                  checked={includePrs}
+                  onChange={(e) => setIncludePrs(e.target.checked)}
+                />
+                {S.library.includePullRequests}
+              </label>
+            </>
+          )}
           {kind === "custom" && (
             <>
               {field(

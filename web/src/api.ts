@@ -161,9 +161,30 @@ export interface ExtractionDrop {
 
 export interface SourceView {
   id: string;
-  kind: "folder" | "url" | "rss" | "api" | "custom" | "memory" | "upload";
+  kind:
+    | "folder"
+    | "url"
+    | "rss"
+    | "api"
+    | "custom"
+    | "github_issues"
+    | "jira_issues"
+    | "memory"
+    | "upload";
   name: string;
-  config: { urls?: string[]; feed_url?: string; endpoint?: string } | null;
+  config: {
+    urls?: string[];
+    feed_url?: string;
+    endpoint?: string;
+    /** github_issues：owner/name */
+    repo?: string;
+    /** github_issues：PR 在 GitHub 模型里也是工单，默认不收 */
+    include_pull_requests?: boolean;
+    /** jira_issues：站点地址，如 https://issues.apache.org/jira */
+    base_url?: string;
+    /** jira_issues：项目 key，如 KAFKA */
+    project?: string;
+  } | null;
   icon: string | null;
   sync_interval_minutes: number | null;
   sync_cron: string | null;

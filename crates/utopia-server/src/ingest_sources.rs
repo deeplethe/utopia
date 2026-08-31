@@ -1,4 +1,5 @@
-//! 来源同步任务：url（网页抓取）/ rss（订阅，pubDate → doc_time）。
+//! 来源同步任务：url（网页抓取）/ rss（订阅，pubDate → doc_time）/
+//! github_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）。
 //! 全部走 sha256 去重（重复内容静默跳过），新文档进标准摄入管道（process_document）。
 //! folder 是纯容器（上传入内），api 是推送型——两者无拉取语义。
 
@@ -50,6 +51,8 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         "url" => sync_urls(state, &source).await,
         "rss" => sync_rss(state, &source).await,
         "custom" => sync_custom(state, &source).await,
+        "github_issues" => sync_github_issues(state, &source).await,
+        "jira_issues" => sync_jira_issues(state, &source).await,
         // folder / api 无拉取语义
         _ => Ok(SyncStats::default()),
     };
@@ -454,6 +457,184 @@ async fn sync_rss(state: &AppState, source: &Source) -> anyhow::Result<SyncStats
         stats.absorb(action);
     }
     Ok(stats)
+}
+
+/// GitHub 工单：一张工单一篇文档，正文里带它的状态变更史。
+///
+/// 工单与评论走**仓库级 + `since`**（一次分页取全），事件走**逐工单**——
+/// 不是不一致，是 `issues/events` 不支持 `since` 且会被 PR 事件淹没，
+/// 拿真实仓库一跑就发现状态变更史悄悄空了。详见 [`crate::github_issues`]。
+///
+/// `doc_time` 取 `updated_at` 而不是 `created_at`：每次同步捕获的是"此刻这张
+/// 工单是什么样"，认知时间该说这个状态是何时成立的。新增一条评论会改
+/// `updated_at`，于是内容变了、记一个新版本、`doc_time` 也跟着走。
+async fn sync_github_issues(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    let repo = source.config["repo"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("github_issues source is missing config.repo (owner/name)")
+        })?;
+    if repo.split('/').count() != 2 {
+        anyhow::bail!("config.repo should look like owner/name, got {repo:?}");
+    }
+    let auth = source.config["auth_header"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    // PR 在 GitHub 的模型里也是 issue。默认排除——问"工单系统"要的是工单；
+    // 但有些仓库的决策记录实际写在 PR 描述里，所以留了开关
+    let include_prs = source.config["include_pull_requests"]
+        .as_bool()
+        .unwrap_or(false);
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(UA)
+        .build()?;
+    let base = format!("https://api.github.com/repos/{repo}");
+
+    // 增量：GitHub 的 since 是"这之后更新过的"
+    let mut issue_q: Vec<(&str, String)> = vec![("state", "all".into())];
+    let mut comment_q: Vec<(&str, String)> = Vec::new();
+    if let Some(t) = source.last_sync_at {
+        issue_q.push(("since", t.to_rfc3339()));
+        comment_q.push(("since", t.to_rfc3339()));
+    }
+
+    let issues: Vec<crate::github_issues::Issue> =
+        crate::github_issues::fetch_all(&http, &format!("{base}/issues"), &issue_q, auth).await?;
+    let comments: Vec<crate::github_issues::Comment> = crate::github_issues::fetch_all(
+        &http,
+        &format!("{base}/issues/comments"),
+        &comment_q,
+        auth,
+    )
+    .await?;
+    let mut stats = SyncStats::default();
+    for (issue, cs) in crate::github_issues::group_comments(&issues, &comments)
+        .into_iter()
+        .filter(|(i, _)| include_prs || i.pull_request.is_none())
+        .take(MAX_NEW_PER_SYNC)
+    {
+        // 逐工单取事件。N 只是本轮要写入的工单数——首次同步等于总数，
+        // 之后有 since 兜着通常是个位数
+        let events = crate::github_issues::sort_events(
+            crate::github_issues::fetch_all(
+                &http,
+                &format!("{base}/issues/{}/events", issue.number),
+                &[],
+                auth,
+            )
+            .await?,
+        );
+        let es: Vec<&crate::github_issues::Event> = events.iter().collect();
+        let body = crate::github_issues::render(issue, &cs, &es);
+        // 逻辑身份带上仓库：同一个知识库里接两个仓库时，#18 不会互相覆盖
+        let key = format!("github:{repo}#{}", issue.number);
+        let filename = format!("{}-{}.md", issue.number, slugify(&issue.title));
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            &filename,
+            "text/markdown",
+            body.as_bytes(),
+            Some(issue.updated_at),
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    Ok(stats)
+}
+
+/// Jira 工单：一张工单一篇文档，正文里带**字段级**的变更史。
+///
+/// 比 GitHub 那条路省：`search?expand=changelog` 一次调用就带回工单本体、
+/// 完整变更史与评论，**没有 N+1**。增量靠 JQL 的 `updated >= …` 表达，
+/// 因为 Jira 没有 `since` 参数。详见 [`crate::jira_issues`]。
+///
+/// `doc_time` 取 `updated`，与 github_issues 同一口径：每次同步捕获的是
+/// "此刻这张工单是什么样"，认知时间该说这个状态何时成立。
+async fn sync_jira_issues(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    let base_url = source.config["base_url"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("jira_issues source is missing config.base_url"))?;
+    let project = source.config["project"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("jira_issues source is missing config.project"))?;
+    // 项目 key 直接拼进 JQL，所以不能是任意字符串。Jira 的 key 本身就限定
+    // 字母数字加下划线——挡住它顺带挡住了 JQL 注入
+    if !project.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        anyhow::bail!("config.project should be a Jira project key, got {project:?}");
+    }
+    let auth = source.config["auth_header"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(45))
+        .user_agent(UA)
+        .build()?;
+
+    let jql = crate::jira_issues::jql(project, source.last_sync_at);
+    let (issues, total) = crate::jira_issues::fetch_all(&http, base_url, &jql, auth).await?;
+    // **截断了就说出来。** 一个跑了多年的项目动辄上万张工单，翻页上限意味着
+    // 这一轮只覆盖了一段；不报的话界面上"同步完成"就是一句误导
+    if total > issues.len() as i64 {
+        tracing::warn!(
+            source_id = %source.id,
+            fetched = issues.len(),
+            total,
+            "Jira 结果被翻页上限截断，本轮只覆盖了一部分；下一轮的 JQL 窗口会接上"
+        );
+    }
+
+    let mut stats = SyncStats::default();
+    for issue in issues.iter().take(MAX_NEW_PER_SYNC) {
+        let body = crate::jira_issues::render(issue);
+        // 逻辑身份带上站点：一个知识库接两个 Jira 时，PROJ-1 不会互相覆盖
+        let host = reqwest::Url::parse(base_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| "jira".into());
+        let key = format!("jira:{host}/{}", issue.key);
+        let filename = format!(
+            "{}-{}.md",
+            issue.key,
+            slugify(issue.fields.summary.as_deref().unwrap_or(""))
+        );
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            &filename,
+            "text/markdown",
+            body.as_bytes(),
+            issue.fields.updated.map(|t| t.0),
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    Ok(stats)
+}
+
+/// 标题 → 文件名安全的片段。与 RSS 那条路同一个口径（非字母数字换成 -，截断）。
+fn slugify(title: &str) -> String {
+    let mut s: String = title
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .collect();
+    s.truncate(60);
+    s.trim_matches('-').to_string()
 }
 
 /// 自定义拉取器 —— Utopia Ingest Interface：

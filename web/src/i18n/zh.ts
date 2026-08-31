@@ -353,12 +353,21 @@ export const zh: Strings = {
       rss: "RSS 订阅",
       api: "API",
       custom: "自定义",
+      github_issues: "GitHub 工单",
+      jira_issues: "Jira 工单",
     },
     sourceKindHints: {
       folder:
         "一个普通文件夹。选中它，把文件直接上传（或拖）进去——不监听、不同步。",
       url: "抓取所列的网页；内容变化时更新同一篇文档。",
       rss: "订阅一个源；每条目成为一篇文档，日期取其发布时间。",
+      jira_issues:
+        "同步一个 Jira 项目的工单。**每张工单连同它的字段级变更史**成为一篇文档——" +
+        "状态、负责人、优先级何时从什么变成什么，都带着日期。一次调用取全，不逐张翻。",
+      github_issues:
+        "同步一个仓库的工单。**每张工单连同它的状态变更史**成为一篇文档——" +
+        "何时开出、何时关闭、标签与负责人怎么变的，都带着日期。未配令牌时" +
+        "每小时只有 60 次请求配额。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
       custom:
         "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Utopia 保持同步。",
@@ -401,6 +410,11 @@ export const zh: Strings = {
     sourceName: "名称",
     urlsField: "网页地址（每行一个）",
     feedUrl: "订阅地址",
+    repoField: "仓库（owner/name）",
+    jiraUrlField: "Jira 地址",
+    jiraProjectField: "项目 key",
+    tokenField: "GitHub 令牌（可选，不再显示）",
+    includePullRequests: "把 PR 也当工单收进来",
     interval: "同步计划",
     intervalManual: "仅手动",
     intervalEvery: (m: number) =>

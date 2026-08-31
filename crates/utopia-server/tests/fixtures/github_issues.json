@@ -1,0 +1,161 @@
+{
+ "note": "取自 deeplethe/utopia 的真实 GitHub 响应，字段已裁到我们声明的那些。events 走的是逐工单端点（/issues/{n}/events），它不带 issue 字段——这份夹具就是用来钉住那个形状的。",
+ "issues": [
+  {
+   "number": 18,
+   "title": "Deleting an agent conversation permanently removes all turns and events",
+   "state": "closed",
+   "body": "# Description\n\nDeleting an agent conversation immediately removes the conversation and all related turns and events from the database.\n\nThe deletion cannot be recovered, and no independent audit record is created to identify who deleted the conversation or when.\n\n# Steps to Reproduce\n\n1. Create an a",
+   "created_at": "2026-08-18T16:18:27Z",
+   "updated_at": "2026-08-20T22:31:47Z",
+   "closed_at": "2026-08-20T22:31:47Z",
+   "labels": [],
+   "assignees": [],
+   "user": {
+    "login": "Danmushu"
+   }
+  },
+  {
+   "number": 17,
+   "title": "Generic HTTP 409 error is shown when an extraction job is active",
+   "state": "closed",
+   "body": "# Description\n\nWhen a document parse, reparse, or extraction request is blocked by an active extraction job, the UI may display a generic HTTP 409 error without explaining the conflict.\n\n# Steps to Reproduce\n\n1. Start a TBox, ABox, or combined extraction.\n2. Confirm that the extraction job is `pendi",
+   "created_at": "2026-08-18T16:14:13Z",
+   "updated_at": "2026-08-20T22:31:47Z",
+   "closed_at": "2026-08-20T22:31:47Z",
+   "labels": [],
+   "assignees": [],
+   "user": {
+    "login": "Danmushu"
+   }
+  },
+  {
+   "number": 16,
+   "title": "Expand ABox entity resolution beyond Match and Create",
+   "state": "closed",
+   "body": "## Summary\n\nThe ABox entity resolution workflow currently allows reviewers to match a mention to a suggested candidate or create a new entity.\n\nIt does not support rejecting an invalid mention, explicitly deferring a decision, searching for an entity outside the candidate list, or merging entities t",
+   "created_at": "2026-08-18T16:07:01Z",
+   "updated_at": "2026-08-20T22:31:47Z",
+   "closed_at": "2026-08-20T22:31:47Z",
+   "labels": [],
+   "assignees": [],
+   "user": {
+    "login": "Danmushu"
+   }
+  },
+  {
+   "number": 15,
+   "title": "Re-parsing a document can create duplicate ABox entities",
+   "state": "closed",
+   "body": "## Summary\n\nRe-parsing a document replaces its chunks without reconciling the existing entity resolution records and RDF facts associated with those chunks.\n\nAfter reparse, a subsequent ABox extraction may no longer reuse the previous resolution decision. If the resolver selects `new`, another IRI i",
+   "created_at": "2026-08-18T16:01:49Z",
+   "updated_at": "2026-08-20T22:31:47Z",
+   "closed_at": "2026-08-20T22:31:47Z",
+   "labels": [],
+   "assignees": [],
+   "user": {
+    "login": "Danmushu"
+   }
+  }
+ ],
+ "comments": [
+  {
+   "issue_url": "https://api.github.com/repos/deeplethe/utopia/issues/18",
+   "user": {
+    "login": "WaylandYang"
+   },
+   "created_at": "2026-08-20T22:31:46Z",
+   "body": "Completed by #20 and merged into dev in commit 6007547."
+  },
+  {
+   "issue_url": "https://api.github.com/repos/deeplethe/utopia/issues/15",
+   "user": {
+    "login": "WaylandYang"
+   },
+   "created_at": "2026-08-20T22:31:46Z",
+   "body": "Completed by #20 and merged into dev in commit 6007547."
+  },
+  {
+   "issue_url": "https://api.github.com/repos/deeplethe/utopia/issues/17",
+   "user": {
+    "login": "WaylandYang"
+   },
+   "created_at": "2026-08-20T22:31:46Z",
+   "body": "Completed by #20 and merged into dev in commit 6007547."
+  },
+  {
+   "issue_url": "https://api.github.com/repos/deeplethe/utopia/issues/16",
+   "user": {
+    "login": "WaylandYang"
+   },
+   "created_at": "2026-08-20T22:31:46Z",
+   "body": "Completed by #20 and merged into dev in commit 6007547."
+  }
+ ],
+ "events_by_issue": {
+  "15": [
+   {
+    "event": "closed",
+    "created_at": "2026-08-20T22:31:47Z",
+    "actor": {
+     "login": "WaylandYang"
+    }
+   },
+   {
+    "event": "referenced",
+    "created_at": "2026-08-21T08:12:51Z",
+    "actor": {
+     "login": "Danmushu"
+    }
+   }
+  ],
+  "16": [
+   {
+    "event": "closed",
+    "created_at": "2026-08-20T22:31:47Z",
+    "actor": {
+     "login": "WaylandYang"
+    }
+   },
+   {
+    "event": "referenced",
+    "created_at": "2026-08-21T08:12:51Z",
+    "actor": {
+     "login": "Danmushu"
+    }
+   }
+  ],
+  "17": [
+   {
+    "event": "closed",
+    "created_at": "2026-08-20T22:31:47Z",
+    "actor": {
+     "login": "WaylandYang"
+    }
+   },
+   {
+    "event": "referenced",
+    "created_at": "2026-08-21T08:12:51Z",
+    "actor": {
+     "login": "Danmushu"
+    }
+   }
+  ],
+  "18": [
+   {
+    "event": "closed",
+    "created_at": "2026-08-20T22:31:47Z",
+    "actor": {
+     "login": "WaylandYang"
+    }
+   },
+   {
+    "event": "referenced",
+    "created_at": "2026-08-21T08:12:51Z",
+    "actor": {
+     "login": "Danmushu"
+    }
+   }
+  ]
+ }
+}
