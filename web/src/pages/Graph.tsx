@@ -1848,11 +1848,17 @@ function TimeScrubber({
         onMouseLeave={() => setTrackHover(false)}
         className="relative h-9 min-w-[150px] flex-1 overflow-hidden rounded-lg bg-white/[0.04]"
       >
+        {/* 演完由 **React** 卸载，**别自己 `remove()`**。
+            从前是 `onAnimationEnd={(e) => e.currentTarget.remove()}`——
+            把 React 管着的节点从 DOM 里抠走，它自己并不知道。下一次扫光时
+            key 变了，React 去移除"旧节点"，而那个节点已经不在父节点里，
+            removeChild 抛 NotFoundError，未捕获的错误让整棵树卸载重挂：
+            现象就是**连播两轮之后界面像刷新了一次** */}
         {sweep > 0 && (
           <span
             key={sweep}
             className="u-sweep"
-            onAnimationEnd={(e) => e.currentTarget.remove()}
+            onAnimationEnd={() => setSweep(0)}
           />
         )}
         {/* **间隙必须随密度收**：写死 2px 时，日单位下 216 根柱子有 215 个间隙
