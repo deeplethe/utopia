@@ -934,6 +934,9 @@ function ClassForm({
     existing?.parents ?? (parentId ? [parentId] : []),
   );
   const [description, setDescription] = useState(existing?.description ?? "");
+  // 互斥：声明「不可能同时是」。一致性检查据此报不可满足的类（0002）——
+  // 一个类继承了两个互斥的祖先，就永远不可能有实例，而它不报错，只是永远空着
+  const [disjoint, setDisjoint] = useState<string[]>(existing?.disjoint ?? []);
 
   // 从左栏点"+ 子类"进来时预填那个父。多父下它是第一个，也就是主父
   useEffect(() => setParents(parentId ? [parentId] : []), [parentId]);
@@ -946,6 +949,7 @@ function ClassForm({
             color,
             shape,
             parents,
+            disjoint,
             description,
           })
         : api.createEntityType(kbId, {
@@ -954,6 +958,7 @@ function ClassForm({
             color,
             shape,
             parents,
+            disjoint,
             description,
           }),
     onSuccess: (res) => {
@@ -1057,6 +1062,33 @@ function ClassForm({
         {parents.length > 1 && (
           <p className="mt-1 text-[11px] text-neutral-600">
             {S.ontology.primaryParentHint}
+          </p>
+        )}
+      </div>
+      {/* 互斥：**声明「不可能同时是」**。紧挨着父类，因为两者是同一件事的
+          两面——父类说「也是」，互斥说「不可能同时是」，而一致性检查正是
+          在这两者打架时报出「这个类永远不可能有实例」 */}
+      <div>
+        <label className={lbl}>{S.ontology.disjoint}</label>
+        <p className="text-[11px] leading-relaxed text-neutral-600 mb-1.5">
+          {S.ontology.disjointHint}
+        </p>
+        <MultiSearchSelect
+          values={disjoint}
+          options={parentOptions(allTypes, existing?.id)}
+          onToggle={(id) =>
+            setDisjoint((v) =>
+              v.includes(id) ? v.filter((x) => x !== id) : [...v, id],
+            )
+          }
+          placeholder={S.ontology.searchTypes}
+          emptyHint={S.ontology.noDisjoint}
+        />
+        {/* 跟自己的父类互斥 = 这个类永远不可能有实例。当场说，
+            比让人跑一遍一致性检查再发现要快 */}
+        {disjoint.some((d) => parents.includes(d)) && (
+          <p className="mt-1.5 text-[11px] text-[var(--u-danger)]">
+            {S.ontology.disjointWithParent}
           </p>
         )}
       </div>

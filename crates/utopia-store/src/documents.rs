@@ -1,6 +1,6 @@
 use pgvector::Vector;
 use sqlx::PgPool;
-use utopia_core::models::{ChunkView, Document};
+use utopia_core::models::{ChunkView, Document, DocumentPage};
 use utopia_core::{AppError, AppResult};
 use utopia_ingest::ChunkPiece;
 use uuid::Uuid;
@@ -52,6 +52,111 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Document>> {
         .fetch_all(pool)
         .await?;
     Ok(rows)
+}
+
+/// 文库一页，**带筛选与统计**。
+///
+/// 从前是 `SELECT * FROM documents WHERE kb_id = $1` 不带上限、前端客户端分页。
+/// 27 篇没事，两万篇会把整张表打进浏览器；而客户端筛选还有个更隐蔽的毛病——
+/// 它只筛得到已经拿下来的那些。
+///
+/// 统计单独算，而且**只按来源作用域算，不受名字/状态筛选影响**：
+/// 「这个来源里有几篇可抽」是那两个批量按钮的作用范围，跟你此刻在搜什么无关。
+#[allow(clippy::too_many_arguments)]
+pub async fn page(
+    pool: &PgPool,
+    kb_id: Uuid,
+    // None = 全部；Some(None) = 只看没有来源的；Some(Some(id)) = 某个来源
+    source: Option<Option<Uuid>>,
+    q: Option<&str>,
+    graph_status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> AppResult<DocumentPage> {
+    // 三个筛选都写成「参数为空就不生效」，一条 SQL 覆盖全部组合。
+    // `$2 = 'any'` 那一支是「不按来源筛」，`'none'` 是「只看没有来源的」——
+    // 用两个哨兵字符串而不是两个可空参数，因为 NULL 在这里有歧义：
+    // 它既可能是「不筛」，也可能是「筛出 source_id IS NULL 的」
+    const WHERE: &str = "WHERE kb_id = $1
+           AND ($2 = 'any'
+                OR ($2 = 'none' AND source_id IS NULL)
+                OR source_id::text = $2)
+           AND ($3::text IS NULL OR filename ILIKE '%' || $3 || '%')
+           AND ($4::text IS NULL OR graph_status = $4)";
+    let scope = match source {
+        None => "any".to_string(),
+        Some(None) => "none".to_string(),
+        Some(Some(id)) => id.to_string(),
+    };
+
+    let docs: Vec<Document> = sqlx::query_as(&format!(
+        "SELECT * FROM documents {WHERE} ORDER BY created_at DESC LIMIT $5 OFFSET $6"
+    ))
+    .bind(kb_id)
+    .bind(&scope)
+    .bind(q)
+    .bind(graph_status)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    let (total,): (i64,) = sqlx::query_as(&format!("SELECT count(*) FROM documents {WHERE}"))
+        .bind(kb_id)
+        .bind(&scope)
+        .bind(q)
+        .bind(graph_status)
+        .fetch_one(pool)
+        .await?;
+
+    // 统计只按来源作用域算：那两个批量按钮作用于整个来源，不是你搜出来的那几条
+    let stats: (i64, i64, i64) = sqlx::query_as(
+        "SELECT
+           count(*) FILTER (WHERE status = 'ready'),
+           count(*) FILTER (WHERE graph_status IN ('queued', 'extracting')),
+           count(*) FILTER (WHERE graph_status = 'failed')
+         FROM documents
+         WHERE kb_id = $1
+           AND ($2 = 'any'
+                OR ($2 = 'none' AND source_id IS NULL)
+                OR source_id::text = $2)",
+    )
+    .bind(kb_id)
+    .bind(&scope)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(DocumentPage {
+        docs,
+        total,
+        ready: stats.0,
+        extracting: stats.1,
+        failed: stats.2,
+    })
+}
+
+/// 这个来源（或整库）里抽取失败的文档 id。**一键重试要的就是这份名单**。
+pub async fn failed_ids(
+    pool: &PgPool,
+    kb_id: Uuid,
+    source: Option<Option<Uuid>>,
+) -> AppResult<Vec<Uuid>> {
+    let scope = match source {
+        None => "any".to_string(),
+        Some(None) => "none".to_string(),
+        Some(Some(id)) => id.to_string(),
+    };
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM documents
+          WHERE kb_id = $1 AND graph_status = 'failed'
+            AND ($2 = 'any'
+                 OR ($2 = 'none' AND source_id IS NULL)
+                 OR source_id::text = $2)",
+    )
+    .bind(kb_id)
+    .bind(&scope)
+    .fetch_all(pool)
+    .await?)
 }
 
 pub async fn get(pool: &PgPool, id: Uuid) -> AppResult<Document> {

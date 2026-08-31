@@ -584,6 +584,8 @@ export interface EntityTypeView {
   builtin: boolean;
   /** 全部父类（subClassOf 可以有多个） */
   parents: string[];
+  /** 与它互斥的类：**声明「不可能同时是」** */
+  disjoint: string[];
   /** 左栏画树时挂在哪一支下。不参与语义，只管展示 */
   primary_parent: string | null;
   description: string;
@@ -1012,7 +1014,41 @@ export const api = {
       { method: "POST" },
     ),
 
-  documents: (kbId: string) => request<Doc[]>(`/api/v1/kbs/${kbId}/documents`),
+  /** 文库一页。**服务端筛选与分页**——从前一次取回整库、前端切片，
+   *  而客户端筛选只筛得到已经拿下来的那些 */
+  documents: (
+    kbId: string,
+    opts: {
+      source?: string;
+      q?: string;
+      graph?: string;
+      limit: number;
+      offset: number;
+    },
+  ) => {
+    const p = new URLSearchParams({
+      limit: String(opts.limit),
+      offset: String(opts.offset),
+    });
+    if (opts.source) p.set("source", opts.source);
+    if (opts.q) p.set("q", opts.q);
+    if (opts.graph) p.set("graph", opts.graph);
+    return request<{
+      docs: Doc[];
+      total: number;
+      /** 下面三个**只按来源作用域算**，不受名字/状态筛选影响——
+       *  它们是批量按钮的作用范围 */
+      ready: number;
+      extracting: number;
+      failed: number;
+    }>(`/api/v1/kbs/${kbId}/documents?${p}`);
+  },
+  /** 一键重试这个作用域里全部抽取失败的文档 */
+  retryFailedDocs: (kbId: string, source?: string) =>
+    request<{ queued: number; found: number }>(
+      `/api/v1/kbs/${kbId}/documents/retry-failed${source ? `?source=${source}` : ""}`,
+      { method: "POST" },
+    ),
   /** 整库一次取回：行数按 (文档 × 原因 × 对象) 聚合后很小，避免逐行发请求 */
   extractionDrops: (kbId: string) =>
     request<{ drops: ExtractionDrop[] }>(

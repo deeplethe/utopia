@@ -294,6 +294,14 @@ export const en = {
     emptyPull: "No documents yet — they arrive when this source syncs.",
     filterPlaceholder: "Filter by name",
     filterNoMatch: "No documents match your filter.",
+    anyStatus: "Any extraction state",
+    statusFailed: "Failed",
+    statusDone: "Extracted",
+    statusQueued: "Queued",
+    statusExtracting: "Extracting",
+    statusNone: "Not extracted",
+    retryFailed: (n: number) => `Retry ${n} failed`,
+    retryQueued: (n: number) => `${n} queued for extraction`,
     colFile: "File",
     colStatus: "Status",
     colGraph: "Graph",
@@ -796,6 +804,12 @@ export const en = {
     shapeColor: "Shape & color",
     parent: "Parent class",
     noParent: "(top level)",
+    disjoint: "Cannot also be",
+    disjointHint:
+      "Classes nothing can belong to at the same time. A Person is not an Organisation. The consistency check uses this to find classes that can never have an instance.",
+    noDisjoint: "No class excluded",
+    disjointWithParent:
+      "This class inherits from a class it says it cannot be — nothing could ever satisfy it.",
     /* 多父时左栏只能画一处，说明画在哪一支下 */
     primaryParentHint: "Shown in the tree under the first one.",
     /* 类型签名。措辞要说清它是引导不是闸门——本体写错时模型仍可覆盖 */

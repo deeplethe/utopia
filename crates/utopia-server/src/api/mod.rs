@@ -133,6 +133,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
                 .post(documents_routes::upload)
                 .layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES)),
         )
+        // 一键重试：抽取失败往往是成批的（模型端点断了一阵，那段时间进来的全挂）
+        .route(
+            "/kbs/{id}/documents/retry-failed",
+            post(documents_routes::retry_failed),
+        )
         .route(
             "/kbs/{id}/extraction-drops",
             get(documents_routes::extraction_drops),

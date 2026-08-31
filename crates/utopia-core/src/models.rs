@@ -307,6 +307,9 @@ pub struct EntityTypeView {
     pub parents: Vec<Uuid>,
     /// 左栏画树时挂在哪一支下。不参与语义，只管展示
     pub primary_parent: Option<Uuid>,
+    /// 与这个类互斥的类：**声明「不可能同时是」**。一致性检查据此报出
+    /// 不可满足的类——一个类继承了两个互斥的祖先，就永远不可能有实例（0002）
+    pub disjoint: Vec<Uuid>,
     pub description: String,
     pub usage: i64,
 }
@@ -922,4 +925,18 @@ pub struct RelationAxioms {
     pub asymmetric: bool,
     /// 不存在 A→A
     pub irreflexive: bool,
+}
+
+/// 文库的一页，连同这一页之外的统计。
+///
+/// **统计不受名字/状态筛选影响**：`ready` / `extracting` / `failed` 说的是这个
+/// 来源里有多少，那是批量按钮的作用范围，跟你此刻在搜什么无关。
+#[derive(Debug, Clone, Serialize)]
+pub struct DocumentPage {
+    pub docs: Vec<Document>,
+    /// 命中筛选的总数（分页器用它）
+    pub total: i64,
+    pub ready: i64,
+    pub extracting: i64,
+    pub failed: i64,
 }

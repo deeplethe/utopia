@@ -86,6 +86,10 @@ pub struct EntityTypeReq {
     /// 界面上写明了这条，所以不额外给一个"选主父"的控件
     #[serde(default)]
     pub parents: Vec<Uuid>,
+    /// 与它互斥的类。**缺省 = 不动**——不管互斥的调用方（提案采纳、冷启动）
+    /// 不该因为一次建类就把已有的声明清空
+    #[serde(default)]
+    pub disjoint: Option<Vec<Uuid>>,
     /// 语义指引，注入抽取 prompt
     #[serde(default)]
     pub description: Option<String>,
@@ -115,6 +119,11 @@ pub async fn create_entity_type(
         req.description.as_deref().unwrap_or("").trim(),
     )
     .await?;
+    // 互斥缺省 = 不动：不管它的调用方（提案采纳、冷启动）不该因为建一个类
+    // 就把已有的声明清空
+    if let Some(d) = req.disjoint.as_deref() {
+        utopia_store::ontology::set_disjoint_for(&state.pool, kb_id, id, d).await?;
+    }
     // 审计只记不阻断
     let _ = utopia_store::audit::record(
         &state.pool,
@@ -147,6 +156,9 @@ pub async fn update_entity_type(
         req.description.as_deref().unwrap_or("").trim(),
     )
     .await?;
+    if let Some(d) = req.disjoint.as_deref() {
+        utopia_store::ontology::set_disjoint_for(&state.pool, kb_id, id, d).await?;
+    }
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),

@@ -16,6 +16,8 @@ pub async fn entity_type_views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Enti
                       WHERE p.child_id = t.id) AS parents,
                 (SELECT p.parent_id FROM entity_type_parents p
                   WHERE p.child_id = t.id AND p.is_primary) AS primary_parent,
+                ARRAY(SELECT d.b_id FROM entity_type_disjoint d
+                      WHERE d.kb_id = t.kb_id AND d.a_id = t.id) AS disjoint,
                 (SELECT count(*) FROM entities e
                  WHERE e.type_id = t.id AND e.merged_into IS NULL) AS usage
          FROM entity_types t WHERE t.kb_id = $1 ORDER BY lower(t.label)",
@@ -1423,6 +1425,48 @@ pub async fn set_disjoint_bulk(
     .bind(&b)
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+/// 把 `others` 设成这个类的**全部**互斥对象（不在其中的解除）。
+///
+/// 与 [`set_disjoint_bulk`] 的分工：那个是导入用的「只增不减」，这个是编辑用的
+/// 「这就是全部」。编辑必须能取消——否则界面上取消勾选没有任何效果，
+/// 而用户会以为自己改了。
+///
+/// 两个方向各写一行，与导入侧一致：查「A 与 B 互斥吗」因此不必关心从哪头问。
+pub async fn set_disjoint_for(
+    pool: &PgPool,
+    kb_id: Uuid,
+    class: Uuid,
+    others: &[Uuid],
+) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
+    // 先清掉这个类参与的全部互斥边——两个方向都要清，因为它两边都可能出现
+    sqlx::query(
+        "DELETE FROM entity_type_disjoint
+          WHERE kb_id = $1 AND (a_id = $2 OR b_id = $2)",
+    )
+    .bind(kb_id)
+    .bind(class)
+    .execute(&mut *tx)
+    .await?;
+    for other in others {
+        if *other == class {
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO entity_type_disjoint (kb_id, a_id, b_id)
+             VALUES ($1, $2, $3), ($1, $3, $2)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(kb_id)
+        .bind(class)
+        .bind(other)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 

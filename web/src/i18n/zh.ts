@@ -272,6 +272,14 @@ export const zh: Strings = {
     emptyPull: "还没有文档——这个来源同步时它们会出现。",
     filterPlaceholder: "按名称筛选",
     filterNoMatch: "没有文档匹配当前筛选。",
+    anyStatus: "全部抽取状态",
+    statusFailed: "失败",
+    statusDone: "已抽取",
+    statusQueued: "排队中",
+    statusExtracting: "抽取中",
+    statusNone: "未抽取",
+    retryFailed: (n: number) => `重试 ${n} 篇失败`,
+    retryQueued: (n: number) => `${n} 篇已排队`,
     colFile: "文件",
     colStatus: "状态",
     colGraph: "图谱",
@@ -732,6 +740,12 @@ export const zh: Strings = {
     shapeColor: "形状与颜色",
     parent: "父类",
     noParent: "（顶层）",
+    disjoint: "不可能同时是",
+    disjointHint:
+      "任何东西不可能同时属于的类。人不是组织。一致性检查据此找出永远不可能有实例的类。",
+    noDisjoint: "没有排除任何类",
+    disjointWithParent:
+      "这个类继承自一个它声明不可能是的类——没有任何东西能满足它。",
     primaryParentHint: "左栏的树里挂在第一个下面。",
     signature: "类型签名",
     signatureHint:

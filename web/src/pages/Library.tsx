@@ -16,7 +16,7 @@ import { api, type Doc, type ExtractionDrop, type SourceView } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
-import { Chip, type ChipTone, DangerConfirm, Loading, Pager, pageSlice } from "../ui";
+import { Chip, type ChipTone, DangerConfirm, Loading, Pager } from "../ui";
 import {
   KIND_ICON,
   SOURCE_ICONS,
@@ -326,6 +326,9 @@ export function Library() {
   const [showHistory, setShowHistory] = useState(false);
   const [page, setPage] = useState(0);
   const [filter, setFilter] = useState("");
+  // 按抽取状态筛。**空 = 不筛**——五篇失败混在二十七篇里，从前只能一页页看
+  const [graphFilter, setGraphFilter] = useState("");
+
 
   // 切换文件夹回到第一页、清空过滤、退出历史视图
   useEffect(() => {
@@ -338,9 +341,19 @@ export function Library() {
 
   // 状态变化经 SSE 事件流推送（useKbEvents 挂在 Shell），无需轮询
   const docs = useQuery({
-    queryKey: ["documents", kb?.id],
-    queryFn: () => api.documents(kb!.id),
+    // **服务端筛选与分页**：作用域、名字、抽取状态、页码都进 queryKey，
+    // 换任何一个都重新取一页。从前是一次取回整库、客户端切片
+    queryKey: ["documents", kb?.id, selection, filter, graphFilter, page],
+    queryFn: () =>
+      api.documents(kb!.id, {
+        source: selection === "all" ? undefined : selection === "uploads" ? "none" : selection,
+        q: filter.trim() || undefined,
+        graph: graphFilter || undefined,
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
+      }),
     enabled: !!kb,
+    placeholderData: (prev) => prev,
   });
   const sources = useQuery({
     queryKey: ["sources", kb?.id],
@@ -365,10 +378,30 @@ export function Library() {
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["documents", kb?.id] });
+    queryClient.invalidateQueries({ queryKey: ["docCount", kb?.id] });
     queryClient.invalidateQueries({ queryKey: ["sources", kb?.id] });
     // 重抽会重写这篇文档的丢弃信号，跟着文档一起失效
     queryClient.invalidateQueries({ queryKey: ["extraction-drops", kb?.id] });
   };
+
+  // 一键重试这个作用域里全部失败的。**逐篇入队在服务端做**——排队还带着
+  // 别的动作（解雇在跑的任务、清增量标记），绕过去会留下半截状态
+  const retryFailed = useMutation({
+    mutationFn: () =>
+      api.retryFailedDocs(
+        kb!.id,
+        selection === "all"
+          ? undefined
+          : selection === "uploads"
+            ? "none"
+            : selection,
+      ),
+    onSuccess: (r) => {
+      toast.success(S.library.retryQueued(r.queued));
+      invalidate();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
 
   const upload = useMutation({
     // 选中 folder 来源时，上传直接归入该文件夹
@@ -452,22 +485,20 @@ export function Library() {
 
   if (!kb) return <Loading>{S.nav.loading}</Loading>;
 
-  const allDocs = docs.data ?? [];
+  // 服务端已经切好了这一页：筛选、作用域、页码都在请求里
+  const pagedDocs = docs.data?.docs ?? [];
+  const totalDocs = docs.data?.total ?? 0;
+  // 整库可抽的篇数。**重建是库级动作**，不该显示当前来源的数字
+  const kbStats = useQuery({
+    queryKey: ["docCount", kb?.id],
+    queryFn: () => api.documents(kb!.id, { limit: 1, offset: 0 }),
+    enabled: !!kb,
+  });
+  const kbReady = kbStats.data?.ready ?? 0;
   const sourceList = sources.data?.sources ?? [];
-  const visibleDocs =
-    selection === "all"
-      ? allDocs
-      : selection === "uploads"
-        ? allDocs.filter((d) => !d.source_id)
-        : allDocs.filter((d) => d.source_id === selection);
   const selectedSource = sourceList.find((s) => s.id === selection);
-
+  const safePage = page;
   const query = filter.trim().toLowerCase();
-  const filteredDocs = query
-    ? visibleDocs.filter((d) => d.filename.toLowerCase().includes(query))
-    : visibleDocs;
-
-  const { rows: pagedDocs, safe: safePage } = pageSlice(filteredDocs, page, PAGE_SIZE);
 
   return (
     <div className="h-full flex">
@@ -518,6 +549,36 @@ export function Library() {
                   </button>
                 )}
               </div>
+              {/* 按抽取状态筛。**选项写死成那五个**，不按库里实际有的填——
+                  它是一组固定的管道状态，而「这个库现在没有失败的」正是用户
+                  想通过筛一下确认的事 */}
+              <select
+                className="input-dark px-2 py-1.5 text-[13px] shrink-0"
+                value={graphFilter}
+                onChange={(e) => {
+                  setGraphFilter(e.target.value);
+                  setPage(0);
+                }}
+              >
+                <option value="">{S.library.anyStatus}</option>
+                <option value="failed">{S.library.statusFailed}</option>
+                <option value="done">{S.library.statusDone}</option>
+                <option value="queued">{S.library.statusQueued}</option>
+                <option value="extracting">{S.library.statusExtracting}</option>
+                <option value="none">{S.library.statusNone}</option>
+              </select>
+              {/* 一键重试。**只在真有失败时出现**——没有失败的库不该看到一个
+                  点了什么都不会发生的按钮。数字写在按钮上，点之前就知道会动几篇 */}
+              {(docs.data?.failed ?? 0) > 0 && canUpload && (
+                <button
+                  onClick={() => retryFailed.mutate()}
+                  disabled={retryFailed.isPending}
+                  className="u-btn u-btn-ghost px-3 py-1.5 text-xs flex items-center gap-1.5 shrink-0"
+                >
+                  <RefreshCw size={12} />
+                  {S.library.retryFailed(docs.data!.failed)}
+                </button>
+              )}
               {/* 全库重建：清算语义，仅 KB admin；放在 All documents 视图 */}
               {selection === "all" && canRebuild && (
                 <button
@@ -563,13 +624,12 @@ export function Library() {
             />
           )}
 
-          {/* 抽取进度：当前视图内聚合 graph_status，SSE 推动实时走条 */}
+          {/* 抽取进度。**数来自服务端**，按来源作用域算——从前是数当前页里的，
+              翻一页进度条就跳 */}
           {(() => {
-            const pending = visibleDocs.filter((d) =>
-              ["queued", "extracting"].includes(d.graph_status),
-            ).length;
+            const pending = docs.data?.extracting ?? 0;
             if (pending === 0) return null;
-            const total = visibleDocs.filter((d) => d.graph_status !== "none").length;
+            const total = (docs.data?.ready ?? 0) + pending;
             const done = total - pending;
             return (
               <div className="mb-3 glass rounded-xl px-4 py-2.5">
@@ -603,7 +663,7 @@ export function Library() {
           ) : (
           <>
           <div className={`glass rounded-2xl glass-hover ${dragging ? "u-highlight" : ""}`}>
-            {filteredDocs.length ? (
+            {pagedDocs.length ? (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-neutral-500 border-b border-white/10">
@@ -640,7 +700,7 @@ export function Library() {
                   ))}
                 </tbody>
               </table>
-            ) : query && visibleDocs.length ? (
+            ) : query || graphFilter ? (
               <div className="py-20 text-center text-sm text-neutral-500">
                 {S.library.filterNoMatch}
               </div>
@@ -659,7 +719,7 @@ export function Library() {
           </div>
 
           <Pager
-            total={filteredDocs.length}
+            total={totalDocs}
             pageSize={PAGE_SIZE}
             page={safePage}
             onPage={setPage}
@@ -718,7 +778,7 @@ export function Library() {
         <DangerConfirm
           title={S.library.reExtractTitle}
           hint={S.library.reExtractHint(
-            allDocs.filter((d) => d.source_id === selectedSource.id && d.status === "ready").length,
+            docs.data?.ready ?? 0,
             selectedSource.name,
           )}
           confirmLabel={S.library.reExtractConfirm}
@@ -748,7 +808,7 @@ export function Library() {
         <DangerConfirm
           title={S.library.rebuildTitle}
           hint={S.library.rebuildHint(
-            allDocs.filter((d) => d.status === "ready").length,
+            kbReady,
             kb.name,
           )}
           requireText={kb.name}

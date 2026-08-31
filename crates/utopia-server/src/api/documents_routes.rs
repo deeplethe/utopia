@@ -107,14 +107,88 @@ pub async fn upload(
     Ok(Json(json!({ "created": created, "skipped": skipped })))
 }
 
+#[derive(serde::Deserialize)]
+pub struct DocsQuery {
+    /// 来源作用域：缺省 = 全部；`none` = 没有来源的；否则一个来源 id
+    #[serde(default)]
+    pub source: Option<String>,
+    /// 文件名包含
+    #[serde(default)]
+    pub q: Option<String>,
+    /// 抽取状态：none | queued | extracting | done | failed
+    #[serde(default)]
+    pub graph: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+    #[serde(default)]
+    pub offset: Option<i64>,
+}
+
+/// 文库一页。
+///
+/// **改成服务端筛选与分页**：从前一次取回整库、前端切片。27 篇没事，两万篇会把
+/// 整张表打进浏览器；而客户端筛选还有个更隐蔽的毛病——它只筛得到已经拿下来的那些。
 pub async fn list(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
-) -> ApiResult<Json<Vec<Document>>> {
+    Query(q): Query<DocsQuery>,
+) -> ApiResult<Json<utopia_core::models::DocumentPage>> {
     utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
-    let docs = utopia_store::documents::list(&state.pool, kb_id).await?;
-    Ok(Json(docs))
+    let page = utopia_store::documents::page(
+        &state.pool,
+        kb_id,
+        parse_scope(q.source.as_deref()),
+        q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        q.graph.as_deref().filter(|s| !s.is_empty()),
+        q.limit.unwrap_or(15).clamp(1, 200),
+        q.offset.unwrap_or(0).max(0),
+    )
+    .await?;
+    Ok(Json(page))
+}
+
+/// `None` = 全部，`Some(None)` = 没有来源的，`Some(Some(id))` = 某个来源。
+///
+/// 认不出的字符串当成「全部」而不是报错：这个参数来自界面上的一次点击，
+/// 而一次点击不该把整页变成一条错误。
+fn parse_scope(raw: Option<&str>) -> Option<Option<Uuid>> {
+    match raw {
+        None | Some("") => None,
+        Some("none") => Some(None),
+        Some(s) => s.parse().ok().map(Some),
+    }
+}
+
+/// 一键重试这个作用域里全部抽取失败的文档。
+///
+/// **存在的理由是一条条点太慢**：一个来源里五篇失败就是点五次，而失败往往是
+/// 成批的（模型端点断了一阵，那段时间进来的全挂）。
+pub async fn retry_failed(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Query(q): Query<DocsQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Editor).await?;
+    let ids =
+        utopia_store::documents::failed_ids(&state.pool, kb_id, parse_scope(q.source.as_deref()))
+            .await?;
+    // 逐个入队而不是一条 SQL 批量改状态：排队本身有别的动作（解雇在跑的任务、
+    // 清增量标记），那些在 `queue_extraction_one` 里，绕过它会留下半截状态
+    let mut queued = 0usize;
+    for id in &ids {
+        if utopia_store::documents::queue_extraction_one(&state.pool, *id)
+            .await
+            .is_ok()
+        {
+            queued += 1;
+        }
+    }
+    if queued > 0 {
+        state.emit_document(kb_id, ids[0]);
+    }
+    Ok(Json(json!({ "queued": queued, "found": ids.len() })))
 }
 
 /// 文档详情 + 全部分块（文档查看器用）。

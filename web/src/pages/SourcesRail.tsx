@@ -126,18 +126,23 @@ export function SourcesRail({
   /** 缺省时隐藏 "+"（如文档查看页） */
   onAdd?: () => void;
 }) {
+  // 左栏只要两个数：整库多少篇、没有来源的多少篇。**各取一页零条**——
+  // 统计随响应回来，不必把文档拉下来数
   const docs = useQuery({
-    queryKey: ["documents", kbId],
-    queryFn: () => api.documents(kbId),
+    queryKey: ["docCount", kbId],
+    queryFn: () => api.documents(kbId, { limit: 1, offset: 0 }),
+  });
+  const uploads = useQuery({
+    queryKey: ["docCount", kbId, "uploads"],
+    queryFn: () => api.documents(kbId, { source: "none", limit: 1, offset: 0 }),
   });
   const sources = useQuery({
     queryKey: ["sources", kbId],
     queryFn: () => api.sources(kbId),
   });
 
-  const allDocs = docs.data ?? [];
   const sourceList = sources.data?.sources ?? [];
-  const uploadsCount = allDocs.filter((d) => !d.source_id).length;
+  const uploadsCount = uploads.data?.total ?? 0;
 
   return (
     <aside className={`${RAIL_CLS} flex flex-col`}>
@@ -148,7 +153,7 @@ export function SourcesRail({
           onClick={() => onSelect("all")}
           icon={<LibraryIcon size={14} />}
           label={S.library.allDocs}
-          count={allDocs.length}
+          count={docs.data?.total ?? 0}
         />
       </div>
       <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
