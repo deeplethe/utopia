@@ -103,15 +103,19 @@ pub async fn mounted(
     Ok(Json(json!({ "data_sources": mounted })))
 }
 
-/// 库 admin 从系统已注册的源里挑选挂载（列表给 name/summary，不含凭据）。
+/// 库 admin 能挂哪些（列表给 name/summary，不含凭据）。
+///
+/// **只列授权给本工作区的（0014）。** 从前这里返回 `datasources::list`——
+/// 全部署每一个源，于是任何库的管理员都看得见并挂得上任意生产库。
 pub async fn mountable(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Admin).await?;
-    let all = utopia_store::datasources::list(&state.pool).await?;
-    Ok(Json(json!({ "data_sources": all })))
+    let kb = require_kb(&state, &user, kb_id, Role::Admin).await?;
+    let granted =
+        utopia_store::datasources::granted_to_workspace(&state.pool, kb.workspace_id).await?;
+    Ok(Json(json!({ "data_sources": granted })))
 }
 
 pub async fn mount(
@@ -120,12 +124,44 @@ pub async fn mount(
     Path((kb_id, ds_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Admin).await?;
+    // **列表过滤不是守卫。** 那只挡「看得见」，而这个端点是照着 id 调的——
+    // 谁都能自己拼一个 uuid 打过来。授权在这里再查一次
+    if !utopia_store::datasources::is_granted(&state.pool, kb_id, ds_id).await? {
+        return Err(AppError::invalid(
+            "source_not_granted",
+            "This data source is not available to this workspace",
+        )
+        .into());
+    }
     utopia_store::datasources::mount(&state.pool, kb_id, ds_id).await?;
     // 挂载即摄取 schema：Chat 写 SQL 前能检索到表结构
-    let synced = sync_schema_doc(&state, kb_id, ds_id)
+    //
+    // **这一步失败不能回报成挂载失败。** 上面那行已经写进 kb_data_sources 了，
+    // 源是真挂着的；从前这里 `?` 出去回 500，人以为没挂上，实际挂上了——
+    // 而问数看不见它有哪些表。改成：照实说挂载成了，schema 没成，并且
+    // 报进告警中心，因为那之后就是一个静默的缺失状态（0009）
+    match sync_schema_doc(&state, kb_id, ds_id).await {
+        Ok(synced) => Ok(Json(json!({ "ok": true, "schema_tables": synced }))),
+        Err(e) => {
+            let name = source_name(&state, ds_id).await;
+            crate::alerting::observe_schema_sync_failure(&state, kb_id, ds_id, &name, &e).await;
+            Ok(Json(json!({
+                "ok": true,
+                "schema_tables": 0,
+                "schema_error": e.to_string(),
+            })))
+        }
+    }
+}
+
+/// 告警要留住名字：源被删之后 `subject_id` 就解析不出名字了。查不到时给占位符
+/// 而不是让告警本身失败——**报警路径上的失败不该淹掉它要报的那件事**。
+async fn source_name(state: &AppState, ds_id: Uuid) -> String {
+    utopia_store::datasources::list(&state.pool)
         .await
-        .map_err(AppError::Other)?;
-    Ok(Json(json!({ "ok": true, "schema_tables": synced })))
+        .ok()
+        .and_then(|all| all.into_iter().find(|d| d.id == ds_id).map(|d| d.name))
+        .unwrap_or_else(|| ds_id.to_string())
 }
 
 pub async fn unmount(
@@ -138,16 +174,25 @@ pub async fn unmount(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// 手动刷新结构。
+///
+/// **这里照旧把错误回给调用方**——点按钮的人正看着，而且什么都没半途发生。
+/// 但同样报一条告警：留下的后果与挂载失败时一模一样（源挂着、表结构是旧的
+/// 或空的），而点按钮的人未必是需要知道这件事的人。
 pub async fn sync_schema(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path((kb_id, ds_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Admin).await?;
-    let synced = sync_schema_doc(&state, kb_id, ds_id)
-        .await
-        .map_err(AppError::Other)?;
-    Ok(Json(json!({ "ok": true, "schema_tables": synced })))
+    match sync_schema_doc(&state, kb_id, ds_id).await {
+        Ok(synced) => Ok(Json(json!({ "ok": true, "schema_tables": synced }))),
+        Err(e) => {
+            let name = source_name(&state, ds_id).await;
+            crate::alerting::observe_schema_sync_failure(&state, kb_id, ds_id, &name, &e).await;
+            Err(AppError::Other(e).into())
+        }
+    }
 }
 
 /// Agentic 探索：后台任务读挂载源 schema，提议 指标/维度→字段 映射（低置信入 Review）。
@@ -246,4 +291,71 @@ async fn sync_schema_doc(state: &AppState, kb_id: Uuid, ds_id: Uuid) -> anyhow::
     .await?;
     state.emit_source(kb_id);
     Ok(tables)
+}
+
+// ---------------------------------------------------------------------------
+// 系统层：授权（0014）
+//
+// 授权与挂载是两层，各有各的主人：
+//   授权 = 系统管理员说「这个源可以给哪些工作区用」  ← 这里
+//   挂载 = KB 管理员说「我这个库挂哪几个」          ← 上面那组
+// 两层都是多对多。挂载只能在授权过的集合里挑。
+// ---------------------------------------------------------------------------
+
+/// 这个源授权给了哪些工作区。
+pub async fn grants(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    let rows = utopia_store::datasources::grants_for_source(&state.pool, id).await?;
+    let workspaces: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(id, name)| json!({ "id": id, "name": name }))
+        .collect();
+    Ok(Json(json!({ "workspaces": workspaces })))
+}
+
+pub async fn grant(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((id, workspace_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    utopia_store::datasources::grant(&state.pool, id, workspace_id, user.id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "data_source.granted",
+        "data_source",
+        Some(id),
+        json!({ "workspace_id": workspace_id }),
+    )
+    .await;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 收回授权。**连同该工作区里已挂上的一起卸掉**——只删授权行的话，
+/// 问数读的还是 `kb_data_sources`，撤销就不生效。返回卸掉了几个，
+/// 好让界面说得出「顺带卸了 3 个库」而不是悄悄断人家的连接。
+pub async fn revoke(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((id, workspace_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    let unmounted = utopia_store::datasources::revoke(&state.pool, id, workspace_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        "data_source.revoked",
+        "data_source",
+        Some(id),
+        json!({ "workspace_id": workspace_id, "unmounted": unmounted }),
+    )
+    .await;
+    Ok(Json(json!({ "ok": true, "unmounted": unmounted })))
 }

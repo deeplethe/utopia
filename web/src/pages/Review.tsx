@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
+import { ArrowUpRight } from "lucide-react";
 import {
   api,
   type AxiomViolation,
   type ReviewQueue,
   type OntologyDefect,
-  type ConceptMapping,
   type ConflictItem,
   type FactReviewItem,
   type MergeLog,
@@ -55,7 +56,8 @@ function SideCard({ side }: { side: ReviewSide }) {
         )}
       </div>
       <div className="text-xs text-neutral-500 mb-2">
-        {side.type_label ?? S.graph.untyped} · {S.review.factsCount(side.degree)}
+        {side.type_label ?? S.graph.untyped} ·{" "}
+        {S.review.factsCount(side.degree)}
       </div>
       {side.top_facts.length > 0 ? (
         <ul className="space-y-1">
@@ -145,7 +147,13 @@ function FactRow({
         </span>
         <span className="text-xs text-neutral-500">
           —{" "}
-          <span className={fact.predicate_label === null ? "italic text-neutral-600" : undefined}>
+          <span
+            className={
+              fact.predicate_label === null
+                ? "italic text-neutral-600"
+                : undefined
+            }
+          >
             {fact.predicate_label ?? S.graph.unknownPredicate}
           </span>{" "}
           →
@@ -299,7 +307,13 @@ function UnconfirmedRow({
         </span>
         <span className="text-xs text-neutral-500">
           —{" "}
-          <span className={fact.predicate_label === null ? "italic text-neutral-600" : undefined}>
+          <span
+            className={
+              fact.predicate_label === null
+                ? "italic text-neutral-600"
+                : undefined
+            }
+          >
             {fact.predicate_label ?? S.graph.unknownPredicate}
           </span>{" "}
           →
@@ -441,8 +455,7 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
   );
 }
 
-
-/** 一条待表态的语义层映射（0011）。
+/** 一条待表态的数据映射口径（0011）。
  *
  * 展示的重点是**「这个数怎么算」**——SQL / 表达式 / 表名按这个优先级取一个，
  * 因为人要判断的正是它对不对。概念名与源是身份，unit 是答里必须带的量纲。 */
@@ -578,53 +591,6 @@ function ViolationRow({
   );
 }
 
-function MappingRow({
-  mapping: m,
-  busy,
-  onDecide,
-}: {
-  mapping: ConceptMapping;
-  busy: boolean;
-  onDecide: (status: "confirmed" | "rejected") => void;
-}) {
-  const how = m.sql ?? m.expr ?? m.table_name ?? "—";
-  return (
-    <div className="glass rounded-xl p-3">
-      <div className="flex items-baseline gap-2 flex-wrap">
-        <span className="text-sm text-neutral-200">{m.concept_name}</span>
-        <span className="text-[11px] text-neutral-500">{m.source}</span>
-        {m.unit && (
-          <span className="text-[11px] text-neutral-500">[{m.unit}]</span>
-        )}
-        {m.derived && (
-          <span className="text-[11px] text-[var(--u-warn)]">
-            {S.review.mappingDerived}
-          </span>
-        )}
-      </div>
-      <div className="mt-1 u-num text-xs text-neutral-400 break-all">{how}</div>
-      {m.summary && (
-        <p className="mt-1 text-xs text-neutral-500">{m.summary}</p>
-      )}
-      <div className="mt-2 flex gap-1.5">
-        <button
-          className="u-btn text-xs"
-          disabled={busy}
-          onClick={() => onDecide("rejected")}
-        >
-          {S.review.reject}
-        </button>
-        <button
-          className="u-btn u-btn-primary text-xs"
-          disabled={busy}
-          onClick={() => onDecide("confirmed")}
-        >
-          {S.review.confirm}
-        </button>
-      </div>
-    </div>
-  );
-}
 /* ---------- 页面：左栏分类 + 单类内容区 ---------- */
 
 type Sel =
@@ -632,9 +598,6 @@ type Sel =
   | "conflicts"
   | "unconfirmed"
   | "lowconf"
-  // 语义层的待表态映射（0011）。从前它借「低置信事实」那一档露面——
-  // 靠 0.6 的置信度混进去,而它根本不是一条关于世界的断言
-  | "mappings"
   // 公理违规（0002 R0）。**与 conflicts 分开**：那一档问「哪条对」，
   // 这一档还可能答「公理写错了」——出路不同
   | "violations"
@@ -649,7 +612,6 @@ const QUEUE_FETCHED: ReviewQueue[] = [
   "conflicts",
   "unconfirmed",
   "lowconf",
-  "mappings",
   "violations",
   "defects",
   "merges",
@@ -660,7 +622,6 @@ const QUEUE_ORDER: Sel[] = [
   "conflicts",
   "unconfirmed",
   "lowconf",
-  "mappings",
   "violations",
   "defects",
 ];
@@ -669,7 +630,6 @@ const PAGE_SIZE: Record<Sel, number> = {
   conflicts: CONFLICT_PAGE,
   unconfirmed: FACT_PAGE,
   lowconf: FACT_PAGE,
-  mappings: FACT_PAGE,
   violations: FACT_PAGE,
   defects: FACT_PAGE,
   merges: MERGE_PAGE,
@@ -689,11 +649,14 @@ function RailItem({
   label,
   count,
   onClick,
+  external,
 }: {
   active: boolean;
   label: string;
   count: number | null;
   onClick: () => void;
+  /** 这一档不在本页办——加个去向记号，免得点下去以为页面没反应 */
+  external?: boolean;
 }) {
   return (
     <button
@@ -706,6 +669,7 @@ function RailItem({
       )}
     >
       <span className="truncate">{label}</span>
+      {external && <ArrowUpRight size={11} className="shrink-0 opacity-50" />}
       {count !== null && (
         <span
           className={cn(
@@ -723,6 +687,7 @@ function RailItem({
 export function Review() {
   const { kb } = useKb();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [sel, setSel] = useState<Sel | null>(null);
   const [page, setPage] = useState(0);
 
@@ -738,7 +703,13 @@ export function Review() {
     : "duplicates";
   const review = useQuery({
     queryKey: ["review", kb?.id, queueSel, page],
-    queryFn: () => api.review(kb!.id, queueSel, PAGE_SIZE[queueSel], page * PAGE_SIZE[queueSel]),
+    queryFn: () =>
+      api.review(
+        kb!.id,
+        queueSel,
+        PAGE_SIZE[queueSel as Sel],
+        page * PAGE_SIZE[queueSel as Sel],
+      ),
     enabled: !!kb,
     // 翻页时别把上一页闪成空白——计数与骨架都还在，只有条目在换
     placeholderData: (prev) => prev,
@@ -772,16 +743,6 @@ export function Review() {
       action === "confirm"
         ? api.confirmFact(kb!.id, id)
         : api.rejectFact(kb!.id, id),
-    onSettled: invalidate,
-  });
-  const mappingAction = useMutation({
-    mutationFn: ({
-      id,
-      status,
-    }: {
-      id: string;
-      status: "confirmed" | "rejected";
-    }) => api.decideMapping(kb!.id, id, status),
     onSettled: invalidate,
   });
   const defectAction = useMutation({
@@ -836,7 +797,9 @@ export function Review() {
   // **徽标读服务端的 COUNT，不读列表长度。** 这是从前那个「库里 164、界面写
   // 100」的根源：数组长度反映的是一页多少条，不是库里有多少条。
   const c = review.data?.counts;
-  const counts: Record<Sel, number> = {
+  // mappings 不是本页的一档（审批在「数据映射」页），但计数照收：
+  // 收件箱该说「有几条等你」
+  const counts: Record<Sel | "mappings", number> = {
     duplicates: c?.duplicates ?? 0,
     conflicts: c?.conflicts ?? 0,
     unconfirmed: c?.unconfirmed ?? 0,
@@ -853,7 +816,6 @@ export function Review() {
   const asDuplicates = () => rows as ReviewItem[];
   const asFacts = () => rows as FactReviewItem[];
   const asConflicts = () => rows as ConflictItem[];
-  const asMappings = () => rows as ConceptMapping[];
   const asViolations = () => rows as AxiomViolation[];
   const asDefects = () => rows as OntologyDefect[];
   const asMerges = () => rows as MergeLog[];
@@ -885,7 +847,6 @@ export function Review() {
       title: S.review.lowConfidence,
       hint: S.review.lowConfidenceHint,
     },
-    mappings: { title: S.review.mappings, hint: S.review.mappingsHint },
     violations: {
       title: S.review.violations,
       hint: S.review.violationsHint,
@@ -925,11 +886,15 @@ export function Review() {
             count={counts.lowconf}
             onClick={() => select("lowconf")}
           />
+          {/* 口径审批搬去了「数据映射」页：判断一条口径对不对要看得见表结构，
+              而那在那一页。**计数留在这里**——收件箱该说「有几条等你」，
+              但活要在有上下文的地方干 */}
           <RailItem
-            active={active === "mappings"}
+            active={false}
             label={S.review.railMappings}
             count={counts.mappings}
-            onClick={() => select("mappings")}
+            onClick={() => navigate({ to: "/mappings" })}
+            external
           />
           <RailItem
             active={active === "violations"}
@@ -989,10 +954,10 @@ export function Review() {
                 active !== "violations" &&
                 active !== "defects" &&
                 counts[active] === 0 && (
-                <div className="glass rounded-xl p-10 text-center text-sm text-neutral-500">
-                  {queueEmpty ? S.review.empty : S.review.categoryEmpty}
-                </div>
-              )}
+                  <div className="glass rounded-xl p-10 text-center text-sm text-neutral-500">
+                    {queueEmpty ? S.review.empty : S.review.categoryEmpty}
+                  </div>
+                )}
 
               {active === "duplicates" && counts.duplicates > 0 && (
                 <div className="space-y-3">
@@ -1013,46 +978,42 @@ export function Review() {
 
               {active === "conflicts" && counts.conflicts > 0 && (
                 <div className="space-y-3">
-                  {asConflicts().map(
-                    (c) => (
-                      <ConflictRow
-                        key={c.id}
-                        conflict={c}
-                        busy={
-                          conflictAction.isPending &&
-                          conflictAction.variables?.id === c.id
-                        }
-                        onResolve={(action, closeAt) =>
-                          conflictAction.mutate({ id: c.id, action, closeAt })
-                        }
-                      />
-                    ),
-                  )}
+                  {asConflicts().map((c) => (
+                    <ConflictRow
+                      key={c.id}
+                      conflict={c}
+                      busy={
+                        conflictAction.isPending &&
+                        conflictAction.variables?.id === c.id
+                      }
+                      onResolve={(action, closeAt) =>
+                        conflictAction.mutate({ id: c.id, action, closeAt })
+                      }
+                    />
+                  ))}
                 </div>
               )}
 
               {active === "unconfirmed" && counts.unconfirmed > 0 && (
                 <div className="space-y-3">
-                  {asFacts().map(
-                    (fact) => (
-                      <UnconfirmedRow
-                        key={fact.id}
-                        fact={fact}
-                        busy={
-                          (factAction.isPending &&
-                            factAction.variables?.id === fact.id) ||
-                          (closeFactAction.isPending &&
-                            closeFactAction.variables?.id === fact.id)
-                        }
-                        onReject={() =>
-                          factAction.mutate({ id: fact.id, action: "reject" })
-                        }
-                        onClose={(validTo) =>
-                          closeFactAction.mutate({ id: fact.id, validTo })
-                        }
-                      />
-                    ),
-                  )}
+                  {asFacts().map((fact) => (
+                    <UnconfirmedRow
+                      key={fact.id}
+                      fact={fact}
+                      busy={
+                        (factAction.isPending &&
+                          factAction.variables?.id === fact.id) ||
+                        (closeFactAction.isPending &&
+                          closeFactAction.variables?.id === fact.id)
+                      }
+                      onReject={() =>
+                        factAction.mutate({ id: fact.id, action: "reject" })
+                      }
+                      onClose={(validTo) =>
+                        closeFactAction.mutate({ id: fact.id, validTo })
+                      }
+                    />
+                  ))}
                 </div>
               )}
 
@@ -1077,26 +1038,6 @@ export function Review() {
                 </div>
               )}
 
-              {active === "mappings" && counts.mappings > 0 && (
-                <div className="space-y-3">
-                  {asMappings().map(
-                    (m) => (
-                      <MappingRow
-                        key={m.id}
-                        mapping={m}
-                        busy={
-                          mappingAction.isPending &&
-                          mappingAction.variables?.id === m.id
-                        }
-                        onDecide={(status) =>
-                          mappingAction.mutate({ id: m.id, status })
-                        }
-                      />
-                    ),
-                  )}
-                </div>
-              )}
-
               {active === "defects" && (
                 <div className="space-y-3">
                   {counts.defects === 0 && (
@@ -1104,21 +1045,19 @@ export function Review() {
                       {S.review.categoryEmpty}
                     </div>
                   )}
-                  {asDefects().map(
-                    (d) => (
-                      <DefectRow
-                        key={d.id}
-                        defect={d}
-                        busy={
-                          defectAction.isPending &&
-                          defectAction.variables?.id === d.id
-                        }
-                        onDecide={(resolution) =>
-                          defectAction.mutate({ id: d.id, resolution })
-                        }
-                      />
-                    ),
-                  )}
+                  {asDefects().map((d) => (
+                    <DefectRow
+                      key={d.id}
+                      defect={d}
+                      busy={
+                        defectAction.isPending &&
+                        defectAction.variables?.id === d.id
+                      }
+                      onDecide={(resolution) =>
+                        defectAction.mutate({ id: d.id, resolution })
+                      }
+                    />
+                  ))}
                 </div>
               )}
 
@@ -1156,21 +1095,19 @@ export function Review() {
                       {S.review.checkNeverRun}
                     </div>
                   )}
-                  {asViolations().map(
-                    (v) => (
-                      <ViolationRow
-                        key={v.id}
-                        violation={v}
-                        busy={
-                          violationAction.isPending &&
-                          violationAction.variables?.id === v.id
-                        }
-                        onDecide={(resolution) =>
-                          violationAction.mutate({ id: v.id, resolution })
-                        }
-                      />
-                    ),
-                  )}
+                  {asViolations().map((v) => (
+                    <ViolationRow
+                      key={v.id}
+                      violation={v}
+                      busy={
+                        violationAction.isPending &&
+                        violationAction.variables?.id === v.id
+                      }
+                      onDecide={(resolution) =>
+                        violationAction.mutate({ id: v.id, resolution })
+                      }
+                    />
+                  ))}
                 </div>
               )}
 

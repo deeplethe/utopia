@@ -800,6 +800,21 @@ pub struct ProposedAttribute {
     pub domain_keys: Vec<String>,
 }
 
+/// 一条口径改动之前的样子。
+///
+/// **存整版快照而不是差异**（0006）：读的时候要回答的是「当时是什么」，
+/// 而差异得从头重放才答得出来。`before` 是改动前那一行的 `to_jsonb`，
+/// 去掉了 id 与 kb_id。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct MappingRevision {
+    pub id: Uuid,
+    pub before: serde_json::Value,
+    /// 改的人。**裸外键 + 用户软删除**，所以归因不会因为人离职而丢；
+    /// 真被硬删过才会是 NULL
+    pub changed_by_name: Option<String>,
+    pub changed_at: DateTime<Utc>,
+}
+
 /// 语义层的一条映射：业务概念 → 数据资产定义（见 `docs/decisions/0011`）。
 ///
 /// **字段是列，不是 JSON 里的键。** 从前它是一条 `mapped_to` 事实，

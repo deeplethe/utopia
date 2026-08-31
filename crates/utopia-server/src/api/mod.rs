@@ -7,6 +7,7 @@ mod documents_routes;
 mod events_routes;
 mod graph_routes;
 mod kbs;
+mod mapping_routes;
 mod members_routes;
 pub(crate) mod ontology_routes;
 mod review_routes;
@@ -109,6 +110,23 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route(
             "/admin/data-sources/{id}/test",
             post(datasource_routes::test),
+        )
+        .route(
+            "/admin/data-sources/{id}/grants",
+            get(datasource_routes::grants),
+        )
+        .route(
+            "/admin/data-sources/{id}/grants/{workspace_id}",
+            axum::routing::put(datasource_routes::grant).delete(datasource_routes::revoke),
+        )
+        .route("/kbs/{id}/mappings", get(mapping_routes::list))
+        .route(
+            "/kbs/{id}/mappings/{mapping_id}",
+            axum::routing::patch(mapping_routes::revise),
+        )
+        .route(
+            "/kbs/{id}/mappings/{mapping_id}/revisions",
+            get(mapping_routes::revisions),
         )
         .route("/kbs/{id}/data-sources", get(datasource_routes::mounted))
         .route(

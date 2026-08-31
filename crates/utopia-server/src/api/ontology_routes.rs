@@ -113,7 +113,10 @@ pub async fn create_entity_type(
         kb_id,
         key,
         req.label.trim(),
-        req.color.as_deref().unwrap_or("#8ea5bd"),
+        // 不给颜色就按 key 取一个，而不是所有类共用一个灰蓝
+        req.color
+            .as_deref()
+            .unwrap_or_else(|| utopia_store::palette::color_for_key(key)),
         req.shape.as_deref().unwrap_or("circle"),
         &req.parents,
         req.description.as_deref().unwrap_or("").trim(),
@@ -150,7 +153,10 @@ pub async fn update_entity_type(
         kb_id,
         id,
         req.label.trim(),
-        req.color.as_deref().unwrap_or("#8ea5bd"),
+        // **不给颜色 = 保持原色**，不是重置。这里按 id 改，压根拿不到 key；
+        // 而从前无条件写 "#8ea5bd" 意味着任何一次不带颜色的改名
+        // 都会把用户挑过的颜色抹掉
+        req.color.as_deref(),
         req.shape.as_deref().unwrap_or("circle"),
         &req.parents,
         req.description.as_deref().unwrap_or("").trim(),
