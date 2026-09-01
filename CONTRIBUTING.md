@@ -22,7 +22,10 @@ git push -u origin fix/some-thing
 
 Then open a PR with **base `dev`, not `main`**. A maintainer merges once CI and review pass.
 
-Merging `dev → main` is done by maintainers on their own schedule; contributors don't need to think about it.
+Merging `dev → main` is done by maintainers on their own schedule; contributors don't need to think about it. Two rules keep the two branches from drifting apart, and both are for maintainers:
+
+- **Back-merge `main` into `dev` right after a release.** The `dev → main` merge commit lives only on `main`, so without this `main` reads as ahead even though the trees are identical, and the gap grows by one every release.
+- **Urgent fixes go through `dev` too.** A PR opened straight against `main` is the one thing that makes the two branches genuinely diverge, and then someone has to reconcile them by hand.
 
 Both branches are protected: pull request required, CI (`backend` and `web`) must pass, no force pushes, no deletions, and admins are held to the same rules.
 
