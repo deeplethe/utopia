@@ -83,6 +83,60 @@ pub fn is_unreachable(err: &anyhow::Error) -> bool {
     err.chain().any(|e| e.is::<Unreachable>())
 }
 
+/// 端点在限流。**跟 [`Unreachable`] 一样做成类型**，理由也一样：调用方要据此
+/// 决定「等一会儿再来」而不是「这块废了」，而错误文本一路都在被 context 改写。
+///
+/// 限流与其他 4xx 的区别是**它会自己好**。密钥错了重试一万次还是错，配额满了
+/// 等一分钟就过去——两者混在一起，重试预算就会花在永远不会好的那一类上。
+#[derive(Debug, thiserror::Error)]
+#[error("LLM endpoint is rate limiting ({status}): {detail}")]
+pub struct RateLimited {
+    pub status: u16,
+    /// **常常是 `None`。** 多数厂商的 429 不带 `Retry-After`（实测 SiliconFlow
+    /// 就不带），所以调用方必须自带退避，把这一项当「有则更准」的补充而不是判据。
+    pub retry_after: Option<Duration>,
+    pub detail: String,
+}
+
+/// anyhow 错误链里的 [`RateLimited`]，穿透 context 层。
+pub fn rate_limited(err: &anyhow::Error) -> Option<&RateLimited> {
+    err.chain().find_map(|e| e.downcast_ref::<RateLimited>())
+}
+
+/// `Retry-After` 的整数秒形态。
+///
+/// 规范还允许 HTTP-date，这里**不解析**：为一个很少有人发的头引一个日期库不划算，
+/// 而解析失败当成没有正是对的——调用方本来就得有退避，多猜一个数只会更难查。
+fn retry_after_of(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(Duration::from_secs)
+}
+
+/// 非 2xx 统一在这里成型。**只有 429 算限流**：503 可能是端点真挂了、
+/// 也可能是中间代理，把它算进来会让「等一会儿再来」用在等不回来的地方。
+fn failure(
+    kind: &str,
+    status: reqwest::StatusCode,
+    retry_after: Option<Duration>,
+    body: &serde_json::Value,
+) -> anyhow::Error {
+    let detail = err_detail(body);
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        return anyhow::Error::new(RateLimited {
+            status: status.as_u16(),
+            retry_after,
+            detail,
+        });
+    }
+    anyhow::anyhow!("{kind} request failed ({status}): {detail}")
+}
+
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
@@ -159,9 +213,10 @@ impl LlmClient {
             .await
             .map_err(Unreachable)?;
         let status = resp.status();
+        let retry_after = retry_after_of(resp.headers());
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
         if !status.is_success() {
-            anyhow::bail!("LLM request failed ({status}): {}", err_detail(&body));
+            return Err(failure("LLM", status, retry_after, &body));
         }
         log_usage(&self.model, &body);
         body["choices"][0]["message"]["content"]
@@ -189,9 +244,10 @@ impl LlmClient {
             .await
             .map_err(Unreachable)?;
         let status = resp.status();
+        let retry_after = retry_after_of(resp.headers());
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
         if !status.is_success() {
-            anyhow::bail!("LLM request failed ({status}): {}", err_detail(&body));
+            return Err(failure("LLM", status, retry_after, &body));
         }
         let msg = &body["choices"][0]["message"];
         if msg.is_null() {
@@ -245,8 +301,9 @@ impl LlmClient {
             .map_err(Unreachable)?;
         if !resp.status().is_success() {
             let status = resp.status();
+            let retry_after = retry_after_of(resp.headers());
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
-            anyhow::bail!("LLM request failed ({status}): {}", err_detail(&body));
+            return Err(failure("LLM", status, retry_after, &body));
         }
 
         let mut bytes = resp.bytes_stream();
@@ -337,8 +394,9 @@ impl LlmClient {
             .map_err(Unreachable)?;
         if !resp.status().is_success() {
             let status = resp.status();
+            let retry_after = retry_after_of(resp.headers());
             let body: serde_json::Value = resp.json().await.unwrap_or_default();
-            anyhow::bail!("LLM request failed ({status}): {}", err_detail(&body));
+            return Err(failure("LLM", status, retry_after, &body));
         }
 
         let mut bytes = resp.bytes_stream();
@@ -381,9 +439,10 @@ impl LlmClient {
             .await
             .map_err(Unreachable)?;
         let status = resp.status();
+        let retry_after = retry_after_of(resp.headers());
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
         if !status.is_success() {
-            anyhow::bail!("Embedding request failed ({status}): {}", err_detail(&body));
+            return Err(failure("Embedding", status, retry_after, &body));
         }
         let data = body["data"]
             .as_array()
@@ -525,6 +584,62 @@ mod tests {
     async fn an_ordinary_failure_is_not_the_endpoint() {
         let e = anyhow::anyhow!("Embedding 响应缺少向量").context("抽取失败");
         assert!(!is_unreachable(&e));
+    }
+
+    /// **限流要穿透 context 层被认出来。**
+    ///
+    /// 与 [`unreachable_survives_context_layers`] 同一个理由，后果更重：认不出来
+    /// 就退回「这块废了」，而限流本来一分钟后就过去了。实测一次 1884 块的灌入里
+    /// 55/60 篇文档因此整篇失败。
+    #[tokio::test]
+    async fn a_rate_limit_survives_context_layers() {
+        let err = anyhow::Error::new(RateLimited {
+            status: 429,
+            retry_after: None,
+            detail: "TPM limit reached".into(),
+        })
+        .context("抽取失败")
+        .context("process_document 失败");
+        let hit = rate_limited(&err).expect("限流没被认出来");
+        assert_eq!(hit.status, 429);
+        assert!(!err.to_string().contains("rate limiting"));
+    }
+
+    /// **没有 `Retry-After` 是常规情况，不是异常。**
+    ///
+    /// 多数厂商的 429 不带这个头。判定必须只看类型，退避由调用方自己出——
+    /// 把 `retry_after.is_some()` 当判据的话，这些厂商一个都识别不了。
+    #[tokio::test]
+    async fn a_rate_limit_without_retry_after_is_still_a_rate_limit() {
+        let err = anyhow::Error::new(RateLimited {
+            status: 429,
+            retry_after: None,
+            detail: "TPM limit reached".into(),
+        });
+        assert!(rate_limited(&err).is_some());
+        assert!(rate_limited(&err).unwrap().retry_after.is_none());
+    }
+
+    /// 反面：限流不该被当成端点不可达，两者的处置完全不同。
+    #[tokio::test]
+    async fn a_rate_limit_is_not_an_unreachable_endpoint() {
+        let err = anyhow::Error::new(RateLimited {
+            status: 429,
+            retry_after: Some(Duration::from_secs(7)),
+            detail: "slow down".into(),
+        });
+        assert!(!is_unreachable(&err));
+        assert_eq!(
+            rate_limited(&err).unwrap().retry_after,
+            Some(Duration::from_secs(7))
+        );
+    }
+
+    /// 反面：别的 4xx 不是限流。密钥错了重试一万次还是错。
+    #[tokio::test]
+    async fn an_auth_failure_is_not_a_rate_limit() {
+        let e = anyhow::anyhow!("LLM request failed (401 Unauthorized): bad key");
+        assert!(rate_limited(&e).is_none());
     }
 
     /// 端点干干净净地回了 4xx 不算——那说明它就是模型 API，
