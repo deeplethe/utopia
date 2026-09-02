@@ -448,6 +448,7 @@ async fn edges_among(
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS label,
                 r.id IS NULL AS inferred, FALSE AS derived, NULL::text AS rule,
+                ARRAY[]::uuid[] AS premises,
                 f.valid_from, f.valid_to, f.confidence
          FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
@@ -459,6 +460,8 @@ async fn edges_among(
          SELECT d.id, d.subject_id AS source, d.object_id AS target,
                 r.key AS predicate, r.label AS label,
                 FALSE AS inferred, TRUE AS derived, ru.kind AS rule,
+                ARRAY(SELECT fd.premise_fact_id FROM fact_derivations fd
+                       WHERE fd.derived_fact_id = d.id ORDER BY fd.seq) AS premises,
                 d.valid_from, d.valid_to, d.confidence
          FROM derived_facts d JOIN relation_types r ON r.id = d.predicate_id
                               JOIN rules ru ON ru.id = d.rule_id

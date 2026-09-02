@@ -519,6 +519,9 @@ export interface GraphEdge {
    *  界面靠它认出 `inverse`——那种边与来源边是同一件事的两种说法，
    *  画两条只是把冗余画了两遍（见 Graph 的 `layOutParallelEdges`） */
   rule: string | null;
+  /** 推它出来用到的前提事实 id（按证明顺序）；断言的边为空。
+   *  并边要靠它认准来源——只按节点对匹配会把说法挂到错的边上 */
+  premises: string[];
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;

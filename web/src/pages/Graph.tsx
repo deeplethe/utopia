@@ -112,15 +112,19 @@ function layOutParallelEdges(edges: GraphEdge[]): {
     if (e.derived && e.rule === "inverse") inverses.push(e);
     else survivors.push(e);
   }
-  const hosts = new Map<string, GraphEdge[]>();
-  for (const e of survivors) push(hosts, pairKey(e.source, e.target), e);
+  /* **按前提找来源边，不是按节点对。**
+     一度写成「取那一对节点上的第一条边」，于是 `contains` 挂到了恰好也连着
+     那两点的 `allied_with` 上——而 `contains` 属于 `part_of`。挂错之后
+     界面上看着完全正常，是最难发现的那一种。前提是服务端算出来的，用它。 */
+  const onScreen = new Map<string, GraphEdge>();
+  for (const e of survivors) onScreen.set(e.id, e);
 
   const also = new Map<string, string[]>();
   let folded = 0;
   for (const e of inverses) {
-    const host = hosts.get(pairKey(e.source, e.target))?.[0];
+    const host = (e.premises ?? []).map((p) => onScreen.get(p)).find(Boolean);
     if (!host) {
-      // 来源边不在这一屏（时间轴筛掉了，或压根没取进来）。
+      // 来源边不在这一屏（时间轴筛掉了，或它自己也是推出来的而被过滤了）。
       // **那就留着它**——并进一条不存在的边等于把这条知识删了
       survivors.push(e);
       continue;
@@ -562,6 +566,8 @@ export function Graph() {
   /* 焦点 = hover 优先于选中；样式在 reducer 里统一处理 */
   const selectedRef = useRef<string | null>(null);
   const hoverRef = useRef<string | null>(null);
+  /** 鼠标停在哪条边上。用来把并进它的逆关系说法亮出来 */
+  const hoverEdgeRef = useRef<string | null>(null);
   const filterRef = useRef<{
     hiddenTypes: Set<string>;
     activeNodes: Set<string> | null;
@@ -971,6 +977,9 @@ export function Graph() {
          的每条边画在同一条线段上，于是几个标签逐字符叠成乱码——实测一对节点
          之间最多压着六条 */
       edgeProgramClasses: { curved: EdgeCurveProgram },
+      // 边的悬停事件默认是关的。开它是为了 `enterEdge`：并进去的那些说法
+      // 要有地方看得见（见 edgeReducer）
+      enableEdgeEvents: true,
       labelFont: '"Geist", "Inter", "Noto Sans SC", sans-serif',
       labelSize: 11,
       labelColor: { color: "#e5e5e5" },
@@ -1097,6 +1106,27 @@ export function Graph() {
         const f = filterRef.current;
         const res = { ...attrs };
         const [s, t] = g.extremities(edge);
+        /* 并进这条边的逆关系说法，接在本名后面：`PART OF ⁻¹ CONTAINS`。
+           **只在关注它的时候显示**——常驻会把标签拉长一倍，而标签太长
+           正是这次要治的毛病。
+           两个触发点，因为**边只有一像素宽，精确悬停对人也很难命中**：
+           鼠标压在这条边上，或者压在它两端任一个节点上。后者才是实际
+           用得上的那个，前者留着是因为有时人就是要指那一条。
+           放在隐藏/压暗逻辑之前：说法是显示的事，不是可见性的事 */
+        const also = attrs.alsoLabels as string[] | undefined;
+        if (also && also.length > 0) {
+          const focused =
+            edge === hoverEdgeRef.current ||
+            hoverRef.current === s ||
+            hoverRef.current === t ||
+            selectedRef.current === s ||
+            selectedRef.current === t;
+          if (focused) {
+            res.label = `${attrs.label} ⁻¹ ${also
+              .map((l) => l.toUpperCase())
+              .join(" / ")}`;
+          }
+        }
         const sk = g.getNodeAttribute(s, "typeKey") as string;
         const tk = g.getNodeAttribute(t, "typeKey") as string;
         if (f.hiddenTypes.has(sk) || f.hiddenTypes.has(tk)) {
@@ -1211,6 +1241,8 @@ export function Graph() {
         return res;
       },
     });
+    (window as unknown as { __g?: unknown; __s?: unknown }).__g = g;
+    (window as unknown as { __g?: unknown; __s?: unknown }).__s = sigma;
     sigma.on("clickNode", ({ node }) => setSelected(node));
     sigma.on("doubleClickNode", ({ node, event }) => {
       event.preventSigmaDefault();
@@ -1224,6 +1256,24 @@ export function Graph() {
     });
     sigma.on("leaveNode", () => {
       hoverRef.current = null;
+      sigma.refresh();
+    });
+    /* 悬停一条边，把并进来的说法亮出来。
+       逆关系的边被并掉了（见 `layOutParallelEdges`），少画一条是对的，
+       但那个名字不该就此消失：`part_of` 反过来叫 `contains` 是本体里
+       写着的东西，人有权看见。**只在悬停时显示**——常驻会把标签拉长一倍，
+       而拉长标签正是这次要治的毛病 */
+    sigma.on("enterEdge", ({ edge }) => {
+      (window as unknown as { __edgeProbe?: unknown }).__edgeProbe = {
+        edge,
+        also: g.getEdgeAttribute(edge, "alsoLabels"),
+        label: g.getEdgeAttribute(edge, "label"),
+      };
+      hoverEdgeRef.current = edge;
+      sigma.refresh();
+    });
+    sigma.on("leaveEdge", () => {
+      hoverEdgeRef.current = null;
       sigma.refresh();
     });
     // 边标签只在放大后出现（默认视距下太密，Semantica 同样克制）
