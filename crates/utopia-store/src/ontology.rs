@@ -1796,12 +1796,10 @@ pub async fn judge_direction(
     match entity_fits_domain(pool, relation_type_id, subject_id).await? {
         None => Ok(Fit::Unchecked),
         Some(true) => Ok(Fit::Keep),
-        Some(false) => {
-            match entity_fits_domain(pool, relation_type_id, object_id).await? {
-                Some(true) => Ok(Fit::Swap),
-                _ => Ok(Fit::Neither),
-            }
-        }
+        Some(false) => match entity_fits_domain(pool, relation_type_id, object_id).await? {
+            Some(true) => Ok(Fit::Swap),
+            _ => Ok(Fit::Neither),
+        },
     }
 }
 

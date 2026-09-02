@@ -273,6 +273,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             batch_id: batch,
             moved,
             left_off,
+            corrected,
         } = utopia_store::graph::adopt_proposed_predicates(
             &state.pool,
             kb_id,
@@ -283,7 +284,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         .await?;
         tracing::info!(
             %kb_id, key = %g.key, forms = ?g.forms, docs = g.docs, facts = g.facts, moved, left_off,
-            reused = g.existing.is_some(), swap,
+            corrected, reused = g.existing.is_some(), swap,
             "按票数采纳关系"
         );
         moved_total += moved;
@@ -402,6 +403,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             batch_id: batch,
             moved,
             left_off,
+            corrected,
         } = utopia_store::graph::adopt_proposed_predicates(
             &state.pool,
             kb_id,
@@ -410,6 +412,10 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             false,
         )
         .await?;
+        tracing::info!(
+            %kb_id, key, forms = ?forms, moved, left_off, corrected,
+            "按映射提案采纳关系"
+        );
         left_off_total += left_off;
         moved_total += moved;
         if moved > 0 {

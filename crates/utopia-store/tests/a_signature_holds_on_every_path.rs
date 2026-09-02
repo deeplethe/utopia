@@ -50,7 +50,10 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
     .bind(ws)
     .execute(pool)
     .await?;
-    for (id, key, label) in [(company, "company", "Company"), (person, "person", "Person")] {
+    for (id, key, label) in [
+        (company, "company", "Company"),
+        (person, "person", "Person"),
+    ] {
         sqlx::query("INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, $3, $4)")
             .bind(id)
             .bind(kb)
@@ -80,8 +83,11 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
     .bind(person)
     .execute(pool)
     .await?;
-    for (id, ty, name) in [(acme, company, "Acme"), (alice, person, "Alice"), (bob, person, "Bob")]
-    {
+    for (id, ty, name) in [
+        (acme, company, "Acme"),
+        (alice, person, "Alice"),
+        (bob, person, "Bob"),
+    ] {
         sqlx::query(
             "INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES ($1, $2, $3, $4)",
         )
@@ -130,7 +136,12 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
 }
 
 /// 一条没有谓词、证据里留着原文说法 `employee` 的事实——采纳要改写的正是这种
-async fn surfaced_fact(pool: &PgPool, f: &Fixture, subject: Uuid, object: Uuid) -> anyhow::Result<Uuid> {
+async fn surfaced_fact(
+    pool: &PgPool,
+    f: &Fixture,
+    subject: Uuid,
+    object: Uuid,
+) -> anyhow::Result<Uuid> {
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, confidence)

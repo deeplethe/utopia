@@ -1010,6 +1010,7 @@ pub async fn adopt_predicate(
         batch_id,
         moved: remapped,
         left_off,
+        corrected,
     } = utopia_store::graph::adopt_proposed_predicates(
         &state.pool,
         kb_id,
@@ -1031,13 +1032,15 @@ pub async fn adopt_predicate(
         Some(predicate_id),
         json!({
             "key": key, "label": req.label, "forms": req.forms,
-            "facts_remapped": remapped, "facts_left_off": left_off, "batch": batch_id,
+            "facts_remapped": remapped, "facts_left_off": left_off,
+            "facts_direction_corrected": corrected, "batch": batch_id,
         }),
     )
     .await;
     state.emit_review(kb_id);
     Ok(Json(json!({
-        "id": predicate_id, "remapped": remapped, "left_off": left_off, "batch": batch_id,
+        "id": predicate_id, "remapped": remapped, "left_off": left_off,
+        "corrected": corrected, "batch": batch_id,
     })))
 }
 

@@ -1244,6 +1244,14 @@ pub struct Adopted {
     /// 签名两边都对不上、**没有**挂上谓词的条数（#190）。它们照旧留在空谓词上，
     /// 原文说法还在证据里——与抽取遇到同样情形的处置一致
     pub left_off: u32,
+    /// 按签名对调了主宾的条数。
+    ///
+    /// **掰正不该静默。** 抽取那条路每掰一次就落一条 `direction_corrected`
+    /// 丢弃信号（#138 的原话是「绝不静默」：用可能错的声明驱动的自动动作，
+    /// 留痕才不属于 0001 判据 2 反对的那一类）。采纳走的是同一道判断，
+    /// 也该说出来自己动了几条，否则台账上只剩「改写了 N 条」，看不出其中
+    /// 有几条是被本体掉了个头的
+    pub corrected: u32,
 }
 
 /// 要改写哪些事实，以及新行的宾语从哪来。
@@ -1271,6 +1279,7 @@ async fn adopt(
         batch_id,
         moved: 0,
         left_off: 0,
+        corrected: 0,
     };
     let targets: Vec<(Uuid, Uuid, Option<Uuid>, Option<serde_json::Value>)> = match targets {
         AdoptTargets::ByForm(forms) => {
@@ -1324,6 +1333,7 @@ async fn adopt(
 
     let mut moved = 0u32;
     let mut left_off = 0u32;
+    let mut corrected = 0u32;
     for (old_id, subject_id, object_id, object_value) in targets {
         // 被动形改写：主宾对调。字面值宾语的事实换不了（值不能当主语），
         // 而 ByForm 那条查询本来就只取 object_id 非空的，所以这里只可能是实体宾语
@@ -1337,16 +1347,21 @@ async fn adopt(
         // 结果：合就挂，主语不合宾语合就对调着挂，都不合就**不挂**——那条事实留在
         // 空谓词上，原文说法还在证据里，与抽取遇到同样情形的处置一致
         let (subject_id, object_id) = match object_id {
-            Some(o) => match crate::ontology::judge_direction(pool, predicate_id, subject_id, o)
-                .await?
-            {
-                crate::ontology::Fit::Swap => (o, Some(subject_id)),
-                crate::ontology::Fit::Neither => {
-                    left_off += 1;
-                    continue;
+            Some(o) => {
+                match crate::ontology::judge_direction(pool, predicate_id, subject_id, o).await? {
+                    crate::ontology::Fit::Swap => {
+                        corrected += 1;
+                        (o, Some(subject_id))
+                    }
+                    crate::ontology::Fit::Neither => {
+                        left_off += 1;
+                        continue;
+                    }
+                    crate::ontology::Fit::Keep | crate::ontology::Fit::Unchecked => {
+                        (subject_id, Some(o))
+                    }
                 }
-                crate::ontology::Fit::Keep | crate::ontology::Fit::Unchecked => (subject_id, Some(o)),
-            },
+            }
             None => (subject_id, None),
         };
         let mut tx = pool.begin().await?;
@@ -1442,6 +1457,7 @@ async fn adopt(
         batch_id,
         moved,
         left_off,
+        corrected,
     })
 }
 

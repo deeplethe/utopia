@@ -148,7 +148,6 @@ async fn axioms(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> 
     Ok(map)
 }
 
-/// 跑一遍检查，把结果落库。
 /// 主语不在谓词声明的 domain 里、或宾语不在 range 里的活事实（#190 / #196）。
 ///
 /// 这是签名检查在**账本层**的那一半：抽取与采纳在写入时按 `ontology::judge_direction`
@@ -228,6 +227,7 @@ pub async fn record_signature_breaks(
     Ok(inserted)
 }
 
+/// 跑一遍检查，把结果落库。
 pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
     let edges = edges(pool, kb_id).await?;
     let axioms = axioms(pool, kb_id).await?;
