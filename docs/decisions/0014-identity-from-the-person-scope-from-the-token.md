@@ -1,6 +1,6 @@
 # 0014 · 身份跟着人，范围跟着令牌
 
-- **状态**：规划中 · MCP 服务端的第一块地基，代码未动
+- **状态**：已实施（#161 记录、#180 落地）· `personal_tokens` + Streamable HTTP 的 MCP 服务端已上线，暴露五个只读工具；**尚无前端界面**——令牌的发放 / 列表 / 撤销与 MCP 配置提示今天都只有 API（2026-09-02 核，修订见文末）
 - **成文**：2026-09-01（约定见 [README](README.md)）
 - **相关**：迁移 `0014_data_source_grants` 刚给数据源补上授权层——本篇是同一个问题
   换到「机器来敲门」这一侧；[0004](0004-language-and-localization.md) 定下服务端只说英文，
@@ -117,12 +117,23 @@ CREATE TABLE personal_tokens (
 MCP 的对应形态是：握手时校验一次，然后整条连接生命周期里都信任它。工具调用是一个个
 独立请求，`revoked_at` 在中途被写上时，正在跑的连接必须立刻失效。
 
+## 修订记录（2026-09-02）：落地之后对照本文
+
+**形状**多一列 `token_prefix`（`utp_pat_…`，与 ingest 的 `utp_` 区分——日志与配置文件里一眼要认得出是哪一种），`token_hash` 加了 `UNIQUE`。哈希选 SHA-256 不选 argon2：高熵串不怕爆破，而每行盐不同就查不了唯一索引。
+
+**「每个工具入口都校验 scope」那条纪律被满足了，但形态与预想不同**：做成完全无状态——每个 POST 重跑一次认证（撤销 / 过期在 SQL 的 `WHERE` 里判）+ `covers()` + `require_kb`，没有「连接」这个东西可以被信任。`scope` 在这一版没有分支：`can_write` 硬编码 `false`，就算令牌勾了 write 也不放开。每次工具调用写一条审计（`mcp.tool_called`，target 是令牌），归因是真的。
+
+**前置条件本文没记**：#175 把七个工具的执行从 `chat.rs` 的 `match` 里抽成 `tools.rs`，对话与 MCP 共用同一份实现——否则「对话里的 `entity_facts` 和 MCP 里的不是同一个东西」。工具的 JSON schema 仍留在 `chat.rs`，MCP 复用它做转换，已知带一处瑕疵：`search_chunks` 的描述里还写着「可以引用成 [n]」，而 MCP 客户端拿不到引用编号。
+
+**一处会误导人的陈述**：`crates/utopia-mcp` 曾是三行占位，宣称的三个工具名（`add_memory` / `search_memory` / `get_entity_timeline`）从未实现，MCP 服务端住在 `utopia-server/src/api/mcp.rs`。〔已删（2026-09-02，连同 `utopia-graph`、`utopia-connectors`），理由见 [0016](0016-close-the-open-seams-before-cutting-new-ones.md) A2。〕
+
 ## 未决
 
 - **`query_data` 与 `remember` 要不要进第一版。** 倾向不进——先发四个只读工具
   （`search_chunks` / `find_entities` / `entity_facts` / `changes`），把身份这条路走通再说。
-  这两个各自还有没答的问题：外部 agent 写进来的事实挂什么证据？跑 SQL 的审计怎么记？
+  这两个各自还有没答的问题：外部 agent 写进来的事实挂什么证据？跑 SQL 的审计怎么记？〔**已答：不进**。实际发的是五个而非四个，多一个 `search_docs`。`remember` 的前提是 [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) 那道闸，而闸还没接上。〕
 - **传输层**：stdio（本地，配 Claude Desktop 最省事）还是 streamable HTTP（远程，
-  和 Utopia 已经是个服务端相称）。这个选择不影响本篇的结论，两种都要认令牌。
+  和 Utopia 已经是个服务端相称）。这个选择不影响本篇的结论，两种都要认令牌。〔**已答：Streamable HTTP**，一条路由 `POST /api/v1/kbs/{kb_id}/mcp`，响应用 `application/json` 不用 SSE——工具一问一答，没有服务端主动推的东西。〕
 - **令牌能不能跨工作区。** 现在的 `kb_ids` 是库级白名单；如果将来要按工作区发，
-  和数据源授权那张表会长得很像，届时看要不要合并概念。
+  和数据源授权那张表会长得很像，届时看要不要合并概念。〔仍未做。〕
+- **（2026-09-02 补）没有界面。** 「UI 默认给 90 天」的 90 天在服务端，而前端根本没有令牌那一页。这是 MCP 今天对用户不可用的直接原因。

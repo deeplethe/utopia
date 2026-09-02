@@ -1,6 +1,6 @@
 # 0001 · 本体导入与治理路线
 
-- **状态**：进行中 · P0（实体可编辑）、P1（停止静默丢弃）、P2（OWL 导入）、P2c（属性落库 / 关联表 / 类型签名 / 多继承）已建成；P3a（类型消解）已建成但检索命中率不足以自动跑，见下方修订记录；P3b 部分建成，见 [0003](0003-ontology-growth-loop.md)；**P4a（决策不可被遗忘）已建成，P4b/P4c 待做**；P5 由 [0002](0002-reasoning-engine.md) 取代
+- **状态**：进行中 · P0 / P1 / P2 / P2c 全部建成；P3 的「按预算切换」已落地（部署级 `ontology_prompt_budget`，缺省 24,000 字符，超了按块检索），P3a 建成但**只能手动触发**、没有类数阈值这根轴；P3b 两条腿都建成但形态与本文不同（原词落 `fact_evidence.proposed_predicate`，映射由 `predicate_match` + [0003](0003-ontology-growth-loop.md) 的采纳回路承担）；**P4a 已建成，P4b / P4c 仍待做**；**P5 已由 [0002](0002-reasoning-engine.md) 落地，`utopia-reason` 不再是空壳**；判据 2 关于「参数顺序」的那一半已被 [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) 推翻。2026-09-02 对照代码复核，修订就地
 - **成文**：2026-08-27 / 28，随调研持续修订（约定见 [README](README.md)）
 
 > 理由比清单重要——清单会过期，理由决定以后遇到新情况怎么判。所以本文把「贯穿性判据」放在分阶段之前，且推翻过的判断就地留痕（见 P1、P3 的修订记录）。
@@ -51,6 +51,7 @@
 
 1. **不是"OWL 有没有"，是"我们有没有机器消费它"**——但要加时间维度：**丢弃不可逆，保存近乎免费**。所以原文一律保真，投影只覆盖当下用得上的。推论：**保留了原文，投影就不必语义完整**——简化是 UI/提示词层的取舍，不是数据损失。
 2. **本体是引导，不是执法**。声明可能是错的（`part_of` 就是），所以本体应当影响提示词与候选排序，而不是驱动丢弃、覆盖、自动改写。错误的引导模型能靠原文覆盖；错误的执法会系统性地毁数据。
+   > **修订（2026-09-02，据 [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md)）**：这条要拆成两半。**哪些类型能参与**仍是引导——本体可能写错，原文说西雅图就写西雅图。**参数顺序**改成执法：它不是关于世界的断言，是这个 key 的编码约定，原文从来没有「说了别的方向」。主语违反 domain 而宾语符合时按签名对调，留 `direction_corrected` 痕迹；对调也不合法则丢掉谓词、保留主宾与证据。留痕的自动动作不属于本条反对的那一类。实测五轮：违反率 57% → 4%，真·反向 39 → 0。
 3. **提示词大小必须与本体规模脱钩**。把 N 个类塞进每个分块的提示词，成本是 O(分块 × 本体)，而且模型从 800 个选项里挑反而更差。规模问题用检索解，不用"少列几个"解。
 4. **同名不能传递任何结论**。判定为同一实体 → 本来就一个类型，无所谓传递；判定为不同 → 名字正是我们刻意不信任的信号（两个张伟）。能携带信息的是上下文。
 5. **不确定性浮到人面前**，不要悄悄猜。分层阈值 + 灰区进 Review，与消解的"宁分勿合"同源。
@@ -96,9 +97,9 @@
 | 269 | 既无 `value` 也无 `object` | 真丢弃 |
 | 274 | datatype 归一化失败 | 有 `debug!` 日志，但用户不可见 |
 
-关系路径另有两条值得记：`confidence < 0.6`（第 234 行，设计阈值，但同样不可见——用户无从知道"抽到了但不够自信"）与 `related_to` 不在本体时**整条事实消失**（第 380 行，删掉默认关系就会踩到）。
+关系路径另有两条值得记：`confidence < 0.6`（第 234 行，设计阈值，但同样不可见——用户无从知道"抽到了但不够自信"）与 `related_to` 不在本体时**整条事实消失**（第 380 行，删掉默认关系就会踩到）。〔**后者已不可能发生**：`related_to` 整个删掉，落不上就是 `predicate_id = NULL`，见 [0010](0010-no-relation-is-no-relation.md)。〕
 
-**顺带发现一个不一致**：关系路径上主宾未声明时会**兜底按 `concept` 消解**（332-362 行），属性路径上同样的缺失却直接丢（255 行）。同一个原因，一边宽容一边静默丢弃。要么两边都兜底，要么两边都记信号——不能一边一个样。
+**顺带发现一个不一致**：关系路径上主宾未声明时会**兜底按 `concept` 消解**（332-362 行），属性路径上同样的缺失却直接丢（255 行）。同一个原因，一边宽容一边静默丢弃。要么两边都兜底，要么两边都记信号——不能一边一个样。〔**已消除**：`concept` 兜底类随 [0009](0009-no-type-is-a-type.md) 删掉，两条路径现在都记 `subject_not_declared`。丢弃原因码今天有 12 个（`extraction_drops::reason`），含 `truncated_reply`、`malformed_item`、`not_an_entity_name`、`direction_corrected`，比本节设想的多一倍。〕
 
 **做**
 - 新表 `extraction_drops (kb_id, document_id, reason, detail, count, example, updated_at)`，PK `(kb_id, document_id, reason, detail)`，抽取开始时按 document 清空
@@ -179,7 +180,7 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 
 **个体（ABox）永不作为事实导入**——不是能力问题，是原则：每条事实必须有证据链和出处，凭空塞进来的实例破坏的正是这个地基。它们随原文件保存，将来推理机可当背景知识读。
 
-**依赖**：`oxttl` + `oxrdfxml`（Oxigraph 那套小而专的 crate）。不引 `horned-owl`，我们不需要推理。工作区目前无任何 RDF 依赖。
+**依赖**：`oxttl` + `oxrdfxml`（Oxigraph 那套小而专的 crate）。不引 `horned-owl`，我们不需要推理。工作区目前无任何 RDF 依赖。〔已引入，住在 `utopia-ingest`。〕
 
 > **修订记录 · P2a + P2b 已落地**（`feat/owl-import`）
 >
@@ -199,8 +200,10 @@ v2: http://acme.com/hr#Employee  rdfs:label "Staff Member" → key = staff_membe
 > 哪个**——这正是本文论证 IRI 必要性时用的那个例子，只是换了个方向出现。所以：
 > 报告，不解决。想要导入的那份，先给现有的改名。
 >
+> 〔**后来改了一半**（#78、#145）：本地同名行**没有 IRI**时被认领——它是种子或手工建的占位者，被词表接管否则整棵树是断的；认领时形状跟着改成「方」（词表声明的）。两边都有 IRI 而 key 撞车的仍然报告不解决。〕
+>
 > **暂未落地的三件**——属性落库、domain/range 关联表与类型签名、多继承 DAG——
-> 照着 P2b 的产物重新算过账，独立成节：见下方 **P2c**。初稿在这里写的依赖顺序
+> 照着 P2b 的产物重新算过账，独立成节：见下方 **P2c**。〔四件均已落地，见 P2c 末尾。〕初稿在这里写的依赖顺序
 > 有一处高估了（属性落库要等的那个映射，P2b 里已经建好了），那节里就地留痕。
 >
 > **一个自己犯的错值得记**：`OntologyImportView` 的字段叫 `imported_at`，前端类型
@@ -342,6 +345,10 @@ OWL 里一个属性有多个 domain 是常态。`datatype` 仍留在 `relation_t
 
 前三项是一条链，第四项可以并行。
 
+> **修订记录（2026-09-02）：四项全部建成。** 属性由导入器建（`create_attribute_with_iri`）；`relation_type_domains` / `relation_type_ranges` 建表；
+> 签名进提示词（`works_at (person → organization)`），且只提铺出去的类，整侧没选中退回 `*`；`parent_id` 单列**已不存在**，多父落 `entity_type_parents`（带 `is_primary` 供左栏画树），
+> 判定改成广度优先加访问集。另一处与本文不同：`update_relation_type` 现在**允许改 domain / range**——签名不是身份，`kind` 仍不可变。
+> 全部 OWL 公理的投影现状见 P5 的修订。
 
 ---
 
@@ -378,6 +385,9 @@ OWL 里一个属性有多个 domain 是常态。`datatype` 仍留在 `relation_t
 > top-K 内联，**且种子基类永远在场**当兜底。属性按 domain 逐类展开，类被裁了它自动
 > 跟着裁。预算按 token 数而不是类数量——类描述长度差着数量级。**预算定在哪还没量**，
 > 那需要把内联类数从 12 逐级加到 968，看事实数与耗时在哪一档开始掉。
+>
+> 〔**已落地**，见 [0006](0006-ontology-scale-and-the-prompt.md)：预算按**字符**而非 token，落在 `deployment_settings.ontology_prompt_budget`（24,000），每块 40 类 / 30 关系 / 30 属性，三个数都标着「待测」。
+> 「种子基类永远在场」在 #128 之后失效（没有种子了），换成**祖先补齐**：命中什么就把它的祖先一起铺出去。本文下方与开放问题里的「阈值 30」这根轴**从未存在过**。〕
 >
 > **三、第二层建成了，但比原文写的复杂**，见下。
 
@@ -470,7 +480,7 @@ related_to 事实  359 条
 
 **放在 `fact_evidence` 上，不是 `facts` 上**：`insert_fact_inner`（`graph.rs:164-175`）按 `(kb_id, subject_id, predicate_id, object_id)` 对存活事实去重，所以一条 `(A, related_to, B)` 会吸收多个分块——甲块说 "runs on"、乙块说 "optimized for"，合并成同一行。放 `facts` 上就是**先写者胜、其余静默丢弃**，正是本条要修的毛病。`fact_evidence` 每分块一行、已带 `quote`（该块的原文佐证），表层谓词是同一种东西：每次观察的原始形态。粒度对，且无需新增语义。
 
-加 `fact_evidence.surface_predicate TEXT`，两条路径都写（关系路径写降级前的 `f.predicate`；正常命中时写模型实际给的那个词，因为它可能是别名）。不等映射落地就有独立价值——Review 与实体面板可直接展示"原文说的是 available from，被降级成 related to"，而今天前端对 `related_to` 无任何特殊处理（`web/src/` 里零命中），降级对用户完全不可见。
+加 `fact_evidence.surface_predicate TEXT`〔落地时列名叫 **`proposed_predicate`**，下同〕，两条路径都写（关系路径写降级前的 `f.predicate`；正常命中时写模型实际给的那个词，因为它可能是别名）。不等映射落地就有独立价值——Review 与实体面板可直接展示"原文说的是 available from，被降级成 related to"，而今天前端对 `related_to` 无任何特殊处理（`web/src/` 里零命中），降级对用户完全不可见。
 
 **映射不取代 miss 报表**：反复出现又映射不上的（`available_from ×9`）正是"本体该加这个关系"的治理信号（P4 燃料）。映射只吃高置信的那部分，其余留在 miss 里变建议。
 
@@ -485,6 +495,10 @@ related_to 事实  359 条
 **真正的风险不是成本是质量**：大本体下错判会把噪声规模化。缓解仍是判据 4——只有相似度高且与次优拉开差距的才自动升格，灰区进 Review。
 
 **第一次抽取一定有类型**：`entities.type_id NOT NULL`，没有"未分类"状态。粗类是真类型不是占位符，小本体下它就是最终类型。升格挂在文档抽取完成的同一条任务链上（与攒批裁决并列），窗口是秒级。
+
+> **修订记录（2026-09-02）：这一段两句都反了。** `type_id` 已改为可空（[0009](0009-no-type-is-a-type.md)），「没有类型」就是没有类型，且可能是**人的决定**（`type_source = human`）。
+> 「升格挂在同一条任务链上」**没有实现**：抽取结束只入队 `bootstrap_ontology` 与 `adjudicate_entities`，类型消解今天只能在本体页手动跑 preview → apply。
+> 原因见 P3a——检索命中率不足以自动跑。这是一个真缺口，不是取舍：**大本体下新实体的细化依赖人记得去点一下**。
 
 ---
 
@@ -532,7 +546,7 @@ related_to 事实  359 条
 
 > **排期已由 [0002](0002-reasoning-engine.md) 取代**。本节列的"届时能消费什么"仍然成立，但顺序变了：0002 实测发现语料第一天就带 `part_of` 环（传递闭包在深度 5 起振荡不收敛），所以推理机的第一交付是**一致性检查**而非推导——同一套求值引擎反过来用，零风险，且现存 11 处矛盾立刻可查出。
 
-`utopia-reason` 目前是 3 行空壳。它上线后能消费的，正是 P2 保留而未投影的那些公理：
+`utopia-reason` 目前是 3 行空壳〔**已建成**，近两千行：R0 一致性检查与本体自检、R1 物化推导带开关，见 [0002](0002-reasoning-engine.md) 的修订〕。它上线后能消费的，正是 P2 保留而未投影的那些公理：
 
 - `TransitiveProperty` → "NVIDIA 名下所有东西"（现在只能靠 hops 逐跳猜）
 - 非 1 的基数被违反 → **一致性告警进 Review 队列**，本体成为数据质量规则
@@ -542,19 +556,26 @@ related_to 事实  359 条
 
 **这些今天全部读不了，但 P2 的原文保真保证了届时无需用户重新上传。**
 
+> **修订记录（2026-09-02）：大半已经读得了。** 投影落库的公理：`TransitiveProperty` / `SymmetricProperty` / `AsymmetricProperty` / `IrreflexiveProperty` / `FunctionalProperty` / `InverseFunctionalProperty` / `disjointWith` / `inverseOf` / `subPropertyOf`。
+> 仍在「暂未投影」里的：`equivalentClass`、`someValuesFrom` 与类表达式、属性链。
+> 上面五条的兑现情况：Transitive 进 R1 规则（带环检测与每谓词封顶）；基数违反进 `axiom_violations` 由 Review 裁；`equivalentClass` / 类表达式未做；`inverseOf` 与 `subPropertyOf` 进 R1（#177 / #179）；
+> **`disjointWith` 只兑现一半**——导入落了 `entity_type_disjoint`，消费者只有 R0 的本体自检（类不可满足），消解侧的 `classify_type_drift` 仍用硬编码的 `CONFUSABLE_TYPE_KEYS`，[0009](0009-no-type-is-a-type.md) 点名的「改从本体读」没做。
+
 ---
 
 ## 开放问题
 
 - **升格准确率给不出数**——需要真实企业本体做小样本评测，现在只有推演
 - **`active` 标记的定位**：原本当规模解药（错，规模应由 P3 的检索解），现在只剩治理用途（弃用的旧类不参与分配）。是否值得单独做，等有真实大本体再定
-- **阈值 30 是拍的**——类数超过多少才启用类型消解，需要实测校准
-- **`disjointWith` 与 `SymmetricProperty` 收益中等**：前者剪枝防错误合并；后者去重（新语料里测得 8 对互为反向的重复事实，占 910 条的 1%）。排在 P2 之后按需
+- **阈值 30 是拍的**——类数超过多少才启用类型消解，需要实测校准〔这根轴不存在，换成了字符预算；新的待测量是每块 40 / 30 / 30，见 [0006](0006-ontology-scale-and-the-prompt.md)〕
+- **`disjointWith` 与 `SymmetricProperty` 收益中等**：前者剪枝防错误合并；后者去重（新语料里测得 8 对互为反向的重复事实，占 910 条的 1%）。排在 P2 之后按需〔Symmetric 已进 R0 检查与 R1 规则；disjointWith 进了本体自检，**消解侧剪枝仍未做**〕
 
 ---
 
 ## 基准语料
 
 `Industry Corpus` 库保留着（NVIDIA 博客 18 篇 + 微软新闻室 10 篇，RSS 摄入），是上面所有数字的来源，也是后续所有评测的基线——改动前后跑同一个库，数字才可比。别在它上面做破坏性实验。
+
+〔**2026-09-02**：基线已换。种子本体退场后这个库的起点不可复现，现在的基准是 `scripts/bench/` 上可重跑的语料，本体侧用 `ai-timeline-ends × schema.org + W3C Org`（[0012](0012-the-ontology-is-a-contract-not-a-suggestion.md)）。本文的数字仍是当时的真实测量，只是不再能与今天对比。〕
 
 分支状态不记在这里：git 自己知道，写进文档只会过期。

@@ -1,7 +1,7 @@
 # 0005 · 告警中心
 
-- **状态**：第一刀已建成（`source.sync_failed` + `llm.unreachable`）。
-  三个决定里第 1、2 条在实现过程中被推翻，就地留痕见下
+- **状态**：已建成 · 五种告警在线（`source.sync_failed`、`llm.unreachable`、`llm.rate_limited` #160、`llm.out_of_credit` #182、`data_source.schema_sync_failed`），面板带搜索与按组分页；
+  三个决定里第 1、2 条在实现过程中被推翻，就地留痕见下；`document.no_text_layer` 仍未接（2026-09-02 核）
 - **成文**：2026-08-29
 - **相关**：与 Review 队列（0001 P4）职责相邻，本文划边界
 
@@ -13,14 +13,14 @@
 
 | 位置 | 记的是 |
 |---|---|
-| `jobs.status='failed'` + `jobs.last_error` | 任务失败 —— **没有任何界面** |
+| `jobs.status='failed'` + `jobs.last_error` | 任务失败 —— **没有任何界面**〔现在：任务**最终**失败（`attempts >= max_attempts`）且错误可分类时，经 `observe_job_failure` 变成告警；重试期间不报，重试本就是为了不惊动人〕 |
 | `documents.status='failed'` | 摄入失败 |
 | `documents.graph_status='failed'` | 抽取失败 |
 | `sources.last_sync_status='failed'` | 源的最近一次同步失败 |
 | `source_sync_runs.status='failed'` | 单次同步失败 |
 | 日志 | 其余一切 |
 
-而且这个问题**已经被局部修过一次**。迁移 `0021_graph_error.sql` 的第一句是：
+而且这个问题**已经被局部修过一次**。当时的迁移 `0021_graph_error.sql`（#130/#131 折叠后落在 `0002_ingest.sql` 的 `graph_error` 列）的第一句是：
 
 > 抽取失败的原因此前只进日志与 `jobs.last_error`，文档上什么都不留，界面无从显示。
 
@@ -129,7 +129,7 @@
 `kb_id` 可空，两种语义：
 
 ```
-kb_id IS NULL   系统级：LLM 端点不可达、数据库连接池打满、镜像版本不一致
+kb_id IS NULL   系统级：LLM 端点不可达（今天实际是三条 LLM 告警：不可达 / 限流 / 欠费）
                 → 仅 users.is_admin
 
 kb_id 有值      知识库级：解析失败、抽取失败、源同步失败
@@ -137,6 +137,11 @@ kb_id 有值      知识库级：解析失败、抽取失败、源同步失败
 ```
 
 **不新写权限逻辑**：`access::kb_role()` 第一句就是 `if user.is_admin { return Ok(Some(Role::Owner)) }`，告警的可见性判定直接复用它，和 KB 路由走同一条鉴权链。系统管理员因此对知识库级告警也全通。
+
+> **修订记录（2026-09-02）**：结论（admin 全通、按 `min_role` 比大小）成立，「不新写」没做到。
+> 列表要一条 SQL 里按人过滤，于是走的是 `access::visible_kb_roles()` 加 `alerts.rs` 里一段 `VISIBLE` CASE
+> 加一个 `rank()`——代码自己承认「跟 `Role` 的 `PartialOrd` 同序，也跟 `VISIBLE` 里那个 CASE 同序，三处必须一致」。
+> 记在这里是因为这正是本仓库最怕的那种隐形规则：改角色顺序时得记得改三处。
 
 `min_role` 存在 alert 上而不是按 kind 硬编码，因为同一类告警在不同场景下该找的人不同：
 
@@ -193,6 +198,20 @@ kb_id 有值      知识库级：解析失败、抽取失败、源同步失败
 |---|---|---|---|
 | `source.sync_failed` | KB 级 | 聚合、自愈、`min_role=editor` | 聚合改到视图层；自愈作废；权限如设计 |
 | `llm.unreachable` | 系统级 | `kb_id IS NULL` 那条路径、`is_admin` 可见性 | 它没有成功信号，就是这一条逼出了第 2 节的推翻 |
+
+> **后续（2026-09-02 核）**：第一刀之后又接了三条，**没有一条需要新的检测逻辑**，都是把已有的错误分类接上来：
+> `llm.rate_limited`（#160，退避用尽仍过不去）、`llm.out_of_credit`（#182，402 或「余额不足」文案，与限流分开——该找的人不同）、
+> `data_source.schema_sync_failed`（源挂上了但表结构没摄进来）。分类做成纯函数 `alert_for` 并有单测，
+> 因为判据是错误的**类型**不是文本。最后一条值得记：它报的是「留下的状态」不是「那次失败」，
+> 是第一条不由一次执行失败直接触发的告警，与上文「任何执行路径在失败时上报」的表述有出入。
+>
+> 面板顺带长出了搜索与按组分页（每页 8 组、每组最多 5 条明细）。搜索**刻意搜不到标题**——
+> 标题是前端按 kind 查表拼的（[0004](0004-language-and-localization.md)：服务端不产出展示文案），
+> 服务端只能匹配库名、detail、kind 代号。
+>
+> **一条本文该划而没划的边界**：`extraction_drops`（11 种丢弃原因，读者是上传文档的人）是另一条完全独立的失败信号通道，
+> 它与告警的分工是「这份文档里有东西没落地」对「系统某处坏了」——前者按文档聚在文库行上，后者进铃铛。
+> 两者都不进 Review：Review 管知识的对错。
 
 **如果设计有错，这一刀就会暴露** —— 确实暴露了，见上面两条修订记录。
 

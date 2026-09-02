@@ -26,6 +26,11 @@ flowchart TB
     TR --> G
     GROW --> ONT[(本体)]
     ONT -.喂回.-> X
+    G --> R0[一致性检查<br/>公理 vs 事实 · 不写库]
+    ONT --> R0
+    G --> R1[物化推导<br/>开关 · 派生另存]
+    ONT --> R1
+    R1 --> G
 
     style RDY fill:#2d4a5a,color:#fff
     style G fill:#2d4a5a,color:#fff
@@ -38,6 +43,12 @@ flowchart TB
 **本体那条回流虚线是这套东西的循环**：抽取用本体，抽取遇到本体没有的说法就把原词记下来，
 提案回流补进本体，下一批文档的抽取就用上了。见 [0003](decisions/0003-ontology-growth-loop.md)。
 
+**本体从哪来**：建库时什么都不种。起点是可选的预制包（schema.org 默认勾选，另有 W3C Org、PROV-O、FOAF、IOF Core），
+或者用户导入自己的 OWL，或者空着——空库照样能抽，实体没有类型就是没有类型。见 [0008](decisions/0008-ontology-packs-as-cold-start.md)、[0009](decisions/0009-no-type-is-a-type.md)。
+
+**最下面那两个框是本体的公理在干活**：一致性检查不写 `facts`，只把矛盾摆出来（Review 的 violations / defects 两档）；
+物化推导默认关，打开后派生事实另存一张表、图上金色，永远不闭合任何断言事实。见第四节。
+
 ---
 
 ## 一、抽取一个分块
@@ -47,7 +58,7 @@ flowchart TB
     subgraph 提示词
         B{本体装得下预算吗?}
         B -->|装得下| FULL[全量铺<br/>小本体的老路]
-        B -->|装不下| RET[按这一块的向量检索<br/>约 40 类 / 30 关系 / 30 属性<br/>+ 内置类恒在]
+        B -->|装不下| RET[按这一块的向量检索<br/>约 40 类 / 30 关系 / 30 属性<br/>+ 命中类的祖先一起铺]
     end
     FULL --> LLM[LLM]
     RET --> LLM
@@ -56,8 +67,12 @@ flowchart TB
     J -->|entities| EN[实体<br/>type 从清单挑<br/>specific_type 自由文本]
     J -->|predicate 命中属性| AT[属性事实<br/>值按 datatype 归一]
     J -->|predicate 命中关系| RL[关系事实]
+    RL --> DIR{主宾类型<br/>对得上签名?}
+    DIR -->|对| OK[落库]
+    DIR -->|主语违反且宾语符合| SWAP[按签名对调主宾<br/>留 direction_corrected]
+    DIR -->|对调也不合法| NOP[谓词留空<br/>主宾时间证据都留]
     J -->|词表外 + 字面值| LIT[值落 object_value<br/>原词落 proposed_predicate]
-    J -->|词表外 + 实体宾语| FB[降级 related_to<br/>原词落 proposed_predicate]
+    J -->|词表外 + 实体宾语| FB[谓词留空<br/>原词落 proposed_predicate]
 
     style LLM fill:#3a3a5a,color:#fff
 ```
@@ -68,24 +83,35 @@ flowchart TB
 因为清单里总有个"差不多"的，模型选了它，心里那个更准的说法就此丢失。
 
 **词表外的两条路都不丢东西**：带字面值的落 `object_value`（而不是凭空造一个叫「2015」的实体），
-带实体宾语的降级成 `related_to`。两者的原词都进 `fact_evidence.proposed_predicate`，
-那是这条事实身上唯一还留着原意的地方。
+带实体宾语的**谓词留空**——不是降级成一个叫「有关联」的关系，那是断言不是含糊（[0010](decisions/0010-no-relation-is-no-relation.md)）。
+两者的原词都进 `fact_evidence.proposed_predicate`，那是这条事实身上唯一还留着原意的地方，显示时由 `fact_surface_predicate()` 取回。
+
+**命中的关系还要过一道签名**：本体声明了 `employee (organization → person)`，模型照样会写 `Musk employee Microsoft`——
+提示词三轮都压不下去，英语的 "X is an employee of Y" 太强。所以写入时掰正：主语违反 domain 而宾语符合就对调，**绝不静默**，留一条 `direction_corrected`；
+对调也不合法（`OpenAI affectedBy …`，schema.org 里那是医学检验用的）就丢掉谓词、留下主宾与证据。参数顺序是 key 的编码约定，不是关于世界的断言，所以这一处本体是执法的。
+见 [0012](decisions/0012-the-ontology-is-a-contract-not-a-suggestion.md)。
 
 ### 这里会丢东西吗
 
-会。七种，全部记进 `extraction_drops`，界面上可见：
+会。十二种原因码，全部记进 `extraction_drops`，界面上可见（其中一种不是丢弃，是留痕）：
 
 | 原因 | 什么时候 |
 |---|---|
+| `truncated_reply` | 模型的输出被截断，这一块整块作废 |
+| `malformed_item` | 一条事实格式不对——**只丢这一条**，不丢整块（#127） |
+| `not_an_entity_name` | 「实体名」是一整句话（按词数 + 限定动词判，#143） |
 | `low_confidence` | 模型自报置信度低于阈值 |
-| `subject_not_declared` | 属性事实的主语没在 `entities` 里声明，类型不明、domain 无从校验 |
-| `attr_domain_mismatch` | 属性挂到了 domain 之外的类上（沿父类上溯仍不匹配） |
+| `subject_not_declared` | 主语没在 `entities` 里声明——关系与属性两条路径**都**记 |
+| `attr_domain_mismatch` | 属性挂到了 domain 之外的类上（沿父类 DAG 上溯仍不匹配） |
 | `attr_no_value` / `attr_datatype` | 属性事实没给值，或值换算不出声明的 datatype |
 | `object_missing` | 关系事实没有宾语 |
-| `fallback_relation_missing` | 本体里连兜底关系都被删了 |
+| `direction_corrected` | **不是丢弃**：主宾按签名对调了，记下来是为了不静默 |
+| `domain_mismatch` | 对调也不合法，谓词被丢掉（主宾与证据留下） |
 
 **`attr_domain_mismatch` 是最贵的一种**：它在落地当场丢弃，而事后改类救不回来——
 那条事实从没写入过，只能重抽。
+
+从前还有一种 `fallback_relation_missing`（兜底关系被删了就整条消失）——随 `related_to` 一起没了。
 
 ---
 
@@ -203,15 +229,55 @@ flowchart TB
 
 ### 这里会丢东西吗
 
-不丢事实，但**改类不进时间轴**——它是 `entities` 上一次 UPDATE 加一行 `entity_retypes`，
-而实体历史只读 `facts`。所以改错了不会自己显形。**可撤销不等于会被撤销**，
+不丢事实，但**改类不进时间轴**——它是 `entities` 上一次 UPDATE 加一行 `entity_retypes`〔实体历史现在会显示 `retyped` / `retype_reverted` 两种事件，这一条已经补上〕。**可撤销不等于会被撤销**，
 这是先做 preview 再做 apply 的理由。
+
+**类型消解今天只能手动跑**——本体页 preview → apply，没有任何自动触发。抽取结束只入队本体扩展与实体裁决。
+所以大本体下新实体的细化依赖人记得去点一下，这是个真缺口（0001 P3a）。
+
+**人拍过板的不再被引擎重判**：`entities.type_source` 是 `human` 的实体不进取材，包括「人判了，就是没有类型」（0001 P4a）。
 
 **拒绝要给理由。** `left_alone` 曾经只是个数，而这一步的设计押在"选择都不是是个体面答案"上——
 最大的一档不透明。记上理由之后第一次跑就回答了此前答不出的问题：失败**全在检索一侧**
 （`administrative_area`、`periodical` 从没被端上来过），不在裁决。
 
 ---
+
+## 四、公理：检查与推导
+
+```mermaid
+flowchart TB
+    ONT[(本体的公理<br/>functional · symmetric · asymmetric<br/>transitive · inverseOf · subPropertyOf · disjoint)] --> SELF[本体自检<br/>八类缺陷]
+    SELF --> DEF[(ontology_defects)]
+    ONT --> R0[事实层检查<br/>自环 · 反对称 · 传递环 · 基数]
+    G[(图谱)] --> R0
+    R0 --> VIO[(axiom_violations<br/>带完整路径)]
+    VIO --> DEC{人裁}
+    DEC -->|撤回事实| RET[事实作废]
+    DEC -->|放宽公理| RLX[改本体]
+    DEC -->|接受| ACC[两条都留]
+    ONT --> R1{materialize_inferences<br/>开关，默认关}
+    G --> R1
+    R1 -->|开| DER[(derived_facts<br/>另一张表 · rule_id · 前提链)]
+    DER --> GV[图上金色边<br/>实体面板「推出来的」]
+
+    style DEC fill:#3a3a5a,color:#fff
+```
+
+**检查不写库，推导写另一张表。** 一致性检查（R0）只指出问题，风险面为零；物化推导（R1）会往图里加东西，所以它的每条约束都是必要的：
+规则**只从本体公理编译**，没有用户 DSL；**断言硬性优先于派生**——已经断言过的三元组不再派生，「这条是谁说的」有唯一答案；
+深度上限加环检测，每谓词封顶两万条且被截掉的**要说出来**；有效时间取前提的交集，空交集不推。
+派生不进 `facts`：四十多处读 `facts` 的查询只有一处认得标记，分开之后忘了 UNION 的后果是**看不见**派生，而不是**混进去**。
+
+**本体自检排在前面**：自相矛盾的本体（一个关系既 symmetric 又 asymmetric、子类成环、逆没指回来）会让事实层的结论全部可疑。
+
+**没装本体包的库跑出来是零**，那是实情不是故障——没有公理就没有判据，不报矛盾比猜一个公理出来安全。
+
+**什么时候跑**：导入本体后自动跑一次检查（公理刚变，最该重算的时刻）；Review 页可手动跑；推导按 `inference_interval_minutes`（缺省 60）定时全量重推——增量维护还没做。
+
+### 这里会丢东西吗
+
+不丢，但**有两处沉默**：派生 vs 断言矛盾时派生不落地，今天**不记信号**；同一三元组有多条推导路径只留第一条证明。两者都是 [0002](decisions/0002-reasoning-engine.md) 里写了而没做的。
 
 ## 想自己跑一遍
 
@@ -238,3 +304,5 @@ node scripts/bench/run.mjs --corpus holmes --label holmes
 - [0001](decisions/0001-ontology-import-and-governance.md) 本体导入与治理，含 P3 的实测修订
 - [0003](decisions/0003-ontology-growth-loop.md) 本体从语料里长出来，人站在哪一环
 - [0006](decisions/0006-ontology-scale-and-the-prompt.md) 本体规模与抽取提示词，含曲线与一次撤回
+- [0002](decisions/0002-reasoning-engine.md) 推理机的顺序与安全边界；[0012](decisions/0012-the-ontology-is-a-contract-not-a-suggestion.md) 写入时的方向掰正
+- [0009](decisions/0009-no-type-is-a-type.md) / [0010](decisions/0010-no-relation-is-no-relation.md) 为什么「还没判出来」不是类、「说不出」不是关系

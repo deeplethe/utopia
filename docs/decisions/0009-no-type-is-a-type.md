@@ -1,6 +1,6 @@
 # 0009 · 「还没判出来」不该是一个类
 
-- **状态**：已实施
+- **状态**：已实施 · `entities.type_id` / `entity_retypes.from_type_id` 可空；内置九类与播种函数已连同种子关系一起退场（#110 / #125 / #128 / [0011](0011-a-mapping-is-not-a-fact.md)）；两个开放问题仍开放，第二个已有可见代价（2026-09-02 核）
 - **成文**：2026-08-30（约定见 [README](README.md)）
 - **相关**：[0008](0008-ontology-packs-as-cold-start.md) 让真词表成为可选起点，本文把内置的那套拆掉；
   [0001](0001-ontology-import-and-governance.md) 的 IRI/key 分工是本文撞名论证的前提
@@ -128,6 +128,8 @@ Postgres 里 **NULL 不等于 NULL**，所以未分类的同名实体不会被�
 它的正解仍然是注释里写的那条——等 `disjointWith` 落库后改从本体读，即 0008 的 R0 第三阶段。
 本文不动它。
 
+〔**2026-09-02**：前提已经成立，动作仍未做。`owl:disjointWith` 有表（`entity_type_disjoint`）、有导入、有编辑接口，消费者只有 R0 的本体自检；`CONFUSABLE_TYPE_KEYS` 仍是硬编码三个 key，且它上面的注释还停留在旧世界。〕
+
 ## 空白库
 
 删光之后，不选任何包的库是**真的空**：抽出来的实体 `type_id` 为 NULL，事实照常落库，
@@ -135,6 +137,8 @@ Postgres 里 **NULL 不等于 NULL**，所以未分类的同名实体不会被�
 `entities_for_type_resolution` 本来就是取「落在兜底上的」，改成取 `type_id IS NULL` 即可。
 
 **所以"先建库后建模"是受支持的路径，不是将就。**
+
+〔落地时多了一列本文没写的 `entities.type_source`（extracted / human / inferred）：0009 让 `type_id IS NULL` 同时承载「还没判」和「人判了就是没有」，这一列把两者分开，也是类型消解取材的过滤条件（0001 P4a）。另有 `specific_type` 与 `proposed_type` 分列——前者是模型对这个实体的自由说法，专供类型消解。〕
 
 配套：schema.org 在建库对话框里默认勾选，可反选。这在 45 秒的时候不成立，
 在 0.42 秒的时候成立（导入改批量插入之后的实测）。
@@ -158,4 +162,4 @@ Postgres 里 **NULL 不等于 NULL**，所以未分类的同名实体不会被�
   两个都没类型的同名实体，今天按 `Recall` 走画像相似度——够不够，没测过。
 - **`metric` / `dimension` 的去处**：语义层要用，而没有任何公开词表提供它们。
   是让用户自己建，还是我们出一个「Utopia 语义层」包？后者会把内置本体从代码搬到包里，
-  性质完全不同——那是可选、带 IRI、可被替换的。
+  性质完全不同——那是可选、带 IRI、可被替换的。〔**仍未答，且有了可见代价**：映射探查按 `entity_types.key IN ('metric','dimension')` 找类型，找不到就 `continue`——不装包、也没人手建这两个类的库里，探查会**静默产出零条**。〕

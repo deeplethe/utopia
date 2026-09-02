@@ -1,6 +1,6 @@
 # 「说不出是什么关系」不该是一个关系
 
-**状态**：已实施 · `facts.predicate_id` 改为可空
+**状态**：已实施 · `facts.predicate_id` 改为可空 · 文末两条待做已随 [0011](0011-a-mapping-is-not-a-fact.md)（#126）一并完成——`mapped_to` 不只撤出提示词，它整体退出了 `relation_types`，建库不再播种任何关系（2026-09-02 核）
 
 这是 [0009](0009-no-type-is-a-type.md) 在关系侧的孪生。那一篇讲的是
 `concept`——一个"还没判出来"被写成了一个类；这一篇讲 `related_to`——
@@ -128,7 +128,7 @@
 
 0052 只删了 `relation_types` 里的**行**。种子关系是**代码**——`graph.rs` 的
 `DEFAULT_RELATION_TYPES` 里那一条还在，而 `ensure_default_ontology` 在建库、
-看本体页、**每次抽取**时都会跑。账本上看得很清楚：
+看本体页、**每次抽取**时都会跑。〔该函数连同种子表在 #128 整体退场，这类「长回来」从此不可能；`no_predicate_still_shows.rs` 里的对照组随之改写。〕账本上看得很清楚：
 
     0052 应用于 08-30 17:54  →  全库 related_to 归零
     bench demo-autoextend    →  08-30 18:01 又长出一条 builtin=true
@@ -159,10 +159,12 @@ SELECT count(*) FROM relation_types WHERE key = 'related_to' AND builtin
 另外两个连带修掉的：全库计数的断言会被并行测试污染（改成按 kb 查），
 以及断言 panic 会跳过 teardown（改成开跑前先扫地）。
 
-## 待做
+## 待做〔均已完成，见状态行〕
 
 - `mapped_to` 从抽取提示词里撤掉。它链接的是实体 → 数据源 schema（JSON 值），
   只有 `related_to` 被排除在提示词外，于是模型在实体↔实体上用了它 41 次。
   一行过滤的事。
 - 再进一步：`mapped_to` 根本不该在本体里，它是问数映射的内部机制，
   与这一篇讲的是同一类错误——把控制流写成词汇。
+
+〔**顺带记两处死代码**（2026-09-02）：`graph.rs` 的 `confirmed_mappings()` 全仓零调用（问数改走 `mappings::confirmed`）；`confirm_fact` 里那段「同 (概念,源) 旧映射作废」的 `r.key = 'mapped_to'` 连接现在恒匹配零行。该清。〕

@@ -1,6 +1,6 @@
 # 0015 · 记下一句话，不等于断言一个事实
 
-- **状态**：规划中 · schema 未动
+- **状态**：进行中 · schema 已落（迁移 `0018_a_fact_awaiting_a_nod`，与本文同一 PR #180）· **抽取侧尚未接线，三条决定一条都没落地；`remember` 已被整体停用作为临时闸**（2026-09-02 核，修订见文末）
 - **成文**：2026-09-01（约定见 [README](README.md)）
 - **相关**：[0010](0010-no-relation-is-no-relation.md) 删掉兜底关系（本篇那条空谓词正是它的
   正确行为）、[0011](0011-a-mapping-is-not-a-fact.md) 批过「拿浮点数编码二值状态」——
@@ -122,6 +122,20 @@ object_value, valid_from, valid_to, ..., confidence, derived_by_rule, supersedes
 装上这道闸之后，**外部 agent 也只能提议，不能断言**。人先看见才生效，那条顾虑就不
 成立了。所以本篇不只是修一个 bug，它是 0014 里那个「未决」的答案。
 
+## 修订记录（2026-09-02）：只有 schema，没有运行时
+
+`pending_facts` 与 `rejected_facts` 两张表在 #180 建好了，形状按「原句在上、三元组在下」设计：`chunk_id NOT NULL` 指回那句记忆、`proposed_predicate` 存模型原话、`predicate_id` **可空**——人要看见的正是这个空、`proposed_by` 补上「谁的话」。失败方向的论证被完整搬进了迁移注释。
+
+**但全仓零读零写。** `memory::is_memory_document()` 为这道判据写好了，零调用；抽取管线没有任何 `pending_facts` 写入点；Review 的八档计数里没有 `pending` 这一档；`remember` 的回话仍是 `Recorded (effective …)`。
+
+**临时闸是把工具整个关掉**：`chat.rs` 的 `REMEMBER_ENABLED = false`，注释写着「抽取侧接上那张表之后改回 true；在那之前宁可没有这个工具，也不要一个会悄悄改图的工具」。所以三条决定里只有隐含的第 0 条（不让说谎继续）实现了。
+
+**于是下文「MCP 开写的障碍消掉了」在代码上还不成立**——闸没装上，MCP 依旧只读。
+
+**一个数字的更正**：「27 处查询按 `invalidated_at IS NULL` 捞活事实，分布在 6 个文件」——今天是 56 处、7 个文件（多出 `ontology.rs`）。论证方向不变，数字若再被引用应重新数。
+
+**同一类问题的另一面**（#173，迁移 `0015_what_it_did_not_just_what_it_said`）：跨轮回放助手上一轮的工具调用与结果，模型才知道自己做过什么，不会把上一轮的检索重跑一遍落到另一批同名实体上。本文讲的是「助手说的」与「图里得到的」之间的落差，那一条讲的是「助手说的」与「助手做的」之间的落差。
+
 ## 未决
 
 - **闸只拦记忆，还是拦所有「单条、交互式」的写入？** 今天只有 `remember` 这一条路，
@@ -130,4 +144,4 @@ object_value, valid_from, valid_to, ..., confidence, derived_by_rule, supersedes
   confidence 表达人的态度，那大概是「不动它」——但要想清楚。
 - **拒绝之后那条记忆怎么办。** 文档还在（人确实说过那句话），只是没抽出可用的事实。
   下一轮重抽会不会又提议一遍？`concept_mappings` 那边靠 `status='rejected'` 挡住了
-  重复提议，这里需要对应的东西。
+  重复提议，这里需要对应的东西。〔答了一半：`rejected_facts` 表与查重索引建好了，语义就是「这个三元组在这个库里被拒过」，但没有任何代码写它或查它。〕
