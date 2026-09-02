@@ -34,6 +34,8 @@ pub struct AppState {
     /// 按模型的并发闸门：后台任务调 LLM 前取许可。限额存库，改完即时生效
     pub model_gates: Arc<crate::llm_util::ModelGates>,
     pub events: broadcast::Sender<AppEvent>,
+    /// 正在生成的回答，按会话查。**刷新页面之后还能接上**（见 `live`）
+    pub live: Arc<crate::live::Registry>,
 }
 
 impl AppState {
@@ -59,6 +61,7 @@ impl AppState {
             worker_concurrency: Arc::new(std::sync::atomic::AtomicUsize::new(32)),
             model_gates: Arc::new(crate::llm_util::ModelGates::default()),
             events,
+            live: Arc::new(crate::live::Registry::default()),
         }
     }
 

@@ -2,6 +2,7 @@
 //! 事件序列：step*（行动轨迹）| sources（引用清单，随检索增量更新）| delta*（增量文本）→ done | error。
 //! 模型不支持 tool-calling 时自动降级为一次性 RAG 注入。
 
+use crate::live::Frame;
 use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
@@ -324,7 +325,23 @@ pub async fn chat(
     .await?;
     let workspace_id = kb.workspace_id;
 
-    let stream = async_stream::stream! {
+    // 注册表在生成器之前取出来：下面那个 `async_stream!` 会把 `state` 整个搬走
+    let live = state.live.clone();
+
+    // 生成过程不挂在这条连接上。
+    //
+    // **切走一次就丢一个回答**，而且丢得比看上去彻底：整段生成住在下面这个
+    // 生成器里，助手消息只在走完时落库；浏览器一导航，axum 丢掉响应体、
+    // 生成器 future 被丢弃，于是 LLM 调用当场取消，那句 `append_message`
+    // 永远不执行。实测掐断连接时已经收到 1219 字节的正文，二十秒后库里
+    // 只剩用户那一行——**那个回答不是存在但没显示，是根本没被生成完**。
+    //
+    // 所以把生成器交给一个独立任务去驱动，这条连接降级成一个订阅者。
+    // 任务不随连接消失，答案照常写完、照常落库，人回来就在。
+    //
+    // 代价说清楚：**没人看的时候仍然在花钱**。这是有意的——丢答案比多跑一轮贵，
+    // 而 `MAX_ROUNDS` 已经给了上限。send 失败（接收端没了）不中断，那正是要点。
+    let producer = async_stream::stream! {
         let ds_names: Vec<String> = mounted_sources.iter().map(|d| d.name.clone()).collect();
         let tools = tools_schema(can_write, &ds_names);
         let mut system_prompt = if can_write {
@@ -423,9 +440,7 @@ pub async fn chat(
         }
 
         // 会话 id 先行下发（新会话由此告知前端）
-        yield Ok(Event::default()
-            .event("conversation")
-            .data(json!({ "id": conversation_id }).to_string()));
+        yield Frame::new("conversation", json!({ "id": conversation_id }).to_string());
 
         // 引用清单：跨轮累积、去重、编号稳定。键 = chunk uuid 或 "charter:{slug}#{anchor}"
         let mut source_ids: Vec<String> = Vec::new();
@@ -488,10 +503,10 @@ pub async fn chat(
                             .enumerate()
                             .map(|(i, c)| source_json(i + 1, c))
                             .collect();
-                        yield Ok(Event::default().event("sources").data(
-                            serde_json::to_string(&legacy_sources)
-                                .unwrap_or_else(|_| "[]".into()),
-                        ));
+                        yield Frame::new(
+                            "sources",
+                            serde_json::to_string(&legacy_sources).unwrap_or_else(|_| "[]".into()),
+                        );
                         let mut lmsgs =
                             vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
                         for (role, content) in &history.turns {
@@ -848,14 +863,28 @@ pub async fn chat(
                         json!({ "kind": "tool", "label": other, "detail": "unknown" }),
                     ),
                 };
+                // **这一步发生在正文的哪个位置。**
+                //
+                // 模型是边说边调的：说一句、查一下、再说一句。SSE 上 `delta` 与
+                // `step` 本来就是交替发出去的，顺序不用额外记；而**历史回放没有
+                // 那条时间线**——落库的只有拼好的整段正文和一个扁平的 steps 数组，
+                // 于是重新打开一场对话，所有调用都堆在正文最前面，读起来像是
+                // 先查了七次再一口气说完。记下偏移，回放才能把话再断开。
+                //
+                // 单位是 **UTF-16 码元**，因为切分发生在浏览器里，而 JS 的
+                // `String.prototype.length` 数的就是它。用字节数或 `chars()`
+                // 在中文和 emoji 上都会切歪
+                let mut step = step;
+                if let Some(obj) = step.as_object_mut() {
+                    obj.insert("at".into(), json!(answer_acc.encode_utf16().count()));
+                }
                 steps_acc.push(step.clone());
-                yield Ok(Event::default()
-                    .event("step")
-                    .data(serde_json::to_string(&step).unwrap_or_default()));
+                yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
                 if step["kind"] == "search" || step["kind"] == "docs" {
-                    yield Ok(Event::default()
-                        .event("sources")
-                        .data(serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
+                    yield Frame::new(
+                        "sources",
+                        serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()),
+                    );
                 }
                 let result_msg = tool_result_message(&call.id, &result);
                 exchange_acc.push(result_msg.clone());
@@ -865,21 +894,96 @@ pub async fn chat(
         }
     };
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    // 生成登记在案，然后**这条连接也只是去「接上」它**——与刷新之后
+    // 那条重连走的是同一段代码。两条路分开写的话，迟早只有一条是对的
+    let handle = live.begin(conversation_id).await;
+    let attached = live.attach(conversation_id).await;
+    tokio::spawn(async move {
+        let mut producer = std::pin::pin!(producer);
+        while let Some(frame) = producer.next().await {
+            // 没有订阅者是常态（人走了）。**照发不误**：这里中断就等于
+            // 把「切走一次丢一个回答」原样搬回来
+            handle.emit(frame).await;
+        }
+        // 注销之后再接上的人得到「没有在跑的」，那时答案已经落库
+        handle.finish().await;
+    });
+
+    Ok(sse_from(attached))
 }
 
-fn delta_event(text: &str) -> Result<Event, Infallible> {
-    Ok(Event::default()
-        .event("delta")
-        .data(serde_json::to_string(&json!({ "text": text })).unwrap_or_default()))
+/// 把一次「接上」变成 SSE：先补一份快照，再照常收增量。
+///
+/// `None` = 这个会话没有在跑的生成。回一条 `idle` 而不是 404——**客户端
+/// 每次打开会话都会问一次**，而「没有在跑」是最常见的答案，不是错误
+fn sse_from(
+    attached: Option<(
+        crate::live::Snapshot,
+        tokio::sync::broadcast::Receiver<Frame>,
+    )>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = async_stream::stream! {
+        let Some((snapshot, mut rx)) = attached else {
+            yield to_event(&Frame::new("idle", "{}".into()));
+            return;
+        };
+        yield to_event(&snapshot.to_frame());
+        loop {
+            match rx.recv().await {
+                Ok(frame) => {
+                    let done = frame.event == "done" || frame.event == "error";
+                    yield to_event(&frame);
+                    if done { return; }
+                }
+                // 生成结束、发送端销毁：正常收尾
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                // 这个客户端读得太慢，被广播缓冲甩下了。**说出来**——
+                // 静默继续会让它少掉中间一段而毫不知情
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    yield to_event(&Frame::new(
+                        "error",
+                        format!("Fell behind the stream by {n} messages; reopen the conversation"),
+                    ));
+                    return;
+                }
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-fn done_event() -> Result<Event, Infallible> {
-    Ok(Event::default().event("done").data("{}"))
+fn to_event(frame: &Frame) -> Result<Event, Infallible> {
+    Ok(Event::default().event(frame.event).data(&frame.data))
 }
 
-fn error_event(message: &str) -> Result<Event, Infallible> {
-    Ok(Event::default().event("error").data(message))
+/// 接上一次正在跑的生成（刷新页面之后走这里）。
+pub async fn reattach(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, conversation_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
+    // **归属要查。** 会话 id 是可以猜的，而这条流会把别人的回答一字不差地念出来
+    utopia_store::conversations::require_owned(&state.pool, kb_id, user.id, conversation_id)
+        .await?;
+    Ok(sse_from(state.live.attach(conversation_id).await))
+}
+
+/// 生成器产出的是 `Frame`，不是 `axum` 的 `Event`。
+/// **广播与快照都要读回事件的内容**，而 `Event` 读不回来（见 `live`）
+fn delta_event(text: &str) -> Frame {
+    Frame::new(
+        "delta",
+        serde_json::to_string(&json!({ "text": text })).unwrap_or_default(),
+    )
+}
+
+fn done_event() -> Frame {
+    Frame::new("done", "{}".into())
+}
+
+fn error_event(message: &str) -> Frame {
+    Frame::new("error", message.into())
 }
 
 fn source_json(n: usize, c: &ChunkView) -> serde_json::Value {
