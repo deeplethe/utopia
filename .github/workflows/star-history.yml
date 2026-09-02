@@ -13,42 +13,52 @@ permissions:
 jobs:
   star-history:
     runs-on: ubuntu-latest
-    # 这个 action 用 Puppeteer 渲染，挂住过。没有这一行的话，挂住就是
-    # 跑满 GitHub 的六小时上限——实测有一次重试了十五分钟才失败
+    # 网络接口卡住的话不该跑满 GitHub 的六小时上限。翻页 + 画图实测不到一分钟
     timeout-minutes: 10
     steps:
-      - name: Generate Star History
-        # 钉到 commit，不是 tag。**这是仓库里第一个有 `contents: write` 的
-        # workflow**，而 tag 可以被 action 作者改指向——写权限配可变引用，
-        # 等于把仓库的写入托付给一份随时能换掉的代码。
-        # 65836723 = v3.34，升级时连这行注释一起改
-        uses: lowlighter/metrics@65836723097537a54cd8eb90f61839426b4266b6
+      # 图由 `scripts/star-history.mjs` 生成，不再用第三方 action。
+      #
+      # 换掉 `lowlighter/metrics` 有两个理由。一是它把「累计总数」和
+      # 「每天新增」绑在同一个开关上，模板里没有只留累计那张的办法，
+      # 而想要的就是传统的那一条曲线。二是**它是跑在 `contents: write`
+      # 之下的第三方代码**——这个权限底下跑我们自己的脚本，安心得多。
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
         with:
-          filename: assets/star-history.svg
-          # **必须是 classic token，fine-grained 的会被直接拒收**：这个
-          # action 走 GraphQL，而 GitHub 的 fine-grained token 不能用于
-          # GraphQL 认证。试过，报的就是这句话。
-          #
-          # **需要 `read:org`**（本仓库属于组织，action 要先把
-          # `deeplethe` 解析成组织），**外加能读星标的权限**：GitHub 在
-          # 2026-06-30 把星标时间线限制成只有仓库自己的管理员/协作者可读，
-          # 零 scope 的 token 从此读不到，自己的仓库也不行。
-          # 这条限制也是 star-history.com 那类匿名出图现在只回占位图的原因——
-          # 换句话说，**用我们自己的 token 在 CI 里出图，是现在唯一还成立的路**。
-          token: ${{ secrets.METRICS_TOKEN }}
-          # 这个不用配：它管的是把生成的 SVG 提交回仓库那一步，
-          # 用 workflow 自带的 token，靠上面的 `contents: write`
-          committer_token: ${{ github.token }}
-          # **提交到专用分支，不碰默认分支。**
-          # `dev` 上有分支保护（必须走 PR、`enforce_admins: true`），
-          # 机器人直推一定被拒；而为了一张图去松保护是本末倒置。
-          # README 直接引这个分支上的 raw 地址
-          committer_branch: assets
-          user: ${{ github.repository_owner }}
-          repo: ${{ github.event.repository.name }}
-          template: repository
-          base: ""
-          plugin_stargazers: yes
-          plugin_stargazers_days: 0
-          plugin_stargazers_charts_type: graph
-          output_action: commit
+          node-version: 22
+
+      - name: Render the chart
+        env:
+          REPO: ${{ github.repository }}
+          # **`GITHUB_TOKEN` 在这里不够**：GitHub 在 2026-06-30 把星标
+          # 时间线限制成只有仓库的管理员/协作者可读。这个 secret 是一个
+          # classic token（fine-grained 的读不了这份数据），已经验过能取到。
+          # 名字沿用 `METRICS_TOKEN` 是为了不必再改一次仓库设置
+          GITHUB_TOKEN: ${{ secrets.METRICS_TOKEN }}
+          OUT: chart/star-history.svg
+        run: node scripts/star-history.mjs
+
+      # **提交到专用的孤儿分支，不碰默认分支。**
+      # `dev` 上有分支保护（必须走 PR、`enforce_admins: true`），机器人
+      # 直推一定被拒；而为了一张图去松保护是本末倒置。`assets` 与 `dev`
+      # 没有共同历史，在那边提交碰不到任何源码。
+      - name: Commit to the assets branch
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch assets \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" out
+          mkdir -p out/assets
+          cp chart/star-history.svg out/assets/star-history.svg
+          cd out
+          # 星标没变化的那天不留空提交——每天一条 "no change" 会把
+          # 这个分支的历史淹掉
+          if git diff --quiet -- assets/star-history.svg; then
+            echo "chart unchanged, nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add assets/star-history.svg
+          git commit -m "Star history: $(date -u +%Y-%m-%d)"
+          git push
