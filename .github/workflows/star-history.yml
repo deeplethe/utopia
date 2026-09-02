@@ -1,0 +1,28 @@
+name: Star History
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  star-history:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Star History
+        uses: lowlighter/metrics@v3.34
+        with:
+          filename: assets/star-history.svg
+          token: ${{ secrets.METRICS_TOKEN }}
+          committer_token: ${{ github.token }}
+          user: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          template: repository
+          base: ""
+          plugin_stargazers: yes
+          plugin_stargazers_days: 0
+          plugin_stargazers_charts_type: graph
+          output_action: commit
