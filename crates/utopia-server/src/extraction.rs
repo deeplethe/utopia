@@ -1025,13 +1025,20 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                 // 那份只覆盖模型在这一块里声明过的实体，而宾语常是别处已存在的实体，
                 // 这一块没重新声明它，于是查不到、判不了、掰不动。实测差别不小——
                 // 用声明那份时反向只降到 7.0%，剩下的正是宾语类型查不到的那些
-                let s_fits =
-                    utopia_store::ontology::entity_fits_domain(&state.pool, pid, subject_id).await;
-                if let Ok(Some(false)) = s_fits {
-                    let o_fits =
-                        utopia_store::ontology::entity_fits_domain(&state.pool, pid, object_id)
-                            .await;
-                    if let Ok(Some(true)) = o_fits {
+                //
+                // 判断本身在 store（`ontology::judge_direction`），**与采纳共用**（#190）：
+                // 写谓词的路不止这一条，守卫只装在一条上就等于没装。查不出来（库错）
+                // 按没有判据处理，照原样落——宁可少掰一条，不能因为一次查询失败丢事实
+                let fit = utopia_store::ontology::judge_direction(
+                    &state.pool,
+                    pid,
+                    subject_id,
+                    object_id,
+                )
+                .await
+                .unwrap_or(utopia_store::ontology::Fit::Unchecked);
+                match fit {
+                    utopia_store::ontology::Fit::Swap => {
                         drop_signal(
                             state,
                             doc.kb_id,
@@ -1048,7 +1055,8 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                         )
                         .await;
                         (Some(pid), object_id, subject_id)
-                    } else {
+                    }
+                    utopia_store::ontology::Fit::Neither => {
                         // **对调也不合法 → 退回没有谓词。**
                         //
                         // 这不是方向问题，是这个关系压根不适用：schema.org 的
@@ -1077,8 +1085,9 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                         .await;
                         (None, subject_id, object_id)
                     }
-                } else {
-                    (Some(pid), subject_id, object_id)
+                    utopia_store::ontology::Fit::Keep | utopia_store::ontology::Fit::Unchecked => {
+                        (Some(pid), subject_id, object_id)
+                    }
                 }
             } else {
                 (predicate_id, subject_id, object_id)

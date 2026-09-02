@@ -249,7 +249,7 @@ flowchart TB
 flowchart TB
     ONT[(本体的公理<br/>functional · symmetric · asymmetric<br/>transitive · inverseOf · subPropertyOf · disjoint)] --> SELF[本体自检<br/>八类缺陷]
     SELF --> DEF[(ontology_defects)]
-    ONT --> R0[事实层检查<br/>自环 · 反对称 · 传递环 · 基数]
+    ONT --> R0[事实层检查<br/>自环 · 反对称 · 传递环 · 基数 · 签名]
     G[(图谱)] --> R0
     R0 --> VIO[(axiom_violations<br/>带完整路径)]
     VIO --> DEC{人裁}
@@ -263,6 +263,8 @@ flowchart TB
 
     style DEC fill:#3a3a5a,color:#fff
 ```
+
+**签名在三条写路径上都算数**（#190 / #196）：第一节那道「主宾对得上签名吗」的判断住在 store（`ontology::judge_direction`），抽取落新事实、采纳把谓词挂回旧事实都调它——两边都不合的采纳**不挂**，条数随 `facts_left_off` 上报；合并换了主宾之后不掰不改，只对搬动过的事实查一遍，违反的进 `axiom_violations`（`signature`）。检查里的第五类就是它的全量版，本体事后改了 domain 也逃不过。
 
 **检查不写库，推导写另一张表。** 一致性检查（R0）只指出问题，风险面为零；物化推导（R1）会往图里加东西，所以它的每条约束都是必要的：
 规则**只从本体公理编译**，没有用户 DSL；**断言硬性优先于派生**——已经断言过的三元组不再派生，「这条是谁说的」有唯一答案；

@@ -1768,6 +1768,43 @@ pub async fn entity_fits_domain(
     Ok((declared > 0).then_some(ok > 0))
 }
 
+/// 一条 (主语, 谓词, 宾语) 对着谓词的 domain 签名该怎么落。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fit {
+    /// 谓词没声明 domain——没有判据，照原样落
+    Unchecked,
+    /// 主语符合
+    Keep,
+    /// 主语不符合、宾语符合：按签名对调主宾
+    Swap,
+    /// 两边都不符合：这个关系不适用于这对实体，谓词该留空
+    Neither,
+}
+
+/// **三条写谓词的路共用的那一道判断**（#190 / #196）：抽取落新事实、采纳把谓词
+/// 挂回旧事实、合并换掉主语——从前只有抽取查，另外两条各自绕了过去。
+///
+/// 判据刻意窄（0012）：只看 domain，只在**主语违反且宾语符合**时对调，两边都对不上
+/// 就留空谓词。参数顺序不是关于世界的断言，是这个 key 的编码约定，所以本体在这一处
+/// 是执法的；哪些类型能参与仍是引导，不在这里裁。
+pub async fn judge_direction(
+    pool: &PgPool,
+    relation_type_id: Uuid,
+    subject_id: Uuid,
+    object_id: Uuid,
+) -> AppResult<Fit> {
+    match entity_fits_domain(pool, relation_type_id, subject_id).await? {
+        None => Ok(Fit::Unchecked),
+        Some(true) => Ok(Fit::Keep),
+        Some(false) => {
+            match entity_fits_domain(pool, relation_type_id, object_id).await? {
+                Some(true) => Ok(Fit::Swap),
+                _ => Ok(Fit::Neither),
+            }
+        }
+    }
+}
+
 /// 把 `owl:inverseOf` / `rdfs:subPropertyOf` 从 IRI 解析成 id。
 ///
 /// **必须是第二遍。** 这两条指的是另一个关系类型，而 id 要等全部插完才有——

@@ -19,7 +19,7 @@ use utopia_core::models::{AxiomViolation, DerivedFactView, OntologyDefect};
 type RuleKind = &'static str;
 use utopia_core::AppResult;
 use utopia_reason::derive::TimedEdge;
-use utopia_reason::{check, Axioms, Edge, Violation};
+use utopia_reason::{check, Axioms, Edge, Kind, Violation};
 use uuid::Uuid;
 
 /// 一次检查的产出，给调用方写审计与告诉用户。
@@ -149,10 +149,99 @@ async fn axioms(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> 
 }
 
 /// 跑一遍检查，把结果落库。
+/// 主语不在谓词声明的 domain 里、或宾语不在 range 里的活事实（#190 / #196）。
+///
+/// 这是签名检查在**账本层**的那一半：抽取与采纳在写入时按 `ontology::judge_direction`
+/// 掰正或留空，但合并会换掉主语、本体会事后改 domain，写入时的守卫挡不住写入之后
+/// 的改动。所以这里对着库量一遍，任何一条路写反了都在 Review 里看得见。
+///
+/// **没有类型的实体不算**：它没有类型可比，「不知道」不是「不符合」——按 0009，
+/// 未分类是一种诚实的状态，不该因此被报成矛盾。声明了 domain / range 的谓词才查，
+/// 与其它四类同一条纪律：没有公理就没有判据。
+///
+/// `only` 给了就只看这些事实（合并之后对搬动过的那几条立刻查）；None 是全量。
+pub async fn signature_breaks(
+    pool: &PgPool,
+    kb_id: Uuid,
+    only: Option<&[Uuid]>,
+) -> AppResult<Vec<Uuid>> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "WITH RECURSIVE anc(type_id, anc_id) AS (
+             SELECT id, id FROM entity_types WHERE kb_id = $1
+             UNION
+             SELECT a.type_id, p.parent_id
+               FROM anc a JOIN entity_type_parents p ON p.child_id = a.anc_id
+         )
+         SELECT f.id
+           FROM facts f
+           JOIN relation_types r ON r.id = f.predicate_id
+           JOIN entities s ON s.id = f.subject_id
+           JOIN entities o ON o.id = f.object_id
+          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+            AND ($2::uuid[] IS NULL OR f.id = ANY($2))
+            AND (
+              (s.type_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM relation_type_domains d WHERE d.relation_type_id = r.id)
+               AND NOT EXISTS (SELECT 1 FROM relation_type_domains d
+                                 JOIN anc a ON a.anc_id = d.entity_type_id
+                                WHERE d.relation_type_id = r.id AND a.type_id = s.type_id))
+              OR
+              (o.type_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM relation_type_ranges g WHERE g.relation_type_id = r.id)
+               AND NOT EXISTS (SELECT 1 FROM relation_type_ranges g
+                                 JOIN anc a ON a.anc_id = g.entity_type_id
+                                WHERE g.relation_type_id = r.id AND a.type_id = o.type_id))
+            )
+          ORDER BY f.recorded_at",
+    )
+    .bind(kb_id)
+    .bind(only)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// 把签名违规落进 `axiom_violations`（kind = `signature`，left 与 right 同一条事实）。
+/// 幂等：同一条事实重复报不重复入库。返回新插入的条数。
+pub async fn record_signature_breaks(
+    pool: &PgPool,
+    kb_id: Uuid,
+    facts: &[Uuid],
+) -> AppResult<usize> {
+    let mut inserted = 0usize;
+    for fact in facts {
+        let id: Option<(Uuid,)> = sqlx::query_as(
+            "INSERT INTO axiom_violations (id, kb_id, kind, left_fact, right_fact)
+             VALUES ($1, $2, 'signature', $3, $3)
+             ON CONFLICT (kb_id, kind, left_fact, right_fact) DO NOTHING
+             RETURNING id",
+        )
+        .bind(Uuid::now_v7())
+        .bind(kb_id)
+        .bind(fact)
+        .fetch_optional(pool)
+        .await?;
+        if id.is_some() {
+            inserted += 1;
+        }
+    }
+    Ok(inserted)
+}
+
 pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
     let edges = edges(pool, kb_id).await?;
     let axioms = axioms(pool, kb_id).await?;
-    let violations = check(&edges, &axioms);
+    let mut violations = check(&edges, &axioms);
+    // 第五类不在纯逻辑引擎里：它要看实体的类型与谓词的 domain / range，那是库里的
+    // 东西。算出来后与其它四类走同一条落库与清陈规矩
+    for fact in signature_breaks(pool, kb_id, None).await? {
+        violations.push(Violation {
+            kind: Kind::Signature,
+            left: fact,
+            right: fact,
+            path: Vec::new(),
+        });
+    }
 
     let mut report = Report {
         edges: edges.len(),

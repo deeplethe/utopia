@@ -1187,6 +1187,7 @@ export const zh: Strings = {
     violationAsymmetry: "两个方向都断言了",
     violationCycle: "传递链绕成了环",
     violationFunctional: "该只有一个值，却有两个",
+    violationSignature: "主语或宾语不在关系声明的类型里",
     violationVia: (p: string) => `依据 ${p}`,
     violationPath: (n: number) => `环上 ${n} 条事实`,
     retractFact: "数据错了",

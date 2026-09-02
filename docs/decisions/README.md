@@ -27,7 +27,7 @@
 | | 文档 | 状态 |
 |---|---|---|
 | 0001 | [本体导入与治理路线](0001-ontology-import-and-governance.md) | 进行中 · P0–P2c 全建成；P3 按预算落地、P3a 只能手动跑；P3b 建成但形态不同；**P4b/P4c 待做**；P5 已由 0002 落地；判据 2 被 0012 推翻一半 |
-| 0002 | [推理机](0002-reasoning-engine.md) | R0 建成（含本体自检八类）· R1 建成带开关默认关 · **R2 只一层、R3 未做** · 派生 vs 断言矛盾无信号 |
+| 0002 | [推理机](0002-reasoning-engine.md) | R0 建成（事实层五类含签名、本体自检八类）· R1 建成带开关默认关 · **R2 只一层、R3 未做** · 派生 vs 断言矛盾无信号 |
 | 0003 | [本体从语料里长出来，人站在哪一环](0003-ontology-growth-loop.md) | 已建成且仍在跑 · 起点已被 0010 与种子退场改写 · 「拒绝有记忆」被 0007 推翻重做 · 新说法提醒待做 |
 | 0004 | [语言：哪些字跟着看的人走，哪些跟着语料走](0004-language-and-localization.md) | 已建成 · L0–L3 全落地 · 界面刻意不猜浏览器语言 · 「中文内置本体」随播种退场作废 |
 | 0005 | [告警中心](0005-alert-center.md) | 已建成 · 五种告警 · 三个决定推翻两个（就地留痕）· `no_text_layer` 待接 |
@@ -37,7 +37,7 @@
 | 0009 | [「还没判出来」不该是一个类](0009-no-type-is-a-type.md) | 已实施 · `disjointWith` 落库但消解侧未消费 · `metric`/`dimension` 去处未答且有可见代价 |
 | 0010 | [「说不出是什么关系」不该是一个关系](0010-no-relation-is-no-relation.md) | 已实施 · 待做两条随 0011 完成 · 两处死代码待清 |
 | 0011 | [「怎么算」不是「有什么」](0011-a-mapping-is-not-a-fact.md) | 已实施（#126 / #140 / #148）· 证据链未做 · 多源选法未做 |
-| 0012 | [本体是一份契约，不只是一份建议](0012-the-ontology-is-a-contract-not-a-suggestion.md) | 已实施 · 违反率 57%→4%、反向 39→0 · 三条待做全未做 |
+| 0012 | [本体是一份契约，不只是一份建议](0012-the-ontology-is-a-contract-not-a-suggestion.md) | 已实施 · 违反率 57%→4%、反向 39→0 · 守卫已扩到采纳与合并（#190 / #196），另两条待做仍在 |
 | 0013 | [一个来源该交出它的历史，不是它的现状](0013-a-source-should-hand-over-its-history.md) | 已实施两个（GitHub / Jira）· 文档协作类未开工 |
 | 0014 | [身份跟着人，范围跟着令牌](0014-identity-from-the-person-scope-from-the-token.md) | 已实施（#180）· MCP 只读五工具 · 令牌页在账户层（A2）· 误导性的占位 crate 已删 |
 | 0015 | [记下一句话，不等于断言一个事实](0015-recording-a-sentence-is-not-asserting-a-fact.md) | 已实施 · 记忆抽出的事实进 `pending_facts`，Review 新档 + 跟在 remember 步骤后的确认卡 · `remember` 重新打开 · MCP 放开写是下一刀 |

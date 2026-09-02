@@ -101,6 +101,7 @@ CREATE TABLE fact_derivations (
 
 > **修订记录（2026-09-02）：R0 建成，四处与上面写的不同。**
 > 一、**四类不是三类，且不是那三类**：`self_loop` / `asymmetry` / `cycle` / `functional`（兼含 inverse_functional）。**事实层的 disjointWith 违反没有做**——disjoint 只进了本体自检。
+> 〔后来多了第五类 `signature`（#190 / #196）：主语不在谓词的 domain、或宾语不在 range。它不由纯逻辑引擎算——要看实体类型与闭包，那是库里的东西——`store::reasoning::signature_breaks` 用 SQL 量，算出来后与其它四类走同一条落库、清陈、裁决的路。合并之后对搬动过的事实立刻查，手动跑检查时全量查。未分类实体不算。〕
 > 二、**不进 `fact_conflicts`，另建 `axiom_violations`**：那张表问的是「哪条对」，公理违规问的是「错在数据还是错在定义」，出路是 `fact_retracted` / `axiom_relaxed` / `accepted`。「零新界面」也没守住，Review 页多了 `violations` 与 `defects` 两个页签。
 > 三、**多出另一半：本体自身的自洽性**（`ontology_defects`，八类：symmetric 且 asymmetric、transitive 且 functional、子类成环、与祖先 disjoint、继承来的 disjoint、自逆、逆没指回来、子属性成环）。理由是自相矛盾的本体会让事实层的结论全部可疑，所以缺陷优先于违规展示。
 > 四、环检测是深度优先不是半朴素——闭包只告诉你 A 推出了 A，人要的是**路径**；半朴素在 R1。

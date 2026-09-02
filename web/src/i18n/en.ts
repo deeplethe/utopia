@@ -1313,6 +1313,9 @@ export const en = {
     violationAsymmetry: "Both directions asserted",
     violationCycle: "Cycle through the transitive chain",
     violationFunctional: "Should hold one value, holds two",
+    /** 签名违规（#190 / #196）：一条事实的主语或宾语落在谓词声明的类型之外——
+     *  抽取时会掰正，采纳与合并这两条路从前绕过了检查 */
+    violationSignature: "Subject or object outside the declared types",
     violationVia: (p: string) => `via ${p}`,
     violationPath: (n: number) => `${n} facts in the cycle`,
     retractFact: "Data is wrong",

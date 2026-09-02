@@ -26,7 +26,7 @@
 | `utopia-mcp` / `utopia-connectors` / `utopia-graph` 三个 crate 是三行占位，其中一个宣称的工具名从未实现 | 0014 | 读源码的人被误导 |
 | 证明树只展开一层；增量维护没做；派生 vs 断言矛盾不记信号 | 0002 | README 说 derivation path expands back to the sentence，只对了一层 |
 | `disjointWith` 落库了，消解侧仍用硬编码 `CONFUSABLE_TYPE_KEYS` | 0009 / 0001 P5 | 本体声明了不相交，合并候选照样跨过去 |
-| 合并路径没有签名复核 | 0012 待做 | 写入时掰正的方向，合并一次就能再反回去 |
+| 合并路径没有签名复核〔已做，#196；采纳那条路也没有，#190，一并做了〕 | 0012 待做 | 写入时掰正的方向，合并一次就能再反回去 |
 | 类型消解只能手动跑 | 0001 P3a | 大本体下新实体的细化靠人记得点一下 |
 | 中文库拿到纯英文本体；`zh.ts` 没追平所以界面默认英文 | 0008 / 0004 | 中文用户两头都是英文 |
 | `merge_key` 不折 `_by`；叙述动词进本体 | 0007 | 同一关系两个方向并存 |
@@ -70,6 +70,7 @@ Chat memory 与 MCP 两处在 A1 / A2 落地前标 in development。中英两份
 **B2 · 派生 vs 断言矛盾要有信号。** `axiom_violations` 加一种 kind（`derived_contradiction`），进 Review 同一档——0002 写了没做的那一行。
 **B3 · `disjointWith` 进消解，合并路径复核签名。** `classify_type_drift` 改从 `entity_type_disjoint` 读（没声明就退回今天的行为，不硬编码）；
 `merge_entities` 搬事实前跑一遍与写入时相同的 domain / range 检查，违反的进 `axiom_violations` 而不是静默搬过去。这是 0009 与 0012 各自待做的同一件事。
+〔**签名那一半已提前做了**（#190 / #196 逼出来的，A 线里插队）：`ontology::judge_direction` 一处判断，抽取与采纳共用；合并后对搬动过的事实报 `signature` 违规；R0 多一类。剩下 `disjointWith` 进消解那一半仍在这里。〕
 **B4 · R3 增量维护——后置。** 只在测量台上全量重推超过一个明确阈值（建议：`ai-timeline-ends` 语料超过 10 秒）时才做。今天每次全量重推活得下去。
 
 ### C · 本体与抽取质量——先造尺子，再调参

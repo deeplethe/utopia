@@ -545,6 +545,7 @@ function ViolationRow({
     asymmetry: S.review.violationAsymmetry,
     cycle: S.review.violationCycle,
     functional: S.review.violationFunctional,
+    signature: S.review.violationSignature,
   }[v.kind];
   // 自反那一类两条事实是同一条——显示一遍就够，显示两遍像个 bug
   const single = v.left_fact === v.right_fact;

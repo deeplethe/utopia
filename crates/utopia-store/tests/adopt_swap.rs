@@ -97,14 +97,15 @@ async fn adopting_a_passive_wording_flips_subject_and_object() -> anyhow::Result
     .await?;
 
     let run = async {
-        let (_, moved) = utopia_store::graph::adopt_proposed_predicates(
+        let moved = utopia_store::graph::adopt_proposed_predicates(
             &pool,
             kb,
             produces,
             &["produced_by".to_string()],
             true,
         )
-        .await?;
+        .await?
+        .moved;
         assert_eq!(moved, 1);
         // 改写后应该是 OpenAI -[produces]-> ChatGPT，**方向反过来**
         let (s, o): (Uuid, Option<Uuid>) = sqlx::query_as(

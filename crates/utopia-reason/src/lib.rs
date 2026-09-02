@@ -78,6 +78,13 @@ pub enum Kind {
     /// 同一主语与谓词同时指向两个宾语，而 p 声明了 functional
     /// （inverse_functional 则是同一宾语被两个主语指）
     Functional,
+    /// `A p B`，而 A 不在 p 声明的 domain 里、或 B 不在 range 里（#190 / #196）。
+    ///
+    /// **这一类不由本 crate 算出**：它要看实体的类型与 domain / range 的闭包，那是
+    /// 库里的东西，`utopia-store::reasoning::signature_breaks` 用 SQL 量。列在这里
+    /// 是为了与其它四类走同一条落库、清陈、裁决的路——left 与 right 同一条事实，
+    /// 与自反那类同款
+    Signature,
 }
 
 impl Kind {
@@ -87,6 +94,7 @@ impl Kind {
             Kind::Asymmetry => "asymmetry",
             Kind::Cycle => "cycle",
             Kind::Functional => "functional",
+            Kind::Signature => "signature",
         }
     }
 }

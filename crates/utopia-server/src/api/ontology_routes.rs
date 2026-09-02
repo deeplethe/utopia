@@ -1006,7 +1006,11 @@ pub async fn adopt_predicate(
     // 这里的 forms 是人在面板上勾的，完全可能同时勾了 `produced` 和 `produced_by`，
     // 而一个 swap 标志伺候不了混合。自动那条路不存在这个问题：同组说法共享屈折基，
     // 结尾有没有 `by` 必然一致。真要修得让 adopt 逐条判方向，那是另一件事。
-    let (batch_id, remapped) = utopia_store::graph::adopt_proposed_predicates(
+    let utopia_store::graph::Adopted {
+        batch_id,
+        moved: remapped,
+        left_off,
+    } = utopia_store::graph::adopt_proposed_predicates(
         &state.pool,
         kb_id,
         predicate_id,
@@ -1027,14 +1031,14 @@ pub async fn adopt_predicate(
         Some(predicate_id),
         json!({
             "key": key, "label": req.label, "forms": req.forms,
-            "facts_remapped": remapped, "batch": batch_id,
+            "facts_remapped": remapped, "facts_left_off": left_off, "batch": batch_id,
         }),
     )
     .await;
     state.emit_review(kb_id);
-    Ok(Json(
-        json!({ "id": predicate_id, "remapped": remapped, "batch": batch_id }),
-    ))
+    Ok(Json(json!({
+        "id": predicate_id, "remapped": remapped, "left_off": left_off, "batch": batch_id,
+    })))
 }
 
 /// 撤销一次采纳：新写的行作废、旧行复活。关系类型留着（有事实指向过它，
@@ -1372,8 +1376,12 @@ pub(crate) async fn adopt_attribute_core(
             None => unconvertible += 1,
         }
     }
-    let (batch_id, remapped) =
-        utopia_store::graph::adopt_value_facts(&state.pool, kb_id, attribute_id, &rewrites).await?;
+    // 属性那一路没有签名可判（宾语是字面值），`left_off` 恒为 0
+    let utopia_store::graph::Adopted {
+        batch_id,
+        moved: remapped,
+        ..
+    } = utopia_store::graph::adopt_value_facts(&state.pool, kb_id, attribute_id, &rewrites).await?;
     for form in spec.forms {
         let _ =
             utopia_store::ontology::clear_miss(&state.pool, kb_id, "attribute_type", form).await;

@@ -160,6 +160,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
     let mut added_relations = Vec::new();
     let mut added_classes = Vec::new();
     let mut moved_total = 0u32;
+    let mut left_off_total = 0u32;
     let mut batches = Vec::new();
 
     for p in &classes {
@@ -268,7 +269,11 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
                 }
             }
         };
-        let (batch, moved) = utopia_store::graph::adopt_proposed_predicates(
+        let utopia_store::graph::Adopted {
+            batch_id: batch,
+            moved,
+            left_off,
+        } = utopia_store::graph::adopt_proposed_predicates(
             &state.pool,
             kb_id,
             predicate_id,
@@ -277,11 +282,12 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         )
         .await?;
         tracing::info!(
-            %kb_id, key = %g.key, forms = ?g.forms, docs = g.docs, facts = g.facts, moved,
+            %kb_id, key = %g.key, forms = ?g.forms, docs = g.docs, facts = g.facts, moved, left_off,
             reused = g.existing.is_some(), swap,
             "按票数采纳关系"
         );
         moved_total += moved;
+        left_off_total += left_off;
         if moved > 0 {
             batches.push(batch);
         }
@@ -392,7 +398,11 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
         };
         // LLM 的 map_to 提案同样可能混着主动与被动，一个 swap 标志伺候不了
         //（同人工路径，见 ontology_routes 里那段注释）
-        let (batch, moved) = utopia_store::graph::adopt_proposed_predicates(
+        let utopia_store::graph::Adopted {
+            batch_id: batch,
+            moved,
+            left_off,
+        } = utopia_store::graph::adopt_proposed_predicates(
             &state.pool,
             kb_id,
             predicate_id,
@@ -400,6 +410,7 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             false,
         )
         .await?;
+        left_off_total += left_off;
         moved_total += moved;
         if moved > 0 {
             batches.push(batch);
@@ -437,6 +448,8 @@ pub async fn bootstrap_ontology(state: &AppState, kb_id: Uuid) -> anyhow::Result
             "relations": added_relations,
             "classes": added_classes,
             "facts_remapped": moved_total,
+            // 签名两边都对不上、没挂上谓词的（#190）。不报这个数，「改写了 N 条」就是报喜不报忧
+            "facts_left_off": left_off_total,
             "batches": batches,
         }),
     )
