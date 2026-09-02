@@ -837,6 +837,21 @@ pub async fn chat(
                         json!({ "kind": "tool", "label": other, "detail": "unknown" }),
                     ),
                 };
+                // **这一步发生在正文的哪个位置。**
+                //
+                // 模型是边说边调的：说一句、查一下、再说一句。SSE 上 `delta` 与
+                // `step` 本来就是交替发出去的，顺序不用额外记；而**历史回放没有
+                // 那条时间线**——落库的只有拼好的整段正文和一个扁平的 steps 数组，
+                // 于是重新打开一场对话，所有调用都堆在正文最前面，读起来像是
+                // 先查了七次再一口气说完。记下偏移，回放才能把话再断开。
+                //
+                // 单位是 **UTF-16 码元**，因为切分发生在浏览器里，而 JS 的
+                // `String.prototype.length` 数的就是它。用字节数或 `chars()`
+                // 在中文和 emoji 上都会切歪
+                let mut step = step;
+                if let Some(obj) = step.as_object_mut() {
+                    obj.insert("at".into(), json!(answer_acc.encode_utf16().count()));
+                }
                 steps_acc.push(step.clone());
                 yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
                 if step["kind"] == "search" || step["kind"] == "docs" {
