@@ -410,9 +410,7 @@ pub async fn chat(
         }
 
         // 会话 id 先行下发（新会话由此告知前端）
-        yield Ok(Event::default()
-            .event("conversation")
-            .data(json!({ "id": conversation_id }).to_string()));
+        yield Frame::new("conversation", json!({ "id": conversation_id }).to_string());
 
         // 引用清单：跨轮累积、去重、编号稳定。键 = chunk uuid 或 "charter:{slug}#{anchor}"
         let mut source_ids: Vec<String> = Vec::new();
@@ -470,10 +468,10 @@ pub async fn chat(
                             .enumerate()
                             .map(|(i, c)| source_json(i + 1, c))
                             .collect();
-                        yield Ok(Event::default().event("sources").data(
-                            serde_json::to_string(&legacy_sources)
-                                .unwrap_or_else(|_| "[]".into()),
-                        ));
+                        yield Frame::new(
+                            "sources",
+                            serde_json::to_string(&legacy_sources).unwrap_or_else(|_| "[]".into()),
+                        );
                         let mut lmsgs =
                             vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
                         for (role, content) in &history {
@@ -823,13 +821,12 @@ pub async fn chat(
                     ),
                 };
                 steps_acc.push(step.clone());
-                yield Ok(Event::default()
-                    .event("step")
-                    .data(serde_json::to_string(&step).unwrap_or_default()));
+                yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
                 if step["kind"] == "search" || step["kind"] == "docs" {
-                    yield Ok(Event::default()
-                        .event("sources")
-                        .data(serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
+                    yield Frame::new(
+                        "sources",
+                        serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()),
+                    );
                 }
                 msgs.push(tool_result_message(&call.id, &result));
             }
@@ -840,18 +837,21 @@ pub async fn chat(
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
-fn delta_event(text: &str) -> Result<Event, Infallible> {
-    Ok(Event::default()
-        .event("delta")
-        .data(serde_json::to_string(&json!({ "text": text })).unwrap_or_default()))
+/// 生成器产出的是 `Frame`，不是 `axum` 的 `Event`。
+/// **广播与快照都要读回事件的内容**，而 `Event` 读不回来（见 `live`）
+fn delta_event(text: &str) -> Frame {
+    Frame::new(
+        "delta",
+        serde_json::to_string(&json!({ "text": text })).unwrap_or_default(),
+    )
 }
 
-fn done_event() -> Result<Event, Infallible> {
-    Ok(Event::default().event("done").data("{}"))
+fn done_event() -> Frame {
+    Frame::new("done", "{}".into())
 }
 
-fn error_event(message: &str) -> Result<Event, Infallible> {
-    Ok(Event::default().event("error").data(message))
+fn error_event(message: &str) -> Frame {
+    Frame::new("error", message.into())
 }
 
 fn source_json(n: usize, c: &ChunkView) -> serde_json::Value {
