@@ -732,6 +732,10 @@ export const en = {
     derivedHint:
       "Edges no one asserted — the engine worked them out from axioms your ontology declares. Each one shows the premises it came from.",
     derivedNoProof: "The premises are gone.",
+    /** 证明链（0002 R2）：每一步是一条断言前提，展开到原句 */
+    proofStep: (n: number) => `Step ${n}`,
+    proofRetracted: "since retracted",
+    proofLoading: "Tracing the proof…",
     derivedPanel: "Inference",
     derivedRunAsk: "Re-run inference for the whole base?",
     derivedRunGo: "Run",

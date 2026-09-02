@@ -2443,6 +2443,7 @@ function DerivedPanel({
  *  Relations/Timeline/History 的紧凑行里显得是另一个产品的东西，而且十几条
  *  推导堆起来是一面墙。证明是「问了才看」的东西，收进展开区正合适。 */
 function DerivedRow({
+  kbId,
   d,
   otherId,
   otherName,
@@ -2450,6 +2451,7 @@ function DerivedRow({
   onToggle,
   onNavigate,
 }: {
+  kbId: string;
   d: DerivedFact;
   otherId: string;
   otherName: string;
@@ -2490,23 +2492,91 @@ function DerivedRow({
           {d.premises.length}
         </span>
       </button>
-      {/* 证明：前提按推导顺序。**边框与 EvidenceList 同一档**——
-          两者是同一件事的两种形态：一个给出处，一个给推理链 */}
-      {open && (
-        <div className="mx-2 mb-2 mt-0.5 border-l border-white/15 pl-2.5">
-          <ol className="space-y-0.5">
-            {d.premises.map((p, i) => (
-              <li key={i} className="text-[11px] text-neutral-400">
-                {p}
-              </li>
-            ))}
-          </ol>
+      {/* 证明：前提按推导顺序，每条展开到原句（0002 R2）。**边框与 EvidenceList
+          同一档**——两者是同一件事的两种形态：一个给出处，一个给推理链 */}
+      {open && <ProofChain kbId={kbId} d={d} />}
+    </div>
+  );
+}
+
+/** 一条派生的证明链。展开时才取——证明是「问了才看」的东西。
+ *
+ *  每一步是一条断言前提：三元组在上，它的原句在下，原句可点进文档。
+ *  前提被撤过的打标记但不藏：派生随之失效，而「当时靠的是什么」正是记录轴要答的。
+ *  取不到（派生已失效）就退回列表里带来的那几行文本，不空着。 */
+function ProofChain({ kbId, d }: { kbId: string; d: DerivedFact }) {
+  const proof = useQuery({
+    queryKey: ["proof", d.id],
+    queryFn: () => api.derivedProof(kbId, d.id),
+  });
+  const steps = proof.data?.proof?.steps;
+  return (
+    <div className="mx-2 mb-2 mt-0.5 border-l border-white/15 pl-2.5">
+      {proof.isPending && (
+        <p className="text-[11px] text-neutral-600">{S.graph.proofLoading}</p>
+      )}
+      {steps && (
+        <ol className="space-y-2">
+          {steps.map((st) => (
+            <li key={st.fact_id} className="text-[11px]">
+              <div className="flex items-baseline gap-1.5 flex-wrap">
+                <span className="u-num text-[10px] text-neutral-600 shrink-0">
+                  {S.graph.proofStep(st.seq + 1)}
+                </span>
+                <span className={st.retracted ? "text-neutral-600 line-through" : "text-neutral-300"}>
+                  {st.subject}
+                  <span className="text-neutral-500"> — {st.predicate ?? "?"} → </span>
+                  {st.object ?? "?"}
+                </span>
+                {st.retracted && (
+                  <span className="u-chip u-chip-warn text-[10px]">{S.graph.proofRetracted}</span>
+                )}
+              </div>
+              <div className="mt-0.5 space-y-1 pl-2">
+                {st.evidence.map((ev) => (
+                  <Link
+                    key={ev.chunk_id}
+                    to="/kb/$kbId/doc/$docId"
+                    params={{ kbId, docId: ev.document_id }}
+                    search={{ chunk: ev.chunk_id }}
+                    className="block text-neutral-500 hover:text-neutral-300"
+                  >
+                    <div className="line-clamp-2 italic">
+                      {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
+                    </div>
+                    <div className="mt-0.5 text-neutral-400">
+                      {S.graph.sectionRef(ev.filename, ev.seq + 1)}
+                      {ev.stale && (
+                        <span
+                          className="ml-1.5 u-num text-[10px] text-neutral-600"
+                          title={S.graph.staleEvidenceHint}
+                        >
+                          {S.graph.fromVersion(ev.doc_version)}
+                        </span>
+                      )}
+                    </div>
+                  </Link>
+                ))}
+                {st.evidence.length === 0 && (
+                  <p className="text-neutral-600">{S.graph.noEvidence}</p>
+                )}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+      {/* 派生已失效、证明取不到：退回列表里带来的那几行文本 */}
+      {!proof.isPending && !steps && (
+        <ol className="space-y-0.5">
+          {d.premises.map((p, i) => (
+            <li key={i} className="text-[11px] text-neutral-400">
+              {p}
+            </li>
+          ))}
           {d.premises.length === 0 && (
-            <p className="text-[11px] text-neutral-600">
-              {S.graph.derivedNoProof}
-            </p>
+            <li className="text-[11px] text-neutral-600">{S.graph.derivedNoProof}</li>
           )}
-        </div>
+        </ol>
       )}
     </div>
   );
@@ -2966,6 +3036,7 @@ function EntityPanel({
                     return (
                       <DerivedRow
                         key={d.id}
+                        kbId={kbId}
                         d={d}
                         otherId={out ? d.object_id : d.subject_id}
                         otherName={out ? d.object : d.subject}

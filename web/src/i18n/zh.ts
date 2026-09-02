@@ -674,6 +674,9 @@ export const zh: Strings = {
     derivedHint:
       "没有人断言过的边——引擎按本体声明的公理推出来的。每一条都附着它用到的前提。",
     derivedNoProof: "前提已经不在了。",
+    proofStep: (n: number) => `第 ${n} 步`,
+    proofRetracted: "后来撤了",
+    proofLoading: "正在展开证明…",
     derivedPanel: "推理",
     derivedRunAsk: "对整个库重跑一遍推理？",
     derivedRunGo: "跑",

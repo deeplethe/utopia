@@ -290,6 +290,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/facts/{fact_id}/evidence",
             get(graph_routes::fact_evidence),
         )
+        // 派生事实的证明（0002 R2）：前提按顺序展开到原句
+        .route(
+            "/kbs/{id}/derived/{derived_id}/proof",
+            get(graph_routes::derived_proof),
+        )
         .route("/kbs/{id}/events", get(events_routes::kb_events))
         .route(
             "/kbs/{id}/sources",

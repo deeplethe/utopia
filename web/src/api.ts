@@ -324,6 +324,29 @@ export interface DerivedFact {
   premises: string[];
 }
 
+/** 证明的一步：一条断言前提，带它的证据。前提一律是断言，所以证明是链不是树 */
+export interface ProofStep {
+  seq: number;
+  fact_id: string;
+  subject_id: string;
+  subject: string;
+  predicate_id: string | null;
+  predicate: string | null;
+  object_id: string | null;
+  object: string | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  confidence: number;
+  /** 这条前提后来被撤了；派生随之失效，证明仍要读得出当时靠的是什么 */
+  retracted: boolean;
+  evidence: Evidence[];
+}
+
+export interface Proof {
+  derived: DerivedFact;
+  steps: ProofStep[];
+}
+
 /** 审核页的分档。**与服务端的 queue 参数是同一组字面量**——拼错会拿到
  *  一个明确的 unknown_queue 错误，而不是悄悄的空列表。 */
 export type ReviewQueue =
@@ -1317,6 +1340,12 @@ export const api = {
   factEvidence: (kbId: string, factId: string) =>
     request<{ evidence: Evidence[] }>(
       `/api/v1/kbs/${kbId}/facts/${factId}/evidence`,
+    ),
+  /** 一条派生事实的证明（0002 R2）：前提按推导顺序，每条带证据，一路到原句。
+   *  派生已失效时回 null——不是错误 */
+  derivedProof: (kbId: string, derivedId: string) =>
+    request<{ proof: Proof | null }>(
+      `/api/v1/kbs/${kbId}/derived/${derivedId}/proof`,
     ),
   documentDetail: (id: string) =>
     request<{ document: Doc; chunks: ChunkFull[] }>(`/api/v1/documents/${id}`),

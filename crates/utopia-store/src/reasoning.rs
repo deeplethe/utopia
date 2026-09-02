@@ -857,6 +857,129 @@ pub async fn mark_inference_ran(pool: &PgPool, kb_id: Uuid) -> AppResult<()> {
     Ok(())
 }
 
+/// 一条派生事实的证明，展开到原句（0002 R2）。
+///
+/// `fact_derivations` 只记直接前提，而前提一律是断言，所以「递归展开」在这里
+/// 退化成一条链：派生 → 按 `seq` 的断言 → 每条断言的证据。叶子是 chunk，
+/// 界面上一路点到文档。**撤了的前提照样列出并打上标记**：派生随前提失效，
+/// 但「当时靠的是什么」要读得出来，那正是记录轴存在的理由。
+///
+/// 派生已失效或不存在时回 None——不是错误，界面据此收起。
+pub async fn proof(
+    pool: &PgPool,
+    kb_id: Uuid,
+    derived_id: Uuid,
+) -> AppResult<Option<utopia_core::models::Proof>> {
+    let Some(derived) = derived_one(pool, kb_id, derived_id).await? else {
+        return Ok(None);
+    };
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        i32,
+        Uuid,
+        Uuid,
+        String,
+        Option<Uuid>,
+        Option<String>,
+        Option<Uuid>,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        f32,
+        bool,
+    )> = sqlx::query_as(
+        "SELECT fd.seq, f.id, f.subject_id, s.canonical_name,
+                f.predicate_id, r.label, f.object_id, o.canonical_name,
+                f.valid_from, f.valid_to, f.confidence,
+                f.invalidated_at IS NOT NULL
+           FROM fact_derivations fd
+           JOIN facts f ON f.id = fd.premise_fact_id
+           JOIN entities s ON s.id = f.subject_id
+           LEFT JOIN relation_types r ON r.id = f.predicate_id
+           LEFT JOIN entities o ON o.id = f.object_id
+          WHERE fd.derived_fact_id = $1
+          ORDER BY fd.seq",
+    )
+    .bind(derived_id)
+    .fetch_all(pool)
+    .await?;
+    let mut steps = Vec::with_capacity(rows.len());
+    for (
+        seq,
+        fact_id,
+        subject_id,
+        subject,
+        predicate_id,
+        predicate,
+        object_id,
+        object,
+        valid_from,
+        valid_to,
+        confidence,
+        retracted,
+    ) in rows
+    {
+        // 一条链最多 MAX_DEPTH 步，逐条取证据是可数的几次往返
+        let evidence = crate::graph::fact_evidence(pool, fact_id).await?;
+        steps.push(utopia_core::models::ProofStep {
+            seq,
+            fact_id,
+            subject_id,
+            subject,
+            predicate_id,
+            predicate,
+            object_id,
+            object,
+            valid_from,
+            valid_to,
+            confidence,
+            retracted,
+            evidence,
+        });
+    }
+    Ok(Some(utopia_core::models::Proof { derived, steps }))
+}
+
+/// 按 id 取一条派生（失效的也取：证明要能回看）。
+async fn derived_one(
+    pool: &PgPool,
+    kb_id: Uuid,
+    derived_id: Uuid,
+) -> AppResult<Option<DerivedFactView>> {
+    Ok(sqlx::query_as(
+        "SELECT d.id,
+                d.subject_id, s.canonical_name AS subject,
+                d.object_id,  o.canonical_name AS object,
+                r.label AS predicate,
+                ru.kind AS rule,
+                d.valid_from, d.valid_to, d.confidence, d.derived_at,
+                COALESCE(
+                    (SELECT array_agg(
+                                ps.canonical_name || ' · '
+                                || COALESCE(pr.label, '?') || ' · '
+                                || COALESCE(po.canonical_name, '?')
+                                ORDER BY fd.seq)
+                       FROM fact_derivations fd
+                       JOIN facts pf       ON pf.id = fd.premise_fact_id
+                       JOIN entities ps    ON ps.id = pf.subject_id
+                       LEFT JOIN relation_types pr ON pr.id = pf.predicate_id
+                       LEFT JOIN entities po ON po.id = pf.object_id
+                      WHERE fd.derived_fact_id = d.id),
+                    ARRAY[]::text[]
+                ) AS premises
+           FROM derived_facts d
+           JOIN entities s ON s.id = d.subject_id
+           JOIN entities o ON o.id = d.object_id
+           JOIN relation_types r ON r.id = d.predicate_id
+           JOIN rules ru ON ru.id = d.rule_id
+          WHERE d.kb_id = $1 AND d.id = $2",
+    )
+    .bind(kb_id)
+    .bind(derived_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
 /// 一条派生事实，配好展示与证明所需的文本（实体面板的「推出来的」那一档）。
 ///
 /// **证明一起取回来**：这一档存在的理由就是「这条边不是谁说的，是这么推出来的」，

@@ -924,6 +924,37 @@ pub struct DerivedFactView {
     pub premises: Vec<String>,
 }
 
+/// 证明的一步：一条断言前提，连同它的证据（0002 R2）。
+///
+/// 前提一律是断言（`fact_derivations` 不记派生），所以证明是一条链而不是一棵树：
+/// 派生 → 按 `seq` 排好的断言 → 每条断言的原句。叶子就是 chunk。
+#[derive(Debug, Clone, Serialize)]
+pub struct ProofStep {
+    pub seq: i32,
+    pub fact_id: Uuid,
+    pub subject_id: Uuid,
+    pub subject: String,
+    pub predicate_id: Option<Uuid>,
+    /// 本体里的关系名；空谓词事实（0010）不参与推导，这里理论上恒有值，
+    /// 留 Option 是不在读路径上撒谎
+    pub predicate: Option<String>,
+    pub object_id: Option<Uuid>,
+    pub object: Option<String>,
+    pub valid_from: Option<DateTime<Utc>>,
+    pub valid_to: Option<DateTime<Utc>>,
+    pub confidence: f32,
+    /// 这条前提后来被撤了。派生随之失效，但证明还要读得出「当时靠的是什么」
+    pub retracted: bool,
+    pub evidence: Vec<EvidenceView>,
+}
+
+/// 一条派生事实的完整证明：它本身，加上按顺序展开到原句的前提。
+#[derive(Debug, Clone, Serialize)]
+pub struct Proof {
+    pub derived: DerivedFactView,
+    pub steps: Vec<ProofStep>,
+}
+
 /// 审核队列各档的**真实条数**。
 ///
 /// 与列表分开取是有意的：列表有上限（一页十条），数数没有。从前左栏读的是

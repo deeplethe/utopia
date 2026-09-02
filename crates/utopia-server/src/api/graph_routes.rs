@@ -228,6 +228,18 @@ pub async fn fact_evidence(
     Ok(Json(json!({ "evidence": evidence })))
 }
 
+/// 一条派生事实的证明（0002 R2）：前提按推导顺序，每条带证据，一路到原句。
+/// 派生已失效或不存在时 `proof` 为 null——不是错误，界面据此退回文本前提
+pub async fn derived_proof(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, derived_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let proof = utopia_store::reasoning::proof(&state.pool, kb_id, derived_id).await?;
+    Ok(Json(json!({ "proof": proof })))
+}
+
 /// 手动触发抽取（failed 重试 / 补配模型后补抽）。
 pub async fn extract(
     State(state): State<AppState>,
