@@ -26,6 +26,7 @@ import {
 import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import {
   conversationsApi,
+  reattachChat,
   streamChat,
   type ChatStep,
   type ConversationRow,
@@ -179,6 +180,46 @@ export function Chat() {
       params: { kbId, conversationId: id },
     });
 
+  /** 接回一个正在生成的回答。没有在跑的话服务端回 `idle`，什么都不发生。 */
+  const attachIfRunning = (id: string, history: Turn[]) => {
+    let abort = () => {};
+    const stop = reattachChat(kb!.id, id, {
+      onConversation: () => {},
+      /* **快照到了才建这一轮。** 先摆一个空位再等回答的话，没有在跑的会话
+         上会闪一下空的助手气泡——而那是绝大多数情况。
+         快照是覆盖：它是那个回答此刻的全貌，不是增量 */
+      onSnapshot: (s) =>
+        liveAnswer.start(
+          id,
+          [
+            ...history,
+            {
+              role: "assistant",
+              content: s.content,
+              steps: s.steps.length ? s.steps : undefined,
+              sources: s.sources.length ? s.sources : undefined,
+            },
+          ],
+          abort,
+        ),
+      onSources: (sources) => liveAnswer.patchLast((t) => ({ ...t, sources })),
+      onStep: (step) =>
+        liveAnswer.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
+      onDelta: (text) => liveAnswer.patchLast((t) => ({ ...t, content: t.content + text })),
+      onDone: () => {
+        liveAnswer.finish();
+        invalidateList();
+      },
+      onError: (message) => {
+        liveAnswer.patchLast((t) => ({ ...t, error: message }));
+        liveAnswer.finish();
+      },
+      onIdle: () => {},
+    });
+    abort = stop;
+    abortRef.current = stop;
+  };
+
   const loadConversation = async (id: string) => {
     // 回到正在写的那一场：直接认领，别去库里读——库里要等它写完才有那一行
     if (liveAnswer.get()?.conversationId === id) {
@@ -191,14 +232,21 @@ export function Chat() {
     try {
       const { messages } = await conversationsApi.detail(kb!.id, id);
       sessionStorage.setItem(lastKey(kb!.id), id);
-      setTurns(
-        messages.map((m) => ({
-          role: m.role,
-          content: m.content,
-          steps: m.steps.length ? m.steps : undefined,
-          sources: m.sources.length ? m.sources : undefined,
-        })),
-      );
+      const history: Turn[] = messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        steps: m.steps.length ? m.steps : undefined,
+        sources: m.sources.length ? m.sources : undefined,
+      }));
+      setTurns(history);
+      /* **刷新之后接回去。** 上面那个 store 只活在这一个页面里；刷新、
+         新标签页、换台机器都拿不到它，而服务端那边生成还在跑。问一句
+         「这个会话有没有在跑的」——没有是最常见的答案，代价是一次会
+         立刻回 `idle` 的请求。
+         最后一条是用户说的话时才问：那正好是「问了但还没答上」的形状 */
+      if (history[history.length - 1]?.role === "user") {
+        attachIfRunning(id, history);
+      }
     } catch {
       // 失效链接（会话已删 / 属于别的库）：安静回到新对话
       sessionStorage.removeItem(lastKey(kb!.id));
