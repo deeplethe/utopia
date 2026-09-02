@@ -1310,6 +1310,8 @@ export const zh: Strings = {
     auditTotal: (n: number) => `共 ${n} 条`,
     activityEmpty: "还没有记录。",
     deletedUser: "一位已移除的用户",
+    adjudicator: "AI 裁决器",
+    engine: "引擎",
     auditActions: {
       "entity_type.created": "创建了实体类型",
       "entity_type.updated": "更新了实体类型",

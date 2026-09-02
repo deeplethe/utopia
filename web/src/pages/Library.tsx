@@ -483,17 +483,22 @@ export function Library() {
     [kb, upload, canUpload],
   );
 
-  if (!kb) return <Loading>{S.nav.loading}</Loading>;
-
-  // 服务端已经切好了这一页：筛选、作用域、页码都在请求里
-  const pagedDocs = docs.data?.docs ?? [];
-  const totalDocs = docs.data?.total ?? 0;
   // 整库可抽的篇数。**重建是库级动作**，不该显示当前来源的数字
   const kbStats = useQuery({
     queryKey: ["docCount", kb?.id],
     queryFn: () => api.documents(kb!.id, { limit: 1, offset: 0 }),
     enabled: !!kb,
   });
+
+  // **最后一个 hook 之后才能提前返回。** 这一行从前排在 kbStats 前面：整页
+  // 刷新或直接打开链接时第一次渲染 kb 还没到，提前返回跳过了后面的 hook，
+  // 下一次渲染多出一个 hook，React 直接抛 "Rendered more hooks"。站内导航
+  // 时 kb 已在缓存里，所以只有深链和刷新会撞上
+  if (!kb) return <Loading>{S.nav.loading}</Loading>;
+
+  // 服务端已经切好了这一页：筛选、作用域、页码都在请求里
+  const pagedDocs = docs.data?.docs ?? [];
+  const totalDocs = docs.data?.total ?? 0;
   const kbReady = kbStats.data?.ready ?? 0;
   const sourceList = sources.data?.sources ?? [];
   const selectedSource = sourceList.find((s) => s.id === selection);

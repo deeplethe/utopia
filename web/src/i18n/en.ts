@@ -1453,6 +1453,9 @@ export const en = {
     auditTotal: (n: number) => `${n} events`,
     activityEmpty: "Nothing recorded yet.",
     deletedUser: "a removed user",
+    // actor_id 为空的两种引擎动作：审阅队列里的自动裁决，和其余后台工作
+    adjudicator: "AI adjudicator",
+    engine: "the engine",
     auditActions: {
       "entity_type.created": "created entity type",
       "entity_type.updated": "updated entity type",

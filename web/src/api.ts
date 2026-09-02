@@ -132,6 +132,8 @@ export interface AuditEvent {
   target_kind: string;
   target_id: string | null;
   detail: Record<string, unknown>;
+  /** null = 引擎自动（裁决器、一致性检查、推理）；有 id 没名字 = 账号已移除 */
+  actor_id: string | null;
   actor_name: string | null;
   created_at: string;
 }
