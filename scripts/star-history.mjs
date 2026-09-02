@@ -29,9 +29,15 @@ if (!token) throw new Error("GITHUB_TOKEN must be set");
  * GraphQL 的 `stargazers` 连接认这个 token——CI 上验过。
  * 改这里，好过为了一个接口去放宽凭据。 */
 async function stargazerDates() {
+  /* `viewerPermission` 与 `totalCount` 不是装饰。**受限数据 GitHub 回的是
+     空集合，不是报错**——只看 `edges` 的话，「没权限」和「真的零颗星」
+     长得一模一样。把这两个一起取回来，失败时说得出是哪一种 */
   const query = `query($owner:String!,$name:String!,$cursor:String){
     repository(owner:$owner,name:$name){
+      stargazerCount
+      viewerPermission
       stargazers(first:100,after:$cursor,orderBy:{field:STARRED_AT,direction:ASC}){
+        totalCount
         pageInfo{hasNextPage endCursor}
         edges{starredAt}
       }
@@ -58,8 +64,15 @@ async function stargazerDates() {
     if (body.errors) {
       throw new Error(`graphql page ${page}: ${JSON.stringify(body.errors)}`);
     }
-    const conn = body.data?.repository?.stargazers;
+    const node = body.data?.repository;
+    const conn = node?.stargazers;
     if (!conn) throw new Error(`graphql page ${page}: no stargazers in response`);
+    if (page === 1) {
+      console.log(
+        `repo sees ${node.stargazerCount} stars; connection reports ` +
+          `${conn.totalCount}; token permission = ${node.viewerPermission}`,
+      );
+    }
     for (const e of conn.edges) if (e.starredAt) dates.push(new Date(e.starredAt));
     if (!conn.pageInfo.hasNextPage) return dates;
     cursor = conn.pageInfo.endCursor;
@@ -68,7 +81,16 @@ async function stargazerDates() {
 }
 
 const dates = (await stargazerDates()).sort((a, b) => a - b);
-if (dates.length === 0) throw new Error("no stargazer timestamps came back");
+if (dates.length === 0) {
+  // 上面那行日志已经说了 repo 报多少颗星、连接报多少、token 是什么权限。
+  // **不要在这里静默出一张空图**——一张画着零的曲线比没有图更糟
+  throw new Error(
+    "no stargazer timestamps came back — see the line above for what the API " +
+      "reported. An empty connection with a non-zero star count means the token " +
+      "cannot read the stargazer timeline (restricted to admins and collaborators " +
+      "since 2026-06-30).",
+  );
+}
 
 /* 按天聚合成累计值。**每一天都要有点**，哪怕当天没有新增——
    缺口跳过去的话，横轴的间距就不再代表时间，曲线的斜率也就骗人了 */
