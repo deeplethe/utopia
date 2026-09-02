@@ -1674,28 +1674,64 @@ export const conversationsApi = {
     }),
 };
 
+export interface ChatHandlers {
+  onConversation: (id: string) => void;
+  onSources: (s: Source[]) => void;
+  onStep: (s: ChatStep) => void;
+  onDelta: (text: string) => void;
+  onDone: () => void;
+  onError: (message: string) => void;
+  /** 接上一个已经在跑的回答：这是它此刻的样子，**覆盖，不是追加** */
+  onSnapshot?: (s: { content: string; steps: ChatStep[]; sources: Source[] }) => void;
+  /** 这个会话没有在跑的生成——最常见的答案，不是错误 */
+  onIdle?: () => void;
+}
+
+/** 接上一个正在生成的回答（刷新页面之后走这里）。
+ *
+ *  与 `streamChat` 读的是同一条事件流，只是多了开头那份快照。 */
+export function reattachChat(
+  kbId: string,
+  conversationId: string,
+  handlers: ChatHandlers,
+): () => void {
+  return consumeChatStream(
+    (signal) =>
+      fetch(`/api/v1/kbs/${kbId}/conversations/${conversationId}/stream`, {
+        credentials: "include",
+        signal,
+      }),
+    handlers,
+  );
+}
+
 export function streamChat(
   kbId: string,
   body: { conversation_id?: string; message: string },
-  handlers: {
-    onConversation: (id: string) => void;
-    onSources: (s: Source[]) => void;
-    onStep: (s: ChatStep) => void;
-    onDelta: (text: string) => void;
-    onDone: () => void;
-    onError: (message: string) => void;
-  },
+  handlers: ChatHandlers,
 ): () => void {
-  const controller = new AbortController();
-  (async () => {
-    try {
-      const res = await fetch(`/api/v1/kbs/${kbId}/chat`, {
+  return consumeChatStream(
+    (signal) =>
+      fetch(`/api/v1/kbs/${kbId}/chat`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+        signal,
+      }),
+    handlers,
+  );
+}
+
+/** SSE 的读法只有一份：发起请求的方式不同，收下来之后的处理完全一样。 */
+function consumeChatStream(
+  open: (signal: AbortSignal) => Promise<Response>,
+  handlers: ChatHandlers,
+): () => void {
+  const controller = new AbortController();
+  (async () => {
+    try {
+      const res = await open(controller.signal);
       if (!res.ok || !res.body) {
         let message = res.statusText;
         try {
@@ -1732,6 +1768,8 @@ export function streamChat(
             handlers.onStep(JSON.parse(data) as ChatStep);
           else if (event === "delta")
             handlers.onDelta((JSON.parse(data) as { text: string }).text);
+          else if (event === "snapshot") handlers.onSnapshot?.(JSON.parse(data));
+          else if (event === "idle") handlers.onIdle?.();
           else if (event === "done") handlers.onDone();
           else if (event === "error") handlers.onError(data);
         }

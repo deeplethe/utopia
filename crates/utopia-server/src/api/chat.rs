@@ -2,6 +2,7 @@
 //! 事件序列：step*（行动轨迹）| sources（引用清单，随检索增量更新）| delta*（增量文本）→ done | error。
 //! 模型不支持 tool-calling 时自动降级为一次性 RAG 注入。
 
+use crate::live::Frame;
 use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
@@ -325,6 +326,9 @@ pub async fn chat(
     )
     .await?;
     let workspace_id = kb.workspace_id;
+
+    // 注册表在生成器之前取出来：下面那个 `async_stream!` 会把 `state` 整个搬走
+    let live = state.live.clone();
 
     // 生成过程不挂在这条连接上。
     //
@@ -847,22 +851,79 @@ pub async fn chat(
         }
     };
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    // 生成登记在案，然后**这条连接也只是去「接上」它**——与刷新之后
+    // 那条重连走的是同一段代码。两条路分开写的话，迟早只有一条是对的
+    let handle = live.begin(conversation_id).await;
+    let attached = live.attach(conversation_id).await;
     tokio::spawn(async move {
         let mut producer = std::pin::pin!(producer);
-        while let Some(event) = producer.next().await {
-            // 接收端没了 = 人走了。**照发不误**：这里中断就等于把上面那个 bug
-            // 原样搬了回来
-            let _ = tx.send(event);
+        while let Some(frame) = producer.next().await {
+            // 没有订阅者是常态（人走了）。**照发不误**：这里中断就等于
+            // 把「切走一次丢一个回答」原样搬回来
+            handle.emit(frame).await;
         }
+        // 注销之后再接上的人得到「没有在跑的」，那时答案已经落库
+        handle.finish().await;
     });
+
+    Ok(sse_from(attached))
+}
+
+/// 把一次「接上」变成 SSE：先补一份快照，再照常收增量。
+///
+/// `None` = 这个会话没有在跑的生成。回一条 `idle` 而不是 404——**客户端
+/// 每次打开会话都会问一次**，而「没有在跑」是最常见的答案，不是错误
+fn sse_from(
+    attached: Option<(
+        crate::live::Snapshot,
+        tokio::sync::broadcast::Receiver<Frame>,
+    )>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let stream = async_stream::stream! {
-        while let Some(event) = rx.recv().await {
-            yield event;
+        let Some((snapshot, mut rx)) = attached else {
+            yield to_event(&Frame::new("idle", "{}".into()));
+            return;
+        };
+        yield to_event(&snapshot.to_frame());
+        loop {
+            match rx.recv().await {
+                Ok(frame) => {
+                    let done = frame.event == "done" || frame.event == "error";
+                    yield to_event(&frame);
+                    if done { return; }
+                }
+                // 生成结束、发送端销毁：正常收尾
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                // 这个客户端读得太慢，被广播缓冲甩下了。**说出来**——
+                // 静默继续会让它少掉中间一段而毫不知情
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    yield to_event(&Frame::new(
+                        "error",
+                        format!("Fell behind the stream by {n} messages; reopen the conversation"),
+                    ));
+                    return;
+                }
+            }
         }
     };
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+fn to_event(frame: &Frame) -> Result<Event, Infallible> {
+    Ok(Event::default().event(frame.event).data(&frame.data))
+}
+
+/// 接上一次正在跑的生成（刷新页面之后走这里）。
+pub async fn reattach(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, conversation_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
+    // **归属要查。** 会话 id 是可以猜的，而这条流会把别人的回答一字不差地念出来
+    utopia_store::conversations::require_owned(&state.pool, kb_id, user.id, conversation_id)
+        .await?;
+    Ok(sse_from(state.live.attach(conversation_id).await))
 }
 
 /// 生成器产出的是 `Frame`，不是 `axum` 的 `Event`。

@@ -143,7 +143,10 @@ impl Registry {
     /// 接上一次正在跑的生成：拿到此刻的快照，以及之后的增量。
     ///
     /// 返回 `None` = 这个会话没有在跑的生成。**那不是错**，是最常见的情况
-    pub async fn attach(&self, conversation_id: Uuid) -> Option<(Snapshot, broadcast::Receiver<Frame>)> {
+    pub async fn attach(
+        &self,
+        conversation_id: Uuid,
+    ) -> Option<(Snapshot, broadcast::Receiver<Frame>)> {
         let map = self.0.read().await;
         let entry = map.get(&conversation_id)?;
         // **握着快照的读锁再订阅。** `emit` 是握着写锁广播的，所以这一段
