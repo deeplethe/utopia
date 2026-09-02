@@ -225,6 +225,17 @@ function plaintext(revid) {
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<table[\s\S]*?<\/table>/gi, "") // 信息框/导航框：全是模板残渣
+    // **引文列表按结构切，不按标题切。** `CUT` 认的是 `== References ==` 那行，
+    // 而参考文献是渲染出来的一个块，它**不一定在那个标题下面**：`<references/>`
+    // 写在哪一节，它就渲染在哪一节。实测 216 张快照里有一张如此
+    //（`Mistral AI` @2024-12-10，refs 块落在 Recent Developments 里），
+    // 于是标题切完了，93 条引文照样留在正文里——占那一版正文的三分之一，
+    // 而它们正是 `Wired --employee--> Steven Levy` 那类假事实的来源。
+    //
+    // 容器名是 MediaWiki 渲染的，不是条目作者写的，所以它比标题文字稳
+    // （标题可以被译、被改写、被写成 `== Notes and references ==`）。
+    // 标题那条留着：它还管着 External links / See also 这些不该进语料的尾节
+    .replace(/<ol class="references"[\s\S]*?<\/ol>/gi, "")
     .replace(/<sup class="reference"[\s\S]*?<\/sup>/gi, "") // 脚注角标
     .replace(/<span class="mw-editsection"[\s\S]*?<\/span>/gi, "")
     .replace(/<h([1-6])[^>]*>/gi, (_, n) => "\n\n" + "=".repeat(+n) + " ")
