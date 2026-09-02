@@ -7,6 +7,7 @@ import forceAtlas2 from "graphology-layout-forceatlas2";
 import FA2Layout from "graphology-layout-forceatlas2/worker";
 import Sigma from "sigma";
 import { createNodeBorderProgram } from "@sigma/node-border";
+import EdgeCurveProgram from "@sigma/edge-curve";
 import { NodeSquareShellProgram } from "./squareShellProgram";
 import { EntityHistory } from "./EntityHistory";
 import {
@@ -68,6 +69,88 @@ const EDGE_COLOR_INFERRED = "rgba(163,163,163,0.1)";
 // 用户要在余光里就分得出「文档里写的」和「推出来的」
 const EDGE_COLOR_DERIVED = "rgba(231,197,124,0.42)";
 const EDGE_COLOR_DERIVED_DIM = "rgba(231,197,124,0.14)";
+
+/** 相邻两条弧之间的曲率差。太小仍然糊，太大在长边上会甩得离节点很远 */
+const EDGE_CURVATURE_STEP = 0.18;
+
+/** 一条边画在哪条弧上；`curvature === 0` = 直线。 */
+interface PlacedEdge {
+  edge: GraphEdge;
+  curvature: number;
+  /** 并进这条边的别的说法（逆关系），悬停时一并显示 */
+  alsoLabels: string[];
+}
+
+/** 同一对节点之间的边，画在各自的弧上；逆关系推出来的那些先并掉。
+ *
+ *  **两件事，顺序有讲究：先减后分。**
+ *
+ *  一、`A works_at B` 与它推出的 `B employs A` 是**同一件事的两种说法**，
+ *  不是两条知识。画成两条弧只是把冗余画得好看一点。所以逆关系推出来的边
+ *  并进它的来源边，说法挂在那条边上。`sub_property`（`ceo_of ⊑ works_at`）
+ *  不并——那是两条粒度不同的事实，各自成立。
+ *
+ *  二、剩下的按**无向对**分组扇开。无向是要点：一条边和它的反向边起终点相反，
+ *  按有向对分组会各自成组、各自以为自己是独苗，于是又叠回同一条直线上。
+ *  分组用 min/max，而落到弧上时按边自己的方向翻符号——sigma 的曲率是相对
+ *  source→target 的，不翻的话反向的弧会绕到同一侧。 */
+function layOutParallelEdges(edges: GraphEdge[]): {
+  edges: PlacedEdge[];
+  folded: number;
+} {
+  const pairKey = (a: string, b: string) => (a < b ? `${a} ${b}` : `${b} ${a}`);
+  const push = (m: Map<string, GraphEdge[]>, k: string, e: GraphEdge) => {
+    const list = m.get(k);
+    if (list) list.push(e);
+    else m.set(k, [e]);
+  };
+
+  // ---- 一、并掉逆关系推出来的边
+  const survivors: GraphEdge[] = [];
+  const inverses: GraphEdge[] = [];
+  for (const e of edges) {
+    if (e.derived && e.rule === "inverse") inverses.push(e);
+    else survivors.push(e);
+  }
+  const hosts = new Map<string, GraphEdge[]>();
+  for (const e of survivors) push(hosts, pairKey(e.source, e.target), e);
+
+  const also = new Map<string, string[]>();
+  let folded = 0;
+  for (const e of inverses) {
+    const host = hosts.get(pairKey(e.source, e.target))?.[0];
+    if (!host) {
+      // 来源边不在这一屏（时间轴筛掉了，或压根没取进来）。
+      // **那就留着它**——并进一条不存在的边等于把这条知识删了
+      survivors.push(e);
+      continue;
+    }
+    const list = also.get(host.id) ?? [];
+    list.push(e.label ?? e.predicate ?? "");
+    also.set(host.id, list);
+    folded++;
+  }
+
+  // ---- 二、剩下的按无向对扇开
+  const groups = new Map<string, GraphEdge[]>();
+  for (const e of survivors) push(groups, pairKey(e.source, e.target), e);
+
+  const placed: PlacedEdge[] = [];
+  for (const group of groups.values()) {
+    const n = group.length;
+    group.forEach((e, i) => {
+      // 围绕直线对称铺开：n=1 → [0]；n=2 → [-0.5, 0.5]；n=3 → [-1, 0, 1]
+      const offset = n === 1 ? 0 : i - (n - 1) / 2;
+      const sign = e.source < e.target ? 1 : -1;
+      placed.push({
+        edge: e,
+        curvature: offset === 0 ? 0 : sign * offset * EDGE_CURVATURE_STEP,
+        alsoLabels: also.get(e.id) ?? [],
+      });
+    });
+  }
+  return { edges: placed, folded };
+}
 // 呼吸周期。动画不是为了好看，是因为静态的一个色差在几百条边里根本注意不到
 const DERIVED_PULSE_MS = 2200;
 // 超过这个数就只上色不动画。**写出来而不是悄悄降级**：每帧重算几千条边的颜色，
@@ -746,21 +829,26 @@ export function Graph() {
         });
       }
     }
-    for (const e of data.data.edges) {
-      if (g.hasNode(e.source) && g.hasNode(e.target)) {
-        g.addEdgeWithKey(e.id, e.source, e.target, {
-          label: e.label?.toUpperCase() ?? "",
-          size: 1,
-          color: e.derived
-            ? EDGE_COLOR_DERIVED
-            : e.inferred
-              ? EDGE_COLOR_INFERRED
-              : EDGE_COLOR,
-          type: "line",
-          // reducer 每帧读它：决定要不要藏、要不要呼吸
-          derived: e.derived,
-        });
-      }
+    const placed = layOutParallelEdges(
+      data.data.edges.filter((e) => g.hasNode(e.source) && g.hasNode(e.target)),
+    );
+    for (const { edge: e, curvature, alsoLabels } of placed.edges) {
+      g.addEdgeWithKey(e.id, e.source, e.target, {
+        label: e.label?.toUpperCase() ?? "",
+        size: 1,
+        color: e.derived
+          ? EDGE_COLOR_DERIVED
+          : e.inferred
+            ? EDGE_COLOR_INFERRED
+            : EDGE_COLOR,
+        // 独一条就走直线：曲线是为了把重叠分开，没有重叠就不必弯
+        type: curvature === 0 ? "line" : "curved",
+        curvature,
+        // 并进来的逆关系说法，悬停时连着本名一起显示
+        alsoLabels,
+        // reducer 每帧读它：决定要不要藏、要不要呼吸
+        derived: e.derived,
+      });
     }
     // 布局：先静态铺开，再用 worker 动画稳定 ~2.5s（Semantica 式 stabilizing）
     let fa2: InstanceType<typeof FA2Layout> | null = null;
@@ -879,6 +967,10 @@ export function Graph() {
       },
       renderEdgeLabels: true,
       defaultEdgeType: "line",
+      /* 平行边扇成弧（见 `layOutParallelEdges`）。直线那一版把同一对节点之间
+         的每条边画在同一条线段上，于是几个标签逐字符叠成乱码——实测一对节点
+         之间最多压着六条 */
+      edgeProgramClasses: { curved: EdgeCurveProgram },
       labelFont: '"Geist", "Inter", "Noto Sans SC", sans-serif',
       labelSize: 11,
       labelColor: { color: "#e5e5e5" },

@@ -515,6 +515,10 @@ export interface GraphEdge {
   /** true = 这条边是**推出来的**，不是任何人断言的（R1）。
    *  与 `inferred` 不是一回事：那个说「名字来自原文」，这个说「不是谁说的」 */
   derived: boolean;
+  /** 推它出来的那条规则；断言的边为 null。
+   *  界面靠它认出 `inverse`——那种边与来源边是同一件事的两种说法，
+   *  画两条只是把冗余画了两遍（见 Graph 的 `layOutParallelEdges`） */
+  rule: string | null;
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
