@@ -490,6 +490,19 @@ pub struct GraphEdge {
     /// **与 `inferred` 不是一回事**，尽管两个词很近：那一位说的是「名字来自原文
     /// 而不是本体」，这一位说的是「这条边根本不是谁说的，是引擎推的」
     pub derived: bool,
+    /// 推它出来的那条规则（`transitive` / `symmetric` / `inverse` / `sub_property`）；
+    /// 断言的边为 None。
+    ///
+    /// **界面需要分辨 `inverse`**：`A works_at B` 与它推出的 `B employs A` 是
+    /// 同一件事的两种说法，画成两条边只是把冗余画了两遍；而 `sub_property`
+    /// 推出的是另一条粒度不同的事实，该各画各的
+    pub rule: Option<String>,
+    /// 推它出来用到的前提事实（按证明顺序）。断言的边为空。
+    ///
+    /// **界面并边要靠它认准来源。** 只按「同一对节点」找，会把 `contains`
+    /// 挂到恰好也连着那两点的 `allied_with` 上——那条说法属于 `part_of`，
+    /// 挂错的结果看着完全正常，正是最难发现的那种
+    pub premises: Vec<Uuid>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confidence: f32,
