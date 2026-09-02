@@ -22,7 +22,17 @@ jobs:
         uses: lowlighter/metrics@65836723097537a54cd8eb90f61839426b4266b6
         with:
           filename: assets/star-history.svg
+          # **必须是 classic token，fine-grained 的会被直接拒收**：这个
+          # action 走 GraphQL，而 GitHub 的 fine-grained token 不能用于
+          # GraphQL 认证。试过，报的就是这句话。
+          #
+          # 一个 scope 都不用勾——只读公开仓库的星标是公开数据。
+          # 代价是 classic token 锁不到单个仓库，它是账户级的；
+          # 那正是上面把 action 钉到 commit 的理由：凭据比想要的宽，
+          # 就把代码的来源钉死。
           token: ${{ secrets.METRICS_TOKEN }}
+          # 这个不用配：它管的是把生成的 SVG 提交回仓库那一步，
+          # 用 workflow 自带的 token，靠上面的 `contents: write`
           committer_token: ${{ github.token }}
           user: ${{ github.repository_owner }}
           repo: ${{ github.event.repository.name }}
