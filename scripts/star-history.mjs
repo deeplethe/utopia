@@ -8,10 +8,9 @@
  * 自己画还顺手去掉了一件事：那是个跑在 `contents: write` 之下的第三方
  * action。现在这个权限底下跑的是这份脚本。
  *
- * 数据只有一个接口：`GET /repos/{owner}/{repo}/stargazers`，配上
- * `Accept: application/vnd.github.star+json` 才会回 `starred_at`。
- * **GitHub 在 2026-06-30 把这份数据限制成只有仓库的管理员/协作者可读**，
- * 所以必须带一个够权限的 token——匿名调用现在拿不到。
+ * **GitHub 在 2026-06-30 把星标时间线限制成只有仓库的管理员/协作者可读**，
+ * 所以必须带一个够权限的 token——匿名调用现在拿不到，star-history.com
+ * 那类站点从此只回一张占位图。
  */
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -22,32 +21,50 @@ const out = process.env.OUT ?? "assets/star-history.svg";
 if (!owner || !repo) throw new Error("REPO must be set as owner/name");
 if (!token) throw new Error("GITHUB_TOKEN must be set");
 
-/** 每页 100，一直翻到空页。1867 颗星 = 19 页，不值得为它上并发 */
+/** 每页 100，游标翻到底。1868 颗星 = 19 页，不值得为它上并发。
+ *
+ * **走 GraphQL，不走 REST。** REST 的 `/repos/{o}/{r}/stargazers` 用同一个
+ * token 会回 404：那个接口要求 token 带仓库级 scope，而这个只有 `read:org`；
+ * GitHub 对无权访问的资源回 404 而不是 403，免得泄露它存不存在。
+ * GraphQL 的 `stargazers` 连接认这个 token——CI 上验过。
+ * 改这里，好过为了一个接口去放宽凭据。 */
 async function stargazerDates() {
-  const dates = [];
-  for (let page = 1; ; page++) {
-    const res = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/stargazers?per_page=100&page=${page}`,
-      {
-        headers: {
-          // 没有这个 Accept，回来的是用户列表，没有时间戳
-          accept: "application/vnd.github.star+json",
-          authorization: `Bearer ${token}`,
-          "user-agent": `${owner}-star-history`,
-        },
-      },
-    );
-    if (!res.ok) {
-      throw new Error(
-        `stargazers page ${page}: ${res.status} ${await res.text()}`,
-      );
+  const query = `query($owner:String!,$name:String!,$cursor:String){
+    repository(owner:$owner,name:$name){
+      stargazers(first:100,after:$cursor,orderBy:{field:STARRED_AT,direction:ASC}){
+        pageInfo{hasNextPage endCursor}
+        edges{starredAt}
+      }
     }
-    const rows = await res.json();
-    if (rows.length === 0) return dates;
-    for (const r of rows) if (r.starred_at) dates.push(new Date(r.starred_at));
-    // GitHub 对这个接口封顶 400 页；到不了也别转圈
-    if (page >= 400) return dates;
+  }`;
+  const dates = [];
+  let cursor = null;
+  for (let page = 1; page <= 400; page++) {
+    const res = await fetch("https://api.github.com/graphql", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        "user-agent": `${owner}-star-history`,
+      },
+      body: JSON.stringify({ query, variables: { owner, name: repo, cursor } }),
+    });
+    if (!res.ok) {
+      throw new Error(`graphql page ${page}: ${res.status} ${await res.text()}`);
+    }
+    const body = await res.json();
+    // **GraphQL 出错也回 200**，所以必须自己看 `errors`——否则要等到下面
+    // 读出 undefined 才发现，而那时错误原文已经丢了
+    if (body.errors) {
+      throw new Error(`graphql page ${page}: ${JSON.stringify(body.errors)}`);
+    }
+    const conn = body.data?.repository?.stargazers;
+    if (!conn) throw new Error(`graphql page ${page}: no stargazers in response`);
+    for (const e of conn.edges) if (e.starredAt) dates.push(new Date(e.starredAt));
+    if (!conn.pageInfo.hasNextPage) return dates;
+    cursor = conn.pageInfo.endCursor;
   }
+  return dates;
 }
 
 const dates = (await stargazerDates()).sort((a, b) => a - b);
