@@ -31,3 +31,7 @@ _*.txt
 # `--from-manifest` 按清单逐字节重建（action=parse&oldid 不可变）。
 /scripts/bench/corpora/wiki-history.json
 /scripts/bench/corpora/wiki-history.manifest.json
+# subset-corpus.mjs 切出来的子集同理：它是清单加一行命令的产物，不是素材。
+# 命令写进跑测记录，语料本身不进仓库。
+/scripts/bench/corpora/wiki-*-subset.json
+/scripts/bench/corpora/wiki-nov2023.json

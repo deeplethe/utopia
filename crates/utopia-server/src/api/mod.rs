@@ -14,6 +14,7 @@ mod review_routes;
 mod search_routes;
 mod settings_routes;
 mod sources_routes;
+mod tools;
 mod workspaces;
 
 use axum::extract::DefaultBodyLimit;
@@ -243,6 +244,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         )
         .route("/kbs/{id}/search", post(search_routes::search))
         .route("/kbs/{id}/chat", post(chat::chat))
+        // 刷新页面后重新接上正在生成的那个回答（见 `live`）
+        .route(
+            "/kbs/{id}/conversations/{conversation_id}/stream",
+            get(chat::reattach),
+        )
         .route("/kbs/{id}/conversations", get(chat::list_conversations))
         .route(
             "/kbs/{id}/conversations/{conversation_id}",
