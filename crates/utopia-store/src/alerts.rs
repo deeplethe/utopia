@@ -25,8 +25,20 @@ pub mod kind {
     /// 库级：某个来源同步失败。`min_role = editor`
     pub const SOURCE_SYNC_FAILED: &str = "source.sync_failed";
     /// 系统级：模型端点没给出可用的回答——连不上，或者连上了但回来的不是这个 API。
-    /// 端点干净地回 4xx 不算：那说明它就是模型 API，只是密钥或配额不对
+    /// 端点干净地回 4xx 不算：那说明它就是模型 API，只是密钥或配额不对。
+    /// 配额那一种见 [`LLM_RATE_LIMITED`]
     pub const LLM_UNREACHABLE: &str = "llm.unreachable";
+    /// 系统级：端点在限流，退避重试用尽后仍然过不去。`min_role = admin`
+    ///
+    /// **与 [`LLM_UNREACHABLE`] 分开，因为该做的事不同**：端点不可达要去查
+    /// 网络或地址，配额打满要去降并发或升档，找的人和动作都不一样。
+    ///
+    /// severity 是 `warning` 不是 `error`：配额会自己恢复，端点挂了不会。
+    ///
+    /// 它补的是「退避重试」留下的那一半。重试之后不再丢数据，但一篇文档
+    /// 真的被配额挡在外面时，没有这条告警就没有任何人知道——
+    /// 实测一次跑测里 4 篇失败，一半是不可达（有告警），一半是限流（静默）。
+    pub const LLM_RATE_LIMITED: &str = "llm.rate_limited";
     /// 库级：数据源挂上了，它的库表结构却没摄进来。`min_role = admin`
     ///
     /// **这一条描述的不是那次失败，是它留下的状态**：源挂着，而问数看不见它有

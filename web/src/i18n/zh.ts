@@ -140,6 +140,10 @@ export const zh: Strings = {
         title: "模型端点没有给出可用的回答",
         hint: "抽取与向量化已停摆。去系统设置里检查端点地址。",
       },
+      "llm.rate_limited": {
+        title: "模型端点在限流",
+        hint: "退避重试之后仍然被挡回来，有文档因此缺了事实。去系统设置里降低模型并发，或者把账号配额升一档。",
+      },
     } as Record<string, { title: string; hint: string } | undefined>,
     unknownKind: (kind: string) => kind,
   },

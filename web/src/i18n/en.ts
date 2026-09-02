@@ -158,6 +158,10 @@ export const en = {
         title: "The model endpoint gave no usable answer",
         hint: "Extraction and embedding are stopped. Check the endpoint URL in system settings.",
       },
+      "llm.rate_limited": {
+        title: "The model endpoint is rate limiting us",
+        hint: "Documents were retried and still turned away, so some are missing facts. Lower model concurrency in system settings, or raise the quota on the account.",
+      },
     } as Record<string, { title: string; hint: string } | undefined>,
     // 没见过的 kind 也要能显示：新告警源上线时前端可能还没更新
     unknownKind: (kind: string) => kind,
