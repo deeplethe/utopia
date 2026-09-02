@@ -107,3 +107,20 @@ pub async fn append_episode(
     tx.commit().await?;
     Ok((doc_id, chunk_id))
 }
+
+/// 这篇文档是不是记忆日志。
+///
+/// **抽取据此决定事实要不要人点头**（0015）：记忆是人在对话里特意说的一句话，
+/// 一次一条、人就在现场，确认成本最低；而摄进来的文档一次上万条，逐条确认
+/// 是不可能的，那条路仍旧乐观写入 + 事后审阅。
+pub async fn is_memory_document(pool: &PgPool, document_id: Uuid) -> AppResult<bool> {
+    let found: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM documents d JOIN sources s ON s.id = d.source_id
+          WHERE d.id = $1 AND s.kind = $2",
+    )
+    .bind(document_id)
+    .bind(MEMORY_SOURCE_KIND)
+    .fetch_optional(pool)
+    .await?;
+    Ok(found.is_some())
+}

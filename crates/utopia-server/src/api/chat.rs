@@ -2,6 +2,7 @@
 //! 事件序列：step*（行动轨迹）| sources（引用清单，随检索增量更新）| delta*（增量文本）→ done | error。
 //! 模型不支持 tool-calling 时自动降级为一次性 RAG 注入。
 
+use super::tools;
 use crate::live::Frame;
 use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -10,7 +11,7 @@ use futures_util::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use std::convert::Infallible;
-use utopia_core::models::{ChunkView, EntityFact, GraphChange, Role};
+use utopia_core::models::{ChunkView, Role};
 use utopia_core::AppError;
 use utopia_llm::tool_result_message;
 use uuid::Uuid;
@@ -27,12 +28,18 @@ const KNOWN_ENTITY_LIMIT: usize = 20;
 
 const MAX_HISTORY: usize = 20;
 const MAX_ROUNDS: usize = 6;
-const SEARCH_TOP_K: usize = 6;
-const TOOL_CHUNK_CHARS: usize = 800;
-/// 一次 changes 最多回多少条。刚灌完的库里 asserted 是成百上千条，全发出去
-/// 只会把上下文填满而不增加信息——有信息量的是 corrected/rejected，那类事件
-/// 本来就稀少。截断时 detail 写 "40+"，模型据此知道该收窄窗口
-const CHANGES_LIMIT: i64 = 40;
+
+/// **`remember` 暂时停用**（见 `docs/decisions/0015`）。
+///
+/// 它今天会把一句话直接变成图上一条活边，而中间那一步没人看得见：实测里
+/// 「记住 Acme 把总部搬到了深圳」落成的是一条 **空谓词、0.9 置信** 的边——
+/// 本体里没有「搬迁到」这类关系，抽取落不上就留空（按 0010 这是对的），
+/// 于是助手宣称的和图里得到的不是一回事。
+///
+/// 0018 建好了 `pending_facts`：抽出来的先等人点头。**抽取侧接上那张表
+/// 之后，把这里改回 true。** 在那之前宁可没有这个工具，也不要一个会
+/// 悄悄改图的工具。
+pub(super) const REMEMBER_ENABLED: bool = false;
 
 #[derive(Deserialize)]
 pub struct ChatReq {
@@ -80,7 +87,7 @@ fn tools_schema(can_write: bool, data_source_names: &[String]) -> serde_json::Va
             }));
         }
     }
-    if can_write {
+    if can_write && REMEMBER_ENABLED {
         if let Some(arr) = tools.as_array_mut() {
             arr.push(json!({
                 "type": "function",
@@ -184,7 +191,12 @@ const MEMORY_PROMPT: &str = "\
     \"remember/record this\" or states a decision meant to last. Confirm in your reply what \
     was recorded. Never invent memories, and never call it for small talk.";
 
-fn base_tools() -> serde_json::Value {
+/// 工具的 JSON schema——**给模型看的那一份**。
+///
+/// 留在 `chat.rs` 而不是 `tools.rs`：它是提示词的一部分，随对话策略走；
+/// `tools.rs` 只管拿到参数之后干什么（见那个模块顶上的说明）。
+/// MCP 也读它，所以对同模块开放——两边描述同一批工具，各写一份必然分叉。
+pub(super) fn base_tools() -> serde_json::Value {
     json!([
         {
             "type": "function",
@@ -416,7 +428,7 @@ pub async fn chat(
     let producer = async_stream::stream! {
         let ds_names: Vec<String> = mounted_sources.iter().map(|d| d.name.clone()).collect();
         let tools = tools_schema(can_write, &ds_names);
-        let mut system_prompt = if can_write {
+        let mut system_prompt = if can_write && REMEMBER_ENABLED {
             format!("{SYSTEM_PROMPT}\n{MEMORY_PROMPT}")
         } else {
             SYSTEM_PROMPT.to_string()
@@ -514,17 +526,14 @@ pub async fn chat(
         // 会话 id 先行下发（新会话由此告知前端）
         yield Frame::new("conversation", json!({ "id": conversation_id }).to_string());
 
-        // 引用清单：跨轮累积、去重、编号稳定。键 = chunk uuid 或 "charter:{slug}#{anchor}"
-        let mut source_ids: Vec<String> = Vec::new();
-        let mut sources: Vec<serde_json::Value> = Vec::new();
+        // 引用清单与这一轮认下的实体。**攒在工具外面**——`[3]` 里的 3 取决于
+        // 之前已经引过几个，各个工具各算各的会让同一个 chunk 拿到两个号
+        let mut sink = tools::ToolSink::default();
         // 落库累积：assistant 全文与行动轨迹（历史回放用）
         let mut answer_acc = String::new();
         let mut steps_acc: Vec<serde_json::Value> = Vec::new();
         // 这一轮的工具往返，原样留一份落库：下一轮回放它，模型才知道自己做过什么
         let mut exchange_acc: Vec<serde_json::Value> = Vec::new();
-        // 这一轮认下的实体，落库供下一轮回放。**只记身份不记正文**——
-        // 工具结果里是 chunk 全文，每轮重复堆进上下文几轮就把窗口吃光
-        let mut resolved_acc: Vec<serde_json::Value> = Vec::new();
 
         let mut rounds = 0usize;
         loop {
@@ -547,8 +556,8 @@ pub async fn chat(
                             &state.pool, conversation_id, "assistant", &answer_acc,
                             &utopia_store::conversations::TurnRecord {
                                 steps: serde_json::Value::Array(steps_acc.clone()),
-                                sources: serde_json::Value::Array(sources.clone()),
-                                resolved: serde_json::Value::Array(resolved_acc.clone()),
+                                sources: serde_json::Value::Array(sink.sources.clone()),
+                                resolved: serde_json::Value::Array(sink.resolved.clone()),
                                 tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
                             },
                         ).await;
@@ -598,7 +607,7 @@ pub async fn chat(
                                     &utopia_store::conversations::TurnRecord {
                                         steps: serde_json::Value::Array(steps_acc.clone()),
                                         sources: serde_json::Value::Array(legacy_sources.clone()),
-                                        resolved: serde_json::Value::Array(resolved_acc.clone()),
+                                        resolved: serde_json::Value::Array(sink.resolved.clone()),
                                         tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
                                     },
                                 ).await;
@@ -642,8 +651,8 @@ pub async fn chat(
                         &state.pool, conversation_id, "assistant", &answer_acc,
                         &utopia_store::conversations::TurnRecord {
                             steps: serde_json::Value::Array(steps_acc.clone()),
-                            sources: serde_json::Value::Array(sources.clone()),
-                            resolved: serde_json::Value::Array(resolved_acc.clone()),
+                            sources: serde_json::Value::Array(sink.sources.clone()),
+                            resolved: serde_json::Value::Array(sink.resolved.clone()),
                             tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
                         },
                     ).await;
@@ -672,279 +681,14 @@ pub async fn chat(
                         continue;
                     }
                 };
-                let (result, step) = match call.name.as_str() {
-                    "search_chunks" => {
-                        // check_call 已经保证 query 在且非空——这里不再有回落
-                        let q = args["query"].as_str().unwrap_or_default().to_string();
-                        let chunks = retrieval::hybrid(&state, kb_id, workspace_id, &q, SEARCH_TOP_K)
-                            .await
-                            .unwrap_or_default();
-                        let mut lines = Vec::new();
-                        for c in &chunks {
-                            let key = c.id.to_string();
-                            let n = match source_ids.iter().position(|id| *id == key) {
-                                Some(i) => i + 1,
-                                None => {
-                                    source_ids.push(key);
-                                    sources.push(source_json(source_ids.len(), c));
-                                    source_ids.len()
-                                }
-                            };
-                            lines.push(format!(
-                                "[{n}] \"{}\" section {}:\n{}",
-                                c.filename,
-                                c.seq + 1,
-                                truncate(&c.text, TOOL_CHUNK_CHARS)
-                            ));
-                        }
-                        let text = if lines.is_empty() {
-                            "No results.".to_string()
-                        } else {
-                            lines.join("\n\n")
-                        };
-                        (text, json!({ "kind": "search", "label": q, "detail": format!("{} sources", chunks.len()) }))
-                    }
-                    "search_docs" => {
-                        // 同上：check_call 已经拦过，这里不再回落到用户原话
-                        let q = args["query"].as_str().unwrap_or_default().to_string();
-                        let hits = state.docs.search(&q, 4).unwrap_or_default();
-                        let mut lines = Vec::new();
-                        for h in &hits {
-                            let key = format!("charter:{}#{}", h.slug, h.anchor);
-                            let n = match source_ids.iter().position(|id| *id == key) {
-                                Some(i) => i + 1,
-                                None => {
-                                    source_ids.push(key);
-                                    sources.push(charter_source_json(source_ids.len(), h));
-                                    source_ids.len()
-                                }
-                            };
-                            lines.push(format!(
-                                "[{n}] Utopia Charter — {} › {}:\n{}",
-                                h.title,
-                                h.heading,
-                                truncate(&h.body, 1600)
-                            ));
-                        }
-                        let text = if lines.is_empty() {
-                            "No matching manual sections.".to_string()
-                        } else {
-                            lines.join("\n\n")
-                        };
-                        (text, json!({ "kind": "docs", "label": q, "detail": format!("{} sections", hits.len()) }))
-                    }
-                    "find_entities" => {
-                        let name = args["name"].as_str().unwrap_or("").to_string();
-                        let (hits, _) =
-                            utopia_store::graph::search_entities(&state.pool, kb_id, &name, 8, 0)
-                            .await
-                            .unwrap_or_default();
-                        let text = if hits.is_empty() {
-                            "No matching entities.".to_string()
-                        } else {
-                            hits.iter()
-                                .map(|n| {
-                                    let dis = n
-                                        .disambiguator
-                                        .as_deref()
-                                        .map(|d| format!(" ({d})"))
-                                        .unwrap_or_default();
-                                    format!(
-                                        "{} | {}{} | {} | {} facts",
-                                        n.id,
-                                        n.name,
-                                        dis,
-                                        // 没判出类型的实体照样能被搜到、被引用（0009）
-                                        n.type_label.as_deref().unwrap_or("untyped"),
-                                        n.degree
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        };
-                        for n in &hits {
-                            resolved_acc.push(json!({
-                                "id": n.id.to_string(), "name": n.name, "type": n.type_label
-                            }));
-                        }
-                        (text, json!({ "kind": "entity", "label": name, "detail": format!("{} matches", hits.len()) }))
-                    }
-                    "entity_facts" => {
-                        let id = args["entity_id"].as_str().and_then(|s| s.parse::<Uuid>().ok());
-                        // as-of 过滤：T 时刻有效 = 起点不晚于 T（或未知）且终点晚于 T（或开放）
-                        let at = args["at"]
-                            .as_str()
-                            .and_then(|s| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok())
-                            .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
-                        match id {
-                            Some(id) => match utopia_store::graph::entity_detail(&state.pool, kb_id, id).await {
-                                Ok((node, mut facts)) => {
-                                    if let Some(t) = at {
-                                        facts.retain(|f| {
-                                            f.valid_from.is_none_or(|from| from <= t)
-                                                && f.valid_to.is_none_or(|to| to > t)
-                                        });
-                                    }
-                                    let text = if facts.is_empty() {
-                                        match at {
-                                            Some(t) => format!(
-                                                "{}: no facts valid as of {}.",
-                                                node.name,
-                                                t.format("%Y-%m-%d")
-                                            ),
-                                            None => format!("{}: no recorded facts.", node.name),
-                                        }
-                                    } else {
-                                        facts.iter().map(fact_line).collect::<Vec<_>>().join("\n")
-                                    };
-                                    let detail = match at {
-                                        Some(t) => format!(
-                                            "{} facts as of {}",
-                                            facts.len(),
-                                            t.format("%Y-%m-%d")
-                                        ),
-                                        None => format!("{} facts", facts.len()),
-                                    };
-                                    (text, json!({ "kind": "facts", "label": node.name, "detail": detail }))
-                                }
-                                Err(_) => (
-                                    "Entity not found.".to_string(),
-                                    json!({ "kind": "facts", "label": "?", "detail": "not found" }),
-                                ),
-                            },
-                            None => (
-                                "Invalid entity_id (expected the uuid returned by find_entities)."
-                                    .to_string(),
-                                json!({ "kind": "facts", "label": "?", "detail": "invalid id" }),
-                            ),
-                        }
-                    }
-                    "changes" => {
-                        let day = |k: &str| {
-                            args[k]
-                                .as_str()
-                                .and_then(|s| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok())
-                        };
-                        match changes_window(day("since"), day("until"), chrono::Utc::now()) {
-                            None => (
-                                "Invalid or missing `since` (expected YYYY-MM-DD).".to_string(),
-                                json!({ "kind": "changes", "label": "?", "detail": "invalid since" }),
-                            ),
-                            Some((since, until, window)) => {
-                                let entity = args["entity_id"]
-                                    .as_str()
-                                    .and_then(|s| s.parse::<Uuid>().ok());
-                                let kinds: Option<Vec<String>> = args["kinds"].as_array().map(|a| {
-                                    a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()
-                                });
-                                let kinds = kinds.filter(|k: &Vec<String>| !k.is_empty());
-                                let rows = utopia_store::graph::graph_changes(
-                                    &state.pool,
-                                    kb_id,
-                                    since,
-                                    until,
-                                    entity,
-                                    kinds.as_deref(),
-                                    CHANGES_LIMIT,
-                                )
-                                .await
-                                .unwrap_or_default();
-                                let text = if rows.is_empty() {
-                                    format!("No recorded changes in {window}.")
-                                } else {
-                                    rows.iter().map(change_line).collect::<Vec<_>>().join("\n")
-                                };
-                                let detail = if rows.len() as i64 == CHANGES_LIMIT {
-                                    format!("{CHANGES_LIMIT}+ changes")
-                                } else {
-                                    format!("{} changes", rows.len())
-                                };
-                                (text, json!({ "kind": "changes", "label": window, "detail": detail }))
-                            }
-                        }
-                    }
-                    "query_data" if !mounted_sources.is_empty() => {
-                        let ds_name = args["data_source"].as_str().map(str::trim).unwrap_or("");
-                        let sql = args["sql"].as_str().map(str::trim).unwrap_or("");
-                        let purpose = args["purpose"].as_str().map(str::trim).unwrap_or("");
-                        // 安全边界：只允许本 KB 挂载的源（凭据不出服务端）
-                        let found = mounted_sources
-                            .iter()
-                            .find(|d| d.name.eq_ignore_ascii_case(ds_name));
-                        let text = match found {
-                            None => format!(
-                                "Unknown data source '{ds_name}'. Mounted sources: {}",
-                                mounted_sources
-                                    .iter()
-                                    .map(|d| d.name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                            Some(ds) => {
-                                match run_query(&state, ds.id, sql).await {
-                                    Ok(out) => out,
-                                    // 错误透传：模型可据此修正 SQL 重试
-                                    Err(e) => format!("Query failed: {e}"),
-                                }
-                            }
-                        };
-                        let detail = if purpose.is_empty() {
-                            sql.chars().take(60).collect::<String>()
-                        } else {
-                            purpose.to_string()
-                        };
-                        (text, json!({ "kind": "query", "label": ds_name, "detail": detail }))
-                    }
-                    "remember" if can_write => {
-                        let text = args["text"].as_str().map(str::trim).unwrap_or("");
-                        let occurred_at = args["occurred_at"]
-                            .as_str()
-                            .and_then(|s| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok())
-                            .map(|d| d.and_hms_opt(12, 0, 0).unwrap().and_utc())
-                            .unwrap_or_else(chrono::Utc::now);
-                        if text.is_empty() {
-                            (
-                                "remember requires non-empty text.".to_string(),
-                                json!({ "kind": "tool", "label": "remember", "detail": "empty" }),
-                            )
-                        } else {
-                            match utopia_store::memory::append_episode(
-                                &state.pool, kb_id, text, occurred_at,
-                            )
-                            .await
-                            {
-                                Ok((doc_id, _chunk)) => {
-                                    // 摄入(embedding/索引/增量抽取)异步走队列，不阻塞对话
-                                    let _ = utopia_store::jobs::enqueue(
-                                        &state.pool,
-                                        "memory_ingest",
-                                        json!({ "document_id": doc_id }),
-                                    )
-                                    .await;
-                                    state.emit_document(kb_id, doc_id);
-                                    (
-                                        format!(
-                                            "Recorded (effective {}): {text}",
-                                            occurred_at.format("%Y-%m-%d")
-                                        ),
-                                        json!({
-                                            "kind": "tool", "label": "remember",
-                                            "detail": text.chars().take(60).collect::<String>()
-                                        }),
-                                    )
-                                }
-                                Err(e) => (
-                                    format!("Failed to record: {e}"),
-                                    json!({ "kind": "tool", "label": "remember", "detail": "failed" }),
-                                ),
-                            }
-                        }
-                    }
-                    other => (
-                        format!("Unknown tool: {other}"),
-                        json!({ "kind": "tool", "label": other, "detail": "unknown" }),
-                    ),
+                let ctx = tools::ToolCtx {
+                    state: &state,
+                    kb_id,
+                    workspace_id,
+                    mounted_sources: &mounted_sources,
+                    can_write,
                 };
+                let (result, step) = tools::dispatch(&ctx, &mut sink, &call.name, &args).await;
                 // **这一步发生在正文的哪个位置。**
                 //
                 // 模型是边说边调的：说一句、查一下、再说一句。SSE 上 `delta` 与
@@ -965,7 +709,7 @@ pub async fn chat(
                 if step["kind"] == "search" || step["kind"] == "docs" {
                     yield Frame::new(
                         "sources",
-                        serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()),
+                        serde_json::to_string(&sink.sources).unwrap_or_else(|_| "[]".into()),
                     );
                 }
                 let result_msg = tool_result_message(&call.id, &result);
@@ -1076,145 +820,6 @@ fn source_json(n: usize, c: &ChunkView) -> serde_json::Value {
         "filename": c.filename,
         "excerpt": truncate(&c.text, 160),
     })
-}
-
-/// Charter 引用：前端渲染成手册行，链到 /docs/{slug}#{anchor}。
-fn charter_source_json(n: usize, h: &utopia_search::DocsSection) -> serde_json::Value {
-    json!({
-        "n": n,
-        "kind": "charter",
-        "slug": h.slug,
-        "anchor": h.anchor,
-        "heading": h.heading,
-        "filename": h.title,
-        "excerpt": truncate(&h.body, 160),
-    })
-}
-
-/// 事实行："works at → 星云科技 (2023-08 → now) [90%]"，in 方向用 ←。
-/// 问数执行：安全闸（解析白名单）→ 引擎执行（只读会话 + 强制 LIMIT + 超时）→ JSON 行。
-async fn run_query(state: &AppState, ds_id: Uuid, sql: &str) -> anyhow::Result<String> {
-    let guarded = crate::query_engine::guard_sql(sql)?;
-    let (engine, conn) = utopia_store::datasources::engine_and_conn(&state.pool, ds_id).await?;
-    let result = crate::query_engine::engine_for(&engine, &conn)?
-        .execute(&guarded)
-        .await?;
-    let mut out = String::new();
-    if result.rows.is_empty() {
-        out.push_str("(no rows)");
-    } else {
-        out.push_str(&result.rows.join("\n"));
-        out.push_str(&format!("\n({} rows", result.rows.len()));
-        if result.truncated {
-            out.push_str(&format!(
-                ", truncated at {} — aggregate in SQL for totals",
-                crate::query_engine::ROW_CAP
-            ));
-        }
-        out.push(')');
-    }
-    Ok(out)
-}
-
-fn fact_line(f: &EntityFact) -> String {
-    let other = f.other_name.as_deref().unwrap_or("?");
-    // 本体没认下、原文说法也没留下时用 "?"——与 other 同一个约定。
-    // 不编一个"相关"出来：那正是删掉 related_to 要消灭的东西
-    let pred = f.predicate_label.as_deref().unwrap_or("?");
-    let core = if f.direction == "out" {
-        format!("{pred} → {other}")
-    } else {
-        format!("{pred} ← {other}")
-    };
-    let range = match (&f.valid_from, &f.valid_to) {
-        (Some(from), Some(to)) => {
-            format!(" ({} → {})", from.format("%Y-%m-%d"), to.format("%Y-%m-%d"))
-        }
-        (Some(from), None) => format!(" ({} → now)", from.format("%Y-%m-%d")),
-        (None, Some(to)) => format!(" (→ {})", to.format("%Y-%m-%d")),
-        (None, None) => String::new(),
-    };
-    format!("{core}{range} [{}%]", (f.confidence * 100.0).round() as i32)
-}
-
-/// changes 的时间窗：把两个可选日期变成 (SQL 用的半开区间, 展示用的窗口串)。
-///
-/// **抽成纯函数是因为这里出过一次错。** `until` 进 SQL 前要加一天（说"到 3 月 31 日
-/// 为止"的人要的是含 31 日，而 SQL 那头是 `< $3`），第一版把加过一天的值也印进了
-/// 展示串，模型于是照着答"截至 8 月 30 日"——问的是 29 日。两个值必须一起算、
-/// 一起被测住；分在两处写，迟早再次分叉。
-///
-/// `now` 从外面传进来而不是在里面取，纯粹是为了这个函数测得动。
-fn changes_window(
-    since: Option<chrono::NaiveDate>,
-    until: Option<chrono::NaiveDate>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Option<(
-    chrono::DateTime<chrono::Utc>,
-    chrono::DateTime<chrono::Utc>,
-    String,
-)> {
-    let from = since?;
-    let start = from.and_hms_opt(0, 0, 0).unwrap().and_utc();
-    let end = until
-        .and_then(|d| d.succ_opt())
-        .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc())
-        .unwrap_or(now);
-    // 展示用的是**问的那天**，没问就写 now——绝不是 end
-    let label = format!(
-        "{} → {}",
-        from.format("%Y-%m-%d"),
-        match until {
-            Some(d) => d.format("%Y-%m-%d").to_string(),
-            None => "now".to_string(),
-        }
-    );
-    Some((start, end, label))
-}
-
-/// 认知轴上的一行。
-///
-/// 排版把两根轴**分开写**：`at` 前面标事件类型，世界轴的区间夹在括号里跟在断言后。
-/// 若把它们排成一串日期，模型会把"2026 年记下的"读成"2026 年发生的"——那正是
-/// 这个工具要防的误读。
-fn change_line(c: &GraphChange) -> String {
-    let object = match (&c.object_name, &c.object_value) {
-        (Some(name), _) => name.clone(),
-        (None, Some(v)) => match v {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        },
-        (None, None) => "?".to_string(),
-    };
-    let range = match (&c.valid_from, &c.valid_to) {
-        (Some(from), Some(to)) => {
-            format!(
-                " [valid {} → {}]",
-                from.format("%Y-%m-%d"),
-                to.format("%Y-%m-%d")
-            )
-        }
-        (Some(from), None) => format!(" [valid {} → now]", from.format("%Y-%m-%d")),
-        (None, Some(to)) => format!(" [valid → {}]", to.format("%Y-%m-%d")),
-        (None, None) => String::new(),
-    };
-    // 文件名不带 [n]：引证编号是 chunk 的，这里只有 document，发一个编号出去
-    // 会在界面上落成一条指不到东西的引证
-    let src = match (&c.filename, &c.quote) {
-        (Some(f), Some(q)) => format!(" — from \"{f}\": \"{}\"", truncate(q, 160)),
-        (Some(f), None) => format!(" — from \"{f}\""),
-        _ => String::new(),
-    };
-    format!(
-        "{} {}: {} {} {}{}{}",
-        c.at.format("%Y-%m-%d"),
-        c.kind,
-        c.subject_name,
-        c.predicate_label.as_deref().unwrap_or("?"),
-        object,
-        range,
-        src
-    )
 }
 
 /// 降级路径的系统提示（tool-calling 不可用时的一次性注入）。
@@ -1339,122 +944,6 @@ pub async fn delete_conversation(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn d(s: &str) -> chrono::NaiveDate {
-        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
-    fn t(s: &str) -> chrono::DateTime<chrono::Utc> {
-        s.parse().unwrap()
-    }
-
-    // --- changes_window -----------------------------------------------------
-
-    /// 说"到 3 月 31 日为止"的人要的是**含 31 日**。SQL 那头是 `< end`，
-    /// 所以 end 必须落在 4 月 1 日零点——差这一天，问 31 日会安静地丢掉 31 日
-    #[test]
-    fn until_names_a_day_the_window_must_contain() {
-        let (start, end, label) = changes_window(
-            Some(d("2026-03-01")),
-            Some(d("2026-03-31")),
-            t("2026-06-01T00:00:00Z"),
-        )
-        .unwrap();
-        assert_eq!(start, t("2026-03-01T00:00:00Z"));
-        assert_eq!(end, t("2026-04-01T00:00:00Z"));
-        // 但**展示串里绝不能出现 04-01**：那是半开区间的内部细节，
-        // 印出去等于告诉模型窗口比它要的宽一天，模型会照着答（这条真的发生过）
-        assert_eq!(label, "2026-03-01 → 2026-03-31");
-    }
-
-    /// 没给 until 时，展示串写 now。写成 end 的格式化结果就等于把服务器时钟
-    /// 当成用户问的边界——看着像个精确答案，其实只是"现在几点"
-    #[test]
-    fn an_open_window_says_now_rather_than_the_clock() {
-        let now = t("2026-06-01T13:45:00Z");
-        let (_, end, label) = changes_window(Some(d("2026-03-01")), None, now).unwrap();
-        assert_eq!(end, now);
-        assert_eq!(label, "2026-03-01 → now");
-    }
-
-    #[test]
-    fn without_since_there_is_no_window() {
-        assert!(changes_window(None, Some(d("2026-03-31")), t("2026-06-01T00:00:00Z")).is_none());
-    }
-
-    // --- change_line --------------------------------------------------------
-
-    fn change(kind: &str) -> GraphChange {
-        GraphChange {
-            fact_id: Uuid::nil(),
-            at: t("2026-08-28T10:00:00Z"),
-            kind: kind.to_string(),
-            subject_id: Uuid::nil(),
-            subject_name: "Acme".to_string(),
-            predicate_label: Some("founded in".to_string()),
-            object_name: None,
-            object_value: None,
-            valid_from: None,
-            valid_to: None,
-            // 两端都没日期就没有精度——夹具也得守这条不变量（见 `facts.valid_from_precision`）
-            // 两端都没日期，所以两端都没有精度（见 facts 的两个精度列）
-            valid_from_precision: None,
-            valid_to_precision: None,
-            confidence: 0.9,
-            document_id: None,
-            filename: None,
-            quote: None,
-        }
-    }
-
-    /// 字面值要读成它自己。走 `Value::to_string()` 会把字符串连引号一起印出来，
-    /// 模型于是把 `"1993"` 当成答案的一部分
-    #[test]
-    fn a_literal_value_reads_as_itself_not_as_json() {
-        let mut c = change("asserted");
-        c.object_value = Some(serde_json::json!("1993"));
-        assert!(
-            change_line(&c).ends_with("Acme founded in 1993"),
-            "{}",
-            change_line(&c)
-        );
-    }
-
-    /// 两根轴必须在同一行里**看得出是两样东西**：记录时刻在前、无标签，
-    /// 世界轴区间在后、带 `valid` 字样。排成一串裸日期，模型会把
-    /// "2026 年记下的"读成"2026 年发生的"——这个工具存在的理由就是防这个
-    #[test]
-    fn the_record_time_and_the_valid_range_do_not_read_as_one_date_run() {
-        let mut c = change("corrected");
-        c.object_name = Some("Berlin".to_string());
-        c.predicate_label = Some("headquartered in".to_string());
-        c.valid_from = Some(t("2019-01-01T00:00:00Z"));
-        let line = change_line(&c);
-        assert!(line.starts_with("2026-08-28 corrected: "), "{line}");
-        assert!(line.contains("[valid 2019-01-01 → now]"), "{line}");
-    }
-
-    /// 没有证据就什么都别说。凭空补一句 from "…" 会让一条无出处的断言
-    /// 看起来有出处
-    #[test]
-    fn a_fact_with_no_evidence_claims_no_document() {
-        let mut c = change("rejected");
-        c.object_name = Some("Berlin".to_string());
-        assert!(!change_line(&c).contains("from"), "{}", change_line(&c));
-    }
-
-    #[test]
-    fn evidence_carries_the_filename_and_the_quote() {
-        let mut c = change("corrected");
-        c.object_name = Some("Berlin".to_string());
-        c.filename = Some("annual-report.pdf".to_string());
-        c.quote = Some("moved its head office to Berlin".to_string());
-        let line = change_line(&c);
-        assert!(line.contains("from \"annual-report.pdf\""), "{line}");
-        assert!(
-            line.contains("\"moved its head office to Berlin\""),
-            "{line}"
-        );
-    }
 
     // --- check_call ---------------------------------------------------------
 

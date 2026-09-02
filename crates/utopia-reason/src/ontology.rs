@@ -44,6 +44,17 @@ pub enum Defect {
     /// 一个类的两个祖先互相互斥 → 同上，不可满足。
     /// 多父继承下这个形状不罕见：两支各自合理，合起来就矛盾了。
     InheritsDisjoint,
+    /// 一个谓词声明自己是自己的逆。**等价于 symmetric**——推理照跑，
+    /// 只是读的人要多想一步。提示改写成 `symmetric` 更直白
+    InverseOfItself,
+    /// `p⁻¹ = q` 而 `q⁻¹ = r`，两边指得不一样。
+    ///
+    /// 载入公理时只补空缺、不覆盖人写的（**人写的优先于推出来的**），
+    /// 所以这个矛盾不会被悄悄抹平，留到这里报。
+    InverseNotMutual,
+    /// subPropertyOf 绕成了环。与 [`Defect::SubclassCycle`] 同形：
+    /// 环上所有谓词互为子属性 = 它们其实是同一个谓词，而各自有标签、有事实。
+    SubPropertyCycle,
 }
 
 impl Defect {
@@ -54,6 +65,9 @@ impl Defect {
             Defect::SubclassCycle => "subclass_cycle",
             Defect::DisjointWithAncestor => "disjoint_with_ancestor",
             Defect::InheritsDisjoint => "inherits_disjoint",
+            Defect::InverseOfItself => "inverse_of_itself",
+            Defect::InverseNotMutual => "inverse_not_mutual",
+            Defect::SubPropertyCycle => "sub_property_cycle",
         }
     }
 }
@@ -101,6 +115,79 @@ pub fn check_ontology(
                 other: None,
                 path: Vec::new(),
             });
+        }
+        // 自己是自己的逆 = 对称。**不是错，是绕远路**——推理照跑，
+        // 但读本体的人得自己想一步才明白。提示改用 `symmetric` 更直白
+        if ax.inverse_of == Some(pred) {
+            out.push(OntologyDefect {
+                kind: Defect::InverseOfItself,
+                subject: pred,
+                other: None,
+                path: Vec::new(),
+            });
+        }
+        // 逆 + 反对称：`A p B` 推出 `B p A`（自己的逆），而反对称说这不成立。
+        // 与 symmetric+asymmetric 同一个矛盾，换了个写法进来
+        if ax.inverse_of == Some(pred) && ax.asymmetric {
+            out.push(OntologyDefect {
+                kind: Defect::SymmetricAndAsymmetric,
+                subject: pred,
+                other: None,
+                path: Vec::new(),
+            });
+        }
+        // 两边各自声明了逆，却指向不同的谓词。**不在载入时悄悄改一致**
+        // （`reasoning::axioms` 那边只补空缺，不覆盖人写的），所以在这里报
+        if let Some(inv) = ax.inverse_of {
+            if let Some(back) = axioms.get(&inv).and_then(|a| a.inverse_of) {
+                if back != pred {
+                    out.push(OntologyDefect {
+                        kind: Defect::InverseNotMutual,
+                        subject: pred,
+                        other: Some(inv),
+                        path: vec![pred, inv, back],
+                    });
+                }
+            }
+        }
+    }
+
+    // ---- subPropertyOf 成环。与 subClassOf 的环是同一个形状：
+    // 环上所有谓词互为子属性 = 它们其实是同一个谓词，而各自有标签、有事实
+    {
+        let parent_of: HashMap<Uuid, Uuid> = axioms
+            .iter()
+            .filter_map(|(id, ax)| ax.sub_property_of.map(|p| (*id, p)))
+            .collect();
+        let mut starts: Vec<Uuid> = parent_of.keys().copied().collect();
+        starts.sort();
+        let mut reported: HashSet<Uuid> = HashSet::new();
+        for start in starts {
+            if reported.contains(&start) {
+                continue;
+            }
+            let mut seen: Vec<Uuid> = Vec::new();
+            let mut cur = start;
+            for _ in 0..MAX_ANCESTRY {
+                if seen.contains(&cur) {
+                    // 环上每个成员都标记过，整条环只报一次
+                    for m in &seen {
+                        reported.insert(*m);
+                    }
+                    out.push(OntologyDefect {
+                        kind: Defect::SubPropertyCycle,
+                        subject: start,
+                        other: None,
+                        path: seen.clone(),
+                    });
+                    break;
+                }
+                seen.push(cur);
+                match parent_of.get(&cur) {
+                    Some(&p) => cur = p,
+                    None => break,
+                }
+            }
         }
     }
 
@@ -388,5 +475,141 @@ mod tests {
         // 类层级齐全但一条 disjoint 都没有 → 没有判据
         let parents = [(c(1), c(2)), (c(2), c(3))];
         assert!(check_ontology(&HashMap::new(), &parents, &[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod inverse_and_sub_property_tests {
+    use super::*;
+
+    fn c(i: u8) -> Uuid {
+        Uuid::from_bytes([i; 16])
+    }
+    fn kinds(v: &[OntologyDefect]) -> Vec<Defect> {
+        let mut k: Vec<Defect> = v.iter().map(|d| d.kind).collect();
+        k.sort();
+        k
+    }
+    fn only(id: Uuid, a: Axioms) -> HashMap<Uuid, Axioms> {
+        HashMap::from([(id, a)])
+    }
+
+    /// 自己是自己的逆 —— 合法但绕远路，提示改用 symmetric。
+    #[test]
+    fn a_predicate_that_is_its_own_inverse_should_just_say_symmetric() {
+        let a = Axioms {
+            inverse_of: Some(c(1)),
+            ..Default::default()
+        };
+        let d = check_ontology(&only(c(1), a), &[], &[]);
+        assert_eq!(kinds(&d), vec![Defect::InverseOfItself]);
+    }
+
+    /// 自己的逆 + 反对称 = 与 symmetric+asymmetric 同一个矛盾，换了个写法。
+    #[test]
+    fn its_own_inverse_and_asymmetric_is_the_same_contradiction_in_disguise() {
+        let a = Axioms {
+            inverse_of: Some(c(1)),
+            asymmetric: true,
+            ..Default::default()
+        };
+        let d = check_ontology(&only(c(1), a), &[], &[]);
+        assert!(
+            kinds(&d).contains(&Defect::SymmetricAndAsymmetric),
+            "**要报成同一类**：读的人不该因为写法不同就以为是两回事"
+        );
+    }
+
+    /// 互指一致 —— 干净，什么都不该报。
+    #[test]
+    fn a_mutual_pair_is_clean() {
+        let ax = HashMap::from([
+            (
+                c(1),
+                Axioms {
+                    inverse_of: Some(c(2)),
+                    ..Default::default()
+                },
+            ),
+            (
+                c(2),
+                Axioms {
+                    inverse_of: Some(c(1)),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert!(check_ontology(&ax, &[], &[]).is_empty());
+    }
+
+    /// `p⁻¹ = q` 而 `q⁻¹ = r` —— 两边指得不一样。
+    ///
+    /// **载入公理时只补空缺不覆盖**，所以这个矛盾不会被悄悄抹平；
+    /// 它必须在这里被报出来，否则没有任何地方会提。
+    #[test]
+    fn an_inverse_that_does_not_point_back_is_reported() {
+        let ax = HashMap::from([
+            (
+                c(1),
+                Axioms {
+                    inverse_of: Some(c(2)),
+                    ..Default::default()
+                },
+            ),
+            (
+                c(2),
+                Axioms {
+                    inverse_of: Some(c(3)),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let d = check_ontology(&ax, &[], &[]);
+        let one = d
+            .iter()
+            .find(|x| x.kind == Defect::InverseNotMutual)
+            .expect("该报 InverseNotMutual");
+        assert_eq!(one.subject, c(1));
+        assert_eq!(one.other, Some(c(2)));
+        assert_eq!(one.path, vec![c(1), c(2), c(3)], "路径要说清指到哪去了");
+    }
+
+    /// subPropertyOf 成环。
+    #[test]
+    fn a_sub_property_ring_is_a_single_predicate_wearing_three_hats() {
+        let mk = |parent: u8| Axioms {
+            sub_property_of: Some(c(parent)),
+            ..Default::default()
+        };
+        let ax = HashMap::from([(c(1), mk(2)), (c(2), mk(3)), (c(3), mk(1))]);
+        let d = check_ontology(&ax, &[], &[]);
+        let ring: Vec<&OntologyDefect> = d
+            .iter()
+            .filter(|x| x.kind == Defect::SubPropertyCycle)
+            .collect();
+        assert_eq!(ring.len(), 1, "**整条环只报一次**，不是每个成员报一遍");
+        assert_eq!(ring[0].path.len(), 3);
+    }
+
+    /// 一条不成环的链不该被误报。
+    #[test]
+    fn a_chain_that_ends_is_not_a_ring() {
+        let ax = HashMap::from([
+            (
+                c(1),
+                Axioms {
+                    sub_property_of: Some(c(2)),
+                    ..Default::default()
+                },
+            ),
+            (
+                c(2),
+                Axioms {
+                    sub_property_of: Some(c(3)),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        assert!(check_ontology(&ax, &[], &[]).is_empty());
     }
 }

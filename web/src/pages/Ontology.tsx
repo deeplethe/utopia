@@ -39,6 +39,7 @@ import {
   Pager,
   PageTitle,
   RAIL_CLS,
+  SearchSelect,
   cn,
   pageSlice,
 } from "../ui";
@@ -355,6 +356,7 @@ export function Ontology() {
                 kbId={kb.id}
                 existing={selectedProp}
                 allTypes={entity_types}
+                allRelations={relations}
                 onDone={(createdId) => {
                   if (sel?.kind === "new-relation")
                     setSel(
@@ -1150,12 +1152,16 @@ function PropertyForm({
   kbId,
   existing,
   allTypes,
+  allRelations,
   onDone,
   onError,
 }: {
   kbId: string;
   existing: RelationTypeView | null;
   allTypes: EntityTypeView[];
+  /** 本库的关系（不含属性）。逆与子属性的下拉从这里取——**属性不在其中**，
+   *  它的宾语是字面值，反过来无从谈起 */
+  allRelations: RelationTypeView[];
   onDone: (createdId?: string) => void;
   onError: (e: unknown) => void;
 }) {
@@ -1174,6 +1180,11 @@ function PropertyForm({
   const [irreflexive, setIrreflexive] = useState(
     existing?.is_irreflexive ?? false,
   );
+  // 同一族的后两条，形状不同：指向另一个关系。空串 = 没声明
+  const [inverseOf, setInverseOf] = useState(existing?.inverse_of ?? "");
+  const [subPropertyOf, setSubPropertyOf] = useState(
+    existing?.sub_property_of ?? "",
+  );
   const [description, setDescription] = useState(existing?.description ?? "");
   const [domains, setDomains] = useState<string[]>(existing?.domains ?? []);
   const [ranges, setRanges] = useState<string[]>(existing?.ranges ?? []);
@@ -1184,6 +1195,28 @@ function PropertyForm({
     () => parentOptions(allTypes, undefined),
     [allTypes],
   );
+  // 两个下拉的选项：本库的其它关系。
+  //
+  // **自己不进列表**，两条都是。子属性指向自己数据库直接拒（那是个环）；
+  // 逆指向自己在语义上合法——但它等于 `symmetric`，而那个复选框就在上面，
+  // 在这里提供第二条路只会让人写出 R0 要报的东西。
+  //
+  // 唯一的例外是**当前值就是自己**：OWL 导入进来的可以长这样，从列表里漏掉
+  // 它就会让下拉显示空白，而空白一保存就把已声明的抹了
+  const linkOptions = (current: string) => [
+    { value: "", label: S.ontology.noLink },
+    // 当前值就是自己时把自己补回列表，否则下拉显示空白，
+    // 而空白一保存就把已声明的抹了
+    ...(existing && current === existing.id
+      ? [{ value: existing.id, label: existing.label, hint: existing.key }]
+      : []),
+    ...allRelations
+      .filter((r) => r.id !== existing?.id)
+      .map((r) => ({ value: r.id, label: r.label, hint: r.key })),
+  ];
+  /** 下拉里选中那条的显示名。找不到就回落到 id——宁可难看，不要空着 */
+  const nameOf = (id: string) =>
+    allRelations.find((r) => r.id === id)?.label ?? id;
   const toggle = (
     set: React.Dispatch<React.SetStateAction<string[]>>,
     id: string,
@@ -1201,6 +1234,10 @@ function PropertyForm({
             is_symmetric: symmetric,
             is_asymmetric: asymmetric,
             is_irreflexive: irreflexive,
+            // 空串要变成 null 再送——服务端收 `Option<Uuid>`，
+            // `""` 解不成 UUID，会是一个 422 而不是「清空」
+            inverse_of: inverseOf || null,
+            sub_property_of: subPropertyOf || null,
             description,
             domains,
             ranges,
@@ -1215,6 +1252,10 @@ function PropertyForm({
             is_symmetric: symmetric,
             is_asymmetric: asymmetric,
             is_irreflexive: irreflexive,
+            // 空串要变成 null 再送——服务端收 `Option<Uuid>`，
+            // `""` 解不成 UUID，会是一个 422 而不是「清空」
+            inverse_of: inverseOf || null,
+            sub_property_of: subPropertyOf || null,
             description,
             domains,
             ranges,
@@ -1371,6 +1412,66 @@ function PropertyForm({
             {S.ontology.axiomConflict}
           </p>
         )}
+        {/* 同一组的后两条，只是形状不同：它们指向**另一个关系**，所以是下拉
+            不是复选框。放在这里而不是单开一节——推理机的四种规则源里，两条是
+            上面的勾，两条是下面的选，分开会让人以为它们是两回事（0002） */}
+        <div className="mt-3 space-y-2.5 border-t border-white/5 pt-3">
+          {(
+            [
+              [
+                inverseOf,
+                setInverseOf,
+                S.ontology.inverseOf,
+                S.ontology.inverseOfHint,
+                linkOptions(inverseOf),
+              ],
+              [
+                subPropertyOf,
+                setSubPropertyOf,
+                S.ontology.subPropertyOf,
+                S.ontology.subPropertyOfHint,
+                linkOptions(subPropertyOf),
+              ],
+            ] as const
+          ).map(([value, set, title, hint, options], i) => (
+            <div key={i}>
+              <div className="text-[13px] text-neutral-200">{title}</div>
+              <p className="text-[11px] leading-relaxed text-neutral-500 mb-1">
+                {hint}
+              </p>
+              <SearchSelect
+                value={value}
+                onChange={set}
+                options={options}
+                size="sm"
+                className="w-full"
+                placeholder={S.ontology.noLink}
+              />
+            </div>
+          ))}
+          {/* 选了之后当场把话说全。**这两条推出来的事实主宾未必同向**——
+              逆要对调，子属性不对调，只看名字分不出来，写出来就分得出 */}
+          {(inverseOf || subPropertyOf) && (
+            <div className="text-[11px] leading-relaxed text-neutral-500 space-y-0.5">
+              {inverseOf && (
+                <div>
+                  {S.ontology.linkMeansInverse(
+                    label.trim() || key || "?",
+                    nameOf(inverseOf),
+                  )}
+                </div>
+              )}
+              {subPropertyOf && (
+                <div>
+                  {S.ontology.linkMeansSuper(
+                    label.trim() || key || "?",
+                    nameOf(subPropertyOf),
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       <div>
         <label className={lbl}>{S.ontology.description}</label>

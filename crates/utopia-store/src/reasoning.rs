@@ -72,19 +72,31 @@ async fn edges(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Edge>> {
 /// **只取声明了至少一位的**：一位都没声明的谓词进了表也不会被检查（`says_nothing`
 /// 会跳过），白白占内存。而且这个条数本身有意义——它是「有没有判据」的度量，
 /// 报告里要用。
+#[allow(clippy::type_complexity)]
 async fn axioms(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> {
-    let rows: Vec<(Uuid, bool, bool, bool, bool, bool, bool)> = sqlx::query_as(
+    let rows: Vec<(
+        Uuid,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
+        Option<Uuid>,
+        Option<Uuid>,
+    )> = sqlx::query_as(
         "SELECT id, is_transitive, is_symmetric, is_asymmetric, is_irreflexive,
-                functional, inverse_functional
-           FROM relation_types
-          WHERE kb_id = $1
-            AND (is_transitive OR is_symmetric OR is_asymmetric OR is_irreflexive
-                 OR functional OR inverse_functional)",
+                    functional, inverse_functional, inverse_of, sub_property_of
+               FROM relation_types
+              WHERE kb_id = $1
+                AND (is_transitive OR is_symmetric OR is_asymmetric OR is_irreflexive
+                     OR functional OR inverse_functional
+                     OR inverse_of IS NOT NULL OR sub_property_of IS NOT NULL)",
     )
     .bind(kb_id)
     .fetch_all(pool)
     .await?;
-    Ok(rows
+    let mut map: HashMap<Uuid, Axioms> = rows
         .into_iter()
         .map(
             |(
@@ -95,6 +107,8 @@ async fn axioms(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> 
                 irreflexive,
                 functional,
                 inverse_functional,
+                inverse_of,
+                sub_property_of,
             )| {
                 (
                     id,
@@ -105,11 +119,33 @@ async fn axioms(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> 
                         irreflexive,
                         functional,
                         inverse_functional,
+                        inverse_of,
+                        sub_property_of,
                     },
                 )
             },
         )
-        .collect())
+        .collect();
+
+    // **逆是相互的，而库里只存单向。** 声明了 `p⁻¹ = q` 却没回填
+    // `q⁻¹ = p` 的话，`A p B` 推得出 `B q A`，`B q A` 却推不回 `A p B`
+    // ——「问工作和问雇佣答案不同」正是 R1 要消灭的东西，只修一半等于没修。
+    //
+    // 归一化放在这里而不是数据库触发器：绕过触发器的路不止一条（RDF 导入、
+    // 直接改表），而载入公理只有这一处，谁也绕不过去。
+    let pairs: Vec<(Uuid, Uuid)> = map
+        .iter()
+        .filter_map(|(id, ax)| ax.inverse_of.map(|inv| (inv, *id)))
+        .collect();
+    for (target, source) in pairs {
+        // 已经声明了自己的逆就不动它——**人写的优先于推出来的**，
+        // 两边指得不一样是本体自己的矛盾，交给 R0 报，不在这里悄悄改
+        map.entry(target)
+            .or_default()
+            .inverse_of
+            .get_or_insert(source);
+    }
+    Ok(map)
 }
 
 /// 跑一遍检查，把结果落库。
@@ -365,6 +401,13 @@ pub struct DeriveReport {
     pub invalidated: usize,
     /// 撞上单谓词上限、没推完的谓词个数
     pub capped: usize,
+    /// **推出来了却找不到对应规则行的条数。正常应当恒为零。**
+    ///
+    /// 不为零意味着规则编译与推导对不上了。之前这里是一句 `continue`，
+    /// 于是 `ceo_of ⊑ works_at` 推出的那条 `works_at` 事实**推出来了却不落库**，
+    /// 而下游靠它推出的 `employs` 反倒进了库——一条派生的前提凭空消失。
+    /// 数出来，别再让它静默一次
+    pub unruled: usize,
 }
 
 /// 派生事实的身份：三元组 + 区间。
@@ -412,6 +455,15 @@ async fn compile_rules(
         }
         if a.symmetric {
             want.push((pred, "symmetric"));
+        }
+        // 后两种是 0017 补上的规则源。**规则挂在「有声明的那一侧」**——
+        // 归一化过的逆两边都有声明，所以两个方向各得一条规则，与它们各自
+        // 推出的派生对得上
+        if a.inverse_of.is_some() {
+            want.push((pred, "inverse"));
+        }
+        if a.sub_property_of.is_some() {
+            want.push((pred, "sub_property"));
         }
     }
     want.sort();
@@ -557,7 +609,14 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
     }
 
     for ((subject, predicate, object, from, to), d) in wanted {
-        let Some(&rule_id) = rules.get(&(predicate, d.rule.as_str())) else {
+        // **按 `via` 查，不是 `predicate`。** 规则行是给「声明了公理的那个
+        // 谓词」编的；跨谓词的两条规则里，派生出来的谓词是另一个。
+        // 原先按 predicate 查，前两条规则一直对（两者相同），加了 inverse /
+        // sub_property 之后查不到规则就 `continue`——推出来了却不落库
+        let Some(&rule_id) = rules.get(&(d.via, d.rule.as_str())) else {
+            // 查不到规则是**编译与推导不一致**，不是正常情况。数出来，
+            // 别再让它静默消失一次
+            report.unruled += 1;
             continue;
         };
         // 精度与置信度都取前提里最保守的那一个

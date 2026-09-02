@@ -476,6 +476,9 @@ function DefectRow({
     subclass_cycle: S.review.defectCycle,
     disjoint_with_ancestor: S.review.defectDisjointAncestor,
     inherits_disjoint: S.review.defectInheritsDisjoint,
+    inverse_of_itself: S.review.defectInverseSelf,
+    inverse_not_mutual: S.review.defectInverseNotMutual,
+    sub_property_cycle: S.review.defectSubPropertyCycle,
   }[d.kind];
   // 后两类的后果值得写出来：不可满足的类不会报错，它只是永远空着
   const unsatisfiable =
