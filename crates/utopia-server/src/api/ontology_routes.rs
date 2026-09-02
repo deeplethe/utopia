@@ -223,6 +223,16 @@ pub struct RelationTypeReq {
     pub is_asymmetric: bool,
     #[serde(default)]
     pub is_irreflexive: bool,
+    /// 指向另一个关系的两条（`inverseOf` / `subPropertyOf`）。
+    ///
+    /// **缺省 = 清空，与上面六位同一条规矩。** 它们是同一个表单一次提交的
+    /// 一组声明；一半覆盖一半保留，会让「我把逆去掉了」和「我没碰逆」
+    /// 长得一模一样。属性表单不填这两个，而属性本来就不许有——
+    /// store 层会拦，落库也照样是 NULL
+    #[serde(default)]
+    pub inverse_of: Option<Uuid>,
+    #[serde(default)]
+    pub sub_property_of: Option<Uuid>,
     #[serde(default)]
     pub description: Option<String>,
     /// relation | attribute（创建时定死，更新时忽略）
@@ -244,7 +254,8 @@ pub struct RelationTypeReq {
 }
 
 impl RelationTypeReq {
-    /// 六位公理打包。**散着传迟早传错顺序**——它们都是 bool，编译器帮不上忙。
+    /// 公理打包。**散着传迟早传错顺序**——六位都是 bool，编译器帮不上忙；
+    /// 后两位都是 `Option<Uuid>`，一样。
     fn axioms(&self) -> utopia_core::models::RelationAxioms {
         utopia_core::models::RelationAxioms {
             functional: self.functional,
@@ -253,6 +264,8 @@ impl RelationTypeReq {
             symmetric: self.is_symmetric,
             asymmetric: self.is_asymmetric,
             irreflexive: self.is_irreflexive,
+            inverse_of: self.inverse_of,
+            sub_property_of: self.sub_property_of,
         }
     }
 }

@@ -43,6 +43,13 @@ pub struct OwlProperty {
     pub symmetric: bool,
     pub asymmetric: bool,
     pub irreflexive: bool,
+    /// `owl:inverseOf` 的对端 IRI。**只按写的方向收**——归一化（补上反向）
+    /// 在读取公理时做（`reasoning::axioms`），那里绕不过去；
+    /// 在这里补会让「本体自己写了什么」和「我们推出来的」分不开
+    pub inverse_of: Option<String>,
+    /// `rdfs:subPropertyOf` 的父属性 IRI。多写几条只留第一条——
+    /// OWL 允许多父，而 R1 的规则一次只升一级，多父要另一套形状
+    pub sub_property_of: Option<String>,
     pub domains: Vec<String>,
     pub ranges: Vec<String>,
     /// **多条 range 是并集还是交集**。`rdfs:range` 写多条是交集
@@ -219,6 +226,9 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let mut inverse_functional: BTreeSet<String> = BTreeSet::new();
     let mut transitive: BTreeSet<String> = BTreeSet::new();
     let mut symmetric: BTreeSet<String> = BTreeSet::new();
+    // 属性之间的两条关系（不是类型声明，所以单独收）
+    let mut inverse_of: BTreeMap<String, String> = BTreeMap::new();
+    let mut sub_property_of: BTreeMap<String, String> = BTreeMap::new();
     let mut asymmetric: BTreeSet<String> = BTreeSet::new();
     let mut irreflexive: BTreeSet<String> = BTreeSet::new();
     let mut plain_props: BTreeSet<String> = BTreeSet::new();
@@ -304,6 +314,7 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             || is_schema(p, "domainIncludes")
             || is_schema(p, "rangeIncludes")
             || p == format!("{OWL}disjointWith")
+            || p == format!("{OWL}inverseOf")
     };
     for t in &triples {
         let p = t.predicate.as_str();
@@ -331,6 +342,23 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
                     .entry(o.clone())
                     .or_default()
                     .push(t.subject.clone());
+            }
+        } else if p == format!("{OWL}inverseOf") {
+            // **只按写的方向收。** OWL 里 `p owl:inverseOf q` 蕴含反向，
+            // 而词表通常只写一遍。补反向是在读取公理时做的
+            //（`reasoning::axioms`，那一处绕不过去）——在这里补会让
+            // 「本体自己写了什么」和「我们推出来的」分不开，而 R0 有一条
+            // `inverse_not_mutual` 检查恰恰要区分这两者
+            if let Some(o) = &t.object_iri {
+                inverse_of.entry(t.subject.clone()).or_insert(o.clone());
+            }
+        } else if p == format!("{RDFS}subPropertyOf") {
+            // 从前这条只出现在 `known()` 白名单里——认得出、不报警、**然后扔掉**。
+            // 导一份带 subPropertyOf 的本体进来，那部分信息当场消失且没有提示
+            if let Some(o) = &t.object_iri {
+                sub_property_of
+                    .entry(t.subject.clone())
+                    .or_insert(o.clone());
             }
         } else if p == format!("{RDFS}subClassOf") {
             if let Some(o) = &t.object_iri {
@@ -450,6 +478,8 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             transitive: transitive.contains(iri),
             symmetric: symmetric.contains(iri),
             asymmetric: asymmetric.contains(iri),
+            inverse_of: inverse_of.get(iri).cloned(),
+            sub_property_of: sub_property_of.get(iri).cloned(),
             irreflexive: irreflexive.contains(iri),
             domains: domains.get(iri).cloned().unwrap_or_default(),
             ranges: rs,
@@ -1246,6 +1276,47 @@ mod against_real_packs {
                 .any(|d| d.ends_with("Organization")),
             "foaf:Person 该与 Organization 互斥,实得 {:?}",
             person.disjoint_with
+        );
+    }
+}
+
+#[cfg(test)]
+mod property_axiom_tests {
+    use super::*;
+
+    /// `owl:inverseOf` 与 `rdfs:subPropertyOf` 要被读出来。
+    ///
+    /// 从前 `subPropertyOf` 只出现在 `known()` 白名单里——认得出、不报警、
+    /// **然后扔掉**；`inverseOf` 连白名单都没进，被算进「暂未投影」。
+    /// 两种都是导一份本体进来，那部分信息当场消失。
+    #[test]
+    fn the_two_property_relations_survive_projection() {
+        let ttl = include_str!("../tests/inverse_and_sub.ttl");
+        let p = project(ttl.as_bytes(), RdfFormat::Turtle).expect("解析");
+        let by = |k: &str| {
+            p.properties
+                .iter()
+                .find(|x| x.key == k)
+                .unwrap_or_else(|| panic!("没有 {k}"))
+        };
+        assert_eq!(
+            by("employs").inverse_of.as_deref(),
+            Some("http://example.org/worksAt"),
+            "**逆要按写的方向收**——补反向是读取公理时的事"
+        );
+        assert_eq!(
+            by("ceo_of").sub_property_of.as_deref(),
+            Some("http://example.org/worksAt")
+        );
+        // 反方向没写，就该是空的：本体写了什么与我们推了什么要分得开，
+        // R0 的 inverse_not_mutual 检查靠这个区分
+        assert!(
+            by("works_at").inverse_of.is_none(),
+            "没写的方向不该在导入时被补上"
+        );
+        assert!(
+            !p.unprojected.keys().any(|k| k.contains("inverseOf")),
+            "**认了就不该再算进「暂未投影」**"
         );
     }
 }

@@ -75,6 +75,7 @@ pub async fn relation_type_views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Re
     Ok(sqlx::query_as(
         "SELECT r.id, r.key, r.label, r.temporal, r.functional, r.inverse_functional,
                 r.is_transitive, r.is_symmetric, r.is_asymmetric, r.is_irreflexive,
+                r.inverse_of, r.sub_property_of,
                 r.builtin, r.description,
                 r.kind, r.datatype, r.unit,
                 ARRAY(SELECT d.entity_type_id FROM relation_type_domains d
@@ -302,6 +303,68 @@ fn validate_attribute_fields(
     }
 }
 
+/// 两条指向别的关系的公理，落库前必须过这里。
+///
+/// **最要紧的一条是同库。** 列上的外键是 `REFERENCES relation_types(id)`，
+/// 它不认知识库——数据库层面，A 库的关系可以指向 B 库的关系。RDF 导入那条路
+/// 天然过不去（按 IRI 在本库里查），而接口收的是裸 UUID：不在这里挡，
+/// 拿到任意一个 UUID 就能让推理机跨库读公理。**不能靠前端只列本库选项**，
+/// 那是界面礼貌，不是边界。
+///
+/// 另外两条：属性没有逆（它的宾语是字面值，反过来无从谈起），
+/// 子属性不能是自己（DB 有 CHECK，但撞上去是 500，得在这里给出人话）。
+/// 而**逆是自己允许**——那等于对称，R0 会提示改用 `symmetric` 更直白，不算错。
+async fn validate_property_links(
+    pool: &PgPool,
+    kb_id: Uuid,
+    self_id: Option<Uuid>,
+    kind: &str,
+    ax: RelationAxioms,
+) -> AppResult<()> {
+    let links = [ax.inverse_of, ax.sub_property_of];
+    if links.iter().all(|l| l.is_none()) {
+        return Ok(());
+    }
+    if kind == "attribute" {
+        return Err(AppError::invalid(
+            "attr_has_no_link",
+            "An attribute cannot have an inverse or a super-property",
+        ));
+    }
+    if self_id.is_some() && ax.sub_property_of == self_id {
+        return Err(AppError::invalid(
+            "sub_property_self",
+            "A relation cannot be its own super-property",
+        ));
+    }
+    for target in links.into_iter().flatten() {
+        let ok: Option<(String,)> =
+            sqlx::query_as("SELECT kind FROM relation_types WHERE id = $1 AND kb_id = $2")
+                .bind(target)
+                .bind(kb_id)
+                .fetch_optional(pool)
+                .await?;
+        match ok {
+            // 不区分「不存在」与「在别的库」：能问出哪个 UUID 存在于别处，
+            // 本身就是一点不该给的信息
+            None => {
+                return Err(AppError::invalid(
+                    "unknown_relation",
+                    "That relation is not in this knowledge base",
+                ));
+            }
+            Some((k,)) if k != "relation" => {
+                return Err(AppError::invalid(
+                    "link_target_is_attr",
+                    "An attribute cannot be an inverse or a super-property",
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn create_relation_type(
     pool: &PgPool,
@@ -324,6 +387,8 @@ pub async fn create_relation_type(
         ));
     }
     validate_attribute_fields(kind, domains, datatype)?;
+    // 新建的行 id 还不存在，指向自己无从谈起——所以 self_id 传 None
+    validate_property_links(pool, kb_id, None, kind, ax).await?;
     let is_attr = kind == "attribute";
     let id = Uuid::now_v7();
     sqlx::query(
@@ -331,8 +396,10 @@ pub async fn create_relation_type(
                                      functional, inverse_functional, description,
                                      kind, datatype, unit,
                                      is_transitive, is_symmetric,
-                                     is_asymmetric, is_irreflexive)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+                                     is_asymmetric, is_irreflexive,
+                                     inverse_of, sub_property_of)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+                 $16, $17)",
     )
     .bind(id)
     .bind(kb_id)
@@ -349,6 +416,9 @@ pub async fn create_relation_type(
     .bind(ax.symmetric)
     .bind(ax.asymmetric)
     .bind(ax.irreflexive)
+    // 属性不带这两条（上面已经拦了非空的情况，这里是兜底）
+    .bind(if is_attr { None } else { ax.inverse_of })
+    .bind(if is_attr { None } else { ax.sub_property_of })
     .execute(pool)
     .await
     .map_err(|e| match &e {
@@ -421,9 +491,25 @@ pub async fn update_relation_type(
             "datatype must be text / number / date / bool".into(),
         ));
     }
+    // 指向别的关系的两条要先问过库：目标在不在本库、是不是关系。
+    // 只在真的填了的时候查——清空（两个都 None）没有目标可验
+    if ax.inverse_of.is_some() || ax.sub_property_of.is_some() {
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT kind FROM relation_types WHERE id = $1 AND kb_id = $2")
+                .bind(id)
+                .bind(kb_id)
+                .fetch_optional(pool)
+                .await?;
+        let (kind,) = row.ok_or(AppError::NotFound)?;
+        validate_property_links(pool, kb_id, Some(id), &kind, ax).await?;
+    }
     // kind 不可变（改它会让存量事实语义错乱）。domain/range 可改——
     // 它们是签名不是身份，"这个属性也适用于承包商" 是个正当的编辑。
     // datatype/unit 只对 attribute 行生效，datatype 缺省保持原值
+    //
+    // 两条链**跟着六位公理一起覆盖式写**：缺省 = 清空，不是「不动」。
+    // 与 `is_transitive` 那几位同一条规矩——它们是同一个表单里同时提交的
+    // 一组声明，一半覆盖一半保留才是真正会出事的语义
     let res = sqlx::query(
         "UPDATE relation_types
             SET label = $3, temporal = $4,
@@ -431,7 +517,8 @@ pub async fn update_relation_type(
                 datatype = CASE WHEN kind = 'attribute' AND $8 IS NOT NULL THEN $8 ELSE datatype END,
                 unit = CASE WHEN kind = 'attribute' THEN $9 ELSE unit END,
                 is_transitive = $10, is_symmetric = $11,
-                is_asymmetric = $12, is_irreflexive = $13
+                is_asymmetric = $12, is_irreflexive = $13,
+                inverse_of = $14, sub_property_of = $15
          WHERE id = $2 AND kb_id = $1",
     )
     .bind(kb_id)
@@ -447,6 +534,8 @@ pub async fn update_relation_type(
     .bind(ax.symmetric)
     .bind(ax.asymmetric)
     .bind(ax.irreflexive)
+    .bind(ax.inverse_of)
+    .bind(ax.sub_property_of)
     .execute(pool)
     .await?;
     if res.rows_affected() == 0 {
@@ -1677,4 +1766,47 @@ pub async fn entity_fits_domain(
     .fetch_one(pool)
     .await?;
     Ok((declared > 0).then_some(ok > 0))
+}
+
+/// 把 `owl:inverseOf` / `rdfs:subPropertyOf` 从 IRI 解析成 id。
+///
+/// **必须是第二遍。** 这两条指的是另一个关系类型，而 id 要等全部插完才有——
+/// 一遍过的写法只能处理「父属性恰好排在前面」的文件，而 RDF 三元组没有顺序。
+///
+/// 按 IRI 配对而不是按 key：key 会因为撞名加后缀（`part_of_2`），
+/// 而 IRI 是这份本体里的身份。
+pub async fn link_property_axioms_bulk(
+    pool: &PgPool,
+    kb_id: Uuid,
+    inverse: &[(String, String)],
+    sub_property: &[(String, String)],
+) -> AppResult<(u64, u64)> {
+    let run = |column: &'static str, pairs: &[(String, String)]| {
+        let src: Vec<String> = pairs.iter().map(|(s, _)| s.clone()).collect();
+        let dst: Vec<String> = pairs.iter().map(|(_, d)| d.clone()).collect();
+        async move {
+            if src.is_empty() {
+                return AppResult::Ok(0);
+            }
+            // 目标 IRI 在这个库里找不到就跳过这一条——**部分导入是常态**
+            // （引用了外部词汇表里的属性），一条连不上不该让整次导入失败
+            let sql = format!(
+                "UPDATE relation_types r SET {column} = t.id
+                   FROM UNNEST($2::text[], $3::text[]) AS p(src, dst)
+                   JOIN relation_types t ON t.kb_id = $1 AND t.iri = p.dst
+                  WHERE r.kb_id = $1 AND r.iri = p.src AND r.id <> t.id"
+            );
+            let n = sqlx::query(&sql)
+                .bind(kb_id)
+                .bind(&src)
+                .bind(&dst)
+                .execute(pool)
+                .await?
+                .rows_affected();
+            AppResult::Ok(n)
+        }
+    };
+    let inv = run("inverse_of", inverse).await?;
+    let sub = run("sub_property_of", sub_property).await?;
+    Ok((inv, sub))
 }

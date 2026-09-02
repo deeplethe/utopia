@@ -37,6 +37,11 @@ pub enum Rule {
     Transitive,
     /// `A p B` ⟹ `B p A`
     Symmetric,
+    /// `A p B` ∧ `p⁻¹ = q` ⟹ `B q A`。**主宾对调且换谓词**——
+    /// 两件事一起发生，只做一件是这条规则最容易写错的地方
+    Inverse,
+    /// `A p B` ∧ `p ⊑ q` ⟹ `A q B`。主宾不动，只升谓词
+    SubProperty,
 }
 
 impl Rule {
@@ -44,6 +49,8 @@ impl Rule {
         match self {
             Rule::Transitive => "transitive",
             Rule::Symmetric => "symmetric",
+            Rule::Inverse => "inverse",
+            Rule::SubProperty => "sub_property",
         }
     }
 }
@@ -52,6 +59,16 @@ impl Rule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Derived {
     pub predicate: Uuid,
+    /// **哪个谓词的声明触发了它。**
+    ///
+    /// 传递与对称不换谓词，`via == predicate`；而 `inverseOf` 与
+    /// `subPropertyOf` 换——`ceo_of ⊑ works_at` 推出的事实谓词是 `works_at`，
+    /// 而声明写在 `ceo_of` 上。
+    ///
+    /// 落库时按 `via` 找规则行。**这里踩过一次**：原先按 `predicate` 找，
+    /// 前两条规则一直对（两者相同），加了跨谓词的两条之后查不到规则，
+    /// 于是 `continue` 静默丢弃——推出来了却不落库，最难查的那一种。
+    pub via: Uuid,
     pub subject: Uuid,
     pub object: Uuid,
     pub rule: Rule,
@@ -117,171 +134,232 @@ struct Reached {
     premises: Vec<Uuid>,
 }
 
+/// 一条三元组的身份：(谓词, 主语, 宾语)。
+///
+/// **谓词进了 key，这是这一版最要紧的改动。** 从前推导按谓词分组、组内自成一体，
+/// 因为传递与对称都不换谓词；而 `inverseOf` 与 `subPropertyOf` 天生跨谓词——
+/// `A works_at B` 推出的是 `B employs A`，落在另一个谓词上。分组一做，这两条
+/// 规则就无处安放。
+type Triple = (Uuid, Uuid, Uuid);
+
 /// 拿公理推一遍这批边。
+///
+/// **全局不动点，不再按谓词分组。** 三条规则会串起来：
+///
+/// ```text
+/// A ceo_of B  --(subPropertyOf)-->  A works_at B  --(inverseOf)-->  B employs A
+/// ```
+///
+/// 各谓词各算各的话，这条链在第一步就断了。所以改成半朴素求值扫全集：每一轮拿上
+/// 一轮的新边（frontier）再推一遍，没有新增就停。
+///
+/// 三条一跳规则（对称／逆／子属性）与传递放在同一轮里，因为它们互为输入——
+/// 逆推出来的边可能让某条传递链接得上，反之亦然。
 pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation {
     let mut out = Derivation::default();
-    let mut by_pred: HashMap<Uuid, Vec<TimedEdge>> = HashMap::new();
-    for e in edges {
-        let Some(ax) = axioms.get(&e.edge.predicate) else {
-            continue;
-        };
-        if !ax.transitive && !ax.symmetric {
-            continue;
-        }
-        by_pred.entry(e.edge.predicate).or_default().push(*e);
-    }
-    // 谓词按 id 排序：同一个库两次推导该给出同一份结果
-    let mut preds: Vec<Uuid> = by_pred.keys().copied().collect();
-    preds.sort();
-    for pred in preds {
-        let group = &by_pred[&pred];
-        let ax = axioms[&pred];
-        one_predicate(pred, group, ax, &mut out);
-    }
-    out
-}
 
-fn one_predicate(pred: Uuid, group: &[TimedEdge], ax: Axioms, out: &mut Derivation) {
     // 断言过的三元组。**派生撞上它就让路**——asserted > derived 是硬性的
-    let asserted: HashSet<(Uuid, Uuid)> = group
+    let asserted: HashSet<Triple> = edges
         .iter()
-        .map(|e| (e.edge.subject, e.edge.object))
+        .map(|e| (e.edge.predicate, e.edge.subject, e.edge.object))
         .collect();
 
-    // 已经推出来的 (主, 宾) → 怎么来的。同一对只留第一条证明:
-    // 多条路径都能推出同一件事时，展示哪一条对用户没有区别，而全存下来
-    // 会让证明树的规模跟着路径数走
-    let mut reached: HashMap<(Uuid, Uuid), Reached> = HashMap::new();
-    let mut emitted: Vec<Derived> = Vec::new();
-    let mut capped = false;
+    // 已经推出来的 → 怎么来的。同一条只留第一条证明：多条路径都能推出同一件事
+    // 时，展示哪一条对用户没有区别，而全存下来会让证明树的规模跟着路径数走
+    let mut reached: HashMap<Triple, Reached> = HashMap::new();
+    // **封顶仍按谓词计**：那个常量的含义没变（一个谓词最多推两万条），
+    // 而 `Derivation::capped` 回的也是谓词列表。跨谓词之后若改成全局一个数，
+    // 界面上「哪个谓词太密」就答不出来了
+    let mut per_pred: HashMap<Uuid, usize> = HashMap::new();
+    let mut capped: HashSet<Uuid> = HashSet::new();
 
-    // ---- 对称：一跳就够，不进迭代
-    if ax.symmetric {
-        for e in group {
-            let pair = (e.edge.object, e.edge.subject);
-            if pair.0 == pair.1 || asserted.contains(&pair) || reached.contains_key(&pair) {
-                continue;
-            }
-            reached.insert(
-                pair,
+    // 从 (谓词, 主语) 出发能走的边，传递用。派生出来的也进来——它们已经是
+    // 我们的断言了，链上不该因为「来路不同」断掉
+    let mut adj: HashMap<(Uuid, Uuid), Vec<Hop>> = HashMap::new();
+    for e in edges {
+        adj.entry((e.edge.predicate, e.edge.subject))
+            .or_default()
+            .push((e.edge.object, e.from, e.to, e.edge.fact));
+    }
+
+    let mut frontier: Vec<(Triple, Reached)> = edges
+        .iter()
+        .map(|e| {
+            (
+                (e.edge.predicate, e.edge.subject, e.edge.object),
                 Reached {
                     from: e.from,
                     to: e.to,
                     premises: vec![e.edge.fact],
                 },
-            );
-            emitted.push(Derived {
-                predicate: pred,
-                subject: pair.0,
-                object: pair.1,
-                rule: Rule::Symmetric,
-                premises: vec![e.edge.fact],
-            });
-        }
-    }
+            )
+        })
+        .collect();
+    // 起始 frontier 的顺序跟着入参走，而入参顺序不保证——排一次，
+    // 同一个库两次推导才给得出同一份结果
+    frontier.sort_by_key(|(t, _)| *t);
 
-    // ---- 传递：半朴素求值。frontier 是上一轮新产生的，只有它需要再往下接
-    if ax.transitive {
-        // 从主语出发能走的边。对称推出来的那些也算基础事实——它们已经是我们
-        // 的断言了，链上不该因为「来路不同」断掉
-        let mut base: HashMap<Uuid, Vec<Hop>> = HashMap::new();
-        for e in group {
-            base.entry(e.edge.subject).or_default().push((
-                e.edge.object,
-                e.from,
-                e.to,
-                e.edge.fact,
-            ));
+    // 轮数上限是**兜底**，真正的界在下面那条 `premises.len() >= MAX_DEPTH`：
+    // 常量的含义是「路径最长 12」，按前提条数算才对得上。轮数只防病态输入
+    for _ in 0..MAX_DEPTH {
+        if frontier.is_empty() {
+            break;
         }
-        for ((s, o), r) in reached.iter() {
-            if let Some(&p) = r.premises.first() {
-                base.entry(*s).or_default().push((*o, r.from, r.to, p));
+        let mut next: Vec<(Triple, Reached)> = Vec::new();
+
+        for (triple, acc) in frontier.drain(..) {
+            let (pred, subj, obj) = triple;
+            let Some(ax) = axioms.get(&pred) else {
+                continue;
+            };
+            // 再接一条就超了：这一条不再往下延，但它自己已经产出过
+            if acc.premises.len() >= MAX_DEPTH {
+                continue;
             }
-        }
 
-        let mut frontier: Vec<((Uuid, Uuid), Reached)> = group
-            .iter()
-            .map(|e| {
-                (
-                    (e.edge.subject, e.edge.object),
-                    Reached {
-                        from: e.from,
-                        to: e.to,
-                        premises: vec![e.edge.fact],
-                    },
-                )
-            })
-            .collect();
-
-        // **`MAX_DEPTH - 1` 轮,不是 MAX_DEPTH 轮。** 起始 frontier 里每条已经
-        // 带着一条前提,此后每轮加一条——跑满 MAX_DEPTH 轮会得到 13 条前提的
-        // 证明,而那个常量在 R0 那边的含义是「路径最长 12」。两处得是同一个意思
-        for _ in 0..MAX_DEPTH.saturating_sub(1) {
-            if frontier.is_empty() {
-                break;
+            // ---- 一跳的三条：换主宾（对称）、换谓词（逆 / 子属性）
+            let mut hops: Vec<(Triple, Rule)> = Vec::new();
+            if ax.symmetric {
+                hops.push(((pred, obj, subj), Rule::Symmetric));
             }
-            let mut next: Vec<((Uuid, Uuid), Reached)> = Vec::new();
-            for ((a, b), acc) in frontier.drain(..) {
-                let Some(outs) = base.get(&b) else {
+            if let Some(inv) = ax.inverse_of {
+                // `A p B ⟹ B p⁻¹ A`。主宾对调**且**谓词换掉——两件事一起发生，
+                // 只做一件是这条规则最容易写错的地方
+                hops.push(((inv, obj, subj), Rule::Inverse));
+            }
+            if let Some(sup) = ax.sub_property_of {
+                // `A p B ∧ p ⊑ q ⟹ A q B`。主宾不动，只升谓词
+                hops.push(((sup, subj, obj), Rule::SubProperty));
+            }
+            for (t, rule) in hops {
+                if emit(
+                    t,
+                    pred,
+                    rule,
+                    &acc,
+                    acc.from,
+                    acc.to,
+                    None,
+                    &asserted,
+                    &mut reached,
+                    &mut per_pred,
+                    &mut capped,
+                    &mut out,
+                    &mut next,
+                    &mut adj,
+                ) {
                     continue;
-                };
-                for &(c, from, to, fact) in outs {
+                }
+            }
+
+            // ---- 传递：需要接一条同谓词的出边
+            if ax.transitive {
+                let outs = adj.get(&(pred, obj)).cloned().unwrap_or_default();
+                for (c, from, to, fact) in outs {
                     // **不推自环。** `A p A` 在一个传递+反对称的谓词上是矛盾
                     // 而不是知识，R0 那边会把这个环连路径一起报出来
-                    if a == c {
-                        continue;
-                    }
-                    if asserted.contains(&(a, c)) || reached.contains_key(&(a, c)) {
+                    if subj == c {
                         continue;
                     }
                     let Some((nf, nt)) = overlap((acc.from, acc.to), (from, to)) else {
                         continue;
                     };
-                    if emitted.len() >= MAX_DERIVED_PER_PREDICATE {
-                        capped = true;
-                        break;
-                    }
-                    let mut premises = acc.premises.clone();
-                    premises.push(fact);
-                    reached.insert(
-                        (a, c),
-                        Reached {
-                            from: nf,
-                            to: nt,
-                            premises: premises.clone(),
-                        },
+                    emit(
+                        (pred, subj, c),
+                        pred,
+                        Rule::Transitive,
+                        &acc,
+                        nf,
+                        nt,
+                        Some(fact),
+                        &asserted,
+                        &mut reached,
+                        &mut per_pred,
+                        &mut capped,
+                        &mut out,
+                        &mut next,
+                        &mut adj,
                     );
-                    emitted.push(Derived {
-                        predicate: pred,
-                        subject: a,
-                        object: c,
-                        rule: Rule::Transitive,
-                        premises: premises.clone(),
-                    });
-                    next.push((
-                        (a, c),
-                        Reached {
-                            from: nf,
-                            to: nt,
-                            premises,
-                        },
-                    ));
-                }
-                if capped {
-                    break;
                 }
             }
-            if capped {
-                break;
-            }
-            frontier = next;
         }
+        next.sort_by_key(|(t, _)| *t);
+        frontier = next;
     }
 
-    out.facts.extend(emitted);
-    if capped {
-        out.capped.push(pred);
+    let mut capped: Vec<Uuid> = capped.into_iter().collect();
+    capped.sort();
+    out.capped = capped;
+    out
+}
+
+/// 落一条派生，并把它接进邻接表供后续传递使用。返回 true = 这个谓词封顶了。
+///
+/// 参数多得难看，但把它抽出来是必要的：四条规则各自的落地动作一模一样
+/// （查断言、查已推、算区间、记证明、进 frontier、进邻接表），而上一版
+/// 正是因为对称与传递各写一遍，两处的「跳过条件」慢慢长得不一样了。
+#[allow(clippy::too_many_arguments)]
+fn emit(
+    t: Triple,
+    // 触发它的那个谓词的声明。四条规则都是「当前展开的这条边的谓词」
+    via: Uuid,
+    rule: Rule,
+    acc: &Reached,
+    from: Option<i64>,
+    to: Option<i64>,
+    // 传递多用掉的那一条前提；一跳规则没有
+    extra_premise: Option<Uuid>,
+    asserted: &HashSet<Triple>,
+    reached: &mut HashMap<Triple, Reached>,
+    per_pred: &mut HashMap<Uuid, usize>,
+    capped: &mut HashSet<Uuid>,
+    out: &mut Derivation,
+    next: &mut Vec<(Triple, Reached)>,
+    adj: &mut HashMap<(Uuid, Uuid), Vec<Hop>>,
+) -> bool {
+    let (pred, subj, obj) = t;
+    // 自环不推，任何规则都一样：`A p A` 是矛盾不是知识
+    if subj == obj {
+        return false;
     }
+    // 断言优先；已经推过的不重复推——**逆的互指靠这一条收敛**：
+    // `p⁻¹ = q` 且 `q⁻¹ = p` 时，第二轮推回来的那条已经在 reached 里
+    if asserted.contains(&t) || reached.contains_key(&t) {
+        return false;
+    }
+    let n = per_pred.entry(pred).or_insert(0);
+    if *n >= MAX_DERIVED_PER_PREDICATE {
+        capped.insert(pred);
+        return true;
+    }
+    *n += 1;
+
+    let mut premises = acc.premises.clone();
+    if let Some(p) = extra_premise {
+        premises.push(p);
+    }
+    let r = Reached {
+        from,
+        to,
+        premises: premises.clone(),
+    };
+    reached.insert(t, r.clone());
+    // 派生出来的边也能被后续传递接上
+    if let Some(&first) = premises.first() {
+        adj.entry((pred, subj))
+            .or_default()
+            .push((obj, from, to, first));
+    }
+    out.facts.push(Derived {
+        predicate: pred,
+        via,
+        subject: subj,
+        object: obj,
+        rule,
+        premises,
+    });
+    next.push((t, r));
+    false
 }
 
 /// 派生事实的有效期,给落库那一侧用。
@@ -500,5 +578,222 @@ mod tests {
         let edges = [e(1, 1, 2), other];
         let d = derive(&edges, &transitive());
         assert!(d.facts.is_empty(), "1 →(99) 2 →(98) 3 推不出任何东西");
+    }
+
+    // ---- 跨谓词的两条规则（inverseOf / subPropertyOf）----
+    //
+    // 上面那些用的都是单谓词 `n(99)`；这两条规则天生要三个谓词才说得清，
+    // 所以另起一组常量与构造器
+
+    const P: Uuid = Uuid::from_bytes([1; 16]);
+    const Q: Uuid = Uuid::from_bytes([2; 16]);
+    const R: Uuid = Uuid::from_bytes([3; 16]);
+
+    /// 指定谓词的一条无时间边
+    fn ep(pred: Uuid, fact: u8, s: u8, o: u8) -> TimedEdge {
+        TimedEdge {
+            edge: Edge {
+                fact: f(fact),
+                predicate: pred,
+                subject: n(s),
+                object: n(o),
+            },
+            from: None,
+            to: None,
+        }
+    }
+    /// 指定谓词、带区间
+    fn tep(pred: Uuid, fact: u8, s: u8, o: u8, from: Option<i64>, to: Option<i64>) -> TimedEdge {
+        TimedEdge {
+            from,
+            to,
+            ..ep(pred, fact, s, o)
+        }
+    }
+    /// `p⁻¹ = q` 且 `q⁻¹ = p`——互指，收敛性靠它测
+    fn inverse_pair() -> HashMap<Uuid, Axioms> {
+        HashMap::from([
+            (
+                P,
+                Axioms {
+                    inverse_of: Some(Q),
+                    ..Default::default()
+                },
+            ),
+            (
+                Q,
+                Axioms {
+                    inverse_of: Some(P),
+                    ..Default::default()
+                },
+            ),
+        ])
+    }
+    /// `p ⊑ q`
+    fn sub_property() -> HashMap<Uuid, Axioms> {
+        HashMap::from([(
+            P,
+            Axioms {
+                sub_property_of: Some(Q),
+                ..Default::default()
+            },
+        )])
+    }
+
+    /// `A works_at B` ⟹ `B employs A`：主宾对调**且**换谓词。
+    /// 只做一件就是这条规则最常见的写错方式，所以两件都断言。
+    #[test]
+    fn the_inverse_swaps_the_ends_and_the_predicate() {
+        let d = derive(&[ep(P, 1, 1, 2)], &inverse_pair());
+        assert_eq!(d.facts.len(), 1, "一条边只推出一条逆");
+        let got = &d.facts[0];
+        assert_eq!(got.predicate, Q, "**谓词换了**");
+        assert_eq!((got.subject, got.object), (n(2), n(1)), "**主宾也对调了**");
+        assert_eq!(got.rule, Rule::Inverse);
+        assert_eq!(got.via, P, "声明写在 P 上，产出落在 Q 上");
+        assert_eq!(got.premises, vec![f(1)], "证明就是那一条原边");
+    }
+
+    /// `p⁻¹ = q` 且 `q⁻¹ = p` —— 互指。推回来的那条已经断言过，
+    /// 必须收敛而不是来回震荡。
+    #[test]
+    fn a_mutual_inverse_settles_instead_of_bouncing() {
+        let d = derive(&[ep(P, 1, 1, 2), ep(Q, 2, 2, 1)], &inverse_pair());
+        assert!(
+            d.facts.is_empty(),
+            "两个方向都已经断言过，一条都不该推——**断言优先**"
+        );
+    }
+
+    /// `p ⊑ q`：断言具体的，通用的也成立。主宾不动。
+    #[test]
+    fn a_sub_property_lifts_the_predicate_and_keeps_the_ends() {
+        let d = derive(&[ep(P, 1, 1, 2)], &sub_property());
+        assert_eq!(d.facts.len(), 1);
+        let got = &d.facts[0];
+        assert_eq!(got.predicate, Q, "升到父属性");
+        assert_eq!((got.subject, got.object), (n(1), n(2)), "主宾不动");
+        assert_eq!(got.rule, Rule::SubProperty);
+        assert_eq!(
+            got.via, P,
+            "**via 是声明公理的那个谓词**，不是推出来的那个——落库按它找规则行"
+        );
+    }
+
+    /// **不换谓词的两条规则，`via` 必须等于 `predicate`。**
+    ///
+    /// 这条看着是废话，而它正是那个 bug 藏得住的原因：落库从前按 `predicate`
+    /// 找规则行，对传递与对称一直是对的，所以没人发现键选错了。跨谓词的两条
+    /// 一加，`ceo_of ⊑ works_at` 推出的事实就查不到规则、被静默丢弃。
+    #[test]
+    fn for_the_same_predicate_rules_via_is_the_predicate() {
+        let d = derive(&[e(1, 1, 2), e(2, 2, 3)], &transitive());
+        assert!(!d.facts.is_empty());
+        for f in &d.facts {
+            assert_eq!(f.via, f.predicate, "传递不换谓词");
+        }
+    }
+
+    /// **这一条是整次改造的理由**：三条规则串起来。
+    ///
+    /// `A ceo_of B` ∧ `ceo_of ⊑ works_at` ∧ `works_at⁻¹ = employs`
+    ///   ⟹ `A works_at B` ⟹ `B employs A`
+    ///
+    /// 按谓词分组的旧结构在第一步就断了。
+    #[test]
+    fn a_sub_property_feeds_the_inverse() {
+        let mut ax = HashMap::new();
+        // ceo_of ⊑ works_at
+        ax.insert(
+            P,
+            Axioms {
+                sub_property_of: Some(Q),
+                ..Default::default()
+            },
+        );
+        // works_at⁻¹ = employs
+        ax.insert(
+            Q,
+            Axioms {
+                inverse_of: Some(R),
+                ..Default::default()
+            },
+        );
+        let d = derive(&[ep(P, 1, 1, 2)], &ax);
+        let mut got: Vec<(Uuid, u8, u8)> = d
+            .facts
+            .iter()
+            .map(|x| (x.predicate, x.subject.as_bytes()[0], x.object.as_bytes()[0]))
+            .collect();
+        got.sort();
+        assert!(got.contains(&(Q, 1, 2)), "先升成 works_at");
+        assert!(
+            got.contains(&(R, 2, 1)),
+            "**再转成 employs 的反方向**——跨了两个谓词，旧结构做不到"
+        );
+        assert_eq!(got.len(), 2);
+        // 证明要跟着长：第二跳用掉两条前提里的第一条
+        let employs = d.facts.iter().find(|x| x.predicate == R).unwrap();
+        assert_eq!(employs.premises, vec![f(1)], "根还是那条原始断言");
+    }
+
+    /// 逆推出来的边要能被传递接上：`p` 传递、`q` 是它的逆，
+    /// `B q A` ∧ `C q B` 应当推出 `C q A`（若 q 也传递）。
+    #[test]
+    fn what_the_inverse_produces_can_still_be_chained() {
+        let mut ax = HashMap::new();
+        ax.insert(
+            P,
+            Axioms {
+                inverse_of: Some(Q),
+                ..Default::default()
+            },
+        );
+        ax.insert(
+            Q,
+            Axioms {
+                transitive: true,
+                ..Default::default()
+            },
+        );
+        // A p B、B p C  ⟹  B q A、C q B  ⟹（q 传递）⟹ C q A
+        let d = derive(&[ep(P, 1, 1, 2), ep(P, 2, 2, 3)], &ax);
+        let got: Vec<(Uuid, u8, u8)> = d
+            .facts
+            .iter()
+            .map(|x| (x.predicate, x.subject.as_bytes()[0], x.object.as_bytes()[0]))
+            .collect();
+        assert!(got.contains(&(Q, 2, 1)));
+        assert!(got.contains(&(Q, 3, 2)));
+        assert!(
+            got.contains(&(Q, 3, 1)),
+            "**逆产出的边要进邻接表**，否则传递接不上它"
+        );
+    }
+
+    /// 区间照旧取交集，跨谓词也一样。
+    #[test]
+    fn the_inverse_carries_the_same_span() {
+        let d = derive(&[tep(P, 1, 1, 2, Some(10), Some(20))], &inverse_pair());
+        assert_eq!(d.facts.len(), 1);
+        let v = validity(
+            &d.facts[0].premises,
+            &HashMap::from([(f(1), (Some(10), Some(20)))]),
+        );
+        assert_eq!(v, Some((Some(10), Some(20))), "逆不改变有效期");
+    }
+
+    /// 自己是自己的逆 = 对称，但不该推出自环。
+    #[test]
+    fn a_predicate_that_is_its_own_inverse_still_refuses_self_loops() {
+        let ax = HashMap::from([(
+            P,
+            Axioms {
+                inverse_of: Some(P),
+                ..Default::default()
+            },
+        )]);
+        let d = derive(&[ep(P, 1, 1, 1)], &ax);
+        assert!(d.facts.is_empty(), "`A p A` 的逆还是 `A p A`——自环不推");
     }
 }
