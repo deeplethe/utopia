@@ -59,7 +59,7 @@ Review 加 `pending` 一档，界面**原句在上、三元组在下**；确认 
 **A2 · 令牌有界面。**〔已做，`feat/tokens-have-a-page`〕Account 页：列表（前缀、名字、scope、库、最后使用、过期）、发放（明文只显示一次）、撤销；旁边给一段可复制的 MCP 客户端配置（URL + Authorization 头）。
 三个占位 crate **删掉**（已做，与 A3 同一刀）：`utopia-mcp` 宣称的三个工具从未存在，服务端住在 `utopia-server/src/api/mcp.rs`；`utopia-graph` 没有对应物；`utopia-connectors` 的意图是对的，但两个连接器看不出边界该划在哪，[0013](0013-a-source-should-hand-over-its-history.md) 说等第三个来了再看抽象，crate 是同一个判断。占位是对读者的承诺，兑现不了就别留，需要时 `cargo new` 是几分钟的事。
 
-**A3 · 清死代码与陈旧注释。** 上表最后一行那五处，加上 `resolution.rs` 里 `CONFUSABLE_TYPE_KEYS` 上方停留在旧世界的注释。一个 PR。
+**A3 · 清死代码与陈旧注释。**〔已做，分两刀：#188 那批清了五处死代码与三个占位 crate；`chore/comments-catch-up` 补了还在描述「兜底谓词」的五处注释和一处指向仓库外 DESIGN.md 的引用〕上表最后一行那五处，加上 `resolution.rs` 里 `CONFUSABLE_TYPE_KEYS` 上方停留在旧世界的注释。一个 PR。
 
 **A4 · README 与代码对表。** Reasoning 那一行的 "derivation path expands all the way back to the original sentence" 在 B1 做完之前改成只承诺一层；
 Chat memory 与 MCP 两处在 A1 / A2 落地前标 in development。中英两份一起改。
