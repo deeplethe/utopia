@@ -114,6 +114,70 @@ fn tools_schema(can_write: bool, data_source_names: &[String]) -> serde_json::Va
     tools
 }
 
+/// 执行之前先看这次调用说清楚了没有。
+///
+/// **两种「没说清」以前都会安静地变成一次正常调用。**
+///
+/// 一是参数解析不出来。模型的输出撞上 token 上限时，`arguments` 会在半路断掉，
+/// 那串 JSON 不完整。从前这里是 `unwrap_or_else(|_| json!({}))`——空对象，
+/// 接着 `search_chunks` 里 `args["query"].as_str().unwrap_or(&query)` 回落到
+/// **用户那句原话**，于是一次被截断的调用变成「拿用户的原问题去检索」，
+/// 而轨迹上显示的是一条完全正常的 `search · 6 sources`。
+///
+/// 二是必填参数干脆没给。同一个回落，同一个结果。
+///
+/// 两种都不该猜。**回落产出的是一个看起来没问题的错误答案**，那比报错坏得多——
+/// 报错模型会重试，猜出来的答案没有人会去核。
+///
+/// 判据直接取自工具表里的 `required`：加一个必填参数，这里自动跟上，
+/// 不必记得来改第二处。
+fn check_call(
+    tools: &serde_json::Value,
+    name: &str,
+    raw_args: &str,
+) -> Result<serde_json::Value, (String, serde_json::Value)> {
+    let refuse = |detail: &str, message: String| {
+        (
+            message,
+            json!({ "kind": "tool", "label": name, "detail": detail }),
+        )
+    };
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(raw_args) else {
+        return Err(refuse(
+            "bad arguments",
+            format!(
+                "The arguments for {name} were not valid JSON, so the call was not run. \
+                 They were probably cut off. Call it again with complete arguments."
+            ),
+        ));
+    };
+    let required = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| t["function"]["name"] == name)
+        .and_then(|t| t["function"]["parameters"]["required"].as_array());
+    for key in required.into_iter().flatten().filter_map(|k| k.as_str()) {
+        // 空串与 null 都算没给：`{"query": ""}` 检索出来的东西与问题无关，
+        // 而它同样会显示成一条正常的轨迹
+        let missing = match args.get(key) {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::String(s)) => s.trim().is_empty(),
+            Some(_) => false,
+        };
+        if missing {
+            return Err(refuse(
+                &format!("missing {key}"),
+                format!(
+                    "{name} needs `{key}`, and it was missing or empty, so the call was not \
+                     run. Call it again with `{key}` set."
+                ),
+            ));
+        }
+    }
+    Ok(args)
+}
+
 const MEMORY_PROMPT: &str = "\
     Memory: you can persist knowledge with the remember tool. Use it when the user says \
     \"remember/record this\" or states a decision meant to last. Confirm in your reply what \
@@ -549,11 +613,22 @@ pub async fn chat(
 
             msgs.push(turn.to_message());
             for call in &turn.tool_calls {
-                let args: serde_json::Value =
-                    serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+                // **说不清自己要做什么的调用不执行。** 把话回给模型，让它重来
+                let args = match check_call(&tools, &call.name, &call.arguments) {
+                    Ok(args) => args,
+                    Err((message, step)) => {
+                        steps_acc.push(step.clone());
+                        yield Ok(Event::default()
+                            .event("step")
+                            .data(serde_json::to_string(&step).unwrap_or_default()));
+                        msgs.push(tool_result_message(&call.id, &message));
+                        continue;
+                    }
+                };
                 let (result, step) = match call.name.as_str() {
                     "search_chunks" => {
-                        let q = args["query"].as_str().unwrap_or(&query).to_string();
+                        // check_call 已经保证 query 在且非空——这里不再有回落
+                        let q = args["query"].as_str().unwrap_or_default().to_string();
                         let chunks = retrieval::hybrid(&state, kb_id, workspace_id, &q, SEARCH_TOP_K)
                             .await
                             .unwrap_or_default();
@@ -583,7 +658,8 @@ pub async fn chat(
                         (text, json!({ "kind": "search", "label": q, "detail": format!("{} sources", chunks.len()) }))
                     }
                     "search_docs" => {
-                        let q = args["query"].as_str().unwrap_or(&query).to_string();
+                        // 同上：check_call 已经拦过，这里不再回落到用户原话
+                        let q = args["query"].as_str().unwrap_or_default().to_string();
                         let hits = state.docs.search(&q, 4).unwrap_or_default();
                         let mut lines = Vec::new();
                         for h in &hits {
@@ -1240,5 +1316,88 @@ mod tests {
             line.contains("\"moved its head office to Berlin\""),
             "{line}"
         );
+    }
+
+    // --- check_call ---------------------------------------------------------
+
+    /// 参数在半路断掉——模型撞上 token 上限时就长这样。
+    ///
+    /// **从前这里回落成空对象，然后 `search_chunks` 拿用户那句原话去检索。**
+    /// 得到的是一条看起来完全正常的 `search · 6 sources`，和一个基于错误输入
+    /// 的答案。没人会去核一个看起来正常的答案，所以这一条必须是拒绝
+    #[test]
+    fn arguments_cut_off_mid_json_do_not_become_a_search() {
+        let tools = tools_schema(false, &[]);
+        let err = check_call(&tools, "search_chunks", "{\"query\": \"Acme reven")
+            .expect_err("残缺 JSON 必须拒绝，而不是回落");
+        assert_eq!(err.1["kind"], "tool", "轨迹上要显示成一次没做成的调用");
+        assert_eq!(err.1["detail"], "bad arguments");
+        assert!(
+            err.0.contains("not valid JSON") && err.0.contains("again"),
+            "回给模型的话要说清没执行、并让它重来：{}",
+            err.0
+        );
+    }
+
+    /// 空串与缺字段是同一件事：`{"query": ""}` 检索回来的东西与问题无关，
+    /// 而它同样会显示成一条正常轨迹
+    #[test]
+    fn an_empty_required_argument_counts_as_missing() {
+        let tools = tools_schema(false, &[]);
+        for raw in [
+            "{}",
+            "{\"query\": \"\"}",
+            "{\"query\": \"   \"}",
+            "{\"query\": null}",
+        ] {
+            let Err(err) = check_call(&tools, "search_chunks", raw) else {
+                panic!("{raw} 应当被拒");
+            };
+            assert_eq!(err.1["detail"], "missing query", "{raw}");
+        }
+    }
+
+    /// **判据取自工具表本身。** 这条守的是「加了必填参数却忘了改校验」——
+    /// query_data 只在挂了数据源时才出现在表里，它的两个必填参数
+    /// 从没在别处被单独写过一遍
+    #[test]
+    fn the_schema_is_the_only_place_required_is_written_down() {
+        let tools = tools_schema(false, &["warehouse".into()]);
+        let err = check_call(&tools, "query_data", "{\"data_source\": \"warehouse\"}")
+            .expect_err("缺 sql 必须拒绝");
+        assert_eq!(err.1["detail"], "missing sql");
+        check_call(
+            &tools,
+            "query_data",
+            "{\"data_source\": \"warehouse\", \"sql\": \"SELECT 1\"}",
+        )
+        .expect("两个都给了就该放行");
+    }
+
+    /// 合规的调用原样通过，**可选参数一个不少**。
+    ///
+    /// 这一关只判「说清了没有」，不做过滤——把 args 重新组装一遍的话，
+    /// 加一个可选参数就得记得来这里加一次，而忘记的后果是它安静地失效
+    #[test]
+    fn a_well_formed_call_passes_through_untouched() {
+        let tools = tools_schema(false, &[]);
+        let args = check_call(
+            &tools,
+            "entity_facts",
+            "{\"entity_id\": \"1f8ac10b-58cc-4372-a567-0e02b2c3d479\", \"at\": \"2026-03-15\"}",
+        )
+        .expect("必填给了就该放行");
+        assert_eq!(args["at"], "2026-03-15", "可选参数不能在这一关被吃掉");
+    }
+
+    /// `changes` 早就在自己那一支里拒绝缺失的 `since`——**它是唯一做对的一个**。
+    /// 这条钉住两件事：新的统一关卡与它一致，而它自己那道对日期格式的检查
+    /// （`2026-13-45` 这种）仍然要留着，因为 check_call 只看有没有、不看对不对
+    #[test]
+    fn the_one_tool_that_already_refused_still_refuses() {
+        let tools = tools_schema(false, &[]);
+        assert!(check_call(&tools, "changes", "{}").is_err());
+        check_call(&tools, "changes", "{\"since\": \"2026-13-45\"}")
+            .expect("格式错的日期不归这一关管，交给 changes_window");
     }
 }
