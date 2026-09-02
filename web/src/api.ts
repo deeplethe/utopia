@@ -170,6 +170,8 @@ export interface SourceView {
     | "github_issues"
     | "jira_issues"
     | "s3"
+    | "azure_blob"
+    | "gcs"
     | "memory"
     | "upload";
   name: string;

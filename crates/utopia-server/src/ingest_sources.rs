@@ -54,7 +54,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         "custom" => sync_custom(state, &source).await,
         "github_issues" => sync_github_issues(state, &source).await,
         "jira_issues" => sync_jira_issues(state, &source).await,
-        "s3" => sync_object_storage(state, &source).await,
+        "s3" | "azure_blob" | "gcs" => sync_object_storage(state, &source).await,
         // folder / api 无拉取语义
         _ => Ok(SyncStats::default()),
     };
@@ -763,14 +763,15 @@ async fn sync_object_storage(state: &AppState, source: &Source) -> anyhow::Resul
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("s3 source is missing config.bucket"))?;
+        .ok_or_else(|| anyhow::anyhow!("{} source is missing config.bucket", source.kind))?;
     let prefix = source.config["prefix"]
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    let store = crate::object_storage::client(&source.config)?;
-    let (objects, truncated) = crate::object_storage::fetch(store.as_ref(), bucket, prefix).await?;
+    let store = crate::object_storage::client(&source.kind, &source.config)?;
+    let (objects, truncated) =
+        crate::object_storage::fetch(&source.kind, store.as_ref(), bucket, prefix).await?;
 
     // 到顶不是错误，但必须说出来——否则「同步成功」下面藏着没进来的东西，
     // 而那正是 0005 说的失败无声

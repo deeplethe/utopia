@@ -386,7 +386,9 @@ export const zh: Strings = {
       custom: "自定义",
       github_issues: "GitHub 工单",
       jira_issues: "Jira 工单",
-      s3: "对象存储",
+      s3: "S3 / MinIO",
+      azure_blob: "Azure Blob",
+      gcs: "Google Cloud Storage",
     },
     sourceKindHints: {
       folder:
@@ -404,6 +406,12 @@ export const zh: Strings = {
         "从 S3 桶里读文档，或者任何说同一套协议的东西（MinIO、Ceph、R2）。" +
         "**端点留空就是 AWS**，填了就是自建。每个对象成为一篇文档，" +
         "日期取它最后一次修改的时刻。",
+      azure_blob:
+        "从 Azure Blob 容器里读文档。用 Azure 本身就把端点留空，" +
+        "填了是指向 Azurite 或某个网关。",
+      gcs:
+        "从 Google Cloud Storage 桶里读文档。服务账号 JSON 整份贴进来——" +
+        "服务器上没有那个文件可以指。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
       custom:
         "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Utopia 保持同步。",
@@ -455,6 +463,9 @@ export const zh: Strings = {
     s3RegionField: "区域",
     s3KeyField: "Access Key ID",
     s3SecretField: "Secret Access Key",
+    azAccountField: "存储账号名",
+    azKeyField: "账号密钥",
+    gcsKeyField: "服务账号 JSON（整个文件贴进来）",
     tokenField: "GitHub 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
     interval: "同步计划",

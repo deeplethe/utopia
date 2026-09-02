@@ -1271,6 +1271,8 @@ function SourceModal({
     | "github_issues"
     | "jira_issues"
     | "s3"
+    | "azure_blob"
+    | "gcs"
   >("folder");
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<string | null>(null);
@@ -1287,6 +1289,9 @@ function SourceModal({
   const [s3Region, setS3Region] = useState("");
   const [s3Key, setS3Key] = useState("");
   const [s3Secret, setS3Secret] = useState("");
+  const [azAccount, setAzAccount] = useState("");
+  const [azKey, setAzKey] = useState("");
+  const [gcsKey, setGcsKey] = useState("");
   // PR 在 GitHub 的模型里也是工单。默认不收——问「工单」要的是工单；
   // 但有些仓库的决策记录实际写在 PR 描述里，所以给个开关
   const [includePrs, setIncludePrs] = useState(false);
@@ -1301,7 +1306,9 @@ function SourceModal({
     kind === "custom" ||
     kind === "github_issues" ||
     kind === "jira_issues" ||
-    kind === "s3";
+    kind === "s3" ||
+    kind === "azure_blob" ||
+    kind === "gcs";
 
   const create = useMutation({
     mutationFn: () => {
@@ -1337,7 +1344,24 @@ function SourceModal({
                         ...(s3Key.trim() ? { access_key_id: s3Key.trim() } : {}),
                         ...(s3Secret.trim() ? { secret_access_key: s3Secret.trim() } : {}),
                       }
-                    : {};
+                    : kind === "azure_blob"
+                      ? {
+                          bucket: s3Bucket.trim(),
+                          ...(s3Prefix.trim() ? { prefix: s3Prefix.trim() } : {}),
+                          ...(s3Endpoint.trim() ? { endpoint: s3Endpoint.trim() } : {}),
+                          ...(azAccount.trim() ? { account_name: azAccount.trim() } : {}),
+                          ...(azKey.trim() ? { account_key: azKey.trim() } : {}),
+                        }
+                      : kind === "gcs"
+                        ? {
+                            bucket: s3Bucket.trim(),
+                            ...(s3Prefix.trim() ? { prefix: s3Prefix.trim() } : {}),
+                            ...(s3Endpoint.trim() ? { endpoint: s3Endpoint.trim() } : {}),
+                            ...(gcsKey.trim()
+                              ? { service_account_key: gcsKey.trim() }
+                              : {}),
+                          }
+                        : {};
       return api.createSource(kbId, {
         kind,
         name: name.trim(),
@@ -1359,7 +1383,7 @@ function SourceModal({
         ? feedUrl.trim()
         : kind === "custom"
           ? endpoint.trim()
-          : kind === "s3"
+          : kind === "s3" || kind === "azure_blob" || kind === "gcs"
             ? s3Bucket.trim()
             : true);
 
@@ -1398,6 +1422,8 @@ function SourceModal({
                 "github_issues",
                 "jira_issues",
                 "s3",
+                "azure_blob",
+                "gcs",
                 "api",
                 "custom",
               ] as const
@@ -1541,7 +1567,7 @@ function SourceModal({
               )}
             </>
           )}
-          {kind === "s3" && (
+          {(kind === "s3" || kind === "azure_blob" || kind === "gcs") && (
             <>
               {field(
                 S.library.s3BucketField,
@@ -1579,23 +1605,58 @@ function SourceModal({
                   onChange={(e) => setS3Region(e.target.value)}
                 />,
               )}
-              {field(
-                S.library.s3KeyField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
-                  value={s3Key}
-                  onChange={(e) => setS3Key(e.target.value)}
-                />,
+              {kind === "s3" && (
+                <>
+                  {field(
+                    S.library.s3KeyField,
+                    <input
+                      className="input-dark w-full px-3 py-2 text-sm font-mono"
+                      value={s3Key}
+                      onChange={(e) => setS3Key(e.target.value)}
+                    />,
+                  )}
+                  {field(
+                    S.library.s3SecretField,
+                    <input
+                      className="input-dark w-full px-3 py-2 text-sm font-mono"
+                      type="password"
+                      value={s3Secret}
+                      onChange={(e) => setS3Secret(e.target.value)}
+                    />,
+                  )}
+                </>
               )}
-              {field(
-                S.library.s3SecretField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
-                  type="password"
-                  value={s3Secret}
-                  onChange={(e) => setS3Secret(e.target.value)}
-                />,
+              {kind === "azure_blob" && (
+                <>
+                  {field(
+                    S.library.azAccountField,
+                    <input
+                      className="input-dark w-full px-3 py-2 text-sm font-mono"
+                      value={azAccount}
+                      onChange={(e) => setAzAccount(e.target.value)}
+                    />,
+                  )}
+                  {field(
+                    S.library.azKeyField,
+                    <input
+                      className="input-dark w-full px-3 py-2 text-sm font-mono"
+                      type="password"
+                      value={azKey}
+                      onChange={(e) => setAzKey(e.target.value)}
+                    />,
+                  )}
+                </>
               )}
+              {kind === "gcs" &&
+                field(
+                  S.library.gcsKeyField,
+                  <textarea
+                    className="input-dark w-full px-3 py-2 text-sm font-mono h-24"
+                    placeholder='{"type":"service_account",...}'
+                    value={gcsKey}
+                    onChange={(e) => setGcsKey(e.target.value)}
+                  />,
+                )}
             </>
           )}
           {kind === "github_issues" && (

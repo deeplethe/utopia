@@ -418,7 +418,9 @@ export const en = {
       custom: "Custom",
       github_issues: "GitHub issues",
       jira_issues: "Jira issues",
-      s3: "Object storage",
+      s3: "S3 / MinIO",
+      azure_blob: "Azure Blob",
+      gcs: "Google Cloud Storage",
     },
     sourceKindHints: {
       folder:
@@ -437,6 +439,12 @@ export const en = {
         "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
         "(MinIO, Ceph, R2). **Leave the endpoint empty for AWS**; fill it in for a " +
         "self-hosted one. Each object becomes a document dated by its last modification.",
+      azure_blob:
+        "Reads documents out of an Azure Blob container. Leave the endpoint empty for " +
+        "Azure itself; fill it in for Azurite or a gateway.",
+      gcs:
+        "Reads documents out of a Google Cloud Storage bucket. The service account JSON " +
+        "goes in whole — there is no file on the server to point at.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       custom:
         "Polls a URL you control on a schedule — your service returns JSON items and Utopia keeps them in sync.",
@@ -489,6 +497,9 @@ export const en = {
     s3RegionField: "Region",
     s3KeyField: "Access key ID",
     s3SecretField: "Secret access key",
+    azAccountField: "Storage account name",
+    azKeyField: "Account key",
+    gcsKeyField: "Service account JSON (paste the whole file)",
     tokenField: "GitHub token (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     interval: "Sync schedule",
