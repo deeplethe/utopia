@@ -37,7 +37,11 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
+            # **预发布不动 latest。** `{{major}}.{{minor}}` 那两条
+            # metadata-action 自己会跳过预发布，而这条 raw 不会——推一个
+            # `v0.1.0-rc1` 就把 latest 拖了过去，而那正好是 rc 要避免的事。
+            # 判据是 tag 里有没有连字符：semver 用它标预发布
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
             type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
       # 先只 load 到本地跑一遍。"镜像构建成功"证明不了"容器能起来"——
