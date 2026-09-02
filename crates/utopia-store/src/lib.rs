@@ -19,6 +19,7 @@ pub mod memory;
 pub mod model_limits;
 pub mod ontology;
 pub mod palette;
+pub mod pending;
 pub mod reasoning;
 pub mod resolution;
 pub mod review;

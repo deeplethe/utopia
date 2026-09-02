@@ -19,6 +19,11 @@ export function useKbEvents(kbId: string | undefined) {
     es.addEventListener("review", () => {
       queryClient.invalidateQueries({ queryKey: ["review", kbId] });
     });
+    // 一句记忆抽出了等人点头的事实（0015）：对话里那张确认卡跟着长出来
+    es.addEventListener("pending", () => {
+      queryClient.invalidateQueries({ queryKey: ["pending", kbId] });
+      queryClient.invalidateQueries({ queryKey: ["review", kbId] });
+    });
     es.addEventListener("source", () => {
       queryClient.invalidateQueries({ queryKey: ["sources", kbId] });
       queryClient.invalidateQueries({ queryKey: ["documents", kbId] });

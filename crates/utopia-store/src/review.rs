@@ -22,6 +22,7 @@ pub const LOW_CONFIDENCE_BELOW: f32 = 0.75;
 pub async fn counts(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewCounts> {
     Ok(sqlx::query_as(
         "SELECT
+           (SELECT count(*) FROM pending_facts WHERE kb_id = $1) AS pending,
            (SELECT count(*) FROM resolution_reviews
              WHERE kb_id = $1 AND status = 'pending') AS duplicates,
            (SELECT count(*) FROM fact_conflicts

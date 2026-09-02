@@ -29,17 +29,14 @@ const KNOWN_ENTITY_LIMIT: usize = 20;
 const MAX_HISTORY: usize = 20;
 const MAX_ROUNDS: usize = 6;
 
-/// **`remember` 暂时停用**（见 `docs/decisions/0015`）。
+/// `remember` 曾整个停用过一段（见 `docs/decisions/0015`）：它那时会把一句话直接
+/// 变成图上一条活边，实测里「记住 Acme 把总部搬到了深圳」落成的是一条**空谓词、
+/// 0.9 置信**的边，而助手宣称的和图里得到的不是一回事。
 ///
-/// 它今天会把一句话直接变成图上一条活边，而中间那一步没人看得见：实测里
-/// 「记住 Acme 把总部搬到了深圳」落成的是一条 **空谓词、0.9 置信** 的边——
-/// 本体里没有「搬迁到」这类关系，抽取落不上就留空（按 0010 这是对的），
-/// 于是助手宣称的和图里得到的不是一回事。
-///
-/// 0018 建好了 `pending_facts`：抽出来的先等人点头。**抽取侧接上那张表
-/// 之后，把这里改回 true。** 在那之前宁可没有这个工具，也不要一个会
-/// 悄悄改图的工具。
-pub(super) const REMEMBER_ENABLED: bool = false;
+/// 现在抽取侧接上了 `pending_facts`：记忆抽出的事实先等人点头，再进账本。
+/// 这个开关留着，是为了下次再发现「工具会悄悄改图」时有地方立刻拉闸——
+/// 宁可没有这个工具，也不要一个会悄悄改图的工具。
+pub(super) const REMEMBER_ENABLED: bool = true;
 
 #[derive(Deserialize)]
 pub struct ChatReq {
@@ -95,10 +92,11 @@ fn tools_schema(can_write: bool, data_source_names: &[String]) -> serde_json::Va
                     "name": "remember",
                     "description": "Record one memory episode into the knowledge base's temporal \
                         memory. Use ONLY when the user explicitly asks to remember/record \
-                        something, or clearly states a decision or fact to keep. The episode is \
-                        extracted into the knowledge graph; if it contradicts an existing \
-                        single-valued fact, the old fact's validity is closed automatically \
-                        (never deleted). Do not use for casual conversation.",
+                        something, or clearly states a decision or fact to keep. The sentence \
+                        is stored immediately; facts extracted from it are PROPOSED and shown \
+                        to the user for confirmation before they enter the knowledge graph. \
+                        Never claim a fact was added to the graph. Do not use for casual \
+                        conversation.",
                     "parameters": {
                         "type": "object",
                         "properties": {
@@ -188,8 +186,10 @@ fn check_call(
 
 const MEMORY_PROMPT: &str = "\
     Memory: you can persist knowledge with the remember tool. Use it when the user says \
-    \"remember/record this\" or states a decision meant to last. Confirm in your reply what \
-    was recorded. Never invent memories, and never call it for small talk.";
+    \"remember/record this\" or states a decision meant to last. In your reply, say that the \
+    sentence was recorded and that the facts extracted from it will be shown for the user's \
+    confirmation before entering the graph; never say a fact is already in the graph. \
+    Never invent memories, and never call it for small talk.";
 
 /// 工具的 JSON schema——**给模型看的那一份**。
 ///
@@ -687,6 +687,7 @@ pub async fn chat(
                     workspace_id,
                     mounted_sources: &mounted_sources,
                     can_write,
+                    actor: Some(user.id),
                 };
                 let (result, step) = tools::dispatch(&ctx, &mut sink, &call.name, &args).await;
                 // **这一步发生在正文的哪个位置。**

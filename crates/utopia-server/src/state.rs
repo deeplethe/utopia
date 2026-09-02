@@ -82,6 +82,16 @@ impl AppState {
         });
     }
 
+    /// 一句记忆抽出了等人点头的事实（0015）。对话里那张确认卡按这个刷新——
+    /// 抽取是异步的，卡片只能在任务完成时长出来，而不是在助手回话的那一刻
+    pub fn emit_pending(&self, kb_id: Uuid) {
+        let _ = self.events.send(AppEvent {
+            kb_id: Some(kb_id),
+            kind: "pending",
+            document_id: None,
+        });
+    }
+
     /// 图变了。推理往图里加过边之后要发一次——它不经过文档管道，
     /// 而 `document` 那条事件是文档管道专用的
     pub fn emit_graph(&self, kb_id: Uuid) {

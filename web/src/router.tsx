@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { Account } from "./pages/Account";
 import { AccountShell } from "./pages/AccountShell";
+import { Tokens } from "./pages/Tokens";
 import { Chat } from "./pages/Chat";
 import { DocViewer } from "./pages/DocViewer";
 import { DocsPage } from "./pages/Docs";
@@ -179,6 +180,13 @@ const myKbsRoute = createRoute({
   component: MyKbs,
 });
 
+// 个人令牌（0014）：给 agent 的钥匙属于人，所以在账户层，不在库里
+const tokensRoute = createRoute({
+  getParentRoute: () => accountShellRoute,
+  path: "/account/tokens",
+  component: Tokens,
+});
+
 const adminRoute = createRoute({
   getParentRoute: () => accountShellRoute,
   path: "/admin",
@@ -266,7 +274,7 @@ const routeTree = rootRoute.addChildren([
   settingsRoute,
   docsIndexRoute,
   docsRoute,
-  accountShellRoute.addChildren([accountRoute, myKbsRoute, adminRoute]),
+  accountShellRoute.addChildren([accountRoute, myKbsRoute, tokensRoute, adminRoute]),
   appRoute.addChildren([
     indexRoute,
     legacyGraphRoute,

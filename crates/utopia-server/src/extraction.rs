@@ -212,8 +212,14 @@ async fn enqueue_bootstrap(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub async fn extract_document(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
-    match run(state, document_id).await {
+/// `proposed_by`：这篇文档若是记忆日志，抽出的事实等人点头，这一列记「谁说的」。
+/// 批量摄入的文档传 None——那条路不经待确认队列，这个值用不上
+pub async fn extract_document(
+    state: &AppState,
+    document_id: Uuid,
+    proposed_by: Option<Uuid>,
+) -> anyhow::Result<()> {
+    match run(state, document_id, proposed_by).await {
         Ok(()) => Ok(()),
         Err(e) => {
             // 原因随状态落库：只进日志的错误等于没有错误
@@ -280,7 +286,7 @@ async fn resolve(
     Ok(r.entity_id)
 }
 
-async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
+async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> anyhow::Result<()> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
     let kb = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
@@ -388,6 +394,13 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     };
     // 本轮要从头讲一遍这篇文档的故事，旧信号先清掉（重抽自动作数）
     let _ = utopia_store::extraction_drops::clear_for_document(&state.pool, document_id).await;
+
+    // **记忆抽出的事实先等人点头**（0015）。一句 remember 一次一句、人就在对话里，
+    // 确认成本最低的时刻就是说完那句话的时候；而批量摄入一次上万条，逐条确认
+    // 不可能，那条路仍旧乐观写入 + 事后审阅。判据只有一个：这篇是不是记忆日志。
+    // 实体照常消解并创建——`pending_facts.subject_id` 是外键，这是 0018 定下的取舍
+    let await_nod = utopia_store::memory::is_memory_document(&state.pool, document_id).await?;
+    let mut pending_count = 0usize;
 
     let doc_time = doc.doc_time.map(|t| t.format("%Y-%m-%d").to_string());
     let chunks = utopia_store::documents::chunks_for_extraction(&state.pool, document_id).await?;
@@ -716,6 +729,29 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     // 单位随事实落笔：类型上的单位以后改了，旧值仍按记录时的单位读
                     object_value["unit"] = serde_json::json!(u);
                 }
+                if await_nod {
+                    if let utopia_store::pending::Outcome::Proposed(_) =
+                        utopia_store::pending::propose(
+                            &state.pool,
+                            utopia_store::pending::Proposal {
+                                kb_id: doc.kb_id,
+                                subject_id,
+                                predicate_id: Some(attr.id),
+                                object_id: None,
+                                object_value: Some(&object_value),
+                                proposed_predicate: Some(f.predicate.as_str()),
+                                validity,
+                                confidence,
+                                chunk_id: chunk.id,
+                                proposed_by,
+                            },
+                        )
+                        .await?
+                    {
+                        pending_count += 1;
+                    }
+                    continue;
+                }
                 let (fact_id, created) = utopia_store::graph::insert_value_fact(
                     &state.pool,
                     doc.kb_id,
@@ -812,12 +848,36 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                     Some(&format!("{subject_name} → {value}")),
                 )
                 .await;
+                let literal = serde_json::json!({ "value": value });
+                if await_nod {
+                    if let utopia_store::pending::Outcome::Proposed(_) =
+                        utopia_store::pending::propose(
+                            &state.pool,
+                            utopia_store::pending::Proposal {
+                                kb_id: doc.kb_id,
+                                subject_id,
+                                predicate_id: None,
+                                object_id: None,
+                                object_value: Some(&literal),
+                                proposed_predicate: Some(f.predicate.as_str()),
+                                validity,
+                                confidence,
+                                chunk_id: chunk.id,
+                                proposed_by,
+                            },
+                        )
+                        .await?
+                    {
+                        pending_count += 1;
+                    }
+                    continue;
+                }
                 let (fact_id, created) = utopia_store::graph::insert_value_fact(
                     &state.pool,
                     doc.kb_id,
                     subject_id,
                     None,
-                    &serde_json::json!({ "value": value }),
+                    &literal,
                     validity,
                     confidence,
                 )
@@ -1024,6 +1084,28 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 (predicate_id, subject_id, object_id)
             };
 
+            if await_nod {
+                if let utopia_store::pending::Outcome::Proposed(_) = utopia_store::pending::propose(
+                    &state.pool,
+                    utopia_store::pending::Proposal {
+                        kb_id: doc.kb_id,
+                        subject_id,
+                        predicate_id,
+                        object_id: Some(object_id),
+                        object_value: None,
+                        proposed_predicate: Some(f.predicate.as_str()),
+                        validity,
+                        confidence,
+                        chunk_id: chunk.id,
+                        proposed_by,
+                    },
+                )
+                .await?
+                {
+                    pending_count += 1;
+                }
+                continue;
+            }
             {
                 let (fact_id, created) = utopia_store::graph::insert_fact(
                     &state.pool,
@@ -1091,6 +1173,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         // 本块抽取完成即打标：更新时被认领的块携带标记跳过；中断的抽取可续跑
         // （LLM 调用/解析失败的块在上方 continue 掉，不打标，下次重试）
         utopia_store::documents::mark_chunk_extracted(&state.pool, chunk.id).await?;
+    }
+    // 队列里多了东西才叫醒人：Review 的计数与对话里那张确认卡都靠这一声
+    if pending_count > 0 {
+        tracing::info!(%document_id, pending_count, "记忆抽出的事实进了待确认队列");
+        state.emit_pending(doc.kb_id);
+        state.emit_review(doc.kb_id);
     }
 
     // 消歧后缀在实体创建时算会早于其事实写入——收尾时对本文档涉及的名字统一刷新

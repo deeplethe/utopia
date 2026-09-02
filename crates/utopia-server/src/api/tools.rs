@@ -32,6 +32,9 @@ pub struct ToolCtx<'a> {
     pub mounted_sources: &'a [DataSourceView],
     /// editor 及以上才有 `remember`
     pub can_write: bool,
+    /// 在说话的人。`remember` 把它记成「谁说的」，一路跟到待确认队列（0015）。
+    /// 对话里恒有值；MCP 也有——令牌以人的身份行事（0014）
+    pub actor: Option<Uuid>,
 }
 
 /// 工具执行过程中往外攒的东西。
@@ -343,23 +346,31 @@ pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult
     }
     match utopia_store::memory::append_episode(&ctx.state.pool, ctx.kb_id, text, occurred_at).await
     {
-        Ok((doc_id, _chunk)) => {
-            // 摄入(embedding/索引/增量抽取)异步走队列，不阻塞对话
+        Ok((doc_id, chunk_id)) => {
+            // 摄入(embedding/索引/增量抽取)异步走队列，不阻塞对话。
+            // 抽出来的事实**先等人点头**（0015）——所以这里只能如实说「记下了这句话」，
+            // 说不出抽出了几条：抽取还没跑。卡片在任务完成时长到对话里
             let _ = utopia_store::jobs::enqueue(
                 &ctx.state.pool,
                 "memory_ingest",
-                json!({ "document_id": doc_id }),
+                json!({ "document_id": doc_id, "proposed_by": ctx.actor }),
             )
             .await;
             ctx.state.emit_document(ctx.kb_id, doc_id);
             (
                 format!(
-                    "Recorded (effective {}): {text}",
+                    "Recorded the sentence (effective {}): {text}\n\
+                     Facts extracted from it will be shown to the user for confirmation \
+                     before entering the graph. Tell the user exactly that: the sentence is \
+                     recorded, and the extracted facts await their confirmation. Do not claim \
+                     any fact has been added to the knowledge graph.",
                     occurred_at.format("%Y-%m-%d")
                 ),
                 json!({
                     "kind": "tool", "label": "remember",
-                    "detail": text.chars().take(60).collect::<String>()
+                    "detail": text.chars().take(60).collect::<String>(),
+                    // 对话里那张确认卡按它取待确认项；回放时也据此重画
+                    "chunk_id": chunk_id,
                 }),
             )
         }

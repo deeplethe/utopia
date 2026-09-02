@@ -926,8 +926,36 @@ pub struct DerivedFactView {
 /// 与列表分开取是有意的：列表有上限（一页十条），数数没有。从前左栏读的是
 /// 数组长度，而接口固定只回 100 条——一个有 164 条待办的库，界面写着 100，
 /// 清完还会再冒出来。
+/// 等人点头的一条事实（0015）。`quote` 是那句记忆的全文——确认界面要把原句和
+/// 三元组并排显示，只列三元组等于要人凭空判断它对不对。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct PendingFactView {
+    pub id: Uuid,
+    pub subject_id: Uuid,
+    pub subject_name: String,
+    pub predicate_id: Option<Uuid>,
+    /// 本体里的关系名；为空时前端显示 `proposed_predicate`（斜体，标明是原话）
+    pub predicate_label: Option<String>,
+    pub proposed_predicate: Option<String>,
+    pub object_id: Option<Uuid>,
+    pub object_name: Option<String>,
+    pub object_value: Option<serde_json::Value>,
+    pub valid_from: Option<DateTime<Utc>>,
+    pub valid_from_precision: Option<String>,
+    pub valid_to: Option<DateTime<Utc>>,
+    pub valid_to_precision: Option<String>,
+    pub confidence: f32,
+    pub chunk_id: Uuid,
+    pub quote: String,
+    pub proposed_by: Option<Uuid>,
+    pub proposed_by_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy, Default, Serialize, sqlx::FromRow)]
 pub struct ReviewCounts {
+    /// 记忆抽出、等人点头的事实（0015）。排第一：它是人自己说的话
+    pub pending: i64,
     pub duplicates: i64,
     pub conflicts: i64,
     pub unconfirmed: i64,

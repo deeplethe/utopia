@@ -50,16 +50,16 @@
 
 ### A · 收口——两到三周，不加新概念
 
-**A1 · 把 0015 接上。** 抽取遇到记忆文档（`memory::is_memory_document`，已写好零调用）时写 `pending_facts` 而不是 `facts`；
+**A1 · 把 0015 接上。**〔已做，形态与下文有两处不同，见 0015 末尾的修订：助手说不出 N，确认卡在对话里随抽取完成长出来。〕 抽取遇到记忆文档（`memory::is_memory_document`，已写好零调用）时写 `pending_facts` 而不是 `facts`；
 Review 加 `pending` 一档，界面**原句在上、三元组在下**；确认 → `insert_fact`，**置信度不动**（0011 的教训：别拿浮点数表达人的态度，人的态度在审计台账里）；
 拒绝 → 写 `rejected_facts`，下一轮重抽先查它；`remember` 的回话改成「已记录，抽出 N 条待你确认」；然后把 `REMEMBER_ENABLED` 改回 true。
 **验收**：那条实测（「Acme 把总部搬到深圳」）跑一遍，图上不出现空谓词活边，Review 里出现一条带原句的待确认项。
 做完这一条，MCP 可以放 `remember`（scope = write，令牌以人的身份提议，人自己确认）——0014 未决的答案由此成立。
 
-**A2 · 令牌有界面。** Account 页：列表（前缀、名字、scope、库、最后使用、过期）、发放（明文只显示一次）、撤销；旁边给一段可复制的 MCP 客户端配置（URL + Authorization 头）。
+**A2 · 令牌有界面。**〔已做，`feat/tokens-have-a-page`〕Account 页：列表（前缀、名字、scope、库、最后使用、过期）、发放（明文只显示一次）、撤销；旁边给一段可复制的 MCP 客户端配置（URL + Authorization 头）。
 三个占位 crate **删掉**（已做，与 A3 同一刀）：`utopia-mcp` 宣称的三个工具从未存在，服务端住在 `utopia-server/src/api/mcp.rs`；`utopia-graph` 没有对应物；`utopia-connectors` 的意图是对的，但两个连接器看不出边界该划在哪，[0013](0013-a-source-should-hand-over-its-history.md) 说等第三个来了再看抽象，crate 是同一个判断。占位是对读者的承诺，兑现不了就别留，需要时 `cargo new` 是几分钟的事。
 
-**A3 · 清死代码与陈旧注释。** 上表最后一行那五处，加上 `resolution.rs` 里 `CONFUSABLE_TYPE_KEYS` 上方停留在旧世界的注释。一个 PR。
+**A3 · 清死代码与陈旧注释。**〔已做，分两刀：#188 那批清了五处死代码与三个占位 crate；`chore/comments-catch-up` 补了还在描述「兜底谓词」的五处注释和一处指向仓库外 DESIGN.md 的引用〕上表最后一行那五处，加上 `resolution.rs` 里 `CONFUSABLE_TYPE_KEYS` 上方停留在旧世界的注释。一个 PR。
 
 **A4 · README 与代码对表。** Reasoning 那一行的 "derivation path expands all the way back to the original sentence" 在 B1 做完之前改成只承诺一层；
 Chat memory 与 MCP 两处在 A1 / A2 落地前标 in development。中英两份一起改。
@@ -114,5 +114,9 @@ A 与 B 做完之后单独写一篇决策记录，那时再排。
 - **A1 的闸只拦记忆，还是拦所有单条交互式写入？** 0015 未决。今天只有 `remember` 一条路，先拦它；将来「在图上手工加一条边」的界面出现时，按同一张表走。
 - **C3 生成的中文描述算不算「原文保真」的例外？** 它不是导入的原文，是我们生成的投影。倾向记成投影（可重跑、可丢弃），原文 IRI 与英文描述保留在包里。
 - **B4 的阈值**：10 秒是拍的。
+- **对话内 agent 生成的界面走哪个协议。** A1 的确认卡载荷是声明式的（chunk + 三元组列表），渲染器是我们的 React。
+  讨论过 A2UI（2026-09-02）：它解决的是「你不控制的客户端渲染你 agent 的 UI」，而 Chat 页两头都是我们的；
+  卖点成立的地方在 MCP 那一侧，那里对应的是 MCP 自己的 UI 扩展，不是 A2UI。**判据是谁的客户端在看**，
+  等 MCP 放开写工具、有外部客户端要渲染这张卡时再定。
 - **要不要把抽取层拆出 `utopia-server`。** 今天约 6,500 行领域代码（extraction、type_resolution、bootstrap_ontology、predicate_match、adjudication、owl_import、连接器）住在 HTTP crate 里，依赖方向仍是干净的一条线。讨论过（2026-09-02）决定**不拆**：唯一实在的收益是脱离 server 测纯函数，而它们的单测今天已经不起 server；搬动 1,500 行的 `extraction.rs` 会让紧接着的 A1 diff 和 blame 变难看。判据留下：**等它造成实际损失再拆，损失的定义是「有东西没法脱离 server 测试」**。连接器那一块的边界等第三个连接器（飞书）来了再定。
 - **十万文档基准跑出来之后**，单进程 worker 与内嵌 Tantivy 的天花板在哪，决定了要不要在 v0.2 谈横向扩展。现在不谈。

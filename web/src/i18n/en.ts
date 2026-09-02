@@ -119,6 +119,47 @@ export const en = {
     deploymentAdmin: "Deployment admin",
     openKb: "Open",
     kbSettingsBtn: "Settings",
+    /* 个人令牌页（0014 / 0016 A2）：给 agent 的钥匙，以这个人的身份行事 */
+    tokensNav: "Agents & tokens",
+    tokensTitle: "Personal access tokens",
+    tokensHint:
+      "A token lets an agent reach Utopia over MCP as you, never with more than you can do yourself. Read-only by default, limited to the bases you pick, revocable here at any time.",
+    newToken: "New token",
+    tokenName: "Name",
+    tokenNamePlaceholder: "My laptop",
+    tokenScope: "Scope",
+    scopeRead: "Read",
+    scopeWrite: "Write",
+    scopeHint:
+      "Effective rights are your own role ∩ this scope. Write is a ceiling, not a grant: a viewer's write token still cannot write.",
+    tokenKbs: "Knowledge bases",
+    kbsAllHint: "Nothing selected means every base you can open.",
+    tokenExpires: "Expires",
+    expiresDays: (n: number) => `${n} days`,
+    expiresNever: "Never",
+    issueToken: "Create token",
+    issuedTitle: "Copy it now. It will not be shown again.",
+    issuedHint:
+      "Utopia keeps only a hash of it. If you lose it, revoke it here and create another.",
+    copy: "Copy",
+    copied: "Copied",
+    mcpTitle: "MCP client configuration",
+    mcpHint:
+      "For Claude Code, Claude Desktop and other Streamable HTTP clients. Each base has its own endpoint, so pick the one the agent should talk to. Other clients spell the keys differently.",
+    mcpBase: "Base",
+    yourTokens: "Your tokens",
+    noTokens: "No tokens yet.",
+    allBases: "All bases",
+    nBases: (n: number) => `${n} base${n === 1 ? "" : "s"}`,
+    lastUsed: (d: string) => `last used ${d}`,
+    neverUsed: "never used",
+    expiresOn: (d: string) => `expires ${d}`,
+    noExpiry: "no expiry",
+    createdOn: (d: string) => `created ${d}`,
+    revoke: "Revoke",
+    revokeConfirm: "Revoke?",
+    revokedOn: (d: string) => `revoked ${d}`,
+    tokenDone: "Done",
     roleNames: {
       owner: "Owner",
       admin: "Admin",
@@ -1180,6 +1221,7 @@ export const en = {
     empty: "Nothing to review — the graph is clean.",
     historyEmpty: "No merges yet.",
     // 左栏分类导航
+    railPending: "Awaiting your nod",
     railDuplicates: "Duplicates",
     railConflicts: "Conflicts",
     railUnconfirmed: "Unconfirmed",
@@ -1201,6 +1243,8 @@ export const en = {
       "review.keep": "Kept apart",
       "fact.confirm": "Confirmed",
       "fact.reject": "Rejected",
+      "fact.nod_confirmed": "Confirmed a remembered fact",
+      "fact.nod_rejected": "Rejected a remembered fact",
       "fact.close": "Closed",
       "conflict.close_old": "Closed old",
       "conflict.keep_both": "Kept both",
@@ -1282,6 +1326,19 @@ export const en = {
     mappingsHint:
       "Proposed mappings from a business concept to how it is computed. Confirm one and Ask uses it instead of guessing from the schema.",
     mappingDerived: "derived",
+    // 记忆抽出、等人点头的事实（0015）
+    pending: "Awaiting your confirmation",
+    pendingHint:
+      "Facts extracted from what you asked the assistant to remember. Nothing here is in the graph yet: " +
+      "the sentence is kept, the facts wait for your nod. Confirm to add with the sentence as evidence; " +
+      "reject and it will not be proposed again.",
+    pendingNoPredicate: "The ontology has no relation for this; the word is the model's own.",
+    pendingNoPredicateChip: "no relation in ontology",
+    pendingSaidBy: (name: string) => `said by ${name}`,
+    nodCardTitle: (n: number) =>
+      n === 1
+        ? "One fact extracted from this. Confirm to add it to the graph, or reject."
+        : `${n} facts extracted from this. Confirm to add them to the graph, or reject.`,
     lowConfidenceHint:
       "Extracted with confidence below 75%. Confirm to trust, reject to remove from the graph (the ledger keeps the record).",
     confirm: "Confirm",

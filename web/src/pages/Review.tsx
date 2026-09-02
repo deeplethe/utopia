@@ -10,10 +10,12 @@ import {
   type ConflictItem,
   type FactReviewItem,
   type MergeLog,
+  type PendingFactItem,
   type ReviewHistoryEvent,
   type ReviewItem,
   type ReviewSide,
 } from "../api";
+import { PendingFactRow, useCanDecide } from "./PendingFacts";
 import { S } from "../i18n";
 import { useKb, useKbId } from "../kb";
 import { Chip, type ChipTone, Pager, RAIL_CLS, cn } from "../ui";
@@ -597,6 +599,9 @@ function ViolationRow({
 /* ---------- 页面：左栏分类 + 单类内容区 ---------- */
 
 type Sel =
+  // 记忆抽出、等人点头的事实（0015）。排第一：它是人自己说的话，
+  // 而且在这一档里的东西**还没进图**——别处每一档审的都是已经在图上的
+  | "pending"
   | "duplicates"
   | "conflicts"
   | "unconfirmed"
@@ -611,6 +616,7 @@ type Sel =
 
 /** 走服务端分页的那几档（决策台账另有自己的接口） */
 const QUEUE_FETCHED: ReviewQueue[] = [
+  "pending",
   "duplicates",
   "conflicts",
   "unconfirmed",
@@ -621,6 +627,7 @@ const QUEUE_FETCHED: ReviewQueue[] = [
 ];
 
 const QUEUE_ORDER: Sel[] = [
+  "pending",
   "duplicates",
   "conflicts",
   "unconfirmed",
@@ -629,6 +636,7 @@ const QUEUE_ORDER: Sel[] = [
   "defects",
 ];
 const PAGE_SIZE: Record<Sel, number> = {
+  pending: FACT_PAGE,
   duplicates: DUP_PAGE,
   conflicts: CONFLICT_PAGE,
   unconfirmed: FACT_PAGE,
@@ -749,6 +757,22 @@ export function Review() {
         : api.rejectFact(kb!.id, id),
     onSettled: invalidate,
   });
+  // 等人点头的事实（0015）：确认进账本，驳回记进 rejected_facts
+  // 点头是写图的动作：Viewer 看得见提议、看不见按钮（与服务端 Editor 门槛同口径）
+  const canDecidePending = useCanDecide(kb?.id);
+  const pendingAction = useMutation({
+    mutationFn: ({
+      id,
+      action,
+    }: {
+      id: string;
+      action: "confirm" | "reject";
+    }) => api.decidePending(kb!.id, id, action),
+    onSettled: () => {
+      invalidate();
+      queryClient.invalidateQueries({ queryKey: ["pending", kb?.id] });
+    },
+  });
   const defectAction = useMutation({
     mutationFn: ({
       id,
@@ -804,6 +828,7 @@ export function Review() {
   // mappings 不是本页的一档（审批在「数据映射」页），但计数照收：
   // 收件箱该说「有几条等你」
   const counts: Record<Sel | "mappings", number> = {
+    pending: c?.pending ?? 0,
     duplicates: c?.duplicates ?? 0,
     conflicts: c?.conflicts ?? 0,
     unconfirmed: c?.unconfirmed ?? 0,
@@ -817,6 +842,7 @@ export function Review() {
   // 当前这一档的一页。**服务端已经切好了**，这里只按档收窄类型——
   // 收窄错了会在渲染时露馅，而不是悄悄显示空列表
   const rows = review.data?.queue === queueSel ? (review.data.items ?? []) : [];
+  const asPending = () => rows as PendingFactItem[];
   const asDuplicates = () => rows as ReviewItem[];
   const asFacts = () => rows as FactReviewItem[];
   const asConflicts = () => rows as ConflictItem[];
@@ -841,6 +867,7 @@ export function Review() {
   const isQueueSel = QUEUE_ORDER.includes(active);
 
   const SECTION: Record<Sel, { title: string; hint: string | null }> = {
+    pending: { title: S.review.pending, hint: S.review.pendingHint },
     duplicates: { title: S.review.duplicates, hint: S.review.duplicatesHint },
     conflicts: { title: S.review.conflicts, hint: S.review.conflictsHint },
     unconfirmed: {
@@ -869,6 +896,12 @@ export function Review() {
       <aside className={`${RAIL_CLS} flex flex-col overflow-y-auto u-scroll`}>
         <RailHeader label={S.review.tabQueue} />
         <div className="px-2 space-y-0.5">
+          <RailItem
+            active={active === "pending"}
+            label={S.review.railPending}
+            count={counts.pending}
+            onClick={() => select("pending")}
+          />
           <RailItem
             active={active === "duplicates"}
             label={S.review.railDuplicates}
@@ -1026,6 +1059,28 @@ export function Review() {
                       }
                       onClose={(validTo) =>
                         closeFactAction.mutate({ id: fact.id, validTo })
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+
+              {active === "pending" && counts.pending > 0 && (
+                <div className="space-y-3">
+                  {asPending().map((fact) => (
+                    <PendingFactRow
+                      key={fact.id}
+                      fact={fact}
+                      canDecide={canDecidePending}
+                      busy={
+                        pendingAction.isPending &&
+                        pendingAction.variables?.id === fact.id
+                      }
+                      onConfirm={() =>
+                        pendingAction.mutate({ id: fact.id, action: "confirm" })
+                      }
+                      onReject={() =>
+                        pendingAction.mutate({ id: fact.id, action: "reject" })
                       }
                     />
                   ))}
