@@ -1,7 +1,7 @@
 /* Chat：agentic 对话（检索/图谱工具 + remember 记忆）。
    会话持久化：左栏会话列表;上下文由服务端拼,前端只发 conversation_id + 新消息;
    行动轨迹(steps)与引用(sources)随消息落库,历史回放与实时流共用渲染。 */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import Markdown from "react-markdown";
@@ -29,20 +29,15 @@ import {
   streamChat,
   type ChatStep,
   type ConversationRow,
-  type Source,
 } from "../api";
 import { S } from "../i18n";
 import { toast } from "../toast";
 import { useKb, useKbId } from "../kb";
 import { DangerConfirm, RAIL_CLS } from "../ui";
+import { liveAnswer, type Turn } from "../liveAnswer";
 
-interface Turn {
-  role: "user" | "assistant";
-  content: string;
-  sources?: Source[];
-  steps?: ChatStep[];
-  error?: string;
-}
+/* `Turn` 定义在 liveAnswer 里：进行中的那一次也是一串 Turn，
+   而它必须活得比这个组件长（见那个文件顶上的说明） */
 
 /** 同标签页记忆：上次会话（按库）与未发送草稿——切页回来还原，新标签页从头开始 */
 const lastKey = (kbId: string) => `chat:last:${kbId}`;
@@ -61,9 +56,24 @@ export function Chat() {
   // 路由同步 effect 的判据：state 的提交时序晚于 navigate 触发的重渲染，
   // 用 ref 同步写入才能让"流式新建后仅换 URL"的守卫可靠命中
   const activeIdRef = useRef<string | null>(null);
+  // 已经结束的那些轮次，从库里读来。**进行中的那一次不在这里**——见下
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState(() => sessionStorage.getItem(DRAFT_KEY) ?? "");
-  const [streaming, setStreaming] = useState(false);
+  // 进行中的那一次活在组件之外，所以切走再回来它还在（见 liveAnswer.ts）。
+  // 新建会话时它的 id 是 null，而此时 activeId 也是 null，两者对得上
+  const live = useSyncExternalStore(liveAnswer.subscribe, liveAnswer.get);
+  /* **是「这一场」在流，不是「有一场」在流。**
+     写成全局的话，另一场在生成时这一场的输入框也会变成停止按钮、发不出消息，
+     而且最后一轮会被当成还在流——引用于是被藏起来（那条判据见 TurnView）。
+     一个正在别处生成的回答不该改变这里的任何东西 */
+  /* **按 URL 认领，不按 state。** 这个文件开头就写着「URL 是当前会话的唯一
+     事实来源」，而这里一度用了 `activeId`——它是 state，切走再回来时更新得
+     比第一次渲染晚，于是那一帧认不出自己，屏幕空着。用地址栏里的那个 id
+     就没有时序可言。新会话还没拿到 id 时两者都是空，也对得上 */
+  const currentId = routeConvId ?? activeId;
+  const liveHere = live && live.conversationId === currentId ? live : null;
+  const streaming = liveHere?.streaming ?? false;
+  const shown = liveHere ? liveHere.turns : turns;
   const [scopeOpen, setScopeOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ConversationRow | null>(null);
   // 会话搜索。**搜标题也搜正文**——人记得住的往往是问过的那句话
@@ -114,7 +124,7 @@ export function Chat() {
   // 直落底部（instant）：平滑滚动在流式追加下会一路慢爬
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
-  }, [turns]);
+  }, [shown]);
 
   // 切库回到新会话（首次拿到 kb 不算切换——直刷 /chat/$id 时不能把 URL 冲掉）
   const prevKbRef = useRef<string | null>(null);
@@ -122,8 +132,7 @@ export function Chat() {
     const prev = prevKbRef.current;
     prevKbRef.current = kb?.id ?? null;
     if (prev && kb && prev !== kb.id) {
-      if (streaming) abortRef.current?.();
-      setStreaming(false);
+      // **不 abort**：换库不该杀掉另一个库里正在写的回答，它落到那边的会话里
       activeIdRef.current = null;
       setActiveId(null);
       setTurns([]);
@@ -171,8 +180,12 @@ export function Chat() {
     });
 
   const loadConversation = async (id: string) => {
-    if (streaming) abortRef.current?.();
-    setStreaming(false);
+    // 回到正在写的那一场：直接认领，别去库里读——库里要等它写完才有那一行
+    if (liveAnswer.get()?.conversationId === id) {
+      activeIdRef.current = id;
+      setActiveId(id);
+      return;
+    }
     activeIdRef.current = id;
     setActiveId(id);
     try {
@@ -197,8 +210,7 @@ export function Chat() {
   };
 
   const newChat = () => {
-    if (streaming) abortRef.current?.();
-    setStreaming(false);
+    // 同样不 abort：开一场新的不等于放弃上一场
     if (kb) sessionStorage.removeItem(lastKey(kb.id));
     activeIdRef.current = null;
     setActiveId(null);
@@ -222,14 +234,17 @@ export function Chat() {
     setInput("");
     sessionStorage.removeItem(DRAFT_KEY);
     if (inputRef.current) inputRef.current.style.height = "auto";
-    setTurns((prev) => [...prev, { role: "user", content: q }, { role: "assistant", content: "" }]);
-    setStreaming(true);
 
-    abortRef.current = streamChat(
+    /* **结果留在 store 里，不交回组件状态。**
+       交回去要经过一个 `setTurns`，而流结束时这个组件可能早就卸载了——
+       那一下是空操作，内容就此消失（切回来一片空白，问题气泡都没有）。
+       留在 store 里，谁挂载谁认领 */
+    const abort = streamChat(
       kb.id,
       { conversation_id: activeId ?? undefined, message: q },
       {
         onConversation: (id) => {
+          liveAnswer.identify(id);
           // 先同步写 ref 再换 URL：路由同步 effect 因 id 相等而跳过重载，不打断流
           activeIdRef.current = id;
           setActiveId(id);
@@ -241,39 +256,26 @@ export function Chat() {
           });
           invalidateList();
         },
-        onSources: (sources) =>
-          setTurns((prev) => {
-            const next = [...prev];
-            next[next.length - 1] = { ...next[next.length - 1], sources };
-            return next;
-          }),
+        onSources: (sources) => liveAnswer.patchLast((t) => ({ ...t, sources })),
         onStep: (step) =>
-          setTurns((prev) => {
-            const next = [...prev];
-            const last = next[next.length - 1];
-            next[next.length - 1] = { ...last, steps: [...(last.steps ?? []), step] };
-            return next;
-          }),
+          liveAnswer.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
         onDelta: (text) =>
-          setTurns((prev) => {
-            const next = [...prev];
-            const last = next[next.length - 1];
-            next[next.length - 1] = { ...last, content: last.content + text };
-            return next;
-          }),
+          liveAnswer.patchLast((t) => ({ ...t, content: t.content + text })),
         onDone: () => {
-          setStreaming(false);
+          liveAnswer.finish();
           invalidateList();
         },
         onError: (message) => {
-          setStreaming(false);
-          setTurns((prev) => {
-            const next = [...prev];
-            next[next.length - 1] = { ...next[next.length - 1], error: message };
-            return next;
-          });
+          liveAnswer.patchLast((t) => ({ ...t, error: message }));
+          liveAnswer.finish();
         },
       },
+    );
+    abortRef.current = abort;
+    liveAnswer.start(
+      activeId,
+      [...turns, { role: "user", content: q }, { role: "assistant", content: "" }],
+      abort,
     );
   };
 
@@ -350,8 +352,9 @@ export function Chat() {
         {streaming ? (
           <button
             onClick={() => {
+              // **只有这里 abort**——切页面、换会话、换库都不再打断（liveAnswer.ts）
               abortRef.current?.();
-              setStreaming(false);
+              liveAnswer.finish();
             }}
             title={S.ask.stop}
             className="h-8 w-8 shrink-0 rounded-lg grid place-items-center bg-white/[0.08] text-neutral-200 hover:bg-white/[0.14] transition-colors"
@@ -500,7 +503,7 @@ export function Chat() {
       {/* 对话区：新对话首屏 = 问候 + 居中 composer（ChatGPT/Claude 惯例）；
           有消息后 composer 停靠底部 */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {turns.length === 0 ? (
+        {shown.length === 0 ? (
           /* 锚定上三分之一而非垂直居中：居中在高窗口下会显得下坠。
              22vh + 顶部 chrome(~100px) ≈ 问候落在 37% 高度、composer 中心 ~49% */
           <div className="flex-1 px-4 pt-[22vh]">
@@ -518,8 +521,8 @@ export function Chat() {
           <>
             <div className="flex-1 overflow-y-auto u-scroll px-4 py-6">
               <div className="max-w-3xl mx-auto space-y-4">
-                {turns.map((t, i) => (
-                  <TurnView key={i} turn={t} live={streaming && i === turns.length - 1} />
+                {shown.map((t, i) => (
+                  <TurnView key={i} turn={t} live={streaming && i === shown.length - 1} />
                 ))}
                 <div ref={bottomRef} />
               </div>
