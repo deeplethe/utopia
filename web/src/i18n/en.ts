@@ -201,6 +201,10 @@ export const en = {
         title: "A data source is mounted, but its schema is not",
         hint: "Ask cannot see which tables exist, so it will guess column names. Check the connection, then use Refresh schema.",
       },
+      "mapping.exploration_empty": {
+        title: "Mapping exploration proposed nothing",
+        hint: "The model read the mounted schema but found no metric or dimension to propose. Refresh the schema under Data mapping > Data sources, add column comments if you can, then run Explore again.",
+      },
       "llm.unreachable": {
         title: "The model endpoint gave no usable answer",
         hint: "Extraction and embedding are stopped. Check the endpoint URL in system settings.",
@@ -1214,7 +1218,8 @@ export const en = {
     explore: "Explore mappings",
     exploreHint:
       "An agent reads these schemas and proposes metric and dimension definitions. Proposals land in Pending; Ask uses them only once confirmed.",
-    exploreQueued: "Exploration queued — proposals will appear under Pending.",
+    exploreQueued:
+      "Exploration queued — proposals will appear under Pending. If nothing can be proposed, the alert bell will say so.",
     sourcesEmpty: "No data sources mounted.",
     sourcesNoneAvailable:
       "No data sources registered yet — ask a deployment admin to register one.",
@@ -1448,6 +1453,9 @@ export const en = {
     auditTotal: (n: number) => `${n} events`,
     activityEmpty: "Nothing recorded yet.",
     deletedUser: "a removed user",
+    // actor_id 为空的两种引擎动作：审阅队列里的自动裁决，和其余后台工作
+    adjudicator: "AI adjudicator",
+    engine: "the engine",
     auditActions: {
       "entity_type.created": "created entity type",
       "entity_type.updated": "updated entity type",
