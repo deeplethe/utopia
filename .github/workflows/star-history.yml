@@ -49,16 +49,18 @@ jobs:
           git clone --depth 1 --branch assets \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" out
           mkdir -p out/assets
-          cp chart/star-history.svg out/assets/star-history.svg
+          # 两张：深色主题用白线那张，浅色用深线那张（README 里 `<picture>`
+          # 按主题选）。白线在 GitHub 浅色底上是看不见的，所以少一张都不行
+          cp chart/star-history.svg chart/star-history-light.svg out/assets/
           cd out
           # 星标没变化的那天不留空提交——每天一条 "no change" 会把
           # 这个分支的历史淹掉
-          if git diff --quiet -- assets/star-history.svg; then
+          if git diff --quiet -- assets/; then
             echo "chart unchanged, nothing to commit"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/star-history.svg
+          git add assets/
           git commit -m "Star history: $(date -u +%Y-%m-%d)"
           git push

@@ -137,15 +137,59 @@ function ticks(max, count = 5) {
 const fmtDate = (t) =>
   new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
-const line = series.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.v).toFixed(1)}`).join("");
-const area = `${line}L${x(series.length - 1).toFixed(1)},${(PAD.top + plotH).toFixed(1)}L${x(0).toFixed(1)},${(PAD.top + plotH).toFixed(1)}Z`;
+/** 平滑成三次贝塞尔，用**单调**插值（Fritsch–Carlson）。
+ *
+ * 不用普通的 Catmull-Rom：累计星标只增不减，而普通样条会在斜率突变处
+ * 过冲，画出一段下凹——**那等于在图上说星标掉了**。单调插值把每段的
+ * 切线夹在不制造极值的范围内，曲线因此永远不会往回走。
+ *
+ * 平的那几天（当天零新增）切线为零，接上去也不会鼓出来。 */
+function smoothPath(pts) {
+  const n = pts.length;
+  if (n < 2) return `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+  // 每段的斜率
+  const dx = [], dy = [], slope = [];
+  for (let i = 0; i < n - 1; i++) {
+    dx.push(pts[i + 1].x - pts[i].x);
+    dy.push(pts[i + 1].y - pts[i].y);
+    slope.push(dy[i] / dx[i]);
+  }
+  // 每个点的切线：相邻两段异号（或有一段是平的）时取零，那正是不过冲的条件
+  const m = [slope[0]];
+  for (let i = 1; i < n - 1; i++) {
+    m.push(slope[i - 1] * slope[i] <= 0 ? 0 : (slope[i - 1] + slope[i]) / 2);
+  }
+  m.push(slope[n - 2]);
+  // Fritsch–Carlson：把切线限制在每段斜率的三倍以内
+  for (let i = 0; i < n - 1; i++) {
+    if (slope[i] === 0) {
+      m[i] = 0;
+      m[i + 1] = 0;
+      continue;
+    }
+    const a = m[i] / slope[i];
+    const b = m[i + 1] / slope[i];
+    const s = a * a + b * b;
+    if (s > 9) {
+      const t = (3 / Math.sqrt(s)) * slope[i];
+      m[i] = t * a;
+      m[i + 1] = t * b;
+    }
+  }
+  let d = `M${pts[0].x.toFixed(1)},${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const h = dx[i] / 3;
+    d +=
+      `C${(pts[i].x + h).toFixed(1)},${(pts[i].y + m[i] * h).toFixed(1)} ` +
+      `${(pts[i + 1].x - h).toFixed(1)},${(pts[i + 1].y - m[i + 1] * h).toFixed(1)} ` +
+      `${pts[i + 1].x.toFixed(1)},${pts[i + 1].y.toFixed(1)}`;
+  }
+  return d;
+}
 
-/* 颜色不跟随主题。GitHub 的 README 里 SVG 是当图片渲染的，
-   `prefers-color-scheme` 不一定生效——挑一组在浅色和深色底上都读得出的中间调，
-   比赌媒体查询可靠 */
-const INK = "#8b949e";
-const ACCENT = "#e3b341";
-const GRID = "#8b949e33";
+const pts = series.map((p, i) => ({ x: x(i), y: y(p.v) }));
+const line = smoothPath(pts);
+const area = `${line}L${x(series.length - 1).toFixed(1)},${(PAD.top + plotH).toFixed(1)}L${x(0).toFixed(1)},${(PAD.top + plotH).toFixed(1)}Z`;
 
 /* 末点与它的数值。**贴着右边缘时把文字改成右对齐**，
    否则一个四位数会伸出画布外——SVG 不会替你裁，它就是没了 */
@@ -157,21 +201,36 @@ const xTickIdx = [...new Set(
   Array.from({ length: 6 }, (_, i) => Math.round((i * (series.length - 1)) / 5)),
 )];
 
-const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
+/* 出两张，深浅各一，README 用 `<picture>` 按主题选。
+ *
+ * **白线在浅色主题上是看不见的**——GitHub 浅色底就是白的。想要白色就
+ * 必须分两张：`prefers-color-scheme` 写在 SVG 里不算数，README 里的 SVG
+ * 是当图片加载的，那条媒体查询问的是操作系统，不是 GitHub 的主题设置，
+ * 两者不一致的人就会看到一张空白的图。`<picture>` 问的才是 GitHub 自己。 */
+const THEMES = {
+  dark: { ink: "#8b949e", accent: "#ffffff", grid: "#8b949e33" },
+  light: { ink: "#6e7781", accent: "#1f2328", grid: "#6e778133" },
+};
+
+function render({ ink, accent, grid }) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
 <defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
-<stop offset="0%" stop-color="${ACCENT}" stop-opacity="0.28"/>
-<stop offset="100%" stop-color="${ACCENT}" stop-opacity="0"/>
+<stop offset="0%" stop-color="${accent}" stop-opacity="0.22"/>
+<stop offset="100%" stop-color="${accent}" stop-opacity="0"/>
 </linearGradient></defs>
-<text x="${PAD.left}" y="24" fill="${INK}" font-size="13">${owner}/${repo}</text>
-${ticks(maxV).map((v) => `<g><line x1="${PAD.left}" y1="${y(v).toFixed(1)}" x2="${W - PAD.right}" y2="${y(v).toFixed(1)}" stroke="${GRID}"/><text x="${PAD.left - 10}" y="${(y(v) + 4).toFixed(1)}" fill="${INK}" font-size="11" text-anchor="end">${v.toLocaleString("en-US")}</text></g>`).join("")}
-${xTickIdx.map((i) => `<text x="${x(i).toFixed(1)}" y="${H - 16}" fill="${INK}" font-size="11" text-anchor="middle">${fmtDate(series[i].t)}</text>`).join("")}
+<text x="${PAD.left}" y="24" fill="${ink}" font-size="13">${owner}/${repo}</text>
+${ticks(maxV).map((v) => `<g><line x1="${PAD.left}" y1="${y(v).toFixed(1)}" x2="${W - PAD.right}" y2="${y(v).toFixed(1)}" stroke="${grid}"/><text x="${PAD.left - 10}" y="${(y(v) + 4).toFixed(1)}" fill="${ink}" font-size="11" text-anchor="end">${v.toLocaleString("en-US")}</text></g>`).join("")}
+${xTickIdx.map((i) => `<text x="${x(i).toFixed(1)}" y="${H - 16}" fill="${ink}" font-size="11" text-anchor="middle">${fmtDate(series[i].t)}</text>`).join("")}
 <path d="${area}" fill="url(#fill)"/>
-<path d="${line}" fill="none" stroke="${ACCENT}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="3.5" fill="${ACCENT}"/>
-<text x="${endX.toFixed(1)}" y="${(endY - 12).toFixed(1)}" fill="${ACCENT}" font-size="14" font-weight="600" text-anchor="${endAnchor}">${maxV.toLocaleString("en-US")}</text>
+<path d="${line}" fill="none" stroke="${accent}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="${endX.toFixed(1)}" cy="${endY.toFixed(1)}" r="3.5" fill="${accent}"/>
+<text x="${endX.toFixed(1)}" y="${(endY - 12).toFixed(1)}" fill="${accent}" font-size="14" font-weight="600" text-anchor="${endAnchor}">${maxV.toLocaleString("en-US")}</text>
 </svg>
 `;
+}
 
 mkdirSync(dirname(out), { recursive: true });
-writeFileSync(out, svg);
-console.log(`${series.length} days, ${maxV} stars → ${out}`);
+const lightOut = out.replace(/\.svg$/, "-light.svg");
+writeFileSync(out, render(THEMES.dark));
+writeFileSync(lightOut, render(THEMES.light));
+console.log(`${series.length} days, ${maxV} stars → ${out} + ${lightOut}`);
