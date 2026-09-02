@@ -194,6 +194,9 @@ pub struct AuditEventView {
     pub target_kind: String,
     pub target_id: Option<Uuid>,
     pub detail: serde_json::Value,
+    /// NULL = 引擎自动（裁决器合并、一致性检查、推理物化……）。界面靠它把
+    /// 「没有人」和「人已被移除」分开：后者 actor_id 还在，只是查不到显示名
+    pub actor_id: Option<Uuid>,
     pub actor_name: Option<String>,
     pub created_at: DateTime<Utc>,
 }
