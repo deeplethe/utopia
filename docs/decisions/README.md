@@ -36,6 +36,7 @@
 | 0012 | [本体是一份契约，不只是一份建议](0012-the-ontology-is-a-contract-not-a-suggestion.md) | 已实施 · 五轮对照实验 · 违反率 57%→4%、反向 39→0 · 首次拿真语料问 0008 那个问题 |
 | 0013 | [一个来源该交出它的历史，不是它的现状](0013-a-source-should-hand-over-its-history.md) | 已实施两个（GitHub / Jira 工单）· **文档协作类待做** |
 | 0014 | [身份跟着人，范围跟着令牌](0014-identity-from-the-person-scope-from-the-token.md) | 规划中 · MCP 服务端的第一块地基 · 含一条被否掉的岔路（KB 级机器令牌）|
+| 0015 | [记下一句话，不等于断言一个事实](0015-recording-a-sentence-is-not-asserting-a-fact.md) | 规划中 · 起因是一次实测：助手说的与图里落的不是一回事 · **含一次就地推翻**（状态加在 facts 上 → 自己一张表）· 消掉 0014 里「不开写」的顾虑 |
 
 ## 不是决策记录的那些
 

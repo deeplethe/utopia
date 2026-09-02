@@ -8,12 +8,14 @@ mod events_routes;
 mod graph_routes;
 mod kbs;
 mod mapping_routes;
+mod mcp;
 mod members_routes;
 pub(crate) mod ontology_routes;
 mod review_routes;
 mod search_routes;
 mod settings_routes;
 mod sources_routes;
+mod token_routes;
 mod tools;
 mod workspaces;
 
@@ -119,6 +121,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route(
             "/admin/data-sources/{id}/grants/{workspace_id}",
             axum::routing::put(datasource_routes::grant).delete(datasource_routes::revoke),
+        )
+        .route("/kbs/{id}/mcp", post(mcp::handle))
+        .route(
+            "/me/tokens",
+            get(token_routes::list).post(token_routes::issue),
+        )
+        .route(
+            "/me/tokens/{token_id}",
+            axum::routing::delete(token_routes::revoke),
         )
         .route("/kbs/{id}/mappings", get(mapping_routes::list))
         .route(

@@ -29,6 +29,18 @@ const KNOWN_ENTITY_LIMIT: usize = 20;
 const MAX_HISTORY: usize = 20;
 const MAX_ROUNDS: usize = 6;
 
+/// **`remember` 暂时停用**（见 `docs/decisions/0015`）。
+///
+/// 它今天会把一句话直接变成图上一条活边，而中间那一步没人看得见：实测里
+/// 「记住 Acme 把总部搬到了深圳」落成的是一条 **空谓词、0.9 置信** 的边——
+/// 本体里没有「搬迁到」这类关系，抽取落不上就留空（按 0010 这是对的），
+/// 于是助手宣称的和图里得到的不是一回事。
+///
+/// 0018 建好了 `pending_facts`：抽出来的先等人点头。**抽取侧接上那张表
+/// 之后，把这里改回 true。** 在那之前宁可没有这个工具，也不要一个会
+/// 悄悄改图的工具。
+pub(super) const REMEMBER_ENABLED: bool = false;
+
 #[derive(Deserialize)]
 pub struct ChatReq {
     /// 缺省 = 新建会话（SSE 首个 `conversation` 事件回传 id）
@@ -75,7 +87,7 @@ fn tools_schema(can_write: bool, data_source_names: &[String]) -> serde_json::Va
             }));
         }
     }
-    if can_write {
+    if can_write && REMEMBER_ENABLED {
         if let Some(arr) = tools.as_array_mut() {
             arr.push(json!({
                 "type": "function",
@@ -179,7 +191,12 @@ const MEMORY_PROMPT: &str = "\
     \"remember/record this\" or states a decision meant to last. Confirm in your reply what \
     was recorded. Never invent memories, and never call it for small talk.";
 
-fn base_tools() -> serde_json::Value {
+/// 工具的 JSON schema——**给模型看的那一份**。
+///
+/// 留在 `chat.rs` 而不是 `tools.rs`：它是提示词的一部分，随对话策略走；
+/// `tools.rs` 只管拿到参数之后干什么（见那个模块顶上的说明）。
+/// MCP 也读它，所以对同模块开放——两边描述同一批工具，各写一份必然分叉。
+pub(super) fn base_tools() -> serde_json::Value {
     json!([
         {
             "type": "function",
@@ -411,7 +428,7 @@ pub async fn chat(
     let producer = async_stream::stream! {
         let ds_names: Vec<String> = mounted_sources.iter().map(|d| d.name.clone()).collect();
         let tools = tools_schema(can_write, &ds_names);
-        let mut system_prompt = if can_write {
+        let mut system_prompt = if can_write && REMEMBER_ENABLED {
             format!("{SYSTEM_PROMPT}\n{MEMORY_PROMPT}")
         } else {
             SYSTEM_PROMPT.to_string()
