@@ -176,6 +176,7 @@ pub async fn handle(
                 workspace_id: kb.workspace_id,
                 mounted_sources: &[],
                 can_write: false,
+                actor: Some(user.id),
             };
             let mut sink = ToolSink::default();
             let (text, _step) = tools::dispatch(&ctx, &mut sink, name, &args).await;

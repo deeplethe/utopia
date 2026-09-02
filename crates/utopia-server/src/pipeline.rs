@@ -93,7 +93,13 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
 /// 记忆摄入（episodes 快速路径的后半程）：新 episode chunk 补 embedding、
 /// 重建全文索引、触发增量抽取（extracted_at 为空的新 chunk 才会被抽）。
 /// 免解析免分块——episode 落库时已是 chunk。
-pub async fn memory_ingest(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
+///
+/// `proposed_by`：说这句话的人。一路传到抽取，落在 `pending_facts.proposed_by`（0015）
+pub async fn memory_ingest(
+    state: &AppState,
+    document_id: Uuid,
+    proposed_by: Option<Uuid>,
+) -> anyhow::Result<()> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
     let kb_row = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb_row.workspace_id).await?;
@@ -132,7 +138,7 @@ pub async fn memory_ingest(state: &AppState, document_id: Uuid) -> anyhow::Resul
         utopia_store::jobs::enqueue(
             &state.pool,
             "extract_document",
-            serde_json::json!({ "document_id": document_id }),
+            serde_json::json!({ "document_id": document_id, "proposed_by": proposed_by }),
         )
         .await?;
     }

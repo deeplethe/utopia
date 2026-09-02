@@ -36,6 +36,7 @@ import { toast } from "../toast";
 import { useKb, useKbId } from "../kb";
 import { DangerConfirm, RAIL_CLS } from "../ui";
 import { liveAnswer, type Turn } from "../liveAnswer";
+import { NodCard } from "./PendingFacts";
 
 /* `Turn` 定义在 liveAnswer 里：进行中的那一次也是一串 Turn，
    而它必须活得比这个组件长（见那个文件顶上的说明） */
@@ -705,10 +706,15 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
               className="my-2.5 space-y-1 border-l border-white/15 pl-2.5"
             >
               {seg.steps.map((s, j) => (
-                <div key={j} className="flex items-center gap-1.5 text-xs">
-                  <span className="text-neutral-600">{stepIcon(s.kind)}</span>
-                  <span className="text-neutral-400 truncate">{s.label}</span>
-                  <span className="text-neutral-600 shrink-0">· {s.detail}</span>
+                <div key={j}>
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="text-neutral-600">{stepIcon(s.kind)}</span>
+                    <span className="text-neutral-400 truncate">{s.label}</span>
+                    <span className="text-neutral-600 shrink-0">· {s.detail}</span>
+                  </div>
+                  {/* remember 那一步后面跟着确认卡（0015）：这句话抽出的事实先等人点头。
+                      抽取是异步的，卡片在任务完成时才长出来；回放时按同一个 chunk 重画 */}
+                  {s.chunk_id && <NodCard kbId={kbId} chunkId={s.chunk_id} />}
                 </div>
               ))}
             </div>

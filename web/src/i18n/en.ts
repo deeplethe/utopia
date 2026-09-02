@@ -1171,6 +1171,7 @@ export const en = {
     empty: "Nothing to review — the graph is clean.",
     historyEmpty: "No merges yet.",
     // 左栏分类导航
+    railPending: "Awaiting your nod",
     railDuplicates: "Duplicates",
     railConflicts: "Conflicts",
     railUnconfirmed: "Unconfirmed",
@@ -1192,6 +1193,8 @@ export const en = {
       "review.keep": "Kept apart",
       "fact.confirm": "Confirmed",
       "fact.reject": "Rejected",
+      "fact.nod_confirmed": "Confirmed a remembered fact",
+      "fact.nod_rejected": "Rejected a remembered fact",
       "fact.close": "Closed",
       "conflict.close_old": "Closed old",
       "conflict.keep_both": "Kept both",
@@ -1273,6 +1276,19 @@ export const en = {
     mappingsHint:
       "Proposed mappings from a business concept to how it is computed. Confirm one and Ask uses it instead of guessing from the schema.",
     mappingDerived: "derived",
+    // 记忆抽出、等人点头的事实（0015）
+    pending: "Awaiting your confirmation",
+    pendingHint:
+      "Facts extracted from what you asked the assistant to remember. Nothing here is in the graph yet: " +
+      "the sentence is kept, the facts wait for your nod. Confirm to add with the sentence as evidence; " +
+      "reject and it will not be proposed again.",
+    pendingNoPredicate: "The ontology has no relation for this; the word is the model's own.",
+    pendingNoPredicateChip: "no relation in ontology",
+    pendingSaidBy: (name: string) => `said by ${name}`,
+    nodCardTitle: (n: number) =>
+      n === 1
+        ? "One fact extracted from this. Confirm to add it to the graph, or reject."
+        : `${n} facts extracted from this. Confirm to add them to the graph, or reject.`,
     lowConfidenceHint:
       "Extracted with confidence below 75%. Confirm to trust, reject to remove from the graph (the ledger keeps the record).",
     confirm: "Confirm",

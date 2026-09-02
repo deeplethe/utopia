@@ -1054,6 +1054,7 @@ export const zh: Strings = {
     tabHistory: "历史",
     empty: "没有待审阅的——图谱是干净的。",
     historyEmpty: "还没有合并记录。",
+    railPending: "等你点头",
     railDuplicates: "重复项",
     railConflicts: "冲突",
     railUnconfirmed: "未确认",
@@ -1074,6 +1075,8 @@ export const zh: Strings = {
       "review.keep": "保持分开",
       "fact.confirm": "已确认",
       "fact.reject": "已驳回",
+      "fact.nod_confirmed": "已确认一条记忆事实",
+      "fact.nod_rejected": "已驳回一条记忆事实",
       "fact.close": "已闭合",
       "conflict.close_old": "闭合旧的",
       "conflict.keep_both": "两条都留",
@@ -1150,6 +1153,16 @@ export const zh: Strings = {
     mappingsHint:
       "从业务概念到「这个数怎么算」的提议。确认之后问数直接用这个口径，而不是每次从 schema 猜。",
     mappingDerived: "派生",
+    // 记忆抽出、等人点头的事实（0015）
+    pending: "等你确认",
+    pendingHint:
+      "从你让助手记住的话里抽出的事实。这里的东西都还没进图：那句话已经存下，事实等你点头。" +
+      "确认后以那句话为证据进账本；驳回后不会再被提议。",
+    pendingNoPredicate: "本体里没有这个关系，这个词是模型自己的说法。",
+    pendingNoPredicateChip: "本体里没有这个关系",
+    pendingSaidBy: (name: string) => `${name} 说的`,
+    nodCardTitle: (n: number) =>
+      n === 1 ? "从这句话里抽出 1 条事实。确认进图，或驳回。" : `从这句话里抽出 ${n} 条事实。确认进图，或驳回。`,
     lowConfidenceHint:
       "抽取时置信度低于 75%。确认表示采信，驳回表示从图谱移除（台账仍留有记录）。",
     confirm: "确认",

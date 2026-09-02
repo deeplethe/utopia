@@ -33,6 +33,14 @@ use utopia_core::config::AppConfig;
 use utopia_search::SearchIndex;
 use uuid::Uuid;
 
+/// 记忆那条路带着「谁说的」（0015）；别的任务没有这个字段，读到 None 本就该如此
+fn payload_proposed_by(payload: &serde_json::Value) -> Option<Uuid> {
+    payload
+        .get("proposed_by")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+}
+
 fn payload_document_id(payload: &serde_json::Value) -> anyhow::Result<Uuid> {
     payload
         .get("document_id")
@@ -295,7 +303,7 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
         }
         "memory_ingest" => {
             let id = payload_document_id(&job.payload)?;
-            pipeline::memory_ingest(st, id).await
+            pipeline::memory_ingest(st, id, payload_proposed_by(&job.payload)).await
         }
         "explore_mappings" => {
             let kb_id: Uuid = job
@@ -342,7 +350,7 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
         }
         "extract_document" => {
             let id = payload_document_id(&job.payload)?;
-            extraction::extract_document(st, id).await
+            extraction::extract_document(st, id, payload_proposed_by(&job.payload)).await
         }
         "bootstrap_ontology" => {
             let kb_id: Uuid = job

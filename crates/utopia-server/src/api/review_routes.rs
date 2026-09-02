@@ -75,6 +75,8 @@ pub async fn list(
     let offset = q.offset.unwrap_or(0).max(0);
 
     let items = match queue {
+        // 记忆抽出、等人点头的事实（0015）。排第一：它是人自己说的话
+        "pending" => json!(utopia_store::pending::list(&state.pool, kb_id, limit, offset).await?),
         "duplicates" => {
             json!(utopia_store::resolution::list_reviews(&state.pool, kb_id, limit, offset).await?)
         }
@@ -636,6 +638,90 @@ pub async fn decide_defect(
 /// 就按它改图。开关关着时不静默跳过：回一个明确的错，界面才说得出为什么没动。
 ///
 /// 同步跑，与一致性检查同一个理由：纯计算，没有模型调用也没有网络。
+#[derive(Deserialize)]
+pub struct PendingQuery {
+    pub chunk_id: Uuid,
+}
+
+/// 一句记忆抽出的全部待确认项——对话里那张确认卡按这个取（0015）。
+/// Viewer 也能看：看得见提议、看不见按钮，与 Review 页同一口径
+pub async fn pending_for_chunk(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+    Query(q): Query<PendingQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let items = utopia_store::pending::for_chunk(&state.pool, kb_id, q.chunk_id).await?;
+    Ok(Json(json!({ "items": items })))
+}
+
+#[derive(Deserialize)]
+pub struct DecidePendingBody {
+    /// `confirm` 进账本；`reject` 记进 `rejected_facts`，下一轮重抽不再提
+    pub action: String,
+}
+
+/// 人对一条待确认事实点头或摇头。
+///
+/// 两个动作都进决策台账，快照自包含——行删了之后台账上还读得出当时确认的是什么。
+/// 确认走与抽取相同的那条路（事实 + 证据 + 时态对账），所以一句「Mira 交给 Devin 了」
+/// 点头之后，Mira 那条会像从文档里抽出来时一样被闭合
+pub async fn decide_pending(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, pending_id)): Path<(Uuid, Uuid)>,
+    Json(body): Json<DecidePendingBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    match body.action.as_str() {
+        "confirm" => {
+            let done = utopia_store::pending::confirm(&state.pool, kb_id, pending_id).await?;
+            let _ = utopia_store::audit::record(
+                &state.pool,
+                Some(kb_id),
+                user.id,
+                "fact.nod_confirmed",
+                "fact",
+                Some(done.fact_id),
+                done.snapshot,
+            )
+            .await;
+            state.emit_pending(kb_id);
+            state.emit_review(kb_id);
+            state.emit_graph(kb_id);
+            Ok(Json(json!({
+                "ok": true,
+                "fact_id": done.fact_id,
+                "created": done.created,
+                "conflicts": done.conflicts,
+            })))
+        }
+        "reject" => {
+            let snap =
+                utopia_store::pending::reject(&state.pool, kb_id, pending_id, Some(user.id)).await?;
+            let _ = utopia_store::audit::record(
+                &state.pool,
+                Some(kb_id),
+                user.id,
+                "fact.nod_rejected",
+                "pending_fact",
+                Some(pending_id),
+                snap,
+            )
+            .await;
+            state.emit_pending(kb_id);
+            state.emit_review(kb_id);
+            Ok(Json(json!({ "ok": true })))
+        }
+        other => Err(utopia_core::AppError::invalid(
+            "unknown_action",
+            format!("action must be confirm or reject, got {other}"),
+        )
+        .into()),
+    }
+}
+
 pub async fn run_inference(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,

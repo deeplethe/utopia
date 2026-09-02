@@ -307,6 +307,7 @@ export interface DerivedFact {
 /** 审核页的分档。**与服务端的 queue 参数是同一组字面量**——拼错会拿到
  *  一个明确的 unknown_queue 错误，而不是悄悄的空列表。 */
 export type ReviewQueue =
+  | "pending"
   | "duplicates"
   | "conflicts"
   | "unconfirmed"
@@ -318,6 +319,8 @@ export type ReviewQueue =
 
 /** 各档的真实条数。左栏的徽标读它，不读列表长度 */
 export interface ReviewCounts {
+  /** 记忆抽出、等人点头的事实（0015） */
+  pending: number;
   duplicates: number;
   conflicts: number;
   unconfirmed: number;
@@ -470,6 +473,29 @@ export interface FactReviewItem {
   confidence: number;
   evidence_count: number;
   quote: string | null;
+}
+
+/** 一句记忆抽出、等人点头的事实（0015）。`quote` 是那句记忆的全文——
+ *  确认界面把原句放在三元组上面，人对着原句判断，而不是凭空判断三元组。 */
+export interface PendingFactItem {
+  id: string;
+  subject_id: string;
+  subject_name: string;
+  predicate_id: string | null;
+  /** 本体里的关系名；为空时显示 `proposed_predicate`（斜体，标明是原话） */
+  predicate_label: string | null;
+  proposed_predicate: string | null;
+  object_id: string | null;
+  object_name: string | null;
+  object_value: { value?: unknown; unit?: string; summary?: string } | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  confidence: number;
+  chunk_id: string;
+  quote: string;
+  proposed_by: string | null;
+  proposed_by_name: string | null;
+  created_at: string;
 }
 
 /** 时态冲突（自动闭合拿不准的那些）：旧事实 vs 新事实。 */
@@ -785,6 +811,9 @@ export interface ChatStep {
   kind: "search" | "docs" | "entity" | "facts" | "changes" | "query" | "tool";
   label: string;
   detail: string;
+  /** `remember` 那一步带着它：那句记忆落成的 chunk。对话里的确认卡按它取
+   *  待确认项（0015）；回放时也据此重画 */
+  chunk_id?: string;
   /** 这一步发生时正文已经有多长（UTF-16 码元，与 `string.length` 同一单位）。
    *  据此把轨迹穿回正文里，而不是全堆在最前面。
    *  **这条迁移之前的消息没有它**——缺省时整段轨迹回到顶部，即旧的样子 */
@@ -1521,6 +1550,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** 一句记忆抽出的全部待确认项（0015）。空数组 = 这句话没有等着人的东西了 */
+  pendingForChunk: (kbId: string, chunkId: string) =>
+    request<{ items: PendingFactItem[] }>(
+      `/api/v1/kbs/${kbId}/review/pending?chunk_id=${chunkId}`,
+    ),
+  decidePending: (kbId: string, pendingId: string, action: "confirm" | "reject") =>
+    request<{ ok: boolean; fact_id?: string; created?: boolean; conflicts?: number }>(
+      `/api/v1/kbs/${kbId}/review/pending/${pendingId}`,
+      { method: "POST", body: JSON.stringify({ action }) },
+    ),
   decideReview: (kbId: string, reviewId: string, action: "merge" | "keep") =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/review/${reviewId}`, {
       method: "POST",
