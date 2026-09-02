@@ -119,7 +119,7 @@ Please read [SECURITY.md](SECURITY.md) before exposing it to the public internet
 
 <div align="center">
 
-<img src="assets/star-history.svg" alt="Star History" width="820">
+<img src="https://raw.githubusercontent.com/deeplethe/utopia/assets/assets/star-history.svg" alt="Star History" width="820">
 
 </div>
 

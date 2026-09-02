@@ -13,6 +13,9 @@ permissions:
 jobs:
   star-history:
     runs-on: ubuntu-latest
+    # 这个 action 用 Puppeteer 渲染，挂住过。没有这一行的话，挂住就是
+    # 跑满 GitHub 的六小时上限——实测有一次重试了十五分钟才失败
+    timeout-minutes: 10
     steps:
       - name: Generate Star History
         # 钉到 commit，不是 tag。**这是仓库里第一个有 `contents: write` 的
@@ -26,14 +29,21 @@ jobs:
           # action 走 GraphQL，而 GitHub 的 fine-grained token 不能用于
           # GraphQL 认证。试过，报的就是这句话。
           #
-          # 一个 scope 都不用勾——只读公开仓库的星标是公开数据。
-          # 代价是 classic token 锁不到单个仓库，它是账户级的；
-          # 那正是上面把 action 钉到 commit 的理由：凭据比想要的宽，
-          # 就把代码的来源钉死。
+          # **需要 `read:org`**（本仓库属于组织，action 要先把
+          # `deeplethe` 解析成组织），**外加能读星标的权限**：GitHub 在
+          # 2026-06-30 把星标时间线限制成只有仓库自己的管理员/协作者可读，
+          # 零 scope 的 token 从此读不到，自己的仓库也不行。
+          # 这条限制也是 star-history.com 那类匿名出图现在只回占位图的原因——
+          # 换句话说，**用我们自己的 token 在 CI 里出图，是现在唯一还成立的路**。
           token: ${{ secrets.METRICS_TOKEN }}
           # 这个不用配：它管的是把生成的 SVG 提交回仓库那一步，
           # 用 workflow 自带的 token，靠上面的 `contents: write`
           committer_token: ${{ github.token }}
+          # **提交到专用分支，不碰默认分支。**
+          # `dev` 上有分支保护（必须走 PR、`enforce_admins: true`），
+          # 机器人直推一定被拒；而为了一张图去松保护是本末倒置。
+          # README 直接引这个分支上的 raw 地址
+          committer_branch: assets
           user: ${{ github.repository_owner }}
           repo: ${{ github.event.repository.name }}
           template: repository

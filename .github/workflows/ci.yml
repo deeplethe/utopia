@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+# **显式只读。** 没有这一块时它继承仓库级默认，而那个默认要为
+# star-history 改成读写——CI 是每次推送、每个 PR 都跑的那个 workflow，
+# 不该因为别处的需要顺带拿到写权限。写在这里，仓库默认怎么变都与它无关
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
