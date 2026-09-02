@@ -103,6 +103,26 @@ pub fn rate_limited(err: &anyhow::Error) -> Option<&RateLimited> {
     err.chain().find_map(|e| e.downcast_ref::<RateLimited>())
 }
 
+/// 账号付不起这次请求：欠费，或者套餐配额用尽。
+///
+/// **跟 [`RateLimited`] 分开，因为它不会自己好。** 限流等一分钟就过去，
+/// 欠费等到天亮也还是欠费——重试只是在把同一个错误说三遍，而真正该发生的事
+/// （有人去充值）不会因为重试而发生。
+///
+/// 实测：一次跑测里 14 篇文档因为它整篇失败，而当时它跟普通失败走同一条路，
+/// 唯一能知道原因的办法是去数据库里翻 `graph_error`。
+#[derive(Debug, thiserror::Error)]
+#[error("LLM account cannot pay for this request ({status}): {detail}")]
+pub struct OutOfCredit {
+    pub status: u16,
+    pub detail: String,
+}
+
+/// anyhow 错误链里的 [`OutOfCredit`]，穿透 context 层。
+pub fn out_of_credit(err: &anyhow::Error) -> Option<&OutOfCredit> {
+    err.chain().find_map(|e| e.downcast_ref::<OutOfCredit>())
+}
+
 /// `Retry-After` 的整数秒形态。
 ///
 /// 规范还允许 HTTP-date，这里**不解析**：为一个很少有人发的头引一个日期库不划算，
@@ -118,8 +138,10 @@ fn retry_after_of(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-/// 非 2xx 统一在这里成型。**只有 429 算限流**：503 可能是端点真挂了、
-/// 也可能是中间代理，把它算进来会让「等一会儿再来」用在等不回来的地方。
+/// 非 2xx 统一在这里成型，分成三类：欠费、限流、其他。
+///
+/// **503 不算限流**：它可能是端点真挂了、也可能是中间代理，把它算进来会让
+/// 「等一会儿再来」用在等不回来的地方。判据窄一点，宁可退回「其他」。
 fn failure(
     kind: &str,
     status: reqwest::StatusCode,
@@ -127,6 +149,18 @@ fn failure(
     body: &serde_json::Value,
 ) -> anyhow::Error {
     let detail = err_detail(body);
+    // **欠费要先判，而且不能只看状态码。**
+    //
+    // 402 是标准答案（SiliconFlow 用它），但 OpenAI 的余额耗尽走的是 **429**，
+    // 靠 body 里的 `insufficient_quota` 区分。只按状态码分类的话，一个没钱的
+    // OpenAI 账号会被当成限流，然后无限退避重试一个永远不会好的东西——
+    // 而退避越久，症状越像"端点慢"，越查不到根上。
+    if status == reqwest::StatusCode::PAYMENT_REQUIRED || says_out_of_credit(body) {
+        return anyhow::Error::new(OutOfCredit {
+            status: status.as_u16(),
+            detail,
+        });
+    }
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return anyhow::Error::new(RateLimited {
             status: status.as_u16(),
@@ -493,6 +527,21 @@ fn err_detail(body: &serde_json::Value) -> String {
         .to_string()
 }
 
+/// 响应体说不说这是余额问题。
+///
+/// **给 429 用的**：OpenAI 用同一个状态码表示「太快了」和「没钱了」，
+/// `error.code` 或 `error.type` 里的 `insufficient_quota` 才是分界。
+///
+/// 只认这一个标识、不去匹配 message 的自由文本：措辞会改、会本地化，
+/// 而 `code` 是接口契约的一部分。认不出来就退回按状态码判，那是安全的一侧
+/// （当成限流退避几次，比当成欠费直接放弃温和）。
+fn says_out_of_credit(body: &serde_json::Value) -> bool {
+    ["code", "type"]
+        .iter()
+        .filter_map(|k| body["error"][k].as_str())
+        .any(|v| v == "insufficient_quota")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -633,6 +682,36 @@ mod tests {
             rate_limited(&err).unwrap().retry_after,
             Some(Duration::from_secs(7))
         );
+    }
+
+    /// **429 不一定是限流。** OpenAI 用同一个状态码表示「太快了」和「没钱了」，
+    /// 分界在 `error.code`。只按状态码分类的话，一个没钱的账号会被无限退避
+    /// 重试——而重试越久，症状越像「端点慢」，越查不到根上。
+    #[test]
+    fn a_429_that_says_insufficient_quota_is_a_billing_problem() {
+        let body = serde_json::json!({
+            "error": { "message": "You exceeded your current quota", "code": "insufficient_quota" }
+        });
+        let e = failure("LLM", reqwest::StatusCode::TOO_MANY_REQUESTS, None, &body);
+        assert!(out_of_credit(&e).is_some(), "该判成欠费");
+        assert!(rate_limited(&e).is_none(), "不该判成限流");
+    }
+
+    /// 402 是标准答案，SiliconFlow 用的就是它。
+    #[test]
+    fn a_402_is_a_billing_problem() {
+        let body = serde_json::json!({ "message": "Sorry, your account balance is insufficient" });
+        let e = failure("LLM", reqwest::StatusCode::PAYMENT_REQUIRED, None, &body);
+        assert!(out_of_credit(&e).is_some());
+    }
+
+    /// 反面：不带那个标识的 429 还是限流，别把会自己好的事判成要人动手。
+    #[test]
+    fn a_plain_429_is_still_a_rate_limit() {
+        let body = serde_json::json!({ "error": { "message": "TPM limit reached" } });
+        let e = failure("LLM", reqwest::StatusCode::TOO_MANY_REQUESTS, None, &body);
+        assert!(rate_limited(&e).is_some());
+        assert!(out_of_credit(&e).is_none());
     }
 
     /// 反面：别的 4xx 不是限流。密钥错了重试一万次还是错。

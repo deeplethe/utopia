@@ -162,6 +162,10 @@ export const en = {
         title: "The model endpoint is rate limiting us",
         hint: "Documents were retried and still turned away, so some are missing facts. Lower model concurrency in system settings, or raise the quota on the account.",
       },
+      "llm.out_of_credit": {
+        title: "The model account cannot pay for requests",
+        hint: "Extraction and embedding are stopped and will not resume on their own. Top up the account, or point system settings at an endpoint that can serve.",
+      },
     } as Record<string, { title: string; hint: string } | undefined>,
     // 没见过的 kind 也要能显示：新告警源上线时前端可能还没更新
     unknownKind: (kind: string) => kind,

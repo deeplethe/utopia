@@ -56,12 +56,19 @@ pub async fn observe_job_failure(
 /// 一次任务失败该报哪一类告警，报不报。
 ///
 /// **抽成纯函数是为了能测**：`observe_job_failure` 要 `AppState` 和一个真数据库，
-/// 而这里要守的是分类本身——限流不能被当成端点不可达，反之亦然。两者该做的事
-/// 完全不同：一个去查网络或地址，一个去降并发或升配额。
+/// 而这里要守的是分类本身。三类该做的事完全不同——欠费要人去充值，限流要降并发
+/// 或升配额，端点不可达要查网络和地址。**混成一条会把人指向错的地方，比不报还费时间。**
 ///
-/// **限流排在前面。** 两者今天互斥，但顺序反过来的话，将来谁给 `Unreachable`
-/// 加一层包装就会把限流吞进去，而症状是这条告警再也不出现——没有任何测试会红。
+/// 顺序是「更该先说的放前面」，而不是判据有重叠：类型本身互斥，重叠在状态码上
+/// （OpenAI 的余额耗尽也回 429），那一层已经在 `utopia_llm::failure` 里分开了。
 fn alert_for(err: &anyhow::Error) -> Option<(&'static str, &'static str)> {
+    // 欠费排在限流之前。两者的状态码会重叠——OpenAI 的余额耗尽也回 429——
+    // 而分类在 `utopia_llm::failure` 里已经做完，这里的顺序只是把「更该先说
+    // 的那件事」放前面：没钱是人必须动手的，限流不是
+    if utopia_llm::out_of_credit(err).is_some() {
+        // `error`：它不会自己好，在有人充值之前抽取一直是停的
+        return Some((alerts::kind::LLM_OUT_OF_CREDIT, "error"));
+    }
     if utopia_llm::rate_limited(err).is_some() {
         // `warning` 不是 `error`：配额会自己恢复，端点挂了不会
         return Some((alerts::kind::LLM_RATE_LIMITED, "warning"));
@@ -135,7 +142,7 @@ pub async fn observe_schema_sync_failure(
 #[cfg(test)]
 mod tests {
     use super::alert_for;
-    use utopia_llm::RateLimited;
+    use utopia_llm::{OutOfCredit, RateLimited};
     use utopia_store::alerts::kind;
 
     /// 限流与端点不可达是两类事，报的告警必须分开。
@@ -165,6 +172,30 @@ mod tests {
         .context("限流退避 5 次仍未通过")
         .context("extract_document 失败");
         assert_eq!(alert_for(&err), Some((kind::LLM_RATE_LIMITED, "warning")));
+    }
+
+    /// 欠费与限流必须分开：一个要人去充值，一个等一会儿就好。
+    ///
+    /// 报错了方向的代价是实打实的——实测 14 篇文档因为欠费整篇失败，
+    /// 而当时唯一能知道原因的办法是去数据库里翻 `graph_error`。
+    #[test]
+    fn out_of_credit_is_not_a_rate_limit() {
+        let err = anyhow::Error::new(OutOfCredit {
+            status: 402,
+            detail: "Sorry, your account balance is insufficient".into(),
+        });
+        assert_eq!(alert_for(&err), Some((kind::LLM_OUT_OF_CREDIT, "error")));
+    }
+
+    /// 判定同样要穿透 context 层。
+    #[test]
+    fn out_of_credit_survives_context_layers() {
+        let err = anyhow::Error::new(OutOfCredit {
+            status: 402,
+            detail: "insufficient balance".into(),
+        })
+        .context("bootstrap_ontology 失败");
+        assert_eq!(alert_for(&err), Some((kind::LLM_OUT_OF_CREDIT, "error")));
     }
 
     /// 反面：普通失败不该报告警，否则每一次解析错都弹一条，人会学会忽略它。

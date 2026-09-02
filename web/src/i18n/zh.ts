@@ -144,6 +144,10 @@ export const zh: Strings = {
         title: "模型端点在限流",
         hint: "退避重试之后仍然被挡回来，有文档因此缺了事实。去系统设置里降低模型并发，或者把账号配额升一档。",
       },
+      "llm.out_of_credit": {
+        title: "模型账号付不起请求",
+        hint: "抽取与向量化已停摆，而且不会自己恢复。去给账号充值，或者在系统设置里换一个能用的端点。",
+      },
     } as Record<string, { title: string; hint: string } | undefined>,
     unknownKind: (kind: string) => kind,
   },
