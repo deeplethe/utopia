@@ -18,6 +18,8 @@ export function useKbEvents(kbId: string | undefined) {
     });
     es.addEventListener("review", () => {
       queryClient.invalidateQueries({ queryKey: ["review", kbId] });
+      // 映射探索跑完发的也是 review：Pending 那一栏得跟着刷新
+      queryClient.invalidateQueries({ queryKey: ["mappings", kbId] });
     });
     // 一句记忆抽出了等人点头的事实（0015）：对话里那张确认卡跟着长出来
     es.addEventListener("pending", () => {

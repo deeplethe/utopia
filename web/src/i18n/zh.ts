@@ -180,6 +180,10 @@ export const zh: Strings = {
         title: "数据源挂上了，库表结构没进来",
         hint: "问数看不见有哪些表，只能猜列名。检查连接串，然后点「刷新结构」。",
       },
+      "mapping.exploration_empty": {
+        title: "映射探索没有提出任何口径",
+        hint: "模型读了挂载的库表结构，但没找到可提的指标或维度。到「数据映射 > 数据源」刷新结构、给列加注释，再探索一次。",
+      },
       "llm.unreachable": {
         title: "模型端点没有给出可用的回答",
         hint: "抽取与向量化已停摆。去系统设置里检查端点地址。",
@@ -1095,7 +1099,7 @@ export const zh: Strings = {
     explore: "探查映射",
     exploreHint:
       "一个智能体读这些库表结构，提出指标／维度的口径。提出来的落在「待审批」，确认之后问数才会用。",
-    exploreQueued: "探查已排队——提案稍后出现在「待审批」。",
+    exploreQueued: "探索已排队，提议会出现在「待确认」里；一条都提不出来时，铃铛会告诉你。",
     sourcesEmpty: "没有挂载任何数据源。",
     sourcesNoneAvailable: "还没有登记数据源——请部署管理员登记一个。",
     newConn: "登记新连接",

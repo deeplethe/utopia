@@ -51,6 +51,9 @@ pub mod kind {
     /// 哪些表——`query_data` 照样入列，模型却只能瞎猜列名。挂载那一刻的报错
     /// 只有点按钮的人看得见，此后这个库就一直这样静默地缺着。
     pub const SCHEMA_SYNC_FAILED: &str = "data_source.schema_sync_failed";
+    /// 库级：映射探索跑完了，一条口径都没提出来。`severity = info`，`min_role = editor`——
+    /// 不是故障，是"你在等的那件事没有结果"，而页面上没有别的地方能说这句话（#223）
+    pub const MAPPING_EXPLORATION_EMPTY: &str = "mapping.exploration_empty";
 }
 
 /// 一次故障。打包成结构体不只是为了参数个数——调用点写 `severity: "error"`
