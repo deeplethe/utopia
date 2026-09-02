@@ -14,6 +14,7 @@ mod review_routes;
 mod search_routes;
 mod settings_routes;
 mod sources_routes;
+mod tools;
 mod workspaces;
 
 use axum::extract::DefaultBodyLimit;
