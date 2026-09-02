@@ -25,6 +25,12 @@ node scripts/bench/run.mjs --corpus pharma --ontology /tmp/schemaorg.ttl --label
   （抽取给的名字每次略有出入，全等匹配会把这种变化算成失败）；值是可接受的类，
   任一命中算对。**空数组 = 本体里没有对得上的类，此时正确行为是不动它**。
 - `run.mjs` —— 一组：新建库 → 灌语料 → 可选导入本体 → 跑消解 → 打分。
+- `fetch-ai-timeline.mjs` —— 抓条目的**当前版**（`prop=extracts`）。
+- `fetch-wiki-history.mjs` —— 抓**历史快照**（`action=parse&oldid`）。演认知时间靠它：
+  同一条目的多张快照按 `doc_time` 灌进去，图会真的改主意。
+- `subset-corpus.mjs` —— 从一份语料里挑几个条目做成新语料。**整条目取**，
+  因为 `supersedes` 只在同一条目的相邻快照之间发生，随机抽块会把时态那根轴废掉。
+- `subset.mjs` —— 把 schema.org 的 TTL 切成前 N 个类，给退化曲线用。
 
 ## 读数怎么算
 
