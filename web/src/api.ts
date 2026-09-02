@@ -766,6 +766,10 @@ export interface ChatStep {
   kind: "search" | "docs" | "entity" | "facts" | "changes" | "query" | "tool";
   label: string;
   detail: string;
+  /** 这一步发生时正文已经有多长（UTF-16 码元，与 `string.length` 同一单位）。
+   *  据此把轨迹穿回正文里，而不是全堆在最前面。
+   *  **这条迁移之前的消息没有它**——缺省时整段轨迹回到顶部，即旧的样子 */
+  at?: number;
 }
 
 /** 会话行（Chat 左栏列表）。 */

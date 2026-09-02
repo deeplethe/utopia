@@ -548,6 +548,46 @@ export function Chat() {
   );
 }
 
+/** 一段正文，或一组同时发生的调用。 */
+type Segment =
+  | { kind: "text"; text: string; last: boolean }
+  | { kind: "steps"; steps: ChatStep[] };
+
+/** 把一轮回复拆成按发生顺序排列的段。
+ *
+ *  切分点是 `step.at`——那一步发生时正文已经有多长。**这条迁移之前落库的
+ *  消息没有 `at`**，那时的顺序信息是真的没有存下来，编不出来也不该编：
+ *  它们退回旧样子，整段轨迹在最前面。 */
+function segments(turn: Turn): Segment[] {
+  const steps = turn.steps ?? [];
+  const text = turn.content ?? "";
+  if (steps.length === 0) {
+    return text ? [{ kind: "text", text, last: true }] : [];
+  }
+  if (steps.some((s) => s.at === undefined)) {
+    return [
+      { kind: "steps", steps },
+      ...(text ? [{ kind: "text" as const, text, last: true }] : []),
+    ];
+  }
+  const out: Segment[] = [];
+  let cursor = 0;
+  for (let i = 0; i < steps.length; ) {
+    const at = steps[i].at!;
+    // 同一位置的连成一组：一轮里的多次调用之间没有正文，它们本来就是一次扇出
+    let j = i;
+    while (j < steps.length && steps[j].at === at) j++;
+    const before = text.slice(cursor, at);
+    if (before) out.push({ kind: "text", text: before, last: false });
+    out.push({ kind: "steps", steps: steps.slice(i, j) });
+    cursor = at;
+    i = j;
+  }
+  const tail = text.slice(cursor);
+  if (tail) out.push({ kind: "text", text: tail, last: true });
+  return out;
+}
+
 function stepIcon(kind: ChatStep["kind"]) {
   if (kind === "search") return <SearchIcon size={11} />;
   if (kind === "docs") return <BookOpen size={11} />;
@@ -602,26 +642,36 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
     <div className="max-w-[95%]">
       {/* agent 回复无气泡：正文直接落在画布上（用户消息保留气泡以区分角色） */}
       <div className="py-1 text-sm text-neutral-200 leading-relaxed">
-        {turn.steps && turn.steps.length > 0 && (
-          <div className="mb-2.5 space-y-1 border-l border-white/15 pl-2.5">
-            {turn.steps.map((s, i) => (
-              <div key={i} className="flex items-center gap-1.5 text-xs">
-                <span className="text-neutral-600">{stepIcon(s.kind)}</span>
-                <span className="text-neutral-400 truncate">{s.label}</span>
-                <span className="text-neutral-600 shrink-0">· {s.detail}</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {turn.content && (
-          /* react-markdown 承载渲染（皮肤全归 u-chat-prose 设计系统），
-             流式中经 remend 修补未闭合语法（粗体/围栏/链接），
-             rehype-highlight 做代码高亮——成熟件组装，观感自持 */
-          <div className="u-chat-prose">
-            <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-              {live ? remend(turn.content) : turn.content}
-            </Markdown>
-          </div>
+        {/* **轨迹按发生的顺序穿在正文里。**
+            模型是边说边查的：说一句、调一次、再说一句。把调用整块提到最前面，
+            读起来就成了「先查七次再一口气说完」——那不是它做的事，而且相邻两次
+            调用之间那句「我先看看这一个」失去了它解释的对象。
+            同一轮里的多次调用共享一个位置，于是自然并成一组——一组就是一轮 */}
+        {segments(turn).map((seg, i) =>
+          seg.kind === "steps" ? (
+            <div
+              key={i}
+              className="my-2.5 space-y-1 border-l border-white/15 pl-2.5"
+            >
+              {seg.steps.map((s, j) => (
+                <div key={j} className="flex items-center gap-1.5 text-xs">
+                  <span className="text-neutral-600">{stepIcon(s.kind)}</span>
+                  <span className="text-neutral-400 truncate">{s.label}</span>
+                  <span className="text-neutral-600 shrink-0">· {s.detail}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            /* react-markdown 承载渲染（皮肤全归 u-chat-prose 设计系统），
+               流式中经 remend 修补未闭合语法（粗体/围栏/链接），
+               rehype-highlight 做代码高亮——成熟件组装，观感自持。
+               **只有还在长的那一段需要 remend**：先前的段落已经收尾了 */
+            <div key={i} className="u-chat-prose">
+              <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+                {live && seg.last ? remend(seg.text) : seg.text}
+              </Markdown>
+            </div>
+          ),
         )}
         {thinking && <Thinking step={lastStep} />}
         {turn.error && <div className="text-rose-400">{turn.error}</div>}
