@@ -8,6 +8,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 struct Fixture {
+    /// 夹具建的 org，收尾时从它删起（级联）
+    org: Uuid,
     kb: Uuid,
     acme: Uuid,
     shenzhen: Uuid,
@@ -60,6 +62,7 @@ async fn fixture(pool: &PgPool) -> anyhow::Result<Fixture> {
     )
     .await?;
     Ok(Fixture {
+        org,
         kb,
         acme,
         shenzhen,
@@ -186,9 +189,11 @@ async fn a_remembered_fact_waits_for_a_nod() -> anyhow::Result<()> {
     }
     .await;
 
-    // 只删知识库，级联带走其余；不删 org（生产代码里没有这个动作）
-    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
-        .bind(f.kb)
+    // 删掉夹具自己建的 org，级联带走工作区、知识库与其余一切。
+    // 从前只删知识库，每跑一次就在库里多留一对空的 org / workspace——
+    // 「生产代码里没有删 org 这个动作」是对的，但夹具不是生产代码，自己建的自己收
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
         .execute(&pool)
         .await?;
     run
