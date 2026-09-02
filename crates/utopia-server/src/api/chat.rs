@@ -633,9 +633,7 @@ pub async fn chat(
                     Ok(args) => args,
                     Err((message, step)) => {
                         steps_acc.push(step.clone());
-                        yield Ok(Event::default()
-                            .event("step")
-                            .data(serde_json::to_string(&step).unwrap_or_default()));
+                        yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
                         msgs.push(tool_result_message(&call.id, &message));
                         continue;
                     }
