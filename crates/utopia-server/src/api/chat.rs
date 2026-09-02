@@ -2,6 +2,7 @@
 //! 事件序列：step*（行动轨迹）| sources（引用清单，随检索增量更新）| delta*（增量文本）→ done | error。
 //! 模型不支持 tool-calling 时自动降级为一次性 RAG 注入。
 
+use crate::live::Frame;
 use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
@@ -112,6 +113,70 @@ fn tools_schema(can_write: bool, data_source_names: &[String]) -> serde_json::Va
         }
     }
     tools
+}
+
+/// 执行之前先看这次调用说清楚了没有。
+///
+/// **两种「没说清」以前都会安静地变成一次正常调用。**
+///
+/// 一是参数解析不出来。模型的输出撞上 token 上限时，`arguments` 会在半路断掉，
+/// 那串 JSON 不完整。从前这里是 `unwrap_or_else(|_| json!({}))`——空对象，
+/// 接着 `search_chunks` 里 `args["query"].as_str().unwrap_or(&query)` 回落到
+/// **用户那句原话**，于是一次被截断的调用变成「拿用户的原问题去检索」，
+/// 而轨迹上显示的是一条完全正常的 `search · 6 sources`。
+///
+/// 二是必填参数干脆没给。同一个回落，同一个结果。
+///
+/// 两种都不该猜。**回落产出的是一个看起来没问题的错误答案**，那比报错坏得多——
+/// 报错模型会重试，猜出来的答案没有人会去核。
+///
+/// 判据直接取自工具表里的 `required`：加一个必填参数，这里自动跟上，
+/// 不必记得来改第二处。
+fn check_call(
+    tools: &serde_json::Value,
+    name: &str,
+    raw_args: &str,
+) -> Result<serde_json::Value, (String, serde_json::Value)> {
+    let refuse = |detail: &str, message: String| {
+        (
+            message,
+            json!({ "kind": "tool", "label": name, "detail": detail }),
+        )
+    };
+    let Ok(args) = serde_json::from_str::<serde_json::Value>(raw_args) else {
+        return Err(refuse(
+            "bad arguments",
+            format!(
+                "The arguments for {name} were not valid JSON, so the call was not run. \
+                 They were probably cut off. Call it again with complete arguments."
+            ),
+        ));
+    };
+    let required = tools
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|t| t["function"]["name"] == name)
+        .and_then(|t| t["function"]["parameters"]["required"].as_array());
+    for key in required.into_iter().flatten().filter_map(|k| k.as_str()) {
+        // 空串与 null 都算没给：`{"query": ""}` 检索出来的东西与问题无关，
+        // 而它同样会显示成一条正常的轨迹
+        let missing = match args.get(key) {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::String(s)) => s.trim().is_empty(),
+            Some(_) => false,
+        };
+        if missing {
+            return Err(refuse(
+                &format!("missing {key}"),
+                format!(
+                    "{name} needs `{key}`, and it was missing or empty, so the call was not \
+                     run. Call it again with `{key}` set."
+                ),
+            ));
+        }
+    }
+    Ok(args)
 }
 
 const MEMORY_PROMPT: &str = "\
@@ -245,7 +310,15 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
     user's data unless they asked about Utopia's behavior.\n\
     \n\
     Method:\n\
-    1. For factual questions, ALWAYS gather evidence with tools before answering. Prefer the \
+    First decide what the message is about. A message about THIS CONVERSATION — translate it, \
+    say it shorter, rephrase it, \"what did you just say\", \"why\" — is answered from the \
+    transcript above with NO tool calls: the evidence is already in it. Gathering it again is \
+    not merely wasted work — with several entities sharing a name the second pass can land on \
+    a different one, and the \"translation\" then says something else. Just deliver it — no \
+    preamble about what you are or are not looking up. Everything below is for messages about \
+    the user's data.\n\
+    1. For factual questions — questions about the user's data, never one about this \
+       conversation — ALWAYS gather evidence with tools before answering. Prefer the \
        graph tools for questions about people/organizations/projects and time (\"who was X \
        when\", \"what changed\"), search_chunks for content and detail questions. Combine both \
        when useful.\n\
@@ -313,12 +386,10 @@ pub async fn chat(
         conversation_id,
         "user",
         &query,
-        &json!([]),
-        &json!([]),
-        &json!([]),
+        &utopia_store::conversations::TurnRecord::empty(),
     )
     .await?;
-    let (history, known_entities) = utopia_store::conversations::recent_context(
+    let history = utopia_store::conversations::recent_context(
         &state.pool,
         conversation_id,
         MAX_HISTORY as i64,
@@ -326,7 +397,23 @@ pub async fn chat(
     .await?;
     let workspace_id = kb.workspace_id;
 
-    let stream = async_stream::stream! {
+    // 注册表在生成器之前取出来：下面那个 `async_stream!` 会把 `state` 整个搬走
+    let live = state.live.clone();
+
+    // 生成过程不挂在这条连接上。
+    //
+    // **切走一次就丢一个回答**，而且丢得比看上去彻底：整段生成住在下面这个
+    // 生成器里，助手消息只在走完时落库；浏览器一导航，axum 丢掉响应体、
+    // 生成器 future 被丢弃，于是 LLM 调用当场取消，那句 `append_message`
+    // 永远不执行。实测掐断连接时已经收到 1219 字节的正文，二十秒后库里
+    // 只剩用户那一行——**那个回答不是存在但没显示，是根本没被生成完**。
+    //
+    // 所以把生成器交给一个独立任务去驱动，这条连接降级成一个订阅者。
+    // 任务不随连接消失，答案照常写完、照常落库，人回来就在。
+    //
+    // 代价说清楚：**没人看的时候仍然在花钱**。这是有意的——丢答案比多跑一轮贵，
+    // 而 `MAX_ROUNDS` 已经给了上限。send 失败（接收端没了）不中断，那正是要点。
+    let producer = async_stream::stream! {
         let ds_names: Vec<String> = mounted_sources.iter().map(|d| d.name.clone()).collect();
         let tools = tools_schema(can_write, &ds_names);
         let mut system_prompt = if can_write {
@@ -374,7 +461,22 @@ pub async fn chat(
         }
         let mut msgs: Vec<serde_json::Value> =
             vec![json!({ "role": "system", "content": system_prompt })];
-        for (role, content) in &history {
+        /* **上一轮做过什么，按它当时发生的位置放回去。**
+           最后那条助手消息是它的结论；带 `tool_calls` 的消息与 tool 结果
+           发生在它之前，所以插在它前面——顺序就是真实顺序，模型读起来
+           就是「我问了、我查了、我答了」。
+           少了这一段，跨轮之后它只看得见自己写的散文，于是接着说「翻译」
+           时重查一遍（还可能落到另一批同名实体上）。 */
+        let last_assistant = history
+            .turns
+            .iter()
+            .rposition(|(role, _)| role == "assistant");
+        for (i, (role, content)) in history.turns.iter().enumerate() {
+            if Some(i) == last_assistant {
+                for m in &history.last_tool_exchange {
+                    msgs.push(m.clone());
+                }
+            }
             msgs.push(json!({ "role": role, "content": content }));
         }
         // **前几轮已经认下的实体，连 id 一起交回去。**
@@ -385,8 +487,8 @@ pub async fn chat(
         //
         // 贴在历史之后、当前问题之前——位置就是服从性，跟抽取里 known_block
         // 紧挨正文是同一条理由。
-        if !known_entities.is_empty() {
-            let lines: Vec<String> = known_entities
+        if !history.entities.is_empty() {
+            let lines: Vec<String> = history.entities
                 .iter()
                 .take(KNOWN_ENTITY_LIMIT)
                 .map(|e| {
@@ -410,9 +512,7 @@ pub async fn chat(
         }
 
         // 会话 id 先行下发（新会话由此告知前端）
-        yield Ok(Event::default()
-            .event("conversation")
-            .data(json!({ "id": conversation_id }).to_string()));
+        yield Frame::new("conversation", json!({ "id": conversation_id }).to_string());
 
         // 引用清单：跨轮累积、去重、编号稳定。键 = chunk uuid 或 "charter:{slug}#{anchor}"
         let mut source_ids: Vec<String> = Vec::new();
@@ -420,6 +520,8 @@ pub async fn chat(
         // 落库累积：assistant 全文与行动轨迹（历史回放用）
         let mut answer_acc = String::new();
         let mut steps_acc: Vec<serde_json::Value> = Vec::new();
+        // 这一轮的工具往返，原样留一份落库：下一轮回放它，模型才知道自己做过什么
+        let mut exchange_acc: Vec<serde_json::Value> = Vec::new();
         // 这一轮认下的实体，落库供下一轮回放。**只记身份不记正文**——
         // 工具结果里是 chunk 全文，每轮重复堆进上下文几轮就把窗口吃光
         let mut resolved_acc: Vec<serde_json::Value> = Vec::new();
@@ -443,9 +545,12 @@ pub async fn chat(
                         }
                         let _ = utopia_store::conversations::append_message(
                             &state.pool, conversation_id, "assistant", &answer_acc,
-                            &serde_json::Value::Array(steps_acc.clone()),
-                            &serde_json::Value::Array(sources.clone()),
-                            &serde_json::Value::Array(resolved_acc.clone()),
+                            &utopia_store::conversations::TurnRecord {
+                                steps: serde_json::Value::Array(steps_acc.clone()),
+                                sources: serde_json::Value::Array(sources.clone()),
+                                resolved: serde_json::Value::Array(resolved_acc.clone()),
+                                tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
+                            },
                         ).await;
                         yield done_event();
                     }
@@ -470,13 +575,13 @@ pub async fn chat(
                             .enumerate()
                             .map(|(i, c)| source_json(i + 1, c))
                             .collect();
-                        yield Ok(Event::default().event("sources").data(
-                            serde_json::to_string(&legacy_sources)
-                                .unwrap_or_else(|_| "[]".into()),
-                        ));
+                        yield Frame::new(
+                            "sources",
+                            serde_json::to_string(&legacy_sources).unwrap_or_else(|_| "[]".into()),
+                        );
                         let mut lmsgs =
                             vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
-                        for (role, content) in &history {
+                        for (role, content) in &history.turns {
                             lmsgs.push(json!({ "role": role, "content": content }));
                         }
                         match client.chat_stream_raw(&lmsgs).await {
@@ -490,9 +595,12 @@ pub async fn chat(
                                 }
                                 let _ = utopia_store::conversations::append_message(
                                     &state.pool, conversation_id, "assistant", &answer_acc,
-                                    &serde_json::Value::Array(steps_acc.clone()),
-                                    &serde_json::Value::Array(legacy_sources.clone()),
-                                    &serde_json::Value::Array(resolved_acc.clone()),
+                                    &utopia_store::conversations::TurnRecord {
+                                        steps: serde_json::Value::Array(steps_acc.clone()),
+                                        sources: serde_json::Value::Array(legacy_sources.clone()),
+                                        resolved: serde_json::Value::Array(resolved_acc.clone()),
+                                        tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
+                                    },
                                 ).await;
                                 yield done_event();
                             }
@@ -532,9 +640,12 @@ pub async fn chat(
                 } else {
                     let _ = utopia_store::conversations::append_message(
                         &state.pool, conversation_id, "assistant", &answer_acc,
-                        &serde_json::Value::Array(steps_acc.clone()),
-                        &serde_json::Value::Array(sources.clone()),
-                        &serde_json::Value::Array(resolved_acc.clone()),
+                        &utopia_store::conversations::TurnRecord {
+                            steps: serde_json::Value::Array(steps_acc.clone()),
+                            sources: serde_json::Value::Array(sources.clone()),
+                            resolved: serde_json::Value::Array(resolved_acc.clone()),
+                            tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
+                        },
                     ).await;
                     yield done_event();
                 }
@@ -547,13 +658,24 @@ pub async fn chat(
                 yield delta_event("\n\n");
             }
 
-            msgs.push(turn.to_message());
+            let call_msg = turn.to_message();
+            exchange_acc.push(call_msg.clone());
+            msgs.push(call_msg);
             for call in &turn.tool_calls {
-                let args: serde_json::Value =
-                    serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+                // **说不清自己要做什么的调用不执行。** 把话回给模型，让它重来
+                let args = match check_call(&tools, &call.name, &call.arguments) {
+                    Ok(args) => args,
+                    Err((message, step)) => {
+                        steps_acc.push(step.clone());
+                        yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
+                        msgs.push(tool_result_message(&call.id, &message));
+                        continue;
+                    }
+                };
                 let (result, step) = match call.name.as_str() {
                     "search_chunks" => {
-                        let q = args["query"].as_str().unwrap_or(&query).to_string();
+                        // check_call 已经保证 query 在且非空——这里不再有回落
+                        let q = args["query"].as_str().unwrap_or_default().to_string();
                         let chunks = retrieval::hybrid(&state, kb_id, workspace_id, &q, SEARCH_TOP_K)
                             .await
                             .unwrap_or_default();
@@ -583,7 +705,8 @@ pub async fn chat(
                         (text, json!({ "kind": "search", "label": q, "detail": format!("{} sources", chunks.len()) }))
                     }
                     "search_docs" => {
-                        let q = args["query"].as_str().unwrap_or(&query).to_string();
+                        // 同上：check_call 已经拦过，这里不再回落到用户原话
+                        let q = args["query"].as_str().unwrap_or_default().to_string();
                         let hits = state.docs.search(&q, 4).unwrap_or_default();
                         let mut lines = Vec::new();
                         for h in &hits {
@@ -822,36 +945,127 @@ pub async fn chat(
                         json!({ "kind": "tool", "label": other, "detail": "unknown" }),
                     ),
                 };
-                steps_acc.push(step.clone());
-                yield Ok(Event::default()
-                    .event("step")
-                    .data(serde_json::to_string(&step).unwrap_or_default()));
-                if step["kind"] == "search" || step["kind"] == "docs" {
-                    yield Ok(Event::default()
-                        .event("sources")
-                        .data(serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
+                // **这一步发生在正文的哪个位置。**
+                //
+                // 模型是边说边调的：说一句、查一下、再说一句。SSE 上 `delta` 与
+                // `step` 本来就是交替发出去的，顺序不用额外记；而**历史回放没有
+                // 那条时间线**——落库的只有拼好的整段正文和一个扁平的 steps 数组，
+                // 于是重新打开一场对话，所有调用都堆在正文最前面，读起来像是
+                // 先查了七次再一口气说完。记下偏移，回放才能把话再断开。
+                //
+                // 单位是 **UTF-16 码元**，因为切分发生在浏览器里，而 JS 的
+                // `String.prototype.length` 数的就是它。用字节数或 `chars()`
+                // 在中文和 emoji 上都会切歪
+                let mut step = step;
+                if let Some(obj) = step.as_object_mut() {
+                    obj.insert("at".into(), json!(answer_acc.encode_utf16().count()));
                 }
-                msgs.push(tool_result_message(&call.id, &result));
+                steps_acc.push(step.clone());
+                yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
+                if step["kind"] == "search" || step["kind"] == "docs" {
+                    yield Frame::new(
+                        "sources",
+                        serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()),
+                    );
+                }
+                let result_msg = tool_result_message(&call.id, &result);
+                exchange_acc.push(result_msg.clone());
+                msgs.push(result_msg);
             }
             rounds += 1;
         }
     };
 
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+    // 生成登记在案，然后**这条连接也只是去「接上」它**——与刷新之后
+    // 那条重连走的是同一段代码。两条路分开写的话，迟早只有一条是对的
+    let handle = live.begin(conversation_id).await;
+    let attached = live.attach(conversation_id).await;
+    tokio::spawn(async move {
+        let mut producer = std::pin::pin!(producer);
+        while let Some(frame) = producer.next().await {
+            // 没有订阅者是常态（人走了）。**照发不误**：这里中断就等于
+            // 把「切走一次丢一个回答」原样搬回来
+            handle.emit(frame).await;
+        }
+        // 注销之后再接上的人得到「没有在跑的」，那时答案已经落库
+        handle.finish().await;
+    });
+
+    Ok(sse_from(attached))
 }
 
-fn delta_event(text: &str) -> Result<Event, Infallible> {
-    Ok(Event::default()
-        .event("delta")
-        .data(serde_json::to_string(&json!({ "text": text })).unwrap_or_default()))
+/// 把一次「接上」变成 SSE：先补一份快照，再照常收增量。
+///
+/// `None` = 这个会话没有在跑的生成。回一条 `idle` 而不是 404——**客户端
+/// 每次打开会话都会问一次**，而「没有在跑」是最常见的答案，不是错误
+fn sse_from(
+    attached: Option<(
+        crate::live::Snapshot,
+        tokio::sync::broadcast::Receiver<Frame>,
+    )>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let stream = async_stream::stream! {
+        let Some((snapshot, mut rx)) = attached else {
+            yield to_event(&Frame::new("idle", "{}".into()));
+            return;
+        };
+        yield to_event(&snapshot.to_frame());
+        loop {
+            match rx.recv().await {
+                Ok(frame) => {
+                    let done = frame.event == "done" || frame.event == "error";
+                    yield to_event(&frame);
+                    if done { return; }
+                }
+                // 生成结束、发送端销毁：正常收尾
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                // 这个客户端读得太慢，被广播缓冲甩下了。**说出来**——
+                // 静默继续会让它少掉中间一段而毫不知情
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    yield to_event(&Frame::new(
+                        "error",
+                        format!("Fell behind the stream by {n} messages; reopen the conversation"),
+                    ));
+                    return;
+                }
+            }
+        }
+    };
+    Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-fn done_event() -> Result<Event, Infallible> {
-    Ok(Event::default().event("done").data("{}"))
+fn to_event(frame: &Frame) -> Result<Event, Infallible> {
+    Ok(Event::default().event(frame.event).data(&frame.data))
 }
 
-fn error_event(message: &str) -> Result<Event, Infallible> {
-    Ok(Event::default().event("error").data(message))
+/// 接上一次正在跑的生成（刷新页面之后走这里）。
+pub async fn reattach(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, conversation_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
+    // **归属要查。** 会话 id 是可以猜的，而这条流会把别人的回答一字不差地念出来
+    utopia_store::conversations::require_owned(&state.pool, kb_id, user.id, conversation_id)
+        .await?;
+    Ok(sse_from(state.live.attach(conversation_id).await))
+}
+
+/// 生成器产出的是 `Frame`，不是 `axum` 的 `Event`。
+/// **广播与快照都要读回事件的内容**，而 `Event` 读不回来（见 `live`）
+fn delta_event(text: &str) -> Frame {
+    Frame::new(
+        "delta",
+        serde_json::to_string(&json!({ "text": text })).unwrap_or_default(),
+    )
+}
+
+fn done_event() -> Frame {
+    Frame::new("done", "{}".into())
+}
+
+fn error_event(message: &str) -> Frame {
+    Frame::new("error", message.into())
 }
 
 fn source_json(n: usize, c: &ChunkView) -> serde_json::Value {
@@ -1240,5 +1454,88 @@ mod tests {
             line.contains("\"moved its head office to Berlin\""),
             "{line}"
         );
+    }
+
+    // --- check_call ---------------------------------------------------------
+
+    /// 参数在半路断掉——模型撞上 token 上限时就长这样。
+    ///
+    /// **从前这里回落成空对象，然后 `search_chunks` 拿用户那句原话去检索。**
+    /// 得到的是一条看起来完全正常的 `search · 6 sources`，和一个基于错误输入
+    /// 的答案。没人会去核一个看起来正常的答案，所以这一条必须是拒绝
+    #[test]
+    fn arguments_cut_off_mid_json_do_not_become_a_search() {
+        let tools = tools_schema(false, &[]);
+        let err = check_call(&tools, "search_chunks", "{\"query\": \"Acme reven")
+            .expect_err("残缺 JSON 必须拒绝，而不是回落");
+        assert_eq!(err.1["kind"], "tool", "轨迹上要显示成一次没做成的调用");
+        assert_eq!(err.1["detail"], "bad arguments");
+        assert!(
+            err.0.contains("not valid JSON") && err.0.contains("again"),
+            "回给模型的话要说清没执行、并让它重来：{}",
+            err.0
+        );
+    }
+
+    /// 空串与缺字段是同一件事：`{"query": ""}` 检索回来的东西与问题无关，
+    /// 而它同样会显示成一条正常轨迹
+    #[test]
+    fn an_empty_required_argument_counts_as_missing() {
+        let tools = tools_schema(false, &[]);
+        for raw in [
+            "{}",
+            "{\"query\": \"\"}",
+            "{\"query\": \"   \"}",
+            "{\"query\": null}",
+        ] {
+            let Err(err) = check_call(&tools, "search_chunks", raw) else {
+                panic!("{raw} 应当被拒");
+            };
+            assert_eq!(err.1["detail"], "missing query", "{raw}");
+        }
+    }
+
+    /// **判据取自工具表本身。** 这条守的是「加了必填参数却忘了改校验」——
+    /// query_data 只在挂了数据源时才出现在表里，它的两个必填参数
+    /// 从没在别处被单独写过一遍
+    #[test]
+    fn the_schema_is_the_only_place_required_is_written_down() {
+        let tools = tools_schema(false, &["warehouse".into()]);
+        let err = check_call(&tools, "query_data", "{\"data_source\": \"warehouse\"}")
+            .expect_err("缺 sql 必须拒绝");
+        assert_eq!(err.1["detail"], "missing sql");
+        check_call(
+            &tools,
+            "query_data",
+            "{\"data_source\": \"warehouse\", \"sql\": \"SELECT 1\"}",
+        )
+        .expect("两个都给了就该放行");
+    }
+
+    /// 合规的调用原样通过，**可选参数一个不少**。
+    ///
+    /// 这一关只判「说清了没有」，不做过滤——把 args 重新组装一遍的话，
+    /// 加一个可选参数就得记得来这里加一次，而忘记的后果是它安静地失效
+    #[test]
+    fn a_well_formed_call_passes_through_untouched() {
+        let tools = tools_schema(false, &[]);
+        let args = check_call(
+            &tools,
+            "entity_facts",
+            "{\"entity_id\": \"1f8ac10b-58cc-4372-a567-0e02b2c3d479\", \"at\": \"2026-03-15\"}",
+        )
+        .expect("必填给了就该放行");
+        assert_eq!(args["at"], "2026-03-15", "可选参数不能在这一关被吃掉");
+    }
+
+    /// `changes` 早就在自己那一支里拒绝缺失的 `since`——**它是唯一做对的一个**。
+    /// 这条钉住两件事：新的统一关卡与它一致，而它自己那道对日期格式的检查
+    /// （`2026-13-45` 这种）仍然要留着，因为 check_call 只看有没有、不看对不对
+    #[test]
+    fn the_one_tool_that_already_refused_still_refuses() {
+        let tools = tools_schema(false, &[]);
+        assert!(check_call(&tools, "changes", "{}").is_err());
+        check_call(&tools, "changes", "{\"since\": \"2026-13-45\"}")
+            .expect("格式错的日期不归这一关管，交给 changes_window");
     }
 }

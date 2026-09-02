@@ -197,8 +197,19 @@ function sampleDaily(revs, [from, to]) {
 }
 
 // 末尾的 References / External links 全是链接和模板残渣，抽取器会把它们当正文。切掉。
+//
+// **收尾侧写 `=+` 而不是 `==+`，是有意宽一格的。** 这里曾经两边都是 `==+`，
+// 而下面 h 标签的转换开标签按层级铺 `=`、闭标签硬编码了一个，于是二级标题
+// 落成 `== References =`，这条正则一次都没匹配上——**每一篇快照的整个参考
+// 文献区都进了抽取**。实测 414 块里 223 块（54%）是引文残渣，产出的是
+// `Wired --employee--> Steven Levy` 这种把记者署名当雇佣关系的事实，
+// 还占着 supersedes 机制。
+//
+// 闭标签那侧已经修好，但这条仍然放宽：标题两侧对不对称是渲染的事，而这里
+// 要判的是「从哪儿开始不要了」。宽一格换来同类错配再也打不穿它，代价是可能
+// 多切一个 `= Foo =` 形状的一级标题——那种标题在条目正文里不出现。
 const CUT =
-  /\n==+ ?(References|External links|See also|Further reading|Notes|Bibliography|Sources|Citations) ?==+/i;
+  /\n==+ ?(References|External links|See also|Further reading|Notes|Bibliography|Sources|Citations) ?=+/i;
 
 /// 取某一版的正文。历史版本没有 `prop=extracts`（那个只认当前版），
 /// 所以走 `action=parse&oldid=` 拿渲染后的 HTML，再剥成纯文本。
@@ -217,7 +228,9 @@ function plaintext(revid) {
     .replace(/<sup class="reference"[\s\S]*?<\/sup>/gi, "") // 脚注角标
     .replace(/<span class="mw-editsection"[\s\S]*?<\/span>/gi, "")
     .replace(/<h([1-6])[^>]*>/gi, (_, n) => "\n\n" + "=".repeat(+n) + " ")
-    .replace(/<\/h[1-6]>/gi, " " + "=" + "\n")
+    // 闭标签也按层级铺，跟上一行对称。硬编码一个 `=` 会让二级标题落成
+    // `== References =`，而 CUT 那边在等 `==`，于是尾节永远切不掉。
+    .replace(/<\/h([1-6])>/gi, (_, n) => " " + "=".repeat(+n) + "\n")
     .replace(/<li[^>]*>/gi, "\n- ")
     .replace(/<\/(p|div|li|tr)>/gi, "\n")
     .replace(/<br\s*\/?>/gi, "\n")
