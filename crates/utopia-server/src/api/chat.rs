@@ -313,12 +313,10 @@ pub async fn chat(
         conversation_id,
         "user",
         &query,
-        &json!([]),
-        &json!([]),
-        &json!([]),
+        &utopia_store::conversations::TurnRecord::empty(),
     )
     .await?;
-    let (history, known_entities) = utopia_store::conversations::recent_context(
+    let history = utopia_store::conversations::recent_context(
         &state.pool,
         conversation_id,
         MAX_HISTORY as i64,
@@ -374,7 +372,22 @@ pub async fn chat(
         }
         let mut msgs: Vec<serde_json::Value> =
             vec![json!({ "role": "system", "content": system_prompt })];
-        for (role, content) in &history {
+        /* **上一轮做过什么，按它当时发生的位置放回去。**
+           最后那条助手消息是它的结论；带 `tool_calls` 的消息与 tool 结果
+           发生在它之前，所以插在它前面——顺序就是真实顺序，模型读起来
+           就是「我问了、我查了、我答了」。
+           少了这一段，跨轮之后它只看得见自己写的散文，于是接着说「翻译」
+           时重查一遍（还可能落到另一批同名实体上）。 */
+        let last_assistant = history
+            .turns
+            .iter()
+            .rposition(|(role, _)| role == "assistant");
+        for (i, (role, content)) in history.turns.iter().enumerate() {
+            if Some(i) == last_assistant {
+                for m in &history.last_tool_exchange {
+                    msgs.push(m.clone());
+                }
+            }
             msgs.push(json!({ "role": role, "content": content }));
         }
         // **前几轮已经认下的实体，连 id 一起交回去。**
@@ -385,8 +398,8 @@ pub async fn chat(
         //
         // 贴在历史之后、当前问题之前——位置就是服从性，跟抽取里 known_block
         // 紧挨正文是同一条理由。
-        if !known_entities.is_empty() {
-            let lines: Vec<String> = known_entities
+        if !history.entities.is_empty() {
+            let lines: Vec<String> = history.entities
                 .iter()
                 .take(KNOWN_ENTITY_LIMIT)
                 .map(|e| {
@@ -420,6 +433,8 @@ pub async fn chat(
         // 落库累积：assistant 全文与行动轨迹（历史回放用）
         let mut answer_acc = String::new();
         let mut steps_acc: Vec<serde_json::Value> = Vec::new();
+        // 这一轮的工具往返，原样留一份落库：下一轮回放它，模型才知道自己做过什么
+        let mut exchange_acc: Vec<serde_json::Value> = Vec::new();
         // 这一轮认下的实体，落库供下一轮回放。**只记身份不记正文**——
         // 工具结果里是 chunk 全文，每轮重复堆进上下文几轮就把窗口吃光
         let mut resolved_acc: Vec<serde_json::Value> = Vec::new();
@@ -443,9 +458,12 @@ pub async fn chat(
                         }
                         let _ = utopia_store::conversations::append_message(
                             &state.pool, conversation_id, "assistant", &answer_acc,
-                            &serde_json::Value::Array(steps_acc.clone()),
-                            &serde_json::Value::Array(sources.clone()),
-                            &serde_json::Value::Array(resolved_acc.clone()),
+                            &utopia_store::conversations::TurnRecord {
+                                steps: serde_json::Value::Array(steps_acc.clone()),
+                                sources: serde_json::Value::Array(sources.clone()),
+                                resolved: serde_json::Value::Array(resolved_acc.clone()),
+                                tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
+                            },
                         ).await;
                         yield done_event();
                     }
@@ -476,7 +494,7 @@ pub async fn chat(
                         ));
                         let mut lmsgs =
                             vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
-                        for (role, content) in &history {
+                        for (role, content) in &history.turns {
                             lmsgs.push(json!({ "role": role, "content": content }));
                         }
                         match client.chat_stream_raw(&lmsgs).await {
@@ -490,9 +508,12 @@ pub async fn chat(
                                 }
                                 let _ = utopia_store::conversations::append_message(
                                     &state.pool, conversation_id, "assistant", &answer_acc,
-                                    &serde_json::Value::Array(steps_acc.clone()),
-                                    &serde_json::Value::Array(legacy_sources.clone()),
-                                    &serde_json::Value::Array(resolved_acc.clone()),
+                                    &utopia_store::conversations::TurnRecord {
+                                        steps: serde_json::Value::Array(steps_acc.clone()),
+                                        sources: serde_json::Value::Array(legacy_sources.clone()),
+                                        resolved: serde_json::Value::Array(resolved_acc.clone()),
+                                        tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
+                                    },
                                 ).await;
                                 yield done_event();
                             }
@@ -532,9 +553,12 @@ pub async fn chat(
                 } else {
                     let _ = utopia_store::conversations::append_message(
                         &state.pool, conversation_id, "assistant", &answer_acc,
-                        &serde_json::Value::Array(steps_acc.clone()),
-                        &serde_json::Value::Array(sources.clone()),
-                        &serde_json::Value::Array(resolved_acc.clone()),
+                        &utopia_store::conversations::TurnRecord {
+                            steps: serde_json::Value::Array(steps_acc.clone()),
+                            sources: serde_json::Value::Array(sources.clone()),
+                            resolved: serde_json::Value::Array(resolved_acc.clone()),
+                            tool_exchange: serde_json::Value::Array(exchange_acc.clone()),
+                        },
                     ).await;
                     yield done_event();
                 }
@@ -547,7 +571,9 @@ pub async fn chat(
                 yield delta_event("\n\n");
             }
 
-            msgs.push(turn.to_message());
+            let call_msg = turn.to_message();
+            exchange_acc.push(call_msg.clone());
+            msgs.push(call_msg);
             for call in &turn.tool_calls {
                 let args: serde_json::Value =
                     serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
@@ -831,7 +857,9 @@ pub async fn chat(
                         .event("sources")
                         .data(serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
                 }
-                msgs.push(tool_result_message(&call.id, &result));
+                let result_msg = tool_result_message(&call.id, &result);
+                exchange_acc.push(result_msg.clone());
+                msgs.push(result_msg);
             }
             rounds += 1;
         }
