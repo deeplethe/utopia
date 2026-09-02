@@ -172,6 +172,7 @@ export interface SourceView {
     | "s3"
     | "azure_blob"
     | "gcs"
+    | "webdav"
     | "memory"
     | "upload";
   name: string;

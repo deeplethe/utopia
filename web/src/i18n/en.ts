@@ -421,6 +421,7 @@ export const en = {
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
       gcs: "Google Cloud Storage",
+      webdav: "WebDAV",
     },
     sourceKindHints: {
       folder:
@@ -445,6 +446,10 @@ export const en = {
       gcs:
         "Reads documents out of a Google Cloud Storage bucket. The service account JSON " +
         "goes in whole — there is no file on the server to point at.",
+      webdav:
+        "Reads documents off a WebDAV share — Nextcloud, ownCloud, Synology, or anything " +
+        "else speaking the protocol. Walks folders one level at a time; each file becomes " +
+        "a document dated by its last modification.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       custom:
         "Polls a URL you control on a schedule — your service returns JSON items and Utopia keeps them in sync.",
@@ -500,6 +505,10 @@ export const en = {
     azAccountField: "Storage account name",
     azKeyField: "Account key",
     gcsKeyField: "Service account JSON (paste the whole file)",
+    davUrlField: "Server URL",
+    davPathField: "Folder (optional — defaults to the root)",
+    davUserField: "Username",
+    davPassField: "Password",
     tokenField: "GitHub token (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     interval: "Sync schedule",

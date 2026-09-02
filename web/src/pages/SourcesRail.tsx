@@ -70,6 +70,7 @@ export const KIND_ICON = {
   s3: HardDrive,
   azure_blob: Cloud,
   gcs: Cloud,
+  webdav: FolderOpen,
   memory: Brain,
   upload: Upload,
 } as const;
@@ -84,6 +85,7 @@ export const SYNCING_KINDS = new Set([
   "s3",
   "azure_blob",
   "gcs",
+  "webdav",
 ]);
 
 export const SYNC_DOT: Record<SourceView["last_sync_status"], string> = {

@@ -55,6 +55,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         "github_issues" => sync_github_issues(state, &source).await,
         "jira_issues" => sync_jira_issues(state, &source).await,
         "s3" | "azure_blob" | "gcs" => sync_object_storage(state, &source).await,
+        "webdav" => sync_webdav(state, &source).await,
         // folder / api 无拉取语义
         _ => Ok(SyncStats::default()),
     };
@@ -797,6 +798,51 @@ async fn sync_object_storage(state: &AppState, source: &Source) -> anyhow::Resul
             "application/octet-stream",
             &obj.bytes,
             obj.last_modified,
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    Ok(stats)
+}
+
+/// WebDAV 同步：逐层走目录，把文件摄进来。
+///
+/// `external_key` 用 `webdav://host/path`——同一台网盘换了挂载点仍是同一份
+/// 文件，而不同网盘上的同名路径是两份。
+async fn sync_webdav(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    let base = source.config["base_url"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("webdav source is missing config.base_url"))?;
+    let root = source.config["path"].as_str().map(str::trim).unwrap_or("/");
+    let user = source.config["username"].as_str().map(str::trim);
+    let pass = source.config["password"].as_str().map(str::trim);
+    let auth = match (user, pass) {
+        (Some(u), Some(p)) if !u.is_empty() => Some((u, p)),
+        _ => None,
+    };
+
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()?;
+    let (files, truncated) = crate::webdav::fetch(&http, base, root, auth).await?;
+    if truncated {
+        tracing::warn!(base, root, "文件数到达单次上限，其余留给下一次同步");
+    }
+
+    let mut stats = SyncStats::default();
+    for f in files {
+        // 不猜 mime，理由同对象存储：解析先看魔数
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &f.external_key,
+            &f.filename,
+            "application/octet-stream",
+            &f.bytes,
+            f.last_modified,
         )
         .await?;
         stats.absorb(action);

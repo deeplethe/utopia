@@ -1273,6 +1273,7 @@ function SourceModal({
     | "s3"
     | "azure_blob"
     | "gcs"
+    | "webdav"
   >("folder");
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<string | null>(null);
@@ -1292,6 +1293,10 @@ function SourceModal({
   const [azAccount, setAzAccount] = useState("");
   const [azKey, setAzKey] = useState("");
   const [gcsKey, setGcsKey] = useState("");
+  const [davUrl, setDavUrl] = useState("");
+  const [davPath, setDavPath] = useState("");
+  const [davUser, setDavUser] = useState("");
+  const [davPass, setDavPass] = useState("");
   // PR 在 GitHub 的模型里也是工单。默认不收——问「工单」要的是工单；
   // 但有些仓库的决策记录实际写在 PR 描述里，所以给个开关
   const [includePrs, setIncludePrs] = useState(false);
@@ -1308,7 +1313,8 @@ function SourceModal({
     kind === "jira_issues" ||
     kind === "s3" ||
     kind === "azure_blob" ||
-    kind === "gcs";
+    kind === "gcs" ||
+    kind === "webdav";
 
   const create = useMutation({
     mutationFn: () => {
@@ -1361,7 +1367,14 @@ function SourceModal({
                               ? { service_account_key: gcsKey.trim() }
                               : {}),
                           }
-                        : {};
+                        : kind === "webdav"
+                          ? {
+                              base_url: davUrl.trim(),
+                              ...(davPath.trim() ? { path: davPath.trim() } : {}),
+                              ...(davUser.trim() ? { username: davUser.trim() } : {}),
+                              ...(davPass ? { password: davPass } : {}),
+                            }
+                          : {};
       return api.createSource(kbId, {
         kind,
         name: name.trim(),
@@ -1383,7 +1396,9 @@ function SourceModal({
         ? feedUrl.trim()
         : kind === "custom"
           ? endpoint.trim()
-          : kind === "s3" || kind === "azure_blob" || kind === "gcs"
+          : kind === "webdav"
+            ? davUrl.trim()
+            : kind === "s3" || kind === "azure_blob" || kind === "gcs"
             ? s3Bucket.trim()
             : true);
 
@@ -1424,6 +1439,7 @@ function SourceModal({
                 "s3",
                 "azure_blob",
                 "gcs",
+                "webdav",
                 "api",
                 "custom",
               ] as const
@@ -1657,6 +1673,45 @@ function SourceModal({
                     onChange={(e) => setGcsKey(e.target.value)}
                   />,
                 )}
+            </>
+          )}
+          {kind === "webdav" && (
+            <>
+              {field(
+                S.library.davUrlField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  placeholder="https://cloud.example.com/remote.php/dav/files/alice"
+                  value={davUrl}
+                  onChange={(e) => setDavUrl(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.davPathField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  placeholder="/Documents"
+                  value={davPath}
+                  onChange={(e) => setDavPath(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.davUserField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  value={davUser}
+                  onChange={(e) => setDavUser(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.davPassField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  type="password"
+                  value={davPass}
+                  onChange={(e) => setDavPass(e.target.value)}
+                />,
+              )}
             </>
           )}
           {kind === "github_issues" && (

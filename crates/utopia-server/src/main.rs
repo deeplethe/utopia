@@ -25,6 +25,7 @@ mod query_engine;
 mod retrieval;
 mod state;
 mod type_resolution;
+mod webdav;
 
 use state::AppState;
 use std::sync::Arc;

@@ -389,6 +389,7 @@ export const zh: Strings = {
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
       gcs: "Google Cloud Storage",
+      webdav: "WebDAV",
     },
     sourceKindHints: {
       folder:
@@ -412,6 +413,9 @@ export const zh: Strings = {
       gcs:
         "从 Google Cloud Storage 桶里读文档。服务账号 JSON 整份贴进来——" +
         "服务器上没有那个文件可以指。",
+      webdav:
+        "从 WebDAV 网盘读文档——Nextcloud、ownCloud、群晖，以及一切说这套协议的。" +
+        "逐层走目录，每个文件成为一篇文档，日期取它最后一次修改的时刻。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
       custom:
         "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Utopia 保持同步。",
@@ -466,6 +470,10 @@ export const zh: Strings = {
     azAccountField: "存储账号名",
     azKeyField: "账号密钥",
     gcsKeyField: "服务账号 JSON（整个文件贴进来）",
+    davUrlField: "服务器地址",
+    davPathField: "目录（可选——默认从根开始）",
+    davUserField: "用户名",
+    davPassField: "密码",
     tokenField: "GitHub 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
     interval: "同步计划",
