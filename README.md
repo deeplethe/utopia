@@ -115,6 +115,14 @@ Utopia is still at **v0.1**. The database schema evolves between versions and mi
 
 Please read [SECURITY.md](SECURITY.md) before exposing it to the public internet.
 
+## Star History
+
+<div align="center">
+
+<img src="assets/star-history.svg" alt="Star History" width="820">
+
+</div>
+
 ## Community
 
 - 💬 [Discussions](https://github.com/deeplethe/utopia/discussions): discussion, experience reports and reviews

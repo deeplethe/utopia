@@ -1,0 +1,34 @@
+name: Star History
+
+on:
+  schedule:
+    # 每天一次。星标曲线一周才动一次的话，图上那一段是平的——
+    # 而它存在的意义正是让人看见增长的形状
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  star-history:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate Star History
+        # 钉到 commit，不是 tag。**这是仓库里第一个有 `contents: write` 的
+        # workflow**，而 tag 可以被 action 作者改指向——写权限配可变引用，
+        # 等于把仓库的写入托付给一份随时能换掉的代码。
+        # 65836723 = v3.34，升级时连这行注释一起改
+        uses: lowlighter/metrics@65836723097537a54cd8eb90f61839426b4266b6
+        with:
+          filename: assets/star-history.svg
+          token: ${{ secrets.METRICS_TOKEN }}
+          committer_token: ${{ github.token }}
+          user: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          template: repository
+          base: ""
+          plugin_stargazers: yes
+          plugin_stargazers_days: 0
+          plugin_stargazers_charts_type: graph
+          output_action: commit
