@@ -106,8 +106,11 @@ pub fn recall_keys(name: &str) -> Vec<String> {
 
 /// 易混具体类型：抽取常在这几类间摇摆（一个团队算组织还是项目？平台算项目还是产品？）。
 /// 同名跨这组类型 → 照建实体（宁分勿合），但入队审核对交 LLM/人工裁决。
-/// DESIGN.md §3.2 的 disjoint 公理目前只是设计面（0005 仅落了 subClassOf 数据面），
-/// 公理落库后这张表应改从本体读取。
+///
+/// **这张表该从本体读，今天还没有。** `owl:disjointWith` 已经落库（`entity_type_disjoint`，
+/// 有导入有编辑），但消费者只有推理机的本体自检；消解这边仍按这三个硬编码的 key 判。
+/// 没装包的库里这三个 key 不存在，于是这一档永不命中，所有跨类型同名判 `Disjoint`——
+/// 变严不变松，不会错合。改从本体读是 0016 的 B3。
 pub const CONFUSABLE_TYPE_KEYS: &[&str] = &["organization", "project", "product"];
 
 /// 单次消解最多入队的漂移审核对（防同名大组刷爆审核队列）。

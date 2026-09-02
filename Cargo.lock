@@ -4735,10 +4735,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
-name = "utopia-connectors"
-version = "0.1.0"
-
-[[package]]
 name = "utopia-core"
 version = "0.1.0"
 dependencies = [
@@ -4764,10 +4760,6 @@ dependencies = [
  "tracing",
  "utopia-llm",
 ]
-
-[[package]]
-name = "utopia-graph"
-version = "0.1.0"
 
 [[package]]
 name = "utopia-ingest"
@@ -4805,10 +4797,6 @@ dependencies = [
  "tokio",
  "tracing",
 ]
-
-[[package]]
-name = "utopia-mcp"
-version = "0.1.0"
 
 [[package]]
 name = "utopia-reason"

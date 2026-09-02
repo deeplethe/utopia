@@ -6,12 +6,9 @@ members = [
     "crates/utopia-server",
     "crates/utopia-ingest",
     "crates/utopia-extract",
-    "crates/utopia-graph",
     "crates/utopia-reason",
     "crates/utopia-search",
     "crates/utopia-llm",
-    "crates/utopia-mcp",
-    "crates/utopia-connectors",
 ]
 
 [workspace.package]

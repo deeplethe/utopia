@@ -456,7 +456,7 @@ async fn compile_rules(
         if a.symmetric {
             want.push((pred, "symmetric"));
         }
-        // 后两种是 0017 补上的规则源。**规则挂在「有声明的那一侧」**——
+        // 后两种是迁移 0016（a_relation_can_name_its_inverse）补上的规则源。**规则挂在「有声明的那一侧」**——
         // 归一化过的逆两边都有声明，所以两个方向各得一条规则，与它们各自
         // 推出的派生对得上
         if a.inverse_of.is_some() {

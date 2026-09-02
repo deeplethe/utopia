@@ -310,31 +310,6 @@ pub async fn insert_value_fact(
     .await
 }
 
-/// 已确认（置信 ≥ threshold）的问数映射：概念名 + 定义。问数 prompt 注入用。
-pub async fn confirmed_mappings(
-    pool: &PgPool,
-    kb_id: Uuid,
-    threshold: f32,
-    limit: i64,
-) -> AppResult<Vec<(String, serde_json::Value)>> {
-    let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
-        "SELECT s.canonical_name, f.object_value
-         FROM facts f
-         JOIN relation_types r ON r.id = f.predicate_id AND r.key = 'mapped_to'
-         JOIN entities s ON s.id = f.subject_id
-         WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.valid_to IS NULL
-           AND f.object_value IS NOT NULL AND f.confidence >= $2
-         ORDER BY s.canonical_name
-         LIMIT $3",
-    )
-    .bind(kb_id)
-    .bind(threshold)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows)
-}
-
 /// `proposed`：模型在这一块里实际提议的谓词。命中本体时它等于 key，
 /// 本体外的谓词不落到关系上时，它是唯一还留着原意的东西——事实行上只剩
 /// "有关联"，原文说的"runs on"就靠这里活下来。
@@ -806,23 +781,8 @@ pub async fn confirm_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResul
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
-    // 问数映射的口径唯一性：确认 (概念, 源) 的新定义 = 背书替换，同源旧映射作废。
-    // 认知轴修正（旧口径是"我们当时的理解"，不是世界里结束的状态）；
-    // 唯一性只活在这条确认流里，时态引擎保持领域无关。
-    sqlx::query(
-        "UPDATE facts f SET invalidated_at = now()
-         FROM facts nf
-         JOIN relation_types r ON r.id = nf.predicate_id
-         WHERE nf.id = $1 AND r.key = 'mapped_to'
-           AND f.kb_id = $2 AND f.id <> nf.id
-           AND f.subject_id = nf.subject_id AND f.predicate_id = nf.predicate_id
-           AND f.invalidated_at IS NULL
-           AND f.object_value->>'source' = nf.object_value->>'source'",
-    )
-    .bind(fact_id)
-    .bind(kb_id)
-    .execute(pool)
-    .await?;
+    // 从前这里还有一段：确认 `mapped_to` 事实时把同 (概念, 源) 的旧映射作废。
+    // 映射已搬出账本（0011，`concept_mappings` 自己管唯一性），那段 SQL 恒匹配零行，删了。
     Ok(())
 }
 
