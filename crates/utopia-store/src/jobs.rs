@@ -1,5 +1,6 @@
 //! 任务队列：Postgres `FOR UPDATE SKIP LOCKED` 消费。
-//! worker 与 API 同进程（tokio task），失败按 30s * attempts² 退避重试。
+//! worker 与 API 同进程（tokio task），失败按 30s * attempts² 退避重试——
+//! 除非处理器把它标成了 `utopia_core::Terminal`，那种一次就到此为止（见 [`retry_delay`]）。
 //! 并发消费：调度循环按"运行中 < 目标数"续派，任务在独立 task 执行；
 //! 目标数经 AtomicUsize 热读——系统设置里改并发即时生效，无需重启。
 
@@ -61,29 +62,51 @@ async fn mark_done(pool: &PgPool, id: i64) -> AppResult<()> {
     Ok(())
 }
 
-async fn mark_failed(pool: &PgPool, job: &Job, err: &str) -> AppResult<()> {
-    if job.attempts >= job.max_attempts {
+/// 下一次重试等多久；`None` = 到此为止。
+///
+/// 两个理由到此为止：**次数用完了**，或者**处理器说了这次不会因为重试而变好**
+/// （`utopia_core::Terminal`，见 issue #195）。后者以前不存在，于是余额耗尽的
+/// 任务照样把三次退避走完——七分钟里余额不会自己长回来，那三次只是把同一句
+/// 错误重说三遍，还把运维该看见的「失败」推迟了七分钟。
+///
+/// 限流相反，它正是这套退避的服务对象：配额会自己恢复。#176 把两类分开就是
+/// 为了让它们各走各的路，而重试策略当时没跟上。
+///
+/// 抽成纯函数是为了能测——决定在这里，写库只是把决定落下去。
+fn retry_delay(attempts: i32, max_attempts: i32, terminal: bool) -> Option<i64> {
+    if terminal || attempts >= max_attempts {
+        return None;
+    }
+    Some(30i64 * i64::from(attempts) * i64::from(attempts))
+}
+
+async fn mark_failed(pool: &PgPool, job: &Job, err: &anyhow::Error) -> AppResult<()> {
+    let text = format!("{err:#}");
+    let Some(backoff_secs) = retry_delay(
+        job.attempts,
+        job.max_attempts,
+        utopia_core::is_terminal(err),
+    ) else {
         sqlx::query(
             "UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
         )
         .bind(job.id)
-        .bind(err)
+        .bind(&text)
         .execute(pool)
         .await?;
-    } else {
-        let backoff_secs = 30i64 * i64::from(job.attempts) * i64::from(job.attempts);
-        sqlx::query(
-            "UPDATE jobs SET status = 'queued', last_error = $2,
-                    run_at = now() + make_interval(secs => $3::float8),
-                    updated_at = now()
-             WHERE id = $1",
-        )
-        .bind(job.id)
-        .bind(err)
-        .bind(backoff_secs as f64)
-        .execute(pool)
-        .await?;
-    }
+        return Ok(());
+    };
+    sqlx::query(
+        "UPDATE jobs SET status = 'queued', last_error = $2,
+                run_at = now() + make_interval(secs => $3::float8),
+                updated_at = now()
+         WHERE id = $1",
+    )
+    .bind(job.id)
+    .bind(&text)
+    .bind(backoff_secs as f64)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -137,7 +160,7 @@ where
                         Ok(()) => mark_done(&pool, job.id).await,
                         Err(e) => {
                             tracing::warn!(job_id = job.id, kind = %job.kind, error = %e, "任务执行失败");
-                            mark_failed(&pool, &job, &e.to_string()).await
+                            mark_failed(&pool, &job, &e).await
                         }
                     };
                     if let Err(e) = outcome {
@@ -152,5 +175,25 @@ where
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retry_delay;
+
+    /// 退避照旧：30s、120s、270s，第三次之后放弃。
+    #[test]
+    fn an_ordinary_failure_backs_off_and_then_gives_up() {
+        assert_eq!(retry_delay(1, 3, false), Some(30));
+        assert_eq!(retry_delay(2, 3, false), Some(120));
+        assert_eq!(retry_delay(3, 3, false), None);
+    }
+
+    /// 标成没救的**第一次就到此为止**——那三次退避加起来是七分钟，
+    /// 而余额不会在七分钟里自己长回来（#195）。
+    #[test]
+    fn a_terminal_failure_does_not_spend_the_budget() {
+        assert_eq!(retry_delay(1, 3, true), None);
     }
 }

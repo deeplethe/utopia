@@ -4,4 +4,4 @@ pub mod config;
 pub mod error;
 pub mod models;
 
-pub use error::{AppError, AppResult};
+pub use error::{is_terminal, AppError, AppResult, Terminal};

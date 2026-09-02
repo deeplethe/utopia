@@ -131,7 +131,15 @@ async fn main() -> anyhow::Result<()> {
             async move {
                 // 任务失败时看一眼是不是模型端点连不上——那是系统级故障，
                 // 而现在它只会留在 jobs.last_error 里，没有任何界面看得到
-                let result = dispatch(&st, &job).await;
+                //
+                // 没救的失败在这里挂上标记，队列据此不再退避重试（#195）：
+                // 判据在这一侧，因为 `utopia-store` 看不见 LLM 的错误类型
+                let result = dispatch(&st, &job)
+                    .await
+                    .map_err(|e| match alerting::hopeless(&e) {
+                        true => e.context(utopia_core::Terminal),
+                        false => e,
+                    });
                 if let Err(e) = &result {
                     alerting::observe_job_failure(&st, &job, e).await;
                 }

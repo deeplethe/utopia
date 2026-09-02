@@ -15,9 +15,10 @@ const RETAIN_DAYS: i32 = 30;
 
 /// 任务失败时看一眼是不是模型端点不可用。
 ///
-/// **只在任务最终放弃时报**（`attempts >= max_attempts`）。中间那几次重试报了
-/// 就是同一件事发三遍——重试本来就是为了不惊动人，报出去等于把它的意义抵消掉。
-/// 一个任务至多一条告警，不需要任何去重状态。
+/// **只在任务最终放弃时报**——次数用完，或者这次失败被标成了不必重试
+/// （[`hopeless`]，#195）。中间那几次重试报了就是同一件事发三遍：重试本来就是
+/// 为了不惊动人，报出去等于把它的意义抵消掉。一个任务至多一条告警，
+/// 不需要任何去重状态。
 ///
 /// 判据是错误的**类型**，不匹配错误文本——调用链上任何一层加一句 context
 /// 都会改文本。分类本身抽在 [`alert_for`]。
@@ -26,7 +27,9 @@ pub async fn observe_job_failure(
     job: &utopia_store::jobs::Job,
     err: &anyhow::Error,
 ) {
-    if job.attempts < job.max_attempts {
+    // 标成不必重试的那些**这一次就是最后一次**，所以现在就报（#195）。
+    // 漏掉这一句的后果是失败得更快、却反而没人被告知——比不改还糟
+    if job.attempts < job.max_attempts && !utopia_core::is_terminal(err) {
         return;
     }
     let Some((kind, severity)) = alert_for(err) else {
@@ -51,6 +54,17 @@ pub async fn observe_job_failure(
         return;
     }
     state.emit_alert();
+}
+
+/// 这次失败还值不值得重试。
+///
+/// **只有欠费是没救的。** 限流会自己恢复，端点不可达可能是重启中的服务，
+/// 别的错误更没有理由一次定生死——只有余额不会在七分钟里自己长回来（#195）。
+///
+/// 判据与 [`alert_for`] 同源（`utopia_llm::out_of_credit`，类型不是文本），
+/// 于是「报成 error 那一类」与「不再重试那一类」永远是同一类，不会分叉。
+pub fn hopeless(err: &anyhow::Error) -> bool {
+    utopia_llm::out_of_credit(err).is_some()
 }
 
 /// 一次任务失败该报哪一类告警，报不报。
@@ -211,5 +225,34 @@ mod tests {
     fn an_auth_failure_raises_nothing() {
         let err = anyhow::anyhow!("LLM request failed (401 Unauthorized): bad key");
         assert_eq!(alert_for(&err), None);
+    }
+
+    /// **余额不会在七分钟里自己长回来**，所以那三次退避重试只是把同一句错误
+    /// 重说三遍，还把该看见的失败推迟了七分钟（#195）。
+    #[test]
+    fn an_empty_balance_is_not_worth_retrying() {
+        let err = anyhow::Error::new(OutOfCredit {
+            status: 402,
+            detail: "insufficient balance".into(),
+        })
+        .context("抽取失败");
+        assert!(super::hopeless(&err));
+    }
+
+    /// 而限流正是这套退避的服务对象——两类分开（#176）的意义就在这里。
+    #[test]
+    fn a_rate_limit_still_gets_its_retries() {
+        let err = anyhow::Error::new(RateLimited {
+            status: 429,
+            retry_after: Some(std::time::Duration::from_secs(30)),
+            detail: "TPM limit reached".into(),
+        });
+        assert!(!super::hopeless(&err));
+    }
+
+    /// 反面：普通失败照常重试。一次网络抖动不该一次定生死。
+    #[test]
+    fn an_ordinary_failure_still_gets_its_retries() {
+        assert!(!super::hopeless(&anyhow::anyhow!("结果解析失败")));
     }
 }
