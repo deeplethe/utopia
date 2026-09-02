@@ -165,7 +165,11 @@ pub async fn list(
 }
 
 /// 一句记忆抽出的全部待确认项——对话里那张卡片按这个取。
-pub async fn for_chunk(pool: &PgPool, kb_id: Uuid, chunk_id: Uuid) -> AppResult<Vec<PendingFactView>> {
+pub async fn for_chunk(
+    pool: &PgPool,
+    kb_id: Uuid,
+    chunk_id: Uuid,
+) -> AppResult<Vec<PendingFactView>> {
     Ok(sqlx::query_as(&format!(
         "{VIEW_SELECT} WHERE p.kb_id = $1 AND p.chunk_id = $2 ORDER BY p.created_at"
     ))

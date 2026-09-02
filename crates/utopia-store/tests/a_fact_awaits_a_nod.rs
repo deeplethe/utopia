@@ -45,7 +45,11 @@ async fn fixture(pool: &PgPool) -> anyhow::Result<Fixture> {
     .execute(pool)
     .await?;
     let (acme, shenzhen, shanghai) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
-    for (id, name) in [(acme, "Acme"), (shenzhen, "Shenzhen"), (shanghai, "Shanghai")] {
+    for (id, name) in [
+        (acme, "Acme"),
+        (shenzhen, "Shenzhen"),
+        (shanghai, "Shanghai"),
+    ] {
         sqlx::query("INSERT INTO entities (id, kb_id, canonical_name) VALUES ($1, $2, $3)")
             .bind(id)
             .bind(kb)

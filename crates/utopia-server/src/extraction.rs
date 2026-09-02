@@ -1085,23 +1085,22 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
             };
 
             if await_nod {
-                if let utopia_store::pending::Outcome::Proposed(_) =
-                    utopia_store::pending::propose(
-                        &state.pool,
-                        utopia_store::pending::Proposal {
-                            kb_id: doc.kb_id,
-                            subject_id,
-                            predicate_id,
-                            object_id: Some(object_id),
-                            object_value: None,
-                            proposed_predicate: Some(f.predicate.as_str()),
-                            validity,
-                            confidence,
-                            chunk_id: chunk.id,
-                            proposed_by,
-                        },
-                    )
-                    .await?
+                if let utopia_store::pending::Outcome::Proposed(_) = utopia_store::pending::propose(
+                    &state.pool,
+                    utopia_store::pending::Proposal {
+                        kb_id: doc.kb_id,
+                        subject_id,
+                        predicate_id,
+                        object_id: Some(object_id),
+                        object_value: None,
+                        proposed_predicate: Some(f.predicate.as_str()),
+                        validity,
+                        confidence,
+                        chunk_id: chunk.id,
+                        proposed_by,
+                    },
+                )
+                .await?
                 {
                     pending_count += 1;
                 }

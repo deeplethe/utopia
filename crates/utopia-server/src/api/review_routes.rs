@@ -698,8 +698,8 @@ pub async fn decide_pending(
             })))
         }
         "reject" => {
-            let snap =
-                utopia_store::pending::reject(&state.pool, kb_id, pending_id, Some(user.id)).await?;
+            let snap = utopia_store::pending::reject(&state.pool, kb_id, pending_id, Some(user.id))
+                .await?;
             let _ = utopia_store::audit::record(
                 &state.pool,
                 Some(kb_id),

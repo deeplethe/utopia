@@ -334,7 +334,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/review", get(review_routes::list))
         .route("/kbs/{id}/review/history", get(review_routes::history))
         // 记忆抽出、等人点头的事实（0015）：按句取、逐条裁
-        .route("/kbs/{id}/review/pending", get(review_routes::pending_for_chunk))
+        .route(
+            "/kbs/{id}/review/pending",
+            get(review_routes::pending_for_chunk),
+        )
         .route(
             "/kbs/{id}/review/pending/{pending_id}",
             post(review_routes::decide_pending),
