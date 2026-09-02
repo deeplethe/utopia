@@ -300,6 +300,8 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
     utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
     state.emit_document(doc.kb_id, document_id);
     let etypes = utopia_store::graph::entity_types(&state.pool, doc.kb_id).await?;
+    // 这一轮落过的事实（新建或重复观察）：结尾对它们跑一遍签名检查
+    let mut touched_facts: Vec<Uuid> = Vec::new();
     let rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;
     // 关系与属性分道：属性走字面值通道，不进关系清单。
     //
@@ -762,6 +764,7 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                     confidence,
                 )
                 .await?;
+                touched_facts.push(fact_id);
                 // 属性谓词也留原词：模型偶尔照抄 "person.salary" 全限定名，
                 // 命中的是剥掉前缀后的 key，原样是什么值得留着
                 utopia_store::graph::add_evidence(
@@ -882,6 +885,7 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                     confidence,
                 )
                 .await?;
+                touched_facts.push(fact_id);
                 utopia_store::graph::add_evidence(
                     &state.pool,
                     fact_id,
@@ -1126,6 +1130,7 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                     confidence,
                 )
                 .await?;
+                touched_facts.push(fact_id);
                 // 重复观察也要挂证据：多来源相互印证，任一来源删除后事实不孤儿化。
                 // 表层谓词随每次观察落笔——甲块说 "runs on"、乙块说 "optimized for"
                 // 会并进同一条事实，放事实上就是先写者胜，放证据上两个都留着
@@ -1220,6 +1225,36 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
     // 不需要拍的判据——**每一块都成了才叫抽完**。
     if let Some(msg) = incomplete_reason(&unextracted, chunks.len()) {
         return Err(anyhow::anyhow!(msg));
+    }
+    // 刚落的事实立刻过一遍签名。写入时只掰方向（judge_direction）；掰不动的
+    // ——两个方向都对不上、或宾语没类型判不了——从前要等人按 Review 里的
+    // Run check 才露面，Axioms 一直是 0，图里却躺着反向事实（#222）。
+    // 检查失败不影响抽取本身：事实已经在库里，下一次 Run check 仍然查得到
+    if !touched_facts.is_empty() {
+        match utopia_store::reasoning::signature_breaks(
+            &state.pool,
+            doc.kb_id,
+            Some(&touched_facts),
+        )
+        .await
+        {
+            Ok(broken) if !broken.is_empty() => {
+                match utopia_store::reasoning::record_signature_breaks(
+                    &state.pool,
+                    doc.kb_id,
+                    &broken,
+                )
+                .await
+                {
+                    Ok(_) => state.emit_review(doc.kb_id),
+                    Err(e) => {
+                        tracing::warn!(%document_id, error = %e, "抽取后的签名违规没记进队列")
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%document_id, error = %e, "抽取后的签名检查失败"),
+        }
     }
     utopia_store::documents::set_graph_status(&state.pool, document_id, "done").await?;
     state.emit_document(doc.kb_id, document_id);
