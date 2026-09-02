@@ -676,7 +676,11 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
         {thinking && <Thinking step={lastStep} />}
         {turn.error && <div className="text-rose-400">{turn.error}</div>}
       </div>
-      {turn.sources && turn.sources.length > 0 && (
+      {/* **引用等答案说完再出。**
+          `sources` 是随检索一次次增量发来的，跟着渲染的话，一份还在生长的清单
+          就挂在一段还没写完的话下面，一边长一边把正文往上推。它是答案的落款，
+          不是过程的一部分——过程已经由上面的轨迹交代了 */}
+      {!live && turn.sources && turn.sources.length > 0 && (
         <div className="mt-2 space-y-1">
           {turn.sources.map((s) =>
             s.kind === "charter" ? (
