@@ -15,6 +15,39 @@ use uuid::Uuid;
 
 const MAX_SCHEMA_CHARS: usize = 12_000;
 
+/// 探索把 schema 里的量与维度落成 Metric / Dimension 实体，而这两个类不在任何
+/// 内置本体包里——0009 之后建库不再自带类。没有它们，下面的 `type_id` 查不到，
+/// 每条提议都被 `continue` 吞掉，页面只说"已排队"就再无下文（#223）。
+/// 所以探索前把两个类补上：builtin，描述给抽取提示词，本体页可以改
+async fn ensure_concept_types(pool: &sqlx::PgPool, kb_id: Uuid) -> anyhow::Result<()> {
+    for (key, label, description) in [
+        (
+            "metric",
+            "Metric",
+            "An aggregatable business quantity (revenue, order count, average ticket) that              maps to a definition in a mounted database.",
+        ),
+        (
+            "dimension",
+            "Dimension",
+            "A group-by attribute (region, month, product line) that maps to a column in a              mounted database.",
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO entity_types (id, kb_id, key, label, builtin, description)
+             SELECT $1, $2, $3, $4, TRUE, $5
+             WHERE NOT EXISTS (SELECT 1 FROM entity_types WHERE kb_id = $2 AND key = $3)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(kb_id)
+        .bind(key)
+        .bind(label)
+        .bind(description)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
 pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
     let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
@@ -27,6 +60,7 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
     if sources.is_empty() {
         anyhow::bail!("No data sources mounted");
     }
+    ensure_concept_types(&state.pool, kb_id).await?;
 
     // 各源 schema（引擎直读，保证新鲜；限量防 prompt 爆炸）
     let mut schema_txt = String::new();
@@ -168,6 +202,27 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
     }
 
     tracing::info!(%kb_id, proposals = accepted, "映射探索完成，提议已入审核队列");
+    // 一条都没提出来时页面上什么都不会变——Pending 还是 0，而"已排队"那句
+    // 早就翻篇了。走告警中心说一声，人才知道该去刷新结构或给列加注释
+    if accepted == 0 {
+        if let Err(e) = utopia_store::alerts::raise(
+            &state.pool,
+            utopia_store::alerts::NewAlert {
+                kb_id: Some(kb_id),
+                severity: "info",
+                kind: utopia_store::alerts::kind::MAPPING_EXPLORATION_EMPTY,
+                min_role: utopia_core::models::Role::Editor,
+                subject_type: None,
+                subject_id: None,
+                detail: serde_json::json!({ "proposals": 0, "sources": source_names }),
+            },
+        )
+        .await
+        {
+            tracing::warn!(%kb_id, error = %e, "映射探索空结果的告警没写进去");
+        }
+        state.emit_alert();
+    }
     state.emit_review(kb_id);
     Ok(())
 }
