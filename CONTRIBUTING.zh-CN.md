@@ -90,6 +90,8 @@ cargo test --workspace
 
 **提交信息一句英文，说清动机。** 不写长 body。看一眼 `git log` 就知道调子。
 
+**每个 workflow 自己声明 `permissions:`。** 仓库默认现在是读写——有一个 workflow 要把生成的图提交回来。不写 `permissions:` 块的 workflow 会继承那个默认，于是一个只需要读的任务悄悄拿到了写权限。按这个任务实际需要的最小集写：只做构建或测试的，写 `contents: read`。
+
 ## DCO：每个提交要签
 
 我们用 [DCO](https://developercertificate.org/)（开发者原创声明），不用 CLA。你保留自己代码的著作权，只是声明你有权按 Apache-2.0 提交它。

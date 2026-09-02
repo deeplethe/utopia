@@ -90,6 +90,8 @@ cargo test --workspace
 
 **Commit messages: one English sentence, stating the motivation.** No long body. Skim `git log` for the register.
 
+**Every workflow declares its own `permissions:`.** The repository default is now read-and-write, because one workflow commits a generated chart. A workflow without a `permissions:` block inherits that default, so leaving it out silently hands write access to something that only needed to read. Declare the minimum the job actually needs — `contents: read` for anything that just builds or tests.
+
 ## DCO: sign off every commit
 
 We use the [DCO](https://developercertificate.org/), not a CLA. You keep the copyright on your code; you are certifying that you have the right to submit it under Apache-2.0.
