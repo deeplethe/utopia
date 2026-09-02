@@ -57,6 +57,22 @@ export interface User {
   created_at: string;
 }
 
+/** 个人访问令牌（0014）：给 MCP 客户端的长命钥匙，以发它的人的身份行事。
+ *  有效权限 = 这个人的角色 ∩ scope；`kb_ids` 为空 = 这个人能进的全部库。 */
+export interface TokenView {
+  id: string;
+  name: string;
+  /** 给人认的那一小截（`utp_pat_ab12`），够对上配置文件里那一串，又不足以复原 */
+  token_prefix: string;
+  scope: "read" | "write";
+  kb_ids: string[] | null;
+  expires_at: string | null;
+  last_used_at: string | null;
+  /** 撤销打戳不删行 */
+  revoked_at: string | null;
+  created_at: string;
+}
+
 export interface Workspace {
   id: string;
   org_id: string;
@@ -914,6 +930,23 @@ export const api = {
         new_password: newPassword,
       }),
     }),
+  /** 我发过的个人令牌（0014）。撤销过的也在——撤过这件事本身要看得见 */
+  tokens: () => request<{ tokens: TokenView[] }>("/api/v1/me/tokens"),
+  /** 发一枚。**明文只在这一次的响应里**，列表永远给不出它 */
+  issueToken: (body: {
+    name: string;
+    scope: "read" | "write";
+    /** 缺省 = 这个人能进的全部库 */
+    kb_ids?: string[] | null;
+    /** 0 = 不过期 */
+    expires_in_days: number;
+  }) =>
+    request<{ token: string; info: TokenView }>("/api/v1/me/tokens", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revokeToken: (tokenId: string) =>
+    request<{ ok: boolean }>(`/api/v1/me/tokens/${tokenId}`, { method: "DELETE" }),
   workspaces: () => request<Workspace[]>("/api/v1/workspaces"),
 
   kbs: (workspaceId: string) =>

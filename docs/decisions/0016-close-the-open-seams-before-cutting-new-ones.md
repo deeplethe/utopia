@@ -56,7 +56,7 @@ Review 加 `pending` 一档，界面**原句在上、三元组在下**；确认 
 **验收**：那条实测（「Acme 把总部搬到深圳」）跑一遍，图上不出现空谓词活边，Review 里出现一条带原句的待确认项。
 做完这一条，MCP 可以放 `remember`（scope = write，令牌以人的身份提议，人自己确认）——0014 未决的答案由此成立。
 
-**A2 · 令牌有界面。** Account 页：列表（前缀、名字、scope、库、最后使用、过期）、发放（明文只显示一次）、撤销；旁边给一段可复制的 MCP 客户端配置（URL + Authorization 头）。
+**A2 · 令牌有界面。**〔已做，`feat/tokens-have-a-page`〕Account 页：列表（前缀、名字、scope、库、最后使用、过期）、发放（明文只显示一次）、撤销；旁边给一段可复制的 MCP 客户端配置（URL + Authorization 头）。
 三个占位 crate **删掉**（已做，与 A3 同一刀）：`utopia-mcp` 宣称的三个工具从未存在，服务端住在 `utopia-server/src/api/mcp.rs`；`utopia-graph` 没有对应物；`utopia-connectors` 的意图是对的，但两个连接器看不出边界该划在哪，[0013](0013-a-source-should-hand-over-its-history.md) 说等第三个来了再看抽象，crate 是同一个判断。占位是对读者的承诺，兑现不了就别留，需要时 `cargo new` 是几分钟的事。
 
 **A3 · 清死代码与陈旧注释。** 上表最后一行那五处，加上 `resolution.rs` 里 `CONFUSABLE_TYPE_KEYS` 上方停留在旧世界的注释。一个 PR。

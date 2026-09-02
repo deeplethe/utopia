@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import { usePageTitle } from "../useTitle";
-import { BookMarked, ShieldCheck, UserRound } from "lucide-react";
+import { BookMarked, KeyRound, ShieldCheck, UserRound } from "lucide-react";
 import { api, ApiError } from "../api";
 import { S } from "../i18n";
 import { GithubMark, RAIL_CLS, SectionMark } from "../ui";
@@ -80,6 +80,10 @@ export function AccountShell() {
           <Link to="/account/kbs" className={rail} activeProps={{ className: railActive }}>
             <BookMarked size={14} />
             {S.account.kbsNav}
+          </Link>
+          <Link to="/account/tokens" className={rail} activeProps={{ className: railActive }}>
+            <KeyRound size={14} />
+            {S.account.tokensNav}
           </Link>
           {me.data.is_admin && (
             <Link to="/admin" className={rail} activeProps={{ className: railActive }}>
