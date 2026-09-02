@@ -130,7 +130,10 @@ function layOutParallelEdges(edges: GraphEdge[]): {
       continue;
     }
     const list = also.get(host.id) ?? [];
-    list.push(e.label ?? e.predicate ?? "");
+    // 去重：传递推出来的几条 `part_of` 各有各的逆，而前提链都回到同一条边上，
+    // 于是同一个说法会被挂三遍。**说法是名字，不是计数**
+    const name = e.label ?? e.predicate ?? "";
+    if (!list.includes(name)) list.push(name);
     also.set(host.id, list);
     folded++;
   }
@@ -1241,8 +1244,6 @@ export function Graph() {
         return res;
       },
     });
-    (window as unknown as { __g?: unknown; __s?: unknown }).__g = g;
-    (window as unknown as { __g?: unknown; __s?: unknown }).__s = sigma;
     sigma.on("clickNode", ({ node }) => setSelected(node));
     sigma.on("doubleClickNode", ({ node, event }) => {
       event.preventSigmaDefault();
@@ -1264,11 +1265,6 @@ export function Graph() {
        写着的东西，人有权看见。**只在悬停时显示**——常驻会把标签拉长一倍，
        而拉长标签正是这次要治的毛病 */
     sigma.on("enterEdge", ({ edge }) => {
-      (window as unknown as { __edgeProbe?: unknown }).__edgeProbe = {
-        edge,
-        also: g.getEdgeAttribute(edge, "alsoLabels"),
-        label: g.getEdgeAttribute(edge, "label"),
-      };
       hoverEdgeRef.current = edge;
       sigma.refresh();
     });
