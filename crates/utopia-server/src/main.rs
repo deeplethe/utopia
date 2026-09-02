@@ -14,6 +14,7 @@ mod jira_issues;
 mod live;
 mod llm_util;
 mod mappings;
+mod object_storage;
 mod ontology_index;
 mod ontology_packs;
 mod owl_import;

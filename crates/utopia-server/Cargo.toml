@@ -39,3 +39,4 @@ reqwest.workspace = true
 feed-rs.workspace = true
 async-trait = "0.1.92"
 sqlparser = "0.62.0"
+object_store = { version = "0.14.1", features = ["aws"] }

@@ -67,6 +67,7 @@ export const KIND_ICON = {
   custom: Puzzle,
   github_issues: CircleDot,
   jira_issues: SquareKanban,
+  s3: HardDrive,
   memory: Brain,
   upload: Upload,
 } as const;
@@ -78,6 +79,7 @@ export const SYNCING_KINDS = new Set([
   "custom",
   "github_issues",
   "jira_issues",
+  "s3",
 ]);
 
 export const SYNC_DOT: Record<SourceView["last_sync_status"], string> = {

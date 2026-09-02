@@ -386,6 +386,7 @@ export const zh: Strings = {
       custom: "自定义",
       github_issues: "GitHub 工单",
       jira_issues: "Jira 工单",
+      s3: "对象存储",
     },
     sourceKindHints: {
       folder:
@@ -399,6 +400,10 @@ export const zh: Strings = {
         "同步一个仓库的工单。**每张工单连同它的状态变更史**成为一篇文档——" +
         "何时开出、何时关闭、标签与负责人怎么变的，都带着日期。未配令牌时" +
         "每小时只有 60 次请求配额。",
+      s3:
+        "从 S3 桶里读文档，或者任何说同一套协议的东西（MinIO、Ceph、R2）。" +
+        "**端点留空就是 AWS**，填了就是自建。每个对象成为一篇文档，" +
+        "日期取它最后一次修改的时刻。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
       custom:
         "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Utopia 保持同步。",
@@ -444,6 +449,12 @@ export const zh: Strings = {
     repoField: "仓库（owner/name）",
     jiraUrlField: "Jira 地址",
     jiraProjectField: "项目 key",
+    s3BucketField: "桶名",
+    s3PrefixField: "前缀（可选——不填则读整个桶）",
+    s3EndpointField: "端点（用 AWS S3 就留空）",
+    s3RegionField: "区域",
+    s3KeyField: "Access Key ID",
+    s3SecretField: "Secret Access Key",
     tokenField: "GitHub 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
     interval: "同步计划",

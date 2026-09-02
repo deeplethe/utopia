@@ -418,6 +418,7 @@ export const en = {
       custom: "Custom",
       github_issues: "GitHub issues",
       jira_issues: "Jira issues",
+      s3: "Object storage",
     },
     sourceKindHints: {
       folder:
@@ -432,6 +433,10 @@ export const en = {
         "Syncs a repository's issues. **Each ticket, together with its state history**, becomes " +
         "one document — when it was opened, closed, relabelled, reassigned, all dated. " +
         "Without a token GitHub allows only 60 requests an hour.",
+      s3:
+        "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
+        "(MinIO, Ceph, R2). **Leave the endpoint empty for AWS**; fill it in for a " +
+        "self-hosted one. Each object becomes a document dated by its last modification.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       custom:
         "Polls a URL you control on a schedule — your service returns JSON items and Utopia keeps them in sync.",
@@ -478,6 +483,12 @@ export const en = {
     repoField: "Repository (owner/name)",
     jiraUrlField: "Jira site URL",
     jiraProjectField: "Project key",
+    s3BucketField: "Bucket",
+    s3PrefixField: "Prefix (optional — without one the whole bucket is read)",
+    s3EndpointField: "Endpoint (leave empty for AWS S3)",
+    s3RegionField: "Region",
+    s3KeyField: "Access key ID",
+    s3SecretField: "Secret access key",
     tokenField: "GitHub token (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     interval: "Sync schedule",

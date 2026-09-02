@@ -169,6 +169,7 @@ export interface SourceView {
     | "custom"
     | "github_issues"
     | "jira_issues"
+    | "s3"
     | "memory"
     | "upload";
   name: string;

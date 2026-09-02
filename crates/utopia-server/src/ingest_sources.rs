@@ -1,5 +1,6 @@
 //! 来源同步任务：url（网页抓取）/ rss（订阅，pubDate → doc_time）/
-//! github_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）。
+//! github_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）/
+//! s3（对象存储，LastModified → doc_time）。
 //! 全部走 sha256 去重（重复内容静默跳过），新文档进标准摄入管道（process_document）。
 //! folder 是纯容器（上传入内），api 是推送型——两者无拉取语义。
 
@@ -53,6 +54,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         "custom" => sync_custom(state, &source).await,
         "github_issues" => sync_github_issues(state, &source).await,
         "jira_issues" => sync_jira_issues(state, &source).await,
+        "s3" => sync_object_storage(state, &source).await,
         // folder / api 无拉取语义
         _ => Ok(SyncStats::default()),
     };
@@ -742,6 +744,61 @@ async fn sync_custom(state: &AppState, source: &Source) -> anyhow::Result<SyncSt
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
         tracing::info!(source_id = %source.id, count = n, "custom 墓碑：标记不在来源中");
+    }
+    Ok(stats)
+}
+
+/// 对象存储同步：列前缀下的对象，逐个摄入。
+///
+/// `external_key` 用 `s3://bucket/key`，跟 `file:///` 与页面 URL 同一个约定：
+/// 出处自描述。换了前缀但内容没变时，`ingest_item` 会认成「搬家」而不是新增，
+/// 不会重跑一遍抽取。
+///
+/// **`doc_time` 取 `LastModified`，而它是写入时刻不是文档自身的时间。**
+/// 一份 2019 年的合同今天传上去，时间线上会落在今天。对象存储没有更好的
+/// 来源——除非文件名或正文里带日期，而那是抽取器的活。这一条与 `url` 源
+/// 同病：`0013` 的第一条判据在这里只满足一半。
+async fn sync_object_storage(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    let bucket = source.config["bucket"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("s3 source is missing config.bucket"))?;
+    let prefix = source.config["prefix"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let store = crate::object_storage::client(&source.config)?;
+    let (objects, truncated) = crate::object_storage::fetch(store.as_ref(), bucket, prefix).await?;
+
+    // 到顶不是错误，但必须说出来——否则「同步成功」下面藏着没进来的东西，
+    // 而那正是 0005 说的失败无声
+    if truncated {
+        tracing::warn!(
+            %bucket, prefix = prefix.unwrap_or(""),
+            "对象数到达单次上限，其余留给下一次同步"
+        );
+    }
+
+    let mut stats = SyncStats::default();
+    for obj in objects {
+        // **不猜 mime。** `utopia_ingest::parse` 先看魔数、再看扩展名，
+        // 注释写着「扩展名可能撒谎」——在这里按文件名猜一个，只是多一个
+        // 会撒谎的来源，而且要为此多一个依赖。`octet-stream` 是诚实的：
+        // 我们拿到的就是一串字节，没看过里面是什么。
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &obj.external_key,
+            &obj.filename,
+            "application/octet-stream",
+            &obj.bytes,
+            obj.last_modified,
+        )
+        .await?;
+        stats.absorb(action);
     }
     Ok(stats)
 }
