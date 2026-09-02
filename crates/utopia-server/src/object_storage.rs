@@ -96,8 +96,14 @@ pub fn client(config: &serde_json::Value) -> anyhow::Result<Box<dyn ObjectStore>
 
 /// 列出前缀下的对象并逐个取回。
 ///
-/// 目录占位对象（key 以 `/` 结尾、零字节）直接跳过：某些客户端会造它们来
-/// 让控制台显示出「文件夹」，它们不是文档。
+/// **零字节的一律跳过，判据是大小不是名字。** 直觉的写法是看 key 以不以 `/`
+/// 结尾——控制台和 `aws s3 sync` 就是这样造「文件夹」的。但 `object_store`
+/// 的 `Path` 会**把尾斜杠规范化掉**，`docs/` 到手里就成了 `docs`，那个判断
+/// 永远不成立；接着它去 GET `docs`，而桶里真实的 key 是 `docs/`，
+/// 于是 404 把整次同步带走。实测在 MinIO 上就是这样炸的。
+///
+/// 按大小判还更宽：零字节的对象无论叫什么都不是文档，`ingest_item` 拿到
+/// 空字节也只会返回 `Unchanged`。
 ///
 /// 格式不在这里判。`utopia_ingest` 的抽取按扩展名加 mime 分派，认不出的
 /// 一律按文本解码——在这里再维护一张白名单，就是同一件事写两遍，
@@ -111,12 +117,13 @@ pub async fn fetch(
     let mut listing = store.list(p.as_ref());
     let mut out = Vec::new();
     let mut truncated = false;
+    let mut unreadable = 0usize;
 
     while let Some(meta) = listing.next().await {
         let meta = meta.context("listing objects")?;
         let key = meta.location.as_ref().to_string();
 
-        if key.ends_with('/') && meta.size == 0 {
+        if meta.size == 0 {
             continue;
         }
         if meta.size > MAX_OBJECT_BYTES {
@@ -128,13 +135,22 @@ pub async fn fetch(
             break;
         }
 
-        let bytes = store
-            .get(&meta.location)
-            .await
-            .with_context(|| format!("get {key}"))?
-            .bytes()
-            .await
-            .with_context(|| format!("read {key}"))?;
+        // **一个对象取不回来不该带走整次同步。** 列表与取回之间隔着时间，
+        // 中途被删、被换权限都是正常的；桶越大越常见。记下来在收尾时一并报，
+        // 而不是让第 900 个对象的一次 404 把前 899 个的成果一起丢掉。
+        let got = async {
+            let r = store.get(&meta.location).await?;
+            r.bytes().await
+        }
+        .await;
+        let bytes = match got {
+            Ok(b) => b,
+            Err(e) => {
+                unreadable += 1;
+                tracing::warn!(%key, error = %e, "对象取不回来，跳过");
+                continue;
+            }
+        };
 
         out.push(RemoteObject {
             external_key: format!("s3://{bucket}/{key}"),
@@ -142,6 +158,9 @@ pub async fn fetch(
             bytes: bytes.to_vec(),
             last_modified: Some(meta.last_modified),
         });
+    }
+    if unreadable > 0 {
+        tracing::warn!(unreadable, bucket, "有对象没能取回");
     }
     Ok((out, truncated))
 }
@@ -184,22 +203,36 @@ mod tests {
         assert!(client(&cfg).is_ok());
     }
 
-    /// 真连一个 S3 兼容端点：建桶、放两个对象、列出来、取回内容。
+    /// 真连一个 S3 兼容端点，只测**读**这一侧：列出来、取回内容、身份对不对。
     ///
     /// **没有 `UTOPIA_S3_TEST_ENDPOINT` 时跳过而不是失败**——跟连库的测试
     /// 同一个约定（见 CONTRIBUTING）。上面那三条只证明 builder 拼得出来，
     /// 而这条要守的是**线上协议真的说得通**：path-style 有没有生效、
-    /// 明文 http 放没放行、列表分页拿不拿得全、目录占位对象有没有被滤掉。
-    /// 这些没有一条是构造 client 时能发现的。
+    /// 明文 http 放没放行、`s3://` 身份拼得对不对、`LastModified` 回不回来。
+    /// 没有一条是构造 client 时能发现的。
     ///
-    /// 跑法：
+    /// **数据由外部布置，测试不写只读。** 第一版让测试自己 `put`，结果被
+    /// `object_store` 的 `Path` 咬了一口：它会把 `docs/` 规范化成 `docs`，
+    /// 于是「目录占位」写成了一个名叫 `docs` 的普通对象，而 MinIO 不允许
+    /// 对象 `docs` 与前缀 `docs/` 并存——整个前缀被顶掉，列表回来是空的。
+    /// 真实的占位对象只能由别的客户端造，那就让它由别的客户端造。
+    ///
+    /// 跑法（先起 MinIO，再用 curl 布数据；curl 自带 SigV4）：
     /// ```text
-    /// docker run -d -p 19000:9000 -e MINIO_ROOT_USER=minioadmin \
-    ///   -e MINIO_ROOT_PASSWORD=minioadmin minio/minio server /data
-    /// UTOPIA_S3_TEST_ENDPOINT=http://127.0.0.1:19000 cargo test -p utopia-server object_storage
+    /// MINIO_ROOT_USER=u MINIO_ROOT_PASSWORD=p123456 \
+    ///   minio server ./data --address 127.0.0.1:19000 &
+    /// S3="curl -s --aws-sigv4 aws:amz:us-east-1:s3 -u u:p123456"
+    /// B=http://127.0.0.1:19000/utopia-conn-test
+    /// $S3 -X PUT $B                                  # 建桶
+    /// $S3 -X PUT --data-raw hello    "$B/docs/a.txt"
+    /// $S3 -X PUT --data-raw '# world' "$B/docs/b.md"
+    /// $S3 -X PUT --data-raw ''        "$B/docs/"     # 目录占位
+    /// UTOPIA_S3_TEST_ENDPOINT=http://127.0.0.1:19000 \
+    ///   UTOPIA_S3_TEST_KEY=u UTOPIA_S3_TEST_SECRET=p123456 \
+    ///   cargo test -p utopia-server object_storage
     /// ```
     #[tokio::test]
-    async fn it_talks_to_a_real_s3_endpoint() -> anyhow::Result<()> {
+    async fn it_reads_from_a_real_s3_endpoint() -> anyhow::Result<()> {
         let Ok(endpoint) = std::env::var("UTOPIA_S3_TEST_ENDPOINT") else {
             eprintln!("跳过：未设 UTOPIA_S3_TEST_ENDPOINT");
             return Ok(());
@@ -214,48 +247,29 @@ mod tests {
         });
         let store = client(&cfg)?;
 
-        // 自建自拆：先扫地，断言 panic 会跳过收尾
-        for p in ["docs/a.txt", "docs/b.md", "docs/"] {
-            let _ = store.delete(&StorePath::from(p)).await;
-        }
-        store
-            .put(&StorePath::from("docs/a.txt"), "hello".into())
-            .await?;
-        store
-            .put(&StorePath::from("docs/b.md"), "# world".into())
-            .await?;
-        // 目录占位：零字节、key 以 / 结尾。控制台造它来显示文件夹，它不是文档
-        store
-            .put(&StorePath::from("docs/"), Vec::new().into())
-            .await?;
-
         let (objs, truncated) = fetch(store.as_ref(), bucket, Some("docs")).await?;
-        assert!(!truncated);
+        assert!(!truncated, "三个对象不该触发上限");
 
         let keys: Vec<&str> = objs.iter().map(|o| o.external_key.as_str()).collect();
-        assert!(
-            keys.contains(&"s3://utopia-conn-test/docs/a.txt"),
-            "{keys:?}"
-        );
-        assert!(
-            keys.contains(&"s3://utopia-conn-test/docs/b.md"),
-            "{keys:?}"
-        );
-        assert!(
-            !keys.iter().any(|k| k.ends_with('/')),
-            "目录占位对象没被滤掉：{keys:?}"
-        );
+        for want in [
+            "s3://utopia-conn-test/docs/a.txt",
+            "s3://utopia-conn-test/docs/b.md",
+        ] {
+            assert!(keys.contains(&want), "少了 {want}：{keys:?}");
+        }
+
+        // **这条守的是一个真炸过的 bug。** 桶里有一个 `docs/` 目录占位对象，
+        // 而 `object_store` 把尾斜杠规范化掉了，于是它以 `docs` 的身份进到
+        // 循环里，GET 回来 404，整次同步失败。三条构造 client 的单元测试
+        // 一条都发现不了——只有真连一个装过「文件夹」的桶才看得见。
+        assert_eq!(objs.len(), 2, "目录占位对象没被滤掉：{keys:?}");
 
         let a = objs.iter().find(|o| o.filename == "a.txt").expect("a.txt");
-        assert_eq!(a.bytes, b"hello");
+        assert_eq!(a.bytes, b"hello", "取回的内容不对");
         assert!(
             a.last_modified.is_some(),
             "LastModified 是 doc_time 的唯一来源"
         );
-
-        for p in ["docs/a.txt", "docs/b.md", "docs/"] {
-            let _ = store.delete(&StorePath::from(p)).await;
-        }
         Ok(())
     }
 }
