@@ -56,6 +56,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         "jira_issues" => sync_jira_issues(state, &source).await,
         "s3" | "azure_blob" | "gcs" => sync_object_storage(state, &source).await,
         "webdav" => sync_webdav(state, &source).await,
+        "notion" => sync_notion(state, &source).await,
         // folder / api 无拉取语义
         _ => Ok(SyncStats::default()),
     };
@@ -843,6 +844,45 @@ async fn sync_webdav(state: &AppState, source: &Source) -> anyhow::Result<SyncSt
             "application/octet-stream",
             &f.bytes,
             f.last_modified,
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    Ok(stats)
+}
+
+/// Notion 同步：把 integration 能看见的页面摄进来。
+///
+/// `doc_time` 取 `last_edited_time`——**这是页面自己的编辑时刻**，比对象存储
+/// 那边的写入时刻实在：一份 2019 年的合同今天传进 S3 会落在今天，而 Notion
+/// 页面的编辑时刻就是它内容变化的时刻。
+async fn sync_notion(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    let token = source.config["token"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("notion source is missing config.token"))?;
+    let query = source.config["query"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+
+    let (pages, truncated) = crate::notion::fetch(token, query).await?;
+    if truncated {
+        tracing::warn!("页面数到达单次上限，其余留给下一次同步");
+    }
+
+    let mut stats = SyncStats::default();
+    for p in pages {
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &p.external_key,
+            &p.filename,
+            "text/markdown",
+            p.text.as_bytes(),
+            p.last_edited,
         )
         .await?;
         stats.absorb(action);

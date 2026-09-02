@@ -1274,6 +1274,7 @@ function SourceModal({
     | "azure_blob"
     | "gcs"
     | "webdav"
+    | "notion"
   >("folder");
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<string | null>(null);
@@ -1297,6 +1298,8 @@ function SourceModal({
   const [davPath, setDavPath] = useState("");
   const [davUser, setDavUser] = useState("");
   const [davPass, setDavPass] = useState("");
+  const [notionToken, setNotionToken] = useState("");
+  const [notionQuery, setNotionQuery] = useState("");
   // PR 在 GitHub 的模型里也是工单。默认不收——问「工单」要的是工单；
   // 但有些仓库的决策记录实际写在 PR 描述里，所以给个开关
   const [includePrs, setIncludePrs] = useState(false);
@@ -1314,7 +1317,8 @@ function SourceModal({
     kind === "s3" ||
     kind === "azure_blob" ||
     kind === "gcs" ||
-    kind === "webdav";
+    kind === "webdav" ||
+    kind === "notion";
 
   const create = useMutation({
     mutationFn: () => {
@@ -1374,7 +1378,14 @@ function SourceModal({
                               ...(davUser.trim() ? { username: davUser.trim() } : {}),
                               ...(davPass ? { password: davPass } : {}),
                             }
-                          : {};
+                          : kind === "notion"
+                            ? {
+                                token: notionToken.trim(),
+                                ...(notionQuery.trim()
+                                  ? { query: notionQuery.trim() }
+                                  : {}),
+                              }
+                            : {};
       return api.createSource(kbId, {
         kind,
         name: name.trim(),
@@ -1396,8 +1407,10 @@ function SourceModal({
         ? feedUrl.trim()
         : kind === "custom"
           ? endpoint.trim()
-          : kind === "webdav"
-            ? davUrl.trim()
+          : kind === "notion"
+            ? notionToken.trim()
+            : kind === "webdav"
+              ? davUrl.trim()
             : kind === "s3" || kind === "azure_blob" || kind === "gcs"
             ? s3Bucket.trim()
             : true);
@@ -1440,6 +1453,7 @@ function SourceModal({
                 "azure_blob",
                 "gcs",
                 "webdav",
+                "notion",
                 "api",
                 "custom",
               ] as const
@@ -1710,6 +1724,28 @@ function SourceModal({
                   type="password"
                   value={davPass}
                   onChange={(e) => setDavPass(e.target.value)}
+                />,
+              )}
+            </>
+          )}
+          {kind === "notion" && (
+            <>
+              {field(
+                S.library.notionTokenField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  type="password"
+                  placeholder="ntn_..."
+                  value={notionToken}
+                  onChange={(e) => setNotionToken(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.notionQueryField,
+                <input
+                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                  value={notionQuery}
+                  onChange={(e) => setNotionQuery(e.target.value)}
                 />,
               )}
             </>

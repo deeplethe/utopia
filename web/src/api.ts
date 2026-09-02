@@ -189,6 +189,7 @@ export interface SourceView {
     | "azure_blob"
     | "gcs"
     | "webdav"
+    | "notion"
     | "memory"
     | "upload";
   name: string;

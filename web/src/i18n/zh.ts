@@ -429,6 +429,7 @@ export const zh: Strings = {
       azure_blob: "Azure Blob",
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
+      notion: "Notion",
     },
     sourceKindHints: {
       folder:
@@ -455,6 +456,9 @@ export const zh: Strings = {
       webdav:
         "从 WebDAV 网盘读文档——Nextcloud、ownCloud、群晖，以及一切说这套协议的。" +
         "逐层走目录，每个文件成为一篇文档，日期取它最后一次修改的时刻。",
+      notion:
+        "同步一个 Notion 集成能看见的页面——把页面分享给集成，它就会出现在这里。" +
+        "日期取页面最后一次编辑的时刻，那是页面自己的时钟，不是我们抓它的时刻。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
       custom:
         "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Utopia 保持同步。",
@@ -513,6 +517,8 @@ export const zh: Strings = {
     davPathField: "目录（可选——默认从根开始）",
     davUserField: "用户名",
     davPassField: "密码",
+    notionTokenField: "内部集成令牌",
+    notionQueryField: "搜索词（可选——留空则取全部已分享页面）",
     tokenField: "GitHub 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
     interval: "同步计划",

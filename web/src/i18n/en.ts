@@ -463,6 +463,7 @@ export const en = {
       azure_blob: "Azure Blob",
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
+      notion: "Notion",
     },
     sourceKindHints: {
       folder:
@@ -491,6 +492,10 @@ export const en = {
         "Reads documents off a WebDAV share — Nextcloud, ownCloud, Synology, or anything " +
         "else speaking the protocol. Walks folders one level at a time; each file becomes " +
         "a document dated by its last modification.",
+      notion:
+        "Syncs the pages a Notion integration can see — share a page with the integration " +
+        "and it appears here. Dated by when the page was last edited, which is the page's " +
+        "own clock rather than ours.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       custom:
         "Polls a URL you control on a schedule — your service returns JSON items and Utopia keeps them in sync.",
@@ -550,6 +555,8 @@ export const en = {
     davPathField: "Folder (optional — defaults to the root)",
     davUserField: "Username",
     davPassField: "Password",
+    notionTokenField: "Internal integration token",
+    notionQueryField: "Search term (optional — empty takes every shared page)",
     tokenField: "GitHub token (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     interval: "Sync schedule",
