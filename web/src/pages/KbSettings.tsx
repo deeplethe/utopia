@@ -492,7 +492,12 @@ function KbActivity({ kbId }: { kbId: string }) {
               </span>
               <span className="min-w-0 truncate">
                 <span className="text-neutral-200">
-                  {e.actor_name ?? S.kbset.deletedUser}
+                  {e.actor_name ??
+                    (e.actor_id
+                      ? S.kbset.deletedUser
+                      : e.action.startsWith("review.")
+                        ? S.kbset.adjudicator
+                        : S.kbset.engine)}
                 </span>{" "}
                 <span className="text-neutral-500">
                   {S.kbset.auditActions[e.action] ?? e.action}
