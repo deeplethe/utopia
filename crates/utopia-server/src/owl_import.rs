@@ -543,6 +543,31 @@ pub async fn apply(
     let rel_ids =
         utopia_store::ontology::create_relation_types_bulk(&state.pool, kb_id, &new_rels).await?;
     created_rels += rel_ids.len();
+
+    // 逆与父属性指的是**另一个关系类型**，id 要等全部插完才有——所以是第二遍。
+    // 一遍过只能处理「父属性恰好排在前面」的文件，而 RDF 三元组没有顺序。
+    //
+    // 新建的与已存在的都收：一份本体重导时，这两条声明可能是这次才加上的
+    let mut inv_pairs: Vec<(String, String)> = Vec::new();
+    let mut sub_pairs: Vec<(String, String)> = Vec::new();
+    for item in &plan.relations {
+        let Some(p) = by_prop_iri.get(item.iri.as_str()) else {
+            continue;
+        };
+        if let Some(o) = &p.inverse_of {
+            inv_pairs.push((p.iri.clone(), o.clone()));
+        }
+        if let Some(o) = &p.sub_property_of {
+            sub_pairs.push((p.iri.clone(), o.clone()));
+        }
+    }
+    let (linked_inv, linked_sub) = utopia_store::ontology::link_property_axioms_bulk(
+        &state.pool,
+        kb_id,
+        &inv_pairs,
+        &sub_pairs,
+    )
+    .await?;
     // 关联行也摊平：单条版对每条关系跑 4 句（两张表各一次 DELETE 一次 INSERT），
     // 一千五百条关系就是六千次提交
     let mut link_d: Vec<(Uuid, Uuid)> = Vec::new();
@@ -617,6 +642,10 @@ pub async fn apply(
         "classes_updated": updated_classes,
         "classes_key_taken": plan.classes.iter().filter(|c| c.disposition == Disposition::KeyTaken).count(),
         "relations_seen": plan.relations.len(),
+        // 连上了几条逆 / 父属性。**报出来**——目标 IRI 不在这个库里时会静默跳过
+        // （引用外部词汇表是常态），不给数就没人知道少连了多少
+        "inverse_linked": linked_inv,
+        "sub_property_linked": linked_sub,
         "relations_created": created_rels,
         "relations_updated": updated_rels,
         "attributes_seen": plan.attributes.len(),

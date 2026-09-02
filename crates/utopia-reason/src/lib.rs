@@ -36,6 +36,11 @@ pub struct Axioms {
     pub irreflexive: bool,
     pub functional: bool,
     pub inverse_functional: bool,
+    /// `p⁻¹ = q`：这个谓词的逆是哪一个。**跨谓词的规则从这里来**——
+    /// `A p B` 推出 `B q A`，而 R0 的检查也要看它（自己是自己的逆等于对称）
+    pub inverse_of: Option<Uuid>,
+    /// `p ⊑ q`：断言了具体的，通用的也成立。链要防成环，R0 那边查
+    pub sub_property_of: Option<Uuid>,
 }
 
 impl Axioms {

@@ -328,6 +328,10 @@ pub struct RelationTypeView {
     pub is_symmetric: bool,
     pub is_asymmetric: bool,
     pub is_irreflexive: bool,
+    /// 指向另一个关系的两条。**必须回给界面**——下拉框要显示当前选的是谁，
+    /// 否则每次打开表单都是空的，编辑一次就把已声明的抹掉了
+    pub inverse_of: Option<Uuid>,
+    pub sub_property_of: Option<Uuid>,
     pub builtin: bool,
     pub description: String,
     /// relation（宾语是实体）| attribute（宾语是字面值）
@@ -936,9 +940,13 @@ pub struct ReviewCounts {
 
 /// 一个关系声明了哪些 OWL 公理。
 ///
-/// **六位打包成一个东西传，不是六个参数。** 它们本来就是同一族——推理机
+/// **打包成一个东西传，不是一串参数。** 它们本来就是同一族——推理机
 /// （0002）拿它们当判据，界面上也该并排出现；散成参数表里的六个 bool，
 /// 调用点迟早传错顺序，而 `bool` 之间编译器帮不上忙。
+///
+/// 后两位不是 bool：`inverseOf` 与 `subPropertyOf` 指向**另一个关系**，
+/// 界面上是下拉框而不是复选框。形状不同不改变它们属于这一族——推理机
+/// 的四种规则源正是这六位里的两条加上这两条（0002）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationAxioms {
     /// 主语侧唯一（一个人一个出生地）
@@ -953,6 +961,11 @@ pub struct RelationAxioms {
     pub asymmetric: bool,
     /// 不存在 A→A
     pub irreflexive: bool,
+    /// `p⁻¹ = q`：`A p B ⟹ B q A`。**单向存，双向用**——载入公理时归一化
+    /// （`reasoning::axioms`），所以只需在一侧声明，反向那条自动成立
+    pub inverse_of: Option<Uuid>,
+    /// `p ⊑ q`：`A p B ⟹ A q B`。断言了具体的，通用的也成立
+    pub sub_property_of: Option<Uuid>,
 }
 
 /// 文库的一页，连同这一页之外的统计。
@@ -967,4 +980,25 @@ pub struct DocumentPage {
     pub ready: i64,
     pub extracting: i64,
     pub failed: i64,
+}
+
+/// 一枚个人访问令牌的元信息（0014）。**永远不含明文**——
+/// 明文只在 `tokens::issue` 返回的那一次存在，库里只有哈希。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct TokenView {
+    pub id: Uuid,
+    pub name: String,
+    /// 给人认的那一小截（`utp_pat_ab12`）。够对上配置文件里那一串，
+    /// 又不足以复原
+    pub token_prefix: String,
+    /// read | write。**上限不是授权**：有效权限 = 这个人的角色 ∩ 这个 scope
+    pub scope: String,
+    /// None = 这个人能进的全部库
+    pub kb_ids: Option<Vec<Uuid>>,
+    pub expires_at: Option<DateTime<Utc>>,
+    /// 「这把还在用吗」。撤之前要答得出，否则没人敢撤
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// **撤销打戳不删行**：撤过这件事本身要留痕
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }

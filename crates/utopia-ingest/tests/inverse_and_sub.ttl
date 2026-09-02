@@ -1,0 +1,20 @@
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex:   <http://example.org/> .
+
+ex:Person a owl:Class ; rdfs:label "Person" ; rdfs:comment "A human being." .
+ex:Org    a owl:Class ; rdfs:label "Organization" ; rdfs:comment "A company." .
+
+ex:worksAt a owl:ObjectProperty ;
+    rdfs:label "works at" ; rdfs:comment "Employment." ;
+    rdfs:domain ex:Person ; rdfs:range ex:Org .
+
+ex:employs a owl:ObjectProperty ;
+    rdfs:label "employs" ; rdfs:comment "The other direction." ;
+    rdfs:domain ex:Org ; rdfs:range ex:Person ;
+    owl:inverseOf ex:worksAt .
+
+ex:ceoOf a owl:ObjectProperty ;
+    rdfs:label "CEO of" ; rdfs:comment "Chief executive." ;
+    rdfs:domain ex:Person ; rdfs:range ex:Org ;
+    rdfs:subPropertyOf ex:worksAt .
