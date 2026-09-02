@@ -2550,10 +2550,9 @@ function EntityPanel({
     >();
     for (const d of derived) {
       const direction = d.subject_id === entityId ? "out" : "in";
-      const rule =
-        d.rule === "transitive"
-          ? S.graph.ruleTransitive
-          : S.graph.ruleSymmetric;
+      // 四条规则各有名字。**查不到就退回原始 kind 串**——那对读的人没有
+      // 意义，但比显示成另一条规则的名字诚实
+      const rule = S.graph.ruleNames[d.rule] ?? d.rule;
       const key = `${direction}|${d.predicate}|${d.rule}`;
       const cur = map.get(key);
       if (cur) cur.rows.push(d);

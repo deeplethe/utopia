@@ -44,6 +44,11 @@ export const zh: Strings = {
     parent_cycle: "那个类已经在这个类下面了——层级会成环。",
     bad_lang: "选一个支持的语言。",
     attr_needs_class: "属性必须挂在某个类上。",
+    attr_has_no_link:
+      "属性没有逆，也没有父属性——它的宾语是字面值，谈不上反过来指回来。",
+    link_target_is_attr: "要选一条关系，不是属性——属性的值是字面量。",
+    sub_property_self: "一条关系不能是自己的父属性。",
+    unknown_relation: "这个知识库里没有这条关系。",
     entity_name_required: "名称不能为空。",
     entity_name_too_long: "名称太长了——最多 100 个字符。",
     unknown_entity_type: "这个类不在当前本体里。",
@@ -609,8 +614,12 @@ export const zh: Strings = {
       `新增 ${added} · 作废 ${gone}`,
     derivedCapped: (n: number) => `${n} 个谓词没推完`,
     close: "关闭",
-    ruleTransitive: "传递",
-    ruleSymmetric: "对称",
+    ruleNames: {
+      transitive: "传递",
+      symmetric: "对称",
+      inverse: "互逆",
+      sub_property: "子属性",
+    } as Record<string, string | undefined>,
     historyHint: "这个实体的记录如何变化——以及是谁改的。",
     historyEmpty: "这个实体还没有记录。",
     historyKind: {
@@ -854,6 +863,15 @@ export const zh: Strings = {
     irreflexiveHint: "任何东西不能通过这条关系指向自己。",
     axiomConflict:
       "对称与反对称同时成立，只对一条事实都没有的关系为真——两者必有一个写错了。",
+    noLink: "无",
+    inverseOf: "逆关系",
+    inverseOfHint:
+      "反过来说同一件事的那条关系。只需在一侧声明，另一个方向自动成立。",
+    subPropertyOf: "父属性",
+    subPropertyOfHint: "这条关系是谁的特例。说了具体的那条，宽泛的那条也成立。",
+    linkMeansInverse: (p: string, q: string) =>
+      `A ${p} B 同时也是 B ${q} A。`,
+    linkMeansSuper: (p: string, q: string) => `A ${p} B 同时也是 A ${q} B。`,
     usage: (n: number) => `${n} 处在用`,
     builtin: "内置",
     save: "保存",
@@ -1067,6 +1085,9 @@ export const zh: Strings = {
     defectCycle: "subClassOf 绕成了环",
     defectDisjointAncestor: "与自己的祖先互斥",
     defectInheritsDisjoint: "继承了两个互斥的类",
+    defectInverseSelf: "自己是自己的逆——写成「对称」更直白",
+    defectInverseNotMutual: "逆关系没有指回来",
+    defectSubPropertyCycle: "子属性绕成了环",
     defectNeverInstantiable: "这个类永远不可能有实例",
     defectFixed: "已去本体里改了",
     defectAccepted: "先放着",

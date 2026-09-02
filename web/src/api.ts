@@ -291,7 +291,8 @@ export interface DerivedFact {
   object: string;
   predicate: string;
   /** 靠哪条规则推的 */
-  rule: "transitive" | "symmetric";
+  /** 靠哪条规则推的。后两种是 0017 补上的跨谓词规则 */
+  rule: "transitive" | "symmetric" | "inverse" | "sub_property";
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
@@ -446,7 +447,11 @@ export interface OntologyDefect {
     | "transitive_and_functional"
     | "subclass_cycle"
     | "disjoint_with_ancestor"
-    | "inherits_disjoint";
+    | "inherits_disjoint"
+    // 0017 加的三类：都在谓词上，前两类关于逆，第三类是子属性成环
+    | "inverse_of_itself"
+    | "inverse_not_mutual"
+    | "sub_property_cycle";
   subject_label: string | null;
   other_label: string | null;
   path_labels: string[];
@@ -642,6 +647,10 @@ export interface RelationTypeView {
   is_symmetric: boolean;
   is_asymmetric: boolean;
   is_irreflexive: boolean;
+  /** 指向另一个关系的两条：`p⁻¹ = q` 与 `p ⊑ q`。是 id 不是布尔，
+   *  所以界面上是下拉框 */
+  inverse_of: string | null;
+  sub_property_of: string | null;
   builtin: boolean;
   description: string;
   /** relation（宾语是实体）| attribute（宾语是字面值） */
@@ -1193,9 +1202,7 @@ export const api = {
        *  那一批，把上限当成规模显示是这个接口从前最误导人的地方 */
       total_nodes?: number;
       total_edges?: number;
-    }>(
-      `/api/v1/kbs/${kbId}/graph/overview${limit ? `?limit=${limit}` : ""}`,
-    ),
+    }>(`/api/v1/kbs/${kbId}/graph/overview${limit ? `?limit=${limit}` : ""}`),
   /** 邻域视图**没有总数**：它本来就只是一小片，说「共 325 个」没有意义。
    *  两个字段声明成可选，好让调用方与总览共用一个类型 */
   graphNeighborhood: (kbId: string, entityId: string) =>

@@ -47,6 +47,12 @@ export const en = {
       "That class is already below this one — the hierarchy would loop.",
     bad_lang: "Pick a supported language.",
     attr_needs_class: "An attribute has to belong to a class.",
+    attr_has_no_link:
+      "An attribute has no inverse and no super-property — its value is a literal, not something to point back from.",
+    link_target_is_attr:
+      "Pick a relation, not an attribute — an attribute's value is a literal.",
+    sub_property_self: "A relation cannot be its own super-property.",
+    unknown_relation: "That relation is not in this knowledge base.",
     entity_name_required: "Name cannot be empty.",
     entity_name_too_long: "Name is too long — 100 characters at most.",
     unknown_entity_type: "That class is not in this ontology.",
@@ -357,9 +363,11 @@ export const en = {
       object_missing: "Relation had no object",
       malformed_item: "The model's item did not fit the schema",
       truncated_reply: "The model's reply was cut off",
-      domain_mismatch: "The subject does not fit the relation, and swapping would not help",
+      domain_mismatch:
+        "The subject does not fit the relation, and swapping would not help",
       not_an_entity_name: "That name is a sentence, not a thing",
-      direction_corrected: "Subject and object were swapped to match the signature",
+      direction_corrected:
+        "Subject and object were swapped to match the signature",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",
@@ -660,8 +668,14 @@ export const en = {
       `${added} added · ${gone} retracted`,
     derivedCapped: (n: number) => `${n} predicate(s) not closed fully`,
     close: "Close",
-    ruleTransitive: "transitive",
-    ruleSymmetric: "symmetric",
+    // 派生边靠哪条规则来的。**四种都要有**——查不到的会退回原始 kind 串，
+    // 而那对读的人没有意义
+    ruleNames: {
+      transitive: "transitive",
+      symmetric: "symmetric",
+      inverse: "inverse",
+      sub_property: "sub-property",
+    } as Record<string, string | undefined>,
     historyHint: "How this entity's record changed — and who changed it.",
     historyEmpty: "Nothing recorded for this entity yet.",
     historyKind: {
@@ -930,6 +944,16 @@ export const en = {
     irreflexiveHint: "Nothing can point at itself through this relation.",
     axiomConflict:
       "Symmetric and asymmetric together hold only for a relation with no facts at all — one of the two is wrong.",
+    noLink: "None",
+    inverseOf: "Inverse",
+    inverseOfHint:
+      "The relation that says the same thing the other way round. Declare it on one side only — the other direction follows.",
+    subPropertyOf: "Super-property",
+    subPropertyOfHint:
+      "The broader relation this one is a special case of. Stating the specific one also states the broader one.",
+    linkMeansInverse: (p: string, q: string) =>
+      `A ${p} B also means B ${q} A.`,
+    linkMeansSuper: (p: string, q: string) => `A ${p} B also means A ${q} B.`,
     usage: (n: number) => `${n} in use`,
     builtin: "built-in",
     save: "Save",
@@ -1181,6 +1205,9 @@ export const en = {
     defectCycle: "subClassOf runs in a circle",
     defectDisjointAncestor: "Disjoint with its own ancestor",
     defectInheritsDisjoint: "Inherits from two disjoint classes",
+    defectInverseSelf: "Its own inverse — say symmetric instead",
+    defectInverseNotMutual: "The inverse does not point back",
+    defectSubPropertyCycle: "subPropertyOf runs in a circle",
     defectNeverInstantiable: "no instance can ever satisfy it",
     defectFixed: "I fixed the ontology",
     defectAccepted: "Leave it",
