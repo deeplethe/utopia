@@ -445,6 +445,8 @@ struct CrossCandidate {
     canonical_name: String,
     // None = 这个候选还没判出类型（0009）
     type_key: Option<String>,
+    // 同上；`types_are_kin` 要按 id 走类层级
+    type_id: Option<Uuid>,
     // 抽取升格要看它：人说过「就是没有类型」时，那也是一个决定
     type_source: String,
     profile_embedding: Option<Vector>,
@@ -462,6 +464,40 @@ fn drift_reason(mention_key: Option<&str>, other_key: Option<&str>, sim: Option<
         Some(s) => format!("type_drift|{a} vs {b} {s:.2}"),
         None => format!("type_drift|{a} vs {b}"),
     }
+}
+
+/// 两个类是不是一家的：一方是另一方的祖先，或者两者共有一个**不是根**的祖先。
+///
+/// `CONFUSABLE_TYPE_KEYS` 那张三 key 的硬表是给没装包的库准备的；装了 schema.org
+/// 之后同一家公司会被抽成 Organization / Corporation / OnlineBusiness 三种类型，
+/// 全都在 Organization 之下，却一对都过不了硬表，于是三个同名实体并存、
+/// 审阅队列里一条都没有，面板还指着 Review 说"去那里合并"（#226）。
+///
+/// 根不算共同祖先：schema.org 里万物皆 Thing，算上它 Person 与 Organization
+/// 也成了一家。没有根的词汇表（W3C Org 的 Organization 自己就是顶）靠
+/// 祖先/后代那一半接住
+async fn types_are_kin(pool: &PgPool, a: Uuid, b: Uuid) -> AppResult<bool> {
+    let (kin,): (bool,) = sqlx::query_as(
+        "WITH RECURSIVE up_a(id) AS (
+             SELECT $1::uuid
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up_a ON p.child_id = up_a.id
+         ), up_b(id) AS (
+             SELECT $2::uuid
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up_b ON p.child_id = up_b.id
+         )
+         SELECT EXISTS (SELECT 1 FROM up_a WHERE id = $2)
+             OR EXISTS (SELECT 1 FROM up_b WHERE id = $1)
+             OR EXISTS (SELECT 1 FROM up_a JOIN up_b USING (id)
+                         WHERE EXISTS (SELECT 1 FROM entity_type_parents p
+                                        WHERE p.child_id = up_a.id))",
+    )
+    .bind(a)
+    .bind(b)
+    .fetch_one(pool)
+    .await?;
+    Ok(kin)
 }
 
 fn confusable_reviews(
@@ -510,7 +546,7 @@ async fn resolve_type_drift(
         None => None,
     };
     let cross: Vec<CrossCandidate> = sqlx::query_as(
-        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_source,
+        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_id, e.type_source,
                 e.profile_embedding, e.profile_n
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          -- IS DISTINCT FROM 而不是 <>：后者遇 NULL 返回 NULL，被 WHERE 当假，
@@ -528,7 +564,16 @@ async fn resolve_type_drift(
     let mut recall_cands: Vec<&CrossCandidate> = Vec::new();
     let mut review_cands: Vec<&CrossCandidate> = Vec::new();
     for c in &cross {
-        match classify_type_drift(mention_key.as_deref(), c.type_key.as_deref()) {
+        let mut drift = classify_type_drift(mention_key.as_deref(), c.type_key.as_deref());
+        // 硬表判不上的，再看类层级：同一支系下的同名当易混，进审阅队列
+        if drift == TypeDrift::Disjoint {
+            if let (Some(a), Some(b)) = (type_id, c.type_id) {
+                if types_are_kin(pool, a, b).await? {
+                    drift = TypeDrift::Review;
+                }
+            }
+        }
+        match drift {
             TypeDrift::Recall => recall_cands.push(c),
             TypeDrift::Review => review_cands.push(c),
             TypeDrift::Disjoint => {}
