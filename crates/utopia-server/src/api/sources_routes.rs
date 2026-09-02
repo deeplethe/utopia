@@ -285,6 +285,10 @@ pub async fn sync_now(
 #[derive(Deserialize)]
 pub struct IngestBody {
     pub filename: String,
+    /// 墓碑推送（`deleted: true`）可以不带 content——指南一直这么写，而字段
+    /// 从前是必填，缺了就在反序列化那一步被拒。其余情况仍然必填：空串在
+    /// 下面的校验里挡
+    #[serde(default)]
     pub content: String,
     #[serde(default)]
     pub doc_time: Option<DateTime<Utc>>,
@@ -341,14 +345,33 @@ pub async fn ingest(
     Ok(Json(json!({ "action": action_str(action) })))
 }
 
+/// 推送失败的两种性质。**调用方发错了**和**我们这边没接住**得分开：前者记进
+/// run 供集成调试，但不算来源同步失败——来源没坏，是那一次请求不合格；
+/// 后者才该把来源标成 failed 并进告警中心。从前两者都走 `finish_sync(error)`，
+/// 一次格式错误就让铃铛说"来源同步失败，没有新内容进来"
+enum PushError {
+    /// 4xx：负载不合格（JSON 解析、缺字段）
+    Rejected(String),
+    /// 摄入本身失败
+    Failed(String),
+}
+
+impl PushError {
+    fn message(&self) -> &str {
+        match self {
+            PushError::Rejected(m) | PushError::Failed(m) => m,
+        }
+    }
+}
+
 /// 认证之后的推送处理：解析 + 校验 + 摄入/墓碑。错误一律返回文字（记进 run）。
 async fn handle_push(
     state: &AppState,
     source: &utopia_core::models::Source,
     bytes: &[u8],
-) -> Result<crate::ingest_sources::IngestAction, String> {
-    let body: IngestBody =
-        serde_json::from_slice(bytes).map_err(|e| format!("Invalid JSON payload: {e}"))?;
+) -> Result<crate::ingest_sources::IngestAction, PushError> {
+    let body: IngestBody = serde_json::from_slice(bytes)
+        .map_err(|e| PushError::Rejected(format!("Invalid JSON payload: {e}")))?;
     let identity = body
         .external_id
         .as_deref()
@@ -357,7 +380,9 @@ async fn handle_push(
         .unwrap_or_else(|| body.filename.trim())
         .to_string();
     if identity.is_empty() {
-        return Err("external_id or filename is required".into());
+        return Err(PushError::Rejected(
+            "external_id or filename is required".into(),
+        ));
     }
     let key = format!("api:{identity}");
 
@@ -365,12 +390,14 @@ async fn handle_push(
     if body.deleted {
         utopia_store::documents::mark_missing_keys(&state.pool, source.id, &[key])
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| PushError::Failed(e.to_string()))?;
         return Ok(crate::ingest_sources::IngestAction::Tombstoned);
     }
 
     if body.filename.trim().is_empty() || body.content.trim().is_empty() {
-        return Err("filename and content are required".into());
+        return Err(PushError::Rejected(
+            "filename and content are required".into(),
+        ));
     }
     let action = crate::ingest_sources::ingest_item(
         state,
@@ -383,11 +410,11 @@ async fn handle_push(
         body.doc_time,
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| PushError::Failed(e.to_string()))?;
     // 失而复得：曾被墓碑标记的身份再次正常推送，摘掉 missing 标记
     utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| PushError::Failed(e.to_string()))?;
     Ok(action)
 }
 
@@ -434,10 +461,14 @@ pub async fn push(
             state.emit_source(source.kb_id);
             Ok(Json(json!({ "action": action_str(action) })))
         }
-        Err(msg) => {
+        Err(err) => {
+            let msg = err.message().to_string();
             utopia_store::sources::finish_run(&state.pool, run, source.id, Some(&msg), 0, 0)
                 .await?;
-            utopia_store::sources::finish_sync(&state.pool, source.id, Some(&msg), 0).await?;
+            // 只有我们这边没接住才算来源失败；调用方发错了留在 run 历史里就够
+            if let PushError::Failed(_) = err {
+                utopia_store::sources::finish_sync(&state.pool, source.id, Some(&msg), 0).await?;
+            }
             state.emit_source(source.kb_id);
             Err(utopia_core::AppError::Validation(msg).into())
         }
