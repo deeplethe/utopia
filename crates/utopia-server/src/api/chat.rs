@@ -326,7 +326,20 @@ pub async fn chat(
     .await?;
     let workspace_id = kb.workspace_id;
 
-    let stream = async_stream::stream! {
+    // 生成过程不挂在这条连接上。
+    //
+    // **切走一次就丢一个回答**，而且丢得比看上去彻底：整段生成住在下面这个
+    // 生成器里，助手消息只在走完时落库；浏览器一导航，axum 丢掉响应体、
+    // 生成器 future 被丢弃，于是 LLM 调用当场取消，那句 `append_message`
+    // 永远不执行。实测掐断连接时已经收到 1219 字节的正文，二十秒后库里
+    // 只剩用户那一行——**那个回答不是存在但没显示，是根本没被生成完**。
+    //
+    // 所以把生成器交给一个独立任务去驱动，这条连接降级成一个订阅者。
+    // 任务不随连接消失，答案照常写完、照常落库，人回来就在。
+    //
+    // 代价说清楚：**没人看的时候仍然在花钱**。这是有意的——丢答案比多跑一轮贵，
+    // 而 `MAX_ROUNDS` 已经给了上限。send 失败（接收端没了）不中断，那正是要点。
+    let producer = async_stream::stream! {
         let ds_names: Vec<String> = mounted_sources.iter().map(|d| d.name.clone()).collect();
         let tools = tools_schema(can_write, &ds_names);
         let mut system_prompt = if can_write {
@@ -834,6 +847,21 @@ pub async fn chat(
                 msgs.push(tool_result_message(&call.id, &result));
             }
             rounds += 1;
+        }
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        let mut producer = std::pin::pin!(producer);
+        while let Some(event) = producer.next().await {
+            // 接收端没了 = 人走了。**照发不误**：这里中断就等于把上面那个 bug
+            // 原样搬了回来
+            let _ = tx.send(event);
+        }
+    });
+    let stream = async_stream::stream! {
+        while let Some(event) = rx.recv().await {
+            yield event;
         }
     };
 
