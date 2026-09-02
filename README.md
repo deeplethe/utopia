@@ -52,7 +52,7 @@ The system is a Rust binary and a Postgres service. pgvector and a queue-table d
 
 | | |
 |---|---|
-| **A complete application** | A system console, a graph browser and an ontology workbench that runs in the browser. Install it and it works; there is no library to assemble first. |
+| **A complete application** | A browser-based system console, graph browser and ontology workbench. Install it and it works; there is no library to assemble first. |
 | **Knowledge ingest** | PDF, DOCX, PPTX, XLSX/XLS/ODS, CSV/TSV, Markdown, HTML and plain text, with legacy text encodings detected on the way in. Web pages, RSS, GitHub and Jira sync on a cron; anything else pushes in with a per-source token. Failed parses reprocess in place, and a whole source or base can be re-extracted in bulk. |
 | **Search and chat** | Hybrid retrieval over Tantivy full-text and pgvector, fused with RRF; Chinese full-text uses jieba tokenisation. Answers stream with inline citations that jump straight to the source passage. Any OpenAI-compatible endpoint works (DeepSeek, Qwen, GLM, Ollama, vLLM), so the whole system can run on an isolated network. |
 | **Agent harness and agentic RAG** | The application is itself a harness: the whole system can be driven through conversation. The built-in agent carries tools for document search, entity lookup, fact and change history, and querying a mounted database, and calls them over several turns before it answers. |
