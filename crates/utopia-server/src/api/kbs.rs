@@ -359,13 +359,29 @@ async fn install_packs(
     if pack_ids.is_empty() {
         return Ok(());
     }
+    let mut packs = Vec::with_capacity(pack_ids.len());
     for id in pack_ids {
         let pack = crate::ontology_packs::get(id)
             .ok_or_else(|| AppError::invalid("unknown_pack", format!("未知的本体包：{id}")))?;
-        let bytes = crate::ontology_packs::bytes(pack)?;
-        crate::owl_import::apply(state, kb_id, actor, pack.filename, &bytes)
+        packs.push((pack, crate::ontology_packs::bytes(pack)?));
+    }
+    for (pack, bytes) in &packs {
+        crate::owl_import::apply(state, kb_id, actor, pack.filename, bytes)
             .await
             .map_err(|e| AppError::Other(anyhow::anyhow!("装本体包 {} 失败：{e}", pack.id)))?;
+    }
+    // 第二遍：跨包的 domain / range。包是挨个装的，先装的看不见后装的类——
+    // W3C Org 的 headOf 要等 FOAF 的 Agent（#222）。只装一个包时没有"别的包"
+    if packs.len() > 1 {
+        for (pack, bytes) in &packs {
+            let (d, r) =
+                crate::owl_import::relink_domains_ranges(state, kb_id, pack.filename, bytes)
+                    .await
+                    .map_err(|e| {
+                        AppError::Other(anyhow::anyhow!("补本体包 {} 的签名失败：{e}", pack.id))
+                    })?;
+            tracing::debug!(%kb_id, pack = pack.id, domains = d, ranges = r, "跨包签名补链");
+        }
     }
     Ok(())
 }

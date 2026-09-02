@@ -1784,23 +1784,63 @@ pub enum Fit {
 /// **三条写谓词的路共用的那一道判断**（#190 / #196）：抽取落新事实、采纳把谓词
 /// 挂回旧事实、合并换掉主语——从前只有抽取查，另外两条各自绕了过去。
 ///
-/// 判据刻意窄（0012）：只看 domain，只在**主语违反且宾语符合**时对调，两边都对不上
-/// 就留空谓词。参数顺序不是关于世界的断言，是这个 key 的编码约定，所以本体在这一处
-/// 是执法的；哪些类型能参与仍是引导，不在这里裁。
+/// 判据刻意窄（0012）：只看签名，只在**正向违反而反向成立**时对调，两个方向都
+/// 对不上就留空谓词。参数顺序不是关于世界的断言，是这个 key 的编码约定，所以本体
+/// 在这一处是执法的；哪些类型能参与仍是引导，不在这里裁。
+///
+/// **range 也算进来**（#222）。从前只看 domain：`headOf` 的 domain 是 Agent，
+/// schema.org 里 Project 也是 Organization 也是 Agent，于是 `Project Aurora head_of
+/// Li Ting` 主语过关就 Keep，宾语是个人、range 要 Organization 这件事没人看。
+/// 现在两端各看各的：正向两端都不违反才 Keep；否则反过来两端都不违反才 Swap。
+/// 没判出类型的实体在 range 这一端不算违反（"不知道"不是"不符合"，与
+/// `signature_breaks` 同一条纪律）；domain 那一端沿用旧规矩，那是 0012 定下的
 pub async fn judge_direction(
     pool: &PgPool,
     relation_type_id: Uuid,
     subject_id: Uuid,
     object_id: Uuid,
 ) -> AppResult<Fit> {
-    match entity_fits_domain(pool, relation_type_id, subject_id).await? {
-        None => Ok(Fit::Unchecked),
-        Some(true) => Ok(Fit::Keep),
-        Some(false) => match entity_fits_domain(pool, relation_type_id, object_id).await? {
-            Some(true) => Ok(Fit::Swap),
-            _ => Ok(Fit::Neither),
-        },
+    let subject_in_domain = entity_fits_domain(pool, relation_type_id, subject_id).await?;
+    let object_in_range = entity_fits_range(pool, relation_type_id, object_id).await?;
+    if subject_in_domain.is_none() && object_in_range.is_none() {
+        return Ok(Fit::Unchecked);
     }
+    if subject_in_domain != Some(false) && object_in_range != Some(false) {
+        return Ok(Fit::Keep);
+    }
+    let object_in_domain = entity_fits_domain(pool, relation_type_id, object_id).await?;
+    let subject_in_range = entity_fits_range(pool, relation_type_id, subject_id).await?;
+    if object_in_domain != Some(false) && subject_in_range != Some(false) {
+        return Ok(Fit::Swap);
+    }
+    Ok(Fit::Neither)
+}
+
+/// [`entity_fits_domain`] 的 range 版。多一条规矩：实体还没判出类型 → None，
+/// 不当违反——range 这一端是新加的判据（#222），不该让未分类实体的事实因此
+/// 丢掉谓词
+pub async fn entity_fits_range(
+    pool: &PgPool,
+    relation_type_id: Uuid,
+    entity_id: Uuid,
+) -> AppResult<Option<bool>> {
+    let (declared, typed, ok): (i64, bool, i64) = sqlx::query_as(
+        "WITH RECURSIVE up(id) AS (
+             SELECT type_id FROM entities WHERE id = $2
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+         )
+         SELECT (SELECT count(*) FROM relation_type_ranges WHERE relation_type_id = $1),
+                (SELECT type_id IS NOT NULL FROM entities WHERE id = $2),
+                (SELECT count(*) FROM relation_type_ranges g
+                   JOIN up ON up.id = g.entity_type_id
+                  WHERE g.relation_type_id = $1)",
+    )
+    .bind(relation_type_id)
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await?;
+    Ok((declared > 0 && typed).then_some(ok > 0))
 }
 
 /// 把 `owl:inverseOf` / `rdfs:subPropertyOf` 从 IRI 解析成 id。

@@ -323,6 +323,64 @@ pub async fn plan(
     Ok((plan, proj, format))
 }
 
+/// 装完一组包之后再过一遍：把 domain / range 指向**别的包里的类**的那些关系接上。
+///
+/// 单次导入认本文件里的类和库里已有的类（见 [`apply`] 里的 resolve），但包是挨个
+/// 装的：装 W3C Org 时 FOAF 还没来，`headOf` 的 `rdfs:domain foaf:Agent` 就落了空；
+/// 等 FOAF 装好，没人回头补。没有 domain 的谓词 `judge_direction` 不判方向，
+/// 反向的 `Project Aurora head_of Li Ting` 就原样进图（#222）。
+///
+/// 只补不删，关联表 ON CONFLICT DO NOTHING，重复跑无害。属性不在这里：属性的
+/// 去向在计划阶段就定了（没有 domain 的根本建不出来），事后补 domain 改不了它
+/// 已经是不是一列的事实
+pub async fn relink_domains_ranges(
+    state: &AppState,
+    kb_id: Uuid,
+    filename: &str,
+    bytes: &[u8],
+) -> AppResult<(usize, usize)> {
+    let format = RdfFormat::detect(filename, bytes);
+    let proj = ontology_rdf::project(bytes, format).map_err(|e| {
+        utopia_core::AppError::invalid_detail(
+            "bad_ontology_file",
+            "Could not parse this ontology file",
+            e.to_string(),
+        )
+    })?;
+    let classes: HashMap<String, Uuid> = utopia_store::graph::entity_types(&state.pool, kb_id)
+        .await?
+        .into_iter()
+        .filter_map(|t| t.iri.clone().map(|i| (i, t.id)))
+        .collect();
+    let relations: HashMap<String, Uuid> = utopia_store::graph::relation_types(&state.pool, kb_id)
+        .await?
+        .into_iter()
+        .filter_map(|r| r.iri.clone().map(|i| (i, r.id)))
+        .collect();
+    let mut link_d: Vec<(Uuid, Uuid)> = Vec::new();
+    let mut link_r: Vec<(Uuid, Uuid)> = Vec::new();
+    for p in &proj.properties {
+        if p.is_datatype {
+            continue;
+        }
+        let Some(&rid) = relations.get(&p.iri) else {
+            continue;
+        };
+        link_d.extend(
+            p.domains
+                .iter()
+                .filter_map(|d| classes.get(d).map(|&t| (rid, t))),
+        );
+        link_r.extend(
+            p.ranges
+                .iter()
+                .filter_map(|r| classes.get(r).map(|&t| (rid, t))),
+        );
+    }
+    utopia_store::ontology::link_domains_ranges_bulk(&state.pool, &link_d, &link_r).await?;
+    Ok((link_d.len(), link_r.len()))
+}
+
 /// 执行计划。属性在类之后落库——它们要挂在 domain 上，而 domain 要等
 /// 类先建好并解析 IRI → id（就是下面那个 `id_of`）。
 pub async fn apply(
@@ -500,9 +558,20 @@ pub async fn apply(
             continue;
         };
         // domain/range 指向没被建出来的类时只丢那一个，不丢整条关系：
-        // 关系不像属性那样必须挂在类上，没有 domain 就是"不限主语类型"
+        // 关系不像属性那样必须挂在类上，没有 domain 就是"不限主语类型"。
+        //
+        // **库里已有的类也算数。** 从前只认本文件里的类，于是 W3C Org 的
+        // `headOf rdfs:domain foaf:Agent` 在 FOAF 已经装好的库里照样丢 domain，
+        // 而没有 domain 的谓词 `judge_direction` 根本不判方向（#222）
         let resolve = |iris: &[String]| -> Vec<Uuid> {
-            iris.iter().filter_map(|i| id_of.get(i).copied()).collect()
+            iris.iter()
+                .filter_map(|i| {
+                    id_of
+                        .get(i)
+                        .copied()
+                        .or_else(|| existing_by_iri.get(i).copied())
+                })
+                .collect()
         };
         let domains = resolve(&p.domains);
         let ranges = resolve(&p.ranges);
