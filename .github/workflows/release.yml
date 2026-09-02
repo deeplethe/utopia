@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Image tag to publish (e.g. 0.1.0-rc1)"
+        description: "Image tag to publish (e.g. 0.1.0-rc2)"
         required: true
 
 permissions:
