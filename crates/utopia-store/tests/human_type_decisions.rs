@@ -99,8 +99,7 @@ async fn source_of(pool: &PgPool, id: Uuid) -> anyhow::Result<String> {
 /// 主战场：取材条件里的「现类还有子类就纳入」会把人拍过板的实体一并捞回来。
 #[tokio::test]
 async fn type_resolution_leaves_human_decisions_alone() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
@@ -138,8 +137,7 @@ async fn type_resolution_leaves_human_decisions_alone() -> anyhow::Result<()> {
 /// 撤销时也就不会遇到它们，不必额外还原 `type_source`。
 #[tokio::test]
 async fn adopting_a_new_class_does_not_claim_human_typed_entities() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
@@ -190,8 +188,7 @@ async fn adopting_a_new_class_does_not_claim_human_typed_entities() -> anyhow::R
 /// 就是没有」，于是下一次抽取会给它安一个类型。
 #[tokio::test]
 async fn extraction_does_not_fill_in_a_type_a_human_left_empty() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
@@ -270,8 +267,7 @@ async fn extraction_does_not_fill_in_a_type_a_human_left_empty() -> anyhow::Resu
 /// 引擎自动裁决的不是。不必为此加新参数——#112 加 actor 时它就已经在那儿了。
 #[tokio::test]
 async fn who_approved_a_retype_decides_whether_it_is_protected() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
@@ -322,8 +318,7 @@ async fn who_approved_a_retype_decides_whether_it_is_protected() -> anyhow::Resu
 /// `ontology.types_resolved` 审计里,后者才该决定 `type_source`。
 #[tokio::test]
 async fn an_engine_retype_does_not_lock_the_entity_out_of_the_next_round() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
