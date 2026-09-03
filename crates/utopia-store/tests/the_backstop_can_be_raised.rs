@@ -11,35 +11,43 @@
 //! 把别的饿死"。约束堵死了它自己的设计。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。只读 + 改完还原，绝不留下痕迹。
+//!
+//! **两个检查放在同一个测试里顺序跑**：它们都碰同一行单例，而同一个二进制里的
+//! 测试默认并发。行锁本来就挡得住读脏，但一个测试改、另一个删（事务内）的交错
+//! 没有必要存在——串起来什么都不用赌（#248 报告者提的）。
 
 use sqlx::PgPool;
 
-/// Rust 放行的值，数据库必须也放行。
-///
-/// 逐个试边界而不是只试一个：漂移可能出在任何一档上，而这几次查询很便宜。
 #[tokio::test]
-async fn every_value_rust_accepts_the_database_accepts_too() -> anyhow::Result<()> {
+async fn the_backstop_can_be_raised() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
+    every_value_rust_accepts_the_database_accepts_too(&pool).await?;
+    the_two_defaults_say_the_same_number(&pool).await
+}
 
-    let before = utopia_store::access::worker_concurrency(&pool).await?;
+/// Rust 放行的值，数据库必须也放行。
+///
+/// 逐个试边界而不是只试一个：漂移可能出在任何一档上，而这几次查询很便宜。
+async fn every_value_rust_accepts_the_database_accepts_too(pool: &PgPool) -> anyhow::Result<()> {
+    let before = utopia_store::access::worker_concurrency(pool).await?;
 
     let run = async {
         // 33 是当初被卡死的第一格；256 是 Rust 侧的上限
         for v in [1_i32, 33, 64, 255, 256] {
-            utopia_store::access::set_worker_concurrency(&pool, v)
+            utopia_store::access::set_worker_concurrency(pool, v)
                 .await
                 .map_err(|e| anyhow::anyhow!("Rust 放行了 {v}，数据库却拒绝：{e}"))?;
-            let got = utopia_store::access::worker_concurrency(&pool).await?;
+            let got = utopia_store::access::worker_concurrency(pool).await?;
             assert_eq!(got, v, "写进去 {v} 读回来却是 {got}");
         }
 
         // 反向：Rust 拒绝的，不该悄悄落库
         for v in [0_i32, 257, -1] {
             assert!(
-                utopia_store::access::set_worker_concurrency(&pool, v)
+                utopia_store::access::set_worker_concurrency(pool, v)
                     .await
                     .is_err(),
                 "{v} 越界了却被接受"
@@ -50,7 +58,7 @@ async fn every_value_rust_accepts_the_database_accepts_too() -> anyhow::Result<(
     .await;
 
     // 还原：这是共享的部署设置，测试不该改变别人的运行参数
-    utopia_store::access::set_worker_concurrency(&pool, before).await?;
+    utopia_store::access::set_worker_concurrency(pool, before).await?;
     run
 }
 
@@ -58,19 +66,13 @@ async fn every_value_rust_accepts_the_database_accepts_too() -> anyhow::Result<(
 ///
 /// 两处分开写（一处 SQL、一处 Rust），改一处不会带上另一处。不一致的后果很隐蔽：
 /// 有行的库跑一个数、空表的库跑另一个数，而两者都不报错。
-#[tokio::test]
-async fn the_two_defaults_say_the_same_number() -> anyhow::Result<()> {
-    let Some(url) = utopia_store::test_db::url() else {
-        return Ok(());
-    };
-    let pool = PgPool::connect(&url).await?;
-
+async fn the_two_defaults_say_the_same_number(pool: &PgPool) -> anyhow::Result<()> {
     // 列的缺省：直接问 information_schema，不猜
     let column_default: Option<String> = sqlx::query_scalar(
         "SELECT column_default FROM information_schema.columns
           WHERE table_name = 'deployment_settings' AND column_name = 'worker_concurrency'",
     )
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await?;
     let column_default: i32 = column_default
         .as_deref()
