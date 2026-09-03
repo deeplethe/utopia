@@ -143,6 +143,13 @@ const mappingsRoute = createRoute({
 const reviewRoute = createRoute({
   getParentRoute: () => kbRoute,
   path: "review",
+  // 从实体面板的争议 chip 跳过来：落到对应那一档，并点亮那一张卡（0017 §3）
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { queue?: string; item?: string } => ({
+    queue: typeof search.queue === "string" ? search.queue : undefined,
+    item: typeof search.item === "string" ? search.item : undefined,
+  }),
   component: Review,
 });
 

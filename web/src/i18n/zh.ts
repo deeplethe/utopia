@@ -674,6 +674,17 @@ export const zh: Strings = {
     derivedHint:
       "没有人断言过的边——引擎按本体声明的公理推出来的。每一条都附着它用到的前提。",
     derivedNoProof: "前提已经不在了。",
+    contestedChip: "有争议",
+    contestedHint: (kind: string, derived: string | null) =>
+      kind === "derived_contradiction"
+        ? `有一条推出来的事实与它抵触${derived ? `：${derived}` : ""}。去 Review 看。`
+        : kind === "temporal_conflict"
+          ? "有一条更新的断言在时间上与它冲突。去 Review 看。"
+          : "这条断言违反了本体声明的公理。去 Review 看。",
+    blockedTitle: "没落地的",
+    blockedHint: "引擎本可以画出这些边，被一条断言挡住了。图上画成幽灵边。",
+    blockedBy: (t: string) => `挡住它的：${t}`,
+    blockedReview: "去 Review",
     proofStep: (n: number) => `第 ${n} 步`,
     proofRetracted: "后来撤了",
     proofLoading: "正在展开证明…",

@@ -732,6 +732,19 @@ export const en = {
     derivedHint:
       "Edges no one asserted — the engine worked them out from axioms your ontology declares. Each one shows the premises it came from.",
     derivedNoProof: "The premises are gone.",
+    /* 争议（0017 §3） */
+    contestedChip: "disputed",
+    contestedHint: (kind: string, derived: string | null) =>
+      kind === "derived_contradiction"
+        ? `A derivation contradicts this assertion${derived ? `: ${derived}` : ""}. Open it under Review.`
+        : kind === "temporal_conflict"
+          ? "A newer assertion conflicts with this one in time. Open it under Review."
+          : "This assertion breaks an axiom the ontology declares. Open it under Review.",
+    blockedTitle: "Did not land",
+    blockedHint:
+      "The engine could draw these edges; an assertion stood in the way. They show on the graph as ghost edges.",
+    blockedBy: (t: string) => `blocked by ${t}`,
+    blockedReview: "Review",
     /** 证明链（0002 R2）：每一步是一条断言前提，展开到原句 */
     proofStep: (n: number) => `Step ${n}`,
     proofRetracted: "since retracted",

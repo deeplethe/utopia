@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ArrowUpRight } from "lucide-react";
 import {
   api,
@@ -830,7 +830,11 @@ export function Review() {
   const { kb } = useKb();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [sel, setSel] = useState<Sel | null>(null);
+  // 面板的争议 chip 带着 queue / item 跳过来：先落到那一档，再把那张卡点亮
+  const search = useSearch({ from: "/app/kb/$kbId/review" });
+  const [sel, setSel] = useState<Sel | null>(
+    QUEUE_ORDER.includes(search.queue as Sel) ? (search.queue as Sel) : null,
+  );
   const [page, setPage] = useState(0);
 
   // 队列变化经 SSE 事件流推送（useKbEvents 挂在 Shell），无需轮询。
@@ -1301,8 +1305,15 @@ export function Review() {
                     </div>
                   )}
                   {asViolations().map((v) => (
-                    <ViolationRow
+                    <div
                       key={v.id}
+                      className={
+                        v.id === search.item
+                          ? "rounded-xl ring-1 ring-[var(--u-contest)]"
+                          : undefined
+                      }
+                    >
+                    <ViolationRow
                       violation={v}
                       busy={
                         violationAction.isPending &&
@@ -1314,6 +1325,7 @@ export function Review() {
                       onDuplicates={() => select("duplicates")}
                       onOntology={() => navigate({ to: "/ontology" })}
                     />
+                    </div>
                   ))}
                 </div>
               )}

@@ -513,6 +513,13 @@ pub struct GraphEdge {
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confidence: f32,
+    /// 有争议（0017 §3）：有一条 open 的公理违规或时态冲突指着它。整条边画成
+    /// 警戒色——环在节点上、边还是灰的，余光分不出来
+    pub contested: bool,
+    /// 幽灵边（0017 §3）：一条**没有落地**的派生——推出来了却撞上断言。`id` 是那条
+    /// `derived_contradiction` 违规的 id，不是任何事实；`derived` 同时为 true，
+    /// 所以它跟着派生开关走
+    pub blocked: bool,
 }
 
 /// 实体详情页的事实行（时间线）。
@@ -549,6 +556,10 @@ pub struct EntityFact {
     pub corrected: bool,
     /// 证据集合里最新的文档时间——开放事实的"最后确认时间"（时效性透明化）
     pub last_evidence_time: Option<DateTime<Utc>>,
+    /// 有争议（0017 §3）：`{ kind, ref_id, derived? }`——哪一种（违规的 kind，或
+    /// `temporal_conflict`）、Review 里那一项的 id、派生撞断言时推出来的那句话。
+    /// 一条只报最新的一处；行**不压暗**，断言仍然活着
+    pub contested: Option<serde_json::Value>,
 }
 
 /// 实体的一次认知变更（记录时间轴上的事件，与 EntityFact 的有效时间轴正交）。
@@ -931,6 +942,30 @@ pub struct DerivedFactView {
     pub derived_at: DateTime<Utc>,
     /// 直接前提，按推导顺序展开成三元组文本
     pub premises: Vec<String>,
+}
+
+/// 一条**没有落地**的派生（0017 §3）：推出来了，撞上一条断言，拦在图外。
+///
+/// 它没有 id——落库的才有。这里用那条 `derived_contradiction` 违规的 id 指它，
+/// 面板上的「没落地的」一档与图上的幽灵边都靠这个 id 对上 Review 里的卡片。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct BlockedDerivation {
+    pub violation_id: Uuid,
+    pub subject_id: Uuid,
+    pub subject: String,
+    pub object_id: Uuid,
+    pub object: String,
+    pub predicate: String,
+    pub rule: String,
+    /// 声明所在的谓词
+    pub via_label: String,
+    pub valid_from: Option<DateTime<Utc>>,
+    pub valid_to: Option<DateTime<Utc>>,
+    /// 挡住它的那条断言，与它的三元组文本
+    pub against_fact: Uuid,
+    pub against_text: String,
+    /// 前提事实 id，按推导顺序——证明链从这里展开
+    pub premises: Vec<Uuid>,
 }
 
 /// 证明的一步：一条断言前提，连同它的证据（0002 R2）。

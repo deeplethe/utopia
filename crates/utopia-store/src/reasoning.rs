@@ -1178,9 +1178,27 @@ pub async fn proof(
     let Some(derived) = derived_one(pool, kb_id, derived_id).await? else {
         return Ok(None);
     };
+    let premises: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT premise_fact_id FROM fact_derivations WHERE derived_fact_id = $1 ORDER BY seq",
+    )
+    .bind(derived_id)
+    .fetch_all(pool)
+    .await?;
+    let steps = steps_for(pool, &premises).await?;
+    Ok(Some(utopia_core::models::Proof { derived, steps }))
+}
+
+/// 一串前提展开成证明的步：三元组、区间、撤没撤、证据。
+///
+/// 落了地的派生（`fact_derivations`）与没落地的（`axiom_violations.path`）都从这里
+/// 走——前提是同一种东西，证明链没有理由长两个样
+async fn steps_for(
+    pool: &PgPool,
+    premises: &[Uuid],
+) -> AppResult<Vec<utopia_core::models::ProofStep>> {
     #[allow(clippy::type_complexity)]
     let rows: Vec<(
-        i32,
+        i64,
         Uuid,
         Uuid,
         String,
@@ -1193,19 +1211,18 @@ pub async fn proof(
         f32,
         bool,
     )> = sqlx::query_as(
-        "SELECT fd.seq, f.id, f.subject_id, s.canonical_name,
+        "SELECT x.ord - 1, f.id, f.subject_id, s.canonical_name,
                 f.predicate_id, r.label, f.object_id, o.canonical_name,
                 f.valid_from, f.valid_to, f.confidence,
                 f.invalidated_at IS NOT NULL
-           FROM fact_derivations fd
-           JOIN facts f ON f.id = fd.premise_fact_id
+           FROM unnest($1::uuid[]) WITH ORDINALITY AS x(id, ord)
+           JOIN facts f ON f.id = x.id
            JOIN entities s ON s.id = f.subject_id
            LEFT JOIN relation_types r ON r.id = f.predicate_id
            LEFT JOIN entities o ON o.id = f.object_id
-          WHERE fd.derived_fact_id = $1
-          ORDER BY fd.seq",
+          ORDER BY x.ord",
     )
-    .bind(derived_id)
+    .bind(premises)
     .fetch_all(pool)
     .await?;
     let mut steps = Vec::with_capacity(rows.len());
@@ -1227,7 +1244,7 @@ pub async fn proof(
         // 一条链最多 MAX_DEPTH 步，逐条取证据是可数的几次往返
         let evidence = crate::graph::fact_evidence(pool, fact_id).await?;
         steps.push(utopia_core::models::ProofStep {
-            seq,
+            seq: seq as i32,
             fact_id,
             subject_id,
             subject,
@@ -1242,7 +1259,65 @@ pub async fn proof(
             evidence,
         });
     }
-    Ok(Some(utopia_core::models::Proof { derived, steps }))
+    Ok(steps)
+}
+
+/// 没落地的派生里，与这个实体有关的那些（0017 §3）——面板「推出来的」一档的
+/// 「没落地的」小节。
+pub async fn blocked_for_entity(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+) -> AppResult<Vec<utopia_core::models::BlockedDerivation>> {
+    Ok(sqlx::query_as(
+        "SELECT v.id AS violation_id,
+                (v.detail->>'subject_id')::uuid AS subject_id,
+                COALESCE(v.detail->>'subject', '?') AS subject,
+                (v.detail->>'object_id')::uuid AS object_id,
+                COALESCE(v.detail->>'object', '?') AS object,
+                COALESCE(v.detail->>'predicate', '?') AS predicate,
+                COALESCE(v.detail->>'rule', '?') AS rule,
+                COALESCE(v.detail->>'via_label', '?') AS via_label,
+                (v.detail->>'valid_from')::timestamptz AS valid_from,
+                (v.detail->>'valid_to')::timestamptz AS valid_to,
+                v.left_fact AS against_fact,
+                s.canonical_name || ' · '
+                  || COALESCE(r.label, fact_surface_predicate(f.id), '?') || ' · '
+                  || COALESCE(o.canonical_name, '?') AS against_text,
+                v.path AS premises
+           FROM axiom_violations v
+           JOIN facts f ON f.id = v.left_fact
+           JOIN entities s ON s.id = f.subject_id
+           LEFT JOIN relation_types r ON r.id = f.predicate_id
+           LEFT JOIN entities o ON o.id = f.object_id
+          WHERE v.kb_id = $1 AND v.kind = 'derived_contradiction' AND v.status = 'open'
+            AND (v.detail->>'subject_id' = $2::text OR v.detail->>'object_id' = $2::text)
+          ORDER BY v.detected_at DESC",
+    )
+    .bind(kb_id)
+    .bind(entity_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 没落地的派生的证明链：它的前提就在违规的 `path` 里。找不到那条违规时 `None`
+pub async fn blocked_proof(
+    pool: &PgPool,
+    kb_id: Uuid,
+    violation_id: Uuid,
+) -> AppResult<Option<Vec<utopia_core::models::ProofStep>>> {
+    let path: Option<(Vec<Uuid>,)> = sqlx::query_as(
+        "SELECT path FROM axiom_violations
+          WHERE id = $1 AND kb_id = $2 AND kind = 'derived_contradiction'",
+    )
+    .bind(violation_id)
+    .bind(kb_id)
+    .fetch_optional(pool)
+    .await?;
+    match path {
+        None => Ok(None),
+        Some((p,)) => Ok(Some(steps_for(pool, &p).await?)),
+    }
 }
 
 /// 按 id 取一条派生（失效的也取：证明要能回看）。

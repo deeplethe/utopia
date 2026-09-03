@@ -324,6 +324,24 @@ export interface DerivedFact {
   premises: string[];
 }
 
+/** 一条**没有落地**的派生（0017 §3）：推出来了，撞上一条断言，拦在图外。
+ *  没有自己的 id，用那条违规的 id 指它——面板、幽灵边、Review 卡片三处靠它对上 */
+export interface BlockedDerivation {
+  violation_id: string;
+  subject_id: string;
+  subject: string;
+  object_id: string;
+  object: string;
+  predicate: string;
+  rule: string;
+  via_label: string;
+  valid_from: string | null;
+  valid_to: string | null;
+  against_fact: string;
+  against_text: string;
+  premises: string[];
+}
+
 /** 证明的一步：一条断言前提，带它的证据。前提一律是断言，所以证明是链不是树 */
 export interface ProofStep {
   seq: number;
@@ -646,6 +664,11 @@ export interface GraphEdge {
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
+  /** 有争议（0017 §3）：有一条 open 的公理违规或时态冲突指着它。整条边画成警戒色 */
+  contested: boolean;
+  /** 幽灵边（0017 §3）：没落地的派生。`id` 是那条 `derived_contradiction` 违规的 id；
+   *  `derived` 同时为 true，跟着派生开关走。点它打开主语的面板 */
+  blocked: boolean;
 }
 
 export interface EntityFact {
@@ -673,6 +696,13 @@ export interface EntityFact {
   stale: boolean;
   /** 修正行：区间闭合来自引擎对账/人工裁决而非抽取原文 */
   corrected: boolean;
+  /** 有争议（0017 §3）：哪一种、Review 里那一项的 id、派生撞断言时推出来的那句话。
+   *  行不压暗——断言仍然活着 */
+  contested: {
+    kind: string;
+    ref_id: string;
+    derived?: string | null;
+  } | null;
   /** 证据集合里最新的文档时间（开放事实的"最后确认时间"） */
   last_evidence_time: string | null;
 }
@@ -1361,6 +1391,8 @@ export const api = {
       /** 推出来的那些**单独一个键**，不掺进 facts：混在同一个列表里，
        *  用户看不出「文档里写的」和「引擎推的」的区别 */
       derived: DerivedFact[];
+      /** 没落地的派生（0017 §3）：连 `derived_facts` 都不在，所以也单独一个键 */
+      blocked: BlockedDerivation[];
       /** 同名的其他实体。**打开面板就给**——合并入口要长在能看见同名的地方，
        *  而不是藏在「改一次名」之后 */
       same_name: GraphNode[];
@@ -1390,6 +1422,11 @@ export const api = {
   derivedProof: (kbId: string, derivedId: string) =>
     request<{ proof: Proof | null }>(
       `/api/v1/kbs/${kbId}/derived/${derivedId}/proof`,
+    ),
+  /** 没落地的派生的证明链（0017 §3）：前提在违规的 path 里 */
+  blockedProof: (kbId: string, violationId: string) =>
+    request<{ steps: ProofStep[] | null }>(
+      `/api/v1/kbs/${kbId}/violations/${violationId}/proof`,
     ),
   documentDetail: (id: string) =>
     request<{ document: Doc; chunks: ChunkFull[] }>(`/api/v1/documents/${id}`),

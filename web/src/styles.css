@@ -413,6 +413,11 @@ select.input-dark option {
   background: rgba(242, 182, 109, 0.12);
   color: var(--u-warn);
 }
+/* 争议（0017 §3）：与图上的争议边同一个色相 */
+.u-chip-contest {
+  background: rgba(255, 106, 61, 0.14);
+  color: var(--u-contest);
+}
 .u-chip-danger {
   background: rgba(255, 157, 175, 0.12);
   color: var(--u-danger);

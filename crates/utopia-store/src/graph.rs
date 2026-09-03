@@ -418,13 +418,29 @@ async fn edges_among(
     //
     // 图要它们，因为「这条边是推出来的」正是用户该看见的信息之一；`derived`
     // 那一位让界面画得出区别，也让人整体过滤掉。
+    //
+    // 第三段是**幽灵边**（0017 §3）：推出来却没落地的派生，住在 `axiom_violations`
+    // 的 `detail` 里。它的 id 是违规的 id；`derived` 与 `blocked` 同时为 true，
+    // 界面据此让它跟着派生开关走、画成争议色往背景混的那一档。
+    //
+    // 断言那一段多算一位 `contested`：有 open 的违规或时态冲突指着它。派生撞断言
+    // 时被撞的是 left；right 只是最后一条前提，它本身没有争议
     let edges: Vec<GraphEdge> = sqlx::query_as(
         "SELECT f.id, f.subject_id AS source, f.object_id AS target,
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS label,
                 r.id IS NULL AS inferred, FALSE AS derived, NULL::text AS rule,
                 ARRAY[]::uuid[] AS premises,
-                f.valid_from, f.valid_to, f.confidence
+                f.valid_from, f.valid_to, f.confidence,
+                (EXISTS (SELECT 1 FROM axiom_violations v
+                          WHERE v.status = 'open'
+                            AND (v.left_fact = f.id
+                                 OR (v.right_fact = f.id AND v.kind <> 'derived_contradiction')))
+                 OR EXISTS (SELECT 1 FROM fact_conflicts c
+                             WHERE c.status = 'open'
+                               AND (c.old_fact_id = f.id OR c.new_fact_id = f.id))
+                ) AS contested,
+                FALSE AS blocked
          FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
            AND f.subject_id = ANY($2) AND f.object_id = ANY($2)
@@ -437,14 +453,35 @@ async fn edges_among(
                 FALSE AS inferred, TRUE AS derived, ru.kind AS rule,
                 ARRAY(SELECT fd.premise_fact_id FROM fact_derivations fd
                        WHERE fd.derived_fact_id = d.id ORDER BY fd.seq) AS premises,
-                d.valid_from, d.valid_to, d.confidence
+                d.valid_from, d.valid_to, d.confidence,
+                FALSE AS contested, FALSE AS blocked
          FROM derived_facts d JOIN relation_types r ON r.id = d.predicate_id
                               JOIN rules ru ON ru.id = d.rule_id
          WHERE d.kb_id = $1 AND d.invalidated_at IS NULL
            AND d.subject_id = ANY($2) AND d.object_id = ANY($2)
            AND ($3::timestamptz IS NULL
                 OR ((d.valid_from IS NULL OR d.valid_from <= $3)
-                    AND (d.valid_to IS NULL OR d.valid_to > $3)))",
+                    AND (d.valid_to IS NULL OR d.valid_to > $3)))
+         UNION ALL
+         SELECT v.id,
+                (v.detail->>'subject_id')::uuid AS source,
+                (v.detail->>'object_id')::uuid AS target,
+                v.detail->>'predicate' AS predicate, v.detail->>'predicate' AS label,
+                FALSE AS inferred, TRUE AS derived, v.detail->>'rule' AS rule,
+                v.path AS premises,
+                (v.detail->>'valid_from')::timestamptz AS valid_from,
+                (v.detail->>'valid_to')::timestamptz AS valid_to,
+                0::real AS confidence,
+                TRUE AS contested, TRUE AS blocked
+         FROM axiom_violations v
+         WHERE v.kb_id = $1 AND v.kind = 'derived_contradiction' AND v.status = 'open'
+           AND (v.detail->>'subject_id')::uuid = ANY($2)
+           AND (v.detail->>'object_id')::uuid = ANY($2)
+           AND ($3::timestamptz IS NULL
+                OR (((v.detail->>'valid_from')::timestamptz IS NULL
+                     OR (v.detail->>'valid_from')::timestamptz <= $3)
+                    AND ((v.detail->>'valid_to')::timestamptz IS NULL
+                         OR (v.detail->>'valid_to')::timestamptz > $3)))",
     )
     .bind(kb_id)
     .bind(ids)
@@ -568,7 +605,25 @@ pub async fn entity_detail(
                 (f.supersedes IS NOT NULL) AS corrected,
                 (SELECT MAX(COALESCE(d.doc_time, d.created_at))
                  FROM fact_evidence fe JOIN documents d ON d.id = fe.document_id
-                 WHERE fe.fact_id = f.id) AS last_evidence_time
+                 WHERE fe.fact_id = f.id) AS last_evidence_time,
+                COALESCE(
+                    (SELECT jsonb_build_object(
+                                'kind', v.kind, 'ref_id', v.id,
+                                'derived', CASE WHEN v.kind = 'derived_contradiction'
+                                    THEN (v.detail->>'subject') || ' · '
+                                         || (v.detail->>'predicate') || ' · '
+                                         || (v.detail->>'object') END)
+                       FROM axiom_violations v
+                      WHERE v.status = 'open'
+                        AND (v.left_fact = f.id
+                             OR (v.right_fact = f.id AND v.kind <> 'derived_contradiction'))
+                      ORDER BY v.detected_at DESC LIMIT 1),
+                    (SELECT jsonb_build_object('kind', 'temporal_conflict', 'ref_id', c.id)
+                       FROM fact_conflicts c
+                      WHERE c.status = 'open'
+                        AND (c.old_fact_id = f.id OR c.new_fact_id = f.id)
+                      ORDER BY c.created_at DESC LIMIT 1)
+                ) AS contested
          FROM facts f
          LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o

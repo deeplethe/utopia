@@ -295,6 +295,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/derived/{derived_id}/proof",
             get(graph_routes::derived_proof),
         )
+        // 没落地的派生的证明（0017 §3）：前提在违规的 path 里
+        .route(
+            "/kbs/{id}/violations/{violation_id}/proof",
+            get(graph_routes::blocked_proof),
+        )
         .route("/kbs/{id}/events", get(events_routes::kb_events))
         .route(
             "/kbs/{id}/sources",

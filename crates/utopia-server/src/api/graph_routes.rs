@@ -145,9 +145,12 @@ pub async fn entity_detail(
     // 只有先改一次名才够得着——而两个张伟并存是「宁分勿合」的正当产物，不是
     // 改名改出来的。合并入口该长在能看见同名的地方。
     let same_name = utopia_store::graph::same_name_peers(&state.pool, kb_id, entity_id).await?;
+    // 没落地的派生（0017 §3）也单独一个键：它们连 `derived_facts` 都不在
+    let blocked =
+        utopia_store::reasoning::blocked_for_entity(&state.pool, kb_id, entity_id).await?;
     Ok(Json(json!({
         "entity": entity, "facts": facts,
-        "derived": derived, "same_name": same_name,
+        "derived": derived, "blocked": blocked, "same_name": same_name,
     })))
 }
 
@@ -238,6 +241,18 @@ pub async fn derived_proof(
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
     let proof = utopia_store::reasoning::proof(&state.pool, kb_id, derived_id).await?;
     Ok(Json(json!({ "proof": proof })))
+}
+
+/// 没落地的派生的证明链（0017 §3）：前提在那条 `derived_contradiction` 违规的
+/// `path` 里，展开方式与落了地的一样。违规不存在时 `steps` 为 null
+pub async fn blocked_proof(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, violation_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let steps = utopia_store::reasoning::blocked_proof(&state.pool, kb_id, violation_id).await?;
+    Ok(Json(json!({ "steps": steps })))
 }
 
 /// 手动触发抽取（failed 重试 / 补配模型后补抽）。

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import Graphology from "graphology";
@@ -34,6 +41,8 @@ import {
   type Evidence,
   type GraphEdge,
   type GraphNode,
+  type BlockedDerivation,
+  type ProofStep,
 } from "../api";
 import { S } from "../i18n";
 import { usePopoverFlip } from "../ui/popoverFlip";
@@ -69,6 +78,10 @@ const EDGE_COLOR_INFERRED = "rgba(163,163,163,0.1)";
 // 用户要在余光里就分得出「文档里写的」和「推出来的」
 const EDGE_COLOR_DERIVED = "rgba(231,197,124,0.42)";
 const EDGE_COLOR_DERIVED_DIM = "rgba(231,197,124,0.14)";
+/* 争议（0017 §3）：珊瑚橙 `--u-contest`。金是派生、琥珀是警告、粉是危险，
+   它得跟三个都拉开。**整条边换色**——环在节点上、边还是灰的，余光分不出来 */
+const EDGE_COLOR_CONTEST = "rgba(255,106,61,0.55)";
+const EDGE_FOCUS_CONTEST = "rgba(255,106,61,1)";
 
 /** 相邻两条弧之间的曲率差。太小仍然糊，太大在长边上会甩得离节点很远 */
 const EDGE_CURVATURE_STEP = 0.18;
@@ -187,6 +200,10 @@ const NODE_BUDGETS: number[] = [150, 300, 600, 1000];
 // 注意：sigma 边着色器在预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，
 // alpha 无法压暗边——暗度必须编码进 RGB（不透明近背景色）
 const EDGE_DIM = "#141414";
+/* 幽灵边：没落地的派生。同一个色相往 EDGE_DIM 混（预乘混合下 alpha 压不暗边），
+   更细。sigma 默认的边程序画不了虚线，也不为此另写一个 */
+const EDGE_GHOST = lerpColor("rgba(255,106,61,1)", EDGE_DIM, 0.55);
+const EDGE_GHOST_FOCUS = lerpColor("rgba(255,106,61,1)", EDGE_DIM, 0.2);
 const EDGE_FOCUS = "rgba(255,255,255,0.55)";
 // 选中/悬停时的派生边。**不能跟着走白**：选中恰恰是看得最仔细的时候，
 // 而这时候「这条边是推出来的、没人写过」比任何时候都该说清楚。
@@ -439,6 +456,8 @@ export function Graph() {
      先留在原地演完退场，再真的移除。用 selectedRef 取当前值而不是把
      setState 写成带副作用的 updater：那种写法在 StrictMode 下会跑两遍 */
   const [exiting, setExiting] = useState<string | null>(null);
+  // 打开面板时想停在哪一档、展开哪一行——幽灵边点进来时用
+  const panelIntentRef = useRef<{ view: "derived"; open: string } | null>(null);
   const deselect = useCallback(() => {
     const cur = selectedRef.current;
     if (!cur) return;
@@ -843,13 +862,20 @@ export function Graph() {
     );
     for (const { edge: e, curvature, alsoLabels } of placed.edges) {
       g.addEdgeWithKey(e.id, e.source, e.target, {
-        label: e.label?.toUpperCase() ?? "",
-        size: 1,
-        color: e.derived
-          ? EDGE_COLOR_DERIVED
-          : e.inferred
-            ? EDGE_COLOR_INFERRED
-            : EDGE_COLOR,
+        // 争议的边标签前置 ⚠：颜色之外再给一个不靠色觉的记号
+        label: (e.contested ? "⚠ " : "") + (e.label?.toUpperCase() ?? ""),
+        size: e.blocked ? 0.7 : 1,
+        color: e.blocked
+          ? EDGE_GHOST
+          : e.contested
+            ? EDGE_COLOR_CONTEST
+            : e.derived
+              ? EDGE_COLOR_DERIVED
+              : e.inferred
+                ? EDGE_COLOR_INFERRED
+                : EDGE_COLOR,
+        contested: e.contested,
+        blocked: e.blocked,
         // 独一条就走直线：曲线是为了把重叠分开，没有重叠就不必弯
         type: curvature === 0 ? "line" : "curved",
         curvature,
@@ -1170,16 +1196,24 @@ export function Graph() {
                 : null;
             const hovNow = hoverRef.current;
             const focused = selNow ?? hovNow;
+            const ghost = attrs.blocked === true;
             const from = !focused
-              ? EDGE_COLOR_DERIVED
+              ? ghost
+                ? EDGE_GHOST
+                : EDGE_COLOR_DERIVED
               : s === focused || t === focused
-                ? EDGE_FOCUS_DERIVED
+                ? ghost
+                  ? EDGE_GHOST_FOCUS
+                  : EDGE_FOCUS_DERIVED
                 : EDGE_DIM;
             res.color = lerpColor(from, EDGE_DIM, k);
             res.label = "";
             return res;
           }
-          const pulse = lerpColor(
+          // 幽灵边不呼吸：它不是知识，是一条没走通的路
+          const pulse = attrs.blocked === true
+            ? EDGE_GHOST
+            : lerpColor(
             EDGE_COLOR_DERIVED_DIM,
             EDGE_COLOR_DERIVED,
             // 三角波而不是正弦：两端各停一瞬，看起来是「呼吸」不是「闪」
@@ -1199,7 +1233,14 @@ export function Graph() {
             ? selectedRef.current
             : null;
         const boost = () => {
-          res.color = isDerived ? EDGE_FOCUS_DERIVED : EDGE_FOCUS;
+          res.color =
+            attrs.blocked === true
+              ? EDGE_GHOST_FOCUS
+              : attrs.contested === true
+                ? EDGE_FOCUS_CONTEST
+                : isDerived
+                  ? EDGE_FOCUS_DERIVED
+                  : EDGE_FOCUS;
           res.size = Math.max((attrs.size as number) * 1.42, 1.85);
           res.zIndex = 5;
         };
@@ -1245,6 +1286,13 @@ export function Graph() {
       },
     });
     sigma.on("clickNode", ({ node }) => setSelected(node));
+    // 幽灵边点一下：打开它主语的面板，停在「推出来的」那一档、展开那一行（0017 §3）
+    sigma.on("clickEdge", ({ edge }) => {
+      if (g.getEdgeAttribute(edge, "blocked") !== true) return;
+      const [s] = g.extremities(edge);
+      panelIntentRef.current = { view: "derived", open: edge };
+      setSelected(s);
+    });
     sigma.on("doubleClickNode", ({ node, event }) => {
       event.preventSigmaDefault();
       setFocusEntity(node);
@@ -1840,6 +1888,7 @@ export function Graph() {
           kbId={kb.id}
           entityId={(selected ?? exiting)!}
           exiting={!selected}
+          intent={panelIntentRef}
           onClose={deselect}
           onNavigate={(id) => {
             // 跳转目标可能不在当前画布：同时把图 refocus 到它的邻域（与搜索选择一致）
@@ -2515,56 +2564,7 @@ function ProofChain({ kbId, d }: { kbId: string; d: DerivedFact }) {
       {proof.isPending && (
         <p className="text-[11px] text-neutral-600">{S.graph.proofLoading}</p>
       )}
-      {steps && (
-        <ol className="space-y-2">
-          {steps.map((st) => (
-            <li key={st.fact_id} className="text-[11px]">
-              <div className="flex items-baseline gap-1.5 flex-wrap">
-                <span className="u-num text-[10px] text-neutral-600 shrink-0">
-                  {S.graph.proofStep(st.seq + 1)}
-                </span>
-                <span className={st.retracted ? "text-neutral-600 line-through" : "text-neutral-300"}>
-                  {st.subject}
-                  <span className="text-neutral-500"> — {st.predicate ?? "?"} → </span>
-                  {st.object ?? "?"}
-                </span>
-                {st.retracted && (
-                  <span className="u-chip u-chip-warn text-[10px]">{S.graph.proofRetracted}</span>
-                )}
-              </div>
-              <div className="mt-0.5 space-y-1 pl-2">
-                {st.evidence.map((ev) => (
-                  <Link
-                    key={ev.chunk_id}
-                    to="/kb/$kbId/doc/$docId"
-                    params={{ kbId, docId: ev.document_id }}
-                    search={{ chunk: ev.chunk_id }}
-                    className="block text-neutral-500 hover:text-neutral-300"
-                  >
-                    <div className="line-clamp-2 italic">
-                      {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
-                    </div>
-                    <div className="mt-0.5 text-neutral-400">
-                      {S.graph.sectionRef(ev.filename, ev.seq + 1)}
-                      {ev.stale && (
-                        <span
-                          className="ml-1.5 u-num text-[10px] text-neutral-600"
-                          title={S.graph.staleEvidenceHint}
-                        >
-                          {S.graph.fromVersion(ev.doc_version)}
-                        </span>
-                      )}
-                    </div>
-                  </Link>
-                ))}
-                {st.evidence.length === 0 && (
-                  <p className="text-neutral-600">{S.graph.noEvidence}</p>
-                )}
-              </div>
-            </li>
-          ))}
-        </ol>
-      )}
+      {steps && <ProofSteps kbId={kbId} steps={steps} />}
       {/* 派生已失效、证明取不到：退回列表里带来的那几行文本 */}
       {!proof.isPending && !steps && (
         <ol className="space-y-0.5">
@@ -2582,10 +2582,200 @@ function ProofChain({ kbId, d }: { kbId: string; d: DerivedFact }) {
   );
 }
 
+/** 证明的步，落了地的与没落地的派生共用：前提是同一种东西 */
+function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
+  return (
+    <ol className="space-y-2">
+      {steps.map((st) => (
+        <li key={st.fact_id} className="text-[11px]">
+          <div className="flex items-baseline gap-1.5 flex-wrap">
+            <span className="u-num text-[10px] text-neutral-600 shrink-0">
+              {S.graph.proofStep(st.seq + 1)}
+            </span>
+            <span className={st.retracted ? "text-neutral-600 line-through" : "text-neutral-300"}>
+              {st.subject}
+              <span className="text-neutral-500"> — {st.predicate ?? "?"} → </span>
+              {st.object ?? "?"}
+            </span>
+            {st.retracted && (
+              <span className="u-chip u-chip-warn text-[10px]">{S.graph.proofRetracted}</span>
+            )}
+          </div>
+          <div className="mt-0.5 space-y-1 pl-2">
+            {st.evidence.map((ev) => (
+              <Link
+                key={ev.chunk_id}
+                to="/kb/$kbId/doc/$docId"
+                params={{ kbId, docId: ev.document_id }}
+                search={{ chunk: ev.chunk_id }}
+                className="block text-neutral-500 hover:text-neutral-300"
+              >
+                <div className="line-clamp-2 italic">
+                  {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
+                </div>
+                <div className="mt-0.5 text-neutral-400">
+                  {S.graph.sectionRef(ev.filename, ev.seq + 1)}
+                  {ev.stale && (
+                    <span
+                      className="ml-1.5 u-num text-[10px] text-neutral-600"
+                      title={S.graph.staleEvidenceHint}
+                    >
+                      {S.graph.fromVersion(ev.doc_version)}
+                    </span>
+                  )}
+                </div>
+              </Link>
+            ))}
+            {st.evidence.length === 0 && (
+              <p className="text-neutral-600">{S.graph.noEvidence}</p>
+            )}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+/** 没落地的派生（0017 §3）：像 DerivedRow 一样的一行，多一句「挡住它的是谁」，
+ *  展开是它的证明链——人在这里看到「引擎本可以画这条边，是什么拦住了它」 */
+function BlockedRow({
+  kbId,
+  b,
+  entityId,
+  open,
+  onToggle,
+  onNavigate,
+}: {
+  kbId: string;
+  b: BlockedDerivation;
+  entityId: string;
+  open: boolean;
+  onToggle: () => void;
+  onNavigate: (entityId: string) => void;
+}) {
+  const navigate = useNavigate();
+  const out = b.subject_id === entityId;
+  const otherId = out ? b.object_id : b.subject_id;
+  const otherName = out ? b.object : b.subject;
+  const proof = useQuery({
+    queryKey: ["blocked-proof", b.violation_id],
+    queryFn: () => api.blockedProof(kbId, b.violation_id),
+    enabled: open,
+  });
+  return (
+    <div
+      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"}`}
+    >
+      <button
+        onClick={onToggle}
+        className="w-full text-left px-2 py-1.5 flex items-center gap-1.5"
+      >
+        <ChevronRight
+          size={11}
+          className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
+        />
+        {out ? <ArrowRight size={10} className="shrink-0 text-neutral-600" /> : <ArrowLeft size={10} className="shrink-0 text-neutral-600" />}
+        <span className="shrink-0 text-[11px] text-neutral-500">{b.predicate}</span>
+        <span
+          role="link"
+          tabIndex={0}
+          onClick={(ev) => {
+            ev.stopPropagation();
+            onNavigate(otherId);
+          }}
+          onKeyDown={(ev) => {
+            if (ev.key === "Enter") {
+              ev.stopPropagation();
+              onNavigate(otherId);
+            }
+          }}
+          className="truncate text-[13px] text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
+        >
+          {otherName}
+        </span>
+        <span className="ml-auto shrink-0 pl-2 text-[10.5px] text-neutral-600">
+          {S.graph.ruleNames[b.rule] ?? b.rule}
+        </span>
+      </button>
+      <div className="flex items-center gap-1.5 px-2 pb-1.5 pl-[26px] text-[11px]">
+        <span className="truncate text-[var(--u-contest)]">
+          {S.graph.blockedBy(b.against_text)}
+        </span>
+        <span
+          role="link"
+          tabIndex={0}
+          onClick={() =>
+            navigate({
+              to: "/kb/$kbId/review",
+              params: { kbId },
+              search: { queue: "violations", item: b.violation_id },
+            })
+          }
+          className="ml-auto shrink-0 text-neutral-500 hover:text-neutral-300 hover:underline underline-offset-2"
+        >
+          {S.graph.blockedReview} →
+        </span>
+      </div>
+      {open && (
+        <div className="mx-2 mb-2 mt-0.5 border-l border-white/15 pl-2.5">
+          {proof.isPending && (
+            <p className="text-[11px] text-neutral-600">{S.graph.proofLoading}</p>
+          )}
+          {proof.data?.steps && (
+            <ProofSteps kbId={kbId} steps={proof.data.steps} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 争议 chip（0017 §3）：有一条 open 的违规或冲突指着这条断言。行不压暗——
+ *  它仍然活着。点它去 Review 对应那一档，并把那张卡点亮 */
+function ContestedChip({
+  kbId,
+  c,
+}: {
+  kbId: string;
+  c: NonNullable<EntityFact["contested"]>;
+}) {
+  const navigate = useNavigate();
+  const queue = c.kind === "temporal_conflict" ? "conflicts" : "violations";
+  return (
+    <span
+      role="link"
+      tabIndex={0}
+      onClick={(ev) => {
+        ev.stopPropagation();
+        navigate({
+          to: "/kb/$kbId/review",
+          params: { kbId },
+          search: { queue, item: c.ref_id },
+        });
+      }}
+      onKeyDown={(ev) => {
+        if (ev.key === "Enter") {
+          ev.stopPropagation();
+          navigate({
+            to: "/kb/$kbId/review",
+            params: { kbId },
+            search: { queue, item: c.ref_id },
+          });
+        }
+      }}
+      className="u-chip u-chip-contest shrink-0 !text-[10px] !px-1.5 cursor-pointer"
+      title={S.graph.contestedHint(c.kind, c.derived ?? null)}
+    >
+      {S.graph.contestedChip}
+    </span>
+  );
+}
+
 function EntityPanel({
   kbId,
   entityId,
   exiting,
+  intent,
   onClose,
   onNavigate,
 }: {
@@ -2593,6 +2783,8 @@ function EntityPanel({
   entityId: string;
   /** 正在演退场：还挂在 DOM 上，但已经不接受点击 */
   exiting: boolean;
+  /** 打开时停在哪一档、展开哪一行；读一次就清掉 */
+  intent?: MutableRefObject<{ view: "derived"; open: string } | null>;
   onClose: () => void;
   onNavigate: (entityId: string) => void;
 }) {
@@ -2604,6 +2796,8 @@ function EntityPanel({
   // 推出来的那些。**单独一个键，不掺进 facts**——混在一个列表里，用户看不出
   // 「文档里写的」和「引擎推的」的区别
   const derived = detail.data?.derived ?? [];
+  // 没落地的（0017 §3）：推出来了，撞上一条断言
+  const blocked = detail.data?.blocked ?? [];
   /* 按「方向 + 谓词 + 规则」分组，骨架与 Relations 的 groups 一致。
      规则挂在组上而不是每一行：它对整组都成立，逐行重复既冗余，
      那个琥珀色小字还会跟派生边抢色相 */
@@ -2635,6 +2829,13 @@ function EntityPanel({
   const [view, setView] = useState<
     "relations" | "timeline" | "history" | "derived"
   >("relations");
+  useEffect(() => {
+    const it = intent?.current;
+    if (!it) return;
+    intent.current = null;
+    setView(it.view);
+    setOpenFact(it.open);
+  }, [entityId, intent]);
 
   const e: GraphNode | undefined = detail.data?.entity;
 
@@ -2919,8 +3120,10 @@ function EntityPanel({
         <div className="flex rounded-lg overflow-hidden border border-white/10 w-fit">
           {(["relations", "timeline", "history", "derived"] as const)
             // 推出来的那一档：**没有派生就不出现**。一个没开推理的库不该看到
-            // 一个永远是空的标签页
-            .filter((v) => v !== "derived" || derived.length > 0)
+            // 一个永远是空的标签页。没落地的也算——那正是这一档要说的事
+            .filter(
+              (v) => v !== "derived" || derived.length > 0 || blocked.length > 0,
+            )
             .map((v) => (
               <button
                 key={v}
@@ -3051,6 +3254,34 @@ function EntityPanel({
                 </div>
               </div>
             ))}
+            {blocked.length > 0 && (
+              <div className="mb-3 last:mb-1">
+                <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--u-contest)]">
+                  <span>{S.graph.blockedTitle}</span>
+                  <span className="ml-auto text-neutral-600">
+                    {blocked.length}
+                  </span>
+                </div>
+                <p className="px-2 pb-1.5 text-[11px] leading-relaxed text-neutral-500">
+                  {S.graph.blockedHint}
+                </p>
+                {blocked.map((b) => (
+                  <BlockedRow
+                    key={b.violation_id}
+                    kbId={kbId}
+                    b={b}
+                    entityId={entityId}
+                    open={openFact === b.violation_id}
+                    onToggle={() =>
+                      setOpenFact(
+                        openFact === b.violation_id ? null : b.violation_id,
+                      )
+                    }
+                    onNavigate={onNavigate}
+                  />
+                ))}
+              </div>
+            )}
           </>
         )}
         {view !== "history" &&
@@ -3212,6 +3443,9 @@ function TimelineRow({
               {S.graph.staleFactChip}
             </span>
           )}
+          {fact.contested && (
+            <ContestedChip kbId={kbId} c={fact.contested} />
+          )}
         </div>
       </button>
       {open && <EvidenceList kbId={kbId} fact={fact} />}
@@ -3296,6 +3530,7 @@ function FactRow({
             {S.graph.staleFactChip}
           </span>
         )}
+        {fact.contested && <ContestedChip kbId={kbId} c={fact.contested} />}
         {interval && (
           <span className="ml-auto shrink-0 pl-2 u-num text-[10.5px] text-neutral-500">
             {interval}

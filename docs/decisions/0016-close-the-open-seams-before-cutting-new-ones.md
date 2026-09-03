@@ -1,6 +1,6 @@
 # 0016 · Close the open seams before cutting new ones
 
-- **Status**: in progress · the first schedule after v0.1.0 · A1, A2, A3 done · B1 done (#227) · B2a done (#238, [0017](0017-a-contradiction-points-upstream.md)), B2b planned · B3: the signature half done (#190 / #196), cross-pack signatures and range-aware direction done (#233), `disjointWith` into resolution still open · D2's blank-base problem worked around with builtin `metric` / `dimension` classes (#231), the pack itself still planned · the lakehouse engines landed ahead of D4 (#239, [0018](0018-the-lakehouse-is-one-protocol-away.md))
+- **Status**: in progress · the first schedule after v0.1.0 · A1, A2, A3 done · B1 done (#227) · B2 done (#238 / #243, [0017](0017-a-contradiction-points-upstream.md)) · B3: the signature half done (#190 / #196), cross-pack signatures and range-aware direction done (#233), `disjointWith` into resolution still open · D2's blank-base problem worked around with builtin `metric` / `dimension` classes (#231), the pack itself still planned · the lakehouse engines landed ahead of D4 (#239, [0018](0018-the-lakehouse-is-one-protocol-away.md))
 - **Written**: 2026-09-02 · condensed into English 2026-09-03
 - **Related**: written after checking [0001](0001-ontology-import-and-governance.md) through [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) against the code; every item below has its source in those fifteen records, whose 2026-09-02 revision notes are the check's product. This record only orders them and says why this order.
 
@@ -44,8 +44,8 @@ A4 README against code, both languages: promise only what has landed.
 
 **B · Finish the reasoning engine**, after A, parallel with C. B1 the R2 proof chain (done,
 #227; a chain, not a tree — see [0002](0002-reasoning-engine.md)). B2 the derived-vs-asserted
-contradiction signal, `axiom_violations` kind `derived_contradiction` (B2a done; B2b, visibility
-on graph and panel, planned — 0017). B3 `classify_type_drift` reads `entity_type_disjoint`
+contradiction signal, `axiom_violations` kind `derived_contradiction` (done: B2a engine and
+queue #238, B2b visibility on graph and panel #243 — 0017). B3 `classify_type_drift` reads `entity_type_disjoint`
 instead of the hard-coded list, today's behavior when nothing is declared (class kinship from the
 hierarchy landed first, #226). B4 R3 incremental
 maintenance, deferred until a full re-derivation of `ai-timeline-ends` exceeds a threshold
