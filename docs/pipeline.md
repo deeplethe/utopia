@@ -1,34 +1,31 @@
-# 一份文档如何变成图谱
+# How a Document Becomes a Graph
 
-**这一篇不讲为什么，讲东西怎么流的。** 「为什么这样而不是那样」在 [decisions/](decisions/README.md)；
-这里回答另一个问题：**我改的这一行，处在整条链的哪个位置，它上游给我什么、我不给下游什么会断在哪。**
+**This page describes how a document flows through the pipeline.** The reasons behind each choice live in [decisions/](decisions/README.md). This page answers a different question: **where the line you are editing sits in the chain, what upstream hands it, and what breaks downstream if you hand nothing on.**
 
-> 图上最值钱的不是箭头，是**箭头断掉的地方**。每一段末尾都有一节「这里会丢东西吗」，
-> 列的是代码里真实存在的丢弃点与它们在库里的落点——不是"理论上可能失败"，
-> 是**已经在 `extraction_drops` 里数得出来的那几种**。
+> The most valuable thing on the map is **where the arrows break**. Every stage ends with a "Where this stage drops things" section listing the drop points that actually exist in the code and where they land in the database: the kinds you can already count in `extraction_drops`, rather than theoretical failures.
 
-## 全景
+## Overview
 
 ```mermaid
 flowchart TB
-    U[上传 / 来源同步] --> P[解析<br/>parsers.rs]
-    P --> C[分块<br/>1200 字符 · 重叠 150]
-    C --> E1[嵌入<br/>chunks.embedding]
-    E1 --> RDY[(文档 ready<br/>可搜可问)]
-    E1 --> X[抽取<br/>每块一次 LLM]
-    X --> ENT[实体消解<br/>这一条是谁]
-    X --> FCT[事实落库<br/>双时态账本]
-    ENT --> ADJ[裁决<br/>攒批一次 LLM]
-    ADJ --> MRG[合并 / 保持分开]
-    FCT --> TR[类型消解<br/>这一条是什么]
-    FCT --> GROW[本体增长<br/>词表外的说法回流成提案]
-    MRG --> G[(图谱)]
+    U[Upload / source sync] --> P[Parse<br/>parsers.rs]
+    P --> C[Chunk<br/>1200 chars · overlap 150]
+    C --> E1[Embed<br/>chunks.embedding]
+    E1 --> RDY[(Document ready<br/>searchable and askable)]
+    E1 --> X[Extract<br/>one LLM call per chunk]
+    X --> ENT[Entity resolution<br/>who this mention is]
+    X --> FCT[Facts to store<br/>bitemporal ledger]
+    ENT --> ADJ[Adjudication<br/>one batched LLM call]
+    ADJ --> MRG[Merge / keep apart]
+    FCT --> TR[Type resolution<br/>what this entity is]
+    FCT --> GROW[Ontology growth<br/>out-of-vocabulary terms become proposals]
+    MRG --> G[(Graph)]
     TR --> G
-    GROW --> ONT[(本体)]
-    ONT -.喂回.-> X
-    G --> R0[一致性检查<br/>公理 vs 事实 · 不写库]
+    GROW --> ONT[(Ontology)]
+    ONT -.feeds back.-> X
+    G --> R0[Consistency check<br/>axioms vs facts · writes nothing]
     ONT --> R0
-    G --> R1[物化推导<br/>开关 · 派生另存]
+    G --> R1[Materialized inference<br/>opt-in · derived facts stored separately]
     ONT --> R1
     R1 --> G
 
@@ -37,274 +34,229 @@ flowchart TB
     style ONT fill:#2d4a5a,color:#fff
 ```
 
-**两段式是有意的**：嵌入完成即 `ready`，搜索与问答立刻可用，抽取在后台排队。
-一篇长文档的图谱要几分钟才长出来，但它在几十秒内就能被搜到。
+**The two-phase split is deliberate.** A document is `ready` as soon as embedding finishes; search and Q&A work immediately while extraction queues in the background. A long document takes minutes to grow its graph but is searchable within seconds.
 
-**本体那条回流虚线是这套东西的循环**：抽取用本体，抽取遇到本体没有的说法就把原词记下来，
-提案回流补进本体，下一批文档的抽取就用上了。见 [0003](decisions/0003-ontology-growth-loop.md)。
+**The dotted line back into extraction is the loop.** Extraction uses the ontology; when it meets a term the ontology lacks, it records the original wording; proposals flow back into the ontology; the next batch of documents is extracted with it. See [0003](decisions/0003-ontology-growth-loop.md).
 
-**本体从哪来**：建库时什么都不种。起点是可选的预制包（schema.org 默认勾选，另有 W3C Org、PROV-O、FOAF、IOF Core），
-或者用户导入自己的 OWL，或者空着——空库照样能抽，实体没有类型就是没有类型。见 [0008](decisions/0008-ontology-packs-as-cold-start.md)、[0009](decisions/0009-no-type-is-a-type.md)。
+**Where the ontology comes from.** A new database seeds nothing. The starting point is an optional prebuilt pack (schema.org checked by default; also W3C Org, PROV-O, FOAF, IOF Core), a user-imported OWL file, or nothing at all. An empty ontology still extracts; an entity without a type simply has no type. See [0008](decisions/0008-ontology-packs-as-cold-start.md) and [0009](decisions/0009-no-type-is-a-type.md).
 
-**最下面那两个框是本体的公理在干活**：一致性检查不写 `facts`，只把矛盾摆出来（Review 的 violations / defects 两档）；
-物化推导默认关，打开后派生事实另存一张表、图上金色，永远不闭合任何断言事实。见第四节。
+**The bottom two boxes are the ontology's axioms at work.** The consistency check never writes `facts`; it only surfaces contradictions (the Review page's two tiers, violations and defects). Materialized inference is off by default; when on, derived facts go to a separate table, show as gold on the graph, and never close any asserted fact. See section 4.
 
 ---
 
-## 一、抽取一个分块
+## 1. Extracting a Chunk
 
 ```mermaid
 flowchart TB
-    subgraph 提示词
-        B{本体装得下预算吗?}
-        B -->|装得下| FULL[全量铺<br/>小本体的老路]
-        B -->|装不下| RET[按这一块的向量检索<br/>约 40 类 / 30 关系 / 30 属性<br/>+ 命中类的祖先一起铺]
+    subgraph prompt [Prompt]
+        B{Does the ontology fit the budget?}
+        B -->|yes| FULL[Lay out the whole ontology<br/>the small-ontology path]
+        B -->|no| RET[Retrieve by the chunk vector<br/>about 40 classes / 30 relations / 30 attributes<br/>+ ancestors of the hit classes]
     end
     FULL --> LLM[LLM]
     RET --> LLM
-    CHK[分块正文 + 本文档已认下的实体] --> LLM
-    LLM --> J{输出的每一条}
-    J -->|entities| EN[实体<br/>type 从清单挑<br/>specific_type 自由文本]
-    J -->|predicate 命中属性| AT[属性事实<br/>值按 datatype 归一]
-    J -->|predicate 命中关系| RL[关系事实]
-    RL --> DIR{主宾类型<br/>对得上签名?}
-    DIR -->|对| OK[落库]
-    DIR -->|主语违反且宾语符合| SWAP[按签名对调主宾<br/>留 direction_corrected]
-    DIR -->|对调也不合法| NOP[谓词留空<br/>主宾时间证据都留]
-    J -->|词表外 + 字面值| LIT[值落 object_value<br/>原词落 proposed_predicate]
-    J -->|词表外 + 实体宾语| FB[谓词留空<br/>原词落 proposed_predicate]
+    CHK[Chunk text + entities already accepted in this document] --> LLM
+    LLM --> J{Each item in the output}
+    J -->|entities| EN[Entity<br/>type picked from the list<br/>specific_type free text]
+    J -->|predicate matches an attribute| AT[Attribute fact<br/>value normalized by datatype]
+    J -->|predicate matches a relation| RL[Relation fact]
+    RL --> DIR{Subject and object types<br/>match the signature?}
+    DIR -->|yes| OK[Stored]
+    DIR -->|subject violates, object fits| SWAP[Swap subject and object per the signature<br/>record direction_corrected]
+    DIR -->|swap is also invalid| NOP[Predicate left empty<br/>subject, object, time and evidence kept]
+    J -->|out of vocabulary + literal value| LIT[Value into object_value<br/>original term into proposed_predicate]
+    J -->|out of vocabulary + entity object| FB[Predicate left empty<br/>original term into proposed_predicate]
 
     style LLM fill:#3a3a5a,color:#fff
 ```
 
-**`specific_type` 是这一步最容易被忽略的输出**：自由文本、不校验、不入本体，就是模型自己
-对这个实体的说法（"vector database software"）。类型消解靠它把任务从「读懂这是什么」
-换回「本体里哪个类叫这个名字」。没有它，实测 17 个实体的 `proposed_type` 全是空的——
-因为清单里总有个"差不多"的，模型选了它，心里那个更准的说法就此丢失。
+**`specific_type` is the easiest output to overlook.** Free text, unvalidated, never entered into the ontology: it is the model's own description of the entity ("vector database software"). Type resolution uses it to turn the task from "understand what this is" into "which class in the ontology has this name". Without it, a test run left `proposed_type` empty on all 17 entities: the list always has something close enough, the model picks it, and the more precise description is lost.
 
-**词表外的两条路都不丢东西**：带字面值的落 `object_value`（而不是凭空造一个叫「2015」的实体），
-带实体宾语的**谓词留空**——不是降级成一个叫「有关联」的关系，那是断言不是含糊（[0010](decisions/0010-no-relation-is-no-relation.md)）。
-两者的原词都进 `fact_evidence.proposed_predicate`，那是这条事实身上唯一还留着原意的地方，显示时由 `fact_surface_predicate()` 取回。
+**Neither out-of-vocabulary path loses anything.** A literal value goes to `object_value` instead of becoming an entity named "2015". An entity object leaves the **predicate empty** instead of degrading into a relation called "related to", which would be an assertion rather than vagueness ([0010](decisions/0010-no-relation-is-no-relation.md)). In both cases the original term goes to `fact_evidence.proposed_predicate`, the one place on the fact that still carries the original meaning; `fact_surface_predicate()` reads it back for display.
 
-**命中的关系还要过一道签名**：本体声明了 `employee (organization → person)`，模型照样会写 `Musk employee Microsoft`——
-提示词三轮都压不下去，英语的 "X is an employee of Y" 太强。所以写入时掰正：主语违反 domain 而宾语符合就对调，**绝不静默**，留一条 `direction_corrected`；
-对调也不合法（`OpenAI affectedBy …`，schema.org 里那是医学检验用的）就丢掉谓词、留下主宾与证据。参数顺序是 key 的编码约定，不是关于世界的断言，所以这一处本体是执法的。
-见 [0012](decisions/0012-the-ontology-is-a-contract-not-a-suggestion.md)。
+**A matched relation still passes a signature check.** The ontology declares `employee (organization → person)`, and the model still writes `Musk employee Microsoft`; three rounds of prompt tuning could not suppress it, because English "X is an employee of Y" is too strong. So the write path corrects it: if the subject violates the domain and the object fits, swap them and record `direction_corrected`, never silently. If the swap is also invalid (`OpenAI affectedBy …`, a medical-test predicate in schema.org), drop the predicate and keep subject, object and evidence. Argument order is an encoding convention of the key, not a claim about the world, so here the ontology enforces. See [0012](decisions/0012-the-ontology-is-a-contract-not-a-suggestion.md).
 
-### 这里会丢东西吗
+### Where this stage drops things
 
-会。十二种原因码，全部记进 `extraction_drops`，界面上可见（其中一种不是丢弃，是留痕）：
+Eleven reason codes, all recorded in `extraction_drops` and visible in the UI (one is a trace, not a drop):
 
-| 原因 | 什么时候 |
+| Reason | When |
 |---|---|
-| `truncated_reply` | 模型的输出被截断，这一块整块作废 |
-| `malformed_item` | 一条事实格式不对——**只丢这一条**，不丢整块（#127） |
-| `not_an_entity_name` | 「实体名」是一整句话（按词数 + 限定动词判，#143） |
-| `low_confidence` | 模型自报置信度低于阈值 |
-| `subject_not_declared` | 主语没在 `entities` 里声明——关系与属性两条路径**都**记 |
-| `attr_domain_mismatch` | 属性挂到了 domain 之外的类上（沿父类 DAG 上溯仍不匹配） |
-| `attr_no_value` / `attr_datatype` | 属性事实没给值，或值换算不出声明的 datatype |
-| `object_missing` | 关系事实没有宾语 |
-| `direction_corrected` | **不是丢弃**：主宾按签名对调了，记下来是为了不静默 |
-| `domain_mismatch` | 对调也不合法，谓词被丢掉（主宾与证据留下） |
+| `truncated_reply` | The model's output was cut off; the whole chunk is discarded |
+| `malformed_item` | One fact is malformed; **only that item** is dropped, not the chunk (#127) |
+| `not_an_entity_name` | The "entity name" is a whole sentence (judged by word count and finite verbs, #143) |
+| `low_confidence` | The model's self-reported confidence is below the threshold |
+| `subject_not_declared` | The subject is not declared in `entities`; recorded on **both** the relation and attribute paths |
+| `attr_domain_mismatch` | The attribute is attached to a class outside its domain, even after walking up the parent DAG |
+| `attr_no_value` / `attr_datatype` | The attribute fact has no value, or the value cannot be converted to the declared datatype |
+| `object_missing` | The relation fact has no object |
+| `direction_corrected` | **Not a drop**: subject and object were swapped per the signature; recorded so it is never silent |
+| `domain_mismatch` | The swap is also invalid; the predicate is dropped (subject, object and evidence stay) |
 
-**`attr_domain_mismatch` 是最贵的一种**：它在落地当场丢弃，而事后改类救不回来——
-那条事实从没写入过，只能重抽。
-
-从前还有一种 `fallback_relation_missing`（兜底关系被删了就整条消失）——随 `related_to` 一起没了。
+**`attr_domain_mismatch` is the most expensive.** It drops the fact at write time, and retyping the entity later does not recover it: the fact was never written and can only be re-extracted.
 
 ---
 
-## 二、实体消解：这一条是谁
+## 2. Entity Resolution: Who This Mention Is
 
 ```mermaid
 flowchart TB
-    M[一次 mention<br/>类型 + 名字 + 分块向量] --> EQ[等值召回<br/>canonical_name 或 aliases 相等]
-    EQ --> S{画像相似度}
-    S -->|0.55 及以上| ATT[并进已有实体<br/>更新画像]
-    S -->|0.35 到 0.55| NEW1[新建 + 入审阅队列]
-    S -->|低于 0.35| NEW2[新建，不打扰队列]
-    EQ -->|一个都没有| NEW3[新建]
+    M[One mention<br/>type + name + chunk vector] --> EQ[Equality recall<br/>canonical_name or aliases equal]
+    EQ --> S{Profile similarity}
+    S -->|0.55 and above| ATT[Attach to the existing entity<br/>update its profile]
+    S -->|0.35 to 0.55| NEW1[Create + enqueue for review]
+    S -->|below 0.35| NEW2[Create, queue untouched]
+    EQ -->|no match| NEW3[Create]
     NEW1 --> CT
     NEW2 --> CT
-    NEW3 --> CT[包含关系召回<br/>只在新建时跑一次]
-    CT --> Q[(审阅队列<br/>pending)]
-    Q --> AD[裁决<br/>攒批一次 LLM]
-    AD -->|同一个| ME[合并<br/>名字进 aliases<br/>事实搬过去]
-    AD -->|不是| KP[保持分开]
-    ME --> RD[把该 source 上其余 pending<br/>改指到合并目标]
+    NEW3 --> CT[Containment recall<br/>runs once, on creation only]
+    CT --> Q[(Review queue<br/>pending)]
+    Q --> AD[Adjudication<br/>one batched LLM call]
+    AD -->|same| ME[Merge<br/>name into aliases<br/>facts moved over]
+    AD -->|different| KP[Keep apart]
+    ME --> RD[Redirect the other pending pairs on that source<br/>to the merge target]
     RD --> Q
 
     style AD fill:#3a3a5a,color:#fff
     style Q fill:#2d4a5a,color:#fff
 ```
 
-**三个阈值分三档**（`SIM_ATTACH = 0.55`、`SIM_NEW = 0.35`）：像得没话说就并，
-像得可疑就新建但入队，不像就新建且不打扰队列。**宁分勿合**——错合的代价是两个实体的
-事实混在一起，比多一个实体贵得多。
+**Two thresholds, three tiers** (`SIM_ATTACH = 0.55`, `SIM_NEW = 0.35`): clearly the same attaches; suspiciously similar creates a new entity and queues it; dissimilar creates one without touching the queue. **Prefer splitting over merging.** A wrong merge mixes two entities' facts together, which costs far more than one extra entity.
 
-**包含关系召回**（`Holmes` ⊂ `Sherlock Holmes`）补等值召回的盲区：前缀枚举不完，
-简称会静默变成第二个实体。它有三条约束：较短那个名字至少 4 字符（低于此多是通名）、
-单次最多产出 4 对、SQL 侧多扫 16 行（硬互斥类型在 Rust 侧才筛得掉）。
+**Containment recall** (`Holmes` ⊂ `Sherlock Holmes`) covers the blind spot of equality recall: prefixes cannot be enumerated, so a short name would silently become a second entity. Three constraints: the shorter name is at least 4 characters (below that it is usually a generic word), at most 4 pairs per run, and SQL scans 16 extra rows because hard-disjoint types are only filtered on the Rust side.
 
-**改指那一步**是整张图里最不直觉的一环，也是最容易被误删的：合并之后，涉及被合实体的
-其余待审阅对**不能关掉**，要改指到合并目标。理由见下。
+**The redirect step** is the least intuitive part of the graph and the easiest to delete by mistake. After a merge, the other pending pairs that involve the merged-away entity **must not be closed**; they are redirected to the merge target. The reason follows.
 
-### 这一段修过三个洞，三个都是同一份语料照出来的
+### Three Holes, One Corpus
 
-用《福尔摩斯冒险史》前六篇（`scripts/bench/corpora/holmes.json`）连跑四次，每次修一层：
+Four runs over the first six stories of *The Adventures of Sherlock Holmes* (`scripts/bench/corpora/holmes.json`), each fixing one layer:
 
-| | 原始 | 修同类型 | 加别名召回 | 加改指 |
+| | Baseline | Same-type fix | Alias recall | Redirect |
 |---|---|---|---|---|
-| 已合并实体 | 14 | 37 | 47 | **57** |
-| `Holmes` 并入 | ✗ | ✓ | ✓ | ✓ |
-| `Mr. Holmes` 并入 | ✗ | ✗ | ✗ | **✓** |
+| Entities merged | 14 | 37 | 47 | **57** |
+| `Holmes` merged | ✗ | ✓ | ✓ | ✓ |
+| `Mr. Holmes` merged | ✗ | ✗ | ✗ | **✓** |
 
-**第一层**：`classify_type_drift` 没有「两个类型相同」这一档，`person × person` 落进
-`Disjoint`——"永不可能是同一个"。那个函数生来服务「类型漂移」（同名被抽成两种类型），
-那里两边相同不会发生；后来被包含关系召回借去当相容性判据，**而那里两边相同才是常态**。
-全文最明显的同指关系一对都没进过队列，十二个既有单元测试全在测跨类型。
+**Layer one.** `classify_type_drift` had no tier for "both types equal", so `person × person` fell into `Disjoint`, "can never be the same". The function was written for type drift (one name extracted as two types), where equal sides never occur; containment recall later borrowed it as a compatibility test, where equal sides are the norm. The most obvious coreferences in the text never reached the queue, and all twelve existing unit tests covered cross-type cases.
 
-**第二层**：召回只看 `canonical_name`。合并把名字搬进 `aliases`，于是**每成功合并一次
-就拆掉一条桥**——`Holmes` 并入之后，后来的 `Mr. Holmes` 跟 `Sherlock Holmes` 谁也不含谁，
-本来正是靠 `Holmes` 桥接。修好第一层反而让第二层的漏显形了。
+**Layer two.** Recall looked only at `canonical_name`. A merge moves the name into `aliases`, so every successful merge removed a bridge: once `Holmes` was merged, the later `Mr. Holmes` and `Sherlock Holmes` contained neither the other, and `Holmes` had been the bridge. Fixing layer one exposed layer two.
 
-**第三层**：合并会把涉及被合实体的其余 pending 审阅关成 `superseded by merge`，
-代码注释里的理由是"疑点若仍在会由后续 mention 重新提起"。**那句是错的**：包含关系召回
-只在新建实体时跑，而这些实体早就存在、不会再被新建。关掉即永久关闭。现在改指到合并目标，
-只有两类真正过时的才关——重定向后成自环的，和目标对已在队列里的。
+**Layer three.** A merge closed the other pending reviews involving the merged-away entity as `superseded by merge`; the code comment claimed a later mention would raise the doubt again. That was wrong: containment recall runs only when an entity is created, and these entities already exist, so closing was permanent. Now they are redirected to the merge target, and only two genuinely stale kinds are closed: pairs that become self-loops after the redirect, and pairs whose target pair is already queued.
 
-**这三层是一层套一层的**：不修第一层看不见第二层，不修第二层看不见第三层。
-基准语料的价值不在第一次跑出的数字，在**每修一次就再照出下一层**。
+**Each layer hid the next.** The value of the benchmark corpus is the next layer it exposes after every fix, more than the first number it produces.
 
-### 这里会丢东西吗
+### Where this stage drops things
 
-不会丢事实，但会**留下不该分开的实体**。两个已知缺口：
+No facts are lost, but **entities that belong together can stay apart**. Two known gaps:
 
-- 两个名字既不互相包含、又没有共同别名做桥（`启明 X7 加速卡` vs `启明 X7 推理加速卡`）。
-  要三元组相似度，而 `CREATE EXTENSION pg_trgm` 需要超级权限，本仓库是受限角色连库。
-- 单次包含关系召回上限 4 对：一个通名可能被几十个实体包含，全放进去会淹掉队列。
+- Two names that neither contain each other nor share an alias as a bridge (`启明 X7 加速卡` vs `启明 X7 推理加速卡`). Trigram similarity would cover this, but `CREATE EXTENSION pg_trgm` needs superuser and this repository connects with a restricted role.
+- Containment recall is capped at 4 pairs per run. A generic name may be contained by dozens of entities, and admitting them all would flood the queue.
 
-合并本身**可撤销**（`entity_merges` 记着改之前的一切，`revert_merge` 放回去）。
+A merge itself is **reversible**: `entity_merges` records everything as it was, and `revert_merge` restores it.
 
 ---
 
-## 三、本体消解：这一条是什么
+## 3. Type Resolution: What This Entity Is
 
 ```mermaid
 flowchart TB
-    subgraph 抽取留下的线索
-        PT[proposed_type<br/>词表外的类型名]
-        ST[specific_type<br/>模型自己的说法]
-        PP[proposed_predicate<br/>词表外的谓词原词]
+    subgraph clues [Clues left by extraction]
+        PT[proposed_type<br/>out-of-vocabulary type name]
+        ST[specific_type<br/>free-text description from the model]
+        PP[proposed_predicate<br/>out-of-vocabulary predicate, original term]
     end
     PT --> TR
     ST --> TR
-    PP --> GP[本体提案<br/>检索候选 + 裁决]
-    TR[类型消解] --> C1[候选一<br/>画像 → 类的描述]
-    TR --> C2[候选二<br/>语境近邻的类当票投]
-    C1 --> AD2{裁决}
+    PP --> GP[Ontology proposal<br/>retrieve candidates + adjudicate]
+    TR[Type resolution] --> C1[Candidate one<br/>profile → class descriptions]
+    TR --> C2[Candidate two<br/>classes of context neighbors vote]
+    C1 --> AD2{Adjudication}
     C2 --> AD2
-    AD2 -->|在原类子树里| AUTO[自动改类<br/>entity_retypes]
-    AD2 -->|跨了分类轴| REV[待人工<br/>类对认可一次即免问]
-    AD2 -->|都不是| NONE[不动<br/>并记下理由]
-    GP -->|已有的| MAP[映射到已有类型<br/>改写等待的事实]
-    GP -->|没有的| NEWT[新建类型 + 改写]
+    AD2 -->|within the original class subtree| AUTO[Retype automatically<br/>entity_retypes]
+    AD2 -->|crosses a classification axis| REV[Human review<br/>a class pair approved once is never asked again]
+    AD2 -->|neither| NONE[Leave alone<br/>reason recorded]
+    GP -->|type exists| MAP[Map to the existing type<br/>rewrite the waiting facts]
+    GP -->|type is new| NEWT[Create the type + rewrite]
 
     style AD2 fill:#3a3a5a,color:#fff
 ```
 
-**两路候选取并集，不合分数。** 距离在三处都不可比：跨实体不可比
-（`清华大学计算机系→computer_store` 0.46 比 `星云科技→corporation` 0.59 还近，而前者荒谬）、
-两路之间不可比（一个在类空间一个在实体空间）、同一路的两个查询之间也不可比
-（短查询"医药集团"产生的距离系统性小于一整段画像）。**一律交替取。**
+**The two candidate routes are unioned, never scored together.** Distances are incomparable in three places: across entities (`清华大学计算机系→computer_store` at 0.46 is closer than `星云科技→corporation` at 0.59, and the former is absurd), between the two routes (one lives in class space, the other in entity space), and between two queries on the same route (a short query like "医药集团" yields systematically smaller distances than a full profile). Candidates are interleaved instead.
 
-**分档不看模型自报的 confidence**——实测是双峰的（15 条全 ≥0.85、4 条 null，中间没有），
-自报置信度是语气不是概率。改用「选中的类在不在原类的子树里」：在 = 往下走一格，自动；
-不在 = 换了分类轴，进人工。
+**Tiering ignores the model's self-reported confidence.** In practice it is bimodal (15 items all ≥ 0.85, 4 null, nothing in between): it is tone, not probability. The tier comes from whether the chosen class sits in the original class's subtree. Inside means one step down, applied automatically; outside means a different classification axis, sent to a human.
 
-**纠正也走人工，而且天然如此**：抽取按块检索候选之后自己就会挑细类，也会挑错
-（`绍兴 → address`）；正确答案是错类的**兄弟**不是后代，所以必然判为跨轴。
-推翻抽取的判断比细化它风险大，不该自动发生。
+**Corrections go to a human as well, by construction.** Extraction already picks fine-grained classes after per-chunk retrieval, and sometimes picks wrong ones (`绍兴 → address`). The right answer is a **sibling** of the wrong class, so it always reads as crossing an axis. Overturning extraction's judgment is riskier than refining it and should not happen automatically.
 
-### 这里会丢东西吗
+### Where this stage drops things
 
-不丢事实，但**改类不进时间轴**——它是 `entities` 上一次 UPDATE 加一行 `entity_retypes`〔实体历史现在会显示 `retyped` / `retype_reverted` 两种事件，这一条已经补上〕。**可撤销不等于会被撤销**，
-这是先做 preview 再做 apply 的理由。
+No facts are lost. A retype is one UPDATE on `entities` plus a row in `entity_retypes`, and entity history shows it as `retyped` / `retype_reverted` events. **Reversible does not mean it will be reversed**, which is why preview comes before apply.
 
-**类型消解今天只能手动跑**——本体页 preview → apply，没有任何自动触发。抽取结束只入队本体扩展与实体裁决。
-所以大本体下新实体的细化依赖人记得去点一下，这是个真缺口（0001 P3a）。
+**Type resolution runs only by hand today**: preview → apply on the ontology page, with no automatic trigger. Finishing extraction only enqueues ontology growth and entity adjudication, so refining new entities under a large ontology depends on someone remembering to click. This is a real gap (0001 P3a).
 
-**人拍过板的不再被引擎重判**：`entities.type_source` 是 `human` 的实体不进取材，包括「人判了，就是没有类型」（0001 P4a）。
+**Human decisions are never re-judged by the engine.** Entities whose `entities.type_source` is `human` are excluded from the candidate pool, including "a human decided it has no type" (0001 P4a).
 
-**拒绝要给理由。** `left_alone` 曾经只是个数，而这一步的设计押在"选择都不是是个体面答案"上——
-最大的一档不透明。记上理由之后第一次跑就回答了此前答不出的问题：失败**全在检索一侧**
-（`administrative_area`、`periodical` 从没被端上来过），不在裁决。
+**Rejections carry a reason.** The design bets on "none of these" being an honest answer, which made `left_alone` the largest and most opaque tier while it was only a count. With reasons recorded, the first run answered a question that had been unanswerable: the failures were **all on the retrieval side** (`administrative_area` and `periodical` were never offered), none in adjudication.
 
 ---
 
-## 四、公理：检查与推导
+## 4. Axioms: Checking and Inference
 
 ```mermaid
 flowchart TB
-    ONT[(本体的公理<br/>functional · symmetric · asymmetric<br/>transitive · inverseOf · subPropertyOf · disjoint)] --> SELF[本体自检<br/>八类缺陷]
+    ONT[(Ontology axioms<br/>functional · symmetric · asymmetric<br/>transitive · inverseOf · subPropertyOf · disjoint)] --> SELF[Ontology self-check<br/>eight defect kinds]
     SELF --> DEF[(ontology_defects)]
-    ONT --> R0[事实层检查<br/>自环 · 反对称 · 传递环 · 基数 · 签名]
-    G[(图谱)] --> R0
-    R0 --> VIO[(axiom_violations<br/>带完整路径)]
-    VIO --> DEC{人裁}
-    DEC -->|撤回事实| RET[事实作废]
-    DEC -->|放宽公理| RLX[改本体]
-    DEC -->|接受| ACC[两条都留]
-    ONT --> R1{materialize_inferences<br/>开关，默认关}
+    ONT --> R0[Fact-level check<br/>self-loop · asymmetry · transitive cycle · cardinality · signature]
+    G[(Graph)] --> R0
+    R0 --> VIO[(axiom_violations<br/>with the full path)]
+    VIO --> DEC{Human decision}
+    DEC -->|retract the fact| RET[Fact retracted]
+    DEC -->|relax the axiom| RLX[Edit the ontology]
+    DEC -->|accept| ACC[Both stay]
+    ONT --> R1{materialize_inferences<br/>switch, off by default}
     G --> R1
-    R1 -->|开| DER[(derived_facts<br/>另一张表 · rule_id · 前提链)]
-    DER --> GV[图上金色边<br/>实体面板「推出来的」]
+    R1 -->|on| DER[(derived_facts<br/>separate table · rule_id · premise chain)]
+    DER --> GV[Gold edges on the graph<br/>entity panel marks them inferred]
 
     style DEC fill:#3a3a5a,color:#fff
 ```
 
-**签名在三条写路径上都算数**（#190 / #196）：第一节那道「主宾对得上签名吗」的判断住在 store（`ontology::judge_direction`），抽取落新事实、采纳把谓词挂回旧事实都调它——两边都不合的采纳**不挂**，条数随 `facts_left_off` 上报；合并换了主宾之后不掰不改，只对搬动过的事实查一遍，违反的进 `axiom_violations`（`signature`）。检查里的第五类就是它的全量版，本体事后改了 domain 也逃不过。
+**Signatures count on all three write paths** (#190 / #196). The "do subject and object match the signature" check from section 1 lives in the store (`ontology::judge_direction`). Extraction calls it when writing new facts. Adoption calls it when reattaching a predicate to old facts; where both directions fail, the predicate is **not attached** and the count is reported as `facts_left_off`. A merge that changes subject or object neither swaps nor edits; it re-checks only the moved facts, and violations go to `axiom_violations` as `signature`. The `signature` check kind is the full-scan version of the same rule, so a domain changed in the ontology after the fact is caught too.
 
-**检查不写库，推导写另一张表。** 一致性检查（R0）只指出问题，风险面为零；物化推导（R1）会往图里加东西，所以它的每条约束都是必要的：
-规则**只从本体公理编译**，没有用户 DSL；**断言硬性优先于派生**——已经断言过的三元组不再派生，「这条是谁说的」有唯一答案；
-深度上限加环检测，每谓词封顶两万条且被截掉的**要说出来**；有效时间取前提的交集，空交集不推。
-派生不进 `facts`：四十多处读 `facts` 的查询只有一处认得标记，分开之后忘了 UNION 的后果是**看不见**派生，而不是**混进去**。
+**The check writes nothing; inference writes to a separate table.** The consistency check (R0) only points at problems, with zero risk. Materialized inference (R1) adds to the graph, so each of its constraints is necessary: rules **compile only from ontology axioms**, with no user DSL; **asserted facts strictly override derived ones**, so a triple already asserted is never derived and "who said this" has one answer; a depth limit plus cycle detection, a cap of 20,000 per predicate, and truncation **is reported**; valid time is the intersection of the premises, and an empty intersection derives nothing. Derived facts never enter `facts`: of the forty-odd queries that read `facts`, only one recognizes a marker, so with separate tables a forgotten UNION makes derived facts **invisible** rather than **mixed in**.
 
-**本体自检排在前面**：自相矛盾的本体（一个关系既 symmetric 又 asymmetric、子类成环、逆没指回来）会让事实层的结论全部可疑。
+**The ontology self-check runs first.** A self-contradictory ontology (a relation both symmetric and asymmetric, a subclass cycle, an inverse that does not point back) makes every fact-level conclusion suspect.
 
-**没装本体包的库跑出来是零**，那是实情不是故障——没有公理就没有判据，不报矛盾比猜一个公理出来安全。
+**A database without an ontology pack reports zero.** That is the truth, not a fault: without axioms there is no criterion, and reporting no contradiction is safer than guessing an axiom.
 
-**什么时候跑**：导入本体后自动跑一次检查（公理刚变，最该重算的时刻）；Review 页可手动跑；推导按 `inference_interval_minutes`（缺省 60）定时全量重推——增量维护还没做。
+**When it runs.** The check runs automatically after an ontology import (the axioms just changed, the best moment to recompute) and on demand from the Review page. Inference reruns in full on a timer, `inference_interval_minutes` (default 60); incremental maintenance is not built yet.
 
-### 这里会丢东西吗
+### Where this stage drops things
 
-不丢，但**有两处沉默**：派生 vs 断言矛盾时派生不落地，今天**不记信号**；同一三元组有多条推导路径只留第一条证明。两者都是 [0002](decisions/0002-reasoning-engine.md) 里写了而没做的。
+Nothing is dropped, but the engine keeps quiet in two places. A derivation that contradicts an assertion (or another derivation) is not written; since #238 it leaves an `axiom_violations` row of kind `derived_contradiction`, capped per predicate, with the overflow counted in the run report and rule-versus-rule disagreements recorded as `ontology_defects` (`rules_disagree`) — see [0017](decisions/0017-a-contradiction-points-upstream.md). When one triple has several derivation paths, only the first proof is kept; that one is still silent ([0002](decisions/0002-reasoning-engine.md)).
 
-## 想自己跑一遍
+## Running the Benchmarks
 
-`scripts/bench/` 是可重跑的测量台，**每一组一个新库**——复用一个库省几分钟，
-换来的是一整段无效结论（那是踩过的坑，不是假设）。
+`scripts/bench/` is a rerunnable measurement bench, **one fresh database per run**. Reusing a database saves minutes and costs a whole run of invalid conclusions; that is a lesson learned, not a hypothesis.
 
 ```bash
 node scripts/bench/run.mjs --corpus pharma --label seeds-only
 node scripts/bench/run.mjs --corpus holmes --label holmes
 ```
 
-三份语料各测一件事，用途不同、要求也不同：
+Three corpora measure three things, with different requirements:
 
-| 语料 | 测什么 | 有答案键 |
+| Corpus | Measures | Answer key |
 |---|---|---|
-| `tech` / `pharma` | 类型准确性 | 有（弱：自己写的） |
-| `holmes` | 实体消解 · demo 空镜 | **无，故意的** |
+| `tech` / `pharma` | Type accuracy | Yes (weak: hand-written) |
+| `holmes` | Entity resolution · demo footage | **None, by design** |
 
-福尔摩斯那份**不该有**准确性答案键：模型早就读过它，量类型准确率量到的是记忆，
-不是这条流水线。**编一份假答案比不打分更糟。**
+The Holmes corpus **must not** have an accuracy key: the model has read the book, so measuring type accuracy would measure memory, not the pipeline. A fabricated answer key is worse than no score.
 
-## 相关决策
+## Related Decisions
 
-- [0001](decisions/0001-ontology-import-and-governance.md) 本体导入与治理，含 P3 的实测修订
-- [0003](decisions/0003-ontology-growth-loop.md) 本体从语料里长出来，人站在哪一环
-- [0006](decisions/0006-ontology-scale-and-the-prompt.md) 本体规模与抽取提示词，含曲线与一次撤回
-- [0002](decisions/0002-reasoning-engine.md) 推理机的顺序与安全边界；[0012](decisions/0012-the-ontology-is-a-contract-not-a-suggestion.md) 写入时的方向掰正
-- [0009](decisions/0009-no-type-is-a-type.md) / [0010](decisions/0010-no-relation-is-no-relation.md) 为什么「还没判出来」不是类、「说不出」不是关系
+- [0001](decisions/0001-ontology-import-and-governance.md) Ontology import and governance, with the measured revision of P3
+- [0003](decisions/0003-ontology-growth-loop.md) Growing the ontology from the corpus, and where the human stands in the loop
+- [0006](decisions/0006-ontology-scale-and-the-prompt.md) Ontology scale and the extraction prompt, with the curve and one reversal
+- [0002](decisions/0002-reasoning-engine.md) Reasoning engine order and safety boundary; [0012](decisions/0012-the-ontology-is-a-contract-not-a-suggestion.md) direction correction at write time
+- [0017](decisions/0017-a-contradiction-points-upstream.md) A contradiction points at an error upstream: what happens when a derivation disagrees with the ledger
+- [0009](decisions/0009-no-type-is-a-type.md) / [0010](decisions/0010-no-relation-is-no-relation.md) An undecided type and an unnamed relation both stay empty
