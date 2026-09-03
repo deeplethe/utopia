@@ -2,9 +2,11 @@
 
 - **Status**: Implemented · `entities.type_id` and `entity_retypes.from_type_id` are
   nullable; the nine builtin classes and the seeding function left with the seed relations
-  (#110 / #125 / #128 / [0011](0011-a-mapping-is-not-a-fact.md)) · `owl:disjointWith` is
-  stored but resolution still reads the hard-coded `CONFUSABLE_TYPE_KEYS`; since #226 same-name
-  entities of kin classes (ancestor, descendant or a shared non-root ancestor) go to Review · `metric` /
+  (#110 / #125 / #128 / [0011](0011-a-mapping-is-not-a-fact.md)) · `owl:disjointWith` now
+  reaches resolution (0016 B3): a declared disjointness, inherited down both hierarchies, keeps
+  same-name entities apart ahead of every heuristic; since #226 same-name entities of kin classes
+  (ancestor, descendant or a shared non-root ancestor) go to Review; `CONFUSABLE_TYPE_KEYS` stays
+  as the fallback when nothing is declared · `metric` /
   `dimension` are created on demand by mapping exploration (#231); a semantic-layer pack is
   still planned
 - **Written**: 2026-08-30 · condensed into English 2026-09-03
@@ -82,6 +84,12 @@ in the ontology as a class, as if someone had decided it.
 - 2026-09-02: `owl:disjointWith` now has a table (`entity_type_disjoint`), import and an
   edit endpoint, but its only consumer is R0's ontology self-check; `CONFUSABLE_TYPE_KEYS`
   is still three hard-coded keys (0016 B3).
+- 2026-09-03: resolution reads the table (0016 B3). `declared_disjoint_from` collects the
+  classes declared disjoint with the mention's class or any ancestor, expanded to their
+  descendants, in one recursive query; both cross-type paths (type drift and containment)
+  treat a hit as `Disjoint` before the kinship check and the hard-coded list. Nothing
+  declared → today's behavior, unchanged. The list is now a fallback, and decision 6 reads
+  accordingly.
 - 2026-09-02: `metric` / `dimension` had a visible cost — mapping exploration looked up
   `entity_types.key IN ('metric','dimension')` and `continue`d when missing, so a KB without
   those classes silently produced zero mappings. 2026-09-03: exploration now creates both as

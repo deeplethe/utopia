@@ -107,10 +107,12 @@ pub fn recall_keys(name: &str) -> Vec<String> {
 /// 易混具体类型：抽取常在这几类间摇摆（一个团队算组织还是项目？平台算项目还是产品？）。
 /// 同名跨这组类型 → 照建实体（宁分勿合），但入队审核对交 LLM/人工裁决。
 ///
-/// **这张表该从本体读，今天还没有。** `owl:disjointWith` 已经落库（`entity_type_disjoint`，
-/// 有导入有编辑），但消费者只有推理机的本体自检；消解这边仍按这三个硬编码的 key 判。
-/// 没装包的库里这三个 key 不存在，于是这一档永不命中，所有跨类型同名判 `Disjoint`——
-/// 变严不变松，不会错合。改从本体读是 0016 的 B3。
+/// **本体说了算，这张表只是没声明时的退路。** 判两个类能不能指同一个东西，先看
+/// `owl:disjointWith`（`entity_type_disjoint`，含继承：Person ⟂ Organization 就让
+/// Corporation ⟂ Person）——声明了互斥的一律分开，哪怕它们在类层级上是一家；
+/// 没声明的再看类层级（同一支系当易混，#226），最后才是这三个硬 key。
+/// 没装包也没声明的库里这三个 key 不存在，于是所有跨类型同名判 `Disjoint`——
+/// 变严不变松，不会错合（0016 B3）
 pub const CONFUSABLE_TYPE_KEYS: &[&str] = &["organization", "project", "product"];
 
 /// 单次消解最多入队的漂移审核对（防同名大组刷爆审核队列）。
@@ -352,6 +354,9 @@ const CONTAIN_SCAN_LIMIT: i64 = 16;
 /// 所以这里靠 `kb_id` 收窄行集并设上限，且只在**新建实体时**跑一次，
 /// 不是每条 mention。大库上如果不够，正解是建一张「后缀键」表走等值查，
 /// 而不是加模糊索引。
+/// 包含扫描的一行：(id, 本名, 类型 key, 类型 id, 画像)。类型 id 用来比本体声明的互斥
+type ContainRow = (Uuid, String, Option<String>, Option<Uuid>, Option<Vector>);
+
 async fn containment_reviews(
     pool: &PgPool,
     kb_id: Uuid,
@@ -379,9 +384,11 @@ async fn containment_reviews(
     //  启明 X7 加速卡→concept vs 启明 X7 推理加速卡→product），
     //  按类型相等去查，这两对一个都捞不到。相容性交给下面的 classify_type_drift。
     //  多取一些行，因为硬互斥的会在 Rust 侧被筛掉
+    // 本体声明了跟这个类互斥的那些类（含继承），一次取出，逐行比 id
+    let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
     // 第三列可空：未分类实体也要参与包含关系扫描（0009）
-    let rows: Vec<(Uuid, String, Option<String>, Option<Vector>)> = sqlx::query_as(
-        "SELECT e.id, e.canonical_name, t.key, e.profile_embedding
+    let rows: Vec<ContainRow> = sqlx::query_as(
+        "SELECT e.id, e.canonical_name, t.key, e.type_id, e.profile_embedding
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.kb_id = $1 AND e.merged_into IS NULL
            AND e.id <> $2
@@ -419,12 +426,15 @@ async fn containment_reviews(
     Ok(rows
         .into_iter()
         // 哪些类型对可能指同一个东西，既有规则已经想清楚了，别另发明一套：
-        // person vs organization 永不合并，concept 兜底与谁都可能是一个
-        .filter(|(_, _, type_key, _)| {
-            classify_type_drift(mention_key.as_deref(), type_key.as_deref()) != TypeDrift::Disjoint
+        // 本体声明互斥的永不合并，person vs organization 永不合并，
+        // concept 兜底与谁都可能是一个
+        .filter(|(_, _, type_key, other_type, _)| {
+            !other_type.is_some_and(|t| disjoint.contains(&t))
+                && classify_type_drift(mention_key.as_deref(), type_key.as_deref())
+                    != TypeDrift::Disjoint
         })
         .take(MAX_CONTAIN_REVIEWS)
-        .map(|(id, other_name, _, emb)| {
+        .map(|(id, other_name, _, _, emb)| {
             // 分数只是给队列排序用的参考，**不参与是否合并的判断**——
             // 那个判断本来就不在这条路上
             let score = ctx
@@ -464,6 +474,43 @@ fn drift_reason(mention_key: Option<&str>, other_key: Option<&str>, sim: Option<
         Some(s) => format!("type_drift|{a} vs {b} {s:.2}"),
         None => format!("type_drift|{a} vs {b}"),
     }
+}
+
+/// 本体声明了跟这个类互斥的全部类（0016 B3）。
+///
+/// **互斥是继承的**：Person ⟂ Organization 一条声明，就让 Person 的每个子类跟
+/// Organization 的每个子类都互斥。所以先沿父链往上收集这个类的祖先，取它们声明的
+/// 互斥对象，再沿子链往下展开。表里两个方向各存一行，问一个方向就够。
+///
+/// 没判出类型（`None`）时没有类可问，回空集：那一侧本来就走召回候选那一档
+async fn declared_disjoint_from(
+    pool: &PgPool,
+    kb_id: Uuid,
+    type_id: Option<Uuid>,
+) -> AppResult<HashSet<Uuid>> {
+    let Some(type_id) = type_id else {
+        return Ok(HashSet::new());
+    };
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "WITH RECURSIVE up(id) AS (
+             SELECT $2::uuid
+             UNION
+             SELECT p.parent_id FROM entity_type_parents p JOIN up ON p.child_id = up.id
+         ), hit(id) AS (
+             SELECT d.b_id FROM entity_type_disjoint d JOIN up ON d.a_id = up.id
+              WHERE d.kb_id = $1
+         ), down(id) AS (
+             SELECT id FROM hit
+             UNION
+             SELECT p.child_id FROM entity_type_parents p JOIN down ON p.parent_id = down.id
+         )
+         SELECT id FROM down",
+    )
+    .bind(kb_id)
+    .bind(type_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
 /// 两个类是不是一家的：一方是另一方的祖先，或者两者共有一个**不是根**的祖先。
@@ -561,12 +608,18 @@ async fn resolve_type_drift(
     .fetch_all(pool)
     .await?;
 
+    // 本体声明了互斥的类，一次取出（含继承）。声明优先于下面所有启发式
+    let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
     let mut recall_cands: Vec<&CrossCandidate> = Vec::new();
     let mut review_cands: Vec<&CrossCandidate> = Vec::new();
     for c in &cross {
         let mut drift = classify_type_drift(mention_key.as_deref(), c.type_key.as_deref());
-        // 硬表判不上的，再看类层级：同一支系下的同名当易混，进审阅队列
-        if drift == TypeDrift::Disjoint {
+        if c.type_id.is_some_and(|t| disjoint.contains(&t)) {
+            // 本体说这两类互斥：哪怕硬表说易混、类层级说一家，也分开。
+            // 声明是人写下的判断，启发式只是没声明时的猜测
+            drift = TypeDrift::Disjoint;
+        } else if drift == TypeDrift::Disjoint {
+            // 硬表判不上的，再看类层级：同一支系下的同名当易混，进审阅队列
             if let (Some(a), Some(b)) = (type_id, c.type_id) {
                 if types_are_kin(pool, a, b).await? {
                     drift = TypeDrift::Review;
