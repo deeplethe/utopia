@@ -220,6 +220,10 @@ export const en = {
     } as Record<string, { title: string; hint: string } | undefined>,
     // 没见过的 kind 也要能显示：新告警源上线时前端可能还没更新
     unknownKind: (kind: string) => kind,
+    /** 修好之后接着跑（#216） */
+    runAgain: "Run those again",
+    requeued: (n: number) =>
+      n === 1 ? "1 job back in the queue" : `${n} jobs back in the queue`,
   },
 
   kbScope: {
@@ -1463,6 +1467,10 @@ export const en = {
     inferEvery: "Re-derive every",
     minutes: "minutes",
     lastInference: (when: string) => `last run ${when}`,
+    failedJobs: (n: number) => (n === 1 ? "1 failed job" : `${n} failed jobs`),
+    requeue: "Run again",
+    requeued: (n: number) =>
+      n === 1 ? "1 job back in the queue" : `${n} jobs back in the queue`,
     /* 语料语言。措辞要把"这不是界面语言"讲清楚，否则一定有人当成界面开关 */
     ontologyLang: "Language of this ontology",
     ontologyLangNote:

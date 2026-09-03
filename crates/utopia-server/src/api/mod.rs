@@ -6,6 +6,7 @@ mod datasource_routes;
 mod documents_routes;
 mod events_routes;
 mod graph_routes;
+mod jobs_routes;
 mod kbs;
 mod mapping_routes;
 mod mcp;
@@ -86,6 +87,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         )
         .route("/kbs/{id}/members", get(kbs::members))
         .route("/kbs/{id}/audit", get(kbs::audit_log))
+        // 失败任务回队列（#216）：库内给 Editor，全局给管理员
+        .route("/kbs/{id}/jobs/failed", get(jobs_routes::failed_in_kb))
+        .route("/kbs/{id}/jobs/requeue", post(jobs_routes::requeue_in_kb))
+        .route("/jobs/requeue", post(jobs_routes::requeue_all))
         .route(
             "/kbs/{id}/members/{user_id}",
             axum::routing::put(kbs::set_member).delete(kbs::remove_member),

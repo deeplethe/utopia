@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { api, type AuditEvent } from "../api";
 import { LANG_NAMES, S } from "../i18n";
+import { toast } from "../toast";
 import {
   DangerConfirm,
   Dropdown,
@@ -52,6 +53,20 @@ export function KbSettings() {
      带着库走的地方，现在整片都在 /kb/$kbId 之下，它就不必自成一格了 */
   const { kbId } = useParams({ from: "/app/kb/$kbId/settings" });
 
+  // 失败任务数与重排（#216）。查询键带库 id，重排后失效重取
+  const failedJobs = useQuery({
+    queryKey: ["jobs", "failed", kbId],
+    queryFn: () => api.failedJobs(kbId!),
+    enabled: !!kbId,
+  });
+  const requeue = useMutation({
+    mutationFn: () => api.requeueJobs(kbId!),
+    onSuccess: (r) => {
+      toast.success(S.kbset.requeued(r.requeued));
+      queryClient.invalidateQueries({ queryKey: ["jobs", "failed", kbId] });
+    },
+    onError: (e) => toast.error(String(e)),
+  });
   const kb = useQuery({
     queryKey: ["kbOne", kbId],
     queryFn: () => api.kbDetail(kbId!),
@@ -294,6 +309,21 @@ export function KbSettings() {
                       )}
                     </span>
                   )}
+                </div>
+              )}
+              {/* 失败的任务（#216）：有才露出来。「再跑一遍」把这个库里全部 failed 放回队列 */}
+              {failedJobs.data && failedJobs.data.failed > 0 && (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-neutral-400">
+                    {S.kbset.failedJobs(failedJobs.data.failed)}
+                  </span>
+                  <button
+                    className="u-btn u-btn-ghost px-2.5 py-1 text-xs"
+                    disabled={requeue.isPending}
+                    onClick={() => requeue.mutate()}
+                  >
+                    {S.kbset.requeue}
+                  </button>
                 </div>
               )}
               {/* 语料语言。**不是界面语言**——类描述逐字进抽取提示词，

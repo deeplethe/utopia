@@ -119,6 +119,7 @@ channel: something in this document did not land. None of it goes to Review.
   too narrow.
 - `llm.unreachable` first matched only transport failures, so the commonest fault (a wrong
   URL, a proxy answering HTML) produced no alert at all.
+- 2026-09-03: an alert can carry the action that closes its loop (#216). `llm.out_of_credit` and `llm.unreachable` groups offer "Run those again", which puts the jobs that failed in that group's time window back in the queue (`jobs::requeue_failed`, scoped to the group's knowledge base, or to everything for a system alert — admins only). The KB settings page shows the failed count with the same action for every other kind of failure. A queue page was not built: the one failure where the operator does something specific and then wants the work to resume is the one that reports through an alert.
 
 ## Open questions
 

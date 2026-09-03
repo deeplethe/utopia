@@ -198,6 +198,8 @@ export const zh: Strings = {
       },
     } as Record<string, { title: string; hint: string } | undefined>,
     unknownKind: (kind: string) => kind,
+    runAgain: "再跑一遍",
+    requeued: (n: number) => `${n} 个任务回到队列`,
   },
 
   kbScope: {
@@ -1317,6 +1319,9 @@ export const zh: Strings = {
     inferEvery: "每隔",
     minutes: "分钟重推",
     lastInference: (when: string) => `上次 ${when}`,
+    failedJobs: (n: number) => `${n} 个失败的任务`,
+    requeue: "再跑一遍",
+    requeued: (n: number) => `${n} 个任务回到队列`,
     ontologyLang: "本体的语言",
     ontologyLangNote:
       "类与关系的描述用哪种语言写。它们会被原样送进抽取提示词，" +

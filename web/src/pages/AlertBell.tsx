@@ -11,6 +11,7 @@ import { Bell, Search, X } from "lucide-react";
 
 import { api, type AlertGroup } from "../api";
 import { S } from "../i18n";
+import { toast } from "../toast";
 import { Chip, Pager, cn } from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 
@@ -22,12 +23,19 @@ function line(d: AlertGroup["lines"][number]): string | null {
   return parts.length ? parts.join(" — ") : null;
 }
 
+/** 哪些告警带「再跑一遍」：故障修好之后（充值、改端点）任务不会自己回来的那几种 */
+const REQUEUE_KINDS = new Set(["llm.out_of_credit", "llm.unreachable"]);
+
 function AlertRow({
   g,
   onRead,
+  onRequeue,
+  requeuing,
 }: {
   g: AlertGroup;
   onRead: (g: AlertGroup) => void;
+  onRequeue: (g: AlertGroup) => void;
+  requeuing: boolean;
 }) {
   // 没见过的 kind 也得显示得出来：新告警源上线时前端可能还没跟上，
   // 而"有条告警但我不认识它"远好过"什么都不显示"
@@ -36,14 +44,19 @@ function AlertRow({
   // count 数的是整组，lines 只带回前几条——差额是"还有 N 条"
   const rest = g.count - lines.length;
   return (
-    <button
-      type="button"
+    // div 而不是 button：行里还有一个动作按钮，按钮套按钮是无效 HTML
+    <div
+      role="button"
+      tabIndex={0}
       // **点击才算读过**，不是划过。鼠标经过一列告警不代表看过它们，
       // 而已读一旦落下就再也不会自己回来。点一下把这一组整个标掉
       onClick={() => {
         if (g.unread > 0) onRead(g);
       }}
-      className="w-full text-left flex gap-2.5 px-3.5 py-3 border-b border-white/[0.06] last:border-b-0 hover:bg-white/[0.03] transition-colors"
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && g.unread > 0) onRead(g);
+      }}
+      className="w-full text-left flex gap-2.5 px-3.5 py-3 border-b border-white/[0.06] last:border-b-0 hover:bg-white/[0.03] transition-colors cursor-pointer"
     >
       {/* 未读就是一个红点。整行描边或底色会让面板在告警多时变成一片红，
           而红点只占它该占的那一点地方，读过就没了 */}
@@ -89,8 +102,24 @@ function AlertRow({
         <p className="u-num mt-1.5 text-[10.5px] text-neutral-600">
           {new Date(g.latest_at).toLocaleString()}
         </p>
+        {/* 修好之后接着跑：把这次故障窗口里失败的任务放回队列（#216）。
+            余额耗尽是唯一一种「人做完一件具体的事就想让活继续」的失败，
+            动作长在告警上，闭环就在这里，不必另建一个队列页 */}
+        {REQUEUE_KINDS.has(g.kind) && (
+          <button
+            type="button"
+            className="u-btn u-btn-ghost mt-2 px-2.5 py-1 text-[11px]"
+            disabled={requeuing}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRequeue(g);
+            }}
+          >
+            {S.alerts.runAgain}
+          </button>
+        )}
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -125,6 +154,16 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
   const readAll = useMutation({
     mutationFn: () => api.alertsReadAll(),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["alerts"] }),
+  });
+  // 时间窗从这组最早那次故障起——之前失败的不是这次的事
+  const requeue = useMutation({
+    mutationFn: (g: AlertGroup) =>
+      api.requeueJobs(g.kb_id, { failed_since: g.earliest_at }),
+    onSuccess: (r) => {
+      toast.success(S.alerts.requeued(r.requeued));
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (e) => toast.error(String(e)),
   });
 
   const groups = list.data?.items ?? [];
@@ -185,6 +224,8 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
               key={`${g.kb_id ?? "system"}|${g.kind}|${g.latest_at}`}
               g={g}
               onRead={(x) => read.mutate(x)}
+              onRequeue={(x) => requeue.mutate(x)}
+              requeuing={requeue.isPending}
             />
           ))
         )}

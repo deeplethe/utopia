@@ -981,6 +981,17 @@ export const api = {
     );
   },
   alertsUnread: () => request<{ unread: number }>("/api/v1/alerts/unread"),
+  /** 失败任务回队列（#216）。库内一条、全局一条（管理员）；范围可按种类与失败时间收窄 */
+  failedJobs: (kbId: string) =>
+    request<{ failed: number }>(`/api/v1/kbs/${kbId}/jobs/failed`),
+  requeueJobs: (
+    kbId: string | null,
+    body: { kind?: string; failed_since?: string } = {},
+  ) =>
+    request<{ requeued: number }>(
+      kbId ? `/api/v1/kbs/${kbId}/jobs/requeue` : "/api/v1/jobs/requeue",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   alertReadGroup: (g: {
     kb_id: string | null;
     kind: string;

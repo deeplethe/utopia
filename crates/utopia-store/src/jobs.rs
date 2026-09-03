@@ -4,11 +4,13 @@
 //! 并发消费：调度循环按"运行中 < 目标数"续派，任务在独立 task 执行；
 //! 目标数经 AtomicUsize 热读——系统设置里改并发即时生效，无需重启。
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use utopia_core::AppResult;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Job {
@@ -27,6 +29,61 @@ pub async fn enqueue(pool: &PgPool, kind: &str, payload: serde_json::Value) -> A
             .fetch_one(pool)
             .await?;
     Ok(id)
+}
+
+/// 重排失败任务的范围（#216）。三个条件都可空，空 = 不限。
+///
+/// **按库圈要解 payload**：任务表没有 kb 列，payload 只带 `document_id` /
+/// `source_id` / `kb_id` 三种之一，各自解到库。没有库的系统任务只在不限库时才动
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RequeueScope<'a> {
+    pub kb_id: Option<Uuid>,
+    pub kind: Option<&'a str>,
+    /// 只排这个时刻之后失败的——告警上的「再跑一遍」圈的正是那次故障窗口
+    pub failed_since: Option<DateTime<Utc>>,
+}
+
+/// 库范围的 SQL 谓词，`$N` 是库 id；`requeue_failed` 与 `failed_count` 共用
+const KB_SCOPE: &str = "(
+       (j.payload ? 'kb_id' AND j.payload->>'kb_id' = $KB::text)
+    OR (j.payload ? 'document_id' AND EXISTS (
+            SELECT 1 FROM documents d
+             WHERE d.id::text = j.payload->>'document_id' AND d.kb_id = $KB))
+    OR (j.payload ? 'source_id' AND EXISTS (
+            SELECT 1 FROM sources s
+             WHERE s.id::text = j.payload->>'source_id' AND s.kb_id = $KB)))";
+
+/// 把范围内的 failed 任务放回队列：`attempts` 归零、立即到期。
+///
+/// 处理器都是幂等的（启动时回收孤儿就靠这一点），所以重排永远安全；
+/// 此前 `failed` 是终点，余额耗尽一批文档全失败，充值之后只能逐个点或整源重抽
+pub async fn requeue_failed(pool: &PgPool, scope: RequeueScope<'_>) -> AppResult<u64> {
+    let sql = format!(
+        "UPDATE jobs j
+            SET status = 'queued', attempts = 0, run_at = now(), updated_at = now()
+          WHERE j.status = 'failed'
+            AND ($1::text IS NULL OR j.kind = $1)
+            AND ($2::timestamptz IS NULL OR j.updated_at >= $2)
+            AND ($3::uuid IS NULL OR {})",
+        KB_SCOPE.replace("$KB", "$3")
+    );
+    let res = sqlx::query(&sql)
+        .bind(scope.kind)
+        .bind(scope.failed_since)
+        .bind(scope.kb_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// 范围内 failed 的条数——设置页那一行「N 个失败任务」
+pub async fn failed_count(pool: &PgPool, kb_id: Option<Uuid>) -> AppResult<i64> {
+    let sql = format!(
+        "SELECT count(*) FROM jobs j
+          WHERE j.status = 'failed' AND ($1::uuid IS NULL OR {})",
+        KB_SCOPE.replace("$KB", "$1")
+    );
+    Ok(sqlx::query_scalar(&sql).bind(kb_id).fetch_one(pool).await?)
 }
 
 /// 认领一个到期任务；没有则返回 None。
