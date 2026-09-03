@@ -103,6 +103,7 @@ cd web && pnpm install && pnpm dev
 ## 路线图
 
 - [ ] **决策推理**：计算约束条件，决策复盘
+- [ ] **业务规则**：由人写下、作用于实体属性事实的规则（阈值、类别集合），把实体归类为一条带前提的派生事实，规则与前提就是它的解释（[#277](https://github.com/deeplethe/utopia/issues/277)）
 - [ ] **执行校验层**：对 Agent 的调用进行本体规则与符号逻辑校验
 - [ ] **问数与映射添加数据湖仓支持**：Iceberg / Delta Lake，以及 Databricks、Snowflake、MaxCompute 的映射探索与 Ontology2SQL 支持
 - [ ] **更多数据源**：MySQL、ClickHouse、Doris 驱动，S3、WebDAV、Notion、飞书连接器

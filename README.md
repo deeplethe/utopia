@@ -102,6 +102,7 @@ cd web && pnpm install && pnpm dev
 ## Roadmap
 
 - [ ] **Decision reasoning**: constraint computation, and replaying a decision after the fact
+- [ ] **Business rules**: rules written by people over an entity's attribute facts, a threshold or a category set, that classify it as a derived fact with the rule and the premises as its explanation ([#277](https://github.com/deeplethe/utopia/issues/277))
 - [ ] **Execution gate**: checking an agent's calls against ontology rules and symbolic logic
 - [ ] **MaxCompute**: mapping exploration and Ontology2SQL over Alibaba Cloud MaxCompute (Iceberg / Delta Lake via Trino, Databricks and Snowflake are in, awaiting a run against a real cluster)
 - [ ] **More sources**: MySQL, ClickHouse and Doris drivers; S3, WebDAV, Notion and Feishu connectors
