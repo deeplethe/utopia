@@ -497,8 +497,11 @@ pub async fn decide_mapping(
 
 #[derive(Deserialize)]
 pub struct DecideViolationReq {
-    /// fact_retracted | axiom_relaxed | accepted
+    /// fact_retracted | fact_closed | axiom_relaxed | accepted
     pub resolution: String,
+    /// `fact_closed` 必填：旧断言在哪一天结束
+    #[serde(default)]
+    pub close_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// 人裁决一处公理违规。
@@ -518,16 +521,101 @@ pub async fn decide_violation(
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     if !matches!(
         req.resolution.as_str(),
-        "fact_retracted" | "axiom_relaxed" | "accepted"
+        "fact_retracted" | "fact_closed" | "axiom_relaxed" | "accepted"
     ) {
         return Err(utopia_core::AppError::invalid(
             "bad_resolution",
-            "resolution 只能是 fact_retracted、axiom_relaxed 或 accepted",
+            "resolution 只能是 fact_retracted、fact_closed、axiom_relaxed 或 accepted",
         )
         .into());
     }
+    let row: Option<(String, Uuid)> = sqlx::query_as(
+        "SELECT kind, left_fact FROM axiom_violations
+          WHERE id = $1 AND kb_id = $2 AND status = 'open'",
+    )
+    .bind(violation_id)
+    .bind(kb_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(utopia_core::AppError::Db)?;
+    let Some((kind, left)) = row else {
+        return Err(utopia_core::AppError::NotFound.into());
+    };
+    // 派生撞断言那一类（0017）的修法就在卡片上，端点替人执行：撤旧断言、或给它一个
+    // 结束日期。其它几类仍只记决定——那些卡片上两条都是断言，撤哪条端点判不了
+    let repaired = kind == "derived_contradiction";
+    match (repaired, req.resolution.as_str()) {
+        (true, "fact_retracted") => {
+            let snap = fact_snapshot(&state, kb_id, left).await;
+            utopia_store::graph::reject_fact(&state.pool, kb_id, left).await?;
+            if let Some(d) = snap {
+                let _ = utopia_store::audit::record(
+                    &state.pool,
+                    Some(kb_id),
+                    user.id,
+                    "fact.reject",
+                    "fact",
+                    Some(left),
+                    d,
+                )
+                .await;
+            }
+        }
+        (true, "fact_closed") => {
+            let Some(at) = req.close_at else {
+                return Err(utopia_core::AppError::invalid(
+                    "close_at_required",
+                    "fact_closed 要给出结束日期",
+                )
+                .into());
+            };
+            let open: Option<(Uuid,)> = sqlx::query_as(
+                "SELECT id FROM facts
+                  WHERE id = $1 AND invalidated_at IS NULL AND valid_to IS NULL",
+            )
+            .bind(left)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(utopia_core::AppError::Db)?;
+            if open.is_none() {
+                return Err(utopia_core::AppError::invalid(
+                    "not_open",
+                    "这条断言已有结束日期，或已被撤",
+                )
+                .into());
+            }
+            let snap = fact_snapshot(&state, kb_id, left).await;
+            utopia_store::temporal::close_superseded(&state.pool, left, at, "day").await?;
+            if let Some(mut d) = snap {
+                d["valid_to"] = json!(at.to_rfc3339());
+                let _ = utopia_store::audit::record(
+                    &state.pool,
+                    Some(kb_id),
+                    user.id,
+                    "fact.close",
+                    "fact",
+                    Some(left),
+                    d,
+                )
+                .await;
+            }
+        }
+        (false, "fact_closed") => {
+            return Err(utopia_core::AppError::invalid(
+                "bad_resolution",
+                "fact_closed 只用于 derived_contradiction",
+            )
+            .into());
+        }
+        _ => {}
+    }
     utopia_store::reasoning::decide(&state.pool, kb_id, violation_id, &req.resolution, user.id)
         .await?;
+    // 路清了就让派生落地，人不必再去点一次「推一遍」。撤与闭合把断言挪开了，
+    // 认可则在 materialize 里放行
+    if repaired {
+        utopia_store::reasoning::materialize(&state.pool, kb_id).await?;
+    }
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),

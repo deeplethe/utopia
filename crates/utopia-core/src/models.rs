@@ -867,10 +867,10 @@ pub struct ConceptMapping {
 ///
 /// **两条事实都展开成 主-谓-宾 文本**：Review 页要让人一眼看出矛盾在哪，
 /// 而两个 UUID 看不出任何东西。自反那一类两条相同——它就是一条事实。
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AxiomViolation {
     pub id: Uuid,
-    /// self_loop | asymmetry | cycle | functional
+    /// self_loop | asymmetry | cycle | functional | signature | derived_contradiction
     pub kind: String,
     /// 判据来自哪条关系。人若判「公理写错了」，从这里进本体去改
     pub predicate: Option<String>,
@@ -881,6 +881,12 @@ pub struct AxiomViolation {
     /// 环的长度（含首尾）。其余三类为 0——前端据此决定要不要显示「查看路径」
     pub path_len: i32,
     pub detected_at: chrono::DateTime<chrono::Utc>,
+    /// `derived_contradiction` 独有（0017）：推出来的那条三元组——它没有落库，
+    /// 只能在这里写出来。字段见 `reasoning::run`。其余种类是 `{}`
+    pub detail: serde_json::Value,
+    /// 审核线索（0017 §2）：`stale`（旧断言没写结束日期）、`duplicate`（有同名
+    /// 实体）、`unsure`（抽取置信度低）。只给一条，没有就空
+    pub hint: Option<String>,
 }
 
 /// 本体自己的一处自相矛盾（见 `ontology_defects`）。
@@ -891,8 +897,11 @@ pub struct AxiomViolation {
 pub struct OntologyDefect {
     pub id: Uuid,
     /// symmetric_and_asymmetric | transitive_and_functional | subclass_cycle
-    /// | disjoint_with_ancestor | inherits_disjoint
+    /// | disjoint_with_ancestor | inherits_disjoint | inverse_of_itself
+    /// | inverse_not_mutual | sub_property_cycle | rules_disagree
     pub kind: String,
+    /// `rules_disagree` 独有（0017）：哪两条规则、撞在哪条公理上、几对、几个例子
+    pub detail: serde_json::Value,
     /// 出问题那个对象的标签（类或谓词）。查不到就是它已经被删了
     pub subject_label: Option<String>,
     /// 另一方：互斥的那个类

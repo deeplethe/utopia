@@ -67,7 +67,7 @@ Chat memory 与 MCP 两处在 A1 / A2 落地前标 in development。中英两份
 ### B · 推理机补完——A 之后，与 C 并行
 
 **B1 · R2 证明树。**〔已做，`feat/proof-tree`；实际是链不是树，理由见 0002 R2 的修订〕递归展开到叶子 chunk 的 API + 实体面板里可展开的树。数据结构（`fact_derivations`）已够。
-**B2 · 派生 vs 断言矛盾要有信号。** `axiom_violations` 加一种 kind（`derived_contradiction`），进 Review 同一档——0002 写了没做的那一行。
+**B2 · 派生 vs 断言矛盾要有信号。** `axiom_violations` 加一种 kind（`derived_contradiction`），进 Review 同一档——0002 写了没做的那一行。（完整方案见 [0017](0017-a-contradiction-points-upstream.md)；B2a 引擎与队列已做，B2b 图与面板上的可见性待做。）
 **B3 · `disjointWith` 进消解，合并路径复核签名。** `classify_type_drift` 改从 `entity_type_disjoint` 读（没声明就退回今天的行为，不硬编码）；
 `merge_entities` 搬事实前跑一遍与写入时相同的 domain / range 检查，违反的进 `axiom_violations` 而不是静默搬过去。这是 0009 与 0012 各自待做的同一件事。
 〔**签名那一半已提前做了**（#190 / #196 逼出来的，A 线里插队）：`ontology::judge_direction` 一处判断，抽取与采纳共用；合并后对搬动过的事实报 `signature` 违规；R0 多一类。剩下 `disjointWith` 进消解那一半仍在这里。〕

@@ -1309,6 +1309,16 @@ export const en = {
     defectInverseSelf: "Its own inverse — say symmetric instead",
     defectInverseNotMutual: "The inverse does not point back",
     defectSubPropertyCycle: "subPropertyOf runs in a circle",
+    defectRulesDisagree: "Two rules produce contradicting derivations",
+    rulesDisagreeCount: (n: number) =>
+      `${n} pair(s) of derivations held back until this is settled`,
+    rulesDisagreeRule: (
+      a: string,
+      va: string,
+      b: string,
+      vb: string,
+      axiom: string,
+    ) => `${a} on ${va} with ${b} on ${vb}, against ${axiom}`,
     defectNeverInstantiable: "no instance can ever satisfy it",
     defectFixed: "I fixed the ontology",
     defectAccepted: "Leave it",
@@ -1331,6 +1341,24 @@ export const en = {
     /** 签名违规（#190 / #196）：一条事实的主语或宾语落在谓词声明的类型之外——
      *  抽取时会掰正，采纳与合并这两条路从前绕过了检查 */
     violationSignature: "Subject or object outside the declared types",
+    /** 0017：派生撞上断言。卡片是一次审核，线索指向上游的错 */
+    violationDerived: "A derivation contradicts an assertion",
+    derivedLine: (s: string, p: string, o: string) =>
+      `Derived: ${s} · ${p} · ${o}`,
+    derivedBy: (rule: string, via: string) => `by ${rule} on ${via}`,
+    assertedLine: (t: string) => `Asserted: ${t}`,
+    hintStale:
+      "The assertion has no end date and the derivation starts later. It may simply have ended.",
+    hintDuplicate:
+      "Two entities share this name. They may be the same one.",
+    hintUnsure:
+      "The assertion was extracted with low confidence. Read its sentence.",
+    hintReadBoth: "Read both sentences and decide which one is wrong.",
+    closeAssertion: "Give the assertion an end date",
+    retractAssertion: "Retract the assertion",
+    seeDuplicates: "See duplicates",
+    openOntology: "Open the ontology",
+    letBothStand: "Let both stand",
     violationVia: (p: string) => `via ${p}`,
     violationPath: (n: number) => `${n} facts in the cycle`,
     retractFact: "Data is wrong",

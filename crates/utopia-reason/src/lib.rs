@@ -67,7 +67,7 @@ pub struct Violation {
     pub path: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// `A p A`，而 p 声明了 irreflexive
     SelfLoop,
@@ -85,6 +85,11 @@ pub enum Kind {
     /// 是为了与其它四类走同一条落库、清陈、裁决的路——left 与 right 同一条事实，
     /// 与自反那类同款
     Signature,
+    /// 一条派生撞上了一条断言（0017）：推出来的 `A p B` 与账本里的某条断言在 p 的
+    /// 公理上不能并存。派生不落地，这一行把它摆到人面前。`left` 是被撞的断言，
+    /// `right` 是派生的最后一条前提，`path` 是全部前提；推出来的三元组本身在
+    /// `axiom_violations.detail` 里——它没有落库，没有 id 可指
+    DerivedContradiction,
 }
 
 impl Kind {
@@ -95,6 +100,7 @@ impl Kind {
             Kind::Cycle => "cycle",
             Kind::Functional => "functional",
             Kind::Signature => "signature",
+            Kind::DerivedContradiction => "derived_contradiction",
         }
     }
 }

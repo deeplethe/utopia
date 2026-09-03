@@ -473,9 +473,33 @@ export interface MappingRevision {
   changed_at: string;
 }
 /** 一处公理违规（0002 R0）。判据来自本体自己声明的公理，没声明就不报 */
+/** derived_contradiction 独有（0017）：推出来的那条三元组——它没有落库，
+ *  只能在这里写出来。其它种类是 `{}` */
+export interface ViolationDetail {
+  axiom?: "functional" | "asymmetry" | "self_loop";
+  rule?: "transitive" | "symmetric" | "inverse" | "sub_property";
+  via_label?: string;
+  subject?: string;
+  predicate?: string;
+  object?: string;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  premises?: string[];
+}
+export type ViolationResolution =
+  | "fact_retracted"
+  | "fact_closed"
+  | "axiom_relaxed"
+  | "accepted";
 export interface AxiomViolation {
   id: string;
-  kind: "self_loop" | "asymmetry" | "cycle" | "functional";
+  kind:
+    | "self_loop"
+    | "asymmetry"
+    | "cycle"
+    | "functional"
+    | "signature"
+    | "derived_contradiction";
   /** 判据来自哪条关系。判「公理写错了」时从这里进本体去改 */
   predicate: string | null;
   left_fact: string;
@@ -486,6 +510,10 @@ export interface AxiomViolation {
   /** 环的长度；其余三类为 0 */
   path_len: number;
   detected_at: string;
+  detail: ViolationDetail;
+  /** 审核线索（0017 §2），一次只给一条：旧断言没写结束日期、有同名实体、
+   *  抽取置信度低。没有就空 */
+  hint: "stale" | "duplicate" | "unsure" | null;
 }
 /** 本体自己的一处自相矛盾。**与 AxiomViolation 不是一回事**：那个说
  *  「事实与定义抵触」，这个说「定义自己站不住」，后者更根本 */
@@ -500,11 +528,27 @@ export interface OntologyDefect {
     // 0017 加的三类：都在谓词上，前两类关于逆，第三类是子属性成环
     | "inverse_of_itself"
     | "inverse_not_mutual"
-    | "sub_property_cycle";
+    | "sub_property_cycle"
+    // 0017：两条规则加在一起产出互斥的派生，按规则对聚合报一次
+    | "rules_disagree";
   subject_label: string | null;
   other_label: string | null;
   path_labels: string[];
   detected_at: string;
+  detail: DefectDetail;
+}
+/** rules_disagree 独有：哪两条规则、撞在哪条公理上、几对、几个例子 */
+export interface DefectDetail {
+  count?: number;
+  rules?: {
+    rule_a: string;
+    via_a: string;
+    rule_b: string;
+    via_b: string;
+    axiom: string;
+    count: number;
+    examples: [string, string][];
+  }[];
 }
 export interface FactReviewItem {
   id: string;
@@ -1720,11 +1764,15 @@ export const api = {
   decideViolation: (
     kbId: string,
     violationId: string,
-    resolution: "fact_retracted" | "axiom_relaxed" | "accepted",
+    resolution: ViolationResolution,
+    closeAt?: string,
   ) =>
     request<{ ok: boolean }>(
       `/api/v1/kbs/${kbId}/review/violations/${violationId}`,
-      { method: "POST", body: JSON.stringify({ resolution }) },
+      {
+        method: "POST",
+        body: JSON.stringify({ resolution, close_at: closeAt ?? null }),
+      },
     ),
   confirmFact: (kbId: string, factId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/facts/${factId}/confirm`, {
