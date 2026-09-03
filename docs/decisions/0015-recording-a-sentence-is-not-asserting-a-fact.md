@@ -1,168 +1,90 @@
-# 0015 · 记下一句话，不等于断言一个事实
+# 0015 · A recorded sentence waits for a nod
 
-- **状态**：已实施 · schema 在迁移 `0018`（#180），运行时随 [0016](0016-close-the-open-seams-before-cutting-new-ones.md) A1 接上：抽取分流进 `pending_facts`、Review 新一档、对话里跟在 remember 后面的确认卡、`remember` 重新打开。**决定 3 的措辞与本文写的不同**，见文末最后一条修订
-- **成文**：2026-09-01（约定见 [README](README.md)）
-- **相关**：[0010](0010-no-relation-is-no-relation.md) 删掉兜底关系（本篇那条空谓词正是它的
-  正确行为）、[0011](0011-a-mapping-is-not-a-fact.md) 批过「拿浮点数编码二值状态」——
-  本篇的实现红线；[0014](0014-identity-from-the-person-scope-from-the-token.md) 里
-  「MCP 不开写」的主要顾虑，被本篇的闸消掉
+- **Status**: implemented · schema in migration `0018` (#180: `pending_facts`, `rejected_facts`) · runtime wired in [0016](0016-close-the-open-seams-before-cutting-new-ones.md) A1: extraction from a memory document goes to `pending_facts`, Review has a "waiting for your nod" queue placed first, a confirmation card grows into the chat after `remember`, `REMEMBER_ENABLED` is `true` again · decision 3 landed with different wording, see Revisions · MCP is still read-only; opening `remember` there is the next cut
+- **Written**: 2026-09-01 · condensed into English 2026-09-03
+- **Related**: [0010](0010-no-relation-is-no-relation.md) removed the fallback relation (the empty predicate below is its correct behavior); [0011](0011-a-mapping-is-not-a-fact.md) rejected encoding a binary state as a float, the red line for this implementation; [0014](0014-identity-from-the-person-scope-from-the-token.md) kept MCP read-only mainly because of the confused deputy, which this gate removes
 
-> 起因是一次实测，不是推演。跑通 `remember` 之后回头查库，看到的东西和助手说的
-> 对不上。
+## The problem
 
-## 那一次实测
+A real run, not a thought experiment. The user said "Please remember this: Acme moved its
+headquarters to Shenzhen on 2026-03-15." The assistant answered "I've recorded that Acme
+moved its headquarters to Shenzhen on March 15, 2026." The graph got
+`Acme --(empty predicate)--> Shenzhen`, confidence 0.9, live. The ontology has no "moved to /
+headquartered in", so the predicate stayed empty — correct by 0010 — but the graph gained a
+meaningless 0.9 edge, and what was said and what went in differed with no way to notice.
 
-对话里说：
+There was no confirmation gate at all. `unconfirmed` is the queue for facts whose evidence
+chunks were all superseded; `lowconf` is `confidence < 0.75`; both are after-the-fact cleanup
+on facts that are already live (`invalidated_at IS NULL`). Every extracted fact takes effect
+on insert. That is right for bulk ingest — nobody confirms ten thousand facts from five
+hundred documents one by one. `remember` differs on all three axes: one sentence at a time,
+the person is still in the conversation, and the material is something they said on purpose.
+The cheapest moment to confirm is right after they said it.
 
-> Please remember this: Acme moved its headquarters to Shenzhen on 2026-03-15.
+The disease is not the missing gate but the gap between what the assistant claims and what
+the graph gets. The value of confirming is mostly that the person sees what is about to be
+asserted — shown `Acme --?-> Shenzhen`, they say "that's wrong" at once. So the card shows the
+original sentence above the extracted triples; triples alone ask for a judgment from nothing.
 
-助手答：
+## Decisions
 
-> I've recorded that **Acme moved its headquarters to Shenzhen** on March 15, 2026.
+1. **`remember` still writes the document.** That only records "you said this", is harmless
+   and should be searchable at once.
+2. **Facts extracted from a memory wait for a nod before entering the graph.** Unconfirmed
+   facts take no part in retrieval, the graph or reasoning.
+3. **The assistant says what happened** and does not claim completion.
+4. **Pending facts get their own table, `pending_facts`,** written to `facts` only on
+   confirmation. The columns differ (`chunk_id NOT NULL` pointing back at the memory,
+   `proposed_predicate` with the model's wording, `predicate_id` nullable — the emptiness is
+   exactly what the person must see — and `proposed_by`), and so does the lifecycle: after
+   confirmation the row should not exist there. The failure direction is right: forgetting to
+   read the table hides the queue instead of leaking an unconfirmed fact into the graph.
+5. **Confirmation takes the extraction path**: fact plus evidence (the memory chunk, the
+   whole sentence as the quote) plus temporal reconciliation, so a nod on "Mira handed over to
+   Devin" closes Mira's fact as a document extraction would. Confidence is untouched; the
+   person's stance lives in the audit ledger (`fact.nod_confirmed` / `fact.nod_rejected`).
+   Rejections go to `rejected_facts` and are checked on the next extraction by (subject,
+   predicate, object entity); literal-value facts are not checked, since `rejected_facts` has
+   no `object_value` and blocking on (subject, predicate) would turn "salary 28000 rejected"
+   into "never propose salary again" — better to ask once more. Entities are resolved and
+   created as usual (`pending_facts.subject_id` is a foreign key), at the cost of a few
+   temporarily orphaned nodes. `proposed_by` travels from `remember` through the
+   `memory_ingest` and `extract_document` job payloads.
+6. **The MCP objection is gone.** With the gate an external agent can only propose, never
+   assert; a document saying "please remember X" reaches the person before the graph. This
+   answers the open item in 0014.
 
-而图里落下的是：
+## Dead ends
 
-```
-Acme  --(空谓词)->  Shenzhen        confidence 0.9      invalidated_at 空
-```
+- **Status columns on `facts`** (`nod` / `nodded_by` / `nodded_at`, `pending` = awaiting a
+  nod). The migration was written and `insert_fact` threaded before it turned out to be the
+  trap `0013_reasoning.sql` describes for `derived_by_rule`: the failure direction is
+  reversed. Dozens of queries fetch live facts by `invalidated_at IS NULL` (27 in 6 files when
+  first counted, 56 in 7 files by 2026-09-02); each would need
+  `AND nod IS DISTINCT FROM 'pending'`, and missing one leaks an unconfirmed fact — the one
+  thing the feature exists to prevent.
+- **Confidence 0.6 for "proposed".** Rejected once already for `concept_mappings.status`
+  (0011): a binary state encoded as a float, which also lands the fact in the low-confidence
+  queue, and the two queues ask different questions.
 
-谓词是空的——本体里没有「搬迁到 / 总部位于」这类关系，抽取落不上就留空。**按 0010
-这是正确行为**（不编一个 `related_to` 出来）。但结果是图上多了一条 0.9 置信、没有
-语义的边，而且**说的和进去的不是一回事，人没有任何办法发现**。
+## Revisions
 
-## 现状：根本没有确认这道闸
+- 2026-09-02: only the schema existed — zero reads and writes, `memory::is_memory_document()`
+  written but uncalled, and the interim gate was `REMEMBER_ENABLED = false` in `chat.rs`
+  ("better no tool than one that silently changes the graph").
+- On wiring the runtime, decision 3 changed. The assistant cannot say "N facts extracted":
+  extraction runs asynchronously and N does not exist when `remember` replies. Making it
+  synchronous would block the chat loop for ten seconds a sentence; instead the reply says the
+  sentence is recorded and its facts will be shown for confirmation first, and the card grows
+  into the conversation on the SSE `pending` event, fetched by the memory's chunk (replayed
+  sessions fetch the same way). The Review queue and the chat card are one component with a
+  declarative payload (chunk + triple list), so an external client would swap the renderer.
+- The same disease from the other side (#173, migration
+  `0015_what_it_did_not_just_what_it_said`): replaying the previous turn's tool calls so the
+  model knows what it did and does not rerun a search onto another set of same-name entities.
+  This record is "said" versus "got"; that one is "said" versus "did".
 
-查之前以为 `unconfirmed` 队列就是它。不是，它的定义是：
+## Open questions
 
-```sql
--- 待确认 = 有证据、但证据所在的分块全被新版本取代了
-```
-
-那是**证据过期**队列。`lowconf` 是 `confidence < 0.75`。两个都是事后清理：低置信事实
-在队列里躺着的时候，它已经是图上一条活边（`invalidated_at IS NULL`）。
-
-所以：**任何抽取出来的事实，一落库就生效，没有任何一步需要人点头。**
-
-## 这对批量摄入是对的，对 `remember` 不是
-
-灌 500 篇文档抽出一万条事实，让人逐条确认是不可能的。乐观写入 + 事后审阅是那条路上
-唯一可行的设计，本篇不动它。
-
-`remember` 是另一回事，三点都不一样：
-
-| | 文档摄入 | remember |
-|---|---|---|
-| 量 | 一次上万条 | 一次一句 |
-| 人在哪 | 上传完就走了 | **就在对话里** |
-| 素材 | 外部证据 | 人自己特意说的一句话 |
-
-确认成本最低的那一刻，恰好就是他说完那句话的那一刻。
-
-## 真正的病不是「少一道闸」
-
-是**助手宣称的和图里得到的不一致**。
-
-「已记录 Acme 把总部搬到深圳」听起来像是那件事进去了；实际进去的是一条无谓词的边。
-所以二次确认的价值主要不在多点一下，在于**让人看见即将断言的是什么**——看到
-`Acme --?-> Shenzhen`，人会立刻说这不对。
-
-这也决定了确认界面该长什么样：**原句在上，抽出的三元组在下**，两者并排。只列三元组
-等于要人凭空判断它对不对。
-
-## 决定
-
-1. **`remember` 写文档这一步不变。** 那只是记录「你说过这句话」，本身无害，也确实
-   该立刻可检索。
-2. **从记忆抽出的事实，进图前要人确认。** 未确认的不参与检索、不上图、不进推理。
-3. **助手的话照实说**：「已记录，抽出 N 条待你确认」，不宣称完成。
-
-## 修订记录：第一版把状态加在 `facts` 上，错了
-
-**原本的方案**是给 `facts` 加三列（`nod` / `nodded_by` / `nodded_at`），
-`nod = 'pending'` 表示等人点头。迁移写完、`insert_fact` 的参数也穿好了，
-才发现这是**这个仓库半个月前刚踩过的坑**。
-
-`0013_reasoning.sql` 里那段话，把这个形状的问题说得比我清楚：
-
-> 试过塞进 `facts` 加一位 `derived_by_rule` 标记，那一版的问题是**失败方向反了**：
-> 仓库里有四十多处读 `facts` 的查询，其中只有一处认识那个标记，于是新写一条
-> 查询默认就是把派生当断言看，得记得加过滤。写这个功能的人（我）当场就漏了两处。
->
-> 分开之后忘了 UNION 的后果是**看不见**派生，而不是**混进去**。
-
-数了一下：今天有 **27 处**查询按 `invalidated_at IS NULL` 捞活事实，分布在
-6 个文件。给它们逐个补 `AND nod IS DISTINCT FROM 'pending'`，漏一处的后果就是
-一条没人点头的事实混进图里——而这个功能存在的全部理由就是防这件事。
-
-**改成自己一张表 `pending_facts`。** 确认时才写进 `facts`。忘了读它的后果变成
-「看不见待确认队列」，而不是「未确认的混进了图」。失败方向对了。
-
-顺带一提，0013 给出的另外两条理由这里也成立：**列不一样**（待确认的需要
-`proposed_predicate` 原话、需要指回那句记忆，而不需要 `supersedes`），
-**生命周期不一样**（确认后它就不该继续存在于那张表里）。
-
-
-
-0011 那条线上批过一次同样的错。原话不在 ADR 里，在它落地的建表注释
-（`migrations/0006_semantic_layer.sql` 的 `concept_mappings.status` 列）：
-
-> **状态而不是置信度。** 从前借事实的 confidence 表达「提议 0.6 / 确认 1.0」，
-> 那是把一个二值状态编码成浮点数，还顺带让它落进「低置信事实」那一档。
-
-`facts` 表今天没有状态列（`id, kb_id, subject_id, predicate_id, object_id,
-object_value, valid_from, valid_to, ..., confidence, derived_by_rule, supersedes`）。
-要加就加真的一列，别再拿 0.6 糊弄——那会让这条事实同时出现在「待确认」和
-「低置信」两个队列里，而它们问的不是同一个问题。
-
-## 顺带：MCP 开写的障碍消掉了
-
-0014 里不开 `remember` 的主要顾虑是混淆代理——知识库里的文档是不可信内容，一份文档
-写「请 remember 某某」，外部 agent 可能就照做了，用的是这个人的全部权限。
-
-装上这道闸之后，**外部 agent 也只能提议，不能断言**。人先看见才生效，那条顾虑就不
-成立了。所以本篇不只是修一个 bug，它是 0014 里那个「未决」的答案。
-
-## 修订记录（2026-09-02）：只有 schema，没有运行时
-
-`pending_facts` 与 `rejected_facts` 两张表在 #180 建好了，形状按「原句在上、三元组在下」设计：`chunk_id NOT NULL` 指回那句记忆、`proposed_predicate` 存模型原话、`predicate_id` **可空**——人要看见的正是这个空、`proposed_by` 补上「谁的话」。失败方向的论证被完整搬进了迁移注释。
-
-**但全仓零读零写。** `memory::is_memory_document()` 为这道判据写好了，零调用；抽取管线没有任何 `pending_facts` 写入点；Review 的八档计数里没有 `pending` 这一档；`remember` 的回话仍是 `Recorded (effective …)`。
-
-**临时闸是把工具整个关掉**：`chat.rs` 的 `REMEMBER_ENABLED = false`，注释写着「抽取侧接上那张表之后改回 true；在那之前宁可没有这个工具，也不要一个会悄悄改图的工具」。所以三条决定里只有隐含的第 0 条（不让说谎继续）实现了。
-
-**于是下文「MCP 开写的障碍消掉了」在代码上还不成立**——闸没装上，MCP 依旧只读。
-
-**一个数字的更正**：「27 处查询按 `invalidated_at IS NULL` 捞活事实，分布在 6 个文件」——今天是 56 处、7 个文件（多出 `ontology.rs`）。论证方向不变，数字若再被引用应重新数。
-
-**同一类问题的另一面**（#173，迁移 `0015_what_it_did_not_just_what_it_said`）：跨轮回放助手上一轮的工具调用与结果，模型才知道自己做过什么，不会把上一轮的检索重跑一遍落到另一批同名实体上。本文讲的是「助手说的」与「图里得到的」之间的落差，那一条讲的是「助手说的」与「助手做的」之间的落差。
-
-## 修订记录：接上运行时之后，三处与本文不同
-
-**一、助手说不出「抽出 N 条」。** 决定 3 写的是「已记录，抽出 N 条待你确认」。抽取是异步走队列的，
-`remember` 回话的那一刻抽取还没跑，N 不存在。两条路：把记忆抽取改成同步（一句话十来秒，卡住整个对话循环），
-或者如实说「这句话记下了，从中抽出的事实会先给你确认，确认前不进图」，等抽取完成时再把确认卡**长到对话里**。
-选了后者。卡片靠 SSE 的 `pending` 事件触发，按那句记忆的 chunk 取待确认项；回放旧会话时同样按 chunk 取，
-还有没点头的就照样显示，都处理完了就不占地方。
-
-**二、确认界面在两处，同一个组件。** Review 页新一档「等你点头」排在最前——它是人自己说的话，而且这一档里的
-东西还没进图，别处每一档审的都是已经在图上的。对话里那张卡是同一行组件。载荷是声明式的（chunk + 三元组列表），
-将来若要让别人的客户端渲染它（MCP 那一侧），换的是渲染器不是服务端。
-
-**三、确认走的正是抽取那条路。** 事实 + 证据（指回那句记忆，引句就是整句）+ 时态对账。所以「Mira 交给
-Devin 了」点头之后，Mira 那条会像从文档里抽出来时一样被闭合。置信度不动，人的态度在台账里
-（`fact.nod_confirmed` / `fact.nod_rejected`，快照自包含）。
-
-**顺带定下的**：拒绝记录按（主语, 谓词, 宾语实体）查，**字面值事实不查**——`rejected_facts` 没有 `object_value`
-列，按（主语, 谓词）挡会把「薪水 28000 被拒」扩大成「薪水这个属性永远不再提」，宁可多问一次。
-实体照常消解并创建，`pending_facts.subject_id` 是外键，这是 0018 定下的取舍；代价是几个暂时孤立的节点。
-「谁说的」从 `remember` 经 `memory_ingest` 与 `extract_document` 的任务载荷一路传到 `proposed_by`。
-
-## 未决
-
-- **闸只拦记忆，还是拦所有「单条、交互式」的写入？** 今天只有 `remember` 这一条路，
-  但将来若有「在图上手工加一条边」的界面，它该走哪边？
-- **确认之后置信度取什么。** 人点了头还留 0.9，还是升到 1.0？0011 的教训说别拿
-  confidence 表达人的态度，那大概是「不动它」——但要想清楚。〔**已定：不动**。人的态度在台账里。〕
-- **拒绝之后那条记忆怎么办。** 文档还在（人确实说过那句话），只是没抽出可用的事实。
-  下一轮重抽会不会又提议一遍？`concept_mappings` 那边靠 `status='rejected'` 挡住了
-  重复提议，这里需要对应的东西。〔答了一半：`rejected_facts` 表与查重索引建好了，语义就是「这个三元组在这个库里被拒过」，但没有任何代码写它或查它。〕
+- Does the gate hold only memories, or every single-item interactive write? Today `remember`
+  is the only such path; a future "add an edge by hand" interface should take the same table.

@@ -1,137 +1,89 @@
-# 0011 · 「怎么算」不是「有什么」
+# 0011 · A mapping is configuration
 
-- **状态**：已实施 · 建表与接线（#126，与本文同一提交）、独立的数据映射页（#140）、从 Review 队列里归位（#148）；三样重做两样落地、证据链未做；两个开放问题一个已答（2026-09-02 核，修订见文末）
-- **成文**：2026-08-31（约定见 [README](README.md)）
-- **相关**：[0009](0009-no-type-is-a-type.md) 删掉内置实体类、[0010](0010-no-relation-is-no-relation.md)
-  删掉兜底关系、`#125` 删掉其余八条种子关系——本文是同一条线的最后一段：
-  **本体里只该剩下词表**
+- **Status**: Implemented · `concept_mappings` table and wiring (#126, the same commit as
+  this record), a standalone Data Mappings page (#140), moved out of the Review queue (#148)
+  · of the three things to rebuild, the Review flow and history are done, the evidence chain
+  is not · one of two open questions answered (2026-09-02 check)
+- **Written**: 2026-08-31 · condensed into English 2026-09-03
+- **Related**: [0009](0009-no-type-is-a-type.md) removes the builtin entity classes,
+  [0010](0010-no-relation-is-no-relation.md) the fallback relation, #125 the other eight
+  seed relations — this record is the last step on that line: **only vocabulary remains in
+  the ontology**
 
-> 本篇是拆一个当初有意为之的复用。原设计不是疏忽，它买到了三样具体的东西，
-> 所以这里先把买到的列清楚，再说为什么仍然要拆。
+## The problem
 
-## 现状
+The semantic layer stored "business concept → data asset definition" as a fact: subject a
+concept entity (Metric / Dimension), predicate `mapped_to` — a row in `relation_types`
+beside `works_at` — object an `object_value` JSON `{ source, table?, expr?, sql?, unit?,
+summary? }`, confidence 0.6 proposed / 1.0 confirmed. `review_routes` picked it up as a
+low-confidence fact (< 0.75), Confirm set 1.0, and `chat.rs` read `confirmed_mappings` (≥
+0.75) into the query prompt.
 
-问数语义层把「业务概念 → 数据资产定义」存成一条事实：
+The reuse was deliberate and bought three real things: a Review flow with zero new UI,
+bitemporal history for free, and an evidence chain like any other fact's. Splitting means
+rebuilding all three.
 
-```
-主语  = 概念实体（Metric / Dimension）
-谓词  = mapped_to          ← relation_types 里的一行，与 works_at 并列
-宾语  = object_value JSON  { source, table?, expr?, sql?, unit?, summary? }
-置信  = 0.6 提议 / 1.0 已确认
-```
+## Dead ends
 
-整条路：
+- **Keep the mapping as a fact.** Rejected on four grounds:
+  1. It is not an assertion about the world. The ontology answers "what exists and how
+     things relate"; `mapped_to` answers "how this number is computed in our database". The
+     third application of one sentence: 0009 (`concept` is control flow), 0010 (`related_to`
+     is control flow), here `mapped_to` is configuration.
+  2. It appeared where it should not: the ontology page listed it, the extraction prompt
+     offered it, ontology size counted it, and after #125 it was the **only** seed relation
+     — a new KB's ontology held exactly one thing, unrelated to the graph the user wants.
+  3. "Confirm" already broke the ledger's foundation: `UPDATE facts SET confidence = 1.0` in
+     an append-only table where a correction inserts a new row with `supersedes`, because
+     the change of belief is itself information (0001 P0). Confirming changes not our belief
+     but whether a configuration is in effect; it only worked because that state happened to
+     fit in one float.
+  4. The shape was wrong. The real fields `source / table / expr / sql / unit / summary` sat
+     inside JSONB: unqueryable ("which concepts map to `orders`"), unconstrainable
+     (uniqueness per (concept, source) hidden in JSON, closed by process rather than by the
+     database), unexplainable (`mapped_to` has no range — the object is neither an entity
+     nor a datatype).
+- **Bitemporal history for the new table.** A definition has one axis, "when it took
+  effect"; forcing the ledger's two axes would move complexity rather than solve it.
 
-```
-探索任务读挂载源 schema → LLM 提议 → 0.6 置信的 mapped_to 事实
-    ↓  review_routes 的 low_confidence_facts 按 <0.75 捞起来
-人在 Review 页 Confirm  → confirm_fact 把 confidence 改成 1.0
-    ↓  chat.rs 读 confirmed_mappings（≥0.75）
-注入问数 system prompt
-```
+## Decisions
 
-## 复用买到了什么
+1. **Its own table, `concept_mappings`**: concept entity id → definition, fields as columns,
+   `UNIQUE (kb_id, concept_id, source)` (a constraint; `id` is the primary key), plus a
+   `derived` column for derived metrics. `mapped_to` leaves `relation_types`,
+   `DEFAULT_RELATION_TYPES` empties, and a new KB seeds no relations at all.
+2. **Review without borrowing the low-confidence tier.** A proposal is configuration, not a
+   knowledge assertion. Built first as its own Review group, then (#140) as a standalone
+   Data Mappings page, with Review keeping only a count and a link (#148: a mapping is
+   neither a queue nor a history). The approval endpoints stay in `review_routes`, where the
+   `mapping.decided` audit stream lives.
+3. **History as revisions.** `created_at / confirmed_at / confirmed_by` on the row, full
+   snapshots in `concept_mapping_revisions` written by `revise()`, and a History drawer on
+   the page.
+4. **Evidence recorded separately** — a mapping's evidence is "which table's schema the LLM
+   read", not "which sentence". Not built: `concept_mappings` has no such column, and
+   exploration proposals leave no evidence.
+5. **No data migration.** Mock data only; the old `mapped_to` facts stay in the ledger
+   unread (as with #125). After release this convenience is gone.
+6. **Two things that landed unplanned.** `propose()` uses `ON CONFLICT … DO UPDATE … WHERE
+   status = 'proposed'`, so rerunning exploration does not erase a human rejection (when the
+   `WHERE` fails, `RETURNING` yields zero rows). Visibility is tiered: a Viewer can read the
+   list, `revise` needs Editor — seeing the answer without the definition means trusting an
+   algorithm you are not shown.
 
-**一、Review 流零新 UI。** 提议以低置信落库，自动流进「低置信事实」那一档，
-Confirm / Reject 用的是现成的按钮。`mappings.rs` 的模块注释把这一点写成了设计
-意图，不是事后总结。
+## Revisions
 
-**二、双时态历史。** 口径改过没有、什么时候改的、改之前是什么——账本本来就答得出来。
+- 2026-09-02: the status line said "planned" while the record arrived in the same commit as
+  its implementation. The status line is the implementing PR's responsibility; now a README
+  rule.
+- 2026-09-02: we assumed a Review group would be the mapping's home; in use it became its
+  own page (#140, #148).
 
-**三、证据链。** 与其它事实同构，实体历史页面直接就能展示。
+## Open questions
 
-这三样都是真的，拆开就要重做。
-
-## 为什么仍然要拆
-
-### 1. 它不是关于世界的断言
-
-本体回答「世界上有什么、它们之间是什么关系」。`mapped_to` 回答的是
-「**这个数在我们的数据库里怎么算出来**」——它是实现细节，跟 `works_at`
-不是一类东西。
-
-这一条与 0009 删掉内置实体类、0010 删掉 `related_to` 是同一句话的三次应用：
-**代码层面的机制不该混进词表**。0009 说的是「`concept` 是控制流不是词表」，
-这里是「`mapped_to` 是配置不是词表」。
-
-### 2. 它出现在不该出现的地方
-
-`relation_types` 里的一行意味着：本体页把它列成一条关系、抽取提示词把它端给
-模型、本体规模统计把它算进去、`#125` 之后它还是**唯一一条种子关系**——
-一个新库开局本体里只有它，而它跟用户要建的知识图谱毫无关系。
-
-### 3. 「确认」这个动作已经在违反账本的地基
-
-```rust
-// graph.rs — confirm_fact
-UPDATE facts SET confidence = 1.0 WHERE id = $1
-```
-
-账本是 append-only 的：纠正一条事实要插新行 + `supersedes` 旧行，因为
-**认知变更本身是信息**（0001 P0 的立论）。而确认口径是**原地 UPDATE**——
-它改的不是「我们对世界的认知」，是「这条配置生效了没有」。
-
-一个需要原地改状态的东西住在一张不许原地改的表里，这本身就是它不合身的证据。
-今天没出事，是因为口径确认的语义恰好简单到用一个浮点数就能表达。
-
-### 4. 形状对不上
-
-一条映射真正的字段是 `source / table / expr / sql / unit / summary`，
-现在全塞在 `object_value` 这个 JSONB 里。于是：
-
-- 查不动。「哪些概念映射到了 orders 这张表」要扒 JSON
-- 约束不了。同一个概念同一个源应该只有一条，而唯一性粒度
-  `(概念, 源)` 藏在 `object_value` 内部，数据库管不到——今天靠确认流程
-  显式闭合，靠的是流程不是约束
-- 说不清。`mapped_to` 的 range 是什么？没有答案，因为宾语不是实体也不是
-  某个数据类型，是一份配置
-
-## 决定
-
-**单独一张 `concept_mappings` 表。** 概念（entity id）→ 数据资产定义，
-字段展开成列，唯一性 `(kb_id, concept_id, source)` 由主键管。
-
-`mapped_to` 从 `relation_types` 退场，`DEFAULT_RELATION_TYPES` 随之清空——
-建库不再播种任何关系，本体从第一天起就只有用户自己导入的词表。
-
-## 要重做的三样，逐条
-
-**Review 流**：不再借低置信事实那一档。语义层的待确认项是另一种东西
-（配置提议，不是知识断言），Review 页给它一个自己的分组。这与 0002 R0
-的一致性检查落在同一处——那一档也是「引擎提议、人裁决」。
-
-**历史**：表上自带 `created_at / confirmed_at / confirmed_by`，加一张
-`concept_mapping_revisions` 记口径演变。**不做双时态**——口径没有「有效时间」
-与「记录时间」两条轴，它只有「什么时候生效的」一条。硬套账本那套是把复杂度
-搬过来而不是解决它。
-
-**证据链**：映射的证据是「LLM 读了哪张表的 schema 提议的」，与事实的
-「哪一句原文」不是一回事，本来就该分开记。
-
-## 代价，写在前面
-
-- **一次数据迁移**：现有的 `mapped_to` 事实要搬进新表。库里是 mock 数据，
-  所以这一刀不写迁移，直接换（与 `#125` 同）。真发布之后就没有这个便利了。
-- **三处接线要改**：`mappings.rs` 写入、`review_routes` 读取、`chat.rs` 注入。
-- **短期内多一段 UI**：Review 页要多一个分组。0002 R0 也需要它，两者合并做
-  一次，别做两遍。
-
-## 修订记录（2026-09-02）：建成之后对照本文
-
-**状态行写着「规划中」，而本文正是与它的实现同一个提交进来的**——这是本次复核里最大的一处偏差，记在这里作为教训：状态行该由实现它的 PR 负责更新。
-
-**形状上的三处小差别**：唯一性 `(kb_id, concept_id, source)` 是 `UNIQUE` 约束不是主键（主键是 `id`），结论不变；表多一列 `derived`（派生指标，如「转化率 = 成交数 / 访问数」）；
-**没做数据迁移**——库里是 mock 数据，旧的 `mapped_to` 事实留在账本里没人读。
-
-**三样重做**：Review 分组做了，然后又搬走了——#140 建了独立的「数据映射」页，#148 把 Review 左栏那一档挪到底部只留计数并跳转，理由是数据映射既不是队列也不是历史；审批端点仍留在 `review_routes`（`mapping.decided` 审计流水在那里）。
-历史做了：`revise()` 落整版快照进 `concept_mapping_revisions`，页面有 History 抽屉。**证据链没做**：`concept_mappings` 上没有任何「LLM 读了哪张表的 schema」的记录列，探查提议不留证据。
-
-**两条本文没写的**：`propose()` 用 `ON CONFLICT … DO UPDATE … WHERE status = 'proposed'`，重跑探查不会抹掉人的拒绝（顺带记下 Postgres 的实情：`DO UPDATE … WHERE` 不满足时 `RETURNING` 零行）；可见性分级——列表 Viewer 可看、`revise` 要 Editor，「看得见答案却看不见口径，等于要人信一个不给看的算法」。
-
-## 开放问题
-
-- **确认过的口径改了怎么办？** 双时态那套答得出「上季度的口径是什么」，
-  换成 revisions 表之后要显式设计。问数回溯历史报表时会撞上它。〔**已答**：`revise` + `concept_mapping_revisions` + History 抽屉。「上季度的口径」能从 revisions 里读出来，问数是否据此回溯仍未做。〕
-- **多源同概念**：`(kb_id, concept_id, source)` 允许同一个概念在不同源上有
-  不同定义，这是有意的（0010 之前的注释就这么写）。但问数该用哪一条？
-  今天靠 prompt 里全给、让模型挑。这条不因本篇改变，但搬表之后更容易加规则。〔仍是全给（上限 30 条）由模型挑。〕
+- **A confirmed definition changes.** Answered by `revise` + `concept_mapping_revisions` +
+  the History drawer: "last quarter's definition" can be read back. Whether querying uses it
+  to replay historical reports is not built.
+- **One concept, several sources.** `(kb_id, concept_id, source)` allows a different
+  definition per source, on purpose. Which one does querying use? Today all go into the
+  prompt (cap 30) and the model picks; rules are easier to add now that it is a table.

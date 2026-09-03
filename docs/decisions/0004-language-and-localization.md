@@ -1,144 +1,43 @@
-# 0004 · 语言：哪些字跟着看的人走，哪些跟着语料走
+# 0004 · Language follows the reader of each text
 
-- **状态**：已建成 · L0–L3 全部落地：界面词汇在 `web/src/i18n/`（约 950 条，含 108 个函数）、服务端错误改成带 `code` 的 `AppError::Invalid`（81 处；23 处 API 契约守卫刻意留英文 `Validation`）、
-  本体 `description` 跟 `knowledge_bases.ontology_lang`（带部署默认值）、LLM 面向人的输出
-  由调用方在请求里传 `locale`、抽出来的数据逐字跟文档。**两处与本文写的不同**，见 2026-09-02 的修订记录：界面首次访问刻意不猜浏览器语言；「中文内置本体」那一支随播种机制退场而作废
-- **成文**：2026-08-29（状态于 2026-08-30 更正：文档一直写着「规划中」，而索引与代码都说已建成；2026-09-02 对照代码复核）
-- **相关**：[0001](0001-ontology-import-and-governance.md) 论证过 `description` 是承重字段——本文把「它该用什么语言」补上；[0003](0003-ontology-growth-loop.md) 的 `reason` 与 `description` 之分是本文分界线的起点
+- **Status**: Built · UI strings in `web/src/i18n/`; user-reachable server errors carry a `code` (`AppError::Invalid`, 81 sites; 23 `Validation` guards stay English); `description` follows `knowledge_bases.ontology_lang`; LLM output for people takes `locale` from the request; extracted data stays verbatim; the UI does not guess the browser language yet.
+- **Written**: 2026-08-29 · condensed into English 2026-09-03
+- **Related**: [0001](0001-ontology-import-and-governance.md) made `description` load-bearing; [0003](0003-ontology-growth-loop.md) separated `reason` from `description`; [0008](0008-ontology-packs-as-cold-start.md) supplies the English packs a Chinese knowledge base starts from.
 
-> 触发：产品要面向中文企业出中文版。但「加个语言开关」这句话底下藏着**五种性质不同的文本**，它们的正确语言互不相同，用一个开关管必然有一半是错的。
+## The problem
 
----
+One language switch cannot serve five kinds of text with different readers and sources:
 
-## 五种文本
-
-平时都叫「文案」，但读者和来源完全不同：
-
-| | 例子 | 读者 | 来源 |
-|---|---|---|---|
-| **界面词汇** | "Import an ontology" | 人 | 我们写死在 `i18n.ts` |
-| **服务端错误** | "Password must be at least 8 characters" | 人 | 我们写死在 Rust 里 |
-| **本体的 label / description** | `person` / "A named individual human being…" | **description 的读者是模型** | 内置播种 + 用户撰写 + OWL 导入 |
-| **LLM 当场生成给人看的** | 建议的 `reason` | 人 | 模型，按需生成 |
-| **抽出来的数据** | 实体名 `张三`、`surface_predicate` "runs on" | 人与模型 | **原文，逐字** |
-
-最后一行不是文案。**它是引文。**
-
----
-
-## 分界线
-
-### 界面词汇 → 客户端，每个人自己设
-
-和暗色模式同类：这是**看的人**的偏好，不是部署的属性。中国企业里的外籍同事不该为了看英文界面去找管理员。
-
-`localStorage` + [wsStore.ts:22](../../web/src/wsStore.ts) 已有的 `makeStore` 模式，多一行 `makeStore("utopia.lang")`。首次访问按 `navigator.language` 猜一次，之后以人选的为准。
-
-> **修订记录（2026-09-02）**：「按 `navigator.language` 猜一次」**没有落地，而且是刻意的**。
-> `web/src/i18n/index.ts` 的 `detect()` 只读 `localStorage`，否则一律 `"en"`，注释写着
-> 「等 zh 追平了再把 navigator.language 那一句加回来」。原因是下文「已知会疼的地方」第一条：
-> 中文包在追英文包，漏译的那部分会静默回落成英文。于是把「漂移」的代价换成了
-> 「中文用户默认先看英文」——这是个取舍，不是遗漏，追平之后该把那一句加回来。
-
-> **修订记录**：本文初稿把界面语言放在**部署级管理员设置**里，理由是"和并发上限一样，DB 存、即时生效"。那个类比是错的——并发上限是**部署的属性**（供应商速率限制），界面语言是**读者的属性**。判断一个设置该放哪，问的不是"改起来方不方便"，是"它描述的是谁"。
-
-中文包写成 `const zh: typeof S = { … }`。**不用 `Partial` + 逐键回退**：那样漏译不报错，只是某一行悄悄变回英文，而这种缺口只有用户会发现。`typeof S` 让漏一条就编译不过——512 条字符串 + 44 个函数，靠人眼对不齐。
-
-### 服务端错误 → 改成 key，措辞归前端
-
-界面语言在客户端之后，**后端不再拥有任何 locale**。所以留在 Rust 里的字符串是**永久不可翻译**的，不是"以后再补"。
-
-`AppError::Validation` 目前 75 处〔**已做完**（2026-09-02 核）：能撞到的改成了带 `code` 的 `AppError::Invalid`，81 处，前端 `err.*` 表 48 条；留下的 23 处 `Validation` 全是契约守卫。`Invalid` 还多带一个 `detail`——机器给的补充（cron 解析器的报错之类）与措辞分离；`message` 仍是英文原句且刻意保留，给不做本地化的客户端（MCP、CLI）与日志用〕。分两类处理：
-
-- **用户正常操作能撞到的**（密码规则、邮箱格式、空文件、日期格式等）→ 改成 key，前端查表。这样全部措辞收进 `i18n.ts` 一个文件，而不是前端一半后端一半。
-- **API 契约守卫**（`role must be admin, editor or viewer`——只有调错接口才会碰到）→ 留英文。它的读者是开发者，永久英文正是它该有的样子。
-
-关键是**逐条判断并认下来**，而不是含糊地"以后再说"。
-
-> 这让本仓库一条既有原则从好品味变成硬约束：**服务端不产出展示形态**。此前违反它只是不优雅（OWL 导入把 `（手工建的）` 塞进 `conflict_with`，直接漏进英文界面）；现在违反它等于制造一个永远翻不了的字符串。
-
-### 本体的 description → 跟语料，不跟界面
-
-`description` 逐字进抽取提示词（[0001](0001-ontology-import-and-governance.md) 已论证它是承重字段），**读者是模型，而模型正在读你的文档**。
-
-所以正确语言是**语料的语言**，不是界面的语言。中国企业读英文技术文档是常见组合：界面要中文，而类描述**应该是英文**——描述与被判断的文本同语言时，模型判断"这段文字里的东西算不算 `product`"更稳。
-
-这是一个**知识库级**的属性（一个库就是一份语料），不是部署级，更不是客户端。
-
-### 本体的 label → 是数据，不跟任何开关
-
-`label` 存在库里，跟不了客户端的开关。**而这是对的**：它是那个团队写下的本体。一个中国团队建的库里类叫 `人物`，用英文界面的同事看到的也该是 `人物`——那是他同事定义的概念，不是界面元素。翻译它反而错。
-
-内置的 9 个类只在**播种那一刻**是应用词汇，落库之后就是这个库的数据，可编辑。〔**已作废**：[0009](0009-no-type-is-a-type.md)、[0010](0010-no-relation-is-no-relation.md)、#125、#128 之后不再有内置类、种子关系与播种函数。冷启动改由英文预制包提供（[0008](0008-ontology-packs-as-cold-start.md)），于是「label 是数据」这条的实际后果是：**中文库装到的是纯英文本体**，`ontology_lang = zh` 只影响将来由 LLM 提案长出来的词。见 0008 开放问题。〕
-
-**`key` 永不翻译**：它是标识符（`[a-z0-9_]`，最长 40），是模型读写的令牌，也是 `type_ids` 的查找键。
-
-**一个连带修改**：提示词当时排成 `- {key} ({label}): {description}`（[lib.rs](../../crates/utopia-extract/src/lib.rs)，已按下句改掉）。界面语言与语料语言不一致时，这一行会中英混排。`Person` 相对 `person` 本来就近乎零信息量，所以**提示词只送 `key` + `description`，`label` 仅在 description 为空时兜底**。
-
-### LLM 当场生成给人看的 → 调用方在请求里说
-
-`reason` 是人点 "Suggest with AI" 当场生成、当场显示、接受或忽略后就没了——`suggest` **即时返回不存库**（[ontology_routes.rs](../../crates/utopia-server/src/api/ontology_routes.rs)）。调用者就在现场，那就让请求自己说要什么语言，而不是让后端记一个设置。
-
-> **修订记录（2026-09-02）**：「不存库」已不成立——#112 之后 `suggest` 算完会写进 `ontology_proposals`，
-> 因为丢掉的不是原材料而是**聚类结果**（见 [0003](0003-ontology-growth-loop.md) 已知缺口）。
-> 但语言的结论不变：`reason` 仍按请求里的 `locale` 生成，label / description 则跟 `kb.ontology_lang`，
-> 两者在**同一次调用**里表达，提示词里写明后者覆盖英文骨架。
-
-冷启动自动扩本体走同一条路但没有人类调用者。它生成的 `reason` 本来就被丢掉（`lastAutoExtension` 只回 relations / classes / facts_remapped / batches），所以那条路不需要 locale。
-
-**今天真正的毛病不是语言错，是语言没定**：[bootstrap_ontology.rs](../../crates/utopia-server/src/bootstrap_ontology.rs) 的提示词压根没说输出用什么语言，模型看心情。〔**已修**：提示词末尾有一整段 Language 指令，`lang_name()` 把 `zh` 写成 `Chinese` 再送进去——模型认得懂 Chinese，未必认得懂 zh；冷启动那条路显式传 `en`。〕
-
-### 抽出来的数据 → 逐字跟文档，连开关都不给
-
-实体名之所以是 `张三`，因为文档第 3 段就是这么写的——证据链指着那个位置。翻译成 `Zhang San` 同时坏掉三件事：证据对不上原文、同一个人在中英文档里裂成两个实体、`surface_predicate` 那一整套「原文用的什么词」的记录失去意义。
-
-**不是语言偏好问题，是出处问题。**
-
----
-
-## 于是后端只剩一个语言概念
-
-| 层 | 管什么 | 存哪 |
+| Text | Reader | Source |
 |---|---|---|
-| 客户端 | 界面词汇（512 条 + 44 个函数） | `localStorage` |
-| 单次请求 | LLM 当场生成给人看的文本 | 请求参数 |
-| **知识库** | `description`、播种哪套内置本体 | `knowledge_bases` 一列 |
-| 部署 | 上一行的默认值 | 管理员设置 |
+| UI strings ("Import an ontology") | people | the i18n bundle |
+| Server errors ("Password must be at least 8 characters") | people | Rust |
+| Ontology `label` / `description` | the model reads `description` | packs, users, OWL import |
+| LLM text generated on the spot (a suggested `reason`) | people | the model, on demand |
+| Extracted data (`张三`, `surface_predicate` "runs on") | people and the model | the document, verbatim |
 
-最后一行是「系统语言」唯一剩下的东西。它值得留——中文部署不该每次建库都手动选——但**必须换个名字**。叫「系统语言」的话，三个月后一定有人试图把界面语言挂上去，然后发现挂不上。叫**「新建知识库的默认本体语言」**，名字本身就把误用挡住了。
+The last row is not copy. It is a quotation.
 
----
+## Decisions
 
-## 一条架构约束
+1. **UI strings are a per-person client setting**, like dark mode: a foreign colleague in a Chinese company should not need an administrator to see English. Kept in `localStorage` via `makeStore`, resolved in one function that everything else consumes. The Chinese bundle is `const zh: typeof S = { … }`: a missing key fails compilation, where `Partial` with fallback would leave a silently English line.
+2. **Server errors become keys.** With the locale in the client, any string left in Rust is permanently untranslatable. Errors a user can hit are `AppError::Invalid` with a `code` for the frontend `err.*` table, a machine `detail`, and an English `message` for MCP, CLI and logs. API-contract guards (`role must be admin, editor or viewer`) stay English `Validation`: their reader is a developer. Hence a hard rule: **the server produces no display text**.
+3. **Ontology `description` follows the corpus.** It goes verbatim into the extraction prompt beside the documents, and Chinese UI with English class descriptions is common. So it is a knowledge-base property, `knowledge_bases.ontology_lang`, whose deployment default is named "default ontology language for new knowledge bases"; call it "system language" and someone will hang the UI language on it.
+4. **`label` is data and follows no switch.** A class a Chinese team named `人物` reads `人物` on the English UI too: it is their concept. `key` is never translated; it is the model's token and the lookup key of `type_ids`. The prompt lists `key` + `description`, `label` only when the description is empty: `Person` beside `person` adds nothing and mixes scripts.
+5. **LLM text for people takes `locale` from the request.** `reason` is generated when someone clicks "Suggest with AI", so the caller states the language; `label`/`description` in the same call follow `kb.ontology_lang`. `lang_name()` sends `Chinese` rather than `zh`; the cold-start path passes `en`.
+6. **Extracted data stays verbatim.** An entity is `张三` because paragraph 3 says so; translating it breaks the evidence match, splits one person across Chinese and English documents, and empties `surface_predicate`. Provenance has no switch.
 
-locale 必须**在一个函数里解析出来**，其余全部消费它，不各自去读来源。
+## Dead ends
 
-这样将来要不要做「每用户语言」「跟随浏览器」「按知识库切界面」，改的是那一个函数，而不是翻遍 512 个调用点。**设置放哪会变，解析在一处不会变。**
+- **UI language as a deployment-level admin setting**, "like the concurrency limit". That limit describes the deployment; the UI language describes the reader. A setting lives with whatever it describes.
+- **A Chinese rewrite of the built-in ontology** (9 classes, 14 relations, negative examples included) lost its object when seeding was removed (#125, #128, [0009](0009-no-type-is-a-type.md), [0010](0010-no-relation-is-no-relation.md)). A Chinese knowledge base now starts from an all-English pack; `ontology_lang = zh` affects only terms the LLM proposes later. What remains is an imported vocabulary or packs with Chinese labels ([0008](0008-ontology-packs-as-cold-start.md), open question).
 
----
+## Revisions
 
-## 分步
+- 2026-09-02: "guess `navigator.language` once" was never shipped, deliberately: `detect()` reads `localStorage` and otherwise returns `"en"`, because the Chinese bundle trails the English one and untranslated lines fall back silently. The line goes back in when the bundle catches up.
+- 2026-09-02: since #112 `suggest` writes `ontology_proposals` ([0003](0003-ontology-growth-loop.md)); the language conclusion is unchanged.
 
-| | 内容 | 依赖 |
-|---|---|---|
-| **L0** | 前端 i18n 骨架：locale store + 语言切换 + `zh.ts`（`typeof S` 全量） | 无 |
-| **L1** | 服务端错误文案分类，能撞到的改 key | L0 |
-| **L2** | 知识库本体语言列 + 中文内置本体 + 部署级默认值 | 无（可与 L0 并行） |
-| **L3** | 提示词去掉 `label`；`suggest` 带 locale；提示词钉死输出语言 | L0（locale 来源） |
+## Open questions
 
-**L2 独立于界面语言，且今天就有收益**：中文语料配中文类描述，抽取质量直接受益，不必等中文界面。
-
-**L2 里最实的一块不是加列，是重写内置本体的描述**——9 个类 + 14 个关系。它们当初是斟酌着写的（负面例子那部分尤其：「不是角色、职位或团队，那些归 concept 或 organization」——错误聚集在边界上，负面例子才是干活的那半）。**翻译不能敷衍，得按同样的思路用中文重写一遍。**
-
-> **修订记录（2026-09-02）**：这一块**已无对象**——种子本体整个退场（见上文「label」一节的作废注）。
-> L0、L1、L3 与 L2 的「加列 + 部署默认值」都已建成；中文本体这件事换了形态：
-> 要么用户导入自己的中文词表，要么等本体包有中文标签（0008 开放问题），代码里没有第三条路。
-
----
-
-## 已知会疼的地方
-
-- **中文包与英文包漂移**。`typeof S` 挡住"漏一条"，挡不住"英文改了措辞、中文还是旧的"——两边都合法。目前没有好办法，只能靠改文案时同时改两处。
-- **一个库里中英文档混放**时，`description` 该用哪种语言没有正确答案。本文选了「知识库单语」，因为混放本身就会让抽取质量下降（不只是描述的问题）。真遇到了再说，别提前设计。
-- **中文分词与检索**。Tantivy 那边已经用了 `tantivy-jieba`，不在本文范围，但中文版上线后会被更认真地检验。
-- **（2026-09-02 补）中文包追不上英文包的期间，界面默认英文**。见「界面词汇」一节的修订记录：`detect()` 暂不猜浏览器语言。追平的标志是 `zh.ts` 不再靠 `typeof S` 之外的任何东西撑着，那时把 `navigator.language` 加回去。
+- **Bundle drift**: `typeof S` catches a missing key but not "the English wording changed and the Chinese did not". Edit both together.
+- **Mixed-language corpora in one knowledge base**: one language per KB; design it when it happens.

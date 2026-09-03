@@ -1,123 +1,102 @@
-# 0016 · 先把开着的口子收上，再开新的
+# 0016 · Close the open seams before cutting new ones
 
-- **状态**：规划中 · v0.1.0 之后的第一份排期
-- **成文**：2026-09-02（约定见 [README](README.md)）
-- **相关**：本文是对 [0001](0001-ontology-import-and-governance.md) 到 [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) 逐篇对照代码复核之后写的；每一条「待做」都能在那十五篇里找到出处。复核本身的产物是各篇里 2026-09-02 的修订记录，本文只排顺序、只讲为什么是这个顺序
+- **Status**: in progress · the first schedule after v0.1.0 · A1, A2, A3 done · B1 done (#227) · B2a done (#238, [0017](0017-a-contradiction-points-upstream.md)), B2b planned · B3: the signature half done (#190 / #196), cross-pack signatures and range-aware direction done (#233), `disjointWith` into resolution still open · D2's blank-base problem worked around with builtin `metric` / `dimension` classes (#231), the pack itself still planned · the lakehouse engines landed ahead of D4 (#239, [0018](0018-the-lakehouse-is-one-protocol-away.md))
+- **Written**: 2026-09-02 · condensed into English 2026-09-03
+- **Related**: written after checking [0001](0001-ontology-import-and-governance.md) through [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) against the code; every item below has its source in those fifteen records, whose 2026-09-02 revision notes are the check's product. This record only orders them and says why this order.
 
-> 这一篇没有实验数字。它是一次盘点：v0.1.0 发出去了，README 的能力表写了十二行，
-> 十五篇决策记录里有三篇的状态行落后于同一个 PR 里的代码。**在开下一条大线之前，
-> 先把「说的」和「做的」对齐一遍。**
+## The problem
 
-## 现状，一段话
+v0.1.0 shipped with twelve capability rows in the README while three of fifteen records had
+status lines behind the code in the same PR. Before the next big line, align "said" with
+"done". The half-built pieces still open:
 
-一个 Rust 二进制加一个 Postgres：摄入（十种格式、URL / RSS / GitHub / Jira 同步、按源令牌推送）→
-混合检索 → 抽取（本体驱动、预算内全铺、超预算按块检索加祖先补齐、写入时按签名掰正方向）→
-三段消解（等值召回、画像相似、包含关系）加攒批裁决 → 双时态账本（证据、supersedes、合并可回滚）→
-本体从语料长出来（计数采纳、可撤销、默认开）→ 推理机 R0 全建、R1 带开关 → 语义层（概念映射另存、口径有历史）→
-问数（Ontology2SQL，源授权到工作区）→ 对话是 agentic 的，七个工具，跨轮回放自己做过什么 → MCP 只读五工具、个人令牌。
-告警五种，审计台账，每库角色矩阵。约 4.7 万行 Rust、2.2 万行前端、18 个连库测试、8 份可重跑语料。
-
-**这些都是真的。** 下面这些也是真的：
-
-| 半成品 | 出处 | 症状 |
+| Half-built | Source | Symptom |
 |---|---|---|
-| `pending_facts` 只有表没有运行时；`remember` 整个停用 | 0015 | README 里有 Chat 记忆，用户用不到 |
-| MCP 只有 API，没有令牌界面 | 0014 | README 里有 MCP，用户配不了 |
-| `utopia-mcp` / `utopia-connectors` / `utopia-graph` 三个 crate 是三行占位，其中一个宣称的工具名从未实现 | 0014 | 读源码的人被误导 |
-| 证明树只展开一层；增量维护没做；派生 vs 断言矛盾不记信号 | 0002 | README 说 derivation path expands back to the sentence，只对了一层 |
-| `disjointWith` 落库了，消解侧仍用硬编码 `CONFUSABLE_TYPE_KEYS` | 0009 / 0001 P5 | 本体声明了不相交，合并候选照样跨过去 |
-| 合并路径没有签名复核〔已做，#196；采纳那条路也没有，#190，一并做了〕 | 0012 待做 | 写入时掰正的方向，合并一次就能再反回去 |
-| 类型消解只能手动跑 | 0001 P3a | 大本体下新实体的细化靠人记得点一下 |
-| 中文库拿到纯英文本体；`zh.ts` 没追平所以界面默认英文 | 0008 / 0004 | 中文用户两头都是英文 |
-| `merge_key` 不折 `_by`；叙述动词进本体 | 0007 | 同一关系两个方向并存 |
-| 预算 24,000 与每块 40 / 30 / 30 标着「待测」；答案键仍是人填的；混装准确率没测 | 0006 / 0008 | 所有「更好」都说不清是改动还是方差 |
-| 语义层映射不留证据；多源同概念全给模型挑 | 0011 | 口径是黑箱 |
-| 映射探查硬依赖 `metric` / `dimension` 两个 key，空库静默零条 | 0009 未决 | 不装包就没有问数语义层 |
-| 关掉自动扩本体后没有「新说法」提醒 | 0003 | 索引铺好了，提醒没做 |
-| `document.no_text_layer` 未接，OCR 端点不存在 | 0005 | 扫描件全绿 |
-| 死代码与陈旧注释：`graph.rs` 的 `confirmed_mappings()`、`confirm_fact` 里的 `mapped_to` 连接、`bootstrap_ontology.rs` 开头的注释、`reasoning.rs` 里写错的迁移号、测试抬头写错的迁移号 | 0010 / 0012 / 0002 / 0014 | 下一个读的人会信 |
+| `disjointWith` is stored; resolution still uses the hard-coded `CONFUSABLE_TYPE_KEYS` | 0009 / 0001 P5 | merge candidates cross declared disjointness |
+| type resolution runs only by hand | 0001 P3a | refining new entities depends on someone clicking |
+| a Chinese base gets an English ontology; `zh.ts` lags, so the interface defaults to English | 0008 / 0004 | Chinese users get English at both ends |
+| `merge_key` does not fold `_by`; narrative verbs enter the ontology | 0007 | one relation in two directions |
+| the 24,000 budget and 40 / 30 / 30 per-chunk counts are untested; the answer key is hand-filled; mixed packs unmeasured | 0006 / 0008 | no "better" can be told from variance |
+| mappings carry no evidence; with several sources every same-name concept goes to the model | 0011 | the calculation is a black box |
+| the mapping probe depends on the `metric` / `dimension` keys | 0009 | a blank base found nothing until the builtin classes of #231; the pack is D2 |
+| no "new phrasings" reminder once auto-extension is off | 0003 | the index is there, the reminder is not |
+| `document.no_text_layer` unwired, no OCR endpoint | 0005 | scanned documents show all green |
 
-## 判据
+## Criteria
 
-以后再排期，用这几条判，不重新辩论：
+1. **Said and done agree.** README line, status line, code comment: when they disagree, fix
+   that before adding features. 0015 is the assistant to the user; this is us to the reader.
+2. **What writes the graph comes before what reads it.** A half-built thing that silently
+   changes the graph is worse than nothing; a half-built read is a missing feature. So
+   `pending_facts` came before the proof tree.
+3. **Measurable first.** `scripts/bench/` and the corpora exist; the external answer key does
+   not, and without it tuning tightens overfitting ([0006](0006-ontology-scale-and-the-prompt.md)).
+4. **Simulation and execution gates wait for the ground.** The README roadmap's first two
+   items are proposals overlaid on the ledger; `pending_facts` (A1), the proof chain (B1) and
+   the contradiction signal (B2) are what they stack on.
 
-1. **说的和做的要一致。** README 的一行承诺、决策记录的一个状态行、代码里的一句注释——三者不一致时，先改到一致，再谈新功能。[0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) 讲的是助手对用户，这条是我们对读者。
-2. **写图的东西先于读图的东西。** 一个会悄悄改图的半成品比没有更坏；一个只读的半成品只是少一个功能。所以 `pending_facts` 排在证明树前面。
-3. **能量的先做。** `scripts/bench/` 在，语料在，缺的是外部答案键。没有它，本体与抽取侧的任何调参都是把过拟合调得更紧（[0006](0006-ontology-scale-and-the-prompt.md) 未决）。
-4. **模拟与执行门等地基。** README 路线图的头两条——决策推演、执行校验——本质是「**不落账的提议叠加在账本之上**」。0015 的 `pending_facts` 就是这个形状的第一块砖：一条提议、原句在上三元组在下、人点头才进账。先把这块砖砌稳，模拟引擎才有可以叠的东西。
+## The lines: A → B ∥ C → D → E
 
-## 四条线，按这个顺序
+**A · Close the seams**, no new concepts. A1 wire 0015 (done). A2 a tokens page and delete
+the three placeholder crates (done; a placeholder is a promise to the reader, and `cargo new`
+takes minutes). A3 dead code and stale comments (done, #188 and `chore/comments-catch-up`).
+A4 README against code, both languages: promise only what has landed.
 
-### A · 收口——两到三周，不加新概念
+**B · Finish the reasoning engine**, after A, parallel with C. B1 the R2 proof chain (done,
+#227; a chain, not a tree — see [0002](0002-reasoning-engine.md)). B2 the derived-vs-asserted
+contradiction signal, `axiom_violations` kind `derived_contradiction` (B2a done; B2b, visibility
+on graph and panel, planned — 0017). B3 `classify_type_drift` reads `entity_type_disjoint`
+instead of the hard-coded list, today's behavior when nothing is declared (class kinship from the
+hierarchy landed first, #226). B4 R3 incremental
+maintenance, deferred until a full re-derivation of `ai-timeline-ends` exceeds a threshold
+(proposal: 10 seconds).
 
-**A1 · 把 0015 接上。**〔已做，形态与下文有两处不同，见 0015 末尾的修订：助手说不出 N，确认卡在对话里随抽取完成长出来。〕 抽取遇到记忆文档（`memory::is_memory_document`，已写好零调用）时写 `pending_facts` 而不是 `facts`；
-Review 加 `pending` 一档，界面**原句在上、三元组在下**；确认 → `insert_fact`，**置信度不动**（0011 的教训：别拿浮点数表达人的态度，人的态度在审计台账里）；
-拒绝 → 写 `rejected_facts`，下一轮重抽先查它；`remember` 的回话改成「已记录，抽出 N 条待你确认」；然后把 `REMEMBER_ENABLED` 改回 true。
-**验收**：那条实测（「Acme 把总部搬到深圳」）跑一遍，图上不出现空谓词活边，Review 里出现一条带原句的待确认项。
-做完这一条，MCP 可以放 `remember`（scope = write，令牌以人的身份提议，人自己确认）——0014 未决的答案由此成立。
+**C · Ontology and extraction quality**: build the ruler, then tune. C1 an external answer
+key, Wikidata `P31` as the type answer for Wikipedia articles, generated by script; only then
+can the 0008 mixed-pack comparison (`run.mjs --packs`) and the 0006 budget curve run. C2 type
+resolution queued after extraction, auto-applying only the "within the original subtree"
+tier; after C1, or it scales noise. C3 with `ontology_lang = zh`, generate Chinese
+`description` rows by LLM (the line the model reads follows the corpus,
+[0004](0004-language-and-localization.md)), IRIs and `label` untouched; catch `zh.ts` up and
+put `navigator.language` back into `detect()`. C4 fold `_by` in `merge_key` and let the
+synonym-merging LLM call review narrative verbs, reversibly. C5 "N new phrasings since last
+time" from `ontology_misses` where `dismissed_at IS NULL`.
 
-**A2 · 令牌有界面。**〔已做，`feat/tokens-have-a-page`〕Account 页：列表（前缀、名字、scope、库、最后使用、过期）、发放（明文只显示一次）、撤销；旁边给一段可复制的 MCP 客户端配置（URL + Authorization 头）。
-三个占位 crate **删掉**（已做，与 A3 同一刀）：`utopia-mcp` 宣称的三个工具从未存在，服务端住在 `utopia-server/src/api/mcp.rs`；`utopia-graph` 没有对应物；`utopia-connectors` 的意图是对的，但两个连接器看不出边界该划在哪，[0013](0013-a-source-should-hand-over-its-history.md) 说等第三个来了再看抽象，crate 是同一个判断。占位是对读者的承诺，兑现不了就别留，需要时 `cargo new` 是几分钟的事。
+**D · Semantic layer and data questions**, after C1. D1 `concept_mappings` gains `evidence`
+(the schema-doc chunk ids read during probing). D2 a "Utopia semantic layer" pack with IRIs,
+optional and replaceable; `mappings.rs` finds types by IRI. D3 one mounted source → only its
+mappings, several → all, in `mappings::confirmed`. D4 the MySQL wire protocol (TiDB /
+OceanBase / Doris / StarRocks, `sqlparser` dialect switch); the lakehouse engines came first.
 
-**A3 · 清死代码与陈旧注释。**〔已做，分两刀：#188 那批清了五处死代码与三个占位 crate；`chore/comments-catch-up` 补了还在描述「兜底谓词」的五处注释和一处指向仓库外 DESIGN.md 的引用〕上表最后一行那五处，加上 `resolution.rs` 里 `CONFUSABLE_TYPE_KEYS` 上方停留在旧世界的注释。一个 PR。
+**E · Enterprise delivery**, the v0.2 bar, can interleave. Credentials encrypted at rest
+(SECURITY.md promises it before 1.0) — small, do it early. OIDC SSO; backup and restore; a
+hundred-thousand-document benchmark (numbers beat design). `document.no_text_layer` together
+with an OCR endpoint (docling-serve sidecar). `instant` precision only when the trigger in
+[0013](0013-a-source-should-hand-over-its-history.md) fires.
 
-**A4 · README 与代码对表。** Reasoning 那一行的 "derivation path expands all the way back to the original sentence" 在 B1 做完之前改成只承诺一层；
-Chat memory 与 MCP 两处在 A1 / A2 落地前标 in development。中英两份一起改。
+**Deferred: simulation engine and execution gate** (criterion 4); a separate record once A
+and B are done.
 
-### B · 推理机补完——A 之后，与 C 并行
+## A new convention
 
-**B1 · R2 证明树。**〔已做，`feat/proof-tree`；实际是链不是树，理由见 0002 R2 的修订〕递归展开到叶子 chunk 的 API + 实体面板里可展开的树。数据结构（`fact_derivations`）已够。
-**B2 · 派生 vs 断言矛盾要有信号。** `axiom_violations` 加一种 kind（`derived_contradiction`），进 Review 同一档——0002 写了没做的那一行。（完整方案见 [0017](0017-a-contradiction-points-upstream.md)；B2a 引擎与队列已做，B2b 图与面板上的可见性待做。）
-**B3 · `disjointWith` 进消解，合并路径复核签名。** `classify_type_drift` 改从 `entity_type_disjoint` 读（没声明就退回今天的行为，不硬编码）；
-`merge_entities` 搬事实前跑一遍与写入时相同的 domain / range 检查，违反的进 `axiom_violations` 而不是静默搬过去。这是 0009 与 0012 各自待做的同一件事。
-〔**签名那一半已提前做了**（#190 / #196 逼出来的，A 线里插队）：`ontology::judge_direction` 一处判断，抽取与采纳共用；合并后对搬动过的事实报 `signature` 违规；R0 多一类。剩下 `disjointWith` 进消解那一半仍在这里。〕
-**B4 · R3 增量维护——后置。** 只在测量台上全量重推超过一个明确阈值（建议：`ai-timeline-ends` 语料超过 10 秒）时才做。今天每次全量重推活得下去。
+The PR that implements a record updates its status line. 0011, 0014 and 0015 fell behind the
+code in the same PR by the same author, so the PR template asks which record the change
+implements or overturns and whether the status line moved. Written into the [README](README.md).
 
-### C · 本体与抽取质量——先造尺子，再调参
+## Open questions
 
-**C1 · 外部答案键。** 0006 未决的那条：维基条目配 Wikidata `P31` 作类型答案，生成脚本入库。有了它，才能跑 0008 的混装对照（`run.mjs --packs` 已支持）与 0006 的预算曲线。
-**C2 · 类型消解自动触发。** 抽取结束入队一次类型消解（与 `bootstrap_ontology` 并列），只自动落「在原类子树里」的那一档，跨轴仍进人工。**排在 C1 后面**：没有尺子，自动跑等于把噪声规模化（0001 P3 的原话）。
-**C3 · 中文本体。** 三选一，倾向第一个：装包时若 `ontology_lang = zh`，由 LLM 批量生成中文 **description**（模型读的那一行，0004 说它该跟语料语言），存进库、原文 IRI 不动、`label` 不动（label 是 key 的展示，key 永不翻译）；
-另两个是「等社区出中文包」与「什么都不做只提示」。同时把 `zh.ts` 追平，把 `navigator.language` 加回 `detect()`。
-**C4 · 0007 的两条尾巴。** `merge_key` 折 `_by` 并把整组标成需对调；叙述动词交给那次同义归并的 LLM 调用一并审（「这些里哪些是文章的口吻」），可撤销。
-**C5 · 0003 的提醒。** 关掉开关后 Ontology 页显示「自上次以来有 N 个新说法」，数据从 `ontology_misses` 按 `dismissed_at IS NULL` 算，索引已在。
-
-### D · 语义层与问数——C1 之后
-
-**D1 · 映射留证据。** `concept_mappings` 加 `evidence`（探查时读了哪几张表的 schema 文档，chunk id 数组），数据映射页展示。
-**D2 · `metric` / `dimension` 出包。** 0009 未决的答案：做一个「Utopia 语义层」包，带 IRI、可选、可替换，与其它包同一条装法；`mappings.rs` 改按 IRI 找类型，不按 key。
-**D3 · 多源同概念的选法。** 先做最简单的规则：问数时若挂载的源只有一个，只给那个源的映射；多个源全给。规则写在 `mappings::confirmed` 一处。
-**D4 · MySQL 线协议。** 白捡 TiDB / OceanBase / Doris / StarRocks，`sqlparser` 换方言。README 路线图里的那条。
-
-### E · 企业交付——v0.2 的门槛，可穿插
-
-- **凭据静态加密**（SECURITY.md 承诺「1.0 之前」；LLM key 与连接串同待遇）——小，可提前。
-- **OIDC SSO**；**备份与恢复命令**；**十万文档基准**（先跑再说，数字比设计重要）。
-- **`document.no_text_layer` + OCR**：告警那条接上要先有 OCR 端点（docling-serve sidecar），两件一起做，提示语才完整（0005 留到第二批的那条）。
-- **`instant` 精度**：0013 说了触发条件（按当地营业日统计、或事件聚在午夜附近的源），没触发前不做。
-
-### 后置：模拟引擎与执行门
-
-README 路线图的头两条**不在这份排期里**，理由见判据 4。它们需要三样地基：`pending_facts` 的提议语义（A1）、派生的可解释性（B1）、派生与断言的矛盾信号（B2）。
-A 与 B 做完之后单独写一篇决策记录，那时再排。
-
-## 顺序与理由，一句话
-
-**A → B ∥ C → D → E。** A 是对齐「说的和做的」，不做新东西；B 与 C 互不依赖，B 动写图的路径、C 动尺子；D 等 C1 的尺子；E 可穿插，加密先。
-
-## 一条新约定
-
-**状态行由实现它的 PR 负责更新。** 0011、0014、0015 三篇的状态行都落后于同一个 PR 里的代码——写决策记录的人和写代码的人是同一个人，在同一个提交里，仍然漏了。
-所以不靠记性：PR 模板里加一行「这个改动实现或推翻了哪篇决策记录，状态行改了没有」。已写进 [README](README.md) 的约定。
-
-## 开放问题
-
-- **A1 的闸只拦记忆，还是拦所有单条交互式写入？** 0015 未决。今天只有 `remember` 一条路，先拦它；将来「在图上手工加一条边」的界面出现时，按同一张表走。
-- **C3 生成的中文描述算不算「原文保真」的例外？** 它不是导入的原文，是我们生成的投影。倾向记成投影（可重跑、可丢弃），原文 IRI 与英文描述保留在包里。
-- **B4 的阈值**：10 秒是拍的。
-- **对话内 agent 生成的界面走哪个协议。** A1 的确认卡载荷是声明式的（chunk + 三元组列表），渲染器是我们的 React。
-  讨论过 A2UI（2026-09-02）：它解决的是「你不控制的客户端渲染你 agent 的 UI」，而 Chat 页两头都是我们的；
-  卖点成立的地方在 MCP 那一侧，那里对应的是 MCP 自己的 UI 扩展，不是 A2UI。**判据是谁的客户端在看**，
-  等 MCP 放开写工具、有外部客户端要渲染这张卡时再定。
-- **要不要把抽取层拆出 `utopia-server`。** 今天约 6,500 行领域代码（extraction、type_resolution、bootstrap_ontology、predicate_match、adjudication、owl_import、连接器）住在 HTTP crate 里，依赖方向仍是干净的一条线。讨论过（2026-09-02）决定**不拆**：唯一实在的收益是脱离 server 测纯函数，而它们的单测今天已经不起 server；搬动 1,500 行的 `extraction.rs` 会让紧接着的 A1 diff 和 blame 变难看。判据留下：**等它造成实际损失再拆，损失的定义是「有东西没法脱离 server 测试」**。连接器那一块的边界等第三个连接器（飞书）来了再定。
-- **十万文档基准跑出来之后**，单进程 worker 与内嵌 Tantivy 的天花板在哪，决定了要不要在 v0.2 谈横向扩展。现在不谈。
+- Does the A1 gate hold only memories or every single-item interactive write? Only `remember`
+  today; a hand-added edge should take the same table.
+- Are C3's generated descriptions an exception to "keep the original text"? Leaning towards a
+  projection — rerunnable, disposable — with the IRI and English description kept.
+- B4's 10-second threshold is a guess.
+- Which protocol for agent-generated interfaces in chat. A2UI (discussed 2026-09-02) solves
+  "a client you do not control renders your agent's UI"; on the Chat page both ends are ours,
+  on the MCP side the counterpart is MCP's own UI extension. Decide when an external client
+  needs the A1 card.
+- Whether to split extraction (about 6,500 lines) out of `utopia-server`. Decided not to
+  (2026-09-02): the only real gain is testing pure functions without the server, which their
+  unit tests already do. Split when something cannot be tested without the server; the
+  connector boundary waits for Feishu.
+- After the benchmark: where the single-process worker and embedded Tantivy hit their ceiling
+  decides whether v0.2 discusses horizontal scaling.

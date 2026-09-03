@@ -1,182 +1,43 @@
-# 0007 · 谁来决定一个说法值不值得成为关系
+# 0007 · Counting decides what becomes a relation
 
-- **状态**：已建成 · 采纳改由计数决定；六条缺陷的修法全部在线；「叙述动词进了本体」与 `merge_key` 不折 `_by` 两条仍未解；**本文的起点（10 个种子关系、`related_to` 占比）已不存在**，见文末修订（2026-09-02 核）
-- **成文**：2026-08-30（约定见 [README](README.md)）
+- **Status**: Built · adoption by counting (`MIN_DOCS = 2`; an LLM run needs `MIN_SIGNALS = 3`); six defects fixed; proposals persist in `ontology_proposals` (#112); open: narrative verbs in the ontology, `merge_key` not folding `_by`; the starting point (10 seeds, the `related_to` share) no longer exists.
+- **Written**: 2026-08-30 · condensed into English 2026-09-03
+- **Related**: [0006](0006-ontology-scale-and-the-prompt.md) for the bench and its caveats; [0010](0010-no-relation-is-no-relation.md) and [0011](0011-a-mapping-is-not-a-fact.md) removed the seed relations this record started from; [0008](0008-ontology-packs-as-cold-start.md) packs are now the start; [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) has the successor metric.
 
-> 跟 [0006](0006-ontology-scale-and-the-prompt.md) 一样带数字，也一样标明每个数字
-> **不能**说明什么。这一篇额外记了走过的死路——四个被数据否掉的方案，
-> 其中三个是我自己提的。留着它们，是因为它们看起来都很合理。
+## The problem
 
-## 问题
+A new knowledge base started with 10 seed relations. Most relations the model produced were not among them and degraded to `related_to`, a predicate that says nothing: 49.8% of facts on the ai-timeline corpus (15 Wikipedia articles on AI companies, 348 chunks). `bootstrap_ontology` existed for exactly this and worked badly, for six independent reasons:
 
-新建的库只有 10 个种子关系。灌进第一批文档，模型说出的关系大半不在这 10 个里，
-于是降级成 `related_to`——一个什么都没说的兜底谓词。
+1. Exact-string matching discarded vocabulary already in the ontology: `produced_by | ChatGPT → OpenAI` missed `produces`. Fix: `predicate_match` (spelling, inflection, and a trailing `by` that swaps subject and object).
+2. If the last document failed, the KB stuck forever: auto-extension was enqueued on the success path only. Fix: enqueue on both paths.
+3. The ≥ 2 documents threshold only gated the LLM run; `build_proposals` re-queried the unfiltered set, so 456 of 526 phrasings (86.7%) came from one document and five were adopted.
+4. `doc_count` counted leftovers still on the fallback predicate, so a KB fed one document at a time never reached two. Fix: prevalence counts all evidence.
+5. "Ignore" was a one-way door: `record_miss` skipped dismissed phrasings, so counts froze at 1 while twenty later documents used them. Fix: count everything; list dismissed apart, undoable.
+6. Undated facts claimed day precision (`valid_precision NOT NULL DEFAULT 'day'`; 728 and 843 live rows). Fix: nullable, CHECK-tied to a date (`facts.valid_from_precision`).
 
-实测（ai-timeline 语料，15 篇维基百科 AI 公司条目，348 块）：**49.8% 的事实是
-`related_to`**，`ontology_misses` 里 398 个不同的关系名、895 次使用。
+## Decisions
 
-`bootstrap_ontology` 本来就是为这件事设计的：抽取完把候选交给 LLM，让它提案、
-采纳、并改写等着它的旧事实。但它效果不好，而查下去发现原因不止一个。
+1. **Counting decides adoption; the model is not asked.** The data answers "which phrasings deserve to become relations", and the model got it wrong: it skipped `runs_on` (8 documents, 13 facts) and adopted a single-document `pledged_capital`. Three deterministic steps: group by inflectional base (`predicate_match::merge_key`: `sued` and `sues` are one), take the union of documents per group (never a sum), pass `MIN_DOCS = 2`; the group is named by its most frequent phrasing. From 10 seeds, `related_to` went 55.5% with auto-extension off, 39.1% with LLM adoption (17 relations), 25.8% with counted adoption (104).
+2. **The model keeps the question that needs meaning**: synonym merging (is `collaborates_with` the same as `partnered_with`), reversible with `unadopt`.
+3. **Deterministic adoption is the most valuable side effect**: the same corpus produces the same ontology, so the bench can compare this stage at all.
+4. **`_by` is the only inverse marker worth handling** (#109): 31 forms (`founded_by` 42 facts), nearly all coexisting with an active form (`produces` 265). Before adopting, `PredicateIndex` is consulted; an existing equivalent, `_by` inverse included, is rewritten to with subject and object swapped. `has_X`/`X_of` had two pairs, not enough evidence.
 
-## 找到了什么
+Caveats: differences between LLM groups are within run variance (25 vs 18 entities on the same input); only the deterministic part is certain (single-document adoptions 5 → 0). The `related_to` share is no quality metric, since adopting everything lowers it fastest, and the corpus is dense in training data.
 
-按发现顺序，每一条都是独立的缺陷：
+## Dead ends
 
-**一、词汇明明在本体里，只因说法不同就被扔了。** 抽取只做精确字符串比对，
-`produced_by | ChatGPT → OpenAI` 想说的就是已有的 `produces`，主宾对调而已。
-→ [`predicate_match`](../../crates/utopia-server/src/predicate_match.rs)：
-精确 key → 写法对齐 → 屈折归一，各再试一次去掉结尾的 `by`（命中就交换主宾）。
+- **Snowball stemming** (`rust-stemmers`) went the wrong way: 49 matches with a 10-word vocabulary, 18 with schema.org's 629, because it strips derivational suffixes too; `producer` and `produces` both become `produc` and the collision rule refuses to match. Inflectional suffixes only: 49 → 59.
+- **Subject diversity instead of document count**: stricter in practice (6 gained, 33 lost), and most of the 6 were coordinated subjects ("A, B and C proposed X" split into three facts). `docs >= 2 OR subjects >= 3` fell to the same problem.
+- **Auto-extension after every document**: "≥ 2 documents" becomes a so-far property, and merging degrades, since the LLM merges `acquired`/`acquires`/`acquisition_of` only when it sees them together.
+- **A fact-count threshold (≥ 3) for new single-document relations**: the top two it admits are the worst two (`has_property` 11, `intends_to` 5); about 5 of 20 groups look like relations, 1.2% of the KB. Growing KBs solve this themselves; static corpora have the manual panel (`min_docs = 0`).
 
-**二、最后一篇文档失败，整个库永久卡住。** 自动扩本体的入队只写在成功路径上，
-而它的触发条件是「这一批都抽完了」。第 15 篇重试耗尽变 `failed` 时，条件恰好为真，
-可再没有任何一篇会完成来做这次检查。提案堆在池子里，本体永远停在种子那几个关系。
-→ 入队点挪到成功/失败都会走到的位置。
+## Revisions
 
-**三、门槛算了却没生效。** `bootstrap_ontology` 把「出现在 ≥2 篇文档」筛出来，
-只用于判断值不值得跑一次 LLM，随后调 `build_proposals` 时只传 `kb_id`——那个函数
-重查一遍**没过滤的**全量。交给模型的 526 个说法里 **456 个（86.7%）只在一篇里
-出现过**。反方向也漏：5 个单篇说法被采纳了，其中两个建成了新属性。
+- 2026-09-02: both premises are gone. Seed relations left in three steps (`related_to` in [0010](0010-no-relation-is-no-relation.md), eight more in #125, `mapped_to` in [0011](0011-a-mapping-is-not-a-fact.md)) and the seeding function with them (#128); a new KB starts from a pack ([0008](0008-ontology-packs-as-cold-start.md)). The numbers above are not comparable with anything measured today: a fact may now have no predicate (the original word goes to `fact_evidence.proposed_predicate`), and the successor metric, empty-predicate share, measured 25.6% in [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) under a different start and definition. The decisions are unaffected and all live.
+- 2026-09-02: the ontology can declare inverses (#177/#179) and direction is corrected on write (#138, leaving a `direction_corrected` trace). That does not close the `merge_key` gap below.
 
-**四、`doc_count` 数的是残渣。** 它只数「还挂在兜底谓词上、还活着、宾语是实体」的
-事实。说法一旦被采纳、被谓词匹配接住、或被修正作废，行就离开积压，篇数随之下降。
-**一篇一篇往里灌的库因此永远攒不够两篇，本体就此冻死。**
-→ 普遍程度改从全量证据数，改写量仍从积压数。
+## Open questions
 
-**五、「忽略」是一扇单向门。** `record_miss` 带着 `WHERE dismissed_at IS NULL`，
-点一次忽略既不再呈现、也**不再计数**。用户看着「出现 1 次」做的判断，被系统记成了
-对所有时间的判断——后面二十篇都在用它，计数仍停在 1，没有任何人看得见。
-→ 抑制与计数分开：计数照走，已忽略的连同更新后的计数单列一处，可撤回。
-
-**六、没有日期的事实自称精确到日。** `valid_precision` 是 `NOT NULL DEFAULT 'day'`，
-于是每一条两端都没有日期的事实都带着 `'day'` 落库（实测两个库分别 728 和 843 条活行）。
-→ 改成可空 + 「有日期才有精度」的 CHECK（见 `facts.valid_from_precision`）。
-
-## 决定
-
-**采纳由计数决定，不问模型。**
-
-LLM 从前被问的是「哪些说法值得建成关系」。那个问题数据已经答了——`runs_on` 出现在
-8 篇文档、13 条事实里，不是判断题。而模型实测答错：漏掉 `runs_on`，却采纳了只在
-一篇里出现过的 `pledged_capital`。
-
-三步，全部确定性：
-
-1. **按屈折基归并**（`predicate_match::merge_key`）：`sued` 与 `sues` 是一个关系
-2. **算文档并集**：不能相加——同一篇可能两种写法都用过
-3. **过门槛**（≥2 篇），规范 key 取组里事实最多的那个说法
-
-模型没有被撤走，只是换了个问题：**同义归并**（`collaborates_with` 是不是就是
-`partnered_with`）。那个才需要理解意义，且答错了 `unadopt` 一键回退。
-
-**副作用是这条路最值钱的地方：采纳变成确定性的。** 同一份语料重跑得到同一个本体，
-测量台第一次能对这一段做对照——在此之前，两组之间 3 个百分点的差别究竟是改动
-还是跑次方差，答不上来。
-
-## 量到了什么
-
-同一份语料（`scripts/bench/corpora/ai-timeline.json`），348 块：
-
-| 组 | 本体关系 | `related_to` | 说明 |
-|---|---|---|---|
-| A | 10 | 55.5% | 自动扩本体关 |
-| B | 17 | 39.1% | LLM 采纳 |
-| B3 | 15 | 42.3% | LLM 采纳 + 门槛修复 |
-| **B3 + 计数采纳** | **104** | **25.8%** | 本篇的决定 |
-
-归并的贡献可以单独看：够格的候选从 **70 组 / 281 条**涨到 **85 组 / 355 条**，
-40 组吸收了 80 个说法，每组都是同一个动词的不同时态
-（`sued`/`sues`、`reported`/`report`、`integrated_with`/`integrates_with`、
-`announced`/`announces`、`develops`/`developed`……）。
-
-`_by` 是唯一值得处理的反向标记：31 种写法，`founded_by` 42 条、`released_by` 19、
-`produced_by` 15。而且几乎每个都有主动版本共存（`produces` 265 条），
-不折叠就会建出两个方向相反的关系。`has_X`/`X_of` 只有两对，证据不够。
-
-> **后续（2026-08-30，#109）**：采纳前先过一遍 `PredicateIndex`——本体里已经有
-> 等价关系（含 `_by` 反向）就不新建，直接改写过去并对调主宾。`adopt` 也因此
-> 学会了交换主宾（此前它从旧行原样复制主语）。
->
-> **仍待做**：两边都不在本体里时（`founded_by` 42 条 vs `founded` 4 条，
-> 都够票且都没被采纳过），`merge_key` 不把 `_by` 折进同一组，于是仍会建出
-> 两个方向相反的关系。当初不折的理由是「采纳路径不能对调」，而那个理由
-> 已经不成立了——现在是笔小账，只差把 `_by` 加进 `merge_key` 并把整组标成需对调。
-
-## 这些数字**不能**说明什么
-
-- **B 与 B3 之间的 3 个百分点读不出信息。** 两组中间都夹着一次 LLM 调用，
-  同输入的跑次方差在这个语料上量到过 25 vs 18 个实体。能确定的只有确定性的部分：
-  单篇说法被采纳从 5 降到 0。
-- **`related_to` 占比不是质量指标。** 它衡量的是"有多少事实挂在一个什么都没说的
-  谓词上"，压低它的最省事办法是把一切都收进本体——而那正是下面那个未决问题。
-- **语料在训练数据里密度极高。** 这批 AI 公司条目适合做 demo（认得出是优点），
-  不适合当准确率基准（量到的是背诵）。0006 里那条「语料的合法性」未决项仍然成立。
-
-## 未决：叙述动词进了本体
-
-104 个关系里混着维基百科的口吻：
-
-```
-reported/report 11 条 · states/stated 6 · describes/described 5
-criticizes/criticized 6 · published/publishes 6 · accused/accuses 6
-```
-
-这些是**文章在引述来源**，不是 AI 公司之间的结构。它们跨篇复现得很好，
-计数拦不住。而本体会反馈进抽取提示词——下一批文档抽取时，模型看见清单上有
-`states` 和 `describes`，会更倾向于把叙述也抽成事实。
-
-**区分叙述与结构需要判断，这是计数做不到的第三件事**（前两件是同义归并和
-介词变体，都已有去处）。候选方向：把它交给那次同义归并的 LLM 调用一并审
-（"这些里哪些是文章的口吻"），问题小、可撤销。维护一张叙述动词表则太脆，
-换一个语料就失效。
-
-暂不处理：`related_to` 从 55.5% 降到 25.8% 已经是大改善，而叙述关系至少还带着
-原文措辞，比"有关联"多说了东西。〔**后续**：剩下那 25.8% 也不再显示成"有关联"了——
-`related_to` 已整个删掉，见 [0010](0010-no-relation-is-no-relation.md)。这条未决项本身仍然成立：
-叙述动词进本体的问题与谓词兜底无关。〕
-
-## 修订记录（2026-09-02）：起点没了，结论还在
-
-本文的问题陈述是「新建的库只有 10 个种子关系，大半说法降级成 `related_to`」。**两个前提今天都不成立**：
-种子关系分三次退场（`related_to` 见 [0010](0010-no-relation-is-no-relation.md)，另外八条 #125，`mapped_to` 见 [0011](0011-a-mapping-is-not-a-fact.md)），播种函数随之消失（#128）；
-新库的起点是预制包（[0008](0008-ontology-packs-as-cold-start.md)），默认 schema.org，1010 类 / 1676 属性。
-
-**于是「量到了什么」那张表的可比性也没了**：A / B / B3 / 计数采纳四组都是从 10 个种子起跑的。
-今天同一份语料从 schema.org 起跑，`related_to` 这个指标本身已经不存在（事实可以没有谓词，原词落 `fact_evidence.proposed_predicate`），
-对应的指标变成「空谓词占比」——[0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) 在 ai-timeline-ends 上量到 25.6%，
-与本文 B3 + 计数采纳的 25.8% 是两个不同起点、不同定义下的数，**不要拿来对比**。
-
-**决定本身不受影响。** 采纳由计数决定、`merge_key` 归并、文档并集、`MIN_DOCS = 2`——全部在线，另加一条本文没写的 `MIN_SIGNALS = 3`（够格信号不足三个就不跑 LLM）。
-提案现在落库到 `ontology_proposals`（#112），表过态的不被下一轮刷回。
-
-**起点从 10 变 1500 对采纳回路意味着什么，仍然没人量过**——0008 开放问题最后一条。阈值一个没动。
-
-**`_by` 的下游后果有了结构上的解**：本体现在能声明 inverse（#177/#179），方向由本体签名声明并在写入时掰正（#138，留 `direction_corrected` 痕迹）。
-但那不替代 `merge_key` 折 `_by` 这个缺口——两个方向都不在本体里时，仍会建出两条相反的关系。
-
-## 走过的死路
-
-留着它们，因为每一个当时看起来都很合理。
-
-**Snowball 词干器。** 用 `rust-stemmers` 做屈折归一，实测**方向是反的**：
-词表 10 个词时捞回 49 次，换成 schema.org 的 629 个词只剩 18 次。原因是它连派生
-后缀一起削，`producer`（一个人）与 `produces`（一个动作）都成了 `produc`，
-撞车规则于是拒绝匹配——**词表越大越不敢动**。改成只削屈折后缀后是 49 → 59。
-
-**主语多样性替代文档数。** 想法是"这个说法连接了多少个不同的主语"比"出现在几篇
-文档里"更贴近普适性。实测更严：捡 6 个丢 33 个。而且那 6 个里大多数是**并列主语**
-造成的假象——"A、B、C 都提议了 X"被拆成 3 条事实，3 个主语 1 个宾语，
-量到的是句子语法不是词汇普适性。
-
-**`docs>=2 OR subjects>=3` 并联。** 上一条的补救，被同一个并列主语问题击穿。
-
-**每篇文档完成就触发一次自动扩本体。** 想解决"最后一篇失败就永久卡住"，但会把
-`>=2 篇` 的语义从"语料的"变成"到目前为止的"，更要紧的是**合并判断会变差**——
-池子完整时 LLM 同时看得见 `acquired`/`acquires`/`acquisition_of`，能一次并成一个；
-拆成 8 次跑，每次只看见一两个，看不见簇就合不动。而且采纳批次从 1 个变成 8 个，
-撤销要逐个点。最后走的是最小修法：入队挪到成功/失败都会走到的位置。
-
-**为「真新关系卡在一篇」再加一个阈值。** 直觉是"事实数 ≥3 也算够格"。
-数据否掉：那样放进来的**头两名恰恰是最差的两个**（`has_property` 11 条、
-`intends_to` 5 条）。单篇 ≥3 条的一共 20 组 86 条，看着像关系的约 5 组 25 条
-——占全库 1.2%。不为它加第四个拍脑袋的阈值；会长大的库自己会解决，
-静态语料则交给手动面板（`min_docs = 0`，看得见全部）。
+- **Narrative verbs enter the ontology.** Among the 104 relations: `reported/report` 11, `states/stated` 6, `describes/described` 5, `criticizes/criticized` 6: the article citing sources, no structure between companies. They recur across documents, so counting cannot stop them, and the ontology feeds back into the prompt. Candidate: ask the synonym-merging LLM call "which of these are the article's voice", small and reversible; a verb list would break with the next corpus.
+- **`merge_key` does not fold `_by`.** When neither direction is in the ontology (`founded_by` 42 vs `founded` 4, both qualifying), two opposite relations are still created. The original reason, "the adoption path cannot swap", no longer holds; fold `_by` into the group and mark it for swapping.
+- **What a 1,500-term start does to the adoption loop** has not been measured; no threshold has moved.

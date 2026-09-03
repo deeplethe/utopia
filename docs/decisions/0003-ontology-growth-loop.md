@@ -1,152 +1,96 @@
-# 0003 · 本体从语料里长出来，人站在哪一环
-
-- **状态**：已建成且仍在跑（#44 + 自动扩展开关）；**本文的起点已被 [0010](0010-no-relation-is-no-relation.md)（`related_to` 删除）与 #125 / #128（种子退场）改写**；「拒绝有记忆」一节的实现被 [0007](0007-who-decides-what-becomes-a-relation.md) 推翻重做；末节三条缺口两条已补，「新说法提醒」仍待做（2026-09-02 核）
-- **成文**：2026-08-28
-- **相关**：[0001](0001-ontology-import-and-governance.md) 的 P3b 与 P4——那两节是计划，本文是实际长出来的东西，两者不一样
-
-> 本文最有价值的部分是**三次判断变化**那一节。结论本身从代码里读得出来，理由读不出来，而三次变化的理由各不相同——按 [README](README.md) 的约定就地留痕。
-
----
-
-## 问题
-
-抽取器读到"《星球大战：零号连队》可在 GeForce NOW 上玩"，而本体里没有"可在…上玩"，只能降级成 `related_to`——**等于什么都没说**。真实语料上这类边曾占 40.5%。
-
-而新建的知识库只有 10 个默认关系，那不是任何人选的，是种子数据。所以每一个新库开局都是这个状态：**图里近一半的边没有语义，直到有人坐下来一条条补本体。**
-
-抽取侧的修法（撤掉逃生舱、加提示词规则 8、把原词存进 `fact_evidence.surface_predicate`〔落地列名 `proposed_predicate`〕）见 0001 的 P3b。本文接着往下——**原词留住之后，怎么把它变回本体里的关系。**
-
-> **修订记录（2026-09-02）：上面两段的世界不在了。** `related_to` 整个删掉，落不上就是空谓词，显示时由 `fact_surface_predicate()` 取回原文说法；新建的库**一个关系都没有**，起点改为预制本体包（[0008](0008-ontology-packs-as-cold-start.md)）。
-> 40.5% 是当时的数；[0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) 在 ai-timeline-ends × schema.org 上量到空谓词 25.6%，而且 41 个关系全部来自本体包，**自动扩本体一条都没长出来**。
-> 所以这条回路的角色变了：冷启动的主力是「先装一份词表」，本文的机制负责「长出来的补缺口」。回路本身一字未改，仍然默认开着。
-
----
-
-## 建成的东西
-
-### 采纳的收益在后半句
-
-Suggest 面板此前就能提案并一键 Add，但**只建关系、不动事实**——本体长大了，图没变好，那 49 条继续写着"有关联"。
-
-现在采纳做两件事：建关系类型 + **把等着它的事实改写过去**。提案上直接写"将重新归类 21 条"，并列出归并了哪些写法。
-
-改写走追加：插入带 `supersedes` 的新行、作废旧行，与人工纠正、时态闭合同一条路。实体历史里因此读得到「先记成 related to，后精化成 available on，某某某改的」。
-
-**只改写说法全部落在采纳集合内的事实。** 一条事实可能跨分块积累多种说法，只认领其中一种就改写等于替另一种做了决定。实测这类占比不到 1%。
-
-### 可以撤销
-
-`fact_adoptions` 记每一条的去向：批次、谓词、旧事实、新事实、以及**是"新建取代"还是"并入已存在"**。撤销按批次回滚：新行作废、旧行复活。
-
-**关系类型不删**——有事实指向过它（`delete_relation_type` 也会拒绝），而按 append-only 的规矩"它存在过"本身是历史，一个没人用的关系是惰性的。撤销标记账本行而不是删除，因为采纳发生过、撤销也发生过，两件都是真的。
-
-撤销要二次确认（轻确认，不是打字解锁——它本身可逆）。
-
-### 三档动作
-
-| | 谁决定 | 何时用 |
-|---|---|---|
-| 逐条 Add | 人 | 挑着采纳 |
-| Add all | 人 | 常见情形是"这些都对"，一次决定 |
-| 自动 | 开关 | 见下 |
-
-### 开关
-
-`knowledge_bases.auto_extend_ontology`，KB 设置页，**默认开启**。
-
-它只管**自动采纳**，永远不管**留意**：关掉之后未匹配的说法照常累积、照常在 Unmatched 面板可见，只是变成你点一下的提案。文案里必须明说这一点——"停止扩展"太容易被读成"停止留意"。
-
-默认开启的前提是它的动作**可见且可退**：Ontology 页有横幅说明加了什么、改了多少条、附撤销。**审计台账是事后查证用的，不是通知用的。**
-
-### 永不自动的那一样
-
-`functional` 无论建议方说什么、开关开着也一样，永远是 `false`。
-
-它驱动时态引擎**自动闭合事实、生成冲突**，等发现时那些闭合本身已是一串 supersede 链，撤销要反向拆解。`part_of` 曾被误标为 functional，28 篇新闻稿积压 59 条假冲突。
-
-**判据一句话：可逆的可以自动，触发级联写入的不行。**
-
-〔后来扩大到全部公理：冷启动路径传 `Axioms::default()`，八位全 false——推理机（[0002](0002-reasoning-engine.md)）的判据必须是人写下来的。〕
-
-### 拒绝有记忆
-
-`dismiss` 此前是 `DELETE FROM ontology_misses`，下一次抽取遇到同一个词原样插回——**用户的"不要"活不过一轮抽取**。开关关着时这只是恼人；开着时它变成系统覆盖人的明确决定。
-
-改成标记（`dismissed_at`）：`record_miss` 不再累加已标记的，人工与自动两条路都跳过。顺带修好了"dismiss 是暂时的"这个现存 bug。
-
-> **修订记录（据 [0007](0007-who-decides-what-becomes-a-relation.md) 缺陷五）**：「不再累加」这一半**又被推翻**。它把「忽略」做成了单向门：用户看着「出现 1 次」做的判断被记成对所有时间的判断，后面二十篇都在用它，计数仍停在 1，没有人看得见。
-> 现在 `record_miss` 照样累加，抑制移到读取侧——已忽略的连同更新后的计数单列一处，可撤回。「拒绝有记忆」仍然成立，只是记忆的是**态度**不是**计数**。
-
-### 自动采纳的门槛
-
-只采纳出现在 **≥2 篇文档**里的说法。理由不是安全（有撤销），是质量：**本体会反馈进抽取提示词，一次偶然用词会变成长期指令。** 副作用正好——单篇文档什么都够不着门槛，于是什么也不做，下一篇再议。
-
----
-
-## 三次判断变化
-
-### 一、我反对自动化，理由是错的
-
-**原判断**：不该自动写本体。同义词会爆炸（四种 "available" 变四个关系）、通用动词会混进来（`is`/`has`/`includes`）、频次不等于语义、`functional` 猜错会成批制造假冲突。
-
-**这些论据本身没错**，错的是结论所依赖的隐含前提：**"错了代价高"**。
-
-代价并不高。采纳走的是 supersede，旧事实从来没被销毁过。**可逆性是我自己设计的，然后论证时没把它算进去**——拿一个已经设计掉的不可逆去反对自动化。
-
-**判断轴不是"有多确信"，是"错了有多贵"。**
-
-（同义词与通用动词那两条论据仍然成立，只是它们要的不是"人来点头"，是**聚类**——自动化的是审批，不是归并。）
-
-### 二、接受自动化后，我用了一个猜测当判据
-
-**原判断**：本体"有没有被碰过"（存在非内置类型）可以判断该不该自动跑。
-
-**那是从行为推断意图，两个方向都错。**
-
-在提案上点一次 Add 会记一条带操作人的本体动作——**参与治理闭环，导致治理闭环停止工作**。改个描述里的错别字也一样。
-
-而且它一旦为假就永不再真：自动跑完第一轮，本体"被碰过了"，于是**词汇永久冻结在第一批文档碰巧包含的那些上**，而 RSS 与文件夹来源是每天持续进文档的。
-
-### 三、开关（用户指出）
-
-**声明取代猜测。** 开关不只是加了个控制，它**删掉了一个坏机制**——没有猜测就没有荒唐的开关，没有自动关闭就没有冻结，迭代变成"开着就一直跑"，不需要任何聪明劲。
-
-默认开启则解掉了开关本身的老问题：新用户找不到它，只能忍受一个近半边没有语义的图。
-
----
-
-## 两个在已上线代码里发现的缺陷
-
-**并入分支让历史说了谎。** 采纳时若目标断言已存在，旧行被作废且**没有任何后继指向它**。实体历史把"已作废且无后继"判为 `rejected`，于是界面上写着「关于 GeForce NOW 的这条记录被撤回了」——它其实一字未少地并进了另一条断言。这跟 [#37](https://github.com/deeplethe/utopia/pull/37) 修的是同一类：**界面自信地陈述一件没发生的事。** `fact_adoptions` 是它的直接由来。
-
-**单篇文档能定下整个本体。** 触发条件"没有别的文档在处理中"，在批次只有一篇时立刻为真——而代码里我自己的注释写着"逐篇触发是错的"。≥2 篇文档那条门槛修的是它。
-
----
-
-## 实测
-
-| | |
-|---|---|
-| 采纳 `available_on`（归并 4 种写法） | 改写 **49** 条（48 新建 + 1 并入） |
-| 采纳 `supports` 后撤销 | `related_to` 精确回到采纳前的数，24 行标记已撤销，关系类型留着 |
-| 冷启动（一次性库，3 篇文档） | 自动建 5 个关系（全 `functional=false`），改写 19 条，**剩余 `related_to` 为 0** |
-| 拒绝 `runs_on` 后模拟下一轮抽取 | 计数停在 41 不涨（此前会删掉再插回） |
-
-一个**负面结果，而它证明了设计**：建议把 `optimized_for` 并进了 `runs_on`——"为 RTX 优化"不等于"跑在 RTX 上"。归并的写法在 tooltip 里可见，过并能被人抓出来。**这就是我不建议全自动归并的最直接证据。**
-
-〔上表四行都基于已不存在的 `related_to` 与种子本体，是历史记录，不要再当基线引用。采纳路径后来多了两样本文没写的东西：整组说法先过 `predicate_match`，本体里已有等价关系（含 `_by` 反向）就落到它上面并对调主宾（#109）；门槛按「谓词 + 类型」合起来算 `MIN_SIGNALS = 3`，此前只数谓词，一个只缺实体类型的语料会被整个跳过。规范 key 不问模型取名，取组内事实最多的那个真实措辞。〕
-
----
-
-## 已知缺口
-
-- ~~**实体类型这半边完全没有对应机制。**~~ **已补上**（2026-08-30）：类型消解
-  （0001 P3a）给了提案与裁决，`adopt_proposed_types` 给了采纳并改类，
-  `entity_retypes` 给了可撤销的台账。原文说的「只有一个 PATCH 端点」不再成立。
-  当时列的实测数据（`General` 库里 "rust" 分在 5 个类、`Industry Corpus` 里
-  `product` 占 37.1%）仍是这条路要解的问题，见 0001 P3 的三层拆解。
-- **关掉开关后没有"自上次以来有 88 个新说法"的提醒**，信号在 Unmatched 面板里但没人主动看。
-  **待做。**〔2026-09-02 核：仍未做。`ontology_proposals_open_idx` 的建表注释把这条缺口原样抄了一遍——索引铺好了，提醒没做。今天只有 `last_auto_extension` 横幅，讲的是「最近一次自动扩本体做了什么」。〕
-- ~~**提案不持久化**~~ **已修**（2026-08-30，#112）：`ontology_proposals` 表落库。
-  丢的从来不是原材料（那在 `ontology_misses` 里），是**聚类结果**——哪些说法被归到
-  同一条提议底下，而那正是唯一能查证过并的东西。
+# 0003 · The ontology grows out of the corpus
+
+- **Status**: Built and running (#44; switch `knowledge_bases.auto_extend_ontology`, default on). Its
+  starting point has moved: `related_to` is deleted ([0010](0010-no-relation-is-no-relation.md)) and
+  the seed ontology retired (#125, #128), so a new KB starts from an ontology pack
+  ([0008](0008-ontology-packs-as-cold-start.md)) and this loop fills the gaps a pack leaves.
+  "Dismissal has memory" redone per [0007](0007-who-decides-what-becomes-a-relation.md). Two of three
+  known gaps closed (`adopt_proposed_types` + `entity_retypes`; `ontology_proposals`, #112); the "new
+  phrasings since you last looked" reminder still pending. Checked against the code 2026-09-02.
+- **Written**: 2026-08-28 · condensed into English 2026-09-03
+- **Related**: [0001](0001-ontology-import-and-governance.md) P3b and P4 are the plan, this is what
+  grew; [0007](0007-who-decides-what-becomes-a-relation.md); [0008](0008-ontology-packs-as-cold-start.md);
+  [0010](0010-no-relation-is-no-relation.md); [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md)
+
+## The problem
+
+The extractor reads "《星球大战：零号连队》可在 GeForce NOW 上玩", the ontology has no "playable on", and
+the fact lands as `related_to`, which says nothing. On real corpora 40.5% of edges were like that, and
+every new KB began with ten seed relations nobody had chosen. The extraction side (0001 P3b) removed
+the escape hatch and kept the original phrasing on `fact_evidence.proposed_predicate`. This record is
+the other half: turning kept phrasings back into relations, with a person somewhere in the loop.
+
+That world is gone: an unmapped fact now has a null predicate and shows its phrasing through
+`fact_surface_predicate()`, and a new KB has no relations until a pack is installed. 0012 measured
+25.6% null predicates on ai-timeline-ends × schema.org, all 41 relations from the pack and none grown
+by this loop. The loop itself is unchanged and still on by default.
+
+## Decisions
+
+1. **Adoption rewrites the facts waiting for it.** Add used to create the relation type and leave the
+   facts saying "related to". Now it also rewrites every fact whose phrasings all fall inside the
+   adopted set (a fact with several phrasings across chunks is left alone; under 1% of cases), and
+   the proposal says "will reclassify N" with the phrasings merged. The rewrite is an append (new row
+   with `supersedes`, old row invalidated), the same path as human correction, so entity history
+   reads "recorded as related to, refined to available on, by whom". `predicate_match` runs first: an
+   equivalent relation already in the ontology (including `_by` inverses) absorbs the group with
+   subject and object swapped (#109). The canonical key is the group's most frequent real phrasing.
+2. **Undo is per batch.** `fact_adoptions` records batch, predicate, old fact, new fact, and whether
+   the new row superseded or merged into an existing assertion. Undo invalidates the new rows and
+   revives the old; the relation type stays (facts pointed at it, and both the adoption and the undo
+   happened). Light confirmation, no typed unlock.
+3. **Three tiers**: Add one (a person, picking), Add all (a person, one decision), automatic (the
+   switch).
+4. **The switch governs adoption, never attention.** Off, unmatched phrasings still accumulate in the
+   Unmatched panel as proposals, and the copy must say so, since "stop extending" reads as "stop
+   noticing". Default-on is justified because every automatic action is visible and reversible: the
+   Ontology page banner (`last_auto_extension`) shows what was added, how many facts changed, and
+   undo. The audit ledger is for later verification, never a notification.
+5. **No axiom is set automatically**, `functional` first and now all of them (`Axioms::default()` on
+   the cold-start path). Criterion: a reversible action may be automatic; one that triggers cascading
+   writes may not. `functional` drives auto-closing and conflicts, and undoing that means unpicking
+   supersede chains; `part_of` mislabelled once produced 59 false conflicts from 28 press releases.
+6. **Dismissal remembers an attitude, and counts go on.** `ontology_misses.dismissed_at`;
+   `record_miss` keeps counting; suppression happens on read, with dismissed entries listed
+   separately with current counts, revocable (0007).
+7. **Automatic adoption needs a phrasing in at least two documents**, `MIN_SIGNALS = 3` counted over
+   predicate and type signals together (counting predicates alone skipped a corpus that lacked only
+   entity types). The reason is quality: the ontology feeds back into the extraction prompt, so one
+   document's accidental wording would become a standing instruction.
+
+## Dead ends
+
+- **Opposing automation.** Synonym explosion (four "available" phrasings, four relations), generic
+  verbs (`is`, `has`), frequency taken for meaning, a guessed `functional`. The arguments stand; the
+  hidden premise "being wrong is expensive" does not, because adoption supersedes and destroys
+  nothing. The axis is the cost of an error. What gets automated is approval; synonyms and verbs
+  call for clustering, and merging stays human.
+- **"Has the ontology been touched" as the trigger.** Inferring intent from behavior fails both
+  ways: one click on Add stops the loop, and once false it never turns true again, freezing the
+  vocabulary on the first batch while RSS keeps delivering. The declared switch (a user's
+  suggestion) removed a bad mechanism.
+- **`dismiss` as `DELETE FROM ontology_misses`.** The next extraction re-inserted it. The first fix,
+  "stop counting after dismissal", was a one-way door: a judgment made at count 1 applied to twenty
+  later documents, count frozen, invisible.
+- **A merge branch that made history lie.** When the target assertion already existed, the old row
+  was invalidated with no successor and entity history rendered "retracted" for a fact merged intact.
+  `fact_adoptions` exists because of this.
+- **Triggering when no other document is in flight.** True at once for a batch of one, so a single
+  document could set the whole ontology; the two-document threshold fixes it.
+- **Automatic merging of phrasings.** A suggestion folded `optimized_for` into `runs_on` ("optimized
+  for RTX" is not "runs on RTX"); the merged phrasings were visible in the tooltip and a person
+  caught it. This is the direct evidence for keeping merges human.
+
+## Revisions
+
+- 2026-08-30 (#112): proposals persist in `ontology_proposals`; what used to be lost was the
+  clustering, the only thing that lets a person check a merge, never the raw misses.
+- 2026-09-02: the measured rows (49 rewrites for `available_on`, 24 undone for `supports`, a cold
+  start growing 5 relations and rewriting 19 facts) rest on `related_to` and the seeds; history, no
+  longer a baseline.
+
+## Open questions
+
+- With the switch off there is no "88 new phrasings since you last looked"; the index
+  `ontology_proposals_open_idx` was laid for it and the reminder never built. The only banner today
+  is `last_auto_extension`, which reports the last automatic run.

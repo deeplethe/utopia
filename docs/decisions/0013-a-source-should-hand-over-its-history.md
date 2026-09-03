@@ -1,202 +1,109 @@
-# 0013 · 一个来源该交出它的历史，不是它的现状
+# 0013 · A source hands over its history
 
-- **状态**：已实施两个（`github_issues` #134、`jira_issues` #135）· 文档协作类（飞书 / Confluence / Notion）仍未开工，`instant` 精度未触发（2026-09-02 核，其余陈述逐条复核为真）
-- **成文**：2026-08-31（约定见 [README](README.md)）
-- **相关**：[0001](0001-ontology-import-and-governance.md) 的双时态地基；
-  语料侧的同一个判断见 `scripts/bench/fetch-wiki-history.mjs`（#122）；
-  [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) 是同一件事的另一头——
-  这一篇管**东西怎么进来**，那一篇管**进来之后按什么规矩落**
+- **Status**: implemented for `github_issues` (#134), `jira_issues` (#135) and `notion` (#213, pages keep their own clock); WebDAV shares and object storage (S3 / Azure / GCS) arrived as plain file sources (#200, #207, #209) · Feishu and Confluence not started · the `instant` precision has not been triggered
+- **Written**: 2026-08-31 · condensed into English 2026-09-03
+- **Related**: the bitemporal ground of [0001](0001-ontology-import-and-governance.md); the same judgment on the corpus side in `scripts/bench/fetch-wiki-history.mjs` (#122); [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) is the other end of the line — this record is about how things come in, that one about the rules they land by; the grant layer added afterwards (#142, `data_source_grants`) decides who may mount a source: provenance visible, destination governed
 
-## 判据：一个来源值不值得接
+## The problem
 
-这产品是双时态账本，所以看四条，缺一条就退化成"又一个抓网页的"：
+The product is a bitemporal ledger, so a source is worth connecting only if it passes four
+tests: real timestamps (the recorded-time axis depends on them); the ability to contradict
+itself (otherwise `supersedes` has nothing to do); a stable identity so a new version of the
+same thing is recognized (`external_key`); and enterprise knowledge actually living there.
+Miss one and it degrades into another web scraper. Issue trackers pass all four.
 
-1. **有没有真实时间戳** —— 认知时间那根轴靠它
-2. **会不会自我推翻** —— `supersedes` 才有事可做
-3. **有没有稳定身份** —— 同一份东西的新版能认出来（`external_key`）
-4. **企业知识是不是真的住在那儿**
+The valuable part of a ticket is not "it is closed now" but "opened 08-18, closed 08-20,
+assigned to whom in between, priority changed how". Syncing only the current state builds
+that timeline sync by sync, and everything before the first sync is lost — while most systems
+already keep the change history and only need to be asked. #122 made the same call for
+Wikipedia; there revisions have to be sampled, an issue tracker hands the events over.
 
-工单系统四条全中：每张工单的状态天生随时间变，而且信噪比远高于聊天记录。
+## Decisions
 
-## 核心判断：别取现在，取变化
+1. **One ticket is one document, and the body carries the history.** Both connectors render
+   the same shape on purpose: a heading, dated declarative sentences (`Currently Closed.`,
+   `Resolved on 2011-07-19.`), a `## History` list of `date — who changed Field: A → B`, then
+   `## Comments`. Sentences with dates, never key-value pairs: `Opened by X on 2026-08-18`
+   extracts to a fact with `valid_from`; `created_at: 2026-08-18` leaves the model to guess.
 
-**工单最有价值的部分不是"它现在是 closed"**，而是"8-18 开出、8-20 关掉、
-中间被指派给谁、优先级怎么变的"。
+2. **GitHub fetches events per ticket.** The first version routed everything through
+   repository-level endpoints to spare 200 tickets 401 requests. Real data showed the events
+   leg was wrong: `issues/events` has no `since`, pages from newest backwards, and pull
+   requests produce issue events too — this repository's issue events sat on page 5, and a
+   PR-heavy repository pushes them past the page cap. The state history came back silently
+   empty, and it is the reason the source exists. Per-ticket fetching costs N requests, N
+   being the tickets written this round; accuracy over economy here.
 
-只抓当前状态，这条时间线要靠一次次同步慢慢攒——第一次同步只能看见此刻，
-之前发生的全丢了。而多数系统**已经把变更史准备好了**，只是要多问一句。
+3. **Jira's traps are all in field shape.** Timestamps are `2026-08-24T11:11:52.944+0000`,
+   no colon in the offset, not RFC3339; an unparsed one drops a whole page. Incremental sync
+   has no `since` and goes through JQL `updated >= "…"` in Jira's own format with quotes, and
+   both mistakes surface as 400, not as an empty result. `fields` must be listed explicitly:
+   omit `comment` and no comments come back; list nothing and one response runs to hundreds
+   of KB. `expand=changelog` returns the field-level history in one call.
 
-这与 #122 给维基百科语料做的是同一个判断。区别是维基要从修订列表里采样，
-工单系统直接把变更事件给你。
+4. **Fixtures come from real responses.** Hand-written JSON only proves that the shape I
+   imagined parses. Both fixtures come from publicly readable instances (`deeplethe/utopia`,
+   `issues.apache.org`), trimmed to the declared fields — the trimming itself shows that
+   undeclared fields do not break serde. It caught a bug the hand-written tests passed: the
+   per-ticket events endpoint does not return the `issue` field (the context is in the URL),
+   and the first version had it as required. A source without a public instance must be
+   delivered with "not verified against a real instance" stated.
 
-落进正文的形状（两个来源一致，刻意的）：
+5. **Truncation is reported.** Kafka has 14506 tickets; a round caps at 500 pages. When the
+   fetched count is below `total`, a warning says this round covered a slice, otherwise "sync
+   complete" misleads. Same principle as #108 (partial extraction reported as complete) and
+   #127 (one bad record must not sink a chunk).
 
-```
-# KAFKA-9 Consumer logs ERROR during close
+6. **Timestamps are cut to the day, deliberately.** The connectors write
+   `created_at.format("%Y-%m-%d")` in UTC, so `valid_from` extracted from
+   "Opened by X on 2026-08-18." has day precision, and an event across UTC midnight is off by
+   one day for a UTC+8 reader. Accepted because nothing is truly lost (both connectors are
+   idempotent and resyncable); because `precision = day` says exactly "the day is known, the
+   instant is not" — the real error would be pretending to know; and because the product does
+   not yet ask "at what hour". Add an `instant` precision (CHECK constraint, extraction prompt
+   and rendering branch together) only when someone needs local business days or a source
+   whose events cluster around midnight.
 
-Type Bug.
-Currently Closed.
-Resolved on 2011-07-19.
+   A related rule is already in code: world time and record time get opposite timezone
+   treatment. `valid_from` / `valid_to` are calendar dates from statements in documents and
+   render in UTC (local conversion shows a UTC-5 reader the previous day); `recorded_at` is a
+   real instant and renders in the viewer's timezone. The difference is intentional.
 
-## History
-- 2011-08-05 — Alan Cabrera changed Workflow: jira → no-reopen-closed
-- 2015-09-01 — Tony Stevenson changed Workflow: no-reopen-closed → Apache Kafka Workflow
+## Dead ends
 
-## Comments
-### Luke Chen on 2026-08-24
-…
-```
+- **An `issues` + provider abstraction.** The second vendor was connected to find out whether
+  to abstract. Not yet: the fetch strategies differ at the root (three pulls vs one call,
+  `since` vs JQL, event-level vs field-level history). What they share — one ticket, one
+  document, history in the body — already lives in the identical document shape and needs no
+  trait; a forced interface would push the real differences into a pile of `match`.
+  Reconsider when a third source lands in one of the two existing shapes.
 
-**抬头写成带日期的陈述句，不是键值对。** `Opened by X on 2026-08-18` 能抽出带
-`valid_from` 的事实；`created_at: 2026-08-18` 则要模型自己猜这是什么意思。
+## The same judgment elsewhere
 
-## 两个供应商教的不同的事
+Provenance has to be visible, and that reached the ontology after this record: a class's
+shape carries its origin (#141: square = declared by a vocabulary with an IRI, circle = grown
+from the corpus), and a class adopted by a vocabulary (`adopt_iri_onto_key`, #145) changes
+shape — a class with an IRI drawn as a circle is a picture that lies.
 
-| | GitHub | Jira |
-|---|---|---|
-| 取法 | 三次拉取 + **逐工单**取事件 | **一次调用**取全（`expand=changelog`）|
-| 增量 | `since` 参数 | JQL `updated >= "…"` |
-| 变更史 | 事件级（"发生了 labeled"）| **字段级**（`Workflow: A → B`）|
-| 时间戳 | RFC3339 | `+0000` **无冒号**，不是 RFC3339 |
+## Open questions
 
-### GitHub：聪明的设计悄悄丢掉了全部价值
+- **Feishu / Confluence / Notion** are next: the enterprise version of the #122 Wikipedia
+  history corpus — versions of one document at different times, numbered, no sampling and no
+  events buried in PRs. Feishu first (`feishu_docs`): it is where Chinese users are, and its
+  API hands out document versions. Three unknowns to answer first: no public instance (a test
+  tenant, or "not verified" stated); rich text is a block tree (Feishu `docx` blocks, Notion
+  blocks, Confluence ADF; Jira v3 has the same problem, avoided this round via v2) and needs a
+  block-tree-to-text renderer; and "history" here is a version sequence, closer to #122 —
+  probably sampled by how much changed rather than every version.
 
-第一版想让三样都走仓库级端点、一次分页取全，避免 200 张工单 401 次请求。
-**拿真实数据一跑就发现事件那一路是错的**：`issues/events` 不支持 `since`，
-只能从最新往回翻，而 GitHub 的模型里 PR 也产生 issue 事件——实测本仓库的工单事件
-埋在**第 5 页**，换一个 PR 活跃的仓库就会被推到翻页上限之外。
-
-于是"状态变更史"悄悄变成空的，**而它正是这个来源存在的理由**。改成逐工单取，
-N 只是本轮要写入的工单数。用一次准确换一次省事，这里该换。
-
-### Jira：三个坑都藏在字段形状里
-
-- **时间戳不是 RFC3339**（`2026-08-24T11:11:52.944+0000`，时区偏移没有冒号）。
-  chrono 默认解不了，解不出来就是整页工单丢掉。
-- **增量没有 `since` 参数**，只能靠 JQL，时间格式是 Jira 自己的且**要带引号**——
-  两点写错的症状都是 400，不是"查不到"。
-- **`fields` 必须显式列**：不列 `comment` 就不返回评论；默认返回全部字段会把
-  一条响应撑到几百 KB。
-
-## 拿真实响应钉住字段形状
-
-手写的 JSON 只能证明"我以为的形状"解得出来。GitHub 一条 issue 有上百个字段，
-我们只声明十个；哪个其实叫别的名、哪个在某些情况下是 null，只有真数据说得清。
-
-两个连接器的夹具都取自**公开可匿名读的实例**（`deeplethe/utopia`、
-`issues.apache.org`），字段裁到我们声明的那些——裁剪本身顺带证明了未声明的
-字段不会让 serde 失败。
-
-它当场抓到一个手写测试全绿而真实数据报错的 bug：**逐工单事件端点不返回 `issue`
-字段**（上下文已经在 URL 里）。第一版按仓库级响应写成必填，换端点后整片解不出来。
-
-**这条对后来者是硬要求**：接一个没有公开实例、拿不到真实响应的来源，
-交付时必须说明"未经真实实例验证"，别跟这两个混为一谈。
-
-## 截断要说出来
-
-Kafka 项目有 **14506** 张工单，一轮翻页上限取 500。不报的话界面上"同步完成"
-是一句误导——所以取回数小于 `total` 时落一条 warn，说明本轮只覆盖了一段。
-
-与 #108「部分抽取报告成完成」、#127「一条坏记录不该毁掉一整块」同一条原则：
-**限了覆盖面就要说出来**。
-
-## 已知取舍：时刻被截成了日期
-
-连接器把时间戳写进正文时是 `created_at.format("%Y-%m-%d")`——**按 UTC 截到天**。
-抽取器从 "Opened by X on 2026-08-18." 这句话里读出的 `valid_from` 因此是
-day 精度，时刻在入库前就没了。
-
-**代价说清楚**：跨 UTC 午夜的事件会差一天。一个 UTC+8 的人在 8 月 19 日
-早上七点开的 issue，GitHub 界面上写着 8-19，我们的文档里写的是 8-18。
-
-**为什么仍然接受**：
-
-- 它没有真的丢。源头原样还在，而两个连接器都是**幂等可重同步**的——
-  真要精确到时刻，重同步一次就能拿回来。这与"不可逆丢失"差一个量级。
-- 精度模型本来就在说实话。`precision = day` 的含义正是"知道哪天、不知哪刻"，
-  day 精度的日期存成 UTC 午夜、按 UTC 渲染，是自洽的。**真正的错是假装知道**。
-- 这产品目前不问"几点"。它回答"某个时刻世界是什么样"，粒度到天。
-
-**什么时候该回头做**：有人要按"当地营业日"统计，或者接了一个事件天然聚在
-午夜附近的源（交接班、开盘收盘）。那时 day 精度不够，才值得加一档 `instant`
-精度——连带 CHECK 约束、抽取提示词、渲染分支一起改。
-
-顺带记一条同源的规矩，它已经落在代码里：**世界时间与记录时间的时区待遇相反**。
-`valid_from`/`valid_to` 来自文档里的陈述，是日历日期不是时刻，一律按 UTC 渲染
-（转本地会让 UTC-5 的读者看到前一天）；`recorded_at` 这类"我们何时这么认为"
-是真实时刻，按看的人的时区渲染。这两处**故意不一样，别统一**。
-
-## 为什么没有抽象成 `issues` + provider
-
-接第二个供应商正是为了看清该不该抽象。答案是**暂时不该**：取法根本不同
-（三次拉取 vs 一次调用、`since` vs JQL、事件 vs 字段变更）。共同的只有
-"一张工单一篇文档、正文带变更史"这条判断——而它已经体现在两边一致的**文档形状**上，
-不需要一个共同的 trait 来强制。
-
-硬抽一个 provider 接口，会把这些真实差异挤进一堆 `match`。等第三个来了再看：
-如果它的取法落在已有两种之一，那时抽象才有形状可依。
-
-## 这条线后来延伸到了哪
-
-「说清楚一样东西是哪来的」不止管来源。同一句话在本体侧也成立，
-而且是这篇写完之后才补上的：
-
-- **#141**：类的形状开始承载来历——**方 = 词表声明的（有 IRI），
-  圆 = 语料里长出来的**。从前所有自动建的类都写死 `circle`，
-  一张图上看不出哪些类是本体里定义过的、哪些是从文档里长出来的。
-- **#145**：一个类被词汇表**认领**（`adopt_iri_onto_key`）之后形状要跟着改。
-  漏了这一处的症状很刺眼：类拿到了 IRI 却仍画成圆——**有 IRI 却是圆的，
-  画面就在说谎**。这个缝隙只有真导入一次才撞得到，实测撞上过。
-
-两件都不是这篇的主题，但判据是同一条：**来历要看得见**。
-接新来源时值得一并想：这个来源带进来的东西，读者能不能一眼看出它是从哪来的。
-
-## 相邻的一层：一个源能被谁挂载
-
-本文谈「东西怎么进来」。写完之后加了一层本文没有的东西——**授权**（#142，`data_source_grants`）：注册数据源是部署级动作，而它携带的连接串会到达每一个被授权的工作区，所以挂载只能在授权过的集合里挑，守卫在两侧都有（列表按工作区过滤 + 挂载端点复核）。
-判据与本文一致：来历要看得见，去向也要管得住。
-
-## 待做：飞书 / Confluence / Notion
-
-文档协作类是下一个该接的——它是 #122 那份维基历史快照语料的**企业版**：
-同一份文档在不同时刻的版本，天然带版本号，不用采样也不用跟埋在 PR 里的事件较劲。
-四条判据全中。
-
-**飞书优先**（`feishu_docs`）：中文用户的实际落点，而且它的 API 直接给文档版本。
-
-三个已知的未知，接的人要先答：
-
-1. **拿不到公开实例。** 飞书/Confluence/Notion 都要租户与凭据，所以做不到
-   GitHub/Jira 那样的真实端到端。要么用测试租户，要么明说未经真实验证。
-2. **富文本不是字符串。** 飞书文档是块结构（`docx` 的 block 树），
-   Notion 是 block、Confluence Cloud 是 ADF——都需要一个"块树 → 纯文本"的渲染器。
-   Jira Cloud 的 v3 也是同一个问题，本轮绕开了（走 v2）。
-3. **"变更史"在这里是什么。** 工单的变更史是事件流；文档的变更史是**版本序列**，
-   更接近 #122 那份语料的做法——可能要按"变了多少"采样，而不是每个版本都取。
-
-### 照着走的骨架
-
-两个已有实现是同一个形状，抄它就行：`github_issues.rs`（三次拉取 + 逐工单事件）、
-`jira_issues.rs`（一次调用取全，`expand=changelog`）。
-
-1. **纯函数 `render()`** 把一条记录排成 Markdown——不联网，于是测得动
-2. **`fetch_all()`** 负责分页与鉴权
-3. `ingest_sources.rs` 里加一个 `sync_*` 分支，调 `ingest_item()`——身份、
-   sha256 去重、版本记录都由它负责
-4. `sources::KINDS` 白名单 **加前端三处**（`api.ts` 的 `SourceView["kind"]`、
-   `Library.tsx` 的建来源对话框、`SourcesRail.tsx` 的图标与 `SYNCING_KINDS`）
-
-第 4 步最容易漏，症状是**界面上选得到、建的时候报 `kind must be one of…`**——
-单元测试与 tsc 都看不见，只有端到端会撞上（#134 就是这么撞的）。
-
-另外注意凭据只进不出：编辑来源时留空 = 保留库里原值，写法见 `sync_custom`。
-
-### 验收
-
-- 单元测试覆盖 `render()`（含"空评论不留空节"这类边界）
-- 拿得到真实响应就加夹具测试；**拿不到就在 PR 里明说未经真实实例验证**
-- 端到端：建来源 → 同步 → 文档带版本/变更信息 → 二次同步幂等（新增 0）
-- `cargo clippy --workspace --all-targets` 与 `npm run typecheck` 干净
-
-Confluence / Notion 是同一类，上面第 2 条未知三家共通。
+  The skeleton is the two existing connectors: a pure `render()` turning one record into
+  Markdown (no network, so testable); `fetch_all()` for paging and auth; a `sync_*` branch in
+  `ingest_sources.rs` calling `ingest_item()`, which owns identity, sha256 dedup and version
+  records; and the `sources::KINDS` whitelist plus three frontend places (`SourceView["kind"]`
+  in `api.ts`, the create dialog in `Library.tsx`, icons and `SYNCING_KINDS` in
+  `SourcesRail.tsx`). The fourth step is the one that gets missed: the kind is selectable and
+  creation fails with `kind must be one of…`, invisible to unit tests and tsc (#134 hit it).
+  Credentials go in and never out — an empty field on edit keeps the stored value, as in
+  `sync_custom`. Acceptance: unit tests on `render()`, fixture tests where a real response is
+  obtainable, create → sync → versions present → second sync adds 0, and clean
+  `cargo clippy --workspace --all-targets` and `npm run typecheck`.

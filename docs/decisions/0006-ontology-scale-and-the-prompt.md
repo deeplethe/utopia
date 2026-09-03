@@ -1,131 +1,32 @@
-# 0006 · 本体规模与抽取提示词
+# 0006 · Ontology scale and the extraction prompt
 
-- **状态**：已建成 · 预算（24,000 字符）与按块检索在线，数值未动；「内置类恒在」那道地板已被**祖先补齐**取代（见文末修订）；预算的具体数值仍待更好的语料来定——外部语料已入库，答案键仍是人填的（2026-09-02 核）
-- **成文**：2026-08-29（约定见 [README](README.md)）
+- **Status**: Built · the character budget (`deployment_settings.ontology_prompt_budget`, 24,000) and per-chunk retrieval are live, values unchanged; the "built-in classes always present" floor is replaced by ancestor completion; answer keys are still hand-filled.
+- **Written**: 2026-08-29 · condensed into English 2026-09-03
+- **Related**: [0008](0008-ontology-packs-as-cold-start.md) packs are now the starting ontology; [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) measured the bias that forced ancestor completion.
 
-> 这一篇比别的多一样东西：**数字**。它们来自 `scripts/bench/`，任何人都能重跑。
-> 每个数字后面都标了它**不能**说明什么——一次运行的差别常常只是跑次方差，
-> 而把方差当成效果，是这轮里我犯过不止一次的错。
+## The problem
 
-## 问题
+The extraction prompt inlined the whole ontology once per chunk; `extraction.rs` called `entity_types(kb)` with no selection step. After importing schema.org (968 classes, 1034 relations, 599 attributes) each chunk cost 108,133 tokens. [0001](0001-ontology-import-and-governance.md) P3 had guessed "800 classes blows the prompt" and got the shares wrong: classes 38%, relations 34%, attributes 28%.
 
-抽取提示词把**整个本体**铺进去，每个文本块重发一遍。`extraction.rs` 从前只有一句
-`entity_types(kb)`，一个不落。
+## Decisions
 
-导入 schema.org 当前版之后：968 个类、1034 个关系、599 个属性，**每个文本块 108,133
-token**。这个数字不是某个设计的代价，**是没有设计的结果**——代码里根本没有"选"这个
-动作。0001 的 P3 曾把它归到"800 个类时提示词爆炸"，但那时没人量过真实本体，而且
-猜错了大头：类清单只占 38%，关系 34%、属性 28%。
+1. **Switch by budget.** If the ontology fits, inline it all, unchanged: a forty-class ontology is 2k characters and retrieval would be a wasted round trip. If not, each chunk retrieves its own candidates with `chunk.embedding` (already loaded for entity resolution), falling back to the full list when nothing is retrieved. The budget is in characters because description lengths differ by orders of magnitude, and it measures the text `build_lists` actually lays out. It is a deployment setting because tuning it needs paired runs per level, and nobody reruns a curve that needs a server restart per point.
+2. **Three details that exist only once there is a choice.** Signatures may name only inlined classes (an absent class in `works_at (person → organization)` teaches the model a type that does not exist; an unselected side becomes `*`); attributes follow their domain class; both paths share one `build_lists`, or the prompt stops matching what the code accepts.
+3. **Ancestor completion** (2026-09-02): whatever retrieval hits, its `subClassOf` ancestors are inlined too, breadth-first with a visited set. The chain is the ontology's own declaration of generalization; no hand-kept list of "general classes". The only detail forced by real data.
 
-## 决定
+**The bench** (`scripts/bench/corpora/pharma.json`, 5 Chinese pharmaceutical documents, one run each) showed no degradation up to 58,651 characters of ontology (about 15k tokens, 202 classes): entities per run swung 23–28 with no trend, so 24,000 is conservative. Full inline has a ceiling unrelated to quality: at 394 classes (169,380 characters) it hit the vendor's per-minute token limit (429) and never finished; retrieval did. With schema.org, correctly typed entities went 2 of 19 with seeds only, 7 with the large ontology in post-hoc resolution, 12 with per-chunk retrieval. Caveats: single runs (the same input has produced 25 and 18 entities); alphabetical subsets (`subset.mjs` takes the first N classes, hence no hit rate); corpus, answer key and system from the same hand.
 
-**按预算切换，不按类数量。**
+## Dead ends
 
-- 装得下 → 全量铺，行为一字不变。四十个类的本体约 2k 字符，检索反而是多余的往返。
-- 装不下 → **每块用它自己的向量检索候选**，内置类恒在〔已换成祖先补齐，见文末〕，检索不出来就退回全量。
+- **A fixed floor of built-in classes.** Its premise, that seed classes are the general ones, died when #128 stopped seeding. [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) measured the symptom: retrieval favors leaf classes that appear literally in the text (`researcher` ranks 4th of 976, `person` 359th), so `employee (organization → person)` degraded to `(* → *)`.
+- **`BATCH = 16` in the ontology index**, chosen from synthetic short texts; 64 doubled throughput. **`join_all` over 31 embedding batches** held the shared `model_concurrency` gate for fifteen minutes; now `EMBED_JOBS = 4`.
 
-预算按**字符**而不是类数量：类描述的长度差着数量级（`SoftwareApplication` 的描述是
-一句话，FIBO 的能有一整段）。判据量的是**实际要排的那段字**（`build_lists` 自己数），
-不是另写一个估算公式——公式会跟排版分叉。
+## Revisions
 
-分块向量是**现成的**：`chunk.embedding` 在抽取循环里本来就加载了（实体消解在用），
-所以按块检索一次嵌入调用都不加。
+- Withdrawn: "the 108k prompt ate 5 entities". The bench ingested first and imported later, so both runs extracted with 9 seed classes and `prompt_tokens_est` measured an ontology extraction never saw; 25 vs 18 was run variance. The bench now reports `ontology_at_extraction` and `ontology_at_resolution` separately and has `--ontology-first`.
+- 2026-09-02: per-chunk retrieval sends one vector query per chunk with concurrency up to `worker_concurrency` (cap 256 since #133) against a pool of 32; migration `0011` records it.
 
-预算落在 `deployment_settings.ontology_prompt_budget` 而不是常量或环境变量，
-理由是测量本身：定它需要每档两组对照，靠重启服务改一档的话，那条曲线不会有人跑第二遍。
+## Open questions
 
-### 三个细节只在"选择"存在时才有
-
-1. **签名只能提到铺出去的类。** `works_at (person → organization)` 里那两个 key 必须是
-   模型看得见的——写一个没铺出去的类名，等于教它输出一个不存在的类型。整侧都没选中
-   就退回 `*`。
-2. **属性跟着 domain 走。** 属性行是 `class.attr`，它的类没铺出去这行就没意义。
-   这顺带解决了属性段（提示词的 28%）的裁剪，不用单独处理。
-3. **两条路共用一个 `build_lists`。** 两份排版代码迟早分叉，而分叉在这里的后果是
-   提示词说的与代码认的不是一回事。
-
-## 量到了什么
-
-同一份语料（`scripts/bench/corpora/pharma.json`，5 篇中文医药文档），**每组一个新库**，
-先导本体再灌语料（抽取当场就看得见本体）。
-
-| 内联的类 | 本体段字符 | 模式 | 抽到实体/事实 | 抽取秒 |
-|---|---|---|---|---|
-| 32 | 2,977 | 全量 | 23 / 25 | 47 |
-| 32 | 2,977 | 检索 | 28 / 27 | 31 |
-| 78 | 19,187 | 全量 | 25 / 26 | 41 |
-| 78 | 19,187 | 检索 | 23 / 26 | 36 |
-| 202 | 58,651 | 全量 | 26 / 27 | 36 |
-| 202 | 58,651 | 检索 | 23 / 26 | 36 |
-| 394 | 169,380 | 全量 | **跑不完（429 TPM 限流）** | — |
-| 394 | 169,380 | 检索 | 28 / 26 | 52 |
-
-**一、到 58,651 字符（约 15k token）为止看不到退化。** 实体数在 23–28 之间摆动，
-没有趋势。这跟"提示词一大抽取就掉东西"的直觉不符，也跟我先前的一个结论不符
-（见下方的撤回）。所以现在的 24,000 字符预算**偏保守**，但改它之前需要更好的语料。
-
-**二、全量内联有一个跟质量无关的硬天花板。** 400 类那一档全量组撞穿了供应商的每分钟
-token 限额（429），同一份本体检索组跑得下来。这不是"慢一点"，是**跑不完**。
-
-**三、大本体确实带来正确的类型，但要靠检索送到眼前。** 另一组对照（schema.org 全量，
-968 类）：只有种子本体时 19 个实体里 2 个类型正确；大本体只作用于事后消解时 7 个；
-大本体 + 按块检索进提示词时 12 个。
-
-## 这些数字**不能**说明什么
-
-- **每组只跑了一次。** 同一份输入、同一套设置，我们观测到过 25 个实体与 18 个实体的
-  差别。所以实体数那一列的个位数差异**读不出信息**，只有趋势（或没有趋势）可读。
-- **子集是按字母序取的。** `subset.mjs` 取前 N 个类，所以 200 类那一档全是 A–B 开头的
-  （`AdultEntertainment`、`Brand`…），不含 `hospital`、`pharmacy`、`drug`、`city`。
-  上表**没有列命中率**就是因为这个：正确答案不在子集里，命中涨不上去不是系统的问题。
-  要量"词汇量对质量的贡献"，子集得按语料里实际出现的类采样。
-- **语料是我们自己写的，标准答案也是自己填的。** 语料、答案、系统三样出自同一只手，
-  过拟合无从检验。这是目前最大的短板，见下。
-
-## 未决
-
-**语料的合法性。** 现在两份语料（科技 / 医药）都是手写的，答案键是逐条人填的。
-它们作为 smoke fixture 是称职的——不联网、跑得快、结果确定——但**不足以支撑
-"这个改动更好"这种结论**，外部贡献者也无从基于它们做比较。
-
-方向是引入一份外部语料，且**标准答案由外部数据推导而不是由我们填**：中文维基百科
-正文（CC BY-SA，可入库可引用）配维基数据的 `P31` 作类型答案。要点不是"维基百科更
-真实"——它是百科体，跟企业文档并不一致——而是**答案不再是我们的意见**。
-生成脚本必须一并入库，否则"挑哪些条目"又成了一个没人能检查的选择。
-
-**预算与每块候选数的具体值。** 24,000 字符、每块 40 类 / 30 关系 / 30 属性，
-都是拍的，代码里标着。上面的曲线说它偏保守，但在语料这一关过掉之前，
-按那条曲线去调只是把过拟合调得更紧。
-
-## 修订记录（2026-09-02）：地板换了材料，索引付了代价
-
-**「内置类恒在」失效了。** 它的前提是种子类正好是那几个通用类，而 #128 之后建库不种任何类，
-`seed_classes` 恒为空。症状在 [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) 里量过：向量检索偏爱字面出现在正文里的叶子类
-（976 个类里 `researcher` 第 4、`corporation` 第 27，`organization` 第 177、`person` 第 359，前 40 名里一个泛化基类都没有），
-于是实体判成 `researcher`，`employee (organization → person)` 的签名退化成 `(* → *)`。
-
-**改成：命中什么，就把它的祖先一起铺出去。** 沿 `subClassOf` 上溯，广度优先加访问集（菱形继承会从两条路到达同一祖先）。
-比维护一张「通用类」清单好——继承链本来就是本体自己声明的泛化关系，谁是谁的上位不用我们再判一次。
-代价是每块多铺几层祖先。这是「三个细节」之外的第四个，也是唯一由真实数据逼出来的。
-
-**本体向量索引本身也有两个实测常量**，本文当初只谈了提示词的规模：`BATCH = 64`（曾改成 16，因为拿合成短文本量的「每条更快」，
-改回后吞吐翻倍）、`EMBED_JOBS = 4`（曾用 `join_all` 挂 31 批，把共享的 `model_concurrency` 闸门占死——五篇文档全卡在 embedding，抽取十五分钟零进展）。
-索引陈旧靠「当时嵌的原文与模型名跟现在对不对得上」自愈，不挂钩子。
-
-**按块检索的系统级代价**：每块一次向量检索砸向数据库，并发数由 `worker_concurrency` 决定，而它的上限已从 32 提到 256（#133）。
-连接池是 32。这条账本文没记，迁移 `0011` 的注释记了。
-
-**测量台已经能测 0008 那个开放问题**：`run.mjs --packs schema-org,prov-o` 走产品真实的冷启动路径。工具就位，对照仍未跑。
-
-**语料那一半**：语料从 2 份涨到 8 份，新增的都不是手写的（维基历史快照带可重建的 manifest、公有领域国情咨文、福尔摩斯），
-生成脚本一并入库。但「标准答案由外部数据推导」没做——`scripts/bench/truth/` 仍只有 pharma / tech 两份人填答案，没有任何 Wikidata `P31` 代码。
-
-## 撤回
-
-> **「108k 的提示词吃掉了 5 个实体」不成立。** 那条结论来自测量台的默认次序
->（先灌语料再导本体），两组抽取时提示词里都只有 9 个种子类，`prompt_tokens_est`
-> 量的是**导入之后**的本体——抽取从没见过它。25 vs 18 是跑次方差。
->
-> 台子当时没拦住这个错，因为指标名暗示了顺序没兑现的东西。现在两份规模分开报
->（`ontology_at_extraction` / `ontology_at_resolution`），并有 `--ontology-first`，
-> 次序写在输出里而不是靠人记得。
+- **Legitimacy of the corpus.** The set grew from two to eight, with generation scripts committed, but `scripts/bench/truth/` still holds only the hand-filled `pharma` and `tech` keys. The intended fix is Chinese Wikipedia text with Wikidata `P31` as the type answer, so the answer stops being our opinion; no `P31` code exists yet.
+- **Budget and per-chunk candidate counts** (24,000; 40 classes / 30 relations / 30 attributes) are guesses; tuning before the corpus question is settled only tightens the overfit. `run.mjs --packs schema-org,prov-o` walks the real cold-start path, but that comparison has not been run.

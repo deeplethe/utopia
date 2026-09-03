@@ -1,184 +1,119 @@
-# 0008 · 预制本体包作为冷启动
+# 0008 · Ontology packs as the cold start
 
-- **状态**：已建成 · 五个包内嵌进二进制、建库时多选（schema.org 默认勾选）、对齐表 22 条静态维护；**建库不再发任何种子关系**——包不是补充，是本体的全部来源；三个开放问题全部仍然开放，且「中文标签」那条变严重了（2026-09-02 核，修订见文末）
-- **成文**：2026-08-30（约定见 [README](README.md)）
-- **相关**：[0001](0001-ontology-import-and-governance.md) 定了 IRI/key 分工与贯穿性判据；
-  [0006](0006-ontology-scale-and-the-prompt.md) 拆掉了大本体的提示词障碍；
-  [0007](0007-who-decides-what-becomes-a-relation.md) 定了从种子长大的采纳规则
+- **Status**: Built · five packs embedded in the binary (gzip, 1.7 MB → 316 KB),
+  multi-select at KB creation with schema.org checked by default, 22-row static alignment
+  table · a new KB seeds no relations: the packs are the whole ontology · the three open
+  questions stay open; the Chinese-label one got worse (2026-09-02 check)
+- **Written**: 2026-08-30 · condensed into English 2026-09-03
+- **Related**: [0001](0001-ontology-import-and-governance.md) criteria and IRI/key split;
+  [0006](0006-ontology-scale-and-the-prompt.md) prompt budget;
+  [0007](0007-who-decides-what-becomes-a-relation.md) growth loop;
+  [0009](0009-no-type-is-a-type.md) the empty start;
+  [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) the packs on a real corpus
 
-> 与 0006、0007 同规格：先摆数字，并标明每个数字**不能**说明什么。
-> 本篇的数字**只来自官方发布文件**（2026-08-30 抓取），任何人都能重跑。
-> **刻意不引用开发库的统计**——那是 mock 语料，能说明错误的形状，
-> 不能说明真实部署的比率，写进决策记录只会被后人当成依据。
+## The problem
 
-## 问题
+The ten seed relations a new KB used to receive (since removed) had no domain or range. The
+extraction prompt supports signatures (`- buys_from (employee|team → *)`), but with none to
+feed it each predicate degraded to prose, and prose cannot fix direction: `produces` — "an
+organization or project makes or releases the object" — hints at the subject's type without
+constraining it, so a model reading "Anthropic's Claude" has nothing machine-checkable to
+say which side is the subject. Only `part_of` had a counter-example written in, after a
+mishap; fixing direction with prose costs one mishap per predicate and holds only under that
+line. Ten predicates do not cover real documents either (most facts degraded to
+`related_to`), and widening to dozens does not fix direction.
 
-新建的库只发 10 个种子关系（成文时 `graph.rs` 的 `RELATION_TEXT_ZH`；今天那张表、`localized()` 与 `ensure_default_ontology` 都不存在，`graph.rs` 开头留了三次退场的理由）。这 10 个里
-**零个带类型签名**——没有 domain，没有 range。
+schema.org turns direction into structure: 1010 classes, 1521 properties, **1488 (97.8%)
+with both domain and range**. With `schema:manufacturer Product → Organization`, `Claude
+manufacturer Anthropic` is legal and the reverse is stopped at domain validation before it
+reaches the graph.
 
-抽取提示词是支持签名的（`extract/lib.rs:498` 的测试：`- buys_from (employee|team → *)`），
-有签名的谓语会带上「主语类型 → 宾语类型」。种子没得可喂，于是退化成一句白话：
-`- works_at: 受雇于某个组织。`
+## Candidates
 
-**一句白话约束不了方向。** `produces` 的定义是「一个组织或项目制造、发布或推出了宾语」——
-「组织或项目」是对主语的**类型提示**，不是**方向约束**。模型读到「Anthropic 的 Claude」，
-知道两者有 `produces` 关系，但没有任何机器可检的东西告诉它谁该在主语位。
-而产品在本体里往往也归到 Project 或 Product，于是两个方向读起来都合法。
+Counted from the official release files of 2026-08-30 (not from the dev database: a mock
+corpus shows the shape of errors, not real ratios). Criteria: readable by the current
+importer (Turtle / RDF-XML), open license, has domain/range.
 
-十个种子里只有 `part_of` 写了反例（"**不是「可以在……上用」**"），显然是踩过坑之后补的。
-**这正是问题所在**：用散文补方向，每个谓语都要单独踩一次坑，而且补丁只在那一条下面生效——
-`part_of` 警告过的"能在某服务上玩"，换个谓语照样踩。
-
-`graph.rs` 开头的自陈（今天挪到了 `bootstrap_ontology.rs` 开头，**内容已过时**，仍写着 10 个默认关系与降级 `related_to`）说明这不是个别谓语的事：
-
-> 文档，里面的关系大半不在这 10 个里，于是大量事实降级成 related_to
-
-**十个谓语覆盖不了真实文档，而扩到几十个也不解决方向问题**——只要方向靠散文写，
-就是 O(谓语数) 次踩坑。
-
-## schema.org 把方向变成结构
-
-| | 类 | 属性 | domain+range 齐全 |
+| Pack | Size | Classes / properties | Fills |
 |---|---|---|---|
-| 我们的 10 个种子 | — | 10 | **0** |
-| schema.org（2026-08-30） | 1010 | 1521 | **1488 = 97.8%** |
+| schema.org | 1078 KB | 1010 / 1521 (the shipped pack counts 1676) | general: people, organizations, products, events, creative works |
+| W3C Org | 82 KB | 13 / 34 | what `schema:Organization` lacks: Unit, Post, Membership, Role, tenure, reporting lines |
+| PROV-O | 110 KB | 62 (shipped: 49) / 69 | provenance: Activity, Agent, wasDerivedFrom |
+| FOAF | 43 KB | 12 / 62 | social relations; 21% overlap with schema.org and the least unique value — a candidate, not a default |
+| IOF Core | 394 KB | 294 / 75 | industrial manufacturing |
 
-```
-schema:manufacturer   Product      → Organization
-schema:worksFor       Person       → Organization
-```
+Overlap by `key_from_iri()` (keys collide, not IRIs) is about 20 words in total: org ∩
+schema 6, foaf ∩ schema 15, prov ∩ schema 4. True synonyms are mapped (`foaf:Person ≡
+schema:Person`); same name with a different meaning stays as two (`org:role` is a post,
+`schema:role` a part in a creative work; `foaf:status` is chat presence, `schema:status` an
+order status).
 
-`Claude manufacturer Anthropic` 合法；反向因为 `Anthropic` 不是 `Product`，
-**在 domain 校验时就被拦掉**，根本进不了图。方向不再靠散文描述，而是靠声明。
+## Decisions
 
-注意 `manufacturer` 的方向与我们的 `produces`（组织 → 产品）**正好相反**。
-这不影响结论——重点不是哪个方向对，是方向被显式声明了。
+1. **Multi-select at KB creation, no bundles.** Alignment is declared pairwise —
+   `foaf:Person ≡ schema:Person` holds whatever else is selected — so multi-select adds no
+   alignment cost, and fixed bundles are guesswork that never matches: fintech wants IOF
+   plus a future FIBO, a consultancy wants schema plus Org plus PROV. The UI shows each
+   pack's size and lets the user weigh it.
+2. **No import undo.** Three guards — `ON DELETE RESTRICT` (`0003_graph.sql`),
+   application-level counts in `ontology.rs`, and `NOT builtin` (now an empty condition) —
+   already mean a type with entities cannot be deleted. That is right: the inverse of "the
+   ontology guides, it does not enforce" — **knowledge can veto the deletion of ontology**.
+   What "wrong pack" needs is a bulk view ("this import created 294 classes, 12 in use, 282
+   empty — delete the empty ones"): simpler than undo, touches nothing that holds data. Not
+   built yet.
+3. **Static alignment table, no runtime inference.** About 20 rows by hand (22 built,
+   `SameAs` and `Rename`, e.g. `org:Role → org_role`), partly copied from upstream: W3C Org
+   declares its alignment with FOAF, PROV-O with FOAF and Dublin Core. No label similarity
+   or embedding matching — the packs are ours, five or six of them, and the overlaps can be
+   enumerated. An unbounded problem shrinks to a table, per 0001's criterion 6: governance
+   experience goes into the schema, not into hidden rules.
 
-## 候选包（实测）
+## Dead ends
 
-抓取并按各自语法计数。判据三条：能被现有导入器吃下（Turtle / RDF-XML）、开放许可、带 domain/range。
+- **Three fixed bundles** (general / provenance-compliance / industrial) and
+  **`undo_import`**, both in the first draft — rejected, see decisions 1 and 2.
+- **Showing overlap with the packs already selected** was planned; `2fa8d57` removed the
+  collision hint entirely. The alignment table handles the collisions, and reporting them
+  asks the user to rule on something with nothing to rule on.
+- **Packs that do not fit**: FIBO is modular, hundreds of files by catalog (finance is a
+  project, not a pack); Brick (1438 classes, 25 properties) and QUDT are taxonomies, not
+  relation ontologies; SAREF projects to 0 classes and 0 properties, its declaration form is
+  not covered yet; SNOMED CT needs a license.
 
-| 包 | 体积 | 类 | 属性 | domain | range | 补什么 |
-|---|---|---|---|---|---|---|
-| **schema.org** | 1078 KB | 1010 | 1521〔发货的包记 1676〕 | 1521 | 1521 | 通用：人、组织、产品、事件、创作 |
-| **W3C Org** | 82 KB | 13 | 34 | 36 | 32 | **组织架构**：Unit、Post、Membership、Role、任期 |
-| **PROV-O** | 110 KB | 62〔发货的包记 49〕 | 69 | 63 | 62 | 溯源：Activity、Agent、wasDerivedFrom |
-| **FOAF** | 43 KB | 12 | 62 | 60 | 57 | 社交关系 |
-| **IOF Core** | 394 KB | 294 | 75 | 94 | 94 | 工业制造 |
+## Revisions
 
-**W3C Org 只有 13 类 34 属性，却补上 schema.org 最弱的一块。** schema.org 的
-`Organization` 是给网页用的，没有部门、职位、任期、汇报关系的概念。
+- 2026-09-02: the alignment table grew three things not foreseen: a third disposition
+  `Aligned` (beside `Create` / `Update` / `KeyTaken`); direction sensitivity — rows are
+  (incoming IRI, occupying IRI), so install order decides which row hits, hence the visible
+  rule "check order is install order"; and a guard test that projects all five real packs
+  and checks every IRI, against a silent typo and upstream prefix changes (schema.org moved
+  from `http://` to `https://`).
+- 2026-09-02: a failing pack does not roll back the packs already installed — the ontology
+  is additive, and rollback is the undo this record refuses. And there is a start at **0**:
+  no pack is legal, entities carry `type_id` NULL ([0009](0009-no-type-is-a-type.md)).
+- 2026-09-02: "the ontology guides, it does not enforce" was half overturned. On a real
+  corpus (0012) the vocabulary caught things — 215 facts with predicates, all 41 relations
+  from packs — but not one declared direction was enforced: 102 of 130 checkable facts were
+  stored reversed; the fix bends to the signature at write time and leaves a trace. The cost
+  of packs is not prompt length but **choice**: many names are generic with narrow meanings
+  (`affectedBy` is a medical test, `competitor` a sports event), and picking by name or
+  vector will hit them.
 
-**PROV-O 顺带补上一个对外的缺口**：竞品对比里"Provenance: W3C PROV-O"与
-"Compliance export"两格，我们今天是自有 schema，导进来就有了标准词汇。
+## Open questions
 
-### 下不到或不适合的
-
-- **FIBO**（金融）模块化发布，完整版要按 catalog 抓几百个文件。单模块（People）
-  只有 31 类。想做金融是单独一件工程，不是随手加一个包。
-- **Brick**（1438 类）与 **QUDT**：属性对类的比例极低（Brick 是 25 : 1438）——
-  它们是分类树不是关系本体，对抽取帮助有限。
-- **SAREF**：解析出的类与属性都是 0，声明形式我们的投影暂不覆盖，需先验证。
-- **SNOMED CT**：需授权。
-
-## 重叠有多少
-
-按 `key_from_iri()` 的实际算法比对——撞的是 key 不是 IRI。
-
-| 组合 | 撞名 | 具体 |
-|---|---|---|
-| org ∩ schema | **6** / 43 | `identifier` `location` `member` `member_of` `organization` `role` |
-| foaf ∩ schema | **15** / 72 | `agent` `name` `person` `knows` `member` `organization` `title` `image` `logo` `thumbnail` `given_name` `family_name` `gender` `project` `status` |
-| prov ∩ schema | **4** / 95 | `agent` `contributor` `creator` `publisher` |
-| org ∩ foaf | 2 | `member` `organization` |
-
-去重后**约 20 个词**。而且分两类，不能一概映射：
-
-**真同义 —— 映射掉**：`foaf:Person ≡ schema:Person`、`org:Organization ≡ schema:Organization`、
-`foaf:knows ≡ schema:knows`
-
-**同名不同义 —— 必须两份**：
-- `org:role` 是组织中的职位，`schema:role` 是创作作品里的角色（演员饰演）
-- `foaf:status` 是即时通讯的在线状态（2000 年代遗留），`schema:status` 是订单/动作状态
-
-**FOAF 重叠率最高（21%）而独有价值最低**——核心概念 schema.org 全有，剩下的
-`mbox_sha1sum`、`icqChatID` 是遗物。它进候选列表，但不进推荐默认。
-
-## 决定
-
-### 1. 建库时多选，不做预制捆绑
-
-初稿曾拟三个固定组合（通用 / 溯源合规 / 工业）。**否掉**：对齐表是两两声明的，
-`foaf:Person ≡ schema:Person` 这条不管用户选了几个包都成立，所以多选**不增加对齐成本**。
-而固定捆绑是拍脑袋的分类，现实里一定不匹配——做金融科技的要 IOF 加未来的 FIBO，
-咨询公司要 schema 加 Org 加 PROV，没有哪个捆绑覆盖得了。
-
-界面上每个包标出规模与**跟已选项的重叠率**，让用户自己掂量，而不是我们替他决定。
-
-### 2. 不做导入撤销
-
-`ON DELETE RESTRICT`（今天在 `0003_graph.sql`）加应用层计数（`ontology.rs` 的删类 / 删关系两处）加
-`NOT builtin` 三道防线〔第三道现在是空条件：没有 builtin 行了〕，已经保证了安全边界：**有实体挂着的类型删不掉**。
-
-所以"选错了怎么办"的实际路径是：没被用到的类型直接删，被用到的删不掉——
-**而删不掉恰恰是对的**，那些类型上挂着真实知识。
-
-需要的不是 `undo_import`，是一个**批量视图**：「这次导入建了 294 个类，
-12 个有实体在用，282 个空着」，一键删空的。比真正的撤销简单得多，
-且语义清楚——不碰任何有数据的东西。
-
-> 这三道防线值得单独记一笔，它是判据 2「本体是引导不是执法」的**反面**：
-> 本体不执法，但**知识可以否决本体的删除**。方向是知识保护本体，不是本体裁剪知识。
-
-### 3. 对齐表静态维护，不做运行时推断
-
-约 20 行，我们自己写。**上游已经写好了一部分**——W3C Org 官方文档声明了与 FOAF 的
-对齐，PROV-O 声明了与 FOAF、Dublin Core 的对齐，抄过来即可。
-
-不做自动对齐（标签相似度、嵌入匹配）：预制包是我们选的，不是用户随便传的，
-只有五六套，两两重叠有限且可穷举。**把无限的对齐问题缩成一张静态表**，
-这与判据 6「治理经验固化进 schema，不要固化成隐形规则」一致。
-
-## 修订记录（2026-09-02）：建成之后对照本文
-
-**三个决定的落地情况。** 多选建库已做（`CreateKbReq.ontology_packs`，前端多选卡片，无任何组合预设）；
-**「跟已选项的重叠率」没做**，而且方向反了——`2fa8d57` 把碰撞提示整个拿掉了，因为对齐表已经处理了它们，报给用户等于让人裁一件没得裁的事。
-不做导入撤销守住了，但**替代品「批量视图：这次导入建了 294 个类、12 个在用、282 个空着，一键删空的」没做**，`ImportPanel` 只有导入历史与 plan。
-对齐表 22 条（本文估「约 20 行」），`SameAs` / `Rename` 两类，`org:Role → org_role`、`foaf:status → foaf_status` 都在。
-
-**对齐表长出了三样本文没预见的东西。**
-一是第三种处置 `Aligned`：同义命中记作「已对齐」而不是「冲突」，与 `Create` / `Update` / `KeyTaken` 并列。
-二是**方向敏感**：表是 `(进来的 IRI, 已占的 IRI)`，装包顺序不同命中的是不同条目——直接推出界面上「勾选顺序即安装顺序」这条用户可见语义。
-三是它需要一道防腐：一个跑真包的测试把五个包全投影一遍逐条核对 IRI，防的是写错一个字符静默失效，以及上游改前缀（schema.org 从 `http://` 迁到 `https://` 就发生过）。
-
-**两条推论落在了代码里**：一个包失败不回滚已装的（本体是加法，装了一半的库仍然可用；回滚要撤已建好的类，正是本文不做导入撤销的理由）；
-包按 gzip 内嵌、每次建库现解压（1.7 MB → 316 KB，离线内网承诺 + clone 体积）。
-
-**本文没讨论的第三种起点：从 0 开始。** 不装任何包是合法的，空库能用，实体 `type_id` 为 NULL（[0009](0009-no-type-is-a-type.md)）。本文假定包把起点从 10 变成 1500，实际多了一档「0」。
-
-**「本体是引导不是执法」在包上被推翻了一半。** [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) 拿真语料第一次问了「大本体顶不顶用」：词汇量确实接住了东西（215 条有谓词的事实、41 个关系全部来自包），
-但声明的方向一条没被执行，130 条可校验的里 102 条反着落库。修法是写入时按签名掰正并留痕。**包的代价不在提示词长度，在选择难度**：
-包里很多名字通用、含义狭窄的词（`affectedBy` 是医学检验的、`competitor` 是体育赛事的），按名字或向量挑必然撞上。这条该记进本文的成本项。
-
-**开放问题的现状**：
-- 混装准确率——**工具就位、对照未跑**。`run.mjs --packs` 走真实冷启动路径，`truth/` 里仍只有 pharma / tech。
-- schema.org 面向网页——仍然如此。README 把「按行业要包」做成了 issue 模板链接，把这条缺口转成了用户输入通道。
-- 中文标签——**变严重了**。种子那 14 个带中文名的关系没了，五个包全英文，所以今天一个中文库拿到的是**纯英文本体**。
-  [0004](0004-language-and-localization.md) 的分工在这里的实际结果是：`ontology_lang = zh` 只影响将来由 LLM 提案长出来的词，对已装的包一个字不动，且没有任何地方提示这一点。
-- 起点规模——未研究。`MIN_DOCS = 2`、`MIN_SIGNALS = 3` 全部没随起点从 10 变 1500 而调。
-
-## 开放问题
-
-- **混装的抽取准确率没人测过。** 0006 的数据是单一本体下的。全选之后本体约 2400 类，
-  按块检索会同时召回 `org:role` 与 `schema:role`。0006 的预算保证**塞得下**，
-  但塞得下不等于**选得准**。这是本篇最大的未知，应在实施前用 `scripts/bench/` 补一组对照。
-- **schema.org 面向网页内容**（Recipe、JobPosting、Event），企业语料的"合同""审批"
-  "供应商资质"它没有。它是好的冷启动底座，不是终点——0007 的增长回路仍然必要，
-  只是起点从 10 变成 1500。
-- **中文标签**：schema.org 与所有候选包都只有英文。我们 10 个种子是带中文名的
-  （`produces` → 出品）。1500 个属性的中文化不可能手工做，也不该机器翻——
-  `rdfs:label` 是模型读的令牌，译错比不译更糟。[0004](0004-language-and-localization.md)
-  定的分工在这里够不够用，待查。
-- **起点规模本身是个变量。** 0007 的死路里那条 Snowball 实测顺带证明了这点：
-  词表从 10 涨到 629，匹配行为会质变（捞回 49 次 → 18 次）。没人正面研究过
-  "从 1500 个词起步"对采纳回路意味着什么——高频提议还会提议什么？
+- **Mixed-pack extraction accuracy is untested.** 0006 measured one ontology; all packs
+  together are about 2400 classes, and chunk retrieval recalls `org:role` and `schema:role`
+  side by side. Fitting the budget is not picking right. `run.mjs --packs` runs the real
+  cold-start path, but `truth/` still holds only pharma and tech.
+- **schema.org is web-facing** (Recipe, JobPosting, Event); enterprise "contract",
+  "approval", "supplier qualification" are absent. 0007's growth loop stays, starting from
+  1500 instead of 10; the README turns "packs by industry" into an issue-template link.
+- **Chinese labels**, worse since the 14 Chinese-named seed relations left: a Chinese KB now
+  gets a purely English ontology, `ontology_lang = zh` affects only terms the LLM proposes
+  later, and nothing tells the user. 1500 properties cannot be translated by hand and should
+  not be machine-translated — `rdfs:label` is a token the model reads, and a wrong label is
+  worse than none.
+- **Starting scale is a variable.** 0007's Snowball run showed that growing the vocabulary
+  from 10 to 629 changes matching (49 recalls → 18). Nobody has studied what starting at
+  1500 does to the adoption loop; `MIN_DOCS = 2` and `MIN_SIGNALS = 3` were never retuned.

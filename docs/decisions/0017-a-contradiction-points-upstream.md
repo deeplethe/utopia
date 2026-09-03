@@ -123,8 +123,8 @@ chain. Here a person sees "the engine could have drawn this edge, and what stopp
 
 **Edges on the graph**:
 
-- A contested assertion switches to the **alert colour**, edge and all, with no reliance on
-  a node ring. The request was explicit: a ring sits on the node while the edge stays grey,
+- A contested assertion switches to the **alert color**, edge and all, with no reliance on
+  a node ring. The request was explicit: a ring sits on the node while the edge stays gray,
   and peripheral vision cannot tell them apart.
 - A blocked derivation is drawn as a **ghost edge**: the same hue mixed toward `EDGE_DIM`
   (under premultiplied blending alpha cannot darken an edge; only the RGB can be mixed — see
@@ -133,14 +133,14 @@ chain. Here a person sees "the engine could have drawn this edge, and what stopp
   program is introduced for this.
 - The hover label chip gets a "⚠" prefix, and the tooltip states the dispute.
 
-**Colour**: one new token, `--u-contest`, set to **#ff6a3d** (hot coral orange). It has to
-stand apart from three colours already in use: derived edges are gold
+**Color**: one new token, `--u-contest`, set to **#ff6a3d** (hot coral orange). It has to
+stand apart from three colors already in use: derived edges are gold
 (`rgb(231,197,124)`), warning chips are amber (`--u-warn` #f2b66d, too close to gold to
-double as an edge colour), and danger is pink (`--u-danger` #ff9daf, reserved for
+double as an edge color), and danger is pink (`--u-danger` #ff9daf, reserved for
 destructive actions). Coral orange is bright enough on the dark ground, its hue is far from
-all three, and it is no common type colour (the type palette leans blue, green and violet).
-Edge colour `rgba(255,106,61,0.55)`; ghost edge `lerp(#ff6a3d, EDGE_DIM, 0.55)`. This is
-the only new colour; chips on the Ontology and Review pages use the same token.
+all three, and it is no common type color (the type palette leans blue, green and violet).
+Edge color `rgba(255,106,61,0.55)`; ghost edge `lerp(#ff6a3d, EDGE_DIM, 0.55)`. This is
+the only new color; chips on the Ontology and Review pages use the same token.
 
 ### 4. Data
 
@@ -196,7 +196,7 @@ B1 (#227) merges first after a rebase; B2a branches from it.
   thousand.
 - **Granularity of `accepted`**: per pair (one derivation against one assertion). An
   assertion hit by several derivations needs several clicks; aggregating the exemption per
-  assertion would generalise "this axiom does not apply to this assertion" too far. Per
+  assertion would generalize "this axiom does not apply to this assertion" too far. Per
   pair first, measure later.
 - **Could ghost edges be too many?** Their number is bounded by the (capped) violation
   count, so it should stay manageable; failing that, draw them only when a related node is
