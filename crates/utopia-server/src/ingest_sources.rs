@@ -8,6 +8,7 @@ use crate::state::AppState;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use utopia_core::models::Source;
+use utopia_core::models::SourceKind;
 use uuid::Uuid;
 
 /// 单次同步的新文档上限（防超长 feed/URL 列表拖垮任务）
@@ -48,17 +49,23 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
     let run_id = utopia_store::sources::start_run(&state.pool, source_id).await?;
     state.emit_source(source.kb_id);
 
-    let outcome = match source.kind.as_str() {
-        "url" => sync_urls(state, &source).await,
-        "rss" => sync_rss(state, &source).await,
-        "custom" => sync_custom(state, &source).await,
-        "github_issues" => sync_github_issues(state, &source).await,
-        "jira_issues" => sync_jira_issues(state, &source).await,
-        "s3" | "azure_blob" | "gcs" => sync_object_storage(state, &source).await,
-        "webdav" => sync_webdav(state, &source).await,
-        "notion" => sync_notion(state, &source).await,
-        // folder / api 无拉取语义
-        _ => Ok(SyncStats::default()),
+    // 按枚举穷举：加一种来源就得在这里决定它怎么同步，编译器不放过漏掉的那一支
+    let outcome = match SourceKind::parse(&source.kind) {
+        Some(SourceKind::Url) => sync_urls(state, &source).await,
+        Some(SourceKind::Rss) => sync_rss(state, &source).await,
+        Some(SourceKind::Custom) => sync_custom(state, &source).await,
+        Some(SourceKind::GithubIssues) => sync_github_issues(state, &source).await,
+        Some(SourceKind::JiraIssues) => sync_jira_issues(state, &source).await,
+        Some(SourceKind::S3 | SourceKind::AzureBlob | SourceKind::Gcs) => {
+            sync_object_storage(state, &source).await
+        }
+        Some(SourceKind::Webdav) => sync_webdav(state, &source).await,
+        Some(SourceKind::Notion) => sync_notion(state, &source).await,
+        // 被动容器：folder / api / memory / upload 没有拉取语义
+        Some(SourceKind::Folder | SourceKind::Api | SourceKind::Memory | SourceKind::Upload) => {
+            Ok(SyncStats::default())
+        }
+        None => Err(anyhow::anyhow!("unknown source kind `{}`", source.kind)),
     };
 
     match outcome {

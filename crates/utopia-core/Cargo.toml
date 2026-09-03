@@ -14,3 +14,4 @@ chrono.workspace = true
 sqlx.workspace = true
 figment.workspace = true
 pgvector.workspace = true
+strum.workspace = true

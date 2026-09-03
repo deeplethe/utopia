@@ -1,4 +1,5 @@
 /* 来源栏（"来源即文件夹"）：Library 与 DocViewer 共用的左侧导航。 */
+import type { SourceKind } from "../sourceKinds";
 import { useQuery } from "@tanstack/react-query";
 import {
   Archive,
@@ -59,7 +60,8 @@ export const SOURCE_ICONS: Record<string, LucideIcon> = {
   users: Users,
 };
 
-export const KIND_ICON = {
+// 按 SourceKind 键全：加一种来源没配图标，tsc 就红
+export const KIND_ICON: Record<SourceKind, LucideIcon> = {
   folder: FolderOpen,
   url: Globe,
   rss: Rss,
@@ -74,7 +76,7 @@ export const KIND_ICON = {
   notion: Notebook,
   memory: Brain,
   upload: Upload,
-} as const;
+};
 
 /** 有拉取/同步语义的来源类型（folder/api 无同步概念） */
 export const SYNCING_KINDS = new Set([

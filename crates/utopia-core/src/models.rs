@@ -165,6 +165,67 @@ impl Source {
     }
 }
 
+/// 来源的种类。**一处定义，三处消费**：创建时的白名单、同步时的分派（按枚举穷举匹配，
+/// 加一种就得决定它怎么同步）、前端的下拉框（`web/src/sourceKinds.ts`，由
+/// `utopia-store` 的测试对表）。
+///
+/// 此前后端两张手写清单各自演进：五种连接器加了同步分支、进了界面，却没进创建的
+/// 白名单，界面上选得到、建的时候报「kind must be one of…」（#247）。变体顺序就是
+/// 对话框里的顺序；字符串形式由 strum 按 snake_case 生成，不再手写
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::EnumIter,
+    strum::IntoStaticStr,
+    strum::EnumString,
+)]
+#[strum(serialize_all = "snake_case")]
+pub enum SourceKind {
+    Folder,
+    Url,
+    Rss,
+    GithubIssues,
+    JiraIssues,
+    S3,
+    AzureBlob,
+    Gcs,
+    Webdav,
+    Notion,
+    Api,
+    Custom,
+    /// 每个库自带的记忆来源，不可建不可删（0015）
+    Memory,
+    /// 老数据里 `sources.kind` 的默认值，没有对应的界面
+    Upload,
+}
+
+impl SourceKind {
+    pub fn as_str(self) -> &'static str {
+        self.into()
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        s.parse().ok()
+    }
+
+    pub fn all() -> impl Iterator<Item = Self> {
+        <Self as strum::IntoEnumIterator>::iter()
+    }
+
+    /// 人能从界面建的：`memory` 与 `upload` 之外的全部
+    pub fn creatable_by_hand(self) -> bool {
+        !matches!(self, Self::Memory | Self::Upload)
+    }
+
+    pub fn creatable() -> impl Iterator<Item = Self> {
+        Self::all().filter(|k| k.creatable_by_hand())
+    }
+}
+
 /// 来源同步运行记录（渠道审计历史）。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct SyncRun {

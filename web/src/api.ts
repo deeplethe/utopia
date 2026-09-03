@@ -1,3 +1,4 @@
+import type { SourceKind } from "./sourceKinds";
 import { S, lang } from "./i18n";
 
 export class ApiError extends Error {
@@ -179,21 +180,7 @@ export interface ExtractionDrop {
 
 export interface SourceView {
   id: string;
-  kind:
-    | "folder"
-    | "url"
-    | "rss"
-    | "api"
-    | "custom"
-    | "github_issues"
-    | "jira_issues"
-    | "s3"
-    | "azure_blob"
-    | "gcs"
-    | "webdav"
-    | "notion"
-    | "memory"
-    | "upload";
+  kind: SourceKind;
   name: string;
   config: {
     urls?: string[];

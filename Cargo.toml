@@ -41,6 +41,8 @@ dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 flate2 = "1"
+# 枚举的字符串化与遍历（来源种类 `SourceKind`）——手写两份清单的漂移就是 #247
+strum = { version = "0.27", features = ["derive"] }
 
 # Phase 1: 摄入/检索/LLM
 utopia-ingest = { path = "crates/utopia-ingest" }

@@ -14,6 +14,10 @@ import {
 } from "lucide-react";
 import { api, type Doc, type ExtractionDrop, type SourceView } from "../api";
 import { S } from "../i18n";
+import {
+  CREATABLE_SOURCE_KINDS,
+  type CreatableSourceKind,
+} from "../sourceKinds";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
 import { Chip, type ChipTone, DangerConfirm, Loading, Pager } from "../ui";
@@ -1267,20 +1271,7 @@ function SourceModal({
   /** isApi=true 时父级紧接着打开密钥弹窗 */
   onDone: (id?: string, isApi?: boolean) => void;
 }) {
-  const [kind, setKind] = useState<
-    | "folder"
-    | "url"
-    | "rss"
-    | "custom"
-    | "api"
-    | "github_issues"
-    | "jira_issues"
-    | "s3"
-    | "azure_blob"
-    | "gcs"
-    | "webdav"
-    | "notion"
-  >("folder");
+  const [kind, setKind] = useState<CreatableSourceKind>("folder");
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<string | null>(null);
   const [urls, setUrls] = useState("");
@@ -1447,22 +1438,7 @@ function SourceModal({
         <div className="px-5 py-4">
           {/* 类型 */}
           <div className="flex gap-2 mb-2">
-            {(
-              [
-                "folder",
-                "url",
-                "rss",
-                "github_issues",
-                "jira_issues",
-                "s3",
-                "azure_blob",
-                "gcs",
-                "webdav",
-                "notion",
-                "api",
-                "custom",
-              ] as const
-            ).map((k) => {
+            {CREATABLE_SOURCE_KINDS.map((k) => {
               const Icon = KIND_ICON[k];
               return (
                 <button
