@@ -32,12 +32,18 @@ use crate::state::AppState;
 /// 规范要求服务端回自己支持的版本，由客户端决定接不接受
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
-/// 这一版放出去的工具。**只读四个**（0014）：
+/// 这一版放出去的工具。**只读五个**（0014）：
 ///
 /// `query_data` 对生产库跑 SQL，`remember` 往账本里写，两者各自还有没答完的
 /// 问题——外部 agent 写进来的事实挂什么证据、跑 SQL 的审计怎么记。先把身份
 /// 这条路走通。
-const EXPOSED: [&str; 4] = ["search_chunks", "search_docs", "find_entities", "changes"];
+const EXPOSED: [&str; 5] = [
+    "search_chunks",
+    "get_document",
+    "search_docs",
+    "find_entities",
+    "changes",
+];
 /// `entity_facts` 也在内，单列是因为上面那个数组要定长
 const EXPOSED_EXTRA: &str = "entity_facts";
 

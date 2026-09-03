@@ -157,12 +157,13 @@ fn check_call(
             ),
         ));
     };
-    let required = tools
+    let function = tools
         .as_array()
         .into_iter()
         .flatten()
         .find(|t| t["function"]["name"] == name)
-        .and_then(|t| t["function"]["parameters"]["required"].as_array());
+        .map(|t| &t["function"]);
+    let required = function.and_then(|f| f["parameters"]["required"].as_array());
     for key in required.into_iter().flatten().filter_map(|k| k.as_str()) {
         // 空串与 null 都算没给：`{"query": ""}` 检索出来的东西与问题无关，
         // 而它同样会显示成一条正常的轨迹
@@ -177,6 +178,24 @@ fn check_call(
                 format!(
                     "{name} needs `{key}`, and it was missing or empty, so the call was not \
                      run. Call it again with `{key}` set."
+                ),
+            ));
+        }
+        // 判据同样取自工具表：schema 里写了 `format: uuid` 的参数，格式也在这一关挡。
+        // 编出来的 id 到了工具里只能回「本库没有这篇文档」，模型会把它读成
+        // 「库里真的没有」而放弃——那是又一个看起来没问题的错误答案
+        let is_uuid =
+            function.is_some_and(|f| f["parameters"]["properties"][key]["format"] == "uuid");
+        if is_uuid
+            && args[key]
+                .as_str()
+                .is_none_or(|s| s.trim().parse::<Uuid>().is_err())
+        {
+            return Err(refuse(
+                &format!("invalid {key}"),
+                format!(
+                    "{name} needs `{key}` to be a uuid returned by another tool, and it was \
+                     not, so the call was not run. Look the id up first, then call it again."
                 ),
             ));
         }
@@ -203,7 +222,10 @@ pub(super) fn base_tools() -> serde_json::Value {
             "function": {
                 "name": "search_chunks",
                 "description": "Full-text + semantic search over the knowledge base documents. \
-                    Returns numbered source excerpts you can cite as [n].",
+                    Returns numbered source excerpts you can cite as [n], each with the \
+                    document_id it came from. Excerpts are cut short and only the best-matching \
+                    sections come back, so when the answer may sit elsewhere in a hit, call \
+                    get_document with that document_id to read the whole document.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -216,14 +238,33 @@ pub(super) fn base_tools() -> serde_json::Value {
         {
             "type": "function",
             "function": {
+                "name": "get_document",
+                "description": "Read the full text of ONE knowledge base document, all sections \
+                    in order, by the document_id shown in search_chunks results. Use it whenever \
+                    a search hit looks like the right document but the excerpt does not contain \
+                    the answer — action items, decisions and lists usually sit past the excerpt \
+                    or in a section that did not match the query.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "document_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "Document id (uuid) from a search_chunks result line."
+                        }
+                    },
+                    "required": ["document_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "search_docs",
-                "description": "Search Utopia's own user manual (the Charter): how the platform \
-                    itself works — sources and ingestion, sync semantics (missing markers, \
-                    tombstones, versions), the knowledge graph and review flow, roles and \
-                    permissions, settings. Use ONLY for questions about using or understanding \
-                    Utopia itself, or to explain platform concepts that appear in other tool \
-                    results (e.g. why a document is marked missing). NEVER use it to answer \
-                    questions about the content stored in the knowledge base.",
+                "description": "Search the Utopia product manual (the \"Utopia Charter\") — how \
+                    the platform itself works (ingestion and sync, missing markers and versions, \
+                    the graph and review flow, roles, settings) — and never the user's own \
+                    documents, which live in search_chunks.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -308,9 +349,12 @@ pub(super) fn base_tools() -> serde_json::Value {
 }
 
 const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowledge platform. \
-    You have tools: search_chunks (document search), find_entities, entity_facts and \
-    changes (a bi-temporal knowledge graph), and search_docs (Utopia's own manual, the \
-    Charter).\n\
+    You have tools: search_chunks (document search) and get_document (the full text of one \
+    document found by search), find_entities, entity_facts and changes (a bi-temporal \
+    knowledge graph), and search_docs (Utopia's own manual, the Charter).\n\
+    search_chunks returns short excerpts of the best-matching sections only. When a hit is \
+    clearly the right document but the excerpt does not carry the answer, read the whole \
+    document with get_document before saying the knowledge base does not have it.\n\
     The graph has TWO independent time axes, and each graph tool reads exactly one:\n\
     - World time — when something was true. Read with entity_facts (`at` = as of that date).\n\
     - Record time — when we came to believe it, and when we revised it. Read with changes.\n\
@@ -1016,6 +1060,37 @@ mod tests {
         )
         .expect("必填给了就该放行");
         assert_eq!(args["at"], "2026-03-15", "可选参数不能在这一关被吃掉");
+    }
+
+    /// 全文只能按 id 读，而 id 是模型从检索结果里抄来的——抄错、抄漏
+    /// 都得在这里停住
+    #[test]
+    fn get_document_without_an_id_does_not_run() {
+        let tools = tools_schema(false, &[]);
+        let err = check_call(&tools, "get_document", "{}").expect_err("缺 document_id 必须拒绝");
+        assert_eq!(err.1["detail"], "missing document_id");
+    }
+
+    /// 不是 uuid 的 id 到了工具里只能回「本库没有这篇文档」——模型会把它读成
+    /// 「库里真的没有」而收手，于是一次抄错的 id 变成一个否定的答案
+    #[test]
+    fn a_document_id_that_is_not_a_uuid_does_not_run() {
+        let tools = tools_schema(false, &[]);
+        for raw in [
+            "{\"document_id\": \"Notes- 'Scrum' 3 Sept 2026.txt\"}",
+            "{\"document_id\": \"1f8ac10b-58cc-4372\"}",
+        ] {
+            let Err(err) = check_call(&tools, "get_document", raw) else {
+                panic!("{raw} 应当被拒");
+            };
+            assert_eq!(err.1["detail"], "invalid document_id", "{raw}");
+        }
+        check_call(
+            &tools,
+            "get_document",
+            "{\"document_id\": \"1f8ac10b-58cc-4372-a567-0e02b2c3d479\"}",
+        )
+        .expect("真的 uuid 就该放行");
     }
 
     /// `changes` 早就在自己那一支里拒绝缺失的 `since`——**它是唯一做对的一个**。

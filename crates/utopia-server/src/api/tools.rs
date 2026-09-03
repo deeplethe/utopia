@@ -17,6 +17,10 @@ use crate::state::AppState;
 
 const SEARCH_TOP_K: usize = 6;
 const TOOL_CHUNK_CHARS: usize = 800;
+/// `get_document` 一次最多回多少字。检索那边的 800 字是为了让六条命中都装得下，
+/// 这边只有一篇文档，而问的人已经知道要读哪一篇——截在答案前面才是这个工具
+/// 要消灭的毛病
+const DOCUMENT_CHARS: usize = 24_000;
 /// 一次 changes 最多回多少条。刚灌完的库里 asserted 是成百上千条，全发出去
 /// 只会把上下文填满而不增加信息——有信息量的是 corrected/rejected，那类事件
 /// 本来就稀少。截断时 detail 写 "40+"，模型据此知道该收窄窗口
@@ -64,6 +68,7 @@ pub async fn dispatch(
 ) -> ToolResult {
     match name {
         "search_chunks" => search_chunks(ctx, sink, args).await,
+        "get_document" => get_document(ctx, sink, args).await,
         "search_docs" => search_docs(ctx, sink, args).await,
         "find_entities" => find_entities(ctx, sink, args).await,
         "entity_facts" => entity_facts(ctx, args).await,
@@ -104,10 +109,12 @@ pub async fn search_chunks(
     let mut lines = Vec::new();
     for c in &chunks {
         let n = cite(sink, c.id.to_string(), |n| source_json(n, c));
+        // 行里带 document_id：命中被切在 800 字上时，模型得有办法把整篇要回去
         lines.push(format!(
-            "[{n}] \"{}\" section {}:\n{}",
+            "[{n}] \"{}\" section {} (document_id: {}):\n{}",
             c.filename,
             c.seq + 1,
+            c.document_id,
             truncate(&c.text, TOOL_CHUNK_CHARS)
         ));
     }
@@ -119,6 +126,89 @@ pub async fn search_chunks(
     (
         text,
         json!({ "kind": "search", "label": q, "detail": format!("{} sources", chunks.len()) }),
+    )
+}
+
+/// 一篇文档的全文。**search_chunks 够不到的东西全在这里**：它只回前六条命中、
+/// 每条切在 800 字上，答案落在第 801 字或落在没排上的那一块时，检索本身没错，
+/// 错在没有第二步。
+pub async fn get_document(
+    ctx: &ToolCtx<'_>,
+    sink: &mut ToolSink,
+    args: &serde_json::Value,
+) -> ToolResult {
+    let refuse = |detail: &str| {
+        (
+            "No document with that id in this knowledge base.".to_string(),
+            json!({ "kind": "document", "label": "?", "detail": detail }),
+        )
+    };
+    let Some(id) = args["document_id"]
+        .as_str()
+        .and_then(|s| s.trim().parse::<Uuid>().ok())
+    else {
+        return refuse("invalid id");
+    };
+    // 本库之外的 id 一律当作不存在——分不出「没有」和「不给你看」才是对的
+    let Ok(Some(doc)) = utopia_store::documents::find_in_kb(&ctx.state.pool, ctx.kb_id, id).await
+    else {
+        return refuse("not found");
+    };
+    let chunks = utopia_store::documents::chunks_in_document(&ctx.state.pool, ctx.kb_id, id)
+        .await
+        .unwrap_or_default();
+
+    let mut lines = Vec::new();
+    let mut used = 0usize;
+    let mut omitted = 0usize;
+    for c in &chunks {
+        let body = c.text.trim();
+        let len = body.chars().count();
+        let room = DOCUMENT_CHARS.saturating_sub(used);
+        // 装不下的分块整块不发，也不引——发一个引证编号出去而正文不在，
+        // 界面上落成一条指不到东西的引证
+        if room == 0 {
+            omitted += len;
+            continue;
+        }
+        let body: String = if len > room {
+            omitted += len - room;
+            body.chars().take(room).collect()
+        } else {
+            body.to_string()
+        };
+        used += body.chars().count();
+        let n = cite(sink, c.id.to_string(), |n| source_json(n, c));
+        lines.push(format!(
+            "[{n}] \"{}\" section {}:\n{body}",
+            c.filename,
+            c.seq + 1
+        ));
+    }
+    if omitted > 0 {
+        lines.push(format!("… truncated, {omitted} chars omitted"));
+    }
+
+    let when = doc
+        .doc_time
+        .map(|t| t.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "no date".to_string());
+    let header = format!(
+        "\"{}\" ({when}) — {} section(s):",
+        doc.filename,
+        chunks.len()
+    );
+    let text = if lines.is_empty() {
+        format!("{header}\n(no text)")
+    } else {
+        format!("{header}\n\n{}", lines.join("\n\n"))
+    };
+    (
+        text,
+        json!({
+            "kind": "document", "label": doc.filename,
+            "detail": format!("{} sections", chunks.len()),
+        }),
     )
 }
 

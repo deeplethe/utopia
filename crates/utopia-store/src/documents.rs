@@ -167,6 +167,18 @@ pub async fn get(pool: &PgPool, id: Uuid) -> AppResult<Document> {
         .ok_or(AppError::NotFound)
 }
 
+/// 按 kb 收窄的取文档。**id 由模型给出时只能走这一支**：`get` 只按 id 查，
+/// 一个别的库的 id 照样查得到。
+pub async fn find_in_kb(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Option<Document>> {
+    Ok(
+        sqlx::query_as("SELECT * FROM documents WHERE id = $1 AND kb_id = $2")
+            .bind(id)
+            .bind(kb_id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
 /// 按来源内逻辑身份查文档（同步三路判定用）。
 pub async fn find_by_external_key(
     pool: &PgPool,
@@ -659,6 +671,24 @@ pub async fn chunks_by_ids(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResul
     let mut by_id: std::collections::HashMap<Uuid, ChunkView> =
         rows.into_iter().map(|c| (c.id, c)).collect();
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+/// 一篇文档的现行分块（带文档名），按 seq 排。kb_id 进 WHERE 而不是查回来再比。
+pub async fn chunks_in_document(
+    pool: &PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+) -> AppResult<Vec<ChunkView>> {
+    Ok(sqlx::query_as(
+        "SELECT c.id, c.document_id, c.seq, c.text, d.filename
+         FROM chunks c JOIN documents d ON d.id = c.document_id
+         WHERE c.kb_id = $1 AND c.document_id = $2 AND c.superseded_at IS NULL
+         ORDER BY c.seq",
+    )
+    .bind(kb_id)
+    .bind(document_id)
+    .fetch_all(pool)
+    .await?)
 }
 
 /// 批量排队全量重抽：ready 文档清增量标记 → graph_status=queued → 建抽取任务，
