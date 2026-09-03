@@ -128,9 +128,9 @@ Please read [SECURITY.md](SECURITY.md) before exposing it to the public internet
 
 ## Community
 
-- 💬 [Discussions](https://github.com/deeplethe/utopia/discussions): discussion, experience reports and reviews
-- 🐛 [Issues](https://github.com/deeplethe/utopia/issues): any bug, design question or request
-- 🤝 [Contributing](CONTRIBUTING.md): dev setup, the checks to run before pushing, DCO sign-off
+- 💬 [Discussions](https://github.com/deeplethe/utopia/discussions): discuss the project, share your experience, and leave feedback
+- 🐛 [Issues](https://github.com/deeplethe/utopia/issues): report bugs, ask design questions, and submit feature requests
+- 🤝 [Contributing](CONTRIBUTING.md): development setup, pre-push checks, and DCO sign-off
 - 🔌 [Ontology2SQL](https://github.com/deeplethe/ontology2sql): the ontology-driven text-to-SQL method referenced above
 
 ## License
