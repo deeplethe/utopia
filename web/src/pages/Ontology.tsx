@@ -7,6 +7,7 @@ import { Link } from "@tanstack/react-router";
 import {
   ChevronRight,
   Inbox,
+  Network,
   Plus,
   Search,
   Upload,
@@ -26,6 +27,7 @@ import {
 import { S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
+import { OntologySchemaGraph } from "./OntologySchemaGraph";
 import {
   Button,
   Chip,
@@ -62,6 +64,9 @@ type Sel =
   // 类型消解：把「大致对」的类换成更具体的那个
   | { kind: "refine" }
   | { kind: "import" }
+  // 模式图：本体本身的结构（类、继承、关系），不是表单意义上的「选中一项」——
+  // 但复用同一个 sel 状态,右侧工作区照旧按它切换,不必另起一层状态
+  | { kind: "schema" }
   | null;
 
 export function Ontology() {
@@ -130,6 +135,23 @@ export function Ontology() {
               onChange={(e) => setFilter(e.target.value)}
             />
           </div>
+        </div>
+        {/* 模式图：本体结构的主视图,不是 Import/Refine/Unmatched 那种管理性操作——
+            放在筛选框正下方、列表上方,与那三个钉在底部的按钮拉开位置,
+            视觉上就说明了「这是浏览本体的另一种方式」而不是「这是一项维护动作」 */}
+        <div className="px-3 pb-2">
+          <button
+            onClick={() => setSel({ kind: "schema" })}
+            className={cn(
+              "w-full flex items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
+              sel?.kind === "schema"
+                ? "u-nav-active"
+                : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
+            )}
+          >
+            <Network size={14} className="text-neutral-500" />
+            {S.ontology.schemaDiagram}
+          </button>
         </div>
         {/* 分段切换：与登录页模式切换/日程选择器同一语汇（bg-white/5 容器 + 激活反白）；
             过滤时列表例外：两节混排同时给出命中 */}
@@ -272,118 +294,131 @@ export function Ontology() {
         </button>
       </aside>
 
-      {/* 右侧：详情。选中类时表单 + 实例列表双栏铺开，提高宽屏利用率 */}
-      <div className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
-        {/* 放宽到 6xl 供三列铺开；misses/关系/概览各自带 max-w-xl 内衬不受影响 */}
-        <div className="max-w-6xl">
-          {sel?.kind === "import" ? (
-            <div className="max-w-xl">
-              <ImportPanel kbId={kb.id} onChanged={refresh} onError={onError} />
-            </div>
-          ) : sel?.kind === "refine" ? (
-            <div className="max-w-2xl">
-              <RefinePanel kbId={kb.id} onChanged={refresh} onError={onError} />
-            </div>
-          ) : sel?.kind === "misses" ? (
-            <div className="max-w-xl">
-              <MissesPanel
-                kbId={kb.id}
-                misses={misses}
-                dismissedMisses={dismissed_misses ?? []}
-                onChanged={refresh}
-                onError={onError}
-              />
-            </div>
-          ) : sel?.kind === "new-class" || selectedClass ? (
-            /* lg 两列（表单 | 属性+实例堆叠）；xl 三列并排（包装器 xl:contents 解散入栅格） */
-            <div className="grid gap-4 items-start lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)_minmax(0,1fr)]">
-              <div className="glass rounded-xl p-4">
-                <ClassForm
-                  key={
-                    selectedClass?.id ??
-                    `new-${sel?.kind === "new-class" ? sel.parentId : "root"}`
-                  }
+      {/* 右侧：详情。选中类时表单 + 实例列表双栏铺开，提高宽屏利用率。
+          模式图单独给整块——它是个 sigma 画布，要满高不参与这里的纵向滚动,
+          跟 import/refine/misses/表单那几个不是同一种布局需求 */}
+      {sel?.kind === "schema" ? (
+        <div className="flex-1 min-w-0">
+          <OntologySchemaGraph
+            entityTypes={entity_types}
+            relationTypes={relation_types}
+            onEditClass={(id) => setSel({ kind: "class", id })}
+            onEditRelation={(id) => setSel({ kind: "relation", id })}
+          />
+        </div>
+      ) : (
+        <div className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
+          {/* 放宽到 6xl 供三列铺开；misses/关系/概览各自带 max-w-xl 内衬不受影响 */}
+          <div className="max-w-6xl">
+            {sel?.kind === "import" ? (
+              <div className="max-w-xl">
+                <ImportPanel kbId={kb.id} onChanged={refresh} onError={onError} />
+              </div>
+            ) : sel?.kind === "refine" ? (
+              <div className="max-w-2xl">
+                <RefinePanel kbId={kb.id} onChanged={refresh} onError={onError} />
+              </div>
+            ) : sel?.kind === "misses" ? (
+              <div className="max-w-xl">
+                <MissesPanel
                   kbId={kb.id}
-                  existing={selectedClass}
-                  parentId={
-                    sel?.kind === "new-class"
-                      ? sel.parentId
-                      : (selectedClass?.primary_parent ?? null)
-                  }
+                  misses={misses}
+                  dismissedMisses={dismissed_misses ?? []}
+                  onChanged={refresh}
+                  onError={onError}
+                />
+              </div>
+            ) : sel?.kind === "new-class" || selectedClass ? (
+              /* lg 两列（表单 | 属性+实例堆叠）；xl 三列并排（包装器 xl:contents 解散入栅格） */
+              <div className="grid gap-4 items-start lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)_minmax(0,1fr)]">
+                <div className="glass rounded-xl p-4">
+                  <ClassForm
+                    key={
+                      selectedClass?.id ??
+                      `new-${sel?.kind === "new-class" ? sel.parentId : "root"}`
+                    }
+                    kbId={kb.id}
+                    existing={selectedClass}
+                    parentId={
+                      sel?.kind === "new-class"
+                        ? sel.parentId
+                        : (selectedClass?.primary_parent ?? null)
+                    }
+                    allTypes={entity_types}
+                    onNewSub={
+                      selectedClass
+                        ? () =>
+                            setSel({
+                              kind: "new-class",
+                              parentId: selectedClass.id,
+                            })
+                        : undefined
+                    }
+                    onDone={(createdId) => {
+                      // 新建成功即选中它：立刻能看到、能继续编辑
+                      if (sel?.kind === "new-class")
+                        setSel(
+                          createdId ? { kind: "class", id: createdId } : null,
+                        );
+                      refresh();
+                    }}
+                    onError={onError}
+                  />
+                </div>
+                {/* lg 右列堆叠属性+实例；xl 解散为两个独立栅格列 */}
+                {selectedClass && (
+                  <div className="grid gap-4 items-start xl:contents">
+                    <AttributesCard
+                      kbId={kb.id}
+                      type={selectedClass}
+                      attributes={relation_types.filter(
+                        (r) =>
+                          r.kind === "attribute" &&
+                          r.domains.includes(selectedClass.id),
+                      )}
+                      onChanged={refresh}
+                      onError={onError}
+                    />
+                    <InstancesCard kbId={kb.id} type={selectedClass} />
+                  </div>
+                )}
+              </div>
+            ) : sel?.kind === "new-relation" || selectedProp ? (
+              <div className="glass rounded-xl p-4 max-w-xl">
+                <PropertyForm
+                  key={selectedProp?.id ?? "new"}
+                  kbId={kb.id}
+                  existing={selectedProp}
                   allTypes={entity_types}
-                  onNewSub={
-                    selectedClass
-                      ? () =>
-                          setSel({
-                            kind: "new-class",
-                            parentId: selectedClass.id,
-                          })
-                      : undefined
-                  }
+                  allRelations={relations}
                   onDone={(createdId) => {
-                    // 新建成功即选中它：立刻能看到、能继续编辑
-                    if (sel?.kind === "new-class")
+                    if (sel?.kind === "new-relation")
                       setSel(
-                        createdId ? { kind: "class", id: createdId } : null,
+                        createdId ? { kind: "relation", id: createdId } : null,
                       );
                     refresh();
                   }}
                   onError={onError}
                 />
               </div>
-              {/* lg 右列堆叠属性+实例；xl 解散为两个独立栅格列 */}
-              {selectedClass && (
-                <div className="grid gap-4 items-start xl:contents">
-                  <AttributesCard
-                    kbId={kb.id}
-                    type={selectedClass}
-                    attributes={relation_types.filter(
-                      (r) =>
-                        r.kind === "attribute" &&
-                        r.domains.includes(selectedClass.id),
-                    )}
-                    onChanged={refresh}
-                    onError={onError}
-                  />
-                  <InstancesCard kbId={kb.id} type={selectedClass} />
-                </div>
-              )}
-            </div>
-          ) : sel?.kind === "new-relation" || selectedProp ? (
-            <div className="glass rounded-xl p-4 max-w-xl">
-              <PropertyForm
-                key={selectedProp?.id ?? "new"}
-                kbId={kb.id}
-                existing={selectedProp}
-                allTypes={entity_types}
-                allRelations={relations}
-                onDone={(createdId) => {
-                  if (sel?.kind === "new-relation")
-                    setSel(
-                      createdId ? { kind: "relation", id: createdId } : null,
-                    );
-                  refresh();
-                }}
-                onError={onError}
-              />
-            </div>
-          ) : (
-            /* 概览：未选中任何条目 */
-            <div className="glass rounded-xl p-6 max-w-xl">
-              <PageTitle className="mb-1">{S.ontology.title}</PageTitle>
-              <p className="text-xs text-neutral-500 u-num">
-                {S.ontology.overviewStats(
-                  entity_types.length,
-                  relations.length,
-                )}
-              </p>
-              <p className="mt-3 text-sm text-neutral-400">
-                {S.ontology.overviewHint}
-              </p>
-            </div>
-          )}
+            ) : (
+              /* 概览：未选中任何条目 */
+              <div className="glass rounded-xl p-6 max-w-xl">
+                <PageTitle className="mb-1">{S.ontology.title}</PageTitle>
+                <p className="text-xs text-neutral-500 u-num">
+                  {S.ontology.overviewStats(
+                    entity_types.length,
+                    relations.length,
+                  )}
+                </p>
+                <p className="mt-3 text-sm text-neutral-400">
+                  {S.ontology.overviewHint}
+                </p>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

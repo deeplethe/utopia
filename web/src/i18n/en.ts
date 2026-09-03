@@ -1204,6 +1204,22 @@ export const en = {
       `Some could not be added: ${keys.join(", ")} — the rest went through.`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
+    /* ---- Schema diagram ---- */
+    schemaDiagram: "Schema diagram",
+    schemaSearchPlaceholder: "Search schema…",
+    schemaEmpty:
+      "No schema to display yet. Add a class on the left, or import an OWL/RDFS/Turtle file to get started.",
+    schemaFitView: "Fit view",
+    schemaZoomIn: "Zoom in",
+    schemaZoomOut: "Zoom out",
+    schemaLegendInheritance: "Inheritance",
+    schemaLegendRelation: "Relations",
+    schemaLegendDisjoint: "Disjoint",
+    schemaUnscoped: (n: number) => `Unscoped properties (${n})`,
+    schemaUnscopedHint:
+      "Not limited to specific classes, so no line on the canvas would be honest. Select one to inspect or edit it.",
+    schemaEditClass: "Edit class",
+    schemaEditRelation: "Edit property",
   },
   mapping: {
     title: "Data mapping",
