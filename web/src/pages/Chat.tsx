@@ -297,7 +297,10 @@ export function Chat() {
     const handle = liveAnswer.begin(
       kb.id,
       activeId,
-      [...turns, { role: "user", content: q }, { role: "assistant", content: "" }],
+      // 从屏上正在显示的那些轮续接，而不是组件 state——流结束后内容只落在
+      // store 里，state 还是上次装 conversation 时的库内历史，用它会让
+      // 上一条回答从画面里消失
+      [...(liveHere?.turns ?? turns), { role: "user", content: q }, { role: "assistant", content: "" }],
       () => {},
     );
     const abort = streamChat(
