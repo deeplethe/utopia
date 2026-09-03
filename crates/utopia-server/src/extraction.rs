@@ -399,6 +399,33 @@ fn referenced_entity(
     ref_entities.get(reference.trim()).copied()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum NoRefNameBinding {
+    Legacy(Uuid),
+    AmbiguousHandled,
+    Missing,
+}
+
+fn no_ref_name_binding(
+    entity_ids: &HashMap<String, Uuid>,
+    handled_by_name: &HashMap<String, Vec<Uuid>>,
+    name: &str,
+) -> NoRefNameBinding {
+    let normalized = utopia_store::resolution::normalize_name(name).to_lowercase();
+    if handled_by_name
+        .get(&normalized)
+        .is_some_and(|ids| ids.len() > 1)
+    {
+        NoRefNameBinding::AmbiguousHandled
+    } else {
+        entity_ids
+            .get(name)
+            .copied()
+            .map(NoRefNameBinding::Legacy)
+            .unwrap_or(NoRefNameBinding::Missing)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn resolve_handle(
     pool: &PgPool,
@@ -408,24 +435,52 @@ async fn resolve_handle(
     ctx: Option<&[f32]>,
     response_claims: &mut HashMap<String, Vec<Uuid>>,
     handled_by_name: &mut HashMap<String, Vec<Uuid>>,
+    ambiguous_bare_cache: &mut HashMap<String, Uuid>,
     needs_adjudication: &mut bool,
     human_reviews_found: &mut bool,
 ) -> anyhow::Result<Uuid> {
     let normalized = utopia_store::resolution::normalize_name(name).to_lowercase();
-    let excluded = response_claims
+    let response_excluded = response_claims
         .get(&normalized)
         .cloned()
         .unwrap_or_default();
-    let id = resolve_uncached(
-        pool,
-        kb_id,
-        type_id,
-        name,
-        ctx,
-        &excluded,
-        needs_adjudication,
-    )
-    .await?;
+    let document_excluded = handled_by_name
+        .get(&normalized)
+        .filter(|ids| ids.len() > 1)
+        .cloned()
+        .unwrap_or_default();
+    let mut excluded = response_excluded.clone();
+    for id in &document_excluded {
+        if !excluded.contains(id) {
+            excluded.push(*id);
+        }
+    }
+    // A later response may allocate a fresh e-handle for an otherwise bare ambiguous name
+    // instead of choosing one of the supplied k-handles. That must still become/reuse C; a new
+    // response-local spelling is not permission to guess A or B.
+    let reuse_document_provisional = response_excluded.is_empty() && document_excluded.len() > 1;
+    let id = match reuse_document_provisional
+        .then(|| ambiguous_bare_cache.get(&normalized).copied())
+        .flatten()
+    {
+        Some(id) => id,
+        None => {
+            let id = resolve_uncached(
+                pool,
+                kb_id,
+                type_id,
+                name,
+                ctx,
+                &excluded,
+                needs_adjudication,
+            )
+            .await?;
+            if reuse_document_provisional {
+                ambiguous_bare_cache.insert(normalized.clone(), id);
+            }
+            id
+        }
+    };
     if create_namesake_reviews(pool, kb_id, id, &excluded).await? {
         *human_reviews_found = true;
     }
@@ -655,9 +710,14 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
             None
         };
         let lists = lists.as_ref().unwrap_or(&full);
-        let known: Vec<(String, String)> = doc_entities
+        let known: Vec<utopia_extract::KnownEntity> = doc_entities
             .iter()
-            .map(|(_, k, n)| (k.clone(), n.clone()))
+            .enumerate()
+            .map(|(index, (_, type_key, name))| utopia_extract::KnownEntity {
+                handle: format!("k{}", index + 1),
+                type_key: type_key.clone(),
+                name: name.clone(),
+            })
             .collect();
         let messages = utopia_extract::build_messages(
             &lists.types,
@@ -726,8 +786,6 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
         let mut entity_ids: HashMap<String, Uuid> = HashMap::new();
         // 名称 → 声明类型（属性 domain 校验用：salary 不能挂在 Organization 上）
         let mut entity_type_of: HashMap<String, Option<Uuid>> = HashMap::new();
-        // k-handles are regenerated for every response and map only to persistent entities
-        // already recorded from earlier chunks. UUIDs never enter the prompt.
         let mut ref_entities: HashMap<String, BoundEntity> = doc_entities
             .iter()
             .enumerate()
@@ -828,12 +886,11 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                     ctx,
                     &mut response_claims,
                     &mut handled_by_name,
+                    &mut ambiguous_bare_cache,
                     &mut needs_adjudication,
                     &mut human_reviews_found,
                 )
                 .await?;
-                // parse_response has already removed duplicate definitions, so insert cannot
-                // silently replace another entity identity here.
                 ref_entities.insert(handle.to_string(), BoundEntity { id, type_id });
                 id
             } else {
@@ -938,10 +995,36 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                 // 按 concept 解出来 domain 照样不匹配，只是从这里掉进下面那一档
                 let bound = match f.subject_ref.as_deref().map(str::trim) {
                     Some(handle) => referenced_entity(&ref_entities, handle),
-                    None => entity_ids
-                        .get(subject_name)
-                        .zip(entity_type_of.get(subject_name))
-                        .map(|(&id, &type_id)| BoundEntity { id, type_id }),
+                    None => {
+                        match no_ref_name_binding(&entity_ids, &handled_by_name, subject_name) {
+                            NoRefNameBinding::Legacy(id) => entity_type_of
+                                .get(subject_name)
+                                .copied()
+                                .map(|type_id| BoundEntity { id, type_id }),
+                            NoRefNameBinding::Missing => None,
+                            NoRefNameBinding::AmbiguousHandled => {
+                                let type_id = entity_type_of.get(subject_name).copied().flatten();
+                                touched_names.insert(
+                                    utopia_store::resolution::normalize_name(subject_name)
+                                        .to_lowercase(),
+                                );
+                                let id = resolve_bare(
+                                    &state.pool,
+                                    doc.kb_id,
+                                    type_id,
+                                    subject_name,
+                                    ctx,
+                                    &mut doc_cache,
+                                    &handled_by_name,
+                                    &mut ambiguous_bare_cache,
+                                    &mut needs_adjudication,
+                                    &mut human_reviews_found,
+                                )
+                                .await?;
+                                Some(BoundEntity { id, type_id })
+                            }
+                        }
+                    }
                 };
                 let Some(BoundEntity {
                     id: subject_id,
@@ -1274,28 +1357,30 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                         continue;
                     }
                 },
-                None => match entity_ids.get(f.subject.trim()) {
-                    Some(id) => *id,
-                    None => {
-                        touched_names.insert(
-                            utopia_store::resolution::normalize_name(f.subject.trim())
-                                .to_lowercase(),
-                        );
-                        resolve_bare(
-                            &state.pool,
-                            doc.kb_id,
-                            None,
-                            f.subject.trim(),
-                            ctx,
-                            &mut doc_cache,
-                            &handled_by_name,
-                            &mut ambiguous_bare_cache,
-                            &mut needs_adjudication,
-                            &mut human_reviews_found,
-                        )
-                        .await?
+                None => {
+                    match no_ref_name_binding(&entity_ids, &handled_by_name, f.subject.trim()) {
+                        NoRefNameBinding::Legacy(id) => id,
+                        NoRefNameBinding::AmbiguousHandled | NoRefNameBinding::Missing => {
+                            touched_names.insert(
+                                utopia_store::resolution::normalize_name(f.subject.trim())
+                                    .to_lowercase(),
+                            );
+                            resolve_bare(
+                                &state.pool,
+                                doc.kb_id,
+                                None,
+                                f.subject.trim(),
+                                ctx,
+                                &mut doc_cache,
+                                &handled_by_name,
+                                &mut ambiguous_bare_cache,
+                                &mut needs_adjudication,
+                                &mut human_reviews_found,
+                            )
+                            .await?
+                        }
                     }
-                },
+                }
             };
             let object_id = match f.object_ref.as_deref().map(str::trim) {
                 Some(handle) => match referenced_entity(&ref_entities, handle) {
@@ -1313,9 +1398,9 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                         continue;
                     }
                 },
-                None => match entity_ids.get(object_name) {
-                    Some(id) => *id,
-                    None => {
+                None => match no_ref_name_binding(&entity_ids, &handled_by_name, object_name) {
+                    NoRefNameBinding::Legacy(id) => id,
+                    NoRefNameBinding::AmbiguousHandled | NoRefNameBinding::Missing => {
                         touched_names.insert(
                             utopia_store::resolution::normalize_name(object_name).to_lowercase(),
                         );
@@ -1986,8 +2071,8 @@ mod name_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        incomplete_reason, looks_literal, referenced_entity, resolve_bare, resolve_handle,
-        BoundEntity,
+        incomplete_reason, looks_literal, no_ref_name_binding, referenced_entity, resolve_bare,
+        resolve_handle, BoundEntity, NoRefNameBinding,
     };
     use std::collections::HashMap;
     use uuid::Uuid;
@@ -2011,6 +2096,34 @@ mod tests {
         ] {
             assert!(!looks_literal(no), "{no} 不该认成字面值");
         }
+    }
+
+    #[test]
+    fn no_ref_names_bypass_legacy_map_only_after_two_handle_claims() {
+        let (a, b) = (Uuid::now_v7(), Uuid::now_v7());
+        let entity_ids = HashMap::from([("Zhang Wei".to_string(), b)]);
+        let normalized = utopia_store::resolution::normalize_name("Zhang Wei").to_lowercase();
+
+        assert_eq!(
+            no_ref_name_binding(&entity_ids, &HashMap::new(), "Zhang Wei"),
+            NoRefNameBinding::Legacy(b)
+        );
+        assert_eq!(
+            no_ref_name_binding(
+                &entity_ids,
+                &HashMap::from([(normalized.clone(), vec![a])]),
+                "Zhang Wei",
+            ),
+            NoRefNameBinding::Legacy(b)
+        );
+        assert_eq!(
+            no_ref_name_binding(
+                &entity_ids,
+                &HashMap::from([(normalized, vec![a, b])]),
+                "Zhang Wei",
+            ),
+            NoRefNameBinding::AmbiguousHandled
+        );
     }
 
     /// 这条判据存在的理由：一次网络抖动让六篇文档 60 块里只抽成 12 块，
@@ -2105,6 +2218,7 @@ mod tests {
 
             let mut response_claims = HashMap::new();
             let mut document_claims = HashMap::new();
+            let mut bare_cache = HashMap::new();
             let (mut needs_adjudication, mut human_reviews) = (false, false);
             let a = resolve_handle(
                 &pool,
@@ -2114,6 +2228,7 @@ mod tests {
                 None,
                 &mut response_claims,
                 &mut document_claims,
+                &mut bare_cache,
                 &mut needs_adjudication,
                 &mut human_reviews,
             )
@@ -2126,6 +2241,7 @@ mod tests {
                 None,
                 &mut response_claims,
                 &mut document_claims,
+                &mut bare_cache,
                 &mut needs_adjudication,
                 &mut human_reviews,
             )
@@ -2196,7 +2312,6 @@ mod tests {
             assert!(pairs.contains(&(b, platform)));
             assert!(!pairs.contains(&(a, platform)));
             assert!(!pairs.contains(&(b, finance)));
-            // This is the same single refresh operation run() performs after all chunks.
             utopia_store::resolution::refresh_disambiguators(&pool, kb, "Zhang Wei").await?;
             let labels: Vec<(Uuid, Option<String>)> = sqlx::query_as(
                 "SELECT id, disambiguator FROM entities WHERE id = ANY($1) ORDER BY id",
@@ -2208,7 +2323,14 @@ mod tests {
             assert!(labels.contains(&(b, Some("Platform Engineering".to_string()))));
 
             let mut doc_cache = HashMap::new();
-            let mut bare_cache = HashMap::new();
+            // The legacy surface map still ends on B, but a no-ref fact must not use that
+            // last-write-wins value once handles have claimed two distinct Zhang Weis.
+            let entity_ids = HashMap::from([("Zhang Wei".to_string(), b)]);
+            assert_eq!(entity_ids.get("Zhang Wei"), Some(&b));
+            assert_eq!(
+                super::no_ref_name_binding(&entity_ids, &document_claims, "Zhang Wei"),
+                super::NoRefNameBinding::AmbiguousHandled
+            );
             let c = resolve_bare(
                 &pool,
                 kb,
@@ -2220,6 +2342,16 @@ mod tests {
                 &mut bare_cache,
                 &mut needs_adjudication,
                 &mut human_reviews,
+            )
+            .await?;
+            utopia_store::graph::insert_fact(
+                &pool,
+                kb,
+                c,
+                Some(works_at),
+                finance,
+                utopia_store::graph::Validity::default(),
+                0.9,
             )
             .await?;
             let c_again = resolve_bare(
@@ -2235,11 +2367,49 @@ mod tests {
                 &mut human_reviews,
             )
             .await?;
+            utopia_store::graph::insert_fact(
+                &pool,
+                kb,
+                c_again,
+                Some(works_at),
+                platform,
+                utopia_store::graph::Validity::default(),
+                0.9,
+            )
+            .await?;
             assert_ne!(c, a);
             assert_ne!(c, b);
             assert_eq!(
                 c_again, c,
                 "later bare mentions must reuse document-local C"
+            );
+            let c_objects: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT object_id FROM facts WHERE kb_id = $1 AND subject_id = $2 ORDER BY object_id",
+            )
+            .bind(kb)
+            .bind(c)
+            .fetch_all(&pool)
+            .await?;
+            assert_eq!(c_objects.len(), 2);
+            assert!(c_objects.contains(&finance));
+            assert!(c_objects.contains(&platform));
+            let mut later_response_claims = HashMap::new();
+            let c_via_fresh_handle = resolve_handle(
+                &pool,
+                kb,
+                Some(person),
+                "Zhang Wei",
+                None,
+                &mut later_response_claims,
+                &mut document_claims,
+                &mut bare_cache,
+                &mut needs_adjudication,
+                &mut human_reviews,
+            )
+            .await?;
+            assert_eq!(
+                c_via_fresh_handle, c,
+                "a later response cannot evade A/B ambiguity by inventing a new e-handle"
             );
 
             let reviews = utopia_store::resolution::list_reviews(&pool, kb, 10, 0).await?;

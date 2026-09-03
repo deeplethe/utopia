@@ -83,6 +83,13 @@ pub struct PromptRelation {
     pub signature: String,
 }
 
+/// Response-scoped reference to a persistent entity; database UUIDs must never enter prompts.
+pub struct KnownEntity {
+    pub handle: String,
+    pub type_key: String,
+    pub name: String,
+}
+
 /// 构造抽取提示词。`types` 为 (key, label, description) 三元组；
 /// description 非空时按行列出——本体里的语义指引直接决定抽取质量。
 /// `attributes` 为调用方预排版的属性行（"person.salary (number, CNY): 月薪"）；
@@ -93,9 +100,9 @@ pub fn build_messages(
     attributes: &[String],
     doc_time: Option<&str>,
     filename: &str,
-    // 本文档前面几块已经认下的 (类型 key, 实体名)，按首次出现排序。
+    // 本文档前面几块已经认下的实体，按首次出现排序。handle 只对这次回复有效。
     // 第一块为空——那时还没有"前面"
-    known: &[(String, String)],
+    known: &[KnownEntity],
     chunk_text: &str,
 ) -> Vec<ChatMessage> {
     // **有描述时不送 label**。label 是给人看的显示名，而且它跟界面无关、
@@ -213,17 +220,28 @@ pub fn build_messages(
          {attr_section}\
          \n\
          Output format:\n\
-         {{\"entities\":[{{\"name\":\"entity name\",\"type\":\"type key\",\"specific_type\":\"what you would call it\"}}],\n\
-          \"facts\":[{{\"subject\":\"subject entity name\",\"predicate\":\"relation key\",\"object\":\"object entity name\",\n\
+         {{\"entities\":[{{\"local_id\":\"e1\",\"name\":\"entity name\",\"type\":\"type key\",\"specific_type\":\"what you would call it\"}}],\n\
+          \"facts\":[{{\"subject\":\"subject entity name\",\"subject_ref\":\"e1\",\"predicate\":\"relation key\",\"object\":\"object entity name\",\"object_ref\":\"e2\",\n\
                      \"valid_from\":\"2023-01\",\"valid_to\":null,\"confidence\":0.9,\"quote\":\"verbatim supporting quote\"}}]}}\n\
          \n\
          Rules:\n\
-         1. Use the canonical full name as written in the text, in the text's original language; \
+         1. Give every newly listed entity a local_id unique within this response (e1, e2, ...). \
+            A local_id may define at most one entity. Reuse the same local_id when this response \
+            mentions the same entity again, including abbreviations; never allocate a new handle \
+            merely because a mention repeats. Different handles mean the mentions should be \
+            tracked separately for attribution, not that their permanent identity is proven. \
+            When the text clearly describes two different entities with the same surface name, \
+            list both under different local_ids. A shared name alone neither proves sameness nor \
+            requires a split.\n\
+         1a. Use the canonical full name as written in the text, in the text's original language; \
             list each entity once. Text introduces a full name and then shortens it — \
             \"星云科技上海研究院\" becomes \"上海研究院\", \"Nebula Technologies Inc.\" becomes \
             \"Nebula\" — and both forms mean one entity, listed once under the fuller form. \
             Two names are two entities only when the text is talking about two things.\n\
-         2. Every fact's subject/object must appear in entities.\n\
+         2. Every fact keeps its name fields and uses subject_ref; relation facts also use \
+            object_ref. Each ref must be either a local_id defined exactly once in \
+            entities or a known handle supplied with this text. An entity referenced by a known \
+            handle must not be copied into entities.\n\
          3. Dates must be \"YYYY\", \"YYYY-MM\", \"YYYY-MM-DD\", or null — never invent dates.\n\
          3a. valid_to takes a third value: \"unknown\". Use it when the text says the relation \
             has ended but does not say when — \"former CEO of X\", \"stepped down\", \"left the \
@@ -285,37 +303,35 @@ const KNOWN_BUDGET_CHARS: usize = 1200;
 /// 真正会打碎缓存的是把它塞在**中间**（本体之后、规则之前），那会把规则挤出前缀。
 /// 缓存本身不归我们管——供应商开不开、报不报都由它，本部署实测 `cached=0`——
 /// 我们只负责别把它弄碎。自部署 vLLM 默认开着自动前缀缓存，那省的是算力不是钱。
-fn known_block(known: &[(String, String)]) -> String {
+fn known_block(known: &[KnownEntity]) -> String {
     if known.is_empty() {
         return String::new();
     }
-    // 按类型分组：更紧凑，而且顺带压住跨块类型漂移
-    //（同一个"沧海"在一块里是 product、另一块里是 project）
-    let mut by_type: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut lines = Vec::new();
     let mut used = 0usize;
-    for (type_key, name) in known {
-        used += name.chars().count() + 2;
+    for entity in known {
+        used += entity.handle.chars().count()
+            + entity.type_key.chars().count()
+            + entity.name.chars().count()
+            + 6;
         if used > KNOWN_BUDGET_CHARS {
             break;
         }
-        match by_type.iter_mut().find(|(k, _)| *k == type_key.as_str()) {
-            Some((_, names)) => names.push(name),
-            None => by_type.push((type_key, vec![name])),
-        }
+        lines.push(format!(
+            "  {} [{}]: {}",
+            entity.handle, entity.type_key, entity.name
+        ));
     }
-    if by_type.is_empty() {
+    if lines.is_empty() {
         return String::new();
     }
-    let lines = by_type
-        .iter()
-        .map(|(k, names)| format!("  {k}: {}", names.join(", ")))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let lines = lines.join("\n");
     format!(
         "\nAlready recorded from earlier parts of this same document:\n{lines}\n\
          \n\
-         If something in the text below refers to one of these, write that exact string as \
-         the name, and give it that same type — documents abbreviate after first mention \
+         If something in the text below refers to one of these, use its k-handle in the fact's \
+         subject_ref/object_ref, write that exact string as the name, and give it that same \
+         type — documents abbreviate after first mention \
          (\"星云科技上海研究院\" later becomes \"上海研究院\"), and the shortened form must \
          not become a second entity. If it is a different thing, name it as the text does; \
          do not force it onto this list.\n"
@@ -725,17 +741,18 @@ mod prompt_shape_tests {
     fn known_entities_stay_out_of_the_system_message() {
         // 用一个规则 1 的例子里没有的名字：规则 1 也提"星云科技上海研究院"，
         // 拿它断言等于测不出清单到底在哪条消息里
-        let known = vec![(
-            "organization".to_string(),
-            "华瑞集团智能制造研究院".to_string(),
-        )];
+        let known = vec![KnownEntity {
+            handle: "k1".into(),
+            type_key: "organization".into(),
+            name: "华瑞集团智能制造研究院".into(),
+        }];
         let msgs = build_messages(&[], &[], &[], None, "a.txt", &known, "text");
         assert_eq!(msgs[0].role, "system");
         assert!(!msgs[0].content.contains("Already recorded"));
         assert!(!msgs[0].content.contains("华瑞集团智能制造研究院"));
         assert!(msgs[1]
             .content
-            .contains("organization: 华瑞集团智能制造研究院"));
+            .contains("k1 [organization]: 华瑞集团智能制造研究院"));
     }
 
     /// 第一块没有"前面"，那一段应当完全不出现——成本为零，而不是一段空标题
@@ -748,7 +765,11 @@ mod prompt_shape_tests {
     /// 反向护栏必须在：给了参照物就会有人硬套（`concept` 那次的教训）
     #[test]
     fn the_block_tells_the_model_not_to_force_a_match() {
-        let known = vec![("person".to_string(), "陈立".to_string())];
+        let known = vec![KnownEntity {
+            handle: "k1".into(),
+            type_key: "person".into(),
+            name: "陈立".into(),
+        }];
         let msgs = build_messages(&[], &[], &[], None, "a.txt", &known, "text");
         assert!(msgs[1].content.contains("do not force it onto this list"));
     }
@@ -937,5 +958,38 @@ mod tests {
         assert!(sys.contains("never checked against the list"));
         // 与 type 的关系必须说清楚，否则模型会把粗类抄一遍
         assert!(sys.contains("narrower than"));
+    }
+
+    #[test]
+    fn extraction_contract_explains_handle_identity_without_forcing_splits() {
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        let system = &msgs[0].content;
+        assert!(system.contains("\"local_id\":\"e1\""));
+        assert!(system.contains("\"subject_ref\":\"e1\""));
+        assert!(system.contains("unique within this response"));
+        assert!(system.contains("Reuse the same local_id"));
+        assert!(system.contains("permanent identity is proven"));
+        assert!(system.contains("A shared name alone neither proves sameness nor requires a split"));
+    }
+
+    #[test]
+    fn same_name_known_entities_keep_distinct_response_handles() {
+        let known = vec![
+            KnownEntity {
+                handle: "k1".into(),
+                type_key: "person".into(),
+                name: "Zhang Wei".into(),
+            },
+            KnownEntity {
+                handle: "k2".into(),
+                type_key: "person".into(),
+                name: "Zhang Wei".into(),
+            },
+        ];
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &known, "text");
+        let user = &msgs[1].content;
+        assert!(user.contains("k1 [person]: Zhang Wei"));
+        assert!(user.contains("k2 [person]: Zhang Wei"));
+        assert!(user.contains("subject_ref/object_ref"));
     }
 }
