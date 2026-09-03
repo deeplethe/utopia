@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use utopia_core::models::{Role, Source, SourceView, SyncRun};
+use utopia_core::models::{Role, Source, SourceView, SyncRun, SOURCE_SECRET_KEYS};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
@@ -55,9 +55,11 @@ fn cron_next_after(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
 }
 
 pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SourceView>> {
-    // config 剔除 auth_header：自定义拉取器的凭据不下发给任何客户端
+    // config 剔掉凭据：列表给 Viewer 看，哪一种连接器的密钥都不下发。
+    // 键在 `SOURCE_SECRET_KEYS` 一张表上——从前这里只减 `auth_header`，五种连接器
+    // 的密钥就这么漏出去的（#246）
     let rows: Vec<SourceView> = sqlx::query_as(
-        "SELECT s.id, s.kind, s.name, s.config - 'auth_header' AS config, s.icon,
+        "SELECT s.id, s.kind, s.name, s.config - $2::text[] AS config, s.icon,
                 s.sync_interval_minutes, s.sync_cron,
                 s.last_sync_at, s.last_sync_status, s.last_sync_error, s.last_sync_added,
                 (SELECT count(*) FROM documents d WHERE d.source_id = s.id) AS doc_count,
@@ -66,6 +68,7 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SourceView>> {
          FROM sources s WHERE s.kb_id = $1 ORDER BY s.created_at",
     )
     .bind(kb_id)
+    .bind(SOURCE_SECRET_KEYS)
     .fetch_all(pool)
     .await?;
     Ok(rows)

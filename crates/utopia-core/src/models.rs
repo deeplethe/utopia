@@ -137,6 +137,34 @@ pub struct Source {
     pub created_at: DateTime<Utc>,
 }
 
+/// 来源配置里**用来鉴权**的那几个键。凭据只进不出：列表与创建 / 更新的响应都剔掉，
+/// 更新时客户端没传或传空串就保留库里的原值，审计里也不落。
+///
+/// **一张表，四处共用。** 此前那条规矩只对 `auth_header` 一个键成立，而对象存储、
+/// WebDAV、Notion 各自的密钥原样发给了每一个 Viewer（#246）。加连接器时**先加这里**，
+/// 再写读它的代码。`username` / `account_name` / `access_key_id` 这类是身份标识，
+/// 单独拿到鉴不了权，留着让界面显示得出「这是哪个账号」。
+pub const SOURCE_SECRET_KEYS: &[&str] = &[
+    "auth_header",
+    "token",
+    "password",
+    "secret_access_key",
+    "account_key",
+    "service_account_key",
+];
+
+impl Source {
+    /// 剔掉凭据后的这条来源——任何要回给客户端的 `Source` 都从这里过
+    pub fn without_secrets(mut self) -> Self {
+        if let Some(obj) = self.config.as_object_mut() {
+            for key in SOURCE_SECRET_KEYS {
+                obj.remove(*key);
+            }
+        }
+        self
+    }
+}
+
 /// 来源同步运行记录（渠道审计历史）。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct SyncRun {

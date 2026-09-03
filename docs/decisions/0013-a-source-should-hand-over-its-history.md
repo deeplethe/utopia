@@ -107,3 +107,7 @@ shape — a class with an IRI drawn as a circle is a picture that lies.
   `sync_custom`. Acceptance: unit tests on `render()`, fixture tests where a real response is
   obtainable, create → sync → versions present → second sync adds 0, and clean
   `cargo clippy --workspace --all-targets` and `npm run typecheck`.
+
+## Revisions
+
+- 2026-09-03: every connector's credentials stay on the server (#246). Until now only `auth_header` was stripped from responses; the object-storage, WebDAV and Notion keys went out to every viewer. The keys now live in one list, `SOURCE_SECRET_KEYS`, shared by the listing, the create / update responses and the update merge (blank or missing keeps the stored value, an explicit `null` removes it). Adding a connector means adding its keys there first.
