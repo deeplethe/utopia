@@ -338,6 +338,7 @@ async fn resolve(
             review.other_id,
             review.score,
             &review.reason,
+            utopia_store::resolution::ReviewStage::Adjudicating,
         )
         .await?;
         *needs_adjudication = true;

@@ -197,6 +197,23 @@ pub struct ReviewRequest {
     pub reason: String,
 }
 
+/// 审核项由谁消费。普通画像灰区先交给批量裁决器；抽取器在同一回复里明确拆出的
+/// 同名实体只有人能判断，不能让几乎相同的画像触发自动合并。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewStage {
+    Adjudicating,
+    Human,
+}
+
+impl ReviewStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Adjudicating => "adjudicating",
+            Self::Human => "human",
+        }
+    }
+}
+
 /// 单条 mention 消解。`context` 为 mention 所在分块的向量（无 embedding 模型时为 None，
 /// 退化为 v1 行为：同名归并到事实最多的候选）。
 pub async fn resolve_mention(
@@ -848,13 +865,16 @@ pub async fn create_review(
     right_id: Uuid,
     score: f32,
     reason: &str,
+    stage: ReviewStage,
 ) -> AppResult<()> {
     sqlx::query(
-        "INSERT INTO resolution_reviews (id, kb_id, left_id, right_id, score, reason)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO resolution_reviews AS existing
+             (id, kb_id, left_id, right_id, score, reason, stage)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (kb_id, least(left_id, right_id), greatest(left_id, right_id))
              WHERE status = 'pending'
-         DO NOTHING",
+         DO UPDATE SET stage = 'human', reason = EXCLUDED.reason
+           WHERE EXCLUDED.stage = 'human' AND existing.stage = 'adjudicating'",
     )
     .bind(Uuid::now_v7())
     .bind(kb_id)
@@ -862,6 +882,7 @@ pub async fn create_review(
     .bind(right_id)
     .bind(score)
     .bind(reason)
+    .bind(stage.as_str())
     .execute(pool)
     .await?;
     Ok(())
