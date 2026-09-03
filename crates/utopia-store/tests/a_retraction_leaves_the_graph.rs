@@ -136,8 +136,7 @@ async fn retracted(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
 
 #[tokio::test]
 async fn a_retraction_leaves_the_graph() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
