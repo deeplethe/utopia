@@ -106,6 +106,9 @@ pub struct Document {
     pub external_key: Option<String>,
     /// watch_folder 同步时发现源文件已消失（默认保留文档，仅标记）
     pub missing_since: Option<DateTime<Utc>>,
+    /// 墓碑（#268）：删除是认知轴上的一个事件。行、分块、证据、原始文件都留着，
+    /// 只是不再算活的；撤销、同步撞见、同内容重传都能把它复活
+    pub deleted_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -799,6 +802,8 @@ pub struct EvidenceView {
     pub doc_version: i32,
     /// 文档已有更新的版本（证据停留在旧版；不代表事实失效）
     pub stale: bool,
+    /// 这条证据所在的文档已被删除（#268）。事实若还活着，是因为它另有出处
+    pub document_deleted: bool,
 }
 
 /// 时态冲突（S3 自动闭合拿不准的那些）：旧事实 vs 新事实，Review 页人裁。

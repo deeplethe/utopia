@@ -3,7 +3,7 @@ mod alerts_routes;
 mod auth_routes;
 mod chat;
 mod datasource_routes;
-mod documents_routes;
+pub(crate) mod documents_routes;
 mod events_routes;
 mod graph_routes;
 mod jobs_routes;
@@ -276,6 +276,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/documents/{id}",
             get(documents_routes::detail).delete(documents_routes::delete),
         )
+        // 撤销删除（#268）：删除是墓碑，所以有得撤
+        .route("/documents/{id}/restore", post(documents_routes::restore))
         .route("/documents/{id}/extract", post(graph_routes::extract))
         .route("/kbs/{id}/graph/overview", get(graph_routes::overview))
         .route(

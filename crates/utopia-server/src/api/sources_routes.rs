@@ -238,7 +238,7 @@ pub async fn cleanup_missing(
     source_in_kb(&state, kb_id, source_id).await?;
     let ids = utopia_store::documents::list_missing(&state.pool, source_id).await?;
     for id in &ids {
-        utopia_store::documents::delete(&state.pool, *id).await?;
+        utopia_store::documents::delete(&state.pool, kb_id, *id, Some(user.id)).await?;
         let search = state.search.clone();
         let did = id.to_string();
         tokio::task::spawn_blocking(move || search.delete_document(&did))

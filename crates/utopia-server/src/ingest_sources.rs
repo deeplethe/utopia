@@ -212,7 +212,30 @@ pub async fn ingest_item(
     }
 
     if let Some(doc) = existing {
+        // 同步撞见墓碑：源头还有这篇，本地删除对同步源本来就是暂时的——复活它，
+        // 分块与这次作废的事实原路回来，索引重建（#268）
+        let revived = doc.deleted_at.is_some();
+        if revived {
+            let doc = utopia_store::documents::restore(&state.pool, kb_id, doc.id).await?;
+            crate::api::documents_routes::reindex(state, &doc).await?;
+            crate::api::documents_routes::settle_derivations(state, kb_id).await?;
+            // 引擎做的，没有人：actor 留空，台账写「engine」
+            let _ = utopia_store::audit::record_opt(
+                &state.pool,
+                Some(kb_id),
+                None,
+                "document.restored",
+                "document",
+                Some(doc.id),
+                serde_json::json!({ "filename": doc.filename, "via": "sync" }),
+            )
+            .await;
+        }
         if doc.sha256 == sha256 {
+            if revived {
+                state.emit_document(kb_id, doc.id);
+                return Ok(IngestAction::Updated);
+            }
             return Ok(IngestAction::Unchanged);
         }
         // 变更：原地替换，旧版本入 document_versions（blob 内容寻址不删，回放有料）

@@ -56,9 +56,11 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SourceView>> {
         "SELECT s.id, s.kind, s.name, s.config - $2::text[] AS config, s.icon,
                 s.sync_interval_minutes, s.sync_cron,
                 s.last_sync_at, s.last_sync_status, s.last_sync_error, s.last_sync_added,
-                (SELECT count(*) FROM documents d WHERE d.source_id = s.id) AS doc_count,
                 (SELECT count(*) FROM documents d
-                 WHERE d.source_id = s.id AND d.missing_since IS NOT NULL) AS missing_count
+                  WHERE d.source_id = s.id AND d.deleted_at IS NULL) AS doc_count,
+                (SELECT count(*) FROM documents d
+                 WHERE d.source_id = s.id AND d.missing_since IS NOT NULL
+                   AND d.deleted_at IS NULL) AS missing_count
          FROM sources s WHERE s.kb_id = $1 ORDER BY s.created_at",
     )
     .bind(kb_id)
@@ -323,12 +325,14 @@ pub async fn set_document_tags(
 
 /// 同步用去重：该 KB 是否已有同内容文档。
 pub async fn document_exists_by_sha(pool: &PgPool, kb_id: Uuid, sha256: &str) -> AppResult<bool> {
-    let row: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM documents WHERE kb_id = $1 AND sha256 = $2 LIMIT 1")
-            .bind(kb_id)
-            .bind(sha256)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM documents
+              WHERE kb_id = $1 AND sha256 = $2 AND deleted_at IS NULL LIMIT 1",
+    )
+    .bind(kb_id)
+    .bind(sha256)
+    .fetch_optional(pool)
+    .await?;
     Ok(row.is_some())
 }
 
