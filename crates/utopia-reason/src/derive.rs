@@ -20,7 +20,7 @@
 //! 前提 A `[2020,2023)`、前提 B `[2022,∞)` → 派生 `[2022,2023)`。交集为空
 //! 就不推——两段没有重叠的时候,链本身在任何时刻都不成立。
 
-use crate::{Axioms, Edge, MAX_DEPTH};
+use crate::{Axioms, Edge, Kind, MAX_DEPTH};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -31,7 +31,7 @@ use uuid::Uuid;
 /// ——悄悄截断会让「推完了」和「推了一部分」长得一模一样。
 pub const MAX_DERIVED_PER_PREDICATE: usize = 20_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rule {
     /// `A p B` ∧ `B p C` ⟹ `A p C`
     Transitive,
@@ -377,6 +377,248 @@ pub fn validity(
         acc = overlap(acc, span)?;
     }
     Some(acc)
+}
+
+// ===================== 矛盾：派生撞上了什么（0017） =====================
+
+/// 一条派生撞上了一条断言。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Clash {
+    /// `Derivation::facts` 里的下标
+    pub derived: usize,
+    /// 撞在哪条公理上：`Functional`（含 inverse_functional）、`Asymmetry`、`SelfLoop`
+    pub axiom: Kind,
+    /// 被撞的断言。自环没有对方，取派生的最后一条前提
+    pub against: Uuid,
+}
+
+/// 两条规则加在一起产出了互相矛盾的派生。
+///
+/// **按规则对聚合，不逐对报**：`ceo_of ⊑ works_at` 加 `works_at` functional，每个有
+/// 两个 ceo 的组织就撞一对——根子是那两条声明，逐对进队列只会淹掉 Review。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleClash {
+    /// (声明所在的谓词, 规则种类)，两条按 (谓词, 种类) 排过序，a ≤ b
+    pub a: (Uuid, Rule),
+    pub b: (Uuid, Rule),
+    pub axiom: Kind,
+    /// 互撞的派生对，按 `Derivation::facts` 的下标
+    pub pairs: Vec<(usize, usize)>,
+}
+
+/// 半开区间 `[from, to)`，两端可空
+type Span = (Option<i64>, Option<i64>);
+/// (谓词, 一端) → 另一端的边：(另一端, 事实, 区间)。functional 两个方向各一份
+type ByEnd = HashMap<(Uuid, Uuid), Vec<(Uuid, Uuid, Span)>>;
+/// 一条规则的身份：声明所在的谓词 + 规则种类
+type RuleSide = (Uuid, Rule);
+/// 互撞的派生对，按 (规则 a, 规则 b, 撞在哪条公理上) 分组
+type Grouped = HashMap<(RuleSide, RuleSide, Kind), Vec<(usize, usize)>>;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Contradictions {
+    pub with_assertions: Vec<Clash>,
+    pub between_derivations: Vec<RuleClash>,
+}
+
+impl Contradictions {
+    /// 不该落地的派生下标：撞过断言的，和撞过别的派生的。**写图宁少勿错**（0002）
+    pub fn blocked(&self) -> HashSet<usize> {
+        let mut out: HashSet<usize> = self.with_assertions.iter().map(|c| c.derived).collect();
+        for rc in &self.between_derivations {
+            for (i, j) in &rc.pairs {
+                out.insert(*i);
+                out.insert(*j);
+            }
+        }
+        out
+    }
+}
+
+/// 拿公理量一遍派生：与断言撞的逐条列出，派生之间撞的按规则对聚合。
+///
+/// 只查四类——`functional`（含 inverse）、`asymmetric`、`irreflexive`——因为只有它们
+/// 能由**两条边**判出矛盾；传递环那类要走闭包，派生本身就是闭包的一部分，R0 对断言
+/// 查过就够了。functional 与 asymmetric 都要求**有效区间重叠**：Mira 走了 Devin
+/// 接任，两条 `ceo_of` 区间不交，那是接任，不是矛盾。
+///
+/// 撞上断言的派生一律**不落地**（asserted > derived，硬性）；这一步把「让路」这件事
+/// 从静默变成可见——0002 那张表里写了没做的那一行。
+pub fn contradictions(
+    derivation: &Derivation,
+    edges: &[TimedEdge],
+    axioms: &HashMap<Uuid, Axioms>,
+    spans: &HashMap<Uuid, (Option<i64>, Option<i64>)>,
+) -> Contradictions {
+    // 断言的三份索引：(谓词, 主) → 宾；(谓词, 宾) → 主；(谓词, 主, 宾) → 边
+    let mut by_ps: ByEnd = HashMap::new();
+    let mut by_po: ByEnd = HashMap::new();
+    let mut by_spo: HashMap<(Uuid, Uuid, Uuid), Vec<(Uuid, Span)>> = HashMap::new();
+    for e in edges {
+        let span = (e.from, e.to);
+        let x = e.edge;
+        by_ps
+            .entry((x.predicate, x.subject))
+            .or_default()
+            .push((x.object, x.fact, span));
+        by_po
+            .entry((x.predicate, x.object))
+            .or_default()
+            .push((x.subject, x.fact, span));
+        by_spo
+            .entry((x.predicate, x.subject, x.object))
+            .or_default()
+            .push((x.fact, span));
+    }
+
+    let mut out = Contradictions::default();
+    // 派生的区间：与落库那一侧同一个函数算，算不出的（前提区间不交）本来就不会落
+    let derived_spans: Vec<Option<Span>> = derivation
+        .facts
+        .iter()
+        .map(|d| validity(&d.premises, spans))
+        .collect();
+
+    for (i, d) in derivation.facts.iter().enumerate() {
+        let Some(span) = derived_spans[i] else {
+            continue;
+        };
+        let Some(ax) = axioms.get(&d.predicate) else {
+            continue;
+        };
+        let Some(&last) = d.premises.last() else {
+            continue;
+        };
+        if ax.irreflexive && d.subject == d.object {
+            out.with_assertions.push(Clash {
+                derived: i,
+                axiom: Kind::SelfLoop,
+                against: last,
+            });
+        }
+        if ax.asymmetric {
+            if let Some(v) = by_spo.get(&(d.predicate, d.object, d.subject)) {
+                for (fact, sp) in v {
+                    if overlap(span, *sp).is_some() {
+                        out.with_assertions.push(Clash {
+                            derived: i,
+                            axiom: Kind::Asymmetry,
+                            against: *fact,
+                        });
+                    }
+                }
+            }
+        }
+        if ax.functional {
+            if let Some(v) = by_ps.get(&(d.predicate, d.subject)) {
+                for (obj, fact, sp) in v {
+                    if *obj != d.object && overlap(span, *sp).is_some() {
+                        out.with_assertions.push(Clash {
+                            derived: i,
+                            axiom: Kind::Functional,
+                            against: *fact,
+                        });
+                    }
+                }
+            }
+        }
+        if ax.inverse_functional {
+            if let Some(v) = by_po.get(&(d.predicate, d.object)) {
+                for (subj, fact, sp) in v {
+                    if *subj != d.subject && overlap(span, *sp).is_some() {
+                        out.with_assertions.push(Clash {
+                            derived: i,
+                            axiom: Kind::Functional,
+                            against: *fact,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 派生之间：同样三份索引，只不过键的是下标
+    let mut d_ps: HashMap<(Uuid, Uuid), Vec<usize>> = HashMap::new();
+    let mut d_po: HashMap<(Uuid, Uuid), Vec<usize>> = HashMap::new();
+    let mut d_spo: HashMap<(Uuid, Uuid, Uuid), Vec<usize>> = HashMap::new();
+    for (i, d) in derivation.facts.iter().enumerate() {
+        if derived_spans[i].is_none() {
+            continue;
+        }
+        d_ps.entry((d.predicate, d.subject)).or_default().push(i);
+        d_po.entry((d.predicate, d.object)).or_default().push(i);
+        d_spo
+            .entry((d.predicate, d.subject, d.object))
+            .or_default()
+            .push(i);
+    }
+    let mut grouped: Grouped = HashMap::new();
+    let mut note = |i: usize, j: usize, axiom: Kind| {
+        let (i, j) = if i < j { (i, j) } else { (j, i) };
+        let ri = (derivation.facts[i].via, derivation.facts[i].rule);
+        let rj = (derivation.facts[j].via, derivation.facts[j].rule);
+        let (a, b) = if (ri.0, ri.1.as_str()) <= (rj.0, rj.1.as_str()) {
+            (ri, rj)
+        } else {
+            (rj, ri)
+        };
+        grouped.entry((a, b, axiom)).or_default().push((i, j));
+    };
+    for (i, d) in derivation.facts.iter().enumerate() {
+        let Some(span) = derived_spans[i] else {
+            continue;
+        };
+        let Some(ax) = axioms.get(&d.predicate) else {
+            continue;
+        };
+        let overlapping = |j: usize| derived_spans[j].is_some_and(|s| overlap(span, s).is_some());
+        if ax.asymmetric {
+            if let Some(v) = d_spo.get(&(d.predicate, d.object, d.subject)) {
+                for &j in v {
+                    if j > i && overlapping(j) {
+                        note(i, j, Kind::Asymmetry);
+                    }
+                }
+            }
+        }
+        if ax.functional {
+            if let Some(v) = d_ps.get(&(d.predicate, d.subject)) {
+                for &j in v {
+                    if j > i && derivation.facts[j].object != d.object && overlapping(j) {
+                        note(i, j, Kind::Functional);
+                    }
+                }
+            }
+        }
+        if ax.inverse_functional {
+            if let Some(v) = d_po.get(&(d.predicate, d.object)) {
+                for &j in v {
+                    if j > i && derivation.facts[j].subject != d.subject && overlapping(j) {
+                        note(i, j, Kind::Functional);
+                    }
+                }
+            }
+        }
+    }
+    let mut rule_clashes: Vec<RuleClash> = grouped
+        .into_iter()
+        .map(|((a, b, axiom), mut pairs)| {
+            pairs.sort_unstable();
+            pairs.dedup();
+            RuleClash { a, b, axiom, pairs }
+        })
+        .collect();
+    // 输出排过序——这条路的价值有一半在确定性
+    rule_clashes.sort_by(|x, y| {
+        (x.a.0, x.a.1.as_str(), x.b.0, x.b.1.as_str()).cmp(&(
+            y.a.0,
+            y.a.1.as_str(),
+            y.b.0,
+            y.b.1.as_str(),
+        ))
+    });
+    out.between_derivations = rule_clashes;
+    out
 }
 
 #[cfg(test)]
@@ -795,5 +1037,164 @@ mod tests {
         )]);
         let d = derive(&[ep(P, 1, 1, 1)], &ax);
         assert!(d.facts.is_empty(), "`A p A` 的逆还是 `A p A`——自环不推");
+    }
+
+    // ---------- 矛盾（0017） ----------
+
+    /// 指定谓词的一条带区间的边
+    fn et(pred: Uuid, fact: u8, s: u8, o: u8, from: Option<i64>, to: Option<i64>) -> TimedEdge {
+        TimedEdge {
+            edge: Edge {
+                fact: f(fact),
+                predicate: pred,
+                subject: n(s),
+                object: n(o),
+            },
+            from,
+            to,
+        }
+    }
+
+    fn spans_of(edges: &[TimedEdge]) -> HashMap<Uuid, (Option<i64>, Option<i64>)> {
+        edges
+            .iter()
+            .map(|e| (e.edge.fact, (e.from, e.to)))
+            .collect()
+    }
+
+    /// `ceo_of ⊑ works_at`，works_at functional：Mira 的 ceo_of 推出 works_at Acme，
+    /// 而账本里说她 works_at Globex——派生撞上断言，指名道姓
+    #[test]
+    fn a_derivation_that_breaks_functional_names_the_assertion_it_hit() {
+        let ax = HashMap::from([
+            (
+                P,
+                Axioms {
+                    sub_property_of: Some(Q),
+                    ..Default::default()
+                },
+            ),
+            (
+                Q,
+                Axioms {
+                    functional: true,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let edges = [ep(P, 1, 1, 2), ep(Q, 2, 1, 3)];
+        let d = derive(&edges, &ax);
+        assert_eq!(d.facts.len(), 1);
+        let c = contradictions(&d, &edges, &ax, &spans_of(&edges));
+        assert_eq!(
+            c.with_assertions,
+            vec![Clash {
+                derived: 0,
+                axiom: Kind::Functional,
+                against: f(2)
+            }]
+        );
+        assert!(c.between_derivations.is_empty());
+        assert_eq!(c.blocked(), HashSet::from([0]));
+    }
+
+    /// 区间不交就不是矛盾：前任与继任
+    #[test]
+    fn disjoint_intervals_are_succession_and_stay_silent() {
+        let ax = HashMap::from([
+            (
+                P,
+                Axioms {
+                    sub_property_of: Some(Q),
+                    ..Default::default()
+                },
+            ),
+            (
+                Q,
+                Axioms {
+                    functional: true,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let edges = [
+            et(P, 1, 1, 2, Some(10), Some(20)),
+            et(Q, 2, 1, 3, Some(30), None),
+        ];
+        let d = derive(&edges, &ax);
+        let c = contradictions(&d, &edges, &ax, &spans_of(&edges));
+        assert!(c.with_assertions.is_empty(), "{c:?}");
+    }
+
+    /// 对称与非对称：`A p B` 对称推出 `B p A`，而 p 又声明 asymmetric——
+    /// 每条断言都撞上自己的镜像
+    #[test]
+    fn a_symmetric_derivation_hits_the_asymmetric_assertion() {
+        let ax = HashMap::from([(
+            P,
+            Axioms {
+                symmetric: true,
+                asymmetric: true,
+                ..Default::default()
+            },
+        )]);
+        let edges = [ep(P, 1, 1, 2)];
+        let d = derive(&edges, &ax);
+        let c = contradictions(&d, &edges, &ax, &spans_of(&edges));
+        assert_eq!(c.with_assertions.len(), 1);
+        assert_eq!(c.with_assertions[0].axiom, Kind::Asymmetry);
+        assert_eq!(c.with_assertions[0].against, f(1));
+    }
+
+    /// 两条派生互撞时按规则对聚合，而且都不落地
+    #[test]
+    fn derivations_that_disagree_are_grouped_by_the_rules_that_made_them() {
+        let ax = HashMap::from([
+            (
+                P,
+                Axioms {
+                    sub_property_of: Some(Q),
+                    ..Default::default()
+                },
+            ),
+            (
+                Q,
+                Axioms {
+                    functional: true,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        // 1 ceo_of 2 与 1 ceo_of 3：两条 works_at 由同一条规则推出，互相排斥
+        let edges = [ep(P, 1, 1, 2), ep(P, 2, 1, 3), ep(P, 3, 4, 5)];
+        let d = derive(&edges, &ax);
+        assert_eq!(d.facts.len(), 3);
+        let c = contradictions(&d, &edges, &ax, &spans_of(&edges));
+        assert!(c.with_assertions.is_empty());
+        assert_eq!(c.between_derivations.len(), 1);
+        let rc = &c.between_derivations[0];
+        assert_eq!(rc.a, (P, Rule::SubProperty));
+        assert_eq!(rc.b, (P, Rule::SubProperty));
+        assert_eq!(rc.axiom, Kind::Functional);
+        assert_eq!(rc.pairs.len(), 1);
+        // 第三条（4 works_at 5）没跟谁撞，照常落地
+        assert_eq!(c.blocked().len(), 2);
+        assert!(!c.blocked().contains(&2));
+    }
+
+    /// 谓词上没有公理就没有矛盾可言
+    #[test]
+    fn a_predicate_without_axioms_cannot_contradict() {
+        let ax = HashMap::from([(
+            P,
+            Axioms {
+                sub_property_of: Some(Q),
+                ..Default::default()
+            },
+        )]);
+        let edges = [ep(P, 1, 1, 2), ep(Q, 2, 1, 3)];
+        let d = derive(&edges, &ax);
+        let c = contradictions(&d, &edges, &ax, &spans_of(&edges));
+        assert_eq!(c, Contradictions::default());
     }
 }

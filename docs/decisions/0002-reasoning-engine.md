@@ -75,6 +75,8 @@ CREATE TABLE fact_derivations (
 
 > **修订记录（2026-09-02）**：表格三行里只有第一行的前半兑现了——`asserted` 硬性优先，已断言的三元组不再派生（`derive.rs`）。
 > 「记一条规则与事实矛盾的信号」**没有**，「派生 vs 派生进 Review」**没有**（同一三元组的多条推导只留第一条证明）。两者都还是待做。
+>
+> **修订记录（2026-09-03）**：两行都兑现了，方案见 [0017](0017-a-contradiction-points-upstream.md)。派生撞断言：`derive::contradictions` 逐条算出，`run` 记成 `axiom_violations` 一种 `derived_contradiction`（单谓词封顶 50），`materialize` 用同一个函数拦下不落地；卡片给线索（旧断言没结束日期、同名实体、置信度低）与修法（闭合、撤回、认可）。派生撞派生：按规则对聚合进 `ontology_defects` 一种 `rules_disagree`，两边都不落——根子是那两条声明，不是哪条事实。
 
 ### 3. 前提撤回时——双时态是最优解，不是负担
 

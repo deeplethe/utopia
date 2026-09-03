@@ -42,7 +42,7 @@
 | 0014 | [身份跟着人，范围跟着令牌](0014-identity-from-the-person-scope-from-the-token.md) | 已实施（#180）· MCP 只读五工具 · 令牌页在账户层（A2）· 误导性的占位 crate 已删 |
 | 0015 | [记下一句话，不等于断言一个事实](0015-recording-a-sentence-is-not-asserting-a-fact.md) | 已实施 · 记忆抽出的事实进 `pending_facts`，Review 新档 + 跟在 remember 步骤后的确认卡 · `remember` 重新打开 · MCP 放开写是下一刀 |
 | 0016 | [先把开着的口子收上，再开新的](0016-close-the-open-seams-before-cutting-new-ones.md) | 规划中 · v0.1.0 之后的排期：A 收口 → B 推理机 ∥ C 尺子与本体 → D 语义层 → E 企业交付；模拟引擎后置 |
-| 0017 | [A contradiction points at an error upstream](0017-a-contradiction-points-upstream.md) | 规划中 · 0016 B2 的完整方案：派生撞断言逐条封顶、派生撞派生按规则聚合、卡片给线索与修法、争议在图和面板上原地可见（新警戒色）|
+| 0017 | [A contradiction points at an error upstream](0017-a-contradiction-points-upstream.md) | B2a 已实现（引擎与队列：逐条封顶、按规则对聚合、卡片给线索与修法）· B2b 待做：争议在图和面板上原地可见（新警戒色）|
 
 ## 不是决策记录的那些
 

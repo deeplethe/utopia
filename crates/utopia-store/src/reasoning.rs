@@ -12,13 +12,14 @@
 //! 提案刷回待看，等于每跑一次就把人的否决抹掉一次。所以这里 `ON CONFLICT`
 //! 什么都不做——已经在库里的那一行，无论 open 还是 resolved，都按原样留着。
 
+use serde_json::json;
 use sqlx::PgPool;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utopia_core::models::{AxiomViolation, DerivedFactView, OntologyDefect};
 /// 规则种类的字面量。用 &'static str 而不是枚举:它直接进 SQL 也直接做键
 type RuleKind = &'static str;
 use utopia_core::AppResult;
-use utopia_reason::derive::TimedEdge;
+use utopia_reason::derive::{Contradictions, Derivation, TimedEdge};
 use utopia_reason::{check, Axioms, Edge, Kind, Violation};
 use uuid::Uuid;
 
@@ -35,37 +36,17 @@ pub struct Report {
     pub inserted: usize,
     /// 清掉的陈旧 open 行
     pub cleared: usize,
+    /// 派生撞上断言的条数（0017），已含在 `found` 里
+    pub contradictions: usize,
+    /// 撞上单谓词上限、没进队列的矛盾条数。**不为零时说明根子在规则**：
+    /// 一条谓词上上百条派生都撞了，逐条看是没有意义的
+    pub contradictions_capped: usize,
+    /// 互撞的规则对数——进 `ontology_defects`，不进这张表
+    pub rules_disagree: usize,
 }
 
-/// 取这个库里所有能参与检查的边。
-///
-/// 三个过滤条件都是必要的：
-///
-/// - `invalidated_at IS NULL`——被推翻的事实不该再报矛盾，它已经不是我们的断言了
-/// - `predicate_id IS NOT NULL`——没有谓词就没有公理可依（见 `facts.predicate_id`）
-/// - `object_id IS NOT NULL`——属性事实的宾语是字面值，公理谈的是实体之间的关系
-async fn edges(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Edge>> {
-    let rows: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
-        "SELECT id, predicate_id, subject_id, object_id
-           FROM facts
-          WHERE kb_id = $1
-            AND invalidated_at IS NULL
-            AND predicate_id IS NOT NULL
-            AND object_id IS NOT NULL",
-    )
-    .bind(kb_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|(fact, predicate, subject, object)| Edge {
-            fact,
-            predicate,
-            subject,
-            object,
-        })
-        .collect())
-}
+/// 单个谓词上进队列的矛盾上限（0017 §1）。超出的部分只计数。
+const MAX_CLASHES_PER_PREDICATE: usize = 50;
 
 /// 取这个库的谓词公理。
 ///
@@ -229,7 +210,8 @@ pub async fn record_signature_breaks(
 
 /// 跑一遍检查，把结果落库。
 pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
-    let edges = edges(pool, kb_id).await?;
+    let (timed, spans, _) = timed_edges(pool, kb_id).await?;
+    let edges: Vec<Edge> = timed.iter().map(|t| t.edge).collect();
     let axioms = axioms(pool, kb_id).await?;
     let mut violations = check(&edges, &axioms);
     // 第五类不在纯逻辑引擎里：它要看实体的类型与谓词的 domain / range，那是库里的
@@ -243,10 +225,63 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         });
     }
 
+    // 第六类（0017）：推出来却落不了地的派生。与 `materialize` 用同一个函数算，
+    // 所以这里报的正是那边拦下的——两边各算一套的话，队列会跟图对不上
+    let derivation = utopia_reason::derive::derive(&timed, &axioms);
+    let clashes = utopia_reason::derive::contradictions(&derivation, &timed, &axioms, &spans);
+    let names = names_for(pool, &derivation, &clashes).await?;
+    let mut details: HashMap<(Uuid, Uuid), serde_json::Value> = HashMap::new();
+    let mut per_pred: HashMap<Uuid, usize> = HashMap::new();
+    let mut contradictions_capped = 0usize;
+    for c in &clashes.with_assertions {
+        let d = &derivation.facts[c.derived];
+        let Some(&last) = d.premises.last() else {
+            continue;
+        };
+        let key = (c.against, last);
+        if details.contains_key(&key) {
+            continue;
+        }
+        let n = per_pred.entry(d.predicate).or_default();
+        if *n >= MAX_CLASHES_PER_PREDICATE {
+            contradictions_capped += 1;
+            continue;
+        }
+        *n += 1;
+        let span = utopia_reason::derive::validity(&d.premises, &spans);
+        details.insert(
+            key,
+            json!({
+                "axiom": c.axiom.as_str(),
+                "rule": d.rule.as_str(),
+                "via": d.via,
+                "via_label": names.predicate(d.via),
+                "subject_id": d.subject,
+                "subject": names.entity(d.subject),
+                "predicate_id": d.predicate,
+                "predicate": names.predicate(d.predicate),
+                "object_id": d.object,
+                "object": names.entity(d.object),
+                "valid_from": span.and_then(|s| s.0).map(|t| stamp(t).to_rfc3339()),
+                "valid_to": span.and_then(|s| s.1).map(|t| stamp(t).to_rfc3339()),
+                "premises": d.premises,
+            }),
+        );
+        violations.push(Violation {
+            kind: Kind::DerivedContradiction,
+            left: c.against,
+            right: last,
+            path: d.premises.clone(),
+        });
+    }
+
     let mut report = Report {
         edges: edges.len(),
         predicates_with_axioms: axioms.len(),
         found: violations.len(),
+        contradictions: details.len(),
+        contradictions_capped,
+        rules_disagree: clashes.between_derivations.len(),
         ..Default::default()
     };
 
@@ -261,9 +296,13 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
             right,
             path,
         } = v;
+        let detail = details
+            .get(&(*left, *right))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let id: Option<(Uuid,)> = sqlx::query_as(
-            "INSERT INTO axiom_violations (id, kb_id, kind, left_fact, right_fact, path)
-             VALUES ($1, $2, $3, $4, $5, $6)
+            "INSERT INTO axiom_violations (id, kb_id, kind, left_fact, right_fact, path, detail)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
              ON CONFLICT (kb_id, kind, left_fact, right_fact) DO NOTHING
              RETURNING id",
         )
@@ -273,6 +312,7 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         .bind(left)
         .bind(right)
         .bind(path)
+        .bind(&detail)
         .fetch_optional(&mut *tx)
         .await?;
         if id.is_some() {
@@ -303,8 +343,142 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
     .execute(&mut *tx)
     .await?;
     report.cleared = cleared.rows_affected() as usize;
+
+    // 派生之间互撞的按规则对进 `ontology_defects`——根子是那两条声明，不是哪条事实。
+    // 同一对谓词上可能有几种撞法（functional 与 asymmetric 各撞各的），唯一键只到
+    // 谓词对，所以合成一行，几种撞法都写进 detail
+    let mut by_pair: HashMap<(Uuid, Uuid), Vec<serde_json::Value>> = HashMap::new();
+    let mut order: Vec<(Uuid, Uuid)> = Vec::new();
+    for rc in &clashes.between_derivations {
+        let triple = |i: usize| {
+            let d = &derivation.facts[i];
+            format!(
+                "{} · {} · {}",
+                names.entity(d.subject),
+                names.predicate(d.predicate),
+                names.entity(d.object)
+            )
+        };
+        let examples: Vec<serde_json::Value> = rc
+            .pairs
+            .iter()
+            .take(3)
+            .map(|(i, j)| json!([triple(*i), triple(*j)]))
+            .collect();
+        let key = (rc.a.0, rc.b.0);
+        if !by_pair.contains_key(&key) {
+            order.push(key);
+        }
+        by_pair.entry(key).or_default().push(json!({
+            "rule_a": rc.a.1.as_str(),
+            "via_a": names.predicate(rc.a.0),
+            "rule_b": rc.b.1.as_str(),
+            "via_b": names.predicate(rc.b.0),
+            "axiom": rc.axiom.as_str(),
+            "count": rc.pairs.len(),
+            "examples": examples,
+        }));
+    }
+    let mut fresh_defects: Vec<Uuid> = Vec::with_capacity(order.len());
+    for key in order {
+        let rules = by_pair.remove(&key).unwrap_or_default();
+        let count: usize = rules
+            .iter()
+            .map(|r| r["count"].as_u64().unwrap_or(0) as usize)
+            .sum();
+        // 已经有人认可过的那一行保持 resolved，只刷 detail：0017 说认可之后不再报
+        let (id,): (Uuid,) = sqlx::query_as(
+            "INSERT INTO ontology_defects (id, kb_id, kind, subject, other, path, detail)
+             VALUES ($1, $2, 'rules_disagree', $3, $4, '{}', $5)
+             ON CONFLICT (kb_id, kind, subject, other) DO UPDATE SET detail = EXCLUDED.detail
+             RETURNING id",
+        )
+        .bind(Uuid::now_v7())
+        .bind(kb_id)
+        .bind(key.0)
+        .bind(key.1)
+        .bind(json!({ "count": count, "rules": rules }))
+        .fetch_one(&mut *tx)
+        .await?;
+        fresh_defects.push(id);
+    }
+    sqlx::query(
+        "DELETE FROM ontology_defects
+          WHERE kb_id = $1 AND kind = 'rules_disagree' AND status = 'open'
+            AND NOT (id = ANY($2))",
+    )
+    .bind(kb_id)
+    .bind(&fresh_defects)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(report)
+}
+
+/// 矛盾要写成人能读的话，而派生没有落库、没有文本可查——名字在这里补。
+struct Names {
+    entities: HashMap<Uuid, String>,
+    predicates: HashMap<Uuid, String>,
+}
+
+impl Names {
+    fn entity(&self, id: Uuid) -> String {
+        self.entities
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| "?".into())
+    }
+    fn predicate(&self, id: Uuid) -> String {
+        self.predicates
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| "?".into())
+    }
+}
+
+async fn names_for(
+    pool: &PgPool,
+    derivation: &Derivation,
+    clashes: &Contradictions,
+) -> AppResult<Names> {
+    let mut ents: HashSet<Uuid> = HashSet::new();
+    let mut preds: HashSet<Uuid> = HashSet::new();
+    let mut want = |i: usize| {
+        let d = &derivation.facts[i];
+        ents.insert(d.subject);
+        ents.insert(d.object);
+        preds.insert(d.predicate);
+        preds.insert(d.via);
+    };
+    for c in &clashes.with_assertions {
+        want(c.derived);
+    }
+    for rc in &clashes.between_derivations {
+        for (i, j) in rc.pairs.iter().take(3) {
+            want(*i);
+            want(*j);
+        }
+    }
+    for rc in &clashes.between_derivations {
+        preds.insert(rc.a.0);
+        preds.insert(rc.b.0);
+    }
+    let ents: Vec<Uuid> = ents.into_iter().collect();
+    let preds: Vec<Uuid> = preds.into_iter().collect();
+    let entities: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, canonical_name FROM entities WHERE id = ANY($1)")
+            .bind(&ents)
+            .fetch_all(pool)
+            .await?;
+    let predicates: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id, label FROM relation_types WHERE id = ANY($1)")
+            .bind(&preds)
+            .fetch_all(pool)
+            .await?;
+    Ok(Names {
+        entities: entities.into_iter().collect(),
+        predicates: predicates.into_iter().collect(),
+    })
 }
 
 /// Review 页要看的:还没人表态的违规,连同两条事实的三元组文本。
@@ -336,10 +510,20 @@ pub async fn open_violations(
                 v.left_fact, l.text AS left_text,
                 v.right_fact, rt.text AS right_text,
                 coalesce(array_length(v.path, 1), 0) AS path_len,
-                v.detected_at
+                v.detected_at, v.detail,
+                lf.valid_to IS NULL AS left_open,
+                lf.confidence AS left_confidence,
+                EXISTS (
+                    SELECT 1 FROM entities e
+                    JOIN entities x ON x.kb_id = e.kb_id AND x.id <> e.id
+                                   AND x.merged_into IS NULL
+                                   AND lower(x.canonical_name) = lower(e.canonical_name)
+                    WHERE e.id IN (lf.subject_id, lf.object_id)
+                ) AS same_name_peers
            FROM axiom_violations v
            JOIN triple l  ON l.id  = v.left_fact
            JOIN triple rt ON rt.id = v.right_fact
+           JOIN facts lf ON lf.id = v.left_fact
           WHERE v.kb_id = $1 AND v.status = 'open'
           ORDER BY v.detected_at DESC
           LIMIT $2 OFFSET $3",
@@ -348,7 +532,60 @@ pub async fn open_violations(
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
-    .await?)
+    .await?
+    .into_iter()
+    .map(|r: ViolationRow| {
+        let hint = if r.kind == "derived_contradiction" {
+            hint_for(&r).map(String::from)
+        } else {
+            None
+        };
+        AxiomViolation {
+            id: r.id,
+            kind: r.kind,
+            predicate: r.predicate,
+            left_fact: r.left_fact,
+            left_text: r.left_text,
+            right_fact: r.right_fact,
+            right_text: r.right_text,
+            path_len: r.path_len,
+            detected_at: r.detected_at,
+            detail: r.detail,
+            hint,
+        }
+    })
+    .collect())
+}
+
+#[derive(sqlx::FromRow)]
+struct ViolationRow {
+    id: Uuid,
+    kind: String,
+    predicate: Option<String>,
+    left_fact: Uuid,
+    left_text: String,
+    right_fact: Uuid,
+    right_text: String,
+    path_len: i32,
+    detected_at: chrono::DateTime<chrono::Utc>,
+    detail: serde_json::Value,
+    left_open: bool,
+    left_confidence: f32,
+    same_name_peers: bool,
+}
+
+/// 线索按最常见的错法排（0017 §2）：旧断言没写结束日期、两个同名实体、抽取本来就
+/// 没把握。一次只给一条——三条并列等于没给
+fn hint_for(r: &ViolationRow) -> Option<&'static str> {
+    if r.left_open && r.detail.get("valid_from").is_some_and(|v| !v.is_null()) {
+        Some("stale")
+    } else if r.same_name_peers {
+        Some("duplicate")
+    } else if r.left_confidence < 0.75 {
+        Some("unsure")
+    } else {
+        None
+    }
 }
 
 /// 人裁决一处违规。
@@ -463,7 +700,8 @@ pub async fn check_ontology(pool: &PgPool, kb_id: Uuid) -> AppResult<OntologyRep
     }
     let cleared = sqlx::query(
         "DELETE FROM ontology_defects
-          WHERE kb_id = $1 AND status = 'open' AND NOT (id = ANY($2))",
+          WHERE kb_id = $1 AND status = 'open' AND kind <> 'rules_disagree'
+            AND NOT (id = ANY($2))",
     )
     .bind(kb_id)
     .bind(&fresh)
@@ -497,6 +735,84 @@ pub struct DeriveReport {
     /// 而下游靠它推出的 `employs` 反倒进了库——一条派生的前提凭空消失。
     /// 数出来，别再让它静默一次
     pub unruled: usize,
+    /// 推出来了却撞上断言或别的派生、这一轮拦下没落的（0017）。**拦下的每一条
+    /// 都在 Review 里有对应的一行**——`run` 与这里用同一个函数算
+    pub blocked: usize,
+}
+
+/// 一次取数，三样东西：带区间的边、每条事实的区间、精度与置信度。
+/// `run` 与 `materialize` 共用——两边看到的边必须是同一批
+type TimedEdges = (
+    Vec<TimedEdge>,
+    HashMap<Uuid, (Option<i64>, Option<i64>)>,
+    HashMap<Uuid, (Option<String>, Option<String>, f32)>,
+);
+
+async fn timed_edges(pool: &PgPool, kb_id: Uuid) -> AppResult<TimedEdges> {
+    // 输入**只有断言**。派生住在另一张表，所以这里连过滤都不必写——那正是
+    // 分表买到的东西：忘了排除的后果是推不出东西，不是把自己的输出喂回自己
+    let rows: Vec<EdgeRow> = sqlx::query_as(
+        "SELECT id, predicate_id, subject_id, object_id,
+                valid_from, valid_to, valid_from_precision, valid_to_precision, confidence
+           FROM facts
+          WHERE kb_id = $1
+            AND invalidated_at IS NULL
+            AND predicate_id IS NOT NULL
+            AND object_id IS NOT NULL",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut edges = Vec::with_capacity(rows.len());
+    let mut meta: HashMap<Uuid, (Option<String>, Option<String>, f32)> = HashMap::new();
+    let mut spans: HashMap<Uuid, (Option<i64>, Option<i64>)> = HashMap::new();
+    for (id, pred, subj, obj, from, to, fp, tp, conf) in rows {
+        let (f, t) = (from.map(|x| x.timestamp()), to.map(|x| x.timestamp()));
+        edges.push(TimedEdge {
+            edge: Edge {
+                fact: id,
+                predicate: pred,
+                subject: subj,
+                object: obj,
+            },
+            from: f,
+            to: t,
+        });
+        spans.insert(id, (f, t));
+        meta.insert(id, (fp, tp, conf));
+    }
+    Ok((edges, spans, meta))
+}
+
+/// 人认可过并存的（派生三元组, 断言）对：这些派生下一轮照常落地（0017 §2）。
+async fn accepted_clashes(
+    pool: &PgPool,
+    kb_id: Uuid,
+) -> AppResult<HashSet<(Uuid, Uuid, Uuid, Uuid)>> {
+    let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
+        "SELECT left_fact, detail FROM axiom_violations
+          WHERE kb_id = $1 AND kind = 'derived_contradiction' AND resolution = 'accepted'",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    let id = |v: &serde_json::Value, k: &str| {
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .and_then(|s| s.parse::<Uuid>().ok())
+    };
+    Ok(rows
+        .into_iter()
+        .filter_map(|(against, d)| {
+            Some((
+                id(&d, "subject_id")?,
+                id(&d, "predicate_id")?,
+                id(&d, "object_id")?,
+                against,
+            ))
+        })
+        .collect())
 }
 
 /// 派生事实的身份：三元组 + 区间。
@@ -610,52 +926,40 @@ type LiveRow = (
 pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> {
     let ax = axioms(pool, kb_id).await?;
     let rules = compile_rules(pool, kb_id, &ax).await?;
-
-    // 输入**只有断言**。派生住在另一张表，所以这里连过滤都不必写——那正是
-    // 分表买到的东西：忘了排除的后果是推不出东西，不是把自己的输出喂回自己
-    let rows: Vec<EdgeRow> = sqlx::query_as(
-        "SELECT id, predicate_id, subject_id, object_id,
-                valid_from, valid_to, valid_from_precision, valid_to_precision, confidence
-           FROM facts
-          WHERE kb_id = $1
-            AND invalidated_at IS NULL
-            AND predicate_id IS NOT NULL
-            AND object_id IS NOT NULL",
-    )
-    .bind(kb_id)
-    .fetch_all(pool)
-    .await?;
-
-    let mut edges = Vec::with_capacity(rows.len());
-    let mut meta: HashMap<Uuid, (Option<String>, Option<String>, f32)> = HashMap::new();
-    let mut spans: HashMap<Uuid, (Option<i64>, Option<i64>)> = HashMap::new();
-    for (id, pred, subj, obj, from, to, fp, tp, conf) in rows {
-        let (f, t) = (from.map(|x| x.timestamp()), to.map(|x| x.timestamp()));
-        edges.push(TimedEdge {
-            edge: Edge {
-                fact: id,
-                predicate: pred,
-                subject: subj,
-                object: obj,
-            },
-            from: f,
-            to: t,
-        });
-        spans.insert(id, (f, t));
-        meta.insert(id, (fp, tp, conf));
-    }
+    let (edges, spans, meta) = timed_edges(pool, kb_id).await?;
 
     let derivation = utopia_reason::derive::derive(&edges, &ax);
+    // asserted > derived 是硬性的（0002）：撞上断言的派生不落地。人认可过并存的
+    // 除外；派生之间互撞的两边都不落，认可与否只影响报不报（0017）
+    let clashes = utopia_reason::derive::contradictions(&derivation, &edges, &ax, &spans);
+    let accepted = accepted_clashes(pool, kb_id).await?;
+    let mut blocked: HashSet<usize> = HashSet::new();
+    for c in &clashes.with_assertions {
+        let d = &derivation.facts[c.derived];
+        if !accepted.contains(&(d.subject, d.predicate, d.object, c.against)) {
+            blocked.insert(c.derived);
+        }
+    }
+    for rc in &clashes.between_derivations {
+        for (i, j) in &rc.pairs {
+            blocked.insert(*i);
+            blocked.insert(*j);
+        }
+    }
     let mut report = DeriveReport {
         rules: rules.len(),
         edges: edges.len(),
         derived: derivation.facts.len(),
         capped: derivation.capped.len(),
+        blocked: blocked.len(),
         ..Default::default()
     };
 
     let mut wanted: HashMap<DerivedKey, &utopia_reason::derive::Derived> = HashMap::new();
-    for d in &derivation.facts {
+    for (i, d) in derivation.facts.iter().enumerate() {
+        if blocked.contains(&i) {
+            continue;
+        }
         let Some((from, to)) = utopia_reason::derive::validity(&d.premises, &spans) else {
             continue;
         };
@@ -776,9 +1080,9 @@ pub async fn open_defects(
     offset: i64,
 ) -> AppResult<Vec<OntologyDefect>> {
     Ok(sqlx::query_as(
-        "SELECT d.id, d.kind,
+        "SELECT d.id, d.kind, d.detail,
                 COALESCE(st.label, sr.label) AS subject_label,
-                ot.label AS other_label,
+                COALESCE(ot.label, orr.label) AS other_label,
                 COALESCE(
                     (SELECT array_agg(t.label ORDER BY x.ord)
                        FROM unnest(d.path) WITH ORDINALITY AS x(id, ord)
@@ -790,6 +1094,7 @@ pub async fn open_defects(
            LEFT JOIN entity_types   st ON st.id = d.subject
            LEFT JOIN relation_types sr ON sr.id = d.subject
            LEFT JOIN entity_types   ot ON ot.id = d.other
+           LEFT JOIN relation_types orr ON orr.id = d.other
           WHERE d.kb_id = $1 AND d.status = 'open'
           ORDER BY d.detected_at DESC
           LIMIT $2 OFFSET $3",

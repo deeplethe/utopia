@@ -14,6 +14,7 @@ import {
   type ReviewHistoryEvent,
   type ReviewItem,
   type ReviewSide,
+  type ViolationResolution,
 } from "../api";
 import { PendingFactRow, useCanDecide } from "./PendingFacts";
 import { S } from "../i18n";
@@ -481,7 +482,9 @@ function DefectRow({
     inverse_of_itself: S.review.defectInverseSelf,
     inverse_not_mutual: S.review.defectInverseNotMutual,
     sub_property_cycle: S.review.defectSubPropertyCycle,
+    rules_disagree: S.review.defectRulesDisagree,
   }[d.kind];
+  const rules = d.kind === "rules_disagree" ? (d.detail.rules ?? []) : [];
   // 后两类的后果值得写出来：不可满足的类不会报错，它只是永远空着
   const unsatisfiable =
     d.kind === "disjoint_with_ancestor" || d.kind === "inherits_disjoint";
@@ -505,6 +508,23 @@ function DefectRow({
         <p className="mt-1 text-xs text-neutral-500">
           {S.review.defectNeverInstantiable}
         </p>
+      )}
+      {rules.length > 0 && (
+        <div className="mt-1 space-y-1 text-xs text-neutral-400">
+          <div>{S.review.rulesDisagreeCount(d.detail.count ?? 0)}</div>
+          {rules.map((r, i) => (
+            <div key={i}>
+              <div className="text-neutral-500">
+                {S.review.rulesDisagreeRule(r.rule_a, r.via_a, r.rule_b, r.via_b, r.axiom)}
+              </div>
+              {r.examples.map(([x, y], j) => (
+                <div key={j} className="pl-3 text-neutral-400">
+                  {x} <span className="text-neutral-600">·</span> {y}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
       )}
       <div className="mt-2 flex gap-1.5">
         <button
@@ -533,12 +553,14 @@ function ViolationRow({
   violation: v,
   busy,
   onDecide,
+  onDuplicates,
+  onOntology,
 }: {
   violation: AxiomViolation;
   busy: boolean;
-  onDecide: (
-    resolution: "fact_retracted" | "axiom_relaxed" | "accepted",
-  ) => void;
+  onDecide: (resolution: ViolationResolution, closeAt?: string) => void;
+  onDuplicates: () => void;
+  onOntology: () => void;
 }) {
   const what = {
     self_loop: S.review.violationSelfLoop,
@@ -546,7 +568,11 @@ function ViolationRow({
     cycle: S.review.violationCycle,
     functional: S.review.violationFunctional,
     signature: S.review.violationSignature,
+    derived_contradiction: S.review.violationDerived,
   }[v.kind];
+  if (v.kind === "derived_contradiction") {
+    return <ContradictionRow {...{ v, what, busy, onDecide, onDuplicates, onOntology }} />;
+  }
   // 自反那一类两条事实是同一条——显示一遍就够，显示两遍像个 bug
   const single = v.left_fact === v.right_fact;
   return (
@@ -591,6 +617,109 @@ function ViolationRow({
           onClick={() => onDecide("fact_retracted")}
         >
           {S.review.retractFact}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 派生撞上断言（0017）：卡片是一次审核，线索指向上游的错——旧断言该闭合、
+ * 两个同名实体其实是一个、抽取本来就没把握。修法就在卡片上，端点替人执行。
+ */
+function ContradictionRow({
+  v,
+  what,
+  busy,
+  onDecide,
+  onDuplicates,
+  onOntology,
+}: {
+  v: AxiomViolation;
+  what: string;
+  busy: boolean;
+  onDecide: (resolution: ViolationResolution, closeAt?: string) => void;
+  onDuplicates: () => void;
+  onOntology: () => void;
+}) {
+  const [closeAt, setCloseAt] = useState("");
+  const d = v.detail;
+  const hint =
+    v.hint === "stale"
+      ? S.review.hintStale
+      : v.hint === "duplicate"
+        ? S.review.hintDuplicate
+        : v.hint === "unsure"
+          ? S.review.hintUnsure
+          : S.review.hintReadBoth;
+  return (
+    <div className="glass rounded-xl p-3 border border-[color-mix(in_srgb,var(--u-contest)_35%,transparent)]">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-sm text-[var(--u-contest)]">{what}</span>
+        {v.predicate && (
+          <span className="text-[11px] text-neutral-500">
+            {S.review.violationVia(v.predicate)}
+          </span>
+        )}
+      </div>
+      <div className="mt-1.5 space-y-1">
+        <div className="text-xs text-neutral-300">
+          {S.review.derivedLine(d.subject ?? "?", d.predicate ?? "?", d.object ?? "?")}
+          {d.rule && d.via_label && (
+            <span className="ml-1.5 text-neutral-500">
+              {S.review.derivedBy(d.rule, d.via_label)}
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-neutral-300">
+          {S.review.assertedLine(v.left_text)}
+        </div>
+      </div>
+      <p className="mt-1.5 text-xs text-neutral-500">{hint}</p>
+      <div className="mt-2 flex gap-1.5 flex-wrap items-center">
+        <input
+          type="date"
+          className="input-dark px-2 py-1 text-xs u-num"
+          value={closeAt}
+          title={S.review.closeAssertion}
+          onChange={(e) => setCloseAt(e.target.value)}
+        />
+        <button
+          className="u-btn u-btn-primary px-3 py-1.5 text-xs"
+          disabled={busy || !closeAt}
+          onClick={() =>
+            onDecide("fact_closed", new Date(closeAt).toISOString())
+          }
+        >
+          {S.review.closeAssertion}
+        </button>
+        <button
+          className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+          disabled={busy}
+          onClick={() => onDecide("fact_retracted")}
+        >
+          {S.review.retractAssertion}
+        </button>
+        <button
+          className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+          disabled={busy}
+          onClick={onDuplicates}
+        >
+          {S.review.seeDuplicates}
+        </button>
+        <button
+          className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+          disabled={busy}
+          onClick={onOntology}
+        >
+          {S.review.openOntology}
+        </button>
+        <button
+          className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+          disabled={busy}
+          onClick={() => onDecide("accepted")}
+        >
+          {S.review.letBothStand}
         </button>
       </div>
     </div>
@@ -788,10 +917,12 @@ export function Review() {
     mutationFn: ({
       id,
       resolution,
+      closeAt,
     }: {
       id: string;
-      resolution: "fact_retracted" | "axiom_relaxed" | "accepted";
-    }) => api.decideViolation(kb!.id, id, resolution),
+      resolution: ViolationResolution;
+      closeAt?: string;
+    }) => api.decideViolation(kb!.id, id, resolution, closeAt),
     onSettled: invalidate,
   });
   // 检查是同步的纯计算,所以直接 mutate 不排队。跑完把报告留在按钮旁边——
@@ -1177,9 +1308,11 @@ export function Review() {
                         violationAction.isPending &&
                         violationAction.variables?.id === v.id
                       }
-                      onDecide={(resolution) =>
-                        violationAction.mutate({ id: v.id, resolution })
+                      onDecide={(resolution, closeAt) =>
+                        violationAction.mutate({ id: v.id, resolution, closeAt })
                       }
+                      onDuplicates={() => select("duplicates")}
+                      onOntology={() => navigate({ to: "/ontology" })}
                     />
                   ))}
                 </div>
