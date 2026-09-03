@@ -42,6 +42,7 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0016 | [Close the open seams before cutting new ones](0016-close-the-open-seams-before-cutting-new-ones.md) | In progress · A done · B done (B4 deferred) · C untouched · D2 worked around (#231); the lakehouse landed ahead of D4 (#239) |
 | 0017 | [A contradiction points at an error upstream](0017-a-contradiction-points-upstream.md) | Implemented · B2a: engine and queue, per-item cap, aggregation by rule pair, cards with clues and repairs (#238) · B2b: contested edges in the alert colour, ghost edges for blocked derivations, the disputed chip and the "did not land" section in the panel (#243) |
 | 0018 | [The lakehouse is one protocol away](0018-the-lakehouse-is-one-protocol-away.md) | Implemented: Trino (Iceberg / Delta / Hive), Databricks and Snowflake behind the same trait, scheme picks the engine (#239) · replay tests only, real clusters wanted (#240–#242) · MaxCompute waits |
+| 0019 | [The second clock can be rewound](0019-the-second-clock-can-be-rewound.md) | Planned · the recording axis is stored but nothing reads it as of a moment; one `held_at(T)` predicate in place of the hard-coded `invalidated_at IS NULL`, `at` and `as_of` separate to the API · read-only, no migration |
 
 ## Not a decision record
 
