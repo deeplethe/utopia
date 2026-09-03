@@ -43,6 +43,9 @@ pub struct Report {
     pub contradictions_capped: usize,
     /// 互撞的规则对数——进 `ontology_defects`，不进这张表
     pub rules_disagree: usize,
+    /// 重新打开的 resolved 行：人曾说撤了、闭合了、要去改本体，而违规又算出来了——
+    /// 承诺没兑现，队列不替人沉默（#202）
+    pub reopened: usize,
 }
 
 /// 单个谓词上进队列的矛盾上限（0017 §1）。超出的部分只计数。
@@ -318,9 +321,14 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         if id.is_some() {
             report.inserted += 1;
         }
-        // 无论新插的还是本来就在的，都算「这一轮仍然成立」
-        let keep: (Uuid,) = sqlx::query_as(
-            "SELECT id FROM axiom_violations
+        // 无论新插的还是本来就在的，都算「这一轮仍然成立」。
+        //
+        // 本来就在而且 resolved 的要再看一眼：`fact_retracted` / `fact_closed` /
+        // `axiom_relaxed` 都是「世界会变」的承诺——事实没了、区间闭了、公理放宽了，
+        // 违规就不该再算出来。又算出来了，承诺就是没兑现，那行回到 open，人再看一次。
+        // `accepted` 是有意并存，重算多少次都沉默（#202）
+        let (keep, status, resolution): (Uuid, String, Option<String>) = sqlx::query_as(
+            "SELECT id, status, resolution FROM axiom_violations
               WHERE kb_id = $1 AND kind = $2 AND left_fact = $3 AND right_fact = $4",
         )
         .bind(kb_id)
@@ -329,7 +337,24 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         .bind(right)
         .fetch_one(&mut *tx)
         .await?;
-        fresh.push(keep.0);
+        if status == "resolved"
+            && matches!(
+                resolution.as_deref(),
+                Some("fact_retracted" | "fact_closed" | "axiom_relaxed")
+            )
+        {
+            sqlx::query(
+                "UPDATE axiom_violations
+                    SET status = 'open', resolution = NULL, decided_by = NULL,
+                        decided_at = NULL, detected_at = now()
+                  WHERE id = $1",
+            )
+            .bind(keep)
+            .execute(&mut *tx)
+            .await?;
+            report.reopened += 1;
+        }
+        fresh.push(keep);
     }
 
     // 这一轮没算出来的 open 行是陈的：事实被撤了，或者公理放宽了。
@@ -511,6 +536,10 @@ pub async fn open_violations(
                 v.right_fact, rt.text AS right_text,
                 coalesce(array_length(v.path, 1), 0) AS path_len,
                 v.detected_at, v.detail,
+                COALESCE((SELECT jsonb_agg(jsonb_build_object('id', x.id, 'text', pt.text)
+                                           ORDER BY x.ord)
+                            FROM unnest(v.path) WITH ORDINALITY AS x(id, ord)
+                            JOIN triple pt ON pt.id = x.id), '[]'::jsonb) AS path,
                 lf.valid_to IS NULL AS left_open,
                 lf.confidence AS left_confidence,
                 EXISTS (
@@ -552,6 +581,7 @@ pub async fn open_violations(
             detected_at: r.detected_at,
             detail: r.detail,
             hint,
+            path: serde_json::from_value(r.path).unwrap_or_default(),
         }
     })
     .collect())
@@ -569,6 +599,7 @@ struct ViolationRow {
     path_len: i32,
     detected_at: chrono::DateTime<chrono::Utc>,
     detail: serde_json::Value,
+    path: serde_json::Value,
     left_open: bool,
     left_confidence: f32,
     same_name_peers: bool,
@@ -596,6 +627,61 @@ fn hint_for(r: &ViolationRow) -> Option<&'static str> {
 ///
 /// 改状态不删行,与账本同一个规矩:表过态这件事本身要留痕,而且 `run` 靠
 /// `status = 'open'` 判断哪些是派生的、可以重算掉——人的决定必须活过重跑。
+/// 一处违规里该撤哪条事实。
+///
+/// 单事实的种类（自环、签名、派生撞断言）只有一条，不用说；双事实与环上的要人指名，
+/// 而且只能指违规自己列出的那几条——撤一条不相干的事实不是裁决，是误操作
+pub fn pick_retraction(
+    left: Uuid,
+    right: Uuid,
+    path: &[Uuid],
+    requested: Option<Uuid>,
+) -> Option<Uuid> {
+    if left == right {
+        return match requested {
+            None => Some(left),
+            Some(r) if r == left => Some(left),
+            Some(_) => None,
+        };
+    }
+    let r = requested?;
+    (r == left || r == right || path.contains(&r)).then_some(r)
+}
+
+/// 「数据错了」：**真的撤掉那条事实**，再把违规标成 resolved（#202）。
+///
+/// 此前只改 `axiom_violations`，事实照样活在图里；重跑撞上 resolved 行又什么都不做，
+/// 违规既没消失也不再出现。撤走的是 `reject_fact` 那条路——`invalidated_at`，
+/// 证据不动，账本留痕。回撤掉的那条 id，调用方据此记审计
+pub async fn retract_from_violation(
+    pool: &PgPool,
+    kb_id: Uuid,
+    violation_id: Uuid,
+    requested: Option<Uuid>,
+    actor: Uuid,
+) -> AppResult<Uuid> {
+    let row: Option<(Uuid, Uuid, Vec<Uuid>)> = sqlx::query_as(
+        "SELECT left_fact, right_fact, path FROM axiom_violations
+          WHERE id = $1 AND kb_id = $2 AND status = 'open'",
+    )
+    .bind(violation_id)
+    .bind(kb_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((left, right, path)) = row else {
+        return Err(utopia_core::AppError::NotFound);
+    };
+    let Some(target) = pick_retraction(left, right, &path, requested) else {
+        return Err(utopia_core::AppError::invalid(
+            "fact_required",
+            "这处违规涉及多条事实，要说撤哪一条，且只能是它列出的那几条",
+        ));
+    };
+    crate::graph::reject_fact(pool, kb_id, target).await?;
+    decide(pool, kb_id, violation_id, "fact_retracted", actor).await?;
+    Ok(target)
+}
+
 pub async fn decide(
     pool: &PgPool,
     kb_id: Uuid,

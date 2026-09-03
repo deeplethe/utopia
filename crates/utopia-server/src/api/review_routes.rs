@@ -502,6 +502,9 @@ pub struct DecideViolationReq {
     /// `fact_closed` 必填：旧断言在哪一天结束
     #[serde(default)]
     pub close_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// `fact_retracted` 时撤哪条：双事实与环上的违规必填，单事实的可省（#202）
+    #[serde(default)]
+    pub fact_id: Option<Uuid>,
 }
 
 /// 人裁决一处公理违规。
@@ -510,8 +513,9 @@ pub struct DecideViolationReq {
 /// 而不是数据——用户导的本体把某个属性声明成反对称，而他自己的语料里那关系
 /// 其实双向。这时该改的是本体，不是二十条事实。
 ///
-/// 端点只记决定，不替人执行。撤事实走 `reject_fact`，改公理走本体页——
-/// 那两个动作各有自己的权限与台账，塞进这里会变成一个什么都能干的端点。
+/// **「数据错了」真的撤事实**（#202）：此前只记决定，事实照样活在图里，而队列又
+/// 不再提它。撤哪条由请求指名（`fact_id`），单事实的种类可省；撤完重算一遍检查，
+/// 那条事实牵连的其它违规一并清掉。改公理仍然走本体页——那是另一个页面的事。
 pub async fn decide_violation(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -529,8 +533,8 @@ pub async fn decide_violation(
         )
         .into());
     }
-    let row: Option<(String, Uuid)> = sqlx::query_as(
-        "SELECT kind, left_fact FROM axiom_violations
+    let row: Option<(String, Uuid, Uuid, Vec<Uuid>)> = sqlx::query_as(
+        "SELECT kind, left_fact, right_fact, path FROM axiom_violations
           WHERE id = $1 AND kb_id = $2 AND status = 'open'",
     )
     .bind(violation_id)
@@ -538,16 +542,33 @@ pub async fn decide_violation(
     .fetch_optional(&state.pool)
     .await
     .map_err(utopia_core::AppError::Db)?;
-    let Some((kind, left)) = row else {
+    let Some((kind, left, right, path)) = row else {
         return Err(utopia_core::AppError::NotFound.into());
     };
-    // 派生撞断言那一类（0017）的修法就在卡片上，端点替人执行：撤旧断言、或给它一个
-    // 结束日期。其它几类仍只记决定——那些卡片上两条都是断言，撤哪条端点判不了
     let repaired = kind == "derived_contradiction";
+    // 撤事实的那条路自己会把违规标成 resolved；其余出路在下面统一记
+    let mut decided = false;
     match (repaired, req.resolution.as_str()) {
-        (true, "fact_retracted") => {
-            let snap = fact_snapshot(&state, kb_id, left).await;
-            utopia_store::graph::reject_fact(&state.pool, kb_id, left).await?;
+        (_, "fact_retracted") => {
+            let Some(target) =
+                utopia_store::reasoning::pick_retraction(left, right, &path, req.fact_id)
+            else {
+                return Err(utopia_core::AppError::invalid(
+                    "fact_required",
+                    "这处违规涉及多条事实，要说撤哪一条，且只能是它列出的那几条",
+                )
+                .into());
+            };
+            let snap = fact_snapshot(&state, kb_id, target).await;
+            utopia_store::reasoning::retract_from_violation(
+                &state.pool,
+                kb_id,
+                violation_id,
+                Some(target),
+                user.id,
+            )
+            .await?;
+            decided = true;
             if let Some(d) = snap {
                 let _ = utopia_store::audit::record(
                     &state.pool,
@@ -555,7 +576,7 @@ pub async fn decide_violation(
                     user.id,
                     "fact.reject",
                     "fact",
-                    Some(left),
+                    Some(target),
                     d,
                 )
                 .await;
@@ -609,12 +630,18 @@ pub async fn decide_violation(
         }
         _ => {}
     }
-    utopia_store::reasoning::decide(&state.pool, kb_id, violation_id, &req.resolution, user.id)
-        .await?;
+    if !decided {
+        utopia_store::reasoning::decide(&state.pool, kb_id, violation_id, &req.resolution, user.id)
+            .await?;
+    }
     // 路清了就让派生落地，人不必再去点一次「推一遍」。撤与闭合把断言挪开了，
     // 认可则在 materialize 里放行
     if repaired {
         utopia_store::reasoning::materialize(&state.pool, kb_id).await?;
+    }
+    // 撤掉的事实可能还挂在别的违规里：重算一遍，那些行随之清掉，队列不留死账
+    if req.resolution == "fact_retracted" {
+        utopia_store::reasoning::run(&state.pool, kb_id).await?;
     }
     let _ = utopia_store::audit::record(
         &state.pool,

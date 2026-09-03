@@ -1375,6 +1375,9 @@ export const en = {
     violationVia: (p: string) => `via ${p}`,
     violationPath: (n: number) => `${n} facts in the cycle`,
     retractFact: "Data is wrong",
+    /** 双事实与环上的违规：撤具体哪一条（#202） */
+    retractThis: "Retract",
+    retractThisHint: "Withdraw this fact from the graph; the other one stays.",
     relaxAxiom: "Axiom is wrong",
     acceptBoth: "Both are right",
     runCheck: "Run check",

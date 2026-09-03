@@ -987,6 +987,16 @@ pub struct AxiomViolation {
     /// 审核线索（0017 §2）：`stale`（旧断言没写结束日期）、`duplicate`（有同名
     /// 实体）、`unsure`（抽取置信度低）。只给一条，没有就空
     pub hint: Option<String>,
+    /// 环上的每一条事实，按顺序（其余种类为空）。**逐条给 id**：撤事实要说撤哪条，
+    /// 而环上哪条错了只有人看了才知道（#202）
+    pub path: Vec<ViolationFact>,
+}
+
+/// 违规里的一条事实：id 与三元组文本
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViolationFact {
+    pub id: Uuid,
+    pub text: String,
 }
 
 /// 本体自己的一处自相矛盾（见 `ontology_defects`）。

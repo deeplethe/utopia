@@ -1237,6 +1237,8 @@ export const zh: Strings = {
     violationVia: (p: string) => `依据 ${p}`,
     violationPath: (n: number) => `环上 ${n} 条事实`,
     retractFact: "数据错了",
+    retractThis: "撤这条",
+    retractThisHint: "把这条事实撤出图谱，另一条不动。",
     relaxAxiom: "公理错了",
     acceptBoth: "两边都对",
     runCheck: "跑一遍检查",
