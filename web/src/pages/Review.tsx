@@ -549,6 +549,9 @@ function DefectRow({
 /** 一处公理违规。**三个按钮而不是两个**——第三个是这一档独有的出路：
  *  矛盾可能出在定义上（用户导的本体把某个属性声明成反对称，而他的语料里
  *  那关系其实双向），这时该改的是本体，不是二十条事实。 */
+/** 裁决的附加参数：闭合日期（fact_closed）、撤哪条（fact_retracted） */
+type DecideOpts = { closeAt?: string; factId?: string };
+
 function ViolationRow({
   violation: v,
   busy,
@@ -558,7 +561,7 @@ function ViolationRow({
 }: {
   violation: AxiomViolation;
   busy: boolean;
-  onDecide: (resolution: ViolationResolution, closeAt?: string) => void;
+  onDecide: (resolution: ViolationResolution, opts?: DecideOpts) => void;
   onDuplicates: () => void;
   onOntology: () => void;
 }) {
@@ -575,6 +578,16 @@ function ViolationRow({
   }
   // 自反那一类两条事实是同一条——显示一遍就够，显示两遍像个 bug
   const single = v.left_fact === v.right_fact;
+  // 「数据错了」要撤具体哪一条：环逐条列，双事实的两条各一个按钮，单事实的不用问（#202）
+  const facts =
+    v.path.length > 0
+      ? v.path
+      : single
+        ? [{ id: v.left_fact, text: v.left_text }]
+        : [
+            { id: v.left_fact, text: v.left_text },
+            { id: v.right_fact, text: v.right_text },
+          ];
   return (
     <div className="glass rounded-xl p-3">
       <div className="flex items-baseline gap-2 flex-wrap">
@@ -591,10 +604,21 @@ function ViolationRow({
         )}
       </div>
       <div className="mt-1.5 space-y-1">
-        <div className="text-xs text-neutral-300">{v.left_text}</div>
-        {!single && (
-          <div className="text-xs text-neutral-300">{v.right_text}</div>
-        )}
+        {facts.map((f) => (
+          <div key={f.id} className="flex items-center gap-2">
+            <span className="text-xs text-neutral-300 min-w-0 flex-1">{f.text}</span>
+            {!single && (
+              <button
+                className="u-btn u-btn-ghost shrink-0 px-2 py-1 text-[11px]"
+                disabled={busy}
+                title={S.review.retractThisHint}
+                onClick={() => onDecide("fact_retracted", { factId: f.id })}
+              >
+                {S.review.retractThis}
+              </button>
+            )}
+          </div>
+        ))}
       </div>
       <div className="mt-2 flex gap-1.5 flex-wrap">
         <button
@@ -611,13 +635,15 @@ function ViolationRow({
         >
           {S.review.relaxAxiom}
         </button>
-        <button
-          className="u-btn u-btn-primary px-3 py-1.5 text-xs"
-          disabled={busy}
-          onClick={() => onDecide("fact_retracted")}
-        >
-          {S.review.retractFact}
-        </button>
+        {single && (
+          <button
+            className="u-btn u-btn-primary px-3 py-1.5 text-xs"
+            disabled={busy}
+            onClick={() => onDecide("fact_retracted", { factId: v.left_fact })}
+          >
+            {S.review.retractFact}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -638,7 +664,7 @@ function ContradictionRow({
   v: AxiomViolation;
   what: string;
   busy: boolean;
-  onDecide: (resolution: ViolationResolution, closeAt?: string) => void;
+  onDecide: (resolution: ViolationResolution, opts?: DecideOpts) => void;
   onDuplicates: () => void;
   onOntology: () => void;
 }) {
@@ -688,7 +714,7 @@ function ContradictionRow({
           className="u-btn u-btn-primary px-3 py-1.5 text-xs"
           disabled={busy || !closeAt}
           onClick={() =>
-            onDecide("fact_closed", new Date(closeAt).toISOString())
+            onDecide("fact_closed", { closeAt: new Date(closeAt).toISOString() })
           }
         >
           {S.review.closeAssertion}
@@ -921,12 +947,12 @@ export function Review() {
     mutationFn: ({
       id,
       resolution,
-      closeAt,
+      opts,
     }: {
       id: string;
       resolution: ViolationResolution;
-      closeAt?: string;
-    }) => api.decideViolation(kb!.id, id, resolution, closeAt),
+      opts?: DecideOpts;
+    }) => api.decideViolation(kb!.id, id, resolution, opts),
     onSettled: invalidate,
   });
   // 检查是同步的纯计算,所以直接 mutate 不排队。跑完把报告留在按钮旁边——
@@ -1319,8 +1345,8 @@ export function Review() {
                         violationAction.isPending &&
                         violationAction.variables?.id === v.id
                       }
-                      onDecide={(resolution, closeAt) =>
-                        violationAction.mutate({ id: v.id, resolution, closeAt })
+                      onDecide={(resolution, opts) =>
+                        violationAction.mutate({ id: v.id, resolution, opts })
                       }
                       onDuplicates={() => select("duplicates")}
                       onOntology={() => navigate({ to: "/ontology" })}

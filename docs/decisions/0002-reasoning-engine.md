@@ -81,6 +81,7 @@ corpus is cleaned, then materialization is switched on.
   declarations; with the seeds gone, a KB without a pack reports zero.
 - 2026-09-03: the contradiction signals promised in decision 4 exist (0017); the `related_to`
   obstacle (39% empty edges) vanished with 0010, since null-predicate edges never enter reasoning.
+- 2026-09-03: "Data is wrong" retracts the fact (#202). Until now `decide` only marked the violation resolved; the fact stayed in the graph, and a rerun hit the resolved row and stayed silent. The decision now names the fact (single-fact kinds pick it themselves; asymmetry, functional and cycle cards offer a button per fact), retracts it through `reject_fact`, and reruns the check. A resolved row whose violation is computed again is reopened when its resolution promised a change (`fact_retracted`, `fact_closed`, `axiom_relaxed`); `accepted` stays quiet.
 
 ## Open questions
 

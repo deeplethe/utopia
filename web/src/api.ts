@@ -519,6 +519,8 @@ export interface AxiomViolation {
   /** 审核线索（0017 §2），一次只给一条：旧断言没写结束日期、有同名实体、
    *  抽取置信度低。没有就空 */
   hint: "stale" | "duplicate" | "unsure" | null;
+  /** 环上的每一条事实，按顺序；其余种类为空。撤事实要指名撤哪条（#202） */
+  path: { id: string; text: string }[];
 }
 /** 本体自己的一处自相矛盾。**与 AxiomViolation 不是一回事**：那个说
  *  「事实与定义抵触」，这个说「定义自己站不住」，后者更根本 */
@@ -1800,13 +1802,17 @@ export const api = {
     kbId: string,
     violationId: string,
     resolution: ViolationResolution,
-    closeAt?: string,
+    opts: { closeAt?: string; factId?: string } = {},
   ) =>
     request<{ ok: boolean }>(
       `/api/v1/kbs/${kbId}/review/violations/${violationId}`,
       {
         method: "POST",
-        body: JSON.stringify({ resolution, close_at: closeAt ?? null }),
+        body: JSON.stringify({
+          resolution,
+          close_at: opts.closeAt ?? null,
+          fact_id: opts.factId ?? null,
+        }),
       },
     ),
   confirmFact: (kbId: string, factId: string) =>
