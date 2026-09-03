@@ -35,7 +35,7 @@ import { S } from "../i18n";
 import { toast } from "../toast";
 import { useKb, useKbId } from "../kb";
 import { DangerConfirm, RAIL_CLS } from "../ui";
-import { liveAnswer, type Turn } from "../liveAnswer";
+import { liveAnswer, type LiveHandle, type Turn } from "../liveAnswer";
 import { NodCard } from "./PendingFacts";
 
 /* `Turn` 定义在 liveAnswer 里：进行中的那一次也是一串 Turn，
@@ -61,19 +61,23 @@ export function Chat() {
   // 已经结束的那些轮次，从库里读来。**进行中的那一次不在这里**——见下
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState(() => sessionStorage.getItem(DRAFT_KEY) ?? "");
-  // 进行中的那一次活在组件之外，所以切走再回来它还在（见 liveAnswer.ts）。
-  // 新建会话时它的 id 是 null，而此时 activeId 也是 null，两者对得上
-  const live = useSyncExternalStore(liveAnswer.subscribe, liveAnswer.get);
-  /* **是「这一场」在流，不是「有一场」在流。**
-     写成全局的话，另一场在生成时这一场的输入框也会变成停止按钮、发不出消息，
-     而且最后一轮会被当成还在流——引用于是被藏起来（那条判据见 TurnView）。
-     一个正在别处生成的回答不该改变这里的任何东西 */
   /* **按 URL 认领，不按 state。** 这个文件开头就写着「URL 是当前会话的唯一
      事实来源」，而这里一度用了 `activeId`——它是 state，切走再回来时更新得
      比第一次渲染晚，于是那一帧认不出自己，屏幕空着。用地址栏里的那个 id
      就没有时序可言。新会话还没拿到 id 时两者都是空，也对得上 */
   const currentId = routeConvId ?? activeId;
-  const liveHere = live && live.conversationId === currentId ? live : null;
+  // 进行中的那些回答都活在组件之外（见 liveAnswer.ts），这里只认领「正在看的
+  // 这一场」。别场的任何变更都不动这一场的快照引用——「一个正在别处生成的
+  // 回答不该改变这里的任何东西」如今在渲染层也字面成立：React 靠引用相等
+  // 跳过重渲染，别场逐字增长不再打扰当前会话
+  const liveHere = useSyncExternalStore(
+    liveAnswer.subscribe,
+    () => liveAnswer.entry(kb?.id ?? null, currentId),
+  );
+  /* **是「这一场」在流，不是「有一场」在流。**
+     写成全局的话，另一场在生成时这一场的输入框也会变成停止按钮、发不出消息，
+     而且最后一轮会被当成还在流——引用于是被藏起来（那条判据见 TurnView）。
+     一个正在别处生成的回答不该改变这里的任何东西 */
   const streaming = liveHere?.streaming ?? false;
   const shown = liveHere ? liveHere.turns : turns;
   const [scopeOpen, setScopeOpen] = useState(false);
@@ -82,7 +86,6 @@ export function Chat() {
   const [convSearch, setConvSearch] = useState("");
   // 三点菜单展开的是哪一条。同时只开一个
   const [menuFor, setMenuFor] = useState<string | null>(null);
-  const abortRef = useRef<(() => void) | null>(null);
   const scopeRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -184,13 +187,15 @@ export function Chat() {
   /** 接回一个正在生成的回答。没有在跑的话服务端回 `idle`，什么都不发生。 */
   const attachIfRunning = (id: string, history: Turn[]) => {
     let abort = () => {};
+    let handle: LiveHandle | null = null;
     const stop = reattachChat(kb!.id, id, {
       onConversation: () => {},
       /* **快照到了才建这一轮。** 先摆一个空位再等回答的话，没有在跑的会话
          上会闪一下空的助手气泡——而那是绝大多数情况。
          快照是覆盖：它是那个回答此刻的全貌，不是增量 */
-      onSnapshot: (s) =>
-        liveAnswer.start(
+      onSnapshot: (s) => {
+        handle = liveAnswer.begin(
+          kb!.id,
           id,
           [
             ...history,
@@ -202,28 +207,28 @@ export function Chat() {
             },
           ],
           abort,
-        ),
-      onSources: (sources) => liveAnswer.patchLast((t) => ({ ...t, sources })),
+        );
+      },
+      onSources: (sources) => handle?.patchLast((t) => ({ ...t, sources })),
       onStep: (step) =>
-        liveAnswer.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
-      onDelta: (text) => liveAnswer.patchLast((t) => ({ ...t, content: t.content + text })),
+        handle?.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
+      onDelta: (text) => handle?.patchLast((t) => ({ ...t, content: t.content + text })),
       onDone: () => {
-        liveAnswer.finish();
+        handle?.finish();
         invalidateList();
       },
       onError: (message) => {
-        liveAnswer.patchLast((t) => ({ ...t, error: message }));
-        liveAnswer.finish();
+        handle?.patchLast((t) => ({ ...t, error: message }));
+        handle?.finish();
       },
       onIdle: () => {},
     });
     abort = stop;
-    abortRef.current = stop;
   };
 
   const loadConversation = async (id: string) => {
     // 回到正在写的那一场：直接认领，别去库里读——库里要等它写完才有那一行
-    if (liveAnswer.get()?.conversationId === id) {
+    if (liveAnswer.entry(kb!.id, id)) {
       activeIdRef.current = id;
       setActiveId(id);
       return;
@@ -287,13 +292,23 @@ export function Chat() {
     /* **结果留在 store 里，不交回组件状态。**
        交回去要经过一个 `setTurns`，而流结束时这个组件可能早就卸载了——
        那一下是空操作，内容就此消失（切回来一片空白，问题气泡都没有）。
-       留在 store 里，谁挂载谁认领 */
+       留在 store 里，谁挂载谁认领。这一场从开场起就有名有姓：先建条目、
+       后开流，回调顺着句柄只写自己这一场 */
+    const handle = liveAnswer.begin(
+      kb.id,
+      activeId,
+      // 从屏上正在显示的那些轮续接，而不是组件 state——流结束后内容只落在
+      // store 里，state 还是上次装 conversation 时的库内历史，用它会让
+      // 上一条回答从画面里消失
+      [...(liveHere?.turns ?? turns), { role: "user", content: q }, { role: "assistant", content: "" }],
+      () => {},
+    );
     const abort = streamChat(
       kb.id,
       { conversation_id: activeId ?? undefined, message: q },
       {
         onConversation: (id) => {
-          liveAnswer.identify(id);
+          handle.identify(id);
           // 先同步写 ref 再换 URL：路由同步 effect 因 id 相等而跳过重载，不打断流
           activeIdRef.current = id;
           setActiveId(id);
@@ -305,27 +320,23 @@ export function Chat() {
           });
           invalidateList();
         },
-        onSources: (sources) => liveAnswer.patchLast((t) => ({ ...t, sources })),
+        onSources: (sources) => handle.patchLast((t) => ({ ...t, sources })),
         onStep: (step) =>
-          liveAnswer.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
+          handle.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
         onDelta: (text) =>
-          liveAnswer.patchLast((t) => ({ ...t, content: t.content + text })),
+          handle.patchLast((t) => ({ ...t, content: t.content + text })),
         onDone: () => {
-          liveAnswer.finish();
+          handle.finish();
           invalidateList();
         },
         onError: (message) => {
-          liveAnswer.patchLast((t) => ({ ...t, error: message }));
-          liveAnswer.finish();
+          handle.patchLast((t) => ({ ...t, error: message }));
+          handle.finish();
         },
       },
     );
-    abortRef.current = abort;
-    liveAnswer.start(
-      activeId,
-      [...turns, { role: "user", content: q }, { role: "assistant", content: "" }],
-      abort,
-    );
+    // streamChat 的 abort 要等它返回才有；真 abort 到手前，句柄上先占着空操作
+    handle.setAbort(abort);
   };
 
   /* Composer 卡：新对话首屏居中出场，进入对话后停靠底部（同一块 JSX 两处复用） */
@@ -401,9 +412,9 @@ export function Chat() {
         {streaming ? (
           <button
             onClick={() => {
-              // **只有这里 abort**——切页面、换会话、换库都不再打断（liveAnswer.ts）
-              abortRef.current?.();
-              liveAnswer.finish();
+              // **只停正在看的这一场**——切页面、换会话、换库都不打断（liveAnswer.ts），
+              // 别场照常写它们自己的条目
+              if (kb) liveAnswer.stop(kb.id, currentId);
             }}
             title={S.ask.stop}
             className="h-8 w-8 shrink-0 rounded-lg grid place-items-center bg-white/[0.08] text-neutral-200 hover:bg-white/[0.14] transition-colors"
