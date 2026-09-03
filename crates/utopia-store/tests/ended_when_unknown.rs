@@ -106,8 +106,7 @@ async fn shape(pool: &PgPool, id: Uuid) -> anyhow::Result<(bool, Option<String>)
 
 #[tokio::test]
 async fn a_relation_the_text_says_is_over_is_not_stored_as_ongoing() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
@@ -166,8 +165,7 @@ async fn a_relation_the_text_says_is_over_is_not_stored_as_ongoing() -> anyhow::
 /// 一条自己都不知道何时结束的断言，没有资格给别人定结束时刻。
 #[tokio::test]
 async fn an_already_ended_fact_is_not_treated_as_an_open_claim() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;

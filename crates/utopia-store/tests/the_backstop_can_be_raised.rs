@@ -19,8 +19,7 @@ use sqlx::PgPool;
 /// 逐个试边界而不是只试一个：漂移可能出在任何一档上，而这几次查询很便宜。
 #[tokio::test]
 async fn every_value_rust_accepts_the_database_accepts_too() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
@@ -61,8 +60,7 @@ async fn every_value_rust_accepts_the_database_accepts_too() -> anyhow::Result<(
 /// 有行的库跑一个数、空表的库跑另一个数，而两者都不报错。
 #[tokio::test]
 async fn the_two_defaults_say_the_same_number() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
