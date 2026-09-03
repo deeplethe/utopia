@@ -110,8 +110,7 @@ async fn state(pool: &PgPool, id: i64) -> anyhow::Result<(String, i32)> {
 
 #[tokio::test]
 async fn a_failed_job_finds_its_way_back() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
