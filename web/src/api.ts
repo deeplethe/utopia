@@ -164,6 +164,8 @@ export interface Doc {
    *  `migrations/0002_ingest.sql` 的 `tags` 列上 */
   tags: string[];
   missing_since: string | null;
+  /** 墓碑（#268）：删了但留着，可撤销 */
+  deleted_at: string | null;
   created_at: string;
 }
 
@@ -745,6 +747,8 @@ export interface Evidence {
   doc_version: number;
   /** 文档已有更新版本（证据停留在旧版；不代表事实失效） */
   stale: boolean;
+  /** 这条证据的文档已被删除；事实还活着是因为另有出处（#268） */
+  document_deleted: boolean;
 }
 
 export interface ChunkFull {
@@ -1345,7 +1349,13 @@ export const api = {
     );
   },
   deleteDocument: (id: string) =>
-    request<{ ok: boolean }>(`/api/v1/documents/${id}`, { method: "DELETE" }),
+    request<{ ok: boolean; deletion_id: string; invalidated_facts: number }>(
+      `/api/v1/documents/${id}`,
+      { method: "DELETE" },
+    ),
+  /** 撤销删除（#268）：文档、分块、随之作废的事实原路复活 */
+  restoreDocument: (id: string) =>
+    request<{ ok: boolean }>(`/api/v1/documents/${id}/restore`, { method: "POST" }),
 
   search: (kbId: string, q: string) =>
     request<{ results: SearchResult[] }>(`/api/v1/kbs/${kbId}/search`, {

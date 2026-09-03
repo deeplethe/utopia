@@ -892,7 +892,8 @@ pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<Eviden
                 c.doc_version,
                 c.doc_version < COALESCE(
                     (SELECT MAX(version) FROM document_versions dv
-                     WHERE dv.document_id = c.document_id), 1) AS stale
+                     WHERE dv.document_id = c.document_id), 1) AS stale,
+                d.deleted_at IS NOT NULL AS document_deleted
          FROM fact_evidence fe
          JOIN chunks c ON c.id = fe.chunk_id
          JOIN documents d ON d.id = c.document_id

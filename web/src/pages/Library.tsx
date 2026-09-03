@@ -417,7 +417,25 @@ export function Library() {
     },
     onSuccess: invalidate,
   });
-  const remove = useMutation({ mutationFn: (id: string) => api.deleteDocument(id), onSuccess: invalidate });
+  // 删除是墓碑（#268）：提示里给一个「撤销」，点了原路复活
+  const restore = useMutation({
+    mutationFn: (id: string) => api.restoreDocument(id),
+    onSuccess: () => {
+      toast.success(S.library.restored);
+      invalidate();
+    },
+    onError: (e) => toast.error(String(e)),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.deleteDocument(id),
+    onSuccess: (r, id) => {
+      toast.info(S.library.deletedWithFacts(r.invalidated_facts), {
+        label: S.library.undo,
+        onClick: () => restore.mutate(id),
+      });
+      invalidate();
+    },
+  });
   const extract = useMutation({ mutationFn: (id: string) => api.extractDocument(id), onSuccess: invalidate });
   const reprocess = useMutation({
     mutationFn: (id: string) => api.reprocessDocument(id),

@@ -149,7 +149,8 @@ pub async fn my_kb_infos(
                 m.role AS member_role,
                 m.created_at AS joined_at,
                 inviter.display_name AS added_by_name,
-                (SELECT count(*) FROM documents d WHERE d.kb_id = k.id) AS doc_count,
+                (SELECT count(*) FROM documents d
+                  WHERE d.kb_id = k.id AND d.deleted_at IS NULL) AS doc_count,
                 (SELECT count(*) FROM kb_members mm WHERE mm.kb_id = k.id) AS member_count
          FROM knowledge_bases k
          LEFT JOIN kb_members m ON m.kb_id = k.id AND m.user_id = $2

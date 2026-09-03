@@ -2635,6 +2635,14 @@ function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
                       {S.graph.fromVersion(ev.doc_version)}
                     </span>
                   )}
+                  {ev.document_deleted && (
+                    <span
+                      className="ml-1.5 text-[10px] text-[var(--u-contest)]"
+                      title={S.graph.sourceDeletedHint}
+                    >
+                      {S.graph.sourceDeleted}
+                    </span>
+                  )}
                 </div>
               </Link>
             ))}
@@ -3590,6 +3598,14 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
                 title={S.graph.staleEvidenceHint}
               >
                 {S.graph.fromVersion(ev.doc_version)}
+              </span>
+            )}
+            {ev.document_deleted && (
+              <span
+                className="ml-1.5 text-[10px] text-[var(--u-contest)]"
+                title={S.graph.sourceDeletedHint}
+              >
+                {S.graph.sourceDeleted}
               </span>
             )}
           </div>

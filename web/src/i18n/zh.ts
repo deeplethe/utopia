@@ -284,7 +284,7 @@ export const zh: Strings = {
         {
           h: "留存与删除",
           body: [
-            "删除一篇文档会移除它的存储内容与索引条目。已经抽取进知识图谱的事实连同其出处仍会保留，直到在「审阅」中被移除。删除一个知识库会永久移除它的文档、图谱与来源。",
+            "删除一篇文档会把它移出知识库，并让只以它为出处的事实一并失效；另有出处的事实保留，出处照旧。内容会留着以便撤销：删除可以恢复，重新上传同一份文件也会恢复它。删除一个知识库会永久移除它的文档、图谱与来源。",
           ],
         },
         {
@@ -336,6 +336,10 @@ export const zh: Strings = {
     },
   },
   library: {
+    deletedWithFacts: (n: number) =>
+      n === 0 ? "文档已删除" : `文档已删除 · 随之失效 ${n} 条事实`,
+    undo: "撤销",
+    restored: "文档已恢复",
     title: "文库",
     upload: "上传文件",
     uploading: "上传中…",
@@ -573,8 +577,8 @@ export const zh: Strings = {
     cleanupTitle: "删除缺失的文档",
     cleanupHint: (n: number, name: string) =>
       `「${name}」中有 ${n} 篇文档已不在来源里。` +
-      "删除会永久移除它们的内容与检索条目。" +
-      "已经抽取进图谱的事实连同出处仍会保留。",
+      "删除会把它们移出知识库，只以它们为出处的事实随之失效；" +
+      "内容会留着，删掉的文档可以恢复。",
     cleanupConfirm: "删除它们",
     deleteSourceTitle: "删除这个来源",
     deleteSourceBody: (name: string) =>
@@ -652,6 +656,8 @@ export const zh: Strings = {
     sectionRef: (filename: string, seq: number) =>
       `${filename} · 第 ${seq} 段 →`,
     fromVersion: (v: number) => `v${v}`,
+    sourceDeleted: "出处已删",
+    sourceDeletedHint: "这句引文所在的文档已被删除。事实还在，因为它另有出处。",
     staleEvidenceHint:
       "这条证据来自文档的较早版本。文档此后已更新；事实本身不受影响。",
     staleFactChip: "未确认",

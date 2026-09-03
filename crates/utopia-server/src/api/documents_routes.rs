@@ -223,13 +223,16 @@ pub async fn delete(
     let doc = utopia_store::documents::get(&state.pool, id).await?;
     utopia_store::access::require_kb(&state.pool, &user, doc.kb_id, Role::Editor).await?;
 
-    utopia_store::documents::delete(&state.pool, id).await?;
+    // 墓碑，不是减法（#268）：文档、分块、证据、原始文件都留着；只作废没有别的出处的事实
+    let report = utopia_store::documents::delete(&state.pool, doc.kb_id, id, Some(user.id)).await?;
     let search = state.search.clone();
     let did = id.to_string();
     tokio::task::spawn_blocking(move || search.delete_document(&did))
         .await
         .map_err(|e| AppError::Other(e.into()))?
         .map_err(AppError::Other)?;
+    // 前提作废了，靠它推出来的派生随之失效——不等下一次定时重推
+    settle_derivations(&state, doc.kb_id).await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(doc.kb_id),
@@ -237,10 +240,74 @@ pub async fn delete(
         "document.deleted",
         "document",
         Some(id),
+        json!({
+            "filename": doc.filename,
+            "deletion_id": report.deletion_id,
+            "invalidated_facts": report.invalidated_facts,
+        }),
+    )
+    .await;
+    state.emit_document(doc.kb_id, id);
+    Ok(Json(json!({
+        "ok": true,
+        "deletion_id": report.deletion_id,
+        "invalidated_facts": report.invalidated_facts,
+    })))
+}
+
+/// 撤销删除：文档、分块、这次作废的事实原路复活，索引重建。
+/// 同步撞见墓碑与同内容重传走的是同一个 store 函数，这里只是人按的那一条路
+pub async fn restore(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let doc = utopia_store::documents::get(&state.pool, id).await?;
+    utopia_store::access::require_kb(&state.pool, &user, doc.kb_id, Role::Editor).await?;
+    let doc = utopia_store::documents::restore(&state.pool, doc.kb_id, id).await?;
+    reindex(&state, &doc).await?;
+    settle_derivations(&state, doc.kb_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(doc.kb_id),
+        user.id,
+        "document.restored",
+        "document",
+        Some(id),
         json!({ "filename": doc.filename }),
     )
     .await;
+    state.emit_document(doc.kb_id, id);
     Ok(Json(json!({ "ok": true })))
+}
+
+/// 复活的文档回到全文索引：分块的正文一直都在，只是重写一遍索引条目
+pub async fn reindex(state: &AppState, doc: &Document) -> utopia_core::AppResult<()> {
+    let chunks =
+        utopia_store::documents::chunks_in_document(&state.pool, doc.kb_id, doc.id).await?;
+    let pairs: Vec<(String, String)> = chunks
+        .into_iter()
+        .map(|c| (c.id.to_string(), c.text))
+        .collect();
+    let search = state.search.clone();
+    let (kb, did) = (doc.kb_id.to_string(), doc.id.to_string());
+    tokio::task::spawn_blocking(move || search.reindex_document(&kb, &did, &pairs))
+        .await
+        .map_err(|e| AppError::Other(e.into()))?
+        .map_err(AppError::Other)?;
+    Ok(())
+}
+
+/// 前提变了就重推一遍，让派生跟上——开关关着的库不推。删除、撤销、同步复活三条路共用
+pub(crate) async fn settle_derivations(
+    state: &AppState,
+    kb_id: Uuid,
+) -> utopia_core::AppResult<()> {
+    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
+    if kb.materialize_inferences {
+        utopia_store::reasoning::materialize(&state.pool, kb_id).await?;
+    }
+    Ok(())
 }
 
 /// 重新处理（解析器升级/失败重试）。

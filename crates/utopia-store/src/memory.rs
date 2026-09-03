@@ -43,7 +43,8 @@ pub async fn get_or_create_memory_source(pool: &PgPool, kb_id: Uuid) -> AppResul
 /// 它不是内容寻址的文件，sha256 填哨兵值。
 pub async fn get_or_create_memory_doc(pool: &PgPool, kb_id: Uuid) -> AppResult<Uuid> {
     if let Some((id,)) = sqlx::query_as::<_, (Uuid,)>(
-        "SELECT id FROM documents WHERE kb_id = $1 AND external_key = $2 LIMIT 1",
+        "SELECT id FROM documents
+          WHERE kb_id = $1 AND external_key = $2 AND deleted_at IS NULL LIMIT 1",
     )
     .bind(kb_id)
     .bind(MEMORY_DOC_KEY)

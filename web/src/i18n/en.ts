@@ -311,7 +311,7 @@ export const en = {
         {
           h: "Retention and deletion",
           body: [
-            "Deleting a document removes its stored content and index entries. Facts already extracted into the knowledge graph remain, with their provenance, until removed through Review. Deleting a knowledge base permanently removes its documents, graph and sources.",
+            "Deleting a document removes it from the base and retires the facts that had no other source; facts with another source keep it as provenance. The content is kept so the deletion can be undone; a deleted document can be restored, and a re-upload of the same file restores it too. Deleting a knowledge base permanently removes its documents, graph and sources.",
           ],
         },
         {
@@ -363,6 +363,15 @@ export const en = {
     },
   },
   library: {
+    /** 删除是墓碑（#268）：说清作废了几条事实，并给撤销 */
+    deletedWithFacts: (n: number) =>
+      n === 0
+        ? "Document deleted"
+        : n === 1
+          ? "Document deleted · 1 fact retired with it"
+          : `Document deleted · ${n} facts retired with it`,
+    undo: "Undo",
+    restored: "Document restored",
     title: "Library",
     upload: "Upload files",
     uploading: "Uploading…",
@@ -614,8 +623,8 @@ export const en = {
     cleanupTitle: "Delete missing documents",
     cleanupHint: (n: number, name: string) =>
       `${n} document${n === 1 ? "" : "s"} in “${name}” ${n === 1 ? "is" : "are"} no longer ` +
-      "present in the source. Deleting removes their content and search entries permanently. " +
-      "Facts already extracted into the graph remain, with their provenance.",
+      "present in the source. Deleting removes them from the base and retires the facts that " +
+      "had no other source. Their content is kept, and a deleted document can be restored.",
     cleanupConfirm: "Delete them",
     deleteSourceTitle: "Delete this source",
     deleteSourceBody: (name: string) =>
@@ -706,6 +715,10 @@ export const en = {
     sectionRef: (filename: string, seq: number) =>
       `${filename} · section ${seq} →`,
     fromVersion: (v: number) => `v${v}`,
+    /** 证据所在的文档已删（#268）：事实还在是因为另有出处 */
+    sourceDeleted: "source deleted",
+    sourceDeletedHint:
+      "The document this quote came from was deleted. The fact stays because it has another source.",
     staleEvidenceHint:
       "This evidence comes from an earlier version of the document. " +
       "The document has since been updated; the fact itself is unaffected.",

@@ -17,6 +17,18 @@ pub async fn create(
     doc_time: Option<chrono::DateTime<chrono::Utc>>,
     external_key: Option<&str>,
 ) -> AppResult<Document> {
+    // 同样的内容回来了，而它只是被删过：复活那一篇，而不是撞 (kb_id, sha256) 的唯一
+    // 索引报「已存在」。撤销删除的一种自然形态——重传就是「我要它回来」（#268）
+    if let Some((id,)) = sqlx::query_as::<_, (Uuid,)>(
+        "SELECT id FROM documents WHERE kb_id = $1 AND sha256 = $2 AND deleted_at IS NOT NULL",
+    )
+    .bind(kb_id)
+    .bind(sha256)
+    .fetch_optional(pool)
+    .await?
+    {
+        return restore(pool, kb_id, id).await;
+    }
     sqlx::query_as(
         "INSERT INTO documents (id, kb_id, filename, mime, size_bytes, sha256, source_id,
                                 doc_time, doc_time_source, external_key)
@@ -47,10 +59,12 @@ pub async fn create(
 }
 
 pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Document>> {
-    let rows = sqlx::query_as("SELECT * FROM documents WHERE kb_id = $1 ORDER BY created_at DESC")
-        .bind(kb_id)
-        .fetch_all(pool)
-        .await?;
+    let rows = sqlx::query_as(
+        "SELECT * FROM documents WHERE kb_id = $1 AND deleted_at IS NULL ORDER BY created_at DESC",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
     Ok(rows)
 }
 
@@ -77,7 +91,7 @@ pub async fn page(
     // `$2 = 'any'` 那一支是「不按来源筛」，`'none'` 是「只看没有来源的」——
     // 用两个哨兵字符串而不是两个可空参数，因为 NULL 在这里有歧义：
     // 它既可能是「不筛」，也可能是「筛出 source_id IS NULL 的」
-    const WHERE: &str = "WHERE kb_id = $1
+    const WHERE: &str = "WHERE kb_id = $1 AND deleted_at IS NULL
            AND ($2 = 'any'
                 OR ($2 = 'none' AND source_id IS NULL)
                 OR source_id::text = $2)
@@ -116,7 +130,7 @@ pub async fn page(
            count(*) FILTER (WHERE graph_status IN ('queued', 'extracting')),
            count(*) FILTER (WHERE graph_status = 'failed')
          FROM documents
-         WHERE kb_id = $1
+         WHERE kb_id = $1 AND deleted_at IS NULL
            AND ($2 = 'any'
                 OR ($2 = 'none' AND source_id IS NULL)
                 OR source_id::text = $2)",
@@ -148,7 +162,7 @@ pub async fn failed_ids(
     };
     Ok(sqlx::query_scalar(
         "SELECT id FROM documents
-          WHERE kb_id = $1 AND graph_status = 'failed'
+          WHERE kb_id = $1 AND deleted_at IS NULL AND graph_status = 'failed'
             AND ($2 = 'any'
                  OR ($2 = 'none' AND source_id IS NULL)
                  OR source_id::text = $2)",
@@ -170,13 +184,13 @@ pub async fn get(pool: &PgPool, id: Uuid) -> AppResult<Document> {
 /// 按 kb 收窄的取文档。**id 由模型给出时只能走这一支**：`get` 只按 id 查，
 /// 一个别的库的 id 照样查得到。
 pub async fn find_in_kb(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Option<Document>> {
-    Ok(
-        sqlx::query_as("SELECT * FROM documents WHERE id = $1 AND kb_id = $2")
-            .bind(id)
-            .bind(kb_id)
-            .fetch_optional(pool)
-            .await?,
+    Ok(sqlx::query_as(
+        "SELECT * FROM documents WHERE id = $1 AND kb_id = $2 AND deleted_at IS NULL",
     )
+    .bind(id)
+    .bind(kb_id)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// 按来源内逻辑身份查文档（同步三路判定用）。
@@ -200,13 +214,14 @@ pub async fn find_by_source_sha(
     source_id: Uuid,
     sha256: &str,
 ) -> AppResult<Option<Document>> {
-    Ok(
-        sqlx::query_as("SELECT * FROM documents WHERE source_id = $1 AND sha256 = $2 LIMIT 1")
-            .bind(source_id)
-            .bind(sha256)
-            .fetch_optional(pool)
-            .await?,
+    Ok(sqlx::query_as(
+        "SELECT * FROM documents
+              WHERE source_id = $1 AND sha256 = $2 AND deleted_at IS NULL LIMIT 1",
     )
+    .bind(source_id)
+    .bind(sha256)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// 迁移前的历史文档（无 external_key）按文件名认领——0008 之前建的行的一次性兜底。
@@ -217,7 +232,8 @@ pub async fn find_legacy_by_filename(
 ) -> AppResult<Option<Document>> {
     Ok(sqlx::query_as(
         "SELECT * FROM documents
-         WHERE source_id = $1 AND external_key IS NULL AND filename = $2 LIMIT 1",
+         WHERE source_id = $1 AND external_key IS NULL AND filename = $2
+           AND deleted_at IS NULL LIMIT 1",
     )
     .bind(source_id)
     .bind(filename)
@@ -355,7 +371,8 @@ pub async fn mark_missing_keys(pool: &PgPool, source_id: Uuid, keys: &[String]) 
 /// 该来源下所有已标记 missing 的文档 id（批量清理用）。
 pub async fn list_missing(pool: &PgPool, source_id: Uuid) -> AppResult<Vec<Uuid>> {
     let rows: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM documents WHERE source_id = $1 AND missing_since IS NOT NULL",
+        "SELECT id FROM documents
+          WHERE source_id = $1 AND missing_since IS NOT NULL AND deleted_at IS NULL",
     )
     .bind(source_id)
     .fetch_all(pool)
@@ -396,15 +413,139 @@ pub async fn set_ready(pool: &PgPool, id: Uuid, text_len: i32, chunk_count: i32)
     Ok(())
 }
 
-pub async fn delete(pool: &PgPool, id: Uuid) -> AppResult<()> {
-    let res = sqlx::query("DELETE FROM documents WHERE id = $1")
-        .bind(id)
-        .execute(pool)
-        .await?;
-    if res.rows_affected() == 0 {
+/// 一次删除的产出，给审计与界面提示用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeletionReport {
+    pub deletion_id: Uuid,
+    /// 随之作废的事实：只有「每条出处都已删除」的那些
+    pub invalidated_facts: usize,
+    pub superseded_chunks: usize,
+}
+
+/// 删除一篇文档——**认知轴上的一个事件，不是减法**（#268）。
+///
+/// 从前这里一句 `DELETE`，外键把分块与证据一并级联掉：事实留在图里、活着、却没了
+/// 出处，而隐私政策写着「事实连同其出处保留」。现在文档打墓碑，分块走 `replace_chunks`
+/// 用了很久的 `superseded_at`，**什么内容都不清**——原始文件本来也没删过；只作废
+/// 「每条出处都已删除」的事实。判据看 `documents.deleted_at` 而不是分块的
+/// `superseded_at`：证据停在文档**旧版本**上的事实是 stale，按 `stale_facts` 的规矩
+/// 「没再提 ≠ 不成立」，交给人、不作废；只有源本身没了才作废。
+///
+/// 作废的事实与打标的分块记进 `document_deletions`，[`restore`] 原路读回。
+/// `actor` 为 None = 引擎（来源对账的批量清理）
+pub async fn delete(
+    pool: &PgPool,
+    kb_id: Uuid,
+    id: Uuid,
+    actor: Option<Uuid>,
+) -> AppResult<DeletionReport> {
+    let mut tx = pool.begin().await?;
+    let hit = sqlx::query(
+        "UPDATE documents SET deleted_at = now(), updated_at = now()
+          WHERE id = $1 AND kb_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .execute(&mut *tx)
+    .await?;
+    if hit.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
-    Ok(())
+    let chunks: Vec<(Uuid,)> = sqlx::query_as(
+        "UPDATE chunks SET superseded_at = now()
+          WHERE document_id = $1 AND superseded_at IS NULL RETURNING id",
+    )
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    // 先打了墓碑再算：这篇文档此刻已经算「已删除」，所以只剩它作出处的事实才落网；
+    // 另一篇活着的文档里也有证据的一条不动——删一份重复上传不该掀掉半张图
+    let facts: Vec<(Uuid,)> = sqlx::query_as(
+        "UPDATE facts f SET invalidated_at = now()
+          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+            AND EXISTS (SELECT 1 FROM fact_evidence fe
+                        JOIN chunks c ON c.id = fe.chunk_id
+                        WHERE fe.fact_id = f.id AND c.document_id = $2)
+            AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
+                            JOIN chunks c ON c.id = fe.chunk_id
+                            JOIN documents d ON d.id = c.document_id
+                            WHERE fe.fact_id = f.id AND d.deleted_at IS NULL)
+          RETURNING f.id",
+    )
+    .bind(kb_id)
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let chunk_ids: Vec<Uuid> = chunks.into_iter().map(|(c,)| c).collect();
+    let fact_ids: Vec<Uuid> = facts.into_iter().map(|(f,)| f).collect();
+    let deletion_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO document_deletions
+            (id, kb_id, document_id, deleted_by, invalidated_facts, superseded_chunks)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(deletion_id)
+    .bind(kb_id)
+    .bind(id)
+    .bind(actor)
+    .bind(&fact_ids)
+    .bind(&chunk_ids)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(DeletionReport {
+        deletion_id,
+        invalidated_facts: fact_ids.len(),
+        superseded_chunks: chunk_ids.len(),
+    })
+}
+
+/// 撤销一次删除：文档、这次打标的分块、这次作废的事实原路复活，形状照 `revert_merge`。
+///
+/// 只救 `document_deletions` 名单上的——更早版本的旧分块、删除之前就作废的事实
+/// 都不在名单里。三条路都从这里走：人点撤销、同步撞见墓碑、同内容重传
+pub async fn restore(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Document> {
+    let row: Option<(Uuid, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as(
+        "SELECT id, invalidated_facts, superseded_chunks FROM document_deletions
+          WHERE document_id = $1 AND kb_id = $2 AND reverted_at IS NULL
+          ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((deletion_id, fact_ids, chunk_ids)) = row else {
+        return Err(AppError::Conflict("Document is not deleted".into()));
+    };
+    let mut tx = pool.begin().await?;
+    let hit = sqlx::query(
+        "UPDATE documents SET deleted_at = NULL, updated_at = now()
+          WHERE id = $1 AND kb_id = $2 AND deleted_at IS NOT NULL",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .execute(&mut *tx)
+    .await?;
+    if hit.rows_affected() == 0 {
+        return Err(AppError::Conflict("Document is not deleted".into()));
+    }
+    sqlx::query("UPDATE chunks SET superseded_at = NULL WHERE id = ANY($1)")
+        .bind(&chunk_ids)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE facts SET invalidated_at = NULL
+          WHERE id = ANY($1) AND invalidated_at IS NOT NULL",
+    )
+    .bind(&fact_ids)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE document_deletions SET reverted_at = now() WHERE id = $1")
+        .bind(deletion_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    get(pool, id).await
 }
 
 /// 重建文档分块（事务内，幂等）。返回 (chunk_id, text) 供全文索引。
@@ -661,7 +802,8 @@ pub async fn chunks_by_ids(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResul
     let rows: Vec<ChunkView> = sqlx::query_as(
         "SELECT c.id, c.document_id, c.seq, c.text, d.filename
          FROM chunks c JOIN documents d ON d.id = c.document_id
-         WHERE c.kb_id = $1 AND c.id = ANY($2)",
+         WHERE c.kb_id = $1 AND c.id = ANY($2)
+           AND c.superseded_at IS NULL AND d.deleted_at IS NULL",
     )
     .bind(kb_id)
     .bind(ids)
@@ -708,7 +850,8 @@ pub async fn queue_extraction(
     let mut tx = pool.begin().await?;
     let ids: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT id FROM documents
-         WHERE kb_id = $1 AND status = 'ready' AND ($2::uuid IS NULL OR source_id = $2)
+         WHERE kb_id = $1 AND deleted_at IS NULL AND status = 'ready'
+           AND ($2::uuid IS NULL OR source_id = $2)
          ORDER BY created_at",
     )
     .bind(kb_id)
@@ -788,7 +931,7 @@ pub async fn extract_epoch(pool: &PgPool, id: Uuid) -> AppResult<i32> {
 pub async fn extraction_idle(pool: &PgPool, kb_id: Uuid) -> AppResult<bool> {
     let (pending,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM documents
-         WHERE kb_id = $1 AND graph_status IN ('queued', 'extracting')",
+         WHERE kb_id = $1 AND deleted_at IS NULL AND graph_status IN ('queued', 'extracting')",
     )
     .bind(kb_id)
     .fetch_one(pool)
