@@ -546,6 +546,8 @@ export function Graph() {
      界面看着变了实际还是老数据 */
   const [nodeBudget, setNodeBudget] = useState<number>(NODE_BUDGETS[0]);
 
+  // 空状态给谁看：管理员能自己去配模型，其他人只能去找管理员。与 Shell 共用同一份缓存
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
   const data = useQuery({
     queryKey: ["graph", kb?.id, focusEntity, nodeBudget],
     queryFn: () =>
@@ -1864,9 +1866,19 @@ export function Graph() {
       {empty && (
         <div className="absolute inset-0 grid place-items-center pointer-events-none">
           {/* 不放标题方块：页面本身就是图谱页，tab 条上也写着，
-              第三遍写"图谱"两个字不带任何信息。空状态该说的是下一步做什么 */}
-          <div className="text-center text-sm text-neutral-500 max-w-xs">
-            {S.graph.emptyBody}
+              第三遍写"图谱"两个字不带任何信息。空状态该说的是下一步做什么——
+              而"下一步"因人而异：管理员能直接去配模型，别人只能去找管理员（#267） */}
+          <div className="text-center text-sm text-neutral-500 max-w-xs pointer-events-auto">
+            {me.data?.is_admin ? S.graph.emptyBodyAdmin : S.graph.emptyBody}
+            {me.data?.is_admin && (
+              <Link
+                to="/admin"
+                search={{ tab: "models" }}
+                className="block mt-3 text-neutral-300 hover:text-white underline underline-offset-4"
+              >
+                {S.graph.emptyOpenModels}
+              </Link>
+            )}
           </div>
         </div>
       )}

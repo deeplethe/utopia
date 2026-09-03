@@ -24,7 +24,7 @@ export const en = {
     registration_closed:
       "Sign-up is closed on this deployment — ask an administrator for an account.",
     no_chat_model:
-      "No chat model configured yet. Set one under Settings → Models.",
+      "No chat model configured yet. Set one under Administration → Models.",
     bad_upload: "That upload could not be read.",
     upload_read_failed: "The file could not be read to the end.",
     no_files: "No file was attached.",
@@ -64,7 +64,7 @@ export const en = {
     no_data_sources: "No databases are mounted on this knowledge base.",
     // 授权是逐工作区的（0014）：源没授权给本库所属的工作区
     source_not_granted:
-      "This data source is not granted to this workspace. Ask a deployment admin to grant it in System settings → Data sources.",
+      "This data source is not granted to this workspace. Ask a deployment admin to grant it in Administration → Data sources.",
     memory_source_permanent:
       "The Memory source is part of the knowledge base and stays.",
     source_name_required: "Give this source a name.",
@@ -207,15 +207,15 @@ export const en = {
       },
       "llm.unreachable": {
         title: "The model endpoint gave no usable answer",
-        hint: "Extraction and embedding are stopped. Check the endpoint URL in system settings.",
+        hint: "Extraction and embedding are stopped. Check the endpoint URL in Administration → Models.",
       },
       "llm.rate_limited": {
         title: "The model endpoint is rate limiting us",
-        hint: "Documents were retried and still turned away, so some are missing facts. Lower model concurrency in system settings, or raise the quota on the account.",
+        hint: "Documents were retried and still turned away, so some are missing facts. Lower model concurrency in Administration, or raise the quota on the account.",
       },
       "llm.out_of_credit": {
         title: "The model account cannot pay for requests",
-        hint: "Extraction and embedding are stopped and will not resume on their own. Top up the account, or point system settings at an endpoint that can serve.",
+        hint: "Extraction and embedding are stopped and will not resume on their own. Top up the account, or set an endpoint that can serve in Administration → Models.",
       },
     } as Record<string, { title: string; hint: string } | undefined>,
     // 没见过的 kind 也要能显示：新告警源上线时前端可能还没更新
@@ -635,7 +635,7 @@ export const en = {
     greeting: "Ask Utopia what it remembers",
     emptyTitle: "Chat",
     emptyBody:
-      "Converse with your knowledge base — cited answers, temporal questions, and it can remember.\nUpload documents in Library and configure a model in Settings first.",
+      "Converse with your knowledge base — cited answers, temporal questions, and it can remember.\nUpload documents in Library and configure a model in Administration → Models first.",
     placeholder: "Ask anything…",
     composerHint: "Enter to send · Shift+Enter for a new line",
     scopeLabel: "Knowledge base",
@@ -681,8 +681,13 @@ export const en = {
     backToOverview: "← Full graph",
     // 顺序不是随便排的：模型没配好之前，上传的文档只会排队等着，
     // 一个实体也抽不出来。先配模型，再传文档
+    // 管理页在头像菜单里叫 Administration，提示语得叫同一个名字（#267）。
+    // 能配模型的人和不能配的人看到的不是同一句：后者只能去找管理员
     emptyBody:
-      "The graph is empty. Configure a chat model in Settings first, then upload documents in the Library — entities and relations are extracted automatically.",
+      "The graph is empty. Ask an administrator to configure a chat model, then upload documents in the Library — entities and relations are extracted automatically.",
+    emptyBodyAdmin:
+      "The graph is empty. Configure a chat model under Administration → Models first, then upload documents in the Library — entities and relations are extracted automatically.",
+    emptyOpenModels: "Open Administration → Models",
     facts: "facts",
     noFacts: "No facts for this entity yet",
     confidence: "confidence",
@@ -848,7 +853,7 @@ export const en = {
     ongoing: "now",
   },
   settings: {
-    title: "System settings",
+    title: "Administration",
     tabModels: "Models",
     tabMembers: "Users",
     tabKbs: "Knowledge bases",
