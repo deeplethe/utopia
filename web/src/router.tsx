@@ -88,6 +88,11 @@ const searchRoute = createRoute({
   getParentRoute: () => kbRoute,
   path: "search",
   component: Search,
+  // 搜索词是「你在看什么」，不是「你怎么看」——刷新、返回、分享都靠它重建
+  // （同 doc 的 chunk、review 的 queue）。分页留在本地，同图谱的档位
+  validateSearch: (search: Record<string, unknown>): { q?: string } => ({
+    q: typeof search.q === "string" ? search.q : undefined,
+  }),
 });
 
 const graphRoute = createRoute({

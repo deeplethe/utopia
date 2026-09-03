@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { api } from "../api";
 import { S } from "../i18n";
 import { useKb, useKbId } from "../kb";
@@ -11,15 +11,30 @@ const RESULT_PAGE = 10;
 export function Search() {
   const kbId = useKbId();
   const { kb } = useKb();
-  const [input, setInput] = useState("");
-  const [query, setQuery] = useState("");
+  const navigate = useNavigate();
+  /* 已提交的查询词以 URL 为唯一事实来源（同 review 的 queue、doc 的 chunk）：
+     刷新、返回、分享链接都从地址栏重建，结果由 useQuery 自动重取 */
+  const { q: query } = useSearch({ from: "/app/kb/$kbId/search" });
+  // 打字是本地事，不打扰地址栏；前进/后退到别的 q 时输入框跟着走
+  const [input, setInput] = useState(query ?? "");
+  useEffect(() => setInput(query ?? ""), [query]);
   const [page, setPage] = useState(0);
+  // 新查询换一批结果，从第一页看起
+  useEffect(() => setPage(0), [query]);
 
   const results = useQuery({
     queryKey: ["search", kb?.id, query],
-    queryFn: () => api.search(kb!.id, query),
-    enabled: !!kb && query.length > 0,
+    queryFn: () => api.search(kb!.id, query!),
+    enabled: !!kb && !!query,
   });
+
+  /* 提交 = 换地址，不是换 state：地址栏才是已提交查询词的唯一事实源。
+     打字不写 URL，提交才写；空提交不动 */
+  const submit = () => {
+    const q = input.trim();
+    if (!q) return;
+    navigate({ to: "/kb/$kbId/search", params: { kbId }, search: { q } });
+  };
 
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -31,17 +46,11 @@ export function Search() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-                setQuery(input.trim());
-                setPage(0);
-              }
+              if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
             }}
           />
           <button
-            onClick={() => {
-              setQuery(input.trim());
-              setPage(0);
-            }}
+            onClick={submit}
             disabled={!input.trim()}
             className="u-btn u-btn-primary px-5 py-2 text-sm"
           >
