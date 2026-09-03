@@ -37,7 +37,7 @@ services:
     # 写一个不存在的标签，clone 下来第一步就是 manifest unknown。
     # 所以撤掉一个版本时必须连它一起改——0.1.0 撤了，现在指向 rc。
     # 转正之后改回 0.1.0（或改成 latest 让它自动跟随）。
-    image: ${UTOPIA_IMAGE:-ghcr.io/deeplethe/utopia:0.1.0-rc2}
+    image: ${UTOPIA_IMAGE:-ghcr.io/deeplethe/utopia:0.1.0-rc3}
     profiles: ["app"]
     environment:
       # 默认以 owner 身份运行。要启用受限角色（业务表随便读写、台账只增不改），
