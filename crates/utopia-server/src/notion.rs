@@ -19,12 +19,20 @@
 //! **`Notion-Version` 头是必填的**，而且值是日期。少了它接口直接 400，
 //! 而错误信息只说 "missing version"，不会告诉你该填哪个。
 //!
-//! **限流是每秒三次**（官方说法是「平均三次」）。所以取页面内容时是顺序而不是
-//! 并发——并发上去只会换来一串 429，而我们的重试退避是为抽取那条路设计的，
-//! 不该被摄入路径借用。
+//! **限流是每秒三次**（官方说法是「平均三次」）。顺序发请求还不够：一个 100 毫秒
+//! 的响应紧接着下一个请求就是每秒十次。#215 的复测在一个几百页的 workspace 上
+//! 跑了三分钟，然后 search 回了 429，整次同步就此失败。所以现在两件事一起做：
+//! 请求之间保底间隔（[`MIN_INTERVAL`]），撞上 429 时按 `Retry-After` 等完再发
+//! （[`Paced::send`]）。仍然不并发。这套退避是本地的、很小的——抽取那条路的
+//! 退避是为模型厂商设计的，判据和节奏都不同，不借用。
+//!
+//! 错误文案是英文：它会原样落到来源的同步状态里给用户看。
+
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
+use reqwest::StatusCode;
 
 /// 请求头里的 API 版本。**写死而不是留给配置**：响应的形状跟着它变，
 /// 让用户填一个我们没适配过的版本，换来的是解析静默失配。
@@ -36,6 +44,17 @@ const MAX_PAGES_PER_SYNC: usize = 500;
 
 /// 每页最多取多少个 block。再深的页面截断，比让一次同步卡在一页上好。
 const MAX_BLOCKS_PER_PAGE: usize = 500;
+
+/// 两次请求之间至少隔这么久。Notion 说的是「平均每秒三次」，取 350 毫秒留一点余量：
+/// 500 页的上限下一次同步最坏三分钟出头，比同步失败便宜得多。
+const MIN_INTERVAL: Duration = Duration::from_millis(350);
+/// 一次请求撞上 429 最多等几回。`Retry-After` 通常是个位数秒，连等几回还在限流
+/// 就不是节奏问题了，该把错误交出去。
+const MAX_RATE_LIMIT_RETRIES: u32 = 5;
+/// `Retry-After` 缺失或读不出来时等多久。
+const DEFAULT_RETRY_AFTER: Duration = Duration::from_secs(1);
+/// 单次等待上限。头里的值我们照做，但不能让一个离谱的值把同步挂死。
+const RETRY_AFTER_CAP: Duration = Duration::from_secs(30);
 
 /// 一个待摄入的页面。
 pub struct NotionPage {
@@ -55,8 +74,86 @@ fn client(token: &str) -> anyhow::Result<reqwest::Client> {
     );
     Ok(reqwest::Client::builder()
         .default_headers(h)
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(Duration::from_secs(60))
         .build()?)
+}
+
+/// 按 Notion 的节奏发请求的客户端：请求之间保底间隔，429 按 `Retry-After` 等。
+struct Paced {
+    http: reqwest::Client,
+    last: Option<Instant>,
+}
+
+impl Paced {
+    fn new(http: reqwest::Client) -> Self {
+        Self { http, last: None }
+    }
+
+    /// 发一次请求并解析 JSON。`what` 进日志和错误文案（"search" / "blocks"）。
+    ///
+    /// 429 在这里消化：等 `Retry-After` 再发，最多 [`MAX_RATE_LIMIT_RETRIES`] 回；
+    /// 其它非 2xx 直接报错，带上 Notion 自己的 message——它比状态码说得清楚。
+    async fn send(
+        &mut self,
+        what: &str,
+        build: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut attempt = 0u32;
+        loop {
+            if let Some(last) = self.last {
+                let since = last.elapsed();
+                if since < MIN_INTERVAL {
+                    tokio::time::sleep(MIN_INTERVAL - since).await;
+                }
+            }
+            let resp = build(&self.http)
+                .send()
+                .await
+                .with_context(|| format!("notion {what}"))?;
+            self.last = Some(Instant::now());
+
+            let status = resp.status();
+            if status == StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RATE_LIMIT_RETRIES {
+                let wait = retry_after(
+                    resp.headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|h| h.to_str().ok()),
+                );
+                attempt += 1;
+                tracing::info!(
+                    what,
+                    attempt,
+                    wait_ms = wait.as_millis() as u64,
+                    "notion rate limited, waiting before the next attempt"
+                );
+                tokio::time::sleep(wait).await;
+                continue;
+            }
+
+            let v: serde_json::Value = resp
+                .json()
+                .await
+                .with_context(|| format!("notion {what}: reading the response"))?;
+            if !status.is_success() {
+                anyhow::bail!(
+                    "notion {what} returned {status}: {}",
+                    v["message"].as_str().unwrap_or("no message")
+                );
+            }
+            return Ok(v);
+        }
+    }
+}
+
+/// `Retry-After` 头 → 等多久。Notion 给的是秒数（可能带小数）；缺失、读不出来、
+/// 或负数都按缺省，离谱的值截到上限。纯函数，下面的单测钉住这几档。
+fn retry_after(header: Option<&str>) -> Duration {
+    header
+        .and_then(|h| h.trim().parse::<f64>().ok())
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .map(Duration::from_secs_f64)
+        .unwrap_or(DEFAULT_RETRY_AFTER)
+        .min(RETRY_AFTER_CAP)
 }
 
 /// 取 integration 能看见的所有页面。
@@ -64,7 +161,7 @@ fn client(token: &str) -> anyhow::Result<reqwest::Client> {
 /// **只搜页面，不搜 data source。** 后者是表格的容器，它自己没有正文；
 /// 表格里的每一行是一个页面，会在同一次搜索里出现。
 pub async fn fetch(token: &str, query: Option<&str>) -> anyhow::Result<(Vec<NotionPage>, bool)> {
-    let http = client(token)?;
+    let mut http = Paced::new(client(token)?);
     let mut out = Vec::new();
     let mut cursor: Option<String> = None;
     let mut truncated = false;
@@ -81,20 +178,11 @@ pub async fn fetch(token: &str, query: Option<&str>) -> anyhow::Result<(Vec<Noti
             body["start_cursor"] = serde_json::Value::String(c.clone());
         }
 
-        let resp = http
-            .post("https://api.notion.com/v1/search")
-            .json(&body)
-            .send()
-            .await
-            .context("notion search")?;
-        let status = resp.status();
-        let v: serde_json::Value = resp.json().await.context("notion search 响应")?;
-        if !status.is_success() {
-            anyhow::bail!(
-                "notion search 回了 {status}: {}",
-                v["message"].as_str().unwrap_or("unknown")
-            );
-        }
+        let v = http
+            .send("search", |c| {
+                c.post("https://api.notion.com/v1/search").json(&body)
+            })
+            .await?;
 
         for p in v["results"].as_array().unwrap_or(&vec![]).clone() {
             // 回收站里的和归档的都不要——它们在界面上已经不算数了
@@ -107,7 +195,7 @@ pub async fn fetch(token: &str, query: Option<&str>) -> anyhow::Result<(Vec<Noti
             }
             let Some(id) = p["id"].as_str() else { continue };
             let title = page_title(&p);
-            let text = page_text(&http, id).await.unwrap_or_else(|e| {
+            let text = page_text(&mut http, id).await.unwrap_or_else(|e| {
                 tracing::warn!(%id, error = %e, "页面正文取不回来，只留标题");
                 String::new()
             });
@@ -161,7 +249,7 @@ fn page_title(page: &serde_json::Value) -> String {
 }
 
 /// 取一页的正文，逐层展开 block。
-async fn page_text(http: &reqwest::Client, page_id: &str) -> anyhow::Result<String> {
+async fn page_text(http: &mut Paced, page_id: &str) -> anyhow::Result<String> {
     let mut out = String::new();
     let mut n = 0usize;
     let mut cursor: Option<String> = None;
@@ -171,11 +259,7 @@ async fn page_text(http: &reqwest::Client, page_id: &str) -> anyhow::Result<Stri
         if let Some(c) = &cursor {
             url.push_str(&format!("&start_cursor={c}"));
         }
-        let resp = http.get(&url).send().await?;
-        if !resp.status().is_success() {
-            anyhow::bail!("blocks 回了 {}", resp.status());
-        }
-        let v: serde_json::Value = resp.json().await?;
+        let v = http.send("blocks", |c| c.get(&url)).await?;
 
         for b in v["results"].as_array().unwrap_or(&vec![]) {
             if n >= MAX_BLOCKS_PER_PAGE {
@@ -317,6 +401,17 @@ mod tests {
 
     /// 真连一个 Notion workspace。**没有模拟器**——Notion 是闭源 SaaS，
     /// 开源的替代品（AppFlowy、AFFiNE）不说这套 API。所以这条只有在
+    /// `Retry-After` 的几档：Notion 给的秒数照做，缺失和垃圾按缺省，离谱的截顶。
+    #[test]
+    fn retry_after_follows_the_header_within_bounds() {
+        assert_eq!(retry_after(Some("3")), Duration::from_secs(3));
+        assert_eq!(retry_after(Some(" 0.5 ")), Duration::from_millis(500));
+        assert_eq!(retry_after(None), DEFAULT_RETRY_AFTER);
+        assert_eq!(retry_after(Some("soon")), DEFAULT_RETRY_AFTER);
+        assert_eq!(retry_after(Some("-2")), DEFAULT_RETRY_AFTER);
+        assert_eq!(retry_after(Some("600")), RETRY_AFTER_CAP);
+    }
+
     /// 有人给出真 token 时才跑，CI 上永远跳过。
     ///
     /// ```text
