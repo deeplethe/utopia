@@ -24,6 +24,10 @@ pub struct Extraction {
 
 #[derive(Debug, Deserialize)]
 pub struct ExtractedEntity {
+    /// Identifier scoped to this extraction response. It preserves mention identity while
+    /// facts are bound; it is not a persistent entity id or a resolution verdict.
+    #[serde(default)]
+    pub local_id: Option<String>,
     pub name: String,
     #[serde(rename = "type")]
     pub type_key: String,
@@ -40,10 +44,16 @@ pub struct ExtractedEntity {
 #[derive(Debug, Deserialize)]
 pub struct ExtractedFact {
     pub subject: String,
+    /// Response-local entity handle. When present, callers must bind through it rather than
+    /// guessing from the surface name.
+    #[serde(default)]
+    pub subject_ref: Option<String>,
     pub predicate: String,
     /// 关系事实的宾语实体名；属性事实为空
     #[serde(default)]
     pub object: Option<String>,
+    #[serde(default)]
+    pub object_ref: Option<String>,
     /// 属性事实的字面值（谓词是 attribute 时）
     #[serde(default)]
     pub value: Option<serde_json::Value>,
@@ -429,8 +439,30 @@ pub fn parse_response(raw: &str) -> anyhow::Result<Extraction> {
         (out, skipped)
     }
 
-    let (entities, skipped_entities) = take::<ExtractedEntity>(&value, "entities");
+    let (mut entities, mut skipped_entities) = take::<ExtractedEntity>(&value, "entities");
     let (facts, skipped_facts) = take::<ExtractedFact>(&value, "facts");
+
+    // A handle identifies exactly one entity definition within one response. Reject every
+    // definition participating in a duplicate (including identical duplicates): keeping the
+    // first or last would make fact attribution depend on array order. Empty handles are
+    // malformed too; legacy output is represented by an absent field, not an empty id.
+    let mut handle_counts = std::collections::HashMap::<String, usize>::new();
+    for entity in &entities {
+        if let Some(handle) = entity.local_id.as_deref() {
+            *handle_counts.entry(handle.trim().to_string()).or_default() += 1;
+        }
+    }
+    entities.retain(|entity| match entity.local_id.as_deref() {
+        None => true,
+        Some(handle) => {
+            let handle = handle.trim();
+            let valid = !handle.is_empty() && handle_counts.get(handle) == Some(&1);
+            if !valid {
+                skipped_entities += 1;
+            }
+            valid
+        }
+    });
     Ok(Extraction {
         entities,
         facts,
@@ -852,6 +884,43 @@ mod tests {
         let e = parse_response(raw).unwrap();
         assert_eq!(e.entities.len(), 1);
         assert_eq!(e.entities[0].type_key, "person");
+    }
+
+    #[test]
+    fn handles_and_fact_refs_are_optional_and_legacy_compatible() {
+        let handled = parse_response(
+            r#"{"entities":[{"local_id":"e1","name":"Zhang Wei","type":"person"}],
+                "facts":[{"subject":"Zhang Wei","subject_ref":"e1","predicate":"leads",
+                           "object":"Finance","object_ref":"e2"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(handled.entities[0].local_id.as_deref(), Some("e1"));
+        assert_eq!(handled.facts[0].subject_ref.as_deref(), Some("e1"));
+        assert_eq!(handled.facts[0].object_ref.as_deref(), Some("e2"));
+
+        let legacy = parse_response(
+            r#"{"entities":[{"name":"Zhang Wei","type":"person"}],
+                "facts":[{"subject":"Zhang Wei","predicate":"leads","object":"Finance"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.entities[0].local_id, None);
+        assert_eq!(legacy.facts[0].subject_ref, None);
+        assert_eq!(legacy.facts[0].object_ref, None);
+    }
+
+    #[test]
+    fn duplicate_handle_definitions_are_all_malformed() {
+        let x = parse_response(
+            r#"{"entities":[
+                  {"local_id":"e1","name":"Zhang Wei","type":"person"},
+                  {"local_id":"e1","name":"John Smith","type":"person"},
+                  {"local_id":"e2","name":"Finance","type":"organization"}],
+                "facts":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(x.skipped_entities, 2);
+        assert_eq!(x.entities.len(), 1);
+        assert_eq!(x.entities[0].local_id.as_deref(), Some("e2"));
     }
 
     /// specific_type 在骨架里、也在规则里，且两处都说"永远要填"。

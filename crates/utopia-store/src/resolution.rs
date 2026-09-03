@@ -223,6 +223,9 @@ pub async fn resolve_mention(
     type_id: Option<Uuid>,
     raw_name: &str,
     context: Option<&[f32]>,
+    // Candidates already claimed by a different response-local handle. They remain stored
+    // and recallable on later calls, but this mention cannot attach to them.
+    exclude: &[Uuid],
 ) -> AppResult<Resolution> {
     let name = normalize_name(raw_name);
     // 召回键 = 本名 + 泛用后缀词干及其增广（"星尘"↔"星尘项目"互为候选）。
@@ -242,12 +245,15 @@ pub async fn resolve_mention(
     .bind(type_id)
     .bind(&keys)
     .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .filter(|candidate: &Candidate| !exclude.contains(&candidate.id))
+    .collect();
 
     if candidates.is_empty() {
         // 同类型无候选 ≠ 新名字：类型标签会漂（同一团队被抽成 organization/project/
         // concept），先查其它类型下的同名实体，按类型对的互斥强度分流。
-        return resolve_type_drift(pool, kb_id, type_id, &name, &keys, context).await;
+        return resolve_type_drift(pool, kb_id, type_id, &name, &keys, context, exclude).await;
     }
 
     let Some(ctx) = context else {
@@ -599,6 +605,7 @@ async fn resolve_type_drift(
     name: &str,
     keys: &[String],
     context: Option<&[f32]>,
+    exclude: &[Uuid],
 ) -> AppResult<Resolution> {
     // 这一侧也可能还没判出类型（0009），那时没有 key 可查
     let mention_key: Option<String> = match type_id {
@@ -623,7 +630,10 @@ async fn resolve_type_drift(
     .bind(type_id)
     .bind(keys)
     .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .filter(|candidate: &CrossCandidate| !exclude.contains(&candidate.id))
+    .collect();
 
     // 本体声明了互斥的类，一次取出（含继承）。声明优先于下面所有启发式
     let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;

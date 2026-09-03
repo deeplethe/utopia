@@ -10,7 +10,9 @@ async fn human_review_is_visible_but_never_pending_adjudication() -> anyhow::Res
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
-    let (org, ws, kb, left, right, third) = (
+    let (org, ws, kb, ty, left, right, third, existing) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
         Uuid::now_v7(),
         Uuid::now_v7(),
         Uuid::now_v7(),
@@ -34,20 +36,45 @@ async fn human_review_is_visible_but_never_pending_adjudication() -> anyhow::Res
     .bind(ws)
     .execute(&pool)
     .await?;
+    sqlx::query("INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, 'org', 'Org')")
+        .bind(ty)
+        .bind(kb)
+        .execute(&pool)
+        .await?;
     for (id, name) in [
         (left, "Zhang Wei"),
         (right, "Zhang Wei"),
         (third, "Zhang W."),
+        (existing, "Acme"),
     ] {
-        sqlx::query("INSERT INTO entities (id, kb_id, canonical_name) VALUES ($1, $2, $3)")
-            .bind(id)
-            .bind(kb)
-            .bind(name)
-            .execute(&pool)
-            .await?;
+        sqlx::query(
+            "INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES ($1, $2, $3, $4)",
+        )
+        .bind(id)
+        .bind(kb)
+        .bind(ty)
+        .bind(name)
+        .execute(&pool)
+        .await?;
     }
 
     let run = async {
+        let ordinary = resolution::resolve_mention(&pool, kb, Some(ty), "Acme", None, &[]).await?;
+        assert_eq!(ordinary.entity_id, existing);
+        assert!(!ordinary.created, "exclude=[] must retain ordinary recall");
+
+        let split =
+            resolution::resolve_mention(&pool, kb, Some(ty), "Acme", None, &[existing]).await?;
+        assert_ne!(split.entity_id, existing);
+        assert!(split.created, "the excluded candidate cannot be attached");
+        let recalled_split =
+            resolution::resolve_mention(&pool, kb, Some(ty), "Acme", None, &[existing]).await?;
+        assert_eq!(recalled_split.entity_id, split.entity_id);
+        assert!(
+            !recalled_split.created,
+            "re-extraction must reuse the non-excluded candidate"
+        );
+
         resolution::create_review(&pool, kb, left, right, 1.0, "namesake", ReviewStage::Human)
             .await?;
         resolution::create_review(
