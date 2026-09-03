@@ -1218,8 +1218,6 @@ export const en = {
     schemaUnscoped: (n: number) => `Unscoped properties (${n})`,
     schemaUnscopedHint:
       "Not limited to specific classes, so no line on the canvas would be honest. Select one to inspect or edit it.",
-    schemaEditClass: "Edit class",
-    schemaEditRelation: "Edit property",
   },
   mapping: {
     title: "Data mapping",

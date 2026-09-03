@@ -1,7 +1,10 @@
 // 本体的模式图：类是节点，subClassOf / 关系 / 互斥是三种边。
 // 画的是 TBox（本体本身的结构），不是 /graph 画的那张 ABox（实例与事实）——
-// 两者共用 graphology/sigma 这套工具链与视觉语汇，但语义不共享，也不共用查询：
-// 本体数据只有一份，由 Ontology.tsx 的 useQuery 取，这里只接数据 + 回调。
+// 两者共用 graphology/sigma 这套工具链与视觉语汇（见 graphVisuals.ts），
+// 但语义不共享，也不共用查询：本体数据只有一份，由 Ontology.tsx 的 useQuery
+// 取，这里只接数据 + 回调。选中一个类/关系时，检查器直接嵌入 Ontology.tsx
+// 里那几张真正的编辑卡片（ClassForm / PropertyForm / AttributesCard）——
+// 不是另一份只读摘要，编辑就发生在这里，不必跳回本体主视图。
 import { useEffect, useMemo, useRef, useState } from "react";
 import Graphology from "graphology";
 import { circular } from "graphology-layout";
@@ -12,17 +15,25 @@ import { EdgeArrowProgram, EdgeLineProgram } from "sigma/rendering";
 import { EdgeCurvedArrowProgram } from "@sigma/edge-curve";
 import { NodeSquareShellProgram } from "./squareShellProgram";
 import {
-  Maximize2,
-  Network,
-  Pencil,
-  Search,
-  X,
-  ZoomIn,
-  ZoomOut,
-} from "lucide-react";
+  drawHoverCard,
+  drawPillLabel,
+  drawWorldGrid,
+  mix,
+  MUTED_SHELL,
+  NODE_BORDER_BASE,
+  NODE_CORE_BASE,
+  NODE_CORE_MIX,
+  NODE_SHELL_BASE,
+  NODE_TINT_MIX,
+  RING_HOVER_MIX,
+  RING_SELECT_MIX,
+  TRANSPARENT,
+} from "./graphVisuals";
+import { AttributesCard, ClassForm, PropertyForm } from "./Ontology";
+import { Maximize2, Network, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import type { EntityTypeView, RelationTypeView } from "../api";
 import { S } from "../i18n";
-import { Button, Chip, cn } from "../ui";
+import { cn } from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 
 /* ============ 边的三种语义，与三种视觉语汇的映射 ============
@@ -37,7 +48,6 @@ import { usePopoverFlip } from "../ui/popoverFlip";
    看起来变暗（Graph.tsx 的 EDGE_DIM 处有同一条注释）。这里的边不需要
    动画淡入淡出，所以不必再搬一套 lerp/parseRgba，几个状态各写一个
    现成的颜色字面量就够了。 */
-const TRANSPARENT = "rgba(0,0,0,0)";
 const EDGE_SUBCLASS = "rgba(195,195,195,0.4)";
 const EDGE_SUBCLASS_FOCUS = "rgba(235,235,235,0.95)";
 const EDGE_RELATION = "rgba(196,165,255,0.55)"; // --u-violet
@@ -46,9 +56,18 @@ const EDGE_DISJOINT = "rgba(255,157,175,0.45)"; // --u-danger
 const EDGE_DISJOINT_FOCUS = "rgba(255,157,175,0.9)";
 const EDGE_DIM = "rgba(48,48,48,0.4)";
 
+/** 三种边各自的语义——驱动颜色/暗淡/可点选，与「用哪个 sigma 程序画」分开管 */
 const SUBCLASS_KIND = "subclass";
 const RELATION_KIND = "relation";
 const DISJOINT_KIND = "disjoint";
+
+/** sigma 的渲染派发键。**故意与上面的语义分开**：关系边有直的也有弯的
+ *  （只有一条就是直的，平行才弯），但两种都是「relation 语义」；早先把
+ *  这两件事焊成一个字段，直的关系边全都退回默认类型、边看不见——
+ *  这正是本体模式图第一版里"有些线不可见"的根因 */
+const EDGE_TYPE_ARROW = "arrow"; // 直线 + 箭头（EdgeArrowProgram）
+const EDGE_TYPE_CURVED_ARROW = "curvedArrow"; // 弧线 + 箭头（EdgeCurvedArrowProgram）
+const EDGE_TYPE_LINE = "line"; // 直线，无箭头（EdgeLineProgram）——互斥专用
 
 /** 结构边细、关系边粗一档——「语义关系比结构性信息更显眼」不能只靠颜色说,
  *  粗细上也要有一档差 */
@@ -63,19 +82,6 @@ const RELATION_CURVATURE_STEP = 0.22;
 /** 自环（domain === range，如 married_to: Person→Person）没有「偏移」可言——
  *  给一个固定起始弯曲，否则退化成一个看不见的点 */
 const SELF_LOOP_BASE_CURVATURE = 1;
-
-function hexToRgb(hex: string): [number, number, number] {
-  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
-  if (!m) return [163, 163, 163];
-  const v = parseInt(m[1], 16);
-  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
-}
-/** 悬停/选中环的颜色：节点自己的类型色往白里混，环才能在同色的节点上跳出来 */
-function mixWhite(hex: string, t: number): string {
-  const [r, g, b] = hexToRgb(hex);
-  const f = (c: number) => Math.round(c + (255 - c) * t);
-  return `rgb(${f(r)},${f(g)},${f(b)})`;
-}
 
 export interface SchemaGraphResult {
   graph: Graphology;
@@ -98,13 +104,14 @@ export function buildSchemaGraph(
   for (const t of entityTypes) {
     graph.addNode(t.id, {
       label: t.label,
-      color: t.color,
-      // 方形节点程序硬编码四通道（ring/border/shell/fill）；shell 与 fill 同色，
-      // 让它读成「描边 + 实心」而不是 /graph 那种四层壳。本体类在左栏本来就是
-      // 纯色的圆点/方点（ClassTree），这里延续同一套语汇，不是发明新的
-      shellColor: t.color,
-      borderColor: "rgba(255,255,255,0.22)",
+      // 与 /graph 同一套四层壳配方（深壳 + 14% 类型 tint，核心 50% tint，
+      // 钢灰描边微 tint）——模式图与实例图看着是同一个引擎画的
+      color: mix(NODE_CORE_BASE, t.color, NODE_CORE_MIX),
+      shellColor: mix(NODE_SHELL_BASE, t.color, NODE_TINT_MIX),
+      borderColor: mix(NODE_BORDER_BASE, t.color, 0.3),
       ringColor: TRANSPARENT,
+      typeColor: t.color,
+      typeLabel: t.key,
       type: t.shape === "square" ? "square" : "circle",
       key: t.key,
     });
@@ -117,7 +124,8 @@ export function buildSchemaGraph(
     for (const parentId of t.parents) {
       if (parentId === t.id || !byId.has(parentId)) continue;
       graph.addEdgeWithKey(`sub:${t.id}:${parentId}`, t.id, parentId, {
-        type: SUBCLASS_KIND,
+        kind: SUBCLASS_KIND,
+        type: EDGE_TYPE_ARROW,
         size: SUBCLASS_EDGE_SIZE,
       });
     }
@@ -132,7 +140,8 @@ export function buildSchemaGraph(
       if (disjointSeen.has(pairKey)) continue;
       disjointSeen.add(pairKey);
       graph.addEdgeWithKey(`dis:${pairKey}`, t.id, otherId, {
-        type: DISJOINT_KIND,
+        kind: DISJOINT_KIND,
+        type: EDGE_TYPE_LINE,
         size: DISJOINT_EDGE_SIZE,
       });
     }
@@ -159,7 +168,8 @@ export function buildSchemaGraph(
     for (const d of domains) {
       for (const rg of ranges) {
         graph.addEdgeWithKey(`rel:${r.id}:${d}:${rg}`, d, rg, {
-          type: RELATION_KIND,
+          kind: RELATION_KIND,
+          // type 由 layOutParallelRelations 按最终弯曲度决定（直线还是弧线）
           relationId: r.id,
           label: r.label,
           size: RELATION_EDGE_SIZE,
@@ -187,11 +197,15 @@ export function buildSchemaGraph(
  *  各自扇到一条独立的弧上，不叠成一条谁也点不中的线。算法与 Graph.tsx 的
  *  layOutParallelEdges 同一个思路（按无向对分组，围绕直线对称铺开），
  *  但这里的边不需要先合并逆关系——本体里 inverse_of 只在关系检查器里说明，
- *  不折进画布，所以少了那一整步。 */
+ *  不折进画布，所以少了那一整步。
+ *
+ *  顺带决定每条关系边的渲染类型：**独苗走直线**（EDGE_TYPE_ARROW），
+ *  只有真的平行/自环时才切到弧线程序——弧线程序在零弯曲度下也能画，
+ *  但没必要为大多数只有一条的关系边多背一层曲线计算 */
 function layOutParallelRelations(graph: Graphology): void {
   const groups = new Map<string, string[]>();
   graph.forEachEdge((edge, attrs, source, target) => {
-    if (attrs.type !== RELATION_KIND) return;
+    if (attrs.kind !== RELATION_KIND) return;
     const key =
       source === target ? `loop:${source}` : [source, target].sort().join("|");
     const list = groups.get(key);
@@ -203,22 +217,21 @@ function layOutParallelRelations(graph: Graphology): void {
     edges.forEach((edge, i) => {
       const [source, target] = graph.extremities(edge);
       if (source === target) {
-        graph.setEdgeAttribute(
-          edge,
-          "curvature",
-          SELF_LOOP_BASE_CURVATURE + i * RELATION_CURVATURE_STEP,
-        );
+        graph.mergeEdgeAttributes(edge, {
+          curvature: SELF_LOOP_BASE_CURVATURE + i * RELATION_CURVATURE_STEP,
+          type: EDGE_TYPE_CURVED_ARROW,
+        });
         return;
       }
       const offset = n === 1 ? 0 : i - (n - 1) / 2;
       // sigma 的弯曲度相对这条边自己的 source→target 而言，符号得按谁小谁大
       // 归一化，否则方向相反的两条边会各自以为自己是独苗，扇到同一侧叠回去
       const sign = source < target ? 1 : -1;
-      graph.setEdgeAttribute(
-        edge,
-        "curvature",
-        offset === 0 ? 0 : sign * offset * RELATION_CURVATURE_STEP,
-      );
+      const curvature = offset === 0 ? 0 : sign * offset * RELATION_CURVATURE_STEP;
+      graph.mergeEdgeAttributes(edge, {
+        curvature,
+        type: curvature === 0 ? EDGE_TYPE_ARROW : EDGE_TYPE_CURVED_ARROW,
+      });
     });
   }
 }
@@ -256,18 +269,22 @@ interface SearchHit {
 }
 
 export function OntologySchemaGraph({
+  kbId,
   entityTypes,
   relationTypes,
-  onEditClass,
-  onEditRelation,
+  onChanged,
+  onError,
 }: {
+  kbId: string;
   entityTypes: EntityTypeView[];
   /** 全量关系（含 attribute）：图只画 kind === "relation"，但类检查器要用
    *  attribute 列出这个类的字面值字段——单一数据源，不在这里再筛一遍就把
    *  attribute 丢了 */
   relationTypes: RelationTypeView[];
-  onEditClass: (id: string) => void;
-  onEditRelation: (id: string) => void;
+  /** 编辑保存后调用，与 Ontology.tsx 主视图共享同一次 invalidate——
+   *  没有第二份本体缓存需要单独失效 */
+  onChanged: () => void;
+  onError: (e: unknown) => void;
 }) {
   const entityById = useMemo(
     () => new Map(entityTypes.map((t) => [t.id, t])),
@@ -300,6 +317,7 @@ export function OntologySchemaGraph({
   }, [selected]);
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<HTMLCanvasElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const graphRef = useRef<Graphology | null>(null);
 
@@ -317,50 +335,67 @@ export function OntologySchemaGraph({
       allowInvalidContainer: true,
       defaultNodeType: "circle",
       nodeProgramClasses: {
+        // 与 /graph 同一套「状态环 → 描边 → 深色壳 → 微彩核心」四层解剖
         circle: createNodeBorderProgram({
           borders: [
-            { size: { value: 0.14 }, color: { attribute: "ringColor" } },
-            { size: { value: 0.1 }, color: { attribute: "borderColor" } },
+            { size: { value: 0.1 }, color: { attribute: "ringColor" } },
+            { size: { value: 0.07 }, color: { attribute: "borderColor" } },
+            { size: { value: 0.3 }, color: { attribute: "shellColor" } },
             { size: { fill: true }, color: { attribute: "color" } },
           ],
         }),
         square: NodeSquareShellProgram,
       },
-      defaultEdgeType: RELATION_KIND,
+      defaultEdgeType: EDGE_TYPE_ARROW,
       edgeProgramClasses: {
-        [SUBCLASS_KIND]: EdgeArrowProgram,
-        [DISJOINT_KIND]: EdgeLineProgram,
-        [RELATION_KIND]: EdgeCurvedArrowProgram,
+        [EDGE_TYPE_ARROW]: EdgeArrowProgram,
+        [EDGE_TYPE_LINE]: EdgeLineProgram,
+        [EDGE_TYPE_CURVED_ARROW]: EdgeCurvedArrowProgram,
       },
       enableEdgeEvents: true,
       labelFont: '"Geist", "Inter", "Noto Sans SC", sans-serif',
-      labelSize: 12,
+      labelSize: 11,
       labelColor: { color: "#e5e5e5" },
-      labelRenderedSizeThreshold: 5,
-      labelDensity: 1,
+      labelRenderedSizeThreshold: 6,
+      labelDensity: 0.7,
+      labelGridCellSize: 140,
       minCameraRatio: 0.05,
       maxCameraRatio: 6,
       edgeLabelSize: 10,
       // 关系边的同一个紫——看到画布上有字，就知道这是一条关系边而不是继承/互斥
       edgeLabelColor: { color: "#c4a5ff" },
       edgeLabelFont: '"Geist", "Inter", sans-serif',
+      defaultDrawNodeLabel: drawPillLabel,
+      defaultDrawNodeHover: drawHoverCard,
       nodeReducer: (node, attrs) => {
         const res = { ...attrs };
         const base = attrs.size as number;
         const sel = selectedRef.current;
         const hov = hoverRef.current;
-        const own = (attrs.color as string) ?? "#a3a3a3";
+        // 环取节点自己的类型色，不取已经混过壳色的 color——见 graphVisuals
+        // 里 RING_*_MIX 的说明
+        const ownColor = (attrs.typeColor as string) ?? NODE_CORE_BASE;
+        const muteNode = () => {
+          res.size = base * 0.55;
+          res.color = mix(MUTED_SHELL, NODE_CORE_BASE, 0.3);
+          res.shellColor = MUTED_SHELL;
+          res.borderColor = TRANSPARENT;
+          res.ringColor = TRANSPARENT;
+          res.label = "";
+          res.zIndex = 0;
+        };
         if (hov === node) {
-          res.size = base * 1.12;
-          res.ringColor = mixWhite(own, 0.7);
-          res.forceLabel = true;
+          res.size = Math.max(base * 1.08, 10.4);
+          res.ringColor = mix(ownColor, "#ffffff", RING_HOVER_MIX);
+          // 悬浮卡接管标签展示；label 本身保留（悬浮卡靠它渲染标题）
+          res.hideBaseLabel = true;
           res.zIndex = 4;
           return res;
         }
         if (sel?.kind === "class" && g.hasNode(sel.id)) {
           if (node === sel.id) {
-            res.size = base * 1.08;
-            res.ringColor = mixWhite(own, 0.35);
+            res.size = Math.max(base * 1.02, 9.2);
+            res.ringColor = mix(ownColor, "#ffffff", RING_SELECT_MIX);
             res.forceLabel = true;
             res.zIndex = 3;
             return res;
@@ -369,27 +404,19 @@ export function OntologySchemaGraph({
             res.zIndex = 2;
             return res;
           }
-          res.color = "rgba(90,90,90,0.5)";
-          res.shellColor = "rgba(90,90,90,0.5)";
-          res.borderColor = TRANSPARENT;
-          res.label = "";
-          res.zIndex = 0;
+          muteNode();
           return res;
         }
         if (sel?.kind === "relation") {
           const rel = relationById.get(sel.id);
-          const endpoints = new Set([...(rel?.domains ?? []), ...(rel?.ranges ?? [])]);
-          if (endpoints.has(node)) {
-            res.ringColor = mixWhite(own, 0.35);
-            res.zIndex = 2;
-            return res;
-          }
           if (rel) {
-            res.color = "rgba(90,90,90,0.5)";
-            res.shellColor = "rgba(90,90,90,0.5)";
-            res.borderColor = TRANSPARENT;
-            res.label = "";
-            res.zIndex = 0;
+            const endpoints = new Set([...rel.domains, ...rel.ranges]);
+            if (endpoints.has(node)) {
+              res.ringColor = mix(ownColor, "#ffffff", RING_SELECT_MIX);
+              res.zIndex = 2;
+              return res;
+            }
+            muteNode();
             return res;
           }
         }
@@ -397,7 +424,7 @@ export function OntologySchemaGraph({
       },
       edgeReducer: (edge, attrs) => {
         const res = { ...attrs };
-        const kind = attrs.type as string;
+        const kind = attrs.kind as string;
         const relId = attrs.relationId as string | undefined;
         const base =
           kind === SUBCLASS_KIND
@@ -474,6 +501,14 @@ export function OntologySchemaGraph({
       sigma.setSetting("renderEdgeLabels", sigma.getCamera().ratio < 1.1);
     sigma.getCamera().on("updated", updateEdgeLabels);
     updateEdgeLabels();
+
+    // 世界坐标网格：随相机变动/容器尺寸变动重绘，与 /graph 同一张背景
+    const renderGrid = () => {
+      if (gridRef.current) drawWorldGrid(gridRef.current, sigma);
+    };
+    sigma.getCamera().on("updated", renderGrid);
+    sigma.on("resize", renderGrid);
+    renderGrid();
 
     sigmaRef.current = sigma;
     if (import.meta.env.DEV) {
@@ -656,7 +691,9 @@ export function OntologySchemaGraph({
         </div>
       </div>
 
+      {/* 画布：世界坐标网格层（随相机动）垫在 sigma WebGL 层下，与 /graph 同款 */}
       <div className="absolute inset-0">
+        <canvas ref={gridRef} className="absolute inset-0 h-full w-full" />
         <div ref={containerRef} className="absolute inset-0" />
       </div>
 
@@ -703,331 +740,116 @@ export function OntologySchemaGraph({
       {selected && (
         <SchemaInspector
           selected={selected}
+          kbId={kbId}
+          entityTypes={entityTypes}
+          relationTypes={relationTypes}
+          objectRelations={objectRelations}
           entityById={entityById}
           relationById={relationById}
-          relationTypes={relationTypes}
-          onSelectClass={(id) => {
-            setSelected({ kind: "class", id });
-            focusClass(id);
-          }}
           onClose={() => setSelected(null)}
-          onEditClass={onEditClass}
-          onEditRelation={onEditRelation}
+          onChanged={onChanged}
+          onError={onError}
         />
       )}
     </div>
   );
 }
 
-/* ============ 检查器：只读，导航为主，不是又一个编辑表单 ============ */
+/* ============ 检查器：直接嵌真正的编辑卡片，不是又一份只读摘要 ============ */
+
+function SchemaSidePanel({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="absolute top-14 right-3 bottom-4 w-96 z-10 flex flex-col gap-2">
+      <div className="shrink-0 flex justify-end">
+        <button
+          onClick={onClose}
+          className="glass-strong rounded-full p-1.5 text-neutral-400 shadow-lg transition-colors hover:text-neutral-100"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto u-scroll flex flex-col gap-3 pb-1">
+        {children}
+      </div>
+    </div>
+  );
+}
 
 function SchemaInspector({
   selected,
+  kbId,
+  entityTypes,
+  relationTypes,
+  objectRelations,
   entityById,
   relationById,
-  relationTypes,
-  onSelectClass,
   onClose,
-  onEditClass,
-  onEditRelation,
+  onChanged,
+  onError,
 }: {
   selected: NonNullable<SchemaSelection>;
+  kbId: string;
+  entityTypes: EntityTypeView[];
+  relationTypes: RelationTypeView[];
+  objectRelations: RelationTypeView[];
   entityById: Map<string, EntityTypeView>;
   relationById: Map<string, RelationTypeView>;
-  relationTypes: RelationTypeView[];
-  onSelectClass: (id: string) => void;
   onClose: () => void;
-  onEditClass: (id: string) => void;
-  onEditRelation: (id: string) => void;
+  onChanged: () => void;
+  onError: (e: unknown) => void;
 }) {
   if (selected.kind === "class") {
     const cls = entityById.get(selected.id);
     // 选中的类在刷新后没了（并发编辑/删除）——不渲染一个查无此人的面板
     if (!cls) return null;
-    // 与 AttributesCard（Ontology.tsx）同一个筛法：attribute 挂在类下，
-    // 检查器只读展示，编辑还是走那张卡片,不在这里另开一份
+    // 与 Ontology.tsx 主视图同一个筛法：attribute 挂在类下
     const attributes = relationTypes.filter(
       (r) => r.kind === "attribute" && r.domains.includes(cls.id),
     );
     return (
-      <ClassInspectorBody
-        cls={cls}
-        entityById={entityById}
-        attributes={attributes}
-        onSelectClass={onSelectClass}
-        onClose={onClose}
-        onEdit={() => onEditClass(cls.id)}
-      />
+      <SchemaSidePanel onClose={onClose}>
+        <div className="glass rounded-xl p-4">
+          <ClassForm
+            key={cls.id}
+            kbId={kbId}
+            existing={cls}
+            parentId={cls.primary_parent}
+            allTypes={entityTypes}
+            onDone={onChanged}
+            onError={onError}
+          />
+        </div>
+        <AttributesCard
+          kbId={kbId}
+          type={cls}
+          attributes={attributes}
+          onChanged={onChanged}
+          onError={onError}
+        />
+      </SchemaSidePanel>
     );
   }
   const rel = relationById.get(selected.id);
   if (!rel) return null;
   return (
-    <RelationInspectorBody
-      rel={rel}
-      entityById={entityById}
-      relationById={relationById}
-      onClose={onClose}
-      onEdit={() => onEditRelation(rel.id)}
-    />
-  );
-}
-
-function InspectorShell({
-  swatch,
-  title,
-  meta,
-  onEdit,
-  editLabel,
-  onClose,
-  children,
-}: {
-  swatch: React.ReactNode;
-  title: string;
-  meta: React.ReactNode;
-  onEdit: () => void;
-  editLabel: string;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="glass-strong absolute top-14 right-3 bottom-4 w-80 z-10 rounded-xl shadow-2xl flex flex-col">
-      <div className="flex items-start justify-between gap-2 px-4 py-3.5 border-b border-white/10">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            {swatch}
-            <span
-              className="text-[15px] font-semibold tracking-tight text-white truncate"
-              style={{ fontFamily: "var(--font-display)" }}
-            >
-              {title}
-            </span>
-          </div>
-          <div className="mt-1 text-xs text-neutral-500">{meta}</div>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <button
-            onClick={onClose}
-            className="text-neutral-500 hover:text-neutral-200"
-          >
-            <X size={15} />
-          </button>
-        </div>
-      </div>
-      <div className="flex-1 min-h-0 overflow-y-auto u-scroll px-4 py-3 space-y-3.5">
-        {children}
-      </div>
-      <div className="border-t border-white/10 px-4 py-2.5">
-        <Button size="sm" variant="ghost" onClick={onEdit} className="w-full">
-          <Pencil size={12} className="mr-1.5" />
-          {editLabel}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function InspectorSection({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <div className="mb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-600">
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-}
-
-function ClassInspectorBody({
-  cls,
-  entityById,
-  attributes,
-  onSelectClass,
-  onClose,
-  onEdit,
-}: {
-  cls: EntityTypeView;
-  entityById: Map<string, EntityTypeView>;
-  attributes: RelationTypeView[];
-  onSelectClass: (id: string) => void;
-  onClose: () => void;
-  onEdit: () => void;
-}) {
-  const parents = cls.parents
-    .map((id) => entityById.get(id))
-    .filter((t): t is EntityTypeView => !!t);
-  const disjoint = cls.disjoint
-    .map((id) => entityById.get(id))
-    .filter((t): t is EntityTypeView => !!t);
-
-  const ClassChip = ({ t }: { t: EntityTypeView }) => (
-    <button
-      onClick={() => onSelectClass(t.id)}
-      className="flex items-center gap-1.5 rounded-full bg-white/[0.08] px-2 py-0.5 text-[11px] text-neutral-200 hover:bg-white/[0.16]"
-    >
-      <span
-        className={cn("h-1.5 w-1.5 shrink-0", t.shape !== "square" && "rounded-full")}
-        style={{ background: t.color }}
-      />
-      {t.label}
-    </button>
-  );
-
-  return (
-    <InspectorShell
-      swatch={
-        <span
-          className={cn("h-2.5 w-2.5 shrink-0", cls.shape !== "square" && "rounded-full")}
-          style={{ background: cls.color, boxShadow: `0 0 8px ${cls.color}55` }}
+    <SchemaSidePanel onClose={onClose}>
+      <div className="glass rounded-xl p-4">
+        <PropertyForm
+          key={rel.id}
+          kbId={kbId}
+          existing={rel}
+          allTypes={entityTypes}
+          allRelations={objectRelations}
+          onDone={onChanged}
+          onError={onError}
         />
-      }
-      title={cls.label}
-      meta={S.ontology.usage(cls.usage)}
-      onEdit={onEdit}
-      editLabel={S.ontology.schemaEditClass}
-      onClose={onClose}
-    >
-      {cls.description && (
-        <InspectorSection title={S.ontology.description}>
-          <p className="text-[13px] leading-relaxed text-neutral-300">
-            {cls.description}
-          </p>
-        </InspectorSection>
-      )}
-      <InspectorSection title={S.ontology.parent}>
-        {parents.length === 0 ? (
-          <p className="text-[13px] text-neutral-500">{S.ontology.noParent}</p>
-        ) : (
-          <div className="flex flex-wrap gap-1.5">
-            {parents.map((t) => (
-              <ClassChip key={t.id} t={t} />
-            ))}
-          </div>
-        )}
-      </InspectorSection>
-      {disjoint.length > 0 && (
-        <InspectorSection title={S.ontology.disjoint}>
-          <div className="flex flex-wrap gap-1.5">
-            {disjoint.map((t) => (
-              <ClassChip key={t.id} t={t} />
-            ))}
-          </div>
-        </InspectorSection>
-      )}
-      {attributes.length > 0 && (
-        <InspectorSection title={S.ontology.attributes}>
-          <div className="divide-y divide-white/[0.06]">
-            {attributes.map((a) => (
-              <div
-                key={a.id}
-                className="flex items-center gap-2 py-1 text-[13px] text-neutral-300"
-              >
-                <span className="truncate">{a.label}</span>
-                <Chip tone="neutral" className="shrink-0">
-                  {S.ontology.datatypeNames[a.datatype ?? "text"]}
-                </Chip>
-              </div>
-            ))}
-          </div>
-        </InspectorSection>
-      )}
-    </InspectorShell>
-  );
-}
-
-function RelationInspectorBody({
-  rel,
-  entityById,
-  relationById,
-  onClose,
-  onEdit,
-}: {
-  rel: RelationTypeView;
-  entityById: Map<string, EntityTypeView>;
-  relationById: Map<string, RelationTypeView>;
-  onClose: () => void;
-  onEdit: () => void;
-}) {
-  const domainLabels = rel.domains.map((id) => entityById.get(id)?.label ?? id);
-  const rangeLabels = rel.ranges.map((id) => entityById.get(id)?.label ?? id);
-  const axioms: [boolean, string][] = [
-    [rel.functional, S.ontology.functional],
-    [rel.inverse_functional, S.ontology.inverseFunctional],
-    [rel.is_transitive, S.ontology.transitive],
-    [rel.is_symmetric, S.ontology.symmetric],
-    [rel.is_asymmetric, S.ontology.asymmetric],
-    [rel.is_irreflexive, S.ontology.irreflexive],
-  ];
-  const activeAxioms = axioms.filter(([on]) => on);
-  const temporalLabel =
-    rel.temporal === "event"
-      ? S.ontology.temporalEvent
-      : rel.temporal === "eternal"
-        ? S.ontology.temporalEternal
-        : S.ontology.temporalState;
-  const inverseOf = rel.inverse_of ? relationById.get(rel.inverse_of) : null;
-  const subPropertyOf = rel.sub_property_of
-    ? relationById.get(rel.sub_property_of)
-    : null;
-
-  return (
-    <InspectorShell
-      swatch={<Network size={13} className="shrink-0 text-[#c4a5ff]" />}
-      title={rel.label}
-      meta={S.ontology.usage(rel.usage)}
-      onEdit={onEdit}
-      editLabel={S.ontology.schemaEditRelation}
-      onClose={onClose}
-    >
-      {rel.description && (
-        <InspectorSection title={S.ontology.description}>
-          <p className="text-[13px] leading-relaxed text-neutral-300">
-            {rel.description}
-          </p>
-        </InspectorSection>
-      )}
-      <div className="grid grid-cols-2 gap-3">
-        <InspectorSection title={S.ontology.domainLabel}>
-          <p className="text-[13px] text-neutral-300">
-            {domainLabels.length > 0 ? domainLabels.join(", ") : S.ontology.anyType}
-          </p>
-        </InspectorSection>
-        <InspectorSection title={S.ontology.rangeLabel}>
-          <p className="text-[13px] text-neutral-300">
-            {rangeLabels.length > 0 ? rangeLabels.join(", ") : S.ontology.anyType}
-          </p>
-        </InspectorSection>
       </div>
-      <InspectorSection title={S.ontology.temporal}>
-        <p className="text-[13px] text-neutral-300">{temporalLabel}</p>
-      </InspectorSection>
-      {activeAxioms.length > 0 && (
-        <InspectorSection title={S.ontology.axioms}>
-          <div className="flex flex-wrap gap-1.5">
-            {activeAxioms.map(([, label]) => (
-              <Chip key={label} tone="info">
-                {label}
-              </Chip>
-            ))}
-          </div>
-        </InspectorSection>
-      )}
-      {inverseOf && (
-        <InspectorSection title={S.ontology.inverseOf}>
-          <p className="text-[13px] text-neutral-300">{inverseOf.label}</p>
-        </InspectorSection>
-      )}
-      {subPropertyOf && (
-        <InspectorSection title={S.ontology.subPropertyOf}>
-          <p className="text-[13px] text-neutral-300">{subPropertyOf.label}</p>
-        </InspectorSection>
-      )}
-    </InspectorShell>
+    </SchemaSidePanel>
   );
 }

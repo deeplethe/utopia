@@ -300,10 +300,11 @@ export function Ontology() {
       {sel?.kind === "schema" ? (
         <div className="flex-1 min-w-0">
           <OntologySchemaGraph
+            kbId={kb.id}
             entityTypes={entity_types}
             relationTypes={relation_types}
-            onEditClass={(id) => setSel({ kind: "class", id })}
-            onEditRelation={(id) => setSel({ kind: "relation", id })}
+            onChanged={refresh}
+            onError={onError}
           />
         </div>
       ) : (
@@ -472,7 +473,9 @@ function InstancesCard({ kbId, type }: { kbId: string; type: EntityTypeView }) {
 
 /* ---------- 属性卡片：选中类的字面值字段（行内增改删） ---------- */
 
-function AttributesCard({
+/** 导出给模式图复用：选中一个类时，检查器里嵌的就是这一张卡片本身，
+ *  不是另一份只读摘要——编辑发生在同一处，不必跳回本体主视图 */
+export function AttributesCard({
   kbId,
   type,
   attributes,
@@ -944,7 +947,8 @@ function parentOptions(
   return out;
 }
 
-function ClassForm({
+/** 导出给模式图复用（见 AttributesCard 上的注释） */
+export function ClassForm({
   kbId,
   existing,
   parentId,
@@ -1183,7 +1187,8 @@ function ClassForm({
 
 /* ---------- 关系表单 ---------- */
 
-function PropertyForm({
+/** 导出给模式图复用（见 AttributesCard 上的注释） */
+export function PropertyForm({
   kbId,
   existing,
   allTypes,
