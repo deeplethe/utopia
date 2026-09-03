@@ -45,8 +45,7 @@ async fn fixture(pool: &PgPool) -> anyhow::Result<(Uuid, Uuid, Uuid)> {
 
 #[tokio::test]
 async fn one_concept_one_source_one_mapping() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
@@ -116,8 +115,7 @@ async fn one_concept_one_source_one_mapping() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn a_rejected_mapping_does_not_come_back() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;

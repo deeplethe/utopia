@@ -44,8 +44,7 @@ fn count_of(rows: &[utopia_core::models::OntologyMiss], key: &str) -> Option<i32
 
 #[tokio::test]
 async fn dismissing_stops_the_suggestion_but_not_the_counting() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;

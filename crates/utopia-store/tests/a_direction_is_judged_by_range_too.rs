@@ -107,8 +107,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
 
 #[tokio::test]
 async fn direction_is_judged_by_range_too() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
