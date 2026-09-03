@@ -82,8 +82,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<(Uuid, Vec<(&'static str, Uuid)>)
 
 #[tokio::test]
 async fn a_retrieved_leaf_brings_its_ancestors() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;

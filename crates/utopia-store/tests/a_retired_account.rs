@@ -32,8 +32,7 @@ async fn org_with_two_admins(pool: &PgPool) -> anyhow::Result<(Uuid, Uuid, Uuid)
 
 #[tokio::test]
 async fn a_retired_account_cannot_get_back_in() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
@@ -88,8 +87,7 @@ async fn a_retired_account_cannot_get_back_in() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn the_last_admin_and_oneself_are_protected() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;

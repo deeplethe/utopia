@@ -173,8 +173,7 @@ async fn open_contradictions(
 
 #[tokio::test]
 async fn a_contradiction_points_upstream() -> anyhow::Result<()> {
-    let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-        eprintln!("跳过：未设 UTOPIA_DATABASE_URL");
+    let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;

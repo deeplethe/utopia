@@ -65,11 +65,12 @@ cd web && pnpm install --frozen-lockfile && pnpm build   # build type-checks
 This is the easiest thing to get wrong here. A green `cargo test --workspace` does not mean everything ran. A number of tests begin like this:
 
 ```rust
-let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
-    eprintln!("skipping: UTOPIA_DATABASE_URL not set");
+let Some(url) = utopia_store::test_db::url() else {
     return Ok(());
 };
 ```
+
+`test_db::url()` reads `UTOPIA_DATABASE_URL`. With `UTOPIA_TEST_REQUIRE_DB=1` also set, a missing database is a failure rather than a skip — that is how the `migrations` job in CI runs the whole `utopia-store` suite, so a green run there means the SQL was exercised. Use the same guard in new tests; do not read the env var directly.
 
 They guard what the compiler cannot see: table aliases inside SQL strings, how `NULL` behaves in a comparison, rows an `INNER JOIN` silently drops, whether a recursive CTE expands the same ancestor twice under diamond inheritance. `cargo check` and clippy say nothing about any of it.
 
