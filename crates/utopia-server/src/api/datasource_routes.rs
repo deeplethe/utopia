@@ -53,10 +53,25 @@ pub async fn create(
     Json(body): Json<CreateBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_admin(&user)?;
+    // 引擎跟着 scheme 走，界面只有一个连接串输入框；body.engine 只为兼容旧调用留着
+    let engine = crate::query_engine::engine_from_conn(&body.conn_string).ok_or_else(|| {
+        utopia_core::AppError::invalid(
+            "unsupported_conn_scheme",
+            format!(
+                "Connection string must start with one of: postgres://, trino://, databricks://, snowflake:// (engines: {})",
+                crate::query_engine::ENGINES.join(", ")
+            ),
+        )
+    })?;
+    let _ = &body.engine;
+    // 连接串的形状在登记时就校验（缺令牌、缺 warehouse……），错误信息里带写法；
+    // 否则要等到「测试」才知道，而那一步只回 ok:false
+    crate::query_engine::engine_for(engine, &body.conn_string)
+        .map_err(|e| utopia_core::AppError::invalid("bad_conn_string", e.to_string()))?;
     let id = utopia_store::datasources::create(
         &state.pool,
         &body.name,
-        &body.engine,
+        engine,
         &body.conn_string,
         user.id,
     )
@@ -228,7 +243,7 @@ async fn sync_schema_doc(state: &AppState, kb_id: Uuid, ds_id: Uuid) -> anyhow::
         .await?;
 
     let mut md = format!(
-        "# Data source: {name}\n\nTables and columns available for SQL queries against this source.\n"
+        "# Data source: {name}\n\nEngine: {engine}. Tables and columns available for SQL queries against this source; write SQL in this engine's dialect.\n"
     );
     let mut current = String::new();
     let mut tables = 0usize;

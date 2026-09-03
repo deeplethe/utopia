@@ -639,7 +639,12 @@ function DataSourcesAdmin() {
           <div key={d.id} className="px-4 py-3 space-y-3">
             <div className="flex items-center gap-3">
               <div className="min-w-0 flex-1">
-                <div className="text-sm text-neutral-200">{d.name}</div>
+                <div className="text-sm text-neutral-200">
+                  {d.name}
+                  <span className="ml-2 text-[11px] uppercase tracking-wide text-neutral-500">
+                    {d.engine}
+                  </span>
+                </div>
                 <div className="text-xs text-neutral-500 font-mono truncate">
                   {d.summary}
                 </div>
@@ -695,6 +700,9 @@ function DataSourcesAdmin() {
           value={conn}
           onChange={(e) => setConn(e.target.value)}
         />
+        <p className="text-[11px] leading-5 text-neutral-500 font-mono whitespace-pre-line">
+          {S.settings.datasources.connSchemes}
+        </p>
         <div className="flex items-center gap-3">
           <button
             className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"

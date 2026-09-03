@@ -18,17 +18,16 @@ type DataSourceRow = (
     Option<bool>,
 );
 
-/// 连接串 → 无凭据摘要（host:port/db）。解析失败给占位符，绝不回显原串。
+/// 连接串 → 无凭据摘要（host[:port]/path）。解析失败给占位符，绝不回显原串。
+/// 端口没写就不补：四种 scheme 的默认端口各不相同，补错比不补更误导
 pub fn conn_summary(conn: &str) -> String {
     url::Url::parse(conn)
         .ok()
         .map(|u| {
             format!(
-                "{}:{}{}",
+                "{}{}{}",
                 u.host_str().unwrap_or("?"),
-                u.port()
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "5432".into()),
+                u.port().map(|p| format!(":{p}")).unwrap_or_default(),
                 u.path()
             )
         })
@@ -77,16 +76,12 @@ pub async fn create(
             "Data source name is required",
         ));
     }
-    if engine != "postgres" {
-        return Err(AppError::invalid(
-            "only_postgres",
-            "Only the postgres engine is supported for now",
-        ));
-    }
-    if !conn_string.starts_with("postgres://") && !conn_string.starts_with("postgresql://") {
+    // 引擎由调用方按连接串的 scheme 定（`query_engine::engine_from_conn`）；
+    // 允许的取值在迁移 0020 的 CHECK 里，这里不再复制一份
+    if engine.is_empty() || conn_string.trim().is_empty() {
         return Err(AppError::invalid(
             "bad_conn_string",
-            "Connection string must start with postgres://",
+            "A connection string is required",
         ));
     }
     let id = Uuid::now_v7();

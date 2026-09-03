@@ -876,7 +876,13 @@ export const en = {
         "Read-only database connections for asking questions about your data in Chat. " +
         "Register connections here; each knowledge base mounts the ones it may query.",
       name: "Name",
-      connString: "Connection string (postgres://user:pass@host:5432/db)",
+      connString: "Connection string — the scheme picks the engine",
+      // 四种写法各一行；令牌放 password 位，Databricks 的路径就是控制台里的 httpPath
+      connSchemes:
+        "postgres://user:pass@host:5432/db\n" +
+        "trino://user[:pass]@host:8080/catalog[/schema]   (Iceberg, Delta Lake, Hive)\n" +
+        "databricks://:TOKEN@host/sql/1.0/warehouses/ID?catalog=main\n" +
+        "snowflake://:TOKEN@account.snowflakecomputing.com/DB/SCHEMA?warehouse=WH",
       add: "Add data source",
       test: "Test",
       testOk: "Connected",

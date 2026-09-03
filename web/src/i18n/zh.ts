@@ -800,7 +800,12 @@ export const zh: Strings = {
         "只读的数据库连接，用于在「对话」里就你的数据提问。" +
         "在这里登记连接；每个知识库各自挂载允许查询的那些。",
       name: "名称",
-      connString: "连接串（postgres://user:pass@host:5432/db）",
+      connString: "连接串，前缀决定引擎",
+      connSchemes:
+        "postgres://user:pass@host:5432/db\n" +
+        "trino://user[:pass]@host:8080/catalog[/schema]   （Iceberg、Delta Lake、Hive）\n" +
+        "databricks://:TOKEN@host/sql/1.0/warehouses/ID?catalog=main\n" +
+        "snowflake://:TOKEN@account.snowflakecomputing.com/DB/SCHEMA?warehouse=WH",
       add: "添加数据源",
       test: "测试",
       testOk: "已连接",

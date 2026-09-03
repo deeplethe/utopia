@@ -42,6 +42,7 @@
 | 0014 | [身份跟着人，范围跟着令牌](0014-identity-from-the-person-scope-from-the-token.md) | 已实施（#180）· MCP 只读五工具 · 令牌页在账户层（A2）· 误导性的占位 crate 已删 |
 | 0015 | [记下一句话，不等于断言一个事实](0015-recording-a-sentence-is-not-asserting-a-fact.md) | 已实施 · 记忆抽出的事实进 `pending_facts`，Review 新档 + 跟在 remember 步骤后的确认卡 · `remember` 重新打开 · MCP 放开写是下一刀 |
 | 0016 | [先把开着的口子收上，再开新的](0016-close-the-open-seams-before-cutting-new-ones.md) | 规划中 · v0.1.0 之后的排期：A 收口 → B 推理机 ∥ C 尺子与本体 → D 语义层 → E 企业交付；模拟引擎后置 |
+| 0018 | [The lakehouse is one protocol away](0018-the-lakehouse-is-one-protocol-away.md) | 已实施 · 问数引擎扩到 HTTP 族：Trino（Iceberg / Delta / Hive）、Databricks、Snowflake，scheme 决定引擎，只有回放测试 · MaxCompute 未做 |
 
 ## 不是决策记录的那些
 

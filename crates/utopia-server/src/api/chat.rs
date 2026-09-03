@@ -71,7 +71,7 @@ fn tools_schema(can_write: bool, data_source_names: &[String]) -> serde_json::Va
                             },
                             "sql": {
                                 "type": "string",
-                                "description": "One SELECT/WITH statement (PostgreSQL dialect)."
+                                "description": "One SELECT/WITH statement in the source's own SQL dialect (PostgreSQL, Trino, Databricks or Snowflake; the schema document names the engine)."
                             },
                             "purpose": {
                                 "type": "string",
@@ -435,7 +435,7 @@ pub async fn chat(
         };
         if !ds_names.is_empty() {
             system_prompt.push_str(&format!(
-                "\nData: query_data runs read-only SQL (PostgreSQL dialect) against: {}. \
+                "\nData: query_data runs read-only SQL (in each source's own dialect) against: {}. \
                  For questions about numbers/metrics, search for the source's schema document \
                  first, then query. State units and the time range you used in the answer.",
                 ds_names.join(", ")

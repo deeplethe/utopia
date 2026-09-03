@@ -410,8 +410,9 @@ pub(super) fn charter_source_json(n: usize, h: &utopia_search::DocsSection) -> s
 
 /// 问数执行：安全闸（解析白名单）→ 引擎执行（只读会话 + 强制 LIMIT + 超时）→ JSON 行。
 async fn run_query(state: &AppState, ds_id: Uuid, sql: &str) -> anyhow::Result<String> {
-    let guarded = crate::query_engine::guard_sql(sql)?;
     let (engine, conn) = utopia_store::datasources::engine_and_conn(&state.pool, ds_id).await?;
+    // 闸门按引擎选方言：Databricks 的反引号、Snowflake 的 :: 转型都得先过得了解析
+    let guarded = crate::query_engine::guard_sql_for(&engine, sql)?;
     let result = crate::query_engine::engine_for(&engine, &conn)?
         .execute(&guarded)
         .await?;
