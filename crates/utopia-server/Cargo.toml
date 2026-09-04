@@ -43,7 +43,7 @@ object_store = { version = "0.14.1", features = ["aws", "azure", "gcp"] }
 quick-xml.workspace = true
 url = "2.5.8"
 percent-encoding = "2.3.2"
-base64 = "0.23.1"
+base64.workspace = true
 
 [dev-dependencies]
 wiremock = "0.6.5"

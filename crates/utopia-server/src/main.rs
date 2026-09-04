@@ -80,6 +80,22 @@ async fn main() -> anyhow::Result<()> {
 
     let pool = utopia_store::db::connect(&cfg.database_url, cfg.db_max_connections).await?;
 
+    // 凭据封印钥匙：环境变量优先，否则数据目录下的 secret.key（首次启动生成）。
+    // **钥匙不进库**——库泄漏不等于凭据泄漏，是这一层的全部意义。空串按未设置处理，
+    // 理由同下面的 JWT 密钥
+    let secret_key = match cfg.secret_key.clone().filter(|s| !s.trim().is_empty()) {
+        Some(text) => utopia_core::secrets::parse_key(&text).ok_or_else(|| {
+            anyhow::anyhow!("UTOPIA_SECRET_KEY must be 32 bytes, as 64 hex characters or base64")
+        })?,
+        None => secret_key_file(std::path::Path::new(&cfg.data_dir))?,
+    };
+    utopia_core::secrets::init(secret_key);
+    // 升级前落库的明文凭据在这里补封
+    let sealed = utopia_store::sealing::backfill(&pool).await?;
+    if sealed > 0 {
+        tracing::info!(rows = sealed, "凭据补封完成");
+    }
+
     let index_dir = std::path::Path::new(&cfg.data_dir).join("index");
     let search = Arc::new(SearchIndex::open(&index_dir)?);
     tracing::info!("全文索引就绪: {}", index_dir.display());
@@ -403,4 +419,32 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
         }
         other => anyhow::bail!("未知任务类型: {other}"),
     }
+}
+
+/// 数据目录下的封印钥匙：有就读，没有就生成一把写进去（unix 下 0600）。
+/// 读出来解析不了就报错停下——静默生成一把新的会让库里已封的凭据全部打不开
+fn secret_key_file(data_dir: &std::path::Path) -> anyhow::Result<[u8; 32]> {
+    let path = data_dir.join("secret.key");
+    if path.exists() {
+        let text = std::fs::read_to_string(&path)?;
+        return utopia_core::secrets::parse_key(&text).ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} does not hold a 32-byte key (64 hex characters or base64)",
+                path.display()
+            )
+        });
+    }
+    std::fs::create_dir_all(data_dir)?;
+    let key = utopia_core::secrets::generate_key();
+    std::fs::write(&path, utopia_core::secrets::key_to_hex(&key))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    tracing::info!(
+        "生成了凭据封印钥匙: {}（备份数据目录时一起带走；UTOPIA_SECRET_KEY 可覆盖）",
+        path.display()
+    );
+    Ok(key)
 }

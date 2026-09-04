@@ -18,6 +18,10 @@ pub struct AppConfig {
     /// 要求部署者手填一个随机串，现实中的结果是默认值原样上生产。
     /// 显式给出时优先于库里那条：密钥轮换与多实例显式对齐走这条路。
     pub jwt_secret: Option<String>,
+    /// 凭据封印钥匙（32 字节，64 位十六进制或 base64）。留空则用数据目录下的
+    /// `secret.key`，首次启动生成。**钥匙不进库**：库泄漏不等于凭据泄漏，是静态加密
+    /// 的全部意义；备份数据目录时把它一起带走，没有它库里的凭据读不出来。
+    pub secret_key: Option<String>,
     /// 前端构建产物目录；存在时由服务端托管 SPA（history fallback）。
     pub web_dist: String,
     /// 数据目录：原始文件（files/）与 Tantivy 索引（index/）。
@@ -39,6 +43,7 @@ impl Default for AppConfig {
             migration_url: None,
             bind_addr: "0.0.0.0:1516".into(),
             jwt_secret: None,
+            secret_key: None,
             web_dist: "web/dist".into(),
             data_dir: "data".into(),
             db_max_connections: None,
