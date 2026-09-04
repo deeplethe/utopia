@@ -83,6 +83,9 @@ const out = {
   source: raw.source,
   generated_at: new Date().toISOString(),
   vocabulary: mapping.vocabulary,
+  // 生成的答案卷按**全名精确**匹配。手填的卷用子串（名字每次略有出入），而这里的
+  // key 是维基百科条目名：子串会把 "OpenAI" 的答案套到 "OpenAI Foundation" 头上
+  match: "exact",
   expect: Object.fromEntries(Object.keys(expect).sort((a, b) => a.localeCompare(b)).map((k) => [k, expect[k]])),
 };
 fs.writeFileSync(outPath, JSON.stringify(out, null, 2) + "\n");

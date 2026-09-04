@@ -114,9 +114,13 @@ async function main() {
   const truthPath = args.truth
     ? path.resolve(args.truth)
     : path.join(HERE, "truth", corpusName + ".json");
-  const truth = fs.existsSync(truthPath)
-    ? JSON.parse(fs.readFileSync(truthPath, "utf8")).expect
-    : null;
+  const truthFile = fs.existsSync(truthPath) ? JSON.parse(fs.readFileSync(truthPath, "utf8")) : null;
+  const truth = truthFile?.expect ?? null;
+  // 匹配方式跟着答案卷走：手填的按子串（名字每次略有出入），生成的按全名精确
+  //（"OpenAI" 的答案不该套到 "OpenAI Foundation" 头上）
+  const exactNames = truthFile?.match === "exact";
+  const nameMatches = (name, frag) =>
+    exactNames ? name.trim().toLowerCase() === frag.toLowerCase() : name.includes(frag);
 
   try {
     await api("POST", "/api/v1/auth/register", {
@@ -284,12 +288,33 @@ async function main() {
   // **分档打分**（0016 的 C2 之前先量）：自动改的那一档准不准，待人工那一档若照单
   // 全收会怎样。总分把待人工按「没改」算，看不出自动那一档单独的水平；而放不放开
   // 自动跑，看的正是这一档
-  const inTruth = (name) => Object.entries(truth ?? {}).find(([frag]) => name.includes(frag));
+  // **命中 = 可接受类或它的子类。** 答案卷给的是锚（organization、place），引擎答的
+  // 常常更具体（research_organization、city）——精化正是要它做的事，不是错
+  const ancestors = new Map();
+  for (const l of psql(
+    "WITH RECURSIVE up(child, parent) AS (" +
+      " SELECT p.child_id, p.parent_id FROM entity_type_parents p JOIN entity_types t ON t.id = p.child_id" +
+      " WHERE t.kb_id = '" +
+      kb +
+      "' UNION SELECT up.child, p.parent_id FROM up JOIN entity_type_parents p ON p.child_id = up.parent)" +
+      " SELECT c.key || '|' || pk.key FROM up JOIN entity_types c ON c.id = up.child" +
+      " JOIN entity_types pk ON pk.id = up.parent",
+  )
+    .split(String.fromCharCode(10))
+    .filter((l) => l.includes("|"))) {
+    const i = l.lastIndexOf("|");
+    const c = l.slice(0, i);
+    if (!ancestors.has(c)) ancestors.set(c, new Set());
+    ancestors.get(c).add(l.slice(i + 1));
+  }
+  const accepts = (accept, key) =>
+    accept.includes(key) || [...(ancestors.get(key) ?? [])].some((a) => accept.includes(a));
+  const inTruth = (name) => Object.entries(truth ?? {}).find(([frag]) => nameMatches(name, frag));
   const judge = (name, key) => {
     const t = inTruth(name);
     if (!t) return "unknown";
     if (t[1].length === 0) return "should_leave";
-    return t[1].includes(key) ? "hit" : "miss";
+    return accepts(t[1], key) ? "hit" : "miss";
   };
   const tally = (pairs) => {
     const c = { hit: 0, miss: 0, should_leave: 0, unknown: 0, examples: [] };
@@ -354,7 +379,7 @@ async function main() {
   for (const [frag, accept] of Object.entries(truth ?? {})) {
     // 按片段匹配而不是全等：抽取给的名字每次略有出入
     //（"星云科技" / "星云科技(上海)有限公司"），全等会把这种变化算成失败
-    const found = rows.filter(([name]) => name.includes(frag));
+    const found = rows.filter(([name]) => nameMatches(name, frag));
     if (found.length === 0) {
       absent += 1;
       continue;
@@ -366,7 +391,7 @@ async function main() {
         wronglyChanged += 1;
         notes.push(frag + "：本不该改，却成了 " + keys.join("/"));
       } else correctlyLeft += 1;
-    } else if (keys.some((k) => accept.includes(k))) {
+    } else if (keys.some((k) => accepts(accept, k))) {
       hit += 1;
     } else {
       miss += 1;

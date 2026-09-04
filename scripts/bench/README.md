@@ -50,6 +50,11 @@ node scripts/bench/run.mjs --corpus pharma --ontology /tmp/schemaorg.ttl --label
   一路签名；这里要量的是"本体规模"，比例稳定就够用。
 - `for_review` 按**没改**算进 miss。它确实还没改——算成命中就是把人的活记在机器账上。
 - `absent` = 标准答案里有、但抽取压根没抽出这个实体。它不是消解的错，单独一栏。
+- **命中 = 可接受类或它的子类**（按库里的类层级算）。答案卷给的是锚（organization、
+  place），引擎答的常常更具体（research_organization、city）——精化正是要它做的事。
+- 手填的答案卷按子串匹配名字，生成的（`match: "exact"`）按全名精确匹配。
+- `score.tiers`：分档打分。`auto` 是自动落地那一档对答案卷的命中，`review` 是待人工那一档
+  若盲目照收会怎样——放不放开自动跑看的是前者。
 
 ## 标准答案会写错
 

@@ -44,7 +44,7 @@ pub struct UpdateKbReq {
     /// 多久重推一次（分钟）。事实持续在变，只靠手点会让派生一直是缺的
     #[serde(default)]
     pub inference_interval_minutes: Option<i32>,
-    /// 抽取结束自动排一轮类型消解（缺省关）。见 docs/decisions/0016 C2
+    /// 抽取结束自动排一轮类型消解（缺省开）。见 docs/decisions/0016 C2
     #[serde(default)]
     pub auto_type_resolution: Option<bool>,
 }
