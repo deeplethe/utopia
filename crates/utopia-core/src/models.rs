@@ -859,6 +859,9 @@ pub struct KnowledgeBase {
     /// 而 0001 判据 2 说「本体是引导不是执法」：声明可能是错的，不该在用户
     /// 没表态时就按它改图
     pub materialize_inferences: bool,
+    /// 抽取结束自动排一轮类型消解（0016 C2）。**只自动落地在原类子树里精化的那一档**，
+    /// 跨轴的改判仍留给人。缺省开：基准上自动那一档的命中 39/41（#297），且每批可撤
+    pub auto_type_resolution: bool,
     /// 多久重推一次（分钟）。见 `knowledge_bases.inference_interval_minutes`
     pub inference_interval_minutes: i32,
     /// 上次推完的时间。**答的是「上次看过没有」，不是「上次改过没有」**

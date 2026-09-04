@@ -686,6 +686,7 @@ export const zh: Strings = {
     sameNameNote: (n: number) => `另有 ${n} 个实体同名。`,
     sameNameHint: "如果它们是同一个东西，去「审阅」里合并。",
     mergeInto: "并入",
+    mergeTitle: "合并实体",
     mergeIntoHint: "把那个实体并进这一个。它的事实搬过来；合并可以撤销。",
     mergeConfirm: (from: string, into: string) =>
       `把「${from}」并进「${into}」？它的事实会搬过来。可以在审阅页撤销。`,
@@ -846,6 +847,7 @@ export const zh: Strings = {
       testFail: "失败",
       neverTested: "未测试",
       remove: "移除",
+      empty: "还没有注册数据源。在下面注册一个。",
       grants: "可用于",
       grantsHint:
         "授权哪些工作区可以用这个源。**授权之后，那些工作区的知识库管理员自己挑挂不挂**——" +
@@ -874,6 +876,7 @@ export const zh: Strings = {
       visRestricted: "仅受邀者",
       create: "创建",
       openSettings: "设置",
+      empty: "还没有知识库。在上面建第一个。",
       docs: (n: number) => `${n} 篇文档`,
     },
     modelsIntro:
@@ -943,7 +946,7 @@ export const zh: Strings = {
       text: "文本",
       number: "数字",
       date: "日期",
-      bool: "是 / 否",
+      bool: "布尔",
     },
     cancel: "取消",
     key: "Key",
@@ -955,7 +958,7 @@ export const zh: Strings = {
     disjoint: "不可能同时是",
     disjointHint:
       "任何东西不可能同时属于的类。人不是组织。一致性检查据此找出永远不可能有实例的类。",
-    noDisjoint: "没有排除任何类",
+    noDisjoint: "尚未声明",
     disjointWithParent:
       "这个类继承自一个它声明不可能是的类——没有任何东西能满足它。",
     primaryParentHint: "左栏的树里挂在第一个下面。",
@@ -1339,6 +1342,9 @@ export const zh: Strings = {
     materialize: "物化推理",
     materializeNote:
       "把本体蕴含的事实写进账本——传递链与对称对。默认关：声明可能是错的，而这一步会改图。派生事实带标记，也随时可以撤回。",
+    autoResolveTypes: "抽取后自动消解实体类型",
+    autoResolveTypesNote:
+      "每篇文档抽完，对引擎还没看过的实体跑一轮类型消解。只有在现类子树里精化的才自动落地，跨轴的改判仍留在本体页等你。每一批都列在本体页，随时可以撤回。",
     inferEvery: "每隔",
     minutes: "分钟重推",
     lastInference: (when: string) => `上次 ${when}`,
@@ -1425,6 +1431,7 @@ export const zh: Strings = {
     systemAdmin: "系统管理员",
     remove: "移除",
     deactivate: "停用账号",
+    cancel: "取消",
     deactivateHint:
       "断掉整个系统的访问——登录与已签发的 token 都失效。他做过的事仍然记在他名下。",
     deactivatedTitle: "已停用的账号",

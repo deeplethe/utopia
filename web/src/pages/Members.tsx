@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { S } from "../i18n";
 import { toast } from "../toast";
-import { Dropdown, Pager, pageSlice, SearchSelect } from "../ui";
+import { DangerConfirm, Dropdown, Pager, pageSlice, SearchSelect } from "../ui";
 
 const ROLES = ["owner", "admin", "editor", "viewer"] as const;
 const ROLE_OPTIONS = ROLES.map((r) => ({ value: r, label: S.members.roles[r] }));
@@ -41,6 +41,10 @@ export function Members({ workspaceId }: { workspaceId: string }) {
     onSuccess: refresh,
     onError,
   });
+  // 停用先问一句——用全站的对话框而不是浏览器原生 confirm()
+  const [deactivating, setDeactivating] = useState<{ id: string; name: string } | null>(
+    null,
+  );
   const deactivate = useMutation({
     mutationFn: (userId: string) => api.adminDeactivateUser(userId),
     onSuccess: refresh,
@@ -109,10 +113,9 @@ export function Members({ workspaceId }: { workspaceId: string }) {
                     只给管理员看——它的影响面大得多 */}
                 {me.data?.is_admin && me.data.id !== m.user_id && (
                   <button
-                    onClick={() => {
-                      if (confirm(S.members.deactivateConfirm(m.display_name)))
-                        deactivate.mutate(m.user_id);
-                    }}
+                    onClick={() =>
+                      setDeactivating({ id: m.user_id, name: m.display_name })
+                    }
                     className="ml-3 text-xs text-neutral-600 hover:text-rose-400"
                     title={S.members.deactivateHint}
                   >
@@ -164,6 +167,20 @@ export function Members({ workspaceId }: { workspaceId: string }) {
 
       {me.data?.is_admin && <CreateUser onCreated={refresh} />}
       {me.data?.is_admin && <DeactivatedUsers onChanged={refresh} />}
+      {deactivating && (
+        <DangerConfirm
+          title={S.members.deactivate}
+          hint={S.members.deactivateConfirm(deactivating.name)}
+          confirmLabel={S.members.deactivate}
+          cancelLabel={S.members.cancel}
+          busy={deactivate.isPending}
+          onConfirm={() => {
+            deactivate.mutate(deactivating.id);
+            setDeactivating(null);
+          }}
+          onCancel={() => setDeactivating(null)}
+        />
+      )}
     </div>
   );
 }

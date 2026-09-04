@@ -12,10 +12,12 @@ import { GithubMark, SectionMark } from "../ui";
 import { UserMenu } from "./UserMenu";
 import { usePageTitle } from "../useTitle";
 import ingestMd from "../docs/ingest.md?raw";
+import mcpMd from "../docs/mcp.md?raw";
 
 /** 文档清单：slug → 标题 + 内容（构建期打进 bundle） */
 const DOCS: { slug: string; title: string; body: string }[] = [
   { slug: "ingest", title: "Ingest interfaces", body: ingestMd },
+  { slug: "mcp", title: "Agents over MCP", body: mcpMd },
 ];
 
 /** 全文检索（客户端，文档已在 bundle 里）：命中行 → 文档 + 以命中词为中心的摘录 */

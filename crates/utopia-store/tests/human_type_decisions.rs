@@ -109,11 +109,12 @@ async fn type_resolution_leaves_human_decisions_alone() -> anyhow::Result<()> {
         let by_human = entity(&pool, &f, "Acme", Some(f.org_type), "human").await?;
         let by_engine = entity(&pool, &f, "Globex", Some(f.org_type), "extracted").await?;
 
-        let picked = utopia_store::resolution::entities_for_type_resolution(&pool, f.kb, 100)
-            .await?
-            .into_iter()
-            .map(|c| c.id)
-            .collect::<std::collections::HashSet<_>>();
+        let picked =
+            utopia_store::resolution::entities_for_type_resolution(&pool, f.kb, 100, false)
+                .await?
+                .into_iter()
+                .map(|c| c.id)
+                .collect::<std::collections::HashSet<_>>();
 
         assert!(
             picked.contains(&by_engine),
@@ -342,11 +343,12 @@ async fn an_engine_retype_does_not_lock_the_entity_out_of_the_next_round() -> an
             "引擎裁决不是人的背书"
         );
 
-        let picked = utopia_store::resolution::entities_for_type_resolution(&pool, f.kb, 100)
-            .await?
-            .into_iter()
-            .map(|c| c.id)
-            .collect::<std::collections::HashSet<_>>();
+        let picked =
+            utopia_store::resolution::entities_for_type_resolution(&pool, f.kb, 100, false)
+                .await?
+                .into_iter()
+                .map(|c| c.id)
+                .collect::<std::collections::HashSet<_>>();
         assert!(
             picked.contains(&e),
             "引擎改过一次不该把实体锁死——本体还会长大,它还得能被重判"

@@ -1716,6 +1716,16 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
     if needs_adjudication || human_reviews_found || conflicts_found {
         state.emit_review(doc.kb_id);
     }
+    // 类型消解排队自动跑（0016 C2）：开关开着就排一个库级任务，同库已排着的不重复。
+    // 任务自己只看引擎没看过的实体、只自动落地子树内精化的那一档
+    if kb.auto_type_resolution {
+        utopia_store::jobs::enqueue_unless_queued(
+            &state.pool,
+            "resolve_types",
+            serde_json::json!({ "kb_id": doc.kb_id }),
+        )
+        .await?;
+    }
     // 自动扩本体：开关开着、且这一批都抽完了，由最后一篇触发。
     // 判据是显式开关而不是"本体有没有被碰过"——后者是从行为推断意图，
     // 推错的后果很荒唐（在提案上点一次 Add 就永久关掉建议），而且一旦为假
