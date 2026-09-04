@@ -1,0 +1,4959 @@
+{
+  "corpus": "ai-timeline-ends",
+  "generated_at": "2026-09-04T01:57:43.913Z",
+  "source": "Wikipedia API (pageprops.wikibase_item, links) + Wikidata SPARQL (wdt:P31, wdt:P279, rdfs:label)",
+  "note": "Raw material for an answer key: which Wikidata class each entity is an instance of. The mapping from these classes to ontology classes lives in p31-to-classes.json; keep the two apart.",
+  "anchors": {
+    "Q5": "human",
+    "Q43229": "organization",
+    "Q4830453": "business",
+    "Q783794": "company",
+    "Q163740": "nonprofit organization",
+    "Q3918": "university",
+    "Q31855": "research institute",
+    "Q327333": "government agency",
+    "Q7278": "political party",
+    "Q7397": "software",
+    "Q115305900": "large language model",
+    "Q117349473": "artificial intelligence model",
+    "Q870780": "chatbot",
+    "Q35127": "website",
+    "Q1668024": "service on Internet",
+    "Q2424752": "product",
+    "Q431289": "brand",
+    "Q1656682": "event",
+    "Q1190554": "occurrence",
+    "Q515": "city",
+    "Q6256": "country",
+    "Q56061": "administrative territorial entity",
+    "Q82794": "geographic region",
+    "Q1002697": "periodical",
+    "Q11032": "newspaper",
+    "Q41298": "magazine",
+    "Q7889": "video game",
+    "Q11424": "film",
+    "Q571": "book",
+    "Q11862829": "academic discipline",
+    "Q151885": "concept",
+    "Q11514315": "historical period",
+    "Q486972": "human settlement",
+    "Q10929058": "product model",
+    "Q7725634": "literary work",
+    "Q34770": "language"
+  },
+  "subjects": [
+    {
+      "doc": "removal-of-sam-altman-from-openai.txt",
+      "title": "Removal of Sam Altman from OpenAI",
+      "name": "Removal of Sam Altman from OpenAI",
+      "qid": "Q123567706",
+      "p31": [
+        "Q480454"
+      ]
+    },
+    {
+      "doc": "mistral-ai.txt",
+      "title": "Mistral AI",
+      "name": "Mistral AI",
+      "qid": "Q119718658",
+      "p31": [
+        "Q1058914",
+        "Q43229"
+      ]
+    },
+    {
+      "doc": "hugging-face.txt",
+      "title": "Hugging Face",
+      "name": "Hugging Face",
+      "qid": "Q108943604",
+      "p31": [
+        "Q210980",
+        "Q4830453"
+      ]
+    },
+    {
+      "doc": "stability-ai.txt",
+      "title": "Stability AI",
+      "name": "Stability AI",
+      "qid": "Q123592234",
+      "p31": [
+        "Q43229",
+        "Q783794"
+      ]
+    },
+    {
+      "doc": "safe-superintelligence-inc.txt",
+      "title": "Safe Superintelligence Inc.",
+      "name": "Safe Superintelligence Inc.",
+      "qid": "Q130302670",
+      "p31": [
+        "Q783794"
+      ]
+    },
+    {
+      "doc": "spacexai.txt",
+      "title": "SpaceXAI",
+      "name": "SpaceXAI",
+      "qid": "Q120599684",
+      "p31": [
+        "Q219577",
+        "Q4830453"
+      ]
+    }
+  ],
+  "entities": {
+    "Accenture": {
+      "qid": "Q338825",
+      "title": "Accenture",
+      "p31": [
+        "Q2089936",
+        "Q4830453",
+        "Q891723"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Adam D'Angelo": {
+      "qid": "Q4208213",
+      "title": "Adam D'Angelo",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Adolf Hitler": {
+      "qid": "Q352",
+      "title": "Adolf Hitler",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "AI agent": {
+      "qid": "Q132451509",
+      "title": "AI agent",
+      "p31": [],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "AI boom": {
+      "qid": "Q117336820",
+      "title": "AI boom",
+      "p31": [
+        "Q11514315",
+        "Q762702"
+      ],
+      "from": [
+        "hugging-face.txt",
+        "mistral-ai.txt",
+        "spacexai.txt"
+      ]
+    },
+    "AI safety": {
+      "qid": "Q116291231",
+      "title": "AI safety",
+      "p31": [
+        "Q120970651",
+        "Q96264607"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Airbnb": {
+      "qid": "Q63327",
+      "title": "Airbnb",
+      "p31": [
+        "Q35127",
+        "Q4830453",
+        "Q57590076",
+        "Q6881511",
+        "Q891723"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Alfred Lin": {
+      "qid": "Q4723073",
+      "title": "Alfred Lin",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Amazon": {
+      "qid": "Q3884",
+      "title": "Amazon (company)",
+      "p31": [
+        "Q118140435",
+        "Q4830453",
+        "Q6881511",
+        "Q891723"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Amazon Web Services": {
+      "qid": "Q456157",
+      "title": "Amazon Web Services",
+      "p31": [
+        "Q1153767",
+        "Q117350903",
+        "Q1210425",
+        "Q241317",
+        "Q4830453"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "AMD": {
+      "qid": "Q128896",
+      "title": "AMD",
+      "p31": [
+        "Q18388277",
+        "Q4830453",
+        "Q6881511"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "American Lung Association": {
+      "qid": "Q446094",
+      "title": "American Lung Association",
+      "p31": [
+        "Q163740",
+        "Q4287745"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Andreessen Horowitz": {
+      "qid": "Q4034010",
+      "title": "Andreessen Horowitz",
+      "p31": [
+        "Q3487908"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "safe-superintelligence-inc.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Andrew Garfield": {
+      "qid": "Q23891",
+      "title": "Andrew Garfield",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Android": {
+      "qid": "Q94",
+      "title": "Android (operating system)",
+      "p31": [
+        "Q1130645",
+        "Q241317",
+        "Q920890"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Anthropic": {
+      "qid": "Q116758847",
+      "title": "Anthropic",
+      "p31": [
+        "Q18388277",
+        "Q4830453",
+        "Q4887441",
+        "Q783794"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Apache License": {
+      "qid": "Q616526",
+      "title": "Apache License",
+      "p31": [
+        "Q1156659",
+        "Q207621"
+      ],
+      "from": [
+        "hugging-face.txt",
+        "mistral-ai.txt"
+      ]
+    },
+    "APEC United States 2023": {
+      "qid": "Q115799072",
+      "title": "APEC United States 2023",
+      "p31": [
+        "Q28415750"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "API": {
+      "qid": "Q165194",
+      "title": "API",
+      "p31": [
+        "Q1047113",
+        "Q11862829",
+        "Q2267705",
+        "Q66747126"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Arthur Mensch": {
+      "qid": "Q123758735",
+      "title": "Arthur Mensch",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "ASML": {
+      "qid": "Q297879",
+      "title": "ASML",
+      "p31": [
+        "Q4830453",
+        "Q891723"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Axios": {
+      "qid": "Q28230873",
+      "title": "Axios (website)",
+      "p31": [
+        "Q17232649",
+        "Q4830453"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "BlackRock": {
+      "qid": "Q219635",
+      "title": "BlackRock",
+      "p31": [
+        "Q4830453",
+        "Q783794",
+        "Q891723"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "BLOOM": {
+      "qid": "Q113013356",
+      "title": "BLOOM (language model)",
+      "p31": [
+        "Q115305900",
+        "Q3621696"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Bloomberg News": {
+      "qid": "Q14270642",
+      "title": "Bloomberg News",
+      "p31": [
+        "Q192283"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "BNP Paribas": {
+      "qid": "Q499707",
+      "title": "BNP Paribas",
+      "p31": [
+        "Q141145821",
+        "Q1548033",
+        "Q22687",
+        "Q43229",
+        "Q4830453",
+        "Q650241"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Bret Taylor": {
+      "qid": "Q4961964",
+      "title": "Bret Taylor",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Brian Chesky": {
+      "qid": "Q4963341",
+      "title": "Brian Chesky",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Burning Man": {
+      "qid": "Q152518",
+      "title": "Burning Man",
+      "p31": [
+        "Q15275719",
+        "Q43229",
+        "Q4801521"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "California county routes in zone G": {
+      "qid": "Q795496",
+      "title": "California county routes in zone G",
+      "p31": [
+        "Q25631158"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Center for Security and Emerging Technology": {
+      "qid": "Q65052724",
+      "title": "Center for Security and Emerging Technology",
+      "p31": [
+        "Q155271"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "ChatGPT": {
+      "qid": "Q115564437",
+      "title": "ChatGPT",
+      "p31": [
+        "Q115305900",
+        "Q116777014",
+        "Q117246174",
+        "Q133284163",
+        "Q19967801",
+        "Q35127",
+        "Q870780"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Chief executive officer": {
+      "qid": "Q484876",
+      "title": "Chief executive officer",
+      "p31": [
+        "Q11488158",
+        "Q12737077",
+        "Q2135465",
+        "Q28640"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Chris Lehane": {
+      "qid": "Q5107216",
+      "title": "Chris Lehane",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Claude": {
+      "qid": "Q118876059",
+      "title": "Claude (AI)",
+      "p31": [
+        "Q116961403",
+        "Q124629760",
+        "Q133284163",
+        "Q870780"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "CMA CGM": {
+      "qid": "Q1023867",
+      "title": "CMA CGM",
+      "p31": [
+        "Q1807108",
+        "Q43229"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Coatue Management": {
+      "qid": "Q25245629",
+      "title": "Coatue Management",
+      "p31": [
+        "Q4830453"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Cohere": {
+      "qid": "Q110363143",
+      "title": "Cohere",
+      "p31": [
+        "Q43229",
+        "Q783794"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "CoinDesk": {
+      "qid": "Q18348227",
+      "title": "CoinDesk",
+      "p31": [
+        "Q1194970",
+        "Q17232649"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Colossus": {
+      "qid": "Q130614744",
+      "title": "Colossus (data center)",
+      "p31": [
+        "Q121117"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Competition and Markets Authority": {
+      "qid": "Q18363996",
+      "title": "Competition and Markets Authority",
+      "p31": [
+        "Q1465684",
+        "Q3044788"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Cursor": {
+      "qid": "Q135683783",
+      "title": "Cursor (company)",
+      "p31": [
+        "Q1058914",
+        "Q129238"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Daniel Gross": {
+      "qid": "Q19364797",
+      "title": "Daniel Gross (businessman)",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "Daniel S. Loeb": {
+      "qid": "Q5218659",
+      "title": "Daniel S. Loeb",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Dario Amodei": {
+      "qid": "Q103335665",
+      "title": "Dario Amodei",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "DST Global": {
+      "qid": "Q27346280",
+      "title": "DST Global",
+      "p31": [
+        "Q6881511"
+      ],
+      "from": [
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "Electronic Arts": {
+      "qid": "Q173941",
+      "title": "Electronic Arts",
+      "p31": [
+        "Q1137109",
+        "Q210167",
+        "Q891723"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Elon Musk": {
+      "qid": "Q317521",
+      "title": "Elon Musk",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Elon Musk salute controversy": {
+      "qid": "Q131918205",
+      "title": "Elon Musk salute controversy",
+      "p31": [
+        "Q1255828",
+        "Q2927074"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Emad Mostaque": {
+      "qid": "Q114049362",
+      "title": "Emad Mostaque",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Emmett Shear": {
+      "qid": "Q5373565",
+      "title": "Emmett Shear",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "England": {
+      "qid": "Q21",
+      "title": "England",
+      "p31": [
+        "Q3336843"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "England and Wales": {
+      "qid": "Q1156248",
+      "title": "England and Wales",
+      "p31": [
+        "Q140937209",
+        "Q27096213",
+        "Q56061"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Eric Schmidt": {
+      "qid": "Q92747",
+      "title": "Eric Schmidt",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "European Union": {
+      "qid": "Q458",
+      "title": "European Union",
+      "p31": [
+        "Q120121699",
+        "Q1335818",
+        "Q170156",
+        "Q4120211"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Ezra Klein": {
+      "qid": "Q605",
+      "title": "Ezra Klein",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Federal Trade Commission": {
+      "qid": "Q786713",
+      "title": "Federal Trade Commission",
+      "p31": [
+        "Q1752939"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Fidji Simo": {
+      "qid": "Q64853019",
+      "title": "Fidji Simo",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Financial Times": {
+      "qid": "Q183399",
+      "title": "Financial Times",
+      "p31": [
+        "Q1110794"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Flux": {
+      "qid": "Q128801793",
+      "title": "Flux (text-to-image model)",
+      "p31": [
+        "Q113940039",
+        "Q120785614",
+        "Q85810444"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "stability-ai.txt"
+      ]
+    },
+    "France": {
+      "qid": "Q142",
+      "title": "France",
+      "p31": [
+        "Q3624078",
+        "Q6256",
+        "Q7270"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Freiburg im Breisgau": {
+      "qid": "Q2833",
+      "title": "Freiburg im Breisgau",
+      "p31": [
+        "Q1187811",
+        "Q134626",
+        "Q14784328",
+        "Q1549591",
+        "Q2327515",
+        "Q253030",
+        "Q42744322",
+        "Q4946461"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "French Armed Forces": {
+      "qid": "Q477986",
+      "title": "French Armed Forces",
+      "p31": [
+        "Q772547"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "French phonology": {
+      "qid": "Q2344119",
+      "title": "French phonology",
+      "p31": [
+        "Q49124804"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Gates Foundation": {
+      "qid": "Q655286",
+      "title": "Gates Foundation",
+      "p31": [
+        "Q163740",
+        "Q33060455",
+        "Q7246202"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Geoffrey Hinton": {
+      "qid": "Q92894",
+      "title": "Geoffrey Hinton",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Getty Images": {
+      "qid": "Q1520122",
+      "title": "Getty Images",
+      "p31": [
+        "Q134161",
+        "Q27032363",
+        "Q860572",
+        "Q891723"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "GitHub": {
+      "qid": "Q364",
+      "title": "GitHub",
+      "p31": [
+        "Q114955954",
+        "Q115203600",
+        "Q115217949",
+        "Q1480561",
+        "Q1668024",
+        "Q16920237",
+        "Q16947796",
+        "Q189210",
+        "Q3077240",
+        "Q3220391",
+        "Q35127",
+        "Q5227240",
+        "Q5988403",
+        "Q6576792",
+        "Q6686945"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "GLM": {
+      "qid": "Q140356408",
+      "title": "GLM (AI)",
+      "p31": [],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Google": {
+      "qid": "Q95",
+      "title": "Google",
+      "p31": [
+        "Q18388277",
+        "Q19967801",
+        "Q4830453",
+        "Q5988403",
+        "Q891723"
+      ],
+      "from": [
+        "hugging-face.txt",
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Google Cloud Platform": {
+      "qid": "Q17054505",
+      "title": "Google Cloud Platform",
+      "p31": [
+        "Q1153767",
+        "Q117350903",
+        "Q1346018",
+        "Q241317"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Google DeepMind": {
+      "qid": "Q15733006",
+      "title": "Google DeepMind",
+      "p31": [
+        "Q4830453",
+        "Q658255"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Google Meet": {
+      "qid": "Q56669074",
+      "title": "Google Meet",
+      "p31": [
+        "Q116961852",
+        "Q165194",
+        "Q238354",
+        "Q3635085"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "GPT-3": {
+      "qid": "Q95726734",
+      "title": "GPT-3",
+      "p31": [
+        "Q115305900",
+        "Q116777014",
+        "Q2202883",
+        "Q5532625"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "GPT-4": {
+      "qid": "Q116709136",
+      "title": "GPT-4",
+      "p31": [
+        "Q115305900",
+        "Q116777014",
+        "Q117349473"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "GPT-5.6": {
+      "qid": "Q140371307",
+      "title": "GPT-5.6",
+      "p31": [
+        "Q115305900",
+        "Q7397"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Greater Memphis Chamber": {
+      "qid": "Q116290827",
+      "title": "Greater Memphis Chamber",
+      "p31": [
+        "Q897399"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Greg Brockman": {
+      "qid": "Q100604534",
+      "title": "Greg Brockman",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Greycroft": {
+      "qid": "Q5608337",
+      "title": "Greycroft",
+      "p31": [
+        "Q3487908",
+        "Q4830453"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Grok": {
+      "qid": "Q123361035",
+      "title": "Grok (chatbot)",
+      "p31": [
+        "Q115305900",
+        "Q117246174",
+        "Q19967801",
+        "Q870780"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Grokipedia": {
+      "qid": "Q136410803",
+      "title": "Grokipedia",
+      "p31": [
+        "Q125361038",
+        "Q593744",
+        "Q615699"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "HAL 9000": {
+      "qid": "Q833933",
+      "title": "HAL 9000",
+      "p31": [
+        "Q1114461",
+        "Q15773347",
+        "Q18327510",
+        "Q20962530",
+        "Q3658341",
+        "Q66481339"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Helen Toner": {
+      "qid": "Q123475976",
+      "title": "Helen Toner",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Hugging Face": {
+      "qid": "Q108943604",
+      "title": "Hugging Face",
+      "p31": [
+        "Q210980",
+        "Q4830453"
+      ],
+      "from": [
+        "hugging-face.txt",
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Ilya Sutskever": {
+      "qid": "Q21712134",
+      "title": "Ilya Sutskever",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt",
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "Instacart": {
+      "qid": "Q22909236",
+      "title": "Instacart",
+      "p31": [
+        "Q1589009",
+        "Q4830453",
+        "Q891723"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "International Decade of Indigenous Languages": {
+      "qid": "Q97012378",
+      "title": "International Decade of Indigenous Languages",
+      "p31": [
+        "Q16675450"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Jakub Pachocki": {
+      "qid": "Q123478068",
+      "title": "Jakub Pachocki",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "James Cameron": {
+      "qid": "Q42574",
+      "title": "James Cameron",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "JCDecaux": {
+      "qid": "Q74877",
+      "title": "JCDecaux",
+      "p31": [
+        "Q43229"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Jean-Noël Barrot": {
+      "qid": "Q30339198",
+      "title": "Jean-Noël Barrot",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Jony Ive": {
+      "qid": "Q164750",
+      "title": "Jony Ive",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Kara Swisher": {
+      "qid": "Q6367550",
+      "title": "Kara Swisher",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Kevin Scott": {
+      "qid": "Q55615876",
+      "title": "Kevin Scott (computer scientist)",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Kyle Kosic": {
+      "qid": "Q139040969",
+      "title": "Kyle Kosic",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Language model": {
+      "qid": "Q3621696",
+      "title": "Language model",
+      "p31": [],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Larry Summers": {
+      "qid": "Q317953",
+      "title": "Larry Summers",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Las Vegas Grand Prix": {
+      "qid": "Q111443584",
+      "title": "Las Vegas Grand Prix",
+      "p31": [
+        "Q108886259"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Laurene Powell Jobs": {
+      "qid": "Q3133593",
+      "title": "Laurene Powell Jobs",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Lightspeed Venture Partners": {
+      "qid": "Q6546580",
+      "title": "Lightspeed Venture Partners",
+      "p31": [
+        "Q3487908",
+        "Q4830453"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "spacexai.txt",
+        "stability-ai.txt"
+      ]
+    },
+    "LinkedIn": {
+      "qid": "Q213660",
+      "title": "LinkedIn",
+      "p31": [
+        "Q118140435",
+        "Q3220391",
+        "Q35127",
+        "Q6576792"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Llama": {
+      "qid": "Q116894231",
+      "title": "Llama (language model)",
+      "p31": [
+        "Q124629760",
+        "Q431289",
+        "Q7397"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "London": {
+      "qid": "Q84",
+      "title": "London",
+      "p31": [
+        "Q1048835",
+        "Q1066984",
+        "Q108178728",
+        "Q174844",
+        "Q200250",
+        "Q208511",
+        "Q515",
+        "Q51929311"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Marc Benioff": {
+      "qid": "Q1521908",
+      "title": "Marc Benioff",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Masayoshi Son": {
+      "qid": "Q717038",
+      "title": "Masayoshi Son",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Memphis, Tennessee": {
+      "qid": "Q16563",
+      "title": "Memphis, Tennessee",
+      "p31": [
+        "Q1093829",
+        "Q1549591",
+        "Q62049"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Meta AI": {
+      "qid": "Q112114913",
+      "title": "Meta AI",
+      "p31": [
+        "Q107658553"
+      ],
+      "from": [
+        "hugging-face.txt",
+        "mistral-ai.txt"
+      ]
+    },
+    "Meta Platforms": {
+      "qid": "Q380",
+      "title": "Meta Platforms",
+      "p31": [
+        "Q1641122",
+        "Q18388277",
+        "Q4830453",
+        "Q891723"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Meta Superintelligence Labs": {
+      "qid": "Q135397403",
+      "title": "Meta Superintelligence Labs",
+      "p31": [
+        "Q783794"
+      ],
+      "from": [
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "Microsoft": {
+      "qid": "Q2283",
+      "title": "Microsoft",
+      "p31": [
+        "Q1058914",
+        "Q18388277",
+        "Q4830453",
+        "Q891723"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Microsoft Azure": {
+      "qid": "Q725967",
+      "title": "Microsoft Azure",
+      "p31": [
+        "Q117350903",
+        "Q1346018",
+        "Q241317",
+        "Q483639"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Mira Murati": {
+      "qid": "Q116706551",
+      "title": "Mira Murati",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Mistral": {
+      "qid": "Q193742",
+      "title": "Mistral (wind)",
+      "p31": [],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Mistral AI": {
+      "qid": "Q119718658",
+      "title": "Mistral AI",
+      "p31": [
+        "Q1058914",
+        "Q43229"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Mistral Vibe": {
+      "qid": "Q132323422",
+      "title": "Mistral Vibe",
+      "p31": [
+        "Q133284163"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Morgan Stanley": {
+      "qid": "Q334204",
+      "title": "Morgan Stanley",
+      "p31": [
+        "Q141145821",
+        "Q22687",
+        "Q4830453",
+        "Q6881511",
+        "Q730038",
+        "Q891723"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Musk": {
+      "qid": "Q117253374",
+      "title": "Musk (film)",
+      "p31": [
+        "Q18011172"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Musk v. Altman": {
+      "qid": "Q139570683",
+      "title": "Musk v. Altman",
+      "p31": [
+        "Q2334719"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Nat Friedman": {
+      "qid": "Q92955",
+      "title": "Nat Friedman",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "National Assembly": {
+      "qid": "Q193582",
+      "title": "National Assembly (France)",
+      "p31": [
+        "Q11204",
+        "Q1752346",
+        "Q375928"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Neural processing unit": {
+      "qid": "Q24895600",
+      "title": "Neural processing unit",
+      "p31": [
+        "Q124996351"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Nevada": {
+      "qid": "Q1227",
+      "title": "Nevada",
+      "p31": [
+        "Q35657"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "New York City": {
+      "qid": "Q60",
+      "title": "New York City",
+      "p31": [
+        "Q1093829",
+        "Q15063611",
+        "Q1549591",
+        "Q174844",
+        "Q200250",
+        "Q208511",
+        "Q2264924",
+        "Q515",
+        "Q51929311"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Nicole Seligman": {
+      "qid": "Q13560785",
+      "title": "Nicole Seligman",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Nobel Prize": {
+      "qid": "Q7191",
+      "title": "Nobel Prize",
+      "p31": [
+        "Q107655869"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Nvidia": {
+      "qid": "Q182477",
+      "title": "Nvidia",
+      "p31": [
+        "Q4830453",
+        "Q891723"
+      ],
+      "from": [
+        "hugging-face.txt",
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt",
+        "safe-superintelligence-inc.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Occitan language": {
+      "qid": "Q14185",
+      "title": "Occitan language",
+      "p31": [
+        "Q1288568",
+        "Q33742"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "OpenAI": {
+      "qid": "Q21708200",
+      "title": "OpenAI",
+      "p31": [
+        "Q6881511"
+      ],
+      "from": [
+        "hugging-face.txt",
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt",
+        "safe-superintelligence-inc.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Palo Alto, California": {
+      "qid": "Q47265",
+      "title": "Palo Alto, California",
+      "p31": [
+        "Q13218357",
+        "Q13218391",
+        "Q515"
+      ],
+      "from": [
+        "safe-superintelligence-inc.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Paris": {
+      "qid": "Q90",
+      "title": "Paris",
+      "p31": [
+        "Q108178728",
+        "Q174844",
+        "Q200250",
+        "Q208511",
+        "Q22923920",
+        "Q51929311"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Paul Graham": {
+      "qid": "Q92650",
+      "title": "Paul Graham (programmer)",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Prem Akkaraju": {
+      "qid": "Q111245152",
+      "title": "Prem Akkaraju",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Products and applications of OpenAI": {
+      "qid": "Q135111627",
+      "title": "Products and applications of OpenAI",
+      "p31": [],
+      "from": [
+        "hugging-face.txt",
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Quora": {
+      "qid": "Q51711",
+      "title": "Quora",
+      "p31": [
+        "Q4830453",
+        "Q6576792",
+        "Q6881511",
+        "Q7265244",
+        "Q783794"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Qwen": {
+      "qid": "Q130234299",
+      "title": "Qwen",
+      "p31": [
+        "Q115305900",
+        "Q870780"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Reid Hoffman": {
+      "qid": "Q211098",
+      "title": "Reid Hoffman",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Removal of Sam Altman from OpenAI": {
+      "qid": "Q123567706",
+      "title": "Removal of Sam Altman from OpenAI",
+      "p31": [
+        "Q480454"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Reuters": {
+      "qid": "Q130879",
+      "title": "Reuters",
+      "p31": [
+        "Q192283",
+        "Q4830453"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Safe Superintelligence Inc.": {
+      "qid": "Q130302670",
+      "title": "Safe Superintelligence Inc.",
+      "p31": [
+        "Q783794"
+      ],
+      "from": [
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "Salesforce": {
+      "qid": "Q941127",
+      "title": "Salesforce",
+      "p31": [
+        "Q1058914",
+        "Q18388277",
+        "Q183888",
+        "Q4830453",
+        "Q6881511",
+        "Q891723"
+      ],
+      "from": [
+        "hugging-face.txt",
+        "mistral-ai.txt",
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Sam Altman": {
+      "qid": "Q7407093",
+      "title": "Sam Altman",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt",
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "San Francisco Bay Area": {
+      "qid": "Q213205",
+      "title": "San Francisco Bay Area",
+      "p31": [
+        "Q1907114",
+        "Q2221906"
+      ],
+      "from": [
+        "mistral-ai.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Satya Nadella": {
+      "qid": "Q7426870",
+      "title": "Satya Nadella",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Scaleway": {
+      "qid": "Q3352745",
+      "title": "Scaleway",
+      "p31": [
+        "Q2401749",
+        "Q43229",
+        "Q483639"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Sean Parker": {
+      "qid": "Q328929",
+      "title": "Sean Parker",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Sequoia Capital": {
+      "qid": "Q1852025",
+      "title": "Sequoia Capital",
+      "p31": [
+        "Q3487908",
+        "Q4830453",
+        "Q6881511"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt",
+        "safe-superintelligence-inc.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Shivon Zilis": {
+      "qid": "Q112957545",
+      "title": "Shivon Zilis",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "SoftBank Group": {
+      "qid": "Q201653",
+      "title": "SoftBank Group",
+      "p31": [
+        "Q219577",
+        "Q4830453",
+        "Q891723"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Soho": {
+      "qid": "Q124010",
+      "title": "Soho",
+      "p31": [
+        "Q2755753"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Sony": {
+      "qid": "Q41187",
+      "title": "Sony",
+      "p31": [
+        "Q11294827",
+        "Q161726",
+        "Q219577",
+        "Q4830453",
+        "Q778575",
+        "Q891723"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Sony Music Group": {
+      "qid": "Q121433363",
+      "title": "Sony Music Group",
+      "p31": [
+        "Q783794"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "SpaceX": {
+      "qid": "Q193701",
+      "title": "SpaceX",
+      "p31": [
+        "Q11753232",
+        "Q4830453",
+        "Q891723",
+        "Q936518"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "SpaceXAI": {
+      "qid": "Q120599684",
+      "title": "SpaceXAI",
+      "p31": [
+        "Q219577",
+        "Q4830453"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Stability AI": {
+      "qid": "Q123592234",
+      "title": "Stability AI",
+      "p31": [
+        "Q43229",
+        "Q783794"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Stable Diffusion": {
+      "qid": "Q113660857",
+      "title": "Stable Diffusion",
+      "p31": [
+        "Q113364611",
+        "Q113940039",
+        "Q114617315",
+        "Q1806885"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Stanford Research Park": {
+      "qid": "Q3968168",
+      "title": "Stanford Research Park",
+      "p31": [
+        "Q1281153"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Starlink": {
+      "qid": "Q19867977",
+      "title": "Starlink",
+      "p31": [
+        "Q136937248",
+        "Q54806917"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Station F": {
+      "qid": "Q32979361",
+      "title": "Station F",
+      "p31": [
+        "Q4086495"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "Steve Jobs": {
+      "qid": "Q19837",
+      "title": "Steve Jobs",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Steven Levy": {
+      "qid": "Q929788",
+      "title": "Steven Levy",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Subsidiary": {
+      "qid": "Q658255",
+      "title": "Subsidiary",
+      "p31": [
+        "Q2135465"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Sue Desmond-Hellmann": {
+      "qid": "Q7647750",
+      "title": "Sue Desmond-Hellmann",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Superintelligence": {
+      "qid": "Q1566000",
+      "title": "Superintelligence",
+      "p31": [
+        "Q125161275"
+      ],
+      "from": [
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "SV Angel": {
+      "qid": "Q133947726",
+      "title": "SV Angel",
+      "p31": [],
+      "from": [
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "Sweden": {
+      "qid": "Q34",
+      "title": "Sweden",
+      "p31": [
+        "Q179164",
+        "Q3624078",
+        "Q41614",
+        "Q6256",
+        "Q63791824"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Tay": {
+      "qid": "Q23518144",
+      "title": "Tay (chatbot)",
+      "p31": [
+        "Q870780"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Tel Aviv": {
+      "qid": "Q33935",
+      "title": "Tel Aviv",
+      "p31": [
+        "Q1549591",
+        "Q3505887",
+        "Q515"
+      ],
+      "from": [
+        "safe-superintelligence-inc.txt"
+      ]
+    },
+    "Tennessee Valley Authority": {
+      "qid": "Q1367577",
+      "title": "Tennessee Valley Authority",
+      "p31": [
+        "Q1326624",
+        "Q1752939",
+        "Q4830453"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Tesla, Inc.": {
+      "qid": "Q478214",
+      "title": "Tesla, Inc.",
+      "p31": [
+        "Q167037",
+        "Q4830453",
+        "Q6881511"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "The Atlantic": {
+      "qid": "Q1542536",
+      "title": "The Atlantic",
+      "p31": [
+        "Q17232649",
+        "Q35127",
+        "Q41298",
+        "Q4830453"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "The Economist": {
+      "qid": "Q180089",
+      "title": "The Economist",
+      "p31": [
+        "Q35127",
+        "Q41298"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "The Information": {
+      "qid": "Q30609005",
+      "title": "The Information (website)",
+      "p31": [
+        "Q17232649",
+        "Q783794"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "The New York Times": {
+      "qid": "Q9684",
+      "title": "The New York Times",
+      "p31": [
+        "Q1110794"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "The New Yorker": {
+      "qid": "Q217305",
+      "title": "The New Yorker",
+      "p31": [
+        "Q1684600",
+        "Q2085381",
+        "Q35127",
+        "Q41298",
+        "Q7247847"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt",
+        "spacexai.txt"
+      ]
+    },
+    "The Verge": {
+      "qid": "Q2155442",
+      "title": "The Verge",
+      "p31": [
+        "Q17232649",
+        "Q72398691"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "The Wall Street Journal": {
+      "qid": "Q164746",
+      "title": "The Wall Street Journal",
+      "p31": [
+        "Q106651372",
+        "Q1110794",
+        "Q35127",
+        "Q5633421"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "The Washington Post": {
+      "qid": "Q166032",
+      "title": "The Washington Post",
+      "p31": [
+        "Q11032",
+        "Q1110794",
+        "Q35127"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Third Point": {
+      "qid": "Q17164492",
+      "title": "Third Point",
+      "p31": [
+        "Q4830453"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Thrive Capital": {
+      "qid": "Q105962567",
+      "title": "Thrive Capital",
+      "p31": [
+        "Q3487908",
+        "Q783794"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Tiger Global Management": {
+      "qid": "Q95413215",
+      "title": "Tiger Global Management",
+      "p31": [
+        "Q2563546",
+        "Q3487908",
+        "Q43423468",
+        "Q4830453"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Time": {
+      "qid": "Q43297",
+      "title": "Time (magazine)",
+      "p31": [
+        "Q1684600",
+        "Q35127",
+        "Q41298",
+        "Q847906"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Tribe Capital": {
+      "qid": "Q120108672",
+      "title": "Tribe Capital",
+      "p31": [],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Twitch": {
+      "qid": "Q4555537",
+      "title": "Twitch (service)",
+      "p31": [
+        "Q102336293"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "UNESCO": {
+      "qid": "Q7809",
+      "title": "UNESCO",
+      "p31": [
+        "Q15925165",
+        "Q245065"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    },
+    "United States Congress": {
+      "qid": "Q11268",
+      "title": "United States Congress",
+      "p31": [
+        "Q189445"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "United States Department of Defense": {
+      "qid": "Q11209",
+      "title": "United States Department of Defense",
+      "p31": [
+        "Q24834073",
+        "Q910252"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "United States District Court for the District of Delaware": {
+      "qid": "Q7889771",
+      "title": "United States District Court for the District of Delaware",
+      "p31": [
+        "Q1614849"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "United States District Court for the Northern District of California": {
+      "qid": "Q7889830",
+      "title": "United States District Court for the Northern District of California",
+      "p31": [
+        "Q1614849"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "United States Securities and Exchange Commission": {
+      "qid": "Q953944",
+      "title": "United States Securities and Exchange Commission",
+      "p31": [
+        "Q105062392",
+        "Q1639780",
+        "Q1752939"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt",
+        "spacexai.txt"
+      ]
+    },
+    "Universal Music Group": {
+      "qid": "Q38903",
+      "title": "Universal Music Group",
+      "p31": [
+        "Q116453729",
+        "Q1660312",
+        "Q2442401",
+        "Q891723"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Vinod Khosla": {
+      "qid": "Q738005",
+      "title": "Vinod Khosla",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Warner Music Group": {
+      "qid": "Q21077",
+      "title": "Warner Music Group",
+      "p31": [
+        "Q18127",
+        "Q2442401",
+        "Q891723"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Wētā FX": {
+      "qid": "Q842482",
+      "title": "Wētā FX",
+      "p31": [
+        "Q10689397",
+        "Q1762059"
+      ],
+      "from": [
+        "stability-ai.txt"
+      ]
+    },
+    "Wikipedia": {
+      "qid": "Q52",
+      "title": "Wikipedia",
+      "p31": [
+        "Q33120876"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Will Hurd": {
+      "qid": "Q18639742",
+      "title": "Will Hurd",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Wired": {
+      "qid": "Q520154",
+      "title": "Wired (magazine)",
+      "p31": [
+        "Q11780435",
+        "Q17232649",
+        "Q35127",
+        "Q41298"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "World": {
+      "qid": "Q118868596",
+      "title": "World (blockchain)",
+      "p31": [
+        "Q13479982",
+        "Q35127"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "X Corp.": {
+      "qid": "Q117617480",
+      "title": "X Corp.",
+      "p31": [
+        "Q1589009",
+        "Q18388277",
+        "Q4830453"
+      ],
+      "from": [
+        "spacexai.txt"
+      ]
+    },
+    "Xavier Niel": {
+      "qid": "Q1450891",
+      "title": "Xavier Niel",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "mistral-ai.txt"
+      ]
+    },
+    "Y Combinator": {
+      "qid": "Q2616400",
+      "title": "Y Combinator",
+      "p31": [
+        "Q2385804",
+        "Q3487908",
+        "Q4086495",
+        "Q4830453",
+        "Q5341296",
+        "Q6881511"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Yura Borisov": {
+      "qid": "Q24035944",
+      "title": "Yura Borisov",
+      "p31": [
+        "Q5"
+      ],
+      "from": [
+        "removal-of-sam-altman-from-openai.txt"
+      ]
+    },
+    "Z.ai": {
+      "qid": "Q129572031",
+      "title": "Z.ai",
+      "p31": [
+        "Q4830453"
+      ],
+      "from": [
+        "hugging-face.txt"
+      ]
+    }
+  },
+  "classes": {
+    "Q102336293": {
+      "label": "live streaming service",
+      "subclass_of": [
+        "Q122759350",
+        "Q63241860"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q1047113": {
+      "label": "field of study",
+      "subclass_of": [
+        "Q105948247",
+        "Q110403031",
+        "Q21040055",
+        "Q26256810"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q1048835": {
+      "label": "political territorial entity",
+      "subclass_of": [
+        "Q56061"
+      ],
+      "anchors": [
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q105062392": {
+      "label": "financial regulatory agency",
+      "subclass_of": [
+        "Q1639780"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q1058914": {
+      "label": "software company",
+      "subclass_of": [
+        "Q18388277",
+        "Q4830453",
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q106651372": {
+      "label": "business newspaper",
+      "subclass_of": [
+        "Q11032"
+      ],
+      "anchors": [
+        "Q1002697",
+        "Q11032",
+        "Q151885"
+      ]
+    },
+    "Q1066984": {
+      "label": "financial center",
+      "subclass_of": [
+        "Q16562419",
+        "Q208511"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q10689397": {
+      "label": "television production company",
+      "subclass_of": [
+        "Q110357230",
+        "Q11396960",
+        "Q1762059"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q107655869": {
+      "label": "group of awards",
+      "subclass_of": [
+        "Q16887380",
+        "Q5257307",
+        "Q618779"
+      ],
+      "anchors": []
+    },
+    "Q107658553": {
+      "label": "company division",
+      "subclass_of": [
+        "Q334453"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q108178728": {
+      "label": "national capital",
+      "subclass_of": [
+        "Q5119"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q108886259": {
+      "label": "Formula One event",
+      "subclass_of": [
+        "Q1656682"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1656682"
+      ]
+    },
+    "Q1093829": {
+      "label": "city in the United States",
+      "subclass_of": [
+        "Q3327870",
+        "Q515",
+        "Q5951278"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229",
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q783794",
+        "Q82794"
+      ]
+    },
+    "Q11032": {
+      "label": "newspaper",
+      "subclass_of": [
+        "Q1002697",
+        "Q119648442",
+        "Q28877"
+      ],
+      "anchors": [
+        "Q1002697",
+        "Q11032",
+        "Q151885"
+      ]
+    },
+    "Q1110794": {
+      "label": "daily newspaper",
+      "subclass_of": [
+        "Q11032"
+      ],
+      "anchors": [
+        "Q1002697",
+        "Q11032",
+        "Q151885"
+      ]
+    },
+    "Q1114461": {
+      "label": "comics character",
+      "subclass_of": [
+        "Q3658341"
+      ],
+      "anchors": []
+    },
+    "Q11204": {
+      "label": "legislature",
+      "subclass_of": [
+        "Q1752346",
+        "Q2324993",
+        "Q895526"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q11294827": {
+      "label": "camera manufacturer",
+      "subclass_of": [
+        "Q13235160",
+        "Q4830453"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q1130645": {
+      "label": "open-source software",
+      "subclass_of": [
+        "Q1293664",
+        "Q5500964",
+        "Q56273712"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q113364611": {
+      "label": "deep learning model",
+      "subclass_of": [
+        "Q115215420"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q1137109": {
+      "label": "video game publisher",
+      "subclass_of": [
+        "Q112042224",
+        "Q137435715",
+        "Q7554349"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q113940039": {
+      "label": "text-to-image model",
+      "subclass_of": [
+        "Q117349473",
+        "Q96369982"
+      ],
+      "anchors": [
+        "Q117349473",
+        "Q151885",
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q114617315": {
+      "label": "diffusion model",
+      "subclass_of": [
+        "Q1806885",
+        "Q85810444",
+        "Q96369982"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q11488158": {
+      "label": "corporate title",
+      "subclass_of": [
+        "Q28640",
+        "Q480319",
+        "Q828803"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q114955954": {
+      "label": "crowdsourced project",
+      "subclass_of": [
+        "Q170584"
+      ],
+      "anchors": [
+        "Q1190554"
+      ]
+    },
+    "Q11514315": {
+      "label": "historical period",
+      "subclass_of": [
+        "Q17524420",
+        "Q186081"
+      ],
+      "anchors": [
+        "Q11514315",
+        "Q151885"
+      ]
+    },
+    "Q115203600": {
+      "label": "repository hosting service",
+      "subclass_of": [
+        "Q1210425"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752"
+      ]
+    },
+    "Q115217949": {
+      "label": "repository web interface",
+      "subclass_of": [
+        "Q1981057"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q115305900": {
+      "label": "large language model",
+      "subclass_of": [
+        "Q3621696"
+      ],
+      "anchors": [
+        "Q115305900",
+        "Q151885"
+      ]
+    },
+    "Q1153767": {
+      "label": "platform as a service",
+      "subclass_of": [
+        "Q1382299",
+        "Q241317",
+        "Q483639"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752"
+      ]
+    },
+    "Q1156659": {
+      "label": "OSI-approved license",
+      "subclass_of": [
+        "Q196294",
+        "Q207621",
+        "Q63032908",
+        "Q97044024"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q151885"
+      ]
+    },
+    "Q116453729": {
+      "label": "record label group",
+      "subclass_of": [
+        "Q1956113",
+        "Q32178211"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q116777014": {
+      "label": "generative pre-trained transformer",
+      "subclass_of": [
+        "Q115305900"
+      ],
+      "anchors": [
+        "Q115305900",
+        "Q151885"
+      ]
+    },
+    "Q116961403": {
+      "label": "conversational AI",
+      "subclass_of": [
+        "Q117349473",
+        "Q870780"
+      ],
+      "anchors": [
+        "Q117349473",
+        "Q151885",
+        "Q2424752",
+        "Q7397",
+        "Q870780"
+      ]
+    },
+    "Q116961852": {
+      "label": "video conferencing product",
+      "subclass_of": [
+        "Q11024"
+      ],
+      "anchors": [
+        "Q1190554"
+      ]
+    },
+    "Q117246174": {
+      "label": "generative artificial intelligence",
+      "subclass_of": [
+        "Q11660",
+        "Q117349473",
+        "Q5532625"
+      ],
+      "anchors": [
+        "Q117349473",
+        "Q1190554",
+        "Q151885",
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q117349473": {
+      "label": "artificial intelligence model",
+      "subclass_of": [
+        "Q192776",
+        "Q7397"
+      ],
+      "anchors": [
+        "Q117349473",
+        "Q151885",
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q117350903": {
+      "label": "hyperscaler",
+      "subclass_of": [
+        "Q241317"
+      ],
+      "anchors": [
+        "Q2424752"
+      ]
+    },
+    "Q11753232": {
+      "label": "launch service provider",
+      "subclass_of": [
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q783794"
+      ]
+    },
+    "Q11780435": {
+      "label": "monthly magazine",
+      "subclass_of": [
+        "Q1002697",
+        "Q41298",
+        "Q732577"
+      ],
+      "anchors": [
+        "Q1002697",
+        "Q151885",
+        "Q2424752",
+        "Q41298",
+        "Q7397"
+      ]
+    },
+    "Q118140435": {
+      "label": "very large online platform",
+      "subclass_of": [
+        "Q35127",
+        "Q4182287"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q11862829": {
+      "label": "academic discipline",
+      "subclass_of": [
+        "Q1047113"
+      ],
+      "anchors": [
+        "Q11862829",
+        "Q151885"
+      ]
+    },
+    "Q1187811": {
+      "label": "college town",
+      "subclass_of": [
+        "Q27702623",
+        "Q515"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q1194970": {
+      "label": "dot-com company",
+      "subclass_of": [
+        "Q4830453"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q120121699": {
+      "label": "political economic union",
+      "subclass_of": [
+        "Q1140229",
+        "Q3623811"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q120785614": {
+      "label": "open-source artificial intelligence",
+      "subclass_of": [
+        "Q11660",
+        "Q341"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q151885",
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q120970651": {
+      "label": "research topic",
+      "subclass_of": [
+        "Q1047113",
+        "Q2267705"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q1210425": {
+      "label": "internet hosting service",
+      "subclass_of": [
+        "Q1668024"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752"
+      ]
+    },
+    "Q121117": {
+      "label": "supercomputer",
+      "subclass_of": [
+        "Q68"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q124629760": {
+      "label": "family of large language models",
+      "subclass_of": [
+        "Q115305900",
+        "Q117349475"
+      ],
+      "anchors": [
+        "Q115305900",
+        "Q151885"
+      ]
+    },
+    "Q124996351": {
+      "label": "processor type",
+      "subclass_of": [
+        "Q21146257",
+        "Q96116695"
+      ],
+      "anchors": []
+    },
+    "Q125161275": {
+      "label": "type of intelligence",
+      "subclass_of": [
+        "Q21146257"
+      ],
+      "anchors": []
+    },
+    "Q125361038": {
+      "label": "AI-generated content",
+      "subclass_of": [
+        "Q11320476",
+        "Q1260632",
+        "Q778569"
+      ],
+      "anchors": []
+    },
+    "Q1255828": {
+      "label": "controversy",
+      "subclass_of": [
+        "Q104813442",
+        "Q179875",
+        "Q180684",
+        "Q2447975"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q151885"
+      ]
+    },
+    "Q12737077": {
+      "label": "occupation",
+      "subclass_of": [
+        "Q1807498"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q1281153": {
+      "label": "technology park",
+      "subclass_of": [
+        "Q329683",
+        "Q338313",
+        "Q7315155"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q43229",
+        "Q82794"
+      ]
+    },
+    "Q1288568": {
+      "label": "modern language",
+      "subclass_of": [
+        "Q20162172"
+      ],
+      "anchors": [
+        "Q34770"
+      ]
+    },
+    "Q129238": {
+      "label": "startup company",
+      "subclass_of": [
+        "Q4830453",
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q13218357": {
+      "label": "city of California",
+      "subclass_of": [
+        "Q1093829",
+        "Q21074401"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229",
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q783794",
+        "Q82794"
+      ]
+    },
+    "Q13218391": {
+      "label": "charter city",
+      "subclass_of": [
+        "Q13218357",
+        "Q604886"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229",
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q783794",
+        "Q82794"
+      ]
+    },
+    "Q1326624": {
+      "label": "electricity supply company",
+      "subclass_of": [
+        "Q1341478",
+        "Q1951366"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q133284163": {
+      "label": "generative artificial intelligence chatbot",
+      "subclass_of": [
+        "Q119018971",
+        "Q870780"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752",
+        "Q35127",
+        "Q7397",
+        "Q870780"
+      ]
+    },
+    "Q1335818": {
+      "label": "supranational union",
+      "subclass_of": [
+        "Q484652"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q134161": {
+      "label": "joint-stock company",
+      "subclass_of": [
+        "Q33685"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q1346018": {
+      "label": "infrastructure as a service",
+      "subclass_of": [
+        "Q1382299",
+        "Q483639"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752"
+      ]
+    },
+    "Q134626": {
+      "label": "district capital",
+      "subclass_of": [
+        "Q262166",
+        "Q470540"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q13479982": {
+      "label": "cryptocurrency",
+      "subclass_of": [
+        "Q10836209",
+        "Q19892282",
+        "Q986008"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752"
+      ]
+    },
+    "Q136937248": {
+      "label": "ongoing project",
+      "subclass_of": [
+        "Q170584"
+      ],
+      "anchors": [
+        "Q1190554"
+      ]
+    },
+    "Q140937209": {
+      "label": "legal jurisdiction",
+      "subclass_of": [
+        "Q7748",
+        "Q82794"
+      ],
+      "anchors": [
+        "Q82794"
+      ]
+    },
+    "Q141145821": {
+      "label": "global systemically important bank",
+      "subclass_of": [
+        "Q141145754"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q1465684": {
+      "label": "competition regulator",
+      "subclass_of": [
+        "Q1639780",
+        "Q2659904"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q14784328": {
+      "label": "state capital in Germany",
+      "subclass_of": [
+        "Q11271835"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q1480561": {
+      "label": "issue tracking system",
+      "subclass_of": [
+        "Q4420972",
+        "Q629173",
+        "Q7397"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q15063611": {
+      "label": "city in the state of New York",
+      "subclass_of": [
+        "Q1093829",
+        "Q47682"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229",
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q783794",
+        "Q82794"
+      ]
+    },
+    "Q15275719": {
+      "label": "recurring event",
+      "subclass_of": [
+        "Q1190554",
+        "Q1656682",
+        "Q28314507"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1656682"
+      ]
+    },
+    "Q1548033": {
+      "label": "large bank",
+      "subclass_of": [
+        "Q1434636",
+        "Q22687"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q1549591": {
+      "label": "big city",
+      "subclass_of": [
+        "Q515"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q155271": {
+      "label": "think tank",
+      "subclass_of": [
+        "Q136410232",
+        "Q31855",
+        "Q431603",
+        "Q5341295"
+      ],
+      "anchors": [
+        "Q163740",
+        "Q31855",
+        "Q43229"
+      ]
+    },
+    "Q15773347": {
+      "label": "film character",
+      "subclass_of": [
+        "Q95074"
+      ],
+      "anchors": []
+    },
+    "Q1589009": {
+      "label": "privately held company",
+      "subclass_of": [
+        "Q5621421",
+        "Q56876011"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q15925165": {
+      "label": "specialized agency of the United Nations",
+      "subclass_of": [
+        "Q15285626"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q1614849": {
+      "label": "United States district court",
+      "subclass_of": [
+        "Q119173073",
+        "Q3125101",
+        "Q75029"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q161726": {
+      "label": "multinational corporation",
+      "subclass_of": [
+        "Q4830453"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q163740": {
+      "label": "nonprofit organization",
+      "subclass_of": [
+        "Q43229"
+      ],
+      "anchors": [
+        "Q163740",
+        "Q43229"
+      ]
+    },
+    "Q1639780": {
+      "label": "regulatory agency",
+      "subclass_of": [
+        "Q327333"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q1641122": {
+      "label": "online service provider",
+      "subclass_of": [
+        "Q19967801",
+        "Q2169973"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752",
+        "Q43229"
+      ]
+    },
+    "Q165194": {
+      "label": "application programming interface",
+      "subclass_of": [
+        "Q132364",
+        "Q23808",
+        "Q241317"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752"
+      ]
+    },
+    "Q1660312": {
+      "label": "major label",
+      "subclass_of": [
+        "Q161726",
+        "Q18127"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q431289",
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q16675450": {
+      "label": "international decade",
+      "subclass_of": [
+        "Q16675435",
+        "Q39911"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q151885",
+        "Q1656682"
+      ]
+    },
+    "Q1668024": {
+      "label": "service on Internet",
+      "subclass_of": [
+        "Q1273271"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752"
+      ]
+    },
+    "Q167037": {
+      "label": "corporation",
+      "subclass_of": [
+        "Q155076",
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q783794"
+      ]
+    },
+    "Q1684600": {
+      "label": "news magazine",
+      "subclass_of": [
+        "Q1002697",
+        "Q1193236",
+        "Q41298"
+      ],
+      "anchors": [
+        "Q1002697",
+        "Q151885",
+        "Q2424752",
+        "Q41298",
+        "Q7397"
+      ]
+    },
+    "Q16920237": {
+      "label": "code reviewing software",
+      "subclass_of": [
+        "Q7397"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q16947796": {
+      "label": "continuous integration software",
+      "subclass_of": [
+        "Q7397"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q170156": {
+      "label": "confederation",
+      "subclass_of": [
+        "Q1048835",
+        "Q484652"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q17232649": {
+      "label": "news website",
+      "subclass_of": [
+        "Q1193236",
+        "Q12135927",
+        "Q35127"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q174844": {
+      "label": "megacity",
+      "subclass_of": [
+        "Q1637706"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q1752346": {
+      "label": "assembly",
+      "subclass_of": [
+        "Q43229"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q1752939": {
+      "label": "independent agency of the United States government",
+      "subclass_of": [
+        "Q20857065"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q1762059": {
+      "label": "film production company",
+      "subclass_of": [
+        "Q104649845",
+        "Q11396960"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q179164": {
+      "label": "unitary state",
+      "subclass_of": [
+        "Q7275"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q18011172": {
+      "label": "film project",
+      "subclass_of": [
+        "Q11424",
+        "Q47495113",
+        "Q64728694"
+      ],
+      "anchors": [
+        "Q11424",
+        "Q1190554",
+        "Q151885"
+      ]
+    },
+    "Q1806885": {
+      "label": "latent variable model",
+      "subclass_of": [
+        "Q3284399"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q1807108": {
+      "label": "shipping line",
+      "subclass_of": [
+        "Q740752"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q18127": {
+      "label": "record label",
+      "subclass_of": [
+        "Q1417728",
+        "Q167270",
+        "Q2608849",
+        "Q431289",
+        "Q43229",
+        "Q70382745"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q431289",
+        "Q43229"
+      ]
+    },
+    "Q18327510": {
+      "label": "fictional robot",
+      "subclass_of": [
+        "Q27921916"
+      ],
+      "anchors": []
+    },
+    "Q18388277": {
+      "label": "technology company",
+      "subclass_of": [
+        "Q6881511"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q183888": {
+      "label": "software developer",
+      "subclass_of": [
+        "Q108289400",
+        "Q1709010"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q189210": {
+      "label": "web application",
+      "subclass_of": [
+        "Q35127",
+        "Q63862928"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q189445": {
+      "label": "bicameral legislature",
+      "subclass_of": [
+        "Q29431432",
+        "Q6934578"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q43229"
+      ]
+    },
+    "Q1907114": {
+      "label": "metropolitan area",
+      "subclass_of": [
+        "Q1048835",
+        "Q15042037",
+        "Q15642541",
+        "Q702492"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q192283": {
+      "label": "news agency",
+      "subclass_of": [
+        "Q1193236",
+        "Q1331793"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q43229",
+        "Q4830453",
+        "Q7397",
+        "Q783794"
+      ]
+    },
+    "Q19967801": {
+      "label": "online service",
+      "subclass_of": [
+        "Q11492760",
+        "Q1668024"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752"
+      ]
+    },
+    "Q200250": {
+      "label": "metropolis",
+      "subclass_of": [
+        "Q515"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q207621": {
+      "label": "software license",
+      "subclass_of": [
+        "Q77205602",
+        "Q79719"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q151885"
+      ]
+    },
+    "Q208511": {
+      "label": "global city",
+      "subclass_of": [
+        "Q515"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q2085381": {
+      "label": "publishing house",
+      "subclass_of": [
+        "Q105044823",
+        "Q6881511",
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q2089936": {
+      "label": "consulting company",
+      "subclass_of": [
+        "Q6881511",
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q20962530": {
+      "label": "fictional computer",
+      "subclass_of": [
+        "Q15706911"
+      ],
+      "anchors": []
+    },
+    "Q210167": {
+      "label": "video game developer",
+      "subclass_of": [
+        "Q112042224",
+        "Q43229"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q210980": {
+      "label": "virtual community",
+      "subclass_of": [
+        "Q131164",
+        "Q177634",
+        "Q35127"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q2135465": {
+      "label": "legal term or legal concept",
+      "subclass_of": [
+        "Q151885",
+        "Q1969448"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q219577": {
+      "label": "holding company",
+      "subclass_of": [
+        "Q4830453",
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q2202883": {
+      "label": "autoregressive model",
+      "subclass_of": [
+        "Q192776",
+        "Q208042",
+        "Q3072260",
+        "Q3284399"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q151885",
+        "Q2424752"
+      ]
+    },
+    "Q2221906": {
+      "label": "geographic location",
+      "subclass_of": [
+        "Q27096213"
+      ],
+      "anchors": []
+    },
+    "Q2264924": {
+      "label": "port city",
+      "subclass_of": [
+        "Q132967635",
+        "Q515"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q2267705": {
+      "label": "field of study",
+      "subclass_of": [
+        "Q1047113"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q22687": {
+      "label": "bank",
+      "subclass_of": [
+        "Q1416431",
+        "Q5260792",
+        "Q650241",
+        "Q6881511",
+        "Q730038"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q22923920": {
+      "label": "territorial collectivity of France with special status",
+      "subclass_of": [
+        "Q583865"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q783794",
+        "Q82794"
+      ]
+    },
+    "Q2327515": {
+      "label": "City district in Baden-Württemberg",
+      "subclass_of": [
+        "Q22865"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q2334719": {
+      "label": "legal case",
+      "subclass_of": [
+        "Q180684",
+        "Q2447975",
+        "Q327197",
+        "Q386724"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q151885"
+      ]
+    },
+    "Q238354": {
+      "label": "video conference",
+      "subclass_of": [
+        "Q854954"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q2385804": {
+      "label": "educational institution",
+      "subclass_of": [
+        "Q132759797",
+        "Q2169973",
+        "Q5341295"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q2401749": {
+      "label": "telecommunications company",
+      "subclass_of": [
+        "Q4830453",
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q241317": {
+      "label": "computing platform",
+      "subclass_of": [
+        "Q2424752",
+        "Q994895"
+      ],
+      "anchors": [
+        "Q2424752"
+      ]
+    },
+    "Q2442401": {
+      "label": "record company",
+      "subclass_of": [
+        "Q1331793",
+        "Q32178211",
+        "Q4830453"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q245065": {
+      "label": "intergovernmental organization",
+      "subclass_of": [
+        "Q1896989",
+        "Q484652",
+        "Q7210356"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q24834073": {
+      "label": "ministry of War",
+      "subclass_of": [
+        "Q192350"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q253030": {
+      "label": "major regional center",
+      "subclass_of": [
+        "Q107104511",
+        "Q20724715"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q25631158": {
+      "label": "highway system",
+      "subclass_of": [
+        "Q358078",
+        "Q376799",
+        "Q924286"
+      ],
+      "anchors": [
+        "Q2424752"
+      ]
+    },
+    "Q2563546": {
+      "label": "investment firm",
+      "subclass_of": [
+        "Q11774490",
+        "Q1416636",
+        "Q1752459",
+        "Q2073644"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q27032363": {
+      "label": "photo archive",
+      "subclass_of": [
+        "Q2668072"
+      ],
+      "anchors": []
+    },
+    "Q27096213": {
+      "label": "geographic entity",
+      "subclass_of": [
+        "Q123349660"
+      ],
+      "anchors": []
+    },
+    "Q2755753": {
+      "label": "area of London",
+      "subclass_of": [
+        "Q486972",
+        "Q48907157",
+        "Q56061"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q28415750": {
+      "label": "APEC Economic Leaders Meeting",
+      "subclass_of": [
+        "Q1072326"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1656682"
+      ]
+    },
+    "Q28640": {
+      "label": "profession",
+      "subclass_of": [
+        "Q12737077"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q2927074": {
+      "label": "internet meme",
+      "subclass_of": [
+        "Q1260632",
+        "Q17537576",
+        "Q4287668",
+        "Q836950",
+        "Q978"
+      ],
+      "anchors": [
+        "Q1190554"
+      ]
+    },
+    "Q3044788": {
+      "label": "non-ministerial government department",
+      "subclass_of": [
+        "Q2500378"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q3077240": {
+      "label": "forge",
+      "subclass_of": [
+        "Q115217949",
+        "Q241317",
+        "Q7094076"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q3220391": {
+      "label": "social networking service",
+      "subclass_of": [
+        "Q1668024",
+        "Q202833",
+        "Q210980"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q33060455": {
+      "label": "charitable fund",
+      "subclass_of": [
+        "Q157031",
+        "Q708676"
+      ],
+      "anchors": [
+        "Q163740",
+        "Q43229"
+      ]
+    },
+    "Q33120876": {
+      "label": "Wikimedia content project",
+      "subclass_of": [
+        "Q115096159",
+        "Q122759350",
+        "Q33120867"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q151885",
+        "Q1668024",
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q3336843": {
+      "label": "constituent country of the United Kingdom",
+      "subclass_of": [
+        "Q10864048",
+        "Q1763527",
+        "Q717478"
+      ],
+      "anchors": [
+        "Q56061",
+        "Q6256",
+        "Q82794"
+      ]
+    },
+    "Q33742": {
+      "label": "natural language",
+      "subclass_of": [
+        "Q20162172"
+      ],
+      "anchors": [
+        "Q34770"
+      ]
+    },
+    "Q3487908": {
+      "label": "venture capital firm",
+      "subclass_of": [
+        "Q4830453"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q3505887": {
+      "label": "city council",
+      "subclass_of": [
+        "Q15284",
+        "Q2762194",
+        "Q486972"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q486972",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q35127": {
+      "label": "website",
+      "subclass_of": [
+        "Q107307154",
+        "Q1076968",
+        "Q108637623",
+        "Q119648796",
+        "Q1714118",
+        "Q17537576",
+        "Q3427877",
+        "Q7397"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q35657": {
+      "label": "U.S. state",
+      "subclass_of": [
+        "Q106458883",
+        "Q107390",
+        "Q10864048",
+        "Q155076",
+        "Q192611",
+        "Q852446"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q3621696": {
+      "label": "language model",
+      "subclass_of": [
+        "Q3284399"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q3624078": {
+      "label": "sovereign state",
+      "subclass_of": [
+        "Q6256",
+        "Q7275"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q6256",
+        "Q82794"
+      ]
+    },
+    "Q3635085": {
+      "label": "communication software",
+      "subclass_of": [
+        "Q166142",
+        "Q7397"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q3658341": {
+      "label": "literary character",
+      "subclass_of": [
+        "Q95074"
+      ],
+      "anchors": []
+    },
+    "Q375928": {
+      "label": "lower house",
+      "subclass_of": [
+        "Q10553309",
+        "Q2266479"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q4086495": {
+      "label": "startup accelerator",
+      "subclass_of": [
+        "Q1132207"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q4120211": {
+      "label": "regional organization",
+      "subclass_of": [
+        "Q484652",
+        "Q56061"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q41298": {
+      "label": "magazine",
+      "subclass_of": [
+        "Q1002697",
+        "Q11033",
+        "Q119648442",
+        "Q340169",
+        "Q47461344"
+      ],
+      "anchors": [
+        "Q1002697",
+        "Q151885",
+        "Q2424752",
+        "Q41298",
+        "Q7397"
+      ]
+    },
+    "Q41614": {
+      "label": "constitutional monarchy",
+      "subclass_of": [
+        "Q7269"
+      ],
+      "anchors": []
+    },
+    "Q42744322": {
+      "label": "urban municipality in Germany",
+      "subclass_of": [
+        "Q13539802",
+        "Q262166",
+        "Q515"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q4287745": {
+      "label": "medical organization",
+      "subclass_of": [
+        "Q30139652",
+        "Q43229"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q431289": {
+      "label": "brand",
+      "subclass_of": [
+        "Q16686448"
+      ],
+      "anchors": [
+        "Q431289"
+      ]
+    },
+    "Q43229": {
+      "label": "organization",
+      "subclass_of": [
+        "Q106559804",
+        "Q106668099",
+        "Q131085629",
+        "Q1639378",
+        "Q854457"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q43423468": {
+      "label": "hedge fund manager",
+      "subclass_of": [
+        "Q1435728",
+        "Q1979607"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q4801521": {
+      "label": "arts festival",
+      "subclass_of": [
+        "Q132241"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1656682"
+      ]
+    },
+    "Q480454": {
+      "label": "removal from office",
+      "subclass_of": [
+        "Q110513085",
+        "Q32098",
+        "Q9213592"
+      ],
+      "anchors": [
+        "Q1190554"
+      ]
+    },
+    "Q4830453": {
+      "label": "business",
+      "subclass_of": [
+        "Q155076",
+        "Q43229"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q483639": {
+      "label": "cloud computing",
+      "subclass_of": [
+        "Q1668024",
+        "Q241317",
+        "Q771906"
+      ],
+      "anchors": [
+        "Q1190554",
+        "Q1668024",
+        "Q2424752"
+      ]
+    },
+    "Q4887441": {
+      "label": "benefit corporation",
+      "subclass_of": [
+        "Q167037",
+        "Q78443472"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q783794"
+      ]
+    },
+    "Q49124804": {
+      "label": "phonological system",
+      "subclass_of": [
+        "Q12775443",
+        "Q3622126"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q4946461": {
+      "label": "spa town",
+      "subclass_of": [
+        "Q317548",
+        "Q570116"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q82794"
+      ]
+    },
+    "Q5": {
+      "label": "human",
+      "subclass_of": [
+        "Q154954",
+        "Q164509",
+        "Q2250224",
+        "Q5891007"
+      ],
+      "anchors": [
+        "Q5"
+      ]
+    },
+    "Q515": {
+      "label": "city",
+      "subclass_of": [
+        "Q124250988",
+        "Q56061",
+        "Q7930989"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q51929311": {
+      "label": "largest city",
+      "subclass_of": [
+        "Q515"
+      ],
+      "anchors": [
+        "Q486972",
+        "Q515",
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q5227240": {
+      "label": "data library",
+      "subclass_of": [
+        "Q15141646",
+        "Q212805"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q43229",
+        "Q7397"
+      ]
+    },
+    "Q5341296": {
+      "label": "educational program",
+      "subclass_of": [
+        "Q15621286"
+      ],
+      "anchors": []
+    },
+    "Q54806917": {
+      "label": "satellite internet constellation",
+      "subclass_of": [
+        "Q967145"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q5532625": {
+      "label": "generative model",
+      "subclass_of": [
+        "Q3284399"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q56061": {
+      "label": "administrative territorial entity",
+      "subclass_of": [
+        "Q141104744"
+      ],
+      "anchors": [
+        "Q56061",
+        "Q82794"
+      ]
+    },
+    "Q5633421": {
+      "label": "scientific journal",
+      "subclass_of": [
+        "Q49850",
+        "Q591041",
+        "Q685935",
+        "Q737498"
+      ],
+      "anchors": [
+        "Q1002697",
+        "Q151885",
+        "Q2424752",
+        "Q41298",
+        "Q7397",
+        "Q7725634"
+      ]
+    },
+    "Q57590076": {
+      "label": "hotel booking website",
+      "subclass_of": [
+        "Q114106",
+        "Q1276157",
+        "Q1668023"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q593744": {
+      "label": "knowledge base",
+      "subclass_of": [
+        "Q1063801",
+        "Q2623243",
+        "Q788790",
+        "Q8513"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q5988403": {
+      "label": "identity provider",
+      "subclass_of": [
+        "Q784561"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q615699": {
+      "label": "online encyclopedia",
+      "subclass_of": [
+        "Q137915424",
+        "Q5292"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752",
+        "Q35127",
+        "Q7397",
+        "Q7725634"
+      ]
+    },
+    "Q62049": {
+      "label": "county seat",
+      "subclass_of": [
+        "Q1306755",
+        "Q470540",
+        "Q486972"
+      ],
+      "anchors": [
+        "Q486972"
+      ]
+    },
+    "Q6256": {
+      "label": "country",
+      "subclass_of": [
+        "Q1048835",
+        "Q4835091"
+      ],
+      "anchors": [
+        "Q56061",
+        "Q6256",
+        "Q82794"
+      ]
+    },
+    "Q63791824": {
+      "label": "country bordering the Baltic Sea",
+      "subclass_of": [
+        "Q3624078"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q56061",
+        "Q6256",
+        "Q82794"
+      ]
+    },
+    "Q650241": {
+      "label": "financial institution",
+      "subclass_of": [
+        "Q43229"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q6576792": {
+      "label": "online community",
+      "subclass_of": [
+        "Q210980",
+        "Q35127"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q658255": {
+      "label": "subsidiary company",
+      "subclass_of": [
+        "Q62079110",
+        "Q679206",
+        "Q783794"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q783794"
+      ]
+    },
+    "Q66481339": {
+      "label": "fictional artificial intelligence",
+      "subclass_of": [
+        "Q95074"
+      ],
+      "anchors": []
+    },
+    "Q66747126": {
+      "label": "computer science term",
+      "subclass_of": [
+        "Q12812139",
+        "Q151885",
+        "Q999234"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q6686945": {
+      "label": "wiki software",
+      "subclass_of": [
+        "Q1371279",
+        "Q189210",
+        "Q2622299",
+        "Q3257930",
+        "Q474157"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q6881511": {
+      "label": "enterprise",
+      "subclass_of": [
+        "Q43229",
+        "Q4830453"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q72398691": {
+      "label": "video game news website",
+      "subclass_of": [
+        "Q17232649"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q7246202": {
+      "label": "private foundation",
+      "subclass_of": [
+        "Q18325436",
+        "Q7246201"
+      ],
+      "anchors": [
+        "Q163740",
+        "Q43229"
+      ]
+    },
+    "Q7247847": {
+      "label": "production team",
+      "subclass_of": [
+        "Q327245"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q7265244": {
+      "label": "question-and-answer site",
+      "subclass_of": [
+        "Q35127"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q35127",
+        "Q7397"
+      ]
+    },
+    "Q7270": {
+      "label": "republic",
+      "subclass_of": [
+        "Q5589178"
+      ],
+      "anchors": []
+    },
+    "Q730038": {
+      "label": "credit institution",
+      "subclass_of": [
+        "Q650241"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q7397": {
+      "label": "software",
+      "subclass_of": [
+        "Q12774177",
+        "Q17537576",
+        "Q2424752",
+        "Q47461344"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q762702": {
+      "label": "technological change",
+      "subclass_of": [
+        "Q1150070",
+        "Q247792"
+      ],
+      "anchors": []
+    },
+    "Q772547": {
+      "label": "armed forces",
+      "subclass_of": [
+        "Q17149090",
+        "Q2659904",
+        "Q8473"
+      ],
+      "anchors": [
+        "Q43229"
+      ]
+    },
+    "Q778575": {
+      "label": "conglomerate",
+      "subclass_of": [
+        "Q197952",
+        "Q206361"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q783794": {
+      "label": "company",
+      "subclass_of": [
+        "Q3778211",
+        "Q43229"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q783794"
+      ]
+    },
+    "Q847906": {
+      "label": "online magazine",
+      "subclass_of": [
+        "Q1327300",
+        "Q1714118"
+      ],
+      "anchors": [
+        "Q1002697",
+        "Q1190554",
+        "Q151885",
+        "Q2424752",
+        "Q41298",
+        "Q7397"
+      ]
+    },
+    "Q85810444": {
+      "label": "transformer",
+      "subclass_of": [
+        "Q113364611",
+        "Q192776"
+      ],
+      "anchors": [
+        "Q151885"
+      ]
+    },
+    "Q860572": {
+      "label": "photo agency",
+      "subclass_of": [
+        "Q1331793",
+        "Q4830453"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q870780": {
+      "label": "chatbot",
+      "subclass_of": [
+        "Q2297769"
+      ],
+      "anchors": [
+        "Q151885",
+        "Q2424752",
+        "Q7397",
+        "Q870780"
+      ]
+    },
+    "Q891723": {
+      "label": "public company",
+      "subclass_of": [
+        "Q134161",
+        "Q6881511"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794"
+      ]
+    },
+    "Q897399": {
+      "label": "chamber of commerce and industry",
+      "subclass_of": [
+        "Q1123526",
+        "Q536390"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229",
+        "Q783794"
+      ]
+    },
+    "Q910252": {
+      "label": "United States federal executive department",
+      "subclass_of": [
+        "Q192350",
+        "Q20857065"
+      ],
+      "anchors": [
+        "Q327333",
+        "Q43229"
+      ]
+    },
+    "Q920890": {
+      "label": "mobile operating system",
+      "subclass_of": [
+        "Q21743174",
+        "Q9135"
+      ],
+      "anchors": [
+        "Q2424752",
+        "Q7397"
+      ]
+    },
+    "Q936518": {
+      "label": "aerospace manufacturer",
+      "subclass_of": [
+        "Q136675338"
+      ],
+      "anchors": [
+        "Q43229",
+        "Q4830453"
+      ]
+    },
+    "Q96264607": {
+      "label": "type of security",
+      "subclass_of": [
+        "Q21146257"
+      ],
+      "anchors": []
+    }
+  }
+}
