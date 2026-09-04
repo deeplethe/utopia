@@ -1,0 +1,26 @@
+{
+ "name": "pharma-en",
+ "note": "pharma.json 的英文版，逐句对译，实体名换成英文；答案键对应",
+ "docs": [
+  [
+   "m1.txt",
+   "Renhetang Pharmacy opened its 40th store in Gongshu District, Hangzhou; the chain is controlled by Renhe Pharmaceutical Group.\nThe group's Renhe Pharmaceutical Plant, located in Shaoxing, mainly produces the antihypertensive drug amlodipine besylate tablets.\nGroup chairman Chen Guohua was formerly a professor at the Zhejiang University College of Pharmaceutical Sciences."
+  ],
+  [
+   "m2.txt",
+   "Amlodipine besylate tablets are a calcium channel blocker used to treat primary hypertension.\nThe drug is produced by Renhe Pharmaceutical Plant and passed the generic drug consistency evaluation of the National Medical Products Administration in 2022.\nCommon adverse reactions include ankle edema and headache."
+  ],
+  [
+   "m3.txt",
+   "The First Affiliated Hospital of Zhejiang University School of Medicine is a long-term clinical partner of Renhe Pharmaceutical Group.\nZhou Min, director of the hospital's cardiology department, took part in the phase III clinical trial of amlodipine besylate tablets.\nThe trial started in Hangzhou in 2021 and enrolled 800 patients with hypertension."
+  ],
+  [
+   "m4.txt",
+   "The Chinese Journal of Cardiology published the results of this phase III clinical trial.\nZhou Min is the corresponding author of the paper, and Chen Guohua is a co-author.\nThe journal is run by the Chinese Medical Association and appears monthly."
+  ],
+  [
+   "m5.txt",
+   "In 2023 Renhe Pharmaceutical Group held the first Cardiovascular Health Forum in Wuzhen.\nThe forum was co-organised by the First Affiliated Hospital of Zhejiang University School of Medicine, and Zhou Min gave a keynote.\nAt the forum, Renhetang Pharmacy launched a chronic disease management mini-app."
+  ]
+ ]
+}
