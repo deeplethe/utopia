@@ -1,6 +1,6 @@
 # 0018 · The lakehouse is one protocol away
 
-- **Status**: implemented · `trino` / `databricks` / `snowflake` engines in `query_engine/` (migration `0021` widens the `engine` CHECK) · every engine is covered by protocol replays only (wiremock); **none has run against a real cluster** (#240, #241, #242) · MaxCompute is not done, see the last section
+- **Status**: implemented · `trino` / `databricks` / `snowflake` engines in `query_engine/` (migration `0021` widens the `engine` CHECK) · every engine is covered by protocol replays only (wiremock); **none has run against a real cluster** (#240, #241, #242) · MaxCompute is not done, see the last section · the MySQL wire family this record skipped landed later in #303 (migration `0025`), so the order below is now "Postgres, MySQL, HTTP" as the `query_engine` header always had it
 - **Written**: 2026-09-03 (conventions in the [README](README.md))
 - **Related**: [0011](0011-a-mapping-is-not-a-fact.md) placed data sources at the deployment level and mounts at the base level; this record leaves that layer alone. [0016](0016-close-the-open-seams-before-cutting-new-ones.md) D4 put the MySQL wire protocol ahead of the lakehouse; the first section explains why the order flipped
 

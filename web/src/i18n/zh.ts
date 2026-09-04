@@ -854,6 +854,7 @@ export const zh: Strings = {
       connString: "连接串，前缀决定引擎",
       connSchemes:
         "postgres://user:pass@host:5432/db\n" +
+        "mysql://user:pass@host:3306/db   （MariaDB、TiDB、OceanBase、Doris、StarRocks）\n" +
         "trino://user[:pass]@host:8080/catalog[/schema]   （Iceberg、Delta Lake、Hive）\n" +
         "databricks://:TOKEN@host/sql/1.0/warehouses/ID?catalog=main\n" +
         "snowflake://:TOKEN@account.snowflakecomputing.com/DB/SCHEMA?warehouse=WH",

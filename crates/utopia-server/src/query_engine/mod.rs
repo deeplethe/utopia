@@ -1,6 +1,8 @@
 //! 问数查询引擎：trait 接缝（BlobStore 同手法）+ 引擎无关的安全闸。
 //!
-//! 引擎按协议族扩，不按产品名扩：postgres 线协议（`postgres.rs`）→ HTTP 族——
+//! 引擎按协议族扩，不按产品名扩：postgres 线协议（`postgres.rs`）、MySQL 线协议
+//! （`mysql.rs`，一条协议顺带覆盖 TiDB / OceanBase / Doris / StarRocks / MariaDB）
+//! → HTTP 族——
 //! `trino.rs` 一个顶起 Iceberg / Delta / Hive 整个湖仓生态，`databricks.rs`、
 //! `snowflake.rs` 各走自家的 SQL REST API。挂载模型与注册表引擎无关，加引擎只放宽
 //! 一条 CHECK。连接串是唯一的输入：引擎由 scheme 决定（[`engine_from_conn`]），
@@ -16,12 +18,15 @@
 
 mod conn;
 mod databricks;
+mod mysql;
 mod postgres;
 mod snowflake;
 mod trino;
 
 use sqlparser::ast::Statement;
-use sqlparser::dialect::{DatabricksDialect, GenericDialect, PostgreSqlDialect, SnowflakeDialect};
+use sqlparser::dialect::{
+    DatabricksDialect, GenericDialect, MySqlDialect, PostgreSqlDialect, SnowflakeDialect,
+};
 use sqlparser::parser::Parser;
 use std::time::Duration;
 
@@ -33,7 +38,7 @@ pub(crate) const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const HTTP_POLL_BUDGET: Duration = Duration::from_secs(30);
 
 /// 注册表里 `engine` 列的取值。迁移里的 CHECK 与这张表要一致
-pub const ENGINES: &[&str] = &["postgres", "trino", "databricks", "snowflake"];
+pub const ENGINES: &[&str] = &["postgres", "mysql", "trino", "databricks", "snowflake"];
 
 #[derive(Debug)]
 pub struct QueryResult {
@@ -64,6 +69,9 @@ pub fn engine_from_conn(conn: &str) -> Option<&'static str> {
     let scheme = conn.trim().split("://").next()?.to_ascii_lowercase();
     match scheme.as_str() {
         "postgres" | "postgresql" => Some("postgres"),
+        // 一条线协议顺带覆盖 TiDB / OceanBase / Doris / StarRocks——它们都说
+        // MySQL 协议，连接串照写 mysql:// 即可
+        "mysql" | "mariadb" => Some("mysql"),
         "trino" | "presto" => Some("trino"),
         "databricks" => Some("databricks"),
         "snowflake" => Some("snowflake"),
@@ -75,6 +83,7 @@ pub fn engine_from_conn(conn: &str) -> Option<&'static str> {
 pub fn engine_for(engine: &str, conn: &str) -> anyhow::Result<Box<dyn QueryEngine>> {
     match engine {
         "postgres" => Ok(Box::new(postgres::PostgresEngine::new(conn))),
+        "mysql" => Ok(Box::new(mysql::MysqlEngine::new(conn))),
         "trino" => Ok(Box::new(trino::TrinoEngine::new(conn::TrinoConn::parse(
             conn,
         )?))),
@@ -98,6 +107,7 @@ pub fn guard_sql_for(engine: &str, sql: &str) -> anyhow::Result<String> {
         "databricks" => Parser::parse_sql(&DatabricksDialect {}, cleaned),
         "snowflake" => Parser::parse_sql(&SnowflakeDialect {}, cleaned),
         "trino" => Parser::parse_sql(&GenericDialect {}, cleaned),
+        "mysql" => Parser::parse_sql(&MySqlDialect {}, cleaned),
         _ => Parser::parse_sql(&PostgreSqlDialect {}, cleaned),
     };
     let statements = parsed.map_err(|e| anyhow::anyhow!("SQL parse error: {e}"))?;
@@ -292,7 +302,7 @@ mod tests {
 
     #[test]
     fn every_dialect_keeps_the_same_gate() {
-        for engine in ["postgres", "trino", "databricks", "snowflake"] {
+        for engine in ["postgres", "mysql", "trino", "databricks", "snowflake"] {
             assert!(
                 guard_sql_for(engine, "SELECT a FROM t WHERE b > 1").is_ok(),
                 "{engine}"
@@ -307,6 +317,8 @@ mod tests {
         assert!(guard_sql_for("databricks", "SELECT `region` FROM main.sales.orders").is_ok());
         assert!(guard_sql_for("snowflake", "SELECT amount::number FROM db.public.orders").is_ok());
         assert!(guard_sql_for("trino", "SELECT count(*) FROM hive.default.orders").is_ok());
+        // MySQL 的反引号与 PG 方言不兼容，走自己的方言才过得去
+        assert!(guard_sql_for("mysql", "SELECT `region` FROM `sales`.`orders`").is_ok());
     }
 
     #[test]
@@ -323,7 +335,9 @@ mod tests {
             engine_from_conn("snowflake://:t@a.snowflakecomputing.com/db"),
             Some("snowflake")
         );
-        assert_eq!(engine_from_conn("mysql://u@h/db"), None);
+        assert_eq!(engine_from_conn("mysql://u:p@h:3306/db"), Some("mysql"));
+        // 同一套协议的另一个写法，引擎里会被改写成 mysql:// 再交给驱动
+        assert_eq!(engine_from_conn("mariadb://u@h/db"), Some("mysql"));
         assert_eq!(engine_from_conn("garbage"), None);
     }
 
