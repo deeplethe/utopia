@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Lock, Plus, X } from "lucide-react";
-import { api } from "../api";
+import { api, DEFAULT_ONTOLOGY_PACKS } from "../api";
 import { LANG_NAMES, S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
@@ -461,7 +461,7 @@ function NewKbModal({
   // schema.org 默认勾选，可反选（0009）。删掉内置类之后不选任何包的库是真的空，
   // 而空库仍然能用——但绝大多数人要的是一个已经能认出人、组织、产品的起点。
   // 一秒装完（0008 的批量插入），所以默认装得起
-  const [packs, setPacks] = useState<string[]>(["schema-org"]);
+  const [packs, setPacks] = useState<string[]>([...DEFAULT_ONTOLOGY_PACKS]);
 
   const available = useQuery({
     queryKey: ["ontologyPacks"],

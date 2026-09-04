@@ -53,7 +53,7 @@ One Rust binary and one Postgres. Full-text search is embedded in the binary, ve
 | | |
 |---|---|
 | **A complete application** | A system console, a graph browser and an ontology workbench in one web UI. A product, not a library: install it and it works. |
-| **Knowledge ingest** | Upload PDF, DOCX, PPTX, XLSX, XLS, ODS, CSV, TSV, Markdown, HTML or plain text, with legacy encodings detected on the way in. Web pages, RSS, GitHub, Jira and S3-compatible buckets sync on a schedule; everything else comes in through the API. |
+| **Knowledge ingest** | Upload PDF, DOCX, PPTX, XLSX, XLS, ODS, CSV, TSV, Markdown, HTML or plain text, with legacy encodings detected on the way in. Web pages, RSS, GitHub, Jira, Notion, WebDAV and S3-compatible buckets sync on a schedule; everything else comes in through the API. |
 | **Search and chat** | Full-text on Tantivy, vectors on pgvector, fused with RRF. Answers stream with inline citations that open the passage they came from. Any OpenAI-compatible endpoint works (DeepSeek, Qwen, GLM, Ollama, vLLM), so the whole system can run air-gapped. |
 | **Agent harness and agentic RAG** | The whole system can be driven through conversation. The built-in agent searches documents, walks the graph (an entity's facts as of any date, or what changed in a period) and queries a mounted database. The same read-only tools are exposed over MCP. |
 | **Ontology and cold start** | A new knowledge base has no vocabulary of its own; it starts from the packs you pick at creation. Five ship inside the binary: schema.org, W3C Org, PROV-O, FOAF and IOF Core ([ask for your industry](https://github.com/deeplethe/utopia/issues/new?labels=enhancement&title=Ontology%20pack%20request)). Terms outside the packs are counted as they appear; confirm the common ones and they join the ontology. |
@@ -78,7 +78,7 @@ cd utopia
 docker compose --profile app up -d
 ```
 
-Open http://localhost:1516 and register. The first account automatically becomes the administrator, and a public knowledge base readable by everyone is created at the same time. Before extracting business documents, configure the model endpoints (chat and embedding) under system settings.
+Open http://localhost:1516 and register. The first account automatically becomes the administrator, and a public knowledge base readable by everyone is created at the same time. Before extracting business documents, configure the model endpoints (chat and embedding) under Administration → Models.
 
 Or build from source:
 
@@ -105,7 +105,7 @@ cd web && pnpm install && pnpm dev
 - [ ] **Business rules**: rules written by people over an entity's attribute facts, a threshold or a category set, that classify it as a derived fact with the rule and the premises as its explanation ([#277](https://github.com/deeplethe/utopia/issues/277))
 - [ ] **Execution gate**: checking an agent's calls against ontology rules and symbolic logic
 - [ ] **MaxCompute**: mapping exploration and Ontology2SQL over Alibaba Cloud MaxCompute (Iceberg / Delta Lake via Trino, Databricks and Snowflake are in, awaiting a run against a real cluster)
-- [ ] **More sources**: MySQL, ClickHouse and Doris drivers; S3, WebDAV, Notion and Feishu connectors
+- [ ] **More sources**: MySQL, ClickHouse and Doris drivers; a Feishu connector
 - [ ] **Time to the moment**: an `instant` precision beside year / month / day, for sources that carry a real timestamp. Today a connector rounds it to a UTC day, which can shift an event across midnight by one day
 - [ ] **Agent memory over MCP**: episode writes, the retrieve endpoint, and the MCP server
 - [ ] **Enterprise**: OIDC SSO, backup and restore commands, benchmarks at 100k documents
