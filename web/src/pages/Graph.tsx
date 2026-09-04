@@ -1864,8 +1864,10 @@ export function Graph() {
         </div>
       </div>
 
+      {/* pb 把这块从几何正中抬起 40px：视觉重心比几何中心略高一点，
+          正居中的短文字块看上去总是偏下 */}
       {empty && (
-        <div className="absolute inset-0 grid place-items-center pointer-events-none">
+        <div className="absolute inset-0 grid place-items-center pb-20 pointer-events-none">
           {/* 不放标题方块：页面本身就是图谱页，tab 条上也写着，
               第三遍写"图谱"两个字不带任何信息。空状态该说的是下一步做什么——
               而"下一步"因人而异：管理员能直接去配模型，别人只能去找管理员（#267） */}
