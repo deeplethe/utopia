@@ -62,6 +62,7 @@ import {
   type ProofStep,
 } from "../api";
 import { S } from "../i18n";
+import { DangerConfirm, localDate } from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
@@ -1671,8 +1672,10 @@ export function Graph() {
         </div>
       </div>
 
+      {/* pb 把这块从几何正中抬起 40px：视觉重心比几何中心略高一点，
+          正居中的短文字块看上去总是偏下 */}
       {empty && (
-        <div className="absolute inset-0 grid place-items-center pointer-events-none">
+        <div className="absolute inset-0 grid place-items-center pb-20 pointer-events-none">
           {/* 不放标题方块：页面本身就是图谱页，tab 条上也写着，
               第三遍写"图谱"两个字不带任何信息。空状态该说的是下一步做什么——
               而"下一步"因人而异：管理员能直接去配模型，别人只能去找管理员（#267） */}
@@ -2679,6 +2682,11 @@ function EntityPanel({
   const setSameName = setRenamedPeers;
   // 手动合并：把同名的那个并进**当前这个**。方向写死是有意的——
   // 用户正在看的就是他判断为「主」的那一个
+  // 「并进来」先问一句。从前是浏览器原生 confirm()，和全站的对话框不是一套；
+  // 合并可撤销，所以走轻确认（不要求打字），同 Library 的重抽
+  const [mergeCandidate, setMergeCandidate] = useState<{ id: string; name: string } | null>(
+    null,
+  );
   const merge = useMutation({
     mutationFn: (source: string) => api.mergeEntities(kbId, source, entityId),
     onSuccess: () => {
@@ -2930,10 +2938,7 @@ function EntityPanel({
                   className="shrink-0 text-[11px] px-1.5 py-0.5 rounded text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
                   disabled={merge.isPending}
                   title={S.graph.mergeIntoHint}
-                  onClick={() => {
-                    if (confirm(S.graph.mergeConfirm(p.name, e?.name ?? "")))
-                      merge.mutate(p.id);
-                  }}
+                  onClick={() => setMergeCandidate({ id: p.id, name: p.name })}
                 >
                   {S.graph.mergeInto}
                 </button>
@@ -2941,6 +2946,21 @@ function EntityPanel({
             ))}
           </div>
         </div>
+      )}
+
+      {mergeCandidate && (
+        <DangerConfirm
+          title={S.graph.mergeTitle}
+          hint={S.graph.mergeConfirm(mergeCandidate.name, e?.name ?? "")}
+          confirmLabel={S.graph.mergeInto}
+          cancelLabel={S.graph.editCancel}
+          busy={merge.isPending}
+          onConfirm={() => {
+            merge.mutate(mergeCandidate.id);
+            setMergeCandidate(null);
+          }}
+          onCancel={() => setMergeCandidate(null)}
+        />
       )}
 
       {/* 视图切换：Relations（分组）| Timeline（年表） */}
@@ -3221,7 +3241,7 @@ function TimelineRow({
           )}
           {isOpenEnded && fact.last_evidence_time && (
             <span className="ml-auto text-neutral-600">
-              {S.graph.lastConfirmed(fact.last_evidence_time.slice(0, 10))}
+              {S.graph.lastConfirmed(localDate(fact.last_evidence_time))}
             </span>
           )}
         </div>

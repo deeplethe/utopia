@@ -303,6 +303,11 @@ async fn a_deletion_is_an_event() -> anyhow::Result<()> {
     }
     .await;
 
+    // 组织删除不级联到库：库自己删，别在共用的测试库里留墓碑
+    let _ = sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await;
     let _ = sqlx::query("DELETE FROM organizations WHERE id = $1")
         .bind(f.org)
         .execute(&pool)

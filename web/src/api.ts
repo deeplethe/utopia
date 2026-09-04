@@ -105,6 +105,8 @@ export interface Kb {
   /** 把推出来的事实写进账本（R1）。**缺省关**——推理往图里加东西，
    *  而声明可能是错的，不该在用户没表态时就按它改图 */
   materialize_inferences: boolean;
+  /** 抽取结束自动排一轮类型消解（只自动落地子树内精化的那一档） */
+  auto_type_resolution: boolean;
   /** 多久重推一次（分钟）。事实持续在变，只靠手点会让派生一直是缺的 */
   inference_interval_minutes: number;
   /** 上次推完的时间 */
@@ -166,6 +168,8 @@ export interface Doc {
   missing_since: string | null;
   /** 墓碑（#268）：删了但留着，可撤销 */
   deleted_at: string | null;
+  /** 真删过：内容没了，回不来 */
+  purged_at: string | null;
   created_at: string;
 }
 
@@ -971,6 +975,10 @@ export type AlertGroup = {
   lines: { name?: string; error?: string; job?: string }[];
 };
 
+/** 新库默认装的本体包。建库对话框和自动建出的第一个库都从这里取，
+ *  两处只能有一个答案：README 承诺的是「默认 schema.org」，不是「默认没有词表」 */
+export const DEFAULT_ONTOLOGY_PACKS = ["schema-org"];
+
 export const api = {
   health: () =>
     request<{ status: string; name: string; version: string }>(
@@ -1307,6 +1315,8 @@ export const api = {
       source?: string;
       q?: string;
       graph?: string;
+      /** "deleted" = 「已删除」视图：只列墓碑（#268） */
+      state?: "deleted";
       limit: number;
       offset: number;
     },
@@ -1318,6 +1328,7 @@ export const api = {
     if (opts.source) p.set("source", opts.source);
     if (opts.q) p.set("q", opts.q);
     if (opts.graph) p.set("graph", opts.graph);
+    if (opts.state) p.set("state", opts.state);
     return request<{
       docs: Doc[];
       total: number;
@@ -1326,6 +1337,8 @@ export const api = {
       ready: number;
       extracting: number;
       failed: number;
+      /** 整库的墓碑数（删了、没清的），不随作用域变 */
+      deleted: number;
     }>(`/api/v1/kbs/${kbId}/documents?${p}`);
   },
   /** 一键重试这个作用域里全部抽取失败的文档 */
@@ -1356,6 +1369,12 @@ export const api = {
   /** 撤销删除（#268）：文档、分块、随之作废的事实原路复活 */
   restoreDocument: (id: string) =>
     request<{ ok: boolean }>(`/api/v1/documents/${id}/restore`, { method: "POST" }),
+  /** 真删（#268 下半）：只对已删除的开放，库管理员，不可撤销 */
+  purgeDocument: (id: string) =>
+    request<{ ok: boolean; chunks: number; blobs: number }>(
+      `/api/v1/documents/${id}/purge`,
+      { method: "POST" },
+    ),
 
   search: (kbId: string, q: string) =>
     request<{ results: SearchResult[] }>(`/api/v1/kbs/${kbId}/search`, {

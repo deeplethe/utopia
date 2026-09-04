@@ -327,11 +327,27 @@ export function OntologySchemaGraph({
   const gridRef = useRef<HTMLCanvasElement>(null);
   const sigmaRef = useRef<Sigma | null>(null);
   const graphRef = useRef<Graphology | null>(null);
+  // 手动拖过的节点位置，按 id 存——**跨重建存活**：这个 ref 不在 [schema]
+  // 依赖里，本体一编辑（新建/改一个类或关系都会让 entityTypes/relationTypes
+  // 换引用，图整个重建）也不会清空。没有这个，摆好的布局会在下一次保存后
+  // 被自动布局悄悄冲掉，「挪节点求清楚」就成了白费。只留在这次会话里，
+  // 不写回后端——这是渲染层的手感，不是本体数据，同一个道理 /graph 的拖拽
+  // 也没有持久化
+  const draggedPositionsRef = useRef<Map<string, { x: number; y: number }>>(
+    new Map(),
+  );
 
   useEffect(() => {
     if (!containerRef.current) return;
     const g = schema.graph;
     layoutSchemaGraph(g);
+    // 拖过的节点摆回去——自动布局不知道用户已经动过手，重新算一遍位置
+    // 之后，把记下来的坐标原样盖回去
+    for (const [id, pos] of draggedPositionsRef.current) {
+      if (!g.hasNode(id)) continue;
+      g.setNodeAttribute(id, "x", pos.x);
+      g.setNodeAttribute(id, "y", pos.y);
+    }
     graphRef.current = g;
     // 选中的东西可能在新图里已经不存在了（比如删除了当前选中的类）——
     // 交给渲染时的存在性检查处理，这里不主动清空：多数情况下（编辑保存后
@@ -501,6 +517,58 @@ export function OntologySchemaGraph({
     sigma.on("leaveEdge", () => {
       hoverEdgeRef.current = null;
       sigma.refresh();
+    });
+
+    // 拖节点。**没有活的力模拟要喂**——与 /graph 不同，这里的布局是一次性
+    // 算完就定住的，拖完往哪放就在哪，不会被力模拟拽回去，这正是「手动摆
+    // 布局求清楚」要的效果。按下只记候选：位移超过阈值才升格成拖拽，
+    // 否则一次纯点击也会被当成拖了 0 像素的拖拽,鼠标松手时机跟点选打架
+    let dragCandidate: string | null = null;
+    let downPoint: { x: number; y: number } | null = null;
+    let dragged: string | null = null;
+    sigma.on("downNode", (e) => {
+      dragCandidate = e.node;
+      downPoint = { x: e.event.x, y: e.event.y };
+    });
+    sigma.getMouseCaptor().on("mousemovebody", (e) => {
+      if (!dragCandidate) return;
+      if (!dragged) {
+        if (!downPoint || Math.hypot(e.x - downPoint.x, e.y - downPoint.y) < 4)
+          return;
+        dragged = dragCandidate;
+        if (containerRef.current) containerRef.current.style.cursor = "grabbing";
+        // 冻住此刻的包围盒：拖着拖着节点飞出画面边缘时，相机不该跟着自动
+        // 缩放去「适应」新的包围盒——那样一拖节点全图就跟着抖
+        if (!sigma.getCustomBBox()) sigma.setCustomBBox(sigma.getBBox());
+      }
+      const pos = sigma.viewportToGraph(e);
+      g.setNodeAttribute(dragged, "x", pos.x);
+      g.setNodeAttribute(dragged, "y", pos.y);
+      // 边拖边记：万一中途出岔子（组件卸载、切换本体）也不丢这一手
+      draggedPositionsRef.current.set(dragged, pos);
+      e.preventSigmaDefault();
+      e.original.preventDefault();
+      e.original.stopPropagation();
+    });
+    const endDrag = () => {
+      dragCandidate = null;
+      downPoint = null;
+      if (!dragged) return;
+      dragged = null;
+      if (containerRef.current)
+        containerRef.current.style.cursor = hoverRef.current ? "grab" : "";
+      // 拖完把冻结的包围盒解开——「归位」要看得见刚挪过去的新位置，
+      // 不能还按拖拽开始前的旧范围来适应
+      sigma.setCustomBBox(null);
+    };
+    sigma.getMouseCaptor().on("mouseup", endDrag);
+    // 悬停在节点上方给个「可以抓」的提示——发现得靠猜的交互等于没有
+    sigma.on("enterNode", () => {
+      if (containerRef.current && !dragged)
+        containerRef.current.style.cursor = "grab";
+    });
+    sigma.on("leaveNode", () => {
+      if (containerRef.current && !dragged) containerRef.current.style.cursor = "";
     });
 
     // 关系标签只在放大后出现——本体大起来（导入包常有几十上百个类）时,

@@ -1195,7 +1195,7 @@ function AttributeForm({
       <div>
         <label className={lbl}>{S.ontology.description}</label>
         <textarea
-          className="input-dark w-full px-3 py-2 text-sm min-h-[3.5rem] resize-y"
+          className="input-dark w-full px-3 py-2 text-sm min-h-[6rem] resize-y"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
@@ -1642,7 +1642,7 @@ export function ClassForm({
         <label className={lbl}>{S.ontology.description}</label>
         {/* 语义指引：整段注入抽取 prompt，直接影响抽取归类质量 */}
         <textarea
-          className="input-dark w-full px-3 py-2 text-sm min-h-[4.5rem] resize-y"
+          className="input-dark w-full px-3 py-2 text-sm min-h-[9rem] resize-y"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
@@ -2021,7 +2021,7 @@ export function PropertyForm({
       <div>
         <label className={lbl}>{S.ontology.description}</label>
         <textarea
-          className="input-dark w-full px-3 py-2 text-sm min-h-[4.5rem] resize-y"
+          className="input-dark w-full px-3 py-2 text-sm min-h-[9rem] resize-y"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />

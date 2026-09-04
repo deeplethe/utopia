@@ -311,7 +311,7 @@ export const en = {
         {
           h: "Retention and deletion",
           body: [
-            "Deleting a document removes it from the base and retires the facts that had no other source; facts with another source keep it as provenance. The content is kept so the deletion can be undone; a deleted document can be restored, and a re-upload of the same file restores it too. Deleting a knowledge base permanently removes its documents, graph and sources.",
+            "Deleting a document removes it from the base and retires the facts that had no other source; facts with another source keep it as provenance. The content is kept so the deletion can be undone; a deleted document can be restored, and a re-upload of the same file restores it too. A knowledge-base admin can purge a deleted document, which removes its stored content for good. Deleting a knowledge base permanently removes its documents, graph and sources.",
           ],
         },
         {
@@ -372,6 +372,19 @@ export const en = {
           : `Document deleted · ${n} facts retired with it`,
     undo: "Undo",
     restored: "Document restored",
+    /** 「已删除」视图与真删（#268 下半） */
+    deleted: "Deleted",
+    colDeleted: "Deleted",
+    restore: "Restore",
+    purge: "Purge",
+    purgeTitle: "Purge this document?",
+    purgeHint: (name: string) =>
+      `“${name}” is deleted, and its content is still stored so the deletion can be undone. ` +
+      "Purging removes the stored file, its chunks and its evidence quotes for good. " +
+      "The facts it retired stay retired, and the deletion stays on record. This cannot be undone.",
+    purgeConfirm: "Purge",
+    purged: "Content purged",
+    deletedEmpty: "Nothing deleted. Deleted documents wait here until they are restored or purged.",
     title: "Library",
     upload: "Upload files",
     uploading: "Uploading…",
@@ -428,6 +441,7 @@ export const en = {
       domain_mismatch:
         "The subject does not fit the relation, and swapping would not help",
       not_an_entity_name: "That name is a sentence, not a thing",
+      clause_suspect: "Kept, but the name reads like a clause: a sample for the guard",
       direction_corrected:
         "Subject and object were swapped to match the signature",
     } as Record<string, string>,
@@ -741,6 +755,7 @@ export const en = {
         : `${n} other entities share this name.`,
     sameNameHint: "If they are the same thing, merge them under Review.",
     mergeInto: "Merge in",
+    mergeTitle: "Merge entities",
     mergeIntoHint:
       "Fold that entity into this one. Its facts move here; merges can be reverted.",
     mergeConfirm: (from: string, into: string) =>
@@ -924,6 +939,7 @@ export const en = {
       testFail: "Failed",
       neverTested: "Untested",
       remove: "Remove",
+      empty: "No data sources registered yet. Register one below.",
       grants: "Available to",
       grantsHint:
         "Which workspaces may use this source. **Once granted, KB admins in those workspaces choose whether to mount it** — " +
@@ -956,6 +972,7 @@ export const en = {
       visRestricted: "Invited only",
       create: "Create",
       openSettings: "Settings",
+      empty: "No knowledge bases yet. Create the first one above.",
       docs: (n: number) => `${n} docs`,
     },
     modelsIntro:
@@ -1023,7 +1040,7 @@ export const en = {
       text: "Text",
       number: "Number",
       date: "Date",
-      bool: "Yes / no",
+      bool: "Boolean",
     } as Record<string, string>,
     cancel: "Cancel",
     key: "Key",
@@ -1035,7 +1052,7 @@ export const en = {
     disjoint: "Cannot also be",
     disjointHint:
       "Classes nothing can belong to at the same time. A Person is not an Organisation. The consistency check uses this to find classes that can never have an instance.",
-    noDisjoint: "No class excluded",
+    noDisjoint: "None declared yet",
     disjointWithParent:
       "This class inherits from a class it says it cannot be — nothing could ever satisfy it.",
     /* 多父时左栏只能画一处，说明画在哪一支下 */
@@ -1517,6 +1534,9 @@ export const en = {
     materialize: "Materialize inferences",
     materializeNote:
       "Write facts the ontology entails into the ledger — transitive chains and symmetric pairs. Off by default: a declaration can be wrong, and this one changes the graph. Derived facts are marked and can be taken back.",
+    autoResolveTypes: "Resolve entity types after extraction",
+    autoResolveTypesNote:
+      "After each document is extracted, run a round of type resolution on entities the engine has not looked at yet. Only refinements within the current class are applied on their own — a re-classification across the tree still waits for you on the Ontology page. Every batch is listed there and can be undone.",
     inferEvery: "Re-derive every",
     minutes: "minutes",
     lastInference: (when: string) => `last run ${when}`,
@@ -1612,6 +1632,7 @@ export const en = {
     systemAdmin: "System admin",
     remove: "Remove",
     deactivate: "Deactivate",
+    cancel: "Cancel",
     deactivateHint:
       "Cuts off access everywhere — sign-in and any token already issued. What they did stays attributed to them.",
     deactivatedTitle: "Deactivated accounts",

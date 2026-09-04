@@ -1,0 +1,54 @@
+{
+ "note": "见 pharma.json 的说明；键是英文名的可辨认片段",
+ "expect": {
+  "Nebula Technologies": [
+   "corporation"
+  ],
+  "Shanghai Research Institute": [
+   "research_organization"
+  ],
+  "Department of Computer Science": [
+   "college_or_university",
+   "educational_organization"
+  ],
+  "Shanghai Municipal Government": [
+   "government_organization"
+  ],
+  "DeepBlue vector database": [
+   "software_application"
+  ],
+  "Milvus": [
+   "software_application"
+  ],
+  "DeepBlue 3.0": [
+   "software_application"
+  ],
+  "Linux": [
+   "operating_system",
+   "software_application"
+  ],
+  "China Data Intelligence": [
+   "periodical"
+  ],
+  "World Artificial Intelligence Conference": [
+   "business_event",
+   "event_series",
+   "conference_event"
+  ],
+  "main forum": [
+   "conference_event",
+   "event"
+  ],
+  "Shanghai": [
+   "city"
+  ],
+  "Pudong New Area": [
+   "administrative_area"
+  ],
+  "Xihu District": [
+   "administrative_area"
+  ],
+  "Zhang Wei": [],
+  "Li Na": []
+ }
+}

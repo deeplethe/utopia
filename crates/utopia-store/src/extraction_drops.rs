@@ -39,6 +39,9 @@ pub mod reason {
     pub const DIRECTION_CORRECTED: &str = "direction_corrected";
     /// 模型输出被截断（撞上 max_tokens）→ 已完整的那些留下，尾巴丢掉
     pub const TRUNCATED_REPLY: &str = "truncated_reply";
+    /// 守卫放行了、结构却像从句（限定词起头的长串、句中的关系词）。**只记不挡**：
+    /// 实体照常落库，例句留下来——#193 要的是一份跨语料的标注集，再决定哪条升成硬规则
+    pub const CLAUSE_SUSPECT: &str = "clause_suspect";
 }
 
 pub async fn record(

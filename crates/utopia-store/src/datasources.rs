@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use utopia_core::models::DataSourceView;
-use utopia_core::{AppError, AppResult};
+use utopia_core::{secrets, AppError, AppResult};
 use uuid::Uuid;
 
 /// data_sources 的行投影，list 与 mounted 共用。
@@ -39,11 +39,16 @@ pub fn conn_summary(conn: &str) -> String {
 fn row_to_view(
     (id, name, engine, conn, created_at, last_test_at, last_test_ok): DataSourceRow,
 ) -> DataSourceView {
+    // 连接串在库里是封印的；开不了（换过钥匙）就说开不了，别把密文当 URL 去解析
+    let summary = match secrets::open(&conn) {
+        Ok(plain) => conn_summary(&plain),
+        Err(_) => "(sealed with another key)".into(),
+    };
     DataSourceView {
         id,
         name,
         engine,
-        summary: conn_summary(&conn),
+        summary,
         created_at,
         last_test_at,
         last_test_ok,
@@ -92,7 +97,7 @@ pub async fn create(
     .bind(id)
     .bind(name.trim())
     .bind(engine)
-    .bind(conn_string.trim())
+    .bind(secrets::seal(conn_string.trim()))
     .bind(created_by)
     .execute(pool)
     .await?;
@@ -117,7 +122,8 @@ pub async fn conn_string(pool: &PgPool, id: Uuid) -> AppResult<String> {
             .bind(id)
             .fetch_optional(pool)
             .await?;
-    row.map(|(c,)| c).ok_or(AppError::NotFound)
+    let (conn,) = row.ok_or(AppError::NotFound)?;
+    secrets::open(&conn).map_err(AppError::Other)
 }
 
 pub async fn record_test(pool: &PgPool, id: Uuid, ok: bool) -> AppResult<()> {
@@ -174,7 +180,8 @@ pub async fn engine_and_conn(pool: &PgPool, id: Uuid) -> AppResult<(String, Stri
             .bind(id)
             .fetch_optional(pool)
             .await?;
-    row.ok_or(AppError::NotFound)
+    let (engine, conn) = row.ok_or(AppError::NotFound)?;
+    Ok((engine, secrets::open(&conn).map_err(AppError::Other)?))
 }
 
 /// 这个工作区被授权用哪些源（0014）。

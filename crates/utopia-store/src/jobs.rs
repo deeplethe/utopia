@@ -21,6 +21,27 @@ pub struct Job {
     pub max_attempts: i32,
 }
 
+/// 同种任务、同样载荷已经排着就不再排：一批文档各自抽完都想触发同一个库级任务
+/// （类型消解、对账），排十次跑十次是浪费，而且后九次看到的是第一次跑完的库。
+/// 返回 None = 已有一条在排队
+pub async fn enqueue_unless_queued(
+    pool: &PgPool,
+    kind: &str,
+    payload: serde_json::Value,
+) -> AppResult<Option<i64>> {
+    let row: Option<(i64,)> = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload)
+         SELECT $1, $2
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND payload = $2 AND status = 'queued')
+         RETURNING id",
+    )
+    .bind(kind)
+    .bind(payload)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id,)| id))
+}
+
 pub async fn enqueue(pool: &PgPool, kind: &str, payload: serde_json::Value) -> AppResult<i64> {
     let (id,): (i64,) =
         sqlx::query_as("INSERT INTO jobs (kind, payload) VALUES ($1, $2) RETURNING id")

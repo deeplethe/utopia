@@ -284,7 +284,7 @@ export const zh: Strings = {
         {
           h: "留存与删除",
           body: [
-            "删除一篇文档会把它移出知识库，并让只以它为出处的事实一并失效；另有出处的事实保留，出处照旧。内容会留着以便撤销：删除可以恢复，重新上传同一份文件也会恢复它。删除一个知识库会永久移除它的文档、图谱与来源。",
+            "删除一篇文档会把它移出知识库，并让只以它为出处的事实一并失效；另有出处的事实保留，出处照旧。内容会留着以便撤销：删除可以恢复，重新上传同一份文件也会恢复它。知识库管理员可以清除已删除的文档，其存储内容将被彻底移除。删除一个知识库会永久移除它的文档、图谱与来源。",
           ],
         },
         {
@@ -340,6 +340,17 @@ export const zh: Strings = {
       n === 0 ? "文档已删除" : `文档已删除 · 随之失效 ${n} 条事实`,
     undo: "撤销",
     restored: "文档已恢复",
+    deleted: "已删除",
+    colDeleted: "删除时间",
+    restore: "恢复",
+    purge: "清除",
+    purgeTitle: "清除这篇文档？",
+    purgeHint: (name: string) =>
+      `「${name}」已删除，内容还留着以便撤销。清除会把原文、分块与证据引文彻底移除；` +
+      "随它失效的事实保持失效，删除记录保留。此操作不可撤销。",
+    purgeConfirm: "清除",
+    purged: "内容已清除",
+    deletedEmpty: "没有已删除的文档。删掉的文档会在这里等着被恢复或清除。",
     title: "文库",
     upload: "上传文件",
     uploading: "上传中…",
@@ -390,6 +401,7 @@ export const zh: Strings = {
       truncated_reply: "模型的输出被截断",
       domain_mismatch: "主语对不上这个关系，对调也不行",
       not_an_entity_name: "那个名字是一句话，不是一个东西",
+      clause_suspect: "已保留，但这个名字像从句：给守卫攒的样本",
       direction_corrected: "已按签名把主宾掰正",
     },
     reExtractSource: "重新抽取",
@@ -674,6 +686,7 @@ export const zh: Strings = {
     sameNameNote: (n: number) => `另有 ${n} 个实体同名。`,
     sameNameHint: "如果它们是同一个东西，去「审阅」里合并。",
     mergeInto: "并入",
+    mergeTitle: "合并实体",
     mergeIntoHint: "把那个实体并进这一个。它的事实搬过来；合并可以撤销。",
     mergeConfirm: (from: string, into: string) =>
       `把「${from}」并进「${into}」？它的事实会搬过来。可以在审阅页撤销。`,
@@ -834,6 +847,7 @@ export const zh: Strings = {
       testFail: "失败",
       neverTested: "未测试",
       remove: "移除",
+      empty: "还没有注册数据源。在下面注册一个。",
       grants: "可用于",
       grantsHint:
         "授权哪些工作区可以用这个源。**授权之后，那些工作区的知识库管理员自己挑挂不挂**——" +
@@ -862,6 +876,7 @@ export const zh: Strings = {
       visRestricted: "仅受邀者",
       create: "创建",
       openSettings: "设置",
+      empty: "还没有知识库。在上面建第一个。",
       docs: (n: number) => `${n} 篇文档`,
     },
     modelsIntro:
@@ -929,7 +944,7 @@ export const zh: Strings = {
       text: "文本",
       number: "数字",
       date: "日期",
-      bool: "是 / 否",
+      bool: "布尔",
     },
     cancel: "取消",
     key: "Key",
@@ -941,7 +956,7 @@ export const zh: Strings = {
     disjoint: "不可能同时是",
     disjointHint:
       "任何东西不可能同时属于的类。人不是组织。一致性检查据此找出永远不可能有实例的类。",
-    noDisjoint: "没有排除任何类",
+    noDisjoint: "尚未声明",
     disjointWithParent:
       "这个类继承自一个它声明不可能是的类——没有任何东西能满足它。",
     primaryParentHint: "左栏的树里挂在第一个下面。",
@@ -1354,6 +1369,9 @@ export const zh: Strings = {
     materialize: "物化推理",
     materializeNote:
       "把本体蕴含的事实写进账本——传递链与对称对。默认关：声明可能是错的，而这一步会改图。派生事实带标记，也随时可以撤回。",
+    autoResolveTypes: "抽取后自动消解实体类型",
+    autoResolveTypesNote:
+      "每篇文档抽完，对引擎还没看过的实体跑一轮类型消解。只有在现类子树里精化的才自动落地，跨轴的改判仍留在本体页等你。每一批都列在本体页，随时可以撤回。",
     inferEvery: "每隔",
     minutes: "分钟重推",
     lastInference: (when: string) => `上次 ${when}`,
@@ -1440,6 +1458,7 @@ export const zh: Strings = {
     systemAdmin: "系统管理员",
     remove: "移除",
     deactivate: "停用账号",
+    cancel: "取消",
     deactivateHint:
       "断掉整个系统的访问——登录与已签发的 token 都失效。他做过的事仍然记在他名下。",
     deactivatedTitle: "已停用的账号",

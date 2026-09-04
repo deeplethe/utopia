@@ -23,6 +23,11 @@ pub async fn process_document(state: &AppState, document_id: Uuid) -> anyhow::Re
 
 async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
+    // 排队之后被删了（#268）：墓碑不重建分块、不回索引；清过的连原文都没了
+    if doc.deleted_at.is_some() {
+        tracing::info!(document = %document_id, "skipping a deleted document");
+        return Ok(());
+    }
 
     // 1. 解析（CPU 密集，放 blocking 线程）
     utopia_store::documents::set_status(&state.pool, document_id, "parsing").await?;
@@ -101,6 +106,10 @@ pub async fn memory_ingest(
     proposed_by: Option<Uuid>,
 ) -> anyhow::Result<()> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
+    if doc.deleted_at.is_some() {
+        tracing::info!(document = %document_id, "skipping a deleted document");
+        return Ok(());
+    }
     let kb_row = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb_row.workspace_id).await?;
 

@@ -433,44 +433,47 @@ export function MultiSearchSelect({
       {picked.length === 0 && emptyHint && (
         <p className="mb-1 text-[11px] text-neutral-600">{emptyHint}</p>
       )}
-      <SearchIcon
-        size={11}
-        className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-600 pointer-events-none"
-        style={{ top: undefined }}
-      />
+      {/* 图标只对输入框定位。从前它相对整个组件居中，而组件里输入框上面
+          还有一行已选项或空态提示，"一半高"就落到了输入框的上方（#288） */}
+      <div className="relative">
+        <SearchIcon
+          size={11}
+          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-600 pointer-events-none"
+        />
       <input
-        ref={inputRef}
-        className="input-dark w-full pl-7 pr-2.5 py-1 text-xs"
-        value={query}
-        placeholder={placeholder}
-        onFocus={() => {
-          setOpen(true);
-          setActive(0);
-        }}
-        onBlur={() => setOpen(false)}
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setActive(0);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            setOpen(false);
-            inputRef.current?.blur();
-          } else if (e.key === "ArrowDown") {
-            e.preventDefault();
-            setActive((a) => Math.min(a + 1, visible.length - 1));
-          } else if (e.key === "ArrowUp") {
-            e.preventDefault();
-            setActive((a) => Math.max(a - 1, 0));
-          } else if (e.key === "Enter" && visible[active]) {
-            e.preventDefault();
-            toggle(visible[active].value);
-          } else if (e.key === "Backspace" && !query && picked.length) {
-            // 空输入时退格删掉最后一个 —— 与各家 token 输入框一致
-            onToggle(picked[picked.length - 1].value);
-          }
-        }}
-      />
+          ref={inputRef}
+          className="input-dark w-full pl-7 pr-2.5 py-1 text-xs"
+          value={query}
+          placeholder={placeholder}
+          onFocus={() => {
+            setOpen(true);
+            setActive(0);
+          }}
+          onBlur={() => setOpen(false)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setActive(0);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setOpen(false);
+              inputRef.current?.blur();
+            } else if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActive((a) => Math.min(a + 1, visible.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActive((a) => Math.max(a - 1, 0));
+            } else if (e.key === "Enter" && visible[active]) {
+              e.preventDefault();
+              toggle(visible[active].value);
+            } else if (e.key === "Backspace" && !query && picked.length) {
+              // 空输入时退格删掉最后一个 —— 与各家 token 输入框一致
+              onToggle(picked[picked.length - 1].value);
+            }
+          }}
+        />
+      </div>
       {open && (
         <div className="u-pop u-pop-in u-pop-in-tl absolute z-50 mt-1 w-full rounded-lg shadow-xl overflow-hidden">
           {visible.map((o, i) => (
@@ -902,4 +905,20 @@ export function SectionMark({ text, title }: { text: string; title: string }) {
       ))}
     </RouterLink>
   );
+}
+
+/* 时刻按看的人的时区显示。**只给时刻用**：recorded_at、created_at、上传时间这类
+   "何时发生"的值。文档里写的日历日期（"2019 年 5 月"）没有时区，另走 ISO 切片，
+   转成本地会让 UTC-5 的读者看到前一天。EntityHistory 里的判据同一条 */
+export function localDate(iso: string): string {
+  const d = new Date(iso);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+export function localDateTime(iso: string): string {
+  const d = new Date(iso);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${localDate(iso)} ${hh}:${mm}`;
 }
