@@ -41,6 +41,8 @@ async-trait = "0.1.92"
 sqlparser = "0.62.0"
 object_store = { version = "0.14.1", features = ["aws", "azure", "gcp"] }
 quick-xml.workspace = true
+oxrdf.workspace = true
+oxrdfio.workspace = true
 url = "2.5.8"
 percent-encoding = "2.3.2"
 base64.workspace = true
