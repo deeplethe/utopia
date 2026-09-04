@@ -804,8 +804,27 @@ async fn update_profile(pool: &PgPool, id: Uuid, n: i32, ctx: &[f32]) -> AppResu
     Ok(())
 }
 
-/// 同名组展示消歧：组内 ≥2 个存活实体时，各自取最强区分性事实
-/// （works_at/part_of/located_in/leads 的宾语名），否则退回类型标签；组内唯一则清空。
+/// 同名组展示消歧：组内 ≥2 个存活实体时，各自取最能把自己和同名者分开的那条
+/// 事实的宾语名，否则退回类型标签；组内唯一则清空。
+///
+/// **不认谓词的名字**（#299）。原先这里写死 works_at / part_of / located_in / leads
+/// 四个 key，而 schema.org 包建出来的库用的是 works_for / member_of / affiliation
+/// ——于是两个明明分得清清楚楚的 John Smith（一个在 Acme Robotics，一个在
+/// St Mary's Hospital）双双退回类型标签，并排显示成两个 "John Smith · Person"。
+/// 一张手写的词表管不住别人的词汇表，这与 #193 那条「封闭动词表换个语料就漏」
+/// 是同一个毛病。
+///
+/// 换成按**这条事实分不分得开**排序，理由都来自本体自己的声明：
+///
+/// 1. **宾语在同名组里独一份**——后缀存在的全部意义就是这个。两个人都在 Acme
+///    时它谁也分不开，那就退到下面几条按信息量取，而不是编一个假的区分
+/// 2. **谓词声明过值域**（`relation_type_ranges`）——有人特意说过这条关系指向什么，
+///    比抽取顺手长出来的那些更可能是身份性的
+/// 3. **状态而非事件**（`temporal`）：「在哪儿工作」是身份，「某天开了个会」不是
+/// 4. **单值关系**（`functional`）：一个主语只能有一个值的关系，本身就是身份锚
+///
+/// 没有谓词的事实（`predicate_id IS NULL`，0010）不参与：原话留在证据里，
+/// 不是本体承认的说法，不该被当成一个人的身份写进后缀。
 pub async fn refresh_disambiguators(pool: &PgPool, kb_id: Uuid, name: &str) -> AppResult<()> {
     let group: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT id FROM entities
@@ -826,6 +845,7 @@ pub async fn refresh_disambiguators(pool: &PgPool, kb_id: Uuid, name: &str) -> A
         return Ok(());
     }
 
+    let peers: Vec<Uuid> = group.iter().map(|(id,)| *id).collect();
     for (id,) in &group {
         let label: Option<(String,)> = sqlx::query_as(
             "SELECT o.canonical_name FROM facts f
@@ -833,12 +853,22 @@ pub async fn refresh_disambiguators(pool: &PgPool, kb_id: Uuid, name: &str) -> A
              JOIN entities o ON o.id = f.object_id
              WHERE f.kb_id = $1 AND f.subject_id = $2
                AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
-               AND r.key IN ('works_at', 'part_of', 'located_in', 'leads')
-             ORDER BY (r.key = 'works_at') DESC, f.confidence DESC, f.recorded_at DESC
+             ORDER BY
+               -- 同名的另一个也指着它，这条就分不开谁是谁
+               (NOT EXISTS (SELECT 1 FROM facts g
+                             WHERE g.kb_id = $1 AND g.subject_id = ANY($3)
+                               AND g.subject_id <> $2 AND g.object_id = f.object_id
+                               AND g.invalidated_at IS NULL)) DESC,
+               EXISTS (SELECT 1 FROM relation_type_ranges rr
+                        WHERE rr.relation_type_id = r.id) DESC,
+               (r.temporal = 'state') DESC,
+               r.functional DESC,
+               f.confidence DESC, f.recorded_at DESC
              LIMIT 1",
         )
         .bind(kb_id)
         .bind(id)
+        .bind(&peers)
         .fetch_optional(pool)
         .await?;
         // 关联事实找不着就退到类型标签；**类型也可能没有**（0009），
