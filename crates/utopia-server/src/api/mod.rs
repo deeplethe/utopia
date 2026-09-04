@@ -85,6 +85,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}",
             patch(kbs::update).get(kbs::get_one).delete(kbs::delete),
         )
+        // 四个页面的空状态共用的一步判断（#313）
+        .route("/kbs/{id}/readiness", get(kbs::readiness))
         .route("/kbs/{id}/members", get(kbs::members))
         .route("/kbs/{id}/audit", get(kbs::audit_log))
         // 失败任务回队列（#216）：库内给 Editor，全局给管理员

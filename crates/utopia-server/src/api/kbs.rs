@@ -222,6 +222,19 @@ pub async fn delete(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// 这个库走到哪一步了（#313）：四个页面的空状态共用同一个判断。
+///
+/// Viewer 起步——看得见这个库的人都该知道它是空的还是在跑。回的全是布尔与
+/// 计数，模型那一项只说配没配，所以不需要工作区 admin 那道门。
+pub async fn readiness(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<utopia_core::models::Readiness>> {
+    kb_with_role(&state, &user, id, Role::Viewer).await?;
+    Ok(Json(utopia_store::kbs::readiness(&state.pool, id).await?))
+}
+
 // ---------------------------------------------------------------------------
 // KB 成员矩阵（库自己的 Settings → Members）
 // ---------------------------------------------------------------------------

@@ -808,6 +808,29 @@ pub struct EvidenceView {
     pub document_deleted: bool,
 }
 
+/// 这个库走到哪一步了（#313）：四个页面的空状态共用同一个判断。
+///
+/// 每个页面此前都各自假设「已经就绪」，于是空状态只会说同一句话：图谱页
+/// 让人去配模型，哪怕文档正在抽取；对话页照常显示问候语，哪怕模型根本没配——
+/// 用户问出第一句才撞墙。
+///
+/// **只回布尔与计数。** 模型那一项来自工作区设置，而那张表要 workspace admin
+/// 才看得到（`settings_routes::get`）。普通成员看不到配置，却需要知道配没配，
+/// 所以这里只说「有没有」，不带 base_url、模型名或任何凭据。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct Readiness {
+    /// 工作区配了对话模型。没有它，抽取与对话都跑不起来
+    pub has_chat_model: bool,
+    /// 活文档数（墓碑不算——删掉的文档不构成「库里有东西」）
+    pub documents: i64,
+    /// 正在解析或抽取的文档数
+    pub processing: i64,
+    /// 解析或抽取失败的文档数
+    pub failed: i64,
+    /// 图里的实体数。文档齐了、抽取也跑完了，这个还是 0 说明什么都没抽出来
+    pub entities: i64,
+}
+
 /// 时态冲突（S3 自动闭合拿不准的那些）：旧事实 vs 新事实，Review 页人裁。
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ConflictView {

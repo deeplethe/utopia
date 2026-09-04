@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { ThinkingOrb, type OrbState } from "thinking-orbs";
 import {
+  api,
   conversationsApi,
   reattachChat,
   streamChat,
@@ -37,6 +38,7 @@ import { useKb, useKbId } from "../kb";
 import { DangerConfirm, RAIL_CLS } from "../ui";
 import { liveAnswer, type LiveHandle, type Turn } from "../liveAnswer";
 import { NodCard } from "./PendingFacts";
+import { NextStep, nextStep, useReadiness } from "./NextStep";
 
 /* `Turn` 定义在 liveAnswer 里：进行中的那一次也是一串 Turn，
    而它必须活得比这个组件长（见那个文件顶上的说明） */
@@ -48,6 +50,18 @@ const DRAFT_KEY = "chat:draft";
 export function Chat() {
   const kbId = useKbId();
   const { kb, kbs, setKb } = useKb();
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  /* **只拦模型这一档。** 空的知识库照样能聊——挂载的数据库查得了，记忆也读得到；
+     没有对话模型才是真的一句都问不出来，而问候语从前照常显示，用户敲完第一句
+     才撞墙（#313） */
+  const readiness = useReadiness(kbId);
+  const modelStep = readiness.data?.has_chat_model
+    ? null
+    : nextStep(readiness.data, {
+        kbId,
+        isAdmin: !!me.data?.is_admin,
+        canUpload: kb?.my_role !== "viewer",
+      });
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   // 会话即路由：/chat/$conversationId，URL 是当前会话的唯一事实来源（刷新/回退天然可用）
@@ -574,6 +588,11 @@ export function Chat() {
               >
                 {S.ask.greeting}
               </h1>
+              {modelStep && (
+                <div className="mb-6 grid place-items-center">
+                  <NextStep {...modelStep} />
+                </div>
+              )}
               {composerCard}
             </div>
           </div>

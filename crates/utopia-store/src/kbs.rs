@@ -1,5 +1,5 @@
 use sqlx::PgPool;
-use utopia_core::models::KnowledgeBase;
+use utopia_core::models::{KnowledgeBase, Readiness};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
@@ -135,6 +135,34 @@ pub async fn update(
     .fetch_optional(pool)
     .await?
     .ok_or(AppError::NotFound)
+}
+
+pub async fn readiness(pool: &PgPool, kb_id: Uuid) -> AppResult<Readiness> {
+    // 一次查询拿全，四个页面各发一次请求也只是一次点查
+    let r: Readiness = sqlx::query_as(
+        "SELECT
+           EXISTS (
+             SELECT 1 FROM llm_settings s
+             JOIN knowledge_bases k ON k.workspace_id = s.workspace_id
+             WHERE k.id = $1 AND coalesce(s.chat_model, '') <> ''
+           ) AS has_chat_model,
+           (SELECT count(*) FROM documents
+             WHERE kb_id = $1 AND deleted_at IS NULL) AS documents,
+           -- 两条轴各有各的进行时：内容还没进库（status），或图还没抽完（graph_status）
+           (SELECT count(*) FROM documents
+             WHERE kb_id = $1 AND deleted_at IS NULL
+               AND (status IN ('pending', 'parsing', 'indexing', 'embedding')
+                    OR graph_status IN ('queued', 'extracting'))) AS processing,
+           (SELECT count(*) FROM documents
+             WHERE kb_id = $1 AND deleted_at IS NULL
+               AND (status = 'failed' OR graph_status = 'failed')) AS failed,
+           (SELECT count(*) FROM entities
+             WHERE kb_id = $1 AND merged_into IS NULL) AS entities",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(r)
 }
 
 pub async fn delete(pool: &PgPool, id: Uuid) -> AppResult<()> {
