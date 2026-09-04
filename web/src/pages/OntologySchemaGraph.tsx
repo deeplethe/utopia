@@ -70,10 +70,16 @@ const EDGE_TYPE_CURVED_ARROW = "curvedArrow"; // 弧线 + 箭头（EdgeCurvedArr
 const EDGE_TYPE_LINE = "line"; // 直线，无箭头（EdgeLineProgram）——互斥专用
 
 /** 结构边细、关系边粗一档——「语义关系比结构性信息更显眼」不能只靠颜色说,
- *  粗细上也要有一档差 */
+ *  粗细上也要有一档差。这个粗细同时也是点选判定的命中带宽——sigma 的边拾取
+ *  用的就是渲染出来的这条几何体（WebGL 拾取缓冲，不是另一套「点击容差」），
+ *  细到 minEdgeThickness 的默认 1.7px 时，关系边在真实鼠标操作下几乎点不中。
+ *  调粗关系边，视觉突出与「点得中」是同一个改动 */
 const SUBCLASS_EDGE_SIZE = 0.9;
 const DISJOINT_EDGE_SIZE = 0.8;
-const RELATION_EDGE_SIZE = 1.3;
+const RELATION_EDGE_SIZE = 2;
+/** sigma 边渲染的最小厚度（像素），默认 1.7——同一个理由，全局兜底,
+ *  免得缩小到某个层级时任何边都变得难点 */
+const MIN_EDGE_THICKNESS = 3;
 /** 节点基准大小；连接越多（继承 + 关系 + 互斥合计）越大 */
 const BASE_NODE_SIZE = 9;
 
@@ -353,6 +359,7 @@ export function OntologySchemaGraph({
         [EDGE_TYPE_CURVED_ARROW]: EdgeCurvedArrowProgram,
       },
       enableEdgeEvents: true,
+      minEdgeThickness: MIN_EDGE_THICKNESS,
       labelFont: '"Geist", "Inter", "Noto Sans SC", sans-serif',
       labelSize: 11,
       labelColor: { color: "#e5e5e5" },
