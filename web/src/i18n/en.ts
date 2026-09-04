@@ -839,9 +839,33 @@ export const en = {
     undated: "Undated",
     timelineEmpty: "No dated facts yet.",
     lastConfirmed: (d: string) => `confirmed ${d}`,
+    /* 三种来源共用一个标记（引擎接任对账、Review 裁决、有人手改），所以这句
+       不再声称是哪一种——加上人工编辑之后，原来那句「由对账闭合」会说错来源。
+       想知道是谁改的，History 有 actor 和时刻 */
     correctedHint:
-      "This interval was closed by reconciliation (automatic succession or a review decision), " +
-      "not stated verbatim in a document. The superseded assertion remains in the ledger.",
+      "This interval comes from a correction rather than a sentence in a document: " +
+      "automatic succession, a review decision, or someone editing it. " +
+      "The superseded assertion stays in the ledger — see History for who and when.",
+    /* ---- 人工修正有效区间（302） ---- */
+    editTime: "Correct the interval",
+    timeStart: "Start",
+    timeEnd: "End",
+    /* 结束端的三态，与账本里的三种写法一一对应（见迁移 0003 的注释） */
+    timeEndOpen: "Still going",
+    timeEndUnknown: "Ended, date unknown",
+    timeEndDate: "Ended on",
+    /* 写多少位就是多少精度：2023 是「那一年」，2023-06 是「那个月」 */
+    timeFormat: "2023, 2023-06 or 2023-06-15",
+    timeBadDate: "Use 2023, 2023-06 or 2023-06-15.",
+    timeNote: "Why (optional)",
+    timeNotePlaceholder: "The document says the first half of 2023",
+    timeSave: "Save",
+    timeCancel: "Cancel",
+    timeSaved: "Interval corrected",
+    timeSavedClosed: (n: number) =>
+      `Interval corrected — ${n} open fact${n === 1 ? "" : "s"} closed to match`,
+    timeSavedConflicts: (n: number) =>
+      `Interval corrected — ${n} conflict${n === 1 ? "" : "s"} need a ruling in Review`,
     ongoing: "now",
     /* 必须跟 ongoing 看得出区别：混淆这两个正是迁移 0046 要修的东西——
        原文说 "former CEO"，界面却显示 now */

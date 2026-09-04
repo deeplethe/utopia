@@ -62,7 +62,7 @@ import {
   type ProofStep,
 } from "../api";
 import { S } from "../i18n";
-import { DangerConfirm, localDate } from "../ui";
+import { Button, DangerConfirm, Input, localDate } from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
@@ -2141,6 +2141,26 @@ function fmtTime(iso: string | null, precision: string | null): string | null {
   return `${y}-${m}-${day}`;
 }
 
+/** 输入框里的日期 → 时间戳 + 精度。**写多少位就是多少精度**，与抽取端
+ *  `parse_time` 同一个约定：2023 是「那一年」，2023-06 是「那个月」。
+ *
+ *  这也是不用日期选择器的理由——选择器逼人给出一个日，而「文档只说了上半年」
+ *  正是这个表单要修的那种错。回读比对是因为 `new Date("2023-13")` 不报错。 */
+function parseDateInput(
+  s: string,
+): { iso: string; precision: string } | null {
+  const t = s.trim();
+  const shape = /^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/.exec(t);
+  if (!shape) return null;
+  const [, y, m, d] = shape;
+  const iso = `${y}-${m ?? "01"}-${d ?? "01"}T00:00:00.000Z`;
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return null;
+  // 溢出静默：2023-13-01 会变成 2024-01-01，2023-02-30 会变成 3 月
+  if (parsed.toISOString().slice(0, 10) !== iso.slice(0, 10)) return null;
+  return { iso, precision: d ? "day" : m ? "month" : "year" };
+}
+
 function fmtInterval(f: EntityFact): string {
   if (f.temporal === "eternal") return "";
   const from = fmtTime(f.valid_from, f.valid_from_precision);
@@ -3224,9 +3244,10 @@ function TimelineRow({
   const interval = fmtInterval(fact);
   const isOpenEnded = !fact.valid_to;
   const literal = fmtObjectValue(fact.object_value);
+  const [editing, setEditing] = useState(false);
   return (
     <div
-      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"} ${
+      className={`group rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"} ${
         fact.stale ? "opacity-55" : ""
       }`}
       title={fact.stale ? S.graph.staleFactHint : undefined}
@@ -3239,11 +3260,37 @@ function TimelineRow({
               ⟲
             </span>
           )}
-          {isOpenEnded && fact.last_evidence_time && (
-            <span className="ml-auto text-neutral-600">
-              {S.graph.lastConfirmed(localDate(fact.last_evidence_time))}
+          <span className="ml-auto flex items-center gap-1.5">
+            {isOpenEnded && fact.last_evidence_time && (
+              <span className="text-neutral-600">
+                {S.graph.lastConfirmed(localDate(fact.last_evidence_time))}
+              </span>
+            )}
+            {/* 这一档只有断言事实：派生的区间是算出来的，走 Derived 那条路径，
+                改了下一轮推理也会覆盖（服务端另有 derived_by_rule 的防线） */}
+            <span
+              role="button"
+              tabIndex={0}
+              title={S.graph.editTime}
+              aria-label={S.graph.editTime}
+              onClick={(ev) => {
+                ev.stopPropagation();
+                setEditing((v) => !v);
+              }}
+              onKeyDown={(ev) => {
+                if (ev.key === "Enter" || ev.key === " ") {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  setEditing((v) => !v);
+                }
+              }}
+              className={`cursor-pointer rounded p-0.5 transition-opacity hover:text-neutral-200 focus-visible:opacity-100 ${
+                editing ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+              }`}
+            >
+              <Pencil size={10} />
             </span>
-          )}
+          </span>
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-[13px] text-neutral-200">
           <span className="text-neutral-500 text-xs">
@@ -3296,7 +3343,157 @@ function TimelineRow({
           )}
         </div>
       </button>
+      {editing && (
+        <TimeEditor
+          kbId={kbId}
+          fact={fact}
+          onDone={() => setEditing(false)}
+        />
+      )}
       {open && <EvidenceList kbId={kbId} fact={fact} />}
+    </div>
+  );
+}
+
+/** 有效区间的人工修正表单（302）。
+ *
+ *  两端一起提交而不是逐端改：区间的两端互相定义，「清空结束端」与「这次不动
+ *  结束端」得能分辨。结束端的三个选项与账本里的三种写法一一对应，所以这里
+ *  没有「留空即至今」这种隐含约定——那正是 valid_to IS NULL 一度承载两个意思
+ *  的老毛病。 */
+function TimeEditor({
+  kbId,
+  fact,
+  onDone,
+}: {
+  kbId: string;
+  fact: EntityFact;
+  onDone: () => void;
+}) {
+  const qc = useQueryClient();
+  const [from, setFrom] = useState(
+    fmtTime(fact.valid_from, fact.valid_from_precision) ?? "",
+  );
+  const [to, setTo] = useState(
+    fmtTime(fact.valid_to, fact.valid_to_precision) ?? "",
+  );
+  const [endMode, setEndMode] = useState<"open" | "unknown" | "date">(
+    fact.valid_to
+      ? "date"
+      : fact.valid_to_precision === "unknown"
+        ? "unknown"
+        : "open",
+  );
+  const [note, setNote] = useState("");
+
+  const save = useMutation({
+    mutationFn: () => {
+      const f = from.trim() ? parseDateInput(from) : null;
+      if (from.trim() && !f) throw new Error(S.graph.timeBadDate);
+      const t = endMode === "date" ? parseDateInput(to) : null;
+      if (endMode === "date" && !t) throw new Error(S.graph.timeBadDate);
+      return api.updateFactTime(kbId, fact.id, {
+        valid_from: f?.iso ?? null,
+        valid_from_precision: f?.precision ?? null,
+        valid_to: t?.iso ?? null,
+        valid_to_precision:
+          endMode === "date"
+            ? (t?.precision ?? null)
+            : endMode === "unknown"
+              ? "unknown"
+              : null,
+        note: note.trim() || undefined,
+      });
+    },
+    onSuccess: (r) => {
+      // 对账的后果要说出来：改了起点可能顺手闭合了继任者的开放区间，
+      // 也可能撞出一条需要人裁的冲突。不说的话图会自己变而没人知道为什么
+      if (r.conflicts) toast.success(S.graph.timeSavedConflicts(r.conflicts));
+      else if (r.closed) toast.success(S.graph.timeSavedClosed(r.closed));
+      else toast.success(S.graph.timeSaved);
+      qc.invalidateQueries({ queryKey: ["entity", kbId] });
+      qc.invalidateQueries({ queryKey: ["graph"] });
+      qc.invalidateQueries({ queryKey: ["review", kbId] });
+      onDone();
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  return (
+    <div
+      className="mx-2 mb-1.5 rounded-lg border border-white/10 bg-white/[0.03] p-2.5"
+      onClick={(ev) => ev.stopPropagation()}
+    >
+      <div className="flex items-center gap-2">
+        <label className="w-11 shrink-0 text-[11px] text-neutral-500">
+          {S.graph.timeStart}
+        </label>
+        <Input
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+          placeholder={S.graph.timeFormat}
+          className="u-num flex-1 !py-1 !text-xs"
+        />
+      </div>
+      <div className="mt-1.5 flex items-start gap-2">
+        <label className="w-11 shrink-0 pt-1 text-[11px] text-neutral-500">
+          {S.graph.timeEnd}
+        </label>
+        <div className="flex-1 space-y-1">
+          {(
+            [
+              ["open", S.graph.timeEndOpen],
+              ["unknown", S.graph.timeEndUnknown],
+              ["date", S.graph.timeEndDate],
+            ] as const
+          ).map(([mode, label]) => (
+            <label
+              key={mode}
+              className="flex items-center gap-1.5 text-[11.5px] text-neutral-300"
+            >
+              <input
+                type="radio"
+                name={`end-${fact.id}`}
+                checked={endMode === mode}
+                onChange={() => setEndMode(mode)}
+                className="accent-white/70"
+              />
+              {label}
+              {mode === "date" && endMode === "date" && (
+                <Input
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  placeholder={S.graph.timeFormat}
+                  className="u-num ml-1 flex-1 !py-0.5 !text-xs"
+                />
+              )}
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="mt-1.5 flex items-center gap-2">
+        <label className="w-11 shrink-0 text-[11px] text-neutral-500">
+          {S.graph.timeNote}
+        </label>
+        <Input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder={S.graph.timeNotePlaceholder}
+          className="flex-1 !py-1 !text-xs"
+        />
+      </div>
+      <div className="mt-2 flex justify-end gap-1.5">
+        <Button size="sm" variant="ghost" onClick={onDone}>
+          {S.graph.timeCancel}
+        </Button>
+        <Button
+          size="sm"
+          onClick={() => save.mutate()}
+          disabled={save.isPending}
+        >
+          {S.graph.timeSave}
+        </Button>
+      </div>
     </div>
   );
 }

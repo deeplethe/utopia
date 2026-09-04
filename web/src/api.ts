@@ -1438,6 +1438,30 @@ export const api = {
       { method: "PATCH", body: JSON.stringify(body) },
     ),
 
+  /** 人工修正一条事实的有效区间（302）。**整体替换**：四个值一起提交，
+   *  服务端作废旧行、插修正行——不是原地改，所以这次修改会出现在 History 上。 */
+  updateFactTime: (
+    kbId: string,
+    factId: string,
+    body: {
+      valid_from: string | null;
+      valid_from_precision: string | null;
+      valid_to: string | null;
+      valid_to_precision: string | null;
+      note?: string;
+    },
+  ) =>
+    request<{
+      ok: boolean;
+      unchanged?: boolean;
+      fact_id?: string;
+      closed?: number;
+      conflicts?: number;
+    }>(`/api/v1/kbs/${kbId}/facts/${factId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
   entityHistory: (kbId: string, entityId: string, page: number, per = 30) =>
     request<{ events: EntityHistoryEvent[]; total: number }>(
       `/api/v1/kbs/${kbId}/entities/${entityId}/history?page=${page}&per=${per}`,

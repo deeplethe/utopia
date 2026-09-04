@@ -1027,7 +1027,11 @@ pub async fn entity_history(
                AND ev.kind <> 'asserted'
                AND a.action = ANY(CASE ev.kind
                      WHEN 'corrected' THEN
-                       ARRAY['fact.close', 'conflict.close_old', 'ontology.predicate_adopted']
+                       ARRAY['fact.close', 'conflict.close_old', 'ontology.predicate_adopted',
+                             -- 人工改区间（302）。少了这一条，人做的修正在
+                             -- 这条轴上归给「engine」——一个决策账本把人的
+                             -- 决定记成机器的，比不记还坏
+                             'fact.time_corrected']
                      -- 并入只可能由采纳造成，不会是 Review 里的拒绝
                      WHEN 'merged' THEN ARRAY['ontology.predicate_adopted']
                      ELSE ARRAY['fact.reject', 'conflict.reject_new',
