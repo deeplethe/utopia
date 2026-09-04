@@ -4,9 +4,10 @@ use axum::Json;
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 use serde_json::json;
-use utopia_core::models::{User, Workspace};
+use utopia_core::models::User;
 use utopia_core::AppError;
 
+use super::kbs::{install_packs, DEFAULT_PACK};
 use crate::auth::{self, AuthUser};
 use crate::error::ApiResult;
 use crate::state::AppState;
@@ -62,7 +63,11 @@ pub async fn register(
     let open = utopia_store::access::open_registration(&state.pool)
         .await
         .unwrap_or(state.open_registration);
-    let (user, workspace): (User, Workspace) = utopia_store::accounts::register(
+    let utopia_store::accounts::Registered {
+        user,
+        workspace,
+        general_kb,
+    } = utopia_store::accounts::register(
         &state.pool,
         req.email.trim(),
         &hash,
@@ -71,6 +76,24 @@ pub async fn register(
         open,
     )
     .await?;
+
+    /* 首个用户那个 General 库也要有词汇表（#322）。
+    建库对话框里 schema.org 是预勾选的默认（0008、0009），而这条路径绕过了
+    对话框——于是每个部署的第一个库、也就是新用户落地的那个，本体是空的：
+    没有 domain/range，抽取的方向就定不住，事实退化成 related_to，
+    而这正是 0008 装包要解决的事。
+
+    **装不上不能挡住注册。** 事务已经提交，账号已经存在；这一步失败只是
+    回到今天的行为（库空着，日后手动装包再重跑类型消解即可，见 0009），
+    让人注册不进来则是把小事变成大事 */
+    if let Some(kb_id) = general_kb {
+        if install_packs(&state, kb_id, user.id, &[DEFAULT_PACK.to_string()])
+            .await
+            .is_err()
+        {
+            tracing::warn!(kb_id = %kb_id, pack = DEFAULT_PACK, "默认库的冷启动本体包没装上");
+        }
+    }
 
     let token = auth::issue_token(&state, user.id)?;
     let secure = auth::behind_tls(&headers, state.cookie_secure);

@@ -258,6 +258,25 @@ export const en = {
     reportIssue: "Report an issue",
     refresh: "Refresh",
   },
+  /* 空状态的共用文案（#313）。
+     **状态一句话，动作在按钮上，不解释原理。** 从前这里是一整段：
+     「图是空的。先去 管理 → 模型 配置对话模型，然后在文库上传文档——
+     实体和关系会自动抽取。」——一句话里塞了状态、两个动作和一段原理，
+     而盯着空页面的人要的是下一步点哪儿。原理属于文档，不属于空状态 */
+  steps: {
+    noModel: "No chat model yet.",
+    /* 配模型要工作区管理员，别人只能去找人——所以话不同，按钮也不给 */
+    noModelAsk: "No chat model yet. Ask an administrator.",
+    configureModel: "Configure model",
+    noDocs: "No documents yet.",
+    upload: "Upload a document",
+    processing: (n: number) => `Reading ${n} document${n === 1 ? "" : "s"}…`,
+    viewProgress: "View progress",
+    someFailed: (n: number) => `${n} document${n === 1 ? "" : "s"} failed.`,
+    /* 文档齐了、抽取也跑完了，图还是空的：不是「还没开始」，是没抽出东西 */
+    nothingExtracted: "Nothing extracted yet.",
+    openLibrary: "Open Library",
+  },
   login: {
     signIn: "Sign in",
     signUp: "Sign up",
@@ -706,11 +725,6 @@ export const en = {
     // 一个实体也抽不出来。先配模型，再传文档
     // 管理页在头像菜单里叫 Administration，提示语得叫同一个名字（#267）。
     // 能配模型的人和不能配的人看到的不是同一句：后者只能去找管理员
-    emptyBody:
-      "The graph is empty. Ask an administrator to configure a chat model, then upload documents in the Library — entities and relations are extracted automatically.",
-    emptyBodyAdmin:
-      "The graph is empty. Configure a chat model under Administration → Models first, then upload documents in the Library — entities and relations are extracted automatically.",
-    emptyOpenModels: "Open Administration → Models",
     facts: "facts",
     noFacts: "No facts for this entity yet",
     confidence: "confidence",
@@ -1246,8 +1260,10 @@ export const en = {
     /* ---- Schema diagram ---- */
     schemaDiagram: "Schema diagram",
     schemaSearchPlaceholder: "Search schema…",
-    schemaEmpty:
-      "No schema to display yet. Add a class on the left, or import an OWL/RDFS/Turtle file to get started.",
+    /* 从前这句把「先加个类或导入 OWL 文件」说成了开始的前提，而本体本来就
+       从语料里长（0003，默认开）——那句话正是 #313 说的劝退点。现在只说状态，
+       动作留给左栏本来就有的 New class 与 Import */
+    schemaEmpty: "No classes yet. Extraction adds them as documents arrive.",
     schemaFitView: "Fit view",
     schemaZoomIn: "Zoom in",
     schemaZoomOut: "Zoom out",

@@ -3,6 +3,17 @@ use utopia_core::models::{Role, User, Workspace};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
+/// 一次注册建出来的东西。
+pub struct Registered {
+    pub user: User,
+    pub workspace: Workspace,
+    /// 首个用户会连带建出 General 库；后续注册加入既有工作区，这里是 None。
+    ///
+    /// **把它交出去，是为了让调用方装冷启动本体包。** 装包要读内嵌的包文件、
+    /// 走 OWL 导入，那需要 `AppState`，进不了这里的事务（#322）。
+    pub general_kb: Option<Uuid>,
+}
+
 /// 注册（单租户模型）：
 /// - 部署内还没有组织 → 首个用户：创建组织 + 默认工作区，成为 owner + 系统管理员；
 /// - 已有组织 → 加入该组织，并以 viewer 进入默认（最早的）工作区；
@@ -14,7 +25,7 @@ pub async fn register(
     display_name: &str,
     org_name: Option<&str>,
     open_registration: bool,
-) -> AppResult<(User, Workspace)> {
+) -> AppResult<Registered> {
     let mut tx = pool.begin().await?;
 
     let existing_org: Option<(Uuid,)> =
@@ -45,8 +56,8 @@ pub async fn register(
             .await?;
 
             insert_membership(&mut tx, user.id, workspace.id, Role::Owner).await?;
-            insert_general_kb(&mut tx, workspace.id, user.id).await?;
-            (user, workspace)
+            let kb_id = insert_general_kb(&mut tx, workspace.id, user.id).await?;
+            (user, workspace, Some(kb_id))
         }
         Some((org_id,)) => {
             if !open_registration {
@@ -69,7 +80,7 @@ pub async fn register(
             match default_ws {
                 Some(ws) => {
                     insert_membership(&mut tx, user.id, ws.id, Role::Viewer).await?;
-                    (user, ws)
+                    (user, ws, None)
                 }
                 None => {
                     let ws: Workspace = sqlx::query_as(
@@ -81,14 +92,19 @@ pub async fn register(
                     .fetch_one(&mut *tx)
                     .await?;
                     insert_membership(&mut tx, user.id, ws.id, Role::Owner).await?;
-                    (user, ws)
+                    (user, ws, None)
                 }
             }
         }
     };
 
     tx.commit().await?;
-    Ok(result)
+    let (user, workspace, general_kb) = result;
+    Ok(Registered {
+        user,
+        workspace,
+        general_kb,
+    })
 }
 
 async fn insert_user(
@@ -145,7 +161,7 @@ async fn insert_general_kb(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     workspace_id: Uuid,
     owner_id: Uuid,
-) -> AppResult<()> {
+) -> AppResult<Uuid> {
     let kb_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO knowledge_bases
@@ -167,7 +183,7 @@ async fn insert_general_kb(
     .bind(owner_id)
     .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(kb_id)
 }
 
 /// 管理员代开账号：加入既有组织 + 默认工作区，部署角色由管理员指定。

@@ -5,6 +5,7 @@ import { api } from "../api";
 import { S } from "../i18n";
 import { useKb, useKbId } from "../kb";
 import { Pager, pageSlice } from "../ui";
+import { NextStep, nextStep, useReadiness } from "./NextStep";
 
 const RESULT_PAGE = 10;
 
@@ -21,6 +22,15 @@ export function Search() {
   const [page, setPage] = useState(0);
   // 新查询换一批结果，从第一页看起
   useEffect(() => setPage(0), [query]);
+
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  // 搜之前就该说清楚库里有没有东西可搜（#313）
+  const readiness = useReadiness(kbId);
+  const step = nextStep(readiness.data, {
+    kbId,
+    isAdmin: !!me.data?.is_admin,
+    canUpload: kb?.my_role !== "viewer",
+  });
 
   const results = useQuery({
     queryKey: ["search", kb?.id, query],
@@ -57,6 +67,14 @@ export function Search() {
             {S.search.button}
           </button>
         </div>
+
+        {/* 一次都还没搜、而库里本来就没东西：与其等他敲一个词再回"没有结果"，
+            不如现在就说下一步（#313） */}
+        {!query && step && (
+          <div className="py-10 grid place-items-center">
+            <NextStep {...step} />
+          </div>
+        )}
 
         {results.isFetching && <p className="text-sm text-neutral-500">{S.search.searching}</p>}
         {results.isError && (

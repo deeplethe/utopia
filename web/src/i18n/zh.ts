@@ -232,6 +232,19 @@ export const zh: Strings = {
     reportIssue: "反馈问题",
     refresh: "刷新",
   },
+  /* 空状态的共用文案（#313）：状态一句话，动作在按钮上，不解释原理 */
+  steps: {
+    noModel: "还没配置对话模型。",
+    noModelAsk: "还没配置对话模型，请联系管理员。",
+    configureModel: "配置模型",
+    noDocs: "还没有文档。",
+    upload: "上传文档",
+    processing: (n: number) => `正在读取 ${n} 份文档…`,
+    viewProgress: "查看进度",
+    someFailed: (n: number) => `${n} 份文档处理失败。`,
+    nothingExtracted: "还没抽取出内容。",
+    openLibrary: "打开文库",
+  },
   login: {
     signIn: "登录",
     signUp: "注册",
@@ -649,11 +662,6 @@ export const zh: Strings = {
     searchEntity: "搜索实体…",
     searchInSubgraph: "在子图中搜索…",
     backToOverview: "← 全图",
-    emptyBody:
-      "图谱是空的。请管理员先配置对话模型，然后在「文库」中上传文档——实体与关系会被自动抽取。",
-    emptyBodyAdmin:
-      "图谱是空的。请先在「管理 → 模型」里配置对话模型，然后在「文库」中上传文档——实体与关系会被自动抽取。",
-    emptyOpenModels: "打开「管理 → 模型」",
     facts: "条事实",
     noFacts: "这个实体还没有事实",
     confidence: "置信度",
@@ -1104,7 +1112,7 @@ export const zh: Strings = {
     /* ---- 模式图 ---- */
     schemaDiagram: "模式图",
     schemaSearchPlaceholder: "搜索模式…",
-    schemaEmpty: "还没有可显示的模式。在左侧新建一个类，或导入一个 OWL/RDFS/Turtle 文件开始。",
+    schemaEmpty: "还没有类。文档进来时会自动补上。",
     schemaFitView: "归位",
     schemaZoomIn: "放大",
     schemaZoomOut: "缩小",

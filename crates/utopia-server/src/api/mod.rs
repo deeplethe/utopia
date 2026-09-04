@@ -86,6 +86,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}",
             patch(kbs::update).get(kbs::get_one).delete(kbs::delete),
         )
+        // 四个页面的空状态共用的一步判断（#313）
+        .route("/kbs/{id}/readiness", get(kbs::readiness))
         .route("/kbs/{id}/members", get(kbs::members))
         .route("/kbs/{id}/audit", get(kbs::audit_log))
         // 整库导出为 RDF（0020）。viewer 就能导：能看见的东西本来就能一条条抄走，

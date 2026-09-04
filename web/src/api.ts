@@ -220,6 +220,15 @@ export interface SearchResult {
   filename: string;
 }
 
+/** 这个库走到哪一步了（#313）。凭据不出库：模型那项只说配没配 */
+export interface Readiness {
+  has_chat_model: boolean;
+  documents: number;
+  processing: number;
+  failed: number;
+  entities: number;
+}
+
 export interface LlmSettingsView {
   chat_base_url?: string | null;
   chat_model?: string | null;
@@ -1463,6 +1472,10 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+
+  /** 这个库走到哪一步了（#313）：四个页面的空状态共用。只回布尔与计数 */
+  readiness: (kbId: string) =>
+    request<Readiness>(`/api/v1/kbs/${kbId}/readiness`),
 
   entityHistory: (kbId: string, entityId: string, page: number, per = 30) =>
     request<{ events: EntityHistoryEvent[]; total: number }>(
