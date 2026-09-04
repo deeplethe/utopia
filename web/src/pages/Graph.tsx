@@ -45,7 +45,7 @@ import {
   type ProofStep,
 } from "../api";
 import { S } from "../i18n";
-import { localDate } from "../ui";
+import { DangerConfirm, localDate } from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
@@ -2874,6 +2874,11 @@ function EntityPanel({
   const setSameName = setRenamedPeers;
   // 手动合并：把同名的那个并进**当前这个**。方向写死是有意的——
   // 用户正在看的就是他判断为「主」的那一个
+  // 「并进来」先问一句。从前是浏览器原生 confirm()，和全站的对话框不是一套；
+  // 合并可撤销，所以走轻确认（不要求打字），同 Library 的重抽
+  const [mergeCandidate, setMergeCandidate] = useState<{ id: string; name: string } | null>(
+    null,
+  );
   const merge = useMutation({
     mutationFn: (source: string) => api.mergeEntities(kbId, source, entityId),
     onSuccess: () => {
@@ -3125,10 +3130,7 @@ function EntityPanel({
                   className="shrink-0 text-[11px] px-1.5 py-0.5 rounded text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
                   disabled={merge.isPending}
                   title={S.graph.mergeIntoHint}
-                  onClick={() => {
-                    if (confirm(S.graph.mergeConfirm(p.name, e?.name ?? "")))
-                      merge.mutate(p.id);
-                  }}
+                  onClick={() => setMergeCandidate({ id: p.id, name: p.name })}
                 >
                   {S.graph.mergeInto}
                 </button>
@@ -3136,6 +3138,21 @@ function EntityPanel({
             ))}
           </div>
         </div>
+      )}
+
+      {mergeCandidate && (
+        <DangerConfirm
+          title={S.graph.mergeTitle}
+          hint={S.graph.mergeConfirm(mergeCandidate.name, e?.name ?? "")}
+          confirmLabel={S.graph.mergeInto}
+          cancelLabel={S.graph.editCancel}
+          busy={merge.isPending}
+          onConfirm={() => {
+            merge.mutate(mergeCandidate.id);
+            setMergeCandidate(null);
+          }}
+          onCancel={() => setMergeCandidate(null)}
+        />
       )}
 
       {/* 视图切换：Relations（分组）| Timeline（年表） */}
