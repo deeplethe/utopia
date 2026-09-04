@@ -35,6 +35,9 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 argon2 = { version = "0.5", features = ["std"] }
+# 凭据静态加密（core::secrets）：AES-256-GCM，钥匙不进库
+aes-gcm = "0.10"
+base64 = "0.23"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 figment = { version = "0.10", features = ["env"] }
 dotenvy = "0.15"

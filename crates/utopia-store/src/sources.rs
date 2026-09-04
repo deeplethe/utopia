@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use utopia_core::models::{Role, Source, SourceKind, SourceView, SyncRun, SOURCE_SECRET_KEYS};
-use utopia_core::{AppError, AppResult};
+use utopia_core::{secrets, AppError, AppResult};
 use uuid::Uuid;
 
 /// folder = 纯容器（上传/拖拽入内，无同步语义）；url/rss = 拉取型；api = 推送型。
@@ -70,12 +70,20 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SourceView>> {
     Ok(rows)
 }
 
+/// 出库即开封：配置里的凭据键与推送密钥在库里是封印的（`utopia_core::secrets`）。
+/// 任何返回 `Source` 的查询都从这里过——`list` 不用，它在 SQL 里就把凭据键剔了
+fn opened(mut s: Source) -> AppResult<Source> {
+    secrets::open_json_keys(&mut s.config, SOURCE_SECRET_KEYS).map_err(AppError::Other)?;
+    s.ingest_token = secrets::open_opt(s.ingest_token.as_deref()).map_err(AppError::Other)?;
+    Ok(s)
+}
+
 pub async fn get(pool: &PgPool, id: Uuid) -> AppResult<Source> {
-    sqlx::query_as("SELECT * FROM sources WHERE id = $1")
+    let row: Option<Source> = sqlx::query_as("SELECT * FROM sources WHERE id = $1")
         .bind(id)
         .fetch_optional(pool)
-        .await?
-        .ok_or(AppError::NotFound)
+        .await?;
+    opened(row.ok_or(AppError::NotFound)?)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -109,12 +117,14 @@ pub async fn create(
         sync_interval_minutes
     };
     // serde 缺省的 Value::Null 会以 jsonb null 落库，前端读 config.x 直接炸——规范化为空对象
-    let config = if config.is_null() {
+    let mut config = if config.is_null() {
         serde_json::json!({})
     } else {
         config.clone()
     };
-    let source = sqlx::query_as(
+    // 入库即封印
+    secrets::seal_json_keys(&mut config, SOURCE_SECRET_KEYS);
+    let source: Source = sqlx::query_as(
         "INSERT INTO sources (id, kb_id, kind, name, config, icon, sync_interval_minutes, sync_cron)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
     )
@@ -128,14 +138,14 @@ pub async fn create(
     .bind(cron_norm)
     .fetch_one(pool)
     .await?;
-    Ok(source)
+    opened(source)
 }
 
 /// 设置 api 来源的推送密钥（创建 / 轮换时）。
 pub async fn set_ingest_token(pool: &PgPool, source_id: Uuid, token: &str) -> AppResult<()> {
     let res = sqlx::query("UPDATE sources SET ingest_token = $2 WHERE id = $1")
         .bind(source_id)
-        .bind(token)
+        .bind(secrets::seal(token))
         .execute(pool)
         .await?;
     if res.rows_affected() == 0 {
@@ -162,7 +172,11 @@ pub async fn update(
         }
         None => None,
     };
-    let source = sqlx::query_as(
+    let config = config.cloned().map(|mut c| {
+        secrets::seal_json_keys(&mut c, SOURCE_SECRET_KEYS);
+        c
+    });
+    let source: Source = sqlx::query_as(
         "UPDATE sources SET
             name = COALESCE($2, name),
             config = COALESCE($3, config),
@@ -181,7 +195,7 @@ pub async fn update(
     .fetch_optional(pool)
     .await?
     .ok_or(AppError::NotFound)?;
-    Ok(source)
+    opened(source)
 }
 
 /// 删除来源；其文档保留（source_id 置 NULL，落回 Uploads 组）。
@@ -211,6 +225,10 @@ pub async fn due_sources(pool: &PgPool) -> AppResult<Vec<Source>> {
     .await?;
 
     let now = chrono::Utc::now();
+    let rows = rows
+        .into_iter()
+        .map(opened)
+        .collect::<AppResult<Vec<_>>>()?;
     Ok(rows
         .into_iter()
         .filter(|s| match &s.sync_cron {
