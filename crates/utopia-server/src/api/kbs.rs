@@ -368,7 +368,11 @@ pub async fn audit_log(
 /// **一个包失败不回滚已装的**：本体是加法，装了一半的库仍然可用，
 /// 而回滚要撤已经建好的类——那正是 0008 决定不做导入撤销的理由。
 /// 失败信息里带上是哪个包，让人知道从哪补。
-async fn install_packs(
+/// 建库对话框里预勾选的那个包（0008、0009）。注册时建出来的 General 库
+/// 绕过了对话框，所以它在那条路径上也要用同一个默认（#322）。
+pub(super) const DEFAULT_PACK: &str = "schema-org";
+
+pub(super) async fn install_packs(
     state: &AppState,
     kb_id: Uuid,
     actor: Uuid,
