@@ -1,0 +1,76 @@
+{
+ "note": "见 pharma.json 的说明；键是英文名的可辨认片段",
+ "expect": {
+  "Renhe Pharmaceutical Group": [
+   "corporation",
+   "organization"
+  ],
+  "Renhe Pharmaceutical Plant": [
+   "corporation",
+   "organization"
+  ],
+  "Renhetang Pharmacy": [
+   "pharmacy"
+  ],
+  "First Affiliated Hospital": [
+   "hospital"
+  ],
+  "National Medical Products Administration": [
+   "government_organization"
+  ],
+  "Chinese Medical Association": [
+   "medical_organization"
+  ],
+  "amlodipine besylate": [
+   "drug"
+  ],
+  "College of Pharmaceutical Sciences": [
+   "college_or_university",
+   "educational_organization"
+  ],
+  "Chinese Journal of Cardiology": [
+   "periodical"
+  ],
+  "phase III clinical trial": [
+   "medical_trial"
+  ],
+  "primary hypertension": [
+   "medical_condition"
+  ],
+  "headache": [
+   "medical_symptom",
+   "medical_sign_or_symptom"
+  ],
+  "ankle edema": [
+   "medical_symptom",
+   "medical_sign_or_symptom"
+  ],
+  "Hangzhou": [
+   "city"
+  ],
+  "Shaoxing": [
+   "city"
+  ],
+  "Wuzhen": [
+   "city"
+  ],
+  "Gongshu District": [
+   "administrative_area"
+  ],
+  "Cardiovascular Health Forum": [
+   "business_event",
+   "event_series",
+   "conference_event"
+  ],
+  "chronic disease management": [
+   "software_application",
+   "mobile_application"
+  ],
+  "Zhou Min": [
+   "individual_physician",
+   "physician"
+  ],
+  "Chen Guohua": [],
+  "generic drug consistency evaluation": []
+ }
+}

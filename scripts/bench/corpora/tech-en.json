@@ -1,0 +1,26 @@
+{
+ "name": "tech-en",
+ "note": "tech.json 的英文版，逐句对译",
+ "docs": [
+  [
+   "d1.txt",
+   "Nebula Technologies (Shanghai) Co., Ltd. is registered in Pudong New Area, Shanghai, and is a joint-stock company.\nFounder and chief technology officer Zhang Wei graduated from the Department of Computer Science at Tsinghua University.\nThe company's core product is the DeepBlue vector database, retrieval software deployed on servers.\nIn 2023 the company's revenue was 420 million yuan."
+  ],
+  [
+   "d2.txt",
+   "The DeepBlue vector database supports approximate search over billions of vectors and runs on Linux servers.\nThe software is developed and released by Nebula Technologies; the current version is 3.0.\nDeepBlue's main competitor is the open-source Milvus.\nZhang Wei has presented DeepBlue's architecture on several occasions."
+  ],
+  [
+   "d3.txt",
+   "In July 2024 the World Artificial Intelligence Conference was held in Shanghai over three days.\nNebula Technologies released DeepBlue 3.0 at the conference.\nZhang Wei gave a keynote at the conference's main forum.\nThe conference was co-hosted by the Shanghai Municipal Government and several companies."
+  ],
+  [
+   "d4.txt",
+   "China Data Intelligence is a quarterly academic journal founded in 2018.\nZhang Wei has published a paper on vector retrieval in the journal.\nSeveral professors from the Department of Computer Science at Tsinghua University serve on its editorial board."
+  ],
+  [
+   "d5.txt",
+   "Nebula Technologies has a Shanghai Research Institute located in Xihu District, Hangzhou.\nThe institute is led by Dr. Li Na, who previously taught at the Department of Computer Science at Tsinghua University.\nThe institute belongs to Nebula Technologies."
+  ]
+ ]
+}
