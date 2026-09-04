@@ -20,7 +20,8 @@ pub async fn create(
     // 同样的内容回来了，而它只是被删过：复活那一篇，而不是撞 (kb_id, sha256) 的唯一
     // 索引报「已存在」。撤销删除的一种自然形态——重传就是「我要它回来」（#268）
     if let Some((id,)) = sqlx::query_as::<_, (Uuid,)>(
-        "SELECT id FROM documents WHERE kb_id = $1 AND sha256 = $2 AND deleted_at IS NOT NULL",
+        "SELECT id FROM documents
+          WHERE kb_id = $1 AND sha256 = $2 AND deleted_at IS NOT NULL AND purged_at IS NULL",
     )
     .bind(kb_id)
     .bind(sha256)
@@ -84,6 +85,8 @@ pub async fn page(
     source: Option<Option<Uuid>>,
     q: Option<&str>,
     graph_status: Option<&str>,
+    // true = 「已删除」视图：只列墓碑（删了、没清的）；false = 活着的
+    deleted: bool,
     limit: i64,
     offset: i64,
 ) -> AppResult<DocumentPage> {
@@ -91,7 +94,9 @@ pub async fn page(
     // `$2 = 'any'` 那一支是「不按来源筛」，`'none'` 是「只看没有来源的」——
     // 用两个哨兵字符串而不是两个可空参数，因为 NULL 在这里有歧义：
     // 它既可能是「不筛」，也可能是「筛出 source_id IS NULL 的」
-    const WHERE: &str = "WHERE kb_id = $1 AND deleted_at IS NULL
+    const WHERE: &str = "WHERE kb_id = $1
+           AND (($5::bool AND deleted_at IS NOT NULL AND purged_at IS NULL)
+                OR (NOT $5::bool AND deleted_at IS NULL))
            AND ($2 = 'any'
                 OR ($2 = 'none' AND source_id IS NULL)
                 OR source_id::text = $2)
@@ -104,12 +109,15 @@ pub async fn page(
     };
 
     let docs: Vec<Document> = sqlx::query_as(&format!(
-        "SELECT * FROM documents {WHERE} ORDER BY created_at DESC LIMIT $5 OFFSET $6"
+        "SELECT * FROM documents {WHERE}
+         ORDER BY (CASE WHEN $5::bool THEN deleted_at ELSE created_at END) DESC
+         LIMIT $6 OFFSET $7"
     ))
     .bind(kb_id)
     .bind(&scope)
     .bind(q)
     .bind(graph_status)
+    .bind(deleted)
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -120,6 +128,7 @@ pub async fn page(
         .bind(&scope)
         .bind(q)
         .bind(graph_status)
+        .bind(deleted)
         .fetch_one(pool)
         .await?;
 
@@ -140,12 +149,22 @@ pub async fn page(
     .fetch_one(pool)
     .await?;
 
+    // 墓碑数是整库的：左栏那一行不随作用域变
+    let (deleted_total,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM documents
+          WHERE kb_id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+
     Ok(DocumentPage {
         docs,
         total,
         ready: stats.0,
         extracting: stats.1,
         failed: stats.2,
+        deleted: deleted_total,
     })
 }
 
@@ -517,6 +536,17 @@ pub async fn restore(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Document
     let Some((deletion_id, fact_ids, chunk_ids)) = row else {
         return Err(AppError::Conflict("Document is not deleted".into()));
     };
+    // 清过的没东西可复活：分块、原文都不在了
+    let purged: bool =
+        sqlx::query_scalar("SELECT purged_at IS NOT NULL FROM documents WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await?;
+    if purged {
+        return Err(AppError::Conflict(
+            "The document's content was purged; there is nothing to restore".into(),
+        ));
+    }
     let mut tx = pool.begin().await?;
     let hit = sqlx::query(
         "UPDATE documents SET deleted_at = NULL, updated_at = now()
@@ -546,6 +576,87 @@ pub async fn restore(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Document
         .await?;
     tx.commit().await?;
     get(pool, id).await
+}
+
+/// 一次真删的产出。`blobs` 是这篇（连同历史版本）独占的原文指纹——别处还引用的
+/// 不在名单上。BlobStore 归服务端，删文件由调用方做
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurgeReport {
+    pub blobs: Vec<String>,
+    pub chunks: u64,
+}
+
+/// 真删（#268 下半）：把内容真的抹掉，**只对已删除的文档开放，不可撤销**。
+///
+/// 删除是事件、可撤销（[`delete`] / [`restore`]）；这里是另一个动作：分块行删掉
+/// （证据引文随外键级联）、版本行删掉、文档行留作墓碑打 `purged_at`。`external_key`
+/// 清空——身份让出来，同步源里若还有这篇，下次同步当新文档重新摄入；同一份内容也
+/// 可以再传（唯一索引只管没清的行）。事实保持作废，`document_deletions` 那条账留着：
+/// 「曾经有过这么一篇，某时被删、某时被清」
+pub async fn purge(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<PurgeReport> {
+    let mut tx = pool.begin().await?;
+    type Stamp = Option<chrono::DateTime<chrono::Utc>>;
+    let row: Option<(String, Stamp, Stamp)> = sqlx::query_as(
+        "SELECT sha256, deleted_at, purged_at FROM documents
+          WHERE id = $1 AND kb_id = $2 FOR UPDATE",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((sha, deleted_at, purged_at)) = row else {
+        return Err(AppError::NotFound);
+    };
+    if purged_at.is_some() {
+        return Err(AppError::Conflict("The document was already purged".into()));
+    }
+    if deleted_at.is_none() {
+        return Err(AppError::Conflict(
+            "Delete the document before purging it".into(),
+        ));
+    }
+    let mut shas: Vec<String> =
+        sqlx::query_scalar("SELECT DISTINCT sha256 FROM document_versions WHERE document_id = $1")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+    if !shas.contains(&sha) {
+        shas.push(sha);
+    }
+    let chunks = sqlx::query("DELETE FROM chunks WHERE document_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    sqlx::query("DELETE FROM document_versions WHERE document_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "UPDATE documents
+            SET purged_at = now(), external_key = NULL, text_len = 0, chunk_count = 0,
+                updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?;
+    // 原文按内容寻址，别的文档（任何库）可能共用同一份：只交出没人再引用的
+    let mut blobs = Vec::new();
+    for s in shas {
+        let (referenced,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM documents WHERE sha256 = $1 AND purged_at IS NULL)
+                 OR EXISTS (SELECT 1 FROM document_versions WHERE sha256 = $1)",
+        )
+        .bind(&s)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !referenced {
+            blobs.push(s);
+        }
+    }
+    tx.commit().await?;
+    Ok(PurgeReport { blobs, chunks })
 }
 
 /// 重建文档分块（事务内，幂等）。返回 (chunk_id, text) 供全文索引。

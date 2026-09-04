@@ -109,6 +109,8 @@ pub struct Document {
     /// 墓碑（#268）：删除是认知轴上的一个事件。行、分块、证据、原始文件都留着，
     /// 只是不再算活的；撤销、同步撞见、同内容重传都能把它复活
     pub deleted_at: Option<DateTime<Utc>>,
+    /// 真删（#268 下半）：内容已抹掉，回不来。行留作墓碑
+    pub purged_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -1190,6 +1192,8 @@ pub struct DocumentPage {
     pub ready: i64,
     pub extracting: i64,
     pub failed: i64,
+    /// 整库的墓碑数（删了、没清的）——左栏「已删除」那一行的数字，不随作用域变
+    pub deleted: i64,
 }
 
 /// 一枚个人访问令牌的元信息（0014）。**永远不含明文**——

@@ -311,7 +311,7 @@ export const en = {
         {
           h: "Retention and deletion",
           body: [
-            "Deleting a document removes it from the base and retires the facts that had no other source; facts with another source keep it as provenance. The content is kept so the deletion can be undone; a deleted document can be restored, and a re-upload of the same file restores it too. Deleting a knowledge base permanently removes its documents, graph and sources.",
+            "Deleting a document removes it from the base and retires the facts that had no other source; facts with another source keep it as provenance. The content is kept so the deletion can be undone; a deleted document can be restored, and a re-upload of the same file restores it too. A knowledge-base admin can purge a deleted document, which removes its stored content for good. Deleting a knowledge base permanently removes its documents, graph and sources.",
           ],
         },
         {
@@ -372,6 +372,19 @@ export const en = {
           : `Document deleted · ${n} facts retired with it`,
     undo: "Undo",
     restored: "Document restored",
+    /** 「已删除」视图与真删（#268 下半） */
+    deleted: "Deleted",
+    colDeleted: "Deleted",
+    restore: "Restore",
+    purge: "Purge",
+    purgeTitle: "Purge this document?",
+    purgeHint: (name: string) =>
+      `“${name}” is deleted, and its content is still stored so the deletion can be undone. ` +
+      "Purging removes the stored file, its chunks and its evidence quotes for good. " +
+      "The facts it retired stay retired, and the deletion stays on record. This cannot be undone.",
+    purgeConfirm: "Purge",
+    purged: "Content purged",
+    deletedEmpty: "Nothing deleted. Deleted documents wait here until they are restored or purged.",
     title: "Library",
     upload: "Upload files",
     uploading: "Uploading…",

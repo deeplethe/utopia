@@ -25,6 +25,7 @@ import {
   Rss,
   Server,
   SquareKanban,
+  Trash2,
   Upload,
   Users,
   Webhook,
@@ -35,7 +36,8 @@ import { S } from "../i18n";
 import { RAIL_CLS } from "../ui";
 
 /** 左栏选择：全部 / 手动上传 / 某个来源 id */
-export type LibrarySelection = "all" | "uploads" | string;
+/** "deleted" = 墓碑视图（#268）：删了、还能恢复或清除的文档 */
+export type LibrarySelection = "all" | "uploads" | "deleted" | string;
 
 /** 可选的来源图标（lucide 图标名 → 组件）。 */
 export const SOURCE_ICONS: Record<string, LucideIcon> = {
@@ -220,6 +222,18 @@ export function SourcesRail({
           );
         })}
       </div>
+      {/* 已删除（#268）：墓碑在这里等着被恢复或清除。一个都没有就不占一行 */}
+      {((docs.data?.deleted ?? 0) > 0 || active === "deleted") && (
+        <div className="px-2 pb-3">
+          <RailItem
+            active={active === "deleted"}
+            onClick={() => onSelect("deleted")}
+            icon={<Trash2 size={14} />}
+            label={S.library.deleted}
+            count={docs.data?.deleted ?? 0}
+          />
+        </div>
+      )}
     </aside>
   );
 }

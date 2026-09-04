@@ -166,6 +166,8 @@ export interface Doc {
   missing_since: string | null;
   /** 墓碑（#268）：删了但留着，可撤销 */
   deleted_at: string | null;
+  /** 真删过：内容没了，回不来 */
+  purged_at: string | null;
   created_at: string;
 }
 
@@ -1307,6 +1309,8 @@ export const api = {
       source?: string;
       q?: string;
       graph?: string;
+      /** "deleted" = 「已删除」视图：只列墓碑（#268） */
+      state?: "deleted";
       limit: number;
       offset: number;
     },
@@ -1318,6 +1322,7 @@ export const api = {
     if (opts.source) p.set("source", opts.source);
     if (opts.q) p.set("q", opts.q);
     if (opts.graph) p.set("graph", opts.graph);
+    if (opts.state) p.set("state", opts.state);
     return request<{
       docs: Doc[];
       total: number;
@@ -1326,6 +1331,8 @@ export const api = {
       ready: number;
       extracting: number;
       failed: number;
+      /** 整库的墓碑数（删了、没清的），不随作用域变 */
+      deleted: number;
     }>(`/api/v1/kbs/${kbId}/documents?${p}`);
   },
   /** 一键重试这个作用域里全部抽取失败的文档 */
@@ -1356,6 +1363,12 @@ export const api = {
   /** 撤销删除（#268）：文档、分块、随之作废的事实原路复活 */
   restoreDocument: (id: string) =>
     request<{ ok: boolean }>(`/api/v1/documents/${id}/restore`, { method: "POST" }),
+  /** 真删（#268 下半）：只对已删除的开放，库管理员，不可撤销 */
+  purgeDocument: (id: string) =>
+    request<{ ok: boolean; chunks: number; blobs: number }>(
+      `/api/v1/documents/${id}/purge`,
+      { method: "POST" },
+    ),
 
   search: (kbId: string, q: string) =>
     request<{ results: SearchResult[] }>(`/api/v1/kbs/${kbId}/search`, {

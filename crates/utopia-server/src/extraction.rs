@@ -288,6 +288,11 @@ async fn resolve(
 
 async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> anyhow::Result<()> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
+    // 排队之后被删了（#268）：墓碑不抽——抽出来的事实会活在一个已删除的出处上
+    if doc.deleted_at.is_some() {
+        tracing::info!(document = %document_id, "skipping a deleted document");
+        return Ok(());
+    }
     let kb = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
