@@ -755,6 +755,7 @@ export const en = {
         : `${n} other entities share this name.`,
     sameNameHint: "If they are the same thing, merge them under Review.",
     mergeInto: "Merge in",
+    mergeTitle: "Merge entities",
     mergeIntoHint:
       "Fold that entity into this one. Its facts move here; merges can be reverted.",
     mergeConfirm: (from: string, into: string) =>
@@ -1042,7 +1043,7 @@ export const en = {
       text: "Text",
       number: "Number",
       date: "Date",
-      bool: "Yes / no",
+      bool: "Boolean",
     } as Record<string, string>,
     cancel: "Cancel",
     key: "Key",
@@ -1054,7 +1055,7 @@ export const en = {
     disjoint: "Cannot also be",
     disjointHint:
       "Classes nothing can belong to at the same time. A Person is not an Organisation. The consistency check uses this to find classes that can never have an instance.",
-    noDisjoint: "No class excluded",
+    noDisjoint: "None declared yet",
     disjointWithParent:
       "This class inherits from a class it says it cannot be — nothing could ever satisfy it.",
     /* 多父时左栏只能画一处，说明画在哪一支下 */
@@ -1596,6 +1597,7 @@ export const en = {
     systemAdmin: "System admin",
     remove: "Remove",
     deactivate: "Deactivate",
+    cancel: "Cancel",
     deactivateHint:
       "Cuts off access everywhere — sign-in and any token already issued. What they did stays attributed to them.",
     deactivatedTitle: "Deactivated accounts",
