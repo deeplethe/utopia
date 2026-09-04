@@ -301,7 +301,7 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
             json!({ "kind": "facts", "label": "?", "detail": "invalid id" }),
         );
     };
-    match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, id).await {
+    match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, id, None).await {
         Ok((node, mut facts)) => {
             if let Some(t) = at {
                 facts.retain(|f| {

@@ -19,8 +19,15 @@ pub(super) async fn require_kb(
     utopia_store::access::require_kb(&state.pool, user, kb_id, min).await
 }
 
-/// `at`：可选 as-of 日期（YYYY-MM-DD 或 RFC3339）——服务端时间旅行。
-fn parse_at(raw: Option<&str>) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
+/// 时刻参数（YYYY-MM-DD 或 RFC3339）——服务端时间旅行。
+///
+/// 两根轴共用这一个解析：`at` 走世界轴（那时世界是什么样），`as_of` 走记录轴
+/// （那时我们以为世界是什么样）。**两个参数一路分开**（0019）：合成一个控件，
+/// 答出来的是另一个问题，而屏幕上看不出来
+fn parse_instant(
+    field: &str,
+    raw: Option<&str>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {
     let Some(s) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
@@ -29,7 +36,11 @@ fn parse_at(raw: Option<&str>) -> Result<Option<chrono::DateTime<chrono::Utc>>, 
     }
     chrono::DateTime::parse_from_rfc3339(s)
         .map(|t| Some(t.with_timezone(&chrono::Utc)))
-        .map_err(|_| AppError::Validation("Invalid `at` (expected YYYY-MM-DD or RFC3339)".into()))
+        .map_err(|_| {
+            AppError::Validation(format!(
+                "Invalid `{field}` (expected YYYY-MM-DD or RFC3339)"
+            ))
+        })
 }
 
 /// 总览一次画多少个节点的**默认值**。上限本身是合理的——画一万个点没人看得懂；
@@ -44,6 +55,9 @@ const GRAPH_NODE_CAP_MAX: i64 = 1000;
 pub struct OverviewQuery {
     #[serde(default)]
     pub at: Option<String>,
+    /// 记录轴：那时**我们持有**的图（0019）。不给就是现在
+    #[serde(default)]
+    pub as_of: Option<String>,
     /// 画多少个。不给就用默认值；给了也钳在 [10, GRAPH_NODE_CAP_MAX]——
     /// 界面上的按钮只给几档，但接口是公开的，别让一个 `limit=999999` 把库拖垮
     #[serde(default)]
@@ -57,7 +71,8 @@ pub async fn overview(
     Query(q): Query<OverviewQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let at = parse_at(q.at.as_deref())?;
+    let at = parse_instant("at", q.at.as_deref())?;
+    let as_of = parse_instant("as_of", q.as_of.as_deref())?;
     // 画多少个是渲染的事，库里有多少是知识库的事——两个数都回，界面才说得出
     // 「画了 150 个，共 325 个」而不是把上限说成规模
     let limit = q
@@ -65,7 +80,7 @@ pub async fn overview(
         .unwrap_or(GRAPH_NODE_CAP)
         .clamp(10, GRAPH_NODE_CAP_MAX);
     let (nodes, edges, total_nodes, total_edges) =
-        utopia_store::graph::overview(&state.pool, kb_id, limit, at).await?;
+        utopia_store::graph::overview(&state.pool, kb_id, limit, at, as_of).await?;
     Ok(Json(json!({
         "nodes": nodes, "edges": edges,
         "total_nodes": total_nodes, "total_edges": total_edges,
@@ -79,6 +94,8 @@ pub struct NeighborhoodQuery {
     pub hops: Option<u8>,
     #[serde(default)]
     pub at: Option<String>,
+    #[serde(default)]
+    pub as_of: Option<String>,
 }
 
 pub async fn neighborhood(
@@ -88,10 +105,17 @@ pub async fn neighborhood(
     Query(q): Query<NeighborhoodQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let at = parse_at(q.at.as_deref())?;
-    let (nodes, edges) =
-        utopia_store::graph::neighborhood(&state.pool, kb_id, q.entity, q.hops.unwrap_or(2), at)
-            .await?;
+    let at = parse_instant("at", q.at.as_deref())?;
+    let as_of = parse_instant("as_of", q.as_of.as_deref())?;
+    let (nodes, edges) = utopia_store::graph::neighborhood(
+        &state.pool,
+        kb_id,
+        q.entity,
+        q.hops.unwrap_or(2),
+        at,
+        as_of,
+    )
+    .await?;
     Ok(Json(json!({ "nodes": nodes, "edges": edges })))
 }
 
@@ -127,13 +151,23 @@ pub async fn search_entities(
     Ok(Json(json!({ "entities": entities, "total": total })))
 }
 
+#[derive(Deserialize)]
+pub struct EntityDetailQuery {
+    /// 记录轴：回放中的图上点开一个节点，面板该说**当时**的事实（0019）
+    #[serde(default)]
+    pub as_of: Option<String>,
+}
+
 pub async fn entity_detail(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path((kb_id, entity_id)): Path<(Uuid, Uuid)>,
+    Query(q): Query<EntityDetailQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let (entity, facts) = utopia_store::graph::entity_detail(&state.pool, kb_id, entity_id).await?;
+    let as_of = parse_instant("as_of", q.as_of.as_deref())?;
+    let (entity, facts) =
+        utopia_store::graph::entity_detail(&state.pool, kb_id, entity_id, as_of).await?;
     // 推出来的那些**单独回一个键**，不掺进 `facts`。前端据此给它们自己的一档：
     // 一条派生边跟一条断言边混在同一个列表里，用户看不出「这条是文档里写的」
     // 和「这条是引擎推的」的区别，而那正是推理会污染知识的样子

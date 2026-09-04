@@ -347,18 +347,32 @@ pub async fn add_evidence(
 ///
 /// key 与 label 留 NULL，**颜色和形状给缺省值**：前者是身份，没有就该说没有；
 /// 后者是画布必须拿到的东西，编不出来就没法渲染。灰色圆点正是「还没定」的样子
-const NODE_SQL: &str = "SELECT e.id, e.canonical_name AS name, t.key AS type_key,
+/// `as_of`：绑记录轴参数的位置（`None` = 只答现在，写路径和"当下"视图用这个）。
+/// 度数跟着画布走——回放时数的是**当时**连在这个节点上的边，否则右上角的数
+/// 和眼前的图对不上。
+fn node_sql(as_of: Option<usize>) -> String {
+    let held = match as_of {
+        Some(param) => crate::record_axis::facts_held_at("f", param),
+        None => "f.invalidated_at IS NULL".to_string(),
+    };
+    format!(
+        "SELECT e.id, e.canonical_name AS name, t.key AS type_key,
         t.label AS type_label,
         coalesce(t.color, '#94a3b8') AS color,
         coalesce(t.shape, 'circle') AS shape,
         e.disambiguator,
         (SELECT count(*) FROM facts f
-         WHERE (f.subject_id = e.id OR f.object_id = e.id) AND f.invalidated_at IS NULL) AS degree
-     FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id";
+         WHERE (f.subject_id = e.id OR f.object_id = e.id) AND {held}) AS degree
+     FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id"
+    )
+}
 
 /// 全图概览：按度数取 top N 实体及其间的边。
-/// `at`：服务端 as-of——只返回 T 时刻有效的边（起点不晚于 T 或未知，终点晚于 T 或开放）。
-/// 前端时间滑杆走本地过滤不传此参数；这是给 API/MCP 消费者的时间旅行入口。
+/// `at`：世界轴——只返回 T 时刻**有效**的边（起点不晚于 T 或未知，终点晚于 T 或开放）。
+/// `as_of`：记录轴（0019）——只返回 T 时刻**我们持有**的边，三月被改掉的断言在
+/// 三月之前的位置上应当还在。两个参数一路分开到 API：折成一个控件，就会拿
+/// 「三月的世界，以今天的认知」去答「三月的世界，以三月的认知」，而两者在
+/// 屏幕上都说得通。
 /// 图谱总览：度数最高的 `limit` 个节点，以及它们之间的边。
 ///
 /// **一并回总数。** 画多少个是渲染的事，库里有多少是知识库的事，两者从前
@@ -370,34 +384,44 @@ pub async fn overview(
     kb_id: Uuid,
     limit: i64,
     at: Option<chrono::DateTime<chrono::Utc>>,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(Vec<GraphNode>, Vec<GraphEdge>, i64, i64)> {
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
-        "{NODE_SQL} WHERE e.kb_id = $1 AND e.merged_into IS NULL ORDER BY degree DESC, e.created_at LIMIT $2"
+        "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL ORDER BY degree DESC, e.created_at LIMIT $2",
+        node_sql(Some(3))
     ))
     .bind(kb_id)
     .bind(limit)
+    .bind(as_of)
     .fetch_all(pool)
     .await?;
 
     let ids: Vec<Uuid> = nodes.iter().map(|n| n.id).collect();
-    let edges = edges_among(pool, kb_id, &ids, at).await?;
+    let edges = edges_among(pool, kb_id, &ids, at, as_of).await?;
 
     // 总数按与画布同一套口径数：合并掉的实体不算，作废的事实不算，
     // 属性事实（宾语是字面值）画不出边所以也不算。口径不同的话，
-    // 「150 / 325」里那个 325 会跟用户在别处看到的数对不上
+    // 「150 / 325」里那个 325 会跟用户在别处看到的数对不上——**回放时也一样**，
+    // 边数跟着记录轴走，否则倒回三月的图上写着今天的边数。
+    //
+    // 节点数没跟着倒：实体身上没有记录轴（`merged_into` 只说合并发生过，
+    // 时刻在 `entity_merges` 里），要倒得顺着那张表拆合并，是另一刀（0019 遗留问题）
     let total_nodes: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM entities WHERE kb_id = $1 AND merged_into IS NULL",
     )
     .bind(kb_id)
     .fetch_one(pool)
     .await?;
-    let total_edges: i64 = sqlx::query_scalar(
-        "SELECT (SELECT count(*) FROM facts
-                  WHERE kb_id = $1 AND invalidated_at IS NULL AND object_id IS NOT NULL)
-              + (SELECT count(*) FROM derived_facts
-                  WHERE kb_id = $1 AND invalidated_at IS NULL)",
-    )
+    let total_edges: i64 = sqlx::query_scalar(&format!(
+        "SELECT (SELECT count(*) FROM facts f
+                  WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL)
+              + (SELECT count(*) FROM derived_facts d
+                  WHERE d.kb_id = $1 AND {derived_held})",
+        facts_held = crate::record_axis::facts_held_at("f", 2),
+        derived_held = crate::record_axis::derived_held_at("d", 2),
+    ))
     .bind(kb_id)
+    .bind(as_of)
     .fetch_one(pool)
     .await?;
     Ok((nodes, edges, total_nodes, total_edges))
@@ -408,6 +432,7 @@ async fn edges_among(
     kb_id: Uuid,
     ids: &[Uuid],
     at: Option<chrono::DateTime<chrono::Utc>>,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Vec<GraphEdge>> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -425,7 +450,7 @@ async fn edges_among(
     //
     // 断言那一段多算一位 `contested`：有 open 的违规或时态冲突指着它。派生撞断言
     // 时被撞的是 left；right 只是最后一条前提，它本身没有争议
-    let edges: Vec<GraphEdge> = sqlx::query_as(
+    let edges: Vec<GraphEdge> = sqlx::query_as(&format!(
         "SELECT f.id, f.subject_id AS source, f.object_id AS target,
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS label,
@@ -433,16 +458,16 @@ async fn edges_among(
                 ARRAY[]::uuid[] AS premises,
                 f.valid_from, f.valid_to, f.confidence,
                 (EXISTS (SELECT 1 FROM axiom_violations v
-                          WHERE v.status = 'open'
+                          WHERE {violation_open}
                             AND (v.left_fact = f.id
                                  OR (v.right_fact = f.id AND v.kind <> 'derived_contradiction')))
                  OR EXISTS (SELECT 1 FROM fact_conflicts c
-                             WHERE c.status = 'open'
+                             WHERE {conflict_open}
                                AND (c.old_fact_id = f.id OR c.new_fact_id = f.id))
                 ) AS contested,
                 FALSE AS blocked
          FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
-         WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
+         WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL
            AND f.subject_id = ANY($2) AND f.object_id = ANY($2)
            AND ($3::timestamptz IS NULL
                 OR ((f.valid_from IS NULL OR f.valid_from <= $3)
@@ -457,7 +482,7 @@ async fn edges_among(
                 FALSE AS contested, FALSE AS blocked
          FROM derived_facts d JOIN relation_types r ON r.id = d.predicate_id
                               JOIN rules ru ON ru.id = d.rule_id
-         WHERE d.kb_id = $1 AND d.invalidated_at IS NULL
+         WHERE d.kb_id = $1 AND {derived_held}
            AND d.subject_id = ANY($2) AND d.object_id = ANY($2)
            AND ($3::timestamptz IS NULL
                 OR ((d.valid_from IS NULL OR d.valid_from <= $3)
@@ -474,7 +499,7 @@ async fn edges_among(
                 0::real AS confidence,
                 TRUE AS contested, TRUE AS blocked
          FROM axiom_violations v
-         WHERE v.kb_id = $1 AND v.kind = 'derived_contradiction' AND v.status = 'open'
+         WHERE v.kb_id = $1 AND v.kind = 'derived_contradiction' AND {violation_open}
            AND (v.detail->>'subject_id')::uuid = ANY($2)
            AND (v.detail->>'object_id')::uuid = ANY($2)
            AND ($3::timestamptz IS NULL
@@ -482,10 +507,15 @@ async fn edges_among(
                      OR (v.detail->>'valid_from')::timestamptz <= $3)
                     AND ((v.detail->>'valid_to')::timestamptz IS NULL
                          OR (v.detail->>'valid_to')::timestamptz > $3)))",
-    )
+        facts_held = crate::record_axis::facts_held_at("f", 4),
+        derived_held = crate::record_axis::derived_held_at("d", 4),
+        violation_open = crate::record_axis::violation_open_at("v", 4),
+        conflict_open = crate::record_axis::conflict_open_at("c", 4),
+    ))
     .bind(kb_id)
     .bind(ids)
     .bind(at)
+    .bind(as_of)
     .fetch_all(pool)
     .await?;
     Ok(edges)
@@ -498,6 +528,7 @@ pub async fn neighborhood(
     entity_id: Uuid,
     hops: u8,
     at: Option<chrono::DateTime<chrono::Utc>>,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(Vec<GraphNode>, Vec<GraphEdge>)> {
     const MAX_NODES: usize = 300;
     let mut seen: HashSet<Uuid> = HashSet::from([entity_id]);
@@ -507,13 +538,17 @@ pub async fn neighborhood(
         if frontier.is_empty() || seen.len() >= MAX_NODES {
             break;
         }
-        let touching: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(
-            "SELECT subject_id, object_id FROM facts
-             WHERE kb_id = $1 AND invalidated_at IS NULL AND object_id IS NOT NULL
-               AND (subject_id = ANY($2) OR object_id = ANY($2))",
-        )
+        // 铺开也走记录轴：邻居按**当时**的边找，否则回放的图上会长出
+        // 只有今天才连得上的节点
+        let touching: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(&format!(
+            "SELECT f.subject_id, f.object_id FROM facts f
+             WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL
+               AND (f.subject_id = ANY($2) OR f.object_id = ANY($2))",
+            facts_held = crate::record_axis::facts_held_at("f", 3),
+        ))
         .bind(kb_id)
         .bind(&frontier)
+        .bind(as_of)
         .fetch_all(pool)
         .await?;
 
@@ -532,13 +567,16 @@ pub async fn neighborhood(
     }
 
     let ids: Vec<Uuid> = seen.into_iter().collect();
-    let nodes: Vec<GraphNode> =
-        sqlx::query_as(&format!("{NODE_SQL} WHERE e.kb_id = $1 AND e.id = ANY($2)"))
-            .bind(kb_id)
-            .bind(&ids)
-            .fetch_all(pool)
-            .await?;
-    let edges = edges_among(pool, kb_id, &ids, at).await?;
+    let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
+        "{} WHERE e.kb_id = $1 AND e.id = ANY($2)",
+        node_sql(Some(3))
+    ))
+    .bind(kb_id)
+    .bind(&ids)
+    .bind(as_of)
+    .fetch_all(pool)
+    .await?;
+    let edges = edges_among(pool, kb_id, &ids, at, as_of).await?;
     Ok((nodes, edges))
 }
 
@@ -553,9 +591,10 @@ pub async fn search_entities(
 ) -> AppResult<(Vec<GraphNode>, i64)> {
     let pattern = format!("%{}%", q.trim());
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
-        "{NODE_SQL} WHERE e.kb_id = $1 AND e.merged_into IS NULL
+        "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL
          AND e.canonical_name ILIKE $2
-         ORDER BY degree DESC, e.canonical_name LIMIT $3 OFFSET $4"
+         ORDER BY degree DESC, e.canonical_name LIMIT $3 OFFSET $4",
+        node_sql(None)
     ))
     .bind(kb_id)
     .bind(&pattern)
@@ -579,15 +618,20 @@ pub async fn entity_detail(
     pool: &PgPool,
     kb_id: Uuid,
     entity_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(GraphNode, Vec<EntityFact>)> {
-    let node: GraphNode = sqlx::query_as(&format!("{NODE_SQL} WHERE e.kb_id = $1 AND e.id = $2"))
-        .bind(kb_id)
-        .bind(entity_id)
-        .fetch_optional(pool)
-        .await?
-        .ok_or(AppError::NotFound)?;
+    let node: GraphNode = sqlx::query_as(&format!(
+        "{} WHERE e.kb_id = $1 AND e.id = $2",
+        node_sql(Some(3))
+    ))
+    .bind(kb_id)
+    .bind(entity_id)
+    .bind(as_of)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
 
-    let facts: Vec<EntityFact> = sqlx::query_as(
+    let facts: Vec<EntityFact> = sqlx::query_as(&format!(
         "SELECT f.id,
                 CASE WHEN f.subject_id = $2 THEN 'out' ELSE 'in' END AS direction,
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate_key,
@@ -600,7 +644,7 @@ pub async fn entity_detail(
                 (EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
                  AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
                                  JOIN chunks c ON c.id = fe.chunk_id
-                                 WHERE fe.fact_id = f.id AND c.superseded_at IS NULL)
+                                 WHERE fe.fact_id = f.id AND {chunk_live})
                 ) AS stale,
                 (f.supersedes IS NOT NULL) AS corrected,
                 (SELECT MAX(COALESCE(d.doc_time, d.created_at))
@@ -614,13 +658,13 @@ pub async fn entity_detail(
                                          || (v.detail->>'predicate') || ' · '
                                          || (v.detail->>'object') END)
                        FROM axiom_violations v
-                      WHERE v.status = 'open'
+                      WHERE {violation_open}
                         AND (v.left_fact = f.id
                              OR (v.right_fact = f.id AND v.kind <> 'derived_contradiction'))
                       ORDER BY v.detected_at DESC LIMIT 1),
                     (SELECT jsonb_build_object('kind', 'temporal_conflict', 'ref_id', c.id)
                        FROM fact_conflicts c
-                      WHERE c.status = 'open'
+                      WHERE {conflict_open}
                         AND (c.old_fact_id = f.id OR c.new_fact_id = f.id)
                       ORDER BY c.created_at DESC LIMIT 1)
                 ) AS contested
@@ -628,12 +672,17 @@ pub async fn entity_detail(
          LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o
            ON o.id = CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END
-         WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+         WHERE f.kb_id = $1 AND {facts_held}
            AND (f.subject_id = $2 OR f.object_id = $2)
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
-    )
+        facts_held = crate::record_axis::facts_held_at("f", 3),
+        chunk_live = crate::record_axis::chunk_live_at("c", 3),
+        violation_open = crate::record_axis::violation_open_at("v", 3),
+        conflict_open = crate::record_axis::conflict_open_at("c", 3),
+    ))
     .bind(kb_id)
     .bind(entity_id)
+    .bind(as_of)
     .fetch_all(pool)
     .await?;
 
@@ -654,7 +703,8 @@ pub async fn update_entity(
     canonical_name: Option<&str>,
 ) -> AppResult<(GraphNode, GraphNode)> {
     let before: GraphNode = sqlx::query_as(&format!(
-        "{NODE_SQL} WHERE e.kb_id = $1 AND e.id = $2 AND e.merged_into IS NULL"
+        "{} WHERE e.kb_id = $1 AND e.id = $2 AND e.merged_into IS NULL",
+        node_sql(None)
     ))
     .bind(kb_id)
     .bind(entity_id)
@@ -729,11 +779,14 @@ pub async fn update_entity(
         crate::resolution::refresh_disambiguators(pool, kb_id, &before.name).await?;
     }
 
-    let after: GraphNode = sqlx::query_as(&format!("{NODE_SQL} WHERE e.kb_id = $1 AND e.id = $2"))
-        .bind(kb_id)
-        .bind(entity_id)
-        .fetch_one(pool)
-        .await?;
+    let after: GraphNode = sqlx::query_as(&format!(
+        "{} WHERE e.kb_id = $1 AND e.id = $2",
+        node_sql(None)
+    ))
+    .bind(kb_id)
+    .bind(entity_id)
+    .fetch_one(pool)
+    .await?;
     Ok((before, after))
 }
 
@@ -745,9 +798,10 @@ pub async fn same_name_peers(
     entity_id: Uuid,
 ) -> AppResult<Vec<GraphNode>> {
     sqlx::query_as(&format!(
-        "{NODE_SQL} WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
+        "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
            AND lower(e.canonical_name) = (SELECT lower(canonical_name) FROM entities WHERE id = $2)
-         ORDER BY degree DESC LIMIT 10"
+         ORDER BY degree DESC LIMIT 10",
+        node_sql(None)
     ))
     .bind(kb_id)
     .bind(entity_id)

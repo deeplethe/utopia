@@ -21,6 +21,7 @@ pub mod ontology;
 pub mod palette;
 pub mod pending;
 pub mod reasoning;
+pub mod record_axis;
 pub mod resolution;
 pub mod review;
 pub mod sealing;
