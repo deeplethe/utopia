@@ -204,9 +204,17 @@ impl QueryEngine for MysqlEngine {
     async fn fetch_schema(&self) -> anyhow::Result<Vec<SchemaColumn>> {
         let pool = self.pool().await?;
         // MySQL 的 schema 就是 database。系统库按名字排除——information_schema
-        // 在这里是**要排除的对象**，与 PG 那边同名的概念不是一回事
+        // 在这里是**要排除的对象**，与 PG 那边同名的概念不是一回事。
+        //
+        // **每列都要 CAST(... AS CHAR)。** MySQL 8.0 起 information_schema 是建在
+        // 数据字典上的视图，这些列经二进制协议报成 VARBINARY，sqlx 严格类型解码
+        // 会拒绝把它读进 String（`VARCHAR is not compatible with VARBINARY`）。
+        // 原始 SQL 在命令行里看着好好的——命令行不做强类型解码，这一处只有连真
+        // 服务器才现形。MariaDB 上 CAST 无害，两边同一条语句
         let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT table_schema, table_name, column_name, column_type, column_comment
+            "SELECT CAST(table_schema AS CHAR), CAST(table_name AS CHAR),
+                    CAST(column_name AS CHAR), CAST(column_type AS CHAR),
+                    CAST(column_comment AS CHAR)
              FROM information_schema.columns
              WHERE table_schema NOT IN
                    ('information_schema', 'mysql', 'performance_schema', 'sys')
