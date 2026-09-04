@@ -21,6 +21,12 @@ use uuid::Uuid;
 pub const SIM_ATTACH: f32 = 0.55;
 pub const SIM_NEW: f32 = 0.35;
 
+/// 同名并列的判定边界：两个**同名**候选的画像分数相差不超过这个值，就算「分不开」。
+/// 画像分不出谁是谁时，attach 到分高的那个只是候选顺序掷出的硬币（#270）——
+/// 与其掷硬币，不如两个都不并、都入人工审核。取值偏紧：真正拉得开的同名人（不同
+/// chunk、不同事实积累）分差远大于此，只有质心几乎重合（如同一 chunk 播种）才触发。
+pub const SIM_TIE_MARGIN: f32 = 0.02;
+
 /// 名称规范化：全角 ASCII → 半角、全角空格 → 半角、空白折叠。
 /// 返回展示形态（保留大小写）；匹配一律再套 SQL lower()。
 pub fn normalize_name(raw: &str) -> String {
@@ -175,6 +181,7 @@ fn cosine(a: &[f32], b: &[f32]) -> Option<f32> {
 #[derive(Debug, sqlx::FromRow)]
 struct Candidate {
     id: Uuid,
+    canonical_name: String,
     profile_embedding: Option<Vector>,
     profile_n: i32,
     degree: i64,
@@ -195,6 +202,9 @@ pub struct ReviewRequest {
     pub other_id: Uuid,
     pub score: f32,
     pub reason: String,
+    /// 交给谁裁：画像灰区走 [`ReviewStage::Adjudicating`]（批量裁决器），
+    /// 同名并列只有人分得开，走 [`ReviewStage::Human`]。
+    pub stage: ReviewStage,
 }
 
 /// 审核项由谁消费。普通画像灰区先交给批量裁决器；抽取器在同一回复里明确拆出的
@@ -232,7 +242,7 @@ pub async fn resolve_mention(
     // 只扩召回，归并与否仍由下方画像相似度分层定夺。
     let keys = recall_keys(&name);
     let candidates: Vec<Candidate> = sqlx::query_as(
-        "SELECT e.id, e.profile_embedding, e.profile_n,
+        "SELECT e.id, e.canonical_name, e.profile_embedding, e.profile_n,
                 (SELECT count(*) FROM facts f
                  WHERE (f.subject_id = e.id OR f.object_id = e.id)
                    AND f.invalidated_at IS NULL) AS degree
@@ -271,7 +281,7 @@ pub async fn resolve_mention(
     };
 
     // 有画像的候选算相似度；无画像（历史数据/无 embedding 期创建）单独归类
-    let mut best_scored: Option<(&Candidate, f32)> = None;
+    let mut scored: Vec<(&Candidate, f32)> = Vec::new();
     let mut unprofiled: Option<&Candidate> = None;
     for c in &candidates {
         match c
@@ -279,11 +289,7 @@ pub async fn resolve_mention(
             .as_ref()
             .and_then(|p| cosine(p.as_slice(), ctx))
         {
-            Some(sim) => {
-                if best_scored.map(|(_, s)| sim > s).unwrap_or(true) {
-                    best_scored = Some((c, sim));
-                }
-            }
+            Some(sim) => scored.push((c, sim)),
             None => {
                 if unprofiled.map(|u| c.degree > u.degree).unwrap_or(true) {
                     unprofiled = Some(c);
@@ -291,9 +297,47 @@ pub async fn resolve_mention(
             }
         }
     }
+    // 最高分候选：并列时保留先遇到的那个（与旧的 `sim > s` 严格大于一致）
+    let best_scored = scored
+        .iter()
+        .copied()
+        .reduce(|acc, cur| if cur.1 > acc.1 { cur } else { acc });
 
     if let Some((best, sim)) = best_scored {
         if sim >= SIM_ATTACH {
+            // 同名并列的灰区：另有一个**同名**候选的分数贴着最高分（差 ≤ SIM_TIE_MARGIN），
+            // 画像分不出谁是谁——attach 到分高的那个只是候选顺序掷出的硬币（#270）。
+            // 宁分勿合：不 attach，新建实体，对并列的两个候选各入一条**人工**审核对。
+            // 分数无论多高都拦：高分并列正是静默错并的危险区，不能因为「够像」就放行。
+            if let Some((runner, r_sim)) = scored
+                .iter()
+                .copied()
+                .filter(|(c, s)| {
+                    // 同名比较要与召回一致地忽略大小写：召回用 SQL `lower()`，
+                    // 「Zhang Wei」与「zhang wei」本就是一对同名候选，不能漏。
+                    c.id != best.id
+                        && c.canonical_name.to_lowercase() == best.canonical_name.to_lowercase()
+                        && sim - *s <= SIM_TIE_MARGIN
+                })
+                .reduce(|acc, cur| if cur.1 > acc.1 { cur } else { acc })
+            {
+                let id = create_entity(pool, kb_id, type_id, &name, context).await?;
+                refresh_disambiguators(pool, kb_id, &name).await?;
+                let reviews = [(best, sim), (runner, r_sim)]
+                    .into_iter()
+                    .map(|(c, s)| ReviewRequest {
+                        other_id: c.id,
+                        score: s,
+                        reason: format!("namesake_tie|{s:.2}"),
+                        stage: ReviewStage::Human,
+                    })
+                    .collect();
+                return Ok(Resolution {
+                    entity_id: id,
+                    created: true,
+                    reviews,
+                });
+            }
             update_profile(pool, best.id, best.profile_n, ctx).await?;
             return Ok(Resolution {
                 entity_id: best.id,
@@ -322,6 +366,7 @@ pub async fn resolve_mention(
                 other_id: c.id,
                 score: sim,
                 reason: format!("ambiguous_name|{sim:.2}"),
+                stage: ReviewStage::Adjudicating,
             }]
         })
         .unwrap_or_default();
@@ -467,6 +512,7 @@ async fn containment_reviews(
                 other_id: id,
                 score,
                 reason: format!("contains|{other_name}"),
+                stage: ReviewStage::Adjudicating,
             }
         })
         .collect())
@@ -588,6 +634,7 @@ fn confusable_reviews(
                 other_id: c.id,
                 score: sim.unwrap_or(0.0),
                 reason: drift_reason(mention_key, c.type_key.as_deref(), sim),
+                stage: ReviewStage::Adjudicating,
             }
         })
         .collect()
@@ -725,6 +772,7 @@ async fn resolve_type_drift(
                 other_id: c.id,
                 score: sim.unwrap_or(0.0),
                 reason: drift_reason(mention_key.as_deref(), c.type_key.as_deref(), sim),
+                stage: ReviewStage::Adjudicating,
             }),
         }
     }
