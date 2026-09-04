@@ -1,0 +1,234 @@
+{
+  "note": "Wikidata anchor class -> acceptable ontology classes (schema.org pack keys, as key_from_iri derives them). An entity's answer is the union over the anchors its P31 classes fall under (fetch-wikidata-truth.mjs records the P279* closure per class), after the family rules below. An empty list means: the ontology has no class for this, so the correct behaviour is to leave the entity alone. A Wikidata class not listed here contributes nothing; an entity none of whose classes contribute is omitted from the answer key rather than guessed. This table is the one place a human judgement enters; the raw file is untouched by hand.",
+  "vocabulary": "schema-org",
+  "families_note": "Wikidata's subclass chains cross what an ontology keeps apart: a consolidated city-county is a local government is an organization, so San Francisco would accept `corporation`. Each anchor belongs to a family; when an entity has anchors in a family, the anchors of the families it excludes are dropped. Person beats everything; a place is not an organization; a work or an organization is not an event; anything concrete beats the abstract families.",
+  "families": {
+    "person": {
+      "anchors": [
+        "Q5"
+      ],
+      "excludes": [
+        "place",
+        "organization",
+        "work",
+        "event",
+        "abstract"
+      ]
+    },
+    "place": {
+      "anchors": [
+        "Q515",
+        "Q6256",
+        "Q56061",
+        "Q82794",
+        "Q486972"
+      ],
+      "excludes": [
+        "organization",
+        "event",
+        "abstract"
+      ]
+    },
+    "organization": {
+      "anchors": [
+        "Q43229",
+        "Q4830453",
+        "Q783794",
+        "Q163740",
+        "Q3918",
+        "Q31855",
+        "Q327333",
+        "Q7278"
+      ],
+      "excludes": [
+        "event",
+        "abstract"
+      ]
+    },
+    "work": {
+      "anchors": [
+        "Q7397",
+        "Q115305900",
+        "Q117349473",
+        "Q870780",
+        "Q35127",
+        "Q1668024",
+        "Q2424752",
+        "Q431289",
+        "Q1002697",
+        "Q11032",
+        "Q41298",
+        "Q7889",
+        "Q11424",
+        "Q571",
+        "Q10929058",
+        "Q7725634"
+      ],
+      "excludes": [
+        "event",
+        "abstract"
+      ]
+    },
+    "event": {
+      "anchors": [
+        "Q1656682",
+        "Q1190554"
+      ],
+      "excludes": [
+        "abstract"
+      ]
+    },
+    "abstract": {
+      "anchors": [
+        "Q11862829",
+        "Q151885",
+        "Q11514315",
+        "Q34770"
+      ],
+      "excludes": []
+    }
+  },
+  "classes": {
+    "Q5": [
+      "person"
+    ],
+    "Q43229": [
+      "organization"
+    ],
+    "Q4830453": [
+      "corporation",
+      "organization"
+    ],
+    "Q783794": [
+      "corporation",
+      "organization"
+    ],
+    "Q163740": [
+      "ngo",
+      "organization"
+    ],
+    "Q3918": [
+      "college_or_university",
+      "educational_organization",
+      "organization"
+    ],
+    "Q31855": [
+      "research_organization",
+      "organization"
+    ],
+    "Q327333": [
+      "government_organization",
+      "organization"
+    ],
+    "Q7278": [
+      "political_party",
+      "organization"
+    ],
+    "Q7397": [
+      "software_application",
+      "web_application",
+      "mobile_application",
+      "creative_work"
+    ],
+    "Q115305900": [
+      "software_application",
+      "creative_work"
+    ],
+    "Q117349473": [
+      "software_application",
+      "creative_work"
+    ],
+    "Q870780": [
+      "software_application",
+      "web_application",
+      "creative_work"
+    ],
+    "Q35127": [
+      "web_site",
+      "creative_work"
+    ],
+    "Q1668024": [
+      "web_site",
+      "web_application",
+      "software_application"
+    ],
+    "Q2424752": [
+      "product",
+      "product_model"
+    ],
+    "Q431289": [
+      "brand"
+    ],
+    "Q1656682": [
+      "event"
+    ],
+    "Q1190554": [
+      "event"
+    ],
+    "Q515": [
+      "city",
+      "place",
+      "administrative_area"
+    ],
+    "Q6256": [
+      "country",
+      "place",
+      "administrative_area"
+    ],
+    "Q56061": [
+      "administrative_area",
+      "place"
+    ],
+    "Q82794": [
+      "place",
+      "administrative_area"
+    ],
+    "Q1002697": [
+      "periodical",
+      "creative_work"
+    ],
+    "Q11032": [
+      "newspaper",
+      "periodical",
+      "creative_work"
+    ],
+    "Q41298": [
+      "periodical",
+      "creative_work"
+    ],
+    "Q7889": [
+      "video_game",
+      "game",
+      "software_application",
+      "creative_work"
+    ],
+    "Q11424": [
+      "movie",
+      "creative_work"
+    ],
+    "Q571": [
+      "book",
+      "creative_work"
+    ],
+    "Q11862829": [],
+    "Q151885": [],
+    "Q11514315": [],
+    "Q486972": [
+      "place",
+      "city",
+      "administrative_area"
+    ],
+    "Q10929058": [
+      "product",
+      "product_model"
+    ],
+    "Q7725634": [
+      "book",
+      "creative_work"
+    ],
+    "Q34770": []
+  },
+  "skip": {
+    "Q4167410": "Wikimedia disambiguation page: the link went to a list of meanings, not to a thing"
+  }
+}

@@ -167,6 +167,7 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
             Some(type_id),
             name,
             None,
+            &[],
         )
         .await?;
 

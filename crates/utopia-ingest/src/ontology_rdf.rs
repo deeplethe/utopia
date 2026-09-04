@@ -423,11 +423,37 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
         }
     }
 
+    let home = home_namespace(
+        classes
+            .iter()
+            .chain(obj_props.iter())
+            .chain(data_props.iter())
+            .map(String::as_str),
+    )
+    .unwrap_or_default();
     for iri in &classes {
         // **数据类型不是实体类型。** schema:Text 声明的是
         // `a rdfs:Class, schema:DataType`，只看前半截就会建出叫
         // `text`、`number`、`boolean` 的实体类型来
         if datatype_classes.contains(iri) {
+            continue;
+        }
+        // **光秃秃的外来声明不是这份词表的类。** schema.org 的 dump 里写着
+        // `snomed:105590001 a rdfs:Class .`——它只是某个 owl:equivalentClass 的对象：
+        // 没有标签、没有父类、没有任何属性指向它，命名空间也不是 schema.org 的。
+        // 建出来就是八个数字排在类列表最前面（#286）。这份词表对它一个字都没说，
+        // 所以不建，记进"未投影"让预览页说得出它去了哪儿。本命名空间的裸声明
+        // 照建：小词表常常只写 `a owl:Class`，那是它自己的类
+        let bare = !labels.contains_key(iri)
+            && !comments.contains_key(iri)
+            && parents.get(iri).is_none_or(|p| p.is_empty())
+            && !domains.values().any(|ds| ds.contains(iri))
+            && !ranges.values().any(|rs| rs.contains(iri));
+        if bare && namespace_of(iri) != home {
+            *proj
+                .unprojected
+                .entry("bare class declared outside the vocabulary's own namespace".to_string())
+                .or_insert(0) += 1;
             continue;
         }
         proj.classes.push(OwlClass {
@@ -503,31 +529,36 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
 /// 判据是**声明得最多的那个命名空间就是文件的主人**——不认 schema.org
 /// 这个名字，任何词汇表都适用。同数时取字典序小的，保证可重复。
 fn order_by_home_namespace(proj: &mut OwlProjection) {
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for iri in proj
-        .classes
-        .iter()
-        .map(|c| c.iri.as_str())
-        .chain(proj.properties.iter().map(|p| p.iri.as_str()))
-    {
-        *counts.entry(namespace_of(iri)).or_insert(0) += 1;
-    }
-    // max_by_key 取的是最后一个最大值，而 BTreeMap 按 key 升序——
-    // 于是同数时拿到字典序最大的那个。要的是最小的，所以自己比
-    let Some(home) = counts
-        .into_iter()
-        .fold(None::<(&str, usize)>, |best, (ns, n)| match best {
-            Some((_, bn)) if bn >= n => best,
-            _ => Some((ns, n)),
-        })
-        .map(|(ns, _)| ns.to_string())
-    else {
+    let Some(home) = home_namespace(
+        proj.classes
+            .iter()
+            .map(|c| c.iri.as_str())
+            .chain(proj.properties.iter().map(|p| p.iri.as_str())),
+    ) else {
         return;
     };
     // 稳定排序：只把主词汇表提到前面，其余保持原有的字典序
     proj.classes.sort_by_key(|c| namespace_of(&c.iri) != home);
     proj.properties
         .sort_by_key(|p| namespace_of(&p.iri) != home);
+}
+
+/// 一批 IRI 里声明得最多的命名空间，即"这份文件的主人"。
+///
+/// max_by_key 取的是最后一个最大值，而 BTreeMap 按 key 升序——
+/// 于是同数时拿到字典序最大的那个。要的是最小的，所以自己比
+fn home_namespace<'a>(iris: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for iri in iris {
+        *counts.entry(namespace_of(iri)).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        .fold(None::<(&str, usize)>, |best, (ns, n)| match best {
+            Some((_, bn)) if bn >= n => best,
+            _ => Some((ns, n)),
+        })
+        .map(|(ns, _)| ns.to_string())
 }
 
 /// IRI 去掉局部名剩下的那段（含结尾的 `#` 或 `/`）。
@@ -917,6 +948,39 @@ mod tests {
         assert!(p
             .unprojected
             .contains_key("http://www.w3.org/2002/07/owl#equivalentClass"));
+    }
+
+    /// schema.org 把 `snomed:105590001 a rdfs:Class .` 这种 equivalentClass 的对象
+    /// 也声明成了类：没标签、没父类、没属性、不在自家命名空间。不建，但记账；
+    /// 自家命名空间里同样光秃秃的类照建
+    #[test]
+    fn a_bare_class_from_another_namespace_is_reported_not_projected() {
+        let ttl = r#"
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix ex: <http://acme.example/hr#> .
+            @prefix snomed: <http://purl.bioontology.org/ontology/SNOMEDCT/> .
+            ex:Employee a owl:Class ; rdfs:label "Employee" ; owl:equivalentClass snomed:105590001 .
+            ex:Person a owl:Class ; rdfs:label "Person" .
+            ex:Contractor a owl:Class .
+            snomed:105590001 a rdfs:Class .
+        "#;
+        let p = project(ttl.as_bytes(), RdfFormat::Turtle).unwrap();
+        let keys: Vec<&str> = p.classes.iter().map(|c| c.key.as_str()).collect();
+        assert!(keys.contains(&"employee") && keys.contains(&"person"));
+        assert!(
+            keys.contains(&"contractor"),
+            "自家的裸声明是自己的类：{keys:?}"
+        );
+        assert!(
+            !keys.iter().any(|k| k.chars().all(|c| c.is_ascii_digit())),
+            "{keys:?}"
+        );
+        assert_eq!(
+            p.unprojected
+                .get("bare class declared outside the vocabulary's own namespace"),
+            Some(&1)
+        );
     }
 
     #[test]

@@ -18,6 +18,8 @@ pub trait BlobStore: Send + Sync {
     async fn get(&self, sha256: &str) -> anyhow::Result<Vec<u8>>;
     #[allow(dead_code)] // 接口完整性：回放/GC 路径的将来消费者
     async fn exists(&self, sha256: &str) -> anyhow::Result<bool>;
+    /// 真删（#268 下半）：只在库里确认没人再引用这份指纹之后调用。幂等：不存在也算成功
+    async fn delete(&self, sha256: &str) -> anyhow::Result<()>;
 }
 
 /// 本地磁盘实现：`{dir}/{sha256}` 平铺存放（与历史行为逐字节一致）。
@@ -48,5 +50,13 @@ impl BlobStore for LocalBlobStore {
 
     async fn exists(&self, sha256: &str) -> anyhow::Result<bool> {
         Ok(self.dir.join(sha256).exists())
+    }
+
+    async fn delete(&self, sha256: &str) -> anyhow::Result<()> {
+        match tokio::fs::remove_file(self.dir.join(sha256)).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 }

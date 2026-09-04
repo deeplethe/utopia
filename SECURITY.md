@@ -7,11 +7,6 @@ but the places the design has not reached yet.
 
 ## Before you put this on a public network
 
-**Credentials are stored in the clear.** LLM API keys and Ask-the-Data connection strings
-are plain text in Postgres (`llm_settings.chat_api_key`, `data_sources.conn_string`). Anyone
-who can read the database can read them. Encryption at rest is a 1.0 item; until then, keep
-the system and its database inside a trusted network.
-
 **The default database password is `utopia`.** By default the port binds to loopback
 (`127.0.0.1:1517`), so nothing outside the host can connect. If you change `UTOPIA_DB_BIND`
 to expose it, change `UTOPIA_DB_PASSWORD` in `.env` first.
@@ -24,6 +19,11 @@ source.
 
 ## What is in place
 
+- **Credentials sealed at rest** — LLM API keys, Ask-the-Data connection strings, source
+  tokens and push keys are AES-256-GCM encrypted before they reach Postgres. The key never
+  enters the database: `UTOPIA_SECRET_KEY`, or `secret.key` generated in the data directory
+  on first start. Back the key up together with the data directory — without it those values
+  cannot be read. Rows written by earlier versions are sealed on the next start.
 - **JWT signing key generated on first start** — 32 bytes from a CSPRNG, stored in the
   database. No deployment shares a default key.
 - **`Secure` on session cookies behind TLS** — decided from `X-Forwarded-Proto`, so local

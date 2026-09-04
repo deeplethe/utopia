@@ -15,3 +15,5 @@ sqlx.workspace = true
 figment.workspace = true
 pgvector.workspace = true
 strum.workspace = true
+aes-gcm.workspace = true
+base64.workspace = true

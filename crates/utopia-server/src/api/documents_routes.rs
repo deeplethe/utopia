@@ -118,6 +118,9 @@ pub struct DocsQuery {
     /// 抽取状态：none | queued | extracting | done | failed
     #[serde(default)]
     pub graph: Option<String>,
+    /// `deleted` = 「已删除」视图：只列墓碑（#268）。缺省 = 活着的
+    #[serde(default)]
+    pub state: Option<String>,
     #[serde(default)]
     pub limit: Option<i64>,
     #[serde(default)]
@@ -141,6 +144,7 @@ pub async fn list(
         parse_scope(q.source.as_deref()),
         q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()),
         q.graph.as_deref().filter(|s| !s.is_empty()),
+        q.state.as_deref() == Some("deleted"),
         q.limit.unwrap_or(15).clamp(1, 200),
         q.offset.unwrap_or(0).max(0),
     )
@@ -279,6 +283,42 @@ pub async fn restore(
     .await;
     state.emit_document(doc.kb_id, id);
     Ok(Json(json!({ "ok": true })))
+}
+
+/// 真删（#268 下半）：内容抹掉，不可撤销，只对已删除的文档开放，库管理员才能按。
+/// 库里先记账（purged_at），再删文件：删文件失败只是漏一份孤儿原文，反过来则是
+/// 库说「还能恢复」而原文已经没了
+pub async fn purge(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let doc = utopia_store::documents::get(&state.pool, id).await?;
+    utopia_store::access::require_kb(&state.pool, &user, doc.kb_id, Role::Admin).await?;
+    let report = utopia_store::documents::purge(&state.pool, doc.kb_id, id).await?;
+    for sha in &report.blobs {
+        if let Err(e) = state.blob.delete(sha).await {
+            tracing::warn!(document = %id, sha, error = %e, "purge: blob left behind");
+        }
+    }
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(doc.kb_id),
+        user.id,
+        "document.purged",
+        "document",
+        Some(id),
+        json!({
+            "filename": doc.filename,
+            "chunks": report.chunks,
+            "blobs": report.blobs.len(),
+        }),
+    )
+    .await;
+    state.emit_document(doc.kb_id, id);
+    Ok(Json(
+        json!({ "ok": true, "chunks": report.chunks, "blobs": report.blobs.len() }),
+    ))
 }
 
 /// 复活的文档回到全文索引：分块的正文一直都在，只是重写一遍索引条目

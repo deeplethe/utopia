@@ -278,6 +278,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         )
         // 撤销删除（#268）：删除是墓碑，所以有得撤
         .route("/documents/{id}/restore", post(documents_routes::restore))
+        // 真删（#268 下半）：只对已删除的开放，库管理员
+        .route("/documents/{id}/purge", post(documents_routes::purge))
         .route("/documents/{id}/extract", post(graph_routes::extract))
         .route("/kbs/{id}/graph/overview", get(graph_routes::overview))
         .route(

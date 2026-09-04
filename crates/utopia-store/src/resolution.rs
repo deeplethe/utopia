@@ -197,6 +197,23 @@ pub struct ReviewRequest {
     pub reason: String,
 }
 
+/// 审核项由谁消费。普通画像灰区先交给批量裁决器；抽取器在同一回复里明确拆出的
+/// 同名实体只有人能判断，不能让几乎相同的画像触发自动合并。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewStage {
+    Adjudicating,
+    Human,
+}
+
+impl ReviewStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Adjudicating => "adjudicating",
+            Self::Human => "human",
+        }
+    }
+}
+
 /// 单条 mention 消解。`context` 为 mention 所在分块的向量（无 embedding 模型时为 None，
 /// 退化为 v1 行为：同名归并到事实最多的候选）。
 pub async fn resolve_mention(
@@ -206,6 +223,9 @@ pub async fn resolve_mention(
     type_id: Option<Uuid>,
     raw_name: &str,
     context: Option<&[f32]>,
+    // Candidates already claimed by a different response-local handle. They remain stored
+    // and recallable on later calls, but this mention cannot attach to them.
+    exclude: &[Uuid],
 ) -> AppResult<Resolution> {
     let name = normalize_name(raw_name);
     // 召回键 = 本名 + 泛用后缀词干及其增广（"星尘"↔"星尘项目"互为候选）。
@@ -225,12 +245,15 @@ pub async fn resolve_mention(
     .bind(type_id)
     .bind(&keys)
     .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .filter(|candidate: &Candidate| !exclude.contains(&candidate.id))
+    .collect();
 
     if candidates.is_empty() {
         // 同类型无候选 ≠ 新名字：类型标签会漂（同一团队被抽成 organization/project/
         // concept），先查其它类型下的同名实体，按类型对的互斥强度分流。
-        return resolve_type_drift(pool, kb_id, type_id, &name, &keys, context).await;
+        return resolve_type_drift(pool, kb_id, type_id, &name, &keys, context, exclude).await;
     }
 
     let Some(ctx) = context else {
@@ -582,6 +605,7 @@ async fn resolve_type_drift(
     name: &str,
     keys: &[String],
     context: Option<&[f32]>,
+    exclude: &[Uuid],
 ) -> AppResult<Resolution> {
     // 这一侧也可能还没判出类型（0009），那时没有 key 可查
     let mention_key: Option<String> = match type_id {
@@ -606,7 +630,10 @@ async fn resolve_type_drift(
     .bind(type_id)
     .bind(keys)
     .fetch_all(pool)
-    .await?;
+    .await?
+    .into_iter()
+    .filter(|candidate: &CrossCandidate| !exclude.contains(&candidate.id))
+    .collect();
 
     // 本体声明了互斥的类，一次取出（含继承）。声明优先于下面所有启发式
     let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
@@ -848,13 +875,16 @@ pub async fn create_review(
     right_id: Uuid,
     score: f32,
     reason: &str,
+    stage: ReviewStage,
 ) -> AppResult<()> {
     sqlx::query(
-        "INSERT INTO resolution_reviews (id, kb_id, left_id, right_id, score, reason)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO resolution_reviews AS existing
+             (id, kb_id, left_id, right_id, score, reason, stage)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (kb_id, least(left_id, right_id), greatest(left_id, right_id))
              WHERE status = 'pending'
-         DO NOTHING",
+         DO UPDATE SET stage = 'human', reason = EXCLUDED.reason
+           WHERE EXCLUDED.stage = 'human' AND existing.stage = 'adjudicating'",
     )
     .bind(Uuid::now_v7())
     .bind(kb_id)
@@ -862,6 +892,7 @@ pub async fn create_review(
     .bind(right_id)
     .bind(score)
     .bind(reason)
+    .bind(stage.as_str())
     .execute(pool)
     .await?;
     Ok(())
@@ -1972,10 +2003,15 @@ pub struct TypeCandidateSubject {
 /// 值得送去精化类型的实体：**还没有类的**，或者模型报过一个词表外类型的。
 ///
 /// 类型化得已经很具体的实体不动——重判一次只有下降风险，没有上升空间。
+///
+/// `unattended` = 自动跑（0016 C2）：**跳过引擎已经看过的**（`type_resolved_at`）。候选按
+/// 事实数排序、一轮六十个，不跳过的话每一轮都是同一批，后面的永远轮不到。人点的那条
+/// 路传 false——人要的是把现状重新审一遍
 pub async fn entities_for_type_resolution(
     pool: &PgPool,
     kb_id: Uuid,
     limit: i64,
+    unattended: bool,
 ) -> AppResult<Vec<TypeCandidateSubject>> {
     Ok(sqlx::query_as(
         "SELECT e.id, e.canonical_name, e.aliases, t.key AS coarse_key, t.id AS coarse_id,
@@ -2029,13 +2065,28 @@ pub async fn entities_for_type_resolution(
            -- 唯一的用武之地。只看前两种就把它整个漏掉了
            AND (e.type_id IS NULL OR e.proposed_type IS NOT NULL OR e.specific_type IS NOT NULL
                 OR EXISTS (SELECT 1 FROM entity_type_parents p WHERE p.parent_id = t.id))
+           AND (NOT $3::bool OR e.type_resolved_at IS NULL)
          ORDER BY fact_count DESC, e.created_at
          LIMIT $2",
     )
     .bind(kb_id)
     .bind(limit)
+    .bind(unattended)
     .fetch_all(pool)
     .await?)
+}
+
+/// 引擎看过了：三档（改了 / 留给人 / 不动）都算看过，自动跑不再回头。
+/// 人手工改类、合并之类的写路径不清这个标记——它们本来也不在自动跑的候选里
+pub async fn mark_type_judged(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResult<u64> {
+    Ok(sqlx::query(
+        "UPDATE entities SET type_resolved_at = now() WHERE kb_id = $1 AND id = ANY($2)",
+    )
+    .bind(kb_id)
+    .bind(ids)
+    .execute(pool)
+    .await?
+    .rows_affected())
 }
 
 /// 某个类的全部后代（含自身）。精化只能往粗类的后代走。
