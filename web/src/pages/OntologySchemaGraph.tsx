@@ -589,7 +589,7 @@ export function OntologySchemaGraph({
             className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-600"
           />
           <input
-            className="input-dark w-60 pl-7 pr-2 py-1.5 text-sm shadow-lg"
+            className="input-dark w-60 pl-7 pr-2 py-[5px] text-sm shadow-lg"
             placeholder={S.ontology.schemaSearchPlaceholder}
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}

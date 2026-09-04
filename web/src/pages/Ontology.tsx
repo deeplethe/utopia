@@ -1,7 +1,7 @@
 // 本体编辑器：master-detail 双栏（与 Library 的 SourcesRail 同构）。
 // 左栏 = filter + Classes/Properties 两小节 + 底部 Unmatched 入口；
 // 右侧 = 选中项的表单 / 未匹配信号面板 / 概览。
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
@@ -78,12 +78,41 @@ type Sel =
   | { kind: "schema" }
   | null;
 
+/** 这次选中会不会在模式图右侧停靠一张表单 */
+const onPanel = (s: Sel) =>
+  s?.kind === "class" ||
+  s?.kind === "relation" ||
+  s?.kind === "new-class" ||
+  s?.kind === "new-relation";
+
 export function Ontology() {
   const { kb } = useKb();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [sel, setSel] = useState<Sel>(null);
   const [railTab, setRailTab] = useState<"classes" | "properties">("classes");
+  // 模式图详情面板停在哪一段。**跨选中保留**：在实例上挨个类看下去，
+  // 是一种真实的读法，每换一个类就被弹回定义页会打断它
+  const [panelTab, setPanelTab] = useState<
+    "definition" | "properties" | "instances"
+  >("definition");
+  /** 正在退场的那次选择：面板演完 `u-dock-out` 再卸载，而不是一下子消失 */
+  const [exitingSel, setExitingSel] = useState<Sel>(null);
+  // **当前选中从 ref 里取，不从闭包里取。** 模式图注册 sigma 事件的 effect
+  // 只依赖 [schema]，`clickStage` 抓住的是那一次渲染的 onSelect；读闭包里的
+  // sel 会把早就过期的那次选中当成"正在退场的东西"，于是点空白处时面板先
+  // 冒出来再消失。图谱页的 `selectedRef` 是同一个理由
+  const selRef = useRef<Sel>(null);
+  useEffect(() => {
+    selRef.current = sel;
+  }, [sel]);
+  const closePanel = useCallback(() => {
+    const cur = selRef.current;
+    if (!onPanel(cur)) return;
+    setExitingSel(cur);
+    setSel({ kind: "schema" });
+    window.setTimeout(() => setExitingSel(null), 170);
+  }, []);
   const [filter, setFilter] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // 每页行数按列表区实际高度动态算：窗口多高铺多满，不滚动也不留大空
@@ -142,14 +171,33 @@ export function Ontology() {
   const { entity_types, relation_types, misses, dismissed_misses } = data.data;
   // 属性不进 Properties 列表：它们挂在类下，在类详情区编辑
   const relations = relation_types.filter((r) => r.kind !== "attribute");
+  // 面板要演完退场再卸载：一取消选中就 unmount 是瞬间消失（图谱页同一个做法）。
+  // 在两个类之间切换不走这条路——面板留在原地换内容，每点一个节点抖一下反而吵
+  const panelSel = onPanel(sel) ? sel : exitingSel;
+
   const selectedClass =
-    sel?.kind === "class"
-      ? (entity_types.find((t) => t.id === sel.id) ?? null)
+    panelSel?.kind === "class"
+      ? (entity_types.find((t) => t.id === panelSel.id) ?? null)
       : null;
   const selectedProp =
-    sel?.kind === "relation"
-      ? (relation_types.find((r) => r.id === sel.id) ?? null)
+    panelSel?.kind === "relation"
+      ? (relation_types.find((r) => r.id === panelSel.id) ?? null)
       : null;
+  // 选中类身上挂着的东西，面板分段的计数和内容都用它
+  const classRelations = selectedClass
+    ? relations.filter(
+        (r) =>
+          r.domains.includes(selectedClass.id) ||
+          r.ranges.includes(selectedClass.id),
+      )
+    : [];
+  const classAttributes = selectedClass
+    ? relation_types.filter(
+        (r) => r.kind === "attribute" && r.domains.includes(selectedClass.id),
+      )
+    : [];
+  // 新建的类还没有关系也没有实例，只剩定义这一段
+  const classTab = selectedClass ? panelTab : "definition";
 
   return (
     <div className="h-full flex">
@@ -162,7 +210,7 @@ export function Ontology() {
               className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-600"
             />
             <input
-              className="input-dark w-full pl-7 pr-2 py-1.5 text-xs"
+              className="input-dark w-full pl-7 pr-2 py-[7px] text-xs"
               placeholder={S.ontology.filter}
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
@@ -368,24 +416,66 @@ export function Ontology() {
                 ? ({ kind: sel.kind, id: sel.id } as SchemaSelection)
                 : null
             }
-            onSelect={(next) => setSel(next ?? { kind: "schema" })}
+            // 点空白处取消选中走的也是 closePanel：不然点画布关掉的面板没有
+            // 退场动画，而点画布正是最常用的那种关法
+            onSelect={(next) => (next ? setSel(next) : closePanel())}
           />
-          {(sel?.kind === "new-class" || selectedClass) && (
-            <DockedPanel onClose={() => setSel({ kind: "schema" })}>
-              <div className="u-modal-panel rounded-xl p-4">
+          {(panelSel?.kind === "new-class" || selectedClass) && (
+            <DockedPanel
+              onClose={closePanel}
+              exiting={!onPanel(sel)}
+              header={
+                <PanelHeader
+                  color={selectedClass?.color}
+                  square={selectedClass?.shape === "square"}
+                  title={selectedClass?.label ?? S.ontology.newClass}
+                  builtin={selectedClass?.builtin}
+                />
+              }
+              tabs={
+                selectedClass && (
+                  <>
+                    <PanelTab
+                      active={classTab === "definition"}
+                      onClick={() => setPanelTab("definition")}
+                    >
+                      {S.ontology.schemaTabDefinition}
+                    </PanelTab>
+                    <PanelTab
+                      active={classTab === "properties"}
+                      count={classRelations.length + classAttributes.length}
+                      onClick={() => setPanelTab("properties")}
+                    >
+                      {S.ontology.schemaTabProperties}
+                    </PanelTab>
+                    <PanelTab
+                      active={classTab === "instances"}
+                      count={selectedClass.usage}
+                      onClick={() => setPanelTab("instances")}
+                    >
+                      {S.ontology.schemaTabInstances}
+                    </PanelTab>
+                  </>
+                )
+              }
+            >
+              {/* 三段用 hidden 藏，不卸载：表单里改了一半的字段、实例列表翻到的
+                  第几页，都该在切回来的时候还在 */}
+              <div className={classTab === "definition" ? "" : "hidden"}>
                 <ClassForm
                   key={
                     selectedClass?.id ??
-                    `new-${sel?.kind === "new-class" ? sel.parentId : "root"}`
+                    `new-${panelSel?.kind === "new-class" ? panelSel.parentId : "root"}`
                   }
                   kbId={kb.id}
                   existing={selectedClass}
                   parentId={
-                    sel?.kind === "new-class"
-                      ? sel.parentId
+                    panelSel?.kind === "new-class"
+                      ? panelSel.parentId
                       : (selectedClass?.primary_parent ?? null)
                   }
                   allTypes={entity_types}
+                  headless
                   onNewSub={
                     selectedClass
                       ? () =>
@@ -410,40 +500,58 @@ export function Ontology() {
               </div>
               {selectedClass && (
                 <>
-                  <RelationshipsCard
-                    kbId={kb.id}
-                    cls={selectedClass}
-                    relations={relations}
-                    allTypes={entity_types}
-                    onChanged={afterOntologyChange}
-                    onError={onError}
-                    onSelect={(id) => setSel({ kind: "relation", id })}
-                    onAddNew={() =>
-                      setSel({
-                        kind: "new-relation",
-                        initialDomain: selectedClass.id,
-                      })
+                  <div
+                    className={
+                      classTab === "properties" ? "flex flex-col gap-3" : "hidden"
                     }
-                  />
-                  <AttributesCard
-                    kbId={kb.id}
-                    type={selectedClass}
-                    attributes={relation_types.filter(
-                      (r) =>
-                        r.kind === "attribute" &&
-                        r.domains.includes(selectedClass.id),
-                    )}
-                    onChanged={afterOntologyChange}
-                    onError={onError}
-                  />
-                  <InstancesCard kbId={kb.id} type={selectedClass} />
+                  >
+                    <RelationshipsCard
+                      kbId={kb.id}
+                      cls={selectedClass}
+                      relations={relations}
+                      allTypes={entity_types}
+                      onChanged={afterOntologyChange}
+                      onError={onError}
+                      onSelect={(id) => setSel({ kind: "relation", id })}
+                      onAddNew={() =>
+                        setSel({
+                          kind: "new-relation",
+                          initialDomain: selectedClass.id,
+                        })
+                      }
+                    />
+                    <AttributesCard
+                      kbId={kb.id}
+                      type={selectedClass}
+                      attributes={classAttributes}
+                      onChanged={afterOntologyChange}
+                      onError={onError}
+                    />
+                  </div>
+                  <div className={classTab === "instances" ? "" : "hidden"}>
+                    <InstancesCard kbId={kb.id} type={selectedClass} />
+                  </div>
                 </>
               )}
             </DockedPanel>
           )}
-          {(sel?.kind === "new-relation" || selectedProp) && (
-            <DockedPanel onClose={() => setSel({ kind: "schema" })}>
-              <div className="u-modal-panel rounded-xl p-4">
+          {(panelSel?.kind === "new-relation" || selectedProp) && (
+            <DockedPanel
+              onClose={closePanel}
+              exiting={!onPanel(sel)}
+              header={
+                <PanelHeader
+                  title={selectedProp?.label ?? S.ontology.newProperty}
+                  sub={
+                    selectedProp
+                      ? S.ontology.usage(selectedProp.usage)
+                      : undefined
+                  }
+                  builtin={selectedProp?.builtin}
+                />
+              }
+            >
+              <div>
                 <PropertyForm
                   key={selectedProp?.id ?? "new"}
                   kbId={kb.id}
@@ -451,8 +559,9 @@ export function Ontology() {
                   allTypes={entity_types}
                   allRelations={relations}
                   initialDomain={
-                    sel?.kind === "new-relation" ? sel.initialDomain : null
+                    panelSel?.kind === "new-relation" ? panelSel.initialDomain : null
                   }
+                  headless
                   onDone={(createdId) => {
                     if (sel?.kind === "new-relation")
                       setSel(
@@ -473,30 +582,124 @@ export function Ontology() {
   );
 }
 
-/* ---------- 停靠面板：模式图右侧的表单外壳（关闭键 + 近实底卡片列） ---------- */
+/* ---------- 停靠面板：模式图右侧的详情外壳 ----------
+   与图谱页的实体面板同一个结构：**标题行固定，只有下面的内容滚**。整列一起滚
+   的话，正在编辑的那个类叫什么、用了多少次、以及关闭键，都会滚出视野。
+   关闭键跟着标题走，不再单开一行——那一行既占掉顶上的高度，又让按钮看着不
+   属于任何一张卡片。
+
+   面也跟图谱页一样是 `glass-strong`：**指针一放上去就压实**（120ms 进、260ms
+   出，见 styles.css）。作者原本用近实底，理由是画布在动、透上来的动静会跟正在
+   读的字段打架——那个顾虑成立，而玻璃的 hover 压实正是对它的回答：人在用这块
+   面的时候它就是实的，手移开才透回去，画布的上下文也就没被一块死板挡住。
+
+   退场也照图谱页：`u-dock-out` 演完再卸载，而不是一下子消失 */
 
 function DockedPanel({
+  header,
+  tabs,
+  exiting,
   onClose,
   children,
 }: {
+  header: React.ReactNode;
+  /** 分段控件，跟着标题一起固定在顶上——它要能一直点得到 */
+  tabs?: React.ReactNode;
+  /** 正在退场：演动画，期间不再接受点击（u-dock-out 里带了 pointer-events） */
+  exiting?: boolean;
   onClose: () => void;
   children: React.ReactNode;
 }) {
   return (
-    <div className="absolute top-3 right-3 bottom-3 w-[26rem] z-10 flex flex-col gap-2">
-      <div className="shrink-0 flex justify-end">
+    <div
+      className={`${exiting ? "u-dock-out" : "u-dock-in"} glass-strong absolute top-3 right-3 bottom-3 w-[26rem] z-10 rounded-xl shadow-2xl flex flex-col`}
+    >
+      <div className="shrink-0 flex items-start justify-between gap-2 px-4 py-3.5 border-b border-white/10">
+        <div className="min-w-0">{header}</div>
         <button
           onClick={onClose}
           title={S.ontology.schemaClosePanel}
-          className="u-modal-panel rounded-full p-1.5 text-neutral-400 shadow-lg transition-colors hover:text-neutral-100"
+          className="mt-0.5 shrink-0 text-neutral-500 hover:text-neutral-200 transition-colors"
         >
-          <X size={14} />
+          <X size={15} />
         </button>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto u-scroll flex flex-col gap-3 pb-1">
+      {tabs && (
+        <div className="shrink-0 px-4 pt-3 pb-1">
+          <div className="flex rounded-lg overflow-hidden border border-white/10">
+            {tabs}
+          </div>
+        </div>
+      )}
+      <div className="u-scroll flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 px-4 py-3">
         {children}
       </div>
     </div>
+  );
+}
+
+/** 分段控件里的一格。与 Library / 图谱页那个是同一个写法 */
+function PanelTab({
+  active,
+  count,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  count?: number;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-[11px] transition-colors ${
+        active
+          ? "bg-white/10 text-neutral-100"
+          : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
+      }`}
+    >
+      {children}
+      {count !== undefined && count > 0 && (
+        <span className="u-num text-neutral-500">{count}</span>
+      )}
+    </button>
+  );
+}
+
+/* 面板标题：色点 + 名字 + 第二行的小字。与图谱页实体面板的头一个写法 */
+function PanelHeader({
+  color,
+  square,
+  title,
+  sub,
+  builtin,
+}: {
+  color?: string;
+  square?: boolean;
+  title: string;
+  sub?: string;
+  builtin?: boolean;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-2">
+        {color && (
+          <span
+            className={`h-2.5 w-2.5 shrink-0 ${square ? "" : "rounded-full"}`}
+            style={{ background: color, boxShadow: `0 0 8px ${color}55` }}
+          />
+        )}
+        <span
+          className="truncate text-[15px] font-semibold tracking-tight text-white"
+          style={{ fontFamily: "var(--font-display)" }}
+        >
+          {title}
+        </span>
+        {builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
+      </div>
+      {sub && <div className="mt-1 text-xs text-neutral-500">{sub}</div>}
+    </>
   );
 }
 
@@ -529,14 +732,14 @@ function InstancesCard({ kbId, type }: { kbId: string; type: EntityTypeView }) {
             to="/kb/$kbId/graph"
             params={{ kbId }}
             search={{ entity: e.id }}
-            className="flex items-center gap-2 py-1.5 text-sm text-neutral-300 hover:text-white"
+            className="group flex items-center gap-2 -mx-2 px-2 py-1.5 rounded-lg text-sm text-neutral-300 transition-colors hover:bg-white/[0.05] hover:text-white"
           >
             <span
               className={`h-2 w-2 shrink-0 ${type.shape === "square" ? "" : "rounded-full"}`}
               style={{ background: type.color }}
             />
             <span className="truncate">{e.name}</span>
-            <span className="ml-auto shrink-0 u-num text-[10.5px] text-neutral-600">
+            <span className="ml-auto shrink-0 u-num text-[10.5px] text-neutral-600 transition-colors group-hover:text-neutral-400">
               {S.ontology.instanceFacts(e.fact_count)}
             </span>
           </Link>
@@ -632,9 +835,11 @@ function RelationshipsCard({
   });
 
   const RelationRow = ({ r, dir }: { r: RelationTypeView; dir: "out" | "in" }) => (
+    // 悬停要有底色：这一行整条可点，只把文字提亮半级在深底上几乎看不出来。
+    // 底色用左栏那一档（white/[0.05]），右端的类型小字跟着一起提亮
     <button
       onClick={() => onSelect(r.id)}
-      className="w-full flex items-center gap-1.5 py-1.5 text-sm text-left text-neutral-300 hover:text-white"
+      className="group w-full flex items-center gap-1.5 -mx-2 px-2 py-1.5 rounded-lg text-sm text-left text-neutral-300 transition-colors hover:bg-white/[0.05] hover:text-white"
     >
       {dir === "out" ? (
         <ArrowRight size={12} className="shrink-0 text-[#c4a5ff]" />
@@ -642,7 +847,7 @@ function RelationshipsCard({
         <ArrowLeft size={12} className="shrink-0 text-[#c4a5ff]" />
       )}
       <span className="truncate">{r.label}</span>
-      <span className="ml-auto shrink-0 text-xs text-neutral-500 truncate max-w-[8rem]">
+      <span className="ml-auto shrink-0 text-xs text-neutral-500 truncate max-w-[8rem] transition-colors group-hover:text-neutral-300">
         {(dir === "out" ? r.ranges : r.domains).map(labelOf).join(", ") ||
           S.ontology.anyType}
       </span>
@@ -650,7 +855,8 @@ function RelationshipsCard({
   );
 
   return (
-    <div className="u-modal-panel rounded-xl p-4">
+    // 卡片在面板里边，底交给面板；这里与属性卡、实例卡同一个写法
+    <div className="glass rounded-xl p-4">
       <div className="mb-1 flex items-baseline gap-2">
         <h3 className="text-sm font-bold text-neutral-200">
           {S.ontology.schemaRelationships}
@@ -809,7 +1015,7 @@ export function AttributesCard({
             <button
               key={a.id}
               onClick={() => setEditing(a.id)}
-              className="w-full flex items-center gap-2 py-1.5 text-sm text-left text-neutral-300 hover:text-white"
+              className="w-full flex items-center gap-2 -mx-2 px-2 py-1.5 rounded-lg text-sm text-left text-neutral-300 transition-colors hover:bg-white/[0.05] hover:text-white"
             >
               <span className="truncate">{a.label}</span>
               <Chip tone="neutral">
@@ -1237,6 +1443,7 @@ export function ClassForm({
   parentId,
   allTypes,
   onNewSub,
+  headless,
   onDone,
   onError,
 }: {
@@ -1246,6 +1453,8 @@ export function ClassForm({
   allTypes: EntityTypeView[];
   /** 编辑已有类时提供：以当前类为父级新建子类 */
   onNewSub?: () => void;
+  /** 停靠面板把标题画在自己的固定头里，表单就不再画第二遍 */
+  headless?: boolean;
   /** 创建成功时携带新 id，编辑成功时为 undefined */
   onDone: (createdId?: string) => void;
   onError: (e: unknown) => void;
@@ -1310,22 +1519,24 @@ export function ClassForm({
   const lbl = "block text-xs font-medium text-neutral-500 mb-1";
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <span
-          className={`h-3 w-3 ${shape === "square" ? "" : "rounded-full"}`}
-          style={{ background: color }}
-        />
-        <span className="font-bold text-neutral-100">
-          {existing?.label ?? S.ontology.newClass}
-        </span>
-        {/* key 是纯技术标识：已存在时干脆不展示，只在创建时输入 */}
-        {existing?.builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
-        {existing && (
-          <span className="ml-auto text-xs text-neutral-500">
-            {S.ontology.usage(existing.usage)}
+      {!headless && (
+        <div className="flex items-center gap-2">
+          <span
+            className={`h-3 w-3 ${shape === "square" ? "" : "rounded-full"}`}
+            style={{ background: color }}
+          />
+          <span className="font-bold text-neutral-100">
+            {existing?.label ?? S.ontology.newClass}
           </span>
-        )}
-      </div>
+          {/* key 是纯技术标识：已存在时干脆不展示，只在创建时输入 */}
+          {existing?.builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
+          {existing && (
+            <span className="ml-auto text-xs text-neutral-500">
+              {S.ontology.usage(existing.usage)}
+            </span>
+          )}
+        </div>
+      )}
       {!existing && (
         <div>
           <label className={lbl}>
@@ -1477,6 +1688,7 @@ export function PropertyForm({
   allTypes,
   allRelations,
   initialDomain,
+  headless,
   onDone,
   onError,
 }: {
@@ -1489,6 +1701,8 @@ export function PropertyForm({
   /** 从模式图上一个类出发新建关系时，domain 预填成那个类——**只影响初始值**，
    *  不是约束：下面照旧是个可编辑的 MultiSearchSelect，填错了随手改 */
   initialDomain?: string | null;
+  /** 见 `ClassForm.headless` */
+  headless?: boolean;
   onDone: (createdId?: string) => void;
   onError: (e: unknown) => void;
 }) {
@@ -1607,17 +1821,19 @@ export function PropertyForm({
   const lbl = "block text-xs font-medium text-neutral-500 mb-1";
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <span className="font-bold text-neutral-100">
-          {existing?.label ?? S.ontology.newProperty}
-        </span>
-        {existing?.builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
-        {existing && (
-          <span className="ml-auto text-xs text-neutral-500">
-            {S.ontology.usage(existing.usage)}
+      {!headless && (
+        <div className="flex items-center gap-2">
+          <span className="font-bold text-neutral-100">
+            {existing?.label ?? S.ontology.newProperty}
           </span>
-        )}
-      </div>
+          {existing?.builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
+          {existing && (
+            <span className="ml-auto text-xs text-neutral-500">
+              {S.ontology.usage(existing.usage)}
+            </span>
+          )}
+        </div>
+      )}
       {!existing && (
         <div>
           <label className={lbl}>

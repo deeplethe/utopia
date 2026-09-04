@@ -1082,6 +1082,9 @@ export const zh: Strings = {
     schemaUnscoped: (n: number) => `未限定的属性（${n}）`,
     schemaUnscopedHint: "没有限定在具体的类上，画到画布上的连线会是本体没说过的话。选一个来查看或编辑。",
     schemaClosePanel: "关闭",
+    schemaTabDefinition: "定义",
+    schemaTabProperties: "属性",
+    schemaTabInstances: "实例",
     schemaAddRelationship: "新建关系…",
     schemaCheckDefects: (n) =>
       n === 1 ? "这次改动带来 1 个新的本体问题" : `这次改动带来 ${n} 个新的本体问题`,

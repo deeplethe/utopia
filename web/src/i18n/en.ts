@@ -1216,6 +1216,11 @@ export const en = {
     schemaUnscopedHint:
       "Not limited to specific classes, so no line on the canvas would be honest. Select one to inspect or edit it.",
     schemaClosePanel: "Close",
+    // 面板里的三段：定义（表单）/ 属性（关系 + 字面值字段）/ 实例。
+    // 用页面自己的词——左栏就叫 Classes / Properties
+    schemaTabDefinition: "Definition",
+    schemaTabProperties: "Properties",
+    schemaTabInstances: "Instances",
     schemaAddRelationship: "New relationship…",
     schemaCheckDefects: (n: number) =>
       n === 1
