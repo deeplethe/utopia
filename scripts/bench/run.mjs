@@ -109,7 +109,11 @@ async function main() {
   // 答案键是**可选的**。有些语料不是准确性基准：holmes 那份是 demo 空镜与
   // 实体消解夹具，模型早就读过它，量类型准确性量到的是记忆而不是这条流水线。
   // 没有答案键就只报规模、耗时与图的形状，不打分——比编一份假答案诚实
-  const truthPath = path.join(HERE, "truth", corpusName + ".json");
+  // --truth 换一份答案卷（如 make-truth.mjs 生成的 truth/<corpus>.wikidata.json）：
+  // 同一组结果对两份答案各打一次分，差异就是「答案错了还是系统错了」的第一手材料
+  const truthPath = args.truth
+    ? path.resolve(args.truth)
+    : path.join(HERE, "truth", corpusName + ".json");
   const truth = fs.existsSync(truthPath)
     ? JSON.parse(fs.readFileSync(truthPath, "utf8")).expect
     : null;
@@ -330,6 +334,7 @@ async function main() {
       {
         label,
         corpus: corpusName,
+        truth: truth ? path.basename(truthPath) : null,
         ontology: args.ontology ? path.basename(args.ontology) : null,
         kb_id: kb,
         order: ontologyFirst ? "ontology-first" : "documents-first",

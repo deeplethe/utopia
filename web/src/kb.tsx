@@ -2,7 +2,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type Kb, type Workspace } from "./api";
+import { api, DEFAULT_ONTOLOGY_PACKS, type Kb, type Workspace } from "./api";
 import { kbStore, wsStore } from "./wsStore";
 
 /** 当前路径里的知识库 id。**页面都在 /kb/$kbId 之下，所以直接从路径取**——
@@ -53,9 +53,15 @@ export function useKb(): {
       const existing = await api.kbs(ws!.id);
       if (existing.length > 0) return existing;
       // 空工作区自动创建 General——建库现在是管理员动作，非管理员会 403：
-      // 静默等管理员来创建（现实中首个用户即管理员，General 总在）
+      // 静默等管理员来创建（现实中首个用户即管理员，General 总在）。
+      // **带默认本体包。** 从前这里不传 packs，于是一个新部署的第一个库一个类
+      // 都没有，第一批文档抽出来全是未分类实体；建库对话框里那个"默认 schema.org"
+      // 只对第二个库起效。第一个库恰恰是大多数人唯一会用的那个
       try {
-        const created = await api.createKb(ws!.id, { name: "General" });
+        const created = await api.createKb(ws!.id, {
+          name: "General",
+          ontology_packs: DEFAULT_ONTOLOGY_PACKS,
+        });
         queryClient.invalidateQueries({ queryKey: ["kbs", ws!.id] });
         return [created];
       } catch {

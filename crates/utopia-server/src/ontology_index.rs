@@ -10,8 +10,31 @@
 
 use crate::{llm_util, AppState};
 use futures_util::{stream, StreamExt};
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 use utopia_store::ontology::TypeToEmbed;
 use uuid::Uuid;
+
+/// 同一个库的补齐一次只跑一个（#282）。
+///
+/// 建库装三个包，每个包各排一个 `embed_ontology` 任务，worker 并发 64，三个任务
+/// 同时起跑、同时读到同一批 3752 个待嵌条目、各嵌一遍：嵌入调用翻三倍，
+/// 而结果一模一样。所以按库排队：后到的等前一个跑完再进，进来时再查一遍待嵌，
+/// 通常只剩前一个读完集合之后才装进来的那几条。**等而不是跳过**——跳过的话，
+/// 前一个没看见的条目要等下一次不知何时的补齐。
+///
+/// 表不清理：一个库一把锁，条目数以库计，几十上百把锁不值得为它加一轮回收。
+static PER_KB: LazyLock<Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(Default::default);
+
+fn lock_for(kb_id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
+    PER_KB
+        .lock()
+        .expect("per-kb refresh lock table poisoned")
+        .entry(kb_id)
+        .or_default()
+        .clone()
+}
 
 /// 一次送多少条去嵌入。
 ///
@@ -48,6 +71,9 @@ pub async fn refresh_scoped(
     kb_id: Uuid,
     only: Option<utopia_store::ontology::TypeKind>,
 ) -> anyhow::Result<usize> {
+    // 同库串行：见 PER_KB。锁在这个 future 里一直握到函数返回
+    let lock = lock_for(kb_id);
+    let _serial = lock.lock().await;
     // 库可能已经被删了——任务是导入时排的，中间隔着几分钟。
     // 这不是失败，是没事可做；当成错误的话它还要重试三次才放弃
     let Ok(kb) = utopia_store::kbs::get(&state.pool, kb_id).await else {
@@ -182,4 +208,28 @@ pub enum Target {
     /// `Some("attribute")` 只找属性、`Some("relation")` 只找关系、`None` 都找。
     /// 字面值宾语的事实要的是属性，实体宾语的要的是关系
     Predicate(Option<&'static str>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 同一个库的两次补齐排队，不同库互不相干。守的是 #282 的那条：三个包排的
+    /// 三个任务不能同时读同一批待嵌条目
+    #[tokio::test]
+    async fn refreshes_of_one_base_take_turns() {
+        let a = Uuid::now_v7();
+        let b = Uuid::now_v7();
+        let first = lock_for(a);
+        let held = first.lock().await;
+        // 同库：第二个拿不到
+        assert!(
+            lock_for(a).try_lock().is_err(),
+            "同一个库的第二次补齐应当排队"
+        );
+        // 别的库：不受影响
+        assert!(lock_for(b).try_lock().is_ok(), "别的库不该被这把锁挡住");
+        drop(held);
+        assert!(lock_for(a).try_lock().is_ok(), "前一个放开后下一个才进");
+    }
 }

@@ -76,6 +76,13 @@ pub async fn create(
         user.id,
     )
     .await?;
+    // **登记完就能挂。** 授权是按工作区的（0014），可工作区在界面上已经隐形——
+    // 单租户部署只有一个，谁也没见过它的名字。从前登记完还要在卡片上先
+    // 「授权给工作区」，等于让人授权一件从没见过的东西，挂载时只得到一句
+    // 「未授权」。所以登记人所在的每个工作区一并授权；要收窄，卡片上仍能撤销
+    for ws in utopia_store::workspaces::list_for_user(&state.pool, user.id).await? {
+        utopia_store::datasources::grant(&state.pool, id, ws.id, user.id).await?;
+    }
     Ok(Json(json!({ "id": id })))
 }
 

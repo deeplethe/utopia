@@ -973,6 +973,10 @@ export type AlertGroup = {
   lines: { name?: string; error?: string; job?: string }[];
 };
 
+/** 新库默认装的本体包。建库对话框和自动建出的第一个库都从这里取，
+ *  两处只能有一个答案：README 承诺的是「默认 schema.org」，不是「默认没有词表」 */
+export const DEFAULT_ONTOLOGY_PACKS = ["schema-org"];
+
 export const api = {
   health: () =>
     request<{ status: string; name: string; version: string }>(
