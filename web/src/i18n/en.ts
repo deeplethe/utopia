@@ -1216,14 +1216,21 @@ export const en = {
     schemaUnscopedHint:
       "Not limited to specific classes, so no line on the canvas would be honest. Select one to inspect or edit it.",
     schemaClosePanel: "Close",
-    schemaAddRelationship: "Add relationship…",
-    schemaAddRelationshipHint: (label: string) =>
-      `New property starting from ${label}.`,
+    schemaAddRelationship: "New relationship…",
     schemaCheckDefects: (n: number) =>
       n === 1
         ? "1 new ontology issue from this change"
         : `${n} new ontology issues from this change`,
     schemaCheckReview: "Review",
+    schemaRelationships: "Relationships",
+    schemaOutgoing: "From this class",
+    schemaIncoming: "To this class",
+    schemaNoRelationships: "No relationships yet.",
+    schemaConnectHint: "Connect using an existing relationship",
+    schemaConnectPlaceholder: "Search relationships…",
+    schemaConnectAs: "As",
+    schemaConnect: "Connect",
+    schemaConnected: (label: string) => `Connected via ${label}.`,
   },
   mapping: {
     title: "Data mapping",

@@ -5,6 +5,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
+  ArrowLeft,
+  ArrowRight,
   ChevronRight,
   Inbox,
   Network,
@@ -408,20 +410,21 @@ export function Ontology() {
               </div>
               {selectedClass && (
                 <>
-                  {/* 从这个类出发新建关系：domain 预填成它——孤立节点也不再是
-                      死胡同，选中它就看得到「新增关系」这条路 */}
-                  <button
-                    onClick={() =>
+                  <RelationshipsCard
+                    kbId={kb.id}
+                    cls={selectedClass}
+                    relations={relations}
+                    allTypes={entity_types}
+                    onChanged={afterOntologyChange}
+                    onError={onError}
+                    onSelect={(id) => setSel({ kind: "relation", id })}
+                    onAddNew={() =>
                       setSel({
                         kind: "new-relation",
                         initialDomain: selectedClass.id,
                       })
                     }
-                    className="u-modal-panel rounded-xl p-3 flex items-center gap-2 text-[13px] text-neutral-300 hover:text-white transition-colors"
-                  >
-                    <Plus size={13} className="text-neutral-500" />
-                    {S.ontology.schemaAddRelationship}
-                  </button>
+                  />
                   <AttributesCard
                     kbId={kb.id}
                     type={selectedClass}
@@ -540,6 +543,213 @@ function InstancesCard({ kbId, type }: { kbId: string; type: EntityTypeView }) {
         ))}
       </div>
       <Pager total={total} pageSize={PER} page={page} onPage={setPage} />
+    </div>
+  );
+}
+
+/* ---------- 关系卡片：这个类作为主语/宾语连着哪些关系 + 用已有关系接一条新的 ---------- */
+
+/** 「新建关系」（PropertyForm）解决的是本体里还没有这条关系的情况；这张卡片
+ *  解决另一半——**这个类身上已经挂着哪些关系**（从它出发的、指向它的），
+ *  以及更常见的那种需求：不是每次都要一条新关系，而是把这个类接到一条
+ *  已经存在的关系上（`works_at` 已经连着 Person→Organization，
+ *  再建一个 Contractor 时多半是把 Contractor 也加进 works_at 的 domain，
+ *  不是另建一条 works_at_2）。后一半直接改写已有关系的 domains/ranges，
+ *  走的是 PropertyForm 保存时同一个 updateRelationType，只是把「打开表单、
+ *  找到多选框、加一个类」压缩成一步。 */
+function RelationshipsCard({
+  kbId,
+  cls,
+  relations,
+  allTypes,
+  onChanged,
+  onError,
+  onSelect,
+  onAddNew,
+}: {
+  kbId: string;
+  cls: EntityTypeView;
+  /** kind === "relation" 的那些——attribute 的宾语是字面值，谈不上「连着」 */
+  relations: RelationTypeView[];
+  allTypes: EntityTypeView[];
+  onChanged: () => void;
+  onError: (e: unknown) => void;
+  onSelect: (relationId: string) => void;
+  onAddNew: () => void;
+}) {
+  const labelOf = (id: string) =>
+    allTypes.find((t) => t.id === id)?.label ?? id;
+  // 自环关系（domain 和 range 都是这个类）两边都算——它确实两个方向都成立
+  const outgoing = relations.filter((r) => r.domains.includes(cls.id));
+  const incoming = relations.filter((r) => r.ranges.includes(cls.id));
+
+  const [connectId, setConnectId] = useState("");
+  const [connectSide, setConnectSide] = useState<"domain" | "range">("domain");
+  useEffect(() => {
+    setConnectId("");
+  }, [cls.id]);
+
+  const connect = useMutation({
+    mutationFn: () => {
+      const rel = relations.find((r) => r.id === connectId);
+      if (!rel) return Promise.reject(new Error("relation not found"));
+      // 只加不减：已经连着的那一侧原样保留，另一侧才可能被追加。
+      // Set 去重——挑到已经连过的关系时这是个无害的空操作，不必先禁用按钮
+      const domains =
+        connectSide === "domain"
+          ? [...new Set([...rel.domains, cls.id])]
+          : rel.domains;
+      const ranges =
+        connectSide === "range"
+          ? [...new Set([...rel.ranges, cls.id])]
+          : rel.ranges;
+      return api.updateRelationType(kbId, rel.id, {
+        label: rel.label,
+        temporal: rel.temporal,
+        functional: rel.functional,
+        inverse_functional: rel.inverse_functional,
+        is_transitive: rel.is_transitive,
+        is_symmetric: rel.is_symmetric,
+        is_asymmetric: rel.is_asymmetric,
+        is_irreflexive: rel.is_irreflexive,
+        inverse_of: rel.inverse_of,
+        sub_property_of: rel.sub_property_of,
+        description: rel.description,
+        domains,
+        ranges,
+      });
+    },
+    onSuccess: () => {
+      const rel = relations.find((r) => r.id === connectId);
+      toast.success(S.ontology.schemaConnected(rel?.label ?? ""));
+      const id = connectId;
+      setConnectId("");
+      onChanged();
+      // 连完直接跳到那条关系：域/值域改没改、改对了没有，一眼可见
+      onSelect(id);
+    },
+    onError,
+  });
+
+  const RelationRow = ({ r, dir }: { r: RelationTypeView; dir: "out" | "in" }) => (
+    <button
+      onClick={() => onSelect(r.id)}
+      className="w-full flex items-center gap-1.5 py-1.5 text-sm text-left text-neutral-300 hover:text-white"
+    >
+      {dir === "out" ? (
+        <ArrowRight size={12} className="shrink-0 text-[#c4a5ff]" />
+      ) : (
+        <ArrowLeft size={12} className="shrink-0 text-[#c4a5ff]" />
+      )}
+      <span className="truncate">{r.label}</span>
+      <span className="ml-auto shrink-0 text-xs text-neutral-500 truncate max-w-[8rem]">
+        {(dir === "out" ? r.ranges : r.domains).map(labelOf).join(", ") ||
+          S.ontology.anyType}
+      </span>
+    </button>
+  );
+
+  return (
+    <div className="u-modal-panel rounded-xl p-4">
+      <div className="mb-1 flex items-baseline gap-2">
+        <h3 className="text-sm font-bold text-neutral-200">
+          {S.ontology.schemaRelationships}
+        </h3>
+        {outgoing.length + incoming.length > 0 && (
+          <span className="u-num text-xs text-neutral-500">
+            {outgoing.length + incoming.length}
+          </span>
+        )}
+      </div>
+      {outgoing.length === 0 && incoming.length === 0 ? (
+        <p className="text-xs text-neutral-500 mb-2">
+          {S.ontology.schemaNoRelationships}
+        </p>
+      ) : (
+        <div className="mb-2">
+          {outgoing.length > 0 && (
+            <>
+              <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-0.5">
+                {S.ontology.schemaOutgoing}
+              </div>
+              <div className="divide-y divide-white/[0.06] mb-1.5">
+                {outgoing.map((r) => (
+                  <RelationRow key={`out:${r.id}`} r={r} dir="out" />
+                ))}
+              </div>
+            </>
+          )}
+          {incoming.length > 0 && (
+            <>
+              <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-0.5">
+                {S.ontology.schemaIncoming}
+              </div>
+              <div className="divide-y divide-white/[0.06]">
+                {incoming.map((r) => (
+                  <RelationRow key={`in:${r.id}`} r={r} dir="in" />
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+      <div className="pt-2 border-t border-white/5">
+        <p className="text-[11px] text-neutral-500 mb-1.5">
+          {S.ontology.schemaConnectHint}
+        </p>
+        <div className="flex gap-1.5 mb-1.5">
+          <SearchSelect
+            value={connectId}
+            onChange={setConnectId}
+            options={relations.map((r) => ({
+              value: r.id,
+              label: r.label,
+              hint: r.key,
+            }))}
+            size="sm"
+            className="flex-1 min-w-0"
+            placeholder={S.ontology.schemaConnectPlaceholder}
+          />
+        </div>
+        <div className="flex items-center gap-1.5 mb-2">
+          <span className="text-[11px] text-neutral-500">
+            {S.ontology.schemaConnectAs}
+          </span>
+          <div className="flex rounded-lg overflow-hidden border border-white/10">
+            {(["domain", "range"] as const).map((side) => (
+              <button
+                key={side}
+                onClick={() => setConnectSide(side)}
+                className={cn(
+                  "px-2 py-1 text-[11px] transition-colors",
+                  connectSide === side
+                    ? "bg-white/[0.12] text-white"
+                    : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300",
+                )}
+              >
+                {side === "domain" ? S.ontology.domainLabel : S.ontology.rangeLabel}
+              </button>
+            ))}
+          </div>
+        </div>
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={!connectId || connect.isPending}
+          onClick={() => connect.mutate()}
+        >
+          {S.ontology.schemaConnect}
+        </Button>
+      </div>
+      <div className="mt-2 pt-2 border-t border-white/5">
+        <button
+          onClick={onAddNew}
+          className="flex items-center gap-1.5 text-[13px] text-neutral-500 hover:text-neutral-200 transition-colors"
+        >
+          <Plus size={13} />
+          {S.ontology.schemaAddRelationship}
+        </button>
+      </div>
     </div>
   );
 }
