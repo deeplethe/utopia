@@ -255,6 +255,177 @@ pub async fn update_entity(
     Ok(Json(json!({ "entity": after, "same_name": peers })))
 }
 
+/// 一条事实的新有效区间。**整体替换，不是部分更新**：区间的两端互相定义，
+/// 「把结束端清空」与「这次不动结束端」必须能分辨，而缺字段与 null 在 JSON 里
+/// 分不开。界面提交的是表单里的四个值，不是差异。
+#[derive(Deserialize)]
+pub struct FactTimePatch {
+    #[serde(default)]
+    pub valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub valid_from_precision: Option<String>,
+    #[serde(default)]
+    pub valid_to: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub valid_to_precision: Option<String>,
+    /// 为什么改。落进台账，不进图——「之前记错了」与「新证据说是六月」在账本上
+    /// 长得一样，硬加一个类型枚举会让入口变重而判据模糊；真需要分辨了，再从
+    /// 这里升格成字段
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+const DATE_PRECISIONS: [&str; 3] = ["year", "month", "day"];
+
+/// 修改前的区间，用于「一字未改」的判定与台账里的前后对照。
+#[derive(sqlx::FromRow)]
+struct FactInterval {
+    valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    valid_from_precision: Option<String>,
+    valid_to: Option<chrono::DateTime<chrono::Utc>>,
+    valid_to_precision: Option<String>,
+}
+
+/// 复刻 `facts` 表的两条 CHECK，外加一条数据库没有的：起点不能晚于终点。
+///
+/// 在这里挡住是为了让错误说人话。交给数据库挡会得到一句约束名，而这三态
+/// （仍在持续 / 结束了不知哪天 / 某日结束）本来就是账本里最容易记混的地方。
+fn check_interval(p: &FactTimePatch) -> Result<(), AppError> {
+    // 起始端：没日期就没精度，且没有 unknown 档——「开始了但不知何时」与
+    // 「不知道有没有开始」在这个账本里不可区分（见迁移 0003 的注释）
+    match (&p.valid_from, p.valid_from_precision.as_deref()) {
+        (Some(_), Some(prec)) if DATE_PRECISIONS.contains(&prec) => {}
+        (None, None) => {}
+        _ => return Err(AppError::invalid(
+            "bad_valid_from",
+            "A start date needs a precision of year, month or day, and a precision needs a date.",
+        )),
+    }
+    // 结束端：有日期必有精度；没日期只能是仍在持续（都为空）或结束了不知哪天
+    match (&p.valid_to, p.valid_to_precision.as_deref()) {
+        (Some(_), Some(prec)) if DATE_PRECISIONS.contains(&prec) => {}
+        (None, None) => {}
+        (None, Some(prec)) if prec == utopia_store::graph::ENDED_UNKNOWN => {}
+        _ => {
+            return Err(AppError::invalid(
+                "bad_valid_to",
+                "An end date needs a precision of year, month or day. Leave the date empty for still going, or mark it ended with an unknown date.",
+            ))
+        }
+    }
+    if let (Some(from), Some(to)) = (p.valid_from, p.valid_to) {
+        if from > to {
+            return Err(AppError::invalid(
+                "interval_inverted",
+                "The start of the interval is after its end.",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 人工修正一条事实的有效区间。抽取给的是初判，此前判错只能删掉文档重抽——
+/// 名字判错有 Review 可改（见 `update_entity`），时间判错没有入口，而这个
+/// 产品卖的正是时间。
+///
+/// 走账本不走原地改：`correct_interval` 作废旧行、插带 `supersedes` 的修正行。
+/// 于是这次修改本身出现在记录轴上（实体面板的 History），世界轴上只留新区间——
+/// 旧区间是我们记错了，不是世界曾经的样子，两段并排会被读成换过两次岗。
+pub async fn update_fact_time(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, fact_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<FactTimePatch>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    check_interval(&req)?;
+
+    // 归属与状态校验：本 KB 的、未作废的事实才可改。派生事实不在此列——
+    // 它的区间来自前提，改它等于改一个算出来的值，下一轮推理就会覆盖
+    let before: Option<FactInterval> = sqlx::query_as(
+        "SELECT valid_from, valid_from_precision, valid_to, valid_to_precision
+         FROM facts
+         WHERE id = $1 AND kb_id = $2 AND invalidated_at IS NULL AND derived_by_rule IS NULL",
+    )
+    .bind(fact_id)
+    .bind(kb_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Db)?;
+    let Some(before) = before else {
+        return Err(AppError::NotFound.into());
+    };
+    // 一字未改就不写一条修正进账本：History 上多一行「改过」而区间没动，
+    // 读者会去找那个不存在的差异
+    if before.valid_from == req.valid_from
+        && before.valid_from_precision == req.valid_from_precision
+        && before.valid_to == req.valid_to
+        && before.valid_to_precision == req.valid_to_precision
+    {
+        return Ok(Json(json!({ "ok": true, "unchanged": true })));
+    }
+
+    let snap = crate::api::review_routes::fact_snapshot(&state, kb_id, fact_id).await;
+    let validity = utopia_store::graph::Validity {
+        from: req.valid_from,
+        from_precision: req.valid_from_precision.as_deref(),
+        to: req.valid_to,
+        to_precision: req.valid_to_precision.as_deref(),
+    };
+    let Some(corrected) =
+        utopia_store::temporal::correct_interval(&state.pool, fact_id, validity).await?
+    else {
+        // 并发：另一处已经改写或作废了它。让界面重取，不要把两次修正叠起来
+        return Err(AppError::invalid(
+            "fact_changed",
+            "This fact was changed by someone else. Reload and try again.",
+        )
+        .into());
+    };
+
+    // 改完要重新对账：把起点往前挪可能撞上前任的开放区间，那正是时态引擎
+    // 该管的事。复用搬移后的那条路径——换了区间与换了主宾一样，都让唯一性
+    // 不变量第一次看到这次相撞
+    let report =
+        utopia_store::temporal::reconcile_moved_facts(&state.pool, kb_id, &[corrected]).await?;
+
+    if let Some(mut d) = snap {
+        d["from"] = json!({
+            "valid_from": before.valid_from.map(|t| t.to_rfc3339()),
+            "valid_from_precision": before.valid_from_precision,
+            "valid_to": before.valid_to.map(|t| t.to_rfc3339()),
+            "valid_to_precision": before.valid_to_precision,
+        });
+        d["to"] = json!({
+            "valid_from": req.valid_from.map(|t| t.to_rfc3339()),
+            "valid_from_precision": req.valid_from_precision,
+            "valid_to": req.valid_to.map(|t| t.to_rfc3339()),
+            "valid_to_precision": req.valid_to_precision,
+        });
+        if let Some(note) = req.note.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            d["note"] = json!(note);
+        }
+        let _ = utopia_store::audit::record(
+            &state.pool,
+            Some(kb_id),
+            user.id,
+            "fact.time_corrected",
+            "fact",
+            Some(fact_id),
+            d,
+        )
+        .await;
+    }
+
+    state.emit_review(kb_id);
+    Ok(Json(json!({
+        "ok": true,
+        "fact_id": corrected,
+        "closed": report.corrected.len(),
+        "conflicts": report.conflicts,
+    })))
+}
+
 pub async fn fact_evidence(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,

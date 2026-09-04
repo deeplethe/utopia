@@ -26,7 +26,11 @@ axum = { version = "0.8", features = ["multipart"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 sqlx = { version = "0.8", default-features = false, features = [
-    "runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros",
+    # mysql 只为问数引擎而开（query_engine::mysql）：一条线协议顺带覆盖
+    # TiDB / OceanBase / Doris / StarRocks。本体的库始终是 postgres。
+    # bigdecimal 是 DECIMAL 唯一的读法——驱动把 DECIMAL 同时挡在 f64 和 String
+    # 之外（"floating-point numbers have different semantics"），没有它金额列会整列变 null
+    "runtime-tokio", "tls-rustls", "postgres", "mysql", "bigdecimal", "uuid", "chrono", "json", "migrate", "macros",
 ] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

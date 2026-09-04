@@ -20,7 +20,11 @@ type ConflictSnapshot = (String, Option<String>, String, Option<String>, String)
 
 /// 事实快照（决策台账用）：reject 后事实从图里消失，台账必须自包含展示文本。
 /// 一律在动作执行前取。
-async fn fact_snapshot(state: &AppState, kb_id: Uuid, fact_id: Uuid) -> Option<serde_json::Value> {
+pub(crate) async fn fact_snapshot(
+    state: &AppState,
+    kb_id: Uuid,
+    fact_id: Uuid,
+) -> Option<serde_json::Value> {
     // 宾语可能是实体或字面值；结构化字面值优先取 summary（与队列卡片同一显示口径）
     let row: Option<(String, Option<String>, Option<String>, f32)> = sqlx::query_as(
         "SELECT s.canonical_name, COALESCE(r.label, fact_surface_predicate(f.id)),

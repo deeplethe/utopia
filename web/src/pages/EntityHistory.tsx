@@ -60,10 +60,18 @@ function objectText(e: EntityHistoryEvent): string {
   return raw === undefined || raw === null ? "—" : String(raw);
 }
 
-/** 这次变更对有效区间做了什么（记录轴上的事件，改的是有效轴上的边界） */
+/** 这次变更对有效区间做了什么（记录轴上的事件，改的是有效轴上的边界）。
+ *
+ *  修正行**不再假设修正就是闭合**。从前这里是「有 valid_to 就说 closed at，
+ *  否则什么都不说」，那在只有自动闭合的年代成立；人工改起点（302）产生的
+ *  修正行没有结束端，于是整条事件只剩一个图标，看不出改成了什么。
+ *
+ *  两个分支说的都是修正**之后**的状态，不声称原因——引擎接任、Review 裁决
+ *  和有人手改在这一行上分不出来，也不必分：谁改的写在下面那行的归因里。 */
 function intervalNote(e: EntityHistoryEvent): string | null {
-  if (e.kind === "corrected") {
-    return e.valid_to ? S.graph.historyClosedAt(ym(e.valid_to)!) : null;
+  // 结束端存在 = 区间在此闭合。这句对三种来源都成立
+  if (e.kind === "corrected" && e.valid_to) {
+    return S.graph.historyClosedAt(ym(e.valid_to)!);
   }
   const from = ym(e.valid_from);
   if (!from) return null;

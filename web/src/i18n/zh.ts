@@ -760,8 +760,24 @@ export const zh: Strings = {
     timelineEmpty: "还没有带日期的事实。",
     lastConfirmed: (d: string) => `${d} 确认`,
     correctedHint:
-      "这个区间是被调和过程闭合的（自动接续或一次审阅决定），并非文档里逐字这么写。" +
-      "被取代的那条断言仍留在台账里。",
+      "这个区间来自一次修正，并非文档里逐字这么写：自动接续、审阅决定，或有人手工改过。" +
+      "被取代的那条断言仍留在台账里——谁改的、何时改的见「变更」。",
+    editTime: "修正区间",
+    timeStart: "起点",
+    timeEnd: "终点",
+    timeEndOpen: "仍在持续",
+    timeEndUnknown: "已结束，日期不详",
+    timeEndDate: "结束于",
+    timeFormat: "2023、2023-06 或 2023-06-15",
+    timeBadDate: "请写成 2023、2023-06 或 2023-06-15。",
+    timeNote: "原因（选填）",
+    timeNotePlaceholder: "文档说的是 2023 年上半年",
+    timeSave: "保存",
+    timeCancel: "取消",
+    timeSaved: "区间已修正",
+    timeSavedClosed: (n: number) => `区间已修正——顺带闭合了 ${n} 条现行事实`,
+    timeSavedConflicts: (n: number) =>
+      `区间已修正——${n} 条冲突待在审阅里裁决`,
     ongoing: "至今",
     endedUnknown: "已结束（时间不详）",
     stats: (n: number, e: number, active: number | null) =>
@@ -838,6 +854,7 @@ export const zh: Strings = {
       connString: "连接串，前缀决定引擎",
       connSchemes:
         "postgres://user:pass@host:5432/db\n" +
+        "mysql://user:pass@host:3306/db   （MariaDB、TiDB、OceanBase、Doris、StarRocks）\n" +
         "trino://user[:pass]@host:8080/catalog[/schema]   （Iceberg、Delta Lake、Hive）\n" +
         "databricks://:TOKEN@host/sql/1.0/warehouses/ID?catalog=main\n" +
         "snowflake://:TOKEN@account.snowflakecomputing.com/DB/SCHEMA?warehouse=WH",

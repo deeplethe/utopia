@@ -299,6 +299,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/facts/{fact_id}/evidence",
             get(graph_routes::fact_evidence),
         )
+        // 人工修正有效区间（302）：与实体的 PATCH 对称，走账本不原地改
+        .route(
+            "/kbs/{id}/facts/{fact_id}",
+            patch(graph_routes::update_fact_time),
+        )
         // 派生事实的证明（0002 R2）：前提按顺序展开到原句
         .route(
             "/kbs/{id}/derived/{derived_id}/proof",

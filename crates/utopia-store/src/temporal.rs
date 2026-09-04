@@ -275,19 +275,77 @@ pub async fn close_superseded(
         .bind(fact_id)
         .execute(&mut *tx)
         .await?;
+    copy_evidence(&mut tx, fact_id, corrected).await?;
+    tx.commit().await?;
+    Ok(corrected)
+}
+
+/// 证据引用随修正行复制。表层谓词一起搬：纠正的是时间区间，不是原文说了什么。
+async fn copy_evidence(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    from: Uuid,
+    to: Uuid,
+) -> AppResult<()> {
     sqlx::query(
-        // 表层谓词随证据一起搬：纠正的是时间区间，不是原文说了什么
         "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version)
          SELECT $1, chunk_id, quote, proposed_predicate, document_id, doc_version
          FROM fact_evidence WHERE fact_id = $2
          ON CONFLICT DO NOTHING",
     )
+    .bind(to)
+    .bind(from)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// 人工修正一条事实的有效区间。与自动闭合同一机制（作废 + 改写），区别只在
+/// 两端都来自参数，而不是继承旧行的起点。
+///
+/// 抽取把「2023 年上半年」读成 1 月 1 日，在此之前只能删掉文档重抽一遍：
+/// 名字判错有 Review 可改，时间判错没有入口，而整条时间线都歪在那一个值上。
+///
+/// **不原地 UPDATE。** 原地改会把修正本身抹掉，而那正是记录轴要回放的东西
+/// （0019）——改过之后，问三月与问九月应当得到不同的区间。这也是这个函数
+/// 与一条 `UPDATE facts SET valid_from = …` 的全部差别。
+///
+/// 返回修正行 id；`None` 表示这条已被并发改写或作废，本次没有动手。
+pub async fn correct_interval(
+    pool: &PgPool,
+    fact_id: Uuid,
+    validity: crate::graph::Validity<'_>,
+) -> AppResult<Option<Uuid>> {
+    let mut tx = pool.begin().await?;
+    let corrected = Uuid::now_v7();
+    let inserted: Option<(Uuid,)> = sqlx::query_as(
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
+                            valid_from, valid_from_precision,
+                            valid_to, valid_to_precision, confidence, supersedes)
+         SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
+                $3, $4, $5, $6, confidence, id
+         FROM facts WHERE id = $2 AND invalidated_at IS NULL
+         RETURNING id",
+    )
     .bind(corrected)
     .bind(fact_id)
-    .execute(&mut *tx)
+    .bind(validity.from)
+    .bind(validity.from_precision)
+    .bind(validity.to)
+    .bind(validity.to_precision)
+    .fetch_optional(&mut *tx)
     .await?;
+    // 已被并发修正过：不重复动手（与 close_superseded 同一防线）
+    if inserted.is_none() {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
+        .bind(fact_id)
+        .execute(&mut *tx)
+        .await?;
+    copy_evidence(&mut tx, fact_id, corrected).await?;
     tx.commit().await?;
-    Ok(corrected)
+    Ok(Some(corrected))
 }
 
 async fn record_conflict(
