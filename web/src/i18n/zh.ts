@@ -686,6 +686,7 @@ export const zh: Strings = {
     sameNameNote: (n: number) => `另有 ${n} 个实体同名。`,
     sameNameHint: "如果它们是同一个东西，去「审阅」里合并。",
     mergeInto: "并入",
+    mergeTitle: "合并实体",
     mergeIntoHint: "把那个实体并进这一个。它的事实搬过来；合并可以撤销。",
     mergeConfirm: (from: string, into: string) =>
       `把「${from}」并进「${into}」？它的事实会搬过来。可以在审阅页撤销。`,
@@ -945,7 +946,7 @@ export const zh: Strings = {
       text: "文本",
       number: "数字",
       date: "日期",
-      bool: "是 / 否",
+      bool: "布尔",
     },
     cancel: "取消",
     key: "Key",
@@ -957,7 +958,7 @@ export const zh: Strings = {
     disjoint: "不可能同时是",
     disjointHint:
       "任何东西不可能同时属于的类。人不是组织。一致性检查据此找出永远不可能有实例的类。",
-    noDisjoint: "没有排除任何类",
+    noDisjoint: "尚未声明",
     disjointWithParent:
       "这个类继承自一个它声明不可能是的类——没有任何东西能满足它。",
     primaryParentHint: "左栏的树里挂在第一个下面。",
@@ -1427,6 +1428,7 @@ export const zh: Strings = {
     systemAdmin: "系统管理员",
     remove: "移除",
     deactivate: "停用账号",
+    cancel: "取消",
     deactivateHint:
       "断掉整个系统的访问——登录与已签发的 token 都失效。他做过的事仍然记在他名下。",
     deactivatedTitle: "已停用的账号",
