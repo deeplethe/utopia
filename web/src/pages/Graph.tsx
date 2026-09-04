@@ -1416,7 +1416,7 @@ export function Graph() {
       <div className="absolute top-3 left-3 right-3 z-10 flex items-start gap-2 pointer-events-none">
         <div className="relative pointer-events-auto">
           <input
-            className="input-dark w-60 px-3 py-1.5 text-sm shadow-lg"
+            className="input-dark w-60 px-3 py-[5px] text-sm shadow-lg"
             placeholder={
               inSubgraph ? S.graph.searchInSubgraph : S.graph.searchEntity
             }
