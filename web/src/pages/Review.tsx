@@ -86,6 +86,8 @@ function DuplicateCard({
   busy: boolean;
   onDecide: (action: "merge" | "keep") => void;
 }) {
+  const reasonCode = item.reason?.split("|", 1)[0];
+
   return (
     <div className="glass rounded-xl p-4">
       <div className="flex gap-4">
@@ -101,9 +103,11 @@ function DuplicateCard({
             ? S.review.stageHuman
             : S.review.stageAdjudicating}
         </span>
-        <span className="text-xs text-neutral-500">
-          {S.review.similarity(Math.round(item.score * 100))}
-        </span>
+        {reasonCode !== "namesake" && (
+          <span className="text-xs text-neutral-500">
+            {S.review.similarity(Math.round(item.score * 100))}
+          </span>
+        )}
         {item.reason && (
           <span className="text-xs text-neutral-600 truncate min-w-0">
             {escalationText(item.reason)}

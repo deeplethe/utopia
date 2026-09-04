@@ -1028,9 +1028,6 @@ export const en = {
     description: "Description",
     descriptionHint:
       "Guides the extractor: what belongs here, with a couple of examples. Fed straight into the extraction prompt.",
-    overviewHint:
-      "The schema your extractor follows. Select a class or property on the left to edit it, or add new ones with the + buttons.",
-    overviewStats: (c: number, p: number) => `${c} classes · ${p} properties`,
     attributes: "Attributes",
     attributesHint:
       "Literal-valued fields of this class (a person's salary, a contract's amount). Extracted with evidence and history, like any fact.",
@@ -1221,6 +1218,41 @@ export const en = {
       `Some could not be added: ${keys.join(", ")} — the rest went through.`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
+    /* ---- Schema diagram ---- */
+    schemaDiagram: "Schema diagram",
+    schemaSearchPlaceholder: "Search schema…",
+    schemaEmpty:
+      "No schema to display yet. Add a class on the left, or import an OWL/RDFS/Turtle file to get started.",
+    schemaFitView: "Fit view",
+    schemaZoomIn: "Zoom in",
+    schemaZoomOut: "Zoom out",
+    schemaLegendInheritance: "Inheritance",
+    schemaLegendRelation: "Relations",
+    schemaLegendDisjoint: "Disjoint",
+    schemaUnscoped: (n: number) => `Unscoped properties (${n})`,
+    schemaUnscopedHint:
+      "Not limited to specific classes, so no line on the canvas would be honest. Select one to inspect or edit it.",
+    schemaClosePanel: "Close",
+    // 面板里的三段：定义（表单）/ 属性（关系 + 字面值字段）/ 实例。
+    // 用页面自己的词——左栏就叫 Classes / Properties
+    schemaTabDefinition: "Definition",
+    schemaTabProperties: "Properties",
+    schemaTabInstances: "Instances",
+    schemaAddRelationship: "New relationship…",
+    schemaCheckDefects: (n: number) =>
+      n === 1
+        ? "1 new ontology issue from this change"
+        : `${n} new ontology issues from this change`,
+    schemaCheckReview: "Review",
+    schemaRelationships: "Relationships",
+    schemaOutgoing: "From this class",
+    schemaIncoming: "To this class",
+    schemaNoRelationships: "No relationships yet.",
+    schemaConnectHint: "Connect using an existing relationship",
+    schemaConnectPlaceholder: "Search relationships…",
+    schemaConnectAs: "As",
+    schemaConnect: "Connect",
+    schemaConnected: (label: string) => `Connected via ${label}.`,
   },
   mapping: {
     title: "Data mapping",
@@ -1332,6 +1364,7 @@ export const en = {
       escalate_no_verdict: "The adjudicator returned no verdict",
       escalate_entity_changed: "The entity changed while being adjudicated",
       escalate_unsure: "The adjudicator was not confident enough",
+      namesake: "Two entities with this name in one document",
       /* 名字互相包含：等值召回看不见，简称会静默变成第二个实体 */
       contains: "One name contains the other",
       ambiguous_name: "Same name, context did not settle it",
