@@ -53,7 +53,7 @@ https://github.com/user-attachments/assets/aa226443-75de-437e-bd80-88e592ed8457
 | 能力 | 亮点 |
 | --- | --- |
 | **完整应用** | 系统控制台 · 图谱浏览器 · 在线本体工作台 · 开箱即用 |
-| **文档接入** | 支持多种文档（pdf、md、html、ppt、word、excel）· 支持自定义订阅更新与定时同步（JIRA、飞书正在支持中） · 网页、RSS、GitHub、Jira、Notion、WebDAV、S3 兼容存储定时同步 |
+| **文档接入** | 支持多种文档（pdf、md、html、ppt、word、excel）· 支持自定义订阅更新与定时同步（JIRA、飞书正在支持中） |
 | **混合检索** | Tantivy · pgvector 向量 · RRF 融合 · chunk 溯源 |
 | **双时态图谱** | 知识时态+溯源时态 · 支持任意时刻图谱 · 知识变更链 |
 | **AgentHarness · AgenticRAG** | 应用本身具备 harness 能力，可通过对话调用系统完整功能 · 内置智能体包含多种工具，支持多轮工具调用与对话 |
