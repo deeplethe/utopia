@@ -1972,10 +1972,15 @@ pub struct TypeCandidateSubject {
 /// 值得送去精化类型的实体：**还没有类的**，或者模型报过一个词表外类型的。
 ///
 /// 类型化得已经很具体的实体不动——重判一次只有下降风险，没有上升空间。
+///
+/// `unattended` = 自动跑（0016 C2）：**跳过引擎已经看过的**（`type_resolved_at`）。候选按
+/// 事实数排序、一轮六十个，不跳过的话每一轮都是同一批，后面的永远轮不到。人点的那条
+/// 路传 false——人要的是把现状重新审一遍
 pub async fn entities_for_type_resolution(
     pool: &PgPool,
     kb_id: Uuid,
     limit: i64,
+    unattended: bool,
 ) -> AppResult<Vec<TypeCandidateSubject>> {
     Ok(sqlx::query_as(
         "SELECT e.id, e.canonical_name, e.aliases, t.key AS coarse_key, t.id AS coarse_id,
@@ -2029,13 +2034,28 @@ pub async fn entities_for_type_resolution(
            -- 唯一的用武之地。只看前两种就把它整个漏掉了
            AND (e.type_id IS NULL OR e.proposed_type IS NOT NULL OR e.specific_type IS NOT NULL
                 OR EXISTS (SELECT 1 FROM entity_type_parents p WHERE p.parent_id = t.id))
+           AND (NOT $3::bool OR e.type_resolved_at IS NULL)
          ORDER BY fact_count DESC, e.created_at
          LIMIT $2",
     )
     .bind(kb_id)
     .bind(limit)
+    .bind(unattended)
     .fetch_all(pool)
     .await?)
+}
+
+/// 引擎看过了：三档（改了 / 留给人 / 不动）都算看过，自动跑不再回头。
+/// 人手工改类、合并之类的写路径不清这个标记——它们本来也不在自动跑的候选里
+pub async fn mark_type_judged(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResult<u64> {
+    Ok(sqlx::query(
+        "UPDATE entities SET type_resolved_at = now() WHERE kb_id = $1 AND id = ANY($2)",
+    )
+    .bind(kb_id)
+    .bind(ids)
+    .execute(pool)
+    .await?
+    .rows_affected())
 }
 
 /// 某个类的全部后代（含自身）。精化只能往粗类的后代走。

@@ -44,6 +44,9 @@ pub struct UpdateKbReq {
     /// 多久重推一次（分钟）。事实持续在变，只靠手点会让派生一直是缺的
     #[serde(default)]
     pub inference_interval_minutes: Option<i32>,
+    /// 抽取结束自动排一轮类型消解（缺省关）。见 docs/decisions/0016 C2
+    #[serde(default)]
+    pub auto_type_resolution: Option<bool>,
 }
 
 /// 用户可见的 KB 列表（restricted 库仅矩阵成员与系统管理员可见）。
@@ -97,6 +100,7 @@ pub async fn create(
             None,
             None,
             Some(v),
+            None,
             None,
             None,
             None,
@@ -180,6 +184,7 @@ pub async fn update(
         req.ontology_lang.as_deref(),
         req.materialize_inferences,
         req.inference_interval_minutes,
+        req.auto_type_resolution,
     )
     .await?;
     // 审计只记不阻断

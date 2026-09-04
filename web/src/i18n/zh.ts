@@ -1342,6 +1342,9 @@ export const zh: Strings = {
     materialize: "物化推理",
     materializeNote:
       "把本体蕴含的事实写进账本——传递链与对称对。默认关：声明可能是错的，而这一步会改图。派生事实带标记，也随时可以撤回。",
+    autoResolveTypes: "抽取后自动消解实体类型",
+    autoResolveTypesNote:
+      "每篇文档抽完，对引擎还没看过的实体跑一轮类型消解。只有在现类子树里精化的才自动落地，跨轴的改判仍留在本体页等你。默认关，等基准说明自动那一档足够准再放开。",
     inferEvery: "每隔",
     minutes: "分钟重推",
     lastInference: (when: string) => `上次 ${when}`,

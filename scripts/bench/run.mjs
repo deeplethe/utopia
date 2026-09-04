@@ -281,6 +281,51 @@ async function main() {
   const outcome = await api("POST", "/api/v1/kbs/" + kb + "/ontology/type-resolution");
   const resolveMs = Date.now() - t2;
 
+  // **分档打分**（0016 的 C2 之前先量）：自动改的那一档准不准，待人工那一档若照单
+  // 全收会怎样。总分把待人工按「没改」算，看不出自动那一档单独的水平；而放不放开
+  // 自动跑，看的正是这一档
+  const inTruth = (name) => Object.entries(truth ?? {}).find(([frag]) => name.includes(frag));
+  const judge = (name, key) => {
+    const t = inTruth(name);
+    if (!t) return "unknown";
+    if (t[1].length === 0) return "should_leave";
+    return t[1].includes(key) ? "hit" : "miss";
+  };
+  const tally = (pairs) => {
+    const c = { hit: 0, miss: 0, should_leave: 0, unknown: 0, examples: [] };
+    for (const [name, key] of pairs) {
+      const j = judge(name, key);
+      c[j] += 1;
+      if (j === "miss" && c.examples.length < 12) {
+        c.examples.push(name + " → " + key + "，期望 " + inTruth(name)[1].join("|"));
+      }
+    }
+    return c;
+  };
+  const split = (out) =>
+    out
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => {
+        const i = l.lastIndexOf("|");
+        return [l.slice(0, i), l.slice(i + 1)];
+      });
+  const autoPairs = outcome.batch
+    ? split(
+        psql(
+          "SELECT e.canonical_name || '|' || t.key FROM entity_retypes r" +
+            " JOIN entities e ON e.id = r.entity_id JOIN entity_types t ON t.id = r.to_type_id" +
+            " WHERE r.batch_id = '" +
+            outcome.batch +
+            "'",
+        ),
+      )
+    : [];
+  const reviewPairs = (outcome.for_review ?? []).map((r) => [r.name, r.choice]);
+  const tiers = truth
+    ? { auto: tally(autoPairs), review: tally(reviewPairs), left_alone: outcome.left_alone.length }
+    : null;
+
   // 打分。**待人工的按"没改"算**——它确实还没改，算成命中就是把人的活记在机器账上。
   //
   // **LEFT JOIN，且没有类时写 `-`**（0009）。内连接会让未分类实体整个不出现，
@@ -358,12 +403,13 @@ async function main() {
           ),
         },
         resolution: {
+          batch: outcome.batch,
           retyped: outcome.retyped,
           for_review: outcome.for_review.length,
           left_alone: outcome.left_alone.length,
         },
         score: truth
-          ? { hit, miss, correctlyLeft, wronglyChanged, absent, notes }
+          ? { hit, miss, correctlyLeft, wronglyChanged, absent, notes, tiers }
           : "无答案键，不打分",
         ms: { extract: extractMs, import: importMs, resolve: resolveMs },
       },

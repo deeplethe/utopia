@@ -78,6 +78,8 @@ export function KbSettings() {
   const [autoExtend, setAutoExtend] = useState(true);
   // **默认关**，与上面那个相反：推理往账本里写事实，而声明可能是错的
   const [materialize, setMaterialize] = useState(false);
+  // 类型消解自动跑（0016 C2）：只自动落地子树内精化的那一档
+  const [autoResolve, setAutoResolve] = useState(false);
   const [inferMins, setInferMins] = useState(60);
   const [ontoLang, setOntoLang] = useState<"en" | "zh">("en");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -90,6 +92,7 @@ export function KbSettings() {
       setVisibility(kb.data.visibility);
       setAutoExtend(kb.data.auto_extend_ontology);
       setMaterialize(kb.data.materialize_inferences);
+      setAutoResolve(kb.data.auto_type_resolution);
       setInferMins(kb.data.inference_interval_minutes);
       setOntoLang(kb.data.ontology_lang);
     }
@@ -108,6 +111,7 @@ export function KbSettings() {
         visibility,
         auto_extend_ontology: autoExtend,
         materialize_inferences: materialize,
+        auto_type_resolution: autoResolve,
         inference_interval_minutes: inferMins,
         ontology_lang: ontoLang,
       }),
@@ -279,6 +283,23 @@ export function KbSettings() {
                   </span>
                   <span className="block text-xs leading-relaxed text-neutral-500">
                     {S.kbset.materializeNote}
+                  </span>
+                </span>
+              </label>
+              {/* 类型消解自动跑：抽完排一轮，只自动改子树内精化的那一档，跨轴的仍留给人 */}
+              <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-[var(--u-accent)]"
+                  checked={autoResolve}
+                  onChange={(e) => setAutoResolve(e.target.checked)}
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm text-neutral-200">
+                    {S.kbset.autoResolveTypes}
+                  </span>
+                  <span className="block text-xs leading-relaxed text-neutral-500">
+                    {S.kbset.autoResolveTypesNote}
                   </span>
                 </span>
               </label>

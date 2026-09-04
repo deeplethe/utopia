@@ -105,6 +105,8 @@ export interface Kb {
   /** 把推出来的事实写进账本（R1）。**缺省关**——推理往图里加东西，
    *  而声明可能是错的，不该在用户没表态时就按它改图 */
   materialize_inferences: boolean;
+  /** 抽取结束自动排一轮类型消解（只自动落地子树内精化的那一档） */
+  auto_type_resolution: boolean;
   /** 多久重推一次（分钟）。事实持续在变，只靠手点会让派生一直是缺的 */
   inference_interval_minutes: number;
   /** 上次推完的时间 */

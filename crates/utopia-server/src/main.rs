@@ -399,6 +399,15 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
             ontology_index::refresh(st, kb_id).await.map(|_| ())
         }
+        "resolve_types" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            type_resolution::resolve_types_job(st, kb_id).await
+        }
         "adjudicate_entities" => {
             let kb_id: Uuid = job
                 .payload
