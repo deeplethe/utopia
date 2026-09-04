@@ -34,6 +34,7 @@ import {
   TRANSPARENT,
 } from "./graphVisuals";
 import { EntityHistory } from "./EntityHistory";
+import { NextStep, nextStep, useReadiness } from "./NextStep";
 import {
   ArrowLeft,
   ArrowRight,
@@ -357,6 +358,13 @@ export function Graph() {
 
   // 空状态给谁看：管理员能自己去配模型，其他人只能去找管理员。与 Shell 共用同一份缓存
   const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  // 空状态说哪一句，取决于这个库走到哪一步了（#313）
+  const readiness = useReadiness(kbId);
+  const step = nextStep(readiness.data, {
+    kbId,
+    isAdmin: !!me.data?.is_admin,
+    canUpload: kb?.my_role !== "viewer",
+  });
   const data = useQuery({
     queryKey: ["graph", kb?.id, focusEntity, nodeBudget],
     queryFn: () =>
@@ -1678,18 +1686,20 @@ export function Graph() {
         <div className="absolute inset-0 grid place-items-center pb-20 pointer-events-none">
           {/* 不放标题方块：页面本身就是图谱页，tab 条上也写着，
               第三遍写"图谱"两个字不带任何信息。空状态该说的是下一步做什么——
-              而"下一步"因人而异：管理员能直接去配模型，别人只能去找管理员（#267） */}
-          <div className="text-center text-sm text-neutral-500 max-w-xs pointer-events-auto">
-            {me.data?.is_admin ? S.graph.emptyBodyAdmin : S.graph.emptyBody}
-            {me.data?.is_admin && (
-              <Link
-                to="/admin"
-                search={{ tab: "models" }}
-                className="block mt-3 text-neutral-300 hover:text-white underline underline-offset-4"
-              >
-                {S.graph.emptyOpenModels}
-              </Link>
-            )}
+              而"下一步"因人而异：管理员能直接去配模型，别人只能去找管理员（#267）。
+              这一步现在由 readiness 统一判定（#313）：文档正在抽取时不该还让人去配模型 */}
+          <div className="pointer-events-auto">
+            <NextStep
+              {...(step ?? {
+                // 模型有了、文档也进来了、抽取跑完了，图还是空的
+                line: S.steps.nothingExtracted,
+                action: {
+                  label: S.steps.openLibrary,
+                  to: "/kb/$kbId/library",
+                  params: { kbId },
+                },
+              })}
+            />
           </div>
         </div>
       )}
