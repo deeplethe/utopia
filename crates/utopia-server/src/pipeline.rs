@@ -3,6 +3,7 @@
 
 use crate::llm_util;
 use crate::state::AppState;
+use utopia_core::models::Proposer;
 use uuid::Uuid;
 
 const EMBED_BATCH: usize = 16;
@@ -99,11 +100,12 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
 /// 重建全文索引、触发增量抽取（extracted_at 为空的新 chunk 才会被抽）。
 /// 免解析免分块——episode 落库时已是 chunk。
 ///
-/// `proposed_by`：说这句话的人。一路传到抽取，落在 `pending_facts.proposed_by`（0015）
+/// `proposer`：说这句话的人，以及经 MCP 时那个 agent。一路传到抽取，落在
+/// `pending_facts.proposed_by` / `proposed_token`（0015、0026）
 pub async fn memory_ingest(
     state: &AppState,
     document_id: Uuid,
-    proposed_by: Option<Uuid>,
+    proposer: Proposer,
 ) -> anyhow::Result<()> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
     if doc.deleted_at.is_some() {
@@ -147,7 +149,11 @@ pub async fn memory_ingest(
         utopia_store::jobs::enqueue(
             &state.pool,
             "extract_document",
-            serde_json::json!({ "document_id": document_id, "proposed_by": proposed_by }),
+            serde_json::json!({
+                "document_id": document_id,
+                "proposed_by": proposer.user_id,
+                "proposed_token": proposer.token_id,
+            }),
         )
         .await?;
     }

@@ -39,6 +39,9 @@ pub struct ToolCtx<'a> {
     /// 在说话的人。`remember` 把它记成「谁说的」，一路跟到待确认队列（0015）。
     /// 对话里恒有值；MCP 也有——令牌以人的身份行事（0014）
     pub actor: Option<Uuid>,
+    /// 经 MCP 时，是哪一枚令牌在说话。**人之外还要记它**：一个人可以同时挂
+    /// 三个 agent，审核卡上只写人名分不出是哪一个记的（0026）。对话里为 None
+    pub via_token: Option<Uuid>,
 }
 
 /// 工具执行过程中往外攒的东西。
@@ -443,7 +446,11 @@ pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult
             let _ = utopia_store::jobs::enqueue(
                 &ctx.state.pool,
                 "memory_ingest",
-                json!({ "document_id": doc_id, "proposed_by": ctx.actor }),
+                json!({
+                    "document_id": doc_id,
+                    "proposed_by": ctx.actor,
+                    "proposed_token": ctx.via_token,
+                }),
             )
             .await;
             ctx.state.emit_document(ctx.kb_id, doc_id);

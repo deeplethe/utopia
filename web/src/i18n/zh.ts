@@ -1334,6 +1334,7 @@ export const zh: Strings = {
     pendingNoPredicate: "本体里没有这个关系，这个词是模型自己的说法。",
     pendingNoPredicateChip: "本体里没有这个关系",
     pendingSaidBy: (name: string) => `${name} 说的`,
+    pendingSaidVia: (name: string, agent: string) => `${name} 说的 · 经 ${agent}`,
     nodCardTitle: (n: number) =>
       n === 1 ? "从这句话里抽出 1 条事实。确认进图，或驳回。" : `从这句话里抽出 ${n} 条事实。确认进图，或驳回。`,
     lowConfidenceHint:

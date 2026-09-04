@@ -35,12 +35,19 @@ use utopia_core::config::AppConfig;
 use utopia_search::SearchIndex;
 use uuid::Uuid;
 
-/// 记忆那条路带着「谁说的」（0015）；别的任务没有这个字段，读到 None 本就该如此
-fn payload_proposed_by(payload: &serde_json::Value) -> Option<Uuid> {
-    payload
-        .get("proposed_by")
-        .and_then(|v| v.as_str())
-        .and_then(|s| s.parse().ok())
+/// 记忆那条路带着「谁说的」（0015、0026）；别的任务没有这两个字段，
+/// 读到默认值本就该如此
+fn payload_proposer(payload: &serde_json::Value) -> utopia_core::models::Proposer {
+    let uuid = |key: &str| {
+        payload
+            .get(key)
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+    };
+    utopia_core::models::Proposer {
+        user_id: uuid("proposed_by"),
+        token_id: uuid("proposed_token"),
+    }
 }
 
 fn payload_document_id(payload: &serde_json::Value) -> anyhow::Result<Uuid> {
@@ -329,7 +336,7 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
         }
         "memory_ingest" => {
             let id = payload_document_id(&job.payload)?;
-            pipeline::memory_ingest(st, id, payload_proposed_by(&job.payload)).await
+            pipeline::memory_ingest(st, id, payload_proposer(&job.payload)).await
         }
         "explore_mappings" => {
             let kb_id: Uuid = job
@@ -376,7 +383,7 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
         }
         "extract_document" => {
             let id = payload_document_id(&job.payload)?;
-            extraction::extract_document(st, id, payload_proposed_by(&job.payload)).await
+            extraction::extract_document(st, id, payload_proposer(&job.payload)).await
         }
         "bootstrap_ontology" => {
             let kb_id: Uuid = job

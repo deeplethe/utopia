@@ -32,6 +32,8 @@ pub struct Proposal<'a> {
     pub confidence: f32,
     pub chunk_id: Uuid,
     pub proposed_by: Option<Uuid>,
+    /// 经 MCP 提的话，是哪一枚令牌说的（0026）。网页端对话为空
+    pub proposed_token: Option<Uuid>,
 }
 
 /// 提议的去向。三种「没提」都不是错误——重抽一句记忆会再次算出同样的三元组，
@@ -111,8 +113,8 @@ pub async fn propose(pool: &PgPool, p: Proposal<'_>) -> AppResult<Outcome> {
         "INSERT INTO pending_facts
              (id, kb_id, subject_id, predicate_id, object_id, object_value, proposed_predicate,
               valid_from, valid_from_precision, valid_to, valid_to_precision,
-              confidence, chunk_id, proposed_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+              confidence, chunk_id, proposed_by, proposed_token)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(id)
     .bind(p.kb_id)
@@ -128,6 +130,7 @@ pub async fn propose(pool: &PgPool, p: Proposal<'_>) -> AppResult<Outcome> {
     .bind(p.confidence)
     .bind(p.chunk_id)
     .bind(p.proposed_by)
+    .bind(p.proposed_token)
     .execute(pool)
     .await?;
     Ok(Outcome::Proposed(id))
@@ -140,13 +143,15 @@ const VIEW_SELECT: &str = "\
            p.object_id, o.canonical_name AS object_name, p.object_value,
            p.valid_from, p.valid_from_precision, p.valid_to, p.valid_to_precision,
            p.confidence, p.chunk_id, c.text AS quote,
-           p.proposed_by, u.display_name AS proposed_by_name, p.created_at
+           p.proposed_by, u.display_name AS proposed_by_name,
+           t.name AS proposed_token_name, p.created_at
       FROM pending_facts p
       JOIN entities s ON s.id = p.subject_id
       LEFT JOIN relation_types r ON r.id = p.predicate_id
       LEFT JOIN entities o ON o.id = p.object_id
       JOIN chunks c ON c.id = p.chunk_id
-      LEFT JOIN users u ON u.id = p.proposed_by";
+      LEFT JOIN users u ON u.id = p.proposed_by
+      LEFT JOIN personal_tokens t ON t.id = p.proposed_token";
 
 pub async fn list(
     pool: &PgPool,

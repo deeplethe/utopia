@@ -46,7 +46,9 @@ pub struct ChatReq {
     pub message: String,
 }
 
-fn tools_schema(can_write: bool, data_source_names: &[String]) -> serde_json::Value {
+/// 工具清单。**MCP 也用这一份**（`mcp.rs`）：名字、描述、参数 schema 抄成
+/// 两套迟早分叉，而它们是与 `tools.rs` 执行侧的契约
+pub(super) fn tools_schema(can_write: bool, data_source_names: &[String]) -> serde_json::Value {
     let mut tools = base_tools();
     if !data_source_names.is_empty() {
         if let Some(arr) = tools.as_array_mut() {
@@ -732,6 +734,8 @@ pub async fn chat(
                     mounted_sources: &mounted_sources,
                     can_write,
                     actor: Some(user.id),
+                    // 网页端对话不经令牌：说话的就是这个人本人
+                    via_token: None,
                 };
                 let (result, step) = tools::dispatch(&ctx, &mut sink, &call.name, &args).await;
                 // **这一步发生在正文的哪个位置。**

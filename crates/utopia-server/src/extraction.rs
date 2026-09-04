@@ -8,6 +8,7 @@ use crate::state::AppState;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
+use utopia_core::models::Proposer;
 use uuid::Uuid;
 
 /// 限流最多退避重试几次。**只对 429 生效**：密钥错了重试一万次还是错。
@@ -273,14 +274,15 @@ async fn enqueue_bootstrap(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// `proposed_by`：这篇文档若是记忆日志，抽出的事实等人点头，这一列记「谁说的」。
-/// 批量摄入的文档传 None——那条路不经待确认队列，这个值用不上
+/// `proposer`：这篇文档若是记忆日志，抽出的事实等人点头，据此记下「谁说的」
+/// ——人，以及经 MCP 时那个 agent（0014 的令牌）。批量摄入的文档传默认值：
+/// 那条路不经待确认队列，这两位都用不上
 pub async fn extract_document(
     state: &AppState,
     document_id: Uuid,
-    proposed_by: Option<Uuid>,
+    proposer: Proposer,
 ) -> anyhow::Result<()> {
-    match run(state, document_id, proposed_by).await {
+    match run(state, document_id, proposer).await {
         Ok(()) => Ok(()),
         Err(e) => {
             // 原因随状态落库：只进日志的错误等于没有错误
@@ -540,7 +542,7 @@ async fn resolve_bare(
     Ok(id)
 }
 
-async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> anyhow::Result<()> {
+async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow::Result<()> {
     let doc = utopia_store::documents::get(&state.pool, document_id).await?;
     // 排队之后被删了（#268）：墓碑不抽——抽出来的事实会活在一个已删除的出处上
     if doc.deleted_at.is_some() {
@@ -1129,7 +1131,8 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                                 validity,
                                 confidence,
                                 chunk_id: chunk.id,
-                                proposed_by,
+                                proposed_by: proposer.user_id,
+                                proposed_token: proposer.token_id,
                             },
                         )
                         .await?
@@ -1250,7 +1253,8 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                                 validity,
                                 confidence,
                                 chunk_id: chunk.id,
-                                proposed_by,
+                                proposed_by: proposer.user_id,
+                                proposed_token: proposer.token_id,
                             },
                         )
                         .await?
@@ -1556,7 +1560,8 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                         validity,
                         confidence,
                         chunk_id: chunk.id,
-                        proposed_by,
+                        proposed_by: proposer.user_id,
+                        proposed_token: proposer.token_id,
                     },
                 )
                 .await?

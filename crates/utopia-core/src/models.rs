@@ -1136,7 +1136,22 @@ pub struct PendingFactView {
     pub quote: String,
     pub proposed_by: Option<Uuid>,
     pub proposed_by_name: Option<String>,
+    /// 经 MCP 记进来时，那枚令牌的名字（0014 里人给 agent 起的名）。
+    /// 网页端对话记的记忆这一位是空的——那时「谁说的」就是那个人本人
+    pub proposed_token_name: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+/// 一句记忆是谁提的。
+///
+/// **两层，不是一层**：`user_id` 是人（令牌代表的就是他，0014），`token_id` 是
+/// 他挂在这个库上的哪一个 agent。同一个人可以同时连着三个客户端，只记人
+/// 就等于让审核的人在三条一模一样的「张三说的」之间猜。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Proposer {
+    pub user_id: Option<Uuid>,
+    /// None = 不经 MCP（网页端对话，或批量摄入）
+    pub token_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, sqlx::FromRow)]

@@ -85,7 +85,12 @@ export function PendingFactRow({
       <div className="mt-3 flex items-center gap-2">
         {fact.proposed_by_name && (
           <span className="text-[11px] text-neutral-600">
-            {S.review.pendingSaidBy(fact.proposed_by_name)}
+            {fact.proposed_token_name
+              ? S.review.pendingSaidVia(
+                  fact.proposed_by_name,
+                  fact.proposed_token_name,
+                )
+              : S.review.pendingSaidBy(fact.proposed_by_name)}
           </span>
         )}
         {canDecide && (

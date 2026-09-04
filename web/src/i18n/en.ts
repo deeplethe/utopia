@@ -1501,6 +1501,8 @@ export const en = {
     pendingNoPredicate: "The ontology has no relation for this; the word is the model's own.",
     pendingNoPredicateChip: "no relation in ontology",
     pendingSaidBy: (name: string) => `said by ${name}`,
+    /* 同一个人可以挂着好几个 agent，只写人名分不出是哪一个记的 */
+    pendingSaidVia: (name: string, agent: string) => `said by ${name} · via ${agent}`,
     nodCardTitle: (n: number) =>
       n === 1
         ? "One fact extracted from this. Confirm to add it to the graph, or reject."

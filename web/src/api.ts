@@ -595,6 +595,8 @@ export interface PendingFactItem {
   quote: string;
   proposed_by: string | null;
   proposed_by_name: string | null;
+  /** 经 MCP 记进来时，那个 agent 的令牌名；网页端对话里为空 */
+  proposed_token_name: string | null;
   created_at: string;
 }
 

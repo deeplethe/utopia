@@ -1,6 +1,6 @@
 # Agents over MCP
 
-Utopia serves every knowledge base as a **Model Context Protocol** server. Any MCP client — Claude Desktop, Cursor, an agent framework, a script — can search a base, read a document, look up an entity and ask what changed, with the same permissions as the person whose token it carries. This version exposes **read tools only**; nothing an agent does over MCP changes the base.
+Utopia serves every knowledge base as a **Model Context Protocol** server. Any MCP client — Claude Desktop, Cursor, an agent framework, a script — can search a base, read a document, look up an entity and ask what changed, with the same permissions as the person whose token it carries. Reading needs nothing but a token. One tool records: `remember` asks a `write` token held by an editor, and what it records **waits for a person's nod** before it reaches the graph.
 
 ## Get a token
 
@@ -9,7 +9,7 @@ Tokens belong to people, not to bases: **Account → Agents & tokens → Persona
 | Field | Meaning |
 |---|---|
 | Name | For your own bookkeeping; shows in the token list and in the audit log |
-| Scope | `read` (default) or `write`. Scope is a **ceiling**, not a grant: a token can never do more than its owner can, and this version's MCP tools are read-only even for a `write` token |
+| Scope | `read` (default) or `write`. Scope is a **ceiling**, not a grant: a token can never do more than its owner can. `remember` needs both — the `write` scope, and editor rights in that base. A viewer's `write` token still cannot record |
 | Knowledge bases | Optional. Leave empty and the token reaches every base its owner can open; pick some to narrow it |
 | Expires in | 90 days by default |
 
@@ -43,8 +43,17 @@ Three methods are served:
 | `entity_facts` | One entity's facts with validity ranges. Pass `at` (a date) to see the world as of that day; this is the tool for "who was X in 2024" |
 | `changes` | What the graph learned or revised in a window of **record** time: asserted, corrected, rejected, merged. Needs no entity; use it when the question names a period, not a subject |
 | `search_docs` | Utopia's own manual, for questions about how the platform works. Never the user's documents |
+| `remember` | Record one sentence into the base's memory. **Needs a `write` token held by an editor**; a token without it does not see this tool in `tools/list`, and calling it anyway says why |
 
 The two time axes matter here. `entity_facts` reads **world time** (when something was true); `changes` reads **record time** (when Utopia came to believe it, and when it revised that belief). An agent that confuses them will answer "what happened in March" with "what we learned in March".
+
+## What an agent records waits for a nod
+
+`remember` stores the sentence immediately — searchable at once, attributed to the token's owner. The facts extracted from it do **not** enter the graph. They queue in Review as proposals, each shown beneath the sentence it came from, and a person confirms or rejects them one at a time.
+
+That gate is why the tool can be served at all. An agent reads documents in the base, and a document can say "remember that X" — so an agent may be talked into recording something by the very material it was asked to read. A proposal that waits for a person costs a click; an assertion that does not costs a wrong edge on the graph, indistinguishable from one someone meant.
+
+The Review card names the agent, not only the person: several clients can share one owner's identity, and "which one said this" is most of what a reviewer has to go on. Never claim to a user that a fact was added — say the sentence was recorded and its facts await confirmation.
 
 ## Try it from a shell
 
@@ -91,5 +100,5 @@ One entry per knowledge base you want the agent to reach. The agent sees the sam
 
 ## What is not here yet
 
-- **Writing.** `remember` (recording an episode) and `query_data` (SQL over a mounted database) are chat tools today and are not served over MCP. When they are, the write path will go through the same confirmation step a person's own "remember" does: an agent proposes, a person confirms, and only then does anything enter the graph.
+- **SQL.** `query_data` (a read-only query against a mounted database) is a chat tool and is not served over MCP. It reaches production databases outside this deployment, and what a borrowed agent should be able to ask them is a question this version does not answer.
 - **Streaming.** Responses are single JSON-RPC replies; there is no server-sent event channel.
