@@ -183,6 +183,65 @@ pub(crate) fn schema_row(row: Vec<serde_json::Value>) -> SchemaColumn {
 }
 
 #[cfg(test)]
+mod live_tests {
+    use super::super::conn::TrinoConn;
+    use super::super::QueryEngine;
+    use super::TrinoEngine;
+
+    /// 对着真 Trino 跑的那一档。没有 `UTOPIA_TEST_TRINO_URL` 就跳过——
+    /// wiremock 回放证得了协议分页与列序，证不了「真集群的 information_schema
+    /// 长这样、REST 一页页取回来的值解得对」。这两样只有真服务器有答案。
+    ///
+    /// 起一个来跑（内置 tpch 目录，数据现成、schema 固定）：
+    /// `docker run -d -p 8080:8080 trinodb/trino`
+    /// 然后 `UTOPIA_TEST_TRINO_URL=trino://probe@127.0.0.1:8080/tpch/tiny`。
+    fn live_url() -> Option<String> {
+        std::env::var("UTOPIA_TEST_TRINO_URL")
+            .ok()
+            .filter(|u| !u.trim().is_empty())
+    }
+
+    #[tokio::test]
+    async fn a_live_cluster_reads_schema_and_answers() {
+        let Some(url) = live_url() else {
+            return;
+        };
+        let engine = TrinoEngine::new(TrinoConn::parse(&url).expect("parse url"));
+        engine.test().await.expect("SELECT 1");
+
+        // fetch_schema 打的是 "<catalog>".information_schema.columns——列名与写法
+        // 只有真集群能证。schema 段限定了范围（tpch 有许多 sfN，只取 tiny）
+        let schema = engine.fetch_schema().await.expect("schema");
+        let name = schema
+            .iter()
+            .find(|c| c.table == "region" && c.column == "name")
+            .expect("tpch.tiny.region.name in information_schema");
+        assert_eq!(name.schema, "tiny", "schema 段应被限定");
+        assert!(
+            name.data_type.starts_with("varchar"),
+            "data_type 要给出真形态，拿到的是 {}",
+            name.data_type
+        );
+
+        // 取值往返：QUEUED → nextUri 一页页取，直到拿到 data。tpch.tiny.region
+        // 是 TPC-H 标准表，五行、内容固定，正好当判据
+        let r = engine
+            .execute("SELECT regionkey, name FROM tpch.tiny.region ORDER BY regionkey")
+            .await
+            .expect("execute");
+        assert_eq!(r.rows.len(), 5, "region 有五行");
+        let first: serde_json::Value = serde_json::from_str(&r.rows[0]).unwrap();
+        assert_eq!(first["regionkey"], serde_json::json!(0));
+        assert_eq!(first["name"], serde_json::json!("AFRICA"));
+        let last: serde_json::Value = serde_json::from_str(&r.rows[4]).unwrap();
+        assert_eq!(last["name"], serde_json::json!("MIDDLE EAST"));
+
+        // 写路径仍被闸挡住（第 1 层），与 mysql 那档对称
+        assert!(super::super::guard_sql_for("trino", "DROP TABLE tpch.tiny.region").is_err());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::super::conn::TrinoConn;
     use super::super::QueryEngine;
