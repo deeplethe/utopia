@@ -100,13 +100,70 @@ const CLAUSE_MARKERS: &[&str] = &[
     "became", "went", "came", "did", "does", "gave", "took", "made",
 ];
 
+/// 情态动词：英语里**封闭类**的限定形式——不像 `fell`、`hits` 那样开放无边，也不会
+/// 出现在名词短语里。`may`（月份、人名）与 `can`（容器）除外，它们兼作名词（#193）
+const MODALS: &[&str] = &["could", "should", "might", "must", "shall"];
+
+/// 结构信号：不靠词表也看得出的「这是一句话」（#193）。
+///
+/// 动词表挡不住新语料——英语有上千个限定形式，`could`、`fell`、`hits` 都不在那 19 个
+/// 词里，而且第一个例句恰好 12 个词，卡在上限上。结构信号迁移得动：
+/// 1. **句号结尾**：末词是小写词并以句号收尾（`… as a whole.`）。专名缩写 `Inc.` /
+///    `Co.` 是大写开头，不误伤。
+/// 2. **情态动词**：封闭类，见 [`MODALS`]。
+///
+/// 这两条**当场拒绝**——它们和词数上限一样是结构判据，不是又一份词表。
+/// `words` 是小写化、去标点的词，`raw_last` 是保留原样的末词
+fn reads_like_a_sentence(words: &[String], raw_last: Option<&str>) -> bool {
+    if words.len() > 2 && words.iter().any(|w| MODALS.contains(&w.as_str())) {
+        return true;
+    }
+    if let Some(stem) = raw_last.and_then(|w| w.strip_suffix('.')) {
+        if stem.chars().count() >= 3 && stem.chars().all(|c| c.is_lowercase()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 弱信号：像从句，但不敢当场拒绝（#193）。
+///
+/// 守卫的样本全部来自一份语料，换一份就漏——换规则之前先要一份**跨语料的标注集**。
+/// 命中只记 `clause_suspect`（例句进 `extraction_drops`），实体照常落库；攒够两份语料的
+/// 样本再决定哪条升成硬规则。返回的是信号名，作为记录的 detail
+fn clause_suspect(name: &str) -> Option<&'static str> {
+    let words: Vec<String> = name
+        .split_whitespace()
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .collect();
+    // 限定词起头的长串：「The removal … industry as a whole」；机构名也会长，但
+    // 通常不以 the 起头（US District Court …），起头的（The New York Times）不长
+    if words.len() >= 8 && matches!(words[0].as_str(), "a" | "an" | "the") {
+        return Some("determiner_opens_a_long_string");
+    }
+    // 句中的关系词 / 从属连词：「the committee that reviewed …」
+    if words.len() >= 5
+        && words
+            .iter()
+            .skip(1)
+            .any(|w| matches!(w.as_str(), "that" | "which" | "who" | "because" | "while"))
+    {
+        return Some("relative_or_subordinate_clause");
+    }
+    None
+}
+
 fn is_entity_name(name: &str) -> bool {
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 100 {
         return false;
     }
-    let words: Vec<String> = name
-        .split_whitespace()
+    let raw: Vec<&str> = name.split_whitespace().collect();
+    let words: Vec<String> = raw
+        .iter()
         .map(|w| {
             w.trim_matches(|c: char| !c.is_alphanumeric())
                 .to_lowercase()
@@ -117,6 +174,9 @@ fn is_entity_name(name: &str) -> bool {
     }
     // 一个词的名字不可能是从句，别让 "Is" 这种专名被误伤
     if words.len() > 2 && words.iter().any(|w| CLAUSE_MARKERS.contains(&w.as_str())) {
+        return false;
+    }
+    if reads_like_a_sentence(&words, raw.last().copied()) {
         return false;
     }
     // 部分格：`745 of OpenAI's 770 employees` 是一个数量描述，不是一个东西。
@@ -536,6 +596,18 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                 .await;
                 continue;
             }
+            // 守卫放行、结构却像从句：只记不挡（#193 先攒标注集）
+            if let Some(signal) = clause_suspect(name) {
+                drop_signal(
+                    state,
+                    doc.kb_id,
+                    document_id,
+                    utopia_store::extraction_drops::reason::CLAUSE_SUSPECT,
+                    signal,
+                    Some(name),
+                )
+                .await;
+            }
             // 降级时记住模型提议的那个词：本体装不下不等于它说错了。
             // 只留计数的话，日后想加 model 类就找不出那 43 个实体——它们混在
             // concept 里面，唯一的出路是整库重抽
@@ -945,6 +1017,19 @@ async fn run(state: &AppState, document_id: Uuid, proposed_by: Option<Uuid>) -> 
                 )
                 .await;
                 continue;
+            }
+            for side in [f.subject.trim(), object_name] {
+                if let Some(signal) = clause_suspect(side) {
+                    drop_signal(
+                        state,
+                        doc.kb_id,
+                        document_id,
+                        utopia_store::extraction_drops::reason::CLAUSE_SUSPECT,
+                        signal,
+                        Some(side),
+                    )
+                    .await;
+                }
             }
 
             // 主宾未在 entities 中声明时先建出来（模型偶尔漏报）。没有 entities 那条
@@ -1535,7 +1620,7 @@ async fn chunk_lists(
 
 #[cfg(test)]
 mod name_tests {
-    use super::is_entity_name;
+    use super::{clause_suspect, is_entity_name};
 
     /// 样本全部取自实跑出来的库（ai-timeline-ends × schema.org），不是编的。
     #[test]
@@ -1564,6 +1649,46 @@ mod name_tests {
             "GPT-4",
         ] {
             assert!(is_entity_name(s), "这是真实体，不该被挡：{s}");
+        }
+    }
+
+    /// #193：词表之外的句子，结构信号接住——句号结尾、情态动词。样本来自第二份语料
+    #[test]
+    fn a_sentence_is_caught_without_its_verb_on_the_list() {
+        for s in [
+            "The removal could slow down the artificial intelligence industry as a whole.",
+            "Shares in Microsoft fell nearly three percent following the announcement.",
+            "the board should reconsider its position",
+        ] {
+            assert!(!is_entity_name(s), "这是一句话，不该当成实体名：{s}");
+        }
+        // 大写缩写的句号、兼作名词的情态词，都不误伤
+        for s in [
+            "Safe Superintelligence Inc.",
+            "Theresa May",
+            "Trash Can Museum",
+        ] {
+            assert!(is_entity_name(s), "这是真实体，不该被挡：{s}");
+        }
+    }
+
+    /// 弱信号只记不挡：像从句的照常落库，但留下样本
+    #[test]
+    fn a_suspect_is_recorded_not_rejected() {
+        let s = "The committee that reviewed the merger of the two companies";
+        assert!(is_entity_name(s));
+        assert_eq!(clause_suspect(s), Some("determiner_opens_a_long_string"));
+        assert_eq!(
+            clause_suspect("committee members who reviewed the merger"),
+            Some("relative_or_subordinate_clause")
+        );
+        for s in [
+            "US District Court for the Northern District of California",
+            "OpenAI's board of directors",
+            "The New York Times",
+            "The Men Who Stare",
+        ] {
+            assert_eq!(clause_suspect(s), None, "{s} 不该被怀疑");
         }
     }
 

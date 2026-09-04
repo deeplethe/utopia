@@ -401,6 +401,7 @@ export const zh: Strings = {
       truncated_reply: "模型的输出被截断",
       domain_mismatch: "主语对不上这个关系，对调也不行",
       not_an_entity_name: "那个名字是一句话，不是一个东西",
+      clause_suspect: "已保留，但这个名字像从句：给守卫攒的样本",
       direction_corrected: "已按签名把主宾掰正",
     },
     reExtractSource: "重新抽取",

@@ -441,6 +441,7 @@ export const en = {
       domain_mismatch:
         "The subject does not fit the relation, and swapping would not help",
       not_an_entity_name: "That name is a sentence, not a thing",
+      clause_suspect: "Kept, but the name reads like a clause: a sample for the guard",
       direction_corrected:
         "Subject and object were swapped to match the signature",
     } as Record<string, string>,
