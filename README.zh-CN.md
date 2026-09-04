@@ -53,7 +53,7 @@ https://github.com/user-attachments/assets/aa226443-75de-437e-bd80-88e592ed8457
 | 能力 | 亮点 |
 | --- | --- |
 | **完整应用** | 系统控制台 · 图谱浏览器 · 在线本体工作台 · 开箱即用 |
-| **文档接入** | 支持多种文档（pdf、md、html、ppt、word、excel）· 支持自定义订阅更新与定时同步（JIRA、飞书正在支持中） |
+| **文档接入** | 支持多种文档（pdf、md、html、ppt、word、excel）· 支持自定义订阅更新与定时同步（JIRA、飞书正在支持中） · 网页、RSS、GitHub、Jira、Notion、WebDAV、S3 兼容存储定时同步 |
 | **混合检索** | Tantivy · pgvector 向量 · RRF 融合 · chunk 溯源 |
 | **双时态图谱** | 知识时态+溯源时态 · 支持任意时刻图谱 · 知识变更链 |
 | **AgentHarness · AgenticRAG** | 应用本身具备 harness 能力，可通过对话调用系统完整功能 · 内置智能体包含多种工具，支持多轮工具调用与对话 |
@@ -79,7 +79,7 @@ cd utopia
 docker compose --profile app up -d
 ```
 
-打开 http://localhost:1516 注册 —— 第一个账户自动成为管理员，同时系统会创建所有人可读的公共知识库。抽取业务文档前，请先在系统设置里配置模型端点（chat 与 embedding）。
+打开 http://localhost:1516 注册 —— 第一个账户自动成为管理员，同时系统会创建所有人可读的公共知识库。抽取业务文档前，请先在「管理 → 模型」里配置模型端点（chat 与 embedding）。
 
 或者从源码构建：
 
@@ -106,7 +106,7 @@ cd web && pnpm install && pnpm dev
 - [ ] **业务规则**：由人写下、作用于实体属性事实的规则（阈值、类别集合），把实体归类为一条带前提的派生事实，规则与前提就是它的解释（[#277](https://github.com/deeplethe/utopia/issues/277)）
 - [ ] **执行校验层**：对 Agent 的调用进行本体规则与符号逻辑校验
 - [ ] **问数与映射添加数据湖仓支持**：Iceberg / Delta Lake，以及 Databricks、Snowflake、MaxCompute 的映射探索与 Ontology2SQL 支持
-- [ ] **更多数据源**：MySQL、ClickHouse、Doris 驱动，S3、WebDAV、Notion、飞书连接器
+- [ ] **更多数据源**：MySQL、ClickHouse、Doris 驱动，飞书连接器
 - [ ] **精确到时刻**：在年 / 月 / 日之外加一档 `instant` 精度，给那些本来就带时间戳的来源——现在连接器按 UTC 截到天，跨午夜的事件会差一天
 - [ ] **MCP 上的 Agent 记忆**：补齐 episodes 写入、retrieve 端点与 MCP 服务器
 - [ ] **企业化**：OIDC SSO、备份恢复命令、10 万文档级别的性能基准
