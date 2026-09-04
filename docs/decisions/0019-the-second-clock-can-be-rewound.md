@@ -1,6 +1,6 @@
 # 0019 · The second clock can be rewound
 
-- **Status**: planned · nothing built; the rows are already there, the read paths are not
+- **Status**: in progress · the read paths and the API rewind the recording axis (#317); the graph control stays a separate cut (#307)
 - **Written**: 2026-09-04 (conventions in the [README](README.md))
 - **Related**: [0003](0003-ontology-growth-loop.md) put adoption's rewrites on the same append path as human correction, so the prior state is still on disk; [0002](0002-reasoning-engine.md) built the proof chain on the same rows. #268 (deleting a document) is what made the gap urgent, and is deliberately a separate change
 
