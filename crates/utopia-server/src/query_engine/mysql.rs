@@ -289,7 +289,80 @@ impl QueryEngine for MysqlEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_kind, Cell, MysqlEngine};
+    use super::{cell_kind, Cell, MysqlEngine, QueryEngine};
+
+    /// 对着真服务器跑的那一档。没有 `UTOPIA_TEST_MYSQL_URL` 就跳过——
+    /// 这三样（information_schema 的列名、两种超时写法、取值往返）是
+    /// 类型表之外唯一测不到的部分，而它们只在真服务器上才有答案。
+    ///
+    /// 起一个来跑：
+    /// `docker run -d -e MARIADB_ROOT_PASSWORD=pw -p 13306:3306 mariadb:11.4`
+    /// 然后 `UTOPIA_TEST_MYSQL_URL=mysql://root:pw@127.0.0.1:13306/sales`。
+    /// 建表语句见 #316。
+    fn live_url() -> Option<String> {
+        std::env::var("UTOPIA_TEST_MYSQL_URL")
+            .ok()
+            .filter(|u| !u.trim().is_empty())
+    }
+
+    #[tokio::test]
+    async fn a_live_server_answers_with_typed_values() {
+        let Some(url) = live_url() else {
+            return;
+        };
+        let engine = MysqlEngine::new(&url);
+        engine.test().await.expect("SELECT 1");
+
+        // information_schema 的列名与 PG 不同（column_type / column_comment），
+        // 写错了不会报错，只会让 schema 文档少一半
+        let schema = engine.fetch_schema().await.expect("schema");
+        let amount = schema
+            .iter()
+            .find(|c| c.table == "orders" && c.column == "amount")
+            .expect("orders.amount");
+        assert!(
+            amount.data_type.starts_with("decimal"),
+            "column_type 要给出带精度的形态，拿到的是 {}",
+            amount.data_type
+        );
+        assert_eq!(
+            amount.comment.as_deref(),
+            Some("Order total in CNY"),
+            "注释要跟着列走"
+        );
+        assert!(
+            schema.iter().all(|c| c.comment.as_deref() != Some("")),
+            "空注释是空串不是 NULL，要过滤掉"
+        );
+
+        // 取值往返：每一种掉档都会在这里现形——数变成字符串，或者整列 null
+        let r = engine
+            .execute(
+                "SELECT id, region, amount, qty, flag, placed_on FROM sales.orders ORDER BY id",
+            )
+            .await
+            .expect("execute");
+        assert_eq!(r.rows.len(), 3);
+        let first: serde_json::Value = serde_json::from_str(&r.rows[0]).unwrap();
+        assert_eq!(first["id"], serde_json::json!(1));
+        assert_eq!(first["region"], serde_json::json!("east"));
+        // DECIMAL：没有 BigDecimal 这一格就是 null
+        assert_eq!(first["amount"], serde_json::json!(1234.56));
+        // BIGINT UNSIGNED：i64 装不下，且驱动拒绝用 i64 读它
+        assert_eq!(first["qty"], serde_json::json!(18446744073709551615u64));
+        // TINYINT(1) 报的类型名是 BOOLEAN
+        assert_eq!(first["flag"], serde_json::json!(true));
+        assert_eq!(first["placed_on"], serde_json::json!("2023-06-01"));
+
+        // 全 NULL 的那一行：每一格都该是 JSON null，而不是某个类型的零值
+        let third: serde_json::Value = serde_json::from_str(&r.rows[2]).unwrap();
+        for k in ["region", "amount", "qty", "flag", "placed_on"] {
+            assert_eq!(third[k], serde_json::Value::Null, "{k} 该是 null");
+        }
+
+        // 写路径仍然被闸挡住（第 1 层），只读会话是第 3 层
+        assert!(super::super::guard_sql_for("mysql", "DELETE FROM sales.orders").is_err());
+    }
 
     #[test]
     fn mariadb_is_the_same_protocol_under_another_name() {
