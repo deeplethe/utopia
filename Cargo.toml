@@ -38,6 +38,8 @@ argon2 = { version = "0.5", features = ["std"] }
 # 凭据静态加密（core::secrets）：AES-256-GCM，钥匙不进库
 aes-gcm = "0.10"
 base64 = "0.23"
+# 密钥比对（sources 的推送密钥）：常量时间。已随 aes-gcm 进依赖树，显式列出
+subtle = "2"
 jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 figment = { version = "0.10", features = ["env"] }
 dotenvy = "0.15"

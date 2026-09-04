@@ -19,6 +19,29 @@ fn new_ingest_token() -> String {
     format!("utp_{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
+/// 推送来的密钥对不对。**常量时间比对。**
+///
+/// 挡的不是计时攻击——这条路上它打不动：密钥是服务端生成的 244 位随机串
+/// （`new_ingest_token`，两个 v4 拼起来），比对又发生在一次数据库往返之后，
+/// 毫秒级的网络与查询抖动盖住的是纳秒级的差异。真正在保护这把密钥的是熵。
+///
+/// 这样写是为了**读代码的人不必重新推一遍上面那段**：仓库里另外两条令牌路径
+/// 都不做明文比对（个人令牌存 sha256 按哈希查，会话走 JWT 验签），这里是唯一
+/// 要拿明文对明文的地方，那就让它自己看起来是想过的。
+///
+/// 长度不等直接返回——`ct_eq` 只对等长切片有意义。密钥长度固定（`utp_` + 64 位
+/// 十六进制），不是秘密的一部分，在这里短路不泄漏任何东西。
+fn push_key_matches(stored: Option<&str>, offered: &str) -> bool {
+    let Some(stored) = stored else {
+        return false;
+    };
+    if stored.len() != offered.len() {
+        return false;
+    }
+    use subtle::ConstantTimeEq;
+    stored.as_bytes().ct_eq(offered.as_bytes()).into()
+}
+
 /// 取一条来源，并确认它属于路径上的这个库。
 ///
 /// `require_kb` 只查人对库的权限；来源 id 是另一个维度——不比对的话，A 库的
@@ -470,7 +493,7 @@ pub async fn push(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or(utopia_core::AppError::Unauthorized)?;
-    if source.ingest_token.as_deref() != Some(token) {
+    if !push_key_matches(source.ingest_token.as_deref(), token) {
         return Err(utopia_core::AppError::Unauthorized.into());
     }
 
@@ -540,6 +563,33 @@ pub async fn re_extract(
 mod tests {
     use super::keep_secrets;
     use serde_json::json;
+
+    /// 认证判断写反是这类改动唯一值得担心的事（`ct_eq` 给的是 `Choice` 不是
+    /// `bool`，判反一次就是全放行且一切看起来正常），所以两个方向都钉住
+    #[test]
+    fn only_the_key_itself_gets_in() {
+        let key = super::new_ingest_token();
+        assert!(super::push_key_matches(Some(&key), &key));
+        let mut off_by_one = key.clone();
+        off_by_one.pop();
+        off_by_one.push(if key.ends_with('a') { 'b' } else { 'a' });
+        assert!(
+            !super::push_key_matches(Some(&key), &off_by_one),
+            "one character off is not the key"
+        );
+        assert!(
+            !super::push_key_matches(Some(&key), &key[..key.len() - 1]),
+            "a prefix is not the key"
+        );
+        assert!(
+            !super::push_key_matches(Some(&key), &format!("{key}x")),
+            "the key with something after it is not the key"
+        );
+        assert!(
+            !super::push_key_matches(None, &key),
+            "a source that never had a key takes nobody's word"
+        );
+    }
 
     #[test]
     fn a_blank_or_missing_secret_keeps_the_stored_one() {
