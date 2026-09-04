@@ -49,7 +49,7 @@ pub fn pptx(bytes: &[u8]) -> anyhow::Result<String> {
         entry.read_to_string(&mut xml)?;
         let text = extract_xml_text(&xml, "a:t", "a:p")?;
         if !text.trim().is_empty() {
-            out.push_str(&format!("\n## 第 {num} 页\n{text}\n"));
+            out.push_str(&format!("\n## Slide {num}\n{text}\n"));
         }
     }
     Ok(out)
@@ -68,7 +68,7 @@ pub fn spreadsheet(bytes: &[u8]) -> anyhow::Result<String> {
         if range.is_empty() {
             continue;
         }
-        out.push_str(&format!("\n# 工作表: {sheet_name}\n"));
+        out.push_str(&format!("\n# Sheet: {sheet_name}\n"));
         for row in range.rows().take(2000) {
             let line: Vec<String> = row
                 .iter()

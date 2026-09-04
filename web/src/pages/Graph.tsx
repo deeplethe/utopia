@@ -45,6 +45,7 @@ import {
   type ProofStep,
 } from "../api";
 import { S } from "../i18n";
+import { localDate } from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
@@ -3413,7 +3414,7 @@ function TimelineRow({
           )}
           {isOpenEnded && fact.last_evidence_time && (
             <span className="ml-auto text-neutral-600">
-              {S.graph.lastConfirmed(fact.last_evidence_time.slice(0, 10))}
+              {S.graph.lastConfirmed(localDate(fact.last_evidence_time))}
             </span>
           )}
         </div>

@@ -938,6 +938,7 @@ export const en = {
       testFail: "Failed",
       neverTested: "Untested",
       remove: "Remove",
+      empty: "No data sources registered yet. Register one below.",
       grants: "Available to",
       grantsHint:
         "Which workspaces may use this source. **Once granted, KB admins in those workspaces choose whether to mount it** — " +
@@ -970,6 +971,7 @@ export const en = {
       visRestricted: "Invited only",
       create: "Create",
       openSettings: "Settings",
+      empty: "No knowledge bases yet. Create the first one above.",
       docs: (n: number) => `${n} docs`,
     },
     modelsIntro:

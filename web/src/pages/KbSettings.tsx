@@ -15,14 +15,12 @@ import {
 import { api, type AuditEvent } from "../api";
 import { LANG_NAMES, S } from "../i18n";
 import { toast } from "../toast";
-import {
-  DangerConfirm,
+import { DangerConfirm,
   Dropdown,
   Loading,
   Pager,
   RAIL_CLS,
-  SearchSelect,
-} from "../ui";
+  SearchSelect, localDateTime } from "../ui";
 
 const KB_ROLES = [
   { value: "viewer", label: S.kbset.roles.viewer },
@@ -518,7 +516,7 @@ function KbActivity({ kbId }: { kbId: string }) {
               className="flex items-baseline gap-3 py-1.5 text-[13px]"
             >
               <span className="u-num shrink-0 text-[11px] text-neutral-600">
-                {e.created_at.slice(0, 16).replace("T", " ")}
+                {localDateTime(e.created_at)}
               </span>
               <span className="min-w-0 truncate">
                 <span className="text-neutral-200">

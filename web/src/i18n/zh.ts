@@ -846,6 +846,7 @@ export const zh: Strings = {
       testFail: "失败",
       neverTested: "未测试",
       remove: "移除",
+      empty: "还没有注册数据源。在下面注册一个。",
       grants: "可用于",
       grantsHint:
         "授权哪些工作区可以用这个源。**授权之后，那些工作区的知识库管理员自己挑挂不挂**——" +
@@ -874,6 +875,7 @@ export const zh: Strings = {
       visRestricted: "仅受邀者",
       create: "创建",
       openSettings: "设置",
+      empty: "还没有知识库。在上面建第一个。",
       docs: (n: number) => `${n} 篇文档`,
     },
     modelsIntro:

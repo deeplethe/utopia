@@ -1204,6 +1204,12 @@ function TokenModal({
   const copy = (text: string, msg: string) =>
     navigator.clipboard.writeText(text).then(() => toast.success(msg)).catch(() => {});
   const endpoint = `${location.origin}/api/v1/sources/${sourceId}/ingest`;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"

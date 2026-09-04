@@ -414,7 +414,7 @@ function KbsAdmin() {
           </div>
         ))}
         {!list.isPending && rows.length === 0 && (
-          <p className="px-4 py-6 text-sm text-neutral-500">—</p>
+          <p className="px-4 py-6 text-sm text-neutral-500">{S.settings.kbs.empty}</p>
         )}
       </div>
 
@@ -543,13 +543,14 @@ function NewKbModal({
                   className={
                     "cursor-pointer rounded-lg border px-2.5 py-2 transition-colors " +
                     (on
-                      ? "border-white/25 bg-white/[0.07]"
+                      ? "border-white/60 bg-white/[0.12] ring-1 ring-white/30"
                       : "border-white/10 hover:bg-white/5")
                   }
                 >
                   <input
                     type="checkbox"
                     className="sr-only"
+                    aria-label={p.name}
                     checked={on}
                     onChange={() => toggle(p.id)}
                   />
@@ -683,7 +684,9 @@ function DataSourcesAdmin() {
           </div>
         ))}
         {list.data?.data_sources.length === 0 && (
-          <p className="px-4 py-6 text-sm text-neutral-500">—</p>
+          <p className="px-4 py-6 text-sm text-neutral-500">
+            {S.settings.datasources.empty}
+          </p>
         )}
       </div>
 
