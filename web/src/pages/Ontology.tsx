@@ -3,7 +3,7 @@
 // 右侧 = 选中项的表单 / 未匹配信号面板 / 概览。
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronRight,
   Inbox,
@@ -12,6 +12,7 @@ import {
   Search,
   Upload,
   Wand2,
+  X,
 } from "lucide-react";
 import {
   api,
@@ -27,7 +28,7 @@ import {
 import { S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
-import { OntologySchemaGraph } from "./OntologySchemaGraph";
+import { OntologySchemaGraph, type SchemaSelection } from "./OntologySchemaGraph";
 import {
   Button,
   Chip,
@@ -39,7 +40,6 @@ import {
   Loading,
   MultiSearchSelect,
   Pager,
-  PageTitle,
   RAIL_CLS,
   SearchSelect,
   cn,
@@ -54,24 +54,32 @@ const RAIL_PAGE = 14;
 /** 过滤模式两节混排时每节的行数 */
 const RAIL_PAGE_MIXED = 6;
 
-/** 右侧详情区当前展示什么 */
+/** 右侧详情区当前展示什么。
+ *
+ *  class / relation / new-class / new-relation / schema / null 这一组共享
+ *  同一块工作区：模式图常驻做背景，表单（如果有）停靠在右侧——左栏点一个
+ *  类名、画布上点一个节点、模式图自己的搜索框选中一个关系，三条路径落到
+ *  的是同一个 `sel`，因此也落到同一份表单，不必再各画一遍。
+ *  import / refine / misses 仍是独立的整页视图：那三个不是「关于某个类
+ *  或关系」的事，跟模式图没有共同的背景可言。 */
 type Sel =
   | { kind: "class"; id: string }
   | { kind: "relation"; id: string }
   | { kind: "new-class"; parentId: string | null }
-  | { kind: "new-relation" }
+  // 从模式图上一个类发起「新建关系」时带上它的 id，表单里 domain 预填成它
+  | { kind: "new-relation"; initialDomain?: string | null }
   | { kind: "misses" }
   // 类型消解：把「大致对」的类换成更具体的那个
   | { kind: "refine" }
   | { kind: "import" }
-  // 模式图：本体本身的结构（类、继承、关系），不是表单意义上的「选中一项」——
-  // 但复用同一个 sel 状态,右侧工作区照旧按它切换,不必另起一层状态
+  // 模式图无选中：看整张图,不停靠表单
   | { kind: "schema" }
   | null;
 
 export function Ontology() {
   const { kb } = useKb();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [sel, setSel] = useState<Sel>(null);
   const [railTab, setRailTab] = useState<"classes" | "properties">("classes");
   const [filter, setFilter] = useState("");
@@ -101,6 +109,29 @@ export function Ontology() {
     queryClient.invalidateQueries({ queryKey: ["ontology", kb?.id] });
   // 错误统一走全局 toast，不再用页面内嵌错误行
   const onError = (e: unknown) => toast.error((e as Error).message);
+
+  // 本体自洽检查是同步的纯计算（Review 页的「Run check」用的是同一个接口），
+  // 不排队、不需要确认——每次本体改动后顺手跑一遍，把新增的矛盾在它们
+  // 发生的当下就说出来，而不是等人某天想起去 Review 才看见。
+  // 干净就不出声：**只在有新东西时才说话**，否则每次保存都弹一条「没事」
+  // 比不弹还烦
+  const runCheck = useMutation({
+    mutationFn: () => api.runConsistencyCheck(kb!.id),
+    onSuccess: (r) => {
+      if (r.defects_new > 0) {
+        toast.info(S.ontology.schemaCheckDefects(r.defects_new), {
+          label: S.ontology.schemaCheckReview,
+          onClick: () =>
+            navigate({ to: "/kb/$kbId/review", params: { kbId: kb!.id } }),
+        });
+      }
+    },
+    // 检查本身失败不该盖过「保存成功」——本体的写已经落了盘，静默重试留给下次改动
+  });
+  const afterOntologyChange = () => {
+    refresh();
+    runCheck.mutate();
+  };
 
   if (!kb) return <Loading>{S.nav.loading}</Loading>;
   if (data.isPending) return <Loading>{S.nav.loading}</Loading>;
@@ -294,32 +325,25 @@ export function Ontology() {
         </button>
       </aside>
 
-      {/* 右侧：详情。选中类时表单 + 实例列表双栏铺开，提高宽屏利用率。
-          模式图单独给整块——它是个 sigma 画布，要满高不参与这里的纵向滚动,
-          跟 import/refine/misses/表单那几个不是同一种布局需求 */}
-      {sel?.kind === "schema" ? (
-        <div className="flex-1 min-w-0">
-          <OntologySchemaGraph
-            kbId={kb.id}
-            entityTypes={entity_types}
-            relationTypes={relation_types}
-            onChanged={refresh}
-            onError={onError}
-          />
-        </div>
-      ) : (
+      {/* 右侧：详情。class/relation/new-class/new-relation/schema/概览共享
+          同一块工作区——模式图常驻做背景，表单（有的话）停靠右侧，近实底
+          （u-modal-panel），不是浮层玻璃：画布是动的，透出来的内容会跟
+          正在读的表单字段打架。左栏点类名、画布点节点、模式图自带的搜索框
+          选中关系，三条路径落到同一个 sel，也就落到同一份表单——
+          不再各画一遍。import/refine/misses 仍是独立整页视图,那三个
+          不是「关于某个类或关系」的事，没有跟模式图共享背景的道理 */}
+      {sel?.kind === "import" || sel?.kind === "refine" || sel?.kind === "misses" ? (
         <div className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
-          {/* 放宽到 6xl 供三列铺开；misses/关系/概览各自带 max-w-xl 内衬不受影响 */}
           <div className="max-w-6xl">
-            {sel?.kind === "import" ? (
+            {sel.kind === "import" ? (
               <div className="max-w-xl">
                 <ImportPanel kbId={kb.id} onChanged={refresh} onError={onError} />
               </div>
-            ) : sel?.kind === "refine" ? (
+            ) : sel.kind === "refine" ? (
               <div className="max-w-2xl">
                 <RefinePanel kbId={kb.id} onChanged={refresh} onError={onError} />
               </div>
-            ) : sel?.kind === "misses" ? (
+            ) : (
               <div className="max-w-xl">
                 <MissesPanel
                   kbId={kb.id}
@@ -329,97 +353,146 @@ export function Ontology() {
                   onError={onError}
                 />
               </div>
-            ) : sel?.kind === "new-class" || selectedClass ? (
-              /* lg 两列（表单 | 属性+实例堆叠）；xl 三列并排（包装器 xl:contents 解散入栅格） */
-              <div className="grid gap-4 items-start lg:grid-cols-[minmax(0,24rem)_minmax(0,1fr)] xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)_minmax(0,1fr)]">
-                <div className="glass rounded-xl p-4">
-                  <ClassForm
-                    key={
-                      selectedClass?.id ??
-                      `new-${sel?.kind === "new-class" ? sel.parentId : "root"}`
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 min-w-0 relative">
+          <OntologySchemaGraph
+            entityTypes={entity_types}
+            relationTypes={relation_types}
+            selected={
+              sel?.kind === "class" || sel?.kind === "relation"
+                ? ({ kind: sel.kind, id: sel.id } as SchemaSelection)
+                : null
+            }
+            onSelect={(next) => setSel(next ?? { kind: "schema" })}
+          />
+          {(sel?.kind === "new-class" || selectedClass) && (
+            <DockedPanel onClose={() => setSel({ kind: "schema" })}>
+              <div className="u-modal-panel rounded-xl p-4">
+                <ClassForm
+                  key={
+                    selectedClass?.id ??
+                    `new-${sel?.kind === "new-class" ? sel.parentId : "root"}`
+                  }
+                  kbId={kb.id}
+                  existing={selectedClass}
+                  parentId={
+                    sel?.kind === "new-class"
+                      ? sel.parentId
+                      : (selectedClass?.primary_parent ?? null)
+                  }
+                  allTypes={entity_types}
+                  onNewSub={
+                    selectedClass
+                      ? () =>
+                          setSel({
+                            kind: "new-class",
+                            parentId: selectedClass.id,
+                          })
+                      : undefined
+                  }
+                  onDone={(createdId) => {
+                    // 新建成功即选中它：立刻能看到、能继续编辑
+                    if (sel?.kind === "new-class")
+                      setSel(
+                        createdId
+                          ? { kind: "class", id: createdId }
+                          : { kind: "schema" },
+                      );
+                    afterOntologyChange();
+                  }}
+                  onError={onError}
+                />
+              </div>
+              {selectedClass && (
+                <>
+                  {/* 从这个类出发新建关系：domain 预填成它——孤立节点也不再是
+                      死胡同，选中它就看得到「新增关系」这条路 */}
+                  <button
+                    onClick={() =>
+                      setSel({
+                        kind: "new-relation",
+                        initialDomain: selectedClass.id,
+                      })
                     }
+                    className="u-modal-panel rounded-xl p-3 flex items-center gap-2 text-[13px] text-neutral-300 hover:text-white transition-colors"
+                  >
+                    <Plus size={13} className="text-neutral-500" />
+                    {S.ontology.schemaAddRelationship}
+                  </button>
+                  <AttributesCard
                     kbId={kb.id}
-                    existing={selectedClass}
-                    parentId={
-                      sel?.kind === "new-class"
-                        ? sel.parentId
-                        : (selectedClass?.primary_parent ?? null)
-                    }
-                    allTypes={entity_types}
-                    onNewSub={
-                      selectedClass
-                        ? () =>
-                            setSel({
-                              kind: "new-class",
-                              parentId: selectedClass.id,
-                            })
-                        : undefined
-                    }
-                    onDone={(createdId) => {
-                      // 新建成功即选中它：立刻能看到、能继续编辑
-                      if (sel?.kind === "new-class")
-                        setSel(
-                          createdId ? { kind: "class", id: createdId } : null,
-                        );
-                      refresh();
-                    }}
+                    type={selectedClass}
+                    attributes={relation_types.filter(
+                      (r) =>
+                        r.kind === "attribute" &&
+                        r.domains.includes(selectedClass.id),
+                    )}
+                    onChanged={afterOntologyChange}
                     onError={onError}
                   />
-                </div>
-                {/* lg 右列堆叠属性+实例；xl 解散为两个独立栅格列 */}
-                {selectedClass && (
-                  <div className="grid gap-4 items-start xl:contents">
-                    <AttributesCard
-                      kbId={kb.id}
-                      type={selectedClass}
-                      attributes={relation_types.filter(
-                        (r) =>
-                          r.kind === "attribute" &&
-                          r.domains.includes(selectedClass.id),
-                      )}
-                      onChanged={refresh}
-                      onError={onError}
-                    />
-                    <InstancesCard kbId={kb.id} type={selectedClass} />
-                  </div>
-                )}
-              </div>
-            ) : sel?.kind === "new-relation" || selectedProp ? (
-              <div className="glass rounded-xl p-4 max-w-xl">
+                  <InstancesCard kbId={kb.id} type={selectedClass} />
+                </>
+              )}
+            </DockedPanel>
+          )}
+          {(sel?.kind === "new-relation" || selectedProp) && (
+            <DockedPanel onClose={() => setSel({ kind: "schema" })}>
+              <div className="u-modal-panel rounded-xl p-4">
                 <PropertyForm
                   key={selectedProp?.id ?? "new"}
                   kbId={kb.id}
                   existing={selectedProp}
                   allTypes={entity_types}
                   allRelations={relations}
+                  initialDomain={
+                    sel?.kind === "new-relation" ? sel.initialDomain : null
+                  }
                   onDone={(createdId) => {
                     if (sel?.kind === "new-relation")
                       setSel(
-                        createdId ? { kind: "relation", id: createdId } : null,
+                        createdId
+                          ? { kind: "relation", id: createdId }
+                          : { kind: "schema" },
                       );
-                    refresh();
+                    afterOntologyChange();
                   }}
                   onError={onError}
                 />
               </div>
-            ) : (
-              /* 概览：未选中任何条目 */
-              <div className="glass rounded-xl p-6 max-w-xl">
-                <PageTitle className="mb-1">{S.ontology.title}</PageTitle>
-                <p className="text-xs text-neutral-500 u-num">
-                  {S.ontology.overviewStats(
-                    entity_types.length,
-                    relations.length,
-                  )}
-                </p>
-                <p className="mt-3 text-sm text-neutral-400">
-                  {S.ontology.overviewHint}
-                </p>
-              </div>
-            )}
-          </div>
+            </DockedPanel>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ---------- 停靠面板：模式图右侧的表单外壳（关闭键 + 近实底卡片列） ---------- */
+
+function DockedPanel({
+  onClose,
+  children,
+}: {
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="absolute top-3 right-3 bottom-3 w-[26rem] z-10 flex flex-col gap-2">
+      <div className="shrink-0 flex justify-end">
+        <button
+          onClick={onClose}
+          title={S.ontology.schemaClosePanel}
+          className="u-modal-panel rounded-full p-1.5 text-neutral-400 shadow-lg transition-colors hover:text-neutral-100"
+        >
+          <X size={14} />
+        </button>
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto u-scroll flex flex-col gap-3 pb-1">
+        {children}
+      </div>
     </div>
   );
 }
@@ -1193,6 +1266,7 @@ export function PropertyForm({
   existing,
   allTypes,
   allRelations,
+  initialDomain,
   onDone,
   onError,
 }: {
@@ -1202,6 +1276,9 @@ export function PropertyForm({
   /** 本库的关系（不含属性）。逆与子属性的下拉从这里取——**属性不在其中**，
    *  它的宾语是字面值，反过来无从谈起 */
   allRelations: RelationTypeView[];
+  /** 从模式图上一个类出发新建关系时，domain 预填成那个类——**只影响初始值**，
+   *  不是约束：下面照旧是个可编辑的 MultiSearchSelect，填错了随手改 */
+  initialDomain?: string | null;
   onDone: (createdId?: string) => void;
   onError: (e: unknown) => void;
 }) {
@@ -1226,7 +1303,9 @@ export function PropertyForm({
     existing?.sub_property_of ?? "",
   );
   const [description, setDescription] = useState(existing?.description ?? "");
-  const [domains, setDomains] = useState<string[]>(existing?.domains ?? []);
+  const [domains, setDomains] = useState<string[]>(
+    existing?.domains ?? (initialDomain ? [initialDomain] : []),
+  );
   const [ranges, setRanges] = useState<string[]>(existing?.ranges ?? []);
   // 显示标签，不显示 key。**进提示词的 key 由服务端从库里取**，与界面显示什么无关；
   // 而类树、属性列表也都显示标签，这里没有理由例外——中文库里用户该看到

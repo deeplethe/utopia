@@ -2,9 +2,14 @@
 // 画的是 TBox（本体本身的结构），不是 /graph 画的那张 ABox（实例与事实）——
 // 两者共用 graphology/sigma 这套工具链与视觉语汇（见 graphVisuals.ts），
 // 但语义不共享，也不共用查询：本体数据只有一份，由 Ontology.tsx 的 useQuery
-// 取，这里只接数据 + 回调。选中一个类/关系时，检查器直接嵌入 Ontology.tsx
-// 里那几张真正的编辑卡片（ClassForm / PropertyForm / AttributesCard）——
-// 不是另一份只读摘要，编辑就发生在这里，不必跳回本体主视图。
+// 取，这里只接数据 + 回调。
+//
+// **选中态是受控的**：这个组件只管画布本身（节点/边/搜索/图例/缩放），
+// 不知道编辑表单长什么样——选中一个类或关系之后，实际的 ClassForm /
+// PropertyForm 由 Ontology.tsx 在画布右侧停靠渲染。早先这里自己内嵌过一份
+// （selected 是内部 state，检查器也在这个文件里），代价是本体页原有的那套
+// 「点左栏类名 → 出表单」路径和这里各画一遍，长得还不一样。现在两条路径
+// 落到同一个 sel 状态、同一份表单组件，这个文件只剩「画」和「选中了什么」。
 import { useEffect, useMemo, useRef, useState } from "react";
 import Graphology from "graphology";
 import { circular } from "graphology-layout";
@@ -29,7 +34,6 @@ import {
   RING_SELECT_MIX,
   TRANSPARENT,
 } from "./graphVisuals";
-import { AttributesCard, ClassForm, PropertyForm } from "./Ontology";
 import { Maximize2, Network, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import type { EntityTypeView, RelationTypeView } from "../api";
 import { S } from "../i18n";
@@ -275,22 +279,20 @@ interface SearchHit {
 }
 
 export function OntologySchemaGraph({
-  kbId,
   entityTypes,
   relationTypes,
-  onChanged,
-  onError,
+  selected,
+  onSelect,
 }: {
-  kbId: string;
   entityTypes: EntityTypeView[];
-  /** 全量关系（含 attribute）：图只画 kind === "relation"，但类检查器要用
-   *  attribute 列出这个类的字面值字段——单一数据源，不在这里再筛一遍就把
-   *  attribute 丢了 */
+  /** 全量关系（含 attribute）：图只画 kind === "relation"，attribute 在这里
+   *  单纯被忽略——它们的宾语是字面值，不是类，不进类图，也不用在这个文件里
+   *  另外筛出来，展示 attribute 是 Ontology.tsx 停靠面板的事 */
   relationTypes: RelationTypeView[];
-  /** 编辑保存后调用，与 Ontology.tsx 主视图共享同一次 invalidate——
-   *  没有第二份本体缓存需要单独失效 */
-  onChanged: () => void;
-  onError: (e: unknown) => void;
+  /** 受控选中态：与 Ontology.tsx 左栏共用同一个 `sel`，点画布上的节点/边
+   *  和点左栏的类名走的是同一条状态,右侧停靠的表单也就自然是同一份 */
+  selected: SchemaSelection;
+  onSelect: (sel: SchemaSelection) => void;
 }) {
   const entityById = useMemo(
     () => new Map(entityTypes.map((t) => [t.id, t])),
@@ -312,7 +314,6 @@ export function OntologySchemaGraph({
     [entityTypes, objectRelations],
   );
 
-  const [selected, setSelected] = useState<SchemaSelection>(null);
   const selectedRef = useRef<SchemaSelection>(null);
   const hoverRef = useRef<string | null>(null);
   const hoverEdgeRef = useRef<string | null>(null);
@@ -479,12 +480,12 @@ export function OntologySchemaGraph({
       },
     });
 
-    sigma.on("clickNode", ({ node }) => setSelected({ kind: "class", id: node }));
+    sigma.on("clickNode", ({ node }) => onSelect({ kind: "class", id: node }));
     sigma.on("clickEdge", ({ edge }) => {
       const relId = g.getEdgeAttribute(edge, "relationId") as string | undefined;
-      if (relId) setSelected({ kind: "relation", id: relId });
+      if (relId) onSelect({ kind: "relation", id: relId });
     });
-    sigma.on("clickStage", () => setSelected(null));
+    sigma.on("clickStage", () => onSelect(null));
     sigma.on("enterNode", ({ node }) => {
       hoverRef.current = node;
       sigma.refresh();
@@ -565,10 +566,10 @@ export function OntologySchemaGraph({
   };
   const pickHit = (hit: SearchHit) => {
     if (hit.kind === "class") {
-      setSelected({ kind: "class", id: hit.id });
+      onSelect({ kind: "class", id: hit.id });
       focusClass(hit.id);
     } else {
-      setSelected({ kind: "relation", id: hit.id });
+      onSelect({ kind: "relation", id: hit.id });
       const rel = relationById.get(hit.id);
       if (rel?.domains[0]) focusClass(rel.domains[0]);
     }
@@ -682,7 +683,7 @@ export function OntologySchemaGraph({
                       <button
                         key={r.id}
                         onClick={() => {
-                          setSelected({ kind: "relation", id: r.id });
+                          onSelect({ kind: "relation", id: r.id });
                           unscopedPop.close();
                         }}
                         className="w-full truncate rounded px-1.5 py-1 text-left text-[12px] text-neutral-300 hover:bg-white/5 hover:text-white"
@@ -743,120 +744,6 @@ export function OntologySchemaGraph({
           </div>
         </div>
       )}
-
-      {selected && (
-        <SchemaInspector
-          selected={selected}
-          kbId={kbId}
-          entityTypes={entityTypes}
-          relationTypes={relationTypes}
-          objectRelations={objectRelations}
-          entityById={entityById}
-          relationById={relationById}
-          onClose={() => setSelected(null)}
-          onChanged={onChanged}
-          onError={onError}
-        />
-      )}
     </div>
-  );
-}
-
-/* ============ 检查器：直接嵌真正的编辑卡片，不是又一份只读摘要 ============ */
-
-function SchemaSidePanel({
-  onClose,
-  children,
-}: {
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="absolute top-14 right-3 bottom-4 w-96 z-10 flex flex-col gap-2">
-      <div className="shrink-0 flex justify-end">
-        <button
-          onClick={onClose}
-          className="glass-strong rounded-full p-1.5 text-neutral-400 shadow-lg transition-colors hover:text-neutral-100"
-        >
-          <X size={14} />
-        </button>
-      </div>
-      <div className="flex-1 min-h-0 overflow-y-auto u-scroll flex flex-col gap-3 pb-1">
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function SchemaInspector({
-  selected,
-  kbId,
-  entityTypes,
-  relationTypes,
-  objectRelations,
-  entityById,
-  relationById,
-  onClose,
-  onChanged,
-  onError,
-}: {
-  selected: NonNullable<SchemaSelection>;
-  kbId: string;
-  entityTypes: EntityTypeView[];
-  relationTypes: RelationTypeView[];
-  objectRelations: RelationTypeView[];
-  entityById: Map<string, EntityTypeView>;
-  relationById: Map<string, RelationTypeView>;
-  onClose: () => void;
-  onChanged: () => void;
-  onError: (e: unknown) => void;
-}) {
-  if (selected.kind === "class") {
-    const cls = entityById.get(selected.id);
-    // 选中的类在刷新后没了（并发编辑/删除）——不渲染一个查无此人的面板
-    if (!cls) return null;
-    // 与 Ontology.tsx 主视图同一个筛法：attribute 挂在类下
-    const attributes = relationTypes.filter(
-      (r) => r.kind === "attribute" && r.domains.includes(cls.id),
-    );
-    return (
-      <SchemaSidePanel onClose={onClose}>
-        <div className="glass rounded-xl p-4">
-          <ClassForm
-            key={cls.id}
-            kbId={kbId}
-            existing={cls}
-            parentId={cls.primary_parent}
-            allTypes={entityTypes}
-            onDone={onChanged}
-            onError={onError}
-          />
-        </div>
-        <AttributesCard
-          kbId={kbId}
-          type={cls}
-          attributes={attributes}
-          onChanged={onChanged}
-          onError={onError}
-        />
-      </SchemaSidePanel>
-    );
-  }
-  const rel = relationById.get(selected.id);
-  if (!rel) return null;
-  return (
-    <SchemaSidePanel onClose={onClose}>
-      <div className="glass rounded-xl p-4">
-        <PropertyForm
-          key={rel.id}
-          kbId={kbId}
-          existing={rel}
-          allTypes={entityTypes}
-          allRelations={objectRelations}
-          onDone={onChanged}
-          onError={onError}
-        />
-      </div>
-    </SchemaSidePanel>
   );
 }

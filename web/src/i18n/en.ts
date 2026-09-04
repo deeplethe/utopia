@@ -1011,9 +1011,6 @@ export const en = {
     description: "Description",
     descriptionHint:
       "Guides the extractor: what belongs here, with a couple of examples. Fed straight into the extraction prompt.",
-    overviewHint:
-      "The schema your extractor follows. Select a class or property on the left to edit it, or add new ones with the + buttons.",
-    overviewStats: (c: number, p: number) => `${c} classes · ${p} properties`,
     attributes: "Attributes",
     attributesHint:
       "Literal-valued fields of this class (a person's salary, a contract's amount). Extracted with evidence and history, like any fact.",
@@ -1218,6 +1215,15 @@ export const en = {
     schemaUnscoped: (n: number) => `Unscoped properties (${n})`,
     schemaUnscopedHint:
       "Not limited to specific classes, so no line on the canvas would be honest. Select one to inspect or edit it.",
+    schemaClosePanel: "Close",
+    schemaAddRelationship: "Add relationship…",
+    schemaAddRelationshipHint: (label: string) =>
+      `New property starting from ${label}.`,
+    schemaCheckDefects: (n: number) =>
+      n === 1
+        ? "1 new ontology issue from this change"
+        : `${n} new ontology issues from this change`,
+    schemaCheckReview: "Review",
   },
   mapping: {
     title: "Data mapping",

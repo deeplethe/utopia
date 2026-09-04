@@ -917,8 +917,6 @@ export const zh: Strings = {
     description: "描述",
     descriptionHint:
       "指导抽取器：什么属于这里，配上几个例子。它会被原样送进抽取提示词。",
-    overviewHint: "抽取器遵循的模式。在左侧选一个类或属性来编辑，或用 + 新建。",
-    overviewStats: (c: number, p: number) => `${c} 个类 · ${p} 个属性`,
     attributes: "属性",
     attributesHint:
       "这个类的字面值字段（一个人的薪资、一份合同的金额）。和任何事实一样带证据与历史。",
@@ -1083,6 +1081,12 @@ export const zh: Strings = {
     schemaLegendDisjoint: "互斥",
     schemaUnscoped: (n: number) => `未限定的属性（${n}）`,
     schemaUnscopedHint: "没有限定在具体的类上，画到画布上的连线会是本体没说过的话。选一个来查看或编辑。",
+    schemaClosePanel: "关闭",
+    schemaAddRelationship: "新增关系…",
+    schemaAddRelationshipHint: (label) => `新属性从 ${label} 出发。`,
+    schemaCheckDefects: (n) =>
+      n === 1 ? "这次改动带来 1 个新的本体问题" : `这次改动带来 ${n} 个新的本体问题`,
+    schemaCheckReview: "去审阅",
   },
   mapping: {
     title: "数据映射",
