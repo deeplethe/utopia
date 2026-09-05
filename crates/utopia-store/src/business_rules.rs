@@ -345,6 +345,84 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
         .collect())
 }
 
+/// 命中查询回来的一行：派生 id、实体 id 与名字、结论、区间两端、前提的可读形态
+type MatchRow = (
+    Uuid,
+    Uuid,
+    String,
+    Option<serde_json::Value>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Vec<String>,
+);
+
+/// 一条规则此刻标了哪些实体。
+///
+/// **规则卡片上那个数字要点得动**：二十个实体还能一个个点开看，两百个就只能
+/// 靠这份列表。前提也带回来——「凭哪几条读数」与结论本身同样是答案的一半。
+pub async fn matches(
+    pool: &PgPool,
+    kb_id: Uuid,
+    rule_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> AppResult<(Vec<serde_json::Value>, i64)> {
+    let total: (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM derived_facts d
+          WHERE d.kb_id = $1 AND d.attribute_rule_id = $2 AND d.invalidated_at IS NULL",
+    )
+    .bind(kb_id)
+    .bind(rule_id)
+    .fetch_one(pool)
+    .await?;
+
+    let rows: Vec<MatchRow> = sqlx::query_as(
+        "SELECT d.id, e.id, e.canonical_name, d.object_value, d.valid_from, d.valid_to,
+                COALESCE(
+                    (SELECT array_agg(
+                                COALESCE(pr.label, '?') || ' = '
+                                || COALESCE(pf.object_value #>> '{value}', '?')
+                                ORDER BY fd.seq)
+                       FROM fact_derivations fd
+                       JOIN facts pf ON pf.id = fd.premise_fact_id
+                       LEFT JOIN relation_types pr ON pr.id = pf.predicate_id
+                      WHERE fd.derived_fact_id = d.id),
+                    ARRAY[]::text[]
+                )
+           FROM derived_facts d
+           JOIN entities e ON e.id = d.subject_id
+          WHERE d.kb_id = $1 AND d.attribute_rule_id = $2 AND d.invalidated_at IS NULL
+          ORDER BY e.canonical_name
+          LIMIT $3 OFFSET $4",
+    )
+    .bind(kb_id)
+    .bind(rule_id)
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    Ok((
+        rows.into_iter()
+            .map(|(id, entity_id, name, value, from, to, premises)| {
+                json!({
+                    "derived_id": id,
+                    "entity_id": entity_id,
+                    "entity": name,
+                    "concluded": value
+                        .as_ref()
+                        .and_then(|v| v.get("class").or_else(|| v.get("value")))
+                        .cloned(),
+                    "valid_from": from,
+                    "valid_to": to,
+                    "premises": premises,
+                })
+            })
+            .collect(),
+        total.0,
+    ))
+}
+
 async fn insert_conditions(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     rule_id: Uuid,

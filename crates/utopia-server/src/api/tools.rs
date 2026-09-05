@@ -76,6 +76,11 @@ pub async fn dispatch(
         "find_entities" => find_entities(ctx, sink, args).await,
         "entity_facts" => entity_facts(ctx, args).await,
         "changes" => changes(ctx, args).await,
+        // 业务规则只读（0021）：判据要看得见，但**写规则不开给模型**——
+        // 「推理的判据由人写」是 0002 与 0021 共同的那条线，而一个工具调用
+        // 分不出「人口述、agent 代打」与「模型自己编了一条」
+        "list_rules" => list_rules(ctx).await,
+        "rule_matches" => rule_matches(ctx, args).await,
         "query_data" if !ctx.mounted_sources.is_empty() => query_data(ctx, args).await,
         "remember" if ctx.can_write => remember(ctx, args).await,
         other => (
@@ -318,7 +323,33 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
                     f.valid_from.is_none_or(|from| from <= t) && f.valid_to.is_none_or(|to| to > t)
                 });
             }
-            let text = if facts.is_empty() {
+            // 规则的结论也是这个实体的一部分（0021）。**不给的话模型会拿那些
+            // 读数自己再判一遍**——而阈值写在规则里，它看不见，于是两处判断
+            // 迟早不一致，agent 那次还没有前提链、没有区间、也不进账本
+            let derived =
+                utopia_store::reasoning::derived_for_entity(&ctx.state.pool, ctx.kb_id, id)
+                    .await
+                    .unwrap_or_default();
+            let mut derived: Vec<String> = derived
+                .iter()
+                .filter(|d| {
+                    at.is_none_or(|t| {
+                        d.valid_from.is_none_or(|from| from <= t)
+                            && d.valid_to.is_none_or(|to| to > t)
+                    })
+                })
+                .map(|d| {
+                    format!(
+                        "{} · {} · {} [rule: {}]",
+                        d.subject,
+                        d.predicate,
+                        d.object,
+                        d.rule_name.as_deref().unwrap_or(&d.rule),
+                    )
+                })
+                .collect();
+
+            let text = if facts.is_empty() && derived.is_empty() {
                 match at {
                     Some(t) => format!(
                         "{}: no facts valid as of {}.",
@@ -328,7 +359,9 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
                     None => format!("{}: no recorded facts.", node.name),
                 }
             } else {
-                facts.iter().map(fact_line).collect::<Vec<_>>().join("\n")
+                let mut lines: Vec<String> = facts.iter().map(fact_line).collect();
+                lines.append(&mut derived);
+                lines.join("\n")
             };
             let detail = match at {
                 Some(t) => format!("{} facts as of {}", facts.len(), t.format("%Y-%m-%d")),
@@ -344,6 +377,135 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
             json!({ "kind": "facts", "label": "?", "detail": "not found" }),
         ),
     }
+}
+
+/// 这个库的判据。**把阈值原样给出来**——模型要能解释「凭什么算含气井」，
+/// 而不是猜一个听起来合理的门槛。
+pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
+    let Ok(rules) = utopia_store::business_rules::list(&ctx.state.pool, ctx.kb_id).await else {
+        return (
+            "Could not read the rules.".to_string(),
+            json!({ "kind": "tool", "label": "list_rules", "detail": "failed" }),
+        );
+    };
+    if rules.is_empty() {
+        return (
+            "This base has no business rules.".to_string(),
+            json!({ "kind": "tool", "label": "list_rules", "detail": "none" }),
+        );
+    }
+    let text = rules
+        .iter()
+        .map(|r| {
+            let conditions = r["conditions"]
+                .as_array()
+                .map(|cs| {
+                    cs.iter()
+                        .map(|c| {
+                            format!(
+                                "{} {} {}",
+                                c["predicate_label"].as_str().unwrap_or("?"),
+                                c["op"].as_str().unwrap_or("?"),
+                                c["operand"]
+                                    .as_str()
+                                    .map(str::to_string)
+                                    .unwrap_or_else(|| c["operand"].to_string()),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" AND ")
+                })
+                .unwrap_or_default();
+            let concludes = if r["conclusion"] == "typing" {
+                r["conclude_type_label"].as_str().unwrap_or("?").to_string()
+            } else {
+                format!(
+                    "{} = {}",
+                    r["conclude_predicate_label"].as_str().unwrap_or("?"),
+                    r["conclude_value"]
+                )
+            };
+            format!(
+                "{} [{}] — applies to {} where {} ⇒ {} · marks {} now · id {}",
+                r["name"].as_str().unwrap_or("?"),
+                if r["enabled"] == true { "on" } else { "off" },
+                r["subject_label"].as_str().unwrap_or("?"),
+                conditions,
+                concludes,
+                r["derived_count"],
+                r["id"].as_str().unwrap_or("?"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let n = rules.len();
+    (
+        text,
+        json!({ "kind": "tool", "label": "list_rules", "detail": format!("{n} rules") }),
+    )
+}
+
+/// 一条规则此刻标了谁。**前提一起给**：结论没有前提就跟一条凭空的断言没区别。
+pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult {
+    let Some(rule_id) = args["rule_id"]
+        .as_str()
+        .and_then(|s| s.parse::<Uuid>().ok())
+    else {
+        return (
+            "Invalid rule_id (expected the uuid returned by list_rules).".to_string(),
+            json!({ "kind": "tool", "label": "rule_matches", "detail": "invalid id" }),
+        );
+    };
+    let limit = args["limit"].as_i64().unwrap_or(50).clamp(1, 200);
+    let Ok((rows, total)) =
+        utopia_store::business_rules::matches(&ctx.state.pool, ctx.kb_id, rule_id, limit, 0).await
+    else {
+        return (
+            "Could not read what that rule marks.".to_string(),
+            json!({ "kind": "tool", "label": "rule_matches", "detail": "failed" }),
+        );
+    };
+    if rows.is_empty() {
+        return (
+            "That rule marks nothing right now.".to_string(),
+            json!({ "kind": "tool", "label": "rule_matches", "detail": "0" }),
+        );
+    }
+    let text = rows
+        .iter()
+        .map(|m| {
+            let premises = m["premises"]
+                .as_array()
+                .map(|p| {
+                    p.iter()
+                        .filter_map(|x| x.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            format!(
+                "{} ⇒ {} (because {}) [{}]",
+                m["entity"].as_str().unwrap_or("?"),
+                m["concluded"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| m["concluded"].to_string()),
+                premises,
+                m["entity_id"].as_str().unwrap_or("?"),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    // 截断要说出来：模型看到 50 条会当成全部，而库里可能有两百
+    let text = if total > rows.len() as i64 {
+        format!("{text}\n(showing {} of {total})", rows.len())
+    } else {
+        text
+    };
+    (
+        text,
+        json!({ "kind": "tool", "label": "rule_matches", "detail": format!("{total} entities") }),
+    )
 }
 
 pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult {
