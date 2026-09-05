@@ -350,11 +350,16 @@ pub async fn add_evidence(
 /// `as_of`：绑记录轴参数的位置（`None` = 只答现在，写路径和"当下"视图用这个）。
 /// 度数跟着画布走——回放时数的是**当时**连在这个节点上的边，否则右上角的数
 /// 和眼前的图对不上。
-fn node_sql(as_of: Option<usize>) -> String {
+/// `owner`：**只在真的传了时刻时**才绑（#336）。`fact_owner_at` 包住列之后
+/// `facts` 上按主宾的索引就用不上了，而「现在」是每次画图都要走的那条路
+fn node_sql(as_of: Option<usize>, owner: Option<usize>) -> String {
     let held = match as_of {
         Some(param) => crate::record_axis::facts_held_at("f", param),
         None => "f.invalidated_at IS NULL".to_string(),
     };
+    // 主宾也跟着倒：三月被合并掉的实体，在二月身上还挂着它自己的那些事实（#336）
+    let subject = crate::record_axis::owner_at("f", "subject_id", owner, false);
+    let object = crate::record_axis::owner_at("f", "object_id", owner, true);
     format!(
         "SELECT e.id, e.canonical_name AS name, t.key AS type_key,
         t.label AS type_label,
@@ -362,7 +367,7 @@ fn node_sql(as_of: Option<usize>) -> String {
         coalesce(t.shape, 'circle') AS shape,
         e.disambiguator,
         (SELECT count(*) FROM facts f
-         WHERE (f.subject_id = e.id OR f.object_id = e.id) AND {held}) AS degree
+         WHERE ({subject} = e.id OR {object} = e.id) AND {held}) AS degree
      FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id"
     )
 }
@@ -387,8 +392,9 @@ pub async fn overview(
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(Vec<GraphNode>, Vec<GraphEdge>, i64, i64)> {
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
-        "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL ORDER BY degree DESC, e.created_at LIMIT $2",
-        node_sql(Some(3))
+        "{} WHERE e.kb_id = $1 AND {visible} ORDER BY degree DESC, e.created_at LIMIT $2",
+        node_sql(Some(3), as_of.map(|_| 3)),
+        visible = crate::record_axis::entity_visible_at("e", 3),
     ))
     .bind(kb_id)
     .bind(limit)
@@ -404,12 +410,14 @@ pub async fn overview(
     // 「150 / 325」里那个 325 会跟用户在别处看到的数对不上——**回放时也一样**，
     // 边数跟着记录轴走，否则倒回三月的图上写着今天的边数。
     //
-    // 节点数没跟着倒：实体身上没有记录轴（`merged_into` 只说合并发生过，
-    // 时刻在 `entity_merges` 里），要倒得顺着那张表拆合并，是另一刀（0019 遗留问题）
-    let total_nodes: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM entities WHERE kb_id = $1 AND merged_into IS NULL",
-    )
+    // 节点数也跟着倒（#336）：实体的时刻在 `entity_merges` 上，不在实体行上——
+    // 三月并掉的那个，在二月既该出现在画布上，也该数进这个总数里
+    let total_nodes: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM entities e WHERE e.kb_id = $1 AND {visible}",
+        visible = crate::record_axis::entity_visible_at("e", 2),
+    ))
     .bind(kb_id)
+    .bind(as_of)
     .fetch_one(pool)
     .await?;
     let total_edges: i64 = sqlx::query_scalar(&format!(
@@ -451,7 +459,7 @@ async fn edges_among(
     // 断言那一段多算一位 `contested`：有 open 的违规或时态冲突指着它。派生撞断言
     // 时被撞的是 left；right 只是最后一条前提，它本身没有争议
     let edges: Vec<GraphEdge> = sqlx::query_as(&format!(
-        "SELECT f.id, f.subject_id AS source, f.object_id AS target,
+        "SELECT f.id, {subject} AS source, {object} AS target,
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS label,
                 r.id IS NULL AS inferred, FALSE AS derived, NULL::text AS rule,
@@ -468,7 +476,7 @@ async fn edges_among(
                 FALSE AS blocked
          FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
          WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL
-           AND f.subject_id = ANY($2) AND f.object_id = ANY($2)
+           AND {subject} = ANY($2) AND {object} = ANY($2)
            AND ($3::timestamptz IS NULL
                 OR ((f.valid_from IS NULL OR f.valid_from <= $3)
                     AND (f.valid_to IS NULL OR f.valid_to > $3)))
@@ -511,6 +519,9 @@ async fn edges_among(
         derived_held = crate::record_axis::derived_held_at("d", 4),
         violation_open = crate::record_axis::violation_open_at("v", 4),
         conflict_open = crate::record_axis::conflict_open_at("c", 4),
+        // 派生边不跟着倒：它们由引擎按当时的断言推出，主宾从来没被合并改写过
+        subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 4), false),
+        object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 4), true),
     ))
     .bind(kb_id)
     .bind(ids)
@@ -541,10 +552,12 @@ pub async fn neighborhood(
         // 铺开也走记录轴：邻居按**当时**的边找，否则回放的图上会长出
         // 只有今天才连得上的节点
         let touching: Vec<(Uuid, Option<Uuid>)> = sqlx::query_as(&format!(
-            "SELECT f.subject_id, f.object_id FROM facts f
+            "SELECT {subject}, {object} FROM facts f
              WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL
-               AND (f.subject_id = ANY($2) OR f.object_id = ANY($2))",
+               AND ({subject} = ANY($2) OR {object} = ANY($2))",
             facts_held = crate::record_axis::facts_held_at("f", 3),
+            subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
+            object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 3), true),
         ))
         .bind(kb_id)
         .bind(&frontier)
@@ -568,8 +581,9 @@ pub async fn neighborhood(
 
     let ids: Vec<Uuid> = seen.into_iter().collect();
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
-        "{} WHERE e.kb_id = $1 AND e.id = ANY($2)",
-        node_sql(Some(3))
+        "{} WHERE e.kb_id = $1 AND e.id = ANY($2) AND {visible}",
+        node_sql(Some(3), as_of.map(|_| 3)),
+        visible = crate::record_axis::entity_visible_at("e", 3),
     ))
     .bind(kb_id)
     .bind(&ids)
@@ -594,7 +608,7 @@ pub async fn search_entities(
         "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL
          AND e.canonical_name ILIKE $2
          ORDER BY degree DESC, e.canonical_name LIMIT $3 OFFSET $4",
-        node_sql(None)
+        node_sql(None, None)
     ))
     .bind(kb_id)
     .bind(&pattern)
@@ -622,7 +636,7 @@ pub async fn entity_detail(
 ) -> AppResult<(GraphNode, Vec<EntityFact>)> {
     let node: GraphNode = sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND e.id = $2",
-        node_sql(Some(3))
+        node_sql(Some(3), as_of.map(|_| 3))
     ))
     .bind(kb_id)
     .bind(entity_id)
@@ -633,11 +647,11 @@ pub async fn entity_detail(
 
     let facts: Vec<EntityFact> = sqlx::query_as(&format!(
         "SELECT f.id,
-                CASE WHEN f.subject_id = $2 THEN 'out' ELSE 'in' END AS direction,
+                CASE WHEN {subject} = $2 THEN 'out' ELSE 'in' END AS direction,
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate_key,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
                 r.id IS NULL AS inferred, r.temporal,
-                CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END AS other_id,
+                CASE WHEN {subject} = $2 THEN {object} ELSE {subject} END AS other_id,
                 o.canonical_name AS other_name, f.object_value,
                 f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision, f.confidence,
                 (SELECT count(*) FROM fact_evidence fe WHERE fe.fact_id = f.id) AS evidence_count,
@@ -671,11 +685,13 @@ pub async fn entity_detail(
          FROM facts f
          LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o
-           ON o.id = CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END
+           ON o.id = CASE WHEN {subject} = $2 THEN {object} ELSE {subject} END
          WHERE f.kb_id = $1 AND {facts_held}
-           AND (f.subject_id = $2 OR f.object_id = $2)
+           AND ({subject} = $2 OR {object} = $2)
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
         facts_held = crate::record_axis::facts_held_at("f", 3),
+        subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
+        object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 3), true),
         chunk_live = crate::record_axis::chunk_live_at("c", 3),
         violation_open = crate::record_axis::violation_open_at("v", 3),
         conflict_open = crate::record_axis::conflict_open_at("c", 3),
@@ -704,7 +720,7 @@ pub async fn update_entity(
 ) -> AppResult<(GraphNode, GraphNode)> {
     let before: GraphNode = sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND e.id = $2 AND e.merged_into IS NULL",
-        node_sql(None)
+        node_sql(None, None)
     ))
     .bind(kb_id)
     .bind(entity_id)
@@ -781,7 +797,7 @@ pub async fn update_entity(
 
     let after: GraphNode = sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND e.id = $2",
-        node_sql(None)
+        node_sql(None, None)
     ))
     .bind(kb_id)
     .bind(entity_id)
@@ -801,7 +817,7 @@ pub async fn same_name_peers(
         "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
            AND lower(e.canonical_name) = (SELECT lower(canonical_name) FROM entities WHERE id = $2)
          ORDER BY degree DESC LIMIT 10",
-        node_sql(None)
+        node_sql(None, None)
     ))
     .bind(kb_id)
     .bind(entity_id)
