@@ -1,0 +1,134 @@
+{
+  "name": "meridian",
+  "note": "虚构公司，刻意不用真实实体：模型读过的东西量出来的是记忆，不是这条流水线。句子写得钝——一句一个事实、日期写全、名字写全——因为这个台子要量的是时间那根轴，不是抽取的运气。",
+  "axioms_note": "时态引擎的自动闭合**只按本体的声明跑**：`functional` / `inverse_functional` 永不自动推断（理由见 bootstrap_ontology.rs——它驱动的是自动改写账本）。所以这两条声明是被测配置的一部分，跑分前先建出来；`--no-declare` 跑的是「本体自己长出来」的那种库，两组的差就是这条声明值多少。",
+  "classes": [
+    { "key": "person", "label": "Person", "description": "A human being." },
+    { "key": "organization", "label": "Organization", "description": "A company or a group inside one." },
+    { "key": "project", "label": "Project", "description": "A named piece of work with people responsible for it." }
+  ],
+  "axioms": [
+    {
+      "key": "leads",
+      "label": "leads",
+      "kind": "relation",
+      "temporal": "state",
+      "inverse_functional": true,
+      "description": "The person currently responsible for a project. One project has one lead at a time."
+    },
+    {
+      "key": "works_for",
+      "label": "works for",
+      "kind": "relation",
+      "temporal": "state",
+      "description": "The organization a person is employed by."
+    },
+    {
+      "key": "part_of",
+      "label": "part of",
+      "kind": "relation",
+      "temporal": "state",
+      "is_transitive": true,
+      "description": "A group or project inside a larger organization."
+    },
+    {
+      "key": "advises",
+      "label": "advises",
+      "kind": "relation",
+      "temporal": "state",
+      "description": "A person who advises a project without being responsible for it. Several advisers are possible."
+    },
+    {
+      "key": "salary",
+      "label": "salary",
+      "kind": "attribute",
+      "datatype": "number",
+      "unit": "CNY",
+      "domain": "person",
+      "functional": true,
+      "description": "The person's monthly salary. One value holds at a time."
+    },
+    {
+      "key": "job_title",
+      "label": "job title",
+      "kind": "attribute",
+      "datatype": "text",
+      "domain": "person",
+      "functional": true,
+      "description": "The person's job title. One title holds at a time."
+    }
+  ],
+  "waves_note": "每一波灌完（含这一波的删除、更正、合并）记一个时刻 `wave-N`。记录轴上的题目以它们为界。一波之内的顺序固定：先灌文档并等抽取完，再删除，再更正区间，再合并。",
+  "waves": [
+    {
+      "label": "wave-1",
+      "note": "起点。这时我们只知道张三在管 Aurora、林昭六月入职、王五在给 Aurora 当顾问。",
+      "documents": [
+        {
+          "filename": "aurora-charter.md",
+          "doc_time": "2023-01-10",
+          "text": "# Project Aurora charter\n\nProject Aurora started on 2023-01-10 at Meridian Systems.\n\nZhang San leads Project Aurora from 2023-01-10.\n\nProject Aurora is part of the Platform Group.\n\nThe Platform Group is part of Meridian Systems.\n"
+        },
+        {
+          "filename": "lin-zhao-offer.md",
+          "doc_time": "2023-06-01",
+          "text": "# Offer record\n\nLin Zhao joined Meridian Systems on 2023-06-01.\n\nLin Zhao works for Meridian Systems from 2023-06-01.\n\nLin Zhao has the job title Staff Engineer from 2023-06-01.\n\nLin Zhao has a salary of 28000 CNY from 2023-06-01.\n"
+        },
+        {
+          "filename": "aurora-advisor-note.md",
+          "doc_time": "2023-03-02",
+          "text": "# Assistant note\n\nWang Wu advises Project Aurora from 2023-03-02.\n\nWang Wu works for Meridian Systems from 2020-09-01.\n"
+        }
+      ]
+    },
+    {
+      "label": "wave-2",
+      "note": "交接、薪资更正、一次删除，外加一个**拼写不同的李四**（\"L. Si\"）——消解认不出它们是同一个人，于是库里多出一个实体，等下一波由人合并。",
+      "documents": [
+        {
+          "filename": "aurora-handover.md",
+          "doc_time": "2024-07-05",
+          "text": "# Handover memo\n\nLi Si leads Project Aurora from 2024-07-05.\n\nLi Si works for Meridian Systems from 2021-04-01.\n"
+        },
+        {
+          "filename": "lin-zhao-correction.md",
+          "doc_time": "2024-02-20",
+          "text": "# Payroll correction\n\nLin Zhao has a salary of 32000 CNY from 2024-02-20.\n\nThe raise was approved by the Platform Group.\n"
+        },
+        {
+          "filename": "helios-kickoff.md",
+          "doc_time": "2024-08-12",
+          "text": "# Project Helios kickoff\n\nProject Helios started on 2024-08-12 at Meridian Systems.\n\nL. Si leads Project Helios from 2024-08-12.\n\nProject Helios is part of the Platform Group.\n"
+        }
+      ],
+      "delete": ["aurora-advisor-note.md"]
+    },
+    {
+      "label": "wave-3",
+      "note": "第三任接手（三任接力）、一个只知道年份的入职、一条不带日期的「不再担任」，以及两件**人做的事**：改一条事实的起点，合并两个拼法。",
+      "documents": [
+        {
+          "filename": "aurora-third-lead.md",
+          "doc_time": "2025-09-01",
+          "text": "# Leadership update\n\nZhou Qi leads Project Aurora from 2025-09-01.\n\nZhou Qi joined Meridian Systems in 2024.\n\nZhou Qi works for Meridian Systems from 2024.\n"
+        },
+        {
+          "filename": "lin-zhao-role-change.md",
+          "doc_time": "2025-10-15",
+          "text": "# Role note\n\nLin Zhao no longer holds the job title Staff Engineer.\n\nThe date of the change was not recorded.\n"
+        }
+      ],
+      "correct": [
+        {
+          "subject": "Zhang San",
+          "object": "Project Aurora",
+          "valid_from_was": "2023-01-10",
+          "valid_from": "2023-02-01",
+          "precision": "day",
+          "note": "The charter date was the approval date; Zhang San took over on 2023-02-01."
+        }
+      ],
+      "merge": [{ "source": "L. Si", "target": "Li Si" }]
+    }
+  ]
+}

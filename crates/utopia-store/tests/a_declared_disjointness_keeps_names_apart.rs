@@ -113,7 +113,7 @@ async fn drift_reviews(
     name: &str,
     type_id: Uuid,
 ) -> anyhow::Result<Vec<Uuid>> {
-    let r = resolution::resolve_mention(pool, f.kb, Some(type_id), name, None, &[]).await?;
+    let r = resolution::resolve_mention(pool, f.kb, Some(type_id), name, None, None, &[]).await?;
     assert!(
         r.created,
         "a cross-type same name is a new entity: keep apart, never merge"

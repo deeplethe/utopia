@@ -231,7 +231,11 @@ pub(super) fn base_tools() -> serde_json::Value {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Search query, phrased in the corpus language." }
+                        "query": { "type": "string", "description": "Search query, phrased in the corpus language." },
+                        "as_of": {
+                            "type": "string",
+                            "description": "Optional RECORD-time moment (YYYY-MM-DD or RFC3339): search only what the knowledge base held at that moment — earlier versions of documents, documents deleted since. Full-text recall stays current, so hits are correct but may be incomplete. Omit for the current base."
+                        }
                     },
                     "required": ["query"]
                 }
@@ -308,6 +312,10 @@ pub(super) fn base_tools() -> serde_json::Value {
                             "type": "string",
                             "description": "Optional as-of date (YYYY-MM-DD). Only facts valid on \
                                 this date are returned. Omit for the full history."
+                        },
+                        "as_of": {
+                            "type": "string",
+                            "description": "Optional RECORD-time moment (YYYY-MM-DD or RFC3339): the facts as the knowledge base held them at that moment, before later corrections, retractions and merges. Use for 'what did we think / know / have on record as of <date>' and 'before <event> arrived'. Independent of `at`: `at` is when something was true, `as_of` is when we believed it. Omit for today's understanding."
                         }
                     },
                     "required": ["entity_id"]
@@ -357,9 +365,9 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
     search_chunks returns short excerpts of the best-matching sections only. When a hit is \
     clearly the right document but the excerpt does not carry the answer, read the whole \
     document with get_document before saying the knowledge base does not have it.\n\
-    The graph has TWO independent time axes, and each graph tool reads exactly one:\n\
-    - World time — when something was true. Read with entity_facts (`at` = as of that date).\n\
-    - Record time — when we came to believe it, and when we revised it. Read with changes.\n\
+    The graph has TWO independent time axes:\n\
+    - World time — when something was true. entity_facts(`at` = as of that date).\n\
+    - Record time — when we came to believe it, and when we revised it. entity_facts and search_chunks take `as_of` = the base as it stood at that moment, before later corrections, retractions and merges; changes lists what moved in a window.\n\
     \"Who was CTO in 2019\" is world time; \"what did we learn last month\" and \"what did \
     we get wrong\" are record time. The same fact has a position on both.\n\
     Boundary: search_docs answers questions about Utopia itself (features, ingestion, \
@@ -382,7 +390,7 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
        when useful.\n\
     2. Facts carry validity ranges (from → to). For \"as of <date>\" questions pass `at` to \
        entity_facts and the server filters to that moment; for history questions omit `at` \
-       to see the full timeline. State dates in the answer.\n\
+       to see the full timeline. For 'what did we know / have on record / believe as of <date>' or 'before <memo> arrived' pass `as_of` — that is the record axis and the ONLY way to answer such a question; do not narrate a plan, call the tool. The two combine: `at` for the date asked about, `as_of` for when. State dates in the answer.\n\
     2b. For \"what changed / what is new / what did we get wrong since <date>\", call changes — \
        it needs no entity. Name the document a correction came from in plain prose. Graph tools \
        return no [n] numbers and no URLs, so never write a bracketed citation or a placeholder \

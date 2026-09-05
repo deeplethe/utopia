@@ -132,6 +132,7 @@ async fn a_namesake_tie_creates_an_entity_and_two_reviews() -> anyhow::Result<()
             Some(f.person),
             "Zhang Wei",
             Some(&ctx),
+            None,
             &[],
         )
         .await?;

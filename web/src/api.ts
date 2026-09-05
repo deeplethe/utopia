@@ -825,6 +825,37 @@ export interface OntologyMiss {
   count: number;
 }
 
+/** 一条谓词的一端挂着两个以上开放值（#341）。
+ *
+ *  本体自己长出来的库里没人声明过唯一性，于是接任不闭合前任：两条 `leads`
+ *  都开着，"六月谁在管"两个都答。引擎不自动推断这个公理（它驱动账本改写），
+ *  所以只能把证据摆出来问人。 */
+export interface UniquenessCandidate {
+  predicate_id: string;
+  key: string;
+  label: string;
+  kind: string;
+  /** subject = 主语侧（functional）；object = 宾语侧（inverse functional） */
+  side: "subject" | "object";
+  axiom: "functional" | "inverse_functional";
+  /** 已经声明过、只是还没对过账（导入的，或声明之前就在的行） */
+  declared: boolean;
+  holders: number;
+  open_facts: number;
+  /** 对账会闭合几条，几条拿不准要进人审 */
+  would_close: number;
+  would_review: number;
+  examples: {
+    holder: string;
+    values: {
+      fact_id: string;
+      name: string | null;
+      valid_from: string | null;
+      confidence: number;
+    }[];
+  }[];
+}
+
 /** `description` 与 `reason` 不是一回事：description 逐字进抽取提示词，是模型判断
     "什么算这个类"的唯一依据；reason 只是给人看的"为什么该加"。喂错了这个类会成为
     下一个倾倒场——实测 technology 就是这么来的。 */
@@ -1562,6 +1593,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /** 一端挂着两个以上开放值的谓词（#341）：本体没人声明唯一性时接任不闭合前任 */
+  uniquenessCandidates: (kbId: string) =>
+    request<{ candidates: UniquenessCandidate[] }>(
+      `/api/v1/kbs/${kbId}/ontology/uniqueness`,
+    ),
+
+  /** 补上声明之后把已经在账上的开放行对一遍。声明本身走 updateRelationType */
+  reconcileRelationType: (kbId: string, id: string) =>
+    request<{ corrected: number; conflicts: number }>(
+      `/api/v1/kbs/${kbId}/ontology/relation-types/${id}/reconcile`,
+      { method: "POST" },
+    ),
+
   updateRelationType: (
     kbId: string,
     id: string,

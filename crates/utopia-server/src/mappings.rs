@@ -160,12 +160,14 @@ pub async fn explore_mappings(state: &AppState, kb_id: Uuid) -> anyhow::Result<(
                 .await?;
         let Some((type_id,)) = type_id else { continue };
 
-        // 概念实体：走消解（同名归并；无向量上下文按 v1 兼容归并）
+        // 概念实体：走消解（同名归并；无向量上下文按 v1 兼容归并）。
+        // 没有块原文可给——这些名字来自数据源的 schema 探索，不是从文档句子里抽的
         let resolved = utopia_store::resolution::resolve_mention(
             &state.pool,
             kb_id,
             Some(type_id),
             name,
+            None,
             None,
             &[],
         )

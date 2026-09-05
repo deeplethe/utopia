@@ -12,6 +12,7 @@ import {
   Network,
   Plus,
   Search,
+  Split,
   Upload,
   Wand2,
   X,
@@ -26,6 +27,7 @@ import {
   type ResolutionOutcome,
   type TypeSuggestion,
   type RelationTypeView,
+  type UniquenessCandidate,
 } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
@@ -71,6 +73,7 @@ type Sel =
   // 从模式图上一个类发起「新建关系」时带上它的 id，表单里 domain 预填成它
   | { kind: "new-relation"; initialDomain?: string | null }
   | { kind: "misses" }
+  | { kind: "uniqueness" }
   // 类型消解：把「大致对」的类换成更具体的那个
   | { kind: "refine" }
   | { kind: "import" }
@@ -135,6 +138,14 @@ export function Ontology() {
     queryFn: () => api.ontology(kb!.id),
     enabled: !!kb,
   });
+  // 并存的取值（#341）：单独取，因为它扫的是事实不是本体，而本体页
+  // 每改一个字段都要重取——把这趟扫描搭进去等于每次输入都扫一遍全库
+  const uniqueness = useQuery({
+    queryKey: ["uniqueness", kb?.id],
+    queryFn: () => api.uniquenessCandidates(kb!.id),
+    enabled: !!kb,
+  });
+  const overlaps = uniqueness.data?.candidates ?? [];
 
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: ["ontology", kb?.id] });
@@ -355,6 +366,26 @@ export function Ontology() {
           <Wand2 size={14} className="text-neutral-500" />
           <span>{S.ontology.refineShort}</span>
         </button>
+        {/* 并存的取值（#341）：**与未匹配同一类**——都是数据在说本体缺了什么。
+            那个说缺一个词，这个说缺一条公理，而缺公理的代价是接任不闭合前任，
+            "六月谁在管"两个人都答 */}
+        <button
+          onClick={() => setSel({ kind: "uniqueness" })}
+          className={cn(
+            "shrink-0 border-t border-white/10 px-4 py-2.5 flex items-center gap-2 text-[13px] transition-colors",
+            sel?.kind === "uniqueness"
+              ? "u-nav-active"
+              : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
+          )}
+        >
+          <Split size={14} className="text-neutral-500" />
+          <span>{S.ontology.uniquenessShort}</span>
+          {overlaps.length > 0 && (
+            <span className="ml-auto u-num text-[10.5px] text-neutral-500 bg-white/[0.08] rounded-full px-1.5 py-px">
+              {overlaps.length}
+            </span>
+          )}
+        </button>
         {/* 底部常驻：抽取未匹配信号（有存量时带数量徽标） */}
         <button
           onClick={() => setSel({ kind: "misses" })}
@@ -382,7 +413,10 @@ export function Ontology() {
           选中关系，三条路径落到同一个 sel，也就落到同一份表单——
           不再各画一遍。import/refine/misses 仍是独立整页视图,那三个
           不是「关于某个类或关系」的事，没有跟模式图共享背景的道理 */}
-      {sel?.kind === "import" || sel?.kind === "refine" || sel?.kind === "misses" ? (
+      {sel?.kind === "import" ||
+      sel?.kind === "refine" ||
+      sel?.kind === "misses" ||
+      sel?.kind === "uniqueness" ? (
         <div className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
           <div className="max-w-6xl">
             {sel.kind === "import" ? (
@@ -392,6 +426,20 @@ export function Ontology() {
             ) : sel.kind === "refine" ? (
               <div className="max-w-2xl">
                 <RefinePanel kbId={kb.id} onChanged={refresh} onError={onError} />
+              </div>
+            ) : sel.kind === "uniqueness" ? (
+              <div className="max-w-2xl">
+                <UniquenessPanel
+                  kbId={kb.id}
+                  candidates={overlaps}
+                  relations={relation_types}
+                  pending={uniqueness.isPending}
+                  onChanged={() => {
+                    uniqueness.refetch();
+                    refresh();
+                  }}
+                  onError={onError}
+                />
               </div>
             ) : (
               <div className="max-w-xl">
@@ -2297,6 +2345,175 @@ function RefinePanel({
     </div>
   );
 }
+/** 一端挂着两个以上开放值的谓词（#341）。
+ *
+ *  自动闭合靠 `functional` / `inverse_functional`，而本体自己长出来的库里
+ *  没人声明过它们——引擎也不替人推断（那会让账本被一条猜出来的公理改写）。
+ *  于是接任不闭合前任：两条 `leads` 都开着，问六月谁在管，两个都答。
+ *
+ *  **这一档不替人做决定，只把证据摆出来。** 谁挂着哪些值、对账会闭合几条、
+ *  几条拿不准要进人审——按钮按下去之前都写在脸上，因为闭合一条从 2023 年
+ *  开着的区间是对账本的真实改动。 */
+function UniquenessPanel({
+  kbId,
+  candidates,
+  relations,
+  pending,
+  onChanged,
+  onError,
+}: {
+  kbId: string;
+  candidates: UniquenessCandidate[];
+  relations: RelationTypeView[];
+  pending: boolean;
+  onChanged: () => void;
+  onError: (e: unknown) => void;
+}) {
+  // 刚做完的那一条留一行结果：面板会重取，卡片随之消失，
+  // 不留话的话人只看到东西没了，不知道闭合了几条
+  const [done, setDone] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const apply = async (c: UniquenessCandidate) => {
+    setBusy(c.predicate_id);
+    try {
+      // 两步：先补声明（已声明的跳过），再对账。声明是本体的事，
+      // 对账是账本的事——后端的 reconcile 在没有声明时会拒绝执行。
+      //
+      // **整条一起发。** 这个端点是整体替换：缺省字段等于清空（后端在
+      // `RelationTypeReq` 上写了为什么——一半覆盖一半保留会让「我把逆去掉了」
+      // 和「我没碰逆」长得一样）。只发一个公理会把另外五条连同 inverse_of
+      // 一起抹掉，而那是本体里最难重建的部分
+      if (!c.declared) {
+        const rel = relations.find((r) => r.id === c.predicate_id);
+        if (!rel) throw new Error(c.label);
+        await api.updateRelationType(kbId, c.predicate_id, {
+          label: rel.label,
+          temporal: rel.temporal,
+          functional: c.axiom === "functional" ? true : rel.functional,
+          inverse_functional:
+            c.axiom === "inverse_functional" ? true : rel.inverse_functional,
+          is_transitive: rel.is_transitive,
+          is_symmetric: rel.is_symmetric,
+          is_asymmetric: rel.is_asymmetric,
+          is_irreflexive: rel.is_irreflexive,
+          inverse_of: rel.inverse_of,
+          sub_property_of: rel.sub_property_of,
+          description: rel.description,
+          domains: rel.domains,
+          ranges: rel.ranges,
+        });
+      }
+      const r = await api.reconcileRelationType(kbId, c.predicate_id);
+      setDone((d) => ({
+        ...d,
+        [c.predicate_id]: S.ontology.uniquenessDone(r.corrected, r.conflicts),
+      }));
+      onChanged();
+    } catch (e) {
+      onError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-sm font-medium text-neutral-200">
+          {S.ontology.uniqueness}
+        </h2>
+        <p className="mt-1 text-[12.5px] leading-relaxed text-neutral-500">
+          {S.ontology.uniquenessHint}
+        </p>
+      </div>
+
+      {pending ? (
+        <p className="text-xs text-neutral-500">{S.nav.loading}</p>
+      ) : candidates.length === 0 ? (
+        <p className="text-xs text-neutral-500">{S.ontology.uniquenessEmpty}</p>
+      ) : (
+        <div className="space-y-2">
+          {candidates.map((c) => (
+            <div
+              key={`${c.predicate_id}-${c.side}`}
+              className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] text-neutral-200">{c.label}</span>
+                <span className="font-mono text-[11px] text-neutral-600">
+                  {c.key}
+                </span>
+                {c.declared && (
+                  <Chip tone="neutral">{S.ontology.uniquenessDeclared}</Chip>
+                )}
+                <span className="ml-auto">
+                  {done[c.predicate_id] ? (
+                    <span className="text-[11.5px] text-neutral-400">
+                      {done[c.predicate_id]}
+                    </span>
+                  ) : (
+                    <Button
+                      size="sm"
+                      onClick={() => apply(c)}
+                      disabled={busy === c.predicate_id}
+                    >
+                      {busy === c.predicate_id
+                        ? S.ontology.uniquenessBusy
+                        : c.declared
+                          ? S.ontology.uniquenessReconcile
+                          : S.ontology.uniquenessDeclare}
+                    </Button>
+                  )}
+                </span>
+              </div>
+
+              <p className="mt-1 text-[12px] text-neutral-500">
+                {c.side === "subject"
+                  ? S.ontology.uniquenessSubject(c.holders)
+                  : S.ontology.uniquenessObject(c.holders)}
+                {" · "}
+                {S.ontology.uniquenessEffect(c.would_close, c.would_review)}
+              </p>
+
+              {/* 证据：谁挂着哪些值。**这是人做判断的依据**，不是装饰——
+                  看见「张三 leads 凤凰 / 李四 leads 凤凰」才知道该不该声明 */}
+              {c.examples.length > 0 && (
+                <div className="mt-2 space-y-1 border-t border-white/[0.06] pt-2">
+                  {c.examples.slice(0, 3).map((ex) => (
+                    <div
+                      key={ex.holder}
+                      className="flex items-baseline gap-2 text-[11.5px]"
+                    >
+                      <span className="shrink-0 text-neutral-400">
+                        {ex.holder}
+                      </span>
+                      <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-neutral-500">
+                        {ex.values.map((v) => (
+                          <span key={v.fact_id}>
+                            {v.name ?? "—"}
+                            {v.valid_from && (
+                              <span className="u-num ml-1 text-neutral-600">
+                                {S.ontology.uniquenessSince(
+                                  v.valid_from.slice(0, 10),
+                                )}
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MissesPanel({
   kbId,
   misses,
