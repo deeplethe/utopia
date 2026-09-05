@@ -23,6 +23,7 @@
      **唯一**入口——text-ink-2、border-line、bg-surface-2、text-danger。
      Tailwind 自带的 neutral-500、white/10 在页面里禁用（scripts/style-guard.mjs） */
   --color-ground: var(--u-ground);
+  --color-well: var(--u-well);
   --color-ink: var(--u-text);
   --color-ink-2: var(--u-text-2);
   --color-ink-3: var(--u-text-3);
@@ -88,6 +89,8 @@
   --u-surface-3: rgba(255, 255, 255, 0.1);
   /* 键盘焦点环：够亮，因为它是键盘用户唯一的"我在哪" */
   --u-ring: rgba(255, 255, 255, 0.6);
+  /* 凹下去的一格：代码块、令牌那种"这是原样内容"的底 */
+  --u-well: rgba(0, 0, 0, 0.4);
   /* 动效两档：进入 fast、离开 base（见 .glass-strong 上的说明） */
   --u-fast: 120ms;
   --u-base: 260ms;
@@ -700,6 +703,119 @@ select.input-dark option {
   transition: width 500ms ease;
 }
 
+/* 无皮输入：装在别的面里 */
+.u-input-bare {
+  background: transparent;
+  border: 0;
+  outline: none;
+  padding: 0;
+  color: var(--u-text);
+}
+.u-input-bare::placeholder {
+  color: var(--u-text-3);
+}
+
+/* 顶栏里的小链接（Docs、返回） */
+.u-navlink {
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.5rem;
+  font-size: var(--text-small);
+  line-height: var(--text-small--line-height);
+  color: var(--u-text-3);
+  transition:
+    color var(--u-fast),
+    background-color var(--u-fast);
+}
+.u-navlink:hover {
+  color: var(--u-text);
+  background: var(--u-surface-2);
+}
+
+/* 主导航的一页：图标 + 文字，激活态下划线 */
+.u-tab {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  font-size: var(--text-body);
+  line-height: var(--text-body--line-height);
+  font-weight: 500;
+  color: var(--u-text-2);
+  border-bottom: 2px solid transparent;
+  transition: color var(--u-fast);
+}
+.u-tab:hover {
+  color: var(--u-text);
+}
+.u-tab.is-active {
+  color: var(--u-text);
+  border-bottom-color: #ffffff;
+}
+
+/* 一行的壳：自己不是按钮（里面还有按钮）但整行要有 hover */
+.u-row-shell {
+  transition: background-color var(--u-fast);
+}
+.u-row-shell:hover {
+  background: var(--u-surface-2);
+}
+
+/* 玻璃卡片式链接（引用来源）：指针停上字提亮 */
+.u-card-link:hover {
+  color: var(--u-text-2);
+}
+
+/* 检索命中：警示琥珀的浅底 */
+.u-mark {
+  border-radius: 3px;
+  padding: 0 0.25rem;
+  background: rgba(242, 182, 109, 0.16);
+  color: var(--u-warn);
+}
+
+/* 对话输入框的外壳 */
+.u-composer {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--u-surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  transition: border-color var(--u-fast);
+}
+.u-composer:focus-within {
+  border-color: var(--u-line-strong);
+}
+
+/* 文档页的分块卡：引用定位时闪一下（u-flash），之后慢慢淡回 */
+.u-chunk {
+  transition:
+    border-color 700ms,
+    background-color 700ms,
+    box-shadow 700ms;
+}
+.u-fade-slow {
+  transition: opacity 700ms;
+}
+
+/* 用户菜单的触发胶囊：打开时原地隐身，让面板从它身上长出来 */
+.u-avatar-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: auto;
+  border-radius: 9999px;
+  padding: 0.25rem 0.75rem 0.25rem 0.25rem;
+  transition:
+    background-color var(--u-fast),
+    opacity var(--u-fast);
+}
+.u-avatar-btn:hover {
+  background: var(--u-surface-2);
+}
+.u-avatar-btn.is-hidden {
+  opacity: 0;
+}
+
 /* ---- chips ---- */
 .u-chip {
   display: inline-block;
@@ -817,6 +933,7 @@ select.input-dark option {
   }
 }
 
+@layer components {
 /* ---- text helpers ---- */
 .u-accent {
   color: var(--u-accent);
@@ -839,6 +956,7 @@ select.input-dark option {
 .brand-gradient {
   color: #ffffff;
   letter-spacing: -0.02em;
+}
 }
 
 /* 登录卡：近实底，不用 backdrop-filter（对动画背景每帧重算模糊，代价高） */

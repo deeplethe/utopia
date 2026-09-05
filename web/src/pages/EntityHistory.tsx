@@ -26,12 +26,12 @@ const KIND_ICON = {
 } as const;
 
 const KIND_TONE: Record<string, string> = {
-  asserted: "text-neutral-500",
-  corrected: "text-[var(--u-warn)]",
-  rejected: "text-[var(--u-danger)]",
-  merged: "text-neutral-500",
-  retyped: "text-neutral-500",
-  retype_reverted: "text-[var(--u-warn)]",
+  asserted: "text-ink-3",
+  corrected: "text-warn",
+  rejected: "text-danger",
+  merged: "text-ink-3",
+  retyped: "text-ink-3",
+  retype_reverted: "text-warn",
 };
 
 /* 这两个函数**故意不一样**，别"统一一下"——它们渲染的是两种时间。
@@ -85,37 +85,37 @@ function EventRow({ e }: { e: EntityHistoryEvent }) {
   const Icon = KIND_ICON[e.kind] ?? FileText;
   const note = intervalNote(e);
   return (
-    <div className="flex gap-2.5 px-2 py-2">
-      <Icon size={13} className={`mt-0.5 shrink-0 ${KIND_TONE[e.kind] ?? ""}`} />
+    <div className="flex gap-3 px-2 py-2">
+      <Icon size={13} className={`mt-1 shrink-0 ${KIND_TONE[e.kind] ?? ""}`} />
       <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-1.5 flex-wrap">
-          <span className="text-[11px] font-medium text-neutral-300">
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <span className="text-fine font-medium text-ink-2">
             {S.graph.historyKind[e.kind] ?? e.kind}
           </span>
-          {note && <span className="u-num text-[11px] text-neutral-500">{note}</span>}
+          {note && <span className="u-num text-fine text-ink-3">{note}</span>}
         </div>
         {/* 改类事件没有谓词也没有宾语，正文换成类的两端。
             起点为空 = 从「未分类」改过来，0009 之后最常见的一种 */}
         {e.kind === "retyped" || e.kind === "retype_reverted" ? (
-          <div className="mt-0.5 text-[12.5px] text-neutral-400 truncate">
-            <span className="text-neutral-500">
+          <div className="mt-1 text-small text-ink-2 truncate">
+            <span className="text-ink-3">
               {e.from_type_label ?? S.graph.untyped} →{" "}
             </span>
-            <span className="text-neutral-200">{e.to_type_label}</span>
+            <span className="text-ink">{e.to_type_label}</span>
           </div>
         ) : (
-          <div className="mt-0.5 text-[12.5px] text-neutral-400 truncate">
-            <span className="text-neutral-500">
+          <div className="mt-1 text-small text-ink-2 truncate">
+            <span className="text-ink-3">
               {e.direction === "in" ? "← " : ""}
-              <span className={e.predicate_label === null ? "italic text-neutral-600" : undefined}>
+              <span className={e.predicate_label === null ? "italic text-ink-3" : undefined}>
                 {e.predicate_label ?? S.graph.unknownPredicate}
               </span>
               {e.direction === "in" ? "" : " →"}
             </span>{" "}
-            <span className="text-neutral-200">{objectText(e)}</span>
+            <span className="text-ink">{objectText(e)}</span>
           </div>
         )}
-        <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-neutral-600">
+        <div className="mt-1 flex items-center gap-2 text-fine text-ink-3">
           <span className="u-num">{ymd(e.at)}</span>
           <span>·</span>
           {/* 归因：人名，或引擎（抽取写入 / 时态对账自动闭合） */}
@@ -127,7 +127,7 @@ function EventRow({ e }: { e: EntityHistoryEvent }) {
                 to="/kb/$kbId/doc/$docId"
                 params={{ kbId, docId: e.document_id }}
                 search={{}}
-                className="truncate hover:text-neutral-300"
+                className="u-hover-ink truncate"
                 title={e.quote ?? e.filename}
               >
                 {e.filename}
@@ -149,15 +149,15 @@ export function EntityHistory({ kbId, entityId }: { kbId: string; entityId: stri
   });
 
   const total = q.data?.total ?? 0;
-  if (q.isPending) return <p className="p-2 text-sm text-neutral-500">{S.nav.loading}</p>;
+  if (q.isPending) return <p className="p-2 text-body text-ink-3">{S.nav.loading}</p>;
   // 只有"一条都没有"才是空。记录轴上首次断言本身就是一次事件——
   // "我们何时、从哪份文档得知这件事"是这条轴要回答的问题的一半
-  if (total === 0) return <p className="p-2 text-xs text-neutral-500">{S.graph.historyEmpty}</p>;
+  if (total === 0) return <p className="p-2 text-small text-ink-3">{S.graph.historyEmpty}</p>;
 
   return (
     <div>
-      <p className="px-2 pb-1.5 text-[11px] text-neutral-600">{S.graph.historyHint}</p>
-      <div className="divide-y divide-white/[0.06]">
+      <p className="px-2 pb-2 text-fine text-ink-3">{S.graph.historyHint}</p>
+      <div className="divide-y divide-line">
         {/* key 里用 fact_id ?? at：改类事件没有 fact_id */}
         {(q.data?.events ?? []).map((e) => (
           <EventRow key={`${e.fact_id ?? e.at}-${e.kind}`} e={e} />

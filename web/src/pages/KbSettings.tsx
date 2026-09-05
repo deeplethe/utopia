@@ -15,12 +15,22 @@ import {
 import { api, type AuditEvent } from "../api";
 import { LANG_NAMES, S } from "../i18n";
 import { toast } from "../toast";
-import { DangerConfirm,
+import {
+  Button,
+  Checkbox,
+  DangerConfirm,
   Dropdown,
+  Input,
+  LinkButton,
   Loading,
+  localDateTime,
+  NativeSelect,
   Pager,
   RAIL_CLS,
-  SearchSelect, localDateTime } from "../ui";
+  Row,
+  SearchSelect,
+  Segmented,
+} from "../ui";
 
 const KB_ROLES = [
   { value: "viewer", label: S.kbset.roles.viewer },
@@ -134,14 +144,12 @@ export function KbSettings() {
   if (!kbId || kb.isPending) return <Loading>{S.nav.loading}</Loading>;
   if (kb.isError)
     return (
-      <div className="p-8 text-sm text-rose-400">
+      <div className="p-8 text-body text-danger">
         {(kb.error as Error).message}
       </div>
     );
 
-  const lbl = "block text-xs font-medium text-neutral-500 mb-1";
-  const rail =
-    "w-full flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-left transition-colors";
+  const lbl = "block text-small font-medium text-ink-3 mb-1";
 
   const isDefault = kb.data.is_default;
   const sections: {
@@ -169,37 +177,32 @@ export function KbSettings() {
   return (
     <div className="h-full flex">
       {/* 分节导航：未来的抽取设置/保留策略/令牌等在此扩展 */}
-      <aside className={`${RAIL_CLS} p-3 space-y-0.5`}>
+      <aside className={`${RAIL_CLS} p-3 space-y-1`}>
         {sections.map(({ key, label, Icon, danger }) => (
-          <button
+          <Row
             key={key}
+            density="nav"
+            active={section === key}
+            danger={danger}
+            icon={<Icon size={14} />}
             onClick={() => setSection(key)}
-            className={`${rail} ${
-              section === key
-                ? "u-nav-active"
-                : danger
-                  ? "text-neutral-500 hover:bg-white/[0.05] hover:text-[var(--u-danger)]"
-                  : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200"
-            }`}
           >
-            <Icon size={14} />
             {label}
-          </button>
+          </Row>
         ))}
       </aside>
 
       <main className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
-        <div className="max-w-xl space-y-5">
+        <div className="max-w-xl space-y-6">
           {/* 不缀库名：顶栏切换器已标明当前库 */}
-          <h2 className="u-title text-lg">{S.kbset.title}</h2>
+          <h2 className="u-title text-title">{S.kbset.title}</h2>
 
           {section === "general" && (
             <div className="glass rounded-xl p-4 space-y-3">
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className={lbl}>{S.settings.kbs.name}</label>
-                  <input
-                    className="input-dark w-full px-3 py-2 text-sm"
+                  <Input className="w-full"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                   />
@@ -208,121 +211,83 @@ export function KbSettings() {
                   <label className={lbl}>{S.settings.kbs.visibility}</label>
                   {isDefault ? (
                     /* 默认库锁 open：说明常驻可见（藏在 hover 里等于没解释）,详情见 grid 下方整行 */
-                    <div className="flex items-center gap-1.5 rounded-lg border border-white/10 px-2.5 py-2 text-[11px] text-neutral-500 cursor-not-allowed">
-                      <Lock size={11} className="shrink-0 text-neutral-600" />
+                    <div className="flex items-center gap-2 rounded-lg border border-line px-3 py-2 text-fine text-ink-3 cursor-not-allowed">
+                      <Lock size={11} className="shrink-0 text-ink-3" />
                       {S.kbset.defaultOpenLabel}
                     </div>
                   ) : (
-                    <div className="flex rounded-lg overflow-hidden border border-white/10">
-                      {(
+                    <Segmented
+                      fill
+                      size="sm"
+                      value={visibility}
+                      onChange={setVisibility}
+                      options={(
                         [
                           ["open", "Open"],
                           ["restricted", S.settings.kbs.visRestricted],
                         ] as const
-                      ).map(([v, label]) => (
-                        <button
-                          key={v}
-                          onClick={() => setVisibility(v)}
-                          title={label}
-                          className={`flex-1 px-2 py-2 text-[11px] truncate transition-colors ${
-                            visibility === v
-                              ? "bg-white/[0.12] text-white"
-                              : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-                          }`}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
+                      ).map(([v, label]) => ({ value: v, label, title: label }))}
+                    />
                   )}
                 </div>
               </div>
               {isDefault && (
-                <p className="text-xs leading-relaxed text-neutral-500">
+                <p className="text-small leading-relaxed text-ink-3">
                   {S.kbset.defaultOpenNote}
                 </p>
               )}
               <div>
                 <label className={lbl}>{S.settings.kbs.description}</label>
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm"
+                <Input className="w-full"
                   value={desc}
                   onChange={(e) => setDesc(e.target.value)}
                 />
               </div>
               {/* 自动扩本体：默认开，因为新库的十个默认关系不是任何人选的。
                   说明里要讲清关掉之后失去的**只是**代劳，不是留意 */}
-              <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 accent-[var(--u-accent)]"
-                  checked={autoExtend}
-                  onChange={(e) => setAutoExtend(e.target.checked)}
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm text-neutral-200">
-                    {S.kbset.autoExtend}
-                  </span>
-                  <span className="block text-xs leading-relaxed text-neutral-500">
-                    {S.kbset.autoExtendNote}
-                  </span>
-                </span>
-              </label>
+              <Checkbox
+                className="pt-1"
+                checked={autoExtend}
+                onChange={(e) => setAutoExtend(e.target.checked)}
+                label={S.kbset.autoExtend}
+                hint={S.kbset.autoExtendNote}
+              />
               {/* 物化推理：**默认关**，与上面那个相反。自动扩本体动的是词表，
                   这个动的是账本——它按公理往图里写事实，而声明可能是错的 */}
-              <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 accent-[var(--u-accent)]"
-                  checked={materialize}
-                  onChange={(e) => setMaterialize(e.target.checked)}
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm text-neutral-200">
-                    {S.kbset.materialize}
-                  </span>
-                  <span className="block text-xs leading-relaxed text-neutral-500">
-                    {S.kbset.materializeNote}
-                  </span>
-                </span>
-              </label>
+              <Checkbox
+                className="pt-1"
+                checked={materialize}
+                onChange={(e) => setMaterialize(e.target.checked)}
+                label={S.kbset.materialize}
+                hint={S.kbset.materializeNote}
+              />
               {/* 类型消解自动跑：抽完排一轮，只自动改子树内精化的那一档，跨轴的仍留给人 */}
-              <label className="flex items-start gap-2.5 pt-1 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 accent-[var(--u-accent)]"
-                  checked={autoResolve}
-                  onChange={(e) => setAutoResolve(e.target.checked)}
-                />
-                <span className="min-w-0">
-                  <span className="block text-sm text-neutral-200">
-                    {S.kbset.autoResolveTypes}
-                  </span>
-                  <span className="block text-xs leading-relaxed text-neutral-500">
-                    {S.kbset.autoResolveTypesNote}
-                  </span>
-                </span>
-              </label>
+              <Checkbox
+                className="pt-1"
+                checked={autoResolve}
+                onChange={(e) => setAutoResolve(e.target.checked)}
+                label={S.kbset.autoResolveTypes}
+                hint={S.kbset.autoResolveTypesNote}
+              />
               {/* 重推间隔。**只在开着的时候露出来**——关着时它不影响任何事，
                   摆在那里只会让人以为设了就会推 */}
               {materialize && (
                 <div className="pl-6 flex items-center gap-2">
-                  <label className="text-xs text-neutral-500">
+                  <label className="text-small text-ink-3">
                     {S.kbset.inferEvery}
                   </label>
-                  <input
+                  <Input size="sm" className="w-24 u-num"
                     type="number"
                     min={5}
                     max={10080}
-                    className="input-dark w-24 px-2 py-1 text-xs u-num"
                     value={inferMins}
                     onChange={(e) => setInferMins(Number(e.target.value))}
                   />
-                  <span className="text-xs text-neutral-500">
+                  <span className="text-small text-ink-3">
                     {S.kbset.minutes}
                   </span>
                   {kb.data.last_inference_at && (
-                    <span className="text-[11px] text-neutral-600">
+                    <span className="text-fine text-ink-3">
                       {S.kbset.lastInference(
                         new Date(kb.data.last_inference_at).toLocaleString(),
                       )}
@@ -333,53 +298,46 @@ export function KbSettings() {
               {/* 失败的任务（#216）：有才露出来。「再跑一遍」把这个库里全部 failed 放回队列 */}
               {failedJobs.data && failedJobs.data.failed > 0 && (
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-neutral-400">
+                  <span className="text-small text-ink-2">
                     {S.kbset.failedJobs(failedJobs.data.failed)}
                   </span>
-                  <button
-                    className="u-btn u-btn-ghost px-2.5 py-1 text-xs"
+                  <Button variant="secondary" size="sm"
                     disabled={requeue.isPending}
                     onClick={() => requeue.mutate()}
                   >
                     {S.kbset.requeue}
-                  </button>
+                  </Button>
                 </div>
               )}
               {/* 语料语言。**不是界面语言**——类描述逐字进抽取提示词，
                   读者是正在读这些文档的模型，所以它跟文档走不跟读者走 */}
               <div className="pt-1">
-                <span className="block text-sm text-neutral-200">
+                <span className="block text-body text-ink">
                   {S.kbset.ontologyLang}
                 </span>
-                <span className="mt-0.5 block text-xs leading-relaxed text-neutral-500">
+                <span className="mt-1 block text-small leading-relaxed text-ink-3">
                   {S.kbset.ontologyLangNote}
                 </span>
-                <div className="mt-2 flex gap-1 rounded-lg bg-white/5 p-1 w-fit">
-                  {(["en", "zh"] as const).map((l) => (
-                    <button
-                      key={l}
-                      onClick={() => setOntoLang(l)}
-                      className={`rounded-md px-3 py-1 text-[12px] font-medium transition-colors ${
-                        ontoLang === l
-                          ? "bg-white/10 text-neutral-100"
-                          : "text-neutral-500 hover:text-neutral-300"
-                      }`}
-                    >
-                      {LANG_NAMES[l]}
-                    </button>
-                  ))}
-                </div>
+                <Segmented
+                  size="sm"
+                  className="mt-2 w-fit"
+                  value={ontoLang}
+                  onChange={setOntoLang}
+                  options={(["en", "zh"] as const).map((l) => ({
+                    value: l,
+                    label: LANG_NAMES[l],
+                  }))}
+                />
               </div>
               <div className="flex items-center gap-3">
-                <button
-                  className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
+                <Button variant="primary" size="sm"
                   disabled={!name.trim() || save.isPending}
                   onClick={() => save.mutate()}
                 >
                   {S.kbset.save}
-                </button>
+                </Button>
                 {save.isSuccess && (
-                  <span className="text-xs text-neutral-400">
+                  <span className="text-small text-ink-2">
                     {S.kbset.saved}
                   </span>
                 )}
@@ -394,17 +352,16 @@ export function KbSettings() {
           {section === "activity" && <KbActivity kbId={kbId} />}
 
           {section === "danger" && (
-            <div className="glass rounded-2xl px-5 py-4 flex items-center justify-between gap-4">
+            <div className="glass rounded-xl px-6 py-4 flex items-center justify-between gap-4">
               <div className="min-w-0">
-                <div className="text-sm font-medium text-neutral-200">
+                <div className="text-body font-medium text-ink">
                   {S.kbset.deleteRowTitle}
                 </div>
-                <div className="mt-0.5 text-xs text-neutral-500">
+                <div className="mt-1 text-small text-ink-3">
                   {S.kbset.deleteRowHint}
                 </div>
               </div>
-              <button
-                className="u-btn px-3.5 py-1.5 text-xs font-semibold shrink-0"
+              <Button variant="secondary" size="sm" className="shrink-0"
                 style={{
                   background: "var(--u-danger-solid)",
                   color: "#ffffff",
@@ -412,11 +369,11 @@ export function KbSettings() {
                 onClick={() => setConfirmingDelete(true)}
               >
                 {S.kbset.deleteRowBtn}
-              </button>
+              </Button>
             </div>
           )}
 
-          {error && <p className="text-sm text-rose-400">{error}</p>}
+          {error && <p className="text-body text-danger">{error}</p>}
 
           {confirmingDelete && (
             <DangerConfirm
@@ -478,10 +435,9 @@ function KbActivity({ kbId }: { kbId: string }) {
 
   return (
     <div className="glass rounded-xl p-4">
-      <p className="text-xs text-neutral-500 mb-3">{S.kbset.activityHint}</p>
+      <p className="text-small text-ink-3 mb-3">{S.kbset.activityHint}</p>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <select
-          className="input-dark px-2 py-1 text-xs"
+        <NativeSelect size="sm"
           value={action}
           onChange={(e) => reset(() => setAction(e.target.value))}
         >
@@ -491,25 +447,22 @@ function KbActivity({ kbId }: { kbId: string }) {
               {a}
             </option>
           ))}
-        </select>
-        <input
+        </NativeSelect>
+        <Input size="sm" className="u-num"
           type="date"
-          className="input-dark px-2 py-1 text-xs u-num"
           value={since}
           title={S.kbset.auditSince}
           onChange={(e) => reset(() => setSince(e.target.value))}
         />
-        <span className="text-xs text-neutral-600">→</span>
-        <input
+        <span className="text-small text-ink-3">→</span>
+        <Input size="sm" className="u-num"
           type="date"
-          className="input-dark px-2 py-1 text-xs u-num"
           value={until}
           title={S.kbset.auditUntil}
           onChange={(e) => reset(() => setUntil(e.target.value))}
         />
         {filtered && (
-          <button
-            className="u-btn u-btn-ghost px-2 py-1 text-xs"
+          <Button variant="secondary" size="sm"
             onClick={() =>
               reset(() => {
                 setAction("");
@@ -519,28 +472,28 @@ function KbActivity({ kbId }: { kbId: string }) {
             }
           >
             {S.kbset.auditClear}
-          </button>
+          </Button>
         )}
-        <span className="ml-auto u-num text-[11px] text-neutral-500">
+        <span className="ml-auto u-num text-fine text-ink-3">
           {S.kbset.auditTotal(total)}
         </span>
       </div>
       {audit.isPending ? (
-        <p className="text-xs text-neutral-600">{S.nav.loading}</p>
+        <p className="text-small text-ink-3">{S.nav.loading}</p>
       ) : events.length === 0 ? (
-        <p className="text-xs text-neutral-600">{S.kbset.activityEmpty}</p>
+        <p className="text-small text-ink-3">{S.kbset.activityEmpty}</p>
       ) : (
-        <div className="space-y-0.5">
+        <div className="space-y-1">
           {events.map((e) => (
             <div
               key={e.id}
-              className="flex items-baseline gap-3 py-1.5 text-[13px]"
+              className="flex items-baseline gap-3 py-2 text-body"
             >
-              <span className="u-num shrink-0 text-[11px] text-neutral-600">
+              <span className="u-num shrink-0 text-fine text-ink-3">
                 {localDateTime(e.created_at)}
               </span>
               <span className="min-w-0 truncate">
-                <span className="text-neutral-200">
+                <span className="text-ink">
                   {e.actor_name ??
                     (e.actor_id
                       ? S.kbset.deletedUser
@@ -548,11 +501,11 @@ function KbActivity({ kbId }: { kbId: string }) {
                         ? S.kbset.adjudicator
                         : S.kbset.engine)}
                 </span>{" "}
-                <span className="text-neutral-500">
+                <span className="text-ink-3">
                   {S.kbset.auditActions[e.action] ?? e.action}
                 </span>
                 {auditDetailName(e) && (
-                  <span className="text-neutral-300">
+                  <span className="text-ink-2">
                     {" "}
                     “{auditDetailName(e)}”
                   </span>
@@ -610,20 +563,20 @@ function KbMembers({ kbId, isOpen }: { kbId: string; isOpen: boolean }) {
 
   return (
     <div className="glass rounded-xl p-4">
-      <p className="text-xs text-neutral-500 mb-3">
+      <p className="text-small text-ink-3 mb-3">
         {isOpen ? S.kbset.membersHintOpen : S.kbset.membersHintRestricted}
       </p>
 
       {members.data && listed.length === 0 && (
-        <p className="text-xs text-neutral-600 mb-3">
+        <p className="text-small text-ink-3 mb-3">
           {isOpen ? S.kbset.noWriters : S.kbset.noMembers}
         </p>
       )}
       {listed.map((m) => (
-        <div key={m.user_id} className="flex items-center gap-3 py-1.5">
+        <div key={m.user_id} className="flex items-center gap-3 py-2">
           <div className="min-w-0 flex-1">
-            <span className="text-sm text-neutral-200">{m.display_name}</span>
-            <span className="ml-2 text-xs text-neutral-500">{m.email}</span>
+            <span className="text-body text-ink">{m.display_name}</span>
+            <span className="ml-2 text-small text-ink-3">{m.email}</span>
           </div>
           <Dropdown
             size="sm"
@@ -632,12 +585,9 @@ function KbMembers({ kbId, isOpen }: { kbId: string; isOpen: boolean }) {
             onChange={(role) => setMember.mutate({ userId: m.user_id, role })}
             options={rolesFor(isOpen)}
           />
-          <button
-            onClick={() => remove.mutate(m.user_id)}
-            className="text-xs text-neutral-500 hover:text-rose-400"
-          >
+          <LinkButton tone="danger" onClick={() => remove.mutate(m.user_id)}>
             {S.kbset.remove}
-          </button>
+          </LinkButton>
         </div>
       ))}
 
@@ -645,7 +595,7 @@ function KbMembers({ kbId, isOpen }: { kbId: string; isOpen: boolean }) {
           一个时有时无的控件比一个空着的控件更让人困惑——不见了的第一反应是
           功能坏了，而不是"没人可加"。空列表由 SearchSelect 自己说
           （它有 noMatches 空态），这里不必再加一句话 */}
-      <div className="mt-3 flex gap-2 items-center border-t border-white/5 pt-3">
+      <div className="mt-3 flex gap-2 items-center border-t border-line pt-3">
         <SearchSelect
           className="flex-1"
           value={addUserId}
@@ -663,13 +613,12 @@ function KbMembers({ kbId, isOpen }: { kbId: string; isOpen: boolean }) {
           onChange={setAddRole}
           options={rolesFor(isOpen)}
         />
-        <button
-          className="u-btn u-btn-primary px-3 py-1.5 text-xs"
+        <Button variant="primary" size="sm"
           disabled={!addUserId || setMember.isPending}
           onClick={() => setMember.mutate({ userId: addUserId, role: addRole })}
         >
           {S.members.add}
-        </button>
+        </Button>
       </div>
     </div>
   );

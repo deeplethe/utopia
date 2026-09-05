@@ -37,7 +37,15 @@ import {
 import { Maximize2, Network, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import type { EntityTypeView, RelationTypeView } from "../api";
 import { S } from "../i18n";
-import { cn } from "../ui";
+import {
+  cn,
+  Input,
+  Pill,
+  Row,
+  ToolButton,
+  ToolDivider,
+  ToolTower,
+} from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 
 /* ============ 边的三种语义，与三种视觉语汇的映射 ============
@@ -654,10 +662,9 @@ export function OntologySchemaGraph({
         <div className="relative pointer-events-auto">
           <Search
             size={12}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-600"
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3"
           />
-          <input
-            className="input-dark w-60 pl-7 pr-2 py-[5px] text-sm shadow-lg"
+          <Input className="w-60 pl-8 pr-2 shadow-lg"
             placeholder={S.ontology.schemaSearchPlaceholder}
             value={searchQ}
             onChange={(e) => setSearchQ(e.target.value)}
@@ -665,13 +672,14 @@ export function OntologySchemaGraph({
           {searchQ && (
             <div className="glass-strong absolute mt-1 w-72 rounded-lg shadow-xl overflow-hidden">
               {searchHits.length === 0 && (
-                <p className="px-3 py-2 text-xs text-neutral-600">{S.ui.noMatches}</p>
+                <p className="px-3 py-2 text-small text-ink-3">{S.ui.noMatches}</p>
               )}
               {searchHits.map((hit) => (
-                <button
+                <Row
                   key={`${hit.kind}:${hit.id}`}
+                  density="menu"
+                  className="text-body text-ink"
                   onClick={() => pickHit(hit)}
-                  className="w-full px-3 py-1.5 text-left text-sm text-neutral-200 hover:bg-white/5 flex items-center gap-2"
                 >
                   {hit.kind === "class" ? (
                     <span
@@ -682,21 +690,21 @@ export function OntologySchemaGraph({
                       style={{ background: entityById.get(hit.id)?.color }}
                     />
                   ) : (
-                    <Network size={11} className="shrink-0 text-[#c4a5ff]" />
+                    <Network size={11} className="shrink-0 text-violet" />
                   )}
                   <span className="truncate">{hit.label}</span>
                   {hit.sub && (
-                    <span className="ml-auto shrink-0 text-xs text-neutral-500 truncate max-w-[9rem]">
+                    <span className="ml-auto shrink-0 text-small text-ink-3 truncate max-w-[9rem]">
                       {hit.sub}
                     </span>
                   )}
-                </button>
+                </Row>
               ))}
             </div>
           )}
         </div>
 
-        <div className="pointer-events-auto flex flex-wrap gap-1.5 pt-0.5">
+        <div className="pointer-events-auto flex flex-wrap gap-2 pt-1">
           {/* 静态图例：三种边各自的说法，不是可切换的过滤器——本体的边远比
               实例图少，藏一种边省下的空间不值得多一层交互 */}
           {(
@@ -708,7 +716,7 @@ export function OntologySchemaGraph({
           ).map(([label, color]) => (
             <span
               key={label}
-              className="glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 text-neutral-300"
+              className="glass rounded-full px-3 py-1 text-fine flex items-center gap-2 text-ink-2"
             >
               <span className="h-0.5 w-3 rounded-full" style={{ background: color }} />
               {label}
@@ -717,47 +725,40 @@ export function OntologySchemaGraph({
 
           {schema.unscoped.length > 0 && (
             <div className="relative" ref={unscopedPop.rootRef}>
-              <button
+              <Pill
                 ref={unscopedPop.anchorRef}
+                active={unscopedPop.open}
+                aria-expanded={unscopedPop.open}
                 onClick={() =>
                   unscopedPop.open ? unscopedPop.close() : unscopedPop.setOpen(true)
                 }
-                aria-expanded={unscopedPop.open}
-                className={cn(
-                  "glass rounded-full px-2.5 py-1 text-[11px] transition-colors",
-                  unscopedPop.open ? "text-neutral-100" : "text-neutral-400",
-                  "hover:text-neutral-100",
-                )}
               >
                 {S.ontology.schemaUnscoped(schema.unscoped.length)}
-              </button>
+              </Pill>
               {unscopedPop.open && (
                 <div
                   ref={unscopedPop.panelRef}
                   className="u-menu-glass absolute left-0 top-0 z-50 w-64 overflow-hidden rounded-xl p-2 shadow-2xl"
                 >
-                  <button
-                    onClick={() => unscopedPop.close()}
-                    className="mb-1.5 flex w-full items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-neutral-300 hover:text-neutral-100"
-                  >
+                  <Pill className="mb-2 w-full" onClick={() => unscopedPop.close()}>
                     {S.ontology.schemaUnscoped(schema.unscoped.length)}
-                    <X size={11} className="ml-auto text-neutral-500" />
-                  </button>
-                  <p className="px-1.5 pb-1.5 text-[11px] leading-relaxed text-neutral-500">
+                    <X size={11} className="ml-auto text-ink-3" />
+                  </Pill>
+                  <p className="px-2 pb-2 text-fine leading-relaxed text-ink-3">
                     {S.ontology.schemaUnscopedHint}
                   </p>
                   <div className="flex max-h-64 flex-col overflow-y-auto">
                     {schema.unscoped.map((r) => (
-                      <button
+                      <Row
                         key={r.id}
+                        className="text-small"
                         onClick={() => {
                           onSelect({ kind: "relation", id: r.id });
                           unscopedPop.close();
                         }}
-                        className="w-full truncate rounded px-1.5 py-1 text-left text-[12px] text-neutral-300 hover:bg-white/5 hover:text-white"
                       >
                         {r.label}
-                      </button>
+                      </Row>
                     ))}
                   </div>
                 </div>
@@ -776,38 +777,29 @@ export function OntologySchemaGraph({
       {/* 左下：缩放 + 归位。不给布局切换——模式图只有一套确定性布局,
           不像实例图那样需要按类型聚簇或摊成环 */}
       <div className="absolute bottom-4 left-3 z-10 flex flex-col items-start gap-2">
-        <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
-          <button
-            title={S.ontology.schemaZoomIn}
+        <ToolTower>
+          <ToolButton
+            label={S.ontology.schemaZoomIn}
+            icon={<ZoomIn size={15} />}
             onClick={() => sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })}
-            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-          >
-            <ZoomIn size={15} />
-            <span className="u-tower-label">{S.ontology.schemaZoomIn}</span>
-          </button>
-          <button
-            title={S.ontology.schemaZoomOut}
+          />
+          <ToolButton
+            label={S.ontology.schemaZoomOut}
+            icon={<ZoomOut size={15} />}
             onClick={() => sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })}
-            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-          >
-            <ZoomOut size={15} />
-            <span className="u-tower-label">{S.ontology.schemaZoomOut}</span>
-          </button>
-          <div className="h-px bg-white/10 mx-1.5" />
-          <button
-            title={S.ontology.schemaFitView}
+          />
+          <ToolDivider />
+          <ToolButton
+            label={S.ontology.schemaFitView}
+            icon={<Maximize2 size={15} />}
             onClick={() => sigmaRef.current?.getCamera().animatedReset({ duration: 300 })}
-            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-          >
-            <Maximize2 size={15} />
-            <span className="u-tower-label">{S.ontology.schemaFitView}</span>
-          </button>
-        </div>
+          />
+        </ToolTower>
       </div>
 
       {empty && (
         <div className="absolute inset-0 grid place-items-center pointer-events-none">
-          <div className="text-center text-sm text-neutral-500 max-w-xs">
+          <div className="text-center text-body text-ink-3 max-w-xs">
             {S.ontology.schemaEmpty}
           </div>
         </div>

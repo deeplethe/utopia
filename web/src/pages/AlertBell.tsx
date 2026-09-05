@@ -12,7 +12,15 @@ import { Bell, Search, X } from "lucide-react";
 import { api, type AlertGroup } from "../api";
 import { S } from "../i18n";
 import { toast } from "../toast";
-import { Chip, Pager, cn } from "../ui";
+import {
+  Button,
+  Chip,
+  cn,
+  IconButton,
+  Input,
+  LinkButton,
+  Pager,
+} from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 
 const PAGE = 8;
@@ -56,22 +64,22 @@ function AlertRow({
       onKeyDown={(e) => {
         if (e.key === "Enter" && g.unread > 0) onRead(g);
       }}
-      className="w-full text-left flex gap-2.5 px-3.5 py-3 border-b border-white/[0.06] last:border-b-0 hover:bg-white/[0.03] transition-colors cursor-pointer"
+      className="u-row-shell flex w-full cursor-pointer gap-3 border-b border-line px-4 py-3 text-left last:border-b-0"
     >
       {/* 未读就是一个红点。整行描边或底色会让面板在告警多时变成一片红，
           而红点只占它该占的那一点地方，读过就没了 */}
       <span
         className={cn(
           "mt-[7px] h-1.5 w-1.5 rounded-full shrink-0",
-          g.unread > 0 ? "bg-rose-500" : "bg-transparent",
+          g.unread > 0 ? "bg-danger" : "bg-transparent",
         )}
       />
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1.5 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
           <span
             className={cn(
-              "text-[13px]",
-              g.unread > 0 ? "font-medium text-white" : "text-neutral-400",
+              "text-body",
+              g.unread > 0 ? "font-medium text-ink" : "text-ink-2",
             )}
           >
             {worded?.title ?? S.alerts.unknownKind(g.kind)}
@@ -82,33 +90,32 @@ function AlertRow({
           </Chip>
         </div>
         {worded && (
-          <p className="mt-0.5 text-[11.5px] text-neutral-500">{worded.hint}</p>
+          <p className="mt-1 text-small text-ink-3">{worded.hint}</p>
         )}
         {lines.length > 0 && (
-          <ul className="mt-1 space-y-0.5">
+          <ul className="mt-1 space-y-1">
             {lines.map((l, i) => (
-              <li key={i} className="text-[11px] text-neutral-400 break-words">
+              <li key={i} className="text-fine text-ink-2 break-words">
                 {l}
               </li>
             ))}
             {rest > 0 && (
-              <li className="text-[11px] text-neutral-600">
+              <li className="text-fine text-ink-3">
                 {S.alerts.andMore(rest)}
               </li>
             )}
           </ul>
         )}
         {/* 时间取组里最新的那一次 */}
-        <p className="u-num mt-1.5 text-[10.5px] text-neutral-600">
+        <p className="u-num mt-2 text-fine text-ink-3">
           {new Date(g.latest_at).toLocaleString()}
         </p>
         {/* 修好之后接着跑：把这次故障窗口里失败的任务放回队列（#216）。
             余额耗尽是唯一一种「人做完一件具体的事就想让活继续」的失败，
             动作长在告警上，闭环就在这里，不必另建一个队列页 */}
         {REQUEUE_KINDS.has(g.kind) && (
-          <button
+          <Button variant="secondary" size="sm" className="mt-2"
             type="button"
-            className="u-btn u-btn-ghost mt-2 px-2.5 py-1 text-[11px]"
             disabled={requeuing}
             onClick={(e) => {
               e.stopPropagation();
@@ -116,7 +123,7 @@ function AlertRow({
             }}
           >
             {S.alerts.runAgain}
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -175,45 +182,43 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
       ref={panelRef}
       className="u-menu-glass absolute right-0 top-0 w-[420px] rounded-xl shadow-2xl z-50 overflow-hidden"
     >
-      <div className="flex items-center gap-2 pl-3.5 pr-10 py-2.5 border-b border-white/10">
-        <span className="text-[13px] font-medium text-neutral-100">
+      <div className="flex items-center gap-2 pl-4 pr-8 py-3 border-b border-line">
+        <span className="text-body font-medium text-ink">
           {S.alerts.title}
         </span>
       </div>
 
       {/* 跟文库的过滤框同一套：input-dark + 左侧图标 + 有值时右侧清除、Esc 清空 */}
-      <div className="px-3.5 py-2.5 border-b border-white/[0.06]">
+      <div className="px-4 py-3 border-b border-line">
         <div className="relative">
           <Search
             size={13}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none"
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none"
           />
-          <input
-            className="input-dark w-full pl-8 pr-7 py-1.5 text-[13px]"
+          <Input size="sm" className="w-full pl-8 pr-8"
             placeholder={S.alerts.searchPlaceholder}
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setQ("")}
           />
           {q && (
-            <button
+            <IconButton size="sm" label={S.ui.close} className="absolute right-2 top-1/2 -translate-y-1/2"
               onClick={() => setQ("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-200"
             >
               <X size={12} />
-            </button>
+            </IconButton>
           )}
         </div>
       </div>
 
       <div className="max-h-[420px] overflow-y-auto">
         {groups.length === 0 ? (
-          <div className="px-3.5 py-8 text-center">
-            <p className="text-[13px] text-neutral-300">
+          <div className="px-4 py-8 text-center">
+            <p className="text-body text-ink-2">
               {q ? S.alerts.noMatch : S.alerts.empty}
             </p>
             {!q && (
-              <p className="mt-1 text-[11.5px] text-neutral-500">
+              <p className="mt-1 text-small text-ink-3">
                 {S.alerts.emptyHint}
               </p>
             )}
@@ -233,14 +238,11 @@ function Panel({ panelRef }: { panelRef: Ref<HTMLDivElement> }) {
 
       {/* 底栏：整张列表级的动作跟翻页放一起，离光标最远 */}
       {groups.length > 0 && (
-        <div className="flex items-center gap-3 px-3.5 py-2 border-t border-white/[0.06]">
+        <div className="flex items-center gap-3 px-4 py-2 border-t border-line">
           {groups.some((g) => g.unread > 0) && (
-            <button
-              className="text-[11.5px] text-neutral-500 hover:text-neutral-200 transition-colors"
-              onClick={() => readAll.mutate()}
-            >
+            <LinkButton onClick={() => readAll.mutate()}>
               {S.alerts.markAllRead}
-            </button>
+            </LinkButton>
           )}
           <Pager
             className="ml-auto"
@@ -269,28 +271,21 @@ export function AlertBell() {
 
   return (
     <div ref={rootRef} className="relative">
-      <button
+      <IconButton
+        size="sm"
         ref={anchorRef}
-        onClick={() => (open ? close() : setOpen(true))}
-        title={S.alerts.badgeLabel}
-        aria-label={S.alerts.badgeLabel}
+        label={S.alerts.badgeLabel}
         aria-expanded={open}
-        // h-7 w-7 正方形：只装一个图标的按钮不该是长方形。
-        // 关闭按钮用同一组尺寸绝对定位在面板的 right-0 top-0，两者严丝合缝
-        className={cn(
-          "relative grid h-7 w-7 place-items-center rounded-lg transition-colors",
-          open
-            ? "text-neutral-200 bg-white/[0.06]"
-            : "text-neutral-500 hover:text-neutral-200 hover:bg-white/[0.05]",
-        )}
+        className={cn("relative", open && "bg-surface-2 text-ink")}
+        onClick={() => (open ? close() : setOpen(true))}
       >
         <Bell size={15} />
         {/* 角标也是个点，不是数字。"有事没看"是二元的，具体几条打开就知道；
             数字还会随重试一路往上跳，跳到三位数就把铃铛撑变形了 */}
         {n > 0 && (
-          <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-rose-500" />
+          <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-danger" />
         )}
-      </button>
+      </IconButton>
       {open && (
         <>
           <Panel panelRef={panelRef} />
@@ -302,14 +297,14 @@ export function AlertBell() {
               光标点开面板之后正停在这个位置，所以这儿必须是"再点一下关掉"。
               放"全部标为已读"等于把误触做成默认动作，而它一下清掉的是
               所有库的所有告警 */}
-          <button
+          <IconButton
+            size="sm"
+            label={S.alerts.close}
+            className="absolute right-0 top-0 z-[60]"
             onClick={close}
-            title={S.alerts.close}
-            aria-label={S.alerts.close}
-            className="absolute right-0 top-0 z-[60] grid h-7 w-7 place-items-center rounded-lg text-neutral-500 hover:text-neutral-200 transition-colors"
           >
             <X size={15} />
-          </button>
+          </IconButton>
         </>
       )}
     </div>

@@ -75,19 +75,23 @@ const BUTTON_VARIANT: Record<ButtonVariant, string> = {
   danger: "u-btn-danger",
 };
 
-export function Button({
-  variant = "secondary",
-  size = "md",
-  icon,
-  busy,
-  className,
-  disabled,
-  children,
-  type = "button",
-  ...props
-}: ButtonProps) {
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  {
+    variant = "secondary",
+    size = "md",
+    icon,
+    busy,
+    className,
+    disabled,
+    children,
+    type = "button",
+    ...props
+  },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type={type}
       className={cn(
         "u-btn",
@@ -103,24 +107,24 @@ export function Button({
       {children}
     </button>
   );
-}
+});
 
 /* 只有图标的按钮：正方形；`label` 同时是 aria-label 与 title——
    没有可见文字的按钮必须有一个名字，这是无障碍的底线 */
-export function IconButton({
-  label,
-  variant = "ghost",
-  size = "md",
-  className,
-  type = "button",
-  ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
-  label: string;
-  variant?: ButtonVariant;
-  size?: "sm" | "md";
-}) {
+export const IconButton = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement> & {
+    label: string;
+    variant?: ButtonVariant;
+    size?: "sm" | "md";
+  }
+>(function IconButton(
+  { label, variant = "ghost", size = "md", className, type = "button", ...props },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type={type}
       aria-label={label}
       title={label}
@@ -133,23 +137,22 @@ export function IconButton({
       {...props}
     />
   );
-}
+});
 
 /* ---------- Input / Textarea / NativeSelect ---------- */
 type InputSize = { size?: "sm" | "md" };
 
-export function Input({
-  className,
-  size = "md",
-  icon,
-  ...props
-}: Omit<InputHTMLAttributes<HTMLInputElement>, "size"> &
-  InputSize & {
-    /** 左侧的语义图标（筛选框的放大镜）。给了它，className 落在外层容器上 */
-    icon?: ReactNode;
-  }) {
+export const Input = forwardRef<
+  HTMLInputElement,
+  Omit<InputHTMLAttributes<HTMLInputElement>, "size"> &
+    InputSize & {
+      /** 左侧的语义图标（筛选框的放大镜）。给了它，className 落在外层容器上 */
+      icon?: ReactNode;
+    }
+>(function Input({ className, size = "md", icon, ...props }, ref) {
   const control = (
     <input
+      ref={ref}
       className={cn(
         "input-dark",
         size === "sm" ? "u-input-sm" : "u-input-md",
@@ -173,24 +176,28 @@ export function Input({
       {control}
     </div>
   );
-}
+});
 
-export function Textarea({
-  className,
-  size = "md",
-  ...props
-}: TextareaHTMLAttributes<HTMLTextAreaElement> & InputSize) {
+export const Textarea = forwardRef<
+  HTMLTextAreaElement,
+  TextareaHTMLAttributes<HTMLTextAreaElement> &
+    InputSize & {
+      /** 没有自己的皮：装在别的面里（对话输入框那种） */
+      bare?: boolean;
+    }
+>(function Textarea({ className, size = "md", bare, ...props }, ref) {
   return (
     <textarea
+      ref={ref}
       className={cn(
-        "input-dark u-scroll",
-        size === "sm" ? "u-input-sm" : "u-input-md",
+        "u-scroll",
+        bare ? "u-input-bare" : cn("input-dark", size === "sm" ? "u-input-sm" : "u-input-md"),
         className,
       )}
       {...props}
     />
   );
-}
+});
 
 /* 原生 select：弹层无法主题化，所以只给"两三个选项、不值得一个 Dropdown"的地方用 */
 export function NativeSelect({
@@ -1046,11 +1053,25 @@ export function localDateTime(iso: string): string {
    一行整条可点，指针停上变面、选中反白。列表里的行与左栏导航项是同一个东西，
    只差密度：nav 高一点、带图标；list 矮一点、可缩进。 */
 /** 一行的类：Row 自己用；页面里必须是 <Link> 的行（跳去图谱的实例行）也用它 */
-export function rowClass(active?: boolean, density: "nav" | "list" = "list"): string {
+export type RowDensity = "nav" | "list" | "menu";
+export function rowClass(
+  active?: boolean,
+  density: RowDensity = "list",
+  danger?: boolean,
+): string {
   return cn(
-    "group flex w-full items-center gap-2 rounded-lg text-left transition-colors duration-fast",
-    density === "nav" ? "px-2 py-2 text-body font-medium" : "px-2 py-1 text-body",
-    active ? "u-nav-active" : "text-ink-2 hover:bg-surface-2 hover:text-ink",
+    "group flex w-full items-center gap-2 text-left transition-colors duration-fast",
+    density === "menu" ? "rounded-none" : "rounded-lg",
+    density === "nav"
+      ? "px-2 py-2 text-body font-medium"
+      : density === "menu"
+        ? "px-3 py-2 text-small"
+        : "px-2 py-1 text-body",
+    active
+      ? "u-nav-active"
+      : danger
+        ? "text-danger hover:bg-surface-2"
+        : "text-ink-2 hover:bg-surface-2 hover:text-ink",
   );
 }
 /** 行右端小字：静止时最淡，整行被指着时提亮一级 */
@@ -1058,6 +1079,7 @@ export const ROW_TRAILING = "ml-auto shrink-0 text-fine text-ink-3 group-hover:t
 
 export function Row({
   active,
+  danger,
   density = "list",
   indent = 0,
   icon,
@@ -1068,7 +1090,10 @@ export function Row({
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   active?: boolean;
-  density?: "nav" | "list";
+  /** 危险的那一行（菜单里的删除） */
+  danger?: boolean;
+  /** nav = 左栏导航项；list = 列表行；menu = 弹出菜单里的一项（顶满、不圆角） */
+  density?: RowDensity;
   /** 树形缩进的层级 */
   indent?: number;
   icon?: ReactNode;
@@ -1080,7 +1105,7 @@ export function Row({
       type={type}
       aria-current={active ? "true" : undefined}
       style={indent ? { paddingLeft: `${8 + indent * 14}px` } : undefined}
-      className={cn(rowClass(active, density), className)}
+      className={cn(rowClass(active, density, danger), className)}
       {...props}
     >
       {icon && <span className="shrink-0 text-ink-3">{icon}</span>}

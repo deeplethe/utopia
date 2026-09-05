@@ -21,34 +21,34 @@ function LegalPage({ doc }: { doc: LegalDocData }) {
       <div className="mx-auto w-full max-w-xl">
         <Link
           to="/login"
-          className="text-xs text-neutral-500 hover:text-neutral-300 transition-colors"
+          className="u-hover-ink text-small text-ink-3"
         >
           {S.legal.backToSignIn}
         </Link>
         <h1
-          className="mt-6 text-3xl text-white"
+          className="mt-6 text-display text-ink"
           style={{ fontFamily: "var(--font-brand)", letterSpacing: "0.04em" }}
         >
           {doc.title}
         </h1>
-        <p className="mt-3 text-xs text-neutral-600">{doc.note}</p>
-        <div className="mt-9 space-y-7">
+        <p className="mt-3 text-small text-ink-3">{doc.note}</p>
+        <div className="mt-8 space-y-8">
           {doc.sections.map((s) => (
             <section key={s.h}>
-              <h2 className="text-sm font-semibold text-neutral-200">{s.h}</h2>
+              <h2 className="text-body font-semibold text-ink">{s.h}</h2>
               {s.body.map((p, i) => (
-                <p key={i} className="mt-2 text-sm leading-relaxed text-neutral-400">
+                <p key={i} className="mt-2 text-body leading-relaxed text-ink-2">
                   {p}
                 </p>
               ))}
               {s.bullets && (
-                <ul className="mt-2 space-y-1.5">
+                <ul className="mt-2 space-y-2">
                   {s.bullets.map((b, i) => (
                     <li
                       key={i}
-                      className="relative pl-4 text-sm leading-relaxed text-neutral-400"
+                      className="relative pl-4 text-body leading-relaxed text-ink-2"
                     >
-                      <span className="absolute left-0 text-neutral-600">–</span>
+                      <span className="absolute left-0 text-ink-3">–</span>
                       {b}
                     </li>
                   ))}
