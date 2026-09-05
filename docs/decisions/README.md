@@ -45,6 +45,7 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0019 | [The second clock can be rewound](0019-the-second-clock-can-be-rewound.md) | Implemented in three cuts · `held_at` and `as_of` on every graph read (#317), entities' own clock by unwinding `entity_merges` (#337), retrieval as of a moment · the control on the graph page is still open (#307), full-text recall is still "now" only |
 | 0020 | [An auditor reads it without us](0020-an-auditor-reads-it-without-us.md) | Implemented · `GET /kbs/{id}/export?format=turtle\|jsonld` streams the base as RDF, `rdf.rs` holds the mapping · SPARQL waits, and the record says why (#308) |
 | 0021 | [A rule reads attributes and concludes a type](0021-a-rule-reads-attributes-and-concludes-a-type.md) | Implemented (#359) · `derived_facts` widened to match `facts`, rules authored in `attribute_rules` from the ontology page, evaluated in the materialisation job, explained in the entity panel with their premises · read-only over MCP, writing a rule stays out · no canvas marker, and a conclusion is rewritten rather than edited |
+| 0022 | [An unknown date is not an open one](0022-an-unknown-date-is-not-an-open-one.md) | Proposed · a missing start is read as since-always and a stated-but-undated ending as still-holding, by hand at every read site · one `world_axis` predicate, an `attested_at` anchor from the document's date, derived rows on read intervals · two cuts (#345, #352) |
 
 ## Not a decision record
 
