@@ -28,6 +28,7 @@ import {
   cn,
   DangerConfirm,
   Dialog,
+  Dropdown,
   IconButton,
   Input,
   LinkButton,
@@ -1438,6 +1439,7 @@ function SourceModal({
             ? s3Bucket.trim()
             : true);
 
+  const KindIcon = KIND_ICON[kind];
   // 注意用 div 而非 label：label 会把 :hover/click 转发给内部第一个可标记控件
   //（button 也算），导致图标网格/日程选择器悬停时第一个按钮常亮
   const field = (label: string, node: React.ReactNode) => (
@@ -1470,24 +1472,29 @@ function SourceModal({
       }
     >
       <div>
-          {/* 类型：十二种排不下一行，换行，按钮按内容宽。选中的那个是 primary，
-              与日程选择器里的多选同一个说法 */}
-          <div className="mb-2 flex flex-wrap gap-2">
-            {CREATABLE_SOURCE_KINDS.map((k) => {
-              const Icon = KIND_ICON[k];
-              return (
-                <Button
-                  key={k}
-                  variant={kind === k ? "primary" : "secondary"}
-                  size="sm"
-                  icon={<Icon size={12} />}
-                  onClick={() => setKind(k)}
-                >
-                  {S.library.sourceKinds[k]}
-                </Button>
-              );
-            })}
-          </div>
+          {/* 类型：十二种，一个下拉装下——排成按钮要占四行，还没等填名字弹窗
+              已经满了。触发器上带当前类型的图标，选项里每一项也带 */}
+          {field(
+            S.library.sourceType,
+            <Dropdown
+              className="w-full"
+              value={kind}
+              icon={<KindIcon size={12} />}
+              onChange={(v) => setKind(v as CreatableSourceKind)}
+              options={CREATABLE_SOURCE_KINDS.map((k) => {
+                const Icon = KIND_ICON[k];
+                return {
+                  value: k,
+                  label: (
+                    <span className="flex items-center gap-2">
+                      <Icon size={12} className="shrink-0 text-ink-3" />
+                      {S.library.sourceKinds[k]}
+                    </span>
+                  ),
+                };
+              })}
+            />,
+          )}
           {/* 类型自解释：一行说明；接口细节移入内置文档，弹窗只留链接 */}
           <p className="mb-4 text-fine leading-relaxed text-ink-3">
             {S.library.sourceKindHints[kind]}
