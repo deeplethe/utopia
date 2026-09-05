@@ -185,18 +185,17 @@ export function SourcesRail({
           count={docs.data?.total ?? 0}
         />
       </div>
-      <div className="flex items-center justify-between px-4 pt-3 pb-2">
+      {/* 加号紧跟在 SOURCES 后面，是这个小节的动作，不是右边栏位里的一个数。
+          按钮贴着图标（4px 内距、不要那 1px 透明边框），标题行不因它长高 */}
+      <div className="flex items-center gap-1 px-4 pt-3 pb-2">
         <span className="text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
           {S.library.sources}
         </span>
         {onAdd && (
-          // 贴着图标的小方块（4px 内距、不要那 1px 透明边框），再往右挂 4px：
-          // 加号的右缘正好落在下面各行计数的右缘上。标准的 26px 图标按钮把
-          // 14px 的加号居中，右缘会比计数缩进 6px
           <IconButton
             size="sm"
             label={S.library.addSource}
-            className="-mr-1 h-auto w-auto border-0 p-1"
+            className="h-auto w-auto border-0 p-1"
             onClick={onAdd}
           >
             <Plus size={14} />
