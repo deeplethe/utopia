@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { ArrowUpRight } from "lucide-react";
 import {
   api,
   type AxiomViolation,
@@ -23,11 +22,10 @@ import {
   Button,
   Chip,
   type ChipTone,
-  cn,
   Input,
   Pager,
   RAIL_CLS,
-  Row,
+  RailItem,
 } from "../ui";
 
 const DUP_PAGE = 6;
@@ -800,40 +798,6 @@ function RailHeader({ label }: { label: string }) {
   );
 }
 
-function RailItem({
-  active,
-  label,
-  count,
-  onClick,
-  external,
-}: {
-  active: boolean;
-  label: string;
-  count: number | null;
-  onClick: () => void;
-  /** 这一档不在本页办——加个去向记号，免得点下去以为页面没反应 */
-  external?: boolean;
-}) {
-  return (
-    <Row
-      density="nav"
-      active={active}
-      onClick={onClick}
-      trailing={
-        count !== null ? (
-          <span className={cn("u-num", count > 0 ? "text-ink-2" : "text-ink-3")}>
-            {count}
-          </span>
-        ) : undefined
-      }
-    >
-      <span className="flex items-center gap-2">
-        <span className="truncate">{label}</span>
-        {external && <ArrowUpRight size={11} className="shrink-0 opacity-50" />}
-      </span>
-    </Row>
-  );
-}
 
 export function Review() {
   const kbId = useKbId();
@@ -1044,61 +1008,69 @@ export function Review() {
         <div className="px-2 space-y-1">
           <RailItem
             active={active === "pending"}
-            label={S.review.railPending}
             count={counts.pending}
             onClick={() => select("pending")}
-          />
+          >
+            {S.review.railPending}
+          </RailItem>
           <RailItem
             active={active === "duplicates"}
-            label={S.review.railDuplicates}
             count={counts.duplicates}
             onClick={() => select("duplicates")}
-          />
+          >
+            {S.review.railDuplicates}
+          </RailItem>
           <RailItem
             active={active === "conflicts"}
-            label={S.review.railConflicts}
             count={counts.conflicts}
             onClick={() => select("conflicts")}
-          />
+          >
+            {S.review.railConflicts}
+          </RailItem>
           <RailItem
             active={active === "unconfirmed"}
-            label={S.review.railUnconfirmed}
             count={counts.unconfirmed}
             onClick={() => select("unconfirmed")}
-          />
+          >
+            {S.review.railUnconfirmed}
+          </RailItem>
           <RailItem
             active={active === "lowconf"}
-            label={S.review.railLowConfidence}
             count={counts.lowconf}
             onClick={() => select("lowconf")}
-          />
+          >
+            {S.review.railLowConfidence}
+          </RailItem>
           <RailItem
             active={active === "violations"}
-            label={S.review.railViolations}
             count={counts.violations}
             onClick={() => select("violations")}
-          />
+          >
+            {S.review.railViolations}
+          </RailItem>
           <RailItem
             active={active === "defects"}
-            label={S.review.railDefects}
             count={counts.defects}
             onClick={() => select("defects")}
-          />
+          >
+            {S.review.railDefects}
+          </RailItem>
         </div>
         <RailHeader label={S.review.tabHistory} />
         <div className="px-2 space-y-1">
           <RailItem
             active={active === "decisions"}
-            label={S.review.railDecisions}
-            count={null}
-            onClick={() => select("decisions")}
-          />
+                        onClick={() => select("decisions")}
+          >
+            {S.review.railDecisions}
+          </RailItem>
           <RailItem
             active={active === "merges"}
-            label={S.review.railMerges}
             count={counts.merges}
             onClick={() => select("merges")}
-          />
+          >
+            {S.review.railMerges}
+          </RailItem>
         </div>
 
         {/* 数据映射：**两组都不属于，所以压在底部单独一条。**
@@ -1110,13 +1082,14 @@ export function Review() {
         <div className="mt-auto border-t border-line px-2 py-2">
           <RailItem
             active={false}
-            label={S.review.railMappings}
             count={counts.mappings}
             onClick={() =>
               navigate({ to: "/kb/$kbId/mappings", params: { kbId } })
             }
             external
-          />
+          >
+            {S.review.railMappings}
+          </RailItem>
         </div>
       </aside>
 

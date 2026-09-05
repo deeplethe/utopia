@@ -33,11 +33,7 @@ import {
 } from "lucide-react";
 import { api, type SourceView } from "../api";
 import { S } from "../i18n";
-import {
-  IconButton,
-  RAIL_CLS,
-  Row,
-} from "../ui";
+import { IconButton, RAIL_CLS, RailItem } from "../ui";
 
 /** 左栏选择：全部 / 手动上传 / 某个来源 id */
 /** "deleted" = 墓碑视图（#268）：删了、还能恢复或清除的文档 */
@@ -112,37 +108,6 @@ export function sourceIcon(s: SourceView): LucideIcon {
   return KIND_ICON[s.kind] || Globe;
 }
 
-function RailItem({
-  active,
-  onClick,
-  icon,
-  label,
-  count,
-  dot,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-  count: number;
-  dot?: string;
-}) {
-  return (
-    <Row
-      density="nav"
-      active={active}
-      icon={icon}
-      trailing={<span className="u-num">{count}</span>}
-      onClick={onClick}
-    >
-      <span className="flex items-center gap-2">
-        <span className="truncate">{label}</span>
-        {dot && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />}
-      </span>
-    </Row>
-  );
-}
-
 export function SourcesRail({
   kbId,
   active,
@@ -181,9 +146,10 @@ export function SourcesRail({
           active={active === "all"}
           onClick={() => onSelect("all")}
           icon={<LibraryIcon size={14} />}
-          label={S.library.allDocs}
           count={docs.data?.total ?? 0}
-        />
+        >
+          {S.library.allDocs}
+        </RailItem>
       </div>
       {/* 加号紧跟在 SOURCES 后面，是这个小节的动作，不是右边栏位里的一个数。
           按钮贴着图标（4px 内距、不要那 1px 透明边框），标题行不因它长高 */}
@@ -208,9 +174,10 @@ export function SourcesRail({
           active={active === "uploads"}
           onClick={() => onSelect("uploads")}
           icon={<Upload size={14} />}
-          label={S.library.uploads}
           count={uploadsCount}
-        />
+        >
+          {S.library.uploads}
+        </RailItem>
         {sourceList.map((s) => {
           const Icon = sourceIcon(s);
           return (
@@ -219,14 +186,15 @@ export function SourcesRail({
               active={active === s.id}
               onClick={() => onSelect(s.id)}
               icon={<Icon size={14} />}
-              label={s.name}
               count={s.doc_count}
               dot={
                 SYNCING_KINDS.has(s.kind) || s.kind === "api"
                   ? SYNC_DOT[s.last_sync_status]
                   : undefined
               }
-            />
+            >
+              {s.name}
+            </RailItem>
           );
         })}
       </div>
@@ -237,9 +205,10 @@ export function SourcesRail({
             active={active === "deleted"}
             onClick={() => onSelect("deleted")}
             icon={<Trash2 size={14} />}
-            label={S.library.deleted}
             count={docs.data?.deleted ?? 0}
-          />
+          >
+            {S.library.deleted}
+          </RailItem>
         </div>
       )}
     </aside>

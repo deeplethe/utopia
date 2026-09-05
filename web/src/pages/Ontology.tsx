@@ -331,7 +331,10 @@ export function Ontology() {
             />
           )}
         </div>
-        {/* 底部常驻：两个"关于本体"的入口——从外部拿一份本体，或看抽取顶回来的信号 */}
+        {/* 底部常驻：关于本体的几个入口——从外部拿一份本体、业务规则、类型消解，
+            以及数据顶回来的两种信号。一条分隔线说明它们是钉住的，行本身与上面
+            列表里的行同一副样子 */}
+        <div className="shrink-0 border-t border-line px-2 py-2 space-y-1">
         <RailItem
           active={sel?.kind === "import"}
           icon={<Upload size={14} />}
@@ -378,6 +381,7 @@ export function Ontology() {
         >
           {S.ontology.missesShort}
         </RailItem>
+        </div>
       </aside>
 
       {/* 右侧：详情。class/relation/new-class/new-relation/schema/概览共享

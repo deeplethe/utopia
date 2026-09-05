@@ -1115,39 +1115,49 @@ export function Row({
   );
 }
 
-/* 左栏底部那种钉住的入口：顶上一条线，不圆角，撑满 */
+/* 左栏的一条入口：Library 的来源、Review 的队列、Ontology 底部钉住的那几个
+   都是它。**与列表里的行同一副样子**（Row density="nav"，圆角、缩进）——
+   钉在底部的靠外面那条分隔线说明「这几个是常驻的」，不靠把行本身画成方的。
+   计数给了就显示，0 也显示（灰一档）：队列清空了是个有意义的事实。 */
 export function RailItem({
   active,
   icon,
   count,
+  dot,
+  external,
   className,
   children,
-  type = "button",
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & {
+}: Omit<ButtonHTMLAttributes<HTMLButtonElement>, "type"> & {
   active?: boolean;
   icon?: ReactNode;
   count?: number;
+  /** 右侧的状态点（同步中/失败那种），给背景色的类名 */
+  dot?: string;
+  /** 这一条不在本页办——加个去向记号，免得点下去以为页面没反应 */
+  external?: boolean;
 }) {
   return (
-    <button
-      type={type}
-      aria-current={active ? "true" : undefined}
-      className={cn(
-        "flex w-full shrink-0 items-center gap-2 border-t border-line px-4 py-2 text-left text-body transition-colors duration-fast",
-        active ? "u-nav-active" : "text-ink-2 hover:bg-surface-2 hover:text-ink",
-        className,
-      )}
+    <Row
+      density="nav"
+      active={active}
+      icon={icon}
+      className={className}
+      trailing={
+        count !== undefined ? (
+          <span className={cn("u-num", count > 0 ? "text-ink-2" : "text-ink-3")}>
+            {count}
+          </span>
+        ) : undefined
+      }
       {...props}
     >
-      {icon && <span className="shrink-0 text-ink-3">{icon}</span>}
-      <span className="min-w-0 flex-1 truncate">{children}</span>
-      {count !== undefined && count > 0 && (
-        <span className="u-num ml-auto rounded-full bg-surface-3 px-2 text-fine text-ink-3">
-          {count}
-        </span>
-      )}
-    </button>
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="truncate">{children}</span>
+        {dot && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />}
+        {external && <ArrowUpRight size={11} className="shrink-0 opacity-50" />}
+      </span>
+    </Row>
   );
 }
 
