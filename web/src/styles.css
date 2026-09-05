@@ -377,18 +377,27 @@ body::before {
 
 @layer components {
 /* ---- form controls ---- */
+/* 输入框：无填充、细线。玻璃左栏、玻璃工具条上的输入框不该再是面上叠面——
+   一条 line 粗细的线把它圈出来就够了，聚焦时线亮一档、外面一圈 ring 说明
+   「光标在这」。与顶栏无背景的切换器同一个逻辑 */
 .input-dark {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--u-line-strong);
+  background: transparent;
+  border: 1px solid var(--u-line);
   color: var(--u-text);
   border-radius: 0.5rem;
+  transition:
+    border-color var(--u-fast),
+    box-shadow var(--u-fast);
 }
 .input-dark::placeholder {
   color: var(--u-text-3);
 }
+.input-dark:hover:not(:disabled):not(:focus) {
+  border-color: var(--u-line-strong);
+}
 .input-dark:focus {
   outline: none;
-  border-color: rgba(255, 255, 255, 0.4);
+  border-color: var(--u-line-strong);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 .input-dark:disabled {
