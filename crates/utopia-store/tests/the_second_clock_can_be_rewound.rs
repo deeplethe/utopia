@@ -84,13 +84,17 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         (phoenix, project, "Project Phoenix"),
         (program, project, "Phoenix Program"),
     ] {
+        // **实体的出生时刻也要回填**：事实记在三月，实体却是"刚才"建的，那种账本
+        // 现实里不存在——而 #336 之后 T 时刻还没出生的实体不再出现在图上
         sqlx::query(
-            "INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO entities (id, kb_id, type_id, canonical_name, created_at)
+             VALUES ($1, $2, $3, $4, $5)",
         )
         .bind(id)
         .bind(kb)
         .bind(type_id)
         .bind(name)
+        .bind(t("2026-01-01T00:00:00Z"))
         .execute(pool)
         .await?;
     }
