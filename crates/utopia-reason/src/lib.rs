@@ -13,6 +13,7 @@
 //! 是零，那是实情不是故障。
 
 pub mod derive;
+pub mod rules;
 pub mod ontology;
 
 use std::collections::{HashMap, HashSet};
