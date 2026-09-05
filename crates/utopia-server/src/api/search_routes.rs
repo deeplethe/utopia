@@ -16,6 +16,10 @@ pub struct SearchReq {
     pub q: String,
     #[serde(default)]
     pub top_k: Option<usize>,
+    /// 记录轴（0019）：按**那一刻库里有的东西**检索。YYYY-MM-DD 或 RFC3339。
+    /// 命中的是当时活着的块、当时还没被删的文档
+    #[serde(default)]
+    pub as_of: Option<String>,
 }
 
 pub async fn search(
@@ -31,6 +35,7 @@ pub async fn search(
     let kb = utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
 
     let top_k = req.top_k.unwrap_or(10).min(50);
-    let chunks = retrieval::hybrid(&state, kb_id, kb.workspace_id, q, top_k).await?;
+    let as_of = super::graph_routes::parse_instant("as_of", req.as_of.as_deref())?;
+    let chunks = retrieval::hybrid(&state, kb_id, kb.workspace_id, q, top_k, as_of).await?;
     Ok(Json(json!({ "results": chunks })))
 }

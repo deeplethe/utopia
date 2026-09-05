@@ -24,7 +24,7 @@ pub(super) async fn require_kb(
 /// 两根轴共用这一个解析：`at` 走世界轴（那时世界是什么样），`as_of` 走记录轴
 /// （那时我们以为世界是什么样）。**两个参数一路分开**（0019）：合成一个控件，
 /// 答出来的是另一个问题，而屏幕上看不出来
-fn parse_instant(
+pub(super) fn parse_instant(
     field: &str,
     raw: Option<&str>,
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>, AppError> {

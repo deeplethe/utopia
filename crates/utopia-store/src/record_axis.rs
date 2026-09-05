@@ -54,6 +54,15 @@ pub fn conflict_open_at(alias: &str, param: usize) -> String {
     )
 }
 
+/// `documents`：文档在 T 时刻还在库里。删除留墓碑（#268），所以"删掉的文档"
+/// 在删除之前的任何时刻都该照常出现——它的分块当时确实是可检索的。
+pub fn document_live_at(alias: &str, param: usize) -> String {
+    format!(
+        "{alias}.created_at <= coalesce(${param}, now()) \
+         AND ({alias}.deleted_at IS NULL OR {alias}.deleted_at > coalesce(${param}, now()))"
+    )
+}
+
 /// `chunks`：分块在 T 时刻还是现行版本。证据是否"已消失"要按当时的版本判——
 /// 今天被重解析顶掉的段落，在三月的图上仍然是活证据。
 pub fn chunk_live_at(alias: &str, param: usize) -> String {

@@ -106,9 +106,16 @@ pub async fn search_chunks(
     // 必填参数由 `chat::check_call` 在派发之前挡下，所以这里不再回落到
     // 用户那句原话——回落产出的是一个看起来没问题的错误答案
     let q = args["query"].as_str().unwrap_or_default().to_string();
-    let chunks = retrieval::hybrid(ctx.state, ctx.kb_id, ctx.workspace_id, &q, SEARCH_TOP_K)
-        .await
-        .unwrap_or_default();
+    let chunks = retrieval::hybrid(
+        ctx.state,
+        ctx.kb_id,
+        ctx.workspace_id,
+        &q,
+        SEARCH_TOP_K,
+        None,
+    )
+    .await
+    .unwrap_or_default();
     let mut lines = Vec::new();
     for c in &chunks {
         let n = cite(sink, c.id.to_string(), |n| source_json(n, c));

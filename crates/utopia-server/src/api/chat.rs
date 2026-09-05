@@ -622,7 +622,7 @@ pub async fn chat(
                         // 模型可能不支持 tool-calling：降级为一次性 RAG 注入
                         tracing::warn!(error = %e, "tool-calling 不可用，降级为一次性 RAG");
                         let chunks =
-                            retrieval::hybrid(&state, kb_id, workspace_id, &query, 8)
+                            retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None)
                                 .await
                                 .unwrap_or_default();
                         let legacy_sources: Vec<serde_json::Value> = chunks
