@@ -1399,6 +1399,7 @@ export const zh: Strings = {
     closeFactAt: (d: string) => `在 ${d} 闭合`,
   },
   ui: {
+    close: "关闭",
     noMatches: "没有匹配",
     keepTyping: (n: number) => `还有 ${n} 项——继续输入以缩小范围`,
   },

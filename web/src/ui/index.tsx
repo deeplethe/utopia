@@ -863,17 +863,87 @@ export function Chip({
   tone = "neutral",
   className,
   title,
+  onClick,
   children,
 }: {
   tone?: ChipTone;
   className?: string;
   title?: string;
+  /** 给了就是一个按钮（点开看失败原文那种） */
+  onClick?: () => void;
   children: ReactNode;
 }) {
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title}
+        className={cn("u-chip u-chip-click", `u-chip-${tone}`, className)}
+      >
+        {children}
+      </button>
+    );
+  }
   return (
     <span className={cn("u-chip", `u-chip-${tone}`, className)} title={title}>
       {children}
     </span>
+  );
+}
+
+/* ---------- LinkButton（长得像一句话的动作：表格行末的"重抽""删除"） ---------- */
+export function LinkButton({
+  tone = "default",
+  underline,
+  className,
+  type = "button",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  tone?: "default" | "danger";
+  /** 带下划线（u-link 那种） */
+  underline?: boolean;
+}) {
+  return (
+    <button
+      type={type}
+      className={cn(
+        "u-linkbtn",
+        tone === "danger" && "is-danger",
+        underline && "u-link",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+/* ---------- ChoiceCard（勾选框藏起来的可选卡片：本体包那种并排的几张） ---------- */
+export function ChoiceCard({
+  checked,
+  onChange,
+  label,
+  className,
+  children,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  /** 读屏器念的名字 */
+  label: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className={cn("u-choice", checked && "is-on", className)}>
+      <input
+        type="checkbox"
+        className="sr-only"
+        aria-label={label}
+        checked={checked}
+        onChange={onChange}
+      />
+      {children}
+    </label>
   );
 }
 
@@ -1065,6 +1135,7 @@ export function Segmented<T extends string>({
   onChange,
   size = "md",
   fill,
+  disabled,
   className,
 }: {
   value: T;
@@ -1072,6 +1143,7 @@ export function Segmented<T extends string>({
   onChange: (v: T) => void;
   size?: "sm" | "md";
   fill?: boolean;
+  disabled?: boolean;
   className?: string;
 }) {
   return (
@@ -1080,6 +1152,7 @@ export function Segmented<T extends string>({
       className={cn(
         "flex gap-1 rounded-lg bg-surface p-1",
         fill && "w-full",
+        disabled && "opacity-40",
         className,
       )}
     >
@@ -1092,6 +1165,7 @@ export function Segmented<T extends string>({
             role="tab"
             aria-selected={active}
             title={o.title}
+            disabled={disabled}
             onClick={() => onChange(o.value)}
             className={cn(
               "flex items-center justify-center gap-1 rounded-lg font-medium transition-colors duration-fast",

@@ -645,6 +645,61 @@ select.input-dark option {
   transition: background-color var(--u-fast);
 }
 
+/* 像一句话的动作 */
+.u-linkbtn {
+  font-size: var(--text-small);
+  line-height: var(--text-small--line-height);
+  color: var(--u-text-2);
+  transition: color var(--u-fast);
+}
+.u-linkbtn:hover:not(:disabled) {
+  color: var(--u-text);
+}
+.u-linkbtn.is-danger {
+  color: var(--u-text-3);
+}
+.u-linkbtn.is-danger:hover:not(:disabled) {
+  color: var(--u-danger);
+}
+.u-linkbtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.u-linkbtn:focus-visible {
+  outline: 2px solid var(--u-ring);
+  outline-offset: 2px;
+  border-radius: 0.25rem;
+}
+
+/* 勾选框藏起来的可选卡片 */
+.u-choice {
+  display: block;
+  cursor: pointer;
+  border-radius: 0.5rem;
+  border: 1px solid var(--u-line);
+  padding: 0.5rem 0.75rem;
+  transition:
+    background-color var(--u-fast),
+    border-color var(--u-fast);
+}
+.u-choice:hover {
+  background: var(--u-surface-2);
+}
+.u-choice.is-on {
+  border-color: rgba(255, 255, 255, 0.6);
+  background: var(--u-surface-3);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.3);
+}
+.u-choice:focus-within {
+  outline: 2px solid var(--u-ring);
+  outline-offset: 2px;
+}
+
+/* 进度条的填充：宽度过渡 */
+.u-progress-fill {
+  transition: width 500ms ease;
+}
+
 /* ---- chips ---- */
 .u-chip {
   display: inline-block;
@@ -682,6 +737,15 @@ select.input-dark option {
 .u-chip-violet {
   background: rgba(196, 165, 255, 0.12);
   color: var(--u-violet);
+}
+/* 可点的 chip：指针停上提亮一点 */
+.u-chip-click {
+  cursor: pointer;
+  vertical-align: middle;
+  transition: filter var(--u-fast);
+}
+.u-chip-click:hover {
+  filter: brightness(1.25);
 }
 }
 
