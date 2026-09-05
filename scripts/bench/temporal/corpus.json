@@ -1,0 +1,116 @@
+{
+  "name": "meridian",
+  "note": "虚构公司，刻意不用真实实体：模型读过的东西量出来的是记忆，不是这条流水线。句子写得钝——一句一个事实、日期写全、名字写全——因为这个台子要量的是时间那根轴，不是抽取的运气。",
+  "waves": [
+    {
+      "label": "wave-1",
+      "note": "第一波灌完之后记一个时刻。记录轴上的所有题目都以它为界：那时我们还不知道后来的交接与更正。",
+      "documents": [
+        {
+          "filename": "aurora-charter.md",
+          "doc_time": "2023-01-10",
+          "text": "# Project Aurora charter\n\nProject Aurora started on 2023-01-10 at Meridian Systems.\n\nZhang San leads Project Aurora from 2023-01-10.\n\nProject Aurora is part of the Platform Group.\n\nThe Platform Group is part of Meridian Systems.\n"
+        },
+        {
+          "filename": "lin-zhao-offer.md",
+          "doc_time": "2023-06-01",
+          "text": "# Offer record\n\nLin Zhao joined Meridian Systems on 2023-06-01.\n\nLin Zhao works for Meridian Systems from 2023-06-01.\n\nLin Zhao has the job title Staff Engineer from 2023-06-01.\n\nLin Zhao has a salary of 28000 CNY from 2023-06-01.\n"
+        },
+        {
+          "filename": "aurora-advisor-note.md",
+          "doc_time": "2023-03-02",
+          "text": "# Assistant note\n\nWang Wu advises Project Aurora from 2023-03-02.\n\nWang Wu works for Meridian Systems from 2020-09-01.\n"
+        }
+      ],
+      "delete": []
+    },
+    {
+      "label": "wave-2",
+      "note": "第二波在第一个时刻之后才灌：世界轴上它们讲的是 2024 年的事，记录轴上它们是「后来才知道的」。删除那一条制造撤回。",
+      "documents": [
+        {
+          "filename": "aurora-handover.md",
+          "doc_time": "2024-07-05",
+          "text": "# Handover memo\n\nLi Si leads Project Aurora from 2024-07-05.\n\nLi Si works for Meridian Systems from 2021-04-01.\n"
+        },
+        {
+          "filename": "lin-zhao-correction.md",
+          "doc_time": "2024-02-20",
+          "text": "# Payroll correction\n\nLin Zhao has a salary of 32000 CNY from 2024-02-20.\n\nThe raise was approved by the Platform Group.\n"
+        }
+      ],
+      "delete": [
+        "aurora-advisor-note.md"
+      ]
+    }
+  ],
+  "axioms_note": "时态引擎的自动闭合**只按本体的声明跑**：`functional` / `inverse_functional` 永不自动推断（理由见 bootstrap_ontology.rs——它驱动的是自动改写账本）。所以这两条声明是被测配置的一部分，跑分前先建出来；`--no-declare` 跑的是「本体自己长出来」的那种库，两组的差就是这条声明值多少。",
+  "classes": [
+    {
+      "key": "person",
+      "label": "Person",
+      "description": "A human being."
+    },
+    {
+      "key": "organization",
+      "label": "Organization",
+      "description": "A company or a group inside one."
+    },
+    {
+      "key": "project",
+      "label": "Project",
+      "description": "A named piece of work with people responsible for it."
+    }
+  ],
+  "axioms": [
+    {
+      "key": "leads",
+      "label": "leads",
+      "kind": "relation",
+      "temporal": "state",
+      "inverse_functional": true,
+      "description": "The person currently responsible for a project. One project has one lead at a time."
+    },
+    {
+      "key": "works_for",
+      "label": "works for",
+      "kind": "relation",
+      "temporal": "state",
+      "description": "The organization a person is employed by."
+    },
+    {
+      "key": "part_of",
+      "label": "part of",
+      "kind": "relation",
+      "temporal": "state",
+      "is_transitive": true,
+      "description": "A group or project inside a larger organization."
+    },
+    {
+      "key": "salary",
+      "label": "salary",
+      "kind": "attribute",
+      "datatype": "number",
+      "unit": "CNY",
+      "domain": "person",
+      "functional": true,
+      "description": "The person's monthly salary. One value holds at a time."
+    },
+    {
+      "key": "job_title",
+      "label": "job title",
+      "kind": "attribute",
+      "datatype": "text",
+      "domain": "person",
+      "functional": true,
+      "description": "The person's job title. One title holds at a time."
+    },
+    {
+      "key": "advises",
+      "label": "advises",
+      "kind": "relation",
+      "temporal": "state",
+      "description": "A person who advises a project without being responsible for it. Several advisers are possible."
+    }
+  ]
+}
