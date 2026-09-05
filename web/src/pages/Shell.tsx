@@ -7,6 +7,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import {
+  BookMarked,
   Database,
   Library as LibraryIcon,
   ListChecks,
@@ -97,16 +98,17 @@ export function Shell() {
       <header className="glass-strong relative z-40 border-x-0 border-t-0 h-14 shrink-0 flex items-center gap-4 px-6">
         {/* 字标：逐字母淡入，hover 浮出 ↗，点击去官网 */}
         <Wordmark className="text-title" />
-        {/* 面包屑唯一一级：知识库。Workspace 已从概念层折叠为部署级隐形管道
-            （settings/members 仍经它走 API，如 organizations 之于单租户）。 */}
-        <span className="text-ink-3">/</span>
-        {/* 纯切换器：建库是管理动作，入口在 System settings › Knowledge bases */}
-        {/* 没有图标：字标已经在左边，这里就是库的名字；箭头贴着名字，不顶到
-            一个固定宽度的右边去 */}
+        {/* 知识库切换器紧跟字标，中间不画斜杠——它不是面包屑的第二级，就是
+            「现在在哪个库」。Workspace 已从概念层折叠为部署级隐形管道
+            （settings/members 仍经它走 API，如 organizations 之于单租户）。
+            左边的书签图标与账户页左栏「Knowledge bases」那一项同一个，说明这
+            一串字是库名；箭头贴着名字，不顶到一个固定宽度的右边去。
+            纯切换器：建库是管理动作，入口在 System settings › Knowledge bases */}
         <Dropdown
           bare
           className="max-w-64"
           size="sm"
+          icon={<BookMarked size={12} />}
           menuLabel={S.nav.kbLabel}
           value={kb?.id ?? ""}
           onChange={setKb}
