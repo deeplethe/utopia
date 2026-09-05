@@ -287,7 +287,10 @@ export function Dropdown({
           pad,
         )}
       >
-        {icon && <span className="shrink-0 text-ink-3">{icon}</span>}
+        {/* 无框的触发器（顶栏）里图标与导航标签同一档灰；输入框里的照旧更淡 */}
+        {icon && (
+          <span className={cn("shrink-0", bare ? "text-ink-2" : "text-ink-3")}>{icon}</span>
+        )}
         <span className="flex-1 min-w-0 truncate">
           {current?.label ?? (
             <span className="text-ink-3">{placeholder ?? ""}</span>
@@ -304,13 +307,14 @@ export function Dropdown({
       {open && (
         <div
           className={cn(
-            "u-pop u-pop-in u-pop-in-tl absolute z-50 mt-1 rounded-lg shadow-xl overflow-hidden",
+            // 与告警面板、用户菜单同一张皮（u-menu-glass）：浮在页面上的面只有一种
+            "u-menu-glass u-pop-in u-pop-in-tl absolute z-50 mt-1 rounded-xl shadow-2xl overflow-hidden",
             // 无框的触发器按内容宽，菜单不能跟着窄：给一个下限，按最长的名字撑开
             bare ? "min-w-48 w-max max-w-80" : "w-full",
           )}
         >
           {menuLabel && (
-            <div className="px-2.5 pt-2 pb-1 text-fine font-medium uppercase tracking-[0.1em] text-ink-3 border-b border-line">
+            <div className="border-b border-line px-4 py-3 text-body font-medium text-ink">
               {menuLabel}
             </div>
           )}
@@ -449,7 +453,7 @@ export function SearchSelect({
         }}
       />
       {open && (
-        <div className="u-pop u-pop-in u-pop-in-tl absolute z-50 mt-1 w-full rounded-lg shadow-xl overflow-hidden">
+        <div className="u-menu-glass u-pop-in u-pop-in-tl absolute z-50 mt-1 w-full rounded-xl shadow-2xl overflow-hidden">
           {visible.map((o, i) => (
             <button
               key={o.value}
@@ -618,7 +622,7 @@ export function MultiSearchSelect({
         />
       </div>
       {open && (
-        <div className="u-pop u-pop-in u-pop-in-tl absolute z-50 mt-1 w-full rounded-lg shadow-xl overflow-hidden">
+        <div className="u-menu-glass u-pop-in u-pop-in-tl absolute z-50 mt-1 w-full rounded-xl shadow-2xl overflow-hidden">
           {visible.map((o, i) => (
             <button
               key={o.value}
@@ -764,7 +768,7 @@ export function ColorPicker({
       )}
       {open && (
         // 显式宽度：绝对定位的收缩宽度会被 inline-block 触发器的 56px 容器块钳死
-        <div className="u-pop u-pop-in u-pop-in-tl absolute z-50 left-0 top-full mt-2 w-56 rounded-xl p-3 shadow-xl">
+        <div className="u-menu-glass u-pop-in u-pop-in-tl absolute z-50 left-0 top-full mt-2 w-56 rounded-xl p-3 shadow-2xl">
           <div className="grid grid-cols-8 gap-1.5 mb-2.5">
             {ENTITY_PALETTE.map((c) => (
               <button
