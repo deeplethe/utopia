@@ -366,23 +366,7 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
                 lines.append(&mut derived);
                 lines.join("\n")
             };
-            let detail = match (at, as_of) {
-                (Some(t), Some(r)) => format!(
-                    "{} facts at {}, as recorded by {}",
-                    facts.len(),
-                    t.format("%Y-%m-%d"),
-                    r.format("%Y-%m-%d")
-                ),
-                (Some(t), None) => format!("{} facts as of {}", facts.len(), t.format("%Y-%m-%d")),
-                (None, Some(r)) => {
-                    format!(
-                        "{} facts as recorded by {}",
-                        facts.len(),
-                        r.format("%Y-%m-%d")
-                    )
-                }
-                (None, None) => format!("{} facts", facts.len()),
-            };
+            let detail = entity_facts_detail(facts.len(), at, as_of);
             (
                 text,
                 json!({ "kind": "facts", "label": node.name, "detail": detail }),
@@ -749,6 +733,28 @@ fn fact_line(f: &EntityFact) -> String {
     format!("{core}{range} [{}%]", (f.confidence * 100.0).round() as i32)
 }
 
+// 记录轴上的两次更正可以发生在同一秒；输出必须能原样交回 as_of，不能截到天或秒。
+fn record_stamp(time: chrono::DateTime<chrono::Utc>) -> String {
+    time.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+}
+
+fn entity_facts_detail(
+    count: usize,
+    at: Option<chrono::DateTime<chrono::Utc>>,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+) -> String {
+    match (at, as_of) {
+        (Some(t), Some(r)) => format!(
+            "{count} facts at {}, as recorded by {}",
+            t.format("%Y-%m-%d"),
+            record_stamp(r)
+        ),
+        (Some(t), None) => format!("{count} facts as of {}", t.format("%Y-%m-%d")),
+        (None, Some(r)) => format!("{count} facts as recorded by {}", record_stamp(r)),
+        (None, None) => format!("{count} facts"),
+    }
+}
+
 /// 时刻参数：`YYYY-MM-DD` 或 RFC3339。`at` 与 `as_of` 共用一个解析——记录轴上的
 /// 时刻常常是一个带时间的戳（"第一波灌完那一刻"），日期粒度装不下它
 fn parse_when(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -866,7 +872,7 @@ fn change_line(c: &GraphChange) -> String {
     };
     format!(
         "{} {}: {} {} {}{}{}",
-        c.at.format("%Y-%m-%d"),
+        record_stamp(c.at),
         c.kind,
         c.subject_name,
         c.predicate_label.as_deref().unwrap_or("?"),
@@ -971,6 +977,40 @@ mod tests {
         }
     }
 
+    // 同一秒内也能先录入再更正；截到整秒会把这两次认知重新叠在一起。
+    #[test]
+    fn change_stamps_round_trip_without_losing_the_record_clock() {
+        let mut c = change("corrected");
+        for stamp in [
+            "2026-09-05T02:43:53Z",
+            "2026-09-05T02:43:53.382Z",
+            "2026-09-05T02:43:53.382001Z",
+            "2026-09-05T02:43:53.382002Z",
+        ] {
+            c.at = t(stamp);
+            let line = change_line(&c);
+            let printed = line.split_whitespace().next().unwrap();
+            assert_eq!(printed, stamp);
+            assert_eq!(parse_when(printed), Some(c.at));
+        }
+    }
+
+    #[test]
+    fn fact_details_keep_the_record_instant_beside_the_world_date() {
+        let at = Some(t("2024-08-01T00:00:00Z"));
+        let as_of = Some(t("2026-09-05T02:43:53.382001Z"));
+        assert_eq!(
+            entity_facts_detail(2, at, as_of),
+            "2 facts at 2024-08-01, as recorded by 2026-09-05T02:43:53.382001Z"
+        );
+        assert_eq!(
+            entity_facts_detail(2, None, as_of),
+            "2 facts as recorded by 2026-09-05T02:43:53.382001Z"
+        );
+        assert_eq!(entity_facts_detail(2, at, None), "2 facts as of 2024-08-01");
+        assert_eq!(entity_facts_detail(0, None, None), "0 facts");
+    }
+
     fn attribute_fact(value: serde_json::Value) -> EntityFact {
         EntityFact {
             id: Uuid::nil(),
@@ -1045,7 +1085,10 @@ mod tests {
         c.predicate_label = Some("headquartered in".to_string());
         c.valid_from = Some(t("2019-01-01T00:00:00Z"));
         let line = change_line(&c);
-        assert!(line.starts_with("2026-08-28 corrected: "), "{line}");
+        assert!(
+            line.starts_with("2026-08-28T10:00:00Z corrected: "),
+            "{line}"
+        );
         assert!(line.contains("[valid 2019-01-01 → now]"), "{line}");
     }
 

@@ -352,7 +352,7 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "changes",
-                "description": "What the graph LEARNED or REVISED in a window of record time —                     the belief axis. Answers \"what changed since X\", \"what did we get wrong\",                     \"what is new this quarter\", and needs no entity, so use it when the                     question names a period rather than a subject.                     Events: asserted (new claim), corrected (a claim replaced by a revised one),                     rejected (a claim withdrawn), merged (folded into another claim) — each with                     the document it came from.                     NOT the same axis as entity_facts(at): that asks \"what was true on date D\";                     this asks \"what did we change our mind about between D1 and D2\". A fact                     about 2019 can be recorded in 2026 — this windows on when we recorded it.",
+                "description": "What the graph LEARNED or REVISED in a window of record time —                     the belief axis. Answers \"what changed since X\", \"what did we get wrong\",                     \"what is new this quarter\", and needs no entity, so use it when the                     question names a period rather than a subject.                     Events: asserted (new claim), corrected (a claim replaced by a revised one),                     rejected (a claim withdrawn), merged (folded into another claim) — each with                     the document it came from.                     NOT the same axis as entity_facts(at): that asks \"what was true on date D\";                     this asks \"what did we change our mind about between D1 and D2\". A fact                     about 2019 can be recorded in 2026 — this windows on when we recorded it.                     Each event starts with its exact UTC RFC3339 record timestamp, including fractional seconds.                     For 'before a correction arrived', find that event here, then call entity_facts with as_of                     one microsecond before its timestamp. At the timestamp itself the change already applies;                     subtracting a whole day or second can skip earlier records. Keep at for the world date asked about.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -417,6 +417,11 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
     2. Facts carry validity ranges (from → to). For \"as of <date>\" questions pass `at` to \
        entity_facts and the server filters to that moment; for history questions omit `at` \
        to see the full timeline. For 'what did we know / have on record / believe as of <date>' or 'before <memo> arrived' pass `as_of` — that is the record axis and the ONLY way to answer such a question; do not narrate a plan, call the tool. The two combine: `at` for the date asked about, `as_of` for when. State dates in the answer.\n\
+    2a. For 'before a correction or memo arrived', call changes to find its exact record timestamp, \
+       then call entity_facts with `as_of` one microsecond before that timestamp. At the timestamp \
+       itself the change already applies. Preserve fractional seconds: for example, before \
+       2026-09-05T02:43:53.382Z use 2026-09-05T02:43:53.381999Z. Subtracting a whole day or \
+       second can skip earlier records. Keep `at` for the world date asked about.\n\
     2b. For \"what changed / what is new / what did we get wrong since <date>\", call changes — \
        it needs no entity. Name the document a correction came from in plain prose. Graph tools \
        return no [n] numbers and no URLs, so never write a bracketed citation or a placeholder \

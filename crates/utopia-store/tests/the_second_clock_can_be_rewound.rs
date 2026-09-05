@@ -262,6 +262,57 @@ async fn the_recording_axis_rewinds_on_every_graph_read() -> anyhow::Result<()> 
     let before = facts(Some("2026-02-01T00:00:00Z")).await?;
     assert!(before.is_empty(), "记下之前不该有事实");
 
+    // #351：同一秒内先录入再更正。拿更正时刻退一整秒会跳过旧记录，
+    // 拿更正时刻本身则已经是新记录；工具提示的「前一微秒」必须能读回旧事实。
+    let first = t("2026-03-20T02:43:53.382000Z");
+    let changed = t("2026-03-20T02:43:53.382002Z");
+    sqlx::query("UPDATE facts SET recorded_at = $2, invalidated_at = $3 WHERE id = $1")
+        .bind(f.retracted)
+        .bind(first)
+        .bind(changed)
+        .execute(&pool)
+        .await?;
+    sqlx::query("UPDATE facts SET recorded_at = $2 WHERE id = $1")
+        .bind(f.correction)
+        .bind(changed)
+        .execute(&pool)
+        .await?;
+
+    let events = utopia_store::graph::graph_changes(
+        &pool,
+        f.kb,
+        t("2026-03-20T00:00:00Z"),
+        t("2026-03-21T00:00:00Z"),
+        Some(f.zhang),
+        None,
+        10,
+    )
+    .await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        (events[0].at, events[0].kind.as_str()),
+        (changed, "corrected")
+    );
+    assert_eq!((events[1].at, events[1].kind.as_str()), (first, "asserted"));
+
+    for (moment, expected) in [
+        (changed - chrono::Duration::seconds(1), None),
+        (
+            changed - chrono::Duration::microseconds(1),
+            Some(f.retracted),
+        ),
+        (changed, Some(f.correction)),
+    ] {
+        let (_, rows) =
+            utopia_store::graph::entity_detail(&pool, f.kb, f.zhang, Some(moment)).await?;
+        let ids: Vec<_> = rows.iter().map(|row| row.id).collect();
+        assert_eq!(
+            ids,
+            expected.into_iter().collect::<Vec<_>>(),
+            "as_of={moment}"
+        );
+    }
+
     // 拆台：facts/entities/… 全是 ON DELETE CASCADE
     let gone = sqlx::query(
         "DELETE FROM organizations WHERE id = (
