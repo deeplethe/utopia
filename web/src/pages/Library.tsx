@@ -1444,7 +1444,6 @@ function SourceModal({
             ? s3Bucket.trim()
             : true);
 
-  const KindIcon = KIND_ICON[kind];
   // 注意用 div 而非 label：label 会把 :hover/click 转发给内部第一个可标记控件
   //（button 也算），导致图标网格/日程选择器悬停时第一个按钮常亮
   const field = (label: string, node: React.ReactNode) => (
@@ -1478,13 +1477,13 @@ function SourceModal({
     >
       <div>
           {/* 类型：十二种，一个下拉装下——排成按钮要占四行，还没等填名字弹窗
-              已经满了。触发器上带当前类型的图标，选项里每一项也带 */}
+              已经满了。图标只在选项的标签里：触发器显示的就是选中那项的标签，
+              再给触发器一个 icon 就画两遍 */}
           {field(
             S.library.sourceType,
             <Dropdown
               className="w-full"
               value={kind}
-              icon={<KindIcon size={12} />}
               onChange={(v) => setKind(v as CreatableSourceKind)}
               options={CREATABLE_SOURCE_KINDS.map((k) => {
                 const Icon = KIND_ICON[k];
