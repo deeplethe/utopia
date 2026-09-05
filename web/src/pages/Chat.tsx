@@ -411,8 +411,8 @@ export function Chat() {
               />
             </Button>
             {scopeOpen && (
-              <div className="u-pop u-pop-up absolute bottom-full mb-2 left-0 z-50 w-56 rounded-lg shadow-xl overflow-hidden">
-                <div className="px-3 pt-2 pb-1 text-fine font-medium uppercase tracking-[0.1em] text-ink-3 border-b border-line">
+              <div className="u-menu-glass u-pop-up absolute bottom-full mb-2 left-0 z-50 w-56 rounded-xl shadow-2xl overflow-hidden">
+                <div className="border-b border-line px-4 py-3 text-body font-medium text-ink">
                   {S.ask.scopeLabel}
                 </div>
                 <div className="u-scroll max-h-60 overflow-y-auto">

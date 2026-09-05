@@ -205,7 +205,7 @@ export function DocsPage() {
             )}
           </div>
           {q.trim().length >= 2 && (
-            <div className="u-pop u-pop-in u-pop-in-tl absolute inset-x-0 top-full mt-2 rounded-xl shadow-2xl overflow-hidden">
+            <div className="u-menu-glass u-pop-in u-pop-in-tl absolute inset-x-0 top-full mt-2 rounded-xl shadow-2xl overflow-hidden">
               {results.length === 0 ? (
                 <p className="px-4 py-3 text-small text-ink-3">{S.docs.noResults}</p>
               ) : (
