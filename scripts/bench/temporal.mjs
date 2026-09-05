@@ -313,11 +313,21 @@ async function main() {
   if (args.chat) {
     for (const r of results) {
       if (r.outcome === "absent") continue;
-      const reply = await askChat(kb, r.ask);
+      let reply;
+      try {
+        reply = await askChat(kb, r.ask);
+      } catch (e) {
+        // 接口本身失败不算答错，单独记 error——否则一个 500 会被记成
+        // 「对话答不出来」，而它答都没答
+        r.chat = { outcome: "error", reply: String(e).slice(0, 200) };
+        continue;
+      }
+      // **空回复永远不算通过**：空字符串当然不含 not 里的名字
       r.chat = {
-        outcome:
-          (r.expect === null || reply.includes(r.expect)) &&
-          !(r.not || []).some((bad) => reply.includes(bad))
+        outcome: !reply.trim()
+          ? "error"
+          : (r.expect === null || reply.includes(r.expect)) &&
+              !(r.not || []).some((bad) => reply.includes(bad))
             ? "pass"
             : "fail",
         reply: reply.slice(0, 400),
@@ -351,9 +361,15 @@ async function main() {
     },
     chat: args.chat
       ? (() => {
-          const rows = results.filter((r) => r.chat);
+          const rows = results.filter((r) => r.chat && r.chat.outcome !== "error");
           const pass = rows.filter((r) => r.chat.outcome === "pass").length;
-          return { asked: rows.length, pass, rate: rows.length ? +(pass / rows.length).toFixed(3) : null };
+          const errors = results.filter((r) => r.chat?.outcome === "error").length;
+          return {
+            asked: rows.length,
+            pass,
+            errors,
+            rate: rows.length ? +(pass / rows.length).toFixed(3) : null,
+          };
         })()
       : null,
     questions: results,
@@ -380,25 +396,37 @@ async function entityByName(kb, name) {
 
 /// 一次对话问答。SSE 流里只取正文。
 async function askChat(kb, question) {
+  // 帧的形状与 `web/src/api.ts` 里客户端解析的一致：`event:` 一行定类型，
+  // `data:` 一行是 JSON；正文在 `delta` 帧的 `{ text }` 里。第一版只读 `data:`
+  // 又去找 `.delta`，于是每一题都得到空串——空串不含 `not` 里的名字，
+  // 八道 expect=null 的题就这样被记成了通过
   const res = await fetch(`${BASE}/api/v1/kbs/${kb}/chat`, {
     method: "POST",
     headers: { "content-type": "application/json", cookie },
     body: JSON.stringify({ message: question }),
   });
   const text = await res.text();
+  if (!res.ok) throw new Error(`chat → ${res.status} ${text.slice(0, 200)}`);
   let answer = "";
-  for (const line of text.split("\n")) {
-    if (!line.startsWith("data:")) continue;
-    const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]") continue;
-    try {
-      const frame = JSON.parse(payload);
-      if (typeof frame === "string") answer += frame;
-      else if (frame.delta) answer += frame.delta;
-    } catch {
-      answer += payload;
+  let error = null;
+  for (const frame of text.split("\n\n")) {
+    let event = "message";
+    let data = "";
+    for (const line of frame.split("\n")) {
+      if (line.startsWith("event:")) event = line.slice(6).trim();
+      else if (line.startsWith("data:")) data += line.slice(5).trim();
+    }
+    if (event === "delta" && data) {
+      try {
+        answer += JSON.parse(data).text ?? "";
+      } catch {
+        /* 半截帧，跳过 */
+      }
+    } else if (event === "error") {
+      error = data;
     }
   }
+  if (error && !answer) throw new Error(`chat error frame: ${error.slice(0, 200)}`);
   return answer;
 }
 
