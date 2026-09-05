@@ -300,7 +300,13 @@ export function Dropdown({
         />
       </button>
       {open && (
-        <div className="u-pop u-pop-in u-pop-in-tl absolute z-50 mt-1 w-full rounded-lg shadow-xl overflow-hidden">
+        <div
+          className={cn(
+            "u-pop u-pop-in u-pop-in-tl absolute z-50 mt-1 rounded-lg shadow-xl overflow-hidden",
+            // 无框的触发器按内容宽，菜单不能跟着窄：给一个下限，按最长的名字撑开
+            bare ? "min-w-48 w-max max-w-80" : "w-full",
+          )}
+        >
           {menuLabel && (
             <div className="px-2.5 pt-2 pb-1 text-fine font-medium uppercase tracking-[0.1em] text-ink-3 border-b border-line">
               {menuLabel}

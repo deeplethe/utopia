@@ -378,8 +378,9 @@ body::before {
 @layer components {
 /* ---- form controls ---- */
 /* 输入框：无填充、细线。玻璃左栏、玻璃工具条上的输入框不该再是面上叠面——
-   一条 line 粗细的线把它圈出来就够了，聚焦时线亮一档、外面一圈 ring 说明
-   「光标在这」。与顶栏无背景的切换器同一个逻辑 */
+   一条 line 粗细的线把它圈出来就够了；悬停亮一档，聚焦时线直接用 ring 那个
+   白（与按钮的聚焦框同一个值），外面再一圈柔光晕说明「光标在这」。
+   与顶栏无背景的切换器同一个逻辑 */
 .input-dark {
   background: transparent;
   border: 1px solid var(--u-line);
@@ -397,7 +398,7 @@ body::before {
 }
 .input-dark:focus {
   outline: none;
-  border-color: var(--u-line-strong);
+  border-color: var(--u-ring);
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
 }
 .input-dark:disabled {
@@ -744,10 +745,11 @@ select.input-dark option {
   background: var(--u-surface-2);
 }
 
-/* 无底无框的下拉触发器（顶栏的知识库切换器）：与 u-navlink 同一套悬停 */
+/* 无底无框的下拉触发器（顶栏的知识库切换器）：字是正文色——它是当前库的名字，
+   不是次要信息；悬停只垫一层面，与 u-navlink 同一套 */
 .u-dropdown-bare {
   border-radius: 0.5rem;
-  color: var(--u-text-2);
+  color: var(--u-text);
   transition:
     color var(--u-fast),
     background-color var(--u-fast);

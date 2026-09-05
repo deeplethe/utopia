@@ -7,7 +7,6 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import {
-  BookMarked,
   Database,
   Library as LibraryIcon,
   ListChecks,
@@ -102,11 +101,12 @@ export function Shell() {
             （settings/members 仍经它走 API，如 organizations 之于单租户）。 */}
         <span className="text-ink-3">/</span>
         {/* 纯切换器：建库是管理动作，入口在 System settings › Knowledge bases */}
+        {/* 没有图标：字标已经在左边，这里就是库的名字；箭头贴着名字，不顶到
+            一个固定宽度的右边去 */}
         <Dropdown
           bare
-          className="w-40"
+          className="max-w-64"
           size="sm"
-          icon={<BookMarked size={12} />}
           menuLabel={S.nav.kbLabel}
           value={kb?.id ?? ""}
           onChange={setKb}
