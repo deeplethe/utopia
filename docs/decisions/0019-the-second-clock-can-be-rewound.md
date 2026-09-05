@@ -1,6 +1,6 @@
 # 0019 · The second clock can be rewound
 
-- **Status**: in progress · the read paths and the API rewind the recording axis (#317); the graph control stays a separate cut (#307)
+- **Status**: implemented in three cuts · #317 gave every graph read the `held_at` predicate and `as_of` beside `at`; #337 gave entities their clock by unwinding `entity_merges`; this record's second open question landed with retrieval (superseded chunks keep their vectors, and vector recall and chunk fetch both take `as_of`) · the control on the graph page is still open, and full-text recall is still "now" only
 - **Written**: 2026-09-04 (conventions in the [README](README.md))
 - **Related**: [0003](0003-ontology-growth-loop.md) put adoption's rewrites on the same append path as human correction, so the prior state is still on disk; [0002](0002-reasoning-engine.md) built the proof chain on the same rows. #268 (deleting a document) is what made the gap urgent, and is deliberately a separate change
 
@@ -34,6 +34,6 @@ Read-only throughout. No new column, no migration.
 
 ## Open questions
 
-- **Entities have no clock.** `merged_into` records that a merge happened, not when; the time is in `entity_merges.created_at` / `reverted_at`. Two entities merged in March should be two nodes at an `as_of` in February, which means unwinding merges through that table rather than reading the entity row. Probably a second cut.
-- **Retrieval has the same two clocks.** `chunks` carries `created_at` / `superseded_at`, so the predicate above applies unchanged. What is missing is content: `replace_chunks` clears `embedding` on the superseded version to save storage, and the full-text index keeps no history. Deleted documents keep everything (#268), so as-of retrieval over them costs nothing; over earlier *versions* it costs keeping their vectors, which is a storage decision, and full text stays "now" either way.
+- **Entities have no clock.** ~~`merged_into` records that a merge happened, not when.~~ Settled in #337: `entity_merges.created_at` / `reverted_at` is the clock, `fact_owner_at` reads the moved-fact arrays back, and a merge made in March leaves two nodes at an `as_of` in February. The target's own type and profile at T are recorded (`target_type_before`, `target_profile_before`) and still unread.
+- **Retrieval has the same two clocks.** Settled, with one half left standing. `replace_chunks` no longer clears `embedding` on a superseded chunk: the storage that decision saved was the smaller half — the chunk's **text** was already kept — and the price was that history could not be searched at all. Vector recall and chunk fetch now take `as_of`, and a document deleted after T comes back with its chunks (#268 leaves the tombstone). **Full text stays "now"**: Tantivy holds one version of a base, so a timed search returns correct hits and misses the ones only history has. Giving the index versions is a separate piece of work, not a filter.
 - **What the control is.** A second slider doubles the surface for a question most people ask rarely; a mode switch on the existing slider is cheaper but risks reading as the same axis, which is the confusion the section above is written to prevent.

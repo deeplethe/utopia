@@ -23,6 +23,7 @@ mod pack_alignment;
 mod pipeline;
 mod predicate_match;
 mod query_engine;
+mod rdf;
 mod retrieval;
 mod state;
 mod type_resolution;

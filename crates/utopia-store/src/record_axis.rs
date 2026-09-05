@@ -54,6 +54,15 @@ pub fn conflict_open_at(alias: &str, param: usize) -> String {
     )
 }
 
+/// `documents`：文档在 T 时刻还在库里。删除留墓碑（#268），所以"删掉的文档"
+/// 在删除之前的任何时刻都该照常出现——它的分块当时确实是可检索的。
+pub fn document_live_at(alias: &str, param: usize) -> String {
+    format!(
+        "{alias}.created_at <= coalesce(${param}, now()) \
+         AND ({alias}.deleted_at IS NULL OR {alias}.deleted_at > coalesce(${param}, now()))"
+    )
+}
+
 /// `chunks`：分块在 T 时刻还是现行版本。证据是否"已消失"要按当时的版本判——
 /// 今天被重解析顶掉的段落，在三月的图上仍然是活证据。
 pub fn chunk_live_at(alias: &str, param: usize) -> String {
@@ -61,4 +70,42 @@ pub fn chunk_live_at(alias: &str, param: usize) -> String {
         "{alias}.created_at <= coalesce(${param}, now()) \
          AND ({alias}.superseded_at IS NULL OR {alias}.superseded_at > coalesce(${param}, now()))"
     )
+}
+
+/// `entity_merges`：这次合并在 T 时刻**生效着**吗（0019 第二刀 / #336）。
+///
+/// 实体身上没有记录轴——`merged_into` 只说合并发生过，不说何时。时刻在这张表上，
+/// 而它和别的表问的是同一个问题，所以列名不同、形状一样。
+pub fn merge_in_effect_at(alias: &str, param: usize) -> String {
+    format!(
+        "{alias}.created_at <= coalesce(${param}, now()) \
+         AND ({alias}.reverted_at IS NULL OR {alias}.reverted_at > coalesce(${param}, now()))"
+    )
+}
+
+/// 实体在 T 时刻是不是一个独立的节点：那时已经存在，且没有被一次生效中的合并吞掉。
+///
+/// **取代读路径上的 `merged_into IS NULL`。** 参数为 NULL 时两者等价（已撤销的合并
+/// 此刻不生效，那个实体本来就该出现），但传了时刻之后，三月被并掉的实体在二月
+/// 会重新长回来——那正是这一刀要的。
+pub fn entity_visible_at(alias: &str, param: usize) -> String {
+    let merged = merge_in_effect_at("m", param);
+    format!(
+        "{alias}.created_at <= coalesce(${param}, now()) \
+         AND NOT EXISTS (SELECT 1 FROM entity_merges m \
+                          WHERE m.source_id = {alias}.id AND {merged})"
+    )
+}
+
+/// 一条事实在 T 时刻的主语（`on_object = false`）或宾语。
+///
+/// **现在这条路不进函数**：`fact_owner_at` 包住列之后索引就用不上了，而
+/// 「现在」是每一次画图都要走的路。回放才付这个代价——它本来就少见。
+pub fn owner_at(fact_alias: &str, column: &str, as_of: Option<usize>, on_object: bool) -> String {
+    match as_of {
+        None => format!("{fact_alias}.{column}"),
+        Some(param) => {
+            format!("fact_owner_at({fact_alias}.id, {fact_alias}.{column}, ${param}, {on_object})")
+        }
+    }
 }

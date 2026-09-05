@@ -1244,6 +1244,7 @@ export const zh: Strings = {
       escalate_entity_changed: "裁决过程中实体发生了变化",
       escalate_unsure: "裁决的把握不够",
       namesake: "同一篇文档里有两个同名实体",
+      namesake_tie: "同名，画像分不出谁是谁",
       contains: "一个名字包含另一个",
       ambiguous_name: "同名，但上下文没能定夺",
       type_drift: "同名，但类型不同",
