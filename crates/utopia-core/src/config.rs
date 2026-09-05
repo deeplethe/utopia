@@ -56,15 +56,135 @@ impl Default for AppConfig {
 impl AppConfig {
     pub fn load() -> anyhow::Result<Self> {
         let cfg = Figment::from(Serialized::defaults(AppConfig::default()))
-            .merge(Env::prefixed("UTOPIA_"))
+            .merge(blank_is_unset(Env::prefixed("UTOPIA_")))
             .extract()?;
         Ok(cfg)
     }
+}
+
+/// 值为空的环境变量按**没设**处理（#343）。
+///
+/// 容器编排里 `UTOPIA_X: ${UTOPIA_X:-}` 这种写法，在变量没设时传进容器的是空串，
+/// 不是「不传」。Figment 照单全收，于是 `Option<String>` 拿到 `Some("")`、`String`
+/// 字段被空串盖掉默认值、`bool` 与数字字段连反序列化都过不去。
+///
+/// 判断放在读环境变量这一层，而不是各个取值点：空串对这里的每一个字段都不是合法值，
+/// 逐个字段加守卫只会漏掉下一个加进来的字段——`jwt_secret` 和 `secret_key` 各自守着，
+/// `migration_url` 就是漏掉的那个，症状是空串交给 sqlx 报 "relative URL without a
+/// base"，照 README 快速开始起的部署第一步就退出。同一件事 `init-app-role.sh` 里
+/// 用 `[ -z ]` 判过了，Rust 这侧缺的就是它。
+fn blank_is_unset(env: Env) -> Env {
+    // iter() 给的是剥掉前缀、转成小写之后的键；filter 拿到的是剥掉前缀、
+    // 还没转小写的那个，所以这里按不分大小写比。
+    let blank: Vec<String> = env
+        .iter()
+        .filter(|(_, value)| value.trim().is_empty())
+        .map(|(key, _)| key.to_string())
+        .collect();
+    env.filter(move |key| {
+        !blank
+            .iter()
+            .any(|blank_key| key.as_str().eq_ignore_ascii_case(blank_key))
+    })
 }
 
 impl AppConfig {
     /// 迁移连接串：未单独配置时用运行时那一个。
     pub fn migration_url(&self) -> &str {
         self.migration_url.as_deref().unwrap_or(&self.database_url)
+    }
+}
+
+#[cfg(test)]
+// Jail 的闭包必须返回 figment::Result，那个 Err 变体的大小不由我们定
+#[allow(clippy::result_large_err)]
+mod tests {
+    use super::AppConfig;
+    use figment::Jail;
+
+    /// #343：`docker-compose.yml` 里 `UTOPIA_MIGRATION_URL: ${UTOPIA_MIGRATION_URL:-}`
+    /// 在变量没设时传进容器的是**空串**而不是「不传」。空串盖掉回落之后
+    /// `migration_url()` 返回 ""，sqlx 报 "relative URL without a base"，
+    /// 照 README 快速开始起的部署第一步就退出。
+    #[test]
+    fn a_blank_migration_url_falls_back_to_the_database_url() {
+        Jail::expect_with(|jail| {
+            jail.set_env("UTOPIA_DATABASE_URL", "postgres://u:p@db:5432/utopia");
+            jail.set_env("UTOPIA_MIGRATION_URL", "");
+            let cfg = AppConfig::load().unwrap();
+            assert_eq!(cfg.migration_url, None, "空串要当作没设");
+            assert_eq!(cfg.migration_url(), cfg.database_url);
+            Ok(())
+        });
+    }
+
+    /// 只有空白也算空：`UTOPIA_MIGRATION_URL=" "` 同样不是连接串。
+    #[test]
+    fn whitespace_counts_as_blank() {
+        Jail::expect_with(|jail| {
+            jail.set_env("UTOPIA_DATABASE_URL", "postgres://u:p@db:5432/utopia");
+            jail.set_env("UTOPIA_MIGRATION_URL", "   ");
+            let cfg = AppConfig::load().unwrap();
+            assert_eq!(cfg.migration_url, None);
+            Ok(())
+        });
+    }
+
+    /// 真给了值就照旧生效——这一条是拦着上面那个过滤越界的。
+    #[test]
+    fn a_migration_url_that_is_set_still_wins() {
+        Jail::expect_with(|jail| {
+            jail.set_env("UTOPIA_DATABASE_URL", "postgres://app:p@db:5432/utopia");
+            jail.set_env("UTOPIA_MIGRATION_URL", "postgres://owner:p@db:5432/utopia");
+            let cfg = AppConfig::load().unwrap();
+            assert_eq!(
+                cfg.migration_url.as_deref(),
+                Some("postgres://owner:p@db:5432/utopia")
+            );
+            assert_ne!(cfg.migration_url(), cfg.database_url);
+            Ok(())
+        });
+    }
+
+    /// 空串不止坑 `Option<String>`：`String` 字段没有回落可言，空串直接盖掉默认值。
+    #[test]
+    fn a_blank_string_field_keeps_its_default() {
+        Jail::expect_with(|jail| {
+            jail.set_env("UTOPIA_DATA_DIR", "");
+            jail.set_env("UTOPIA_WEB_DIST", "");
+            jail.set_env("UTOPIA_BIND_ADDR", "");
+            let cfg = AppConfig::load().unwrap();
+            assert_eq!(cfg.data_dir, "data");
+            assert_eq!(cfg.web_dist, "web/dist");
+            assert_eq!(cfg.bind_addr, "0.0.0.0:1516");
+            Ok(())
+        });
+    }
+
+    /// 非字符串字段更早一步：空串连反序列化都过不去，`load()` 直接报错，
+    /// 而报的是 figment 的类型错误，看不出是哪个环境变量传空了。
+    #[test]
+    fn a_blank_typed_field_does_not_break_loading() {
+        Jail::expect_with(|jail| {
+            jail.set_env("UTOPIA_DB_MAX_CONNECTIONS", "");
+            jail.set_env("UTOPIA_COOKIE_SECURE", "");
+            let cfg = AppConfig::load().unwrap();
+            assert_eq!(cfg.db_max_connections, None);
+            assert!(!cfg.cookie_secure);
+            Ok(())
+        });
+    }
+
+    /// 同上的反面：给了值仍然解析。
+    #[test]
+    fn a_typed_field_that_is_set_still_parses() {
+        Jail::expect_with(|jail| {
+            jail.set_env("UTOPIA_DB_MAX_CONNECTIONS", "8");
+            jail.set_env("UTOPIA_COOKIE_SECURE", "true");
+            let cfg = AppConfig::load().unwrap();
+            assert_eq!(cfg.db_max_connections, Some(8));
+            assert!(cfg.cookie_secure);
+            Ok(())
+        });
     }
 }

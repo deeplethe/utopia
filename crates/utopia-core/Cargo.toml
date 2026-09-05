@@ -17,3 +17,8 @@ pgvector.workspace = true
 strum.workspace = true
 aes-gcm.workspace = true
 base64.workspace = true
+
+[dev-dependencies]
+# Jail：环境变量的隔离夹具。配置这一层的回归要在真的环境变量上验，
+# 自己拿 set_var 造一个只会在并行测试里互相打架（figment 的 test feature）
+figment = { workspace = true, features = ["test"] }
