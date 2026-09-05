@@ -626,12 +626,17 @@ export function Library() {
                   {S.library.retryFailed(docs.data!.failed)}
                 </Button>
               )}
-              {/* 全库重建：清算语义，仅 KB admin；放在 All documents 视图 */}
+              {/* 全库重建：清算语义，仅 KB admin；放在 All documents 视图。
+                  **按钮本身是普通色**：它只是打开确认框，危险色留给确认框里那个
+                  真正动手的按钮——工具栏上常驻一块红，看久了就不红了 */}
               {selection === "all" && canRebuild && (
-                <Button variant="danger" size="sm" className="flex items-center gap-2 shrink-0"
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="shrink-0"
+                  icon={<RefreshCw size={12} />}
                   onClick={() => setRebuilding(true)}
                 >
-                  <RefreshCw size={12} />
                   {S.library.rebuild}
                 </Button>
               )}
@@ -2012,9 +2017,9 @@ function SourceEditModal({
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-fine text-ink-3">{S.library.deleteSourceHint}</span>
+              {/* 同一个道理：这里只打开确认框，红色在确认框里 */}
               <Button variant="secondary" size="sm" className="shrink-0"
                 onClick={() => setConfirmingDelete(true)}
-                style={{ background: "var(--u-danger-solid)", color: "#ffffff" }}
               >
                 {S.library.deleteSource}
               </Button>
