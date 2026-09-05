@@ -330,9 +330,9 @@ pub async fn close_superseded(
     let inserted: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                             valid_from, valid_from_precision,
-                            valid_to, valid_to_precision, confidence, supersedes)
+                            valid_to, valid_to_precision, confidence, supersedes, attested_at)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
-                valid_from, valid_from_precision, $3, $4, confidence, id
+                valid_from, valid_from_precision, $3, $4, confidence, id, attested_at
          FROM facts WHERE id = $2 AND invalidated_at IS NULL
          RETURNING id",
     )
@@ -343,6 +343,47 @@ pub async fn close_superseded(
     .fetch_optional(&mut *tx)
     .await?;
     // 已被改写过（并发，或同一批对账里前一步已经闭合了它）：不重复动手，也不算一次修正
+    if inserted.is_none() {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
+        .bind(fact_id)
+        .execute(&mut *tx)
+        .await?;
+    copy_evidence(&mut tx, fact_id, corrected).await?;
+    tx.commit().await?;
+    Ok(Some(corrected))
+}
+
+/// 作废 + 改写成「结束了，不知哪天」（0022）：旧行记 invalidated_at，修正行终点仍是
+/// NULL、精度 'unknown'，锚点换成**说出结束的那份文档**——读出来就是「到它为止」
+/// （起点是原文给的，锚点只管结束端）。证据引用随行复制。
+/// 返回修正行 id；`None` = 这条已不是带起点的开放行，没动。
+pub async fn close_with_unknown_end(
+    pool: &PgPool,
+    fact_id: Uuid,
+    attested_at: Option<DateTime<Utc>>,
+) -> AppResult<Option<Uuid>> {
+    let mut tx = pool.begin().await?;
+    let corrected = Uuid::now_v7();
+    let inserted: Option<(Uuid,)> = sqlx::query_as(
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
+                            valid_from, valid_from_precision,
+                            valid_to, valid_to_precision, confidence, supersedes, attested_at)
+         SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
+                valid_from, valid_from_precision, NULL, $3, confidence, id, COALESCE($4, now())
+         FROM facts
+         WHERE id = $2 AND invalidated_at IS NULL
+           AND valid_from IS NOT NULL AND valid_to IS NULL AND valid_to_precision IS NULL
+         RETURNING id",
+    )
+    .bind(corrected)
+    .bind(fact_id)
+    .bind(crate::graph::ENDED_UNKNOWN)
+    .bind(attested_at)
+    .fetch_optional(&mut *tx)
+    .await?;
     if inserted.is_none() {
         tx.rollback().await?;
         return Ok(None);
@@ -396,9 +437,9 @@ pub async fn correct_interval(
     let inserted: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                             valid_from, valid_from_precision,
-                            valid_to, valid_to_precision, confidence, supersedes)
+                            valid_to, valid_to_precision, confidence, supersedes, attested_at)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
-                $3, $4, $5, $6, confidence, id
+                $3, $4, $5, $6, confidence, id, attested_at
          FROM facts WHERE id = $2 AND invalidated_at IS NULL
          RETURNING id",
     )

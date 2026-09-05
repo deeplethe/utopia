@@ -245,7 +245,7 @@ async fn the_recording_axis_rewinds_on_every_graph_read() -> anyhow::Result<()> 
     let facts = |as_of: Option<&'static str>| {
         let pool = pool.clone();
         async move {
-            utopia_store::graph::entity_detail(&pool, f.kb, f.zhang, as_of.map(t))
+            utopia_store::graph::entity_detail(&pool, f.kb, f.zhang, None, as_of.map(t))
                 .await
                 .map(|(_, facts)| facts)
         }

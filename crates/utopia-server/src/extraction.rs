@@ -1016,6 +1016,9 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 to_precision: to
                     .map(|(_, p)| p)
                     .or(ended_unknown.then_some(utopia_store::graph::ENDED_UNKNOWN)),
+                // 这次观察出自哪一天的文档（0022）：没起点的事实从它起成立，结束了
+                // 不知哪天的到它为止。没有文档日期就是记下的此刻——账本能给的最好的
+                attested_at: doc.doc_time,
             };
 
             // 属性事实：谓词命中属性 → 字面值通道。datatype 校验失败宁缺勿脏；

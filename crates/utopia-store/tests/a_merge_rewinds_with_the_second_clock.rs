@@ -166,7 +166,8 @@ async fn facts_of(
     entity: Uuid,
     as_of: Option<&str>,
 ) -> anyhow::Result<Vec<Uuid>> {
-    let (_, facts) = utopia_store::graph::entity_detail(pool, kb, entity, as_of.map(t)).await?;
+    let (_, facts) =
+        utopia_store::graph::entity_detail(pool, kb, entity, None, as_of.map(t)).await?;
     let mut ids: Vec<Uuid> = facts.iter().map(|f| f.id).collect();
     ids.sort();
     Ok(ids)

@@ -226,7 +226,8 @@ async fn a_contradiction_points_upstream() -> anyhow::Result<()> {
 
         // 争议在它坐的地方可见（0017 §3）：面板行挂 contested，图上有一条幽灵边，
         // 「没落地的」一档有一行，它的证明链读得出前提
-        let (_, facts) = utopia_store::graph::entity_detail(&pool, f.kb, f.mira, None).await?;
+        let (_, facts) =
+            utopia_store::graph::entity_detail(&pool, f.kb, f.mira, None, None).await?;
         let hit = facts
             .iter()
             .find(|x| x.id == old)

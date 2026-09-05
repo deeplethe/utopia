@@ -71,6 +71,9 @@ pub struct ExportFact {
     pub valid_from_precision: Option<String>,
     pub valid_to: Option<DateTime<Utc>>,
     pub valid_to_precision: Option<String>,
+    /// 读出来的区间（0022）：「现在仍成立」那条三元组按它判，不再自己解释 NULL
+    pub holds_from: Option<DateTime<Utc>>,
+    pub holds_to: Option<DateTime<Utc>>,
     pub recorded_at: DateTime<Utc>,
     pub invalidated_at: Option<DateTime<Utc>>,
     pub confidence: f32,
@@ -173,22 +176,25 @@ pub async fn facts_page(
     kb_id: Uuid,
     after: Option<Uuid>,
 ) -> AppResult<Vec<ExportFact>> {
-    Ok(sqlx::query_as(
+    Ok(sqlx::query_as(&format!(
         "SELECT f.id, f.subject_id, f.predicate_id,
                 fact_surface_predicate(f.id) AS surface_predicate,
                 f.object_id, f.object_value,
                 f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision,
+                {holds_from} AS holds_from, {holds_to} AS holds_to,
                 f.recorded_at, f.invalidated_at, f.confidence, f.supersedes,
                 COALESCE(ARRAY(SELECT DISTINCT e.document_id FROM fact_evidence e
-                                WHERE e.fact_id = f.id AND e.document_id IS NOT NULL), '{}')
+                                WHERE e.fact_id = f.id AND e.document_id IS NOT NULL), '{{}}')
                   AS documents,
                 COALESCE(ARRAY(SELECT e.quote FROM fact_evidence e
                                 WHERE e.fact_id = f.id AND e.quote IS NOT NULL
-                                ORDER BY e.chunk_id), '{}') AS quotes
+                                ORDER BY e.chunk_id), '{{}}') AS quotes
            FROM facts f
           WHERE f.kb_id = $1 AND f.id > COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)
           ORDER BY f.id LIMIT $3",
-    )
+        holds_from = crate::world_axis::facts_holds_from("f"),
+        holds_to = crate::world_axis::facts_holds_to("f"),
+    ))
     .bind(kb_id)
     .bind(after)
     .bind(PAGE)

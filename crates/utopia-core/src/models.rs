@@ -606,6 +606,11 @@ pub struct GraphEdge {
     pub premises: Vec<Uuid>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
+    /// **读出来的**区间（0022）：没有起点的事实从最早的证据起，结束了不知哪天的
+    /// 到最早说出它的那份文档为止。滑杆按这两个过滤，不再自己解释 NULL——
+    /// 上面那两个是原文说了什么，只用来显示
+    pub holds_from: Option<DateTime<Utc>>,
+    pub holds_to: Option<DateTime<Utc>>,
     pub confidence: f32,
     /// 有争议（0017 §3）：有一条 open 的公理违规或时态冲突指着它。整条边画成
     /// 警戒色——环在节点上、边还是灰的，余光分不出来
@@ -642,6 +647,10 @@ pub struct EntityFact {
     /// 结束端的粒度，外加一个 `unknown`——**原文说它结束了，但没说哪天**。
     /// `valid_to` 与它都为 None 才是「仍在持续」（见 `facts.valid_to_precision`）
     pub valid_to_precision: Option<String>,
+    /// **读出来的**区间（0022），与 `GraphEdge` 同义：面板判「此刻成立」按它，
+    /// 不再自己把 NULL 解释成开放
+    pub holds_from: Option<DateTime<Utc>>,
+    pub holds_to: Option<DateTime<Utc>>,
     pub confidence: f32,
     pub evidence_count: i64,
     /// 证据全部停留在来源文档的旧版（未被现行内容确认；不代表事实失效）
