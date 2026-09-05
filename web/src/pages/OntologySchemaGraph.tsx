@@ -12,9 +12,10 @@
 // 落到同一个 sel 状态、同一份表单组件，这个文件只剩「画」和「选中了什么」。
 //
 // **不是什么都画。** 导入的包动辄几百上千个类（schema.org 一份就九百多），
-// 全摊开是一团毛球。大本体默认只画库用到的类（有实例的及其祖先），其余的
-// 一个药丸切过去看全貌；左栏点到的类随时补进画布。取景规则在 schemaScope，
-// 与投影（buildSchemaGraph）分开，两个都是纯函数。
+// 全摊开是一团毛球。大本体只画库用到的类（有实例的及其祖先），左栏点到的
+// 类随时补进画布；没有「显示全部」——九百个类摊开谁也读不出结构，那张画
+// 唯一说明的是包有多大，药丸上的数字就把这句话说完了。取景规则在
+// schemaScope，与投影（buildSchemaGraph）分开，两个都是纯函数。
 //
 // **画布上没有自己的搜索框。** 找一个类或关系走左栏的过滤框——同一页放两个
 // 搜索等于没决定搜索属于谁。左栏选中什么，画布就把它带到眼前（bringIntoView）。
@@ -56,21 +57,23 @@ import {
 import { usePopoverFlip } from "../ui/popoverFlip";
 
 /* ============ 边的三种语义，与三种视觉语汇的映射 ============
-   紫色留给「关系」——本体页 AI 提案面板里，Property 提案的徽标（P）已经是紫的，
-   这里延续同一个语义，不是另起一套颜色。粉色是 --u-danger，ClassForm 里
-   互斥与父类冲突的提示文字用的就是它。灰色留给纯结构性的 subClassOf,
-   让「谁是谁的对象属性」在余光里就比「谁是谁的子类」更显眼——
-   语义关系是这张图要回答的主要问题，继承是骨架，互斥是附注。
+   关系边与 /graph 的边同一个灰（那边是应用户要求改成纯灰的，这边不另起
+   一套）。两个大类之间常有几十条关系并排扇开，任何有彩度的颜色一叠就是
+   一团；灰的叠起来只是深一点。继承边反过来：亮、细——它是骨架，条数少
+   （每个类一条），亮一点才能从关系的灰网里透出来，细一点又不会抢戏。
+   粉色是 --u-danger，ClassForm 里互斥与父类冲突的提示文字用的就是它。
 
    暗态的 RGB 得自己压向背景色，不能只调低 alpha：sigma 的边着色器在
    预乘混合(ONE, ONE_MINUS_SRC_ALPHA)下不预乘 RGB，alpha 单独降不会让边
    看起来变暗（Graph.tsx 的 EDGE_DIM 处有同一条注释）。这里的边不需要
    动画淡入淡出，所以不必再搬一套 lerp/parseRgba，几个状态各写一个
    现成的颜色字面量就够了。 */
-const EDGE_SUBCLASS = "rgba(195,195,195,0.4)";
-const EDGE_SUBCLASS_FOCUS = "rgba(235,235,235,0.95)";
-const EDGE_RELATION = "rgba(196,165,255,0.55)"; // --u-violet
-const EDGE_RELATION_FOCUS = "rgba(214,193,255,0.95)";
+const EDGE_SUBCLASS = "rgba(235,235,235,0.55)";
+const EDGE_SUBCLASS_FOCUS = "rgba(255,255,255,0.95)";
+// 与 Graph.tsx 的 EDGE_COLOR 同一个灰，RGB 再压一档：这里的线粗一倍
+// （MIN_EDGE_THICKNESS），同一个色值会显得更亮
+const EDGE_RELATION = "rgba(128,128,128,0.3)";
+const EDGE_RELATION_FOCUS = "rgba(255,255,255,0.6)";
 const EDGE_DISJOINT = "rgba(255,157,175,0.45)"; // --u-danger
 const EDGE_DISJOINT_FOCUS = "rgba(255,157,175,0.9)";
 const EDGE_DIM = "rgba(48,48,48,0.4)";
@@ -96,11 +99,20 @@ const EDGE_TYPE_LINE = "line"; // 直线，无箭头（EdgeLineProgram）——�
 const SUBCLASS_EDGE_SIZE = 0.9;
 const DISJOINT_EDGE_SIZE = 0.8;
 const RELATION_EDGE_SIZE = 2;
+/** 同一对类、同一个方向上超过这么多条关系，就并成一条带计数的边。schema.org
+ *  里 Person→Organization 有二十几条（worksFor、memberOf、affiliation……），
+ *  二十几条弧扇开就是那团毛球，而且哪条也点不中；一条边写着「23 relations」
+ *  说的是同一件事。点它选中 domain 那个类，面板的属性页把这些关系一条条列出来 */
+const BUNDLE_ABOVE = 3;
 /** sigma 边渲染的最小厚度（像素），默认 1.7——同一个理由，全局兜底,
  *  免得缩小到某个层级时任何边都变得难点 */
 const MIN_EDGE_THICKNESS = 3;
-/** 节点基准大小；连接越多（继承 + 关系 + 互斥合计）越大 */
-const BASE_NODE_SIZE = 9;
+/** 节点大小按层级深度走：根最大，每往下一层小一档，到底不再缩。区间与
+ *  /graph 的节点（5–13）同一档，两张图并排看是同一个引擎画的。以前按连接数
+ *  走，结果 Thing 和它的每个子类都顶到同一个上限，层级在图上读不出来 */
+const NODE_SIZE_ROOT = 13;
+const NODE_SIZE_STEP = 2;
+const NODE_SIZE_MIN = 6;
 
 /** 并排偏移的步长；同一对类之间的关系边超过一条时用它扇开 */
 const RELATION_CURVATURE_STEP = 0.22;
@@ -129,9 +141,8 @@ export interface SchemaScope {
 export function schemaScope(
   entityTypes: EntityTypeView[],
   revealed: ReadonlySet<string>,
-  showAll: boolean,
 ): SchemaScope {
-  if (showAll || entityTypes.length <= FULL_VIEW_MAX_CLASSES) {
+  if (entityTypes.length <= FULL_VIEW_MAX_CLASSES) {
     return { drawn: null, basis: "all", hidden: 0 };
   }
   const byId = new Map(entityTypes.map((t) => [t.id, t]));
@@ -173,6 +184,33 @@ export interface SchemaGraphResult {
  *  多重继承是不是都进了图、互斥有没有被对称声明重复、平行关系有没有叠成一条、
  *  未限定的关系有没有被错误地画成全连接、坏引用（父类/域/值域指向不存在的
  *  id）会不会让它崩溃。 */
+/** 每个类在层级里的深度：根 0，往下每层 +1；多重继承取最浅的一条。
+ *  按整个本体算，不按画布上那部分——取景之外的祖先也算层数，一个类被
+ *  左栏点开时该多小就多小。父类互指成环时按走到过的截断 */
+function classDepths(entityTypes: EntityTypeView[]): Map<string, number> {
+  const byId = new Map(entityTypes.map((t) => [t.id, t]));
+  const depths = new Map<string, number>();
+  const walking = new Set<string>();
+  const depthOf = (id: string): number => {
+    const known = depths.get(id);
+    if (known !== undefined) return known;
+    const t = byId.get(id);
+    if (!t || walking.has(id)) return 0;
+    walking.add(id);
+    let depth = 0;
+    for (const parentId of t.parents) {
+      if (parentId === id || !byId.has(parentId)) continue;
+      const d = depthOf(parentId) + 1;
+      if (depth === 0 || d < depth) depth = d;
+    }
+    walking.delete(id);
+    depths.set(id, depth);
+    return depth;
+  };
+  for (const t of entityTypes) depthOf(t.id);
+  return depths;
+}
+
 export function buildSchemaGraph(
   entityTypes: EntityTypeView[],
   relationTypes: RelationTypeView[],
@@ -181,11 +219,16 @@ export function buildSchemaGraph(
 ): SchemaGraphResult {
   const graph = new Graphology({ multi: true });
   const byId = new Map(entityTypes.map((t) => [t.id, t]));
+  const depths = classDepths(entityTypes);
 
   for (const t of entityTypes) {
     if (drawn && !drawn.has(t.id)) continue;
     graph.addNode(t.id, {
       label: t.label,
+      size: Math.max(
+        NODE_SIZE_MIN,
+        NODE_SIZE_ROOT - NODE_SIZE_STEP * (depths.get(t.id) ?? 0),
+      ),
       // 与 /graph 同一套四层壳配方（深壳 + 14% 类型 tint，核心 50% tint，
       // 钢灰描边微 tint）——模式图与实例图看着是同一个引擎画的
       color: mix(NODE_CORE_BASE, t.color, NODE_CORE_MIX),
@@ -234,6 +277,10 @@ export function buildSchemaGraph(
 
   // 关系：attribute 的宾语是字面值，不是类，这里只处理 kind === "relation"
   const unscoped: RelationTypeView[] = [];
+  const pairs = new Map<
+    string,
+    { d: string; rg: string; rels: RelationTypeView[] }
+  >();
   for (const r of relationTypes) {
     if (r.kind !== "relation") continue;
     const domains = [...new Set(r.domains)].filter((id) => byId.has(id));
@@ -256,27 +303,37 @@ export function buildSchemaGraph(
     const drawnRanges = ranges.filter((id) => graph.hasNode(id));
     for (const d of drawnDomains) {
       for (const rg of drawnRanges) {
-        graph.addEdgeWithKey(`rel:${r.id}:${d}:${rg}`, d, rg, {
-          kind: RELATION_KIND,
-          // type 由 layOutParallelRelations 按最终弯曲度决定（直线还是弧线）
-          relationId: r.id,
-          label: r.label,
-          size: RELATION_EDGE_SIZE,
-        });
+        const key = `${d}|${rg}`;
+        const pair = pairs.get(key);
+        if (pair) pair.rels.push(r);
+        else pairs.set(key, { d, rg, rels: [r] });
       }
     }
   }
 
-  // 大小按连接数走——继承、关系、互斥合起来算,连得越多的类看着越「重要」。
-  // 必须等边全部建完才能算度数，所以放在这两段循环之后
-  graph.forEachNode((node) => {
-    const degree = graph.degree(node);
-    graph.setNodeAttribute(
-      node,
-      "size",
-      BASE_NODE_SIZE + Math.min(7, Math.sqrt(degree) * 2.1),
-    );
-  });
+  // 先按有向类对归堆再画：少的各画各的，多的并成一条带计数的边（见 BUNDLE_ABOVE）。
+  // relationIds 两种边都带——选中一条关系时，含着它的那条边要亮
+  for (const { d, rg, rels } of pairs.values()) {
+    if (rels.length <= BUNDLE_ABOVE) {
+      for (const r of rels) {
+        graph.addEdgeWithKey(`rel:${r.id}:${d}:${rg}`, d, rg, {
+          kind: RELATION_KIND,
+          // type 由 layOutParallelRelations 按最终弯曲度决定（直线还是弧线）
+          relationIds: [r.id],
+          label: r.label,
+          size: RELATION_EDGE_SIZE,
+        });
+      }
+      continue;
+    }
+    graph.addEdgeWithKey(`bundle:${d}:${rg}`, d, rg, {
+      kind: RELATION_KIND,
+      relationIds: rels.map((r) => r.id),
+      label: S.ontology.schemaBundle(rels.length),
+      // 并得越多越粗一点，但封顶——粗细是「有多少」的余光提示，不是柱状图
+      size: RELATION_EDGE_SIZE + Math.min(2, Math.log2(rels.length) * 0.6),
+    });
+  }
 
   layOutParallelRelations(graph);
   return { graph, unscoped };
@@ -342,8 +399,8 @@ const SEED_RADIUS = 40;
  *  **有旧坐标就增量。** 大半节点上一次已经画过（搜索揭开一个类、编辑加了
  *  一个类），它们从原位出发，只给新节点在已定位的邻居旁边找落点，再少跑
  *  几十步力收一收——在画面旁边多出一个点，不是整张图重新洗牌。手动摆过的
- *  节点这时钉住（FA2 认 fixed 属性）。新节点占了大半（「显示全部」一下多出
- *  几百个）就从头来。 */
+ *  节点这时钉住（FA2 认 fixed 属性）。新节点占了大半（比如刚导入一个包）
+ *  就从头来。 */
 function layoutSchemaGraph(
   graph: Graphology,
   known: ReadonlyMap<string, Point>,
@@ -491,14 +548,13 @@ export function OntologySchemaGraph({
     [relationTypes],
   );
 
-  // 取景：大本体默认只画库用到的类，左栏点到的类补进来（见 schemaScope）
-  const [showAll, setShowAll] = useState(false);
+  // 取景：大本体只画库用到的类，左栏点到的类补进来（见 schemaScope）
   const [revealed, setRevealed] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
   const scope = useMemo(
-    () => schemaScope(entityTypes, revealed, showAll),
-    [entityTypes, revealed, showAll],
+    () => schemaScope(entityTypes, revealed),
+    [entityTypes, revealed],
   );
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
@@ -566,8 +622,7 @@ export function OntologySchemaGraph({
   // 也没有持久化
   const draggedPositionsRef = useRef<Map<string, Point>>(new Map());
   /** 上一次画完时每个节点的坐标（含拖过的）。重建时先把它们摆回原位，只给
-   *  新节点找落点——见 layoutSchemaGraph 的增量说明。「显示全部」切换时清空：
-   *  那是换一张画，旧坐标对它没有意义 */
+   *  新节点找落点——见 layoutSchemaGraph 的增量说明 */
   const positionsRef = useRef<Map<string, Point>>(new Map());
   /** 左栏点中了还没画出来的类：等它进了画布再对焦 */
   const pendingFocusRef = useRef<string | null>(null);
@@ -630,8 +685,8 @@ export function OntologySchemaGraph({
       minCameraRatio: 0.05,
       maxCameraRatio: 6,
       edgeLabelSize: 10,
-      // 关系边的同一个紫——看到画布上有字，就知道这是一条关系边而不是继承/互斥
-      edgeLabelColor: { color: "#c4a5ff" },
+      // 与 /graph 的边标签同一个灰；只有关系边挂标签，有字的就是关系边
+      edgeLabelColor: { color: "#a3a3a3" },
       edgeLabelFont: '"Geist", "Inter", sans-serif',
       defaultDrawNodeLabel: drawPillLabel,
       defaultDrawNodeHover: drawHoverCard,
@@ -693,7 +748,7 @@ export function OntologySchemaGraph({
       edgeReducer: (edge, attrs) => {
         const res = { ...attrs };
         const kind = attrs.kind as string;
-        const relId = attrs.relationId as string | undefined;
+        const relIds = attrs.relationIds as string[] | undefined;
         const base =
           kind === SUBCLASS_KIND
             ? EDGE_SUBCLASS
@@ -721,7 +776,7 @@ export function OntologySchemaGraph({
           sel?.kind === "class"
             ? sel.id === s || sel.id === t
             : sel?.kind === "relation"
-              ? sel.id === relId
+              ? (relIds?.includes(sel.id) ?? false)
               : false;
 
         if (selHit || hoverHit || hoverEdgeHit) {
@@ -742,8 +797,11 @@ export function OntologySchemaGraph({
 
     sigma.on("clickNode", ({ node }) => onSelect({ kind: "class", id: node }));
     sigma.on("clickEdge", ({ edge }) => {
-      const relId = g.getEdgeAttribute(edge, "relationId") as string | undefined;
-      if (relId) onSelect({ kind: "relation", id: relId });
+      const ids = g.getEdgeAttribute(edge, "relationIds") as string[] | undefined;
+      if (!ids?.length) return;
+      // 单独一条：选中它；并起来的一捆：选中 domain 那个类，属性页里一条条看
+      if (ids.length === 1) onSelect({ kind: "relation", id: ids[0] });
+      else onSelect({ kind: "class", id: g.source(edge) });
     });
     sigma.on("clickStage", () => onSelect(null));
     sigma.on("enterNode", ({ node }) => {
@@ -877,28 +935,19 @@ export function OntologySchemaGraph({
             </span>
           ))}
 
-          {(showAll || scope.hidden > 0) && (
+          {/* 没画的有多少：只是说明，与图例同一副样子，不可点——想看哪个类
+              去左栏点它 */}
+          {scope.hidden > 0 && (
             <Tooltip
               content={
-                showAll
-                  ? S.ontology.schemaScopeAllHint
-                  : scope.basis === "top"
-                    ? S.ontology.schemaScopeTopHint
-                    : S.ontology.schemaScopeInUseHint
+                scope.basis === "top"
+                  ? S.ontology.schemaScopeTopHint
+                  : S.ontology.schemaScopeInUseHint
               }
             >
-              <Pill
-                active={showAll}
-                onClick={() => {
-                  // 换一张画：旧坐标对新画面没有意义，从头布局
-                  positionsRef.current.clear();
-                  setShowAll((v) => !v);
-                }}
-              >
-                {showAll
-                  ? S.ontology.schemaAllClasses(entityTypes.length)
-                  : S.ontology.schemaMoreClasses(scope.hidden)}
-              </Pill>
+              <span className="glass rounded-full px-3 py-1 text-fine flex items-center text-ink-2">
+                {S.ontology.schemaMoreClasses(scope.hidden)}
+              </span>
             </Tooltip>
           )}
 

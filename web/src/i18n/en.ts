@@ -1349,16 +1349,12 @@ export const en = {
     schemaUnscoped: (n: number) => `Unscoped properties (${n})`,
     schemaUnscopedHint:
       "Not limited to specific classes, so no line on the canvas would be honest. Select one to inspect or edit it.",
-    // 取景药丸：大本体默认只画库用到的类，这里说没画的有多少、为什么
-    // 「+903 classes」：加号在前，一眼就是「还能再展开」
+    // 取景说明：大本体只画库用到的类，这里说没画的有多少、为什么、去哪找
     schemaMoreClasses: (n: number) => (n === 1 ? "+1 class" : `+${n} classes`),
-    schemaAllClasses: (n: number) => `All ${n} classes`,
     schemaScopeInUseHint:
-      "Drawn: the classes with instances, and their ancestors. Click for the whole ontology.",
+      "Drawn: the classes with instances, and their ancestors. Pick any other class in the rail to add it.",
     schemaScopeTopHint:
-      "No class has instances yet, so the top two levels are drawn. Click for the whole ontology.",
-    schemaScopeAllHint:
-      "Every class is drawn. Click to go back to the classes the base uses.",
+      "No class has instances yet, so the top two levels are drawn. Pick any other class in the rail to add it.",
     schemaClosePanel: "Close",
     // 面板里的三段：定义（表单）/ 属性（关系 + 字面值字段）/ 实例。
     // 用页面自己的词——左栏就叫 Classes / Properties
@@ -1372,6 +1368,8 @@ export const en = {
         : `${n} new ontology issues from this change`,
     schemaCheckReview: "Review",
     schemaRelationships: "Relationships",
+    /** 画布上并成一条的关系边写的字 */
+    schemaBundle: (n: number) => `${n} relations`,
     schemaOutgoing: "From this class",
     schemaIncoming: "To this class",
     schemaNoRelationships: "No relationships yet.",
