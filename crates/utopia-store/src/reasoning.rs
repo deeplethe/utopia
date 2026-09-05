@@ -824,6 +824,12 @@ pub struct DeriveReport {
     /// 推出来了却撞上断言或别的派生、这一轮拦下没落的（0017）。**拦下的每一条
     /// 都在 Review 里有对应的一行**——`run` 与这里用同一个函数算
     pub blocked: usize,
+    /// 参与求值的业务规则条数（0021）
+    pub attribute_rules: usize,
+    /// 业务规则命中数
+    pub rule_hits: usize,
+    /// 前提组合太多、没展开完的 (规则, 实体) 对数。**与「不满足」区分开报**
+    pub rule_capped: usize,
 }
 
 /// 一次取数，三样东西：带区间的边、每条事实的区间、精度与置信度。
@@ -901,11 +907,47 @@ async fn accepted_clashes(
         .collect())
 }
 
-/// 派生事实的身份：三元组 + 区间。
+/// 派生事实的身份：主 + 谓 + 宾 + 区间。
 ///
 /// **区间进键**是有意的：区间变了就是另一条断言，老的作废、新的落地，
 /// 因为账本不许原地改。
-type DerivedKey = (Uuid, Uuid, Uuid, Option<i64>, Option<i64>);
+///
+/// 宾语两格,与 `derived_facts` 拓宽后的两条通道一一对应(0021 决策 1):实体宾语
+/// 走 `Option<Uuid>`,字面值结论走那串规范化过的 JSON。两格都参与比较——否则
+/// 同一个类上的两条不同结论会被认成同一条。
+type DerivedKey = (
+    Uuid,
+    Uuid,
+    Option<Uuid>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
+/// 这一轮要落库的一条派生。公理推出来的与规则推出来的在这里合流——
+/// **合流是必须的**：陈旧行的对账扫的是整张表，两趟各做各的 diff 会把对方的
+/// 行每轮都判成陈旧作废掉。
+struct Wanted {
+    subject: Uuid,
+    predicate: Uuid,
+    object_id: Option<Uuid>,
+    object_value: Option<serde_json::Value>,
+    from: Option<i64>,
+    to: Option<i64>,
+    premises: Vec<Uuid>,
+    /// 公理规则（`rules.id`）或业务规则（`attribute_rules.id`），恰好一个
+    rule_id: Option<Uuid>,
+    attribute_rule_id: Option<Uuid>,
+}
+
+/// JSON 值的规范化文本形态，只用来做键。
+///
+/// `serde_json::Value` 自己不是 `Hash`，而键里必须带上字面值宾语；序列化成
+/// 字符串是最省事且稳定的做法——`Map` 在 serde_json 默认是 `BTreeMap`，
+/// 同样的内容序列化出来逐字节相同。
+fn value_key(v: Option<&serde_json::Value>) -> Option<String> {
+    v.map(|v| v.to_string())
+}
 
 /// 精度按「最粗的那个」取。
 ///
@@ -1000,10 +1042,244 @@ type LiveRow = (
     Uuid,
     Uuid,
     Uuid,
-    Uuid,
+    Option<Uuid>,
+    Option<serde_json::Value>,
     Option<chrono::DateTime<chrono::Utc>>,
     Option<chrono::DateTime<chrono::Utc>>,
 );
+
+/// 一条业务规则连同它的条件，已经解析成求值器的形状。
+struct LoadedRule {
+    rule: utopia_reason::rules::BusinessRule,
+    /// 规则只看这个类**及其子类**的实体
+    subject_types: Vec<Uuid>,
+    /// 结论落在哪个谓词上：归类落 `is_a`，属性落它自己那个
+    conclude_predicate: Uuid,
+}
+
+/// 取业务规则。条件形状不合法的规则**整条跳过而不是报错退出**——一条写坏的
+/// 规则不该让整轮物化停摆，而它不产出这件事在报告的条数里看得见。
+async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<LoadedRule>> {
+    use utopia_reason::rules::{BusinessRule, Conclusion, Condition, Op};
+
+    let rows: Vec<(
+        Uuid,
+        Uuid,
+        String,
+        Option<Uuid>,
+        Option<Uuid>,
+        Option<serde_json::Value>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT r.id, r.subject_type_id, r.conclusion,
+                r.conclude_type_id, r.conclude_predicate_id, r.conclude_value,
+                ct.iri, ct.key
+           FROM attribute_rules r
+           LEFT JOIN entity_types ct ON ct.id = r.conclude_type_id
+          WHERE r.kb_id = $1 AND r.enabled",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 归类结论要落在内建 `is_a` 上。规则存在就意味着它已经被建出来了
+    // （建规则那一步负责），这里取不到就说明库被手改过——跳过而不是造一个
+    let is_a: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM relation_types WHERE kb_id = $1 AND key = 'is_a'")
+            .bind(kb_id)
+            .fetch_optional(pool)
+            .await?;
+
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
+    let conds: Vec<(Uuid, Uuid, String, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT rule_id, predicate_id, op, operand
+           FROM attribute_rule_conditions
+          WHERE rule_id = ANY($1)
+          ORDER BY rule_id, seq",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    let mut by_rule: HashMap<Uuid, Vec<Condition>> = HashMap::new();
+    let mut broken: HashSet<Uuid> = HashSet::new();
+    for (rule_id, predicate, op, operand) in conds {
+        let Some(op) = Op::parse(&op) else {
+            broken.insert(rule_id);
+            continue;
+        };
+        let Some(operand) = parse_operand(op, operand.as_ref()) else {
+            broken.insert(rule_id);
+            continue;
+        };
+        by_rule.entry(rule_id).or_default().push(Condition {
+            predicate,
+            op,
+            operand,
+        });
+    }
+
+    let mut out = Vec::new();
+    for (id, subject_type, conclusion, conclude_type, conclude_pred, conclude_value, iri, key) in
+        rows
+    {
+        if broken.contains(&id) {
+            continue;
+        }
+        let Some(conditions) = by_rule.remove(&id) else {
+            // 一条没有条件的规则什么都不推（求值器也这么判），不必往下走
+            continue;
+        };
+        let (conclusion, predicate) = match conclusion.as_str() {
+            "typing" => {
+                let (Some(_), Some((is_a,))) = (conclude_type, is_a) else {
+                    continue;
+                };
+                // **按 IRI 记，没有 IRI 才退回 key**：改标签不该让已推出的结论
+                // 变成另一条（0021 决策 2）
+                let Some(class) = iri.or(key) else { continue };
+                (Conclusion::Typing { class }, is_a)
+            }
+            "attribute" => {
+                let (Some(p), Some(v)) = (conclude_pred, conclude_value) else {
+                    continue;
+                };
+                (
+                    Conclusion::Attribute {
+                        predicate: p,
+                        value: v,
+                    },
+                    p,
+                )
+            }
+            _ => continue,
+        };
+        let subject_types = descendants_of(pool, kb_id, subject_type).await?;
+        out.push(LoadedRule {
+            rule: BusinessRule {
+                id,
+                conclusion,
+                conditions,
+            },
+            subject_types,
+            conclude_predicate: predicate,
+        });
+    }
+    Ok(out)
+}
+
+/// 操作数按 op 解析。形状不对返回 None，调用方整条规则跳过。
+fn parse_operand(
+    op: utopia_reason::rules::Op,
+    raw: Option<&serde_json::Value>,
+) -> Option<utopia_reason::rules::Operand> {
+    use utopia_reason::rules::{Op, Operand};
+    match op {
+        Op::Present => Some(Operand::None),
+        Op::Between => {
+            let arr = raw?.as_array()?;
+            let (lo, hi) = (arr.first()?.as_f64()?, arr.get(1)?.as_f64()?);
+            Some(Operand::Range(lo.min(hi), lo.max(hi)))
+        }
+        Op::In => {
+            let arr = raw?.as_array()?;
+            let set: Vec<String> = arr
+                .iter()
+                .filter_map(|v| match v {
+                    serde_json::Value::String(s) => Some(s.trim().to_string()),
+                    other => Some(other.to_string()),
+                })
+                .collect();
+            (!set.is_empty()).then_some(Operand::Set(set))
+        }
+        _ => Some(Operand::Num(raw?.as_f64().or_else(|| {
+            raw.and_then(|v| v.as_str())
+                .and_then(|s| s.trim().parse().ok())
+        })?)),
+    }
+}
+
+/// 一个类连同它的全部子类。规则写在 `Well` 上，`HorizontalWell` 的实体也该被看。
+async fn descendants_of(pool: &PgPool, kb_id: Uuid, root: Uuid) -> AppResult<Vec<Uuid>> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "WITH RECURSIVE sub AS (
+             SELECT id FROM entity_types WHERE id = $2 AND kb_id = $1
+             UNION
+             SELECT p.child_id FROM entity_type_parents p JOIN sub ON p.parent_id = sub.id
+         )
+         SELECT id FROM sub",
+    )
+    .bind(kb_id)
+    .bind(root)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// 属性事实：字面值通道上的活事实，连同区间与精度。
+///
+/// 与 `timed_edges` 是对偶的一份——那边取 `object_id IS NOT NULL` 的边，
+/// 这边取 `object_value IS NOT NULL` 的字面值。两边都只看断言。
+async fn attribute_facts(
+    pool: &PgPool,
+    kb_id: Uuid,
+) -> AppResult<(
+    Vec<utopia_reason::rules::AttrFact>,
+    HashMap<Uuid, (Option<i64>, Option<i64>)>,
+    HashMap<Uuid, (Option<String>, Option<String>, f32)>,
+    HashMap<Uuid, Option<Uuid>>,
+)> {
+    let rows: Vec<(
+        Uuid,
+        Uuid,
+        Uuid,
+        serde_json::Value,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Option<String>,
+        Option<String>,
+        f32,
+        Option<Uuid>,
+    )> = sqlx::query_as(
+        "SELECT f.id, f.subject_id, f.predicate_id, f.object_value,
+                f.valid_from, f.valid_to, f.valid_from_precision, f.valid_to_precision,
+                f.confidence, e.type_id
+           FROM facts f
+           JOIN entities e ON e.id = f.subject_id
+          WHERE f.kb_id = $1
+            AND f.invalidated_at IS NULL
+            AND f.predicate_id IS NOT NULL
+            AND f.object_value IS NOT NULL
+            AND e.merged_into IS NULL",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut facts = Vec::with_capacity(rows.len());
+    let mut spans = HashMap::new();
+    let mut meta = HashMap::new();
+    let mut type_of = HashMap::new();
+    for (id, subject, predicate, value, from, to, fp, tp, conf, type_id) in rows {
+        let (f, t) = (from.map(|x| x.timestamp()), to.map(|x| x.timestamp()));
+        // 属性事实的字面值是 `{"value": …, "unit": …}`；比较的是里面那个 value。
+        // 取不到就把整个对象交给求值器——它对认不出的形状一律判不满足
+        let inner = value.get("value").cloned().unwrap_or_else(|| value.clone());
+        facts.push(utopia_reason::rules::AttrFact {
+            id,
+            subject,
+            predicate,
+            value: inner,
+        });
+        spans.insert(id, (f, t));
+        meta.insert(id, (fp, tp, conf));
+        type_of.insert(subject, type_id);
+    }
+    Ok((facts, spans, meta, type_of))
+}
 
 /// 推一遍，把派生事实落进账本。
 ///
@@ -1012,7 +1288,7 @@ type LiveRow = (
 pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> {
     let ax = axioms(pool, kb_id).await?;
     let rules = compile_rules(pool, kb_id, &ax).await?;
-    let (edges, spans, meta) = timed_edges(pool, kb_id).await?;
+    let (edges, spans, mut meta) = timed_edges(pool, kb_id).await?;
 
     let derivation = utopia_reason::derive::derive(&edges, &ax);
     // asserted > derived 是硬性的（0002）：撞上断言的派生不落地。人认可过并存的
@@ -1032,6 +1308,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
             blocked.insert(*j);
         }
     }
+
     let mut report = DeriveReport {
         rules: rules.len(),
         edges: edges.len(),
@@ -1041,7 +1318,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
         ..Default::default()
     };
 
-    let mut wanted: HashMap<DerivedKey, &utopia_reason::derive::Derived> = HashMap::new();
+    let mut wanted: HashMap<DerivedKey, Wanted> = HashMap::new();
     for (i, d) in derivation.facts.iter().enumerate() {
         if blocked.contains(&i) {
             continue;
@@ -1049,12 +1326,91 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
         let Some((from, to)) = utopia_reason::derive::validity(&d.premises, &spans) else {
             continue;
         };
-        wanted.insert((d.subject, d.predicate, d.object, from, to), d);
+        // **按 `via` 查，不是 `predicate`。** 规则行是给「声明了公理的那个
+        // 谓词」编的；跨谓词的两条规则里，派生出来的谓词是另一个
+        let Some(&rule_id) = rules.get(&(d.via, d.rule.as_str())) else {
+            // 查不到规则是**编译与推导不一致**，不是正常情况。数出来，
+            // 别再让它静默消失一次
+            report.unruled += 1;
+            continue;
+        };
+        wanted.insert(
+            (d.subject, d.predicate, Some(d.object), None, from, to),
+            Wanted {
+                subject: d.subject,
+                predicate: d.predicate,
+                object_id: Some(d.object),
+                object_value: None,
+                from,
+                to,
+                premises: d.premises.clone(),
+                rule_id: Some(rule_id),
+                attribute_rule_id: None,
+            },
+        );
     }
+
+    // 第二趟：属性事实上的业务规则（0021）。**并进同一个 `wanted`**——
+    // 下面的陈旧对账扫的是整张 `derived_facts`，两趟各做各的 diff 会把对方
+    // 落的行每一轮都判成陈旧
+    let loaded = attribute_rules(pool, kb_id).await?;
+    report.attribute_rules = loaded.len();
+    if !loaded.is_empty() {
+        let (attr_facts, attr_spans, attr_meta, type_of) = attribute_facts(pool, kb_id).await?;
+        for lr in &loaded {
+            // 规则只看自己主类（含子类）的实体
+            let scoped: Vec<utopia_reason::rules::AttrFact> = attr_facts
+                .iter()
+                .filter(|f| {
+                    type_of
+                        .get(&f.subject)
+                        .and_then(|t| *t)
+                        .is_some_and(|t| lr.subject_types.contains(&t))
+                })
+                .cloned()
+                .collect();
+            let (hits, rr) =
+                utopia_reason::rules::evaluate(&[lr.rule.clone()], &scoped, &attr_spans);
+            report.rule_hits += rr.hits;
+            report.rule_capped += rr.capped;
+            for h in hits {
+                let value = match &lr.rule.conclusion {
+                    utopia_reason::rules::Conclusion::Typing { class } => {
+                        serde_json::json!({ "class": class })
+                    }
+                    utopia_reason::rules::Conclusion::Attribute { value, .. } => {
+                        serde_json::json!({ "value": value })
+                    }
+                };
+                let key = (
+                    h.subject,
+                    lr.conclude_predicate,
+                    None,
+                    value_key(Some(&value)),
+                    h.from,
+                    h.to,
+                );
+                wanted.entry(key).or_insert(Wanted {
+                    subject: h.subject,
+                    predicate: lr.conclude_predicate,
+                    object_id: None,
+                    object_value: Some(value),
+                    from: h.from,
+                    to: h.to,
+                    premises: h.premises,
+                    rule_id: None,
+                    attribute_rule_id: Some(lr.rule.id),
+                });
+            }
+        }
+        // 前提的精度与置信度：两趟共用下面那段，所以两份 meta 也要合起来
+        meta.extend(attr_meta);
+    }
+    report.derived = wanted.len();
 
     let mut tx = pool.begin().await?;
     let live: Vec<LiveRow> = sqlx::query_as(
-        "SELECT id, subject_id, predicate_id, object_id, valid_from, valid_to
+        "SELECT id, subject_id, predicate_id, object_id, object_value, valid_from, valid_to
            FROM derived_facts
           WHERE kb_id = $1 AND invalidated_at IS NULL",
     )
@@ -1063,11 +1419,12 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
     .await?;
 
     let mut stale: Vec<Uuid> = Vec::new();
-    for (id, s, p, o, from, to) in &live {
+    for (id, s, p, o, ov, from, to) in &live {
         let key = (
             *s,
             *p,
             *o,
+            value_key(ov.as_ref()),
             from.map(|x| x.timestamp()),
             to.map(|x| x.timestamp()),
         );
@@ -1087,17 +1444,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
         report.invalidated = stale.len();
     }
 
-    for ((subject, predicate, object, from, to), d) in wanted {
-        // **按 `via` 查，不是 `predicate`。** 规则行是给「声明了公理的那个
-        // 谓词」编的；跨谓词的两条规则里，派生出来的谓词是另一个。
-        // 原先按 predicate 查，前两条规则一直对（两者相同），加了 inverse /
-        // sub_property 之后查不到规则就 `continue`——推出来了却不落库
-        let Some(&rule_id) = rules.get(&(d.via, d.rule.as_str())) else {
-            // 查不到规则是**编译与推导不一致**，不是正常情况。数出来，
-            // 别再让它静默消失一次
-            report.unruled += 1;
-            continue;
-        };
+    for (_, d) in wanted {
         // 精度与置信度都取前提里最保守的那一个
         let mut fp: Option<String> = None;
         let mut tp: Option<String> = None;
@@ -1110,27 +1457,29 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
             }
         }
         // 约束是「有日期才有精度」——交集把某一端算成无界时，那一端的精度也得清掉
-        let fp = from.and(fp);
-        let tp = to.and(tp);
+        let fp = d.from.and(fp);
+        let tp = d.to.and(tp);
         let id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO derived_facts (id, kb_id, subject_id, predicate_id, object_id,
-                                        valid_from, valid_to,
+                                        object_value, valid_from, valid_to,
                                         valid_from_precision, valid_to_precision,
-                                        confidence, rule_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                                        confidence, rule_id, attribute_rule_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
         )
         .bind(id)
         .bind(kb_id)
-        .bind(subject)
-        .bind(predicate)
-        .bind(object)
-        .bind(from.map(stamp))
-        .bind(to.map(stamp))
+        .bind(d.subject)
+        .bind(d.predicate)
+        .bind(d.object_id)
+        .bind(&d.object_value)
+        .bind(d.from.map(stamp))
+        .bind(d.to.map(stamp))
         .bind(&fp)
         .bind(&tp)
         .bind(conf)
-        .bind(rule_id)
+        .bind(d.rule_id)
+        .bind(d.attribute_rule_id)
         .execute(&mut *tx)
         .await?;
         for (seq, premise) in d.premises.iter().enumerate() {

@@ -13,8 +13,8 @@
 //! 是零，那是实情不是故障。
 
 pub mod derive;
-pub mod rules;
 pub mod ontology;
+pub mod rules;
 
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;

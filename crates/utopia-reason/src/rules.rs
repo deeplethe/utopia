@@ -88,7 +88,10 @@ pub enum Conclusion {
     /// 派生归类：结论是一个类，落成 `is_a` 上的字面值
     Typing { class: String },
     /// 派生属性：某个属性谓词上的一个字面值
-    Attribute { predicate: Uuid, value: serde_json::Value },
+    Attribute {
+        predicate: Uuid,
+        value: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -369,7 +372,10 @@ mod tests {
         assert_eq!(hits.len(), 2, "两次读数各自成立");
         let mut spans_out: Vec<_> = hits.iter().map(|h| (h.from, h.to)).collect();
         spans_out.sort();
-        assert_eq!(spans_out, vec![(Some(100), Some(200)), (Some(300), Some(400))]);
+        assert_eq!(
+            spans_out,
+            vec![(Some(100), Some(200)), (Some(300), Some(400))]
+        );
     }
 
     /// 区间不相交的两条前提凑不成一次命中：全烃是 2023 的，解释是 2025 的，
@@ -454,9 +460,7 @@ mod tests {
     fn a_rule_without_conditions_concludes_nothing() {
         let rule = BusinessRule {
             id: id(90),
-            conclusion: Conclusion::Typing {
-                class: "X".into(),
-            },
+            conclusion: Conclusion::Typing { class: "X".into() },
             conditions: vec![],
         };
         let facts = vec![fact(1, 50, 10, json!(12.3))];
@@ -470,9 +474,7 @@ mod tests {
     fn too_many_combinations_are_reported() {
         let rule = BusinessRule {
             id: id(90),
-            conclusion: Conclusion::Typing {
-                class: "X".into(),
-            },
+            conclusion: Conclusion::Typing { class: "X".into() },
             conditions: vec![
                 Condition {
                     predicate: id(10),
