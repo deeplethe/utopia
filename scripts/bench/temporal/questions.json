@@ -1,5 +1,5 @@
 {
-  "note": "每道题问的是**某一个时刻**的图。`axis` 说的是哪根轴在动：world = 世界轴（那时世界是什么样，参数 at），record = 记录轴（那时我们以为世界是什么样，参数 as_of）。`as_of: \"wave-N\"` 由跑分脚本换成第 N 波灌完那一刻的时间戳。\n\n判分不认谓词的名字：本体在不同库里长得不一样（works_for / employed_by），而这个台子量的是时间，不是词汇。判据是「这个实体在那一刻挂着的事实里，有没有出现 expect，有没有出现 not 里的任何一个」。\n\n`known_gap: true` 的题目单独计数：它们钉住的是一个已知还没做对的行为，写在这里是为了让它被修的那天看得见，不是为了把分数拉低。",
+  "note": "每道题问的是**某一个时刻**的图。`axis` 说的是哪根轴在动：world = 世界轴（那时世界是什么样，参数 at），record = 记录轴（那时我们以为世界是什么样，参数 as_of）。`as_of: \"wave-N\"` 由跑分脚本换成第 N 波灌完那一刻的时间戳；`ask` 里的 `{wave-N}` 同样换成那个戳——对话里问「as of 那一刻」，模型才有一个能填进 `as_of` 的时刻。「灌完之前」那类题故意不给戳，量的是模型会不会自己去 `changes` 里找那一刻。\n\n判分不认谓词的名字：本体在不同库里长得不一样（works_for / employed_by），而这个台子量的是时间，不是词汇。判据是「这个实体在那一刻挂着的事实里，有没有出现 expect，有没有出现 not 里的任何一个」。\n\n`known_gap: true` 的题目单独计数：它们钉住的是一个已知还没做对的行为，写在这里是为了让它被修的那天看得见，不是为了把分数拉低。",
   "questions": [
     {
       "id": "aurora-lead-2023-02",
@@ -94,7 +94,7 @@
       "subject": "Project Aurora",
       "expect": "Zhang San",
       "not": ["Li Si"],
-      "ask": "As of the first ingest, who was recorded as leading Project Aurora?"
+      "ask": "As of {wave-1}, who was recorded as leading Project Aurora?"
     },
     {
       "id": "aurora-lead-record-wave2-at-2025-10",
@@ -180,9 +180,10 @@
       "at": "2023-01-01",
       "subject": "Lin Zhao",
       "expect": null,
-      "not": ["Meridian Systems"],
+      "not": ["Meridian Systems", "Platform Group"],
+      "known_gap": true,
       "ask": "Who did Lin Zhao work for in January 2023?",
-      "why": "入职是六月的事。一月的答案应当是空，而不是把开区间当成「一直如此」——`valid_from` 之前不成立，正是双时态存在的理由。"
+      "why": "入职是六月的事。一月的答案应当是空，而不是把开区间当成「一直如此」——`valid_from` 之前不成立，正是双时态存在的理由。第一版只禁 Meridian，账本满分；对话却答出「Platform Group 的 Staff Engineer」——那两条都没有起点（2024 年的调薪单说「加薪由平台组批准」，2025 年的角色说明说「不再担任，日期未记录」），而世界轴把没有起点读成自古就有。见 #352。"
     },
     {
       "id": "lin-zhao-salary-2023-09",
@@ -259,7 +260,7 @@
       "subject": "Project Aurora",
       "expect": "Wang Wu",
       "not": [],
-      "ask": "As of the first ingest, was Wang Wu recorded as advising Project Aurora?",
+      "ask": "As of {wave-1}, was Wang Wu recorded as advising Project Aurora?",
       "why": "那条笔记当时确实在库里。记录轴回到那一刻就该看得见它——账本记的是「我们曾经这么以为」，抹掉它等于替过去修饰。"
     },
     {
@@ -291,7 +292,7 @@
       "subject": "Li Si",
       "expect": null,
       "not": ["Meridian Systems"],
-      "ask": "As of the first ingest, what did we know about where Li Si worked in 2022?",
+      "ask": "As of {wave-1}, what did we know about where Li Si worked in 2022?",
       "why": "上一题的反面：那时这个人还没进过我们的账本。世界轴上成立，记录轴上还不知道——两根轴各答各的。"
     },
     {
@@ -302,7 +303,7 @@
       "subject": "Project Helios",
       "expect": "L. Si",
       "not": ["Li Si"],
-      "ask": "As of the second ingest, who was recorded as leading Project Helios?",
+      "ask": "As of {wave-2}, who was recorded as leading Project Helios?",
       "why": "合并之前的世界（#337 那一刀）：两种拼法是两个实体，Helios 挂在 \"L. Si\" 身上。记录轴倒回合并之前，那个被并掉的实体要重新长回来、带着它自己的事实。"
     },
     {
@@ -324,7 +325,7 @@
       "subject": "Li Si",
       "expect": null,
       "not": ["Project Helios"],
-      "ask": "As of the second ingest, did we have Li Si connected to Project Helios?",
+      "ask": "As of {wave-2}, did we have Li Si connected to Project Helios?",
       "why": "合并之前，\"Li Si\" 这个实体跟 Helios 没有任何关系——那条事实当时在另一个实体身上。"
     },
     {

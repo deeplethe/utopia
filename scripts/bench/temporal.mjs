@@ -21,6 +21,7 @@
 //   node scripts/bench/temporal.mjs --kb <id> --stamps '{"wave-1":"…","wave-2":"…"}'
 //                                                          # 复用已灌好的库，只重打分
 //   node scripts/bench/temporal.mjs --corpus zh             # 换一套语料与题目（corpus.zh.json）
+//   node scripts/bench/temporal.mjs --kb … --chat --only a,b # 只重问几题，看它们的工具轨迹
 //
 // 环境变量：BENCH_BASE / BENCH_EMAIL / BENCH_PASSWORD / BENCH_PSQL（同 run.mjs）。
 
@@ -311,11 +312,20 @@ async function main() {
   // 对话那一路可选：它量的是**产品的答案**（模型带着工具自己去问），
   // 上面那一路量的是账本本身。两者差在哪，正是 agent 那一层的水平
   if (args.chat) {
+    // `--only a,b`：改判分、查一道题的工具轨迹时不必把整张卷子重问一遍。
+    // 正式的数永远来自不带 --only 的整跑
+    const only =
+      typeof args.only === "string" ? new Set(args.only.split(",").map((x) => x.trim())) : null;
     for (const r of results) {
       if (r.outcome === "absent") continue;
+      if (only && !only.has(r.id)) continue;
       let reply;
+      let steps;
       try {
-        reply = await askChat(kb, r.ask);
+        // `{wave-N}` 填成那一波灌完的时间戳："as of the second ingest" 是卷子内部的
+        // 说法，模型无从知道它是哪一刻，只会反问；给它戳，量的才是工具那条路
+        const ask = r.ask.replace(/\{(wave-\d+)\}/g, (_, w) => stamps[w] ?? w);
+        ({ answer: reply, steps } = await askChat(kb, ask));
       } catch (e) {
         // 接口本身失败不算答错，单独记 error——否则一个 500 会被记成
         // 「对话答不出来」，而它答都没答
@@ -324,13 +334,13 @@ async function main() {
       }
       // **空回复永远不算通过**：空字符串当然不含 not 里的名字
       r.chat = {
-        outcome: !reply.trim()
-          ? "error"
-          : (r.expect === null || reply.includes(r.expect)) &&
-              !(r.not || []).some((bad) => reply.includes(bad))
-            ? "pass"
-            : "fail",
-        reply: reply.slice(0, 400),
+        outcome: !reply.trim() ? "error" : chatVerdict(r, reply),
+        // 整段留下。曾经截到四百字，"…Lin Zhao's salary in June 2024" 后面的数字
+        // 正好被截掉，复核时看着像没答——判分用的是整段，留档也得是整段
+        reply: reply.slice(0, 2000),
+        // 工具轨迹：模型有没有带 `at` / `as_of`、带的是哪个时刻，从 step 的 detail
+        // 上一眼能看出来（"5 facts at 2024-08-01, as recorded by 2026-09-05"）
+        steps,
       };
     }
   }
@@ -361,7 +371,11 @@ async function main() {
     },
     chat: args.chat
       ? (() => {
-          const rows = results.filter((r) => r.chat && r.chat.outcome !== "error");
+          // 与账本同一个口径：known_gap 的题不进主分。对话在那几题上不可能比账本
+          // 答得更对——它问的就是这本账
+          const answered = results.filter((r) => r.chat && r.chat.outcome !== "error");
+          const rows = answered.filter((r) => !r.known_gap);
+          const gaps = answered.filter((r) => r.known_gap);
           const pass = rows.filter((r) => r.chat.outcome === "pass").length;
           const errors = results.filter((r) => r.chat?.outcome === "error").length;
           return {
@@ -369,6 +383,10 @@ async function main() {
             pass,
             errors,
             rate: rows.length ? +(pass / rows.length).toFixed(3) : null,
+            known_gaps: {
+              asked: gaps.length,
+              pass: gaps.filter((r) => r.chat.outcome === "pass").length,
+            },
           };
         })()
       : null,
@@ -409,6 +427,7 @@ async function askChat(kb, question) {
   if (!res.ok) throw new Error(`chat → ${res.status} ${text.slice(0, 200)}`);
   let answer = "";
   let error = null;
+  const steps = [];
   for (const frame of text.split("\n\n")) {
     let event = "message";
     let data = "";
@@ -422,12 +441,31 @@ async function askChat(kb, question) {
       } catch {
         /* 半截帧，跳过 */
       }
+    } else if (event === "step" && data) {
+      try {
+        const s = JSON.parse(data);
+        steps.push([s.kind, s.label, s.detail].filter(Boolean).join(" · "));
+      } catch {
+        /* 同上 */
+      }
     } else if (event === "error") {
       error = data;
     }
   }
   if (error && !answer) throw new Error(`chat error frame: ${error.slice(0, 200)}`);
-  return answer;
+  return { answer, steps };
+}
+
+/// 对话判分：子串匹配，只做一件归一——千位分隔符。模型写 "28,000 CNY"，题上写
+/// 28000，那是同一个数，不是另一个答案；第一版没归一，六道薪资题里答对的也记了错。
+/// 否定句里出现 `not` 的名字仍记错（"没有证据表明王五曾经…"）——这是自然语言
+/// 判分的已知弱点，README 里单独有数，不在这里用一串否定词去猜
+function chatVerdict(q, reply) {
+  const text = reply.replace(/(?<=\d),(?=\d)/g, "");
+  const ok =
+    (q.expect === null || text.includes(q.expect)) &&
+    !(q.not || []).some((bad) => text.includes(bad));
+  return ok ? "pass" : "fail";
 }
 
 main().catch((e) => {
