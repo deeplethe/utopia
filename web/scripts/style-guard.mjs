@@ -48,7 +48,8 @@ const RULES = [
   },
   {
     id: "radius",
-    re: /\brounded(-(sm|md|2xl|3xl|none|\[[^\]]+\]))?(?=[\s"'`}])/g,
+    // rounded-none 不是第三档，是"这一条要顶到边"（下拉里撑满的行），放行
+    re: /\brounded(-(sm|md|2xl|3xl|\[[^\]]+\]))?(?=[\s"'`}])/g,
     why: "圆角两档：rounded-lg 给控件，rounded-xl 给面，rounded-full 给药丸（规矩 3）",
     ui: true,
   },
@@ -61,7 +62,8 @@ const RULES = [
   },
   {
     id: "raw-control",
-    re: /<(button|input|textarea|select)\b/g,
+    // 隐藏的文件选择框不算控件（它没有样子），放行
+    re: /<(button|textarea|select)\b|<input\b(?![^>]*type="file")/g,
     why: "控件从 ui/ 来：Button / IconButton / Input / Textarea / NativeSelect（规矩 5）",
     ui: false,
   },
@@ -98,7 +100,12 @@ const staleBaseline = [...baseline].filter((f) => !files.includes(f));
 for (const rel of files) {
   if (baseline.has(rel)) continue;
   const inUi = rel.startsWith("src/ui/");
-  const text = fs.readFileSync(path.join(ROOT, rel), "utf8");
+  let text = fs.readFileSync(path.join(ROOT, rel), "utf8");
+  // 隐藏的文件选择框可以跨好几行，先整段抹掉（保留换行，行号不变）
+  // 时间轴的 range 同理：它的皮在 styles.css 的 .scrubber-range 里
+  text = text.replace(/<input\b[^>]*type="(file|range)"[^>]*>/g, (m) =>
+    m.replace(/[^\n]/g, " "),
+  );
   const lines = text.split("\n");
   for (const rule of RULES) {
     if (inUi && !rule.ui) continue;

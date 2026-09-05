@@ -35,7 +35,17 @@ import {
 import { S } from "../i18n";
 import { toast } from "../toast";
 import { useKb, useKbId } from "../kb";
-import { DangerConfirm, RAIL_CLS } from "../ui";
+import {
+  Button,
+  cn,
+  DangerConfirm,
+  IconButton,
+  Input,
+  RAIL_CLS,
+  REVEAL,
+  Row,
+  Textarea,
+} from "../ui";
 import { liveAnswer, type LiveHandle, type Turn } from "../liveAnswer";
 import { NodCard } from "./PendingFacts";
 import { NextStep, nextStep, useReadiness } from "./NextStep";
@@ -355,11 +365,12 @@ export function Chat() {
 
   /* Composer 卡：新对话首屏居中出场，进入对话后停靠底部（同一块 JSX 两处复用） */
   const composerCard = (
-    <div className="rounded-2xl border border-white/[0.12] bg-white/[0.04] backdrop-blur-md focus-within:border-white/30 transition-colors px-4 pt-3 pb-2">
-      <textarea
+    <div className="u-composer px-4 pt-3 pb-2">
+      <Textarea
+        bare
         ref={inputRef}
         rows={1}
-        className="w-full bg-transparent outline-none text-sm resize-none leading-relaxed max-h-48 u-scroll placeholder:text-neutral-600"
+        className="w-full resize-none text-body leading-relaxed max-h-48"
         placeholder={S.ask.placeholder}
         value={input}
         onChange={(e) => {
@@ -377,77 +388,72 @@ export function Chat() {
         }}
       />
       <div className="flex items-center justify-between gap-3 pt-1">
-        <div className="flex items-center gap-2.5 min-w-0">
+        <div className="flex items-center gap-3 min-w-0">
           {/* 作用域 chip：提问点位可见"在问哪个库"，切库沿用现有语义（开新会话） */}
           <div ref={scopeRef} className="relative shrink-0">
-            <button
-              onClick={() => setScopeOpen((v) => !v)}
+            <Button
+              variant="ghost"
+              size="sm"
+              className="max-w-52"
               title={S.ask.scopeLabel}
-              className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs text-neutral-400 hover:text-neutral-200 hover:bg-white/[0.07] transition-colors max-w-52"
+              onClick={() => setScopeOpen((v) => !v)}
             >
-              <Database size={12} className="shrink-0 text-neutral-500" />
+              <Database size={12} className="shrink-0 text-ink-3" />
               <span className="truncate">{kb?.name ?? "…"}</span>
               <ChevronDown
                 size={11}
-                className={`shrink-0 text-neutral-600 transition-transform ${
-                  scopeOpen ? "rotate-180" : ""
-                }`}
+                className={cn("u-turn shrink-0 text-ink-3", scopeOpen && "rotate-180")}
               />
-            </button>
+            </Button>
             {scopeOpen && (
-              <div className="u-pop u-pop-up absolute bottom-full mb-1.5 left-0 z-50 w-56 rounded-lg shadow-xl overflow-hidden">
-                <div className="px-2.5 pt-2 pb-1 text-[9.5px] font-medium uppercase tracking-[0.1em] text-neutral-600 border-b border-white/5">
+              <div className="u-pop u-pop-up absolute bottom-full mb-2 left-0 z-50 w-56 rounded-lg shadow-xl overflow-hidden">
+                <div className="px-3 pt-2 pb-1 text-fine font-medium uppercase tracking-[0.1em] text-ink-3 border-b border-line">
                   {S.ask.scopeLabel}
                 </div>
                 <div className="u-scroll max-h-60 overflow-y-auto">
                   {kbs.map((k) => (
-                    <button
+                    <Row
                       key={k.id}
+                      density="menu"
+                      active={k.id === kb?.id}
                       onClick={() => {
                         setScopeOpen(false);
                         if (k.id !== kb?.id) setKb(k.id);
                       }}
-                      className={`w-full flex items-center gap-2 text-left px-2.5 py-1.5 text-xs ${
-                        k.id === kb?.id
-                          ? "bg-white/[0.12] text-white"
-                          : "text-neutral-300 hover:bg-white/[0.06] hover:text-white"
-                      }`}
                     >
                       <span className="flex-1 min-w-0 truncate">{k.name}</span>
-                      {k.id === kb?.id && <Check size={12} className="shrink-0 text-neutral-400" />}
-                    </button>
+                      {k.id === kb?.id && <Check size={12} className="shrink-0 text-ink-2" />}
+                    </Row>
                   ))}
                 </div>
               </div>
             )}
           </div>
-          <span className="text-[11px] text-neutral-600 truncate">{S.ask.composerHint}</span>
+          <span className="text-fine text-ink-3 truncate">{S.ask.composerHint}</span>
         </div>
         {streaming ? (
-          <button
+          <IconButton
             onClick={() => {
               // **只停正在看的这一场**——切页面、换会话、换库都不打断（liveAnswer.ts），
               // 别场照常写它们自己的条目
               if (kb) liveAnswer.stop(kb.id, currentId);
             }}
-            title={S.ask.stop}
-            className="h-8 w-8 shrink-0 rounded-lg grid place-items-center bg-white/[0.08] text-neutral-200 hover:bg-white/[0.14] transition-colors"
+            label={S.ask.stop}
+            variant="secondary"
+            className="shrink-0"
           >
             <Square size={11} fill="currentColor" />
-          </button>
+          </IconButton>
         ) : (
-          <button
-            onClick={send}
+          <IconButton
+            variant={input.trim() ? "primary" : "secondary"}
+            className="shrink-0"
+            label={S.ask.send}
             disabled={!input.trim()}
-            title={S.ask.send}
-            className={`h-8 w-8 shrink-0 rounded-lg grid place-items-center transition-colors ${
-              input.trim()
-                ? "bg-white text-black hover:bg-neutral-200"
-                : "bg-white/[0.07] text-neutral-600"
-            }`}
+            onClick={send}
           >
             <ArrowUp size={15} strokeWidth={2.4} />
-          </button>
+          </IconButton>
         )}
       </div>
     </div>
@@ -459,39 +465,32 @@ export function Chat() {
       <aside className={`${RAIL_CLS} flex flex-col`}>
         <div className="px-2 pt-3 pb-1">
           {/* 与会话行同一套样式：左栏是一列同质的行，新对话只是第一行 */}
-          <button
-            onClick={newChat}
-            className="w-full flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] text-neutral-300 hover:bg-white/[0.05] hover:text-white transition-colors"
-          >
-            <SquarePen size={14} className="shrink-0 text-neutral-500" />
+          <Row density="nav" onClick={newChat}>
+            <SquarePen size={14} className="shrink-0 text-ink-3" />
             {S.ask.newChat}
-          </button>
+          </Row>
         </div>
         {/* 搜索。**标题重是常态**（同一个问题问两次就重了），而正文里那句话
             才是人记得住的——所以服务端两处都搜 */}
         <div className="px-2 pb-2">
-          <input
-            className="input-dark w-full px-2.5 py-1.5 text-[12.5px]"
+          <Input size="sm" className="w-full"
             placeholder={S.ask.searchConversations}
             value={convSearch}
             onChange={(e) => setConvSearch(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setConvSearch("")}
           />
         </div>
-        <div className="u-scroll flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
+        <div className="u-scroll flex-1 overflow-y-auto px-2 pb-3 space-y-1">
           {(convs.data?.conversations ?? []).map((c: ConversationRow) => (
             <div
               key={c.id}
-              className={`group relative rounded-lg transition-colors ${
-                c.id === activeId ? "u-nav-active" : "hover:bg-white/[0.05]"
-              }`}
+              className="group relative"
             >
               {/* 单行标题；删除键悬停浮现（弹确认，不直接删） */}
               {renamingId === c.id ? (
                 /* 就地编辑：Enter 保存、Esc 取消。改一个名字不值得弹对话框 */
-                <input
+                <Input size="sm" className="w-full"
                   autoFocus
-                  className="input-dark w-full px-2 py-1.5 text-[13px]"
                   value={renameDraft}
                   onChange={(e) => setRenameDraft(e.target.value)}
                   onBlur={() => setRenamingId(null)}
@@ -502,29 +501,32 @@ export function Chat() {
                   }}
                 />
               ) : (
-                <button
+                <Row
+                  density="nav"
+                  active={c.id === activeId}
+                  className="pr-8"
                   onClick={() => openConversation(c.id)}
-                  className="w-full text-left px-2.5 py-2"
                 >
                   <span
-                    className={`block truncate pr-5 text-[13px] ${
-                      c.id === activeId ? "text-white" : "text-neutral-300"
+                    className={`block truncate pr-6 text-body ${
+                      c.id === activeId ? "text-ink" : "text-ink-2"
                     }`}
                   >
                     {c.title || S.ask.untitled}
                   </span>
-                </button>
+                </Row>
               )}
               {/* 三点菜单：**一个入口装下所有动作**。从前右边直接是删除，
                   而删除是这里最不该一步到位的那个 */}
               {renamingId !== c.id && (
-                <button
+                <IconButton
+                  size="sm"
+                  label={S.ask.moreActions}
+                  className={cn(REVEAL, "absolute right-1 top-1/2 -translate-y-1/2")}
                   onClick={() => setMenuFor(menuFor === c.id ? null : c.id)}
-                  title={S.ask.moreActions}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 hidden group-hover:block text-neutral-600 hover:text-neutral-200"
                 >
                   <MoreHorizontal size={14} />
-                </button>
+                </IconButton>
               )}
               {menuFor === c.id && (
                 <>
@@ -535,8 +537,8 @@ export function Chat() {
                     onClick={() => setMenuFor(null)}
                   />
                   <div className="glass-strong absolute right-2 top-8 z-20 w-32 rounded-lg py-1 shadow-xl">
-                    <button
-                      className="w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-white/5"
+                    <Row
+                      density="menu"
                       onClick={() => {
                         setRenameDraft(c.title || "");
                         setRenamingId(c.id);
@@ -544,32 +546,33 @@ export function Chat() {
                       }}
                     >
                       {S.ask.rename}
-                    </button>
-                    <button
-                      className="w-full px-3 py-1.5 text-left text-xs text-neutral-300 hover:bg-white/5"
+                    </Row>
+                    <Row
+                      density="menu"
                       onClick={() => {
                         navigator.clipboard?.writeText(c.title || "");
                         setMenuFor(null);
                       }}
                     >
                       {S.ask.copyTitle}
-                    </button>
-                    <button
-                      className="w-full px-3 py-1.5 text-left text-xs text-[var(--u-danger)] hover:bg-white/5"
+                    </Row>
+                    <Row
+                      density="menu"
+                      danger
                       onClick={() => {
                         setPendingDelete(c);
                         setMenuFor(null);
                       }}
                     >
                       {S.ask.deleteConversation}
-                    </button>
+                    </Row>
                   </div>
                 </>
               )}
             </div>
           ))}
           {convs.data?.conversations.length === 0 && (
-            <p className="px-2.5 py-2 text-xs text-neutral-600">{S.ask.noConversations}</p>
+            <p className="px-3 py-2 text-small text-ink-3">{S.ask.noConversations}</p>
           )}
         </div>
       </aside>
@@ -583,7 +586,7 @@ export function Chat() {
           <div className="flex-1 px-4 pt-[22vh]">
             <div className="w-full max-w-3xl mx-auto">
               <h1
-                className="text-center text-[26px] text-neutral-100 mb-9"
+                className="text-center text-[26px] text-ink mb-8"
                 style={{ fontFamily: "var(--font-brand)", letterSpacing: "0.03em" }}
               >
                 {S.ask.greeting}
@@ -694,10 +697,10 @@ function orbState(kind?: ChatStep["kind"]): OrbState {
 /** 思考指示：thinking-orbs 球体 + 当前动作（应用是深色定妆，theme 钉死 dark）。 */
 function Thinking({ step }: { step?: ChatStep }) {
   return (
-    <span className="inline-flex items-center gap-2.5 text-neutral-500">
+    <span className="inline-flex items-center gap-3 text-ink-3">
       <ThinkingOrb state={orbState(step?.kind)} size={20} theme="dark" />
       {step && (
-        <span className="text-xs truncate">
+        <span className="text-small truncate">
           {step.label} · {step.detail}
         </span>
       )}
@@ -710,7 +713,7 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
   if (turn.role === "user") {
     return (
       <div className="flex justify-end">
-        <div className="u-bubble-user max-w-[85%] rounded-2xl rounded-tr-sm px-4 py-2 text-sm whitespace-pre-wrap text-neutral-100">
+        <div className="u-bubble-user max-w-[85%] rounded-xl rounded-tr-sm px-4 py-2 text-body whitespace-pre-wrap text-ink">
           {turn.content}
         </div>
       </div>
@@ -723,7 +726,7 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
   return (
     <div className="max-w-[95%]">
       {/* agent 回复无气泡：正文直接落在画布上（用户消息保留气泡以区分角色） */}
-      <div className="py-1 text-sm text-neutral-200 leading-relaxed">
+      <div className="py-1 text-body text-ink leading-relaxed">
         {/* **轨迹按发生的顺序穿在正文里。**
             模型是边说边查的：说一句、调一次、再说一句。把调用整块提到最前面，
             读起来就成了「先查七次再一口气说完」——那不是它做的事，而且相邻两次
@@ -733,14 +736,14 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
           seg.kind === "steps" ? (
             <div
               key={i}
-              className="my-2.5 space-y-1 border-l border-white/15 pl-2.5"
+              className="my-3 space-y-1 border-l border-line-strong pl-3"
             >
               {seg.steps.map((s, j) => (
                 <div key={j}>
-                  <div className="flex items-center gap-1.5 text-xs">
-                    <span className="text-neutral-600">{stepIcon(s.kind)}</span>
-                    <span className="text-neutral-400 truncate">{s.label}</span>
-                    <span className="text-neutral-600 shrink-0">· {s.detail}</span>
+                  <div className="flex items-center gap-2 text-small">
+                    <span className="text-ink-3">{stepIcon(s.kind)}</span>
+                    <span className="text-ink-2 truncate">{s.label}</span>
+                    <span className="text-ink-3 shrink-0">· {s.detail}</span>
                   </div>
                   {/* remember 那一步后面跟着确认卡（0015）：这句话抽出的事实先等人点头。
                       抽取是异步的，卡片在任务完成时才长出来；回放时按同一个 chunk 重画 */}
@@ -761,7 +764,7 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
           ),
         )}
         {thinking && <Thinking step={lastStep} />}
-        {turn.error && <div className="text-rose-400">{turn.error}</div>}
+        {turn.error && <div className="text-danger">{turn.error}</div>}
       </div>
       {/* **引用等答案说完再出。**
           `sources` 是随检索一次次增量发来的，跟着渲染的话，一份还在生长的清单
@@ -778,10 +781,10 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
                 params={{ slug: s.slug! }}
                 hash={s.anchor || undefined}
                 title={s.excerpt}
-                className="flex items-center gap-1.5 text-xs text-neutral-500 glass rounded-lg px-3 py-1.5 glass-hover hover:text-neutral-300"
+                className="u-card-link flex items-center gap-2 text-small text-ink-3 glass rounded-lg px-3 py-2 glass-hover"
               >
-                <span className="u-num text-[var(--u-accent)]">[{s.n}]</span>
-                <BookOpen size={11} className="shrink-0 text-neutral-600" />
+                <span className="u-num text-accent">[{s.n}]</span>
+                <BookOpen size={11} className="shrink-0 text-ink-3" />
                 <span className="truncate">
                   {/* 引言节 heading 即文章名，避免 "X › X" */}
                   {s.heading && s.heading !== s.filename
@@ -796,9 +799,9 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
                 params={{ kbId, docId: s.document_id! }}
                 search={{ chunk: s.chunk_id }}
                 title={s.excerpt}
-                className="block text-xs text-neutral-500 glass rounded-lg px-3 py-1.5 glass-hover hover:text-neutral-300"
+                className="u-card-link block text-small text-ink-3 glass rounded-lg px-3 py-2 glass-hover"
               >
-                <span className="u-num text-[var(--u-accent)]">[{s.n}]</span> {s.filename} ·{" "}
+                <span className="u-num text-accent">[{s.n}]</span> {s.filename} ·{" "}
                 {s.excerpt.slice(0, 60)}…
               </Link>
             ),

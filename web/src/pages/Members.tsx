@@ -3,7 +3,16 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { S } from "../i18n";
 import { toast } from "../toast";
-import { DangerConfirm, Dropdown, Pager, pageSlice, SearchSelect } from "../ui";
+import {
+  Button,
+  DangerConfirm,
+  Dropdown,
+  Input,
+  LinkButton,
+  Pager,
+  pageSlice,
+  SearchSelect,
+} from "../ui";
 
 const ROLES = ["owner", "admin", "editor", "viewer"] as const;
 const ROLE_OPTIONS = ROLES.map((r) => ({ value: r, label: S.members.roles[r] }));
@@ -61,11 +70,10 @@ export function Members({ workspaceId }: { workspaceId: string }) {
   const { rows: pagedMembers, safe: safeMemberPage } = pageSlice(memberList, memberPage, MEMBER_PAGE);
 
   return (
-    <div className="glass rounded-xl p-5">
+    <div className="glass rounded-xl p-6">
       <div className="flex items-center gap-3 mb-3">
-        <h3 className="text-sm font-bold text-neutral-200">{S.members.title}</h3>
-        <input
-          className="input-dark ml-auto w-56 px-2.5 py-1 text-xs"
+        <h3 className="text-body font-semibold text-ink">{S.members.title}</h3>
+        <Input size="sm" className="ml-auto w-56"
           placeholder={S.settings.searchUsers}
           value={filter}
           onChange={(e) => {
@@ -75,22 +83,22 @@ export function Members({ workspaceId }: { workspaceId: string }) {
         />
       </div>
 
-      {error && <p className="mb-3 text-sm text-rose-400">{error}</p>}
+      {error && <p className="mb-3 text-body text-danger">{error}</p>}
 
-      <table className="w-full text-sm">
+      <table className="w-full text-body">
         <tbody>
           {pagedMembers.map((m) => (
-            <tr key={m.user_id} className="border-b border-white/5">
+            <tr key={m.user_id} className="border-b border-line">
               <td className="py-2 pr-3">
-                <div className="text-neutral-200">
+                <div className="text-ink">
                   {m.display_name}
                   {m.is_admin && (
-                    <span className="ml-1.5 rounded bg-[rgba(74,163,255,0.12)] px-1.5 py-0.5 text-[10px] text-[var(--u-accent)]">
+                    <span className="ml-2 rounded-lg bg-[rgba(74,163,255,0.12)] px-2 py-1 text-fine text-accent">
                       {S.members.systemAdmin}
                     </span>
                   )}
                 </div>
-                <div className="text-xs text-neutral-500">{m.email}</div>
+                <div className="text-small text-ink-3">{m.email}</div>
               </td>
               <td className="py-2 pr-3 text-right">
                 <Dropdown
@@ -102,25 +110,23 @@ export function Members({ workspaceId }: { workspaceId: string }) {
                 />
               </td>
               <td className="py-2 text-right whitespace-nowrap">
-                <button
-                  onClick={() => remove.mutate(m.user_id)}
-                  className="text-xs text-neutral-500 hover:text-rose-400"
-                >
+                <LinkButton tone="danger" onClick={() => remove.mutate(m.user_id)}>
                   {S.members.remove}
-                </button>
+                </LinkButton>
                 {/* 停用账号跟「移出工作区」是两件事：前者断掉整个系统的访问，
                     后者只是这个工作区不再有他。所以分开两个按钮，而且停用
                     只给管理员看——它的影响面大得多 */}
                 {me.data?.is_admin && me.data.id !== m.user_id && (
-                  <button
+                  <LinkButton
+                    tone="danger"
                     onClick={() =>
                       setDeactivating({ id: m.user_id, name: m.display_name })
                     }
-                    className="ml-3 text-xs text-neutral-600 hover:text-rose-400"
+                    className="ml-3"
                     title={S.members.deactivateHint}
                   >
                     {S.members.deactivate}
-                  </button>
+                  </LinkButton>
                 )}
               </td>
             </tr>
@@ -156,13 +162,12 @@ export function Members({ workspaceId }: { workspaceId: string }) {
             onChange={setAddRole}
             options={ROLE_OPTIONS}
           />
-          <button
+          <Button variant="primary" size="sm"
             onClick={() => addUserId && setRole.mutate({ userId: addUserId, role: addRole })}
             disabled={!addUserId}
-            className="u-btn u-btn-primary px-3 py-1.5 text-sm"
           >
             {S.members.add}
-          </button>
+          </Button>
       </div>
 
       {me.data?.is_admin && <CreateUser onCreated={refresh} />}
@@ -213,29 +218,28 @@ function DeactivatedUsers({ onChanged }: { onChanged: () => void }) {
 
   return (
     <div className="mt-6">
-      <h4 className="text-[13px] text-neutral-300">
+      <h4 className="text-body text-ink-2">
         {S.members.deactivatedTitle}
       </h4>
-      <p className="mt-0.5 text-[11px] leading-relaxed text-neutral-500">
+      <p className="mt-1 text-fine leading-relaxed text-ink-3">
         {S.members.deactivatedHint}
       </p>
       <div className="mt-2 space-y-1">
         {users.map((u) => (
           <div
             key={u.id}
-            className="flex items-center gap-2 rounded border border-white/10 px-2.5 py-1.5"
+            className="flex items-center gap-2 rounded-lg border border-line px-3 py-2"
           >
-            <span className="text-[13px] text-neutral-300">
+            <span className="text-body text-ink-2">
               {u.display_name}
             </span>
-            <span className="text-[11px] text-neutral-600">{u.email}</span>
-            <button
-              className="ml-auto u-btn u-btn-ghost px-2 py-0.5 text-xs"
+            <span className="text-fine text-ink-3">{u.email}</span>
+            <Button variant="secondary" size="sm" className="ml-auto"
               disabled={revive.isPending}
               onClick={() => revive.mutate(u.id)}
             >
               {S.members.reactivate}
-            </button>
+            </Button>
           </div>
         ))}
       </div>
@@ -268,23 +272,20 @@ function CreateUser({ onCreated }: { onCreated: () => void }) {
   const valid = email.includes("@") && name.trim() && password.length >= 8;
 
   return (
-    <div className="mt-5 border-t border-white/10 pt-4">
-      <h4 className="text-xs font-bold text-neutral-400 mb-2">{S.settings.newUser}</h4>
+    <div className="mt-6 border-t border-line pt-4">
+      <h4 className="text-small font-semibold text-ink-2 mb-2">{S.settings.newUser}</h4>
       <div className="grid grid-cols-2 gap-2 mb-2">
-        <input
-          className="input-dark px-3 py-2 text-sm"
+        <Input
           placeholder={S.login.email}
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
-        <input
-          className="input-dark px-3 py-2 text-sm"
+        <Input
           placeholder={S.login.displayName}
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <input
-          className="input-dark px-3 py-2 text-sm"
+        <Input
           type="password"
           placeholder={S.settings.initialPassword}
           value={password}
@@ -301,14 +302,13 @@ function CreateUser({ onCreated }: { onCreated: () => void }) {
         />
       </div>
       <div className="flex items-center gap-3">
-        <button
-          className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
+        <Button variant="primary" size="sm"
           disabled={!valid || create.isPending}
           onClick={() => create.mutate()}
         >
           {S.settings.createUserBtn}
-        </button>
-        {error && <p className="text-xs text-rose-400">{error}</p>}
+        </Button>
+        {error && <p className="text-small text-danger">{error}</p>}
       </div>
     </div>
   );

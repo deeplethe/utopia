@@ -58,10 +58,10 @@ export function DocViewer() {
   }, [detail.data, chunk]);
 
   if (detail.isPending)
-    return <div className="p-8 text-sm text-neutral-500">{S.doc.loading}</div>;
+    return <div className="p-8 text-body text-ink-3">{S.doc.loading}</div>;
   if (detail.isError)
     return (
-      <div className="p-8 text-sm text-rose-400">
+      <div className="p-8 text-body text-danger">
         {(detail.error as Error).message}
       </div>
     );
@@ -83,13 +83,13 @@ export function DocViewer() {
         <div className="max-w-4xl mx-auto p-6">
         <div className="mb-4 flex items-baseline justify-between gap-4">
           <div>
-            <h2 className="text-lg font-bold text-neutral-100 break-all">{doc.filename}</h2>
-            <p className="mt-0.5 text-xs text-neutral-500">
+            <h2 className="text-title font-semibold text-ink break-all">{doc.filename}</h2>
+            <p className="mt-1 text-small text-ink-3">
               {chunks.length} {S.doc.sections} · {(doc.size_bytes / 1024).toFixed(0)} KB ·{" "}
               {new Date(doc.created_at).toLocaleDateString()}
             </p>
           </div>
-          <Link to="/kb/$kbId/library" params={{ kbId }} className="shrink-0 text-sm text-[var(--u-accent)] hover:underline">
+          <Link to="/kb/$kbId/library" params={{ kbId }} className="u-link shrink-0 text-body">
             {S.doc.backToLibrary}
           </Link>
         </div>
@@ -101,15 +101,15 @@ export function DocViewer() {
             return (
               <div key={c.id} ref={hit ? highlightRef : undefined} className="flex gap-3">
                 <div
-                  className={`flex-1 min-w-0 rounded-xl border p-4 text-sm leading-relaxed whitespace-pre-wrap border-white/10 transition-[border-color,background-color,box-shadow] duration-700 ${
-                    hit && flash ? "u-flash" : "bg-white/[0.04]"
+                  className={`u-chunk flex-1 min-w-0 rounded-xl border p-4 text-body leading-relaxed whitespace-pre-wrap border-line ${
+                    hit && flash ? "u-flash" : "bg-surface"
                   }`}
                 >
-                  <div className="mb-1.5 text-xs text-neutral-500">
+                  <div className="mb-2 text-small text-ink-3">
                     {S.doc.section} {c.seq + 1}
                     {hit && (
                       <span
-                        className={`ml-2 text-[var(--u-accent)] transition-opacity duration-700 ${
+                        className={`u-fade-slow ml-2 text-accent ${
                           flash ? "opacity-100" : "opacity-0"
                         }`}
                       >
@@ -122,29 +122,29 @@ export function DocViewer() {
 
                 {/* 抽取对照栏：这个分块产出了哪些事实（实体可跳图谱） */}
                 {facts.length > 0 && (
-                  <aside className="w-64 shrink-0 rounded-xl border border-white/10 bg-white/[0.02] p-3">
-                    <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-600">
+                  <aside className="w-64 shrink-0 rounded-xl border border-line bg-surface p-3">
+                    <div className="mb-2 text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
                       {S.doc.extracted} · {facts.length}
                     </div>
                     <div className="space-y-2">
                       {facts.map((f) => {
                         const range = factRange(f);
                         return (
-                          <div key={f.fact_id} className="text-xs leading-snug">
+                          <div key={f.fact_id} className="text-small leading-snug">
                             <div>
                               <Link
                                 to="/kb/$kbId/graph"
                                 params={{ kbId }}
                                 search={{ entity: f.subject_id }}
-                                className="text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
+                                className="u-inline-link text-ink"
                               >
                                 {f.subject}
                               </Link>
                               <span
                                 className={
                                   f.predicate === null
-                                    ? "italic text-neutral-700"
-                                    : "text-neutral-600"
+                                    ? "italic text-ink-3"
+                                    : "text-ink-3"
                                 }
                                 title={
                                   f.predicate && f.inferred
@@ -160,15 +160,15 @@ export function DocViewer() {
                                   to="/kb/$kbId/graph"
                                   params={{ kbId }}
                                   search={{ entity: f.object_id }}
-                                  className="text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
+                                  className="u-inline-link text-ink"
                                 >
                                   {f.object}
                                 </Link>
                               ) : (
-                                <span className="text-neutral-300">{f.object ?? ""}</span>
+                                <span className="text-ink-2">{f.object ?? ""}</span>
                               )}
                             </div>
-                            {range && <div className="u-num text-[10.5px] text-neutral-500">{range}</div>}
+                            {range && <div className="u-num text-fine text-ink-3">{range}</div>}
                           </div>
                         );
                       })}

@@ -18,7 +18,12 @@ function GithubMark({ size = 16 }: { size?: number }) {
 }
 import { api, ApiError } from "../api";
 import { S } from "../i18n";
-import { Wordmark } from "../ui";
+import {
+  Button,
+  Input,
+  Segmented,
+  Wordmark,
+} from "../ui";
 import { LoginScene } from "./LoginScene";
 import { usePageTitle } from "../useTitle";
 
@@ -50,7 +55,6 @@ export function Login() {
         ? S.login.networkError
         : null;
 
-  const input = "input-dark w-full px-3 py-2 text-sm";
 
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
@@ -63,32 +67,26 @@ export function Login() {
           <h1 className="text-5xl font-normal">
             <Wordmark />
           </h1>
-          <p className="mt-2 text-sm text-neutral-400">
+          <p className="mt-2 text-body text-ink-2">
             {S.app.tagline}
-            <span className="ml-2 text-[11px]">{S.app.taglineSource}</span>
+            <span className="ml-2 text-fine">{S.app.taglineSource}</span>
           </p>
         </div>
 
         <div
-          className="u-card-opaque rounded-2xl p-6 u-rise"
+          className="u-card-opaque rounded-xl p-6 u-rise"
           style={{ animationDelay: "90ms" }}
         >
-          <div className="flex gap-1 mb-5 bg-white/5 rounded-lg p-1">
-            {(["login", "register"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setMode(m)}
-                className={`flex-1 rounded-md py-1.5 text-sm font-medium transition-colors ${
-                  mode === m
-                    ? "bg-white/10 text-neutral-100"
-                    : "text-neutral-500 hover:text-neutral-300"
-                }`}
-              >
-                {m === "login" ? S.login.signIn : S.login.signUp}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            fill
+            className="mb-6"
+            value={mode}
+            onChange={setMode}
+            options={(["login", "register"] as const).map((m) => ({
+              value: m,
+              label: m === "login" ? S.login.signIn : S.login.signUp,
+            }))}
+          />
 
           <form
             className="space-y-3"
@@ -98,43 +96,42 @@ export function Login() {
             }}
           >
             {mode === "register" && (
-              <input
-                className={input}
+              <Input
+                className="w-full"
                 placeholder={S.login.displayName}
                 value={displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
                 required
               />
             )}
-            <input
+            <Input
               type="email"
-              className={input}
+              className="w-full"
               placeholder={S.login.email}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               required
             />
-            <input
+            <Input
               type="password"
-              className={input}
+              className="w-full"
               placeholder={S.login.password}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               minLength={8}
             />
-            {error && <p className="text-sm text-rose-400">{error}</p>}
-            <button
+            {error && <p className="text-body text-danger">{error}</p>}
+            <Button variant="primary" size="md" className="w-full"
               type="submit"
               disabled={mutation.isPending || leaving}
-              className="btn-primary w-full py-2 text-sm"
             >
               {mutation.isPending || leaving
                 ? S.login.submitting
                 : mode === "login"
                   ? S.login.signIn
                   : S.login.createAccount}
-            </button>
+            </Button>
           </form>
         </div>
 
@@ -143,18 +140,18 @@ export function Login() {
           className="mt-6 text-center u-rise"
           style={{ animationDelay: "180ms" }}
         >
-          <p className="u-balance text-[11px] leading-relaxed text-neutral-600">
+          <p className="u-balance text-fine leading-relaxed text-ink-3">
             {S.login.agreePrefix}
             <Link
               to="/terms"
-              className="whitespace-nowrap text-neutral-500 underline decoration-white/20 underline-offset-2 hover:text-neutral-300 transition-colors"
+              className="u-link whitespace-nowrap"
             >
               {S.legal.termsTitle}
             </Link>
             {S.login.agreeAnd}
             <Link
               to="/privacy"
-              className="whitespace-nowrap text-neutral-500 underline decoration-white/20 underline-offset-2 hover:text-neutral-300 transition-colors"
+              className="u-link whitespace-nowrap"
             >
               {S.legal.privacyTitle}
             </Link>
@@ -165,7 +162,7 @@ export function Login() {
             target="_blank"
             rel="noreferrer"
             title="GitHub"
-            className="mt-3 inline-flex text-neutral-600 hover:text-neutral-300 transition-colors"
+            className="u-hover-ink mt-3 inline-flex text-ink-3"
           >
             <GithubMark size={16} />
           </a>

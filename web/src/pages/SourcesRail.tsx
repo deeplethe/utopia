@@ -33,7 +33,11 @@ import {
 } from "lucide-react";
 import { api, type SourceView } from "../api";
 import { S } from "../i18n";
-import { RAIL_CLS } from "../ui";
+import {
+  IconButton,
+  RAIL_CLS,
+  Row,
+} from "../ui";
 
 /** 左栏选择：全部 / 手动上传 / 某个来源 id */
 /** "deleted" = 墓碑视图（#268）：删了、还能恢复或清除的文档 */
@@ -95,11 +99,11 @@ export const SYNCING_KINDS = new Set([
 ]);
 
 export const SYNC_DOT: Record<SourceView["last_sync_status"], string> = {
-  never: "bg-neutral-600",
-  queued: "bg-[var(--u-warn)]",
-  running: "bg-[var(--u-warn)] animate-pulse",
-  ok: "bg-[var(--u-ok)]",
-  failed: "bg-[var(--u-danger)]",
+  never: "bg-ink-3",
+  queued: "bg-warn",
+  running: "bg-warn animate-pulse",
+  ok: "bg-ok",
+  failed: "bg-danger",
 };
 
 export function sourceIcon(s: SourceView): LucideIcon {
@@ -124,17 +128,18 @@ function RailItem({
   dot?: string;
 }) {
   return (
-    <button
+    <Row
+      density="nav"
+      active={active}
+      icon={icon}
+      trailing={<span className="u-num">{count}</span>}
       onClick={onClick}
-      className={`w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors ${
-        active ? "u-nav-active" : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200"
-      }`}
     >
-      <span className="shrink-0 text-neutral-500">{icon}</span>
-      <span className="truncate">{label}</span>
-      {dot && <span className={`h-1.5 w-1.5 rounded-full shrink-0 ${dot}`} />}
-      <span className="ml-auto shrink-0 u-num text-[10.5px] text-neutral-600">{count}</span>
-    </button>
+      <span className="flex items-center gap-2">
+        <span className="truncate">{label}</span>
+        {dot && <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${dot}`} />}
+      </span>
+    </Row>
   );
 }
 
@@ -180,21 +185,19 @@ export function SourcesRail({
           count={docs.data?.total ?? 0}
         />
       </div>
-      <div className="flex items-center justify-between px-4 pt-3 pb-1.5">
-        <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+      <div className="flex items-center justify-between px-4 pt-3 pb-2">
+        <span className="text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
           {S.library.sources}
         </span>
         {onAdd && (
-          <button
+          <IconButton size="sm" label={S.library.addSource}
             onClick={onAdd}
-            title={S.library.addSource}
-            className="text-neutral-500 hover:text-neutral-200"
           >
             <Plus size={14} />
-          </button>
+          </IconButton>
         )}
       </div>
-      <div className="u-scroll flex-1 overflow-y-auto px-2 pb-3 space-y-0.5">
+      <div className="u-scroll flex-1 overflow-y-auto px-2 pb-3 space-y-1">
         {/* Uploads：常驻默认来源（上传的默认去处，不可删除） */}
         <RailItem
           active={active === "uploads"}

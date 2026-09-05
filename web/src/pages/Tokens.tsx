@@ -10,7 +10,13 @@ import { Check, Copy, KeyRound } from "lucide-react";
 import { api, type TokenView } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
-import { Chip, Loading } from "../ui";
+import {
+  Button,
+  Chip,
+  Input,
+  Loading,
+  NativeSelect,
+} from "../ui";
 import { toast } from "../toast";
 
 const ymd = (iso: string) => iso.slice(0, 10);
@@ -45,8 +51,8 @@ function mcpSnippet(kbId: string, kbName: string, token: string): string {
 function CopyButton({ text, small }: { text: string; small?: boolean }) {
   const [done, setDone] = useState(false);
   return (
-    <button
-      className={`u-btn u-btn-ghost ${small ? "px-2 py-1 text-[11px]" : "px-3 py-1.5 text-xs"} flex items-center gap-1.5`}
+    <Button variant="secondary" size="sm"
+      className={`u-btn u-btn-ghost ${small ? "px-2 py-1 text-fine" : "px-3 py-2 text-small"} flex items-center gap-2`}
       onClick={() => {
         copyText(text);
         setDone(true);
@@ -55,7 +61,7 @@ function CopyButton({ text, small }: { text: string; small?: boolean }) {
     >
       {done ? <Check size={12} /> : <Copy size={12} />}
       {done ? S.account.copied : S.account.copy}
-    </button>
+    </Button>
   );
 }
 
@@ -79,23 +85,22 @@ function IssuedPanel({
   const kb = kbs.find((k) => k.id === kbId);
   const snippet = kb ? mcpSnippet(kb.id, kb.name, token) : "";
   return (
-    <div className="glass rounded-2xl p-5 mb-4 border border-[var(--u-warn)]/40">
-      <div className="text-[13px] font-medium text-neutral-100">{S.account.issuedTitle}</div>
-      <p className="mt-1 text-xs text-neutral-500">{S.account.issuedHint}</p>
+    <div className="glass rounded-xl p-6 mb-4 border border-warn/40">
+      <div className="text-body font-medium text-ink">{S.account.issuedTitle}</div>
+      <p className="mt-1 text-small text-ink-3">{S.account.issuedHint}</p>
       <div className="mt-3 flex items-center gap-2">
-        <code className="flex-1 min-w-0 truncate rounded-lg bg-black/40 px-3 py-2 font-mono text-[12px] text-neutral-200">
+        <code className="flex-1 min-w-0 truncate rounded-lg bg-well px-3 py-2 font-mono text-small text-ink">
           {token}
         </code>
         <CopyButton text={token} />
       </div>
 
-      <div className="mt-5 flex items-baseline justify-between gap-3 flex-wrap">
-        <div className="text-[13px] font-medium text-neutral-200">{S.account.mcpTitle}</div>
+      <div className="mt-6 flex items-baseline justify-between gap-3 flex-wrap">
+        <div className="text-body font-medium text-ink">{S.account.mcpTitle}</div>
         {candidates.length > 1 && (
-          <label className="flex items-center gap-2 text-xs text-neutral-500">
+          <label className="flex items-center gap-2 text-small text-ink-3">
             {S.account.mcpBase}
-            <select
-              className="input-dark px-2 py-1 text-xs"
+            <NativeSelect size="sm"
               value={kbId}
               onChange={(e) => setKbId(e.target.value)}
             >
@@ -104,13 +109,13 @@ function IssuedPanel({
                   {k.name}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </label>
         )}
       </div>
-      <p className="mt-1 text-xs text-neutral-500">{S.account.mcpHint}</p>
+      <p className="mt-1 text-small text-ink-3">{S.account.mcpHint}</p>
       <div className="mt-2 relative">
-        <pre className="rounded-lg bg-black/40 px-3 py-2 font-mono text-[11.5px] text-neutral-300 overflow-x-auto u-scroll">
+        <pre className="rounded-lg bg-well px-3 py-2 font-mono text-small text-ink-2 overflow-x-auto u-scroll">
           {snippet}
         </pre>
         <div className="absolute top-1.5 right-1.5">
@@ -119,9 +124,9 @@ function IssuedPanel({
       </div>
 
       <div className="mt-4 flex justify-end">
-        <button className="u-btn u-btn-primary px-3.5 py-1.5 text-xs" onClick={onDone}>
+        <Button variant="primary" size="sm" onClick={onDone}>
           {S.account.tokenDone}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -147,9 +152,9 @@ function TokenRow({
   return (
     <div className={`glass rounded-xl px-4 py-3 ${revoked ? "opacity-55" : ""}`}>
       <div className="flex items-center gap-2 flex-wrap">
-        <KeyRound size={13} className="text-neutral-500 shrink-0" />
-        <span className="text-sm font-medium text-neutral-100">{t.name}</span>
-        <code className="font-mono text-[11px] text-neutral-500">{t.token_prefix}…</code>
+        <KeyRound size={13} className="text-ink-3 shrink-0" />
+        <span className="text-body font-medium text-ink">{t.name}</span>
+        <code className="font-mono text-fine text-ink-3">{t.token_prefix}…</code>
         <Chip tone={t.scope === "write" ? "warn" : "neutral"}>
           {t.scope === "write" ? S.account.scopeWrite : S.account.scopeRead}
         </Chip>
@@ -157,27 +162,25 @@ function TokenRow({
         {!revoked && (
           <div className="ml-auto flex gap-2">
             {arm ? (
-              <button
-                className="u-btn u-btn-ghost px-3 py-1.5 text-xs text-[var(--u-danger)]"
+              <Button variant="danger" size="sm"
                 disabled={busy}
                 onClick={onRevoke}
                 onBlur={() => setArm(false)}
               >
                 {S.account.revokeConfirm}
-              </button>
+              </Button>
             ) : (
-              <button
-                className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+              <Button variant="secondary" size="sm"
                 disabled={busy}
                 onClick={() => setArm(true)}
               >
                 {S.account.revoke}
-              </button>
+              </Button>
             )}
           </div>
         )}
       </div>
-      <div className="mt-1.5 text-[11.5px] text-neutral-500 flex gap-x-3 gap-y-0.5 flex-wrap u-num">
+      <div className="mt-2 text-small text-ink-3 flex gap-x-3 gap-y-1 flex-wrap u-num">
         <span title={t.kb_ids?.length ? bases : undefined}>
           {t.kb_ids?.length ? S.account.nBases(t.kb_ids.length) : S.account.allBases}
         </span>
@@ -241,16 +244,16 @@ export function Tokens() {
 
   const field = (label: string, node: React.ReactNode, hint?: string) => (
     <div className="mb-4">
-      <div className="mb-1 text-[11px] font-medium text-neutral-500">{label}</div>
+      <div className="mb-1 text-fine font-medium text-ink-3">{label}</div>
       {node}
-      {hint && <p className="mt-1 text-[11px] text-neutral-600">{hint}</p>}
+      {hint && <p className="mt-1 text-fine text-ink-3">{hint}</p>}
     </div>
   );
 
   return (
     <div className="max-w-2xl p-8">
-      <h1 className="u-title text-lg">{S.account.tokensTitle}</h1>
-      <p className="mt-1 mb-6 text-xs text-neutral-500 max-w-lg">{S.account.tokensHint}</p>
+      <h1 className="u-title text-title">{S.account.tokensTitle}</h1>
+      <p className="mt-1 mb-6 text-small text-ink-3 max-w-lg">{S.account.tokensHint}</p>
 
       {issued && (
         <IssuedPanel
@@ -261,12 +264,11 @@ export function Tokens() {
         />
       )}
 
-      <div className="glass rounded-2xl p-5 mb-6">
-        <h2 className="text-[13px] font-medium text-neutral-200 mb-4">{S.account.newToken}</h2>
+      <div className="glass rounded-xl p-6 mb-6">
+        <h2 className="text-body font-medium text-ink mb-4">{S.account.newToken}</h2>
         {field(
           S.account.tokenName,
-          <input
-            className="input-dark w-full px-3 py-2 text-sm"
+          <Input className="w-full"
             placeholder={S.account.tokenNamePlaceholder}
             value={name}
             maxLength={64}
@@ -277,13 +279,13 @@ export function Tokens() {
           S.account.tokenScope,
           <div className="flex gap-2">
             {(["read", "write"] as const).map((s) => (
-              <button
+              <Button variant="secondary" size="sm"
                 key={s}
-                className={`u-btn px-3 py-1.5 text-xs ${scope === s ? "u-btn-primary" : "u-btn-ghost"}`}
+                className={`u-btn px-3 py-2 text-small ${scope === s ? "u-btn-primary" : "u-btn-ghost"}`}
                 onClick={() => setScope(s)}
               >
                 {s === "read" ? S.account.scopeRead : S.account.scopeWrite}
-              </button>
+              </Button>
             ))}
           </div>,
           S.account.scopeHint,
@@ -294,9 +296,9 @@ export function Tokens() {
             {kbs.map((k) => {
               const on = picked.has(k.id);
               return (
-                <button
+                <Button variant="secondary" size="sm"
                   key={k.id}
-                  className={`u-btn px-2.5 py-1 text-xs ${on ? "u-btn-primary" : "u-btn-ghost"}`}
+                  className={`u-btn px-3 py-1 text-small ${on ? "u-btn-primary" : "u-btn-ghost"}`}
                   onClick={() => {
                     const next = new Set(picked);
                     if (on) next.delete(k.id);
@@ -305,7 +307,7 @@ export function Tokens() {
                   }}
                 >
                   {k.name}
-                </button>
+                </Button>
               );
             })}
           </div>,
@@ -315,30 +317,29 @@ export function Tokens() {
           S.account.tokenExpires,
           <div className="flex gap-2">
             {EXPIRY_CHOICES.map((d) => (
-              <button
+              <Button variant="secondary" size="sm"
                 key={d}
-                className={`u-btn px-2.5 py-1 text-xs u-num ${days === d ? "u-btn-primary" : "u-btn-ghost"}`}
+                className={`u-btn px-3 py-1 text-small u-num ${days === d ? "u-btn-primary" : "u-btn-ghost"}`}
                 onClick={() => setDays(d)}
               >
                 {d === 0 ? S.account.expiresNever : S.account.expiresDays(d)}
-              </button>
+              </Button>
             ))}
           </div>,
         )}
         <div className="flex justify-end">
-          <button
-            className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
+          <Button variant="primary" size="sm"
             disabled={!name.trim() || issue.isPending}
             onClick={() => issue.mutate()}
           >
             {S.account.issueToken}
-          </button>
+          </Button>
         </div>
       </div>
 
-      <h2 className="text-[13px] font-medium text-neutral-200 mb-3">{S.account.yourTokens}</h2>
+      <h2 className="text-body font-medium text-ink mb-3">{S.account.yourTokens}</h2>
       {rows.length === 0 ? (
-        <div className="glass rounded-xl p-8 text-center text-sm text-neutral-500">
+        <div className="glass rounded-xl p-8 text-center text-body text-ink-3">
           {S.account.noTokens}
         </div>
       ) : (

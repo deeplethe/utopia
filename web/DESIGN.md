@@ -36,7 +36,7 @@ Concretely, a page renders no raw `<button>`, `<input>`, `<textarea>` or `<selec
 
 ## How this is enforced
 
-`web/scripts/style-guard.mjs` scans `web/src/**/*.tsx` for the patterns above and fails CI on any hit outside `web/style-guard.baseline.json`. The baseline lists the pages that have not been migrated yet; a migration PR removes its pages from the baseline and cannot be merged until they pass. New files are never exempt. When the baseline is empty, the file goes.
+`web/scripts/style-guard.mjs` scans `web/src/**/*.tsx` for the patterns above and fails CI on any hit. It runs first in `pnpm build`. While the pages were being migrated, `web/style-guard.baseline.json` listed the ones not yet done; every page passes now and the file is gone. A new file is checked from its first commit.
 
 ## Migration order
 

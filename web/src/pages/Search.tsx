@@ -4,7 +4,12 @@ import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { api } from "../api";
 import { S } from "../i18n";
 import { useKb, useKbId } from "../kb";
-import { Pager, pageSlice } from "../ui";
+import {
+  Button,
+  Input,
+  Pager,
+  pageSlice,
+} from "../ui";
 import { NextStep, nextStep, useReadiness } from "./NextStep";
 
 const RESULT_PAGE = 10;
@@ -50,8 +55,7 @@ export function Search() {
     <div className="h-full overflow-y-auto p-6">
       <div className="max-w-2xl mx-auto">
         <div className="flex gap-2 mb-6">
-          <input
-            className="input-dark flex-1 px-4 py-2.5 text-sm"
+          <Input className="flex-1"
             placeholder={S.search.placeholder}
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -59,29 +63,28 @@ export function Search() {
               if (e.key === "Enter" && !e.nativeEvent.isComposing) submit();
             }}
           />
-          <button
+          <Button variant="primary" size="md"
             onClick={submit}
             disabled={!input.trim()}
-            className="u-btn u-btn-primary px-5 py-2 text-sm"
           >
             {S.search.button}
-          </button>
+          </Button>
         </div>
 
         {/* 一次都还没搜、而库里本来就没东西：与其等他敲一个词再回"没有结果"，
             不如现在就说下一步（#313） */}
         {!query && step && (
-          <div className="py-10 grid place-items-center">
+          <div className="py-8 grid place-items-center">
             <NextStep {...step} />
           </div>
         )}
 
-        {results.isFetching && <p className="text-sm text-neutral-500">{S.search.searching}</p>}
+        {results.isFetching && <p className="text-body text-ink-3">{S.search.searching}</p>}
         {results.isError && (
-          <p className="text-sm text-rose-400">{(results.error as Error).message}</p>
+          <p className="text-body text-danger">{(results.error as Error).message}</p>
         )}
         {results.data && results.data.results.length === 0 && (
-          <p className="text-sm text-neutral-500">{S.search.noResults}</p>
+          <p className="text-body text-ink-3">{S.search.noResults}</p>
         )}
 
         <div className="space-y-3">
@@ -93,10 +96,10 @@ export function Search() {
               search={{ chunk: r.id }}
               className="block glass rounded-xl p-4 glass-hover"
             >
-              <div className="mb-1.5 text-xs text-neutral-500">
+              <div className="mb-2 text-small text-ink-3">
                 {S.search.chunkOf(r.filename, r.seq + 1)}
               </div>
-              <p className="text-sm text-neutral-300 leading-relaxed line-clamp-4 whitespace-pre-wrap">
+              <p className="text-body text-ink-2 leading-relaxed line-clamp-4 whitespace-pre-wrap">
                 {r.text}
               </p>
             </Link>

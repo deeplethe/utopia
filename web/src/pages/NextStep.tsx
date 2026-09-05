@@ -30,7 +30,7 @@ export function NextStep({
   action?: { label: string; to: string; params?: Record<string, string>; search?: Record<string, unknown> };
 }) {
   return (
-    <div className="text-center text-sm text-neutral-500 max-w-xs">
+    <div className="text-center text-body text-ink-3 max-w-xs">
       {line}
       {action && (
         <Link
@@ -38,7 +38,7 @@ export function NextStep({
           to={action.to as never}
           params={action.params as never}
           search={(action.search ?? {}) as never}
-          className="block mt-3 text-neutral-300 hover:text-white underline underline-offset-4"
+          className="u-link mt-3 block"
         >
           {action.label}
         </Link>

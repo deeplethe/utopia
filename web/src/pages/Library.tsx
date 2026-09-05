@@ -20,7 +20,22 @@ import {
 } from "../sourceKinds";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
-import { Chip, type ChipTone, DangerConfirm, Loading, Pager } from "../ui";
+import {
+  Button,
+  Checkbox,
+  Chip,
+  type ChipTone,
+  cn,
+  DangerConfirm,
+  IconButton,
+  Input,
+  LinkButton,
+  Loading,
+  NativeSelect,
+  Pager,
+  Segmented,
+  Textarea,
+} from "../ui";
 import {
   KIND_ICON,
   SOURCE_ICONS,
@@ -177,32 +192,24 @@ function SchedulePicker({
 
   return (
     <div>
-      <div className="flex rounded-lg overflow-hidden border border-white/10 mb-2">
-        {modes.map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => {
-              setMode(key);
-              emit(key, {});
-            }}
-            className={`flex-1 px-2 py-1.5 text-[11px] transition-colors ${
-              mode === key
-                ? "bg-white/10 text-neutral-100"
-                : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        fill
+        size="sm"
+        className="mb-2"
+        value={mode}
+        onChange={(k) => {
+          setMode(k);
+          emit(k, {});
+        }}
+        options={modes.map(({ key, label }) => ({ value: key, label }))}
+      />
 
       {mode === "interval" && (
-        <div className="flex items-center gap-2 text-sm text-neutral-400">
+        <div className="flex items-center gap-2 text-body text-ink-2">
           {S.library.schedule.every}
-          <input
+          <Input size="sm" className="u-input-plain w-16 u-num text-center"
             type="number"
             min={1}
-            className="input-dark u-input-plain w-16 px-2 py-1.5 text-sm u-num text-center"
             value={every}
             onChange={(e) => {
               const n = Number(e.target.value) || 1;
@@ -211,24 +218,18 @@ function SchedulePicker({
             }}
           />
           {/* 两个选项不配下拉：分段切换，与上方模式条同配方 */}
-          <div className="flex rounded-lg overflow-hidden border border-white/10">
-            {(["minutes", "hours"] as const).map((u) => (
-              <button
-                key={u}
-                onClick={() => {
-                  setUnit(u);
-                  emit("interval", { unit: u });
-                }}
-                className={`px-3 py-1.5 text-xs transition-colors ${
-                  unit === u
-                    ? "bg-white/10 text-neutral-100"
-                    : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-                }`}
-              >
-                {S.library.schedule[u]}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            size="sm"
+            value={unit}
+            onChange={(u) => {
+              setUnit(u);
+              emit("interval", { unit: u });
+            }}
+            options={(["minutes", "hours"] as const).map((u) => ({
+              value: u,
+              label: S.library.schedule[u],
+            }))}
+          />
         </div>
       )}
 
@@ -237,8 +238,11 @@ function SchedulePicker({
           {mode === "weekly" && (
             <div className="flex gap-1">
               {S.library.schedule.daysShort.map((d, i) => (
-                <button
+                <Button
+                  variant={days.has(i) ? "primary" : "secondary"}
+                  size="sm"
                   key={d}
+                  className="flex-1"
                   onClick={() => {
                     const next = new Set(days);
                     if (next.has(i)) next.delete(i);
@@ -246,24 +250,21 @@ function SchedulePicker({
                     setDays(next);
                     emit("weekly", { days: next });
                   }}
-                  className={`flex-1 rounded-lg px-1 py-1.5 text-[11px] transition-colors ${
-                    days.has(i)
-                      ? "bg-white text-black font-medium"
-                      : "bg-white/[0.05] text-neutral-500 hover:text-neutral-300"
-                  }`}
                 >
                   {d}
-                </button>
+                </Button>
               ))}
             </div>
           )}
-          <div className="flex items-center gap-2 text-sm text-neutral-400">
+          <div className="flex items-center gap-2 text-body text-ink-2">
             {S.library.schedule.at}
             {/* 24h 纯文本输入：原生 time 控件块头大且跟随系统语言（"上午 09:00"） */}
-            <input
-              className={`input-dark u-input-plain w-[4.2rem] px-2 py-1.5 text-sm u-num text-center ${
-                /^([01]?\d|2[0-3]):[0-5]\d$/.test(time) ? "" : "!border-[var(--u-danger)]"
-              }`}
+            <Input
+              size="sm"
+              className={cn(
+                "u-input-plain u-num w-20 text-center",
+                !/^([01]?\d|2[0-3]):[0-5]\d$/.test(time) && "!border-danger",
+              )}
               placeholder="09:00"
               value={time}
               onChange={(e) => {
@@ -279,8 +280,7 @@ function SchedulePicker({
       {mode === "advanced" && (
         <div>
           {/* 表达式用 mono，placeholder 回默认字体（u-placeholder-sans） */}
-          <input
-            className="input-dark w-full px-3 py-2 text-sm font-mono u-placeholder-sans"
+          <Input className="w-full font-mono u-placeholder-sans"
             placeholder={S.library.schedule.cronPlaceholder}
             value={cron}
             onChange={(e) => {
@@ -292,7 +292,7 @@ function SchedulePicker({
             href={S.library.schedule.cronDocsUrl}
             target="_blank"
             rel="noreferrer"
-            className="mt-1.5 inline-block text-[10.5px] text-neutral-500 underline decoration-white/20 underline-offset-2 hover:text-neutral-300 transition-colors"
+            className="u-link mt-2 inline-block text-fine"
           >
             {S.library.schedule.whatIsCron}
           </a>
@@ -566,7 +566,7 @@ export function Library() {
         {/* 工作页居左：与 Review/Ontology 同规——左缘随栏起步，切页不跳 */}
         <div className="max-w-4xl">
           <div className="flex items-center justify-between mb-4">
-            <h1 className="u-title text-lg">
+            <h1 className="u-title text-title">
               {selectedSource?.name ??
                 (selection === "uploads"
                   ? S.library.uploads
@@ -579,30 +579,27 @@ export function Library() {
               <div className={`relative ${showHistory ? "invisible" : ""}`}>
                 <Search
                   size={13}
-                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none"
+                  className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3 pointer-events-none"
                 />
-                <input
-                  className="input-dark w-52 pl-8 pr-7 py-1.5 text-[13px]"
+                <Input size="sm" className="w-52 pl-8 pr-8"
                   placeholder={S.library.filterPlaceholder}
                   value={filter}
                   onChange={(e) => setFilter(e.target.value)}
                   onKeyDown={(e) => e.key === "Escape" && setFilter("")}
                 />
                 {filter && (
-                  <button
+                  <IconButton size="sm" label={S.library.close} className="absolute right-2 top-1/2 -translate-y-1/2"
                     onClick={() => setFilter("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 hover:text-neutral-200"
                   >
                     <X size={12} />
-                  </button>
+                  </IconButton>
                 )}
               </div>
               {/* 按抽取状态筛。**选项写死成那五个**，不按库里实际有的填——
                   它是一组固定的管道状态，而「这个库现在没有失败的」正是用户
                   想通过筛一下确认的事 */}
               {selection !== "deleted" && (
-              <select
-                className="input-dark px-2 py-1.5 text-[13px] shrink-0"
+              <NativeSelect size="sm" className="shrink-0"
                 value={graphFilter}
                 onChange={(e) => {
                   setGraphFilter(e.target.value);
@@ -615,38 +612,35 @@ export function Library() {
                 <option value="queued">{S.library.statusQueued}</option>
                 <option value="extracting">{S.library.statusExtracting}</option>
                 <option value="none">{S.library.statusNone}</option>
-              </select>
+              </NativeSelect>
               )}
               {/* 一键重试。**只在真有失败时出现**——没有失败的库不该看到一个
                   点了什么都不会发生的按钮。数字写在按钮上，点之前就知道会动几篇 */}
               {(docs.data?.failed ?? 0) > 0 && canUpload && (
-                <button
+                <Button variant="secondary" size="sm" className="flex items-center gap-2 shrink-0"
                   onClick={() => retryFailed.mutate()}
                   disabled={retryFailed.isPending}
-                  className="u-btn u-btn-ghost px-3 py-1.5 text-xs flex items-center gap-1.5 shrink-0"
                 >
                   <RefreshCw size={12} />
                   {S.library.retryFailed(docs.data!.failed)}
-                </button>
+                </Button>
               )}
               {/* 全库重建：清算语义，仅 KB admin；放在 All documents 视图 */}
               {selection === "all" && canRebuild && (
-                <button
+                <Button variant="danger" size="sm" className="flex items-center gap-2 shrink-0"
                   onClick={() => setRebuilding(true)}
-                  className="u-btn u-btn-ghost px-3 py-1.5 text-xs flex items-center gap-1.5 shrink-0 !text-[var(--u-danger)]"
                 >
                   <RefreshCw size={12} />
                   {S.library.rebuild}
-                </button>
+                </Button>
               )}
               {canUpload && (
-                <button
+                <Button variant="secondary" size="sm" className="flex items-center gap-2 shrink-0"
                   onClick={() => fileInput.current?.click()}
-                  className="u-btn u-btn-ghost px-3 py-1.5 text-xs flex items-center gap-1.5 shrink-0"
                 >
                   <Upload size={12} />
                   {S.library.upload}
-                </button>
+                </Button>
               )}
             </div>
             <input
@@ -682,16 +676,16 @@ export function Library() {
             const total = (docs.data?.ready ?? 0) + pending;
             const done = total - pending;
             return (
-              <div className="mb-3 glass rounded-xl px-4 py-2.5">
-                <div className="flex items-center justify-between text-xs text-neutral-400 mb-1.5">
+              <div className="mb-3 glass rounded-xl px-4 py-3">
+                <div className="flex items-center justify-between text-small text-ink-2 mb-2">
                   <span>{S.library.extractProgress(done, total)}</span>
-                  <span className="u-num text-neutral-600">
+                  <span className="u-num text-ink-3">
                     {Math.round((done / Math.max(total, 1)) * 100)}%
                   </span>
                 </div>
-                <div className="h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                <div className="h-1 rounded-full bg-surface-2 overflow-hidden">
                   <div
-                    className="h-full bg-[var(--u-warn)] transition-[width] duration-500"
+                    className="u-progress-fill h-full bg-warn"
                     style={{ width: `${(done / Math.max(total, 1)) * 100}%` }}
                   />
                 </div>
@@ -700,10 +694,10 @@ export function Library() {
           })()}
 
           {upload.isPending && (
-            <div className="mb-3 text-sm text-[var(--u-warn)]">{S.library.uploading}</div>
+            <div className="mb-3 text-body text-warn">{S.library.uploading}</div>
           )}
           {upload.isError && (
-            <div className="mb-3 text-sm text-rose-400">
+            <div className="mb-3 text-body text-danger">
               {S.library.uploadFailed}: {String((upload.error as Error).message)}
             </div>
           )}
@@ -712,7 +706,7 @@ export function Library() {
             <RunsPanel kbId={kb.id} sourceId={selectedSource.id} />
           ) : (
           <>
-          <div className={`glass rounded-2xl glass-hover ${dragging ? "u-highlight" : ""}`}>
+          <div className={`glass rounded-xl glass-hover ${dragging ? "u-highlight" : ""}`}>
             {selection === "deleted" ? (
               <DeletedTable
                 docs={pagedDocs}
@@ -722,18 +716,18 @@ export function Library() {
                 onPurge={setPurging}
               />
             ) : pagedDocs.length ? (
-              <table className="w-full text-sm">
+              <table className="w-full text-body">
                 <thead>
-                  <tr className="text-left text-xs text-neutral-500 border-b border-white/10">
-                    <th className="px-4 py-2.5 font-medium">{S.library.colFile}</th>
+                  <tr className="text-left text-small text-ink-3 border-b border-line">
+                    <th className="px-4 py-3 font-medium">{S.library.colFile}</th>
                     {selection === "all" && (
-                      <th className="px-4 py-2.5 font-medium">{S.library.colSource}</th>
+                      <th className="px-4 py-3 font-medium">{S.library.colSource}</th>
                     )}
-                    <th className="px-4 py-2.5 font-medium">{S.library.colStatus}</th>
-                    <th className="px-4 py-2.5 font-medium">{S.library.colGraph}</th>
-                    <th className="px-4 py-2.5 font-medium">{S.library.colChunks}</th>
-                    <th className="px-4 py-2.5 font-medium">{S.library.colSize}</th>
-                    <th className="px-4 py-2.5"></th>
+                    <th className="px-4 py-3 font-medium">{S.library.colStatus}</th>
+                    <th className="px-4 py-3 font-medium">{S.library.colGraph}</th>
+                    <th className="px-4 py-3 font-medium">{S.library.colChunks}</th>
+                    <th className="px-4 py-3 font-medium">{S.library.colSize}</th>
+                    <th className="px-4 py-3"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -759,15 +753,15 @@ export function Library() {
                 </tbody>
               </table>
             ) : query || graphFilter ? (
-              <div className="py-20 text-center text-sm text-neutral-500">
+              <div className="py-20 text-center text-body text-ink-3">
                 {S.library.filterNoMatch}
               </div>
             ) : (
-              <div className="py-20 text-center text-sm text-neutral-500">
+              <div className="py-20 text-center text-body text-ink-3">
                 {canUpload ? (
                   <>
                     {S.library.dropHint}
-                    <div className="mt-2 text-xs text-neutral-600">{S.library.formats}</div>
+                    <div className="mt-2 text-small text-ink-3">{S.library.formats}</div>
                   </>
                 ) : (
                   S.library.emptyPull
@@ -932,7 +926,7 @@ function SourceBar({
 
   return (
     <div className="glass rounded-xl mb-3">
-      <div className="px-4 py-2.5 flex items-center gap-3 text-xs">
+      <div className="px-4 py-3 flex items-center gap-3 text-small">
         {/* api 与拉取型同一状态语汇：点 + 状态 + 时刻 + 产出/错误；
             端点是一次性集成信息，放 Token 弹窗，不占常驻条 */}
         {(isPull || isApi) && (
@@ -940,36 +934,36 @@ function SourceBar({
             <span
               className={`h-1.5 w-1.5 rounded-full shrink-0 ${SYNC_DOT[source.last_sync_status]}`}
             />
-            <span className="text-neutral-300 whitespace-nowrap shrink-0">
+            <span className="text-ink-2 whitespace-nowrap shrink-0">
               {isApi
                 ? S.library.pushStatus[source.last_sync_status]
                 : S.library.syncStatus[source.last_sync_status]}
             </span>
             {source.last_sync_at && (
-              <span className="text-neutral-600 u-num whitespace-nowrap shrink-0">
+              <span className="text-ink-3 u-num whitespace-nowrap shrink-0">
                 {source.last_sync_at.slice(0, 16).replace("T", " ")}
               </span>
             )}
             {source.last_sync_status === "ok" && source.last_sync_added > 0 && (
-              <span className="text-[var(--u-ok)]">
+              <span className="text-ok">
                 {S.library.lastSyncAdded(source.last_sync_added)}
               </span>
             )}
             {source.last_sync_error && (
-              <span className="text-rose-400 truncate min-w-0" title={source.last_sync_error}>
+              <span className="text-danger truncate min-w-0" title={source.last_sync_error}>
                 {source.last_sync_error}
               </span>
             )}
             {isPull && (
               <>
-                <span className="text-neutral-600 truncate min-w-0">{configSummary}</span>
-                <span className="text-neutral-600 shrink-0 u-num">{scheduleLabel(source)}</span>
+                <span className="text-ink-3 truncate min-w-0">{configSummary}</span>
+                <span className="text-ink-3 shrink-0 u-num">{scheduleLabel(source)}</span>
               </>
             )}
           </>
         )}
         {!isPull && !isApi && (
-          <span className="text-neutral-600 truncate min-w-0">
+          <span className="text-ink-3 truncate min-w-0">
             {S.library.sourceKindHints[source.kind as "folder"] ?? ""}
           </span>
         )}
@@ -987,62 +981,57 @@ function SourceBar({
             </Link>
           )}
           {source.missing_count > 0 && (
-            <button
+            <Button variant="secondary" size="sm"
               onClick={onCleanup}
-              className="u-btn u-btn-ghost px-2.5 py-1 text-xs !text-[var(--u-warn)]"
             >
               {S.library.cleanupMissing(source.missing_count)}
-            </button>
+            </Button>
           )}
           {/* History 对拉取型与 api 推送型都开放：推送失败（格式错等）也记 run */}
           {(isPull || source.kind === "api") && (
             /* 激活态用反色（与弹窗类型 tab、图标选中同一语汇），一眼可辨 */
-            <button
+            <Button variant="secondary" size="sm"
               onClick={onToggleHistory}
-              className={`u-btn px-2.5 py-1 text-xs flex items-center gap-1.5 ${
+              className={`u-btn px-3 py-1 text-small flex items-center gap-2 ${
                 historyOpen ? "u-btn-primary" : "u-btn-ghost"
               }`}
             >
               <HistoryIcon size={11} />
               {S.library.syncHistory}
-            </button>
+            </Button>
           )}
           {isPull && (
-            <button
+            <Button variant="secondary" size="sm" className="flex items-center gap-2"
               onClick={onSync}
               disabled={busy || syncing}
-              className="u-btn u-btn-ghost px-2.5 py-1 text-xs flex items-center gap-1.5"
             >
               <RefreshCw size={11} className={busy ? "animate-spin" : ""} />
               {S.library.syncNow}
-            </button>
+            </Button>
           )}
           {source.kind === "api" && (
-            <button
+            <Button variant="secondary" size="sm" className="flex items-center gap-2"
               onClick={onToken}
-              className="u-btn u-btn-ghost px-2.5 py-1 text-xs flex items-center gap-1.5"
             >
               <KeyRound size={11} />
               {S.library.viewToken}
-            </button>
+            </Button>
           )}
           {/* 全量重抽本来源：所有类型都给（有文档就能重抽） */}
           {onReExtract && source.doc_count > 0 && (
-            <button
+            <Button variant="secondary" size="sm" className="flex items-center gap-2"
               onClick={onReExtract}
-              className="u-btn u-btn-ghost px-2.5 py-1 text-xs flex items-center gap-1.5"
             >
               <Waypoints size={11} />
               {S.library.reExtractSource}
-            </button>
+            </Button>
           )}
-          <button
+          <Button variant="secondary" size="sm"
             onClick={onEdit}
             title={S.library.sourceSettings}
-            className="u-btn u-btn-ghost px-2 py-1"
           >
             <SettingsIcon size={12} />
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1068,41 +1057,41 @@ function DropsModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="glass-strong w-[36rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl">
-        <div className="px-5 pt-4 pb-3 border-b border-white/10">
+      <div className="glass-strong w-[36rem] max-w-[calc(100vw-2rem)] rounded-xl shadow-2xl">
+        <div className="px-6 pt-4 pb-3 border-b border-line">
           <div className="flex items-center justify-between">
-            <h2 className="u-title text-[15px]">{S.library.dropsTitle}</h2>
-            <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200">
+            <h2 className="u-title text-title">{S.library.dropsTitle}</h2>
+            <IconButton size="sm" label={S.library.close} onClick={onClose}>
               <X size={15} />
-            </button>
+            </IconButton>
           </div>
-          <p className="mt-1 text-xs text-neutral-500 truncate" title={file}>
+          <p className="mt-1 text-small text-ink-3 truncate" title={file}>
             {file}
           </p>
-          <p className="mt-1.5 text-xs text-neutral-500">{S.library.dropsNote}</p>
+          <p className="mt-2 text-small text-ink-3">{S.library.dropsNote}</p>
         </div>
-        <div className="u-scroll max-h-80 overflow-y-auto px-5 py-3">
+        <div className="u-scroll max-h-80 overflow-y-auto px-6 py-3">
           {rows.map((r) => (
             <div
               key={`${r.reason}:${r.detail}`}
-              className="border-b border-white/5 py-2.5 last:border-0"
+              className="border-b border-line py-3 last:border-0"
             >
               <div className="flex items-baseline gap-2">
-                <span className="text-sm text-neutral-200">
+                <span className="text-body text-ink">
                   {S.library.dropReason[r.reason] ?? r.reason}
                 </span>
-                <span className="u-num ml-auto text-xs text-neutral-500">×{r.count}</span>
+                <span className="u-num ml-auto text-small text-ink-3">×{r.count}</span>
               </div>
-              <div className="mt-0.5 font-mono text-[11px] text-neutral-400 break-all">
+              <div className="mt-1 font-mono text-fine text-ink-2 break-all">
                 {r.detail}
               </div>
               {r.example && (
-                <div className="mt-0.5 text-[11px] text-neutral-600 break-all">
+                <div className="mt-1 text-fine text-ink-3 break-all">
                   {S.library.dropsExample} {r.example}
                 </div>
               )}
@@ -1133,31 +1122,30 @@ function ErrorModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="glass-strong w-[36rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl">
-        <div className="px-5 pt-4 pb-3 border-b border-white/10">
+      <div className="glass-strong w-[36rem] max-w-[calc(100vw-2rem)] rounded-xl shadow-2xl">
+        <div className="px-6 pt-4 pb-3 border-b border-line">
           <div className="flex items-center justify-between">
-            <h2 className="u-title text-[15px]">{S.library.errorTitle}</h2>
-            <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200">
+            <h2 className="u-title text-title">{S.library.errorTitle}</h2>
+            <IconButton size="sm" label={S.library.close} onClick={onClose}>
               <X size={15} />
-            </button>
+            </IconButton>
           </div>
-          <p className="mt-1 text-xs text-neutral-500 truncate" title={file}>
+          <p className="mt-1 text-small text-ink-3 truncate" title={file}>
             {file} · {kind}
           </p>
         </div>
-        <div className="px-5 py-4">
-          <pre className="u-scroll max-h-72 overflow-auto rounded-lg border border-white/10 bg-white/[0.03] p-3 text-[12px] leading-relaxed text-neutral-300 whitespace-pre-wrap break-words">
+        <div className="px-6 py-4">
+          <pre className="u-scroll max-h-72 overflow-auto rounded-lg border border-line bg-surface p-3 text-small leading-relaxed text-ink-2 whitespace-pre-wrap break-words">
             {text}
           </pre>
         </div>
-        <div className="flex justify-end gap-2 px-5 py-3 border-t border-white/10">
-          <button
-            className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs"
+        <div className="flex justify-end gap-2 px-6 py-3 border-t border-line">
+          <Button variant="secondary" size="sm"
             onClick={() =>
               navigator.clipboard
                 .writeText(text)
@@ -1166,10 +1154,10 @@ function ErrorModal({
             }
           >
             {S.library.copyError}
-          </button>
-          <button className="u-btn u-btn-primary px-3.5 py-1.5 text-xs" onClick={onClose}>
+          </Button>
+          <Button variant="primary" size="sm" onClick={onClose}>
             {S.library.close}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1212,64 +1200,65 @@ function TokenModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="glass-strong w-[32rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl">
-        <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-white/10">
-          <h2 className="u-title text-[15px] flex items-center gap-2">
-            <KeyRound size={14} className="text-neutral-400" />
+      <div className="glass-strong w-[32rem] max-w-[calc(100vw-2rem)] rounded-xl shadow-2xl">
+        <div className="flex items-center justify-between px-6 pt-4 pb-3 border-b border-line">
+          <h2 className="u-title text-title flex items-center gap-2">
+            <KeyRound size={14} className="text-ink-2" />
             {S.library.tokenTitle}
           </h2>
-          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-200">
+          <IconButton size="sm" label={S.library.close} onClick={onClose}>
             <X size={15} />
-          </button>
+          </IconButton>
         </div>
-        <div className="px-5 py-4 space-y-3">
+        <div className="px-6 py-4 space-y-3">
           {tokenQuery.isPending ? (
-            <p className="text-sm text-neutral-500">{S.nav.loading}</p>
+            <p className="text-body text-ink-3">{S.nav.loading}</p>
           ) : token ? (
             <>
-              <button
-                onClick={() => copy(token, S.library.tokenCopied)}
+              <Button
+                variant="secondary"
+                className="h-auto w-full justify-start whitespace-normal break-all py-3 text-left font-mono"
                 title={S.library.copyEndpoint}
-                className="w-full text-left font-mono text-[12.5px] text-neutral-200 bg-white/[0.05] border border-white/10 hover:border-white/25 rounded-lg px-3 py-2.5 break-all transition-colors"
+                onClick={() => copy(token, S.library.tokenCopied)}
               >
                 {token}
-              </button>
-              <p className="text-[11px] leading-relaxed text-neutral-500">
+              </Button>
+              <p className="text-fine leading-relaxed text-ink-3">
                 {S.library.tokenWarning}
               </p>
               <div>
-                <p className="mb-1 text-[11px] text-neutral-500">{S.library.tokenUsage}</p>
-                <button
-                  onClick={() => copy(endpoint, S.library.endpointCopied)}
+                <p className="mb-1 text-fine text-ink-3">{S.library.tokenUsage}</p>
+                <Button
+                  variant="secondary"
+                  className="h-auto w-full justify-start whitespace-pre-wrap break-all py-2 text-left font-mono text-ink-2"
                   title={S.library.copyEndpoint}
-                  className="w-full text-left font-mono text-[11.5px] text-neutral-400 hover:text-neutral-200 bg-white/[0.03] border border-white/10 rounded-lg px-3 py-2 break-all transition-colors"
+                  onClick={() => copy(endpoint, S.library.endpointCopied)}
                 >
                   POST {endpoint}
                   {"\n"}Authorization: Bearer &lt;token&gt;
-                </button>
+                </Button>
               </div>
             </>
           ) : (
-            <p className="text-sm text-neutral-500">{S.library.noToken}</p>
+            <p className="text-body text-ink-3">{S.library.noToken}</p>
           )}
         </div>
-        <div className="flex justify-end gap-2 px-5 py-3 border-t border-white/10">
-          <button
-            className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs flex items-center gap-1.5"
+        <div className="flex justify-end gap-2 px-6 py-3 border-t border-line">
+          <Button variant="secondary" size="sm" className="flex items-center gap-2"
             disabled={rotate.isPending || tokenQuery.isPending}
             onClick={() => rotate.mutate()}
           >
             <RefreshCw size={11} className={rotate.isPending ? "animate-spin" : ""} />
             {token ? S.library.rotateToken : S.library.generateToken}
-          </button>
-          <button className="u-btn u-btn-primary px-3.5 py-1.5 text-xs" onClick={onClose}>
+          </Button>
+          <Button variant="primary" size="sm" onClick={onClose}>
             {S.library.close}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1285,40 +1274,40 @@ function RunsPanel({ kbId, sourceId }: { kbId: string; sourceId: string }) {
   const list = runs.data?.runs ?? [];
 
   return (
-    <div className="glass rounded-2xl">
+    <div className="glass rounded-xl">
       {runs.isLoading ? (
-        <div className="py-20 text-center text-sm text-neutral-500">{S.nav.loading}</div>
+        <div className="py-20 text-center text-body text-ink-3">{S.nav.loading}</div>
       ) : list.length === 0 ? (
-        <div className="py-20 text-center text-sm text-neutral-500">{S.library.noRuns}</div>
+        <div className="py-20 text-center text-body text-ink-3">{S.library.noRuns}</div>
       ) : (
         <div className="px-4 py-2">
           {list.map((r) => (
             <div
               key={r.id}
-              className="flex items-center gap-3 py-2 text-xs border-b border-white/5 last:border-0"
+              className="flex items-center gap-3 py-2 text-small border-b border-line last:border-0"
             >
               <span
                 className={`h-1.5 w-1.5 rounded-full shrink-0 ${
                   r.status === "ok"
-                    ? "bg-[var(--u-ok)]"
+                    ? "bg-ok"
                     : r.status === "failed"
-                      ? "bg-[var(--u-danger)]"
-                      : "bg-[var(--u-warn)] animate-pulse"
+                      ? "bg-danger"
+                      : "bg-warn animate-pulse"
                 }`}
               />
-              <span className="u-num text-neutral-400 whitespace-nowrap shrink-0">
+              <span className="u-num text-ink-2 whitespace-nowrap shrink-0">
                 {r.started_at.slice(0, 16).replace("T", " ")}
               </span>
-              <span className="text-neutral-500 whitespace-nowrap shrink-0">
+              <span className="text-ink-3 whitespace-nowrap shrink-0">
                 {r.created_docs > 0 && S.library.runNew(r.created_docs)}
                 {r.created_docs > 0 && r.updated_docs > 0 && " · "}
                 {r.updated_docs > 0 && S.library.runUpdated(r.updated_docs)}
                 {r.status === "ok" && r.created_docs === 0 && r.updated_docs === 0 && (
-                  <span className="text-neutral-600">{S.library.runNothing}</span>
+                  <span className="text-ink-3">{S.library.runNothing}</span>
                 )}
               </span>
               {r.error && (
-                <span className="text-rose-400 truncate min-w-0" title={r.error}>
+                <span className="text-danger truncate min-w-0" title={r.error}>
                   {r.error}
                 </span>
               )}
@@ -1483,47 +1472,47 @@ function SourceModal({
   //（button 也算），导致图标网格/日程选择器悬停时第一个按钮常亮
   const field = (label: string, node: React.ReactNode) => (
     <div className="mb-3">
-      <div className="mb-1 text-[11px] font-medium text-neutral-500">{label}</div>
+      <div className="mb-1 text-fine font-medium text-ink-3">{label}</div>
       {node}
     </div>
   );
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onDone();
       }}
     >
-      <div className="glass-strong w-[30rem] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-4rem)] overflow-y-auto u-scroll rounded-2xl shadow-2xl">
-        <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-white/10">
-          <h2 className="u-title text-[15px]">{S.library.newSourceTitle}</h2>
-          <button onClick={() => onDone()} className="text-neutral-500 hover:text-neutral-200">
+      <div className="glass-strong w-[30rem] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-4rem)] overflow-y-auto u-scroll rounded-xl shadow-2xl">
+        <div className="flex items-center justify-between px-6 pt-4 pb-3 border-b border-line">
+          <h2 className="u-title text-title">{S.library.newSourceTitle}</h2>
+          <IconButton size="sm" label={S.library.close} onClick={() => onDone()}>
             <X size={15} />
-          </button>
+          </IconButton>
         </div>
 
-        <div className="px-5 py-4">
+        <div className="px-6 py-4">
           {/* 类型 */}
           <div className="flex gap-2 mb-2">
             {CREATABLE_SOURCE_KINDS.map((k) => {
               const Icon = KIND_ICON[k];
               return (
-                <button
+                <Button variant="secondary" size="sm"
                   key={k}
                   onClick={() => setKind(k)}
-                  className={`u-btn flex-1 px-3 py-2 text-xs flex items-center justify-center gap-1.5 ${
+                  className={`u-btn flex-1 px-3 py-2 text-small flex items-center justify-center gap-2 ${
                     kind === k ? "u-btn-primary" : "u-btn-ghost"
                   }`}
                 >
                   <Icon size={12} />
                   {S.library.sourceKinds[k]}
-                </button>
+                </Button>
               );
             })}
           </div>
           {/* 类型自解释：一行说明；接口细节移入内置文档，弹窗只留链接 */}
-          <p className="mb-4 text-[11px] leading-relaxed text-neutral-500">
+          <p className="mb-4 text-fine leading-relaxed text-ink-3">
             {S.library.sourceKindHints[kind]}
             {kind === "custom" && (
               <>
@@ -1542,8 +1531,7 @@ function SourceModal({
 
           {field(
             S.library.sourceName,
-            <input
-              className="input-dark w-full px-3 py-2 text-sm"
+            <Input className="w-full"
               value={name}
               onChange={(e) => setName(e.target.value)}
               autoFocus
@@ -1556,18 +1544,14 @@ function SourceModal({
               S.library.iconLabel,
               <div className="grid grid-cols-10 gap-1">
                 {Object.entries(SOURCE_ICONS).map(([key, Icon]) => (
-                  <button
+                  <IconButton
                     key={key}
+                    variant={icon === key ? "primary" : "ghost"}
+                    label={key}
                     onClick={() => setIcon(icon === key ? null : key)}
-                    title={key}
-                    className={`h-8 grid place-items-center rounded-lg transition-colors ${
-                      icon === key
-                        ? "bg-white text-black"
-                        : "text-neutral-400 hover:bg-white/[0.07] hover:text-neutral-200"
-                    }`}
                   >
                     <Icon size={14} />
-                  </button>
+                  </IconButton>
                 ))}
               </div>,
             )}
@@ -1576,8 +1560,7 @@ function SourceModal({
             <>
               {field(
                 S.library.endpointField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="https://your-service/utopia-feed"
                   value={endpoint}
                   onChange={(e) => setEndpoint(e.target.value)}
@@ -1585,8 +1568,7 @@ function SourceModal({
               )}
               {field(
                 S.library.authHeaderField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   type="password"
                   placeholder="Bearer sk-…"
                   value={authHeader}
@@ -1599,8 +1581,7 @@ function SourceModal({
           {kind === "url" &&
             field(
               S.library.urlsField,
-              <textarea
-                className="input-dark w-full px-3 py-2 text-sm font-mono h-20 resize-y"
+              <Textarea className="w-full font-mono resize-y"
                 value={urls}
                 onChange={(e) => setUrls(e.target.value)}
               />,
@@ -1608,8 +1589,7 @@ function SourceModal({
           {kind === "rss" &&
             field(
               S.library.feedUrl,
-              <input
-                className="input-dark w-full px-3 py-2 text-sm font-mono"
+              <Input className="w-full font-mono"
                 value={feedUrl}
                 onChange={(e) => setFeedUrl(e.target.value)}
               />,
@@ -1618,8 +1598,7 @@ function SourceModal({
             <>
               {field(
                 S.library.jiraUrlField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="https://jira.example.com"
                   value={jiraUrl}
                   onChange={(e) => setJiraUrl(e.target.value)}
@@ -1627,8 +1606,7 @@ function SourceModal({
               )}
               {field(
                 S.library.jiraProjectField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="KAFKA"
                   value={jiraProject}
                   onChange={(e) => setJiraProject(e.target.value)}
@@ -1636,8 +1614,7 @@ function SourceModal({
               )}
               {field(
                 S.library.tokenField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   type="password"
                   placeholder="Basic dXNlcjp0b2tlbg=="
                   value={authHeader}
@@ -1650,8 +1627,7 @@ function SourceModal({
             <>
               {field(
                 S.library.s3BucketField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="documents"
                   value={s3Bucket}
                   onChange={(e) => setS3Bucket(e.target.value)}
@@ -1659,8 +1635,7 @@ function SourceModal({
               )}
               {field(
                 S.library.s3PrefixField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="reports/2026/"
                   value={s3Prefix}
                   onChange={(e) => setS3Prefix(e.target.value)}
@@ -1668,8 +1643,7 @@ function SourceModal({
               )}
               {field(
                 S.library.s3EndpointField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="http://minio.internal:9000"
                   value={s3Endpoint}
                   onChange={(e) => setS3Endpoint(e.target.value)}
@@ -1677,8 +1651,7 @@ function SourceModal({
               )}
               {field(
                 S.library.s3RegionField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="us-east-1"
                   value={s3Region}
                   onChange={(e) => setS3Region(e.target.value)}
@@ -1688,16 +1661,14 @@ function SourceModal({
                 <>
                   {field(
                     S.library.s3KeyField,
-                    <input
-                      className="input-dark w-full px-3 py-2 text-sm font-mono"
+                    <Input className="w-full font-mono"
                       value={s3Key}
                       onChange={(e) => setS3Key(e.target.value)}
                     />,
                   )}
                   {field(
                     S.library.s3SecretField,
-                    <input
-                      className="input-dark w-full px-3 py-2 text-sm font-mono"
+                    <Input className="w-full font-mono"
                       type="password"
                       value={s3Secret}
                       onChange={(e) => setS3Secret(e.target.value)}
@@ -1709,16 +1680,14 @@ function SourceModal({
                 <>
                   {field(
                     S.library.azAccountField,
-                    <input
-                      className="input-dark w-full px-3 py-2 text-sm font-mono"
+                    <Input className="w-full font-mono"
                       value={azAccount}
                       onChange={(e) => setAzAccount(e.target.value)}
                     />,
                   )}
                   {field(
                     S.library.azKeyField,
-                    <input
-                      className="input-dark w-full px-3 py-2 text-sm font-mono"
+                    <Input className="w-full font-mono"
                       type="password"
                       value={azKey}
                       onChange={(e) => setAzKey(e.target.value)}
@@ -1729,8 +1698,7 @@ function SourceModal({
               {kind === "gcs" &&
                 field(
                   S.library.gcsKeyField,
-                  <textarea
-                    className="input-dark w-full px-3 py-2 text-sm font-mono h-24"
+                  <Textarea className="w-full font-mono"
                     placeholder='{"type":"service_account",...}'
                     value={gcsKey}
                     onChange={(e) => setGcsKey(e.target.value)}
@@ -1742,8 +1710,7 @@ function SourceModal({
             <>
               {field(
                 S.library.davUrlField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="https://cloud.example.com/remote.php/dav/files/alice"
                   value={davUrl}
                   onChange={(e) => setDavUrl(e.target.value)}
@@ -1751,8 +1718,7 @@ function SourceModal({
               )}
               {field(
                 S.library.davPathField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="/Documents"
                   value={davPath}
                   onChange={(e) => setDavPath(e.target.value)}
@@ -1760,16 +1726,14 @@ function SourceModal({
               )}
               {field(
                 S.library.davUserField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   value={davUser}
                   onChange={(e) => setDavUser(e.target.value)}
                 />,
               )}
               {field(
                 S.library.davPassField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   type="password"
                   value={davPass}
                   onChange={(e) => setDavPass(e.target.value)}
@@ -1781,8 +1745,7 @@ function SourceModal({
             <>
               {field(
                 S.library.notionTokenField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   type="password"
                   placeholder="ntn_..."
                   value={notionToken}
@@ -1791,8 +1754,7 @@ function SourceModal({
               )}
               {field(
                 S.library.notionQueryField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   value={notionQuery}
                   onChange={(e) => setNotionQuery(e.target.value)}
                 />,
@@ -1803,8 +1765,7 @@ function SourceModal({
             <>
               {field(
                 S.library.repoField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="owner/name"
                   value={repo}
                   onChange={(e) => setRepo(e.target.value)}
@@ -1812,43 +1773,39 @@ function SourceModal({
               )}
               {field(
                 S.library.tokenField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   type="password"
                   placeholder="Bearer ghp_…"
                   value={authHeader}
                   onChange={(e) => setAuthHeader(e.target.value)}
                 />,
               )}
-              <label className="mb-4 flex items-center gap-2 text-[11px] text-neutral-400">
-                <input
-                  type="checkbox"
-                  checked={includePrs}
-                  onChange={(e) => setIncludePrs(e.target.checked)}
-                />
-                {S.library.includePullRequests}
-              </label>
+              <Checkbox
+                className="mb-4"
+                checked={includePrs}
+                onChange={(e) => setIncludePrs(e.target.checked)}
+                label={S.library.includePullRequests}
+              />
             </>
           )}
 
           {syncing && field(S.library.interval, <SchedulePicker onChange={setSchedule} />)}
 
           {create.isError && (
-            <p className="text-xs text-rose-400 mb-2">{(create.error as Error).message}</p>
+            <p className="text-small text-danger mb-2">{(create.error as Error).message}</p>
           )}
         </div>
 
-        <div className="flex justify-end gap-2 px-5 py-3 border-t border-white/10">
-          <button className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs" onClick={() => onDone()}>
+        <div className="flex justify-end gap-2 px-6 py-3 border-t border-line">
+          <Button variant="secondary" size="sm" onClick={() => onDone()}>
             {S.library.cancel}
-          </button>
-          <button
-            className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
+          </Button>
+          <Button variant="primary" size="sm"
             disabled={!valid || create.isPending}
             onClick={() => create.mutate()}
           >
             {S.library.createSource}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -1939,37 +1896,36 @@ function SourceEditModal({
   // div 而非 label：label 会把 :hover/click 转发给第一个可标记控件
   const field = (label: string, node: React.ReactNode) => (
     <div className="mb-3">
-      <div className="mb-1 text-[11px] font-medium text-neutral-500">{label}</div>
+      <div className="mb-1 text-fine font-medium text-ink-3">{label}</div>
       {node}
     </div>
   );
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onDone();
       }}
     >
-      <div className="glass-strong w-[30rem] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-4rem)] overflow-y-auto u-scroll rounded-2xl shadow-2xl">
-        <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-white/10">
-          <h2 className="u-title text-[15px]">{S.library.editSourceTitle}</h2>
-          <button onClick={onDone} className="text-neutral-500 hover:text-neutral-200">
+      <div className="glass-strong w-[30rem] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-4rem)] overflow-y-auto u-scroll rounded-xl shadow-2xl">
+        <div className="flex items-center justify-between px-6 pt-4 pb-3 border-b border-line">
+          <h2 className="u-title text-title">{S.library.editSourceTitle}</h2>
+          <IconButton size="sm" label={S.library.close} onClick={onDone}>
             <X size={15} />
-          </button>
+          </IconButton>
         </div>
 
-        <div className="px-5 py-4">
+        <div className="px-6 py-4">
           {/* 类型只读：换类型 = 换身份，应新建来源 */}
-          <div className="mb-4 flex items-center gap-2 text-xs text-neutral-400">
-            <KindIcon size={13} className="text-neutral-500" />
+          <div className="mb-4 flex items-center gap-2 text-small text-ink-2">
+            <KindIcon size={13} className="text-ink-3" />
             {S.library.sourceKinds[kind as keyof typeof S.library.sourceKinds] ?? kind}
           </div>
 
           {field(
             S.library.sourceName,
-            <input
-              className="input-dark w-full px-3 py-2 text-sm"
+            <Input className="w-full"
               value={name}
               onChange={(e) => setName(e.target.value)}
             />,
@@ -1980,18 +1936,14 @@ function SourceEditModal({
               S.library.iconLabel,
               <div className="grid grid-cols-10 gap-1">
                 {Object.entries(SOURCE_ICONS).map(([key, Icon]) => (
-                  <button
+                  <IconButton
                     key={key}
+                    variant={icon === key ? "primary" : "ghost"}
+                    label={key}
                     onClick={() => setIcon(icon === key ? null : key)}
-                    title={key}
-                    className={`h-8 grid place-items-center rounded-lg transition-colors ${
-                      icon === key
-                        ? "bg-white text-black"
-                        : "text-neutral-400 hover:bg-white/[0.07] hover:text-neutral-200"
-                    }`}
                   >
                     <Icon size={14} />
-                  </button>
+                  </IconButton>
                 ))}
               </div>,
             )}
@@ -1999,8 +1951,7 @@ function SourceEditModal({
           {kind === "url" &&
             field(
               S.library.urlsField,
-              <textarea
-                className="input-dark w-full px-3 py-2 text-sm font-mono h-20 resize-y"
+              <Textarea className="w-full font-mono resize-y"
                 value={urls}
                 onChange={(e) => setUrls(e.target.value)}
               />,
@@ -2008,8 +1959,7 @@ function SourceEditModal({
           {kind === "rss" &&
             field(
               S.library.feedUrl,
-              <input
-                className="input-dark w-full px-3 py-2 text-sm font-mono"
+              <Input className="w-full font-mono"
                 value={feedUrl}
                 onChange={(e) => setFeedUrl(e.target.value)}
               />,
@@ -2018,8 +1968,7 @@ function SourceEditModal({
             <>
               {field(
                 S.library.repoField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   placeholder="owner/name"
                   value={repo}
                   onChange={(e) => setRepo(e.target.value)}
@@ -2027,38 +1976,33 @@ function SourceEditModal({
               )}
               {field(
                 S.library.tokenField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   type="password"
                   placeholder="Bearer ghp_…"
                   value={authHeader}
                   onChange={(e) => setAuthHeader(e.target.value)}
                 />,
               )}
-              <label className="mb-4 flex items-center gap-2 text-[11px] text-neutral-400">
-                <input
-                  type="checkbox"
-                  checked={includePrs}
-                  onChange={(e) => setIncludePrs(e.target.checked)}
-                />
-                {S.library.includePullRequests}
-              </label>
+              <Checkbox
+                className="mb-4"
+                checked={includePrs}
+                onChange={(e) => setIncludePrs(e.target.checked)}
+                label={S.library.includePullRequests}
+              />
             </>
           )}
           {kind === "custom" && (
             <>
               {field(
                 S.library.endpointField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   value={endpoint}
                   onChange={(e) => setEndpoint(e.target.value)}
                 />,
               )}
               {field(
                 S.library.authHeaderEditField,
-                <input
-                  className="input-dark w-full px-3 py-2 text-sm font-mono"
+                <Input className="w-full font-mono"
                   type="password"
                   placeholder={S.library.authKeepHint}
                   value={authHeader}
@@ -2069,7 +2013,7 @@ function SourceEditModal({
           )}
 
           {ingestChanged && (
-            <p className="mb-3 text-[11px] leading-relaxed text-neutral-500">
+            <p className="mb-3 text-fine leading-relaxed text-ink-3">
               {S.library.editKeepNote}
             </p>
           )}
@@ -2087,38 +2031,36 @@ function SourceEditModal({
             )}
 
           {save.isError && (
-            <p className="text-xs text-rose-400 mb-2">{(save.error as Error).message}</p>
+            <p className="text-small text-danger mb-2">{(save.error as Error).message}</p>
           )}
 
           {/* Danger zone：删除来源（文档保留，落回 Uploads） */}
-          <div className="mt-4 pt-3 border-t border-white/10">
-            <div className="mb-1 text-[11px] font-medium text-neutral-500">
+          <div className="mt-4 pt-3 border-t border-line">
+            <div className="mb-1 text-fine font-medium text-ink-3">
               {S.library.dangerZone}
             </div>
             <div className="flex items-center justify-between gap-3">
-              <span className="text-[11px] text-neutral-600">{S.library.deleteSourceHint}</span>
-              <button
+              <span className="text-fine text-ink-3">{S.library.deleteSourceHint}</span>
+              <Button variant="secondary" size="sm" className="shrink-0"
                 onClick={() => setConfirmingDelete(true)}
-                className="u-btn px-3.5 py-1.5 text-xs font-semibold shrink-0"
                 style={{ background: "var(--u-danger-solid)", color: "#ffffff" }}
               >
                 {S.library.deleteSource}
-              </button>
+              </Button>
             </div>
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 px-5 py-3 border-t border-white/10">
-          <button className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs" onClick={onDone}>
+        <div className="flex justify-end gap-2 px-6 py-3 border-t border-line">
+          <Button variant="secondary" size="sm" onClick={onDone}>
             {S.library.cancel}
-          </button>
-          <button
-            className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
+          </Button>
+          <Button variant="primary" size="sm"
             disabled={!valid || save.isPending}
             onClick={() => save.mutate()}
           >
             {S.library.saveChanges}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -2153,43 +2095,37 @@ function DeletedTable({
 }) {
   if (!docs.length) {
     return (
-      <div className="py-20 text-center text-sm text-neutral-500">{S.library.deletedEmpty}</div>
+      <div className="py-20 text-center text-body text-ink-3">{S.library.deletedEmpty}</div>
     );
   }
   return (
-    <table className="w-full text-sm">
+    <table className="w-full text-body">
       <thead>
-        <tr className="text-left text-xs text-neutral-500 border-b border-white/10">
-          <th className="px-4 py-2.5 font-medium">{S.library.colFile}</th>
-          <th className="px-4 py-2.5 font-medium">{S.library.colSource}</th>
-          <th className="px-4 py-2.5 font-medium">{S.library.colDeleted}</th>
-          <th className="px-4 py-2.5"></th>
+        <tr className="text-left text-small text-ink-3 border-b border-line">
+          <th className="px-4 py-3 font-medium">{S.library.colFile}</th>
+          <th className="px-4 py-3 font-medium">{S.library.colSource}</th>
+          <th className="px-4 py-3 font-medium">{S.library.colDeleted}</th>
+          <th className="px-4 py-3"></th>
         </tr>
       </thead>
       <tbody>
         {docs.map((d) => {
           const src = sources.find((s) => s.id === d.source_id);
           return (
-            <tr key={d.id} className="border-b border-white/[0.06] last:border-0">
-              <td className="px-4 py-2.5 text-neutral-300">{d.filename}</td>
-              <td className="px-4 py-2.5 text-neutral-500">{src?.name ?? S.library.uploads}</td>
-              <td className="px-4 py-2.5 u-num text-neutral-500">
+            <tr key={d.id} className="border-b border-line last:border-0">
+              <td className="px-4 py-3 text-ink-2">{d.filename}</td>
+              <td className="px-4 py-3 text-ink-3">{src?.name ?? S.library.uploads}</td>
+              <td className="px-4 py-3 u-num text-ink-3">
                 {d.deleted_at ? new Date(d.deleted_at).toLocaleString() : ""}
               </td>
-              <td className="px-4 py-2.5 text-right whitespace-nowrap">
-                <button
-                  onClick={() => onRestore(d.id)}
-                  className="text-xs text-neutral-400 hover:text-neutral-100"
-                >
+              <td className="px-4 py-3 text-right whitespace-nowrap">
+                <LinkButton onClick={() => onRestore(d.id)}>
                   {S.library.restore}
-                </button>
+                </LinkButton>
                 {canPurge && (
-                  <button
-                    onClick={() => onPurge(d)}
-                    className="ml-4 text-xs text-neutral-500 hover:text-rose-400"
-                  >
+                  <LinkButton tone="danger" className="ml-4" onClick={() => onPurge(d)}>
                     {S.library.purge}
-                  </button>
+                  </LinkButton>
                 )}
               </td>
             </tr>
@@ -2230,82 +2166,82 @@ function DocRow({
     doc.graph_status;
   const SrcIcon = source ? sourceIcon(source) : Upload;
   return (
-    <tr className="border-b border-white/5 hover:bg-white/[0.03]">
-      <td className="px-4 py-2.5 max-w-xs truncate" title={doc.filename}>
+    <tr className="border-b border-line">
+      <td className="px-4 py-3 max-w-xs truncate" title={doc.filename}>
         <Link
           to="/kb/$kbId/doc/$docId"
           params={{ kbId, docId: doc.id }}
           search={{}}
-          className="text-neutral-200 hover:text-[var(--u-accent)]"
+          className="u-inline-link text-ink"
         >
           {doc.filename}
         </Link>
       </td>
       {source !== undefined && (
-        <td className="px-4 py-2.5">
-          <span className="flex items-center gap-1.5 text-xs text-neutral-400">
-            <SrcIcon size={12} className="shrink-0 text-neutral-500" />
+        <td className="px-4 py-3">
+          <span className="flex items-center gap-2 text-small text-ink-2">
+            <SrcIcon size={12} className="shrink-0 text-ink-3" />
             <span className="truncate max-w-28">{source?.name ?? S.library.uploads}</span>
           </span>
         </td>
       )}
-      <td className="px-4 py-2.5">
+      <td className="px-4 py-3">
         {/* 失败可点开看原文：tooltip 会截断、也没法复制 */}
         {doc.status === "failed" && doc.error ? (
-          <button
+          <Chip
+            tone="danger"
             onClick={() => onShowError(S.library.errorParse, doc.error!)}
-            className="align-middle"
           >
-            <Chip tone="danger">{statusText}</Chip>
-          </button>
+            {statusText}
+          </Chip>
         ) : (
           <Chip tone={STATUS_TONE[doc.status] ?? "neutral"}>{statusText}</Chip>
         )}
         {/* 解析管道失败：重跑 解析→索引→嵌入（解析器升级/瞬时故障重试） */}
         {doc.status === "failed" && (
-          <button onClick={onReprocess} className="u-link ml-1.5 text-xs">
+          <LinkButton underline className="ml-2" onClick={onReprocess}>
             {S.library.reprocess}
-          </button>
+          </LinkButton>
         )}
         {doc.missing_since && (
-          <span className="ml-1.5 inline-block" title={doc.missing_since.slice(0, 16).replace("T", " ")}>
+          <span className="ml-2 inline-block" title={doc.missing_since.slice(0, 16).replace("T", " ")}>
             <Chip tone="neutral">{S.library.notInSource}</Chip>
           </span>
         )}
       </td>
-      <td className="px-4 py-2.5">
+      <td className="px-4 py-3">
         {doc.graph_status === "none" ? (
-          <span className="text-xs text-neutral-600">{graphText}</span>
+          <span className="text-small text-ink-3">{graphText}</span>
         ) : doc.graph_status === "failed" && doc.graph_error ? (
-          <button
+          <Chip
+            tone="danger"
             onClick={() => onShowError(S.library.errorGraph, doc.graph_error!)}
-            className="align-middle"
           >
-            <Chip tone="danger">{graphText}</Chip>
-          </button>
+            {graphText}
+          </Chip>
         ) : (
           <Chip tone={GRAPH_TONE[doc.graph_status] ?? "neutral"}>{graphText}</Chip>
         )}
         {/* 抽出来却没落地的事实。抽取成功不代表全须全尾，所以这个 chip 与
             graph_status 并列而不是替代它——"done" 和 "3 dropped" 同时为真 */}
         {dropTotal > 0 && drops && (
-          <button onClick={() => onShowDrops(drops)} className="ml-1.5 align-middle">
-            <Chip tone="warn">{S.library.dropsChip(dropTotal)}</Chip>
-          </button>
+          <Chip tone="warn" className="ml-2" onClick={() => onShowDrops(drops)}>
+            {S.library.dropsChip(dropTotal)}
+          </Chip>
         )}
         {/* done 也可重抽：本体（描述/新类）调整后强制全量重抽正是常规操作 */}
         {doc.status === "ready" && ["none", "failed", "done"].includes(doc.graph_status) && (
-          <button onClick={onExtract} className="u-link ml-1.5 text-xs">
+          <LinkButton underline className="ml-2" onClick={onExtract}>
             {doc.graph_status === "done" ? S.library.reExtract : S.library.extract}
-          </button>
+          </LinkButton>
         )}
       </td>
-      <td className="px-4 py-2.5 text-neutral-400">{doc.chunk_count || "—"}</td>
-      <td className="px-4 py-2.5 text-neutral-400">{formatSize(doc.size_bytes)}</td>
-      <td className="px-4 py-2.5 text-right">
-        <button onClick={onDelete} className="text-xs text-neutral-500 hover:text-rose-400">
+      <td className="px-4 py-3 text-ink-2">{doc.chunk_count || "—"}</td>
+      <td className="px-4 py-3 text-ink-2">{formatSize(doc.size_bytes)}</td>
+      <td className="px-4 py-3 text-right">
+        <LinkButton tone="danger" onClick={onDelete}>
           {S.library.delete}
-        </button>
+        </LinkButton>
       </td>
     </tr>
   );

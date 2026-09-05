@@ -6,7 +6,17 @@ import { api, DEFAULT_ONTOLOGY_PACKS } from "../api";
 import { LANG_NAMES, S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
-import { SearchSelect } from "../ui";
+import {
+  Button,
+  Checkbox,
+  ChoiceCard,
+  IconButton,
+  Input,
+  LinkButton,
+  Pill,
+  SearchSelect,
+  Segmented,
+} from "../ui";
 import { Members } from "./Members";
 
 /** 一个源授权给了哪些工作区（0014）。
@@ -59,31 +69,29 @@ function SourceGrants({ sourceId }: { sourceId: string }) {
   );
 
   return (
-    <div className="border-t border-white/5 pt-3 space-y-2">
+    <div className="border-t border-line pt-3 space-y-2">
       <div className="flex items-baseline gap-2">
-        <span className="text-[11px] text-neutral-500">
+        <span className="text-fine text-ink-3">
           {S.settings.datasources.grants}
         </span>
         {granted.length === 0 ? (
-          <span className="text-[11px] text-neutral-600">
+          <span className="text-fine text-ink-3">
             {S.settings.datasources.grantsNone}
           </span>
         ) : (
-          <div className="flex flex-wrap gap-1.5">
+          <div className="flex flex-wrap gap-2">
             {granted.map((w) => (
               <span
                 key={w.id}
-                className="u-chip u-chip-neutral text-[11px] flex items-center gap-1"
+                className="u-chip u-chip-neutral text-fine flex items-center gap-1"
               >
                 {w.name}
-                <button
-                  className="text-neutral-500 hover:text-[var(--u-danger)]"
-                  title={S.settings.datasources.grantRevoke}
+                <IconButton size="sm" label={S.settings.datasources.grantRevoke}
                   disabled={revoke.isPending}
                   onClick={() => revoke.mutate(w.id)}
                 >
                   <X size={10} />
-                </button>
+                </IconButton>
               </span>
             ))}
           </div>
@@ -103,7 +111,7 @@ function SourceGrants({ sourceId }: { sourceId: string }) {
           />
         </div>
       )}
-      {notice && <p className="text-[11px] text-neutral-500">{notice}</p>}
+      {notice && <p className="text-fine text-ink-3">{notice}</p>}
     </div>
   );
 }
@@ -150,76 +158,59 @@ function DeploymentAdmin() {
 
   return (
     <div className="glass rounded-xl p-4 space-y-4">
-      <label className="flex items-start gap-3 cursor-pointer">
-        <input
-          type="checkbox"
-          className="mt-0.5"
-          checked={open}
-          disabled={dep.isPending || save.isPending}
-          onChange={(e) => save.mutate({ open: e.target.checked })}
-        />
-        <span>
-          <span className="block text-sm text-neutral-200">
-            {S.settings.deployment.openReg}
-          </span>
-          <span className="block text-xs text-neutral-500 mt-0.5">
-            {S.settings.deployment.openRegHint}
-          </span>
-        </span>
-      </label>
+      <Checkbox
+        checked={open}
+        disabled={dep.isPending || save.isPending}
+        onChange={(e) => save.mutate({ open: e.target.checked })}
+        label={S.settings.deployment.openReg}
+        hint={S.settings.deployment.openRegHint}
+      />
 
       {/* 新建库的本体语言。**不是界面语言**——界面语言是每个人自己在账户菜单里选的，
           根本不经过后端（docs/decisions/0004）。说明里必须把这句讲出来 */}
-      <div className="flex items-start justify-between gap-4 border-t border-white/10 pt-4">
+      <div className="flex items-start justify-between gap-4 border-t border-line pt-4">
         <div className="min-w-0">
-          <span className="block text-sm text-neutral-200">
+          <span className="block text-body text-ink">
             {S.settings.deployment.ontologyLang}
           </span>
-          <span className="block text-xs text-neutral-500 mt-0.5">
+          <span className="block text-small text-ink-3 mt-1">
             {S.settings.deployment.ontologyLangHint}
           </span>
         </div>
-        <div className="flex gap-1 rounded-lg bg-white/5 p-1 h-fit shrink-0">
-          {(["en", "zh"] as const).map((l) => (
-            <button
-              key={l}
-              disabled={dep.isPending || save.isPending}
-              onClick={() => save.mutate({ open, ontologyLang: l })}
-              className={`rounded-md px-3 py-1 text-[12px] font-medium transition-colors ${
-                (dep.data?.default_ontology_lang ?? "en") === l
-                  ? "bg-white/10 text-neutral-100"
-                  : "text-neutral-500 hover:text-neutral-300"
-              }`}
-            >
-              {LANG_NAMES[l]}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          size="sm"
+          className="h-fit shrink-0"
+          disabled={dep.isPending || save.isPending}
+          value={dep.data?.default_ontology_lang ?? "en"}
+          onChange={(l) => save.mutate({ open, ontologyLang: l })}
+          options={(["en", "zh"] as const).map((l) => ({
+            value: l,
+            label: LANG_NAMES[l],
+          }))}
+        />
       </div>
 
-      <div className="flex items-start justify-between gap-4 border-t border-white/10 pt-4">
+      <div className="flex items-start justify-between gap-4 border-t border-line pt-4">
         <div className="min-w-0">
-          <span className="block text-sm text-neutral-200">
+          <span className="block text-body text-ink">
             {S.settings.deployment.workers}
           </span>
-          <span className="block text-xs text-neutral-500 mt-0.5">
+          <span className="block text-small text-ink-3 mt-1">
             {S.settings.deployment.workersHint}
           </span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <input
+          <Input size="sm" className="u-input-plain w-16 u-num text-center"
             type="number"
             min={1}
             max={32}
-            className="input-dark u-input-plain w-16 px-2 py-1.5 text-sm u-num text-center"
             value={shown}
             disabled={dep.isPending}
             onChange={(e) =>
               setWorkers(Math.max(1, Math.min(32, Number(e.target.value) || 1)))
             }
           />
-          <button
-            className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+          <Button variant="secondary" size="sm"
             disabled={
               save.isPending ||
               workers === null ||
@@ -228,30 +219,29 @@ function DeploymentAdmin() {
             onClick={() => save.mutate({ open, workers: shown })}
           >
             {S.settings.deployment.workersApply}
-          </button>
+          </Button>
         </div>
       </div>
       {/* 按模型的并发才是真正的节流：约束来自供应商的速率限制，而那是按模型算的。
           上面那个 worker 并发只是外层兜底，防任务无限堆积 */}
-      <div className="border-t border-white/10 pt-4">
+      <div className="border-t border-line pt-4">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <span className="block text-sm text-neutral-200">
+            <span className="block text-body text-ink">
               {S.settings.deployment.modelConcurrency}
             </span>
-            <span className="block text-xs text-neutral-500 mt-0.5">
+            <span className="block text-small text-ink-3 mt-1">
               {S.settings.deployment.modelConcurrencyHint}
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs text-neutral-500">
+            <span className="text-small text-ink-3">
               {S.settings.deployment.modelDefault}
             </span>
-            <input
+            <Input size="sm" className="u-input-plain w-16 u-num text-center"
               type="number"
               min={1}
               max={256}
-              className="input-dark u-input-plain w-16 px-2 py-1.5 text-sm u-num text-center"
               value={shownDefault}
               disabled={dep.isPending}
               onChange={(e) =>
@@ -260,8 +250,7 @@ function DeploymentAdmin() {
                 )
               }
             />
-            <button
-              className="u-btn u-btn-ghost px-3 py-1.5 text-xs"
+            <Button variant="secondary" size="sm"
               disabled={
                 save.isPending ||
                 modelDefault === null ||
@@ -270,12 +259,12 @@ function DeploymentAdmin() {
               onClick={() => save.mutate({ open, defaultModel: shownDefault })}
             >
               {S.settings.deployment.workersApply}
-            </button>
+            </Button>
           </div>
         </div>
 
         {!!dep.data?.models_in_use?.length && (
-          <div className="mt-3 space-y-1.5">
+          <div className="mt-3 space-y-2">
             {dep.data.models_in_use.map((m) => {
               const cur =
                 dep.data?.model_limits?.find(
@@ -284,21 +273,20 @@ function DeploymentAdmin() {
               const key = `${m.base_url}|${m.model}`;
               const val = perModel[key] ?? cur ?? shownDefault;
               return (
-                <div key={key} className="flex items-center gap-2 text-xs">
-                  <span className="u-chip u-chip-neutral !text-[10px] !px-1.5 shrink-0">
+                <div key={key} className="flex items-center gap-2 text-small">
+                  <span className="u-chip u-chip-neutral !text-fine !px-2 shrink-0">
                     {m.kind}
                   </span>
-                  <span className="font-mono text-neutral-300 truncate">
+                  <span className="font-mono text-ink-2 truncate">
                     {m.model}
                   </span>
-                  <span className="text-neutral-600 truncate hidden sm:inline">
+                  <span className="text-ink-3 truncate hidden sm:inline">
                     {m.base_url}
                   </span>
-                  <input
+                  <Input size="sm" className="u-input-plain ml-auto w-14 u-num text-center shrink-0"
                     type="number"
                     min={1}
                     max={256}
-                    className="input-dark u-input-plain ml-auto w-14 px-1.5 py-1 text-xs u-num text-center shrink-0"
                     value={val}
                     onChange={(e) =>
                       setPerModel({
@@ -310,8 +298,7 @@ function DeploymentAdmin() {
                       })
                     }
                   />
-                  <button
-                    className="u-btn u-btn-ghost px-2 py-1 text-[11px] shrink-0"
+                  <Button variant="secondary" size="sm" className="shrink-0"
                     disabled={save.isPending || perModel[key] === undefined}
                     onClick={() =>
                       save.mutate({
@@ -325,10 +312,9 @@ function DeploymentAdmin() {
                     }
                   >
                     {S.settings.deployment.workersApply}
-                  </button>
+                  </Button>
                   {cur !== null && (
-                    <button
-                      className="u-btn u-btn-ghost px-2 py-1 text-[11px] shrink-0 text-neutral-500"
+                    <Button variant="secondary" size="sm" className="shrink-0"
                       disabled={save.isPending}
                       title={S.settings.deployment.modelResetHint}
                       onClick={() =>
@@ -343,7 +329,7 @@ function DeploymentAdmin() {
                       }
                     >
                       {S.settings.deployment.modelReset}
-                    </button>
+                    </Button>
                   )}
                 </div>
               );
@@ -353,7 +339,7 @@ function DeploymentAdmin() {
       </div>
 
       {save.isError && (
-        <p className="text-xs text-rose-400">{(save.error as Error).message}</p>
+        <p className="text-small text-danger">{(save.error as Error).message}</p>
       )}
     </div>
   );
@@ -374,57 +360,55 @@ function KbsAdmin() {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-neutral-500">{S.settings.kbs.hint}</p>
+      <p className="text-small text-ink-3">{S.settings.kbs.hint}</p>
 
-      <div className="glass rounded-xl divide-y divide-white/5">
+      <div className="glass rounded-xl divide-y divide-line">
         {rows.map(({ kb, doc_count, member_count }) => (
           <div key={kb.id} className="px-4 py-3 flex items-center gap-3">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
-                <span className="text-sm text-neutral-200 truncate">
+                <span className="text-body text-ink truncate">
                   {kb.name}
                 </span>
                 {kb.is_default && (
-                  <span className="u-chip u-chip-neutral !text-[10px]">
+                  <span className="u-chip u-chip-neutral !text-fine">
                     {S.settings.kbs.defaultChip}
                   </span>
                 )}
                 {kb.visibility === "restricted" && (
-                  <span className="flex items-center gap-1 text-[10.5px] text-neutral-500">
+                  <span className="flex items-center gap-1 text-fine text-ink-3">
                     <Lock size={10} />
                     {S.settings.kbs.visRestricted}
                   </span>
                 )}
               </div>
-              <div className="mt-0.5 text-xs text-neutral-500">
+              <div className="mt-1 text-small text-ink-3">
                 <span className="u-num">
                   {S.account.kbStats(doc_count, member_count)}
                 </span>
               </div>
             </div>
-            <button
-              className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
+            <Button variant="secondary" size="sm" className="shrink-0"
               onClick={() => {
                 setKb(kb.id);
                 navigate({ to: "/kb/$kbId/settings", params: { kbId: kb.id } });
               }}
             >
               {S.settings.kbs.openSettings}
-            </button>
+            </Button>
           </div>
         ))}
         {!list.isPending && rows.length === 0 && (
-          <p className="px-4 py-6 text-sm text-neutral-500">{S.settings.kbs.empty}</p>
+          <p className="px-4 py-6 text-body text-ink-3">{S.settings.kbs.empty}</p>
         )}
       </div>
 
-      <button
+      <Button variant="primary" size="sm" className="flex items-center gap-2"
         onClick={() => setCreating(true)}
-        className="u-btn u-btn-primary px-3.5 py-1.5 text-xs flex items-center gap-1.5"
       >
         <Plus size={12} />
         {S.settings.kbs.newKb}
-      </button>
+      </Button>
 
       {creating && workspace && (
         <NewKbModal
@@ -488,110 +472,91 @@ function NewKbModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm"
+      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onDone();
       }}
     >
-      <div className="glass-strong w-[24rem] max-w-[calc(100vw-2rem)] rounded-2xl shadow-2xl p-5">
+      <div className="glass-strong w-[24rem] max-w-[calc(100vw-2rem)] rounded-xl shadow-2xl p-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="u-title text-[15px]">{S.settings.kbs.newKb}</h2>
-          <button
+          <h2 className="u-title text-title">{S.settings.kbs.newKb}</h2>
+          <IconButton size="sm" label={S.ui.close}
             onClick={() => onDone()}
-            className="text-neutral-500 hover:text-neutral-200"
           >
             <X size={15} />
-          </button>
+          </IconButton>
         </div>
-        <input
+        <Input className="w-full mb-2"
           autoFocus
-          className="input-dark w-full px-3 py-2 text-sm mb-2"
           placeholder={S.settings.kbs.name}
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <input
-          className="input-dark w-full px-3 py-2 text-sm mb-3"
+        <Input className="w-full mb-3"
           placeholder={S.settings.kbs.description}
           value={desc}
           onChange={(e) => setDesc(e.target.value)}
         />
-        <label className="flex items-center gap-2 text-xs text-neutral-400 mb-4">
-          <input
-            type="checkbox"
-            checked={restricted}
-            onChange={(e) => setRestricted(e.target.checked)}
-          />
-          {S.settings.kbs.visRestricted}
-        </label>
+        <Checkbox
+          className="mb-4"
+          checked={restricted}
+          onChange={(e) => setRestricted(e.target.checked)}
+          label={S.settings.kbs.visRestricted}
+        />
 
         <div className="mb-4">
-          <div className="text-xs text-neutral-300 mb-1">
+          <div className="text-small text-ink-2 mb-1">
             {S.settings.kbs.packsLabel}
           </div>
-          <p className="text-[11px] leading-relaxed text-neutral-500 mb-2">
+          <p className="text-fine leading-relaxed text-ink-3 mb-2">
             {S.settings.kbs.packsHint}
           </p>
-          <div className="grid grid-cols-2 gap-1.5">
+          <div className="grid grid-cols-2 gap-2">
             {available.data?.packs.map((p) => {
               const on = packs.includes(p.id);
               return (
-                <label
+                <ChoiceCard
                   key={p.id}
-                  // 选中态靠边框与底色，勾选框藏起来：五个并排时
-                  // 一排勾选框比内容本身还抢眼
-                  className={
-                    "cursor-pointer rounded-lg border px-2.5 py-2 transition-colors " +
-                    (on
-                      ? "border-white/60 bg-white/[0.12] ring-1 ring-white/30"
-                      : "border-white/10 hover:bg-white/5")
-                  }
+                  checked={on}
+                  onChange={() => toggle(p.id)}
+                  label={p.name}
                 >
-                  <input
-                    type="checkbox"
-                    className="sr-only"
-                    aria-label={p.name}
-                    checked={on}
-                    onChange={() => toggle(p.id)}
-                  />
-                  <span className="block text-xs text-neutral-200">
+                  <span className="block text-small text-ink">
                     {p.name}
                   </span>
-                  <span className="block text-[11px] leading-snug text-neutral-500">
+                  <span className="block text-fine leading-snug text-ink-3">
                     {p.summary}
                   </span>
-                  <span className="mt-0.5 block text-[10px] text-neutral-600">
+                  <span className="mt-1 block text-fine text-ink-3">
                     {S.settings.kbs.packsCount(p.classes, p.properties)}
                   </span>
-                </label>
+                </ChoiceCard>
               );
             })}
           </div>
           {packs.length === 0 && (
-            <p className="text-[11px] text-neutral-500 mt-1.5">
+            <p className="text-fine text-ink-3 mt-2">
               {S.settings.kbs.packsNone}
             </p>
           )}
         </div>
         {create.isError && (
-          <p className="text-xs text-rose-400 mb-2">
+          <p className="text-small text-danger mb-2">
             {(create.error as Error).message}
           </p>
         )}
         <div className="flex justify-end gap-2">
-          <button
-            className="u-btn u-btn-ghost px-3.5 py-1.5 text-xs"
+          <Button variant="secondary" size="sm"
             onClick={() => onDone()}
           >
             {S.library.cancel}
-          </button>
-          <button
-            className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
+          </Button>
+          <Button variant="primary" size="sm"
             disabled={!name.trim() || create.isPending}
             onClick={() => create.mutate()}
           >
             {S.settings.kbs.create}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
@@ -633,20 +598,20 @@ function DataSourcesAdmin() {
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-neutral-500">{S.settings.datasources.hint}</p>
+      <p className="text-small text-ink-3">{S.settings.datasources.hint}</p>
 
-      <div className="glass rounded-xl divide-y divide-white/5">
+      <div className="glass rounded-xl divide-y divide-line">
         {(list.data?.data_sources ?? []).map((d) => (
           <div key={d.id} className="px-4 py-3 space-y-3">
             <div className="flex items-center gap-3">
               <div className="min-w-0 flex-1">
-                <div className="text-sm text-neutral-200">
+                <div className="text-body text-ink">
                   {d.name}
-                  <span className="ml-2 text-[11px] uppercase tracking-wide text-neutral-500">
+                  <span className="ml-2 text-fine uppercase tracking-wide text-ink-3">
                     {d.engine}
                   </span>
                 </div>
-                <div className="text-xs text-neutral-500 font-mono truncate">
+                <div className="text-small text-ink-3 font-mono truncate">
                   {d.summary}
                 </div>
               </div>
@@ -665,57 +630,54 @@ function DataSourcesAdmin() {
                     ? S.settings.datasources.testFail
                     : S.settings.datasources.neverTested}
               </span>
-              <button
-                className="u-btn u-btn-ghost px-2.5 py-1 text-xs shrink-0"
+              <Button variant="secondary" size="sm" className="shrink-0"
                 disabled={test.isPending}
                 onClick={() => test.mutate(d.id)}
               >
                 {S.settings.datasources.test}
-              </button>
-              <button
-                className="text-xs text-neutral-500 hover:text-[var(--u-danger)] shrink-0"
+              </Button>
+              <LinkButton
+                tone="danger"
+                className="shrink-0"
                 disabled={remove.isPending}
                 onClick={() => remove.mutate(d.id)}
               >
                 {S.settings.datasources.remove}
-              </button>
+              </LinkButton>
             </div>
             <SourceGrants sourceId={d.id} />
           </div>
         ))}
         {list.data?.data_sources.length === 0 && (
-          <p className="px-4 py-6 text-sm text-neutral-500">
+          <p className="px-4 py-6 text-body text-ink-3">
             {S.settings.datasources.empty}
           </p>
         )}
       </div>
 
       <div className="glass rounded-xl p-4 space-y-2">
-        <input
-          className="input-dark w-full px-3 py-2 text-sm"
+        <Input className="w-full"
           placeholder={S.settings.datasources.name}
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <input
-          className="input-dark w-full px-3 py-2 text-sm font-mono u-placeholder-sans"
+        <Input className="w-full font-mono u-placeholder-sans"
           placeholder={S.settings.datasources.connString}
           value={conn}
           onChange={(e) => setConn(e.target.value)}
         />
-        <p className="text-[11px] leading-5 text-neutral-500 font-mono whitespace-pre-line">
+        <p className="text-fine leading-5 text-ink-3 font-mono whitespace-pre-line">
           {S.settings.datasources.connSchemes}
         </p>
         <div className="flex items-center gap-3">
-          <button
-            className="u-btn u-btn-primary px-3.5 py-1.5 text-xs"
+          <Button variant="primary" size="sm"
             disabled={!name.trim() || !conn.trim() || create.isPending}
             onClick={() => create.mutate()}
           >
             {S.settings.datasources.add}
-          </button>
+          </Button>
           {create.isError && (
-            <span className="text-xs text-rose-400">
+            <span className="text-small text-danger">
               {(create.error as Error).message}
             </span>
           )}
@@ -806,23 +768,25 @@ export function Settings() {
   });
 
   if (!workspace)
-    return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
+    return <div className="p-8 text-body text-ink-3">{S.nav.loading}</div>;
 
   const set =
     (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
       setForm({ ...form, [k]: e.target.value });
 
-  const input = "input-dark w-full px-3 py-2 text-sm";
-  const label = "block text-xs font-medium text-neutral-400 mb-1";
+  const label = "block text-small font-medium text-ink-2 mb-1";
 
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="max-w-xl">
-        <h2 className="text-lg font-bold text-neutral-100 mb-3">
+        <h2 className="text-title font-semibold text-ink mb-3">
           {S.settings.title}
         </h2>
-        <div className="flex gap-1 mb-5 bg-white/5 rounded-lg p-1 w-fit">
-          {(
+        <Segmented
+          className="mb-6 w-fit"
+          value={tab}
+          onChange={setTab}
+          options={(
             [
               ["models", S.settings.tabModels],
               ["members", S.settings.tabMembers],
@@ -830,20 +794,8 @@ export function Settings() {
               ["datasources", S.settings.datasources.tab],
               ["deployment", S.settings.tabDeployment],
             ] as const
-          ).map(([key, tabLabel]) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`rounded-md px-4 py-1.5 text-sm font-medium transition-colors ${
-                tab === key
-                  ? "bg-white/10 text-neutral-100"
-                  : "text-neutral-500 hover:text-neutral-300"
-              }`}
-            >
-              {tabLabel}
-            </button>
-          ))}
-        </div>
+          ).map(([key, tabLabel]) => ({ value: key, label: tabLabel }))}
+        />
 
         {tab === "members" && <Members workspaceId={workspace.id} />}
         {tab === "kbs" && <KbsAdmin />}
@@ -852,13 +804,13 @@ export function Settings() {
 
         {tab === "models" && (
           <>
-            <p className="text-sm text-neutral-400 mb-4">
+            <p className="text-body text-ink-2 mb-4">
               {S.settings.modelsIntro}
             </p>
 
-            <div className="mb-5 flex flex-wrap gap-2">
+            <div className="mb-6 flex flex-wrap gap-2">
               {Object.entries(PRESETS).map(([name, p]) => (
-                <button
+                <Pill
                   key={name}
                   onClick={() =>
                     setForm({
@@ -869,21 +821,20 @@ export function Settings() {
                       embed_model: p.embedModel,
                     })
                   }
-                  className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-neutral-300 hover:border-[rgba(var(--u-accent-deep),0.5)] hover:text-[var(--u-accent)]"
                 >
                   {name}
-                </button>
+                </Pill>
               ))}
             </div>
 
-            <div className="glass rounded-xl p-5 space-y-4">
-              <h3 className="text-sm font-bold text-neutral-200">
+            <div className="glass rounded-xl p-6 space-y-4">
+              <h3 className="text-body font-semibold text-ink">
                 {S.settings.chatModel}
               </h3>
               <div>
                 <label className={label}>{S.settings.baseUrl}</label>
-                <input
-                  className={input}
+                <Input
+                  className="w-full"
                   placeholder="https://api.deepseek.com/v1"
                   value={form.chat_base_url}
                   onChange={set("chat_base_url")}
@@ -892,8 +843,8 @@ export function Settings() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={label}>{S.settings.model}</label>
-                  <input
-                    className={input}
+                  <Input
+                    className="w-full"
                     placeholder="deepseek-chat"
                     value={form.chat_model}
                     onChange={set("chat_model")}
@@ -903,13 +854,13 @@ export function Settings() {
                   <label className={label}>
                     {S.settings.apiKey}{" "}
                     {settings.data?.has_chat_key && (
-                      <span className="text-[var(--u-accent)]">
+                      <span className="text-accent">
                         {S.settings.keyConfigured}
                       </span>
                     )}
                   </label>
-                  <input
-                    className={input}
+                  <Input
+                    className="w-full"
                     type="password"
                     placeholder="sk-…"
                     value={form.chat_api_key}
@@ -918,13 +869,13 @@ export function Settings() {
                 </div>
               </div>
 
-              <h3 className="text-sm font-bold text-neutral-200 pt-2">
+              <h3 className="text-body font-semibold text-ink pt-2">
                 {S.settings.embedModel}
               </h3>
               <div>
                 <label className={label}>{S.settings.baseUrl}</label>
-                <input
-                  className={input}
+                <Input
+                  className="w-full"
                   placeholder="http://localhost:11434/v1"
                   value={form.embed_base_url}
                   onChange={set("embed_base_url")}
@@ -933,8 +884,8 @@ export function Settings() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className={label}>{S.settings.model}</label>
-                  <input
-                    className={input}
+                  <Input
+                    className="w-full"
                     placeholder="bge-m3"
                     value={form.embed_model}
                     onChange={set("embed_model")}
@@ -944,13 +895,13 @@ export function Settings() {
                   <label className={label}>
                     {S.settings.apiKey}{" "}
                     {settings.data?.has_embed_key && (
-                      <span className="text-[var(--u-accent)]">
+                      <span className="text-accent">
                         {S.settings.keyConfigured}
                       </span>
                     )}
                   </label>
-                  <input
-                    className={input}
+                  <Input
+                    className="w-full"
                     type="password"
                     value={form.embed_api_key}
                     onChange={set("embed_api_key")}
@@ -959,39 +910,37 @@ export function Settings() {
               </div>
 
               <div className="flex gap-2 pt-2">
-                <button
+                <Button variant="primary" size="md"
                   onClick={() => save.mutate()}
                   disabled={save.isPending}
-                  className="u-btn u-btn-primary px-4 py-2 text-sm"
                 >
                   {save.isPending ? S.settings.saving : S.settings.save}
-                </button>
-                <button
+                </Button>
+                <Button variant="secondary" size="md"
                   onClick={() => test.mutate()}
                   disabled={test.isPending}
-                  className="u-btn u-btn-ghost px-4 py-2 text-sm"
                 >
                   {test.isPending ? S.settings.testing : S.settings.test}
-                </button>
+                </Button>
               </div>
 
               {save.isSuccess && (
-                <p className="text-sm text-[var(--u-accent)]">
+                <p className="text-body text-accent">
                   {S.settings.saved}
                 </p>
               )}
               {save.isError && (
-                <p className="text-sm text-rose-400">
+                <p className="text-body text-danger">
                   {(save.error as Error).message}
                 </p>
               )}
               {test.data && (
-                <div className="text-sm space-y-1 pt-1">
+                <div className="text-body space-y-1 pt-1">
                   <p
                     className={
                       test.data.chat.ok
-                        ? "text-[var(--u-accent)]"
-                        : "text-rose-400"
+                        ? "text-accent"
+                        : "text-danger"
                     }
                   >
                     {S.settings.chatLabel}:{" "}
@@ -1002,8 +951,8 @@ export function Settings() {
                   <p
                     className={
                       test.data.embed.ok
-                        ? "text-[var(--u-accent)]"
-                        : "text-neutral-400"
+                        ? "text-accent"
+                        : "text-ink-2"
                     }
                   >
                     {S.settings.embedLabel}:{" "}

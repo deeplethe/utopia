@@ -1639,6 +1639,7 @@ export const en = {
   },
   /** 通用组件文案（SearchSelect 等） */
   ui: {
+    close: "Close",
     noMatches: "No matches",
     keepTyping: (n: number) => `${n} more — keep typing to narrow down`,
   },

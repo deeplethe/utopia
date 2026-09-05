@@ -63,7 +63,26 @@ import {
   type ProofStep,
 } from "../api";
 import { S } from "../i18n";
-import { Button, DangerConfirm, Input, localDate } from "../ui";
+import {
+  Button,
+  DangerConfirm,
+  ExpandCard,
+  Field,
+  HOVER_ROW,
+  IconButton,
+  Input,
+  NativeSelect,
+  Pill,
+  Radio,
+  REVEAL,
+  Row,
+  Segmented,
+  ToolButton,
+  ToolDivider,
+  ToolTower,
+  cn,
+  localDate,
+} from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
@@ -1215,7 +1234,7 @@ export function Graph() {
   }, [data.data]);
 
   if (!kb)
-    return <div className="p-8 text-sm text-neutral-500">{S.nav.loading}</div>;
+    return <div className="p-8 text-body text-ink-3">{S.nav.loading}</div>;
 
   const empty = data.isSuccess && data.data.nodes.length === 0;
   const nodeCount = data.data?.nodes.length ?? 0;
@@ -1231,8 +1250,8 @@ export function Graph() {
       {/* 顶部悬浮条：搜索 + 图例 + 状态 */}
       <div className="absolute top-3 left-3 right-3 z-10 flex items-start gap-2 pointer-events-none">
         <div className="relative pointer-events-auto">
-          <input
-            className="input-dark w-60 px-3 py-[5px] text-sm shadow-lg"
+          <Input
+            className="w-60 shadow-lg"
             placeholder={
               inSubgraph ? S.graph.searchInSubgraph : S.graph.searchEntity
             }
@@ -1245,8 +1264,9 @@ export function Graph() {
           {searchQ && searchHits.length > 0 && (
             <div className="glass-strong absolute mt-1 w-full rounded-lg shadow-xl overflow-hidden">
               {searchHits.map((c) => (
-                <button
+                <Row
                   key={c.id}
+                  trailing={c.type_label}
                   onClick={() => {
                     // 子图内命中：只选中（已在视野里）；全图搜索：跳到该实体邻域
                     if (!inSubgraph) setFocusEntity(c.id);
@@ -1254,56 +1274,58 @@ export function Graph() {
                     setSearchInput("");
                     setSearchQ("");
                   }}
-                  className="w-full px-3 py-1.5 text-left text-sm text-neutral-200 hover:bg-white/5 flex items-center gap-2"
                 >
-                  <span
-                    className="h-2.5 w-2.5 rounded-full shrink-0"
-                    style={{ background: c.color }}
-                  />
-                  <span className="truncate">{c.name}</span>
-                  {c.disambiguator && (
-                    <span className="text-xs text-neutral-500 truncate">
-                      · {c.disambiguator}
-                    </span>
-                  )}
-                  <span className="ml-auto text-xs text-neutral-500">
-                    {c.type_label}
+                  <span className="flex items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ background: c.color }}
+                    />
+                    <span className="truncate">{c.name}</span>
+                    {c.disambiguator && (
+                      <span className="truncate text-small text-ink-3">
+                        · {c.disambiguator}
+                      </span>
+                    )}
                   </span>
-                </button>
+                </Row>
               ))}
               {/* 还有更多没显示。**说清剩多少**——从前固定十条，想找的那个
                   不在这十条里的时候，界面上一点线索都没有。子图内搜索是客户端
                   过滤，没有「更多」这回事 */}
               {!inSubgraph &&
                 (candidates.data?.total ?? 0) > searchHits.length && (
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full justify-start rounded-none border-t border-line"
                     onClick={() => setSearchLimit((n) => n + 20)}
-                    className="w-full border-t border-white/10 px-3 py-1.5 text-left text-xs text-neutral-400 hover:bg-white/5 hover:text-neutral-200"
                   >
                     {S.graph.searchMore(
                       candidates.data!.total - searchHits.length,
                     )}
-                  </button>
+                  </Button>
                 )}
             </div>
           )}
         </div>
         {focusEntity && (
-          <button
+          <Button
+            variant="secondary"
+            className="glass-strong pointer-events-auto shadow-lg"
             onClick={() => setFocusEntity(null)}
-            className="u-btn u-btn-ghost glass-strong pointer-events-auto px-3 py-1.5 text-sm shadow-lg"
           >
             {S.graph.backToOverview}
-          </button>
+          </Button>
         )}
 
         {/* 图例（点击切换类型显隐）。**只摆前 LEGEND_MAX 个**，其余收进
             「+N 个类」——那一排横着长，类一多就换行把画布顶下去；而且十几个
             一模一样的胶囊排开，谁重要也读不出来 */}
-        <div className="pointer-events-auto flex flex-wrap gap-1.5 pt-0.5">
+        <div className="pointer-events-auto flex flex-wrap gap-2 pt-1">
           {legendShown.map(([key, t]) => (
-            <button
+            <Pill
               key={key}
+              dim={hiddenTypes.has(key)}
               onClick={() =>
                 setHiddenTypes((prev) => {
                   const next = new Set(prev);
@@ -1312,16 +1334,13 @@ export function Graph() {
                   return next;
                 })
               }
-              className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-opacity ${
-                hiddenTypes.has(key) ? "opacity-35" : ""
-              }`}
             >
               <span
                 className={`h-2 w-2 ${t.shape === "square" ? "" : "rounded-full"}`}
                 style={{ background: t.color }}
               />
-              <span className="text-neutral-300">{t.label}</span>
-            </button>
+              <span>{t.label}</span>
+            </Pill>
           ))}
 
           {/* chip 上的数是**全部类**，不是被收起来的那几个——
@@ -1329,34 +1348,29 @@ export function Graph() {
           {/* 复位。**只要存在隐藏就给一步到位的出口**——「只看」很容易把
               画面收得很窄，没有这个就得挨个点回来 */}
           {hiddenTypes.size > 0 && (
-            <button
-              onClick={() => setHiddenTypes(new Set())}
-              className="glass rounded-full px-2.5 py-1 text-[11px] text-neutral-400 transition-colors hover:text-neutral-100"
-            >
+            <Pill onClick={() => setHiddenTypes(new Set())}>
               {S.graph.legendShowAll(hiddenTypes.size)}
-            </button>
+            </Pill>
           )}
 
           {legendRest.length > 0 && (
             <div className="relative" ref={legendPop.rootRef}>
-              <button
+              <Pill
                 ref={legendPop.anchorRef}
+                active={legendPop.open}
+                title={S.graph.legendAllHint}
+                aria-expanded={legendPop.open}
                 onClick={() =>
                   legendPop.open ? legendPop.close() : legendPop.setOpen(true)
                 }
-                title={S.graph.legendAllHint}
-                aria-expanded={legendPop.open}
-                className={`glass rounded-full px-2.5 py-1 text-[11px] flex items-center gap-1.5 transition-colors ${
-                  legendPop.open ? "text-neutral-100" : "text-neutral-400"
-                } hover:text-neutral-100`}
               >
                 {S.graph.legendMore(types.length)}
                 {/* 收起来的类里有正被隐藏的就点一下。**不点就是无声过滤**：
                     在面板里关掉一个类、把面板一收，界面上再没有任何东西说它被关了 */}
                 {hiddenInRest > 0 && (
-                  <span className="h-1.5 w-1.5 rounded-full bg-neutral-300" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-ink-2" />
                 )}
-              </button>
+              </Pill>
               {legendPop.open && (
                 <div
                   ref={legendPop.panelRef}
@@ -1365,19 +1379,17 @@ export function Graph() {
                   {/* 面板盖在 chip 原位，所以**第一行就长成那个 chip 的样子**，
                       点它收回去——「哪儿展开的就从哪儿收回去」，
                       与通知/用户卡片的关闭键跟触发键原位重合是同一个道理 */}
-                  <button
-                    onClick={() => legendPop.close()}
-                    className="mb-1.5 flex w-full items-center gap-1.5 rounded-full px-1.5 py-0.5 text-[11px] text-neutral-300 transition-colors hover:text-neutral-100"
-                  >
+                  <Pill className="mb-2 w-full" onClick={() => legendPop.close()}>
                     {S.graph.legendMore(types.length)}
-                    <X size={11} className="ml-auto text-neutral-500" />
-                  </button>
-                  <input
+                    <X size={11} className="ml-auto text-ink-3" />
+                  </Pill>
+                  <Input
+                    size="sm"
                     autoFocus
                     value={legendQ}
                     onChange={(e) => setLegendQ(e.target.value)}
                     placeholder={S.graph.legendSearch}
-                    className="input-dark mb-1.5 w-full px-2 py-1 text-[12px]"
+                    className="mb-2 w-full"
                   />
                   {/* **列的是全部类，不只是收起来的那些**：想找一个类的时候，
                       没人记得它是不是恰好排进了前几个 */}
@@ -1394,9 +1406,12 @@ export function Graph() {
                            拆开之后每个手势含义固定 */
                         <div
                           key={key}
-                          className="group flex items-center gap-2 rounded px-1.5 py-1 hover:bg-white/5"
+                          className={HOVER_ROW}
                         >
-                          <button
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="min-w-0 flex-1 justify-start px-0"
                             onClick={() =>
                               setHiddenTypes((prev) => {
                                 const next = new Set(prev);
@@ -1405,7 +1420,6 @@ export function Graph() {
                                 return next;
                               })
                             }
-                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
                           >
                             <span
                               className={`h-2 w-2 shrink-0 ${t.shape === "square" ? "" : "rounded-full"}`}
@@ -1415,18 +1429,20 @@ export function Graph() {
                               }}
                             />
                             <span
-                              className={`truncate text-[12px] ${
-                                hiddenTypes.has(key)
-                                  ? "text-neutral-500 line-through"
-                                  : "text-neutral-200"
-                              }`}
+                              className={cn(
+                                "truncate text-small",
+                                hiddenTypes.has(key) ? "text-ink-3 line-through" : "text-ink",
+                              )}
                             >
                               {t.label}
                             </span>
-                          </button>
+                          </Button>
                           {/* 「只看这个」：类一多时最想要的动作。**给显式按钮而不是
                               修饰键**——alt+点击没人猜得到，这里横向有地方 */}
-                          <button
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className={cn(REVEAL, "shrink-0")}
                             onClick={() =>
                               setHiddenTypes(
                                 new Set(
@@ -1434,11 +1450,10 @@ export function Graph() {
                                 ),
                               )
                             }
-                            className="shrink-0 rounded px-1 text-[10px] text-neutral-500 opacity-0 transition-opacity hover:text-white focus:opacity-100 group-hover:opacity-100"
                           >
                             {S.graph.legendOnly}
-                          </button>
-                          <span className="u-num shrink-0 text-[11px] text-neutral-500">
+                          </Button>
+                          <span className="u-num shrink-0 text-fine text-ink-3">
                             {t.count}
                           </span>
                         </div>
@@ -1447,7 +1462,7 @@ export function Graph() {
                       ([, t]) =>
                         !t.label.toLowerCase().includes(legendQ.toLowerCase()),
                     ) && (
-                      <div className="px-1.5 py-2 text-[12px] text-neutral-500">
+                      <div className="px-2 py-2 text-small text-ink-3">
                         {S.graph.legendNone}
                       </div>
                     )}
@@ -1463,23 +1478,24 @@ export function Graph() {
             外壳保持中性——这一片是 chrome，彩色只属于数据 */}
         <div className="ml-auto flex flex-col items-end gap-1">
           <div className="flex items-start gap-2">
-            <div className="pointer-events-auto flex items-center overflow-hidden rounded-md border border-white/10">
-            <button
-              title={S.graph.nodeBudgetLess}
+            <div className="pointer-events-auto flex items-center overflow-hidden rounded-lg border border-line">
+            <IconButton
+              size="sm"
+              label={S.graph.nodeBudgetLess}
               disabled={nodeBudget <= NODE_BUDGETS[0]}
               onClick={() =>
                 setNodeBudget(
                   (b) => NODE_BUDGETS[Math.max(0, NODE_BUDGETS.indexOf(b) - 1)],
                 )
               }
-              className="px-1.5 py-[3px] text-[11px] leading-none text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-neutral-400"
             >
               −
-            </button>
+            </IconButton>
             {/* **画满了就别再给「多画」**：库里一共就这么多，再调高什么也不会变，
                 而一个点了没反应的按钮比没有这个按钮更糟 */}
-            <button
-              title={S.graph.nodeBudgetMore}
+            <IconButton
+              size="sm"
+              label={S.graph.nodeBudgetMore}
               disabled={
                 !capped || nodeBudget >= NODE_BUDGETS[NODE_BUDGETS.length - 1]
               }
@@ -1491,12 +1507,11 @@ export function Graph() {
                     ],
                 )
               }
-              className="px-1.5 py-[3px] text-[11px] leading-none text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-white disabled:opacity-25 disabled:hover:bg-transparent disabled:hover:text-neutral-400"
             >
               +
-            </button>
+            </IconButton>
           </div>
-          <div className="pointer-events-none pt-0.5 u-num text-[11px] text-neutral-500">
+          <div className="pointer-events-none pt-1 u-num text-fine text-ink-3">
           {/* 画满上限时说清「画了多少 / 共多少」。**这个数从前是上限冒充规模**——
               一个上万实体的库右上角永远写着 150 */}
           {capped ? (
@@ -1527,7 +1542,7 @@ export function Graph() {
               于是每次重新布局，左边的档位按钮都会被挤着跳一下。
               自己占一行，第一行的宽度就不再随它变 */}
           {stabilizing && (
-            <div className="flex items-center gap-1.5 text-[11px] text-neutral-400">
+            <div className="flex items-center gap-2 text-fine text-ink-2">
               <Loader2 size={11} className="animate-spin" />
               {S.graph.stabilizing}
             </div>
@@ -1563,47 +1578,38 @@ export function Graph() {
              那个类是给按钮堆裁圆角的，可面板是同一个盒子的子元素——
              合成一层的话面板会被一起裁掉，实测只剩塔本身那 32px 宽 */
           <div className="relative" ref={derivedPop.rootRef}>
-            <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
-            <button
-              onClick={() => setShowDerived((v) => !v)}
-              role="switch"
-              aria-checked={showDerived}
-              title={`${S.graph.derivedEdges(derivedCount)} · ${S.graph.derivedHint}`}
-              className={`flex items-center p-2 transition-colors ${
-                showDerived
-                  ? "bg-white/[0.1]"
-                  : "text-neutral-500 hover:bg-white/[0.06]"
-              }`}
-              style={
-                showDerived ? { color: "rgba(231,197,124,0.95)" } : undefined
-              }
-            >
-              <Waypoints size={15} />
-              <span className="u-tower-label">{S.graph.viewDerived}</span>
-            </button>
-            <div className="h-px bg-white/10 mx-1.5" />
-            {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
-                **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
-                是偶尔才问的，合成一个会让常用动作多一步 */}
-            <button
-              ref={derivedPop.anchorRef}
-              onClick={() =>
-                derivedPop.open ? derivedPop.close() : derivedPop.setOpen(true)
-              }
-              title={S.graph.derivedPanel}
-              aria-expanded={derivedPop.open}
-              className={`flex items-center p-2 text-[11px] leading-none transition-colors ${
-                derivedPop.open
-                  ? "text-white bg-white/[0.1]"
-                  : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
-              }`}
-            >
-              <span className="grid h-[15px] w-[15px] shrink-0 place-items-center leading-none">
-                ⋯
-              </span>
-              <span className="u-tower-label">{S.graph.derivedPanel}</span>
-            </button>
-            </div>
+            <ToolTower>
+              <ToolButton
+                role="switch"
+                aria-checked={showDerived}
+                active={showDerived}
+                label={S.graph.viewDerived}
+                title={`${S.graph.derivedEdges(derivedCount)} · ${S.graph.derivedHint}`}
+                icon={<Waypoints size={15} />}
+                style={
+                  showDerived ? { color: "rgba(231,197,124,0.95)" } : undefined
+                }
+                onClick={() => setShowDerived((v) => !v)}
+              />
+              <ToolDivider />
+              {/* 展开成一个小窗：这批边是什么时候推的、现在还推不推、手动再跑一次。
+                  **与开关分成两个按钮**——「藏起来」是每天要点的，「什么时候推的」
+                  是偶尔才问的，合成一个会让常用动作多一步 */}
+              <ToolButton
+                ref={derivedPop.anchorRef}
+                aria-expanded={derivedPop.open}
+                active={derivedPop.open}
+                label={S.graph.derivedPanel}
+                icon={
+                  <span className="grid h-4 w-4 shrink-0 place-items-center leading-none">
+                    ⋯
+                  </span>
+                }
+                onClick={() =>
+                  derivedPop.open ? derivedPop.close() : derivedPop.setOpen(true)
+                }
+              />
+            </ToolTower>
             {derivedPop.open && kb && (
               <DerivedPanel
                 panelRef={derivedPop.panelRef}
@@ -1614,7 +1620,7 @@ export function Graph() {
             )}
           </div>
         )}
-        <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
+        <ToolTower>
           {(
             [
               { key: "force", Icon: Orbit, label: S.graph.layoutForce },
@@ -1626,58 +1632,43 @@ export function Graph() {
               { key: "pack", Icon: Grape, label: S.graph.layoutPack },
             ] as const
           ).map(({ key, Icon, label }) => (
-            <button
+            <ToolButton
               key={key}
-              title={label}
+              active={layoutMode === key}
+              label={label}
+              icon={<Icon size={15} />}
               onClick={() => {
                 setLayoutMode(key);
                 layoutModeRef.current = key;
                 layoutCtlRef.current?.apply(key);
               }}
-              className={`flex items-center p-2 transition-colors ${
-                layoutMode === key
-                  ? "text-white bg-white/[0.1]"
-                  : "text-neutral-400 hover:text-white hover:bg-white/[0.06]"
-              }`}
-            >
-              <Icon size={15} />
-              <span className="u-tower-label">{label}</span>
-            </button>
+            />
           ))}
-        </div>
-        <div className="u-tower group glass-strong rounded-xl shadow-xl flex flex-col overflow-hidden">
-          <button
-            title={S.graph.zoomIn}
+        </ToolTower>
+        <ToolTower>
+          <ToolButton
+            label={S.graph.zoomIn}
+            icon={<ZoomIn size={15} />}
             onClick={() =>
               sigmaRef.current?.getCamera().animatedZoom({ duration: 220 })
             }
-            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-          >
-            <ZoomIn size={15} />
-            <span className="u-tower-label">{S.graph.zoomIn}</span>
-          </button>
-          <button
-            title={S.graph.zoomOut}
+          />
+          <ToolButton
+            label={S.graph.zoomOut}
+            icon={<ZoomOut size={15} />}
             onClick={() =>
               sigmaRef.current?.getCamera().animatedUnzoom({ duration: 220 })
             }
-            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-          >
-            <ZoomOut size={15} />
-            <span className="u-tower-label">{S.graph.zoomOut}</span>
-          </button>
-          <div className="h-px bg-white/10 mx-1.5" />
-          <button
-            title={S.graph.fitView}
+          />
+          <ToolDivider />
+          <ToolButton
+            label={S.graph.fitView}
+            icon={<Maximize2 size={15} />}
             onClick={() =>
               sigmaRef.current?.getCamera().animatedReset({ duration: 300 })
             }
-            className="flex items-center p-2 text-neutral-400 hover:text-white hover:bg-white/[0.06] transition-colors"
-          >
-            <Maximize2 size={15} />
-            <span className="u-tower-label">{S.graph.fitView}</span>
-          </button>
-        </div>
+          />
+        </ToolTower>
       </div>
 
       {/* pb 把这块从几何正中抬起 40px：视觉重心比几何中心略高一点，
@@ -1932,10 +1923,13 @@ function TimeScrubber({
        仍夹在视口内（calc 那一项），窄屏不会顶出去。
        实测宽度：年 320 / 月 648 / 日 760。 */
     <div
-      className={`glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 rounded-2xl px-3 py-2 flex items-center gap-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.5)] u-scrub-island${playing ? " u-solid" : ""}`}
+      className={`glass-strong absolute bottom-4 left-1/2 -translate-x-1/2 z-10 rounded-xl px-3 py-2 flex items-center gap-3 shadow-[0_12px_40px_rgba(0,0,0,0.5)] u-scrub-island${playing ? " u-solid" : ""}`}
       style={{ width: `min(${trackW}px, calc(100vw - 4rem))` }}
     >
-      <button
+      <IconButton
+        variant="secondary"
+        className="shrink-0"
+        label={playing ? S.graph.pause : S.graph.play}
         onClick={() => {
           // 已经在末端（`Now`）时按播放要从头来。**否则第一下等于没反应**：
           // acc 起点就是终点，循环第一帧就判定播完，只把位置清成 All time
@@ -1946,41 +1940,30 @@ function TimeScrubber({
             onChange(minTs);
           setPlaying(!playing);
         }}
-        title={playing ? S.graph.pause : S.graph.play}
-        className="u-btn u-btn-ghost h-8 w-8 shrink-0 grid place-items-center rounded-lg"
       >
         {playing ? <Pause size={13} /> : <Play size={13} />}
-      </button>
+      </IconButton>
 
       {/* 步长。**播放与柱子共用它**——从前柱子按年、播放按天，
           界面上没有一处说得出「一格是多久」 */}
-      <div
-        title={S.graph.scrubUnitHint}
-        /* **与播放键同高同圆角**：那个键是 h-8 / rounded-lg，
-           而这里从前是 py-[3px] 撑出来的 20px 高、rounded-md——
-           并排放着两个尺寸和圆角都不一样的东西，看着不像一套 */
-        className="flex h-8 shrink-0 items-center overflow-hidden rounded-lg border border-white/10"
-      >
-        {(["year", "month", "day"] as const).map((u) => (
-          <button
-            key={u}
-            onClick={() => setUnit(u)}
-            className={`grid h-full place-items-center px-2 text-[10px] leading-none transition-colors ${
-              unit === u
-                ? "bg-white/[0.08] text-neutral-100"
-                : "text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-300"
-            }`}
-          >
-            {u === "year"
+      <Segmented
+        size="sm"
+        className="shrink-0"
+        value={unit}
+        onChange={setUnit}
+        options={(["year", "month", "day"] as const).map((u) => ({
+          value: u,
+          title: S.graph.scrubUnitHint,
+          label:
+            u === "year"
               ? S.graph.scrubUnitYear
               : u === "month"
                 ? S.graph.scrubUnitMonth
-                : S.graph.scrubUnitDay}
-          </button>
-        ))}
-      </div>
+                : S.graph.scrubUnitDay,
+        }))}
+      />
 
-      <span className="shrink-0 u-num text-[10px] text-neutral-600">
+      <span className="shrink-0 u-num text-fine text-ink-3">
         {minYear}
       </span>
 
@@ -1989,7 +1972,7 @@ function TimeScrubber({
         ref={trackRef}
         onMouseEnter={() => setTrackHover(true)}
         onMouseLeave={() => setTrackHover(false)}
-        className="relative h-9 min-w-[150px] flex-1 overflow-hidden rounded-lg bg-white/[0.04]"
+        className="relative h-9 min-w-[150px] flex-1 overflow-hidden rounded-lg bg-surface"
       >
         {/* 演完由 **React** 卸载，**别自己 `remove()`**。
             从前是 `onAnimationEnd={(e) => e.currentTarget.remove()}`——
@@ -2028,7 +2011,7 @@ function TimeScrubber({
                 title={`${stamp} · ${b.n}${merged > 1 ? ` · ${S.graph.scrubBarMerged(merged)}` : ""}`}
               >
                 <div
-                  className="w-full rounded-[1px] transition-colors"
+                  className="u-bar w-full"
                   style={{
                     height: `${Math.max(10, b.h * 100)}%`,
                     // 播放中已扫过的提亮，停止后回到常规亮度。
@@ -2083,50 +2066,30 @@ function TimeScrubber({
         />
       </div>
 
-      <span className="shrink-0 u-num text-[10px] text-neutral-600">
+      <span className="shrink-0 u-num text-fine text-ink-3">
         {maxYear}
       </span>
 
-      <div className="w-[5.6rem] shrink-0 text-center u-num text-xs text-neutral-200">
+      <div className="w-[5.6rem] shrink-0 text-center u-num text-small text-ink">
         {label}
       </div>
 
-      <div className="h-5 w-px shrink-0 bg-white/10" />
+      <div className="h-5 w-px shrink-0 bg-surface-3" />
 
       {/* 双锚点分段：所处锚点高亮、点击即跳；拖在中间某天时两者皆不亮 */}
-      <div className="flex shrink-0 rounded-lg overflow-hidden border border-white/10">
-        {(
-          [
-            {
-              key: "all",
-              label: S.graph.allTime,
-              active: value === null,
-              to: null,
-            },
-            {
-              key: "now",
-              label: S.graph.nowBtn,
-              active: value !== null && maxTs - value < DAY_MS,
-              to: maxTs,
-            },
-          ] as const
-        ).map((a) => (
-          <button
-            key={a.key}
-            onClick={() => {
-              setPlaying(false);
-              onChange(a.to);
-            }}
-            className={`px-2.5 py-1.5 text-xs transition-colors ${
-              a.active
-                ? "bg-white/10 text-neutral-100"
-                : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-            }`}
-          >
-            {a.label}
-          </button>
-        ))}
-      </div>
+      <Segmented<"all" | "now" | "none">
+        size="sm"
+        className="shrink-0"
+        value={value === null ? "all" : maxTs - value < DAY_MS ? "now" : "none"}
+        onChange={(k) => {
+          setPlaying(false);
+          onChange(k === "all" ? null : maxTs);
+        }}
+        options={[
+          { value: "all", label: S.graph.allTime },
+          { value: "now", label: S.graph.nowBtn },
+        ]}
+      />
     </div>
   );
 }
@@ -2241,54 +2204,52 @@ function DerivedPanel({
   return (
     <div
       ref={panelRef}
-      className="u-menu-glass pointer-events-auto absolute bottom-0 left-0 z-50 w-72 overflow-hidden rounded-xl px-3 pb-3 pt-2.5 shadow-2xl"
+      className="u-menu-glass pointer-events-auto absolute bottom-0 left-0 z-50 w-72 overflow-hidden rounded-xl px-3 pb-3 pt-3 shadow-2xl"
     >
       {/* items-center 而不是 baseline：标题旁边站着一个按钮和一个关闭键，
           按基线对齐会让那两个看着往上飘 */}
       <div className="flex items-center gap-2">
-        <span className="text-[13px] text-neutral-100">
+        <span className="text-body text-ink">
           {S.graph.derivedPanel}
         </span>
         {!armed && (
-          <button
-            /* **要长得像个按钮**：从前是一段灰色幽灵文字夹在标题与 × 之间，
-               读起来像第三个标题而不是一个动作。加边框 + 内距，
-               与右上角那个档位加减器同一档次要控件的样子 */
-            className="ml-auto rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-neutral-400 transition-colors hover:border-white/20 hover:text-neutral-100"
+          <Button
+            variant="secondary"
+            size="sm"
+            className="ml-auto"
             disabled={!on || run.isPending}
             title={on ? undefined : S.err.inference_off}
             onClick={() => setArmed(true)}
           >
             {run.isPending ? S.graph.derivedRunning : S.graph.derivedRun}
-          </button>
+          </Button>
         )}
         {/* 固定 18px 方格：**别让关闭键撑起标题行的高**——一撑高，
             行里最矮的标题就被居中挤出上下空当，看着像上边距过大 */}
-        <button
-          className={`${armed ? "ml-auto " : ""}grid h-[18px] w-[18px] place-items-center rounded text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-200`}
+        <IconButton
+          size="sm"
+          label={S.graph.close}
+          className={armed ? "ml-auto" : undefined}
           onClick={onClose}
-          aria-label={S.graph.close}
         >
           ×
-        </button>
+        </IconButton>
       </div>
 
       {/* 问句 + 两个目标。**取消排在前面**：从「跑」那一下移过来最先碰到的
           是取消，误触的代价小的那个该更近 */}
       {armed && (
-        <div className="mt-2 rounded-lg bg-white/[0.04] p-2">
-          <p className="text-[11px] leading-relaxed text-neutral-300">
+        <div className="mt-2 rounded-lg bg-surface p-2">
+          <p className="text-fine leading-relaxed text-ink-2">
             {S.graph.derivedRunAsk}
           </p>
-          <div className="mt-1.5 flex gap-1.5">
-            <button
-              className="rounded px-2 py-0.5 text-[11px] text-neutral-400 transition-colors hover:bg-white/[0.06] hover:text-neutral-100"
-              onClick={() => setArmed(false)}
-            >
+          <div className="mt-2 flex gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setArmed(false)}>
               {S.graph.derivedRunCancel}
-            </button>
-            <button
-              className="rounded bg-white/10 px-2 py-0.5 text-[11px] text-neutral-100 transition-colors hover:bg-white/[0.16]"
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
               disabled={run.isPending}
               onClick={() => {
                 setArmed(false);
@@ -2296,27 +2257,27 @@ function DerivedPanel({
               }}
             >
               {S.graph.derivedRunGo}
-            </button>
+            </Button>
           </div>
         </div>
       )}
 
-      <dl className="mt-2 space-y-1 text-[11px]">
+      <dl className="mt-2 space-y-1 text-fine">
         <div className="flex justify-between gap-3">
-          <dt className="text-neutral-500">{S.graph.derivedCountLabel}</dt>
-          <dd className="u-num text-neutral-200">{count}</dd>
+          <dt className="text-ink-3">{S.graph.derivedCountLabel}</dt>
+          <dd className="u-num text-ink">{count}</dd>
         </div>
         <div className="flex justify-between gap-3">
-          <dt className="text-neutral-500">{S.graph.derivedStateLabel}</dt>
-          <dd className={on ? "text-neutral-200" : "text-[var(--u-warn)]"}>
+          <dt className="text-ink-3">{S.graph.derivedStateLabel}</dt>
+          <dd className={on ? "text-ink" : "text-warn"}>
             {on
               ? S.graph.derivedOn(kb.data!.inference_interval_minutes)
               : S.graph.derivedOff}
           </dd>
         </div>
         <div className="flex justify-between gap-3">
-          <dt className="text-neutral-500">{S.graph.derivedLastLabel}</dt>
-          <dd className="u-num text-neutral-200">
+          <dt className="text-ink-3">{S.graph.derivedLastLabel}</dt>
+          <dd className="u-num text-ink">
             {age === null ? S.graph.derivedNever : S.graph.derivedAgo(age)}
           </dd>
         </div>
@@ -2325,7 +2286,7 @@ function DerivedPanel({
       {/* 上一次手动跑的结果留在这儿。**推出多少、作废多少要分开说**——
           「什么都没变」和「换掉了三十条」是两件很不一样的事 */}
       {run.data && (
-        <p className="mt-2 text-[11px] text-neutral-400">
+        <p className="mt-2 text-fine text-ink-2">
           {run.data.inserted === 0 && run.data.invalidated === 0
             ? S.graph.derivedNoChange
             : S.graph.derivedChanged(run.data.inserted, run.data.invalidated)}
@@ -2363,17 +2324,18 @@ function DerivedRow({
   onNavigate: (entityId: string) => void;
 }) {
   return (
-    <div
-      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"}`}
-    >
-      <button
-        onClick={onToggle}
-        className="w-full text-left px-2 py-1.5 flex items-center gap-1.5"
-      >
+    <ExpandCard
+      open={open}
+      onToggle={onToggle}
+      headerClassName="flex items-center gap-2"
+      header={
+        <>
         <ChevronRight
           size={11}
-          className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
+          className={`shrink-0 text-ink-3 u-turn ${open ? "rotate-90" : ""}`}
         />
+        {/* 业务规则的结论是字面值（一个类、一个值），另一端没有实体可跳——
+            这时候画成普通文字，而不是一个点了没反应的链接（0021） */}
         {/* 业务规则的结论是字面值（一个类、一个值），另一端没有实体可跳——
             这时候画成普通文字，而不是一个点了没反应的链接（0021） */}
         {otherId ? (
@@ -2390,21 +2352,23 @@ function DerivedRow({
                 onNavigate(otherId);
               }
             }}
-            className="truncate text-[13px] text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
+            className="u-inline-link truncate text-body text-ink"
           >
             {otherName}
           </span>
         ) : (
-          <span className="truncate text-[13px] text-neutral-200">{otherName}</span>
+          <span className="truncate text-body text-ink">{otherName}</span>
         )}
-        <span className="ml-auto shrink-0 pl-2 text-[10.5px] text-neutral-600">
+        <span className="ml-auto shrink-0 pl-2 text-fine text-ink-3">
           {d.premises.length}
         </span>
-      </button>
+        </>
+      }
+    >
       {/* 证明：前提按推导顺序，每条展开到原句（0002 R2）。**边框与 EvidenceList
           同一档**——两者是同一件事的两种形态：一个给出处，一个给推理链 */}
       {open && <ProofChain kbId={kbId} d={d} />}
-    </div>
+    </ExpandCard>
   );
 }
 
@@ -2420,21 +2384,21 @@ function ProofChain({ kbId, d }: { kbId: string; d: DerivedFact }) {
   });
   const steps = proof.data?.proof?.steps;
   return (
-    <div className="mx-2 mb-2 mt-0.5 border-l border-white/15 pl-2.5">
+    <div className="mx-2 mb-2 mt-1 border-l border-line-strong pl-3">
       {proof.isPending && (
-        <p className="text-[11px] text-neutral-600">{S.graph.proofLoading}</p>
+        <p className="text-fine text-ink-3">{S.graph.proofLoading}</p>
       )}
       {steps && <ProofSteps kbId={kbId} steps={steps} />}
       {/* 派生已失效、证明取不到：退回列表里带来的那几行文本 */}
       {!proof.isPending && !steps && (
-        <ol className="space-y-0.5">
+        <ol className="space-y-1">
           {d.premises.map((p, i) => (
-            <li key={i} className="text-[11px] text-neutral-400">
+            <li key={i} className="text-fine text-ink-2">
               {p}
             </li>
           ))}
           {d.premises.length === 0 && (
-            <li className="text-[11px] text-neutral-600">{S.graph.derivedNoProof}</li>
+            <li className="text-fine text-ink-3">{S.graph.derivedNoProof}</li>
           )}
         </ol>
       )}
@@ -2447,37 +2411,37 @@ function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
   return (
     <ol className="space-y-2">
       {steps.map((st) => (
-        <li key={st.fact_id} className="text-[11px]">
-          <div className="flex items-baseline gap-1.5 flex-wrap">
-            <span className="u-num text-[10px] text-neutral-600 shrink-0">
+        <li key={st.fact_id} className="text-fine">
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <span className="u-num text-fine text-ink-3 shrink-0">
               {S.graph.proofStep(st.seq + 1)}
             </span>
-            <span className={st.retracted ? "text-neutral-600 line-through" : "text-neutral-300"}>
+            <span className={st.retracted ? "text-ink-3 line-through" : "text-ink-2"}>
               {st.subject}
-              <span className="text-neutral-500"> — {st.predicate ?? "?"} → </span>
+              <span className="text-ink-3"> — {st.predicate ?? "?"} → </span>
               {st.object ?? "?"}
             </span>
             {st.retracted && (
-              <span className="u-chip u-chip-warn text-[10px]">{S.graph.proofRetracted}</span>
+              <span className="u-chip u-chip-warn text-fine">{S.graph.proofRetracted}</span>
             )}
           </div>
-          <div className="mt-0.5 space-y-1 pl-2">
+          <div className="mt-1 space-y-1 pl-2">
             {st.evidence.map((ev) => (
               <Link
                 key={ev.chunk_id}
                 to="/kb/$kbId/doc/$docId"
                 params={{ kbId, docId: ev.document_id }}
                 search={{ chunk: ev.chunk_id }}
-                className="block text-neutral-500 hover:text-neutral-300"
+                className="u-hover-ink block text-ink-3"
               >
                 <div className="line-clamp-2 italic">
                   {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
                 </div>
-                <div className="mt-0.5 text-neutral-400">
+                <div className="mt-1 text-ink-2">
                   {S.graph.sectionRef(ev.filename, ev.seq + 1)}
                   {ev.stale && (
                     <span
-                      className="ml-1.5 u-num text-[10px] text-neutral-600"
+                      className="ml-2 u-num text-fine text-ink-3"
                       title={S.graph.staleEvidenceHint}
                     >
                       {S.graph.fromVersion(ev.doc_version)}
@@ -2485,7 +2449,7 @@ function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
                   )}
                   {ev.document_deleted && (
                     <span
-                      className="ml-1.5 text-[10px] text-[var(--u-contest)]"
+                      className="ml-2 text-fine text-contest"
                       title={S.graph.sourceDeletedHint}
                     >
                       {S.graph.sourceDeleted}
@@ -2495,7 +2459,7 @@ function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
               </Link>
             ))}
             {st.evidence.length === 0 && (
-              <p className="text-neutral-600">{S.graph.noEvidence}</p>
+              <p className="text-ink-3">{S.graph.noEvidence}</p>
             )}
           </div>
         </li>
@@ -2531,19 +2495,18 @@ function BlockedRow({
     enabled: open,
   });
   return (
-    <div
-      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"}`}
-    >
-      <button
-        onClick={onToggle}
-        className="w-full text-left px-2 py-1.5 flex items-center gap-1.5"
-      >
+    <ExpandCard
+      open={open}
+      onToggle={onToggle}
+      headerClassName="flex items-center gap-2"
+      header={
+        <>
         <ChevronRight
           size={11}
-          className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
+          className={`shrink-0 text-ink-3 u-turn ${open ? "rotate-90" : ""}`}
         />
-        {out ? <ArrowRight size={10} className="shrink-0 text-neutral-600" /> : <ArrowLeft size={10} className="shrink-0 text-neutral-600" />}
-        <span className="shrink-0 text-[11px] text-neutral-500">{b.predicate}</span>
+        {out ? <ArrowRight size={10} className="shrink-0 text-ink-3" /> : <ArrowLeft size={10} className="shrink-0 text-ink-3" />}
+        <span className="shrink-0 text-fine text-ink-3">{b.predicate}</span>
         <span
           role="link"
           tabIndex={0}
@@ -2557,16 +2520,18 @@ function BlockedRow({
               onNavigate(otherId);
             }
           }}
-          className="truncate text-[13px] text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
+          className="u-inline-link truncate text-body text-ink"
         >
           {otherName}
         </span>
-        <span className="ml-auto shrink-0 pl-2 text-[10.5px] text-neutral-600">
+        <span className="ml-auto shrink-0 pl-2 text-fine text-ink-3">
           {S.graph.ruleNames[b.rule] ?? b.rule}
         </span>
-      </button>
-      <div className="flex items-center gap-1.5 px-2 pb-1.5 pl-[26px] text-[11px]">
-        <span className="truncate text-[var(--u-contest)]">
+        </>
+      }
+    >
+      <div className="flex items-center gap-2 px-2 pb-2 pl-[26px] text-fine">
+        <span className="truncate text-contest">
           {S.graph.blockedBy(b.against_text)}
         </span>
         <span
@@ -2579,22 +2544,22 @@ function BlockedRow({
               search: { queue: "violations", item: b.violation_id },
             })
           }
-          className="ml-auto shrink-0 text-neutral-500 hover:text-neutral-300 hover:underline underline-offset-2"
+          className="u-inline-link ml-auto shrink-0 text-ink-3"
         >
           {S.graph.blockedReview} →
         </span>
       </div>
       {open && (
-        <div className="mx-2 mb-2 mt-0.5 border-l border-white/15 pl-2.5">
+        <div className="mx-2 mb-2 mt-1 border-l border-line-strong pl-3">
           {proof.isPending && (
-            <p className="text-[11px] text-neutral-600">{S.graph.proofLoading}</p>
+            <p className="text-fine text-ink-3">{S.graph.proofLoading}</p>
           )}
           {proof.data?.steps && (
             <ProofSteps kbId={kbId} steps={proof.data.steps} />
           )}
         </div>
       )}
-    </div>
+    </ExpandCard>
   );
 }
 
@@ -2631,7 +2596,7 @@ function ContestedChip({
           });
         }
       }}
-      className="u-chip u-chip-contest shrink-0 !text-[10px] !px-1.5 cursor-pointer"
+      className="u-chip u-chip-contest shrink-0 !text-fine !px-2 cursor-pointer"
       title={S.graph.contestedHint(c.kind, c.derived ?? null)}
     >
       {S.graph.contestedChip}
@@ -2837,7 +2802,7 @@ function EntityPanel({
     <div
       className={`${exiting ? "u-dock-out" : "u-dock-in"} glass-strong absolute top-14 right-3 bottom-20 w-80 z-10 rounded-xl shadow-2xl flex flex-col`}
     >
-      <div className="flex items-start justify-between px-4 py-3.5 border-b border-white/10">
+      <div className="flex items-start justify-between px-4 py-4 border-b border-line">
         <div>
           {e && (
             <>
@@ -2850,14 +2815,14 @@ function EntityPanel({
                   }}
                 />
                 <span
-                  className="text-[15px] font-semibold tracking-tight text-white"
+                  className="text-title font-semibold tracking-tight text-ink"
                   style={{ fontFamily: "var(--font-display)" }}
                 >
                   {e.name}
                 </span>
               </div>
               {/* 消歧后缀找不到关联事实时兜底成类型标签，那就与后面的类型重复了 */}
-              <div className="mt-1 text-xs text-neutral-500">
+              <div className="mt-1 text-small text-ink-3">
                 {e.disambiguator && e.disambiguator !== e.type_label
                   ? `${e.disambiguator} · `
                   : ""}
@@ -2867,32 +2832,23 @@ function EntityPanel({
             </>
           )}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5">
+        <div className="flex items-center gap-2 mt-1">
           {e && !editing && (
-            <button
-              onClick={openEdit}
-              title={S.graph.edit}
-              className="text-neutral-500 hover:text-neutral-200"
-            >
+            <IconButton size="sm" label={S.graph.edit} onClick={openEdit}>
               <Pencil size={13} />
-            </button>
+            </IconButton>
           )}
-          <button
-            onClick={onClose}
-            className="text-neutral-500 hover:text-neutral-200"
-          >
+          <IconButton size="sm" label={S.graph.close} onClick={onClose}>
             <X size={15} />
-          </button>
+          </IconButton>
         </div>
       </div>
 
       {editing && e && (
-        <div className="px-4 py-3 border-b border-white/10 space-y-2.5">
-          <label className="block">
-            <span className="text-[10px] uppercase tracking-[0.08em] text-neutral-500">
-              {S.graph.editName}
-            </span>
-            <input
+        <div className="px-4 py-3 border-b border-line space-y-3">
+          <Field label={S.graph.editName} className="mb-2">
+            <Input
+              size="sm"
               autoFocus
               value={draftName}
               onChange={(ev) => setDraftName(ev.target.value)}
@@ -2901,41 +2857,37 @@ function EntityPanel({
                   save.mutate();
                 if (ev.key === "Escape") setEditing(false);
               }}
-              className="mt-1 w-full bg-white/[0.04] border border-white/10 rounded px-2 py-1 text-sm text-neutral-100 focus:outline-none focus:border-white/25"
+              className="w-full"
             />
-          </label>
-          <label className="block">
-            <span className="text-[10px] uppercase tracking-[0.08em] text-neutral-500">
-              {S.graph.editType}
-            </span>
-            <select
+          </Field>
+          <Field label={S.graph.editType} className="mb-2">
+            <NativeSelect
+              size="sm"
+              className="w-full"
               value={draftType}
               onChange={(ev) => setDraftType(ev.target.value)}
-              className="mt-1 w-full bg-white/[0.04] border border-white/10 rounded px-2 py-1 text-sm text-neutral-100 focus:outline-none focus:border-white/25"
             >
               {types.map((t) => (
-                <option key={t.id} value={t.id} className="bg-neutral-900">
+                <option key={t.id} value={t.id}>
                   {t.label}
                 </option>
               ))}
-            </select>
-          </label>
-          <div className="flex items-center gap-2 pt-0.5">
-            <button
+            </NativeSelect>
+          </Field>
+          <div className="flex items-center gap-2 pt-1">
+            <Button
+              variant="primary"
+              size="sm"
               disabled={!dirty || !draftName.trim() || save.isPending}
               onClick={() => save.mutate()}
-              className="u-pop px-2.5 py-1 text-xs rounded bg-white/10 text-neutral-100 hover:bg-white/15 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               {S.graph.editSave}
-            </button>
-            <button
-              onClick={() => setEditing(false)}
-              className="px-2.5 py-1 text-xs rounded text-neutral-500 hover:text-neutral-300"
-            >
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setEditing(false)}>
               {S.graph.editCancel}
-            </button>
+            </Button>
             {!draftName.trim() && (
-              <span className="text-[11px] text-[var(--u-danger)]">
+              <span className="text-fine text-danger">
                 {S.graph.editEmptyName}
               </span>
             )}
@@ -2945,42 +2897,50 @@ function EntityPanel({
 
       {/* 同名不是错误——两个张伟可以并存。只提示，判定是不是同一个是人的事 */}
       {sameName.length > 0 && !editing && (
-        <div className="mx-4 mt-2.5 rounded border border-white/10 bg-white/[0.03] px-2.5 py-2">
+        <div className="mx-4 mt-3 rounded-lg border border-line bg-surface px-3 py-2">
           <div className="flex items-start justify-between gap-2">
-            <p className="text-[11px] text-neutral-400">
+            <p className="text-fine text-ink-2">
               {S.graph.sameNameNote(sameName.length)}{" "}
-              <span className="text-neutral-500">{S.graph.sameNameHint}</span>
+              <span className="text-ink-3">{S.graph.sameNameHint}</span>
             </p>
-            <button
+            <IconButton
+              size="sm"
+              label={S.graph.close}
+              className="shrink-0"
               onClick={() => setSameName([])}
-              className="text-neutral-600 hover:text-neutral-300 shrink-0"
             >
               <X size={11} />
-            </button>
+            </IconButton>
           </div>
           {/* 每个同名的给两个动作：去看它，或者把它并进来。
               **方向写死成「并进当前这个」**——合并有方向（源消失、事实搬到目标上），
               而当前打开的这个就是用户正在看、正在判断的那一个 */}
-          <div className="mt-1.5 space-y-1">
+          <div className="mt-2 space-y-1">
             {sameName.map((p) => (
               <div key={p.id} className="flex items-center gap-1">
-                <button
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="min-w-0 flex-1 justify-start"
                   onClick={() => onNavigate(p.id)}
-                  className="min-w-0 flex-1 truncate text-left text-[11px] px-1.5 py-0.5 rounded bg-white/[0.06] text-neutral-300 hover:bg-white/10"
                 >
-                  {p.type_label ?? S.graph.untyped}
-                  {p.disambiguator && p.disambiguator !== p.type_label
-                    ? ` · ${p.disambiguator}`
-                    : ""}
-                </button>
-                <button
-                  className="shrink-0 text-[11px] px-1.5 py-0.5 rounded text-neutral-400 hover:bg-white/10 hover:text-neutral-100"
+                  <span className="truncate">
+                    {p.type_label ?? S.graph.untyped}
+                    {p.disambiguator && p.disambiguator !== p.type_label
+                      ? ` · ${p.disambiguator}`
+                      : ""}
+                  </span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="shrink-0"
                   disabled={merge.isPending}
                   title={S.graph.mergeIntoHint}
                   onClick={() => setMergeCandidate({ id: p.id, name: p.name })}
                 >
                   {S.graph.mergeInto}
-                </button>
+                </Button>
               </div>
             ))}
           </div>
@@ -3003,49 +2963,46 @@ function EntityPanel({
       )}
 
       {/* 视图切换：Relations（分组）| Timeline（年表） */}
-      <div className="px-4 pt-2.5">
-        <div className="flex rounded-lg overflow-hidden border border-white/10 w-fit">
-          {(["relations", "timeline", "history", "derived"] as const)
+      <div className="px-4 pt-3">
+        <Segmented
+          size="sm"
+          value={view}
+          onChange={setView}
+          options={(["relations", "timeline", "history", "derived"] as const)
             // 推出来的那一档：**没有派生就不出现**。一个没开推理的库不该看到
             // 一个永远是空的标签页。没落地的也算——那正是这一档要说的事
             .filter(
               (v) => v !== "derived" || derived.length > 0 || blocked.length > 0,
             )
-            .map((v) => (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                className={`px-3 py-1 text-[11px] transition-colors ${
-                  view === v
-                    ? "bg-white/10 text-neutral-100"
-                    : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-                }`}
-              >
-                {v === "relations"
+            .map((v) => ({
+              value: v,
+              label:
+                v === "relations"
                   ? S.graph.viewRelations
                   : v === "timeline"
                     ? S.graph.viewTimeline
                     : v === "history"
                       ? S.graph.viewHistory
-                      : S.graph.viewDerived}
-              </button>
-            ))}
-        </div>
+                      : S.graph.viewDerived,
+            }))}
+        />
       </div>
 
       <div className="u-scroll flex-1 overflow-y-auto px-2 py-2">
         {view === "relations" && historicalCount > 0 && (
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
+            className="mx-2 mb-2 mt-1"
             onClick={() => setView("timeline")}
-            className="mx-2 mb-2 mt-0.5 text-[11px] text-neutral-500 hover:text-neutral-300 underline-offset-2 hover:underline"
           >
             {S.graph.historicalNote(historicalCount)}
-          </button>
+          </Button>
         )}
         {view === "relations" &&
           groups.map((gr) => (
             <div key={gr.key} className="mb-3 last:mb-1">
-              <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+              <div className="flex items-center gap-2 px-2 pb-1 pt-2 text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
                 {gr.direction === "in" ? (
                   <ArrowLeft size={10} />
                 ) : (
@@ -3053,7 +3010,7 @@ function EntityPanel({
                 )}
                 <span
                   className={
-                    gr.label === null ? "italic text-neutral-600" : undefined
+                    gr.label === null ? "italic text-ink-3" : undefined
                   }
                   title={
                     gr.label && gr.inferred
@@ -3064,7 +3021,7 @@ function EntityPanel({
                   {gr.label ?? S.graph.unknownPredicate}
                 </span>
                 {gr.rows.length > 1 && (
-                  <span className="text-neutral-600">{gr.rows.length}</span>
+                  <span className="text-ink-3">{gr.rows.length}</span>
                 )}
               </div>
               <div>
@@ -3097,7 +3054,7 @@ function EntityPanel({
         )}
 {view === "derived" && (
           <>
-            <p className="px-2 pb-1.5 pt-0.5 text-[11px] leading-relaxed text-neutral-500">
+            <p className="px-2 pb-2 pt-1 text-fine leading-relaxed text-ink-3">
               {S.graph.derivedHint}
             </p>
             {/* **与 Relations 同一个骨架**：方向箭头 + 谓词 + 条数的小标题，
@@ -3106,16 +3063,16 @@ function EntityPanel({
                 与派生边抢色相的地方 */}
             {derivedGroups.map((gr) => (
               <div key={gr.key} className="mb-3 last:mb-1">
-                <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-500">
+                <div className="flex items-center gap-2 px-2 pb-1 pt-2 text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
                   {gr.direction === "in" ? (
                     <ArrowLeft size={10} />
                   ) : (
                     <ArrowRight size={10} />
                   )}
                   <span>{gr.predicate}</span>
-                  <span className="text-neutral-600">{gr.rule}</span>
+                  <span className="text-ink-3">{gr.rule}</span>
                   {gr.rows.length > 1 && (
-                    <span className="ml-auto text-neutral-600">
+                    <span className="ml-auto text-ink-3">
                       {gr.rows.length}
                     </span>
                   )}
@@ -3143,13 +3100,13 @@ function EntityPanel({
             ))}
             {blocked.length > 0 && (
               <div className="mb-3 last:mb-1">
-                <div className="flex items-center gap-1.5 px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-[var(--u-contest)]">
+                <div className="flex items-center gap-2 px-2 pb-1 pt-2 text-fine font-medium uppercase tracking-[0.08em] text-contest">
                   <span>{S.graph.blockedTitle}</span>
-                  <span className="ml-auto text-neutral-600">
+                  <span className="ml-auto text-ink-3">
                     {blocked.length}
                   </span>
                 </div>
-                <p className="px-2 pb-1.5 text-[11px] leading-relaxed text-neutral-500">
+                <p className="px-2 pb-2 text-fine leading-relaxed text-ink-3">
                   {S.graph.blockedHint}
                 </p>
                 {blocked.map((b) => (
@@ -3174,7 +3131,7 @@ function EntityPanel({
         {view !== "history" &&
           view !== "derived" &&
           detail.data?.facts.length === 0 && (
-            <p className="text-sm text-neutral-500 p-2">{S.graph.noFacts}</p>
+            <p className="text-body text-ink-3 p-2">{S.graph.noFacts}</p>
           )}
       </div>
     </div>
@@ -3206,10 +3163,10 @@ function TimelineView({
 
   return (
     <div className="px-2 pt-1">
-      <div className="relative ml-1.5 border-l border-white/15 pl-3 space-y-0.5">
+      <div className="relative ml-2 border-l border-line-strong pl-3 space-y-1">
         {dated.map((f) => (
           <div key={f.id} className="relative">
-            <span className="absolute -left-[17.5px] top-2.5 h-2 w-2 rounded-full bg-neutral-600 ring-2 ring-[#0f0f0f]" />
+            <span className="absolute -left-[17.5px] top-2.5 h-2 w-2 rounded-full bg-ink-3 ring-2 ring-ground" />
             <TimelineRow
               kbId={kbId}
               fact={f}
@@ -3220,14 +3177,14 @@ function TimelineView({
           </div>
         ))}
         {dated.length === 0 && (
-          <p className="py-2 text-xs text-neutral-500">
+          <p className="py-2 text-small text-ink-3">
             {S.graph.timelineEmpty}
           </p>
         )}
       </div>
       {undated.length > 0 && (
         <div className="mt-3">
-          <div className="px-2 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-600">
+          <div className="px-2 pb-1 text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
             {S.graph.undated}
           </div>
           {undated.map((f) => (
@@ -3265,23 +3222,23 @@ function TimelineRow({
   const literal = fmtObjectValue(fact.object_value);
   const [editing, setEditing] = useState(false);
   return (
-    <div
-      className={`group rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"} ${
-        fact.stale ? "opacity-55" : ""
-      }`}
+    <ExpandCard
+      open={open}
+      onToggle={onToggle}
+      dim={fact.stale}
       title={fact.stale ? S.graph.staleFactHint : undefined}
-    >
-      <button onClick={onToggle} className="w-full text-left px-2 py-1.5">
-        <div className="flex items-center gap-1.5 u-num text-[10.5px] text-neutral-500">
+      header={
+        <>
+        <div className="flex items-center gap-2 u-num text-fine text-ink-3">
           {interval || "—"}
           {fact.corrected && (
-            <span className="text-neutral-600" title={S.graph.correctedHint}>
+            <span className="text-ink-3" title={S.graph.correctedHint}>
               ⟲
             </span>
           )}
-          <span className="ml-auto flex items-center gap-1.5">
+          <span className="ml-auto flex items-center gap-2">
             {isOpenEnded && fact.last_evidence_time && (
-              <span className="text-neutral-600">
+              <span className="text-ink-3">
                 {S.graph.lastConfirmed(localDate(fact.last_evidence_time))}
               </span>
             )}
@@ -3303,21 +3260,19 @@ function TimelineRow({
                   setEditing((v) => !v);
                 }
               }}
-              className={`cursor-pointer rounded p-0.5 transition-opacity hover:text-neutral-200 focus-visible:opacity-100 ${
-                editing ? "opacity-100" : "opacity-0 group-hover:opacity-100"
-              }`}
+              className={cn(REVEAL, "cursor-pointer rounded-lg p-1", editing && "is-on")}
             >
               <Pencil size={10} />
             </span>
           </span>
         </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-[13px] text-neutral-200">
-          <span className="text-neutral-500 text-xs">
+        <div className="mt-1 flex items-center gap-2 text-body text-ink">
+          <span className="text-ink-3 text-small">
             {fact.direction === "in" ? "←" : "→"}{" "}
             <span
               className={
                 fact.predicate_label === null
-                  ? "italic text-neutral-600"
+                  ? "italic text-ink-3"
                   : undefined
               }
               title={
@@ -3343,7 +3298,7 @@ function TimelineRow({
                   onNavigate(fact.other_id!);
                 }
               }}
-              className="truncate hover:text-white hover:underline underline-offset-2 decoration-white/30"
+              className="u-inline-link truncate"
             >
               {fact.other_name ?? "?"}
             </span>
@@ -3353,7 +3308,7 @@ function TimelineRow({
             </span>
           )}
           {fact.stale && (
-            <span className="u-chip u-chip-neutral shrink-0 !text-[10px] !px-1.5">
+            <span className="u-chip u-chip-neutral shrink-0 !text-fine !px-2">
               {S.graph.staleFactChip}
             </span>
           )}
@@ -3361,7 +3316,9 @@ function TimelineRow({
             <ContestedChip kbId={kbId} c={fact.contested} />
           )}
         </div>
-      </button>
+        </>
+      }
+    >
       {editing && (
         <TimeEditor
           kbId={kbId}
@@ -3370,7 +3327,7 @@ function TimelineRow({
         />
       )}
       {open && <EvidenceList kbId={kbId} fact={fact} />}
-    </div>
+    </ExpandCard>
   );
 }
 
@@ -3440,22 +3397,23 @@ function TimeEditor({
 
   return (
     <div
-      className="mx-2 mb-1.5 rounded-lg border border-white/10 bg-white/[0.03] p-2.5"
+      className="mx-2 mb-2 rounded-lg border border-line bg-surface p-3"
       onClick={(ev) => ev.stopPropagation()}
     >
       <div className="flex items-center gap-2">
-        <label className="w-11 shrink-0 text-[11px] text-neutral-500">
+        <label className="w-11 shrink-0 text-fine text-ink-3">
           {S.graph.timeStart}
         </label>
         <Input
           value={from}
           onChange={(e) => setFrom(e.target.value)}
           placeholder={S.graph.timeFormat}
-          className="u-num flex-1 !py-1 !text-xs"
+          size="sm"
+          className="u-num flex-1"
         />
       </div>
-      <div className="mt-1.5 flex items-start gap-2">
-        <label className="w-11 shrink-0 pt-1 text-[11px] text-neutral-500">
+      <div className="mt-2 flex items-start gap-2">
+        <label className="w-11 shrink-0 pt-1 text-fine text-ink-3">
           {S.graph.timeEnd}
         </label>
         <div className="flex-1 space-y-1">
@@ -3466,42 +3424,39 @@ function TimeEditor({
               ["date", S.graph.timeEndDate],
             ] as const
           ).map(([mode, label]) => (
-            <label
+            <Radio
               key={mode}
-              className="flex items-center gap-1.5 text-[11.5px] text-neutral-300"
+              name={`end-${fact.id}`}
+              checked={endMode === mode}
+              onChange={() => setEndMode(mode)}
+              label={label}
             >
-              <input
-                type="radio"
-                name={`end-${fact.id}`}
-                checked={endMode === mode}
-                onChange={() => setEndMode(mode)}
-                className="accent-white/70"
-              />
-              {label}
               {mode === "date" && endMode === "date" && (
                 <Input
+                  size="sm"
                   value={to}
                   onChange={(e) => setTo(e.target.value)}
                   placeholder={S.graph.timeFormat}
-                  className="u-num ml-1 flex-1 !py-0.5 !text-xs"
+                  className="u-num ml-1 flex-1"
                 />
               )}
-            </label>
+            </Radio>
           ))}
         </div>
       </div>
-      <div className="mt-1.5 flex items-center gap-2">
-        <label className="w-11 shrink-0 text-[11px] text-neutral-500">
+      <div className="mt-2 flex items-center gap-2">
+        <label className="w-11 shrink-0 text-fine text-ink-3">
           {S.graph.timeNote}
         </label>
         <Input
           value={note}
           onChange={(e) => setNote(e.target.value)}
           placeholder={S.graph.timeNotePlaceholder}
-          className="flex-1 !py-1 !text-xs"
+          size="sm"
+          className="flex-1"
         />
       </div>
-      <div className="mt-2 flex justify-end gap-1.5">
+      <div className="mt-2 flex justify-end gap-2">
         <Button size="sm" variant="secondary" onClick={onDone}>
           {S.graph.timeCancel}
         </Button>
@@ -3547,19 +3502,17 @@ function FactRow({
   const lowConfidence = fact.confidence < 0.75;
 
   return (
-    <div
-      className={`rounded-lg transition-colors ${open ? "bg-white/[0.05]" : "hover:bg-white/[0.04]"} ${
-        fact.stale ? "opacity-55" : ""
-      }`}
+    <ExpandCard
+      open={open}
+      onToggle={onToggle}
+      dim={fact.stale}
       title={fact.stale ? S.graph.staleFactHint : undefined}
-    >
-      <button
-        onClick={onToggle}
-        className="w-full text-left px-2 py-1.5 flex items-center gap-1.5"
-      >
+      headerClassName="flex items-center gap-2"
+      header={
+        <>
         <ChevronRight
           size={11}
-          className={`shrink-0 text-neutral-600 transition-transform ${open ? "rotate-90" : ""}`}
+          className={`shrink-0 text-ink-3 u-turn ${open ? "rotate-90" : ""}`}
         />
         {fact.other_id ? (
           <span
@@ -3575,34 +3528,36 @@ function FactRow({
                 onNavigate(fact.other_id!);
               }
             }}
-            className="truncate text-[13px] text-neutral-200 hover:text-white hover:underline underline-offset-2 decoration-white/30"
+            className="u-inline-link truncate text-body text-ink"
           >
             {fact.other_name ?? "?"}
           </span>
         ) : (
-          <span className="truncate text-[13px] text-neutral-200">
+          <span className="truncate text-body text-ink">
             {fact.other_name ?? fmtObjectValue(fact.object_value) ?? "?"}
           </span>
         )}
         {lowConfidence && (
-          <span className="shrink-0 u-num u-meta-warn text-[10.5px]">
+          <span className="shrink-0 u-num u-meta-warn text-fine">
             {Math.round(fact.confidence * 100)}%
           </span>
         )}
         {fact.stale && (
-          <span className="u-chip u-chip-neutral shrink-0 !text-[10px] !px-1.5">
+          <span className="u-chip u-chip-neutral shrink-0 !text-fine !px-2">
             {S.graph.staleFactChip}
           </span>
         )}
         {fact.contested && <ContestedChip kbId={kbId} c={fact.contested} />}
         {interval && (
-          <span className="ml-auto shrink-0 pl-2 u-num text-[10.5px] text-neutral-500">
+          <span className="ml-auto shrink-0 pl-2 u-num text-fine text-ink-3">
             {interval}
           </span>
         )}
-      </button>
+        </>
+      }
+    >
       {open && <EvidenceList kbId={kbId} fact={fact} />}
-    </div>
+    </ExpandCard>
   );
 }
 
@@ -3613,32 +3568,32 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
     queryFn: () => api.factEvidence(kbId, fact.id),
   });
   return (
-    <div className="mx-2 mb-2 mt-0.5 space-y-2 border-l border-white/15 pl-2.5">
+    <div className="mx-2 mb-2 mt-1 space-y-2 border-l border-line-strong pl-3">
       {evidence.data?.evidence.map((ev: Evidence) => (
         <Link
           key={ev.chunk_id}
           to="/kb/$kbId/doc/$docId"
           params={{ kbId, docId: ev.document_id }}
           search={{ chunk: ev.chunk_id }}
-          className="block text-xs text-neutral-500 hover:text-neutral-300"
+          className="u-hover-ink block text-small text-ink-3"
         >
           {/* 原文说的谓词，只在它与事实行上显示的不同时才写出来。本体外的谓词
               事实行上已经显示原文说法（0052），相同的话再写一遍是噪声；
               一条事实有多种说法时（占 3%）这里才有话说 */}
           {ev.proposed_predicate &&
             ev.proposed_predicate !== fact.predicate_key && (
-              <div className="mb-0.5 text-[11px] text-neutral-400">
+              <div className="mb-1 text-fine text-ink-2">
                 {S.graph.proposedPredicate(ev.proposed_predicate)}
               </div>
             )}
           <div className="line-clamp-2 italic">
             {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
           </div>
-          <div className="mt-0.5 text-neutral-400">
+          <div className="mt-1 text-ink-2">
             {S.graph.sectionRef(ev.filename, ev.seq + 1)}
             {ev.stale && (
               <span
-                className="ml-1.5 u-num text-[10px] text-neutral-600"
+                className="ml-2 u-num text-fine text-ink-3"
                 title={S.graph.staleEvidenceHint}
               >
                 {S.graph.fromVersion(ev.doc_version)}
@@ -3646,7 +3601,7 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
             )}
             {ev.document_deleted && (
               <span
-                className="ml-1.5 text-[10px] text-[var(--u-contest)]"
+                className="ml-2 text-fine text-contest"
                 title={S.graph.sourceDeletedHint}
               >
                 {S.graph.sourceDeleted}
@@ -3656,11 +3611,11 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
         </Link>
       ))}
       {evidence.data?.evidence.length === 0 && (
-        <p className="text-xs text-neutral-500">{S.graph.noEvidence}</p>
+        <p className="text-small text-ink-3">{S.graph.noEvidence}</p>
       )}
       {/* 置信度只在低到值得怀疑时说话（与 Review 低置信口径一致），常规不标 */}
       {fact.confidence < 0.75 && (
-        <p className="text-[10px] text-[var(--u-warn)]">
+        <p className="text-fine text-warn">
           {Math.round(fact.confidence * 100)}% {S.graph.confidence}
         </p>
       )}
