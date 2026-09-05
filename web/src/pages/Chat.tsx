@@ -479,8 +479,7 @@ export function Chat() {
         </div>
         <div className="px-2 pb-1">
           {/* 与会话行同一套样式：左栏是一列同质的行，新对话只是第一行 */}
-          <Row density="nav" onClick={newChat}>
-            <SquarePen size={14} className="shrink-0 text-ink-3" />
+          <Row density="nav" icon={<SquarePen size={14} />} onClick={newChat}>
             {S.ask.newChat}
           </Row>
         </div>
