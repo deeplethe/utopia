@@ -22,6 +22,8 @@
 //                                                          # 复用已灌好的库，只重打分
 //   node scripts/bench/temporal.mjs --corpus zh             # 换一套语料与题目（corpus.zh.json）
 //   node scripts/bench/temporal.mjs --kb … --chat --only a,b # 只重问几题，看它们的工具轨迹
+//   node scripts/bench/temporal.mjs --label late --no-declare --reconcile
+//                                                          # 本体自己长，灌完再接受声明、对账（#341）
 //
 // 环境变量：BENCH_BASE / BENCH_EMAIL / BENCH_PASSWORD / BENCH_PSQL（同 run.mjs）。
 
@@ -202,6 +204,16 @@ async function main() {
         process.stderr.write(`  抽取 ${done}/${want} 篇\n`);
         return done >= want ? true : done;
       });
+      // 文档 done 之后还有活：本体自动扩展（bootstrap_ontology）在**另一个任务里**
+      // 把本体没认下的谓词建出来、把那些事实改写过去；类型消解也是。不等它们，
+      // 时刻就记在 `leads` 还不存在的那一刻——记录轴倒回去看不到接任，候选也是空的
+      // （`--reconcile` 第一次就是这样报了零条）。等队列清空再记时刻
+      await until(async () => {
+        const busy = num(
+          `SELECT count(*) FROM jobs WHERE payload->>'kb_id'='${kb}' AND status IN ('queued','running')`,
+        );
+        return busy === 0 ? true : busy;
+      });
       // 删除也是记录轴上的事件（#268）：墓碑留着，这一波之前的时刻仍看得见它
       for (const filename of wave.delete || []) {
         const id = psql(
@@ -247,6 +259,10 @@ async function main() {
     }
   }
   if (!Object.keys(stamps).length) throw new Error("复用库时要给 --stamps");
+
+  // 声明来晚了（#341）：新用户走的路——先灌、本体自己长、然后才有人接受声明。
+  // 三波都灌完再对账，记录轴上的时刻都在对账之前，倒回去看到的仍是三条开放的行
+  const reconciled = "reconcile" in args ? await acceptUniqueness(kb, corpus.axioms || []) : null;
 
   // 实体按名字找一次，后面所有题目复用。**合并掉的实体在这里找不到**——
   // 它已经不是一个节点了；问它的题目从留下的那一方或它挂过的项目那边问
@@ -359,6 +375,7 @@ async function main() {
     label,
     corpus: corpus.name,
     declared: !("no-declare" in args),
+    reconciled,
     kb,
     stamps,
     at: new Date().toISOString(),
@@ -403,6 +420,69 @@ async function main() {
       (report.chat ? `　对话：${report.chat.pass}/${report.chat.asked}` : "") +
       `\n`,
   );
+}
+
+/// 声明来晚了（#341）：`uniqueness` 报出候选，**语料的公理表替人表态**——只接受语料
+/// 本来就声明了那一端的（一个项目一个 leader，一人一份薪资），PATCH 打开它、再 POST
+/// reconcile 把账上已有的行对一遍。其余候选原样记下，不收：第一版全收过一次，
+/// `leads` 主语侧（一人只管一个项目）和 `works_for` 宾语侧（一家公司只有一个员工）
+/// 也被打开了，李四的 Aurora 被 Helios 闭合，分数反而更歪——这正是产品把这一步
+/// 留给人的原因。返回每条候选的估算与实际——两者不一致就是引擎的规则变了
+async function acceptUniqueness(kb, axioms) {
+  const wanted = new Map(
+    axioms.map((a) => [a.key, { functional: !!a.functional, inverse_functional: !!a.inverse_functional }]),
+  );
+  const { candidates } = await api("GET", `/api/v1/kbs/${kb}/ontology/uniqueness`);
+  const { relation_types } = await api("GET", `/api/v1/kbs/${kb}/ontology`);
+  const byId = new Map(relation_types.map((r) => [r.id, r]));
+  const rows = [];
+  for (const c of candidates) {
+    const r = byId.get(c.predicate_id);
+    if (!r) continue;
+    const declared = wanted.get(c.key);
+    if (!declared || !declared[c.axiom]) {
+      rows.push({ key: c.key, axiom: c.axiom, holders: c.holders, skipped: true });
+      process.stderr.write(`  候选 ${c.key} ${c.axiom}：${c.holders} 个持有者——语料没声明，不收\n`);
+      continue;
+    }
+    if (!c.declared) {
+      // 同一谓词两端都是候选时，第二次 PATCH 要带着第一次打开的那一位
+      r.functional = r.functional || c.side === "subject";
+      r.inverse_functional = r.inverse_functional || c.side === "object";
+      await api("PATCH", `/api/v1/kbs/${kb}/ontology/relation-types/${r.id}`, {
+        label: r.label,
+        temporal: r.temporal,
+        functional: r.functional,
+        inverse_functional: r.inverse_functional,
+        is_transitive: r.is_transitive,
+        is_symmetric: r.is_symmetric,
+        is_asymmetric: r.is_asymmetric,
+        is_irreflexive: r.is_irreflexive,
+        inverse_of: r.inverse_of,
+        sub_property_of: r.sub_property_of,
+        description: r.description,
+        datatype: r.datatype,
+        unit: r.unit,
+      });
+    }
+    const rep = await api(
+      "POST",
+      `/api/v1/kbs/${kb}/ontology/relation-types/${r.id}/reconcile`,
+      {},
+    );
+    rows.push({
+      key: c.key,
+      axiom: c.axiom,
+      holders: c.holders,
+      estimated: { close: c.would_close, review: c.would_review },
+      actual: { close: rep.corrected, review: rep.conflicts },
+    });
+    process.stderr.write(
+      `  声明 ${c.key} ${c.axiom}：${c.holders} 个持有者，` +
+        `估 ${c.would_close} 闭合 / ${c.would_review} 进审，实际 ${rep.corrected} / ${rep.conflicts}\n`,
+    );
+  }
+  return rows;
 }
 
 /// 按名字找一个**现在还是节点**的实体。
