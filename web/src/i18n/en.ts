@@ -1042,6 +1042,7 @@ export const en = {
     newProperty: "New property",
     filter: "Filter…",
     missesShort: "Unmatched",
+    uniquenessShort: "Overlaps",
     refineShort: "Refine types",
     /* ---- 业务规则（0021 / #277）---- */
     rulesShort: "Business rules",
@@ -1253,6 +1254,33 @@ export const en = {
     misses: "Unmatched from extraction",
     missesHint:
       "The extractor produced these outside your ontology (they fell back to concept / related to). They are signals for extending the ontology.",
+    /* ---- 一端挂着两个以上开放值的谓词（#341） ----
+       文案克制：状态一句话，后果一句话，动作在按钮上。这一档的读者要判断的是
+       「这条关系一次只能有一个值吗」，不是读一篇关于双时态的说明 */
+    uniqueness: "Overlapping values",
+    uniquenessHint:
+      "One holder, two values, neither closed. Until the relation says it holds one value at a time, a successor does not close a predecessor — and a question about any past date answers with both.",
+    uniquenessEmpty: "No overlaps. Every holder has at most one open value.",
+    /* 主语侧 / 宾语侧：说人话，不写 functional / inverse functional */
+    uniquenessSubject: (n: number) =>
+      `${n} subject${n === 1 ? "" : "s"} with two or more open values`,
+    uniquenessObject: (n: number) =>
+      `${n} value${n === 1 ? "" : "s"} held open by two or more subjects`,
+    /* 按钮按下去会动账本，所以先说清动多少 */
+    uniquenessEffect: (close: number, review: number) =>
+      review > 0
+        ? `Closes ${close}, sends ${review} to review`
+        : `Closes ${close}`,
+    uniquenessDeclare: "Declare and close",
+    /* 声明过了、只是还没对过账（导入的，或声明之前就在的行） */
+    uniquenessReconcile: "Close them",
+    uniquenessDeclared: "Declared",
+    uniquenessBusy: "Closing…",
+    uniquenessDone: (close: number, review: number) =>
+      review > 0
+        ? `Closed ${close} · ${review} in Review`
+        : `Closed ${close}`,
+    uniquenessSince: (d: string) => `since ${d}`,
     dismiss: "Dismiss",
     dismissed: (n: number) => `Dismissed (${n})`,
     /* 数字是**忽略之后**还在涨的那个——这一行的全部意义就在于此：

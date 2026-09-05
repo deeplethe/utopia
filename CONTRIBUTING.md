@@ -111,7 +111,7 @@ Signed-off-by: Your Name <your@email>
 
 Forgot? `git commit --amend -s` for the last commit, or `git rebase --signoff HEAD~3` for several (adjust the count), then `git push -f`.
 
-Use a real name and a reachable email address.
+Use a consistent identity you answer to — a GitHub account with history under it counts — and an address that reaches you; a noreply address tied to that account is fine. No anonymous or throwaway contributions.
 
 ## License
 

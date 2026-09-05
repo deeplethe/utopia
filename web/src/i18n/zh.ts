@@ -932,6 +932,7 @@ export const zh: Strings = {
     newProperty: "新建属性",
     filter: "筛选…",
     missesShort: "未匹配",
+    uniquenessShort: "并存",
     refineShort: "类型消解",
     rulesShort: "业务规则",
     rulesTitle: "业务规则",
@@ -1115,6 +1116,22 @@ export const zh: Strings = {
     misses: "抽取中未匹配的",
     missesHint:
       "抽取器产出了这些，但它们不在你的本体里（于是降级成了 concept / related to）。它们是扩展本体的信号。",
+    /* 一端挂着两个以上开放值的谓词（#341）：状态一句话，后果一句话，动作在按钮上 */
+    uniqueness: "并存的取值",
+    uniquenessHint:
+      "同一个持有者挂着两个取值，都没有终点。除非这条关系声明了一次只能有一个值，接任就不会闭合前任——问任何一个过去的日期，两个都会答。",
+    uniquenessEmpty: "没有并存：每个持有者至多一个开放取值。",
+    uniquenessSubject: (n: number) => `${n} 个主语挂着两个以上开放取值`,
+    uniquenessObject: (n: number) => `${n} 个取值被两个以上主语挂着`,
+    uniquenessEffect: (close: number, review: number) =>
+      review > 0 ? `闭合 ${close} 条，${review} 条进人审` : `闭合 ${close} 条`,
+    uniquenessDeclare: "声明并闭合",
+    uniquenessReconcile: "闭合它们",
+    uniquenessDeclared: "已声明",
+    uniquenessBusy: "闭合中…",
+    uniquenessDone: (close: number, review: number) =>
+      review > 0 ? `已闭合 ${close} 条 · ${review} 条待审` : `已闭合 ${close} 条`,
+    uniquenessSince: (d: string) => `自 ${d}`,
     dismiss: "忽略",
     dismissed: (n: number) => `已忽略（${n}）`,
     dismissedHint:

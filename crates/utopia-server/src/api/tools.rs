@@ -111,13 +111,16 @@ pub async fn search_chunks(
     // 必填参数由 `chat::check_call` 在派发之前挡下，所以这里不再回落到
     // 用户那句原话——回落产出的是一个看起来没问题的错误答案
     let q = args["query"].as_str().unwrap_or_default().to_string();
+    // 记录轴（0019 / #347）：只搜那一刻库里有的东西。全文那一路仍是"现在"，
+    // 命中不会错但会缺——retrieval.rs 的头上写了
+    let as_of = args["as_of"].as_str().and_then(parse_when);
     let chunks = retrieval::hybrid(
         ctx.state,
         ctx.kb_id,
         ctx.workspace_id,
         &q,
         SEARCH_TOP_K,
-        None,
+        as_of,
     )
     .await
     .unwrap_or_default();
@@ -305,18 +308,18 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
     let id = args["entity_id"]
         .as_str()
         .and_then(|s| s.parse::<Uuid>().ok());
-    // as-of 过滤：T 时刻有效 = 起点不晚于 T（或未知）且终点晚于 T（或开放）
-    let at = args["at"]
-        .as_str()
-        .and_then(|s| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok())
-        .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
+    // 世界轴过滤：T 时刻有效 = 起点不晚于 T（或未知）且终点晚于 T（或开放）
+    let at = args["at"].as_str().and_then(parse_when);
+    // 记录轴（0019 / #347）：那一刻**我们持有**的事实。两根轴两个参数，绝不合成
+    // 一个——合起来就会拿「三月的世界，以今天的认知」去答「三月的世界，以三月的认知」
+    let as_of = args["as_of"].as_str().and_then(parse_when);
     let Some(id) = id else {
         return (
             "Invalid entity_id (expected the uuid returned by find_entities).".to_string(),
             json!({ "kind": "facts", "label": "?", "detail": "invalid id" }),
         );
     };
-    match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, id, None).await {
+    match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, id, as_of).await {
         Ok((node, mut facts)) => {
             if let Some(t) = at {
                 facts.retain(|f| {
@@ -363,9 +366,22 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
                 lines.append(&mut derived);
                 lines.join("\n")
             };
-            let detail = match at {
-                Some(t) => format!("{} facts as of {}", facts.len(), t.format("%Y-%m-%d")),
-                None => format!("{} facts", facts.len()),
+            let detail = match (at, as_of) {
+                (Some(t), Some(r)) => format!(
+                    "{} facts at {}, as recorded by {}",
+                    facts.len(),
+                    t.format("%Y-%m-%d"),
+                    r.format("%Y-%m-%d")
+                ),
+                (Some(t), None) => format!("{} facts as of {}", facts.len(), t.format("%Y-%m-%d")),
+                (None, Some(r)) => {
+                    format!(
+                        "{} facts as recorded by {}",
+                        facts.len(),
+                        r.format("%Y-%m-%d")
+                    )
+                }
+                (None, None) => format!("{} facts", facts.len()),
             };
             (
                 text,
@@ -701,7 +717,19 @@ async fn run_query(state: &AppState, ds_id: Uuid, sql: &str) -> anyhow::Result<S
 
 /// 事实行："works at → 星云科技 (2023-08 → now) [90%]"，in 方向用 ←。
 fn fact_line(f: &EntityFact) -> String {
-    let other = f.other_name.as_deref().unwrap_or("?");
+    // 属性事实没有对端实体，值在 `object_value` 里（0004）。从前这里只看 `other_name`，
+    // 于是薪资、职位到了模型眼前是 `salary → ?`——区间和置信度都在，唯独值没到，
+    // 模型只能说"没有薪资信息"（#348）。渲染规则与客户端 `fmtObjectValue` 一致
+    let literal = f
+        .object_value
+        .as_ref()
+        .and_then(literal_text)
+        .filter(|_| f.other_name.is_none());
+    let other = f
+        .other_name
+        .as_deref()
+        .or(literal.as_deref())
+        .unwrap_or("?");
     // 本体没认下、原文说法也没留下时用 "?"——与 other 同一个约定。
     // 不编一个"相关"出来：那正是删掉 related_to 要消灭的东西
     let pred = f.predicate_label.as_deref().unwrap_or("?");
@@ -719,6 +747,54 @@ fn fact_line(f: &EntityFact) -> String {
         (None, None) => String::new(),
     };
     format!("{core}{range} [{}%]", (f.confidence * 100.0).round() as i32)
+}
+
+/// 时刻参数：`YYYY-MM-DD` 或 RFC3339。`at` 与 `as_of` 共用一个解析——记录轴上的
+/// 时刻常常是一个带时间的戳（"第一波灌完那一刻"），日期粒度装不下它
+fn parse_when(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let s = raw.trim();
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d.and_hms_opt(0, 0, 0).unwrap().and_utc());
+    }
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// 字面值宾语给模型看的样子：`{value, unit}` → "28000 CNY"，布尔 → ✓/✗，
+/// 映射那类 `{summary}` → 摘要本身。与 `web/src/pages/Graph.tsx::fmtObjectValue` 同一条规则，
+/// 两边分叉的话，人看到的和模型看到的就不是同一个值
+fn literal_text(v: &serde_json::Value) -> Option<String> {
+    // 裸标量（`changes` 那头的旧数据长这样）：字符串读成它自己，不带引号
+    match v {
+        serde_json::Value::Null => return None,
+        serde_json::Value::String(s) => return Some(s.clone()),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => return Some(v.to_string()),
+        _ => {}
+    }
+    if let Some(val) = v.get("value") {
+        let text = match val {
+            serde_json::Value::Bool(true) => "✓".to_string(),
+            serde_json::Value::Bool(false) => "✗".to_string(),
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Null => return None,
+            other => other.to_string(),
+        };
+        return Some(
+            match v
+                .get("unit")
+                .and_then(|u| u.as_str())
+                .filter(|u| !u.is_empty())
+            {
+                Some(unit) => format!("{text} {unit}"),
+                None => text,
+            },
+        );
+    }
+    if let Some(summary) = v.get("summary").and_then(|s| s.as_str()) {
+        return Some(summary.to_string());
+    }
+    Some(v.to_string())
 }
 
 /// changes 的时间窗：把两个可选日期变成 (SQL 用的半开区间, 展示用的窗口串)。
@@ -762,12 +838,11 @@ fn changes_window(
 /// 若把它们排成一串日期，模型会把"2026 年记下的"读成"2026 年发生的"——那正是
 /// 这个工具要防的误读。
 fn change_line(c: &GraphChange) -> String {
+    // 字面值宾语与 `fact_line` 同一条规则（`literal_text`）：两个工具看到的
+    // 不能是两种写法，否则 `{value, unit}` 在这里会印成一段 JSON
     let object = match (&c.object_name, &c.object_value) {
         (Some(name), _) => name.clone(),
-        (None, Some(v)) => match v {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        },
+        (None, Some(v)) => literal_text(v).unwrap_or_else(|| "?".to_string()),
         (None, None) => "?".to_string(),
     };
     let range = match (&c.valid_from, &c.valid_to) {
@@ -820,6 +895,21 @@ mod tests {
     }
     fn t(s: &str) -> chrono::DateTime<chrono::Utc> {
         s.parse().unwrap()
+    }
+
+    // --- parse_when -------------------------------------------------------------
+
+    /// `at` 与 `as_of` 共用一个解析：日期按当天零点，RFC3339 原样；别的一律 None，
+    /// 不猜——猜出来的时刻会安静地把问题答到另一天上
+    #[test]
+    fn a_moment_is_a_date_or_an_rfc3339_stamp_and_nothing_else() {
+        assert_eq!(parse_when("2024-08-01"), Some(t("2024-08-01T00:00:00Z")));
+        assert_eq!(
+            parse_when(" 2026-09-05T02:43:24.197Z "),
+            Some(t("2026-09-05T02:43:24.197Z"))
+        );
+        assert_eq!(parse_when("August 2024"), None);
+        assert_eq!(parse_when(""), None);
     }
 
     // --- changes_window -----------------------------------------------------
@@ -879,6 +969,57 @@ mod tests {
             filename: None,
             quote: None,
         }
+    }
+
+    fn attribute_fact(value: serde_json::Value) -> EntityFact {
+        EntityFact {
+            id: Uuid::nil(),
+            direction: "out".into(),
+            predicate_key: Some("salary".into()),
+            predicate_label: Some("salary".into()),
+            inferred: false,
+            temporal: Some("state".into()),
+            other_id: None,
+            other_name: None,
+            object_value: Some(value),
+            valid_from: Some(t("2023-06-01T00:00:00Z")),
+            valid_to: Some(t("2024-02-20T00:00:00Z")),
+            valid_from_precision: Some("day".into()),
+            valid_to_precision: Some("day".into()),
+            confidence: 0.9,
+            evidence_count: 1,
+            stale: false,
+            corrected: false,
+            last_evidence_time: None,
+            contested: None,
+        }
+    }
+
+    /// 属性事实的值要到模型眼前（#348）。从前这里是 `salary → ? (2023-06-01 → 2024-02-20)`：
+    /// 区间和置信度都在，唯独值没到，模型只能说"没有薪资信息"——而账本里明明有
+    #[test]
+    fn an_attribute_fact_shows_the_model_its_value() {
+        let line = fact_line(&attribute_fact(
+            serde_json::json!({ "value": 28000, "unit": "CNY" }),
+        ));
+        assert!(line.starts_with("salary → 28000 CNY"), "{line}");
+        assert!(line.contains("(2023-06-01 → 2024-02-20)"), "{line}");
+
+        // 与客户端 fmtObjectValue 同一条规则：布尔画成 ✓/✗，映射摘要读摘要本身
+        let flag = fact_line(&attribute_fact(serde_json::json!({ "value": true })));
+        assert!(flag.starts_with("salary → ✓"), "{flag}");
+        let mapped = fact_line(&attribute_fact(
+            serde_json::json!({ "summary": "orders.total" }),
+        ));
+        assert!(mapped.starts_with("salary → orders.total"), "{mapped}");
+    }
+
+    /// 本体没接住的关系仍然是 "?"：那个问号是给「没有谓词」留的，不是给「有值」用的
+    #[test]
+    fn a_missing_object_still_reads_as_a_question_mark() {
+        let mut f = attribute_fact(serde_json::json!(null));
+        f.object_value = None;
+        assert!(fact_line(&f).starts_with("salary → ?"), "{}", fact_line(&f));
     }
 
     /// 字面值要读成它自己。走 `Value::to_string()` 会把字符串连引号一起印出来，

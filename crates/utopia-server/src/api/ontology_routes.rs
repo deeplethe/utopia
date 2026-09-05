@@ -373,6 +373,79 @@ pub async fn delete_relation_type(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// 一条谓词的一端挂着两个以上开放值的持有者（#341）。
+///
+/// 本体自己长出来的库里没人声明过唯一性，接任不会闭合前任，三个人同时在管
+/// 一个项目——而「谁在管」正是这个产品的题。引擎永不自动推断 functional
+/// （bootstrap_ontology.rs 写了为什么），所以它只能被**问**：这里把证据摆出来
+/// ——哪条谓词、哪一端、多少持有者、对账会闭合几条、几条要进人审——人决定。
+/// `declared` 为真的那些是声明了却还没对过账的（导入的、声明之前就在的）。
+pub async fn uniqueness_candidates(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let cands = utopia_store::temporal::uniqueness_candidates(&state.pool, kb_id).await?;
+    let items: Vec<serde_json::Value> = cands
+        .iter()
+        .map(|c| {
+            json!({
+                "predicate_id": c.predicate_id,
+                "key": c.key,
+                "label": c.label,
+                "kind": c.kind,
+                "side": c.side,
+                "axiom": if c.side == "subject" { "functional" } else { "inverse_functional" },
+                "declared": c.declared,
+                "holders": c.holders,
+                "open_facts": c.open_facts,
+                "would_close": c.would_close,
+                "would_review": c.would_review,
+                "examples": c.examples.iter().map(|e| json!({
+                    "holder": e.holder,
+                    "values": e.values.iter().map(|v| json!({
+                        "fact_id": v.fact_id,
+                        "name": v.name,
+                        "valid_from": v.valid_from.map(|t| t.to_rfc3339()),
+                        "confidence": v.confidence,
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "candidates": items })))
+}
+
+/// 补上声明之后，把这条谓词已经在账上的开放行对一遍（#341）。
+///
+/// 与落库时同一条路：作废 + 改写，supersedes 链回旧行，记录轴倒回声明之前
+/// 仍看得见原来的行；拿不准的进人审。谓词没有唯一性声明时拒绝——
+/// 声明是人的事，这里只执行。响应里报闭合了几条、几条进了人审。
+pub async fn reconcile_relation_type(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let report = utopia_store::temporal::reconcile_predicate(&state.pool, kb_id, id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "relation_type.reconciled",
+        "relation_type",
+        Some(id),
+        json!({ "corrected": report.corrected.len(), "conflicts": report.conflicts }),
+    )
+    .await;
+    Ok(Json(json!({
+        "corrected": report.corrected.len(),
+        "conflicts": report.conflicts,
+        "corrected_ids": report.corrected,
+    })))
+}
+
 #[derive(Deserialize)]
 pub struct DismissMissReq {
     pub kind: String,

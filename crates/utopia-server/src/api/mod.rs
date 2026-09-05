@@ -232,6 +232,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             patch(ontology_routes::update_relation_type)
                 .delete(ontology_routes::delete_relation_type),
         )
+        // 声明来晚了（#341）：谁的哪一端挂着两个以上开放值；补上声明后把账对一遍
+        .route(
+            "/kbs/{id}/ontology/uniqueness",
+            get(ontology_routes::uniqueness_candidates),
+        )
+        .route(
+            "/kbs/{id}/ontology/relation-types/{type_id}/reconcile",
+            post(ontology_routes::reconcile_relation_type),
+        )
         .route(
             "/kbs/{id}/ontology/misses/dismiss",
             post(ontology_routes::dismiss_miss),
