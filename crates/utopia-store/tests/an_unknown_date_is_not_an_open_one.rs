@@ -523,3 +523,180 @@ async fn an_ending_without_a_date_closes_the_dated_row_it_ends() -> anyhow::Resu
         .await?;
     run
 }
+
+/// 派生读前提**读出来的**区间（0022 第 4 条）：一条 part_of 链里，没起点的那一环从它
+/// 的证据日期起算，结束了不知哪天的那一环到说出它的那份文档为止。派生行的两端因此
+/// 是前提共同支撑的那一段；来自锚点的那一端没有精度。
+#[tokio::test]
+async fn a_derivation_reads_no_further_than_its_premises() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        // part_of 传递；四个组织 a ⊂ b ⊂ c ⊂ d
+        let part_of = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO relation_types (id, kb_id, key, label, is_transitive)
+             VALUES ($1, $2, 'part_of', 'part of', TRUE)",
+        )
+        .bind(part_of)
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+        let org_type: Uuid = sqlx::query_scalar("SELECT type_id FROM entities WHERE id = $1")
+            .bind(f.meridian)
+            .fetch_one(&pool)
+            .await?;
+        let mut ids = Vec::new();
+        for name in ["Team A", "Group B", "Division C", "Company D"] {
+            let id = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(id)
+            .bind(f.kb)
+            .bind(org_type)
+            .bind(name)
+            .execute(&pool)
+            .await?;
+            ids.push(id);
+        }
+        let (a, b, c, d) = (ids[0], ids[1], ids[2], ids[3]);
+        // a ⊂ b：原文给了起点 2022-01-01
+        fact(
+            &pool,
+            &f,
+            a,
+            part_of,
+            b,
+            Validity::starting(Some(t("2022-01-01T00:00:00Z")), Some("day"))
+                .attested(Some(t("2022-01-01T00:00:00Z"))),
+        )
+        .await?;
+        // b ⊂ c：没起点，出自 2024-02-20 的文档
+        fact(
+            &pool,
+            &f,
+            b,
+            part_of,
+            c,
+            Validity::default().attested(Some(t("2024-02-20T00:00:00Z"))),
+        )
+        .await?;
+        // c ⊂ d：2020-01-01 起，2025-10-15 的文档说已不再（日期未记录）
+        fact(
+            &pool,
+            &f,
+            c,
+            part_of,
+            d,
+            Validity::starting(Some(t("2020-01-01T00:00:00Z")), Some("day"))
+                .ended_when_unknown()
+                .attested(Some(t("2025-10-15T00:00:00Z"))),
+        )
+        .await?;
+
+        utopia_store::reasoning::materialize(&pool, f.kb).await?;
+
+        type DerivedRow = (
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<String>,
+            Option<chrono::DateTime<chrono::Utc>>,
+            Option<String>,
+        );
+        let derived = |s: Uuid, o: Uuid| {
+            let pool = pool.clone();
+            async move {
+                let row: Option<DerivedRow> = sqlx::query_as(
+                    "SELECT valid_from, valid_from_precision, valid_to, valid_to_precision
+                       FROM derived_facts
+                      WHERE kb_id = $1 AND subject_id = $2 AND object_id = $3
+                        AND invalidated_at IS NULL",
+                )
+                .bind(f.kb)
+                .bind(s)
+                .bind(o)
+                .fetch_optional(&pool)
+                .await?;
+                Ok::<_, anyhow::Error>(row)
+            }
+        };
+
+        // a ⊂ c：起点是 b ⊂ c 的证据日期（锚点），没有精度；终点开放
+        let ac = derived(a, c).await?.expect("a ⊂ c 推得出");
+        assert_eq!(
+            ac.0,
+            Some(t("2024-02-20T00:00:00Z")),
+            "从没起点那一环的证据起算"
+        );
+        assert_eq!(ac.1, None, "来自锚点的一端没有精度");
+        assert_eq!(ac.2, None);
+
+        // a ⊂ d：起点同上；终点是 c ⊂ d 的锚点（说出结束的那份文档），也没有精度
+        let ad = derived(a, d).await?.expect("a ⊂ d 推得出");
+        assert_eq!(ad.0, Some(t("2024-02-20T00:00:00Z")));
+        assert_eq!(ad.1, None);
+        assert_eq!(
+            ad.2,
+            Some(t("2025-10-15T00:00:00Z")),
+            "到结束的那份文档为止"
+        );
+        assert_eq!(ad.3, None, "'unknown' 不是粒度，锚点顶上来的一端没有精度");
+
+        // b ⊂ d：起点是 b ⊂ c 的锚点、终点是 c ⊂ d 的锚点——两端都没有精度
+        let bd = derived(b, d).await?.expect("b ⊂ d 推得出");
+        assert_eq!(
+            (bd.0, bd.2),
+            (
+                Some(t("2024-02-20T00:00:00Z")),
+                Some(t("2025-10-15T00:00:00Z"))
+            )
+        );
+        assert_eq!((bd.1, bd.3), (None, None));
+
+        // 图上按读出来的区间亮灭：2023 年 a ⊂ c 还不存在；2024 年中在；2026 年 a ⊂ d 已灭
+        // 从 b 看两跳：a ⊂ b 与 c ⊂ d 把 a、d 都收进来，派生边才都在「这些节点之间」
+        let at = |when: &str| {
+            let pool = pool.clone();
+            let when = when.to_string();
+            async move {
+                let (_, edges) =
+                    utopia_store::graph::neighborhood(&pool, f.kb, b, 2, Some(t(&when)), None)
+                        .await?;
+                Ok::<_, anyhow::Error>(
+                    edges
+                        .into_iter()
+                        .filter(|e| e.derived)
+                        .map(|e| (e.source, e.target))
+                        .collect::<HashSet<_>>(),
+                )
+            }
+        };
+        assert!(!at("2023-06-01T00:00:00Z").await?.contains(&(a, c)));
+        assert!(at("2024-06-01T00:00:00Z").await?.contains(&(a, c)));
+        assert!(at("2024-06-01T00:00:00Z").await?.contains(&(a, d)));
+        assert!(
+            !at("2026-01-01T00:00:00Z").await?.contains(&(a, d)),
+            "链经过已结束的一环，之后不成立"
+        );
+        assert!(
+            at("2026-01-01T00:00:00Z").await?.contains(&(a, c)),
+            "另一条链还开着"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}

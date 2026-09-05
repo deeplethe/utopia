@@ -517,13 +517,13 @@ pub async fn open_violations(
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<AxiomViolation>> {
-    Ok(sqlx::query_as(
+    Ok(sqlx::query_as(&format!(
         "WITH triple AS (
              SELECT f.id,
                     s.canonical_name || ' · '
                       || COALESCE(r.label, fact_surface_predicate(f.id), '?') || ' · '
                       || COALESCE(o.canonical_name, f.object_value ->> 'summary',
-                                  f.object_value #>> '{}', '?') AS text,
+                                  f.object_value #>> '{{}}', '?') AS text,
                     r.label AS predicate
                FROM facts f
                JOIN entities s ON s.id = f.subject_id
@@ -540,7 +540,7 @@ pub async fn open_violations(
                                            ORDER BY x.ord)
                             FROM unnest(v.path) WITH ORDINALITY AS x(id, ord)
                             JOIN triple pt ON pt.id = x.id), '[]'::jsonb) AS path,
-                lf.valid_to IS NULL AS left_open,
+                {left_holds_to} IS NULL AS left_open,
                 lf.confidence AS left_confidence,
                 EXISTS (
                     SELECT 1 FROM entities e
@@ -556,7 +556,9 @@ pub async fn open_violations(
           WHERE v.kb_id = $1 AND v.status = 'open'
           ORDER BY v.detected_at DESC
           LIMIT $2 OFFSET $3",
-    )
+        // 「左边还开着」按读出来的终点判（0022）：结束了不知哪天的不算开着
+        left_holds_to = crate::world_axis::facts_holds_to("lf"),
+    ))
     .bind(kb_id)
     .bind(limit)
     .bind(offset)
@@ -834,18 +836,45 @@ pub struct DeriveReport {
 
 /// 一次取数，三样东西：带区间的边、每条事实的区间、精度与置信度。
 /// `run` 与 `materialize` 共用——两边看到的边必须是同一批
+/// 前提的精度、置信度，以及两端各自**是不是锚点**（0022）：来自证据日期而不是原文
+/// 日期的那一端，推出来的派生行在那一端没有精度可言
+type PremiseMeta = (Option<String>, Option<String>, f32, bool, bool);
+
 type TimedEdges = (
     Vec<TimedEdge>,
     HashMap<Uuid, (Option<i64>, Option<i64>)>,
-    HashMap<Uuid, (Option<String>, Option<String>, f32)>,
+    HashMap<Uuid, PremiseMeta>,
 );
+
+/// 一条前提**读出来的**区间（0022）：原文没给起点就从锚点起，说结束了不知哪天就到
+/// 锚点为止。两端都不知道的行读成空区间，求交时自然掉出去——它支撑不了任何派生。
+/// 返回 `(from, to, from_anchored, to_anchored)`。
+fn read_span(
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
+    to_precision: Option<&str>,
+    attested_at: chrono::DateTime<chrono::Utc>,
+) -> (Option<i64>, Option<i64>, bool, bool) {
+    let anchor = attested_at.timestamp();
+    let (f, from_anchored) = match from {
+        Some(x) => (Some(x.timestamp()), false),
+        None => (Some(anchor), true),
+    };
+    let (t, to_anchored) = match (to, to_precision) {
+        (Some(x), _) => (Some(x.timestamp()), false),
+        (None, Some(p)) if p == crate::graph::ENDED_UNKNOWN => (Some(anchor), true),
+        (None, _) => (None, false),
+    };
+    (f, t, from_anchored, to_anchored)
+}
 
 async fn timed_edges(pool: &PgPool, kb_id: Uuid) -> AppResult<TimedEdges> {
     // 输入**只有断言**。派生住在另一张表，所以这里连过滤都不必写——那正是
     // 分表买到的东西：忘了排除的后果是推不出东西，不是把自己的输出喂回自己
     let rows: Vec<EdgeRow> = sqlx::query_as(
         "SELECT id, predicate_id, subject_id, object_id,
-                valid_from, valid_to, valid_from_precision, valid_to_precision, confidence
+                valid_from, valid_to, valid_from_precision, valid_to_precision, confidence,
+                attested_at
            FROM facts
           WHERE kb_id = $1
             AND invalidated_at IS NULL
@@ -857,10 +886,13 @@ async fn timed_edges(pool: &PgPool, kb_id: Uuid) -> AppResult<TimedEdges> {
     .await?;
 
     let mut edges = Vec::with_capacity(rows.len());
-    let mut meta: HashMap<Uuid, (Option<String>, Option<String>, f32)> = HashMap::new();
+    let mut meta: HashMap<Uuid, PremiseMeta> = HashMap::new();
     let mut spans: HashMap<Uuid, (Option<i64>, Option<i64>)> = HashMap::new();
-    for (id, pred, subj, obj, from, to, fp, tp, conf) in rows {
-        let (f, t) = (from.map(|x| x.timestamp()), to.map(|x| x.timestamp()));
+    for (id, pred, subj, obj, from, to, fp, tp, conf, attested) in rows {
+        // 按读出来的区间推（0022）：没起点的前提从最早的证据起，结束了不知哪天的
+        // 到说出它的那份文档为止。读成开放的话，一条经过 "former CEO" 的链会推出
+        // 一条今天还成立的边
+        let (f, t, fa, ta) = read_span(from, to, tp.as_deref(), attested);
         edges.push(TimedEdge {
             edge: Edge {
                 fact: id,
@@ -872,7 +904,7 @@ async fn timed_edges(pool: &PgPool, kb_id: Uuid) -> AppResult<TimedEdges> {
             to: t,
         });
         spans.insert(id, (f, t));
-        meta.insert(id, (fp, tp, conf));
+        meta.insert(id, (fp, tp, conf, fa, ta));
     }
     Ok((edges, spans, meta))
 }
@@ -1036,6 +1068,7 @@ type EdgeRow = (
     Option<String>,
     Option<String>,
     f32,
+    chrono::DateTime<chrono::Utc>,
 );
 
 type LiveRow = (
@@ -1236,6 +1269,7 @@ type AttrFactRow = (
     Option<String>,
     f32,
     Option<Uuid>,
+    chrono::DateTime<chrono::Utc>,
 );
 
 /// 属性事实：字面值通道上的活事实，连同区间与精度。
@@ -1248,13 +1282,13 @@ async fn attribute_facts(
 ) -> AppResult<(
     Vec<utopia_reason::rules::AttrFact>,
     HashMap<Uuid, (Option<i64>, Option<i64>)>,
-    HashMap<Uuid, (Option<String>, Option<String>, f32)>,
+    HashMap<Uuid, PremiseMeta>,
     HashMap<Uuid, Option<Uuid>>,
 )> {
     let rows: Vec<AttrFactRow> = sqlx::query_as(
         "SELECT f.id, f.subject_id, f.predicate_id, f.object_value,
                 f.valid_from, f.valid_to, f.valid_from_precision, f.valid_to_precision,
-                f.confidence, e.type_id
+                f.confidence, e.type_id, f.attested_at
            FROM facts f
            JOIN entities e ON e.id = f.subject_id
           WHERE f.kb_id = $1
@@ -1271,8 +1305,9 @@ async fn attribute_facts(
     let mut spans = HashMap::new();
     let mut meta = HashMap::new();
     let mut type_of = HashMap::new();
-    for (id, subject, predicate, value, from, to, fp, tp, conf, type_id) in rows {
-        let (f, t) = (from.map(|x| x.timestamp()), to.map(|x| x.timestamp()));
+    for (id, subject, predicate, value, from, to, fp, tp, conf, type_id, attested) in rows {
+        // 与公理那一路同一种读法（0022）：读数没日期就从它的文档起算
+        let (f, t, fa, ta) = read_span(from, to, tp.as_deref(), attested);
         // 属性事实的字面值是 `{"value": …, "unit": …}`；比较的是里面那个 value。
         // 取不到就把整个对象交给求值器——它对认不出的形状一律判不满足
         let inner = value.get("value").cloned().unwrap_or_else(|| value.clone());
@@ -1283,7 +1318,7 @@ async fn attribute_facts(
             value: inner,
         });
         spans.insert(id, (f, t));
-        meta.insert(id, (fp, tp, conf));
+        meta.insert(id, (fp, tp, conf, fa, ta));
         type_of.insert(subject, type_id);
     }
     Ok((facts, spans, meta, type_of))
@@ -1296,7 +1331,7 @@ async fn attribute_facts(
 pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> {
     let ax = axioms(pool, kb_id).await?;
     let rules = compile_rules(pool, kb_id, &ax).await?;
-    let (edges, spans, mut meta) = timed_edges(pool, kb_id).await?;
+    let (edges, mut spans, mut meta) = timed_edges(pool, kb_id).await?;
 
     let derivation = utopia_reason::derive::derive(&edges, &ax);
     // asserted > derived 是硬性的（0002）：撞上断言的派生不落地。人认可过并存的
@@ -1425,8 +1460,10 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                 });
             }
         }
-        // 前提的精度与置信度：两趟共用下面那段，所以两份 meta 也要合起来
+        // 前提的精度与置信度：两趟共用下面那段，所以两份 meta 也要合起来；
+        // 区间也要——落地时要对着前提的区间认出派生的哪一端是锚点顶上的
         meta.extend(attr_meta);
+        spans.extend(attr_spans);
     }
 
     let mut tx = pool.begin().await?;
@@ -1470,16 +1507,30 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
         let mut fp: Option<String> = None;
         let mut tp: Option<String> = None;
         let mut conf = 1.0f32;
+        // 派生的那一端是不是某条前提的**锚点**顶上来的（0022）：是，就没有精度可言
+        let mut from_anchored = false;
+        let mut to_anchored = false;
         for p in &d.premises {
-            if let Some((pf, pt, pc)) = meta.get(p) {
+            if let Some((pf, pt, pc, fa, ta)) = meta.get(p) {
                 fp = coarsest(fp.as_deref(), pf.as_deref());
-                tp = coarsest(tp.as_deref(), pt.as_deref());
+                // 'unknown' 不是粒度，是「结束了不知哪天」的标记；它顶上来的那一端
+                // 走下面 to_anchored 那条路，不进粒度的比较
+                tp = coarsest(
+                    tp.as_deref(),
+                    pt.as_deref().filter(|p| *p != crate::graph::ENDED_UNKNOWN),
+                );
                 conf = conf.min(*pc);
+                if let Some((sf, st)) = spans.get(p) {
+                    from_anchored |= *fa && *sf == d.from;
+                    to_anchored |= *ta && *st == d.to;
+                }
             }
         }
-        // 约束是「有日期才有精度」——交集把某一端算成无界时，那一端的精度也得清掉
-        let fp = d.from.and(fp);
-        let tp = d.to.and(tp);
+        // 约束是「有精度必有日期」（0022 放宽了反向）：交集把某一端算成无界时，那一端
+        // 的精度清掉；那一端若来自证据日期而不是原文的日期，也没有精度——在无知的地方
+        // 填一个确定的值，正是 `facts.valid_from_precision` 那条注释说的病
+        let fp = if from_anchored { None } else { d.from.and(fp) };
+        let tp = if to_anchored { None } else { d.to.and(tp) };
         let id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO derived_facts (id, kb_id, subject_id, predicate_id, object_id,

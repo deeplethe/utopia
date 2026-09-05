@@ -54,8 +54,8 @@ pub fn interval_holds_at(from: &str, to: &str, param: usize) -> String {
 }
 
 /// `derived_facts`：派生在 T 时刻成立。两端由求值器按前提**读出来的**区间求交写入
-/// （0022 第 4 条，第二刀），所以这里是纯粹的包含。第一刀里派生行仍带着前提原样的
-/// NULL 起点，那一半随第二刀补上。
+/// （0022 第 4 条：没起点的前提从锚点起算，结束了不知哪天的到锚点为止），所以这里
+/// 是纯粹的包含——派生行自己不需要锚点。
 pub fn derived_hold_at(alias: &str, param: usize) -> String {
     interval_holds_at(
         &format!("{alias}.valid_from"),
