@@ -735,6 +735,23 @@ select.input-dark option {
   background: var(--u-surface-2);
 }
 
+/* 无底无框的下拉触发器（顶栏的知识库切换器）：与 u-navlink 同一套悬停 */
+.u-dropdown-bare {
+  border-radius: 0.5rem;
+  color: var(--u-text-2);
+  transition:
+    color var(--u-fast),
+    background-color var(--u-fast);
+}
+.u-dropdown-bare:hover {
+  color: var(--u-text);
+  background: var(--u-surface-2);
+}
+.u-dropdown-bare:focus-visible {
+  outline: 2px solid var(--u-ring);
+  outline-offset: 2px;
+}
+
 /* 主导航的一页：图标 + 文字，激活态下划线 */
 .u-tab {
   display: flex;
