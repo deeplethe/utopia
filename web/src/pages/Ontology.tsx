@@ -266,13 +266,13 @@ export function Ontology() {
         </div>
         <div
           ref={listRef}
-          className="flex-1 min-h-0 overflow-hidden px-2 pt-2 pb-2 flex flex-col"
+          className="flex-1 min-h-0 overflow-hidden px-3 pt-2 pb-2 flex flex-col"
         >
           {/* 新建行置顶：随当前段建类/建关系 */}
           {!filter.trim() && (
             <Row
               className="mb-1"
-              icon={<Plus size={13} />}
+              icon={<Plus size={14} />}
               onClick={() =>
                 railTab === "classes"
                   ? setSel({ kind: "new-class", parentId: null })
@@ -337,7 +337,7 @@ export function Ontology() {
         {/* 底部常驻：关于本体的几个入口——从外部拿一份本体、业务规则、类型消解，
             以及数据顶回来的两种信号。一条分隔线说明它们是钉住的，行本身与上面
             列表里的行同一副样子 */}
-        <div className="shrink-0 border-t border-line px-2 py-2 space-y-1">
+        <div className="shrink-0 border-t border-line px-3 py-2 space-y-1">
         <RailItem
           active={sel?.kind === "import"}
           icon={<Upload size={14} />}

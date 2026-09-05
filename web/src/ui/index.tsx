@@ -156,7 +156,9 @@ export const Input = forwardRef<
       className={cn(
         "input-dark",
         size === "sm" ? "u-input-sm" : "u-input-md",
-        icon ? (size === "sm" ? "pl-7" : "pl-8") : null,
+        // 图标槽：图标离左内缘 8px，文字从 30px 起。左栏里的输入框（盒 12）
+        // 于是图标在 20、文字在 42，与左栏的行（图标 20、文字 42）同一条线
+        icon ? (size === "sm" ? "pl-7" : "pl-[30px]") : null,
         icon ? "w-full" : className,
       )}
       {...props}
@@ -168,7 +170,7 @@ export const Input = forwardRef<
       <span
         className={cn(
           "pointer-events-none absolute top-1/2 -translate-y-1/2 text-ink-3",
-          size === "sm" ? "left-2" : "left-3",
+          "left-2",
         )}
       >
         {icon}

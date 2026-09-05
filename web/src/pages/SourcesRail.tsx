@@ -142,7 +142,7 @@ export function SourcesRail({
     <aside className={`${RAIL_CLS} flex flex-col`}>
       {/* 全部文档置顶为一级入口。**不带计数**：它是总数，下面各行已经说了
           文档都在哪，这个数只是装饰 */}
-      <div className="px-2 pt-3">
+      <div className="px-3 pt-3">
         <RailItem
           active={active === "all"}
           onClick={() => onSelect("all")}
@@ -155,13 +155,13 @@ export function SourcesRail({
           语汇：加号在图标槽里，行本身与周围的行同一副样子——这一栏从头到尾只有
           一种东西。没有 onAdd 的页面（文档查看页）不渲染这一行 */}
       {onAdd && (
-        <div className="px-2 pt-1">
+        <div className="px-3 pt-1">
           <RailItem icon={<Plus size={14} />} onClick={onAdd}>
             {S.library.newSourceTitle}
           </RailItem>
         </div>
       )}
-      <div className="u-scroll flex-1 overflow-y-auto px-2 pt-1 pb-3 space-y-1">
+      <div className="u-scroll flex-1 overflow-y-auto px-3 pt-1 pb-3 space-y-1">
         {/* Uploads：常驻默认来源（上传的默认去处，不可删除） */}
         <RailItem
           active={active === "uploads"}
@@ -193,7 +193,7 @@ export function SourcesRail({
       </div>
       {/* 已删除（#268）：墓碑在这里等着被恢复或清除。一个都没有就不占一行 */}
       {((docs.data?.deleted ?? 0) > 0 || active === "deleted") && (
-        <div className="px-2 pb-3">
+        <div className="px-3 pb-3">
           <RailItem
             active={active === "deleted"}
             onClick={() => onSelect("deleted")}

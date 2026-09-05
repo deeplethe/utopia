@@ -96,11 +96,11 @@ export function Shell() {
       {/* z-40：backdrop-filter 使顶栏与 tab 条各自成 stacking context，
           不提权则后者按 DOM 序盖住顶栏内的弹出面板 */}
       {/* 左内距 32px：字标的左缘落在下面第一个标签的图标上（nav px-4 + 标签
-          px-4）。字标与切换器之间 gap-8：切换器的图标正好落在第二个标签的图标上
-          （英文界面下差 1px，ml-px 补齐）——两行同一套节奏 */}
-      <header className="glass-strong relative z-40 border-x-0 border-t-0 h-14 shrink-0 flex items-center gap-8 px-8">
+          px-4）。字标与切换器之间 gap-4：切换器的图标正好落在第二个标签的图标上
+          （英文界面下的巧合，字标一换字号就得重量）——两行同一套节奏 */}
+      <header className="glass-strong relative z-40 border-x-0 border-t-0 h-14 shrink-0 flex items-center gap-4 px-8">
         {/* 字标：逐字母淡入，hover 浮出 ↗，点击去官网 */}
-        <Wordmark className="text-title" />
+        <Wordmark className="text-display" />
         {/* 知识库切换器紧跟字标，中间不画斜杠——它不是面包屑的第二级，就是
             「现在在哪个库」。Workspace 已从概念层折叠为部署级隐形管道
             （settings/members 仍经它走 API，如 organizations 之于单租户）。
@@ -110,7 +110,7 @@ export function Shell() {
             纯切换器：建库是管理动作，入口在 System settings › Knowledge bases */}
         <Dropdown
           bare
-          className="ml-px max-w-64"
+          className="max-w-64"
           icon={<Layers size={13} />}
           menuLabel={S.nav.kbLabel}
           value={kb?.id ?? ""}
