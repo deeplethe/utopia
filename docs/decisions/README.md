@@ -43,7 +43,8 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0017 | [A contradiction points at an error upstream](0017-a-contradiction-points-upstream.md) | Implemented · B2a: engine and queue, per-item cap, aggregation by rule pair, cards with clues and repairs (#238) · B2b: contested edges in the alert colour, ghost edges for blocked derivations, the disputed chip and the "did not land" section in the panel (#243) |
 | 0018 | [The lakehouse is one protocol away](0018-the-lakehouse-is-one-protocol-away.md) | Implemented: Trino (Iceberg / Delta / Hive), Databricks and Snowflake behind the same trait, scheme picks the engine (#239) · Trino verified against a real cluster (#327); Databricks and Snowflake still want one (#241, #242) · MaxCompute waits |
 | 0019 | [The second clock can be rewound](0019-the-second-clock-can-be-rewound.md) | In progress · `held_at(T)` replaces the hard-coded `invalidated_at IS NULL` on the read paths, `at` and `as_of` separate to the API (#317) · the graph control stays a separate cut (#307) |
-| 0020 | [A rule reads attributes and concludes a type](0020-a-rule-reads-attributes-and-concludes-a-type.md) | Planned · nothing built · `derived_facts` widens to match `facts`, a derived typing rides the builtin `is_a`, rules authored in `attribute_rules` by a person, validity is the premise intersection (#277) |
+| 0020 | [An auditor reads it without us](0020-an-auditor-reads-it-without-us.md) | Implemented · `GET /kbs/{id}/export?format=turtle\|jsonld` streams the base as RDF, `rdf.rs` holds the mapping · SPARQL waits, and the record says why (#308) |
+| 0021 | [A rule reads attributes and concludes a type](0021-a-rule-reads-attributes-and-concludes-a-type.md) | Planned · nothing built · `derived_facts` widens to match `facts`, a derived typing rides the builtin `is_a`, rules authored in `attribute_rules` by a person, validity is the premise intersection (#277) |
 
 ## Not a decision record
 
