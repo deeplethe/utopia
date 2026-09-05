@@ -106,13 +106,16 @@ pub async fn search_chunks(
     // 必填参数由 `chat::check_call` 在派发之前挡下，所以这里不再回落到
     // 用户那句原话——回落产出的是一个看起来没问题的错误答案
     let q = args["query"].as_str().unwrap_or_default().to_string();
+    // 记录轴（0019 / #347）：只搜那一刻库里有的东西。全文那一路仍是"现在"，
+    // 命中不会错但会缺——retrieval.rs 的头上写了
+    let as_of = args["as_of"].as_str().and_then(parse_when);
     let chunks = retrieval::hybrid(
         ctx.state,
         ctx.kb_id,
         ctx.workspace_id,
         &q,
         SEARCH_TOP_K,
-        None,
+        as_of,
     )
     .await
     .unwrap_or_default();
@@ -300,18 +303,18 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
     let id = args["entity_id"]
         .as_str()
         .and_then(|s| s.parse::<Uuid>().ok());
-    // as-of 过滤：T 时刻有效 = 起点不晚于 T（或未知）且终点晚于 T（或开放）
-    let at = args["at"]
-        .as_str()
-        .and_then(|s| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok())
-        .map(|d| d.and_hms_opt(0, 0, 0).unwrap().and_utc());
+    // 世界轴过滤：T 时刻有效 = 起点不晚于 T（或未知）且终点晚于 T（或开放）
+    let at = args["at"].as_str().and_then(parse_when);
+    // 记录轴（0019 / #347）：那一刻**我们持有**的事实。两根轴两个参数，绝不合成
+    // 一个——合起来就会拿「三月的世界，以今天的认知」去答「三月的世界，以三月的认知」
+    let as_of = args["as_of"].as_str().and_then(parse_when);
     let Some(id) = id else {
         return (
             "Invalid entity_id (expected the uuid returned by find_entities).".to_string(),
             json!({ "kind": "facts", "label": "?", "detail": "invalid id" }),
         );
     };
-    match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, id, None).await {
+    match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, id, as_of).await {
         Ok((node, mut facts)) => {
             if let Some(t) = at {
                 facts.retain(|f| {
@@ -330,9 +333,22 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
             } else {
                 facts.iter().map(fact_line).collect::<Vec<_>>().join("\n")
             };
-            let detail = match at {
-                Some(t) => format!("{} facts as of {}", facts.len(), t.format("%Y-%m-%d")),
-                None => format!("{} facts", facts.len()),
+            let detail = match (at, as_of) {
+                (Some(t), Some(r)) => format!(
+                    "{} facts at {}, as recorded by {}",
+                    facts.len(),
+                    t.format("%Y-%m-%d"),
+                    r.format("%Y-%m-%d")
+                ),
+                (Some(t), None) => format!("{} facts as of {}", facts.len(), t.format("%Y-%m-%d")),
+                (None, Some(r)) => {
+                    format!(
+                        "{} facts as recorded by {}",
+                        facts.len(),
+                        r.format("%Y-%m-%d")
+                    )
+                }
+                (None, None) => format!("{} facts", facts.len()),
             };
             (
                 text,
@@ -559,6 +575,18 @@ fn fact_line(f: &EntityFact) -> String {
     format!("{core}{range} [{}%]", (f.confidence * 100.0).round() as i32)
 }
 
+/// 时刻参数：`YYYY-MM-DD` 或 RFC3339。`at` 与 `as_of` 共用一个解析——记录轴上的
+/// 时刻常常是一个带时间的戳（"第一波灌完那一刻"），日期粒度装不下它
+fn parse_when(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let s = raw.trim();
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d.and_hms_opt(0, 0, 0).unwrap().and_utc());
+    }
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
 /// changes 的时间窗：把两个可选日期变成 (SQL 用的半开区间, 展示用的窗口串)。
 ///
 /// **抽成纯函数是因为这里出过一次错。** `until` 进 SQL 前要加一天（说"到 3 月 31 日
@@ -658,6 +686,21 @@ mod tests {
     }
     fn t(s: &str) -> chrono::DateTime<chrono::Utc> {
         s.parse().unwrap()
+    }
+
+    // --- parse_when -------------------------------------------------------------
+
+    /// `at` 与 `as_of` 共用一个解析：日期按当天零点，RFC3339 原样；别的一律 None，
+    /// 不猜——猜出来的时刻会安静地把问题答到另一天上
+    #[test]
+    fn a_moment_is_a_date_or_an_rfc3339_stamp_and_nothing_else() {
+        assert_eq!(parse_when("2024-08-01"), Some(t("2024-08-01T00:00:00Z")));
+        assert_eq!(
+            parse_when(" 2026-09-05T02:43:24.197Z "),
+            Some(t("2026-09-05T02:43:24.197Z"))
+        );
+        assert_eq!(parse_when("August 2024"), None);
+        assert_eq!(parse_when(""), None);
     }
 
     // --- changes_window -----------------------------------------------------
