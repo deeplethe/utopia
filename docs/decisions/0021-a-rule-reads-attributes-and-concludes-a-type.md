@@ -1,4 +1,4 @@
-# 0020 · A rule reads attributes and concludes a type
+# 0021 · A rule reads attributes and concludes a type
 
 - **Status**: planned · nothing built; the derivation machinery it stacks on is live
 - **Written**: 2026-09-05 (conventions in the [README](README.md))
