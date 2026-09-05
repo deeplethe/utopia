@@ -3502,10 +3502,10 @@ function TimeEditor({
         />
       </div>
       <div className="mt-2 flex justify-end gap-1.5">
-        <Button size="sm" variant="ghost" onClick={onDone}>
+        <Button size="sm" variant="secondary" onClick={onDone}>
           {S.graph.timeCancel}
         </Button>
-        <Button
+        <Button variant="primary"
           size="sm"
           onClick={() => save.mutate()}
           disabled={save.isPending}

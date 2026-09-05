@@ -1015,7 +1015,7 @@ function RelationshipsCard({
         </div>
         <Button
           size="sm"
-          variant="ghost"
+          variant="secondary"
           disabled={!connectId || connect.isPending}
           onClick={() => connect.mutate()}
         >
@@ -1276,7 +1276,7 @@ function AttributeForm({
         />
       </div>
       <div className="flex gap-2">
-        <Button
+        <Button variant="primary"
           size="sm"
           onClick={() => save.mutate()}
           disabled={
@@ -1285,13 +1285,13 @@ function AttributeForm({
         >
           {S.ontology.save}
         </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel}>
+        <Button size="sm" variant="secondary" onClick={onCancel}>
           {S.ontology.cancel}
         </Button>
         {existing && (
           <Button
             size="sm"
-            variant="ghost"
+            variant="secondary"
             className="ml-auto"
             disabled={existing.usage > 0}
             title={existing.usage > 0 ? S.ontology.deleteBlocked : undefined}
@@ -1726,7 +1726,7 @@ export function ClassForm({
         </p>
       </div>
       <div className="flex gap-2 pt-1">
-        <Button
+        <Button variant="primary"
           size="sm"
           onClick={() => save.mutate()}
           disabled={save.isPending || !label.trim()}
@@ -1734,14 +1734,14 @@ export function ClassForm({
           {S.ontology.save}
         </Button>
         {onNewSub && (
-          <Button size="sm" variant="ghost" onClick={onNewSub}>
+          <Button size="sm" variant="secondary" onClick={onNewSub}>
             {S.ontology.newSubClass}
           </Button>
         )}
         {existing && !existing.builtin && (
           <Button
             size="sm"
-            variant="ghost"
+            variant="secondary"
             disabled={existing.usage > 0}
             title={existing.usage > 0 ? S.ontology.deleteBlocked : undefined}
             onClick={() => remove.mutate()}
@@ -2105,7 +2105,7 @@ export function PropertyForm({
         </p>
       </div>
       <div className="flex gap-2 pt-1">
-        <Button
+        <Button variant="primary"
           size="sm"
           onClick={() => save.mutate()}
           disabled={save.isPending || !label.trim()}
@@ -2115,7 +2115,7 @@ export function PropertyForm({
         {existing && !existing.builtin && (
           <Button
             size="sm"
-            variant="ghost"
+            variant="secondary"
             disabled={existing.usage > 0}
             title={existing.usage > 0 ? S.ontology.deleteBlocked : undefined}
             onClick={() => remove.mutate()}
@@ -2480,7 +2480,7 @@ function UniquenessPanel({
                       {done[c.predicate_id]}
                     </span>
                   ) : (
-                    <Button
+                    <Button variant="primary"
                       size="sm"
                       onClick={() => apply(c)}
                       disabled={busy === c.predicate_id}
@@ -2895,7 +2895,7 @@ function MissesPanel({
         {misses.length > 0 && (
           <Button
             size="sm"
-            variant="ghost"
+            variant="secondary"
             onClick={() => suggest.mutate()}
             disabled={suggest.isPending}
           >
@@ -2992,7 +2992,7 @@ function MissesPanel({
             </div>
             <Button
               size="sm"
-              variant="ghost"
+              variant="secondary"
               disabled={unadopt.isPending}
               onClick={() =>
                 setConfirmUndo({
@@ -3018,7 +3018,7 @@ function MissesPanel({
           </span>
           <Button
             size="sm"
-            variant="ghost"
+            variant="secondary"
             className="ml-auto"
             disabled={unadopt.isPending}
             onClick={() =>
@@ -3059,7 +3059,7 @@ function MissesPanel({
               1 && (
               <Button
                 size="sm"
-                variant="ghost"
+                variant="secondary"
                 className="ml-auto"
                 disabled={addAll.isPending}
                 onClick={() => addAll.mutate(proposals)}
@@ -3100,7 +3100,7 @@ function MissesPanel({
                     {p.reason}
                   </span>
                 )}
-                <Button
+                <Button variant="primary"
                   size="sm"
                   className="ml-auto"
                   onClick={() => approveMapping.mutate(p)}
@@ -3120,7 +3120,7 @@ function MissesPanel({
                     {p.reason}
                   </span>
                 )}
-                <Button
+                <Button variant="primary"
                   size="sm"
                   className="ml-auto"
                   onClick={() => approveEntity.mutate(p)}
@@ -3151,7 +3151,7 @@ function MissesPanel({
                     {p.reason}
                   </span>
                 )}
-                <Button
+                <Button variant="primary"
                   size="sm"
                   className="ml-auto"
                   onClick={() => approveRelation.mutate(p)}
@@ -3182,7 +3182,7 @@ function MissesPanel({
                     {p.reason}
                   </span>
                 )}
-                <Button
+                <Button variant="primary"
                   size="sm"
                   className="ml-auto"
                   onClick={() => approveAttribute.mutate(p)}
@@ -3289,7 +3289,7 @@ function ImportPanel({
       <div className="flex items-center gap-2">
         <Button
           size="sm"
-          variant="ghost"
+          variant="secondary"
           disabled={busy}
           onClick={() => pick.current?.click()}
         >
@@ -3404,7 +3404,7 @@ function ImportPanel({
               )}
 
               <div className="mt-4 flex items-center gap-2">
-                <Button
+                <Button variant="primary"
                   size="sm"
                   disabled={busy}
                   onClick={() => file && apply.mutate(file)}
@@ -3415,7 +3415,7 @@ function ImportPanel({
                 </Button>
                 <Button
                   size="sm"
-                  variant="ghost"
+                  variant="secondary"
                   disabled={busy}
                   onClick={() => {
                     setFile(null);
