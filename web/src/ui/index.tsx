@@ -233,6 +233,7 @@ export function Dropdown({
   icon,
   menuLabel,
   footer,
+  bare,
 }: {
   value: string;
   options: DropdownOption[];
@@ -246,6 +247,9 @@ export function Dropdown({
   menuLabel?: string;
   /** 弹层底部固定操作区（点击后弹层关闭） */
   footer?: ReactNode;
+  /** 无底无框：只有文字和箭头。给顶栏那种本身已经是一块面的地方——再套一个
+   *  输入框的壳，就是面上叠面 */
+  bare?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -276,7 +280,8 @@ export function Dropdown({
         onClick={() => setOpen(!open)}
         title={menuLabel}
         className={cn(
-          "input-dark w-full flex items-center gap-2 text-left",
+          bare ? "u-dropdown-bare" : "input-dark",
+          "w-full flex items-center gap-2 text-left",
           pad,
         )}
       >

@@ -103,6 +103,7 @@ export function Shell() {
         <span className="text-ink-3">/</span>
         {/* 纯切换器：建库是管理动作，入口在 System settings › Knowledge bases */}
         <Dropdown
+          bare
           className="w-40"
           size="sm"
           icon={<BookMarked size={12} />}
