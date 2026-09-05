@@ -27,6 +27,7 @@ import {
   type ChipTone,
   cn,
   DangerConfirm,
+  Dialog,
   IconButton,
   Input,
   LinkButton,
@@ -1049,33 +1050,22 @@ function DropsModal({
   rows: ExtractionDrop[];
   onClose: () => void;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div
-      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="glass-strong w-[36rem] max-w-[calc(100vw-2rem)] rounded-xl shadow-2xl">
-        <div className="px-6 pt-4 pb-3 border-b border-line">
-          <div className="flex items-center justify-between">
-            <h2 className="u-title text-title">{S.library.dropsTitle}</h2>
-            <IconButton size="sm" label={S.library.close} onClick={onClose}>
-              <X size={15} />
-            </IconButton>
-          </div>
-          <p className="mt-1 text-small text-ink-3 truncate" title={file}>
+    <Dialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={S.library.dropsTitle}
+      description={
+        <>
+          <span className="block truncate" title={file}>
             {file}
-          </p>
-          <p className="mt-2 text-small text-ink-3">{S.library.dropsNote}</p>
-        </div>
-        <div className="u-scroll max-h-80 overflow-y-auto px-6 py-3">
+          </span>
+          <span className="mt-1 block">{S.library.dropsNote}</span>
+        </>
+      }
+      closeLabel={S.library.close}
+    >
+      <div className="u-scroll max-h-80 overflow-y-auto">
           {rows.map((r) => (
             <div
               key={`${r.reason}:${r.detail}`}
@@ -1097,9 +1087,8 @@ function DropsModal({
               )}
             </div>
           ))}
-        </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -1114,38 +1103,22 @@ function ErrorModal({
   text: string;
   onClose: () => void;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div
-      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="glass-strong w-[36rem] max-w-[calc(100vw-2rem)] rounded-xl shadow-2xl">
-        <div className="px-6 pt-4 pb-3 border-b border-line">
-          <div className="flex items-center justify-between">
-            <h2 className="u-title text-title">{S.library.errorTitle}</h2>
-            <IconButton size="sm" label={S.library.close} onClick={onClose}>
-              <X size={15} />
-            </IconButton>
-          </div>
-          <p className="mt-1 text-small text-ink-3 truncate" title={file}>
-            {file} · {kind}
-          </p>
-        </div>
-        <div className="px-6 py-4">
-          <pre className="u-scroll max-h-72 overflow-auto rounded-lg border border-line bg-surface p-3 text-small leading-relaxed text-ink-2 whitespace-pre-wrap break-words">
-            {text}
-          </pre>
-        </div>
-        <div className="flex justify-end gap-2 px-6 py-3 border-t border-line">
-          <Button variant="secondary" size="sm"
+    <Dialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={S.library.errorTitle}
+      description={
+        <span className="block truncate" title={file}>
+          {file} · {kind}
+        </span>
+      }
+      closeLabel={S.library.close}
+      footer={
+        <>
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() =>
               navigator.clipboard
                 .writeText(text)
@@ -1158,9 +1131,13 @@ function ErrorModal({
           <Button variant="primary" size="sm" onClick={onClose}>
             {S.library.close}
           </Button>
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <pre className="u-scroll max-h-72 overflow-auto rounded-lg border border-line bg-surface p-3 text-small leading-relaxed text-ink-2 whitespace-pre-wrap break-words">
+        {text}
+      </pre>
+    </Dialog>
   );
 }
 
@@ -1192,30 +1169,36 @@ function TokenModal({
   const copy = (text: string, msg: string) =>
     navigator.clipboard.writeText(text).then(() => toast.success(msg)).catch(() => {});
   const endpoint = `${location.origin}/api/v1/sources/${sourceId}/ingest`;
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div
-      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+    <Dialog
+      open
+      onOpenChange={(o) => !o && onClose()}
+      title={
+        <span className="flex items-center gap-2">
+          <KeyRound size={14} className="text-ink-2" />
+          {S.library.tokenTitle}
+        </span>
+      }
+      closeLabel={S.library.close}
+      footer={
+        <>
+          <Button
+            variant="secondary"
+            size="sm"
+            className="flex items-center gap-2"
+            disabled={rotate.isPending || tokenQuery.isPending}
+            onClick={() => rotate.mutate()}
+          >
+            <RefreshCw size={11} className={rotate.isPending ? "animate-spin" : ""} />
+            {token ? S.library.rotateToken : S.library.generateToken}
+          </Button>
+          <Button variant="primary" size="sm" onClick={onClose}>
+            {S.library.close}
+          </Button>
+        </>
+      }
     >
-      <div className="glass-strong w-[32rem] max-w-[calc(100vw-2rem)] rounded-xl shadow-2xl">
-        <div className="flex items-center justify-between px-6 pt-4 pb-3 border-b border-line">
-          <h2 className="u-title text-title flex items-center gap-2">
-            <KeyRound size={14} className="text-ink-2" />
-            {S.library.tokenTitle}
-          </h2>
-          <IconButton size="sm" label={S.library.close} onClick={onClose}>
-            <X size={15} />
-          </IconButton>
-        </div>
-        <div className="px-6 py-4 space-y-3">
+      <div className="space-y-3">
           {tokenQuery.isPending ? (
             <p className="text-body text-ink-3">{S.nav.loading}</p>
           ) : token ? (
@@ -1247,21 +1230,8 @@ function TokenModal({
           ) : (
             <p className="text-body text-ink-3">{S.library.noToken}</p>
           )}
-        </div>
-        <div className="flex justify-end gap-2 px-6 py-3 border-t border-line">
-          <Button variant="secondary" size="sm" className="flex items-center gap-2"
-            disabled={rotate.isPending || tokenQuery.isPending}
-            onClick={() => rotate.mutate()}
-          >
-            <RefreshCw size={11} className={rotate.isPending ? "animate-spin" : ""} />
-            {token ? S.library.rotateToken : S.library.generateToken}
-          </Button>
-          <Button variant="primary" size="sm" onClick={onClose}>
-            {S.library.close}
-          </Button>
-        </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -1478,21 +1448,28 @@ function SourceModal({
   );
 
   return (
-    <div
-      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onDone();
-      }}
+    <Dialog
+      open
+      onOpenChange={(o) => !o && onDone()}
+      title={S.library.newSourceTitle}
+      closeLabel={S.library.close}
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={() => onDone()}>
+            {S.library.cancel}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!valid || create.isPending}
+            onClick={() => create.mutate()}
+          >
+            {S.library.createSource}
+          </Button>
+        </>
+      }
     >
-      <div className="glass-strong w-[30rem] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-4rem)] overflow-y-auto u-scroll rounded-xl shadow-2xl">
-        <div className="flex items-center justify-between px-6 pt-4 pb-3 border-b border-line">
-          <h2 className="u-title text-title">{S.library.newSourceTitle}</h2>
-          <IconButton size="sm" label={S.library.close} onClick={() => onDone()}>
-            <X size={15} />
-          </IconButton>
-        </div>
-
-        <div className="px-6 py-4">
+      <div>
           {/* 类型 */}
           <div className="flex gap-2 mb-2">
             {CREATABLE_SOURCE_KINDS.map((k) => {
@@ -1794,21 +1771,8 @@ function SourceModal({
           {create.isError && (
             <p className="text-small text-danger mb-2">{(create.error as Error).message}</p>
           )}
-        </div>
-
-        <div className="flex justify-end gap-2 px-6 py-3 border-t border-line">
-          <Button variant="secondary" size="sm" onClick={() => onDone()}>
-            {S.library.cancel}
-          </Button>
-          <Button variant="primary" size="sm"
-            disabled={!valid || create.isPending}
-            onClick={() => create.mutate()}
-          >
-            {S.library.createSource}
-          </Button>
-        </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -1902,21 +1866,28 @@ function SourceEditModal({
   );
 
   return (
-    <div
-      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onDone();
-      }}
+    <Dialog
+      open
+      onOpenChange={(o) => !o && onDone()}
+      title={S.library.editSourceTitle}
+      closeLabel={S.library.close}
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={onDone}>
+            {S.library.cancel}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!valid || save.isPending}
+            onClick={() => save.mutate()}
+          >
+            {S.library.saveChanges}
+          </Button>
+        </>
+      }
     >
-      <div className="glass-strong w-[30rem] max-w-[calc(100vw-2rem)] max-h-[calc(100vh-4rem)] overflow-y-auto u-scroll rounded-xl shadow-2xl">
-        <div className="flex items-center justify-between px-6 pt-4 pb-3 border-b border-line">
-          <h2 className="u-title text-title">{S.library.editSourceTitle}</h2>
-          <IconButton size="sm" label={S.library.close} onClick={onDone}>
-            <X size={15} />
-          </IconButton>
-        </div>
-
-        <div className="px-6 py-4">
+      <div>
           {/* 类型只读：换类型 = 换身份，应新建来源 */}
           <div className="mb-4 flex items-center gap-2 text-small text-ink-2">
             <KindIcon size={13} className="text-ink-3" />
@@ -2049,21 +2020,9 @@ function SourceEditModal({
               </Button>
             </div>
           </div>
-        </div>
-
-        <div className="flex justify-end gap-2 px-6 py-3 border-t border-line">
-          <Button variant="secondary" size="sm" onClick={onDone}>
-            {S.library.cancel}
-          </Button>
-          <Button variant="primary" size="sm"
-            disabled={!valid || save.isPending}
-            onClick={() => save.mutate()}
-          >
-            {S.library.saveChanges}
-          </Button>
-        </div>
       </div>
 
+      {/* 危险确认叠在设置弹窗之上：Radix 的层叠只让最上面那层响应 Esc 与遮罩 */}
       {confirmingDelete && (
         <DangerConfirm
           title={S.library.deleteSourceTitle}
@@ -2075,7 +2034,7 @@ function SourceEditModal({
           onCancel={() => setConfirmingDelete(false)}
         />
       )}
-    </div>
+    </Dialog>
   );
 }
 

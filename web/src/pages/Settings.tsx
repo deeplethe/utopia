@@ -10,6 +10,7 @@ import {
   Button,
   Checkbox,
   ChoiceCard,
+  Dialog,
   IconButton,
   Input,
   LinkButton,
@@ -471,21 +472,29 @@ function NewKbModal({
   });
 
   return (
-    <div
-      className="u-modal-scrim fixed inset-0 z-50 grid place-items-center"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onDone();
-      }}
-    >
-      <div className="glass-strong w-[24rem] max-w-[calc(100vw-2rem)] rounded-xl shadow-2xl p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="u-title text-title">{S.settings.kbs.newKb}</h2>
-          <IconButton size="sm" label={S.ui.close}
-            onClick={() => onDone()}
+    <Dialog
+      open
+      onOpenChange={(o) => !o && onDone()}
+      title={S.settings.kbs.newKb}
+      closeLabel={S.ui.close}
+      width="sm"
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={() => onDone()}>
+            {S.library.cancel}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!name.trim() || create.isPending}
+            onClick={() => create.mutate()}
           >
-            <X size={15} />
-          </IconButton>
-        </div>
+            {S.settings.kbs.create}
+          </Button>
+        </>
+      }
+    >
+      <div>
         <Input className="w-full mb-2"
           autoFocus
           placeholder={S.settings.kbs.name}
@@ -545,21 +554,8 @@ function NewKbModal({
             {(create.error as Error).message}
           </p>
         )}
-        <div className="flex justify-end gap-2">
-          <Button variant="secondary" size="sm"
-            onClick={() => onDone()}
-          >
-            {S.library.cancel}
-          </Button>
-          <Button variant="primary" size="sm"
-            disabled={!name.trim() || create.isPending}
-            onClick={() => create.mutate()}
-          >
-            {S.settings.kbs.create}
-          </Button>
-        </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
 
