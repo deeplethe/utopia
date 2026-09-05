@@ -14,6 +14,7 @@ mod mcp;
 mod members_routes;
 pub(crate) mod ontology_routes;
 mod review_routes;
+pub(crate) mod rule_routes;
 mod search_routes;
 mod settings_routes;
 mod sources_routes;
@@ -184,6 +185,16 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(documents_routes::extraction_drops),
         )
         .route("/kbs/{id}/ontology", get(ontology_routes::get))
+        // 业务规则（0021）：读规则要 Viewer，写要 Editor
+        .route(
+            "/kbs/{id}/rules",
+            get(rule_routes::list).post(rule_routes::create),
+        )
+        .route("/kbs/{id}/rules/run", post(rule_routes::run_now))
+        .route(
+            "/kbs/{id}/rules/{rule_id}",
+            patch(rule_routes::update).delete(rule_routes::delete),
+        )
         .route(
             "/kbs/{id}/ontology/type-resolution/preview",
             post(ontology_routes::type_resolution_preview),

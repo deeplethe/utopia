@@ -5,6 +5,7 @@ pub mod access;
 pub mod accounts;
 pub mod alerts;
 pub mod audit;
+pub mod business_rules;
 pub mod conversations;
 pub mod datasources;
 pub mod db;
