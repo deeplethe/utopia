@@ -10,6 +10,11 @@
 // （selected 是内部 state，检查器也在这个文件里），代价是本体页原有的那套
 // 「点左栏类名 → 出表单」路径和这里各画一遍，长得还不一样。现在两条路径
 // 落到同一个 sel 状态、同一份表单组件，这个文件只剩「画」和「选中了什么」。
+//
+// **不是什么都画。** 导入的包动辄几百上千个类（schema.org 一份就九百多），
+// 全摊开是一团毛球。大本体默认只画库用到的类（有实例的及其祖先），其余的
+// 一个药丸切过去看全貌；搜索/左栏点到的类随时补进画布。取景规则在
+// schemaScope，与投影（buildSchemaGraph）分开，两个都是纯函数。
 import { useEffect, useMemo, useRef, useState } from "react";
 import Graphology from "graphology";
 import { circular } from "graphology-layout";
@@ -45,6 +50,7 @@ import {
   ToolButton,
   ToolDivider,
   ToolTower,
+  Tooltip,
 } from "../ui";
 import { usePopoverFlip } from "../ui/popoverFlip";
 
@@ -101,6 +107,60 @@ const RELATION_CURVATURE_STEP = 0.22;
  *  给一个固定起始弯曲，否则退化成一个看不见的点 */
 const SELF_LOOP_BASE_CURVATURE = 1;
 
+/** 类数不超过这个数就全画——几十个类的手工本体，藏起一部分只会让人找不到
+ *  自己刚建的类。超过它（导入的包动辄几百上千）才按「库用到了什么」取景 */
+const FULL_VIEW_MAX_CLASSES = 60;
+
+export interface SchemaScope {
+  /** 画到画布上的类；null 表示全画 */
+  drawn: ReadonlySet<string> | null;
+  /** 取景依据：all 全画；in-use 有实例的类及其祖先；top 一个实例都没有,
+   *  画层级最上面两层 */
+  basis: "all" | "in-use" | "top";
+  /** 没画的类数 */
+  hidden: number;
+}
+
+/** 默认取景。本体小就全画；大了只画库用到的类——有实例的，连同祖先，好让
+ *  继承链是完整的；一个实例都没有（刚建的库）就退到层级顶上两层，schema.org
+ *  是 Thing 和它的十来个直接子类，正是你手画时会画的那张地图。
+ *  revealed 是用户通过搜索/左栏点名要看的类，同样连着祖先补进来。 */
+export function schemaScope(
+  entityTypes: EntityTypeView[],
+  revealed: ReadonlySet<string>,
+  showAll: boolean,
+): SchemaScope {
+  if (showAll || entityTypes.length <= FULL_VIEW_MAX_CLASSES) {
+    return { drawn: null, basis: "all", hidden: 0 };
+  }
+  const byId = new Map(entityTypes.map((t) => [t.id, t]));
+  const drawn = new Set<string>();
+  // 已经在集合里就不再往上走——父类互指成环也走不死
+  const addWithAncestors = (id: string) => {
+    const t = byId.get(id);
+    if (!t || drawn.has(id)) return;
+    drawn.add(id);
+    for (const parentId of t.parents) addWithAncestors(parentId);
+  };
+  for (const t of entityTypes) if (t.usage > 0) addWithAncestors(t.id);
+  const basis: SchemaScope["basis"] = drawn.size > 0 ? "in-use" : "top";
+  if (basis === "top") {
+    // 根：没有一个父类指向真实存在的类（坏引用与自指都不算父类，
+    // buildSchemaGraph 画继承边时是同一条判定）
+    const rootIds = new Set(
+      entityTypes
+        .filter((t) => !t.parents.some((p) => p !== t.id && byId.has(p)))
+        .map((t) => t.id),
+    );
+    for (const t of entityTypes) {
+      if (rootIds.has(t.id) || t.parents.some((p) => rootIds.has(p)))
+        drawn.add(t.id);
+    }
+  }
+  for (const id of revealed) addWithAncestors(id);
+  return { drawn, basis, hidden: entityTypes.length - drawn.size };
+}
+
 export interface SchemaGraphResult {
   graph: Graphology;
   /** domains 或 ranges 留空的关系——本体没把它限定在哪个类上，画不出边，
@@ -115,11 +175,14 @@ export interface SchemaGraphResult {
 export function buildSchemaGraph(
   entityTypes: EntityTypeView[],
   relationTypes: RelationTypeView[],
+  /** 取景（见 schemaScope）：只有这些类进画布；null 全画 */
+  drawn: ReadonlySet<string> | null = null,
 ): SchemaGraphResult {
   const graph = new Graphology({ multi: true });
   const byId = new Map(entityTypes.map((t) => [t.id, t]));
 
   for (const t of entityTypes) {
+    if (drawn && !drawn.has(t.id)) continue;
     graph.addNode(t.id, {
       label: t.label,
       // 与 /graph 同一套四层壳配方（深壳 + 14% 类型 tint，核心 50% tint，
@@ -137,10 +200,12 @@ export function buildSchemaGraph(
 
   // subClassOf：子 → 父。方向不因为「父类画在上面看着顺眼」而倒转——
   // 那是布局要解决的事，不是边该说谎的理由。全部 parents，不是只有
-  // primary_parent：多重继承必须在图上看得见，primary_parent 只管左栏那棵树
+  // primary_parent：多重继承必须在图上看得见，primary_parent 只管左栏那棵树。
+  // 取景之外的类不在图里，连着它们的边也就不画——hasNode 同时挡住坏引用
   for (const t of entityTypes) {
+    if (!graph.hasNode(t.id)) continue;
     for (const parentId of t.parents) {
-      if (parentId === t.id || !byId.has(parentId)) continue;
+      if (parentId === t.id || !graph.hasNode(parentId)) continue;
       graph.addEdgeWithKey(`sub:${t.id}:${parentId}`, t.id, parentId, {
         kind: SUBCLASS_KIND,
         type: EDGE_TYPE_ARROW,
@@ -152,8 +217,9 @@ export function buildSchemaGraph(
   // 互斥：无向声明，两边经常互相写一遍——按排序后的 id 对去重，只画一条
   const disjointSeen = new Set<string>();
   for (const t of entityTypes) {
+    if (!graph.hasNode(t.id)) continue;
     for (const otherId of t.disjoint) {
-      if (otherId === t.id || !byId.has(otherId)) continue;
+      if (otherId === t.id || !graph.hasNode(otherId)) continue;
       const pairKey = [t.id, otherId].sort().join("|");
       if (disjointSeen.has(pairKey)) continue;
       disjointSeen.add(pairKey);
@@ -183,8 +249,12 @@ export function buildSchemaGraph(
       unscoped.push(r);
       continue;
     }
-    for (const d of domains) {
-      for (const rg of ranges) {
+    // 端点在取景之外的那部分不画，也不算「未限定」——它是本体说过的话，只是
+    // 眼下没摊在画布上；左栏的属性页照样列着它，药丸上的数也说了画面不全
+    const drawnDomains = domains.filter((id) => graph.hasNode(id));
+    const drawnRanges = ranges.filter((id) => graph.hasNode(id));
+    for (const d of drawnDomains) {
+      for (const rg of drawnRanges) {
         graph.addEdgeWithKey(`rel:${r.id}:${d}:${rg}`, d, rg, {
           kind: RELATION_KIND,
           // type 由 layOutParallelRelations 按最终弯曲度决定（直线还是弧线）
@@ -198,14 +268,14 @@ export function buildSchemaGraph(
 
   // 大小按连接数走——继承、关系、互斥合起来算,连得越多的类看着越「重要」。
   // 必须等边全部建完才能算度数，所以放在这两段循环之后
-  for (const t of entityTypes) {
-    const degree = graph.degree(t.id);
+  graph.forEachNode((node) => {
+    const degree = graph.degree(node);
     graph.setNodeAttribute(
-      t.id,
+      node,
       "size",
       BASE_NODE_SIZE + Math.min(7, Math.sqrt(degree) * 2.1),
     );
-  }
+  });
 
   layOutParallelRelations(graph);
   return { graph, unscoped };
@@ -254,24 +324,112 @@ function layOutParallelRelations(graph: Graphology): void {
   }
 }
 
+type Point = { x: number; y: number };
+
+/** 黄金角：同一个锚点旁边接连落下的几个新节点，按它转着摆开，不叠在一起 */
+const GOLDEN_ANGLE = 2.399963;
+const SEED_RADIUS = 40;
+
 /** 确定性初始布局 + 一次性同步收敛的 ForceAtlas2。**不起动画 worker**——
  *  本体的类数量级比实例图小得多（几十到大几百，不是几千），一次性跑够步数
  *  比维护一个 worker 的生命周期简单，也不会在用户只是点了一下选中时被
- *  误重启（依赖数组只挂 entityTypes/relationTypes，选中状态在别处）。
+ *  误重启（依赖数组只挂 entityTypes/relationTypes 与取景，选中状态在别处）。
  *  circular 的起始顺序取自节点插入顺序（即 entityTypes 数组顺序），
  *  本体不变时顺序不变，因此这套布局是可重复的——不是精确到像素的稳定，
- *  但同一份本体两次渲染出来的样子不会天差地别。 */
-function layoutSchemaGraph(graph: Graphology): void {
+ *  但同一份本体两次渲染出来的样子不会天差地别。
+ *
+ *  **有旧坐标就增量。** 大半节点上一次已经画过（搜索揭开一个类、编辑加了
+ *  一个类），它们从原位出发，只给新节点在已定位的邻居旁边找落点，再少跑
+ *  几十步力收一收——在画面旁边多出一个点，不是整张图重新洗牌。手动摆过的
+ *  节点这时钉住（FA2 认 fixed 属性）。新节点占了大半（「显示全部」一下多出
+ *  几百个）就从头来。 */
+function layoutSchemaGraph(
+  graph: Graphology,
+  known: ReadonlyMap<string, Point>,
+  pinned: ReadonlySet<string>,
+): void {
   if (graph.order === 0) return;
-  circular.assign(graph, { scale: 260 });
-  if (graph.size === 0) return; // 只有孤立节点：圆形摆好就是终局，没有力可跑
+  let placed = 0;
+  graph.forEachNode((node) => {
+    const pos = known.get(node);
+    if (!pos) return;
+    graph.mergeNodeAttributes(node, { x: pos.x, y: pos.y });
+    placed += 1;
+  });
+  const incremental = placed * 2 >= graph.order;
+  if (!incremental) {
+    circular.assign(graph, { scale: 260 });
+  } else if (seedFreshNodes(graph, known) === 0) {
+    return; // 没有新节点：旧坐标就是终局，不再跑力
+  }
+  if (graph.size === 0) return; // 只有孤立节点：摆好就是终局，没有力可跑
   const settings = {
     ...forceAtlas2.inferSettings(graph),
     gravity: 0.55,
     scalingRatio: 28,
     outboundAttractionDistribution: true,
   };
-  forceAtlas2.assign(graph, { iterations: 200, settings });
+  const fixed = incremental
+    ? [...pinned].filter((id) => graph.hasNode(id))
+    : [];
+  for (const id of fixed) graph.setNodeAttribute(id, "fixed", true);
+  forceAtlas2.assign(graph, { iterations: incremental ? 80 : 200, settings });
+  for (const id of fixed) graph.removeNodeAttribute(id, "fixed");
+}
+
+/** 增量布局里给没有旧坐标的节点找落点：挨着一个已经定位的邻居——子类通常
+ *  只连着父类，于是就是父类旁边；邻居也是新的就等下一轮，直到没人可靠为止；
+ *  实在孤立的落在原点附近。返回新节点数。 */
+function seedFreshNodes(
+  graph: Graphology,
+  known: ReadonlyMap<string, Point>,
+): number {
+  const pending = new Set(graph.filterNodes((node) => !known.has(node)));
+  const total = pending.size;
+  let seeded = 0;
+  const drop = (node: string, ax: number, ay: number) => {
+    const angle = seeded * GOLDEN_ANGLE;
+    seeded += 1;
+    graph.mergeNodeAttributes(node, {
+      x: ax + SEED_RADIUS * Math.cos(angle),
+      y: ay + SEED_RADIUS * Math.sin(angle),
+    });
+    pending.delete(node);
+  };
+  let progressed = true;
+  while (progressed && pending.size > 0) {
+    progressed = false;
+    for (const node of [...pending]) {
+      const anchor = graph.findNeighbor(node, (nb) => !pending.has(nb));
+      if (anchor === undefined) continue;
+      drop(
+        node,
+        graph.getNodeAttribute(anchor, "x") as number,
+        graph.getNodeAttribute(anchor, "y") as number,
+      );
+      progressed = true;
+    }
+  }
+  for (const node of [...pending]) drop(node, 0, 0);
+  return total;
+}
+
+/** 相机推到一个节点上。sigma 的相机坐标是归一化到 [0,1] 的「框内」坐标，
+ *  不是图坐标——直接喂图坐标（x 动辄几百）相机会飞出画面几万像素，画布
+ *  一片空白。sigma 没有公开的图→框内换算，绕一趟视口：graphToViewport 用的
+ *  是上一次渲染的矩阵，与 viewportToFramedGraph 用同一台相机，一来一回把
+ *  相机抵消掉，剩下的就是框内坐标 */
+function focusNode(sigma: Sigma, id: string): void {
+  const graph = sigma.getGraph();
+  if (!graph.hasNode(id)) return;
+  const pos = {
+    x: graph.getNodeAttribute(id, "x") as number,
+    y: graph.getNodeAttribute(id, "y") as number,
+  };
+  const framed = sigma.viewportToFramedGraph(sigma.graphToViewport(pos));
+  sigma
+    .getCamera()
+    .animate({ x: framed.x, y: framed.y, ratio: 0.35 }, { duration: 300 });
 }
 
 export type SchemaSelection =
@@ -315,11 +473,34 @@ export function OntologySchemaGraph({
     [relationTypes],
   );
 
-  // 本体没变就不重建图——依赖数组只看 entityTypes/relationTypes 的引用，
-  // 选中/悬停都是别的状态，不会触发这里
+  // 取景：大本体默认只画库用到的类，搜索/左栏点到的类补进来（见 schemaScope）
+  const [showAll, setShowAll] = useState(false);
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const scope = useMemo(
+    () => schemaScope(entityTypes, revealed, showAll),
+    [entityTypes, revealed, showAll],
+  );
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  /** 把这些类（连同祖先）拉进画布。已经在画布上的不算；什么都没补时不动
+   *  状态，免得白白重建一次图 */
+  const reveal = (ids: string[]) => {
+    const drawn = scopeRef.current.drawn;
+    if (!drawn) return;
+    const missing = ids.filter((id) => entityById.has(id) && !drawn.has(id));
+    if (missing.length === 0) return;
+    setRevealed((prev) =>
+      missing.every((id) => prev.has(id)) ? prev : new Set([...prev, ...missing]),
+    );
+  };
+
+  // 本体没变就不重建图——依赖数组只看 entityTypes/relationTypes 的引用与
+  // 取景，选中/悬停都是别的状态，不会触发这里
   const schema = useMemo(
-    () => buildSchemaGraph(entityTypes, objectRelations),
-    [entityTypes, objectRelations],
+    () => buildSchemaGraph(entityTypes, objectRelations, scope.drawn),
+    [entityTypes, objectRelations, scope.drawn],
   );
 
   const selectedRef = useRef<SchemaSelection>(null);
@@ -327,6 +508,13 @@ export function OntologySchemaGraph({
   const hoverEdgeRef = useRef<string | null>(null);
   useEffect(() => {
     selectedRef.current = selected;
+    // 左栏点到的类可能在取景之外——选中它就该看得见它；选中一条关系则补上
+    // 它的两端
+    if (selected?.kind === "class") reveal([selected.id]);
+    else if (selected?.kind === "relation") {
+      const rel = relationById.get(selected.id);
+      if (rel) reveal([...rel.domains, ...rel.ranges]);
+    }
     sigmaRef.current?.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected]);
@@ -341,21 +529,34 @@ export function OntologySchemaGraph({
   // 被自动布局悄悄冲掉，「挪节点求清楚」就成了白费。只留在这次会话里，
   // 不写回后端——这是渲染层的手感，不是本体数据，同一个道理 /graph 的拖拽
   // 也没有持久化
-  const draggedPositionsRef = useRef<Map<string, { x: number; y: number }>>(
-    new Map(),
-  );
+  const draggedPositionsRef = useRef<Map<string, Point>>(new Map());
+  /** 上一次画完时每个节点的坐标（含拖过的）。重建时先把它们摆回原位，只给
+   *  新节点找落点——见 layoutSchemaGraph 的增量说明。「显示全部」切换时清空：
+   *  那是换一张画，旧坐标对它没有意义 */
+  const positionsRef = useRef<Map<string, Point>>(new Map());
+  /** 搜索点中了还没画出来的类：等它进了画布再对焦 */
+  const pendingFocusRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
     const g = schema.graph;
-    layoutSchemaGraph(g);
-    // 拖过的节点摆回去——自动布局不知道用户已经动过手，重新算一遍位置
-    // 之后，把记下来的坐标原样盖回去
+    layoutSchemaGraph(
+      g,
+      positionsRef.current,
+      new Set(draggedPositionsRef.current.keys()),
+    );
+    // 拖过的节点摆回去——从头算的布局不知道用户已经动过手，重新算一遍位置
+    // 之后，把记下来的坐标原样盖回去（增量布局里它们是钉住的，盖回去无妨）
     for (const [id, pos] of draggedPositionsRef.current) {
       if (!g.hasNode(id)) continue;
       g.setNodeAttribute(id, "x", pos.x);
       g.setNodeAttribute(id, "y", pos.y);
     }
+    const positions = new Map<string, Point>();
+    g.forEachNode((node, attrs) =>
+      positions.set(node, { x: attrs.x as number, y: attrs.y as number }),
+    );
+    positionsRef.current = positions;
     graphRef.current = g;
     // 选中的东西可能在新图里已经不存在了（比如删除了当前选中的类）——
     // 交给渲染时的存在性检查处理，这里不主动清空：多数情况下（编辑保存后
@@ -554,6 +755,7 @@ export function OntologySchemaGraph({
       g.setNodeAttribute(dragged, "y", pos.y);
       // 边拖边记：万一中途出岔子（组件卸载、切换本体）也不丢这一手
       draggedPositionsRef.current.set(dragged, pos);
+      positionsRef.current.set(dragged, pos);
       e.preventSigmaDefault();
       e.original.preventDefault();
       e.original.stopPropagation();
@@ -595,6 +797,13 @@ export function OntologySchemaGraph({
     renderGrid();
 
     sigmaRef.current = sigma;
+    // 搜索/左栏点中时还没画出来的那个类，现在在了：对焦。节点的框内坐标要
+    // 等 sigma 处理完一轮才有，挂在第一次渲染之后
+    const pending = pendingFocusRef.current;
+    if (pending && g.hasNode(pending)) {
+      pendingFocusRef.current = null;
+      sigma.once("afterRender", () => focusNode(sigma, pending));
+    }
     if (import.meta.env.DEV) {
       // 调试句柄（仅 dev），与 Graph.tsx 同一个约定
       (window as unknown as Record<string, unknown>).__schemaGraph = g;
@@ -634,11 +843,14 @@ export function OntologySchemaGraph({
   const focusClass = (id: string) => {
     const g = graphRef.current;
     const sigma = sigmaRef.current;
-    if (!g || !sigma || !g.hasNode(id)) return;
-    sigma.getCamera().animate(
-      { x: g.getNodeAttribute(id, "x"), y: g.getNodeAttribute(id, "y"), ratio: 0.35 },
-      { duration: 300 },
-    );
+    if (!entityById.has(id)) return;
+    if (g && sigma && g.hasNode(id)) {
+      focusNode(sigma, id);
+      return;
+    }
+    // 还在取景之外：先揭开，重建之后再对焦
+    reveal([id]);
+    pendingFocusRef.current = id;
   };
   const pickHit = (hit: SearchHit) => {
     if (hit.kind === "class") {
@@ -647,7 +859,10 @@ export function OntologySchemaGraph({
     } else {
       onSelect({ kind: "relation", id: hit.id });
       const rel = relationById.get(hit.id);
-      if (rel?.domains[0]) focusClass(rel.domains[0]);
+      if (rel) {
+        reveal([...rel.domains, ...rel.ranges]);
+        if (rel.domains[0]) focusClass(rel.domains[0]);
+      }
     }
     setSearchQ("");
   };
@@ -722,6 +937,31 @@ export function OntologySchemaGraph({
               {label}
             </span>
           ))}
+
+          {(showAll || scope.hidden > 0) && (
+            <Tooltip
+              content={
+                showAll
+                  ? S.ontology.schemaScopeAllHint
+                  : scope.basis === "top"
+                    ? S.ontology.schemaScopeTopHint
+                    : S.ontology.schemaScopeInUseHint
+              }
+            >
+              <Pill
+                active={showAll}
+                onClick={() => {
+                  // 换一张画：旧坐标对新画面没有意义，从头布局
+                  positionsRef.current.clear();
+                  setShowAll((v) => !v);
+                }}
+              >
+                {showAll
+                  ? S.ontology.schemaAllClasses(entityTypes.length)
+                  : S.ontology.schemaMoreClasses(scope.hidden)}
+              </Pill>
+            </Tooltip>
+          )}
 
           {schema.unscoped.length > 0 && (
             <div className="relative" ref={unscopedPop.rootRef}>
