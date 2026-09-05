@@ -781,7 +781,7 @@ export const en = {
     viewDerived: "Derived",
     derivedEdges: (n: number) => `${n} derived`,
     derivedHint:
-      "Edges no one asserted — the engine worked them out from axioms your ontology declares. Each one shows the premises it came from.",
+      "Nothing here was asserted — the engine worked it out, from an axiom your ontology declares or from a rule someone wrote. Each one shows the premises it came from.",
     derivedNoProof: "The premises are gone.",
     /* 争议（0017 §3） */
     contestedChip: "disputed",
@@ -1043,6 +1043,55 @@ export const en = {
     filter: "Filter…",
     missesShort: "Unmatched",
     refineShort: "Refine types",
+    /* ---- 业务规则（0021 / #277）---- */
+    rulesShort: "Business rules",
+    rulesTitle: "Business rules",
+    /* 说清三件事：谁写的、结论是什么身份、什么时候重算。第三件最容易被误解成
+       「保存就生效」，而它其实等下一轮物化 */
+    rulesHint:
+      "A rule reads one entity's own attributes and concludes a class or a value. " +
+      "You write the criteria — the model never proposes one. " +
+      "What a rule concludes is derived: it never replaces an asserted fact, it carries the readings that made it true, and it retires by itself when they change.",
+    rulesEmpty: "No rules yet.",
+    ruleNew: "New rule",
+    ruleName: "Name",
+    ruleNamePlaceholder: "Gas-bearing well",
+    ruleDescription: "What it means (optional)",
+    ruleSubject: "Applies to",
+    ruleSubjectHint: "and its subclasses",
+    ruleConcludes: "Concludes",
+    ruleConcludesTyping: "the class",
+    ruleConcludesAttribute: "the attribute",
+    ruleConditions: "When all of",
+    ruleAddCondition: "Add a condition",
+    ruleOpGt: "is above",
+    ruleOpGte: "is at least",
+    ruleOpLt: "is below",
+    ruleOpLte: "is at most",
+    ruleOpBetween: "is between",
+    ruleOpIn: "is one of",
+    ruleOpPresent: "is recorded",
+    ruleOperandNumber: "12.0",
+    ruleOperandSet: "gas anomaly, post-effect gas anomaly",
+    ruleOperandSetHint: "comma separated",
+    ruleSave: "Save rule",
+    ruleSaved: "Rule saved",
+    ruleDeleted: "Rule deleted",
+    ruleDelete: "Delete",
+    ruleDeleteConfirm: (n: string) => `Delete “${n}”? What it concluded goes with it.`,
+    ruleEnabled: "On",
+    ruleDisabled: "Off",
+    /* 数字是「此刻凭它成立的结论条数」，不是历史总数 */
+    ruleDerivedCount: (n: number) =>
+      n === 1 ? "1 entity" : `${n} entities`,
+    ruleRun: "Run now",
+    ruleRunning: "Running…",
+    /* 跑完要说清三件事，因为图会自己变：命中多少、新落多少、退了多少 */
+    ruleRunDone: (hits: number, inserted: number, invalidated: number) =>
+      `${hits} matched · ${inserted} new · ${invalidated} retired`,
+    ruleRunCapped: (n: number) =>
+      `${n} entity/rule pairs had too many readings to expand; their conclusions are incomplete`,
+    ruleNeedsCondition: "A rule needs at least one condition.",
     refineTitle: "Refine types",
     refineHint:
       "Entities whose class is roughly right but not the most specific one available. Look first, then apply — retyping does not appear on any timeline, so this is the only place you get to see it before it happens.",

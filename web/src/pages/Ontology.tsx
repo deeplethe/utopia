@@ -9,6 +9,7 @@ import {
   ArrowRight,
   ChevronRight,
   Inbox,
+  Scale,
   Network,
   Plus,
   Search,
@@ -31,6 +32,7 @@ import { S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
 import { OntologySchemaGraph, type SchemaSelection } from "./OntologySchemaGraph";
+import { RulesPanel } from "./RulesPanel";
 import {
   Button,
   Chip,
@@ -72,6 +74,7 @@ type Sel =
   | { kind: "new-relation"; initialDomain?: string | null }
   | { kind: "misses" }
   // 类型消解：把「大致对」的类换成更具体的那个
+  | { kind: "rules" }
   | { kind: "refine" }
   | { kind: "import" }
   // 模式图无选中：看整张图,不停靠表单
@@ -340,6 +343,20 @@ export function Ontology() {
           <Upload size={14} className="text-neutral-500" />
           <span>{S.ontology.importShort}</span>
         </button>
+        {/* 业务规则（0021）：本体说「有这么个类」，规则说「什么样的实体算它」。
+            所以它归在本体这一页，而不是另开一处——判据与词汇是同一份契约 */}
+        <button
+          onClick={() => setSel({ kind: "rules" })}
+          className={cn(
+            "shrink-0 border-t border-white/10 px-4 py-2.5 flex items-center gap-2 text-[13px] transition-colors",
+            sel?.kind === "rules"
+              ? "u-nav-active"
+              : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
+          )}
+        >
+          <Scale size={14} className="text-neutral-500" />
+          <span>{S.ontology.rulesShort}</span>
+        </button>
         {/* 类型消解：把「大致对」的类换成更具体的那个。**紧挨着未匹配**——
             两者都是「本体与数据对不齐」的处置，只是方向相反：那个是本体缺东西，
             这个是本体有更好的选项没被用上 */}
@@ -382,7 +399,7 @@ export function Ontology() {
           选中关系，三条路径落到同一个 sel，也就落到同一份表单——
           不再各画一遍。import/refine/misses 仍是独立整页视图,那三个
           不是「关于某个类或关系」的事，没有跟模式图共享背景的道理 */}
-      {sel?.kind === "import" || sel?.kind === "refine" || sel?.kind === "misses" ? (
+      {sel?.kind === "import" || sel?.kind === "refine" || sel?.kind === "misses" || sel?.kind === "rules" ? (
         <div className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
           <div className="max-w-6xl">
             {sel.kind === "import" ? (
@@ -392,6 +409,15 @@ export function Ontology() {
             ) : sel.kind === "refine" ? (
               <div className="max-w-2xl">
                 <RefinePanel kbId={kb.id} onChanged={refresh} onError={onError} />
+              </div>
+            ) : sel.kind === "rules" ? (
+              <div className="max-w-2xl">
+                <RulesPanel
+                  kbId={kb.id}
+                  classes={entity_types}
+                  attributes={relation_types.filter((r) => r.kind === "attribute")}
+                  onError={onError}
+                />
               </div>
             ) : (
               <div className="max-w-xl">
