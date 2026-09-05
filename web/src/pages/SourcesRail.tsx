@@ -190,7 +190,13 @@ export function SourcesRail({
           {S.library.sources}
         </span>
         {onAdd && (
-          <IconButton size="sm" label={S.library.addSource}
+          // 贴着图标的小方块（4px 内距、不要那 1px 透明边框），再往右挂 4px：
+          // 加号的右缘正好落在下面各行计数的右缘上。标准的 26px 图标按钮把
+          // 14px 的加号居中，右缘会比计数缩进 6px
+          <IconButton
+            size="sm"
+            label={S.library.addSource}
+            className="-mr-1 h-auto w-auto border-0 p-1"
             onClick={onAdd}
           >
             <Plus size={14} />
