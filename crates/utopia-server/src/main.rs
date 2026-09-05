@@ -9,6 +9,7 @@ mod docs_corpus;
 mod error;
 mod extraction;
 mod github_issues;
+mod http_fetch;
 mod ingest_sources;
 mod jira_issues;
 mod live;
