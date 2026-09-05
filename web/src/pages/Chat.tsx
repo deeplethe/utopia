@@ -16,10 +16,11 @@ import {
   Database,
   GitCompareArrows,
   History,
+  MoreHorizontal,
+  Search,
   Search as SearchIcon,
   Square,
   SquarePen,
-  MoreHorizontal,
   Waypoints,
   Wrench,
 } from "lucide-react";
@@ -463,22 +464,25 @@ export function Chat() {
     <div className="h-full flex">
       {/* 会话栏 */}
       <aside className={`${RAIL_CLS} flex flex-col`}>
-        <div className="px-2 pt-3 pb-1">
-          {/* 与会话行同一套样式：左栏是一列同质的行，新对话只是第一行 */}
-          <Row density="nav" onClick={newChat}>
-            <SquarePen size={14} className="shrink-0 text-ink-3" />
-            {S.ask.newChat}
-          </Row>
-        </div>
-        {/* 搜索。**标题重是常态**（同一个问题问两次就重了），而正文里那句话
-            才是人记得住的——所以服务端两处都搜 */}
-        <div className="px-2 pb-2">
-          <Input size="sm" className="w-full"
+        {/* 搜索在最上面，与图谱页的搜索框、本体页的过滤框同一副身材、同一个
+            角落（左上各 12px、中号带放大镜）：换标签页时框留在原地。
+            **标题重是常态**（同一个问题问两次就重了），而正文里那句话才是人
+            记得住的——所以服务端两处都搜 */}
+        <div className="px-3 pt-3 pb-2">
+          <Input
+            icon={<Search size={12} />}
             placeholder={S.ask.searchConversations}
             value={convSearch}
             onChange={(e) => setConvSearch(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setConvSearch("")}
           />
+        </div>
+        <div className="px-2 pb-1">
+          {/* 与会话行同一套样式：左栏是一列同质的行，新对话只是第一行 */}
+          <Row density="nav" onClick={newChat}>
+            <SquarePen size={14} className="shrink-0 text-ink-3" />
+            {S.ask.newChat}
+          </Row>
         </div>
         <div className="u-scroll flex-1 overflow-y-auto px-2 pb-3 space-y-1">
           {(convs.data?.conversations ?? []).map((c: ConversationRow) => (
