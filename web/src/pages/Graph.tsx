@@ -529,12 +529,14 @@ export function Graph() {
         const nodes = new Set<string>();
         const touched = new Set<string>();
         for (const e of d.edges) {
-          const vf = e.valid_from ? Date.parse(e.valid_from) : null;
-          const vt = e.valid_to ? Date.parse(e.valid_to) : null;
+          // 按**读出来的**区间过滤（0022）：没起点的边从最早的证据起才亮，结束了
+          // 不知哪天的到说出它的那份文档就灭。NULL 一端才是开放——这里不再把
+          // 「没有起点」读成「一直都在」
+          const hf = e.holds_from ? Date.parse(e.holds_from) : null;
+          const ht = e.holds_to ? Date.parse(e.holds_to) : null;
           touched.add(e.source);
           touched.add(e.target);
-          const active =
-            vf === null ? true : vf <= t && (vt === null || vt > t);
+          const active = (hf === null || hf <= t) && (ht === null || ht > t);
           if (active) {
             edges.add(e.id);
             nodes.add(e.source);
@@ -1810,8 +1812,10 @@ function TimeScrubber({
 
   const { minTs, maxTs, bars, merged, trackW } = useMemo(() => {
     const now = Date.now();
+    // 柱子按边**开始成立**的时刻分格（0022）：没起点的边从最早证据起算，这样
+    // 滑杆的量程盖得住它亮起来的那一刻，而不是把它排除在直方图之外
     const froms = edges
-      .map((e) => (e.valid_from ? Date.parse(e.valid_from) : NaN))
+      .map((e) => (e.holds_from ? Date.parse(e.holds_from) : NaN))
       .filter((t) => !Number.isNaN(t));
     const min = froms.length
       ? Math.min(...froms)
@@ -2760,10 +2764,11 @@ function EntityPanel({
   const { groups, historicalCount } = useMemo(() => {
     const all = detail.data?.facts ?? [];
     const nowIso = new Date().toISOString();
+    // 「此刻成立」按读出来的区间判（0022）：结束了不知哪天的那条不再混进现行里
     const current = all.filter(
       (f) =>
-        (!f.valid_from || f.valid_from <= nowIso) &&
-        (!f.valid_to || f.valid_to > nowIso),
+        (!f.holds_from || f.holds_from <= nowIso) &&
+        (!f.holds_to || f.holds_to > nowIso),
     );
     const map = new Map<
       string,

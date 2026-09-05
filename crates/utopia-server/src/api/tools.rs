@@ -308,7 +308,8 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
     let id = args["entity_id"]
         .as_str()
         .and_then(|s| s.parse::<Uuid>().ok());
-    // 世界轴过滤：T 时刻有效 = 起点不晚于 T（或未知）且终点晚于 T（或开放）
+    // 世界轴过滤在 SQL 里（world_axis，0022）：没起点的事实从最早的证据起，结束了
+    // 不知哪天的到说出它的那份文档为止。这里只把 T 传下去，不自己解释 NULL
     let at = args["at"].as_str().and_then(parse_when);
     // 记录轴（0019 / #347）：那一刻**我们持有**的事实。两根轴两个参数，绝不合成
     // 一个——合起来就会拿「三月的世界，以今天的认知」去答「三月的世界，以三月的认知」
@@ -319,28 +320,17 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
             json!({ "kind": "facts", "label": "?", "detail": "invalid id" }),
         );
     };
-    match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, id, as_of).await {
-        Ok((node, mut facts)) => {
-            if let Some(t) = at {
-                facts.retain(|f| {
-                    f.valid_from.is_none_or(|from| from <= t) && f.valid_to.is_none_or(|to| to > t)
-                });
-            }
+    match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, id, at, as_of).await {
+        Ok((node, facts)) => {
             // 规则的结论也是这个实体的一部分（0021）。**不给的话模型会拿那些
             // 读数自己再判一遍**——而阈值写在规则里，它看不见，于是两处判断
             // 迟早不一致，agent 那次还没有前提链、没有区间、也不进账本
             let derived =
-                utopia_store::reasoning::derived_for_entity(&ctx.state.pool, ctx.kb_id, id)
+                utopia_store::reasoning::derived_for_entity(&ctx.state.pool, ctx.kb_id, id, at)
                     .await
                     .unwrap_or_default();
             let mut derived: Vec<String> = derived
                 .iter()
-                .filter(|d| {
-                    at.is_none_or(|t| {
-                        d.valid_from.is_none_or(|from| from <= t)
-                            && d.valid_to.is_none_or(|to| to > t)
-                    })
-                })
                 .map(|d| {
                     format!(
                         "{} · {} · {} [rule: {}]",
@@ -986,6 +976,8 @@ mod tests {
             valid_to: Some(t("2024-02-20T00:00:00Z")),
             valid_from_precision: Some("day".into()),
             valid_to_precision: Some("day".into()),
+            holds_from: Some(t("2023-06-01T00:00:00Z")),
+            holds_to: Some(t("2024-02-20T00:00:00Z")),
             confidence: 0.9,
             evidence_count: 1,
             stale: false,

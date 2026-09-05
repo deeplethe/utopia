@@ -181,7 +181,6 @@
       "subject": "Lin Zhao",
       "expect": null,
       "not": ["Meridian Systems", "Platform Group"],
-      "known_gap": true,
       "ask": "Who did Lin Zhao work for in January 2023?",
       "why": "入职是六月的事。一月的答案应当是空，而不是把开区间当成「一直如此」——`valid_from` 之前不成立，正是双时态存在的理由。第一版只禁 Meridian，账本满分；对话却答出「Platform Group 的 Staff Engineer」——那两条都没有起点（2024 年的调薪单说「加薪由平台组批准」，2025 年的角色说明说「不再担任，日期未记录」），而世界轴把没有起点读成自古就有。见 #352。"
     },
@@ -248,7 +247,6 @@
       "subject": "Lin Zhao",
       "expect": null,
       "not": ["Staff Engineer"],
-      "known_gap": true,
       "ask": "What is Lin Zhao's job title in January 2026?",
       "why": "「不再担任，日期不详」是账本专门留的一个状态（valid_to 为空、精度为 unknown）。世界轴按 `valid_to IS NULL` 判活时会把它当成仍然成立——这一题钉住那个口径，修好的那天它自己会翻绿。"
     },

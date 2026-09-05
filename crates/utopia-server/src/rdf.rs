@@ -481,12 +481,12 @@ pub fn emit_fact(
     }
 
     // 现行三元组：**仍被持有，且现在仍成立**。区间已闭合或已撤回的不写这一条,
-    // 否则一个忽略具体化的消费者会读到「张三现在还管着那个项目」
+    // 否则一个忽略具体化的消费者会读到「张三现在还管着那个项目」。
+    // 「现在成立」按读出来的区间判（0022）：没起点的从最早证据起，结束了不知哪天
+    // 的到说出它的那份文档为止。规则在 world_axis 里，这里只看投影出来的两端
     let held = f.invalidated_at.is_none();
-    let ended =
-        f.valid_to.is_some_and(|t| t <= now) || f.valid_to_precision.as_deref() == Some("unknown");
-    let started = f.valid_from.is_none_or(|t| t <= now);
-    if held && !ended && started {
+    let holds_now = f.holds_from.is_some_and(|t| t <= now) && f.holds_to.is_none_or(|t| t > now);
+    if held && holds_now {
         if let (Some(p), Some(o)) = (&predicate, &object) {
             sink.triple(TripleRef::new(subject.as_ref(), p.as_ref(), o.as_ref()))?;
         }
@@ -669,6 +669,9 @@ mod tests {
             valid_from_precision: None,
             valid_to: None,
             valid_to_precision: None,
+            // 读出来的区间（0022）：没起点就从锚点起，这里让它与记下的时刻同一天
+            holds_from: Some(at("2026-01-01T00:00:00Z")),
+            holds_to: None,
             recorded_at: at("2026-01-01T00:00:00Z"),
             invalidated_at: None,
             confidence: 0.9,
@@ -801,6 +804,9 @@ mod tests {
         closed.valid_from_precision = Some("day".into());
         closed.valid_to = Some(at("2024-07-01T00:00:00Z"));
         closed.valid_to_precision = Some("day".into());
+        // 读出来的区间随原文（0022）：两端都给了，就是它们
+        closed.holds_from = Some(at("2023-01-01T00:00:00Z"));
+        closed.holds_to = Some(at("2024-07-01T00:00:00Z"));
         let quads = export(Format::Turtle, |sink, names, vocab| {
             emit_fact(sink, names, vocab, &closed, at("2026-06-01T00:00:00Z")).unwrap();
         });
@@ -846,6 +852,8 @@ mod tests {
         let mut ended = fact(5);
         ended.valid_to = None;
         ended.valid_to_precision = Some("unknown".into());
+        // 结束了不知哪天：读出来的终点是锚点（说出它的那份文档的日期），SQL 就这么投影
+        ended.holds_to = ended.holds_from;
         let quads = export(Format::Turtle, |sink, names, vocab| {
             emit_fact(sink, names, vocab, &ended, at("2026-06-01T00:00:00Z")).unwrap();
         });

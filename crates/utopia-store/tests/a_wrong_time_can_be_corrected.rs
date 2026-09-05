@@ -255,6 +255,7 @@ async fn an_end_that_was_never_there_can_be_taken_back() -> anyhow::Result<()> {
                 from_precision: Some("day"),
                 to: Some(t("2024-01-01T00:00:00Z")),
                 to_precision: Some("year"),
+                attested_at: None,
             },
         )
         .await?

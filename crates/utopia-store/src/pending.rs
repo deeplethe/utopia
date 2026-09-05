@@ -226,11 +226,22 @@ pub struct Confirmed {
 /// 只会补证据、不会落第二条，删行在最后——幂等靡有余悸。
 pub async fn confirm(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Confirmed> {
     let v = get(pool, kb_id, id).await?;
+    // 锚点是那句记忆所在文档的日期（0022）——与抽取那条路同一个来源。没起点的
+    // 事实从有证据的那一刻起成立，而证据就是这句话
+    let attested_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT d.doc_time FROM chunks c JOIN documents d ON d.id = c.document_id
+          WHERE c.id = $1",
+    )
+    .bind(v.chunk_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
     let validity = Validity {
         from: v.valid_from,
         from_precision: v.valid_from_precision.as_deref(),
         to: v.valid_to,
         to_precision: v.valid_to_precision.as_deref(),
+        attested_at,
     };
     let (fact_id, created) = match (v.object_id, v.object_value.as_ref()) {
         (Some(object_id), _) => {

@@ -1833,21 +1833,22 @@ pub async fn derived_for_entity(
     pool: &PgPool,
     kb_id: Uuid,
     entity_id: Uuid,
+    at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Vec<DerivedFactView>> {
     // **宾语与规则两侧都是 LEFT JOIN。** 表拓宽之后（0021）一条派生的宾语可能
     // 是字面值而不是实体，规则可能是业务规则而不是公理——内连接会把这两种
     // 结论**静默地**从面板上抹掉，而它们恰恰是最需要解释的那种。
     //
     // 宾语的显示文本因此有三个来源：实体名、归类结论里的类标签、属性结论的值。
-    Ok(sqlx::query_as(
+    Ok(sqlx::query_as(&format!(
         "SELECT d.id,
                 d.subject_id, s.canonical_name AS subject,
                 d.object_id,
                 COALESCE(o.canonical_name,
                          ct.label,
                          d.object_value ->> 'class',
-                         d.object_value #>> '{value}',
-                         d.object_value #>> '{}') AS object,
+                         d.object_value #>> '{{value}}',
+                         d.object_value #>> '{{}}') AS object,
                 r.label AS predicate,
                 COALESCE(ru.kind, 'business') AS rule,
                 ar.name AS rule_name,
@@ -1857,7 +1858,7 @@ pub async fn derived_for_entity(
                                 ps.canonical_name || ' · '
                                 || COALESCE(pr.label, '?') || ' · '
                                 || COALESCE(po.canonical_name,
-                                            pf.object_value #>> '{value}',
+                                            pf.object_value #>> '{{value}}',
                                             '?')
                                 ORDER BY fd.seq)
                        FROM fact_derivations fd
@@ -1877,10 +1878,13 @@ pub async fn derived_for_entity(
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
           WHERE d.kb_id = $1 AND d.invalidated_at IS NULL
             AND (d.subject_id = $2 OR d.object_id = $2)
+            AND {derived_hold}
           ORDER BY d.derived_at DESC",
-    )
+        derived_hold = crate::world_axis::derived_hold_at("d", 3),
+    ))
     .bind(kb_id)
     .bind(entity_id)
+    .bind(at)
     .fetch_all(pool)
     .await?)
 }

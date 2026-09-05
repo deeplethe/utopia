@@ -754,6 +754,11 @@ export interface GraphEdge {
   premises: string[];
   valid_from: string | null;
   valid_to: string | null;
+  /** **读出来的**区间（0022）：没起点的事实从最早的证据起，结束了不知哪天的到说出
+   *  它的那份文档为止。滑杆按这两个过滤；上面那两个是原文说了什么，只用来显示。
+   *  前端不自己解释 NULL——规则只在服务端的 world_axis 里有一份 */
+  holds_from: string | null;
+  holds_to: string | null;
   confidence: number;
   /** 有争议（0017 §3）：有一条 open 的公理违规或时态冲突指着它。整条边画成警戒色 */
   contested: boolean;
@@ -778,6 +783,9 @@ export interface EntityFact {
   object_value: Record<string, unknown> | null;
   valid_from: string | null;
   valid_to: string | null;
+  /** 读出来的区间（0022），与 GraphEdge 同义：「此刻成立」按它判 */
+  holds_from: string | null;
+  holds_to: string | null;
   valid_from_precision: string | null;
   /** year | month | day，外加 unknown = 原文说它结束了但没说哪天 */
   valid_to_precision: string | null;

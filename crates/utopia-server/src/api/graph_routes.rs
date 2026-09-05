@@ -166,13 +166,15 @@ pub async fn entity_detail(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
     let as_of = parse_instant("as_of", q.as_of.as_deref())?;
+    // 世界轴不过滤（at = None）：面板要的是整条时间线，「此刻成立」那一档由前端
+    // 按 holds_from / holds_to 分出来（0022）
     let (entity, facts) =
-        utopia_store::graph::entity_detail(&state.pool, kb_id, entity_id, as_of).await?;
+        utopia_store::graph::entity_detail(&state.pool, kb_id, entity_id, None, as_of).await?;
     // 推出来的那些**单独回一个键**，不掺进 `facts`。前端据此给它们自己的一档：
     // 一条派生边跟一条断言边混在同一个列表里，用户看不出「这条是文档里写的」
     // 和「这条是引擎推的」的区别，而那正是推理会污染知识的样子
     let derived =
-        utopia_store::reasoning::derived_for_entity(&state.pool, kb_id, entity_id).await?;
+        utopia_store::reasoning::derived_for_entity(&state.pool, kb_id, entity_id, None).await?;
     // 同名的那些**打开面板时就给**，不是等改名之后才回。
     //
     // 从前它只随 `update_entity` 的响应回来，于是「把同名的合并进来」这个动作
@@ -371,6 +373,9 @@ pub async fn update_fact_time(
         from_precision: req.valid_from_precision.as_deref(),
         to: req.valid_to,
         to_precision: req.valid_to_precision.as_deref(),
+        // 修正行从被替代的行继承锚点（correct_interval 的 SQL 里）：改区间是重述
+        // 同一份证据，不是更新的证据
+        attested_at: None,
     };
     let Some(corrected) =
         utopia_store::temporal::correct_interval(&state.pool, fact_id, validity).await?

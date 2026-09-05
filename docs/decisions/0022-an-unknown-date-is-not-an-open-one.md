@@ -1,6 +1,6 @@
 # 0022 · An unknown date is not an open one
 
-- **Status**: proposed · to be built in two cuts — the predicate, the anchor and every read of asserted facts first (#345, #352), derived rows second
+- **Status**: first cut implemented · `world_axis` beside `record_axis`, `facts.attested_at` set by every writer and backfilled, every server read and both client filters on the read interval, `holds_from` / `holds_to` on edges and entity facts · an undated ending now also **closes** the dated open row it ends (`close_with_unknown_end`), which the first open question below had left to the write side · derived rows still read their stated bounds — the second cut · a bare open row plus an undated ending is #393
 - **Written**: 2026-09-06 (conventions in the [README](README.md))
 - **Related**: [0003](0003-ontology-growth-loop.md)'s graph migration gave the end of a fact three states and refused to store a document's date as an indeterminate instant; this record keeps that refusal and puts the date in a column that says what it is. [0019](0019-the-second-clock-can-be-rewound.md) put the record-axis predicate in one place (`record_axis`) and kept `at` and `as_of` apart; this record does the same for the world axis. [0017](0017-a-contradiction-points-upstream.md) gave derived rows their own precisions, and [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md)'s evaluator intersects premise intervals — both inherit the rule below. From #345 and #352, both found by the temporal benchmark (#306).
 
@@ -86,8 +86,8 @@ The slider and a timed question stop returning a fact before its evidence or aft
 
 ## Phasing
 
-1. Schema (`attested_at`, its backfill, the derived CHECK), every writer, `world_axis`, every server read, `holds_from` / `holds_to` on edges and entity facts, the two client filters, the benchmark's two questions un-gapped. One database-backed test carries the table of cases in both directions: a no-start fact absent the day before its document and present on it; an ended-unknown fact present the day before its document and absent from it; a stated interval untouched; the both-unknown row absent at every moment yet listed on the entity.
-2. Derived rows: the evaluator on read intervals, precision-less anchored bounds, and a test that a chain through an ended-unknown premise ends at that premise's document.
+1. Schema (`attested_at` and its backfill), every writer, `world_axis`, every server read, `holds_from` / `holds_to` on edges and entity facts, the two client filters, the benchmark's two questions un-gapped. One database-backed test carries the table of cases in both directions: a no-start fact absent the day before its document and present on it; an ended-unknown fact present the day before its document and absent from it; a stated interval untouched; the both-unknown row absent at every moment yet listed on the entity.
+2. Derived rows: the evaluator on read intervals, precision-less anchored bounds (which is where the derived CHECK loosens — it ships with its first writer, not ahead of it), and a test that a chain through an ended-unknown premise ends at that premise's document.
 
 ## Dead ends
 
@@ -99,7 +99,7 @@ The slider and a timed question stop returning a fact before its evidence or aft
 
 ## Open questions
 
-- **One write path drops an ending.** `insert_fact_inner` reuses a live row with the same stated start as an exact duplicate before it looks at the end; a bare open row (no start, no end) and a new "ended, date unknown" observation with no start are such a pair, so the ending is lost. The `ended_when_unknown` test covers the weak-statement path, not this one. Separate issue.
-- **An ending does not close the dated row it ends.** `reconcile_new_fact` returns early for any fact that has ended, so the "no longer holds" row from #352 sits beside the 2023-06-01 row that still says "holds", and that row still reads as holding today. Whether an ended-unknown observation should close the open row of the same assertion — its precision to `'unknown'`, its anchor to the ending's document — is a write-side decision that would make the both-unknown row rare. Separate issue.
+- **An ending does not close the dated row it ends.** ~~`reconcile_new_fact` returns early for any fact that has ended, so the "no longer holds" row from #352 sits beside the 2023-06-01 row that still says "holds".~~ Settled in the first cut, because the benchmark showed the read rule alone leaves #345's question failing: the ended-unknown row read correctly, and the dated open row beside it went on holding. An undated ending that meets an open row **with a stated start** of the same assertion now closes it — a superseding row with `'unknown'` at the end, anchored on the ending's document, the old row invalidated (`temporal::close_with_unknown_end`). A repeated ending reuses the closed row and only moves its anchor earlier.
+- **A bare open row cannot be closed the same way** (#393). With no stated start the one anchor would have to serve both ends — held from the first note, ended by the second. Today the exact-duplicate path in `insert_fact_inner` merges the ending into the bare row and drops it. Two anchors is the likely answer; it is a schema decision and waits for its own line.
 - **Retrieval is untimed.** Vector and full-text recall take `as_of` (0019) but no `at`; a chunk about 2025 answers a question about 2023 and the model is left to notice. Out of scope; noted so the benchmark's chat probe is read with that in mind.
 - **Showing the anchor.** Whether the panel should say "attested 2024-02-20" beside a blank start, so a person sees why the slider hides the edge before then. Deferred until the first cut has been looked at.

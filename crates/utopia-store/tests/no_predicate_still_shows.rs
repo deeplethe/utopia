@@ -193,7 +193,8 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
         assert!(m.label.is_none(), "说不出就是说不出，不该回落成「有关联」");
 
         // 3. 实体面板
-        let (_, facts) = utopia_store::graph::entity_detail(&pool, f.kb, f.subject, None).await?;
+        let (_, facts) =
+            utopia_store::graph::entity_detail(&pool, f.kb, f.subject, None, None).await?;
         let panel: Vec<_> = facts
             .iter()
             .filter(|x| x.id == f.surfaced || x.id == f.mute)
