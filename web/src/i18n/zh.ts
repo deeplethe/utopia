@@ -975,6 +975,18 @@ export const zh: Strings = {
     ruleRunCapped: (n: number) =>
       `${n} 对（规则，实体）的读数组合太多没有展开完，它们的结论不完整`,
     ruleNeedsCondition: "一条规则至少要有一个条件。",
+    ruleEdit: "编辑",
+    ruleEditing: "正在编辑",
+    ruleMatchesTitle: "它标住了谁",
+    ruleMatchesEmpty: "此刻一个也没有。",
+    ruleMatchBecause: (premises: string) => `凭 ${premises}`,
+    ruleMatchSpan: (from: string, to: string | null) =>
+      to ? `${from} 至 ${to}` : `${from} 起`,
+    ruleMatchesMore: (shown: number, total: number) =>
+      `显示 ${shown} / ${total}`,
+    ruleCappedChip: "不完整",
+    ruleCappedHint:
+      "有些实体同一属性的读数太多，组合展不完，这条规则在它们身上的结论是不完整的。",
     refineTitle: "类型消解",
     refineHint:
       "类挂得大致对、但本体里有更具体的那一个。先看一遍再落库——改类不进任何时间轴，这是唯一能在它发生之前看见它的地方。",

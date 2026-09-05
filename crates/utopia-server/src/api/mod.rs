@@ -196,6 +196,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             patch(rule_routes::update).delete(rule_routes::delete),
         )
         .route(
+            "/kbs/{id}/rules/{rule_id}/matches",
+            get(rule_routes::matches),
+        )
+        .route(
             "/kbs/{id}/ontology/type-resolution/preview",
             post(ontology_routes::type_resolution_preview),
         )

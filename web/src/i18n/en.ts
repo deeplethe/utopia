@@ -1092,6 +1092,23 @@ export const en = {
     ruleRunCapped: (n: number) =>
       `${n} entity/rule pairs had too many readings to expand; their conclusions are incomplete`,
     ruleNeedsCondition: "A rule needs at least one condition.",
+    /* ---- 打磨：可点的计数、常驻的 capped 提示、改结论 ---- */
+    ruleEdit: "Edit",
+    ruleEditing: "Editing",
+    ruleMatchesTitle: "What it marks",
+    ruleMatchesEmpty: "Nothing right now.",
+    /* 前提要读成「凭什么」，所以用 because 起头而不是干列 */
+    ruleMatchBecause: (premises: string) => `because ${premises}`,
+    /* 同一个实体会因为不同时段的读数出现好几次——不写出这一段就像重复了 */
+    ruleMatchSpan: (from: string, to: string | null) =>
+      to ? `${from} – ${to}` : `since ${from}`,
+    ruleMatchesMore: (shown: number, total: number) =>
+      `showing ${shown} of ${total}`,
+    /* 常驻在卡片上，而不只在跑完那一刻的 toast 里——少推几条与「不满足」
+       在结果里长得一样，读的人得随时看得见 */
+    ruleCappedChip: "incomplete",
+    ruleCappedHint:
+      "Some entities carry too many readings of the same attribute to expand every combination, so this rule's conclusions for them are incomplete.",
     refineTitle: "Refine types",
     refineHint:
       "Entities whose class is roughly right but not the most specific one available. Look first, then apply — retyping does not appear on any timeline, so this is the only place you get to see it before it happens.",

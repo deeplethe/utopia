@@ -1383,6 +1383,13 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                 &attr_spans,
             );
             report.rule_hits += rr.hits;
+            // 展不完的组合数按规则写回：这个数字在卡片上常驻，而不只在
+            // 「跑完那一刻」的提示里闪一下（少推几条与「不满足」长得一样）
+            sqlx::query("UPDATE attribute_rules SET capped_at_last_run = $2 WHERE id = $1")
+                .bind(lr.rule.id)
+                .bind(rr.capped as i32)
+                .execute(pool)
+                .await?;
             //  是「这一轮算出来的派生总数」，公理与规则都算在内。
             // **别改写它的原义**：被拦下的那些也算「算出来了」，队列里那一行
             // 正是凭它对上的
