@@ -421,10 +421,13 @@ pub async fn overview(
     .fetch_one(pool)
     .await?;
     let total_edges: i64 = sqlx::query_scalar(&format!(
+        // 两边都要 `object_id IS NOT NULL`：数的是**画得出来的边**。派生表拓宽
+        // 之后（0021）字面值结论也住在这张表里，把它们数进来，状态栏报的边数
+        // 就比画布上多——而多出来的那些永远找不到
         "SELECT (SELECT count(*) FROM facts f
                   WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL)
               + (SELECT count(*) FROM derived_facts d
-                  WHERE d.kb_id = $1 AND {derived_held})",
+                  WHERE d.kb_id = $1 AND {derived_held} AND d.object_id IS NOT NULL)",
         facts_held = crate::record_axis::facts_held_at("f", 2),
         derived_held = crate::record_axis::derived_held_at("d", 2),
     ))

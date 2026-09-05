@@ -189,7 +189,7 @@ async fn a_proof_reaches_the_sentence() -> anyhow::Result<()> {
             reasoning::derived_for_entity(&pool, f.kb, f.a).await?;
         let ac = derived
             .iter()
-            .find(|d| d.subject_id == f.a && d.object_id == f.c)
+            .find(|d| d.subject_id == f.a && d.object_id == Some(f.c))
             .expect("A part_of C should be derived");
 
         // 1. 顺序对，2. 叶子是原句

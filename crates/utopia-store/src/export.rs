@@ -84,8 +84,12 @@ pub struct ExportDerived {
     pub id: Uuid,
     pub subject_id: Uuid,
     pub predicate_id: Uuid,
-    pub object_id: Uuid,
-    pub rule_id: Uuid,
+    /// 字面值结论（业务规则的归类与属性）没有实体宾语（0021）
+    pub object_id: Option<Uuid>,
+    pub object_value: Option<serde_json::Value>,
+    /// 公理规则。业务规则推的为 None——它的身份在 attribute_rule_id 上
+    pub rule_id: Option<Uuid>,
+    pub attribute_rule_id: Option<Uuid>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_from_precision: Option<String>,
     pub valid_to: Option<DateTime<Utc>>,
@@ -93,8 +97,10 @@ pub struct ExportDerived {
     pub derived_at: DateTime<Utc>,
     pub invalidated_at: Option<DateTime<Utc>>,
     pub confidence: f32,
-    /// transitive | symmetric
+    /// transitive | symmetric | inverse | sub_property，或 business
     pub rule: String,
+    /// 业务规则的名字，进 RDF 当这条推理活动的标签
+    pub rule_name: Option<String>,
     /// 前提事实。审计要顺着它往下走到句子
     pub premises: Vec<Uuid>,
 }
@@ -196,13 +202,19 @@ pub async fn derived_page(
     after: Option<Uuid>,
 ) -> AppResult<Vec<ExportDerived>> {
     Ok(sqlx::query_as(
-        "SELECT d.id, d.subject_id, d.predicate_id, d.object_id, d.rule_id,
+        // **两个 LEFT JOIN。** 表拓宽之后（0021）派生可能没有实体宾语、
+        // 也可能来自业务规则而不是公理——内连接会把这类结论整条挡在导出之外，
+        // 而 0020 承诺的正是「审计员不靠我们也能读全」
+        "SELECT d.id, d.subject_id, d.predicate_id, d.object_id, d.object_value,
+                d.rule_id, d.attribute_rule_id,
                 d.valid_from, d.valid_from_precision, d.valid_to, d.valid_to_precision,
                 d.derived_at, d.invalidated_at, d.confidence,
-                ru.kind AS rule,
+                COALESCE(ru.kind, 'business') AS rule, ar.name AS rule_name,
                 COALESCE(ARRAY(SELECT fd.premise_fact_id FROM fact_derivations fd
                                 WHERE fd.derived_fact_id = d.id ORDER BY fd.seq), '{}') AS premises
-           FROM derived_facts d JOIN rules ru ON ru.id = d.rule_id
+           FROM derived_facts d
+           LEFT JOIN rules ru ON ru.id = d.rule_id
+           LEFT JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
           WHERE d.kb_id = $1 AND d.id > COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)
           ORDER BY d.id LIMIT $3",
     )

@@ -1057,21 +1057,25 @@ struct LoadedRule {
     conclude_predicate: Uuid,
 }
 
+/// 求值要用的一行规则：id、主类、结论种类、结论那三格，外加结论类的 IRI 与 key
+/// （归类结论按 IRI 记，没有才退回 key）
+type RuleDefRow = (
+    Uuid,
+    Uuid,
+    String,
+    Option<Uuid>,
+    Option<Uuid>,
+    Option<serde_json::Value>,
+    Option<String>,
+    Option<String>,
+);
+
 /// 取业务规则。条件形状不合法的规则**整条跳过而不是报错退出**——一条写坏的
 /// 规则不该让整轮物化停摆，而它不产出这件事在报告的条数里看得见。
 async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<LoadedRule>> {
     use utopia_reason::rules::{BusinessRule, Conclusion, Condition, Op};
 
-    let rows: Vec<(
-        Uuid,
-        Uuid,
-        String,
-        Option<Uuid>,
-        Option<Uuid>,
-        Option<serde_json::Value>,
-        Option<String>,
-        Option<String>,
-    )> = sqlx::query_as(
+    let rows: Vec<RuleDefRow> = sqlx::query_as(
         "SELECT r.id, r.subject_type_id, r.conclusion,
                 r.conclude_type_id, r.conclude_predicate_id, r.conclude_value,
                 ct.iri, ct.key
@@ -1188,9 +1192,9 @@ fn parse_operand(
             let arr = raw?.as_array()?;
             let set: Vec<String> = arr
                 .iter()
-                .filter_map(|v| match v {
-                    serde_json::Value::String(s) => Some(s.trim().to_string()),
-                    other => Some(other.to_string()),
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.trim().to_string(),
+                    other => other.to_string(),
                 })
                 .collect();
             (!set.is_empty()).then_some(Operand::Set(set))
@@ -1219,6 +1223,21 @@ async fn descendants_of(pool: &PgPool, kb_id: Uuid, root: Uuid) -> AppResult<Vec
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// 属性事实查询回来的一行：事实、主语、谓词、字面值、区间两端与精度、置信度，
+/// 以及主语当下的断言类型（规则要按主类过滤）
+type AttrFactRow = (
+    Uuid,
+    Uuid,
+    Uuid,
+    serde_json::Value,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<String>,
+    Option<String>,
+    f32,
+    Option<Uuid>,
+);
+
 /// 属性事实：字面值通道上的活事实，连同区间与精度。
 ///
 /// 与 `timed_edges` 是对偶的一份——那边取 `object_id IS NOT NULL` 的边，
@@ -1232,18 +1251,7 @@ async fn attribute_facts(
     HashMap<Uuid, (Option<String>, Option<String>, f32)>,
     HashMap<Uuid, Option<Uuid>>,
 )> {
-    let rows: Vec<(
-        Uuid,
-        Uuid,
-        Uuid,
-        serde_json::Value,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<chrono::DateTime<chrono::Utc>>,
-        Option<String>,
-        Option<String>,
-        f32,
-        Option<Uuid>,
-    )> = sqlx::query_as(
+    let rows: Vec<AttrFactRow> = sqlx::query_as(
         "SELECT f.id, f.subject_id, f.predicate_id, f.object_value,
                 f.valid_from, f.valid_to, f.valid_from_precision, f.valid_to_precision,
                 f.confidence, e.type_id
@@ -1369,9 +1377,16 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                 })
                 .cloned()
                 .collect();
-            let (hits, rr) =
-                utopia_reason::rules::evaluate(&[lr.rule.clone()], &scoped, &attr_spans);
+            let (hits, rr) = utopia_reason::rules::evaluate(
+                std::slice::from_ref(&lr.rule),
+                &scoped,
+                &attr_spans,
+            );
             report.rule_hits += rr.hits;
+            //  是「这一轮算出来的派生总数」，公理与规则都算在内。
+            // **别改写它的原义**：被拦下的那些也算「算出来了」，队列里那一行
+            // 正是凭它对上的
+            report.derived += rr.hits;
             report.rule_capped += rr.capped;
             for h in hits {
                 let value = match &lr.rule.conclusion {
@@ -1406,7 +1421,6 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
         // 前提的精度与置信度：两趟共用下面那段，所以两份 meta 也要合起来
         meta.extend(attr_meta);
     }
-    report.derived = wanted.len();
 
     let mut tx = pool.begin().await?;
     let live: Vec<LiveRow> = sqlx::query_as(
@@ -1764,15 +1778,22 @@ async fn derived_one(
     Ok(sqlx::query_as(
         "SELECT d.id,
                 d.subject_id, s.canonical_name AS subject,
-                d.object_id,  o.canonical_name AS object,
+                d.object_id,
+                COALESCE(o.canonical_name, ct.label,
+                         d.object_value ->> 'class',
+                         d.object_value #>> '{value}',
+                         d.object_value #>> '{}') AS object,
                 r.label AS predicate,
-                ru.kind AS rule,
+                COALESCE(ru.kind, 'business') AS rule,
+                ar.name AS rule_name,
                 d.valid_from, d.valid_to, d.confidence, d.derived_at,
                 COALESCE(
                     (SELECT array_agg(
                                 ps.canonical_name || ' · '
                                 || COALESCE(pr.label, '?') || ' · '
-                                || COALESCE(po.canonical_name, '?')
+                                || COALESCE(po.canonical_name,
+                                            pf.object_value #>> '{value}',
+                                            '?')
                                 ORDER BY fd.seq)
                        FROM fact_derivations fd
                        JOIN facts pf       ON pf.id = fd.premise_fact_id
@@ -1784,9 +1805,11 @@ async fn derived_one(
                 ) AS premises
            FROM derived_facts d
            JOIN entities s ON s.id = d.subject_id
-           JOIN entities o ON o.id = d.object_id
+           LEFT JOIN entities o ON o.id = d.object_id
            JOIN relation_types r ON r.id = d.predicate_id
-           JOIN rules ru ON ru.id = d.rule_id
+           LEFT JOIN rules ru ON ru.id = d.rule_id
+           LEFT JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
+           LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
           WHERE d.kb_id = $1 AND d.id = $2",
     )
     .bind(kb_id)

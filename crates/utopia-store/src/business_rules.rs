@@ -47,6 +47,35 @@ pub async fn ensure_is_a(pool: &PgPool, kb_id: Uuid) -> AppResult<Uuid> {
 
 pub const IS_A: &str = "is_a";
 
+/// 列表查询回来的一行规则：id、名字、说明、主类及其标签、结论那几列、
+/// 开关，以及「此刻凭它成立的结论条数」。
+///
+/// 起个名字而不是让它当匿名元组：这一行有十三格，读的人对不上位置
+type RuleRow = (
+    Uuid,
+    String,
+    String,
+    Uuid,
+    Option<String>,
+    String,
+    Option<Uuid>,
+    Option<String>,
+    Option<Uuid>,
+    Option<String>,
+    Option<serde_json::Value>,
+    bool,
+    i64,
+);
+
+/// 条件查询回来的一行：规则、属性谓词及其标签、比较方式、操作数
+type ConditionRow = (
+    Uuid,
+    Uuid,
+    Option<String>,
+    String,
+    Option<serde_json::Value>,
+);
+
 /// 一条条件，界面与 API 共用的形状。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConditionInput {
@@ -234,21 +263,7 @@ pub async fn delete(pool: &PgPool, kb_id: Uuid, rule_id: Uuid) -> AppResult<()> 
 
 /// 列出规则，连同条件与「现在推出了多少条」。
 pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value>> {
-    let rules: Vec<(
-        Uuid,
-        String,
-        String,
-        Uuid,
-        Option<String>,
-        String,
-        Option<Uuid>,
-        Option<String>,
-        Option<Uuid>,
-        Option<String>,
-        Option<serde_json::Value>,
-        bool,
-        i64,
-    )> = sqlx::query_as(
+    let rules: Vec<RuleRow> = sqlx::query_as(
         "SELECT r.id, r.name, r.description, r.subject_type_id, st.label,
                 r.conclusion, r.conclude_type_id, ct.label,
                 r.conclude_predicate_id, cp.label, r.conclude_value, r.enabled,
@@ -268,13 +283,7 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
         return Ok(Vec::new());
     }
     let ids: Vec<Uuid> = rules.iter().map(|r| r.0).collect();
-    let conds: Vec<(
-        Uuid,
-        Uuid,
-        Option<String>,
-        String,
-        Option<serde_json::Value>,
-    )> = sqlx::query_as(
+    let conds: Vec<ConditionRow> = sqlx::query_as(
         "SELECT c.rule_id, c.predicate_id, p.label, c.op, c.operand
                FROM attribute_rule_conditions c
                JOIN relation_types p ON p.id = c.predicate_id
