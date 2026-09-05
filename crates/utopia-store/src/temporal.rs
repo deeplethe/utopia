@@ -77,14 +77,16 @@ pub async fn reconcile_new_fact(
                AND valid_to IS NULL AND valid_to_precision IS NULL
                AND invalidated_at IS NULL
                AND id <> $4
-               AND (object_id IS DISTINCT FROM $5 OR object_value IS DISTINCT FROM $6)"
+               AND (object_id IS DISTINCT FROM $5 OR object_value IS DISTINCT FROM $6)
+             ORDER BY valid_from ASC NULLS LAST, recorded_at ASC"
         }
         Uniqueness::ObjectSide => {
             "SELECT id, valid_from, valid_from_precision FROM facts
              WHERE kb_id = $1 AND object_id = $5 AND predicate_id = $3
                AND valid_to IS NULL AND valid_to_precision IS NULL
                AND invalidated_at IS NULL
-               AND id <> $4 AND subject_id IS DISTINCT FROM $2"
+               AND id <> $4 AND subject_id IS DISTINCT FROM $2
+             ORDER BY valid_from ASC NULLS LAST, recorded_at ASC"
         }
     };
     let q = sqlx::query_as(sql)
@@ -120,15 +122,16 @@ pub async fn reconcile_new_fact(
                     record_conflict(pool, kb_id, old.id, new_fact_id, "low_confidence").await?;
                     report.conflicts += 1;
                 } else {
-                    report.corrected.push(
-                        close_superseded(
-                            pool,
-                            new_fact_id,
-                            of,
-                            old.valid_from_precision.as_deref().unwrap_or("day"),
-                        )
-                        .await?,
-                    );
+                    if let Some(id) = close_superseded(
+                        pool,
+                        new_fact_id,
+                        of,
+                        old.valid_from_precision.as_deref().unwrap_or("day"),
+                    )
+                    .await?
+                    {
+                        report.corrected.push(id);
+                    }
                 }
             }
             // 常规接替：旧事实闭合在新事实的开始（旧事实无起点也适用——起点未知但已结束）
@@ -137,15 +140,16 @@ pub async fn reconcile_new_fact(
                     record_conflict(pool, kb_id, old.id, new_fact_id, "low_confidence").await?;
                     report.conflicts += 1;
                 } else {
-                    report.corrected.push(
-                        close_superseded(
-                            pool,
-                            old.id,
-                            nf,
-                            new_validity.from_precision.unwrap_or("day"),
-                        )
-                        .await?,
-                    );
+                    if let Some(id) = close_superseded(
+                        pool,
+                        old.id,
+                        nf,
+                        new_validity.from_precision.unwrap_or("day"),
+                    )
+                    .await?
+                    {
+                        report.corrected.push(id);
+                    }
                 }
             }
         }
@@ -168,8 +172,80 @@ pub async fn reconcile_moved_facts(
     if fact_ids.is_empty() {
         return Ok(ReconcileReport::default());
     }
+    reconcile_open(pool, kb_id, fact_ids, "f.recorded_at").await
+}
+
+/// 声明来晚了：一条谓词上所有开放事实按**年表**重跑一遍落库时的对账（#341）。
+///
+/// 本体自己长出来的库里没人声明过唯一性，接任不会闭合前任——三个人同时在管一个
+/// 项目。人补上声明之后，这里把已经躺在账上的行对一遍。走的是与落库时同一条
+/// 路（作废 + 改写，supersedes 链回旧行），所以记录轴倒回声明之前仍看得见三条
+/// 开放的行；拿不准的（缺时间 / 同时开始 / 低置信）照旧进人审，不硬闭合。
+///
+/// 按 `valid_from` 而不是 `recorded_at` 走：合并搬移按摄入顺序回放是对的，
+/// 因为那是在重演落库；这里三条早就都在账上，谁先谁后只有年表说了算——
+/// 前任必须闭合在**最早的**后任起点上，而周七的文档完全可能比李四的先到。
+///
+/// 没有声明的谓词拒绝：引擎不替人推断（bootstrap_ontology.rs 写了为什么）。
+pub async fn reconcile_predicate(
+    pool: &PgPool,
+    kb_id: Uuid,
+    predicate_id: Uuid,
+) -> AppResult<ReconcileReport> {
+    let declared: Option<(bool, bool, String)> = sqlx::query_as(
+        "SELECT functional, inverse_functional, temporal FROM relation_types
+         WHERE kb_id = $1 AND id = $2",
+    )
+    .bind(kb_id)
+    .bind(predicate_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((functional, inverse_functional, temporal)) = declared else {
+        return Err(utopia_core::AppError::NotFound);
+    };
+    if temporal != "state" {
+        return Err(utopia_core::AppError::invalid(
+            "not_a_state",
+            "only a state relation has intervals to close",
+        ));
+    }
+    if !functional && !inverse_functional {
+        return Err(utopia_core::AppError::invalid(
+            "not_unique",
+            "declare the relation functional or inverse-functional first; the engine does not infer it",
+        ));
+    }
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM facts
+         WHERE kb_id = $1 AND predicate_id = $2
+           AND invalidated_at IS NULL AND valid_to IS NULL AND valid_to_precision IS NULL
+         ORDER BY valid_from ASC NULLS LAST, recorded_at ASC",
+    )
+    .bind(kb_id)
+    .bind(predicate_id)
+    .fetch_all(pool)
+    .await?;
+    if ids.is_empty() {
+        return Ok(ReconcileReport::default());
+    }
+    reconcile_open(
+        pool,
+        kb_id,
+        &ids,
+        "f.valid_from ASC NULLS LAST, f.recorded_at ASC",
+    )
+    .await
+}
+
+/// 一批开放期事实按 `order`（SQL 的 ORDER BY 表达式）逐条当作"新落库的观察"对账。
+async fn reconcile_open(
+    pool: &PgPool,
+    kb_id: Uuid,
+    fact_ids: &[Uuid],
+    order: &str,
+) -> AppResult<ReconcileReport> {
     #[derive(sqlx::FromRow)]
-    struct MovedFact {
+    struct OpenRow {
         id: Uuid,
         subject_id: Uuid,
         predicate_id: Uuid,
@@ -181,7 +257,7 @@ pub async fn reconcile_moved_facts(
         functional: bool,
         inverse_functional: bool,
     }
-    let rows: Vec<MovedFact> = sqlx::query_as(
+    let rows: Vec<OpenRow> = sqlx::query_as(&format!(
         "SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value,
                 f.valid_from, f.valid_from_precision,
                 f.confidence, r.functional, r.inverse_functional
@@ -189,8 +265,8 @@ pub async fn reconcile_moved_facts(
          WHERE f.kb_id = $1 AND f.id = ANY($2)
            AND f.invalidated_at IS NULL AND f.valid_to IS NULL
            AND r.temporal = 'state' AND (r.functional OR r.inverse_functional)
-         ORDER BY f.recorded_at",
-    )
+         ORDER BY {order}"
+    ))
     .bind(kb_id)
     .bind(fact_ids)
     .fetch_all(pool)
@@ -242,13 +318,13 @@ pub async fn reconcile_moved_facts(
 }
 
 /// 作废 + 改写：旧行记 invalidated_at（认知轴），插入闭合区间的修正行
-/// （世界轴），证据引用随行复制。返回修正行 id。
+/// （世界轴），证据引用随行复制。返回修正行 id；`None` = 这条已不是开放行，没动。
 pub async fn close_superseded(
     pool: &PgPool,
     fact_id: Uuid,
     valid_to: DateTime<Utc>,
     valid_to_precision: &str,
-) -> AppResult<Uuid> {
+) -> AppResult<Option<Uuid>> {
     let mut tx = pool.begin().await?;
     let corrected = Uuid::now_v7();
     let inserted: Option<(Uuid,)> = sqlx::query_as(
@@ -266,10 +342,10 @@ pub async fn close_superseded(
     .bind(valid_to_precision)
     .fetch_optional(&mut *tx)
     .await?;
-    // 已被并发修正过：不重复动手
+    // 已被改写过（并发，或同一批对账里前一步已经闭合了它）：不重复动手，也不算一次修正
     if inserted.is_none() {
         tx.rollback().await?;
-        return Ok(fact_id);
+        return Ok(None);
     }
     sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
         .bind(fact_id)
@@ -277,7 +353,7 @@ pub async fn close_superseded(
         .await?;
     copy_evidence(&mut tx, fact_id, corrected).await?;
     tx.commit().await?;
-    Ok(corrected)
+    Ok(Some(corrected))
 }
 
 /// 证据引用随修正行复制。表层谓词一起搬：纠正的是时间区间，不是原文说了什么。
@@ -484,4 +560,320 @@ pub async fn resolve_conflict(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// 一条谓词的一端挂着**两个以上开放值**的持有者——唯一性没声明（或声明来晚了）
+/// 时账本的样子（#341）。这是给人看的提议依据，不是判决：`declared` 为假时它说
+/// "这里像是该声明的"，为真时它说"声明了，但这些行还没对过账"。
+#[derive(Debug, Clone)]
+pub struct UniquenessCandidate {
+    pub predicate_id: Uuid,
+    pub key: String,
+    pub label: String,
+    /// relation | attribute
+    pub kind: String,
+    /// "subject"（→ functional）或 "object"（→ inverse_functional）
+    pub side: &'static str,
+    /// 这一端的唯一性是否已经声明
+    pub declared: bool,
+    /// 挂着两个以上开放值的持有者数
+    pub holders: usize,
+    /// 那些持有者身上的开放事实数
+    pub open_facts: usize,
+    /// 对账会闭合的区间数（估算，按落库时的规则：起点更早者止于后任起点）
+    pub would_close: usize,
+    /// 对账会送进人审的对数（缺时间 / 同时开始 / 低置信）
+    pub would_review: usize,
+    /// 头几个持有者与它们的开放值，按年表排
+    pub examples: Vec<HolderExample>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HolderExample {
+    pub holder: String,
+    pub values: Vec<OpenValue>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenValue {
+    pub fact_id: Uuid,
+    pub name: String,
+    pub valid_from: Option<DateTime<Utc>>,
+    pub confidence: f32,
+}
+
+/// 每个候选带几个例子。
+const EXAMPLE_HOLDERS: usize = 3;
+
+pub async fn uniqueness_candidates(
+    pool: &PgPool,
+    kb_id: Uuid,
+) -> AppResult<Vec<UniquenessCandidate>> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        id: Uuid,
+        predicate_id: Uuid,
+        key: String,
+        label: String,
+        kind: String,
+        declared: bool,
+        holder_name: String,
+        other_name: Option<String>,
+        object_value: Option<serde_json::Value>,
+        valid_from: Option<DateTime<Utc>>,
+        confidence: f32,
+    }
+    // 两端各查一遍。`crowded` 先按 (谓词, 持有者) 数不同的值，再把那些持有者
+    // 身上的开放事实整批取回来——估算要看每一对相邻值的起点与置信度，
+    // 光有计数不够。开放 = 世界轴没有终点，与落库时对账用的是同一个不变量
+    let subject_side: Vec<Row> = sqlx::query_as(
+        "WITH open AS (
+             SELECT f.id, f.predicate_id, f.subject_id AS holder, f.object_id, f.object_value,
+                    COALESCE(f.object_id::text, f.object_value::text) AS value_key,
+                    f.valid_from, f.confidence, f.recorded_at
+             FROM facts f JOIN relation_types r ON r.id = f.predicate_id
+             WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+               AND f.valid_to IS NULL AND f.valid_to_precision IS NULL
+               AND r.temporal = 'state'
+               AND (f.object_id IS NOT NULL OR f.object_value IS NOT NULL)
+         ),
+         crowded AS (
+             SELECT predicate_id, holder FROM open
+             GROUP BY predicate_id, holder HAVING count(DISTINCT value_key) >= 2
+         )
+         SELECT o.id, o.predicate_id, r.key, r.label, r.kind, r.functional AS declared,
+                h.canonical_name AS holder_name, e.canonical_name AS other_name,
+                o.object_value, o.valid_from, o.confidence
+         FROM open o
+         JOIN crowded c ON c.predicate_id = o.predicate_id AND c.holder = o.holder
+         JOIN relation_types r ON r.id = o.predicate_id
+         JOIN entities h ON h.id = o.holder
+         LEFT JOIN entities e ON e.id = o.object_id
+         ORDER BY r.key, h.canonical_name, o.valid_from ASC NULLS LAST, o.recorded_at ASC",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    let object_side: Vec<Row> = sqlx::query_as(
+        "WITH open AS (
+             SELECT f.id, f.predicate_id, f.object_id AS holder, f.subject_id,
+                    f.valid_from, f.confidence, f.recorded_at
+             FROM facts f JOIN relation_types r ON r.id = f.predicate_id
+             WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+               AND f.valid_to IS NULL AND f.valid_to_precision IS NULL
+               AND r.temporal = 'state' AND r.kind = 'relation'
+               AND f.object_id IS NOT NULL
+         ),
+         crowded AS (
+             SELECT predicate_id, holder FROM open
+             GROUP BY predicate_id, holder HAVING count(DISTINCT subject_id) >= 2
+         )
+         SELECT o.id, o.predicate_id, r.key, r.label, r.kind, r.inverse_functional AS declared,
+                h.canonical_name AS holder_name, e.canonical_name AS other_name,
+                NULL::jsonb AS object_value, o.valid_from, o.confidence
+         FROM open o
+         JOIN crowded c ON c.predicate_id = o.predicate_id AND c.holder = o.holder
+         JOIN relation_types r ON r.id = o.predicate_id
+         JOIN entities h ON h.id = o.holder
+         JOIN entities e ON e.id = o.subject_id
+         ORDER BY r.key, h.canonical_name, o.valid_from ASC NULLS LAST, o.recorded_at ASC",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+
+    let mut out = Vec::new();
+    for (side, rows) in [("subject", subject_side), ("object", object_side)] {
+        // 行已按 (谓词, 持有者, 年表) 排好，顺着切段就是分组
+        let mut i = 0;
+        while i < rows.len() {
+            let pred = rows[i].predicate_id;
+            let mut cand = UniquenessCandidate {
+                predicate_id: pred,
+                key: rows[i].key.clone(),
+                label: rows[i].label.clone(),
+                kind: rows[i].kind.clone(),
+                side,
+                declared: rows[i].declared,
+                holders: 0,
+                open_facts: 0,
+                would_close: 0,
+                would_review: 0,
+                examples: Vec::new(),
+            };
+            while i < rows.len() && rows[i].predicate_id == pred {
+                let holder = rows[i].holder_name.clone();
+                let mut values = Vec::new();
+                while i < rows.len()
+                    && rows[i].predicate_id == pred
+                    && rows[i].holder_name == holder
+                {
+                    let r = &rows[i];
+                    values.push(OpenValue {
+                        fact_id: r.id,
+                        name: r
+                            .other_name
+                            .clone()
+                            .or_else(|| r.object_value.as_ref().map(literal_name))
+                            .unwrap_or_else(|| "?".to_string()),
+                        valid_from: r.valid_from,
+                        confidence: r.confidence,
+                    });
+                    i += 1;
+                }
+                let (close, review) = plan_closures(&values);
+                cand.holders += 1;
+                cand.open_facts += values.len();
+                cand.would_close += close;
+                cand.would_review += review;
+                if cand.examples.len() < EXAMPLE_HOLDERS {
+                    cand.examples.push(HolderExample { holder, values });
+                }
+            }
+            out.push(cand);
+        }
+    }
+    Ok(out)
+}
+
+/// 一个持有者的开放值按年表排好后，对账会怎么处置：(闭合数, 进人审数)。
+///
+/// 把 `reconcile_predicate` 的过程干跑一遍，不落库：逐条当"新落库的观察"，与
+/// 后面还开着的每一条比——起点更早者止于后任起点（自己置信度够才许改写历史）；
+/// 两条都没起点、或同一天开始，说不清谁接替谁，进人审，两条都还开着；后任没起点
+/// 的，它止于前任的起点。三条都没起点的持有者会报三对冲突，与引擎一致。
+/// 这是估算——真跑一遍的结果才作数
+fn plan_closures(values: &[OpenValue]) -> (usize, usize) {
+    let mut open = vec![true; values.len()];
+    let mut close = 0;
+    let mut review = 0;
+    for i in 0..values.len() {
+        if !open[i] {
+            continue;
+        }
+        let new = &values[i];
+        for j in (i + 1)..values.len() {
+            if !open[j] {
+                continue;
+            }
+            let old = &values[j];
+            match (old.valid_from, new.valid_from) {
+                (_, None) => review += 1,
+                (Some(of), Some(nf)) if of == nf => review += 1,
+                (Some(of), Some(nf)) if nf < of => {
+                    if new.confidence < AUTO_CLOSE_MIN_CONFIDENCE {
+                        review += 1;
+                    } else {
+                        close += 1;
+                        open[i] = false;
+                        break;
+                    }
+                }
+                (_, Some(_)) => {
+                    if new.confidence < AUTO_CLOSE_MIN_CONFIDENCE {
+                        review += 1;
+                    } else {
+                        close += 1;
+                        open[j] = false;
+                    }
+                }
+            }
+        }
+    }
+    (close, review)
+}
+
+/// 字面值给人看的样子：`{value, unit}` → "28000 CNY"，裸标量读成它自己。
+fn literal_name(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Object(o) => {
+            let value = match o.get("value") {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(other) => other.to_string(),
+                None => return v.to_string(),
+            };
+            match o
+                .get("unit")
+                .and_then(|u| u.as_str())
+                .filter(|u| !u.is_empty())
+            {
+                Some(unit) => format!("{value} {unit}"),
+                None => value,
+            }
+        }
+        other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn v(from: Option<(i32, u32, u32)>, confidence: f32) -> OpenValue {
+        OpenValue {
+            fact_id: Uuid::now_v7(),
+            name: String::new(),
+            valid_from: from.map(|(y, m, d)| Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()),
+            confidence,
+        }
+    }
+
+    #[test]
+    fn a_chain_of_three_closes_twice() {
+        let values = [
+            v(Some((2023, 2, 1)), 0.9),
+            v(Some((2024, 7, 5)), 0.9),
+            v(Some((2025, 9, 1)), 0.9),
+        ];
+        assert_eq!(plan_closures(&values), (2, 0));
+    }
+
+    #[test]
+    fn what_the_engine_would_not_close_goes_to_review() {
+        // 同一天开始
+        assert_eq!(
+            plan_closures(&[v(Some((2024, 1, 1)), 0.9), v(Some((2024, 1, 1)), 0.9)]),
+            (0, 1)
+        );
+        // 两条都没起点
+        assert_eq!(plan_closures(&[v(None, 0.9), v(None, 0.9)]), (0, 1));
+        // 起点更早的那条置信度不够，不许它改写历史
+        assert_eq!(
+            plan_closures(&[v(Some((2023, 1, 1)), 0.5), v(Some((2024, 1, 1)), 0.9)]),
+            (0, 1)
+        );
+        // 后任没起点：它止于前任的起点（落库时的"旧事实无起点也适用"）
+        assert_eq!(
+            plan_closures(&[v(Some((2023, 1, 1)), 0.9), v(None, 0.9)]),
+            (1, 0)
+        );
+        // 一条不成对
+        assert_eq!(plan_closures(&[v(Some((2023, 1, 1)), 0.9)]), (0, 0));
+        // 三条都没起点：每一对都说不清，三对冲突，与引擎一致
+        assert_eq!(
+            plan_closures(&[v(None, 0.9), v(None, 0.9), v(None, 0.9)]),
+            (0, 3)
+        );
+        // 有起点的一条闭合两条没起点的：它们都止于它的起点
+        assert_eq!(
+            plan_closures(&[v(Some((2023, 1, 1)), 0.9), v(None, 0.9), v(None, 0.9)]),
+            (2, 0)
+        );
+    }
+
+    #[test]
+    fn a_literal_reads_as_a_value_with_its_unit() {
+        assert_eq!(
+            literal_name(&serde_json::json!({ "value": 28000, "unit": "CNY" })),
+            "28000 CNY"
+        );
+        assert_eq!(
+            literal_name(&serde_json::json!({ "value": "Staff Engineer" })),
+            "Staff Engineer"
+        );
+        assert_eq!(literal_name(&serde_json::json!(32000)), "32000");
+        assert_eq!(literal_name(&serde_json::json!("plain")), "plain");
+    }
 }
