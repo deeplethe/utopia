@@ -1,6 +1,6 @@
 # 0021 · A rule reads attributes and concludes a type
 
-- **Status**: planned · nothing built; the derivation machinery it stacks on is live
+- **Status**: implemented · all four decisions built and the five phases done (#359) · `derived_facts` widened, `attribute_rules` authored through the ontology page, the evaluator running in the materialisation job, conclusions explained in the entity panel with their premises, and two read-only MCP tools (`list_rules`, `rule_matches`) · writing a rule stays out of MCP, see the open question · a conclusion's own text cannot be edited yet (delete and rewrite), the rule card's entity count is not clickable, and a rule-classified entity carries no canvas marker
 - **Written**: 2026-09-05 (conventions in the [README](README.md))
 - **Related**: [0002](0002-reasoning-engine.md) built the derivation runner and ruled out a user-defined rule language for ontology axioms; this record adds one narrow rule kind that lives beside the axioms, not inside them. [0009](0009-no-type-is-a-type.md) made `type_id` nullable and a type a considered claim; a rule concludes a *second* type without touching the asserted one. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) draws the asserted / derived line this conclusion sits below. From #277.
 
@@ -61,4 +61,20 @@ A well with a 2023 reading that fires the rule and a 2025 reading that does not 
 - **Does a derived typing feed the extraction prompt or the mapping probe?** Those read the ontology's classes; a well that is derived-`GasBearingWell` is not asserted to be one. Leaning no — a derivation is a read-time overlay, not a fact the ontology teaches back into extraction — but a rule that concludes a class the corpus then reinforces is a loop worth watching.
 - **Category conditions and language.** `interpretation_category ∈ {"气测异常", "气测异常后效"}` is text matched literally. If the same category arrives in English from a different source, the set misses it. Out of scope here; the mapping layer (0011) is where a category vocabulary would belong.
 - **One conclusion per rule, or several.** #277 says one. A report that sets both a typing and a `gas_potential` grade from the same two readings would want two rules over the same premises today; whether that is a nuisance is a question the sample will answer.
+- **Should an agent ever write a rule?** Reading is settled and built: `list_rules` and
+  `rule_matches` are exposed over MCP, and `entity_facts` returns conclusions marked with the
+  rule that reached them, so an agent explains a classification from the criteria instead of
+  re-deriving it from the readings with a threshold it guessed. Writing is deliberately not
+  exposed. The line 0002 drew is against the model *inventing* criteria, and a person
+  dictating a rule to their agent is not that — but a tool call cannot tell the two apart,
+  and the audit would read as the person's own token either way. A rule is also heavier than
+  a fact: one wrong rule re-decides the whole base on every materialisation pass, quietly.
+  If this opens later, it wants a pending queue of the shape `pending_facts` has, so a person
+  nods before a rule takes effect.
+- **A canvas marker for a rule-classified entity.** A conclusion is a judgement about one
+  entity rather than a connection, so it draws no edge, and today it is visible only in the
+  panel. Asserted attributes have no marker either, so adding one just for derived ones would
+  invert the ground. The real gap the marker was standing in for — "which entities did this
+  rule mark" — is answered by `rule_matches`. Revisit when someone reports losing track of a
+  marked entity on the canvas, which is also when it will be clear what the marker should say.
 - **Where authored rules live for export.** If a deployment's rules are part of its ontology, RDF export (#308) has to say how — a rule is not an OWL axiom. Deferred to whenever export lands.

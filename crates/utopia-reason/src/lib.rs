@@ -14,6 +14,7 @@
 
 pub mod derive;
 pub mod ontology;
+pub mod rules;
 
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;

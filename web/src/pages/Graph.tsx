@@ -2316,7 +2316,8 @@ function DerivedRow({
 }: {
   kbId: string;
   d: DerivedFact;
-  otherId: string;
+  /** 字面值结论没有另一端实体（0021）*/
+  otherId: string | null;
   otherName: string;
   open: boolean;
   onToggle: () => void;
@@ -2333,23 +2334,31 @@ function DerivedRow({
           size={11}
           className={`shrink-0 text-ink-3 u-turn ${open ? "rotate-90" : ""}`}
         />
-        <span
-          role="link"
-          tabIndex={0}
-          onClick={(ev) => {
-            ev.stopPropagation();
-            onNavigate(otherId);
-          }}
-          onKeyDown={(ev) => {
-            if (ev.key === "Enter") {
+        {/* 业务规则的结论是字面值（一个类、一个值），另一端没有实体可跳——
+            这时候画成普通文字，而不是一个点了没反应的链接（0021） */}
+        {/* 业务规则的结论是字面值（一个类、一个值），另一端没有实体可跳——
+            这时候画成普通文字，而不是一个点了没反应的链接（0021） */}
+        {otherId ? (
+          <span
+            role="link"
+            tabIndex={0}
+            onClick={(ev) => {
               ev.stopPropagation();
               onNavigate(otherId);
-            }
-          }}
-          className="u-inline-link truncate text-body text-ink"
-        >
-          {otherName}
-        </span>
+            }}
+            onKeyDown={(ev) => {
+              if (ev.key === "Enter") {
+                ev.stopPropagation();
+                onNavigate(otherId);
+              }
+            }}
+            className="u-inline-link truncate text-body text-ink"
+          >
+            {otherName}
+          </span>
+        ) : (
+          <span className="truncate text-body text-ink">{otherName}</span>
+        )}
         <span className="ml-auto shrink-0 pl-2 text-fine text-ink-3">
           {d.premises.length}
         </span>
@@ -2638,10 +2647,12 @@ function EntityPanel({
     >();
     for (const d of derived) {
       const direction = d.subject_id === entityId ? "out" : "in";
-      // 四条规则各有名字。**查不到就退回原始 kind 串**——那对读的人没有
-      // 意义，但比显示成另一条规则的名字诚实
-      const rule = S.graph.ruleNames[d.rule] ?? d.rule;
-      const key = `${direction}|${d.predicate}|${d.rule}`;
+      // 四条公理各有名字；业务规则用它自己的名字（0021）——「Gas-bearing well」
+      // 比「business」有意义得多，而那个名字正是人写规则时起的。
+      // **查不到就退回原始 kind 串**：对读的人没有意义，但比显示成另一条规则诚实
+      const rule = d.rule_name ?? S.graph.ruleNames[d.rule] ?? d.rule;
+      // 分组键用规则名而不是 kind：同一个谓词上两条业务规则各归各的
+      const key = `${direction}|${d.predicate}|${d.rule_name ?? d.rule}`;
       const cur = map.get(key);
       if (cur) cur.rows.push(d);
       else map.set(key, { key, direction, predicate: d.predicate, rule, rows: [d] });

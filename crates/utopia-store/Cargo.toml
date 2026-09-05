@@ -8,6 +8,7 @@ license.workspace = true
 utopia-core.workspace = true
 utopia-ingest.workspace = true
 utopia-reason.workspace = true
+serde.workspace = true
 pgvector.workspace = true
 cron.workspace = true
 sqlx.workspace = true

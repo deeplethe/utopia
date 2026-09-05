@@ -303,7 +303,10 @@ pub(super) fn base_tools() -> serde_json::Value {
                     relations with validity ranges (from → to; 'now' = still ongoing). \
                     The best tool for who/when/history questions. Use after find_entities. \
                     Pass `at` to see the world as of that date (server-side filter) — \
-                    always do this for \"who was X in <year/month>\" questions.",
+                    always do this for \"who was X in <year/month>\" questions. \
+                    Conclusions a business rule reached about this entity come back too, \
+                    marked `[rule: <name>]` with the readings that made them true — take \
+                    those as given rather than re-deriving them from the readings yourself.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -319,6 +322,29 @@ pub(super) fn base_tools() -> serde_json::Value {
                         }
                     },
                     "required": ["entity_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_rules",
+                "description": "The business rules this base runs: what each one concludes and                     the exact conditions it tests, thresholds included. A rule is written by a                     person, and its conclusions are already in the graph — read the rule to                     explain WHY something was concluded, or to answer \"what counts as X here\".                     Do not re-implement a rule's comparison yourself; ask entity_facts or                     rule_matches for what it actually concluded.",
+                "parameters": { "type": "object", "properties": {} }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "rule_matches",
+                "description": "Which entities a business rule currently marks, with the                     readings that made each one true. Use it for \"which wells are gas-bearing\"                     style questions — one call instead of checking every entity.                     Get the rule id from list_rules.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "rule_id": { "type": "string", "description": "Rule id (uuid) from list_rules." },
+                        "limit": { "type": "integer", "description": "How many to return (default 50, max 200)." }
+                    },
+                    "required": ["rule_id"]
                 }
             }
         },

@@ -36,11 +36,17 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 ///
 /// `query_data` 仍旧不放：它对**部署之外的生产库**跑 SQL，审计怎么记、
 /// 一个被投喂了脏文档的 agent 拿它做什么，都还没答完（0014 的混淆代理那一节）。
-const EXPOSED: [&str; 6] = [
+/// 业务规则的两个只读工具也在这里（0021）：判据要看得见——一个 agent 解释
+/// 「凭什么算含气井」时，该读到那条规则和它的阈值，而不是自己猜一个。
+/// **写规则不放**：推理的判据由人写下，而一次工具调用分不出「人口述、agent
+/// 代打」与「模型自己编了一条」
+const EXPOSED: [&str; 8] = [
     "search_chunks",
     "get_document",
     "search_docs",
     "find_entities",
+    "list_rules",
+    "rule_matches",
     "changes",
     "entity_facts",
 ];

@@ -1063,11 +1063,14 @@ pub struct DerivedFactView {
     pub id: Uuid,
     pub subject_id: Uuid,
     pub subject: String,
-    pub object_id: Uuid,
+    /// 字面值结论（业务规则的归类与属性）没有实体宾语（0021）
+    pub object_id: Option<Uuid>,
     pub object: String,
     pub predicate: String,
-    /// transitive | symmetric——靠哪条规则推的
+    /// transitive | symmetric | inverse | sub_property，或 `business`（业务规则）
     pub rule: String,
+    /// 业务规则的名字。公理推的为 None——公理没有名字，`rule` 那一列就是它的全部身份
+    pub rule_name: Option<String>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confidence: f32,

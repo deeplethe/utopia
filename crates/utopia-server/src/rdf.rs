@@ -503,7 +503,14 @@ pub fn emit_derived(
     d: &ExportDerived,
 ) -> std::io::Result<()> {
     let stmt = names.derived(d.id);
-    let rule = names.rule(d.rule_id);
+    // 推理活动的身份：公理规则有自己的 id，业务规则用它的。两者都要有一个
+    // 稳定的 IRI，否则审计读到一条结论却指不出「凭什么」
+    let rule = match (d.rule_id, d.attribute_rule_id) {
+        (Some(r), _) => names.rule(r),
+        (None, Some(r)) => names.rule(r),
+        // 库里的 CHECK 保证不会两个都空；真到了这一步宁可跳过整条
+        (None, None) => return Ok(()),
+    };
     sink.r(&stmt, &nn(rdf::TYPE.as_str()), &nn(rdf::STATEMENT.as_str()))?;
     sink.r(
         &stmt,
@@ -513,7 +520,19 @@ pub fn emit_derived(
     if let Some(p) = vocab.relation(d.predicate_id).cloned() {
         sink.r(&stmt, &nn(rdf::PREDICATE.as_str()), &p)?;
     }
-    sink.r(&stmt, &nn(rdf::OBJECT.as_str()), &names.entity(d.object_id))?;
+    // 宾语两条通道，与断言事实同一套：实体走 IRI，字面值结论走字面量（0021）
+    match (d.object_id, &d.object_value) {
+        (Some(o), _) => sink.r(&stmt, &nn(rdf::OBJECT.as_str()), &names.entity(o))?,
+        (None, Some(v)) => {
+            let (datatype, _) = vocab.literal_shape(d.predicate_id);
+            sink.l(
+                &stmt,
+                &nn(rdf::OBJECT.as_str()),
+                &literal_value(v, datatype),
+            )?;
+        }
+        (None, None) => {}
+    }
     sink.l(&stmt, &utopia("derived"), &flag(true))?;
     emit_validity(
         sink,
@@ -530,7 +549,13 @@ pub fn emit_derived(
     sink.l(&stmt, &utopia("confidence"), &confidence(d.confidence))?;
     sink.r(&stmt, &prov("wasGeneratedBy"), &rule)?;
     sink.r(&rule, &nn(rdf::TYPE.as_str()), &prov("Activity"))?;
-    sink.l(&rule, &nn(rdfs::LABEL.as_str()), &text(d.rule.clone()))?;
+    // 标签用规则自己的名字（业务规则），公理退回它的种类名——审计读到的是
+    // 「Gas-bearing well」而不是「business」
+    sink.l(
+        &rule,
+        &nn(rdfs::LABEL.as_str()),
+        &text(d.rule_name.clone().unwrap_or_else(|| d.rule.clone())),
+    )?;
     // 前提。审计顺着 prov:used 往下走一步就到断言，再走一步就到句子
     for premise in &d.premises {
         let p = names.fact(*premise);
@@ -876,14 +901,85 @@ mod tests {
         );
     }
 
+    /// 业务规则的结论也要出现在导出里，而且宾语是**字面值**。
+    ///
+    /// 这一条挡的是一次静默丢失：取数那边原本 `JOIN rules`，而业务规则的
+    /// `rule_id` 是 NULL——整条结论会被内连接挡在文件之外，而 0020 承诺的正是
+    /// 「审计员不靠我们也能读全」。活动的标签也要是规则自己的名字，
+    /// 「business」对读的人没有意义
+    #[test]
+    fn a_rule_conclusion_reaches_the_export_as_a_literal() {
+        let derived = ExportDerived {
+            id: id(7),
+            subject_id: id(10),
+            predicate_id: id(2),
+            object_id: None,
+            object_value: Some(serde_json::json!({ "class": "gas_well" })),
+            rule_id: None,
+            attribute_rule_id: Some(id(9)),
+            valid_from: None,
+            valid_from_precision: None,
+            valid_to: None,
+            valid_to_precision: None,
+            derived_at: at("2026-02-01T00:00:00Z"),
+            invalidated_at: None,
+            confidence: 0.9,
+            rule: "business".into(),
+            rule_name: Some("Gas-bearing well".into()),
+            premises: vec![id(5)],
+        };
+        let quads = export(Format::Turtle, |sink, names, vocab| {
+            emit_derived(sink, names, vocab, &derived).unwrap();
+        });
+        let stmt = "<urn:utopia:kb:01a06dc4-f40a-7013-b09f-1b499e2e7441:derived:07070707-0707-0707-0707-070707070707>";
+        // 派生标记还在——它仍旧是推出来的，不是谁断言的
+        assert!(has(
+            &quads,
+            stmt,
+            "urn:utopia:ns:derived",
+            "\"true\"^^<http://www.w3.org/2001/XMLSchema#boolean>"
+        ));
+        // 宾语是字面值而不是一个实体 IRI
+        let obj = objects(
+            &quads,
+            stmt,
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#object",
+        );
+        assert_eq!(obj.len(), 1, "结论要有宾语");
+        assert!(
+            obj[0].starts_with('"'),
+            "字面值结论的宾语该是字面量，拿到的是 {}",
+            obj[0]
+        );
+        // 前提照常挂着：审计顺着 prov:used 走得到那两条读数
+        assert_eq!(
+            objects(&quads, stmt, "http://www.w3.org/ns/prov#used").len(),
+            1
+        );
+        // 活动的标签是规则的名字
+        let rule_iri =
+            "<urn:utopia:kb:01a06dc4-f40a-7013-b09f-1b499e2e7441:rule:09090909-0909-0909-0909-090909090909>";
+        assert_eq!(
+            objects(
+                &quads,
+                rule_iri,
+                "http://www.w3.org/2000/01/rdf-schema#label"
+            ),
+            vec!["\"Gas-bearing well\""],
+            "推理活动要以规则名示人"
+        );
+    }
+
     #[test]
     fn a_derivation_says_it_is_one_and_names_its_premises() {
         let derived = ExportDerived {
             id: id(7),
             subject_id: id(10),
             predicate_id: id(2),
-            object_id: id(11),
-            rule_id: id(8),
+            object_id: Some(id(11)),
+            object_value: None,
+            rule_id: Some(id(8)),
+            attribute_rule_id: None,
             valid_from: None,
             valid_from_precision: None,
             valid_to: None,
@@ -892,6 +988,7 @@ mod tests {
             invalidated_at: None,
             confidence: 0.8,
             rule: "transitive".into(),
+            rule_name: None,
             premises: vec![id(5)],
         };
         let quads = export(Format::Turtle, |sink, names, vocab| {

@@ -308,16 +308,51 @@ export interface ChunkFact {
  *
  * `premises` 是这一档存在的理由：不给出前提的话，一条派生边跟一条普通的边
  * 在界面上看不出区别，而那正是「推理污染知识」的样子。 */
+/** 一条条件：这个属性、这样比、跟这个值比 */
+export interface RuleCondition {
+  predicate_id: string;
+  /** gt | gte | lt | lte | between | in | present */
+  op: string;
+  /** 数字 / [lo,hi] / 字符串数组；present 不带 */
+  operand?: unknown;
+  predicate_label?: string;
+}
+
+export interface RuleInput {
+  name: string;
+  description?: string;
+  subject_type_id: string;
+  /** typing = 推出一个类；attribute = 推出一个属性值 */
+  conclusion: "typing" | "attribute";
+  conclude_type_id?: string;
+  conclude_predicate_id?: string;
+  conclude_value?: unknown;
+  conditions: RuleCondition[];
+}
+
+export interface BusinessRule extends RuleInput {
+  id: string;
+  enabled: boolean;
+  subject_label: string;
+  conclude_type_label: string | null;
+  conclude_predicate_label: string | null;
+  /** 此刻凭它成立的结论条数 */
+  derived_count: number;
+}
+
 export interface DerivedFact {
   id: string;
   subject_id: string;
   subject: string;
-  object_id: string;
+  /** 字面值结论（规则推出的归类与属性）没有实体宾语 */
+  object_id: string | null;
   object: string;
   predicate: string;
   /** 靠哪条规则推的 */
   /** 靠哪条规则推的。后两种是 0017 补上的跨谓词规则 */
-  rule: "transitive" | "symmetric" | "inverse" | "sub_property";
+  rule: "transitive" | "symmetric" | "inverse" | "sub_property" | "business";
+  /** 业务规则的名字。公理推的为 null——公理没有名字 */
+  rule_name?: string | null;
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
@@ -1507,6 +1542,42 @@ export const api = {
   /** 这个库走到哪一步了（#313）：四个页面的空状态共用。只回布尔与计数 */
   readiness: (kbId: string) =>
     request<Readiness>(`/api/v1/kbs/${kbId}/readiness`),
+
+  /* ---- 业务规则（0021 / #277）：人写下的判据，引擎按物化的节奏跑 ---- */
+  rules: (kbId: string) =>
+    request<{ rules: BusinessRule[] }>(`/api/v1/kbs/${kbId}/rules`),
+  createRule: (kbId: string, body: RuleInput) =>
+    request<{ id: string }>(`/api/v1/kbs/${kbId}/rules`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateRule: (
+    kbId: string,
+    ruleId: string,
+    body: {
+      name?: string;
+      description?: string;
+      enabled?: boolean;
+      conditions?: RuleCondition[];
+    },
+  ) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/rules/${ruleId}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteRule: (kbId: string, ruleId: string) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/rules/${ruleId}`, {
+      method: "DELETE",
+    }),
+  /** 立刻跑一遍。物化默认一小时一轮，而写规则的人想马上看见它推出了什么 */
+  runRules: (kbId: string) =>
+    request<{
+      rules: number;
+      hits: number;
+      capped: number;
+      inserted: number;
+      invalidated: number;
+    }>(`/api/v1/kbs/${kbId}/rules/run`, { method: "POST" }),
 
   entityHistory: (kbId: string, entityId: string, page: number, per = 30) =>
     request<{ events: EntityHistoryEvent[]; total: number }>(
