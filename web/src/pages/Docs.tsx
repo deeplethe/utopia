@@ -17,6 +17,7 @@ import {
   rowClass,
   SectionMark,
 } from "../ui";
+import { AlertBell } from "./AlertBell";
 import { UserMenu } from "./UserMenu";
 import { usePageTitle } from "../useTitle";
 import ingestMd from "../docs/ingest.md?raw";
@@ -249,9 +250,14 @@ export function DocsPage() {
             {health.data && <span className="u-num text-fine">v{health.data.version}</span>}
           </a>
           {me.data ? (
-            <div className="ml-1">
-              <UserMenu user={me.data} />
-            </div>
+            <>
+              {/* 告警角标跟着人走：读文档的时候库也在跑。没登录就没有它——
+                  告警是登录后的东西 */}
+              <AlertBell />
+              <div className="ml-1">
+                <UserMenu user={me.data} />
+              </div>
+            </>
           ) : me.isError ? (
             <Link
               to="/login"

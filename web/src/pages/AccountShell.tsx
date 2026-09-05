@@ -18,6 +18,7 @@ import {
   SectionMark,
 } from "../ui";
 import { ServerDown } from "./ServerDown";
+import { AlertBell } from "./AlertBell";
 import { UserMenu } from "./UserMenu";
 
 export function AccountShell() {
@@ -67,6 +68,8 @@ export function AccountShell() {
             <GithubMark size={13} />
             {health.data && <span className="u-num text-fine">v{health.data.version}</span>}
           </a>
+          {/* 告警角标跟着人走，不跟着页面走：在账户页里库照样在跑、照样会出事 */}
+          <AlertBell />
           <div className="ml-2">
             <UserMenu user={me.data} />
           </div>
