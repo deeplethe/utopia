@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { LayoutDashboard } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
@@ -16,6 +17,7 @@ import {
   type ViolationResolution,
 } from "../api";
 import { PendingFactRow, useCanDecide } from "./PendingFacts";
+import { ReviewOverview } from "./ReviewOverview";
 import { S } from "../i18n";
 import { useKb, useKbId } from "../kb";
 import {
@@ -742,6 +744,9 @@ function ContradictionRow({
 /* ---------- 页面：左栏分类 + 单类内容区 ---------- */
 
 type Sel =
+  // 总览（#377）：落地页。回答的是「有多少在等、等了多久、队列在消还是在涨」，
+  // 不是任何一档队列
+  | "overview"
   // 记忆抽出、等人点头的事实（0015）。排第一：它是人自己说的话，
   // 而且在这一档里的东西**还没进图**——别处每一档审的都是已经在图上的
   | "pending"
@@ -778,7 +783,10 @@ const QUEUE_ORDER: Sel[] = [
   "violations",
   "defects",
 ];
-const PAGE_SIZE: Record<Sel, number> = {
+/** 有内容区、要翻页的那些档——总览不翻页 */
+type Paged = Exclude<Sel, "overview">;
+
+const PAGE_SIZE: Record<Paged, number> = {
   pending: FACT_PAGE,
   duplicates: DUP_PAGE,
   conflicts: CONFLICT_PAGE,
@@ -827,8 +835,8 @@ export function Review() {
       api.review(
         kb!.id,
         queueSel,
-        PAGE_SIZE[queueSel as Sel],
-        page * PAGE_SIZE[queueSel as Sel],
+        PAGE_SIZE[queueSel as Paged],
+        page * PAGE_SIZE[queueSel as Paged],
       ),
     enabled: !!kb,
     // 翻页时别把上一页闪成空白——计数与骨架都还在，只有条目在换
@@ -841,8 +849,16 @@ export function Review() {
     enabled: !!kb && sel === "decisions",
   });
 
+  // 总览：只在落在它上面时拉；每一次决定之后连它一起作废——它数的正是这些
+  const summary = useQuery({
+    queryKey: ["reviewSummary", kb?.id],
+    queryFn: () => api.reviewSummary(kb!.id),
+    enabled: !!kb && (sel ?? "overview") === "overview",
+  });
+
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["review", kb?.id] });
+    queryClient.invalidateQueries({ queryKey: ["reviewSummary", kb?.id] });
     queryClient.invalidateQueries({ queryKey: ["reviewHistory", kb?.id] });
     queryClient.invalidateQueries({ queryKey: ["graph"] });
   };
@@ -938,6 +954,7 @@ export function Review() {
   // mappings 不是本页的一档（审批在「数据映射」页），但计数照收：
   // 收件箱该说「有几条等你」
   const counts: Record<Sel | "mappings", number> = {
+    overview: 0,
     pending: c?.pending ?? 0,
     duplicates: c?.duplicates ?? 0,
     conflicts: c?.conflicts ?? 0,
@@ -961,22 +978,18 @@ export function Review() {
   const asMerges = () => rows as MergeLog[];
   const queueEmpty = QUEUE_ORDER.every((k) => counts[k] === 0);
 
-  // 首批数据到达：定位到第一个非空队列（全空落在 duplicates 显示"干净"文案）
-  useEffect(() => {
-    if (sel === null && c)
-      setSel(QUEUE_ORDER.find((k) => counts[k] > 0) ?? "duplicates");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [c]);
-
+  // 没带 ?queue= 进来就落在总览上——从前是「第一个非空队列」，那等于替人
+  // 决定先看哪一档；现在先给全貌，哪一档先办由人挑
   const select = (s: Sel) => {
     setSel(s);
     setPage(0);
   };
 
-  const active = sel ?? "duplicates";
+  const active: Sel = sel ?? "overview";
   const isQueueSel = QUEUE_ORDER.includes(active);
 
   const SECTION: Record<Sel, { title: string; hint: string | null }> = {
+    overview: { title: S.review.overviewTitle, hint: S.review.overviewHint },
     pending: { title: S.review.pending, hint: S.review.pendingHint },
     duplicates: { title: S.review.duplicates, hint: S.review.duplicatesHint },
     conflicts: { title: S.review.conflicts, hint: S.review.conflictsHint },
@@ -1004,8 +1017,18 @@ export function Review() {
           的出口——没有滚动它会被裁掉且够不着。`mt-auto` 只在有富余空间时把它
           压到底，两者要一起给 */}
       <aside className={`${RAIL_CLS} flex flex-col overflow-y-auto u-scroll`}>
-        <RailHeader label={S.review.tabQueue} />
-        <div className="px-2 space-y-1">
+        {/* 总览在最上面，七档队列直接排在它下面，不另起标题——「队列」这个词
+            说的是它们是什么，而人要的是它们有多少 */}
+        <div className="px-2 pt-3 space-y-1">
+          <RailItem
+            active={active === "overview"}
+            icon={<LayoutDashboard size={14} />}
+            onClick={() => select("overview")}
+          >
+            {S.review.railOverview}
+          </RailItem>
+        </div>
+        <div className="px-2 pt-2 space-y-1">
           <RailItem
             active={active === "pending"}
             count={counts.pending}
@@ -1125,6 +1148,17 @@ export function Review() {
                     {queueEmpty ? S.review.empty : S.review.categoryEmpty}
                   </div>
                 )}
+
+              {active === "overview" &&
+                (summary.isPending ? (
+                  <p className="text-body text-ink-3">{S.nav.loading}</p>
+                ) : summary.isError ? (
+                  <p className="text-body text-danger">
+                    {(summary.error as Error).message}
+                  </p>
+                ) : summary.data ? (
+                  <ReviewOverview summary={summary.data} onPick={select} />
+                ) : null)}
 
               {active === "duplicates" && counts.duplicates > 0 && (
                 <div className="space-y-3">
@@ -1345,8 +1379,8 @@ export function Review() {
                   </div>
                 ))}
 
-              {/* 单一分页：queue/merges 走客户端切片，decisions 服务端分页 */}
-              {active !== "decisions" && (
+              {/* 单一分页：queue/merges 走客户端切片，decisions 服务端分页；总览没有页 */}
+              {active !== "decisions" && active !== "overview" && (
                 <Pager
                   total={counts[active]}
                   pageSize={PAGE_SIZE[active]}

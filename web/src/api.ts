@@ -673,6 +673,42 @@ export interface ReviewHistoryEvent {
   created_at: string;
 }
 
+/** 一档队列里等着的：多少条、最老的一条从什么时候起等（空队列是 null） */
+export interface QueueWait {
+  count: number;
+  oldest_at: string | null;
+}
+
+/** 一个时间窗口里的决定 */
+export interface DecidedWindow {
+  total: number;
+  /** 其中台账上没有 actor 的——AI 裁决器自己办的 */
+  automatic: number;
+  by_action: { action: string; count: number }[];
+  /** actor_id 为 null 的一行是裁决器；label 是台账里的身份快照 */
+  by_actor: { actor_id: string | null; label: string | null; count: number }[];
+}
+
+/** 审核台总览（#377）：等着办的、办过的、库的成色。与左栏计数同一套口径 */
+export interface ReviewSummary {
+  waiting: Record<
+    "pending" | "duplicates" | "conflicts" | "unconfirmed" | "lowconf" | "violations" | "defects",
+    QueueWait
+  >;
+  decided: {
+    last_7d: DecidedWindow;
+    last_30d: DecidedWindow;
+    /** 近 14 天，一天一条，含零 */
+    daily: { day: string; count: number }[];
+  };
+  health: {
+    facts: number;
+    low_confidence: number;
+    unconfirmed: number;
+    contested: number;
+  };
+}
+
 export interface MergeLog {
   id: string;
   source_name: string;
@@ -2010,6 +2046,8 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/merges/${mergeId}/revert`, {
       method: "POST",
     }),
+  reviewSummary: (kbId: string) =>
+    request<ReviewSummary>(`/api/v1/kbs/${kbId}/review/summary`),
   reviewHistory: (kbId: string, page: number, per = 20) =>
     request<{ events: ReviewHistoryEvent[]; total: number }>(
       `/api/v1/kbs/${kbId}/review/history?page=${page}&per=${per}`,

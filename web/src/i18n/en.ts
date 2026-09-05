@@ -1447,11 +1447,11 @@ export const en = {
   review: {
     title: "Review",
     hint: "Duplicates & low-confidence facts",
-    tabQueue: "Queue",
     tabHistory: "History",
     empty: "Nothing to review — the graph is clean.",
     historyEmpty: "No merges yet.",
     // 左栏分类导航
+    railOverview: "Overview",
     railPending: "Awaiting your nod",
     railDuplicates: "Duplicates",
     railConflicts: "Conflicts",
@@ -1463,6 +1463,28 @@ export const en = {
     railDecisions: "Decisions",
     railMerges: "Merges",
     categoryEmpty: "This queue is clear.",
+    // 总览（#377）
+    overviewTitle: "Overview",
+    overviewHint:
+      "What the base needs from you: how much is waiting and for how long, what has been decided, and how much of the base is still provisional.",
+    overviewWaiting: "Waiting",
+    overviewAllClear: "Nothing is waiting — the base is clean.",
+    overviewOldest: (days: number) =>
+      days === 0 ? "oldest since today" : days === 1 ? "oldest since yesterday" : `oldest waiting ${days} days`,
+    overviewOpen: "Review these",
+    overviewDecided: "Decided",
+    overviewLast7: "Last 7 days",
+    overviewLast30: "Last 30 days",
+    overviewAutomatic: (n: number) =>
+      n === 1 ? "1 by the adjudicator" : `${n} by the adjudicator`,
+    overviewDaily: "Decisions per day, last 14 days",
+    overviewByAction: "By kind",
+    overviewByActor: "Who decided",
+    overviewNoDecisions: "No decisions in the last 30 days.",
+    overviewHealth: "Base health",
+    overviewFacts: (n: number) =>
+      n === 1 ? "1 fact currently held. Of it:" : `${n} facts currently held. Of them:`,
+    overviewContested: "Contested",
     // 决策台账
     decisionsTitle: "Decisions",
     decisionsHint:
@@ -1482,6 +1504,7 @@ export const en = {
       "conflict.reject_new": "Rejected new",
       "merge.revert": "Reverted merge",
       "merge.manual": "Merged manually",
+      "fact.time_corrected": "Time corrected",
     } as Record<string, string>,
     /** 升格给人裁决的原因。服务端存 code（可选 |detail），措辞在这里 */
     escalated: {
