@@ -581,8 +581,9 @@ export function Chat() {
               )}
             </div>
           ))}
+          {/* 没图标的文字从 20 起（盒 12 + 8），与行里的图标同一条线 */}
           {convs.data?.conversations.length === 0 && (
-            <p className="px-3 py-2 text-small text-ink-3">{S.ask.noConversations}</p>
+            <p className="px-2 py-2 text-small text-ink-3">{S.ask.noConversations}</p>
           )}
         </div>
       </aside>
