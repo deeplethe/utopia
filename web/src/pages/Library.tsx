@@ -1470,19 +1470,19 @@ function SourceModal({
       }
     >
       <div>
-          {/* 类型 */}
-          <div className="flex gap-2 mb-2">
+          {/* 类型：十二种排不下一行，换行，按钮按内容宽。选中的那个是 primary，
+              与日程选择器里的多选同一个说法 */}
+          <div className="mb-2 flex flex-wrap gap-2">
             {CREATABLE_SOURCE_KINDS.map((k) => {
               const Icon = KIND_ICON[k];
               return (
-                <Button variant="secondary" size="sm"
+                <Button
                   key={k}
+                  variant={kind === k ? "primary" : "secondary"}
+                  size="sm"
+                  icon={<Icon size={12} />}
                   onClick={() => setKind(k)}
-                  className={`u-btn flex-1 px-3 py-2 text-small flex items-center justify-center gap-2 ${
-                    kind === k ? "u-btn-primary" : "u-btn-ghost"
-                  }`}
                 >
-                  <Icon size={12} />
                   {S.library.sourceKinds[k]}
                 </Button>
               );
