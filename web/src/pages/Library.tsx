@@ -28,6 +28,7 @@ import {
   cn,
   DangerConfirm,
   Dialog,
+  Dropdown,
   IconButton,
   Input,
   LinkButton,
@@ -626,12 +627,17 @@ export function Library() {
                   {S.library.retryFailed(docs.data!.failed)}
                 </Button>
               )}
-              {/* 全库重建：清算语义，仅 KB admin；放在 All documents 视图 */}
+              {/* 全库重建：清算语义，仅 KB admin；放在 All documents 视图。
+                  **按钮本身是普通色**：它只是打开确认框，危险色留给确认框里那个
+                  真正动手的按钮——工具栏上常驻一块红，看久了就不红了 */}
               {selection === "all" && canRebuild && (
-                <Button variant="danger" size="sm" className="flex items-center gap-2 shrink-0"
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="shrink-0"
+                  icon={<RefreshCw size={12} />}
                   onClick={() => setRebuilding(true)}
                 >
-                  <RefreshCw size={12} />
                   {S.library.rebuild}
                 </Button>
               )}
@@ -1470,24 +1476,29 @@ function SourceModal({
       }
     >
       <div>
-          {/* 类型：十二种排不下一行，换行，按钮按内容宽。选中的那个是 primary，
-              与日程选择器里的多选同一个说法 */}
-          <div className="mb-2 flex flex-wrap gap-2">
-            {CREATABLE_SOURCE_KINDS.map((k) => {
-              const Icon = KIND_ICON[k];
-              return (
-                <Button
-                  key={k}
-                  variant={kind === k ? "primary" : "secondary"}
-                  size="sm"
-                  icon={<Icon size={12} />}
-                  onClick={() => setKind(k)}
-                >
-                  {S.library.sourceKinds[k]}
-                </Button>
-              );
-            })}
-          </div>
+          {/* 类型：十二种，一个下拉装下——排成按钮要占四行，还没等填名字弹窗
+              已经满了。图标只在选项的标签里：触发器显示的就是选中那项的标签，
+              再给触发器一个 icon 就画两遍 */}
+          {field(
+            S.library.sourceType,
+            <Dropdown
+              className="w-full"
+              value={kind}
+              onChange={(v) => setKind(v as CreatableSourceKind)}
+              options={CREATABLE_SOURCE_KINDS.map((k) => {
+                const Icon = KIND_ICON[k];
+                return {
+                  value: k,
+                  label: (
+                    <span className="flex items-center gap-2">
+                      <Icon size={12} className="shrink-0 text-ink-3" />
+                      {S.library.sourceKinds[k]}
+                    </span>
+                  ),
+                };
+              })}
+            />,
+          )}
           {/* 类型自解释：一行说明；接口细节移入内置文档，弹窗只留链接 */}
           <p className="mb-4 text-fine leading-relaxed text-ink-3">
             {S.library.sourceKindHints[kind]}
@@ -2012,9 +2023,9 @@ function SourceEditModal({
             </div>
             <div className="flex items-center justify-between gap-3">
               <span className="text-fine text-ink-3">{S.library.deleteSourceHint}</span>
+              {/* 同一个道理：这里只打开确认框，红色在确认框里 */}
               <Button variant="secondary" size="sm" className="shrink-0"
                 onClick={() => setConfirmingDelete(true)}
-                style={{ background: "var(--u-danger-solid)", color: "#ffffff" }}
               >
                 {S.library.deleteSource}
               </Button>
