@@ -3,7 +3,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link, Outlet, useNavigate } from "@tanstack/react-router";
 import { usePageTitle } from "../useTitle";
-import { BookMarked, KeyRound, ShieldCheck, UserRound } from "lucide-react";
+import {
+  KeyRound,
+  Layers,
+  ShieldCheck,
+  UserRound,
+} from "lucide-react";
 import { api, ApiError } from "../api";
 import { S } from "../i18n";
 import {
@@ -82,7 +87,7 @@ export function AccountShell() {
             {S.account.profile}
           </Link>
           <Link to="/account/kbs" className={rail} activeProps={{ className: railActive }}>
-            <BookMarked size={14} />
+            <Layers size={14} />
             {S.account.kbsNav}
           </Link>
           <Link to="/account/tokens" className={rail} activeProps={{ className: railActive }}>
