@@ -251,16 +251,19 @@ export function Ontology() {
         </div>
         {/* 分段切换：与登录页模式切换/日程选择器同一语汇（bg-surface-2 容器 + 激活反白）；
             过滤时列表例外：两节混排同时给出命中 */}
-        <Segmented
-          fill
-          className="mx-3 mb-1"
-          value={railTab}
-          onChange={setRailTab}
-          options={[
-            { value: "classes", label: S.ontology.tabClasses },
-            { value: "properties", label: S.ontology.tabProperties },
-          ]}
-        />
+        {/* 撑满的东西不能再带外边距：w-full 是按父容器算的，mx-3 只会把它往右
+            推出侧栏 12px。缩进交给外层 */}
+        <div className="px-3 pb-1">
+          <Segmented
+            fill
+            value={railTab}
+            onChange={setRailTab}
+            options={[
+              { value: "classes", label: S.ontology.tabClasses },
+              { value: "properties", label: S.ontology.tabProperties },
+            ]}
+          />
+        </div>
         <div
           ref={listRef}
           className="flex-1 min-h-0 overflow-hidden px-2 pt-2 pb-2 flex flex-col"
