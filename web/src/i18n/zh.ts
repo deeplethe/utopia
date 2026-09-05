@@ -451,7 +451,6 @@ export const zh: Strings = {
     sources: "来源",
     allDocs: "全部文档",
     uploads: "上传",
-    addSource: "新增来源",
     sourceKinds: {
       folder: "文件夹",
       url: "网页",

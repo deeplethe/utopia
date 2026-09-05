@@ -500,7 +500,6 @@ export const en = {
     sources: "Sources",
     allDocs: "All documents",
     uploads: "Uploads",
-    addSource: "Add source",
     sourceKinds: {
       folder: "Folder",
       url: "URLs",

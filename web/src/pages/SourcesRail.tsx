@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { api, type SourceView } from "../api";
 import { S } from "../i18n";
-import { IconButton, RAIL_CLS, RailItem } from "../ui";
+import { RAIL_CLS, RailItem } from "../ui";
 
 /** 左栏选择：全部 / 手动上传 / 某个来源 id */
 /** "deleted" = 墓碑视图（#268）：删了、还能恢复或清除的文档 */
@@ -140,35 +140,28 @@ export function SourcesRail({
 
   return (
     <aside className={`${RAIL_CLS} flex flex-col`}>
-      {/* 全部文档置顶为一级入口；SOURCES 小节（含 +）居其下 */}
+      {/* 全部文档置顶为一级入口。**不带计数**：它是总数，下面各行已经说了
+          文档都在哪，这个数只是装饰 */}
       <div className="px-2 pt-3">
         <RailItem
           active={active === "all"}
           onClick={() => onSelect("all")}
           icon={<LibraryIcon size={14} />}
-          count={docs.data?.total ?? 0}
         >
           {S.library.allDocs}
         </RailItem>
       </div>
-      {/* 加号紧跟在 SOURCES 后面，是这个小节的动作，不是右边栏位里的一个数。
-          按钮贴着图标（4px 内距、不要那 1px 透明边框），标题行不因它长高 */}
-      <div className="flex items-center gap-1 px-4 pt-3 pb-2">
-        <span className="text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
-          {S.library.sources}
-        </span>
-        {onAdd && (
-          <IconButton
-            size="sm"
-            label={S.library.addSource}
-            className="h-auto w-auto border-0 p-1"
-            onClick={onAdd}
-          >
-            <Plus size={14} />
-          </IconButton>
-        )}
-      </div>
-      <div className="u-scroll flex-1 overflow-y-auto px-2 pb-3 space-y-1">
+      {/* 新建来源是一行，与 Chat 的「New chat」、本体页的「New class」同一个
+          语汇：加号在图标槽里，行本身与周围的行同一副样子——这一栏从头到尾只有
+          一种东西。没有 onAdd 的页面（文档查看页）不渲染这一行 */}
+      {onAdd && (
+        <div className="px-2 pt-1">
+          <RailItem icon={<Plus size={14} />} onClick={onAdd}>
+            {S.library.newSourceTitle}
+          </RailItem>
+        </div>
+      )}
+      <div className="u-scroll flex-1 overflow-y-auto px-2 pt-1 pb-3 space-y-1">
         {/* Uploads：常驻默认来源（上传的默认去处，不可删除） */}
         <RailItem
           active={active === "uploads"}
