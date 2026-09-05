@@ -1170,7 +1170,6 @@ export const zh: Strings = {
     keyHint: "小写下划线命名",
     /* ---- 模式图 ---- */
     schemaDiagram: "模式图",
-    schemaSearchPlaceholder: "搜索模式…",
     schemaEmpty: "还没有类。文档进来时会自动补上。",
     schemaFitView: "归位",
     schemaZoomIn: "放大",

@@ -1336,7 +1336,6 @@ export const en = {
     keyHint: "lowercase_snake_case",
     /* ---- Schema diagram ---- */
     schemaDiagram: "Schema diagram",
-    schemaSearchPlaceholder: "Search schema…",
     /* 从前这句把「先加个类或导入 OWL 文件」说成了开始的前提，而本体本来就
        从语料里长（0003，默认开）——那句话正是 #313 说的劝退点。现在只说状态，
        动作留给左栏本来就有的 New class 与 Import */

@@ -47,6 +47,7 @@ import {
   Pause,
   Pencil,
   Play,
+  Search,
   Waypoints,
   X,
   ZoomIn,
@@ -1250,8 +1251,10 @@ export function Graph() {
       {/* 顶部悬浮条：搜索 + 图例 + 状态 */}
       <div className="absolute top-3 left-3 right-3 z-10 flex items-start gap-2 pointer-events-none">
         <div className="relative pointer-events-auto">
+          {/* 与本体页左栏的过滤框同一副身材、同一个角落（见 Ontology.tsx） */}
           <Input
-            className="w-60 shadow-lg"
+            icon={<Search size={12} />}
+            className="w-58 shadow-lg"
             placeholder={
               inSubgraph ? S.graph.searchInSubgraph : S.graph.searchEntity
             }

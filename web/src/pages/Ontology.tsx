@@ -226,9 +226,10 @@ export function Ontology() {
     <div className="h-full flex">
       {/* 左栏：filter + 两小节 + Unmatched */}
       <aside className={`${RAIL_CLS} flex flex-col`}>
+        {/* 与图谱页的搜索框同一副身材、同一个角落（左上各 12px、中号、232 宽）：
+            两个标签页切来切去，框留在原地 */}
         <div className="px-3 pt-3 pb-2">
           <Input
-            size="sm"
             icon={<Search size={12} />}
             placeholder={S.ontology.filter}
             value={filter}

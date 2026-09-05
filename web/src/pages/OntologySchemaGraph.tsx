@@ -13,8 +13,11 @@
 //
 // **不是什么都画。** 导入的包动辄几百上千个类（schema.org 一份就九百多），
 // 全摊开是一团毛球。大本体默认只画库用到的类（有实例的及其祖先），其余的
-// 一个药丸切过去看全貌；搜索/左栏点到的类随时补进画布。取景规则在
-// schemaScope，与投影（buildSchemaGraph）分开，两个都是纯函数。
+// 一个药丸切过去看全貌；左栏点到的类随时补进画布。取景规则在 schemaScope，
+// 与投影（buildSchemaGraph）分开，两个都是纯函数。
+//
+// **画布上没有自己的搜索框。** 找一个类或关系走左栏的过滤框——同一页放两个
+// 搜索等于没决定搜索属于谁。左栏选中什么，画布就把它带到眼前（bringIntoView）。
 import { useEffect, useMemo, useRef, useState } from "react";
 import Graphology from "graphology";
 import { circular } from "graphology-layout";
@@ -39,12 +42,10 @@ import {
   RING_SELECT_MIX,
   TRANSPARENT,
 } from "./graphVisuals";
-import { Maximize2, Network, Search, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Maximize2, X, ZoomIn, ZoomOut } from "lucide-react";
 import type { EntityTypeView, RelationTypeView } from "../api";
 import { S } from "../i18n";
 import {
-  cn,
-  Input,
   Pill,
   Row,
   ToolButton,
@@ -124,7 +125,7 @@ export interface SchemaScope {
 /** 默认取景。本体小就全画；大了只画库用到的类——有实例的，连同祖先，好让
  *  继承链是完整的；一个实例都没有（刚建的库）就退到层级顶上两层，schema.org
  *  是 Thing 和它的十来个直接子类，正是你手画时会画的那张地图。
- *  revealed 是用户通过搜索/左栏点名要看的类，同样连着祖先补进来。 */
+ *  revealed 是用户在左栏点名要看的类，同样连着祖先补进来。 */
 export function schemaScope(
   entityTypes: EntityTypeView[],
   revealed: ReadonlySet<string>,
@@ -414,35 +415,52 @@ function seedFreshNodes(
   return total;
 }
 
+/** 相机推过去时最多放大到这个比例；已经比它更近就保持——从左栏挨个点类
+ *  看下去时，画面不该每点一下就重新缩放 */
+const FOCUS_MAX_RATIO = 0.5;
+/** 视口四边留的边距：贴着边的节点也算看不见（右侧还有停靠的面板压着） */
+const IN_VIEW_MARGIN = 48;
+
+function nodePosition(sigma: Sigma, id: string): Point {
+  const graph = sigma.getGraph();
+  return {
+    x: graph.getNodeAttribute(id, "x") as number,
+    y: graph.getNodeAttribute(id, "y") as number,
+  };
+}
+
+/** 节点此刻是否在视口里（按上一次渲染的相机算） */
+function nodeInView(sigma: Sigma, id: string): boolean {
+  const { x, y } = sigma.graphToViewport(nodePosition(sigma, id));
+  const { width, height } = sigma.getDimensions();
+  return (
+    x >= IN_VIEW_MARGIN &&
+    x <= width - IN_VIEW_MARGIN &&
+    y >= IN_VIEW_MARGIN &&
+    y <= height - IN_VIEW_MARGIN
+  );
+}
+
 /** 相机推到一个节点上。sigma 的相机坐标是归一化到 [0,1] 的「框内」坐标，
  *  不是图坐标——直接喂图坐标（x 动辄几百）相机会飞出画面几万像素，画布
  *  一片空白。sigma 没有公开的图→框内换算，绕一趟视口：graphToViewport 用的
  *  是上一次渲染的矩阵，与 viewportToFramedGraph 用同一台相机，一来一回把
  *  相机抵消掉，剩下的就是框内坐标 */
 function focusNode(sigma: Sigma, id: string): void {
-  const graph = sigma.getGraph();
-  if (!graph.hasNode(id)) return;
-  const pos = {
-    x: graph.getNodeAttribute(id, "x") as number,
-    y: graph.getNodeAttribute(id, "y") as number,
-  };
-  const framed = sigma.viewportToFramedGraph(sigma.graphToViewport(pos));
+  if (!sigma.getGraph().hasNode(id)) return;
+  const framed = sigma.viewportToFramedGraph(
+    sigma.graphToViewport(nodePosition(sigma, id)),
+  );
+  const ratio = Math.min(sigma.getCamera().ratio, FOCUS_MAX_RATIO);
   sigma
     .getCamera()
-    .animate({ x: framed.x, y: framed.y, ratio: 0.35 }, { duration: 300 });
+    .animate({ x: framed.x, y: framed.y, ratio }, { duration: 300 });
 }
 
 export type SchemaSelection =
   | { kind: "class"; id: string }
   | { kind: "relation"; id: string }
   | null;
-
-interface SearchHit {
-  kind: "class" | "relation";
-  id: string;
-  label: string;
-  sub: string | null; // 类的 key，或关系的 domain → range 摘要
-}
 
 export function OntologySchemaGraph({
   entityTypes,
@@ -473,7 +491,7 @@ export function OntologySchemaGraph({
     [relationTypes],
   );
 
-  // 取景：大本体默认只画库用到的类，搜索/左栏点到的类补进来（见 schemaScope）
+  // 取景：大本体默认只画库用到的类，左栏点到的类补进来（见 schemaScope）
   const [showAll, setShowAll] = useState(false);
   const [revealed, setRevealed] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -503,17 +521,34 @@ export function OntologySchemaGraph({
     [entityTypes, objectRelations, scope.drawn],
   );
 
+  /** 把一个类带到眼前：还在取景之外就先揭开、重建之后再对焦；画着但在视口
+   *  外就把相机推过去；已经在视口里就只高亮，画面不动 */
+  const bringIntoView = (id: string) => {
+    if (!entityById.has(id)) return;
+    const g = graphRef.current;
+    const sigma = sigmaRef.current;
+    if (g && sigma && g.hasNode(id)) {
+      if (!nodeInView(sigma, id)) focusNode(sigma, id);
+      return;
+    }
+    reveal([id]);
+    pendingFocusRef.current = id;
+  };
+
   const selectedRef = useRef<SchemaSelection>(null);
   const hoverRef = useRef<string | null>(null);
   const hoverEdgeRef = useRef<string | null>(null);
   useEffect(() => {
     selectedRef.current = selected;
-    // 左栏点到的类可能在取景之外——选中它就该看得见它；选中一条关系则补上
-    // 它的两端
-    if (selected?.kind === "class") reveal([selected.id]);
+    // 左栏选中什么，画布就把它带到眼前；选中一条关系则补上它的两端，
+    // 相机看它的第一个 domain
+    if (selected?.kind === "class") bringIntoView(selected.id);
     else if (selected?.kind === "relation") {
       const rel = relationById.get(selected.id);
-      if (rel) reveal([...rel.domains, ...rel.ranges]);
+      if (rel) {
+        reveal([...rel.domains, ...rel.ranges]);
+        if (rel.domains[0]) bringIntoView(rel.domains[0]);
+      }
     }
     sigmaRef.current?.refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -534,7 +569,7 @@ export function OntologySchemaGraph({
    *  新节点找落点——见 layoutSchemaGraph 的增量说明。「显示全部」切换时清空：
    *  那是换一张画，旧坐标对它没有意义 */
   const positionsRef = useRef<Map<string, Point>>(new Map());
-  /** 搜索点中了还没画出来的类：等它进了画布再对焦 */
+  /** 左栏点中了还没画出来的类：等它进了画布再对焦 */
   const pendingFocusRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -797,7 +832,7 @@ export function OntologySchemaGraph({
     renderGrid();
 
     sigmaRef.current = sigma;
-    // 搜索/左栏点中时还没画出来的那个类，现在在了：对焦。节点的框内坐标要
+    // 左栏点中时还没画出来的那个类，现在在了：对焦。节点的框内坐标要
     // 等 sigma 处理完一轮才有，挂在第一次渲染之后
     const pending = pendingFocusRef.current;
     if (pending && g.hasNode(pending)) {
@@ -816,109 +851,13 @@ export function OntologySchemaGraph({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [schema]);
 
-  const [searchQ, setSearchQ] = useState("");
-  const searchHits = useMemo<SearchHit[]>(() => {
-    const q = searchQ.trim().toLowerCase();
-    if (!q) return [];
-    const hits: SearchHit[] = [];
-    for (const t of entityTypes) {
-      if (t.label.toLowerCase().includes(q) || t.key.toLowerCase().includes(q))
-        hits.push({ kind: "class", id: t.id, label: t.label, sub: t.key });
-    }
-    for (const r of objectRelations) {
-      if (!r.label.toLowerCase().includes(q) && !r.key.toLowerCase().includes(q))
-        continue;
-      const d = r.domains.map((id) => entityById.get(id)?.label ?? "?").join(", ");
-      const rg = r.ranges.map((id) => entityById.get(id)?.label ?? "?").join(", ");
-      hits.push({
-        kind: "relation",
-        id: r.id,
-        label: r.label,
-        sub: d && rg ? `${d} → ${rg}` : null,
-      });
-    }
-    return hits.slice(0, 12);
-  }, [searchQ, entityTypes, objectRelations, entityById]);
-
-  const focusClass = (id: string) => {
-    const g = graphRef.current;
-    const sigma = sigmaRef.current;
-    if (!entityById.has(id)) return;
-    if (g && sigma && g.hasNode(id)) {
-      focusNode(sigma, id);
-      return;
-    }
-    // 还在取景之外：先揭开，重建之后再对焦
-    reveal([id]);
-    pendingFocusRef.current = id;
-  };
-  const pickHit = (hit: SearchHit) => {
-    if (hit.kind === "class") {
-      onSelect({ kind: "class", id: hit.id });
-      focusClass(hit.id);
-    } else {
-      onSelect({ kind: "relation", id: hit.id });
-      const rel = relationById.get(hit.id);
-      if (rel) {
-        reveal([...rel.domains, ...rel.ranges]);
-        if (rel.domains[0]) focusClass(rel.domains[0]);
-      }
-    }
-    setSearchQ("");
-  };
-
   const unscopedPop = usePopoverFlip<HTMLButtonElement, HTMLDivElement>("top left");
   const empty = entityTypes.length === 0;
 
   return (
     <div className="h-full relative">
-      {/* 顶部悬浮条：搜索 + 图例 + 未限定关系入口 */}
+      {/* 顶部悬浮条：图例 + 取景 + 未限定关系入口。没有搜索框——找东西走左栏 */}
       <div className="absolute top-3 left-3 right-3 z-10 flex items-start gap-2 pointer-events-none">
-        <div className="relative pointer-events-auto">
-          <Search
-            size={12}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3"
-          />
-          <Input className="w-60 pl-8 pr-2 shadow-lg"
-            placeholder={S.ontology.schemaSearchPlaceholder}
-            value={searchQ}
-            onChange={(e) => setSearchQ(e.target.value)}
-          />
-          {searchQ && (
-            <div className="glass-strong absolute mt-1 w-72 rounded-lg shadow-xl overflow-hidden">
-              {searchHits.length === 0 && (
-                <p className="px-3 py-2 text-small text-ink-3">{S.ui.noMatches}</p>
-              )}
-              {searchHits.map((hit) => (
-                <Row
-                  key={`${hit.kind}:${hit.id}`}
-                  density="menu"
-                  className="text-body text-ink"
-                  onClick={() => pickHit(hit)}
-                >
-                  {hit.kind === "class" ? (
-                    <span
-                      className={cn(
-                        "h-2.5 w-2.5 shrink-0",
-                        entityById.get(hit.id)?.shape !== "square" && "rounded-full",
-                      )}
-                      style={{ background: entityById.get(hit.id)?.color }}
-                    />
-                  ) : (
-                    <Network size={11} className="shrink-0 text-violet" />
-                  )}
-                  <span className="truncate">{hit.label}</span>
-                  {hit.sub && (
-                    <span className="ml-auto shrink-0 text-small text-ink-3 truncate max-w-[9rem]">
-                      {hit.sub}
-                    </span>
-                  )}
-                </Row>
-              ))}
-            </div>
-          )}
-        </div>
-
         <div className="pointer-events-auto flex flex-wrap gap-2 pt-1">
           {/* 静态图例：三种边各自的说法，不是可切换的过滤器——本体的边远比
               实例图少，藏一种边省下的空间不值得多一层交互 */}
