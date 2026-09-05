@@ -378,8 +378,8 @@ body::before {
 @layer components {
 /* ---- form controls ---- */
 /* 输入框：无填充、细线。玻璃左栏、玻璃工具条上的输入框不该再是面上叠面——
-   一条 line 粗细的线把它圈出来就够了；悬停亮一档，聚焦时线直接用 ring 那个
-   白（与按钮的聚焦框同一个值），外面再一圈柔光晕说明「光标在这」。
+   一条 line 粗细的线把它圈出来就够了；悬停与聚焦线都只亮一档，聚焦的信号
+   在外面那圈光晕上——它要亮到隔着半个屏幕也看得出光标在哪，线本身不必变白。
    与顶栏无背景的切换器同一个逻辑 */
 .input-dark {
   background: transparent;
@@ -398,8 +398,8 @@ body::before {
 }
 .input-dark:focus {
   outline: none;
-  border-color: var(--u-ring);
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08);
+  border-color: var(--u-line-strong);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.22);
 }
 .input-dark:disabled {
   opacity: 0.4;
