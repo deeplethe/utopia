@@ -19,22 +19,24 @@ use uuid::Uuid;
 /// 迟早分叉成「徽标说 12 条，点进去 9 条」。
 pub const LOW_CONFIDENCE_BELOW: f32 = 0.75;
 
+/// 「待确认」的判据，写成 SQL 片段，`counts` 与总览（`review_summary`）共用：
+/// 有证据、但证据所在的分块全被新版本取代了。别名固定用 `f`。
+pub const UNCONFIRMED_FACT: &str = "EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
+               AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
+                                 JOIN chunks c ON c.id = fe.chunk_id
+                                WHERE fe.fact_id = f.id
+                                  AND c.superseded_at IS NULL)";
+
 pub async fn counts(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewCounts> {
-    Ok(sqlx::query_as(
+    let sql = format!(
         "SELECT
            (SELECT count(*) FROM pending_facts WHERE kb_id = $1) AS pending,
            (SELECT count(*) FROM resolution_reviews
              WHERE kb_id = $1 AND status = 'pending') AS duplicates,
            (SELECT count(*) FROM fact_conflicts
              WHERE kb_id = $1 AND status = 'open') AS conflicts,
-           -- 待确认 = 有证据、但证据所在的分块全被新版本取代了
            (SELECT count(*) FROM facts f
-             WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
-               AND EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
-               AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
-                                 JOIN chunks c ON c.id = fe.chunk_id
-                                WHERE fe.fact_id = f.id
-                                  AND c.superseded_at IS NULL)) AS unconfirmed,
+             WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND {unconfirmed}) AS unconfirmed,
            (SELECT count(*) FROM facts
              WHERE kb_id = $1 AND invalidated_at IS NULL
                AND confidence < $2 AND derived_by_rule IS NULL) AS lowconf,
@@ -45,9 +47,11 @@ pub async fn counts(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewCounts> {
            (SELECT count(*) FROM ontology_defects
              WHERE kb_id = $1 AND status = 'open') AS defects,
            (SELECT count(*) FROM entity_merges WHERE kb_id = $1) AS merges",
-    )
-    .bind(kb_id)
-    .bind(LOW_CONFIDENCE_BELOW)
-    .fetch_one(pool)
-    .await?)
+        unconfirmed = UNCONFIRMED_FACT,
+    );
+    Ok(sqlx::query_as(&sql)
+        .bind(kb_id)
+        .bind(LOW_CONFIDENCE_BELOW)
+        .fetch_one(pool)
+        .await?)
 }

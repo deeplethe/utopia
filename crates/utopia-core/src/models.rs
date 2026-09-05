@@ -1194,6 +1194,88 @@ pub struct ReviewCounts {
     pub merges: i64,
 }
 
+/// 审核台的总览（#377）：等着办的、办过的、库的成色。
+///
+/// 左栏的七个数只说「开着多少条」；总览要回答的是一个审核者进来时的三个
+/// 问题——**有多少在等、等了多久、队列在消还是在涨**。三段各自一组查询，
+/// 拼在一起一次返回。
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewSummary {
+    pub waiting: ReviewWaiting,
+    pub decided: ReviewDecided,
+    pub health: ReviewHealth,
+}
+
+/// 一档队列里等着的：多少条、最老的一条从什么时候开始等
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct QueueWait {
+    pub count: i64,
+    pub oldest_at: Option<DateTime<Utc>>,
+}
+
+/// 七档队列，与 [`ReviewCounts`] 同一套口径（同一套 WHERE），多了「最老」
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ReviewWaiting {
+    pub pending: QueueWait,
+    pub duplicates: QueueWait,
+    pub conflicts: QueueWait,
+    pub unconfirmed: QueueWait,
+    pub lowconf: QueueWait,
+    pub violations: QueueWait,
+    pub defects: QueueWait,
+}
+
+/// 办过的：近 7 天与近 30 天两个窗口，加近 14 天每天一根柱
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewDecided {
+    pub last_7d: DecidedWindow,
+    pub last_30d: DecidedWindow,
+    /// 近 14 天，按天，一天一条，没有决定的那天也在（count 0）——画柱子要等距
+    pub daily: Vec<DecidedDay>,
+}
+
+/// 一个时间窗口里的决定：总数、其中 AI 自裁的（台账上没有 actor 的那些）、
+/// 按动作分、按人分
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct DecidedWindow {
+    pub total: i64,
+    pub automatic: i64,
+    pub by_action: Vec<ActionCount>,
+    pub by_actor: Vec<ActorCount>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionCount {
+    /// 台账上的动作名（review.merge / fact.confirm / conflict.close_old …）
+    pub action: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ActorCount {
+    /// None = 后台自裁（攒批裁决那种没有客户端、没有人的动作）
+    pub actor_id: Option<Uuid>,
+    /// 台账里的身份快照；人被删了也认得出
+    pub label: Option<String>,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DecidedDay {
+    pub day: chrono::NaiveDate,
+    pub count: i64,
+}
+
+/// 库的成色：还在世的事实里有多少是暂定的——低置信、证据全被换掉了、
+/// 正跟别的事实打架
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ReviewHealth {
+    pub facts: i64,
+    pub low_confidence: i64,
+    pub unconfirmed: i64,
+    pub contested: i64,
+}
+
 /// 一个关系声明了哪些 OWL 公理。
 ///
 /// **打包成一个东西传，不是一串参数。** 它们本来就是同一族——推理机

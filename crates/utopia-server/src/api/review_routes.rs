@@ -459,6 +459,18 @@ pub async fn history(
     Ok(Json(json!({ "events": events, "total": total })))
 }
 
+/// 审核台的总览（#377）：等着办的、办过的、库的成色。三段聚合，一次返回。
+pub async fn summary(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<utopia_core::models::ReviewSummary>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    Ok(Json(
+        utopia_store::review_summary::summary(&state.pool, kb_id).await?,
+    ))
+}
+
 #[derive(Deserialize)]
 pub struct DecideMappingReq {
     /// confirmed | rejected
