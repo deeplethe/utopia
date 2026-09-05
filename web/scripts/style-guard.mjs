@@ -61,7 +61,8 @@ const RULES = [
   },
   {
     id: "raw-control",
-    re: /<(button|input|textarea|select)\b/g,
+    // 隐藏的文件选择框不算控件（它没有样子），放行
+    re: /<(button|textarea|select)\b|<input\b(?![^>]*type="file")/g,
     why: "控件从 ui/ 来：Button / IconButton / Input / Textarea / NativeSelect（规矩 5）",
     ui: false,
   },
@@ -98,7 +99,11 @@ const staleBaseline = [...baseline].filter((f) => !files.includes(f));
 for (const rel of files) {
   if (baseline.has(rel)) continue;
   const inUi = rel.startsWith("src/ui/");
-  const text = fs.readFileSync(path.join(ROOT, rel), "utf8");
+  let text = fs.readFileSync(path.join(ROOT, rel), "utf8");
+  // 隐藏的文件选择框可以跨好几行，先整段抹掉（保留换行，行号不变）
+  text = text.replace(/<input\b[^>]*type="file"[^>]*>/g, (m) =>
+    m.replace(/[^\n]/g, " "),
+  );
   const lines = text.split("\n");
   for (const rule of RULES) {
     if (inUi && !rule.ui) continue;

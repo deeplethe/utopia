@@ -16,7 +16,6 @@
   "src/pages/Members.tsx",
   "src/pages/MyKbs.tsx",
   "src/pages/NextStep.tsx",
-  "src/pages/Ontology.tsx",
   "src/pages/OntologySchemaGraph.tsx",
   "src/pages/PendingFacts.tsx",
   "src/pages/Review.tsx",

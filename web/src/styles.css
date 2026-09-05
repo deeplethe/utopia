@@ -368,6 +368,7 @@ body::before {
   border-color: var(--u-line-strong);
 }
 
+@layer components {
 /* ---- form controls ---- */
 .input-dark {
   background: rgba(255, 255, 255, 0.04);
@@ -530,6 +531,18 @@ select.input-dark option {
   border-color: #d9464b;
 }
 
+/* 行里的小柄（树的折叠箭头）：不是按钮——按钮里不能再嵌按钮——但要有 hover */
+.u-toggle {
+  color: var(--u-text-3);
+  transition: color var(--u-fast);
+}
+.u-toggle:hover {
+  color: var(--u-text-2);
+}
+.u-turn {
+  transition: transform var(--u-fast);
+}
+
 /* ---- chips ---- */
 .u-chip {
   display: inline-block;
@@ -567,6 +580,7 @@ select.input-dark option {
 .u-chip-violet {
   background: rgba(196, 165, 255, 0.12);
   color: var(--u-violet);
+}
 }
 
 /* 浏览态里的程度标注：同一个警示色，但没有填充、没有药丸形状。

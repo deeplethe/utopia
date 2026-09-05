@@ -35,22 +35,31 @@ import { toast } from "../toast";
 import { OntologySchemaGraph, type SchemaSelection } from "./OntologySchemaGraph";
 import {
   Button,
+  Checkbox,
   Chip,
   ColorPicker,
   colorForKey,
   DangerConfirm,
+  Disclosure,
   Dropdown,
+  IconButton,
   Input,
   Loading,
   MultiSearchSelect,
   Pager,
+  RailItem,
+  Row,
+  ROW_TRAILING,
+  rowClass,
+  Segmented,
+  Textarea,
   RAIL_CLS,
   SearchSelect,
   cn,
   pageSlice,
 } from "../ui";
 
-/** 左栏行高（py-1.5 + 13px 文字 + space-y 间隙）与底部预留（新建行 + 分页器） */
+/** 左栏行高（py-2 + 13px 文字 + space-y 间隙）与底部预留（新建行 + 分页器） */
 const RAIL_ROW_H = 34;
 const RAIL_RESERVED = 80;
 /** 兜底页行数（首帧未量到高度时用） */
@@ -214,83 +223,63 @@ export function Ontology() {
     <div className="h-full flex">
       {/* 左栏：filter + 两小节 + Unmatched */}
       <aside className={`${RAIL_CLS} flex flex-col`}>
-        <div className="px-3 pt-3 pb-2.5">
-          <div className="relative">
-            <Search
-              size={12}
-              className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-600"
-            />
-            <input
-              className="input-dark w-full pl-7 pr-2 py-[7px] text-xs"
-              placeholder={S.ontology.filter}
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-            />
-          </div>
+        <div className="px-3 pt-3 pb-2">
+          <Input
+            size="sm"
+            icon={<Search size={12} />}
+            placeholder={S.ontology.filter}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          />
         </div>
         {/* 模式图：本体结构的主视图,不是 Import/Refine/Unmatched 那种管理性操作——
             放在筛选框正下方、列表上方,与那三个钉在底部的按钮拉开位置,
             视觉上就说明了「这是浏览本体的另一种方式」而不是「这是一项维护动作」 */}
         <div className="px-3 pb-2">
-          <button
+          <Row
+            density="nav"
+            active={sel?.kind === "schema"}
+            icon={<Network size={14} />}
             onClick={() => setSel({ kind: "schema" })}
-            className={cn(
-              "w-full flex items-center gap-2 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors",
-              sel?.kind === "schema"
-                ? "u-nav-active"
-                : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
-            )}
           >
-            <Network size={14} className="text-neutral-500" />
             {S.ontology.schemaDiagram}
-          </button>
+          </Row>
         </div>
-        {/* 分段切换：与登录页模式切换/日程选择器同一语汇（bg-white/5 容器 + 激活反白）；
+        {/* 分段切换：与登录页模式切换/日程选择器同一语汇（bg-surface-2 容器 + 激活反白）；
             过滤时列表例外：两节混排同时给出命中 */}
-        <div className="mx-3 mb-1 flex gap-1 rounded-lg bg-white/5 p-1">
-          {(
-            [
-              ["classes", S.ontology.tabClasses],
-              ["properties", S.ontology.tabProperties],
-            ] as const
-          ).map(([k, label]) => (
-            <button
-              key={k}
-              onClick={() => setRailTab(k)}
-              className={cn(
-                "flex-1 rounded-md py-1 text-[12px] font-medium text-center transition-colors",
-                railTab === k
-                  ? "bg-white/10 text-neutral-100"
-                  : "text-neutral-500 hover:text-neutral-300",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          fill
+          className="mx-3 mb-1"
+          value={railTab}
+          onChange={setRailTab}
+          options={[
+            { value: "classes", label: S.ontology.tabClasses },
+            { value: "properties", label: S.ontology.tabProperties },
+          ]}
+        />
         <div
           ref={listRef}
-          className="flex-1 min-h-0 overflow-hidden px-2 pt-1.5 pb-2 flex flex-col"
+          className="flex-1 min-h-0 overflow-hidden px-2 pt-2 pb-2 flex flex-col"
         >
           {/* 新建行置顶：随当前段建类/建关系 */}
           {!filter.trim() && (
-            <button
+            <Row
+              className="mb-1"
+              icon={<Plus size={13} />}
               onClick={() =>
                 railTab === "classes"
                   ? setSel({ kind: "new-class", parentId: null })
                   : setSel({ kind: "new-relation" })
               }
-              className="w-full flex items-center gap-1.5 rounded-lg px-2 py-2 mb-0.5 text-[13px] text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-200 transition-colors"
             >
-              <Plus size={13} />
               {railTab === "classes"
                 ? S.ontology.newClass
                 : S.ontology.newProperty}
-            </button>
+            </Row>
           )}
           {filter.trim() ? (
             <>
-              <div className="px-2 pt-2 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-600">
+              <div className="px-2 pt-2 pb-1 text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
                 {S.ontology.tabClasses}
               </div>
               <ClassTree
@@ -302,7 +291,7 @@ export function Ontology() {
                 onSelect={(id) => setSel({ kind: "class", id })}
                 pageSize={RAIL_PAGE_MIXED}
               />
-              <div className="px-2 pt-3 pb-1 text-[10px] font-medium uppercase tracking-[0.08em] text-neutral-600">
+              <div className="px-2 pt-3 pb-1 text-fine font-medium uppercase tracking-[0.08em] text-ink-3">
                 {S.ontology.tabProperties}
               </div>
               <PropertyList
@@ -339,71 +328,43 @@ export function Ontology() {
           )}
         </div>
         {/* 底部常驻：两个"关于本体"的入口——从外部拿一份本体，或看抽取顶回来的信号 */}
-        <button
+        <RailItem
+          active={sel?.kind === "import"}
+          icon={<Upload size={14} />}
           onClick={() => setSel({ kind: "import" })}
-          className={cn(
-            "shrink-0 border-t border-white/10 px-4 py-2.5 flex items-center gap-2 text-[13px] transition-colors",
-            sel?.kind === "import"
-              ? "u-nav-active"
-              : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
-          )}
         >
-          <Upload size={14} className="text-neutral-500" />
-          <span>{S.ontology.importShort}</span>
-        </button>
+          {S.ontology.importShort}
+        </RailItem>
         {/* 类型消解：把「大致对」的类换成更具体的那个。**紧挨着未匹配**——
             两者都是「本体与数据对不齐」的处置，只是方向相反：那个是本体缺东西，
             这个是本体有更好的选项没被用上 */}
-        <button
+        <RailItem
+          active={sel?.kind === "refine"}
+          icon={<Wand2 size={14} />}
           onClick={() => setSel({ kind: "refine" })}
-          className={cn(
-            "shrink-0 border-t border-white/10 px-4 py-2.5 flex items-center gap-2 text-[13px] transition-colors",
-            sel?.kind === "refine"
-              ? "u-nav-active"
-              : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
-          )}
         >
-          <Wand2 size={14} className="text-neutral-500" />
-          <span>{S.ontology.refineShort}</span>
-        </button>
+          {S.ontology.refineShort}
+        </RailItem>
         {/* 并存的取值（#341）：**与未匹配同一类**——都是数据在说本体缺了什么。
             那个说缺一个词，这个说缺一条公理，而缺公理的代价是接任不闭合前任，
             "六月谁在管"两个人都答 */}
-        <button
+        <RailItem
+          active={sel?.kind === "uniqueness"}
+          icon={<Split size={14} />}
+          count={overlaps.length}
           onClick={() => setSel({ kind: "uniqueness" })}
-          className={cn(
-            "shrink-0 border-t border-white/10 px-4 py-2.5 flex items-center gap-2 text-[13px] transition-colors",
-            sel?.kind === "uniqueness"
-              ? "u-nav-active"
-              : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
-          )}
         >
-          <Split size={14} className="text-neutral-500" />
-          <span>{S.ontology.uniquenessShort}</span>
-          {overlaps.length > 0 && (
-            <span className="ml-auto u-num text-[10.5px] text-neutral-500 bg-white/[0.08] rounded-full px-1.5 py-px">
-              {overlaps.length}
-            </span>
-          )}
-        </button>
+          {S.ontology.uniquenessShort}
+        </RailItem>
         {/* 底部常驻：抽取未匹配信号（有存量时带数量徽标） */}
-        <button
+        <RailItem
+          active={sel?.kind === "misses"}
+          icon={<Inbox size={14} />}
+          count={misses.length}
           onClick={() => setSel({ kind: "misses" })}
-          className={cn(
-            "shrink-0 border-t border-white/10 px-4 py-2.5 flex items-center gap-2 text-[13px] transition-colors",
-            sel?.kind === "misses"
-              ? "u-nav-active"
-              : "text-neutral-400 hover:bg-white/[0.05] hover:text-neutral-200",
-          )}
         >
-          <Inbox size={14} className="text-neutral-500" />
-          <span>{S.ontology.missesShort}</span>
-          {misses.length > 0 && (
-            <span className="ml-auto u-num text-[10.5px] text-neutral-500 bg-white/[0.08] rounded-full px-1.5 py-px">
-              {misses.length}
-            </span>
-          )}
-        </button>
+          {S.ontology.missesShort}
+        </RailItem>
       </aside>
 
       {/* 右侧：详情。class/relation/new-class/new-relation/schema/概览共享
@@ -482,28 +443,28 @@ export function Ontology() {
               }
               tabs={
                 selectedClass && (
-                  <>
-                    <PanelTab
-                      active={classTab === "definition"}
-                      onClick={() => setPanelTab("definition")}
-                    >
-                      {S.ontology.schemaTabDefinition}
-                    </PanelTab>
-                    <PanelTab
-                      active={classTab === "properties"}
-                      count={classRelations.length + classAttributes.length}
-                      onClick={() => setPanelTab("properties")}
-                    >
-                      {S.ontology.schemaTabProperties}
-                    </PanelTab>
-                    <PanelTab
-                      active={classTab === "instances"}
-                      count={selectedClass.usage}
-                      onClick={() => setPanelTab("instances")}
-                    >
-                      {S.ontology.schemaTabInstances}
-                    </PanelTab>
-                  </>
+                  <Segmented
+                    fill
+                    size="sm"
+                    value={classTab}
+                    onChange={setPanelTab}
+                    options={[
+                      {
+                        value: "definition",
+                        label: S.ontology.schemaTabDefinition,
+                      },
+                      {
+                        value: "properties",
+                        label: S.ontology.schemaTabProperties,
+                        count: classRelations.length + classAttributes.length,
+                      },
+                      {
+                        value: "instances",
+                        label: S.ontology.schemaTabInstances,
+                        count: selectedClass.usage,
+                      },
+                    ]}
+                  />
                 )
               }
             >
@@ -662,56 +623,22 @@ function DockedPanel({
     <div
       className={`${exiting ? "u-dock-out" : "u-dock-in"} glass-strong absolute top-3 right-3 bottom-3 w-[26rem] z-10 rounded-xl shadow-2xl flex flex-col`}
     >
-      <div className="shrink-0 flex items-start justify-between gap-2 px-4 py-3.5 border-b border-white/10">
+      <div className="shrink-0 flex items-start justify-between gap-2 px-4 py-4 border-b border-line">
         <div className="min-w-0">{header}</div>
-        <button
+        <IconButton
+          size="sm"
+          label={S.ontology.schemaClosePanel}
+          className="-mr-1 -mt-1"
           onClick={onClose}
-          title={S.ontology.schemaClosePanel}
-          className="mt-0.5 shrink-0 text-neutral-500 hover:text-neutral-200 transition-colors"
         >
           <X size={15} />
-        </button>
+        </IconButton>
       </div>
-      {tabs && (
-        <div className="shrink-0 px-4 pt-3 pb-1">
-          <div className="flex rounded-lg overflow-hidden border border-white/10">
-            {tabs}
-          </div>
-        </div>
-      )}
+      {tabs && <div className="shrink-0 px-4 pt-3 pb-1">{tabs}</div>}
       <div className="u-scroll flex-1 min-h-0 overflow-y-auto flex flex-col gap-3 px-4 py-3">
         {children}
       </div>
     </div>
-  );
-}
-
-/** 分段控件里的一格。与 Library / 图谱页那个是同一个写法 */
-function PanelTab({
-  active,
-  count,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  count?: number;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1.5 text-[11px] transition-colors ${
-        active
-          ? "bg-white/10 text-neutral-100"
-          : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-      }`}
-    >
-      {children}
-      {count !== undefined && count > 0 && (
-        <span className="u-num text-neutral-500">{count}</span>
-      )}
-    </button>
   );
 }
 
@@ -739,14 +666,14 @@ function PanelHeader({
           />
         )}
         <span
-          className="truncate text-[15px] font-semibold tracking-tight text-white"
+          className="truncate text-title font-semibold tracking-tight text-ink"
           style={{ fontFamily: "var(--font-display)" }}
         >
           {title}
         </span>
         {builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
       </div>
-      {sub && <div className="mt-1 text-xs text-neutral-500">{sub}</div>}
+      {sub && <div className="mt-1 text-small text-ink-3">{sub}</div>}
     </>
   );
 }
@@ -767,27 +694,27 @@ function InstancesCard({ kbId, type }: { kbId: string; type: EntityTypeView }) {
 
   return (
     <div className="glass rounded-xl p-4">
-      <div className="mb-1.5 flex items-baseline gap-2">
-        <h3 className="text-sm font-bold text-neutral-200">
+      <div className="mb-2 flex items-baseline gap-2">
+        <h3 className="text-body font-semibold text-ink">
           {S.ontology.instances}
         </h3>
-        <span className="u-num text-xs text-neutral-500">{total}</span>
+        <span className="u-num text-small text-ink-3">{total}</span>
       </div>
-      <div className="divide-y divide-white/[0.06]">
+      <div className="divide-y divide-line">
         {rows.map((e) => (
           <Link
             key={e.id}
             to="/kb/$kbId/graph"
             params={{ kbId }}
             search={{ entity: e.id }}
-            className="group flex items-center gap-2 -mx-2 px-2 py-1.5 rounded-lg text-sm text-neutral-300 transition-colors hover:bg-white/[0.05] hover:text-white"
+            className={cn(rowClass(), "-mx-2")}
           >
             <span
               className={`h-2 w-2 shrink-0 ${type.shape === "square" ? "" : "rounded-full"}`}
               style={{ background: type.color }}
             />
             <span className="truncate">{e.name}</span>
-            <span className="ml-auto shrink-0 u-num text-[10.5px] text-neutral-600 transition-colors group-hover:text-neutral-400">
+            <span className={cn("u-num", ROW_TRAILING)}>
               {S.ontology.instanceFacts(e.fact_count)}
             </span>
           </Link>
@@ -885,48 +812,52 @@ function RelationshipsCard({
   const RelationRow = ({ r, dir }: { r: RelationTypeView; dir: "out" | "in" }) => (
     // 悬停要有底色：这一行整条可点，只把文字提亮半级在深底上几乎看不出来。
     // 底色用左栏那一档（white/[0.05]），右端的类型小字跟着一起提亮
-    <button
+    <Row
+      className="-mx-2"
+      icon={
+        dir === "out" ? (
+          <ArrowRight size={12} className="text-violet" />
+        ) : (
+          <ArrowLeft size={12} className="text-violet" />
+        )
+      }
+      trailing={
+        <span className="block max-w-32 truncate">
+          {(dir === "out" ? r.ranges : r.domains).map(labelOf).join(", ") ||
+            S.ontology.anyType}
+        </span>
+      }
       onClick={() => onSelect(r.id)}
-      className="group w-full flex items-center gap-1.5 -mx-2 px-2 py-1.5 rounded-lg text-sm text-left text-neutral-300 transition-colors hover:bg-white/[0.05] hover:text-white"
     >
-      {dir === "out" ? (
-        <ArrowRight size={12} className="shrink-0 text-[#c4a5ff]" />
-      ) : (
-        <ArrowLeft size={12} className="shrink-0 text-[#c4a5ff]" />
-      )}
-      <span className="truncate">{r.label}</span>
-      <span className="ml-auto shrink-0 text-xs text-neutral-500 truncate max-w-[8rem] transition-colors group-hover:text-neutral-300">
-        {(dir === "out" ? r.ranges : r.domains).map(labelOf).join(", ") ||
-          S.ontology.anyType}
-      </span>
-    </button>
+      {r.label}
+    </Row>
   );
 
   return (
     // 卡片在面板里边，底交给面板；这里与属性卡、实例卡同一个写法
     <div className="glass rounded-xl p-4">
       <div className="mb-1 flex items-baseline gap-2">
-        <h3 className="text-sm font-bold text-neutral-200">
+        <h3 className="text-body font-semibold text-ink">
           {S.ontology.schemaRelationships}
         </h3>
         {outgoing.length + incoming.length > 0 && (
-          <span className="u-num text-xs text-neutral-500">
+          <span className="u-num text-small text-ink-3">
             {outgoing.length + incoming.length}
           </span>
         )}
       </div>
       {outgoing.length === 0 && incoming.length === 0 ? (
-        <p className="text-xs text-neutral-500 mb-2">
+        <p className="text-small text-ink-3 mb-2">
           {S.ontology.schemaNoRelationships}
         </p>
       ) : (
         <div className="mb-2">
           {outgoing.length > 0 && (
             <>
-              <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-0.5">
+              <div className="text-fine uppercase tracking-[0.08em] text-ink-3 mb-1">
                 {S.ontology.schemaOutgoing}
               </div>
-              <div className="divide-y divide-white/[0.06] mb-1.5">
+              <div className="divide-y divide-line mb-2">
                 {outgoing.map((r) => (
                   <RelationRow key={`out:${r.id}`} r={r} dir="out" />
                 ))}
@@ -935,10 +866,10 @@ function RelationshipsCard({
           )}
           {incoming.length > 0 && (
             <>
-              <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-0.5">
+              <div className="text-fine uppercase tracking-[0.08em] text-ink-3 mb-1">
                 {S.ontology.schemaIncoming}
               </div>
-              <div className="divide-y divide-white/[0.06]">
+              <div className="divide-y divide-line">
                 {incoming.map((r) => (
                   <RelationRow key={`in:${r.id}`} r={r} dir="in" />
                 ))}
@@ -947,11 +878,11 @@ function RelationshipsCard({
           )}
         </div>
       )}
-      <div className="pt-2 border-t border-white/5">
-        <p className="text-[11px] text-neutral-500 mb-1.5">
+      <div className="pt-2 border-t border-line">
+        <p className="text-fine text-ink-3 mb-2">
           {S.ontology.schemaConnectHint}
         </p>
-        <div className="flex gap-1.5 mb-1.5">
+        <div className="flex gap-2 mb-2">
           <SearchSelect
             value={connectId}
             onChange={setConnectId}
@@ -965,26 +896,19 @@ function RelationshipsCard({
             placeholder={S.ontology.schemaConnectPlaceholder}
           />
         </div>
-        <div className="flex items-center gap-1.5 mb-2">
-          <span className="text-[11px] text-neutral-500">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-fine text-ink-3">
             {S.ontology.schemaConnectAs}
           </span>
-          <div className="flex rounded-lg overflow-hidden border border-white/10">
-            {(["domain", "range"] as const).map((side) => (
-              <button
-                key={side}
-                onClick={() => setConnectSide(side)}
-                className={cn(
-                  "px-2 py-1 text-[11px] transition-colors",
-                  connectSide === side
-                    ? "bg-white/[0.12] text-white"
-                    : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300",
-                )}
-              >
-                {side === "domain" ? S.ontology.domainLabel : S.ontology.rangeLabel}
-              </button>
-            ))}
-          </div>
+          <Segmented
+            size="sm"
+            value={connectSide}
+            onChange={setConnectSide}
+            options={[
+              { value: "domain", label: S.ontology.domainLabel },
+              { value: "range", label: S.ontology.rangeLabel },
+            ]}
+          />
         </div>
         <Button
           size="sm"
@@ -995,14 +919,16 @@ function RelationshipsCard({
           {S.ontology.schemaConnect}
         </Button>
       </div>
-      <div className="mt-2 pt-2 border-t border-white/5">
-        <button
+      <div className="mt-2 pt-2 border-t border-line">
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<Plus size={13} />}
+          className="-ml-2"
           onClick={onAddNew}
-          className="flex items-center gap-1.5 text-[13px] text-neutral-500 hover:text-neutral-200 transition-colors"
         >
-          <Plus size={13} />
           {S.ontology.schemaAddRelationship}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -1032,19 +958,19 @@ export function AttributesCard({
   return (
     <div className="glass rounded-xl p-4">
       <div className="mb-1 flex items-baseline gap-2">
-        <h3 className="text-sm font-bold text-neutral-200">
+        <h3 className="text-body font-semibold text-ink">
           {S.ontology.attributes}
         </h3>
         {attributes.length > 0 && (
-          <span className="u-num text-xs text-neutral-500">
+          <span className="u-num text-small text-ink-3">
             {attributes.length}
           </span>
         )}
       </div>
-      <p className="text-xs text-neutral-500 mb-2">
+      <p className="text-small text-ink-3 mb-2">
         {S.ontology.attributesHint}
       </p>
-      <div className="divide-y divide-white/[0.06]">
+      <div className="divide-y divide-line">
         {attributes.map((a) =>
           editing === a.id ? (
             <AttributeForm
@@ -1060,25 +986,23 @@ export function AttributesCard({
               onError={onError}
             />
           ) : (
-            <button
+            <Row
               key={a.id}
+              className="-mx-2"
+              trailing={<span className="u-num">{S.ontology.usage(a.usage)}</span>}
               onClick={() => setEditing(a.id)}
-              className="w-full flex items-center gap-2 -mx-2 px-2 py-1.5 rounded-lg text-sm text-left text-neutral-300 transition-colors hover:bg-white/[0.05] hover:text-white"
             >
-              <span className="truncate">{a.label}</span>
-              <Chip tone="neutral">
-                {S.ontology.datatypeNames[a.datatype ?? "text"]}
-              </Chip>
-              {a.unit && (
-                <span className="text-xs text-neutral-500 shrink-0">
-                  {a.unit}
-                </span>
-              )}
-              {a.functional && <Chip tone="info">1:1</Chip>}
-              <span className="ml-auto shrink-0 u-num text-[10.5px] text-neutral-600">
-                {S.ontology.usage(a.usage)}
+              <span className="flex items-center gap-2">
+                <span className="truncate">{a.label}</span>
+                <Chip tone="neutral">
+                  {S.ontology.datatypeNames[a.datatype ?? "text"]}
+                </Chip>
+                {a.unit && (
+                  <span className="shrink-0 text-small text-ink-3">{a.unit}</span>
+                )}
+                {a.functional && <Chip tone="info">1:1</Chip>}
               </span>
-            </button>
+            </Row>
           ),
         )}
       </div>
@@ -1097,13 +1021,15 @@ export function AttributesCard({
           />
         </div>
       ) : (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<Plus size={13} />}
+          className="mt-2 -ml-2"
           onClick={() => setEditing("new")}
-          className="mt-1.5 flex items-center gap-1.5 text-[13px] text-neutral-500 hover:text-neutral-200 transition-colors"
         >
-          <Plus size={13} />
           {S.ontology.newAttribute}
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -1171,9 +1097,9 @@ function AttributeForm({
     onError,
   });
 
-  const lbl = "block text-xs font-medium text-neutral-500 mb-1";
+  const lbl = "block text-small font-medium text-ink-3 mb-1";
   return (
-    <div className="py-2.5 space-y-2.5">
+    <div className="py-3 space-y-3">
       {!existing && (
         <div className="flex gap-2">
           <div className="flex-1">
@@ -1221,7 +1147,7 @@ function AttributeForm({
         <div className="flex-1">
           <label className={lbl}>
             {S.ontology.attrUnit}{" "}
-            <span className="text-neutral-600">
+            <span className="text-ink-3">
               ({S.ontology.attrUnitHint})
             </span>
           </label>
@@ -1232,18 +1158,15 @@ function AttributeForm({
           />
         </div>
       </div>
-      <label className="flex items-center gap-2 text-[13px] text-neutral-300">
-        <input
-          type="checkbox"
-          checked={single}
-          onChange={(e) => setSingle(e.target.checked)}
-        />
-        {S.ontology.attrSingle}
-      </label>
+      <Checkbox
+        checked={single}
+        onChange={(e) => setSingle(e.target.checked)}
+        label={S.ontology.attrSingle}
+      />
       <div>
         <label className={lbl}>{S.ontology.description}</label>
-        <textarea
-          className="input-dark w-full px-3 py-2 text-sm min-h-[6rem] resize-y"
+        <Textarea
+          className="w-full min-h-24 resize-y"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
@@ -1336,47 +1259,43 @@ function ClassTree({
   const { rows: paged, safe } = pageSlice(rows, page, pageSize);
 
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-1">
       {paged.map(({ t, depth, hasChildren }) => (
-        <button
+        <Row
           key={t.id}
+          indent={depth}
+          active={selectedId === t.id}
           onClick={() => onSelect(t.id)}
-          style={{ paddingLeft: `${6 + depth * 14}px` }}
-          className={cn(
-            "w-full text-left rounded-lg py-1.5 pr-2 text-[13px] flex items-center gap-1.5",
-            selectedId === t.id
-              ? "u-nav-active"
-              : "hover:bg-white/[0.05] text-neutral-400 hover:text-neutral-200",
-          )}
+          icon={
+            hasChildren ? (
+              // 折叠柄：有子类才渲染，点击不选中。是 span 不是按钮——按钮里不能再嵌按钮
+              <span
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle(t.id);
+                }}
+                className="u-toggle"
+              >
+                <ChevronRight
+                  size={12}
+                  className={cn("u-turn", !collapsed.has(t.id) && "rotate-90")}
+                />
+              </span>
+            ) : (
+              <span className="block w-3" />
+            )
+          }
         >
-          {/* 折叠柄：有子类才渲染，点击不选中 */}
-          {hasChildren ? (
+          <span className="flex items-center gap-2">
+            {/* 方形是直角：与圆形拉开区分度（图谱节点同理） */}
             <span
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggle(t.id);
-              }}
-              className="shrink-0 text-neutral-600 hover:text-neutral-300"
-            >
-              <ChevronRight
-                size={12}
-                className={cn(
-                  "transition-transform",
-                  !collapsed.has(t.id) && "rotate-90",
-                )}
-              />
-            </span>
-          ) : (
-            <span className="w-3 shrink-0" />
-          )}
-          {/* 方形是直角：与圆形拉开区分度（图谱节点同理） */}
-          <span
-            className={`h-2.5 w-2.5 shrink-0 ${t.shape === "square" ? "" : "rounded-full"}`}
-            style={{ background: t.color }}
-          />
-          {/* 不在列表里放逐项用量读数：数量级上来后统计和渲染都是负担，用量看表单 */}
-          <span className="truncate">{t.label}</span>
-        </button>
+              className={`h-2.5 w-2.5 shrink-0 ${t.shape === "square" ? "" : "rounded-full"}`}
+              style={{ background: t.color }}
+            />
+            {/* 不在列表里放逐项用量读数：数量级上来后统计和渲染都是负担，用量看表单 */}
+            <span className="truncate">{t.label}</span>
+          </span>
+        </Row>
       ))}
       <Pager
         total={rows.length}
@@ -1415,24 +1334,20 @@ function PropertyList({
   useEffect(() => setPage(0), [filter]);
   const { rows: paged, safe } = pageSlice(rows, page, pageSize);
   return (
-    <div className="space-y-0.5">
+    <div className="space-y-1">
       {paged.map((r) => (
-        <button
+        <Row
           key={r.id}
+          active={selectedId === r.id}
           onClick={() => onSelect(r.id)}
-          style={{ paddingLeft: "6px" }}
-          className={cn(
-            "w-full text-left rounded-lg py-1.5 pr-2 text-[13px] flex items-center gap-1.5",
-            selectedId === r.id
-              ? "u-nav-active"
-              : "hover:bg-white/[0.05] text-neutral-400 hover:text-neutral-200",
-          )}
+          // 前导只留折叠柄槽：文字起点对齐类行"标识点"的左端
+          icon={<span className="block w-3" />}
         >
-          {/* 前导只留折叠柄槽：文字起点对齐类行"标识点"的左端 */}
-          <span className="w-3 shrink-0" />
-          <span className="truncate">{r.label}</span>
-          {r.functional && <Chip tone="info">1:1</Chip>}
-        </button>
+          <span className="flex items-center gap-2">
+            <span className="truncate">{r.label}</span>
+            {r.functional && <Chip tone="info">1:1</Chip>}
+          </span>
+        </Row>
       ))}
       <Pager
         total={rows.length}
@@ -1564,7 +1479,7 @@ export function ClassForm({
     onError,
   });
 
-  const lbl = "block text-xs font-medium text-neutral-500 mb-1";
+  const lbl = "block text-small font-medium text-ink-3 mb-1";
   return (
     <div className="space-y-3">
       {!headless && (
@@ -1573,13 +1488,13 @@ export function ClassForm({
             className={`h-3 w-3 ${shape === "square" ? "" : "rounded-full"}`}
             style={{ background: color }}
           />
-          <span className="font-bold text-neutral-100">
+          <span className="font-semibold text-ink">
             {existing?.label ?? S.ontology.newClass}
           </span>
           {/* key 是纯技术标识：已存在时干脆不展示，只在创建时输入 */}
           {existing?.builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
           {existing && (
-            <span className="ml-auto text-xs text-neutral-500">
+            <span className="ml-auto text-small text-ink-3">
               {S.ontology.usage(existing.usage)}
             </span>
           )}
@@ -1589,7 +1504,7 @@ export function ClassForm({
         <div>
           <label className={lbl}>
             {S.ontology.key}{" "}
-            <span className="text-neutral-600">({S.ontology.keyHint})</span>
+            <span className="text-ink-3">({S.ontology.keyHint})</span>
           </label>
           <Input
             value={key}
@@ -1616,26 +1531,22 @@ export function ClassForm({
         <div className="flex items-center gap-2">
           <ColorPicker value={color} onChange={(c: string) => { setColor(c); setColorTouched(true); }} shape={shape} />
           {/* 形状：与图谱节点渲染一一对应（circle=四层圆 / square=四层方） */}
-          <div className="flex rounded-lg overflow-hidden border border-white/10">
-            {(["circle", "square"] as const).map((sh) => (
-              <button
-                key={sh}
-                onClick={() => setShape(sh)}
-                title={sh}
-                className={`h-8 w-10 grid place-items-center transition-colors ${
-                  shape === sh
-                    ? "bg-white/[0.12] text-white"
-                    : "text-neutral-500 hover:bg-white/[0.05] hover:text-neutral-300"
-                }`}
-              >
+          <Segmented
+            size="sm"
+            value={shape}
+            onChange={setShape}
+            options={(["circle", "square"] as const).map((sh) => ({
+              value: sh,
+              title: sh,
+              label: (
                 <span
                   className={`h-3 w-3 border-[1.5px] border-current ${
                     sh === "circle" ? "rounded-full" : ""
                   }`}
                 />
-              </button>
-            ))}
-          </div>
+              ),
+            }))}
+          />
         </div>
       </div>
       {/* 多父：subClassOf 可以有多条。左栏按树画，一个类只能出现一次——
@@ -1654,7 +1565,7 @@ export function ClassForm({
           emptyHint={S.ontology.noParent}
         />
         {parents.length > 1 && (
-          <p className="mt-1 text-[11px] text-neutral-600">
+          <p className="mt-1 text-fine text-ink-3">
             {S.ontology.primaryParentHint}
           </p>
         )}
@@ -1664,7 +1575,7 @@ export function ClassForm({
           在这两者打架时报出「这个类永远不可能有实例」 */}
       <div>
         <label className={lbl}>{S.ontology.disjoint}</label>
-        <p className="text-[11px] leading-relaxed text-neutral-600 mb-1.5">
+        <p className="text-fine leading-relaxed text-ink-3 mb-2">
           {S.ontology.disjointHint}
         </p>
         <MultiSearchSelect
@@ -1681,7 +1592,7 @@ export function ClassForm({
         {/* 跟自己的父类互斥 = 这个类永远不可能有实例。当场说，
             比让人跑一遍一致性检查再发现要快 */}
         {disjoint.some((d) => parents.includes(d)) && (
-          <p className="mt-1.5 text-[11px] text-[var(--u-danger)]">
+          <p className="mt-2 text-fine text-danger">
             {S.ontology.disjointWithParent}
           </p>
         )}
@@ -1689,12 +1600,12 @@ export function ClassForm({
       <div>
         <label className={lbl}>{S.ontology.description}</label>
         {/* 语义指引：整段注入抽取 prompt，直接影响抽取归类质量 */}
-        <textarea
-          className="input-dark w-full px-3 py-2 text-sm min-h-[9rem] resize-y"
+        <Textarea
+          className="w-full min-h-36 resize-y"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        <p className="mt-1 text-[10.5px] text-neutral-600">
+        <p className="mt-1 text-fine text-ink-3">
           {S.ontology.descriptionHint}
         </p>
       </div>
@@ -1866,17 +1777,17 @@ export function PropertyForm({
     onError,
   });
 
-  const lbl = "block text-xs font-medium text-neutral-500 mb-1";
+  const lbl = "block text-small font-medium text-ink-3 mb-1";
   return (
     <div className="space-y-3">
       {!headless && (
         <div className="flex items-center gap-2">
-          <span className="font-bold text-neutral-100">
+          <span className="font-semibold text-ink">
             {existing?.label ?? S.ontology.newProperty}
           </span>
           {existing?.builtin && <Chip tone="neutral">{S.ontology.builtin}</Chip>}
           {existing && (
-            <span className="ml-auto text-xs text-neutral-500">
+            <span className="ml-auto text-small text-ink-3">
               {S.ontology.usage(existing.usage)}
             </span>
           )}
@@ -1886,7 +1797,7 @@ export function PropertyForm({
         <div>
           <label className={lbl}>
             {S.ontology.key}{" "}
-            <span className="text-neutral-600">({S.ontology.keyHint})</span>
+            <span className="text-ink-3">({S.ontology.keyHint})</span>
           </label>
           <Input
             value={key}
@@ -1908,12 +1819,12 @@ export function PropertyForm({
           与这里显示什么无关（docs/decisions/0004 定的是提示词里必须用 key） */}
       <div>
         <label className={lbl}>{S.ontology.signature}</label>
-        <p className="text-[11px] leading-relaxed text-neutral-600 mb-1.5">
+        <p className="text-fine leading-relaxed text-ink-3 mb-2">
           {S.ontology.signatureHint}
         </p>
         <div className="grid gap-2 sm:grid-cols-2">
           <div className="min-w-0">
-            <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-1">
+            <div className="text-fine uppercase tracking-[0.08em] text-ink-3 mb-1">
               {S.ontology.domainLabel}
             </div>
             <MultiSearchSelect
@@ -1925,7 +1836,7 @@ export function PropertyForm({
             />
           </div>
           <div className="min-w-0">
-            <div className="text-[10px] uppercase tracking-[0.08em] text-neutral-600 mb-1">
+            <div className="text-fine uppercase tracking-[0.08em] text-ink-3 mb-1">
               {S.ontology.rangeLabel}
             </div>
             <MultiSearchSelect
@@ -1958,10 +1869,10 @@ export function PropertyForm({
           加边。看不出后果的开关，人只会照着直觉乱勾。 */}
       <div>
         <label className={lbl}>{S.ontology.axioms}</label>
-        <p className="text-[11px] leading-relaxed text-neutral-600 mb-1.5">
+        <p className="text-fine leading-relaxed text-ink-3 mb-2">
           {S.ontology.axiomsHint}
         </p>
-        <div className="space-y-1.5">
+        <div className="space-y-2">
           {(
             [
               [functional, setFunctional, S.ontology.functional, S.ontology.functionalHint],
@@ -1982,33 +1893,26 @@ export function PropertyForm({
               ],
             ] as const
           ).map(([on, set, title, hint], i) => (
-            <label key={i} className="flex items-start gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                className="mt-0.5 accent-[var(--u-accent)]"
-                checked={on}
-                onChange={(e) => set(e.target.checked)}
-              />
-              <span className="min-w-0">
-                <span className="block text-[13px] text-neutral-200">{title}</span>
-                <span className="block text-[11px] leading-relaxed text-neutral-500">
-                  {hint}
-                </span>
-              </span>
-            </label>
+            <Checkbox
+              key={i}
+              checked={on}
+              onChange={(e) => set(e.target.checked)}
+              label={title}
+              hint={hint}
+            />
           ))}
         </div>
         {/* 对称与反对称同时勾是自相矛盾的（只对空关系成立）。本体自洽性检查
             会报出来，但在这里当场说一句比让人跑一遍检查再发现要快 */}
         {symmetric && asymmetric && (
-          <p className="mt-1.5 text-[11px] text-[var(--u-danger)]">
+          <p className="mt-2 text-fine text-danger">
             {S.ontology.axiomConflict}
           </p>
         )}
         {/* 同一组的后两条，只是形状不同：它们指向**另一个关系**，所以是下拉
             不是复选框。放在这里而不是单开一节——推理机的四种规则源里，两条是
             上面的勾，两条是下面的选，分开会让人以为它们是两回事（0002） */}
-        <div className="mt-3 space-y-2.5 border-t border-white/5 pt-3">
+        <div className="mt-3 space-y-3 border-t border-line pt-3">
           {(
             [
               [
@@ -2028,8 +1932,8 @@ export function PropertyForm({
             ] as const
           ).map(([value, set, title, hint, options], i) => (
             <div key={i}>
-              <div className="text-[13px] text-neutral-200">{title}</div>
-              <p className="text-[11px] leading-relaxed text-neutral-500 mb-1">
+              <div className="text-body text-ink">{title}</div>
+              <p className="text-fine leading-relaxed text-ink-3 mb-1">
                 {hint}
               </p>
               <SearchSelect
@@ -2045,7 +1949,7 @@ export function PropertyForm({
           {/* 选了之后当场把话说全。**这两条推出来的事实主宾未必同向**——
               逆要对调，子属性不对调，只看名字分不出来，写出来就分得出 */}
           {(inverseOf || subPropertyOf) && (
-            <div className="text-[11px] leading-relaxed text-neutral-500 space-y-0.5">
+            <div className="text-fine leading-relaxed text-ink-3 space-y-1">
               {inverseOf && (
                 <div>
                   {S.ontology.linkMeansInverse(
@@ -2068,12 +1972,12 @@ export function PropertyForm({
       </div>
       <div>
         <label className={lbl}>{S.ontology.description}</label>
-        <textarea
-          className="input-dark w-full px-3 py-2 text-sm min-h-[9rem] resize-y"
+        <Textarea
+          className="w-full min-h-36 resize-y"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-        <p className="mt-1 text-[10.5px] text-neutral-600">
+        <p className="mt-1 text-fine text-ink-3">
           {S.ontology.descriptionHint}
         </p>
       </div>
@@ -2170,33 +2074,25 @@ function RefinePanel({
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="u-title text-lg mb-1">{S.ontology.refineTitle}</h3>
-        <p className="text-xs leading-relaxed text-neutral-500 max-w-xl">
+        <h3 className="u-title text-title mb-1">{S.ontology.refineTitle}</h3>
+        <p className="text-small leading-relaxed text-ink-3 max-w-xl">
           {S.ontology.refineHint}
         </p>
       </div>
 
       <div className="flex gap-2">
-        <button
-          className="u-btn text-xs"
-          disabled={busy}
-          onClick={() => look.mutate()}
-        >
+        <Button variant="secondary" size="sm" disabled={busy} onClick={() => look.mutate()}>
           {look.isPending ? S.ontology.refineLooking : S.ontology.refinePreview}
-        </button>
-        <button
-          className="u-btn u-btn-primary text-xs"
-          disabled={busy}
-          onClick={() => run.mutate()}
-        >
+        </Button>
+        <Button variant="primary" size="sm" disabled={busy} onClick={() => run.mutate()}>
           {run.isPending ? S.ontology.refineRunning : S.ontology.refineRun}
-        </button>
+        </Button>
       </div>
 
       {/* ---- 只算不写的那一步 */}
       {preview && (
         <div className="space-y-2">
-          <p className="text-xs text-neutral-500">
+          <p className="text-small text-ink-3">
             {preview.length === 0
               ? S.ontology.refineNothing
               : S.ontology.refineCandidates(preview.length)}
@@ -2204,36 +2100,36 @@ function RefinePanel({
           {preview.map((s) => (
             <div key={s.entity_id} className="glass rounded-xl p-3">
               <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="text-sm text-neutral-100">{s.name}</span>
-                <span className="text-[11px] text-neutral-500">
+                <span className="text-body text-ink">{s.name}</span>
+                <span className="text-fine text-ink-3">
                   {s.coarse ?? S.graph.untyped}
                 </span>
                 {s.specific_type && (
-                  <span className="text-[11px] text-[var(--u-warn)]">
+                  <span className="text-fine text-warn">
                     {S.ontology.refineModelSays(s.specific_type)}
                   </span>
                 )}
-                <span className="ml-auto u-num text-[10.5px] text-neutral-600">
+                <span className="ml-auto u-num text-fine text-ink-3">
                   {S.review.factsCount(s.fact_count)}
                 </span>
               </div>
               {/* **把送去检索的那段字显示出来**：找不着的时候，第一个要看的
                   就是我们拿什么去找的，而不是猜画像还是类描述的问题 */}
-              <p className="mt-1 text-[11px] text-neutral-500 line-clamp-2">
+              <p className="mt-1 text-fine text-ink-3 line-clamp-2">
                 {s.profile}
               </p>
-              <div className="mt-1.5 flex flex-wrap gap-1">
+              <div className="mt-2 flex flex-wrap gap-1">
                 {s.candidates.slice(0, 6).map((c) => (
                   <span
                     key={c.id}
                     title={c.description}
-                    className="u-chip u-chip-neutral u-num text-[10.5px]"
+                    className="u-chip u-chip-neutral u-num text-fine"
                   >
                     {c.label} {c.distance.toFixed(2)}
                   </span>
                 ))}
                 {s.candidates.length === 0 && (
-                  <span className="text-[11px] text-neutral-600">
+                  <span className="text-fine text-ink-3">
                     {S.ontology.refineNoCandidates}
                   </span>
                 )}
@@ -2247,51 +2143,54 @@ function RefinePanel({
       {outcome && (
         <div className="space-y-3">
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-xs text-neutral-300">
+            <span className="text-small text-ink-2">
               {S.ontology.refineRetyped(outcome.retyped)}
             </span>
             {outcome.batch && outcome.retyped > 0 && (
-              <button
-                className="u-btn u-btn-ghost text-xs"
+              <Button
+                variant="secondary"
+                size="sm"
                 disabled={undo.isPending}
                 onClick={() => undo.mutate(outcome.batch!)}
               >
                 {S.ontology.refineUndo}
-              </button>
+              </Button>
             )}
           </div>
 
           {outcome.for_review.length > 0 && (
             <div className="space-y-2">
-              <p className="text-xs text-neutral-500">
+              <p className="text-small text-ink-3">
                 {S.ontology.refineForReview(outcome.for_review.length)}
               </p>
               {outcome.for_review.map((r) => (
                 <div key={r.entity_id} className="glass rounded-xl p-3">
                   <div className="flex items-baseline gap-2 flex-wrap">
-                    <span className="text-sm text-neutral-100">{r.name}</span>
-                    <span className="text-[11px] text-neutral-500">
+                    <span className="text-body text-ink">{r.name}</span>
+                    <span className="text-fine text-ink-3">
                       {r.coarse ?? S.graph.untyped} → {r.choice}
                     </span>
                     {r.crosses_axis && (
-                      <span className="u-chip u-chip-warn text-[10.5px]">
+                      <span className="u-chip u-chip-warn text-fine">
                         {S.ontology.refineCrossesAxis}
                       </span>
                     )}
-                    <span className="ml-auto u-num text-[10.5px] text-neutral-600">
+                    <span className="ml-auto u-num text-fine text-ink-3">
                       {Math.round(r.confidence * 100)}%
                     </span>
                   </div>
                   {r.reason && (
-                    <p className="mt-1 text-[11px] text-neutral-500">
+                    <p className="mt-1 text-fine text-ink-3">
                       {r.reason}
                     </p>
                   )}
                   {/* **认可的是这一对类，不是这一个实体。** 认可一次，
                       之后同一对不再进人工——那正是这一档大部分条目的成因 */}
                   {r.from_type_id && (
-                    <button
-                      className="u-btn u-btn-primary mt-2 text-xs"
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      className="mt-2"
                       disabled={approve.isPending}
                       onClick={() =>
                         approve.mutate({
@@ -2302,7 +2201,7 @@ function RefinePanel({
                       }
                     >
                       {S.ontology.refineApprovePair}
-                    </button>
+                    </Button>
                   )}
                 </div>
               ))}
@@ -2310,29 +2209,29 @@ function RefinePanel({
           )}
 
           {outcome.left_alone.length > 0 && (
-            <div className="space-y-1.5">
-              <p className="text-xs text-neutral-500">
+            <div className="space-y-2">
+              <p className="text-small text-ink-3">
                 {S.ontology.refineLeftAlone(outcome.left_alone.length)}
               </p>
               {outcome.left_alone.map((d, i) => (
                 <div key={i} className="glass rounded-xl px-3 py-2">
                   <div className="flex items-baseline gap-2 flex-wrap">
-                    <span className="text-[13px] text-neutral-200">
+                    <span className="text-body text-ink">
                       {d.name}
                     </span>
-                    <span className="text-[11px] text-neutral-500">
+                    <span className="text-fine text-ink-3">
                       {d.coarse ?? S.graph.untyped}
                     </span>
                   </div>
                   {/* 理由与头一个候选一起给：理由说不通时，看候选就知道是
                       检索没找着还是裁决没看上 */}
                   {d.reason && (
-                    <p className="mt-0.5 text-[11px] text-neutral-500">
+                    <p className="mt-1 text-fine text-ink-3">
                       {d.reason}
                     </p>
                   )}
                   {d.top_candidate && (
-                    <p className="mt-0.5 text-[11px] text-neutral-600">
+                    <p className="mt-1 text-fine text-ink-3">
                       {S.ontology.refineTopCandidate(d.top_candidate)}
                     </p>
                   )}
@@ -2420,28 +2319,28 @@ function UniquenessPanel({
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-sm font-medium text-neutral-200">
+        <h2 className="text-body font-medium text-ink">
           {S.ontology.uniqueness}
         </h2>
-        <p className="mt-1 text-[12.5px] leading-relaxed text-neutral-500">
+        <p className="mt-1 text-small leading-relaxed text-ink-3">
           {S.ontology.uniquenessHint}
         </p>
       </div>
 
       {pending ? (
-        <p className="text-xs text-neutral-500">{S.nav.loading}</p>
+        <p className="text-small text-ink-3">{S.nav.loading}</p>
       ) : candidates.length === 0 ? (
-        <p className="text-xs text-neutral-500">{S.ontology.uniquenessEmpty}</p>
+        <p className="text-small text-ink-3">{S.ontology.uniquenessEmpty}</p>
       ) : (
         <div className="space-y-2">
           {candidates.map((c) => (
             <div
               key={`${c.predicate_id}-${c.side}`}
-              className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5"
+              className="rounded-lg border border-line bg-surface px-3 py-3"
             >
               <div className="flex items-center gap-2">
-                <span className="text-[13px] text-neutral-200">{c.label}</span>
-                <span className="font-mono text-[11px] text-neutral-600">
+                <span className="text-body text-ink">{c.label}</span>
+                <span className="font-mono text-fine text-ink-3">
                   {c.key}
                 </span>
                 {c.declared && (
@@ -2449,7 +2348,7 @@ function UniquenessPanel({
                 )}
                 <span className="ml-auto">
                   {done[c.predicate_id] ? (
-                    <span className="text-[11.5px] text-neutral-400">
+                    <span className="text-small text-ink-2">
                       {done[c.predicate_id]}
                     </span>
                   ) : (
@@ -2468,7 +2367,7 @@ function UniquenessPanel({
                 </span>
               </div>
 
-              <p className="mt-1 text-[12px] text-neutral-500">
+              <p className="mt-1 text-small text-ink-3">
                 {c.side === "subject"
                   ? S.ontology.uniquenessSubject(c.holders)
                   : S.ontology.uniquenessObject(c.holders)}
@@ -2479,21 +2378,21 @@ function UniquenessPanel({
               {/* 证据：谁挂着哪些值。**这是人做判断的依据**，不是装饰——
                   看见「张三 leads 凤凰 / 李四 leads 凤凰」才知道该不该声明 */}
               {c.examples.length > 0 && (
-                <div className="mt-2 space-y-1 border-t border-white/[0.06] pt-2">
+                <div className="mt-2 space-y-1 border-t border-line pt-2">
                   {c.examples.slice(0, 3).map((ex) => (
                     <div
                       key={ex.holder}
-                      className="flex items-baseline gap-2 text-[11.5px]"
+                      className="flex items-baseline gap-2 text-small"
                     >
-                      <span className="shrink-0 text-neutral-400">
+                      <span className="shrink-0 text-ink-2">
                         {ex.holder}
                       </span>
-                      <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-neutral-500">
+                      <span className="flex flex-wrap gap-x-3 gap-y-1 text-ink-3">
                         {ex.values.map((v) => (
                           <span key={v.fact_id}>
                             {v.name ?? "—"}
                             {v.valid_from && (
-                              <span className="u-num ml-1 text-neutral-600">
+                              <span className="u-num ml-1 text-ink-3">
                                 {S.ontology.uniquenessSince(
                                   v.valid_from.slice(0, 10),
                                 )}
@@ -2862,7 +2761,7 @@ function MissesPanel({
   return (
     <div className="glass rounded-xl p-4">
       <div className="flex items-center gap-3 mb-1">
-        <h3 className="text-sm font-bold text-neutral-200">
+        <h3 className="text-body font-semibold text-ink">
           {S.ontology.misses}
         </h3>
         {misses.length > 0 && (
@@ -2876,67 +2775,72 @@ function MissesPanel({
           </Button>
         )}
       </div>
-      <p className="text-xs text-neutral-500 mb-3">{S.ontology.missesHint}</p>
+      <p className="text-small text-ink-3 mb-3">{S.ontology.missesHint}</p>
 
       {misses.length === 0 ? (
-        <p className="text-sm text-neutral-500">{S.ontology.noMisses}</p>
+        <p className="text-body text-ink-3">{S.ontology.noMisses}</p>
       ) : (
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap gap-2">
           {misses.map((m) => (
             <span
               key={`${m.kind}:${m.key}`}
-              className="glass rounded-full px-2.5 py-1 text-xs flex items-center gap-1.5"
+              className="glass rounded-full px-3 py-1 text-small flex items-center gap-2"
               title={m.example ?? ""}
             >
               <Chip tone={m.kind === "entity_type" ? "info" : "violet"}>
                 {m.kind === "entity_type" ? "C" : "P"}
               </Chip>
-              <span className="font-mono text-neutral-300">{m.key}</span>
-              <span className="text-neutral-500">×{m.count}</span>
-              <button
+              <span className="font-mono text-ink-2">{m.key}</span>
+              <span className="text-ink-3">×{m.count}</span>
+              <IconButton
+                size="sm"
+                label={S.ontology.dismiss}
+                className="-mr-1"
                 onClick={() => dismiss.mutate({ kind: m.kind, key: m.key })}
-                className="text-neutral-600 hover:text-neutral-300"
               >
                 ✕
-              </button>
+              </IconButton>
             </span>
           ))}
         </div>
       )}
       {dismissedMisses.length > 0 && (
-        <div className="mt-3 border-t border-white/5 pt-3">
-          <button
+        <div className="mt-3 border-t border-line pt-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-2"
             onClick={() => setShowDismissed((v) => !v)}
-            className="text-xs text-neutral-500 hover:text-neutral-300"
           >
             {showDismissed ? "▾" : "▸"} {S.ontology.dismissed(dismissedMisses.length)}
-          </button>
+          </Button>
           {showDismissed && (
             <>
-              <p className="text-xs text-neutral-600 mt-1.5 mb-2">
+              <p className="text-small text-ink-3 mt-2 mb-2">
                 {S.ontology.dismissedHint}
               </p>
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-2">
                 {dismissedMisses.map((m) => (
                   <span
                     key={`d:${m.kind}:${m.key}`}
-                    className="glass rounded-full px-2.5 py-1 text-xs flex items-center gap-1.5 opacity-60"
+                    className="glass rounded-full px-3 py-1 text-small flex items-center gap-2 opacity-60"
                     title={m.example ?? ""}
                   >
                     <Chip tone={m.kind === "entity_type" ? "info" : "violet"}>
                       {m.kind === "entity_type" ? "C" : "P"}
                     </Chip>
-                    <span className="font-mono text-neutral-400 line-through">
+                    <span className="font-mono text-ink-2 line-through">
                       {m.key}
                     </span>
-                    <span className="text-neutral-500">×{m.count}</span>
-                    <button
+                    <span className="text-ink-3">×{m.count}</span>
+                    <IconButton
+                      size="sm"
+                      label={S.ontology.restore}
+                      className="-mr-1"
                       onClick={() => restore.mutate({ kind: m.kind, key: m.key })}
-                      className="text-neutral-600 hover:text-neutral-200"
-                      title={S.ontology.restore}
                     >
                       ↺
-                    </button>
+                    </IconButton>
                   </span>
                 ))}
               </div>
@@ -2947,19 +2851,19 @@ function MissesPanel({
       {/* 系统自己动了本体，必须让人看见——只记在审计台账里不算可见。
           默认开启的前提是它的动作可见且可退，这条横幅是"可见"那一半 */}
       {autoRun.data?.run && !lastAdopt && (
-        <div className="mt-3 rounded-lg border border-[var(--u-accent)]/25 bg-[var(--u-accent)]/[0.06] px-3 py-2.5">
+        <div className="mt-3 rounded-lg border border-line-strong bg-surface px-3 py-3">
           <div className="flex items-start gap-2">
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-neutral-200">
+              <p className="text-small text-ink">
                 {S.ontology.autoRanTitle}
               </p>
-              <p className="mt-0.5 text-[11px] text-neutral-400">
+              <p className="mt-1 text-fine text-ink-2">
                 {S.ontology.autoRanBody(
                   autoRun.data.run.relations ?? [],
                   autoRun.data.run.facts_remapped ?? 0,
                 )}
               </p>
-              <p className="mt-0.5 text-[11px] text-neutral-600">
+              <p className="mt-1 text-fine text-ink-3">
                 {S.ontology.autoRanOff}
               </p>
             </div>
@@ -2982,11 +2886,11 @@ function MissesPanel({
 
       {/* 采纳改写了成批事实——没有回头路的话没人敢点第一下 */}
       {lastAdopt && (
-        <div className="mt-3 flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-          <span className="text-xs text-neutral-300">
+        <div className="mt-3 flex items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2">
+          <span className="text-small text-ink-2">
             {S.ontology.undoAdopt(lastAdopt.key, lastAdopt.moved)}
           </span>
-          <span className="text-[11px] text-neutral-600">
+          <span className="text-fine text-ink-3">
             {S.ontology.undoKeepsRelation}
           </span>
           <Button
@@ -3019,9 +2923,9 @@ function MissesPanel({
         />
       )}
       {proposals && (
-        <div className="mt-4 border-t border-white/10 pt-3">
+        <div className="mt-4 border-t border-line pt-3">
           <div className="mb-2 flex items-center gap-2">
-            <h4 className="text-xs font-bold text-neutral-400">
+            <h4 className="text-small font-semibold text-ink-2">
               {S.ontology.proposals}
             </h4>
             {/* 常见情形是"这些都对"——一条条点是把一个决定拆成八个 */}
@@ -3048,28 +2952,28 @@ function MissesPanel({
               </Button>
             )}
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             {/* 排在最前：它说的是"本体已经有了"，而这正是最该先看见的一句。
                 排在新建后面的话，人一路点下来就把重复建出来了 */}
             {(proposals.map_to ?? []).map((p) => (
-              <div key={`map-${p.key}`} className="flex items-center gap-2 text-sm">
+              <div key={`map-${p.key}`} className="flex items-center gap-2 text-body">
                 <Chip tone="success">=</Chip>
-                <span className="font-mono text-neutral-300">{p.key}</span>
+                <span className="font-mono text-ink-2">{p.key}</span>
                 {!!p.forms?.length && (
                   <span
-                    className="text-xs text-neutral-400 truncate"
+                    className="text-small text-ink-2 truncate"
                     title={p.forms.join(" · ")}
                   >
                     {p.forms.join(" · ")}
                   </span>
                 )}
                 {!!p.forms?.length && (
-                  <span className="text-xs text-[var(--u-accent)]">
+                  <span className="text-small text-accent">
                     {S.ontology.willRemap(factsWaiting(p.forms))}
                   </span>
                 )}
                 {p.reason && (
-                  <span className="text-xs text-neutral-500 truncate">
+                  <span className="text-small text-ink-3 truncate">
                     {p.reason}
                   </span>
                 )}
@@ -3084,12 +2988,12 @@ function MissesPanel({
               </div>
             ))}
             {proposals.entity_types.map((p) => (
-              <div key={p.key} className="flex items-center gap-2 text-sm">
+              <div key={p.key} className="flex items-center gap-2 text-body">
                 <Chip tone="info">C</Chip>
-                <span className="font-mono text-neutral-300">{p.key}</span>
-                <span className="text-neutral-200">{p.label}</span>
+                <span className="font-mono text-ink-2">{p.key}</span>
+                <span className="text-ink">{p.label}</span>
                 {p.reason && (
-                  <span className="text-xs text-neutral-500 truncate">
+                  <span className="text-small text-ink-3 truncate">
                     {p.reason}
                   </span>
                 )}
@@ -3104,23 +3008,23 @@ function MissesPanel({
               </div>
             ))}
             {proposals.relation_types.map((p) => (
-              <div key={p.key} className="flex items-center gap-2 text-sm">
+              <div key={p.key} className="flex items-center gap-2 text-body">
                 <Chip tone="violet">P</Chip>
-                <span className="font-mono text-neutral-300">{p.key}</span>
-                <span className="text-neutral-200">{p.label}</span>
+                <span className="font-mono text-ink-2">{p.key}</span>
+                <span className="text-ink">{p.label}</span>
                 {p.temporal && <Chip tone="neutral">{p.temporal}</Chip>}
                 {/* 影响面：采纳后会改写多少条、归并了哪些写法。没有这个，
                     "approve" 就只是凭空多一个空关系 */}
                 {!!p.forms?.length && (
                   <span
-                    className="text-xs text-[var(--u-accent)]"
+                    className="text-small text-accent"
                     title={p.forms.join(" · ")}
                   >
                     {S.ontology.willRemap(factsWaiting(p.forms))}
                   </span>
                 )}
                 {p.reason && (
-                  <span className="text-xs text-neutral-500 truncate">
+                  <span className="text-small text-ink-3 truncate">
                     {p.reason}
                   </span>
                 )}
@@ -3135,23 +3039,23 @@ function MissesPanel({
               </div>
             ))}
             {(proposals.attribute_types ?? []).map((p) => (
-              <div key={`attr-${p.key}`} className="flex items-center gap-2 text-sm">
+              <div key={`attr-${p.key}`} className="flex items-center gap-2 text-body">
                 {/* A 而不是 P：字面值那一档跟关系是两回事，界面上分得清 */}
                 <Chip tone="warn">A</Chip>
-                <span className="font-mono text-neutral-300">{p.key}</span>
-                <span className="text-neutral-200">{p.label}</span>
+                <span className="font-mono text-ink-2">{p.key}</span>
+                <span className="text-ink">{p.label}</span>
                 <Chip tone="neutral">{p.datatype ?? "text"}</Chip>
                 {p.unit && <Chip tone="neutral">{p.unit}</Chip>}
                 {!!p.forms?.length && (
                   <span
-                    className="text-xs text-[var(--u-accent)]"
+                    className="text-small text-accent"
                     title={p.forms.join(" · ")}
                   >
                     {S.ontology.willRemap(factsWaiting(p.forms))}
                   </span>
                 )}
                 {p.reason && (
-                  <span className="text-xs text-neutral-500 truncate">
+                  <span className="text-small text-ink-3 truncate">
                     {p.reason}
                   </span>
                 )}
@@ -3169,7 +3073,7 @@ function MissesPanel({
               proposals.relation_types.length === 0 &&
               !proposals.attribute_types?.length &&
               !proposals.map_to?.length && (
-                <p className="text-sm text-neutral-500">—</p>
+                <p className="text-body text-ink-3">—</p>
               )}
           </div>
         </div>
@@ -3244,10 +3148,10 @@ function ImportPanel({
 
   return (
     <div className="glass rounded-xl p-4">
-      <h3 className="text-sm font-bold text-neutral-200 mb-1">
+      <h3 className="text-body font-semibold text-ink mb-1">
         {S.ontology.importTitle}
       </h3>
-      <p className="text-xs text-neutral-500 mb-3">{S.ontology.importHint}</p>
+      <p className="text-small text-ink-3 mb-3">{S.ontology.importHint}</p>
 
       <input
         ref={pick}
@@ -3269,16 +3173,16 @@ function ImportPanel({
           {file ? S.ontology.importChange : S.ontology.importPick}
         </Button>
         {file && (
-          <span className="text-xs text-neutral-400 truncate">
+          <span className="text-small text-ink-2 truncate">
             <span className="font-mono">{file.name}</span>
-            <span className="text-neutral-600">
+            <span className="text-ink-3">
               {" "}
               · {S.ontology.importSize(file.size)}
             </span>
           </span>
         )}
         {preview.isPending && (
-          <span className="text-xs text-neutral-500">
+          <span className="text-small text-ink-3">
             {S.ontology.importReading}
           </span>
         )}
@@ -3286,12 +3190,12 @@ function ImportPanel({
 
       {plan && (
         <div className="mt-4">
-          <p className="text-[11px] uppercase tracking-[0.08em] text-neutral-600 u-num">
+          <p className="text-fine uppercase tracking-[0.08em] text-ink-3 u-num">
             {S.ontology.importParsed(plan.format, plan.triples)}
           </p>
 
           {empty ? (
-            <p className="mt-2 text-sm text-neutral-500">
+            <p className="mt-2 text-body text-ink-3">
               {S.ontology.importNothing}
             </p>
           ) : (
@@ -3351,29 +3255,33 @@ function ImportPanel({
               </div>
 
               {plan.unprojected.length > 0 && (
-                <details className="mt-3">
-                  <summary className="cursor-pointer text-xs text-neutral-500 hover:text-neutral-300">
-                    {S.ontology.importUnprojected} ({plan.unprojected.length})
-                  </summary>
-                  <p className="mt-1.5 text-[11px] text-neutral-600">
+                <Disclosure
+                  className="mt-3"
+                  summary={
+                    <>
+                      {S.ontology.importUnprojected} ({plan.unprojected.length})
+                    </>
+                  }
+                >
+                  <p className="mt-2 text-fine text-ink-3">
                     {S.ontology.importUnprojectedBody}
                   </p>
-                  <ul className="mt-1.5 space-y-0.5">
+                  <ul className="mt-2 space-y-1">
                     {plan.unprojected.map(([iri, n]) => (
-                      <li key={iri} className="flex gap-2 text-[11px]">
+                      <li key={iri} className="flex gap-2 text-fine">
                         <span
-                          className="font-mono text-neutral-500 truncate"
+                          className="font-mono text-ink-3 truncate"
                           title={iri}
                         >
                           {shortIri(iri)}
                         </span>
-                        <span className="u-num text-neutral-600 shrink-0">
+                        <span className="u-num text-ink-3 shrink-0">
                           ×{n}
                         </span>
                       </li>
                     ))}
                   </ul>
-                </details>
+                </Disclosure>
               )}
 
               <div className="mt-4 flex items-center gap-2">
@@ -3404,25 +3312,25 @@ function ImportPanel({
       )}
 
       {/* 导入历史：谁在什么时候拿哪个文件动过本体。原文按 sha256 存着 */}
-      <div className="mt-5 border-t border-white/10 pt-3">
-        <h4 className="text-xs font-medium text-neutral-400 mb-2">
+      <div className="mt-6 border-t border-line pt-3">
+        <h4 className="text-small font-medium text-ink-2 mb-2">
           {S.ontology.importHistory}
         </h4>
         {!history.data?.imports.length ? (
-          <p className="text-xs text-neutral-600">
+          <p className="text-small text-ink-3">
             {S.ontology.importNoHistory}
           </p>
         ) : (
-          <ul className="space-y-1.5">
+          <ul className="space-y-2">
             {history.data.imports.map((im) => (
-              <li key={im.id} className="flex items-baseline gap-2 text-xs">
-                <span className="font-mono text-neutral-300 truncate">
+              <li key={im.id} className="flex items-baseline gap-2 text-small">
+                <span className="font-mono text-ink-2 truncate">
                   {im.filename}
                 </span>
-                <span className="u-num text-neutral-600 shrink-0">
+                <span className="u-num text-ink-3 shrink-0">
                   {S.ontology.importSize(im.byte_size)}
                 </span>
-                <span className="ml-auto text-[11px] text-neutral-600 shrink-0">
+                <span className="ml-auto text-fine text-ink-3 shrink-0">
                   {S.ontology.importBy(
                     im.imported_by_name ?? "—",
                     new Date(im.imported_at).toLocaleDateString(),
@@ -3467,27 +3375,27 @@ function Warning({
   return (
     <div
       className={cn(
-        "mt-3 rounded-lg border px-3 py-2.5",
+        "mt-3 rounded-lg border px-3 py-3",
         tone === "danger"
-          ? "border-rose-500/25 bg-rose-500/[0.06]"
-          : "border-amber-500/25 bg-amber-500/[0.06]",
+          ? "border-danger/25 bg-danger/[0.06]"
+          : "border-warn/25 bg-warn/[0.06]",
       )}
     >
-      <p className="text-xs text-neutral-200">{title}</p>
-      <p className="mt-0.5 text-[11px] text-neutral-400">{body}</p>
+      <p className="text-small text-ink">{title}</p>
+      <p className="mt-1 text-fine text-ink-2">{body}</p>
       {items.length > 0 && (
-        <details className="mt-1.5">
-          <summary className="cursor-pointer text-[11px] text-neutral-500 hover:text-neutral-300">
-            {items.length > 1 ? `${items.length} items` : "1 item"}
-          </summary>
-          <ul className="mt-1 space-y-0.5">
+        <Disclosure
+          className="mt-2"
+          summary={items.length > 1 ? `${items.length} items` : "1 item"}
+        >
+          <ul className="mt-1 space-y-1">
             {items.map((it) => (
-              <li key={it} className="font-mono text-[11px] text-neutral-400">
+              <li key={it} className="font-mono text-fine text-ink-2">
                 {it}
               </li>
             ))}
           </ul>
-        </details>
+        </Disclosure>
       )}
     </div>
   );
@@ -3507,10 +3415,10 @@ function PlanRow({
   const n = (d: PlannedItem["disposition"]) =>
     items.filter((i) => i.disposition === d).length;
   return (
-    <div className="rounded-lg bg-white/[0.03] px-3 py-2">
+    <div className="rounded-lg bg-surface px-3 py-2">
       <div className="flex items-center gap-2">
-        <span className="text-xs text-neutral-300">{label}</span>
-        <span className="ml-auto flex items-center gap-1.5">
+        <span className="text-small text-ink-2">{label}</span>
+        <span className="ml-auto flex items-center gap-2">
           {n("create") > 0 && (
             <Chip tone="success">
               {S.ontology.importWillCreate(n("create"))}
@@ -3526,7 +3434,7 @@ function PlanRow({
           )}
         </span>
       </div>
-      {note && <p className="mt-1 text-[11px] text-neutral-600">{note}</p>}
+      {note && <p className="mt-1 text-fine text-ink-3">{note}</p>}
     </div>
   );
 }

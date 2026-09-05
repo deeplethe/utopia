@@ -141,17 +141,37 @@ type InputSize = { size?: "sm" | "md" };
 export function Input({
   className,
   size = "md",
+  icon,
   ...props
-}: Omit<InputHTMLAttributes<HTMLInputElement>, "size"> & InputSize) {
-  return (
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "size"> &
+  InputSize & {
+    /** 左侧的语义图标（筛选框的放大镜）。给了它，className 落在外层容器上 */
+    icon?: ReactNode;
+  }) {
+  const control = (
     <input
       className={cn(
         "input-dark",
         size === "sm" ? "u-input-sm" : "u-input-md",
-        className,
+        icon ? (size === "sm" ? "pl-7" : "pl-8") : null,
+        icon ? "w-full" : className,
       )}
       {...props}
     />
+  );
+  if (!icon) return control;
+  return (
+    <div className={cn("relative", className)}>
+      <span
+        className={cn(
+          "pointer-events-none absolute top-1/2 -translate-y-1/2 text-ink-3",
+          size === "sm" ? "left-2" : "left-3",
+        )}
+      >
+        {icon}
+      </span>
+      {control}
+    </div>
   );
 }
 
@@ -950,6 +970,190 @@ export function localDateTime(iso: string): string {
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${localDate(iso)} ${hh}:${mm}`;
+}
+
+/* ---------- Row（可点的一行：左栏导航项、类树、关系/属性列表） ----------
+   一行整条可点，指针停上变面、选中反白。列表里的行与左栏导航项是同一个东西，
+   只差密度：nav 高一点、带图标；list 矮一点、可缩进。 */
+/** 一行的类：Row 自己用；页面里必须是 <Link> 的行（跳去图谱的实例行）也用它 */
+export function rowClass(active?: boolean, density: "nav" | "list" = "list"): string {
+  return cn(
+    "group flex w-full items-center gap-2 rounded-lg text-left transition-colors duration-fast",
+    density === "nav" ? "px-2 py-2 text-body font-medium" : "px-2 py-1 text-body",
+    active ? "u-nav-active" : "text-ink-2 hover:bg-surface-2 hover:text-ink",
+  );
+}
+/** 行右端小字：静止时最淡，整行被指着时提亮一级 */
+export const ROW_TRAILING = "ml-auto shrink-0 text-fine text-ink-3 group-hover:text-ink-2";
+
+export function Row({
+  active,
+  density = "list",
+  indent = 0,
+  icon,
+  trailing,
+  className,
+  children,
+  type = "button",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  active?: boolean;
+  density?: "nav" | "list";
+  /** 树形缩进的层级 */
+  indent?: number;
+  icon?: ReactNode;
+  /** 右端的东西：计数、类型小字 */
+  trailing?: ReactNode;
+}) {
+  return (
+    <button
+      type={type}
+      aria-current={active ? "true" : undefined}
+      style={indent ? { paddingLeft: `${8 + indent * 14}px` } : undefined}
+      className={cn(rowClass(active, density), className)}
+      {...props}
+    >
+      {icon && <span className="shrink-0 text-ink-3">{icon}</span>}
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {trailing && <span className={ROW_TRAILING}>{trailing}</span>}
+    </button>
+  );
+}
+
+/* 左栏底部那种钉住的入口：顶上一条线，不圆角，撑满 */
+export function RailItem({
+  active,
+  icon,
+  count,
+  className,
+  children,
+  type = "button",
+  ...props
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  active?: boolean;
+  icon?: ReactNode;
+  count?: number;
+}) {
+  return (
+    <button
+      type={type}
+      aria-current={active ? "true" : undefined}
+      className={cn(
+        "flex w-full shrink-0 items-center gap-2 border-t border-line px-4 py-2 text-left text-body transition-colors duration-fast",
+        active ? "u-nav-active" : "text-ink-2 hover:bg-surface-2 hover:text-ink",
+        className,
+      )}
+      {...props}
+    >
+      {icon && <span className="shrink-0 text-ink-3">{icon}</span>}
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {count !== undefined && count > 0 && (
+        <span className="u-num ml-auto rounded-full bg-surface-3 px-2 text-fine text-ink-3">
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/* ---------- Segmented（分段切换） ----------
+   两三个互斥的视图或取值。fill = 每格等宽撑满（左栏的类/属性切换）；
+   否则按内容宽（连接方向、形状那种小开关）。 */
+export function Segmented<T extends string>({
+  value,
+  options,
+  onChange,
+  size = "md",
+  fill,
+  className,
+}: {
+  value: T;
+  options: { value: T; label: ReactNode; count?: number; title?: string }[];
+  onChange: (v: T) => void;
+  size?: "sm" | "md";
+  fill?: boolean;
+  className?: string;
+}) {
+  return (
+    <div
+      role="tablist"
+      className={cn(
+        "flex gap-1 rounded-lg bg-surface p-1",
+        fill && "w-full",
+        className,
+      )}
+    >
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button
+            key={o.value}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            title={o.title}
+            onClick={() => onChange(o.value)}
+            className={cn(
+              "flex items-center justify-center gap-1 rounded-lg font-medium transition-colors duration-fast",
+              size === "sm" ? "px-2 py-1 text-fine" : "px-3 py-1 text-small",
+              fill && "flex-1",
+              active
+                ? "bg-surface-3 text-ink"
+                : "text-ink-3 hover:bg-surface-2 hover:text-ink-2",
+            )}
+          >
+            {o.label}
+            {o.count !== undefined && o.count > 0 && (
+              <span className="u-num text-ink-3">{o.count}</span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------- Checkbox ---------- */
+export function Checkbox({
+  label,
+  hint,
+  className,
+  ...props
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "type"> & {
+  label: ReactNode;
+  hint?: ReactNode;
+}) {
+  return (
+    <label className={cn("flex cursor-pointer items-start gap-2", className)}>
+      <input type="checkbox" className="mt-1 accent-accent" {...props} />
+      <span className="min-w-0">
+        <span className="block text-body text-ink">{label}</span>
+        {hint && <span className="block text-fine text-ink-3">{hint}</span>}
+      </span>
+    </label>
+  );
+}
+
+/* ---------- Disclosure（折叠小节：一行可点的摘要 + 展开的内容） ---------- */
+export function Disclosure({
+  summary,
+  defaultOpen,
+  className,
+  children,
+}: {
+  summary: ReactNode;
+  defaultOpen?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <details open={defaultOpen} className={className}>
+      <summary className="cursor-pointer select-none text-small text-ink-3 transition-colors duration-fast hover:text-ink-2">
+        {summary}
+      </summary>
+      <div className="mt-2">{children}</div>
+    </details>
+  );
 }
 
 /* 各在自己文件里的组件，从这里一并导出，页面只认 "../ui" 一个入口 */
