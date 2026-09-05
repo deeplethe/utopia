@@ -330,6 +330,18 @@ export interface RuleInput {
   conditions: RuleCondition[];
 }
 
+/** 一条规则标住的一个实体，连同让它成立的那几条读数 */
+export interface RuleMatch {
+  derived_id: string;
+  entity_id: string;
+  entity: string;
+  concluded: string | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  /** 「全烃 = 12.3」这种可读形态，按前提顺序 */
+  premises: string[];
+}
+
 export interface BusinessRule extends RuleInput {
   id: string;
   enabled: boolean;
@@ -338,6 +350,8 @@ export interface BusinessRule extends RuleInput {
   conclude_predicate_label: string | null;
   /** 此刻凭它成立的结论条数 */
   derived_count: number;
+  /** 上次跑的时候有几个实体的读数组合没展开完。**大于零就意味着少推了** */
+  capped: number;
 }
 
 export interface DerivedFact {
@@ -1595,12 +1609,22 @@ export const api = {
       description?: string;
       enabled?: boolean;
       conditions?: RuleCondition[];
+      /** 结论整组替换：三格互相定义，只改一格会留下半截状态 */
+      conclusion?: "typing" | "attribute";
+      conclude_type_id?: string;
+      conclude_predicate_id?: string;
+      conclude_value?: unknown;
     },
   ) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/rules/${ruleId}`, {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
+  /** 一条规则此刻标了谁。规则卡片上那个数字点开就是它 */
+  ruleMatches: (kbId: string, ruleId: string, page = 0, per = 20) =>
+    request<{ matches: RuleMatch[]; total: number }>(
+      `/api/v1/kbs/${kbId}/rules/${ruleId}/matches?page=${page}&per=${per}`,
+    ),
   deleteRule: (kbId: string, ruleId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/rules/${ruleId}`, {
       method: "DELETE",

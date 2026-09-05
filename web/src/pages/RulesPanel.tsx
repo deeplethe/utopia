@@ -10,7 +10,7 @@
  *  一律从 ui/ 来。 */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Play, Plus, Trash2 } from "lucide-react";
+import { Pencil, Play, Plus, Trash2 } from "lucide-react";
 import {
   api,
   type BusinessRule,
@@ -21,10 +21,12 @@ import {
 import { S } from "../i18n";
 import {
   Button,
+  Chip,
   DangerConfirm,
   Dropdown,
   IconButton,
   Input,
+  LinkButton,
   Panel,
 } from "../ui";
 import { toast } from "../toast";
@@ -79,6 +81,8 @@ function parseOperand(op: string, text: string): unknown | undefined {
 }
 
 type Draft = {
+  /** 改的是哪一条；新建时为 null。**同一份草稿两种用途**——两套表单会漂移 */
+  id: string | null;
   name: string;
   description: string;
   subject_type_id: string;
@@ -93,6 +97,7 @@ const emptyDraft = (
   classes: EntityTypeView[],
   attrs: RelationTypeView[],
 ): Draft => ({
+  id: null,
   name: "",
   description: "",
   subject_type_id: classes[0]?.id ?? "",
@@ -104,6 +109,75 @@ const emptyDraft = (
     ? [{ predicate_id: attrs[0].id, op: "gt", text: "" }]
     : [],
 });
+
+/** 已有规则 → 草稿。**回读要与写入是同一套形状**，否则编辑一次就变形。 */
+function draftOf(r: BusinessRule): Draft {
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description ?? "",
+    subject_type_id: r.subject_type_id,
+    conclusion: r.conclusion,
+    conclude_type_id: r.conclude_type_id ?? "",
+    conclude_predicate_id: r.conclude_predicate_id ?? "",
+    conclude_value:
+      typeof r.conclude_value === "string"
+        ? r.conclude_value
+        : r.conclude_value === undefined || r.conclude_value === null
+          ? ""
+          : String(r.conclude_value),
+    conditions: r.conditions.map((c) => ({
+      predicate_id: c.predicate_id,
+      op: c.op,
+      text: operandText(c.op, c.operand),
+    })),
+  };
+}
+
+/** 一条规则此刻标住了谁，以及凭什么。计数点开就是它。 */
+function Matches({ kbId, ruleId }: { kbId: string; ruleId: string }) {
+  const q = useQuery({
+    queryKey: ["ruleMatches", kbId, ruleId],
+    queryFn: () => api.ruleMatches(kbId, ruleId),
+  });
+  const rows = q.data?.matches ?? [];
+  const total = q.data?.total ?? 0;
+  if (!rows.length) {
+    return <p className="text-small text-ink-3">{S.ontology.ruleMatchesEmpty}</p>;
+  }
+  return (
+    <div className="space-y-2">
+      {rows.map((m) => (
+        <div key={m.derived_id} className="space-y-1">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <span className="text-small text-ink">{m.entity}</span>
+            <span className="text-fine text-ink-3">→ {m.concluded}</span>
+            {/* 同一个实体会因为不同时段的读数出现好几次，写出这一段才不像重复 */}
+            {m.valid_from && (
+              <span className="u-num text-fine text-ink-3">
+                {S.ontology.ruleMatchSpan(
+                  m.valid_from.slice(0, 10),
+                  m.valid_to ? m.valid_to.slice(0, 10) : null,
+                )}
+              </span>
+            )}
+          </div>
+          {/* 前提就是「凭什么」——列表没有它就跟一串凭空的判断没区别 */}
+          {m.premises.length > 0 && (
+            <p className="text-fine text-ink-3">
+              {S.ontology.ruleMatchBecause(m.premises.join(", "))}
+            </p>
+          )}
+        </div>
+      ))}
+      {total > rows.length && (
+        <p className="u-num text-fine text-ink-3">
+          {S.ontology.ruleMatchesMore(rows.length, total)}
+        </p>
+      )}
+    </div>
+  );
+}
 
 export function RulesPanel({
   kbId,
@@ -125,6 +199,8 @@ export function RulesPanel({
   const [draft, setDraft] = useState<Draft | null>(null);
   /** 待确认删除的那一条。删规则会带走它推出的全部结论，值得停一下 */
   const [doomed, setDoomed] = useState<BusinessRule | null>(null);
+  /** 展开了哪条规则的命中列表。一次只展开一条——两份长列表并排读不了 */
+  const [opened, setOpened] = useState<string | null>(null);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["rules", kbId] });
@@ -133,7 +209,7 @@ export function RulesPanel({
   };
 
   const save = useMutation({
-    mutationFn: () => {
+    mutationFn: async () => {
       const d = draft!;
       if (!d.conditions.length) throw new Error(S.ontology.ruleNeedsCondition);
       const conditions: RuleCondition[] = d.conditions.map((c) => {
@@ -143,10 +219,7 @@ export function RulesPanel({
         }
         return { predicate_id: c.predicate_id, op: c.op, operand };
       });
-      return api.createRule(kbId, {
-        name: d.name,
-        description: d.description,
-        subject_type_id: d.subject_type_id,
+      const conclusion = {
         conclusion: d.conclusion,
         conclude_type_id:
           d.conclusion === "typing" ? d.conclude_type_id : undefined,
@@ -154,8 +227,23 @@ export function RulesPanel({
           d.conclusion === "attribute" ? d.conclude_predicate_id : undefined,
         conclude_value:
           d.conclusion === "attribute" ? d.conclude_value : undefined,
-        conditions,
-      });
+      };
+      // 改一条已有的规则走 PATCH，主类不动——换主类等于换一条规则，
+      // 那时候删了重写比原地改诚实
+      await (d.id
+        ? api.updateRule(kbId, d.id, {
+            name: d.name,
+            description: d.description,
+            conditions,
+            ...conclusion,
+          })
+        : api.createRule(kbId, {
+            name: d.name,
+            description: d.description,
+            subject_type_id: d.subject_type_id,
+            conditions,
+            ...conclusion,
+          }));
     },
     onSuccess: () => {
       toast.success(S.ontology.ruleSaved);
@@ -239,11 +327,23 @@ export function RulesPanel({
         <Panel key={r.id} className="space-y-2 p-4">
           <div className="flex items-center gap-2">
             <span className="text-body font-medium text-ink">{r.name}</span>
-            {/* 此刻凭它成立的结论条数——规则有没有在干活，一眼看得见 */}
+            {/* 此刻凭它成立的结论条数。**点得动**——二十个实体还能一个个点开
+                看，两百个就只能靠这份列表 */}
             {r.derived_count > 0 && (
-              <span className="u-num text-fine text-ink-3">
+              <LinkButton
+                className="u-num text-fine"
+                onClick={() => setOpened(opened === r.id ? null : r.id)}
+                aria-expanded={opened === r.id}
+              >
                 {S.ontology.ruleDerivedCount(r.derived_count)}
-              </span>
+              </LinkButton>
+            )}
+            {/* 展不完的组合：常驻，不只在跑完那一刻的提示里。少推几条与
+                「不满足」在结果里长得一样，读的人得随时看得见 */}
+            {r.capped > 0 && (
+              <Chip tone="warn" title={S.ontology.ruleCappedHint}>
+                {S.ontology.ruleCappedChip}
+              </Chip>
             )}
             <div className="ml-auto flex items-center gap-2">
               {/* 开关是个动作，所以是 Button；启用与否用 variant 区分，
@@ -256,6 +356,13 @@ export function RulesPanel({
               >
                 {r.enabled ? S.ontology.ruleEnabled : S.ontology.ruleDisabled}
               </Button>
+              <IconButton
+                label={S.ontology.ruleEdit}
+                size="sm"
+                onClick={() => setDraft(draftOf(r))}
+              >
+                <Pencil size={12} />
+              </IconButton>
               <IconButton
                 label={S.ontology.ruleDelete}
                 size="sm"
@@ -295,6 +402,14 @@ export function RulesPanel({
                 : `${r.conclude_predicate_label} = ${JSON.stringify(r.conclude_value)}`}
             </span>
           </p>
+          {opened === r.id && (
+            <div className="border-t border-line pt-2">
+              <p className="mb-2 text-fine text-ink-3">
+                {S.ontology.ruleMatchesTitle}
+              </p>
+              <Matches kbId={kbId} ruleId={r.id} />
+            </div>
+          )}
         </Panel>
       ))}
 
@@ -304,6 +419,9 @@ export function RulesPanel({
 
       {draft ? (
         <Panel className="space-y-3 p-4">
+          {draft.id && (
+            <p className="text-fine text-ink-3">{S.ontology.ruleEditing}</p>
+          )}
           <Input
             value={draft.name}
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
@@ -320,11 +438,19 @@ export function RulesPanel({
             <span className="shrink-0 text-fine text-ink-3">
               {S.ontology.ruleSubject}
             </span>
-            <Dropdown
-              value={draft.subject_type_id}
-              onChange={(v) => setDraft({ ...draft, subject_type_id: v })}
-              options={classes.map((c) => ({ value: c.id, label: c.label }))}
-            />
+            {draft.id ? (
+              // 改一条已有规则时主类固定：换主类等于换一条规则，
+              // 而它推出来的结论全挂在旧主类上
+              <span className="text-small text-ink-2">
+                {classes.find((c) => c.id === draft.subject_type_id)?.label}
+              </span>
+            ) : (
+              <Dropdown
+                value={draft.subject_type_id}
+                onChange={(v) => setDraft({ ...draft, subject_type_id: v })}
+                options={classes.map((c) => ({ value: c.id, label: c.label }))}
+              />
+            )}
           </div>
 
           <div className="space-y-2">

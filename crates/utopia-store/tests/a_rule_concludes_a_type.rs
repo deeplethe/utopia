@@ -457,3 +457,249 @@ async fn the_asserted_type_is_left_alone() -> anyhow::Result<()> {
         .await?;
     run
 }
+
+/// 改结论：从「推一个类」改成「推一个属性值」。
+///
+/// **旧结论要作废，而不是留在那里跟着新结论一起成立。** 三格是互相定义的，
+/// 所以这里也顺带钉住 `conclude_type_id` 被清空了——半截状态（说是 attribute
+/// 却还挂着类）在库里看不出错，只会在导出与画布上冒出来。
+#[tokio::test]
+async fn changing_the_conclusion_retires_the_old_one() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        attr(
+            &pool,
+            &f,
+            f.thc,
+            serde_json::json!(12.3),
+            "2023-06-01T00:00:00Z",
+        )
+        .await?;
+        attr(
+            &pool,
+            &f,
+            f.category,
+            serde_json::json!("气测异常"),
+            "2023-06-01T00:00:00Z",
+        )
+        .await?;
+        let r = rule(&pool, &f, 8.0).await?;
+        utopia_store::reasoning::materialize(&pool, f.kb).await?;
+        let rows = derived(&pool, &f).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].object_value,
+            Some(serde_json::json!({"class": "gas_well"}))
+        );
+
+        // 结论换成属性：含气性 = 含气
+        let verdict = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO relation_types (id, kb_id, key, label, kind, datatype)
+             VALUES ($1, $2, 'gas_verdict', '含气性', 'attribute', 'text')",
+        )
+        .bind(verdict)
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+        utopia_store::business_rules::update(
+            &pool,
+            f.kb,
+            r,
+            None,
+            None,
+            None,
+            None,
+            Some(&utopia_store::business_rules::ConclusionInput {
+                kind: "attribute".into(),
+                type_id: None,
+                predicate_id: Some(verdict),
+                value: Some(serde_json::json!("含气")),
+            }),
+        )
+        .await?;
+
+        let (kind, class): (String, Option<Uuid>) = sqlx::query_as(
+            "SELECT conclusion, conclude_type_id FROM attribute_rules WHERE id = $1",
+        )
+        .bind(r)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(kind, "attribute");
+        assert!(class.is_none(), "换了形状，旧的那一格要清空");
+
+        let report = utopia_store::reasoning::materialize(&pool, f.kb).await?;
+        assert_eq!(report.rule_hits, 1, "同一份读数照样命中，只是结论变了");
+        assert_eq!(report.invalidated, 1, "旧结论退场");
+
+        let rows = derived(&pool, &f).await?;
+        assert_eq!(rows.len(), 2, "两行：作废的旧结论 + 新结论");
+        let old = rows.iter().find(|d| d.invalidated_at.is_some()).unwrap();
+        let new = rows.iter().find(|d| d.invalidated_at.is_none()).unwrap();
+        assert_eq!(
+            old.object_value,
+            Some(serde_json::json!({"class": "gas_well"}))
+        );
+        assert_eq!(new.object_value, Some(serde_json::json!({"value": "含气"})));
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 展不完的组合要**留在规则上**，不是只在跑完那一刻说一句。
+///
+/// 一口井上两个属性各九条读数就是 81 种组合，超过上限之后这个实体整个被跳过
+/// ——而「跳过」与「不满足」在结果里长得一模一样。读数减回来，这个数字要跟着
+/// 归零，否则它只会单调地累积成一句吓人的假话。
+#[tokio::test]
+async fn a_capped_expansion_is_remembered() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        let mut thc_facts = Vec::new();
+        for i in 0..9 {
+            thc_facts.push(
+                attr(
+                    &pool,
+                    &f,
+                    f.thc,
+                    serde_json::json!(10.0 + i as f64),
+                    &format!("2023-06-{:02}T00:00:00Z", i + 1),
+                )
+                .await?,
+            );
+            attr(
+                &pool,
+                &f,
+                f.category,
+                serde_json::json!("气测异常"),
+                &format!("2023-07-{:02}T00:00:00Z", i + 1),
+            )
+            .await?;
+        }
+        let r = rule(&pool, &f, 8.0).await?;
+
+        let report = utopia_store::reasoning::materialize(&pool, f.kb).await?;
+        assert_eq!(report.rule_capped, 1);
+        assert_eq!(
+            report.rule_hits, 0,
+            "展不完就整个跳过——这正是要说出来的原因"
+        );
+        assert_eq!(
+            capped_of(&pool, f.kb, r).await?,
+            1,
+            "落在规则上，卡片读得到"
+        );
+
+        // 读数收回到 1 × 9：能展开了
+        for id in thc_facts.iter().skip(1) {
+            sqlx::query("DELETE FROM facts WHERE id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await?;
+        }
+        let report = utopia_store::reasoning::materialize(&pool, f.kb).await?;
+        assert_eq!(report.rule_capped, 0);
+        assert!(report.rule_hits > 0);
+        assert_eq!(capped_of(&pool, f.kb, r).await?, 0, "归零，不累积");
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 卡片上那个数字点开之后看见的东西：谁被标住了，以及凭哪几条读数。
+#[tokio::test]
+async fn the_matches_list_says_who_and_why() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        attr(
+            &pool,
+            &f,
+            f.thc,
+            serde_json::json!(12.3),
+            "2023-06-01T00:00:00Z",
+        )
+        .await?;
+        attr(
+            &pool,
+            &f,
+            f.category,
+            serde_json::json!("气测异常"),
+            "2023-06-01T00:00:00Z",
+        )
+        .await?;
+        let r = rule(&pool, &f, 8.0).await?;
+        utopia_store::reasoning::materialize(&pool, f.kb).await?;
+
+        let (rows, total) = utopia_store::business_rules::matches(&pool, f.kb, r, 20, 0).await?;
+        assert_eq!(total, 1);
+        assert_eq!(rows[0]["entity"], "W-1");
+        assert_eq!(
+            rows[0]["concluded"], "GasBearingWell",
+            "读出来是标签，不是库里的 key"
+        );
+        let premises: Vec<String> = rows[0]["premises"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            premises,
+            vec!["全烃 = 12.3", "解释结论 = 气测异常"],
+            "前提按顺序，读得出「凭什么」"
+        );
+
+        // 规则关掉之后结论退场，列表也就空了——数字与列表是同一份事实
+        utopia_store::business_rules::update(&pool, f.kb, r, None, None, Some(false), None, None)
+            .await?;
+        utopia_store::reasoning::materialize(&pool, f.kb).await?;
+        let (rows, total) = utopia_store::business_rules::matches(&pool, f.kb, r, 20, 0).await?;
+        assert_eq!(total, 0);
+        assert!(rows.is_empty());
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 一条规则上次跑的时候，有几个实体没展开完。
+async fn capped_of(pool: &PgPool, kb: Uuid, rule_id: Uuid) -> anyhow::Result<i64> {
+    let rules = utopia_store::business_rules::list(pool, kb).await?;
+    let r = rules
+        .iter()
+        .find(|r| r["id"].as_str() == Some(&rule_id.to_string()))
+        .expect("规则在列表里");
+    Ok(r["capped"].as_i64().expect("capped 是个数"))
+}

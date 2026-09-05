@@ -65,6 +65,7 @@ type RuleRow = (
     Option<serde_json::Value>,
     bool,
     i64,
+    i32,
 );
 
 /// 条件查询回来的一行：规则、属性谓词及其标签、比较方式、操作数
@@ -116,44 +117,17 @@ pub async fn create(
     }
     validate_conditions(pool, kb_id, conditions).await?;
 
-    match conclusion {
-        "typing" => {
-            let t = conclude_type_id.ok_or_else(|| {
-                AppError::invalid("no_class", "A typing rule needs the class it concludes.")
-            })?;
-            exists(
-                pool,
-                kb_id,
-                "entity_types",
-                t,
-                "unknown_class",
-                "That class is not in this base.",
-            )
-            .await?;
-            ensure_is_a(pool, kb_id).await?;
-        }
-        "attribute" => {
-            let p = conclude_predicate_id.ok_or_else(|| {
-                AppError::invalid(
-                    "no_predicate",
-                    "An attribute rule needs the attribute it sets.",
-                )
-            })?;
-            if conclude_value.is_none() {
-                return Err(AppError::invalid(
-                    "no_value",
-                    "An attribute rule needs the value it sets.",
-                ));
-            }
-            attribute_predicate(pool, kb_id, p).await?;
-        }
-        _ => {
-            return Err(AppError::invalid(
-                "bad_conclusion",
-                "A conclusion is either a typing or an attribute.",
-            ))
-        }
-    }
+    validate_conclusion(
+        pool,
+        kb_id,
+        &ConclusionInput {
+            kind: conclusion.to_string(),
+            type_id: conclude_type_id,
+            predicate_id: conclude_predicate_id,
+            value: conclude_value.clone(),
+        },
+    )
+    .await?;
     exists(
         pool,
         kb_id,
@@ -199,6 +173,17 @@ pub async fn create(
 ///
 /// **不做逐条的增删改**——条件是一个合取整体，替换比对着 seq 打补丁好读，
 /// 也没有「改到一半」的中间状态。
+/// 结论的一次改写。**两种形状各自完整地给**，不做「只改类、别的不动」——
+/// 结论的三格是互相定义的，部分更新会留下 typing 却带着值这种半截状态。
+pub struct ConclusionInput {
+    /// typing | attribute
+    pub kind: String,
+    pub type_id: Option<Uuid>,
+    pub predicate_id: Option<Uuid>,
+    pub value: Option<serde_json::Value>,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn update(
     pool: &PgPool,
     kb_id: Uuid,
@@ -207,6 +192,7 @@ pub async fn update(
     description: Option<&str>,
     enabled: Option<bool>,
     conditions: Option<&[ConditionInput]>,
+    conclusion: Option<&ConclusionInput>,
 ) -> AppResult<()> {
     if let Some(cs) = conditions {
         if cs.is_empty() {
@@ -217,12 +203,22 @@ pub async fn update(
         }
         validate_conditions(pool, kb_id, cs).await?;
     }
+    if let Some(c) = conclusion {
+        validate_conclusion(pool, kb_id, c).await?;
+    }
     let mut tx = pool.begin().await?;
     let res = sqlx::query(
+        // 结论给了就整组换（三格一起），没给就一格不动——COALESCE 在这里
+        // 不够用：把 typing 改成 attribute 要把 conclude_type_id 置回 NULL，
+        // 而 COALESCE 恰恰做不到「显式清空」
         "UPDATE attribute_rules
             SET name = COALESCE($3, name),
                 description = COALESCE($4, description),
                 enabled = COALESCE($5, enabled),
+                conclusion = COALESCE($6, conclusion),
+                conclude_type_id      = CASE WHEN $6 IS NULL THEN conclude_type_id      ELSE $7 END,
+                conclude_predicate_id = CASE WHEN $6 IS NULL THEN conclude_predicate_id ELSE $8 END,
+                conclude_value        = CASE WHEN $6 IS NULL THEN conclude_value        ELSE $9 END,
                 updated_at = now()
           WHERE id = $2 AND kb_id = $1",
     )
@@ -231,6 +227,10 @@ pub async fn update(
     .bind(name.map(str::trim))
     .bind(description.map(str::trim))
     .bind(enabled)
+    .bind(conclusion.map(|c| c.kind.as_str()))
+    .bind(conclusion.and_then(|c| c.type_id))
+    .bind(conclusion.and_then(|c| c.predicate_id))
+    .bind(conclusion.and_then(|c| c.value.clone()))
     .execute(&mut *tx)
     .await?;
     if res.rows_affected() == 0 {
@@ -268,7 +268,8 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
                 r.conclusion, r.conclude_type_id, ct.label,
                 r.conclude_predicate_id, cp.label, r.conclude_value, r.enabled,
                 (SELECT count(*) FROM derived_facts d
-                  WHERE d.attribute_rule_id = r.id AND d.invalidated_at IS NULL)
+                  WHERE d.attribute_rule_id = r.id AND d.invalidated_at IS NULL),
+                r.capped_at_last_run
            FROM attribute_rules r
            JOIN entity_types st ON st.id = r.subject_type_id
            LEFT JOIN entity_types ct ON ct.id = r.conclude_type_id
@@ -311,6 +312,7 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
                 cv,
                 enabled,
                 derived,
+                capped,
             )| {
                 let conditions: Vec<serde_json::Value> = conds
                     .iter()
@@ -338,6 +340,7 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
                     "conclude_value": cv,
                     "enabled": enabled,
                     "derived_count": derived,
+                    "capped": capped,
                     "conditions": conditions,
                 })
             },
@@ -350,7 +353,7 @@ type MatchRow = (
     Uuid,
     Uuid,
     String,
-    Option<serde_json::Value>,
+    Option<String>,
     Option<chrono::DateTime<chrono::Utc>>,
     Option<chrono::DateTime<chrono::Utc>>,
     Vec<String>,
@@ -377,7 +380,13 @@ pub async fn matches(
     .await?;
 
     let rows: Vec<MatchRow> = sqlx::query_as(
-        "SELECT d.id, e.id, e.canonical_name, d.object_value, d.valid_from, d.valid_to,
+        // 结论读出来要是人看的那个名字。库里存的是类的 key/IRI（归类）或
+        // 字面值（属性），两者都不该原样端上来
+        "SELECT d.id, e.id, e.canonical_name,
+                COALESCE(ct.label,
+                         d.object_value #>> '{value}',
+                         d.object_value ->> 'class'),
+                d.valid_from, d.valid_to,
                 COALESCE(
                     (SELECT array_agg(
                                 COALESCE(pr.label, '?') || ' = '
@@ -391,8 +400,10 @@ pub async fn matches(
                 )
            FROM derived_facts d
            JOIN entities e ON e.id = d.subject_id
+           JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
+           LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
           WHERE d.kb_id = $1 AND d.attribute_rule_id = $2 AND d.invalidated_at IS NULL
-          ORDER BY e.canonical_name
+          ORDER BY e.canonical_name, d.valid_from
           LIMIT $3 OFFSET $4",
     )
     .bind(kb_id)
@@ -404,15 +415,12 @@ pub async fn matches(
 
     Ok((
         rows.into_iter()
-            .map(|(id, entity_id, name, value, from, to, premises)| {
+            .map(|(id, entity_id, name, concluded, from, to, premises)| {
                 json!({
                     "derived_id": id,
                     "entity_id": entity_id,
                     "entity": name,
-                    "concluded": value
-                        .as_ref()
-                        .and_then(|v| v.get("class").or_else(|| v.get("value")))
-                        .cloned(),
+                    "concluded": concluded,
                     "valid_from": from,
                     "valid_to": to,
                     "premises": premises,
@@ -443,6 +451,49 @@ async fn insert_conditions(
         .await?;
     }
     Ok(())
+}
+
+/// 结论的校验。**建与改共用这一份**——分成两处写，改一次就能绕过建时的判据，
+/// 而库里的 CHECK 只会回一个约束名，读的人无从知道错在哪一格。
+async fn validate_conclusion(pool: &PgPool, kb_id: Uuid, c: &ConclusionInput) -> AppResult<()> {
+    match c.kind.as_str() {
+        "typing" => {
+            let t = c.type_id.ok_or_else(|| {
+                AppError::invalid("no_class", "A typing rule needs the class it concludes.")
+            })?;
+            exists(
+                pool,
+                kb_id,
+                "entity_types",
+                t,
+                "unknown_class",
+                "That class is not in this base.",
+            )
+            .await?;
+            // 归类结论落在内建 is_a 上，第一次写这种规则时把它建出来
+            ensure_is_a(pool, kb_id).await?;
+            Ok(())
+        }
+        "attribute" => {
+            let p = c.predicate_id.ok_or_else(|| {
+                AppError::invalid(
+                    "no_predicate",
+                    "An attribute rule needs the attribute it sets.",
+                )
+            })?;
+            if c.value.is_none() {
+                return Err(AppError::invalid(
+                    "no_value",
+                    "An attribute rule needs the value it sets.",
+                ));
+            }
+            attribute_predicate(pool, kb_id, p).await
+        }
+        _ => Err(AppError::invalid(
+            "bad_conclusion",
+            "A conclusion is either a typing or an attribute.",
+        )),
+    }
 }
 
 /// 条件的校验。**报错要说人话**：库里的 CHECK 只会回一个约束名。

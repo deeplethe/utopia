@@ -8,7 +8,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
 use utopia_core::models::Role;
-use utopia_store::business_rules::ConditionInput;
+use utopia_store::business_rules::{ConclusionInput, ConditionInput};
 use uuid::Uuid;
 
 use super::graph_routes::require_kb;
@@ -44,6 +44,15 @@ pub struct RulePatch {
     /// 给了就整组替换；不给就不动条件
     #[serde(default)]
     pub conditions: Option<Vec<ConditionInput>>,
+    /// 结论也整组替换：三格互相定义，只改一格会留下半截状态
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub conclude_type_id: Option<Uuid>,
+    #[serde(default)]
+    pub conclude_predicate_id: Option<Uuid>,
+    #[serde(default)]
+    pub conclude_value: Option<serde_json::Value>,
 }
 
 pub async fn list(
@@ -96,6 +105,12 @@ pub async fn update(
     Json(req): Json<RulePatch>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let conclusion = req.conclusion.as_ref().map(|kind| ConclusionInput {
+        kind: kind.clone(),
+        type_id: req.conclude_type_id,
+        predicate_id: req.conclude_predicate_id,
+        value: req.conclude_value.clone(),
+    });
     utopia_store::business_rules::update(
         &state.pool,
         kb_id,
@@ -104,6 +119,7 @@ pub async fn update(
         req.description.as_deref(),
         req.enabled,
         req.conditions.as_deref(),
+        conclusion.as_ref(),
     )
     .await?;
     let _ = utopia_store::audit::record(
@@ -137,6 +153,29 @@ pub async fn delete(
     )
     .await;
     Ok(Json(json!({ "ok": true })))
+}
+
+/// 一条规则此刻标了谁。界面上那个数字点开就是这份列表。
+pub async fn matches(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, rule_id)): Path<(Uuid, Uuid)>,
+    axum::extract::Query(q): axum::extract::Query<MatchQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let per = q.per.unwrap_or(20).clamp(1, 100);
+    let page = q.page.unwrap_or(0).max(0);
+    let (rows, total) =
+        utopia_store::business_rules::matches(&state.pool, kb_id, rule_id, per, page * per).await?;
+    Ok(Json(json!({ "matches": rows, "total": total })))
+}
+
+#[derive(Deserialize)]
+pub struct MatchQuery {
+    #[serde(default)]
+    pub page: Option<i64>,
+    #[serde(default)]
+    pub per: Option<i64>,
 }
 
 /// 现在就跑一遍，把这条规则的结论算出来。
