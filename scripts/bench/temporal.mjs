@@ -18,7 +18,9 @@
 // 用法：
 //   node scripts/bench/temporal.mjs --label rc5
 //   node scripts/bench/temporal.mjs --label rc5 --chat     # 顺带量对话（要一个会话模型）
-//   node scripts/bench/temporal.mjs --kb <id> --only-score # 复用已灌好的库，只重打分
+//   node scripts/bench/temporal.mjs --kb <id> --stamps '{"wave-1":"…","wave-2":"…"}'
+//                                                          # 复用已灌好的库，只重打分
+//   node scripts/bench/temporal.mjs --corpus zh             # 换一套语料与题目（corpus.zh.json）
 //
 // 环境变量：BENCH_BASE / BENCH_EMAIL / BENCH_PASSWORD / BENCH_PSQL（同 run.mjs）。
 
@@ -101,8 +103,13 @@ function valueOf(fact) {
 }
 
 async function main() {
-  const corpus = JSON.parse(fs.readFileSync(path.join(HERE, "temporal", "corpus.json"), "utf8"));
-  const sheet = JSON.parse(fs.readFileSync(path.join(HERE, "temporal", "questions.json"), "utf8"));
+  const suffix = args.corpus ? `.${args.corpus}` : "";
+  const corpus = JSON.parse(
+    fs.readFileSync(path.join(HERE, "temporal", `corpus${suffix}.json`), "utf8"),
+  );
+  const sheet = JSON.parse(
+    fs.readFileSync(path.join(HERE, "temporal", `questions${suffix}.json`), "utf8"),
+  );
 
   try {
     await api("POST", "/api/v1/auth/register", {
@@ -118,7 +125,8 @@ async function main() {
   await api("POST", "/api/v1/auth/login", { email: EMAIL, password: PASSWORD });
 
   let kb = args.kb;
-  let waveOne = args["wave-1"];
+  // 每一波灌完记一个时刻：wave-1、wave-2……记录轴上的题目以它们为界
+  const stamps = args.stamps ? JSON.parse(args.stamps) : {};
 
   if (!kb) {
     const ws = (await api("GET", "/api/v1/workspaces"))[0].id;
@@ -200,33 +208,61 @@ async function main() {
         );
         if (id) await api("DELETE", `/api/v1/documents/${id}`);
       }
-      if (wave.label === "wave-1") {
-        // **这一刻就是记录轴上的界**。等一拍再取，免得同一秒里第二波的写入
-        // 也落在这个时刻之内
-        await sleep(2000);
-        waveOne = new Date().toISOString();
-        process.stderr.write(`  wave-1 时刻：${waveOne}\n`);
-        await sleep(2000);
+      // 人改一条事实的起点（#311）：不原地改，作废旧行、写修正行——记录轴倒回去
+      // 能看见改之前的区间，这正是它要量的
+      for (const c of wave.correct || []) {
+        const subject = await entityByName(kb, c.subject);
+        if (!subject) throw new Error(`更正找不到实体：${c.subject}`);
+        const detail = await api("GET", `/api/v1/kbs/${kb}/entities/${subject}`);
+        const fact = (detail.facts || []).find(
+          (f) =>
+            f.other_name === c.object &&
+            (!c.valid_from_was || (f.valid_from || "").startsWith(c.valid_from_was)),
+        );
+        if (!fact) throw new Error(`更正找不到事实：${c.subject} → ${c.object}`);
+        await api("PATCH", `/api/v1/kbs/${kb}/facts/${fact.id}`, {
+          valid_from: `${c.valid_from}T00:00:00Z`,
+          valid_from_precision: c.precision || "day",
+          valid_to: fact.valid_to,
+          valid_to_precision: fact.valid_to_precision,
+          note: c.note,
+        });
+        process.stderr.write(`  更正：${c.subject} → ${c.object} 起点改为 ${c.valid_from}\n`);
       }
+      // 人合并两个拼法（#337 那一刀量的就是合并之前的世界）
+      for (const m of wave.merge || []) {
+        const source = await entityByName(kb, m.source);
+        const target = await entityByName(kb, m.target);
+        if (!source || !target) throw new Error(`合并找不到实体：${m.source} / ${m.target}`);
+        await api("POST", `/api/v1/kbs/${kb}/entities/merge`, { source, target });
+        process.stderr.write(`  合并：${m.source} → ${m.target}\n`);
+      }
+      // **这一刻就是记录轴上的界**。前后各等一拍，免得同一秒里下一波的写入
+      // 也落在这个时刻之内
+      await sleep(2000);
+      stamps[wave.label] = new Date().toISOString();
+      process.stderr.write(`  ${wave.label} 时刻：${stamps[wave.label]}\n`);
+      await sleep(2000);
     }
   }
-  if (!waveOne) throw new Error("复用库时要给 --wave-1 <ISO 时刻>");
+  if (!Object.keys(stamps).length) throw new Error("复用库时要给 --stamps");
 
-  // 实体按名字找一次，后面所有题目复用
+  // 实体按名字找一次，后面所有题目复用。**合并掉的实体在这里找不到**——
+  // 它已经不是一个节点了；问它的题目从留下的那一方或它挂过的项目那边问
   const ids = new Map();
   async function entityId(name) {
     if (ids.has(name)) return ids.get(name);
-    const found = await api("GET", `/api/v1/kbs/${kb}/entities?q=${encodeURIComponent(name)}`);
-    const hit = (found.entities || []).find(
-      (e) => e.name.toLowerCase() === name.toLowerCase(),
-    );
-    ids.set(name, hit?.id ?? null);
-    return hit?.id ?? null;
+    const id = await entityByName(kb, name);
+    ids.set(name, id);
+    return id;
   }
 
   const results = [];
   for (const q of sheet.questions) {
-    const asOf = q.as_of === "wave-1" ? waveOne : q.as_of || null;
+    const asOf = q.as_of && q.as_of.startsWith("wave-") ? stamps[q.as_of] : q.as_of || null;
+    if (q.as_of && q.as_of.startsWith("wave-") && !asOf) {
+      throw new Error(`题目 ${q.id} 引用了没有记下的时刻 ${q.as_of}`);
+    }
     const subject = await entityId(q.subject);
     if (!subject) {
       // 抽取没抽出这个实体：不是时态答错，单独一档（与 run.mjs 的 absent 同理）
@@ -237,10 +273,13 @@ async function main() {
     if (q.at) qs.set("at", q.at);
     if (asOf) qs.set("as_of", asOf);
     const graph = await api("GET", `/api/v1/kbs/${kb}/graph/neighborhood?${qs}`);
+    // **只看碰到主语的边。** 一跳邻域里还有邻居之间的边（李四 works_for 公司），
+    // 它们在 `at` 那一刻可能成立，但说的不是主语——把它们两端的名字都收进来，
+    // 第一版就是这么把「李四 2023 年在管 Aurora」误判出来的
     const names = new Set(
       graph.edges
-        .flatMap((e) => [e.source, e.target])
-        .filter((id) => id !== subject)
+        .filter((e) => e.source === subject || e.target === subject)
+        .map((e) => (e.source === subject ? e.target : e.source))
         .map((id) => graph.nodes.find((n) => n.id === id)?.name)
         .filter(Boolean),
     );
@@ -286,19 +325,30 @@ async function main() {
     }
   }
 
-  const tally = (pick) => {
-    const rows = results.filter((r) => (pick ? r.axis === pick : true) && r.outcome !== "absent");
+  // known_gap 的题目不进主分：它们钉住的是已知还没做对的行为，单独列出来，
+  // 修好那天自己翻绿——而不是让主分一直背着一个我们已经知道的数
+  const tally = (pick, gaps = false) => {
+    const rows = results.filter(
+      (r) =>
+        (pick ? r.axis === pick : true) && r.outcome !== "absent" && !!r.known_gap === gaps,
+    );
     const pass = rows.filter((r) => r.outcome === "pass").length;
     return { asked: rows.length, pass, rate: rows.length ? +(pass / rows.length).toFixed(3) : null };
   };
   const report = {
     label,
+    corpus: corpus.name,
     declared: !("no-declare" in args),
     kb,
-    wave_one: waveOne,
+    stamps,
     at: new Date().toISOString(),
     absent: results.filter((r) => r.outcome === "absent").map((r) => r.subject),
-    ledger: { all: tally(null), world: tally("world"), record: tally("record") },
+    ledger: {
+      all: tally(null),
+      world: tally("world"),
+      record: tally("record"),
+      known_gaps: tally(null, true),
+    },
     chat: args.chat
       ? (() => {
           const rows = results.filter((r) => r.chat);
@@ -313,9 +363,19 @@ async function main() {
     `\n账本：${report.ledger.all.pass}/${report.ledger.all.asked}` +
       `（世界轴 ${report.ledger.world.pass}/${report.ledger.world.asked}，` +
       `记录轴 ${report.ledger.record.pass}/${report.ledger.record.asked}）` +
+      (report.ledger.known_gaps.asked
+        ? `　已知缺口 ${report.ledger.known_gaps.pass}/${report.ledger.known_gaps.asked} 通过`
+        : "") +
       (report.chat ? `　对话：${report.chat.pass}/${report.chat.asked}` : "") +
       `\n`,
   );
+}
+
+/// 按名字找一个**现在还是节点**的实体。
+async function entityByName(kb, name) {
+  const found = await api("GET", `/api/v1/kbs/${kb}/entities?q=${encodeURIComponent(name)}`);
+  const hit = (found.entities || []).find((e) => e.name.toLowerCase() === name.toLowerCase());
+  return hit?.id ?? null;
 }
 
 /// 一次对话问答。SSE 流里只取正文。

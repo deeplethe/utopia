@@ -1,5 +1,5 @@
 {
-  "note": "每道题问的是**某一个时刻**的图。`axis` 说的是哪根轴在动：world = 世界轴（那时世界是什么样，参数 at），record = 记录轴（那时我们以为世界是什么样，参数 as_of）。`as_of: \"wave-1\"` 由跑分脚本换成第一波灌完那一刻的时间戳。\n\n判分不认谓词的名字：本体在不同库里长得不一样（works_for / employed_by），而这个台子量的是时间，不是词汇。判据是「这个实体在那一刻挂着的事实里，有没有出现 expect，有没有出现 not 里的任何一个」。",
+  "note": "每道题问的是**某一个时刻**的图。`axis` 说的是哪根轴在动：world = 世界轴（那时世界是什么样，参数 at），record = 记录轴（那时我们以为世界是什么样，参数 as_of）。`as_of: \"wave-N\"` 由跑分脚本换成第 N 波灌完那一刻的时间戳。\n\n判分不认谓词的名字：本体在不同库里长得不一样（works_for / employed_by），而这个台子量的是时间，不是词汇。判据是「这个实体在那一刻挂着的事实里，有没有出现 expect，有没有出现 not 里的任何一个」。\n\n`known_gap: true` 的题目单独计数：它们钉住的是一个已知还没做对的行为，写在这里是为了让它被修的那天看得见，不是为了把分数拉低。",
   "questions": [
     {
       "id": "aurora-lead-2023-02",
@@ -7,9 +7,7 @@
       "at": "2023-02-01",
       "subject": "Project Aurora",
       "expect": "Zhang San",
-      "not": [
-        "Li Si"
-      ],
+      "not": ["Li Si", "Zhou Qi"],
       "ask": "Who led Project Aurora in February 2023?"
     },
     {
@@ -18,9 +16,7 @@
       "at": "2023-06-15",
       "subject": "Project Aurora",
       "expect": "Zhang San",
-      "not": [
-        "Li Si"
-      ],
+      "not": ["Li Si", "Zhou Qi"],
       "ask": "Who led Project Aurora in June 2023?"
     },
     {
@@ -29,9 +25,7 @@
       "at": "2024-06-30",
       "subject": "Project Aurora",
       "expect": "Zhang San",
-      "not": [
-        "Li Si"
-      ],
+      "not": ["Li Si", "Zhou Qi"],
       "ask": "Who led Project Aurora at the end of June 2024, days before the handover?"
     },
     {
@@ -40,9 +34,7 @@
       "at": "2024-08-01",
       "subject": "Project Aurora",
       "expect": "Li Si",
-      "not": [
-        "Zhang San"
-      ],
+      "not": ["Zhang San", "Zhou Qi"],
       "ask": "Who led Project Aurora in August 2024?"
     },
     {
@@ -51,21 +43,37 @@
       "at": "2025-06-01",
       "subject": "Project Aurora",
       "expect": "Li Si",
-      "not": [
-        "Zhang San"
-      ],
+      "not": ["Zhang San", "Zhou Qi"],
       "ask": "Who led Project Aurora in June 2025?"
+    },
+    {
+      "id": "aurora-lead-2025-10",
+      "axis": "world",
+      "at": "2025-10-01",
+      "subject": "Project Aurora",
+      "expect": "Zhou Qi",
+      "not": ["Zhang San", "Li Si"],
+      "ask": "Who led Project Aurora in October 2025?",
+      "why": "三任接力：第二次闭合要发生在第一次闭合过的同一条链上。"
     },
     {
       "id": "aurora-lead-now",
       "axis": "world",
       "at": "2026-01-01",
       "subject": "Project Aurora",
-      "expect": "Li Si",
-      "not": [
-        "Zhang San"
-      ],
+      "expect": "Zhou Qi",
+      "not": ["Zhang San", "Li Si"],
       "ask": "Who leads Project Aurora in January 2026?"
+    },
+    {
+      "id": "aurora-lead-unfiltered",
+      "axis": "world",
+      "at": null,
+      "subject": "Project Aurora",
+      "expect": "Li Si",
+      "not": [],
+      "ask": "Who has led Project Aurora at any point?",
+      "why": "`at` 不给时服务端**不过滤世界轴**——问的是「我们持有的全部」，不是「现在」。这一题把那个口径钉住：三任都该在，而不是只剩现任。"
     },
     {
       "id": "aurora-lead-record-wave1-at-2024-08",
@@ -74,9 +82,7 @@
       "at": "2024-08-01",
       "subject": "Project Aurora",
       "expect": "Zhang San",
-      "not": [
-        "Li Si"
-      ],
+      "not": ["Li Si"],
       "ask": "Before the handover memo arrived, who did we think would be leading Project Aurora in August 2024?",
       "why": "两根轴的分界就在这一题：世界轴问的是 2024 年八月，而记录轴停在我们还没读到交接备忘的那一刻——那时的答案只能是张三。答成李四，就是拿今天的认知去答当时。"
     },
@@ -87,10 +93,19 @@
       "at": null,
       "subject": "Project Aurora",
       "expect": "Zhang San",
-      "not": [
-        "Li Si"
-      ],
+      "not": ["Li Si"],
       "ask": "As of the first ingest, who was recorded as leading Project Aurora?"
+    },
+    {
+      "id": "aurora-lead-record-wave2-at-2025-10",
+      "axis": "record",
+      "as_of": "wave-2",
+      "at": "2025-10-01",
+      "subject": "Project Aurora",
+      "expect": "Li Si",
+      "not": ["Zhou Qi"],
+      "ask": "Before the third lead was announced, who did we expect to be leading Project Aurora in October 2025?",
+      "why": "同一根链上再往前推一格：第二波结束时我们知道李四接了张三，还不知道周七。"
     },
     {
       "id": "aurora-lead-record-now",
@@ -98,9 +113,39 @@
       "as_of": null,
       "at": null,
       "subject": "Project Aurora",
-      "expect": "Li Si",
+      "expect": "Zhou Qi",
       "not": [],
       "ask": "As we understand it today, who leads Project Aurora?"
+    },
+    {
+      "id": "aurora-lead-corrected-start-2023-01-20",
+      "axis": "world",
+      "at": "2023-01-20",
+      "subject": "Project Aurora",
+      "expect": null,
+      "not": ["Zhang San"],
+      "ask": "Who led Project Aurora on 20 January 2023?",
+      "why": "第三波里有人把张三的起点从 01-10 改成了 02-01（#311 那条路：不原地改，作废旧行、写修正行）。改完之后一月二十日该是空的。"
+    },
+    {
+      "id": "aurora-lead-corrected-start-2023-02-05",
+      "axis": "world",
+      "at": "2023-02-05",
+      "subject": "Project Aurora",
+      "expect": "Zhang San",
+      "not": [],
+      "ask": "Who led Project Aurora on 5 February 2023?"
+    },
+    {
+      "id": "aurora-lead-record-wave2-at-2023-01-20",
+      "axis": "record",
+      "as_of": "wave-2",
+      "at": "2023-01-20",
+      "subject": "Project Aurora",
+      "expect": "Zhang San",
+      "not": [],
+      "ask": "Before the start date was corrected, who did we have leading Project Aurora on 20 January 2023?",
+      "why": "更正之前的认知：那时账本上张三从 01-10 起就在管。记录轴倒回去要看得见改之前的区间——那正是 0019 说的「修正是记录轴唯一值得回放的内容」。"
     },
     {
       "id": "aurora-parent",
@@ -135,9 +180,7 @@
       "at": "2023-01-01",
       "subject": "Lin Zhao",
       "expect": null,
-      "not": [
-        "Meridian Systems"
-      ],
+      "not": ["Meridian Systems"],
       "ask": "Who did Lin Zhao work for in January 2023?",
       "why": "入职是六月的事。一月的答案应当是空，而不是把开区间当成「一直如此」——`valid_from` 之前不成立，正是双时态存在的理由。"
     },
@@ -147,9 +190,7 @@
       "at": "2023-09-01",
       "subject": "Lin Zhao",
       "expect": "28000",
-      "not": [
-        "32000"
-      ],
+      "not": ["32000"],
       "ask": "What was Lin Zhao's salary in September 2023?"
     },
     {
@@ -158,9 +199,7 @@
       "at": "2024-06-01",
       "subject": "Lin Zhao",
       "expect": "32000",
-      "not": [
-        "28000"
-      ],
+      "not": ["28000"],
       "ask": "What was Lin Zhao's salary in June 2024?"
     },
     {
@@ -169,9 +208,7 @@
       "at": "2026-01-01",
       "subject": "Lin Zhao",
       "expect": "32000",
-      "not": [
-        "28000"
-      ],
+      "not": ["28000"],
       "ask": "What is Lin Zhao's salary in January 2026?"
     },
     {
@@ -181,9 +218,7 @@
       "at": null,
       "subject": "Lin Zhao",
       "expect": "28000",
-      "not": [
-        "32000"
-      ],
+      "not": ["32000"],
       "ask": "Before the payroll correction arrived, what salary did we have on record for Lin Zhao?"
     },
     {
@@ -193,19 +228,28 @@
       "at": "2024-06-01",
       "subject": "Lin Zhao",
       "expect": "28000",
-      "not": [
-        "32000"
-      ],
+      "not": ["32000"],
       "ask": "Before the correction, what did we think Lin Zhao's June 2024 salary was?"
     },
     {
-      "id": "lin-zhao-title",
+      "id": "lin-zhao-title-2023-09",
       "axis": "world",
       "at": "2023-09-01",
       "subject": "Lin Zhao",
       "expect": "Staff Engineer",
       "not": [],
       "ask": "What was Lin Zhao's job title in September 2023?"
+    },
+    {
+      "id": "lin-zhao-title-ended-unknown",
+      "axis": "world",
+      "at": "2026-01-01",
+      "subject": "Lin Zhao",
+      "expect": null,
+      "not": ["Staff Engineer"],
+      "known_gap": true,
+      "ask": "What is Lin Zhao's job title in January 2026?",
+      "why": "「不再担任，日期不详」是账本专门留的一个状态（valid_to 为空、精度为 unknown）。世界轴按 `valid_to IS NULL` 判活时会把它当成仍然成立——这一题钉住那个口径，修好的那天它自己会翻绿。"
     },
     {
       "id": "adviser-record-wave1",
@@ -216,7 +260,7 @@
       "expect": "Wang Wu",
       "not": [],
       "ask": "As of the first ingest, was Wang Wu recorded as advising Project Aurora?",
-      "why": "那条未经证实的笔记当时确实在库里。记录轴回到那一刻就该看得见它——账本记的是「我们曾经这么以为」，抹掉它等于替过去修饰。"
+      "why": "那条笔记当时确实在库里。记录轴回到那一刻就该看得见它——账本记的是「我们曾经这么以为」，抹掉它等于替过去修饰。"
     },
     {
       "id": "adviser-now",
@@ -225,9 +269,7 @@
       "at": "2023-06-01",
       "subject": "Project Aurora",
       "expect": null,
-      "not": [
-        "Wang Wu"
-      ],
+      "not": ["Wang Wu"],
       "ask": "Do we still hold that Wang Wu advised Project Aurora in June 2023?",
       "why": "那篇文档已经删了，这条事实的出处没了。世界轴仍问 2023 年六月，而今天的认知里它不该再成立。"
     },
@@ -248,11 +290,72 @@
       "at": "2022-06-01",
       "subject": "Li Si",
       "expect": null,
-      "not": [
-        "Meridian Systems"
-      ],
+      "not": ["Meridian Systems"],
       "ask": "As of the first ingest, what did we know about where Li Si worked in 2022?",
       "why": "上一题的反面：那时这个人还没进过我们的账本。世界轴上成立，记录轴上还不知道——两根轴各答各的。"
+    },
+    {
+      "id": "helios-lead-record-wave2",
+      "axis": "record",
+      "as_of": "wave-2",
+      "at": null,
+      "subject": "Project Helios",
+      "expect": "L. Si",
+      "not": ["Li Si"],
+      "ask": "As of the second ingest, who was recorded as leading Project Helios?",
+      "why": "合并之前的世界（#337 那一刀）：两种拼法是两个实体，Helios 挂在 \"L. Si\" 身上。记录轴倒回合并之前，那个被并掉的实体要重新长回来、带着它自己的事实。"
+    },
+    {
+      "id": "helios-lead-now",
+      "axis": "record",
+      "as_of": null,
+      "at": null,
+      "subject": "Project Helios",
+      "expect": "Li Si",
+      "not": ["L. Si"],
+      "ask": "As we understand it today, who leads Project Helios?",
+      "why": "合并之后：Helios 的事实搬到了留下的那个实体身上。"
+    },
+    {
+      "id": "li-si-helios-record-wave2",
+      "axis": "record",
+      "as_of": "wave-2",
+      "at": null,
+      "subject": "Li Si",
+      "expect": null,
+      "not": ["Project Helios"],
+      "ask": "As of the second ingest, did we have Li Si connected to Project Helios?",
+      "why": "合并之前，\"Li Si\" 这个实体跟 Helios 没有任何关系——那条事实当时在另一个实体身上。"
+    },
+    {
+      "id": "li-si-helios-now",
+      "axis": "record",
+      "as_of": null,
+      "at": null,
+      "subject": "Li Si",
+      "expect": "Project Helios",
+      "not": [],
+      "ask": "Today, is Li Si connected to Project Helios?"
+    },
+    {
+      "id": "zhou-qi-employer-2024-06",
+      "axis": "world",
+      "at": "2024-06-15",
+      "subject": "Zhou Qi",
+      "expect": "Meridian Systems",
+      "not": [],
+      "ask": "Who did Zhou Qi work for in June 2024?",
+      "why": "只知道「2024 年」入职。年精度的起点落在年初，六月在年内，成立。"
+    },
+    {
+      "id": "zhou-qi-employer-2023-06",
+      "axis": "world",
+      "at": "2023-06-15",
+      "subject": "Zhou Qi",
+      "expect": null,
+      "not": ["Meridian Systems"],
+      "ask": "Who did Zhou Qi work for in June 2023?",
+      "why": "年精度的另一边：2023 年在「2024 年」之前，不成立。"
     },
     {
       "id": "aurora-lead-before-start",
@@ -260,22 +363,9 @@
       "at": "2022-12-01",
       "subject": "Project Aurora",
       "expect": null,
-      "not": [
-        "Zhang San",
-        "Li Si"
-      ],
+      "not": ["Zhang San", "Li Si", "Zhou Qi"],
       "ask": "Who led Project Aurora in December 2022?",
-      "why": "项目 2023 年一月才开始。这一题防的是把开区间读成「自古如此」。"
-    },
-    {
-      "id": "aurora-lead-unfiltered",
-      "axis": "world",
-      "at": null,
-      "subject": "Project Aurora",
-      "expect": "Li Si",
-      "not": [],
-      "ask": "Who has led Project Aurora at any point?",
-      "why": "`at` 不给时服务端**不过滤世界轴**——问的是「我们持有的全部」，不是「现在」。这一题把那个口径钉住：两任都该在，而不是只剩现任。"
+      "why": "项目 2023 年才开始。这一题防的是把开区间读成「自古如此」。"
     }
   ]
 }
