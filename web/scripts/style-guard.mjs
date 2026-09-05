@@ -48,7 +48,8 @@ const RULES = [
   },
   {
     id: "radius",
-    re: /\brounded(-(sm|md|2xl|3xl|none|\[[^\]]+\]))?(?=[\s"'`}])/g,
+    // rounded-none 不是第三档，是"这一条要顶到边"（下拉里撑满的行），放行
+    re: /\brounded(-(sm|md|2xl|3xl|\[[^\]]+\]))?(?=[\s"'`}])/g,
     why: "圆角两档：rounded-lg 给控件，rounded-xl 给面，rounded-full 给药丸（规矩 3）",
     ui: true,
   },
@@ -101,7 +102,8 @@ for (const rel of files) {
   const inUi = rel.startsWith("src/ui/");
   let text = fs.readFileSync(path.join(ROOT, rel), "utf8");
   // 隐藏的文件选择框可以跨好几行，先整段抹掉（保留换行，行号不变）
-  text = text.replace(/<input\b[^>]*type="file"[^>]*>/g, (m) =>
+  // 时间轴的 range 同理：它的皮在 styles.css 的 .scrubber-range 里
+  text = text.replace(/<input\b[^>]*type="(file|range)"[^>]*>/g, (m) =>
     m.replace(/[^\n]/g, " "),
   );
   const lines = text.split("\n");

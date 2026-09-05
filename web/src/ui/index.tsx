@@ -2,7 +2,7 @@
    规矩在 web/DESIGN.md，守卫在 scripts/style-guard.mjs：字号五档、间距六档、
    圆角两档、颜色只认令牌、状态（hover/focus/disabled/动效）只在这里定。
    Dialog / DangerConfirm / Tooltip / Table / Field 各在自己的文件里，从这里再导出。 */
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useRef, useState } from "react";
 import type {
   ButtonHTMLAttributes,
   InputHTMLAttributes,
@@ -1155,6 +1155,142 @@ export function Disclosure({
     </details>
   );
 }
+
+/* ---------- ToolTower（画布上的竖排工具塔） ----------
+   图标常驻，名字在整组 hover / 键盘走到时一起展开（styles.css 的 u-tower）。
+   一组是一个语义单元：派生 / 布局 / 相机。 */
+export function ToolTower({
+  className,
+  children,
+}: {
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "u-tower group glass-strong flex flex-col overflow-hidden rounded-xl shadow-xl",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+export const ToolButton = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement> & {
+    active?: boolean;
+    /** 展开时显示的名字，也是 title 与无障碍名称 */
+    label: string;
+    icon: ReactNode;
+  }
+>(function ToolButton({ active, label, icon, className, type = "button", ...props }, ref) {
+  return (
+    <button
+      ref={ref}
+      type={type}
+      title={label}
+      aria-label={label}
+      className={cn("u-tool", active && "is-on", className)}
+      {...props}
+    >
+      {icon}
+      <span className="u-tower-label">{label}</span>
+    </button>
+  );
+});
+
+export function ToolDivider() {
+  return <div className="mx-2 h-px bg-line-strong" />;
+}
+
+/* ---------- Pill（玻璃药丸：图例、"+N 个类"这类浮在画布上的小开关） ---------- */
+export const Pill = forwardRef<
+  HTMLButtonElement,
+  ButtonHTMLAttributes<HTMLButtonElement> & {
+    active?: boolean;
+    /** 被关掉的那种：压到三成五 */
+    dim?: boolean;
+  }
+>(function Pill({ active, dim, className, type = "button", ...props }, ref) {
+  return (
+    <button
+      ref={ref}
+      type={type}
+      className={cn("u-pill", active && "is-on", dim && "is-dim", className)}
+      {...props}
+    />
+  );
+});
+
+/* ---------- Radio ---------- */
+export function Radio({
+  label,
+  className,
+  children,
+  ...props
+}: Omit<InputHTMLAttributes<HTMLInputElement>, "type"> & {
+  label: ReactNode;
+  /** 选中后跟在标签后面的东西（比如一个日期框） */
+  children?: ReactNode;
+}) {
+  return (
+    <label className={cn("flex items-center gap-2 text-small text-ink-2", className)}>
+      <input type="radio" className="accent-accent" {...props} />
+      {label}
+      {children}
+    </label>
+  );
+}
+
+/* ---------- ExpandCard（可展开的一条：事实、派生、被挡下的派生） ----------
+   头是一整条可点的按钮，展开的内容跟在下面。头里可以有 role="link" 的 span
+   （去看另一端），但不能有按钮——按钮里不能嵌按钮。 */
+export function ExpandCard({
+  open,
+  onToggle,
+  dim,
+  title,
+  headerClassName,
+  className,
+  header,
+  children,
+}: {
+  open: boolean;
+  onToggle: () => void;
+  /** 陈旧的那种：整条压淡 */
+  dim?: boolean;
+  title?: string;
+  headerClassName?: string;
+  className?: string;
+  header: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn("u-card-row group", open && "is-open", dim && "opacity-55", className)}
+      title={title}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        className={cn("w-full px-2 py-1 text-left", headerClassName)}
+      >
+        {header}
+      </button>
+      {children}
+    </div>
+  );
+}
+
+/** 复合行的外壳：一行里有两个按钮时不能是 Row（按钮里不能嵌按钮），
+    外层 div 用它拿到 hover 与 group */
+export const HOVER_ROW =
+  "group flex items-center gap-2 rounded-lg px-2 py-1 transition-colors duration-fast hover:bg-surface-2";
+/** 指针停在所在行（.group）上才现身的东西；加 is-on 常显 */
+export const REVEAL = "u-reveal";
 
 /* 各在自己文件里的组件，从这里一并导出，页面只认 "../ui" 一个入口 */
 export { Dialog, DangerConfirm } from "./dialog";

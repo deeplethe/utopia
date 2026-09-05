@@ -543,6 +543,108 @@ select.input-dark option {
   transition: transform var(--u-fast);
 }
 
+/* 工具塔里的一格：图标 + 展开的名字 */
+.u-tool {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem;
+  color: var(--u-text-2);
+  transition:
+    color var(--u-fast),
+    background-color var(--u-fast);
+}
+.u-tool:hover:not(:disabled) {
+  color: var(--u-text);
+  background: var(--u-surface-2);
+}
+.u-tool.is-on {
+  color: #ffffff;
+  background: var(--u-surface-3);
+}
+.u-tool:focus-visible {
+  outline: 2px solid var(--u-ring);
+  outline-offset: -2px;
+}
+
+/* 玻璃药丸：图例那种浮在画布上的小开关 */
+.u-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 9999px;
+  padding: 0.25rem 0.625rem;
+  font-size: var(--text-fine);
+  line-height: var(--text-fine--line-height);
+  color: var(--u-text-2);
+  background: var(--u-surface);
+  border: 1px solid var(--u-line);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  transition:
+    color var(--u-fast),
+    opacity var(--u-fast);
+}
+.u-pill:hover,
+.u-pill.is-on {
+  color: var(--u-text);
+}
+.u-pill.is-dim {
+  opacity: 0.35;
+}
+.u-pill:focus-visible {
+  outline: 2px solid var(--u-ring);
+  outline-offset: 2px;
+}
+
+/* 可展开的一条：静止无底，指针停上 surface，展开着 surface-2 */
+.u-card-row {
+  border-radius: 0.5rem;
+  transition: background-color var(--u-fast);
+}
+.u-card-row:hover {
+  background: var(--u-surface);
+}
+.u-card-row.is-open {
+  background: var(--u-surface-2);
+}
+
+/* 行内链接（role=link 的 span）：hover 提亮加下划线 */
+.u-inline-link {
+  cursor: pointer;
+  transition: color var(--u-fast);
+}
+.u-inline-link:hover {
+  color: var(--u-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: rgba(255, 255, 255, 0.3);
+}
+/* 只提亮不划线：整块引文那种链接 */
+.u-hover-ink {
+  transition: color var(--u-fast);
+}
+.u-hover-ink:hover {
+  color: var(--u-text-2);
+}
+
+/* 指针停在所在行上才现身 */
+.u-reveal {
+  opacity: 0;
+  transition: opacity var(--u-fast);
+}
+.group:hover .u-reveal,
+.u-reveal:focus-visible,
+.u-reveal:focus,
+.u-reveal.is-on {
+  opacity: 1;
+}
+
+/* 时间轴的柱子：一像素圆角，亮度随播放头变 */
+.u-bar {
+  border-radius: 1px;
+  transition: background-color var(--u-fast);
+}
+
 /* ---- chips ---- */
 .u-chip {
   display: inline-block;
