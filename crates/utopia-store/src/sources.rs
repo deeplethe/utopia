@@ -37,6 +37,38 @@ pub fn validate_cron(expr: &str) -> AppResult<String> {
     Ok(normalized)
 }
 
+pub const RSS_CONTENT_MODE_KEY: &str = "content_mode";
+pub const RSS_FULL_CONTENT_MODE: &str = "full_new_items";
+
+/// RSS mode is deliberately a small enum in the persisted source config. Old
+/// rows without the key retain the legacy feed behavior.
+pub fn rss_content_mode(config: &serde_json::Value) -> AppResult<&'static str> {
+    let Some(value) = config.get(RSS_CONTENT_MODE_KEY) else {
+        return Ok("feed");
+    };
+    let Some(value) = value.as_str() else {
+        return Err(AppError::invalid(
+            "rss_content_mode_invalid",
+            "RSS content_mode must be feed or full_new_items",
+        ));
+    };
+    match value {
+        "feed" => Ok("feed"),
+        RSS_FULL_CONTENT_MODE => Ok(RSS_FULL_CONTENT_MODE),
+        _ => Err(AppError::invalid(
+            "rss_content_mode_invalid",
+            "RSS content_mode must be feed or full_new_items",
+        )),
+    }
+}
+
+pub fn rss_full_content_enabled(kind: &str, config: &serde_json::Value) -> AppResult<bool> {
+    if SourceKind::parse(kind) != Some(SourceKind::Rss) {
+        return Ok(false);
+    }
+    Ok(rss_content_mode(config)? == RSS_FULL_CONTENT_MODE)
+}
+
 /// cron 的下一次触发时刻（服务器本地时区）。
 fn cron_next_after(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
     use std::str::FromStr;
@@ -53,15 +85,36 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SourceView>> {
     // 键在 `SOURCE_SECRET_KEYS` 一张表上——从前这里只减 `auth_header`，五种连接器
     // 的密钥就这么漏出去的（#246）
     let rows: Vec<SourceView> = sqlx::query_as(
-        "SELECT s.id, s.kind, s.name, s.config - $2::text[] AS config, s.icon,
+        &format!("WITH projected AS ({}) SELECT s.id, s.kind, s.name, s.config - $2::text[] AS config, s.icon,
                 s.sync_interval_minutes, s.sync_cron,
                 s.last_sync_at, s.last_sync_status, s.last_sync_error, s.last_sync_added,
                 (SELECT count(*) FROM documents d
-                  WHERE d.source_id = s.id AND d.deleted_at IS NULL) AS doc_count,
+                 WHERE d.source_id = s.id AND d.deleted_at IS NULL) AS doc_count,
                 (SELECT count(*) FROM documents d
                  WHERE d.source_id = s.id AND d.missing_since IS NOT NULL
-                   AND d.deleted_at IS NULL) AS missing_count
-         FROM sources s WHERE s.kb_id = $1 ORDER BY s.created_at",
+                   AND d.deleted_at IS NULL) AS missing_count,
+                CASE WHEN s.kind <> 'rss' THEN NULL
+                  WHEN s.config->>'content_mode' IS DISTINCT FROM 'full_new_items' THEN 'disabled'
+                  WHEN s.rss_baselined_at IS NULL THEN 'pending' ELSE 'active' END AS rss_full_content_state,
+                CASE WHEN s.kind='rss' THEN s.rss_generation END AS rss_full_content_generation,
+                (SELECT count(*)::int FROM projected e
+                 WHERE e.source_id=s.id AND e.activation_generation=s.rss_generation AND e.state='baseline') AS rss_full_content_baseline_count,
+                COALESCE((SELECT count(*) FROM projected e
+                 WHERE e.source_id = s.id AND e.activation_generation = s.rss_generation
+                   AND e.state = 'pending'), 0) AS rss_full_content_pending_count,
+                COALESCE((SELECT count(*) FROM projected e
+                 WHERE e.source_id = s.id AND e.activation_generation = s.rss_generation
+                   AND e.state IN ('queued', 'hydrating')), 0) AS rss_full_content_queued_count,
+                COALESCE((SELECT count(*) FROM projected e
+                 WHERE e.source_id = s.id AND e.activation_generation = s.rss_generation
+                   AND e.state = 'retry_wait'), 0) AS rss_full_content_retrying_count,
+                COALESCE((SELECT count(*) FROM projected e
+                 WHERE e.source_id = s.id AND e.activation_generation = s.rss_generation
+                   AND e.state = 'complete'), 0) AS rss_full_content_complete_count,
+                COALESCE((SELECT count(*) FROM projected e
+                 WHERE e.source_id = s.id AND e.activation_generation = s.rss_generation
+                   AND e.state IN ('terminal','deleted','superseded')), 0) AS rss_full_content_terminal_count
+         FROM sources s WHERE s.kb_id = $1 ORDER BY s.created_at", crate::rss_full_content::ENTRY_SELECT),
     )
     .bind(kb_id)
     .bind(SOURCE_SECRET_KEYS)
@@ -122,13 +175,15 @@ pub async fn create(
     } else {
         config.clone()
     };
-    // 入库即封印
     secrets::seal_json_keys(&mut config, SOURCE_SECRET_KEYS);
+    let full_content = rss_full_content_enabled(kind, &config)?;
+    let source_id = Uuid::now_v7();
+    let mut tx = pool.begin().await?;
     let source: Source = sqlx::query_as(
         "INSERT INTO sources (id, kb_id, kind, name, config, icon, sync_interval_minutes, sync_cron)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
     )
-    .bind(Uuid::now_v7())
+    .bind(source_id)
     .bind(kb_id)
     .bind(kind)
     .bind(name.trim())
@@ -136,8 +191,12 @@ pub async fn create(
     .bind(icon)
     .bind(interval)
     .bind(cron_norm)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await?;
+    if full_content {
+        crate::rss_full_content::initialize_source(&mut tx, source.id).await?;
+    }
+    tx.commit().await?;
     opened(source)
 }
 
@@ -155,6 +214,14 @@ pub async fn set_ingest_token(pool: &PgPool, source_id: Uuid, token: &str) -> Ap
 }
 
 /// 更新调度：interval 与 cron 互斥，任一被显式设置时都会覆盖两者。
+fn rss_feed_url(config: &serde_json::Value) -> Option<&str> {
+    config
+        .get("feed_url")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn update(
     pool: &PgPool,
@@ -172,11 +239,30 @@ pub async fn update(
         }
         None => None,
     };
-    let config = config.cloned().map(|mut c| {
-        secrets::seal_json_keys(&mut c, SOURCE_SECRET_KEYS);
-        c
-    });
-    let source: Source = sqlx::query_as(
+
+    let mut tx = pool.begin().await?;
+    let previous: Source = sqlx::query_as("SELECT * FROM sources WHERE id = $1 FOR UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let mut next_config = config
+        .map(|value| {
+            if value.is_null() {
+                serde_json::json!({})
+            } else {
+                value.clone()
+            }
+        })
+        .unwrap_or_else(|| previous.config.clone());
+    secrets::seal_json_keys(&mut next_config, SOURCE_SECRET_KEYS);
+    let old_full = rss_full_content_enabled(&previous.kind, &previous.config)?;
+    let new_full = rss_full_content_enabled(&previous.kind, &next_config)?;
+    let feed_url_changed = previous.kind == "rss"
+        && old_full
+        && new_full
+        && rss_feed_url(&previous.config) != rss_feed_url(&next_config);
+    let source = sqlx::query_as(
         "UPDATE sources SET
             name = COALESCE($2, name),
             config = COALESCE($3, config),
@@ -187,14 +273,18 @@ pub async fn update(
     )
     .bind(id)
     .bind(name)
-    .bind(config)
+    .bind(Some(next_config))
     .bind(icon)
     .bind(schedule.is_some())
     .bind(schedule.as_ref().and_then(|(i, _)| *i))
     .bind(schedule.as_ref().and_then(|(_, c)| c.clone()))
-    .fetch_optional(pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if (!old_full && new_full) || feed_url_changed {
+        crate::rss_full_content::enable_source(&mut tx, id).await?;
+    }
+    tx.commit().await?;
     opened(source)
 }
 
@@ -343,14 +433,12 @@ pub async fn set_document_tags(
 
 /// 同步用去重：该 KB 是否已有同内容文档。
 pub async fn document_exists_by_sha(pool: &PgPool, kb_id: Uuid, sha256: &str) -> AppResult<bool> {
-    let row: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM documents
-              WHERE kb_id = $1 AND sha256 = $2 AND deleted_at IS NULL LIMIT 1",
-    )
-    .bind(kb_id)
-    .bind(sha256)
-    .fetch_optional(pool)
-    .await?;
+    let row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM documents WHERE kb_id = $1 AND sha256 = $2 LIMIT 1")
+            .bind(kb_id)
+            .bind(sha256)
+            .fetch_optional(pool)
+            .await?;
     Ok(row.is_some())
 }
 
@@ -445,5 +533,27 @@ mod tests {
         let next = cron_next_after("*/5 * * * *", after).unwrap();
         assert!(next > after);
         assert!((next - after).num_minutes() <= 5);
+    }
+
+    #[test]
+    fn rss_content_mode_defaults_and_validates() {
+        assert_eq!(rss_content_mode(&serde_json::json!({})).unwrap(), "feed");
+        assert_eq!(
+            rss_content_mode(&serde_json::json!({ "content_mode": "feed" })).unwrap(),
+            "feed"
+        );
+        assert_eq!(
+            rss_content_mode(&serde_json::json!({ "content_mode": "full_new_items" })).unwrap(),
+            "full_new_items"
+        );
+        assert!(rss_content_mode(&serde_json::json!({ "content_mode": "all" })).is_err());
+        assert!(rss_content_mode(&serde_json::json!({ "content_mode": true })).is_err());
+        assert!(!rss_full_content_enabled(
+            "url",
+            &serde_json::json!({
+                "content_mode": "full_new_items"
+            })
+        )
+        .unwrap());
     }
 }

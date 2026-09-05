@@ -191,6 +191,7 @@ export interface SourceView {
   config: {
     urls?: string[];
     feed_url?: string;
+    content_mode?: "feed" | "full_new_items";
     endpoint?: string;
     /** github_issues：owner/name */
     repo?: string;
@@ -210,6 +211,14 @@ export interface SourceView {
   last_sync_added: number;
   doc_count: number;
   missing_count: number;
+  rss_full_content_state: "pending" | "active" | "disabled" | null;
+  rss_full_content_generation: number | null;
+  rss_full_content_baseline_count: number | null;
+  rss_full_content_pending_count: number;
+  rss_full_content_queued_count: number;
+  rss_full_content_retrying_count: number;
+  rss_full_content_complete_count: number;
+  rss_full_content_terminal_count: number;
 }
 
 export interface SearchResult {

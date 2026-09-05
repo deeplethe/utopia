@@ -91,6 +91,7 @@ pub async fn create(
     Json(body): Json<CreateBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
+    validate_rss_config(&body.kind, &body.config)?;
     let source = utopia_store::sources::create(
         &state.pool,
         kb_id,
@@ -170,6 +171,13 @@ fn mask_secrets(source: utopia_core::models::Source) -> utopia_core::models::Sou
     source.without_secrets()
 }
 
+fn validate_rss_config(kind: &str, config: &serde_json::Value) -> utopia_core::AppResult<()> {
+    if kind == "rss" {
+        utopia_store::sources::rss_content_mode(config)?;
+    }
+    Ok(())
+}
+
 /// 更新时凭据的合并规则，每个 `SOURCE_SECRET_KEYS` 里的键一样：新配置里**没有**这个键
 /// 或值是空串 → 保留库里的原值（表单留空就是「别动」）；显式 `null` → 删掉；
 /// 其余照新值。响应从不回显，所以客户端没有办法把旧值原样送回来，规则只能长在这里
@@ -225,6 +233,9 @@ pub async fn update(
     let mut config = body.config;
     if let Some(cfg) = config.as_mut() {
         keep_secrets(cfg, &existing.config);
+    }
+    if let Some(cfg) = config.as_ref() {
+        validate_rss_config(&existing.kind, cfg)?;
     }
     let source = utopia_store::sources::update(
         &state.pool,
@@ -561,7 +572,7 @@ pub async fn re_extract(
 
 #[cfg(test)]
 mod tests {
-    use super::keep_secrets;
+    use super::{keep_secrets, validate_rss_config};
     use serde_json::json;
 
     /// 认证判断写反是这类改动唯一值得担心的事（`ct_eq` 给的是 `Choice` 不是
@@ -640,5 +651,11 @@ mod tests {
             obj["access_key_id"], "AKIA",
             "an identifier is not a secret"
         );
+    }
+
+    #[test]
+    fn invalid_rss_content_mode_is_rejected_at_the_route_boundary() {
+        assert!(validate_rss_config("rss", &json!({ "content_mode": "all" })).is_err());
+        assert!(validate_rss_config("url", &json!({ "content_mode": "all" })).is_ok());
     }
 }

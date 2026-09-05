@@ -27,6 +27,7 @@ pub mod record_axis;
 pub mod resolution;
 pub mod review;
 pub mod review_summary;
+pub mod rss_full_content;
 pub mod sealing;
 pub mod settings;
 pub mod sources;

@@ -86,66 +86,9 @@ pub fn spreadsheet(bytes: &[u8]) -> anyhow::Result<String> {
     Ok(out)
 }
 
-/// HTML: 取正文文本。
-///
-/// 真实网页的 chrome 往往比正文还多——整站导航、语言列表、页脚法务、编辑工具。
-/// 全量遍历会把它们一并喂给抽取器：既浪费每个分块一次 LLM 调用，又会把
-/// "Main page""Privacy policy"之类抽成实体污染图谱（实测一篇维基条目 647KB
-/// 产出 60 个分块，首块整块是侧栏菜单、末块整块是版权声明）。
-///
-/// 因此先认正文容器（main / role=main / article），只有都找不到才退回整篇；
-/// 容器内仍可能嵌着导航与表单，交给 walk_html 的 SKIP 名单。
-pub fn html(bytes: &[u8]) -> String {
-    let raw = plain_text(bytes);
-    let doc = scraper::Html::parse_document(&raw);
-    let mut out = String::new();
-    if let Some(title) = doc
-        .select(&scraper::Selector::parse("title").unwrap())
-        .next()
-    {
-        out.push_str(&format!(
-            "# {}\n\n",
-            title.text().collect::<String>().trim()
-        ));
-    }
-    let root = ["main", "[role=main]", "article"]
-        .iter()
-        .find_map(|sel| {
-            scraper::Selector::parse(sel)
-                .ok()
-                .and_then(|s| doc.select(&s).next())
-        })
-        .unwrap_or_else(|| doc.root_element());
-    walk_html(root, &mut out);
-    out
-}
-
-fn walk_html(el: scraper::ElementRef, out: &mut String) {
-    // 导航/页眉页脚/边栏/表单控件即便落在正文容器内也是 chrome，一律跳过
-    const SKIP: &[&str] = &[
-        "script", "style", "noscript", "head", "svg", "template", "nav", "header", "footer",
-        "aside", "form", "button", "select", "iframe", "dialog",
-    ];
-    const BLOCK: &[&str] = &[
-        "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "br", "section", "article",
-    ];
-    for node in el.children() {
-        if let Some(child) = scraper::ElementRef::wrap(node) {
-            let tag = child.value().name();
-            if SKIP.contains(&tag) {
-                continue;
-            }
-            walk_html(child, out);
-            if BLOCK.contains(&tag) && !out.ends_with('\n') {
-                out.push('\n');
-            }
-        } else if let Some(text) = node.value().as_text() {
-            let t: &str = text;
-            if !t.trim().is_empty() {
-                out.push_str(t);
-            }
-        }
-    }
+/// Decode before conversion so legacy HTML encodings remain supported.
+pub fn html(bytes: &[u8]) -> anyhow::Result<String> {
+    Ok(crate::html::page_to_markdown(&plain_text(bytes), None)?)
 }
 
 pub fn csv_text(bytes: &[u8], tsv: bool) -> anyhow::Result<String> {

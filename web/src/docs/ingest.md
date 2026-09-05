@@ -13,6 +13,19 @@ Utopia pulls or receives documents through **sources**. Two source kinds speak J
 
 ---
 
+## RSS sources
+
+RSS sources keep the existing `rss` source kind and can run in either mode:
+
+- **Feed content only** (`content_mode: "feed"`) preserves compatibility. Utopia stores the feed body or summary and does not request the linked article.
+- **Full article content for new items** (`content_mode: "full_new_items"`) is opt-in. The first successful sync records the current feed as a baseline and imports no documents. Later entries are discovered durably and hydrated in the background.
+
+Full-content hydration prefers substantive feed-native HTML (`content:encoded`) and converts it to safe Markdown. If that is absent or too thin, Utopia fetches the first alternate HTTP(S) article link through a bounded SSRF-resistant client, applies readability extraction, and converts the result to Markdown. A failed linked fetch or summary-only entry stays retryable or terminal with a typed diagnostic; it is never marked as completed full content. The source bar shows labeled pending, queued, retrying, complete, and terminal counts; per-entry troubleshooting data remains internal.
+
+Only newly observed entries after activation are eligible for hydration. Changing from feed mode to full mode, or changing the feed URL while full mode is active, starts a new baseline generation; changing back stops new hydration work but preserves the ledger history. Browser rendering, authenticated pages, cookies, paywall bypass, challenge solving, recursive links, assets, and transcription are not part of this path.
+
+---
+
 ## Custom source — the pull interface
 
 Create a **Custom** source and point it at any URL you control. On every sync (manual, interval, or cron) Utopia sends:

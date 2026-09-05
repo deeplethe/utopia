@@ -589,6 +589,18 @@ export const en = {
     sourceName: "Name",
     urlsField: "Page URLs (one per line)",
     feedUrl: "Feed URL",
+    rssContentMode: "RSS content mode",
+    rssModeFeed: "Feed content only",
+    rssModeFull: "Full article content (new items)",
+    rssModeFeedShort: "Feed only",
+    rssModeFullShort: "Full articles",
+    rssContentModeHint: "Full mode fetches linked articles only for items first seen after activation.",
+    rssFullModeHint:
+      "The first successful sync records the current feed as a baseline and imports nothing. Later new items use feed content first, then a guarded article fetch; summaries without usable content remain diagnosable terminal outcomes.",
+    rssFeedModeHint:
+      "Legacy mode stores feed content or the summary and does not fetch linked articles.",
+    rssHydrationCounts: (pending: number, queued: number, retrying: number, complete: number, terminal: number) =>
+      `pending ${pending} · queued ${queued} · retrying ${retrying} · complete ${complete} · terminal ${terminal}`,
     repoField: "Repository (owner/name)",
     jiraUrlField: "Jira site URL",
     jiraProjectField: "Project key",

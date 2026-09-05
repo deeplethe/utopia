@@ -72,6 +72,8 @@ interface ScheduleValue {
   sync_cron: string | null;
 }
 
+type RssContentMode = "feed" | "full_new_items";
+
 const pad2 = (n: number | string) => String(n).padStart(2, "0");
 
 /** 同步日程的人话展示（advanced 自定义表达式按原样显示）。 */
@@ -930,6 +932,8 @@ function SourceBar({
     cfg.endpoint ??
     cfg.repo ??
     (cfg.urls ? `${cfg.urls.length} URLs` : "");
+  const rssMode: RssContentMode =
+    cfg.content_mode === "full_new_items" ? "full_new_items" : "feed";
 
   return (
     <div className="glass rounded-xl mb-3">
@@ -965,6 +969,28 @@ function SourceBar({
               <>
                 <span className="text-ink-3 truncate min-w-0">{configSummary}</span>
                 <span className="text-ink-3 shrink-0 u-num">{scheduleLabel(source)}</span>
+                {source.kind === "rss" && (
+                  <>
+                    <span className="text-ink-3 shrink-0" title={S.library.rssContentModeHint}>
+                      {rssMode === "full_new_items"
+                        ? S.library.rssModeFullShort
+                        : S.library.rssModeFeedShort}
+                    </span>
+                    {rssMode === "full_new_items" && (
+                      <>
+                        <span className="text-ink-3 shrink-0 u-num">
+                          {S.library.rssHydrationCounts(
+                            source.rss_full_content_pending_count,
+                            source.rss_full_content_queued_count,
+                            source.rss_full_content_retrying_count,
+                            source.rss_full_content_complete_count,
+                            source.rss_full_content_terminal_count,
+                          )}
+                        </span>
+                      </>
+                    )}
+                  </>
+                )}
               </>
             )}
           </>
@@ -1309,6 +1335,7 @@ function SourceModal({
   const [icon, setIcon] = useState<string | null>(null);
   const [urls, setUrls] = useState("");
   const [feedUrl, setFeedUrl] = useState("");
+  const [rssContentMode, setRssContentMode] = useState<RssContentMode>("feed");
   const [endpoint, setEndpoint] = useState("");
   const [authHeader, setAuthHeader] = useState("");
   const [repo, setRepo] = useState("");
@@ -1355,7 +1382,7 @@ function SourceModal({
         kind === "url"
           ? { urls: urls.split("\n").map((u) => u.trim()).filter(Boolean) }
           : kind === "rss"
-            ? { feed_url: feedUrl.trim() }
+            ? { feed_url: feedUrl.trim(), content_mode: rssContentMode }
             : kind === "custom"
               ? {
                   endpoint: endpoint.trim(),
@@ -1574,14 +1601,34 @@ function SourceModal({
                 onChange={(e) => setUrls(e.target.value)}
               />,
             )}
-          {kind === "rss" &&
-            field(
-              S.library.feedUrl,
-              <Input className="w-full font-mono"
-                value={feedUrl}
-                onChange={(e) => setFeedUrl(e.target.value)}
-              />,
-            )}
+          {kind === "rss" && (
+            <>
+              {field(
+                S.library.feedUrl,
+                <Input
+                  className="w-full font-mono"
+                  value={feedUrl}
+                  onChange={(e) => setFeedUrl(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.rssContentMode,
+                <NativeSelect
+                  className="w-full"
+                  value={rssContentMode}
+                  onChange={(e) => setRssContentMode(e.target.value as RssContentMode)}
+                >
+                  <option value="full_new_items">{S.library.rssModeFull}</option>
+                  <option value="feed">{S.library.rssModeFeed}</option>
+                </NativeSelect>,
+              )}
+              <p className="-mt-1 mb-3 text-caption leading-relaxed text-ink-3">
+                {rssContentMode === "full_new_items"
+                  ? S.library.rssFullModeHint
+                  : S.library.rssFeedModeHint}
+              </p>
+            </>
+          )}
           {kind === "jira_issues" && (
             <>
               {field(
@@ -1805,6 +1852,9 @@ function SourceEditModal({
   const [icon, setIcon] = useState<string | null>(source.icon);
   const [urls, setUrls] = useState((cfg.urls ?? []).join("\n"));
   const [feedUrl, setFeedUrl] = useState(cfg.feed_url ?? "");
+  const [rssContentMode, setRssContentMode] = useState<RssContentMode>(
+    cfg.content_mode === "full_new_items" ? "full_new_items" : "feed",
+  );
   const [endpoint, setEndpoint] = useState(cfg.endpoint ?? "");
   const [authHeader, setAuthHeader] = useState("");
   const [repo, setRepo] = useState(cfg.repo ?? "");
@@ -1820,7 +1870,9 @@ function SourceEditModal({
   // 摄取配置是否有改动——有则展示"旧文档去留"说明
   const ingestChanged =
     (kind === "url" && urls.trim() !== (cfg.urls ?? []).join("\n").trim()) ||
-    (kind === "rss" && feedUrl.trim() !== (cfg.feed_url ?? "")) ||
+    (kind === "rss" &&
+      (feedUrl.trim() !== (cfg.feed_url ?? "") ||
+        rssContentMode !== (cfg.content_mode === "full_new_items" ? "full_new_items" : "feed"))) ||
     (kind === "custom" && endpoint.trim() !== (cfg.endpoint ?? "")) ||
     // 换仓库或改收不收 PR，两者都会换掉这个来源里文档的集合
     (kind === "github_issues" &&
@@ -1833,7 +1885,7 @@ function SourceEditModal({
         kind === "url"
           ? { urls: urls.split("\n").map((u) => u.trim()).filter(Boolean) }
           : kind === "rss"
-            ? { feed_url: feedUrl.trim() }
+            ? { feed_url: feedUrl.trim(), content_mode: rssContentMode }
             : kind === "custom"
               ? {
                   endpoint: endpoint.trim(),
@@ -1938,14 +1990,34 @@ function SourceEditModal({
                 onChange={(e) => setUrls(e.target.value)}
               />,
             )}
-          {kind === "rss" &&
-            field(
-              S.library.feedUrl,
-              <Input className="w-full font-mono"
-                value={feedUrl}
-                onChange={(e) => setFeedUrl(e.target.value)}
-              />,
-            )}
+          {kind === "rss" && (
+            <>
+              {field(
+                S.library.feedUrl,
+                <Input
+                  className="w-full font-mono"
+                  value={feedUrl}
+                  onChange={(e) => setFeedUrl(e.target.value)}
+                />,
+              )}
+              {field(
+                S.library.rssContentMode,
+                <NativeSelect
+                  className="w-full"
+                  value={rssContentMode}
+                  onChange={(e) => setRssContentMode(e.target.value as RssContentMode)}
+                >
+                  <option value="full_new_items">{S.library.rssModeFull}</option>
+                  <option value="feed">{S.library.rssModeFeed}</option>
+                </NativeSelect>,
+              )}
+              <p className="-mt-1 mb-3 text-caption leading-relaxed text-ink-3">
+                {rssContentMode === "full_new_items"
+                  ? S.library.rssFullModeHint
+                  : S.library.rssFeedModeHint}
+              </p>
+            </>
+          )}
           {kind === "github_issues" && (
             <>
               {field(

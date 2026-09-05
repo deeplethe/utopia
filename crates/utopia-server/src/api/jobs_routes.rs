@@ -18,6 +18,20 @@ use crate::auth::AuthUser;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
+// Both API scopes must apply the same retry policies and report the combined total.
+async fn requeue_failed(
+    pool: &sqlx::PgPool,
+    scope: RequeueScope<'_>,
+) -> utopia_core::AppResult<u64> {
+    let generic = utopia_store::jobs::requeue_failed(pool, scope).await?;
+    let rss = utopia_store::rss_full_content::requeue_failed(pool, scope).await?;
+    Ok(generic + rss)
+}
+
+#[cfg(test)]
+#[path = "jobs_routes_tests.rs"]
+mod tests;
+
 #[derive(Deserialize, Default)]
 pub struct RequeueBody {
     #[serde(default)]
@@ -44,7 +58,7 @@ pub async fn requeue_in_kb(
     Json(body): Json<RequeueBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    let requeued = utopia_store::jobs::requeue_failed(
+    let requeued = requeue_failed(
         &state.pool,
         RequeueScope {
             kb_id: Some(kb_id),
@@ -75,7 +89,7 @@ pub async fn requeue_all(
     if !user.is_admin {
         return Err(utopia_core::AppError::Forbidden.into());
     }
-    let requeued = utopia_store::jobs::requeue_failed(
+    let requeued = requeue_failed(
         &state.pool,
         RequeueScope {
             kb_id: None,

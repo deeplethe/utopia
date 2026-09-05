@@ -278,6 +278,15 @@ pub struct SourceView {
     pub doc_count: i64,
     /// 已标记"不在来源中"的文档数（url 全集对账 / custom 墓碑产生）
     pub missing_count: i64,
+    /// full_new_items 的当前代状态；非 full-content 来源为 NULL
+    pub rss_full_content_state: Option<String>,
+    pub rss_full_content_generation: Option<i32>,
+    pub rss_full_content_baseline_count: Option<i32>,
+    pub rss_full_content_pending_count: i64,
+    pub rss_full_content_queued_count: i64,
+    pub rss_full_content_retrying_count: i64,
+    pub rss_full_content_complete_count: i64,
+    pub rss_full_content_terminal_count: i64,
 }
 
 /// 审计事件视图（带操作人显示名；删号后为 NULL）。纯审计展示用。

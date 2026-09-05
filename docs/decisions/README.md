@@ -46,6 +46,7 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0020 | [An auditor reads it without us](0020-an-auditor-reads-it-without-us.md) | Implemented · `GET /kbs/{id}/export?format=turtle\|jsonld` streams the base as RDF, `rdf.rs` holds the mapping · SPARQL waits, and the record says why (#308) |
 | 0021 | [A rule reads attributes and concludes a type](0021-a-rule-reads-attributes-and-concludes-a-type.md) | Implemented (#359) · `derived_facts` widened to match `facts`, rules authored in `attribute_rules` from the ontology page, evaluated in the materialisation job, explained in the entity panel with their premises · read-only over MCP, writing a rule stays out · no canvas marker, and a conclusion is rewritten rather than edited |
 | 0022 | [An unknown date is not an open one](0022-an-unknown-date-is-not-an-open-one.md) | Implemented in two cuts (#394 and the derived cut) · `world_axis` predicate beside `record_axis`, `facts.attested_at` anchors a missing start or an undated end at the document that attests it, every read and both client filters on the read interval, an undated ending closes the dated row it ends, derived rows intersect premise intervals as read and carry no precision on an anchored bound · a bare open row plus an undated ending is #393 |
+| 0023 | [RSS observations are not documents](0023-rss-observations-are-not-documents.md) | Implemented in #326 |
 
 ## Not a decision record
 

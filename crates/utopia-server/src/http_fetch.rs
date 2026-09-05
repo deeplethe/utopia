@@ -43,7 +43,9 @@ pub enum Reach {
 pub struct Limits {
     pub max_bytes: usize,
     pub max_redirects: usize,
+    pub dns_timeout: Duration,
     pub connect_timeout: Duration,
+    pub read_timeout: Option<Duration>,
     pub overall_timeout: Duration,
 }
 
@@ -52,7 +54,9 @@ impl Default for Limits {
         Self {
             max_bytes: 16 * 1024 * 1024,
             max_redirects: 5,
+            dns_timeout: Duration::from_secs(30),
             connect_timeout: Duration::from_secs(10),
+            read_timeout: None,
             overall_timeout: Duration::from_secs(30),
         }
     }
@@ -91,6 +95,7 @@ pub enum FetchError {
 pub struct Fetched {
     pub final_url: Url,
     pub mime: String,
+    pub content_encoding: Option<reqwest::header::HeaderValue>,
     pub bytes: Vec<u8>,
 }
 
@@ -115,16 +120,33 @@ async fn build_client(
     limits: Limits,
     follow: bool,
 ) -> Result<reqwest::Client, FetchError> {
+    if reach == Reach::Content {
+        validate_content_url(url.as_str())?;
+    }
     let host = url
         .host_str()
         .ok_or_else(|| FetchError::InvalidUrl(url.to_string()))?;
-    let addrs = resolve(host, url, reach).await?;
+    let addrs = tokio::time::timeout(limits.dns_timeout, resolve(host, url, reach))
+        .await
+        .map_err(|_| FetchError::Dns(host.to_string()))??;
     let private = addrs.iter().any(|a| !is_public_ip(a.ip()));
     let mut builder = reqwest::Client::builder()
         .connect_timeout(limits.connect_timeout)
         .timeout(limits.overall_timeout)
         .user_agent(crate::ingest_sources::UA)
         .resolve_to_addrs(host, &addrs);
+    if let Some(timeout) = limits.read_timeout {
+        builder = builder.read_timeout(timeout);
+    }
+    if reach == Reach::Content {
+        // Proxies can bypass DNS pinning; keep encoding visible to RSS acceptance.
+        builder = builder
+            .no_proxy()
+            .no_hickory_dns()
+            .no_gzip()
+            .no_brotli()
+            .no_zstd();
+    }
     if !follow {
         builder = builder.redirect(reqwest::redirect::Policy::none());
     }
@@ -137,6 +159,16 @@ async fn build_client(
 
 /// GET 一个 URL，自己跟重定向。
 pub async fn get(raw_url: &str, reach: Reach, limits: Limits) -> Result<Fetched, FetchError> {
+    // DNS and redirect validation also consume the overall budget.
+    tokio::time::timeout(limits.overall_timeout, get_inner(raw_url, reach, limits))
+        .await
+        .map_err(|_| FetchError::Status(408))?
+}
+
+async fn get_inner(raw_url: &str, reach: Reach, limits: Limits) -> Result<Fetched, FetchError> {
+    if reach == Reach::Content {
+        validate_content_url(raw_url)?;
+    }
     let mut url = parse(raw_url)?;
     let deadline = Instant::now() + limits.overall_timeout;
 
@@ -148,8 +180,14 @@ pub async fn get(raw_url: &str, reach: Reach, limits: Limits) -> Result<Fetched,
         // **自带的重定向要关掉**：跟哪一跳由上面那个循环决定，逐跳复验；
         // 交给 reqwest 跟就等于没人看它跟去了哪里
         let client = build_client(&url, reach, limits.with_overall(remaining), false).await?;
-        let response = client
-            .get(url.clone())
+        let mut request = client.get(url.clone());
+        if reach == Reach::Content {
+            request = request.header(
+                reqwest::header::ACCEPT,
+                "text/html,application/xhtml+xml,text/markdown",
+            );
+        }
+        let response = request
             .header(reqwest::header::ACCEPT_ENCODING, "identity")
             .send()
             .await?;
@@ -163,6 +201,9 @@ pub async fn get(raw_url: &str, reach: Reach, limits: Limits) -> Result<Fetched,
                 .get(reqwest::header::LOCATION)
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| FetchError::BlockedRedirect("(no location)".into()))?;
+            if reach == Reach::Content && raw_authority_contains_userinfo(location) {
+                return Err(FetchError::BlockedRedirect("userinfo".into()));
+            }
             let next = url
                 .join(location)
                 .map_err(|_| FetchError::BlockedRedirect(location.to_string()))?;
@@ -186,6 +227,11 @@ async fn check_hop(from: &Url, to: &Url, reach: Reach) -> Result<(), FetchError>
     if from.scheme() == "https" && to.scheme() == "http" {
         return Err(FetchError::BlockedRedirect(to.to_string()));
     }
+    if reach == Reach::Content {
+        // build_client will resolve and pin the next hop exactly once.
+        validate_content_url(to.as_str())?;
+        return Ok(());
+    }
     let host = to
         .host_str()
         .ok_or_else(|| FetchError::InvalidUrl(to.to_string()))?;
@@ -199,6 +245,41 @@ async fn check_hop(from: &Url, to: &Url, reach: Reach) -> Result<(), FetchError>
         return Err(FetchError::BlockedRedirect(to.to_string()));
     }
     Ok(())
+}
+
+pub(crate) fn validate_content_url(raw: &str) -> Result<Url, FetchError> {
+    let parsed =
+        Url::parse(raw).map_err(|_| FetchError::InvalidUrl("invalid content URL".into()))?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || parsed.fragment().is_some()
+        || parsed.port().is_some_and(|port| !matches!(port, 80 | 443))
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || raw_authority_contains_userinfo(raw)
+    {
+        return Err(FetchError::InvalidUrl("invalid content URL".into()));
+    }
+    if let Some(ip) = parsed.host().and_then(|host| match host {
+        url::Host::Ipv4(ip) => Some(IpAddr::V4(ip)),
+        url::Host::Ipv6(ip) => Some(IpAddr::V6(ip)),
+        url::Host::Domain(_) => None,
+    }) {
+        if !is_public_ip(ip) {
+            return Err(FetchError::BlockedAddress(ip));
+        }
+    }
+    Ok(parsed)
+}
+
+fn raw_authority_contains_userinfo(raw: &str) -> bool {
+    let Some(authority) = raw
+        .split_once("://")
+        .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(rest))
+    else {
+        return false;
+    };
+    authority.contains('@')
 }
 
 fn parse(raw: &str) -> Result<Url, FetchError> {
@@ -217,7 +298,12 @@ async fn resolve(host: &str, url: &Url, reach: Reach) -> Result<Vec<SocketAddr>,
     let port = url
         .port_or_known_default()
         .ok_or_else(|| FetchError::InvalidUrl(url.to_string()))?;
-    let resolved: Vec<SocketAddr> = if let Ok(ip) = host.parse::<IpAddr>() {
+    let literal = match url.host() {
+        Some(url::Host::Ipv4(ip)) => Some(IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => Some(IpAddr::V6(ip)),
+        _ => None,
+    };
+    let resolved: Vec<SocketAddr> = if let Some(ip) = literal {
         vec![SocketAddr::new(ip, port)]
     } else {
         tokio::net::lookup_host((host, port))
@@ -225,6 +311,14 @@ async fn resolve(host: &str, url: &Url, reach: Reach) -> Result<Vec<SocketAddr>,
             .map_err(|_| FetchError::Dns(host.to_string()))?
             .collect()
     };
+    validate_resolved(resolved, reach, host)
+}
+
+fn validate_resolved(
+    resolved: Vec<SocketAddr>,
+    reach: Reach,
+    host: &str,
+) -> Result<Vec<SocketAddr>, FetchError> {
     if resolved.is_empty() {
         return Err(FetchError::Dns(host.to_string()));
     }
@@ -248,6 +342,10 @@ async fn read_bounded(
     final_url: Url,
     max_bytes: usize,
 ) -> Result<Fetched, FetchError> {
+    let content_encoding = response
+        .headers()
+        .get(reqwest::header::CONTENT_ENCODING)
+        .cloned();
     let mime = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -274,6 +372,7 @@ async fn read_bounded(
     Ok(Fetched {
         final_url,
         mime,
+        content_encoding,
         bytes,
     })
 }
@@ -305,7 +404,14 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
                 return is_public_ip(IpAddr::V4(v4));
             }
             let seg = v6.segments();
-            // NAT64（64:ff9b::/96 与 64:ff9b:1::/48）裹着一个 v4 地址，按里面那个判
+            // Local-use NAT64 and special-purpose IPv6 cannot become RSS targets.
+            if seg[..3] == [0x0064, 0xff9b, 1]
+                || (seg[0] == 0x2001 && (seg[1] == 0 || seg[1] == 2 || (seg[1] & 0xfff0) == 0x0010))
+                || (seg[0] == 0x3fff && (seg[1] & 0xf000) == 0)
+            {
+                return false;
+            }
+            // Preserve the shared NAT64 embedded-address exclusion.
             if seg[0] == 0x0064 && seg[1] == 0xff9b {
                 let v4 = std::net::Ipv4Addr::new(
                     (seg[6] >> 8) as u8,
@@ -341,6 +447,96 @@ mod tests {
 
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
+    }
+
+    #[tokio::test]
+    async fn content_urls_reject_empty_userinfo_before_parsing_erases_it() {
+        let error = get("https://@127.0.0.1/", Reach::Content, Limits::default())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, FetchError::InvalidUrl(_)), "{error:?}");
+    }
+
+    #[test]
+    fn mixed_dns_answers_fail_closed_even_when_one_address_is_public() {
+        let addresses = vec![
+            "93.184.216.34:0".parse().unwrap(),
+            "192.168.1.10:0".parse().unwrap(),
+        ];
+        assert!(matches!(
+            validate_resolved(addresses, Reach::Content, "example.com"),
+            Err(FetchError::BlockedAddress(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn content_redirects_preserve_the_rss_boundary() {
+        let from = Url::parse("https://8.8.8.8/article").unwrap();
+        for target in [
+            "http://8.8.8.8/final",
+            "https://127.0.0.1/admin",
+            "https://[::1]/",
+            "https://8.8.8.8:8443/",
+            "https://user:pass@8.8.8.8/",
+            "https://8.8.8.8/#fragment",
+            "ftp://8.8.8.8/",
+        ] {
+            assert!(
+                check_hop(&from, &Url::parse(target).unwrap(), Reach::Content)
+                    .await
+                    .is_err(),
+                "{target}"
+            );
+        }
+        assert!(
+            check_hop(&from, &from.join("/final").unwrap(), Reach::Content)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_fetch_obeys_read_and_overall_deadlines() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::header("accept-encoding", "identity"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string("late")
+                    .set_delay(Duration::from_millis(250)),
+            )
+            .mount(&server)
+            .await;
+        for limits in [
+            Limits {
+                read_timeout: Some(Duration::from_millis(20)),
+                ..Limits::default()
+            },
+            Limits {
+                overall_timeout: Duration::from_millis(20),
+                ..Limits::default()
+            },
+        ] {
+            let result = get(&server.uri(), Reach::Operator, limits).await;
+            assert!(
+                matches!(result, Err(FetchError::Status(408)))
+                    || matches!(result, Err(FetchError::Transport(ref e)) if e.is_timeout()),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn content_reach_preserves_rss_special_ipv6_exclusions() {
+        for address in [
+            "64:ff9b:1::808:808",
+            "2001::1",
+            "2001:10::1",
+            "2001:2::1",
+            "3fff::1",
+        ] {
+            assert!(!is_public_ip(ip(address)), "{address}");
+        }
     }
 
     #[test]
@@ -399,7 +595,7 @@ mod tests {
         // feed 里的一个链接指向 127.0.0.1 —— 正是这条路要拦的东西
         let refused = get(&url, Reach::Content, Limits::default()).await;
         assert!(
-            matches!(refused, Err(FetchError::BlockedAddress(_))),
+            matches!(refused, Err(FetchError::InvalidUrl(_))),
             "内容给出的地址不该够得到回环，得到的是 {refused:?}"
         );
 

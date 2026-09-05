@@ -536,6 +536,17 @@ export const zh: Strings = {
     sourceName: "名称",
     urlsField: "网页地址（每行一个）",
     feedUrl: "订阅地址",
+    rssContentMode: "RSS 内容模式",
+    rssModeFeed: "仅使用订阅内容",
+    rssModeFull: "新条目获取完整文章",
+    rssModeFeedShort: "仅订阅",
+    rssModeFullShort: "完整文章",
+    rssContentModeHint: "完整模式只为启用后首次发现的新条目抓取链接文章。",
+    rssFullModeHint:
+      "第一次成功同步只把当前订阅记录为基线，不导入文档。之后的新条目优先使用订阅正文，再进行受限文章抓取；没有可用正文的摘要只保留为可诊断的终止结果。",
+    rssFeedModeHint: "兼容模式保存订阅正文或摘要，不抓取链接文章。",
+    rssHydrationCounts: (pending: number, queued: number, retrying: number, complete: number, terminal: number) =>
+      `待处理 ${pending} · 排队 ${queued} · 重试 ${retrying} · 完成 ${complete} · 终止 ${terminal}`,
     repoField: "仓库（owner/name）",
     jiraUrlField: "Jira 地址",
     jiraProjectField: "项目 key",

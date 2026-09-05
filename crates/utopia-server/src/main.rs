@@ -26,6 +26,7 @@ mod predicate_match;
 mod query_engine;
 mod rdf;
 mod retrieval;
+mod rss_full_content;
 mod state;
 mod type_resolution;
 mod webdav;
@@ -434,6 +435,21 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 source_id"))?;
             ingest_sources::sync_source(st, source_id).await
+        }
+        "hydrate_rss_entry" => {
+            let source_id: Uuid = job
+                .payload
+                .get("source_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 source_id"))?;
+            let entry_id: Uuid = job
+                .payload
+                .get("rss_entry_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 rss_entry_id"))?;
+            rss_full_content::hydrate_entry(st, job.id, source_id, entry_id).await
         }
         other => anyhow::bail!("未知任务类型: {other}"),
     }
