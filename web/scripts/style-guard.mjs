@@ -54,8 +54,9 @@ const RULES = [
   },
   {
     id: "spacing",
-    re: /\b-?(p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y)-(0\.5|1\.5|2\.5|3\.5|5|7|9|10|11|12|14|16|20|24|28|32|\[[^\]]+\])\b/g,
-    why: "间距六档：1 2 3 4 6 8（规矩 2）",
+    // 12 及以上是版面（给浮层留位、页脚净空），不是节奏，放行
+    re: /\b-?(p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y)-(0\.5|1\.5|2\.5|3\.5|5|7|9|10|11|\[[^\]]+\])\b/g,
+    why: "间距六档：1 2 3 4 6 8；12 以上只给版面净空（规矩 2）",
     ui: false,
   },
   {
