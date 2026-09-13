@@ -215,13 +215,47 @@ async fn lock_timeline(
     lock_timelines(tx, kb_id, &[timeline]).await
 }
 
+/// 一次锁的时间线超过这么多条，改拿谓词一级的排他锁（见 [`lock_timelines`]）
+const BULK_TIMELINES: usize = 256;
+
 /// 拿下几条时间线的咨询锁，**按固定顺序**。一次要动多条时间线的事务都走这里：
-/// 大家按同一个顺序排队，谁也不会拿着一条去等另一条。同一事务里重复拿同一把锁无妨
+/// 大家按同一个顺序排队，谁也不会拿着一条去等另一条。同一事务里重复拿同一把锁无妨。
+///
+/// **锁分两级。** 平常先拿谓词一级的共享锁，再拿时间线一级的排他锁——同一个谓词上
+/// 不同持有者的时间线互不相干，照旧并行。一次要锁的时间线太多时（删一篇给几千个实体
+/// 各记了一个属性的表格），改拿这些谓词的排他锁、不再逐条锁：逐条锁时 8000 条要拿
+/// 8000 把锁，两万条时 Postgres 的锁表（`max_locks_per_transaction`）直接装不下，
+/// 文档就删不掉了（#679 第四轮评审）。谓词锁在前、时间线锁在后，各自排序，
+/// 两级之间不会反着等
 pub async fn lock_timelines(
     tx: &mut Transaction<'_, Postgres>,
     kb_id: Uuid,
     timelines: &[Timeline],
 ) -> AppResult<()> {
+    if timelines.is_empty() {
+        return Ok(());
+    }
+    let mut predicates: Vec<String> = timelines
+        .iter()
+        .map(|t| format!("predicate:{kb_id}:{}", t.predicate_id))
+        .collect();
+    predicates.sort();
+    predicates.dedup();
+    let bulk = timelines.len() > BULK_TIMELINES;
+    let predicate_lock = if bulk {
+        "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))"
+    } else {
+        "SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))"
+    };
+    for key in predicates {
+        sqlx::query(predicate_lock)
+            .bind(key)
+            .execute(&mut **tx)
+            .await?;
+    }
+    if bulk {
+        return Ok(());
+    }
     let mut keys: Vec<String> = timelines.iter().map(|t| t.lock_key(kb_id)).collect();
     keys.sort();
     keys.dedup();
@@ -269,7 +303,8 @@ pub async fn timelines_of<'e, E>(
     executor: E,
     kb_id: Uuid,
     fact_ids: &[Uuid],
-    swap: Option<(Uuid, Uuid)>,
+    // 这些持有者上的时间线，另记一份换到后面那个实体上（合并、撤回合并时两边都要锁）
+    swap: Option<(&[Uuid], Uuid)>,
 ) -> AppResult<Vec<Timeline>>
 where
     E: sqlx::PgExecutor<'e>,
@@ -295,7 +330,10 @@ where
     .bind(fact_ids)
     .fetch_all(executor)
     .await?;
-    let swapped = |id: Uuid| swap.filter(|(from, _)| *from == id).map(|(_, to)| to);
+    let swapped = |id: Uuid| {
+        swap.filter(|(from, _)| from.contains(&id))
+            .map(|(_, to)| to)
+    };
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for p in placed {
@@ -818,6 +856,9 @@ pub async fn rehome_tx(
     .bind(object_id)
     .execute(&mut **tx)
     .await?;
+    // 开着的冲突先换到新行上：旧行一作废，0051 的触发器就把它们撤下，之后重算也不会
+    // 再记同一天开始的那一对——撤回完两行叠在一起，审核队列却是空的（#679 第四轮评审）
+    carry_open_conflicts(tx, fact_id, moved).await?;
     sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
         .bind(fact_id)
         .execute(&mut **tx)
@@ -984,6 +1025,10 @@ async fn record_conflict_tx(
               WHERE c.status = 'resolved' AND c.resolution = 'kept_both'
                 AND ((c.old_fact_id IN (SELECT id FROM a) AND c.new_fact_id IN (SELECT id FROM b))
                   OR (c.old_fact_id IN (SELECT id FROM b) AND c.new_fact_id IN (SELECT id FROM a))))
+           -- 同一对反过来记过的也算记过：重算按时间线顺序看，谁是「旧」谁是「新」
+           -- 随到达顺序变，不去重的话一次全量重算会翻出一堆方向相反的重复
+           AND NOT EXISTS (SELECT 1 FROM fact_conflicts r
+                            WHERE r.old_fact_id = $4 AND r.new_fact_id = $3 AND r.status = 'open')
          ON CONFLICT (old_fact_id, new_fact_id) DO NOTHING",
     )
     .bind(Uuid::now_v7())

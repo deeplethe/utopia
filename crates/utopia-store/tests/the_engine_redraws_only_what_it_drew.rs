@@ -819,3 +819,159 @@ async fn the_migration_marks_the_ends_the_old_engine_drew() -> anyhow::Result<()
     assert_eq!(n, 0);
     Ok(())
 }
+
+/// 连环合并里撤回头一环（#679 第四轮评审）：S 并进 T、T 再并进 C，撤回 S→T。
+/// S 的事实此刻挂在 C 身上，也要跟着 S 回去，C 的时间线上不留它
+#[tokio::test]
+async fn undoing_the_first_merge_of_a_chain_brings_its_facts_home() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let f = seed(&pool).await?;
+    let source = entity(&pool, f.kb, f.etype, "Lease S", Uuid::now_v7()).await?;
+    let chain_end = entity(&pool, f.kb, f.etype, "Lease C", Uuid::now_v7()).await?;
+    observe(
+        &pool,
+        &f,
+        Seen {
+            subject: source,
+            ..seen(&f, "S1", "2020-01-01")
+        },
+    )
+    .await?;
+    let first =
+        utopia_store::resolution::merge_entities(&pool, f.kb, source, f.lease, None, "test")
+            .await?;
+    utopia_store::resolution::merge_entities(&pool, f.kb, f.lease, chain_end, None, "test").await?;
+    utopia_store::resolution::revert_merge(&pool, f.kb, first).await?;
+    let home = timeline(&pool, &f, source).await?;
+    let tail = timeline(&pool, &f, chain_end).await?;
+    cleanup(&pool, &f).await?;
+    assert_eq!(home.len(), 1, "S1 回到 S 上：{home:?}");
+    assert_eq!(home[0].0, "S1");
+    assert!(tail.iter().all(|s| s.0 != "S1"), "C 上不留 S1：{tail:?}");
+    Ok(())
+}
+
+/// 撤回合并把合并之后改写出来的行送回源实体时，它们身上开着的冲突跟着走（#679 第四轮评审）
+#[tokio::test]
+async fn a_revert_keeps_the_conflict_its_rows_carried() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let f = seed(&pool).await?;
+    let source = entity(&pool, f.kb, f.etype, "Lease Agreement", Uuid::now_v7()).await?;
+    for value in ["D", "E"] {
+        observe(
+            &pool,
+            &f,
+            Seen {
+                subject: source,
+                ..seen(&f, value, "2020-01-01")
+            },
+        )
+        .await?;
+    }
+    let merge =
+        utopia_store::resolution::merge_entities(&pool, f.kb, source, f.lease, None, "test")
+            .await?;
+    observe(&pool, &f, seen(&f, "N", "2020-06-01")).await?;
+    utopia_store::resolution::revert_merge(&pool, f.kb, merge).await?;
+    let conflicts = open_conflicts(&pool, f.kb).await?;
+    let back = timeline(&pool, &f, source).await?;
+    let overlap = overlaps(&pool, &f, source).await?;
+    cleanup(&pool, &f).await?;
+    assert_eq!(back.len(), 2, "D 与 E 回到源实体：{back:?}");
+    assert!(
+        overlap == 0 || conflicts.contains(&"simultaneous".to_string()),
+        "两行叠在一起就得有一条开着的冲突：{conflicts:?}"
+    );
+    Ok(())
+}
+
+/// 删一篇给几百个实体各记了一个属性的文档：改拿谓词一级的锁，删得掉，也都作废了。
+/// 逐条锁的时候几千条就要几千把锁，两万条时锁表装不下（#679 第四轮评审）
+#[tokio::test]
+async fn deleting_a_document_that_dates_many_timelines_still_works() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let f = seed(&pool).await?;
+    let (doc, chunk) = document(&pool, f.kb, "2020-01-01", "a table").await?;
+    // 默认 300 条走谓词锁那条路； 可以复现评审时锁表装不下的规模
+    let n: usize = std::env::var("REDRAW_BULK_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    for i in 0..n {
+        let holder = entity(&pool, f.kb, f.etype, &format!("Lease {i}"), Uuid::now_v7()).await?;
+        let (id, _) = utopia_store::graph::insert_value_fact(
+            &pool,
+            f.kb,
+            holder,
+            Some(f.deadline),
+            &json!({ "value": format!("2021-01-{:02}", i % 28 + 1) }),
+            Validity {
+                from: Some(t("2020-01-01")),
+                from_precision: Some("day"),
+                ..Default::default()
+            },
+            0.9,
+        )
+        .await?;
+        utopia_store::graph::add_evidence(&pool, id, chunk, Some("row"), None).await?;
+    }
+    let report = utopia_store::documents::delete(&pool, f.kb, doc, None).await?;
+    let restored = utopia_store::documents::restore(&pool, f.kb, doc).await;
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM facts WHERE kb_id = $1 AND predicate_id = $2 AND invalidated_at IS NULL",
+    )
+    .bind(f.kb)
+    .bind(f.deadline)
+    .fetch_one(&pool)
+    .await?;
+    cleanup(&pool, &f).await?;
+    assert_eq!(report.invalidated_facts, n);
+    assert!(restored.is_ok(), "{:?}", restored.err());
+    assert_eq!(live, n as i64, "撤销删除之后全都回来");
+    Ok(())
+}
+
+/// 删掉没起点那一行最早的证据文档：引擎的锚点挪到第二份文档，读出来的起点也跟着挪，
+/// 两段不叠；撤销删除又都回去（#679 第四轮评审）
+#[tokio::test]
+async fn deleting_the_first_document_moves_the_read_start_with_the_anchor() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let f = seed(&pool).await?;
+    observe(&pool, &f, seen(&f, "P", "2019-01-01")).await?;
+    for day in ["2020-06-01", "2021-06-01"] {
+        observe(
+            &pool,
+            &f,
+            Seen {
+                from: None,
+                doc: Some(day),
+                ..seen(&f, "S", day)
+            },
+        )
+        .await?;
+    }
+    let first: Uuid = sqlx::query_scalar(
+        "SELECT d.id FROM fact_evidence fe JOIN chunks c ON c.id = fe.chunk_id
+           JOIN documents d ON d.id = c.document_id
+          WHERE d.kb_id = $1 ORDER BY d.doc_time LIMIT 1",
+    )
+    .bind(f.kb)
+    .fetch_one(&pool)
+    .await?;
+    let before = overlaps(&pool, &f, f.lease).await?;
+    utopia_store::documents::delete(&pool, f.kb, first, None).await?;
+    let after_delete = overlaps(&pool, &f, f.lease).await?;
+    utopia_store::documents::restore(&pool, f.kb, first).await?;
+    let after_restore = overlaps(&pool, &f, f.lease).await?;
+    cleanup(&pool, &f).await?;
+    assert_eq!((before, after_delete, after_restore), (0, 0, 0));
+    Ok(())
+}

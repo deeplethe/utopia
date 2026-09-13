@@ -825,7 +825,7 @@ pub async fn delete(
     // 作废的事实可能是别的值的后任：它走了，关在它开始时的前任要重新接上；没作废、只是
     // 少了这份证据的，排序用的日期也可能变。牵连的时间线先按固定顺序锁上，再作废任何一行
     // （与撤回合并同一个顺序，见 temporal 模块头）
-    let (cited, timelines) = lock_cited_timelines(&mut tx, kb_id, id).await?;
+    let (cited, timelines) = lock_cited_timelines(&mut tx, kb_id, id, &[]).await?;
     // 先打了墓碑再算：这篇文档此刻已经算「已删除」，所以只剩它作出处的事实才落网；
     // 另一篇活着的文档里也有证据的一条不动——删一份重复上传不该掀掉半张图
     let facts: Vec<(Uuid,)> = sqlx::query_as(
@@ -853,6 +853,7 @@ pub async fn delete(
     .await?;
     let chunk_ids: Vec<Uuid> = chunks.into_iter().map(|(c,)| c).collect();
     let fact_ids: Vec<Uuid> = facts.into_iter().map(|(f,)| f).collect();
+    reattest_tx(&mut tx, &cited).await?;
     crate::temporal::tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
     let deletion_id = Uuid::now_v7();
     sqlx::query(
@@ -878,16 +879,47 @@ pub async fn delete(
     })
 }
 
+/// 证据文档变了（删了一篇、撤销了删除），把这些事实的「最早证据日期」按还在的文档重算。
+///
+/// 读路径拿它当没起点的事实从哪天起成立（`facts_holds_from`），引擎排时间线用的是同一个
+/// 日期（`temporal::DATED_AT`）。删掉最早那份文档之后引擎的锚点挪到了第二份，这里不跟着
+/// 挪的话，前任读到新锚点为止、它却还从旧日期读起，两段叠了一年（#679 第四轮评审）。
+/// 一份带日期的文档都不剩的，保留原值——那是别的来源（人写的）给的日期
+async fn reattest_tx(tx: &mut Transaction<'_, Postgres>, fact_ids: &[Uuid]) -> AppResult<()> {
+    if fact_ids.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE facts f SET attested_from = e.first
+           FROM (SELECT fe.fact_id, min(d.doc_time) AS first
+                   FROM fact_evidence fe
+                   JOIN chunks c ON c.id = fe.chunk_id
+                   JOIN documents d ON d.id = c.document_id
+                  WHERE fe.fact_id = ANY($1) AND d.deleted_at IS NULL AND d.doc_time IS NOT NULL
+                  GROUP BY fe.fact_id) e
+          WHERE f.id = e.fact_id AND f.invalidated_at IS NULL
+            AND f.attested_from IS DISTINCT FROM e.first",
+    )
+    .bind(fact_ids)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// 引用这篇文档的现存事实，连同它们所在的唯一性时间线，锁上之后返回。
 ///
 /// **锁上之后再读一遍**（#679 第三轮评审）：等锁的时候，时间线重算可能把其中一行改写成了
 /// 新的一行，头一遍读到的是旧 id——拿旧名单去作废，新的那一行就活下来，出处却已经删了。
 /// 改写只在时间线的锁里发生，锁上之后名单不会再变；再读出来的行若落在没锁上的时间线上
 /// （撤回合并把它送回了源实体），把那几条也锁上
+///
+/// `also`：一并要锁的别的事实（撤销删除时要复活的那些）。**一次锁齐**：先锁引用的、
+/// 再锁复活的，分两轮拿锁的话，另一个按顺序拿同样两把锁的事务会和它互相等死
 async fn lock_cited_timelines(
     tx: &mut Transaction<'_, Postgres>,
     kb_id: Uuid,
     document_id: Uuid,
+    also: &[Uuid],
 ) -> AppResult<(Vec<Uuid>, Vec<crate::temporal::Timeline>)> {
     let cited_sql = "SELECT DISTINCT f.id FROM facts f
                        JOIN fact_evidence fe ON fe.fact_id = f.id
@@ -898,7 +930,8 @@ async fn lock_cited_timelines(
         .bind(document_id)
         .fetch_all(&mut **tx)
         .await?;
-    let mut timelines = crate::temporal::timelines_of(&mut **tx, kb_id, &cited, None).await?;
+    let first: Vec<Uuid> = cited.iter().chain(also).copied().collect();
+    let mut timelines = crate::temporal::timelines_of(&mut **tx, kb_id, &first, None).await?;
     crate::temporal::lock_timelines(tx, kb_id, &timelines).await?;
     let cited: Vec<Uuid> = sqlx::query_scalar(cited_sql)
         .bind(kb_id)
@@ -978,14 +1011,7 @@ async fn restore_tx(
         .await?;
     // 复活的事实回到各自的时间线上；一直引用着这篇文档的事实，排序用的日期也回来了。
     // 先锁、再复活、再重算（同删除）
-    let (_, mut timelines) = lock_cited_timelines(tx, kb_id, id).await?;
-    let revived: Vec<_> = crate::temporal::timelines_of(&mut **tx, kb_id, &fact_ids, None)
-        .await?
-        .into_iter()
-        .filter(|t| !timelines.contains(t))
-        .collect();
-    crate::temporal::lock_timelines(tx, kb_id, &revived).await?;
-    timelines.extend(revived);
+    let (cited, timelines) = lock_cited_timelines(tx, kb_id, id, &fact_ids).await?;
     sqlx::query(
         "UPDATE facts SET invalidated_at = NULL
           WHERE id = ANY($1) AND invalidated_at IS NOT NULL",
@@ -993,6 +1019,8 @@ async fn restore_tx(
     .bind(&fact_ids)
     .execute(&mut **tx)
     .await?;
+    let touched: Vec<Uuid> = cited.iter().chain(&fact_ids).copied().collect();
+    reattest_tx(tx, &touched).await?;
     crate::temporal::tidy_timelines_tx(tx, kb_id, &timelines).await?;
     sqlx::query("UPDATE document_deletions SET reverted_at = now() WHERE id = $1")
         .bind(deletion_id)

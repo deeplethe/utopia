@@ -1726,7 +1726,7 @@ pub async fn merge_entities(
     .fetch_all(&mut *tx)
     .await?;
     let timelines =
-        crate::temporal::timelines_of(&mut *tx, kb_id, &moving, Some((source_id, target_id)))
+        crate::temporal::timelines_of(&mut *tx, kb_id, &moving, Some((&[source_id], target_id)))
             .await?;
     crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
 
@@ -2022,6 +2022,19 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
     }
 
     let mut tx = pool.begin().await?;
+    // 事实此刻挂在谁身上：目标实体，或者目标后来又并进去的实体（S 并进 T、T 再并进 C，
+    // 撤回 S→T 时 S 的事实在 C 身上）。只认目标的话，连环合并里撤回头一环，源实体
+    // 复活了、它的事实却留在链尾（#679 第四轮评审）
+    let holders: Vec<Uuid> = sqlx::query_scalar(
+        "WITH RECURSIVE chain(id) AS (
+             SELECT $1::uuid
+             UNION SELECT e.merged_into FROM entities e JOIN chain ON e.id = chain.id
+              WHERE e.merged_into IS NOT NULL)
+         SELECT id FROM chain",
+    )
+    .bind(m.target_id)
+    .fetch_all(&mut *tx)
+    .await?;
     let touched: Vec<Uuid> = with_rewrites(&mut tx, &m.moved_subject_facts)
         .await?
         .into_iter()
@@ -2029,23 +2042,23 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
         .chain(m.invalidated_facts.iter().copied())
         .collect();
     let timelines =
-        crate::temporal::timelines_of(&mut *tx, kb_id, &touched, Some((m.target_id, m.source_id)))
+        crate::temporal::timelines_of(&mut *tx, kb_id, &touched, Some((&holders, m.source_id)))
             .await?;
     crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
     // 锁上之后再走一遍：等锁的时候，引擎可能刚从它们改写出新的一行
     let subject_rows = with_rewrites(&mut tx, &m.moved_subject_facts).await?;
     let object_rows = with_rewrites(&mut tx, &m.moved_object_facts).await?;
 
-    sqlx::query("UPDATE facts SET subject_id = $1 WHERE id = ANY($2) AND subject_id = $3")
+    sqlx::query("UPDATE facts SET subject_id = $1 WHERE id = ANY($2) AND subject_id = ANY($3)")
         .bind(m.source_id)
         .bind(&m.moved_subject_facts)
-        .bind(m.target_id)
+        .bind(&holders)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE facts SET object_id = $1 WHERE id = ANY($2) AND object_id = $3")
+    sqlx::query("UPDATE facts SET object_id = $1 WHERE id = ANY($2) AND object_id = ANY($3)")
         .bind(m.source_id)
         .bind(&m.moved_object_facts)
-        .bind(m.target_id)
+        .bind(&holders)
         .execute(&mut *tx)
         .await?;
     for (rows, ledger, on_object) in [
@@ -2055,11 +2068,11 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
         let holder = if on_object { "object_id" } else { "subject_id" };
         let live: Vec<Uuid> = sqlx::query_scalar(&format!(
             "SELECT id FROM facts
-              WHERE id = ANY($1) AND id <> ALL($2) AND invalidated_at IS NULL AND {holder} = $3"
+              WHERE id = ANY($1) AND id <> ALL($2) AND invalidated_at IS NULL AND {holder} = ANY($3)"
         ))
         .bind(rows)
         .bind(ledger)
-        .bind(m.target_id)
+        .bind(&holders)
         .fetch_all(&mut *tx)
         .await?;
         for id in live {
