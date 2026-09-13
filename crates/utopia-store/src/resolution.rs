@@ -1995,23 +1995,48 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
         .await?;
 
     // 合并引发的时态修正随之撤销：这些修正的唯一成因是本次合并（两实体折一后
-    // 不变量才看到的相撞），成因既撤、修正随撤——先恢复被取代的原行，再作废修正行。
-    // 只撤仍存活的修正：之后被真实新观察再度改写过的链保持不动（那部分有独立依据）。
+    // 不变量才看到的相撞），成因既撤、修正随撤——恢复被取代的原行，作废修正行。
+    //
+    // **顺着 supersedes 往下走到底。** 从前只撤仍存活的修正：一段修正行之后又被
+    // 切过（合并搬来两条值，第二条切了第一条的修正行；或者合并后到的新值切了它），
+    // 修正行已经作废，撤回就不动它，被它取代的原行也回不来——撤回丢了一条事实（#679
+    // 评审）。现在修正行连同从它改写出来的所有后代一起作废；后来那些观察各自的时间，
+    // 由下面的时间线整理按剩下的行重新放
+    let chain: Vec<Uuid> = sqlx::query_scalar(
+        "WITH RECURSIVE chain(id) AS (
+             SELECT unnest($1::uuid[])
+             UNION
+             SELECT f.id FROM facts f JOIN chain c ON f.supersedes = c.id
+         )
+         SELECT id FROM chain",
+    )
+    .bind(&m.temporal_corrections)
+    .fetch_all(&mut *tx)
+    .await?;
     sqlx::query(
         "UPDATE facts SET invalidated_at = NULL WHERE id IN (
              SELECT supersedes FROM facts
-             WHERE id = ANY($1) AND invalidated_at IS NULL AND supersedes IS NOT NULL)",
+             WHERE id = ANY($1) AND supersedes IS NOT NULL AND supersedes <> ALL($2))",
     )
     .bind(&m.temporal_corrections)
+    .bind(&chain)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
         "UPDATE facts SET invalidated_at = now()
          WHERE id = ANY($1) AND invalidated_at IS NULL",
     )
-    .bind(&m.temporal_corrections)
+    .bind(&chain)
     .execute(&mut *tx)
     .await?;
+    // 搬回源实体的事实曾是目标时间线上的边界：关在这些边界上的行重新放一次
+    let removed: Vec<Uuid> = m
+        .moved_subject_facts
+        .iter()
+        .chain(m.moved_object_facts.iter())
+        .copied()
+        .collect();
+    crate::temporal::retidy_after_revert(&mut tx, kb_id, m.target_id, &removed).await?;
 
     let source = entity_full(pool, kb_id, m.source_id).await?;
     // source 的名字是它的名字事实，已经跟着 moved_subject_facts 搬回去了

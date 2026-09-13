@@ -216,7 +216,7 @@ async fn arrive_from_document(
 ) -> anyhow::Result<Uuid> {
     let (doc, chunk) = (Uuid::now_v7(), Uuid::now_v7());
     sqlx::query(
-        "INSERT INTO documents (id, kb_id, filename, sha256, doc_time) VALUES ($1, $2, $3, $3, $4)",
+        "INSERT INTO documents (id, kb_id, filename, sha256, doc_time, doc_time_source) VALUES ($1, $2, $3, $3, $4, 'content')",
     )
     .bind(doc)
     .bind(f.kb)
@@ -317,9 +317,11 @@ async fn a_value_with_no_start_ends_where_the_next_known_value_begins() -> anyho
 }
 
 /// 第十一份补充协议（8 月 13 日）说房东是 BBHQ1，没说从哪天起；另一份说 HPBB1 从 2016 年起
-/// 是房东。BBHQ1 在 8 月 13 日成立，它不可能是 2016 年之前的前任：不关它，交给人
+/// 是房东。BBHQ1 在 8 月 13 日成立，所以它排在 HPBB1 之后：HPBB1 写成「结束了，不知哪天」，
+/// 锚在 8 月 13 日（#681 §1，0022 的形状）。日期不写进日期列，读回来 HPBB1 到 8 月 13 日为止、
+/// BBHQ1 从 8 月 13 日起，首尾相接不重叠
 #[tokio::test]
-async fn a_dated_value_with_no_start_is_not_closed_before_its_date() -> anyhow::Result<()> {
+async fn a_dated_value_with_no_start_takes_over_from_its_date() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
@@ -331,20 +333,44 @@ async fn a_dated_value_with_no_start_is_not_closed_before_its_date() -> anyhow::
         arrive_from_document(&pool, &f, "HPBB1", Some("2016-05-16"), "2016-05-16").await?;
 
         let (still_open,): (bool,) = sqlx::query_as(
-            "SELECT valid_to IS NULL AND invalidated_at IS NULL FROM facts WHERE id = $1",
+            "SELECT valid_to IS NULL AND valid_to_precision IS NULL AND invalidated_at IS NULL
+             FROM facts WHERE id = $1",
         )
         .bind(later)
         .fetch_one(&pool)
         .await?;
         assert!(still_open, "BBHQ1 没被关在 2016 年");
-        let (conflicts,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM fact_conflicts WHERE kb_id = $1 AND old_fact_id = $2",
+        let earlier: (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT to_char(valid_from, 'YYYY-MM-DD'), to_char(valid_to, 'YYYY-MM-DD'),
+                        valid_to_precision, to_char(attested_to, 'YYYY-MM-DD')
+                 FROM facts
+                 WHERE kb_id = $1 AND object_value #>> '{value}' = 'HPBB1'
+                   AND invalidated_at IS NULL",
         )
         .bind(f.kb)
-        .bind(later)
         .fetch_one(&pool)
         .await?;
-        assert_eq!(conflicts, 1, "两个房东同时开着，要人看");
+        assert_eq!(
+            earlier,
+            (
+                Some("2016-05-16".into()),
+                None,
+                Some("unknown".into()),
+                Some("2020-08-13".into())
+            ),
+            "HPBB1 结束了、不知哪天，锚在 BBHQ1 那份文件的日期上"
+        );
+        let (conflicts,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM fact_conflicts WHERE kb_id = $1")
+                .bind(f.kb)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(conflicts, 0, "排得出先后，就不用人看");
         Ok::<_, anyhow::Error>(())
     }
     .await;
