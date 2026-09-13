@@ -1884,6 +1884,10 @@ export const HOVER_ROW =
   "group flex items-center gap-2 rounded-cell px-2 py-1 transition-colors duration-fast hover:bg-surface-2";
 /** 指针停在所在行（.group）上才现身的东西；加 is-on 常显 */
 export const REVEAL = "u-reveal";
+/** 行里一个能单独指、单独点的词（事实行的谓词、宾语）。整行的底色说「指着这条」，
+ *  这个词的下划线说「指着它自己那一件」——两层要分得开，所以不用底色 */
+export const POINT_WORD =
+  "cursor-pointer rounded-cell underline-offset-4 hover:text-ink hover:underline";
 
 /* 各在自己文件里的组件，从这里一并导出，页面只认 "../ui" 一个入口 */
 export { Dialog, DangerConfirm, FormDialog } from "./dialog";

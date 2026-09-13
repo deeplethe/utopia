@@ -70,7 +70,8 @@ async fn counted_relation_groups(
     // 而 `produces` 有 265 条、`produced_by` 只有 15 条——票多的先进本体，
     // 票少的那个本该被 `predicate_match` 的 `_by` 规则接住，却因为**采纳路径压根
     // 没走匹配器**而长成了独立关系。匹配器只在抽取时用过，这里是它缺席的第二处。
-    let rtypes = utopia_store::graph::relation_types(&state.pool, kb_id).await?;
+    let mut rtypes = utopia_store::graph::relation_types(&state.pool, kb_id).await?;
+    rtypes.retain(|r| !utopia_store::names::is_name_attribute(r));
     let index = PredicateIndex::build(&rtypes);
 
     let mut docs_of: HashMap<String, HashSet<Uuid>> = HashMap::new();

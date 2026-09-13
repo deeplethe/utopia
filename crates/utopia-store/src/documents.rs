@@ -834,6 +834,12 @@ pub async fn delete(
                             JOIN chunks c ON c.id = fe.chunk_id
                             JOIN documents d ON d.id = c.document_id
                             WHERE fe.fact_id = f.id AND d.deleted_at IS NULL)
+            -- 实体的本名不随文档走（0041）：建实体时就记下了这条名字事实，这篇文档只是
+            -- 给它补过出处。删掉出处，实体还叫这个名字，名字栏里不能少了它
+            AND NOT EXISTS (SELECT 1 FROM relation_types nr
+                             JOIN entities ne ON ne.id = f.subject_id
+                            WHERE nr.id = f.predicate_id AND nr.builtin AND nr.key = 'known_as'
+                              AND lower(f.object_value->>'value') = lower(ne.canonical_name))
           RETURNING f.id",
     )
     .bind(kb_id)

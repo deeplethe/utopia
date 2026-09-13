@@ -44,6 +44,7 @@ export const zh: Strings = {
     parent_cycle: "那个类已经在这个类下面了——层级会成环。",
     bad_lang: "选一个支持的语言。",
     attr_needs_class: "属性必须挂在某个类上。",
+    builtin_name_attribute: "名字属性是内建的，不能修改。",
     attr_has_no_link:
       "属性没有逆，也没有父属性——它的宾语是字面值，谈不上反过来指回来。",
     link_target_is_attr: "要选一条关系，不是属性——属性的值是字面量。",
@@ -793,6 +794,7 @@ export const zh: Strings = {
     undated: "无日期",
     fromEntity: (name) => `从 ${name} 出发`,
     toEntity: (name) => `指向 ${name}`,
+    openEntity: (name) => `打开 ${name}`,
     past: (n) => `${n} 条已结束`,
     sources: (n) => `${n} 处来源`,
     timelineEmpty: "还没有带日期的事实。",
@@ -1532,6 +1534,7 @@ export const zh: Strings = {
       governed: "agent 按先例裁的",
       namesake: "同一篇文档里有两个同名实体",
       namesake_tie: "同名，画像分不出谁是谁",
+      shared_name: "另一个实体已经叫这个名字",
       contains: "一个名字包含另一个",
       ambiguous_name: "同名，但上下文没能定夺",
       type_drift: "同名，但类型不同",

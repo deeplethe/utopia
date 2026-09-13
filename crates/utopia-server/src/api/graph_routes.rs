@@ -186,8 +186,10 @@ pub async fn entity_detail(
     // 没落地的派生（0017 §3）也单独一个键：它们连 `derived_facts` 都不在
     let blocked =
         utopia_store::reasoning::blocked_for_entity(&state.pool, kb_id, entity_id).await?;
+    // 名字也单独一个键（0041）：本名、简称、曾用名，各带出处与有效期
+    let names = utopia_store::names::for_entity(&state.pool, kb_id, entity_id, as_of).await?;
     Ok(Json(json!({
-        "entity": entity, "facts": facts,
+        "entity": entity, "facts": facts, "names": names,
         "derived": derived, "blocked": blocked, "same_name": same_name,
     })))
 }
