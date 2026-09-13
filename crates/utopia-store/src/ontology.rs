@@ -1115,49 +1115,64 @@ pub async fn types_needing_embedding(
     model: &str,
     only: Option<TypeKind>,
 ) -> AppResult<Vec<TypeToEmbed>> {
-    let mut out = Vec::new();
     if only == Some(TypeKind::Relation) {
         // 类型消解只用类，等 1633 个关系嵌完是白等六分钟
         return relations_needing_embedding(pool, kb_id, model).await;
     }
-    let ents: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT id, label, coalesce(description, '') FROM entity_types
-         WHERE kb_id = $1
-           AND (embedding IS NULL
-                OR embedded_model IS DISTINCT FROM $2
-                OR embedded_text IS DISTINCT FROM
-                   CASE WHEN coalesce(btrim(description), '') = '' THEN btrim(label)
-                        ELSE btrim(label) || E'\n' || btrim(description) END)",
+    // **陈不陈，用生成原文的同一个函数判**（#672）。从前在 SQL 里用 `btrim` 把这段字
+    // 重拼一遍再比，而 `embed_text` 用的是 Rust 的 `trim`：`btrim` 只去空格，`trim`
+    // 连换行、制表符一起去。schema.org 的描述结尾是 "\n      "，这些行存下的原文与
+    // SQL 拼出来的永远不等，于是每轮都判成陈的——补齐任务把同一批行一遍遍重嵌，
+    // 抽取门控（#526）等一个永远补不齐的索引，直到期限把文档判失败。
+    // 与 `mappings::needing_embedding` 同一个教训：拉回来在 Rust 里比
+    let rows: Vec<StoredEmbedding> = sqlx::query_as(
+        "SELECT id, label, coalesce(description, '') AS description,
+                embedding IS NOT NULL AS embedded, embedded_model, embedded_text,
+                label_embedding IS NOT NULL AS label_embedded, label_embedded_model, label_embedded_text
+           FROM entity_types
+          WHERE kb_id = $1",
     )
     .bind(kb_id)
-    .bind(model)
     .fetch_all(pool)
     .await?;
-    out.extend(ents.into_iter().map(|(id, label, desc)| TypeToEmbed {
-        id,
-        kind: TypeKind::Entity,
-        text: embed_text(&label, &desc),
-        field: EmbedField::Full,
-    }));
-    // 只嵌 label 的那一份（见 `entity_types.label_embedding`）。短查询走这个索引——查询分了两种形状，
-    // 文档也得分两种，否则短查询被同义反复的类接管
-    let labels: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, label FROM entity_types
-         WHERE kb_id = $1
-           AND (label_embedding IS NULL
-                OR label_embedded_model IS DISTINCT FROM $2
-                OR label_embedded_text IS DISTINCT FROM btrim(label))",
-    )
-    .bind(kb_id)
-    .bind(model)
-    .fetch_all(pool)
-    .await?;
-    out.extend(labels.into_iter().map(|(id, label)| TypeToEmbed {
-        id,
-        kind: TypeKind::Entity,
-        text: label.trim().to_string(),
-        field: EmbedField::Label,
-    }));
+    let mut full = Vec::new();
+    let mut labels = Vec::new();
+    for r in rows {
+        let text = embed_text(&r.label, &r.description);
+        if is_stale(
+            r.embedded,
+            r.embedded_model.as_deref(),
+            r.embedded_text.as_deref(),
+            model,
+            &text,
+        ) {
+            full.push(TypeToEmbed {
+                id: r.id,
+                kind: TypeKind::Entity,
+                text,
+                field: EmbedField::Full,
+            });
+        }
+        // 只嵌 label 的那一份（见 `entity_types.label_embedding`）。短查询走这个索引——查询分了两种形状，
+        // 文档也得分两种，否则短查询被同义反复的类接管
+        let short = r.label.trim().to_string();
+        if is_stale(
+            r.label_embedded,
+            r.label_embedded_model.as_deref(),
+            r.label_embedded_text.as_deref(),
+            model,
+            &short,
+        ) {
+            labels.push(TypeToEmbed {
+                id: r.id,
+                kind: TypeKind::Entity,
+                text: short,
+                field: EmbedField::Label,
+            });
+        }
+    }
+    let mut out = full;
+    out.extend(labels);
     if only == Some(TypeKind::Entity) {
         return Ok(out);
     }
@@ -1170,28 +1185,64 @@ async fn relations_needing_embedding(
     kb_id: Uuid,
     model: &str,
 ) -> AppResult<Vec<TypeToEmbed>> {
-    let mut out = Vec::new();
-    let rels: Vec<(Uuid, String, String)> = sqlx::query_as(
-        "SELECT id, label, coalesce(description, '') FROM relation_types
-         WHERE kb_id = $1
-           AND (embedding IS NULL
-                OR embedded_model IS DISTINCT FROM $2
-                OR embedded_text IS DISTINCT FROM
-                   CASE WHEN coalesce(btrim(description), '') = '' THEN btrim(label)
-                        ELSE btrim(label) || E'\n' || btrim(description) END)",
+    // 判据同上（#672）：在 Rust 里用 `embed_text` 比，不在 SQL 里重拼。关系只有整段
+    // 那一份向量，label 那三列补空
+    let rows: Vec<StoredEmbedding> = sqlx::query_as(
+        "SELECT id, label, coalesce(description, '') AS description,
+                embedding IS NOT NULL AS embedded, embedded_model, embedded_text,
+                false AS label_embedded, NULL::text AS label_embedded_model,
+                NULL::text AS label_embedded_text
+           FROM relation_types
+          WHERE kb_id = $1",
     )
     .bind(kb_id)
-    .bind(model)
     .fetch_all(pool)
     .await?;
-    out.extend(rels.into_iter().map(|(id, label, desc)| TypeToEmbed {
-        id,
-        kind: TypeKind::Relation,
-        text: embed_text(&label, &desc),
-        // 关系没有短查询那一路,只有整段这一份
-        field: EmbedField::Full,
-    }));
-    Ok(out)
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            let text = embed_text(&r.label, &r.description);
+            is_stale(
+                r.embedded,
+                r.embedded_model.as_deref(),
+                r.embedded_text.as_deref(),
+                model,
+                &text,
+            )
+            .then_some(TypeToEmbed {
+                id: r.id,
+                kind: TypeKind::Relation,
+                text,
+                // 关系没有短查询那一路,只有整段这一份
+                field: EmbedField::Full,
+            })
+        })
+        .collect())
+}
+
+/// 类型那一行上两份向量的现状，判陈用
+#[derive(sqlx::FromRow)]
+struct StoredEmbedding {
+    id: Uuid,
+    label: String,
+    description: String,
+    embedded: bool,
+    embedded_model: Option<String>,
+    embedded_text: Option<String>,
+    label_embedded: bool,
+    label_embedded_model: Option<String>,
+    label_embedded_text: Option<String>,
+}
+
+/// 没嵌过、换了模型、或者当时嵌的原文与现在要嵌的不一样
+fn is_stale(
+    embedded: bool,
+    stored_model: Option<&str>,
+    stored_text: Option<&str>,
+    model: &str,
+    text: &str,
+) -> bool {
+    !embedded || stored_model != Some(model) || stored_text != Some(text)
 }
 
 /// 回写向量，连同"嵌的是哪段字、用的哪个模型"。三者必须同一次写入——
