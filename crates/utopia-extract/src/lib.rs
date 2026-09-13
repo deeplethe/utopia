@@ -7,12 +7,19 @@ use utopia_llm::ChatMessage;
 
 pub mod governor;
 
+pub mod normalize;
+pub use normalize::{normalize_facts, Normalization};
+
 #[derive(Debug, Deserialize)]
 pub struct Extraction {
     #[serde(default)]
     pub entities: Vec<ExtractedEntity>,
     #[serde(default)]
     pub facts: Vec<ExtractedFact>,
+    /// 实体在这段文字里的**别的名字**（0041 决定 2）：简称、曾用名、另一种文字的写法。
+    /// 模型报，服务端只核对名字与引文确实在原文里——认不认「简称」「又名」这些词是模型的事
+    #[serde(default)]
+    pub names: Vec<ExtractedName>,
     /// 逐项解析时被跳过的条目数。**必须报给调用方**——不报就是一次静默丢弃，
     /// 与 #108「部分抽取报告成完成」同一类错
     #[serde(skip)]
@@ -41,6 +48,17 @@ pub struct ExtractedEntity {
     /// 短名字对短标签，比拿一段中文散文去匹配 "A software application." 近得多。
     #[serde(default)]
     pub specific_type: Option<String>,
+}
+
+/// 一个实体的一个别的名字。`ref` 是这次回复里的 local_id，或者提示词给的 k 句柄
+#[derive(Debug, Deserialize)]
+pub struct ExtractedName {
+    #[serde(rename = "ref")]
+    pub entity_ref: String,
+    pub name: String,
+    /// 名字出现在里面的那段原文，逐字抄
+    #[serde(default)]
+    pub quote: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -262,7 +280,8 @@ pub fn build_messages(
          Output format:\n\
          {{\"entities\":[{{\"local_id\":\"e1\",\"name\":\"entity name\",\"type\":\"type key\",\"specific_type\":\"what you would call it\"}}],\n\
           \"facts\":[{{\"subject\":\"subject entity name\",\"subject_ref\":\"e1\",\"subject_span\":\"the words in quote that name the subject\",\"predicate\":\"relation key\",\"object\":\"object entity name\",\"object_ref\":\"e2\",\"object_span\":\"the words in quote that name the object\",\n\
-                     \"valid_from\":\"2023-01\",\"valid_to\":null,\"confidence\":0.9,\"quote\":\"verbatim supporting quote\"}}]}}\n\
+                     \"valid_from\":\"2023-01\",\"valid_to\":null,\"confidence\":0.9,\"quote\":\"verbatim supporting quote\"}}],\n\
+          \"names\":[{{\"ref\":\"e1\",\"name\":\"another name the text uses for it\",\"quote\":\"verbatim text containing that name\"}}]}}\n\
          \n\
          Rules:\n\
          1. Give every newly listed entity a local_id unique within this response (e1, e2, ...). \
@@ -278,6 +297,14 @@ pub fn build_messages(
             \"星云科技上海研究院\" becomes \"上海研究院\", \"Nebula Technologies Inc.\" becomes \
             \"Nebula\" — and both forms mean one entity, listed once under the fuller form. \
             Two names are two entities only when the text is talking about two things.\n\
+         1b. Every other name the text gives an entity goes into \"names\", once per name: the \
+            shortened form it introduces or uses (\"上海研究院\" for \"星云科技上海研究院\"), a \
+            former name, the name in another language. \"ref\" is the entity's local_id or its \
+            known handle, and \"quote\" is a verbatim excerpt that contains the name. Only \
+            names belong there — never a pronoun or a description (\"该公司\", \"the company\", \
+            \"former employees\") — and never the name already written in entities. A name \
+            must name the entity itself, not something that belongs to it: \"星云科技研发团队\" \
+            names a team, not 星云科技.\n\
          2. Every fact keeps its name fields and uses subject_ref; relation facts also use \
             object_ref. Each ref must be either a local_id defined exactly once in \
             entities or a known handle supplied with this text. An entity referenced by a known \
@@ -291,7 +318,15 @@ pub fn build_messages(
             company\", \"no longer available\", \"until recently\". Use null only for something \
             still going on. These are not interchangeable: null asserts it still holds, and \
             writing null for a relation the text says is over makes us claim the opposite of \
-            the source.{temporal_note}\n\
+            the source.\n\
+         3c. A period is when a fact holds, never what it is about. A quarter, a half, a \
+            fiscal or calendar year, a month, \"the three months ended July 26, 2026\" — \
+            none of these is an entity and none is an object. Put the period's dates in \
+            valid_from and valid_to (a fiscal period resolves to the dates the document \
+            states for it) and write the figure as the fact's \"value\" — the figure alone, as it stands in the \
+            quote, with nothing appended. A column of a table headed by a period is a column \
+            of values that hold in that period.\n\
+         {temporal_note}\n\
          4. {time_ctx}\n\
          5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
@@ -543,6 +578,8 @@ pub fn parse_response(raw: &str) -> anyhow::Result<Extraction> {
 
     let (mut entities, mut skipped_entities) = take::<ExtractedEntity>(&value, "entities");
     let (facts, skipped_facts) = take::<ExtractedFact>(&value, "facts");
+    // 名字条目坏了不算实体或事实被跳过：丢一个名字只是少一座桥，不丢断言
+    let (names, _) = take::<ExtractedName>(&value, "names");
 
     // A handle identifies exactly one entity definition within one response. Reject every
     // definition participating in a duplicate (including identical duplicates): keeping the
@@ -568,6 +605,7 @@ pub fn parse_response(raw: &str) -> anyhow::Result<Extraction> {
     Ok(Extraction {
         entities,
         facts,
+        names,
         skipped_entities,
         skipped_facts,
         truncated,
@@ -1570,6 +1608,27 @@ mod tests {
         .unwrap();
         assert!(without.facts[0].subject_span.is_none());
         assert!(without.facts[0].object_span.is_none());
+    }
+
+    #[test]
+    fn names_are_parsed_and_a_malformed_one_is_skipped() {
+        let raw = r#"{"entities":[{"local_id":"e1","name":"海洋探测器1号","type":"equipment"}],
+            "facts":[],
+            "names":[{"ref":"e1","name":"海探1","quote":"海洋探测器1号（简称“海探1”）"},
+                     {"name":"no ref"}]}"#;
+        let x = parse_response(raw).unwrap();
+        assert_eq!(x.names.len(), 1);
+        assert_eq!(x.names[0].entity_ref, "e1");
+        assert_eq!(x.names[0].name, "海探1");
+        assert_eq!(x.skipped_entities, 0, "a bad name is not a skipped entity");
+    }
+
+    #[test]
+    fn the_contract_asks_for_other_names_and_forbids_descriptions() {
+        let msgs = build_messages(&[], &[], &[], None, "f.txt", &[], "text");
+        let system = &msgs[0].content;
+        assert!(system.contains("\"names\":[{\"ref\""));
+        assert!(system.contains("1b. Every other name the text gives an entity"));
     }
 
     #[test]

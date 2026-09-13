@@ -607,6 +607,21 @@ pub async fn update_relation_type(
     domains: Option<&[Uuid]>,
     ranges: Option<&[Uuid]>,
 ) -> AppResult<()> {
+    // 名字属性是内建的（0041）：标成 functional 会让每个第二个名字都成一条冲突、
+    // 甚至把本名关掉；改名、改时态也一样没有正当用途
+    let name_attribute: Option<(bool,)> = sqlx::query_as(
+        "SELECT builtin AND key = 'known_as' FROM relation_types WHERE id = $1 AND kb_id = $2",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .fetch_optional(pool)
+    .await?;
+    if name_attribute == Some((true,)) {
+        return Err(AppError::invalid(
+            "builtin_name_attribute",
+            "The name attribute is built in and cannot be edited",
+        ));
+    }
     // 改名也归一：不然界面上改一次就能把小驼峰改回 "access to"
     let label = &lower_camel(label);
     if !matches!(temporal, "state" | "event" | "eternal") {
@@ -1186,14 +1201,17 @@ async fn relations_needing_embedding(
     model: &str,
 ) -> AppResult<Vec<TypeToEmbed>> {
     // 判据同上（#672）：在 Rust 里用 `embed_text` 比，不在 SQL 里重拼。关系只有整段
-    // 那一份向量，label 那三列补空
+    // 那一份向量，label 那三列补空。
+    //
+    // 名字属性不嵌（0041）：没有向量就不会被最近邻检索出来，本体提议、属性归并、
+    // 抽取时的候选清单都碰不到它——名字只走抽取回复里的 `names` 那一条路
     let rows: Vec<StoredEmbedding> = sqlx::query_as(
         "SELECT id, label, coalesce(description, '') AS description,
                 embedding IS NOT NULL AS embedded, embedded_model, embedded_text,
                 false AS label_embedded, NULL::text AS label_embedded_model,
                 NULL::text AS label_embedded_text
            FROM relation_types
-          WHERE kb_id = $1",
+          WHERE kb_id = $1 AND NOT (builtin AND key = 'known_as')",
     )
     .bind(kb_id)
     .fetch_all(pool)
@@ -1383,17 +1401,22 @@ pub async fn nearest_relation_types(
 ///
 /// 不区分 kind：属性与关系同住一张表且共用 key 命名空间，调用方拿到 id 之后
 /// 该怎么用它自己清楚（改写事实时谓词就是谓词）。
+///
+/// 名字属性找不到（0041）：把一批「简称」「former_name」的值事实归并到 `known_as`
+/// 上，等于绕开了名字的核对与配对，所以这条路不给它
 pub async fn relation_type_id_by_key(
     pool: &PgPool,
     kb_id: Uuid,
     key: &str,
 ) -> AppResult<Option<Uuid>> {
-    let row: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM relation_types WHERE kb_id = $1 AND key = $2")
-            .bind(kb_id)
-            .bind(key)
-            .fetch_optional(pool)
-            .await?;
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM relation_types
+              WHERE kb_id = $1 AND key = $2 AND NOT (builtin AND key = 'known_as')",
+    )
+    .bind(kb_id)
+    .bind(key)
+    .fetch_optional(pool)
+    .await?;
     Ok(row.map(|(id,)| id))
 }
 

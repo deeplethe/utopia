@@ -1,0 +1,402 @@
+{
+  "about": "Identity bench for 0041. Documents are ingested one at a time, in `docs` order (forward) or reversed, waiting for every job of the base to finish before the next. An anchor is the entity on one side of the facts whose quote contains `quote_has` in `doc`, picked by type (and by `role` where both sides share a type). Anchors are compared pairwise by the id of the entity they resolve to, so names never take part in the scoring.",
+  "ontology": {
+    "types": [
+      {
+        "key": "person",
+        "label": "人物",
+        "description": "有名有姓的自然人"
+      },
+      {
+        "key": "organization",
+        "label": "机构",
+        "description": "研究院、研究所、集团，以及它们下属的部门与中心"
+      },
+      {
+        "key": "equipment",
+        "label": "装备",
+        "description": "有型号的探测器、潜水器等装备"
+      },
+      {
+        "key": "place",
+        "label": "地点",
+        "description": "城市、海域、港口"
+      }
+    ],
+    "attributes": [
+      {
+        "key": "depth",
+        "label": "深度",
+        "datatype": "number",
+        "unit": "米",
+        "domains": [
+          "equipment"
+        ],
+        "description": "下潜或设计深度"
+      }
+    ],
+    "relations": [
+      {
+        "key": "works_for",
+        "label": "任职于",
+        "temporal": "state",
+        "domains": [
+          "person"
+        ],
+        "ranges": [
+          "organization"
+        ],
+        "description": "一个人在某个机构或部门任职"
+      },
+      {
+        "key": "member_of",
+        "label": "担任成员",
+        "temporal": "state",
+        "domains": [
+          "person"
+        ],
+        "ranges": [
+          "organization"
+        ],
+        "description": "一个人是某个理事会、委员会的成员"
+      },
+      {
+        "key": "leads",
+        "label": "负责",
+        "temporal": "state",
+        "domains": [
+          "person"
+        ],
+        "ranges": [
+          "equipment"
+        ],
+        "description": "一个人负责某个装备的项目、试验或技术工作"
+      },
+      {
+        "key": "operated_by",
+        "label": "所属机构",
+        "temporal": "state",
+        "functional": true,
+        "domains": [
+          "equipment"
+        ],
+        "ranges": [
+          "organization"
+        ],
+        "description": "装备由哪个机构研制或运营"
+      },
+      {
+        "key": "home_port",
+        "label": "母港",
+        "temporal": "state",
+        "functional": true,
+        "domains": [
+          "equipment"
+        ],
+        "ranges": [
+          "place"
+        ],
+        "description": "装备的母港"
+      },
+      {
+        "key": "part_of",
+        "label": "隶属于",
+        "temporal": "state",
+        "functional": true,
+        "domains": [
+          "organization"
+        ],
+        "ranges": [
+          "organization"
+        ],
+        "description": "下属部门或中心隶属于哪个机构"
+      },
+      {
+        "key": "located_in",
+        "label": "位于",
+        "temporal": "state",
+        "functional": true,
+        "domains": [
+          "organization"
+        ],
+        "ranges": [
+          "place"
+        ],
+        "description": "机构总部所在地"
+      }
+    ]
+  },
+  "docs": [
+    {
+      "file": "d00-profile.txt",
+      "doc_time": "2020-09-10T00:00:00Z"
+    },
+    {
+      "file": "d01-rename.txt",
+      "doc_time": "2021-06-01T00:00:00Z"
+    },
+    {
+      "file": "d02-first-dive.txt",
+      "doc_time": "2023-03-15T00:00:00Z"
+    },
+    {
+      "file": "d03-monthly.txt",
+      "doc_time": "2023-05-10T00:00:00Z"
+    },
+    {
+      "file": "d04-budget.txt",
+      "doc_time": "2023-06-30T00:00:00Z"
+    },
+    {
+      "file": "d05-board.txt",
+      "doc_time": "2023-09-01T00:00:00Z"
+    },
+    {
+      "file": "d06-spec.txt",
+      "doc_time": "2023-10-12T00:00:00Z"
+    },
+    {
+      "file": "d07-awards.txt",
+      "doc_time": "2024-01-08T00:00:00Z"
+    },
+    {
+      "file": "d08-english.txt",
+      "doc_time": "2024-02-20T00:00:00Z"
+    },
+    {
+      "file": "d09-home-port.txt",
+      "doc_time": "2024-04-02T00:00:00Z"
+    },
+    {
+      "file": "d10-centres.txt",
+      "doc_time": "2024-05-15T00:00:00Z"
+    },
+    {
+      "file": "d11-hq.txt",
+      "doc_time": "2024-06-20T00:00:00Z"
+    }
+  ],
+  "entities": {
+    "INST": {
+      "names": [
+        "东海海洋研究所",
+        "澜海研究院",
+        "Lanhai Research Institute"
+      ],
+      "case": "former name, current name, English name"
+    },
+    "P1": {
+      "names": [
+        "海洋探测器1号",
+        "海探1"
+      ],
+      "case": "full name and abbreviation; abbreviation alone in later documents"
+    },
+    "P2": {
+      "names": [
+        "海洋探测器2号",
+        "海探2",
+        "Haitan-2"
+      ],
+      "case": "next version of P1; abbreviation; transliteration"
+    },
+    "ZW_FIN": {
+      "names": [
+        "张伟"
+      ],
+      "case": "namesake of ZW_ENG, finance"
+    },
+    "ZW_ENG": {
+      "names": [
+        "张伟"
+      ],
+      "case": "namesake of ZW_FIN, engineering"
+    },
+    "LN": {
+      "names": [
+        "李娜",
+        "Li Na"
+      ],
+      "case": "one person across a dive notice, board minutes, a technical spec and an English brief"
+    },
+    "TC_LH": {
+      "names": [
+        "澜海研究院技术中心"
+      ],
+      "case": "look-alike of TC_LJ"
+    },
+    "TC_LJ": {
+      "names": [
+        "蓝鲸集团技术中心"
+      ],
+      "case": "look-alike of TC_LH"
+    }
+  },
+  "lookalikes": [
+    [
+      "ZW_FIN",
+      "ZW_ENG"
+    ],
+    [
+      "TC_LH",
+      "TC_LJ"
+    ],
+    [
+      "P1",
+      "P2"
+    ]
+  ],
+  "anchors": [
+    {
+      "id": "d00-inst",
+      "doc": "d00-profile.txt",
+      "quote_has": "位于舟山",
+      "type": "organization",
+      "truth": "INST",
+      "other_has": "舟山"
+    },
+    {
+      "id": "d00-zw",
+      "doc": "d00-profile.txt",
+      "quote_has": "预算管理",
+      "type": "person",
+      "truth": "ZW_FIN"
+    },
+    {
+      "id": "d02-p1-depth",
+      "doc": "d02-first-dive.txt",
+      "quote_has": "4500",
+      "type": "equipment",
+      "truth": "P1"
+    },
+    {
+      "id": "d02-ln",
+      "doc": "d02-first-dive.txt",
+      "quote_has": "项目负责人",
+      "type": "person",
+      "truth": "LN"
+    },
+    {
+      "id": "d02-p1-lead",
+      "doc": "d02-first-dive.txt",
+      "quote_has": "项目负责人",
+      "type": "equipment",
+      "truth": "P1"
+    },
+    {
+      "id": "d03-p1",
+      "doc": "d03-monthly.txt",
+      "quote_has": "6000",
+      "type": "equipment",
+      "truth": "P1"
+    },
+    {
+      "id": "d03-zw",
+      "doc": "d03-monthly.txt",
+      "quote_has": "数据回传",
+      "type": "person",
+      "truth": "ZW_ENG"
+    },
+    {
+      "id": "d04-zw",
+      "doc": "d04-budget.txt",
+      "quote_has": "年度预算",
+      "type": "person",
+      "truth": "ZW_FIN"
+    },
+    {
+      "id": "d05-ln",
+      "doc": "d05-board.txt",
+      "quote_has": "理事会成员",
+      "type": "person",
+      "truth": "LN"
+    },
+    {
+      "id": "d06-ln",
+      "doc": "d06-spec.txt",
+      "quote_has": "技术规格",
+      "type": "person",
+      "truth": "LN"
+    },
+    {
+      "id": "d06-p2-lead",
+      "doc": "d06-spec.txt",
+      "quote_has": "技术规格",
+      "type": "equipment",
+      "truth": "P2"
+    },
+    {
+      "id": "d06-p2-depth",
+      "doc": "d06-spec.txt",
+      "quote_has": "11000",
+      "type": "equipment",
+      "truth": "P2"
+    },
+    {
+      "id": "d07-zw-fin",
+      "doc": "d07-awards.txt",
+      "quote_has": "管理奖",
+      "type": "person",
+      "truth": "ZW_FIN"
+    },
+    {
+      "id": "d07-zw-eng",
+      "doc": "d07-awards.txt",
+      "quote_has": "技术奖",
+      "type": "person",
+      "truth": "ZW_ENG"
+    },
+    {
+      "id": "d08-ln",
+      "doc": "d08-english.txt",
+      "quote_has": "sea trials",
+      "type": "person",
+      "truth": "LN"
+    },
+    {
+      "id": "d08-p2",
+      "doc": "d08-english.txt",
+      "quote_has": "Sanya",
+      "type": "equipment",
+      "truth": "P2"
+    },
+    {
+      "id": "d08-inst",
+      "doc": "d08-english.txt",
+      "quote_has": "Lanhai",
+      "type": "organization",
+      "truth": "INST"
+    },
+    {
+      "id": "d09-p1",
+      "doc": "d09-home-port.txt",
+      "quote_has": "母港",
+      "type": "equipment",
+      "truth": "P1"
+    },
+    {
+      "id": "d10-tc-lh",
+      "doc": "d10-centres.txt",
+      "quote_has": "技术中心隶属于澜海研究院",
+      "type": "organization",
+      "role": "subject",
+      "truth": "TC_LH"
+    },
+    {
+      "id": "d10-tc-lj",
+      "doc": "d10-centres.txt",
+      "quote_has": "技术中心隶属于蓝鲸集团",
+      "type": "organization",
+      "role": "subject",
+      "truth": "TC_LJ"
+    },
+    {
+      "id": "d11-inst",
+      "doc": "d11-hq.txt",
+      "quote_has": "总部位于舟山",
+      "type": "organization",
+      "truth": "INST",
+      "other_has": "舟山"
+    }
+  ]
+}

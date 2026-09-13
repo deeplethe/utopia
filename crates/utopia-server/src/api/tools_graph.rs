@@ -630,11 +630,26 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
         })
         .collect();
 
+    // 名字单独一行（0041）：「海探1」和「海洋探测器1号」是同一个，模型答题时要知道
+    let names = utopia_store::names::for_entity(&ctx.state.pool, ctx.kb_id, who.id, m.as_of)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "Entity names lookup failed");
+            Vec::new()
+        });
     let (kept, aligned) = filtered(ctx, &facts, &filter).await;
     let shown: Vec<&EntityFact> = kept.iter().copied().take(limit).collect();
     let mut lines: Vec<String> = Vec::new();
     if let Some(note) = &who.note {
         lines.push(note.clone());
+    }
+    let other_names: Vec<&str> = names
+        .iter()
+        .filter(|n| !n.canonical)
+        .map(|n| n.name.as_str())
+        .collect();
+    if !other_names.is_empty() {
+        lines.push(format!("Also known as: {}", other_names.join(", ")));
     }
     if let Some(a) = &aligned {
         lines.push(a.clone());
@@ -692,6 +707,11 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
         "kb_id": ctx.kb_id,
         "entity": {"id": node.id, "name": node.name,
             "type_key": node.type_key, "type_label": node.type_label},
+        "names": names.iter().map(|n| json!({
+            "fact_id": n.fact_id, "name": n.name, "canonical": n.canonical,
+            "recorded_at": n.recorded_at, "valid_from": n.valid_from, "valid_to": n.valid_to,
+            "document_ids": n.document_ids,
+        })).collect::<Vec<_>>(),
         "at": m.at, "as_of": m.as_of, "before": m.before,
         "total_facts": facts.len(), "matched_facts": kept.len(),
         "limit": limit, "truncated": shown.len() < kept.len(),

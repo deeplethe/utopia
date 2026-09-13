@@ -76,7 +76,9 @@ pub async fn refresh(state: &AppState, kb_id: Uuid) -> anyhow::Result<usize> {
 ///   挂回 `queued` 等 30s。worker 槽立刻空出来，下一轮再试。
 pub async fn gate_required(state: &AppState, kb_id: Uuid) -> anyhow::Result<bool> {
     let etypes = utopia_store::graph::entity_types(&state.pool, kb_id).await?;
-    let rtypes = utopia_store::graph::relation_types(&state.pool, kb_id).await?;
+    let mut rtypes = utopia_store::graph::relation_types(&state.pool, kb_id).await?;
+    // 名字属性不进本体向量索引：检索出来就会被当成一条可抽的属性递给模型
+    rtypes.retain(|r| !utopia_store::names::is_name_attribute(r));
     let budget = utopia_store::access::ontology_prompt_budget(&state.pool).await?;
     let chars = crate::extraction::full_ontology_chars(&etypes, &rtypes);
     if chars <= budget {

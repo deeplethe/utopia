@@ -33,13 +33,11 @@ async fn fixture(pool: &PgPool) -> anyhow::Result<(Uuid, Uuid, Uuid)> {
     .bind(ws)
     .execute(pool)
     .await?;
-    sqlx::query(
-        "INSERT INTO entities (id, kb_id, canonical_name, aliases) VALUES ($1, $2, 'GMV', '{}')",
-    )
-    .bind(ent)
-    .bind(kb)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO entities (id, kb_id, canonical_name) VALUES ($1, $2, 'GMV')")
+        .bind(ent)
+        .bind(kb)
+        .execute(pool)
+        .await?;
     sqlx::query(
         "INSERT INTO users (id, org_id, email, display_name, password_hash)
          VALUES ($1, $2, $1 || '@w.test', 'w', 'x')",
@@ -81,14 +79,25 @@ async fn a_written_definition_is_confirmed_and_signed() -> anyhow::Result<()> {
         assert_eq!(confirmed[0].id, id);
         assert_eq!(confirmed[0].written_by, Some(user), "人写的记谁写的");
         assert!(
-            utopia_store::mappings::proposed(&pool, kb, 100, 0).await?.is_empty(),
+            utopia_store::mappings::proposed(&pool, kb, 100, 0)
+                .await?
+                .is_empty(),
             "不该出现在待审队列里"
         );
 
         // 同一个 (概念, 源) 再写一条：冲突，而不是悄悄盖掉已有的那条
         let again = utopia_store::mappings::create(
-            &pool, kb, ent, "warehouse", Some("dw.dwd_ord_dtl"), Some("sum(amt_total)"),
-            None, None, None, false, user,
+            &pool,
+            kb,
+            ent,
+            "warehouse",
+            Some("dw.dwd_ord_dtl"),
+            Some("sum(amt_total)"),
+            None,
+            None,
+            None,
+            false,
+            user,
         )
         .await;
         assert!(
@@ -98,8 +107,16 @@ async fn a_written_definition_is_confirmed_and_signed() -> anyhow::Result<()> {
 
         // 探索盖不掉人写的：propose 同键 → 行原样不动、仍是 confirmed
         utopia_store::mappings::propose(
-            &pool, kb, ent, "warehouse", Some("orders_v2"), Some("sum(amt_total)"),
-            None, None, None, false,
+            &pool,
+            kb,
+            ent,
+            "warehouse",
+            Some("orders_v2"),
+            Some("sum(amt_total)"),
+            None,
+            None,
+            None,
+            false,
         )
         .await?;
         let confirmed = utopia_store::mappings::confirmed(&pool, kb, 100).await?;
@@ -108,14 +125,22 @@ async fn a_written_definition_is_confirmed_and_signed() -> anyhow::Result<()> {
         assert_eq!(confirmed[0].written_by, Some(user));
         // 探索自己提的那些 written_by 为空——页面靠这个分「人写」与「探索提的」
         let ent2 = Uuid::now_v7();
-        sqlx::query("INSERT INTO entities (id, kb_id, canonical_name, aliases) VALUES ($1, $2, 'Orders', '{}')")
+        sqlx::query("INSERT INTO entities (id, kb_id, canonical_name) VALUES ($1, $2, 'Orders')")
             .bind(ent2)
             .bind(kb)
             .execute(&pool)
             .await?;
         utopia_store::mappings::propose(
-            &pool, kb, ent2, "warehouse", Some("dw.dwd_ord_dtl"), Some("count(distinct ord_id)"),
-            None, None, None, false,
+            &pool,
+            kb,
+            ent2,
+            "warehouse",
+            Some("dw.dwd_ord_dtl"),
+            Some("count(distinct ord_id)"),
+            None,
+            None,
+            None,
+            false,
         )
         .await?;
         let proposed = utopia_store::mappings::proposed(&pool, kb, 100, 0).await?;

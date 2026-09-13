@@ -32,14 +32,12 @@ async fn base(pool: &PgPool) -> anyhow::Result<Uuid> {
 
 async fn definition(pool: &PgPool, kb: Uuid, name: &str, summary: &str) -> anyhow::Result<Uuid> {
     let ent = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO entities (id, kb_id, canonical_name, aliases) VALUES ($1, $2, $3, '{}')",
-    )
-    .bind(ent)
-    .bind(kb)
-    .bind(name)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO entities (id, kb_id, canonical_name) VALUES ($1, $2, $3)")
+        .bind(ent)
+        .bind(kb)
+        .bind(name)
+        .execute(pool)
+        .await?;
     let (id, _) = m::propose(
         pool,
         kb,
