@@ -1,0 +1,607 @@
+{
+ "source": "SEC EDGAR, public filings",
+ "note": "文件版权属于各提交公司，只存脚本和清单，不进仓库。",
+ "chains": [
+  {
+   "id": "blackbaud-hq-lease",
+   "summary": "Blackbaud 查尔斯顿总部租约。2016 年签，到 2020 年共 11 份补充协议；2020 年房东 HPBB1 把物业卖给 BBHQ1，买卖协议及其两份修订一并收入，第 11 份补充协议的房东已是 BBHQ1。",
+   "docs": [
+    {
+     "cik": "1280058",
+     "filed": "2016-08-04",
+     "accession": "0001280058-16-000072",
+     "file": "a2016q210-qexx1084.htm",
+     "role": "base",
+     "title": "Lease Agreement by and between HPBB1, LLC and Blackbaud, Inc.",
+     "seq": 0
+    },
+    {
+     "cik": "1280058",
+     "filed": "2016-11-04",
+     "accession": "0001280058-16-000081",
+     "file": "a2016q310-qexx1087.htm",
+     "role": "amendment",
+     "title": "First Amendment to Lease Agreement (effective 2016-08-22)",
+     "seq": 1
+    },
+    {
+     "cik": "1280058",
+     "filed": "2018-02-20",
+     "accession": "0001280058-18-000007",
+     "file": "a201710-kexx1093.htm",
+     "role": "amendment",
+     "title": "Second Amendment to Lease Agreement (effective 2017-05-18)",
+     "seq": 2
+    },
+    {
+     "cik": "1280058",
+     "filed": "2018-02-20",
+     "accession": "0001280058-18-000007",
+     "file": "a201710-kexx1094.htm",
+     "role": "amendment",
+     "title": "Third Amendment to Lease Agreement (effective 2017-12-11)",
+     "seq": 3
+    },
+    {
+     "cik": "1280058",
+     "filed": "2018-05-04",
+     "accession": "0001280058-18-000021",
+     "file": "a2018q110-qexx1095.htm",
+     "role": "amendment",
+     "title": "Fourth Amendment to Lease Agreement (effective 2018-02-28)",
+     "seq": 4
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-08-04",
+     "accession": "0001280058-20-000038",
+     "file": "a2020q210-qexx101.htm",
+     "role": "amendment",
+     "title": "Fifth Amendment to Lease Agreement (effective 2020-02-18)",
+     "seq": 5
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-08-04",
+     "accession": "0001280058-20-000038",
+     "file": "a2020q210-qexx102.htm",
+     "role": "amendment",
+     "title": "Sixth Amendment to Lease Agreement (effective 2020-03-17)",
+     "seq": 6
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-08-04",
+     "accession": "0001280058-20-000038",
+     "file": "a2020q210-qexx103.htm",
+     "role": "amendment",
+     "title": "Seventh Amendment to Lease Agreement (effective 2020-04-14)",
+     "seq": 7
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-08-04",
+     "accession": "0001280058-20-000038",
+     "file": "a2020q210-qexx104.htm",
+     "role": "amendment",
+     "title": "Eighth Amendment to Lease Agreement (effective 2020-05-26)",
+     "seq": 8
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-08-04",
+     "accession": "0001280058-20-000038",
+     "file": "a2020q210-qexx105.htm",
+     "role": "amendment",
+     "title": "Ninth Amendment to Lease Agreement (effective 2020-06-08)",
+     "seq": 9
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-08-04",
+     "accession": "0001280058-20-000038",
+     "file": "a2020q210-qexx106.htm",
+     "role": "sale",
+     "title": "Purchase and Sale Agreement, HPBB1, LLC to BBHQ1, LLC (as of 2020-06-17)",
+     "seq": 10
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-08-04",
+     "accession": "0001280058-20-000038",
+     "file": "a2020q210-qexx107.htm",
+     "role": "amendment",
+     "title": "Tenth Amendment to Lease Agreement (effective 2020-06-26)",
+     "seq": 11
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-11-03",
+     "accession": "0001280058-20-000052",
+     "file": "a2020q310-qexx101.htm",
+     "role": "sale-amendment",
+     "title": "First Amendment to Purchase and Sale Agreement (2020-07-08)",
+     "seq": 12
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-11-03",
+     "accession": "0001280058-20-000052",
+     "file": "a2020q310-qexx102.htm",
+     "role": "sale-amendment",
+     "title": "Second Amendment to Purchase and Sale Agreement (July 2020)",
+     "seq": 13
+    },
+    {
+     "cik": "1280058",
+     "filed": "2020-11-03",
+     "accession": "0001280058-20-000052",
+     "file": "a2020q310-qexx103.htm",
+     "role": "amendment",
+     "title": "Eleventh Amendment to Lease Agreement, landlord BBHQ1, LLC (effective 2020-08-13)",
+     "seq": 14
+    }
+   ]
+  },
+  {
+   "id": "blackbaud-triple-net-lease",
+   "summary": "Blackbaud 的三净租约。2008 年签，2013 年与 Duck Pond Creek-SPE 签修订及整治协议，2020 年 11 月与 HP 2000DI 签终止协议，终止费 14,759,500 美元。房东在链条中换过人。",
+   "docs": [
+    {
+     "cik": "1280058",
+     "filed": "2008-12-11",
+     "accession": "0001193125-08-251891",
+     "file": "dex1037.htm",
+     "role": "base",
+     "title": "Triple Net Lease Agreement (dated 2008-10-01)",
+     "seq": 0
+    },
+    {
+     "cik": "1280058",
+     "filed": "2013-03-28",
+     "accession": "0001280058-13-000009",
+     "file": "ex1066mar2013.htm",
+     "role": "amendment",
+     "title": "Lease Amendment and Remediation Agreement, Duck Pond Creek-SPE, LLC",
+     "seq": 1
+    },
+    {
+     "cik": "1280058",
+     "filed": "2021-02-23",
+     "accession": "0001280058-21-000006",
+     "file": "a202010-kexx1040.htm",
+     "role": "termination",
+     "title": "Termination of Triple Net Lease and Mutual Release Agreement (effective 2020-11-04)",
+     "seq": 2
+    }
+   ]
+  },
+  {
+   "id": "arrowhead-madison-lease",
+   "summary": "Arrowhead 在威斯康星麦迪逊的实验室租约，房东 University Research Park。2016 年签，2018 到 2021 年共 7 份补充协议。",
+   "docs": [
+    {
+     "cik": "879407",
+     "filed": "2016-02-09",
+     "accession": "0001564590-16-012515",
+     "file": "arwr-ex101_83.htm",
+     "role": "base",
+     "title": "Lease Agreement, University Research Park, Incorporated and Arrowhead Madison Inc.",
+     "seq": 0
+    },
+    {
+     "cik": "879407",
+     "filed": "2020-11-23",
+     "accession": "0001564590-20-054893",
+     "file": "arwr-ex1023_125.htm",
+     "role": "amendment",
+     "title": "First Amendment to Lease Agreement (effective 2018-10-22)",
+     "seq": 1
+    },
+    {
+     "cik": "879407",
+     "filed": "2020-11-23",
+     "accession": "0001564590-20-054893",
+     "file": "arwr-ex1024_124.htm",
+     "role": "amendment",
+     "title": "Second Amendment to Lease Agreement (effective 2019-01-10)",
+     "seq": 2
+    },
+    {
+     "cik": "879407",
+     "filed": "2020-11-23",
+     "accession": "0001564590-20-054893",
+     "file": "arwr-ex1025_123.htm",
+     "role": "amendment",
+     "title": "Third Amendment to Lease Agreement (effective 2019-01-11)",
+     "seq": 3
+    },
+    {
+     "cik": "879407",
+     "filed": "2020-11-23",
+     "accession": "0001564590-20-054893",
+     "file": "arwr-ex1026_121.htm",
+     "role": "amendment",
+     "title": "Fourth Amendment to Lease Agreement (dated 2019-09-19)",
+     "seq": 4
+    },
+    {
+     "cik": "879407",
+     "filed": "2020-11-23",
+     "accession": "0001564590-20-054893",
+     "file": "arwr-ex1027_122.htm",
+     "role": "amendment",
+     "title": "Fifth Amendment to Lease Agreement",
+     "seq": 5
+    },
+    {
+     "cik": "879407",
+     "filed": "2021-02-04",
+     "accession": "0001564590-21-004319",
+     "file": "arwr-ex103_51.htm",
+     "role": "amendment",
+     "title": "Sixth Amendment to Lease Agreement",
+     "seq": 6
+    },
+    {
+     "cik": "879407",
+     "filed": "2021-02-04",
+     "accession": "0001564590-21-004319",
+     "file": "arwr-ex104_52.htm",
+     "role": "amendment",
+     "title": "Seventh Amendment to Lease Agreement",
+     "seq": 7
+    }
+   ]
+  },
+  {
+   "id": "arrowhead-pasadena-lease",
+   "summary": "Arrowhead 帕萨迪纳总部租约，177 E. Colorado Boulevard。2019 年签，2020 年第一份补充协议，2026 年第三份补充协议。第二份补充协议没有在 EDGAR 公开，第三份会引用它。",
+   "docs": [
+    {
+     "cik": "879407",
+     "filed": "2019-08-05",
+     "accession": "0001564590-19-028760",
+     "file": "arwr-ex101_67.htm",
+     "role": "base",
+     "title": "Office Lease, 177 E. Colorado Boulevard",
+     "seq": 0
+    },
+    {
+     "cik": "879407",
+     "filed": "2021-02-04",
+     "accession": "0001564590-21-004319",
+     "file": "arwr-ex102_50.htm",
+     "role": "amendment",
+     "title": "First Amendment to Office Lease (effective 2020-10-23)",
+     "seq": 1
+    },
+    {
+     "cik": "879407",
+     "filed": "2026-08-04",
+     "accession": "0000879407-26-000057",
+     "file": "exhibit104pasadenalease.htm",
+     "role": "amendment",
+     "title": "Third Amendment to Office Lease (effective 2026-04-27)",
+     "seq": 3
+    }
+   ]
+  },
+  {
+   "id": "arrowhead-south-lake-lease",
+   "summary": "Arrowhead 搬去 177 E. Colorado 之前的帕萨迪纳办公室租约，房东 South Lake Avenue Investors，2012 年签。可用来问某个时点公司同时有哪些租约。",
+   "docs": [
+    {
+     "cik": "879407",
+     "filed": "2012-05-08",
+     "accession": "0001193125-12-218387",
+     "file": "d336351dex101.htm",
+     "role": "base",
+     "title": "Office Lease Agreement, South Lake Avenue Investors LLC",
+     "seq": 0
+    }
+   ]
+  },
+  {
+   "id": "arrowhead-san-diego-lease",
+   "summary": "Arrowhead 圣迭戈租约，房东 ARE-SD Region No. 72。2021 年 11 月签，2023 年第一份补充协议。",
+   "docs": [
+    {
+     "cik": "879407",
+     "filed": "2022-02-02",
+     "accession": "0001564590-22-003616",
+     "file": "arwr-ex102_515.htm",
+     "role": "base",
+     "title": "Lease Agreement, ARE-SD Region No. 72, LLC (effective 2021-11-19)",
+     "seq": 0
+    },
+    {
+     "cik": "879407",
+     "filed": "2023-11-29",
+     "accession": "0001628280-23-040219",
+     "file": "a1039-firstamendmenttole.htm",
+     "role": "amendment",
+     "title": "First Amendment to Lease (dated September 2023)",
+     "seq": 1
+    }
+   ]
+  },
+  {
+   "id": "csg-comcast-services",
+   "summary": "CSG 与 Comcast 的主服务协议。2020 年 1 月 1 日生效的重签版本，加上到 2025 年 11 月为止的 29 份补充协议。金额、期限年份等被涂黑，主协议约 74 万字符，抽取成本高，默认不进演示。",
+   "redacted": true,
+   "docs": [
+    {
+     "cik": "1005757",
+     "filed": "2020-02-21",
+     "accession": "0001564590-20-005691",
+     "file": "csgs-ex1027_251.htm",
+     "role": "base",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27",
+     "seq": 0
+    },
+    {
+     "cik": "1005757",
+     "filed": "2020-02-21",
+     "accession": "0001564590-20-005691",
+     "file": "csgs-ex1027a_199.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27A",
+     "seq": 1
+    },
+    {
+     "cik": "1005757",
+     "filed": "2020-05-07",
+     "accession": "0001564590-20-022554",
+     "file": "csgs-ex1027b_58.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27B",
+     "seq": 2
+    },
+    {
+     "cik": "1005757",
+     "filed": "2021-02-19",
+     "accession": "0001564590-21-006874",
+     "file": "csgs-ex1027c_34.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27C",
+     "seq": 3
+    },
+    {
+     "cik": "1005757",
+     "filed": "2021-05-06",
+     "accession": "0001564590-21-024767",
+     "file": "csgs-ex1027d_106.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27D",
+     "seq": 4
+    },
+    {
+     "cik": "1005757",
+     "filed": "2021-08-05",
+     "accession": "0001564590-21-041434",
+     "file": "csgs-ex1027e_105.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27E",
+     "seq": 5
+    },
+    {
+     "cik": "1005757",
+     "filed": "2021-08-05",
+     "accession": "0001564590-21-041434",
+     "file": "csgs-ex1027f_102.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27F",
+     "seq": 6
+    },
+    {
+     "cik": "1005757",
+     "filed": "2021-08-05",
+     "accession": "0001564590-21-041434",
+     "file": "csgs-ex1027g_203.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27G",
+     "seq": 7
+    },
+    {
+     "cik": "1005757",
+     "filed": "2021-08-05",
+     "accession": "0001564590-21-041434",
+     "file": "csgs-ex1027h_101.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27H",
+     "seq": 8
+    },
+    {
+     "cik": "1005757",
+     "filed": "2021-11-04",
+     "accession": "0001564590-21-054408",
+     "file": "csgs-ex10_xxviii.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27I",
+     "seq": 9
+    },
+    {
+     "cik": "1005757",
+     "filed": "2021-11-04",
+     "accession": "0001564590-21-054408",
+     "file": "csgs-ex10_xxviij.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27J",
+     "seq": 10
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-02-18",
+     "accession": "0000950170-22-001463",
+     "file": "csgs-ex10_271.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27K",
+     "seq": 11
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-02-18",
+     "accession": "0000950170-22-001463",
+     "file": "csgs-ex10_272.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27L",
+     "seq": 12
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-02-18",
+     "accession": "0000950170-22-001463",
+     "file": "csgs-ex10_273.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27M",
+     "seq": 13
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-02-18",
+     "accession": "0000950170-22-001463",
+     "file": "csgs-ex10_274.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27N",
+     "seq": 14
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-05-05",
+     "accession": "0001564590-22-018177",
+     "file": "csgs-ex10_271.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27O",
+     "seq": 15
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-05-05",
+     "accession": "0001564590-22-018177",
+     "file": "csgs-ex10_272.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27P",
+     "seq": 16
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-05-05",
+     "accession": "0001564590-22-018177",
+     "file": "csgs-ex10_273.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27Q",
+     "seq": 17
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-05-05",
+     "accession": "0001564590-22-018177",
+     "file": "csgs-ex10_274.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27R",
+     "seq": 18
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-05-05",
+     "accession": "0001564590-22-018177",
+     "file": "csgs-ex10_275.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27S",
+     "seq": 19
+    },
+    {
+     "cik": "1005757",
+     "filed": "2022-05-05",
+     "accession": "0001564590-22-018177",
+     "file": "csgs-ex10_276.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27T",
+     "seq": 20
+    },
+    {
+     "cik": "1005757",
+     "filed": "2023-08-03",
+     "accession": "0000950170-23-037789",
+     "file": "csgs-ex10_27u.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27U",
+     "seq": 21
+    },
+    {
+     "cik": "1005757",
+     "filed": "2023-08-03",
+     "accession": "0000950170-23-037789",
+     "file": "csgs-ex10_27v.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27V",
+     "seq": 22
+    },
+    {
+     "cik": "1005757",
+     "filed": "2023-08-03",
+     "accession": "0000950170-23-037789",
+     "file": "csgs-ex10_27w.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27W",
+     "seq": 23
+    },
+    {
+     "cik": "1005757",
+     "filed": "2024-02-16",
+     "accession": "0000950170-24-016286",
+     "file": "csgs-ex10_27x.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27X",
+     "seq": 24
+    },
+    {
+     "cik": "1005757",
+     "filed": "2024-08-08",
+     "accession": "0000950170-24-093482",
+     "file": "csgs-ex10_27y.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27Y",
+     "seq": 25
+    },
+    {
+     "cik": "1005757",
+     "filed": "2024-11-07",
+     "accession": "0000950170-24-122869",
+     "file": "csgs-ex10_27z.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27Z",
+     "seq": 26
+    },
+    {
+     "cik": "1005757",
+     "filed": "2025-02-20",
+     "accession": "0000950170-25-023962",
+     "file": "csgs-ex10_27aa.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27AA",
+     "seq": 27
+    },
+    {
+     "cik": "1005757",
+     "filed": "2025-08-07",
+     "accession": "0000950170-25-104694",
+     "file": "csgs-ex10_27ab.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27AB",
+     "seq": 28
+    },
+    {
+     "cik": "1005757",
+     "filed": "2025-11-06",
+     "accession": "0001193125-25-269064",
+     "file": "csgs-ex10_27ac.htm",
+     "role": "amendment",
+     "title": "CSG Master Subscriber Management System Agreement, Exhibit 10.27AC",
+     "seq": 29
+    }
+   ]
+  }
+ ]
+}
