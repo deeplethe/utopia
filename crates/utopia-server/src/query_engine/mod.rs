@@ -55,20 +55,17 @@ pub struct SchemaColumn {
     pub data_type: String,
     pub comment: Option<String>,
     /// 该列本身是这张表的主键（单列主键；组合主键里这一位仍为 false）。
-    /// 由引擎在 catalog 里读出：PG/MySQL/Trino/Snowflake 可信；
-    /// Databricks 的 Unity Catalog 不登记主键，因此恒为 false。
+    /// 目前只有 Postgres 从 catalog 读出来；MySQL / Trino / Snowflake / Databricks
+    /// 恒为 false，意思是「不知道」，不是「不是键」——各自的读法是 #502 的后几刀。
     /// 探索提示词靠它把 ID 与量分开，宽表上一个八十列的 schema 没有这个
     /// 几乎认不出哪一列是键（#502）
     pub is_primary_key: bool,
-    /// 该列本身是某张表的外键。外键的目标在 `references_table`（可能为 None
-    /// ——引擎知道是外键但读不出目标表名时只填 true）
-    pub is_foreign_key: bool,
-    /// 外键指向的表（`schema.table`）。`is_foreign_key=false` 时为 None
+    /// 该列本身是某张表的单列外键时，它指向的表（`schema.table`）；组合外键的成员
+    /// 与读不出外键的引擎都是 None。
+    ///
+    /// 可空没有放进来：两个探索提示词都不用它，宽表上每列多一个 NOT NULL 只是挤掉
+    /// 列（#502 真用到时再加）
     pub references_table: Option<String>,
-    /// 该列是否允许 NULL。PK 列必为 false（NOT NULL by construction）。
-    /// 是 `nullable` 而不是 `not_null`：与 `information_schema` 一致，
-    /// prompt 模板读起来方向也一致
-    pub nullable: bool,
 }
 
 #[async_trait::async_trait]

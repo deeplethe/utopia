@@ -183,9 +183,7 @@ pub(crate) fn schema_row(row: Vec<serde_json::Value>) -> SchemaColumn {
         // 拿 PK 与 FK；Databricks 的 Unity Catalog 不登记主键（PK 恒为 false）。
         // 这一刀先 false，下一刀接 #502 的 Trino/Snowflake cut 再补
         is_primary_key: false,
-        is_foreign_key: false,
         references_table: None,
-        nullable: true,
     }
 }
 

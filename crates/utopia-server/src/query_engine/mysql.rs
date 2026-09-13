@@ -232,14 +232,12 @@ impl QueryEngine for MysqlEngine {
                 data_type,
                 // 没有注释时这一列是空串而不是 NULL，照抄会让每张表都挂一个空注释
                 comment: comment.filter(|c| !c.trim().is_empty()),
-                // MySQL 的 PK / FK / nullable 要走 information_schema.statistics 与
+                // MySQL 的 PK / FK 要走 information_schema.statistics 与
                 // key_column_usage 才能拿到（PK 在 INDEX_NAME='PRIMARY' 上、FK 在
                 // REFERENCED_TABLE_NAME 非空上）。这一刀先给 false，下一刀接 #502
                 // 的 MySQL cut 再补
                 is_primary_key: false,
-                is_foreign_key: false,
                 references_table: None,
-                nullable: true,
             })
             .collect())
     }

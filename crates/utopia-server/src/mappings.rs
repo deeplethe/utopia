@@ -16,6 +16,42 @@ use uuid::Uuid;
 
 const MAX_SCHEMA_CHARS: usize = 12_000;
 
+/// schema 文本开头那一句图例：列行里的方括号是什么
+const COLUMN_MARKERS: &str =
+    "Column markers: [PK] single-column primary key; [FK→schema.table] foreign key to that table.
+";
+
+/// schema 文本里的一列：`  名字 类型 [PK, FK→schema.table] -- 注释`。
+///
+/// 键标记放在类型后面、注释前面，用方括号：`-- ` 已经是注释的分隔，写成 `-- PK`
+/// 就与一条内容恰好是「PK」的注释分不开。主键又是外键（一对一的扩展表）两个都标。
+/// 可空不写进来：宽表上几乎每列都是 NOT NULL，每列多十几个字符会让
+/// `MAX_SCHEMA_CHARS` 装下的列明显变少，而两个提示词都用不到它（#502）
+fn column_line(c: &crate::query_engine::SchemaColumn) -> String {
+    let mut marks = Vec::new();
+    if c.is_primary_key {
+        marks.push("PK".to_string());
+    }
+    if let Some(target) = &c.references_table {
+        marks.push(format!("FK→{target}"));
+    }
+    let marks = if marks.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", marks.join(", "))
+    };
+    let comment = c
+        .comment
+        .as_deref()
+        .map(|x| format!(" -- {x}"))
+        .unwrap_or_default();
+    format!(
+        "  {} {}{marks}{comment}
+",
+        c.column, c.data_type
+    )
+}
+
 /// 一轮允许提几条口径。
 ///
 /// **上限跟着 schema 的大小走。** 写死的 12 对一个三张表的小库绰绰有余，
@@ -191,7 +227,7 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
     // **上限是跨源的一个总数。** 从前那个 `break` 只跳出当前源的列循环，
     // 下一个源接着往同一个字符串里追加——`MAX_SCHEMA_CHARS` 读起来像个上限，
     // 实际上是「每个源各自超一次」的下限。
-    let mut schema_txt = String::new();
+    let mut schema_txt = String::from(COLUMN_MARKERS);
     let mut tables_scanned = 0i32;
     let mut columns_scanned = 0i32;
     let mut truncated = false;
@@ -213,29 +249,7 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
                 schema_txt.push_str(&format!("table {key}:\n"));
             }
             columns_scanned += 1;
-            // 列的注释与约束标记拼接在一起：注释先行（原本就是这样），约束标记
-            // 跟在后面。`-- PK` / ` -- FK→schema.table` / ` -- NOT NULL` 三档互不
-            // 冲突，可同时出现。FK 的目标表名带上，模型看到「FK→public.orders.id」
-            // 立刻知道是哪张表的哪一列；NOT NULL 放在最后——它影响 prompt 里
-            // 「哪些列算 key」「可空列与可省过滤的关联」两句提示
-            let constraint = match (c.is_primary_key, c.is_foreign_key, c.nullable) {
-                (true, _, _) => " -- PK",
-                (_, true, _) => " -- FK",
-                (_, _, false) => " -- NOT NULL",
-                _ => "",
-            };
-            let fk_target = c.references_table.as_deref().map(|t| format!("→{t}"));
-            schema_txt.push_str(&format!(
-                "  {} {}{}{}{}\n",
-                c.column,
-                c.data_type,
-                c.comment
-                    .as_deref()
-                    .map(|x| format!(" -- {x}"))
-                    .unwrap_or_default(),
-                constraint,
-                fk_target.as_deref().unwrap_or(""),
-            ));
+            schema_txt.push_str(&column_line(&c));
             if schema_txt.len() > MAX_SCHEMA_CHARS {
                 schema_txt.push_str("(truncated)\n");
                 truncated = true;
@@ -520,7 +534,51 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_description, proposal_cap};
+    use super::{column_line, parse_description, proposal_cap};
+    use crate::query_engine::SchemaColumn;
+
+    fn column(pk: bool, fk: Option<&str>, comment: Option<&str>) -> SchemaColumn {
+        SchemaColumn {
+            schema: "a".into(),
+            table: "t".into(),
+            column: "id".into(),
+            data_type: "integer".into(),
+            comment: comment.map(str::to_string),
+            is_primary_key: pk,
+            references_table: fk.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_column_line_marks_its_keys_before_the_comment() {
+        assert_eq!(
+            column_line(&column(false, None, None)),
+            "  id integer
+"
+        );
+        assert_eq!(
+            column_line(&column(true, None, Some("Order id"))),
+            "  id integer [PK] -- Order id
+"
+        );
+        assert_eq!(
+            column_line(&column(false, Some("a.orders"), None)),
+            "  id integer [FK→a.orders]
+"
+        );
+        // 一对一的扩展表：主键同时是外键，两个都标
+        assert_eq!(
+            column_line(&column(true, Some("a.p1"), None)),
+            "  id integer [PK, FK→a.p1]
+"
+        );
+        // 注释里写着 PK 的普通列，与标记分得开
+        assert_eq!(
+            column_line(&column(false, None, Some("PK"))),
+            "  id integer -- PK
+"
+        );
+    }
 
     #[test]
     fn a_description_is_kept_only_when_it_says_something() {
