@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { fmtObjectValue } from "../objectValue";
 import {
   useCallback,
   useEffect,
@@ -2911,30 +2912,6 @@ function EntityPanel({
       </div>
     </div>
   );
-}
-
-/** 字面值宾语的显示：属性 {value,unit} / 问数映射 {summary} / 其他 JSON 兜底。 */
-function fmtObjectValue(v: Record<string, unknown> | null): string | null {
-  if (!v) return null;
-  if (v.value !== undefined) {
-    if (typeof v.value === "boolean") return v.value ? "✓" : "✗";
-    const unit = typeof v.unit === "string" && v.unit ? v.unit : "";
-    /* 大数收成 `$5B`。金额存进来是**乘开的数**（`$5 billion` → 5000000000），
-       因为值要能比大小才有资格不当节点；可原样念出来是「5000000000 $」，
-       比原文那句「$5 billion」难读得多。符号在前、数收成紧凑写法，两头都要 */
-    if (typeof v.value === "number" && unit && unit !== "%") {
-      const n = new Intl.NumberFormat(undefined, {
-        notation: Math.abs(v.value) >= 10000 ? "compact" : "standard",
-        maximumFractionDigits: 2,
-      }).format(v.value);
-      return `${unit}${n}`;
-    }
-    const val = String(v.value);
-    // 百分号紧贴着数，别的单位空一格
-    return unit ? (unit === "%" ? `${val}%` : `${val} ${unit}`) : val;
-  }
-  if (typeof v.summary === "string") return v.summary;
-  return JSON.stringify(v);
 }
 
 /** 一节（从这个实体出发 / 指向这个实体）：可折叠——折叠柄占图标格，正文缩进同样的 24，

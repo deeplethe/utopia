@@ -73,6 +73,22 @@ pub mod reason {
     /// 宾语落成字面值而不是节点（#559）。记下来是为了量：这一类里有多少
     /// 本该是实体（模型漏报），有多少本来就是描述
     pub const OBJECT_UNDECLARED: &str = "object_undeclared";
+    /// 以下都来自 `utopia_extract::normalize`：只看结构、不看词的形状检查
+    /// 值只有破折号（`—`）：表里的「无」，不落
+    pub const NO_VALUE: &str = "no_value";
+    /// 值后面有一截引文里没有的字：只留引文里有的那段。只记
+    pub const VALUE_TRIMMED: &str = "value_trimmed";
+    /// 没有宾语也没有值、只带边属性：属性落成主语上的值事实。只记
+    pub const QUALIFIERS_WITHOUT_OBJECT: &str = "qualifiers_without_object";
+    /// 宾语是契约格式的日期：数落成值、日期进有效期；没带数的把写出来的那段落成值。只记
+    pub const TIME_AS_OBJECT: &str = "time_as_object";
+    /// 主语是契约格式的日期：数是谁的回复里没说，不落
+    pub const TIME_AS_SUBJECT: &str = "time_as_subject";
+    /// 宾语名字包住另一个声明实体、同句已有指向本尊的边：可能是描述，也可能是另一个
+    /// 东西（每股收益包住了净利润）。只记，不删
+    pub const OBJECT_DESCRIBES_DECLARED: &str = "object_describes_declared";
+    /// 上面几条去掉事实后没人引用的声明：不建
+    pub const ORPHAN_DECLARATION: &str = "orphan_declaration";
 }
 
 pub async fn record(

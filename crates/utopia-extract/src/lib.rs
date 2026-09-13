@@ -7,6 +7,9 @@ use utopia_llm::ChatMessage;
 
 pub mod governor;
 
+pub mod normalize;
+pub use normalize::{normalize_facts, Normalization};
+
 #[derive(Debug, Deserialize)]
 pub struct Extraction {
     #[serde(default)]
@@ -291,7 +294,15 @@ pub fn build_messages(
             company\", \"no longer available\", \"until recently\". Use null only for something \
             still going on. These are not interchangeable: null asserts it still holds, and \
             writing null for a relation the text says is over makes us claim the opposite of \
-            the source.{temporal_note}\n\
+            the source.\n\
+         3c. A period is when a fact holds, never what it is about. A quarter, a half, a \
+            fiscal or calendar year, a month, \"the three months ended July 26, 2026\" — \
+            none of these is an entity and none is an object. Put the period's dates in \
+            valid_from and valid_to (a fiscal period resolves to the dates the document \
+            states for it) and write the figure as the fact's \"value\" — the figure alone, as it stands in the \
+            quote, with nothing appended. A column of a table headed by a period is a column \
+            of values that hold in that period.\n\
+         {temporal_note}\n\
          4. {time_ctx}\n\
          5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\

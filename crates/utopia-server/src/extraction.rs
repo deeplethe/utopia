@@ -1118,7 +1118,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         };
         // 模型的原话只在 debug 级别看得到：查它对哪几个字段怎么填（#582 的片段）时开
         tracing::debug!(%document_id, seq = chunk.seq, reply = %reply, "抽取原始回复");
-        let extraction = match utopia_extract::parse_response(&reply) {
+        let mut extraction = match utopia_extract::parse_response(&reply) {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "抽取结果解析失败，跳过该分块");
@@ -1163,6 +1163,59 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         }
 
         // 实体消解：名称 → 实体 id（本分块的事实按原文名字连线）
+        // **落库前先查形状**（utopia_extract::normalize）：只看结构、不看词——引文里有没有
+        // 这段字、值是不是只有标点、一侧是不是契约的日期、同句有没有另一条边。读懂时间
+        // 归模型（提示词 3c），这里只核对它照没照契约写，做了什么都记进丢弃表
+        for n in utopia_extract::normalize_facts(&mut extraction) {
+            use utopia_extract::Normalization as N;
+            use utopia_store::extraction_drops::reason;
+            let (r, detail, example) = match n {
+                N::NoValue { predicate, written } => (reason::NO_VALUE, predicate, written),
+                N::ValueTrimmed {
+                    predicate,
+                    kept,
+                    dropped,
+                } => (
+                    reason::VALUE_TRIMMED,
+                    predicate,
+                    format!("{kept} ✂ {dropped}"),
+                ),
+                N::QualifiersWithoutObject { predicate, values } => (
+                    reason::QUALIFIERS_WITHOUT_OBJECT,
+                    predicate,
+                    format!("{values} value(s) moved onto the subject"),
+                ),
+                N::TimeAsObject {
+                    predicate,
+                    written,
+                    values,
+                } => (
+                    reason::TIME_AS_OBJECT,
+                    predicate,
+                    if values == 0 {
+                        format!("{written} kept as a value")
+                    } else {
+                        format!("{written} → {values} value(s)")
+                    },
+                ),
+                N::TimeAsSubject { predicate, written } => {
+                    (reason::TIME_AS_SUBJECT, predicate, written)
+                }
+                N::ObjectDescribesDeclared {
+                    predicate,
+                    name,
+                    head,
+                } => (
+                    reason::OBJECT_DESCRIBES_DECLARED,
+                    predicate,
+                    format!("{name} ← {head}"),
+                ),
+                N::OrphanDeclaration { name } => {
+                    (reason::ORPHAN_DECLARATION, "entity".to_string(), name)
+                }
+            };
+            drop_signal(state, doc.kb_id, document_id, r, &detail, Some(&example)).await;
+        }
         let mut entity_ids: HashMap<String, Uuid> = HashMap::new();
         // 名称 → 声明类型（属性 domain 校验用：salary 不能挂在 Organization 上）
         let mut entity_type_of: HashMap<String, Option<Uuid>> = HashMap::new();

@@ -4,6 +4,7 @@ import { Button, CARD_ACTIONS, Status } from "../ui";
    **原句在上，三元组在下**：只列三元组等于要人凭空判断它对不对——
    实测里 `Acme --?--> 深圳` 那条，人一看原句就知道该拒。
    两处共用同一行组件：Review 页的「待确认」一档，与 Chat 里跟在 remember 步骤后面的那张卡。 */
+import { fmtObjectValue } from "../objectValue";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type PendingFactItem } from "../api";
 import { S } from "../i18n";
@@ -21,11 +22,7 @@ function sentence(quote: string): string {
 
 function objectText(f: PendingFactItem): string {
   if (f.object_name) return f.object_name;
-  const v = f.object_value;
-  if (!v) return "?";
-  if (v.summary) return v.summary;
-  const val = v.value === undefined || v.value === null ? "?" : String(v.value);
-  return v.unit ? `${val} ${v.unit}` : val;
+  return fmtObjectValue(f.object_value as Record<string, unknown> | null) ?? "?";
 }
 
 /** 点头是写图的动作，Editor 起步——与服务端 `require_kb(Role::Editor)` 同一口径。
