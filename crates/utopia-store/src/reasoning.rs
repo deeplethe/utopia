@@ -2432,12 +2432,25 @@ async fn steps_for(
 
 /// 没落地的派生里，与这个实体有关的那些（0017 §3）——面板「推出来的」一档的
 /// 「没落地的」小节。
+/// 一个实体身上**当时**还存在的派生矛盾（0017 §3）。
+///
+/// 面板上的 `blocked` 那一档跟其它键走同一个 `as_of`（`#549` 把 `derived`
+/// 那一档接通、`#307` 把剩下的接上）：一个三月被推翻的违规在回放中的面板
+/// 上不该留着幽灵边。`v.status = 'open'` 不区分「现在开着」与「三月还开
+/// 着、四月才被人关了」——`violation_open_at` 是答案。
+///
+/// 写路径不走这里（`decide_violation` 等）。
 pub async fn blocked_for_entity(
     pool: &PgPool,
     kb_id: Uuid,
     entity_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Vec<utopia_core::models::BlockedDerivation>> {
-    Ok(sqlx::query_as(
+    let violation_open = match as_of {
+        Some(_) => crate::record_axis::violation_open_at("v", 3),
+        None => "v.status = 'open'".to_string(),
+    };
+    Ok(sqlx::query_as(&format!(
         "SELECT v.id AS violation_id,
                 (v.detail->>'subject_id')::uuid AS subject_id,
                 COALESCE(v.detail->>'subject', '?') AS subject,
@@ -2458,12 +2471,13 @@ pub async fn blocked_for_entity(
            JOIN entities s ON s.id = f.subject_id
            LEFT JOIN relation_types r ON r.id = f.predicate_id
            LEFT JOIN entities o ON o.id = f.object_id
-          WHERE v.kb_id = $1 AND v.kind = 'derived_contradiction' AND v.status = 'open'
+          WHERE v.kb_id = $1 AND v.kind = 'derived_contradiction' AND {violation_open}
             AND (v.detail->>'subject_id' = $2::text OR v.detail->>'object_id' = $2::text)
           ORDER BY v.detected_at DESC",
-    )
+    ))
     .bind(kb_id)
     .bind(entity_id)
+    .bind(as_of)
     .fetch_all(pool)
     .await?)
 }
