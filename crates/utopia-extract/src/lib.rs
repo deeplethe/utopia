@@ -404,6 +404,10 @@ pub fn build_messages_with_opening(
             Copy them; never paraphrase. When the words that do the thing are a description \
             rather than a name — \"former X employees\", \"companies using X\" — the span \
             is that description, whatever you wrote in subject.\n\
+         8e. An obligation, a deadline or a right belongs to the agreement, law or decision \
+            that imposes it, even when it concerns another agreement or thing. A lease that \
+            sets the last day to sign a second lease gives that deadline to the first lease; \
+            the second lease is only what the deadline is about.\n\
          9. The same holds for entity types: if none of the listed types fits, write the type \
             the text implies, in snake_case (e.g. \"model\", \"technology\"). Do not fall back \
             to a broad listed type such as \"thing\" or \"creative_work\" merely because \
@@ -1273,6 +1277,16 @@ mod prompt_shape_tests {
             c.contains("do not reverse the relation"),
             "少了这句，模型可能去找一个反向关系而不是交换主宾"
         );
+    }
+
+    #[test]
+    fn an_obligation_belongs_to_the_agreement_that_imposes_it() {
+        // 主租约里写着「签二期租约的截止日」，模型时而把截止日挂到二期租约上：
+        // 主租约的时间线上就少了这次改期（#681 §3）
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        assert!(msgs[0]
+            .content
+            .contains("belongs to the agreement, law or decision that imposes it"));
     }
 
     #[test]
