@@ -213,3 +213,122 @@ async fn search_entities_degree_respects_as_of() -> anyhow::Result<()> {
         .await?;
     Ok(())
 }
+
+/// 回放时列表与总数也按当时可见的实体算，走真的合并路径。A 在四月并进 B：
+/// 三月搜「Zhang」要看见 A 和 B、各一度、总数 2；现在只剩 B。
+/// 只回放度数、列表还按 `merged_into IS NULL` 过滤的话，三月只看见 B
+#[tokio::test]
+async fn a_search_in_replay_lists_the_entities_of_that_moment() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let (org, ws, kb, works_at) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let (a, b, later, acme, other) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, 'as-of-search-merge')")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces (id, org_id, name) VALUES ($1, $2, 'as-of-search-merge')")
+        .bind(ws)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_bases (id, workspace_id, name) VALUES ($1, $2, 'as-of-search-merge')",
+    )
+    .bind(kb)
+    .bind(ws)
+    .execute(&pool)
+    .await?;
+    let run = async {
+        sqlx::query(
+            "INSERT INTO relation_types (id, kb_id, key, label) VALUES ($1, $2, 'works_at', 'works at')",
+        )
+        .bind(works_at)
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+        for (id, name, created) in [
+            (a, "Zhang Wei A", "2026-01-01T00:00:00Z"),
+            (b, "Zhang Wei B", "2026-01-01T00:00:00Z"),
+            // 五月才建：三月的搜索里不该有它
+            (later, "Zhang Wei C", "2026-05-01T00:00:00Z"),
+            (acme, "Acme", "2026-01-01T00:00:00Z"),
+            (other, "Other Co", "2026-01-01T00:00:00Z"),
+        ] {
+            sqlx::query(
+                "INSERT INTO entities (id, kb_id, canonical_name, created_at) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(id)
+            .bind(kb)
+            .bind(name)
+            .bind(t(created))
+            .execute(&pool)
+            .await?;
+        }
+        for (subject, object) in [(a, acme), (b, other)] {
+            sqlx::query(
+                "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, confidence, recorded_at)
+                 VALUES ($1, $2, $3, $4, $5, 0.9, $6)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(kb)
+            .bind(subject)
+            .bind(works_at)
+            .bind(object)
+            .bind(t("2026-01-10T00:00:00Z"))
+            .execute(&pool)
+            .await?;
+        }
+        utopia_store::resolution::merge_entities(&pool, kb, a, b, None, "test").await?;
+        sqlx::query("UPDATE entity_merges SET created_at = $2 WHERE source_id = $1")
+            .bind(a)
+            .bind(t("2026-04-01T00:00:00Z"))
+            .execute(&pool)
+            .await?;
+
+        let (march, total) = utopia_store::graph::search_entities(
+            &pool,
+            kb,
+            "Zhang",
+            10,
+            0,
+            Some(t("2026-03-01T00:00:00Z")),
+        )
+        .await?;
+        let mut seen: Vec<(Uuid, i64)> = march.iter().map(|n| (n.id, n.degree)).collect();
+        seen.sort();
+        let mut want = vec![(a, 1), (b, 1)];
+        want.sort();
+        assert_eq!(seen, want, "三月：A 还没并进 B，各一度；C 还没建");
+        assert_eq!(total, 2);
+
+        let (now, total) = utopia_store::graph::search_entities(&pool, kb, "Zhang", 10, 0, None).await?;
+        let ids: Vec<Uuid> = now.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&b) && ids.contains(&later) && !ids.contains(&a));
+        assert_eq!(total, 2);
+        anyhow::Ok(())
+    }
+    .await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    run
+}

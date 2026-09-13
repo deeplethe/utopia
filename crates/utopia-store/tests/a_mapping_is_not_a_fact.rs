@@ -33,13 +33,11 @@ async fn fixture(pool: &PgPool) -> anyhow::Result<(Uuid, Uuid, Uuid)> {
         .bind(ws)
         .execute(pool)
         .await?;
-    sqlx::query(
-        "INSERT INTO entities (id, kb_id, canonical_name, aliases) VALUES ($1, $2, '营收', '{}')",
-    )
-    .bind(ent)
-    .bind(kb)
-    .execute(pool)
-    .await?;
+    sqlx::query("INSERT INTO entities (id, kb_id, canonical_name) VALUES ($1, $2, '营收')")
+        .bind(ent)
+        .bind(kb)
+        .execute(pool)
+        .await?;
     Ok((org, kb, ent))
 }
 

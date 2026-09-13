@@ -35,16 +35,19 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         .bind(kb)
         .execute(pool)
         .await?;
-    // 有类型的、带别名的一个；并掉的一个（同名，不该被找到）
+    // 有类型的、带别名的一个；并掉的一个（同名，不该被找到）。
+    // 别名是一条名字事实（0041），不再是 entities 上的一列
     sqlx::query(
-        "INSERT INTO entities (id, kb_id, type_id, canonical_name, aliases)
-         VALUES ($1, $2, $3, 'Acme Corporation', ARRAY['ACME'])",
+        "INSERT INTO entities (id, kb_id, type_id, canonical_name)
+         VALUES ($1, $2, $3, 'Acme Corporation')",
     )
     .bind(acme)
     .bind(kb)
     .bind(organization)
     .execute(pool)
     .await?;
+    utopia_store::names::record(pool, kb, acme, "Acme Corporation", None, None).await?;
+    utopia_store::names::record(pool, kb, acme, "ACME", None, None).await?;
     sqlx::query(
         "INSERT INTO entities (id, kb_id, canonical_name, merged_into) VALUES ($1, $2, 'Nova Labs', $3)",
     )

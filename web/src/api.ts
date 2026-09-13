@@ -1728,18 +1728,9 @@ export const api = {
     }>(`/api/v1/kbs/${kbId}/graph/neighborhood?entity=${entityId}&hops=2`),
   /** 按名字找实体。**一并回总数**——「宁分勿合」会造出一堆同名，
    *  固定十条时想找的那个可能根本不在这十条里 */
-  searchEntities: (
-    kbId: string,
-    q: string,
-    limit = 10,
-    /** 记录轴（0019）：回放中的搜索结果按**当时**的 `degree` 排。
-     *  YYYY-MM-DD 或 RFC3339；缺省 = 当下 */
-    asOf?: string | null,
-  ) =>
+  searchEntities: (kbId: string, q: string, limit = 10) =>
     request<{ entities: GraphNode[]; total: number }>(
-      `/api/v1/kbs/${kbId}/entities?q=${encodeURIComponent(q)}&limit=${limit}${
-        asOf ? `&as_of=${encodeURIComponent(asOf)}` : ""
-      }`,
+      `/api/v1/kbs/${kbId}/entities?q=${encodeURIComponent(q)}&limit=${limit}`,
     ),
   entityDetail: (kbId: string, entityId: string) =>
     request<{

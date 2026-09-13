@@ -789,6 +789,8 @@ fn node_sql(as_of: Option<usize>, owner: Option<usize>) -> String {
     // 主宾也跟着倒：三月被合并掉的实体，在二月身上还挂着它自己的那些事实（#336）
     let subject = crate::record_axis::owner_at("f", "subject_id", owner, false);
     let object = crate::record_axis::owner_at("f", "object_id", owner, true);
+    // 名字事实不算度数（0041）：每个实体至少有一个名字，数进去所有节点一起变大一号
+    let not_name = crate::names::not_a_name("f");
     format!(
         "SELECT e.id, e.canonical_name AS name, t.key AS type_key,
         t.label AS type_label,
@@ -796,7 +798,7 @@ fn node_sql(as_of: Option<usize>, owner: Option<usize>) -> String {
         coalesce(t.shape, 'circle') AS shape,
         e.disambiguator,
         (SELECT count(*) FROM facts f
-         WHERE ({subject} = e.id OR {object} = e.id) AND {held}) AS degree
+         WHERE ({subject} = e.id OR {object} = e.id) AND {held} AND {not_name}) AS degree
      FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id"
     )
 }
@@ -1073,46 +1075,50 @@ pub async fn profile_distances(
 pub async fn search_entities(
     pool: &PgPool,
     kb_id: Uuid,
-    q: &str,
+    text: &str,
     limit: i64,
     offset: i64,
-    // 记录轴（0019）：回放中的图上点搜索框，结果的 `degree` 按**当时**
-    // 连在节点上的边算——和右上的图一致，否则「高亮的那条边算不算上」
-    // 在两种视图下各答一次
+    // 记录轴（0019）：给了就按**当时**回放——列出当时可见的实体（合并之前的被并者
+    // 还在，之后才建的不在），度数按当时谁持有事实来数，与回放中的画布一致
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(Vec<GraphNode>, i64)> {
-    let pattern = format!("%{}%", q.trim());
-    // `None` 时 SQL 里没有 $5——读路径上有两个分支，绑多一个会冒「supplies 4
-    // parameters but statement requires 5」的错（postgres 看见 `$5` 之前已经
-    // 被 format 串吃掉，所以 prepared statement 期望 5 个参数；绑 4 个反过来
-    // 报的不是这个错，而是「supplies 4 requires 5」）。所以绑不绑同进退
-    let param = if as_of.is_some() { Some(5) } else { None };
+    let pattern = format!("%{}%", text.trim());
+    let named = crate::names::has_name_like("e", 2);
+    // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
+    let visible = |param: usize| match as_of {
+        Some(_) => crate::record_axis::entity_visible_at("e", param),
+        None => "e.merged_into IS NULL".to_string(),
+    };
+    let rewind = as_of.map(|_| 5);
     let sql = format!(
-        "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL
-         AND (e.canonical_name ILIKE $2
-              OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS a WHERE a ILIKE $2))
+        "{} WHERE e.kb_id = $1 AND {visible}
+         AND (e.canonical_name ILIKE $2 OR {named})
          ORDER BY degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
-        node_sql(param, param)
+        node_sql(rewind, rewind),
+        visible = visible(5),
     );
-    let mut q = sqlx::query_as::<_, GraphNode>(&sql)
+    let mut nodes_query = sqlx::query_as::<_, GraphNode>(&sql)
         .bind(kb_id)
         .bind(&pattern)
         .bind(limit)
         .bind(offset);
     if let Some(t) = as_of {
-        q = q.bind(t);
+        nodes_query = nodes_query.bind(t);
     }
-    let nodes: Vec<GraphNode> = q.fetch_all(pool).await?;
-    let (total,): (i64,) = sqlx::query_as(
+    let nodes: Vec<GraphNode> = nodes_query.fetch_all(pool).await?;
+    let count_sql = format!(
         "SELECT count(*) FROM entities e
-          WHERE e.kb_id = $1 AND e.merged_into IS NULL
-            AND (e.canonical_name ILIKE $2
-                 OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS a WHERE a ILIKE $2))",
-    )
-    .bind(kb_id)
-    .bind(&pattern)
-    .fetch_one(pool)
-    .await?;
+          WHERE e.kb_id = $1 AND {visible}
+            AND (e.canonical_name ILIKE $2 OR {named})",
+        visible = visible(3),
+    );
+    let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql)
+        .bind(kb_id)
+        .bind(&pattern);
+    if let Some(t) = as_of {
+        count_query = count_query.bind(t);
+    }
+    let (total,) = count_query.fetch_one(pool).await?;
     Ok((nodes, total))
 }
 
@@ -1183,7 +1189,9 @@ pub async fn entity_detail(
          LEFT JOIN entity_types ot ON ot.id = o.type_id
          WHERE f.kb_id = $1 AND {facts_held} AND {facts_hold}
            AND ({subject} = $2 OR {object} = $2)
+           AND {not_name}
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
+        not_name = crate::names::not_a_name("f"),
         facts_held = crate::record_axis::facts_held_at("f", 3),
         facts_hold = crate::world_axis::facts_hold_at("f", 4),
         holds_from = crate::world_axis::facts_holds_from("f"),
@@ -1294,6 +1302,12 @@ pub async fn update_entity(
     .bind(new_name)
     .execute(pool)
     .await?;
+
+    // 人改的名字也是一条名字事实（0041）。旧名字不作废：之前的文档还管它叫旧名字，
+    // 召回靠它认出来；它只是不再是界面上显示的那一个
+    if let Some(n) = new_name {
+        crate::names::record(pool, kb_id, entity_id, n, None, None).await?;
+    }
 
     // 消歧后缀依赖名字分组与类型标签（类型标签是它的兜底值），两者都刚被改过。
     // 改名要刷两组：旧名那组可能掉到 1 个（后缀该清掉），新名那组可能涨到 2 个。
@@ -1775,7 +1789,11 @@ pub async fn graph_changes(
              WHERE fe.fact_id = ev.id
              ORDER BY fe.doc_version DESC NULLS LAST LIMIT 1
          ) src ON true
-         WHERE $5::text[] IS NULL OR ev.kind = ANY($5)
+         WHERE ($5::text[] IS NULL OR ev.kind = ANY($5))
+           -- 实体的本名那条名字事实不算一次变化（0041）：每建一个实体就多一行「X known as X」，
+           -- 限量的变更清单会被它挤满。新读到的别名、改名照样列出来
+           AND NOT (coalesce(r.builtin AND r.key = 'known_as', false)
+                    AND lower(ev.object_value->>'value') = lower(s.canonical_name))
          ORDER BY ev.at DESC, ev.id
          LIMIT $6"
     ))

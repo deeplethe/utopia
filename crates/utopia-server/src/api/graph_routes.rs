@@ -139,10 +139,11 @@ pub async fn search_entities(
     Query(query): Query<EntitySearchQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    // 先校验时刻：一个写错的 `as_of` 配空查询也该回 400，而不是看起来成功
+    let as_of = parse_instant("as_of", query.as_of.as_deref())?;
     if query.q.trim().is_empty() {
         return Ok(Json(json!({ "entities": [], "total": 0 })));
     }
-    let as_of = parse_instant("as_of", query.as_of.as_deref())?;
     // 一并回总数：「宁分勿合」本来就会造出一堆同名，固定十条时想找的那个
     // 可能根本不在这十条里，而界面上看不出来
     let (entities, total) = utopia_store::graph::search_entities(
@@ -192,8 +193,10 @@ pub async fn entity_detail(
     // 没落地的派生（0017 §3）也单独一个键：它们连 `derived_facts` 都不在
     let blocked =
         utopia_store::reasoning::blocked_for_entity(&state.pool, kb_id, entity_id).await?;
+    // 名字也单独一个键（0041）：本名、简称、曾用名，各带出处与有效期
+    let names = utopia_store::names::for_entity(&state.pool, kb_id, entity_id, as_of).await?;
     Ok(Json(json!({
-        "entity": entity, "facts": facts,
+        "entity": entity, "facts": facts, "names": names,
         "derived": derived, "blocked": blocked, "same_name": same_name,
     })))
 }

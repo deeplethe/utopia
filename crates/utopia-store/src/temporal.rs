@@ -718,6 +718,8 @@ pub async fn uniqueness_candidates(
              WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
                AND f.valid_to IS NULL AND f.valid_to_precision IS NULL
                AND r.temporal = 'state'
+               -- 名字不算：一个实体有两个名字是常态，不是「这个属性该唯一」的证据（0041）
+               AND NOT (r.builtin AND r.key = 'known_as')
                AND (f.object_id IS NOT NULL OR f.object_value IS NOT NULL)
          ),
          crowded AS (

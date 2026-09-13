@@ -722,7 +722,12 @@ pub async fn loop_calls_today(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
 }
 
 /// 工具：提到这个实体的原文片段——它的事实是从哪句话里抽出来的，出自哪份文档。
-/// 证据上有 quote 就用 quote，没有就截分块开头
+/// 证据上有 quote 就用 quote，没有就截分块开头。
+///
+/// **名字事实排在后面，引文就是名字本身的不要**（0041）。名字事实置信度 1.0，
+/// 按置信度排它每块都赢，而「这一块写了它的名字」的引文往往只是那个名字——
+/// 给裁决的 agent 一串光秃秃的名字，等于没给原文。带整句引文的别名（「简称海探1」）
+/// 照样留着，那正是判断是不是一个东西要看的
 pub async fn quotes_of(
     pool: &PgPool,
     kb_id: Uuid,
@@ -730,15 +735,21 @@ pub async fn quotes_of(
     limit: i64,
 ) -> AppResult<Vec<(String, String)>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT DISTINCT ON (fe.chunk_id) d.filename,
-                COALESCE(NULLIF(fe.quote, ''), left(c.text, 240))
-         FROM facts f
-         JOIN fact_evidence fe ON fe.fact_id = f.id
-         JOIN chunks c ON c.id = fe.chunk_id
-         JOIN documents d ON d.id = c.document_id
-         WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
-           AND (f.subject_id = $2 OR f.object_id = $2)
-         ORDER BY fe.chunk_id, f.confidence DESC
+        "SELECT filename, quote FROM (
+           SELECT DISTINCT ON (fe.chunk_id) d.filename,
+                  COALESCE(NULLIF(fe.quote, ''), left(c.text, 240)) AS quote
+           FROM facts f
+           -- 谓词可以为空（0010），LEFT JOIN 才不丢那些事实
+           LEFT JOIN relation_types r ON r.id = f.predicate_id
+           JOIN fact_evidence fe ON fe.fact_id = f.id
+           JOIN chunks c ON c.id = fe.chunk_id
+           JOIN documents d ON d.id = c.document_id
+           WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+             AND (f.subject_id = $2 OR f.object_id = $2)
+             AND NOT (coalesce(r.builtin AND r.key = 'known_as', false)
+                      AND lower(trim(coalesce(fe.quote, ''))) = lower(f.object_value->>'value'))
+           ORDER BY fe.chunk_id, coalesce(r.builtin AND r.key = 'known_as', false), f.confidence DESC
+         ) q
          LIMIT $3",
     )
     .bind(kb_id)

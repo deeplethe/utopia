@@ -316,8 +316,8 @@ fn profile_of(s: &utopia_store::resolution::TypeCandidateSubject) -> String {
         }
     }
     parts.push(s.canonical_name.clone());
-    if !s.aliases.is_empty() {
-        parts.push(s.aliases.join(", "));
+    if !s.other_names.is_empty() {
+        parts.push(s.other_names.join(", "));
     }
     if !s.roles.is_empty() {
         parts.push(s.roles.join(" "));

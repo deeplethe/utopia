@@ -655,7 +655,6 @@ pub struct Entity {
     /// 是「抽取器抽到了东西，但本体里没有对应的类」这个状态
     pub type_id: Option<Uuid>,
     pub canonical_name: String,
-    pub aliases: Vec<String>,
     pub merged_into: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -726,6 +725,23 @@ pub struct GraphEdge {
     /// `derived_contradiction` 违规的 id，不是任何事实；`derived` 同时为 true，
     /// 所以它跟着派生开关走
     pub blocked: bool,
+}
+
+/// 一个实体的一个名字（0041）：`known_as` 上的一条值事实，单独成一栏，不混进事实行。
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct NameView {
+    pub fact_id: Uuid,
+    pub name: String,
+    /// 界面上显示的那个名字（`entities.canonical_name`）
+    pub canonical: bool,
+    pub recorded_at: DateTime<Utc>,
+    /// 世界轴：曾用名在这里有一个结束
+    pub valid_from: Option<DateTime<Utc>>,
+    pub valid_from_precision: Option<String>,
+    pub valid_to: Option<DateTime<Utc>>,
+    pub valid_to_precision: Option<String>,
+    pub document_ids: Vec<Uuid>,
+    pub evidence_count: i64,
 }
 
 /// 实体详情页的事实行（时间线）。

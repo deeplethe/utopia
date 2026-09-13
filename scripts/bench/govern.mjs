@@ -96,7 +96,7 @@ async function fresh() {
 // ---------- 撤掉 agent（与模拟的人）的决定 ----------
 function reset(kb) {
   psql(`DO $$
-DECLARE m RECORD; src RECORD;
+DECLARE m RECORD;
 BEGIN
   FOR m IN SELECT * FROM entity_merges WHERE kb_id = '${kb}' AND reverted_at IS NULL ORDER BY created_at DESC LOOP
     UPDATE facts SET subject_id = m.source_id WHERE id = ANY(m.moved_subject_facts);
@@ -105,10 +105,8 @@ BEGIN
     UPDATE facts SET invalidated_at = NULL WHERE id IN (
       SELECT supersedes FROM facts WHERE id = ANY(m.temporal_corrections) AND invalidated_at IS NULL AND supersedes IS NOT NULL);
     UPDATE facts SET invalidated_at = now() WHERE id = ANY(m.temporal_corrections) AND invalidated_at IS NULL;
-    SELECT canonical_name, aliases INTO src FROM entities WHERE id = m.source_id;
+    -- 名字是 known_as 上的事实（0041），跟着 moved_subject_facts 搬回去了，不用另外还
     UPDATE entities SET
-      aliases = (SELECT coalesce(array_agg(a), '{}') FROM unnest(aliases) a
-                 WHERE lower(a) <> ALL (SELECT lower(x) FROM unnest(array_prepend(src.canonical_name, src.aliases)) x)),
       profile_embedding = m.target_profile_before, profile_n = m.target_profile_n_before,
       type_id = coalesce(m.target_type_before, type_id), updated_at = now()
     WHERE id = m.target_id;
