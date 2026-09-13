@@ -822,11 +822,25 @@ pub async fn delete(
     .bind(id)
     .fetch_all(&mut *tx)
     .await?;
+    // 作废的事实可能是别的值的后任：它走了，关在它开始时的前任要重新接上。牵连的时间线
+    // 先按固定顺序锁上，再作废任何一行（与撤回合并同一个顺序，见 temporal 模块头）
+    let cited: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT f.id FROM facts f
+           JOIN fact_evidence fe ON fe.fact_id = f.id
+           JOIN chunks c ON c.id = fe.chunk_id
+          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND c.document_id = $2",
+    )
+    .bind(kb_id)
+    .bind(id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let timelines = crate::temporal::timelines_of(&mut *tx, kb_id, &cited, None).await?;
+    crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
     // 先打了墓碑再算：这篇文档此刻已经算「已删除」，所以只剩它作出处的事实才落网；
     // 另一篇活着的文档里也有证据的一条不动——删一份重复上传不该掀掉半张图
     let facts: Vec<(Uuid,)> = sqlx::query_as(
         "UPDATE facts f SET invalidated_at = now()
-          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND f.id = ANY($3)
             AND EXISTS (SELECT 1 FROM fact_evidence fe
                         JOIN chunks c ON c.id = fe.chunk_id
                         WHERE fe.fact_id = f.id AND c.document_id = $2)
@@ -844,10 +858,14 @@ pub async fn delete(
     )
     .bind(kb_id)
     .bind(id)
+    .bind(&cited)
     .fetch_all(&mut *tx)
     .await?;
     let chunk_ids: Vec<Uuid> = chunks.into_iter().map(|(c,)| c).collect();
     let fact_ids: Vec<Uuid> = facts.into_iter().map(|(f,)| f).collect();
+    if !fact_ids.is_empty() {
+        crate::temporal::tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
+    }
     let deletion_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO document_deletions
@@ -931,6 +949,9 @@ async fn restore_tx(
         .bind(&chunk_ids)
         .execute(&mut **tx)
         .await?;
+    // 复活的事实回到各自的时间线上：先锁、再复活、再重算（同删除）
+    let timelines = crate::temporal::timelines_of(&mut **tx, kb_id, &fact_ids, None).await?;
+    crate::temporal::lock_timelines(tx, kb_id, &timelines).await?;
     sqlx::query(
         "UPDATE facts SET invalidated_at = NULL
           WHERE id = ANY($1) AND invalidated_at IS NOT NULL",
@@ -938,6 +959,7 @@ async fn restore_tx(
     .bind(&fact_ids)
     .execute(&mut **tx)
     .await?;
+    crate::temporal::tidy_timelines_tx(tx, kb_id, &timelines).await?;
     sqlx::query("UPDATE document_deletions SET reverted_at = now() WHERE id = $1")
         .bind(deletion_id)
         .execute(&mut **tx)

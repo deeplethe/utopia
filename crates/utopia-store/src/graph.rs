@@ -1449,15 +1449,7 @@ pub async fn confirm_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResul
 
 /// 人工否决事实：作废（账本 append-only，不 DELETE）。
 pub async fn reject_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<()> {
-    let res = sqlx::query(
-        "UPDATE facts SET invalidated_at = now()
-         WHERE id = $1 AND kb_id = $2 AND invalidated_at IS NULL",
-    )
-    .bind(fact_id)
-    .bind(kb_id)
-    .execute(pool)
-    .await?;
-    if res.rows_affected() == 0 {
+    if !crate::temporal::retract(pool, kb_id, fact_id).await? {
         return Err(AppError::NotFound);
     }
     Ok(())
@@ -2111,11 +2103,11 @@ async fn adopt(
                     "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                                         valid_from, valid_from_precision,
                                         valid_to, valid_to_precision, confidence, supersedes,
-                                        attested_from, attested_to)
+                                        attested_from, attested_to, end_derived)
                      SELECT $1, kb_id, $6, $3, $4, $5,
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, id,
-                            attested_from, attested_to
+                            attested_from, attested_to, end_derived
                      FROM facts WHERE id = $2 AND invalidated_at IS NULL
                      RETURNING id",
                 )

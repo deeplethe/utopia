@@ -407,8 +407,8 @@ async fn a_revert_restores_both_timelines_a_merge_rewrote() -> anyhow::Result<()
     let source = entity(&pool, f.kb, f.etype, "Lease Agreement", Uuid::now_v7()).await?;
     arrive(&pool, &f, "A", "2020-01-01").await?;
     arrive(&pool, &f, "B", "2020-06-01").await?;
-    let d = arrive_on(&pool, &f, source, "D", Some("2020-03-01"), None, 0.9, false).await?;
-    let e = arrive_on(&pool, &f, source, "E", Some("2020-04-01"), None, 0.9, false).await?;
+    arrive_on(&pool, &f, source, "D", Some("2020-03-01"), None, 0.9, false).await?;
+    arrive_on(&pool, &f, source, "E", Some("2020-04-01"), None, 0.9, false).await?;
     let before_target = timeline_of(&pool, &f, f.lease).await?;
     let merge =
         utopia_store::resolution::merge_entities(&pool, f.kb, source, f.lease, None, "rv").await?;
@@ -416,20 +416,20 @@ async fn a_revert_restores_both_timelines_a_merge_rewrote() -> anyhow::Result<()
     utopia_store::resolution::revert_merge(&pool, f.kb, merge).await?;
     let after_revert = timeline_of(&pool, &f, f.lease).await?;
     let source_rows = timeline_of(&pool, &f, source).await?;
-    let alive: Vec<(Uuid, bool)> =
-        sqlx::query_as("SELECT id, invalidated_at IS NULL FROM facts WHERE id = ANY($1)")
-            .bind(vec![d, e])
-            .fetch_all(&pool)
-            .await?;
     cleanup(&pool, &f).await?;
     assert_eq!(
         after_revert, before_target,
         "target history not restored; after merge it was {after_merge:?}"
     );
-    assert_eq!(source_rows.len(), 2, "source lost a value: {source_rows:?}");
-    assert!(
-        alive.iter().all(|(_, live)| *live),
-        "both source values are live again: {alive:?}"
+    // 两个值都回到源实体上。回来的是改写出的新行，不是把旧行复活：撤回也是一次认知变更，
+    // 记录轴上看得见（0057）；源实体上的时间线顺带按两行重算
+    assert_eq!(
+        source_rows,
+        vec![
+            s("D", Some("2020-03-01"), Some("2020-04-01")),
+            s("E", Some("2020-04-01"), None),
+        ],
+        "source lost a value"
     );
     Ok(())
 }

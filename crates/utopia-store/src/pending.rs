@@ -286,42 +286,41 @@ pub async fn confirm(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Confirme
     .await?;
 
     // 与抽取相同的时态对账：带唯一性约束的状态关系，新事实闭合旧事实。
-    // 这正是记忆该有的行为——「Mira 交给 Devin 了」说完，Mira 那条就该闭合
+    // 这正是记忆该有的行为——「Mira 交给 Devin 了」说完，Mira 那条就该闭合。
+    // 并进已有断言的也对：多了一次观察，时间线的形状可能跟着变（#679）
     let mut conflicts = 0u32;
-    if created {
-        if let Some(pid) = v.predicate_id {
-            let meta: Option<(bool, bool, String)> = sqlx::query_as(
-                "SELECT functional, inverse_functional, temporal FROM relation_types WHERE id = $1",
-            )
-            .bind(pid)
-            .fetch_optional(pool)
-            .await?;
-            if let Some((functional, inverse_functional, temporal)) = meta {
-                if temporal == "state" {
-                    let mut directions = Vec::new();
-                    if functional {
-                        directions.push(crate::temporal::Uniqueness::SubjectSide);
-                    }
-                    // 宾语侧唯一只对实体宾语有意义；字面值没有「谁被指着」
-                    if inverse_functional && v.object_id.is_some() {
-                        directions.push(crate::temporal::Uniqueness::ObjectSide);
-                    }
-                    for dir in directions {
-                        let report = crate::temporal::reconcile_new_fact(
-                            pool,
-                            kb_id,
-                            fact_id,
-                            v.subject_id,
-                            pid,
-                            v.object_id,
-                            v.object_value.as_ref(),
-                            dir,
-                            validity,
-                            v.confidence,
-                        )
-                        .await?;
-                        conflicts += report.conflicts;
-                    }
+    if let Some(pid) = v.predicate_id {
+        let meta: Option<(bool, bool, String)> = sqlx::query_as(
+            "SELECT functional, inverse_functional, temporal FROM relation_types WHERE id = $1",
+        )
+        .bind(pid)
+        .fetch_optional(pool)
+        .await?;
+        if let Some((functional, inverse_functional, temporal)) = meta {
+            if temporal == "state" {
+                let mut directions = Vec::new();
+                if functional {
+                    directions.push(crate::temporal::Uniqueness::SubjectSide);
+                }
+                // 宾语侧唯一只对实体宾语有意义；字面值没有「谁被指着」
+                if inverse_functional && v.object_id.is_some() {
+                    directions.push(crate::temporal::Uniqueness::ObjectSide);
+                }
+                for dir in directions {
+                    let report = crate::temporal::reconcile_new_fact(
+                        pool,
+                        kb_id,
+                        fact_id,
+                        v.subject_id,
+                        pid,
+                        v.object_id,
+                        v.object_value.as_ref(),
+                        dir,
+                        validity,
+                        v.confidence,
+                    )
+                    .await?;
+                    conflicts += report.conflicts;
                 }
             }
         }
