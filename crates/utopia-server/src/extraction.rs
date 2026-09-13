@@ -156,6 +156,15 @@ enum SpanVerdict {
     Misplaced(String),
 }
 
+/// 模型报给 `bound` 的别名，是不是已经声明成了另一个实体的名字（0041）。
+///
+/// 结构判据，不认词：同一个名字不会同时是两样东西的名字。模型把「海探1项目」列成
+/// 一个机构，又把它报成探测器的别名——两个答案打架，别名那个不要
+fn name_claimed_elsewhere(name: &str, bound: Uuid, declared: &HashMap<String, Uuid>) -> bool {
+    let key = utopia_store::resolution::normalize_name(name).to_lowercase();
+    declared.get(&key).is_some_and(|id| *id != bound)
+}
+
 /// 片段在不在引文里：大小写、空白都不论
 fn span_in_quote(span: &str, quote: &str) -> bool {
     let norm = |s: &str| {
@@ -909,7 +918,9 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     let etypes = utopia_store::graph::entity_types(&state.pool, doc.kb_id).await?;
     // 这一轮落过的事实（新建或重复观察）：结尾对它们跑一遍签名检查
     let mut touched_facts: Vec<Uuid> = Vec::new();
-    let rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;
+    let mut rtypes = utopia_store::graph::relation_types(&state.pool, doc.kb_id).await?;
+    // 名字属性不进给模型的清单（0041）：名字走回复里的 `names`，服务端核对它在原文里
+    rtypes.retain(|r| !utopia_store::names::is_name_attribute(r));
     // 关系与属性分道：属性走字面值通道，不进关系清单。
     //
     // **本体里没有对应关系时就没有谓词**（见 `facts.predicate_id`）。原词落进
@@ -1118,7 +1129,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         };
         // 模型的原话只在 debug 级别看得到：查它对哪几个字段怎么填（#582 的片段）时开
         tracing::debug!(%document_id, seq = chunk.seq, reply = %reply, "抽取原始回复");
-        let extraction = match utopia_extract::parse_response(&reply) {
+        let mut extraction = match utopia_extract::parse_response(&reply) {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "抽取结果解析失败，跳过该分块");
@@ -1163,6 +1174,59 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         }
 
         // 实体消解：名称 → 实体 id（本分块的事实按原文名字连线）
+        // **落库前先查形状**（utopia_extract::normalize）：只看结构、不看词——引文里有没有
+        // 这段字、值是不是只有标点、一侧是不是契约的日期、同句有没有另一条边。读懂时间
+        // 归模型（提示词 3c），这里只核对它照没照契约写，做了什么都记进丢弃表
+        for n in utopia_extract::normalize_facts(&mut extraction) {
+            use utopia_extract::Normalization as N;
+            use utopia_store::extraction_drops::reason;
+            let (r, detail, example) = match n {
+                N::NoValue { predicate, written } => (reason::NO_VALUE, predicate, written),
+                N::ValueTrimmed {
+                    predicate,
+                    kept,
+                    dropped,
+                } => (
+                    reason::VALUE_TRIMMED,
+                    predicate,
+                    format!("{kept} ✂ {dropped}"),
+                ),
+                N::QualifiersWithoutObject { predicate, values } => (
+                    reason::QUALIFIERS_WITHOUT_OBJECT,
+                    predicate,
+                    format!("{values} value(s) moved onto the subject"),
+                ),
+                N::TimeAsObject {
+                    predicate,
+                    written,
+                    values,
+                } => (
+                    reason::TIME_AS_OBJECT,
+                    predicate,
+                    if values == 0 {
+                        format!("{written} kept as a value")
+                    } else {
+                        format!("{written} → {values} value(s)")
+                    },
+                ),
+                N::TimeAsSubject { predicate, written } => {
+                    (reason::TIME_AS_SUBJECT, predicate, written)
+                }
+                N::ObjectDescribesDeclared {
+                    predicate,
+                    name,
+                    head,
+                } => (
+                    reason::OBJECT_DESCRIBES_DECLARED,
+                    predicate,
+                    format!("{name} ← {head}"),
+                ),
+                N::OrphanDeclaration { name } => {
+                    (reason::ORPHAN_DECLARATION, "entity".to_string(), name)
+                }
+            };
+            drop_signal(state, doc.kb_id, document_id, r, &detail, Some(&example)).await;
+        }
         let mut entity_ids: HashMap<String, Uuid> = HashMap::new();
         // 名称 → 声明类型（属性 domain 校验用：salary 不能挂在 Organization 上）
         let mut entity_type_of: HashMap<String, Option<Uuid>> = HashMap::new();
@@ -1302,6 +1366,24 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
             if let Some(p) = proposed {
                 let _ = utopia_store::resolution::set_proposed_type(&state.pool, id, p).await;
             }
+            // 模型写下的这个名字就在这一块原文里时，给这条名字事实补出处（0041）。
+            // 给已知句柄时它照提示词写的是清单上的全称，这一块里未必有——那就不补，
+            // 这一块用的别的写法走下面的 `names`。
+            // 记忆日志里的不补：那一句算不算出处，要等人点头（0018）
+            if !await_nod && span_in_quote(name, &chunk.text) {
+                let _ = utopia_store::names::record(
+                    &state.pool,
+                    doc.kb_id,
+                    id,
+                    name,
+                    Some(utopia_store::names::NameSource {
+                        chunk_id: chunk.id,
+                        quote: name,
+                    }),
+                    doc.doc_time,
+                )
+                .await;
+            }
             // 模型自己的说法。**跟 proposed_type 分开存**：那一列的含义是
             // "本体里没有"，增长回路靠它的稀有性设门槛；这一列每个实体都有。
             // 与粗类同名的不记——那不是更具体的说法，只是把清单抄了一遍
@@ -1332,6 +1414,125 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
             // model output when the surface name is unambiguous.
             entity_ids.insert(name.to_string(), id);
             entity_type_of.insert(name.to_string(), type_id);
+        }
+
+        // 实体的别的名字（0041 决定 2）。**名字与引文都要在这一块原文里**：名字是召回的桥，
+        // 一座凭空造的桥会把两个不相干的实体接到一起。认不认「简称」「又名」是模型的事，
+        // 服务端不认词，只核对它抄的字是不是真在原文里
+        // 这次回复声明的名字，加上本文档前面几块认下的：别名撞上它们之一就不收
+        let declared_names: HashMap<String, Uuid> = entity_ids
+            .iter()
+            .map(|(name, id)| (name.as_str(), *id))
+            .chain(
+                doc_entities
+                    .iter()
+                    .map(|(id, _, name)| (name.as_str(), *id)),
+            )
+            .map(|(name, id)| {
+                (
+                    utopia_store::resolution::normalize_name(name).to_lowercase(),
+                    id,
+                )
+            })
+            .collect();
+        for n in &extraction.names {
+            let name = n.name.trim();
+            let Some(bound) = ref_entities.get(n.entity_ref.trim()) else {
+                drop_signal(
+                    state,
+                    doc.kb_id,
+                    document_id,
+                    utopia_store::extraction_drops::reason::MALFORMED_ITEM,
+                    "name ref is not a declared handle",
+                    Some(name),
+                )
+                .await;
+                continue;
+            };
+            let quote = n
+                .quote
+                .as_deref()
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+                .unwrap_or(name);
+            if name_claimed_elsewhere(name, bound.id, &declared_names) {
+                drop_signal(
+                    state,
+                    doc.kb_id,
+                    document_id,
+                    utopia_store::extraction_drops::reason::NAME_CLAIMED_BY_ANOTHER,
+                    &n.entity_ref,
+                    Some(name),
+                )
+                .await;
+                continue;
+            }
+            if !is_entity_name(name)
+                || !span_in_quote(name, quote)
+                || !span_in_quote(quote, &chunk.text)
+            {
+                drop_signal(
+                    state,
+                    doc.kb_id,
+                    document_id,
+                    utopia_store::extraction_drops::reason::NAME_NOT_IN_TEXT,
+                    &n.entity_ref,
+                    Some(name),
+                )
+                .await;
+                continue;
+            }
+            // 记忆日志读到的名字与它的其它事实一样等人点头（0018）：名字是召回的桥，
+            // 一句没确认过的话不该先把桥搭上。点头之后是一条普通的名字事实；
+            // 这一步不配对，同名的配对等下一次在文档里读到它
+            if await_nod {
+                let known_as = utopia_store::names::ensure_known_as(&state.pool, doc.kb_id).await?;
+                let value = serde_json::json!({
+                    "value": utopia_store::resolution::normalize_name(name)
+                });
+                if let utopia_store::pending::Outcome::Proposed(_) = utopia_store::pending::propose(
+                    &state.pool,
+                    utopia_store::pending::Proposal {
+                        kb_id: doc.kb_id,
+                        subject_id: bound.id,
+                        predicate_id: Some(known_as),
+                        object_id: None,
+                        object_value: Some(&value),
+                        proposed_predicate: Some(utopia_store::names::KNOWN_AS),
+                        validity: utopia_store::graph::Validity {
+                            attested_at: doc.doc_time,
+                            ..Default::default()
+                        },
+                        confidence: 1.0,
+                        chunk_id: chunk.id,
+                        proposed_by: proposer.user_id,
+                        proposed_token: proposer.token_id,
+                    },
+                )
+                .await?
+                {
+                    pending_count += 1;
+                }
+                continue;
+            }
+            utopia_store::names::record(
+                &state.pool,
+                doc.kb_id,
+                bound.id,
+                name,
+                Some(utopia_store::names::NameSource {
+                    chunk_id: chunk.id,
+                    quote,
+                }),
+                doc.doc_time,
+            )
+            .await?;
+            // 别的实体已经叫这个名字：送去裁决，不合并
+            if utopia_store::names::pair_shared_name(&state.pool, doc.kb_id, bound.id, name).await?
+                > 0
+            {
+                needs_adjudication = true;
+            }
         }
 
         // 改绑的候选：这次回复声明的实体，加上提示词里给过的库内实体（#582）
@@ -3252,7 +3453,29 @@ mod name_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{slot_matches, span_in_quote, verify_span, SpanVerdict};
+
+    #[test]
+    fn a_name_declared_for_another_entity_is_not_an_alias() {
+        let (probe, project) = (Uuid::now_v7(), Uuid::now_v7());
+        let declared = HashMap::from([
+            ("海洋探测器1号".to_string(), probe),
+            ("海探1项目".to_string(), project),
+        ]);
+        assert!(name_claimed_elsewhere("海探1项目", probe, &declared));
+        assert!(
+            name_claimed_elsewhere(" 海探1项目 ", probe, &declared),
+            "空白不论"
+        );
+        assert!(
+            !name_claimed_elsewhere("海探1", probe, &declared),
+            "没人声明过的名字照收"
+        );
+        assert!(
+            !name_claimed_elsewhere("海洋探测器1号", probe, &declared),
+            "自己的名字不算撞"
+        );
+    }
+    use super::{name_claimed_elsewhere, slot_matches, span_in_quote, verify_span, SpanVerdict};
     fn declared(names: &[&str]) -> HashMap<String, Uuid> {
         names
             .iter()
@@ -3902,7 +4125,9 @@ mod tests {
                 .await?;
             }
             let pairs: Vec<(Uuid, Uuid)> = sqlx::query_as(
-                "SELECT subject_id, object_id FROM facts WHERE kb_id = $1 ORDER BY subject_id",
+                // 只看边：实体身上还有名字事实（0041），那些没有宾语实体
+                "SELECT subject_id, object_id FROM facts
+                  WHERE kb_id = $1 AND object_id IS NOT NULL ORDER BY subject_id",
             )
             .bind(kb)
             .fetch_all(&pool)
@@ -3985,7 +4210,8 @@ mod tests {
                 "later bare mentions must reuse document-local C"
             );
             let c_objects: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT object_id FROM facts WHERE kb_id = $1 AND subject_id = $2 ORDER BY object_id",
+                "SELECT object_id FROM facts
+                  WHERE kb_id = $1 AND subject_id = $2 AND object_id IS NOT NULL ORDER BY object_id",
             )
             .bind(kb)
             .bind(c)

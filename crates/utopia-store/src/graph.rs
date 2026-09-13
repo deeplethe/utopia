@@ -789,6 +789,8 @@ fn node_sql(as_of: Option<usize>, owner: Option<usize>) -> String {
     // 主宾也跟着倒：三月被合并掉的实体，在二月身上还挂着它自己的那些事实（#336）
     let subject = crate::record_axis::owner_at("f", "subject_id", owner, false);
     let object = crate::record_axis::owner_at("f", "object_id", owner, true);
+    // 名字事实不算度数（0041）：每个实体至少有一个名字，数进去所有节点一起变大一号
+    let not_name = crate::names::not_a_name("f");
     format!(
         "SELECT e.id, e.canonical_name AS name, t.key AS type_key,
         t.label AS type_label,
@@ -796,7 +798,7 @@ fn node_sql(as_of: Option<usize>, owner: Option<usize>) -> String {
         coalesce(t.shape, 'circle') AS shape,
         e.disambiguator,
         (SELECT count(*) FROM facts f
-         WHERE ({subject} = e.id OR {object} = e.id) AND {held}) AS degree
+         WHERE ({subject} = e.id OR {object} = e.id) AND {held} AND {not_name}) AS degree
      FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id"
     )
 }
@@ -1080,10 +1082,10 @@ pub async fn search_entities(
     let pattern = format!("%{}%", q.trim());
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL
-         AND (e.canonical_name ILIKE $2
-              OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS a WHERE a ILIKE $2))
+         AND (e.canonical_name ILIKE $2 OR {named})
          ORDER BY degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
-        node_sql(None, None)
+        node_sql(None, None),
+        named = crate::names::has_name_like("e", 2),
     ))
     .bind(kb_id)
     .bind(&pattern)
@@ -1091,12 +1093,12 @@ pub async fn search_entities(
     .bind(offset)
     .fetch_all(pool)
     .await?;
-    let (total,): (i64,) = sqlx::query_as(
+    let (total,): (i64,) = sqlx::query_as(&format!(
         "SELECT count(*) FROM entities e
           WHERE e.kb_id = $1 AND e.merged_into IS NULL
-            AND (e.canonical_name ILIKE $2
-                 OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS a WHERE a ILIKE $2))",
-    )
+            AND (e.canonical_name ILIKE $2 OR {named})",
+        named = crate::names::has_name_like("e", 2),
+    ))
     .bind(kb_id)
     .bind(&pattern)
     .fetch_one(pool)
@@ -1171,7 +1173,9 @@ pub async fn entity_detail(
          LEFT JOIN entity_types ot ON ot.id = o.type_id
          WHERE f.kb_id = $1 AND {facts_held} AND {facts_hold}
            AND ({subject} = $2 OR {object} = $2)
+           AND {not_name}
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
+        not_name = crate::names::not_a_name("f"),
         facts_held = crate::record_axis::facts_held_at("f", 3),
         facts_hold = crate::world_axis::facts_hold_at("f", 4),
         holds_from = crate::world_axis::facts_holds_from("f"),
@@ -1282,6 +1286,12 @@ pub async fn update_entity(
     .bind(new_name)
     .execute(pool)
     .await?;
+
+    // 人改的名字也是一条名字事实（0041）。旧名字不作废：之前的文档还管它叫旧名字，
+    // 召回靠它认出来；它只是不再是界面上显示的那一个
+    if let Some(n) = new_name {
+        crate::names::record(pool, kb_id, entity_id, n, None, None).await?;
+    }
 
     // 消歧后缀依赖名字分组与类型标签（类型标签是它的兜底值），两者都刚被改过。
     // 改名要刷两组：旧名那组可能掉到 1 个（后缀该清掉），新名那组可能涨到 2 个。
@@ -1763,7 +1773,11 @@ pub async fn graph_changes(
              WHERE fe.fact_id = ev.id
              ORDER BY fe.doc_version DESC NULLS LAST LIMIT 1
          ) src ON true
-         WHERE $5::text[] IS NULL OR ev.kind = ANY($5)
+         WHERE ($5::text[] IS NULL OR ev.kind = ANY($5))
+           -- 实体的本名那条名字事实不算一次变化（0041）：每建一个实体就多一行「X known as X」，
+           -- 限量的变更清单会被它挤满。新读到的别名、改名照样列出来
+           AND NOT (coalesce(r.builtin AND r.key = 'known_as', false)
+                    AND lower(ev.object_value->>'value') = lower(s.canonical_name))
          ORDER BY ev.at DESC, ev.id
          LIMIT $6"
     ))

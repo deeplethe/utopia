@@ -47,6 +47,7 @@ export const en = {
       "That class is already below this one — the hierarchy would loop.",
     bad_lang: "Pick a supported language.",
     attr_needs_class: "An attribute has to belong to a class.",
+    builtin_name_attribute: "The name attribute is built in and cannot be edited.",
     attr_has_no_link:
       "An attribute has no inverse and no super-property — its value is a literal, not something to point back from.",
     link_target_is_attr:
@@ -882,6 +883,7 @@ export const en = {
     /* 实体面板的 Relations：两节的标题、组尾的折、行上的证据开关 */
     fromEntity: (name: string) => `From ${name}`,
     toEntity: (name: string) => `To ${name}`,
+    openEntity: (name: string) => `Open ${name}`,
     past: (n: number) => (n === 1 ? "1 past" : `${n} past`),
     sources: (n: number) => (n === 1 ? "1 source" : `${n} sources`),
     timelineEmpty: "No dated facts yet.",
@@ -1754,6 +1756,7 @@ export const en = {
       namesake: "Two entities with this name in one document",
       /* 画像分不开时的并列：分数是真的，所以百分比照常显示（与 namesake 的哨兵值不同） */
       namesake_tie: "Same name, and the profiles cannot tell them apart",
+      shared_name: "Another entity already has this name",
       /* 名字互相包含：等值召回看不见，简称会静默变成第二个实体 */
       contains: "One name contains the other",
       ambiguous_name: "Same name, context did not settle it",
