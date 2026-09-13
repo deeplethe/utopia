@@ -50,6 +50,18 @@ const STALL_NUDGE: &str = "(system) Your last message ended the turn without cal
     plan. Reply with the single word DONE only if the question was not about the user's data \
     at all: a greeting, a question about this transcript, or a refusal.";
 
+/// 模型回了一个**空回复**（没有正文、也没调工具）时重问的那句。
+///
+/// 空回复不是一个结论，只是没说话。从前它直接变成一帧 `error`：台子上 48 轮里出过
+/// 2 次，都在工具已经跑完之后——用户看见三四步查证，接着一句「Model returned an
+/// empty answer」，查到的东西全白费。重问一次，第二次还空才报错：只给一次，所以一个
+/// 始终不说话的端点不会让循环空转。
+///
+/// 措辞两头都留门：工具跑过的，就着查到的答；一步没查的（首轮就回空），缺证据
+/// 就去调工具。它不说「答完了就回 DONE」——#509 那个出口正是被模型滥用的那一个。
+const EMPTY_REPLY_RETRY: &str = "(system) Your previous reply was empty. Reply to the user now: \
+    answer from the evidence gathered above, or call a tool if you still need evidence.";
+
 /// 追问后仍不查时补在答案末尾的话。承诺已经流给用户了，收不回来；能做的是
 /// 让文字和空白的轨迹不再互相矛盾——对一个把「每个回答可追溯」当卖点的产品，
 /// 一句叙述了从未发生的查证的回答比「不知道」更糟。
@@ -786,6 +798,8 @@ pub async fn chat(
         let mut rounds = 0usize;
         // #509 的追问只给一次
         let mut nudged = false;
+        // 空回复的重问也只给一次（见 EMPTY_REPLY_RETRY）
+        let mut asked_again = false;
         loop {
             if rounds >= MAX_ROUNDS {
                 // 弹药耗尽：命令模型就现有证据作答（流式）
@@ -895,8 +909,20 @@ pub async fn chat(
 
             if turn.tool_calls.is_empty() {
                 if answer_acc.is_empty() {
-                    yield error_event("Model returned an empty answer");
-                    return;
+                    if asked_again {
+                        yield error_event("Model returned an empty answer");
+                        return;
+                    }
+                    asked_again = true;
+                    tracing::warn!(
+                        model = settings.chat_model.as_deref().unwrap_or_default(),
+                        rounds,
+                        "模型回了空，重问一次"
+                    );
+                    // 空的那一轮本身不进 msgs：一条既无正文又无调用的 assistant 消息，
+                    // 有的端点直接拒收。回到循环顶上重来，不占工具轮数
+                    msgs.push(json!({ "role": "user", "content": EMPTY_REPLY_RETRY }));
+                    continue;
                 }
                 // **没调工具的一轮不一定是答完了，也可能是停住了**（#509）：正文说
                 // 「我去查」，然后轮次就结束。循环分不出这两种，靠一次追问让模型自己
@@ -1414,3 +1440,7 @@ mod stall_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "chat_empty_reply_tests.rs"]
+mod chat_empty_reply_tests;
