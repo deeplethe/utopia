@@ -123,6 +123,29 @@ pub fn out_of_credit(err: &anyhow::Error) -> Option<&OutOfCredit> {
     err.chain().find_map(|e| e.downcast_ref::<OutOfCredit>())
 }
 
+/// 端点回答了，而且回的是「不」：欠费与限流之外的所有非 2xx。
+///
+/// **做成类型是为了让状态码留下来。** 对话循环要在「这家不支持 tool calling」
+/// （400，请求形状被拒）与「网断了」「密钥错了」之间做不同的事：前者退成一次性
+/// RAG 还能答，后者退了也答不了。从前这一类只剩一段文本，状态码埋在字符串里，
+/// 于是循环把**任何**首轮错误都当成不支持工具——一次网络抖动就退成了 RAG，
+/// 然后 RAG 也死在同一个抖动上。
+#[derive(Debug, thiserror::Error)]
+#[error("{kind} request failed ({reason}): {detail}")]
+pub struct Rejected {
+    /// 哪一类请求（`LLM` / `Embedding`），只进错误文本
+    pub kind: String,
+    pub status: u16,
+    /// 状态码带原因短语，如 `400 Bad Request`——错误文本从前就是这么写的
+    pub reason: String,
+    pub detail: String,
+}
+
+/// anyhow 错误链里的 [`Rejected`]，穿透 context 层。
+pub fn rejected(err: &anyhow::Error) -> Option<&Rejected> {
+    err.chain().find_map(|e| e.downcast_ref::<Rejected>())
+}
+
 /// `Retry-After` 的整数秒形态。
 ///
 /// 规范还允许 HTTP-date，这里**不解析**：为一个很少有人发的头引一个日期库不划算，
@@ -169,7 +192,12 @@ fn failure(
             detail,
         });
     }
-    anyhow::anyhow!("{kind} request failed ({status}): {detail}")
+    anyhow::Error::new(Rejected {
+        kind: kind.to_string(),
+        status: status.as_u16(),
+        reason: status.to_string(),
+        detail,
+    })
 }
 
 /// 把一个非成功状态的响应变成错误（#527）。
@@ -286,14 +314,44 @@ impl LlmClient {
         messages: &[serde_json::Value],
         tools: &serde_json::Value,
     ) -> anyhow::Result<AssistantTurn> {
+        self.chat_tools_with(messages, Some(tools), None).await
+    }
+
+    /// 带工具的请求体。`tools` 为 None 就不带工具字段——**不是空数组**：
+    /// 有的端点见到 `"tools": []` 会 400。`tool_choice` 按 OpenAI 协议原样透传
+    /// （`"auto"` / `"none"` / `"required"` / `{"type":"function",...}`），
+    /// 也只在给了的时候才写进去。
+    fn tools_body(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+        tool_choice: Option<&serde_json::Value>,
+        stream: bool,
+    ) -> serde_json::Value {
+        let mut body = json!({
+            "model": self.model,
+            "messages": messages,
+            "stream": stream,
+        });
+        if let Some(tools) = tools {
+            body["tools"] = tools.clone();
+            if let Some(choice) = tool_choice {
+                body["tool_choice"] = choice.clone();
+            }
+        }
+        body
+    }
+
+    /// 工具对话（非流式），工具清单与 `tool_choice` 都可选。
+    pub async fn chat_tools_with(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+        tool_choice: Option<&serde_json::Value>,
+    ) -> anyhow::Result<AssistantTurn> {
         let resp = self
             .request("/chat/completions")
-            .json(&json!({
-                "model": self.model,
-                "messages": messages,
-                "tools": tools,
-                "stream": false,
-            }))
+            .json(&self.tools_body(messages, tools, tool_choice, false))
             .send()
             .await
             .map_err(Unreachable)?;
@@ -342,14 +400,20 @@ impl LlmClient {
         messages: &[serde_json::Value],
         tools: &serde_json::Value,
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<ToolStreamItem>> + Send + use<>> {
+        self.chat_tools_stream_with(messages, Some(tools), None)
+            .await
+    }
+
+    /// 工具对话（流式），工具清单与 `tool_choice` 都可选；见 [`Self::chat_tools_stream`]。
+    pub async fn chat_tools_stream_with(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+        tool_choice: Option<&serde_json::Value>,
+    ) -> anyhow::Result<impl Stream<Item = anyhow::Result<ToolStreamItem>> + Send + use<>> {
         let resp = self
             .request("/chat/completions")
-            .json(&json!({
-                "model": self.model,
-                "messages": messages,
-                "tools": tools,
-                "stream": true,
-            }))
+            .json(&self.tools_body(messages, tools, tool_choice, true))
             .send()
             .await
             .map_err(Unreachable)?;
