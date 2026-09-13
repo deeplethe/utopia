@@ -883,6 +883,7 @@ export const en = {
     /* 实体面板的 Relations：两节的标题、组尾的折、行上的证据开关 */
     fromEntity: (name: string) => `From ${name}`,
     toEntity: (name: string) => `To ${name}`,
+    openEntity: (name: string) => `Open ${name}`,
     past: (n: number) => (n === 1 ? "1 past" : `${n} past`),
     sources: (n: number) => (n === 1 ? "1 source" : `${n} sources`),
     timelineEmpty: "No dated facts yet.",

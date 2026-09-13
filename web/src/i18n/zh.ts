@@ -794,6 +794,7 @@ export const zh: Strings = {
     undated: "无日期",
     fromEntity: (name) => `从 ${name} 出发`,
     toEntity: (name) => `指向 ${name}`,
+    openEntity: (name) => `打开 ${name}`,
     past: (n) => `${n} 条已结束`,
     sources: (n) => `${n} 处来源`,
     timelineEmpty: "还没有带日期的事实。",
