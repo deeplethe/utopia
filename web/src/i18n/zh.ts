@@ -99,6 +99,18 @@ export const zh: Strings = {
     newPassword: "新密码（至少 8 位）",
     changePassword: "更新密码",
     passwordChanged: "密码已更新",
+    sso: {
+      title: "单点登录",
+      hint: "绑定你在身份提供方的账号，之后可以用单点登录。会跳到身份提供方那边确认是你本人。",
+      linkedAs: (subject: string) => `已绑定：${subject}`,
+      notLinked: "尚未绑定。",
+      link: "绑定身份",
+      unlink: "解绑",
+      unlinkTitle: "解绑单点登录？",
+      unlinkHint: "重新绑定之前，没法再用单点登录。已经打开的会话仍保持登录。",
+      linked: "身份已绑定，可以用单点登录了。",
+      unlinked: "身份已解绑。",
+    },
     avatarHint: "头像目前由你的名字生成。",
     language: "语言",
     theme: "主题",
@@ -271,6 +283,19 @@ export const zh: Strings = {
     networkError: "网络异常，请重试",
     orDivider: "或",
     ssoButton: "使用单点登录",
+    ssoErrors: {
+      unlinked: "这个身份还没绑定任何账号。先用密码登录，再到账户页绑定。",
+      cancelled: "单点登录已取消。",
+      denied: "身份提供方的应答没能通过校验。",
+      session: "这次登录是在另一个浏览器会话里开始的，请重试。",
+      expired: "登录耗时太久，请重试。",
+      busy: "同时进行的登录太多，请稍后再试。",
+      unavailable: "单点登录暂时不可用。",
+      invalid: "登录请求不完整，请重试。",
+      taken: "这个身份已经绑定到另一个账号。",
+      already_linked: "你的账号已经绑定了一个身份，请先解绑。",
+    } as Record<string, string>,
+    ssoErrorOther: "单点登录失败，请重试。",
     agreePrefix: "继续即表示你同意",
     agreeAnd: "，并已知悉",
     agreeSuffix: "。",
@@ -945,8 +970,8 @@ export const zh: Strings = {
     sso: {
       title: "单点登录",
       hint:
-        "通过身份提供方（OIDC）登录。用环境变量配置——见 .env.example——" +
-        "四项没配齐之前一律关闭。",
+        "通过身份提供方（OIDC）登录，用环境变量配置（见 .env.example）。每个人在自己的账户页" +
+        "绑定自己的身份；管理员能看到、能解绑，但不能替别人绑定。",
       disabled:
         "这个部署还没配置。设置 UTOPIA_OIDC_ISSUER、UTOPIA_OIDC_CLIENT_ID、" +
         "UTOPIA_OIDC_REDIRECT_URI（身份提供方要求的话还有 UTOPIA_OIDC_CLIENT_SECRET）后重启。",
@@ -955,16 +980,11 @@ export const zh: Strings = {
       redirectUri: "Redirect URI",
       colUser: "用户",
       colSubject: "Subject",
-      empty: "还没有绑定任何身份。在下面绑定一个。",
-      link: "绑定身份",
-      linkTitle: "绑定一个身份",
-      linkHint:
-        "把身份提供方的一个 subject 绑定到一个账号。没有在这里绑定，" +
-        "谁也没法用 SSO 登进来——首次登录绝不会自动开一个新账号。",
-      pickUser: "选择用户…",
-      subject: "Subject（sub）",
-      subjectHint: "身份提供方给这个人签发的那个精确的 sub。",
+      empty: "还没有人绑定身份。",
       unlink: "解绑",
+      unlinkTitle: (email: string) => `解绑 ${email}？`,
+      unlinkHint:
+        "重新绑定之前，这个人没法再用单点登录。已经打开的会话仍保持登录；要立刻切断访问请停用账号。",
     },
     kbs: {
       hint:

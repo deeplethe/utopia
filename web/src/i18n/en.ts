@@ -110,6 +110,21 @@ export const en = {
     newPassword: "New password (min. 8 characters)",
     changePassword: "Update password",
     passwordChanged: "Password updated",
+    sso: {
+      title: "Single sign-on",
+      hint:
+        "Link your identity provider account to sign in with SSO. You'll be sent to the provider " +
+        "to confirm it's you.",
+      linkedAs: (subject: string) => `Linked as ${subject}`,
+      notLinked: "Not linked.",
+      link: "Link identity",
+      unlink: "Unlink",
+      unlinkTitle: "Unlink single sign-on?",
+      unlinkHint:
+        "You won't be able to sign in with SSO until you link again. Sessions already open stay signed in.",
+      linked: "Identity linked. You can now sign in with SSO.",
+      unlinked: "Identity unlinked.",
+    },
     avatarHint: "Avatars are generated from your name for now.",
     language: "Language",
     theme: "Theme",
@@ -303,6 +318,20 @@ export const en = {
     networkError: "Network error, please try again",
     orDivider: "or",
     ssoButton: "Continue with SSO",
+    ssoErrors: {
+      unlinked:
+        "This identity isn't linked to an account. Sign in with your password and link it from your account page.",
+      cancelled: "Single sign-on was cancelled.",
+      denied: "The identity provider's answer couldn't be verified.",
+      session: "The sign-in started in a different browser session. Try again.",
+      expired: "The sign-in took too long. Try again.",
+      busy: "Too many sign-ins are in progress. Try again in a moment.",
+      unavailable: "Single sign-on is unavailable right now.",
+      invalid: "The sign-in request was incomplete. Try again.",
+      taken: "That identity is already linked to another account.",
+      already_linked: "Your account already has a linked identity. Unlink it first.",
+    } as Record<string, string>,
+    ssoErrorOther: "Single sign-on failed. Try again.",
     // 惯用同意句式：By continuing, you agree to the <Terms> and acknowledge the <Privacy>.
     agreePrefix: "By continuing, you agree to the ",
     agreeAnd: " and acknowledge the ",
@@ -1057,8 +1086,9 @@ export const en = {
     sso: {
       title: "Single sign-on",
       hint:
-        "Sign-in through an identity provider (OIDC). Configured with environment variables — " +
-        "see .env.example — and off until all four are set.",
+        "Sign-in through an identity provider (OIDC), configured with environment variables (see " +
+        ".env.example). People link their own identity from their account page; an administrator " +
+        "can see and remove links but can't create one for someone else.",
       disabled:
         "Not configured on this deployment. Set UTOPIA_OIDC_ISSUER, UTOPIA_OIDC_CLIENT_ID and " +
         "UTOPIA_OIDC_REDIRECT_URI (and, if the provider needs one, UTOPIA_OIDC_CLIENT_SECRET) " +
@@ -1068,16 +1098,12 @@ export const en = {
       redirectUri: "Redirect URI",
       colUser: "User",
       colSubject: "Subject",
-      empty: "No identities linked yet. Link one below.",
-      link: "Link identity",
-      linkTitle: "Link an identity",
-      linkHint:
-        "Binds one subject from the identity provider to one account. Nobody signs in through " +
-        "SSO until their subject is linked here — a new identity is never provisioned on first login.",
-      pickUser: "Choose a user…",
-      subject: "Subject (sub)",
-      subjectHint: "The exact `sub` claim the provider issues for this person.",
+      empty: "Nobody has linked an identity yet.",
       unlink: "Unlink",
+      unlinkTitle: (email: string) => `Unlink ${email}?`,
+      unlinkHint:
+        "They won't be able to sign in with SSO until they link again. Sessions already open " +
+        "stay signed in; deactivate the account to cut access immediately.",
     },
     kbs: {
       hint:

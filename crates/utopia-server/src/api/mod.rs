@@ -116,6 +116,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/auth/oidc/status", get(oidc_routes::status))
         .route("/auth/oidc/start", get(oidc_routes::start))
         .route("/auth/oidc/callback", get(oidc_routes::callback))
+        // 我自己的绑定：看、解绑。绑定走 `/auth/oidc/start?link=1`，由本人完成
+        .route(
+            "/auth/oidc/me",
+            get(oidc_routes::me).delete(oidc_routes::unlink_me),
+        )
         .route(
             "/workspaces",
             get(workspaces::list).post(workspaces::create),
@@ -177,11 +182,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             axum::routing::delete(admin_routes::deactivate_user)
                 .post(admin_routes::reactivate_user),
         )
-        // 一个身份提供方的 subject 绑定到哪个账号，只有管理员能改（0056）
-        .route(
-            "/admin/oidc/identities",
-            get(oidc_routes::identities).post(oidc_routes::bind),
-        )
+        // 管理员看得见谁绑了哪个 subject，也能解绑；**不能替人绑定**（0056）
+        .route("/admin/oidc/identities", get(oidc_routes::identities))
         .route(
             "/admin/oidc/identities/{user_id}",
             axum::routing::delete(oidc_routes::unbind),

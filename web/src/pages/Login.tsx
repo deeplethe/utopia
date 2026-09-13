@@ -37,6 +37,8 @@ export function Login() {
   const [leaving, setLeaving] = useState(false);
   const queryClient = useQueryClient();
   const sso = useQuery({ queryKey: ["oidc-status"], queryFn: api.oidcStatus });
+  // 单点登录回调失败时带着代码跳回这里（`?sso_error=`），措辞按代码查
+  const ssoError = new URLSearchParams(window.location.search).get("sso_error");
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -92,6 +94,12 @@ export function Login() {
               label: m === "login" ? S.login.signIn : S.login.signUp,
             }))}
           />
+
+          {ssoError && (
+            <p role="alert" className="mb-3 text-small text-danger">
+              {S.login.ssoErrors[ssoError] ?? S.login.ssoErrorOther}
+            </p>
+          )}
 
           <form
             className="space-y-3"
