@@ -179,6 +179,11 @@ pub(crate) fn schema_row(row: Vec<serde_json::Value>) -> SchemaColumn {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(str::to_string),
+        // Trino 与 Snowflake 的 `information_schema.table_constraints` / `key_column_usage`
+        // 拿 PK 与 FK；Databricks 的 Unity Catalog 不登记主键（PK 恒为 false）。
+        // 这一刀先 false，下一刀接 #502 的 Trino/Snowflake cut 再补
+        is_primary_key: false,
+        references_table: None,
     }
 }
 
