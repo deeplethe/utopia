@@ -223,9 +223,9 @@ impl QueryEngine for MysqlEngine {
         .fetch_all(&pool)
         .await?;
         // 键是锦上添花：读不出来就照从前那样只给列，不让整次取 schema 失败（#502）。
-        // MySQL 的 BI 连接大多是只读用户，而 `information_schema.statistics` /
-        // `key_column_usage` 对只有 SELECT 的角色**也是空的**——同 PG
-        // `information_schema.table_constraints` 的限制。读不到就只给列，留一行 warn
+        // 可见性：`statistics` 与 `key_column_usage` 对只有 SELECT 的用户照样有行
+        // （实测 MariaDB 11.4）；`table_constraints` / `referential_constraints` 对这种
+        // 用户是空的——所以键从前两张视图读，不要换成后两张
         let keys = match keys(&pool).await {
             Ok(k) => k,
             Err(e) => {
@@ -320,11 +320,7 @@ type ColumnKey = (String, String, String);
 /// 仅 FK 行填的（PK 行是 NULL 占位）
 type KeyRow = (String, String, String, Option<String>, Option<String>);
 
-/// 一个库里的单列主键与单列外键，按 (schema, table, column) 查。
-///
-/// MySQL 没有 PG 那种「约束名在一张表内唯一」的把柄——`information_schema.key_column_usage`
-/// 按 (table_schema, table_name, constraint_name) 联合主键，本来就分得清两张表上
-/// 同名的外键。两张表各有一个叫 `fk_ref` 的外键不会串表
+/// 一个库里的单列主键与单列外键，按 (schema, table, column) 查
 #[derive(Default)]
 struct Keys {
     primary: std::collections::HashSet<ColumnKey>,
@@ -332,56 +328,48 @@ struct Keys {
     foreign: std::collections::HashMap<ColumnKey, String>,
 }
 
-/// 从 MySQL 的 information_schema 读键。两条 SQL：
+/// 从 information_schema 读键，两支 UNION ALL：
 ///
-/// - 单列主键：`information_schema.statistics` 上 `INDEX_NAME='PRIMARY' AND
-///   该索引列数 = 1`。组合主键、组合外键的成员都不标——探索提示词拿 PK 当 ID、
-///   拿 FK 当关联路径，把组合键的一列单独标出来是误导
+/// - 单列主键：`statistics` 里 `index_name = 'PRIMARY'`，按表分组、只有一列的那些；
+/// - 单列外键：`key_column_usage` 里 `referenced_table_name` 非空，按约束分组、只有
+///   一列的那些。
 ///
-/// - 单列外键：`information_schema.key_column_usage` 上
-///   `REFERENCED_TABLE_NAME IS NOT NULL` 且 `ORDINAL_POSITION = 1` 且**该
-///   约束下所有行只有一个**。MySQL 的 `key_column_usage` 一行对一列：组合
-///   外键 `(order_id, ordinal)` 报两行，没有「同一约束下列数 = 1」这个过滤
-///   就会把两列都标 FK。一列同时在多个单列外键里（少见）取排序在前的那个，
-///   结果稳定
+/// 组合主键、组合外键的成员都不标——探索提示词拿 PK 当 ID、拿 FK 当关联路径，
+/// 把组合键的一列单独标出来是误导。
+///
+/// **每张视图只扫一遍，用 GROUP BY 数列，不写逐行的相关子查询。** MariaDB（与
+/// MySQL 5.7）每次读 information_schema 都现场重建这张表：逐行子查询在 1,000 张表时
+/// 要 19 秒、2,000 张时 4 分钟，而取 schema 跑在挂载请求里、没有语句超时，慢到头
+/// 就是挂住。分组写法在 2,000 张表上是 0.6 秒。
+///
+/// 外键约束名在一个库里唯一（InnoDB），按 (库, 表, 约束名) 分组分得开。一列同时在
+/// 两个单列外键里（少见）：五列全排序、先到先得，结果不随服务器的返回顺序变。
 ///
 /// 列名经二进制协议报成 VARBINARY（MySQL 8.0+），跟 fetch_schema 的列查询一样
 /// 必须 CAST(... AS CHAR) 才能让 sqlx 用 String 读出来
 async fn keys(pool: &sqlx::MySqlPool) -> anyhow::Result<Keys> {
     let rows: Vec<KeyRow> = sqlx::query_as(
-        // 一个 row 一种类型：STATISTICS 里 INDEX_NAME='PRIMARY' 的行有列名；KEY_COLUMN_USAGE
-        // 里 REFERENCED_TABLE_NAME 非空的行有引用表。这里把两条 UNION 在一起，靠 kind 区分。
-        // PK 那一支在第二个 SELECT 里用 `NULL AS ...` 占位，让 UNION 的列宽对齐
-        "SELECT CAST(s.table_schema AS CHAR), CAST(s.table_name AS CHAR),
-                CAST(s.column_name AS CHAR),
+        "SELECT CAST(table_schema AS CHAR), CAST(table_name AS CHAR),
+                CAST(MIN(column_name) AS CHAR),
                 NULL AS ref_schema, NULL AS ref_table
-         FROM information_schema.statistics s
-         WHERE s.index_name = 'PRIMARY'
-           AND s.table_schema NOT IN
-               ('information_schema', 'mysql', 'performance_schema', 'sys')
-           AND (
-             SELECT count(*) FROM information_schema.statistics s2
-             WHERE s2.table_schema = s.table_schema
-               AND s2.table_name   = s.table_name
-               AND s2.index_name   = s.index_name
-           ) = 1
+           FROM information_schema.statistics
+          WHERE index_name = 'PRIMARY'
+            AND table_schema NOT IN
+                ('information_schema', 'mysql', 'performance_schema', 'sys')
+          GROUP BY table_schema, table_name
+         HAVING COUNT(*) = 1
          UNION ALL
-         SELECT CAST(k.table_schema AS CHAR), CAST(k.table_name AS CHAR),
-                CAST(k.column_name AS CHAR),
-                CAST(k.referenced_table_schema AS CHAR),
-                CAST(k.referenced_table_name AS CHAR)
-         FROM information_schema.key_column_usage k
-         WHERE k.referenced_table_name IS NOT NULL
-           AND k.table_schema NOT IN
-               ('information_schema', 'mysql', 'performance_schema', 'sys')
-           AND k.ordinal_position = 1
-           AND (
-             SELECT count(*) FROM information_schema.key_column_usage k2
-             WHERE k2.constraint_schema   = k.constraint_schema
-               AND k2.constraint_name     = k.constraint_name
-               AND k2.referenced_table_name IS NOT NULL
-           ) = 1
-         ORDER BY 1, 2, 3",
+         SELECT CAST(table_schema AS CHAR), CAST(table_name AS CHAR),
+                CAST(MIN(column_name) AS CHAR),
+                CAST(MIN(referenced_table_schema) AS CHAR),
+                CAST(MIN(referenced_table_name) AS CHAR)
+           FROM information_schema.key_column_usage
+          WHERE referenced_table_name IS NOT NULL
+            AND table_schema NOT IN
+                ('information_schema', 'mysql', 'performance_schema', 'sys')
+          GROUP BY table_schema, table_name, constraint_name
+         HAVING COUNT(*) = 1
+         ORDER BY 1, 2, 3, 4, 5",
     )
     .fetch_all(pool)
     .await?;
@@ -481,8 +469,8 @@ mod tests {
         assert!(super::super::guard_sql_for("mysql", "DELETE FROM sales.orders").is_err());
     }
 
-    /// 每个测试自己的 schema，名字带随机后缀：并行跑不撞，也不碰库里已有的表。
-    /// 测完 `DROP SCHEMA ... CASCADE`。**这是 MySQL 的「schema」，跟 PG 的命名空间
+    /// 每个测试自己的库，名字带随机后缀：并行跑不撞，也不碰服务器上已有的库。
+    /// 测完逐个 `DROP DATABASE`。**这是 MySQL 的「schema」，跟 PG 的命名空间
     /// 不同——MySQL 的 schema 就是 database**（见 fetch_schema 顶上的注释）
     struct Fx {
         url: String,
@@ -492,34 +480,13 @@ mod tests {
 
     impl Fx {
         async fn new(schemas: usize) -> Option<Self> {
-            let url = std::env::var("UTOPIA_TEST_MYSQL_URL")
-                .ok()
-                .filter(|u| !u.trim().is_empty())?;
-            // `url` 默认是 `mysql://root:***@127.0.0.1:13306/`（无库名）。
-            // sqlx-mysql 在没有具体 database 时拿不到 server-side connection state，
-            // 建库语句会落在「use 哪个库」的歧义上。塞一个固定 schema 让两条
-            // CREATE DATABASE 都能落到地上
-            let base_schema = format!("mysql_keys_base_{}", Uuid::now_v7().simple());
-            let url = if url.contains('/')
-                && url
-                    .rsplit_once('/')
-                    .map(|(_, rest)| rest.contains('@'))
-                    .unwrap_or(false)
-            {
-                // 没有具体 database，附加一个
-                format!("{}/{}", url.trim_end_matches('/'), base_schema)
-            } else {
-                url.clone()
-            };
+            let url = live_url()?;
+            // 连接串照原样用：带不带库名都行，CREATE DATABASE 不需要当前库
             let pool = MySqlPoolOptions::new()
                 .max_connections(1)
                 .connect(&url)
                 .await
                 .expect("connect");
-            sqlx::query(&format!("CREATE DATABASE IF NOT EXISTS `{base_schema}`"))
-                .execute(&pool)
-                .await
-                .expect("create base schema");
             let suffix = Uuid::now_v7().simple().to_string();
             let schemas: Vec<String> = (0..schemas)
                 .map(|i| format!("`mysql_keys_{i}_{}`", &suffix[suffix.len() - 12..]))
@@ -622,7 +589,7 @@ mod tests {
         fx.cleanup().await;
     }
 
-    /// 外键带上它指向的库：自引用、跨库，以及同名约束各指各的
+    /// 外键带上它指向的表：自引用、跨库；一列同时在两个单列外键里时取排序在前的那个
     #[tokio::test]
     async fn a_foreign_key_points_at_its_own_target_mysql() {
         let Some(fx) = Fx::new(2).await else { return };
@@ -635,7 +602,10 @@ mod tests {
              CREATE TABLE {a}.c1 (x INT, FOREIGN KEY (x) REFERENCES {a}.p1 (id));
              CREATE TABLE {a}.c2 (y INT, FOREIGN KEY (y) REFERENCES {a}.p2 (id));
              CREATE TABLE {a}.c3 (z INT, FOREIGN KEY (z) REFERENCES {a}.p1 (id));
-             CREATE TABLE {b}.orders (item_id INT NOT NULL, FOREIGN KEY (item_id) REFERENCES {a}.p2 (id));"
+             CREATE TABLE {b}.orders (item_id INT NOT NULL, FOREIGN KEY (item_id) REFERENCES {a}.p2 (id));
+             CREATE TABLE {a}.dual_fk (x INT,
+                 FOREIGN KEY (x) REFERENCES {a}.p2 (id),
+                 FOREIGN KEY (x) REFERENCES {a}.p1 (id));"
         ))
         .await;
 
@@ -648,6 +618,11 @@ mod tests {
         assert_eq!(target(au, "c2", "y"), Some(p2.clone()), "c2 指 p2 不是 p1");
         assert_eq!(target(au, "c3", "z"), Some(p1.clone()));
         assert_eq!(target(bu, "orders", "item_id"), Some(p2.clone()), "跨库");
+        assert_eq!(
+            target(au, "dual_fk", "x"),
+            Some(p1.clone()),
+            "两条外键取排序在前的"
+        );
         let p2_id = col(&cols, au, "p2", "id");
         assert!(
             p2_id.is_primary_key && p2_id.references_table.is_none(),
@@ -656,9 +631,8 @@ mod tests {
         fx.cleanup().await;
     }
 
-    /// 只有 SELECT 权限的连接照样读得到键。`information_schema.statistics` /
-    /// `key_column_usage` 对只读角色**也可能是空的**（同 PG 那一刀）。建不了角色
-    /// （DB 用户没有 CREATE USER）就跳过
+    /// 只有 SELECT 权限的连接照样读得到键：BI 连接大多就是这种用户。
+    /// 建不了用户（测试账号没有 CREATE USER / GRANT）就跳过
     #[tokio::test]
     async fn a_read_only_login_still_sees_the_keys_mysql() {
         let Some(fx) = Fx::new(1).await else { return };
@@ -695,14 +669,13 @@ mod tests {
             }
         }
 
-        // 在 base URL 里换用户名/密码——这里不能直接走 PgUrl::parse，但 MySQL 的
-        // connection string 形状是 `mysql://user:pass@host:port/db`
+        // 换成只读用户，并去掉库名：它只在测试库上有 SELECT，连到连接串里写的
+        // 那个库（比如 `/sales`）会被拒
         let ro_url = {
-            let base = fx.url.trim_end_matches('/');
-            // 用 url crate 改 user/password（项目已经在用 url::Url 改 Postgres URL）
-            let mut parsed = url::Url::parse(base).expect("parse mysql url");
+            let mut parsed = url::Url::parse(&fx.url).expect("parse mysql url");
             parsed.set_username(&user).expect("username");
             parsed.set_password(Some(password)).expect("password");
+            parsed.set_path("/");
             parsed.to_string()
         };
 
