@@ -258,7 +258,7 @@ async fn a_contradiction_points_upstream() -> anyhow::Result<()> {
         assert_eq!((ghost.source, ghost.target), (f.mira, f.acme));
         assert!(edges.iter().find(|e| e.id == old).unwrap().contested);
         assert!(!edges.iter().find(|e| e.id == ceo).unwrap().contested);
-        let blocked = reasoning::blocked_for_entity(&pool, f.kb, f.acme).await?;
+        let blocked = reasoning::blocked_for_entity(&pool, f.kb, f.acme, None).await?;
         assert_eq!(blocked.len(), 1);
         assert_eq!(blocked[0].violation_id, *vid);
         assert_eq!(blocked[0].against_fact, old);

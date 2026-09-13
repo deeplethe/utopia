@@ -95,6 +95,8 @@ pub mod reason {
     pub const OBJECT_DESCRIBES_DECLARED: &str = "object_describes_declared";
     /// 上面几条去掉事实后没人引用的声明：不建
     pub const ORPHAN_DECLARATION: &str = "orphan_declaration";
+    /// 引文抄自提示词里附的文件开头、不在这一块：证据会挂错出处，不落
+    pub const QUOTE_FROM_OPENING: &str = "quote_from_opening";
 }
 
 pub async fn record(

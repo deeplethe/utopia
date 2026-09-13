@@ -1236,6 +1236,22 @@ pub async fn chunks_for_extraction(
     Ok(rows)
 }
 
+/// 文件的**开头**：序号最小的现存分块，不论抽没抽过。
+///
+/// 不能拿 [`chunks_for_extraction`] 的第一条代替：那只是还没抽的第一块——改过的文件
+/// 重抽时第 7 块会拿到第 3 块，失败重试时后面的块会拿到失败的那块
+pub async fn opening_chunk(pool: &PgPool, document_id: Uuid) -> AppResult<Option<(Uuid, String)>> {
+    let row = sqlx::query_as(
+        "SELECT id, text FROM chunks
+         WHERE document_id = $1 AND superseded_at IS NULL
+         ORDER BY seq LIMIT 1",
+    )
+    .bind(document_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
 /// 推进抽取状态（顺带清空上一轮的失败原因——重跑即翻篇）。
 pub async fn set_graph_status(pool: &PgPool, id: Uuid, status: &str) -> AppResult<()> {
     sqlx::query(
