@@ -120,7 +120,7 @@ pub fn has_name_in(entity: &str, kb: usize, names: usize) -> String {
     format!(
         "{entity}.id IN (SELECT nf.subject_id FROM facts nf
                    JOIN relation_types nr ON nr.id = nf.predicate_id
-                  WHERE nf.kb_id = ${kb} AND nr.builtin AND nr.key = '{KNOWN_AS}'
+                  WHERE nf.kb_id = ${kb} AND nr.kb_id = ${kb} AND nr.builtin AND nr.key = '{KNOWN_AS}'
                     AND nf.invalidated_at IS NULL AND nf.object_value IS NOT NULL
                     AND lower(nf.object_value->>'value') = ANY(${names}))"
     )
