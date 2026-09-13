@@ -392,9 +392,17 @@ export function Graph() {
   // 用户在找一个具体的实体，翻页会让他丢掉刚才扫过的那几条
   const [searchLimit, setSearchLimit] = useState(10);
   useEffect(() => setSearchLimit(10), [searchQ]);
+  // 回放中的搜索：结果的 `degree` 跟着滑杆走（0019）。null = 不传，让后端按
+  // 当下算——和地址栏的「今天」默认值一致
+  const searchAsOf =
+    timeT === null
+      ? null
+      : Math.abs(timeT - Date.now()) < DAY_MS
+        ? null
+        : new Date(timeT).toISOString().slice(0, 10);
   const candidates = useQuery({
-    queryKey: ["entitySearch", kb?.id, searchQ, searchLimit],
-    queryFn: () => api.searchEntities(kb!.id, searchQ, searchLimit),
+    queryKey: ["entitySearch", kb?.id, searchQ, searchLimit, searchAsOf],
+    queryFn: () => api.searchEntities(kb!.id, searchQ, searchLimit, searchAsOf),
     enabled: !!kb && searchQ.length > 0 && !inSubgraph,
     placeholderData: (prev) => prev,
   });

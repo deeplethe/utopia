@@ -1076,21 +1076,33 @@ pub async fn search_entities(
     q: &str,
     limit: i64,
     offset: i64,
+    // 记录轴（0019）：回放中的图上点搜索框，结果的 `degree` 按**当时**
+    // 连在节点上的边算——和右上的图一致，否则「高亮的那条边算不算上」
+    // 在两种视图下各答一次
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(Vec<GraphNode>, i64)> {
     let pattern = format!("%{}%", q.trim());
-    let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
+    // `None` 时 SQL 里没有 $5——读路径上有两个分支，绑多一个会冒「supplies 4
+    // parameters but statement requires 5」的错（postgres 看见 `$5` 之前已经
+    // 被 format 串吃掉，所以 prepared statement 期望 5 个参数；绑 4 个反过来
+    // 报的不是这个错，而是「supplies 4 requires 5」）。所以绑不绑同进退
+    let param = if as_of.is_some() { Some(5) } else { None };
+    let sql = format!(
         "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL
          AND (e.canonical_name ILIKE $2
               OR EXISTS (SELECT 1 FROM unnest(e.aliases) AS a WHERE a ILIKE $2))
          ORDER BY degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
-        node_sql(None, None)
-    ))
-    .bind(kb_id)
-    .bind(&pattern)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
+        node_sql(param, param)
+    );
+    let mut q = sqlx::query_as::<_, GraphNode>(&sql)
+        .bind(kb_id)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset);
+    if let Some(t) = as_of {
+        q = q.bind(t);
+    }
+    let nodes: Vec<GraphNode> = q.fetch_all(pool).await?;
     let (total,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM entities e
           WHERE e.kb_id = $1 AND e.merged_into IS NULL
