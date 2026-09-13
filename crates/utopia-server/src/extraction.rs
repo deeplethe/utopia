@@ -1726,7 +1726,16 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     }
                 };
                 let datatype = attr.datatype.as_deref().unwrap_or("text");
-                let Some(normalized) = utopia_extract::normalize_attr_value(datatype, &raw) else {
+                let parsed = utopia_extract::normalize_attr_value(datatype, &raw);
+                // 只相对一件事给出的日期（「触发日后 45 天」，#681 §4）：解析不成日期、模型又标了
+                // relative，就照原文收下，值里带着标记。它是新的状态值，时态引擎照常用它接替
+                // 前一个截止日。解析得成日期的照日期存，标错了也不当相对
+                let relative = match parsed {
+                    Some(_) => None,
+                    None => utopia_extract::relative_date_value(datatype, &raw, f.relative),
+                };
+                let Some(normalized) = parsed.or_else(|| relative.as_ref().map(|_| raw.clone()))
+                else {
                     tracing::debug!(%document_id, attr = attr.key, ?raw, "属性值不合 datatype，跳过");
                     drop_signal(
                         state,
@@ -1739,7 +1748,8 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     .await;
                     continue;
                 };
-                let mut object_value = serde_json::json!({ "value": normalized });
+                let mut object_value =
+                    relative.unwrap_or_else(|| serde_json::json!({ "value": normalized }));
                 // 单位随事实落笔：类型上的单位以后改了，旧值仍按记录时的单位读。
                 // 记哪个单位照 `unit_for`——从前这里无条件盖上声明的单位，实测
                 //「提供 500 兆瓦的风电」被模型记成金额，再盖上 ¥ 就成了 500 块钱

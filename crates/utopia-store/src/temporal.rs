@@ -416,8 +416,9 @@ pub async fn retidy_after_revert(
 
 /// 实体合并搬移事实后的对账：换了主/宾的事实等价于"新落库的观察"——
 /// 两个对象折成一个之后，唯一性不变量才第一次看得到它们相撞。
-/// 按 recorded_at 顺序逐条重跑插入时对账；非唯一性关系、已闭合区间、
-/// 已被前一条改写作废的事实自动跳过。
+/// 开着的按 recorded_at 顺序逐条重跑插入时对账；之后把搬来的事实所在的每条时间线
+/// 整体理一遍——在源实体上已经被接替关上的行搬过来，也要按目标的时间线重排。
+/// 非唯一性关系、已被前一条改写作废的事实自动跳过。
 /// 返回的修正行 id 由调用方记入合并账本——这些修正的唯一成因是合并本身，
 /// 回滚合并时必须随之撤销（修正行作废、被取代的原行恢复），否则修正行会
 /// 错挂在 target 上而其依据已随回滚离开。
@@ -429,7 +430,60 @@ pub async fn reconcile_moved_facts(
     if fact_ids.is_empty() {
         return Ok(ReconcileReport::default());
     }
-    reconcile_open(pool, kb_id, fact_ids, "f.recorded_at").await
+    let mut report = reconcile_open(pool, kb_id, fact_ids, "f.recorded_at").await?;
+    tidy_timelines_of(pool, kb_id, fact_ids, &mut report).await?;
+    Ok(report)
+}
+
+/// 这些事实所在的每条唯一性时间线，各自持锁整理一遍
+async fn tidy_timelines_of(
+    pool: &PgPool,
+    kb_id: Uuid,
+    fact_ids: &[Uuid],
+    report: &mut ReconcileReport,
+) -> AppResult<()> {
+    #[derive(sqlx::FromRow)]
+    struct Holder {
+        subject_id: Uuid,
+        object_id: Option<Uuid>,
+        predicate_id: Uuid,
+        functional: bool,
+        inverse_functional: bool,
+    }
+    let holders: Vec<Holder> = sqlx::query_as(
+        "SELECT DISTINCT f.subject_id, f.object_id, f.predicate_id, r.functional, r.inverse_functional
+         FROM facts f JOIN relation_types r ON r.id = f.predicate_id
+         WHERE f.kb_id = $1 AND f.id = ANY($2)
+           AND r.temporal = 'state' AND (r.functional OR r.inverse_functional)",
+    )
+    .bind(kb_id)
+    .bind(fact_ids)
+    .fetch_all(pool)
+    .await?;
+    let mut seen = std::collections::HashSet::new();
+    for h in holders {
+        let mut timelines = Vec::new();
+        if h.functional {
+            timelines.push((h.subject_id, Uniqueness::SubjectSide));
+        }
+        if let (true, Some(object)) = (h.inverse_functional, h.object_id) {
+            timelines.push((object, Uniqueness::ObjectSide));
+        }
+        for (holder, side) in timelines {
+            if !seen.insert((
+                holder,
+                h.predicate_id,
+                matches!(side, Uniqueness::SubjectSide),
+            )) {
+                continue;
+            }
+            let mut tx = pool.begin().await?;
+            lock_timeline(&mut tx, kb_id, holder, h.predicate_id, side).await?;
+            tidy(&mut tx, kb_id, holder, h.predicate_id, side, report).await?;
+            tx.commit().await?;
+        }
+    }
+    Ok(())
 }
 
 /// 声明来晚了：一条谓词上所有开放事实按**年表**重跑一遍落库时的对账（#341）。

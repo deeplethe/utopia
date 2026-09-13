@@ -214,6 +214,18 @@ async fn arrive_from_document(
     from: Option<&str>,
     document_date: &str,
 ) -> anyhow::Result<Uuid> {
+    arrive_object_from_document(pool, f, json!({ "value": value }), from, document_date).await
+}
+
+async fn arrive_object_from_document(
+    pool: &PgPool,
+    f: &Fixture,
+    object: serde_json::Value,
+    from: Option<&str>,
+    document_date: &str,
+) -> anyhow::Result<Uuid> {
+    let value = object["value"].as_str().unwrap_or_default().to_string();
+    let value = value.as_str();
     let (doc, chunk) = (Uuid::now_v7(), Uuid::now_v7());
     sqlx::query(
         "INSERT INTO documents (id, kb_id, filename, sha256, doc_time, doc_time_source) VALUES ($1, $2, $3, $3, $4, 'content')",
@@ -238,7 +250,6 @@ async fn arrive_from_document(
         None => Validity::default(),
     }
     .attested(Some(t(document_date)));
-    let object = json!({ "value": value });
     let (id, _) = utopia_store::graph::insert_value_fact(
         pool,
         f.kb,
@@ -371,6 +382,63 @@ async fn a_dated_value_with_no_start_takes_over_from_its_date() -> anyhow::Resul
                 .fetch_one(&pool)
                 .await?;
         assert_eq!(conflicts, 0, "排得出先后，就不用人看");
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 第十份补充协议（6 月 26 日）把截止日改成「触发日后 45 天」：没有日历日期，抽取标成 relative
+/// 照原文存下（#681 §4）。它仍是这份租约新的截止日，所以 6 月 23 日那个到它为止——
+/// 它没有起点，前一个就写成「结束了，不知哪天」，锚在 6 月 26 日这份文件上（§1）
+#[tokio::test]
+async fn a_deadline_stated_relative_to_an_event_still_ends_the_dated_one_before_it(
+) -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        arrive_from_document(&pool, &f, "2020-06-23", Some("2020-06-08"), "2020-06-08").await?;
+        let relative = arrive_object_from_document(
+            &pool,
+            &f,
+            json!({ "value": "45 days after the Trigger Date", "relative": true }),
+            None,
+            "2020-06-26",
+        )
+        .await?;
+
+        let (open,): (bool,) = sqlx::query_as(
+            "SELECT valid_to IS NULL AND valid_to_precision IS NULL AND invalidated_at IS NULL
+             FROM facts WHERE id = $1",
+        )
+        .bind(relative)
+        .fetch_one(&pool)
+        .await?;
+        assert!(open, "相对的截止日是现在的截止日");
+        let before: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT to_char(valid_to, 'YYYY-MM-DD'), valid_to_precision,
+                    to_char(attested_to, 'YYYY-MM-DD')
+             FROM facts
+             WHERE kb_id = $1 AND object_value #>> '{value}' = '2020-06-23'
+               AND invalidated_at IS NULL",
+        )
+        .bind(f.kb)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            before,
+            (None, Some("unknown".into()), Some("2020-06-26".into())),
+            "6 月 23 日那个结束了、不知哪天，锚在第十份补充协议的日期"
+        );
         Ok::<_, anyhow::Error>(())
     }
     .await;

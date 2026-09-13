@@ -96,6 +96,10 @@ pub struct ExtractedFact {
     /// 同上，宾语那一侧
     #[serde(default)]
     pub object_span: Option<String>,
+    /// 日期属性的值只相对一件事给出（「触发日后 45 天」），没有日历上的日期（#681 §4）。
+    /// 模型判断、模型标；服务端不认这类说法的词，只看这个标记决定收不收
+    #[serde(default)]
+    pub relative: bool,
 }
 
 /// 提示词里的一条关系。
@@ -291,7 +295,8 @@ pub fn build_messages_with_opening(
     let attr_rules = if attributes.is_empty() {
         String::new()
     } else {
-        "\n10. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one); bool = true/false; \
+        "\n10. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one) — a date the text gives only relative to an event \
+         (\"45 days after the Trigger Date\", \"within 30 days of closing\") has no calendar date to convert: write it as the text writes it and add \"relative\": true; bool = true/false; \
          text = a short string. Only attach an attribute to a subject of its listed class. \
          valid_from = when this value took effect, if the text or the opening of the document says so. \
          A document that changes a value set earlier — amends, extends or replaces it — makes the new value \
@@ -1047,6 +1052,18 @@ fn next_token(s: &str) -> (&str, &str) {
 
 /// 属性值按 datatype 归一。失败返回 None——宁缺勿脏，调用方跳过并记日志。
 /// number 容忍千分位/空格；date 要求 YYYY[-MM[-DD]] 且保留原精度；bool 宽容 yes/no。
+/// 日期属性上一个**相对**的值（#681 §4）：模型标了 `relative`、写的是一段非空文字时，照原文收下，
+/// 值里带 `"relative": true`。它不是日期，从不当日期比较或排序；没标的非日期值仍然不收
+pub fn relative_date_value(
+    datatype: &str,
+    raw: &serde_json::Value,
+    relative: bool,
+) -> Option<serde_json::Value> {
+    let written = raw.as_str().map(str::trim).filter(|s| !s.is_empty())?;
+    (datatype == "date" && relative)
+        .then(|| serde_json::json!({ "value": written, "relative": true }))
+}
+
 pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<serde_json::Value> {
     match datatype {
         "number" => match raw {
@@ -1168,6 +1185,46 @@ fn split_zone(clock: &str) -> Option<(&str, chrono::Duration)> {
 #[cfg(test)]
 mod prompt_shape_tests {
     use super::*;
+
+    /// 第十份补充协议把截止日改成「触发日后 45 天」：模型标 relative，服务端照原文收；
+    /// 没标的、不是日期属性的、空的都不走这条
+    #[test]
+    fn a_relative_date_is_kept_as_written_only_when_marked() {
+        let raw = serde_json::json!("45 days after the Trigger Date");
+        assert_eq!(
+            relative_date_value("date", &raw, true),
+            Some(
+                serde_json::json!({ "value": "45 days after the Trigger Date", "relative": true })
+            )
+        );
+        assert_eq!(relative_date_value("date", &raw, false), None);
+        assert_eq!(relative_date_value("number", &raw, true), None);
+        assert_eq!(
+            relative_date_value("date", &serde_json::json!("  "), true),
+            None
+        );
+        let fact: ExtractedFact = serde_json::from_value(serde_json::json!({
+            "subject": "Lease", "predicate": "expansion_option_deadline",
+            "value": "45 days after the Trigger Date", "relative": true
+        }))
+        .unwrap();
+        assert!(fact.relative);
+        let plain: ExtractedFact = serde_json::from_value(serde_json::json!({
+            "subject": "Lease", "predicate": "expansion_option_deadline", "value": "2020-06-23"
+        }))
+        .unwrap();
+        assert!(!plain.relative, "没写就不是");
+        let msgs = build_messages(
+            &[],
+            &[],
+            &["lease.deadline (date)".into()],
+            None,
+            "a.txt",
+            &[],
+            "text",
+        );
+        assert!(msgs[0].content.contains("add \"relative\": true"));
+    }
 
     fn rel(key: &str, description: &str, signature: &str) -> PromptRelation {
         PromptRelation {

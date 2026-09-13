@@ -469,3 +469,38 @@ async fn two_late_values_reconciled_at_once_leave_one_timeline() -> anyhow::Resu
     assert_eq!(bad, 0);
     Ok(())
 }
+
+/// A merge that moves only closed rows still rearranges the target's timeline: the source's
+/// D [03-01, 05-01) and E [05-01, 07-01) arrive beside the target's open A from 01-01, and A
+/// must end where D begins.
+#[tokio::test]
+async fn a_merge_of_closed_rows_still_ends_the_open_one_they_follow() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let source = entity(&pool, f.kb, f.etype, "Lease Agreement", Uuid::now_v7()).await?;
+    arrive(&pool, &f, "A", "2020-01-01").await?;
+    arrive_on(&pool, &f, source, "D", Some("2020-03-01"), None, 0.9, true).await?;
+    arrive_on(&pool, &f, source, "E", Some("2020-05-01"), None, 0.9, true).await?;
+    // E's end is one the text states
+    sqlx::query(
+        "UPDATE facts SET valid_to = '2020-07-01', valid_to_precision = 'day'
+         WHERE subject_id = $1 AND object_value #>> '{value}' = 'E' AND invalidated_at IS NULL",
+    )
+    .bind(source)
+    .execute(&pool)
+    .await?;
+    utopia_store::resolution::merge_entities(&pool, f.kb, source, f.lease, None, "closed rows")
+        .await?;
+    let rows = timeline_of(&pool, &f, f.lease).await?;
+    let n = overlaps(&pool, &f, f.lease).await?;
+    cleanup(&pool, &f).await?;
+    assert_eq!(n, 0, "{rows:?}");
+    assert!(
+        rows.contains(&s("A", Some("2020-01-01"), Some("2020-03-01"))),
+        "{rows:?}"
+    );
+    Ok(())
+}
