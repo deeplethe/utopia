@@ -229,8 +229,9 @@ fn value_fact(
     }
 }
 
-/// 一侧写的是时间：契约格式（`YYYY` / `YYYY-MM` / `YYYY-MM-DD`，带时区的时刻），或写法说得清是哪天的日期（`written_date`，#688）
-fn is_contract_time(s: &str) -> bool {
+/// 一侧写的是一个时间：规则 3 的格式（`YYYY` / `YYYY-MM` / `YYYY-MM-DD`，带时区的时刻），
+/// 或写法说得清是哪天的日期（`written_date`，#688）
+fn names_a_time(s: &str) -> bool {
     read_time(s.trim()).is_some()
 }
 
@@ -355,7 +356,7 @@ pub fn normalize_facts(x: &mut Extraction) -> Vec<Normalization> {
         // ---- 主语是时间 ----
         let subject =
             handle_name(f.subject_ref.as_ref()).unwrap_or_else(|| f.subject.trim().to_string());
-        if is_contract_time(&subject) {
+        if names_a_time(&subject) {
             out.push(Normalization::TimeAsSubject {
                 predicate: f.predicate.clone(),
                 written: subject,
@@ -383,7 +384,7 @@ pub fn normalize_facts(x: &mut Extraction) -> Vec<Normalization> {
         }
 
         // ---- 宾语是时间 ----
-        if let Some(o) = object.as_deref().filter(|o| is_contract_time(o)) {
+        if let Some(o) = object.as_deref().filter(|o| names_a_time(o)) {
             if values.is_empty() {
                 // 没带数：写出来的那段就是值。`2028`（「2028 年起上线」）、`4000`（人数）都解析
                 // 得成年份，从前整条丢掉，一条信息就没了。宾语那个声明没人引用，下面按孤点去掉

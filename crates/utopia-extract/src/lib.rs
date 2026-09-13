@@ -1070,7 +1070,8 @@ pub fn attr_object_value(
 }
 
 /// 属性值按 datatype 归一。失败返回 None——宁缺勿脏，调用方跳过并记日志。
-/// number 容忍千分位/空格；date 要求 YYYY[-MM[-DD]] 且保留原精度；bool 宽容 yes/no。
+/// number 容忍千分位/空格；date 收规则 3 的格式（YYYY[-MM[-DD]]、带时区的时刻，原样保留），
+/// 也收写法说得清是哪天的日期（[`written_date`]），换成规则 3 的样子；bool 宽容 yes/no。
 pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<serde_json::Value> {
     match datatype {
         "number" => match raw {

@@ -1583,30 +1583,8 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 .await;
                 continue;
             }
-            let from = f.valid_from.as_deref().and_then(utopia_extract::read_time);
-            let to = f.valid_to.as_deref().and_then(utopia_extract::read_time);
-            // **两端各记各的粒度**（见 `facts.valid_to_precision`）。从前一个精度列描述两个端点，
-            // 于是「2020 年开始、2023-05-06 结束」这种只能共用一个值。
-            //
-            // 模型给的 valid_to = "unknown" 表示**原文说它结束了、但没说哪天**。
-            // read_time 解不出它（本来就不是日期），落在这里显式认掉——
-            // 不认的话它退化成 None，那条事实就又变回"仍在持续"了
-            let ended_unknown = f
-                .valid_to
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|v| v.eq_ignore_ascii_case(utopia_store::graph::ENDED_UNKNOWN));
-            let validity = utopia_store::graph::Validity {
-                from: from.map(|(t, _)| t),
-                from_precision: from.map(|(_, p)| p),
-                to: to.map(|(t, _)| t),
-                to_precision: to
-                    .map(|(_, p)| p)
-                    .or(ended_unknown.then_some(utopia_store::graph::ENDED_UNKNOWN)),
-                // 这次观察出自哪一天的文档（0022）：没起点的事实从它起成立，结束了
-                // 不知哪天的到它为止。没有文档日期就是记下的此刻——账本能给的最好的
-                attested_at: doc.doc_time,
-            };
+            let validity =
+                validity_of(f.valid_from.as_deref(), f.valid_to.as_deref(), doc.doc_time);
 
             // 属性事实：谓词命中属性 → 字面值通道。datatype 校验失败宁缺勿脏；
             // domain 校验（含子类上溯）挡住"把 salary 挂到 Organization"这类张冠李戴。
@@ -2946,6 +2924,38 @@ fn undeclared_beside_value(
 ///
 /// "2015"、"2023-03"、"6" 认；"杭州"、"首席技术官"、"3M"、"V3" 不认。
 /// 调用方还额外要求模型**没有**把它声明成实体——两道门一起过才算数。
+/// 模型给的区间两端 → 落库的有效区间。
+///
+/// **两端各记各的粒度**（见 `facts.valid_to_precision`）。从前一个精度列描述两个端点，
+/// 于是「2020 年开始、2023-05-06 结束」这种只能共用一个值。两端都用 `read_time` 读：
+/// 规则 3 的格式，或写法说得清是哪天的日期（#688），精度随写了几位。
+///
+/// 模型给的 valid_to = "unknown" 表示**原文说它结束了、但没说哪天**。
+/// read_time 解不出它（本来就不是日期），落在这里显式认掉——
+/// 不认的话它退化成 None，那条事实就又变回"仍在持续"了
+fn validity_of(
+    valid_from: Option<&str>,
+    valid_to: Option<&str>,
+    doc_time: Option<chrono::DateTime<chrono::Utc>>,
+) -> utopia_store::graph::Validity<'static> {
+    let from = valid_from.and_then(utopia_extract::read_time);
+    let to = valid_to.and_then(utopia_extract::read_time);
+    let ended_unknown = valid_to
+        .map(str::trim)
+        .is_some_and(|v| v.eq_ignore_ascii_case(utopia_store::graph::ENDED_UNKNOWN));
+    utopia_store::graph::Validity {
+        from: from.map(|(t, _)| t),
+        from_precision: from.map(|(_, p)| p),
+        to: to.map(|(t, _)| t),
+        to_precision: to
+            .map(|(_, p)| p)
+            .or(ended_unknown.then_some(utopia_store::graph::ENDED_UNKNOWN)),
+        // 这次观察出自哪一天的文档（0022）：没起点的事实从它起成立，结束了
+        // 不知哪天的到它为止。没有文档日期就是记下的此刻——账本能给的最好的
+        attested_at: doc_time,
+    }
+}
+
 fn looks_literal(s: &str) -> bool {
     let s = s.trim();
     if s.is_empty() {
@@ -3939,7 +3949,7 @@ mod tests {
 
     use super::{
         incomplete_reason, looks_literal, no_ref_name_binding, referenced_entity, resolve_bare,
-        resolve_handle, BoundEntity, NoRefNameBinding,
+        resolve_handle, validity_of, BoundEntity, NoRefNameBinding,
     };
     use std::collections::HashMap;
     use uuid::Uuid;
@@ -3960,6 +3970,10 @@ mod tests {
             "€1.5 million",
             "52%",
             "35,000",
+            // 合同照原文写的日期（#688）
+            "June 23, 2020",
+            "17 Mar. 2020",
+            "2020年3月17日",
         ] {
             assert!(looks_literal(yes), "{yes} 该认成字面值");
         }
@@ -3981,6 +3995,31 @@ mod tests {
         ] {
             assert!(!looks_literal(no), "{no} 不该认成字面值");
         }
+    }
+
+    /// 区间两端照合同原文写（#688）：读成日期，精度随写了几位；「unknown」仍是结束了不知哪天
+    #[test]
+    fn a_written_start_keeps_the_precision_it_was_written_with() {
+        let day = validity_of(Some("June 8, 2020"), None, None);
+        assert_eq!(
+            day.from.map(|t| t.date_naive().to_string()).as_deref(),
+            Some("2020-06-08")
+        );
+        assert_eq!(day.from_precision, Some("day"));
+        assert!(!day.has_ended());
+
+        let month = validity_of(Some("March 2020"), Some("17 Mar. 2021"), None);
+        assert_eq!(month.from_precision, Some("month"));
+        assert_eq!(
+            month.to.map(|t| t.date_naive().to_string()).as_deref(),
+            Some("2021-03-17")
+        );
+        assert_eq!(month.to_precision, Some("day"));
+
+        // 说不清几月几号的不当起点
+        let ambiguous = validity_of(Some("03/04/2020"), Some("unknown"), None);
+        assert_eq!((ambiguous.from, ambiguous.from_precision), (None, None));
+        assert_eq!(ambiguous.to_precision, Some("unknown"));
     }
 
     #[test]
