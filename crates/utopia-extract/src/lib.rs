@@ -141,6 +141,34 @@ pub fn build_messages(
     known: &[KnownEntity],
     chunk_text: &str,
 ) -> Vec<ChatMessage> {
+    build_messages_with_opening(
+        types, relations, attributes, doc_time, filename, known, None, chunk_text,
+    )
+}
+
+/// 文件开头进提示词的字符预算。一份补充协议的标题、生效日、当事方和「修订的是哪份
+/// 协议」通常在头一千字符里；新闻稿的电头与导语也是
+pub const OPENING_BUDGET_CHARS: usize = 1500;
+
+/// 同 [`build_messages`]，另带**这份文件的开头**（第一块的原文），给第二块往后用。
+///
+/// **一块是孤立抽取的，它看不见自己属于什么。** 补充协议把截止日写在第三块的表格里，
+/// 那一块只说「Article 13 的日期延至……」：改的是哪份租约、从哪天起改，都写在第一块。
+/// 模型拿不到，就只能把「Phase 2 Exercise Deadline」本身当主语（服务端按主语未声明丢掉），
+/// 或者抽出一个没有起点的日期（时态引擎没法据此关闭旧值）——Blackbaud 总部租约链
+/// 上五次改期丢了两次，抽到的三次一次都没关上旧值。开头只作背景，不从里面抽事实：
+/// 它自己那一块会抽，重复抽只会多出重复的事实
+#[allow(clippy::too_many_arguments)]
+pub fn build_messages_with_opening(
+    types: &[(String, String, String)],
+    relations: &[PromptRelation],
+    attributes: &[String],
+    doc_time: Option<&str>,
+    filename: &str,
+    known: &[KnownEntity],
+    opening: Option<&str>,
+    chunk_text: &str,
+) -> Vec<ChatMessage> {
     // **有描述时不送 label**。label 是给人看的显示名，而且它跟界面无关、
     // 跟这个库的语料语言走——中文库里 person 的 label 是"人物"。
     // `- person (人物): 有名有姓的具体的人…` 里那个"人物"相对 key 近乎零信息量，
@@ -265,7 +293,9 @@ pub fn build_messages(
     } else {
         "\n10. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one); bool = true/false; \
          text = a short string. Only attach an attribute to a subject of its listed class. \
-         valid_from = when this value took effect, if the text says so."
+         valid_from = when this value took effect, if the text or the opening of the document says so. \
+         A document that changes a value set earlier — amends, extends, replaces, restates it — makes the new value \
+         hold from the date the change takes effect, which is the document's own effective date unless the text gives another."
             .to_string()
     };
     let system = format!(
@@ -296,7 +326,10 @@ pub fn build_messages(
             list each entity once. Text introduces a full name and then shortens it — \
             \"星云科技上海研究院\" becomes \"上海研究院\", \"Nebula Technologies Inc.\" becomes \
             \"Nebula\" — and both forms mean one entity, listed once under the fuller form. \
-            Two names are two entities only when the text is talking about two things.\n\
+            Two names are two entities only when the text is talking about two things. \
+            A name identifies the thing; it is not a description of its history. When the text \
+            names something and then describes what happened to it, the name ends where the \
+            description begins.\n\
          1b. Every other name the text gives an entity goes into \"names\", once per name: the \
             shortened form it introduces or uses (\"上海研究院\" for \"星云科技上海研究院\"), a \
             former name, the name in another language. \"ref\" is the entity's local_id or its \
@@ -381,7 +414,8 @@ pub fn build_messages(
 
     // 已知实体紧挨着正文：服从性靠位置，理由见 known_block 的注释
     let user = format!(
-        "Source file: \"{filename}\"\n{}\nText:\n{chunk_text}",
+        "Source file: \"{filename}\"\n{}{}\nText:\n{chunk_text}",
+        opening_block(opening),
         known_block(known)
     );
 
@@ -395,6 +429,28 @@ pub fn build_messages(
             content: user,
         },
     ]
+}
+
+/// 文件开头排版成提示词里的一段。空、或正文就是开头本身时返回空串。
+///
+/// 截在字符边界上，不在词中间断：预算按字符算，中文一个字就是一个字符
+fn opening_block(opening: Option<&str>) -> String {
+    let Some(text) = opening.map(str::trim).filter(|t| !t.is_empty()) else {
+        return String::new();
+    };
+    let cut: String = text.chars().take(OPENING_BUDGET_CHARS).collect();
+    let more = if cut.chars().count() < text.chars().count() {
+        " …"
+    } else {
+        ""
+    };
+    format!(
+        "\nOpening of this document, for context only (do not extract facts from it; they are \
+         extracted from that part separately). Use it to know what the text below belongs to — \
+         which agreement, company or event it concerns, who the parties are, and the date it \
+         takes effect — so that facts in the text below attach to the right entity and carry \
+         the right dates:\n\"\"\"\n{cut}{more}\n\"\"\"\n"
+    )
 }
 
 /// 清单里给关系带的标记：事件 `[event]`、恒常 `[eternal]`；状态不标。
@@ -1218,6 +1274,43 @@ mod prompt_shape_tests {
     ///
     /// 理由是服从性不是缓存：抽象规则打不过挨着它的具体块。清单放进 system 的
     /// 规则区，就会隔着输出格式、十条规则、文件名，离它要管的正文最远。
+    #[test]
+    fn a_later_chunk_reads_the_opening_of_its_document() {
+        let opening = "FIFTH AMENDMENT TO LEASE AGREEMENT entered into as of February 18, 2020";
+        let msgs = build_messages_with_opening(
+            &[],
+            &[],
+            &[],
+            None,
+            "a.html",
+            &[],
+            Some(opening),
+            "The Existing Dates are extended to March 17, 2020.",
+        );
+        let user = &msgs[1].content;
+        let at_opening = user.find(opening).expect("opening is in the user message");
+        let at_text = user
+            .find("The Existing Dates")
+            .expect("text is in the user message");
+        assert!(
+            at_opening < at_text,
+            "the opening comes before the text it frames"
+        );
+        // 没有开头时，提示词与从前一字不差
+        let plain = build_messages(&[], &[], &[], None, "a.html", &[], "t");
+        let framed = build_messages_with_opening(&[], &[], &[], None, "a.html", &[], None, "t");
+        assert_eq!(plain[1].content, framed[1].content);
+    }
+
+    #[test]
+    fn a_long_opening_is_cut_on_a_character_boundary() {
+        let long = "租".repeat(OPENING_BUDGET_CHARS + 10);
+        let block = opening_block(Some(&long));
+        assert_eq!(block.matches('租').count(), OPENING_BUDGET_CHARS);
+        assert!(block.contains(" …"));
+        assert_eq!(opening_block(Some("   ")), "");
+    }
+
     #[test]
     fn known_entities_stay_out_of_the_system_message() {
         // 用一个规则 1 的例子里没有的名字：规则 1 也提"星云科技上海研究院"，

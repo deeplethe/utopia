@@ -1108,13 +1108,19 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 name: name.clone(),
             })
             .collect();
-        let messages = utopia_extract::build_messages(
+        // 第一块就是开头本身，不再重复一遍
+        let opening = chunks
+            .first()
+            .filter(|first| first.seq != chunk.seq)
+            .map(|first| first.text.as_str());
+        let messages = utopia_extract::build_messages_with_opening(
             &lists.types,
             &lists.relations,
             &lists.attributes,
             doc_time.as_deref(),
             &doc.filename,
             &known,
+            opening,
             &chunk.text,
         );
         // 这两处 continue 跳过的是**整个分块**——它一条事实都没产出。
