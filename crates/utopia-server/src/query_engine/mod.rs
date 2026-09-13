@@ -55,8 +55,9 @@ pub struct SchemaColumn {
     pub data_type: String,
     pub comment: Option<String>,
     /// 该列本身是这张表的主键（单列主键；组合主键里这一位仍为 false）。
-    /// 目前只有 Postgres 从 catalog 读出来；MySQL / Trino / Snowflake / Databricks
-    /// 恒为 false，意思是「不知道」，不是「不是键」——各自的读法是 #502 的后几刀。
+    /// Postgres（#671）与 MySQL / MariaDB（#678）从 catalog 读出来；Trino / Snowflake /
+    /// Databricks 恒为 false，意思是「不知道」，不是「不是键」（各自能不能读见
+    /// `trino::schema_row` 上的注释）。
     /// 探索提示词靠它把 ID 与量分开，宽表上一个八十列的 schema 没有这个
     /// 几乎认不出哪一列是键（#502）
     pub is_primary_key: bool,
