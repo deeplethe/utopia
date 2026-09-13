@@ -211,35 +211,99 @@ impl QueryEngine for MysqlEngine {
         // 会拒绝把它读进 String（`VARCHAR is not compatible with VARBINARY`）。
         // 原始 SQL 在命令行里看着好好的——命令行不做强类型解码，这一处只有连真
         // 服务器才现形。MariaDB 上 CAST 无害，两边同一条语句
-        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT CAST(table_schema AS CHAR), CAST(table_name AS CHAR),
-                    CAST(column_name AS CHAR), CAST(column_type AS CHAR),
-                    CAST(column_comment AS CHAR)
-             FROM information_schema.columns
-             WHERE table_schema NOT IN
+        //
+        // 三段 SQL：列 + 类型 + 注释 + 可空（原本就这一段，多带一列 is_nullable）；
+        // 单列 PK；外键 + 引用目标。PK 用 `statistics`（index_name='PRIMARY' 且
+        // 索引列数 = 1），FK 用 `key_column_usage`（REFERENCED_TABLE_NAME 非空）。
+        // MySQL 没有 PG 那种 `referential_constraints` 视图，但 key_column_usage
+        // 已经把 REFERENCED_TABLE_SCHEMA / REFERENCED_TABLE_NAME 一起带回来了，
+        // 不用再 join
+        let cols: Vec<(String, String, String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT CAST(c.table_schema AS CHAR), CAST(c.table_name AS CHAR),
+                    CAST(c.column_name AS CHAR), CAST(c.column_type AS CHAR),
+                    CAST(c.column_comment AS CHAR), CAST(c.is_nullable AS CHAR)
+             FROM information_schema.columns c
+             WHERE c.table_schema NOT IN
                    ('information_schema', 'mysql', 'performance_schema', 'sys')
-             ORDER BY table_schema, table_name, ordinal_position",
+             ORDER BY c.table_schema, c.table_name, c.ordinal_position",
+        )
+        .fetch_all(&pool)
+        .await?;
+        let pks: Vec<(String, String, String)> = sqlx::query_as(
+            // 单列主键：约束名（=索引名 = 'PRIMARY'）下索引列数 = 1 的那一行。
+            // 组合主键里 `SEQ_IN_INDEX=1` 也满足不了「列数 = 1」，不会被误标。
+            //
+            // CAST(... AS CHAR) 是必需的——MySQL 8.0 起 information_schema 是
+            // 数据字典视图，这些列经二进制协议报成 VARBINARY，sqlx 严格类型
+            // 解码会拒绝把它读进 String（"VARCHAR is not compatible with
+            // VARBINARY"）。原始 SQL 在命令行里看着没问题——命令行不做强类型解码，
+            // 这一处只有连真服务器才现形
+            "SELECT CAST(s.table_schema AS CHAR), CAST(s.table_name AS CHAR),
+                    CAST(s.column_name AS CHAR)
+             FROM information_schema.statistics s
+             WHERE s.index_name = 'PRIMARY'
+               AND s.table_schema NOT IN
+                   ('information_schema', 'mysql', 'performance_schema', 'sys')
+               AND (
+                 SELECT count(*) FROM information_schema.statistics s2
+                 WHERE s2.table_schema = s.table_schema
+                   AND s2.table_name   = s.table_name
+                   AND s2.index_name   = s.index_name
+               ) = 1",
+        )
+        .fetch_all(&pool)
+        .await?;
+        let fks: Vec<(String, String, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT CAST(k.table_schema AS CHAR), CAST(k.table_name AS CHAR),
+                    CAST(k.column_name AS CHAR),
+                    CAST(k.referenced_table_schema AS CHAR),
+                    CAST(k.referenced_table_name AS CHAR)
+             FROM information_schema.key_column_usage k
+             WHERE k.referenced_table_name IS NOT NULL
+               AND k.table_schema NOT IN
+                   ('information_schema', 'mysql', 'performance_schema', 'sys')",
         )
         .fetch_all(&pool)
         .await?;
         pool.close().await;
-        Ok(rows
+
+        use std::collections::{HashMap, HashSet};
+        let mut pk_set: HashSet<(String, String, String)> = HashSet::with_capacity(pks.len());
+        for (s, t, c) in &pks {
+            pk_set.insert((s.clone(), t.clone(), c.clone()));
+        }
+        let mut fk_map: HashMap<(String, String, String), Option<String>> =
+            HashMap::with_capacity(fks.len());
+        for (s, t, c, ref_schema, ref_table) in &fks {
+            let target = match (ref_schema, ref_table) {
+                (Some(rs), Some(rt)) => Some(format!("{rs}.{rt}")),
+                _ => None,
+            };
+            fk_map.insert((s.clone(), t.clone(), c.clone()), target);
+        }
+
+        Ok(cols
             .into_iter()
-            .map(|(schema, table, column, data_type, comment)| SchemaColumn {
-                schema,
-                table,
-                column,
-                data_type,
-                // 没有注释时这一列是空串而不是 NULL，照抄会让每张表都挂一个空注释
-                comment: comment.filter(|c| !c.trim().is_empty()),
-                // MySQL 的 PK / FK / nullable 要走 information_schema.statistics 与
-                // key_column_usage 才能拿到（PK 在 INDEX_NAME='PRIMARY' 上、FK 在
-                // REFERENCED_TABLE_NAME 非空上）。这一刀先给 false，下一刀接 #502
-                // 的 MySQL cut 再补
-                is_primary_key: false,
-                is_foreign_key: false,
-                references_table: None,
-                nullable: true,
+            .map(|(schema, table, column, data_type, comment, is_nullable)| {
+                let key = (schema.clone(), table.clone(), column.clone());
+                let is_primary_key = pk_set.contains(&key);
+                let (is_foreign_key, references_table) = match fk_map.get(&key) {
+                    Some(target) => (true, target.clone()),
+                    None => (false, None),
+                };
+                let nullable = matches!(is_nullable.as_str(), "YES");
+                SchemaColumn {
+                    schema,
+                    table,
+                    column,
+                    data_type,
+                    // 没有注释时这一列是空串而不是 NULL，照抄会让每张表都挂一个空注释
+                    comment: comment.filter(|c| !c.trim().is_empty()),
+                    is_primary_key,
+                    is_foreign_key,
+                    references_table,
+                    nullable,
+                }
             })
             .collect())
     }
@@ -306,6 +370,8 @@ impl QueryEngine for MysqlEngine {
 #[cfg(test)]
 mod tests {
     use super::{cell_kind, Cell, MysqlEngine, QueryEngine};
+    use sqlx::mysql::MySqlPoolOptions;
+    use std::time::Duration;
 
     /// 对着真服务器跑的那一档。没有 `UTOPIA_TEST_MYSQL_URL` 就跳过——
     /// 这三样（information_schema 的列名、两种超时写法、取值往返）是
@@ -378,6 +444,165 @@ mod tests {
 
         // 写路径仍然被闸挡住（第 1 层），只读会话是第 3 层
         assert!(super::super::guard_sql_for("mysql", "DELETE FROM sales.orders").is_err());
+    }
+
+    /// 与 `a_live_server_answers_with_typed_values` 共用同一个 env 门：
+    /// UTOPIA_TEST_MYSQL_URL 设了就跑真服务器，否则跳过。三个测试都连同一张
+    /// `keys_test.keys_parent` / `keys_test.keys_child`——建表语句见本测试文件
+    /// 头部 setup_key_tables()。三件并行会撞 information_schema.statistics
+    /// 那一行的 PRIMARY 索引命名，OnceLock + Mutex 把它们串起来
+    async fn setup_key_tables(pool: &sqlx::MySqlPool) -> anyhow::Result<()> {
+        sqlx::query("CREATE DATABASE IF NOT EXISTS keys_test")
+            .execute(pool)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS keys_test.keys_child")
+            .execute(pool)
+            .await?;
+        sqlx::query("DROP TABLE IF EXISTS keys_test.keys_parent")
+            .execute(pool)
+            .await?;
+        sqlx::query(
+            "CREATE TABLE keys_test.keys_parent (
+                 id INT PRIMARY KEY AUTO_INCREMENT,
+                 name VARCHAR(100) NOT NULL,
+                 -- 单列 PK + 自引用 FK + 可空对照列各一
+                 ref_parent INT,
+                 note TEXT,
+                 FOREIGN KEY (ref_parent) REFERENCES keys_test.keys_parent(id)
+             )",
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE TABLE keys_test.keys_child (
+                 -- 组合主键（parent_id, ordinal）+ FK
+                 parent_id INT NOT NULL,
+                 ordinal INT NOT NULL,
+                 payload TEXT,
+                 PRIMARY KEY (parent_id, ordinal),
+                 FOREIGN KEY (parent_id) REFERENCES keys_test.keys_parent(id)
+             )",
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    use std::sync::OnceLock;
+    use tokio::sync::Mutex;
+    static KEY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    fn key_lock() -> &'static Mutex<()> {
+        KEY_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[tokio::test]
+    async fn a_primary_key_column_is_marked_and_not_null_mysql() {
+        let Some(url) = live_url() else { return };
+        let _g = key_lock().lock().await;
+        let engine = MysqlEngine::new(&url);
+        engine.test().await.expect("SELECT 1");
+        let pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect");
+        setup_key_tables(&pool).await.expect("setup");
+
+        let cols = engine.fetch_schema().await.expect("schema");
+        let id = cols
+            .iter()
+            .find(|c| c.table == "keys_parent" && c.column == "id")
+            .expect("keys_parent.id");
+        assert!(id.is_primary_key, "id 是单列 PK");
+        assert!(!id.nullable, "PK 必 NOT NULL");
+        assert!(!id.is_foreign_key, "PK 不是 FK");
+
+        // 普通可空列：nullable=true，其他标志都是 false
+        let note = cols
+            .iter()
+            .find(|c| c.table == "keys_parent" && c.column == "note")
+            .expect("keys_parent.note");
+        assert!(note.nullable, "note 没 NOT NULL 约束");
+        assert!(!note.is_primary_key);
+        assert!(!note.is_foreign_key);
+
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_foreign_key_carries_its_target_mysql() {
+        let Some(url) = live_url() else { return };
+        let _g = key_lock().lock().await;
+        let engine = MysqlEngine::new(&url);
+        engine.test().await.expect("SELECT 1");
+        let pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect");
+        setup_key_tables(&pool).await.expect("setup");
+
+        let cols = engine.fetch_schema().await.expect("schema");
+        // parent.ref_parent 是自引用 FK
+        let refp = cols
+            .iter()
+            .find(|c| c.table == "keys_parent" && c.column == "ref_parent")
+            .expect("keys_parent.ref_parent");
+        assert!(refp.is_foreign_key);
+        assert!(!refp.is_primary_key, "FK 不是 PK");
+        assert_eq!(
+            refp.references_table.as_deref(),
+            Some("keys_test.keys_parent"),
+            "自引用 FK 应该指回自己"
+        );
+
+        // child.parent_id 也是 FK，目标是 parent
+        let child_fk = cols
+            .iter()
+            .find(|c| c.table == "keys_child" && c.column == "parent_id")
+            .expect("keys_child.parent_id");
+        assert!(child_fk.is_foreign_key);
+        assert_eq!(
+            child_fk.references_table.as_deref(),
+            Some("keys_test.keys_parent")
+        );
+        // child.parent_id 没显式 NOT NULL，但作为组合 PK 的一员它其实是 NOT NULL
+        assert!(!child_fk.nullable, "FK 列是组合 PK 的一员，必 NOT NULL");
+
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_composite_primary_key_member_stays_unmarked_mysql() {
+        let Some(url) = live_url() else { return };
+        let _g = key_lock().lock().await;
+        let engine = MysqlEngine::new(&url);
+        engine.test().await.expect("SELECT 1");
+        let pool = MySqlPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect");
+        setup_key_tables(&pool).await.expect("setup");
+
+        let cols = engine.fetch_schema().await.expect("schema");
+        // (parent_id, ordinal) 是组合主键——两列都不该被标成 is_primary_key
+        for col_name in ["parent_id", "ordinal"] {
+            let c = cols
+                .iter()
+                .find(|c| c.table == "keys_child" && c.column == col_name)
+                .unwrap_or_else(|| panic!("keys_child.{col_name}"));
+            assert!(
+                !c.is_primary_key,
+                "keys_child.{col_name} 是组合主键的一员，不应标成单列 PK"
+            );
+            assert!(!c.nullable, "keys_child.{col_name} 是组合 PK 的一员");
+        }
+
+        pool.close().await;
     }
 
     #[test]
