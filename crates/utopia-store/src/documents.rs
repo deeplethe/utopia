@@ -1024,7 +1024,8 @@ pub async fn replace_chunks(
         let claimed = claim_pool.get_mut(&piece.text).and_then(|ids| ids.pop());
         if let Some(id) = claimed {
             sqlx::query(
-                "UPDATE chunks SET seq = $2, char_start = $3, char_end = $4, doc_version = $5
+                "UPDATE chunks SET seq = $2, char_start = $3, char_end = $4, doc_version = $5,
+                        heading = $6
                  WHERE id = $1",
             )
             .bind(id)
@@ -1032,6 +1033,7 @@ pub async fn replace_chunks(
             .bind(piece.char_start)
             .bind(piece.char_end)
             .bind(version)
+            .bind(&piece.heading)
             .execute(&mut *tx)
             .await?;
             adopted.push(id);
@@ -1062,8 +1064,8 @@ pub async fn replace_chunks(
     for (id, piece) in to_insert {
         sqlx::query(
             "INSERT INTO chunks
-                (id, kb_id, document_id, seq, text, char_start, char_end, doc_version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                (id, kb_id, document_id, seq, text, char_start, char_end, doc_version, heading)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(id)
         .bind(kb_id)
@@ -1073,6 +1075,7 @@ pub async fn replace_chunks(
         .bind(piece.char_start)
         .bind(piece.char_end)
         .bind(version)
+        .bind(&piece.heading)
         .execute(&mut *tx)
         .await?;
     }

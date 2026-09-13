@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 text-splitter.workspace = true
+tiktoken-rs.workspace = true
+pulldown-cmark.workspace = true
 pdf-extract.workspace = true
 calamine.workspace = true
 htmd.workspace = true

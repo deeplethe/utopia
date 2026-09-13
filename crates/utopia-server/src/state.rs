@@ -29,6 +29,8 @@ pub struct AppState {
     pub open_registration: bool,
     /// 强制 Secure cookie（配置项）；未强制时按请求的 X-Forwarded-Proto 逐次判定
     pub cookie_secure: bool,
+    /// 分块预算，见 `AppConfig::chunk_tokens`
+    pub chunk_tokens: usize,
     /// worker 并发数：调度循环每轮热读——系统设置改动即时生效
     pub worker_concurrency: Arc<std::sync::atomic::AtomicUsize>,
     /// 按模型的并发闸门：后台任务调 LLM 前取许可。限额存库，改完即时生效
@@ -58,6 +60,7 @@ impl AppState {
             blob,
             open_registration: cfg.open_registration,
             cookie_secure: cfg.cookie_secure,
+            chunk_tokens: cfg.chunk_tokens,
             worker_concurrency: Arc::new(std::sync::atomic::AtomicUsize::new(32)),
             model_gates: Arc::new(crate::llm_util::ModelGates::default()),
             events,

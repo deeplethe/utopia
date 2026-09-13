@@ -26,6 +26,9 @@ pub struct AppConfig {
     pub web_dist: String,
     /// 数据目录：原始文件（files/）与 Tantivy 索引（index/）。
     pub data_dir: String,
+    /// 一个分块的预算（cl100k token）。是个旋钮而不是常量，因为它要能被量：
+    /// 结构（表头跟着走）与大小是两件事，召回台子得能只动一个。`UTOPIA_CHUNK_TOKENS`
+    pub chunk_tokens: usize,
     /// 数据库连接池上限。缺省 32，与 worker 并发的缺省对齐——池子小于并发时
     /// 症状是请求变慢而不是任何一处说"池子不够"，所以它必须可调。
     pub db_max_connections: Option<u32>,
@@ -46,6 +49,7 @@ impl Default for AppConfig {
             secret_key: None,
             web_dist: "web/dist".into(),
             data_dir: "data".into(),
+            chunk_tokens: 300,
             db_max_connections: None,
             cookie_secure: false,
             open_registration: true,
@@ -155,6 +159,7 @@ mod tests {
             jail.set_env("UTOPIA_BIND_ADDR", "");
             let cfg = AppConfig::load().unwrap();
             assert_eq!(cfg.data_dir, "data");
+            assert_eq!(cfg.chunk_tokens, 300);
             assert_eq!(cfg.web_dist, "web/dist");
             assert_eq!(cfg.bind_addr, "0.0.0.0:1516");
             Ok(())

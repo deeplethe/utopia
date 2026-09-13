@@ -105,12 +105,13 @@ mod html_tests {
     }
 }
 
+mod blocks;
 mod chunker;
 pub mod html;
 pub mod ontology_rdf;
 mod parsers;
 
-pub use chunker::{chunk_text, ChunkPiece};
+pub use chunker::{chunk_text, chunk_with_budget, ChunkPiece, BUDGET_TOKENS};
 /// Decode fetched text with the same encoding detection as file ingestion.
 pub use parsers::plain_text as decode_text;
 

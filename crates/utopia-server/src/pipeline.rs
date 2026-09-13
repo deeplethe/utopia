@@ -65,7 +65,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let text_len = parsed.text.chars().count() as i32;
 
     // 2. 分块 + 入库
-    let pieces = utopia_ingest::chunk_text(&parsed.text);
+    let pieces = utopia_ingest::chunk_with_budget(&parsed.text, state.chunk_tokens);
     let chunk_pairs =
         utopia_store::documents::replace_chunks(&state.pool, doc.kb_id, document_id, &pieces)
             .await?;
