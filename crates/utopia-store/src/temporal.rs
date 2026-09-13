@@ -23,7 +23,17 @@ struct OpenFact {
     valid_from: Option<DateTime<Utc>>,
     /// 闭合别人的区间时要用它当那个时刻的粒度
     valid_from_precision: Option<String>,
+    /// 它自己作为后任去闭合别的行时，按它的把握放行
+    confidence: f32,
+    /// 证据文件自带的最早日期：没有起点的行至少在这一天成立。文件没带日期的不算——
+    /// `attested_from` 那时是入库时刻，拿它当「那天成立」会把每条旧行都说成此刻仍在
+    dated_at: Option<DateTime<Utc>>,
 }
+
+/// 证据文件自带的最早日期，按 `facts` 的别名 `f` 投影
+const DATED_AT: &str = "(SELECT min(d.doc_time) FROM fact_evidence fe
+                         JOIN documents d ON d.id = fe.document_id
+                         WHERE fe.fact_id = f.id)";
 
 /// 唯一性方向：functional = 主语侧（张三同时只 reports_to 一人）；
 /// inverse functional = 宾语侧（一个项目同时只有一个 leads 它的人）。
@@ -71,25 +81,27 @@ pub async fn reconcile_new_fact(
     }
     // 不变量点查：主语侧 = 同 (kb, S, P) 宾语不同；宾语侧 = 同 (kb, P, O) 主语不同
     let sql = match direction {
-        Uniqueness::SubjectSide => {
-            "SELECT id, valid_from, valid_from_precision FROM facts
-             WHERE kb_id = $1 AND subject_id = $2 AND predicate_id = $3
-               AND valid_to IS NULL AND valid_to_precision IS NULL
-               AND invalidated_at IS NULL
-               AND id <> $4
-               AND (object_id IS DISTINCT FROM $5 OR object_value IS DISTINCT FROM $6)
-             ORDER BY valid_from ASC NULLS LAST, recorded_at ASC"
-        }
-        Uniqueness::ObjectSide => {
-            "SELECT id, valid_from, valid_from_precision FROM facts
-             WHERE kb_id = $1 AND object_id = $5 AND predicate_id = $3
-               AND valid_to IS NULL AND valid_to_precision IS NULL
-               AND invalidated_at IS NULL
-               AND id <> $4 AND subject_id IS DISTINCT FROM $2
-             ORDER BY valid_from ASC NULLS LAST, recorded_at ASC"
-        }
+        Uniqueness::SubjectSide => format!(
+            "SELECT f.id, f.valid_from, f.valid_from_precision, f.confidence, {DATED_AT} AS dated_at
+             FROM facts f
+             WHERE f.kb_id = $1 AND f.subject_id = $2 AND f.predicate_id = $3
+               AND f.valid_to IS NULL AND f.valid_to_precision IS NULL
+               AND f.invalidated_at IS NULL
+               AND f.id <> $4
+               AND (f.object_id IS DISTINCT FROM $5 OR f.object_value IS DISTINCT FROM $6)
+             ORDER BY f.valid_from ASC NULLS LAST, f.recorded_at ASC"
+        ),
+        Uniqueness::ObjectSide => format!(
+            "SELECT f.id, f.valid_from, f.valid_from_precision, f.confidence, {DATED_AT} AS dated_at
+             FROM facts f
+             WHERE f.kb_id = $1 AND f.object_id = $5 AND f.predicate_id = $3
+               AND f.valid_to IS NULL AND f.valid_to_precision IS NULL
+               AND f.invalidated_at IS NULL
+               AND f.id <> $4 AND f.subject_id IS DISTINCT FROM $2
+             ORDER BY f.valid_from ASC NULLS LAST, f.recorded_at ASC"
+        ),
     };
-    let q = sqlx::query_as(sql)
+    let q = sqlx::query_as(&sql)
         .bind(kb_id)
         .bind(subject_id)
         .bind(predicate_id)
@@ -132,8 +144,28 @@ pub async fn reconcile_new_fact(
         return Ok(ReconcileReport::default());
     }
 
+    // 开放行里有起点的那几条：一条旧行的后任是它之后**最近的**已知起点，不一定是新事实。
+    // 同一侧同时开着好几行，只在有人没给时间、进了人审的时候发生；那时新事实一来，
+    // 从前是把它们全关在新起点——没有起点的第五份与 3 月 17 日起的第六份一起关在
+    // 5 月 26 日，两段重叠了两个多月
+    let known_starts: Vec<(Uuid, DateTime<Utc>, String, f32)> = open
+        .iter()
+        .filter_map(|o| {
+            o.valid_from.map(|f| {
+                (
+                    o.id,
+                    f,
+                    o.valid_from_precision
+                        .clone()
+                        .unwrap_or_else(|| "day".into()),
+                    o.confidence,
+                )
+            })
+        })
+        .collect();
+
     let mut report = ReconcileReport::default();
-    for old in open {
+    for old in &open {
         match (old.valid_from, new_validity.from) {
             // 新事实没有世界时间：闭合点无从谈起 → 人裁
             (_, None) => {
@@ -161,19 +193,34 @@ pub async fn reconcile_new_fact(
                     report.corrected.push(id);
                 }
             }
-            // 常规接替：旧事实闭合在新事实的开始（旧事实无起点也适用——起点未知但已结束）
+            // 常规接替：旧事实闭合在它的后任开始时（旧事实无起点也适用——起点未知但已结束）
             (_, Some(nf)) => {
-                if new_confidence < AUTO_CLOSE_MIN_CONFIDENCE {
+                let sibling = known_starts
+                    .iter()
+                    .filter(|(id, start, _, _)| {
+                        *id != old.id && *start < nf && old.valid_from.is_none_or(|of| *start > of)
+                    })
+                    .min_by_key(|(_, start, _, _)| *start);
+                let (end, precision, confidence) = match sibling {
+                    Some((_, start, precision, confidence)) => {
+                        (*start, precision.as_str(), *confidence)
+                    }
+                    None => (
+                        nf,
+                        new_validity.from_precision.unwrap_or("day"),
+                        new_confidence,
+                    ),
+                };
+                // 没有起点、但有一份带日期的文件说它在那天成立：那天不早于后任的起点，
+                // 它就不是前任——第十一份补充协议写着 8 月 13 日房东是 BBHQ1，不能因为
+                // 另一条说 HPBB1 从 2016 年起是房东，就把 BBHQ1 关在 2016 年
+                if old.valid_from.is_none() && old.dated_at.is_some_and(|d| d >= end) {
+                    record_conflict(pool, kb_id, old.id, new_fact_id, "no_time").await?;
+                    report.conflicts += 1;
+                } else if confidence < AUTO_CLOSE_MIN_CONFIDENCE {
                     record_conflict(pool, kb_id, old.id, new_fact_id, "low_confidence").await?;
                     report.conflicts += 1;
-                } else if let Some(id) = close_superseded(
-                    pool,
-                    old.id,
-                    nf,
-                    new_validity.from_precision.unwrap_or("day"),
-                )
-                .await?
-                {
+                } else if let Some(id) = close_superseded(pool, old.id, end, precision).await? {
                     report.corrected.push(id);
                 }
             }
@@ -215,7 +262,9 @@ async fn slot_into_history(
              WHERE c.kb_id = $1 AND c.subject_id = $2 AND c.predicate_id = $3
                AND c.invalidated_at IS NULL AND c.id <> $4
                AND c.valid_to IS NOT NULL AND c.valid_to > $7
-               AND (c.valid_from IS NULL OR c.valid_from <= $7)
+               AND (c.valid_from <= $7 OR (c.valid_from IS NULL AND NOT EXISTS (
+                   SELECT 1 FROM fact_evidence fe JOIN documents d ON d.id = fe.document_id
+                   WHERE fe.fact_id = c.id AND d.doc_time >= $7)))
                AND (c.object_id IS DISTINCT FROM $5 OR c.object_value IS DISTINCT FROM $6)
                AND EXISTS (
                    SELECT 1 FROM facts r
@@ -232,7 +281,9 @@ async fn slot_into_history(
                AND c.invalidated_at IS NULL AND c.id <> $4
                AND c.subject_id IS DISTINCT FROM $2
                AND c.valid_to IS NOT NULL AND c.valid_to > $6
-               AND (c.valid_from IS NULL OR c.valid_from <= $6)
+               AND (c.valid_from <= $6 OR (c.valid_from IS NULL AND NOT EXISTS (
+                   SELECT 1 FROM fact_evidence fe JOIN documents d ON d.id = fe.document_id
+                   WHERE fe.fact_id = c.id AND d.doc_time >= $6)))
                AND EXISTS (
                    SELECT 1 FROM facts r
                    WHERE r.kb_id = c.kb_id AND r.object_id = c.object_id

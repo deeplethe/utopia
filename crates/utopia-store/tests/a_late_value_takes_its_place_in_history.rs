@@ -205,3 +205,153 @@ async fn an_end_the_text_states_is_not_cut_by_a_later_value() -> anyhow::Result<
         .await?;
     run
 }
+
+/// 从一份带日期的文件里读到的值：起点可以没有，证据文件的日期总是有的
+async fn arrive_from_document(
+    pool: &PgPool,
+    f: &Fixture,
+    value: &str,
+    from: Option<&str>,
+    document_date: &str,
+) -> anyhow::Result<Uuid> {
+    let (doc, chunk) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query(
+        "INSERT INTO documents (id, kb_id, filename, sha256, doc_time) VALUES ($1, $2, $3, $3, $4)",
+    )
+    .bind(doc)
+    .bind(f.kb)
+    .bind(format!("amendment-{document_date}-{value}.html"))
+    .bind(t(document_date))
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO chunks (id, kb_id, document_id, seq, text) VALUES ($1, $2, $3, 0, $4)",
+    )
+    .bind(chunk)
+    .bind(f.kb)
+    .bind(doc)
+    .bind(value)
+    .execute(pool)
+    .await?;
+    let validity = match from {
+        Some(from) => Validity::starting(Some(t(from)), Some("day")),
+        None => Validity::default(),
+    }
+    .attested(Some(t(document_date)));
+    let object = json!({ "value": value });
+    let (id, _) = utopia_store::graph::insert_value_fact(
+        pool,
+        f.kb,
+        f.lease,
+        Some(f.deadline),
+        &object,
+        validity,
+        0.9,
+    )
+    .await?;
+    utopia_store::graph::add_evidence(pool, id, chunk, Some(value), None).await?;
+    utopia_store::temporal::reconcile_new_fact(
+        pool,
+        f.kb,
+        id,
+        f.lease,
+        f.deadline,
+        None,
+        Some(&object),
+        Uniqueness::SubjectSide,
+        validity,
+        0.9,
+    )
+    .await?;
+    Ok(id)
+}
+
+/// 第五份补充协议没抽出起点，它先进了人审；第八份来时，从前把它和 3 月 17 日起的
+/// 第六份一起关在 5 月 26 日，两段叠了两个多月。它的后任是它之后最近的已知起点
+#[tokio::test]
+async fn a_value_with_no_start_ends_where_the_next_known_value_begins() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        arrive_from_document(&pool, &f, "2020-04-14", Some("2020-03-17"), "2020-03-17").await?;
+        arrive_from_document(&pool, &f, "2020-03-17", None, "2020-02-18").await?;
+        arrive_from_document(&pool, &f, "2020-06-09", Some("2020-05-26"), "2020-05-26").await?;
+
+        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT object_value #>> '{value}', to_char(valid_from, 'YYYY-MM-DD'),
+                    to_char(valid_to, 'YYYY-MM-DD')
+             FROM facts
+             WHERE kb_id = $1 AND subject_id = $2 AND predicate_id = $3 AND invalidated_at IS NULL
+             ORDER BY valid_to NULLS LAST",
+        )
+        .bind(f.kb)
+        .bind(f.lease)
+        .bind(f.deadline)
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(
+            rows,
+            vec![
+                ("2020-03-17".into(), None, Some("2020-03-17".into())),
+                (
+                    "2020-04-14".into(),
+                    Some("2020-03-17".into()),
+                    Some("2020-05-26".into())
+                ),
+                ("2020-06-09".into(), Some("2020-05-26".into()), None),
+            ]
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 第十一份补充协议（8 月 13 日）说房东是 BBHQ1，没说从哪天起；另一份说 HPBB1 从 2016 年起
+/// 是房东。BBHQ1 在 8 月 13 日成立，它不可能是 2016 年之前的前任：不关它，交给人
+#[tokio::test]
+async fn a_dated_value_with_no_start_is_not_closed_before_its_date() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        let later = arrive_from_document(&pool, &f, "BBHQ1", None, "2020-08-13").await?;
+        arrive_from_document(&pool, &f, "HPBB1", Some("2016-05-16"), "2016-05-16").await?;
+
+        let (still_open,): (bool,) = sqlx::query_as(
+            "SELECT valid_to IS NULL AND invalidated_at IS NULL FROM facts WHERE id = $1",
+        )
+        .bind(later)
+        .fetch_one(&pool)
+        .await?;
+        assert!(still_open, "BBHQ1 没被关在 2016 年");
+        let (conflicts,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM fact_conflicts WHERE kb_id = $1 AND old_fact_id = $2",
+        )
+        .bind(f.kb)
+        .bind(later)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(conflicts, 1, "两个房东同时开着，要人看");
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    run
+}
