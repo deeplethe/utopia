@@ -1613,6 +1613,26 @@ export const en = {
       "An agent reads these schemas and proposes metric and dimension definitions. Proposals land in Pending; Ask uses them only once confirmed.",
     exploreQueued:
       "Exploration queued — proposals will appear under Pending. If nothing can be proposed, the alert bell will say so.",
+    // **最近一轮探索的账**——单看列表答不了「漏了多少」（#503）：
+    // 十二条提议对着八十列的宽表与刚好覆盖完一个小库长得一样。这条贴出来人
+    // 才能从「等量提议」里看出覆盖范围。
+    lastRun: (r: {
+      tables: number;
+      columns: number;
+      returned: number;
+      accepted: number;
+      truncated: boolean;
+    }) => {
+      const parts = [
+        `${r.tables} tables`,
+        `${r.columns} columns`,
+        `returned ${r.returned}`,
+        `accepted ${r.accepted}`,
+      ];
+      if (r.truncated) parts.push("(schema truncated)");
+      return `Last exploration: ${parts.join(" / ")}`;
+    },
+    lastRunMissing: "No exploration has run yet.",
     sourcesEmpty: "No data sources mounted.",
     sourcesNoneAvailable:
       "No data sources registered yet — ask a deployment admin to register one.",

@@ -72,7 +72,7 @@ pub async fn upload(
             .await
             .map_err(AppError::Other)?;
 
-        match utopia_store::documents::create(
+        match utopia_store::documents::create_from_upload(
             &state.pool,
             kb_id,
             &filename,
@@ -80,8 +80,7 @@ pub async fn upload(
             bytes.len() as i64,
             &sha256,
             target_source,
-            None,
-            None,
+            content_time(&filename, &bytes),
         )
         .await
         {
@@ -371,6 +370,49 @@ pub async fn reprocess(
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
+
+/// 只认开头独立的完整日期行，不把正文里提到的事件日期当作文档日期（#610）。
+fn content_time(filename: &str, bytes: &[u8]) -> Option<chrono::DateTime<chrono::Utc>> {
+    let extension = std::path::Path::new(filename).extension()?.to_str()?;
+    if !["txt", "md", "markdown"]
+        .iter()
+        .any(|ext| extension.eq_ignore_ascii_case(ext))
+    {
+        return None;
+    }
+    // 只解码头部 4 KiB：日期行只认开头。PDF、Word 这类格式要读日期时，在各自的解析器里
+    // 读它们自己的元数据，不在这里猜
+    const HEADER_BYTES: usize = 4096;
+    let text = utopia_ingest::decode_text(&bytes[..bytes.len().min(HEADER_BYTES)]);
+    let header = if bytes.len() > HEADER_BYTES {
+        // 截断的半行可能在日期后还有文字，不能把它误当独立日期行。
+        text.rsplit_once('\n')?.0
+    } else {
+        &text
+    };
+    let line = header
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    let date = line
+        .strip_prefix('（')
+        .and_then(|s| s.strip_suffix('）'))
+        .or_else(|| line.strip_prefix('(').and_then(|s| s.strip_suffix(')')))
+        .unwrap_or(line);
+    if !date.get(..4)?.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let day = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .or_else(|_| chrono::NaiveDate::parse_from_str(date, "%Y年%m月%d日"))
+        .ok()?;
+    // 与项目已有日精度约定一致：UTC 零点是存储约定，不猜作者所在时区。
+    Some(day.and_hms_opt(0, 0, 0)?.and_utc())
+}
+
+#[cfg(test)]
+#[path = "documents_routes_tests.rs"]
+mod tests;
 
 /// 抽取丢弃信号：哪些事实抽出来了却没能落地。整库一次取回——按
 /// (文档 × 原因 × 具体对象) 聚合后行数很小，Library 既算总数又展开详情，

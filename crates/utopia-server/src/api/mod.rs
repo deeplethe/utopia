@@ -1,4 +1,5 @@
 mod admin_routes;
+mod agent;
 mod alerts_routes;
 mod auth_routes;
 mod chat;
@@ -14,6 +15,7 @@ mod mcp;
 mod members_routes;
 pub(crate) mod ontology_routes;
 mod review_routes;
+mod rig_model;
 pub(crate) mod rule_routes;
 mod search_routes;
 mod settings_routes;

@@ -1406,6 +1406,26 @@ export const zh: Strings = {
     exploreHint:
       "一个智能体读这些库表结构，提出指标／维度的口径。提出来的落在「待审批」，确认之后问数才会用。",
     exploreQueued: "探索已排队，提议会出现在「待确认」里；一条都提不出来时，铃铛会告诉你。",
+    // **最近一轮探索的账**——光看列表答不了「漏了多少」（#503）：
+    // 十二条提议对着八十列的宽表与刚好覆盖完一个小库长得一样。这条贴出来人
+    // 才能从「等量提议」里看出覆盖范围。
+    lastRun: (r: {
+      tables: number;
+      columns: number;
+      returned: number;
+      accepted: number;
+      truncated: boolean;
+    }) => {
+      const parts = [
+        `${r.tables} 张表`,
+        `${r.columns} 列`,
+        `返回 ${r.returned}`,
+        `落库 ${r.accepted}`,
+      ];
+      if (r.truncated) parts.push("（结构被截）");
+      return `上一轮探索：${parts.join(" ／ ")}`;
+    },
+    lastRunMissing: "还没有跑过探索。",
     sourcesEmpty: "没有挂载任何数据源。",
     sourcesNoneAvailable: "还没有登记数据源——请部署管理员登记一个。",
     newConn: "登记新连接",

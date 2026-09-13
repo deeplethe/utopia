@@ -1554,6 +1554,23 @@ export const api = {
       items: ConceptMapping[];
       total: number;
       counts: { proposed: number; confirmed: number; rejected: number };
+      // 最近一轮探索的账（#503）。单看列表答不了「漏了多少」——
+      // 十二条提议对着八十列的宽表与刚好覆盖完一个小库长得一样。
+      last_run?: {
+        id: string;
+        started_at: string;
+        finished_at: string | null;
+        sources: string[];
+        tables_scanned: number;
+        columns_scanned: number;
+        schema_truncated: boolean;
+        cap: number;
+        returned: number;
+        accepted: number;
+        dropped: Record<string, { n: number; example: string }>;
+        tables_covered: string[];
+        error: string | null;
+      };
     }>(`/api/v1/kbs/${kbId}/mappings${qs ? `?${qs}` : ""}`);
   },
   /** 改一条口径。改之前那一版自动进 revisions */

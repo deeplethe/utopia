@@ -18,6 +18,61 @@ pub async fn create(
     doc_time: Option<chrono::DateTime<chrono::Utc>>,
     external_key: Option<&str>,
 ) -> AppResult<Document> {
+    create_with_time_source(
+        pool,
+        kb_id,
+        filename,
+        mime,
+        size_bytes,
+        sha256,
+        source_id,
+        doc_time,
+        "source",
+        external_key,
+    )
+    .await
+}
+
+/// 正文识别只属于文件上传；JSON ingest 和同步传来的日期仍用原来的 source 语义。
+#[allow(clippy::too_many_arguments)]
+pub async fn create_from_upload(
+    pool: &PgPool,
+    kb_id: Uuid,
+    filename: &str,
+    mime: &str,
+    size_bytes: i64,
+    sha256: &str,
+    source_id: Option<Uuid>,
+    content_time: Option<DateTime<Utc>>,
+) -> AppResult<Document> {
+    create_with_time_source(
+        pool,
+        kb_id,
+        filename,
+        mime,
+        size_bytes,
+        sha256,
+        source_id,
+        content_time,
+        "content",
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_with_time_source(
+    pool: &PgPool,
+    kb_id: Uuid,
+    filename: &str,
+    mime: &str,
+    size_bytes: i64,
+    sha256: &str,
+    source_id: Option<Uuid>,
+    doc_time: Option<DateTime<Utc>>,
+    time_source: &str,
+    external_key: Option<&str>,
+) -> AppResult<Document> {
     // 同样的内容回来了，而它只是被删过：复活那一篇，而不是撞 (kb_id, sha256) 的唯一
     // 索引报「已存在」。撤销删除的一种自然形态——重传就是「我要它回来」（#268）
     if let Some((id,)) = sqlx::query_as::<_, (Uuid,)>(
@@ -45,7 +100,7 @@ pub async fn create(
     .bind(source_id)
     .bind(doc_time)
     .bind(if doc_time.is_some() {
-        "source"
+        time_source
     } else {
         "upload_time"
     })
