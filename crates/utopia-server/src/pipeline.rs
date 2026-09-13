@@ -62,10 +62,13 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let filename = doc.filename.clone();
     let parsed =
         tokio::task::spawn_blocking(move || utopia_ingest::parse(&filename, &bytes)).await??;
-    let text_len = parsed.text.chars().count() as i32;
+    // 解析出来的正文可能夹着 NUL，入库之前剥掉（见 `without_nul`）。之后的长度、分块、
+    // 全文索引、嵌入读的都是这一份，彼此的偏移才对得上
+    let text = without_nul(&parsed.text);
+    let text_len = text.chars().count() as i32;
 
     // 2. 分块 + 入库
-    let pieces = utopia_ingest::chunk_text(&parsed.text);
+    let pieces = utopia_ingest::chunk_text(&text);
     let chunk_pairs =
         utopia_store::documents::replace_chunks(&state.pool, doc.kb_id, document_id, &pieces)
             .await?;
@@ -222,6 +225,25 @@ async fn embed_pending(
         done += written?;
     }
     Ok(done)
+}
+
+/// 正文里的 NUL（`\0`）剥掉。
+///
+/// PDF 的文本层会夹带它——字体的 `ToUnicode` 映射与编码过的内容流是常见来源——而
+/// Postgres 的 `TEXT` 不收 0x00：`chunks.text` 一插就报
+/// `invalid byte sequence for encoding "UTF8": 0x00`，事务回滚，**整篇文档钉在 failed**，
+/// 坏的只是其中几个字节。剥在这里，是因为正文进库只有这一条路（`replace_chunks` 只有
+/// 这一个调用方），而且要在算长度和分块**之前**：放到更下游，存下的 `text_len` 与分块
+/// 偏移就和真正入库的正文对不上了。
+///
+/// 绝大多数文档一个 NUL 都没有，那时原样借用，不为每篇文档复制一整份正文。
+/// （#611，Jun Du / @plpycoin 报告并给出修法）
+fn without_nul(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains('\0') {
+        std::borrow::Cow::Owned(text.replace('\0', ""))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
 }
 
 #[cfg(test)]

@@ -13,6 +13,8 @@
 //!    并带原因，不是停在 embedding。
 //! 5. **就绪之前全部嵌完**：process_document 走通后没有一条向量为空。
 //! 6. **记忆摄入走同一条路**：memory_ingest 嵌完自己的分块。
+//! 7. **正文夹 NUL 不毁整篇**（#611）：Postgres 的 TEXT 不收 0x00，从前一个字节就让整篇
+//!    落在 failed。现在走完整的 process_document 到 ready，库里没有一个分块带 NUL。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
@@ -176,10 +178,15 @@ impl Fx {
 
     /// 一篇真文档：正文进 blob 存储，行是 pending，等 process_document 来解析分块
     async fn document_to_process(&self, paragraphs: usize) -> anyhow::Result<Uuid> {
-        use sha2::{Digest, Sha256};
         let text: String = (0..paragraphs)
             .map(|i| format!("Paragraph {i}. {}\n\n", format!("word{i} ").repeat(140)))
             .collect();
+        self.document_with_text(&text).await
+    }
+
+    /// 同上，正文由调用方给
+    async fn document_with_text(&self, text: &str) -> anyhow::Result<Uuid> {
+        use sha2::{Digest, Sha256};
         let sha: String = Sha256::digest(text.as_bytes())
             .iter()
             .map(|b| format!("{b:02x}"))
@@ -331,6 +338,41 @@ async fn a_failed_batch_does_not_strand_the_document() -> anyhow::Result<()> {
         "the reason is on the document"
     );
     f.cleanup().await
+}
+
+/// #611：一个 NUL 从前让整篇文档失败——坏的只是几个字节，丢的是整篇
+#[tokio::test]
+async fn a_nul_byte_does_not_fail_the_whole_document() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    // PDF 文本层里夹带 NUL 的样子：落在词中间、段落之间、一连好几个
+    let text = "Revenue grew\0 twelve percent.\n\n\0\0Margins held at thirty\0-one.\n";
+    let doc = f.document_with_text(text).await?;
+    super::process_document(&f.state, doc).await?;
+
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "ready", "a NUL byte must not fail the document");
+    let stored = f.stored(doc).await?;
+    assert!(!stored.is_empty(), "the document was chunked");
+    assert!(
+        stored.iter().all(|(t, _)| !t.contains('\0')),
+        "no stored chunk carries a NUL"
+    );
+    let joined: String = stored.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(
+        joined.contains("Revenue grew twelve percent."),
+        "the words around the NUL survive, joined as written"
+    );
+    f.cleanup().await
+}
+
+#[test]
+fn without_nul_borrows_when_there_is_nothing_to_strip() {
+    use std::borrow::Cow;
+    assert!(matches!(super::without_nul("plain text"), Cow::Borrowed(_)));
+    assert_eq!(super::without_nul("a\0b\0\0c"), "abc");
+    assert_eq!(super::without_nul("\0"), "");
 }
 
 #[tokio::test]
