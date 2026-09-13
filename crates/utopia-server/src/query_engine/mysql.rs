@@ -211,7 +211,7 @@ impl QueryEngine for MysqlEngine {
         // 会拒绝把它读进 String（`VARCHAR is not compatible with VARBINARY`）。
         // 原始 SQL 在命令行里看着好好的——命令行不做强类型解码，这一处只有连真
         // 服务器才现形。MariaDB 上 CAST 无害，两边同一条语句
-        let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+        let cols: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
             "SELECT CAST(table_schema AS CHAR), CAST(table_name AS CHAR),
                     CAST(column_name AS CHAR), CAST(column_type AS CHAR),
                     CAST(column_comment AS CHAR)
@@ -222,22 +222,35 @@ impl QueryEngine for MysqlEngine {
         )
         .fetch_all(&pool)
         .await?;
+        // 键是锦上添花：读不出来就照从前那样只给列，不让整次取 schema 失败（#502）。
+        // MySQL 的 BI 连接大多是只读用户，而 `information_schema.statistics` /
+        // `key_column_usage` 对只有 SELECT 的角色**也是空的**——同 PG
+        // `information_schema.table_constraints` 的限制。读不到就只给列，留一行 warn
+        let keys = match keys(&pool).await {
+            Ok(k) => k,
+            Err(e) => {
+                tracing::warn!(error = %e, "读不出 MySQL 主键/外键，schema 不带键标记");
+                Keys::default()
+            }
+        };
         pool.close().await;
-        Ok(rows
+
+        Ok(cols
             .into_iter()
-            .map(|(schema, table, column, data_type, comment)| SchemaColumn {
-                schema,
-                table,
-                column,
-                data_type,
-                // 没有注释时这一列是空串而不是 NULL，照抄会让每张表都挂一个空注释
-                comment: comment.filter(|c| !c.trim().is_empty()),
-                // MySQL 的 PK / FK 要走 information_schema.statistics 与
-                // key_column_usage 才能拿到（PK 在 INDEX_NAME='PRIMARY' 上、FK 在
-                // REFERENCED_TABLE_NAME 非空上）。这一刀先给 false，下一刀接 #502
-                // 的 MySQL cut 再补
-                is_primary_key: false,
-                references_table: None,
+            .map(|(schema, table, column, data_type, comment)| {
+                let key = (schema.clone(), table.clone(), column.clone());
+                let is_primary_key = keys.primary.contains(&key);
+                let references_table = keys.foreign.get(&key).cloned();
+                SchemaColumn {
+                    schema,
+                    table,
+                    column,
+                    data_type,
+                    // 没有注释时这一列是空串而不是 NULL，照抄会让每张表都挂一个空注释
+                    comment: comment.filter(|c| !c.trim().is_empty()),
+                    is_primary_key,
+                    references_table,
+                }
             })
             .collect())
     }
@@ -301,9 +314,99 @@ impl QueryEngine for MysqlEngine {
     }
 }
 
+type ColumnKey = (String, String, String);
+
+/// `keys()` UNION ALL 的返回形状：前三列是 (schema, table, column)；后两列是
+/// 仅 FK 行填的（PK 行是 NULL 占位）
+type KeyRow = (String, String, String, Option<String>, Option<String>);
+
+/// 一个库里的单列主键与单列外键，按 (schema, table, column) 查。
+///
+/// MySQL 没有 PG 那种「约束名在一张表内唯一」的把柄——`information_schema.key_column_usage`
+/// 按 (table_schema, table_name, constraint_name) 联合主键，本来就分得清两张表上
+/// 同名的外键。两张表各有一个叫 `fk_ref` 的外键不会串表
+#[derive(Default)]
+struct Keys {
+    primary: std::collections::HashSet<ColumnKey>,
+    /// 外键列 → 它指向的 `schema.table`
+    foreign: std::collections::HashMap<ColumnKey, String>,
+}
+
+/// 从 MySQL 的 information_schema 读键。两条 SQL：
+///
+/// - 单列主键：`information_schema.statistics` 上 `INDEX_NAME='PRIMARY' AND
+///   该索引列数 = 1`。组合主键、组合外键的成员都不标——探索提示词拿 PK 当 ID、
+///   拿 FK 当关联路径，把组合键的一列单独标出来是误导
+///
+/// - 单列外键：`information_schema.key_column_usage` 上
+///   `REFERENCED_TABLE_NAME IS NOT NULL` 且 `ORDINAL_POSITION = 1` 且**该
+///   约束下所有行只有一个**。MySQL 的 `key_column_usage` 一行对一列：组合
+///   外键 `(order_id, ordinal)` 报两行，没有「同一约束下列数 = 1」这个过滤
+///   就会把两列都标 FK。一列同时在多个单列外键里（少见）取排序在前的那个，
+///   结果稳定
+///
+/// 列名经二进制协议报成 VARBINARY（MySQL 8.0+），跟 fetch_schema 的列查询一样
+/// 必须 CAST(... AS CHAR) 才能让 sqlx 用 String 读出来
+async fn keys(pool: &sqlx::MySqlPool) -> anyhow::Result<Keys> {
+    let rows: Vec<KeyRow> = sqlx::query_as(
+        // 一个 row 一种类型：STATISTICS 里 INDEX_NAME='PRIMARY' 的行有列名；KEY_COLUMN_USAGE
+        // 里 REFERENCED_TABLE_NAME 非空的行有引用表。这里把两条 UNION 在一起，靠 kind 区分。
+        // PK 那一支在第二个 SELECT 里用 `NULL AS ...` 占位，让 UNION 的列宽对齐
+        "SELECT CAST(s.table_schema AS CHAR), CAST(s.table_name AS CHAR),
+                CAST(s.column_name AS CHAR),
+                NULL AS ref_schema, NULL AS ref_table
+         FROM information_schema.statistics s
+         WHERE s.index_name = 'PRIMARY'
+           AND s.table_schema NOT IN
+               ('information_schema', 'mysql', 'performance_schema', 'sys')
+           AND (
+             SELECT count(*) FROM information_schema.statistics s2
+             WHERE s2.table_schema = s.table_schema
+               AND s2.table_name   = s.table_name
+               AND s2.index_name   = s.index_name
+           ) = 1
+         UNION ALL
+         SELECT CAST(k.table_schema AS CHAR), CAST(k.table_name AS CHAR),
+                CAST(k.column_name AS CHAR),
+                CAST(k.referenced_table_schema AS CHAR),
+                CAST(k.referenced_table_name AS CHAR)
+         FROM information_schema.key_column_usage k
+         WHERE k.referenced_table_name IS NOT NULL
+           AND k.table_schema NOT IN
+               ('information_schema', 'mysql', 'performance_schema', 'sys')
+           AND k.ordinal_position = 1
+           AND (
+             SELECT count(*) FROM information_schema.key_column_usage k2
+             WHERE k2.constraint_schema   = k.constraint_schema
+               AND k2.constraint_name     = k.constraint_name
+               AND k2.referenced_table_name IS NOT NULL
+           ) = 1
+         ORDER BY 1, 2, 3",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut keys = Keys::default();
+    for (schema, table, column, ref_schema, ref_table) in rows {
+        let key = (schema, table, column);
+        match (ref_schema, ref_table) {
+            (None, _) => {
+                // 来自 UNION 的第一支，是 PK 行
+                keys.primary.insert(key);
+            }
+            (Some(rs), Some(rt)) => {
+                keys.foreign.entry(key).or_insert(format!("{rs}.{rt}"));
+            }
+            _ => {}
+        }
+    }
+    Ok(keys)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cell_kind, Cell, MysqlEngine, QueryEngine};
+    use super::{cell_kind, Cell, MysqlEngine, QueryEngine, SchemaColumn};
+    use sqlx::mysql::MySqlPoolOptions;
+    use uuid::Uuid;
 
     /// 对着真服务器跑的那一档。没有 `UTOPIA_TEST_MYSQL_URL` 就跳过——
     /// 这三样（information_schema 的列名、两种超时写法、取值往返）是
@@ -376,6 +479,245 @@ mod tests {
 
         // 写路径仍然被闸挡住（第 1 层），只读会话是第 3 层
         assert!(super::super::guard_sql_for("mysql", "DELETE FROM sales.orders").is_err());
+    }
+
+    /// 每个测试自己的 schema，名字带随机后缀：并行跑不撞，也不碰库里已有的表。
+    /// 测完 `DROP SCHEMA ... CASCADE`。**这是 MySQL 的「schema」，跟 PG 的命名空间
+    /// 不同——MySQL 的 schema 就是 database**（见 fetch_schema 顶上的注释）
+    struct Fx {
+        url: String,
+        pool: sqlx::MySqlPool,
+        schemas: Vec<String>,
+    }
+
+    impl Fx {
+        async fn new(schemas: usize) -> Option<Self> {
+            let url = std::env::var("UTOPIA_TEST_MYSQL_URL")
+                .ok()
+                .filter(|u| !u.trim().is_empty())?;
+            // `url` 默认是 `mysql://root:***@127.0.0.1:13306/`（无库名）。
+            // sqlx-mysql 在没有具体 database 时拿不到 server-side connection state，
+            // 建库语句会落在「use 哪个库」的歧义上。塞一个固定 schema 让两条
+            // CREATE DATABASE 都能落到地上
+            let base_schema = format!("mysql_keys_base_{}", Uuid::now_v7().simple());
+            let url = if url.contains('/')
+                && url
+                    .rsplit_once('/')
+                    .map(|(_, rest)| rest.contains('@'))
+                    .unwrap_or(false)
+            {
+                // 没有具体 database，附加一个
+                format!("{}/{}", url.trim_end_matches('/'), base_schema)
+            } else {
+                url.clone()
+            };
+            let pool = MySqlPoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await
+                .expect("connect");
+            sqlx::query(&format!("CREATE DATABASE IF NOT EXISTS `{base_schema}`"))
+                .execute(&pool)
+                .await
+                .expect("create base schema");
+            let suffix = Uuid::now_v7().simple().to_string();
+            let schemas: Vec<String> = (0..schemas)
+                .map(|i| format!("`mysql_keys_{i}_{}`", &suffix[suffix.len() - 12..]))
+                .collect();
+            for s in &schemas {
+                sqlx::query(&format!("CREATE DATABASE {s}"))
+                    .execute(&pool)
+                    .await
+                    .expect("create schema");
+            }
+            Some(Self { url, pool, schemas })
+        }
+
+        async fn exec(&self, sql: &str) {
+            sqlx::raw_sql(sql).execute(&self.pool).await.expect(sql);
+        }
+
+        async fn columns(&self, url: &str) -> Vec<SchemaColumn> {
+            let mut cols = MysqlEngine::new(url).fetch_schema().await.expect("schema");
+            // 只留本测试建的库。库名带反引号，先去掉
+            let our: std::collections::HashSet<String> = self
+                .schemas
+                .iter()
+                .map(|s| s.trim_matches('`').to_string())
+                .collect();
+            cols.retain(|c| our.contains(&c.schema));
+            cols
+        }
+
+        async fn cleanup(self) {
+            // 跨库外键会让 DROP DATABASE ... 顺序敏感——B 库里的表引用 A 库，
+            // 先 drop A 库就报 FK 约束。临时关掉 session 级的外键检查再依次删
+            sqlx::query("SET FOREIGN_KEY_CHECKS = 0")
+                .execute(&self.pool)
+                .await
+                .expect("disable fk checks");
+            for s in &self.schemas {
+                let unquoted = s.trim_matches('`');
+                sqlx::query(&format!("DROP DATABASE IF EXISTS `{unquoted}`"))
+                    .execute(&self.pool)
+                    .await
+                    .expect("drop schema");
+            }
+            sqlx::query("SET FOREIGN_KEY_CHECKS = 1")
+                .execute(&self.pool)
+                .await
+                .expect("enable fk checks");
+            self.pool.close().await;
+        }
+    }
+
+    fn col<'a>(
+        cols: &'a [SchemaColumn],
+        schema: &str,
+        table: &str,
+        column: &str,
+    ) -> &'a SchemaColumn {
+        cols.iter()
+            .find(|c| c.schema == schema && c.table == table && c.column == column)
+            .unwrap_or_else(|| panic!("{schema}.{table}.{column}"))
+    }
+
+    /// 单列主键标出来；组合主键、组合外键的成员都不标
+    #[tokio::test]
+    async fn a_single_column_key_is_marked_and_a_composite_one_is_not_mysql() {
+        let Some(fx) = Fx::new(1).await else { return };
+        let a = fx.schemas[0].clone();
+        fx.exec(&format!(
+            "CREATE TABLE {a}.parent (id INT PRIMARY KEY AUTO_INCREMENT, name VARCHAR(100) NOT NULL, note TEXT);
+             CREATE TABLE {a}.line (
+                 order_id INT NOT NULL,
+                 ordinal INT NOT NULL,
+                 payload TEXT,
+                 PRIMARY KEY (order_id, ordinal)
+             );
+             CREATE TABLE {a}.line_note (
+                 order_id INT,
+                 ordinal INT,
+                 FOREIGN KEY (order_id, ordinal) REFERENCES {a}.line (order_id, ordinal)
+             );"
+        ))
+        .await;
+
+        let cols = fx.columns(&fx.url).await;
+        let id = col(&cols, a.trim_matches('`'), "parent", "id");
+        assert!(id.is_primary_key && id.references_table.is_none());
+        let name = col(&cols, a.trim_matches('`'), "parent", "name");
+        assert!(!name.is_primary_key);
+        let note = col(&cols, a.trim_matches('`'), "parent", "note");
+        assert!(!note.is_primary_key && note.references_table.is_none());
+        for c in ["order_id", "ordinal"] {
+            let member = col(&cols, a.trim_matches('`'), "line", c);
+            assert!(!member.is_primary_key, "组合主键的成员 line.{c} 不标");
+            let fk_member = col(&cols, a.trim_matches('`'), "line_note", c);
+            assert!(
+                fk_member.references_table.is_none(),
+                "组合外键的成员 line_note.{c} 不标"
+            );
+        }
+        fx.cleanup().await;
+    }
+
+    /// 外键带上它指向的库：自引用、跨库，以及同名约束各指各的
+    #[tokio::test]
+    async fn a_foreign_key_points_at_its_own_target_mysql() {
+        let Some(fx) = Fx::new(2).await else { return };
+        let (a, b) = (fx.schemas[0].clone(), fx.schemas[1].clone());
+        let au = a.trim_matches('`');
+        let bu = b.trim_matches('`');
+        fx.exec(&format!(
+            "CREATE TABLE {a}.p1 (id INT PRIMARY KEY AUTO_INCREMENT, parent INT, FOREIGN KEY (parent) REFERENCES {a}.p1 (id));
+             CREATE TABLE {a}.p2 (id INT PRIMARY KEY AUTO_INCREMENT);
+             CREATE TABLE {a}.c1 (x INT, FOREIGN KEY (x) REFERENCES {a}.p1 (id));
+             CREATE TABLE {a}.c2 (y INT, FOREIGN KEY (y) REFERENCES {a}.p2 (id));
+             CREATE TABLE {a}.c3 (z INT, FOREIGN KEY (z) REFERENCES {a}.p1 (id));
+             CREATE TABLE {b}.orders (item_id INT NOT NULL, FOREIGN KEY (item_id) REFERENCES {a}.p2 (id));"
+        ))
+        .await;
+
+        let cols = fx.columns(&fx.url).await;
+        let target = |s: &str, t: &str, c: &str| col(&cols, s, t, c).references_table.clone();
+        let p1 = format!("{au}.p1");
+        let p2 = format!("{au}.p2");
+        assert_eq!(target(au, "p1", "parent"), Some(p1.clone()), "自引用");
+        assert_eq!(target(au, "c1", "x"), Some(p1.clone()));
+        assert_eq!(target(au, "c2", "y"), Some(p2.clone()), "c2 指 p2 不是 p1");
+        assert_eq!(target(au, "c3", "z"), Some(p1.clone()));
+        assert_eq!(target(bu, "orders", "item_id"), Some(p2.clone()), "跨库");
+        let p2_id = col(&cols, au, "p2", "id");
+        assert!(
+            p2_id.is_primary_key && p2_id.references_table.is_none(),
+            "p2.id 是 PK，不是 FK"
+        );
+        fx.cleanup().await;
+    }
+
+    /// 只有 SELECT 权限的连接照样读得到键。`information_schema.statistics` /
+    /// `key_column_usage` 对只读角色**也可能是空的**（同 PG 那一刀）。建不了角色
+    /// （DB 用户没有 CREATE USER）就跳过
+    #[tokio::test]
+    async fn a_read_only_login_still_sees_the_keys_mysql() {
+        let Some(fx) = Fx::new(1).await else { return };
+        let a = fx.schemas[0].clone();
+        let au = a.trim_matches('`');
+        fx.exec(&format!(
+            "CREATE TABLE {a}.p (id INT PRIMARY KEY AUTO_INCREMENT);
+             CREATE TABLE {a}.c (p_id INT, FOREIGN KEY (p_id) REFERENCES {a}.p (id));"
+        ))
+        .await;
+        let user = format!("ro_{}", &Uuid::now_v7().simple().to_string()[..16]);
+        let password = &Uuid::now_v7().simple().to_string()[..16];
+        if let Err(e) = sqlx::query(&format!(
+            "CREATE USER '{user}'@'%' IDENTIFIED BY '{password}'"
+        ))
+        .execute(&fx.pool)
+        .await
+        {
+            eprintln!("跳过：建不了只读角色（{e}）");
+            fx.cleanup().await;
+            return;
+        }
+        let grant = format!("GRANT SELECT ON {a}.* TO '{user}'@'%';");
+        match sqlx::query(&grant).execute(&fx.pool).await {
+            Ok(_) => {}
+            Err(e) => {
+                // 测试用户没有 GRANT 权（root 之外）：跳过这一档
+                eprintln!("跳过：GRANT 失败（{e}）");
+                let _ = sqlx::query(&format!("DROP USER '{user}'@'%'"))
+                    .execute(&fx.pool)
+                    .await;
+                fx.cleanup().await;
+                return;
+            }
+        }
+
+        // 在 base URL 里换用户名/密码——这里不能直接走 PgUrl::parse，但 MySQL 的
+        // connection string 形状是 `mysql://user:pass@host:port/db`
+        let ro_url = {
+            let base = fx.url.trim_end_matches('/');
+            // 用 url crate 改 user/password（项目已经在用 url::Url 改 Postgres URL）
+            let mut parsed = url::Url::parse(base).expect("parse mysql url");
+            parsed.set_username(&user).expect("username");
+            parsed.set_password(Some(password)).expect("password");
+            parsed.to_string()
+        };
+
+        let cols = fx.columns(&ro_url).await;
+        assert!(col(&cols, au, "p", "id").is_primary_key);
+        assert_eq!(
+            col(&cols, au, "c", "p_id").references_table,
+            Some(format!("{au}.p"))
+        );
+
+        sqlx::query(&format!("DROP USER '{user}'@'%'"))
+            .execute(&fx.pool)
+            .await
+            .expect("drop user");
+        fx.cleanup().await;
     }
 
     #[test]
