@@ -99,6 +99,35 @@ pub async fn reconcile_new_fact(
         Uniqueness::SubjectSide => q.bind(object_value).fetch_all(pool).await?,
         Uniqueness::ObjectSide => q.fetch_all(pool).await?,
     };
+
+    // **晚到的一条插回它在年表里的位置。** 上面只看开放行，而开放行只有最新的那一条：
+    // 补充协议并行抽取、历史文件乱序上传时，第五份（2 月 18 日起）先到、第九份（6 月 8 日起）
+    // 接着到，第五份被关在 6 月 8 日；这时第七份（4 月 14 日起）才到，它只和第九份比，
+    // 于是自己也关在 6 月 8 日——第五份那段 [2 月 18 日, 6 月 8 日) 仍然盖着 4 月 14 日，
+    // 那一天的截止日查出两个。Blackbaud 总部租约链上三个值全是这样叠着的。
+    //
+    // 能切的只有**接替留下的边界**：一段已闭区间的终点恰好是同一侧另一条现存事实的起点。
+    // 原文自己写明的终点不是这个形状，不动它——那种重叠是真矛盾，留给人
+    if let Some(nf) = new_validity.from {
+        if let Some(report) = slot_into_history(
+            pool,
+            kb_id,
+            new_fact_id,
+            subject_id,
+            predicate_id,
+            object_id,
+            object_value,
+            direction,
+            nf,
+            new_validity.from_precision.unwrap_or("day"),
+            new_confidence,
+        )
+        .await?
+        {
+            return Ok(report);
+        }
+    }
+
     if open.is_empty() {
         return Ok(ReconcileReport::default());
     }
@@ -151,6 +180,112 @@ pub async fn reconcile_new_fact(
         }
     }
     Ok(report)
+}
+
+/// 新事实的起点落在一段**由接替关闭**的区间里面：把那段切在新起点，新事实活到原来的边界。
+///
+/// 返回 `None` 表示没有这样的区间，调用方照开放行的规则继续。
+/// 同一时刻开始、置信度不够，与开放行同样进人审，不硬切。
+#[allow(clippy::too_many_arguments)]
+async fn slot_into_history(
+    pool: &PgPool,
+    kb_id: Uuid,
+    new_fact_id: Uuid,
+    subject_id: Uuid,
+    predicate_id: Uuid,
+    object_id: Option<Uuid>,
+    object_value: Option<&serde_json::Value>,
+    direction: Uniqueness,
+    nf: DateTime<Utc>,
+    nf_precision: &str,
+    new_confidence: f32,
+) -> AppResult<Option<ReconcileReport>> {
+    #[derive(sqlx::FromRow)]
+    struct Bounded {
+        id: Uuid,
+        valid_from: Option<DateTime<Utc>>,
+        valid_to: DateTime<Utc>,
+        valid_to_precision: Option<String>,
+    }
+    // 同一侧（主语侧：同 S、P，宾语不同；宾语侧：同 P、O，主语不同）现存的已闭区间，
+    // 起点不晚于新起点、终点晚于新起点，而且终点正好是同一侧另一条现存事实的起点
+    let sql = match direction {
+        Uniqueness::SubjectSide => {
+            "SELECT c.id, c.valid_from, c.valid_to, c.valid_to_precision FROM facts c
+             WHERE c.kb_id = $1 AND c.subject_id = $2 AND c.predicate_id = $3
+               AND c.invalidated_at IS NULL AND c.id <> $4
+               AND c.valid_to IS NOT NULL AND c.valid_to > $7
+               AND (c.valid_from IS NULL OR c.valid_from <= $7)
+               AND (c.object_id IS DISTINCT FROM $5 OR c.object_value IS DISTINCT FROM $6)
+               AND EXISTS (
+                   SELECT 1 FROM facts r
+                   WHERE r.kb_id = c.kb_id AND r.subject_id = c.subject_id
+                     AND r.predicate_id = c.predicate_id
+                     AND r.invalidated_at IS NULL AND r.id <> c.id AND r.id <> $4
+                     AND r.valid_from = c.valid_to)
+             ORDER BY c.valid_from ASC NULLS FIRST
+             LIMIT 1"
+        }
+        Uniqueness::ObjectSide => {
+            "SELECT c.id, c.valid_from, c.valid_to, c.valid_to_precision FROM facts c
+             WHERE c.kb_id = $1 AND c.object_id = $5 AND c.predicate_id = $3
+               AND c.invalidated_at IS NULL AND c.id <> $4
+               AND c.subject_id IS DISTINCT FROM $2
+               AND c.valid_to IS NOT NULL AND c.valid_to > $6
+               AND (c.valid_from IS NULL OR c.valid_from <= $6)
+               AND EXISTS (
+                   SELECT 1 FROM facts r
+                   WHERE r.kb_id = c.kb_id AND r.object_id = c.object_id
+                     AND r.predicate_id = c.predicate_id
+                     AND r.invalidated_at IS NULL AND r.id <> c.id AND r.id <> $4
+                     AND r.valid_from = c.valid_to)
+             ORDER BY c.valid_from ASC NULLS FIRST
+             LIMIT 1"
+        }
+    };
+    if matches!(direction, Uniqueness::ObjectSide) && object_id.is_none() {
+        return Ok(None);
+    }
+    let q = sqlx::query_as(sql)
+        .bind(kb_id)
+        .bind(subject_id)
+        .bind(predicate_id)
+        .bind(new_fact_id)
+        .bind(object_id);
+    // 宾语侧不比字面值（字面值不"被占用"），少绑一个参数
+    let bounded: Option<Bounded> = match direction {
+        Uniqueness::SubjectSide => q.bind(object_value).bind(nf).fetch_optional(pool).await?,
+        Uniqueness::ObjectSide => q.bind(nf).fetch_optional(pool).await?,
+    };
+    let Some(c) = bounded else {
+        return Ok(None);
+    };
+    let mut report = ReconcileReport::default();
+    if c.valid_from == Some(nf) {
+        record_conflict(pool, kb_id, c.id, new_fact_id, "simultaneous").await?;
+        report.conflicts += 1;
+        return Ok(Some(report));
+    }
+    if new_confidence < AUTO_CLOSE_MIN_CONFIDENCE {
+        record_conflict(pool, kb_id, c.id, new_fact_id, "low_confidence").await?;
+        report.conflicts += 1;
+        return Ok(Some(report));
+    }
+    // 先切旧的，再给新的定终点：两步各自是一次「作废 + 改写」，记录轴上都回放得到
+    if let Some(id) = close_superseded(pool, c.id, nf, nf_precision).await? {
+        report.corrected.push(id);
+    }
+    if let Some(id) = close_superseded(
+        pool,
+        new_fact_id,
+        c.valid_to,
+        c.valid_to_precision.as_deref().unwrap_or("day"),
+    )
+    .await?
+    {
+        report.corrected.push(id);
+    }
+    Ok(Some(report))
 }
 
 /// 实体合并搬移事实后的对账：换了主/宾的事实等价于"新落库的观察"——
