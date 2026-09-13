@@ -822,20 +822,10 @@ pub async fn delete(
     .bind(id)
     .fetch_all(&mut *tx)
     .await?;
-    // 作废的事实可能是别的值的后任：它走了，关在它开始时的前任要重新接上。牵连的时间线
-    // 先按固定顺序锁上，再作废任何一行（与撤回合并同一个顺序，见 temporal 模块头）
-    let cited: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT DISTINCT f.id FROM facts f
-           JOIN fact_evidence fe ON fe.fact_id = f.id
-           JOIN chunks c ON c.id = fe.chunk_id
-          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND c.document_id = $2",
-    )
-    .bind(kb_id)
-    .bind(id)
-    .fetch_all(&mut *tx)
-    .await?;
-    let timelines = crate::temporal::timelines_of(&mut *tx, kb_id, &cited, None).await?;
-    crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
+    // 作废的事实可能是别的值的后任：它走了，关在它开始时的前任要重新接上；没作废、只是
+    // 少了这份证据的，排序用的日期也可能变。牵连的时间线先按固定顺序锁上，再作废任何一行
+    // （与撤回合并同一个顺序，见 temporal 模块头）
+    let (cited, timelines) = lock_cited_timelines(&mut tx, kb_id, id).await?;
     // 先打了墓碑再算：这篇文档此刻已经算「已删除」，所以只剩它作出处的事实才落网；
     // 另一篇活着的文档里也有证据的一条不动——删一份重复上传不该掀掉半张图
     let facts: Vec<(Uuid,)> = sqlx::query_as(
@@ -863,9 +853,7 @@ pub async fn delete(
     .await?;
     let chunk_ids: Vec<Uuid> = chunks.into_iter().map(|(c,)| c).collect();
     let fact_ids: Vec<Uuid> = facts.into_iter().map(|(f,)| f).collect();
-    if !fact_ids.is_empty() {
-        crate::temporal::tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
-    }
+    crate::temporal::tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
     let deletion_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO document_deletions
@@ -888,6 +876,45 @@ pub async fn delete(
         invalidated_facts: fact_ids.len(),
         superseded_chunks: chunk_ids.len(),
     })
+}
+
+/// 引用这篇文档的现存事实，连同它们所在的唯一性时间线，锁上之后返回。
+///
+/// **锁上之后再读一遍**（#679 第三轮评审）：等锁的时候，时间线重算可能把其中一行改写成了
+/// 新的一行，头一遍读到的是旧 id——拿旧名单去作废，新的那一行就活下来，出处却已经删了。
+/// 改写只在时间线的锁里发生，锁上之后名单不会再变；再读出来的行若落在没锁上的时间线上
+/// （撤回合并把它送回了源实体），把那几条也锁上
+async fn lock_cited_timelines(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    document_id: Uuid,
+) -> AppResult<(Vec<Uuid>, Vec<crate::temporal::Timeline>)> {
+    let cited_sql = "SELECT DISTINCT f.id FROM facts f
+                       JOIN fact_evidence fe ON fe.fact_id = f.id
+                       JOIN chunks c ON c.id = fe.chunk_id
+                      WHERE f.kb_id = $1 AND f.invalidated_at IS NULL AND c.document_id = $2";
+    let cited: Vec<Uuid> = sqlx::query_scalar(cited_sql)
+        .bind(kb_id)
+        .bind(document_id)
+        .fetch_all(&mut **tx)
+        .await?;
+    let mut timelines = crate::temporal::timelines_of(&mut **tx, kb_id, &cited, None).await?;
+    crate::temporal::lock_timelines(tx, kb_id, &timelines).await?;
+    let cited: Vec<Uuid> = sqlx::query_scalar(cited_sql)
+        .bind(kb_id)
+        .bind(document_id)
+        .fetch_all(&mut **tx)
+        .await?;
+    let late: Vec<_> = crate::temporal::timelines_of(&mut **tx, kb_id, &cited, None)
+        .await?
+        .into_iter()
+        .filter(|t| !timelines.contains(t))
+        .collect();
+    if !late.is_empty() {
+        crate::temporal::lock_timelines(tx, kb_id, &late).await?;
+        timelines.extend(late);
+    }
+    Ok((cited, timelines))
 }
 
 /// 撤销一次删除：文档、这次打标的分块、这次作废的事实原路复活，形状照 `revert_merge`。
@@ -949,9 +976,16 @@ async fn restore_tx(
         .bind(&chunk_ids)
         .execute(&mut **tx)
         .await?;
-    // 复活的事实回到各自的时间线上：先锁、再复活、再重算（同删除）
-    let timelines = crate::temporal::timelines_of(&mut **tx, kb_id, &fact_ids, None).await?;
-    crate::temporal::lock_timelines(tx, kb_id, &timelines).await?;
+    // 复活的事实回到各自的时间线上；一直引用着这篇文档的事实，排序用的日期也回来了。
+    // 先锁、再复活、再重算（同删除）
+    let (_, mut timelines) = lock_cited_timelines(tx, kb_id, id).await?;
+    let revived: Vec<_> = crate::temporal::timelines_of(&mut **tx, kb_id, &fact_ids, None)
+        .await?
+        .into_iter()
+        .filter(|t| !timelines.contains(t))
+        .collect();
+    crate::temporal::lock_timelines(tx, kb_id, &revived).await?;
+    timelines.extend(revived);
     sqlx::query(
         "UPDATE facts SET invalidated_at = NULL
           WHERE id = ANY($1) AND invalidated_at IS NOT NULL",

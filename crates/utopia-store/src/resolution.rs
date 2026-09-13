@@ -1716,6 +1716,20 @@ pub async fn merge_entities(
 
     let mut tx = pool.begin().await?;
 
+    // 搬动会牵连的时间线先按固定顺序锁上，再改任何一行（撤回合并同一个顺序，见 temporal
+    // 模块头）：不锁的话，合并与撤回、合并与落库对账会各拿一半行锁互相等
+    let moving: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM facts WHERE kb_id = $1 AND (subject_id = $2 OR object_id = $2)",
+    )
+    .bind(kb_id)
+    .bind(source_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let timelines =
+        crate::temporal::timelines_of(&mut *tx, kb_id, &moving, Some((source_id, target_id)))
+            .await?;
+    crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
+
     // 互指事实（合并后变自环）→ 作废
     let cross: Vec<(Uuid,)> = sqlx::query_as(
         "UPDATE facts SET invalidated_at = now()
@@ -1985,6 +1999,10 @@ async fn with_rewrites(
 /// 驳回的仍是驳回的。合并当时引擎做的闭合不单独撤：两边的时间线在搬完之后按剩下的行重算，
 /// 边界随搬走的行走了，关在那里的行自然重新打开，写明的终点不动（0057）。
 ///
+/// 怎么搬分两种，为的是记录轴回放合并窗口时仍答得对（0027 的 `fact_owner_at` 只认账本）：
+/// 账本上的行原地改回主语/宾语；合并之后才改写出来的行不在账本上，活着的作废、在源实体上
+/// 另起一行接着它，作废了的留在目标实体上——它们在那段窗口里确实挂在那里
+///
 /// 搬动之前先按固定顺序拿下两边所有牵连时间线的锁（见 temporal 模块头）：落库对账先拿锁
 /// 再锁行，这里要是先改行再拿锁，两边会互相等死
 pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResult<()> {
@@ -2020,16 +2038,39 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
 
     sqlx::query("UPDATE facts SET subject_id = $1 WHERE id = ANY($2) AND subject_id = $3")
         .bind(m.source_id)
-        .bind(&subject_rows)
+        .bind(&m.moved_subject_facts)
         .bind(m.target_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query("UPDATE facts SET object_id = $1 WHERE id = ANY($2) AND object_id = $3")
         .bind(m.source_id)
-        .bind(&object_rows)
+        .bind(&m.moved_object_facts)
         .bind(m.target_id)
         .execute(&mut *tx)
         .await?;
+    for (rows, ledger, on_object) in [
+        (&subject_rows, &m.moved_subject_facts, false),
+        (&object_rows, &m.moved_object_facts, true),
+    ] {
+        let holder = if on_object { "object_id" } else { "subject_id" };
+        let live: Vec<Uuid> = sqlx::query_scalar(&format!(
+            "SELECT id FROM facts
+              WHERE id = ANY($1) AND id <> ALL($2) AND invalidated_at IS NULL AND {holder} = $3"
+        ))
+        .bind(rows)
+        .bind(ledger)
+        .bind(m.target_id)
+        .fetch_all(&mut *tx)
+        .await?;
+        for id in live {
+            let (subject, object) = if on_object {
+                (None, Some(m.source_id))
+            } else {
+                (Some(m.source_id), None)
+            };
+            crate::temporal::rehome_tx(&mut tx, id, subject, object).await?;
+        }
+    }
     sqlx::query("UPDATE facts SET invalidated_at = NULL WHERE id = ANY($1)")
         .bind(&m.invalidated_facts)
         .execute(&mut *tx)

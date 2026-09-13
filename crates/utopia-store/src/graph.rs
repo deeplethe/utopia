@@ -494,12 +494,18 @@ async fn insert_fact_inner(
             }
         }
         // 已经关上的（结束了不知哪天）再听到一次「结束了」：同一件事，复用那一行。
-        // 锚点只往早挪——更早的文档说它结束了，它就结束得更早
+        // 锚点只往早挪——更早的文档说它结束了，它就结束得更早。那一行的终点若是引擎推的，
+        // 现在原文说出来了：改成写明的，此后不随时间线重算（#679 第三轮评审）
         if let Some((ended, _, _, _)) = same.iter().find(|(_, vf, vt, vtp)| {
             vt.is_none()
                 && vtp.as_deref() == Some(ENDED_UNKNOWN)
                 && validity.from.is_none_or(|f| Some(f) == *vf)
         }) {
+            if let Some(stated) =
+                crate::temporal::state_derived_end(pool, *ended, None, validity.attested_at).await?
+            {
+                return Ok((stated, true));
+            }
             attest_earlier(pool, *ended, validity.attested_at).await?;
             return Ok((*ended, false));
         }
@@ -511,8 +517,19 @@ async fn insert_fact_inner(
     属性随行），与 #393 关「不知哪天」同一条路；起点比终点晚的开放行不是这一段 */
     if temporal == Temporal::State && validity.from.is_none() {
         if let Some(to) = validity.to {
-            // 已经关在这一天的：同一件事，复用那一行
+            // 已经关在这一天的：同一件事，复用那一行（引擎推的终点改成写明的，同上）
             if let Some((ended, _, _, _)) = same.iter().find(|(_, _, vt, _)| *vt == Some(to)) {
+                let precision = validity.to_precision.unwrap_or("day");
+                if let Some(stated) = crate::temporal::state_derived_end(
+                    pool,
+                    *ended,
+                    Some((to, precision)),
+                    validity.attested_at,
+                )
+                .await?
+                {
+                    return Ok((stated, true));
+                }
                 attest_earlier(pool, *ended, validity.attested_at).await?;
                 return Ok((*ended, false));
             }
@@ -551,6 +568,18 @@ async fn insert_fact_inner(
                 {
                     return Ok((closed, true));
                 }
+            }
+        }
+        // 那行已经关上，这次观察也说了终点：终点若是引擎推的，改成原文说的
+        if temporal == Temporal::State && (vt.is_some() || vtp.is_some()) && validity.has_ended() {
+            let stated_to = validity
+                .to
+                .map(|to| (to, validity.to_precision.unwrap_or("day")));
+            if let Some(stated) =
+                crate::temporal::state_derived_end(pool, *existing, stated_to, validity.attested_at)
+                    .await?
+            {
+                return Ok((stated, true));
             }
         }
         attest_earlier(pool, *existing, validity.attested_at).await?;
@@ -753,18 +782,47 @@ pub async fn add_evidence(
     // 冲突时补写表层谓词而非整行跳过：重抽命中的多是已有的 (事实, 分块) 对，
     // DO NOTHING 会让存量证据永远填不上这一列。只在原值为空时补，不覆盖——
     // 同一分块的同一条事实，第一次记下的说法就是它的说法
+    //
+    // **证据落在活着的那一行上**（#679 第三轮评审）。落库到写证据之间，时间线重算可能已经
+    // 把这一行改写掉（换了终点、换了 id）：改写时复制的证据里没有这一条，写在旧行上就丢了。
+    // 先 `FOR SHARE` 锁住这一行——正在改写它的事务持着 `FOR UPDATE`，这里等它提交；
+    // 等到的若已作废，顺着 supersedes 走到它改写出来的那一行。被驳回、没有后继的，证据仍记在它身上
+    let mut tx = pool.begin().await?;
+    let mut target = fact_id;
+    loop {
+        let live: Option<bool> =
+            sqlx::query_scalar("SELECT invalidated_at IS NULL FROM facts WHERE id = $1 FOR SHARE")
+                .bind(target)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if live != Some(false) {
+            break;
+        }
+        let next: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM facts WHERE supersedes = $1
+              ORDER BY invalidated_at IS NULL DESC, recorded_at DESC LIMIT 1",
+        )
+        .bind(target)
+        .fetch_optional(&mut *tx)
+        .await?;
+        match next {
+            Some(next) => target = next,
+            None => break,
+        }
+    }
     sqlx::query(
         "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version)
          SELECT $1, $2, $3, left($4, 120), c.document_id, c.doc_version FROM chunks c WHERE c.id = $2
          ON CONFLICT (fact_id, chunk_id) DO UPDATE
            SET proposed_predicate = COALESCE(fact_evidence.proposed_predicate, EXCLUDED.proposed_predicate)",
     )
-    .bind(fact_id)
+    .bind(target)
     .bind(chunk_id)
     .bind(quote)
     .bind(proposed)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 

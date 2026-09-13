@@ -14,11 +14,14 @@
 //! 合并搬来或撤回、文档删除或恢复，都把这一列按当下有哪些行**一次**重算到这个形状——结果
 //! 只取决于有哪些行，与它们到达的先后无关（#679）。
 //!
+//! 一条关系两侧都唯一（functional 且 inverse functional，「一个人同时只领导一个项目，一个
+//! 项目同时只有一个领导」）时，一行同时在两条时间线上：它的终点是两侧各推一个、取早的那个。
+//!
 //! 重算在一个事务里、持着这条时间线的咨询锁做完。一次要动几条时间线的事务（撤回合并、删除
 //! 文档）先按固定顺序把这些锁全拿到，再改任何一行：落库对账也是先拿锁再锁行，两边顺序一致，
-//! 谁也不会拿着行锁去等咨询锁。
+//! 谁也不会拿着行锁去等咨询锁。两侧都唯一的关系一条谓词一把锁——重算一侧要读另一侧。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -31,10 +34,11 @@ const AUTO_CLOSE_MIN_CONFIDENCE: f32 = 0.75;
 
 /// 证据文件**自带**的最早日期，按 `facts` 的别名 `f` 投影。只认正文（`content`）与来源
 /// （`source`）给的日期：上传时刻、文件修改时间不是文档自己的日期——拿它们排序，
-/// 每条没起点的旧行都会被读成「此刻还在」
+/// 每条没起点的旧行都会被读成「此刻还在」。删掉的文档不再作证
 const DATED_AT: &str = "(SELECT min(d.doc_time) FROM fact_evidence fe
                          JOIN documents d ON d.id = fe.document_id
                          WHERE fe.fact_id = f.id AND d.doc_time IS NOT NULL
+                           AND d.deleted_at IS NULL
                            AND d.doc_time_source IN ('content', 'source'))";
 
 /// 唯一性方向：functional = 主语侧（张三同时只 reports_to 一人）；
@@ -45,20 +49,35 @@ pub enum Uniqueness {
     ObjectSide,
 }
 
+impl Uniqueness {
+    fn other(self) -> Self {
+        match self {
+            Self::SubjectSide => Self::ObjectSide,
+            Self::ObjectSide => Self::SubjectSide,
+        }
+    }
+}
+
 /// 一条唯一性时间线：谁（持有者）在哪个谓词、哪个方向上同时只能有一个值
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Timeline {
     pub holder: Uuid,
     pub predicate_id: Uuid,
     pub side: Uniqueness,
+    /// 谓词两侧都唯一：这条线上的每一行也在另一侧的一条线上
+    pub both_sides: bool,
 }
 
 impl Timeline {
     fn lock_key(&self, kb_id: Uuid) -> String {
-        format!(
-            "timeline:{kb_id}:{}:{}:{:?}",
-            self.holder, self.predicate_id, self.side
-        )
+        if self.both_sides {
+            format!("timeline:{kb_id}:{}:both", self.predicate_id)
+        } else {
+            format!(
+                "timeline:{kb_id}:{}:{}:{:?}",
+                self.holder, self.predicate_id, self.side
+            )
+        }
     }
 }
 
@@ -97,13 +116,45 @@ enum End {
     Unknown(Option<DateTime<Utc>>),
 }
 
+impl End {
+    /// 读出来止于哪一刻；开着的没有
+    fn instant(&self) -> Option<DateTime<Utc>> {
+        match self {
+            End::Open => None,
+            End::At(at, _) => Some(*at),
+            End::Unknown(anchor) => *anchor,
+        }
+    }
+
+    /// 两个终点里早的那个；同一刻时写着日期的胜过锚点
+    fn earlier(self, other: End) -> End {
+        match (self.instant(), other.instant()) {
+            (None, _) => other,
+            (_, None) => self,
+            (Some(a), Some(b)) if b < a => other,
+            (Some(a), Some(b)) if a == b && matches!(other, End::At(..)) => other,
+            _ => self,
+        }
+    }
+}
+
 impl Row {
-    /// 排序用的时刻：起点；没有起点时，最早那份自带日期的证据——它至少在那天成立
+    /// 排序用的时刻：起点。没有起点时，最早那份自带日期的证据——但只对还开着、或者由引擎
+    /// 关上的行成立：它们的证据说那天还成立。原文说已经结束的行，证据的日期只说明「那天
+    /// 之前结束了」，拿它排序会让一个早就结束的值去关上当下的值（#679 第三轮评审）
     fn key(&self) -> Option<DateTime<Utc>> {
-        self.valid_from.or(self.dated_at)
+        match self.valid_from {
+            Some(start) => Some(start),
+            None if self.is_open() || self.end_derived => self.dated_at,
+            None => None,
+        }
     }
     fn is_open(&self) -> bool {
         self.valid_to.is_none() && self.valid_to_precision.is_none()
+    }
+    /// 终点由引擎按时间线定：开着的，或引擎关上的
+    fn recomputable(&self) -> bool {
+        self.is_open() || self.end_derived
     }
     /// 终点的时刻：日期；「结束了，不知哪天」的锚点（读出侧同样读到它为止）
     fn end(&self) -> Option<DateTime<Utc>> {
@@ -138,6 +189,13 @@ impl Row {
     /// 在 `at` 这一刻还成立
     fn holds_at(&self, at: DateTime<Utc>) -> bool {
         self.is_open() || self.end().is_some_and(|end| end > at)
+    }
+    /// 这一行在 `side` 那一侧的持有者
+    fn holder(&self, side: Uniqueness) -> Option<Uuid> {
+        match side {
+            Uniqueness::SubjectSide => Some(self.subject_id),
+            Uniqueness::ObjectSide => self.object_id,
+        }
     }
 }
 
@@ -241,6 +299,7 @@ where
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for p in placed {
+        let both_sides = p.functional && p.inverse_functional;
         let mut holders = Vec::new();
         if p.functional {
             holders.push((p.subject_id, Uniqueness::SubjectSide));
@@ -256,6 +315,7 @@ where
                 holder,
                 predicate_id: p.predicate_id,
                 side,
+                both_sides,
             };
             if seen.insert(timeline) {
                 out.push(timeline);
@@ -294,10 +354,18 @@ pub async fn reconcile_new_fact(
             None => return Ok(ReconcileReport::default()),
         },
     };
+    let both_sides: bool = sqlx::query_scalar(
+        "SELECT functional AND inverse_functional FROM relation_types WHERE id = $1",
+    )
+    .bind(predicate_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(false);
     let timeline = Timeline {
         holder,
         predicate_id,
         side: direction,
+        both_sides,
     };
     let mut report = ReconcileReport::default();
     let mut tx = pool.begin().await?;
@@ -308,12 +376,11 @@ pub async fn reconcile_new_fact(
     Ok(report)
 }
 
-/// 一条事实来到它的时间线上，记下重算裁不了的（调用方已持锁）：
+/// 一条事实来到它的时间线上，记下重算裁不了的，交给人（调用方已持锁）：
 ///
-/// - 说不出时间（没起点、也没有自带日期的证据）又还开着：谁先谁后无从谈起，与每一条
-///   开着的别的值成对交给人
-/// - 与别的值同一时刻开始、两边那一刻都还成立：谁接替谁说不清，交给人
-/// - 说不出时间的开放行排不进时间线：照旧关在这一条开始时（这一条置信度够才许）
+/// - 与别的值同一时刻开始、两边那一刻都还成立：谁接替谁说不清
+/// - 两边都还开着，有一边说不出时间（没起点、也没有自带日期的证据）：谁先谁后无从谈起。
+///   不论哪一边先到都是这一对冲突，不替人关上任何一边
 ///
 /// `settled`：同一批里已经来过的事实，不再与它们重复成对
 async fn arrive(
@@ -328,52 +395,27 @@ async fn arrive(
     let Some(new) = rows.iter().find(|r| r.id == fact_id) else {
         return Ok(());
     };
-    let others: Vec<&Row> = rows
+    let others = rows
         .iter()
         .filter(|r| r.id != new.id && !same_value(timeline.side, r, new))
-        .collect();
-    let unpaired = |other: &&&Row| !settled.contains(&other.id);
-
-    let Some(new_key) = new.key() else {
-        if new.is_open() {
-            for other in others.iter().filter(|o| o.is_open()).filter(unpaired) {
-                if record_conflict_tx(tx, kb_id, other.id, new.id, "no_time").await? {
-                    report.conflicts += 1;
-                }
+        .filter(|r| !settled.contains(&r.id));
+    for other in others {
+        let reason = match (new.key(), other.key()) {
+            (Some(at), Some(theirs)) if at == theirs && new.holds_at(at) && other.holds_at(at) => {
+                "simultaneous"
             }
-        }
-        return Ok(());
-    };
-
-    if new.holds_at(new_key) {
-        for other in others
-            .iter()
-            .filter(|o| o.key() == Some(new_key) && o.holds_at(new_key))
-            .filter(unpaired)
-        {
-            if record_conflict_tx(tx, kb_id, other.id, new.id, "simultaneous").await? {
-                report.conflicts += 1;
-            }
-        }
-    }
-
-    if new.is_open() {
-        for other in others.iter().filter(|o| o.is_open() && o.key().is_none()) {
-            if new.confidence < AUTO_CLOSE_MIN_CONFIDENCE {
-                if record_conflict_tx(tx, kb_id, other.id, new.id, "low_confidence").await? {
-                    report.conflicts += 1;
-                }
-            } else if let Some(id) =
-                rewrite_end_tx(tx, other.id, &new.end_before(), true, true).await?
-            {
-                report.corrected.push(id);
-            }
+            (None, _) | (_, None) if new.is_open() && other.is_open() => "no_time",
+            _ => continue,
+        };
+        if record_conflict_tx(tx, kb_id, other.id, new.id, reason).await? {
+            report.conflicts += 1;
         }
     }
     Ok(())
 }
 
-/// 重算一条时间线要改的地方
+/// 重算一条时间线要改的地方（单元测试看的形状）
+#[cfg(test)]
 #[derive(Debug, Default, PartialEq)]
 struct Plan {
     /// (行, 它该有的终点)
@@ -382,7 +424,7 @@ struct Plan {
     held: Vec<(Uuid, Uuid)>,
 }
 
-/// 一条时间线该是什么样子（纯函数，不碰库）。
+/// 一条时间线上每一行该有的终点（纯函数，不碰库）：只含终点由引擎定的行。
 ///
 /// 能排进时间线的行（有起点，或有自带日期的证据）按时刻排好；终点是写明的行不动。其余
 /// 每一行——开着的、引擎关上的——止于它之后最近的、值不同的那一行开始时；后面没有这样
@@ -390,39 +432,59 @@ struct Plan {
 ///
 /// 每一行的终点只取决于各行的时刻、值和置信度，改写终点不改这三样，所以一次算完就是
 /// 最终的样子，不必一轮一轮地来；行怎么排进来的也不影响结果
-fn plan_timeline(side: Uniqueness, rows: &[Row]) -> Plan {
+fn desired_ends(side: Uniqueness, rows: &[Row]) -> (HashMap<Uuid, End>, Vec<(Uuid, Uuid)>) {
     let mut keyed: Vec<&Row> = rows.iter().filter(|r| r.key().is_some()).collect();
     // 同一刻开始的几行，写着起点的排前面：后任取它，前任就止于一个日期而不是一个锚点
     keyed.sort_by_key(|r| (r.key(), r.valid_from.is_none(), r.id));
-    let mut plan = Plan::default();
+    let mut ends = HashMap::new();
+    let mut held = Vec::new();
     for (i, row) in keyed.iter().enumerate() {
-        if !row.is_open() && !row.end_derived {
+        if !row.recomputable() {
             continue;
         }
         let mut end = End::Open;
-        let mut held = None;
+        let mut doubtful = None;
         for later in keyed[i + 1..]
             .iter()
             .filter(|later| later.key() > row.key() && !same_value(side, row, later))
         {
             if later.confidence < AUTO_CLOSE_MIN_CONFIDENCE {
-                held.get_or_insert(later.id);
+                doubtful.get_or_insert(later.id);
                 continue;
             }
             end = later.end_before();
             break;
         }
-        if let Some(later) = held {
-            plan.held.push((row.id, later));
+        if let Some(later) = doubtful {
+            held.push((row.id, later));
         }
-        if row.current_end() != end {
-            plan.ends.push((row.id, end));
-        }
+        ends.insert(row.id, end);
     }
-    plan
+    (ends, held)
 }
 
-/// 把一条时间线重算到 [`plan_timeline`] 说的样子（调用方已持锁）
+/// 单侧时间线的重算计划：该有的终点与眼下写着的不同的那些行
+#[cfg(test)]
+fn plan_timeline(side: Uniqueness, rows: &[Row]) -> Plan {
+    let (ends, held) = desired_ends(side, rows);
+    Plan {
+        ends: diff(rows, ends),
+        held,
+    }
+}
+
+/// 该有的终点里与眼下不同的，按行在时间线上的顺序
+fn diff(rows: &[Row], mut ends: HashMap<Uuid, End>) -> Vec<(Uuid, End)> {
+    rows.iter()
+        .filter_map(|r| {
+            let end = ends.remove(&r.id)?;
+            (r.current_end() != end).then_some((r.id, end))
+        })
+        .collect()
+}
+
+/// 把一条时间线重算到 [`desired_ends`] 说的样子（调用方已持锁）。两侧都唯一的关系，
+/// 每一行再按它另一侧的时间线推一次，取早的那个终点
 async fn tidy(
     tx: &mut Transaction<'_, Postgres>,
     kb_id: Uuid,
@@ -430,17 +492,40 @@ async fn tidy(
     report: &mut ReconcileReport,
 ) -> AppResult<()> {
     let rows = load_timeline(tx, kb_id, timeline).await?;
-    let plan = plan_timeline(timeline.side, &rows);
+    let (mut ends, mut held) = desired_ends(timeline.side, &rows);
+    if timeline.both_sides {
+        let other = timeline.side.other();
+        let holders: BTreeSet<Uuid> = rows.iter().filter_map(|r| r.holder(other)).collect();
+        for holder in holders {
+            let across = Timeline {
+                holder,
+                side: other,
+                ..timeline
+            };
+            let across_rows = load_timeline(tx, kb_id, across).await?;
+            let (across_ends, across_held) = desired_ends(other, &across_rows);
+            for (id, end) in across_ends {
+                if let Some(mine) = ends.remove(&id) {
+                    ends.insert(id, mine.earlier(end));
+                }
+            }
+            held.extend(
+                across_held
+                    .into_iter()
+                    .filter(|(row, _)| ends.contains_key(row)),
+            );
+        }
+    }
     let mut rewritten: HashMap<Uuid, Uuid> = HashMap::new();
-    for (id, end) in &plan.ends {
+    for (id, end) in diff(&rows, ends) {
         // 重新打开的行只是开着，终点不是谁推出来的
-        let derived = *end != End::Open;
-        if let Some(corrected) = rewrite_end_tx(tx, *id, end, derived, false).await? {
-            rewritten.insert(*id, corrected);
+        let derived = end != End::Open;
+        if let Some(corrected) = rewrite_end_tx(tx, id, &end, derived, false).await? {
+            rewritten.insert(id, corrected);
             report.corrected.push(corrected);
         }
     }
-    for (row, later) in plan.held {
+    for (row, later) in held {
         let row = rewritten.get(&row).copied().unwrap_or(row);
         let later = rewritten.get(&later).copied().unwrap_or(later);
         if record_conflict_tx(tx, kb_id, row, later, "low_confidence").await? {
@@ -487,8 +572,6 @@ async fn reconcile_facts(
     for timeline in timelines_of(pool, kb_id, fact_ids, None).await? {
         let mut tx = pool.begin().await?;
         lock_timeline(&mut tx, kb_id, timeline).await?;
-        // 有时刻的先来，同一刻按记录先后：没时刻的开放行由有时刻的那一条关上，
-        // 而不是反过来先成对交给人
         let rows = load_timeline(&mut tx, kb_id, timeline).await?;
         let mut arriving: Vec<&Row> = rows.iter().filter(|r| batch.contains(&r.id)).collect();
         arriving.sort_by_key(|r| (r.key().is_none(), r.key(), r.id));
@@ -502,7 +585,7 @@ async fn reconcile_facts(
     Ok(report)
 }
 
-/// 声明来晚了：一条谓词上所有开放事实所在的时间线重算一遍（#341）。
+/// 声明来晚了：一条谓词上所有现存事实所在的时间线重算一遍（#341）。
 ///
 /// 本体自己长出来的库里没人声明过唯一性，接任不会闭合前任——三个人同时在管一个
 /// 项目。人补上声明之后，这里把已经躺在账上的行对一遍。走的是与落库时同一条
@@ -540,8 +623,7 @@ pub async fn reconcile_predicate(
     }
     let ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM facts
-         WHERE kb_id = $1 AND predicate_id = $2
-           AND invalidated_at IS NULL AND valid_to IS NULL AND valid_to_precision IS NULL
+         WHERE kb_id = $1 AND predicate_id = $2 AND invalidated_at IS NULL
            AND (object_id IS NOT NULL OR object_value IS NOT NULL)",
     )
     .bind(kb_id)
@@ -611,11 +693,43 @@ pub async fn close_with_unknown_end(
     Ok(corrected)
 }
 
+/// 原文说出了一条**引擎关上**的行的终点：改写成原文说的，此后不再重算（#679 第三轮评审）。
+/// `valid_to` 为 `None` 是「结束了，不知哪天」，锚在 `attested_at`。返回修正行 id；
+/// 行已作废，或它的终点本来就是写明的，返回 `None`
+pub async fn state_derived_end(
+    pool: &PgPool,
+    fact_id: Uuid,
+    valid_to: Option<(DateTime<Utc>, &str)>,
+    attested_at: Option<DateTime<Utc>>,
+) -> AppResult<Option<Uuid>> {
+    let end = match valid_to {
+        Some((at, precision)) => End::At(
+            crate::graph::truncate_to(at, Some(precision)),
+            precision.to_string(),
+        ),
+        None => End::Unknown(attested_at),
+    };
+    let mut tx = pool.begin().await?;
+    let derived: Option<bool> = sqlx::query_scalar(
+        "SELECT end_derived FROM facts WHERE id = $1 AND invalidated_at IS NULL FOR UPDATE",
+    )
+    .bind(fact_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let corrected = match derived {
+        Some(true) => rewrite_end_tx(&mut tx, fact_id, &end, false, false).await?,
+        _ => None,
+    };
+    tx.commit().await?;
+    Ok(corrected)
+}
+
 /// 作废 + 改写一行的终点。`derived`：这个终点是引擎按时间线推出来的（0057），之后随
 /// 时间线重算；`require_open`：只改还开着的行。
 ///
 /// 先 `FOR UPDATE` 锁住旧行：并行的两次改写只有一次看得见它还活着，另一次拿到 `None`，
-/// 不会各插一条修正行
+/// 不会各插一条修正行；往这一行上添证据的也要等它（`graph::add_evidence`），证据不会落在
+/// 刚被作废的旧行上。还没人裁的冲突跟着换到修正行上：问题还在，只是这一行换了终点
 async fn rewrite_end_tx(
     tx: &mut Transaction<'_, Postgres>,
     fact_id: Uuid,
@@ -660,6 +774,7 @@ async fn rewrite_end_tx(
     .bind(derived)
     .execute(&mut **tx)
     .await?;
+    carry_open_conflicts(tx, fact_id, corrected).await?;
     sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
         .bind(fact_id)
         .execute(&mut **tx)
@@ -667,6 +782,79 @@ async fn rewrite_end_tx(
     copy_evidence(tx, fact_id, corrected).await?;
     copy_qualifiers(tx, fact_id, corrected).await?;
     Ok(Some(corrected))
+}
+
+/// 作废 + 改写一行的持有者：主语或宾语换成另一个实体，其余照旧（证据、边上的属性随行）。
+/// 撤回合并把合并之后才改写出来的行送回源实体时用——原地改主语，记录轴回放合并窗口时
+/// 就找不到它当时挂在哪（0027 只认合并账本上的行）。返回新行 id；`None` = 已作废
+pub async fn rehome_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    fact_id: Uuid,
+    subject_id: Option<Uuid>,
+    object_id: Option<Uuid>,
+) -> AppResult<Option<Uuid>> {
+    let alive: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM facts WHERE id = $1 AND invalidated_at IS NULL FOR UPDATE")
+            .bind(fact_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if alive.is_none() {
+        return Ok(None);
+    }
+    let moved = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
+                            valid_from, valid_from_precision, valid_to, valid_to_precision,
+                            confidence, derived_by_rule, supersedes,
+                            attested_from, attested_to, end_derived)
+         SELECT $1, kb_id, COALESCE($3, subject_id), predicate_id, COALESCE($4, object_id),
+                object_value, valid_from, valid_from_precision, valid_to, valid_to_precision,
+                confidence, derived_by_rule, id, attested_from, attested_to, end_derived
+         FROM facts WHERE id = $2",
+    )
+    .bind(moved)
+    .bind(fact_id)
+    .bind(subject_id)
+    .bind(object_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
+        .bind(fact_id)
+        .execute(&mut **tx)
+        .await?;
+    copy_evidence(tx, fact_id, moved).await?;
+    copy_qualifiers(tx, fact_id, moved).await?;
+    Ok(Some(moved))
+}
+
+/// 还开着的冲突从旧行换到修正行上（旧行一作废，0051 的触发器就会把它们撤下）。
+/// 修正行上已经有同一对的，留着旧的那条随作废撤下
+async fn carry_open_conflicts(
+    tx: &mut Transaction<'_, Postgres>,
+    from: Uuid,
+    to: Uuid,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE fact_conflicts c SET old_fact_id = $2
+          WHERE c.status = 'open' AND c.old_fact_id = $1
+            AND NOT EXISTS (SELECT 1 FROM fact_conflicts d
+                             WHERE d.old_fact_id = $2 AND d.new_fact_id = c.new_fact_id)",
+    )
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "UPDATE fact_conflicts c SET new_fact_id = $2
+          WHERE c.status = 'open' AND c.new_fact_id = $1
+            AND NOT EXISTS (SELECT 1 FROM fact_conflicts d
+                             WHERE d.new_fact_id = $2 AND d.old_fact_id = c.old_fact_id)",
+    )
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// 边上的属性随修正行复制（0037）：纠正的是时间区间，边上的金额、职务照旧——
@@ -778,9 +966,24 @@ async fn record_conflict_tx(
     new_fact_id: Uuid,
     reason: &str,
 ) -> AppResult<bool> {
+    // 人已经裁过「两个都留着」的，不因为两行后来被改写（换了 id）就再问一遍：
+    // 顺着 supersedes 往上找两行的前身，那一对裁过就不记（#679 第三轮评审）
     let inserted = sqlx::query(
         "INSERT INTO fact_conflicts (id, kb_id, old_fact_id, new_fact_id, reason)
-         VALUES ($1, $2, $3, $4, $5)
+         SELECT $1, $2, $3, $4, $5
+         WHERE NOT EXISTS (
+             WITH RECURSIVE a(id) AS (
+                     SELECT $3::uuid
+                     UNION SELECT f.supersedes FROM facts f JOIN a ON f.id = a.id
+                      WHERE f.supersedes IS NOT NULL),
+                 b(id) AS (
+                     SELECT $4::uuid
+                     UNION SELECT f.supersedes FROM facts f JOIN b ON f.id = b.id
+                      WHERE f.supersedes IS NOT NULL)
+             SELECT 1 FROM fact_conflicts c
+              WHERE c.status = 'resolved' AND c.resolution = 'kept_both'
+                AND ((c.old_fact_id IN (SELECT id FROM a) AND c.new_fact_id IN (SELECT id FROM b))
+                  OR (c.old_fact_id IN (SELECT id FROM b) AND c.new_fact_id IN (SELECT id FROM a))))
          ON CONFLICT (old_fact_id, new_fact_id) DO NOTHING",
     )
     .bind(Uuid::now_v7())

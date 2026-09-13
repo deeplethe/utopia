@@ -299,9 +299,12 @@ async fn an_undated_upload_is_not_a_document_date() -> anyhow::Result<()> {
             .await?;
     let rows = timeline_of(&pool, &f, f.lease).await?;
     cleanup(&pool, &f).await?;
+    // The upload time does not place BBHQ1 in 2026, so HPBB1 (2021) does not supersede it
+    // and it does not supersede HPBB1. With no time of its own it goes to a person as a
+    // no_time pair, whichever arrives first (third review, item 11), and both stay open.
     assert!(
-        !open,
-        "undated upload's start-less row was not closed; conflicts={conflicts}, rows={rows:?}"
+        open && conflicts == 1,
+        "an undated row is neither ordered by its upload time nor closed; conflicts={conflicts}, rows={rows:?}"
     );
     Ok(())
 }
