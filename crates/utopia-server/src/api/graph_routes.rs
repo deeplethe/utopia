@@ -126,6 +126,10 @@ pub struct EntitySearchQuery {
     pub limit: Option<i64>,
     #[serde(default)]
     pub offset: Option<i64>,
+    /// 记录轴：回放中的图上点搜索框，结果按**当时**的 `degree` 排（0019）。
+    /// 不给就是当下
+    #[serde(default)]
+    pub as_of: Option<String>,
 }
 
 pub async fn search_entities(
@@ -135,6 +139,8 @@ pub async fn search_entities(
     Query(query): Query<EntitySearchQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    // 先校验时刻：一个写错的 `as_of` 配空查询也该回 400，而不是看起来成功
+    let as_of = parse_instant("as_of", query.as_of.as_deref())?;
     if query.q.trim().is_empty() {
         return Ok(Json(json!({ "entities": [], "total": 0 })));
     }
@@ -146,6 +152,7 @@ pub async fn search_entities(
         &query.q,
         query.limit.unwrap_or(10).clamp(1, 100),
         query.offset.unwrap_or(0).max(0),
+        as_of,
     )
     .await?;
     Ok(Json(json!({ "entities": entities, "total": total })))

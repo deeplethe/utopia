@@ -1075,34 +1075,50 @@ pub async fn profile_distances(
 pub async fn search_entities(
     pool: &PgPool,
     kb_id: Uuid,
-    q: &str,
+    text: &str,
     limit: i64,
     offset: i64,
+    // 记录轴（0019）：给了就按**当时**回放——列出当时可见的实体（合并之前的被并者
+    // 还在，之后才建的不在），度数按当时谁持有事实来数，与回放中的画布一致
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(Vec<GraphNode>, i64)> {
-    let pattern = format!("%{}%", q.trim());
-    let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
-        "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL
+    let pattern = format!("%{}%", text.trim());
+    let named = crate::names::has_name_like("e", 2);
+    // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
+    let visible = |param: usize| match as_of {
+        Some(_) => crate::record_axis::entity_visible_at("e", param),
+        None => "e.merged_into IS NULL".to_string(),
+    };
+    let rewind = as_of.map(|_| 5);
+    let sql = format!(
+        "{} WHERE e.kb_id = $1 AND {visible}
          AND (e.canonical_name ILIKE $2 OR {named})
          ORDER BY degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
-        node_sql(None, None),
-        named = crate::names::has_name_like("e", 2),
-    ))
-    .bind(kb_id)
-    .bind(&pattern)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
-    let (total,): (i64,) = sqlx::query_as(&format!(
+        node_sql(rewind, rewind),
+        visible = visible(5),
+    );
+    let mut nodes_query = sqlx::query_as::<_, GraphNode>(&sql)
+        .bind(kb_id)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset);
+    if let Some(t) = as_of {
+        nodes_query = nodes_query.bind(t);
+    }
+    let nodes: Vec<GraphNode> = nodes_query.fetch_all(pool).await?;
+    let count_sql = format!(
         "SELECT count(*) FROM entities e
-          WHERE e.kb_id = $1 AND e.merged_into IS NULL
+          WHERE e.kb_id = $1 AND {visible}
             AND (e.canonical_name ILIKE $2 OR {named})",
-        named = crate::names::has_name_like("e", 2),
-    ))
-    .bind(kb_id)
-    .bind(&pattern)
-    .fetch_one(pool)
-    .await?;
+        visible = visible(3),
+    );
+    let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql)
+        .bind(kb_id)
+        .bind(&pattern);
+    if let Some(t) = as_of {
+        count_query = count_query.bind(t);
+    }
+    let (total,) = count_query.fetch_one(pool).await?;
     Ok((nodes, total))
 }
 
