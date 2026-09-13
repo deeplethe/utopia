@@ -1054,6 +1054,13 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
 
     let doc_time = doc.doc_time.map(|t| t.format("%Y-%m-%d").to_string());
     let chunks = utopia_store::documents::chunks_for_extraction(&state.pool, document_id).await?;
+    // 文件开头：序号最小的现存分块（不是还没抽的第一块）。备忘文件一个片段一块，
+    // 前一段不是后一段的开头，不附
+    let opening_chunk = if await_nod {
+        None
+    } else {
+        utopia_store::documents::opening_chunk(&state.pool, document_id).await?
+    };
 
     let mut doc_cache: HashMap<(Option<Uuid>, String), Uuid> = HashMap::new();
     // Identities introduced through handles, grouped only for detecting document-local
@@ -1108,11 +1115,11 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 name: name.clone(),
             })
             .collect();
-        // 第一块就是开头本身，不再重复一遍
-        let opening = chunks
-            .first()
-            .filter(|first| first.seq != chunk.seq)
-            .map(|first| first.text.as_str());
+        // 这一块就是开头本身时不再重复一遍
+        let opening = opening_chunk
+            .as_ref()
+            .filter(|(id, _)| *id != chunk.id)
+            .map(|(_, text)| text.as_str());
         let messages = utopia_extract::build_messages_with_opening(
             &lists.types,
             &lists.relations,
@@ -1183,7 +1190,16 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         // **落库前先查形状**（utopia_extract::normalize）：只看结构、不看词——引文里有没有
         // 这段字、值是不是只有标点、一侧是不是契约的日期、同句有没有另一条边。读懂时间
         // 归模型（提示词 3c），这里只核对它照没照契约写，做了什么都记进丢弃表
-        for n in utopia_extract::normalize_facts(&mut extraction) {
+        let from_opening = match opening {
+            Some(text) => {
+                utopia_extract::drop_quotes_from_opening(&mut extraction, &chunk.text, text)
+            }
+            None => Vec::new(),
+        };
+        for n in from_opening
+            .into_iter()
+            .chain(utopia_extract::normalize_facts(&mut extraction))
+        {
             use utopia_extract::Normalization as N;
             use utopia_store::extraction_drops::reason;
             let (r, detail, example) = match n {
@@ -1229,6 +1245,9 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 ),
                 N::OrphanDeclaration { name } => {
                     (reason::ORPHAN_DECLARATION, "entity".to_string(), name)
+                }
+                N::QuoteFromOpening { predicate, quote } => {
+                    (reason::QUOTE_FROM_OPENING, predicate, quote)
                 }
             };
             drop_signal(state, doc.kb_id, document_id, r, &detail, Some(&example)).await;

@@ -8,7 +8,7 @@ use utopia_llm::ChatMessage;
 pub mod governor;
 
 pub mod normalize;
-pub use normalize::{normalize_facts, Normalization};
+pub use normalize::{drop_quotes_from_opening, normalize_facts, Normalization};
 
 #[derive(Debug, Deserialize)]
 pub struct Extraction {
@@ -294,7 +294,7 @@ pub fn build_messages_with_opening(
         "\n10. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one); bool = true/false; \
          text = a short string. Only attach an attribute to a subject of its listed class. \
          valid_from = when this value took effect, if the text or the opening of the document says so. \
-         A document that changes a value set earlier — amends, extends, replaces, restates it — makes the new value \
+         A document that changes a value set earlier — amends, extends or replaces it — makes the new value \
          hold from the date the change takes effect, which is the document's own effective date unless the text gives another."
             .to_string()
     };
@@ -361,7 +361,7 @@ pub fn build_messages_with_opening(
             of values that hold in that period.\n\
          {temporal_note}\n\
          4. {time_ctx}\n\
-         5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
+         5. quote must be a contiguous excerpt from the Text block; never quote the opening of the document. Every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
          7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.\n\
          8. If no listed relation fits, do not force the nearest one — write the predicate the \
@@ -381,7 +381,7 @@ pub fn build_messages_with_opening(
             **A stated figure left out is the loss that costs most**: the reader \
             came for those numbers, and no later step can recover one that was never written \
             down.\n\
-         8c. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number):             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
+         8c. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number) — except a date, which takes the format of rule 3:             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
          8b. A **listed** relation also takes \"value\" when what the text gives is a \
             string rather than another entity — a job title, a designation, a ticker, a \
             model number. Never invent an entity for a string. And when the text introduces \
@@ -435,9 +435,10 @@ pub fn build_messages_with_opening(
     ]
 }
 
-/// 文件开头排版成提示词里的一段。空、或正文就是开头本身时返回空串。
+/// 文件开头排版成提示词里的一段。开头为空（或只有空白）时返回空串；
+/// 「这一块就是开头本身」由调用方判断，那时它传 `None`。
 ///
-/// 截在字符边界上，不在词中间断：预算按字符算，中文一个字就是一个字符
+/// 按字符截：不会截断一个字符，但会截在词中间——英文的最后一个词可能只剩半个
 fn opening_block(opening: Option<&str>) -> String {
     let Some(text) = opening.map(str::trim).filter(|t| !t.is_empty()) else {
         return String::new();
@@ -1274,10 +1275,6 @@ mod prompt_shape_tests {
         );
     }
 
-    /// 已知实体必须落在 **user** 消息里、紧挨着正文。
-    ///
-    /// 理由是服从性不是缓存：抽象规则打不过挨着它的具体块。清单放进 system 的
-    /// 规则区，就会隔着输出格式、十条规则、文件名，离它要管的正文最远。
     #[test]
     fn a_literal_keeps_its_units_but_a_date_takes_the_contract_format() {
         // 8a 从前说「字面值按原文写」并把日期列在字面值里，而规则 3 与属性规则要求
@@ -1325,6 +1322,10 @@ mod prompt_shape_tests {
         assert_eq!(opening_block(Some("   ")), "");
     }
 
+    /// 已知实体必须落在 **user** 消息里、紧挨着正文。
+    ///
+    /// 理由是服从性不是缓存：抽象规则打不过挨着它的具体块。清单放进 system 的
+    /// 规则区，就会隔着输出格式、十条规则、文件名，离它要管的正文最远。
     #[test]
     fn known_entities_stay_out_of_the_system_message() {
         // 用一个规则 1 的例子里没有的名字：规则 1 也提"星云科技上海研究院"，
