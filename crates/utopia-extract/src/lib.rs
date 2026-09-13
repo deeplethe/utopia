@@ -374,7 +374,11 @@ pub fn build_messages_with_opening(
             \"quote\":\"...\"}}. Name the predicate after the text when no listed attribute \
             fits — \"purchase_price\", \"job_title\", \"generation_capacity\", \"record_date\". \
             Attach it to the entity the text attaches it to, and keep the literal as written, \
-            units and all. **A stated figure left out is the loss that costs most**: the reader \
+            units and all — except a date, which is always written in the format of rule 3 \
+            (\"June 23, 2020\" is \"2020-06-23\"): the server keeps a date only in that \
+            format, and a date written any other way is lost. A deadline or a period stated \
+            relative to an event, with no calendar date, is not a date. \
+            **A stated figure left out is the loss that costs most**: the reader \
             came for those numbers, and no later step can recover one that was never written \
             down.\n\
          8c. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number):             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
@@ -1274,6 +1278,16 @@ mod prompt_shape_tests {
     ///
     /// 理由是服从性不是缓存：抽象规则打不过挨着它的具体块。清单放进 system 的
     /// 规则区，就会隔着输出格式、十条规则、文件名，离它要管的正文最远。
+    #[test]
+    fn a_literal_keeps_its_units_but_a_date_takes_the_contract_format() {
+        // 8a 从前说「字面值按原文写」并把日期列在字面值里，而规则 3 与属性规则要求
+        // YYYY-MM-DD：两条互相打架，模型写出「June 23, 2020」，服务端按格式不合整条丢掉。
+        // Blackbaud 总部租约链上各轮累计丢了二十多次
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        let system = &msgs[0].content;
+        assert!(system.contains("except a date, which is always written in the format of rule 3"));
+    }
+
     #[test]
     fn a_later_chunk_reads_the_opening_of_its_document() {
         let opening = "FIFTH AMENDMENT TO LEASE AGREEMENT entered into as of February 18, 2020";
