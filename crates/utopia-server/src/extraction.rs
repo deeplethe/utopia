@@ -1833,45 +1833,68 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
             // 不满足——尾巴上还有实词，它说的就不再只是那个数了。
             // 文本值的属性（schema.org 里 323 个）在这一档仍会变成实体——
             // 那里没有可靠判据，猜错会吃掉真实体，不猜
-            let literal = match (&f.value, f.object.as_deref().map(str::trim)) {
-                // **给了值、没给宾语——不管这个谓词本体认不认识。**
-                //
-                // 从前这里卡着 `!known_predicate`：`job_title` 在 schema.org 里是关系
-                //（它的 range 是 `Text|DefinedTerm`，含一个类就走关系通道），于是模型
-                // 写 `job_title` + "founder and CEO" 时既进不了属性档、又在关系档因为
-                // 缺宾语被丢掉——`object_missing` 实测 69 次，四篇文档里每个人的职务
-                // 就是这么没的。谓词认不认识与「这条事实带的是值还是实体」无关：
-                // 值在手上就收下，原词进 proposed_predicate，等本体采纳时再换谓词，
-                // 形状已经是对的（0010）
-                (Some(v), None | Some("")) => Some(v.clone()),
-                /* **宾语整体是一个量：一律当值收下**，不问谓词认不认识、
-                也不问模型有没有把它声明成实体。
+            // 第二格是表层谓词：通常就是模型写的谓词；值旁边挂着一个没声明的宾语短语时，
+            // 短语并进来（见下面那一档）
+            let literal: Option<(serde_json::Value, String)> =
+                match (&f.value, f.object.as_deref().map(str::trim)) {
+                    // **给了值、没给宾语——不管这个谓词本体认不认识。**
+                    //
+                    // 从前这里卡着 `!known_predicate`：`job_title` 在 schema.org 里是关系
+                    //（它的 range 是 `Text|DefinedTerm`，含一个类就走关系通道），于是模型
+                    // 写 `job_title` + "founder and CEO" 时既进不了属性档、又在关系档因为
+                    // 缺宾语被丢掉——`object_missing` 实测 69 次，四篇文档里每个人的职务
+                    // 就是这么没的。谓词认不认识与「这条事实带的是值还是实体」无关：
+                    // 值在手上就收下，原词进 proposed_predicate，等本体采纳时再换谓词，
+                    // 形状已经是对的（0010）
+                    (Some(v), None | Some("")) => Some((v.clone(), f.predicate.clone())),
+                    /* **宾语整体是一个量：一律当值收下**，不问谓词认不认识、
+                    也不问模型有没有把它声明成实体。
 
-                下面那一档卡着 `!known_predicate`，理由是本体说得上话的时候
-                别去二猜模型。可量值这里没有可猜的余地：一个数额不会因为
-                谓词恰好在本体里就变成一个东西。实测漏的正是这一格——
-                `hasAmount` 来自 FIBO 包、抽取前就在本体里，
-                `Microsoft hasAmount $1 billion` 于是绕过下面那一档，
-                把数额造成了节点；同一个库里 `invested` 当时还未知，
-                走到下面那一档、被拦住了。同一个数额，两种下场。
+                    下面那一档卡着 `!known_predicate`，理由是本体说得上话的时候
+                    别去二猜模型。可量值这里没有可猜的余地：一个数额不会因为
+                    谓词恰好在本体里就变成一个东西。实测漏的正是这一格——
+                    `hasAmount` 来自 FIBO 包、抽取前就在本体里，
+                    `Microsoft hasAmount $1 billion` 于是绕过下面那一档，
+                    把数额造成了节点；同一个库里 `invested` 当时还未知，
+                    走到下面那一档、被拦住了。同一个数额，两种下场。
 
-                收下而不是丢掉：`is_entity_name` 那道闸现在也拦纯量值，
-                不在这里接住的话，这条事实会连同那个数一起进丢弃表。
-                原词照旧进 `proposed_predicate`，采纳时再换谓词 */
-                (_, Some(o)) if utopia_extract::parse_quantity(o).is_some() => {
-                    Some(serde_json::Value::String(o.to_string()))
-                }
-                (_, Some(o))
-                    if !o.is_empty()
-                        && !known_predicate(f.predicate.as_str())
-                        && !entity_ids.contains_key(o)
-                        && looks_literal(o) =>
-                {
-                    Some(serde_json::Value::String(o.to_string()))
-                }
-                _ => None,
-            };
-            if let Some(value) = literal {
+                    收下而不是丢掉：`is_entity_name` 那道闸现在也拦纯量值，
+                    不在这里接住的话，这条事实会连同那个数一起进丢弃表。
+                    原词照旧进 `proposed_predicate`，采纳时再换谓词 */
+                    (_, Some(o)) if utopia_extract::parse_quantity(o).is_some() => Some((
+                        serde_json::Value::String(o.to_string()),
+                        f.predicate.clone(),
+                    )),
+                    /* **给了值、宾语却是一个没声明的短语：值收下，短语并进表层谓词**（#685）。
+
+                    `build` + 宾语「new energy generation」+ 值「at least 10 GW」：宾语不是
+                    回复里声明的实体、没有句柄、也不是本文档认下的名字，于是上面几档都接
+                    不住，关系那条路又因为它不是实体把整条丢掉——那个数跟着没了。模型把
+                    同一句话写成纯值（「at least 10 GW of new energy generation」）时就落得
+                    下，落不落全看它挑了两种同样说得通的写法里的哪一种。
+
+                    只看结构：值在、宾语没有句柄、宾语不在已声明的名字里。宾语是个认得的
+                    实体时照旧走边。短语不丢，进表层谓词（`build new energy generation`），
+                    采纳时再换谓词；原句在证据里 */
+                    (Some(v), Some(o))
+                        if undeclared_beside_value(f.object_ref.as_deref(), o, &span_declared) =>
+                    {
+                        Some((v.clone(), format!("{} {o}", f.predicate.trim())))
+                    }
+                    (_, Some(o))
+                        if !o.is_empty()
+                            && !known_predicate(f.predicate.as_str())
+                            && !entity_ids.contains_key(o)
+                            && looks_literal(o) =>
+                    {
+                        Some((
+                            serde_json::Value::String(o.to_string()),
+                            f.predicate.clone(),
+                        ))
+                    }
+                    _ => None,
+                };
+            if let Some((value, surface)) = literal {
                 let subject_name = f.subject.trim();
                 // **主语按关系那条路解，不要求它在本次回复里重新声明过。**
                 //
@@ -1927,7 +1950,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     &state.pool,
                     doc.kb_id,
                     "attribute_type",
-                    &f.predicate,
+                    &surface,
                     Some(&format!("{subject_name} → {value}")),
                 )
                 .await;
@@ -1954,7 +1977,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                                 predicate_id: None,
                                 object_id: None,
                                 object_value: Some(&literal),
-                                proposed_predicate: Some(f.predicate.as_str()),
+                                proposed_predicate: Some(surface.as_str()),
                                 validity,
                                 confidence,
                                 chunk_id: chunk.id,
@@ -1984,7 +2007,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     fact_id,
                     chunk.id,
                     f.quote.as_deref(),
-                    Some(f.predicate.as_str()),
+                    Some(surface.as_str()),
                 )
                 .await?;
                 if created {
@@ -2894,6 +2917,22 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
 
     tracing::info!(%document_id, facts = fact_count, "图谱抽取完成");
     Ok(())
+}
+
+/// 一条事实同时给了值和宾语时，宾语是不是一个**没声明的短语**（#685）：没有句柄，
+/// 也不是本次回复或本文档前面认下的名字（大小写不计）。是的话这条事实按值落，
+/// 宾语短语并进表层谓词；不是的话宾语是个实体，照旧走边
+fn undeclared_beside_value(
+    object_ref: Option<&str>,
+    object: &str,
+    declared: &HashMap<String, Uuid>,
+) -> bool {
+    let object = object.trim();
+    !object.is_empty()
+        && object_ref.map(str::trim).is_none_or(str::is_empty)
+        && !declared
+            .keys()
+            .any(|name| name.trim().eq_ignore_ascii_case(object))
 }
 
 /// 宾语位上的这串东西，是不是一个字面值而不是实体的名字。
@@ -4398,5 +4437,38 @@ mod tests {
             .execute(&pool)
             .await;
         run
+    }
+}
+
+#[cfg(test)]
+mod undeclared_beside_value_tests {
+    use super::undeclared_beside_value;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    #[test]
+    fn a_phrase_beside_a_value_is_not_an_entity() {
+        let mut declared = HashMap::new();
+        declared.insert("SB Energy".to_string(), Uuid::nil());
+        declared.insert("Microsoft".to_string(), Uuid::nil());
+        // 回复里的真形状：没句柄、没声明 → 值落下，短语进谓词
+        assert!(undeclared_beside_value(
+            None,
+            "new energy generation",
+            &declared
+        ));
+        assert!(undeclared_beside_value(
+            Some(" "),
+            "new regional grid infrastructure",
+            &declared
+        ));
+        // 宾语有句柄，或者是认下的名字（大小写不计）→ 是实体，走边
+        assert!(!undeclared_beside_value(
+            Some("e2"),
+            "new energy generation",
+            &declared
+        ));
+        assert!(!undeclared_beside_value(None, "microsoft", &declared));
+        assert!(!undeclared_beside_value(None, "  ", &declared));
     }
 }
