@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 
 /* lucide 已移除品牌图标，GitHub mark 内联（官方 mark 路径，fill=currentColor） */
@@ -36,6 +36,7 @@ export function Login() {
   const [displayName, setDisplayName] = useState("");
   const [leaving, setLeaving] = useState(false);
   const queryClient = useQueryClient();
+  const sso = useQuery({ queryKey: ["oidc-status"], queryFn: api.oidcStatus });
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -137,6 +138,24 @@ export function Login() {
                   : S.login.createAccount}
             </Button>
           </form>
+
+          {mode === "login" && sso.data?.enabled && (
+            <>
+              <div className="my-4 flex items-center gap-3 text-fine text-ink-2">
+                <span className="h-px flex-1 bg-line" />
+                {S.login.orDivider}
+                <span className="h-px flex-1 bg-line" />
+              </div>
+              <Button variant="secondary" size="md" className="w-full"
+                disabled={leaving}
+                onClick={() => {
+                  window.location.href = "/api/v1/auth/oidc/start";
+                }}
+              >
+                {S.login.ssoButton}
+              </Button>
+            </>
+          )}
         </div>
 
         {/* 页脚：惯用同意句式内嵌条款/隐私链接 + GitHub 入口 */}

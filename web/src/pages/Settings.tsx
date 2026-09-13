@@ -29,6 +29,7 @@ import {
   PageHeader,
   chipLike,} from "../ui";
 import { Members } from "./Members";
+import { SsoAdmin } from "./Sso";
 
 /** 管理页的五节。**它们是左栏的第二层，不是正文顶上的一条 tab 带**——
     与账户栏那四项是同一种东西（去哪儿），只是矮一级；地址里是 `?tab=`，
@@ -39,6 +40,7 @@ export const ADMIN_TABS = [
   { key: "models", label: () => S.settings.tabModels },
   { key: "members", label: () => S.settings.tabMembers },
   { key: "datasources", label: () => S.settings.datasources.tab },
+  { key: "sso", label: () => S.settings.tabSso },
   { key: "deployment", label: () => S.settings.tabDeployment },
 ] as const;
 
@@ -906,6 +908,7 @@ export function Settings() {
 
         {tab === "members" && <Members workspaceId={workspace.id} />}
         {tab === "datasources" && <DataSourcesAdmin />}
+        {tab === "sso" && <SsoAdmin />}
         {tab === "deployment" && <DeploymentAdmin />}
 
         {tab === "models" && (

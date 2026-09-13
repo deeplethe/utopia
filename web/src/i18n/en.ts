@@ -301,6 +301,8 @@ export const en = {
     submitting: "One moment…",
     createAccount: "Create account",
     networkError: "Network error, please try again",
+    orDivider: "or",
+    ssoButton: "Continue with SSO",
     // 惯用同意句式：By continuing, you agree to the <Terms> and acknowledge the <Privacy>.
     agreePrefix: "By continuing, you agree to the ",
     agreeAnd: " and acknowledge the ",
@@ -961,6 +963,7 @@ export const en = {
     tabMembers: "Users",
     tabKbs: "Knowledge bases",
     tabDeployment: "Deployment",
+    tabSso: "Single sign-on",
     cardAccounts: "Accounts",
     newUser: "Create user",
     initialPassword: "Initial password (min. 8 characters)",
@@ -1050,6 +1053,31 @@ export const en = {
         n === 0
           ? "Revoked."
           : `Revoked, and unmounted it from ${n} knowledge base(s).`,
+    },
+    sso: {
+      title: "Single sign-on",
+      hint:
+        "Sign-in through an identity provider (OIDC). Configured with environment variables — " +
+        "see .env.example — and off until all four are set.",
+      disabled:
+        "Not configured on this deployment. Set UTOPIA_OIDC_ISSUER, UTOPIA_OIDC_CLIENT_ID and " +
+        "UTOPIA_OIDC_REDIRECT_URI (and, if the provider needs one, UTOPIA_OIDC_CLIENT_SECRET) " +
+        "and restart.",
+      issuer: "Issuer",
+      clientId: "Client ID",
+      redirectUri: "Redirect URI",
+      colUser: "User",
+      colSubject: "Subject",
+      empty: "No identities linked yet. Link one below.",
+      link: "Link identity",
+      linkTitle: "Link an identity",
+      linkHint:
+        "Binds one subject from the identity provider to one account. Nobody signs in through " +
+        "SSO until their subject is linked here — a new identity is never provisioned on first login.",
+      pickUser: "Choose a user…",
+      subject: "Subject (sub)",
+      subjectHint: "The exact `sub` claim the provider issues for this person.",
+      unlink: "Unlink",
     },
     kbs: {
       hint:

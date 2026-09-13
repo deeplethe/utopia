@@ -209,11 +209,12 @@ const adminRoute = createRoute({
   // 深链指定页签（如 KB 数据节的"注册新连接"直达 Data sources）
   validateSearch: (
     search: Record<string, unknown>,
-  ): { tab?: "models" | "members" | "datasources" | "deployment" } => ({
+  ): { tab?: "models" | "members" | "datasources" | "sso" | "deployment" } => ({
     tab:
       search.tab === "models" ||
       search.tab === "members" ||
       search.tab === "datasources" ||
+      search.tab === "sso" ||
       search.tab === "deployment"
         ? search.tab
         : undefined,

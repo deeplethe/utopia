@@ -269,6 +269,8 @@ export const zh: Strings = {
     submitting: "稍候…",
     createAccount: "创建账户",
     networkError: "网络异常，请重试",
+    orDivider: "或",
+    ssoButton: "使用单点登录",
     agreePrefix: "继续即表示你同意",
     agreeAnd: "，并已知悉",
     agreeSuffix: "。",
@@ -860,6 +862,7 @@ export const zh: Strings = {
     tabMembers: "用户",
     tabKbs: "知识库",
     tabDeployment: "部署",
+    tabSso: "单点登录",
     cardAccounts: "账号",
     newUser: "创建用户",
     initialPassword: "初始密码（至少 8 位）",
@@ -938,6 +941,30 @@ export const zh: Strings = {
       grantRevoke: "收回",
       grantRevoked: (n: number) =>
         n === 0 ? "已收回。" : `已收回，顺带卸掉了 ${n} 个知识库上的挂载。`,
+    },
+    sso: {
+      title: "单点登录",
+      hint:
+        "通过身份提供方（OIDC）登录。用环境变量配置——见 .env.example——" +
+        "四项没配齐之前一律关闭。",
+      disabled:
+        "这个部署还没配置。设置 UTOPIA_OIDC_ISSUER、UTOPIA_OIDC_CLIENT_ID、" +
+        "UTOPIA_OIDC_REDIRECT_URI（身份提供方要求的话还有 UTOPIA_OIDC_CLIENT_SECRET）后重启。",
+      issuer: "Issuer",
+      clientId: "Client ID",
+      redirectUri: "Redirect URI",
+      colUser: "用户",
+      colSubject: "Subject",
+      empty: "还没有绑定任何身份。在下面绑定一个。",
+      link: "绑定身份",
+      linkTitle: "绑定一个身份",
+      linkHint:
+        "把身份提供方的一个 subject 绑定到一个账号。没有在这里绑定，" +
+        "谁也没法用 SSO 登进来——首次登录绝不会自动开一个新账号。",
+      pickUser: "选择用户…",
+      subject: "Subject（sub）",
+      subjectHint: "身份提供方给这个人签发的那个精确的 sub。",
+      unlink: "解绑",
     },
     kbs: {
       hint:

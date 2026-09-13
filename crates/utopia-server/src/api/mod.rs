@@ -13,6 +13,7 @@ mod kbs;
 mod mapping_routes;
 mod mcp;
 mod members_routes;
+mod oidc_routes;
 pub(crate) mod ontology_routes;
 mod review_routes;
 mod rig_model;
@@ -110,6 +111,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(auth_routes::me).patch(auth_routes::update_me),
         )
         .route("/auth/password", post(auth_routes::change_password))
+        // 单点登录：窄范围 OIDC 授权码流程（0056）。未配置时 status 报 false，
+        // 界面据此决定要不要露出登录页那个按钮
+        .route("/auth/oidc/status", get(oidc_routes::status))
+        .route("/auth/oidc/start", get(oidc_routes::start))
+        .route("/auth/oidc/callback", get(oidc_routes::callback))
         .route(
             "/workspaces",
             get(workspaces::list).post(workspaces::create),
@@ -170,6 +176,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/admin/users/{id}",
             axum::routing::delete(admin_routes::deactivate_user)
                 .post(admin_routes::reactivate_user),
+        )
+        // 一个身份提供方的 subject 绑定到哪个账号，只有管理员能改（0056）
+        .route(
+            "/admin/oidc/identities",
+            get(oidc_routes::identities).post(oidc_routes::bind),
+        )
+        .route(
+            "/admin/oidc/identities/{user_id}",
+            axum::routing::delete(oidc_routes::unbind),
         )
         .route(
             "/admin/data-sources",
