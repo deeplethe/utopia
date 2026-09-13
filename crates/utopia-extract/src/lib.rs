@@ -382,7 +382,8 @@ pub fn build_messages_with_opening(
             units and all — except a date, which is always written in the format of rule 3 \
             (\"June 23, 2020\" is \"2020-06-23\"): the server keeps a date only in that \
             format, and a date written any other way is lost. A deadline or a period stated \
-            relative to an event, with no calendar date, is not a date. \
+            relative to an event, with no calendar date, is not a date: keep it as written \
+            and mark it \"relative\" as rule 10 says. \
             **A stated figure left out is the loss that costs most**: the reader \
             came for those numbers, and no later step can recover one that was never written \
             down.\n\
