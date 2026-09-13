@@ -1334,7 +1334,9 @@ pub async fn same_name_peers(
         "{} WHERE e.kb_id = $1 AND {visible} AND e.id <> $2
            AND lower(e.canonical_name) = (SELECT lower(canonical_name) FROM entities WHERE id = $2)
          ORDER BY degree DESC LIMIT 10",
-        node_sql(as_of.map(|_| 3), None),
+        // 度数也倒回当时谁持有事实：合并把事实搬到了目标身上，只按记录轴过滤、
+        // 不倒回主宾，被并的那个在合并之前也显示 0（与画布、面板不一致）
+        node_sql(as_of.map(|_| 3), as_of.map(|_| 3)),
     ))
     .bind(kb_id)
     .bind(entity_id)

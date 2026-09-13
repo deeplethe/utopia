@@ -38,7 +38,7 @@ async fn same_name_peers_respects_as_of() -> anyhow::Result<()> {
     let zhang_wei_a = Uuid::now_v7();
     // 张伟 b：1 月记「works_at other_entity」，没作废——它就是目标，从不消失
     let zhang_wei_b = Uuid::now_v7();
-    // 张伟 c：1 月记「works_at other_entity」，没作废——从未被合并
+    // 张伟 c：5 月记「works_at other_entity」，没作废——从未被合并
     let zhang_wei_c = Uuid::now_v7();
     let project_entity = Uuid::now_v7();
     let other_entity = Uuid::now_v7();
@@ -209,10 +209,7 @@ async fn same_name_peers_respects_as_of() -> anyhow::Result<()> {
         "6 月：a 已合并，c 已创建"
     );
 
-    // 删除 organization 之前先删 user 与 workspaces：entity_merges 的 merged_by
-    // 指着 user，knowledge_bases 的 workspace_id 指着 workspace。先删
-    // knowledge_bases 会带走 workspaces 与 user，但 workspaces 是 workspace_id
-    // 在前所以需要先解 user 那条 FK——按依赖反着来
+    // 拆夹具：合并记录的 merged_by 指着 user，先删它和 user，再删 organization（级联到库）
     sqlx::query("DELETE FROM entity_merges WHERE id = $1")
         .bind(merge_id)
         .execute(&pool)
@@ -226,4 +223,119 @@ async fn same_name_peers_respects_as_of() -> anyhow::Result<()> {
         .execute(&pool)
         .await?;
     Ok(())
+}
+
+/// 走真的合并路径：`merge_entities` 把被并实体的事实搬到目标身上。回放到合并之前，
+/// 被并的那个在同名列里的度数要按**当时**谁持有事实来数——与画布、实体面板一致。
+/// 只按记录轴过滤事实、不倒回主语，它在合并之前的时刻也会显示 0
+#[tokio::test]
+async fn a_merged_peer_keeps_its_degree_before_the_merge() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let (org, ws, kb, person, works_at) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let (a, b, acme, other) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, 'as-of-peers-merge')")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces (id, org_id, name) VALUES ($1, $2, 'as-of-peers-merge')")
+        .bind(ws)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_bases (id, workspace_id, name) VALUES ($1, $2, 'as-of-peers-merge')",
+    )
+    .bind(kb)
+    .bind(ws)
+    .execute(&pool)
+    .await?;
+    let run = async {
+        sqlx::query(
+            "INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, 'person', 'Person')",
+        )
+        .bind(person)
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO relation_types (id, kb_id, key, label) VALUES ($1, $2, 'works_at', 'works at')",
+        )
+        .bind(works_at)
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+        for (id, name, typed) in [
+            (a, "Zhang Wei", true),
+            (b, "Zhang Wei", true),
+            (acme, "Acme", false),
+            (other, "Other Co", false),
+        ] {
+            sqlx::query(
+                "INSERT INTO entities (id, kb_id, type_id, canonical_name, created_at)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(id)
+            .bind(kb)
+            .bind(typed.then_some(person))
+            .bind(name)
+            .bind(t("2026-01-01T00:00:00Z"))
+            .execute(&pool)
+            .await?;
+        }
+        for (subject, object) in [(a, acme), (b, other)] {
+            sqlx::query(
+                "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, confidence, recorded_at)
+                 VALUES ($1, $2, $3, $4, $5, 0.9, $6)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(kb)
+            .bind(subject)
+            .bind(works_at)
+            .bind(object)
+            .bind(t("2026-01-10T00:00:00Z"))
+            .execute(&pool)
+            .await?;
+        }
+        utopia_store::resolution::merge_entities(&pool, kb, a, b, None, "test").await?;
+        sqlx::query("UPDATE entity_merges SET created_at = $2 WHERE source_id = $1")
+            .bind(a)
+            .bind(t("2026-04-01T00:00:00Z"))
+            .execute(&pool)
+            .await?;
+
+        let feb = Some(t("2026-02-01T00:00:00Z"));
+        let peers = utopia_store::graph::same_name_peers(&pool, kb, b, feb).await?;
+        let merged = peers
+            .iter()
+            .find(|n| n.id == a)
+            .expect("合并之前 a 在同名列里");
+        let (_, panel) = utopia_store::graph::entity_detail(&pool, kb, a, None, feb).await?;
+        assert_eq!(panel.len(), 1, "面板上二月的 a 有一条事实");
+        assert_eq!(merged.degree, 1, "同名列里的度数与面板一致");
+        anyhow::Ok(())
+    }
+    .await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    run
 }
