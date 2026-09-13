@@ -178,7 +178,10 @@ impl QueryEngine for DatabricksEngine {
              ORDER BY table_schema, table_name, ordinal_position"
         );
         let (_, rows) = self.run(&sql).await?;
-        Ok(rows.into_iter().map(super::trino::schema_row).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| super::trino::schema_row(r, &Default::default()))
+            .collect())
     }
 
     async fn execute(&self, sql: &str) -> anyhow::Result<QueryResult> {

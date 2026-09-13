@@ -150,7 +150,10 @@ impl QueryEngine for SnowflakeEngine {
             database.replace('"', "\"\"")
         );
         let (_, rows) = self.run(&sql).await?;
-        Ok(rows.into_iter().map(super::trino::schema_row).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| super::trino::schema_row(r, &Default::default()))
+            .collect())
     }
 
     async fn execute(&self, sql: &str) -> anyhow::Result<QueryResult> {
