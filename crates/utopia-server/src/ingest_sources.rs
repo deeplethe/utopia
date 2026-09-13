@@ -794,7 +794,10 @@ async fn sync_github_issues(state: &AppState, source: &Source) -> anyhow::Result
             .await?,
         );
         let es: Vec<&crate::github_issues::Event> = events.iter().collect();
-        let body = crate::github_issues::render(issue, &cs, &es);
+        // #610 提案：把来源 config 的 `precision` 字段传给 render，让一天
+        // 末尾的事件不会在时区换算后静默跨午夜。缺省仍是 day，旧来源不变
+        let precision = source.precision();
+        let body = crate::github_issues::render_with(issue, &cs, &es, precision);
         // 逻辑身份带上仓库：同一个知识库里接两个仓库时，#18 不会互相覆盖
         let key = format!("github:{repo}#{}", issue.number);
         let filename = format!("{}-{}.md", issue.number, slugify(&issue.title));
