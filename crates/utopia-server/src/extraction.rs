@@ -1368,8 +1368,9 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
             }
             // 模型写下的这个名字就在这一块原文里时，给这条名字事实补出处（0041）。
             // 给已知句柄时它照提示词写的是清单上的全称，这一块里未必有——那就不补，
-            // 这一块用的别的写法走下面的 `names`
-            if span_in_quote(name, &chunk.text) {
+            // 这一块用的别的写法走下面的 `names`。
+            // 记忆日志里的不补：那一句算不算出处，要等人点头（0018）
+            if !await_nod && span_in_quote(name, &chunk.text) {
                 let _ = utopia_store::names::record(
                     &state.pool,
                     doc.kb_id,
@@ -1479,6 +1480,39 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     Some(name),
                 )
                 .await;
+                continue;
+            }
+            // 记忆日志读到的名字与它的其它事实一样等人点头（0018）：名字是召回的桥，
+            // 一句没确认过的话不该先把桥搭上。点头之后是一条普通的名字事实；
+            // 这一步不配对，同名的配对等下一次在文档里读到它
+            if await_nod {
+                let known_as = utopia_store::names::ensure_known_as(&state.pool, doc.kb_id).await?;
+                let value = serde_json::json!({
+                    "value": utopia_store::resolution::normalize_name(name)
+                });
+                if let utopia_store::pending::Outcome::Proposed(_) = utopia_store::pending::propose(
+                    &state.pool,
+                    utopia_store::pending::Proposal {
+                        kb_id: doc.kb_id,
+                        subject_id: bound.id,
+                        predicate_id: Some(known_as),
+                        object_id: None,
+                        object_value: Some(&value),
+                        proposed_predicate: Some(utopia_store::names::KNOWN_AS),
+                        validity: utopia_store::graph::Validity {
+                            attested_at: doc.doc_time,
+                            ..Default::default()
+                        },
+                        confidence: 1.0,
+                        chunk_id: chunk.id,
+                        proposed_by: proposer.user_id,
+                        proposed_token: proposer.token_id,
+                    },
+                )
+                .await?
+                {
+                    pending_count += 1;
+                }
                 continue;
             }
             utopia_store::names::record(

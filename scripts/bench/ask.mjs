@@ -154,8 +154,8 @@ function seedTruth(kb) {
       WITH found AS (SELECT id FROM entities
                       WHERE kb_id = '${kb}' AND lower(canonical_name) = lower('${label}')
                         AND merged_into IS NULL LIMIT 1),
-           made AS (INSERT INTO entities (id, kb_id, type_id, canonical_name, aliases)
-                    SELECT gen_random_uuid(), '${kb}', '${typeId}', '${label}', '{}'
+           made AS (INSERT INTO entities (id, kb_id, type_id, canonical_name)
+                    SELECT gen_random_uuid(), '${kb}', '${typeId}', '${label}'
                      WHERE NOT EXISTS (SELECT 1 FROM found) RETURNING id)
       SELECT id FROM found UNION ALL SELECT id FROM made`);
     psql(`

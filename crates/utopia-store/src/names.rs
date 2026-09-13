@@ -107,16 +107,22 @@ pub async fn record(
     Ok(Some(fact_id))
 }
 
-/// 召回用：实体 `{entity}` 有一条现行的名字事实，小写值在第 `${param}` 个参数（text[]）里。
+/// 召回用：实体 `{entity}` 有一条现行的名字事实，库 id 在第 `${kb}` 个参数，
+/// 小写值在第 `${names}` 个参数（text[]）里。
 ///
 /// 只看记录轴：世界轴上结束了的名字（曾用名）照样召回——更名之前的文档还在用它。
-pub fn has_name_in(entity: &str, param: usize) -> String {
+///
+/// **写成不相关子查询，按库过滤，并带上索引的谓词**（`facts_value_text_idx` 是
+/// `(kb_id, lower(value)) WHERE invalidated_at IS NULL AND object_value IS NOT NULL`）。
+/// 相关子查询 `nf.subject_id = e.id` 不带库，规划器用不上这个索引，每次召回都要
+/// 扫全表的 facts——所有库的
+pub fn has_name_in(entity: &str, kb: usize, names: usize) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM facts nf
+        "{entity}.id IN (SELECT nf.subject_id FROM facts nf
                    JOIN relation_types nr ON nr.id = nf.predicate_id
-                  WHERE nf.subject_id = {entity}.id AND nr.builtin AND nr.key = '{KNOWN_AS}'
-                    AND nf.invalidated_at IS NULL
-                    AND lower(nf.object_value->>'value') = ANY(${param}))"
+                  WHERE nf.kb_id = ${kb} AND nr.builtin AND nr.key = '{KNOWN_AS}'
+                    AND nf.invalidated_at IS NULL AND nf.object_value IS NOT NULL
+                    AND lower(nf.object_value->>'value') = ANY(${names}))"
     )
 }
 
@@ -125,7 +131,8 @@ pub fn has_name_like(entity: &str, param: usize) -> String {
     format!(
         "EXISTS (SELECT 1 FROM facts nf
                    JOIN relation_types nr ON nr.id = nf.predicate_id
-                  WHERE nf.subject_id = {entity}.id AND nr.builtin AND nr.key = '{KNOWN_AS}'
+                  WHERE nf.subject_id = {entity}.id AND nf.kb_id = {entity}.kb_id
+                    AND nr.builtin AND nr.key = '{KNOWN_AS}'
                     AND nf.invalidated_at IS NULL
                     AND nf.object_value->>'value' ILIKE ${param})"
     )
@@ -177,7 +184,11 @@ pub async fn for_entity(
 /// 不排的话，后到的那篇把名字记在新实体上，两个实体都叫「海探1」，却没有任何东西
 /// 把它们配成一对——入库顺序又一次决定了结果。
 ///
-/// 类型一方为空或两边相同才配：声明了不同类型的同名，是重名那条路的事。返回排进去的对数
+/// 类型一方为空或两边相同才配：声明了不同类型的同名，是重名那条路的事。
+///
+/// **已经判过「不是一个」的对不再排。** 同一个简称每出现在一块里就会走到这里一次；
+/// 人（或裁决器）分开过的一对要是每次都重新进队列，分开这个决定就等于没有记住。
+/// 返回排进去的对数
 pub async fn pair_shared_name(
     pool: &PgPool,
     kb_id: Uuid,
@@ -189,11 +200,17 @@ pub async fn pair_shared_name(
         "SELECT DISTINCT e.id
            FROM entities e
            JOIN entities me ON me.id = $2
-           JOIN facts nf ON nf.subject_id = e.id AND nf.invalidated_at IS NULL
+           JOIN facts nf ON nf.subject_id = e.id AND nf.kb_id = $1
+                        AND nf.invalidated_at IS NULL AND nf.object_value IS NOT NULL
            JOIN relation_types nr ON nr.id = nf.predicate_id AND nr.builtin AND nr.key = $4
           WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
             AND lower(nf.object_value->>'value') = lower($3)
             AND (e.type_id IS NULL OR me.type_id IS NULL OR e.type_id = me.type_id)
+            AND NOT EXISTS (
+                SELECT 1 FROM resolution_reviews rr
+                 WHERE rr.kb_id = $1 AND rr.status = 'kept'
+                   AND least(rr.left_id, rr.right_id) = least(e.id, $2)
+                   AND greatest(rr.left_id, rr.right_id) = greatest(e.id, $2))
           LIMIT 4",
     )
     .bind(kb_id)

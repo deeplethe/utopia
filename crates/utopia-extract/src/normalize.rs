@@ -423,7 +423,14 @@ pub fn normalize_facts(x: &mut Extraction) -> Vec<Normalization> {
 
     // ---- 被上面几条弄成孤点的声明 ----
     // 只去掉「原来有事实引用、现在没有了」的：模型一开始就只声明不连边的，不归这里管
-    let after = referenced(&x.facts);
+    let mut after = referenced(&x.facts);
+    // 模型给它报了别的名字的声明也不算孤点：那些名字要绑在它身上（0041）
+    after.extend(
+        x.names
+            .iter()
+            .filter_map(|n| handle_name(Some(&n.entity_ref)))
+            .map(|n| n.to_lowercase()),
+    );
     let mut orphans = Vec::new();
     let mut kept_entities = entities;
     kept_entities.retain(|e| {
@@ -494,6 +501,7 @@ mod tests {
             skipped_entities: 0,
             skipped_facts: 0,
             truncated: false,
+            names: Vec::new(),
         };
         let n = normalize_facts(&mut x);
         (x, n)

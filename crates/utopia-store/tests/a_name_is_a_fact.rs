@@ -250,3 +250,189 @@ async fn the_adjudicator_sees_the_other_names_and_never_the_shared_one() -> anyh
     teardown(&pool, &f).await?;
     run
 }
+
+/// 分开过的一对，同一个简称再被读到也不再排队：分开这个决定要记得住
+#[tokio::test]
+async fn a_pair_kept_apart_is_not_queued_again() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        mention(&pool, &f, "海探1").await?;
+        let full = mention(&pool, &f, "海洋探测器1号").await?.entity_id;
+        names::record(&pool, f.kb, full, "海探1", None, None).await?;
+        assert_eq!(
+            names::pair_shared_name(&pool, f.kb, full, "海探1").await?,
+            1
+        );
+        sqlx::query(
+            "UPDATE resolution_reviews SET status = 'kept', decided_at = now() WHERE kb_id = $1",
+        )
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+        assert_eq!(
+            names::pair_shared_name(&pool, f.kb, full, "海探1").await?,
+            0,
+            "判过不是一个的，不再配"
+        );
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM resolution_reviews WHERE kb_id = $1 AND status = 'pending'",
+        )
+        .bind(f.kb)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(pending, 0);
+        anyhow::Ok(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 名字属性不是一条普通属性：按 key 找不到，改不了，也不进本体向量索引。
+/// 否则本体提议能把「简称」一类的值归并到它上面、唯一性面板能把它标成 functional，
+/// 名字的核对与配对就都绕过去了
+#[tokio::test]
+async fn the_name_attribute_is_not_an_ordinary_attribute() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        let known_as = names::ensure_known_as(&pool, f.kb).await?;
+        assert_eq!(
+            utopia_store::ontology::relation_type_id_by_key(&pool, f.kb, names::KNOWN_AS).await?,
+            None
+        );
+        let edited = utopia_store::ontology::update_relation_type(
+            &pool,
+            f.kb,
+            known_as,
+            "known as",
+            "state",
+            utopia_core::models::RelationAxioms {
+                functional: true,
+                ..Default::default()
+            },
+            "",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(edited.is_err(), "内建的名字属性不能改成 functional");
+        let functional: bool =
+            sqlx::query_scalar("SELECT functional FROM relation_types WHERE id = $1")
+                .bind(known_as)
+                .fetch_one(&pool)
+                .await?;
+        assert!(!functional);
+        let stale = utopia_store::ontology::types_needing_embedding(
+            &pool,
+            f.kb,
+            "test-model",
+            Some(utopia_store::ontology::TypeKind::Relation),
+        )
+        .await?;
+        assert!(stale.iter().all(|t| t.id != known_as), "名字属性不嵌");
+        anyhow::Ok(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 一段只写了名字的引文不是原文：给治理 agent 的片段里没有它，带整句的别名照样有。
+/// 删掉文档，实体的本名还在，只凭这篇文档读到的别名跟着作废
+#[tokio::test]
+async fn a_bare_name_is_not_a_quote_and_a_deleted_document_keeps_the_name() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        let full = mention(&pool, &f, "海洋探测器1号").await?.entity_id;
+        let (doc, chunk) = (Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query("INSERT INTO documents (id, kb_id, filename, sha256) VALUES ($1, $2, 'probe.txt', $3)")
+            .bind(doc)
+            .bind(f.kb)
+            .bind(doc.to_string())
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO chunks (id, kb_id, document_id, seq, text)
+             VALUES ($1, $2, $3, 0, '海洋探测器1号（简称海探1）于2026年下水。')",
+        )
+        .bind(chunk)
+        .bind(f.kb)
+        .bind(doc)
+        .execute(&pool)
+        .await?;
+        let source = |quote| {
+            Some(names::NameSource {
+                chunk_id: chunk,
+                quote,
+            })
+        };
+        let canonical = names::record(&pool, f.kb, full, "海洋探测器1号", source("海洋探测器1号"), None)
+            .await?
+            .expect("canonical name fact");
+        let alias = names::record(&pool, f.kb, full, "海探1", source("简称海探1"), None)
+            .await?
+            .expect("alias fact");
+        let launched: Uuid = sqlx::query_scalar(
+            "INSERT INTO relation_types (id, kb_id, key, label, kind, datatype, temporal)
+             VALUES ($1, $2, 'launch_year', 'launch year', 'attribute', 'text', 'event') RETURNING id",
+        )
+        .bind(Uuid::now_v7())
+        .bind(f.kb)
+        .fetch_one(&pool)
+        .await?;
+        let (fact, _) = graph::insert_value_fact(
+            &pool,
+            f.kb,
+            full,
+            Some(launched),
+            &serde_json::json!({ "value": "2026" }),
+            graph::Validity::default(),
+            0.9,
+        )
+        .await?;
+        graph::add_evidence(&pool, fact, chunk, Some("于2026年下水"), Some("launch_year")).await?;
+
+        let quotes: Vec<String> = utopia_store::governance::quotes_of(&pool, f.kb, full, 10)
+            .await?
+            .into_iter()
+            .map(|(_, q)| q)
+            .collect();
+        assert!(quotes.iter().all(|q| q != "海洋探测器1号"), "{quotes:?}");
+        assert_eq!(quotes.len(), 1, "一块一段：{quotes:?}");
+        assert_eq!(quotes[0], "于2026年下水", "同一块里真正的句子优先");
+
+        utopia_store::documents::delete(&pool, f.kb, doc, None).await?;
+        let invalidated = |id: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, bool>(
+                    "SELECT invalidated_at IS NOT NULL FROM facts WHERE id = $1",
+                )
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+            }
+        };
+        assert!(!invalidated(canonical).await?, "本名不随文档走");
+        assert!(invalidated(alias).await?, "只凭这篇读到的别名作废");
+        assert!(invalidated(fact).await?);
+        anyhow::Ok(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}

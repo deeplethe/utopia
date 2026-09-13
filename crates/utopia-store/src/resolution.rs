@@ -264,7 +264,7 @@ pub async fn resolve_mention(
          WHERE e.kb_id = $1 AND e.type_id = $2 AND e.merged_into IS NULL
            AND (lower(e.canonical_name) = ANY($3) OR {named})",
         not_name = crate::names::not_a_name("f"),
-        named = crate::names::has_name_in("e", 3),
+        named = crate::names::has_name_in("e", 1, 3),
     ))
     .bind(kb_id)
     .bind(type_id)
@@ -631,7 +631,8 @@ async fn containment_reviews(
              OR EXISTS (
                SELECT 1 FROM facts nf
                  JOIN relation_types nr ON nr.id = nf.predicate_id
-                WHERE nf.subject_id = e.id AND nr.builtin AND nr.key = 'known_as'
+                WHERE nf.subject_id = e.id AND nf.kb_id = $1
+                  AND nr.builtin AND nr.key = 'known_as'
                   AND nf.invalidated_at IS NULL
                   AND char_length(nf.object_value->>'value') >= $4
                   AND (lower(nf.object_value->>'value') LIKE '%' || $3 || '%'
@@ -828,7 +829,7 @@ async fn resolve_type_drift(
          -- 未分类实体会被整个漏掉（0009）
          WHERE e.kb_id = $1 AND e.type_id IS DISTINCT FROM $2 AND e.merged_into IS NULL
            AND (lower(e.canonical_name) = ANY($3) OR {named})",
-        named = crate::names::has_name_in("e", 3),
+        named = crate::names::has_name_in("e", 1, 3),
     ))
     .bind(kb_id)
     .bind(type_id)
@@ -1121,7 +1122,7 @@ pub async fn existing_by_name(
                      WHERE (f.subject_id = e.id OR f.object_id = e.id) AND {not_name}) DESC,
                    e.created_at
           LIMIT 1",
-        named = crate::names::has_name_in("e", 2),
+        named = crate::names::has_name_in("e", 1, 2),
         not_name = crate::names::not_a_name("f"),
     ))
     .bind(kb_id)
@@ -2509,19 +2510,25 @@ pub async fn entities_for_type_resolution(
                   WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
                     AND (f.subject_id = e.id OR f.object_id = e.id)
                     AND COALESCE(rt.key, fact_surface_predicate(f.id)) IS NOT NULL
+                    -- 名字不是它扮演的角色，每个实体都有，判不出类型（0041）
+                    AND NOT coalesce(rt.builtin AND rt.key = 'known_as', false)
                   LIMIT 12
                 ) AS roles,
                 ARRAY(
                   SELECT DISTINCT ev.quote FROM fact_evidence ev
                   JOIN facts f2 ON f2.id = ev.fact_id
+                  LEFT JOIN relation_types rt2 ON rt2.id = f2.predicate_id
                   WHERE f2.kb_id = $1 AND f2.invalidated_at IS NULL
                     AND f2.subject_id = e.id
                     AND ev.quote IS NOT NULL
+                    AND NOT coalesce(rt2.builtin AND rt2.key = 'known_as', false)
                   LIMIT 3
                 ) AS quotes,
                 (SELECT count(*) FROM facts f3
+                 LEFT JOIN relation_types rt3 ON rt3.id = f3.predicate_id
                  WHERE f3.kb_id = $1 AND f3.invalidated_at IS NULL
-                   AND (f3.subject_id = e.id OR f3.object_id = e.id)) AS fact_count
+                   AND (f3.subject_id = e.id OR f3.object_id = e.id)
+                   AND NOT coalesce(rt3.builtin AND rt3.key = 'known_as', false)) AS fact_count
          FROM entities e
          LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.kb_id = $1 AND e.merged_into IS NULL

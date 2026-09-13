@@ -1773,7 +1773,11 @@ pub async fn graph_changes(
              WHERE fe.fact_id = ev.id
              ORDER BY fe.doc_version DESC NULLS LAST LIMIT 1
          ) src ON true
-         WHERE $5::text[] IS NULL OR ev.kind = ANY($5)
+         WHERE ($5::text[] IS NULL OR ev.kind = ANY($5))
+           -- 实体的本名那条名字事实不算一次变化（0041）：每建一个实体就多一行「X known as X」，
+           -- 限量的变更清单会被它挤满。新读到的别名、改名照样列出来
+           AND NOT (coalesce(r.builtin AND r.key = 'known_as', false)
+                    AND lower(ev.object_value->>'value') = lower(s.canonical_name))
          ORDER BY ev.at DESC, ev.id
          LIMIT $6"
     ))

@@ -18,6 +18,12 @@
 --   存活者已经有同一个名字（重名合并最常见：「Apple」并进「Apple」），就把它作废，
 --   并同样追加进链上每一条的 `invalidated_facts`——合并本来就会这样去重，撤回时一并复活。
 
+-- 0. 用户自己建过一条 key 叫 known_as 的关系：让出 key，它的事实原样留着（只是 key 变了，
+--    标签不动）。不让的话下面第 1 步什么也不插，名字全写到那条非内建的关系上，
+--    而所有读名字的地方只认内建的那条
+UPDATE relation_types SET key = 'known_as_' || left(id::text, 8)
+ WHERE key = 'known_as' AND NOT builtin;
+
 -- 1. 每个库一条内建属性。按需也会建（`names::ensure_known_as`），这里给存量库补上
 INSERT INTO relation_types (id, kb_id, key, label, kind, datatype, temporal, builtin, description)
 SELECT gen_random_uuid(), k.id, 'known_as', 'known as', 'attribute', 'text', 'state', TRUE,
@@ -33,7 +39,11 @@ SELECT gen_random_uuid(), e.kb_id, e.id, r.id, jsonb_build_object('value', e.can
   JOIN relation_types r ON r.kb_id = e.kb_id AND r.key = 'known_as'
  WHERE e.merged_into IS NULL;
 
--- 3. 已合并实体：沿 merged_into 走到存活者，记下经过的每个节点
+-- 3. 已合并实体：沿 merged_into 走到存活者，记下经过的每个节点。
+--
+-- **下面每一步都是一次扫描加连接，不是逐行子查询。** 临时表没有索引、每行一个相关
+-- 子查询的写法，在 20 万实体、4.5 万合并的库上要八分钟以上（三段各两分钟到四分钟）；
+-- 迁移跑在一个事务里，那段时间整库写不进去
 CREATE TEMP TABLE name_walk ON COMMIT DROP AS
 WITH RECURSIVE walk(origin, node, depth) AS (
     SELECT e.id, e.id, 0 FROM entities e WHERE e.merged_into IS NOT NULL
@@ -43,12 +53,19 @@ WITH RECURSIVE walk(origin, node, depth) AS (
      WHERE e.merged_into IS NOT NULL AND w.depth < 64
 )
 SELECT origin, node, depth FROM walk;
+CREATE INDEX ON name_walk (origin);
+ANALYZE name_walk;
 
+-- 链末端就是深度最大的那个节点
 CREATE TEMP TABLE merged_names ON COMMIT DROP AS
 SELECT gen_random_uuid() AS fact_id, x.id AS origin, x.kb_id, x.canonical_name, x.created_at,
-       (SELECT w.node FROM name_walk w WHERE w.origin = x.id ORDER BY w.depth DESC LIMIT 1) AS survivor
+       s.survivor
   FROM entities x
+  JOIN (SELECT DISTINCT ON (origin) origin, node AS survivor
+          FROM name_walk ORDER BY origin, depth DESC) s ON s.origin = x.id
  WHERE x.merged_into IS NOT NULL;
+CREATE INDEX ON merged_names (origin);
+ANALYZE merged_names;
 
 INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_value, recorded_at, attested_from, confidence)
 SELECT m.fact_id, m.kb_id, m.survivor, r.id, jsonb_build_object('value', m.canonical_name),
@@ -56,36 +73,36 @@ SELECT m.fact_id, m.kb_id, m.survivor, r.id, jsonb_build_object('value', m.canon
   FROM merged_names m
   JOIN relation_types r ON r.kb_id = m.kb_id AND r.key = 'known_as';
 
+-- 链上经过节点 N 的每个名字，都记进 source 为 N 的那条未撤回合并
 UPDATE entity_merges em
-   SET moved_subject_facts = em.moved_subject_facts || ARRAY(
-           SELECT m.fact_id FROM merged_names m
-             JOIN name_walk w ON w.origin = m.origin
-            WHERE w.node = em.source_id)
- WHERE em.reverted_at IS NULL
-   AND EXISTS (SELECT 1 FROM merged_names m JOIN name_walk w ON w.origin = m.origin
-                WHERE w.node = em.source_id);
+   SET moved_subject_facts = em.moved_subject_facts || moved.fact_ids
+  FROM (SELECT w.node AS source_id, array_agg(m.fact_id ORDER BY m.fact_id) AS fact_ids
+          FROM merged_names m JOIN name_walk w ON w.origin = m.origin
+         GROUP BY w.node) moved
+ WHERE em.source_id = moved.source_id AND em.reverted_at IS NULL;
 
 -- 同一个存活者身上重复的名字：存活者自己的本名留着，合并来的里面留最早记下的，其余作废
 CREATE TEMP TABLE merged_name_dups ON COMMIT DROP AS
-SELECT m.fact_id, m.origin
-  FROM merged_names m
- WHERE EXISTS (SELECT 1 FROM entities s
-                WHERE s.id = m.survivor AND lower(s.canonical_name) = lower(m.canonical_name))
-    OR EXISTS (SELECT 1 FROM merged_names o
-                WHERE o.survivor = m.survivor AND lower(o.canonical_name) = lower(m.canonical_name)
-                  AND (o.created_at, o.fact_id) < (m.created_at, m.fact_id));
+SELECT fact_id, origin FROM (
+    SELECT m.fact_id, m.origin,
+           lower(s.canonical_name) = lower(m.canonical_name) AS same_as_survivor,
+           row_number() OVER (PARTITION BY m.survivor, lower(m.canonical_name)
+                              ORDER BY m.created_at, m.fact_id) AS nth
+      FROM merged_names m
+      JOIN entities s ON s.id = m.survivor
+) d
+ WHERE same_as_survivor OR nth > 1;
 
-UPDATE facts SET invalidated_at = now()
- WHERE id IN (SELECT fact_id FROM merged_name_dups);
+UPDATE facts f SET invalidated_at = now()
+  FROM merged_name_dups d
+ WHERE f.id = d.fact_id;
 
 UPDATE entity_merges em
-   SET invalidated_facts = em.invalidated_facts || ARRAY(
-           SELECT d.fact_id FROM merged_name_dups d
-             JOIN name_walk w ON w.origin = d.origin
-            WHERE w.node = em.source_id)
- WHERE em.reverted_at IS NULL
-   AND EXISTS (SELECT 1 FROM merged_name_dups d JOIN name_walk w ON w.origin = d.origin
-                WHERE w.node = em.source_id);
+   SET invalidated_facts = em.invalidated_facts || dup.fact_ids
+  FROM (SELECT w.node AS source_id, array_agg(d.fact_id ORDER BY d.fact_id) AS fact_ids
+          FROM merged_name_dups d JOIN name_walk w ON w.origin = d.origin
+         GROUP BY w.node) dup
+ WHERE em.source_id = dup.source_id AND em.reverted_at IS NULL;
 
 -- 4. 存活者别名里剩下的（不对应任何已合并实体本名的，理论上不该有，有就照记）
 INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_value, recorded_at, attested_from, confidence)
