@@ -295,7 +295,7 @@ pub fn build_messages_with_opening(
     let attr_rules = if attributes.is_empty() {
         String::new()
     } else {
-        "\n10. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one) — a date the text gives only relative to an event \
+        "\n11. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one) — a date the text gives only relative to an event \
          (\"45 days after the Trigger Date\", \"within 30 days of closing\") has no calendar date to convert: write it as the text writes it and add \"relative\": true; bool = true/false; \
          text = a short string. Only attach an attribute to a subject of its listed class. \
          valid_from = when this value took effect, if the text or the opening of the document says so. \
@@ -382,12 +382,12 @@ pub fn build_messages_with_opening(
             units and all — except a date, which is always written in the format of rule 3 \
             (\"June 23, 2020\" is \"2020-06-23\"). A deadline or a period stated \
             relative to an event, with no calendar date, is not a date: keep it as written \
-            and mark it \"relative\" as rule 10 says. \
+            and mark it \"relative\" as rule 11 says. \
             **A stated figure left out is the loss that costs most**: the reader \
             came for those numbers, and no later step can recover one that was never written \
             down.\n\
-         8c. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number) — except a date, which takes the format of rule 3:             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
-         8b. A **listed** relation also takes \"value\" when what the text gives is a \
+         8b. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number) — except a date, which takes the format of rule 3:             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
+         8c. A **listed** relation also takes \"value\" when what the text gives is a \
             string rather than another entity — a job title, a designation, a ticker, a \
             model number. Never invent an entity for a string. And when the text introduces \
             someone by their role — \"X, founder and CEO of Y\", \"Z, co-CEO of W\", \
@@ -401,15 +401,15 @@ pub fn build_messages_with_opening(
             (\"appointed … as OpenAI's CTO of applications\") all carry the same \
             shape — the role is the value, the organization is the other \
             entity. Past tense and \"former\" give the tie valid_to: \"unknown\".\n\
-         8c. A list of named parties is a list of facts — one per name. \"partners \
+         8d. A list of named parties is a list of facts — one per name. \"partners \
             including A, B, C and D\" is four facts, not one; \"advisors A and B\" is two. \
             Do not collapse an enumeration into a summary or into its first member. \
             The same applies to the entities: each named party is its own entity.\n\
-         8d. subject_span and object_span are the exact words in quote that name each side. \
+         8e. subject_span and object_span are the exact words in quote that name each side. \
             Copy them; never paraphrase. When the words that do the thing are a description \
             rather than a name — \"former X employees\", \"companies using X\" — the span \
             is that description, whatever you wrote in subject.\n\
-         8e. An obligation, a deadline or a right belongs to the agreement, law or decision \
+         8f. An obligation, a deadline or a right belongs to the agreement, law or decision \
             that imposes it, even when it concerns another agreement or thing. A lease that \
             sets the last day to sign a second lease gives that deadline to the first lease; \
             the second lease is only what the deadline is about.\n\
@@ -1473,6 +1473,48 @@ mod prompt_shape_tests {
         let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
         let system = &msgs[0].content;
         assert!(system.contains("except a date, which is always written in the format of rule 3"));
+    }
+
+    /// 规则编号各不相同，「按规则 N」指得到唯一的一条。从前有两条 8c、两条 10，
+    /// 「as rule 10 says」说的是哪条要靠猜（#689 评审）
+    #[test]
+    fn every_rule_has_its_own_number_and_every_reference_lands() {
+        let rels = vec![PromptRelation {
+            key: "acquired".into(),
+            label: "acquired".into(),
+            description: String::new(),
+            signature: String::new(),
+            temporal: "event".into(),
+            qualifiers: vec![],
+        }];
+        let attrs = vec!["lease.option_deadline (date)".to_string()];
+        let msgs = build_messages(&[], &rels, &attrs, None, "a.txt", &[], "text");
+        let system = &msgs[0].content;
+        let mut labels = Vec::new();
+        for line in system.lines() {
+            let Some((label, _)) = line.trim_start().split_once(". ") else {
+                continue;
+            };
+            let digits = label.trim_end_matches(|c: char| c.is_ascii_lowercase());
+            if !digits.is_empty()
+                && digits.chars().all(|c| c.is_ascii_digit())
+                && label.len() - digits.len() <= 1
+            {
+                labels.push(label.to_string());
+            }
+        }
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "规则编号重复：{labels:?}");
+        for (i, _) in system.match_indices("rule ") {
+            let n: String = system[i + 5..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            assert!(
+                labels.contains(&n),
+                "「rule {n}」指不到任何一条：{labels:?}"
+            );
+        }
     }
 
     #[test]
