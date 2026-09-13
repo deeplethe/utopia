@@ -1583,13 +1583,13 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 .await;
                 continue;
             }
-            let from = f.valid_from.as_deref().and_then(utopia_extract::parse_time);
-            let to = f.valid_to.as_deref().and_then(utopia_extract::parse_time);
+            let from = f.valid_from.as_deref().and_then(utopia_extract::read_time);
+            let to = f.valid_to.as_deref().and_then(utopia_extract::read_time);
             // **两端各记各的粒度**（见 `facts.valid_to_precision`）。从前一个精度列描述两个端点，
             // 于是「2020 年开始、2023-05-06 结束」这种只能共用一个值。
             //
             // 模型给的 valid_to = "unknown" 表示**原文说它结束了、但没说哪天**。
-            // parse_time 解不出它（本来就不是日期），落在这里显式认掉——
+            // read_time 解不出它（本来就不是日期），落在这里显式认掉——
             // 不认的话它退化成 None，那条事实就又变回"仍在持续"了
             let ended_unknown = f
                 .valid_to
@@ -2966,8 +2966,8 @@ fn looks_literal(s: &str) -> bool {
     if utopia_extract::parse_quantity(s).is_some() {
         return true;
     }
-    // 日期：复用抽取侧那个解析器，它认 2015 / 2015-03 / 2015-03-01 等
-    utopia_extract::parse_time(s).is_some()
+    // 日期：复用抽取侧那个解析器，它认 2015 / 2015-03 / 2015-03-01，也认写出来的日期（#688）
+    utopia_extract::read_time(s).is_some()
 }
 
 /// 提示词里那三段清单：类、关系、属性。

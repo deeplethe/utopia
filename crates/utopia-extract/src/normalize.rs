@@ -9,7 +9,7 @@
 //! 每条规则做了什么都返回给服务端记进丢弃表：违约多常见、出在哪个模型，量得出来，
 //! 契约该怎么改看数说话。
 
-use crate::{parse_time, ExtractedEntity, ExtractedFact, Extraction};
+use crate::{read_time, ExtractedEntity, ExtractedFact, Extraction};
 use std::collections::HashSet;
 
 /// 形状检查做了什么；服务端按条记信号
@@ -229,9 +229,9 @@ fn value_fact(
     }
 }
 
-/// 一侧写的是契约格式的时间（`YYYY` / `YYYY-MM` / `YYYY-MM-DD`，带时区的时刻）
+/// 一侧写的是时间：契约格式（`YYYY` / `YYYY-MM` / `YYYY-MM-DD`，带时区的时刻），或写法说得清是哪天的日期（`written_date`，#688）
 fn is_contract_time(s: &str) -> bool {
-    parse_time(s.trim()).is_some()
+    read_time(s.trim()).is_some()
 }
 
 /// 引文不在这一块、却在附上的文件开头里的事实：丢掉，连同因此没人引用的声明。

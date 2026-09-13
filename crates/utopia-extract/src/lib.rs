@@ -380,8 +380,7 @@ pub fn build_messages_with_opening(
             fits — \"purchase_price\", \"job_title\", \"generation_capacity\", \"record_date\". \
             Attach it to the entity the text attaches it to, and keep the literal as written, \
             units and all — except a date, which is always written in the format of rule 3 \
-            (\"June 23, 2020\" is \"2020-06-23\"): the server keeps a date only in that \
-            format, and a date written any other way is lost. A deadline or a period stated \
+            (\"June 23, 2020\" is \"2020-06-23\"). A deadline or a period stated \
             relative to an event, with no calendar date, is not a date: keep it as written \
             and mark it \"relative\" as rule 10 says. \
             **A stated figure left out is the loss that costs most**: the reader \
@@ -1104,9 +1103,17 @@ pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<s
             }
             _ => None,
         },
+        // 按规则 3 写的原样留着（精度随写了几位，带时区的时刻也在内）；写成别的样子、又读得
+        // 出来的日期（#688）换成规则 3 的样子——同一天只该有一种写法，比较和去重才对得上
         "date" => {
             let s = raw.as_str()?.trim();
-            parse_time(s).map(|_| serde_json::Value::String(s.to_string()))
+            match written_date(s) {
+                Some((date, precision)) => Some(serde_json::Value::String(match precision {
+                    "month" => date.format("%Y-%m").to_string(),
+                    _ => date.format("%Y-%m-%d").to_string(),
+                })),
+                None => parse_time(s).map(|_| serde_json::Value::String(s.to_string())),
+            }
         }
         "bool" => match raw {
             serde_json::Value::Bool(b) => Some(serde_json::Value::Bool(*b)),
@@ -1134,6 +1141,8 @@ pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<s
 /// `YYYY-MM-DDTHH[:MM[:SS]]` 后跟 `Z` 或 `±HH:MM`，精度到 hour / minute / second，
 /// 值截到那一位。**没有时区的钟点不是时刻**——「14:32」是哪里的 14:32 没人知道——
 /// 所以只取日期那一半，按天；钟点留在引文里。亚秒一律丢：账本到秒为止。
+///
+/// 这是规则 3 的契约格式，工具参数、界面上的时刻都只认它。读模型回复用 [`read_time`]
 pub fn parse_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
     let s = s.trim();
     if s.is_empty() || s.eq_ignore_ascii_case("null") {
@@ -1169,6 +1178,94 @@ pub fn parse_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
         }
     }
     None
+}
+
+/// 读模型回复里的时间：先按规则 3（[`parse_time`]）；没照它写、但写法说得清是哪天的日期
+/// 也收（[`written_date`]，#688）。区间端点、日期属性、边上的日期属性都从这里读
+pub fn read_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
+    parse_time(s).or_else(|| {
+        let (date, precision) = written_date(s)?;
+        Some((
+            Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0)?),
+            precision,
+        ))
+    })
+}
+
+/// 没照规则 3 写、但说得清是哪一天（或哪个月）的日期（#688）。
+///
+/// 合同、公告里的日期多半这么写，模型常常照抄；从前这些值全被当成「不是日期」丢掉。
+/// 收两类，精度随写了几位——只写到月的就是月，不替它补一个日：
+/// - 月份写成名字的：`March 17, 2020`、`17 March 2020`、`Mar. 17 2020`、`March 2020`。
+///   名字由 chrono 的 `%B` / `%b` 认（整名或三个字母的缩写，不分大小写）
+/// - 年在前的数字：`2020/03/17`、`2020.3.17`、`2020年3月17日`、`2020年3月`
+///
+/// **日、月都是数字而年不在前的不收**：`03/04/2020` 是三月四日还是四月三日，写法本身说
+/// 不清，猜错一次就是一个错的截止日。
+pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
+    let s = s.trim();
+    if let Some(found) = year_first_date(s) {
+        return found;
+    }
+    // 月份写成名字的：句点（缩写后面那个）与逗号只是标点
+    let words: Vec<&str> = s
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is_number = |w: &str| w.chars().all(|c| c.is_ascii_digit());
+    let (day, month, year) = match words.as_slice() {
+        [m, d, y] if !is_number(m) && is_number(d) && is_number(y) => (Some(*d), *m, *y),
+        [d, m, y] if is_number(d) && !is_number(m) && is_number(y) => (Some(*d), *m, *y),
+        [m, y] if !is_number(m) && is_number(y) => (None, *m, *y),
+        _ => return None,
+    };
+    if year.len() != 4 || day.is_some_and(|d| d.len() > 2) {
+        return None;
+    }
+    let month = ["%B", "%b"].iter().find_map(|f| {
+        NaiveDate::parse_from_str(&format!("1 {month} 2000"), &format!("%d {f} %Y"))
+            .ok()
+            .map(|d| chrono::Datelike::month(&d))
+    })?;
+    let year = year.parse().ok()?;
+    match day {
+        Some(d) => NaiveDate::from_ymd_opt(year, month, d.parse().ok()?).map(|date| (date, "day")),
+        None => NaiveDate::from_ymd_opt(year, month, 1).map(|date| (date, "month")),
+    }
+}
+
+/// 年在前的数字日期。外层 `None` = 不是这种写法，交给下一种；`Some(None)` = 是这种写法
+/// 但不是真实的日子
+fn year_first_date(s: &str) -> Option<Option<(NaiveDate, &'static str)>> {
+    let marked = s.contains('年');
+    let separated = s.contains(['/', '.']) && !s.contains(char::is_whitespace);
+    if !marked && !separated {
+        return None;
+    }
+    let parts: Vec<&str> = s
+        .trim_end_matches('日')
+        .split(['/', '.', '年', '月'])
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
+        return None;
+    }
+    if parts.first().is_none_or(|y| y.len() != 4) {
+        // 年不在前：日月顺序说不清，不交给别的写法去猜
+        return Some(None);
+    }
+    let number = |p: &str| p.parse::<u32>().ok();
+    let year = parts[0].parse::<i32>().ok()?;
+    Some(match parts[1..] {
+        [m, d] if m.len() <= 2 && d.len() <= 2 => {
+            NaiveDate::from_ymd_opt(year, number(m)?, number(d)?).map(|date| (date, "day"))
+        }
+        // 只到月：写了「年」「月」才算（`2020/03` 太像别的东西）
+        [m] if marked && s.ends_with('月') && m.len() <= 2 => {
+            NaiveDate::from_ymd_opt(year, number(m)?, 1).map(|date| (date, "month"))
+        }
+        _ => None,
+    })
 }
 
 /// 钟点后面的时区：`Z` 或 `±HH[:]MM` / `±HH`。返回 (钟点, 相对 UTC 的偏移)；
@@ -1694,6 +1791,71 @@ mod tests {
         assert!(parse_time("null").is_none());
         assert!(parse_time("").is_none());
         assert!(parse_time("下个月").is_none());
+        // 契约格式之外的写法不归它：工具参数里的「August 2024」不猜
+        assert!(parse_time("June 23, 2020").is_none());
+        // 读模型回复的那一个收写出来的日期（#688），精度随写了几位
+        let (t, p) = read_time("June 23, 2020").unwrap();
+        assert_eq!(
+            (t.to_rfc3339(), p),
+            ("2020-06-23T00:00:00+00:00".to_string(), "day")
+        );
+        assert_eq!(read_time("March 2020").unwrap().1, "month");
+        assert_eq!(read_time("2024-07").unwrap().1, "month");
+        assert!(read_time("03/04/2020").is_none());
+    }
+
+    /// 合同与公告里的日期写法（#688）：说得清是哪天的都收成规则 3 的样子，说不清的不猜
+    #[test]
+    fn a_written_date_is_read_only_when_its_form_says_which_day() {
+        use serde_json::json;
+        let day = |s: &str| normalize_attr_value("date", &json!(s));
+        for written in [
+            "March 17, 2020",
+            "March 17 2020",
+            "march 17, 2020",
+            "MARCH 17, 2020",
+            "Mar 17, 2020",
+            "Mar. 17, 2020",
+            "17 March 2020",
+            "17 Mar. 2020",
+            "17 March, 2020",
+            "  March 17, 2020 ",
+            "2020/03/17",
+            "2020.3.17",
+            "2020年3月17日",
+        ] {
+            assert_eq!(day(written), Some(json!("2020-03-17")), "{written}");
+        }
+        // 只写到月的是月，不补日
+        for written in ["March 2020", "Mar. 2020", "2020年3月"] {
+            assert_eq!(day(written), Some(json!("2020-03")), "{written}");
+        }
+        // 已经照规则 3 写的原样留着
+        assert_eq!(day("2020-03-17"), Some(json!("2020-03-17")));
+        assert_eq!(day("2020"), Some(json!("2020")));
+        // 日月都是数字、年不在前：说不清是几月几号
+        for ambiguous in ["03/04/2020", "3.4.2020", "04-03-2020", "3/4/20"] {
+            assert_eq!(day(ambiguous), None, "{ambiguous}");
+        }
+        // 不是日期，或不是一个真实的日子
+        for not_a_date in [
+            "45 days after the Trigger Date",
+            "Q3 2020",
+            "Sometime 2020",
+            "February 30, 2020",
+            "March 17, 20",
+            "March 123, 2020",
+            "2020/13/01",
+            "2020/03",
+            "next March",
+        ] {
+            assert_eq!(day(not_a_date), None, "{not_a_date}");
+        }
+        // 区间端点读的是同一个解析
+        assert_eq!(
+            read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
+            Some(("2020-03-17".to_string(), "day"))
+        );
     }
 
     #[test]
