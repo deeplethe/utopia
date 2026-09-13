@@ -8,7 +8,7 @@ use utopia_llm::ChatMessage;
 pub mod governor;
 
 pub mod normalize;
-pub use normalize::{normalize_facts, Normalization};
+pub use normalize::{drop_quotes_from_opening, normalize_facts, Normalization};
 
 #[derive(Debug, Deserialize)]
 pub struct Extraction {
@@ -141,6 +141,34 @@ pub fn build_messages(
     known: &[KnownEntity],
     chunk_text: &str,
 ) -> Vec<ChatMessage> {
+    build_messages_with_opening(
+        types, relations, attributes, doc_time, filename, known, None, chunk_text,
+    )
+}
+
+/// 文件开头进提示词的字符预算。一份补充协议的标题、生效日、当事方和「修订的是哪份
+/// 协议」通常在头一千字符里；新闻稿的电头与导语也是
+pub const OPENING_BUDGET_CHARS: usize = 1500;
+
+/// 同 [`build_messages`]，另带**这份文件的开头**（第一块的原文），给第二块往后用。
+///
+/// **一块是孤立抽取的，它看不见自己属于什么。** 补充协议把截止日写在第三块的表格里，
+/// 那一块只说「Article 13 的日期延至……」：改的是哪份租约、从哪天起改，都写在第一块。
+/// 模型拿不到，就只能把「Phase 2 Exercise Deadline」本身当主语（服务端按主语未声明丢掉），
+/// 或者抽出一个没有起点的日期（时态引擎没法据此关闭旧值）——Blackbaud 总部租约链
+/// 上五次改期丢了两次，抽到的三次一次都没关上旧值。开头只作背景，不从里面抽事实：
+/// 它自己那一块会抽，重复抽只会多出重复的事实
+#[allow(clippy::too_many_arguments)]
+pub fn build_messages_with_opening(
+    types: &[(String, String, String)],
+    relations: &[PromptRelation],
+    attributes: &[String],
+    doc_time: Option<&str>,
+    filename: &str,
+    known: &[KnownEntity],
+    opening: Option<&str>,
+    chunk_text: &str,
+) -> Vec<ChatMessage> {
     // **有描述时不送 label**。label 是给人看的显示名，而且它跟界面无关、
     // 跟这个库的语料语言走——中文库里 person 的 label 是"人物"。
     // `- person (人物): 有名有姓的具体的人…` 里那个"人物"相对 key 近乎零信息量，
@@ -265,7 +293,9 @@ pub fn build_messages(
     } else {
         "\n10. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one); bool = true/false; \
          text = a short string. Only attach an attribute to a subject of its listed class. \
-         valid_from = when this value took effect, if the text says so."
+         valid_from = when this value took effect, if the text or the opening of the document says so. \
+         A document that changes a value set earlier — amends, extends or replaces it — makes the new value \
+         hold from the date the change takes effect, which is the document's own effective date unless the text gives another."
             .to_string()
     };
     let system = format!(
@@ -296,7 +326,10 @@ pub fn build_messages(
             list each entity once. Text introduces a full name and then shortens it — \
             \"星云科技上海研究院\" becomes \"上海研究院\", \"Nebula Technologies Inc.\" becomes \
             \"Nebula\" — and both forms mean one entity, listed once under the fuller form. \
-            Two names are two entities only when the text is talking about two things.\n\
+            Two names are two entities only when the text is talking about two things. \
+            A name identifies the thing; it is not a description of its history. When the text \
+            names something and then describes what happened to it, the name ends where the \
+            description begins.\n\
          1b. Every other name the text gives an entity goes into \"names\", once per name: the \
             shortened form it introduces or uses (\"上海研究院\" for \"星云科技上海研究院\"), a \
             former name, the name in another language. \"ref\" is the entity's local_id or its \
@@ -328,7 +361,7 @@ pub fn build_messages(
             of values that hold in that period.\n\
          {temporal_note}\n\
          4. {time_ctx}\n\
-         5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
+         5. quote must be a contiguous excerpt from the Text block; never quote the opening of the document. Every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
          7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.\n\
          8. If no listed relation fits, do not force the nearest one — write the predicate the \
@@ -341,10 +374,14 @@ pub fn build_messages(
             \"quote\":\"...\"}}. Name the predicate after the text when no listed attribute \
             fits — \"purchase_price\", \"job_title\", \"generation_capacity\", \"record_date\". \
             Attach it to the entity the text attaches it to, and keep the literal as written, \
-            units and all. **A stated figure left out is the loss that costs most**: the reader \
+            units and all — except a date, which is always written in the format of rule 3 \
+            (\"June 23, 2020\" is \"2020-06-23\"): the server keeps a date only in that \
+            format, and a date written any other way is lost. A deadline or a period stated \
+            relative to an event, with no calendar date, is not a date. \
+            **A stated figure left out is the loss that costs most**: the reader \
             came for those numbers, and no later step can recover one that was never written \
             down.\n\
-         8c. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number):             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
+         8c. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number) — except a date, which takes the format of rule 3:             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
          8b. A **listed** relation also takes \"value\" when what the text gives is a \
             string rather than another entity — a job title, a designation, a ticker, a \
             model number. Never invent an entity for a string. And when the text introduces \
@@ -367,6 +404,10 @@ pub fn build_messages(
             Copy them; never paraphrase. When the words that do the thing are a description \
             rather than a name — \"former X employees\", \"companies using X\" — the span \
             is that description, whatever you wrote in subject.\n\
+         8e. An obligation, a deadline or a right belongs to the agreement, law or decision \
+            that imposes it, even when it concerns another agreement or thing. A lease that \
+            sets the last day to sign a second lease gives that deadline to the first lease; \
+            the second lease is only what the deadline is about.\n\
          9. The same holds for entity types: if none of the listed types fits, write the type \
             the text implies, in snake_case (e.g. \"model\", \"technology\"). Do not fall back \
             to a broad listed type such as \"thing\" or \"creative_work\" merely because \
@@ -381,7 +422,8 @@ pub fn build_messages(
 
     // 已知实体紧挨着正文：服从性靠位置，理由见 known_block 的注释
     let user = format!(
-        "Source file: \"{filename}\"\n{}\nText:\n{chunk_text}",
+        "Source file: \"{filename}\"\n{}{}\nText:\n{chunk_text}",
+        opening_block(opening),
         known_block(known)
     );
 
@@ -395,6 +437,29 @@ pub fn build_messages(
             content: user,
         },
     ]
+}
+
+/// 文件开头排版成提示词里的一段。开头为空（或只有空白）时返回空串；
+/// 「这一块就是开头本身」由调用方判断，那时它传 `None`。
+///
+/// 按字符截：不会截断一个字符，但会截在词中间——英文的最后一个词可能只剩半个
+fn opening_block(opening: Option<&str>) -> String {
+    let Some(text) = opening.map(str::trim).filter(|t| !t.is_empty()) else {
+        return String::new();
+    };
+    let cut: String = text.chars().take(OPENING_BUDGET_CHARS).collect();
+    let more = if cut.chars().count() < text.chars().count() {
+        " …"
+    } else {
+        ""
+    };
+    format!(
+        "\nOpening of this document, for context only (do not extract facts from it; they are \
+         extracted from that part separately). Use it to know what the text below belongs to — \
+         which agreement, company or event it concerns, who the parties are, and the date it \
+         takes effect — so that facts in the text below attach to the right entity and carry \
+         the right dates:\n\"\"\"\n{cut}{more}\n\"\"\"\n"
+    )
 }
 
 /// 清单里给关系带的标记：事件 `[event]`、恒常 `[eternal]`；状态不标。
@@ -1212,6 +1277,63 @@ mod prompt_shape_tests {
             c.contains("do not reverse the relation"),
             "少了这句，模型可能去找一个反向关系而不是交换主宾"
         );
+    }
+
+    #[test]
+    fn an_obligation_belongs_to_the_agreement_that_imposes_it() {
+        // 主租约里写着「签二期租约的截止日」，模型时而把截止日挂到二期租约上：
+        // 主租约的时间线上就少了这次改期（#681 §3）
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        assert!(msgs[0]
+            .content
+            .contains("belongs to the agreement, law or decision that imposes it"));
+    }
+
+    #[test]
+    fn a_literal_keeps_its_units_but_a_date_takes_the_contract_format() {
+        // 8a 从前说「字面值按原文写」并把日期列在字面值里，而规则 3 与属性规则要求
+        // YYYY-MM-DD：两条互相打架，模型写出「June 23, 2020」，服务端按格式不合整条丢掉。
+        // Blackbaud 总部租约链上各轮累计丢了二十多次
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        let system = &msgs[0].content;
+        assert!(system.contains("except a date, which is always written in the format of rule 3"));
+    }
+
+    #[test]
+    fn a_later_chunk_reads_the_opening_of_its_document() {
+        let opening = "FIFTH AMENDMENT TO LEASE AGREEMENT entered into as of February 18, 2020";
+        let msgs = build_messages_with_opening(
+            &[],
+            &[],
+            &[],
+            None,
+            "a.html",
+            &[],
+            Some(opening),
+            "The Existing Dates are extended to March 17, 2020.",
+        );
+        let user = &msgs[1].content;
+        let at_opening = user.find(opening).expect("opening is in the user message");
+        let at_text = user
+            .find("The Existing Dates")
+            .expect("text is in the user message");
+        assert!(
+            at_opening < at_text,
+            "the opening comes before the text it frames"
+        );
+        // 没有开头时，提示词与从前一字不差
+        let plain = build_messages(&[], &[], &[], None, "a.html", &[], "t");
+        let framed = build_messages_with_opening(&[], &[], &[], None, "a.html", &[], None, "t");
+        assert_eq!(plain[1].content, framed[1].content);
+    }
+
+    #[test]
+    fn a_long_opening_is_cut_on_a_character_boundary() {
+        let long = "租".repeat(OPENING_BUDGET_CHARS + 10);
+        let block = opening_block(Some(&long));
+        assert_eq!(block.matches('租').count(), OPENING_BUDGET_CHARS);
+        assert!(block.contains(" …"));
+        assert_eq!(opening_block(Some("   ")), "");
     }
 
     /// 已知实体必须落在 **user** 消息里、紧挨着正文。

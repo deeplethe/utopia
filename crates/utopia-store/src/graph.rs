@@ -1075,34 +1075,50 @@ pub async fn profile_distances(
 pub async fn search_entities(
     pool: &PgPool,
     kb_id: Uuid,
-    q: &str,
+    text: &str,
     limit: i64,
     offset: i64,
+    // 记录轴（0019）：给了就按**当时**回放——列出当时可见的实体（合并之前的被并者
+    // 还在，之后才建的不在），度数按当时谁持有事实来数，与回放中的画布一致
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(Vec<GraphNode>, i64)> {
-    let pattern = format!("%{}%", q.trim());
-    let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
-        "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL
+    let pattern = format!("%{}%", text.trim());
+    let named = crate::names::has_name_like("e", 2);
+    // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
+    let visible = |param: usize| match as_of {
+        Some(_) => crate::record_axis::entity_visible_at("e", param),
+        None => "e.merged_into IS NULL".to_string(),
+    };
+    let rewind = as_of.map(|_| 5);
+    let sql = format!(
+        "{} WHERE e.kb_id = $1 AND {visible}
          AND (e.canonical_name ILIKE $2 OR {named})
          ORDER BY degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
-        node_sql(None, None),
-        named = crate::names::has_name_like("e", 2),
-    ))
-    .bind(kb_id)
-    .bind(&pattern)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
-    let (total,): (i64,) = sqlx::query_as(&format!(
+        node_sql(rewind, rewind),
+        visible = visible(5),
+    );
+    let mut nodes_query = sqlx::query_as::<_, GraphNode>(&sql)
+        .bind(kb_id)
+        .bind(&pattern)
+        .bind(limit)
+        .bind(offset);
+    if let Some(t) = as_of {
+        nodes_query = nodes_query.bind(t);
+    }
+    let nodes: Vec<GraphNode> = nodes_query.fetch_all(pool).await?;
+    let count_sql = format!(
         "SELECT count(*) FROM entities e
-          WHERE e.kb_id = $1 AND e.merged_into IS NULL
+          WHERE e.kb_id = $1 AND {visible}
             AND (e.canonical_name ILIKE $2 OR {named})",
-        named = crate::names::has_name_like("e", 2),
-    ))
-    .bind(kb_id)
-    .bind(&pattern)
-    .fetch_one(pool)
-    .await?;
+        visible = visible(3),
+    );
+    let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql)
+        .bind(kb_id)
+        .bind(&pattern);
+    if let Some(t) = as_of {
+        count_query = count_query.bind(t);
+    }
+    let (total,) = count_query.fetch_one(pool).await?;
     Ok((nodes, total))
 }
 
@@ -1315,19 +1331,32 @@ pub async fn update_entity(
 
 /// 与给定实体同名（不区分大小写）的其他存活实体——用于改名后提示"是否合并"。
 /// 只报告，不阻断：判定它们是否真是同一个，是人的事。
+/// 同名的那一栏要跟着面板上的滑杆走（0019 / #307）。
+///
+/// 不传时间时退回到今天：合并掉的实体不算、昨天及之前的边都数，与现状一致。
+/// 传一个时间：把 `entity_visible_at` 挂上去，三月并掉的「张伟」在二月又会
+/// 重新出现在同名列——而这正是面板想告诉人的事
 pub async fn same_name_peers(
     pool: &PgPool,
     kb_id: Uuid,
     entity_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Vec<GraphNode>> {
+    let visible = match as_of {
+        Some(_) => crate::record_axis::entity_visible_at("e", 3),
+        None => "e.merged_into IS NULL".to_string(),
+    };
     sqlx::query_as(&format!(
-        "{} WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
+        "{} WHERE e.kb_id = $1 AND {visible} AND e.id <> $2
            AND lower(e.canonical_name) = (SELECT lower(canonical_name) FROM entities WHERE id = $2)
          ORDER BY degree DESC LIMIT 10",
-        node_sql(None, None)
+        // 度数也倒回当时谁持有事实：合并把事实搬到了目标身上，只按记录轴过滤、
+        // 不倒回主宾，被并的那个在合并之前也显示 0（与画布、面板不一致）
+        node_sql(as_of.map(|_| 3), as_of.map(|_| 3)),
     ))
     .bind(kb_id)
     .bind(entity_id)
+    .bind(as_of)
     .fetch_all(pool)
     .await
     .map_err(Into::into)
