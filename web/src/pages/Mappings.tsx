@@ -261,6 +261,23 @@ export function Mappings() {
           {status === "rejected" && (
             <p className="text-small text-ink-2">{S.mapping.rejectedHint}</p>
           )}
+          {/* 最近一轮探索的账（#503）。**单看列表答不了「漏了多少」**——十二条
+              提议对着八十列的宽表与刚好覆盖完一个小库长得一样。这条贴出来人才能
+              从「等量提议」里看出覆盖范围。filtered out of view 反而更糟：搜索框
+              在搜索的时候人最容易忘上一次跑了多深 */}
+          {data.data?.last_run ? (
+            <p className="text-small text-ink-2">
+              {S.mapping.lastRun({
+                tables: data.data.last_run.tables_scanned,
+                columns: data.data.last_run.columns_scanned,
+                returned: data.data.last_run.returned,
+                accepted: data.data.last_run.accepted,
+                truncated: data.data.last_run.schema_truncated,
+              })}
+            </p>
+          ) : (
+            <p className="text-small text-ink-2">{S.mapping.lastRunMissing}</p>
+          )}
 
           {data.isPending ? (
             <Loading>{S.nav.loading}</Loading>

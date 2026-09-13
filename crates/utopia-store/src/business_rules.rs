@@ -421,7 +421,7 @@ pub async fn matches(
            JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
           WHERE d.kb_id = $1 AND d.attribute_rule_id = $2 AND d.invalidated_at IS NULL
-          ORDER BY e.canonical_name, d.valid_from
+          ORDER BY e.canonical_name, d.valid_from, d.id
           LIMIT $3 OFFSET $4",
     )
     .bind(kb_id)

@@ -273,13 +273,80 @@ fn retry_delay(attempts: i32, max_attempts: i32, terminal: bool) -> Option<i64> 
     Some(30i64 * i64::from(attempts) * i64::from(attempts))
 }
 
-async fn mark_failed(pool: &PgPool, job: &Job, err: &anyhow::Error) -> AppResult<()> {
+/// 处理器挂上 `Deferred { retry_in }` 时下一次重试的等待秒数。**与失败次数无关**——
+/// 这是 `Deferred` 跟默认退避的关键区别：默认的 `30s × attempts²` 是「再试一次
+/// 也许能好」的递增，而 `Deferred` 是「现在条件不满足，`retry_in` 之后再试」，
+/// 与第几次没有关系。同一个等待条件挂回队列两次，两次都得到同一个 `run_at`
+/// 偏移，没有 60s、120s 的递增（#526）。
+///
+/// 一条任务最多连续等多久（见 `mark_failed`）。一小时够一个大本体在远端嵌入模型上
+/// 补齐；过了还没好，多半是补齐任务自己在失败，该让这条抽取按失败处理、被人看见
+pub const DEFER_WINDOW_SECS: i64 = 60 * 60;
+
+fn deferred_retry_secs(retry_in: std::time::Duration) -> i64 {
+    // 截断到秒：底层 `run_at` 是 timestamptz，亚秒精度存不住，而几十毫秒也不值得
+    // 一行浮点换算。向上取整——少等一秒比早跑一秒好，前者无害，后者会把还在跑的
+    // embedding job 撞回锁上。
+    let secs = retry_in.as_secs_f64().ceil();
+    if !secs.is_finite() || secs < 1.0 {
+        1
+    } else {
+        secs as i64
+    }
+}
+
+/// `pub` 给集成测试用——主流程仍然由 `run_worker` 内的私有 caller 调用，
+/// 不会从这里出。`#[doc(hidden)]` 是因为它属于内部契约，不进公开 API。
+#[doc(hidden)]
+pub async fn mark_failed(pool: &PgPool, job: &Job, err: &anyhow::Error) -> AppResult<()> {
     let text = format!("{err:#}");
-    let Some(backoff_secs) = retry_delay(
-        job.attempts,
-        job.max_attempts,
-        utopia_core::is_terminal(err),
-    ) else {
+    // `Terminal` 优先：处理器最后改主意说「这次不算了」就该走 `failed` 路径，
+    // 不该被 `Deferred` 覆盖。两个都挂时由调用方决定——`is_terminal` 写在前面。
+    if utopia_core::is_terminal(err) {
+        let res = sqlx::query(
+            "UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
+        )
+        .bind(job.id)
+        .bind(&text)
+        .execute(pool)
+        .await?;
+        let _ = res.rows_affected();
+        return Ok(());
+    }
+    // `Deferred`（#526）：把任务挂回 `queued`，把 `attempts` 退回去，不烧预算。
+    // 第一次走到这里时 `claim_one` 已经把 `attempts` 加 1，写回时要 -1，
+    // 否则同一次等待会让 `attempts` 慢慢爬到 `max_attempts`，最后那条
+    // `failed` 是我们最不想看见的——ontology 还差一秒就绪，文档却先死了。
+    //
+    // **等也有期限。** 从第一次挂回去算起（记在 payload 的 `deferred_since`，不用
+    // `created_at`：一批上传排队几小时是常态，那不算在等）超过 [`DEFER_WINDOW_SECS`]
+    // 还在等，就不再挂回去，落到下面的普通退避、烧预算。等的那件事（比如
+    // `embed_ontology`）自己一直失败时，不设期限这条任务会每 30 秒醒一次、永远排着，
+    // 却没有一次被记成失败
+    if let Some(retry_in) = utopia_core::is_deferred(err) {
+        let secs = deferred_retry_secs(retry_in);
+        let res = sqlx::query(
+            "UPDATE jobs SET status = 'queued', last_error = $2,
+                    attempts = GREATEST(0, attempts - 1),
+                    run_at = now() + make_interval(secs => $3::float8),
+                    payload = payload || jsonb_build_object('deferred_since',
+                        COALESCE(payload->>'deferred_since', now()::text)),
+                    updated_at = now()
+             WHERE id = $1
+               AND COALESCE((payload->>'deferred_since')::timestamptz, now())
+                   > now() - make_interval(secs => $4::float8)",
+        )
+        .bind(job.id)
+        .bind(&text)
+        .bind(secs as f64)
+        .bind(DEFER_WINDOW_SECS as f64)
+        .execute(pool)
+        .await?;
+        if res.rows_affected() > 0 {
+            return Ok(());
+        }
+    }
+    let Some(backoff_secs) = retry_delay(job.attempts, job.max_attempts, false) else {
         sqlx::query(
             "UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
         )
@@ -391,7 +458,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::retry_delay;
+    use super::{deferred_retry_secs, retry_delay};
+    use std::time::Duration;
 
     /// 退避照旧：30s、120s、270s，第三次之后放弃。
     #[test]
@@ -406,5 +474,20 @@ mod tests {
     #[test]
     fn a_terminal_failure_does_not_spend_the_budget() {
         assert_eq!(retry_delay(1, 3, true), None);
+    }
+
+    /// `Deferred` 不随失败次数递增——同一等待条件两次排队得到的 `run_at`
+    /// 偏移相同，不会出现 60s、120s 的递增（#526）。
+    #[test]
+    fn deferred_retry_is_independent_of_attempts() {
+        assert_eq!(
+            deferred_retry_secs(Duration::from_secs(30)),
+            deferred_retry_secs(Duration::from_secs(30))
+        );
+        // 截断到秒，向上取整：29.5s → 30s
+        assert_eq!(deferred_retry_secs(Duration::from_millis(29_500)), 30);
+        // 0/负数/NaN 都给 1s 下界——至少等一秒，比立刻重试的轮询间隔还短就是浪费
+        assert_eq!(deferred_retry_secs(Duration::ZERO), 1);
+        assert_eq!(deferred_retry_secs(Duration::from_nanos(500)), 1);
     }
 }

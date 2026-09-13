@@ -7,6 +7,9 @@ use utopia_llm::ChatMessage;
 
 pub mod governor;
 
+pub mod normalize;
+pub use normalize::{normalize_facts, Normalization};
+
 #[derive(Debug, Deserialize)]
 pub struct Extraction {
     #[serde(default)]
@@ -291,7 +294,15 @@ pub fn build_messages(
             company\", \"no longer available\", \"until recently\". Use null only for something \
             still going on. These are not interchangeable: null asserts it still holds, and \
             writing null for a relation the text says is over makes us claim the opposite of \
-            the source.{temporal_note}\n\
+            the source.\n\
+         3c. A period is when a fact holds, never what it is about. A quarter, a half, a \
+            fiscal or calendar year, a month, \"the three months ended July 26, 2026\" — \
+            none of these is an entity and none is an object. Put the period's dates in \
+            valid_from and valid_to (a fiscal period resolves to the dates the document \
+            states for it) and write the figure as the fact's \"value\" — the figure alone, as it stands in the \
+            quote, with nothing appended. A column of a table headed by a period is a column \
+            of values that hold in that period.\n\
+         {temporal_note}\n\
          4. {time_ctx}\n\
          5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
@@ -313,10 +324,17 @@ pub fn build_messages(
          8b. A **listed** relation also takes \"value\" when what the text gives is a \
             string rather than another entity — a job title, a designation, a ticker, a \
             model number. Never invent an entity for a string. And when the text introduces \
-            someone by their role — \"X, founder and CEO of Y\", \"Z, co-CEO of W\" — write \
-            both facts: the tie to the organization, and the role itself as a value on the \
-            person. The tie alone says they are connected; the role is what the sentence \
-            was actually telling you.\n\
+            someone by their role — \"X, founder and CEO of Y\", \"Z, co-CEO of W\", \
+            \"Y's vice president of research\", \"the president of OpenAI\", \
+            \"chief executive of Quora\", \"OpenAI's chief technology officer of \
+            applications\" — write both facts: the tie to the organization, and \
+            the role itself as a value on the person. The tie alone says they \
+            are connected; the role is what the sentence was actually telling \
+            you. The possessive (\"Y's <role>\", \"<role> of Y\", \"<role> at Y\"), the past \
+            tense (\"was Y's <role>\", \"former <role> of Y\"), and the implied form \
+            (\"appointed … as OpenAI's CTO of applications\") all carry the same \
+            shape — the role is the value, the organization is the other \
+            entity. Past tense and \"former\" give the tie valid_to: \"unknown\".\n\
          8c. A list of named parties is a list of facts — one per name. \"partners \
             including A, B, C and D\" is four facts, not one; \"advisors A and B\" is two. \
             Do not collapse an enumeration into a summary or into its first member. \

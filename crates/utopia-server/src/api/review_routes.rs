@@ -998,6 +998,7 @@ pub async fn run_consistency_check(
             "found": report.found,
             "inserted": report.inserted,
             "cleared": report.cleared,
+            "cycles_capped": report.cycles_capped,
             "defects_found": onto.found,
         }),
     )
@@ -1009,6 +1010,9 @@ pub async fn run_consistency_check(
         "found": report.found,
         "inserted": report.inserted,
         "cleared": report.cleared,
+        // 环没搜完的谓词数（#642）：不为零时环只报了一部分，界面该说「这个谓词的环
+        // 太多，先看公理」，而不是让人以为那就是全部
+        "cycles_capped": report.cycles_capped,
         // 本体自己那一档单独回。**不加进 found**：两个数不是一类东西，
         // 加起来之后「3 处矛盾」既可能是三条事实抵触，也可能是本体自己写反了三处
         "classes": onto.classes,

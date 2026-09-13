@@ -3,6 +3,7 @@
 //! 消解灰区只入审核队列并触发独立的攒批裁决任务——LLM 裁决永不阻塞本任务。
 
 use crate::llm_util;
+use crate::ontology_index;
 use crate::predicate_match::PredicateIndex;
 use crate::state::AppState;
 use sqlx::PgPool;
@@ -870,6 +871,30 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         tracing::info!(document = %document_id, "skipping a deleted document");
         return Ok(());
     }
+    // **本体向量门控（#526）——把等待从 worker 里搬回队列。**
+    //
+    // 在这之前 `extraction::run` 直接调 `ontology_index::refresh` 等到补齐才动。
+    // 那次等待有三个坏处：它把 worker 槽占住，让同一批次的其余文档和别的库的
+    // 任务全卡在锁上；它让文档在这段时间里挂着 `extracting`，用户看见 32 篇
+    // 全在「抽取中」却没一个事实落库；它用一份可能没补齐的索引作依据，抽出来
+    // 的图是基于半个本体写的，再也不会被重抽。
+    //
+    // 换成队列内门控：本体超出提示词预算且需要嵌入时，先把 `embed_ontology`
+    // 排上、把这次抽取挂回 `queued` 等 30s，让 worker 槽立刻空出来——同一批
+    // 其余文档和其它库的任务都能继续认领。下次轮到这个文档时本体可能已就绪，
+    // 也可能还没，那就再等一轮。**不是同一个文档在等，是同一个抽取器在等**，
+    // 而等候归队列管，attempts 不烧。
+    //
+    // 没配嵌入模型的库不等，照旧送完整本体——那种部署本来就没有检索。
+    // 等也有期限（`jobs::DEFER_WINDOW_SECS`），补齐任务一直失败时这篇按失败处理。
+    if ontology_index::gate_required(state, doc.kb_id).await? {
+        // gate_required 已经把 `embed_ontology` 入队过了（如果应该入队的话）。
+        // 这里只挂等待时长，不重复 enqueue。attempts 会被 mark_failed 退回去——
+        // 同一个等待条件两次排队不应该消耗两次预算。
+        let err = anyhow::Error::msg("waiting for ontology index to be embedded")
+            .context(utopia_core::Deferred::new(Duration::from_secs(30)));
+        return Err(err);
+    }
     let kb = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
@@ -972,24 +997,13 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
             classes = etypes.len(),
             "本体超出提示词预算，改为按分块检索候选"
         );
-        // **这一篇要靠检索，那就先把检索用的向量补齐——不要跟补齐任务赛跑。**
+        // 走到这里说明本体超出预算且按预算逻辑需要按块检索——但本任务的等待
+        // 早就在 `gate_required` 里完成（要么已经嵌好，要么通过 `Deferred` 挂回
+        // 队列）。剩下的就是按块检索本身，不再有「顺便 refresh」这一步：
+        // 那一步是在 worker 里等 PER_KB 锁，正是 #526 想消除的副作用。
         //
-        // 建库装包、随手上传，是产品里最自然的一条路，而它踩的正是这个坑：
-        // `embed_ontology` 与 `extract_document` 同时排队，向量没就绪时按块检索
-        // 取不到候选，退回全量本体——实测每块 109k tokens（正文只占 0.2%），
-        // 且**多给的那些类会吃掉实体**（build_lists 上面那段注释量过：25 → 18）。
-        // 更糟的是连锁：109k × 并发把端点打到限流，退避五次仍失败就整块跳过，
-        // 一轮 13 块抽出来的同时 24 块被丢掉；抽取又占着端点，向量补得更慢。
-        //
-        // `refresh` 是幂等的、按库串行的（ontology_index::PER_KB），所以：
-        // 第一篇文档把向量补出来，同时到的其余文档在锁上等一下，进来时已经没事可做。
-        // 没配嵌入模型时它直接返回 0，退回全量那条路原样保留——那种部署本来就没有检索。
-        //
-        // 代价是新库的第一篇要多等几分钟。**换来的是它不会被一份烂抽取永久写坏**：
-        // 事实一旦落库，没有人会回头发现「这篇当初是在本体看不见的时候抽的」。
-        if let Err(e) = crate::ontology_index::refresh(state, doc.kb_id).await {
-            tracing::warn!(%document_id, error = %e, "本体向量补齐失败，这一篇按全量本体抽");
-        }
+        // 留一个注释方便日后回看：若 budget 在 `gate_required` 与此处之间被改小，
+        // 本文档会按全量本体抽——比 #526 之前的「等几分钟」更接近「对的那一边」。
     }
     // 内置类恒在：检索漏掉的分块仍要有地方落脚，否则模型无类可选
     let seed_classes: HashSet<Uuid> = etypes.iter().filter(|t| t.builtin).map(|t| t.id).collect();
@@ -1104,7 +1118,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         };
         // 模型的原话只在 debug 级别看得到：查它对哪几个字段怎么填（#582 的片段）时开
         tracing::debug!(%document_id, seq = chunk.seq, reply = %reply, "抽取原始回复");
-        let extraction = match utopia_extract::parse_response(&reply) {
+        let mut extraction = match utopia_extract::parse_response(&reply) {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "抽取结果解析失败，跳过该分块");
@@ -1149,6 +1163,59 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         }
 
         // 实体消解：名称 → 实体 id（本分块的事实按原文名字连线）
+        // **落库前先查形状**（utopia_extract::normalize）：只看结构、不看词——引文里有没有
+        // 这段字、值是不是只有标点、一侧是不是契约的日期、同句有没有另一条边。读懂时间
+        // 归模型（提示词 3c），这里只核对它照没照契约写，做了什么都记进丢弃表
+        for n in utopia_extract::normalize_facts(&mut extraction) {
+            use utopia_extract::Normalization as N;
+            use utopia_store::extraction_drops::reason;
+            let (r, detail, example) = match n {
+                N::NoValue { predicate, written } => (reason::NO_VALUE, predicate, written),
+                N::ValueTrimmed {
+                    predicate,
+                    kept,
+                    dropped,
+                } => (
+                    reason::VALUE_TRIMMED,
+                    predicate,
+                    format!("{kept} ✂ {dropped}"),
+                ),
+                N::QualifiersWithoutObject { predicate, values } => (
+                    reason::QUALIFIERS_WITHOUT_OBJECT,
+                    predicate,
+                    format!("{values} value(s) moved onto the subject"),
+                ),
+                N::TimeAsObject {
+                    predicate,
+                    written,
+                    values,
+                } => (
+                    reason::TIME_AS_OBJECT,
+                    predicate,
+                    if values == 0 {
+                        format!("{written} kept as a value")
+                    } else {
+                        format!("{written} → {values} value(s)")
+                    },
+                ),
+                N::TimeAsSubject { predicate, written } => {
+                    (reason::TIME_AS_SUBJECT, predicate, written)
+                }
+                N::ObjectDescribesDeclared {
+                    predicate,
+                    name,
+                    head,
+                } => (
+                    reason::OBJECT_DESCRIBES_DECLARED,
+                    predicate,
+                    format!("{name} ← {head}"),
+                ),
+                N::OrphanDeclaration { name } => {
+                    (reason::ORPHAN_DECLARATION, "entity".to_string(), name)
+                }
+            };
+            drop_signal(state, doc.kb_id, document_id, r, &detail, Some(&example)).await;
+        }
         let mut entity_ids: HashMap<String, Uuid> = HashMap::new();
         // 名称 → 声明类型（属性 domain 校验用：salary 不能挂在 Organization 上）
         let mut entity_type_of: HashMap<String, Option<Uuid>> = HashMap::new();
@@ -2713,6 +2780,19 @@ impl PromptLists {
                 .sum::<usize>()
             + self.attributes.iter().map(|a| a.len() + 1).sum::<usize>()
     }
+}
+
+/// 把当前本体在提示词里的字符数算出来。**空铺**（不筛类/关系）——这就是
+/// `extract_document` 用的「全铺」档，也是判断「要不要按块检索」的标准。
+///
+/// 抽成独立函数是因为 `ontology_index::gate_required`（#526）要在加载抽取器
+/// 之前问一次预算——那时 `build_lists` 还没被调用。两个路径必须用同一个判据，
+/// 否则 gate 的判定会和实际的「全铺」走分。
+pub(crate) fn full_ontology_chars(
+    etypes: &[utopia_core::models::EntityType],
+    rtypes: &[utopia_core::models::RelationType],
+) -> usize {
+    build_lists(etypes, rtypes, None, None).chars()
 }
 
 /// 从一个**选择集**排出三段清单。`None` = 全给（本体小于预算时的老路）。

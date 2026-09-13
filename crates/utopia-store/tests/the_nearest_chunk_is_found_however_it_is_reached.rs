@@ -236,8 +236,13 @@ async fn the_answers_agree_with_and_without_the_index() -> anyhow::Result<()> {
         );
         assert!(!exact.big_top_10_has_superseded, "顶掉的不是命中");
         assert!(!exact.big_top_10_has_other_dims, "7 维的查询看不见 5 维的");
-        // 三月一日：顶掉的那条还活着，它与查询重合，所以它或活着的那条居首都对——
-        // 两条向量一样，并列由 id 定。只钉「顶掉的那条回来了」这件事
+        // 三月一日：顶掉的那条还活着，它与查询重合——两条向量一样，距离并列，由 id 定。
+        // 不定的话精确路径和 HNSW 各排各的，下面「索引改了答案」就会时红时绿（#652）
+        assert_eq!(
+            exact.as_of_march_first,
+            Some(f.planted.min(f.superseded)),
+            "距离并列由 id 定"
+        );
         let then = utopia_store::documents::vector_search(
             &pool,
             f.big,

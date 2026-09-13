@@ -202,7 +202,8 @@ psql(`DELETE FROM extraction_drops WHERE kb_id='${KB}'`);
 psql(`DELETE FROM ontology_misses WHERE kb_id='${KB}'`);
 // 自动扩本体上一轮长出来的关系：留着就进下一轮的提示词，两轮条件不同
 psql(`DELETE FROM relation_types WHERE kb_id='${KB}' AND created_at > '${packTs}'::timestamptz + interval '1 second'`);
-psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE WHERE id='${KB}'`);
+// 四个会在抽取之后改图的开关一律关掉：测的是抽取本身，推理物化和治理闸门会在打分前增删事实
+psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE, governance=FALSE WHERE id='${KB}'`);
 psql(`UPDATE chunks SET extracted_at=NULL WHERE document_id IN (SELECT id FROM documents WHERE kb_id='${KB}' AND filename IN (${names}))`);
 console.log(`本体 ${num(`SELECT count(*) FROM relation_types WHERE kb_id='${KB}'`)} 个关系 / ${num(`SELECT count(*) FROM entity_types WHERE kb_id='${KB}'`)} 个类`);
 

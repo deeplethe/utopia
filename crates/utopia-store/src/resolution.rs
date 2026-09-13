@@ -1415,7 +1415,7 @@ pub async fn list_reviews(
          JOIN entities a ON a.id = rr.left_id
          JOIN entities b ON b.id = rr.right_id
          WHERE rr.kb_id = $1 AND rr.status = 'pending' AND {}
-         ORDER BY rr.created_at DESC LIMIT $2 OFFSET $3",
+         ORDER BY rr.created_at DESC, rr.id DESC LIMIT $2 OFFSET $3",
         types.clause()
     );
     let rows: Vec<ReviewRow> = sqlx::query_as(&sql)
@@ -2040,7 +2040,7 @@ pub async fn list_merges(
          JOIN entities t ON t.id = m.target_id
          LEFT JOIN users u ON u.id = m.merged_by
          WHERE m.kb_id = $1
-         ORDER BY m.created_at DESC LIMIT $2 OFFSET $3",
+         ORDER BY m.created_at DESC, m.id DESC LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)
     .bind(limit)
@@ -2659,23 +2659,29 @@ pub async fn nearest_typed_entities(
              SELECT DISTINCT ev.document_id FROM fact_evidence ev
              JOIN facts f ON f.id = ev.fact_id
              WHERE f.kb_id = $1 AND (f.subject_id = $2 OR f.object_id = $2)
+         ),
+         nearest AS MATERIALIZED (
+             SELECT e.id, e.canonical_name, t.id AS type_id, t.key,
+                    ({distance})::float8 AS distance,
+                    EXISTS (SELECT 1 FROM fact_evidence ev2
+                            JOIN facts f2 ON f2.id = ev2.fact_id
+                            WHERE f2.kb_id = $1 AND (f2.subject_id = e.id OR f2.object_id = e.id)
+                              AND ev2.document_id IN (SELECT document_id FROM my_docs))
+                    AS same_document
+             -- 内连接就是那道门：没判出类型的实体（type_id IS NULL）不是答案，
+             -- 拿它当邻居的证据只会把「没判出来」传染开
+             FROM entities e
+             JOIN entity_types t ON t.id = e.type_id
+             WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
+               AND e.profile_embedding IS NOT NULL AND {same_dims}
+             ORDER BY {distance}
+             LIMIT $4
          )
-         SELECT e.canonical_name, t.id, t.key,
-                ({distance})::float8 AS distance,
-                EXISTS (SELECT 1 FROM fact_evidence ev2
-                        JOIN facts f2 ON f2.id = ev2.fact_id
-                        WHERE f2.kb_id = $1 AND (f2.subject_id = e.id OR f2.object_id = e.id)
-                          AND ev2.document_id IN (SELECT document_id FROM my_docs))
-                AS same_document
-         -- 内连接就是那道门：没判出类型的实体（type_id IS NULL）不是答案，
-         -- 拿它当邻居的证据只会把「没判出来」传染开
-         FROM entities e
-         JOIN entity_types t ON t.id = e.type_id
-         WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.id <> $2
-           AND e.profile_embedding IS NOT NULL AND {same_dims}
-         ORDER BY {distance}
-         LIMIT $4",
+         -- 次序在外层再排一遍，并列由实体 id 定（`vector_index::RESORT`，#652）
+         SELECT canonical_name, type_id, key, distance, same_document
+         FROM nearest ORDER BY {resort}",
         distance = crate::vector_index::distance("e.profile_embedding", 3, dims),
+        resort = crate::vector_index::RESORT,
         same_dims = crate::vector_index::same_dims("e.profile_embedding", dims),
     ))
     .bind(kb_id)

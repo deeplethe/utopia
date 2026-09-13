@@ -585,7 +585,11 @@ pub async fn query_data(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResu
 }
 
 pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult {
-    let text = args["text"].as_str().map(str::trim).unwrap_or("");
+    // NUL 在入口就剥（#665）：`append_episode` 自己也剥，但这里拼的回复与卡片详情
+    // 用的是同一份文本——对话里它们要落进会话记录，Postgres 的 TEXT 与 JSONB 一样
+    // 不收 0x00，一轮对话会因为回显了几个字节而存不下来
+    let text = utopia_core::without_nul(args["text"].as_str().unwrap_or(""));
+    let text = text.trim();
     // 与 `at` 同一种写法：YYYY / YYYY-MM / YYYY-MM-DD 或 RFC3339。日期落在那段第一天的
     // 正午——离两边的日界都最远；时刻照给的。回显按给的精度写，不把「2023 年」说成 1 月 1 日
     let (occurred_at, occurred_text) = match args["occurred_at"].as_str().map(str::trim) {

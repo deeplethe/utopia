@@ -121,17 +121,15 @@ pub async fn reconcile_new_fact(
                 if new_confidence < AUTO_CLOSE_MIN_CONFIDENCE {
                     record_conflict(pool, kb_id, old.id, new_fact_id, "low_confidence").await?;
                     report.conflicts += 1;
-                } else {
-                    if let Some(id) = close_superseded(
-                        pool,
-                        new_fact_id,
-                        of,
-                        old.valid_from_precision.as_deref().unwrap_or("day"),
-                    )
-                    .await?
-                    {
-                        report.corrected.push(id);
-                    }
+                } else if let Some(id) = close_superseded(
+                    pool,
+                    new_fact_id,
+                    of,
+                    old.valid_from_precision.as_deref().unwrap_or("day"),
+                )
+                .await?
+                {
+                    report.corrected.push(id);
                 }
             }
             // 常规接替：旧事实闭合在新事实的开始（旧事实无起点也适用——起点未知但已结束）
@@ -139,17 +137,15 @@ pub async fn reconcile_new_fact(
                 if new_confidence < AUTO_CLOSE_MIN_CONFIDENCE {
                     record_conflict(pool, kb_id, old.id, new_fact_id, "low_confidence").await?;
                     report.conflicts += 1;
-                } else {
-                    if let Some(id) = close_superseded(
-                        pool,
-                        old.id,
-                        nf,
-                        new_validity.from_precision.unwrap_or("day"),
-                    )
-                    .await?
-                    {
-                        report.corrected.push(id);
-                    }
+                } else if let Some(id) = close_superseded(
+                    pool,
+                    old.id,
+                    nf,
+                    new_validity.from_precision.unwrap_or("day"),
+                )
+                .await?
+                {
+                    report.corrected.push(id);
                 }
             }
         }
@@ -556,7 +552,7 @@ pub async fn list_conflicts(
          LEFT JOIN entities oo ON oo.id = fo.object_id
          LEFT JOIN entities no_ ON no_.id = fn_.object_id
          WHERE c.kb_id = $1 AND c.status = 'open'
-         ORDER BY c.created_at DESC
+         ORDER BY c.created_at DESC, c.id DESC
          LIMIT $2 OFFSET $3",
     )
     .bind(kb_id)

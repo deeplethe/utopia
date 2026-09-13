@@ -103,7 +103,7 @@ pub async fn review_history(
         "SELECT e.id, e.action, e.target_kind, e.target_id, e.detail,
                 e.actor_id, u.display_name AS actor_name, e.created_at
          FROM audit_events e LEFT JOIN users u ON u.id = e.actor_id
-         WHERE {COND} ORDER BY e.created_at DESC LIMIT $2 OFFSET $3"
+         WHERE {COND} ORDER BY e.created_at DESC, e.id DESC LIMIT $2 OFFSET $3"
     ))
     .bind(kb_id)
     .bind(limit)
@@ -155,7 +155,7 @@ pub async fn list_for_kb(
                 e.actor_id, u.display_name AS actor_name, e.created_at
          FROM audit_events e LEFT JOIN users u ON u.id = e.actor_id
          {WHERE}
-         ORDER BY e.created_at DESC LIMIT $6 OFFSET $7"
+         ORDER BY e.created_at DESC, e.id DESC LIMIT $6 OFFSET $7"
     ))
     .bind(kb_id)
     .bind(action)

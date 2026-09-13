@@ -99,7 +99,7 @@ pub struct TimedEdge {
 }
 
 /// 交集。`None` 表示无界那一侧。
-fn overlap(
+pub(crate) fn overlap(
     a: (Option<i64>, Option<i64>),
     b: (Option<i64>, Option<i64>),
 ) -> Option<(Option<i64>, Option<i64>)> {

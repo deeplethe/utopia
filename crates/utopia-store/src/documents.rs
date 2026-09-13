@@ -18,6 +18,61 @@ pub async fn create(
     doc_time: Option<chrono::DateTime<chrono::Utc>>,
     external_key: Option<&str>,
 ) -> AppResult<Document> {
+    create_with_time_source(
+        pool,
+        kb_id,
+        filename,
+        mime,
+        size_bytes,
+        sha256,
+        source_id,
+        doc_time,
+        "source",
+        external_key,
+    )
+    .await
+}
+
+/// 正文识别只属于文件上传；JSON ingest 和同步传来的日期仍用原来的 source 语义。
+#[allow(clippy::too_many_arguments)]
+pub async fn create_from_upload(
+    pool: &PgPool,
+    kb_id: Uuid,
+    filename: &str,
+    mime: &str,
+    size_bytes: i64,
+    sha256: &str,
+    source_id: Option<Uuid>,
+    content_time: Option<DateTime<Utc>>,
+) -> AppResult<Document> {
+    create_with_time_source(
+        pool,
+        kb_id,
+        filename,
+        mime,
+        size_bytes,
+        sha256,
+        source_id,
+        content_time,
+        "content",
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_with_time_source(
+    pool: &PgPool,
+    kb_id: Uuid,
+    filename: &str,
+    mime: &str,
+    size_bytes: i64,
+    sha256: &str,
+    source_id: Option<Uuid>,
+    doc_time: Option<DateTime<Utc>>,
+    time_source: &str,
+    external_key: Option<&str>,
+) -> AppResult<Document> {
     // 同样的内容回来了，而它只是被删过：复活那一篇，而不是撞 (kb_id, sha256) 的唯一
     // 索引报「已存在」。撤销删除的一种自然形态——重传就是「我要它回来」（#268）
     if let Some((id,)) = sqlx::query_as::<_, (Uuid,)>(
@@ -45,7 +100,7 @@ pub async fn create(
     .bind(source_id)
     .bind(doc_time)
     .bind(if doc_time.is_some() {
-        "source"
+        time_source
     } else {
         "upload_time"
     })
@@ -399,7 +454,7 @@ pub async fn page(
 
     let docs: Vec<Document> = sqlx::query_as(&format!(
         "SELECT * FROM documents {WHERE}
-         ORDER BY (CASE WHEN $5::bool THEN deleted_at ELSE created_at END) DESC
+         ORDER BY (CASE WHEN $5::bool THEN deleted_at ELSE created_at END) DESC, id DESC
          LIMIT $6 OFFSET $7"
     ))
     .bind(kb_id)
@@ -1024,7 +1079,8 @@ pub async fn replace_chunks(
         let claimed = claim_pool.get_mut(&piece.text).and_then(|ids| ids.pop());
         if let Some(id) = claimed {
             sqlx::query(
-                "UPDATE chunks SET seq = $2, char_start = $3, char_end = $4, doc_version = $5
+                "UPDATE chunks SET seq = $2, char_start = $3, char_end = $4, doc_version = $5,
+                        heading = $6
                  WHERE id = $1",
             )
             .bind(id)
@@ -1032,6 +1088,7 @@ pub async fn replace_chunks(
             .bind(piece.char_start)
             .bind(piece.char_end)
             .bind(version)
+            .bind(&piece.heading)
             .execute(&mut *tx)
             .await?;
             adopted.push(id);
@@ -1062,8 +1119,8 @@ pub async fn replace_chunks(
     for (id, piece) in to_insert {
         sqlx::query(
             "INSERT INTO chunks
-                (id, kb_id, document_id, seq, text, char_start, char_end, doc_version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                (id, kb_id, document_id, seq, text, char_start, char_end, doc_version, heading)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(id)
         .bind(kb_id)
@@ -1073,6 +1130,7 @@ pub async fn replace_chunks(
         .bind(piece.char_start)
         .bind(piece.char_end)
         .bind(version)
+        .bind(&piece.heading)
         .execute(&mut *tx)
         .await?;
     }
@@ -1219,7 +1277,11 @@ pub async fn set_embeddings(pool: &PgPool, items: &[(Uuid, Vec<f32>)]) -> AppRes
 }
 
 /// 向量近邻检索（余弦距离）。维度写成字面量、两侧 cast、`relaxed_order`——三条
-/// 规矩见 `vector_index`；走不走索引由规划器定
+/// 规矩见 `vector_index`；走不走索引由规划器定。
+///
+/// 次序在外层再排一遍（`vector_index::RESORT`）：`relaxed_order` 下索引给的次序
+/// 只是大致按距离，而距离并列时精确路径和 HNSW 各排各的——同一问两种计划回的
+/// 居首不同（#652）。并列由 id 定
 pub async fn vector_search(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1235,14 +1297,18 @@ pub async fn vector_search(
     let mut tx = pool.begin().await?;
     crate::vector_index::relaxed_order(pool, &mut tx).await?;
     let rows: Vec<(Uuid,)> = sqlx::query_as(&format!(
-        "SELECT id FROM chunks c
-         WHERE c.kb_id = $1 AND c.embedding IS NOT NULL AND {live}
-           AND {same_dims}
-         ORDER BY {distance}
-         LIMIT $3",
+        "WITH nearest AS MATERIALIZED (
+             SELECT id, {distance} AS distance FROM chunks c
+             WHERE c.kb_id = $1 AND c.embedding IS NOT NULL AND {live}
+               AND {same_dims}
+             ORDER BY {distance}
+             LIMIT $3
+         )
+         SELECT id FROM nearest ORDER BY {resort}",
         live = crate::record_axis::chunk_live_at("c", 4),
         same_dims = crate::vector_index::same_dims("c.embedding", dims),
         distance = crate::vector_index::distance("c.embedding", 2, dims),
+        resort = crate::vector_index::RESORT,
     ))
     .bind(kb_id)
     .bind(&query_vec)

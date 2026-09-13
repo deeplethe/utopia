@@ -219,7 +219,7 @@ pub async fn list_groups(
                 (array_agg(detail ORDER BY created_at DESC))[1:{GROUP_LINES}] AS lines
          FROM isl
          GROUP BY kb_id, kind, grp
-         ORDER BY max(created_at) DESC
+         ORDER BY max(created_at) DESC, kb_id, kind, grp
          LIMIT $6 OFFSET $7"
     );
     let items: Vec<AlertGroup> = sqlx::query_as(&sql)

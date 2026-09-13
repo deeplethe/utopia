@@ -106,6 +106,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         text: "The 2026 handbook says the office moved to Shenzhen.".into(),
         char_start: 0,
         char_end: 51,
+        heading: None,
     }];
     utopia_store::documents::replace_chunks(pool, kb, doc, &pieces).await?;
     let new_chunk: (Uuid,) = sqlx::query_as(

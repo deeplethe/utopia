@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { fmtObjectValue } from "../objectValue";
 import {
   useCallback,
   useEffect,
@@ -2138,8 +2139,21 @@ function TimeScrubber({
 
 /* ============ 实体侧栏 ============ */
 
-function fmtInterval(f: EntityFact): string {
+/* 抽出来供 vitest 测；UI 段（`EntityPanel`）内部闭包用同名 */
+export function fmtInterval(f: EntityFact): string {
+  // 时态 = 永恒：不画区间。
+  // 写端 `Validity::under(Eternal)` 把 from/to 都抹成 null，render 时就空，
+  // 等同"这条没有时间维度"。
   if (f.temporal === "eternal") return "";
+  // 时态 = 事件：单点。`Validity::under(Event)` 把 from、to 都设成同一个时刻
+  // （0022 / #486 写端契约）——`from ~ from` 读起来像区间错框了，事件本就一个
+  // 时刻。from 为 null 时退到 to；都没有就空（抽取失败，UI 退化为不画）
+  if (f.temporal === "event") {
+    const moment = fmtTime(f.valid_from, f.valid_from_precision);
+    if (moment) return moment;
+    const at = fmtTime(f.valid_to, f.valid_to_precision);
+    return at ?? "";
+  }
   const from = fmtTime(f.valid_from, f.valid_from_precision);
   const to = fmtTime(f.valid_to, f.valid_to_precision);
   // **「结束了但不知哪天」绝不能显示成「至今」。** 那是这条改动要修的正脸：
@@ -2898,30 +2912,6 @@ function EntityPanel({
       </div>
     </div>
   );
-}
-
-/** 字面值宾语的显示：属性 {value,unit} / 问数映射 {summary} / 其他 JSON 兜底。 */
-function fmtObjectValue(v: Record<string, unknown> | null): string | null {
-  if (!v) return null;
-  if (v.value !== undefined) {
-    if (typeof v.value === "boolean") return v.value ? "✓" : "✗";
-    const unit = typeof v.unit === "string" && v.unit ? v.unit : "";
-    /* 大数收成 `$5B`。金额存进来是**乘开的数**（`$5 billion` → 5000000000），
-       因为值要能比大小才有资格不当节点；可原样念出来是「5000000000 $」，
-       比原文那句「$5 billion」难读得多。符号在前、数收成紧凑写法，两头都要 */
-    if (typeof v.value === "number" && unit && unit !== "%") {
-      const n = new Intl.NumberFormat(undefined, {
-        notation: Math.abs(v.value) >= 10000 ? "compact" : "standard",
-        maximumFractionDigits: 2,
-      }).format(v.value);
-      return `${unit}${n}`;
-    }
-    const val = String(v.value);
-    // 百分号紧贴着数，别的单位空一格
-    return unit ? (unit === "%" ? `${val}%` : `${val} ${unit}`) : val;
-  }
-  if (typeof v.summary === "string") return v.summary;
-  return JSON.stringify(v);
 }
 
 /** 一节（从这个实体出发 / 指向这个实体）：可折叠——折叠柄占图标格，正文缩进同样的 24，

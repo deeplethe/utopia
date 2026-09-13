@@ -28,6 +28,33 @@ export interface Turn {
   error?: string;
 }
 
+/** 正文里真正引到的那几条来源。
+ *
+ *  `sources` 是这一轮**检索到**的全部，不是回答**用到**的：打个招呼也可能顺手搜了
+ *  一次，六条摘录挂在「你好」下面，读起来像是这句问候有六个出处。所以只列正文里
+ *  出现过 `[n]` 的那几条，编号照原样不重排，与正文里的标记对得上。
+ *  `[1][2]`、`[1, 2]`、`[1，2]` 都认 */
+export function citedSources(turn: Turn): Source[] {
+  if (!turn.sources?.length) return [];
+  const cited = new Set<number>();
+  for (const m of turn.content.matchAll(/\[(\d+(?:\s*[,，]\s*\d+)*)\]/g)) {
+    for (const n of m[1].split(/[,，]/)) cited.add(Number(n.trim()));
+  }
+  return turn.sources.filter((s) => cited.has(s.n));
+}
+
+/** 这条回答要不要挂「未引用任何来源」（#547）。
+ *
+ *  判据只看数据：说完了、正文一条来源都没引，就挂——招呼、拒答挂着无害，
+ *  而「以下是我找到的内容」配零引用的那条，靠它露馅。检索到了却一条没引，
+ *  同样算没有来源。还在流的不挂：来源是增量到的，挂上又撤下比晚一点出现更糟。
+ *  只有报错、一个字没说的那条也不挂，它不是回答，红字已经交代了 */
+export function answeredWithoutSources(turn: Turn, live: boolean): boolean {
+  if (turn.role !== "assistant" || live) return false;
+  if (turn.error && !turn.content) return false;
+  return citedSources(turn).length === 0;
+}
+
 /** 快照条目：纯数据，给渲染看。abort 不进快照——渲染不该顺手摸到它 */
 export interface Live {
   kbId: string;

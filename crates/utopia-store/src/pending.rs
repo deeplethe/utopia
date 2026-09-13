@@ -160,7 +160,7 @@ pub async fn list(
     offset: i64,
 ) -> AppResult<Vec<PendingFactView>> {
     Ok(sqlx::query_as(&format!(
-        "{VIEW_SELECT} WHERE p.kb_id = $1 ORDER BY p.created_at DESC LIMIT $2 OFFSET $3"
+        "{VIEW_SELECT} WHERE p.kb_id = $1 ORDER BY p.created_at DESC, p.id DESC LIMIT $2 OFFSET $3"
     ))
     .bind(kb_id)
     .bind(limit)

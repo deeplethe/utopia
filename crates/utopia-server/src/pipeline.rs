@@ -62,10 +62,14 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     let filename = doc.filename.clone();
     let parsed =
         tokio::task::spawn_blocking(move || utopia_ingest::parse(&filename, &bytes)).await??;
-    let text_len = parsed.text.chars().count() as i32;
+    // 解析出来的正文可能夹着 NUL（PDF 文本层常见），入库之前剥掉（#611）——与记忆
+    // 那条路共用 `utopia_core::without_nul`（#665）。剥必须在算长度、分块之前：之后的
+    // text_len、分块偏移、全文索引、嵌入读的都是这一份，彼此才对得上
+    let text = utopia_core::without_nul(&parsed.text);
+    let text_len = text.chars().count() as i32;
 
     // 2. 分块 + 入库
-    let pieces = utopia_ingest::chunk_text(&parsed.text);
+    let pieces = utopia_ingest::chunk_with_budget(&text, state.chunk_tokens);
     let chunk_pairs =
         utopia_store::documents::replace_chunks(&state.pool, doc.kb_id, document_id, &pieces)
             .await?;

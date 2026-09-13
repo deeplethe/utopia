@@ -93,6 +93,14 @@ pub fn distance(column: &str, param: usize, dims: usize) -> String {
     format!("{column}::vector({dims}) <=> ${param}::vector({dims})")
 }
 
+/// 近邻查询的外层次序（#652）。里层照规矩 2 写 `ORDER BY {distance} LIMIT n` 让索引
+/// 接住，套进 `MATERIALIZED` 的 CTE（列名 `distance`、`id`），外层再按这个排：
+/// - `relaxed_order` 下索引回的次序只是大致按距离，外层补一次真排序
+/// - 距离并列时两种计划各排各的（一模一样的两条向量，精确路径和 HNSW 居首不同），id 定下来
+/// - `+ 0` 不能省：没有它规划器认 CTE 的次序为已排（`Presorted Key: distance`），
+///   只在并列的组里排 id，乱序的那部分原样漏出去
+pub const RESORT: &str = "distance + 0, id";
+
 /// 索引现在的状态：`None` 没有；`Some(valid)` 有，`false` 是上次建到一半留下的
 pub async fn status(pool: &PgPool, target: Target, dims: usize) -> AppResult<Option<bool>> {
     let row: Option<(bool,)> = sqlx::query_as(

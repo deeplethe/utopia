@@ -64,6 +64,62 @@ pub async fn refresh(state: &AppState, kb_id: Uuid) -> anyhow::Result<usize> {
     refresh_scoped(state, kb_id, None).await
 }
 
+/// 抽取前的门控（#526）。**走这条路径的抽取器必须先问这个再继续**——
+/// 不问而直接抽，要么抽出来的图是基于半个本体的、要么抽取 worker 在
+/// `refresh` 锁上空转把 32 个并发槽占死。
+///
+/// 返回值语义：
+/// - `Ok(false)`：本体小，全铺就行；本体大但已经在向量里了；或者没配嵌入模型
+///   （照旧全铺）。继续抽。
+/// - `Err(anyhow::Error::context(Deferred{30s}))`：本体超出预算且向量还没补齐，
+///   调用方应该把这个错误原样往上抛——`jobs::mark_failed` 认 `Deferred`，把任务
+///   挂回 `queued` 等 30s。worker 槽立刻空出来，下一轮再试。
+pub async fn gate_required(state: &AppState, kb_id: Uuid) -> anyhow::Result<bool> {
+    let etypes = utopia_store::graph::entity_types(&state.pool, kb_id).await?;
+    let rtypes = utopia_store::graph::relation_types(&state.pool, kb_id).await?;
+    let budget = utopia_store::access::ontology_prompt_budget(&state.pool).await?;
+    let chars = crate::extraction::full_ontology_chars(&etypes, &rtypes);
+    if chars <= budget {
+        return Ok(false);
+    }
+    // 超出预算：需要检索候选。检索候选要先有向量——向量是否就绪取决于
+    // `types_needing_embedding`，而它要求一个具体的嵌入模型名。
+    //
+    // KB 拿不到就不再静默当成「没事」——`run()` 后面还会再读一次同样的字段，
+    // 让那次错误冒上来但归因不清。`Err` 直接归到这里，运维日志一眼能找到。
+    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
+    let Some(settings) = utopia_store::settings::get(&state.pool, kb.workspace_id).await? else {
+        // 没设模型就走全铺那条路——和原行为一致。配置阶段不该在这里就报错
+        return Ok(false);
+    };
+    // 与 `refresh_scoped` 同一个判据：客户端与模型名缺一个，补齐就什么都不做，
+    // 等下去只会空等到期限
+    let (Some(_), Some(embed_model)) = (
+        llm_util::embed_client(&settings),
+        settings.embed_model.clone(),
+    ) else {
+        // 超预算 + 没配嵌入模型：照旧按全量本体抽。那种部署本来就没有检索，
+        // 没有什么可等；判成失败会让只配了对话模型的库一篇都抽不出来
+        return Ok(false);
+    };
+    let stale =
+        utopia_store::ontology::types_needing_embedding(&state.pool, kb_id, &embed_model, None)
+            .await?;
+    if stale.is_empty() {
+        // 超预算但所有类型都已嵌好——这个组合很罕见，意味着库被改大后又改小了，
+        // 但代码路径是合法的。继续抽
+        return Ok(false);
+    }
+    // 入队补齐任务——同库已排着的不重复（`enqueue_unless_queued` 的契约）
+    utopia_store::jobs::enqueue_unless_queued(
+        &state.pool,
+        "embed_ontology",
+        serde_json::json!({ "kb_id": kb_id }),
+    )
+    .await?;
+    Ok(true)
+}
+
 /// 只补一半。调用方清楚自己要哪一半时用它——类型消解只用类，
 /// 等关系嵌完是白等。补漏的那一半有后台任务兜着。
 pub async fn refresh_scoped(

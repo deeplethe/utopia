@@ -1427,14 +1427,17 @@ export function Row({
 /** 一条会话此刻站在哪儿，画在左栏行的图标格里（14 宽，与别处的图标同一格，
  *  所以标题仍落在同一条竖线上，见 rowClass 的说明）。
  *
- *  三档：`rest` 空心小方块——它本身也是个记号，说明这一列每一行都是一场对话；
- *  `live` 三个点在跳；`unread` 实心蓝方块，写完了而你还没回来看。
- *  **形状一档不变**（都是 10 的方块、`rounded-cell`），只有里外与颜色在变——
- *  与图上那块名字牌同一个道理：换状态不换形状，余光里才认得出是同一样东西。 */
+ *  三档：`rest` 6px 细线空心圆——它本身也是个记号，说明这一列每一行都是一场对话；
+ *  `live` 三个点在跳；`unread` 同一个圆填成实心蓝，写完了而你还没回来看。
+ *  **形状一档不变**，只有里外与颜色在变：换状态不换形状，余光里才认得出是
+ *  同一样东西。小到只起项目符号的作用，不跟标题抢眼（从前 12 的方块太重） */
 export function ConvMark({ state }: { state: "rest" | "live" | "unread" }) {
   return (
+    // `flex` 不是 `inline-flex`：Row 把图标包在一个 span 里，inline 的盒会坐在
+    // 那一行字的基线上、底下还垫着行高，于是整个记号偏下（三个点里没有字，
+    // 基线就是底边，偏得最明显）。块级的盒没有行框，交给 Row 的 items-center 居中
     <span
-      className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center"
+      className="flex h-3.5 w-3.5 shrink-0 items-center justify-center"
       aria-hidden
     >
       {state === "live" ? (
@@ -1446,9 +1449,7 @@ export function ConvMark({ state }: { state: "rest" | "live" | "unread" }) {
       ) : (
         <span
           className={cn(
-            // 12 的方块配 `rounded-cell`（4）才读成"圆角方块"：10 上的 4
-            // 已经接近一个圆，而圆点在这套语汇里是状态灯，不是一场对话
-            "h-3 w-3 rounded-cell border",
+            "h-1.5 w-1.5 rounded-full border",
             state === "unread" ? "border-unread bg-unread" : "border-ink-2",
           )}
         />

@@ -73,6 +73,11 @@ pub async fn get_or_create_memory_doc(pool: &PgPool, kb_id: Uuid) -> AppResult<U
 
 /// 追加一条 episode：新 chunk（extracted_at 空 → 增量抽取会拾起；embedding 空 →
 /// memory_ingest 会补）。事发时间内嵌进文本首行，抽取模型据此定 valid_from。
+///
+/// **NUL 字节在入库前剥掉**（#665）：chat / MCP 来的 `remember` 工具里 JSON
+/// 解码出来的 `\0` 走到这一行——Postgres `TEXT` 不收 0x00，与文档路径同一
+/// 个错误，整段就丢了。共用 `utopia_core::without_nul`，与
+/// `pipeline::process_document` 走同一个 helper。
 pub async fn append_episode(
     pool: &PgPool,
     kb_id: Uuid,
@@ -80,7 +85,13 @@ pub async fn append_episode(
     occurred_at: DateTime<Utc>,
 ) -> AppResult<(Uuid, Uuid)> {
     let doc_id = get_or_create_memory_doc(pool, kb_id).await?;
-    let stamped = format!("[{}] {}", occurred_at.format("%Y-%m-%d %H:%M"), text.trim());
+    // 先剥 NUL 再拼前缀：下面入库的 text 与 char_end 都从 `stamped` 来，算的是同一份
+    let stripped = utopia_core::without_nul(text);
+    let stamped = format!(
+        "[{}] {}",
+        occurred_at.format("%Y-%m-%d %H:%M"),
+        stripped.trim()
+    );
     let chunk_id = Uuid::now_v7();
     let mut tx = pool.begin().await?;
     sqlx::query(

@@ -44,7 +44,7 @@ pub async fn list(
                  WHERE m.conversation_id = c.id) AS message_count
          FROM conversations c
          {WHERE}
-         ORDER BY c.updated_at DESC
+         ORDER BY c.updated_at DESC, c.id DESC
          LIMIT $4 OFFSET $5"
     ))
     .bind(kb_id)

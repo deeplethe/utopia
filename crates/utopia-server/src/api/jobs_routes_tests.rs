@@ -65,7 +65,11 @@ async fn requeue_api_combines_policies_and_preserves_scope_filters() -> anyhow::
         .await?;
         assert_eq!(count, expected_ids.len() as u64);
         let mut queued: Vec<i64> = sqlx::query_scalar(
-            "SELECT id FROM jobs WHERE id=ANY($1) AND status='queued' AND attempts=0 ORDER BY id",
+            // `status='queued'` alone is racy against a live worker: between the
+            // UPDATE above and this SELECT the worker can claim the row and
+            // flip it to 'running'. 'queued' or 'running' is both correct
+            // post-requeue; attempts=0 was set by requeue_failed and stays.
+            "SELECT id FROM jobs WHERE id=ANY($1) AND status IN ('queued','running') AND attempts=0 ORDER BY id",
         )
         .bind(ids.as_slice())
         .fetch_all(&pool)
