@@ -36,6 +36,7 @@
 //! `pull_request` 字段区分。默认排除：问"工单系统"要的是工单。但留了开关——
 //! 有些仓库（包括本仓库）的决策记录实际写在 PR 描述里。
 
+use crate::time_text;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -100,6 +101,11 @@ fn issue_number_from_url(url: &str) -> Option<i64> {
     url.rsplit('/').next()?.parse().ok()
 }
 
+/// 工单上的一个时刻，写进正文的样子：到秒、带 `Z`（`2026-08-18T16:18:27Z`）
+fn stamp(t: DateTime<Utc>) -> String {
+    time_text::world(t, Some("second"))
+}
+
 /// 把一张工单连同它的评论与事件排成一篇文档。
 ///
 /// **纯函数，不联网**——取回与组织分开，于是组织这一半测得动。
@@ -109,18 +115,22 @@ pub fn render(issue: &Issue, comments: &[&Comment], events: &[&Event]) -> String
     out.push_str(&format!("# #{} {}\n\n", issue.number, issue.title));
 
     // 抬头写成带日期的陈述句，而不是键值对：抽取器读的是句子。
-    // "opened by X on 2026-08-18" 能抽出带 valid_from 的事实，
-    // "created_at: 2026-08-18" 则要它自己去猜这是什么意思
+    // "opened by X on 2026-08-18T16:18:27Z" 能抽出带 valid_from 的事实，
+    // "created_at: 2026-08-18" 则要它自己去猜这是什么意思。
+    //
+    // **时间写到秒**（#691，0024 第 3 节）：GitHub 给的是带 `Z` 的时刻，抽取器读回来就是
+    // second 精度。从前截到 UTC 的那一天，起点最多提前 24 小时，同一天的两件事还会被判成
+    // 同时发生的冲突。这不是开关——精度是数据自己的，截掉它等于替来源说「不知道几点」
     if let Some(u) = &issue.user {
         out.push_str(&format!(
             "Opened by {} on {}.\n",
             u.login,
-            issue.created_at.format("%Y-%m-%d")
+            stamp(issue.created_at)
         ));
     }
     out.push_str(&format!("Currently {}.\n", issue.state));
     if let Some(c) = issue.closed_at {
-        out.push_str(&format!("Closed on {}.\n", c.format("%Y-%m-%d")));
+        out.push_str(&format!("Closed on {}.\n", stamp(c)));
     }
     if !issue.labels.is_empty() {
         let names: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
@@ -155,7 +165,7 @@ pub fn render(issue: &Issue, comments: &[&Comment], events: &[&Event]) -> String
             };
             out.push_str(&format!(
                 "- {} — {} by {}{}\n",
-                e.created_at.format("%Y-%m-%d"),
+                stamp(e.created_at),
                 e.event,
                 who,
                 detail
@@ -174,7 +184,7 @@ pub fn render(issue: &Issue, comments: &[&Comment], events: &[&Event]) -> String
             out.push_str(&format!(
                 "### {} on {}\n\n{}\n\n",
                 who,
-                c.created_at.format("%Y-%m-%d"),
+                stamp(c.created_at),
                 body
             ));
         }
@@ -307,19 +317,45 @@ mod tests {
         .unwrap();
         let out = render(&i, &[], &[&e1, &e2]);
 
-        assert!(out.contains("Opened by Danmushu on 2026-08-18."), "{out}");
-        assert!(out.contains("Closed on 2026-08-20."), "{out}");
+        assert!(
+            out.contains("Opened by Danmushu on 2026-08-18T16:18:27Z."),
+            "{out}"
+        );
+        assert!(out.contains("Closed on 2026-08-20T22:31:47Z."), "{out}");
         assert!(out.contains("Labelled bug."), "{out}");
         assert!(out.contains("Assigned to WaylandYang."), "{out}");
         // 事件行带日期与执行者，labeled 还要带上是哪个标签
         assert!(
-            out.contains("- 2026-08-19 — labeled by WaylandYang (bug)"),
+            out.contains("- 2026-08-19T01:00:00Z — labeled by WaylandYang (bug)"),
             "{out}"
         );
         assert!(
-            out.contains("- 2026-08-20 — closed by WaylandYang"),
+            out.contains("- 2026-08-20T22:31:47Z — closed by WaylandYang"),
             "{out}"
         );
+    }
+
+    /// 正文里的时刻抽取器读得回来，而且是 second 精度：一件 UTC 23:59:59 发生的事，
+    /// 起点就是那一秒，不是那天的零点（#691）
+    #[test]
+    fn a_time_in_the_document_reads_back_to_the_second() {
+        let i = issue(serde_json::json!({
+            "number": 18, "title": "Anything", "state": "open",
+            "created_at": "2026-09-05T23:59:59Z", "updated_at": "2026-09-05T23:59:59Z",
+            "user": {"login": "x"}
+        }));
+        let c: Comment = serde_json::from_value(serde_json::json!({
+            "issue_url": "https://api.github.com/repos/x/y/issues/18",
+            "user": {"login": "x"}, "created_at": "2026-09-05T23:59:59Z", "body": "late"
+        }))
+        .unwrap();
+        let out = render(&i, &[&c], &[]);
+        let written = "2026-09-05T23:59:59Z";
+        assert!(out.contains(&format!("Opened by x on {written}.")), "{out}");
+        assert!(out.contains(&format!("### x on {written}")), "{out}");
+        let (at, precision) = utopia_extract::parse_time(written).expect("reads back");
+        assert_eq!(precision, "second");
+        assert_eq!(at, i.created_at);
     }
 
     /// 评论是**全仓库**取的，归拢必须按工单号，且按时间升序。
@@ -442,7 +478,7 @@ mod tests {
                 issue.number
             );
             assert!(
-                doc.contains(&issue.created_at.format("%Y-%m-%d").to_string()),
+                doc.contains(&super::stamp(issue.created_at)),
                 "#{} 正文里没有创建日期",
                 issue.number
             );

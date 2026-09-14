@@ -167,14 +167,16 @@ pub fn render(issue: &Issue) -> String {
     ));
 
     // 抬头写成带日期的陈述句，不是键值对：抽取器读的是句子，
-    // "Reported by X on 2026-08-24" 能抽出带 valid_from 的事实
+    // "Reported by X on 2026-08-24T11:11:52Z" 能抽出带 valid_from 的事实。
+    // 时间写到秒、带 `Z`（#691，0024 第 3 节），与 GitHub 那边同一个写法；
+    // Jira 给的毫秒不写，抽取器也只认到秒
     if let (Some(r), Some(c)) = (&f.reporter, &f.created) {
         out.push_str(&format!(
             "Reported by {} on {}.\n",
             who(&Some(User {
                 display_name: r.display_name.clone()
             })),
-            c.0.format("%Y-%m-%d")
+            stamp(c.0)
         ));
     }
     if let Some(t) = name(&f.issuetype) {
@@ -193,7 +195,7 @@ pub fn render(issue: &Issue) -> String {
         ));
     }
     if let Some(r) = &f.resolutiondate {
-        out.push_str(&format!("Resolved on {}.\n", r.0.format("%Y-%m-%d")));
+        out.push_str(&format!("Resolved on {}.\n", stamp(r.0)));
     }
     if !f.labels.is_empty() {
         out.push_str(&format!("Labelled {}.\n", f.labels.join(", ")));
@@ -225,7 +227,7 @@ pub fn render(issue: &Issue) -> String {
                 at.0,
                 format!(
                     "- {} — {} changed {field}: {from} → {to}\n",
-                    at.0.format("%Y-%m-%d"),
+                    stamp(at.0),
                     who(&h.author),
                 ),
             ));
@@ -252,10 +254,7 @@ pub fn render(issue: &Issue) -> String {
             if body.is_empty() {
                 continue;
             }
-            let at = c
-                .created
-                .map(|t| t.0.format("%Y-%m-%d").to_string())
-                .unwrap_or_else(|| "?".into());
+            let at = c.created.map(|t| stamp(t.0)).unwrap_or_else(|| "?".into());
             out.push_str(&format!("### {} on {}\n\n{}\n\n", who(&c.author), at, body));
         }
     }
@@ -330,6 +329,11 @@ pub async fn fetch_all(
     Ok((out, total))
 }
 
+/// 工单上的一个时刻，写进正文的样子：到秒、带 `Z`
+fn stamp(t: DateTime<Utc>) -> String {
+    crate::time_text::world(t, Some("second"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +395,30 @@ mod tests {
         assert!(doc.contains("## History"), "历史一节缺失：{doc}");
         assert!(doc.contains(" changed "), "变更行没写成字段级：{doc}");
         assert!(doc.contains(" → "), "缺少 from → to：{doc}");
+    }
+
+    /// 正文里的时刻写到秒、带 `Z`，毫秒不写；抽取器读回来是 second 精度（#691）
+    #[test]
+    fn a_time_in_the_document_is_written_to_the_second() {
+        let issue: Issue = serde_json::from_value(serde_json::json!({
+            "key": "X-2",
+            "fields": {
+                "summary": "t", "description": null, "labels": [],
+                "reporter": {"displayName": "Mickael"},
+                "created": "2026-08-24T23:59:59.944+0000",
+                "updated": "2026-08-25T00:00:00.000+0000",
+                "resolutiondate": "2026-08-25T08:30:00.123+0800"
+            }
+        }))
+        .unwrap();
+        let out = render(&issue);
+        assert!(
+            out.contains("Reported by Mickael on 2026-08-24T23:59:59Z."),
+            "{out}"
+        );
+        assert!(out.contains("Resolved on 2026-08-25T00:30:00Z."), "{out}");
+        let (_, precision) = utopia_extract::parse_time("2026-08-24T23:59:59Z").unwrap();
+        assert_eq!(precision, "second");
     }
 
     /// 空评论不该留下一个只有标题的空节（与 GitHub 那边同一个口径）。

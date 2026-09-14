@@ -248,7 +248,21 @@ pub async fn sync_schema(
         Err(e) => {
             let name = source_name(&state, ds_id).await;
             crate::alerting::observe_schema_sync_failure(&state, kb_id, ds_id, &name, &e).await;
-            Err(AppError::Other(e).into())
+            // **读不出结构回 422 带引擎原话**；我们自己这边出的错（库、写文档）照旧 500。
+            // 从前一律 AppError::Other，界面只有「Internal server error」，原因只在服务端
+            // 日志里——而 Invalid 不打日志，所以这里自己记一行
+            match e.downcast_ref::<SchemaUnreadable>() {
+                Some(unreadable) => {
+                    tracing::warn!(%kb_id, %ds_id, error = %unreadable, "数据源结构读取失败");
+                    Err(AppError::invalid_detail(
+                        "schema_sync_failed",
+                        "The data source's schema could not be read",
+                        bounded(&unreadable.to_string(), 600),
+                    )
+                    .into())
+                }
+                None => Err(AppError::Other(e).into()),
+            }
         }
     }
 }
@@ -272,6 +286,27 @@ pub async fn explore(
 
 /// 拉 information_schema 生成 markdown，走三路判定摄入（同 key 原地更新）。
 /// 文档挂在 per-KB 的 "Data schemas" folder 来源下。
+/// 引擎读不出库表结构（连接、权限、catalog 不存在……），与我们自己这边出错分开：
+/// 前者是连接串或权限的事，回给点按钮的人；后者照旧是 500
+#[derive(Debug)]
+struct SchemaUnreadable(String);
+
+impl std::fmt::Display for SchemaUnreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SchemaUnreadable {}
+
+/// 截到 `max` 个字符以内（按字符边界），引擎的报错可能带整段堆栈
+fn bounded(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_string(),
+    }
+}
+
 async fn sync_schema_doc(state: &AppState, kb_id: Uuid, ds_id: Uuid) -> anyhow::Result<usize> {
     const MAX_TABLES: usize = 200;
     let name = utopia_store::datasources::list(&state.pool)
@@ -283,7 +318,8 @@ async fn sync_schema_doc(state: &AppState, kb_id: Uuid, ds_id: Uuid) -> anyhow::
     let (engine, conn) = utopia_store::datasources::engine_and_conn(&state.pool, ds_id).await?;
     let cols = crate::query_engine::engine_for(&engine, &conn)?
         .fetch_schema()
-        .await?;
+        .await
+        .map_err(|e| anyhow::Error::new(SchemaUnreadable(e.to_string())))?;
 
     let mut md = format!(
         "# Data source: {name}\n\nEngine: {engine}. Tables and columns available for SQL queries against this source; write SQL in this engine's dialect.\n"
