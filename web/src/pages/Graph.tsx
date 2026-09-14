@@ -100,6 +100,7 @@ import {
   CanvasLoading,
   ExpandCard,
   HOVER_ROW,
+  POINT_WORD,
   IconButton,
   Input,
   LinkButton,
@@ -241,6 +242,19 @@ const NODE_BUDGETS: number[] = [150, 300, 600, 1000];
    下 alpha 压不暗边，暗度必须编码进 RGB——所以是函数，切主题后重算 */
 const edgeGhost = () => lerpColor(EDGE_FOCUS_CONTEST, EDGE_DIM, 0.55);
 const edgeGhostFocus = () => lerpColor(EDGE_FOCUS_CONTEST, EDGE_DIM, 0.2);
+
+/** 面板此刻在指哪条边：指着的行优先；没有就用钉住的——但钉住的只在钉它的那个实体
+ *  还选着时作数，而且画布或面板正指着某个节点时让开，好让「它连着谁」照常读得出 */
+function panelFocus(
+  pointed: string | null,
+  pinned: { entity: string; fact: string } | null,
+  hovered: string | null,
+  selected: string | null,
+): string | null {
+  if (pointed) return pointed;
+  if (!pinned || hovered || pinned.entity !== selected) return null;
+  return pinned.fact;
+}
 const DAY_MS = 24 * 3600 * 1000;
 
 /* 播放淡入：解析 hex / rgb / rgba（含 alpha）并线性插值 */
@@ -422,6 +436,14 @@ export function Graph() {
   const hoverRef = useRef<string | null>(null);
   /** 鼠标停在哪条边上。用来把并进它的逆关系说法亮出来 */
   const hoverEdgeRef = useRef<string | null>(null);
+  /** **面板在指哪条边**：指针停在事实行上（指），或者点了那一行（钉住）。
+   *  从前面板和画布各说各的——列表里一条 `partner CoreWeave`，画布上连着这个实体的
+   *  几十条边一样亮，看不出是哪一条。指着的优先于钉住的；两者都以事实 id 为边的 key */
+  const panelEdgeRef = useRef<string | null>(null);
+  /** 钉住的那条记着是在哪个实体的面板里钉的：换了实体它就不作数，不必另开 effect 去清 */
+  const panelPinRef = useRef<{ entity: string; fact: string } | null>(null);
+  const [pin, setPin] = useState<{ entity: string; fact: string } | null>(null);
+  const pinnedFact = pin && pin.entity === selected ? pin.fact : null;
   /** 近到什么程度算「贴脸看」：到了就每条边都写字（见 updateEdgeLabels） */
   const deepZoomRef = useRef(false);
   const filterRef = useRef<{
@@ -666,8 +688,71 @@ export function Graph() {
 
   useEffect(() => {
     selectedRef.current = selected;
+    panelEdgeRef.current = null;
     sigmaRef.current?.refresh();
   }, [selected]);
+
+  /** 面板指着一条事实：画布上那条边亮起来。不在画布上的（时间轴滤掉、邻域外）什么也不亮，
+   *  **不拿同一对节点之间的另一条边顶替**——那会亮一条不是它的事实 */
+  const pointFact = useCallback((factId: string | null) => {
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+    const next = factId && sigma.getGraph().hasEdge(factId) ? factId : null;
+    if (panelEdgeRef.current === next) return;
+    panelEdgeRef.current = next;
+    sigma.refresh();
+  }, []);
+
+  /** 面板指着一个实体（宾语那个词）：画布上它按「指到」画 */
+  const pointEntity = useCallback((entityId: string | null) => {
+    const sigma = sigmaRef.current;
+    if (!sigma) return;
+    hoverRef.current = entityId && sigma.getGraph().hasNode(entityId) ? entityId : null;
+    sigma.refresh();
+  }, []);
+
+  /** 点了一条事实：钉住那条边，镜头移到两端之间、缩到两端都在画面里。
+   *  边不在画布上就退回去跳到宾语——至少把人带到它连着的那个东西 */
+  const focusFact = useCallback((factId: string, otherId: string | null) => {
+    const sigma = sigmaRef.current;
+    const g = sigma?.getGraph();
+    const entity = selectedRef.current;
+    if (!sigma || !g || !entity || !g.hasEdge(factId)) {
+      if (otherId) {
+        setFocusEntity(otherId);
+        setSelected(otherId);
+      }
+      return;
+    }
+    // 再点一次同一行：放开
+    const current = panelPinRef.current;
+    if (current && current.entity === entity && current.fact === factId) {
+      panelPinRef.current = null;
+      setPin(null);
+      sigma.refresh();
+      return;
+    }
+    const next = { entity, fact: factId };
+    panelPinRef.current = next;
+    setPin(next);
+    const [s, t] = g.extremities(factId);
+    const a = sigma.getNodeDisplayData(s);
+    const b = sigma.getNodeDisplayData(t);
+    if (a && b) {
+      // 相机坐标与节点显示坐标同在归一化的画框里（ratio 1 = 整张图）：两端相距 span，
+      // 1.3 倍留出边距。上限 0.6 是为了越过「放大到 0.7 以下才写边标签」那道线
+      const span = Math.hypot(a.x - b.x, a.y - b.y);
+      sigma.getCamera().animate(
+        {
+          x: (a.x + b.x) / 2,
+          y: (a.y + b.y) / 2,
+          ratio: Math.min(0.6, Math.max(0.12, span * 1.3)),
+        },
+        { duration: 400 },
+      );
+    }
+    sigma.refresh();
+  }, []);
 
   useEffect(() => {
     recomputeActive(timeT);
@@ -910,6 +995,18 @@ export function Graph() {
           // 选中的这一个同时被指着：名字改由高亮层画，标签层让开
           return hov === node ? deferToHoverLayer(picked) : picked;
         }
+        /* 面板指着一条边：两端按「指到」画，其余退半档——要读出来的是这一条连着谁 */
+        const pe = panelFocus(
+          panelEdgeRef.current,
+          panelPinRef.current,
+          hoverRef.current,
+          selectedRef.current,
+        );
+        if (pe && g.hasEdge(pe)) {
+          const [ps, pt] = g.extremities(pe);
+          if (node === ps || node === pt) return hoveredNode(res, attrs, base);
+          if (hov !== node) return softMutedNode(res, attrs, base);
+        }
         if (hov === node) return hoveredNode(res, attrs, base);
         if (sel) {
           // 邻居收到 0.76：上千个节点，得给选中的那一条路让地方
@@ -1079,6 +1176,28 @@ export function Graph() {
            不带上它的话，一 hover，所有"还没长出来"的边会从近背景色
            跳到常态色的 45%，看起来是被点亮了。实测就是这么亮的 */
         const liveNow = !f.activeEdges || f.activeEdges.has(edge);
+        /* **面板指着的那一条压过一切**：选中一个实体时，连着它的边本来就全亮，
+           指着的那条得比它们更亮、写字；同一实体的其余边退回常态色的一半，
+           不相干的照旧压暗 */
+        const pe = panelFocus(
+          panelEdgeRef.current,
+          panelPinRef.current,
+          hoverRef.current,
+          selectedRef.current,
+        );
+        if (pe && g.hasEdge(pe)) {
+          if (edge === pe) {
+            boost();
+            res.size = Math.max((attrs.size as number) * 2.4, 2.8);
+            res.forceLabel = true;
+            return res;
+          }
+          const from = liveNow ? String(res.color) : EDGE_DIM;
+          res.color = lerpColor(from, EDGE_DIM, HOVER_MUTE);
+          res.size = (attrs.size as number) * 0.6;
+          res.label = "";
+          return res;
+        }
         if (hov && (s === hov || t === hov) && liveNow) {
           boost();
         } else if (hov && !sel) {
@@ -1732,6 +1851,10 @@ export function Graph() {
           exiting={!selected}
           intent={panelIntentRef}
           onClose={deselect}
+          pinnedFact={pinnedFact}
+          onPointFact={pointFact}
+          onFocusFact={focusFact}
+          onPointEntity={pointEntity}
           onNavigate={(id) => {
             // 跳转目标可能不在当前画布：同时把图 refocus 到它的邻域（与搜索选择一致）
             setFocusEntity(id);
@@ -2593,6 +2716,10 @@ function EntityPanel({
   exiting,
   intent,
   onClose,
+  pinnedFact,
+  onPointFact,
+  onFocusFact,
+  onPointEntity,
   onNavigate,
 }: {
   kbId: string;
@@ -2602,6 +2729,14 @@ function EntityPanel({
   /** 打开时停在哪一档、展开哪一行；读一次就清掉 */
   intent?: MutableRefObject<{ view: "derived"; open: string } | null>;
   onClose: () => void;
+  /** 点过、钉在画布上的那条事实 */
+  pinnedFact: string | null;
+  /** 指针停在一条事实上 / 离开（null） */
+  onPointFact: (factId: string | null) => void;
+  /** 点了一条事实：钉住它的边、镜头移过去 */
+  onFocusFact: (factId: string, otherId: string | null) => void;
+  /** 指针停在一个实体名上 / 离开 */
+  onPointEntity: (entityId: string | null) => void;
   onNavigate: (entityId: string) => void;
 }) {
   const detail = useQuery({
@@ -2806,6 +2941,10 @@ function EntityPanel({
                     fact={f}
                     open={openFact === f.id}
                     onToggle={() => setOpenFact(openFact === f.id ? null : f.id)}
+                    pinned={pinnedFact === f.id}
+                    onPointFact={onPointFact}
+                    onFocusFact={onFocusFact}
+                    onPointEntity={onPointEntity}
                     onNavigate={onNavigate}
                   />
                 ))}
@@ -2820,6 +2959,10 @@ function EntityPanel({
                         past
                         open={openFact === f.id}
                         onToggle={() => setOpenFact(openFact === f.id ? null : f.id)}
+                        pinned={pinnedFact === f.id}
+                        onPointFact={onPointFact}
+                        onFocusFact={onFocusFact}
+                        onPointEntity={onPointEntity}
                         onNavigate={onNavigate}
                       />
                     ))}
@@ -2987,6 +3130,10 @@ function FactRow({
   past,
   open,
   onToggle,
+  pinned,
+  onPointFact,
+  onFocusFact,
+  onPointEntity,
   onNavigate,
 }: {
   kbId: string;
@@ -2996,11 +3143,25 @@ function FactRow({
   past?: boolean;
   open: boolean;
   onToggle: () => void;
+  pinned: boolean;
+  onPointFact: (factId: string | null) => void;
+  onFocusFact: (factId: string, otherId: string | null) => void;
+  onPointEntity: (entityId: string | null) => void;
   onNavigate: (entityId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const interval = fmtInterval(fact);
-  const go = fact.other_id ? () => onNavigate(fact.other_id!) : undefined;
+  /* **一行三件事，各有各的去处**：
+     - 整行（与谓词）是这条事实：指着 = 画布上那条边亮，点 = 钉住它、镜头移过去；
+     - 宾语是另一个实体：指着 = 画布上那个节点亮，点 = 跳过去看它。
+     从前整行点下去就跳到宾语，想看「是哪一条边」反倒没有办法。
+     字面值事实（`amount 13,237`）画布上没有边，这一行不指画布，点也不做事 */
+  const isEdge = !!fact.other_id;
+  const focus = isEdge ? () => onFocusFact(fact.id, fact.other_id) : undefined;
+  const goOther = (ev: { stopPropagation: () => void }) => {
+    ev.stopPropagation();
+    if (fact.other_id) onNavigate(fact.other_id);
+  };
 
   return (
     <div
@@ -3015,13 +3176,23 @@ function FactRow({
           是哪条（#500）。谓词是这一行的主语句，不该是第一个被挤掉的。
           悬停才现身的那两个动作也一起下来：`u-reveal` 只改透明度，看不见也占着位 */}
       <div
-        role={go ? "link" : undefined}
-        tabIndex={go ? 0 : undefined}
-        onClick={go}
+        role={focus ? "button" : undefined}
+        tabIndex={focus ? 0 : undefined}
+        onClick={focus}
+        onMouseEnter={isEdge ? () => onPointFact(fact.id) : undefined}
+        onMouseLeave={isEdge ? () => onPointFact(null) : undefined}
+        onFocus={isEdge ? () => onPointFact(fact.id) : undefined}
+        onBlur={isEdge ? () => onPointFact(null) : undefined}
         onKeyDown={(ev) => {
-          if (go && ev.key === "Enter") go();
+          if (focus && ev.key === "Enter") focus();
         }}
-        className={cn(HOVER_ROW, "items-start", go && "cursor-pointer")}
+        aria-pressed={focus ? pinned : undefined}
+        className={cn(
+          HOVER_ROW,
+          "items-start",
+          focus && "cursor-pointer",
+          pinned && "bg-surface-2",
+        )}
       >
         <span className="shrink-0 pt-1 text-violet">
           {dir === "out" ? <ArrowRight size={12} /> : <ArrowLeft size={12} />}
@@ -3035,6 +3206,7 @@ function FactRow({
             <span
               className={cn(
                 "min-w-0 truncate text-body text-ink",
+                isEdge && POINT_WORD,
                 fact.predicate_label === null && "italic text-ink-2",
               )}
               // 谓词还是可能长到放不下（`publishingPrinciples`）——悬停给全名，
@@ -3055,9 +3227,35 @@ function FactRow({
                 ? predicateSentence(fact.predicate_label)
                 : S.graph.unknownPredicate}
             </span>
-            <span className={ROW_VALUE}>
-              {fact.other_name ?? fmtObjectValue(fact.object_value) ?? "?"}
-            </span>
+            {isEdge ? (
+              <span className={cn(ROW_VALUE, "flex-none")}>
+                <span
+                  role="link"
+                  tabIndex={0}
+                  className={POINT_WORD}
+                  title={S.graph.openEntity(fact.other_name ?? "")}
+                  onClick={goOther}
+                  onMouseEnter={() => {
+                    // 指着宾语说的是那个实体，不是这条边：边先放下，出了这个词再拿起来
+                    onPointFact(null);
+                    onPointEntity(fact.other_id);
+                  }}
+                  onMouseLeave={() => {
+                    onPointEntity(null);
+                    onPointFact(fact.id);
+                  }}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter") goOther(ev);
+                  }}
+                >
+                  {fact.other_name ?? "?"}
+                </span>
+              </span>
+            ) : (
+              <span className={ROW_VALUE}>
+                {fmtObjectValue(fact.object_value) ?? "?"}
+              </span>
+            )}
             {/* 边上的属性（0037）：`amount $4B`——跟在宾语后面，不另起一行。
                 投了谁和投了多少是同一句话，拆开就读不成一句了 */}
             {fact.qualifiers?.map((q) => (

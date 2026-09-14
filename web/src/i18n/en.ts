@@ -110,6 +110,21 @@ export const en = {
     newPassword: "New password (min. 8 characters)",
     changePassword: "Update password",
     passwordChanged: "Password updated",
+    sso: {
+      title: "Single sign-on",
+      hint:
+        "Link your identity provider account to sign in with SSO. You'll be sent to the provider " +
+        "to confirm it's you.",
+      linkedAs: (subject: string) => `Linked as ${subject}`,
+      notLinked: "Not linked.",
+      link: "Link identity",
+      unlink: "Unlink",
+      unlinkTitle: "Unlink single sign-on?",
+      unlinkHint:
+        "You won't be able to sign in with SSO until you link again. Sessions already open stay signed in.",
+      linked: "Identity linked. You can now sign in with SSO.",
+      unlinked: "Identity unlinked.",
+    },
     avatarHint: "Avatars are generated from your name for now.",
     language: "Language",
     theme: "Theme",
@@ -301,6 +316,22 @@ export const en = {
     submitting: "One moment…",
     createAccount: "Create account",
     networkError: "Network error, please try again",
+    orDivider: "or",
+    ssoButton: "Continue with SSO",
+    ssoErrors: {
+      unlinked:
+        "This identity isn't linked to an account. Sign in with your password and link it from your account page.",
+      cancelled: "Single sign-on was cancelled.",
+      denied: "The identity provider's answer couldn't be verified.",
+      session: "The sign-in started in a different browser session. Try again.",
+      expired: "The sign-in took too long. Try again.",
+      busy: "Too many sign-ins are in progress. Try again in a moment.",
+      unavailable: "Single sign-on is unavailable right now.",
+      invalid: "The sign-in request was incomplete. Try again.",
+      taken: "That identity is already linked to another account.",
+      already_linked: "Your account already has a linked identity. Unlink it first.",
+    } as Record<string, string>,
+    ssoErrorOther: "Single sign-on failed. Try again.",
     // 惯用同意句式：By continuing, you agree to the <Terms> and acknowledge the <Privacy>.
     agreePrefix: "By continuing, you agree to the ",
     agreeAnd: " and acknowledge the ",
@@ -883,6 +914,7 @@ export const en = {
     /* 实体面板的 Relations：两节的标题、组尾的折、行上的证据开关 */
     fromEntity: (name: string) => `From ${name}`,
     toEntity: (name: string) => `To ${name}`,
+    openEntity: (name: string) => `Open ${name}`,
     past: (n: number) => (n === 1 ? "1 past" : `${n} past`),
     sources: (n: number) => (n === 1 ? "1 source" : `${n} sources`),
     timelineEmpty: "No dated facts yet.",
@@ -960,6 +992,7 @@ export const en = {
     tabMembers: "Users",
     tabKbs: "Knowledge bases",
     tabDeployment: "Deployment",
+    tabSso: "Single sign-on",
     cardAccounts: "Accounts",
     newUser: "Create user",
     initialPassword: "Initial password (min. 8 characters)",
@@ -1049,6 +1082,28 @@ export const en = {
         n === 0
           ? "Revoked."
           : `Revoked, and unmounted it from ${n} knowledge base(s).`,
+    },
+    sso: {
+      title: "Single sign-on",
+      hint:
+        "Sign-in through an identity provider (OIDC), configured with environment variables (see " +
+        ".env.example). People link their own identity from their account page; an administrator " +
+        "can see and remove links but can't create one for someone else.",
+      disabled:
+        "Not configured on this deployment. Set UTOPIA_OIDC_ISSUER, UTOPIA_OIDC_CLIENT_ID and " +
+        "UTOPIA_OIDC_REDIRECT_URI (and, if the provider needs one, UTOPIA_OIDC_CLIENT_SECRET) " +
+        "and restart.",
+      issuer: "Issuer",
+      clientId: "Client ID",
+      redirectUri: "Redirect URI",
+      colUser: "User",
+      colSubject: "Subject",
+      empty: "Nobody has linked an identity yet.",
+      unlink: "Unlink",
+      unlinkTitle: (email: string) => `Unlink ${email}?`,
+      unlinkHint:
+        "They won't be able to sign in with SSO until they link again. Sessions already open " +
+        "stay signed in; deactivate the account to cut access immediately.",
     },
     kbs: {
       hint:

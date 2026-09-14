@@ -1054,6 +1054,13 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
 
     let doc_time = doc.doc_time.map(|t| t.format("%Y-%m-%d").to_string());
     let chunks = utopia_store::documents::chunks_for_extraction(&state.pool, document_id).await?;
+    // 文件开头：序号最小的现存分块（不是还没抽的第一块）。备忘文件一个片段一块，
+    // 前一段不是后一段的开头，不附
+    let opening_chunk = if await_nod {
+        None
+    } else {
+        utopia_store::documents::opening_chunk(&state.pool, document_id).await?
+    };
 
     let mut doc_cache: HashMap<(Option<Uuid>, String), Uuid> = HashMap::new();
     // Identities introduced through handles, grouped only for detecting document-local
@@ -1108,13 +1115,19 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 name: name.clone(),
             })
             .collect();
-        let messages = utopia_extract::build_messages(
+        // 这一块就是开头本身时不再重复一遍
+        let opening = opening_chunk
+            .as_ref()
+            .filter(|(id, _)| *id != chunk.id)
+            .map(|(_, text)| text.as_str());
+        let messages = utopia_extract::build_messages_with_opening(
             &lists.types,
             &lists.relations,
             &lists.attributes,
             doc_time.as_deref(),
             &doc.filename,
             &known,
+            opening,
             &chunk.text,
         );
         // 这两处 continue 跳过的是**整个分块**——它一条事实都没产出。
@@ -1177,7 +1190,16 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         // **落库前先查形状**（utopia_extract::normalize）：只看结构、不看词——引文里有没有
         // 这段字、值是不是只有标点、一侧是不是契约的日期、同句有没有另一条边。读懂时间
         // 归模型（提示词 3c），这里只核对它照没照契约写，做了什么都记进丢弃表
-        for n in utopia_extract::normalize_facts(&mut extraction) {
+        let from_opening = match opening {
+            Some(text) => {
+                utopia_extract::drop_quotes_from_opening(&mut extraction, &chunk.text, text)
+            }
+            None => Vec::new(),
+        };
+        for n in from_opening
+            .into_iter()
+            .chain(utopia_extract::normalize_facts(&mut extraction))
+        {
             use utopia_extract::Normalization as N;
             use utopia_store::extraction_drops::reason;
             let (r, detail, example) = match n {
@@ -1223,6 +1245,9 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 ),
                 N::OrphanDeclaration { name } => {
                     (reason::ORPHAN_DECLARATION, "entity".to_string(), name)
+                }
+                N::QuoteFromOpening { predicate, quote } => {
+                    (reason::QUOTE_FROM_OPENING, predicate, quote)
                 }
             };
             drop_signal(state, doc.kb_id, document_id, r, &detail, Some(&example)).await;
@@ -1558,30 +1583,8 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 .await;
                 continue;
             }
-            let from = f.valid_from.as_deref().and_then(utopia_extract::parse_time);
-            let to = f.valid_to.as_deref().and_then(utopia_extract::parse_time);
-            // **两端各记各的粒度**（见 `facts.valid_to_precision`）。从前一个精度列描述两个端点，
-            // 于是「2020 年开始、2023-05-06 结束」这种只能共用一个值。
-            //
-            // 模型给的 valid_to = "unknown" 表示**原文说它结束了、但没说哪天**。
-            // parse_time 解不出它（本来就不是日期），落在这里显式认掉——
-            // 不认的话它退化成 None，那条事实就又变回"仍在持续"了
-            let ended_unknown = f
-                .valid_to
-                .as_deref()
-                .map(str::trim)
-                .is_some_and(|v| v.eq_ignore_ascii_case(utopia_store::graph::ENDED_UNKNOWN));
-            let validity = utopia_store::graph::Validity {
-                from: from.map(|(t, _)| t),
-                from_precision: from.map(|(_, p)| p),
-                to: to.map(|(t, _)| t),
-                to_precision: to
-                    .map(|(_, p)| p)
-                    .or(ended_unknown.then_some(utopia_store::graph::ENDED_UNKNOWN)),
-                // 这次观察出自哪一天的文档（0022）：没起点的事实从它起成立，结束了
-                // 不知哪天的到它为止。没有文档日期就是记下的此刻——账本能给的最好的
-                attested_at: doc.doc_time,
-            };
+            let validity =
+                validity_of(f.valid_from.as_deref(), f.valid_to.as_deref(), doc.doc_time);
 
             // 属性事实：谓词命中属性 → 字面值通道。datatype 校验失败宁缺勿脏；
             // domain 校验（含子类上溯）挡住"把 salary 挂到 Organization"这类张冠李戴。
@@ -1701,7 +1704,11 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     }
                 };
                 let datatype = attr.datatype.as_deref().unwrap_or("text");
-                let Some(normalized) = utopia_extract::normalize_attr_value(datatype, &raw) else {
+                // 只相对一件事给出的日期（「触发日后 45 天」，#681 §4）照原文收下、带着标记：
+                // 它是新的状态值，时态引擎照常用它接替前一个截止日
+                let Some(mut object_value) =
+                    utopia_extract::attr_object_value(datatype, &raw, f.relative)
+                else {
                     tracing::debug!(%document_id, attr = attr.key, ?raw, "属性值不合 datatype，跳过");
                     drop_signal(
                         state,
@@ -1714,7 +1721,6 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     .await;
                     continue;
                 };
-                let mut object_value = serde_json::json!({ "value": normalized });
                 // 单位随事实落笔：类型上的单位以后改了，旧值仍按记录时的单位读。
                 // 记哪个单位照 `unit_for`——从前这里无条件盖上声明的单位，实测
                 //「提供 500 兆瓦的风电」被模型记成金额，再盖上 ¥ 就成了 500 块钱
@@ -1766,11 +1772,11 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     Some(f.predicate.as_str()),
                 )
                 .await?;
-                if !created {
-                    continue;
+                if created {
+                    fact_count += 1;
                 }
-                fact_count += 1;
-                // 单值属性 = functional：新值闭合旧值（属性历史由此而来）
+                // 单值属性 = functional：新值闭合旧值（属性历史由此而来）。并进已有断言的也对：
+                // 这份证据的日期可能更早，时间线的形状跟着变（#679）
                 if attr.functional && attr.temporal == "state" {
                     let report = utopia_store::temporal::reconcile_new_fact(
                         &state.pool,
@@ -1808,45 +1814,68 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
             // 不满足——尾巴上还有实词，它说的就不再只是那个数了。
             // 文本值的属性（schema.org 里 323 个）在这一档仍会变成实体——
             // 那里没有可靠判据，猜错会吃掉真实体，不猜
-            let literal = match (&f.value, f.object.as_deref().map(str::trim)) {
-                // **给了值、没给宾语——不管这个谓词本体认不认识。**
-                //
-                // 从前这里卡着 `!known_predicate`：`job_title` 在 schema.org 里是关系
-                //（它的 range 是 `Text|DefinedTerm`，含一个类就走关系通道），于是模型
-                // 写 `job_title` + "founder and CEO" 时既进不了属性档、又在关系档因为
-                // 缺宾语被丢掉——`object_missing` 实测 69 次，四篇文档里每个人的职务
-                // 就是这么没的。谓词认不认识与「这条事实带的是值还是实体」无关：
-                // 值在手上就收下，原词进 proposed_predicate，等本体采纳时再换谓词，
-                // 形状已经是对的（0010）
-                (Some(v), None | Some("")) => Some(v.clone()),
-                /* **宾语整体是一个量：一律当值收下**，不问谓词认不认识、
-                也不问模型有没有把它声明成实体。
+            // 第二格是表层谓词：通常就是模型写的谓词；值旁边挂着一个没声明的宾语短语时，
+            // 短语并进来（见下面那一档）
+            let literal: Option<(serde_json::Value, String)> =
+                match (&f.value, f.object.as_deref().map(str::trim)) {
+                    // **给了值、没给宾语——不管这个谓词本体认不认识。**
+                    //
+                    // 从前这里卡着 `!known_predicate`：`job_title` 在 schema.org 里是关系
+                    //（它的 range 是 `Text|DefinedTerm`，含一个类就走关系通道），于是模型
+                    // 写 `job_title` + "founder and CEO" 时既进不了属性档、又在关系档因为
+                    // 缺宾语被丢掉——`object_missing` 实测 69 次，四篇文档里每个人的职务
+                    // 就是这么没的。谓词认不认识与「这条事实带的是值还是实体」无关：
+                    // 值在手上就收下，原词进 proposed_predicate，等本体采纳时再换谓词，
+                    // 形状已经是对的（0010）
+                    (Some(v), None | Some("")) => Some((v.clone(), f.predicate.clone())),
+                    /* **宾语整体是一个量：一律当值收下**，不问谓词认不认识、
+                    也不问模型有没有把它声明成实体。
 
-                下面那一档卡着 `!known_predicate`，理由是本体说得上话的时候
-                别去二猜模型。可量值这里没有可猜的余地：一个数额不会因为
-                谓词恰好在本体里就变成一个东西。实测漏的正是这一格——
-                `hasAmount` 来自 FIBO 包、抽取前就在本体里，
-                `Microsoft hasAmount $1 billion` 于是绕过下面那一档，
-                把数额造成了节点；同一个库里 `invested` 当时还未知，
-                走到下面那一档、被拦住了。同一个数额，两种下场。
+                    下面那一档卡着 `!known_predicate`，理由是本体说得上话的时候
+                    别去二猜模型。可量值这里没有可猜的余地：一个数额不会因为
+                    谓词恰好在本体里就变成一个东西。实测漏的正是这一格——
+                    `hasAmount` 来自 FIBO 包、抽取前就在本体里，
+                    `Microsoft hasAmount $1 billion` 于是绕过下面那一档，
+                    把数额造成了节点；同一个库里 `invested` 当时还未知，
+                    走到下面那一档、被拦住了。同一个数额，两种下场。
 
-                收下而不是丢掉：`is_entity_name` 那道闸现在也拦纯量值，
-                不在这里接住的话，这条事实会连同那个数一起进丢弃表。
-                原词照旧进 `proposed_predicate`，采纳时再换谓词 */
-                (_, Some(o)) if utopia_extract::parse_quantity(o).is_some() => {
-                    Some(serde_json::Value::String(o.to_string()))
-                }
-                (_, Some(o))
-                    if !o.is_empty()
-                        && !known_predicate(f.predicate.as_str())
-                        && !entity_ids.contains_key(o)
-                        && looks_literal(o) =>
-                {
-                    Some(serde_json::Value::String(o.to_string()))
-                }
-                _ => None,
-            };
-            if let Some(value) = literal {
+                    收下而不是丢掉：`is_entity_name` 那道闸现在也拦纯量值，
+                    不在这里接住的话，这条事实会连同那个数一起进丢弃表。
+                    原词照旧进 `proposed_predicate`，采纳时再换谓词 */
+                    (_, Some(o)) if utopia_extract::parse_quantity(o).is_some() => Some((
+                        serde_json::Value::String(o.to_string()),
+                        f.predicate.clone(),
+                    )),
+                    /* **给了值、宾语却是一个没声明的短语：值收下，短语并进表层谓词**（#685）。
+
+                    `build` + 宾语「new energy generation」+ 值「at least 10 GW」：宾语不是
+                    回复里声明的实体、没有句柄、也不是本文档认下的名字，于是上面几档都接
+                    不住，关系那条路又因为它不是实体把整条丢掉——那个数跟着没了。模型把
+                    同一句话写成纯值（「at least 10 GW of new energy generation」）时就落得
+                    下，落不落全看它挑了两种同样说得通的写法里的哪一种。
+
+                    只看结构：值在、宾语没有句柄、宾语不在已声明的名字里。宾语是个认得的
+                    实体时照旧走边。短语不丢，进表层谓词（`build new energy generation`），
+                    采纳时再换谓词；原句在证据里 */
+                    (Some(v), Some(o))
+                        if undeclared_beside_value(f.object_ref.as_deref(), o, &span_declared) =>
+                    {
+                        Some((v.clone(), format!("{} {o}", f.predicate.trim())))
+                    }
+                    (_, Some(o))
+                        if !o.is_empty()
+                            && !known_predicate(f.predicate.as_str())
+                            && !entity_ids.contains_key(o)
+                            && looks_literal(o) =>
+                    {
+                        Some((
+                            serde_json::Value::String(o.to_string()),
+                            f.predicate.clone(),
+                        ))
+                    }
+                    _ => None,
+                };
+            if let Some((value, surface)) = literal {
                 let subject_name = f.subject.trim();
                 // **主语按关系那条路解，不要求它在本次回复里重新声明过。**
                 //
@@ -1902,7 +1931,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     &state.pool,
                     doc.kb_id,
                     "attribute_type",
-                    &f.predicate,
+                    &surface,
                     Some(&format!("{subject_name} → {value}")),
                 )
                 .await;
@@ -1929,7 +1958,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                                 predicate_id: None,
                                 object_id: None,
                                 object_value: Some(&literal),
-                                proposed_predicate: Some(f.predicate.as_str()),
+                                proposed_predicate: Some(surface.as_str()),
                                 validity,
                                 confidence,
                                 chunk_id: chunk.id,
@@ -1959,7 +1988,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     fact_id,
                     chunk.id,
                     f.quote.as_deref(),
-                    Some(f.predicate.as_str()),
+                    Some(surface.as_str()),
                 )
                 .await?;
                 if created {
@@ -2709,12 +2738,12 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                     Some(f.predicate.as_str()),
                 )
                 .await?;
-                if !created {
-                    continue;
+                if created {
+                    fact_count += 1;
                 }
-                fact_count += 1;
                 // 时态对账：带唯一性约束的状态关系落新事实即检测矛盾（纯规则点查，
-                // 自动闭合走"作废+改写"，拿不准进 fact_conflicts 人裁）
+                // 自动闭合走"作废+改写"，拿不准进 fact_conflicts 人裁）。并进已有断言的
+                // 也对：多了一份证据，时间线的形状可能跟着变（#679）
                 // 没有谓词就没有关系元数据，也就不参与时态对账——
                 // 一条说不出是什么关系的边，本来就不可能带唯一性约束
                 if let Some((pid, (func, inv_func, temporal))) =
@@ -2871,6 +2900,22 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     Ok(())
 }
 
+/// 一条事实同时给了值和宾语时，宾语是不是一个**没声明的短语**（#685）：没有句柄，
+/// 也不是本次回复或本文档前面认下的名字（大小写不计）。是的话这条事实按值落，
+/// 宾语短语并进表层谓词；不是的话宾语是个实体，照旧走边
+fn undeclared_beside_value(
+    object_ref: Option<&str>,
+    object: &str,
+    declared: &HashMap<String, Uuid>,
+) -> bool {
+    let object = object.trim();
+    !object.is_empty()
+        && object_ref.map(str::trim).is_none_or(str::is_empty)
+        && !declared
+            .keys()
+            .any(|name| name.trim().eq_ignore_ascii_case(object))
+}
+
 /// 宾语位上的这串东西，是不是一个字面值而不是实体的名字。
 ///
 /// **只认数字与日期。** 这是个会吃掉真实体的判断，所以宁可漏认：
@@ -2879,6 +2924,38 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
 ///
 /// "2015"、"2023-03"、"6" 认；"杭州"、"首席技术官"、"3M"、"V3" 不认。
 /// 调用方还额外要求模型**没有**把它声明成实体——两道门一起过才算数。
+/// 模型给的区间两端 → 落库的有效区间。
+///
+/// **两端各记各的粒度**（见 `facts.valid_to_precision`）。从前一个精度列描述两个端点，
+/// 于是「2020 年开始、2023-05-06 结束」这种只能共用一个值。两端都用 `read_time` 读：
+/// 规则 3 的格式，或写法说得清是哪天的日期（#688），精度随写了几位。
+///
+/// 模型给的 valid_to = "unknown" 表示**原文说它结束了、但没说哪天**。
+/// read_time 解不出它（本来就不是日期），落在这里显式认掉——
+/// 不认的话它退化成 None，那条事实就又变回"仍在持续"了
+fn validity_of(
+    valid_from: Option<&str>,
+    valid_to: Option<&str>,
+    doc_time: Option<chrono::DateTime<chrono::Utc>>,
+) -> utopia_store::graph::Validity<'static> {
+    let from = valid_from.and_then(utopia_extract::read_time);
+    let to = valid_to.and_then(utopia_extract::read_time);
+    let ended_unknown = valid_to
+        .map(str::trim)
+        .is_some_and(|v| v.eq_ignore_ascii_case(utopia_store::graph::ENDED_UNKNOWN));
+    utopia_store::graph::Validity {
+        from: from.map(|(t, _)| t),
+        from_precision: from.map(|(_, p)| p),
+        to: to.map(|(t, _)| t),
+        to_precision: to
+            .map(|(_, p)| p)
+            .or(ended_unknown.then_some(utopia_store::graph::ENDED_UNKNOWN)),
+        // 这次观察出自哪一天的文档（0022）：没起点的事实从它起成立，结束了
+        // 不知哪天的到它为止。没有文档日期就是记下的此刻——账本能给的最好的
+        attested_at: doc_time,
+    }
+}
+
 fn looks_literal(s: &str) -> bool {
     let s = s.trim();
     if s.is_empty() {
@@ -2899,8 +2976,8 @@ fn looks_literal(s: &str) -> bool {
     if utopia_extract::parse_quantity(s).is_some() {
         return true;
     }
-    // 日期：复用抽取侧那个解析器，它认 2015 / 2015-03 / 2015-03-01 等
-    utopia_extract::parse_time(s).is_some()
+    // 日期：复用抽取侧那个解析器，它认 2015 / 2015-03 / 2015-03-01，也认写出来的日期（#688）
+    utopia_extract::read_time(s).is_some()
 }
 
 /// 提示词里那三段清单：类、关系、属性。
@@ -3872,7 +3949,7 @@ mod tests {
 
     use super::{
         incomplete_reason, looks_literal, no_ref_name_binding, referenced_entity, resolve_bare,
-        resolve_handle, BoundEntity, NoRefNameBinding,
+        resolve_handle, validity_of, BoundEntity, NoRefNameBinding,
     };
     use std::collections::HashMap;
     use uuid::Uuid;
@@ -3893,6 +3970,10 @@ mod tests {
             "€1.5 million",
             "52%",
             "35,000",
+            // 合同照原文写的日期（#688）
+            "June 23, 2020",
+            "17 Mar. 2020",
+            "2020年3月17日",
         ] {
             assert!(looks_literal(yes), "{yes} 该认成字面值");
         }
@@ -3914,6 +3995,31 @@ mod tests {
         ] {
             assert!(!looks_literal(no), "{no} 不该认成字面值");
         }
+    }
+
+    /// 区间两端照合同原文写（#688）：读成日期，精度随写了几位；「unknown」仍是结束了不知哪天
+    #[test]
+    fn a_written_start_keeps_the_precision_it_was_written_with() {
+        let day = validity_of(Some("June 8, 2020"), None, None);
+        assert_eq!(
+            day.from.map(|t| t.date_naive().to_string()).as_deref(),
+            Some("2020-06-08")
+        );
+        assert_eq!(day.from_precision, Some("day"));
+        assert!(!day.has_ended());
+
+        let month = validity_of(Some("March 2020"), Some("17 Mar. 2021"), None);
+        assert_eq!(month.from_precision, Some("month"));
+        assert_eq!(
+            month.to.map(|t| t.date_naive().to_string()).as_deref(),
+            Some("2021-03-17")
+        );
+        assert_eq!(month.to_precision, Some("day"));
+
+        // 说不清几月几号的不当起点
+        let ambiguous = validity_of(Some("03/04/2020"), Some("unknown"), None);
+        assert_eq!((ambiguous.from, ambiguous.from_precision), (None, None));
+        assert_eq!(ambiguous.to_precision, Some("unknown"));
     }
 
     #[test]
@@ -4373,5 +4479,38 @@ mod tests {
             .execute(&pool)
             .await;
         run
+    }
+}
+
+#[cfg(test)]
+mod undeclared_beside_value_tests {
+    use super::undeclared_beside_value;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    #[test]
+    fn a_phrase_beside_a_value_is_not_an_entity() {
+        let mut declared = HashMap::new();
+        declared.insert("SB Energy".to_string(), Uuid::nil());
+        declared.insert("Microsoft".to_string(), Uuid::nil());
+        // 回复里的真形状：没句柄、没声明 → 值落下，短语进谓词
+        assert!(undeclared_beside_value(
+            None,
+            "new energy generation",
+            &declared
+        ));
+        assert!(undeclared_beside_value(
+            Some(" "),
+            "new regional grid infrastructure",
+            &declared
+        ));
+        // 宾语有句柄，或者是认下的名字（大小写不计）→ 是实体，走边
+        assert!(!undeclared_beside_value(
+            Some("e2"),
+            "new energy generation",
+            &declared
+        ));
+        assert!(!undeclared_beside_value(None, "microsoft", &declared));
+        assert!(!undeclared_beside_value(None, "  ", &declared));
     }
 }

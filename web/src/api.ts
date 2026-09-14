@@ -277,6 +277,13 @@ export interface OrgUser {
   is_admin: boolean;
 }
 
+/** 一个身份提供方 subject 绑定到的账号（0056） */
+export interface OidcIdentity {
+  user_id: string;
+  subject: string;
+  email: string;
+}
+
 /** 问数数据源（凭据不下发,只有 host:port/db 摘要）。 */
 export interface DataSourceView {
   id: string;
@@ -2335,6 +2342,30 @@ export const api = {
       chat: { ok: boolean; reply?: string; error?: string };
       embed: { ok: boolean; dim?: number; error?: string };
     }>(`/api/v1/workspaces/${workspaceId}/settings/test`, { method: "POST" }),
+
+  /** 是否配置了单点登录（0056）。四项环境变量缺一个都是 false——
+   *  登录页据此决定要不要露出那个按钮 */
+  oidcStatus: () => request<{ enabled: boolean }>("/api/v1/auth/oidc/status"),
+  /** 谁的哪个身份提供方 subject 绑定到了这个部署的哪个账号（只读 + 解绑） */
+  oidcIdentities: () =>
+    request<{
+      issuer: string;
+      client_id: string;
+      redirect_uri: string;
+      identities: OidcIdentity[];
+    }>("/api/v1/admin/oidc/identities"),
+  /** 我自己的绑定。绑定本身走 `/api/v1/auth/oidc/start?link=1`，由本人在身份提供方那边完成 */
+  oidcMe: () =>
+    request<{ enabled: boolean; linked: boolean; subject?: string | null }>(
+      "/api/v1/auth/oidc/me",
+    ),
+  oidcUnlinkMe: () =>
+    request<{ ok: boolean }>("/api/v1/auth/oidc/me", { method: "DELETE" }),
+  /** 管理员解绑。没有替人绑定的接口——那是一条冒充别人登录的路 */
+  oidcUnlink: (userId: string) =>
+    request<{ ok: boolean }>(`/api/v1/admin/oidc/identities/${userId}`, {
+      method: "DELETE",
+    }),
 };
 
 /** RAG 对话：SSE 流式。返回中止函数。 */

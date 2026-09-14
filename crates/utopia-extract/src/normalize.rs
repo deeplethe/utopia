@@ -9,7 +9,7 @@
 //! 每条规则做了什么都返回给服务端记进丢弃表：违约多常见、出在哪个模型，量得出来，
 //! 契约该怎么改看数说话。
 
-use crate::{parse_time, ExtractedFact, Extraction};
+use crate::{read_time, ExtractedEntity, ExtractedFact, Extraction};
 use std::collections::HashSet;
 
 /// 形状检查做了什么；服务端按条记信号
@@ -49,6 +49,9 @@ pub enum Normalization {
     },
     /// 上面几条去掉事实之后，没有任何事实再引用的声明：不建，否则就是一个孤点
     OrphanDeclaration { name: String },
+    /// 引文抄自提示词里附的文件开头，而不是这一块：开头只作背景，它自己那一块会抽到。
+    /// 照落的话，证据挂在这一块上，引的却是第一块的话——引错了出处
+    QuoteFromOpening { predicate: String, quote: String },
 }
 
 /// 比对用的形态：空白折叠、小写
@@ -222,12 +225,92 @@ fn value_fact(
         quote: f.quote.clone(),
         subject_span: f.subject_span.clone(),
         object_span: None,
+        relative: false,
     }
 }
 
-/// 一侧写的是契约格式的时间（`YYYY` / `YYYY-MM` / `YYYY-MM-DD`，带时区的时刻）
-fn is_contract_time(s: &str) -> bool {
-    parse_time(s.trim()).is_some()
+/// 一侧写的是一个时间：规则 3 的格式（`YYYY` / `YYYY-MM` / `YYYY-MM-DD`，带时区的时刻），
+/// 或写法说得清是哪天的日期（`written_date`，#688）
+fn names_a_time(s: &str) -> bool {
+    read_time(s.trim()).is_some()
+}
+
+/// 引文不在这一块、却在附上的文件开头里的事实：丢掉，连同因此没人引用的声明。
+///
+/// 只比「在不在」（空白、大小写不论），不比像不像：两边都找不到的引文不归这里管——
+/// 那是模型改写了原文，与开头无关
+pub fn drop_quotes_from_opening(
+    x: &mut Extraction,
+    chunk_text: &str,
+    opening: &str,
+) -> Vec<Normalization> {
+    let (chunk, opening) = (norm(chunk_text), norm(opening));
+    if opening.is_empty() {
+        return Vec::new();
+    }
+    let before = referenced_names(&x.entities, &x.facts);
+    let mut out = Vec::new();
+    x.facts.retain(|f| {
+        let q = norm(f.quote.as_deref().unwrap_or(""));
+        let from_opening = !q.is_empty() && !chunk.contains(&q) && opening.contains(&q);
+        if from_opening {
+            out.push(Normalization::QuoteFromOpening {
+                predicate: f.predicate.clone(),
+                quote: f.quote.clone().unwrap_or_default(),
+            });
+        }
+        !from_opening
+    });
+    if out.is_empty() {
+        return out;
+    }
+    let mut after = referenced_names(&x.entities, &x.facts);
+    // 与 normalize_facts 同一条：模型给它报了别的名字的声明不算孤点（0041）
+    after.extend(x.names.iter().filter_map(|n| {
+        x.entities
+            .iter()
+            .find(|e| e.local_id.as_deref().map(str::trim) == Some(n.entity_ref.trim()))
+            .map(|e| e.name.trim().to_lowercase())
+    }));
+    let mut orphans = Vec::new();
+    x.entities.retain(|e| {
+        let n = e.name.trim().to_lowercase();
+        let orphan = before.contains(&n) && !after.contains(&n);
+        if orphan {
+            orphans.push(e.name.trim().to_string());
+        }
+        !orphan
+    });
+    out.extend(
+        orphans
+            .into_iter()
+            .map(|name| Normalization::OrphanDeclaration { name }),
+    );
+    out
+}
+
+/// 事实两侧绑到的声明名（小写）：有句柄按句柄，没有按写出来的名字
+fn referenced_names(entities: &[ExtractedEntity], facts: &[ExtractedFact]) -> HashSet<String> {
+    let handle_name = |h: Option<&String>| {
+        h.and_then(|h| {
+            entities
+                .iter()
+                .find(|e| e.local_id.as_deref().map(str::trim) == Some(h.trim()))
+                .map(|e| e.name.trim().to_string())
+        })
+    };
+    facts
+        .iter()
+        .flat_map(|f| {
+            [
+                handle_name(f.subject_ref.as_ref()).or_else(|| Some(f.subject.trim().to_string())),
+                handle_name(f.object_ref.as_ref())
+                    .or_else(|| f.object.as_deref().map(|o| o.trim().to_string())),
+            ]
+        })
+        .flatten()
+        .map(|n| n.to_lowercase())
+        .collect()
 }
 
 pub fn normalize_facts(x: &mut Extraction) -> Vec<Normalization> {
@@ -243,22 +326,7 @@ pub fn normalize_facts(x: &mut Extraction) -> Vec<Normalization> {
                 .map(|e| e.name.trim().to_string())
         })
     };
-    let referenced = |facts: &[ExtractedFact]| -> HashSet<String> {
-        facts
-            .iter()
-            .flat_map(|f| {
-                [
-                    handle_name(f.subject_ref.as_ref())
-                        .or_else(|| Some(f.subject.trim().to_string())),
-                    handle_name(f.object_ref.as_ref())
-                        .or_else(|| f.object.as_deref().map(|o| o.trim().to_string())),
-                ]
-            })
-            .flatten()
-            .map(|n| n.to_lowercase())
-            .collect()
-    };
-    let before = referenced(&x.facts);
+    let before = referenced_names(&entities, &x.facts);
 
     let mut facts: Vec<ExtractedFact> = Vec::with_capacity(x.facts.len());
     for mut f in std::mem::take(&mut x.facts) {
@@ -288,7 +356,7 @@ pub fn normalize_facts(x: &mut Extraction) -> Vec<Normalization> {
         // ---- 主语是时间 ----
         let subject =
             handle_name(f.subject_ref.as_ref()).unwrap_or_else(|| f.subject.trim().to_string());
-        if is_contract_time(&subject) {
+        if names_a_time(&subject) {
             out.push(Normalization::TimeAsSubject {
                 predicate: f.predicate.clone(),
                 written: subject,
@@ -316,7 +384,7 @@ pub fn normalize_facts(x: &mut Extraction) -> Vec<Normalization> {
         }
 
         // ---- 宾语是时间 ----
-        if let Some(o) = object.as_deref().filter(|o| is_contract_time(o)) {
+        if let Some(o) = object.as_deref().filter(|o| names_a_time(o)) {
             if values.is_empty() {
                 // 没带数：写出来的那段就是值。`2028`（「2028 年起上线」）、`4000`（人数）都解析
                 // 得成年份，从前整条丢掉，一条信息就没了。宾语那个声明没人引用，下面按孤点去掉
@@ -423,7 +491,7 @@ pub fn normalize_facts(x: &mut Extraction) -> Vec<Normalization> {
 
     // ---- 被上面几条弄成孤点的声明 ----
     // 只去掉「原来有事实引用、现在没有了」的：模型一开始就只声明不连边的，不归这里管
-    let mut after = referenced(&x.facts);
+    let mut after = referenced_names(&entities, &x.facts);
     // 模型给它报了别的名字的声明也不算孤点：那些名字要绑在它身上（0041）
     after.extend(
         x.names
@@ -470,6 +538,7 @@ mod tests {
             quote: Some(quote.into()),
             subject_span: Some(subject.into()),
             object_span: object.map(str::to_string),
+            relative: false,
         }
     }
     fn valued(subject: &str, predicate: &str, value: &str, quote: &str) -> ExtractedFact {
@@ -491,6 +560,63 @@ mod tests {
             .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
             .collect()
     }
+    /// 第五份补充协议的第三块：模型从附上的开头里抄了「as of February 18, 2020」那句当引文。
+    /// 那条事实丢掉，只为它而声明的实体跟着不建；引文在这一块里的照落
+    #[test]
+    fn a_fact_quoting_the_opening_is_dropped_with_its_orphan() {
+        let opening = "THIS FIFTH AMENDMENT TO LEASE AGREEMENT is entered into as of February 18, 2020 by and between HPBB1, LLC and BLACKBAUD, INC.";
+        let chunk = "The Phase 2 Exercise Deadline is hereby extended to March 17, 2020.";
+        let mut x = Extraction {
+            entities: vec![entity("e1", "Lease"), entity("e2", "HPBB1, LLC")],
+            facts: vec![
+                fact(
+                    "Lease",
+                    "landlord",
+                    Some("HPBB1, LLC"),
+                    "entered into as of February 18, 2020 by and between HPBB1, LLC",
+                ),
+                fact(
+                    "Lease",
+                    "expansion_option_deadline",
+                    None,
+                    "the phase 2 exercise deadline is hereby   extended to March 17, 2020",
+                ),
+            ],
+            names: Vec::new(),
+            skipped_entities: 0,
+            skipped_facts: 0,
+            truncated: false,
+        };
+        let n = drop_quotes_from_opening(&mut x, chunk, opening);
+        let kept: Vec<&str> = x.facts.iter().map(|f| f.predicate.as_str()).collect();
+        assert_eq!(
+            kept,
+            ["expansion_option_deadline"],
+            "大小写与空白不论，引文在这一块里的留下"
+        );
+        let names: Vec<&str> = x.entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Lease"], "只为被丢那条声明的 HPBB1 不建");
+        assert!(n
+            .iter()
+            .any(|v| matches!(v, Normalization::QuoteFromOpening { .. })));
+        assert!(n
+            .iter()
+            .any(|v| matches!(v, Normalization::OrphanDeclaration { .. })));
+
+        // 两边都找不到的引文不归这里管；没有开头时什么都不做
+        let mut y = Extraction {
+            entities: vec![entity("e1", "Lease")],
+            facts: vec![fact("Lease", "note", None, "a paraphrase of neither")],
+            names: Vec::new(),
+            skipped_entities: 0,
+            skipped_facts: 0,
+            truncated: false,
+        };
+        assert!(drop_quotes_from_opening(&mut y, chunk, opening).is_empty());
+        assert!(drop_quotes_from_opening(&mut y, chunk, "  ").is_empty());
+        assert_eq!(y.facts.len(), 1);
+    }
+
     fn run(
         entities: Vec<ExtractedEntity>,
         facts: Vec<ExtractedFact>,

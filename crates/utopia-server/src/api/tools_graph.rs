@@ -350,8 +350,11 @@ pub(super) fn predicates_of(facts: &[EntityFact]) -> String {
 /// 的候选算命中（"OpenAI board members" → "OpenAI's board of directors"）。
 /// 模型给的名字常带一个库里没有的词（members、公司、这个），全词命中会把它们全漏掉
 async fn lookup(ctx: &ToolCtx<'_>, raw: &str) -> utopia_core::AppResult<Vec<GraphNode>> {
+    // 工具调用来自聊天 / MCP：当下的问题，不在回放里。传 None 让 `degree` 按
+    // 现在算——和现状一致，回放图上的搜索框另走 `/kbs/{id}/entities` 自己挂
+    // 时刻
     let (hits, _) =
-        utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, raw, 8, 0).await?;
+        utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, raw, 8, 0, None).await?;
     if !hits.is_empty() {
         return Ok(hits);
     }
@@ -362,7 +365,8 @@ async fn lookup(ctx: &ToolCtx<'_>, raw: &str) -> utopia_core::AppResult<Vec<Grap
     let mut pool: Vec<GraphNode> = Vec::new();
     for w in &words {
         let (found, _) =
-            utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, w, 40, 0).await?;
+            utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, w, 40, 0, None)
+                .await?;
         for n in found {
             if !pool.iter().any(|p| p.id == n.id) {
                 pool.push(n);

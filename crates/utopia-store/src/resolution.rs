@@ -1716,6 +1716,20 @@ pub async fn merge_entities(
 
     let mut tx = pool.begin().await?;
 
+    // 搬动会牵连的时间线先按固定顺序锁上，再改任何一行（撤回合并同一个顺序，见 temporal
+    // 模块头）：不锁的话，合并与撤回、合并与落库对账会各拿一半行锁互相等
+    let moving: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM facts WHERE kb_id = $1 AND (subject_id = $2 OR object_id = $2)",
+    )
+    .bind(kb_id)
+    .bind(source_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let timelines =
+        crate::temporal::timelines_of(&mut *tx, kb_id, &moving, Some((&[source_id], target_id)))
+            .await?;
+    crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
+
     // 互指事实（合并后变自环）→ 作废
     let cross: Vec<(Uuid,)> = sqlx::query_as(
         "UPDATE facts SET invalidated_at = now()
@@ -1905,9 +1919,9 @@ pub async fn merge_entities(
     // 搬移后的时态对账：换了主/宾的事实等价于新观察落库——两个对象折成一个后，
     // 唯一性不变量才第一次看得到旧开放区间与继任者相撞（如"星尘"并入"星尘项目"，
     // 旧负责人的 leads 应在新任起点闭合）。
-    // 修正行 id 记入合并账本：这些修正的唯一成因是本次合并，回滚时必须随之撤销。
-    // 注：本步在事务外，失败有自愈性——残留的旧开放行会在下一条相关新事实落库时
-    // 被常规插入对账撞到并闭合。
+    // 修正行 id 记入合并账本，供审计。回滚不靠它：回滚按搬走之后剩下的行重算时间线，
+    // 这些引擎画的终点自然跟着变（0057）。
+    // 注：本步在事务外，失败有自愈性——这条时间线下一次有事实落库时整条重算。
     let moved_all: Vec<Uuid> = moved_subject
         .iter()
         .chain(moved_object.iter())
@@ -1954,18 +1968,47 @@ struct MergeRow {
     moved_subject_facts: Vec<Uuid>,
     moved_object_facts: Vec<Uuid>,
     invalidated_facts: Vec<Uuid>,
-    temporal_corrections: Vec<Uuid>,
     target_profile_before: Option<Vector>,
     target_profile_n_before: i32,
     target_type_before: Option<Uuid>,
     reverted_at: Option<DateTime<Utc>>,
 }
 
+/// 搬过的事实，连同从它们改写出来的每一行（顺着 supersedes 往下走到底，作废的也算）
+async fn with_rewrites(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    roots: &[Uuid],
+) -> AppResult<Vec<Uuid>> {
+    Ok(sqlx::query_scalar(
+        "WITH RECURSIVE chain(id) AS (
+             SELECT unnest($1::uuid[])
+             UNION
+             SELECT f.id FROM facts f JOIN chain c ON f.supersedes = c.id
+         )
+         SELECT id FROM chain",
+    )
+    .bind(roots)
+    .fetch_all(&mut **tx)
+    .await?)
+}
+
 /// 精确回滚一次合并：事实原路搬回、作废撤销、target 画像与类型恢复快照、source 复活。
+///
+/// **搬回去的是搬过来的事实连同从它们改写出来的每一行。** 合并之后引擎把它关上过、人改过
+/// 它的区间、人驳回过它——那些行都是它的，跟着回源实体，各自保持原样：人改的区间还在，
+/// 驳回的仍是驳回的。合并当时引擎做的闭合不单独撤：两边的时间线在搬完之后按剩下的行重算，
+/// 边界随搬走的行走了，关在那里的行自然重新打开，写明的终点不动（0057）。
+///
+/// 怎么搬分两种，为的是记录轴回放合并窗口时仍答得对（0027 的 `fact_owner_at` 只认账本）：
+/// 账本上的行原地改回主语/宾语；合并之后才改写出来的行不在账本上，活着的作废、在源实体上
+/// 另起一行接着它，作废了的留在目标实体上——它们在那段窗口里确实挂在那里
+///
+/// 搬动之前先按固定顺序拿下两边所有牵连时间线的锁（见 temporal 模块头）：落库对账先拿锁
+/// 再锁行，这里要是先改行再拿锁，两边会互相等死
 pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResult<()> {
     let m: MergeRow = sqlx::query_as(
         "SELECT source_id, target_id, moved_subject_facts, moved_object_facts,
-                invalidated_facts, temporal_corrections, target_profile_before,
+                invalidated_facts, target_profile_before,
                 target_profile_n_before, target_type_before, reverted_at
          FROM entity_merges WHERE id = $1 AND kb_id = $2",
     )
@@ -1979,39 +2022,73 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
     }
 
     let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE facts SET subject_id = $1 WHERE id = ANY($2)")
+    // 事实此刻挂在谁身上：目标实体，或者目标后来又并进去的实体（S 并进 T、T 再并进 C，
+    // 撤回 S→T 时 S 的事实在 C 身上）。只认目标的话，连环合并里撤回头一环，源实体
+    // 复活了、它的事实却留在链尾（#679 第四轮评审）
+    let holders: Vec<Uuid> = sqlx::query_scalar(
+        "WITH RECURSIVE chain(id) AS (
+             SELECT $1::uuid
+             UNION SELECT e.merged_into FROM entities e JOIN chain ON e.id = chain.id
+              WHERE e.merged_into IS NOT NULL)
+         SELECT id FROM chain",
+    )
+    .bind(m.target_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let touched: Vec<Uuid> = with_rewrites(&mut tx, &m.moved_subject_facts)
+        .await?
+        .into_iter()
+        .chain(with_rewrites(&mut tx, &m.moved_object_facts).await?)
+        .chain(m.invalidated_facts.iter().copied())
+        .collect();
+    let timelines =
+        crate::temporal::timelines_of(&mut *tx, kb_id, &touched, Some((&holders, m.source_id)))
+            .await?;
+    crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
+    // 锁上之后再走一遍：等锁的时候，引擎可能刚从它们改写出新的一行
+    let subject_rows = with_rewrites(&mut tx, &m.moved_subject_facts).await?;
+    let object_rows = with_rewrites(&mut tx, &m.moved_object_facts).await?;
+
+    sqlx::query("UPDATE facts SET subject_id = $1 WHERE id = ANY($2) AND subject_id = ANY($3)")
         .bind(m.source_id)
         .bind(&m.moved_subject_facts)
+        .bind(&holders)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE facts SET object_id = $1 WHERE id = ANY($2)")
+    sqlx::query("UPDATE facts SET object_id = $1 WHERE id = ANY($2) AND object_id = ANY($3)")
         .bind(m.source_id)
         .bind(&m.moved_object_facts)
+        .bind(&holders)
         .execute(&mut *tx)
         .await?;
+    for (rows, ledger, on_object) in [
+        (&subject_rows, &m.moved_subject_facts, false),
+        (&object_rows, &m.moved_object_facts, true),
+    ] {
+        let holder = if on_object { "object_id" } else { "subject_id" };
+        let live: Vec<Uuid> = sqlx::query_scalar(&format!(
+            "SELECT id FROM facts
+              WHERE id = ANY($1) AND id <> ALL($2) AND invalidated_at IS NULL AND {holder} = ANY($3)"
+        ))
+        .bind(rows)
+        .bind(ledger)
+        .bind(&holders)
+        .fetch_all(&mut *tx)
+        .await?;
+        for id in live {
+            let (subject, object) = if on_object {
+                (None, Some(m.source_id))
+            } else {
+                (Some(m.source_id), None)
+            };
+            crate::temporal::rehome_tx(&mut tx, id, subject, object).await?;
+        }
+    }
     sqlx::query("UPDATE facts SET invalidated_at = NULL WHERE id = ANY($1)")
         .bind(&m.invalidated_facts)
         .execute(&mut *tx)
         .await?;
-
-    // 合并引发的时态修正随之撤销：这些修正的唯一成因是本次合并（两实体折一后
-    // 不变量才看到的相撞），成因既撤、修正随撤——先恢复被取代的原行，再作废修正行。
-    // 只撤仍存活的修正：之后被真实新观察再度改写过的链保持不动（那部分有独立依据）。
-    sqlx::query(
-        "UPDATE facts SET invalidated_at = NULL WHERE id IN (
-             SELECT supersedes FROM facts
-             WHERE id = ANY($1) AND invalidated_at IS NULL AND supersedes IS NOT NULL)",
-    )
-    .bind(&m.temporal_corrections)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "UPDATE facts SET invalidated_at = now()
-         WHERE id = ANY($1) AND invalidated_at IS NULL",
-    )
-    .bind(&m.temporal_corrections)
-    .execute(&mut *tx)
-    .await?;
+    crate::temporal::tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
 
     let source = entity_full(pool, kb_id, m.source_id).await?;
     // source 的名字是它的名字事实，已经跟着 moved_subject_facts 搬回去了

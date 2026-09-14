@@ -11,6 +11,7 @@ import {
 } from "../ui";
 import { toast } from "../toast";
 import { Avatar } from "./UserMenu";
+import { SsoAccount } from "./Sso";
 
 export function Account() {
   const queryClient = useQueryClient();
@@ -120,6 +121,8 @@ export function Account() {
             </div>
           </div>
         </div>
+
+        <SsoAccount />
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ mod kbs;
 mod mapping_routes;
 mod mcp;
 mod members_routes;
+mod oidc_routes;
 pub(crate) mod ontology_routes;
 mod review_routes;
 mod rig_model;
@@ -110,6 +111,16 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(auth_routes::me).patch(auth_routes::update_me),
         )
         .route("/auth/password", post(auth_routes::change_password))
+        // 单点登录：窄范围 OIDC 授权码流程（0056）。未配置时 status 报 false，
+        // 界面据此决定要不要露出登录页那个按钮
+        .route("/auth/oidc/status", get(oidc_routes::status))
+        .route("/auth/oidc/start", get(oidc_routes::start))
+        .route("/auth/oidc/callback", get(oidc_routes::callback))
+        // 我自己的绑定：看、解绑。绑定走 `/auth/oidc/start?link=1`，由本人完成
+        .route(
+            "/auth/oidc/me",
+            get(oidc_routes::me).delete(oidc_routes::unlink_me),
+        )
         .route(
             "/workspaces",
             get(workspaces::list).post(workspaces::create),
@@ -170,6 +181,12 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/admin/users/{id}",
             axum::routing::delete(admin_routes::deactivate_user)
                 .post(admin_routes::reactivate_user),
+        )
+        // 管理员看得见谁绑了哪个 subject，也能解绑；**不能替人绑定**（0056）
+        .route("/admin/oidc/identities", get(oidc_routes::identities))
+        .route(
+            "/admin/oidc/identities/{user_id}",
+            axum::routing::delete(oidc_routes::unbind),
         )
         .route(
             "/admin/data-sources",

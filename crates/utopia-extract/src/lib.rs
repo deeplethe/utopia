@@ -8,7 +8,7 @@ use utopia_llm::ChatMessage;
 pub mod governor;
 
 pub mod normalize;
-pub use normalize::{normalize_facts, Normalization};
+pub use normalize::{drop_quotes_from_opening, normalize_facts, Normalization};
 
 #[derive(Debug, Deserialize)]
 pub struct Extraction {
@@ -96,6 +96,10 @@ pub struct ExtractedFact {
     /// 同上，宾语那一侧
     #[serde(default)]
     pub object_span: Option<String>,
+    /// 日期属性的值只相对一件事给出（「触发日后 45 天」），没有日历上的日期（#681 §4）。
+    /// 模型判断、模型标；服务端不认这类说法的词，只看这个标记决定收不收
+    #[serde(default)]
+    pub relative: bool,
 }
 
 /// 提示词里的一条关系。
@@ -139,6 +143,34 @@ pub fn build_messages(
     // 本文档前面几块已经认下的实体，按首次出现排序。handle 只对这次回复有效。
     // 第一块为空——那时还没有"前面"
     known: &[KnownEntity],
+    chunk_text: &str,
+) -> Vec<ChatMessage> {
+    build_messages_with_opening(
+        types, relations, attributes, doc_time, filename, known, None, chunk_text,
+    )
+}
+
+/// 文件开头进提示词的字符预算。一份补充协议的标题、生效日、当事方和「修订的是哪份
+/// 协议」通常在头一千字符里；新闻稿的电头与导语也是
+pub const OPENING_BUDGET_CHARS: usize = 1500;
+
+/// 同 [`build_messages`]，另带**这份文件的开头**（第一块的原文），给第二块往后用。
+///
+/// **一块是孤立抽取的，它看不见自己属于什么。** 补充协议把截止日写在第三块的表格里，
+/// 那一块只说「Article 13 的日期延至……」：改的是哪份租约、从哪天起改，都写在第一块。
+/// 模型拿不到，就只能把「Phase 2 Exercise Deadline」本身当主语（服务端按主语未声明丢掉），
+/// 或者抽出一个没有起点的日期（时态引擎没法据此关闭旧值）——Blackbaud 总部租约链
+/// 上五次改期丢了两次，抽到的三次一次都没关上旧值。开头只作背景，不从里面抽事实：
+/// 它自己那一块会抽，重复抽只会多出重复的事实
+#[allow(clippy::too_many_arguments)]
+pub fn build_messages_with_opening(
+    types: &[(String, String, String)],
+    relations: &[PromptRelation],
+    attributes: &[String],
+    doc_time: Option<&str>,
+    filename: &str,
+    known: &[KnownEntity],
+    opening: Option<&str>,
     chunk_text: &str,
 ) -> Vec<ChatMessage> {
     // **有描述时不送 label**。label 是给人看的显示名，而且它跟界面无关、
@@ -263,9 +295,12 @@ pub fn build_messages(
     let attr_rules = if attributes.is_empty() {
         String::new()
     } else {
-        "\n10. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one); bool = true/false; \
+        "\n11. Attribute facts carry \"value\" (no \"object\"): number = the figure **as the text writes it, magnitude and currency included** \n         (\"86亿元\", \"$5 billion\", \"4,300 人\") — never reduce it to a bare number, the server converts; date = \"YYYY[-MM[-DD]]\" (a zoned clock time only when the text gives one) — a date the text gives only relative to an event \
+         (\"45 days after the Trigger Date\", \"within 30 days of closing\") has no calendar date to convert: write it as the text writes it and add \"relative\": true; bool = true/false; \
          text = a short string. Only attach an attribute to a subject of its listed class. \
-         valid_from = when this value took effect, if the text says so."
+         valid_from = when this value took effect, if the text or the opening of the document says so. \
+         A document that changes a value set earlier — amends, extends or replaces it — makes the new value \
+         hold from the date the change takes effect, which is the document's own effective date unless the text gives another."
             .to_string()
     };
     let system = format!(
@@ -296,7 +331,10 @@ pub fn build_messages(
             list each entity once. Text introduces a full name and then shortens it — \
             \"星云科技上海研究院\" becomes \"上海研究院\", \"Nebula Technologies Inc.\" becomes \
             \"Nebula\" — and both forms mean one entity, listed once under the fuller form. \
-            Two names are two entities only when the text is talking about two things.\n\
+            Two names are two entities only when the text is talking about two things. \
+            A name identifies the thing; it is not a description of its history. When the text \
+            names something and then describes what happened to it, the name ends where the \
+            description begins.\n\
          1b. Every other name the text gives an entity goes into \"names\", once per name: the \
             shortened form it introduces or uses (\"上海研究院\" for \"星云科技上海研究院\"), a \
             former name, the name in another language. \"ref\" is the entity's local_id or its \
@@ -328,7 +366,7 @@ pub fn build_messages(
             of values that hold in that period.\n\
          {temporal_note}\n\
          4. {time_ctx}\n\
-         5. quote must be a contiguous excerpt from the source text; every fact needs one.\n\
+         5. quote must be a contiguous excerpt from the Text block; never quote the opening of the document. Every fact needs one.\n\
          6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
          7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.\n\
          8. If no listed relation fits, do not force the nearest one — write the predicate the \
@@ -341,11 +379,15 @@ pub fn build_messages(
             \"quote\":\"...\"}}. Name the predicate after the text when no listed attribute \
             fits — \"purchase_price\", \"job_title\", \"generation_capacity\", \"record_date\". \
             Attach it to the entity the text attaches it to, and keep the literal as written, \
-            units and all. **A stated figure left out is the loss that costs most**: the reader \
+            units and all — except a date, which is always written in the format of rule 3 \
+            (\"June 23, 2020\" is \"2020-06-23\"). A deadline or a period stated \
+            relative to an event, with no calendar date, is not a date: keep it as written \
+            and mark it \"relative\" as rule 11 says. \
+            **A stated figure left out is the loss that costs most**: the reader \
             came for those numbers, and no later step can recover one that was never written \
             down.\n\
-         8c. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number):             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
-         8b. A **listed** relation also takes \"value\" when what the text gives is a \
+         8b. A listed relation followed by {{…}} can carry those **qualifiers on the edge**:             when the same sentence gives both the other entity and a figure for it — an             amount, a stake, a price, a share count — write the relation with its \"object\"             and put the figure in \"qualifiers\" keyed exactly as listed, **as written in the text, currency and all** (\"€30 million\", \"15亿元人民币\", never a bare number) — except a date, which takes the format of rule 3:             {{\"subject\":\"Vega Capital\",\"predicate\":\"invested_in\",\"object\":\"Northwind\",            \"qualifiers\":{{\"amount\":\"$5 billion\"}},…}}. Never invent a key that is not             listed for that relation, and never drop the figure to keep the edge — a             relation without its amount is half the sentence. A relation you name after the text (rule 8) carries its figure the same way — keyed by the listed attribute that fits it, or by the plainest word for it (\"amount\", \"stake\", \"price\") when none does.
+         8c. A **listed** relation also takes \"value\" when what the text gives is a \
             string rather than another entity — a job title, a designation, a ticker, a \
             model number. Never invent an entity for a string. And when the text introduces \
             someone by their role — \"X, founder and CEO of Y\", \"Z, co-CEO of W\", \
@@ -359,14 +401,18 @@ pub fn build_messages(
             (\"appointed … as OpenAI's CTO of applications\") all carry the same \
             shape — the role is the value, the organization is the other \
             entity. Past tense and \"former\" give the tie valid_to: \"unknown\".\n\
-         8c. A list of named parties is a list of facts — one per name. \"partners \
+         8d. A list of named parties is a list of facts — one per name. \"partners \
             including A, B, C and D\" is four facts, not one; \"advisors A and B\" is two. \
             Do not collapse an enumeration into a summary or into its first member. \
             The same applies to the entities: each named party is its own entity.\n\
-         8d. subject_span and object_span are the exact words in quote that name each side. \
+         8e. subject_span and object_span are the exact words in quote that name each side. \
             Copy them; never paraphrase. When the words that do the thing are a description \
             rather than a name — \"former X employees\", \"companies using X\" — the span \
             is that description, whatever you wrote in subject.\n\
+         8f. An obligation, a deadline or a right belongs to the agreement, law or decision \
+            that imposes it, even when it concerns another agreement or thing. A lease that \
+            sets the last day to sign a second lease gives that deadline to the first lease; \
+            the second lease is only what the deadline is about.\n\
          9. The same holds for entity types: if none of the listed types fits, write the type \
             the text implies, in snake_case (e.g. \"model\", \"technology\"). Do not fall back \
             to a broad listed type such as \"thing\" or \"creative_work\" merely because \
@@ -381,7 +427,8 @@ pub fn build_messages(
 
     // 已知实体紧挨着正文：服从性靠位置，理由见 known_block 的注释
     let user = format!(
-        "Source file: \"{filename}\"\n{}\nText:\n{chunk_text}",
+        "Source file: \"{filename}\"\n{}{}\nText:\n{chunk_text}",
+        opening_block(opening),
         known_block(known)
     );
 
@@ -395,6 +442,29 @@ pub fn build_messages(
             content: user,
         },
     ]
+}
+
+/// 文件开头排版成提示词里的一段。开头为空（或只有空白）时返回空串；
+/// 「这一块就是开头本身」由调用方判断，那时它传 `None`。
+///
+/// 按字符截：不会截断一个字符，但会截在词中间——英文的最后一个词可能只剩半个
+fn opening_block(opening: Option<&str>) -> String {
+    let Some(text) = opening.map(str::trim).filter(|t| !t.is_empty()) else {
+        return String::new();
+    };
+    let cut: String = text.chars().take(OPENING_BUDGET_CHARS).collect();
+    let more = if cut.chars().count() < text.chars().count() {
+        " …"
+    } else {
+        ""
+    };
+    format!(
+        "\nOpening of this document, for context only (do not extract facts from it; they are \
+         extracted from that part separately). Use it to know what the text below belongs to — \
+         which agreement, company or event it concerns, who the parties are, and the date it \
+         takes effect — so that facts in the text below attach to the right entity and carry \
+         the right dates:\n\"\"\"\n{cut}{more}\n\"\"\"\n"
+    )
 }
 
 /// 清单里给关系带的标记：事件 `[event]`、恒常 `[eternal]`；状态不标。
@@ -980,8 +1050,28 @@ fn next_token(s: &str) -> (&str, &str) {
     (&s[..end], &s[end..])
 }
 
+/// 一个属性值落库时的样子：按 datatype 归一成 `{"value": …}`；失败返回 None，调用方记
+/// `attr_datatype`。
+///
+/// 日期属性上一个**相对**的值（#681 §4）：解不成日期、模型又标了 `relative`、写的是一段非空
+/// 文字时，照原文收下，值里带 `"relative": true`。它不是日期，从不当日期比较或排序。解得成
+/// 日期的照日期存，标错了也不当相对；没标的非日期值仍然不收
+pub fn attr_object_value(
+    datatype: &str,
+    raw: &serde_json::Value,
+    relative: bool,
+) -> Option<serde_json::Value> {
+    if let Some(value) = normalize_attr_value(datatype, raw) {
+        return Some(serde_json::json!({ "value": value }));
+    }
+    let written = raw.as_str().map(str::trim).filter(|s| !s.is_empty())?;
+    (datatype == "date" && relative)
+        .then(|| serde_json::json!({ "value": written, "relative": true }))
+}
+
 /// 属性值按 datatype 归一。失败返回 None——宁缺勿脏，调用方跳过并记日志。
-/// number 容忍千分位/空格；date 要求 YYYY[-MM[-DD]] 且保留原精度；bool 宽容 yes/no。
+/// number 容忍千分位/空格；date 收规则 3 的格式（YYYY[-MM[-DD]]、带时区的时刻，原样保留），
+/// 也收写法说得清是哪天的日期（[`written_date`]），换成规则 3 的样子；bool 宽容 yes/no。
 pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<serde_json::Value> {
     match datatype {
         "number" => match raw {
@@ -1014,9 +1104,17 @@ pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<s
             }
             _ => None,
         },
+        // 按规则 3 写的原样留着（精度随写了几位，带时区的时刻也在内）；写成别的样子、又读得
+        // 出来的日期（#688）换成规则 3 的样子——同一天只该有一种写法，比较和去重才对得上
         "date" => {
             let s = raw.as_str()?.trim();
-            parse_time(s).map(|_| serde_json::Value::String(s.to_string()))
+            match written_date(s) {
+                Some((date, precision)) => Some(serde_json::Value::String(match precision {
+                    "month" => date.format("%Y-%m").to_string(),
+                    _ => date.format("%Y-%m-%d").to_string(),
+                })),
+                None => parse_time(s).map(|_| serde_json::Value::String(s.to_string())),
+            }
         }
         "bool" => match raw {
             serde_json::Value::Bool(b) => Some(serde_json::Value::Bool(*b)),
@@ -1044,6 +1142,8 @@ pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<s
 /// `YYYY-MM-DDTHH[:MM[:SS]]` 后跟 `Z` 或 `±HH:MM`，精度到 hour / minute / second，
 /// 值截到那一位。**没有时区的钟点不是时刻**——「14:32」是哪里的 14:32 没人知道——
 /// 所以只取日期那一半，按天；钟点留在引文里。亚秒一律丢：账本到秒为止。
+///
+/// 这是规则 3 的契约格式，工具参数、界面上的时刻都只认它。读模型回复用 [`read_time`]
 pub fn parse_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
     let s = s.trim();
     if s.is_empty() || s.eq_ignore_ascii_case("null") {
@@ -1081,6 +1181,94 @@ pub fn parse_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
     None
 }
 
+/// 读模型回复里的时间：先按规则 3（[`parse_time`]）；没照它写、但写法说得清是哪天的日期
+/// 也收（[`written_date`]，#688）。区间端点、日期属性、边上的日期属性都从这里读
+pub fn read_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
+    parse_time(s).or_else(|| {
+        let (date, precision) = written_date(s)?;
+        Some((
+            Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0)?),
+            precision,
+        ))
+    })
+}
+
+/// 没照规则 3 写、但说得清是哪一天（或哪个月）的日期（#688）。
+///
+/// 合同、公告里的日期多半这么写，模型常常照抄；从前这些值全被当成「不是日期」丢掉。
+/// 收两类，精度随写了几位——只写到月的就是月，不替它补一个日：
+/// - 月份写成名字的：`March 17, 2020`、`17 March 2020`、`Mar. 17 2020`、`March 2020`。
+///   名字由 chrono 的 `%B` / `%b` 认（整名或三个字母的缩写，不分大小写）
+/// - 年在前的数字：`2020/03/17`、`2020.3.17`、`2020年3月17日`、`2020年3月`
+///
+/// **日、月都是数字而年不在前的不收**：`03/04/2020` 是三月四日还是四月三日，写法本身说
+/// 不清，猜错一次就是一个错的截止日。
+pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
+    let s = s.trim();
+    if let Some(found) = year_first_date(s) {
+        return found;
+    }
+    // 月份写成名字的：句点（缩写后面那个）与逗号只是标点
+    let words: Vec<&str> = s
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let is_number = |w: &str| w.chars().all(|c| c.is_ascii_digit());
+    let (day, month, year) = match words.as_slice() {
+        [m, d, y] if !is_number(m) && is_number(d) && is_number(y) => (Some(*d), *m, *y),
+        [d, m, y] if is_number(d) && !is_number(m) && is_number(y) => (Some(*d), *m, *y),
+        [m, y] if !is_number(m) && is_number(y) => (None, *m, *y),
+        _ => return None,
+    };
+    if year.len() != 4 || day.is_some_and(|d| d.len() > 2) {
+        return None;
+    }
+    let month = ["%B", "%b"].iter().find_map(|f| {
+        NaiveDate::parse_from_str(&format!("1 {month} 2000"), &format!("%d {f} %Y"))
+            .ok()
+            .map(|d| chrono::Datelike::month(&d))
+    })?;
+    let year = year.parse().ok()?;
+    match day {
+        Some(d) => NaiveDate::from_ymd_opt(year, month, d.parse().ok()?).map(|date| (date, "day")),
+        None => NaiveDate::from_ymd_opt(year, month, 1).map(|date| (date, "month")),
+    }
+}
+
+/// 年在前的数字日期。外层 `None` = 不是这种写法，交给下一种；`Some(None)` = 是这种写法
+/// 但不是真实的日子
+fn year_first_date(s: &str) -> Option<Option<(NaiveDate, &'static str)>> {
+    let marked = s.contains('年');
+    let separated = s.contains(['/', '.']) && !s.contains(char::is_whitespace);
+    if !marked && !separated {
+        return None;
+    }
+    let parts: Vec<&str> = s
+        .trim_end_matches('日')
+        .split(['/', '.', '年', '月'])
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
+        return None;
+    }
+    if parts.first().is_none_or(|y| y.len() != 4) {
+        // 年不在前：日月顺序说不清，不交给别的写法去猜
+        return Some(None);
+    }
+    let number = |p: &str| p.parse::<u32>().ok();
+    let year = parts[0].parse::<i32>().ok()?;
+    Some(match parts[1..] {
+        [m, d] if m.len() <= 2 && d.len() <= 2 => {
+            NaiveDate::from_ymd_opt(year, number(m)?, number(d)?).map(|date| (date, "day"))
+        }
+        // 只到月：写了「年」「月」才算（`2020/03` 太像别的东西）
+        [m] if marked && s.ends_with('月') && m.len() <= 2 => {
+            NaiveDate::from_ymd_opt(year, number(m)?, 1).map(|date| (date, "month"))
+        }
+        _ => None,
+    })
+}
+
 /// 钟点后面的时区：`Z` 或 `±HH[:]MM` / `±HH`。返回 (钟点, 相对 UTC 的偏移)；
 /// 没有时区返回 None——调用方据此只记那一天
 fn split_zone(clock: &str) -> Option<(&str, chrono::Duration)> {
@@ -1103,6 +1291,59 @@ fn split_zone(clock: &str) -> Option<(&str, chrono::Duration)> {
 #[cfg(test)]
 mod prompt_shape_tests {
     use super::*;
+
+    /// 第十份补充协议把截止日改成「触发日后 45 天」：模型标 relative，服务端照原文收；
+    /// 没标的、不是日期属性的、空的都不走这条
+    #[test]
+    fn a_relative_date_is_kept_as_written_only_when_marked() {
+        let raw = serde_json::json!("45 days after the Trigger Date");
+        assert_eq!(
+            attr_object_value("date", &raw, true),
+            Some(
+                serde_json::json!({ "value": "45 days after the Trigger Date", "relative": true })
+            )
+        );
+        assert_eq!(attr_object_value("date", &raw, false), None, "没标就不收");
+        assert_eq!(
+            attr_object_value("date", &serde_json::json!("  "), true),
+            None
+        );
+        // 解得成日期的照日期存，标了 relative 也不当相对
+        assert_eq!(
+            attr_object_value("date", &serde_json::json!("2020-06-23"), true),
+            Some(serde_json::json!({ "value": "2020-06-23" }))
+        );
+        // 不是日期属性：只按它自己的 datatype 归一，relative 不起作用
+        assert_eq!(
+            attr_object_value("bool", &serde_json::json!("45 days after"), true),
+            None
+        );
+        assert_eq!(
+            attr_object_value("number", &serde_json::json!("1,250"), true),
+            Some(serde_json::json!({ "value": 1250.0 }))
+        );
+        let fact: ExtractedFact = serde_json::from_value(serde_json::json!({
+            "subject": "Lease", "predicate": "expansion_option_deadline",
+            "value": "45 days after the Trigger Date", "relative": true
+        }))
+        .unwrap();
+        assert!(fact.relative);
+        let plain: ExtractedFact = serde_json::from_value(serde_json::json!({
+            "subject": "Lease", "predicate": "expansion_option_deadline", "value": "2020-06-23"
+        }))
+        .unwrap();
+        assert!(!plain.relative, "没写就不是");
+        let msgs = build_messages(
+            &[],
+            &[],
+            &["lease.deadline (date)".into()],
+            None,
+            "a.txt",
+            &[],
+            "text",
+        );
+        assert!(msgs[0].content.contains("add \"relative\": true"));
+    }
 
     fn rel(key: &str, description: &str, signature: &str) -> PromptRelation {
         PromptRelation {
@@ -1212,6 +1453,105 @@ mod prompt_shape_tests {
             c.contains("do not reverse the relation"),
             "少了这句，模型可能去找一个反向关系而不是交换主宾"
         );
+    }
+
+    #[test]
+    fn an_obligation_belongs_to_the_agreement_that_imposes_it() {
+        // 主租约里写着「签二期租约的截止日」，模型时而把截止日挂到二期租约上：
+        // 主租约的时间线上就少了这次改期（#681 §3）
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        assert!(msgs[0]
+            .content
+            .contains("belongs to the agreement, law or decision that imposes it"));
+    }
+
+    #[test]
+    fn a_literal_keeps_its_units_but_a_date_takes_the_contract_format() {
+        // 8a 从前说「字面值按原文写」并把日期列在字面值里，而规则 3 与属性规则要求
+        // YYYY-MM-DD：两条互相打架，模型写出「June 23, 2020」，服务端按格式不合整条丢掉。
+        // Blackbaud 总部租约链上各轮累计丢了二十多次
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        let system = &msgs[0].content;
+        assert!(system.contains("except a date, which is always written in the format of rule 3"));
+    }
+
+    /// 规则编号各不相同，「按规则 N」指得到唯一的一条。从前有两条 8c、两条 10，
+    /// 「as rule 10 says」说的是哪条要靠猜（#689 评审）
+    #[test]
+    fn every_rule_has_its_own_number_and_every_reference_lands() {
+        let rels = vec![PromptRelation {
+            key: "acquired".into(),
+            label: "acquired".into(),
+            description: String::new(),
+            signature: String::new(),
+            temporal: "event".into(),
+            qualifiers: vec![],
+        }];
+        let attrs = vec!["lease.option_deadline (date)".to_string()];
+        let msgs = build_messages(&[], &rels, &attrs, None, "a.txt", &[], "text");
+        let system = &msgs[0].content;
+        let mut labels = Vec::new();
+        for line in system.lines() {
+            let Some((label, _)) = line.trim_start().split_once(". ") else {
+                continue;
+            };
+            let digits = label.trim_end_matches(|c: char| c.is_ascii_lowercase());
+            if !digits.is_empty()
+                && digits.chars().all(|c| c.is_ascii_digit())
+                && label.len() - digits.len() <= 1
+            {
+                labels.push(label.to_string());
+            }
+        }
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "规则编号重复：{labels:?}");
+        for (i, _) in system.match_indices("rule ") {
+            let n: String = system[i + 5..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            assert!(
+                labels.contains(&n),
+                "「rule {n}」指不到任何一条：{labels:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_later_chunk_reads_the_opening_of_its_document() {
+        let opening = "FIFTH AMENDMENT TO LEASE AGREEMENT entered into as of February 18, 2020";
+        let msgs = build_messages_with_opening(
+            &[],
+            &[],
+            &[],
+            None,
+            "a.html",
+            &[],
+            Some(opening),
+            "The Existing Dates are extended to March 17, 2020.",
+        );
+        let user = &msgs[1].content;
+        let at_opening = user.find(opening).expect("opening is in the user message");
+        let at_text = user
+            .find("The Existing Dates")
+            .expect("text is in the user message");
+        assert!(
+            at_opening < at_text,
+            "the opening comes before the text it frames"
+        );
+        // 没有开头时，提示词与从前一字不差
+        let plain = build_messages(&[], &[], &[], None, "a.html", &[], "t");
+        let framed = build_messages_with_opening(&[], &[], &[], None, "a.html", &[], None, "t");
+        assert_eq!(plain[1].content, framed[1].content);
+    }
+
+    #[test]
+    fn a_long_opening_is_cut_on_a_character_boundary() {
+        let long = "租".repeat(OPENING_BUDGET_CHARS + 10);
+        let block = opening_block(Some(&long));
+        assert_eq!(block.matches('租').count(), OPENING_BUDGET_CHARS);
+        assert!(block.contains(" …"));
+        assert_eq!(opening_block(Some("   ")), "");
     }
 
     /// 已知实体必须落在 **user** 消息里、紧挨着正文。
@@ -1494,6 +1834,71 @@ mod tests {
         assert!(parse_time("null").is_none());
         assert!(parse_time("").is_none());
         assert!(parse_time("下个月").is_none());
+        // 契约格式之外的写法不归它：工具参数里的「August 2024」不猜
+        assert!(parse_time("June 23, 2020").is_none());
+        // 读模型回复的那一个收写出来的日期（#688），精度随写了几位
+        let (t, p) = read_time("June 23, 2020").unwrap();
+        assert_eq!(
+            (t.to_rfc3339(), p),
+            ("2020-06-23T00:00:00+00:00".to_string(), "day")
+        );
+        assert_eq!(read_time("March 2020").unwrap().1, "month");
+        assert_eq!(read_time("2024-07").unwrap().1, "month");
+        assert!(read_time("03/04/2020").is_none());
+    }
+
+    /// 合同与公告里的日期写法（#688）：说得清是哪天的都收成规则 3 的样子，说不清的不猜
+    #[test]
+    fn a_written_date_is_read_only_when_its_form_says_which_day() {
+        use serde_json::json;
+        let day = |s: &str| normalize_attr_value("date", &json!(s));
+        for written in [
+            "March 17, 2020",
+            "March 17 2020",
+            "march 17, 2020",
+            "MARCH 17, 2020",
+            "Mar 17, 2020",
+            "Mar. 17, 2020",
+            "17 March 2020",
+            "17 Mar. 2020",
+            "17 March, 2020",
+            "  March 17, 2020 ",
+            "2020/03/17",
+            "2020.3.17",
+            "2020年3月17日",
+        ] {
+            assert_eq!(day(written), Some(json!("2020-03-17")), "{written}");
+        }
+        // 只写到月的是月，不补日
+        for written in ["March 2020", "Mar. 2020", "2020年3月"] {
+            assert_eq!(day(written), Some(json!("2020-03")), "{written}");
+        }
+        // 已经照规则 3 写的原样留着
+        assert_eq!(day("2020-03-17"), Some(json!("2020-03-17")));
+        assert_eq!(day("2020"), Some(json!("2020")));
+        // 日月都是数字、年不在前：说不清是几月几号
+        for ambiguous in ["03/04/2020", "3.4.2020", "04-03-2020", "3/4/20"] {
+            assert_eq!(day(ambiguous), None, "{ambiguous}");
+        }
+        // 不是日期，或不是一个真实的日子
+        for not_a_date in [
+            "45 days after the Trigger Date",
+            "Q3 2020",
+            "Sometime 2020",
+            "February 30, 2020",
+            "March 17, 20",
+            "March 123, 2020",
+            "2020/13/01",
+            "2020/03",
+            "next March",
+        ] {
+            assert_eq!(day(not_a_date), None, "{not_a_date}");
+        }
+        // 区间端点读的是同一个解析
+        assert_eq!(
+            read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
+            Some(("2020-03-17".to_string(), "day"))
+        );
     }
 
     #[test]
