@@ -75,7 +75,7 @@ export const en = {
     ds_name_required: "Give this data source a name.",
     only_postgres: "Only PostgreSQL is supported for now.",
     bad_conn_string: "A connection string starts with postgres://",
-    // Refresh schema failed; the engine's own message rides along in detail
+    // 刷新结构失败；引擎的原话走 detail（括号里那句）
     schema_sync_failed:
       "The schema could not be read — the engine's own message is in parentheses. Check " +
       "the catalog, schema and account privileges in the connection string, then try Refresh schema again.",

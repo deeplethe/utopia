@@ -190,6 +190,19 @@ impl DatabricksEngine {
     }
 }
 
+/// 引擎说的是「这个 catalog / 表不存在（或看不见）」。认的是 Databricks 的错误类名，
+/// 它们是协议的一部分（`[TABLE_OR_VIEW_NOT_FOUND] …`），不是措辞
+fn is_not_found(e: &anyhow::Error) -> bool {
+    const CLASSES: [&str; 4] = [
+        "TABLE_OR_VIEW_NOT_FOUND",
+        "NO_SUCH_CATALOG_EXCEPTION",
+        "CATALOG_NOT_FOUND",
+        "SCHEMA_NOT_FOUND",
+    ];
+    let text = e.to_string();
+    CLASSES.iter().any(|c| text.contains(c))
+}
+
 #[async_trait::async_trait]
 impl QueryEngine for DatabricksEngine {
     async fn test(&self) -> anyhow::Result<()> {
@@ -197,28 +210,38 @@ impl QueryEngine for DatabricksEngine {
     }
 
     async fn fetch_schema(&self) -> anyhow::Result<Vec<SchemaColumn>> {
-        // 两条候选，先准后全；哪条存在由集群决定。真实集群上
-        // `main`.information_schema.columns 回过 TABLE_OR_VIEW_NOT_FOUND（#241），
-        // 所以第一条不通就退到 system 那份。两条都失败才失败，错误带上试过的写法。
+        // 两条候选，先准后全。真实集群上 `main`.information_schema.columns 回过
+        // TABLE_OR_VIEW_NOT_FOUND（#241），所以第一条**说找不到**时退到 system 那份。
+        //
+        // 只有「找不到」才退：令牌不对、仓库停着、超时，换一条语句也还是这样，再跑一遍
+        // 只是让点按钮的人多等半分钟。退过去读到 0 行也算失败——两份 information_schema
+        // 都只列令牌看得见的对象，system 那份还不含 hive_metastore，看不见的 catalog
+        // 在那里是「成功地没有行」；当成功的话，结构文档会被一份空的覆盖掉。
+        // 失败时每条试过的写法连同引擎的原话都带上
         let queries = self.schema_queries();
-        let mut last: Option<anyhow::Error> = None;
-        for (_, sql) in &queries {
+        let mut tried: Vec<String> = Vec::new();
+        for (i, (label, sql)) in queries.iter().enumerate() {
             match self.run(sql).await {
+                Ok((_, rows)) if rows.is_empty() && i > 0 => {
+                    tried.push(format!(
+                        "{label}: no columns for this catalog — the token cannot see it, \
+                         or it is not managed by Unity Catalog"
+                    ));
+                    break;
+                }
                 Ok((_, rows)) => {
                     return Ok(rows.into_iter().map(super::trino::schema_row).collect())
                 }
-                Err(e) => last = Some(e),
+                Err(e) => {
+                    let missing = is_not_found(&e);
+                    tried.push(format!("{label}: {e}"));
+                    if !missing {
+                        break;
+                    }
+                }
             }
         }
-        let tried = queries
-            .iter()
-            .map(|(label, _)| *label)
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!(
-            "no readable information_schema (tried: {tried}): {}",
-            last.map(|e| e.to_string()).unwrap_or_default()
-        )
+        anyhow::bail!("no readable information_schema ({})", tried.join("; "))
     }
 
     async fn execute(&self, sql: &str) -> anyhow::Result<QueryResult> {
@@ -359,18 +382,29 @@ mod tests {
         assert_eq!(cols[0].comment.as_deref(), Some("订单金额"));
     }
 
-    /// 两条都不通时，错误要带上试过的写法。
+    fn failed(code: &str, message: &str) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "status": { "state": "FAILED", "error": { "error_code": code, "message": message } }
+        }))
+    }
+
+    /// 两条都不通时，错误带上每一条试过的写法和它自己的原话。
     #[tokio::test]
     async fn two_dead_ends_say_which_ones_were_tried() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/2.0/sql/statements"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "status": { "state": "FAILED", "error": {
-                    "error_code": "BAD_REQUEST",
-                    "message": "[TABLE_OR_VIEW_NOT_FOUND] nope"
-                } }
-            })))
+            .and(body_string_contains("`main`.information_schema.columns"))
+            .respond_with(failed(
+                "BAD_REQUEST",
+                "[TABLE_OR_VIEW_NOT_FOUND] first words",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .and(body_string_contains("system.information_schema.columns"))
+            .respond_with(failed("PERMISSION_DENIED", "second words"))
             .mount(&server)
             .await;
 
@@ -380,7 +414,65 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("catalog information_schema"), "{err}");
+        assert!(err.contains("first words"), "{err}");
         assert!(err.contains("system information_schema"), "{err}");
-        assert!(err.contains("TABLE_OR_VIEW_NOT_FOUND"), "{err}");
+        assert!(err.contains("second words"), "{err}");
+    }
+
+    /// 令牌不对、仓库停着这类错误不是「找不到」：换一条语句也一样，只发一次
+    #[tokio::test]
+    async fn an_error_that_is_not_a_missing_table_is_not_retried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(failed("PERMISSION_DENIED", "token lacks USE CATALOG"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let err = DatabricksEngine::new(conn(&server))
+            .fetch_schema()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("token lacks USE CATALOG"), "{err}");
+        assert!(!err.contains("system information_schema"), "{err}");
+    }
+
+    /// 退到 system 那份读到 0 行：看不见这个 catalog，或它不归 Unity Catalog 管。
+    /// 这是失败，不是一份空的结构——否则刷新会把原来的结构文档覆盖成空的
+    #[tokio::test]
+    async fn a_fallback_that_reads_no_columns_is_a_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .and(body_string_contains("`main`.information_schema.columns"))
+            .respond_with(failed(
+                "BAD_REQUEST",
+                "[TABLE_OR_VIEW_NOT_FOUND] cannot be found",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .and(body_string_contains("system.information_schema.columns"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "s5",
+                "status": { "state": "SUCCEEDED" },
+                "manifest": { "schema": { "columns": [
+                    { "name": "table_schema", "type_text": "STRING", "position": 0 }
+                ] } },
+                "result": { "data_array": [] }
+            })))
+            .mount(&server)
+            .await;
+
+        let err = DatabricksEngine::new(conn(&server))
+            .fetch_schema()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no columns for this catalog"), "{err}");
+        assert!(err.contains("cannot be found"), "{err}");
     }
 }
