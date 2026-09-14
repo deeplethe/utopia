@@ -36,11 +36,10 @@
 //! `pull_request` 字段区分。默认排除：问"工单系统"要的是工单。但留了开关——
 //! 有些仓库（包括本仓库）的决策记录实际写在 PR 描述里。
 
+use crate::time_text;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::collections::HashMap;
-
-use crate::time_text;
 
 /// 一次同步最多取多少页（每页 100）。GitHub 的分页没有天然终点，
 /// 一个活跃仓库能翻很久；这里封顶，超出的等下一次 `since` 增量取。
@@ -102,41 +101,36 @@ fn issue_number_from_url(url: &str) -> Option<i64> {
     url.rsplit('/').next()?.parse().ok()
 }
 
+/// 工单上的一个时刻，写进正文的样子：到秒、带 `Z`（`2026-08-18T16:18:27Z`）
+fn stamp(t: DateTime<Utc>) -> String {
+    time_text::world(t, Some("second"))
+}
+
 /// 把一张工单连同它的评论与事件排成一篇文档。
 ///
 /// **纯函数，不联网**——取回与组织分开，于是组织这一半测得动。
 /// 三次分页的拼装逻辑（谁归谁、按什么排序）恰恰是最容易出错的部分。
-///
-/// `precision` 决定 `created_at` / `updated_at` 写进文档文本时用哪个精度：
-/// `"day"`（缺省，保留 #610 之前的现状）走 `%Y-%m-%d`，`"instant"` 走 RFC 3339，
-/// 于是 `2026-09-05T23:59:59Z` 不会在时区换算后悄悄跨到 9 月 6 日。
-/// 取值由 `Source::precision()` 决定（`utopia_core::Source::precision`），
-/// 调用方拿到 `source` 后把它传进来
-pub fn render_with(
-    issue: &Issue,
-    comments: &[&Comment],
-    events: &[&Event],
-    precision: &str,
-) -> String {
+pub fn render(issue: &Issue, comments: &[&Comment], events: &[&Event]) -> String {
     let mut out = String::new();
     out.push_str(&format!("# #{} {}\n\n", issue.number, issue.title));
 
     // 抬头写成带日期的陈述句，而不是键值对：抽取器读的是句子。
-    // "opened by X on 2026-08-18" 能抽出带 valid_from 的事实，
-    // "created_at: 2026-08-18" 则要它自己去猜这是什么意思
+    // "opened by X on 2026-08-18T16:18:27Z" 能抽出带 valid_from 的事实，
+    // "created_at: 2026-08-18" 则要它自己去猜这是什么意思。
+    //
+    // **时间写到秒**（#691，0024 第 3 节）：GitHub 给的是带 `Z` 的时刻，抽取器读回来就是
+    // second 精度。从前截到 UTC 的那一天，起点最多提前 24 小时，同一天的两件事还会被判成
+    // 同时发生的冲突。这不是开关——精度是数据自己的，截掉它等于替来源说「不知道几点」
     if let Some(u) = &issue.user {
         out.push_str(&format!(
             "Opened by {} on {}.\n",
             u.login,
-            time_text::world(issue.created_at, Some(precision))
+            stamp(issue.created_at)
         ));
     }
     out.push_str(&format!("Currently {}.\n", issue.state));
     if let Some(c) = issue.closed_at {
-        out.push_str(&format!(
-            "Closed on {}.\n",
-            time_text::world(c, Some(precision))
-        ));
+        out.push_str(&format!("Closed on {}.\n", stamp(c)));
     }
     if !issue.labels.is_empty() {
         let names: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
@@ -171,7 +165,7 @@ pub fn render_with(
             };
             out.push_str(&format!(
                 "- {} — {} by {}{}\n",
-                time_text::world(e.created_at, Some(precision)),
+                stamp(e.created_at),
                 e.event,
                 who,
                 detail
@@ -190,7 +184,7 @@ pub fn render_with(
             out.push_str(&format!(
                 "### {} on {}\n\n{}\n\n",
                 who,
-                time_text::world(c.created_at, Some(precision)),
+                stamp(c.created_at),
                 body
             ));
         }
@@ -198,9 +192,6 @@ pub fn render_with(
     out
 }
 
-/// `render` 已删除：所有调用方都迁到 `render_with(precision)`，精度由
-/// 来源 config 决定。保留 `render_with(.., "day")` 等价于旧形状
-///
 /// 把全仓库的评论按工单号归拢，各自按时间升序。
 ///
 /// 评论是**全仓库**取回来的，里面混着不在本次工单集合里的（增量窗口不同步）。
@@ -324,83 +315,47 @@ mod tests {
             "actor": {"login": "WaylandYang"}
         }))
         .unwrap();
-        let out = render_with(&i, &[], &[&e1, &e2], "day");
+        let out = render(&i, &[], &[&e1, &e2]);
 
-        assert!(out.contains("Opened by Danmushu on 2026-08-18."), "{out}");
-        assert!(out.contains("Closed on 2026-08-20."), "{out}");
+        assert!(
+            out.contains("Opened by Danmushu on 2026-08-18T16:18:27Z."),
+            "{out}"
+        );
+        assert!(out.contains("Closed on 2026-08-20T22:31:47Z."), "{out}");
         assert!(out.contains("Labelled bug."), "{out}");
         assert!(out.contains("Assigned to WaylandYang."), "{out}");
         // 事件行带日期与执行者，labeled 还要带上是哪个标签
         assert!(
-            out.contains("- 2026-08-19 — labeled by WaylandYang (bug)"),
+            out.contains("- 2026-08-19T01:00:00Z — labeled by WaylandYang (bug)"),
             "{out}"
         );
         assert!(
-            out.contains("- 2026-08-20 — closed by WaylandYang"),
+            out.contains("- 2026-08-20T22:31:47Z — closed by WaylandYang"),
             "{out}"
         );
     }
 
-    /// #610 提案的核心承诺：`2026-09-05T23:59:59Z` 这条事件，day 精度会写成
-    /// `2026-09-05`（在 UTC 这一天内），但 Asia/Shanghai 是 9 月 6 日的早上；
-    /// instant 精度必须保持 `2026-09-05T23:59:59Z`，下游的抽取器读到的是
-    /// 同一秒而不是「下一个日期」
+    /// 正文里的时刻抽取器读得回来，而且是 second 精度：一件 UTC 23:59:59 发生的事，
+    /// 起点就是那一秒，不是那天的零点（#691）
     #[test]
-    fn a_late_night_event_keeps_its_time_at_instant_precision() {
+    fn a_time_in_the_document_reads_back_to_the_second() {
         let i = issue(serde_json::json!({
-            "number": 18, "title": "Anything",
-            "state": "open",
-            "created_at": "2026-09-05T23:59:59Z",
-            "updated_at": "2026-09-05T23:59:59Z",
+            "number": 18, "title": "Anything", "state": "open",
+            "created_at": "2026-09-05T23:59:59Z", "updated_at": "2026-09-05T23:59:59Z",
             "user": {"login": "x"}
         }));
-        let e: Event = serde_json::from_value(serde_json::json!({
-            "event": "labeled", "created_at": "2026-09-05T23:59:59Z",
-            "actor": {"login": "x"}, "label": {"name": "bug"}
-        }))
-        .unwrap();
         let c: Comment = serde_json::from_value(serde_json::json!({
             "issue_url": "https://api.github.com/repos/x/y/issues/18",
-            "user": {"login": "x"},
-            "created_at": "2026-09-05T23:59:59Z",
-            "body": "pre-midnight comment"
+            "user": {"login": "x"}, "created_at": "2026-09-05T23:59:59Z", "body": "late"
         }))
         .unwrap();
-        // day 精度：日期留着，秒丢掉——这是 #610 之前的现状
-        let day_doc = render_with(&i, &[&c], &[&e], "day");
-        assert!(
-            day_doc.contains("Opened by x on 2026-09-05."),
-            "day precision should keep the date: {day_doc}"
-        );
-        assert!(
-            !day_doc.contains("T23:59:59"),
-            "day precision must NOT leak the second: {day_doc}"
-        );
-        // instant 精度：完整 RFC 3339，秒留着
-        let instant_doc = render_with(&i, &[&c], &[&e], "instant");
-        assert!(
-            instant_doc.contains("Opened by x on 2026-09-05T23:59:59Z."),
-            "instant precision must keep the second: {instant_doc}"
-        );
-        assert!(
-            !instant_doc.contains("2026-09-06"),
-            "instant precision must not cross into the next day: {instant_doc}"
-        );
-        assert!(
-            instant_doc.contains("### x on 2026-09-05T23:59:59Z"),
-            "comment header must carry the second: {instant_doc}"
-        );
-        assert!(
-            instant_doc.contains("- 2026-09-05T23:59:59Z — labeled by x (bug)"),
-            "history line must carry the second: {instant_doc}"
-        );
-        // 旧别名 `render` 已删——所有调用方都走 render_with(precision)；
-        // 显式传 "day" 保持 #610 之前的形状
-        let legacy = render_with(&i, &[&c], &[&e], "day");
-        assert!(
-            !legacy.contains("T23:59:59"),
-            "render_with(.., \"day\") should keep day precision: {legacy}"
-        );
+        let out = render(&i, &[&c], &[]);
+        let written = "2026-09-05T23:59:59Z";
+        assert!(out.contains(&format!("Opened by x on {written}.")), "{out}");
+        assert!(out.contains(&format!("### x on {written}")), "{out}");
+        let (at, precision) = utopia_extract::parse_time(written).expect("reads back");
+        assert_eq!(precision, "second");
+        assert_eq!(at, i.created_at);
     }
 
     /// 评论是**全仓库**取的，归拢必须按工单号，且按时间升序。
@@ -516,14 +471,14 @@ mod tests {
                     .unwrap_or_default(),
             );
             let es: Vec<&Event> = events.iter().collect();
-            let doc = render_with(issue, cs, &es, "day");
+            let doc = render(issue, cs, &es);
             assert!(
                 doc.contains(&format!("# #{} ", issue.number)),
                 "#{} 的抬头不对：{doc}",
                 issue.number
             );
             assert!(
-                doc.contains(&issue.created_at.format("%Y-%m-%d").to_string()),
+                doc.contains(&super::stamp(issue.created_at)),
                 "#{} 正文里没有创建日期",
                 issue.number
             );
@@ -540,7 +495,7 @@ mod tests {
         );
         assert!(!events.is_empty(), "夹具里 #{} 没有事件", first.number);
         let es: Vec<&Event> = events.iter().collect();
-        let doc = render_with(first, cs, &es, "day");
+        let doc = render(first, cs, &es);
         assert!(doc.contains("## History"), "历史一节缺失：{doc}");
         assert!(doc.contains("— closed by"), "关闭事件没写进历史：{doc}");
     }
@@ -558,7 +513,7 @@ mod tests {
             "user": {"login": "x"}, "created_at": "2026-01-02T00:00:00Z", "body": "   "
         }))
         .unwrap();
-        let out = render_with(&i, &[&c], &[], "day");
+        let out = render(&i, &[&c], &[]);
         assert!(!out.contains("### x"), "空评论不该留下小节：{out}");
     }
 }

@@ -159,27 +159,6 @@ impl Source {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true)
     }
-
-    /// 这个来源把 `created_at` / `updated_at` 写进文档时用的精度。
-    ///
-    /// **缺省是 `"day"`**——保留 #610 之前的现状；任何现有来源都不会因为
-    /// 这一改动静默改变写出来的形状。来源把 config 写成 `"precision": "instant"`
-    /// 就会走 RFC 3339（与 `change_line` 在 #351 后用的同一形式），抽取器
-    /// 收到的精度也变成 `second`，下游 `facts.valid_from_precision` 跟着。
-    ///
-    /// 值不是已知字符串的按 `"day"` 处理：手滑不该让来源「从 day 精度悄悄
-    /// 变成 instant」或反过来（同一份 typo 政策，见 `extracts` 的注释）
-    pub fn precision(&self) -> &'static str {
-        match self
-            .config
-            .get("precision")
-            .and_then(serde_json::Value::as_str)
-        {
-            Some("instant") => "instant",
-            Some("hour") | Some("minute") | Some("second") => "instant",
-            _ => "day",
-        }
-    }
 }
 
 #[cfg(test)]
@@ -215,38 +194,6 @@ mod source_extracts_tests {
         assert!(with(serde_json::json!({ "extract": "no" })).extracts());
         assert!(with(serde_json::json!({ "extract": 0 })).extracts());
         assert!(!with(serde_json::json!({ "extract": false })).extracts());
-    }
-
-    #[test]
-    fn precision_defaults_to_day_and_a_typo_does_not_flip_to_instant() {
-        // 不写 = day（保持 #610 之前的现状）
-        assert_eq!(with(serde_json::json!({})).precision(), "day");
-        // 写错的字、整型、空格、其他键都按 day——手滑不该让来源悄悄变成 instant
-        assert_eq!(
-            with(serde_json::json!({ "precision": "instnat" })).precision(),
-            "day"
-        );
-        assert_eq!(
-            with(serde_json::json!({ "precision": 1 })).precision(),
-            "day"
-        );
-        assert_eq!(
-            with(serde_json::json!({ "precision": "" })).precision(),
-            "day"
-        );
-        // 显式写就照写
-        assert_eq!(
-            with(serde_json::json!({ "precision": "instant" })).precision(),
-            "instant"
-        );
-        // 子精度（hour / minute / second）视作「源端有完整时刻」
-        for p in ["hour", "minute", "second"] {
-            assert_eq!(
-                with(serde_json::json!({ "precision": p })).precision(),
-                "instant",
-                "precision={p} should map to instant"
-            );
-        }
     }
 }
 

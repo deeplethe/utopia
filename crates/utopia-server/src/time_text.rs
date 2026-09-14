@@ -19,11 +19,6 @@ pub fn instant(t: DateTime<Utc>) -> String {
 
 /// 世界轴的一端，按精度写。小时以下用 ISO 8601 的缩略形式（`2026-06-01T14:32Z`），
 /// 同一个字符串能解析回同一个值和精度。没有精度就是一个时刻（锚点、派生的界），写完整。
-///
-/// `"instant"` 是「源端给的精度是完整时刻」——输出和没有精度一样（RFC 3339 整
-/// 时刻），但语义和 `"day"` 不同：前者告诉抽取器「这是 `valid_from_precision`
-/// 等于 `second` 的事实」，后者告诉抽取器「这是精度等于 `day` 的事实」。两边
-/// 的输出字符串是同一个，由 `utopia_extract::parse_time` 区分（#610 提案）
 pub fn world(t: DateTime<Utc>, precision: Option<&str>) -> String {
     match precision {
         Some("year") => t.format("%Y").to_string(),
@@ -32,13 +27,7 @@ pub fn world(t: DateTime<Utc>, precision: Option<&str>) -> String {
         Some("hour") => t.format("%Y-%m-%dT%HZ").to_string(),
         Some("minute") => t.format("%Y-%m-%dT%H:%MZ").to_string(),
         Some("second") => t.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-        // 来源端给的「真实时刻」：写完整，但不假装是哪一天。
-        // 与没有精度走同一条 instant 路径，但语义要在调用方约定清楚
-        Some("instant") | None => instant(t),
-        // 未知精度（写错的字、整型、空串被 serde 解出 `None`）按「无精度」
-        // 处理——手滑不该让一行 fact 静默跨午夜。同 `Source::extracts` 的
-        // typo 政策（models.rs:156）
-        Some(_) => instant(t),
+        _ => instant(t),
     }
 }
 
@@ -103,9 +92,6 @@ mod tests {
         assert_eq!(world(clock, Some("hour")), "2026-06-01T14Z");
         assert_eq!(world(clock, Some("minute")), "2026-06-01T14:32Z");
         assert_eq!(world(clock, Some("second")), "2026-06-01T14:32:07Z");
-        // 「真实时刻」与无精度走同一条 RFC 3339 路径——给抽取器的语义不同，
-        // 但写出来的字符串一样；下游靠精度字段区分
-        assert_eq!(world(clock, Some("instant")), "2026-06-01T14:32:07.382Z");
         // 写出来的能读回去，且是同一个精度
         for (p, s) in [
             ("hour", "2026-06-01T14Z"),
@@ -117,20 +103,6 @@ mod tests {
         }
         // 没有精度 = 一个时刻（锚点、派生的界）：写完整，不冒充哪一天
         assert_eq!(world(at, None), "2023-06-15T00:00:00Z");
-    }
-
-    #[test]
-    fn a_late_night_event_does_not_cross_midnight_when_written_with_instant_precision() {
-        // 23:59:59Z UTC = 第二天 07:59:59 Asia/Shanghai。day 精度会把这件事
-        // 移到 9 月 6 日，而 instant 精度保持 9 月 5 日。这一对断言就是
-        // 提案 #610 的「不静默跨午夜」承诺
-        let late = t("2026-09-05T23:59:59Z");
-        assert_eq!(world(late, Some("day")), "2026-09-05");
-        assert_eq!(world(late, Some("instant")), "2026-09-05T23:59:59Z");
-        // 关键的反向断言：day 写出来的字符串里没有 T23:59:59；instant 写
-        // 出来的字符串里没有 9 月 6 日
-        assert!(!world(late, Some("day")).contains("T23:59:59"));
-        assert!(!world(late, Some("instant")).contains("2026-09-06"));
     }
 
     #[test]
