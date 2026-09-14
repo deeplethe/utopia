@@ -75,6 +75,10 @@ export const en = {
     ds_name_required: "Give this data source a name.",
     only_postgres: "Only PostgreSQL is supported for now.",
     bad_conn_string: "A connection string starts with postgres://",
+    // Refresh schema failed; the engine's own message rides along in detail
+    schema_sync_failed:
+      "The schema could not be read — the engine's own message is in parentheses. Check " +
+      "the catalog, schema and account privileges in the connection string, then try Refresh schema again.",
     concurrency_range: "Pick a number between 1 and 256.",
     inference_off:
       "Materialized inference is off for this knowledge base. Turn it on in Settings.",

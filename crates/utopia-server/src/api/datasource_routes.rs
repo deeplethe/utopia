@@ -248,7 +248,14 @@ pub async fn sync_schema(
         Err(e) => {
             let name = source_name(&state, ds_id).await;
             crate::alerting::observe_schema_sync_failure(&state, kb_id, ds_id, &name, &e).await;
-            Err(AppError::Other(e).into())
+            // 从前回 AppError::Other，落到 error.rs 就是 500「Internal server error」，
+            // 原因只在服务端日志里。带 code 与 detail，界面才看得到引擎原话。
+            Err(AppError::invalid_detail(
+                "schema_sync_failed",
+                "The data source's schema could not be read",
+                e.to_string(),
+            )
+            .into())
         }
     }
 }

@@ -62,6 +62,45 @@ impl DatabricksEngine {
         Self { conn }
     }
 
+    /// information_schema.columns 的候选写法 `(说明, SQL)`，说明只用来报错。
+    /// 没有 catalog 时只剩一条：会话默认那份。
+    fn schema_queries(&self) -> Vec<(&'static str, String)> {
+        let schema_filter = self
+            .conn
+            .schema
+            .as_deref()
+            .map(|s| format!(" AND table_schema = {}", sql_literal(s)))
+            .unwrap_or_default();
+        let select = "SELECT table_schema, table_name, column_name, data_type, comment";
+        let tail = format!(
+            "table_schema <> 'information_schema'{schema_filter} \
+             ORDER BY table_schema, table_name, ordinal_position"
+        );
+        match self.conn.catalog.as_deref() {
+            Some(catalog) => vec![
+                (
+                    "catalog information_schema",
+                    format!(
+                        "{select} FROM `{}`.information_schema.columns WHERE {tail}",
+                        catalog.replace('`', "``")
+                    ),
+                ),
+                (
+                    "system information_schema",
+                    format!(
+                        "{select} FROM system.information_schema.columns \
+                         WHERE table_catalog = {} AND {tail}",
+                        sql_literal(catalog)
+                    ),
+                ),
+            ],
+            None => vec![(
+                "session information_schema",
+                format!("{select} FROM information_schema.columns WHERE {tail}"),
+            )],
+        }
+    }
+
     async fn run(&self, sql: &str) -> anyhow::Result<(Vec<String>, Vec<Vec<serde_json::Value>>)> {
         let client = super::http()?;
         let mut body = json!({
@@ -158,27 +197,28 @@ impl QueryEngine for DatabricksEngine {
     }
 
     async fn fetch_schema(&self) -> anyhow::Result<Vec<SchemaColumn>> {
-        // 带 catalog 就查那个 catalog 的 information_schema；不带就是会话默认的
-        let prefix = self
-            .conn
-            .catalog
-            .as_deref()
-            .map(|c| format!("`{}`.", c.replace('`', "``")))
-            .unwrap_or_default();
-        let schema_filter = self
-            .conn
-            .schema
-            .as_deref()
-            .map(|s| format!(" AND table_schema = {}", sql_literal(s)))
-            .unwrap_or_default();
-        let sql = format!(
-            "SELECT table_schema, table_name, column_name, data_type, comment \
-             FROM {prefix}information_schema.columns \
-             WHERE table_schema <> 'information_schema'{schema_filter} \
-             ORDER BY table_schema, table_name, ordinal_position"
-        );
-        let (_, rows) = self.run(&sql).await?;
-        Ok(rows.into_iter().map(super::trino::schema_row).collect())
+        // 两条候选，先准后全；哪条存在由集群决定。真实集群上
+        // `main`.information_schema.columns 回过 TABLE_OR_VIEW_NOT_FOUND（#241），
+        // 所以第一条不通就退到 system 那份。两条都失败才失败，错误带上试过的写法。
+        let queries = self.schema_queries();
+        let mut last: Option<anyhow::Error> = None;
+        for (_, sql) in &queries {
+            match self.run(sql).await {
+                Ok((_, rows)) => {
+                    return Ok(rows.into_iter().map(super::trino::schema_row).collect())
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        let tried = queries
+            .iter()
+            .map(|(label, _)| *label)
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "no readable information_schema (tried: {tried}): {}",
+            last.map(|e| e.to_string()).unwrap_or_default()
+        )
     }
 
     async fn execute(&self, sql: &str) -> anyhow::Result<QueryResult> {
@@ -197,7 +237,7 @@ mod tests {
     use super::super::QueryEngine;
     use super::DatabricksEngine;
     use serde_json::json;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_string_contains, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn conn(server: &MockServer) -> DatabricksConn {
@@ -266,6 +306,81 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
+        assert!(err.contains("TABLE_OR_VIEW_NOT_FOUND"), "{err}");
+    }
+
+    /// catalog 级那份读不到（真实集群回过 TABLE_OR_VIEW_NOT_FOUND）时退到 system 那份。
+    #[tokio::test]
+    async fn the_schema_read_falls_back_to_the_system_information_schema() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .and(body_string_contains("`main`.information_schema.columns"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "s3",
+                "status": { "state": "FAILED", "error": {
+                    "error_code": "BAD_REQUEST",
+                    "message": "[TABLE_OR_VIEW_NOT_FOUND] The table or view `main`.`information_schema`.`columns` cannot be found."
+                } }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .and(body_string_contains("system.information_schema.columns"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "s4",
+                "status": { "state": "SUCCEEDED" },
+                "manifest": { "schema": { "columns": [
+                    { "name": "table_schema", "type_text": "STRING", "position": 0 },
+                    { "name": "table_name", "type_text": "STRING", "position": 1 },
+                    { "name": "column_name", "type_text": "STRING", "position": 2 },
+                    { "name": "data_type", "type_text": "STRING", "position": 3 },
+                    { "name": "comment", "type_text": "STRING", "position": 4 }
+                ] } },
+                "result": { "data_array": [
+                    ["default", "orders", "amount", "DECIMAL(12,2)", "订单金额"]
+                ] }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let cols = DatabricksEngine::new(conn(&server))
+            .fetch_schema()
+            .await
+            .unwrap();
+        assert_eq!(cols.len(), 1);
+        assert_eq!(cols[0].schema, "default");
+        assert_eq!(cols[0].table, "orders");
+        assert_eq!(cols[0].column, "amount");
+        assert_eq!(cols[0].data_type, "DECIMAL(12,2)");
+        assert_eq!(cols[0].comment.as_deref(), Some("订单金额"));
+    }
+
+    /// 两条都不通时，错误要带上试过的写法。
+    #[tokio::test]
+    async fn two_dead_ends_say_which_ones_were_tried() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": { "state": "FAILED", "error": {
+                    "error_code": "BAD_REQUEST",
+                    "message": "[TABLE_OR_VIEW_NOT_FOUND] nope"
+                } }
+            })))
+            .mount(&server)
+            .await;
+
+        let err = DatabricksEngine::new(conn(&server))
+            .fetch_schema()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("catalog information_schema"), "{err}");
+        assert!(err.contains("system information_schema"), "{err}");
         assert!(err.contains("TABLE_OR_VIEW_NOT_FOUND"), "{err}");
     }
 }
