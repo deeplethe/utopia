@@ -142,8 +142,9 @@ def setup(label, with_base):
     kb = api("POST", f"/workspaces/{ws}/kbs", {"name": f"Blackbaud HQ lease ({label})", "ontology_packs": []})["id"]
     print("kb", kb)
     time.sleep(4)
-    # 与召回测量台同一个理由：抽取之后会改图的开关一律关掉，量的是抽取本身
-    api("PATCH", f"/kbs/{kb}", {"auto_extend_ontology": False, "materialize_inferences": False, "governance": False})
+    # 本体是这里声明的那一套，不让它自己长；治理开着——库生下来就开着它（0050），
+    # 同一份租约被写成几个名字，合不合得起来正是要量的
+    api("PATCH", f"/kbs/{kb}", {"auto_extend_ontology": False, "materialize_inferences": False, "governance": True})
     ids = {}
     for key, name, desc in CLASSES:
         ids[key] = api("POST", f"/kbs/{kb}/ontology/entity-types", {"key": key, "label": name, "description": desc})["id"]

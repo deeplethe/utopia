@@ -230,3 +230,113 @@ async fn a_merge_that_would_leave_the_graph_is_held() -> anyhow::Result<()> {
     assert_eq!(gone.rows_affected(), 1, "一次性 org 没删掉");
     Ok(())
 }
+
+/// 一个值接替了另一个：两个名字各挂一个、合起来是先后接替的时间线，不是矛盾。
+/// 同一天开始的两个值才排不开（Blackbaud 总部租约：房东先 HPBB1、后 BBHQ1，
+/// 「Lease Agreement」与「Lease Agreement dated May 16, 2016」各挂一个，从前闸门把这一对
+/// 当矛盾留给人，同一份租约就一直是两个实体）
+#[tokio::test]
+async fn a_value_that_took_over_from_another_is_not_a_contradiction() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let dated = |s: Uuid, o: Uuid, from: &'static str| {
+        let pool = pool.clone();
+        let (kb, p) = (f.kb, f.ceo_of);
+        async move {
+            sqlx::query(
+                "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id,
+                                    valid_from, valid_from_precision)
+                 VALUES ($1, $2, $3, $4, $5, $6::timestamptz, 'day')",
+            )
+            .bind(Uuid::now_v7())
+            .bind(kb)
+            .bind(s)
+            .bind(p)
+            .bind(o)
+            .bind(format!("{from}T00:00:00Z"))
+            .execute(&pool)
+            .await?;
+            anyhow::Ok(())
+        }
+    };
+    dated(f.a, f.c1, "2019-01-01").await?;
+    dated(f.b, f.c2, "2021-01-01").await?;
+    let succession = impact_of(&pool, f.kb, f.a, f.b).await?;
+
+    let g = seed(&pool).await?;
+    let same_day = |s: Uuid, o: Uuid| {
+        let pool = pool.clone();
+        let (kb, p) = (g.kb, g.ceo_of);
+        async move {
+            sqlx::query(
+                "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id,
+                                    valid_from, valid_from_precision)
+                 VALUES ($1, $2, $3, $4, $5, '2020-01-01T00:00:00Z', 'day')",
+            )
+            .bind(Uuid::now_v7())
+            .bind(kb)
+            .bind(s)
+            .bind(p)
+            .bind(o)
+            .execute(&pool)
+            .await?;
+            anyhow::Ok(())
+        }
+    };
+    same_day(g.a, g.c1).await?;
+    same_day(g.b, g.c2).await?;
+    let clash = impact_of(&pool, g.kb, g.a, g.b).await?;
+
+    for fx in [&f, &g] {
+        sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+            .bind(fx.kb)
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(fx.user)
+            .execute(&pool)
+            .await?;
+        sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(fx.org)
+            .execute(&pool)
+            .await?;
+    }
+    assert_eq!(hold(&succession), None, "先后接替不是矛盾：{succession:?}");
+    assert_eq!(hold(&clash), Some(Hold::Contradiction("CEO of".into())));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_clash_one_side_already_had_is_not_the_merges() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    // b 自己已经挂着两个没日期的值；a 只挂着其中一个
+    fact(&pool, f.kb, f.b, f.ceo_of, f.c1).await?;
+    fact(&pool, f.kb, f.b, f.ceo_of, f.c2).await?;
+    fact(&pool, f.kb, f.a, f.ceo_of, f.c1).await?;
+    let impact = impact_of(&pool, f.kb, f.a, f.b).await?;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(f.user)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    assert!(
+        impact.contradictions.is_empty(),
+        "the clash was on b before the merge: {impact:?}"
+    );
+    Ok(())
+}

@@ -38,6 +38,10 @@ The queue reason is `escalate_impact|<kind> <value>`: `contradiction CEO of`, `d
 
 The contradiction query looks at entity-object edges only, ignores time and ignores literal values, because that is what `too_many` in the reasoning crate looks at. A stricter predictor would hold pairs for violations the check would never open; a looser one would let through the ones it would.
 
+> **Revised 2026-09-14: the contradiction reads time, as the check has since #635.** The consistency check started asking whether two values hold at the same moment in #635, and this query did not follow. The cost showed on the Blackbaud lease bench. The landlord changed from HPBB1 to BBHQ1, and the lease came out under two names, one holding each landlord. The gate called that pair a contradiction and held it for a person every run, so the lease stayed split and questions about it came back with two answers.
+>
+> `temporal::merge_would_overlap` now takes both sides' rows on each unique state predicate as one timeline and ends each row the way the temporal engine would (0022, #679). A contradiction is two values that still hold at one moment: the same start, a value with no time, a successor too doubtful to take over, or two stated intervals that cross. A succession is not one. Event and eternal predicates are not placed by the engine and are compared as their rows stand. The query still reads entity-object edges only.
+
 ## What a reader sees
 
 A pair the adjudicator would have merged shows in Duplicates with the held reason in place of a confidence. In the Agent queue the same pair is a proposal that begins "held for a person". Nothing changes for pairs that touch nothing.
@@ -45,9 +49,9 @@ A pair the adjudicator would have merged shows in Duplicates with the held reaso
 ## Dead ends
 
 - **Exports as a hold.** `kb.exported` is in the ledger, but an export is of the base, not of the pair: holding every merge in a base that has ever been exported is a switch, not a gate, and the switch already exists (governance, or the adjudicator's own). A per-deployment opt-in, "automatic merges may leave the system", waits until someone asks for it.
-- **Size as impact.** The number of facts that would move says how visible a mistake is, not whether it comes back; `revert_merge` returns a hub as fully as a shell. And the sample 0026 keeps for people measures how often the machine is wrong, which is the number size would have been a proxy for.
+- **Size as impact.** The number of facts that would move says how visible a mistake is, not whether it comes back; `revert_merge` returns a hub as fully as a shell. And the rows people answer under the agent (0025) measure how often the machine is wrong, which is the number size would have been a proxy for; 0026's one-in-ten sample did this until it was removed on 2026-09-14.
 - **A higher bar instead of a hold.** 0.95 for pairs with derivations, say. A held pair costs a person one look; a merge that leaves the graph costs a revert that does not fully revert. The asymmetry is the whole point of the issue.
-- **Time-aware contradictions.** Two CEOs in different years are not a contradiction in the world, but the check does not know that yet either; when it does, this query follows it (decision 5).
+- **Time-aware contradictions.** Two CEOs in different years are not a contradiction in the world. Both the check and this query now know it (decision 5, revised 2026-09-14).
 
 ## Open questions
 

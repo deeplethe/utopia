@@ -17,11 +17,6 @@ use uuid::Uuid;
 const BATCH_SIZE: i64 = 12;
 const AUTO_CONF: f32 = 0.8;
 const MAX_ROUNDS: usize = 20;
-/// 每一百对里有几对**即使裁决器有把握也交给人**（0026）。没有这一份，人裁过的
-/// 语料会收缩成只剩难题：既不再代表一般的判法，也没有样本能量出机器与人的
-/// 一致率。按 id 取样而不是掷骰子：同一对每次跑到的答案一样，才好复现
-const HUMAN_SAMPLE_PCT: u128 = 10;
-
 /// 缓存键：类型 + 双方名字 + 事实摘要 + 先例（与实体 id 无关——重传文档不重复付费）。
 /// **先例也进键**：答案随先例变（0025 说的正是这个，治理那一路因此干脆不用缓存）；
 /// 人又裁了一笔，键就变，旧答案自然作废，不必去清
@@ -40,11 +35,6 @@ fn pair_key(item: &ReviewItem, precedents: &[String]) -> String {
     let digest =
         Sha256::digest(format!("{}##{}", sides.join("##"), precedents.join("\n")).as_bytes());
     digest.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// 这一对是不是抽给人看的那一份（见 HUMAN_SAMPLE_PCT）
-fn sampled_for_a_person(item: &ReviewItem) -> bool {
-    item.id.as_u128() % 100 < HUMAN_SAMPLE_PCT
 }
 
 /// 攒批没定的对要不要带工具再看一遍（0028）：没判决或把握不到线；硬规则拦得住的不看
@@ -330,22 +320,8 @@ async fn apply_verdict(
     via: &str,
     why: Option<&str>,
 ) -> anyhow::Result<Outcome> {
-    // 抽给人的那一份：机器有把握也不动手（0026）。理由写进队列那一列，
-    // 界面会说"这一对是抽样给你的"，而不是让人以为裁决器没把握
-    if same.is_some() && conf >= AUTO_CONF && sampled_for_a_person(item) {
-        let verdict = if same == Some(true) {
-            "same"
-        } else {
-            "different"
-        };
-        utopia_store::resolution::escalate_review(
-            &state.pool,
-            item.id,
-            &format!("escalate_sample|{verdict} {conf:.2}"),
-        )
-        .await?;
-        return Ok(Outcome::Escalated);
-    }
+    // 有把握就动手，不再抽一成给人（0026 修订）：队列里等人的，只剩机器拿不准、
+    // 或闸门说合了会送出图外的那些
     let outcome = match same {
         Some(true) if conf >= AUTO_CONF => {
             // 执行闸门（0027）：合并会立刻送出图外的东西——违规、派生、答案——留给人，

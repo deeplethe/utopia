@@ -367,7 +367,10 @@ pub fn build_messages_with_opening(
          {temporal_note}\n\
          4. {time_ctx}\n\
          5. quote must be a contiguous excerpt from the Text block; never quote the opening of the document. Every fact needs one.\n\
-         6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
+         6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain. A value \
+            the text writes out is stated whatever the layout — a sentence, a list, a table \
+            cell, a schedule, the new column of an amendment that replaces an earlier term. \
+            Inferred means the text does not write the value and you worked it out.\n\
          7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.\n\
          8. If no listed relation fits, do not force the nearest one — write the predicate the \
             text itself uses, in snake_case (e.g. \"available_on\", \"runs_on\"). A relation \
@@ -1480,6 +1483,17 @@ mod prompt_shape_tests {
         let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
         let system = &msgs[0].content;
         assert!(system.contains("except a date, which is always written in the format of rule 3"));
+    }
+
+    /// 补充协议把旧条款与新日期排成一张对照表，模型把表格里读到的新日期标 0.7（当成
+    /// 推断），低于 0.75 的值不许接替前一个——截止日就一直停在旧值上。规则 6 说清楚：
+    /// 原文写着的值不论排成什么样都是明写
+    #[test]
+    fn a_value_written_in_a_table_is_stated() {
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        let system = &msgs[0].content;
+        assert!(system.contains("stated whatever the layout"));
+        assert!(system.contains("a table cell"));
     }
 
     /// 规则编号各不相同，「按规则 N」指得到唯一的一条。从前有两条 8c、两条 10，
