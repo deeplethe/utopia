@@ -110,7 +110,6 @@ cd web && pnpm install && pnpm dev
 - [ ] **Execution gate**: checking an agent's calls against ontology rules and symbolic logic
 - [ ] **MaxCompute**: mapping exploration and Ontology2SQL over Alibaba Cloud MaxCompute (Iceberg / Delta Lake via Trino, Databricks and Snowflake are in, awaiting a run against a real cluster)
 - [ ] **More sources**: a ClickHouse driver; a Feishu connector
-- [ ] **Time to the moment**: an `instant` precision beside year / month / day, for sources that carry a real timestamp. Today a connector rounds it to a UTC day, which can shift an event across midnight by one day
 - [ ] **Agent memory over MCP**: episode writes, the retrieve endpoint, and the MCP server
 - [ ] **Enterprise**: OIDC SSO, backup and restore commands, benchmarks at 100k documents
 
