@@ -1097,9 +1097,11 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         // 提示词大是慢，没有类可选是抽不出东西
         let lists = if retrieve_per_chunk {
             match ctx {
-                Some(v) => chunk_lists(state, doc.kb_id, v, &etypes, &rtypes, &seed_classes)
-                    .await
-                    .unwrap_or(None),
+                Some(v) => {
+                    chunk_lists(state, doc.kb_id, v, &etypes, &rtypes, &seed_classes, budget)
+                        .await
+                        .unwrap_or(None)
+                }
                 None => None,
             }
         } else {
@@ -3037,6 +3039,15 @@ fn build_lists(
     rels: Option<&HashSet<Uuid>>,
 ) -> PromptLists {
     let picked_class = |id: &Uuid| classes.is_none_or(|s| s.contains(id));
+    // 按块检索（有选择集）时描述只带第一句：检索那条路只有大的导入本体才走，一块铺上百行，
+    // 描述占清单的八成（#701）。全铺的是装得下预算的小本体，描述原样
+    let describe = |d: &str| -> String {
+        if classes.is_some() {
+            utopia_extract::first_sentence(d).to_string()
+        } else {
+            d.to_string()
+        }
+    };
     // 边上能带的属性：关系.qualifiers → 属性行（0037）。这里只排版，写入侧另有一份同样的查法
     let rtype_by_id: HashMap<Uuid, &utopia_core::models::RelationType> =
         rtypes.iter().map(|r| (r.id, r)).collect();
@@ -3064,7 +3075,7 @@ fn build_lists(
     let types = etypes
         .iter()
         .filter(|t| picked_class(&t.id))
-        .map(|t| (t.key.clone(), t.label.clone(), t.description.clone()))
+        .map(|t| (t.key.clone(), t.label.clone(), describe(&t.description)))
         .collect();
 
     // 一侧的类一个都没铺出去就写 `*`：签名是导向，指向看不见的类只会误导
@@ -3092,7 +3103,7 @@ fn build_lists(
             utopia_extract::PromptRelation {
                 key: r.key.clone(),
                 label: r.label.clone(),
-                description: r.description.clone(),
+                description: describe(&r.description),
                 signature,
                 temporal: r.temporal.clone(),
                 // `amount: number $`——模型要按这个 key 写，单位提醒它别换算
@@ -3112,7 +3123,8 @@ fn build_lists(
                 Some(u) if !u.is_empty() => format!("{dt}, {u}"),
                 _ => dt.to_string(),
             };
-            let d = r.description.trim();
+            let d = describe(&r.description);
+            let d = d.trim();
             Some(if d.is_empty() {
                 format!("- {class_key}.{} ({spec})", r.key)
             } else {
@@ -3151,6 +3163,7 @@ async fn chunk_lists(
     etypes: &[utopia_core::models::EntityType],
     rtypes: &[utopia_core::models::RelationType],
     seed_classes: &HashSet<Uuid>,
+    budget: usize,
 ) -> anyhow::Result<Option<PromptLists>> {
     let mut classes: HashSet<Uuid> = seed_classes.clone();
     classes.extend(
@@ -3186,10 +3199,9 @@ async fn chunk_lists(
         let picked: Vec<Uuid> = classes.iter().copied().collect();
         classes.extend(utopia_store::ontology::ancestors_of(&state.pool, &picked).await?);
     }
-    let mut rels: HashSet<Uuid> = HashSet::new();
     // 关系与属性分开检索：两段在提示词里是分开的，混在一起取会让其中一段
-    // 被另一段挤空
-    rels.extend(
+    // 被另一段挤空。检索回来是按距离排好的，排队时交替取，两段一起往下让
+    let nearest = interleave(
         utopia_store::ontology::nearest_relation_type_ids(
             &state.pool,
             kb_id,
@@ -3198,8 +3210,6 @@ async fn chunk_lists(
             Some("relation"),
         )
         .await?,
-    );
-    rels.extend(
         utopia_store::ontology::nearest_relation_type_ids(
             &state.pool,
             kb_id,
@@ -3209,6 +3219,7 @@ async fn chunk_lists(
         )
         .await?,
     );
+    let rels: HashSet<Uuid> = nearest.iter().copied().collect();
     // **一个关系被铺出去，它签名点名的类就得跟着铺。**
     //
     // 类与关系是各自独立检索的，而签名依赖两者的交集——`sig_of` 只认铺出去的类，
@@ -3225,12 +3236,15 @@ async fn chunk_lists(
     // 顺带还对：这些类正是模型马上要用来判类型的那些，`employee` 在场就说明
     // 这一块讲的是雇佣，`organization`/`person` 本来就该在候选里——
     // 按字面相似度捞不到它们，但**本体的结构知道**。
-    let sig_classes: HashSet<Uuid> = rtypes
-        .iter()
-        .filter(|r| rels.contains(&r.id))
-        .flat_map(|r| r.domains.iter().chain(r.ranges.iter()).copied())
-        .collect();
-    classes.extend(sig_classes);
+    let signature_classes = |kept: &HashSet<Uuid>| -> HashSet<Uuid> {
+        rtypes
+            .iter()
+            .filter(|r| kept.contains(&r.id))
+            .flat_map(|r| r.domains.iter().chain(r.ranges.iter()).copied())
+            .collect()
+    };
+    let mut domain_pool = classes.clone();
+    domain_pool.extend(signature_classes(&rels));
 
     // **类进来了，就把本体声明在它们身上的关系也铺出去。**
     //
@@ -3250,12 +3264,13 @@ async fn chunk_lists(
     // 涨到 21.4k——为了一个谓词付两倍的钱。它们的 domain 侧本来就在清单里
     // （地板正是这么选出来的），range 侧退化成 `*` 可以接受：这道地板要办的事
     // 是「让模型看见这个说法存在」，不是把签名补全。
-    let domain_ids: Vec<Uuid> = classes.iter().copied().collect();
+    let domain_ids: Vec<Uuid> = domain_pool.iter().copied().collect();
+    let mut on_domains = Vec::new();
     for (limit, kind) in [
         (PER_CHUNK_DOMAIN_RELATIONS, "relation"),
         (PER_CHUNK_DOMAIN_ATTRIBUTES, "attribute"),
     ] {
-        rels.extend(
+        on_domains.push(
             utopia_store::ontology::nearest_relation_type_ids_in_domains(
                 &state.pool,
                 kb_id,
@@ -3267,17 +3282,67 @@ async fn chunk_lists(
             .await?,
         );
     }
+    let domain_attributes = on_domains.pop().unwrap_or_default();
+    let domain_relations = on_domains.pop().unwrap_or_default();
+
+    // 排队：按相似度检索到的在前，地板补进来的在后
+    let mut seen = rels.clone();
+    let mut ranked = nearest;
+    ranked.extend(
+        interleave(domain_relations, domain_attributes)
+            .into_iter()
+            .filter(|id| seen.insert(*id)),
+    );
 
     // 一个候选都没检索到 = 索引还没建好，退回全量而不是给一份空清单
-    if classes.len() <= seed_classes.len() && rels.is_empty() {
+    if classes.len() <= seed_classes.len() && ranked.is_empty() {
         return Ok(None);
     }
-    Ok(Some(build_lists(
-        etypes,
-        rtypes,
-        Some(&classes),
-        Some(&rels),
-    )))
+
+    // **这一块的清单也守那个预算**（#701）。预算原本只判「全铺装不装得下」，检索出来的
+    // 清单没有上限：三道地板叠上去，schema.org 一块铺到 5.6 万字符，是预算的 2.3 倍，
+    // 提示词两万 token 里正文不到 2%。
+    //
+    // 按排队顺序取前 k 个，每个带着它的结构（签名点名的类；祖先在类清单里已经有了），量
+    // 实际排出来的那段字，取装得下的最大 k。多一个候选只会多几行，长度随 k 单调，二分就行。
+    // 地板补进来的关系不拉签名类，理由见上
+    let lists_for = |k: usize| {
+        let kept: HashSet<Uuid> = ranked[..k].iter().copied().collect();
+        let near_kept: HashSet<Uuid> = kept.intersection(&rels).copied().collect();
+        let mut picked = classes.clone();
+        picked.extend(signature_classes(&near_kept));
+        build_lists(etypes, rtypes, Some(&picked), Some(&kept))
+    };
+    let (mut lo, mut hi) = (0usize, ranked.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if lists_for(mid).chars() <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo < ranked.len() {
+        tracing::debug!(
+            kept = lo,
+            retrieved = ranked.len(),
+            budget,
+            "按块清单按预算截断"
+        );
+    }
+    Ok(Some(lists_for(lo)))
+}
+
+/// 两串按距离排好的 id 交替并成一串：a0 b0 a1 b1 …，短的那串用完就接着排长的
+fn interleave(a: Vec<Uuid>, b: Vec<Uuid>) -> Vec<Uuid> {
+    let mut out = Vec::with_capacity(a.len() + b.len());
+    let (mut a, mut b) = (a.into_iter(), b.into_iter());
+    loop {
+        match (a.next(), b.next()) {
+            (None, None) => return out,
+            (x, y) => out.extend(x.into_iter().chain(y)),
+        }
+    }
 }
 
 /// 一条值该记什么单位（#600「单位是读出来的，不是猜的」，实体上的属性与边上的属性同一条规矩）。
@@ -3530,6 +3595,17 @@ mod name_tests {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn two_ranked_lists_take_turns_and_the_longer_one_finishes() {
+        let ids: Vec<Uuid> = (0..5).map(|_| Uuid::now_v7()).collect();
+        let (a, b) = (vec![ids[0], ids[1], ids[2]], vec![ids[3]]);
+        assert_eq!(
+            super::interleave(a, b),
+            vec![ids[0], ids[3], ids[1], ids[2]]
+        );
+        assert!(super::interleave(Vec::new(), Vec::new()).is_empty());
+    }
 
     #[test]
     fn a_name_declared_for_another_entity_is_not_an_alias() {

@@ -2,7 +2,8 @@
 
 - **Status**: Built · the character budget (`deployment_settings.ontology_prompt_budget`,
   24,000) and per-chunk retrieval are live, values unchanged; the "built-in classes always
-  present" floor is replaced by ancestor completion; answer keys are still hand-filled.
+  present" floor is replaced by ancestor completion; the per-chunk list keeps to the same budget
+  and carries first sentences (#701); answer keys are still hand-filled.
 - **Written**: 2026-08-29 · condensed into English 2026-09-03
 - **Related**: [0008](0008-ontology-packs-as-cold-start.md) packs are now the starting
   ontology; [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) measured the bias
@@ -64,6 +65,17 @@ classes), hence no hit rate.
   ontology extraction never saw; 25 vs 18 was run variance. The bench now reports
   `ontology_at_extraction` and `ontology_at_resolution` separately and has
   `--ontology-first`.
+- 2026-09-14 (#701): **the per-chunk list keeps to the budget.** The budget only decided
+  whether the whole ontology fits; the list retrieval produced had no limit, and the floors
+  added since (ancestors, signature classes, relations declared on the retrieved classes) laid
+  out 56,155 characters for one schema.org chunk, 2.3 times the budget, 85% of a 19,735-token
+  prompt in which the text was under 2%. Candidates now queue by distance (retrieved first,
+  floor additions after, relations and attributes taking turns), each bringing its signature
+  classes, and the list takes the longest prefix whose laid-out text fits. A retrieved list
+  carries each description's first sentence (UAX #29); descriptions were 84% of it. A full
+  inline list is a small ontology and keeps its descriptions. Recall bench 48/52 against 47/52
+  before; prompt per extraction call on the same four filings 13.5k → 8.1k tokens, measured
+  together with the sentence-numbered reply.
 - 2026-09-02: per-chunk retrieval sends one vector query per chunk with concurrency up to
   `worker_concurrency` (cap 256 since #133) against a pool of 32; migration `0011` records
   it.

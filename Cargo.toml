@@ -63,6 +63,8 @@ tantivy-jieba = "0.20"
 text-splitter = { version = "0.32", features = ["tiktoken-rs"] }
 # 分块预算按 token 数：cl100k 的排名表随 crate 内嵌，离线可用
 tiktoken-rs = "0.12"
+# 句子边界按 Unicode 标准（UAX #29）切，不自己写标点规则
+unicode-segmentation = "1.13"
 pdf-extract = "0.12"
 calamine = "0.36"
 pgvector = { version = "0.4", features = ["sqlx"] }

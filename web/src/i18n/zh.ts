@@ -68,6 +68,10 @@ export const zh: Strings = {
     ds_name_required: "给这个数据源起个名字。",
     only_postgres: "目前只支持 PostgreSQL。",
     bad_conn_string: "连接串要以 postgres:// 开头",
+    // 刷新结构失败；引擎的原话走 detail（括号里那句）
+    schema_sync_failed:
+      "库表结构没能读出来——引擎的原话在括号里。确认连接串里的库、schema 与账号权限，" +
+      "再点「刷新结构」试试。",
     concurrency_range: "填一个 1 到 256 之间的数。",
     inference_off: "这个库没有打开物化推理。到设置里开。",
     bad_resolution: "这不是一个有效的裁决。",

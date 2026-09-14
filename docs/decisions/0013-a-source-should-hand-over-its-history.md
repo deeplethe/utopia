@@ -1,6 +1,6 @@
 # 0013 · A source hands over its history
 
-- **Status**: implemented for `github_issues` (#134), `jira_issues` (#135) and `notion` (#213, pages keep their own clock); WebDAV shares and object storage (S3 / Azure / GCS) arrived as plain file sources (#200, #207, #209) · Feishu and Confluence not started · the `instant` precision has not been triggered
+- **Status**: implemented for `github_issues` (#134), `jira_issues` (#135) and `notion` (#213, pages keep their own clock); WebDAV shares and object storage (S3 / Azure / GCS) arrived as plain file sources (#200, #207, #209) · Feishu and Confluence not started · GitHub and Jira write their timestamps to the second (#691, per 0024 §3)
 - **Written**: 2026-08-31 · condensed into English 2026-09-03
 - **Related**: the bitemporal ground of [0001](0001-ontology-import-and-governance.md); the same judgment on the corpus side in `scripts/bench/fetch-wiki-history.mjs` (#122); [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) is the other end of the line — this record is about how things come in, that one about the rules they land by; the grant layer added afterwards (#142, `data_source_grants`) decides who may mount a source: provenance visible, destination governed
 
@@ -63,6 +63,20 @@ Wikipedia; there revisions have to be sampled, an issue tracker hands the events
    not yet ask "at what hour". Add an `instant` precision (CHECK constraint, extraction prompt
    and rendering branch together) only when someone needs local business days or a source
    whose events cluster around midnight.
+
+   *Revised 2026-09-14 (#691):* the three pieces this waited for all landed in 0024: the
+   precision ladder and truncation CHECK, the prompt sentence about zoned clock times, and the
+   rendering branch in `time_text::world`. 0024 §3 names a ticket's `updated_at` as a time that
+   reaches the second. So the GitHub and Jira connectors now write `2026-08-18T16:18:27Z`, and
+   the extractor reads it back at second precision. Cutting to the day had two real costs that
+   the paragraph above missed. A start could move up to 24 hours early. Two events on the same
+   UTC day could be recorded as a simultaneous conflict. The "off by one day for a UTC+8 reader"
+   framing was wrong: world time renders in UTC at every precision (next paragraph), so no
+   reader sees a shifted date. No per-source setting was added; precision belongs to the data.
+   Already-ingested day-precision facts are left alone: "the day is known" is still true of
+   them, and an issue that changes again is re-rendered on its next sync. The document date in
+   the extraction prompt (`Document date:`) stays a day. It anchors relative phrases like "last
+   March", and the full instant is already stored in `documents.doc_time`.
 
    A related rule is already in code: world time and record time get opposite timezone
    treatment. `valid_from` / `valid_to` are calendar dates from statements in documents and

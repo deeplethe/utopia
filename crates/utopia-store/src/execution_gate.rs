@@ -18,7 +18,7 @@ use uuid::Uuid;
 /// 一次合并会立刻牵动的东西
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Impact {
-    /// 两边各持一条同一个 functional 谓词的事实、指向不同的实体：合了就是一条
+    /// 两边各持一条同一个 functional 谓词的事实、指向不同的实体，合了之后按时间也排不开：
     /// `functional` 违规，一致性检查下一次跑就会开出来——那是离开图的第一站。
     /// 记谓词标签；`inverse_functional` 对称地算
     pub contradictions: Vec<String>,
@@ -112,27 +112,10 @@ pub fn hold(impact: &Impact) -> Option<Hold> {
 /// 写路径的守卫看的是「当前那一行」（`invalidated_at IS NULL`），与 `resolve_mention`
 /// 数度数一个写法；不走记录轴谓词——修正永远发生在现在（0019）
 pub async fn impact_of(pool: &PgPool, kb_id: Uuid, a: Uuid, b: Uuid) -> AppResult<Impact> {
-    // 与一致性检查同一个口径（`too_many`）：只看实体宾语的边，不看时间——它报的
-    // 正是合并之后会报的那一条
-    let contradictions: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT r.label
-         FROM facts x
-         JOIN facts y ON y.predicate_id = x.predicate_id AND y.kb_id = x.kb_id
-         JOIN relation_types r ON r.id = x.predicate_id
-         WHERE x.kb_id = $1
-           AND x.invalidated_at IS NULL AND y.invalidated_at IS NULL
-           AND x.object_id IS NOT NULL AND y.object_id IS NOT NULL
-           AND ((r.functional AND x.subject_id = $2 AND y.subject_id = $3
-                 AND x.object_id <> y.object_id)
-             OR (r.inverse_functional AND x.object_id = $2 AND y.object_id = $3
-                 AND x.subject_id <> y.subject_id))
-         ORDER BY r.label",
-    )
-    .bind(kb_id)
-    .bind(a)
-    .bind(b)
-    .fetch_all(pool)
-    .await?;
+    // 与一致性检查同一个口径：只看实体宾语的边，**按时间看**——两边各有一个不同的值，
+    // 合了之后若能排成先后接替（房东先 HPBB1、后 BBHQ1），一致性检查不会报，这里也
+    // 不拦。从前这里不看时间，一份换过房东的租约有两个名字就永远合不起来
+    let contradictions = crate::temporal::merge_would_overlap(pool, kb_id, a, b).await?;
 
     let derived: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM derived_facts d

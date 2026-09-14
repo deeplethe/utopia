@@ -11,3 +11,4 @@ anyhow.workspace = true
 chrono.workspace = true
 utopia-llm.workspace = true
 tracing.workspace = true
+unicode-segmentation.workspace = true
