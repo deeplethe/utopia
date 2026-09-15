@@ -1597,14 +1597,17 @@ pub struct RelationAxioms {
 
 /// 文库的一页，连同这一页之外的统计。
 ///
-/// **统计不受名字/状态筛选影响**：`ready` / `extracting` / `failed` 说的是这个
-/// 来源里有多少，那是批量按钮的作用范围，跟你此刻在搜什么无关。
+/// **统计不受名字/状态筛选影响**：`ready` / `done` / `extracting` / `failed` 说的是
+/// 这个来源里有多少，那是批量按钮的作用范围，跟你此刻在搜什么无关。
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentPage {
     pub docs: Vec<Document>,
     /// 命中筛选的总数（分页器用它）
     pub total: i64,
+    /// 摄入完成（`status = 'ready'`）的篇数：重抽的作用范围
     pub ready: i64,
+    /// 抽取完成（`graph_status = 'done'`）的篇数：抽取进度条的分子
+    pub done: i64,
     pub extracting: i64,
     pub failed: i64,
     /// 整库的墓碑数（删了、没清的）——左栏「已删除」那一行的数字，不随作用域变
