@@ -1,4 +1,5 @@
-//! 读字的服务（0040）：扫描件和图片交给版面识别服务 MinerU（`mineru-api`）。
+//! 读字的服务（0040）：扫描件和图片交给版面识别服务 MinerU（`mineru-api`），录音交给会标
+//! 说话人的转写模型。
 //!
 //! 识别一份几百页的扫描件要几分钟到几十分钟。处理任务不在这里干等：第一次来交文件、把
 //! 远端任务号记在文档上（`documents.reader_task`），挂 `Deferred` 回队列；之后每次来问
@@ -16,7 +17,7 @@ use anyhow::{anyhow, Context};
 use serde_json::{json, Value};
 use utopia_core::models::{Document, LlmSettings};
 use utopia_core::{Deferred, Terminal};
-use utopia_ingest::mineru::Reading;
+use utopia_ingest::Reading;
 
 use crate::state::AppState;
 
@@ -216,6 +217,105 @@ impl<'a> Ocr<'a> {
             .map(String::from)
             .ok_or_else(|| anyhow!("The OCR service accepted the file but returned no task id"))
     }
+}
+
+/// 转写一段录音最多等多久。OpenAI 一次收 25MB，大约是一小时的压缩音频；本地服务读一小时
+/// 录音在 CPU 上要十几分钟
+const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// 工作区配的转写模型：OpenAI 的 `/audio/transcriptions`，要 `diarized_json`
+pub struct Transcriber<'a> {
+    base: &'a str,
+    key: Option<&'a str>,
+    model: &'a str,
+}
+
+impl<'a> Transcriber<'a> {
+    pub fn from_settings(s: &'a LlmSettings) -> Option<Self> {
+        Some(Transcriber {
+            base: s.transcribe_base_url.as_deref()?.trim_end_matches('/'),
+            key: s.transcribe_api_key.as_deref().filter(|k| !k.is_empty()),
+            model: s.transcribe_model.as_deref()?,
+        })
+    }
+
+    async fn transcribe(
+        &self,
+        filename: &str,
+        bytes: Vec<u8>,
+        timeout: Duration,
+    ) -> anyhow::Result<Value> {
+        let client = crate::query_engine::http()?;
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(filename.to_string())
+            .mime_str("application/octet-stream")?;
+        let form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("model", self.model.to_string())
+            .text("response_format", "diarized_json")
+            // 超过 30 秒的录音，diarize 模型要求给切分策略
+            .text("chunking_strategy", "auto");
+        let mut req = client
+            .post(format!("{}/audio/transcriptions", self.base))
+            .multipart(form)
+            .timeout(timeout);
+        if let Some(key) = self.key {
+            req = req.bearer_auth(key);
+        }
+        let resp = req
+            .send()
+            .await
+            .context("the transcription model is unreachable")?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "The transcription model refused this recording ({status}): {}",
+                body.chars().take(300).collect::<String>()
+            ));
+        }
+        resp.json()
+            .await
+            .context("The transcription model returned something that is not JSON")
+    }
+
+    /// 读这段录音。一次请求读完——没有可以接着问的远端任务；分不出说话人的结果在
+    /// `transcript::reading` 里拒收（`NoSpeakers`）
+    pub async fn read(&self, doc: &Document, bytes: Vec<u8>) -> anyhow::Result<Reading> {
+        let response = self
+            .transcribe(&doc.filename, bytes, TRANSCRIBE_TIMEOUT)
+            .await?;
+        utopia_ingest::transcript::reading(&response, self.model)
+    }
+
+    /// 连通性测试：送一秒静音。端点和模型认这个请求就算通——静音里没有说话人可标，
+    /// 标不标得出要等第一段真录音
+    pub async fn check(&self) -> anyhow::Result<()> {
+        self.transcribe("silence.wav", silent_wav(), Duration::from_secs(60))
+            .await
+            .map(|_| ())
+    }
+}
+
+/// 一秒 16kHz 单声道静音的 WAV
+fn silent_wav() -> Vec<u8> {
+    let (rate, samples): (u32, u32) = (16_000, 16_000);
+    let data_len = samples * 2;
+    let mut w = Vec::with_capacity(44 + data_len as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data_len).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&rate.to_le_bytes());
+    w.extend_from_slice(&(rate * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data_len.to_le_bytes());
+    w.resize(44 + data_len as usize, 0);
+    w
 }
 
 fn jstr(v: &Value) -> &str {

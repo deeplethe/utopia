@@ -11,62 +11,13 @@
 //!
 //! 页码从 1 数（`page_idx` + 1）：锚点是给人翻页用的，查看器的 `#page=` 也从 1 数。
 
-use crate::chunker::{chunk_segments, ChunkPiece};
 use crate::provenance::{Origin, Provenance, Segment};
+use crate::reading::{Place, Reading, Region};
 use serde_json::{json, Value};
-use std::ops::Range;
 
 /// 版面上的辅助区域：页眉、页脚、页码。每页重复一遍，进了正文只会让每块都多一行噪声。
 /// 页脚注和旁注不在这里——合同的脚注里写着条款
 const CHROME: &[&str] = &["header", "footer", "page_number"];
-
-/// 拼好的正文，连同每页的出处和每个区域的位置
-#[derive(Debug, Clone)]
-pub struct Reading {
-    pub text: String,
-    pub segments: Vec<Segment>,
-    /// 每个区域在正文里的字节区间、所在页、框
-    regions: Vec<Region>,
-}
-
-#[derive(Debug, Clone)]
-struct Region {
-    range: Range<usize>,
-    page: u64,
-    bbox: Option<[f64; 4]>,
-}
-
-impl Reading {
-    /// 按页分段切块，再给每块的锚点补上它盖住的区域的外框
-    pub fn chunk(&self, budget: usize) -> Vec<ChunkPiece> {
-        let mut pieces = chunk_segments(&self.text, &self.segments, budget);
-        for p in &mut pieces {
-            let span = p.char_start as usize..p.char_end as usize;
-            let Some(anchor) = p.provenance.anchor.as_mut() else {
-                continue;
-            };
-            let page = anchor["page"].as_u64();
-            let covered = self
-                .regions
-                .iter()
-                .filter(|r| {
-                    Some(r.page) == page && r.range.start < span.end && span.start < r.range.end
-                })
-                .filter_map(|r| r.bbox);
-            if let Some(b) = covered.reduce(|a, b| {
-                [
-                    a[0].min(b[0]),
-                    a[1].min(b[1]),
-                    a[2].max(b[2]),
-                    a[3].max(b[3]),
-                ]
-            }) {
-                anchor["bbox"] = json!(b);
-            }
-        }
-        pieces
-    }
-}
 
 /// 读 `content_list`。`model` 记在出处上：哪个版本、哪个后端读的
 pub fn reading(content_list: &Value, model: &str) -> Reading {
@@ -92,17 +43,23 @@ pub fn reading(content_list: &Value, model: &str) -> Reading {
         text.push_str(body);
         regions.push(Region {
             range: start..text.len(),
-            page: item["page_idx"].as_u64().unwrap_or(0) + 1,
-            bbox: bbox(&item["bbox"]),
+            place: Place::Page {
+                page: item["page_idx"].as_u64().unwrap_or(0) + 1,
+                bbox: bbox(&item["bbox"]),
+            },
         });
     }
 
     // 一页一段，段首尾相接盖满整份正文：段从这一页第一个区域开始，到下一页第一个区域为止
     let mut segments: Vec<Segment> = Vec::new();
     for r in &regions {
-        if segments.last().is_some_and(|s| {
-            s.provenance.anchor.as_ref().map(|a| &a["page"]) == Some(&json!(r.page))
-        }) {
+        let Place::Page { page, .. } = r.place else {
+            continue;
+        };
+        if segments
+            .last()
+            .is_some_and(|s| s.provenance.anchor.as_ref().map(|a| &a["page"]) == Some(&json!(page)))
+        {
             continue;
         }
         if let Some(prev) = segments.last_mut() {
@@ -113,7 +70,7 @@ pub fn reading(content_list: &Value, model: &str) -> Reading {
             provenance: Provenance {
                 origin: Origin::Ocr,
                 model: Some(model.to_string()),
-                anchor: Some(json!({ "page": r.page })),
+                anchor: Some(json!({ "page": page })),
             },
         });
     }
@@ -196,8 +153,8 @@ fn bbox(v: &Value) -> Option<[f64; 4]> {
     Some(out)
 }
 
-/// 认字认出来的 NUL 跟 PDF 文本层里的一样要剥（#611）
-fn without_nul(s: &str) -> String {
+/// 认字、转写出来的 NUL 跟 PDF 文本层里的一样要剥（#611）
+pub(crate) fn without_nul(s: &str) -> String {
     s.replace('\0', "")
 }
 

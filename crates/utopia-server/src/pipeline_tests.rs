@@ -17,6 +17,7 @@
 //!    落在 failed。现在走完整的 process_document 到 ready，库里没有一个分块带 NUL。
 //!
 //! 8. **扫描件等版面识别服务读**（0040 第二刀）：配上服务重新排队，交一次、挂回去问、按页切块。
+//! 9. **录音等会标说话人的转写模型读**（第三刀）：说话人进正文、时刻进锚点；分不出说话人的降级。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
@@ -635,6 +636,153 @@ async fn a_failed_read_is_retried_from_a_fresh_submission() -> anyhow::Result<()
         .expect_err("submitted again");
     assert!(utopia_core::is_deferred(&err).is_some());
     assert_eq!(fake.submissions.lock().expect("lock").len(), 2);
+    f.cleanup().await
+}
+
+/// 假的转写端点：`labels` 时每句带说话人，否则只有时间。记下收到的表单
+#[derive(Clone, Default)]
+struct FakeTranscriber {
+    labels: bool,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl Respond for FakeTranscriber {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let auth = request
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        self.requests.lock().expect("lock").push(format!(
+            "{auth}\n{}",
+            String::from_utf8_lossy(&request.body)
+        ));
+        let seg = |speaker: &str, start: f64, end: f64, text: &str| {
+            if self.labels {
+                serde_json::json!({ "type": "transcript.text.segment", "speaker": speaker, "start": start, "end": end, "text": text })
+            } else {
+                serde_json::json!({ "start": start, "end": end, "text": text })
+            }
+        };
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "text": "…",
+            "segments": [
+                seg("A", 0.0, 3.2, "Who delivers the Beta Robotics prototype?"),
+                seg("B", 3.5, 7.25, "I will deliver it in Q3."),
+            ]
+        }))
+    }
+}
+
+async fn with_transcriber(f: &Fx, fake: &FakeTranscriber, model: &str) -> anyhow::Result<()> {
+    f.server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(f.fake.clone())
+        .mount(&f.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/asr/audio/transcriptions"))
+        .respond_with(fake.clone())
+        .mount(&f.server)
+        .await;
+    utopia_store::settings::upsert_transcribe(
+        &f.pool,
+        f.ws,
+        Some(&format!("{}/asr", f.server.uri())),
+        Some("asr-secret"),
+        Some(model),
+    )
+    .await?;
+    Ok(())
+}
+
+const MP3: [u8; 12] = [b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, 0, 0xFF, 0xFB];
+
+/// 0040 第三刀：录音交给会标说话人的转写模型。说话人写进正文，每块记着起止时刻和说话人
+#[tokio::test]
+async fn a_recording_is_read_with_who_said_what() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let fake = FakeTranscriber {
+        labels: true,
+        ..Default::default()
+    };
+    with_transcriber(&f, &fake, "gpt-4o-transcribe-diarize").await?;
+    let doc = f.document_with_bytes("board-meeting.mp3", &MP3).await?;
+    super::process_document(&f.state, doc).await?;
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "ready", "{:?}", row.error);
+
+    let req = fake.requests.lock().expect("lock").clone();
+    assert_eq!(req.len(), 1);
+    assert!(req[0].starts_with("Bearer asr-secret\n"));
+    assert!(req[0].contains("diarized_json"));
+    assert!(req[0].contains("gpt-4o-transcribe-diarize"));
+
+    type Stored = (String, String, Option<String>, Option<serde_json::Value>);
+    let chunks: Vec<Stored> = sqlx::query_as(
+        "SELECT text, origin, origin_model, anchor FROM chunks
+          WHERE document_id = $1 AND superseded_at IS NULL ORDER BY seq",
+    )
+    .bind(doc)
+    .fetch_all(&f.pool)
+    .await?;
+    assert_eq!(chunks.len(), 1, "{chunks:#?}");
+    assert_eq!(chunks[0].1, "transcribed");
+    assert_eq!(chunks[0].2.as_deref(), Some("gpt-4o-transcribe-diarize"));
+    assert!(chunks[0].0.contains("Speaker B: I will deliver it in Q3."));
+    assert_eq!(
+        chunks[0].3,
+        Some(serde_json::json!({ "start_ms": 0, "end_ms": 7250, "speaker": ["A", "B"] }))
+    );
+    f.cleanup().await
+}
+
+/// 分不出说话人的转写：跟没配一样降级（决定 5）——不进库、告警说原因、不重试；换一个会标
+/// 说话人的模型存下，录音重新排队读成
+#[tokio::test]
+async fn a_transcript_that_cannot_say_who_spoke_waits_for_one_that_can() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let unlabelled = FakeTranscriber::default();
+    with_transcriber(&f, &unlabelled, "whisper-1").await?;
+    let doc = f.document_with_bytes("board-meeting.mp3", &MP3).await?;
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("no speakers");
+    assert!(utopia_core::is_terminal(&err));
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "failed");
+    assert_eq!(row.reader_needed.as_deref(), Some("transcribe"));
+    assert!(row
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("who spoke")));
+    assert!(
+        f.stored(doc).await?.is_empty(),
+        "nothing unattributed is kept"
+    );
+    let alerts = f.alerts("document.needs_reader").await?;
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0]["reader"], "transcribe");
+
+    let labelled = FakeTranscriber {
+        labels: true,
+        ..Default::default()
+    };
+    with_transcriber(&f, &labelled, "gpt-4o-transcribe-diarize").await?;
+    let requeued =
+        utopia_store::documents::requeue_waiting_for_reader(&f.pool, f.ws, "transcribe").await?;
+    assert_eq!(requeued, vec![(doc, f.kb)]);
+    super::process_document(&f.state, doc).await?;
+    assert_eq!(
+        utopia_store::documents::get(&f.pool, doc).await?.status,
+        "ready"
+    );
     f.cleanup().await
 }
 

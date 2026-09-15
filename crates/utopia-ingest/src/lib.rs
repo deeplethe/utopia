@@ -168,11 +168,14 @@ pub mod mineru;
 pub mod ontology_rdf;
 mod parsers;
 pub mod provenance;
+mod reading;
+pub mod transcript;
 
 pub use chunker::{chunk_segments, chunk_text, chunk_with_budget, ChunkPiece, BUDGET_TOKENS};
 /// Decode fetched text with the same encoding detection as file ingestion.
 pub use parsers::plain_text as decode_text;
 pub use provenance::{Origin, Provenance, Segment};
+pub use reading::Reading;
 
 /// 解析产物：纯文本 + 可选结构信息。
 #[derive(Debug)]
@@ -218,6 +221,17 @@ pub struct NeedsReader {
     /// 给人看的是什么文件：scanned PDF / image / recording
     pub what: &'static str,
 }
+
+/// 录音转写回来了，却分不出谁说的（0040 决定 5）。
+///
+/// 跟没配转写模型一样对待：不读，文档停下、告警说明原因。分不出说话人的会议记录，「张三说
+/// 他三季度交付」和「李四说张三三季度交付」是同一行字，承诺会记到错的人头上——比什么都
+/// 不抽更糟。换一个会标说话人的模型，存设置时它会重新排队
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(
+    "The transcription model did not say who spoke; a recording is read only with speaker labels"
+)]
+pub struct NoSpeakers;
 
 /// 这份文件读不了，换什么模型也读不了（视频、可执行文件、老式二进制格式）。重试没用
 #[derive(Debug, Clone, thiserror::Error)]

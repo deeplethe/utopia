@@ -144,6 +144,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             put(settings_routes::put_ocr),
         )
         .route(
+            "/workspaces/{id}/settings/transcribe",
+            put(settings_routes::put_transcribe),
+        )
+        .route(
             "/workspaces/{id}/settings/test",
             post(settings_routes::test),
         )

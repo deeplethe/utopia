@@ -63,7 +63,8 @@ pub async fn observe_document_needs_reader(
     kb_id: uuid::Uuid,
     document_id: uuid::Uuid,
     filename: &str,
-    needs: &utopia_ingest::NeedsReader,
+    reader: utopia_ingest::Reader,
+    error: &str,
 ) {
     if let Err(e) = alerts::raise(
         &state.pool,
@@ -76,8 +77,8 @@ pub async fn observe_document_needs_reader(
             subject_id: Some(document_id),
             detail: serde_json::json!({
                 "name": filename,
-                "reader": needs.reader.as_str(),
-                "error": needs.to_string(),
+                "reader": reader.as_str(),
+                "error": error,
             }),
         },
     )

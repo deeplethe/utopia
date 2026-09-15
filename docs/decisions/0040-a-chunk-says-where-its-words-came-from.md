@@ -12,7 +12,11 @@
   service (`llm_settings.ocr_*`, migration 0059), one segment per page with the covered regions'
   box in the anchor; the processing job waits on the service with `Deferred` and remembers the
   remote task on the document; saving the service queues the waiting documents again · the
-  settings card is its own interface cut · recordings are cut 3
+  settings cards are their own interface cut · cut 3 implemented (2026-09-16): recordings are read
+  by a workspace's transcription model (`llm_settings.transcribe_*`, migration 0060) through
+  `/audio/transcriptions` with `diarized_json`; speakers are written into the text and a chunk's
+  anchor carries its times and speakers; a transcript without speaker labels degrades like a
+  missing model
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: [0039](0039-a-chunk-is-what-extraction-sees.md) (#633, not merged yet) puts Docling
   behind the block model as its cut 2 and leaves "evidence that points at a table cell or an image
@@ -93,7 +97,7 @@ the chunk, and the description would borrow the credibility of the sentence besi
 |---|---|
 | stated | null — `char_start` / `char_end` already place it in the parsed text |
 | ocr | `{"page": n}`, with `"bbox": [x0, y0, x1, y1]` when the engine gives one |
-| transcribed | `{"start_ms": n, "end_ms": n}`, with `"speaker"` when the endpoint gives one |
+| transcribed | `{"start_ms": n, "end_ms": n, "speaker": ["A", "B"]}` — the speakers heard in the chunk, in order (revised with cut 3: required, and a list, because a chunk spans turns) |
 | described | `{"page": n, "image": i}` for a PDF, `{"part": "word/media/image3.png"}` for an Office file, `{}` for a standalone image file |
 
 The original is already kept: the document's blob, content-addressed and versioned in
@@ -193,6 +197,21 @@ the boxes of the regions it covers on its page. Page headers, footers and page n
 dropped; tables become Markdown tables, so a long scanned table repeats its header across
 chunks like any other.
 
+*Cut 3, as built (2026-09-16).* The request is OpenAI's `/audio/transcriptions` with
+`response_format=diarized_json` and `chunking_strategy=auto`; each returned segment carries a
+speaker, its text, and its start and end in seconds. Speakers go into the text, not only the
+anchor: extraction reads words, and who promised delivery has to be on the line that says it.
+Consecutive segments from one speaker join into a turn, and each turn starts `Speaker A:` with
+the label the model gave — the prefix is structure, and no name is guessed. The whole recording
+is one segment; after packing, a chunk's anchor carries the earliest start, the latest end and
+the speakers heard in it. A segment with text and no speaker refuses the whole transcript
+(`NoSpeakers`), which degrades like a missing model: the document waits with `reader_needed =
+'transcribe'`, the alert carries the reason, and saving a model queues it again.
+
+A recording is read in one request, so it is not resumable within itself: a failure retries the
+whole file. Splitting audio needs a decoder the server does not carry; the endpoint's file limit
+(25 MB on OpenAI, about an hour of compressed audio) bounds what one request loses.
+
 ### 7. The read contract says it
 
 The evidence API, the MCP tool results (`quote`, `document_id` and `filename` today) and the RDF
@@ -210,7 +229,7 @@ the recording at `start_ms` — is a separate cut after the capability, not part
 2. **Scans and document images through MinerU** (revised from Docling): `ocr`. The highest value —
    scanned contracts, stamped approvals, invoices, all of which fail today with no text layer —
    and the modality that keeps the verbatim contract.
-3. **Recordings**: `transcribed`, segment times required, speakers where the endpoint labels them.
+3. **Recordings**: `transcribed`, segment times and speakers required.
 4. **Charts, photos, diagrams**: `described`, under the ceiling.
 5. **Video**: its audio track through 3, sampled frames through 4.
 

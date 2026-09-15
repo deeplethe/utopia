@@ -440,6 +440,11 @@ pub struct LlmSettings {
     #[serde(skip_serializing)]
     pub ocr_api_key: Option<String>,
     pub ocr_backend: Option<String>,
+    /// 会标说话人的转写模型（OpenAI `/audio/transcriptions` + `diarized_json`，0040）
+    pub transcribe_base_url: Option<String>,
+    #[serde(skip_serializing)]
+    pub transcribe_api_key: Option<String>,
+    pub transcribe_model: Option<String>,
 }
 
 impl LlmSettings {
@@ -451,6 +456,9 @@ impl LlmSettings {
     }
     pub fn ocr_ready(&self) -> bool {
         self.ocr_base_url.is_some()
+    }
+    pub fn transcribe_ready(&self) -> bool {
+        self.transcribe_base_url.is_some() && self.transcribe_model.is_some()
     }
 }
 

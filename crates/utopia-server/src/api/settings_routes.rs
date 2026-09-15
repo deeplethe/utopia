@@ -32,6 +32,9 @@ pub async fn get(
             "ocr_base_url": s.ocr_base_url,
             "ocr_backend": s.ocr_backend,
             "has_ocr_key": s.ocr_api_key.as_deref().is_some_and(|k| !k.is_empty()),
+            "transcribe_base_url": s.transcribe_base_url,
+            "transcribe_model": s.transcribe_model,
+            "has_transcribe_key": s.transcribe_api_key.as_deref().is_some_and(|k| !k.is_empty()),
         }),
     }))
 }
@@ -144,6 +147,55 @@ pub async fn put_ocr(
     Ok(Json(json!({ "ok": true, "requeued": requeued })))
 }
 
+#[derive(Deserialize)]
+pub struct PutTranscribeReq {
+    /// 地址或模型空 = 关掉：录音照第一刀降级
+    pub base_url: Option<String>,
+    /// None 或空串 = 保留旧密钥
+    pub api_key: Option<String>,
+    pub model: Option<String>,
+}
+
+/// 转写模型（0040 第三刀）。跟版面识别服务一样单独一个接口；配上的这一刀，这个工作区里
+/// 等着转写的录音重新排队——包括上一个模型分不出说话人、被拒收的那些
+pub async fn put_transcribe(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(workspace_id): Path<Uuid>,
+    Json(req): Json<PutTranscribeReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    utopia_store::workspaces::require_role(&state.pool, user.id, workspace_id, Role::Admin).await?;
+    let nonempty = |v: &Option<String>| -> Option<String> {
+        v.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from)
+    };
+    let (base_url, model) = (nonempty(&req.base_url), nonempty(&req.model));
+    utopia_store::settings::upsert_transcribe(
+        &state.pool,
+        workspace_id,
+        base_url.as_deref(),
+        nonempty(&req.api_key).as_deref(),
+        model.as_deref(),
+    )
+    .await?;
+    let mut requeued = 0usize;
+    if base_url.is_some() && model.is_some() {
+        let docs = utopia_store::documents::requeue_waiting_for_reader(
+            &state.pool,
+            workspace_id,
+            "transcribe",
+        )
+        .await?;
+        requeued = docs.len();
+        for (document_id, kb_id) in docs {
+            state.emit_document(kb_id, document_id);
+        }
+    }
+    Ok(Json(json!({ "ok": true, "requeued": requeued })))
+}
+
 /// 连通性测试：对话发一条最小消息；embedding 试算一条并返回维度；版面识别服务问一声健康。
 pub async fn test(
     State(state): State<AppState>,
@@ -155,7 +207,8 @@ pub async fn test(
         return Ok(Json(
             json!({ "chat": { "ok": false, "error": "Not configured" },
                                "embed": { "ok": false, "error": "Not configured" },
-                               "ocr": { "ok": false, "error": "Not configured" } }),
+                               "ocr": { "ok": false, "error": "Not configured" },
+                               "transcribe": { "ok": false, "error": "Not configured" } }),
         ));
     };
 
@@ -192,7 +245,18 @@ pub async fn test(
         },
     };
 
-    Ok(Json(
-        json!({ "chat": chat_result, "embed": embed_result, "ocr": ocr_result }),
-    ))
+    let transcribe_result = match crate::readers::Transcriber::from_settings(&s) {
+        None => json!({ "ok": false, "error": "Not configured" }),
+        Some(t) => match t.check().await {
+            Ok(()) => json!({ "ok": true }),
+            Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+        },
+    };
+
+    Ok(Json(json!({
+        "chat": chat_result,
+        "embed": embed_result,
+        "ocr": ocr_result,
+        "transcribe": transcribe_result,
+    })))
 }
