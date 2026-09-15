@@ -828,6 +828,11 @@ export const zh: Strings = {
     openEntity: (name) => `打开 ${name}`,
     past: (n) => `${n} 条已结束`,
     sources: (n) => `${n} 处来源`,
+    names: "名字",
+    shownName: "显示名",
+    nameUntil: (d) => `至 ${d}`,
+    removeName: "移除",
+    nameRemoved: "已移除这个名字",
     timelineEmpty: "还没有带日期的事实。",
     lastConfirmed: (d: string) => `${d} 确认`,
     correctedHint:

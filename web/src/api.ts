@@ -888,6 +888,20 @@ export interface GraphEdge {
   qualifiers: FactQualifier[];
 }
 
+/** 实体的一个名字（0041）。`canonical` 是面板标题上那个；曾用名在世界轴上有结束 */
+export interface NameView {
+  fact_id: string;
+  name: string;
+  canonical: boolean;
+  recorded_at: string;
+  valid_from: string | null;
+  valid_from_precision: string | null;
+  valid_to: string | null;
+  valid_to_precision: string | null;
+  document_ids: string[];
+  evidence_count: number;
+}
+
 export interface EntityFact {
   id: string;
   direction: "out" | "in";
@@ -1743,6 +1757,9 @@ export const api = {
     request<{
       entity: GraphNode;
       facts: EntityFact[];
+      /** 这个实体的名字（0041）：本名、简称、曾用名，各带出处与有效期。
+       *  名字事实不在 facts 里——它不是一条「关于它的事」 */
+      names: NameView[];
       /** 推出来的那些**单独一个键**，不掺进 facts：混在同一个列表里，
        *  用户看不出「文档里写的」和「引擎推的」的区别 */
       derived: DerivedFact[];

@@ -921,6 +921,12 @@ export const en = {
     openEntity: (name: string) => `Open ${name}`,
     past: (n: number) => (n === 1 ? "1 past" : `${n} past`),
     sources: (n: number) => (n === 1 ? "1 source" : `${n} sources`),
+    /* 名字一节（0041）：本名、简称、曾用名 */
+    names: "Names",
+    shownName: "shown name",
+    nameUntil: (d: string) => `until ${d}`,
+    removeName: "Remove",
+    nameRemoved: "Name removed",
     timelineEmpty: "No dated facts yet.",
     lastConfirmed: (d: string) => `confirmed ${d}`,
     /* 三种来源共用一个标记（引擎接任对账、Review 裁决、有人手改），所以这句
