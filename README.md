@@ -20,6 +20,8 @@
 [![Built by DeepLethe](https://img.shields.io/badge/BUILT%20BY-DEEPLETHE-2D333B?style=flat-square&labelColor=161B22)](https://github.com/deeplethe)
 [![中文](https://img.shields.io/badge/LANG-%E4%B8%AD%E6%96%87-DA3633?style=flat-square&labelColor=161B22)](README.zh-CN.md)
 
+<a href="https://trendshift.io/repositories/159739?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-159739" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/159739/daily?language=Python" alt="deeplethe%2Futopia | Trendshift" width="250" height="55"/></a>  <a href="https://trendshift.io/repositories/159739?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-159739" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/159739/weekly?language=Python" alt="deeplethe%2Futopia | Trendshift" width="250" height="55"/></a>
+
 </div>
 
 **The enterprise world model built by [DeepLethe](https://deeplethe.com).** It is the first open substrate for knowledge engineering that learns passively and governs itself. Where a knowledge graph or a vector store works to hold present knowledge, Utopia puts time awareness and ontology in the base layer: the knowledge system evolves as material arrives, and conflict detection, reasoning and decision making all run against that ontology. It deploys offline, so a company can stand up a knowledge foundation, a decision core its agents can trust, and a compliance audit trail on hardware it controls.
