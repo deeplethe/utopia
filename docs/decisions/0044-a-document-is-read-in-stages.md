@@ -150,6 +150,7 @@ How the card is used:
   - An LLM answers one of: this key; this key reversed; none.
   - Types bind the same way, per entity rather than per mention.
 - **History.** A binding is a record with both clocks. A later binding supersedes it, and the facts it covers are rebound; they are not re-extracted.
+- **The binding table is a governed lexicon.** "is_part_of", "隶属于" and "subsidiary of" → `part_of`, with direction. It is data in the base, with a source and both clocks, and a person can revert an entry. It is not a list in code.
 - **What stays unbound.**
   - A phrase that binds to nothing stays on its facts.
   - Unbound phrases are clustered, and a cluster becomes an ontology proposal (definition, domain and range, examples, frequency) in the governance queue.
@@ -181,6 +182,11 @@ How the card is used:
   - Conflicting functional values in overlapping time are cannot-link constraints. So is being declared apart in one response.
 - **Grey zone.** It goes to the governor as a choice among candidates, with evidence required ([ComEM](https://arxiv.org/abs/2405.16884)). A name alone never merges.
 - **Clustering.** Pair scores are stored as evidenced edges and clustered over the whole base in batch, so the result depends on which documents exist, not on the order they came in. Online resolution attaches provisionally, and the next batch may split it.
+- **Lexicons are governed data.**
+  - **Alias table:** 海探1 = 海洋探测器1号, 英伟达 = NVIDIA, from what the text states and from merge decisions.
+  - **Cannot-link list:** from declarations and from decisions to keep apart.
+  - **External gazetteers (optional):** drug names, listed companies, administrative divisions, Wikidata aliases. Each is imported with its source and version and switched on per base.
+  - All of these live in the base with evidence and can be reverted.
 - **Measurement.** The identity bench reports the mean and range over shuffled orders.
 
 ### 8. What people and agents review are decisions, and every decision writes back
@@ -215,11 +221,11 @@ The queues change from items to decisions, each shown with its impact:
 
 ## Not doing
 
-- **Untyped relations with descriptions only** (GraphRAG, LightRAG). They avoid predicate explosion by giving up the ontology, which is what this product governs.
-- **Graphiti's group-wide contradiction search.** The temporal engine stays local to a timeline.
+- **Untyped relations with descriptions only** (GraphRAG, LightRAG). A relation is stored as a sentence and a strength, with no predicate. They avoid predicate explosion by giving up the ontology, and with it the axioms: functionality and inverses. Those are what the temporal engine and reasoning run on.
+- **Graphiti's group-wide contradiction search.** A new fact searches the whole graph for semantically related facts, and an LLM marks the contradicted ones invalid. Related but independent facts get invalidated. The temporal engine stays local: a value closes only on its own subject's timeline for a functional predicate.
 - **Grammar-constrained decoding against the whole ontology.** It forces wrong choices, favours empty output and is slow ([GenIE analysis](https://arxiv.org/html/2305.13971v6)).
 - **One-shot whole-document extraction on long-context models.** Quality decays with length, and the card gives stage 2 the context without it.
-- **A lexicon of honorifics, suffixes or citation words.** Decisions 3 and 7 use structure; semantics stay in prompts.
+- **Word lists written in code** of honorifics, company suffixes or citation words that rules match against (#637's suffix list was withdrawn for this). Grammatical judgements such as possessives and determiners belong to the mention grading in stage 1. Lexicons that are data — bindings, aliases, cannot-links, gazetteers — are part of the design (decisions 5 and 7).
 
 ## Migration
 
