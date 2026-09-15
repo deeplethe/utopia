@@ -110,12 +110,32 @@ pub async fn govern(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
         tracing::info!(%kb_id, "治理：没有配聊天模型，队列原地等");
         return Ok(());
     };
+    // 同库已经有一个在跑：挂回队列等它跑完（不烧重试次数），别并排裁同一批
+    let Some(run) = gov::claim_run(&state.pool, kb_id).await? else {
+        return Err(
+            anyhow::Error::msg("another govern run holds this base").context(
+                utopia_core::Deferred::new(std::time::Duration::from_secs(30)),
+            ),
+        );
+    };
+    let outcome = govern_held(state, kb_id, &client, &settings).await;
+    run.release().await;
+    outcome
+}
+
+/// 拿到库锁之后的一次治理：重复对的几轮，再是其余几档
+async fn govern_held(
+    state: &AppState,
+    kb_id: Uuid,
+    client: &LlmClient,
+    settings: &Option<LlmSettings>,
+) -> anyhow::Result<()> {
     let ctx = Ctx {
         state,
         kb_id,
         run_id: Uuid::now_v7(),
-        client: &client,
-        settings: &settings,
+        client,
+        settings,
     };
 
     // 上一次任务半路留下的锁先放掉；跑完（不管怎么结束的）再放一次
@@ -126,6 +146,15 @@ pub async fn govern(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
     }
     state.emit_review(kb_id);
     let more = outcome?;
+    // 重复对之后是其余几档（0043）：合并先定下来，事实与冲突看到的才是合并之后的图
+    let queues = crate::queue_agent::Ctx {
+        state,
+        kb_id,
+        run_id: ctx.run_id,
+        client,
+        settings,
+    };
+    let more = crate::queue_agent::run(&queues).await? || more;
 
     // 轮数用完还有积压：再排一个，下一轮从队头接着走
     if more {

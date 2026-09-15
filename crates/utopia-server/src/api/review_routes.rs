@@ -378,6 +378,20 @@ pub async fn agent_answer(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let d = utopia_store::governance::get(&state.pool, kb_id, decision_id).await?;
+    // 事实与冲突两档的建议（0043）：各有各的出路
+    if d.target_kind != "review" {
+        crate::queue_agent::answer(
+            &state,
+            kb_id,
+            &d,
+            &body.action,
+            user.id,
+            body.rationale.as_deref(),
+        )
+        .await?;
+        state.emit_review(kb_id);
+        return Ok(Json(json!({ "ok": true })));
+    }
     let (l, r) = (
         d.left.clone().unwrap_or_default(),
         d.right.clone().unwrap_or_default(),

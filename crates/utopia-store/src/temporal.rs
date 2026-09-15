@@ -563,11 +563,41 @@ async fn tidy(
             report.corrected.push(corrected);
         }
     }
+    let mut still_held = HashSet::new();
     for (row, later) in held {
         let row = rewritten.get(&row).copied().unwrap_or(row);
         let later = rewritten.get(&later).copied().unwrap_or(later);
+        still_held.insert((row, later));
         if record_conflict_tx(tx, kb_id, row, later, "low_confidence").await? {
             report.conflicts += 1;
+        }
+    }
+    // 置信度不够、交给人的那一对，后任后来被人或 agent 确认过（0043）：这道题没了，
+    // 撤下——不撤的话它挂在队列里，问的是一件引擎已经排好的事
+    let on_timeline: Vec<Uuid> = rows
+        .iter()
+        .map(|r| r.id)
+        .chain(rewritten.values().copied())
+        .collect();
+    let open: Vec<(Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT c.id, c.old_fact_id, c.new_fact_id FROM fact_conflicts c
+          WHERE c.kb_id = $1 AND c.status = 'open' AND c.reason = 'low_confidence'
+            AND c.new_fact_id = ANY($2)",
+    )
+    .bind(kb_id)
+    .bind(&on_timeline)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (conflict, old, new) in open {
+        if !still_held.contains(&(old, new)) {
+            sqlx::query(
+                "UPDATE fact_conflicts SET status = 'withdrawn', resolution = NULL,
+                        resolved_at = now()
+                  WHERE id = $1 AND status = 'open'",
+            )
+            .bind(conflict)
+            .execute(&mut **tx)
+            .await?;
         }
     }
     Ok(())
@@ -813,6 +843,117 @@ pub async fn reconcile_predicate(
     .fetch_all(pool)
     .await?;
     reconcile_facts(pool, kb_id, &ids).await
+}
+
+/// 改一条事实的置信度，时间线跟着重算：置信度决定它能不能接替前任（0022），人或 agent
+/// 确认了一条低置信的值，前任就该关在它开始时。先锁时间线再改（见模块头）。
+/// 返回原来的置信度；行不在或已作废返回 `None`
+pub async fn set_confidence(
+    pool: &PgPool,
+    kb_id: Uuid,
+    fact_id: Uuid,
+    confidence: f32,
+) -> AppResult<Option<f32>> {
+    let mut tx = pool.begin().await?;
+    let timelines = timelines_of(&mut *tx, kb_id, &[fact_id], None).await?;
+    lock_timelines(&mut tx, kb_id, &timelines).await?;
+    let prior: Option<f32> = sqlx::query_scalar(
+        "SELECT confidence FROM facts
+         WHERE id = $1 AND kb_id = $2 AND invalidated_at IS NULL FOR UPDATE",
+    )
+    .bind(fact_id)
+    .bind(kb_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if prior.is_some() {
+        sqlx::query("UPDATE facts SET confidence = $2 WHERE id = $1")
+            .bind(fact_id)
+            .bind(confidence)
+            .execute(&mut *tx)
+            .await?;
+        tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
+    }
+    tx.commit().await?;
+    Ok(prior)
+}
+
+/// 撤回一次撤掉：作废了的事实回来，时间线按它回来之后的样子重算。agent 驳回一条事实之后，
+/// 人撤回那个决定走这里。返回有没有救回一行
+pub async fn restore(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    let timelines = timelines_of(&mut *tx, kb_id, &[fact_id], None).await?;
+    lock_timelines(&mut tx, kb_id, &timelines).await?;
+    let restored = sqlx::query(
+        "UPDATE facts SET invalidated_at = NULL
+         WHERE id = $1 AND kb_id = $2 AND invalidated_at IS NOT NULL",
+    )
+    .bind(fact_id)
+    .bind(kb_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        > 0;
+    if restored {
+        tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
+    }
+    tx.commit().await?;
+    Ok(restored)
+}
+
+/// 撤回一次改写：改写出来的那一行作废，被它取代的原行回来，时间线重算。agent 关上一条
+/// 事实、改过一条事实的起点，人撤回时走这里。改写出来的行后来又被改写过的（换过终点、
+/// 被人改过），不再撤：那之后的变化有它自己的依据。返回有没有撤成
+pub async fn undo_rewrite(
+    pool: &PgPool,
+    kb_id: Uuid,
+    corrected: Uuid,
+    original: Uuid,
+) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    let timelines = timelines_of(&mut *tx, kb_id, &[corrected, original], None).await?;
+    lock_timelines(&mut tx, kb_id, &timelines).await?;
+    let still: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM facts
+         WHERE id = $1 AND kb_id = $2 AND supersedes = $3 AND invalidated_at IS NULL
+         FOR UPDATE",
+    )
+    .bind(corrected)
+    .bind(kb_id)
+    .bind(original)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if still.is_none() {
+        tx.commit().await?;
+        return Ok(false);
+    }
+    sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
+        .bind(corrected)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE facts SET invalidated_at = NULL WHERE id = $1")
+        .bind(original)
+        .execute(&mut *tx)
+        .await?;
+    tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// 一条裁过的冲突重新开着：撤回裁决时用。两边都还活着才开得回来
+pub async fn reopen_conflict(pool: &PgPool, kb_id: Uuid, conflict_id: Uuid) -> AppResult<bool> {
+    let n = sqlx::query(
+        "UPDATE fact_conflicts c SET status = 'open', resolution = NULL, resolved_at = NULL
+          WHERE c.id = $1 AND c.kb_id = $2 AND c.status <> 'open'
+            AND NOT EXISTS (SELECT 1 FROM facts f
+                             WHERE f.id IN (c.old_fact_id, c.new_fact_id)
+                               AND f.invalidated_at IS NOT NULL)",
+    )
+    .bind(conflict_id)
+    .bind(kb_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(n > 0)
 }
 
 /// 撤掉一条事实（人判它是抽取错误）：它从来不在，时间线按剩下的行重算——关在它开始时的
@@ -1226,7 +1367,7 @@ pub async fn list_conflicts(
 }
 
 /// 人工裁决：close（旧事实闭合于 close_at 或新事实起点）/ keep（并存不矛盾）/
-/// reject_new（新事实是抽取错误，作废）。
+/// reject_new（新事实是抽取错误，作废）。回 close 改写出来的那一行（撤回要用）
 /// 一条待裁决的冲突：旧事实、新事实、新事实的起点及其精度
 type ConflictRow = (Uuid, Uuid, Option<DateTime<Utc>>, Option<String>);
 
@@ -1237,7 +1378,7 @@ pub async fn resolve_conflict(
     resolution: &str,
     close_at: Option<DateTime<Utc>>,
     close_at_precision: &str,
-) -> AppResult<()> {
+) -> AppResult<Option<Uuid>> {
     let row: Option<ConflictRow> = sqlx::query_as(
         "SELECT c.old_fact_id, c.new_fact_id, fn_.valid_from, fn_.valid_from_precision
          FROM fact_conflicts c JOIN facts fn_ ON fn_.id = c.new_fact_id
@@ -1251,6 +1392,7 @@ pub async fn resolve_conflict(
         return Err(utopia_core::AppError::NotFound);
     };
 
+    let mut corrected = None;
     let stored = match resolution {
         "close" => {
             // 闭合点带着它的精度走：人给了日期就用人给的精度，没给就闭合在新事实的
@@ -1268,7 +1410,7 @@ pub async fn resolve_conflict(
                     new_from_precision.as_deref().unwrap_or("day"),
                 ),
             };
-            close_superseded(pool, old_fact_id, at, precision).await?;
+            corrected = close_superseded(pool, old_fact_id, at, precision).await?;
             "closed"
         }
         "keep" => "kept_both",
@@ -1301,7 +1443,7 @@ pub async fn resolve_conflict(
     .bind(stored)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(corrected)
 }
 
 /// 一条谓词的一端挂着**两个以上开放值**的持有者——唯一性没声明（或声明来晚了）

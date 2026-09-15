@@ -1490,14 +1490,11 @@ pub async fn stale_facts(
 
 /// 人工确认低置信事实：置信度提到 1.0。
 pub async fn confirm_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<()> {
-    let res = sqlx::query(
-        "UPDATE facts SET confidence = 1.0 WHERE id = $1 AND kb_id = $2 AND invalidated_at IS NULL",
-    )
-    .bind(fact_id)
-    .bind(kb_id)
-    .execute(pool)
-    .await?;
-    if res.rows_affected() == 0 {
+    // 置信度够了，它就能接替前任：时间线跟着重算（0043）
+    if crate::temporal::set_confidence(pool, kb_id, fact_id, 1.0)
+        .await?
+        .is_none()
+    {
         return Err(AppError::NotFound);
     }
     // 从前这里还有一段：确认 `mapped_to` 事实时把同 (概念, 源) 的旧映射作废。
