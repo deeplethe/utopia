@@ -111,7 +111,7 @@ Duplicates that the agent proposed on carry the reason code `proposed`; pairs it
 
 ## Open questions
 
-- **Other queues.** Conflicts have three human actions to learn from (`conflict.close_old`, `keep_both`, `reject_new`); unconfirmed and low-confidence facts have `fact.confirm` and `fact.reject`. Nods (`pending_facts`, 0015) stay out: the person who said it nods.
+- **Other queues.** Conflicts have three human actions to learn from (`conflict.close_old`, `keep_both`, `reject_new`); unconfirmed and low-confidence facts have `fact.confirm` and `fact.reject`. Nods (`pending_facts`, 0015) stay out: the person who said it nods. Answered by [0043](0043-every-review-queue-is-governed.md) (2026-09-14): facts and conflicts are governed; violations, defects and mappings follow.
 - **Cross-base precedent.** A workspace's other bases may hold the same names. Kept to one base until someone asks.
 - **A budget for the batch.** The loop has a daily budget (decision 8); the batch does not, and since #458 a round makes up to three batch calls at once. A job runs twenty clusters and re-enqueues itself while backlog remains, which is what the adjudicator always did. Whether a base needs a cap on that too is a question for a large corpus.
 - **Tools the loop does not have yet.** The graph around a side beyond its direct facts, the entity's disambiguator history, a full-text search of the corpus. Add one when a deferred question keeps asking for it.

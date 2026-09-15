@@ -1443,6 +1443,10 @@ pub struct AgentDecisionView {
     pub trace: serde_json::Value,
     /// 循环里花的模型调用次数
     pub calls: i32,
+    /// 重复对以外的一档（0043）：做决定那一刻这一项的样子，给人读
+    pub summary: Option<String>,
+    /// 这一步的参数与撤回要用的东西（0043）
+    pub detail: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub decided_at: Option<DateTime<Utc>>,
     pub decided_by_name: Option<String>,

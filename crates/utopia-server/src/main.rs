@@ -26,6 +26,7 @@ mod pack_alignment;
 mod pipeline;
 mod predicate_match;
 mod query_engine;
+mod queue_agent;
 mod rdf;
 mod retrieval;
 mod rss_full_content;

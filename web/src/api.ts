@@ -570,13 +570,26 @@ export interface ReviewItem {
   proposal: ReviewProposal | null;
 }
 
-/** agent 的一笔（0025）：看了哪一对、想怎么办、凭什么、人怎么答的 */
+/** agent 在各档上的出路（0025 重复对；0043 事实与冲突） */
+export type AgentAction =
+  | "merge"
+  | "keep"
+  | "unsure"
+  | "confirm"
+  | "reject"
+  | "close_old"
+  | "retime_new"
+  | "keep_both"
+  | "reject_new";
+
+/** agent 的一笔（0025 / 0043）：看了哪一项、想怎么办、凭什么、人怎么答的 */
 export interface AgentDecision {
   id: string;
   run_id: string;
-  target_kind: "review";
+  /** review = 重复对；fact = 低置信或证据过期的事实；conflict = 时态冲突 */
+  target_kind: "review" | "fact" | "conflict";
   target_id: string;
-  action: "merge" | "keep" | "unsure";
+  action: AgentAction;
   confidence: number;
   reason: string | null;
   /** 它被给看的先例：同对 / 同名 / 撤回各一条一条，类型对的习惯是一条汇总 */
@@ -594,6 +607,8 @@ export interface AgentDecision {
   decided_by_name: string | null;
   left: string | null;
   right: string | null;
+  /** 事实与冲突（0043）：做决定那一刻这一项的样子 */
+  summary: string | null;
 }
 
 export type AgentPrecedent =
@@ -2308,7 +2323,7 @@ export const api = {
   agentAnswer: (
     kbId: string,
     decisionId: string,
-    action: "merge" | "keep" | "revert",
+    action: AgentAction | "revert",
     rationale?: string,
   ) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/review/agent/${decisionId}`, {

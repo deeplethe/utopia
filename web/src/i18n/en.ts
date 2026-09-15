@@ -1724,7 +1724,17 @@ export const en = {
     agentHint:
       "What the agent proposed or decided for this base, from the decisions people made here before. Answering here is your decision, and it becomes precedent for the next look.",
     agentEmpty: "The agent has not looked at anything yet.",
-    agentActions: { merge: "Merge", keep: "Keep apart", unsure: "Unsure" } as Record<string, string>,
+    agentActions: {
+      merge: "Merge",
+      keep: "Keep apart",
+      unsure: "Unsure",
+      confirm: "Confirm",
+      reject: "Reject",
+      close_old: "Close the old value",
+      retime_new: "Move the new start",
+      keep_both: "Keep both",
+      reject_new: "Reject the new value",
+    } as Record<string, string>,
     agentStatus: {
       proposed: "Proposed",
       applied: "Applied",

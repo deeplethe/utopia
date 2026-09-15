@@ -1507,7 +1507,17 @@ export const zh: Strings = {
     agentHint:
       "agent 依据这个库里人以前的决定，提议或裁决了什么。在这里回答就是你的决定，也会成为它下一次的先例。",
     agentEmpty: "agent 还没看过任何一对。",
-    agentActions: { merge: "合并", keep: "分开", unsure: "说不准" } as Record<string, string>,
+    agentActions: {
+      merge: "合并",
+      keep: "分开",
+      unsure: "说不准",
+      confirm: "确认",
+      reject: "驳回",
+      close_old: "关上旧值",
+      retime_new: "改新值的起点",
+      keep_both: "两个都留着",
+      reject_new: "驳回新值",
+    } as Record<string, string>,
     agentStatus: {
       proposed: "建议",
       applied: "已裁",

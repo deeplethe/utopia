@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   api,
+  type AgentAction,
   type AgentDecision,
   type AgentPrecedent,
   type AxiomViolation,
@@ -494,7 +495,30 @@ const AGENT_ACTION_TONE: Record<AgentDecision["action"], ChipTone> = {
   merge: "violet",
   keep: "neutral",
   unsure: "warn",
+  confirm: "success",
+  reject: "danger",
+  close_old: "info",
+  retime_new: "info",
+  keep_both: "neutral",
+  reject_new: "danger",
 };
+
+/** 一笔建议能怎么答（0043）：每一档用它自己的出路。关上旧值、改新值起点要带日期，
+ *  只能照 agent 给的日期接受，所以只在它自己提议时出现 */
+function answersFor(d: AgentDecision): AgentAction[] {
+  switch (d.target_kind) {
+    case "fact":
+      return ["reject", "confirm"];
+    case "conflict":
+      return [
+        "keep_both",
+        "reject_new",
+        ...(d.action === "close_old" || d.action === "retime_new" ? [d.action] : []),
+      ];
+    default:
+      return ["keep", "merge"];
+  }
+}
 
 const AGENT_STATUS_TONE: Record<AgentDecision["status"], ChipTone> = {
   proposed: "warn",
@@ -527,7 +551,7 @@ function AgentRow({
 }: {
   d: AgentDecision;
   busy: boolean;
-  onAnswer: (action: "merge" | "keep" | "revert", rationale?: string) => void;
+  onAnswer: (action: AgentAction | "revert", rationale?: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [why, setWhy] = useState("");
@@ -539,7 +563,7 @@ function AgentRow({
       <div className="flex items-center gap-3">
         <Status tone={AGENT_ACTION_TONE[d.action]}>{S.review.agentActions[d.action]}</Status>
         <span className="text-body text-ink-2 truncate min-w-0">
-          {d.left ?? "?"} ≟ {d.right ?? "?"}
+          {d.target_kind === "review" ? `${d.left ?? "?"} ≟ ${d.right ?? "?"}` : (d.summary ?? "?")}
         </span>
         <span className="u-num text-small text-ink-2 shrink-0">
           {Math.round(d.confidence * 100)}%
@@ -603,17 +627,23 @@ function AgentRow({
               onChange={(e) => setWhy(e.target.value)}
             />
           )}
-          {d.status === "proposed" && (
-            <>
-              <Button variant="secondary" size="sm" disabled={busy} onClick={() => onAnswer("keep", why)}>
-                {S.review.keep}
+          {d.status === "proposed" &&
+            answersFor(d).map((a, i, all) => (
+              <Button
+                key={a}
+                variant={i === all.length - 1 ? "primary" : "secondary"}
+                size="sm"
+                disabled={busy}
+                onClick={() => onAnswer(a, why)}
+              >
+                {d.target_kind === "review"
+                  ? a === "merge"
+                    ? S.review.merge
+                    : S.review.keep
+                  : S.review.agentActions[a]}
               </Button>
-              <Button variant="primary" size="sm" disabled={busy} onClick={() => onAnswer("merge", why)}>
-                {S.review.merge}
-              </Button>
-            </>
-          )}
-          {d.status === "applied" && d.action === "merge" && (
+            ))}
+          {d.status === "applied" && (d.action === "merge" || d.target_kind !== "review") && (
             <Button variant="secondary" size="sm" disabled={busy} onClick={() => onAnswer("revert", why)}>
               {S.review.revert}
             </Button>
@@ -1137,7 +1167,7 @@ export function Review() {
       rationale,
     }: {
       id: string;
-      action: "merge" | "keep" | "revert";
+      action: AgentAction | "revert";
       rationale?: string;
     }) => api.agentAnswer(kb!.id, id, action, rationale),
     onError: (e) => toast.error((e as Error).message),

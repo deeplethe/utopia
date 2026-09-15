@@ -2860,14 +2860,14 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     // 治理开着（0025）排的是治理任务：灰区对与直接转人工的对都从那条先进先出的
     // 队列走，先读台账再裁；同库已排着的不重复
     if kb.governance {
-        if needs_adjudication || human_reviews_found {
-            utopia_store::jobs::enqueue_unless_queued(
-                &state.pool,
-                "govern",
-                serde_json::json!({ "kb_id": doc.kb_id }),
-            )
-            .await?;
-        }
+        // 重复对之外，低置信的事实与时态冲突也归它（0043）：抽完一篇就排一个，
+        // 什么都没等着的话任务看一眼就结束
+        utopia_store::jobs::enqueue_unless_queued(
+            &state.pool,
+            "govern",
+            serde_json::json!({ "kb_id": doc.kb_id }),
+        )
+        .await?;
     } else if needs_adjudication {
         // 同库已排着的不重复——与下面的 resolve_types 一样。一批文档同时抽完
         // 会各排一个，而它们读到的是同一批待裁项

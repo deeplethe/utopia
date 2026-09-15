@@ -6,6 +6,7 @@ use serde::Deserialize;
 use utopia_llm::ChatMessage;
 
 pub mod governor;
+pub mod queue_agent;
 
 pub mod normalize;
 pub use normalize::{drop_quotes_from_opening, normalize_facts, Normalization};
