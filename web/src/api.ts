@@ -262,6 +262,12 @@ export interface LlmSettingsView {
   embed_model?: string | null;
   embed_dim?: number | null;
   has_embed_key?: boolean;
+  ocr_base_url?: string | null;
+  ocr_backend?: string | null;
+  has_ocr_key?: boolean;
+  transcribe_base_url?: string | null;
+  transcribe_model?: string | null;
+  has_transcribe_key?: boolean;
 }
 
 export interface Member {
@@ -1001,6 +1007,10 @@ export interface Evidence {
   stale: boolean;
   /** 这条证据的文档已被删除；事实还活着是因为另有出处（#268） */
   document_deleted: boolean;
+  /** 这块文字从哪来（0040）；证明链那条路不带，缺席即原文 */
+  origin?: "stated" | "ocr" | "transcribed" | "described";
+  origin_model?: string | null;
+  anchor?: Record<string, unknown> | null;
 }
 
 export interface ChunkFull {
@@ -2367,7 +2377,27 @@ export const api = {
     request<{
       chat: { ok: boolean; reply?: string; error?: string };
       embed: { ok: boolean; dim?: number; error?: string };
+      ocr?: { ok: boolean; version?: string | null; error?: string };
+      transcribe?: { ok: boolean; error?: string };
     }>(`/api/v1/workspaces/${workspaceId}/settings/test`, { method: "POST" }),
+  /** 读扫描件的服务、转写模型各自一个保存：存它们不碰对话与嵌入那几列。
+   *  `requeued`：因为缺它而等着的文件，这一存重新排进了处理队列几份 */
+  saveOcrSettings: (
+    workspaceId: string,
+    body: { base_url: string; api_key: string; backend: string },
+  ) =>
+    request<{ ok: boolean; requeued: number }>(
+      `/api/v1/workspaces/${workspaceId}/settings/ocr`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  saveTranscribeSettings: (
+    workspaceId: string,
+    body: { base_url: string; api_key: string; model: string },
+  ) =>
+    request<{ ok: boolean; requeued: number }>(
+      `/api/v1/workspaces/${workspaceId}/settings/transcribe`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
 
   /** 是否配置了单点登录（0056）。四项环境变量缺一个都是 false——
    *  登录页据此决定要不要露出那个按钮 */

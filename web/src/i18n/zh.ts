@@ -211,7 +211,7 @@ export const zh: Strings = {
       },
       "document.needs_reader": {
         title: "有文件要靠模型才读得出来",
-        hint: "扫描件和图片要配文档识别服务，录音要配能分出说话人的转写模型，这个部署都还没配。文件已经留着，但里面什么都没读出来。",
+        hint: "扫描件和图片要配文档识别服务，录音要配能分出说话人的转写模型；每一行写着缺的是什么。文件已经留着，还没读出任何内容；到「管理 > 模型」存好读取模型，就会自动读。",
       },
       "governance.tripped": {
         title: "agent 停止自动裁决了",
@@ -885,6 +885,18 @@ export const zh: Strings = {
     play: "播放时间线",
     pause: "暂停",
   },
+  origin: {
+    ocr: (page: number | null) => (page === null ? "OCR 识别" : `OCR 识别 · 第 ${page} 页`),
+    transcribed: (span: string | null, speakers: string[]) =>
+      ["转写", span, speakers.length > 0 ? speakers.join("、") : null]
+        .filter(Boolean)
+        .join(" · "),
+    described: "模型描述",
+    ocrHint: "从扫描件或图片上识别出来的文字，个别字或数字可能认错。",
+    transcribedHint: "从录音转写出来的文字，人名可能听错。",
+    describedHint: "模型对一张图的描述，没有人这样写过或说过。",
+    readBy: (model: string) => `读取模型：${model}。`,
+  },
   doc: {
     backToLibrary: "← 返回文库",
     sections: "段",
@@ -1038,6 +1050,19 @@ export const zh: Strings = {
     ok: (reply: string) => `已连通，认证通过（${reply}）`,
     okDim: (dim: number) => `已连通，认证通过（维度 ${dim}）`,
     unsaved: "有未保存的修改。先保存这张卡，再测试。",
+    readersTitle: "读扫描件与录音",
+    readersIntro:
+      "扫描件、图片和录音没有可以直接解析的文字，各要一个读取模型。它们和对话模型分开配置，敏感文件可以留在自己的服务器上。读取模型配好之前传上来的文件会先等着，消息中心会提示；存好之后自动读。",
+    ocrService: "文档识别（OCR）",
+    ocrHint: "MinerU 服务（mineru-api）。先识别每页版面再认字，每段文字都记着所在的页和位置。",
+    serviceUrl: "服务地址",
+    backend: "后端（可选）",
+    transcribeModel: "录音转写",
+    transcribeHint:
+      "会标注说话人的 OpenAI 兼容转写接口（diarized_json），例如 gpt-4o-transcribe-diarize。分不出谁说的转写不会采用。",
+    okVersion: (version: string) => `已连通（MinerU ${version}）`,
+    okReachable: "已连通，认证通过",
+    savedRequeued: (n: number) => `已保存。${n} 个等待中的文件开始读取。`,
   },
   ontology: {
     title: "本体",

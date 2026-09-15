@@ -95,6 +95,7 @@ import {
   type BlockedDerivation,
   type ProofStep,
 } from "../api";
+import { originHint, originLabel } from "../origin";
 import { S } from "../i18n";
 import { predicateSentence } from "../predicateText";
 import {
@@ -3473,6 +3474,15 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
               </span>
               <ExternalLink size={11} className="shrink-0" />
             </Link>
+            {/* 出处不是原文时写一句（0040）：OCR 第几页、录音哪一段谁说的、模型描述 */}
+            {originLabel(ev.origin, ev.anchor) && (
+              <span
+                className="shrink-0 text-fine text-ink-2"
+                title={originHint(ev.origin, ev.origin_model)}
+              >
+                {originLabel(ev.origin, ev.anchor)}
+              </span>
+            )}
             {ev.stale && (
               <span
                 className="u-num shrink-0 text-fine text-ink-2"
