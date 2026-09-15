@@ -54,7 +54,7 @@ The rules the prompt carries have grown to 1, 1a, 1b, 2, 3, 3a, 3c, 4 to 8, 8a t
 - The span check that keeps "former OpenAI personnel" from becoming OpenAI is what drops every figure about an unnamed trial.
 - The server's checks keep growing to catch what one call cannot do: span verdicts, description checks, opening-leak checks, name checks.
 
-A stronger model does not settle it. With thinking off, on the same code:
+A stronger model does not settle it. With thinking off, on the same extraction code (the identity and governance rows ran on builds that differ only in how name vectors pair, #709):
 
 | bench | DeepSeek-V3.2 | deepseek-v4-flash |
 |---|---|---|
