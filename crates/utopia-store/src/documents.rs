@@ -476,10 +476,14 @@ pub async fn page(
         .fetch_one(pool)
         .await?;
 
-    // 统计只按来源作用域算：那两个批量按钮作用于整个来源，不是你搜出来的那几条
-    let stats: (i64, i64, i64) = sqlx::query_as(
+    // 统计只按来源作用域算：那两个批量按钮作用于整个来源，不是你搜出来的那几条。
+    // 四个数各对应一列：`ready` 是摄入（`status`），后三个是抽取（`graph_status`）。
+    // 两个维度不能相加——一篇「摄入已完成、图谱还在抽」的文档两边都占，进度条若拿
+    // `ready + extracting` 当分母，两篇文档会显示成 2 / 4
+    let stats: (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT
            count(*) FILTER (WHERE status = 'ready'),
+           count(*) FILTER (WHERE graph_status = 'done'),
            count(*) FILTER (WHERE graph_status IN ('queued', 'extracting')),
            count(*) FILTER (WHERE graph_status = 'failed')
          FROM documents
@@ -506,8 +510,9 @@ pub async fn page(
         docs,
         total,
         ready: stats.0,
-        extracting: stats.1,
-        failed: stats.2,
+        done: stats.1,
+        extracting: stats.2,
+        failed: stats.3,
         deleted: deleted_total,
     })
 }

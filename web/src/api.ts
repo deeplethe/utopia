@@ -1672,9 +1672,11 @@ export const api = {
     return request<{
       docs: Doc[];
       total: number;
-      /** 下面三个**只按来源作用域算**，不受名字/状态筛选影响——
+      /** 下面四个**只按来源作用域算**，不受名字/状态筛选影响——
        *  它们是批量按钮的作用范围 */
       ready: number;
+      /** `graph_status = 'done'`：抽取进度条的分子 */
+      done: number;
       extracting: number;
       failed: number;
       /** 整库的墓碑数（删了、没清的），不随作用域变 */
