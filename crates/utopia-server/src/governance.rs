@@ -370,7 +370,10 @@ fn pair_of(item: &ReviewItem, p: &Precedents) -> utopia_extract::AdjudicationPai
 }
 
 /// 第一层没定（没判决、置信度不到线），或者同名、大类不冲突、模型却说不同——那是它
-/// 最爱错的一种：都让第二层带着全部事实与原文再看一遍。硬规则拦下的不进：再看也不会改规则
+/// 最爱错的一种：都让第二层带着全部事实与原文再看一遍。名字的形状让人起疑的合并（版本
+/// 尾巴、含着名字的一长串）也再看：名字只能让人起疑，定不了是不是一个东西——「Lease
+/// Agreement dated May 16, 2016, as amended」与「Lease Agreement」形状上是一句话，事实上
+/// 是同一份租约。类型冲突这条硬规则拦下的不进：再看也不会改规则
 fn wants_second_look(item: &ReviewItem, p: &Precedents, look: &Look) -> bool {
     let types_conflict = gov::types_conflict(
         item.left.type_label.as_deref(),
@@ -381,10 +384,36 @@ fn wants_second_look(item: &ReviewItem, p: &Precedents, look: &Look) -> bool {
         && !types_conflict
         && look.same == Some(false)
         && look.calls == 0;
+    let doubted_merge =
+        name_doubts(shape) && !types_conflict && look.same == Some(true) && look.calls == 0;
     ((gov::gate(look.same, look.conf, types_conflict, shape, p) == Gate::Propose
         && look.uncertain())
-        || doubted_split)
+        || doubted_split
+        || doubted_merge)
         && p.reverts.is_empty()
+}
+
+/// 名字形状让人起疑的合并：版本尾巴，或含着另一个名字的一长串
+fn name_doubts(shape: gov::NameShape) -> bool {
+    matches!(shape, gov::NameShape::Version | gov::NameShape::Phrase)
+}
+
+/// 闸门看的名字形状。第二层带着两边的事实与原文看过、仍说是同一个的，形状的疑点已经由
+/// 证据答过了，不再按形状拦——拦的只剩没看过证据的第一层
+fn shape_for_gate(item: &ReviewItem, look: &Look) -> gov::NameShape {
+    settled_shape(
+        gov::name_shape(&item.left.name, &item.right.name),
+        look.calls > 0,
+    )
+}
+
+/// 形状的疑点在第二层读过证据之后就答完了
+fn settled_shape(shape: gov::NameShape, evidence_read: bool) -> gov::NameShape {
+    if evidence_read && name_doubts(shape) {
+        gov::NameShape::Unrelated
+    } else {
+        shape
+    }
 }
 
 /// 裁决器的入口（0028）：治理关着，攒批判不定的对也带工具再看一遍——同一个循环、
@@ -446,7 +475,7 @@ async fn apply(ctx: &Ctx<'_>, item: &ReviewItem, p: &Precedents, look: Look) -> 
         item.left.type_label.as_deref(),
         item.right.type_label.as_deref(),
     );
-    let shape = gov::name_shape(&item.left.name, &item.right.name);
+    let shape = shape_for_gate(item, &look);
 
     let action = look.action();
     let precedents = gov::precedents_json(p);
@@ -906,5 +935,30 @@ pub async fn after_human_decision(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_doubtful_shape_stops_counting_once_the_evidence_was_read() {
+        let lease = gov::name_shape(
+            "Lease Agreement dated May 16, 2016, as amended",
+            "Lease Agreement",
+        );
+        assert!(name_doubts(lease), "{lease:?}");
+        assert_eq!(settled_shape(lease, false), lease);
+        assert_eq!(settled_shape(lease, true), gov::NameShape::Unrelated);
+
+        let version = gov::name_shape("Claude Mythos 5", "Claude Mythos");
+        assert!(name_doubts(version), "{version:?}");
+        assert_eq!(settled_shape(version, false), version);
+
+        // 形状本来就不起疑的，读没读过证据都照旧
+        let same = gov::name_shape("OpenAI", "OpenAI");
+        assert!(!name_doubts(same));
+        assert_eq!(settled_shape(same, true), same);
     }
 }

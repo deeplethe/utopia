@@ -573,6 +573,150 @@ async fn tidy(
     Ok(())
 }
 
+/// 两个实体合成一个之后，哪些唯一性关系上**还会**有两个值同时成立（执行闸门，0027）。
+///
+/// 两边各有一个不同的值不等于矛盾：租约的房东先是 HPBB1、后来换成 BBHQ1，两个名字各挂
+/// 一个，合起来是一条先后接替的时间线。这里把两边的行当成一条时间线，按引擎会怎么排
+/// （[`desired_ends`]）推出每一行的终点，再看不同的值有没有哪一刻叠在一起——排不开的
+/// （同一刻开始、说不出时间、置信度不够接替、两份原文写明的区间相交）才是合了之后一致性
+/// 检查会报的矛盾。只看实体宾语的边，与一致性检查（`utopia_reason::check`）同一个口径。
+/// 返回谓词标签，按标签排
+pub async fn merge_would_overlap(
+    pool: &PgPool,
+    kb_id: Uuid,
+    a: Uuid,
+    b: Uuid,
+) -> AppResult<Vec<String>> {
+    #[derive(sqlx::FromRow)]
+    struct Shared {
+        predicate_id: Uuid,
+        label: String,
+        functional: bool,
+        inverse_functional: bool,
+        temporal: String,
+    }
+    let shared: Vec<Shared> = sqlx::query_as(
+        "SELECT DISTINCT r.id AS predicate_id, r.label, r.functional, r.inverse_functional,
+                r.temporal
+         FROM facts x
+         JOIN facts y ON y.predicate_id = x.predicate_id AND y.kb_id = x.kb_id
+         JOIN relation_types r ON r.id = x.predicate_id
+         WHERE x.kb_id = $1
+           AND x.invalidated_at IS NULL AND y.invalidated_at IS NULL
+           AND x.object_id IS NOT NULL AND y.object_id IS NOT NULL
+           AND ((r.functional AND x.subject_id = $2 AND y.subject_id = $3
+                 AND x.object_id <> y.object_id)
+             OR (r.inverse_functional AND x.object_id = $2 AND y.object_id = $3
+                 AND x.subject_id <> y.subject_id))",
+    )
+    .bind(kb_id)
+    .bind(a)
+    .bind(b)
+    .fetch_all(pool)
+    .await?;
+
+    let mut labels = Vec::new();
+    for s in shared {
+        let mut sides = Vec::new();
+        if s.functional {
+            sides.push(Uniqueness::SubjectSide);
+        }
+        if s.inverse_functional {
+            sides.push(Uniqueness::ObjectSide);
+        }
+        for side in sides {
+            let holder_column = match side {
+                Uniqueness::SubjectSide => "f.subject_id",
+                Uniqueness::ObjectSide => "f.object_id",
+            };
+            let mut rows: Vec<Row> = sqlx::query_as(&format!(
+                "SELECT f.id, f.subject_id, f.object_id, f.object_value,
+                        f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision,
+                        f.attested_to, f.confidence, f.end_derived, {DATED_AT} AS dated_at
+                 FROM facts f
+                 WHERE f.kb_id = $1 AND {holder_column} = ANY($2) AND f.predicate_id = $3
+                   AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL"
+            ))
+            .bind(kb_id)
+            .bind(vec![a, b])
+            .bind(s.predicate_id)
+            .fetch_all(pool)
+            .await?;
+            // **只算合并带进来的冲突。** 一边持有的值另一边全都已经持有，合起来还是那几个值：
+            // 同一个宾语并成一行，冲突要有也是那一边原本就有的，合不合都在。租约链上实测：
+            // 一份租约自己已经挂着两个没日期的房东，另一个写法只挂着其中一个，0.98 的合并被
+            // 「两个房东」挡下，而那两个房东合并之前就在
+            let values_of = |holder: Uuid| -> HashSet<Uuid> {
+                rows.iter()
+                    .filter_map(|r| match side {
+                        Uniqueness::SubjectSide => (r.subject_id == holder).then_some(r.object_id?),
+                        Uniqueness::ObjectSide => {
+                            (r.object_id == Some(holder)).then_some(r.subject_id)
+                        }
+                    })
+                    .collect()
+            };
+            let (held_by_a, held_by_b) = (values_of(a), values_of(b));
+            if held_by_a.is_subset(&held_by_b) || held_by_b.is_subset(&held_by_a) {
+                continue;
+            }
+            // 合成一个之后的样子：持有者那一侧都是同一个实体
+            for row in &mut rows {
+                match side {
+                    Uniqueness::SubjectSide => row.subject_id = a,
+                    Uniqueness::ObjectSide => row.object_id = Some(a),
+                }
+            }
+            if still_overlaps(side, &rows, s.temporal == "state") {
+                labels.push(s.label.clone());
+                break;
+            }
+        }
+    }
+    labels.sort();
+    labels.dedup();
+    Ok(labels)
+}
+
+/// 一行排完之后的 [起, 止)，`None` 是那一侧无界
+type Span = (Option<DateTime<Utc>>, Option<DateTime<Utc>>);
+
+/// 一条时间线按引擎排完之后，不同的值有没有哪一刻同时成立（纯函数）。`placed`：谓词是
+/// 状态，引擎会排它；事件与恒常不排，照行上写着的终点比
+fn still_overlaps(side: Uniqueness, rows: &[Row], placed: bool) -> bool {
+    let ends = if placed {
+        desired_ends(side, rows).0
+    } else {
+        HashMap::new()
+    };
+    // 每一行排完之后的 [起, 止)：起点是排序用的时刻，说不出时间的行从无穷早起；
+    // 终点是引擎推的，或原文写明的
+    let spans: Vec<Span> = rows
+        .iter()
+        .map(|r| {
+            let end = ends.get(&r.id).map(End::instant).unwrap_or_else(|| r.end());
+            (r.key(), end)
+        })
+        .collect();
+    for i in 0..rows.len() {
+        for j in i + 1..rows.len() {
+            if same_value(side, &rows[i], &rows[j]) {
+                continue;
+            }
+            let ((si, ei), (sj, ej)) = (spans[i], spans[j]);
+            let starts_before_end =
+                |s: Option<DateTime<Utc>>, e: Option<DateTime<Utc>>| match (s, e) {
+                    (Some(s), Some(e)) => s < e,
+                    _ => true,
+                };
+            if starts_before_end(si, ej) && starts_before_end(sj, ei) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 把几条时间线各自重算一遍（调用方已按 [`lock_timelines`] 拿到锁）。撤回合并、删除或
 /// 恢复文档在自己的事务里改完行之后调
 pub async fn tidy_timelines_tx(
@@ -1543,6 +1687,38 @@ mod tests {
             plan_timeline(Uniqueness::SubjectSide, &stated),
             Plan::default()
         );
+    }
+
+    /// 合并前的闸门：两个值能排成先后接替就不算叠在一起；排不开的才算
+    #[test]
+    fn two_values_overlap_only_when_the_engine_cannot_order_them() {
+        let succession = vec![
+            row("HPBB1", Some(day(2016, 5, 16)), None),
+            row("BBHQ1", None, Some(day(2020, 8, 13))),
+        ];
+        assert!(!still_overlaps(Uniqueness::SubjectSide, &succession, true));
+
+        let same_day = vec![
+            row("P", Some(day(2020, 1, 1)), None),
+            row("Q", Some(day(2020, 1, 1)), None),
+        ];
+        assert!(still_overlaps(Uniqueness::SubjectSide, &same_day, true));
+
+        let no_time = vec![row("K", None, None), row("N", Some(day(2020, 1, 1)), None)];
+        assert!(still_overlaps(Uniqueness::SubjectSide, &no_time, true));
+
+        // 两份原文写明的区间相交：引擎不替人挑
+        let mut stated = vec![
+            row("C", Some(day(2018, 1, 1)), None),
+            row("D", Some(day(2019, 6, 1)), None),
+        ];
+        stated[0].valid_to = Some(day(2019, 12, 31));
+        stated[0].valid_to_precision = Some("day".into());
+        assert!(still_overlaps(Uniqueness::SubjectSide, &stated, true));
+
+        // 事件与恒常不经引擎排：两个说不出时间的值照旧算撞
+        let eternal = vec![row("X", None, None), row("Y", None, None)];
+        assert!(still_overlaps(Uniqueness::SubjectSide, &eternal, false));
     }
 
     /// 置信度不够的后任不许关上前任，交给人；前任止于它之后第一个够格的后任

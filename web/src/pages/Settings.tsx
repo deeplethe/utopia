@@ -31,6 +31,50 @@ import {
 import { Members } from "./Members";
 import { SsoAdmin } from "./Sso";
 
+/** 两张模型卡的备注只讲一件事，且只讲最新的那件（#698）。
+ *
+ * 从前备注是"有测试结果就说测试，否则说保存"——测完再改键，旧结果还贴在卡上；
+ * 测一次是两套一起测，两个按钮却一起转"Testing…"；嵌入卡的报错还是正文字色，
+ * 聊天卡的报错却是危险色。于是"Saved" 说的是哪次操作、这次测的又是哪张卡，
+ * 全得靠猜。
+ *
+ * 三条规矩，显示层只管最后一条，前两条在调用处用 reset 保证：
+ * 1. 改任何一格、按任何一次保存，旧结论（测试结果、Saved、报错）全部过期；
+ * 2. "Testing…" 只亮在按下的那张卡上（`testCard`），因为测的虽然是两套，
+ *    人按的是这一张；
+ * 3. 新测到的结果（含测挂了）盖掉旧保存态——刚按了"测试"，卡上就该说测试的事。
+ *
+ * 传纯数据、回纯结论（含用哪个色调），字串仍在调用处配 i18n；
+ * 纯函数方便 vitest 直接钉住这张优先级表。 */
+export type ModelCardTest = { ok: boolean; message: string } | null;
+/** `dirty`：这张卡有改过、还没保存的格子 */
+export type ModelCardSave = { error: string | null; saved: boolean; dirty: boolean };
+export type ModelCardStatus =
+  | { kind: "note"; tone: "text-ok" | "text-danger"; text: string }
+  | { kind: "unsaved" }
+  | { kind: "saved" }
+  | { kind: "idle" };
+
+export function modelCardStatus(
+  test: ModelCardTest,
+  testError: string | null,
+  save: ModelCardSave,
+): ModelCardStatus {
+  /* 测试测的永远是**已保存**的那份配置。卡上有没存的修改时，任何测试结果说的都不是
+     表单里这一份——从前改了密钥直接点测试，看到的是旧密钥的「已连通」，或者格子都填着
+     却说 Not configured（#698 的第 2、3 条）。保存失败的报错仍然先说 */
+  if (save.error)
+    return { kind: "note", tone: "text-danger", text: save.error };
+  if (save.dirty) return { kind: "unsaved" };
+  if (test)
+    return test.ok
+      ? { kind: "note", tone: "text-ok", text: test.message }
+      : { kind: "note", tone: "text-danger", text: test.message };
+  if (testError) return { kind: "note", tone: "text-danger", text: testError };
+  if (save.saved) return { kind: "saved" };
+  return { kind: "idle" };
+}
+
 /** 管理页的六节。**它们是左栏的第二层，不是正文顶上的一条 tab 带**——
     与账户栏那四项是同一种东西（去哪儿），只是矮一级；地址里是 `?tab=`，
     刷新、回退、分享链接都落回同一节。左栏（AccountShell）与这一页的标题
@@ -885,16 +929,84 @@ export function Settings() {
 
   const test = useMutation({
     mutationFn: () => api.testSettings(workspace!.id),
+    // 测完谁按的就清掉：pending 的字样只在飞行中属于那张卡
+    onSettled: () => setTestCard(null),
   });
+  /* 哪张卡按下的"测试"。测一次是两套一起测（一个接口），结果各自回卡；
+     但两个按钮共用这一个 mutation，从前按任意一张两张一起转"Testing…"（#698） */
+  const [testCard, setTestCard] = useState<"chat" | "embed" | null>(null);
+  /* 两张卡各自有没有改过、还没保存的格子。测试只测已保存的配置，所以有修改的那张卡
+     不让测，备注改说「先保存」；保存成功才清掉（#698） */
+  const [dirty, setDirty] = useState({ chat: false, embed: false });
+  /* 开测：上一轮的结论（两边卡的 Saved/报错、上一轮测试结果）全部让位给这一轮 */
+  const startTest = () => {
+    test.reset();
+    saveChat.reset();
+    saveEmbed.reset();
+    test.mutate();
+  };
 
   if (!workspace)
     return <div className="p-8 text-body text-ink-2">{S.nav.loading}</div>;
 
   const set =
-    (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => {
+      /* 改一格，旧结论全部过期：测试结果、Saved、报错说的都是改之前的那份配置（#698）。
+         测的永远是已存盘的那份，所以表单一动，卡上就不该再贴任何旧话 */
+      test.reset();
+      saveChat.reset();
+      saveEmbed.reset();
+      setDirty((d) => ({ ...d, [k.startsWith("chat_") ? "chat" : "embed"]: true }));
       setForm({ ...form, [k]: e.target.value });
+    };
 
   const label = "block text-small font-medium text-ink-2 mb-1";
+
+  /* 两张卡的备注：新测到的盖掉旧保存态，测挂了（连接口都没通）也不再
+     悄悄退回"Saved"或空白——从前请求本身失败时卡上什么都不说（#698） */
+  const testTransportError = test.error ? (test.error as Error).message : null;
+  const chatStatus = modelCardStatus(
+    test.data
+      ? {
+          ok: test.data.chat.ok,
+          message: test.data.chat.ok
+            ? S.settings.ok(test.data.chat.reply ?? "OK")
+            : (test.data.chat.error ?? ""),
+        }
+      : null,
+    testTransportError,
+    {
+      error: saveChat.error ? (saveChat.error as Error).message : null,
+      saved: saveChat.isSuccess,
+      dirty: dirty.chat,
+    },
+  );
+  const embedStatus = modelCardStatus(
+    test.data
+      ? {
+          ok: test.data.embed.ok,
+          message: test.data.embed.ok
+            ? S.settings.okDim(test.data.embed.dim ?? 0)
+            : (test.data.embed.error ?? ""),
+        }
+      : null,
+    testTransportError,
+    {
+      error: saveEmbed.error ? (saveEmbed.error as Error).message : null,
+      saved: saveEmbed.isSuccess,
+      dirty: dirty.embed,
+    },
+  );
+  /* 备注的画法两张卡共用：成功走 ok 色、失败走 danger 色——从前成功是中性 accent、
+     嵌入卡的报错还是正文字色，与本页数据源那节的 ok/danger 不一致（#698） */
+  const cardNote = (s: ModelCardStatus) =>
+    s.kind === "idle" ? undefined : s.kind === "saved" ? (
+      S.settings.saved
+    ) : s.kind === "unsaved" ? (
+      S.settings.unsaved
+    ) : (
+      <span className={s.tone}>{s.text}</span>
+    );
 
   return (
     <div className="h-full overflow-y-auto u-scroll px-8 py-6">
@@ -923,15 +1035,20 @@ export function Settings() {
               {Object.entries(PRESETS).map(([name, p]) => (
                 <Pill
                   key={name}
-                  onClick={() =>
+                  onClick={() => {
+                    /* 预设只是批量填格，和手输一样让旧结论过期 */
+                    test.reset();
+                    saveChat.reset();
+                    saveEmbed.reset();
+                    setDirty({ chat: true, embed: true });
                     setForm({
                       ...form,
                       chat_base_url: p.chat,
                       chat_model: p.chatModel,
                       embed_base_url: p.embed,
                       embed_model: p.embedModel,
-                    })
-                  }
+                    });
+                  }}
                 >
                   {name}
                 </Pill>
@@ -940,38 +1057,33 @@ export function Settings() {
 
             <SettingsCard
               title={S.settings.chatModel}
-              note={
-                test.data ? (
-                  <span className={test.data.chat.ok ? "text-accent" : "text-danger"}>
-                    {test.data.chat.ok
-                      ? S.settings.ok(test.data.chat.reply ?? "OK")
-                      : test.data.chat.error}
-                  </span>
-                ) : saveChat.isError ? (
-                  <span className="text-danger">{(saveChat.error as Error).message}</span>
-                ) : saveChat.isSuccess ? (
-                  S.settings.saved
-                ) : undefined
-              }
+              note={cardNote(chatStatus)}
               action={
                 <>
-                  {/* 试一次连的是两套模型（一个接口），结果各自回到各自那张卡 */}
+                  {/* 试一次连的是两套模型（一个接口），结果各自回到各自那张卡；
+                      但"Testing…"只亮在按下的这一张上（`testCard`） */}
                   <Button variant="secondary" size="sm"
-                    onClick={() => test.mutate()}
-                    disabled={test.isPending}
+                    onClick={() => {
+                      setTestCard("chat");
+                      startTest();
+                    }}
+                    disabled={test.isPending || dirty.chat}
                   >
-                    {test.isPending ? S.settings.testing : S.settings.test}
+                    {testCard === "chat" && test.isPending ? S.settings.testing : S.settings.test}
                   </Button>
                   <Button variant="secondary" size="sm"
-                    onClick={() =>
+                    onClick={() => {
+                      /* 存盘改了服务端，旧测试结论说的是上一版配置，一起过期 */
+                      test.reset();
                       saveChat.mutate(
                         withSaved({
                           chat_base_url: form.chat_base_url,
                           chat_model: form.chat_model,
                           chat_api_key: form.chat_api_key,
                         }),
-                      )
-                    }
+                        { onSuccess: () => setDirty((d) => ({ ...d, chat: false })) },
+                      );
+                    }}
                     disabled={saveChat.isPending}
                   >
                     {saveChat.isPending ? S.settings.saving : S.settings.save}
@@ -1020,37 +1132,31 @@ export function Settings() {
 
             <SettingsCard
               title={S.settings.embedModel}
-              note={
-                test.data ? (
-                  <span className={test.data.embed.ok ? "text-accent" : "text-ink-2"}>
-                    {test.data.embed.ok
-                      ? S.settings.okDim(test.data.embed.dim ?? 0)
-                      : test.data.embed.error}
-                  </span>
-                ) : saveEmbed.isError ? (
-                  <span className="text-danger">{(saveEmbed.error as Error).message}</span>
-                ) : saveEmbed.isSuccess ? (
-                  S.settings.saved
-                ) : undefined
-              }
+              note={cardNote(embedStatus)}
               action={
                 <>
                   <Button variant="secondary" size="sm"
-                    onClick={() => test.mutate()}
-                    disabled={test.isPending}
+                    onClick={() => {
+                      setTestCard("embed");
+                      startTest();
+                    }}
+                    disabled={test.isPending || dirty.embed}
                   >
-                    {test.isPending ? S.settings.testing : S.settings.test}
+                    {testCard === "embed" && test.isPending ? S.settings.testing : S.settings.test}
                   </Button>
                   <Button variant="secondary" size="sm"
-                    onClick={() =>
+                    onClick={() => {
+                      /* 存盘改了服务端，旧测试结论说的是上一版配置，一起过期 */
+                      test.reset();
                       saveEmbed.mutate(
                         withSaved({
                           embed_base_url: form.embed_base_url,
                           embed_model: form.embed_model,
                           embed_api_key: form.embed_api_key,
                         }),
-                      )
-                    }
+                        { onSuccess: () => setDirty((d) => ({ ...d, embed: false })) },
+                      );
+                    }}
                     disabled={saveEmbed.isPending}
                   >
                     {saveEmbed.isPending ? S.settings.saving : S.settings.save}

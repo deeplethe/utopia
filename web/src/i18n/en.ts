@@ -1148,6 +1148,7 @@ export const en = {
     embedLabel: "Embedding",
     ok: (reply: string) => `Reachable and authenticated (${reply})`,
     okDim: (dim: number) => `Reachable and authenticated (dim ${dim})`,
+    unsaved: "Unsaved changes. Save this card to test them.",
   },
   ontology: {
     title: "Ontology",

@@ -367,7 +367,10 @@ pub fn build_messages_with_opening(
          {temporal_note}\n\
          4. {time_ctx}\n\
          5. quote must be a contiguous excerpt from the Text block; never quote the opening of the document. Every fact needs one.\n\
-         6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain.\n\
+         6. confidence in 0~1: 0.9 explicitly stated, 0.7 inferred, 0.5 uncertain. A value \
+            the text writes out is stated whatever the layout — a sentence, a list, a table \
+            cell, a schedule, the new column of an amendment that replaces an earlier term. \
+            Inferred means the text does not write the value and you worked it out.\n\
          7. If nothing can be extracted, output {{\"entities\":[],\"facts\":[]}}.\n\
          8. If no listed relation fits, do not force the nearest one — write the predicate the \
             text itself uses, in snake_case (e.g. \"available_on\", \"runs_on\"). A relation \
@@ -467,6 +470,13 @@ fn opening_block(opening: Option<&str>) -> String {
     )
 }
 
+/// 一段描述的第一句（句子边界按 UAX #29）。按块检索出的清单只带这一句：schema.org 的
+/// 描述后半截多是用法说明与示例，一块铺上百行时它们占了清单的八成
+pub fn first_sentence(text: &str) -> &str {
+    use unicode_segmentation::UnicodeSegmentation;
+    text.trim().unicode_sentences().next().map_or("", str::trim)
+}
+
 /// 清单里给关系带的标记：事件 `[event]`、恒常 `[eternal]`；状态不标。
 /// 认不出的值当状态——数据库的 CHECK 只放这三个进来，这里不再报错
 fn temporal_mark(temporal: &str) -> Option<&'static str> {
@@ -532,6 +542,14 @@ fn known_block(known: &[KnownEntity]) -> String {
 /// 从 LLM 回复中稳健地取出 JSON 块（容忍代码围栏与前后废话）。
 pub fn json_block(raw: &str) -> anyhow::Result<String> {
     let text = raw.trim();
+    // 推理模型的思考过程（#690）：`LlmClient::chat` 那边会先切，但取块这一层
+    // 自己认得标记才是最后的保障——`chat_tools` 那条路就不经过 `chat`。
+    // 不切的话，思考过程里的大括号会把下面"第一个 `{`"的起点提前，
+    // 而修补截断的逻辑认不出夹在中间的废话，整块直接作废。
+    let text = match text.rfind("</think>") {
+        Some(pos) => text[pos + "</think>".len()..].trim(),
+        None => text,
+    };
     let cleaned = text
         .strip_prefix("```json")
         .or_else(|| text.strip_prefix("```"))
@@ -761,6 +779,13 @@ Names:\n\
   \"DeepMind\", \"OpenAI Ireland Ltd\" is not \"OpenAI\", \"Microsoft AI\" is not \
   \"Microsoft\"), a project, programme, team, app or component. Never merge a version into \
   its family or a part into its whole.\n\
+- A document, agreement or filing is cited in many ways and stays one thing through its \
+  amendments: \"the Lease\", \"Lease Agreement\", \"Lease Agreement dated May 16, 2016\" and \
+  \"Lease Agreement dated May 16, 2016, as amended\" are one agreement when their parties and \
+  subject do not contradict each other. When it was signed and that it was amended describe \
+  the agreement; they do not make a second one. Each amendment is a document of its own, and \
+  an agreement for other premises, another phase or other parties (\"Phase 2 Lease\") is a \
+  different agreement.\n\
 - A phrase that merely contains a name is not that name: \"Sam Altman's efforts\", \
   \"psychological abuse from Sam Altman\", \"share sale led by Thrive Capital\", \"leaked \
   letter from the National Data Guardian\", \"ChatGPT played a role in the campaign\", \"a \
@@ -1475,6 +1500,17 @@ mod prompt_shape_tests {
         assert!(system.contains("except a date, which is always written in the format of rule 3"));
     }
 
+    /// 补充协议把旧条款与新日期排成一张对照表，模型把表格里读到的新日期标 0.7（当成
+    /// 推断），低于 0.75 的值不许接替前一个——截止日就一直停在旧值上。规则 6 说清楚：
+    /// 原文写着的值不论排成什么样都是明写
+    #[test]
+    fn a_value_written_in_a_table_is_stated() {
+        let msgs = build_messages(&[], &[], &[], None, "a.txt", &[], "text");
+        let system = &msgs[0].content;
+        assert!(system.contains("stated whatever the layout"));
+        assert!(system.contains("a table cell"));
+    }
+
     /// 规则编号各不相同，「按规则 N」指得到唯一的一条。从前有两条 8c、两条 10，
     /// 「as rule 10 says」说的是哪条要靠猜（#689 评审）
     #[test]
@@ -1809,6 +1845,22 @@ mod tests {
     }
 
     #[test]
+    fn a_description_is_cut_at_its_first_sentence() {
+        assert_eq!(
+            first_sentence(
+                "  The date on which the CreativeWork was created. See also dateModified.\n\nExample: 2020-01-01."
+            ),
+            "The date on which the CreativeWork was created."
+        );
+        assert_eq!(
+            first_sentence("一个有名有姓的人。可以是虚构的。"),
+            "一个有名有姓的人。"
+        );
+        assert_eq!(first_sentence("A person"), "A person");
+        assert_eq!(first_sentence("   "), "");
+    }
+
+    #[test]
     fn parse_time_precisions() {
         assert_eq!(parse_time("2024").unwrap().1, "year");
         assert_eq!(parse_time("2024-07").unwrap().1, "month");
@@ -2039,6 +2091,18 @@ mod tests {
     #[test]
     fn parse_response_with_fence() {
         let raw = "好的，结果如下：\n```json\n{\"entities\":[{\"name\":\"张三\",\"type\":\"person\"}],\"facts\":[]}\n```";
+        let e = parse_response(raw).unwrap();
+        assert_eq!(e.entities.len(), 1);
+        assert_eq!(e.entities[0].type_key, "person");
+    }
+
+    /// #690：思考过程里的大括号不能把 JSON 的起止带偏。
+    ///
+    /// 思考过程里这个没闭合的 `{` 会把"第一个 `{`"的起点提前，而修补截断的逻辑
+    /// 认不出夹在中间的废话——不切掉标记，整块直接报解析失败作废。
+    #[test]
+    fn parse_response_ignores_a_think_block_before_the_json() {
+        let raw = "先想想 {\"a\": 1，再回答。\n</think>{\"entities\":[{\"name\":\"张三\",\"type\":\"person\"}],\"facts\":[]}";
         let e = parse_response(raw).unwrap();
         assert_eq!(e.entities.len(), 1);
         assert_eq!(e.entities[0].type_key, "person");

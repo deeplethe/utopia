@@ -1028,6 +1028,7 @@ export const zh: Strings = {
     embedLabel: "向量",
     ok: (reply: string) => `已连通，认证通过（${reply}）`,
     okDim: (dim: number) => `已连通，认证通过（维度 ${dim}）`,
+    unsaved: "有未保存的修改。先保存这张卡，再测试。",
   },
   ontology: {
     title: "本体",

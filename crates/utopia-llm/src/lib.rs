@@ -247,6 +247,27 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 进程活着就永远收不了尸）。7459 块的一次灌入死在第 55 块上。
 const READ_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// 推理模型的思考过程不该进下游（#690）。
+///
+/// DeepSeek-V4-Flash 这类推理模型把思考过程以内联 `<think>…</think>` 写进
+/// `message.content`，而不是单独的 `reasoning_content` 字段——这里本来就只读
+/// `content`，那个字段碰不到。后果在两处当场撞见：`settings/test` 拿回
+/// `"OK</think>OK"`；抽取的 `json_block` 取"第一个 `{` 到最后一个 `}`"，
+/// 思考过程里的一对大括号就能把起止位置带偏。
+///
+/// 切掉**最后一个** `</think>` 之前的一切：它是协议标记，不是正文词汇；
+/// 取最后一个，是防着正文里引用它。没有标记就原样返回——非推理模型
+/// 走这里不受影响。
+///
+/// 只管非流式 `chat`：抽取、裁决、连通性测试都走它。流式路径逐片向界面吐字，
+/// 前半截切掉会让已吐出的字对不上号，那是另一题，不管。
+fn strip_reasoning(reply: &str) -> &str {
+    match reply.rfind("</think>") {
+        Some(pos) => &reply[pos + "</think>".len()..],
+        None => reply,
+    }
+}
+
 impl LlmClient {
     pub fn new(base_url: &str, api_key: Option<&str>, model: &str) -> Self {
         Self::with_timeouts(base_url, api_key, model, CONNECT_TIMEOUT, READ_TIMEOUT)
@@ -303,7 +324,7 @@ impl LlmClient {
         log_usage(&self.model, &body);
         body["choices"][0]["message"]["content"]
             .as_str()
-            .map(String::from)
+            .map(|s| strip_reasoning(s).to_string())
             .ok_or_else(|| anyhow::anyhow!("Unexpected LLM response shape: {body}"))
     }
 
@@ -847,6 +868,55 @@ mod tests {
         let result = client.embed(&["hi".to_string()]).await;
         server.await.unwrap();
         assert_eq!(result.unwrap(), vec![vec![1.0]]);
+    }
+
+    /// #690 的正题：推理模型把思考过程以内联 `<think>` 写进回复正文，
+    /// `chat` 只返回标记之后的那半——抽取、裁决、连通性测试都读它。
+    /// 思考过程里特意放一对大括号：`json_block` 取"第一个 `{` 到最后一个 `}`"，
+    /// 不切掉这里，下游就会卡在思考过程里取错起止。
+    #[tokio::test]
+    async fn a_reasoning_reply_keeps_only_what_follows_think() {
+        let (addr, server) = an_http_response(
+            "200 OK",
+            "application/json",
+            r#"{"choices":[{"message":{"content":"让我想想 {\"a\": 1}。\n</think>{\"facts\": []}"}}]}"#,
+        )
+        .await;
+        let client = client_at(addr);
+        let result = client.chat(&[]).await;
+        server.await.unwrap();
+        assert_eq!(result.unwrap(), r#"{"facts": []}"#);
+    }
+
+    /// 反面：没有标记的回复原样返回——非推理模型走这里不受影响
+    #[tokio::test]
+    async fn a_reply_without_a_think_marker_is_untouched() {
+        let (addr, server) = an_http_response(
+            "200 OK",
+            "application/json",
+            r#"{"choices":[{"message":{"content":"{\"facts\": []}"}}]}"#,
+        )
+        .await;
+        let client = client_at(addr);
+        let result = client.chat(&[]).await;
+        server.await.unwrap();
+        assert_eq!(result.unwrap(), r#"{"facts": []}"#);
+    }
+
+    /// 取最后一个标记：防着正文里引用它
+    #[test]
+    fn strip_reasoning_cuts_before_the_last_marker() {
+        assert_eq!(
+            strip_reasoning("a</think>b</think>c"),
+            "c",
+            "earlier markers are part of the text, not the split point"
+        );
+    }
+
+    /// `settings/test` 当场撞见的形状（#690）：`"OK</think>OK"`
+    #[test]
+    fn strip_reasoning_fixes_the_settings_test_echo() {
+        assert_eq!(strip_reasoning("OK</think>OK"), "OK");
     }
 
     /// `{"error": "…"}` 这种把错误直接写成字符串的端点（LM Studio 就是），从前认不出

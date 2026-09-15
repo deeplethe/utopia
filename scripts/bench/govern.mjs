@@ -84,7 +84,10 @@ async function fresh() {
     await api("POST", `/api/v1/kbs/${kb}/ingest`, body);
   }
   await until(async () => {
-    const done = num(`SELECT count(*) FROM documents WHERE kb_id='${kb}' AND graph_status IN ('done','failed')`);
+    // 失败了但抽取任务还排着的（本体索引没嵌完、延后重试）不算完
+    const done = num(`SELECT count(*) FROM documents d WHERE d.kb_id='${kb}' AND (d.graph_status = 'done'
+      OR (d.graph_status = 'failed' AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = 'extract_document'
+          AND j.status IN ('queued','running') AND j.payload->>'document_id' = d.id::text)))`);
     if (done >= docs.length) return true;
     const chunks = num(`SELECT count(*) FROM chunks WHERE kb_id='${kb}' AND extracted_at IS NOT NULL`);
     log(`  抽取 ${chunks} 块 / ${done} 篇完成`);

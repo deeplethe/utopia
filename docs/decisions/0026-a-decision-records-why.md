@@ -1,6 +1,6 @@
 # 0026 · A decision records why
 
-- **Status**: Implemented · migration 0038 adds `resolution_reviews.rationale`; every human decide path (`decide_review`, the batch, an answer to the agent, a manual merge from the entity panel) takes an optional rationale, keeps it on the row and writes it as `why` on the ledger event; `Precedent.why` carries it into the prompt lines and the `ledger_search` tool; the batch adjudicator now reads the same precedents and keys its verdict cache on them; one confident pair in ten goes to a person (`escalate_sample`); the model's own `why` is written beside machine decisions
+- **Status**: Implemented · migration 0038 adds `resolution_reviews.rationale`; every human decide path (`decide_review`, the batch, an answer to the agent, a manual merge from the entity panel) takes an optional rationale, keeps it on the row and writes it as `why` on the ledger event; `Precedent.why` carries it into the prompt lines and the `ledger_search` tool; the batch adjudicator now reads the same precedents and keys its verdict cache on them; ~~one confident pair in ten goes to a person~~ removed 2026-09-14 (decision 5, revised); the model's own `why` is written beside machine decisions
 - **Written**: 2026-09-08 (conventions in the [README](README.md))
 - **Related**: [0025](0025-governance-reads-the-ledger-before-it-decides.md) made governance read the ledger; this record makes what it reads worth reading. #356 asked for it. The impact gate (#357) and the investigating adjudicator (#358) build on it; a rationale vocabulary that converges is a rule in the sense of [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md).
 
@@ -34,6 +34,8 @@ The batch adjudicator now asks `precedents_for` for each pair and sends the rend
 
 `HUMAN_SAMPLE_PCT = 10`, chosen by `review id % 100`, so the same pair is sampled on every run and a run is reproducible. The pair is escalated with `escalate_sample|<verdict> <confidence>` instead of being applied; the card says it was sampled and what the adjudicator would have said, so nobody reads it as doubt. Two things come out of it: the human corpus keeps ordinary pairs in it, and every sampled row holds both the machine's verdict and the person's, which is the raw material for an agreement rate.
 
+> **Revised 2026-09-14: no confident pair is held for a person.** The sample is removed. On the Blackbaud lease bench it held a pair the adjudicator had judged the same at 0.95, so the lease stayed split into several entities and questions about it came back with several answers. What goes to a person is now only what the machine is unsure of, or what the gate (0027) holds. The reason for the sample, an agreement rate against people, has another source: every agent decision a person answers (0025) already holds both verdicts. Rows escalated as `escalate_sample` before this change keep their label, and the governor takes them like any other waiting pair.
+
 ### 6. The machine's why is kept, and is not a precedent
 
 `apply_verdict` writes the model's one-line `why` into the ledger on the merges and keeps it makes. `precedents_for` still reads only people's rows, as 0025 decided; the line is there so that Decisions shows what the machine went on, and so that a later reader can compare it with what the person wrote on the sampled pairs.
@@ -54,5 +56,5 @@ The duplicate card has an input beside Keep / Merge; the batch toolbar has one i
 
 - **Impact, not confidence** (#357). Answered by [0027](0027-an-automatic-merge-is-gated-by-what-it-can-undo.md): a merge that would leave the graph is held for a person whatever the confidence.
 - **An adjudicator that investigates** (#358). Answered by [0028](0028-the-adjudicator-looks-before-it-asks.md): the batch escalates its unsettled pairs into the governor's loop, with governance off too.
-- **The agreement rate.** The sampled rows carry both verdicts; nothing computes the rate yet, and nothing moves `HUMAN_SAMPLE_PCT` from it.
+- **The agreement rate.** The sample is gone (decision 5, revised). The rows a person answers under the agent (0025) carry both verdicts; nothing computes the rate yet.
 - **History on a merge target.** The merge shows under the withdrawals it caused in the same second, which is honest chronology and hard to read. Folding consequences under their cause is presentation, and belongs with the rationale it now has.
