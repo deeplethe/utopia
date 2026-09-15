@@ -245,6 +245,10 @@ export const en = {
         title: "The model account cannot pay for requests",
         hint: "Extraction and embedding are stopped and will not resume on their own. Top up the account, or set an endpoint that can serve in Administration → Models.",
       },
+      "document.needs_reader": {
+        title: "A file needs a model to be read",
+        hint: "Scans and images need a document-reading service, and recordings need a transcription model that labels speakers. Neither is configured on this deployment. The file is kept, and nothing was read from it.",
+      },
       "governance.tripped": {
         title: "The agent stopped deciding on its own",
         hint: "Two of its merges were reverted within seven days, so the switch went off. Look at what it did under Review → Agent, then turn it back on in the base settings when you want it to resume.",

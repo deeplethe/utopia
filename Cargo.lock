@@ -5438,6 +5438,7 @@ dependencies = [
  "percent-encoding",
  "pulldown-cmark",
  "quick-xml 0.42.0",
+ "serde_json",
  "text-splitter",
  "thiserror 2.0.20",
  "tiktoken-rs",

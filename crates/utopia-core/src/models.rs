@@ -111,6 +111,9 @@ pub struct Document {
     pub deleted_at: Option<DateTime<Utc>>,
     /// 真删（#268 下半）：内容已抹掉，回不来。行留作墓碑
     pub purged_at: Option<DateTime<Utc>>,
+    /// 这份文件的字要靠哪一种模型读，而那种模型还没配：`ocr` / `transcribe`（0040）。
+    /// 文档此时是 failed；配上之后按它重新排进处理队列
+    pub reader_needed: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -875,6 +878,8 @@ pub struct GraphChange {
     pub document_id: Option<Uuid>,
     pub filename: Option<String>,
     pub quote: Option<String>,
+    /// 这条引文从哪来（0040）：stated / ocr / transcribed / described；没有证据为空
+    pub quote_origin: Option<String>,
 }
 
 /// 消解审核项的一侧实体摘要。
@@ -960,6 +965,13 @@ pub struct EvidenceView {
     pub stale: bool,
     /// 这条证据所在的文档已被删除（#268）。事实若还活着，是因为它另有出处
     pub document_deleted: bool,
+    /// 引文从哪来（0040）：`stated` 文件里写的、`ocr` 扫描页上认出来的、`transcribed`
+    /// 录音转写、`described` 模型对一张图的描述——最后一种没有原话可对
+    pub origin: String,
+    /// 读出这段文字的引擎或模型；原文为空
+    pub origin_model: Option<String>,
+    /// 指回原文件的位置：页码（和框）、录音起止毫秒与说话人、图在哪一页
+    pub anchor: Option<serde_json::Value>,
 }
 
 /// 这个库走到哪一步了（#313）：四个页面的空状态共用同一个判断。

@@ -175,6 +175,8 @@ export interface Doc {
   deleted_at: string | null;
   /** 真删过：内容没了，回不来 */
   purged_at: string | null;
+  /** 这份文件的字要靠哪一种模型读、而那种模型没配（0040）：ocr / transcribe；文档此时是 failed */
+  reader_needed: "ocr" | "transcribe" | null;
   created_at: string;
 }
 

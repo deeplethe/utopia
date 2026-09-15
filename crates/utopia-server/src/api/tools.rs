@@ -545,6 +545,7 @@ pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult 
             "valid_from_precision": r.valid_from_precision,
             "valid_to_precision": r.valid_to_precision,
             "document_id": r.document_id, "filename": r.filename, "quote": r.quote,
+            "quote_origin": r.quote_origin,
         })).collect::<Vec<_>>()
     }))
 }
@@ -1074,6 +1075,7 @@ mod tests {
             document_id: None,
             filename: None,
             quote: None,
+            quote_origin: None,
         }
     }
 

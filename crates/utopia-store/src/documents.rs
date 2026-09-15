@@ -749,11 +749,15 @@ pub async fn list_missing(pool: &PgPool, source_id: Uuid) -> AppResult<Vec<Uuid>
 }
 
 pub async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> AppResult<()> {
-    sqlx::query("UPDATE documents SET status = $2, error = NULL, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(status)
-        .execute(pool)
-        .await?;
+    // 重新开始处理：上一次缺的读取模型不再算数，读不出来会再记一次
+    sqlx::query(
+        "UPDATE documents SET status = $2, error = NULL, reader_needed = NULL, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(status)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -768,10 +772,36 @@ pub async fn set_failed(pool: &PgPool, id: Uuid, error: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// 这份文件要 `reader` 那一种模型才读得出字，而那种模型没配（0040）：停在 failed，
+/// 记下缺的是哪一种，配上之后按它重新排队
+pub async fn set_needs_reader(pool: &PgPool, id: Uuid, reader: &str, error: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE documents SET status = 'failed', error = $3, reader_needed = $2, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(reader)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 等着 `reader` 那一种模型的文档（活着的），配上模型之后重新排进处理队列用
+pub async fn waiting_for_reader(pool: &PgPool, reader: &str) -> AppResult<Vec<(Uuid, Uuid)>> {
+    Ok(sqlx::query_as(
+        "SELECT id, kb_id FROM documents
+          WHERE reader_needed = $1 AND deleted_at IS NULL ORDER BY created_at, id",
+    )
+    .bind(reader)
+    .fetch_all(pool)
+    .await?)
+}
+
 pub async fn set_ready(pool: &PgPool, id: Uuid, text_len: i32, chunk_count: i32) -> AppResult<()> {
     sqlx::query(
-        "UPDATE documents SET status = 'ready', error = NULL, text_len = $2, chunk_count = $3,
-                updated_at = now() WHERE id = $1",
+        "UPDATE documents SET status = 'ready', error = NULL, reader_needed = NULL, text_len = $2,
+                chunk_count = $3, updated_at = now() WHERE id = $1",
     )
     .bind(id)
     .bind(text_len)
@@ -1153,16 +1183,41 @@ pub async fn replace_chunks(
     .await?;
 
     // 认领池：现行块按文本分组（同文重复块按多重集配对，各认领各的）
-    let old: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, text FROM chunks WHERE document_id = $1 AND superseded_at IS NULL",
+    // 认领按「文本 + 出处」：同一句话从原文里读到和从扫描页上认出来，不是同一块（0040）
+    type Stored = (
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        Option<serde_json::Value>,
+    );
+    let old: Vec<Stored> = sqlx::query_as(
+        "SELECT id, text, origin, origin_model, anchor FROM chunks
+              WHERE document_id = $1 AND superseded_at IS NULL",
     )
     .bind(document_id)
     .fetch_all(&mut *tx)
     .await?;
-    let mut claim_pool: std::collections::HashMap<String, Vec<Uuid>> =
+    type ClaimKey = (String, String, Option<String>, Option<String>);
+    let key_of = |text: &str,
+                  origin: &str,
+                  model: Option<&str>,
+                  anchor: Option<&serde_json::Value>|
+     -> ClaimKey {
+        (
+            text.to_string(),
+            origin.to_string(),
+            model.map(str::to_string),
+            anchor.map(|a| a.to_string()),
+        )
+    };
+    let mut claim_pool: std::collections::HashMap<ClaimKey, Vec<Uuid>> =
         std::collections::HashMap::new();
-    for (id, text) in old {
-        claim_pool.entry(text).or_default().push(id);
+    for (id, text, origin, model, anchor) in old {
+        claim_pool
+            .entry(key_of(&text, &origin, model.as_deref(), anchor.as_ref()))
+            .or_default()
+            .push(id);
     }
 
     // 第一阶段：认领（原行更新）与待插清单——新块必须等软删跑完再插，
@@ -1171,7 +1226,15 @@ pub async fn replace_chunks(
     let mut to_insert: Vec<(Uuid, &ChunkPiece)> = Vec::new();
     let mut out = Vec::with_capacity(pieces.len());
     for piece in pieces {
-        let claimed = claim_pool.get_mut(&piece.text).and_then(|ids| ids.pop());
+        let p = &piece.provenance;
+        let claimed = claim_pool
+            .get_mut(&key_of(
+                &piece.text,
+                p.origin.as_str(),
+                p.model.as_deref(),
+                p.anchor.as_ref(),
+            ))
+            .and_then(|ids| ids.pop());
         if let Some(id) = claimed {
             sqlx::query(
                 "UPDATE chunks SET seq = $2, char_start = $3, char_end = $4, doc_version = $5,
@@ -1214,8 +1277,9 @@ pub async fn replace_chunks(
     for (id, piece) in to_insert {
         sqlx::query(
             "INSERT INTO chunks
-                (id, kb_id, document_id, seq, text, char_start, char_end, doc_version, heading)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                (id, kb_id, document_id, seq, text, char_start, char_end, doc_version, heading,
+                 origin, origin_model, anchor)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(id)
         .bind(kb_id)
@@ -1226,6 +1290,9 @@ pub async fn replace_chunks(
         .bind(piece.char_end)
         .bind(version)
         .bind(&piece.heading)
+        .bind(piece.provenance.origin.as_str())
+        .bind(&piece.provenance.model)
+        .bind(&piece.provenance.anchor)
         .execute(&mut *tx)
         .await?;
     }
@@ -1307,6 +1374,8 @@ pub struct ChunkForExtract {
     pub seq: i32,
     pub text: String,
     pub embedding: Option<Vector>,
+    /// 这块文字从哪来（0040）：看图描述出来的事实不能单独改写账本
+    pub origin: String,
 }
 
 pub async fn chunks_for_extraction(
@@ -1315,7 +1384,7 @@ pub async fn chunks_for_extraction(
 ) -> AppResult<Vec<ChunkForExtract>> {
     // 只取未抽取的分块：认领的未变段落携带 extracted_at 跳过（增量抽取 + 断点续抽）
     let rows = sqlx::query_as(
-        "SELECT id, seq, text, embedding FROM chunks
+        "SELECT id, seq, text, embedding, origin FROM chunks
          WHERE document_id = $1 AND superseded_at IS NULL AND extracted_at IS NULL
          ORDER BY seq",
     )

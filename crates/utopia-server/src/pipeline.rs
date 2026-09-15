@@ -37,10 +37,41 @@ pub async fn process_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     match run(state, document_id).await {
         Ok(()) => Ok(()),
         Err(e) => {
+            let doc = utopia_store::documents::get(&state.pool, document_id)
+                .await
+                .ok();
+            // 字要靠模型读、而那种模型没配（0040）：**降级**。文件留着，文档停在 failed
+            // 并记下缺哪一种，报一条库级告警；配上模型会自己重新处理。重试没用——
+            // 模型不会在两分钟里自己配上，所以挂 Terminal
+            if let Some(needs) = e.downcast_ref::<utopia_ingest::NeedsReader>() {
+                let _ = utopia_store::documents::set_needs_reader(
+                    &state.pool,
+                    document_id,
+                    needs.reader.as_str(),
+                    &needs.to_string(),
+                )
+                .await;
+                if let Some(doc) = &doc {
+                    crate::alerting::observe_document_needs_reader(
+                        state,
+                        doc.kb_id,
+                        document_id,
+                        &doc.filename,
+                        needs,
+                    )
+                    .await;
+                    state.emit_document(doc.kb_id, document_id);
+                }
+                return Err(e.context(utopia_core::Terminal));
+            }
             let _ =
                 utopia_store::documents::set_failed(&state.pool, document_id, &e.to_string()).await;
-            if let Ok(doc) = utopia_store::documents::get(&state.pool, document_id).await {
+            if let Some(doc) = &doc {
                 state.emit_document(doc.kb_id, document_id);
+            }
+            // 读不了的格式（视频、二进制、空文件）换多少次也一样
+            if e.downcast_ref::<utopia_ingest::Unreadable>().is_some() {
+                return Err(e.context(utopia_core::Terminal));
             }
             Err(e)
         }

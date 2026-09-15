@@ -105,15 +105,73 @@ mod html_tests {
     }
 }
 
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    const PNG: &[u8] = &[
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D,
+    ];
+    const MP3: &[u8] = &[b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, 0];
+    const WAV: &[u8] = &[
+        b'R', b'I', b'F', b'F', 0x24, 0, 0, 0, b'W', b'A', b'V', b'E', b'f', b'm', b't', b' ',
+    ];
+
+    fn needs(filename: &str, bytes: &[u8]) -> Option<Reader> {
+        parse(filename, bytes)
+            .err()
+            .and_then(|e| e.downcast_ref::<NeedsReader>().map(|n| n.reader))
+    }
+
+    fn unreadable(filename: &str, bytes: &[u8]) -> bool {
+        parse(filename, bytes)
+            .err()
+            .is_some_and(|e| e.downcast_ref::<Unreadable>().is_some())
+    }
+
+    #[test]
+    fn an_image_or_a_recording_waits_for_its_reader() {
+        assert_eq!(needs("scan.png", PNG), Some(Reader::Ocr));
+        // 扩展名撒谎：文件头说了算
+        assert_eq!(needs("notes.txt", PNG), Some(Reader::Ocr));
+        assert_eq!(needs("meeting.mp3", MP3), Some(Reader::Transcribe));
+        assert_eq!(needs("meeting.wav", WAV), Some(Reader::Transcribe));
+        // 认不出文件头时看扩展名
+        assert_eq!(needs("photo.heic", &[0, 1, 2, 3]), Some(Reader::Ocr));
+        assert_eq!(needs("call.amr", &[0, 1, 2, 3]), Some(Reader::Transcribe));
+    }
+
+    #[test]
+    fn a_binary_is_not_decoded_as_text() {
+        // 老式 .doc 这类：开头夹着 NUL，从前会解成乱码进库
+        assert!(unreadable(
+            "old.doc",
+            &[0xD0, 0xCF, 0x11, 0xE0, 0, 0, 0, 0, b'x']
+        ));
+        assert!(unreadable(
+            "clip.mp4",
+            &[0, 0, 0, 0x18, b'f', b't', b'y', b'p', b'm', b'p', b'4', b'2']
+        ));
+        assert!(unreadable("empty.txt", b"   \n\n  "));
+        // 真正的文本照读，UTF-16 带字节序标记的不算二进制
+        assert!(parse("a.txt", "你好，世界".as_bytes()).is_ok());
+        assert!(!looks_binary(&[0xFF, 0xFE, b'h', 0, b'i', 0]));
+        // PDF 文本层抄来的正文夹着 NUL 但是合法 UTF-8：照读（#611）
+        assert!(parse("layer.md", "Revenue grew\0 twelve percent.".as_bytes()).is_ok());
+    }
+}
+
 mod blocks;
 mod chunker;
 pub mod html;
 pub mod ontology_rdf;
 mod parsers;
+pub mod provenance;
 
-pub use chunker::{chunk_text, chunk_with_budget, ChunkPiece, BUDGET_TOKENS};
+pub use chunker::{chunk_segments, chunk_text, chunk_with_budget, ChunkPiece, BUDGET_TOKENS};
 /// Decode fetched text with the same encoding detection as file ingestion.
 pub use parsers::plain_text as decode_text;
+pub use provenance::{Origin, Provenance, Segment};
 
 /// 解析产物：纯文本 + 可选结构信息。
 #[derive(Debug)]
@@ -121,7 +179,111 @@ pub struct ParsedDoc {
     pub text: String,
 }
 
-/// 支持的格式（P1）：pdf / docx / xlsx·xls·ods / pptx / md / txt / html / csv / json / yaml / xml / log
+/// 读出字要靠哪一种模型（0040）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reader {
+    /// 扫描件、图片：版面识别（MinerU 这类服务）
+    Ocr,
+    /// 录音：带说话人的转写
+    Transcribe,
+}
+
+impl Reader {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reader::Ocr => "ocr",
+            Reader::Transcribe => "transcribe",
+        }
+    }
+
+    /// 报错里说缺的是什么
+    fn wanted(self) -> &'static str {
+        match self {
+            Reader::Ocr => "a document-reading (OCR) service",
+            Reader::Transcribe => "a transcription model that labels speakers",
+        }
+    }
+}
+
+/// 这份文件没有可以直接读的文字，要靠 [`Reader`] 那一种模型读。
+///
+/// **不是解析失败**：文件没坏，只是这一步轮不到文本解析器。从前图片和录音会掉进
+/// 「按文本解码」那一支，解出一堆乱码、照样分块、嵌入、抽取；扫描件则报一句笼统的
+/// 「没抽出文字」，重试三次。现在它们停在这里，交给配了模型的读取器，没配就降级并告警
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("This {what} has no text layer; reading it needs {}", reader.wanted())]
+pub struct NeedsReader {
+    pub reader: Reader,
+    /// 给人看的是什么文件：scanned PDF / image / recording
+    pub what: &'static str,
+}
+
+/// 这份文件读不了，换什么模型也读不了（视频、可执行文件、老式二进制格式）。重试没用
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{0}")]
+pub struct Unreadable(pub String);
+
+const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp", "heic", "heif",
+];
+const AUDIO_EXTS: &[&str] = &[
+    "mp3", "wav", "m4a", "flac", "ogg", "oga", "opus", "aac", "amr", "wma",
+];
+const VIDEO_EXTS: &[&str] = &["mp4", "mov", "mkv", "avi", "webm", "m4v", "wmv"];
+
+/// 按文件头（认得出来的话）或扩展名判断这是不是要模型读的媒体文件。
+///
+/// 文件头优先：扩展名可能撒谎。认不出文件头的才看扩展名
+fn media_kind(bytes: &[u8], ext: &str) -> Option<Result<NeedsReader, Unreadable>> {
+    use infer::MatcherType;
+    let by_header = infer::get(bytes).map(|t| t.matcher_type());
+    let is = |m: MatcherType, exts: &[&str]| match by_header {
+        Some(h) => h == m,
+        None => exts.contains(&ext),
+    };
+    if is(MatcherType::Image, IMAGE_EXTS) {
+        return Some(Ok(NeedsReader {
+            reader: Reader::Ocr,
+            what: "image",
+        }));
+    }
+    if is(MatcherType::Audio, AUDIO_EXTS) {
+        return Some(Ok(NeedsReader {
+            reader: Reader::Transcribe,
+            what: "recording",
+        }));
+    }
+    if is(MatcherType::Video, VIDEO_EXTS) {
+        return Some(Err(Unreadable(
+            "Video files are not read yet; upload its audio track or a transcript".into(),
+        )));
+    }
+    None
+}
+
+/// 按文本解码之前看一眼是不是二进制：开头夹着 NUL、**而且**不是合法的 UTF-8。
+///
+/// 两条都要：PDF 文本层抄出来的正文会夹 NUL，但它是合法的 UTF-8（#611，照读、剥掉 NUL）；
+/// GBK 这类中文编码不是合法的 UTF-8，但不夹 NUL。老式 .doc、压缩包两条都占。
+/// 带 UTF-16 字节序标记的不算
+fn looks_binary(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        return false;
+    }
+    let head = &bytes[..bytes.len().min(8192)];
+    if !head.contains(&0) {
+        return false;
+    }
+    // 截断可能切在一个多字节字符中间：只看完整的那一段是否合法
+    match std::str::from_utf8(head) {
+        Ok(_) => false,
+        Err(e) => e.error_len().is_some(),
+    }
+}
+
+/// 支持的格式（P1）：pdf / docx / xlsx·xls·ods / pptx / md / txt / html / csv / json / yaml / xml / log。
+///
+/// 要模型读的（扫描件、图片、录音）返回挂着 [`NeedsReader`] 的错误；读不了的挂 [`Unreadable`]
 pub fn parse(filename: &str, bytes: &[u8]) -> anyhow::Result<ParsedDoc> {
     let ext = filename
         .rsplit('.')
@@ -129,23 +291,47 @@ pub fn parse(filename: &str, bytes: &[u8]) -> anyhow::Result<ParsedDoc> {
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
 
+    match media_kind(bytes, &ext) {
+        Some(Ok(needs)) => return Err(needs.into()),
+        Some(Err(unreadable)) => return Err(unreadable.into()),
+        None => {}
+    }
+
     // 魔数探测优先于扩展名（扩展名可能撒谎）
     let kind = infer::get(bytes).map(|t| t.extension()).unwrap_or("");
 
     let text = match (kind, ext.as_str()) {
-        ("pdf", _) | (_, "pdf") => parsers::pdf(bytes)?,
+        ("pdf", _) | (_, "pdf") => {
+            let text = parsers::pdf(bytes)?;
+            // 文本层是空的：扫描件，字在图里
+            if text.trim().is_empty() {
+                return Err(NeedsReader {
+                    reader: Reader::Ocr,
+                    what: "scanned PDF",
+                }
+                .into());
+            }
+            text
+        }
         ("docx", _) | (_, "docx") => parsers::docx(bytes)?,
         ("xlsx", _) | (_, "xlsx") | (_, "xls") | (_, "ods") => parsers::spreadsheet(bytes)?,
         ("pptx", _) | (_, "pptx") => parsers::pptx(bytes)?,
         (_, "html") | (_, "htm") => parsers::html(bytes)?,
         (_, "csv") | (_, "tsv") => parsers::csv_text(bytes, ext == "tsv")?,
-        // md/json/yaml/xml/log/txt 及一切未识别格式：按文本解码（编码探测覆盖 GBK 等）
+        // md/json/yaml/xml/log/txt 及一切未识别格式：按文本解码（编码探测覆盖 GBK 等）。
+        // 解码之前先看是不是二进制：老式 .doc、压缩包、可执行文件解出来是乱码，
+        // 从前照样分块、嵌入、抽取
+        _ if looks_binary(bytes) => {
+            return Err(
+                Unreadable("This file is not in a format that can be read as text".into()).into(),
+            )
+        }
         _ => parsers::plain_text(bytes),
     };
 
     let text = normalize(&text);
     if text.trim().is_empty() {
-        anyhow::bail!("No text could be extracted (possibly a scanned or empty file)");
+        return Err(Unreadable("No text could be extracted from this file".into()).into());
     }
     Ok(ParsedDoc { text })
 }

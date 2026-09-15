@@ -58,6 +58,11 @@ pub mod kind {
     /// （0025 决定 9）。`severity = warning`，`min_role = editor`：裁重复项的人就是
     /// 该去看 Agent 队列、决定要不要再打开的人
     pub const GOVERNANCE_TRIPPED: &str = "governance.tripped";
+    /// 库级：一份文件的字要靠模型读（扫描件、图片要版面识别，录音要转写），而那种模型
+    /// 没配（0040）。`severity = warning`，`min_role = editor`：文件留着、文档停在 failed，
+    /// 在管理页「模型」里配上之后会自己重新处理。没有这一条，传上来的扫描件只是悄悄地
+    /// 什么都没有——0005 里一直空着的 `document.no_text_layer` 就是它
+    pub const DOCUMENT_NEEDS_READER: &str = "document.needs_reader";
 }
 
 /// 一次故障。打包成结构体不只是为了参数个数——调用点写 `severity: "error"`

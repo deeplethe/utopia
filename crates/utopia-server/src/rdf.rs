@@ -500,6 +500,10 @@ pub fn emit_fact(
     for quote in &f.quotes {
         sink.l(&stmt, &utopia("quote"), &text(quote.clone()))?;
     }
+    // 引文从哪来（0040）：审计的人要不问我们就分得清一句原文和一段看图描述（0020）
+    for origin in &f.quote_origins {
+        sink.l(&stmt, &utopia("evidenceOrigin"), &text(origin.clone()))?;
+    }
     // 边上的属性（0037）：陈述节点上各多一行，谓词是属性的 IRI，字面量按它的 datatype
     for q in &f.qualifiers {
         let Some(p) = vocab.relation(q.qualifier_type_id) else {
@@ -731,6 +735,7 @@ mod tests {
             supersedes: None,
             documents: vec![],
             quotes: vec![],
+            quote_origins: vec![],
         }
     }
 

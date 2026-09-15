@@ -1,8 +1,14 @@
 # 0040 · A chunk says where its words came from
 
-- **Status**: Proposed · nothing built · cut 1 is the ledger shape (`chunks.origin`,
-  `chunks.origin_model`, `chunks.anchor`, the packer rule, the confidence ceiling, the read
-  contract); the media readers follow in the order at the end
+- **Status**: Cut 1 implemented (2026-09-15) · `chunks.origin` / `origin_model` / `anchor`
+  with the anchor shape checked (migration 0058), the packer never mixes provenances
+  (`chunk_segments`), the ceiling on described facts, origin in the evidence API, the MCP
+  changes feed and the RDF export (`utopia:evidenceOrigin`) · a file that needs a reader no
+  longer becomes garbage text: images and recordings are recognised by header or extension, a
+  PDF with an empty text layer is a scan, and without the model the document fails once with
+  `documents.reader_needed` and a `document.needs_reader` alert · revised 2026-09-15: scans and
+  images are read by a MinerU service instead of a Docling sidecar, and a transcript must label
+  speakers · readers are cuts 2 and 3
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: [0039](0039-a-chunk-is-what-extraction-sees.md) (#633, not merged yet) puts Docling
   behind the block model as its cut 2 and leaves "evidence that points at a table cell or an image
@@ -126,6 +132,25 @@ is not decided here.
 `/v1/audio/transcriptions` asking for segment timestamps, vision through a chat request with
 image parts. OCR is the Docling sidecar of 0039's cut 2.
 
+*Revised 2026-09-15.* Two changes to this decision, made by the maintainer before cut 2:
+
+- **OCR is a MinerU service, not a Docling sidecar.** MinerU detects the page layout first
+  and then recognises each region, and returns Markdown plus a content list in reading order
+  with `page_idx` and a `bbox` per block. That is exactly the `{"page", "bbox"}` anchor above.
+  Its VLM is not interchangeable with a generic vision model: the model behind `mineru-api`
+  speaks MinerU's own two-step protocol, and a generic model asked to "transcribe this page"
+  gives neither the layout nor the boxes. So the setting is `ocr_*` (the service URL and key),
+  not a vision chat model; a generic vision model stays the reader for cut 4, descriptions.
+- **A transcript must say who spoke** (the first open question below, now decided). A
+  transcription endpoint that returns segments without speaker labels is treated like a
+  missing one: the recording is not read, and the alert says why. The database refuses a
+  `transcribed` anchor without `speaker`.
+
+Where a setting is empty, "fails with an alert" means **degrades**. The file is kept, and the
+document stops at `failed` with `documents.reader_needed` set to the missing reader. It raises
+one `document.needs_reader` alert and is not retried. Saving the setting queues those documents
+again.
+
 These are not a reuse of the chat model. A recording of a board meeting or a scanned contract is
 more sensitive than a paragraph of text, and a deployment will reasonably keep transcription and
 OCR on local models while chat goes to a hosted one. One setting would force the most sensitive
@@ -170,7 +195,8 @@ the recording at `start_ms` — is a separate cut after the capability, not part
 
 ## Open
 
-- **Who said it.** Whisper-compatible endpoints do not separate speakers. Without speakers, "Zhang
+- ~~**Who said it.**~~ *Decided 2026-09-15: a transcript without speaker labels is refused (decision 5).*
+  Whisper-compatible endpoints do not separate speakers. Without speakers, "Zhang
   San said he would deliver in Q3" and "Li Si said Zhang San would deliver in Q3" can be the same
   transcript line, and a meeting ingested that way attributes commitments to the wrong people —
   worse than extracting nothing. Cut 3 does not ship until this is decided: require an endpoint

@@ -186,18 +186,23 @@ impl Fx {
 
     /// 同上，正文由调用方给
     async fn document_with_text(&self, text: &str) -> anyhow::Result<Uuid> {
+        self.document_with_bytes("long.md", text.as_bytes()).await
+    }
+
+    /// 任意字节、任意文件名：图片、录音、二进制都从这里进
+    async fn document_with_bytes(&self, filename: &str, bytes: &[u8]) -> anyhow::Result<Uuid> {
         use sha2::{Digest, Sha256};
-        let sha: String = Sha256::digest(text.as_bytes())
+        let sha: String = Sha256::digest(bytes)
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        self.state.blob.put(&sha, text.as_bytes()).await?;
+        self.state.blob.put(&sha, bytes).await?;
         Ok(utopia_store::documents::create(
             &self.pool,
             self.kb,
-            "long.md",
-            "text/markdown",
-            text.len() as i64,
+            filename,
+            "application/octet-stream",
+            bytes.len() as i64,
             &sha,
             None,
             None,
@@ -205,6 +210,16 @@ impl Fx {
         )
         .await?
         .id)
+    }
+
+    async fn alerts(&self, kind: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(sqlx::query_scalar(
+            "SELECT detail FROM alerts WHERE kb_id = $1 AND kind = $2 ORDER BY created_at",
+        )
+        .bind(self.kb)
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn embed(&self, doc: Uuid) -> anyhow::Result<usize> {
@@ -364,6 +379,66 @@ async fn a_nul_byte_does_not_fail_the_whole_document() -> anyhow::Result<()> {
         joined.contains("Revenue grew twelve percent."),
         "the words around the NUL survive, joined as written"
     );
+    f.cleanup().await
+}
+
+/// 0040：图片、扫描件、录音的字要靠模型读。没配那种模型时**降级**：文件留着、文档停在
+/// failed 并记下缺哪一种、报一条库级告警；不重试，也不再解出一堆乱码去分块、嵌入、抽取
+#[tokio::test]
+async fn a_file_that_needs_a_reader_waits_and_says_so() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let png = [
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H',
+    ];
+    let mp3 = [b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, 0, 0xFF, 0xFB];
+    let image = f.document_with_bytes("contract-scan.png", &png).await?;
+    let recording = f.document_with_bytes("board-meeting.mp3", &mp3).await?;
+
+    for (doc, reader) in [(image, "ocr"), (recording, "transcribe")] {
+        let err = super::process_document(&f.state, doc)
+            .await
+            .expect_err("nothing can be read without the model");
+        assert!(
+            utopia_core::is_terminal(&err),
+            "retrying cannot configure a model"
+        );
+        let row = utopia_store::documents::get(&f.pool, doc).await?;
+        assert_eq!(row.status, "failed");
+        assert_eq!(row.reader_needed.as_deref(), Some(reader));
+        assert!(row.error.is_some(), "the document says why");
+        assert!(f.stored(doc).await?.is_empty(), "no garbage chunks");
+    }
+    let alerts = f.alerts("document.needs_reader").await?;
+    assert_eq!(alerts.len(), 2);
+    assert_eq!(alerts[0]["name"], "contract-scan.png");
+    assert_eq!(alerts[0]["reader"], "ocr");
+    assert_eq!(alerts[1]["reader"], "transcribe");
+    f.cleanup().await
+}
+
+/// 读不了的格式（老式 .doc、压缩包）：一次失败、不重试，也不进库成乱码；它不缺模型，不报那条告警
+#[tokio::test]
+async fn a_binary_file_fails_once_instead_of_becoming_text() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let doc = f
+        .document_with_bytes(
+            "minutes.doc",
+            &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0, 0, 0, 0],
+        )
+        .await?;
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("not text");
+    assert!(utopia_core::is_terminal(&err));
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "failed");
+    assert_eq!(row.reader_needed, None);
+    assert!(f.stored(doc).await?.is_empty());
+    assert!(f.alerts("document.needs_reader").await?.is_empty());
     f.cleanup().await
 }
 

@@ -650,7 +650,7 @@ export function Library() {
               type="file"
               multiple
               hidden
-              accept=".pdf,.docx,.xlsx,.xls,.ods,.pptx,.md,.txt,.html,.htm,.csv,.tsv,.json,.yaml,.yml,.xml,.log"
+              accept=".pdf,.docx,.xlsx,.xls,.ods,.pptx,.md,.txt,.html,.htm,.csv,.tsv,.json,.yaml,.yml,.xml,.log,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp,.gif,.mp3,.wav,.m4a,.flac,.ogg,.opus,.aac,.amr"
               onChange={(e) => e.target.files?.length && upload.mutate(e.target.files)}
             />
 

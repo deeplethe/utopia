@@ -81,6 +81,21 @@ async fn chat_retrying_rate_limits(
 
 const MIN_CONFIDENCE: f32 = 0.6;
 
+/// 模型看图描述出来的事实，置信度压到这里（0040 决定 4）：低于时态引擎自动关闭的门槛，
+/// 它能进图、能被搜到和引用，却不能单独把一段正确的旧值关掉——看柱状图读错一个数字是常事，
+/// 按普通事实入库的话，错的数会关掉它反驳的那个对的数，而库里没有一行说这次关闭靠的是一张图。
+/// 真要关，时态引擎记一条低置信冲突，交给人或治理去判
+const DESCRIBED_CEILING: f32 = utopia_store::temporal::AUTO_CLOSE_MIN_CONFIDENCE - 0.05;
+
+/// 这块文字的来源给事实置信度设的上限
+fn origin_ceiling(origin: &str, confidence: f32) -> f32 {
+    if origin == "described" {
+        confidence.min(DESCRIBED_CEILING)
+    } else {
+        confidence
+    }
+}
+
 /// 这串字**是不是一个东西的名字**。
 ///
 /// 判据是**词数**不是字符数。字符数分不开真假：
@@ -1585,6 +1600,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                 .await;
                 continue;
             }
+            let confidence = origin_ceiling(&chunk.origin, confidence);
             let validity =
                 validity_of(f.valid_from.as_deref(), f.valid_to.as_deref(), doc.doc_time);
 
@@ -3387,6 +3403,22 @@ fn unit_for(
         None
     } else {
         declared.map(str::to_string)
+    }
+}
+
+#[cfg(test)]
+mod origin_ceiling_tests {
+    use super::*;
+
+    #[test]
+    fn a_described_fact_cannot_close_a_value_by_itself() {
+        let ceiling = origin_ceiling("described", 0.95);
+        assert!(ceiling < utopia_store::temporal::AUTO_CLOSE_MIN_CONFIDENCE);
+        assert!(ceiling >= MIN_CONFIDENCE, "it still enters the graph");
+        assert_eq!(origin_ceiling("described", 0.62), 0.62);
+        for origin in ["stated", "ocr", "transcribed"] {
+            assert_eq!(origin_ceiling(origin, 0.95), 0.95);
+        }
     }
 }
 

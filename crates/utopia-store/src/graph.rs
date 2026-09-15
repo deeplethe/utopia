@@ -1549,7 +1549,8 @@ pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<Eviden
                 c.doc_version < COALESCE(
                     (SELECT MAX(version) FROM document_versions dv
                      WHERE dv.document_id = c.document_id), 1) AS stale,
-                d.deleted_at IS NOT NULL AS document_deleted
+                d.deleted_at IS NOT NULL AS document_deleted,
+                c.origin, c.origin_model, c.anchor
          FROM fact_evidence fe
          JOIN chunks c ON c.id = fe.chunk_id
          JOIN documents d ON d.id = c.document_id
@@ -1839,13 +1840,13 @@ pub async fn graph_changes(
                 COALESCE(r.label, fact_surface_predicate(ev.id)) AS predicate_label, o.canonical_name AS object_name,
                 ev.object_value, ev.valid_from, ev.valid_from_precision,
                 ev.valid_to, ev.valid_to_precision,
-                ev.confidence, src.document_id, src.filename, src.quote
+                ev.confidence, src.document_id, src.filename, src.quote, src.quote_origin
          FROM ev
          LEFT JOIN relation_types r ON r.id = ev.predicate_id
          JOIN entities s ON s.id = ev.subject_id
          LEFT JOIN entities o ON o.id = ev.object_id
          LEFT JOIN LATERAL (
-             SELECT d.id AS document_id, d.filename, fe.quote
+             SELECT d.id AS document_id, d.filename, fe.quote, c.origin AS quote_origin
              FROM fact_evidence fe
              JOIN chunks c ON c.id = fe.chunk_id
              JOIN documents d ON d.id = c.document_id

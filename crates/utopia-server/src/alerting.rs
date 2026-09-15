@@ -56,6 +56,39 @@ pub async fn observe_job_failure(
     state.emit_alert();
 }
 
+/// 一份文件的字要靠没配的那种模型读（0040）：报一条库级告警，名字存进告警里——
+/// 文件删了告警还读得懂
+pub async fn observe_document_needs_reader(
+    state: &AppState,
+    kb_id: uuid::Uuid,
+    document_id: uuid::Uuid,
+    filename: &str,
+    needs: &utopia_ingest::NeedsReader,
+) {
+    if let Err(e) = alerts::raise(
+        &state.pool,
+        alerts::NewAlert {
+            kb_id: Some(kb_id),
+            severity: "warning",
+            kind: alerts::kind::DOCUMENT_NEEDS_READER,
+            min_role: Role::Editor,
+            subject_type: Some("document"),
+            subject_id: Some(document_id),
+            detail: serde_json::json!({
+                "name": filename,
+                "reader": needs.reader.as_str(),
+                "error": needs.to_string(),
+            }),
+        },
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "上报告警失败");
+        return;
+    }
+    state.emit_alert();
+}
+
 /// 这次失败还值不值得重试。
 ///
 /// **只有欠费是没救的。** 限流会自己恢复，端点不可达可能是重启中的服务，

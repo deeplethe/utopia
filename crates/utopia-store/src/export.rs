@@ -83,6 +83,8 @@ pub struct ExportFact {
     pub supersedes: Option<Uuid>,
     pub documents: Vec<Uuid>,
     pub quotes: Vec<String>,
+    /// 证据文字的来源（0040），去重：一条陈述的引文里有没有扫描、转写、看图描述来的
+    pub quote_origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -194,7 +196,11 @@ pub async fn facts_page(
                   AS documents,
                 COALESCE(ARRAY(SELECT e.quote FROM fact_evidence e
                                 WHERE e.fact_id = f.id AND e.quote IS NOT NULL
-                                ORDER BY e.chunk_id), '{{}}') AS quotes
+                                ORDER BY e.chunk_id), '{{}}') AS quotes,
+                COALESCE(ARRAY(SELECT DISTINCT c.origin FROM fact_evidence e
+                                JOIN chunks c ON c.id = e.chunk_id
+                                WHERE e.fact_id = f.id
+                                ORDER BY c.origin), '{{}}') AS quote_origins
            FROM facts f
           WHERE f.kb_id = $1 AND f.id > COALESCE($2, '00000000-0000-0000-0000-000000000000'::uuid)
           ORDER BY f.id LIMIT $3",
