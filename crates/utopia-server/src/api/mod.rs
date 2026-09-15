@@ -30,7 +30,7 @@ mod workspaces;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, HeaderValue, Method};
-use axum::routing::{any, get, patch, post};
+use axum::routing::{any, get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
@@ -138,6 +138,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route(
             "/workspaces/{id}/settings",
             get(settings_routes::get).put(settings_routes::put),
+        )
+        .route(
+            "/workspaces/{id}/settings/ocr",
+            put(settings_routes::put_ocr),
         )
         .route(
             "/workspaces/{id}/settings/test",

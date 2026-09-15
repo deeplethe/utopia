@@ -16,6 +16,8 @@
 //! 7. **正文夹 NUL 不毁整篇**（#611）：Postgres 的 TEXT 不收 0x00，从前一个字节就让整篇
 //!    落在 failed。现在走完整的 process_document 到 ready，库里没有一个分块带 NUL。
 //!
+//! 8. **扫描件等版面识别服务读**（0040 第二刀）：配上服务重新排队，交一次、挂回去问、按页切块。
+//!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
 use std::sync::{Arc, Mutex};
@@ -415,6 +417,224 @@ async fn a_file_that_needs_a_reader_waits_and_says_so() -> anyhow::Result<()> {
     assert_eq!(alerts[0]["name"], "contract-scan.png");
     assert_eq!(alerts[0]["reader"], "ocr");
     assert_eq!(alerts[1]["reader"], "transcribe");
+    f.cleanup().await
+}
+
+/// 假的 `mineru-api`：交一次拿到 `t-n`；问状态前 `processing_polls` 次说还在读，之后说读完；
+/// `fail` 时说读失败。记下交了几次、每次带了什么
+#[derive(Clone, Default)]
+struct FakeMineru {
+    submissions: Arc<Mutex<Vec<String>>>,
+    polls: Arc<Mutex<usize>>,
+    processing_polls: usize,
+    fail: bool,
+}
+
+impl Respond for FakeMineru {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        if request.method.as_str() == "POST" {
+            let mut subs = self.submissions.lock().expect("lock");
+            let auth = request
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            subs.push(format!(
+                "{auth}\n{}",
+                String::from_utf8_lossy(&request.body)
+            ));
+            return ResponseTemplate::new(202).set_body_json(
+                serde_json::json!({ "task_id": format!("t-{}", subs.len()), "status": "pending" }),
+            );
+        }
+        if request.url.path().ends_with("/result") {
+            let list = serde_json::json!([
+                { "type": "header", "text": "ACME", "page_idx": 0, "bbox": [0, 0, 1000, 20] },
+                { "type": "text", "text": "Lease Agreement", "text_level": 1, "page_idx": 0, "bbox": [100, 40, 900, 80] },
+                { "type": "text", "text": "Beta Robotics pays Alpha 1,000 per month.", "page_idx": 0, "bbox": [100, 100, 900, 140] },
+                { "type": "text", "text": "Signed on 12 February 2025.", "page_idx": 1, "bbox": [100, 60, 700, 90] }
+            ]);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "completed", "backend": "vlm-auto-engine", "version": "2.5.4",
+                "results": { "contract-scan": { "content_list": list.to_string() } }
+            }));
+        }
+        let mut polls = self.polls.lock().expect("lock");
+        *polls += 1;
+        let status = if self.fail {
+            serde_json::json!({ "status": "failed", "error": "CUDA out of memory" })
+        } else if *polls <= self.processing_polls {
+            serde_json::json!({ "status": "processing" })
+        } else {
+            serde_json::json!({ "status": "completed" })
+        };
+        ResponseTemplate::new(200).set_body_json(status)
+    }
+}
+
+async fn with_mineru(f: &Fx, fake: &FakeMineru) -> anyhow::Result<()> {
+    Mock::given(wiremock::matchers::path_regex("^/ocr/tasks.*"))
+        .respond_with(fake.clone())
+        .mount(&f.server)
+        .await;
+    utopia_store::settings::upsert_ocr(
+        &f.pool,
+        f.ws,
+        Some(&format!("{}/ocr/", f.server.uri())),
+        Some("ocr-secret"),
+        Some("vlm-auto-engine"),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn reader_task(f: &Fx, doc: Uuid) -> anyhow::Result<Option<serde_json::Value>> {
+    Ok(utopia_store::documents::reader_task(&f.pool, doc).await?)
+}
+
+/// 0040 第二刀：没配服务时停下的扫描件，配上服务就重新排队；交一次、问到读完、按页切块，
+/// 每块记着读它的服务版本、页码和框。等的时候不烧重试预算，也不重交
+#[tokio::test]
+async fn a_scan_waits_for_the_layout_service_and_keeps_its_page() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let png = [
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H',
+    ];
+    let doc = f.document_with_bytes("contract-scan.png", &png).await?;
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("no OCR yet");
+    assert!(utopia_core::is_terminal(&err));
+
+    let fake = FakeMineru {
+        processing_polls: 1,
+        ..Default::default()
+    };
+    with_mineru(&f, &fake).await?;
+    let requeued =
+        utopia_store::documents::requeue_waiting_for_reader(&f.pool, f.ws, "ocr").await?;
+    assert_eq!(
+        requeued,
+        vec![(doc, f.kb)],
+        "saving the service queues the scan again"
+    );
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!((row.status.as_str(), row.reader_needed), ("pending", None));
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind = 'process_document' AND status = 'queued'
+            AND payload->>'document_id' = $1",
+    )
+    .bind(doc.to_string())
+    .fetch_one(&f.pool)
+    .await?;
+    assert!(queued >= 1);
+
+    // 交上去：挂回队列等，文档还在 parsing
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("submitted");
+    assert!(utopia_core::is_deferred(&err).is_some(), "{err:#}");
+    assert!(!utopia_core::is_terminal(&err));
+    assert_eq!(
+        utopia_store::documents::get(&f.pool, doc).await?.status,
+        "parsing"
+    );
+    let task = reader_task(&f, doc).await?.expect("the task is remembered");
+    assert_eq!(task["task_id"], "t-1");
+
+    // 问一次：还在读
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("processing");
+    assert!(utopia_core::is_deferred(&err).is_some());
+
+    // 再问：读完了
+    super::process_document(&f.state, doc).await?;
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "ready", "{:?}", row.error);
+    assert_eq!(
+        reader_task(&f, doc).await?,
+        None,
+        "a finished read forgets its task"
+    );
+    let subs = fake.submissions.lock().expect("lock").clone();
+    assert_eq!(subs.len(), 1, "waiting never submits twice");
+    assert!(subs[0].starts_with("Bearer ocr-secret\n"));
+    assert!(subs[0].contains("name=\"backend\""));
+    assert!(subs[0].contains("vlm-auto-engine"));
+
+    type Stored = (String, String, Option<String>, Option<serde_json::Value>);
+    let chunks: Vec<Stored> = sqlx::query_as(
+        "SELECT text, origin, origin_model, anchor FROM chunks
+          WHERE document_id = $1 AND superseded_at IS NULL ORDER BY seq",
+    )
+    .bind(doc)
+    .fetch_all(&f.pool)
+    .await?;
+    assert_eq!(chunks.len(), 2, "one chunk per page: {chunks:#?}");
+    assert!(chunks.iter().all(|c| c.1 == "ocr"));
+    assert_eq!(chunks[0].2.as_deref(), Some("mineru 2.5.4 vlm-auto-engine"));
+    assert!(chunks[0].0.contains("1,000 per month"));
+    assert!(!chunks[0].0.contains("ACME"), "the page header is not text");
+    assert_eq!(
+        chunks[0].3,
+        Some(serde_json::json!({ "page": 1, "bbox": [100.0, 40.0, 900.0, 140.0] }))
+    );
+    assert_eq!(
+        chunks[1].3.as_ref().map(|a| a["page"].clone()),
+        Some(serde_json::json!(2))
+    );
+    assert!(
+        f.stored(doc).await?.iter().all(|(_, v)| v.is_some()),
+        "embedded like any text"
+    );
+    f.cleanup().await
+}
+
+/// 服务说读失败：文档带着服务给的原因落在 failed，任务号清掉，这次失败走普通重试（下一次重交）
+#[tokio::test]
+async fn a_failed_read_is_retried_from_a_fresh_submission() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let fake = FakeMineru {
+        fail: true,
+        ..Default::default()
+    };
+    with_mineru(&f, &fake).await?;
+    let doc = f
+        .document_with_bytes(
+            "contract-scan.png",
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+        )
+        .await?;
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("submitted");
+    assert!(utopia_core::is_deferred(&err).is_some());
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("failed");
+    assert!(utopia_core::is_deferred(&err).is_none());
+    assert!(
+        !utopia_core::is_terminal(&err),
+        "the next attempt may succeed"
+    );
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "failed");
+    assert!(row
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("CUDA out of memory")));
+    assert_eq!(reader_task(&f, doc).await?, None);
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("submitted again");
+    assert!(utopia_core::is_deferred(&err).is_some());
+    assert_eq!(fake.submissions.lock().expect("lock").len(), 2);
     f.cleanup().await
 }
 

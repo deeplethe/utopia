@@ -164,6 +164,7 @@ mod reader_tests {
 mod blocks;
 mod chunker;
 pub mod html;
+pub mod mineru;
 pub mod ontology_rdf;
 mod parsers;
 pub mod provenance;

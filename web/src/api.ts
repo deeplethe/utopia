@@ -1007,6 +1007,11 @@ export interface ChunkFull {
   id: string;
   seq: number;
   text: string;
+  /** 这块文字从哪来（0040） */
+  origin: "stated" | "ocr" | "transcribed" | "described";
+  origin_model: string | null;
+  /** ocr: {page, bbox?}；transcribed: {start_ms, end_ms, speaker} */
+  anchor: Record<string, unknown> | null;
 }
 
 export interface EntityTypeView {

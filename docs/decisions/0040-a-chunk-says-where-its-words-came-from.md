@@ -8,7 +8,11 @@
   PDF with an empty text layer is a scan, and without the model the document fails once with
   `documents.reader_needed` and a `document.needs_reader` alert · revised 2026-09-15: scans and
   images are read by a MinerU service instead of a Docling sidecar, and a transcript must label
-  speakers · readers are cuts 2 and 3
+  speakers · cut 2 implemented (2026-09-15): scans and images are read by a workspace's MinerU
+  service (`llm_settings.ocr_*`, migration 0059), one segment per page with the covered regions'
+  box in the anchor; the processing job waits on the service with `Deferred` and remembers the
+  remote task on the document; saving the service queues the waiting documents again · the
+  settings card is its own interface cut · recordings are cut 3
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: [0039](0039-a-chunk-is-what-extraction-sees.md) (#633, not merged yet) puts Docling
   behind the block model as its cut 2 and leaves "evidence that points at a table cell or an image
@@ -172,6 +176,23 @@ document are deduplicated by content hash across the base — a logo on fifty sl
 description — and skipped below a size floor. A per-document call budget reports what it skipped
 instead of dropping it quietly.
 
+*Cut 2, as built (2026-09-15).* The job that waits is `process_document` itself rather than a
+new job kind. It submits the file to `POST /tasks`, records the remote task on the document
+(`documents.reader_task`: reader, service, task id, the file's `sha256`, when it was submitted),
+and returns `Deferred`, which puts the job back in the queue without spending an attempt. Each
+later run asks `GET /tasks/{id}` and either waits again or fetches the content list. A restart
+resumes from the recorded task; a new file version or a different service discards it. A task
+the service no longer knows is submitted again; a task it reports failed is cleared and takes an
+ordinary retry; a task still unfinished after six hours fails the document for good. MinerU
+returns the whole file at once, so "resumable from the last block written" is resuming from the
+remote task: nothing is read twice unless the service lost it.
+
+Segments are per page, not per region. Every region has its own box, and a segment per region
+would make every paragraph its own chunk. After packing, a chunk's anchor carries the union of
+the boxes of the regions it covers on its page. Page headers, footers and page numbers are
+dropped; tables become Markdown tables, so a long scanned table repeats its header across
+chunks like any other.
+
 ### 7. The read contract says it
 
 The evidence API, the MCP tool results (`quote`, `document_id` and `filename` today) and the RDF
@@ -186,7 +207,7 @@ the recording at `start_ms` — is a separate cut after the capability, not part
 
 1. **The ledger shape.** `origin`, `origin_model`, `anchor`, the packer rule, the ceiling, the read
    contract. No media reader yet; everything that exists is stated, and says so.
-2. **Scans and document images through Docling** (0039's cut 2): `ocr`. The highest value —
+2. **Scans and document images through MinerU** (revised from Docling): `ocr`. The highest value —
    scanned contracts, stamped approvals, invoices, all of which fail today with no text layer —
    and the modality that keeps the verbatim contract.
 3. **Recordings**: `transcribed`, segment times required, speakers where the endpoint labels them.

@@ -435,6 +435,11 @@ pub struct LlmSettings {
     pub embed_model: Option<String>,
     pub embed_dim: Option<i32>,
     pub updated_at: DateTime<Utc>,
+    /// 读扫描件、图片的版面识别服务（MinerU，0040）；空 = 没配，那类文件降级
+    pub ocr_base_url: Option<String>,
+    #[serde(skip_serializing)]
+    pub ocr_api_key: Option<String>,
+    pub ocr_backend: Option<String>,
 }
 
 impl LlmSettings {
@@ -443,6 +448,9 @@ impl LlmSettings {
     }
     pub fn embed_ready(&self) -> bool {
         self.embed_base_url.is_some() && self.embed_model.is_some()
+    }
+    pub fn ocr_ready(&self) -> bool {
+        self.ocr_base_url.is_some()
     }
 }
 
@@ -1023,6 +1031,10 @@ pub struct ChunkFull {
     pub id: Uuid,
     pub seq: i32,
     pub text: String,
+    /// 这块文字从哪来（0040）：查看器按它标出认出来的字，按锚点翻到那一页
+    pub origin: String,
+    pub origin_model: Option<String>,
+    pub anchor: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
