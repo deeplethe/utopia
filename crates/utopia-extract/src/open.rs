@@ -147,7 +147,9 @@ cut water use by 12% compared to 2019\" gives the plant \"cut water use\" = \"12
 {\"compared to\": \"2019\"}. qualifiers is null when there are none.\n\
 4. When a description has another thing folded into it, also write the statement that unfolds \
 it: \"hospitals accredited by the Joint Commission\" also gives Joint Commission —accredited→ \
-hospitals.\n\
+hospitals. Do not unfold a description that only names what it belongs to or is about: \"the \
+northern wing of the palace\" and \"the use of the coating\" give no statement, the palace and \
+the coating are part of the description.\n\
 5. when is the words that say when the statement holds, happened or began, and ended is the \
 words that say when it stopped, each copied exactly as written (\"March 4, 2011\", \"去年冬天\", \
 \"by the end of next season\"). Never compute, convert or normalise a date, and never write one \

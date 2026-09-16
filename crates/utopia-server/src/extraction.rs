@@ -49,12 +49,23 @@ pub(crate) async fn chat_retrying_rate_limits(
     client: &utopia_llm::LlmClient,
     messages: &[utopia_llm::ChatMessage],
 ) -> anyhow::Result<String> {
+    chat_retrying_rate_limits_at(state, settings, client, messages, None).await
+}
+
+/// 同上，指定采样温度（开放抽取要 0，见 `extraction_open`）。
+pub(crate) async fn chat_retrying_rate_limits_at(
+    state: &AppState,
+    settings: &utopia_core::models::LlmSettings,
+    client: &utopia_llm::LlmClient,
+    messages: &[utopia_llm::ChatMessage],
+    temperature: Option<f32>,
+) -> anyhow::Result<String> {
     let mut backoff = Duration::from_secs(2);
     for attempt in 1..=RATE_LIMIT_TRIES {
         // 许可只包住调用本身，出了这个块就还回去
         let outcome = {
             let _permit = llm_util::acquire_chat(state, settings).await;
-            client.chat(messages).await
+            client.chat_at(messages, temperature).await
         };
         let err = match outcome {
             Ok(reply) => return Ok(reply),

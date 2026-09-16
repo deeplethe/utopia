@@ -307,11 +307,25 @@ impl LlmClient {
         req
     }
 
-    /// 非流式对话（连通性测试等轻量场景）。
+    /// 非流式对话（连通性测试等轻量场景）。不传温度：请求体与从前一字不变，端点用它的缺省
     pub async fn chat(&self, messages: &[ChatMessage]) -> anyhow::Result<String> {
+        self.chat_at(messages, None).await
+    }
+
+    /// 非流式对话，指定采样温度。抽取这类「照抄原文」的活要 0：端点缺省是 1.0，同一段
+    /// 文字连问两次，一次给 6 条陈述一次给 19 条（#729 实测），密度全看运气
+    pub async fn chat_at(
+        &self,
+        messages: &[ChatMessage],
+        temperature: Option<f32>,
+    ) -> anyhow::Result<String> {
+        let mut body = json!({ "model": self.model, "messages": messages, "stream": false });
+        if let Some(t) = temperature {
+            body["temperature"] = json!(t);
+        }
         let resp = self
             .request("/chat/completions")
-            .json(&json!({ "model": self.model, "messages": messages, "stream": false }))
+            .json(&body)
             .send()
             .await
             .map_err(Unreachable)?;

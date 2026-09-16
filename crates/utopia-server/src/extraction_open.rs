@@ -20,7 +20,7 @@
 //! 来自内容或来源系统时才用它——上传时刻与文件修改时间都不是文档说的日期。
 
 use crate::extraction::{
-    chat_retrying_rate_limits, drop_signal, incomplete_reason, origin_ceiling, resolve_handle,
+    chat_retrying_rate_limits_at, drop_signal, incomplete_reason, origin_ceiling, resolve_handle,
     span_in_quote,
 };
 use crate::state::AppState;
@@ -127,7 +127,16 @@ pub(crate) async fn run_open(
             .map(|(_, text)| text.as_str());
         let messages =
             utopia_extract::open::build_open_messages(&doc.filename, &known, opening, &chunk.text);
-        let reply = match chat_retrying_rate_limits(state, settings, client, &messages).await {
+        // 温度 0：照抄原文的活不该靠采样。端点缺省 1.0 时同一块两次回复密度差三倍
+        let reply = match chat_retrying_rate_limits_at(
+            state,
+            settings,
+            client,
+            &messages,
+            Some(0.0),
+        )
+        .await
+        {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取调用失败，跳过该分块");
