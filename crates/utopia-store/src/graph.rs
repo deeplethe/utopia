@@ -1455,6 +1455,10 @@ pub async fn low_confidence_facts(
 /// "证据全部停留在旧版"的现行事实（S3 第三刀：文档新版没再确认的知识）。
 /// 判定纯派生自 chunk 存活性——认领机制保证未变段落的证据不被误伤；
 /// 绝不自动删除（没再提 ≠ 不成立），删除/闭合权在 Review 的人手里。
+///
+/// **「现行」这一条不能少。** 闭合是作废+改写，修正行带着原证据（`temporal::close_superseded`），
+/// 只看证据存活性的话，刚闭合的行立刻回到这一档——那个出路等于不存在。
+/// WHERE 与 `review::UNCONFIRMED_FACT` 同一套（0022：「结束不知哪天」不是开放）。
 pub async fn stale_facts(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1473,6 +1477,7 @@ pub async fn stale_facts(
          LEFT JOIN relation_types r ON r.id = f.predicate_id
          LEFT JOIN entities o ON o.id = f.object_id
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
+           AND f.valid_to IS NULL AND f.valid_to_precision IS NULL
            AND EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
            AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
                            JOIN chunks c ON c.id = fe.chunk_id

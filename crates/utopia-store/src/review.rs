@@ -20,8 +20,13 @@ use uuid::Uuid;
 pub const LOW_CONFIDENCE_BELOW: f32 = 0.75;
 
 /// 「待确认」的判据，写成 SQL 片段，`counts` 与总览（`review_summary`）共用：
-/// 有证据、但证据所在的分块全被新版本取代了。别名固定用 `f`。
-pub const UNCONFIRMED_FACT: &str = "EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
+/// 有证据、但证据所在的分块全被新版本取代了，**而且这条事实至今仍成立**。别名固定用 `f`。
+///
+/// 上界那一句是「闭合」这个出路的前提：闭合是作废+改写，修正行把证据一起复制下来
+/// （`temporal::close_superseded`），少了它，刚闭合的行照样满足判据——队列永远清不掉，
+/// 再点一次只会撞上「区间已闭合」。判据与 0022 说同一句话：「结束不知哪天」不是开放。
+pub const UNCONFIRMED_FACT: &str = "f.valid_to IS NULL AND f.valid_to_precision IS NULL
+               AND EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
                AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
                                  JOIN chunks c ON c.id = fe.chunk_id
                                 WHERE fe.fact_id = f.id
