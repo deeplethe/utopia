@@ -1,11 +1,16 @@
 //! 开放图谱的写入路径（0044 第 1 刀，#729）：文档说了什么，就按它自己的话记下来。
 //!
 //! 和 `extraction::run` 的分别只有一处：**提示词里没有本体**，模型不选关系、不选类、
-//! 不算日期。回复里是块自己的句子（`q`）、它提到的东西（`e`，有名字的和只被描述的）、
-//! 它做的陈述（`s`，关系短语照抄）、它写的时间词（`t`）和别名（`n`）。落库时陈述成
+//! 不算日期。回复里是它提到的东西（`e`，有名字的和只被描述的）、它做的陈述（`s`，关系
+//! 短语照抄，主宾按名字写，时间词照抄，引文整句照抄）和别名（`n`）。落库时陈述成
 //! `layer = 'open'` 的事实行，短语留在行上；限定按文档自己的角色词挂在
 //! `statement_qualifiers`；时间词原样进 `time_mentions`，谁也不把它算成日期——那是
 //! 0045 的事。类型化的事实由对齐（第 2 刀）从这些行算出来，不在这里写。
+//!
+//! **陈述按名字指东西，不按编号。** 第一版让 `e` 带编号、陈述写编号、引文按句号索引，
+//! 省的是输出 token；实测 deepseek-v4-flash 在密的段落里会把编号对错——同一块两次回复
+//! 一次「NVIDIA has reached AI」一次「tokens are tokens」，原文说的是「AI has reached its
+//! inflection point」。原型按名字写主宾、每条陈述抄引文，333 条里编造 0 条。忠实先于省钱
 //!
 //! 复用的是身份那一段：名字照旧走 `resolve_handle`（同一回复里两个同名的东西不会
 //! 塌成一个，0041 的名字事实照记），被描述的东西建成没有名字事实的实体
@@ -21,7 +26,6 @@ use crate::extraction::{
 use crate::state::AppState;
 use std::collections::{HashMap, HashSet};
 use utopia_core::models::{Document, KnowledgeBase, LlmSettings};
-use utopia_extract::open::{OpenTime, QualifierValue, Ref};
 use utopia_store::extraction_drops::reason;
 use utopia_store::graph::FactObject;
 use uuid::Uuid;
@@ -49,23 +53,25 @@ fn locate(hay: &str, needle: &str) -> Option<(i32, i32)> {
     Some((start as i32, end as i32))
 }
 
-/// 时间词在块里的字符起点：先在它所属的那句引文里找（同一个词块里可能出现两次，
-/// 要的是这句里的那个），引文没定位到就在整块里找
+/// 时间词在块里的字符起点。**必须在这条陈述自己的那句引文里**：模型会把一个时间词挂到
+/// 好几条陈述上（FDA 语料实测「week 4」挂到了「不应由过敏患者服用」上，六条带时间的陈述错了三条），
+/// 整块里搜得到不等于这句说了它。引文里有、但引文本身没在块里定位到的，起点退回整块里的第一处
 fn locate_time(chunk: &str, quote: Option<(&str, Option<(i32, i32)>)>, words: &str) -> Option<i32> {
-    if let Some((q, Some((start, _)))) = quote {
-        if let Some((inner, _)) = locate(q, words) {
-            return Some(start + inner);
-        }
+    let (q, span) = quote?;
+    let (inner, _) = locate(q, words)?;
+    match span {
+        Some((start, _)) => Some(start + inner),
+        None => locate(chunk, words).map(|(s, _)| s),
     }
-    locate(chunk, words).map(|(s, _)| s)
 }
 
-/// 已知句柄 `k3` → 本文档已认下的第 3 个实体。
-fn known_index(handle: &str) -> Option<usize> {
-    handle
-        .strip_prefix('k')
-        .and_then(|n| n.parse::<usize>().ok())
-        .and_then(|n| n.checked_sub(1))
+/// 名字的查找键：空白折叠、小写。陈述里写的名字和 `e` 里列的名字要一字不差，
+/// 差的只许是空白和大小写
+fn name_key(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 pub(crate) async fn run_open(
@@ -85,9 +91,10 @@ pub(crate) async fn run_open(
     let chunks = utopia_store::documents::chunks_for_extraction(pool, document_id).await?;
     let opening_chunk = utopia_store::documents::opening_chunk(pool, document_id).await?;
 
-    // 本文档已认下的**有名字的**实体，按首次出现排序，送进后续分块的提示词当 k 句柄。
-    // 被描述的东西不进清单：「一家医院」在下一块里指的未必是同一家
+    // 本文档已认下的**有名字的**实体，按首次出现排序，送进后续分块的提示词；
+    // 陈述按名字指它们。被描述的东西不进清单：「一家医院」在下一块里指的未必是同一家
     let mut doc_entities: Vec<(Uuid, String, String)> = Vec::new();
+    let mut known_by_name: HashMap<String, Uuid> = HashMap::new();
     // 被描述的东西按描述文字在本文档内复用：同一块里「the northern wing」说了三次是一个东西
     let mut described: HashMap<String, Uuid> = HashMap::new();
     let mut handled_by_name: HashMap<String, Vec<Uuid>> = HashMap::new();
@@ -162,40 +169,20 @@ pub(crate) async fn run_open(
             )
             .await;
         }
-        // 引文逐句定位。定位不到的那句照样当证据文字记，只是没有偏移，并记一笔——
-        // 模型没照抄的句子是「不是原文说的」那一类的苗头，量它
-        let quotes: Vec<(String, Option<(i32, i32)>)> = extraction
-            .quotes
-            .iter()
-            .map(|q| (q.clone(), locate(&chunk.text, q)))
-            .collect();
-        for (q, span) in &quotes {
-            if span.is_none() {
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::QUOTE_NOT_IN_CHUNK,
-                    "a quoted sentence is not in the chunk verbatim",
-                    Some(q),
-                )
-                .await;
-            }
-        }
-        let quote_at = |i: Option<usize>| -> Option<(&str, Option<(i32, i32)>)> {
-            i.and_then(|i| quotes.get(i))
-                .map(|(q, span)| (q.as_str(), *span))
-        };
 
         // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
         let mut response_claims: HashMap<String, Vec<Uuid>> = HashMap::new();
-        let mut local: HashMap<i64, Uuid> = HashMap::new();
+        let mut local: HashMap<String, Uuid> = HashMap::new();
         for e in &extraction.entities {
             let name = e.name.trim();
             if name.is_empty() {
                 continue;
             }
             let kind = e.kind.trim();
+            let key = name_key(name);
+            if local.contains_key(&key) {
+                continue;
+            }
             let id = if e.named {
                 let id = resolve_handle(
                     pool,
@@ -234,14 +221,10 @@ pub(crate) async fn run_open(
                 touched_names.insert(utopia_store::resolution::normalize_name(name).to_lowercase());
                 if !doc_entities.iter().any(|(x, _, _)| *x == id) {
                     doc_entities.push((id, kind.to_string(), name.to_string()));
+                    known_by_name.entry(key.clone()).or_insert(id);
                 }
                 id
             } else {
-                let key = name
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-                    .to_lowercase();
                 match described.get(&key) {
                     Some(id) => *id,
                     None => {
@@ -252,63 +235,59 @@ pub(crate) async fn run_open(
                             (!kind.is_empty()).then_some(kind),
                         )
                         .await?;
-                        described.insert(key, id);
+                        described.insert(key.clone(), id);
                         id
                     }
                 }
             };
-            local.insert(e.id, id);
+            local.insert(key, id);
         }
-        // 清单里的 k 句柄指的是**这一块开抽时**清单上的那些；这一块新认下的追加在后面，
-        // 前面的序号不变，所以这里直接按当前清单取
-        let resolve_ref = |r: &Ref| -> Option<Uuid> {
-            match r {
-                Ref::Local(n) => local.get(n).copied(),
-                Ref::Known(h) => known_index(h)
-                    .and_then(|i| doc_entities.get(i))
-                    .map(|(id, _, _)| *id),
-            }
+        // 陈述里写的名字 → 实体：先看这一块列出的，再看本文档前面认下的（提示词里的清单）
+        let resolve_name = |name: &str| -> Option<Uuid> {
+            let key = name_key(name);
+            local.get(&key).or_else(|| known_by_name.get(&key)).copied()
         };
 
         // ---- 陈述 ----
-        let times: HashMap<i64, &OpenTime> = extraction.times.iter().map(|t| (t.id, t)).collect();
         for s in &extraction.statements {
             let phrase = s.phrase.trim();
             if phrase.is_empty() {
                 continue;
             }
-            let Some(subject) = resolve_ref(&s.subject) else {
+            let Some(subject) = resolve_name(&s.subject) else {
                 drop_signal(
                     state,
                     kb_id,
                     document_id,
                     reason::UNKNOWN_REF,
-                    "a statement's subject points at nothing in the reply",
-                    Some(phrase),
+                    "a statement's subject is not a listed thing",
+                    Some(&s.subject),
                 )
                 .await;
                 continue;
             };
-            let object = match &s.object {
-                Some(r) => match resolve_ref(r) {
+            // 宾语写了名字但没在清单上：模型漏列了它。陈述照落，宾语落成字面值——
+            // 不凭空建实体，也不丢这条话（#559 的那一档）
+            let mut value = s.value.as_deref().map(str::trim).filter(|v| !v.is_empty());
+            let object = match s.object.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+                Some(name) => match resolve_name(name) {
                     Some(id) => Some(id),
                     None => {
                         drop_signal(
                             state,
                             kb_id,
                             document_id,
-                            reason::UNKNOWN_REF,
-                            "a statement's object points at nothing in the reply",
-                            Some(phrase),
+                            reason::OBJECT_UNDECLARED,
+                            "a statement's object is not a listed thing; written as a value",
+                            Some(name),
                         )
                         .await;
-                        continue;
+                        value = value.or(Some(name));
+                        None
                     }
                 },
                 None => None,
             };
-            let value = s.value.as_deref().map(str::trim).filter(|v| !v.is_empty());
-            // 宾语是实体就走边；同一件东西指向自己不是一条边
             let value_json;
             let fact_object = match (object, value) {
                 (Some(o), _) if o == subject => {
@@ -341,6 +320,22 @@ pub(crate) async fn run_open(
                     continue;
                 }
             };
+            // 引文定位。定位不到的那句照样当证据文字记，只是没有偏移，并记一笔——
+            // 模型没照抄的句子是「不是原文说的」那一类的苗头，量它
+            let quote_text = s.quote.as_deref().map(str::trim).filter(|q| !q.is_empty());
+            let quote: Option<(&str, Option<(i32, i32)>)> =
+                quote_text.map(|q| (q, locate(&chunk.text, q)));
+            if let Some((q, None)) = quote {
+                drop_signal(
+                    state,
+                    kb_id,
+                    document_id,
+                    reason::QUOTE_NOT_IN_CHUNK,
+                    "a quoted sentence is not in the chunk verbatim",
+                    Some(q),
+                )
+                .await;
+            }
             // 开放陈述没有模型自报的置信度：它说的是「文档这么说了」。看图描述出来的块
             // 照旧压上限（0040 决定 4）
             let confidence = origin_ceiling(&chunk.origin, 1.0);
@@ -354,7 +349,6 @@ pub(crate) async fn run_open(
                 confidence,
             )
             .await?;
-            let quote = quote_at(s.quote);
             // 表层谓词也写短语：今天的读路径都从 `fact_surface_predicate` 取名字
             utopia_store::graph::add_evidence_located(
                 pool,
@@ -365,67 +359,43 @@ pub(crate) async fn run_open(
                 quote.and_then(|(_, span)| span),
             )
             .await?;
-            for (role, qv) in &s.qualifiers {
-                let role = role.trim();
-                if role.is_empty() {
+            // 限定：值是清单上某个东西的名字就挂实体，否则挂文字
+            for (role, text) in &s.qualifiers {
+                let (role, text) = (role.trim(), text.trim());
+                if role.is_empty() || text.is_empty() {
                     continue;
                 }
-                match qv {
-                    QualifierValue::Entity(r) => match resolve_ref(r) {
-                        Some(id) => {
-                            utopia_store::graph::add_statement_qualifier(
-                                pool,
-                                fact_id,
-                                role,
-                                None,
-                                Some(id),
-                            )
-                            .await?
-                        }
-                        None => {
-                            drop_signal(
-                                state,
-                                kb_id,
-                                document_id,
-                                reason::UNKNOWN_REF,
-                                "a qualifier points at nothing in the reply",
-                                Some(role),
-                            )
-                            .await
-                        }
-                    },
-                    QualifierValue::Text(t) => {
-                        let t = t.trim();
-                        if t.is_empty() {
-                            continue;
-                        }
+                match resolve_name(text) {
+                    Some(id) => {
                         utopia_store::graph::add_statement_qualifier(
                             pool,
                             fact_id,
                             role,
-                            Some(&serde_json::json!(t)),
+                            None,
+                            Some(id),
+                        )
+                        .await?
+                    }
+                    None => {
+                        utopia_store::graph::add_statement_qualifier(
+                            pool,
+                            fact_id,
+                            role,
+                            Some(&serde_json::json!(text)),
                             None,
                         )
-                        .await?;
+                        .await?
                     }
                 }
             }
-            for tid in &s.times {
-                let Some(t) = times.get(tid) else {
-                    drop_signal(
-                        state,
-                        kb_id,
-                        document_id,
-                        reason::UNKNOWN_REF,
-                        "a statement points at a time mention that is not in the reply",
-                        Some(phrase),
-                    )
-                    .await;
-                    continue;
-                };
-                let words = t.text.trim();
-                // 时间词必须原样在块里：找不到就不记——一个凭空的时间比没有更糟
-                match locate_time(&chunk.text, quote_at(t.quote).or(quote), words) {
+            // 时间词：起与止各是一条提及，必须原样在这条陈述的引文里
+            for words in [s.when.as_deref(), s.ended.as_deref()]
+                .into_iter()
+                .flatten()
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+            {
+                match locate_time(&chunk.text, quote, words) {
                     Some(start) => {
                         utopia_store::time_mentions::record(
                             pool, kb_id, fact_id, chunk.id, words, start,
@@ -438,7 +408,7 @@ pub(crate) async fn run_open(
                             kb_id,
                             document_id,
                             reason::TIME_NOT_IN_QUOTE,
-                            "a time mention's words are not in the chunk verbatim",
+                            "a time mention's words are not in the statement's own sentence",
                             Some(words),
                         )
                         .await;
@@ -454,14 +424,14 @@ pub(crate) async fn run_open(
             if name.is_empty() {
                 continue;
             }
-            let Some(id) = resolve_ref(&n.entity) else {
+            let Some(id) = resolve_name(&n.entity) else {
                 drop_signal(
                     state,
                     kb_id,
                     document_id,
                     reason::UNKNOWN_REF,
-                    "a name points at nothing in the reply",
-                    Some(name),
+                    "a name's thing is not a listed thing",
+                    Some(&n.entity),
                 )
                 .await;
                 continue;
@@ -496,7 +466,12 @@ pub(crate) async fn run_open(
                 .await;
                 continue;
             }
-            let quote = quote_at(n.quote).map(|(q, _)| q).unwrap_or(&chunk.text);
+            let quote = n
+                .quote
+                .as_deref()
+                .map(str::trim)
+                .filter(|q| !q.is_empty())
+                .unwrap_or(&chunk.text);
             let _ = utopia_store::names::record(
                 pool,
                 kb_id,
@@ -576,16 +551,23 @@ mod tests {
         let text = "In 2019 the plant opened. In 2019 it closed again.";
         let quote = ("In 2019 it closed again.", Some((26, 50)));
         assert_eq!(locate_time(text, Some(quote), "2019"), Some(29));
-        // 引文没定位到就退回整块里的第一个
-        assert_eq!(locate_time(text, Some(("x", None)), "2019"), Some(3));
-        assert_eq!(locate_time(text, None, "2020"), None);
+        // 引文里有、引文自己没定位到：起点退回整块里的第一处
+        assert_eq!(
+            locate_time(text, Some(("it closed in 2019", None)), "2019"),
+            Some(3)
+        );
+        // 不在这句引文里的时间不算这条陈述的，哪怕块里别处有
+        assert_eq!(
+            locate_time(text, Some(("the plant opened.", Some((8, 25)))), "2019"),
+            None
+        );
+        assert_eq!(locate_time(text, None, "2019"), None);
     }
 
     #[test]
-    fn known_handles_count_from_one() {
-        assert_eq!(known_index("k1"), Some(0));
-        assert_eq!(known_index("k12"), Some(11));
-        assert_eq!(known_index("k0"), None);
-        assert_eq!(known_index("e3"), None);
+    fn names_match_up_to_whitespace_and_case() {
+        assert_eq!(name_key("  Harbor   Bridge "), "harbor bridge");
+        assert_eq!(name_key("harbor bridge"), name_key("HARBOR BRIDGE"));
+        assert_ne!(name_key("Harbor Bridge"), name_key("Harbour Bridge"));
     }
 }
