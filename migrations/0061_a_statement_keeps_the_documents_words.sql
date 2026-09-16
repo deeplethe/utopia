@@ -28,8 +28,11 @@
 -- 两个时钟：`attested_from`（记录轴）总是有；`attested_at` 只在 `doc_time_source IN
 -- ('content', 'source')` 时来自 `doc_time`，从不取上传时间（#714）。
 
+-- 缺省开：抽取只写开放图谱（0044 决定 2），升级后所有库都走这条路——没有已发布的版本，
+-- 不留遗留层。关掉 = 走带本体的那条老路，它按 0044 决定 3 作为已批准本体下的可选第二路
+-- 保留到对齐追平为止
 ALTER TABLE knowledge_bases
-    ADD COLUMN open_extraction BOOLEAN NOT NULL DEFAULT FALSE;
+    ADD COLUMN open_extraction BOOLEAN NOT NULL DEFAULT TRUE;
 
 ALTER TABLE facts
     ADD COLUMN layer TEXT NOT NULL DEFAULT 'typed' CHECK (layer IN ('typed', 'open')),
