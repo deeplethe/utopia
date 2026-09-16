@@ -103,13 +103,21 @@ pub const RESORT: &str = "distance + 0, id";
 
 /// 索引现在的状态：`None` 没有；`Some(valid)` 有，`false` 是上次建到一半留下的
 pub async fn status(pool: &PgPool, target: Target, dims: usize) -> AppResult<Option<bool>> {
+    status_on(pool, target, dims).await
+}
+
+async fn status_on<'a>(
+    executor: impl Executor<'a, Database = Postgres>,
+    target: Target,
+    dims: usize,
+) -> AppResult<Option<bool>> {
     let row: Option<(bool,)> = sqlx::query_as(
         "SELECT i.indisvalid FROM pg_class c
            JOIN pg_index i ON i.indexrelid = c.oid
           WHERE c.relname = $1 AND c.relkind = 'i'",
     )
     .bind(index_name(target, dims))
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?;
     Ok(row.map(|(v,)| v))
 }
@@ -186,7 +194,9 @@ pub async fn build(pool: &PgPool, target: Target, dims: usize) -> AppResult<Buil
         // 默认 64 MB 的 maintenance_work_mem 到一万四千行 1024 维就装不下图，之后
         // 每一行都要落盘再读，5 万行建了 4 分 20 秒；512 MB 只在建的这一会儿占着
         conn.execute("SET maintenance_work_mem = '512MB'").await?;
-        let before = status(pool, target, dims).await?;
+        // Reuse the held connection: acquiring another from a busy pool can
+        // make builds wait for connections they are themselves holding.
+        let before = status_on(&mut *conn, target, dims).await?;
         if before == Some(false) {
             conn.execute(format!("DROP INDEX CONCURRENTLY IF EXISTS {name}").as_str())
                 .await?;
