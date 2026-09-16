@@ -98,7 +98,7 @@ export function PendingFactRow({
         /* 限定按文档的角色词挂着（0044）：金额、对象、比较基准 */
         <div className="mt-2 flex flex-wrap gap-1">
           {qualifiers.map((q) => (
-            <span key={q.role} className="rounded-full bg-surface-2 px-2 py-0.5 text-fine text-ink-2">
+            <span key={q.role} className="rounded-full bg-surface-2 px-2 py-1 text-fine text-ink-2">
               {q.role}: {q.entity_name ?? String(q.value ?? "")}
             </span>
           ))}
