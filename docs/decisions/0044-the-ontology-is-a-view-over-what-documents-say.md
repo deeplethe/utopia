@@ -55,13 +55,20 @@ The word ontology in this project means the second layer only.
 
 One call per chunk, a compact contract (arrays, short keys, no repeated names), no ontology in the prompt. The extractor reports entities with a type word, statements in the text's words, figures and titles as attributes of the thing they describe, time mentions as they are written, and the other names a document gives. Code checks that names and quotes occur in the chunk.
 
-### 3. The typed graph is materialised from the open graph
+### 3. Alignment produces the typed graph: bindings and implication rules
 
-A binding is decided once for a signature: the phrase, the subject's classes and the object's classes. The decision (a property and a direction, or none) is cached with its confidence and the ontology version, and reused wherever the signature recurs, so its cost grows with the number of distinct phrasings rather than documents. Facts a reader draws without the text stating them (a place's country from its region, a film's country from its nationality adjective) come from derivation rules over the typed graph and are marked derived. When the ontology changes, only facts under changed signatures are recomputed. A property missing from the ontology does not stop the statement: it stays in the open graph and becomes evidence for a proposal.
+Alignment is an operation of the review workbench over the open graph, decided per signature (the phrase, the subject's classes, the object's classes), never per fact. It produces two things:
 
-### 4. The ontology is proposed by an agent and approved by people
+- **A binding**: this signature is this property in this direction, or none. Cached with its confidence and the ontology version, reused wherever the signature recurs, so the cost grows with distinct phrasings rather than documents.
+- **An implication rule**: a statement of this shape implies a fact of that property, with the value taken from a side of the statement or read from the object phrase by a stated reading (the country a nationality adjective names, the year a phrase gives). The aligner proposes the rule, the workbench approves it, and code executes it; a reading is applied once per distinct phrase and cached. Facts the rules produce are marked implied.
 
-An ontology agent reads the open graph and a set of competency questions, and proposes object types, link types and properties with definitions, examples and the signatures they would bind. People approve through actions. Each approved element carries regression cases drawn from the open graph; changing a definition reruns them. The ontology is judged by whether the competency questions can be answered correctly. Structure the slice depends on (class hierarchy, equivalences, domains, ranges) is part of approval, and duplicate properties are merged as part of governance.
+This is how the facts a reader draws without the text stating them (a place's country from its region, a film's country from "British film") reach the typed graph without a second extraction pass bound to the ontology. Whether rules recover as much as the bound pass recovered in the prototype (16.0% of gold facts, 44.6% of inferred reference facts, against 5.6% and 30.4% for binding alone) is measured before cut 2 lands.
+
+When the ontology changes, only facts under changed signatures and rules are recomputed. A signature with no property stays in the open graph, loses nothing, and counts toward the workbench's suggestions.
+
+### 4. The ontology is built on a workbench from three sources
+
+The ontology page becomes a workbench. Its elements come from three sources: **suggestions from the open graph** (the most frequent unbound signatures, the type words in use, and an ontology agent that reads them against competency questions and proposes object types, link types, properties and rules with definitions, examples and the signatures they would bind); **an imported file** (a pack of 0008, schema.org, an OWL or JSON-LD file); and **online editing**. People approve through actions; every approved element carries regression cases drawn from the open graph, and changing a definition reruns them. The ontology is judged by whether the competency questions can be answered correctly. Structure the slice and the rules depend on (class hierarchy, equivalences, domains, ranges) is part of approval, and duplicate properties are merged as part of governance.
 
 ### 5. Time is resolved the way identity is
 
@@ -109,7 +116,7 @@ Thresholds to pass before a cut lands: the open graph at or under 2% not-stated 
 ## Cuts
 
 1. The open graph in the ledger: statements, time mentions and names with provenance on both clocks; the compact extraction contract behind a flag.
-2. Signature bindings: a table of signature → property, direction, confidence, ontology version; materialisation and recomputation of the typed graph.
+2. Alignment: a table of signature → property, direction, confidence, ontology version; implication rules and their cached readings; materialisation and recomputation of the typed graph.
 3. Time context and code resolution of time mentions (closes #714).
 4. Identity evidence: profiles, deterministic scoring, cannot-links, constrained clustering; name vectors from 0041 cut 2 (its migration renumbered from 0060).
 5. The ontology agent and competency questions; regression cases on definitions.
