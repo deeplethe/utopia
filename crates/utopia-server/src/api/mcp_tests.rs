@@ -676,6 +676,12 @@ async fn failed_reads_do_not_become_successful_empty_results() -> anyhow::Result
         question: None,
     };
     for (name, args, text) in [
+        ("list_rules", json!({}), "Could not read the rules."),
+        (
+            "rule_matches",
+            json!({"rule_id":Uuid::now_v7()}),
+            "Could not read what that rule marks.",
+        ),
         (
             "get_document",
             json!({"document_id":f.document}),
@@ -869,4 +875,47 @@ fn text_only_results_do_not_acquire_a_structured_payload() {
         result,
         json!({"content":[{"type":"text","text":"existing text"}],"isError":false})
     );
+}
+
+#[tokio::test]
+async fn rule_reads_preserve_matches_and_empty_results() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let rule: Uuid = sqlx::query_scalar("SELECT id FROM attribute_rules WHERE kb_id=$1")
+        .bind(f.kb)
+        .fetch_one(&f.state.pool)
+        .await?;
+    let listed = f.call("list_rules", json!({})).await?;
+    assert_eq!(listed["isError"], false);
+    assert!(listed["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Weight rule"));
+    let matched = f.call("rule_matches", json!({"rule_id":rule})).await?;
+    assert_eq!(matched["isError"], false);
+    assert!(matched["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("Alice"));
+
+    let absent = f
+        .call("rule_matches", json!({"rule_id":Uuid::now_v7()}))
+        .await?;
+    assert_eq!(absent["isError"], false);
+    assert_eq!(
+        absent["content"][0]["text"],
+        "That rule marks nothing right now."
+    );
+    sqlx::query("DELETE FROM attribute_rules WHERE kb_id=$1")
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+    let empty = f.call("list_rules", json!({})).await?;
+    assert_eq!(empty["isError"], false);
+    assert_eq!(
+        empty["content"][0]["text"],
+        "This base has no business rules."
+    );
+    f.clean().await
 }

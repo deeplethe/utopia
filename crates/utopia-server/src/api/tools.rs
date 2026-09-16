@@ -366,7 +366,8 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
         return ToolResult::new(
             "Could not read the rules.".to_string(),
             json!({ "kind": "tool", "label": "list_rules", "detail": "failed" }),
-        );
+        )
+        .error();
     };
     if rules.is_empty() {
         return ToolResult::new(
@@ -443,7 +444,8 @@ pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
         return ToolResult::new(
             "Could not read what that rule marks.".to_string(),
             json!({ "kind": "tool", "label": "rule_matches", "detail": "failed" }),
-        );
+        )
+        .error();
     };
     if rows.is_empty() {
         return ToolResult::new(
