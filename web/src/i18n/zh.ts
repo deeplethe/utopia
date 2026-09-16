@@ -1740,6 +1740,7 @@ export const zh: Strings = {
       "从你让助手记住的话里抽出的事实。这里的东西都还没进图：那句话已经存下，事实等你点头。" +
       "确认后以那句话为证据进账本；驳回后不会再被提议。",
     pendingNoPredicate: "本体里没有这个关系，这个词是模型自己的说法。",
+    pendingOwnWords: "文档自己的话；对到本体上是对齐那一步的事。",
     pendingNoPredicateChip: "本体里没有这个关系",
     pendingSaidBy: (name: string) => `${name} 说的`,
     pendingSaidVia: (name: string, agent: string) => `${name} 说的 · 经 ${agent}`,

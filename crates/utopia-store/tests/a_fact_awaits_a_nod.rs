@@ -124,6 +124,10 @@ async fn a_remembered_fact_waits_for_a_nod() -> anyhow::Result<()> {
                     chunk_id: f.chunk,
                     proposed_by: None,
                     proposed_token: None,
+                    phrase: None,
+                    qualifiers: None,
+                    time_words: None,
+                    quote_span: None,
                 },
             )
         };

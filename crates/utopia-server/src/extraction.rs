@@ -942,12 +942,13 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
     state.emit_document(doc.kb_id, document_id);
     // **开放图谱**（0044 第 1 刀，#729）：开关开着的库只写文档自己的话，本体不进提示词。
-    // 记忆日志不走这条路——那里的事实要等人点头（0015），而待确认表里没有短语这一列
-    if kb.open_extraction
-        && !utopia_store::memory::is_memory_document(&state.pool, document_id).await?
-    {
-        return crate::extraction_open::run_open(state, &doc, &kb, &settings, &client, my_epoch)
-            .await;
+    // 记忆日志也走这条路，只是它的陈述先进待确认表等人点头（0015），点头时才落成开放陈述
+    if kb.open_extraction {
+        let await_nod = utopia_store::memory::is_memory_document(&state.pool, document_id).await?;
+        return crate::extraction_open::run_open(
+            state, &doc, &kb, &settings, &client, my_epoch, proposer, await_nod,
+        )
+        .await;
     }
     let etypes = utopia_store::graph::entity_types(&state.pool, doc.kb_id).await?;
     // 这一轮落过的事实（新建或重复观察）：结尾对它们跑一遍签名检查
@@ -1568,6 +1569,10 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                         chunk_id: chunk.id,
                         proposed_by: proposer.user_id,
                         proposed_token: proposer.token_id,
+                        phrase: None,
+                        qualifiers: None,
+                        time_words: None,
+                        quote_span: None,
                     },
                 )
                 .await?
@@ -1780,6 +1785,10 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                                 chunk_id: chunk.id,
                                 proposed_by: proposer.user_id,
                                 proposed_token: proposer.token_id,
+                                phrase: None,
+                                qualifiers: None,
+                                time_words: None,
+                                quote_span: None,
                             },
                         )
                         .await?
@@ -2001,6 +2010,10 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                                 chunk_id: chunk.id,
                                 proposed_by: proposer.user_id,
                                 proposed_token: proposer.token_id,
+                                phrase: None,
+                                qualifiers: None,
+                                time_words: None,
+                                quote_span: None,
                             },
                         )
                         .await?
@@ -2376,6 +2389,10 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                                         chunk_id: chunk.id,
                                         proposed_by: proposer.user_id,
                                         proposed_token: proposer.token_id,
+                                        phrase: None,
+                                        qualifiers: None,
+                                        time_words: None,
+                                        quote_span: None,
                                     },
                                 )
                                 .await?
@@ -2571,6 +2588,10 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
                         chunk_id: chunk.id,
                         proposed_by: proposer.user_id,
                         proposed_token: proposer.token_id,
+                        phrase: None,
+                        qualifiers: None,
+                        time_words: None,
+                        quote_span: None,
                     },
                 )
                 .await?

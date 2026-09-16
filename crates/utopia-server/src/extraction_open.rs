@@ -25,9 +25,11 @@ use crate::extraction::{
 };
 use crate::state::AppState;
 use std::collections::{HashMap, HashSet};
-use utopia_core::models::{Document, KnowledgeBase, LlmSettings};
+use utopia_core::models::{Document, KnowledgeBase, LlmSettings, Proposer};
 use utopia_store::extraction_drops::reason;
 use utopia_store::graph::FactObject;
+use utopia_store::graph::Validity;
+use utopia_store::pending::{Outcome, Proposal};
 use uuid::Uuid;
 
 /// 文档日期只在它来自内容或来源系统时才算证据日期（与 `temporal::DATED_AT` 同一口径）。
@@ -74,6 +76,9 @@ fn name_key(name: &str) -> String {
         .to_lowercase()
 }
 
+/// `await_nod`：这是记忆日志（0015）——陈述不直接落库，原样进待确认表，人点头时才成为开放陈述。
+/// `proposer`：那句话是谁、经哪枚令牌说的（0026），随待确认项一起记
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_open(
     state: &AppState,
     doc: &Document,
@@ -81,6 +86,8 @@ pub(crate) async fn run_open(
     settings: &LlmSettings,
     client: &utopia_llm::LlmClient,
     my_epoch: i32,
+    proposer: Proposer,
+    await_nod: bool,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
     let document_id = doc.id;
@@ -89,7 +96,13 @@ pub(crate) async fn run_open(
     let _ = utopia_store::extraction_drops::clear_for_document(pool, document_id).await;
     let attested_at = dated_at(doc);
     let chunks = utopia_store::documents::chunks_for_extraction(pool, document_id).await?;
-    let opening_chunk = utopia_store::documents::opening_chunk(pool, document_id).await?;
+    // 记忆日志一句一块，前一句不是后一句的开头，不附（与老路同一条规矩）
+    let opening_chunk = if await_nod {
+        None
+    } else {
+        utopia_store::documents::opening_chunk(pool, document_id).await?
+    };
+    let mut pending_count = 0usize;
 
     // 本文档已认下的**有名字的**实体，按首次出现排序，送进后续分块的提示词；
     // 陈述按名字指它们。被描述的东西不进清单：「一家医院」在下一块里指的未必是同一家
@@ -212,8 +225,9 @@ pub(crate) async fn run_open(
                 if !kind.is_empty() {
                     let _ = utopia_store::resolution::set_specific_type(pool, id, kind).await;
                 }
-                // 名字就在这一块原文里时，给名字事实补出处（0041）
-                if span_in_quote(name, &chunk.text) {
+                // 名字就在这一块原文里时，给名字事实补出处（0041）。记忆日志里的不补：
+                // 那一句算不算出处，要等人点头（0018）
+                if !await_nod && span_in_quote(name, &chunk.text) {
                     let _ = utopia_store::names::record(
                         pool,
                         kb_id,
@@ -354,6 +368,94 @@ pub(crate) async fn run_open(
             // 开放陈述没有模型自报的置信度：它说的是「文档这么说了」。看图描述出来的块
             // 照旧压上限（0040 决定 4）
             let confidence = origin_ceiling(&chunk.origin, 1.0);
+            // 限定和时间词先算好：直接落库和等人点头两条路用同一份。
+            // 限定：值是清单上某个东西的名字就挂实体，否则挂文字
+            let mut qualifiers: Vec<(&str, Option<serde_json::Value>, Option<Uuid>)> = Vec::new();
+            for (role, text) in &s.qualifiers {
+                let (role, text) = (role.trim(), text.trim());
+                if role.is_empty() || text.is_empty() {
+                    continue;
+                }
+                match resolve_name(text) {
+                    Some(id) => qualifiers.push((role, None, Some(id))),
+                    None => qualifiers.push((role, Some(serde_json::json!(text)), None)),
+                }
+            }
+            // 时间词：起与止各是一条提及，必须原样在这条陈述的引文里
+            let mut time_words: Vec<(&str, i32)> = Vec::new();
+            for words in [s.when.as_deref(), s.ended.as_deref()]
+                .into_iter()
+                .flatten()
+                .map(str::trim)
+                .filter(|w| !w.is_empty())
+            {
+                match locate_time(&chunk.text, quote, words) {
+                    Some(start) => time_words.push((words, start)),
+                    None => {
+                        drop_signal(
+                            state,
+                            kb_id,
+                            document_id,
+                            reason::TIME_NOT_IN_QUOTE,
+                            "a time mention's words are not in the statement's own sentence",
+                            Some(words),
+                        )
+                        .await;
+                    }
+                }
+            }
+            if await_nod {
+                // 记忆日志：一切原样进待确认表（0015），人点头时 `pending::confirm` 才把它
+                // 落成开放陈述——同样的短语、限定、时间词、引文偏移
+                let (object_id, object_value) = match fact_object {
+                    FactObject::Entity(id) => (Some(id), None),
+                    FactObject::Value(v) => (None, Some(v)),
+                };
+                let qualifiers_json = serde_json::Value::Array(
+                    qualifiers
+                        .iter()
+                        .map(|(role, value, entity)| match entity {
+                            Some(id) => serde_json::json!({ "role": role, "entity_id": id }),
+                            None => serde_json::json!({ "role": role, "value": value }),
+                        })
+                        .collect(),
+                );
+                let time_json = serde_json::Value::Array(
+                    time_words
+                        .iter()
+                        .map(|(text, start)| serde_json::json!({ "text": text, "char_start": start }))
+                        .collect(),
+                );
+                let outcome = utopia_store::pending::propose(
+                    pool,
+                    Proposal {
+                        kb_id,
+                        subject_id: subject,
+                        predicate_id: None,
+                        object_id,
+                        object_value,
+                        proposed_predicate: Some(phrase),
+                        validity: Validity {
+                            attested_at,
+                            ..Default::default()
+                        },
+                        confidence,
+                        chunk_id: chunk.id,
+                        proposed_by: proposer.user_id,
+                        proposed_token: proposer.token_id,
+                        phrase: Some(phrase),
+                        qualifiers: Some(&qualifiers_json),
+                        time_words: Some(&time_json),
+                        quote_span: quote.and_then(|(_, span)| span),
+                    },
+                )
+                .await?;
+                if let Outcome::Proposed(_) = outcome {
+                    pending_count += 1;
+                }
+                statement_count += 1;
+                continue;
+            }
             let (fact_id, _created) = utopia_store::graph::insert_open_statement(
                 pool,
                 kb_id,
@@ -374,67 +476,26 @@ pub(crate) async fn run_open(
                 quote.and_then(|(_, span)| span),
             )
             .await?;
-            // 限定：值是清单上某个东西的名字就挂实体，否则挂文字
-            for (role, text) in &s.qualifiers {
-                let (role, text) = (role.trim(), text.trim());
-                if role.is_empty() || text.is_empty() {
-                    continue;
-                }
-                match resolve_name(text) {
-                    Some(id) => {
-                        utopia_store::graph::add_statement_qualifier(
-                            pool,
-                            fact_id,
-                            role,
-                            None,
-                            Some(id),
-                        )
-                        .await?
-                    }
-                    None => {
-                        utopia_store::graph::add_statement_qualifier(
-                            pool,
-                            fact_id,
-                            role,
-                            Some(&serde_json::json!(text)),
-                            None,
-                        )
-                        .await?
-                    }
-                }
+            for (role, value, entity) in &qualifiers {
+                utopia_store::graph::add_statement_qualifier(
+                    pool,
+                    fact_id,
+                    role,
+                    value.as_ref(),
+                    *entity,
+                )
+                .await?;
             }
-            // 时间词：起与止各是一条提及，必须原样在这条陈述的引文里
-            for words in [s.when.as_deref(), s.ended.as_deref()]
-                .into_iter()
-                .flatten()
-                .map(str::trim)
-                .filter(|w| !w.is_empty())
-            {
-                match locate_time(&chunk.text, quote, words) {
-                    Some(start) => {
-                        utopia_store::time_mentions::record(
-                            pool, kb_id, fact_id, chunk.id, words, start,
-                        )
-                        .await?;
-                    }
-                    None => {
-                        drop_signal(
-                            state,
-                            kb_id,
-                            document_id,
-                            reason::TIME_NOT_IN_QUOTE,
-                            "a time mention's words are not in the statement's own sentence",
-                            Some(words),
-                        )
-                        .await;
-                    }
-                }
+            for (words, start) in &time_words {
+                utopia_store::time_mentions::record(pool, kb_id, fact_id, chunk.id, words, *start)
+                    .await?;
             }
             statement_count += 1;
         }
 
         // ---- 别名（0041 决定 2）：服务端只核对名字确实在这一块原文里 ----
-        for n in &extraction.names {
+        // 记忆日志里的别名不记：那一句算不算出处要等人点头（0018）
+        for n in extraction.names.iter().filter(|_| !await_nod) {
             let name = n.name.trim();
             if name.is_empty() {
                 continue;
@@ -521,6 +582,12 @@ pub(crate) async fn run_open(
     utopia_store::documents::set_graph_status(pool, document_id, "done").await?;
     state.emit_document(kb_id, document_id);
     state.emit_graph(kb_id);
+    // 队列里多了东西才叫醒人：Review 的计数与对话里那张确认卡都靠这一声
+    if pending_count > 0 {
+        tracing::info!(%document_id, pending_count, "记忆抽出的陈述进了待确认队列");
+        state.emit_pending(kb_id);
+        state.emit_review(kb_id);
+    }
 
     // 灰区对进了审核队列 → 治理 / 裁决任务，同库已排着的不重复。
     // 不排类型消解、不排自动扩本体：开放图谱里没有类也没有关系可扩，那是对齐的事

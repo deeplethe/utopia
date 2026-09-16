@@ -752,6 +752,12 @@ export interface PendingFactItem {
   /** 本体里的关系名；为空时显示 `proposed_predicate`（斜体，标明是原话） */
   predicate_label: string | null;
   proposed_predicate: string | null;
+  /** 开放陈述（0044）：文档自己的关系短语；有它就没有 predicate，那不是缺陷 */
+  phrase: string | null;
+  /** 按文档角色词记的限定：值或实体 */
+  qualifiers: { role: string; value?: unknown; entity_id?: string; entity_name?: string }[] | null;
+  /** 照抄的时间词，不是算出来的日期 */
+  time_words: { text: string; char_start: number }[] | null;
   object_id: string | null;
   object_name: string | null;
   object_value: { value?: unknown; unit?: string; summary?: string } | null;

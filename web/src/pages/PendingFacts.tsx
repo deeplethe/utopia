@@ -52,7 +52,14 @@ export function PendingFactRow({
 }) {
   const from = ym(fact.valid_from);
   const to = ym(fact.valid_to);
-  const range = from || to ? `${from ?? "…"} → ${to ?? S.review.ongoing}` : null;
+  // 开放陈述（0044）带的是照抄的时间词，不是算出来的区间：有词就显示词
+  const timeWords = (fact.time_words ?? []).map((t) => t.text).join(" · ");
+  const range = timeWords
+    ? timeWords
+    : from || to
+      ? `${from ?? "…"} → ${to ?? S.review.ongoing}`
+      : null;
+  const qualifiers = fact.qualifiers ?? [];
   return (
     <div className="glass rounded-panel p-4">
       {/* 原句先出。它是人自己说的，判断的依据就是它 */}
@@ -63,6 +70,11 @@ export function PendingFactRow({
           —{" "}
           {fact.predicate_label ? (
             <span>{fact.predicate_label}</span>
+          ) : fact.phrase ? (
+            /* 开放陈述：文档自己的话，斜体标明它是原话而不是词表里的词（0044） */
+            <span className="italic text-ink-2" title={S.review.pendingOwnWords}>
+              {fact.phrase}
+            </span>
           ) : (
             /* 本体里没有这个关系：显示原话，斜体标明它不是词表里的词（0010） */
             <span
@@ -76,12 +88,22 @@ export function PendingFactRow({
         </span>
         <span className="text-body font-medium text-ink">{objectText(fact)}</span>
         {range && <span className="text-small text-ink-2">({range})</span>}
-        {!fact.predicate_label && (
+        {!fact.predicate_label && !fact.phrase && (
           <Status tone="warn" className="ml-auto shrink-0">
             {S.review.pendingNoPredicateChip}
           </Status>
         )}
       </div>
+      {qualifiers.length > 0 && (
+        /* 限定按文档的角色词挂着（0044）：金额、对象、比较基准 */
+        <div className="mt-2 flex flex-wrap gap-1">
+          {qualifiers.map((q) => (
+            <span key={q.role} className="rounded-full bg-surface-2 px-2 py-0.5 text-fine text-ink-2">
+              {q.role}: {q.entity_name ?? String(q.value ?? "")}
+            </span>
+          ))}
+        </div>
+      )}
       {/* 与审阅页其余六种卡同一副页脚（CARD_ACTIONS）：动作在左，「谁说的」推到右边 */}
       <div className={CARD_ACTIONS}>
         {canDecide && (

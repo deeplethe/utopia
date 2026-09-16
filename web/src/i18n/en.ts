@@ -1996,6 +1996,7 @@ export const en = {
       "the sentence is kept, the facts wait for your nod. Confirm to add with the sentence as evidence; " +
       "reject and it will not be proposed again.",
     pendingNoPredicate: "The ontology has no relation for this; the word is the model's own.",
+    pendingOwnWords: "In the document's own words; binding to the ontology comes with alignment.",
     pendingNoPredicateChip: "no relation in ontology",
     pendingSaidBy: (name: string) => `said by ${name}`,
     /* 同一个人可以挂着好几个 agent，只写人名分不出是哪一个记的 */

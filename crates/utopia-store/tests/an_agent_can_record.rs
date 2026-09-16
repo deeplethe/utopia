@@ -118,6 +118,10 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
             chunk_id: chunk,
             proposed_by: Some(user),
             proposed_token,
+            phrase: None,
+            qualifiers: None,
+            time_words: None,
+            quote_span: None,
         };
         async move {
             match utopia_store::pending::propose(pool, p).await? {

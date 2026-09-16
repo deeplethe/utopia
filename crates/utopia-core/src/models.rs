@@ -1417,6 +1417,18 @@ pub struct PendingFactView {
     /// 网页端对话记的记忆这一位是空的——那时「谁说的」就是那个人本人
     pub proposed_token_name: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// 文档自己的关系短语（0044）。Some = 这是一条开放陈述：点头后按 `layer = 'open'`
+    /// 落进 `facts`，短语照写、没有谓词、不写 `valid_*`；None = 老的带本体形状
+    pub phrase: Option<String>,
+    /// 开放陈述按文档角色词记的属性：`[{"role": "amount", "value": "$2 million"} |
+    /// {"role": "to", "entity_id": "<uuid>"}]`。只在 `phrase` 非空时有意义
+    pub qualifiers: Option<serde_json::Value>,
+    /// 陈述提到的时间词，**照抄，永远不是日期**（0045）：
+    /// `[{"text": "March 4, 2011", "char_start": 143}]`，偏移是 `chunks.text` 里的字符偏移
+    pub time_words: Option<serde_json::Value>,
+    /// 引文在 `chunks.text` 里的字符偏移（不是字节），服务端搜文本算出；NULL = 没定位到
+    pub quote_start: Option<i32>,
+    pub quote_end: Option<i32>,
 }
 
 /// 一句记忆是谁提的。
