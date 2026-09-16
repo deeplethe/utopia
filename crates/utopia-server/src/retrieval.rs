@@ -47,9 +47,15 @@ pub async fn hybrid(
         .map_err(utopia_core::AppError::Other)?;
     let lists = channel_lists(bm25.into_iter().map(|h| h.chunk_id).collect(), vector?);
 
-    let fused = utopia_search::rrf_fuse(&lists, top_k);
+    // Keep the bounded channel candidates until their record-time and document
+    // filters have run: newer hits must not consume a historical query's limit.
+    let candidate_limit = lists.iter().map(Vec::len).sum();
+    let fused = utopia_search::rrf_fuse(&lists, candidate_limit);
     let ids: Vec<Uuid> = fused.iter().filter_map(|s| s.parse().ok()).collect();
-    utopia_store::documents::chunks_by_ids(&state.pool, kb_id, &ids, as_of).await
+    let mut chunks =
+        utopia_store::documents::chunks_by_ids(&state.pool, kb_id, &ids, as_of).await?;
+    chunks.truncate(top_k);
+    Ok(chunks)
 }
 
 /// 向量那一路。没配嵌入模型、嵌入请求失败、回了空，都是 `Ok(None)`：检索照常，

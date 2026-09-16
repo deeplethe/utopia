@@ -2,11 +2,12 @@
 //!
 //! 夹具：一个库、一篇文档、两个分块。A 的正文能被 BM25 命中，B 不能；
 //! 两块各有一个 4 维向量，嵌入端点用 wiremock 假扮，想回什么向量就回什么。
-//! 三件事：
+//! 四件事：
 //! 1. **没配嵌入模型也能答**：只剩 BM25 那一路，A 回来，B 不回来。
 //! 2. **嵌入请求失败退化成 BM25**：端点回 500，结果与上一条一样，不是报错。
 //! 3. **两路都在时按 BM25 在前融合**：端点回的向量离 A 最近，A 同时在两路里，排第一；
 //!    B 只在向量那一路，排第二。
+//! 4. **历史过滤先于最终截断**：当时不存在的高排名块不能挤掉已召回的有效块。
 
 use std::sync::Arc;
 use uuid::Uuid;
@@ -18,6 +19,7 @@ struct Fixture {
     org: Uuid,
     ws: Uuid,
     kb: Uuid,
+    doc: Uuid,
     a: Uuid,
     b: Uuid,
     dir: std::path::PathBuf,
@@ -28,6 +30,7 @@ async fn fixture() -> anyhow::Result<Option<Fixture>> {
         return Ok(None);
     };
     let pool = sqlx::PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
     let (org, ws, kb, doc, a, b) = (
         Uuid::now_v7(),
         Uuid::now_v7(),
@@ -90,6 +93,7 @@ async fn fixture() -> anyhow::Result<Option<Fixture>> {
         org,
         ws,
         kb,
+        doc,
         a,
         b,
         dir,
@@ -185,4 +189,78 @@ async fn both_channels_fuse_with_bm25_first() -> anyhow::Result<()> {
         "the chunk both channels found ranks first; the vector-only chunk still comes back"
     );
     f.cleanup().await
+}
+
+#[tokio::test]
+async fn historical_search_keeps_live_candidates_before_limiting_results() -> anyhow::Result<()> {
+    let Some(f) = fixture().await? else {
+        return Ok(());
+    };
+    sqlx::query("UPDATE documents SET created_at='2026-01-01' WHERE id=$1")
+        .bind(f.doc)
+        .execute(&f.pool)
+        .await?;
+    sqlx::query("UPDATE chunks SET text='apple harvest', created_at='2026-05-01' WHERE id=$1")
+        .bind(f.a)
+        .execute(&f.pool)
+        .await?;
+    sqlx::query("UPDATE chunks SET text='apple orchard bridge inspection', created_at='2026-01-01' WHERE id=$1")
+        .bind(f.b)
+        .execute(&f.pool)
+        .await?;
+    let mut indexed = vec![
+        (f.a.to_string(), "apple harvest".to_string()),
+        (
+            f.b.to_string(),
+            "apple orchard bridge inspection".to_string(),
+        ),
+    ];
+    for seq in 2..7 {
+        let id = Uuid::now_v7();
+        sqlx::query("INSERT INTO chunks(id,kb_id,document_id,seq,text,created_at) VALUES($1,$2,$3,$4,'apple harvest','2026-05-01')")
+            .bind(id)
+            .bind(f.kb)
+            .bind(f.doc)
+            .bind(seq)
+            .execute(&f.pool)
+            .await?;
+        indexed.push((id.to_string(), "apple harvest".to_string()));
+    }
+    f.state
+        .search
+        .reindex_document(&f.kb.to_string(), &f.doc.to_string(), &indexed)?;
+
+    // All seven hits are already in today's index. This is not the separate
+    // limitation that BM25 cannot recall historical versions absent from it.
+    let raw = f
+        .state
+        .search
+        .search(&f.kb.to_string(), "apple harvest", 24)?;
+    assert_eq!(raw.len(), 7);
+    assert_eq!(raw.last().unwrap().chunk_id, f.b.to_string());
+    let current = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 6, None).await?;
+    assert_eq!(
+        current.iter().map(|c| c.id.to_string()).collect::<Vec<_>>(),
+        raw.iter()
+            .take(6)
+            .map(|h| h.chunk_id.clone())
+            .collect::<Vec<_>>(),
+        "the current search still honors its limit and ranking",
+    );
+
+    // The first six hits do not exist in March. They must not consume the
+    // final limit and discard the one recalled chunk that does exist then.
+    let at = Some("2026-03-01T00:00:00Z".parse()?);
+    let six = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 6, at).await?;
+    let seven = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 7, at).await?;
+    let six: Vec<_> = six.into_iter().map(|c| c.id).collect();
+    let seven: Vec<_> = seven.into_iter().map(|c| c.id).collect();
+    let expected = vec![f.b];
+    f.cleanup().await?;
+    assert_eq!(seven, expected, "the eligible chunk was recalled");
+    assert_eq!(
+        six, expected,
+        "ineligible hits must not consume the final limit"
+    );
+    Ok(())
 }
