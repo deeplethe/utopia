@@ -1,5 +1,7 @@
 # Decision records
 
+The current design, condensed per domain, is in [../design/](../design/README.md); this directory holds the reasons behind it.
+
 Code records what was built and git records when it changed. Neither records why it was built this way and which roads turned out to be dead ends. This directory does.
 
 The test for writing one: if someone (including us) looks at a piece of code in six months and asks "why not simply…", and the answer is not in the code, there should be a record.
@@ -69,6 +71,54 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0044 | [A document is read in stages](0044-a-document-is-read-in-stages.md) | Proposed · nothing built · extraction becomes stages with narrow contracts: a skim that writes a document card with evidenced fields, graded mentions where descriptions never become entities, statements in the text's words with ends from the inventory, normalisation once per distinct phrase with proposals through governance, time resolved by code, identity by evidence in batch · reviews become decisions that write back · today's extractor frozen until an offline prototype of stages 0 and 3 reports on five benches |
 | 0044 | [The ontology is a view over what documents say](0044-the-ontology-is-a-view-over-what-documents-say.md) | Proposed · nothing built · replaces the staged-reading draft · three layers: extraction writes an open graph in the documents' words (0 of 333 statements unstated in the prototype, against 4–9% of facts bound at write time), a small ontology proposed by an agent and approved by people, and a typed graph computed from the open graph on cached signatures · time mentions resolved against a document time context by code · identity across documents on deterministic evidence before the adjudicator · an errata agent reviews the typed graph |
 | 0045 | [A time mention is resolved against its document](0045-a-time-mention-is-resolved-against-its-document.md) | Proposed · nothing built · a time expression is a mention with its words and place; the model returns shape, anchor, offset and granularity and code computes the interval; a document carries its own date, calendars and anchors across chunks, never its upload time; unresolved mentions wait for an anchor; timelines close on resolution grade instead of confidence |
+| | Record | Domain | Status |
+|---|---|---|---|
+| 0001 | [Ontology import and governance](0001-ontology-import-and-governance.md) | ontology | partly superseded (by 0009, 0010, 0012, 0044) |
+| 0002 | [Reasoning engine](0002-reasoning-engine.md) | rules | current |
+| 0003 | [The ontology grows out of the corpus](0003-ontology-growth-loop.md) | ontology | partly superseded (by 0007, 0010, 0044) |
+| 0004 | [Language follows the reader of each text](0004-language-and-localization.md) | interface | partly superseded (by 0044) |
+| 0005 | [The alert center](0005-alert-center.md) | interface | current |
+| 0006 | [Ontology scale and the extraction prompt](0006-ontology-scale-and-the-prompt.md) | extraction | superseded (by 0044) |
+| 0007 | [Counting decides what becomes a relation](0007-who-decides-what-becomes-a-relation.md) | ontology | partly superseded (by 0044) |
+| 0008 | [Ontology packs as the cold start](0008-ontology-packs-as-cold-start.md) | ontology | current |
+| 0009 | [An undecided type stays empty](0009-no-type-is-a-type.md) | ontology | current |
+| 0010 | [An unnamed relation stays empty](0010-no-relation-is-no-relation.md) | ledger | partly superseded (by 0044) |
+| 0011 | [A mapping is configuration](0011-a-mapping-is-not-a-fact.md) | lakehouse-and-actions | partly superseded (by 0036, 0044) |
+| 0012 | [The ontology is a contract](0012-the-ontology-is-a-contract-not-a-suggestion.md) | ontology | partly superseded (by 0044) |
+| 0013 | [A source hands over its history](0013-a-source-should-hand-over-its-history.md) | sources | current |
+| 0014 | [Identity from the person, scope from the token](0014-identity-from-the-person-scope-from-the-token.md) | access-and-audit | current |
+| 0015 | [A recorded sentence waits for a nod](0015-recording-a-sentence-is-not-asserting-a-fact.md) | governance | current |
+| 0016 | [Close the open seams before cutting new ones](0016-close-the-open-seams-before-cutting-new-ones.md) | process | partly superseded (by 0036) |
+| 0017 | [A contradiction points at an error upstream](0017-a-contradiction-points-upstream.md) | governance | current |
+| 0018 | [The lakehouse is one protocol away](0018-the-lakehouse-is-one-protocol-away.md) | lakehouse-and-actions | current |
+| 0019 | [The second clock can be rewound](0019-the-second-clock-can-be-rewound.md) | time | current |
+| 0020 | [An auditor reads it without us](0020-an-auditor-reads-it-without-us.md) | access-and-audit | current |
+| 0021 | [A rule reads attributes and concludes a type](0021-a-rule-reads-attributes-and-concludes-a-type.md) | rules | current |
+| 0022 | [An unknown date is not an open one](0022-an-unknown-date-is-not-an-open-one.md) | time | partly superseded (by 0045) |
+| 0023 | [RSS observations are not documents](0023-rss-observations-are-not-documents.md) | sources | current |
+| 0024 | [The world axis reaches the second](0024-the-world-axis-reaches-the-second.md) | time | current |
+| 0025 | [Governance reads the ledger before it decides](0025-governance-reads-the-ledger-before-it-decides.md) | governance | current |
+| 0026 | [A decision records why](0026-a-decision-records-why.md) | governance | current |
+| 0027 | [An automatic merge is gated by what it can undo](0027-an-automatic-merge-is-gated-by-what-it-can-undo.md) | governance | current |
+| 0028 | [The adjudicator looks before it asks](0028-the-adjudicator-looks-before-it-asks.md) | governance | current |
+| 0029 | [A rule may say "or", once](0029-a-rule-may-say-or-once.md) | rules | current |
+| 0030 | [A rule may read what a rule concluded](0030-a-rule-may-read-what-a-rule-concluded.md) | rules | current |
+| 0031 | [An event holds at the moment it names](0031-an-event-holds-at-the-moment-it-names.md) | time | current |
+| 0032 | [A rule computes what it concludes](0032-a-rule-computes-what-it-concludes.md) | rules | current |
+| 0033 | [RSS summaries are scoped to the source being listed](0033-rss-source-summaries-are-source-scoped.md) | sources | current |
+| 0034 | [An action is a declared call](0034-an-action-is-a-declared-call.md) | lakehouse-and-actions | proposed |
+| 0035 | [A vector index is built by a job](0035-a-vector-index-is-built-by-a-job.md) | sources | current |
+| 0036 | [Exploration aligns a schema to the ontology](0036-exploration-aligns-a-schema-to-the-ontology.md) | lakehouse-and-actions | current |
+| 0037 | [A relation carries its own attributes](0037-a-relation-carries-its-own-attributes.md) | ledger | partly superseded (by 0044) |
+| 0038 | [The interface has a light side](0038-the-interface-has-a-light-side.md) | interface | current |
+| 0039 | [A chunk is what extraction sees](0039-a-chunk-is-what-extraction-sees.md) | sources | current |
+| 0040 | [A chunk says where its words came from](0040-a-chunk-says-where-its-words-came-from.md) | sources | current |
+| 0041 | [A name is a claim about an entity](0041-a-name-is-a-claim-about-an-entity.md) | identity | current |
+| 0042 | [The chat loop is a runner with hooks](0042-the-chat-loop-is-a-runner-with-hooks.md) | chat-and-mcp | current |
+| 0044 | [The ontology is a view over what documents say](0044-the-ontology-is-a-view-over-what-documents-say.md) | ontology | proposed |
+| 0045 | [A time mention is resolved against its document](0045-a-time-mention-is-resolved-against-its-document.md) | time | proposed |
+
+The status word is whether a later record has overtaken this one; what is built is in the record's own status line. Domains are the files of [../design/](../design/README.md), where every record is dated and the status words are defined.
 
 ## Not a decision record
 
@@ -76,4 +126,4 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 
 ## What does not belong here
 
-The `docs/` root is a local scratch area (`/docs/*` is git-ignored except `/docs/decisions/`). Research notes, temporary checklists and test output live there and stay out of the repository. When a draft settles into a judgment worth keeping, it moves here as a record.
+The `docs/` root is a local scratch area (`/docs/*` is git-ignored except `/docs/decisions/`, `/docs/design/` and `/docs/pipeline.md`). Research notes, temporary checklists and test output live there and stay out of the repository. When a draft settles into a judgment worth keeping, it moves here as a record.

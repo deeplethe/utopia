@@ -13,6 +13,7 @@ data/
 # 必须写成 /docs/* 而非 /docs——父目录被忽略时，子路径无法用 ! 重新纳入。
 /docs/*
 !/docs/decisions/
+!/docs/design/
 !/docs/pipeline.md
 .claude/
 
