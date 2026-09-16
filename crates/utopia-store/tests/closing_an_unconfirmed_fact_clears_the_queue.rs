@@ -17,6 +17,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 struct Fx {
+    org: Uuid,
     kb: Uuid,
     fact: Uuid,
     chunk: Uuid,
@@ -111,7 +112,12 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fx> {
     .bind(chunk)
     .execute(pool)
     .await?;
-    Ok(Fx { kb, fact, chunk })
+    Ok(Fx {
+        org,
+        kb,
+        fact,
+        chunk,
+    })
 }
 
 async fn stale_ids(pool: &PgPool, kb: Uuid) -> anyhow::Result<Vec<Uuid>> {
@@ -181,8 +187,13 @@ async fn a_fact_closed_from_that_queue_leaves_it() -> anyhow::Result<()> {
     }
     .await;
 
+    // 删组织不级联到库：先删库，再删组织与工作区
     sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
         .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
         .execute(&pool)
         .await?;
     run
@@ -224,8 +235,13 @@ async fn an_ended_unknown_row_is_not_current_either() -> anyhow::Result<()> {
     }
     .await;
 
+    // 删组织不级联到库：先删库，再删组织与工作区
     sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
         .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
         .execute(&pool)
         .await?;
     run
