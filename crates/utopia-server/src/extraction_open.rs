@@ -277,7 +277,13 @@ pub(crate) async fn run_open(
             };
             // 宾语写了名字但没在清单上：模型漏列了它。陈述照落，宾语落成字面值——
             // 不凭空建实体，也不丢这条话（#559 的那一档）
-            let mut value = s.value.as_deref().map(str::trim).filter(|v| !v.is_empty());
+            // 一个字母数字都没有的值（表格里的「—」、空格）什么也没说：按没有值处理。
+            // 这是结构判断，不是词表——看的是有没有内容，不是内容是什么
+            let mut value = s
+                .value
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| v.chars().any(char::is_alphanumeric));
             let object = match s.object.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
                 Some(name) => match resolve_name(name) {
                     Some(id) => Some(id),
