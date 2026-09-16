@@ -677,6 +677,11 @@ async fn failed_reads_do_not_become_successful_empty_results() -> anyhow::Result
     };
     for (name, args, text) in [
         (
+            "get_document",
+            json!({"document_id":f.document}),
+            "Could not read the document.",
+        ),
+        (
             "find_entities",
             json!({"name":"Alice"}),
             "Could not look up entities.",
@@ -748,6 +753,113 @@ async fn failed_reads_do_not_become_successful_empty_results() -> anyhow::Result
     let mut f = f;
     f.state.pool = sqlx::PgPool::connect(&utopia_store::test_db::url().unwrap()).await?;
     f.clean().await
+}
+
+#[tokio::test]
+async fn document_reads_preserve_text_empty_and_unavailable_results() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let read = f
+        .call("get_document", json!({"document_id":f.document}))
+        .await?;
+    assert_eq!(read["isError"], false);
+    let text = read["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("orchard.md"));
+    assert!(text.contains("2 section(s)"));
+    assert!(text.contains("Alice works for Acme."));
+    assert!(read.get("structuredContent").is_none());
+
+    let foreign = Uuid::now_v7();
+    let empty = Uuid::now_v7();
+    for (id, kb) in [(foreign, f.other_kb), (empty, f.kb)] {
+        sqlx::query(
+            "INSERT INTO documents(id,kb_id,filename,sha256) VALUES ($1,$2,'empty.md',repeat('1',64))",
+        )
+        .bind(id)
+        .bind(kb)
+        .execute(&f.state.pool)
+        .await?;
+    }
+    let read = f.call("get_document", json!({"document_id":empty})).await?;
+    assert_eq!(read["isError"], false);
+    assert!(read["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("0 section(s):\n(no text)"));
+
+    sqlx::query("UPDATE documents SET deleted_at=now() WHERE id=$1")
+        .bind(f.document)
+        .execute(&f.state.pool)
+        .await?;
+    // Missing, foreign and deleted IDs remain indistinguishable; a read failure
+    // must not change that boundary or turn a genuinely empty document into an error.
+    for id in [Uuid::now_v7(), foreign, f.document] {
+        let result = f.call("get_document", json!({"document_id":id})).await?;
+        assert_eq!(result["isError"], false);
+        assert_eq!(
+            result["content"][0]["text"],
+            "No document with that id in this knowledge base."
+        );
+        assert!(result.get("structuredContent").is_none());
+    }
+    f.clean().await
+}
+
+#[tokio::test]
+async fn failed_document_chunks_do_not_become_a_successful_empty_document() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let schema = format!("mcp_chunks_failure_{}", Uuid::now_v7().simple());
+    // Shadow chunks only for this connection: the document lookup succeeds but
+    // its subsequent chunk query fails, without altering tables used by other tests.
+    sqlx::raw_sql(&format!(
+        "CREATE SCHEMA {schema}; CREATE VIEW {schema}.chunks AS SELECT NULL::uuid AS id;"
+    ))
+    .execute(&f.state.pool)
+    .await?;
+    let options: sqlx::postgres::PgConnectOptions =
+        utopia_store::test_db::url().unwrap().parse()?;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options.options([("search_path", format!("{schema},public"))]))
+        .await?;
+    assert!(utopia_store::documents::find_in_kb(&pool, f.kb, f.document)
+        .await?
+        .is_some());
+    let mut state = f.state.clone();
+    state.pool = pool.clone();
+    let ctx = ToolCtx {
+        state: &state,
+        kb_id: f.kb,
+        workspace_id: f.ws,
+        mounted_sources: &[],
+        can_write: false,
+        actor: None,
+        via_token: None,
+        question: None,
+    };
+    let mut sink = ToolSink::default();
+    let result = tool_result(
+        tools::dispatch(
+            &ctx,
+            &mut sink,
+            "get_document",
+            &json!({"document_id":f.document}),
+        )
+        .await,
+    );
+    pool.close().await;
+    sqlx::raw_sql(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&f.state.pool)
+        .await?;
+    f.clean().await?;
+    assert_eq!(result["isError"], true);
+    assert_eq!(result["content"][0]["text"], "Could not read the document.");
+    assert!(result.get("structuredContent").is_none());
+    assert!(sink.sources.is_empty());
+    Ok(())
 }
 
 #[test]

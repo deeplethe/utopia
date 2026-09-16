@@ -240,13 +240,30 @@ pub async fn get_document(
         return refuse("invalid id");
     };
     // 本库之外的 id 一律当作不存在——分不出「没有」和「不给你看」才是对的
-    let Ok(Some(doc)) = utopia_store::documents::find_in_kb(&ctx.state.pool, ctx.kb_id, id).await
-    else {
-        return refuse("not found");
+    let doc = match utopia_store::documents::find_in_kb(&ctx.state.pool, ctx.kb_id, id).await {
+        Ok(Some(doc)) => doc,
+        Ok(None) => return refuse("not found"),
+        Err(e) => {
+            tracing::warn!(error = %e, "MCP document lookup failed");
+            return ToolResult::new(
+                "Could not read the document.".into(),
+                json!({"kind": "document", "label": "?", "detail": "failed"}),
+            )
+            .error();
+        }
     };
-    let chunks = utopia_store::documents::chunks_in_document(&ctx.state.pool, ctx.kb_id, id)
-        .await
-        .unwrap_or_default();
+    let chunks =
+        match utopia_store::documents::chunks_in_document(&ctx.state.pool, ctx.kb_id, id).await {
+            Ok(chunks) => chunks,
+            Err(e) => {
+                tracing::warn!(error = %e, "MCP document chunk read failed");
+                return ToolResult::new(
+                    "Could not read the document.".into(),
+                    json!({"kind": "document", "label": doc.filename, "detail": "failed"}),
+                )
+                .error();
+            }
+        };
 
     let mut lines = Vec::new();
     let mut used = 0usize;
