@@ -443,14 +443,26 @@ async fn confirm_open(
     )
     .await?;
     // 证据指回那句记忆，带着引文在块里的位置；`proposed_predicate = phrase`，于是所有
-    // 已经容得下空谓词的读路径不改一字就按短语显示它
+    // 已经容得下空谓词的读路径不改一字就按短语显示它。
+    // 引文是**那句话**，不是整块：待确认项上的 quote 是块的全文（带时间戳前缀），
+    // 有偏移时按偏移截出这一句，偏移才和引文说同一件事（证据表的 quote 只留 120 字）
+    let span = v.quote_start.zip(v.quote_end);
+    let sentence: String = match span {
+        Some((start, end)) if start >= 0 && end > start => v
+            .quote
+            .chars()
+            .skip(start as usize)
+            .take((end - start) as usize)
+            .collect(),
+        _ => v.quote.clone(),
+    };
     crate::graph::add_evidence_located(
         pool,
         fact_id,
         v.chunk_id,
-        Some(&v.quote),
+        Some(&sentence),
         Some(phrase),
-        v.quote_start.zip(v.quote_end),
+        span,
     )
     .await?;
     for q in json_items(v.qualifiers.as_ref()) {

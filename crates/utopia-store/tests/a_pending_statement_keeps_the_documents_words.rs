@@ -203,6 +203,20 @@ async fn a_pending_statement_keeps_the_documents_words() -> anyhow::Result<()> {
         assert_eq!(ev_chunk, f.chunk, "证据要指回那句记忆");
         assert_eq!(ev_proposed.as_deref(), Some(PHRASE), "表层谓词就是短语");
         assert_eq!((ev_start, ev_end), (Some(quote_start), Some(quote_end)));
+        // 引文就是偏移截出的那句话，不是整块（整块带时间戳前缀，还会被截到 120 字）
+        let (ev_quote, at_span): (Option<String>, String) = sqlx::query_as(
+            "SELECT fe.quote, substr(c.text, fe.quote_start + 1, fe.quote_end - fe.quote_start)
+               FROM fact_evidence fe JOIN chunks c ON c.id = fe.chunk_id WHERE fe.fact_id = $1",
+        )
+        .bind(done.fact_id)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            ev_quote.as_deref(),
+            Some(at_span.as_str()),
+            "证据引文要和偏移截出的字一样"
+        );
+        assert_eq!(ev_quote.as_deref(), Some(SENTENCE));
 
         // 角色词属性按文档的角色词落
         let qualifier_rows: Vec<(String, Option<serde_json::Value>, Option<Uuid>)> =
