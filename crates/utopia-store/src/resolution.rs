@@ -261,7 +261,10 @@ pub async fn resolve_mention(
                  WHERE (f.subject_id = e.id OR f.object_id = e.id)
                    AND f.invalidated_at IS NULL AND {not_name}) AS degree
          FROM entities e
-         WHERE e.kb_id = $1 AND e.type_id = $2 AND e.merged_into IS NULL
+         -- IS NOT DISTINCT FROM 而不是 =（0009 的那个陷阱）：开放图谱里的实体都没有类
+         -- （类由对齐来定），`type_id = NULL` 永远不成立，同名的它就永远撞不上——
+         -- 实测一个库里 Securities and Exchange Commission 与它的全大写写法成了两个实体
+         WHERE e.kb_id = $1 AND e.type_id IS NOT DISTINCT FROM $2 AND e.merged_into IS NULL
            -- 被描述的东西没有名字（0044）：它的 canonical_name 只是显示用的描述，
            -- 不是召回的桥——两篇文档里描述得一样的两个东西不能因此接到一起
            AND e.description IS NULL

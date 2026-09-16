@@ -24,6 +24,7 @@ use crate::extraction::{
     span_in_quote,
 };
 use crate::state::AppState;
+use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use utopia_core::models::{Document, KnowledgeBase, LlmSettings, Proposer};
 use utopia_store::extraction_drops::reason;
@@ -74,6 +75,46 @@ fn name_key(name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+/// 陈述里写的名字 → 实体。先看这一块列出的，再看本文档前面认下的（提示词里的清单）。
+///
+/// **被描述的东西用到才建。** 模型会把段落里每个名词短语都列进 `e`：实测一个 25 篇的库里
+/// 848 个实体有 616 个是被描述的，其中 181 个没挂任何陈述，还有 155 字的从句。没人指着的
+/// 描述不是实体，只是一句话的一部分——所以描述先记在 `deferred` 里，第一条指到它的陈述
+/// 才把它建出来；同一篇里同一段描述只建一次（`described`）
+async fn place(
+    pool: &PgPool,
+    kb_id: Uuid,
+    local: &mut HashMap<String, Uuid>,
+    known: &HashMap<String, Uuid>,
+    deferred: &HashMap<String, (String, String)>,
+    described: &mut HashMap<String, Uuid>,
+    name: &str,
+) -> anyhow::Result<Option<Uuid>> {
+    let key = name_key(name);
+    if let Some(id) = local.get(&key).or_else(|| known.get(&key)) {
+        return Ok(Some(*id));
+    }
+    let Some((text, kind)) = deferred.get(&key) else {
+        return Ok(None);
+    };
+    let id = match described.get(&key) {
+        Some(id) => *id,
+        None => {
+            let id = utopia_store::resolution::create_described(
+                pool,
+                kb_id,
+                text,
+                (!kind.is_empty()).then_some(kind.as_str()),
+            )
+            .await?;
+            described.insert(key.clone(), id);
+            id
+        }
+    };
+    local.insert(key, id);
+    Ok(Some(id))
 }
 
 /// `await_nod`：这是记忆日志（0015）——陈述不直接落库，原样进待确认表，人点头时才成为开放陈述。
@@ -195,6 +236,8 @@ pub(crate) async fn run_open(
         // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
         let mut response_claims: HashMap<String, Vec<Uuid>> = HashMap::new();
         let mut local: HashMap<String, Uuid> = HashMap::new();
+        // 被描述的东西：先记下名字和类别词，等陈述指到它再建（见 `place`）
+        let mut deferred: HashMap<String, (String, String)> = HashMap::new();
         for e in &extraction.entities {
             let name = e.name.trim();
             if name.is_empty() {
@@ -248,28 +291,11 @@ pub(crate) async fn run_open(
                 }
                 id
             } else {
-                match described.get(&key) {
-                    Some(id) => *id,
-                    None => {
-                        let id = utopia_store::resolution::create_described(
-                            pool,
-                            kb_id,
-                            name,
-                            (!kind.is_empty()).then_some(kind),
-                        )
-                        .await?;
-                        described.insert(key.clone(), id);
-                        id
-                    }
-                }
+                deferred.insert(key, (name.to_string(), kind.to_string()));
+                continue;
             };
             local.insert(key, id);
         }
-        // 陈述里写的名字 → 实体：先看这一块列出的，再看本文档前面认下的（提示词里的清单）
-        let resolve_name = |name: &str| -> Option<Uuid> {
-            let key = name_key(name);
-            local.get(&key).or_else(|| known_by_name.get(&key)).copied()
-        };
 
         // ---- 陈述 ----
         for s in &extraction.statements {
@@ -277,7 +303,17 @@ pub(crate) async fn run_open(
             if phrase.is_empty() {
                 continue;
             }
-            let Some(subject) = resolve_name(&s.subject) else {
+            let Some(subject) = place(
+                pool,
+                kb_id,
+                &mut local,
+                &known_by_name,
+                &deferred,
+                &mut described,
+                &s.subject,
+            )
+            .await?
+            else {
                 drop_signal(
                     state,
                     kb_id,
@@ -299,7 +335,17 @@ pub(crate) async fn run_open(
                 .map(str::trim)
                 .filter(|v| v.chars().any(char::is_alphanumeric));
             let object = match s.object.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
-                Some(name) => match resolve_name(name) {
+                Some(name) => match place(
+                    pool,
+                    kb_id,
+                    &mut local,
+                    &known_by_name,
+                    &deferred,
+                    &mut described,
+                    name,
+                )
+                .await?
+                {
                     Some(id) => Some(id),
                     None => {
                         drop_signal(
@@ -376,7 +422,17 @@ pub(crate) async fn run_open(
                 if role.is_empty() || text.is_empty() {
                     continue;
                 }
-                match resolve_name(text) {
+                match place(
+                    pool,
+                    kb_id,
+                    &mut local,
+                    &known_by_name,
+                    &deferred,
+                    &mut described,
+                    text,
+                )
+                .await?
+                {
                     Some(id) => qualifiers.push((role, None, Some(id))),
                     None => qualifiers.push((role, Some(serde_json::json!(text)), None)),
                 }
@@ -500,7 +556,17 @@ pub(crate) async fn run_open(
             if name.is_empty() {
                 continue;
             }
-            let Some(id) = resolve_name(&n.entity) else {
+            let Some(id) = place(
+                pool,
+                kb_id,
+                &mut local,
+                &known_by_name,
+                &deferred,
+                &mut described,
+                &n.entity,
+            )
+            .await?
+            else {
                 drop_signal(
                     state,
                     kb_id,
