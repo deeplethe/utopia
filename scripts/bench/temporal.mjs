@@ -437,6 +437,7 @@ async function acceptUniqueness(kb, axioms) {
   const byId = new Map(relation_types.map((r) => [r.id, r]));
   const rows = [];
   for (const c of candidates) {
+    // 候选来自类型化的事实（predicate_id）；开放陈述带的是 `phrase`、没有 predicate_id，对不上的跳过
     const r = byId.get(c.predicate_id);
     if (!r) continue;
     const declared = wanted.get(c.key);

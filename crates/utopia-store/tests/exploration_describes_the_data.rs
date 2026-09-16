@@ -51,7 +51,6 @@ async fn the_description_and_the_conventions_do_not_overwrite_each_other() -> an
             None,
             None,
             Some("Amounts are in cents.\nis_test = 1 is excluded."),
-            None,
         )
         .await?;
         // 探索写描述与问题
@@ -102,7 +101,6 @@ async fn the_description_and_the_conventions_do_not_overwrite_each_other() -> an
             None,
             None,
             Some("cents only"),
-            None,
         )
         .await?;
         let got = utopia_store::kbs::get(&pool, kb).await?;
@@ -121,7 +119,6 @@ async fn the_description_and_the_conventions_do_not_overwrite_each_other() -> an
             None,
             None,
             no,
-            None,
         )
         .await?;
         assert_eq!(

@@ -65,13 +65,12 @@ node scripts/bench/fetch-sec-filings.mjs                     # 一次就够
 node scripts/bench/recall.mjs --kb <id>                      # 一轮：清空 → 重抽 → 打分
 node scripts/bench/recall.mjs --kb <id> --score              # 只打分
 node scripts/bench/recall.mjs --kb <id> --reprocess          # 改了解析器：连分块一起重来
-node scripts/bench/recall.mjs --kb <id> --typed              # 带本体的老路（可选第二路）；缺省走开放图谱（0044 第 1 刀）
 node scripts/bench/judge_open.mjs --kb <id> --sample 200     # 开放陈述有多少不是原文说的（门槛 2%）
 ```
 
-缺省（库的 `open_extraction` 开着）抽的是开放图谱：陈述按原文短语落成 `layer='open'` 的事实行，
-限定挂在 `statement_qualifiers`，时间词进 `time_mentions`；打分口径不变（谓词取
-`proposed_predicate`，限定也拼进那一行），所以 `--typed` 那条老路和它的分数直接可比。`judge_open.mjs` 是
+抽取写的是开放图谱（0044 决定 2，没有带本体的第二条路）：陈述按原文短语落成 `layer='open'` 的
+事实行，限定挂在 `statement_qualifiers`，时间词进 `time_mentions`；打分口径照旧（谓词取
+`proposed_predicate`，限定也拼进那一行），所以下表里带本体那些轮次的分数仍然可比。`judge_open.mjs` 是
 反面的尺子：抽样让一个裁判模型读原文判 stated / misworded / not_stated；裁判端点用
 `BENCH_JUDGE_BASE / BENCH_JUDGE_KEY / BENCH_JUDGE_MODEL`，不给就用工作区的对话模型
 （和抽取同一个模型，数字要打折看）。

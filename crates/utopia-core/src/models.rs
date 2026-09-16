@@ -1077,10 +1077,6 @@ pub struct KnowledgeBase {
     /// 这次打开治理的时刻；保险丝只数它之后的撤回（0025 决定 9）。
     /// 新库生下来就开着治理，这一格于是等于建库的时刻（0050）
     pub governance_since: Option<DateTime<Utc>>,
-    /// 开放抽取（0044 第一刀，#729）：开着，抽取只写开放图谱——陈述照文档的字落库
-    /// （`facts.layer = 'open'`），不读本体、不问日期。**缺省开**（0044 决定 2）；关掉走
-    /// 带本体的老路，它按决定 3 只是已批准本体下的可选第二路，等对齐追平就退场
-    pub open_extraction: bool,
     /// 多久重推一次（分钟）。见 `knowledge_bases.inference_interval_minutes`
     pub inference_interval_minutes: i32,
     /// 上次推完的时间。**答的是「上次看过没有」，不是「上次改过没有」**

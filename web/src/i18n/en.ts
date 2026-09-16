@@ -503,20 +503,9 @@ export const en = {
       "Each line says why, and how many.",
     dropsExample: "e.g.",
     dropReason: {
-      attr_domain_mismatch: "Attribute on the wrong class",
-      subject_not_declared: "Subject type unknown",
-      attr_no_value: "Attribute had no value",
-      attr_datatype: "Value did not match the datatype",
-      low_confidence: "Below the confidence threshold",
       object_missing: "Relation had no object",
       malformed_item: "The model's item did not fit the schema",
       truncated_reply: "The model's reply was cut off",
-      domain_mismatch:
-        "The subject does not fit the relation, and swapping would not help",
-      not_an_entity_name: "That name is a sentence, not a thing",
-      clause_suspect: "Kept, but the name reads like a clause: a sample for the guard",
-      direction_corrected:
-        "Subject and object were swapped to match the signature",
       quote_not_in_chunk: "Kept, but the quoted sentence is not in the text verbatim",
       time_not_in_quote: "A time mention's words are not in the text",
       unknown_ref: "The item points at nothing in the reply",
@@ -2023,7 +2012,6 @@ export const en = {
     conflictReason: {
       no_time: "new fact has no date",
       simultaneous: "same start date",
-      low_confidence: "low confidence",
     } as Record<string, string>,
     conflictVs: "vs",
     conflictSince: (d: string) => `since ${d}`,

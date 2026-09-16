@@ -110,7 +110,6 @@ pub async fn update(
     auto_type_resolution: Option<bool>,
     governance: Option<bool>,
     data_conventions: Option<&str>,
-    open_extraction: Option<bool>,
 ) -> AppResult<KnowledgeBase> {
     // 改语言不回头重写已有的类——它们已经是这个库的数据，可能有人手工调过。
     // 这一列往后管的是**新**描述（自动扩本体、AI 建议）写成什么语言
@@ -152,8 +151,6 @@ pub async fn update(
                                      ELSE governance_since END,
              -- 人写的约定；清空要送空串，送 null 等于不改（与 description 同一约定）
              data_conventions = COALESCE($11, data_conventions),
-             -- 开放抽取（0044 第一刀）：抽取只写开放图谱；关着走类型化那条路
-             open_extraction = COALESCE($12, open_extraction),
              updated_at = now()
          WHERE id = $1 RETURNING *",
     )
@@ -168,7 +165,6 @@ pub async fn update(
     .bind(auto_type_resolution)
     .bind(governance)
     .bind(data_conventions)
-    .bind(open_extraction)
     .fetch_optional(pool)
     .await?
     .ok_or(AppError::NotFound)

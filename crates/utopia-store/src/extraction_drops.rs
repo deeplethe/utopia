@@ -13,91 +13,24 @@ use utopia_core::AppResult;
 use uuid::Uuid;
 
 /// 原因码。前端按这个查文案，所以是稳定契约，不要改字面量。
+/// 都由开放抽取那条路（0044）发出；类型化那条路的原因码随它一起退场了
 pub mod reason {
-    /// 主语没在 entities 里声明 → 类型不明，属性无法校验 domain
-    pub const SUBJECT_NOT_DECLARED: &str = "subject_not_declared";
-    /// 属性挂在了不该挂的类上（salary 挂到 Organization）
-    pub const ATTR_DOMAIN_MISMATCH: &str = "attr_domain_mismatch";
-    /// 属性事实既没给 value 也没给 object
-    pub const ATTR_NO_VALUE: &str = "attr_no_value";
-    /// 值不合 datatype，归一化失败
-    pub const ATTR_DATATYPE: &str = "attr_datatype";
-    /// 模型在边上写了一个这条关系没声明过的属性 key（0037）
-    pub const QUALIFIER_UNKNOWN: &str = "qualifier_unknown";
-    /// 边上属性的值换不成它声明的 datatype
-    pub const QUALIFIER_DATATYPE: &str = "qualifier_datatype";
-    /// 同一条边再听到一次，属性值与已记的不一致——先记下，不覆盖
-    pub const QUALIFIER_CONFLICT: &str = "qualifier_conflict";
-    /// 模型自报置信度低于阈值
-    pub const LOW_CONFIDENCE: &str = "low_confidence";
-    /// 关系事实缺宾语
+    /// 陈述缺宾语也缺值
     pub const OBJECT_MISSING: &str = "object_missing";
-    /// 模型给的这一条不合结构（缺 predicate 之类）→ 只跳这一条，不牵连整块
+    /// 模型给的这一条不合结构（缺短语之类）→ 只跳这一条，不牵连整块
     pub const MALFORMED_ITEM: &str = "malformed_item";
-    /// 主语的类型对不上关系声明的 domain，**且对调也不合法**——那是选错了关系
-    /// 或类型判错，不是方向问题。照原样落库 + 记信号，交给人看，不猜
-    pub const DOMAIN_MISMATCH: &str = "domain_mismatch";
-    /// 模型给的"实体名"其实是一整句话或从句——不是一个东西的名字。
-    /// 这类东西永远匹配不到别处的提及，在图上是孤点，还会拖累消解
-    pub const NOT_AN_ENTITY_NAME: &str = "not_an_entity_name";
-    /// 主语违反 domain 而宾语符合，已按本体声明的方向把主宾掰正。
-    /// **动作必须留痕**：自动的、看不见的改写才是 0001 反对的那种
-    pub const DIRECTION_CORRECTED: &str = "direction_corrected";
     /// 模型输出被截断（撞上 max_tokens）→ 已完整的那些留下，尾巴丢掉
     pub const TRUNCATED_REPLY: &str = "truncated_reply";
-    /// 守卫放行了、结构却像从句（限定词起头的长串、句中的关系词）。**只记不挡**：
-    /// 实体照常落库，例句留下来——#193 要的是一份跨语料的标注集，再决定哪条升成硬规则
-    pub const CLAUSE_SUSPECT: &str = "clause_suspect";
-    /// 主语是「跟 X 有关的一群人」而写成了 X（#578）："former OpenAI personnel" 不是
-    /// OpenAI。事实不落，例句是那个短语；这一类该由提示词的规则改写到有名字的一侧，
-    /// 这里只量它还错多少
-    pub const SUBJECT_SHORTENED: &str = "subject_shortened";
-    /// 主宾片段不在引文里（#582）：模型没照抄。事实照旧处理，只记下来
-    pub const SPAN_NOT_IN_QUOTE: &str = "span_not_in_quote";
     /// 模型报的别名（或它的引文）不在这一块原文里（0041 决定 2）：不记这个名字。
     /// 名字是召回的桥，一座凭空的桥会把两个不相干的实体接到一起
     pub const NAME_NOT_IN_TEXT: &str = "name_not_in_text";
     /// 模型报的别名，这次回复（或本文档前面几块）里已经是另一个实体的名字（0041 决定 2）：
     /// 一个名字不会同时是两样东西的名字。「海探1项目」声明成了一个机构，就不是探测器的别名
     pub const NAME_CLAIMED_BY_ANOTHER: &str = "name_claimed_by_another";
-    /// 主语片段是个描述，不是任何声明过的实体的名字：事实不落（#582，取代 #578 的词表）
-    pub const SUBJECT_DESCRIBED: &str = "subject_described";
-    /// 宾语片段是个描述：事实照落，宾语落成字面值（#582）
-    pub const OBJECT_DESCRIBED: &str = "object_described";
-    /// 片段点的是另一个声明过的实体：改绑到它（#582）
-    pub const SPAN_REBOUND: &str = "span_rebound";
-    /// 片段是所绑名字前面带了别的词（"entrepreneur Tasha McCauley" / "companies using
-    /// OpenAI"）：头衔还是另一件东西，机器分不开，绑定照旧，只记（#582）
-    pub const SPAN_PREFIXED: &str = "span_prefixed";
-    /// 片段里没有任何声明过的名字（"him" / "the company"）：模型消解了指代，无从核对，
-    /// 绑定照旧，只记（#582）
-    pub const SPAN_COREFERENCE: &str = "span_coreference";
-    /// 片段抄的是事实**另一侧**的名字（宾语片段写成了主语）：抄错了位置，不是绑错了
-    /// 实体。绑定照旧，只记（#582）
-    pub const SPAN_MISPLACED: &str = "span_misplaced";
-    /// 宾语既没在 entities 里声明、库里也没有叫这个名字的东西：事实照落，
+    /// 宾语既没在回复里列出、库里也没有叫这个名字的东西：陈述照落，
     /// 宾语落成字面值而不是节点（#559）。记下来是为了量：这一类里有多少
     /// 本该是实体（模型漏报），有多少本来就是描述
     pub const OBJECT_UNDECLARED: &str = "object_undeclared";
-    /// 以下都来自 `utopia_extract::normalize`：只看结构、不看词的形状检查
-    /// 值只有破折号（`—`）：表里的「无」，不落
-    pub const NO_VALUE: &str = "no_value";
-    /// 值后面有一截引文里没有的字：只留引文里有的那段。只记
-    pub const VALUE_TRIMMED: &str = "value_trimmed";
-    /// 没有宾语也没有值、只带边属性：属性落成主语上的值事实。只记
-    pub const QUALIFIERS_WITHOUT_OBJECT: &str = "qualifiers_without_object";
-    /// 宾语是契约格式的日期：数落成值、日期进有效期；没带数的把写出来的那段落成值。只记
-    pub const TIME_AS_OBJECT: &str = "time_as_object";
-    /// 主语是契约格式的日期：数是谁的回复里没说，不落
-    pub const TIME_AS_SUBJECT: &str = "time_as_subject";
-    /// 宾语名字包住另一个声明实体、同句已有指向本尊的边：可能是描述，也可能是另一个
-    /// 东西（每股收益包住了净利润）。只记，不删
-    pub const OBJECT_DESCRIBES_DECLARED: &str = "object_describes_declared";
-    /// 上面几条去掉事实后没人引用的声明：不建
-    pub const ORPHAN_DECLARATION: &str = "orphan_declaration";
-    /// 引文抄自提示词里附的文件开头、不在这一块：证据会挂错出处，不落
-    pub const QUOTE_FROM_OPENING: &str = "quote_from_opening";
-    /// 以下三条来自开放抽取那条路（0044 第一刀，#729）
     /// 模型的引文在这一块里找不到原样的一句：陈述照落、引文照记，只是没有偏移
     /// （`quote_start` / `quote_end` 留空）。这个信号数的是有多少条没定位到
     pub const QUOTE_NOT_IN_CHUNK: &str = "quote_not_in_chunk";

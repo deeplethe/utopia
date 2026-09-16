@@ -5414,7 +5414,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "unicode-segmentation",
  "utopia-llm",
 ]
 

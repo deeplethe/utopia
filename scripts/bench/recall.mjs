@@ -16,7 +16,6 @@
 //   node scripts/bench/recall.mjs --kb <id>            # 已有库（本体向量已就绪）
 //   node scripts/bench/recall.mjs --kb <id> --score    # 只打分，不重抽
 //   node scripts/bench/recall.mjs --kb <id> --reprocess # 改了解析器：连分块一起重来
-//   node scripts/bench/recall.mjs --kb <id> --typed     # 带本体的老路（可选第二路）；缺省是开放图谱（0044 第 1 刀）
 //
 // 环境变量：BENCH_BASE / BENCH_EMAIL / BENCH_PASSWORD / BENCH_PSQL（同 run.mjs）。
 //
@@ -212,8 +211,7 @@ psql(`DELETE FROM ontology_misses WHERE kb_id='${KB}'`);
 if (packTs) psql(`DELETE FROM relation_types WHERE kb_id='${KB}' AND created_at > '${packTs}'::timestamptz + interval '1 second'`);
 // 会在抽取之后改本体、增派生事实的开关关掉，两轮的本体与打分口径才一样。治理开着：
 // 库生下来就开着它（0050），量的是产品本来的样子
-psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE, governance=TRUE, open_extraction=${args.typed ? "FALSE" : "TRUE"} WHERE id='${KB}'`);
-console.log(args.typed ? "带本体的老路：本体进提示词" : "开放图谱：本体不进提示词，陈述按原文短语落库");
+psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE, governance=TRUE WHERE id='${KB}'`);
 psql(`UPDATE chunks SET extracted_at=NULL WHERE document_id IN (SELECT id FROM documents WHERE kb_id='${KB}' AND filename IN (${names}))`);
 console.log(`本体 ${num(`SELECT count(*) FROM relation_types WHERE kb_id='${KB}'`)} 个关系 / ${num(`SELECT count(*) FROM entity_types WHERE kb_id='${KB}'`)} 个类`);
 
