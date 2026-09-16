@@ -175,6 +175,8 @@ export interface Doc {
   deleted_at: string | null;
   /** 真删过：内容没了，回不来 */
   purged_at: string | null;
+  /** 这份文件的字要靠哪一种模型读、而那种模型没配（0040）：ocr / transcribe；文档此时是 failed */
+  reader_needed: "ocr" | "transcribe" | null;
   created_at: string;
 }
 
@@ -260,6 +262,12 @@ export interface LlmSettingsView {
   embed_model?: string | null;
   embed_dim?: number | null;
   has_embed_key?: boolean;
+  ocr_base_url?: string | null;
+  ocr_backend?: string | null;
+  has_ocr_key?: boolean;
+  transcribe_base_url?: string | null;
+  transcribe_model?: string | null;
+  has_transcribe_key?: boolean;
 }
 
 export interface Member {
@@ -888,6 +896,20 @@ export interface GraphEdge {
   qualifiers: FactQualifier[];
 }
 
+/** 实体的一个名字（0041）。`canonical` 是面板标题上那个；曾用名在世界轴上有结束 */
+export interface NameView {
+  fact_id: string;
+  name: string;
+  canonical: boolean;
+  recorded_at: string;
+  valid_from: string | null;
+  valid_from_precision: string | null;
+  valid_to: string | null;
+  valid_to_precision: string | null;
+  document_ids: string[];
+  evidence_count: number;
+}
+
 export interface EntityFact {
   id: string;
   direction: "out" | "in";
@@ -985,12 +1007,21 @@ export interface Evidence {
   stale: boolean;
   /** 这条证据的文档已被删除；事实还活着是因为另有出处（#268） */
   document_deleted: boolean;
+  /** 这块文字从哪来（0040）；证明链那条路不带，缺席即原文 */
+  origin?: "stated" | "ocr" | "transcribed" | "described";
+  origin_model?: string | null;
+  anchor?: Record<string, unknown> | null;
 }
 
 export interface ChunkFull {
   id: string;
   seq: number;
   text: string;
+  /** 这块文字从哪来（0040） */
+  origin: "stated" | "ocr" | "transcribed" | "described";
+  origin_model: string | null;
+  /** ocr: {page, bbox?}；transcribed: {start_ms, end_ms, speaker} */
+  anchor: Record<string, unknown> | null;
 }
 
 export interface EntityTypeView {
@@ -1658,9 +1689,11 @@ export const api = {
     return request<{
       docs: Doc[];
       total: number;
-      /** 下面三个**只按来源作用域算**，不受名字/状态筛选影响——
+      /** 下面四个**只按来源作用域算**，不受名字/状态筛选影响——
        *  它们是批量按钮的作用范围 */
       ready: number;
+      /** `graph_status = 'done'`：抽取进度条的分子 */
+      done: number;
       extracting: number;
       failed: number;
       /** 整库的墓碑数（删了、没清的），不随作用域变 */
@@ -1743,6 +1776,9 @@ export const api = {
     request<{
       entity: GraphNode;
       facts: EntityFact[];
+      /** 这个实体的名字（0041）：本名、简称、曾用名，各带出处与有效期。
+       *  名字事实不在 facts 里——它不是一条「关于它的事」 */
+      names: NameView[];
       /** 推出来的那些**单独一个键**，不掺进 facts：混在同一个列表里，
        *  用户看不出「文档里写的」和「引擎推的」的区别 */
       derived: DerivedFact[];
@@ -2341,7 +2377,27 @@ export const api = {
     request<{
       chat: { ok: boolean; reply?: string; error?: string };
       embed: { ok: boolean; dim?: number; error?: string };
+      ocr?: { ok: boolean; version?: string | null; error?: string };
+      transcribe?: { ok: boolean; error?: string };
     }>(`/api/v1/workspaces/${workspaceId}/settings/test`, { method: "POST" }),
+  /** 读扫描件的服务、转写模型各自一个保存：存它们不碰对话与嵌入那几列。
+   *  `requeued`：因为缺它而等着的文件，这一存重新排进了处理队列几份 */
+  saveOcrSettings: (
+    workspaceId: string,
+    body: { base_url: string; api_key: string; backend: string },
+  ) =>
+    request<{ ok: boolean; requeued: number }>(
+      `/api/v1/workspaces/${workspaceId}/settings/ocr`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  saveTranscribeSettings: (
+    workspaceId: string,
+    body: { base_url: string; api_key: string; model: string },
+  ) =>
+    request<{ ok: boolean; requeued: number }>(
+      `/api/v1/workspaces/${workspaceId}/settings/transcribe`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
 
   /** 是否配置了单点登录（0056）。四项环境变量缺一个都是 false——
    *  登录页据此决定要不要露出那个按钮 */

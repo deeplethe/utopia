@@ -78,6 +78,7 @@ import {
   Pencil,
   Play,
   Search,
+  Tag,
   Waypoints,
   X,
   ZoomIn,
@@ -90,9 +91,11 @@ import {
   type Evidence,
   type GraphEdge,
   type GraphNode,
+  type NameView,
   type BlockedDerivation,
   type ProofStep,
 } from "../api";
+import { originHint, originLabel } from "../origin";
 import { S } from "../i18n";
 import { predicateSentence } from "../predicateText";
 import {
@@ -2921,6 +2924,11 @@ function EntityPanel({
       </div>
 
       <div className="u-scroll flex-1 overflow-y-auto px-2 py-2">
+        {/* 名字在关系之前：先回答「它叫什么」，再回答「它和谁有关」。只有本名一个的时候
+            不出这一节——标题上已经写着，再列一遍是噪声 */}
+        {view === "relations" && (detail.data?.names.length ?? 0) > 1 && (
+          <NameSection kbId={kbId} entityId={entityId} names={detail.data!.names} />
+        )}
         {view === "relations" &&
           (["out", "in"] as const).map((dir) => {
             const { rows, past } = sections[dir];
@@ -3095,6 +3103,84 @@ function FactSection({
           同一个方向记号（→ 出边 / ← 入边），同一个记号本来就该成列。
           层级由前面那个折叠三角表示（在 18.7），不必再靠缩进说第二遍 */}
       {open && <div className="pl-6">{children}</div>}
+    </div>
+  );
+}
+
+/** 名字一节（0041）：本名、简称、曾用名，一个名字一行。
+ *
+ *  名字是一条事实，所以记错的名字也是一条可以撤回的事实——抽取把「OpenAI's」「ChatGPT
+ *  apps」记成别名时，从前界面上没有任何地方看得见它，只能等它把两个实体错合了才发现。
+ *  撤回走驳回事实那一条（有审计、能在 History 里看到）；本名不给撤，改名在编辑弹窗里 */
+function NameSection({
+  kbId,
+  entityId,
+  names,
+}: {
+  kbId: string;
+  entityId: string;
+  names: NameView[];
+}) {
+  const [open, setOpen] = useState(true);
+  const qc = useQueryClient();
+  const remove = useMutation({
+    mutationFn: (factId: string) => api.rejectFact(kbId, factId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["entity", kbId, entityId] });
+      toast.success(S.graph.nameRemoved);
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+  return (
+    <div className="mb-2">
+      <Row
+        className="mt-1"
+        icon={
+          <span className="flex w-4 justify-center">
+            <ChevronRight size={12} className={cn("u-turn", open && "rotate-90")} />
+          </span>
+        }
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="flex items-center gap-2 text-small font-medium">
+          <Tag size={12} />
+          <span className="truncate">{S.graph.names}</span>
+          <span className="u-num">{names.length}</span>
+        </span>
+      </Row>
+      {open && (
+        <div className="pl-6">
+          {names.map((n) => {
+            const until = n.valid_to ? fmtTime(n.valid_to, n.valid_to_precision) : null;
+            return (
+              <div key={n.fact_id} className={cn(HOVER_ROW, "items-start", until && "opacity-55")}>
+                <span className="shrink-0 pt-1 text-violet">
+                  <Tag size={12} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-body text-ink" title={n.name}>
+                    {n.name}
+                  </span>
+                  <span className="flex items-center gap-2 text-fine text-ink-2">
+                    {n.canonical && <span>{S.graph.shownName}</span>}
+                    {until && <span className="u-num">{S.graph.nameUntil(until)}</span>}
+                    {n.evidence_count > 0 && <span>{S.graph.sources(n.evidence_count)}</span>}
+                    {!n.canonical && (
+                      <LinkButton
+                        className={cn(REVEAL, "ml-auto text-fine")}
+                        disabled={remove.isPending}
+                        onClick={() => remove.mutate(n.fact_id)}
+                      >
+                        {S.graph.removeName}
+                      </LinkButton>
+                    )}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -3388,6 +3474,15 @@ function EvidenceList({ kbId, fact }: { kbId: string; fact: EntityFact }) {
               </span>
               <ExternalLink size={11} className="shrink-0" />
             </Link>
+            {/* 出处不是原文时写一句（0040）：OCR 第几页、录音哪一段谁说的、模型描述 */}
+            {originLabel(ev.origin, ev.anchor) && (
+              <span
+                className="shrink-0 text-fine text-ink-2"
+                title={originHint(ev.origin, ev.origin_model)}
+              >
+                {originLabel(ev.origin, ev.anchor)}
+              </span>
+            )}
             {ev.stale && (
               <span
                 className="u-num shrink-0 text-fine text-ink-2"

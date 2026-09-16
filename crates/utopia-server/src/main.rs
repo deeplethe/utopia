@@ -27,6 +27,7 @@ mod pipeline;
 mod predicate_match;
 mod query_engine;
 mod rdf;
+mod readers;
 mod retrieval;
 mod rss_full_content;
 mod state;

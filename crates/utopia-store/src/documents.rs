@@ -476,10 +476,14 @@ pub async fn page(
         .fetch_one(pool)
         .await?;
 
-    // 统计只按来源作用域算：那两个批量按钮作用于整个来源，不是你搜出来的那几条
-    let stats: (i64, i64, i64) = sqlx::query_as(
+    // 统计只按来源作用域算：那两个批量按钮作用于整个来源，不是你搜出来的那几条。
+    // 四个数各对应一列：`ready` 是摄入（`status`），后三个是抽取（`graph_status`）。
+    // 两个维度不能相加——一篇「摄入已完成、图谱还在抽」的文档两边都占，进度条若拿
+    // `ready + extracting` 当分母，两篇文档会显示成 2 / 4
+    let stats: (i64, i64, i64, i64) = sqlx::query_as(
         "SELECT
            count(*) FILTER (WHERE status = 'ready'),
+           count(*) FILTER (WHERE graph_status = 'done'),
            count(*) FILTER (WHERE graph_status IN ('queued', 'extracting')),
            count(*) FILTER (WHERE graph_status = 'failed')
          FROM documents
@@ -506,8 +510,9 @@ pub async fn page(
         docs,
         total,
         ready: stats.0,
-        extracting: stats.1,
-        failed: stats.2,
+        done: stats.1,
+        extracting: stats.2,
+        failed: stats.3,
         deleted: deleted_total,
     })
 }
@@ -744,17 +749,22 @@ pub async fn list_missing(pool: &PgPool, source_id: Uuid) -> AppResult<Vec<Uuid>
 }
 
 pub async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> AppResult<()> {
-    sqlx::query("UPDATE documents SET status = $2, error = NULL, updated_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(status)
-        .execute(pool)
-        .await?;
+    // 重新开始处理：上一次缺的读取模型不再算数，读不出来会再记一次
+    sqlx::query(
+        "UPDATE documents SET status = $2, error = NULL, reader_needed = NULL, updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(status)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
 pub async fn set_failed(pool: &PgPool, id: Uuid, error: &str) -> AppResult<()> {
     sqlx::query(
-        "UPDATE documents SET status = 'failed', error = $2, updated_at = now() WHERE id = $1",
+        "UPDATE documents SET status = 'failed', error = $2, reader_task = NULL, updated_at = now()
+          WHERE id = $1",
     )
     .bind(id)
     .bind(error)
@@ -763,10 +773,98 @@ pub async fn set_failed(pool: &PgPool, id: Uuid, error: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// 这份文件要 `reader` 那一种模型才读得出字，而那种模型没配（0040）：停在 failed，
+/// 记下缺的是哪一种，配上之后按它重新排队
+pub async fn set_needs_reader(pool: &PgPool, id: Uuid, reader: &str, error: &str) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE documents SET status = 'failed', error = $3, reader_needed = $2, reader_task = NULL,
+                updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(reader)
+    .bind(error)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 配上了 `reader` 那一种模型：这个工作区里等着它的文档（活着的）重新排进处理队列。
+///
+/// 一个事务里改状态、排任务，于是不会有「状态改回 pending、任务却没排上」的半截。
+/// 返回 (文档, 库)，给调用方逐个推送列表更新
+pub async fn requeue_waiting_for_reader(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    reader: &str,
+) -> AppResult<Vec<(Uuid, Uuid)>> {
+    let mut tx = pool.begin().await?;
+    let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "UPDATE documents d SET status = 'pending', error = NULL, reader_needed = NULL,
+                reader_task = NULL, updated_at = now()
+           FROM knowledge_bases k
+          WHERE k.id = d.kb_id AND k.workspace_id = $1
+            AND d.reader_needed = $2 AND d.deleted_at IS NULL
+         RETURNING d.id, d.kb_id",
+    )
+    .bind(workspace_id)
+    .bind(reader)
+    .fetch_all(&mut *tx)
+    .await?;
+    for (id, _) in &rows {
+        crate::jobs::enqueue_with_max_attempts_tx(
+            &mut tx,
+            "process_document",
+            serde_json::json!({ "document_id": id }),
+            3,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(rows)
+}
+
+/// 正在读这份文件的远端任务（0040 第二刀，形状见迁移 0059）
+pub async fn reader_task(pool: &PgPool, id: Uuid) -> AppResult<Option<serde_json::Value>> {
+    Ok(
+        sqlx::query_scalar("SELECT reader_task FROM documents WHERE id = $1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
+    )
+}
+
+/// 记下刚提交的远端任务。**只在没有任务时记得上**：同一份文档被重复排队、两个处理任务
+/// 同时交了一份，只有先记上的那个算数，另一个挂回去问它——返回 false
+pub async fn claim_reader_task(
+    pool: &PgPool,
+    id: Uuid,
+    task: &serde_json::Value,
+) -> AppResult<bool> {
+    let done =
+        sqlx::query("UPDATE documents SET reader_task = $2 WHERE id = $1 AND reader_task IS NULL")
+            .bind(id)
+            .bind(task)
+            .execute(pool)
+            .await?;
+    Ok(done.rows_affected() == 1)
+}
+
+/// 作废远端任务（读完、换了文件、服务把它忘了）
+pub async fn clear_reader_task(pool: &PgPool, id: Uuid) -> AppResult<()> {
+    sqlx::query("UPDATE documents SET reader_task = NULL WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_ready(pool: &PgPool, id: Uuid, text_len: i32, chunk_count: i32) -> AppResult<()> {
     sqlx::query(
-        "UPDATE documents SET status = 'ready', error = NULL, text_len = $2, chunk_count = $3,
-                updated_at = now() WHERE id = $1",
+        "UPDATE documents SET status = 'ready', error = NULL, reader_needed = NULL, reader_task = NULL,
+                text_len = $2,
+                chunk_count = $3, updated_at = now() WHERE id = $1",
     )
     .bind(id)
     .bind(text_len)
@@ -1148,16 +1246,41 @@ pub async fn replace_chunks(
     .await?;
 
     // 认领池：现行块按文本分组（同文重复块按多重集配对，各认领各的）
-    let old: Vec<(Uuid, String)> = sqlx::query_as(
-        "SELECT id, text FROM chunks WHERE document_id = $1 AND superseded_at IS NULL",
+    // 认领按「文本 + 出处」：同一句话从原文里读到和从扫描页上认出来，不是同一块（0040）
+    type Stored = (
+        Uuid,
+        String,
+        String,
+        Option<String>,
+        Option<serde_json::Value>,
+    );
+    let old: Vec<Stored> = sqlx::query_as(
+        "SELECT id, text, origin, origin_model, anchor FROM chunks
+              WHERE document_id = $1 AND superseded_at IS NULL",
     )
     .bind(document_id)
     .fetch_all(&mut *tx)
     .await?;
-    let mut claim_pool: std::collections::HashMap<String, Vec<Uuid>> =
+    type ClaimKey = (String, String, Option<String>, Option<String>);
+    let key_of = |text: &str,
+                  origin: &str,
+                  model: Option<&str>,
+                  anchor: Option<&serde_json::Value>|
+     -> ClaimKey {
+        (
+            text.to_string(),
+            origin.to_string(),
+            model.map(str::to_string),
+            anchor.map(|a| a.to_string()),
+        )
+    };
+    let mut claim_pool: std::collections::HashMap<ClaimKey, Vec<Uuid>> =
         std::collections::HashMap::new();
-    for (id, text) in old {
-        claim_pool.entry(text).or_default().push(id);
+    for (id, text, origin, model, anchor) in old {
+        claim_pool
+            .entry(key_of(&text, &origin, model.as_deref(), anchor.as_ref()))
+            .or_default()
+            .push(id);
     }
 
     // 第一阶段：认领（原行更新）与待插清单——新块必须等软删跑完再插，
@@ -1166,7 +1289,15 @@ pub async fn replace_chunks(
     let mut to_insert: Vec<(Uuid, &ChunkPiece)> = Vec::new();
     let mut out = Vec::with_capacity(pieces.len());
     for piece in pieces {
-        let claimed = claim_pool.get_mut(&piece.text).and_then(|ids| ids.pop());
+        let p = &piece.provenance;
+        let claimed = claim_pool
+            .get_mut(&key_of(
+                &piece.text,
+                p.origin.as_str(),
+                p.model.as_deref(),
+                p.anchor.as_ref(),
+            ))
+            .and_then(|ids| ids.pop());
         if let Some(id) = claimed {
             sqlx::query(
                 "UPDATE chunks SET seq = $2, char_start = $3, char_end = $4, doc_version = $5,
@@ -1209,8 +1340,9 @@ pub async fn replace_chunks(
     for (id, piece) in to_insert {
         sqlx::query(
             "INSERT INTO chunks
-                (id, kb_id, document_id, seq, text, char_start, char_end, doc_version, heading)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                (id, kb_id, document_id, seq, text, char_start, char_end, doc_version, heading,
+                 origin, origin_model, anchor)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(id)
         .bind(kb_id)
@@ -1221,6 +1353,9 @@ pub async fn replace_chunks(
         .bind(piece.char_end)
         .bind(version)
         .bind(&piece.heading)
+        .bind(piece.provenance.origin.as_str())
+        .bind(&piece.provenance.model)
+        .bind(&piece.provenance.anchor)
         .execute(&mut *tx)
         .await?;
     }
@@ -1286,7 +1421,7 @@ pub async fn chunks_full(
     document_id: Uuid,
 ) -> AppResult<Vec<utopia_core::models::ChunkFull>> {
     let rows = sqlx::query_as(
-        "SELECT id, seq, text FROM chunks
+        "SELECT id, seq, text, origin, origin_model, anchor FROM chunks
          WHERE document_id = $1 AND superseded_at IS NULL ORDER BY seq",
     )
     .bind(document_id)
@@ -1302,6 +1437,8 @@ pub struct ChunkForExtract {
     pub seq: i32,
     pub text: String,
     pub embedding: Option<Vector>,
+    /// 这块文字从哪来（0040）：看图描述出来的事实不能单独改写账本
+    pub origin: String,
 }
 
 pub async fn chunks_for_extraction(
@@ -1310,7 +1447,7 @@ pub async fn chunks_for_extraction(
 ) -> AppResult<Vec<ChunkForExtract>> {
     // 只取未抽取的分块：认领的未变段落携带 extracted_at 跳过（增量抽取 + 断点续抽）
     let rows = sqlx::query_as(
-        "SELECT id, seq, text, embedding FROM chunks
+        "SELECT id, seq, text, embedding, origin FROM chunks
          WHERE document_id = $1 AND superseded_at IS NULL AND extracted_at IS NULL
          ORDER BY seq",
     )

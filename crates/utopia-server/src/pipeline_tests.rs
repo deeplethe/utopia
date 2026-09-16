@@ -16,6 +16,9 @@
 //! 7. **正文夹 NUL 不毁整篇**（#611）：Postgres 的 TEXT 不收 0x00，从前一个字节就让整篇
 //!    落在 failed。现在走完整的 process_document 到 ready，库里没有一个分块带 NUL。
 //!
+//! 8. **扫描件等版面识别服务读**（0040 第二刀）：配上服务重新排队，交一次、挂回去问、按页切块。
+//! 9. **录音等会标说话人的转写模型读**（第三刀）：说话人进正文、时刻进锚点；分不出说话人的降级。
+//!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
 use std::sync::{Arc, Mutex};
@@ -186,18 +189,23 @@ impl Fx {
 
     /// 同上，正文由调用方给
     async fn document_with_text(&self, text: &str) -> anyhow::Result<Uuid> {
+        self.document_with_bytes("long.md", text.as_bytes()).await
+    }
+
+    /// 任意字节、任意文件名：图片、录音、二进制都从这里进
+    async fn document_with_bytes(&self, filename: &str, bytes: &[u8]) -> anyhow::Result<Uuid> {
         use sha2::{Digest, Sha256};
-        let sha: String = Sha256::digest(text.as_bytes())
+        let sha: String = Sha256::digest(bytes)
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
-        self.state.blob.put(&sha, text.as_bytes()).await?;
+        self.state.blob.put(&sha, bytes).await?;
         Ok(utopia_store::documents::create(
             &self.pool,
             self.kb,
-            "long.md",
-            "text/markdown",
-            text.len() as i64,
+            filename,
+            "application/octet-stream",
+            bytes.len() as i64,
             &sha,
             None,
             None,
@@ -205,6 +213,16 @@ impl Fx {
         )
         .await?
         .id)
+    }
+
+    async fn alerts(&self, kind: &str) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(sqlx::query_scalar(
+            "SELECT detail FROM alerts WHERE kb_id = $1 AND kind = $2 ORDER BY created_at",
+        )
+        .bind(self.kb)
+        .bind(kind)
+        .fetch_all(&self.pool)
+        .await?)
     }
 
     async fn embed(&self, doc: Uuid) -> anyhow::Result<usize> {
@@ -364,6 +382,431 @@ async fn a_nul_byte_does_not_fail_the_whole_document() -> anyhow::Result<()> {
         joined.contains("Revenue grew twelve percent."),
         "the words around the NUL survive, joined as written"
     );
+    f.cleanup().await
+}
+
+/// 0040：图片、扫描件、录音的字要靠模型读。没配那种模型时**降级**：文件留着、文档停在
+/// failed 并记下缺哪一种、报一条库级告警；不重试，也不再解出一堆乱码去分块、嵌入、抽取
+#[tokio::test]
+async fn a_file_that_needs_a_reader_waits_and_says_so() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let png = [
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H',
+    ];
+    let mp3 = [b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, 0, 0xFF, 0xFB];
+    let image = f.document_with_bytes("contract-scan.png", &png).await?;
+    let recording = f.document_with_bytes("board-meeting.mp3", &mp3).await?;
+
+    for (doc, reader) in [(image, "ocr"), (recording, "transcribe")] {
+        let err = super::process_document(&f.state, doc)
+            .await
+            .expect_err("nothing can be read without the model");
+        assert!(
+            utopia_core::is_terminal(&err),
+            "retrying cannot configure a model"
+        );
+        let row = utopia_store::documents::get(&f.pool, doc).await?;
+        assert_eq!(row.status, "failed");
+        assert_eq!(row.reader_needed.as_deref(), Some(reader));
+        assert!(row.error.is_some(), "the document says why");
+        assert!(f.stored(doc).await?.is_empty(), "no garbage chunks");
+    }
+    let alerts = f.alerts("document.needs_reader").await?;
+    assert_eq!(alerts.len(), 2);
+    assert_eq!(alerts[0]["name"], "contract-scan.png");
+    assert_eq!(alerts[0]["reader"], "ocr");
+    assert_eq!(alerts[1]["reader"], "transcribe");
+    f.cleanup().await
+}
+
+/// 假的 `mineru-api`：交一次拿到 `t-n`；问状态前 `processing_polls` 次说还在读，之后说读完；
+/// `fail` 时说读失败。记下交了几次、每次带了什么
+#[derive(Clone, Default)]
+struct FakeMineru {
+    submissions: Arc<Mutex<Vec<String>>>,
+    polls: Arc<Mutex<usize>>,
+    processing_polls: usize,
+    fail: bool,
+}
+
+impl Respond for FakeMineru {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        if request.method.as_str() == "POST" {
+            let mut subs = self.submissions.lock().expect("lock");
+            let auth = request
+                .headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            subs.push(format!(
+                "{auth}\n{}",
+                String::from_utf8_lossy(&request.body)
+            ));
+            return ResponseTemplate::new(202).set_body_json(
+                serde_json::json!({ "task_id": format!("t-{}", subs.len()), "status": "pending" }),
+            );
+        }
+        if request.url.path().ends_with("/result") {
+            let list = serde_json::json!([
+                { "type": "header", "text": "ACME", "page_idx": 0, "bbox": [0, 0, 1000, 20] },
+                { "type": "text", "text": "Lease Agreement", "text_level": 1, "page_idx": 0, "bbox": [100, 40, 900, 80] },
+                { "type": "text", "text": "Beta Robotics pays Alpha 1,000 per month.", "page_idx": 0, "bbox": [100, 100, 900, 140] },
+                { "type": "text", "text": "Signed on 12 February 2025.", "page_idx": 1, "bbox": [100, 60, 700, 90] }
+            ]);
+            return ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "completed", "backend": "vlm-auto-engine", "version": "2.5.4",
+                "results": { "contract-scan": { "content_list": list.to_string() } }
+            }));
+        }
+        let mut polls = self.polls.lock().expect("lock");
+        *polls += 1;
+        let status = if self.fail {
+            serde_json::json!({ "status": "failed", "error": "CUDA out of memory" })
+        } else if *polls <= self.processing_polls {
+            serde_json::json!({ "status": "processing" })
+        } else {
+            serde_json::json!({ "status": "completed" })
+        };
+        ResponseTemplate::new(200).set_body_json(status)
+    }
+}
+
+async fn with_mineru(f: &Fx, fake: &FakeMineru) -> anyhow::Result<()> {
+    Mock::given(wiremock::matchers::path_regex("^/ocr/tasks.*"))
+        .respond_with(fake.clone())
+        .mount(&f.server)
+        .await;
+    utopia_store::settings::upsert_ocr(
+        &f.pool,
+        f.ws,
+        Some(&format!("{}/ocr/", f.server.uri())),
+        Some("ocr-secret"),
+        Some("vlm-auto-engine"),
+    )
+    .await?;
+    Ok(())
+}
+
+async fn reader_task(f: &Fx, doc: Uuid) -> anyhow::Result<Option<serde_json::Value>> {
+    Ok(utopia_store::documents::reader_task(&f.pool, doc).await?)
+}
+
+/// 0040 第二刀：没配服务时停下的扫描件，配上服务就重新排队；交一次、问到读完、按页切块，
+/// 每块记着读它的服务版本、页码和框。等的时候不烧重试预算，也不重交
+#[tokio::test]
+async fn a_scan_waits_for_the_layout_service_and_keeps_its_page() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let png = [
+        0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H',
+    ];
+    let doc = f.document_with_bytes("contract-scan.png", &png).await?;
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("no OCR yet");
+    assert!(utopia_core::is_terminal(&err));
+
+    let fake = FakeMineru {
+        processing_polls: 1,
+        ..Default::default()
+    };
+    with_mineru(&f, &fake).await?;
+    let requeued =
+        utopia_store::documents::requeue_waiting_for_reader(&f.pool, f.ws, "ocr").await?;
+    assert_eq!(
+        requeued,
+        vec![(doc, f.kb)],
+        "saving the service queues the scan again"
+    );
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!((row.status.as_str(), row.reader_needed), ("pending", None));
+    let queued: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind = 'process_document' AND status = 'queued'
+            AND payload->>'document_id' = $1",
+    )
+    .bind(doc.to_string())
+    .fetch_one(&f.pool)
+    .await?;
+    assert!(queued >= 1);
+
+    // 交上去：挂回队列等，文档还在 parsing
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("submitted");
+    assert!(utopia_core::is_deferred(&err).is_some(), "{err:#}");
+    assert!(!utopia_core::is_terminal(&err));
+    assert_eq!(
+        utopia_store::documents::get(&f.pool, doc).await?.status,
+        "parsing"
+    );
+    let task = reader_task(&f, doc).await?.expect("the task is remembered");
+    assert_eq!(task["task_id"], "t-1");
+
+    // 问一次：还在读
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("processing");
+    assert!(utopia_core::is_deferred(&err).is_some());
+
+    // 再问：读完了
+    super::process_document(&f.state, doc).await?;
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "ready", "{:?}", row.error);
+    assert_eq!(
+        reader_task(&f, doc).await?,
+        None,
+        "a finished read forgets its task"
+    );
+    let subs = fake.submissions.lock().expect("lock").clone();
+    assert_eq!(subs.len(), 1, "waiting never submits twice");
+    assert!(subs[0].starts_with("Bearer ocr-secret\n"));
+    assert!(subs[0].contains("name=\"backend\""));
+    assert!(subs[0].contains("vlm-auto-engine"));
+
+    type Stored = (String, String, Option<String>, Option<serde_json::Value>);
+    let chunks: Vec<Stored> = sqlx::query_as(
+        "SELECT text, origin, origin_model, anchor FROM chunks
+          WHERE document_id = $1 AND superseded_at IS NULL ORDER BY seq",
+    )
+    .bind(doc)
+    .fetch_all(&f.pool)
+    .await?;
+    assert_eq!(chunks.len(), 2, "one chunk per page: {chunks:#?}");
+    assert!(chunks.iter().all(|c| c.1 == "ocr"));
+    assert_eq!(chunks[0].2.as_deref(), Some("mineru 2.5.4 vlm-auto-engine"));
+    assert!(chunks[0].0.contains("1,000 per month"));
+    assert!(!chunks[0].0.contains("ACME"), "the page header is not text");
+    assert_eq!(
+        chunks[0].3,
+        Some(serde_json::json!({ "page": 1, "bbox": [100.0, 40.0, 900.0, 140.0] }))
+    );
+    assert_eq!(
+        chunks[1].3.as_ref().map(|a| a["page"].clone()),
+        Some(serde_json::json!(2))
+    );
+    assert!(
+        f.stored(doc).await?.iter().all(|(_, v)| v.is_some()),
+        "embedded like any text"
+    );
+    f.cleanup().await
+}
+
+/// 服务说读失败：文档带着服务给的原因落在 failed，任务号清掉，这次失败走普通重试（下一次重交）
+#[tokio::test]
+async fn a_failed_read_is_retried_from_a_fresh_submission() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let fake = FakeMineru {
+        fail: true,
+        ..Default::default()
+    };
+    with_mineru(&f, &fake).await?;
+    let doc = f
+        .document_with_bytes(
+            "contract-scan.png",
+            &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+        )
+        .await?;
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("submitted");
+    assert!(utopia_core::is_deferred(&err).is_some());
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("failed");
+    assert!(utopia_core::is_deferred(&err).is_none());
+    assert!(
+        !utopia_core::is_terminal(&err),
+        "the next attempt may succeed"
+    );
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "failed");
+    assert!(row
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("CUDA out of memory")));
+    assert_eq!(reader_task(&f, doc).await?, None);
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("submitted again");
+    assert!(utopia_core::is_deferred(&err).is_some());
+    assert_eq!(fake.submissions.lock().expect("lock").len(), 2);
+    f.cleanup().await
+}
+
+/// 假的转写端点：`labels` 时每句带说话人，否则只有时间。记下收到的表单
+#[derive(Clone, Default)]
+struct FakeTranscriber {
+    labels: bool,
+    requests: Arc<Mutex<Vec<String>>>,
+}
+
+impl Respond for FakeTranscriber {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let auth = request
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        self.requests.lock().expect("lock").push(format!(
+            "{auth}\n{}",
+            String::from_utf8_lossy(&request.body)
+        ));
+        let seg = |speaker: &str, start: f64, end: f64, text: &str| {
+            if self.labels {
+                serde_json::json!({ "type": "transcript.text.segment", "speaker": speaker, "start": start, "end": end, "text": text })
+            } else {
+                serde_json::json!({ "start": start, "end": end, "text": text })
+            }
+        };
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "text": "…",
+            "segments": [
+                seg("A", 0.0, 3.2, "Who delivers the Beta Robotics prototype?"),
+                seg("B", 3.5, 7.25, "I will deliver it in Q3."),
+            ]
+        }))
+    }
+}
+
+async fn with_transcriber(f: &Fx, fake: &FakeTranscriber, model: &str) -> anyhow::Result<()> {
+    f.server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(f.fake.clone())
+        .mount(&f.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/asr/audio/transcriptions"))
+        .respond_with(fake.clone())
+        .mount(&f.server)
+        .await;
+    utopia_store::settings::upsert_transcribe(
+        &f.pool,
+        f.ws,
+        Some(&format!("{}/asr", f.server.uri())),
+        Some("asr-secret"),
+        Some(model),
+    )
+    .await?;
+    Ok(())
+}
+
+const MP3: [u8; 12] = [b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, 0, 0xFF, 0xFB];
+
+/// 0040 第三刀：录音交给会标说话人的转写模型。说话人写进正文，每块记着起止时刻和说话人
+#[tokio::test]
+async fn a_recording_is_read_with_who_said_what() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let fake = FakeTranscriber {
+        labels: true,
+        ..Default::default()
+    };
+    with_transcriber(&f, &fake, "gpt-4o-transcribe-diarize").await?;
+    let doc = f.document_with_bytes("board-meeting.mp3", &MP3).await?;
+    super::process_document(&f.state, doc).await?;
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "ready", "{:?}", row.error);
+
+    let req = fake.requests.lock().expect("lock").clone();
+    assert_eq!(req.len(), 1);
+    assert!(req[0].starts_with("Bearer asr-secret\n"));
+    assert!(req[0].contains("diarized_json"));
+    assert!(req[0].contains("gpt-4o-transcribe-diarize"));
+
+    type Stored = (String, String, Option<String>, Option<serde_json::Value>);
+    let chunks: Vec<Stored> = sqlx::query_as(
+        "SELECT text, origin, origin_model, anchor FROM chunks
+          WHERE document_id = $1 AND superseded_at IS NULL ORDER BY seq",
+    )
+    .bind(doc)
+    .fetch_all(&f.pool)
+    .await?;
+    assert_eq!(chunks.len(), 1, "{chunks:#?}");
+    assert_eq!(chunks[0].1, "transcribed");
+    assert_eq!(chunks[0].2.as_deref(), Some("gpt-4o-transcribe-diarize"));
+    assert!(chunks[0].0.contains("Speaker B: I will deliver it in Q3."));
+    assert_eq!(
+        chunks[0].3,
+        Some(serde_json::json!({ "start_ms": 0, "end_ms": 7250, "speaker": ["A", "B"] }))
+    );
+    f.cleanup().await
+}
+
+/// 分不出说话人的转写：跟没配一样降级（决定 5）——不进库、告警说原因、不重试；换一个会标
+/// 说话人的模型存下，录音重新排队读成
+#[tokio::test]
+async fn a_transcript_that_cannot_say_who_spoke_waits_for_one_that_can() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let unlabelled = FakeTranscriber::default();
+    with_transcriber(&f, &unlabelled, "whisper-1").await?;
+    let doc = f.document_with_bytes("board-meeting.mp3", &MP3).await?;
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("no speakers");
+    assert!(utopia_core::is_terminal(&err));
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "failed");
+    assert_eq!(row.reader_needed.as_deref(), Some("transcribe"));
+    assert!(row
+        .error
+        .as_deref()
+        .is_some_and(|e| e.contains("who spoke")));
+    assert!(
+        f.stored(doc).await?.is_empty(),
+        "nothing unattributed is kept"
+    );
+    let alerts = f.alerts("document.needs_reader").await?;
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0]["reader"], "transcribe");
+
+    let labelled = FakeTranscriber {
+        labels: true,
+        ..Default::default()
+    };
+    with_transcriber(&f, &labelled, "gpt-4o-transcribe-diarize").await?;
+    let requeued =
+        utopia_store::documents::requeue_waiting_for_reader(&f.pool, f.ws, "transcribe").await?;
+    assert_eq!(requeued, vec![(doc, f.kb)]);
+    super::process_document(&f.state, doc).await?;
+    assert_eq!(
+        utopia_store::documents::get(&f.pool, doc).await?.status,
+        "ready"
+    );
+    f.cleanup().await
+}
+
+/// 读不了的格式（老式 .doc、压缩包）：一次失败、不重试，也不进库成乱码；它不缺模型，不报那条告警
+#[tokio::test]
+async fn a_binary_file_fails_once_instead_of_becoming_text() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let doc = f
+        .document_with_bytes(
+            "minutes.doc",
+            &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0, 0, 0, 0],
+        )
+        .await?;
+    let err = super::process_document(&f.state, doc)
+        .await
+        .expect_err("not text");
+    assert!(utopia_core::is_terminal(&err));
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "failed");
+    assert_eq!(row.reader_needed, None);
+    assert!(f.stored(doc).await?.is_empty());
+    assert!(f.alerts("document.needs_reader").await?.is_empty());
     f.cleanup().await
 }
 

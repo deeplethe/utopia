@@ -111,6 +111,9 @@ pub struct Document {
     pub deleted_at: Option<DateTime<Utc>>,
     /// 真删（#268 下半）：内容已抹掉，回不来。行留作墓碑
     pub purged_at: Option<DateTime<Utc>>,
+    /// 这份文件的字要靠哪一种模型读，而那种模型还没配：`ocr` / `transcribe`（0040）。
+    /// 文档此时是 failed；配上之后按它重新排进处理队列
+    pub reader_needed: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -432,6 +435,16 @@ pub struct LlmSettings {
     pub embed_model: Option<String>,
     pub embed_dim: Option<i32>,
     pub updated_at: DateTime<Utc>,
+    /// 读扫描件、图片的版面识别服务（MinerU，0040）；空 = 没配，那类文件降级
+    pub ocr_base_url: Option<String>,
+    #[serde(skip_serializing)]
+    pub ocr_api_key: Option<String>,
+    pub ocr_backend: Option<String>,
+    /// 会标说话人的转写模型（OpenAI `/audio/transcriptions` + `diarized_json`，0040）
+    pub transcribe_base_url: Option<String>,
+    #[serde(skip_serializing)]
+    pub transcribe_api_key: Option<String>,
+    pub transcribe_model: Option<String>,
 }
 
 impl LlmSettings {
@@ -440,6 +453,12 @@ impl LlmSettings {
     }
     pub fn embed_ready(&self) -> bool {
         self.embed_base_url.is_some() && self.embed_model.is_some()
+    }
+    pub fn ocr_ready(&self) -> bool {
+        self.ocr_base_url.is_some()
+    }
+    pub fn transcribe_ready(&self) -> bool {
+        self.transcribe_base_url.is_some() && self.transcribe_model.is_some()
     }
 }
 
@@ -875,6 +894,8 @@ pub struct GraphChange {
     pub document_id: Option<Uuid>,
     pub filename: Option<String>,
     pub quote: Option<String>,
+    /// 这条引文从哪来（0040）：stated / ocr / transcribed / described；没有证据为空
+    pub quote_origin: Option<String>,
 }
 
 /// 消解审核项的一侧实体摘要。
@@ -960,6 +981,13 @@ pub struct EvidenceView {
     pub stale: bool,
     /// 这条证据所在的文档已被删除（#268）。事实若还活着，是因为它另有出处
     pub document_deleted: bool,
+    /// 引文从哪来（0040）：`stated` 文件里写的、`ocr` 扫描页上认出来的、`transcribed`
+    /// 录音转写、`described` 模型对一张图的描述——最后一种没有原话可对
+    pub origin: String,
+    /// 读出这段文字的引擎或模型；原文为空
+    pub origin_model: Option<String>,
+    /// 指回原文件的位置：页码（和框）、录音起止毫秒与说话人、图在哪一页
+    pub anchor: Option<serde_json::Value>,
 }
 
 /// 这个库走到哪一步了（#313）：四个页面的空状态共用同一个判断。
@@ -1011,6 +1039,10 @@ pub struct ChunkFull {
     pub id: Uuid,
     pub seq: i32,
     pub text: String,
+    /// 这块文字从哪来（0040）：查看器按它标出认出来的字，按锚点翻到那一页
+    pub origin: String,
+    pub origin_model: Option<String>,
+    pub anchor: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -1597,14 +1629,17 @@ pub struct RelationAxioms {
 
 /// 文库的一页，连同这一页之外的统计。
 ///
-/// **统计不受名字/状态筛选影响**：`ready` / `extracting` / `failed` 说的是这个
-/// 来源里有多少，那是批量按钮的作用范围，跟你此刻在搜什么无关。
+/// **统计不受名字/状态筛选影响**：`ready` / `done` / `extracting` / `failed` 说的是
+/// 这个来源里有多少，那是批量按钮的作用范围，跟你此刻在搜什么无关。
 #[derive(Debug, Clone, Serialize)]
 pub struct DocumentPage {
     pub docs: Vec<Document>,
     /// 命中筛选的总数（分页器用它）
     pub total: i64,
+    /// 摄入完成（`status = 'ready'`）的篇数：重抽的作用范围
     pub ready: i64,
+    /// 抽取完成（`graph_status = 'done'`）的篇数：抽取进度条的分子
+    pub done: i64,
     pub extracting: i64,
     pub failed: i64,
     /// 整库的墓碑数（删了、没清的）——左栏「已删除」那一行的数字，不随作用域变

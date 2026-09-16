@@ -36,11 +36,53 @@ const EMBED_JOBS: usize = 4;
 pub async fn process_document(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     match run(state, document_id).await {
         Ok(()) => Ok(()),
+        // 在等读字的服务读完：文档照旧是 parsing，任务过一会儿再来问
+        Err(e) if utopia_core::is_deferred(&e).is_some() => Err(e),
         Err(e) => {
+            let doc = utopia_store::documents::get(&state.pool, document_id)
+                .await
+                .ok();
+            // 字要靠模型读、而那种模型没配（0040）：**降级**。文件留着，文档停在 failed
+            // 并记下缺哪一种，报一条库级告警；配上模型会自己重新处理。重试没用——
+            // 模型不会在两分钟里自己配上，所以挂 Terminal。
+            // 转写回来却分不出说话人，跟没配一样对待（决定 5）：换个会标说话人的模型再来
+            let waiting = e
+                .downcast_ref::<utopia_ingest::NeedsReader>()
+                .map(|n| n.reader)
+                .or_else(|| {
+                    e.downcast_ref::<utopia_ingest::NoSpeakers>()
+                        .map(|_| utopia_ingest::Reader::Transcribe)
+                });
+            if let Some(reader) = waiting {
+                let _ = utopia_store::documents::set_needs_reader(
+                    &state.pool,
+                    document_id,
+                    reader.as_str(),
+                    &e.to_string(),
+                )
+                .await;
+                if let Some(doc) = &doc {
+                    crate::alerting::observe_document_needs_reader(
+                        state,
+                        doc.kb_id,
+                        document_id,
+                        &doc.filename,
+                        reader,
+                        &e.to_string(),
+                    )
+                    .await;
+                    state.emit_document(doc.kb_id, document_id);
+                }
+                return Err(e.context(utopia_core::Terminal));
+            }
             let _ =
                 utopia_store::documents::set_failed(&state.pool, document_id, &e.to_string()).await;
-            if let Ok(doc) = utopia_store::documents::get(&state.pool, document_id).await {
+            if let Some(doc) = &doc {
                 state.emit_document(doc.kb_id, document_id);
+            }
+            // 读不了的格式（视频、二进制、空文件）换多少次也一样
+            if e.downcast_ref::<utopia_ingest::Unreadable>().is_some() {
+                return Err(e.context(utopia_core::Terminal));
             }
             Err(e)
         }
@@ -60,16 +102,55 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     state.emit_document(doc.kb_id, document_id);
     let bytes = state.blob.get(&doc.sha256).await?;
     let filename = doc.filename.clone();
-    let parsed =
-        tokio::task::spawn_blocking(move || utopia_ingest::parse(&filename, &bytes)).await??;
-    // 解析出来的正文可能夹着 NUL（PDF 文本层常见），入库之前剥掉（#611）——与记忆
-    // 那条路共用 `utopia_core::without_nul`（#665）。剥必须在算长度、分块之前：之后的
-    // text_len、分块偏移、全文索引、嵌入读的都是这一份，彼此才对得上
-    let text = utopia_core::without_nul(&parsed.text);
-    let text_len = text.chars().count() as i32;
+    let (parsed, bytes) =
+        tokio::task::spawn_blocking(move || (utopia_ingest::parse(&filename, &bytes), bytes))
+            .await?;
+    let kb_row = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
+    let settings = utopia_store::settings::get(&state.pool, kb_row.workspace_id).await?;
 
     // 2. 分块 + 入库
-    let pieces = utopia_ingest::chunk_with_budget(&text, state.chunk_tokens);
+    let (text, pieces) = match parsed {
+        Ok(parsed) => {
+            // 解析出来的正文可能夹着 NUL（PDF 文本层常见），入库之前剥掉（#611）——与记忆
+            // 那条路共用 `utopia_core::without_nul`（#665）。剥必须在算长度、分块之前：之后的
+            // text_len、分块偏移、全文索引、嵌入读的都是这一份，彼此才对得上
+            let text = utopia_core::without_nul(&parsed.text).into_owned();
+            let pieces = utopia_ingest::chunk_with_budget(&text, state.chunk_tokens);
+            (text, pieces)
+        }
+        // 没有文本层的扫描件、图片：工作区配了版面识别服务就交给它读（0040 第二刀），
+        // 按页分段切块，每块记着页码和框。录音交给会标说话人的转写模型（第三刀），
+        // 每块记着起止时刻和说话人。没配的照旧往上抛，由外面降级
+        Err(e) => {
+            let Some(needs) = e.downcast_ref::<utopia_ingest::NeedsReader>() else {
+                return Err(e);
+            };
+            let reading = match (needs.reader, settings.as_ref()) {
+                (utopia_ingest::Reader::Ocr, Some(s)) => {
+                    match crate::readers::Ocr::from_settings(s) {
+                        Some(ocr) => ocr.read(state, &doc, bytes).await?,
+                        None => return Err(e),
+                    }
+                }
+                (utopia_ingest::Reader::Transcribe, Some(s)) => {
+                    match crate::readers::Transcriber::from_settings(s) {
+                        Some(t) => t.read(&doc, bytes).await?,
+                        None => return Err(e),
+                    }
+                }
+                (_, None) => return Err(e),
+            };
+            if reading.text.trim().is_empty() {
+                return Err(utopia_ingest::Unreadable(
+                    "The reader found no text in this file".into(),
+                )
+                .into());
+            }
+            let pieces = reading.chunk(state.chunk_tokens);
+            (reading.text, pieces)
+        }
+    };
+    let text_len = text.chars().count() as i32;
     let chunk_pairs =
         utopia_store::documents::replace_chunks(&state.pool, doc.kb_id, document_id, &pieces)
             .await?;
@@ -84,8 +165,6 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || search.reindex_document(&kb, &did, &chunk_pairs)).await??;
 
     // 4. embedding（工作区配置了 embedding 模型才做；没配也算 ready，先享受 BM25 搜索）
-    let kb_row = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
-    let settings = utopia_store::settings::get(&state.pool, kb_row.workspace_id).await?;
     if let Some((settings, client)) = embedder(settings.as_ref()) {
         utopia_store::documents::set_status(&state.pool, document_id, "embedding").await?;
         state.emit_document(doc.kb_id, document_id);

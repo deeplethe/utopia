@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router"
 import { api, type ChunkFact } from "../api";
 import { S } from "../i18n";
 import { useKbId } from "../kb";
+import { originHint, originLabel } from "../origin";
 import { GroupLabel, PageHeader, Pager, pageSlice } from "../ui";
 import { SourcesRail } from "./SourcesRail";
 
@@ -111,6 +112,13 @@ export function DocViewer() {
                 >
                   <div className="mb-2 text-small text-ink-2">
                     {S.doc.section} {c.seq + 1}
+                    {/* 认出来、转写出来的字标一句出处：可能认错一个数、听错一个名字 */}
+                    {originLabel(c.origin, c.anchor) && (
+                      <span title={originHint(c.origin, c.origin_model)}>
+                        {" · "}
+                        {originLabel(c.origin, c.anchor)}
+                      </span>
+                    )}
                     {hit && (
                       <span
                         className={`u-fade-slow ml-2 text-accent ${

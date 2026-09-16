@@ -30,7 +30,7 @@ use utopia_core::AppResult;
 use uuid::Uuid;
 
 /// 低于此置信度的后任不允许自动改写前任的历史（进审）。
-const AUTO_CLOSE_MIN_CONFIDENCE: f32 = 0.75;
+pub const AUTO_CLOSE_MIN_CONFIDENCE: f32 = 0.75;
 
 /// 证据文件**自带**的最早日期，按 `facts` 的别名 `f` 投影。只认正文（`content`）与来源
 /// （`source`）给的日期：上传时刻、文件修改时间不是文档自己的日期——拿它们排序，

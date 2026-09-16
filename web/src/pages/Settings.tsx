@@ -890,6 +890,12 @@ export function Settings() {
     embed_base_url: "",
     embed_api_key: "",
     embed_model: "",
+    ocr_base_url: "",
+    ocr_api_key: "",
+    ocr_backend: "",
+    transcribe_base_url: "",
+    transcribe_api_key: "",
+    transcribe_model: "",
   });
 
   useEffect(() => {
@@ -900,6 +906,10 @@ export function Settings() {
         chat_model: settings.data.chat_model ?? "",
         embed_base_url: settings.data.embed_base_url ?? "",
         embed_model: settings.data.embed_model ?? "",
+        ocr_base_url: settings.data.ocr_base_url ?? "",
+        ocr_backend: settings.data.ocr_backend ?? "",
+        transcribe_base_url: settings.data.transcribe_base_url ?? "",
+        transcribe_model: settings.data.transcribe_model ?? "",
       }));
     }
   }, [settings.data]);
@@ -926,6 +936,38 @@ export function Settings() {
     });
   const saveChat = usePatch();
   const saveEmbed = usePatch();
+  /* 读扫描件的服务、转写模型各有自己的接口：存它们不经过上面那份整体替换，
+     所以不用 withSaved 垫底子。回来的 `requeued` 是因为缺它而等着的文件数 */
+  const saveOcr = useMutation({
+    mutationFn: () =>
+      api.saveOcrSettings(workspace!.id, {
+        base_url: form.ocr_base_url,
+        api_key: form.ocr_api_key,
+        backend: form.ocr_backend,
+      }),
+    onSuccess: () => {
+      setDirty((d) => ({ ...d, ocr: false }));
+      queryClient.invalidateQueries({ queryKey: ["settings", workspace?.id] });
+    },
+  });
+  const saveTranscribe = useMutation({
+    mutationFn: () =>
+      api.saveTranscribeSettings(workspace!.id, {
+        base_url: form.transcribe_base_url,
+        api_key: form.transcribe_api_key,
+        model: form.transcribe_model,
+      }),
+    onSuccess: () => {
+      setDirty((d) => ({ ...d, transcribe: false }));
+      queryClient.invalidateQueries({ queryKey: ["settings", workspace?.id] });
+    },
+  });
+  const resetSaves = () => {
+    saveChat.reset();
+    saveEmbed.reset();
+    saveOcr.reset();
+    saveTranscribe.reset();
+  };
 
   const test = useMutation({
     mutationFn: () => api.testSettings(workspace!.id),
@@ -934,15 +976,21 @@ export function Settings() {
   });
   /* 哪张卡按下的"测试"。测一次是两套一起测（一个接口），结果各自回卡；
      但两个按钮共用这一个 mutation，从前按任意一张两张一起转"Testing…"（#698） */
-  const [testCard, setTestCard] = useState<"chat" | "embed" | null>(null);
+  const [testCard, setTestCard] = useState<"chat" | "embed" | "ocr" | "transcribe" | null>(
+    null,
+  );
   /* 两张卡各自有没有改过、还没保存的格子。测试只测已保存的配置，所以有修改的那张卡
      不让测，备注改说「先保存」；保存成功才清掉（#698） */
-  const [dirty, setDirty] = useState({ chat: false, embed: false });
+  const [dirty, setDirty] = useState({
+    chat: false,
+    embed: false,
+    ocr: false,
+    transcribe: false,
+  });
   /* 开测：上一轮的结论（两边卡的 Saved/报错、上一轮测试结果）全部让位给这一轮 */
   const startTest = () => {
     test.reset();
-    saveChat.reset();
-    saveEmbed.reset();
+    resetSaves();
     test.mutate();
   };
 
@@ -954,9 +1002,9 @@ export function Settings() {
       /* 改一格，旧结论全部过期：测试结果、Saved、报错说的都是改之前的那份配置（#698）。
          测的永远是已存盘的那份，所以表单一动，卡上就不该再贴任何旧话 */
       test.reset();
-      saveChat.reset();
-      saveEmbed.reset();
-      setDirty((d) => ({ ...d, [k.startsWith("chat_") ? "chat" : "embed"]: true }));
+      resetSaves();
+      // 字段名的前缀就是卡：chat_ / embed_ / ocr_ / transcribe_
+      setDirty((d) => ({ ...d, [k.split("_")[0]]: true }));
       setForm({ ...form, [k]: e.target.value });
     };
 
@@ -997,7 +1045,39 @@ export function Settings() {
       dirty: dirty.embed,
     },
   );
-  /* 备注的画法两张卡共用：成功走 ok 色、失败走 danger 色——从前成功是中性 accent、
+  const ocrStatus = modelCardStatus(
+    test.data?.ocr
+      ? {
+          ok: test.data.ocr.ok,
+          message: test.data.ocr.ok
+            ? S.settings.okVersion(test.data.ocr.version ?? "?")
+            : (test.data.ocr.error ?? ""),
+        }
+      : null,
+    testTransportError,
+    {
+      error: saveOcr.error ? (saveOcr.error as Error).message : null,
+      saved: saveOcr.isSuccess,
+      dirty: dirty.ocr,
+    },
+  );
+  const transcribeStatus = modelCardStatus(
+    test.data?.transcribe
+      ? {
+          ok: test.data.transcribe.ok,
+          message: test.data.transcribe.ok
+            ? S.settings.okReachable
+            : (test.data.transcribe.error ?? ""),
+        }
+      : null,
+    testTransportError,
+    {
+      error: saveTranscribe.error ? (saveTranscribe.error as Error).message : null,
+      saved: saveTranscribe.isSuccess,
+      dirty: dirty.transcribe,
+    },
+  );
+  /* 备注的画法四张卡共用：成功走 ok 色、失败走 danger 色——从前成功是中性 accent、
      嵌入卡的报错还是正文字色，与本页数据源那节的 ok/danger 不一致（#698） */
   const cardNote = (s: ModelCardStatus) =>
     s.kind === "idle" ? undefined : s.kind === "saved" ? (
@@ -1007,6 +1087,9 @@ export function Settings() {
     ) : (
       <span className={s.tone}>{s.text}</span>
     );
+  /* 读取模型那两张卡存完多说一句：等着它的文件开始读了几份 */
+  const readerNote = (s: ModelCardStatus, requeued: number | undefined) =>
+    s.kind === "saved" && requeued ? S.settings.savedRequeued(requeued) : cardNote(s);
 
   return (
     <div className="h-full overflow-y-auto u-scroll px-8 py-6">
@@ -1038,9 +1121,8 @@ export function Settings() {
                   onClick={() => {
                     /* 预设只是批量填格，和手输一样让旧结论过期 */
                     test.reset();
-                    saveChat.reset();
-                    saveEmbed.reset();
-                    setDirty({ chat: true, embed: true });
+                    resetSaves();
+                    setDirty((d) => ({ ...d, chat: true, embed: true }));
                     setForm({
                       ...form,
                       chat_base_url: p.chat,
@@ -1196,6 +1278,144 @@ export function Settings() {
                       type="password"
                       value={form.embed_api_key}
                       onChange={set("embed_api_key")}
+                    />
+                  </div>
+                </div>
+              </div>
+            </SettingsCard>
+
+            {/* 读取模型：扫描件、图片、录音（0040）。跟上面两张分开讲，因为它们只在
+                那几类文件上用得到，没配也不影响别的——文件等着，消息中心会说 */}
+            <h2 className="pt-4 text-title text-ink">{S.settings.readersTitle}</h2>
+            <p className="text-body text-ink-2">{S.settings.readersIntro}</p>
+
+            <SettingsCard
+              title={S.settings.ocrService}
+              hint={S.settings.ocrHint}
+              note={readerNote(ocrStatus, saveOcr.data?.requeued)}
+              action={
+                <>
+                  <Button variant="secondary" size="sm"
+                    onClick={() => {
+                      setTestCard("ocr");
+                      startTest();
+                    }}
+                    disabled={test.isPending || dirty.ocr}
+                  >
+                    {testCard === "ocr" && test.isPending ? S.settings.testing : S.settings.test}
+                  </Button>
+                  <Button variant="secondary" size="sm"
+                    onClick={() => {
+                      test.reset();
+                      saveOcr.mutate();
+                    }}
+                    disabled={saveOcr.isPending}
+                  >
+                    {saveOcr.isPending ? S.settings.saving : S.settings.save}
+                  </Button>
+                </>
+              }
+            >
+              <div className="space-y-3">
+                <div>
+                  <label className={label}>{S.settings.serviceUrl}</label>
+                  <Input
+                    className="w-full"
+                    placeholder="http://localhost:8000"
+                    value={form.ocr_base_url}
+                    onChange={set("ocr_base_url")}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={label}>{S.settings.backend}</label>
+                    <Input
+                      className="w-full"
+                      placeholder="vlm-auto-engine"
+                      value={form.ocr_backend}
+                      onChange={set("ocr_backend")}
+                    />
+                  </div>
+                  <div>
+                    <label className={label}>
+                      {S.settings.apiKey}{" "}
+                      {settings.data?.has_ocr_key && (
+                        <span className="text-accent">{S.settings.keyConfigured}</span>
+                      )}
+                    </label>
+                    <Input
+                      className="w-full"
+                      type="password"
+                      value={form.ocr_api_key}
+                      onChange={set("ocr_api_key")}
+                    />
+                  </div>
+                </div>
+              </div>
+            </SettingsCard>
+
+            <SettingsCard
+              title={S.settings.transcribeModel}
+              hint={S.settings.transcribeHint}
+              note={readerNote(transcribeStatus, saveTranscribe.data?.requeued)}
+              action={
+                <>
+                  <Button variant="secondary" size="sm"
+                    onClick={() => {
+                      setTestCard("transcribe");
+                      startTest();
+                    }}
+                    disabled={test.isPending || dirty.transcribe}
+                  >
+                    {testCard === "transcribe" && test.isPending
+                      ? S.settings.testing
+                      : S.settings.test}
+                  </Button>
+                  <Button variant="secondary" size="sm"
+                    onClick={() => {
+                      test.reset();
+                      saveTranscribe.mutate();
+                    }}
+                    disabled={saveTranscribe.isPending}
+                  >
+                    {saveTranscribe.isPending ? S.settings.saving : S.settings.save}
+                  </Button>
+                </>
+              }
+            >
+              <div className="space-y-3">
+                <div>
+                  <label className={label}>{S.settings.baseUrl}</label>
+                  <Input
+                    className="w-full"
+                    placeholder="https://api.openai.com/v1"
+                    value={form.transcribe_base_url}
+                    onChange={set("transcribe_base_url")}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className={label}>{S.settings.model}</label>
+                    <Input
+                      className="w-full"
+                      placeholder="gpt-4o-transcribe-diarize"
+                      value={form.transcribe_model}
+                      onChange={set("transcribe_model")}
+                    />
+                  </div>
+                  <div>
+                    <label className={label}>
+                      {S.settings.apiKey}{" "}
+                      {settings.data?.has_transcribe_key && (
+                        <span className="text-accent">{S.settings.keyConfigured}</span>
+                      )}
+                    </label>
+                    <Input
+                      className="w-full"
+                      type="password"
+                      placeholder="sk-…"
+                      value={form.transcribe_api_key}
+                      onChange={set("transcribe_api_key")}
                     />
                   </div>
                 </div>

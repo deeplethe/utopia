@@ -245,6 +245,10 @@ export const en = {
         title: "The model account cannot pay for requests",
         hint: "Extraction and embedding are stopped and will not resume on their own. Top up the account, or set an endpoint that can serve in Administration → Models.",
       },
+      "document.needs_reader": {
+        title: "A file needs a model to be read",
+        hint: "Scans and images need a document-reading service, and recordings need a transcription model that labels speakers. Each line says what was missing. The file is kept and nothing was read from it yet; it is read as soon as the reader is saved under Administration → Models.",
+      },
       "governance.tripped": {
         title: "The agent stopped deciding on its own",
         hint: "Two of its merges were reverted within seven days, so the switch went off. Look at what it did under Review → Agent, then turn it back on in the base settings when you want it to resume.",
@@ -921,6 +925,12 @@ export const en = {
     openEntity: (name: string) => `Open ${name}`,
     past: (n: number) => (n === 1 ? "1 past" : `${n} past`),
     sources: (n: number) => (n === 1 ? "1 source" : `${n} sources`),
+    /* 名字一节（0041）：本名、简称、曾用名 */
+    names: "Names",
+    shownName: "shown name",
+    nameUntil: (d: string) => `until ${d}`,
+    removeName: "Remove",
+    nameRemoved: "Name removed",
     timelineEmpty: "No dated facts yet.",
     lastConfirmed: (d: string) => `confirmed ${d}`,
     /* 三种来源共用一个标记（引擎接任对账、Review 裁决、有人手改），所以这句
@@ -980,6 +990,18 @@ export const en = {
     nowBtn: "Now",
     play: "Play timeline",
     pause: "Pause",
+  },
+  origin: {
+    ocr: (page: number | null) => (page === null ? "OCR" : `OCR · p. ${page}`),
+    transcribed: (span: string | null, speakers: string[]) =>
+      ["Transcribed", span, speakers.length > 0 ? speakers.join(", ") : null]
+        .filter(Boolean)
+        .join(" · "),
+    described: "Described by a model",
+    ocrHint: "Read from a scan or image. A character or digit may be misread.",
+    transcribedHint: "Transcribed from a recording. A name may be misheard.",
+    describedHint: "A model's description of an image. Nobody wrote or said these words.",
+    readBy: (model: string) => `Read by ${model}.`,
   },
   doc: {
     backToLibrary: "← Back to Library",
@@ -1149,6 +1171,21 @@ export const en = {
     ok: (reply: string) => `Reachable and authenticated (${reply})`,
     okDim: (dim: number) => `Reachable and authenticated (dim ${dim})`,
     unsaved: "Unsaved changes. Save this card to test them.",
+    readersTitle: "Reading scans and recordings",
+    readersIntro:
+      "Scanned PDFs, images and recordings have no text to parse, so each needs its own reader. They are set apart from chat so that sensitive files can stay on your own servers. A file that arrives before its reader waits, and the message center says so; saving the reader reads it.",
+    ocrService: "Document reading (OCR)",
+    ocrHint:
+      "A MinerU service (mineru-api). It reads each page's layout first, so every passage keeps its page and position.",
+    serviceUrl: "Service URL",
+    backend: "Backend (optional)",
+    transcribeModel: "Transcription",
+    transcribeHint:
+      "An OpenAI-compatible endpoint that labels speakers (diarized_json), such as gpt-4o-transcribe-diarize. A transcript that cannot say who spoke is not used.",
+    okVersion: (version: string) => `Reachable (MinerU ${version})`,
+    okReachable: "Reachable and authenticated",
+    savedRequeued: (n: number) =>
+      `Saved. ${n} waiting ${n === 1 ? "file is" : "files are"} being read.`,
   },
   ontology: {
     title: "Ontology",

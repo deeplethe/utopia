@@ -17,6 +17,7 @@
 //! 切片，只是从别处抄来的。`char_start` / `char_end` 指正文那一段，不含前缀。
 
 use crate::blocks::{blocks, Block, Kind};
+use crate::provenance::{Provenance, Segment};
 use std::ops::Range;
 use std::sync::OnceLock;
 use text_splitter::{ChunkConfig, TextSplitter};
@@ -30,6 +31,8 @@ pub struct ChunkPiece {
     pub char_end: i32,
     /// 这块所在的章节路径，`›` 分隔；没有标题的文档为 None
     pub heading: Option<String>,
+    /// 这块文字从哪来（0040）。一块只有一种出处
+    pub provenance: Provenance,
 }
 
 /// 一块的预算（cl100k token）。
@@ -206,9 +209,29 @@ struct Packer<'a> {
     /// 正在攒的块：前缀（章节标题）与正文
     prefix: Vec<Range<usize>>,
     body: Vec<Piece>,
+    /// 正文按出处分成的段；正在攒的块属于 `current` 那一段
+    segments: &'a [Segment],
+    current: usize,
 }
 
 impl<'a> Packer<'a> {
+    /// 位置 `at` 落在哪一段（段按位置排好序）
+    fn segment_of(&self, at: usize) -> usize {
+        self.segments
+            .iter()
+            .rposition(|s| s.range.start <= at)
+            .unwrap_or(0)
+    }
+
+    /// 下一项要进 `seg` 那一段：跟正在攒的块不是同一段，先把那块收掉。
+    /// 标题不跟着收——它属于接下来的正文，面包屑也照样往下传
+    fn enter_segment(&mut self, seg: usize) {
+        if seg != self.current {
+            self.flush();
+            self.current = seg;
+        }
+    }
+
     fn render(&self, prefix: &[Range<usize>], body: &[Piece]) -> String {
         let mut parts: Vec<String> = prefix
             .iter()
@@ -270,8 +293,10 @@ impl<'a> Packer<'a> {
                         self.body.push(piece);
                         return None;
                     }
-                    // 上一块已经发出去了（长段落走退路切分会立刻 flush）：接到它尾上
-                    if let Some(last) = self.out.last_mut() {
+                    // 上一块已经发出去了（长段落走退路切分会立刻 flush）：接到它尾上。
+                    // 只接同一种出处的——一行转写不能混进原文那一块里借它的可信度
+                    let here = &self.segments[self.current].provenance;
+                    if let Some(last) = self.out.last_mut().filter(|l| &l.provenance == here) {
                         last.text.push_str(
                             "
 
@@ -324,6 +349,7 @@ impl<'a> Packer<'a> {
             char_start: start as i32,
             char_end: end as i32,
             heading,
+            provenance: self.segments[self.current].provenance.clone(),
         });
     }
 
@@ -432,6 +458,28 @@ impl<'a> Packer<'a> {
 }
 
 pub fn chunk_with_budget(text: &str, budget: usize) -> Vec<ChunkPiece> {
+    let whole = [Segment {
+        range: 0..text.len(),
+        provenance: Provenance::stated(),
+    }];
+    chunk_segments(text, &whole, budget)
+}
+
+/// 按出处分段的正文分块：块不跨段（0040 决定 2），面包屑跨段照传。
+///
+/// 读扫描件的引擎一页一段、转写一句一段地交回文字；它们拼成一份正文、按同一套规矩切，
+/// 只是切点多了「出处变了」这一条。`segments` 按位置排好序、覆盖整份正文；
+/// 空的时候当作整份都是原文
+pub fn chunk_segments(text: &str, segments: &[Segment], budget: usize) -> Vec<ChunkPiece> {
+    let whole = [Segment {
+        range: 0..text.len(),
+        provenance: Provenance::stated(),
+    }];
+    let segments = if segments.is_empty() {
+        &whole[..]
+    } else {
+        segments
+    };
     let mut p = Packer {
         text,
         budget,
@@ -440,8 +488,18 @@ pub fn chunk_with_budget(text: &str, budget: usize) -> Vec<ChunkPiece> {
         pending: Vec::new(),
         prefix: Vec::new(),
         body: Vec::new(),
+        segments,
+        current: 0,
     };
     for unit in units(text, blocks(text)) {
+        let start = match &unit {
+            Unit::Heading { range, .. } | Unit::Text(range) => range.start,
+            Unit::Table { caption, head, .. } => caption.as_ref().map_or(head.start, |c| c.start),
+        };
+        // 标题不切段：它贴着下一项走，由下一项决定进哪一段
+        if !matches!(unit, Unit::Heading { .. }) {
+            p.enter_segment(p.segment_of(start));
+        }
         match unit {
             Unit::Heading { level, range } => p.heading(level, range),
             Unit::Text(range) => p.text_unit(range),
@@ -464,6 +522,59 @@ pub fn chunk_with_budget(text: &str, budget: usize) -> Vec<ChunkPiece> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 一块只装一种出处（0040 决定 2）：原文与扫描页挨着，也分成两块；
+    /// 面包屑跨段照传；页末那几个 token 的尾巴不接到别的出处那一块上
+    #[test]
+    fn a_chunk_holds_one_provenance_and_the_breadcrumb_crosses_it() {
+        use crate::provenance::{Origin, Provenance, Segment};
+        let stated = "# Lease
+
+The tenant pays rent monthly.
+
+";
+        let page1 = "The rent is 1,000 per month.
+
+";
+        let page2 = "4
+
+";
+        let text = format!("{stated}{page1}{page2}");
+        let ocr = |page: i64| Provenance {
+            origin: Origin::Ocr,
+            model: Some("mineru".into()),
+            anchor: Some(serde_json::json!({ "page": page })),
+        };
+        let a = stated.len();
+        let b = a + page1.len();
+        let segments = vec![
+            Segment {
+                range: 0..a,
+                provenance: Provenance::stated(),
+            },
+            Segment {
+                range: a..b,
+                provenance: ocr(1),
+            },
+            Segment {
+                range: b..text.len(),
+                provenance: ocr(2),
+            },
+        ];
+        let chunks = chunk_segments(&text, &segments, BUDGET_TOKENS);
+        let origins: Vec<_> = chunks.iter().map(|c| c.provenance.clone()).collect();
+        assert_eq!(chunks.len(), 3, "{chunks:#?}");
+        assert_eq!(origins[0], Provenance::stated());
+        assert_eq!(origins[1], ocr(1));
+        assert_eq!(origins[2], ocr(2), "the page number stays on its own page");
+        assert!(chunks[1].text.contains("1,000"));
+        assert!(!chunks[0].text.contains("1,000"));
+        assert_eq!(chunks[1].heading.as_deref(), Some("Lease"));
+        // 不分段的老路：整份都是原文
+        assert!(chunk_with_budget(&text, BUDGET_TOKENS)
+            .iter()
+            .all(|c| c.provenance == Provenance::stated()));
+    }
 
     fn table(n_rows: usize) -> String {
         let mut s = String::from("The results of the voting were as follows:\n\n| Nominee | For | Against |\n| --- | --- | --- |\n");

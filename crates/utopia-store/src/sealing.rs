@@ -1,7 +1,7 @@
 //! 凭据补封：升级前落库的明文凭据，在钥匙装好之后的第一次启动补成密文。
 //!
 //! 幂等，每次启动都跑：判据是「值没有 `enc:v1:` 前缀」，已封的不动。四处凭据
-//! （`llm_settings` 两把 key、`data_sources.conn_string`、`sources.config` 的凭据键、
+//! （`llm_settings` 四把 key、`data_sources.conn_string`、`sources.config` 的凭据键、
 //! `sources.ingest_token`）在这里各扫一遍——加了新的存放处要同时加到这里，否则那一处
 //! 会一直是明文而没有任何地方报警。
 
@@ -22,23 +22,37 @@ pub async fn backfill(pool: &PgPool) -> AppResult<usize> {
 
 /// `only` = 只补这一个工作区（测试用；启动时传 None 扫全部）
 pub async fn seal_llm_settings(pool: &PgPool, only: Option<Uuid>) -> AppResult<usize> {
-    let rows: Vec<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT workspace_id, chat_api_key, embed_api_key FROM llm_settings
+    type Keys = (
+        Uuid,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let rows: Vec<Keys> = sqlx::query_as(
+        "SELECT workspace_id, chat_api_key, embed_api_key, ocr_api_key, transcribe_api_key
+           FROM llm_settings
           WHERE ($1::uuid IS NULL OR workspace_id = $1)
             AND ((chat_api_key IS NOT NULL AND chat_api_key NOT LIKE 'enc:v1:%')
-              OR (embed_api_key IS NOT NULL AND embed_api_key NOT LIKE 'enc:v1:%'))",
+              OR (embed_api_key IS NOT NULL AND embed_api_key NOT LIKE 'enc:v1:%')
+              OR (ocr_api_key IS NOT NULL AND ocr_api_key NOT LIKE 'enc:v1:%')
+              OR (transcribe_api_key IS NOT NULL AND transcribe_api_key NOT LIKE 'enc:v1:%'))",
     )
     .bind(only)
     .fetch_all(pool)
     .await?;
     let n = rows.len();
-    for (ws, chat, embed) in rows {
+    for (ws, chat, embed, ocr, transcribe) in rows {
         sqlx::query(
-            "UPDATE llm_settings SET chat_api_key = $2, embed_api_key = $3 WHERE workspace_id = $1",
+            "UPDATE llm_settings SET chat_api_key = $2, embed_api_key = $3, ocr_api_key = $4,
+                    transcribe_api_key = $5
+              WHERE workspace_id = $1",
         )
         .bind(ws)
         .bind(secrets::seal_opt(chat.as_deref()))
         .bind(secrets::seal_opt(embed.as_deref()))
+        .bind(secrets::seal_opt(ocr.as_deref()))
+        .bind(secrets::seal_opt(transcribe.as_deref()))
         .execute(pool)
         .await?;
     }

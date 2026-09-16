@@ -107,6 +107,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         char_start: 0,
         char_end: 51,
         heading: None,
+        provenance: utopia_ingest::Provenance::stated(),
     }];
     utopia_store::documents::replace_chunks(pool, kb, doc, &pieces).await?;
     let new_chunk: (Uuid,) = sqlx::query_as(

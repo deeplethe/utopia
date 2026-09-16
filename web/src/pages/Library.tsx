@@ -650,7 +650,7 @@ export function Library() {
               type="file"
               multiple
               hidden
-              accept=".pdf,.docx,.xlsx,.xls,.ods,.pptx,.md,.txt,.html,.htm,.csv,.tsv,.json,.yaml,.yml,.xml,.log"
+              accept=".pdf,.docx,.xlsx,.xls,.ods,.pptx,.md,.txt,.html,.htm,.csv,.tsv,.json,.yaml,.yml,.xml,.log,.png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp,.gif,.mp3,.wav,.m4a,.flac,.ogg,.opus,.aac,.amr"
               onChange={(e) => e.target.files?.length && upload.mutate(e.target.files)}
             />
 
@@ -670,12 +670,14 @@ export function Library() {
           )}
 
           {/* 抽取进度。**数来自服务端**，按来源作用域算——从前是数当前页里的，
-              翻一页进度条就跳 */}
+              翻一页进度条就跳。分子分母都只走 `graph_status`：从前分子是
+              `status='ready'`（摄入完成），一篇「摄入已完成、图谱还在抽」的文档
+              被两个维度各数一次，两篇文档能显示成 2 / 4 */}
           {(() => {
             const pending = docs.data?.extracting ?? 0;
             if (pending === 0) return null;
-            const total = (docs.data?.ready ?? 0) + pending;
-            const done = total - pending;
+            const done = docs.data?.done ?? 0;
+            const total = done + pending;
             return (
               <div className="mb-3 glass rounded-panel px-4 py-3">
                 <div className="flex items-center justify-between text-small text-ink-2 mb-2">

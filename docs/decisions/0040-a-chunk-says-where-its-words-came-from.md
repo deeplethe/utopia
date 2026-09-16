@@ -1,8 +1,22 @@
 # 0040 · A chunk says where its words came from
 
-- **Status**: Proposed · nothing built · cut 1 is the ledger shape (`chunks.origin`,
-  `chunks.origin_model`, `chunks.anchor`, the packer rule, the confidence ceiling, the read
-  contract); the media readers follow in the order at the end
+- **Status**: Cut 1 implemented (2026-09-15) · `chunks.origin` / `origin_model` / `anchor`
+  with the anchor shape checked (migration 0058), the packer never mixes provenances
+  (`chunk_segments`), the ceiling on described facts, origin in the evidence API, the MCP
+  changes feed and the RDF export (`utopia:evidenceOrigin`) · a file that needs a reader no
+  longer becomes garbage text: images and recordings are recognised by header or extension, a
+  PDF with an empty text layer is a scan, and without the model the document fails once with
+  `documents.reader_needed` and a `document.needs_reader` alert · revised 2026-09-15: scans and
+  images are read by a MinerU service instead of a Docling sidecar, and a transcript must label
+  speakers · cut 2 implemented (2026-09-15): scans and images are read by a workspace's MinerU
+  service (`llm_settings.ocr_*`, migration 0059), one segment per page with the covered regions'
+  box in the anchor; the processing job waits on the service with `Deferred` and remembers the
+  remote task on the document; saving the service queues the waiting documents again · the
+  settings cards are their own interface cut · cut 3 implemented (2026-09-16): recordings are read
+  by a workspace's transcription model (`llm_settings.transcribe_*`, migration 0060) through
+  `/audio/transcriptions` with `diarized_json`; speakers are written into the text and a chunk's
+  anchor carries its times and speakers; a transcript without speaker labels degrades like a
+  missing model
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: [0039](0039-a-chunk-is-what-extraction-sees.md) (#633, not merged yet) puts Docling
   behind the block model as its cut 2 and leaves "evidence that points at a table cell or an image
@@ -83,7 +97,7 @@ the chunk, and the description would borrow the credibility of the sentence besi
 |---|---|
 | stated | null — `char_start` / `char_end` already place it in the parsed text |
 | ocr | `{"page": n}`, with `"bbox": [x0, y0, x1, y1]` when the engine gives one |
-| transcribed | `{"start_ms": n, "end_ms": n}`, with `"speaker"` when the endpoint gives one |
+| transcribed | `{"start_ms": n, "end_ms": n, "speaker": ["A", "B"]}` — the speakers heard in the chunk, in order (revised with cut 3: required, and a list, because a chunk spans turns) |
 | described | `{"page": n, "image": i}` for a PDF, `{"part": "word/media/image3.png"}` for an Office file, `{}` for a standalone image file |
 
 The original is already kept: the document's blob, content-addressed and versioned in
@@ -126,6 +140,25 @@ is not decided here.
 `/v1/audio/transcriptions` asking for segment timestamps, vision through a chat request with
 image parts. OCR is the Docling sidecar of 0039's cut 2.
 
+*Revised 2026-09-15.* Two changes to this decision, made by the maintainer before cut 2:
+
+- **OCR is a MinerU service, not a Docling sidecar.** MinerU detects the page layout first
+  and then recognises each region, and returns Markdown plus a content list in reading order
+  with `page_idx` and a `bbox` per block. That is exactly the `{"page", "bbox"}` anchor above.
+  Its VLM is not interchangeable with a generic vision model: the model behind `mineru-api`
+  speaks MinerU's own two-step protocol, and a generic model asked to "transcribe this page"
+  gives neither the layout nor the boxes. So the setting is `ocr_*` (the service URL and key),
+  not a vision chat model; a generic vision model stays the reader for cut 4, descriptions.
+- **A transcript must say who spoke** (the first open question below, now decided). A
+  transcription endpoint that returns segments without speaker labels is treated like a
+  missing one: the recording is not read, and the alert says why. The database refuses a
+  `transcribed` anchor without `speaker`.
+
+Where a setting is empty, "fails with an alert" means **degrades**. The file is kept, and the
+document stops at `failed` with `documents.reader_needed` set to the missing reader. It raises
+one `document.needs_reader` alert and is not retried. Saving the setting queues those documents
+again.
+
 These are not a reuse of the chat model. A recording of a board meeting or a scanned contract is
 more sensitive than a paragraph of text, and a deployment will reasonably keep transcription and
 OCR on local models while chat goes to a hosted one. One setting would force the most sensitive
@@ -147,6 +180,38 @@ document are deduplicated by content hash across the base — a logo on fifty sl
 description — and skipped below a size floor. A per-document call budget reports what it skipped
 instead of dropping it quietly.
 
+*Cut 2, as built (2026-09-15).* The job that waits is `process_document` itself rather than a
+new job kind. It submits the file to `POST /tasks`, records the remote task on the document
+(`documents.reader_task`: reader, service, task id, the file's `sha256`, when it was submitted),
+and returns `Deferred`, which puts the job back in the queue without spending an attempt. Each
+later run asks `GET /tasks/{id}` and either waits again or fetches the content list. A restart
+resumes from the recorded task; a new file version or a different service discards it. A task
+the service no longer knows is submitted again; a task it reports failed is cleared and takes an
+ordinary retry; a task still unfinished after six hours fails the document for good. MinerU
+returns the whole file at once, so "resumable from the last block written" is resuming from the
+remote task: nothing is read twice unless the service lost it.
+
+Segments are per page, not per region. Every region has its own box, and a segment per region
+would make every paragraph its own chunk. After packing, a chunk's anchor carries the union of
+the boxes of the regions it covers on its page. Page headers, footers and page numbers are
+dropped; tables become Markdown tables, so a long scanned table repeats its header across
+chunks like any other.
+
+*Cut 3, as built (2026-09-16).* The request is OpenAI's `/audio/transcriptions` with
+`response_format=diarized_json` and `chunking_strategy=auto`; each returned segment carries a
+speaker, its text, and its start and end in seconds. Speakers go into the text, not only the
+anchor: extraction reads words, and who promised delivery has to be on the line that says it.
+Consecutive segments from one speaker join into a turn, and each turn starts `Speaker A:` with
+the label the model gave — the prefix is structure, and no name is guessed. The whole recording
+is one segment; after packing, a chunk's anchor carries the earliest start, the latest end and
+the speakers heard in it. A segment with text and no speaker refuses the whole transcript
+(`NoSpeakers`), which degrades like a missing model: the document waits with `reader_needed =
+'transcribe'`, the alert carries the reason, and saving a model queues it again.
+
+A recording is read in one request, so it is not resumable within itself: a failure retries the
+whole file. Splitting audio needs a decoder the server does not carry; the endpoint's file limit
+(25 MB on OpenAI, about an hour of compressed audio) bounds what one request loses.
+
 ### 7. The read contract says it
 
 The evidence API, the MCP tool results (`quote`, `document_id` and `filename` today) and the RDF
@@ -161,16 +226,17 @@ the recording at `start_ms` — is a separate cut after the capability, not part
 
 1. **The ledger shape.** `origin`, `origin_model`, `anchor`, the packer rule, the ceiling, the read
    contract. No media reader yet; everything that exists is stated, and says so.
-2. **Scans and document images through Docling** (0039's cut 2): `ocr`. The highest value —
+2. **Scans and document images through MinerU** (revised from Docling): `ocr`. The highest value —
    scanned contracts, stamped approvals, invoices, all of which fail today with no text layer —
    and the modality that keeps the verbatim contract.
-3. **Recordings**: `transcribed`, segment times required, speakers where the endpoint labels them.
+3. **Recordings**: `transcribed`, segment times and speakers required.
 4. **Charts, photos, diagrams**: `described`, under the ceiling.
 5. **Video**: its audio track through 3, sampled frames through 4.
 
 ## Open
 
-- **Who said it.** Whisper-compatible endpoints do not separate speakers. Without speakers, "Zhang
+- ~~**Who said it.**~~ *Decided 2026-09-15: a transcript without speaker labels is refused (decision 5).*
+  Whisper-compatible endpoints do not separate speakers. Without speakers, "Zhang
   San said he would deliver in Q3" and "Li Si said Zhang San would deliver in Q3" can be the same
   transcript line, and a meeting ingested that way attributes commitments to the wrong people —
   worse than extracting nothing. Cut 3 does not ship until this is decided: require an endpoint
