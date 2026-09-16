@@ -43,7 +43,7 @@ fn jitter(base: Duration) -> Duration {
 ///   否则一个在等的分块会挡住本来可以通过的另一个。
 /// - **`Retry-After` 多数厂商不发**，所以它只是「有则更准」，判据是错误类型
 ///   本身；没有它就走指数退避。
-async fn chat_retrying_rate_limits(
+pub(crate) async fn chat_retrying_rate_limits(
     state: &AppState,
     settings: &utopia_core::models::LlmSettings,
     client: &utopia_llm::LlmClient,
@@ -88,7 +88,7 @@ const MIN_CONFIDENCE: f32 = 0.6;
 const DESCRIBED_CEILING: f32 = utopia_store::temporal::AUTO_CLOSE_MIN_CONFIDENCE - 0.05;
 
 /// 这块文字的来源给事实置信度设的上限
-fn origin_ceiling(origin: &str, confidence: f32) -> f32 {
+pub(crate) fn origin_ceiling(origin: &str, confidence: f32) -> f32 {
     if origin == "described" {
         confidence.min(DESCRIBED_CEILING)
     } else {
@@ -181,7 +181,7 @@ fn name_claimed_elsewhere(name: &str, bound: Uuid, declared: &HashMap<String, Uu
 }
 
 /// 片段在不在引文里：大小写、空白都不论
-fn span_in_quote(span: &str, quote: &str) -> bool {
+pub(crate) fn span_in_quote(span: &str, quote: &str) -> bool {
     let norm = |s: &str| {
         s.split_whitespace()
             .collect::<Vec<_>>()
@@ -479,7 +479,7 @@ fn is_entity_name(name: &str) -> bool {
 
 /// 记一条丢弃信号。抽取器有七处 `continue`，每一处都是"事实抽出来了、被挡掉、
 /// 什么都不说"。信号写失败绝不能带垮整篇文档的抽取，所以这里吞掉错误。
-async fn drop_signal(
+pub(crate) async fn drop_signal(
     state: &AppState,
     kb_id: Uuid,
     document_id: Uuid,
@@ -506,7 +506,7 @@ async fn drop_signal(
 /// `attempted` 是**本轮取到的分块数**，不是文档总块数：重试只取
 /// `extracted_at IS NULL` 的块，所以第二轮的分母天然更小。措辞里说「本轮」，
 /// 别让读的人以为文档只有那么几块。
-fn incomplete_reason(unextracted: &[(i32, String)], attempted: usize) -> Option<String> {
+pub(crate) fn incomplete_reason(unextracted: &[(i32, String)], attempted: usize) -> Option<String> {
     if unextracted.is_empty() {
         return None;
     }
@@ -761,7 +761,7 @@ fn no_ref_name_binding(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn resolve_handle(
+pub(crate) async fn resolve_handle(
     pool: &PgPool,
     kb_id: Uuid,
     type_id: Option<Uuid>,
@@ -911,7 +911,8 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     //
     // 没配嵌入模型的库不等，照旧送完整本体——那种部署本来就没有检索。
     // 等也有期限（`jobs::DEFER_WINDOW_SECS`），补齐任务一直失败时这篇按失败处理。
-    if ontology_index::gate_required(state, doc.kb_id).await? {
+    let kb = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
+    if !kb.open_extraction && ontology_index::gate_required(state, doc.kb_id).await? {
         // gate_required 已经把 `embed_ontology` 入队过了（如果应该入队的话）。
         // 这里只挂等待时长，不重复 enqueue。attempts 会被 mark_failed 退回去——
         // 同一个等待条件两次排队不应该消耗两次预算。
@@ -919,7 +920,6 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
             .context(utopia_core::Deferred::new(Duration::from_secs(30)));
         return Err(err);
     }
-    let kb = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot extract"))?;
@@ -930,6 +930,14 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     let my_epoch = utopia_store::documents::extract_epoch(&state.pool, document_id).await?;
     utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
     state.emit_document(doc.kb_id, document_id);
+    // **开放图谱**（0044 第 1 刀，#729）：开关开着的库只写文档自己的话，本体不进提示词。
+    // 记忆日志不走这条路——那里的事实要等人点头（0015），而待确认表里没有短语这一列
+    if kb.open_extraction
+        && !utopia_store::memory::is_memory_document(&state.pool, document_id).await?
+    {
+        return crate::extraction_open::run_open(state, &doc, &kb, &settings, &client, my_epoch)
+            .await;
+    }
     let etypes = utopia_store::graph::entity_types(&state.pool, doc.kb_id).await?;
     // 这一轮落过的事实（新建或重复观察）：结尾对它们跑一遍签名检查
     let mut touched_facts: Vec<Uuid> = Vec::new();

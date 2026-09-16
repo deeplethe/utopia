@@ -16,6 +16,7 @@
 //   node scripts/bench/recall.mjs --kb <id>            # 已有库（本体向量已就绪）
 //   node scripts/bench/recall.mjs --kb <id> --score    # 只打分，不重抽
 //   node scripts/bench/recall.mjs --kb <id> --reprocess # 改了解析器：连分块一起重来
+//   node scripts/bench/recall.mjs --kb <id> --open      # 开放图谱那条路（0044 第 1 刀）：本体不进提示词
 //
 // 环境变量：BENCH_BASE / BENCH_EMAIL / BENCH_PASSWORD / BENCH_PSQL（同 run.mjs）。
 //
@@ -89,7 +90,11 @@ function score() {
            coalesce(to_char(f.valid_from,'YYYY-MM-DD'),''),
            coalesce((SELECT string_agg(q.key || '=' || coalesce(fq.value #>> '{value}', '') || ' ' || coalesce(fq.value #>> '{unit}', ''), ' ')
                        FROM fact_qualifiers fq JOIN relation_types q ON q.id = fq.qualifier_type_id
-                      WHERE fq.fact_id = f.id), ''))
+                      WHERE fq.fact_id = f.id), '')
+           -- 开放陈述的限定（#729）按文档自己的角色词挂着：金额、职务在这里
+           || ' ' || coalesce((SELECT string_agg(sq.role || '=' || coalesce(sq.value #>> '{}', qe.canonical_name, ''), ' ')
+                       FROM statement_qualifiers sq LEFT JOIN entities qe ON qe.id = sq.entity_id
+                      WHERE sq.fact_id = f.id), ''))
     FROM facts f
     JOIN fact_evidence fe ON fe.fact_id = f.id
     JOIN documents d ON d.id = fe.document_id
@@ -204,7 +209,8 @@ psql(`DELETE FROM ontology_misses WHERE kb_id='${KB}'`);
 psql(`DELETE FROM relation_types WHERE kb_id='${KB}' AND created_at > '${packTs}'::timestamptz + interval '1 second'`);
 // 会在抽取之后改本体、增派生事实的开关关掉，两轮的本体与打分口径才一样。治理开着：
 // 库生下来就开着它（0050），量的是产品本来的样子
-psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE, governance=TRUE WHERE id='${KB}'`);
+psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE, governance=TRUE, open_extraction=${args.open ? "TRUE" : "FALSE"} WHERE id='${KB}'`);
+console.log(args.open ? "开放图谱：本体不进提示词，陈述按原文短语落库" : "类型化抽取：本体进提示词");
 psql(`UPDATE chunks SET extracted_at=NULL WHERE document_id IN (SELECT id FROM documents WHERE kb_id='${KB}' AND filename IN (${names}))`);
 console.log(`本体 ${num(`SELECT count(*) FROM relation_types WHERE kb_id='${KB}'`)} 个关系 / ${num(`SELECT count(*) FROM entity_types WHERE kb_id='${KB}'`)} 个类`);
 

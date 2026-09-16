@@ -1069,8 +1069,10 @@ async fn copy_evidence(
     to: Uuid,
 ) -> AppResult<()> {
     sqlx::query(
-        "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version)
-         SELECT $1, chunk_id, quote, proposed_predicate, document_id, doc_version
+        "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version,
+                                    quote_start, quote_end)
+         SELECT $1, chunk_id, quote, proposed_predicate, document_id, doc_version,
+                quote_start, quote_end
          FROM fact_evidence WHERE fact_id = $2
          ON CONFLICT DO NOTHING",
     )

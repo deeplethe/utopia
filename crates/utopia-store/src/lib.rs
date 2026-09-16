@@ -38,6 +38,7 @@ pub mod settings;
 pub mod sources;
 pub mod temporal;
 pub mod test_db;
+pub mod time_mentions;
 pub mod tokens;
 pub mod vector_index;
 pub mod workspaces;

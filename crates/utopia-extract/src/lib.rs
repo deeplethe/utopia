@@ -6,6 +6,7 @@ use serde::Deserialize;
 use utopia_llm::ChatMessage;
 
 pub mod governor;
+pub mod open;
 
 pub mod normalize;
 pub use normalize::{drop_quotes_from_opening, normalize_facts, Normalization};
@@ -451,7 +452,7 @@ pub fn build_messages_with_opening(
 /// 「这一块就是开头本身」由调用方判断，那时它传 `None`。
 ///
 /// 按字符截：不会截断一个字符，但会截在词中间——英文的最后一个词可能只剩半个
-fn opening_block(opening: Option<&str>) -> String {
+pub(crate) fn opening_block(opening: Option<&str>) -> String {
     let Some(text) = opening.map(str::trim).filter(|t| !t.is_empty()) else {
         return String::new();
     };
@@ -491,7 +492,7 @@ fn temporal_mark(temporal: &str) -> Option<&'static str> {
 ///
 /// 超出就截断（保留先出现的）。中文商业文本先出全称、主角先出场，所以
 /// **首次出现顺序天然偏向那些后面会被简称的名字**。
-const KNOWN_BUDGET_CHARS: usize = 1200;
+pub(crate) const KNOWN_BUDGET_CHARS: usize = 1200;
 
 /// 把「本文档已经认下的实体」排版成提示词里的一段。空则返回空串。
 ///
@@ -539,8 +540,10 @@ fn known_block(known: &[KnownEntity]) -> String {
     )
 }
 
-/// 从 LLM 回复中稳健地取出 JSON 块（容忍代码围栏与前后废话）。
-pub fn json_block(raw: &str) -> anyhow::Result<String> {
+/// 回复里可能是 JSON 的那段文字：切掉思考过程与代码围栏。前后的废话留给调用方按
+/// 括号定位——[`json_block`] 取第一个 `{` 到最后一个 `}`；开放抽取的截断修补则从
+/// 第一个 `{` 取到结尾，那边的记录是数组，最后一个 `}` 不是可靠的结尾
+pub(crate) fn json_text(raw: &str) -> &str {
     let text = raw.trim();
     // 推理模型的思考过程（#690）：`LlmClient::chat` 那边会先切，但取块这一层
     // 自己认得标记才是最后的保障——`chat_tools` 那条路就不经过 `chat`。
@@ -550,11 +553,15 @@ pub fn json_block(raw: &str) -> anyhow::Result<String> {
         Some(pos) => text[pos + "</think>".len()..].trim(),
         None => text,
     };
-    let cleaned = text
-        .strip_prefix("```json")
+    text.strip_prefix("```json")
         .or_else(|| text.strip_prefix("```"))
         .map(|s| s.trim_end_matches("```"))
-        .unwrap_or(text);
+        .unwrap_or(text)
+}
+
+/// 从 LLM 回复中稳健地取出 JSON 块（容忍代码围栏与前后废话）。
+pub fn json_block(raw: &str) -> anyhow::Result<String> {
+    let cleaned = json_text(raw);
     let start = cleaned.find('{');
     let end = cleaned.rfind('}');
     match (start, end) {
@@ -566,7 +573,7 @@ pub fn json_block(raw: &str) -> anyhow::Result<String> {
 /// 把 head 后面缺的括号补上。字符串字面量里的括号不算——`"a[b"` 不是一个开括号。
 ///
 /// 返回 None = 结构本身就不对（比如括号已经多了），不是"没写完"。
-fn close_brackets(head: &str) -> Option<String> {
+pub(crate) fn close_brackets(head: &str) -> Option<String> {
     let mut stack: Vec<char> = Vec::new();
     let (mut in_str, mut esc) = (false, false);
     for c in head.chars() {

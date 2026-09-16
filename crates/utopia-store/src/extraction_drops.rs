@@ -97,6 +97,15 @@ pub mod reason {
     pub const ORPHAN_DECLARATION: &str = "orphan_declaration";
     /// 引文抄自提示词里附的文件开头、不在这一块：证据会挂错出处，不落
     pub const QUOTE_FROM_OPENING: &str = "quote_from_opening";
+    /// 以下三条来自开放抽取那条路（0044 第一刀，#729）
+    /// 模型的引文在这一块里找不到原样的一句：陈述照落、引文照记，只是没有偏移
+    /// （`quote_start` / `quote_end` 留空）。这个信号数的是有多少条没定位到
+    pub const QUOTE_NOT_IN_CHUNK: &str = "quote_not_in_chunk";
+    /// 时间词不在它的引文里、也不在这一块里：不记这条时间提及。时间词是照抄的字，
+    /// 抄不出来的字就不是文档说的
+    pub const TIME_NOT_IN_QUOTE: &str = "time_not_in_quote";
+    /// 陈述、属性或名字指着一个回复里不存在的实体编号或已知句柄：跳过这一条
+    pub const UNKNOWN_REF: &str = "unknown_ref";
 }
 
 pub async fn record(

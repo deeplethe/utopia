@@ -262,6 +262,9 @@ pub async fn resolve_mention(
                    AND f.invalidated_at IS NULL AND {not_name}) AS degree
          FROM entities e
          WHERE e.kb_id = $1 AND e.type_id = $2 AND e.merged_into IS NULL
+           -- 被描述的东西没有名字（0044）：它的 canonical_name 只是显示用的描述，
+           -- 不是召回的桥——两篇文档里描述得一样的两个东西不能因此接到一起
+           AND e.description IS NULL
            AND (lower(e.canonical_name) = ANY($3) OR {named})",
         not_name = crate::names::not_a_name("f"),
         named = crate::names::has_name_in("e", 1, 3),
@@ -482,7 +485,12 @@ async fn corroborating_candidate<'a>(
         return Ok(None);
     }
     let ids: Vec<Uuid> = candidates.iter().map(|c| c.id).collect();
-    // 一次查完所有候选：每个候选取若干个「同伴不指向」的宾语名字
+    // 一次查完所有候选：每个候选取若干个「同伴不指向」的宾语名字。
+    //
+    // **LEFT JOIN relation_types**（0044）：开放陈述没有谓词、只有照抄的短语，
+    // 它指着的宾语一样是这个候选的画像——「收购了 Beta」不因为本体没接住
+    // 「收购了」就不算佐证。排序里关系的三个布尔位对开放行是 NULL，COALESCE
+    // 成 false 排在类型化行之后：类型化行之间的次序一字不变
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
         "SELECT s.subject_id, s.name FROM (
            SELECT f.subject_id, o.canonical_name AS name,
@@ -490,12 +498,12 @@ async fn corroborating_candidate<'a>(
                     PARTITION BY f.subject_id
                     ORDER BY EXISTS (SELECT 1 FROM relation_type_ranges rr
                                       WHERE rr.relation_type_id = r.id) DESC,
-                             (r.temporal = 'state') DESC,
-                             r.functional DESC,
+                             COALESCE(r.temporal = 'state', FALSE) DESC,
+                             COALESCE(r.functional, FALSE) DESC,
                              f.confidence DESC, f.recorded_at DESC
                   ) AS rn
            FROM facts f
-           JOIN relation_types r ON r.id = f.predicate_id
+           LEFT JOIN relation_types r ON r.id = f.predicate_id
            JOIN entities o ON o.id = f.object_id
            WHERE f.kb_id = $1 AND f.subject_id = ANY($2)
              AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
@@ -828,6 +836,8 @@ async fn resolve_type_drift(
          -- IS DISTINCT FROM 而不是 <>：后者遇 NULL 返回 NULL，被 WHERE 当假，
          -- 未分类实体会被整个漏掉（0009）
          WHERE e.kb_id = $1 AND e.type_id IS DISTINCT FROM $2 AND e.merged_into IS NULL
+           -- 被描述的东西不参与名字召回（0044），同上
+           AND e.description IS NULL
            AND (lower(e.canonical_name) = ANY($3) OR {named})",
         named = crate::names::has_name_in("e", 1, 3),
     ))
@@ -990,9 +1000,10 @@ async fn create_entity(
         .execute(&mut *tx)
         .await?;
     let existing: Option<(Uuid,)> = sqlx::query_as(
+        // 被描述的东西不算「同名的它」（0044）：它的 canonical_name 只是显示用的描述
         "SELECT id FROM entities
          WHERE kb_id = $1 AND canonical_name = $2 AND type_id IS NOT DISTINCT FROM $3
-           AND merged_into IS NULL AND id <> ALL($4)
+           AND merged_into IS NULL AND description IS NULL AND id <> ALL($4)
          ORDER BY id LIMIT 1",
     )
     .bind(kb_id)
@@ -1033,6 +1044,46 @@ async fn create_entity(
     .await?;
     tx.commit().await?;
     Ok((id, true))
+}
+
+/// 一个被描述、没有名字的东西（0044 第一刀，#729）："the buyer's parent company"、
+/// 「那家上海的子公司」。它是一个实体——陈述要指着它——但它没有名字。
+///
+/// `canonical_name` 写成描述本身，**只为显示**；`description` 是它真正的身份。
+/// **不写 `known_as`**：名字事实是召回的桥（0041），一段描述做桥会把两篇文档里
+/// 碰巧描述得一样的两个东西接到一起。没有名字就没有桥，后来的提及找不到它——
+/// 这是对的：一段描述指的是谁，要靠对齐（第二刀）而不是靠字面相同。
+///
+/// `kind_word` 是文档自己的类别词（"company"、「子公司」），落在 `specific_type`
+/// 上；`type_id` 留空，`type_source` 走缺省的 extracted。
+///
+/// 朴素插入：不加锁、不找候选、不去重——同一篇文档里同一段描述由调用方并成一个。
+/// 两篇文档各描述一次，就是两个实体，等对齐来判它们是不是一个
+pub async fn create_described(
+    pool: &PgPool,
+    kb_id: Uuid,
+    description: &str,
+    kind_word: Option<&str>,
+) -> AppResult<Uuid> {
+    let description = description.trim();
+    if description.is_empty() {
+        return Err(AppError::invalid(
+            "description_missing",
+            "a described thing needs the document's description",
+        ));
+    }
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO entities (id, kb_id, type_id, canonical_name, description, specific_type)
+         VALUES ($1, $2, NULL, $3, $3, left($4, 80))",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .bind(description)
+    .bind(kind_word.map(str::trim).filter(|k| !k.is_empty()))
+    .execute(pool)
+    .await?;
+    Ok(id)
 }
 
 async fn touch_entity(pool: &PgPool, id: Uuid) -> AppResult<()> {
@@ -1117,6 +1168,8 @@ pub async fn existing_by_name(
     let id: Option<Uuid> = sqlx::query_scalar(&format!(
         "SELECT e.id FROM entities e
           WHERE e.kb_id = $1 AND e.merged_into IS NULL
+            -- 被描述的东西不参与名字召回（0044）：描述不是桥
+            AND e.description IS NULL
             AND (lower(e.canonical_name) = ANY($2) OR {named})
           ORDER BY (SELECT count(*) FROM facts f
                      WHERE (f.subject_id = e.id OR f.object_id = e.id) AND {not_name}) DESC,
@@ -1154,9 +1207,12 @@ pub async fn refresh_disambiguators(pool: &PgPool, kb_id: Uuid, name: &str) -> A
 
     let peers: Vec<Uuid> = group.iter().map(|(id,)| *id).collect();
     for (id,) in &group {
+        // LEFT JOIN（0044）：开放陈述指着的宾语也能当消歧后缀——「张三 · 星云科技」
+        // 不因为「任职于」没进本体就写不出来。关系的布尔位对开放行 COALESCE 成 false，
+        // 类型化行之间的次序不变
         let label: Option<(String,)> = sqlx::query_as(
             "SELECT o.canonical_name FROM facts f
-             JOIN relation_types r ON r.id = f.predicate_id
+             LEFT JOIN relation_types r ON r.id = f.predicate_id
              JOIN entities o ON o.id = f.object_id
              WHERE f.kb_id = $1 AND f.subject_id = $2
                AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
@@ -1168,8 +1224,8 @@ pub async fn refresh_disambiguators(pool: &PgPool, kb_id: Uuid, name: &str) -> A
                                AND g.invalidated_at IS NULL)) DESC,
                EXISTS (SELECT 1 FROM relation_type_ranges rr
                         WHERE rr.relation_type_id = r.id) DESC,
-               (r.temporal = 'state') DESC,
-               r.functional DESC,
+               COALESCE(r.temporal = 'state', FALSE) DESC,
+               COALESCE(r.functional, FALSE) DESC,
                f.confidence DESC, f.recorded_at DESC
              LIMIT 1",
         )
@@ -1301,10 +1357,12 @@ pub async fn entity_fact_lines(
         valid_to: Option<DateTime<Utc>>,
     }
     // 名字不算审阅卡上的一条事实（0041）：两个同名实体各有一条「known as 张伟」，
-    // 摆出来像是一条共同证据，其实它什么也分不出来
+    // 摆出来像是一条共同证据，其实它什么也分不出来。
+    // 开放陈述（0044）按它照抄的短语读：`phrase` 在关系标签之后、证据众数之前——
+    // 类型化行的 phrase 是 NULL，它们的显示一字不变
     let rows: Vec<Line> = sqlx::query_as(&format!(
         "SELECT CASE WHEN f.subject_id = $2 THEN 'out' ELSE 'in' END AS direction,
-                COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
+                COALESCE(r.label, f.phrase, fact_surface_predicate(f.id)) AS predicate_label,
                 o.canonical_name AS other_name,
                 f.valid_from, f.valid_to
          FROM facts f
@@ -1313,7 +1371,7 @@ pub async fn entity_fact_lines(
            ON o.id = CASE WHEN f.subject_id = $2 THEN f.object_id ELSE f.subject_id END
          WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
            AND (f.subject_id = $2 OR f.object_id = $2)
-           AND COALESCE(r.label, fact_surface_predicate(f.id)) IS NOT NULL
+           AND COALESCE(r.label, f.phrase, fact_surface_predicate(f.id)) IS NOT NULL
            AND {not_name}
          ORDER BY f.confidence DESC, f.recorded_at DESC
          LIMIT $3",

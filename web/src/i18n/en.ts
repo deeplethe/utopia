@@ -517,6 +517,9 @@ export const en = {
       clause_suspect: "Kept, but the name reads like a clause: a sample for the guard",
       direction_corrected:
         "Subject and object were swapped to match the signature",
+      quote_not_in_chunk: "Kept, but the quoted sentence is not in the text verbatim",
+      time_not_in_quote: "A time mention's words are not in the text",
+      unknown_ref: "The item points at nothing in the reply",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",

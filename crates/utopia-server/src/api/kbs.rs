@@ -55,6 +55,10 @@ pub struct UpdateKbReq {
     /// 提示词都读它。探索生成的描述在另一个字段，PATCH 不了。见 #570
     #[serde(default)]
     pub data_conventions: Option<String>,
+    /// 开放抽取（0044 第一刀，#729）：开着，抽取只写开放图谱——陈述照文档的字落库，
+    /// 不读本体；关着走今天的类型化那条路。缺省关
+    #[serde(default)]
+    pub open_extraction: Option<bool>,
 }
 
 /// 用户可见的 KB 列表（restricted 库仅矩阵成员与系统管理员可见）。
@@ -108,6 +112,7 @@ pub async fn create(
             None,
             None,
             Some(v),
+            None,
             None,
             None,
             None,
@@ -197,6 +202,7 @@ pub async fn update(
         req.auto_type_resolution,
         req.governance,
         req.data_conventions.as_deref().map(str::trim),
+        req.open_extraction,
     )
     .await?;
     // 打开开关就自动开始处理：排一轮，同库已排着的不重复

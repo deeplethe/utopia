@@ -65,7 +65,16 @@ node scripts/bench/fetch-sec-filings.mjs                     # 一次就够
 node scripts/bench/recall.mjs --kb <id>                      # 一轮：清空 → 重抽 → 打分
 node scripts/bench/recall.mjs --kb <id> --score              # 只打分
 node scripts/bench/recall.mjs --kb <id> --reprocess          # 改了解析器：连分块一起重来
+node scripts/bench/recall.mjs --kb <id> --open               # 开放图谱那条路（0044 第 1 刀）：本体不进提示词
+node scripts/bench/judge_open.mjs --kb <id> --sample 200     # 开放陈述有多少不是原文说的（门槛 2%）
 ```
+
+`--open` 打开库的 `open_extraction` 开关再抽：陈述按原文短语落成 `layer='open'` 的事实行，
+限定挂在 `statement_qualifiers`，时间词进 `time_mentions`；打分口径不变（谓词取
+`proposed_predicate`，限定也拼进那一行），所以两条路的分数直接可比。`judge_open.mjs` 是
+反面的尺子：抽样让一个裁判模型读原文判 stated / misworded / not_stated；裁判端点用
+`BENCH_JUDGE_BASE / BENCH_JUDGE_KEY / BENCH_JUDGE_MODEL`，不给就用工作区的对话模型
+（和抽取同一个模型，数字要打折看）。
 
 `--kb` 要一个**装了本体包、向量已补齐**的库：装一次 schema.org 要嵌 2500 条向量、
 二十分钟，而这个台子量的不是本体。库里除了本体没有跨轮状态——事实、实体、信号

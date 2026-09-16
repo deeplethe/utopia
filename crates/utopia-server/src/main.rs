@@ -8,6 +8,7 @@ mod client_ctx;
 mod docs_corpus;
 mod error;
 mod extraction;
+mod extraction_open;
 mod github_issues;
 mod governance;
 mod http_fetch;
