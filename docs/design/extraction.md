@@ -38,8 +38,15 @@ is still listed and the qualifier names it, and a generic phrase that appears on
 words in the qualifier. In a table, a cell is a statement about its row's thing whose phrase is
 the column heading; when the heading names a time it is `when` instead, the statement is about
 the thing the caption names and the phrase is the row label with its section path, and a unit the
-caption gives is a qualifier [#744]. These are contract rules, not server checks: the shape checks
-below look at structure, never at vocabulary.
+caption gives is a qualifier [#744]. A statement the passage requires, plans, expects, forecasts
+or makes conditional carries a qualifier keyed `mood` whose value is the passage's own words for
+that ("要", "should", "will", "is expected to"); a verb that reports (announced, said) is not a
+mood; the phrase stays as written, and alignment never materializes a statement with a mood as a
+typed fact [#745]. A rule that gave a subjectless sentence the passage's addressee or speaker as
+its subject was tried and withdrawn in the same change: under it the model returned nothing for
+a fifth of the chunks of a filing, tables included, and the bullets of a release already take the
+company as their subject without it. These are contract rules, not server checks: the shape
+checks below look at structure, never at vocabulary.
 
 **Server checks, each a drop reason in `extraction_drops`.** Every quote must occur in the chunk
 (`quote_not_in_chunk`); every name in its quote (`name_not_in_text`); a time mention only when its

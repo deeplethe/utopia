@@ -110,8 +110,12 @@ built.
 2. **A triple the sentence did not assert.** OLLIE showed how many extractions are conditioned,
    attributed or hypothetical in the sentence and false without that context [Mausam 2012];
    speculation is a property of the tuple, not of the sentence [Dong 2023b]. Qualifiers hold the
-   context [0037, 0044]. *Open:* a modality qualifier per statement (directive, plan, hypothesis),
-   and the rule that alignment never materializes a directive as a typed relation.
+   context [0037, 0044]; a statement the passage requires, plans, expects or makes conditional
+   carries a `mood` qualifier in the passage's own words, a reporting verb is not a mood, and
+   alignment never materializes a statement with a mood as a typed fact
+   ([extraction](extraction.md), #745). *Open:* the subject of a directive sentence in a notice
+   whose addressee is outside the chunk; a rule naming the addressee was tried and withdrawn
+   because it emptied a fifth of a filing's chunks.
 3. **Minimal is not the same as self-contained.** MinIE says minimization loses context in its own
    evaluation [Gashteovski 2017]; the neural systems went the other way and over-include
    [Fatahi Bayat 2022]; CaRB [Bhardwaj 2019], WiRe57 [Léchelle 2019], LSOIE [Solawetz 2021] and
