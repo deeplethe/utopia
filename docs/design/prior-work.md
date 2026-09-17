@@ -123,7 +123,7 @@ built.
    matcher. The fact-checking side reached the same place: fully atomic facts are not the right
    unit, decontextuality and minimality pull against each other [Gunjal 2024, Choi 2021], and more
    decomposition is not monotonically better [Hu 2025]. Our rule: one statement is one complete
-   proposition; coordinated objects split; a verb chain sharing one object does not.
+   proposition; coordinated objects split; a verb chain sharing one object does not (#743).
 4. **The decomposition is itself a model output.** Change the decomposition prompt and every
    downstream number moves [Wanner 2024]; a segmentation pre-pass can drop entities for strong
    models [Pommeret 2026]. The contract is versioned in code and each bench round names its
@@ -134,8 +134,10 @@ built.
    inside the extractor is what moved OpenIE6 [Kolluru 2020]; it can be done without a parser
    [Wang 2023b]; split-and-rephrase is the general task [Narayan 2017]; irrelevant context is a
    named failure of LLM OpenIE [Ling 2023]. The judge and the coverage script measure the dense
-   NVDA sentences separately (#731). *Open:* the figures dropped from dense sentences get a
-   second-look pass.
+   NVDA sentences separately (#731). A structural count of the money and percentage figures that
+   no statement of their chunk carries (`scripts/bench/figures.mjs`, #PRN) found 2 of 83 in prose
+   on the 25-document batch, 2 of 35 on the NVDA releases and 0 of 451 in their tables, with reasoning
+   on at the endpoint; a second-look pass waits for a corpus that loses more.
 6. **Common nouns as entities.** On Wikipedia text only 42% of open-extraction arguments are named
    entities [Gashteovski 2019]; canonicalization meets the same string with different referents
    first [Galárraga 2014]; the opposite failure, one referent under many strings, is the sparsity
@@ -165,8 +167,11 @@ built.
 9. **The contract's shape has a cost.** Format restrictions degrade reasoning [Tam 2024]; guideline
    prompts are not reliably obeyed without training [Sainz 2024]; quoting before stating improves
    grounding [Huang 2024]; forcing citations finer than a sentence hurts [Wang 2026]. The compact
-   contract was chosen by measurement (#731). *Open:* the quote comes before the statement in `s`;
-   clause-level quotes measured against minimal ones.
+   contract was chosen by measurement (#731); the quote is the first slot of a statement, so the
+   model copies the sentence before it writes from it (#PRN: on the four NVDA releases 909 statements
+   against 901, misworded 5% in both, prose misworded 6% against 9% and prose that does not read
+   alone 5% against 11%). *Open:* clause-level quotes measured against minimal ones; a run-to-run
+   stability number.
 10. **Numbers need their own patterns.** Open numerical extraction is its own problem
     [Saha 2017]; the dense-sentence figures we drop are that class. *Open:* the second-look pass of
     item 5.

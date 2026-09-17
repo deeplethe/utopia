@@ -16,9 +16,9 @@ are extraction's rules [0039].
 
 **Output, the compact contract** (`utopia_extract::open`). `e`: things, each a name or a
 description, the document's kind word, and whether it is named or described. `s`: statements, each
-naming its subject and object in words, the relation phrase as written, an object name or a literal
-value, qualifiers keyed by the document's role words, `when` / `ended` time words, and its own
-verbatim quote. `n`: other names the document gives a thing. Statements name their sides in words
+opening with its own verbatim quote and then naming its subject and object in words, the relation
+phrase as written, an object name or a literal value, qualifiers keyed by the document's role
+words, and `when` / `ended` time words. `n`: other names the document gives a thing. Statements name their sides in words
 and carry their own quote because a numbered contract mixed the ids up on dense passages (misworded
 10 to 14% with ids, 2 to 7% with names) [#731]. Parsing is per item: a malformed item is counted and
 a truncated reply is repaired to its last complete item.
@@ -91,7 +91,9 @@ qualifiers, time words and quote span, and a nod writes an open statement [0015,
   a list says it is a name; the same rule for quotes and time words [0041, 0044 d8].
 - **A described thing is an entity** and gets no name fact, so a description never bridges two
   documents [#731].
-- **Named sides and per-statement quotes** cost tokens and buy the not-stated rate [#731].
+- **Named sides and per-statement quotes** cost tokens and buy the not-stated rate [#731]; the
+  quote comes first so the statement is written from the copied sentence [Huang 2024,
+  prior-work item 9, #PRN].
 - **Every drop is a row** because an append-only ledger with evidence on every fact cannot drop
   silently [0001].
 - **Temperature 0** because the endpoint default swung one paragraph between 8 and 31 statements
