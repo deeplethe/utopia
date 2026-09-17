@@ -163,7 +163,7 @@ built.
    citation presence is not citation support [Gao 2023]; a three-way label (attributable,
    extrapolated, contradictory) is more useful than a binary one [Yue 2023]; abstention must be a
    first-class output [Menick 2022]. `quote_not_in_chunk` is a drop reason and the judge is a
-   separate pass; since #PRN a second pass marks each "misworded" verdict extrapolated or
+   separate pass; since #749 a second pass marks each "misworded" verdict extrapolated or
    contradicted. The verdict pass itself is untouched, because the judge is sensitive to its own
    wording: the same 909 statements came out 0.8% misworded when the three verdicts were reworded as
    four and 2.1% when the kind was asked in the same call, against 5.0% and 3.6% from two passes of
