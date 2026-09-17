@@ -35,7 +35,7 @@ every table that follows it; a row is never split; headings become a breadcrumb 
 overlap; chunk text is verbatim slices so a quote is found by offset; a document is re-chunked on
 its next reprocess [0039].
 
-**Tables** [#744, #PRN, prior-work item 26]. An HTML table is rendered from the DOM before the Markdown
+**Tables** [#744, #750, prior-work item 26]. An HTML table is rendered from the DOM before the Markdown
 converter sees it, by structure alone: cells hidden by style are skipped, spanning cells are laid on
 a grid, columns empty in every row go, a cell holding only a symbol ("$", ")") rejoins the number
 beside it. Rows are classified by what they hold: a lone cell before any header or data is a
@@ -49,7 +49,7 @@ does what it already did: the caption and the header travel with every piece, an
 five short paragraphs before a table is its caption, so a statement's chunk names the report, the
 unit and the period. Nested tables and the tables of other parsers still take the converter's
 path with the first row promoted to header. Measured on the NVDA earnings release: 52 chunks
-became 32, none of them a table without its header. DOCX tables, spreadsheets and CSV files are laid on the same grid by their parsers (#PRN): a DOCX
+became 32, none of them a table without its header. DOCX tables, spreadsheets and CSV files are laid on the same grid by their parsers (#750): a DOCX
 cell keeps its column span and the indent of its first paragraph, a sheet's or a CSV file's first
 row with two or more cells is its header even when the headings are years, and a table with no
 figure in it is read as a header row followed by records; the text layer of a PDF carries no table

@@ -315,7 +315,7 @@ built.
     label, the caption run kept with every chunk ([sources](sources.md), #744); a heading that
     names a time is `when`, a heading that names a change between periods stays the phrase; a
     phrase equal to the value or to the subject is kept and counted. DOCX tables, spreadsheets and
-    CSV files are laid on the same grid by their parsers (#PRN): a DOCX cell keeps its span and
+    CSV files are laid on the same grid by their parsers (#750): a DOCX cell keeps its span and
     the indent of its first paragraph, a sheet's or a file's first row of two or more cells is its
     header even when the headings are years, and a table with no figure in it is a header row and
     records. *Open:* the text layer of a PDF carries no table structure (a scanned PDF's tables
