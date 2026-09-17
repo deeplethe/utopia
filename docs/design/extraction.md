@@ -103,11 +103,16 @@ qualifiers, time words and quote span, and a nod writes an open statement [0015,
 
 `scripts/bench/recall.mjs` (SEC filings, pharma, ai-timeline; Re-DocRED fetched by script and never
 used as prompt examples) scores entity-pair recall; `judge_open.mjs` has a judge model read the
-chunk and reports stated, misworded and not stated, and separately whether the statement reads on
-its own without the document (`alone`, the uninformative-phrase class of [prior-work](prior-work.md)
+chunk and reports stated, misworded and not stated, then in a second pass marks each misworded
+statement extrapolated (it goes beyond what the document gives the pair) or contradicted (the
+document says otherwise: direction, phrase or the value of another cell) [prior-work item 8, #PRN],
+and separately whether the statement reads on its own without the document (`alone`, the uninformative-phrase class of [prior-work](prior-work.md)
 item 1); `identity.mjs`, `govern.mjs`, `temporal.mjs`
-and the lease bench cover the other domains. Every cut reports at least three domains, two runs per
-configuration, with the judge's calibration stated; no F1 against Re-DocRED, whose gold omits true
+and the lease bench cover the other domains. The judge's own variance is measured: the same 909
+statements judged twice came out misworded 5.0% and 3.6% with 97% of verdicts identical, and
+reads-alone 4.8%, 8.6% and 10.7% across three passes, so a difference under two points of misworded
+between two runs is noise and reads-alone is reported but not compared between single runs [#PRN]. Every cut reports at least three domains, two runs per configuration,
+with the judge's calibration stated; no F1 against Re-DocRED, whose gold omits true
 facts [0044]. Thresholds: not stated at most 2%, entity-pair recall no lower than before, prompt
 tokens per document reported. Measured at cut 1: not stated at or under 2% in 16 of 18
 corpus-rounds; NVDA full documents 44 to 46 of 52 (one standard deviation about 2.7) against 43 and

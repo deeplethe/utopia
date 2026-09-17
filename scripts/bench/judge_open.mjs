@@ -10,6 +10,12 @@
 // 三档：stated（原文说了，陈述说对了）/ misworded（原文说了两者有关系，陈述的说法不对）/
 // not_stated（原文没说）。0044 的门槛：not_stated 不超过 2%。
 //
+// 判成 misworded 的再走第二遍，标一个 kind：extrapolated（说过头了：限定、时间或细节是原文给
+// 别的东西的或没给的）或 contradicted（说反了：方向反了、短语说的是原文否认的、值是别的行或
+// 列的）——prior-work 第 8 条，Yue 2023 的三分。判决那一遍一字不改，kind 单独一遍：把三档改成
+// 四档，同一批 909 条的 misworded 从 5.0% 掉到 0.8%；在同一次调用里追问 kind，掉到 2.1%；
+// 裁判自己的抖动是同一批判两遍 5.0% / 3.6%（逐条一致 97%）。
+//
 // 用法：
 //   node scripts/bench/judge_open.mjs --kb <id> [--sample 200] [--seed 7] [--out judged.json]
 //   node scripts/bench/judge_open.mjs --calibrate scripts/bench/truth/open-statements.json
@@ -109,6 +115,34 @@ function chunkText(chunkId) {
 
 const render = (r) => `${r.subj} —${r.phrase}→ ${r.obj}${r.quals ? ` (${r.quals})` : ""}${r.times ? ` [${r.times}]` : ""}`;
 
+// 第二遍：只问判成 misworded 的，说过头了还是说反了
+const KIND = `You check statements extracted from a document. For each numbered statement the document does state a relationship between the subject and the object or value, but the statement describes it wrongly. Say which way:
+- "extrapolated": the statement goes beyond what the document gives this pair: a qualifier, a time or a detail the document gives for something else or does not give, or a phrase that claims more than the document's words;
+- "contradicted": the document says otherwise: the direction is reversed, the phrase says what the document denies, or the value is another row's or column's.
+First copy the words of the document that bear on it ("evidence"). Judge only from the document. Output one JSON object: {"results":[{"i":0,"evidence":"...","kind":"extrapolated|contradicted"}]}`;
+
+async function kindPass(kb, judged) {
+  const ep = judgeEndpoint(kb);
+  const byChunk = new Map();
+  for (const it of judged) if (it.verdict === "misworded") (byChunk.get(it.chunk) || byChunk.set(it.chunk, []).get(it.chunk)).push(it);
+  for (const [chunk, list] of byChunk) {
+    const text = chunkText(chunk);
+    const body = `Document (${list[0].file}):\n${text}\n\nStatements:\n${list.map((x, j) => `${j}. ${x.statement}`).join("\n")}`;
+    let res;
+    try {
+      res = await chat(ep, [{ role: "system", content: KIND }, { role: "user", content: body }]);
+    } catch (e) {
+      console.error(`${stamp()} kind 调用失败：${e.message}`);
+      continue;
+    }
+    for (const r of res.results || []) {
+      const it = list[r.i];
+      if (it && ["extrapolated", "contradicted"].includes(r.kind)) it.kind = r.kind;
+    }
+  }
+  return judged;
+}
+
 async function judgeAll(kb, items) {
   const ep = judgeEndpoint(kb);
   const byChunk = new Map();
@@ -148,7 +182,8 @@ function report(judged, total) {
   const n = judged.length;
   const count = (v) => judged.filter((j) => j.verdict === v).length;
   const pct = (a) => `${a}/${n}（${n ? ((100 * a) / n).toFixed(1) : 0}%）`;
-  console.log(`\n开放陈述 ${total} 条，判了 ${n} 条：stated ${pct(count("stated"))}，misworded ${pct(count("misworded"))}，not_stated ${pct(count("not_stated"))}，未判 ${count("unjudged")}`);
+  const kind = (k) => judged.filter((j) => j.verdict === "misworded" && j.kind === k).length;
+  console.log(`\n开放陈述 ${total} 条，判了 ${n} 条：stated ${pct(count("stated"))}，misworded ${pct(count("misworded"))}（extrapolated ${kind("extrapolated")}，contradicted ${kind("contradicted")}），not_stated ${pct(count("not_stated"))}，未判 ${count("unjudged")}`);
   console.log(`0044 的门槛：not_stated ≤ 2%${count("not_stated") / (n || 1) <= 0.02 ? "，过" : "，没过"}`);
   const fragments = judged.filter((j) => j.alone === false);
   console.log(`单看读不通（alone = false）：${pct(fragments.length)}`);
@@ -187,6 +222,6 @@ if (args.calibrate) {
 
 const { total, picked } = loadStatements(KB, args.sample, args.seed);
 console.error(`${stamp()} 库里 ${total} 条开放陈述，抽 ${picked.length} 条`);
-const judged = await judgeAll(KB, picked);
+const judged = await kindPass(KB, await judgeAll(KB, picked));
 report(judged, total);
 if (args.out) fs.writeFileSync(args.out, JSON.stringify(judged, null, 1));
