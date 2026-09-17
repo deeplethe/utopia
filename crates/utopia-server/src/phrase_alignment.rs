@@ -66,14 +66,9 @@ pub async fn align_phrases(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> 
             .fetch_one(&mut *guard)
             .await?;
     if !locked {
-        // 正在跑的那份看不见这次触发带来的变化（新属性、改过的定义）：排回去，它完了再跑一遍
-        tracing::info!(%kb_id, "短语对齐已有一份在跑，排到它后面");
-        utopia_store::jobs::enqueue_unless_queued(
-            pool,
-            "align_phrases",
-            serde_json::json!({ "kb_id": kb_id }),
-        )
-        .await?;
+        // 正在跑的那份结束时会自己看一眼有没有新东西（见 align_phrases_locked 末尾）；这里
+        // 不排——排回去会和跑着的那份互相踢成死循环
+        tracing::info!(%kb_id, "短语对齐已有一份在跑，这次跳过");
         return Ok(());
     }
     let result = align_phrases_locked(state, kb_id, &settings, &client).await;
@@ -91,6 +86,7 @@ async fn align_phrases_locked(
     client: &utopia_llm::LlmClient,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
+    let run_started = chrono::Utc::now();
     let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
     let class_key: HashMap<Uuid, &str> = classes.iter().map(|c| (c.id, c.key.as_str())).collect();
@@ -114,6 +110,7 @@ async fn align_phrases_locked(
             Some(b) => b.decided_by != "person" && stale.contains(&s.key()),
         })
         .collect();
+    let attempted: HashSet<_> = todo.iter().map(|s| s.key()).collect();
     tracing::info!(%kb_id, signatures = sigs.len(), to_decide = todo.len(), properties = props.len(), "短语对齐开始");
 
     // 没有属性可绑：每条都是「没有」；属性出现后 `stale` 会把它们再交回来
@@ -308,7 +305,19 @@ async fn align_phrases_locked(
         }
     }
     tracing::info!(%kb_id, bound, none, undecided, skipped, failed, "短语对齐完成");
-    if failed > 0 {
+    // 这一轮跑着的时候世界没停：新文档带来新签名，改了的属性让刚判的绑定过期，本轮没排上
+    // 的触发也都落在这里。有失败的批次、有没试过的新签名、有本轮判完又过期的绑定，就再排
+    // 一次
+    let again = failed > 0
+        || phrase_bindings::signatures(pool, kb_id)
+            .await?
+            .iter()
+            .any(|s| !attempted.contains(&s.key()) && !existing.contains_key(&s.key()))
+        || phrase_bindings::stale(pool, kb_id)
+            .await?
+            .iter()
+            .any(|b| b.decided_by != "person" && b.decided_at >= run_started);
+    if again {
         utopia_store::jobs::enqueue_unless_queued(
             pool,
             "align_phrases",
