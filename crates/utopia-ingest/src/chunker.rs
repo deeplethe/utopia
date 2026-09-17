@@ -47,6 +47,8 @@ pub const BUDGET_TOKENS: usize = 300;
 /// 说明句最长多少字节还算说明句：表上面那一段要短、或者以冒号结尾，
 /// 才当成表的一部分带着走；一整段分析不是说明句
 const CAPTION_MAX_BYTES: usize = 200;
+/// 表前最多几段短说明一起当说明句
+const CAPTION_RUN_MAX: usize = 5;
 
 /// 不到这么多 token 的一段（页码、脚注标记）不单独成块，并进上一块
 const TINY_TOKENS: usize = 8;
@@ -100,11 +102,24 @@ fn units(text: &str, blocks: Vec<Block>) -> Vec<Unit> {
                 //   提名人，结果如下：」后面是十张表，从前只有第一张带着它；黄仁勋
                 //   那张在另一块里，四个票数都对，却没有一句话说这是在投什么，
                 //   「当选董事」那条边就没了。一串到别的东西（段落、标题）出现为止。
-                let caption_like = b.range.len() <= CAPTION_MAX_BYTES
-                    || text[b.range.clone()].trim_end().ends_with(':');
-                let mut j = i + 1;
+                //
+                // - 表前**连续几段**短说明一起算：财报的「NVIDIA CORPORATION」「CONDENSED
+                //   CONSOLIDATED STATEMENTS OF INCOME」「(In millions)」「(Unaudited)」是四个
+                //   段落，只带最后一段的话，模型看到的表不知道是哪张报表、什么单位。
+                //   一串最多五段，中间不隔别的东西
+                let caption_like = |blk: &Block| {
+                    matches!(blk.kind, Kind::Paragraph)
+                        && (blk.range.len() <= CAPTION_MAX_BYTES
+                            || text[blk.range.clone()].trim_end().ends_with(':'))
+                };
+                let mut k = i + 1;
+                while k - i < CAPTION_RUN_MAX && blocks.get(k).is_some_and(&caption_like) {
+                    k += 1;
+                }
+                let caption = b.range.start..blocks[k - 1].range.end;
+                let mut j = k;
                 let mut attached = 0usize;
-                if caption_like {
+                if caption_like(b) {
                     loop {
                         while matches!(
                             blocks.get(j),
@@ -123,7 +138,7 @@ fn units(text: &str, blocks: Vec<Block>) -> Vec<Unit> {
                             break;
                         };
                         out.push(Unit::Table {
-                            caption: Some(b.range.clone()),
+                            caption: Some(caption.clone()),
                             head: head.clone(),
                             rows: rows.clone(),
                         });
@@ -132,6 +147,7 @@ fn units(text: &str, blocks: Vec<Block>) -> Vec<Unit> {
                     }
                 }
                 if attached == 0 {
+                    // 不是说明句：这一段照常；后面那几段下一轮各自再看
                     out.push(Unit::Text(b.range.clone()));
                 } else {
                     i = j - 1;
@@ -766,6 +782,26 @@ The tenant pays rent monthly.
                 "说明句留在了没有表的块里:\n{}",
                 p.text
             );
+        }
+    }
+
+    /// 财报的形状：公司名、报表名、单位、「未经审计」四段短说明，然后是表。
+    /// 四段都是说明句，切开的每一块都带着全部四段。
+    #[test]
+    fn a_run_of_short_paragraphs_before_a_table_is_its_caption() {
+        let text = format!(
+            "Prose that is long enough not to be a caption, going on about the quarter and the outlook and the products and the customers.\n\n\
+             NVIDIA CORPORATION\n\nCONDENSED CONSOLIDATED STATEMENTS OF INCOME\n\n(In millions)\n\n(Unaudited)\n\n{}",
+            table(30)
+        );
+        let pieces = chunk_with_budget(&text, 120);
+        let with_table: Vec<&ChunkPiece> = pieces.iter().filter(|p| p.text.contains("| --- |")).collect();
+        assert!(with_table.len() >= 2, "表该被切成几块: {}", pieces.len());
+        for p in &with_table {
+            assert!(p.text.contains("NVIDIA CORPORATION"), "每块都带公司名: {}", p.text);
+            assert!(p.text.contains("STATEMENTS OF INCOME"), "每块都带报表名: {}", p.text);
+            assert!(p.text.contains("(Unaudited)"), "每块都带最后一段: {}", p.text);
+            assert!(!p.text.contains("Prose that is long"), "长段落不是说明句: {}", p.text);
         }
     }
 

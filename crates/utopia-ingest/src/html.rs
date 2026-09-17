@@ -488,7 +488,10 @@ fn prune_empty_table_columns(markdown: &str) -> String {
 }
 
 fn markdown_from_html(html: &str) -> Result<String, HtmlError> {
-    let html = &promote_first_row_headers(html);
+    // 最外层的表先从 DOM 渲染成带真表头的 Markdown（见 `table`），htmd 只看到占位段落；
+    // 套着的表还走老路，所以第一行提表头的补丁留着给它们
+    let (html, tables) = crate::table::lift_tables(html);
+    let html = &promote_first_row_headers(&html);
     let markdown = htmd::HtmlToMarkdown::builder()
         .skip_tags(vec![
             "script", "style", "iframe", "object", "embed", "img", "svg", "math",
@@ -505,6 +508,7 @@ fn markdown_from_html(html: &str) -> Result<String, HtmlError> {
     {
         return Err(HtmlError::Interstitial);
     }
+    let markdown = crate::table::restore_tables(&markdown, &tables);
     normalize_markdown(&prune_empty_table_columns(&markdown))
 }
 

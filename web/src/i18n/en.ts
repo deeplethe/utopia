@@ -509,6 +509,8 @@ export const en = {
       quote_not_in_chunk: "Kept, but the quoted sentence is not in the text verbatim",
       time_not_in_quote: "A time mention's words are not in the text",
       unknown_ref: "The item points at nothing in the reply",
+      phrase_is_value: "The phrase is the value itself",
+      phrase_is_subject: "The phrase is the subject's own name",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",

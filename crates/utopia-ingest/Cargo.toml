@@ -13,6 +13,7 @@ pdf-extract.workspace = true
 calamine.workspace = true
 htmd.workspace = true
 dom_smoothie.workspace = true
+dom_query.workspace = true
 thiserror.workspace = true
 percent-encoding = "2.3.2"
 chardetng.workspace = true

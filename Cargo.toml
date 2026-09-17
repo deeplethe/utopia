@@ -78,6 +78,7 @@ cron = "0.12"
 infer = "0.22"
 sha2 = "0.11"
 dom_smoothie = "0.16"
+dom_query = "0.26"
 htmd = "0.5"
 pulldown-cmark = { version = "0.13", default-features = false }
 chardetng = "1"
