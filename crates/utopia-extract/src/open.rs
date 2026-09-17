@@ -110,21 +110,35 @@ Output one JSON object and nothing else, shaped like this:\n\
  \"n\": [[\"name as listed in e\", \"another name\", \"the sentence that uses it, verbatim\"]]}\n\
 \n\
 1. \"e\" lists the things the passage talks about, one entry each: [name, kind, named]. Every \
-thing a statement refers to is listed here once, under exactly the name the statements use. A \
-thing the passage names (people, organizations, products, places, documents, laws, events) has \
-named = 1 and is named as the passage writes it, without citation words: \"the Harbor Treaty \
-signed on May 3, 1998\" is named \"Harbor Treaty\". A thing the passage only describes has \
-named = 0 and is named by the words that say what it is (\"the northern wing\", \"farmland\", \
-\"beekeepers\"). kind is what the thing is, in two or three words, as the passage says it. A \
-name never carries a figure: \"about 40 hectares of farmland\" is the thing \"farmland\" with a \
-statement \"area\" = \"about 40 hectares\". List each thing once.\n\
+thing a statement refers to is listed here once, under exactly the name the statements use. \
+named = 1 for a proper name or a fixed term: the name of one particular person, organization, \
+product, place, document, law or event, or a term that means the same thing in any document (a \
+disease, a drug, an industry, a product category, an indicator), written as the passage writes \
+it, without citation words (\"the Harbor Treaty signed on May 3, 1998\" is named \"Harbor \
+Treaty\"). named = 0 for a role or a generic phrase whose referent this passage decides, however \
+particular it is here: \"the company\", \"the enterprises visited\", \"patients\", \"各部门\", \
+\"the northern wing\" are described things, named by the words that say what they are. kind is \
+what the thing is, in two or three words, as the passage says it. A name never carries a figure: \"about 40 hectares of farmland\" is the thing \
+\"farmland\" with a statement \"area\" = \"about 40 hectares\". List each thing once.\n\
 2. \"s\" lists the statements, one entry each: [subject, phrase, object, value, qualifiers, \
 when, ended, quote]. subject and object are names, written exactly as listed in \"e\" or in \
 the list of things already recorded, with the same spelling every time. Exactly one of object \
 and value is set; the other is null.\n\
-   A statement with an object links two things. phrase is how the passage says the link, as a \
-short lowercase phrase (\"acquired\", \"was designed by\", \"houses\", \"is the captain of\", \
-\"修建\"); do not translate it into any vocabulary of your own.\n\
+   A statement with an object links two things. phrase is how the passage says the link, \
+lowercase, in the passage's own words; do not translate it into any vocabulary of your own. It \
+is the verb with the words that belong to it, so that subject —phrase→ object reads as a \
+sentence on its own (\"acquired\", \"was designed by\", \"is the captain of\", \"went into \
+partnership with\", \"细化解读\"), never a bare verb cut from a longer verb phrase (\"went\", \
+\"细化\"). Several verbs sharing one object make one statement whose phrase carries them all \
+(\"designed and built\"); one verb with several objects makes one statement per object. The \
+object is what the verb acts on, and a described thing that is the subject or the object is \
+listed like any other (\"the coating should not be used on surfaces exposed to seawater\" gives \
+coating —should not be used on→ surfaces exposed to seawater, a described thing); words that say \
+where, how, why, with what or for whom go in qualifiers under the passage's own role word. A \
+named thing mentioned in a qualifier is still listed and the qualifier names it; a generic phrase \
+that appears in a qualifier alone is words there, not a listed thing: \"各部门要走进学校、社区等\
+基层单位开展宣传活动\" gives 各部门 —开展→ 宣传活动 with {\"走进\": \"学校、社区等基层单位\"}, \
+and neither 学校 nor 社区 is listed.\n\
    A statement with a value is what the passage says about one thing by itself: a figure with \
 its units, a percentage, an amount, a count, a title, a status. phrase is how the passage says \
 what is measured or stated (\"area\", \"was completed\", \"joined\", \"占地面积\"); value is the \

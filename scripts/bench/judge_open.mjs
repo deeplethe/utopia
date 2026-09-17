@@ -70,7 +70,8 @@ For each, first copy the words of the document that bear on it ("evidence", "" i
 - "stated": the document states this, or a careful reader takes it directly from the document, and the statement describes it correctly;
 - "misworded": the document does state a relationship between this subject and this object or value, but the statement describes it wrongly (the wrong phrase, the wrong direction, a qualifier or time that belongs to something else);
 - "not_stated": the document does not state any such relationship between this subject and this object or value (it is invented, the object belongs to something else, or it goes beyond what the document says).
-Judge only from the document. Output one JSON object: {"results":[{"i":0,"evidence":"...","verdict":"stated|misworded|not_stated"}]}`;
+Then, separately, answer "alone": true when "subject —phrase→ object" reads as a complete proposition by itself, without the document; false when a reader could not tell what is being said because the phrase is a bare verb cut from a longer verb phrase, or the object or subject is a fragment of a longer noun phrase.
+Judge only from the document. Output one JSON object: {"results":[{"i":0,"evidence":"...","verdict":"stated|misworded|not_stated","alone":true}]}`;
 
 // 取样：现行的开放陈述，连它的证据块（原文）、限定与时间词
 function loadStatements(kb, sample, seed) {
@@ -128,7 +129,14 @@ async function judgeAll(kb, items) {
       for (const r of res.results || []) {
         const it = part[r.i];
         if (!it) continue;
-        out.push({ ...it, statement: render(it), evidence: r.evidence || "", verdict: ["stated", "misworded", "not_stated"].includes(r.verdict) ? r.verdict : "unjudged" });
+        out.push({
+          ...it,
+          statement: render(it),
+          evidence: r.evidence || "",
+          verdict: ["stated", "misworded", "not_stated"].includes(r.verdict) ? r.verdict : "unjudged",
+          // 读不读得通：单看「主语 —短语→ 宾语」能不能明白在说什么（ReVerb 说的 uninformative 那一类）
+          alone: typeof r.alone === "boolean" ? r.alone : null,
+        });
       }
       console.error(`${stamp()} 判了 ${out.length}/${items.length}`);
     }
@@ -142,10 +150,16 @@ function report(judged, total) {
   const pct = (a) => `${a}/${n}（${n ? ((100 * a) / n).toFixed(1) : 0}%）`;
   console.log(`\n开放陈述 ${total} 条，判了 ${n} 条：stated ${pct(count("stated"))}，misworded ${pct(count("misworded"))}，not_stated ${pct(count("not_stated"))}，未判 ${count("unjudged")}`);
   console.log(`0044 的门槛：not_stated ≤ 2%${count("not_stated") / (n || 1) <= 0.02 ? "，过" : "，没过"}`);
+  const fragments = judged.filter((j) => j.alone === false);
+  console.log(`单看读不通（alone = false）：${pct(fragments.length)}`);
   const bad = judged.filter((j) => j.verdict !== "stated").slice(0, 20);
   if (bad.length) {
     console.log("\n判不对的（样本）：");
     for (const j of bad) console.log(`  [${j.verdict}] ${j.statement}\n      证据：${j.evidence.slice(0, 160)}`);
+  }
+  if (fragments.length) {
+    console.log("\n读不通的（样本）：");
+    for (const j of fragments.slice(0, 20)) console.log(`  ${j.statement}\n      证据：${j.evidence.slice(0, 160)}`);
   }
 }
 
