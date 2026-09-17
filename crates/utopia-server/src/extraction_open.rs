@@ -68,8 +68,20 @@ fn locate_time(chunk: &str, quote: Option<(&str, Option<(i32, i32)>)>, words: &s
         };
     }
     // 表格的一行：期数写在表头行里，不在这一行里；这一块就是这张表（分块器让表头
-    // 跟着每一块走），所以在整块里找。判据是结构的：引文是一行 `|` 开头的表格行
-    if q.trim_start().starts_with('|') {
+    // 跟着每一块走），所以在整块里找。判据是结构的：引文落在块里一行 `|` 开头的
+    // 表格行上（模型常把行首的 `| ` 抄掉，所以看块里那一行，不只看引文自己）
+    let on_table_row = match span {
+        Some((start, _)) => {
+            let start = chunk
+                .char_indices()
+                .nth(start.max(0) as usize)
+                .map_or(chunk.len(), |(b, _)| b);
+            let line_start = chunk[..start].rfind('\n').map_or(0, |i| i + 1);
+            chunk[line_start..].trim_start().starts_with('|')
+        }
+        None => q.trim_start().starts_with('|') || q.contains(" | "),
+    };
+    if on_table_row {
         return locate(chunk, words).map(|(s, _)| s);
     }
     None
@@ -772,6 +784,9 @@ mod tests {
         let row = ("| Revenue | $96,221 | $81,615 |", Some((46, 76)));
         // 期数在表头行里，不在这一行里：表格行在整块里找
         assert_eq!(locate_time(text, Some(row), "Q2 FY27"), Some(5));
+        // 模型把行首的 "| " 抄掉了：引文定位到的那一行还是表格行
+        let bare = ("Revenue | $96,221 | $81,615 |", Some((48, 76)));
+        assert_eq!(locate_time(text, Some(bare), "Q1 FY27"), Some(15));
         // 不是表格行的引文还是只认自己那句
         assert_eq!(
             locate_time(text, Some(("Revenue was up.", None)), "Q2 FY27"),
