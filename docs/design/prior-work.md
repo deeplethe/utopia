@@ -104,8 +104,9 @@ built.
    [Fader 2011]; the fact-level re-annotation of BenchIE rejected vague relation phrases outright
    [Lamarche 2024]; labelling chunks instead of tokens is one remedy [Dong 2023a]. Our
    "各地区 深入 企业" is ReVerb's second class. We keep the whole sentence as the quote, so nothing
-   is lost. *Open:* the contract states that a phrase must read on its own and carries the verb's
-   complements; the judge counts "phrase does not read alone" beside "not stated".
+   is lost; the contract states that a phrase is the verb with the words that belong to it, so that
+   the statement reads on its own, and the judge reports "reads alone" beside "not stated"
+   ([extraction](extraction.md), #743).
 2. **A triple the sentence did not assert.** OLLIE showed how many extractions are conditioned,
    attributed or hypothetical in the sentence and false without that context [Mausam 2012];
    speculation is a property of the tuple, not of the sentence [Dong 2023b]. Qualifiers hold the
@@ -136,9 +137,12 @@ built.
    first [Galárraga 2014]; the opposite failure, one referent under many strings, is the sparsity
    KGGen was built against [Mo 2025], and coreference before extraction was the largest lever on
    duplicate nodes in CORE-KG [Meher 2025]. "企业" merged across documents is a hub that means
-   nothing. A described thing exists only when a statement points at it [#736]. *Open:* a named
-   entity needs a proper name; a common noun is a described thing, scoped to its document and never
-   merged by string.
+   nothing. A described thing exists only when a statement points at it [#736]. A thing is named
+   only by a proper name or a fixed term that means the same in any document; a role or a generic
+   phrase whose referent the passage decides is described, scoped to its document and never merged
+   by string; a generic phrase in an adjunct stays words in the qualifier (#743). The gate is a
+   term gate, not a proper-name gate: a disease, a drug or an indicator merges across documents by
+   design.
 7. **A closed schema makes the model invent.** Prompting with a fixed relation set causes
    hallucination [Jiang 2024]; a model forced onto an ontology conforms almost perfectly and is
    still wrong [van Cauter 2024]; the dominant "error" of LLM extraction against gold is spans the

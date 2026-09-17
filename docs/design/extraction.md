@@ -23,6 +23,21 @@ and carry their own quote because a numbered contract mixed the ids up on dense 
 10 to 14% with ids, 2 to 7% with names) [#731]. Parsing is per item: a malformed item is counted and
 a truncated reply is repaired to its last complete item.
 
+**What is a thing, what is a statement** [#743, prior-work items 1 and 6]. A thing is named when its
+name is a proper name or a fixed term, one that means the same thing in any document (a person, an
+organization, a product, a place, a document, a law, an event; a disease, a drug, an industry, a
+product category, an indicator); it is described when it is a role or a generic phrase whose
+referent the passage decides ("the company", "patients", "各部门"), however particular it is
+there. Named things resolve across documents by name [0041]; described things exist only in their
+document and only when a statement points at them. A phrase is the verb with the words that belong
+to it, so that subject, phrase and object read as a sentence on their own, never a bare verb cut
+from a longer verb phrase; several verbs sharing one object are one statement, one verb with several
+objects is one statement per object. The object is what the verb acts on; where, how, why, with
+what and for whom go in qualifiers under the passage's own role word, a named thing mentioned there
+is still listed and the qualifier names it, and a generic phrase that appears only there stays
+words in the qualifier. These are contract rules, not server checks: the shape checks below look
+at structure, never at vocabulary.
+
 **Server checks, each a drop reason in `extraction_drops`.** Every quote must occur in the chunk
 (`quote_not_in_chunk`); every name in its quote (`name_not_in_text`); a time mention only when its
 words occur in the statement's own quote (`time_not_in_quote`), because the model otherwise attaches
@@ -73,7 +88,9 @@ qualifiers, time words and quote span, and a nod writes an open statement [0015,
 
 `scripts/bench/recall.mjs` (SEC filings, pharma, ai-timeline; Re-DocRED fetched by script and never
 used as prompt examples) scores entity-pair recall; `judge_open.mjs` has a judge model read the
-chunk and reports stated, misworded and not stated; `identity.mjs`, `govern.mjs`, `temporal.mjs`
+chunk and reports stated, misworded and not stated, and separately whether the statement reads on
+its own without the document (`alone`, the uninformative-phrase class of [prior-work](prior-work.md)
+item 1); `identity.mjs`, `govern.mjs`, `temporal.mjs`
 and the lease bench cover the other domains. Every cut reports at least three domains, two runs per
 configuration, with the judge's calibration stated; no F1 against Re-DocRED, whose gold omits true
 facts [0044]. Thresholds: not stated at most 2%, entity-pair recall no lower than before, prompt
