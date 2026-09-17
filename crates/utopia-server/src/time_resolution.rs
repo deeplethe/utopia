@@ -254,11 +254,34 @@ fn resolve_one(
             let Some(((t, p), until)) = anchor_time(anchor, ctx, earlier) else {
                 return UNRESOLVED;
             };
+            // 对着一个期间说「截至」「至」（「年末」对着报告年）：说的是期间的末，不是首。
+            // 这是形状的语义，不是认词
+            if offset.is_none()
+                && matches!(anchor, Anchor::Period { .. })
+                && matches!(interp.shape, Shape::AsOf | Shape::Until)
+            {
+                if let Some(end) = until {
+                    return place(interp.shape, Some(end), None, "B");
+                }
+            }
             let (t, until) = match offset {
                 Some(o) => {
                     let Some(moved) = shift(t, o) else {
                         return UNRESOLVED;
                     };
+                    // 以「年」「月」为单位的偏移（本年、去年、上个月）说的是那一整段：
+                    // 起止同一个桶，精度就是那个单位
+                    if matches!(o.unit, Unit::Year | Unit::Month)
+                        && matches!(interp.shape, Shape::Point | Shape::Interval)
+                    {
+                        let unit_p = if o.unit == Unit::Year {
+                            "year"
+                        } else {
+                            "month"
+                        };
+                        let start = truncate_to(moved, Some(unit_p));
+                        return place(Shape::Point, Some((start, unit_p)), None, "B");
+                    }
                     // 以「季」为单位的偏移（本季度、上季度）说的是那一整个季度，不是某一天
                     if o.unit == Unit::Quarter {
                         let Some((from, to)) = quarter_around(moved, ctx.fiscal_year_end) else {
@@ -789,6 +812,46 @@ mod tests {
         };
         let r = resolve_one(&last_quarter, &calendar, &HashMap::new());
         assert_eq!(r.from, Some(at("2026-04-01T00:00:00Z")));
+    }
+
+    #[test]
+    fn as_of_a_period_means_its_end_and_a_whole_year_is_one_bucket() {
+        let year_end = Interpretation {
+            id: 0,
+            shape: Shape::AsOf,
+            reference: Reference::Anchored {
+                anchor: Anchor::Period {
+                    name: "fiscal 2027".into(),
+                },
+                offset: None,
+            },
+            granularity: Granularity::Day,
+        };
+        let r = resolve_one(&year_end, &ctx_dated(2026, 9, 2), &HashMap::new());
+        assert_eq!((r.from, r.grade), (Some(at("2027-01-25T00:00:00Z")), "B"));
+        let whole_year = Interpretation {
+            id: 1,
+            shape: Shape::Interval,
+            reference: Reference::Anchored {
+                anchor: Anchor::Document,
+                offset: Some(Offset {
+                    count: 0,
+                    unit: Unit::Year,
+                    direction: Direction::After,
+                }),
+            },
+            granularity: Granularity::Year,
+        };
+        let r = resolve_one(&whole_year, &ctx_dated(2024, 1, 1), &HashMap::new());
+        assert_eq!(
+            (r.from, r.to, r.from_p, r.to_p),
+            (
+                Some(at("2024-01-01T00:00:00Z")),
+                Some(at("2024-01-01T00:00:00Z")),
+                Some("year"),
+                Some("year")
+            )
+        );
     }
 
     #[test]
