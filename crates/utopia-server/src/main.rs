@@ -24,6 +24,7 @@ mod ontology_index;
 mod ontology_packs;
 mod owl_import;
 mod pack_alignment;
+mod phrase_alignment;
 mod pipeline;
 mod predicate_match;
 mod query_engine;
@@ -505,6 +506,16 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
             type_alignment::align_types(st, kb_id).await
+        }
+        // 关系短语按签名绑到属性（0044 对齐的第二片）：类别词绑完排一个，属性改了再排
+        "align_phrases" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            phrase_alignment::align_phrases(st, kb_id).await
         }
         "resolve_time" => {
             let id = payload_document_id(&job.payload)?;

@@ -323,6 +323,13 @@ pub async fn create_relation_type(
     if let Some(q) = req.qualifiers.as_deref() {
         utopia_store::ontology::set_relation_qualifiers(&state.pool, kb_id, id, q).await?;
     }
+    // 多了一个属性：判成 none / undecided 的签名也许对得上了（0044 对齐第二片）
+    utopia_store::jobs::enqueue_unless_queued(
+        &state.pool,
+        "align_phrases",
+        serde_json::json!({ "kb_id": kb_id }),
+    )
+    .await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -361,6 +368,13 @@ pub async fn update_relation_type(
     if let Some(q) = req.qualifiers.as_deref() {
         utopia_store::ontology::set_relation_qualifiers(&state.pool, kb_id, id, q).await?;
     }
+    // 属性改了定义或域/值域：绑到它的签名过期，判成 none 的也许对得上了
+    utopia_store::jobs::enqueue_unless_queued(
+        &state.pool,
+        "align_phrases",
+        serde_json::json!({ "kb_id": kb_id }),
+    )
+    .await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),

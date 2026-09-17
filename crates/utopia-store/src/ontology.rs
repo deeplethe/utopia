@@ -661,7 +661,7 @@ pub async fn update_relation_type(
                 unit = CASE WHEN kind = 'attribute' THEN $9 ELSE unit END,
                 is_transitive = $10, is_symmetric = $11,
                 is_asymmetric = $12, is_irreflexive = $13,
-                inverse_of = $14, sub_property_of = $15
+                inverse_of = $14, sub_property_of = $15, updated_at = now()
          WHERE id = $2 AND kb_id = $1",
     )
     .bind(kb_id)

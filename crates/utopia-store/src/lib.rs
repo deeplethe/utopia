@@ -27,6 +27,7 @@ pub mod ontology;
 pub mod palette;
 pub mod paths;
 pub mod pending;
+pub mod phrase_bindings;
 pub mod reasoning;
 pub mod record_axis;
 pub mod resolution;

@@ -189,9 +189,8 @@ built.
     argument types [Dutta 2015]; Angeli's KBP mapping is conditioned on the type signature
     [Angeli 2015]; typed markers lift relation extraction [Ling 2012, Zhong 2021]; ODKE+ exposes only
     the type's slice of the ontology [Khorshidi 2025]; iText2KG lists typing as its missing
-    ingredient [Lairgi 2024]. Kind words bind before relation phrases [0044 cut 2]. *Open:* the
-    phrase binding reads the classes at both ends, and the (class, class) signature is part of a
-    phrase binding's key.
+    ingredient [Lairgi 2024]. Kind words bind before relation phrases [0044 cut 2]; the phrase binding reads the classes at
+    both ends and the (class, class) signature is part of its key (#PRN).
 12. **Precision is lost in the binding, not in the extraction.** Of the mapping errors in the
     three-hour KBP system, 31% were definition mismatch and 23% over-generalized rules against 15%
     open-extraction errors [Soderland 2013]; the top hundred predicates cover only 57 to 82% of an

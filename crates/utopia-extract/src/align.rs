@@ -169,7 +169,7 @@ pub fn parse_kind_word_response(
 /// 先按常规取块（第一个 `{` 到最后一个 `}`）；解不开才从第一个 `{` 取到结尾去修补。
 /// 取块与修补的分工同 `open.rs`：紧凑回复里 `}` 只在结尾出现，截断的回复要么没有 `}`，
 /// 要么最后一个 `}` 不是结尾
-fn parse_value(raw: &str) -> anyhow::Result<Value> {
+pub(crate) fn parse_value(raw: &str) -> anyhow::Result<Value> {
     let block = json_block(raw)
         .and_then(|b| serde_json::from_str::<Value>(&b).map_err(anyhow::Error::from));
     match block {
@@ -212,7 +212,7 @@ fn parse_pair(v: &Value, by_id: &HashMap<i64, &KindWordItem<'_>>) -> Option<Kind
 }
 
 /// id 是 JSON 整数；模型偶尔把它写成字符串，照数字读
-fn item_id(v: &Value) -> Option<i64> {
+pub(crate) fn item_id(v: &Value) -> Option<i64> {
     match v {
         Value::Number(n) => n.as_i64(),
         Value::String(s) => s.trim().parse().ok(),

@@ -12,6 +12,7 @@ use utopia_llm::ChatMessage;
 pub mod align;
 pub mod governor;
 pub mod open;
+pub mod phrase_align;
 pub mod time;
 
 /// Response-scoped reference to a persistent entity; database UUIDs must never enter prompts.

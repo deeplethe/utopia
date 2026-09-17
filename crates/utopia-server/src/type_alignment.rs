@@ -157,6 +157,8 @@ async fn align_types_locked(
     }
 
     let (mut bound, mut none, mut undecided, mut skipped) = (0usize, 0usize, 0usize, 0usize);
+    // 调用或解析失败的批次：这轮跳过，结束时自己再排一次，不等下一篇文档来排
+    let mut failed = 0usize;
     for batch in todo.chunks(BATCH) {
         let cands = candidates_for(state, kb_id, batch, &classes).await?;
         // 两票：第二票把候选倒过来给，防止「选第一个」这种顺序偏好冒充一致
@@ -201,6 +203,7 @@ async fn align_types_locked(
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!(%kb_id, error = %e, "类别词对齐调用失败，这一批留到下次");
+                        failed += 1;
                         continue;
                     }
                 };
@@ -208,6 +211,7 @@ async fn align_types_locked(
                 Ok(x) => x,
                 Err(e) => {
                     tracing::warn!(%kb_id, error = %e, "类别词对齐回复解析失败，这一批留到下次");
+                    failed += 1;
                     continue;
                 }
             };
@@ -299,9 +303,24 @@ async fn align_types_locked(
             }
         }
     }
-    tracing::info!(%kb_id, bound, none, undecided, skipped, "类别词对齐完成");
+    tracing::info!(%kb_id, bound, none, undecided, skipped, failed, "类别词对齐完成");
     if bound > 0 {
         state.emit_graph(kb_id);
     }
+    if failed > 0 {
+        utopia_store::jobs::enqueue_unless_queued(
+            pool,
+            "align_types",
+            serde_json::json!({ "kb_id": kb_id }),
+        )
+        .await?;
+    }
+    // 两端的类定了，短语的签名才定：短语对齐排在它后面
+    utopia_store::jobs::enqueue_unless_queued(
+        pool,
+        "align_phrases",
+        serde_json::json!({ "kb_id": kb_id }),
+    )
+    .await?;
     Ok(())
 }
