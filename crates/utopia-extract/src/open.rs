@@ -127,7 +127,8 @@ and value is set; the other is null. A sentence with no subject of its own (a di
 bullet, an item of a list) takes the subject the passage gives it: the addressee a notice \
 names for its directives, the organization a release speaks for in its bullets, the thing a \
 section is about when its heading names a thing; a heading that names a topic is not a \
-subject.\n\
+subject. A table row is not such a sentence: its subject is its row's thing or the thing the \
+caption names, as the table rule below says, and a table always states its cells.\n\
    A statement with an object links two things. phrase is how the passage says the link, \
 lowercase, in the passage's own words; do not translate it into any vocabulary of your own. It \
 is the verb with the words that belong to it, so that subject —phrase→ object reads as a \
