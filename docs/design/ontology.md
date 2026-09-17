@@ -71,8 +71,20 @@ signatures and dropped the judge to 87%, and on the NVDA releases, where 15 of 2
 bind, to 59%: the generic "value" attribute swallowed every cash-flow row. Coverage therefore
 follows the kind-word bindings and the ontology's size, not the binder. What still goes wrong is
 a phrase that carries part of the value ("下降 1.4%" bound to a change property loses its sign)
-and a table section read as a change ("changes in operating assets › accounts payable"). Nothing is materialised yet: the typed rows with `from_statement_id` are
-the next slice.
+and a table section read as a change ("changes in operating assets › accounts payable").
+
+**A bound statement is a typed fact** [0044 cut 2, #PRN2]. The typed graph is computed, never
+written by hand: after each phrase-alignment run, every live open statement under a bound signature
+becomes one `layer = 'typed'` row whose predicate is the bound property, whose ends follow the
+binding's direction, and whose value, world-axis interval, attestation and confidence are copied
+from the statement; its evidence rows and role-word qualifiers are copied too, and
+`from_statement_id` points back at the statement. A statement with a `mood` qualifier is never
+materialised. The computation is a set operation and idempotent: rows whose source no longer holds
+(the statement invalidated, the signature no longer bound, the property or direction changed) are
+invalidated, rows that are due and missing are added, rows whose binding is unchanged keep their
+id, evidence and recorded time. Typed rows that several statements produce for the same triple are
+separate rows, one per statement. On the 25-document batch the 36 bound signatures give 184
+typed rows.
 
 **Argument order is enforced, participation is guided.** A declared domain or range shapes
 candidates and never discards a fact; argument order is the key's encoding convention, so a fact
@@ -127,10 +139,10 @@ the prompt, a description is read by people and by the aligner.
 
 ## Proposed and not built
 
-- **Alignment** (0044 cut 2), the rest: typed rows carrying `from_statement_id`, materialised
-  from bound signatures and recomputed per changed signature; implication rules proposed by the
-  aligner, approved on the workbench, executed by code with cached readings (the sign of "下降
-  1.4%" is such a reading); a signature that tells a figure from words on the value side. The prototype aligner reached 14.7% and
+- **Alignment** (0044 cut 2), the rest: implication rules proposed by the aligner, approved on
+  the workbench, executed by code with cached readings (the sign of "下降 1.4%" is such a
+  reading); a signature that tells a figure from words on the value side; merging the typed rows
+  that several statements produce for one triple, with the timeline's refinement rules. The prototype aligner reached 14.7% and
   12.1% of gold recall in two runs against 15.5% for the withdrawn bound pass, so the bar for cut 2
   is parity over two clean runs [0044, #729].
 - **The workbench** (0044 cut 5): the ontology page fed by suggestions from the open graph (frequent

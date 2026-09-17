@@ -238,7 +238,9 @@ built.
     [Madhavan 2007]; error propagation from extraction into fusion is the survey's standing warning
     [Bian 2025]; the surveys ask for provenance and re-runnable stages [Weikum 2021, Hogan 2021].
     Every binding carries its two votes and a `decided_at` compared with the class's `updated_at`;
-    only stale bindings are re-decided; every statement keeps its quote and offsets.
+    only stale bindings are re-decided; every statement keeps its quote and offsets; the typed
+    rows are recomputed per changed signature and each carries the statement it was computed from
+    (#PRN2).
 
 ### Time
 
