@@ -773,7 +773,10 @@ mod tests {
         // 期数在表头行里，不在这一行里：表格行在整块里找
         assert_eq!(locate_time(text, Some(row), "Q2 FY27"), Some(5));
         // 不是表格行的引文还是只认自己那句
-        assert_eq!(locate_time(text, Some(("Revenue was up.", None)), "Q2 FY27"), None);
+        assert_eq!(
+            locate_time(text, Some(("Revenue was up.", None)), "Q2 FY27"),
+            None
+        );
     }
 
     #[test]

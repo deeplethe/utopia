@@ -135,7 +135,10 @@ fn padding_left(style: &str) -> u32 {
         }
     }
     if let Some(i) = lower.find("padding:") {
-        let rest = lower[i + "padding:".len()..].split(';').next().unwrap_or("");
+        let rest = lower[i + "padding:".len()..]
+            .split(';')
+            .next()
+            .unwrap_or("");
         let parts: Vec<&str> = rest.split_whitespace().collect();
         let left = match parts.len() {
             4 => parts.get(3),
@@ -198,7 +201,10 @@ fn grid(tbl: &Selection<'_>) -> Vec<Row> {
         let mut cells: Vec<Cell> = Vec::new();
         let mut col = 0usize;
         for cell in tr.select("td, th").iter() {
-            let style = cell.attr("style").map(|s| s.to_string()).unwrap_or_default();
+            let style = cell
+                .attr("style")
+                .map(|s| s.to_string())
+                .unwrap_or_default();
             if hidden(&style) {
                 continue;
             }
@@ -250,7 +256,11 @@ fn kind(row: &Row, headers_seen: bool, data_seen: bool, table_width: usize) -> K
         }
         if !headers_seen && !data_seen {
             // 表头和数据都还没来：靠左或跨宽的一格文字是标题，不靠左的是一根列头
-            return if wide || first.col == 0 { Kind::Caption } else { Kind::Header };
+            return if wide || first.col == 0 {
+                Kind::Caption
+            } else {
+                Kind::Header
+            };
         }
         return Kind::Section;
     }
@@ -344,7 +354,11 @@ fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Ve
                 while sections.last().is_some_and(|(d, _, _)| *d >= depth) {
                     sections.pop();
                 }
-                sections.push((depth, cell.text.trim_end_matches([':', '：']).to_string(), false));
+                sections.push((
+                    depth,
+                    cell.text.trim_end_matches([':', '：']).to_string(),
+                    false,
+                ));
             }
             Kind::Data => {
                 merge_symbols(row);
@@ -374,10 +388,18 @@ fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Ve
     // 标签列 = 第一根出现过数字的列左边的所有列；一个数字都没有的表，标签列只有最左那格。
     // 值列 = 标签列右边、数据行里出现过内容的列（表头有字但整列没数据的列不算）
     let label_end: usize = (0..width)
-        .find(|&k| data.iter().any(|(_, r)| r.covering(k).is_some_and(|c| is_numeric(&c.text))))
+        .find(|&k| {
+            data.iter()
+                .any(|(_, r)| r.covering(k).is_some_and(|c| is_numeric(&c.text)))
+        })
         .or_else(|| {
             data.iter()
-                .filter_map(|(_, r)| r.cells.iter().find(|c| !c.text.is_empty()).map(|c| c.col + c.span))
+                .filter_map(|(_, r)| {
+                    r.cells
+                        .iter()
+                        .find(|c| !c.text.is_empty())
+                        .map(|c| c.col + c.span)
+                })
                 .min()
         })
         .or_else(|| {
@@ -407,7 +429,11 @@ fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Ve
     // 一行的标签：标签列里的格子按出现顺序拼起来
     let own_label = |r: &Row| -> String {
         let mut parts: Vec<&str> = Vec::new();
-        for c in r.cells.iter().filter(|c| !c.text.is_empty() && c.col < label_end) {
+        for c in r
+            .cells
+            .iter()
+            .filter(|c| !c.text.is_empty() && c.col < label_end)
+        {
             if parts.last() != Some(&c.text.as_str()) {
                 parts.push(c.text.as_str());
             }
@@ -432,7 +458,11 @@ fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Ve
     let label_header: String = {
         let mut parts: Vec<String> = Vec::new();
         for h in &headers {
-            for c in h.cells.iter().filter(|c| !c.text.is_empty() && c.col + c.span <= label_end) {
+            for c in h
+                .cells
+                .iter()
+                .filter(|c| !c.text.is_empty() && c.col + c.span <= label_end)
+            {
                 if parts.last() != Some(&c.text) {
                     parts.push(c.text.clone());
                 }
@@ -488,13 +518,12 @@ fn collapse_spans(cols: Vec<usize>, headers: &[Row], data: &[(String, Row)]) -> 
     let mut out: Vec<Vec<usize>> = Vec::new();
     for k in cols {
         let same_as_prev = out.last().and_then(|g| g.last().copied()).is_some_and(|p| {
-            headers
-                .iter()
-                .chain(data.iter().map(|(_, r)| r))
-                .all(|r| match (r.covering(p), r.covering(k)) {
+            headers.iter().chain(data.iter().map(|(_, r)| r)).all(|r| {
+                match (r.covering(p), r.covering(k)) {
                     (Some(a), Some(b)) => a.col == b.col,
                     _ => true,
-                })
+                }
+            })
         });
         match out.last_mut() {
             Some(g) if same_as_prev => g.push(k),
@@ -529,16 +558,27 @@ mod tests {
         </table>"#;
         let md = render(html);
         assert!(
-            md.starts_with("NVIDIA CORPORATION · CONDENSED CONSOLIDATED BALANCE SHEETS · (In millions):\n"),
+            md.starts_with(
+                "NVIDIA CORPORATION · CONDENSED CONSOLIDATED BALANCE SHEETS · (In millions):\n"
+            ),
             "标题行提成表前的说明句: {md}"
         );
-        assert!(md.contains("|  | July 26, 2026 | January 25, 2026 |"), "两行列头拼成一行: {md}");
+        assert!(
+            md.contains("|  | July 26, 2026 | January 25, 2026 |"),
+            "两行列头拼成一行: {md}"
+        );
         assert!(
             md.contains("| Current assets › Accounts receivable, net | $63,059 | $38,466 |"),
             "小节折进标签、美元符并回数字: {md}"
         );
-        assert!(md.contains("| Current assets › Inventories | 31,575 | 21,403 |"), "{md}");
-        assert!(md.contains("| Total current assets | 197,412 | 125,605 |"), "合计行回到小节外: {md}");
+        assert!(
+            md.contains("| Current assets › Inventories | 31,575 | 21,403 |"),
+            "{md}"
+        );
+        assert!(
+            md.contains("| Total current assets | 197,412 | 125,605 |"),
+            "合计行回到小节外: {md}"
+        );
         assert!(!md.contains("Current assets:"), "小节行自己不再出现: {md}");
     }
 
@@ -549,8 +589,14 @@ mod tests {
                     <tr><td>Number of shares Against</td><td>1,399,727</td></tr></table>";
         let md = render(html);
         assert!(md.starts_with("a. Tench Coxe:\n"), "{md}");
-        assert!(md.contains("| Number of shares For | 15,411,252,412 |"), "{md}");
-        assert!(md.contains("| Number of shares Against | 1,399,727 |"), "{md}");
+        assert!(
+            md.contains("| Number of shares For | 15,411,252,412 |"),
+            "{md}"
+        );
+        assert!(
+            md.contains("| Number of shares Against | 1,399,727 |"),
+            "{md}"
+        );
     }
 
     #[test]
@@ -572,14 +618,16 @@ mod tests {
 
     #[test]
     fn a_closing_paren_in_its_own_cell_rejoins_the_number() {
-        let html = "<table><tr><td>Other</td><td>(5,497</td><td>)</td><td>387</td><td></td></tr></table>";
+        let html =
+            "<table><tr><td>Other</td><td>(5,497</td><td>)</td><td>387</td><td></td></tr></table>";
         let md = render(html);
         assert!(md.contains("| Other | (5,497) | 387 |"), "{md}");
     }
 
     #[test]
     fn a_dash_that_means_nothing_stays_in_its_own_cell() {
-        let html = "<table><tr><td>Other</td><td>112</td><td>—</td><td>31</td><td>—</td></tr></table>";
+        let html =
+            "<table><tr><td>Other</td><td>112</td><td>—</td><td>31</td><td>—</td></tr></table>";
         let md = render(html);
         assert!(md.contains("| Other | 112 | — | 31 | — |"), "{md}");
     }
@@ -594,14 +642,27 @@ mod tests {
             <tr><td>Dividends paid</td><td>(6,047)</td><td>(244)</td></tr></table>";
         let (_, tables) = lift_tables(html);
         assert_eq!(tables.len(), 2, "{tables:?}");
-        assert!(tables[1].starts_with("Cash flows from financing activities:\n"), "{}", tables[1]);
-        assert!(tables[1].contains("|  | Q2 FY27 | Q1 FY27 |"), "续表接着用前一张的列头: {}", tables[1]);
-        assert!(tables[1].contains("| Dividends paid | (6,047) | (244) |"), "{}", tables[1]);
+        assert!(
+            tables[1].starts_with("Cash flows from financing activities:\n"),
+            "{}",
+            tables[1]
+        );
+        assert!(
+            tables[1].contains("|  | Q2 FY27 | Q1 FY27 |"),
+            "续表接着用前一张的列头: {}",
+            tables[1]
+        );
+        assert!(
+            tables[1].contains("| Dividends paid | (6,047) | (244) |"),
+            "{}",
+            tables[1]
+        );
     }
 
     #[test]
     fn nested_tables_are_left_to_the_markdown_converter() {
-        let html = "<table><tr><td><table><tr><td>inner</td><td>1</td></tr></table></td></tr></table>";
+        let html =
+            "<table><tr><td><table><tr><td>inner</td><td>1</td></tr></table></td></tr></table>";
         let (out, tables) = lift_tables(html);
         assert!(tables.is_empty(), "{tables:?}");
         assert_eq!(out, html);
@@ -612,6 +673,9 @@ mod tests {
         let md = "before\n\nUTOPIATABLE0\n\nafter";
         let table = "cap:\n\n|  | a |\n| --- | --- |\n| x | 1 |".to_string();
         let out = restore_tables(md, &[table]);
-        assert!(out.contains("before\n\n\ncap:\n\n|  | a |\n| --- | --- |\n| x | 1 |\n\n\nafter"), "{out}");
+        assert!(
+            out.contains("before\n\n\ncap:\n\n|  | a |\n| --- | --- |\n| x | 1 |\n\n\nafter"),
+            "{out}"
+        );
     }
 }

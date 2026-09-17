@@ -164,12 +164,12 @@ mod reader_tests {
 mod blocks;
 mod chunker;
 pub mod html;
-mod table;
 pub mod mineru;
 pub mod ontology_rdf;
 mod parsers;
 pub mod provenance;
 mod reading;
+mod table;
 pub mod transcript;
 
 pub use chunker::{chunk_segments, chunk_text, chunk_with_budget, ChunkPiece, BUDGET_TOKENS};

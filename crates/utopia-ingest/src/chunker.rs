@@ -795,13 +795,32 @@ The tenant pays rent monthly.
             table(30)
         );
         let pieces = chunk_with_budget(&text, 120);
-        let with_table: Vec<&ChunkPiece> = pieces.iter().filter(|p| p.text.contains("| --- |")).collect();
+        let with_table: Vec<&ChunkPiece> = pieces
+            .iter()
+            .filter(|p| p.text.contains("| --- |"))
+            .collect();
         assert!(with_table.len() >= 2, "表该被切成几块: {}", pieces.len());
         for p in &with_table {
-            assert!(p.text.contains("NVIDIA CORPORATION"), "每块都带公司名: {}", p.text);
-            assert!(p.text.contains("STATEMENTS OF INCOME"), "每块都带报表名: {}", p.text);
-            assert!(p.text.contains("(Unaudited)"), "每块都带最后一段: {}", p.text);
-            assert!(!p.text.contains("Prose that is long"), "长段落不是说明句: {}", p.text);
+            assert!(
+                p.text.contains("NVIDIA CORPORATION"),
+                "每块都带公司名: {}",
+                p.text
+            );
+            assert!(
+                p.text.contains("STATEMENTS OF INCOME"),
+                "每块都带报表名: {}",
+                p.text
+            );
+            assert!(
+                p.text.contains("(Unaudited)"),
+                "每块都带最后一段: {}",
+                p.text
+            );
+            assert!(
+                !p.text.contains("Prose that is long"),
+                "长段落不是说明句: {}",
+                p.text
+            );
         }
     }
 
