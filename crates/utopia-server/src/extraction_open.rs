@@ -375,8 +375,9 @@ pub(crate) async fn run_open(
                 },
                 None => None,
             };
-            // 短语就是值、短语就是主语：表格丢了列头时模型的两种写法（#743 的财报长文
-            // 里各占一类），不是陈述。只比字面，不认词
+            // 短语就是值、短语就是主语：表格丢了列头（或没有说明句）时模型的两种写法
+            // （#743 的财报长文里各占一类）。陈述照落——值和主语都在，信息没丢——只记一笔
+            // 让它可量；只比字面，不认词
             let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
             if value.is_some_and(|v| same(v, phrase)) {
                 drop_signal(
@@ -384,23 +385,20 @@ pub(crate) async fn run_open(
                     kb_id,
                     document_id,
                     reason::PHRASE_IS_VALUE,
-                    "the phrase is the value itself",
+                    "kept, but the phrase is the value itself",
                     Some(phrase),
                 )
                 .await;
-                continue;
-            }
-            if same(&s.subject, phrase) {
+            } else if same(&s.subject, phrase) {
                 drop_signal(
                     state,
                     kb_id,
                     document_id,
                     reason::PHRASE_IS_SUBJECT,
-                    "the phrase is the subject's own name",
+                    "kept, but the phrase is the subject's own name",
                     Some(phrase),
                 )
                 .await;
-                continue;
             }
             let value_json;
             let fact_object = match (object, value) {

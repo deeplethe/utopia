@@ -40,10 +40,11 @@ pub mod reason {
     /// 陈述、属性或名字指着一个回复里不存在的实体编号或已知句柄：跳过这一条
     pub const UNKNOWN_REF: &str = "unknown_ref";
     /// 短语就是那个值（「director nominees —ten (10)→ ten (10)」）：表格丢了列头时模型
-    /// 的写法之一，不是一条陈述。纯结构判断：两串字去掉首尾空白后相同
+    /// 的写法之一。陈述照落（主语和值都在，信息没丢），记一笔让它可量。
+    /// 纯结构判断：两串字去掉首尾空白后相同
     pub const PHRASE_IS_VALUE: &str = "phrase_is_value";
     /// 短语就是主语的名字（「实物商品网上零售额 —实物商品网上零售额→ 127878亿元」）：
-    /// 同上，另一种写法
+    /// 同上，另一种写法，同样照落
     pub const PHRASE_IS_SUBJECT: &str = "phrase_is_subject";
 }
 
