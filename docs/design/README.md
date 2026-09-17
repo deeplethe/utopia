@@ -105,6 +105,9 @@ it.
 | 0044 | 2026-09-16 | [The ontology is a view over what documents say](../decisions/0044-the-ontology-is-a-view-over-what-documents-say.md) | ontology | proposed |
 | 0045 | 2026-09-16 | [A time mention is resolved against its document](../decisions/0045-a-time-mention-is-resolved-against-its-document.md) | time | proposed |
 
+[prior-work.md](prior-work.md) is not a domain: it places each layer in the literature it stands on
+and lists the pitfalls taken from it, with what is still open.
+
 0016 is a schedule and a convention rather than a design; its convention (the PR that implements a
 record updates its status line) lives in the [decisions README](../decisions/README.md), and its
 lines are tracked in the domain files they belong to. [pipeline.md](../pipeline.md) still describes
