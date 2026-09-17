@@ -51,7 +51,8 @@ the server by locating the quote, never taken from the model. The remaining code
 `malformed_item`, `truncated_reply` and `object_missing`; a phrase that is the value itself or the
 subject's own name is kept and counted (`phrase_is_value`, `phrase_is_subject`, the two shapes a
 model writes for a table row that lost its heading or its caption; the subject and the value are
-there, so nothing is lost, #744); the 28 codes of the typed path went with it [#736]. A drop is a row, never silence; the table is cleared per document when extraction starts
+there, so nothing is lost, #744); the 28 codes of the typed path went with it [#736]. A drop is a
+row, never silence; the table is cleared per document when extraction starts
 and shown per document in the Library, apart from Review [0001, 0005].
 
 **What it writes** (see [ledger](ledger.md)). Open statements as `facts` rows with `layer = 'open'`,

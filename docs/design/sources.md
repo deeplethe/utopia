@@ -35,7 +35,7 @@ every table that follows it; a row is never split; headings become a breadcrumb 
 overlap; chunk text is verbatim slices so a quote is found by offset; a document is re-chunked on
 its next reprocess [0039].
 
-**Tables** [#744, prior-work item 27]. An HTML table is rendered from the DOM before the Markdown
+**Tables** [#744, prior-work item 26]. An HTML table is rendered from the DOM before the Markdown
 converter sees it, by structure alone: cells hidden by style are skipped, spanning cells are laid on
 a grid, columns empty in every row go, a cell holding only a symbol ("$", ")") rejoins the number
 beside it. Rows are classified by what they hold: a lone cell before any header or data is a
