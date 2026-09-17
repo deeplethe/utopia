@@ -123,7 +123,11 @@ what the thing is, in two or three words, as the passage says it. A name never c
 2. \"s\" lists the statements, one entry each: [subject, phrase, object, value, qualifiers, \
 when, ended, quote]. subject and object are names, written exactly as listed in \"e\" or in \
 the list of things already recorded, with the same spelling every time. Exactly one of object \
-and value is set; the other is null.\n\
+and value is set; the other is null. A sentence with no subject of its own (a directive, a \
+bullet, an item of a list) takes the subject the passage gives it: the addressee a notice \
+names for its directives, the organization a release speaks for in its bullets, the thing a \
+section is about when its heading names a thing; a heading that names a topic is not a \
+subject.\n\
    A statement with an object links two things. phrase is how the passage says the link, \
 lowercase, in the passage's own words; do not translate it into any vocabulary of your own. It \
 is the verb with the words that belong to it, so that subject —phrase→ object reads as a \
@@ -164,7 +168,10 @@ to Brightway Builders for $2 million\" gives city council —awarded→ paving c
 of Hillside School\" gives Jane Doe —is headmaster of→ Hillside School with {\"title\": \
 \"interim headmaster\"}. A statement with a value takes qualifiers the same way: \"the plant \
 cut water use by 12% compared to 2019\" gives the plant \"cut water use\" = \"12%\" with \
-{\"compared to\": \"2019\"}. qualifiers is null when there are none.\n\
+{\"compared to\": \"2019\"}. A statement the passage does not assert as a fact but directs, \
+plans, expects, forecasts or makes conditional carries a qualifier keyed \"mood\" whose value \
+is the passage's own words for that (\"要\", \"should\", \"is expected to\", \"if the merger \
+closes\"); the phrase stays as written. qualifiers is null when there are none.\n\
 4. When a description has another thing folded into it, also write the statement that unfolds \
 it: \"hospitals accredited by the Joint Commission\" also gives Joint Commission —accredited→ \
 hospitals. Do not unfold a description that only names what it belongs to or is about: \"the \
