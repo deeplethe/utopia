@@ -62,13 +62,16 @@ bind. A signature the votes disagree on is `undecided` for the alignment queue o
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings` and go stale when the property they
 bound to changes or a property is added; a person's decision is never overwritten by the agent. On
-the 25-document batch with a hand-written ontology of 14 classes and 28 properties, 423
-signatures cover 861 statements: 90 bind (covering 311 statements),
-305 bind to nothing, 28 split the votes; a judge reading the chunk finds 80.5%
-of the resulting typed facts stated by the document, 16.8% worded wrongly and
-2.7% not stated, most of the wrong ones a copula phrase ("was") whose objects mix
-figures with words, and a phrase that carries part of the value ("下降 1.4%" bound to a change
-property loses its sign). Nothing is materialised yet: the typed rows with `from_statement_id` are
+the 25-document batch with a hand-written ontology of 14 classes and 28 properties, and 60 of
+400 kind words bound, 423 signatures cover 861 statements: 36 bind (184 statements), 110 bind to
+nothing, 1 splits the votes and 276 have no admissible property because an end is unbound; a
+judge reading the chunk finds 95% of the resulting typed facts stated by the document, 4% worded
+wrongly and 1% not stated. Offering every property to an unbound end raised coverage to 85
+signatures and dropped the judge to 87%, and on the NVDA releases, where 15 of 230 kind words
+bind, to 59%: the generic "value" attribute swallowed every cash-flow row. Coverage therefore
+follows the kind-word bindings and the ontology's size, not the binder. What still goes wrong is
+a phrase that carries part of the value ("下降 1.4%" bound to a change property loses its sign)
+and a table section read as a change ("changes in operating assets › accounts payable"). Nothing is materialised yet: the typed rows with `from_statement_id` are
 the next slice.
 
 **Argument order is enforced, participation is guided.** A declared domain or range shapes
