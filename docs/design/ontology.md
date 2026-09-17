@@ -49,7 +49,7 @@ classes of context neighbours, interleaved and never scored together; a class in
 subtree applied on its own, a cross-axis class sent to a person, each pair acknowledged once) runs
 from the ontology page; extraction no longer enqueues it [0001, 0016, #736].
 
-**A relation phrase binds to a property per signature** [0044 cut 2, #PRN]. A signature is a
+**A relation phrase binds to a property per signature** [0044 cut 2, #751]. A signature is a
 phrase as the documents wrote it, the class of its subject and the class of its object, or "value"
 when the object is a figure, a title or a status; the classes come from the kind-word bindings, and
 a side whose kind word is bound to no class is its own signature. Each signature is decided once,
