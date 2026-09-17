@@ -14,6 +14,10 @@
 //! `blocks` / `chunker`，它们本来就让说明句和表头跟着每一块走。
 //!
 //! 只处理最外层且不含内层表的表；套着的表留给 htmd 原路。
+//!
+//! docx、电子表格和 csv 的表不经过 DOM：解析器把格子收成网格交给 [`render_grid`]，之后的
+//! 分类与渲染和 HTML 表一模一样。电子表格和 csv 的第一排（至少两格有字的那排）按惯例是
+//! 列头，哪怕列头是年份这种数字。
 
 use dom_query::{Document, Selection};
 
@@ -317,7 +321,50 @@ fn depth_of(cell: &Cell) -> u32 {
 /// 一张表 → 说明句（可选）+ 带真表头的 Markdown 表，连同它用的列头（给续表接着用）。
 /// 表里什么都没有时返回 None。
 fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Vec<String>)> {
-    let mut rows = grid(tbl);
+    render_rows(grid(tbl), inherited, None)
+}
+
+/// 别的解析器用的入口：一行是若干 (文字, 跨几列, 左内边距 pt)。`first_is_header` 为真时，
+/// 第一排至少两格有字的行按列头算（电子表格、csv 的惯例），其余行照常分类。
+pub(crate) fn render_grid(
+    rows: &[Vec<(String, usize, u32)>],
+    first_is_header: bool,
+) -> Option<String> {
+    let rows: Vec<Row> = rows
+        .iter()
+        .map(|cells| {
+            let mut col = 0usize;
+            let mut out = Vec::with_capacity(cells.len());
+            for (text, span, pad) in cells {
+                let span = (*span).max(1);
+                out.push(Cell {
+                    text: clean(text),
+                    span,
+                    pad: *pad,
+                    col,
+                });
+                col += span;
+            }
+            Row {
+                cells: out,
+                width: col,
+            }
+        })
+        .collect();
+    let forced = first_is_header
+        .then(|| {
+            rows.iter()
+                .position(|r| r.cells.iter().filter(|c| !c.text.is_empty()).count() >= 2)
+        })
+        .flatten();
+    render_rows(rows, &[], forced).map(|(md, _)| md)
+}
+
+fn render_rows(
+    mut rows: Vec<Row>,
+    inherited: &[String],
+    forced_header: Option<usize>,
+) -> Option<(String, Vec<String>)> {
     let width = rows.iter().map(|r| r.width).max().unwrap_or(0);
     if width == 0 {
         return None;
@@ -333,8 +380,26 @@ fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Ve
     // (标签路径, 该行)
     let mut data: Vec<(String, Row)> = Vec::new();
     let (mut headers_seen, mut data_seen) = (false, false);
-    for row in rows.iter_mut() {
-        match kind(row, headers_seen, data_seen, width) {
+    for (i, row) in rows.iter_mut().enumerate() {
+        let filled = row.cells.iter().filter(|c| !c.text.is_empty()).count();
+        let k = match forced_header {
+            Some(h) if i == h => Kind::Header,
+            // 列头之后的行是记录，哪怕一格数字都没有；只填了一个数字的行（序号列）也是记录，
+            // 只填了一个词的行才按小节算
+            Some(h)
+                if i > h
+                    && (filled >= 2
+                        || row
+                            .cells
+                            .iter()
+                            .find(|c| !c.text.is_empty())
+                            .is_some_and(|c| is_numeric(&c.text))) =>
+            {
+                Kind::Data
+            }
+            _ => kind(row, headers_seen, data_seen, width),
+        };
+        match k {
             Kind::Skip => {}
             Kind::Caption => {
                 if let Some(c) = row.cells.iter().find(|c| !c.text.is_empty()) {
@@ -380,6 +445,11 @@ fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Ve
                 data_seen = true;
             }
         }
+    }
+    // 全是列头没有一行数据的表不存在：一格数字都没有的表，第一排是列头，其余是数据行
+    if data.is_empty() && headers.len() >= 2 {
+        let rest = headers.split_off(1);
+        data.extend(rest.into_iter().map(|r| (String::new(), r)));
     }
     if data.is_empty() && headers.is_empty() {
         return None;
