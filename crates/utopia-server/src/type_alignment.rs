@@ -80,7 +80,34 @@ pub async fn align_types(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
+    // 一个库同时只跑一份：抽完每篇、建每个类都会排一次，排队去重只挡「排队中」的，
+    // 后一个开跑时前一个还在跑就并行了——实测种 14 个类跑出 14 份并行任务，把模型端点
+    // 打出 502。拿不到锁的直接退出，正在跑的那份会看到同一批词；本轮没判到的下一轮再来
+    let mut guard = pool.acquire().await?;
+    let locked: bool =
+        sqlx::query_scalar("SELECT pg_try_advisory_lock(hashtext('align_types'), hashtext($1))")
+            .bind(kb_id.to_string())
+            .fetch_one(&mut *guard)
+            .await?;
+    if !locked {
+        tracing::info!(%kb_id, "类别词对齐已有一份在跑，这次跳过");
+        return Ok(());
+    }
+    let result = align_types_locked(state, kb_id, &settings, &client).await;
+    let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext('align_types'), hashtext($1))")
+        .bind(kb_id.to_string())
+        .execute(&mut *guard)
+        .await;
+    result
+}
 
+async fn align_types_locked(
+    state: &AppState,
+    kb_id: Uuid,
+    settings: &utopia_core::models::LlmSettings,
+    client: &utopia_llm::LlmClient,
+) -> anyhow::Result<()> {
+    let pool = &state.pool;
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
     let by_id: HashMap<Uuid, &EntityType> = classes.iter().map(|c| (c.id, c)).collect();
     let by_key: HashMap<&str, &EntityType> = classes.iter().map(|c| (c.key.as_str(), c)).collect();
@@ -168,7 +195,7 @@ pub async fn align_types(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
             }
             let messages = build_kind_word_messages(&items);
             let reply =
-                match chat_retrying_rate_limits_at(state, &settings, &client, &messages, Some(0.0))
+                match chat_retrying_rate_limits_at(state, settings, client, &messages, Some(0.0))
                     .await
                 {
                     Ok(r) => r,
