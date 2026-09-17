@@ -306,7 +306,12 @@ second; direction is before or after.\n\
 the context is named exactly as listed. One whose bounds the words state here carries them: a \
 heading \"Three months ended June 30, 2019\" is {\"kind\": \"period\", \"name\": \"Three months \
 ended June 30, 2019\", \"to\": {\"y\": 2019, \"m\": 6, \"d\": 30}}, with \"from\" only when the \
-words state it.\n\
+words state it. Words that name a period only relatively (the whole year, the end of the year, \
+the start of the month, this quarter) are not a period: they are anchored to the document with \
+count 0 and that unit; the end of it takes shape \"as_of\" or \"until\", the start \"since\", the \
+whole \"interval\". A count inside something the sentence names (a week of a trial, a month of a \
+programme) anchors to that thing's dated mention when the sentence gives one, otherwise it is \
+{\"kind\": \"none\"}: it is not counted from the document.\n\
    {\"kind\": \"none\"} — the words give nothing to anchor to: a duration (\"ten years\"), an \
 ending without a date (\"formerly\", \"no longer\"), a vague time (\"recently\").\n\
 3. granularity is the rung the words reach: \"year\", \"month\", \"day\", \"hour\", \"minute\" \
