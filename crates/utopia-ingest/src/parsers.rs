@@ -82,11 +82,7 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
                     Some(c) => c.0.push(' '),
                     None => out.push(' '),
                 },
-                "w:br" | "w:cr" => {
-                    if cell.is_none() {
-                        out.push('\n');
-                    }
-                }
+                "w:br" | "w:cr" if cell.is_none() => out.push('\n'),
                 _ => {}
             },
             Ok(Event::End(e)) => match e.name().as_ref() {
