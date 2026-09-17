@@ -35,8 +35,11 @@ from a longer verb phrase; several verbs sharing one object are one statement, o
 objects is one statement per object. The object is what the verb acts on; where, how, why, with
 what and for whom go in qualifiers under the passage's own role word, a named thing mentioned there
 is still listed and the qualifier names it, and a generic phrase that appears only there stays
-words in the qualifier. These are contract rules, not server checks: the shape checks below look
-at structure, never at vocabulary.
+words in the qualifier. In a table, a cell is a statement about its row's thing whose phrase is
+the column heading; when the heading names a time it is `when` instead, the statement is about
+the thing the caption names and the phrase is the row label with its section path, and a unit the
+caption gives is a qualifier [#744]. These are contract rules, not server checks: the shape checks
+below look at structure, never at vocabulary.
 
 **Server checks, each a drop reason in `extraction_drops`.** Every quote must occur in the chunk
 (`quote_not_in_chunk`); every name in its quote (`name_not_in_text`); a time mention only when its
@@ -45,8 +48,10 @@ one time to unrelated sentences; every subject must be a listed thing (`unknown_
 object becomes a literal value with a signal (`object_undeclared`); a string one entity already
 claims in the document is not a name of another (`name_claimed_by_another`). Offsets are computed on
 the server by locating the quote, never taken from the model. The remaining codes are
-`malformed_item`, `truncated_reply` and `object_missing`; the 28 codes of the typed path went with
-it [#736]. A drop is a row, never silence; the table is cleared per document when extraction starts
+`malformed_item`, `truncated_reply` and `object_missing`; a phrase that is the value itself or the
+subject's own name is kept and counted (`phrase_is_value`, `phrase_is_subject`, the two shapes a
+model writes for a table row that lost its heading or its caption; the subject and the value are
+there, so nothing is lost, #744); the 28 codes of the typed path went with it [#736]. A drop is a row, never silence; the table is cleared per document when extraction starts
 and shown per document in the Library, apart from Review [0001, 0005].
 
 **What it writes** (see [ledger](ledger.md)). Open statements as `facts` rows with `layer = 'open'`,

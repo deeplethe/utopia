@@ -286,7 +286,26 @@ built.
     writes nothing. `attested_to` means true as of the last attestation, a now-relative value that
     is stored as an explicit timestamp and evaluated when asked [Clifford 1997]; a fact whose last
     attestation is old is stale, not false [Soulard 2025].
-26. **Precision is not confidence, and vague is not coarse.** An indeterminate instant is a set of
+26. **A table is a structure, not a paragraph.** The financial-report question-answering sets
+    feed a table to the model one row at a time with its row and column headers written out
+    [Chen 2021, Zhu 2021], and the pretrained table models flatten it without losing which row and
+    column a cell sits in [Herzig 2020]; the standard for turning cells into one faithful sentence
+    is ToTTo [Parikh 2020]; the statistical-report tables with hierarchical headers have their own
+    dataset, whose difficulty is "complex hierarchical indexing" [Cheng 2022, Zhao 2022]; how a
+    table is serialised, ordered and partitioned changes what a model reads from it [Sui 2024], a
+    change of structure with the same content costs accuracy until the structure is normalised
+    [Liu 2023], a whole table is not fed to a model at all when it is large [Chen 2024c], and the
+    survey of the field is [Fang 2024]; which column is the subject and which are properties is
+    the semantic table interpretation task [Cafarella 2008, SemTab]. Under #743 the earnings release lost its column headings between the HTML converter
+    and the chunker and the model wrote the period as the phrase. Tables are now rendered from the
+    DOM by structure, one row per line under its real headings, the section path folded into the
+    label, the caption run kept with every chunk ([sources](sources.md), #744); a heading that
+    names a time is `when`, a heading that names a change between periods stays the phrase; a
+    phrase equal to the value or to the subject is kept and counted. *Open:*
+    the DOCX, PDF and spreadsheet parsers render their tables the same way; the paragraph units of
+    the NVDA cross-domain corpus are recut from rendered rows with their headings, and the reference
+    facts carry the period; a check that a cell statement under a period column carries `when`.
+27. **Precision is not confidence, and vague is not coarse.** An indeterminate instant is a set of
     chronons with a distribution, and comparing two of them needs a stated semantics
     [Dyreson 1998]; confidence and bitemporality are separate axes [Chekol 2018]; "early 2019" is a
     modifier with a calibrated width, not a coarser precision [Tissot 2019]; grading a date by the
@@ -448,6 +467,21 @@ by two layers is listed once.
 - [Xiao 2018] Xiao et al. Ontology-Based Data Access: A Survey. IJCAI 2018. https://www.ijcai.org/proceedings/2018/777
 - [Hogan 2021] Hogan et al. Knowledge Graphs. ACM Computing Surveys 54(4), 2021. https://arxiv.org/abs/2003.02320
 - [Weikum 2021] Weikum, Dong, Razniewski, Suchanek. Machine Knowledge: Creation and Curation of Comprehensive Knowledge Bases. Foundations and Trends in Databases 10(2–4), 2021. https://arxiv.org/abs/2009.11564
+
+### Tables
+
+- [Chen 2021] Chen et al. FinQA: A Dataset of Numerical Reasoning over Financial Data. EMNLP 2021. https://aclanthology.org/2021.emnlp-main.300/
+- [Zhu 2021] Zhu et al. TAT-QA: A Question Answering Benchmark on a Hybrid of Tabular and Textual Content in Finance. ACL-IJCNLP 2021. https://aclanthology.org/2021.acl-long.254/
+- [Parikh 2020] Parikh et al. ToTTo: A Controlled Table-To-Text Generation Dataset. EMNLP 2020. https://aclanthology.org/2020.emnlp-main.89/
+- [Herzig 2020] Herzig et al. TaPas: Weakly Supervised Table Parsing via Pre-training. ACL 2020. https://aclanthology.org/2020.acl-main.398/
+- [Cheng 2022] Cheng et al. HiTab: A Hierarchical Table Dataset for Question Answering and Natural Language Generation. ACL 2022. https://aclanthology.org/2022.acl-long.78/
+- [Zhao 2022] Zhao et al. MultiHiertt: Numerical Reasoning over Multi Hierarchical Tabular and Textual Data. ACL 2022. https://aclanthology.org/2022.acl-long.454/
+- [Cafarella 2008] Cafarella, Halevy, Wang, Wu, Zhang. WebTables: Exploring the Power of Tables on the Web. VLDB 2008. https://www.vldb.org/pvldb/vol1/1453916.pdf
+- [SemTab] Semantic Web Challenge on Tabular Data to Knowledge Graph Matching, ISWC, since 2019. https://www.cs.ox.ac.uk/isg/challenges/sem-tab/
+- [Sui 2024] Sui et al. Table Meets LLM: Can Large Language Models Understand Structured Table Data? A Benchmark and Empirical Study. WSDM 2024. https://arxiv.org/abs/2305.13062
+- [Liu 2023] Liu et al. Rethinking Tabular Data Understanding with Large Language Models. 2023. https://arxiv.org/abs/2312.16702
+- [Chen 2024c] Chen et al. TableRAG: Million-Token Table Understanding with Language Models. NeurIPS 2024. https://arxiv.org/abs/2410.04739
+- [Fang 2024] Fang et al. Large Language Models (LLMs) on Tabular Data: Prediction, Generation, and Understanding. A Survey. TMLR 2024. https://arxiv.org/abs/2402.17944
 
 ### Time: tagging and normalization
 

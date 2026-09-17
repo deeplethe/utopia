@@ -35,6 +35,22 @@ every table that follows it; a row is never split; headings become a breadcrumb 
 overlap; chunk text is verbatim slices so a quote is found by offset; a document is re-chunked on
 its next reprocess [0039].
 
+**Tables** [#744, prior-work item 27]. An HTML table is rendered from the DOM before the Markdown
+converter sees it, by structure alone: cells hidden by style are skipped, spanning cells are laid on
+a grid, columns empty in every row go, a cell holding only a symbol ("$", ")") rejoins the number
+beside it. Rows are classified by what they hold: a lone cell before any header or data is a
+caption line, a row of words with no label column is a header row, a lone label after the headers
+is a section, a label followed by figures is data. Header rows are stacked per column into one
+heading ("Three Months Ended July 26, 2026"); sections fold into the labels of the rows under them
+("Current assets › Accounts receivable, net"), with indentation read from leading empty cells or
+the label's padding, and a section ends at a row of its own depth only once it has had a deeper
+child; caption lines become a paragraph before the table that ends with a colon. The chunker then
+does what it already did: the caption and the header travel with every piece, and a run of up to
+five short paragraphs before a table is its caption, so a statement's chunk names the report, the
+unit and the period. Nested tables and the tables of other parsers still take the converter's
+path with the first row promoted to header. Measured on the NVDA earnings release: 52 chunks
+became 32, none of them a table without its header.
+
 **Origin and anchor.** `chunks.origin` (stated, ocr, transcribed, described), `origin_model`, and an
 `anchor` whose shape is checked per origin (page and box; start, end and speakers; page and image or
 part); the packer never mixes origins in one chunk; a described block is its own chunk with the
@@ -85,8 +101,8 @@ indexed and never extracted (`sources.config.extract`) [0036 d7].
   anchor in the interface, opening the page, image or recording [0040].
 - Feishu and Confluence connectors with a block-tree renderer and sampled versions [0013].
 - An external parser behind the block model for PDF layout; evidence naming a table cell or an image
-  region; real Markdown tables from the DOCX, PDF, spreadsheet and CSV parsers; header rows promoted
-  by content [0039].
+  region; real Markdown tables from the DOCX, PDF, spreadsheet and CSV parsers, rendered the way
+  HTML tables now are [0039].
 - Backup and restore (#712), a 100k-document benchmark (#713) [0016 E].
 
 ## Open questions
