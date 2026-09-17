@@ -50,7 +50,7 @@ below marks these records from this note; their own status lines predate it and 
 `current`: every decision in the record holds. `partly superseded (by NNNN)`: a later record, or
 the note above, overturned some of its decisions and the rest hold; the record's own revision notes
 say which. `superseded (by NNNN)`: none of its decisions hold. `proposed`: the direction is accepted
-and the record is not yet on `dev` (0034 has no code; 0043 sits in PR #699; 0044 and 0045 sit in
+and the record is not yet on `dev` (0034 has no code; 0043 was in PR #699, closed on 2026-09-17 to re-land on the open graph after alignment; 0044 and 0045 sit in
 PRs #710 and #724, and 0044's cut 1 has landed ahead of the record). The record's own status line
 is the source of truth for what is built; this table only adds whether a later record has overtaken
 it.
@@ -101,7 +101,7 @@ it.
 | 0040 | 2026-09-13 | [A chunk says where its words came from](../decisions/0040-a-chunk-says-where-its-words-came-from.md) | sources | current |
 | 0041 | 2026-09-13 | [A name is a claim about an entity](../decisions/0041-a-name-is-a-claim-about-an-entity.md) | identity | current |
 | 0042 | 2026-09-13 | [The chat loop is a runner with hooks](../decisions/0042-the-chat-loop-is-a-runner-with-hooks.md) | chat-and-mcp | current |
-| 0043 | 2026-09-14 | Every review queue is governed (in PR #699, not yet in this directory) | governance | proposed |
+| 0043 | 2026-09-14 | Every review queue is governed (was PR #699, closed 2026-09-17; re-lands after 0044 cut 2) | governance | proposed |
 | 0044 | 2026-09-16 | [The ontology is a view over what documents say](../decisions/0044-the-ontology-is-a-view-over-what-documents-say.md) | ontology | proposed |
 | 0045 | 2026-09-16 | [A time mention is resolved against its document](../decisions/0045-a-time-mention-is-resolved-against-its-document.md) | time | proposed |
 
