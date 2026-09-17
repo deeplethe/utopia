@@ -15,7 +15,7 @@
 //!
 //! ```json
 //! {"e": [["Harbor Bridge", "bridge", 1], ["farmland", "land", 0]],
-//!  "s": [["city council of Westbrook", "awarded", "paving contract", null, {"to": "Brightway Builders", "amount": "$2 million"}, "March 4, 2011", null, "The city council of Westbrook awarded the paving contract for the Harbor Bridge to Brightway Builders for $2 million on March 4, 2011."]],
+//!  "s": [["The city council of Westbrook awarded the paving contract for the Harbor Bridge to Brightway Builders for $2 million on March 4, 2011.", "city council of Westbrook", "awarded", "paving contract", null, {"to": "Brightway Builders", "amount": "$2 million"}, "March 4, 2011", null]],
 //!  "n": [["Brightway Builders", "Brightway", "Brightway Builders, known locally as Brightway, is based in Port Ellen."]]}
 //! ```
 //!
@@ -25,8 +25,8 @@
 //!   （"the Harbor Treaty signed on May 3, 1998" 叫 "Harbor Treaty"），也不带数字
 //!   （"about 40 hectares of farmland" 是 "farmland" 加一条 `area` = "about 40 hectares"）。
 //!   没有 id。
-//! - `s`：`[主语名, 短语, 宾语名或 null, 字面值或 null, 限定词对象或 null, 何时或 null,
-//!   何时终止或 null, 引文]`。主语与宾语是 `e` 里（或提示词已知清单里）的名字，拼写一模
+//! - `s`：`[引文, 主语名, 短语, 宾语名或 null, 字面值或 null, 限定词对象或 null, 何时或 null,
+//!   何时终止或 null]`。引文在第一格：模型先抄下原句，再从那句写陈述（先引后述）。主语与宾语是 `e` 里（或提示词已知清单里）的名字，拼写一模
 //!   一样。宾语与字面值恰有一个（解析层不裁，两个都给调用方看）。一句话里超过两方参与、
 //!   或者链接带着数额、头衔、条件、比较时，主要的一对进主宾，其余进限定词，键是原文里
 //!   说明其角色的一两个词，值是列出的东西的名字或原文的话。何时/终止照原文的字抄，
@@ -106,7 +106,7 @@ You read one passage of a document and write down what it states, in the passage
 Output one JSON object and nothing else, shaped like this:\n\
 \n\
 {\"e\": [[\"name or description\", \"kind word\", 1]],\n\
- \"s\": [[\"subject name\", \"relation phrase as written\", \"object name\", null, {\"to\": \"name of a listed thing\", \"amount\": \"$2 million\"}, \"when it holds or happened, as written\", \"when it ended, as written\", \"the sentence that states it, verbatim\"]],\n\
+ \"s\": [[\"the sentence that states it, verbatim\", \"subject name\", \"relation phrase as written\", \"object name\", null, {\"to\": \"name of a listed thing\", \"amount\": \"$2 million\"}, \"when it holds or happened, as written\", \"when it ended, as written\"]],\n\
  \"n\": [[\"name as listed in e\", \"another name\", \"the sentence that uses it, verbatim\"]]}\n\
 \n\
 1. \"e\" lists the things the passage talks about, one entry each: [name, kind, named]. Every \
@@ -120,9 +120,11 @@ particular it is here: \"the company\", \"the enterprises visited\", \"patients\
 \"the northern wing\" are described things, named by the words that say what they are. kind is \
 what the thing is, in two or three words, as the passage says it. A name never carries a figure: \"about 40 hectares of farmland\" is the thing \
 \"farmland\" with a statement \"area\" = \"about 40 hectares\". List each thing once.\n\
-2. \"s\" lists the statements, one entry each: [subject, phrase, object, value, qualifiers, \
-when, ended, quote]. subject and object are names, written exactly as listed in \"e\" or in \
-the list of things already recorded, with the same spelling every time. Exactly one of object \
+2. \"s\" lists the statements, one entry each: [quote, subject, phrase, object, value, \
+qualifiers, when, ended]. quote comes first: the sentence of the passage that states it, copied \
+verbatim, one sentence, and when two sentences are needed, the one that carries the link; the \
+rest of the entry is written from that sentence. subject and object are names, written exactly \
+as listed in \"e\" or in the list of things already recorded, with the same spelling every time. Exactly one of object \
 and value is set; the other is null.\n\
    A statement with an object links two things. phrase is how the passage says the link, \
 lowercase, in the passage's own words; do not translate it into any vocabulary of your own. It \
@@ -178,9 +180,8 @@ the coating are part of the description.\n\
 words that say when it stopped, each copied exactly as written (\"March 4, 2011\", \"去年冬天\", \
 \"by the end of next season\"). Never compute, convert or normalise a date, and never write one \
 the passage does not. Each is null when the passage gives none.\n\
-6. quote is the sentence of the passage that states it, copied verbatim: one sentence, and when \
-two sentences are needed, the one that carries the link. Every \"s\" and \"n\" entry carries its \
-own quote.\n\
+6. Every \"s\" and \"n\" entry carries its own quote, copied verbatim from the passage: the first \
+slot of an \"s\" entry, the last slot of an \"n\" entry.\n\
 7. \"n\" lists other names, one entry each: [name as listed, other name, quote] — a short form, \
 a former name, a spelling in another script that this passage uses for a thing in \"e\" or a \
 thing already recorded. Only names actually written in the passage; never a pronoun or a \
@@ -193,7 +194,7 @@ passage states nothing, output {\"e\":[],\"s\":[],\"n\":[]}.\n\
 Example. The passage \"The city council awarded the paving contract to Brightway Builders for \
 $2 million on March 4, 2011.\" gives:\n\
 {\"e\": [[\"city council\", \"council\", 0], [\"paving contract\", \"contract\", 0], [\"Brightway Builders\", \"builders\", 1]],\n\
- \"s\": [[\"city council\", \"awarded\", \"paving contract\", null, {\"to\": \"Brightway Builders\", \"amount\": \"$2 million\"}, \"March 4, 2011\", null, \"The city council awarded the paving contract to Brightway Builders for $2 million on March 4, 2011.\"]],\n\
+ \"s\": [[\"The city council awarded the paving contract to Brightway Builders for $2 million on March 4, 2011.\", \"city council\", \"awarded\", \"paving contract\", null, {\"to\": \"Brightway Builders\", \"amount\": \"$2 million\"}, \"March 4, 2011\", null]],\n\
  \"n\": []}";
 
 /// 构造开放抽取的两条消息：常量系统消息 + `Document:` / 开头 / 已知实体 / `Passage:`。
@@ -366,24 +367,24 @@ fn parse_entity(arr: &[Value]) -> Option<OpenEntity> {
     Some(OpenEntity { name, kind, named })
 }
 
-/// `[subject, phrase, object, value, qualifiers, when, ended, quote]`。八格都得在：短了的
+/// `[quote, subject, phrase, object, value, qualifiers, when, ended]`。八格都得在：短了的
 /// 多半是截断修补切出来的半条，引文都没有，收下也没法核对。主语与短语缺不得；其余格
 /// 放错了类型只是那一格为 None。宾语与字面值同时有则两个都留给调用方
 fn parse_statement(arr: &[Value]) -> Option<OpenStatement> {
     if arr.len() < 8 {
         return None;
     }
-    let subject = text_at(arr, 0)?.to_string();
-    let phrase = text_at(arr, 1)?.to_string();
+    let subject = text_at(arr, 1)?.to_string();
+    let phrase = text_at(arr, 2)?.to_string();
     Some(OpenStatement {
         subject,
         phrase,
-        object: opt_text(&arr[2]),
-        value: literal(&arr[3]),
-        qualifiers: qualifiers(&arr[4]),
-        when: opt_text(&arr[5]),
-        ended: opt_text(&arr[6]),
-        quote: opt_text(&arr[7]),
+        object: opt_text(&arr[3]),
+        value: literal(&arr[4]),
+        qualifiers: qualifiers(&arr[5]),
+        when: opt_text(&arr[6]),
+        ended: opt_text(&arr[7]),
+        quote: opt_text(&arr[0]),
     })
 }
 
@@ -459,12 +460,12 @@ mod tests {
     /// 一份完整的紧凑回复：本块列出的与已知清单里的名字、两种限定词、起止时间、别名
     const FULL: &str = r#"{"e": [["city council", "council", 0], ["paving contract", "contract", 0],
            ["Brightway Builders", "builders", 1], ["northern wing", "wing", 0]],
-     "s": [["city council", "awarded", "paving contract", null, {"to": "Brightway Builders", "amount": "$2 million"}, "March 4, 2011", null,
-            "The city council awarded the paving contract to Brightway Builders for $2 million on March 4, 2011."],
-           ["Nebula Technologies Inc.", "leased", "northern wing", null, {"from": "Harbor Estates", "term": "ten years"}, "from 2010", "until the end of 2019",
-            "Nebula (formerly Starlight Labs) leased the northern wing from Harbor Estates from 2010 until the end of 2019."],
-           ["paving contract", "worth", null, "$2 million", null, null, null,
-            "The city council awarded the paving contract to Brightway Builders for $2 million on March 4, 2011."]],
+     "s": [["The city council awarded the paving contract to Brightway Builders for $2 million on March 4, 2011.",
+            "city council", "awarded", "paving contract", null, {"to": "Brightway Builders", "amount": "$2 million"}, "March 4, 2011", null],
+           ["Nebula (formerly Starlight Labs) leased the northern wing from Harbor Estates from 2010 until the end of 2019.",
+            "Nebula Technologies Inc.", "leased", "northern wing", null, {"from": "Harbor Estates", "term": "ten years"}, "from 2010", "until the end of 2019"],
+           ["The city council awarded the paving contract to Brightway Builders for $2 million on March 4, 2011.",
+            "paving contract", "worth", null, "$2 million", null, null, null]],
      "n": [["Nebula Technologies Inc.", "Starlight Labs", "Nebula (formerly Starlight Labs) leased the northern wing from Harbor Estates from 2010 until the end of 2019."]]}"#;
 
     /// serde_json 的对象按键排序（没开 preserve_order），限定词的顺序不承载意义
@@ -551,11 +552,11 @@ mod tests {
     }
 
     /// 截在一条陈述的限定词之后：修补退到那个 `}`，留下的半条不够八格，计入 skipped
-    /// 而不是收成一条没引文的陈述
+    /// 而不是收成一条只有引文的陈述
     #[test]
     fn a_half_statement_left_by_the_repair_is_counted() {
         let raw = r#"{"e": [["A", "thing", 1]],
-            "s": [["A", "is", null, "b", null, null, null, "A is b."], ["A", "was", null, "c", {"at": "home"}, "in 20"#;
+            "s": [["A is b.", "A", "is", null, "b", null, null, null], ["A was c.", "A", "was", null, "c", {"at": "home"}, "in 20"#;
         let x = parse_open_response(raw).unwrap();
         assert!(x.truncated);
         assert_eq!(x.statements.len(), 1);
@@ -567,7 +568,7 @@ mod tests {
     #[test]
     fn a_cut_off_reply_without_any_closing_brace_is_still_repaired() {
         let raw = r#"{"e": [["A", "thing", 1]],
-            "s": [["A", "is", null, "b", null, null, null, "A is b."], ["A", "was", null, "c", nu"#;
+            "s": [["A is b.", "A", "is", null, "b", null, null, null], ["A was c.", "A", "was", null, "c", nu"#;
         let x = parse_open_response(raw).unwrap();
         assert!(x.truncated);
         assert_eq!(x.entities.len(), 1);
@@ -586,8 +587,8 @@ mod tests {
     #[test]
     fn a_statement_with_seven_slots_is_skipped_and_counted() {
         let raw = r#"{"e": [["A", "thing", 1]],
-            "s": [["A", "is", null, "b", null, null, null],
-                  ["A", "is", null, "b", null, null, null, "A is b."]]}"#;
+            "s": [["A is b.", "A", "is", null, "b", null, null],
+                  ["A is b.", "A", "is", null, "b", null, null, null]]}"#;
         let x = parse_open_response(raw).unwrap();
         assert_eq!(x.statements.len(), 1);
         assert_eq!(x.statements[0].quote.as_deref(), Some("A is b."));
@@ -599,8 +600,8 @@ mod tests {
     #[test]
     fn a_number_in_the_value_slot_becomes_text() {
         let raw = r#"{"e": [["a", "k", 1]],
-            "s": [["a", "cut water use", null, 12, null, null, null, "q"],
-                  ["a", "ratio", null, 1.5, null, null, null, "q"]]}"#;
+            "s": [["q", "a", "cut water use", null, 12, null, null, null],
+                  ["q", "a", "ratio", null, 1.5, null, null, null]]}"#;
         let x = parse_open_response(raw).unwrap();
         assert_eq!(x.statements[0].value.as_deref(), Some("12"));
         assert_eq!(x.statements[1].value.as_deref(), Some("1.5"));
@@ -626,10 +627,10 @@ mod tests {
     #[test]
     fn malformed_items_are_counted_not_fatal() {
         let raw = r#"{"e": [["A", "thing", 1], [""], [5, "x"], "not an array", []],
-            "s": [["A", "is", null, "b", null, null, null, "A is b."],
-                  [null, "is", null, "b", null, null, null, "A is b."],
-                  ["A", "  ", null, "b", null, null, null, "A is b."],
-                  ["A", "is", null, "b", null, null, null],
+            "s": [["A is b.", "A", "is", null, "b", null, null, null],
+                  ["A is b.", null, "is", null, "b", null, null, null],
+                  ["A is b.", "A", "  ", null, "b", null, null, null],
+                  ["A is b.", "A", "is", null, "b", null, null],
                   {"subject": "A"}],
             "n": [["A", "Ay", "A is b."], ["A"], [{}, "Ay", "q"], ["", "Ay", "q"]]}"#;
         let x = parse_open_response(raw).unwrap();
@@ -645,7 +646,7 @@ mod tests {
     #[test]
     fn a_wrong_type_in_an_optional_slot_is_null_not_malformed() {
         let raw = r#"{"e": [["A", "thing", 1]],
-            "s": [["A", "is", 3, true, "not an object", [2019], {"y": 2020}, 7]]}"#;
+            "s": [[7, "A", "is", 3, true, "not an object", [2019], {"y": 2020}]]}"#;
         let x = parse_open_response(raw).unwrap();
         assert_eq!(x.statements.len(), 1);
         let s = &x.statements[0];
@@ -662,7 +663,7 @@ mod tests {
     #[test]
     fn qualifiers_take_strings_and_numbers_and_drop_the_rest() {
         let raw = r#"{"e": [["a", "k", 1]],
-            "s": [["a", "cut water use", null, "12%", {"compared to": "2019", "at": "Harbor Estates", "by": 3, "ratio": 1.5, "flag": true, "who": null, "list": ["x"], "": "x", "blank": "  "}, null, null, "q"]]}"#;
+            "s": [["q", "a", "cut water use", null, "12%", {"compared to": "2019", "at": "Harbor Estates", "by": 3, "ratio": 1.5, "flag": true, "who": null, "list": ["x"], "": "x", "blank": "  "}, null, null]]}"#;
         let x = parse_open_response(raw).unwrap();
         assert_eq!(
             by_key(x.statements[0].qualifiers.clone()),
@@ -680,7 +681,7 @@ mod tests {
     #[test]
     fn every_string_is_trimmed() {
         let raw = r#"{"e": [["  A  ", " thing ", 1]],
-            "s": [[" A ", " is ", " B ", null, {" at ": " home "}, " in 2019 ", " until 2020 ", " A is B. "]],
+            "s": [[" A is B. ", " A ", " is ", " B ", null, {" at ": " home "}, " in 2019 ", " until 2020 "]],
             "n": [[" A ", " Ay ", " A is B. "]]}"#;
         let x = parse_open_response(raw).unwrap();
         assert_eq!(x.entities[0].name, "A");
@@ -702,7 +703,7 @@ mod tests {
     #[test]
     fn a_statement_with_both_object_and_value_is_passed_through() {
         let raw = r#"{"e": [["A", "thing", 1], ["B", "thing", 1]],
-            "s": [["A", "is", "B", "b", null, null, null, "A is b."]]}"#;
+            "s": [["A is b.", "A", "is", "B", "b", null, null, null]]}"#;
         let x = parse_open_response(raw).unwrap();
         assert_eq!(x.statements.len(), 1);
         assert_eq!(x.statements[0].object.as_deref(), Some("B"));
@@ -773,7 +774,7 @@ mod tests {
         assert!(system.contains("copied verbatim"));
         assert!(system.contains("write nothing about them"));
         assert!(system.contains(
-            "\"s\": [[\"city council\", \"awarded\", \"paving contract\", null, {\"to\": \"Brightway Builders\""
+            "\"s\": [[\"The city council awarded the paving contract to Brightway Builders for $2 million on March 4, 2011.\", \"city council\", \"awarded\", \"paving contract\", null, {\"to\": \"Brightway Builders\""
         ));
 
         let doc = user.find("Document: annual-report.txt").unwrap();
