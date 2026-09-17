@@ -32,6 +32,7 @@ mod readers;
 mod retrieval;
 mod rss_full_content;
 mod state;
+mod time_resolution;
 mod time_text;
 mod type_resolution;
 mod webdav;
@@ -492,6 +493,11 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 "向量索引就绪"
             );
             Ok(())
+        }
+        // 时间提及按文档解析（0045）：抽完一篇排一个，重排一次就是重新解析
+        "resolve_time" => {
+            let id = payload_document_id(&job.payload)?;
+            time_resolution::resolve_document(st, id).await
         }
         "resolve_types" => {
             let kb_id: Uuid = job

@@ -253,7 +253,7 @@ fn json_tail(raw: &str) -> Option<&str> {
 /// 结尾。这里每条记录是数组，限定词全是 null 的回复里可能一个 `}` 都没有，只认 `}`
 /// 就是整块作废。所以回退点是最后一个 `]` 或 `}`，谁靠后用谁；括号是否在字符串里
 /// 由 `close_brackets` 判断
-fn repair_truncated_compact(json: &str) -> Option<String> {
+pub(crate) fn repair_truncated_compact(json: &str) -> Option<String> {
     let mut cut = json.len();
     for _ in 0..64 {
         let idx = json[..cut].rfind([']', '}'])?;

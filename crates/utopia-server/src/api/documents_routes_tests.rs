@@ -306,9 +306,10 @@ async fn fallback_restore_and_other_ingest_dates_do_not_change() -> anyhow::Resu
     assert_eq!(status, StatusCode::OK, "{response}");
     let docs = f.created_docs(&response).await?;
     assert_eq!(docs.len(), 3);
+    // 上传时刻不是文档的日期（0045 决定 3，#714）：没有日期就是没有日期
     for doc in &docs {
-        assert_eq!(doc.doc_time_source, "upload_time");
-        assert_eq!(doc.doc_time, Some(doc.created_at));
+        assert_eq!(doc.doc_time_source, "none");
+        assert_eq!(doc.doc_time, None);
     }
     // A pre-existing, dated body with upload_time must retain that historical fallback on restoration.
     let body = b"2024-02-29\nHistorical announcement";

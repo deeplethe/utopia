@@ -1116,6 +1116,14 @@ pub async fn decide_pending(
                 done.snapshot,
             )
             .await;
+            // 点头落下的开放陈述带着时间词：按文档重排一次时间解析（0045），
+            // 幂等，同一篇排着就不重复
+            let _ = utopia_store::jobs::enqueue_unless_queued(
+                &state.pool,
+                "resolve_time",
+                json!({ "document_id": done.document_id }),
+            )
+            .await;
             state.emit_pending(kb_id);
             state.emit_review(kb_id);
             state.emit_graph(kb_id);

@@ -277,6 +277,8 @@ fn snapshot(v: &PendingFactView) -> serde_json::Value {
 
 pub struct Confirmed {
     pub fact_id: Uuid,
+    /// 那句记忆所在的文档：点头之后按它重排时间解析（0045）
+    pub document_id: Uuid,
     /// false = 图上已有同一条活事实，这次只补了证据
     pub created: bool,
     /// 时态对账拿不准、进了 `fact_conflicts` 的条数。开放陈述不对账，恒为 0
@@ -395,6 +397,7 @@ pub async fn confirm(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Confirme
         .await?;
     Ok(Confirmed {
         fact_id,
+        document_id: document_of(pool, v.chunk_id).await?,
         created,
         conflicts,
         snapshot: snapshot(&v),
@@ -506,7 +509,13 @@ async fn confirm_open(
                 "a time word is the document's text and its char offset in the chunk",
             ));
         };
-        crate::time_mentions::record(pool, kb_id, fact_id, v.chunk_id, text, char_start).await?;
+        // 来自陈述的哪个槽；0062 之前记下的项没有这一字段，它们都是 when
+        let role = t
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("when");
+        crate::time_mentions::record(pool, kb_id, fact_id, v.chunk_id, text, char_start, role)
+            .await?;
     }
     sqlx::query("DELETE FROM pending_facts WHERE id = $1")
         .bind(v.id)
@@ -514,6 +523,7 @@ async fn confirm_open(
         .await?;
     Ok(Confirmed {
         fact_id,
+        document_id: document_of(pool, v.chunk_id).await?,
         created,
         conflicts: 0,
         snapshot: snapshot(v),
@@ -533,6 +543,16 @@ fn json_items(v: Option<&serde_json::Value>) -> impl Iterator<Item = &serde_json
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
+}
+
+/// 一块所在的文档。
+async fn document_of(pool: &PgPool, chunk_id: Uuid) -> AppResult<Uuid> {
+    Ok(
+        sqlx::query_scalar("SELECT document_id FROM chunks WHERE id = $1")
+            .bind(chunk_id)
+            .fetch_one(pool)
+            .await?,
+    )
 }
 
 /// 人拒绝：记进 `rejected_facts`（下一轮重抽先查它），从队列里拿掉。

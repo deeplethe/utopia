@@ -93,7 +93,15 @@ pub struct Document {
     pub status: String,
     pub error: Option<String>,
     pub doc_time: Option<DateTime<Utc>>,
+    /// `doc_time` 从哪来：`content`（正文里读出）/ `source`（来源系统给的：发布时间、
+    /// 归档日期）/ `none`（没有日期）。上传时刻与文件修改时刻都不是文档的日期
+    /// （0045 决定 3，#714）：老值 `upload_time` / `file_mtime` 读作没有日期，见
+    /// [`Document::dated_at`]
     pub doc_time_source: String,
+    /// 文档的时间语境（0045 决定 3）：它自己的日期、它定义的期间与历法、叙述设下的锚点。
+    /// 服务端边抽取边填；`time_context_at` 是最近一次写下它的时刻
+    pub time_context: Option<serde_json::Value>,
+    pub time_context_at: Option<DateTime<Utc>>,
     /// 图谱抽取状态：none → queued → extracting → done | failed
     pub graph_status: String,
     /// 抽取失败原因（失败时才有）。与 error 分列——那列归解析管道，
@@ -116,6 +124,17 @@ pub struct Document {
     pub reader_needed: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Document {
+    /// 文档自己的日期：只认正文或来源系统给的（`content` / `source`）。上传、同步、
+    /// 抽取的时刻是记录时间，不是文档的日期（0045 决定 3，#714）——别的来源一律 `None`
+    pub fn dated_at(&self) -> Option<DateTime<Utc>> {
+        match self.doc_time_source.as_str() {
+            "content" | "source" => self.doc_time,
+            _ => None,
+        }
+    }
 }
 
 /// 摄入来源（"来源即文件夹"：容器 + 定时同步）。

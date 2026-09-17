@@ -34,7 +34,7 @@ use utopia_store::pending::{Outcome, Proposal};
 use uuid::Uuid;
 
 /// 文档日期只在它来自内容或来源系统时才算证据日期（与 `temporal::DATED_AT` 同一口径）。
-fn dated_at(doc: &Document) -> Option<chrono::DateTime<chrono::Utc>> {
+pub(crate) fn dated_at(doc: &Document) -> Option<chrono::DateTime<chrono::Utc>> {
     if matches!(doc.doc_time_source.as_str(), "content" | "source") {
         doc.doc_time
     } else {
@@ -438,15 +438,14 @@ pub(crate) async fn run_open(
                 }
             }
             // 时间词：起与止各是一条提及，必须原样在这条陈述的引文里
-            let mut time_words: Vec<(&str, i32)> = Vec::new();
-            for words in [s.when.as_deref(), s.ended.as_deref()]
+            let mut time_words: Vec<(&str, i32, &str)> = Vec::new();
+            for (role, words) in [("when", s.when.as_deref()), ("ended", s.ended.as_deref())]
                 .into_iter()
-                .flatten()
-                .map(str::trim)
-                .filter(|w| !w.is_empty())
+                .filter_map(|(role, words)| Some((role, words?.trim())))
+                .filter(|(_, w)| !w.is_empty())
             {
                 match locate_time(&chunk.text, quote, words) {
-                    Some(start) => time_words.push((words, start)),
+                    Some(start) => time_words.push((words, start, role)),
                     None => {
                         drop_signal(
                             state,
@@ -479,7 +478,9 @@ pub(crate) async fn run_open(
                 let time_json = serde_json::Value::Array(
                     time_words
                         .iter()
-                        .map(|(text, start)| serde_json::json!({ "text": text, "char_start": start }))
+                        .map(|(text, start, role)| {
+                            serde_json::json!({ "text": text, "char_start": start, "role": role })
+                        })
                         .collect(),
                 );
                 let outcome = utopia_store::pending::propose(
@@ -542,9 +543,11 @@ pub(crate) async fn run_open(
                 )
                 .await?;
             }
-            for (words, start) in &time_words {
-                utopia_store::time_mentions::record(pool, kb_id, fact_id, chunk.id, words, *start)
-                    .await?;
+            for (words, start, role) in &time_words {
+                utopia_store::time_mentions::record(
+                    pool, kb_id, fact_id, chunk.id, words, *start, role,
+                )
+                .await?;
             }
             statement_count += 1;
         }
@@ -648,6 +651,13 @@ pub(crate) async fn run_open(
     utopia_store::documents::set_graph_status(pool, document_id, "done").await?;
     state.emit_document(kb_id, document_id);
     state.emit_graph(kb_id);
+    // 时间词的解析是它后面的任务（0045）：文档时间上下文 + 每个提及的解释 + 算区间
+    utopia_store::jobs::enqueue_unless_queued(
+        pool,
+        "resolve_time",
+        serde_json::json!({ "document_id": document_id }),
+    )
+    .await?;
     // 队列里多了东西才叫醒人：Review 的计数与对话里那张确认卡都靠这一声
     if pending_count > 0 {
         tracing::info!(%document_id, pending_count, "记忆抽出的陈述进了待确认队列");

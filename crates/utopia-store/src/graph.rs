@@ -942,6 +942,51 @@ pub async fn insert_open_statement(
     Ok((id, true))
 }
 
+/// 把解算结果写到一条开放陈述的世界轴上（0045 决定 2：模型读，代码算）。
+///
+/// 只改 `layer = 'open'` 且活着的行——WHERE 里写死，不靠调用方检查；类型化的行照旧走
+/// [`insert_fact_inner`] 那道门（谓词的时间语义、去重、时间线），作废的行是历史，不改。
+/// 值先按精度截断（[`truncate_to`]），存的值与精度说同一句话，数据库的 CHECK 才放行。
+/// 结束端的三种状态与 [`Validity`] 同一张表：`(None, None)` 仍在持续、
+/// `(None, Some("unknown"))` 结束了不知哪天、`(Some(t), Some(精度))` 某时结束。
+/// 结束了不知哪天的要有自己的锚点（`facts_ended_unknown_has_anchor`，#393）：说出结束的
+/// 就是这条陈述自己的文档，锚点取 `attested_from`；其余两种状态把 `attested_to` 清空
+///
+/// 没有这一行、它不是开放行、或它已作废：一行不改，返回 `not_an_open_statement`
+pub async fn set_open_validity(
+    pool: &PgPool,
+    fact_id: Uuid,
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    from_precision: Option<&str>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
+    to_precision: Option<&str>,
+) -> AppResult<()> {
+    let from = from.map(|t| truncate_to(t, from_precision));
+    let to = to.map(|t| truncate_to(t, to_precision));
+    let done = sqlx::query(
+        "UPDATE facts
+            SET valid_from = $2, valid_from_precision = $3,
+                valid_to = $4, valid_to_precision = $5,
+                attested_to = CASE WHEN $4 IS NULL AND $5 = 'unknown'
+                                   THEN COALESCE(attested_to, attested_from) END
+          WHERE id = $1 AND layer = 'open' AND invalidated_at IS NULL",
+    )
+    .bind(fact_id)
+    .bind(from)
+    .bind(from_precision)
+    .bind(to)
+    .bind(to_precision)
+    .execute(pool)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Err(AppError::invalid(
+            "not_an_open_statement",
+            "only a live open statement takes its valid time from resolution",
+        ));
+    }
+    Ok(())
+}
+
 /// `proposed`：模型在这一块里实际提议的谓词。命中本体时它等于 key，
 /// 本体外的谓词不落到关系上时，它是唯一还留着原意的东西——事实行上只剩
 /// "有关联"，原文说的"runs on"就靠这里活下来。

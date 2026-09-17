@@ -153,9 +153,16 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
         )
         .await?;
         let (winter_start, _) = span_of(TEXT_A, "last winter");
-        let mention =
-            time_mentions::record(&pool, f.kb, fact, f.chunk_a, "last winter", winter_start)
-                .await?;
+        let mention = time_mentions::record(
+            &pool,
+            f.kb,
+            fact,
+            f.chunk_a,
+            "last winter",
+            winter_start,
+            "when",
+        )
+        .await?;
 
         #[derive(sqlx::FromRow)]
         struct Row {
@@ -335,8 +342,16 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
             ("last winter", winter_start)
         );
         assert_eq!(
-            time_mentions::record(&pool, f.kb, fact, f.chunk_a, "last winter", winter_start)
-                .await?,
+            time_mentions::record(
+                &pool,
+                f.kb,
+                fact,
+                f.chunk_a,
+                "last winter",
+                winter_start,
+                "when",
+            )
+            .await?,
             mention,
             "同一位置再记一次回的是同一行"
         );

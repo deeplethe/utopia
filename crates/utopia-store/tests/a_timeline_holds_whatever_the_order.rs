@@ -92,7 +92,8 @@ async fn arrive_on(
     subject: Uuid,
     value: &str,
     from: Option<&str>,
-    doc: Option<(chrono::DateTime<chrono::Utc>, &str)>,
+    // (文档的日期, doc_time_source)；没有日期的文档是 (None, "none")（0045 决定 3）
+    doc: Option<(Option<chrono::DateTime<chrono::Utc>>, &str)>,
     confidence: f32,
     reconcile: bool,
 ) -> anyhow::Result<Uuid> {
@@ -123,7 +124,7 @@ async fn arrive_on(
         .bind(value)
         .execute(pool)
         .await?;
-        validity = validity.attested(Some(doc_time));
+        validity = validity.attested(doc_time);
         chunk = Some(c);
     }
     let object = json!({ "value": value });
@@ -255,7 +256,8 @@ async fn extracting_the_same_values_again_changes_nothing() -> anyhow::Result<()
     Ok(())
 }
 
-/// Undated upload: documents.create stores doc_time = now(), doc_time_source = 'upload_time'.
+/// Undated upload: the document writers store doc_time NULL, doc_time_source = 'none'
+/// (0045 decision 3); the upload time is recorded time and never a document date.
 #[tokio::test]
 async fn an_undated_upload_is_not_a_document_date() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
@@ -263,14 +265,13 @@ async fn an_undated_upload_is_not_a_document_date() -> anyhow::Result<()> {
     };
     let pool = PgPool::connect(&url).await?;
     let f = seed(&pool).await?;
-    let now = chrono::Utc::now();
     let bare = arrive_on(
         &pool,
         &f,
         f.lease,
         "BBHQ1",
         None,
-        Some((now, "upload_time")),
+        Some((None, "none")),
         0.9,
         true,
     )
@@ -281,7 +282,7 @@ async fn an_undated_upload_is_not_a_document_date() -> anyhow::Result<()> {
         f.lease,
         "HPBB1",
         Some("2021-01-01"),
-        Some((t("2021-01-01"), "content")),
+        Some((Some(t("2021-01-01")), "content")),
         0.9,
         true,
     )
@@ -324,7 +325,7 @@ async fn a_dated_value_with_no_start_ends_at_the_next_start_after_its_date() -> 
         f.lease,
         "BBHQ1",
         None,
-        Some((t("2020-08-13"), "content")),
+        Some((Some(t("2020-08-13")), "content")),
         0.9,
         true,
     )
@@ -335,7 +336,7 @@ async fn a_dated_value_with_no_start_ends_at_the_next_start_after_its_date() -> 
         f.lease,
         "HPBB1",
         Some("2016-05-16"),
-        Some((t("2016-05-16"), "content")),
+        Some((Some(t("2016-05-16")), "content")),
         0.9,
         true,
     )
@@ -346,7 +347,7 @@ async fn a_dated_value_with_no_start_ends_at_the_next_start_after_its_date() -> 
         f.lease,
         "NEWCO",
         Some("2021-01-01"),
-        Some((t("2021-01-01"), "content")),
+        Some((Some(t("2021-01-01")), "content")),
         0.9,
         true,
     )

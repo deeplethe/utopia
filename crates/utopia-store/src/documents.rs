@@ -89,7 +89,7 @@ async fn create_with_time_source(
     sqlx::query_as(
         "INSERT INTO documents (id, kb_id, filename, mime, size_bytes, sha256, source_id,
                                 doc_time, doc_time_source, external_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10) RETURNING *",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *",
     )
     .bind(Uuid::now_v7())
     .bind(kb_id)
@@ -99,10 +99,11 @@ async fn create_with_time_source(
     .bind(sha256)
     .bind(source_id)
     .bind(doc_time)
+    // 没有日期就是没有日期：上传的时刻是记录时间，不是文档的日期（0045 决定 3，#714）
     .bind(if doc_time.is_some() {
         time_source
     } else {
-        "upload_time"
+        "none"
     })
     .bind(external_key)
     .fetch_one(pool)
@@ -131,7 +132,7 @@ pub async fn create_with_version_and_processing(
     let document: Document = sqlx::query_as(
         "INSERT INTO documents (id, kb_id, filename, mime, size_bytes, sha256, source_id,
                                 doc_time, doc_time_source, external_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10) RETURNING *",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *",
     )
     .bind(Uuid::now_v7())
     .bind(kb_id)
@@ -141,11 +142,8 @@ pub async fn create_with_version_and_processing(
     .bind(sha256)
     .bind(source_id)
     .bind(doc_time)
-    .bind(if doc_time.is_some() {
-        "source"
-    } else {
-        "upload_time"
-    })
+    // 没有日期就是没有日期：同步的时刻是记录时间，不是文档的日期（0045 决定 3，#714）
+    .bind(if doc_time.is_some() { "source" } else { "none" })
     .bind(external_key)
     .fetch_one(&mut *tx)
     .await
@@ -369,7 +367,7 @@ pub async fn upsert_source_document_tx(
     let document: Document = sqlx::query_as(
         "INSERT INTO documents (id, kb_id, filename, mime, size_bytes, sha256, source_id,
                                 doc_time, doc_time_source, external_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, now()), $9, $10) RETURNING *",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *",
     )
     .bind(Uuid::now_v7())
     .bind(kb_id)
@@ -379,11 +377,8 @@ pub async fn upsert_source_document_tx(
     .bind(sha256)
     .bind(source_id)
     .bind(doc_time)
-    .bind(if doc_time.is_some() {
-        "source"
-    } else {
-        "upload_time"
-    })
+    // 没有日期就是没有日期：同步的时刻是记录时间，不是文档的日期（0045 决定 3，#714）
+    .bind(if doc_time.is_some() { "source" } else { "none" })
     .bind(external_key)
     .fetch_one(&mut **tx)
     .await
@@ -616,6 +611,39 @@ pub async fn adopt_external_key(pool: &PgPool, id: Uuid, external_key: &str) -> 
         .bind(external_key)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+/// 文档的时间语境（0045 决定 3）：它自己的日期、它定义的期间与历法、叙述设下的锚点。
+/// 服务端边抽取边填、整份覆盖；`time_context_at` 记最近一次写下它的时刻，后来的重新解算
+/// 拿它当输入
+pub async fn set_time_context(
+    pool: &PgPool,
+    id: Uuid,
+    context: &serde_json::Value,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE documents SET time_context = $2, time_context_at = now(), updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(context)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 文档自己的日期，从正文里读出来的（0045 决定 3）：`doc_time_source = 'content'`。
+/// 只有正文或来源系统给的日期算文档的日期（[`Document::dated_at`]）；上传时刻不进这里
+pub async fn set_content_date(pool: &PgPool, id: Uuid, date: DateTime<Utc>) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE documents SET doc_time = $2, doc_time_source = 'content', updated_at = now()
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(date)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

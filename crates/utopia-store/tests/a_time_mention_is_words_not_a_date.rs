@@ -109,7 +109,8 @@ async fn a_time_mention_resolves_inside_the_chunk_and_sets_no_date() -> anyhow::
             byte_start as i32, char_start,
             "中文里字节偏移与字符偏移不同"
         );
-        let id = time_mentions::record(&pool, f.kb, fact, f.chunk, words, char_start).await?;
+        let id =
+            time_mentions::record(&pool, f.kb, fact, f.chunk, words, char_start, "when").await?;
 
         // 字与偏移在块里对得上：按字符数到那里，取同样多的字，得到的就是记下的字
         let (stored_text, stored_start): (String, i32) =
@@ -159,6 +160,35 @@ async fn a_time_mention_resolves_inside_the_chunk_and_sets_no_date() -> anyhow::
         let mentions = time_mentions::for_facts(&pool, &[fact]).await?;
         assert_eq!(mentions[&fact].len(), 1);
         assert_eq!(mentions[&fact][0].chunk_id, f.chunk);
+        assert_eq!(mentions[&fact][0].role, "when");
+        // 刚记下的字还没有读法：解释与解算都空着
+        let m = &mentions[&fact][0];
+        assert!(m.shape.is_none() && m.reference.is_none() && m.granularity.is_none());
+        assert!(m.grade.is_none() && m.resolved_from.is_none() && m.resolved_to.is_none());
+
+        // 起与止各是一条提及：同一处字换一个槽是另一行，同一个槽再记一次是同一行
+        let ended =
+            time_mentions::record(&pool, f.kb, fact, f.chunk, words, char_start, "ended").await?;
+        assert_ne!(ended, id);
+        assert_eq!(
+            time_mentions::record(&pool, f.kb, fact, f.chunk, words, char_start, "when").await?,
+            id
+        );
+        let mentions = time_mentions::for_facts(&pool, &[fact]).await?;
+        assert_eq!(
+            mentions[&fact]
+                .iter()
+                .map(|m| m.role.as_str())
+                .collect::<Vec<_>>(),
+            ["ended", "when"]
+        );
+        // 槽只有这两个
+        assert!(
+            time_mentions::record(&pool, f.kb, fact, f.chunk, words, char_start, "as_of")
+                .await
+                .is_err(),
+            "the ledger takes only when / ended"
+        );
         Ok::<(), anyhow::Error>(())
     }
     .await;
