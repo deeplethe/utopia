@@ -9,6 +9,7 @@ use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use serde::Deserialize;
 use utopia_llm::ChatMessage;
 
+pub mod align;
 pub mod governor;
 pub mod open;
 pub mod time;

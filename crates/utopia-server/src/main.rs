@@ -34,6 +34,7 @@ mod rss_full_content;
 mod state;
 mod time_resolution;
 mod time_text;
+mod type_alignment;
 mod type_resolution;
 mod webdav;
 
@@ -495,6 +496,16 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
             Ok(())
         }
         // 时间提及按文档解析（0045）：抽完一篇排一个，重排一次就是重新解析
+        // 类别词绑到类（0044 对齐的第一片）：库级任务，抽完一篇排一个，本体改了再排
+        "align_types" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            type_alignment::align_types(st, kb_id).await
+        }
         "resolve_time" => {
             let id = payload_document_id(&job.payload)?;
             time_resolution::resolve_document(st, id).await

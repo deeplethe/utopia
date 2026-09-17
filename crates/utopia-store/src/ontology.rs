@@ -193,7 +193,7 @@ pub async fn update_entity_type(
     validate_shape(shape)?;
     let res = sqlx::query(
         "UPDATE entity_types SET label = $3, color = COALESCE($4, color), shape = $5,
-                description = $6
+                description = $6, updated_at = now()
          WHERE id = $2 AND kb_id = $1",
     )
     .bind(kb_id)
@@ -892,7 +892,8 @@ pub async fn update_type_from_import(
          SET label = $3,
              -- 空描述不覆盖已有的：上游可能没写 rdfs:comment，而本地可能
              -- 已经被人按自己的语料调过，那份调整比空值有价值
-             description = CASE WHEN $4 = '' THEN description ELSE $4 END
+             description = CASE WHEN $4 = '' THEN description ELSE $4 END,
+             updated_at = now()
          WHERE kb_id = $1 AND iri = $2 RETURNING id",
     )
     .bind(kb_id)
@@ -1496,7 +1497,7 @@ pub async fn adopt_iri_onto_key(
     iri: &str,
 ) -> AppResult<Option<Uuid>> {
     let row: Option<(Uuid,)> = sqlx::query_as(
-        "UPDATE entity_types SET iri = $3, shape = 'square'
+        "UPDATE entity_types SET iri = $3, shape = 'square', updated_at = now()
          WHERE kb_id = $1 AND key = $2 AND iri IS NULL
          RETURNING id",
     )

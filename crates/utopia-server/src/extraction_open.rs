@@ -149,6 +149,8 @@ pub(crate) async fn run_open(
     // 陈述按名字指它们。被描述的东西不进清单：「一家医院」在下一块里指的未必是同一家
     let mut doc_entities: Vec<(Uuid, String, String)> = Vec::new();
     let mut known_by_name: HashMap<String, Uuid> = HashMap::new();
+    // 类别词已经绑到类的（0044 对齐第一片）：提及带着类去消解，同名不同类才分得开
+    let bound_types = utopia_store::type_bindings::bound_map(pool, kb_id).await?;
     // 被描述的东西按描述文字在本文档内复用：同一块里「the northern wing」说了三次是一个东西
     let mut described: HashMap<String, Uuid> = HashMap::new();
     let mut handled_by_name: HashMap<String, Vec<Uuid>> = HashMap::new();
@@ -249,10 +251,13 @@ pub(crate) async fn run_open(
                 continue;
             }
             let id = if e.named {
+                let bound = bound_types
+                    .get(&utopia_store::type_bindings::normalize(kind))
+                    .copied();
                 let id = resolve_handle(
                     pool,
                     kb_id,
-                    None,
+                    bound,
                     name,
                     ctx,
                     Some(&chunk.text),
@@ -656,6 +661,13 @@ pub(crate) async fn run_open(
         pool,
         "resolve_time",
         serde_json::json!({ "document_id": document_id }),
+    )
+    .await?;
+    // 新出现的类别词绑到类（0044 对齐第一片）：库级，同库排着就不重复
+    utopia_store::jobs::enqueue_unless_queued(
+        pool,
+        "align_types",
+        serde_json::json!({ "kb_id": kb_id }),
     )
     .await?;
     // 队列里多了东西才叫醒人：Review 的计数与对话里那张确认卡都靠这一声

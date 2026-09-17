@@ -138,6 +138,13 @@ pub async fn create_entity_type(
         json!({ "key": key, "label": req.label.trim() }),
     )
     .await;
+    // 本体多了一个类：类别词的绑定里那些「没有」和「没定」的要重判（0044 对齐第一片）
+    let _ = utopia_store::jobs::enqueue_unless_queued(
+        &state.pool,
+        "align_types",
+        json!({ "kb_id": kb_id }),
+    )
+    .await;
     Ok(Json(json!({ "id": id })))
 }
 
@@ -174,6 +181,13 @@ pub async fn update_entity_type(
         Some(id),
         json!({ "label": req.label.trim(), "color": req.color, "shape": req.shape,
                 "description": req.description }),
+    )
+    .await;
+    // 类的定义改了：绑到它的类别词过期，重判
+    let _ = utopia_store::jobs::enqueue_unless_queued(
+        &state.pool,
+        "align_types",
+        json!({ "kb_id": kb_id }),
     )
     .await;
     Ok(Json(json!({ "ok": true })))
