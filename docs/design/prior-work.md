@@ -135,7 +135,7 @@ built.
    [Wang 2023b]; split-and-rephrase is the general task [Narayan 2017]; irrelevant context is a
    named failure of LLM OpenIE [Ling 2023]. The judge and the coverage script measure the dense
    NVDA sentences separately (#731). A structural count of the money and percentage figures that
-   no statement of their chunk carries (`scripts/bench/figures.mjs`, #PRN) found 2 of 83 in prose
+   no statement of their chunk carries (`scripts/bench/figures.mjs`, #748) found 2 of 83 in prose
    on the 25-document batch, 2 of 35 on the NVDA releases and 0 of 451 in their tables, with reasoning
    on at the endpoint; a second-look pass waits for a corpus that loses more.
 6. **Common nouns as entities.** On Wikipedia text only 42% of open-extraction arguments are named
@@ -168,7 +168,7 @@ built.
    prompts are not reliably obeyed without training [Sainz 2024]; quoting before stating improves
    grounding [Huang 2024]; forcing citations finer than a sentence hurts [Wang 2026]. The compact
    contract was chosen by measurement (#731); the quote is the first slot of a statement, so the
-   model copies the sentence before it writes from it (#PRN: on the four NVDA releases 909 statements
+   model copies the sentence before it writes from it (#748: on the four NVDA releases 909 statements
    against 901, misworded 5% in both, prose misworded 6% against 9% and prose that does not read
    alone 5% against 11%). *Open:* clause-level quotes measured against minimal ones; a run-to-run
    stability number.

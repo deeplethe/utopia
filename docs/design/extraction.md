@@ -93,7 +93,7 @@ qualifiers, time words and quote span, and a nod writes an open statement [0015,
   documents [#731].
 - **Named sides and per-statement quotes** cost tokens and buy the not-stated rate [#731]; the
   quote comes first so the statement is written from the copied sentence [Huang 2024,
-  prior-work item 9, #PRN].
+  prior-work item 9, #748].
 - **Every drop is a row** because an append-only ledger with evidence on every fact cannot drop
   silently [0001].
 - **Temperature 0** because the endpoint default swung one paragraph between 8 and 31 statements
