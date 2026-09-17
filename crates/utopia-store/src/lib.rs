@@ -19,6 +19,7 @@ pub mod graph;
 pub mod jobs;
 pub mod kbs;
 pub mod mappings;
+pub mod materialize;
 pub mod members;
 pub mod memory;
 pub mod model_limits;

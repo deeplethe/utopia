@@ -305,6 +305,12 @@ async fn align_phrases_locked(
         }
     }
     tracing::info!(%kb_id, bound, none, undecided, skipped, failed, "短语对齐完成");
+    // 绑定定了，视图跟着算：绑上的签名下的陈述成类型化行，绑定变了的行作废（0067）
+    let typed = utopia_store::materialize::materialize(pool, kb_id).await?;
+    tracing::info!(%kb_id, added = typed.added, retired = typed.retired, "类型化事实按绑定算完");
+    if typed.added > 0 || typed.retired > 0 {
+        state.emit_graph(kb_id);
+    }
     // 这一轮跑着的时候世界没停：新文档带来新签名，改了的属性让刚判的绑定过期，本轮没排上
     // 的触发也都落在这里。有失败的批次、有没试过的新签名、有本轮判完又过期的绑定，就再排
     // 一次
