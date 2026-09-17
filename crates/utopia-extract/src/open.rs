@@ -146,11 +146,13 @@ literal as written. Wording that names or describes something is not a value: th
 goes in \"e\" and is linked by a statement with an object. \"1,200 beekeepers joined\" is the \
 thing \"beekeepers\" with \"joined\" = \"1,200\". Write every figure the passage states. In a \
 table, a cell is a statement about its row's thing whose phrase is the column heading. When \
-the column heading names a time (a date, a quarter, a period), it is when instead, the \
+the column heading names one time (a date, a quarter, a period), it is when instead, the \
 statement is about the thing the table's caption names (the company of a financial statement) \
 and the phrase is the row label as written, path included (\"Operating expenses › Research and \
-development\"); a unit the caption or a heading gives (\"In millions\") is a qualifier on each \
-such statement. Leave out cells whose column heading is not in the passage.\n\
+development\"); a heading that names a comparison between periods (a change from the quarter \
+before, a change from a year ago) is not a time, it stays the phrase; a unit the caption or a \
+heading gives (\"In millions\") is a qualifier on each such statement. Leave out cells whose \
+column heading is not in the passage.\n\
    A list is one statement per member, and so is a subject or object that joins several things \
 (\"the city and the county funded the bridge\" is two statements).\n\
 3. Nothing in a sentence is dropped. When more than two things take part, or the link carries \
