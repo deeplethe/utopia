@@ -59,6 +59,9 @@ pub fn lift_tables(html: &str) -> (String, Vec<String>) {
     let doc = Document::from(html);
     let mut rendered: Vec<String> = Vec::new();
     let mut targets: Vec<Selection<'_>> = Vec::new();
+    // 上一张表的列头：分页符把一张报表劈成两个 <table> 时，后半张没有表头，
+    // 列数又一样，就是同一张表的续表，接着用前一张的列头
+    let mut last_headers: Vec<String> = Vec::new();
     for tbl in doc.select("table").iter() {
         let nested_in = tbl.nodes().first().is_some_and(|n| {
             n.ancestors(None)
@@ -68,9 +71,10 @@ pub fn lift_tables(html: &str) -> (String, Vec<String>) {
         if nested_in || tbl.select("table").exists() {
             continue;
         }
-        if let Some(md) = render_table(&tbl) {
+        if let Some((md, headers)) = render_table(&tbl, &last_headers) {
             rendered.push(md);
             targets.push(tbl);
+            last_headers = headers;
         }
     }
     if rendered.is_empty() {
@@ -164,8 +168,25 @@ fn is_numeric(text: &str) -> bool {
     text.chars().any(|c| c.is_ascii_digit()) && !text.chars().any(char::is_alphabetic)
 }
 
-fn is_symbol_only(text: &str) -> bool {
-    !text.is_empty() && !text.chars().any(char::is_alphanumeric)
+/// 该并回邻格的符号格：货币符号和左括号贴到后一格前面，右括号和百分号贴到前一格后面。
+/// 破折号那类「空值」占位符不算——它自己就是这一格的内容，并过去会把整行的值挪位
+fn merge_direction(text: &str) -> Option<bool> {
+    let mut chars = text.chars();
+    let first = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    if first == '(' || is_currency(first) {
+        Some(true)
+    } else if first == ')' || first == '%' {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn is_currency(c: char) -> bool {
+    matches!(c, '$' | '€' | '£' | '¥' | '₩' | '₹' | '¢' | '￥')
 }
 
 /// 读出网格：按 `tr` 逐行，跨行的格顺着往下带。
@@ -254,11 +275,10 @@ fn kind(row: &Row, headers_seen: bool, data_seen: bool, table_width: usize) -> K
 fn merge_symbols(row: &mut Row) {
     let n = row.cells.len();
     for i in 0..n {
-        if !is_symbol_only(&row.cells[i].text) {
+        let Some(opening) = merge_direction(&row.cells[i].text) else {
             continue;
-        }
+        };
         let sym = row.cells[i].text.clone();
-        let opening = !sym.contains(')') && !sym.contains('%');
         let target = if opening {
             (i + 1..n).find(|&j| !row.cells[j].text.is_empty())
         } else {
@@ -284,8 +304,9 @@ fn depth_of(cell: &Cell) -> u32 {
     cell.col as u32 * 1000 + cell.pad
 }
 
-/// 一张表 → 说明句（可选）+ 带真表头的 Markdown 表。表里什么都没有时返回 None。
-fn render_table(tbl: &Selection<'_>) -> Option<String> {
+/// 一张表 → 说明句（可选）+ 带真表头的 Markdown 表，连同它用的列头（给续表接着用）。
+/// 表里什么都没有时返回 None。
+fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Vec<String>)> {
     let mut rows = grid(tbl);
     let width = rows.iter().map(|r| r.width).max().unwrap_or(0);
     if width == 0 {
@@ -403,7 +424,10 @@ fn render_table(tbl: &Selection<'_>) -> Option<String> {
         }
         parts.join(" ")
     };
-    let header_texts: Vec<String> = value_cols.iter().map(|g| column_header(g)).collect();
+    let mut header_texts: Vec<String> = value_cols.iter().map(|g| column_header(g)).collect();
+    if headers.is_empty() && !data.is_empty() && inherited.len() == header_texts.len() {
+        header_texts = inherited.to_vec();
+    }
     // 标签列的表头：只算整格都落在标签列里的表头格，跨进值列的是值列的头
     let label_header: String = {
         let mut parts: Vec<String> = Vec::new();
@@ -455,7 +479,7 @@ fn render_table(tbl: &Selection<'_>) -> Option<String> {
         }
         lines.push(format!("| {} |", cells.join(" | ")));
     }
-    Some(lines.join("\n"))
+    Some((lines.join("\n"), header_texts))
 }
 
 /// 跨列的格会让同一个值落在好几根网格列上，"$" 又常常单独占一格：相邻两列在每一行
@@ -551,6 +575,28 @@ mod tests {
         let html = "<table><tr><td>Other</td><td>(5,497</td><td>)</td><td>387</td><td></td></tr></table>";
         let md = render(html);
         assert!(md.contains("| Other | (5,497) | 387 |"), "{md}");
+    }
+
+    #[test]
+    fn a_dash_that_means_nothing_stays_in_its_own_cell() {
+        let html = "<table><tr><td>Other</td><td>112</td><td>—</td><td>31</td><td>—</td></tr></table>";
+        let md = render(html);
+        assert!(md.contains("| Other | 112 | — | 31 | — |"), "{md}");
+    }
+
+    #[test]
+    fn a_headerless_table_after_a_page_break_takes_the_headers_before_it() {
+        let html = "<table>\
+            <tr><td></td><td>Q2 FY27</td><td>Q1 FY27</td></tr>\
+            <tr><td>Revenue</td><td>96,221</td><td>81,615</td></tr></table>\
+            <hr>\
+            <table><tr><td colspan=\"3\">Cash flows from financing activities:</td></tr>\
+            <tr><td>Dividends paid</td><td>(6,047)</td><td>(244)</td></tr></table>";
+        let (_, tables) = lift_tables(html);
+        assert_eq!(tables.len(), 2, "{tables:?}");
+        assert!(tables[1].starts_with("Cash flows from financing activities:\n"), "{}", tables[1]);
+        assert!(tables[1].contains("|  | Q2 FY27 | Q1 FY27 |"), "续表接着用前一张的列头: {}", tables[1]);
+        assert!(tables[1].contains("| Dividends paid | (6,047) | (244) |"), "{}", tables[1]);
     }
 
     #[test]
