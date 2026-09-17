@@ -90,7 +90,14 @@ pub async fn align_types(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
             .fetch_one(&mut *guard)
             .await?;
     if !locked {
-        tracing::info!(%kb_id, "类别词对齐已有一份在跑，这次跳过");
+        // 正在跑的那份看不见这次触发带来的变化（新类、新文档的词）：排回去，它完了再跑一遍
+        tracing::info!(%kb_id, "类别词对齐已有一份在跑，排到它后面");
+        utopia_store::jobs::enqueue_unless_queued(
+            pool,
+            "align_types",
+            serde_json::json!({ "kb_id": kb_id }),
+        )
+        .await?;
         return Ok(());
     }
     let result = align_types_locked(state, kb_id, &settings, &client).await;

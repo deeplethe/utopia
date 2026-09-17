@@ -9,8 +9,10 @@
 //! 判过期，本体一改只重判过期的。这一片只记判定；按绑定把陈述算成类型化事实是下一片。
 //!
 //! 候选属性怎么来：先按声明的定义域/值域筛——签名两端的类落在属性的域/值域里的，或者
-//! 属性没声明域/值域的（两个方向都算，绑定可以是反向的）；筛完仍超过上限就不判，
-//! 瞎判比不判糟。
+//! 属性没声明域/值域的（两个方向都算，绑定可以是反向的）。**一端没绑到类的签名，只有
+//! 没声明那一端的属性才算候选**：类别词还没绑上时把声明了域的属性也给模型，NVDA 四篇上
+//! 现金流量表的每一行都绑到了泛泛的 value（主语 NVIDIA 没类，value 的域是指标）——裁判
+//! 判成写错的一半是它。筛完仍超过上限就不判，瞎判比不判糟。
 
 use crate::extraction::chat_retrying_rate_limits_at;
 use crate::llm_util;
@@ -31,10 +33,11 @@ const CANDIDATE_LIMIT: usize = 60;
 /// 一票：这条签名选了哪个属性、哪个方向（None = 没有属性对得上）。
 type Vote = Option<(String, Direction)>;
 
-/// 签名两端的类落在属性声明的域/值域里（没声明的不限）；正反两个方向都算。
+/// 签名两端的类落在属性声明的域/值域里（没声明的不限，没绑到类的一端只被没声明的
+/// 一端接受）；正反两个方向都算。
 fn fits(p: &RelationTypeView, sig: &PhraseSignature) -> bool {
     let within = |declared: &[Uuid], class: Option<Uuid>| -> bool {
-        declared.is_empty() || class.is_none_or(|c| declared.contains(&c))
+        declared.is_empty() || class.is_some_and(|c| declared.contains(&c))
     };
     if sig.object_is_value {
         p.kind == "attribute" && within(&p.domains, sig.subject_type_id)
@@ -63,7 +66,14 @@ pub async fn align_phrases(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> 
             .fetch_one(&mut *guard)
             .await?;
     if !locked {
-        tracing::info!(%kb_id, "短语对齐已有一份在跑，这次跳过");
+        // 正在跑的那份看不见这次触发带来的变化（新属性、改过的定义）：排回去，它完了再跑一遍
+        tracing::info!(%kb_id, "短语对齐已有一份在跑，排到它后面");
+        utopia_store::jobs::enqueue_unless_queued(
+            pool,
+            "align_phrases",
+            serde_json::json!({ "kb_id": kb_id }),
+        )
+        .await?;
         return Ok(());
     }
     let result = align_phrases_locked(state, kb_id, &settings, &client).await;
@@ -362,8 +372,13 @@ mod tests {
         assert!(fits(&hq, &sig(Some(place), Some(org), false)), "反向也算");
         assert!(!fits(&hq, &sig(Some(person), Some(place), false)));
         assert!(
-            fits(&hq, &sig(None, Some(place), false)),
-            "没绑到类的一端不限"
+            !fits(&hq, &sig(None, Some(place), false)),
+            "没绑到类的一端不算落在声明的域里"
+        );
+        let any_to_place = view("relation", vec![], vec![place]);
+        assert!(
+            fits(&any_to_place, &sig(None, Some(place), false)),
+            "没声明的一端接受没绑到类的"
         );
         assert!(!fits(&hq, &sig(Some(org), None, true)), "关系不接字面值");
         let open = view("relation", vec![], vec![]);
