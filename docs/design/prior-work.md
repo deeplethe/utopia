@@ -240,7 +240,7 @@ built.
     Every binding carries its two votes and a `decided_at` compared with the class's `updated_at`;
     only stale bindings are re-decided; every statement keeps its quote and offsets; the typed
     rows are recomputed per changed signature and each carries the statement it was computed from
-    (#PRN2).
+    (#752).
 
 ### Time
 

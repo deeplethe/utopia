@@ -73,7 +73,7 @@ follows the kind-word bindings and the ontology's size, not the binder. What sti
 a phrase that carries part of the value ("下降 1.4%" bound to a change property loses its sign)
 and a table section read as a change ("changes in operating assets › accounts payable").
 
-**A bound statement is a typed fact** [0044 cut 2, #PRN2]. The typed graph is computed, never
+**A bound statement is a typed fact** [0044 cut 2, #752]. The typed graph is computed, never
 written by hand: after each phrase-alignment run, every live open statement under a bound signature
 becomes one `layer = 'typed'` row whose predicate is the bound property, whose ends follow the
 binding's direction, and whose value, world-axis interval, attestation and confidence are copied
