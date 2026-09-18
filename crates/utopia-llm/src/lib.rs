@@ -117,11 +117,25 @@ pub fn transient(err: &anyhow::Error) -> Option<(&'static str, Option<Duration>)
     if let Some(hit) = unavailable(err) {
         return Some(("端点不可用", hit.retry_after));
     }
+    if err.chain().any(|e| e.is::<Interrupted>()) {
+        return Some(("流断在半路", None));
+    }
     let sending = err
         .chain()
         .find_map(|e| e.downcast_ref::<Unreachable>())
         .filter(|u| !u.0.is_timeout());
     sending.map(|_| ("请求没送到", None))
+}
+
+/// 端点开口了又半路没了：流断在一句话中间，既没有 `[DONE]` 也没有 `finish_reason`。
+///
+/// **做成类型是因为它长得像成功。** 拼到一半的回复是一段合法的字符串，调用方看不出
+/// 它本该更长；抽取会把它当成模型给的全部答案，少掉的那些陈述无声无息。
+#[derive(Debug, thiserror::Error)]
+#[error("LLM stream ended in the middle of the answer ({got} chars in)")]
+pub struct Interrupted {
+    /// 断掉时已经拼到多少字——报障时它说明「不是一开口就断」
+    pub got: usize,
 }
 
 /// 端点这会儿不可用：502 / 503 / 504，或者它自己说的 408。**跟 [`RateLimited`] 同一类，
@@ -439,39 +453,65 @@ impl LlmClient {
             return Err(response_failure("LLM", status, retry_after, resp).await?);
         }
         let mut bytes = resp.bytes_stream();
-        let (mut buf, mut answer, mut saw_frame) = (String::new(), String::new(), false);
+        let (mut buf, mut answer) = (String::new(), String::new());
+        let (mut saw_frame, mut ended) = (false, false);
         while let Some(part) = bytes.next().await {
             let part = part.map_err(Unreachable)?;
             buf.push_str(&String::from_utf8_lossy(&part));
             // SSE 帧以空行分隔；最后一个不完整的帧留在 buf 里等下一片
-            while let Some(pos) = buf.find("\n\n") {
+            while let Some(pos) = buf.find(
+                "
+
+",
+            ) {
                 let frame = buf[..pos].to_string();
                 buf.drain(..pos + 2);
-                for line in frame.lines() {
-                    let Some(data) = line.strip_prefix("data:").map(str::trim) else {
-                        continue;
-                    };
-                    if data == "[DONE]" {
-                        continue;
-                    }
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
-                        continue;
-                    };
-                    saw_frame = true;
-                    if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
-                        answer.push_str(delta);
-                    }
-                    // 用量只在最后一帧（choices 为空）出现
-                    if !v["usage"].is_null() {
-                        log_usage(&self.model, &v);
-                    }
-                }
+                self.take_frame(&frame, &mut answer, &mut saw_frame, &mut ended);
             }
+        }
+        // **收尾那一帧也算**：末尾不跟空行的实现有的是，丢掉它就是丢掉答案的尾巴
+        let rest = std::mem::take(&mut buf);
+        if !rest.trim().is_empty() {
+            self.take_frame(&rest, &mut answer, &mut saw_frame, &mut ended);
         }
         if !saw_frame {
             anyhow::bail!("LLM stream carried no frames");
         }
+        // 端点开口了又半路没了：拼到一半的回复长得像成功，不做成错误就会被当成
+        // 模型给的全部答案
+        if !ended {
+            return Err(anyhow::Error::new(Interrupted { got: answer.len() }));
+        }
         Ok(strip_reasoning(&answer).to_string())
+    }
+
+    /// 一个 SSE 帧：取内容增量、认终止信号、顺手记用量。推理的增量读都不读。
+    fn take_frame(&self, frame: &str, answer: &mut String, saw_frame: &mut bool, ended: &mut bool) {
+        for line in frame.lines() {
+            let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                continue;
+            };
+            if data == "[DONE]" {
+                *ended = true;
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
+                continue;
+            };
+            *saw_frame = true;
+            if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
+                answer.push_str(delta);
+            }
+            // 模型自己说完了：正常收尾（stop）或撞上它的输出上限（length），两种都是
+            // 端点把话说完了，与「流断在半路」不同
+            if v["choices"][0]["finish_reason"].is_string() {
+                *ended = true;
+            }
+            // 用量只在最后一帧（choices 为空）出现
+            if !v["usage"].is_null() {
+                log_usage(&self.model, &v);
+            }
+        }
     }
 
     /// 工具对话（非流式）：messages 为 OpenAI 协议原始 JSON
@@ -945,6 +985,46 @@ mod tests {
         assert_eq!(answer, "{\"e\":[]}", "只收 content 的增量，拼成整段");
 
         // 开了流却一帧都没发：那不是空答案，那是没答
+        // 末帧不跟空行：尾巴不能丢
+        let tail = "data: {\"choices\":[{\"delta\":{\"content\":\"head\"}}]}
+
+data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"}]}";
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", tail).await;
+        let answer = client_at(addr)
+            .chat_at_streaming(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(answer, "headtail", "最后一帧没有空行收尾，也要算进去");
+
+        // 开口了又半路没了：那不是一个短答案，那是没答完，值得再试一次
+        let cut = "data: {\"choices\":[{\"delta\":{\"content\":\"half an ans\"}}]}
+
+";
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", cut).await;
+        let err = client_at(addr)
+            .chat_at_streaming(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                None,
+            )
+            .await
+            .expect_err("断在半路该是错误");
+        server.await.unwrap();
+        assert_eq!(
+            crate::transient(&err).map(|(w, _)| w),
+            Some("流断在半路"),
+            "{err:#}"
+        );
+
         let (addr, server) = an_http_response("200 OK", "text/event-stream", "").await;
         let err = client_at(addr)
             .chat_at_streaming(
