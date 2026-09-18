@@ -1,10 +1,11 @@
-//! 类型化图谱是视图（0044 决定 3，0067）：绑上的签名下的开放陈述算成类型化行，绑定变了
-//! 行跟着变，跑多少遍结果一样。
+//! 类型化图谱是视图（0044 决定 3，0067、0068）：绑上的签名下的开放陈述算成类型化行，
+//! 几条陈述说同一件事就是一行，绑定变了行跟着变，跑多少遍结果一样。
 //!
 //! 一条陈述「Harbor Bakery —is based in→ Port Ellen」，签名 (is based in, organization,
 //! place) 绑到 headquartered_in：算出一条类型化行，谓词是它，证据与限定抄过来，
-//! `from_statement_id` 指回陈述；再跑一遍什么都不动；带 mood 的陈述不算；绑定翻成
-//! reverse，旧行作废、新行主宾对调；绑定改成 none，行作废、不再补。
+//! `from_statement_id` 指回陈述；再跑一遍什么都不动；带 mood 的陈述不算；另一份文档
+//! 的同一句并进同一行（两条来源、两条证据）；作废其中一条陈述，行还在、来源少一条；
+//! 绑定翻成 reverse，旧行作废、新行主宾对调；绑定改成 none，行作废、不再补。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
@@ -63,7 +64,7 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         .execute(&pool)
         .await?;
 
-        // 两样东西，两条陈述：一条平常的，一条带 mood 的
+        // 两样东西；三条陈述：一条平常的，一条带 mood 的，一条另一份文档说的同一件事
         let (bakery, port) = (Uuid::now_v7(), Uuid::now_v7());
         for (id, type_id, name) in [(bakery, organization, "Harbor Bakery"), (port, place, "Port Ellen")] {
             sqlx::query(
@@ -76,8 +77,8 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
             .execute(&pool)
             .await?;
         }
-        let (stated, planned) = (Uuid::now_v7(), Uuid::now_v7());
-        for (id, phrase) in [(stated, "is based in"), (planned, "will move to")] {
+        let (stated, planned, again) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        for (id, phrase) in [(stated, "is based in"), (planned, "will move to"), (again, "is based in")] {
             sqlx::query(
                 "INSERT INTO facts (id, kb_id, subject_id, object_id, layer, phrase, confidence,
                                     valid_from, valid_from_precision)
@@ -91,33 +92,39 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
             .execute(&pool)
             .await?;
         }
-        let (doc, chunk) = (Uuid::now_v7(), Uuid::now_v7());
-        sqlx::query(
-            "INSERT INTO documents (id, kb_id, filename, sha256)
-             VALUES ($1, $2, 'bakery.txt', 'materialize-test')",
-        )
-        .bind(doc)
-        .bind(kb)
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO chunks (id, kb_id, document_id, seq, text)
-             VALUES ($1, $2, $3, 0, 'Harbor Bakery is based in Port Ellen.')",
-        )
-        .bind(chunk)
-        .bind(kb)
-        .bind(doc)
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, quote_start, quote_end)
-             VALUES ($1, $2, 'Harbor Bakery is based in Port Ellen.', $3, 0, 37)",
-        )
-        .bind(stated)
-        .bind(chunk)
-        .bind(doc)
-        .execute(&pool)
-        .await?;
+        let evidence_of = |statement: Uuid, name: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let (doc, chunk) = (Uuid::now_v7(), Uuid::now_v7());
+                sqlx::query("INSERT INTO documents (id, kb_id, filename, sha256) VALUES ($1, $2, $3, $3)")
+                    .bind(doc)
+                    .bind(kb)
+                    .bind(name)
+                    .execute(&pool)
+                    .await?;
+                sqlx::query(
+                    "INSERT INTO chunks (id, kb_id, document_id, seq, text)
+                     VALUES ($1, $2, $3, 0, 'Harbor Bakery is based in Port Ellen.')",
+                )
+                .bind(chunk)
+                .bind(kb)
+                .bind(doc)
+                .execute(&pool)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, quote_start, quote_end)
+                     VALUES ($1, $2, 'Harbor Bakery is based in Port Ellen.', $3, 0, 37)",
+                )
+                .bind(statement)
+                .bind(chunk)
+                .bind(doc)
+                .execute(&pool)
+                .await?;
+                anyhow::Ok(())
+            }
+        };
+        evidence_of(stated, "bakery.txt").await?;
+        evidence_of(again, "bakery-2.txt").await?;
         sqlx::query(
             "INSERT INTO statement_qualifiers (fact_id, role, value) VALUES ($1, 'since', '\"2019\"'::jsonb)",
         )
@@ -154,24 +161,28 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         binding("is based in").await?;
         binding("will move to").await?;
 
+        // 两条平常的陈述说的是同一件事：一行，两条来源，两条证据；带 mood 的那条不算
         let first = materialize(&pool, kb).await?;
-        assert_eq!(first, Outcome { retired: 0, added: 1 }, "带 mood 的那条不算");
-        let (subject, object, predicate, from, vf): (Uuid, Uuid, Uuid, Uuid, Option<chrono::DateTime<chrono::Utc>>) =
-            sqlx::query_as(
-                "SELECT subject_id, object_id, predicate_id, from_statement_id, valid_from
+        assert_eq!(first, Outcome { retired: 0, added: 1, merged: 1 });
+        let live = |pool: PgPool| async move {
+            sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, Uuid, Option<chrono::DateTime<chrono::Utc>>)>(
+                "SELECT id, subject_id, object_id, predicate_id, from_statement_id, valid_from
                    FROM facts WHERE kb_id = $1 AND layer = 'typed' AND invalidated_at IS NULL",
             )
             .bind(kb)
-            .fetch_one(&pool)
-            .await?;
+            .fetch_all(&pool)
+            .await
+        };
+        let rows = live(pool.clone()).await?;
+        assert_eq!(rows.len(), 1, "同一个三元组只有一行");
+        let (typed_id, subject, object, predicate, from, vf) = rows[0];
         assert_eq!((subject, object, predicate, from), (bakery, port, hq, stated));
         assert!(vf.is_some(), "世界轴时间抄过来");
-        let typed_id: Uuid = sqlx::query_scalar(
-            "SELECT id FROM facts WHERE from_statement_id = $1 AND invalidated_at IS NULL",
-        )
-        .bind(stated)
-        .fetch_one(&pool)
-        .await?;
+        let sources: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM typed_fact_sources WHERE fact_id = $1")
+                .bind(typed_id)
+                .fetch_one(&pool)
+                .await?;
         let evidence: i64 =
             sqlx::query_scalar("SELECT count(*) FROM fact_evidence WHERE fact_id = $1")
                 .bind(typed_id)
@@ -183,25 +194,34 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         .bind(typed_id)
         .fetch_all(&pool)
         .await?;
-        assert_eq!((evidence, qualifiers), (1, vec!["since".to_string()]), "证据与限定各一份");
+        assert_eq!((sources, evidence, qualifiers), (2, 2, vec!["since".to_string()]));
 
         // 再跑一遍：什么都不动
         assert_eq!(materialize(&pool, kb).await?, Outcome::default());
+
+        // 一份文档撤了它那句：行还在，来源少一条
+        sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
+            .bind(again)
+            .execute(&pool)
+            .await?;
+        assert_eq!(materialize(&pool, kb).await?, Outcome::default());
+        let sources: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM typed_fact_sources WHERE fact_id = $1")
+                .bind(typed_id)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(sources, 1);
+        assert_eq!(live(pool.clone()).await?.len(), 1, "还有一条来源，行留着");
 
         // 绑定翻成 reverse：旧行作废，新行主宾对调
         sqlx::query("UPDATE phrase_bindings SET direction = 'reverse' WHERE kb_id = $1 AND phrase = 'is based in'")
             .bind(kb)
             .execute(&pool)
             .await?;
-        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 1 });
-        let (subject, object): (Uuid, Uuid) = sqlx::query_as(
-            "SELECT subject_id, object_id FROM facts
-              WHERE from_statement_id = $1 AND invalidated_at IS NULL",
-        )
-        .bind(stated)
-        .fetch_one(&pool)
-        .await?;
-        assert_eq!((subject, object), (port, bakery), "方向反了主宾对调");
+        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 1, merged: 0 });
+        let rows = live(pool.clone()).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].1, rows[0].2), (port, bakery), "方向反了主宾对调");
         let retired: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM facts WHERE from_statement_id = $1 AND invalidated_at IS NOT NULL",
         )
@@ -218,7 +238,7 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         .bind(kb)
         .execute(&pool)
         .await?;
-        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 0 });
+        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 0, merged: 0 });
         assert_eq!(utopia_store::materialize::count(&pool, kb).await?, 0);
         anyhow::Ok(())
     }

@@ -82,9 +82,10 @@ from the statement; its evidence rows and role-word qualifiers are copied too, a
 materialised. The computation is a set operation and idempotent: rows whose source no longer holds
 (the statement invalidated, the signature no longer bound, the property or direction changed) are
 invalidated, rows that are due and missing are added, rows whose binding is unchanged keep their
-id, evidence and recorded time. Typed rows that several statements produce for the same triple are
-separate rows, one per statement. On the 25-document batch the 36 bound signatures give 184
-typed rows.
+id, evidence and recorded time. Several statements that produce the same triple give one row: the row is written through
+the typed graph's own gate (the dedup, time refinement and closing rules of `insert_fact`), and
+`typed_fact_sources` lists every statement behind it, so a row is retired only when none of its
+sources holds [#PRN3]. On the 25-document batch the 36 bound signatures give 184 typed rows.
 
 **Argument order is enforced, participation is guided.** A declared domain or range shapes
 candidates and never discards a fact; argument order is the key's encoding convention, so a fact

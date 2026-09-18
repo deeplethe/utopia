@@ -1,20 +1,26 @@
-//! 绑上的签名下的开放陈述算成类型化事实（0044 决定 3 的第三片，见 0067）。
+//! 绑上的签名下的开放陈述算成类型化事实（0044 决定 3 的第三、四片，见 0067、0068）。
 //!
-//! 类型化图谱是视图：一条类型化行 = 一条开放陈述 × 它签名的绑定。谓词是绑定给的属性，
-//! 主宾按绑定的方向（reverse 就是陈述的宾语当主语），字面值、世界轴时间、来源时间、
-//! 置信度照抄，证据与限定各复制一份，`from_statement_id` 指回那条陈述。带 mood 限定的
-//! 陈述不算。
+//! 类型化图谱是视图：一条类型化行 = 一个三元组，来自一条或几条开放陈述与它们签名的绑定。
+//! 谓词是绑定给的属性，主宾按绑定的方向（reverse 就是陈述的宾语当主语），字面值、世界轴
+//! 时间、来源时间、置信度从陈述来；证据与限定各复制一份；来源记在 `typed_fact_sources`，
+//! `from_statement_id` 是第一条。带 mood 限定的陈述不算。
 //!
-//! 重算是集合运算，跑多少遍结果一样：先作废「源头不成立」的类型化行（陈述作废了、签名
-//! 不再绑着、绑到了别的属性或反了方向），再给「该有而没有」的陈述补一行。绑定不变的行
-//! 不动——它们的 id、证据和记录时间都留着。没有模型调用。
+//! 写行走类型化图谱本来的门（[`crate::graph::insert_fact`] / [`insert_value_fact`]）：同断言
+//! 同起点复用那一行，裸行被带时间的观察取代并链上，「结束了」关上开着的行——两份文档说
+//! 同一件事，时间线上是一条边。
+//!
+//! 重算是集合运算，跑多少遍结果一样：先删「不再成立」的来源（陈述作废了、签名不再绑着、
+//! 绑到了别的属性或反了方向、行本身作废了），再作废来源全空的类型化行，最后给「该有而
+//! 没有」的（陈述, 绑定）对补上——有同断言的行就并进去，没有才新建。没有模型调用。
 
 use sqlx::PgPool;
 use utopia_core::AppResult;
 use uuid::Uuid;
 
+use crate::graph::{insert_fact, insert_value_fact, Validity};
+
 /// 陈述与绑定对得上的条件：短语归一后相等，两端的类相同（空也相同），宾语是不是字面值相同。
-/// 两处 SQL 共用；`s` 是开放陈述（facts），`se`/`oe` 是它两端的实体，`b` 是 phrase_bindings
+/// `s` 是开放陈述（facts），`se`/`oe` 是它两端的实体，`b` 是 phrase_bindings
 const MATCH: &str = "b.kb_id = s.kb_id
        AND b.phrase = lower(btrim(regexp_replace(s.phrase, '\\s+', ' ', 'g')))
        AND b.subject_type_id IS NOT DISTINCT FROM se.type_id
@@ -24,30 +30,47 @@ const MATCH: &str = "b.kb_id = s.kb_id
 /// 一轮重算写了什么。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Outcome {
-    /// 作废的类型化行
+    /// 作废的类型化行（来源全空了）
     pub retired: u64,
-    /// 新算出来的类型化行
+    /// 新建的类型化行
     pub added: u64,
+    /// 并进已有行的陈述数
+    pub merged: u64,
+}
+
+/// 一条该物化的（陈述, 绑定）对，连陈述上要抄的东西。
+#[derive(sqlx::FromRow)]
+struct Due {
+    statement: Uuid,
+    property: Uuid,
+    direction: String,
+    subject_id: Uuid,
+    object_id: Option<Uuid>,
+    object_value: Option<serde_json::Value>,
+    valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    valid_from_precision: Option<String>,
+    valid_to: Option<chrono::DateTime<chrono::Utc>>,
+    valid_to_precision: Option<String>,
+    attested_from: Option<chrono::DateTime<chrono::Utc>>,
+    confidence: f32,
 }
 
 /// 对一个库重算一遍。
 pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
-    let mut tx = pool.begin().await?;
-
-    // 1. 作废源头不成立的：陈述死了、签名没绑着、属性或方向变了、陈述带了 mood
-    let retired = sqlx::query(&format!(
-        "UPDATE facts t
-            SET invalidated_at = now()
-          WHERE t.kb_id = $1 AND t.layer = 'typed' AND t.invalidated_at IS NULL
-            AND t.from_statement_id IS NOT NULL
+    // 1. 删不再成立的来源：陈述死了、行死了、签名没绑着、属性或方向变了、陈述带了 mood
+    sqlx::query(&format!(
+        "DELETE FROM typed_fact_sources src
+          USING facts t
+          WHERE src.fact_id = t.id AND t.kb_id = $1
             AND NOT EXISTS (
                 SELECT 1
                   FROM facts s
                   JOIN entities se ON se.id = s.subject_id
              LEFT JOIN entities oe ON oe.id = s.object_id
                   JOIN phrase_bindings b ON {MATCH}
-                 WHERE s.id = t.from_statement_id
+                 WHERE s.id = src.statement_id
                    AND s.invalidated_at IS NULL
+                   AND t.invalidated_at IS NULL
                    AND b.status = 'bound'
                    AND b.relation_type_id = t.predicate_id
                    AND ((b.direction = 'forward' AND t.subject_id = s.subject_id)
@@ -56,14 +79,29 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
                                     WHERE q.fact_id = s.id AND q.role = 'mood'))"
     ))
     .bind(kb_id)
-    .execute(&mut *tx)
+    .execute(pool)
+    .await?;
+
+    // 2. 作废来源全空的类型化行：只动算出来的行（带 from_statement_id 的），人写的不碰
+    let retired = sqlx::query(
+        "UPDATE facts t
+            SET invalidated_at = now()
+          WHERE t.kb_id = $1 AND t.layer = 'typed' AND t.invalidated_at IS NULL
+            AND t.from_statement_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src WHERE src.fact_id = t.id)",
+    )
+    .bind(kb_id)
+    .execute(pool)
     .await?
     .rows_affected();
 
-    // 2. 补该有而没有的：先选出（陈述, 绑定）对，再逐条落行——id 是 v7，库里没有生成
-    //    它的函数。reverse 只对两样东西之间的关系有意义（字面值当不了主语）
-    let due: Vec<(Uuid, Uuid, String)> = sqlx::query_as(&format!(
-        "SELECT s.id, b.relation_type_id, b.direction
+    // 3. 该有而没有的（陈述, 绑定）对：陈述活着、签名绑着、没 mood、还没有活着的行以它为来源
+    //    且谓词相同。reverse 只对两样东西之间的关系有意义（字面值当不了主语）
+    let due: Vec<Due> = sqlx::query_as(&format!(
+        "SELECT s.id AS statement, b.relation_type_id AS property, b.direction,
+                s.subject_id, s.object_id, s.object_value,
+                s.valid_from, s.valid_from_precision, s.valid_to, s.valid_to_precision,
+                s.attested_from, s.confidence
            FROM facts s
            JOIN entities se ON se.id = s.subject_id
       LEFT JOIN entities oe ON oe.id = s.object_id
@@ -73,72 +111,109 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
                              WHERE q.fact_id = s.id AND q.role = 'mood')
-            AND NOT EXISTS (SELECT 1 FROM facts t
-                             WHERE t.from_statement_id = s.id AND t.invalidated_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src JOIN facts t ON t.id = src.fact_id
+                             WHERE src.statement_id = s.id AND t.invalidated_at IS NULL
                                AND t.predicate_id = b.relation_type_id)
           ORDER BY s.id"
     ))
     .bind(kb_id)
-    .fetch_all(&mut *tx)
+    .fetch_all(pool)
     .await?;
-    let mut added: Vec<(Uuid, Uuid)> = Vec::with_capacity(due.len());
-    for (statement, property, direction) in &due {
-        let id = Uuid::now_v7();
-        let reverse = direction == "reverse";
-        sqlx::query(
-            "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
-                                valid_from, valid_from_precision, valid_to, valid_to_precision,
-                                attested_from, attested_to, confidence, layer, from_statement_id)
-             SELECT $1, s.kb_id,
-                    CASE WHEN $4 THEN s.object_id ELSE s.subject_id END,
-                    $3,
-                    CASE WHEN $4 THEN s.subject_id ELSE s.object_id END,
-                    CASE WHEN $4 THEN NULL ELSE s.object_value END,
-                    s.valid_from, s.valid_from_precision, s.valid_to, s.valid_to_precision,
-                    s.attested_from, s.attested_to, s.confidence, 'typed', s.id
-               FROM facts s WHERE s.id = $2",
-        )
-        .bind(id)
-        .bind(statement)
-        .bind(property)
-        .bind(reverse)
-        .execute(&mut *tx)
-        .await?;
-        added.push((id, *statement));
-    }
 
-    // 3. 新行抄证据与限定：证据是同一段原文的同一处引文；限定照角色词原样带过去
-    if !added.is_empty() {
-        let ids: Vec<Uuid> = added.iter().map(|(id, _)| *id).collect();
+    let (mut added, mut merged) = (0u64, 0u64);
+    for d in &due {
+        let reverse = d.direction == "reverse";
+        let validity = Validity {
+            from: d.valid_from,
+            from_precision: d.valid_from_precision.as_deref(),
+            to: d.valid_to,
+            to_precision: d.valid_to_precision.as_deref(),
+            attested_at: d.attested_from,
+        };
+        let (fact, new) = match (reverse, d.object_id, &d.object_value) {
+            (true, Some(object), _) => {
+                insert_fact(
+                    pool,
+                    kb_id,
+                    object,
+                    Some(d.property),
+                    d.subject_id,
+                    validity,
+                    d.confidence,
+                )
+                .await?
+            }
+            (false, Some(object), _) => {
+                insert_fact(
+                    pool,
+                    kb_id,
+                    d.subject_id,
+                    Some(d.property),
+                    object,
+                    validity,
+                    d.confidence,
+                )
+                .await?
+            }
+            (false, None, Some(value)) => {
+                insert_value_fact(
+                    pool,
+                    kb_id,
+                    d.subject_id,
+                    Some(d.property),
+                    value,
+                    validity,
+                    d.confidence,
+                )
+                .await?
+            }
+            _ => continue,
+        };
+        if new {
+            added += 1;
+            sqlx::query("UPDATE facts SET from_statement_id = $2 WHERE id = $1 AND from_statement_id IS NULL")
+                .bind(fact)
+                .bind(d.statement)
+                .execute(pool)
+                .await?;
+        } else {
+            merged += 1;
+        }
+        sqlx::query(
+            "INSERT INTO typed_fact_sources (fact_id, statement_id) VALUES ($1, $2)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(fact)
+        .bind(d.statement)
+        .execute(pool)
+        .await?;
+        // 证据与限定各抄一份：证据是同一段原文的同一处引文；限定照角色词原样带过去
         sqlx::query(
             "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, doc_version,
                                         proposed_predicate, quote_start, quote_end)
-             SELECT t.id, e.chunk_id, e.quote, e.document_id, e.doc_version,
-                    e.proposed_predicate, e.quote_start, e.quote_end
-               FROM facts t
-               JOIN fact_evidence e ON e.fact_id = t.from_statement_id
-              WHERE t.id = ANY($1)
+             SELECT $1, chunk_id, quote, document_id, doc_version, proposed_predicate,
+                    quote_start, quote_end
+               FROM fact_evidence WHERE fact_id = $2
              ON CONFLICT DO NOTHING",
         )
-        .bind(&ids)
-        .execute(&mut *tx)
+        .bind(fact)
+        .bind(d.statement)
+        .execute(pool)
         .await?;
         sqlx::query(
             "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id)
-             SELECT t.id, q.role, q.value, q.entity_id
-               FROM facts t
-               JOIN statement_qualifiers q ON q.fact_id = t.from_statement_id
-              WHERE t.id = ANY($1)
+             SELECT $1, role, value, entity_id FROM statement_qualifiers WHERE fact_id = $2
              ON CONFLICT DO NOTHING",
         )
-        .bind(&ids)
-        .execute(&mut *tx)
+        .bind(fact)
+        .bind(d.statement)
+        .execute(pool)
         .await?;
     }
-    tx.commit().await?;
     Ok(Outcome {
         retired,
-        added: added.len() as u64,
+        added,
+        merged,
     })
 }
 
