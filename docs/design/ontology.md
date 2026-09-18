@@ -49,7 +49,7 @@ classes of context neighbours, interleaved and never scored together; a class in
 subtree applied on its own, a cross-axis class sent to a person, each pair acknowledged once) runs
 from the ontology page; extraction no longer enqueues it [0001, 0016, #736].
 
-**One statement draws one edge** [#PRN5]. The typed graph is a view, so the canvas and the entity
+**One statement draws one edge** [#755]. The typed graph is a view, so the canvas and the entity
 panel show one edge per statement: the property's name when a live typed row was computed from it,
 the document's phrase when none was. The document's wording is not lost with the folded edge, it
 rides on the typed one (`said_as`, the phrases of every statement behind that row) and the interface

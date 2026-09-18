@@ -44,7 +44,7 @@ cards show the original sentence above the statements, the agent's proposal chip
 a rationale input [0015, 0025, 0026, 0027]. An open statement renders as an unnamed relation
 labelled by its phrase [#731]. A page subtitle says the action the screen does, in one sentence.
 
-**Layers on the canvas** [0044 decision 1, #PRN5]. An open statement draws an edge labelled with the
+**Layers on the canvas** [0044 decision 1, #755]. An open statement draws an edge labelled with the
 document's phrase and marked as not-the-ontology's (`inferred`); once alignment computes a typed row
 from it, that row draws the edge instead, labelled with the property, and the document's wording
 rides along for the hover. One statement, one edge, whichever layer it currently lives in.
