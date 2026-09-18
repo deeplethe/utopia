@@ -399,6 +399,81 @@ impl LlmClient {
             .ok_or_else(|| anyhow::anyhow!("Unexpected LLM response shape: {body}"))
     }
 
+    /// 一次问答，**走流式但整段返回**：调用方拿到的和 [`Self::chat_at`] 一样是一个
+    /// 字符串，区别只在字节怎么到。
+    ///
+    /// **为什么长提示词的那几条路要用它**：[`READ_TIMEOUT`] 量的是「多久没有新字节」，
+    /// 而非流式调用的第一个字节要等模型把整段生成完——于是模型思考的时间全部算作沉默。
+    /// 开着推理，一块密集的正文实测首字节 227 秒、偶尔越过 300 秒被判死；同一块流式下
+    /// 2.6 秒就有字节（思考过程在流），总时长一样是 230 秒左右。流式不会更快，它让
+    /// 「沉默」回到它本来的意思，超时于是只杀真正卡住的请求。
+    ///
+    /// 思考过程不进返回值：只收 `delta.content`，推理的增量（`reasoning` /
+    /// `reasoning_content`）读都不读；`<think>` 混在 content 里的那种照旧由
+    /// [`strip_reasoning`] 切掉。
+    pub async fn chat_at_streaming(
+        &self,
+        messages: &[ChatMessage],
+        temperature: Option<f32>,
+    ) -> anyhow::Result<String> {
+        let mut body = json!({
+            "model": self.model,
+            "messages": messages,
+            "stream": true,
+            // 用量随最后一帧回来：比较两次运行的第一件事是看 completion token，
+            // 换成流式不能把这个数弄丢
+            "stream_options": { "include_usage": true },
+        });
+        if let Some(t) = temperature {
+            body["temperature"] = json!(t);
+        }
+        let resp = self
+            .request("/chat/completions")
+            .json(&body)
+            .send()
+            .await
+            .map_err(Unreachable)?;
+        let status = resp.status();
+        let retry_after = retry_after_of(resp.headers());
+        if !status.is_success() {
+            return Err(response_failure("LLM", status, retry_after, resp).await?);
+        }
+        let mut bytes = resp.bytes_stream();
+        let (mut buf, mut answer, mut saw_frame) = (String::new(), String::new(), false);
+        while let Some(part) = bytes.next().await {
+            let part = part.map_err(Unreachable)?;
+            buf.push_str(&String::from_utf8_lossy(&part));
+            // SSE 帧以空行分隔；最后一个不完整的帧留在 buf 里等下一片
+            while let Some(pos) = buf.find("\n\n") {
+                let frame = buf[..pos].to_string();
+                buf.drain(..pos + 2);
+                for line in frame.lines() {
+                    let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                        continue;
+                    };
+                    if data == "[DONE]" {
+                        continue;
+                    }
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
+                        continue;
+                    };
+                    saw_frame = true;
+                    if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
+                        answer.push_str(delta);
+                    }
+                    // 用量只在最后一帧（choices 为空）出现
+                    if !v["usage"].is_null() {
+                        log_usage(&self.model, &v);
+                    }
+                }
+            }
+        }
+        if !saw_frame {
+            anyhow::bail!("LLM stream carried no frames");
+        }
+        Ok(strip_reasoning(&answer).to_string())
+    }
+
     /// 工具对话（非流式）：messages 为 OpenAI 协议原始 JSON
     /// （支持 assistant.tool_calls 与 role=tool 回合），tools 为 function 定义数组。
     pub async fn chat_tools(
@@ -836,6 +911,53 @@ mod tests {
         };
         assert!(!is_unreachable(&error));
         assert!(error.to_string().contains(diagnosis), "{error:#}");
+    }
+
+    /// 流式的一次问答收成整段：只要 `delta.content`，推理的增量不进返回值，
+    /// 用量那一帧不当内容，没有一帧是错（端点开了流却什么都没发）
+    #[tokio::test]
+    async fn a_streamed_answer_arrives_whole_without_its_reasoning() {
+        let sse = [
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"thinking hard\"}}]}",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"e\\\":[\"}}]}",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"]}\"}}]}",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":9000}}",
+            "data: [DONE]",
+            "",
+        ]
+        .join(
+            "
+
+",
+        );
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+        let answer = client_at(addr)
+            .chat_at_streaming(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                Some(0.0),
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(answer, "{\"e\":[]}", "只收 content 的增量，拼成整段");
+
+        // 开了流却一帧都没发：那不是空答案，那是没答
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", "").await;
+        let err = client_at(addr)
+            .chat_at_streaming(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                None,
+            )
+            .await
+            .expect_err("没有帧该是错误");
+        server.await.unwrap();
+        assert!(format!("{err:#}").contains("no frames"), "{err:#}");
     }
 
     /// 会自己好的与不会自己好的分开：网关那几个是 [`Unavailable`]，密钥错那类照旧

@@ -55,10 +55,15 @@ pub(crate) async fn chat_retrying_rate_limits_at(
 ) -> anyhow::Result<String> {
     let mut backoff = Duration::from_secs(2);
     for attempt in 1..=RATE_LIMIT_TRIES {
-        // 许可只包住调用本身，出了这个块就还回去
+        // 许可只包住调用本身，出了这个块就还回去。
+        //
+        // **走流式**：这条路上的提示词都长（抽取一整块、对齐一批签名），开着推理时
+        // 模型先想几分钟再开口，而非流式下那几分钟在传输层看来是彻底的沉默，读超时
+        // 会把正常的调用判死（实测一块正文首字节 227 秒，偶尔越过 300 秒）。流式下
+        // 思考过程就是字节，超时于是只杀真正卡住的请求。返回值仍是整段
         let outcome = {
             let _permit = llm_util::acquire_chat(state, settings).await;
-            client.chat_at(messages, temperature).await
+            client.chat_at_streaming(messages, temperature).await
         };
         let err = match outcome {
             Ok(reply) => return Ok(reply),
