@@ -97,6 +97,8 @@ struct Seen<'a> {
     ended_unknown: bool,
     doc: Option<&'a str>,
     confidence: f32,
+    /// 这次观察出自一块看图描述出来的文字（0040 决定 4）：它不许单独关掉一段正确的旧值
+    described: bool,
 }
 
 fn seen<'a>(f: &Fixture, value: &'a str, from: &'a str) -> Seen<'a> {
@@ -108,6 +110,7 @@ fn seen<'a>(f: &Fixture, value: &'a str, from: &'a str) -> Seen<'a> {
         ended_unknown: false,
         doc: None,
         confidence: 0.9,
+        described: false,
     }
 }
 
@@ -168,6 +171,16 @@ async fn observe(pool: &PgPool, f: &Fixture, x: Seen<'_>) -> anyhow::Result<Uuid
     )
     .await?;
     if let Some(c) = chunk {
+        if x.described {
+            // 描述出来的块必须带锚（0058 的 CHECK）：图在文件里的哪一块
+            sqlx::query(
+                "UPDATE chunks SET origin = 'described', origin_model = 'test-vision',
+                        anchor = jsonb_build_object('page', 1, 'image', 0) WHERE id = $1",
+            )
+            .bind(c)
+            .execute(pool)
+            .await?;
+        }
         utopia_store::graph::add_evidence(pool, id, c, Some(x.value), None).await?;
     }
     utopia_store::temporal::reconcile_new_fact(
@@ -605,7 +618,8 @@ async fn a_pair_a_person_kept_is_not_asked_again_after_a_rewrite() -> anyhow::Re
         &pool,
         &f,
         Seen {
-            confidence: 0.5,
+            described: true,
+            doc: Some("2020-03-01"),
             ..seen(&f, "B", "2020-03-01")
         },
     )
@@ -784,7 +798,8 @@ async fn the_migration_marks_the_ends_the_old_engine_drew() -> anyhow::Result<()
         &f,
         Seen {
             subject: other,
-            confidence: 0.5,
+            described: true,
+            doc: Some("2020-03-01"),
             ..seen(&f, "h2", "2020-03-01")
         },
     )
