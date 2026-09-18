@@ -176,6 +176,26 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
                 .bind(d.statement)
                 .execute(pool)
                 .await?;
+            // 新行取代了一条裸行（时间精化，supersedes 链上）：被取代那行的来源跟着搬过来，
+            // 这一轮就收敛，不等下一轮把旧来源当「不成立」删掉再补
+            sqlx::query(
+                "INSERT INTO typed_fact_sources (fact_id, statement_id)
+                 SELECT $1, src.statement_id
+                   FROM facts n JOIN typed_fact_sources src ON src.fact_id = n.supersedes
+                  WHERE n.id = $1
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(fact)
+            .execute(pool)
+            .await?;
+            sqlx::query(
+                "DELETE FROM typed_fact_sources src
+                  USING facts n
+                  WHERE n.id = $1 AND src.fact_id = n.supersedes",
+            )
+            .bind(fact)
+            .execute(pool)
+            .await?;
         } else {
             merged += 1;
         }

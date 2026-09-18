@@ -77,6 +77,19 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
             .execute(&pool)
             .await?;
         }
+        // 先来一条没时间的裸陈述，再来两条带时间的：裸行会被带时间的行取代（supersedes），
+        // 来源要跟着搬到新行上
+        let bare = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO facts (id, kb_id, subject_id, object_id, layer, phrase, confidence)
+             VALUES ($1, $2, $3, $4, 'open', 'operates from', 0.9)",
+        )
+        .bind(bare)
+        .bind(kb)
+        .bind(bakery)
+        .bind(port)
+        .execute(&pool)
+        .await?;
         let (stated, planned, again) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
         for (id, phrase) in [(stated, "is based in"), (planned, "will move to"), (again, "is based in")] {
             sqlx::query(
@@ -160,10 +173,13 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         };
         binding("is based in").await?;
         binding("will move to").await?;
+        binding("operates from").await?;
 
-        // 两条平常的陈述说的是同一件事：一行，两条来源，两条证据；带 mood 的那条不算
+        // 三条平常的陈述说的是同一件事：裸的那条先成一行，带时间的取代它（added 2，旧行作废、
+        // 来源搬过来），第三条并进去（merged 1）——最后一行，三条来源，两条证据；带 mood 的
+        // 那条不算
         let first = materialize(&pool, kb).await?;
-        assert_eq!(first, Outcome { retired: 0, added: 1, merged: 1 });
+        assert_eq!(first, Outcome { retired: 0, added: 2, merged: 1 });
         let live = |pool: PgPool| async move {
             sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, Uuid, Option<chrono::DateTime<chrono::Utc>>)>(
                 "SELECT id, subject_id, object_id, predicate_id, from_statement_id, valid_from
@@ -194,7 +210,7 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         .bind(typed_id)
         .fetch_all(&pool)
         .await?;
-        assert_eq!((sources, evidence, qualifiers), (2, 2, vec!["since".to_string()]));
+        assert_eq!((sources, evidence, qualifiers), (3, 2, vec!["since".to_string()]));
 
         // 再跑一遍：什么都不动
         assert_eq!(materialize(&pool, kb).await?, Outcome::default());
@@ -210,15 +226,16 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
                 .bind(typed_id)
                 .fetch_one(&pool)
                 .await?;
-        assert_eq!(sources, 1);
-        assert_eq!(live(pool.clone()).await?.len(), 1, "还有一条来源，行留着");
+        assert_eq!(sources, 2);
+        assert_eq!(live(pool.clone()).await?.len(), 1, "还有来源，行留着");
 
         // 绑定翻成 reverse：旧行作废，新行主宾对调
-        sqlx::query("UPDATE phrase_bindings SET direction = 'reverse' WHERE kb_id = $1 AND phrase = 'is based in'")
+        sqlx::query("UPDATE phrase_bindings SET direction = 'reverse' WHERE kb_id = $1 AND phrase IN ('is based in', 'operates from')")
             .bind(kb)
             .execute(&pool)
             .await?;
-        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 1, merged: 0 });
+        // 旧行的来源全不成立了：作废 1；反向重算时裸的那条先成行、带时间的再取代它：新建 2
+        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 2, merged: 0 });
         let rows = live(pool.clone()).await?;
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].1, rows[0].2), (port, bakery), "方向反了主宾对调");
@@ -233,7 +250,7 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         // 绑定改成 none：行作废，不再补
         sqlx::query(
             "UPDATE phrase_bindings SET status = 'none', relation_type_id = NULL, direction = NULL
-              WHERE kb_id = $1 AND phrase = 'is based in'",
+              WHERE kb_id = $1 AND phrase IN ('is based in', 'operates from')",
         )
         .bind(kb)
         .execute(&pool)
