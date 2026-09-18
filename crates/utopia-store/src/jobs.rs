@@ -26,6 +26,37 @@ pub struct Job {
 /// 同种任务、同样载荷已经排着就不再排：一批文档各自抽完都想触发同一个库级任务
 /// （类型消解、对账），排十次跑十次是浪费，而且后九次看到的是第一次跑完的库。
 /// 返回 None = 已有一条在排队
+/// 排一件事，除非同样的一件**已经排着或正在跑**。
+///
+/// 与 [`enqueue_unless_queued`] 的差别只在「正在跑」那一半，而那一半正是批量编辑
+/// 会踩的：本体页一口气建 28 条属性，每建一条排一次，第一条开跑之后的 27 条都不再
+/// 与「排着的」撞上，于是排成 28 份，串行跑 28 遍。用这个入口的任务必须在**结束时
+/// 自己回头看有没有新活**（对齐的两个任务都这么做），否则跑着时来的那些变化会丢。
+pub async fn enqueue_unless_pending(
+    pool: &PgPool,
+    kind: &str,
+    payload: serde_json::Value,
+) -> AppResult<Option<i64>> {
+    let mut tx = pool.begin().await?;
+    let row: Option<(i64,)> = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload)
+         SELECT $1, $2
+          WHERE NOT EXISTS (SELECT 1 FROM jobs
+                             WHERE kind = $1 AND payload = $2
+                               AND status IN ('queued', 'running'))
+         RETURNING id",
+    )
+    .bind(kind)
+    .bind(payload)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if row.is_some() {
+        notify_worker_tx(&mut tx).await?;
+    }
+    tx.commit().await?;
+    Ok(row.map(|(id,)| id))
+}
+
 pub async fn enqueue_unless_queued(
     pool: &PgPool,
     kind: &str,

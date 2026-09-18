@@ -86,7 +86,6 @@ async fn align_phrases_locked(
     client: &utopia_llm::LlmClient,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
-    let run_started = chrono::Utc::now();
     let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
     let class_key: HashMap<Uuid, &str> = classes.iter().map(|c| (c.id, c.key.as_str())).collect();
@@ -314,6 +313,8 @@ async fn align_phrases_locked(
     // 这一轮跑着的时候世界没停：新文档带来新签名，改了的属性让刚判的绑定过期，本轮没排上
     // 的触发也都落在这里。有失败的批次、有没试过的新签名、有本轮判完又过期的绑定，就再排
     // 一次
+    // 「过期」不限本轮判的：跑着的时候有人建了属性，判过 none 的老绑定也该再判一次
+    // ——那正是批量建本体时唯一的触发（建的时候有一份在跑，就不再排了）
     let again = failed > 0
         || phrase_bindings::signatures(pool, kb_id)
             .await?
@@ -322,7 +323,7 @@ async fn align_phrases_locked(
         || phrase_bindings::stale(pool, kb_id)
             .await?
             .iter()
-            .any(|b| b.decided_by != "person" && b.decided_at >= run_started);
+            .any(|b| b.decided_by != "person");
     if again {
         utopia_store::jobs::enqueue_unless_queued(
             pool,

@@ -139,7 +139,7 @@ pub async fn create_entity_type(
     )
     .await;
     // 本体多了一个类：类别词的绑定里那些「没有」和「没定」的要重判（0044 对齐第一片）
-    let _ = utopia_store::jobs::enqueue_unless_queued(
+    let _ = utopia_store::jobs::enqueue_unless_pending(
         &state.pool,
         "align_types",
         json!({ "kb_id": kb_id }),
@@ -184,7 +184,7 @@ pub async fn update_entity_type(
     )
     .await;
     // 类的定义改了：绑到它的类别词过期，重判
-    let _ = utopia_store::jobs::enqueue_unless_queued(
+    let _ = utopia_store::jobs::enqueue_unless_pending(
         &state.pool,
         "align_types",
         json!({ "kb_id": kb_id }),
@@ -324,7 +324,7 @@ pub async fn create_relation_type(
         utopia_store::ontology::set_relation_qualifiers(&state.pool, kb_id, id, q).await?;
     }
     // 多了一个属性：判成 none / undecided 的签名也许对得上了（0044 对齐第二片）
-    utopia_store::jobs::enqueue_unless_queued(
+    utopia_store::jobs::enqueue_unless_pending(
         &state.pool,
         "align_phrases",
         serde_json::json!({ "kb_id": kb_id }),
@@ -369,7 +369,7 @@ pub async fn update_relation_type(
         utopia_store::ontology::set_relation_qualifiers(&state.pool, kb_id, id, q).await?;
     }
     // 属性改了定义或域/值域：绑到它的签名过期，判成 none 的也许对得上了
-    utopia_store::jobs::enqueue_unless_queued(
+    utopia_store::jobs::enqueue_unless_pending(
         &state.pool,
         "align_phrases",
         serde_json::json!({ "kb_id": kb_id }),

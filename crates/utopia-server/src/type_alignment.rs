@@ -109,7 +109,6 @@ async fn align_types_locked(
     client: &utopia_llm::LlmClient,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
-    let run_started = chrono::Utc::now();
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
     let by_id: HashMap<Uuid, &EntityType> = classes.iter().map(|c| (c.id, c)).collect();
     let by_key: HashMap<&str, &EntityType> = classes.iter().map(|c| (c.key.as_str(), c)).collect();
@@ -311,6 +310,7 @@ async fn align_types_locked(
         state.emit_graph(kb_id);
     }
     // 同短语对齐：失败过、来了没试过的新词、本轮判完的又过期了，就再排一次
+    // 同短语对齐：「过期」不限本轮判的，跑着时建的类也要让老绑定再判一次
     let again = failed > 0 || {
         let stale_now: HashSet<String> = type_bindings::stale(pool, kb_id)
             .await?
@@ -320,11 +320,10 @@ async fn align_types_locked(
             .await?
             .iter()
             .any(|s| !attempted.contains(&s.kind_word) && !existing.contains_key(&s.kind_word))
-            || type_bindings::bindings(pool, kb_id).await?.iter().any(|b| {
-                b.decided_by != "person"
-                    && b.decided_at >= run_started
-                    && stale_now.contains(&b.kind_word)
-            })
+            || type_bindings::bindings(pool, kb_id)
+                .await?
+                .iter()
+                .any(|b| b.decided_by != "person" && stale_now.contains(&b.kind_word))
     };
     if again {
         utopia_store::jobs::enqueue_unless_queued(
