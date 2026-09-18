@@ -1529,6 +1529,7 @@ export const zh: Strings = {
     railMappings: "数据映射",
     railViolations: "公理",
     railDefects: "本体",
+    railAlignment: "对齐",
     railDecisions: "决定",
     railMerges: "合并",
     railAgent: "Agent",
@@ -1653,6 +1654,20 @@ export const zh: Strings = {
     batchDone: (ok, failed) =>
       failed === 0 ? `已裁 ${ok} 对` : `已裁 ${ok} 对，${failed} 对没成，留在队列里`,
     lowConfidence: "低置信度事实",
+    // 对齐队列（#725）
+    alignment: "对齐器拿不定的",
+    alignmentHint:
+      "两类东西之间的一个说法，或一个类别词，对齐器的两票不一致。选出文档这个说法对应本体的哪个属性或类，或者说没有对得上的：那些陈述就留在开放图谱里。你定了就算数，对齐器不会改人的判定。",
+    alignmentValue: "一个值",
+    alignmentNone: "没有对得上的",
+    alignmentForward: "照原文方向",
+    alignmentReverse: "反过来",
+    alignmentBind: "绑定",
+    alignmentLeaveOpen: "留在开放图谱",
+    alignmentStatements: (n: number) => `${n} 条陈述`,
+    alignmentEntities: (n: number) => `${n} 样东西`,
+    alignmentVotes: (first: string, second: string) => `两票：${first} · ${second}`,
+    alignmentTyped: (kept: number, retired: number) => `类型化图谱已重算：${kept} 条成了类型化事实，${retired} 行作废`,
     defects: "本体自相矛盾",
     defectsHint:
       "定义本身的问题，没有牵涉任何事实。这一档排在前面：定义站不住的时候，据它报出来的每一条事实级结论都可疑。",

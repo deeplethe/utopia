@@ -101,6 +101,28 @@ pub async fn signatures(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<PhraseSigna
     Ok(sqlx::query_as(&sql).bind(kb_id).fetch_all(pool).await?)
 }
 
+/// 按 id 取一条绑定的签名（人在队列里定它时用）：短语、两端的类、宾语是不是字面值，
+/// 例句照判定时记下的，陈述数同。
+pub async fn signature_of(
+    pool: &PgPool,
+    kb_id: Uuid,
+    id: Uuid,
+) -> AppResult<Option<PhraseSignature>> {
+    Ok(sqlx::query_as(
+        "SELECT b.phrase, b.subject_type_id, st.key AS subject_type_key,
+                b.object_type_id, ot.key AS object_type_key, b.object_is_value,
+                b.statement_count::bigint AS count, b.examples, '{}'::text[] AS quotes
+           FROM phrase_bindings b
+      LEFT JOIN entity_types st ON st.id = b.subject_type_id
+      LEFT JOIN entity_types ot ON ot.id = b.object_type_id
+          WHERE b.kb_id = $1 AND b.id = $2",
+    )
+    .bind(kb_id)
+    .bind(id)
+    .fetch_optional(pool)
+    .await?)
+}
+
 /// 一条签名判成了什么。
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct Binding {

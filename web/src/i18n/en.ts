@@ -1746,6 +1746,7 @@ export const en = {
     railMappings: "Data mapping",
     railViolations: "Axioms",
     railDefects: "Ontology",
+    railAlignment: "Alignment",
     railDecisions: "Decisions",
     railMerges: "Merges",
     railAgent: "Agent",
@@ -1892,6 +1893,21 @@ export const en = {
           : `${ok} pairs decided`
         : `${ok} decided, ${failed} could not be — they stay in the queue`,
     lowConfidence: "Low-confidence facts",
+    // 对齐队列（#725）
+    alignment: "The aligner could not settle these",
+    alignmentHint:
+      "A phrase between two kinds of thing, or a kind word, where the aligner's two votes disagreed. Pick the property or class the documents' words mean, or say none fits: the statements then stay in the open graph. Your decision stands; the aligner never overrides a person.",
+    alignmentValue: "a value",
+    alignmentNone: "none fits",
+    alignmentForward: "as written",
+    alignmentReverse: "reversed",
+    alignmentBind: "Bind",
+    alignmentLeaveOpen: "Leave open",
+    alignmentStatements: (n: number) => (n === 1 ? "1 statement" : `${n} statements`),
+    alignmentEntities: (n: number) => (n === 1 ? "1 thing" : `${n} things`),
+    alignmentVotes: (first: string, second: string) => `Votes: ${first} · ${second}`,
+    alignmentTyped: (kept: number, retired: number) =>
+      `Typed graph recomputed: ${kept} statements typed, ${retired} rows retired`,
     defects: "Ontology contradicts itself",
     defectsHint:
       "Problems in the definitions themselves — no facts involved. These come first: while a definition contradicts itself, every fact-level finding that rests on it is suspect.",

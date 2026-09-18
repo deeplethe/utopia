@@ -497,6 +497,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(review_routes::decide_pending),
         )
         .route("/kbs/{id}/review/{review_id}", post(review_routes::decide))
+        // 对齐队列（#725）：人定签名的属性与方向、类别词的类
+        .route(
+            "/kbs/{id}/review/alignment/phrases/{binding_id}",
+            post(review_routes::decide_alignment_phrase),
+        )
+        .route(
+            "/kbs/{id}/review/alignment/kind-words/{kind_word}",
+            post(review_routes::decide_alignment_kind_word),
+        )
         // 语义层映射的表态（0011）。跟消解审核并排——都是「引擎提议、人裁决」
         .route(
             "/kbs/{id}/review/mappings/{mapping_id}",

@@ -1472,6 +1472,8 @@ pub struct ReviewCounts {
     pub lowconf: i64,
     pub mappings: i64,
     pub violations: i64,
+    /// 对齐器两票不一致的签名与类别词（#725 对齐队列）
+    pub alignment: i64,
     pub defects: i64,
     pub merges: i64,
     /// agent 写下、等人回答的建议（0025）
@@ -1575,6 +1577,7 @@ pub struct ReviewWaiting {
     pub lowconf: QueueWait,
     pub violations: QueueWait,
     pub defects: QueueWait,
+    pub alignment: QueueWait,
 }
 
 /// 办过的：近 7 天与近 30 天两个窗口，加近 14 天每天一根柱

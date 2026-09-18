@@ -10,6 +10,9 @@ import {
   type ReviewQueue,
   type ReviewTypeFilter,
   type OntologyDefect,
+  type AlignmentItem,
+  type EntityTypeView,
+  type RelationTypeView,
   type ConflictItem,
   type FactReviewItem,
   type MergeLog,
@@ -38,6 +41,7 @@ import {
   RAIL_CLS,
   RailItem,
   Segmented,
+  SearchSelect,
   Status,
   cn,
   type ChipTone,
@@ -695,6 +699,135 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
  * 因为人要判断的正是它对不对。概念名与源是身份，unit 是答里必须带的量纲。 */
 /** 本体自己的一处自相矛盾。**两个按钮而不是三个**——这一档压根没看数据，
  *  所以没有「数据错了」这条出路，只能是「我去改了本体」或「先放着」。 */
+function voteText(v: { property: string; direction: string } | string | null | undefined): string {
+  if (v === undefined || v === null) return S.review.alignmentNone;
+  if (typeof v === "string") return v;
+  return `${v.property} · ${v.direction === "reverse" ? S.review.alignmentReverse : S.review.alignmentForward}`;
+}
+
+/** 一条短语签名：短语、两端的类、例句、两票；人选属性与方向，或「没有」 */
+function AlignmentPhraseRow({
+  item,
+  properties,
+  busy,
+  onDecide,
+}: {
+  item: Extract<AlignmentItem, { kind: "phrase" }>;
+  properties: RelationTypeView[];
+  busy: boolean;
+  onDecide: (property: string | null, direction: "forward" | "reverse") => void;
+}) {
+  const first = item.votes?.first ?? null;
+  const second = item.votes?.second ?? null;
+  const [property, setProperty] = useState<string>(first?.property ?? second?.property ?? "");
+  const [direction, setDirection] = useState<"forward" | "reverse">(
+    first?.direction ?? second?.direction ?? "forward",
+  );
+  // 字面值当宾语的签名只配属性（attribute），两样东西之间的只配关系（relation）
+  const fitting = properties.filter((p) =>
+    item.object_is_value ? p.kind === "attribute" : p.kind === "relation",
+  );
+  return (
+    <div className="glass rounded-panel p-3">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-body text-ink">“{item.phrase}”</span>
+        <span className="text-small text-ink-2">
+          {item.subject_class ?? "?"} → {item.object_is_value ? S.review.alignmentValue : (item.object_class ?? "?")}
+        </span>
+        <span className="text-small text-ink-2">{S.review.alignmentStatements(item.statement_count)}</span>
+      </div>
+      {item.examples.length > 0 && (
+        <div className="mt-1 space-y-1 text-small text-ink-2">
+          {item.examples.map((e, i) => (
+            <div key={i}>{e}</div>
+          ))}
+        </div>
+      )}
+      <div className="mt-1 text-small text-ink-2">
+        {S.review.alignmentVotes(voteText(first), voteText(second))}
+      </div>
+      <div className={CARD_ACTIONS}>
+        <SearchSelect
+          size="sm"
+          className="w-56"
+          value={property}
+          onChange={setProperty}
+          options={[
+            { value: "", label: S.review.alignmentNone },
+            ...fitting.map((p) => ({ value: p.key, label: p.label })),
+          ]}
+        />
+        {property && !item.object_is_value && (
+          <Segmented
+            size="sm"
+            value={direction}
+            onChange={setDirection}
+            options={[
+              { value: "forward", label: S.review.alignmentForward },
+              { value: "reverse", label: S.review.alignmentReverse },
+            ]}
+          />
+        )}
+        <Button size="sm" disabled={busy} onClick={() => onDecide(property || null, direction)}>
+          {property ? S.review.alignmentBind : S.review.alignmentLeaveOpen}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** 一个类别词：词、写法、例名、它们参与的短语、两票；人选类，或「没有」 */
+function AlignmentKindWordRow({
+  item,
+  classes,
+  busy,
+  onDecide,
+}: {
+  item: Extract<AlignmentItem, { kind: "kind_word" }>;
+  classes: EntityTypeView[];
+  busy: boolean;
+  onDecide: (cls: string | null) => void;
+}) {
+  const first = item.votes?.first ?? null;
+  const second = item.votes?.second ?? null;
+  const [cls, setCls] = useState<string>(first ?? second ?? "");
+  return (
+    <div className="glass rounded-panel p-3">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="text-body text-ink">{item.kind_word}</span>
+        {item.words.length > 0 && (
+          <span className="text-small text-ink-2">{item.words.join(" · ")}</span>
+        )}
+        <span className="text-small text-ink-2">{S.review.alignmentEntities(item.entity_count)}</span>
+      </div>
+      {item.examples.length > 0 && (
+        <div className="mt-1 text-small text-ink-2">{item.examples.join(" · ")}</div>
+      )}
+      {item.phrases.length > 0 && (
+        <div className="mt-1 text-small text-ink-2">{item.phrases.map((p) => `—${p}→`).join("  ")}</div>
+      )}
+      <div className="mt-1 text-small text-ink-2">
+        {S.review.alignmentVotes(voteText(first), voteText(second))}
+      </div>
+      <div className={CARD_ACTIONS}>
+        <SearchSelect
+          size="sm"
+          className="w-56"
+          value={cls}
+          onChange={setCls}
+          options={[
+            { value: "", label: S.review.alignmentNone },
+            ...classes.map((c) => ({ value: c.key, label: c.label })),
+          ]}
+        />
+        <Button size="sm" disabled={busy} onClick={() => onDecide(cls || null)}>
+          {cls ? S.review.alignmentBind : S.review.alignmentLeaveOpen}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function DefectRow({
   defect: d,
   busy,
@@ -998,6 +1131,8 @@ type Sel =
   | "violations"
   // 本体自己的自相矛盾。**与 violations 分开**：那一档看事实，这一档只看定义
   | "defects"
+  // 对齐器两票不一致的签名与类别词（#725，0044 决定 3）：问的是「这个说法是本体的哪个属性」
+  | "alignment"
   // agent 的每一笔（0025）：建议等人答，自动裁的可撤。它不是七档之一——
   // 七档问「这条知识对不对」，这一档问「机器替你办的对不对」
   | "agent"
@@ -1013,6 +1148,7 @@ const QUEUE_FETCHED: ReviewQueue[] = [
   "lowconf",
   "violations",
   "defects",
+  "alignment",
   "merges",
   "agent",
 ];
@@ -1025,6 +1161,7 @@ const QUEUE_ORDER: Sel[] = [
   "lowconf",
   "violations",
   "defects",
+  "alignment",
 ];
 /** 有内容区、要翻页的那些档——总览不翻页 */
 type Paged = Exclude<Sel, "overview">;
@@ -1037,6 +1174,7 @@ const PAGE_SIZE: Record<Paged, number> = {
   lowconf: FACT_PAGE,
   violations: FACT_PAGE,
   defects: FACT_PAGE,
+  alignment: FACT_PAGE,
   merges: MERGE_PAGE,
   decisions: 20,
   agent: 20,
@@ -1205,6 +1343,28 @@ export function Review() {
     }) => api.decideDefect(kb!.id, id, resolution),
     onSettled: invalidate,
   });
+  const alignmentPhraseAction = useMutation({
+    mutationFn: ({
+      id,
+      property,
+      direction,
+    }: {
+      id: string;
+      property: string | null;
+      direction: "forward" | "reverse";
+    }) => api.decideAlignmentPhrase(kb!.id, id, property, direction),
+    onSuccess: (r) => {
+      if (r.typed.added + r.typed.merged + r.typed.retired > 0) {
+        toast.success(S.review.alignmentTyped(r.typed.added + r.typed.merged, r.typed.retired));
+      }
+    },
+    onSettled: invalidate,
+  });
+  const alignmentKindWordAction = useMutation({
+    mutationFn: ({ kindWord, cls }: { kindWord: string; cls: string | null }) =>
+      api.decideAlignmentKindWord(kb!.id, kindWord, cls),
+    onSettled: invalidate,
+  });
   const violationAction = useMutation({
     mutationFn: ({
       id,
@@ -1275,6 +1435,7 @@ export function Review() {
     mappings: c?.mappings ?? 0,
     violations: c?.violations ?? 0,
     defects: c?.defects ?? 0,
+    alignment: c?.alignment ?? 0,
     merges: c?.merges ?? 0,
     decisions: history.data?.total ?? 0,
     agent: c?.agent ?? 0,
@@ -1288,6 +1449,13 @@ export function Review() {
   const asConflicts = () => rows as ConflictItem[];
   const asViolations = () => rows as AxiomViolation[];
   const asDefects = () => rows as OntologyDefect[];
+  const asAlignment = () => rows as AlignmentItem[];
+  // 对齐卡片要列本体的类与属性给人选；只在这一档拉
+  const ontology = useQuery({
+    queryKey: ["ontology", kb?.id],
+    queryFn: () => api.ontology(kb!.id),
+    enabled: !!kb && queueSel === "alignment",
+  });
   const asMerges = () => rows as MergeLog[];
   const asAgent = () => rows as AgentDecision[];
   // agent 正在裁的一对（0025）：任务在跑、这一对标着 adjudicating。批量选页时跳过它们
@@ -1324,6 +1492,7 @@ export function Review() {
       hint: S.review.violationsHint,
     },
     defects: { title: S.review.defects, hint: S.review.defectsHint },
+    alignment: { title: S.review.alignment, hint: S.review.alignmentHint },
     decisions: { title: S.review.decisionsTitle, hint: S.review.decisionsHint },
     merges: { title: S.review.mergeHistory, hint: null },
     agent: { title: S.review.agentTitle, hint: S.review.agentHint },
@@ -1396,6 +1565,13 @@ export function Review() {
             onClick={() => select("defects")}
           >
             {S.review.railDefects}
+          </RailItem>
+          <RailItem
+            active={active === "alignment"}
+            count={counts.alignment}
+            onClick={() => select("alignment")}
+          >
+            {S.review.railAlignment}
           </RailItem>
           {/* agent 的队列（0025）：徽标是等人回答的建议数 */}
           <RailItem
@@ -1716,6 +1892,45 @@ export function Review() {
                       }
                     />
                   ))}
+                </div>
+              )}
+
+              {active === "alignment" && (
+                <div className="space-y-3">
+                  {counts.alignment === 0 && (
+                    <div className="glass rounded-panel p-8 text-center text-body text-ink-2">
+                      {S.review.categoryEmpty}
+                    </div>
+                  )}
+                  {asAlignment().map((item) =>
+                    item.kind === "phrase" ? (
+                      <AlignmentPhraseRow
+                        key={item.id}
+                        item={item}
+                        properties={ontology.data?.relation_types ?? []}
+                        busy={
+                          alignmentPhraseAction.isPending &&
+                          alignmentPhraseAction.variables?.id === item.id
+                        }
+                        onDecide={(property, direction) =>
+                          alignmentPhraseAction.mutate({ id: item.id, property, direction })
+                        }
+                      />
+                    ) : (
+                      <AlignmentKindWordRow
+                        key={item.kind_word}
+                        item={item}
+                        classes={ontology.data?.entity_types ?? []}
+                        busy={
+                          alignmentKindWordAction.isPending &&
+                          alignmentKindWordAction.variables?.kindWord === item.kind_word
+                        }
+                        onDecide={(cls) =>
+                          alignmentKindWordAction.mutate({ kindWord: item.kind_word, cls })
+                        }
+                      />
+                    ),
+                  )}
                 </div>
               )}
 

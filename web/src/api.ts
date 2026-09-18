@@ -467,6 +467,8 @@ export type ReviewQueue =
   | "mappings"
   | "violations"
   | "defects"
+  // 对齐器两票不一致的签名与类别词（#725，0044 决定 3）
+  | "alignment"
   | "merges"
   // agent 的每一笔（0025）：建议、自动裁决与人的回答
   | "agent";
@@ -488,6 +490,8 @@ export interface ReviewCounts {
   mappings: number;
   violations: number;
   defects: number;
+  /** 对齐器拿不定的签名与类别词（#725） */
+  alignment: number;
   merges: number;
   /** agent 写下、等人回答的建议（0025） */
   agent: number;
@@ -694,6 +698,35 @@ export interface AxiomViolation {
 }
 /** 本体自己的一处自相矛盾。**与 AxiomViolation 不是一回事**：那个说
  *  「事实与定义抵触」，这个说「定义自己站不住」，后者更根本 */
+/** 对齐队列里的一条（#725）：一条短语签名，或一个类别词，都是对齐器两票不一致、等人定的 */
+export type AlignmentItem =
+  | {
+      kind: "phrase";
+      id: string;
+      phrase: string;
+      subject_class: string | null;
+      object_class: string | null;
+      object_is_value: boolean;
+      statement_count: number;
+      examples: string[];
+      votes: { first?: AlignmentVote | null; second?: AlignmentVote | null } | null;
+      decided_at: string;
+    }
+  | {
+      kind: "kind_word";
+      kind_word: string;
+      words: string[];
+      examples: string[];
+      phrases: string[];
+      entity_count: number;
+      votes: { first?: string | null; second?: string | null } | null;
+      decided_at: string;
+    };
+export interface AlignmentVote {
+  property: string;
+  direction: "forward" | "reverse";
+}
+
 export interface OntologyDefect {
   id: string;
   kind:
@@ -829,7 +862,14 @@ export interface ReviewSummary {
   /** agent 在这个库里做过什么（0025） */
   agent: { running: boolean; queue: number; open: number; last_7d: AgentWindow; last_30d: AgentWindow };
   waiting: Record<
-    "pending" | "duplicates" | "conflicts" | "unconfirmed" | "lowconf" | "violations" | "defects",
+    | "pending"
+    | "duplicates"
+    | "conflicts"
+    | "unconfirmed"
+    | "lowconf"
+    | "violations"
+    | "defects"
+    | "alignment",
     QueueWait
   >;
   decided: {
@@ -2252,6 +2292,23 @@ export const api = {
       defects_found: number;
       defects_new: number;
     }>(`/api/v1/kbs/${kbId}/consistency/check`, { method: "POST" }),
+  /** 人定一条短语签名：属性与方向，或没有（陈述留在开放图谱）。类型化图谱立刻重算 */
+  decideAlignmentPhrase: (
+    kbId: string,
+    bindingId: string,
+    property: string | null,
+    direction: "forward" | "reverse",
+  ) =>
+    request<{ ok: boolean; typed: { added: number; merged: number; retired: number } }>(
+      `/api/v1/kbs/${kbId}/review/alignment/phrases/${bindingId}`,
+      { method: "POST", body: JSON.stringify({ property, direction }) },
+    ),
+  /** 人定一个类别词：类，或没有。它名下的实体换类，短语签名跟着重判 */
+  decideAlignmentKindWord: (kbId: string, kindWord: string, cls: string | null) =>
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/review/alignment/kind-words/${encodeURIComponent(kindWord)}`,
+      { method: "POST", body: JSON.stringify({ class: cls }) },
+    ),
   /** 对一处本体缺陷表态。**两个出路**——它压根没看数据，没有「数据错了」这条 */
   decideDefect: (
     kbId: string,

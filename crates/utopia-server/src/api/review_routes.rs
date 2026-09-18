@@ -113,6 +113,10 @@ pub async fn list(
         "mappings" => {
             json!(utopia_store::mappings::proposed(&state.pool, kb_id, limit, offset).await?)
         }
+        // 对齐器两票不一致的签名与类别词（#725 对齐队列，0044 决定 3）
+        "alignment" => {
+            json!(utopia_store::alignment_queue::list(&state.pool, kb_id, limit, offset).await?)
+        }
         "violations" => {
             json!(
                 utopia_store::reasoning::open_violations(&state.pool, kb_id, limit, offset).await?
@@ -1205,4 +1209,167 @@ pub async fn run_inference(
         "invalidated": report.invalidated,
         "capped": report.capped,
     })))
+}
+
+#[derive(Deserialize)]
+pub struct DecideAlignmentPhraseReq {
+    /// 属性的键；空 = 没有属性对得上，陈述留在开放图谱
+    #[serde(default)]
+    pub property: Option<String>,
+    /// forward | reverse；给了属性就得给
+    #[serde(default)]
+    pub direction: Option<String>,
+}
+
+/// 人定一条短语签名绑到哪个属性（#725 对齐队列）。写成人的判定，代理此后不再改它；
+/// 类型化图谱立刻按新绑定重算。
+pub async fn decide_alignment_phrase(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, binding_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideAlignmentPhraseReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let sig = utopia_store::phrase_bindings::signature_of(&state.pool, kb_id, binding_id)
+        .await?
+        .ok_or(utopia_core::AppError::NotFound)?;
+    let property = match req
+        .property
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some(key) => {
+            let id = utopia_store::ontology::relation_type_views(&state.pool, kb_id)
+                .await?
+                .into_iter()
+                .find(|p| p.key == key)
+                .map(|p| p.id)
+                .ok_or_else(|| {
+                    utopia_core::AppError::invalid("unknown_property", "no property with that key")
+                })?;
+            Some(id)
+        }
+    };
+    let direction = match (property, req.direction.as_deref()) {
+        (None, _) => None,
+        (Some(_), Some(d @ ("forward" | "reverse"))) => Some(d),
+        (Some(_), _) => {
+            return Err(utopia_core::AppError::invalid(
+                "direction_required",
+                "a bound signature needs a direction: forward or reverse",
+            )
+            .into())
+        }
+    };
+    let votes = json!({ "person": { "property": req.property, "direction": direction } });
+    utopia_store::phrase_bindings::decide(
+        &state.pool,
+        kb_id,
+        &sig,
+        utopia_store::phrase_bindings::Decision {
+            relation_type_id: property,
+            direction,
+            status: if property.is_some() { "bound" } else { "none" },
+            votes: &votes,
+            decided_by: "person",
+        },
+    )
+    .await?;
+    let typed = utopia_store::materialize::materialize(&state.pool, kb_id).await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "alignment.phrase_decided",
+        "phrase_binding",
+        Some(binding_id),
+        json!({ "phrase": sig.phrase, "property": req.property, "direction": direction,
+                "typed_added": typed.added, "typed_retired": typed.retired }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    state.emit_graph(kb_id);
+    Ok(Json(
+        json!({ "ok": true, "typed": { "added": typed.added, "merged": typed.merged, "retired": typed.retired } }),
+    ))
+}
+
+#[derive(Deserialize)]
+pub struct DecideAlignmentKindWordReq {
+    /// 类的键；空 = 没有类对得上
+    #[serde(default)]
+    pub class: Option<String>,
+}
+
+/// 人定一个类别词绑到哪个类（#725 对齐队列）。绑上的类写到它名下的实体上；两端的类变了，
+/// 短语签名跟着变，所以再排一次短语对齐。
+pub async fn decide_alignment_kind_word(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, kind_word)): Path<(Uuid, String)>,
+    Json(req): Json<DecideAlignmentKindWordReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let class = match req
+        .class
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        None => None,
+        Some(key) => Some(
+            utopia_store::graph::entity_types(&state.pool, kb_id)
+                .await?
+                .into_iter()
+                .find(|c| c.key == key)
+                .map(|c| c.id)
+                .ok_or_else(|| {
+                    utopia_core::AppError::invalid("unknown_class", "no class with that key")
+                })?,
+        ),
+    };
+    let votes = json!({ "person": req.class });
+    let written = utopia_store::type_bindings::decide(
+        &state.pool,
+        kb_id,
+        &kind_word,
+        &[],
+        class,
+        if class.is_some() { "bound" } else { "none" },
+        &votes,
+        "person",
+    )
+    .await?;
+    if !written {
+        return Err(utopia_core::AppError::NotFound.into());
+    }
+    match class {
+        Some(id) => {
+            utopia_store::type_bindings::apply(&state.pool, kb_id, &kind_word, id).await?;
+        }
+        None => {
+            utopia_store::type_bindings::unapply(&state.pool, kb_id, &kind_word).await?;
+        }
+    }
+    utopia_store::jobs::enqueue_unless_queued(
+        &state.pool,
+        "align_phrases",
+        json!({ "kb_id": kb_id }),
+    )
+    .await?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "alignment.kind_word_decided",
+        "type_binding",
+        None,
+        json!({ "kind_word": kind_word, "class": req.class }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    state.emit_graph(kb_id);
+    Ok(Json(json!({ "ok": true })))
 }

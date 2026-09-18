@@ -4,6 +4,7 @@
 pub mod access;
 pub mod accounts;
 pub mod alerts;
+pub mod alignment_queue;
 pub mod audit;
 pub mod business_rules;
 pub mod conversations;

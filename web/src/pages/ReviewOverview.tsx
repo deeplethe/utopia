@@ -17,6 +17,7 @@ const WAITING: { key: WaitingQueue; label: string }[] = [
   { key: "lowconf", label: S.review.railLowConfidence },
   { key: "violations", label: S.review.railViolations },
   { key: "defects", label: S.review.railDefects },
+  { key: "alignment", label: S.review.railAlignment },
 ];
 
 /** 从某个时刻到现在整几天；不满一天算 0 */
