@@ -9,8 +9,11 @@ Records: [0025] (the governor), [0026] (why), [0027] (the impact gate), [0028] (
 
 **Queues, grouped by where an item came from.** Review holds nods (`pending_facts`, placed first),
 duplicates (`resolution_reviews`), conflicts (`fact_conflicts`), unconfirmed (every evidence chunk
-superseded), low-confidence (`confidence < 0.75`), violations (`axiom_violations`) and defects
-(`ontology_defects`), plus the Agent queue; ontology proposals sit on the ontology page and mappings
+superseded), low-confidence (`confidence < 0.75`), violations (`axiom_violations`), defects
+(`ontology_defects`) and alignment (a phrase signature or a kind word the aligner's two votes
+split on, `phrase_bindings` and `type_bindings` in `undecided`; a person binds it to a property
+with a direction or to a class, or says none fits, and the typed graph recomputes at once; the
+aligner never overrides a person, #PRN4), plus the Agent queue; ontology proposals sit on the ontology page and mappings
 on their own page [0011, 0015, 0017, 0025]. Every human decision is a ledger event with an actor
 (`review.merge`, `review.keep`, `merge.revert`, `fact.*`, `conflict.*`) and may carry a `rationale`,
 asked as "What told you?", optional, written as `why` on the event [0026].
@@ -106,7 +109,7 @@ for 589 pairs [0025 d10].
   conflicts queue, the low-confidence handling is dropped. Cut 2 (violations, defects, mappings)
   is open.
 - **Queues organised by what a decision changes** [#725]: ontology proposals; alignment (a
-  signature or rule the aligner cannot settle); time anchors (a missing or conflicting document
+  signature or rule the aligner cannot settle; the signature half is built, #PRN4); time anchors (a missing or conflicting document
   date, an unanchored mention); identity (pairs evidence cannot settle, merges the gate held);
   typed-fact errata; cross-document conflicts; nods. Agents handle every item; people see what an
   agent could not settle or what one decision resolves at once. Cards are one template per queue,
