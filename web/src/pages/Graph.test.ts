@@ -23,6 +23,7 @@ import type { EntityFact } from "../api";
 
 const base: EntityFact = {
   id: "f",
+  said_as: null,
   direction: "out",
   predicate_key: null,
   predicate_label: null,

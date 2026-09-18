@@ -1153,6 +1153,7 @@ mod tests {
 
     fn attribute_fact(value: serde_json::Value) -> EntityFact {
         EntityFact {
+            said_as: None,
             recorded_at: chrono::Utc::now(),
             invalidated_at: None,
             supersedes: None,

@@ -913,6 +913,9 @@ export interface GraphEdge {
   /** 本体没认下这条关系时是原文说法；两者都拿不出时为 null（0052 之前的老数据） */
   predicate: string | null;
   label: string | null;
+  /** 这条边是从哪条开放陈述算出来的，那条陈述的原话（0044 决定 1）：
+   *  画布一条陈述只画一条边，有类型化行就画它，原话跟在这里不丢 */
+  said_as: string | null;
   /** true = 这条边的名字来自原文，不是本体认下的关系 */
   inferred: boolean;
   /** true = 这条边是**推出来的**，不是任何人断言的（R1）。
@@ -962,6 +965,9 @@ export interface EntityFact {
   /** 同 GraphEdge：本体外的关系回落到原文说法，两者都没有时为 null */
   predicate_key: string | null;
   predicate_label: string | null;
+  /** 这条边是从哪条开放陈述算出来的，那条陈述的原话（0044 决定 1）：
+   *  画布一条陈述只画一条边，有类型化行就画它，原话跟在这里不丢 */
+  said_as: string | null;
   /** true = 名字来自原文，不是本体认下的关系 */
   inferred: boolean;
   /** 关系的时态类别。没有谓词就无从谈起，为 null */

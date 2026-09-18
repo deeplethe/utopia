@@ -1168,6 +1168,27 @@ pub async fn overview(
     Ok((nodes, edges, total_nodes, total_edges))
 }
 
+/// 这条开放陈述已经被一条活着的类型化行代表（0044 决定 1：类型化图谱是开放图谱按
+/// 绑定算出来的视图）。画布与实体面板据此一条陈述只画一条边——有类型化行就画它，
+/// 标签是属性的名字；没有才画原话。**账本两条都留着**，这里只管画面。
+/// `$f` 换成调用处的表别名
+const REPRESENTED_BY_TYPED: &str = "EXISTS (SELECT 1 FROM typed_fact_sources src
+                    JOIN facts ty ON ty.id = src.fact_id
+                   WHERE src.statement_id = $f.id AND ty.invalidated_at IS NULL)";
+
+fn represented_by_typed(alias: &str) -> String {
+    REPRESENTED_BY_TYPED.replace("$f", alias)
+}
+
+/// 一条类型化行背后那些陈述的原话，去重拼起来（几条陈述可能算出同一行，见 0068）。
+fn said_as(alias: &str) -> String {
+    format!(
+        "(SELECT string_agg(DISTINCT st.phrase, ' · ')
+            FROM typed_fact_sources src JOIN facts st ON st.id = src.statement_id
+           WHERE src.fact_id = {alias}.id)"
+    )
+}
+
 async fn edges_among(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1195,6 +1216,7 @@ async fn edges_among(
         "SELECT f.id, {subject} AS source, {object} AS target,
                 COALESCE(r.key, fact_surface_predicate(f.id)) AS predicate,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS label,
+                {said_as} AS said_as,
                 r.id IS NULL AS inferred, FALSE AS derived, NULL::text AS rule,
                 ARRAY[]::uuid[] AS premises,
                 f.valid_from, f.valid_to,
@@ -1212,9 +1234,10 @@ async fn edges_among(
          WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL
            AND {subject} = ANY($2) AND {object} = ANY($2)
            AND {facts_hold}
+           AND NOT {represented}
          UNION ALL
          SELECT d.id, d.subject_id AS source, d.object_id AS target,
-                r.key AS predicate, r.label AS label,
+                r.key AS predicate, r.label AS label, NULL::text AS said_as,
                 FALSE AS inferred, TRUE AS derived, ru.kind AS rule,
                 ARRAY(SELECT fd.premise_fact_id FROM fact_derivations fd
                        WHERE fd.derived_fact_id = d.id
@@ -1233,6 +1256,7 @@ async fn edges_among(
                 (v.detail->>'subject_id')::uuid AS source,
                 (v.detail->>'object_id')::uuid AS target,
                 v.detail->>'predicate' AS predicate, v.detail->>'predicate' AS label,
+                NULL::text AS said_as,
                 FALSE AS inferred, TRUE AS derived, v.detail->>'rule' AS rule,
                 v.path AS premises,
                 (v.detail->>'valid_from')::timestamptz AS valid_from,
@@ -1248,6 +1272,8 @@ async fn edges_among(
            AND {ghost_hold}",
         // 世界轴（0022）：三段都从 world_axis 拼，读点上不再手写 NULL 的含义
         facts_hold = crate::world_axis::facts_hold_at("f", 3),
+        said_as = said_as("f"),
+        represented = represented_by_typed("f"),
         derived_hold = crate::world_axis::derived_hold_at("d", 3),
         ghost_hold = crate::world_axis::interval_holds_at(
             "(v.detail->>'valid_from')::timestamptz",
@@ -1441,7 +1467,7 @@ pub async fn entity_detail(
     .ok_or(AppError::NotFound)?;
 
     let mut facts: Vec<EntityFact> = sqlx::query_as(&format!(
-        "SELECT f.id, f.recorded_at, f.invalidated_at, f.supersedes,
+        "SELECT f.id, {said_as} AS said_as, f.recorded_at, f.invalidated_at, f.supersedes,
                 ARRAY(SELECT DISTINCT fe.document_id FROM fact_evidence fe
                       WHERE fe.fact_id = f.id AND fe.document_id IS NOT NULL
                       ORDER BY fe.document_id) AS document_ids,
@@ -1487,10 +1513,13 @@ pub async fn entity_detail(
            ON o.id = CASE WHEN {subject} = $2 THEN {object} ELSE {subject} END
          LEFT JOIN entity_types ot ON ot.id = o.type_id
          WHERE f.kb_id = $1 AND {facts_held} AND {facts_hold}
+           AND NOT {represented}
            AND ({subject} = $2 OR {object} = $2)
            AND {not_name}
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
         not_name = crate::names::not_a_name("f"),
+        said_as = said_as("f"),
+        represented = represented_by_typed("f"),
         facts_held = crate::record_axis::facts_held_at("f", 3),
         facts_hold = crate::world_axis::facts_hold_at("f", 4),
         holds_from = crate::world_axis::facts_holds_from("f"),

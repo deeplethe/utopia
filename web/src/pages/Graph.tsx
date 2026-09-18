@@ -3301,7 +3301,14 @@ function FactRow({
                 fact.predicate_label
                   ? fact.inferred
                     ? `${predicateSentence(fact.predicate_label)} · ${S.graph.inferredPredicate}`
-                    : predicateSentence(fact.predicate_label)
+                    : // 本体认下的关系是从原文的说法算出来的（0044 决定 1）：
+                      // 悬停说出那句原话，画布上少画的那条边不等于把它藏了
+                      [
+                        predicateSentence(fact.predicate_label),
+                        fact.said_as ? S.graph.saidAs(fact.said_as) : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")
                   : undefined
               }
             >

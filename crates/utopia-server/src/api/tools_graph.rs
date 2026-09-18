@@ -1222,6 +1222,7 @@ mod tests {
 
     fn fact(direction: &str, pred: &str, other: &str, other_type: Option<&str>) -> EntityFact {
         EntityFact {
+            said_as: None,
             recorded_at: chrono::Utc::now(),
             invalidated_at: None,
             supersedes: None,

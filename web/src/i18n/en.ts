@@ -803,6 +803,7 @@ export const en = {
        「采购了」出来是 purchases——说"原文说的是 purchases"是假的。
        逐字原句就在旁边的证据引文里，没丢。 */
     proposedPredicate: (p: string) => `read from the text as “${p}”`,
+    saidAs: (words: string) => `the documents say it “${words}”`,
     inferredPredicate:
       "not a relation in the ontology, this is the source's wording",
     unknownPredicate: "no relation stated",

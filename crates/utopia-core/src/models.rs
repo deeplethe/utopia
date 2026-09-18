@@ -725,6 +725,10 @@ pub struct GraphEdge {
     /// 两个来源都拿不出时为 None——那是 add_evidence 记录原文说法之前的老数据
     pub predicate: Option<String>,
     pub label: Option<String>,
+    /// 这条类型化边是从哪条开放陈述算出来的，那条陈述的原话（0044 决定 1，#PRN5）。
+    /// 画布把一条陈述只画一条边：有类型化行就画它，标签是属性的名字——原话不能因此
+    /// 从画面上消失，它跟在这一格里。几条陈述算出同一行时是它们的原话，去重后拼起来
+    pub said_as: Option<String>,
     /// true = 这条边的名字来自原文，不是本体认下的关系。界面要显示得看得出区别
     pub inferred: bool,
     /// true = 这条边是**推出来的**，不是任何人断言的（R1，住在 `derived_facts`）。
@@ -786,6 +790,8 @@ pub struct NameView {
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct EntityFact {
     pub id: Uuid,
+    /// 这条类型化事实是从哪条开放陈述算出来的，那条陈述的原话（#PRN5）
+    pub said_as: Option<String>,
     pub recorded_at: DateTime<Utc>,
     pub invalidated_at: Option<DateTime<Utc>>,
     pub supersedes: Option<Uuid>,
