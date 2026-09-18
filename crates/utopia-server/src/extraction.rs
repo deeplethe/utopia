@@ -64,18 +64,23 @@ pub(crate) async fn chat_retrying_rate_limits_at(
             Ok(reply) => return Ok(reply),
             Err(e) => e,
         };
-        let Some(hit) = utopia_llm::rate_limited(&err) else {
+        // 会自己好的两类：限流，和端点这会儿不可用（502/503/504）。其余照原样抛出去
+        let wait = utopia_llm::rate_limited(&err)
+            .map(|hit| ("限流", hit.retry_after))
+            .or_else(|| utopia_llm::unavailable(&err).map(|hit| ("端点不可用", hit.retry_after)));
+        let Some((what, retry_after)) = wait else {
             return Err(err);
         };
         if attempt == RATE_LIMIT_TRIES {
-            return Err(err.context(format!("限流退避 {RATE_LIMIT_TRIES} 次仍未通过")));
+            return Err(err.context(format!("{what}退避 {RATE_LIMIT_TRIES} 次仍未通过")));
         }
-        let delay = jitter(hit.retry_after.unwrap_or(backoff).min(RATE_LIMIT_CAP));
+        let delay = jitter(retry_after.unwrap_or(backoff).min(RATE_LIMIT_CAP));
         tracing::warn!(
             attempt,
             delay_ms = delay.as_millis() as u64,
-            from_header = hit.retry_after.is_some(),
-            "端点限流，退避后重试"
+            from_header = retry_after.is_some(),
+            why = what,
+            "端点这次没答成，退避后重试"
         );
         tokio::time::sleep(delay).await;
         backoff = (backoff * 2).min(RATE_LIMIT_CAP);

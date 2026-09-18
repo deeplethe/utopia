@@ -103,6 +103,27 @@ pub fn rate_limited(err: &anyhow::Error) -> Option<&RateLimited> {
     err.chain().find_map(|e| e.downcast_ref::<RateLimited>())
 }
 
+/// 端点这会儿不可用：502 / 503 / 504，或者它自己说的 408。**跟 [`RateLimited`] 同一类，
+/// 理由也同一条：它会自己好。** 网关抽风、上游重启、排队超时都是几秒到几十秒的事，
+/// 而 400（提示词不合法）、401（密钥错）重试一万次还是错。
+///
+/// 混在 [`Rejected`] 里的代价实测过：本地代理对上游的一次 `fetch failed` 回 502，
+/// 32 块的一篇文档里随机几块就此报废，整篇抽取失败重来——一次调用 5% 的失败率，
+/// 一篇长文档第一遍几乎必失败（1 − 0.95³² ≈ 81%），而任务只重试三次。
+#[derive(Debug, thiserror::Error)]
+#[error("LLM endpoint is unavailable ({status}): {detail}")]
+pub struct Unavailable {
+    pub status: u16,
+    /// 端点给的 `Retry-After`（有则更准，多数不给）
+    pub retry_after: Option<Duration>,
+    pub detail: String,
+}
+
+/// anyhow 错误链里的 [`Unavailable`]，穿透 context 层。
+pub fn unavailable(err: &anyhow::Error) -> Option<&Unavailable> {
+    err.chain().find_map(|e| e.downcast_ref::<Unavailable>())
+}
+
 /// 账号付不起这次请求：欠费，或者套餐配额用尽。
 ///
 /// **跟 [`RateLimited`] 分开，因为它不会自己好。** 限流等一分钟就过去，
@@ -187,6 +208,21 @@ fn failure(
     }
     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
         return anyhow::Error::new(RateLimited {
+            status: status.as_u16(),
+            retry_after,
+            detail,
+        });
+    }
+    // 网关与排队的那几个：等一等再来。**500 不在里面**——它可以是端点自己的 bug，
+    // 重试只是把同一个崩溃再触发一遍
+    if matches!(
+        status,
+        reqwest::StatusCode::REQUEST_TIMEOUT
+            | reqwest::StatusCode::BAD_GATEWAY
+            | reqwest::StatusCode::SERVICE_UNAVAILABLE
+            | reqwest::StatusCode::GATEWAY_TIMEOUT
+    ) {
+        return anyhow::Error::new(Unavailable {
             status: status.as_u16(),
             retry_after,
             detail,
@@ -779,6 +815,60 @@ mod tests {
         };
         assert!(!is_unreachable(&error));
         assert!(error.to_string().contains(diagnosis), "{error:#}");
+    }
+
+    /// 会自己好的与不会自己好的分开：网关那几个是 [`Unavailable`]，密钥错那类照旧
+    /// 是 [`Rejected`]，欠费与限流各归各位。调用方据此决定「等一会儿再来」还是「这块废了」
+    #[tokio::test]
+    async fn a_gateway_failure_is_transient_and_a_bad_key_is_not() {
+        for status in [
+            "502 Bad Gateway",
+            "503 Service Unavailable",
+            "504 Gateway Timeout",
+            "408 Request Timeout",
+        ] {
+            let (addr, server) = an_http_response(status, "text/plain", "upstream hiccup").await;
+            let err = client_at(addr)
+                .chat(&[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }])
+                .await
+                .expect_err("非成功状态该是错误");
+            server.await.unwrap();
+            let hit = crate::unavailable(&err)
+                .unwrap_or_else(|| panic!("{status} 该是会自己好的那一类：{err:#}"));
+            assert_eq!(hit.status, status[..3].parse::<u16>().unwrap());
+            assert!(
+                format!("{err:#}").contains("upstream hiccup"),
+                "原话要带出来：{err:#}"
+            );
+        }
+
+        // 密钥错、请求不合法：重试一万次还是错，不能混进去
+        for status in [
+            "401 Unauthorized",
+            "400 Bad Request",
+            "500 Internal Server Error",
+        ] {
+            let (addr, server) = an_http_response(status, "text/plain", "no").await;
+            let err = client_at(addr)
+                .chat(&[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }])
+                .await
+                .expect_err("非成功状态该是错误");
+            server.await.unwrap();
+            assert!(
+                crate::unavailable(&err).is_none(),
+                "{status} 不该被当成会自己好的：{err:#}"
+            );
+            assert!(
+                crate::rate_limited(&err).is_none(),
+                "{status} 不是限流：{err:#}"
+            );
+        }
     }
 
     /// #527 的正题：一个回纯文本的 502，五条请求路径（对话、工具对话、两种流式、嵌入）
