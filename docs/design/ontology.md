@@ -85,7 +85,7 @@ invalidated, rows that are due and missing are added, rows whose binding is unch
 id, evidence and recorded time. Several statements that produce the same triple give one row: the row is written through
 the typed graph's own gate (the dedup, time refinement and closing rules of `insert_fact`), and
 `typed_fact_sources` lists every statement behind it, so a row is retired only when none of its
-sources holds [#PRN3]. On the 25-document batch the 36 bound signatures give 184 typed rows.
+sources holds [#753]. On the 25-document batch the 36 bound signatures give 184 typed rows.
 
 **Argument order is enforced, participation is guided.** A declared domain or range shapes
 candidates and never discards a fact; argument order is the key's encoding convention, so a fact
