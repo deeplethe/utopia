@@ -659,7 +659,8 @@ pub async fn merge_would_overlap(
             let mut rows: Vec<Row> = sqlx::query_as(&format!(
                 "SELECT f.id, f.subject_id, f.object_id, f.object_value,
                         f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision,
-                        f.attested_to, f.confidence, f.end_derived, {DATED_AT} AS dated_at
+                        f.attested_to, f.end_derived, {DATED_AT} AS dated_at,
+                        f.valid_from_grade, {DESCRIBED} AS described
                  FROM facts f
                  WHERE f.kb_id = $1 AND {holder_column} = ANY($2) AND f.predicate_id = $3
                    AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL"
