@@ -32,15 +32,20 @@ pub struct Job {
 /// 会踩的：本体页一口气建 28 条属性，每建一条排一次，第一条开跑之后的 27 条都不再
 /// 与「排着的」撞上，于是排成 28 份，串行跑 28 遍。用这个入口的任务必须在**结束时
 /// 自己回头看有没有新活**（对齐的两个任务都这么做），否则跑着时来的那些变化会丢。
+///
+/// `after` 是**去抖**：一批编辑里第一条排下一个几秒后才跑的任务，其余每一条都撞上
+/// 这个「排着的」而不再排。没有它，空库上一次运行只要几百毫秒，42 次创建照样排出
+/// 十几份——「正在跑」这一半只有在任务真的在跑时才挡得住。
 pub async fn enqueue_unless_pending(
     pool: &PgPool,
     kind: &str,
     payload: serde_json::Value,
+    after: Duration,
 ) -> AppResult<Option<i64>> {
     let mut tx = pool.begin().await?;
     let row: Option<(i64,)> = sqlx::query_as(
-        "INSERT INTO jobs (kind, payload)
-         SELECT $1, $2
+        "INSERT INTO jobs (kind, payload, run_at)
+         SELECT $1, $2, now() + make_interval(secs => $3)
           WHERE NOT EXISTS (SELECT 1 FROM jobs
                              WHERE kind = $1 AND payload = $2
                                AND status IN ('queued', 'running'))
@@ -48,6 +53,7 @@ pub async fn enqueue_unless_pending(
     )
     .bind(kind)
     .bind(payload)
+    .bind(after.as_secs_f64())
     .fetch_optional(&mut *tx)
     .await?;
     if row.is_some() {

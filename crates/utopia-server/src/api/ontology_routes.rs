@@ -143,6 +143,8 @@ pub async fn create_entity_type(
         &state.pool,
         "align_types",
         json!({ "kb_id": kb_id }),
+        // 去抖：一批编辑（导一个包、建一串属性）只排一次
+        std::time::Duration::from_secs(5),
     )
     .await;
     Ok(Json(json!({ "id": id })))
@@ -188,6 +190,8 @@ pub async fn update_entity_type(
         &state.pool,
         "align_types",
         json!({ "kb_id": kb_id }),
+        // 去抖：一批编辑（导一个包、建一串属性）只排一次
+        std::time::Duration::from_secs(5),
     )
     .await;
     Ok(Json(json!({ "ok": true })))
@@ -328,6 +332,8 @@ pub async fn create_relation_type(
         &state.pool,
         "align_phrases",
         serde_json::json!({ "kb_id": kb_id }),
+        // 去抖：一批编辑（导一个包、建一串属性）只排一次
+        std::time::Duration::from_secs(5),
     )
     .await?;
     let _ = utopia_store::audit::record(
@@ -373,6 +379,8 @@ pub async fn update_relation_type(
         &state.pool,
         "align_phrases",
         serde_json::json!({ "kb_id": kb_id }),
+        // 去抖：一批编辑（导一个包、建一串属性）只排一次
+        std::time::Duration::from_secs(5),
     )
     .await?;
     let _ = utopia_store::audit::record(
