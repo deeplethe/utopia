@@ -48,6 +48,22 @@ a fifth of the chunks of a filing, tables included, and the bullets of a release
 company as their subject without it. These are contract rules, not server checks: the shape
 checks below look at structure, never at vocabulary.
 
+**What a call to the endpoint survives** [#757]. Extraction, both aligners and time resolution
+share one retry: a failure that fixes itself is waited out (five tries, backing off to a minute,
+honouring `Retry-After`), anything else is raised. Four kinds fix themselves: the endpoint rate
+limits, it answers 408, 502, 503 or 504, the request never reaches it, or its stream stops in the
+middle of an answer. A 500 does not, because that can be the endpoint's own bug, and neither does a
+read timeout: the ceiling is 300 seconds of silence and retrying that five times is 25 minutes.
+
+The call is streamed and the answer assembled, so that the timeout measures silence rather than
+thinking. Not streamed, the first byte waits for the whole answer, so with reasoning on the model's
+thinking counts as silence: one dense passage of a filing crossed 300 seconds three times and was
+declared dead, while the same passage streamed has bytes at 2.6 seconds and finishes at 231. It is
+not faster, it is only honest about what silence means. A stream that ends without `[DONE]` or a
+`finish_reason` is a failure and not a short answer, because half an answer is a valid string and
+the statements it lost would go unmentioned. A chunk that still cannot be extracted is a drop row
+(`chunk_unextracted`), so the gap survives the document being marked done.
+
 **Server checks, each a drop reason in `extraction_drops`.** Every quote must occur in the chunk
 (`quote_not_in_chunk`); every name in its quote (`name_not_in_text`); a time mention only when its
 words occur in the statement's own quote (`time_not_in_quote`), because the model otherwise attaches

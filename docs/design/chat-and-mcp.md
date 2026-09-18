@@ -13,7 +13,8 @@ as before; a tool's UI step goes to the stream; an empty turn is asked again onc
 turn from an endpoint that ignored `required` is sent back once [0042]. A turn cannot end before a
 tool has run; `no_evidence_needed` is the exit for a greeting or "make it shorter"; `STALL_NUDGE`
 and `DONE` are gone [0042 d3]. The wire stays `LlmClient` behind `RigModel`: the read timeout,
-error bodies, the out-of-credit against rate-limit classification and cache logging; earlier
+error bodies, the classification of a failure as out of credit, rate limited, unavailable or nothing
+of the kind, and cache logging; earlier
 entities become a `system` message right before the question; degradation to one-shot RAG happens
 only on a 400 or 422 to the first request with tools [0042 d2].
 
