@@ -20,12 +20,13 @@
 // 换了一种读法。文件管理器就是这么做的。
 
 import { useMemo, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, Plus } from "lucide-react";
 
 import type { EntityTypeView, RelationTypeView } from "../api";
 
 import { S } from "../i18n";
 import {
+  Button,
   Chip,
   cn,
   GroupLabel,
@@ -514,6 +515,8 @@ export function OntologyTables({
   onOpenProperty,
   onOpenAttribute,
   onSeeInstances,
+  onCreateClass,
+  onCreateProperty,
   selected,
   loading = false,
 }: {
@@ -523,6 +526,10 @@ export function OntologyTables({
   onOpenProperty: (r: RelationTypeView) => void;
   onOpenAttribute: (a: RelationTypeView) => void;
   onSeeInstances: (t: EntityTypeView) => void;
+  /** 建顶层类。左栏那一行「新建类」只在图那一档展开，表格得自己有这条路 */
+  onCreateClass: () => void;
+  /** 建不带 domain 的关系，同上 */
+  onCreateProperty: () => void;
   /** 当前选中的那个类或属性。表里要标出来——**点一行开的是右边的面板，
    *  行本身不留痕的话，翻两页之后就不知道正在看的是哪一个了**。
    *  只收这两档：页面那个 `Sel` 还含 import / rules / schema 几种，
@@ -587,6 +594,21 @@ export function OntologyTables({
                     : counts.attributes,
               )}
         </GroupLabel>
+        {/* 新建跟着当前这一档走（图那一档里的同一件事在左栏第一行）。
+            属性那一档不给：它必须挂在某个类下，而属性弹窗自己不挑宿主类
+            （domain 由打开它的地方给定），所以它的入口在某个类的面板里 */}
+        {tab !== "attributes" && (
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<Plus size={12} />}
+            // 本体还没到不给建：新类要挑父类，而父类清单此刻是空的
+            disabled={loading}
+            onClick={tab === "classes" ? onCreateClass : onCreateProperty}
+          >
+            {tab === "classes" ? S.ontology.newClass : S.ontology.newProperty}
+          </Button>
+        )}
       </div>
       <div className="u-scroll min-h-0 flex-1 overflow-y-auto px-8 pb-6">
         {/* 表身出骨架，**表头不画**：列名是什么此刻还没定（三张表的列不一样），

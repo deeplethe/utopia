@@ -558,6 +558,16 @@ export function Ontology() {
                 setPanelTab("instances");
                 setSel({ kind: "class", id: t.id });
               }}
+              onCreateClass={() =>
+                setEdit({ kind: "class", existing: null, parentId: null })
+              }
+              onCreateProperty={() =>
+                setEdit({
+                  kind: "property",
+                  existing: null,
+                  initialDomain: null,
+                })
+              }
             />
           ) : (
             <OntologySchemaGraph
