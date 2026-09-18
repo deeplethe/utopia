@@ -3122,6 +3122,11 @@ function NameSection({
   names: NameView[];
 }) {
   const [open, setOpen] = useState(true);
+  /* 移除一个名字要问一句，**第二下落在另一个按钮上**——同图谱页重推推理那一处的
+     手势（同一个控件连点两下在这产品里一直是「收回去」）。够不上 DangerConfirm 那一
+     档（红标题、逐字输入，留给删库），但也不能一点就走：名字是事实（0041），移除是
+     把那条 `known_as` 作废，**而界面上没有再加回名字的地方**——点错了只能重抽文档 */
+  const [armed, setArmed] = useState<string | null>(null);
   const qc = useQueryClient();
   const remove = useMutation({
     mutationFn: (factId: string) => api.rejectFact(kbId, factId),
@@ -3165,15 +3170,35 @@ function NameSection({
                     {n.canonical && <span>{S.graph.shownName}</span>}
                     {until && <span className="u-num">{S.graph.nameUntil(until)}</span>}
                     {n.evidence_count > 0 && <span>{S.graph.sources(n.evidence_count)}</span>}
-                    {!n.canonical && (
-                      <LinkButton
-                        className={cn(REVEAL, "ml-auto text-fine")}
-                        disabled={remove.isPending}
-                        onClick={() => remove.mutate(n.fact_id)}
-                      >
-                        {S.graph.removeName}
-                      </LinkButton>
-                    )}
+                    {!n.canonical &&
+                      (armed === n.fact_id ? (
+                        /* 问句与两个目标就地展开：一行之内换不了别的排布，而问句
+                           必须和它问的那个名字在同一行，否则「移除哪一个」得靠记 */
+                        <span className="ml-auto flex items-center gap-2 text-fine">
+                          <span className="text-ink-2">{S.graph.removeNameAsk}</span>
+                          <LinkButton onClick={() => setArmed(null)}>
+                            {S.graph.removeNameCancel}
+                          </LinkButton>
+                          <LinkButton
+                            className="text-danger"
+                            disabled={remove.isPending}
+                            onClick={() => {
+                              setArmed(null);
+                              remove.mutate(n.fact_id);
+                            }}
+                          >
+                            {S.graph.removeNameGo}
+                          </LinkButton>
+                        </span>
+                      ) : (
+                        <LinkButton
+                          className={cn(REVEAL, "ml-auto text-fine")}
+                          disabled={remove.isPending}
+                          onClick={() => setArmed(n.fact_id)}
+                        >
+                          {S.graph.removeName}
+                        </LinkButton>
+                      ))}
                   </span>
                 </span>
               </div>

@@ -925,6 +925,10 @@ export const en = {
     shownName: "shown name",
     nameUntil: (d: string) => `until ${d}`,
     removeName: "Remove",
+    // 问一句再移除：名字是事实，界面上没有再加回来的地方
+    removeNameAsk: "Remove this name?",
+    removeNameCancel: "Keep",
+    removeNameGo: "Remove",
     nameRemoved: "Name removed",
     timelineEmpty: "No dated facts yet.",
     lastConfirmed: (d: string) => `confirmed ${d}`,
