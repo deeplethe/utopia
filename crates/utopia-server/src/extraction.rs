@@ -64,11 +64,8 @@ pub(crate) async fn chat_retrying_rate_limits_at(
             Ok(reply) => return Ok(reply),
             Err(e) => e,
         };
-        // 会自己好的两类：限流，和端点这会儿不可用（502/503/504）。其余照原样抛出去
-        let wait = utopia_llm::rate_limited(&err)
-            .map(|hit| ("限流", hit.retry_after))
-            .or_else(|| utopia_llm::unavailable(&err).map(|hit| ("端点不可用", hit.retry_after)));
-        let Some((what, retry_after)) = wait else {
+        // 会自己好的那几类（限流、端点不可用、请求没送到）退避重试，其余照原样抛出去
+        let Some((what, retry_after)) = utopia_llm::transient(&err) else {
             return Err(err);
         };
         if attempt == RATE_LIMIT_TRIES {

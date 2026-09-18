@@ -103,6 +103,27 @@ pub fn rate_limited(err: &anyhow::Error) -> Option<&RateLimited> {
     err.chain().find_map(|e| e.downcast_ref::<RateLimited>())
 }
 
+/// 值得再试一次的那几类失败，连它们各自的「等多久」。**判据是「它会自己好」**：
+/// 端点在限流、端点这会儿不可用（502/503/504）、请求根本没送到（连接被重置、响应中断）。
+///
+/// **读超时不在里面。** `READ_TIMEOUT` 是 300 秒没有第一个字节，重试五次就是 25 分钟；
+/// 一个总是超时的调用不会因为多等而变好，它要的是更小的分块或更快的端点。
+///
+/// 实测一篇 32 块的文档在一小时里两类都撞上：502 四次、连接没送到两次。
+pub fn transient(err: &anyhow::Error) -> Option<(&'static str, Option<Duration>)> {
+    if let Some(hit) = rate_limited(err) {
+        return Some(("端点限流", hit.retry_after));
+    }
+    if let Some(hit) = unavailable(err) {
+        return Some(("端点不可用", hit.retry_after));
+    }
+    let sending = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<Unreachable>())
+        .filter(|u| !u.0.is_timeout());
+    sending.map(|_| ("请求没送到", None))
+}
+
 /// 端点这会儿不可用：502 / 503 / 504，或者它自己说的 408。**跟 [`RateLimited`] 同一类，
 /// 理由也同一条：它会自己好。** 网关抽风、上游重启、排队超时都是几秒到几十秒的事，
 /// 而 400（提示词不合法）、401（密钥错）重试一万次还是错。
@@ -844,6 +865,20 @@ mod tests {
                 "原话要带出来：{err:#}"
             );
         }
+
+        // 请求根本没送到（连不上）：也是会自己好的一类
+        let nowhere = ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        };
+        let dead = LlmClient::new("http://127.0.0.1:1", None, "m");
+        let err = dead.chat(&[nowhere]).await.expect_err("连不上该是错误");
+        assert!(crate::is_unreachable(&err), "{err:#}");
+        assert_eq!(
+            crate::transient(&err).map(|(w, _)| w),
+            Some("请求没送到"),
+            "{err:#}"
+        );
 
         // 密钥错、请求不合法：重试一万次还是错，不能混进去
         for status in [
