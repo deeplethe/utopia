@@ -64,6 +64,21 @@ not faster, it is only honest about what silence means. A stream that ends witho
 the statements it lost would go unmentioned. A chunk that still cannot be extracted is a drop row
 (`chunk_unextracted`), so the gap survives the document being marked done.
 
+**What a reasoning cap costs.** Thinking is where the time goes: on a dense 1,310-character passage
+the model spends 33,000 reasoning tokens and 1,500 on the answer. Of the ways to ask for less, this
+endpoint honours `reasoning_effort`, whose low setting halves the thinking (15.5k and 16.5k
+reasoning tokens against 33k and 35k at medium, 32k and 29.5k at high, 33k with the field left out).
+It ignores `thinking.budget_tokens`, `reasoning.max_tokens` and `max_tokens`: a call
+capped at 4,096 returned 45,428 completion tokens and finished normally.
+
+Run end to end on the same four filings, the same 14 classes and 28 properties and the same 55
+chunks, the low setting is a quarter quicker per chunk (150 seconds to 115) and costs on every other
+axis: 885 open statements become 729, figures in tables that reach no statement go from 2% to 16%
+and in prose from 0% to 3%, quotes that do not occur in the chunk go from 46 to 107, and the judge
+reads 6.9% of statements as misworded against 3.7%, where judging the same graph twice moves the
+number by 1.4. **The lever is measured and left alone.** The read timeout it was meant to answer is
+already answered by streaming.
+
 **Server checks, each a drop reason in `extraction_drops`.** Every quote must occur in the chunk
 (`quote_not_in_chunk`); every name in its quote (`name_not_in_text`); a time mention only when its
 words occur in the statement's own quote (`time_not_in_quote`), because the model otherwise attaches
