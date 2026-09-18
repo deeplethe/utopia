@@ -86,7 +86,7 @@ fn t(day: &str) -> chrono::DateTime<chrono::Utc> {
     format!("{day}T00:00:00Z").parse().unwrap()
 }
 
-/// 一次观察：值、起止、出自哪天的哪种文档、置信度
+/// 一次观察：值、起止、出自哪天的哪种文档、置信度、起点的来历
 #[derive(Clone, Copy)]
 struct Seen<'a> {
     subject: Uuid,
@@ -95,6 +95,8 @@ struct Seen<'a> {
     to: Option<&'a str>,
     doc: Option<&'a str>,
     confidence: f32,
+    /// `None` = 没经过时间解析（这些测试的默认），`Some("C")` = 有时间词却锚不到
+    grade: Option<&'a str>,
 }
 
 fn seen<'a>(f: &Fixture, value: &'a str, from: &'a str) -> Seen<'a> {
@@ -105,6 +107,7 @@ fn seen<'a>(f: &Fixture, value: &'a str, from: &'a str) -> Seen<'a> {
         to: None,
         doc: None,
         confidence: 0.9,
+        grade: None,
     }
 }
 
@@ -116,6 +119,7 @@ async fn observe(pool: &PgPool, f: &Fixture, x: Seen<'_>) -> anyhow::Result<Uuid
         to: x.to.map(t),
         to_precision: x.to.map(|_| "day"),
         attested_at: None,
+        from_grade: x.grade,
     };
     let mut chunk = None;
     if let Some(doc_time) = x.doc {
@@ -414,7 +418,7 @@ async fn a_closed_value_and_an_open_one_meet_the_same_way_in_either_order() -> a
 
 /// 七十个置信度不够的值排在前面，一个够格的值到了：每一个都关上，没有轮数用完这回事
 #[tokio::test]
-async fn doubtful_values_do_not_keep_a_sure_one_from_closing_them() -> anyhow::Result<()> {
+async fn unanchored_values_do_not_keep_a_placed_one_from_closing_them() -> anyhow::Result<()> {
     let Some(pool) = pool().await? else {
         return Ok(());
     };
@@ -428,7 +432,7 @@ async fn doubtful_values_do_not_keep_a_sure_one_from_closing_them() -> anyhow::R
             &pool,
             &f,
             Seen {
-                confidence: 0.5,
+                grade: Some("C"),
                 ..seen(&f, &value, &day)
             },
         )
@@ -438,6 +442,34 @@ async fn doubtful_values_do_not_keep_a_sure_one_from_closing_them() -> anyhow::R
     let open = open_rows(&pool, &f, f.lease).await?;
     cleanup(&pool, &f).await?;
     assert_eq!(open, 1, "只有 Z 还开着");
+    Ok(())
+}
+
+/// 起点锚不到的后任不关前任（0045 第 3 刀）：它进得了图、排得进时间线，可它在轴上的
+/// 位置是文档日期给的，不是那句话给的，拿它改写历史就是拿一个猜的位置改写历史
+#[tokio::test]
+async fn an_unanchored_successor_closes_nothing() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let f = seed(&pool).await?;
+    observe(&pool, &f, seen(&f, "first", "2020-01-01")).await?;
+    observe(
+        &pool,
+        &f,
+        Seen {
+            grade: Some("C"),
+            ..seen(&f, "second", "2021-01-01")
+        },
+    )
+    .await?;
+    let open = open_rows(&pool, &f, f.lease).await?;
+    // 再来一个锚得住的：这一个才关得了前面两个
+    observe(&pool, &f, seen(&f, "third", "2022-01-01")).await?;
+    let after = open_rows(&pool, &f, f.lease).await?;
+    cleanup(&pool, &f).await?;
+    assert_eq!(open, 2, "锚不到的那一行关不了它前面的");
+    assert_eq!(after, 1, "锚得住的一来，前面两行都关上");
     Ok(())
 }
 
@@ -588,6 +620,7 @@ async fn a_revert_keeps_the_interval_a_person_corrected() -> anyhow::Result<()> 
             to: Some(t("2020-04-01")),
             to_precision: Some("day"),
             attested_at: None,
+            from_grade: None,
         },
     )
     .await?

@@ -391,6 +391,7 @@ async fn the_anchor_moves_earlier_and_is_inherited() -> anyhow::Result<()> {
                 to: Some(t("2025-06-01T00:00:00Z")),
                 to_precision: Some("day"),
                 attested_at: None,
+                from_grade: None,
             },
         )
         .await?

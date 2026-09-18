@@ -372,6 +372,7 @@ async fn a_mention_is_read_then_computed_then_written_to_the_open_row() -> anyho
             Some("day"),
             Some(day(2019, 6, 1)),
             Some("year"),
+            Some("A"),
         )
         .await?;
         assert_eq!(
@@ -391,6 +392,7 @@ async fn a_mention_is_read_then_computed_then_written_to_the_open_row() -> anyho
             Some("day"),
             None,
             Some("unknown"),
+            Some("A"),
         )
         .await?;
         assert_eq!(
@@ -415,7 +417,7 @@ async fn a_mention_is_read_then_computed_then_written_to_the_open_row() -> anyho
             "an unknown ending is anchored on its own document"
         );
         // 又算不出来了：清空，锚点也跟着走
-        graph::set_open_validity(&pool, fact, None, None, None, None).await?;
+        graph::set_open_validity(&pool, fact, None, None, None, None, None).await?;
         assert_eq!(
             span_of(&pool, fact).await?,
             Span {
@@ -442,7 +444,7 @@ async fn a_mention_is_read_then_computed_then_written_to_the_open_row() -> anyho
             .execute(&pool)
             .await?;
         let refused =
-            graph::set_open_validity(&pool, typed, Some(day(2011, 3, 4)), Some("day"), None, None)
+            graph::set_open_validity(&pool, typed, Some(day(2011, 3, 4)), Some("day"), None, None, None)
                 .await;
         assert!(refused.is_err(), "a typed row keeps to insert_fact_inner");
         assert_eq!(
@@ -460,6 +462,7 @@ async fn a_mention_is_read_then_computed_then_written_to_the_open_row() -> anyho
             founded,
             Some(day(2009, 1, 1)),
             Some("year"),
+            None,
             None,
             None
         )

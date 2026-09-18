@@ -1042,7 +1042,8 @@ pub struct Readiness {
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct ConflictView {
     pub id: Uuid,
-    /// no_time | simultaneous | low_confidence
+    /// no_time | simultaneous | described_evidence（`low_confidence` 是 0045 第 3 刀
+    /// 之前记下的，历史行还带着它）
     pub reason: String,
     pub created_at: DateTime<Utc>,
     pub predicate_label: String,

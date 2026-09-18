@@ -29,9 +29,6 @@ use utopia_core::models::ConflictView;
 use utopia_core::AppResult;
 use uuid::Uuid;
 
-/// 低于此置信度的后任不允许自动改写前任的历史（进审）。
-pub const AUTO_CLOSE_MIN_CONFIDENCE: f32 = 0.75;
-
 /// 证据文件**自带**的最早日期，按 `facts` 的别名 `f` 投影。只认正文（`content`）与来源
 /// （`source`）给的日期：上传时刻、文件修改时间不是文档自己的日期——拿它们排序，
 /// 每条没起点的旧行都会被读成「此刻还在」。删掉的文档不再作证
@@ -40,6 +37,16 @@ const DATED_AT: &str = "(SELECT min(d.doc_time) FROM fact_evidence fe
                          WHERE fe.fact_id = f.id AND d.doc_time IS NOT NULL
                            AND d.deleted_at IS NULL
                            AND d.doc_time_source IN ('content', 'source'))";
+
+/// 这一行的出处里有看图描述出来的文字吗，按 `facts` 的别名 `f` 投影（0040 决定 4）。
+/// 类型化的行自己没有出处，它的出处是物化它的那些陈述的（0044 第 2 刀）
+const DESCRIBED: &str = "(EXISTS (SELECT 1 FROM fact_evidence fe
+                                    JOIN chunks ch ON ch.id = fe.chunk_id
+                                   WHERE fe.fact_id = f.id AND ch.origin = 'described')
+                          OR EXISTS (SELECT 1 FROM typed_fact_sources ts
+                                       JOIN fact_evidence fe ON fe.fact_id = ts.statement_id
+                                       JOIN chunks ch ON ch.id = fe.chunk_id
+                                      WHERE ts.fact_id = f.id AND ch.origin = 'described'))";
 
 /// 唯一性方向：functional = 主语侧（张三同时只 reports_to 一人）；
 /// inverse functional = 宾语侧（一个项目同时只有一个 leads 它的人）。
@@ -100,9 +107,13 @@ struct Row {
     valid_to: Option<DateTime<Utc>>,
     valid_to_precision: Option<String>,
     attested_to: Option<DateTime<Utc>>,
-    confidence: f32,
     end_derived: bool,
     dated_at: Option<DateTime<Utc>>,
+    /// 起点是怎么来的：`A` 写明、`B` 按文档自己的锚点算出、`C` 有时间词却锚不到；
+    /// `None` = 没经过时间解析（人写的、规则算的），按 A 算
+    valid_from_grade: Option<String>,
+    /// 这一行的出处里有看图描述出来的文字（0040 决定 4）
+    described: bool,
 }
 
 /// 一行的终点
@@ -139,6 +150,13 @@ impl End {
 }
 
 impl Row {
+    /// 这一行的起点锚不到吗：有时间词、代码没能把它放到世界轴上（等级 C）。**没有等级
+    /// 的行不算**——它的日期是直接给的（人写的、规则算的、这一列之前的每一行），不是
+    /// 从别处猜的。锚不到的行仍进得了时间线（它按文档的日期排），只是不许它改写历史
+    fn start_unanchored(&self) -> bool {
+        self.valid_from_grade.as_deref() == Some("C")
+    }
+
     /// 排序用的时刻：起点。没有起点时，最早那份自带日期的证据——但只对还开着、或者由引擎
     /// 关上的行成立：它们的证据说那天还成立。原文说已经结束的行，证据的日期只说明「那天
     /// 之前结束了」，拿它排序会让一个早就结束的值去关上当下的值（#679 第三轮评审）
@@ -280,7 +298,8 @@ async fn load_timeline(
     let rows = sqlx::query_as(&format!(
         "SELECT f.id, f.subject_id, f.object_id, f.object_value,
                 f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision,
-                f.attested_to, f.confidence, f.end_derived, {DATED_AT} AS dated_at
+                f.attested_to, f.end_derived, {DATED_AT} AS dated_at,
+                f.valid_from_grade, {DESCRIBED} AS described
          FROM facts f
          WHERE f.kb_id = $1 AND {holder_column} = $2 AND f.predicate_id = $3
            AND f.invalidated_at IS NULL
@@ -458,7 +477,7 @@ async fn arrive(
 struct Plan {
     /// (行, 它该有的终点)
     ends: Vec<(Uuid, End)>,
-    /// (行, 置信度不够、没让它关上的最近那个后任)：交给人
+    /// (行, 看图描述出来、没让它关上的最近那个后任)：交给人
     held: Vec<(Uuid, Uuid)>,
 }
 
@@ -466,10 +485,11 @@ struct Plan {
 ///
 /// 能排进时间线的行（有起点，或有自带日期的证据）按时刻排好；终点是写明的行不动。其余
 /// 每一行——开着的、引擎关上的——止于它之后最近的、值不同的那一行开始时；后面没有这样
-/// 的行就开着。那一行置信度不够时不许它改写历史：跳过它、交给人，再看下一行。
+/// 的行就开着。后任的起点锚不到（等级 C）时跳过它：它在轴上的位置是文档日期给的，不是
+/// 那句话给的（0045 第 3 刀）。后任是看图描述出来的时也跳过，那一对交给人（0040 决定 4）。
 ///
-/// 每一行的终点只取决于各行的时刻、值和置信度，改写终点不改这三样，所以一次算完就是
-/// 最终的样子，不必一轮一轮地来；行怎么排进来的也不影响结果
+/// 每一行的终点只取决于各行的时刻、值和起点的来历，改写终点不改这三样，所以一次算完
+/// 就是最终的样子，不必一轮一轮地来；行怎么排进来的也不影响结果
 fn desired_ends(side: Uniqueness, rows: &[Row]) -> (HashMap<Uuid, End>, Vec<(Uuid, Uuid)>) {
     let mut keyed: Vec<&Row> = rows.iter().filter(|r| r.key().is_some()).collect();
     // 同一刻开始的几行，写着起点的排前面：后任取它，前任就止于一个日期而不是一个锚点
@@ -486,7 +506,14 @@ fn desired_ends(side: Uniqueness, rows: &[Row]) -> (HashMap<Uuid, End>, Vec<(Uui
             .iter()
             .filter(|later| later.key() > row.key() && !same_value(side, row, later))
         {
-            if later.confidence < AUTO_CLOSE_MIN_CONFIDENCE {
+            // 起点锚不到：不关，也不记矛盾——这一对没有什么可判的，待锚的提及归时间
+            // 锚点队列（0045：等级 C 既不关时间线也不开矛盾）
+            if later.start_unanchored() {
+                continue;
+            }
+            // 看图描述出来的事实能进图、能被引用，却不许单独关掉一段正确的旧值：柱状图
+            // 读错一个数是常事，而库里没有一行会说这次关闭靠的是一张图（0040 决定 4）
+            if later.described {
                 doubtful.get_or_insert(later.id);
                 continue;
             }
@@ -566,7 +593,7 @@ async fn tidy(
     for (row, later) in held {
         let row = rewritten.get(&row).copied().unwrap_or(row);
         let later = rewritten.get(&later).copied().unwrap_or(later);
-        if record_conflict_tx(tx, kb_id, row, later, "low_confidence").await? {
+        if record_conflict_tx(tx, kb_id, row, later, "described_evidence").await? {
             report.conflicts += 1;
         }
     }
@@ -1344,6 +1371,8 @@ pub struct OpenValue {
     pub name: String,
     pub valid_from: Option<DateTime<Utc>>,
     pub confidence: f32,
+    /// 起点是怎么来的（同 [`Row::start_unanchored`]）
+    pub valid_from_grade: Option<String>,
 }
 
 /// 每个候选带几个例子。
@@ -1365,6 +1394,7 @@ pub async fn uniqueness_candidates(
         other_name: Option<String>,
         object_value: Option<serde_json::Value>,
         valid_from: Option<DateTime<Utc>>,
+        valid_from_grade: Option<String>,
         confidence: f32,
     }
     // 两端各查一遍。`crowded` 先按 (谓词, 持有者) 数不同的值，再把那些持有者
@@ -1374,7 +1404,7 @@ pub async fn uniqueness_candidates(
         "WITH open AS (
              SELECT f.id, f.predicate_id, f.subject_id AS holder, f.object_id, f.object_value,
                     COALESCE(f.object_id::text, f.object_value::text) AS value_key,
-                    f.valid_from, f.confidence, f.recorded_at
+                    f.valid_from, f.valid_from_grade, f.confidence, f.recorded_at
              FROM facts f JOIN relation_types r ON r.id = f.predicate_id
              WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
                AND f.valid_to IS NULL AND f.valid_to_precision IS NULL
@@ -1389,7 +1419,7 @@ pub async fn uniqueness_candidates(
          )
          SELECT o.id, o.predicate_id, r.key, r.label, r.kind, r.functional AS declared,
                 h.canonical_name AS holder_name, e.canonical_name AS other_name,
-                o.object_value, o.valid_from, o.confidence
+                o.object_value, o.valid_from, o.valid_from_grade, o.confidence
          FROM open o
          JOIN crowded c ON c.predicate_id = o.predicate_id AND c.holder = o.holder
          JOIN relation_types r ON r.id = o.predicate_id
@@ -1403,7 +1433,7 @@ pub async fn uniqueness_candidates(
     let object_side: Vec<Row> = sqlx::query_as(
         "WITH open AS (
              SELECT f.id, f.predicate_id, f.object_id AS holder, f.subject_id,
-                    f.valid_from, f.confidence, f.recorded_at
+                    f.valid_from, f.valid_from_grade, f.confidence, f.recorded_at
              FROM facts f JOIN relation_types r ON r.id = f.predicate_id
              WHERE f.kb_id = $1 AND f.invalidated_at IS NULL
                AND f.valid_to IS NULL AND f.valid_to_precision IS NULL
@@ -1416,7 +1446,7 @@ pub async fn uniqueness_candidates(
          )
          SELECT o.id, o.predicate_id, r.key, r.label, r.kind, r.inverse_functional AS declared,
                 h.canonical_name AS holder_name, e.canonical_name AS other_name,
-                NULL::jsonb AS object_value, o.valid_from, o.confidence
+                NULL::jsonb AS object_value, o.valid_from, o.valid_from_grade, o.confidence
          FROM open o
          JOIN crowded c ON c.predicate_id = o.predicate_id AND c.holder = o.holder
          JOIN relation_types r ON r.id = o.predicate_id
@@ -1463,6 +1493,7 @@ pub async fn uniqueness_candidates(
                             .or_else(|| r.object_value.as_ref().map(literal_name))
                             .unwrap_or_else(|| "?".to_string()),
                         valid_from: r.valid_from,
+                        valid_from_grade: r.valid_from_grade.clone(),
                         confidence: r.confidence,
                     });
                     i += 1;
@@ -1485,7 +1516,7 @@ pub async fn uniqueness_candidates(
 /// 一个持有者的开放值按年表排好后，对账会怎么处置：(闭合数, 进人审数)。
 ///
 /// 把 `reconcile_predicate` 的过程干跑一遍，不落库：逐条当"新落库的观察"，与
-/// 后面还开着的每一条比——起点更早者止于后任起点（自己置信度够才许改写历史）；
+/// 后面还开着的每一条比——起点更早者止于后任起点（自己的起点锚得住才许改写历史）；
 /// 两条都没起点、或同一天开始，说不清谁接替谁，进人审，两条都还开着；后任没起点
 /// 的，它止于前任的起点。三条都没起点的持有者会报三对冲突，与引擎一致。
 /// 这是估算——真跑一遍的结果才作数
@@ -1507,7 +1538,7 @@ fn plan_closures(values: &[OpenValue]) -> (usize, usize) {
                 (_, None) => review += 1,
                 (Some(of), Some(nf)) if of == nf => review += 1,
                 (Some(of), Some(nf)) if nf < of => {
-                    if new.confidence < AUTO_CLOSE_MIN_CONFIDENCE {
+                    if new.valid_from_grade.as_deref() == Some("C") {
                         review += 1;
                     } else {
                         close += 1;
@@ -1516,7 +1547,7 @@ fn plan_closures(values: &[OpenValue]) -> (usize, usize) {
                     }
                 }
                 (_, Some(_)) => {
-                    if new.confidence < AUTO_CLOSE_MIN_CONFIDENCE {
+                    if new.valid_from_grade.as_deref() == Some("C") {
                         review += 1;
                     } else {
                         close += 1;
@@ -1557,12 +1588,13 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn v(from: Option<(i32, u32, u32)>, confidence: f32) -> OpenValue {
+    fn v(from: Option<(i32, u32, u32)>, grade: Option<&str>) -> OpenValue {
         OpenValue {
             fact_id: Uuid::now_v7(),
             name: String::new(),
             valid_from: from.map(|(y, m, d)| Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()),
-            confidence,
+            valid_from_grade: grade.map(str::to_string),
+            confidence: 0.9,
         }
     }
 
@@ -1582,9 +1614,10 @@ mod tests {
             valid_to: None,
             valid_to_precision: None,
             attested_to: None,
-            confidence: 0.9,
             end_derived: false,
             dated_at: dated,
+            valid_from_grade: None,
+            described: false,
         }
     }
 
@@ -1723,15 +1756,37 @@ mod tests {
         assert!(still_overlaps(Uniqueness::SubjectSide, &eternal, false));
     }
 
-    /// 置信度不够的后任不许关上前任，交给人；前任止于它之后第一个够格的后任
+    /// 起点锚不到的后任不许关上前任，也不开矛盾（0045 第 3 刀：等级 C 两样都不做）；
+    /// 前任止于它之后第一个锚得住的后任
     #[test]
-    fn a_doubtful_successor_is_held_and_the_next_sure_one_closes() {
+    fn an_unanchored_successor_closes_nothing_and_opens_no_conflict() {
         let mut rows = vec![
             row("A", Some(day(2020, 1, 1)), None),
             row("B", Some(day(2020, 2, 1)), None),
             row("C", Some(day(2020, 3, 1)), None),
         ];
-        rows[1].confidence = 0.5;
+        rows[1].valid_from_grade = Some("C".to_string());
+        let plan = plan_timeline(Uniqueness::SubjectSide, &rows);
+        assert_eq!(
+            plan.ends,
+            vec![
+                (rows[0].id, End::At(day(2020, 3, 1), "day".into())),
+                (rows[1].id, End::At(day(2020, 3, 1), "day".into())),
+            ]
+        );
+        assert!(plan.held.is_empty(), "锚不到的一对没有什么可判的");
+    }
+
+    /// 看图描述出来的后任不许单独关上前任，这一对交给人（0040 决定 4）；
+    /// 前任止于它之后第一个不是描述出来的后任
+    #[test]
+    fn a_described_successor_is_held_and_the_next_stated_one_closes() {
+        let mut rows = vec![
+            row("A", Some(day(2020, 1, 1)), None),
+            row("B", Some(day(2020, 2, 1)), None),
+            row("C", Some(day(2020, 3, 1)), None),
+        ];
+        rows[1].described = true;
         let plan = plan_timeline(Uniqueness::SubjectSide, &rows);
         assert_eq!(
             plan.ends,
@@ -1746,9 +1801,9 @@ mod tests {
     #[test]
     fn a_chain_of_three_closes_twice() {
         let values = [
-            v(Some((2023, 2, 1)), 0.9),
-            v(Some((2024, 7, 5)), 0.9),
-            v(Some((2025, 9, 1)), 0.9),
+            v(Some((2023, 2, 1)), None),
+            v(Some((2024, 7, 5)), None),
+            v(Some((2025, 9, 1)), None),
         ];
         assert_eq!(plan_closures(&values), (2, 0));
     }
@@ -1757,31 +1812,31 @@ mod tests {
     fn what_the_engine_would_not_close_goes_to_review() {
         // 同一天开始
         assert_eq!(
-            plan_closures(&[v(Some((2024, 1, 1)), 0.9), v(Some((2024, 1, 1)), 0.9)]),
+            plan_closures(&[v(Some((2024, 1, 1)), None), v(Some((2024, 1, 1)), None)]),
             (0, 1)
         );
         // 两条都没起点
-        assert_eq!(plan_closures(&[v(None, 0.9), v(None, 0.9)]), (0, 1));
+        assert_eq!(plan_closures(&[v(None, None), v(None, None)]), (0, 1));
         // 起点更早的那条置信度不够，不许它改写历史
         assert_eq!(
-            plan_closures(&[v(Some((2023, 1, 1)), 0.5), v(Some((2024, 1, 1)), 0.9)]),
+            plan_closures(&[v(Some((2023, 1, 1)), Some("C")), v(Some((2024, 1, 1)), None)]),
             (0, 1)
         );
         // 后任没起点：它止于前任的起点（落库时的"旧事实无起点也适用"）
         assert_eq!(
-            plan_closures(&[v(Some((2023, 1, 1)), 0.9), v(None, 0.9)]),
+            plan_closures(&[v(Some((2023, 1, 1)), None), v(None, None)]),
             (1, 0)
         );
         // 一条不成对
-        assert_eq!(plan_closures(&[v(Some((2023, 1, 1)), 0.9)]), (0, 0));
+        assert_eq!(plan_closures(&[v(Some((2023, 1, 1)), None)]), (0, 0));
         // 三条都没起点：每一对都说不清，三对冲突，与引擎一致
         assert_eq!(
-            plan_closures(&[v(None, 0.9), v(None, 0.9), v(None, 0.9)]),
+            plan_closures(&[v(None, None), v(None, None), v(None, None)]),
             (0, 3)
         );
         // 有起点的一条闭合两条没起点的：它们都止于它的起点
         assert_eq!(
-            plan_closures(&[v(Some((2023, 1, 1)), 0.9), v(None, 0.9), v(None, 0.9)]),
+            plan_closures(&[v(Some((2023, 1, 1)), None), v(None, None), v(None, None)]),
             (2, 0)
         );
     }

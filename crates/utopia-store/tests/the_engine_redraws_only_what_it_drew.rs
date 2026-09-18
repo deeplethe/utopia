@@ -141,6 +141,7 @@ async fn observe(pool: &PgPool, f: &Fixture, x: Seen<'_>) -> anyhow::Result<Uuid
     let mut validity = Validity {
         from: x.from.map(t),
         from_precision: x.from.map(|_| "day"),
+        from_grade: None,
         to: x.to.map(t),
         to_precision: if x.ended_unknown {
             Some("unknown")

@@ -34,9 +34,16 @@ evidence (`doc_time_source` content or source only) and closes its predecessor a
 there; ends the engine drew are marked `end_derived` and recomputed in one pass whenever a timeline
 changes, so the result depends on which rows exist and not on arrival order; a relation unique on
 both sides sits on two timelines under one lock; a deadline stated relative to an event is stored as
-written and flagged `relative` [0022 revised, #679]. A successor below `AUTO_CLOSE_MIN_CONFIDENCE`
-(0.75) may not take over: it opens a `low_confidence` conflict instead; confirming a fact changes
-the value and recomputes its timelines [0040, 0043 d5]. Two values that still hold at one moment are
+written and flagged `relative` [0022 revised, #679]. **A successor takes over on how its start was
+got, not on a number** [0045 cut 3]: `valid_from_grade` carries the resolution grade from the time
+mention to the statement and on through materialisation to the typed row, and a successor whose
+start could not be anchored (grade C) closes nothing and opens no conflict, because its place on the
+axis comes from its document's date rather than from the sentence. A successor read off a picture
+closes nothing either and opens a `described_evidence` conflict, which is what a misread chart is
+for [0040 d4]; that guarantee used to ride on the confidence ceiling and now stands on the chunk's
+origin. `AUTO_CLOSE_MIN_CONFIDENCE` is gone and the engine reads no confidence at all; the number stays on the
+row for review queues and display. Confirming a fact changes the value and recomputes its
+timelines [0040, 0043 d5]. Two values that still hold at one moment are
 a conflict; a succession is not, for the consistency check and for the merge gate alike [0017,
 0027 revised].
 
@@ -87,9 +94,8 @@ only when that date came from the content or a dating source, else null [#731]. 
   or none) and granularity; code computes the interval; a document carries its own date, calendars
   and narrative anchors from chunk to chunk; an unanchored mention waits and is recomputed when an
   anchor arrives; `attested_at` is null for an undated document (revising 0022 d3, which anchored it
-  at the moment of recording; #731 already writes null on open rows); timelines close on resolution
-  grade (A written, B anchored, C unresolved) and the confidence gate leaves the engine; no time
-  words in code. Cuts: interpretation columns; context and code resolution (closes #714); grades;
+  at the moment of recording; #731 already writes null on open rows); no time words in code.
+  Cuts: interpretation columns; context and code resolution (closes #714); grades **(built)**;
   re-resolution and a time-anchor review queue.
 - Thresholds before cut 2: 95% on absolute and 85% on anchored mentions across corpora; the lease
   bench no lower than 17 of 18 on both runs [0045].

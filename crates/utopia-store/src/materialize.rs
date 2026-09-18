@@ -49,6 +49,7 @@ struct Due {
     object_value: Option<serde_json::Value>,
     valid_from: Option<chrono::DateTime<chrono::Utc>>,
     valid_from_precision: Option<String>,
+    valid_from_grade: Option<String>,
     valid_to: Option<chrono::DateTime<chrono::Utc>>,
     valid_to_precision: Option<String>,
     attested_from: Option<chrono::DateTime<chrono::Utc>>,
@@ -100,7 +101,8 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
     let due: Vec<Due> = sqlx::query_as(&format!(
         "SELECT s.id AS statement, b.relation_type_id AS property, b.direction,
                 s.subject_id, s.object_id, s.object_value,
-                s.valid_from, s.valid_from_precision, s.valid_to, s.valid_to_precision,
+                s.valid_from, s.valid_from_precision, s.valid_from_grade,
+                s.valid_to, s.valid_to_precision,
                 s.attested_from, s.confidence
            FROM facts s
            JOIN entities se ON se.id = s.subject_id
@@ -126,6 +128,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
         let validity = Validity {
             from: d.valid_from,
             from_precision: d.valid_from_precision.as_deref(),
+            from_grade: d.valid_from_grade.as_deref(),
             to: d.valid_to,
             to_precision: d.valid_to_precision.as_deref(),
             attested_at: d.attested_from,

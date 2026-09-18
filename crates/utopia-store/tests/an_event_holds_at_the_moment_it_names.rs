@@ -311,6 +311,7 @@ async fn a_span_an_ending_or_an_unknown_end_given_to_an_event_collapses() -> any
                 to: Some(t("2025-01-01T00:00:00Z")),
                 to_precision: Some("day"),
                 attested_at: None,
+                from_grade: None,
             },
         )
         .await?;
@@ -336,6 +337,7 @@ async fn a_span_an_ending_or_an_unknown_end_given_to_an_event_collapses() -> any
                 to: Some(t("2024-05-01T00:00:00Z")),
                 to_precision: Some("month"),
                 attested_at: None,
+                from_grade: None,
             },
         )
         .await?;
@@ -578,6 +580,7 @@ async fn a_person_correcting_an_event_leaves_it_one_moment() -> anyhow::Result<(
                 to: Some(t("2024-06-01T00:00:00Z")),
                 to_precision: Some("day"),
                 attested_at: None,
+                from_grade: None,
             },
         )
         .await?

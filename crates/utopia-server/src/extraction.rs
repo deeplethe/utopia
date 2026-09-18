@@ -90,11 +90,11 @@ pub(crate) async fn chat_retrying_rate_limits_at(
     unreachable!("循环内必定 return")
 }
 
-/// 模型看图描述出来的事实，置信度压到这里（0040 决定 4）：低于时态引擎自动关闭的门槛，
-/// 它能进图、能被搜到和引用，却不能单独把一段正确的旧值关掉——看柱状图读错一个数字是常事，
-/// 按普通事实入库的话，错的数会关掉它反驳的那个对的数，而库里没有一行说这次关闭靠的是一张图。
-/// 真要关，时态引擎记一条低置信冲突，交给人或治理去判
-const DESCRIBED_CEILING: f32 = utopia_store::temporal::AUTO_CLOSE_MIN_CONFIDENCE - 0.05;
+/// 模型看图描述出来的事实，置信度压到这里（0040 决定 4）：低于审核的低置信阈值，于是
+/// 它在待审里露面。**「不许它单独关掉一段正确的旧值」这一条不再靠这个数字**：0045 第 3 刀
+/// 之后时态引擎读的是出处与起点的来历，看图描述出来的行照旧不关、记一条矛盾交给人
+/// （柱状图读错一个数是常事，而库里没有一行会说这次关闭靠的是一张图）
+const DESCRIBED_CEILING: f32 = utopia_store::review::LOW_CONFIDENCE_BELOW - 0.05;
 
 /// 这块文字的来源给事实置信度设的上限
 pub(crate) fn origin_ceiling(origin: &str, confidence: f32) -> f32 {
@@ -361,7 +361,7 @@ mod origin_ceiling_tests {
     #[test]
     fn a_described_fact_cannot_close_a_value_by_itself() {
         let ceiling = origin_ceiling("described", 0.95);
-        assert!(ceiling < utopia_store::temporal::AUTO_CLOSE_MIN_CONFIDENCE);
+        assert!(ceiling < utopia_store::review::LOW_CONFIDENCE_BELOW);
         assert_eq!(ceiling, DESCRIBED_CEILING, "it still enters the graph");
         assert_eq!(origin_ceiling("described", 0.62), 0.62);
         for origin in ["stated", "ocr", "transcribed"] {

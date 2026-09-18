@@ -338,6 +338,10 @@ pub struct Validity<'a> {
     /// 没有起点的事实从它起成立，结束了不知哪天的到它为止——**它不是起点**，所以
     /// 不写进 `from`（0003 拒绝过把文档日期填进日期列）
     pub attested_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 起点是怎么来的（0045 第 3 刀）：`A` 文档写明、`B` 按文档自己的锚点算出、
+    /// `C` 有时间词但锚不到。`None` = 没经过时间解析（人写的、规则算的），按 A 算。
+    /// 时态引擎读它决定这一行能不能关上前任
+    pub from_grade: Option<&'a str>,
 }
 
 /// `valid_to_precision` 表示「结束了，但不知道是哪天」。
@@ -452,6 +456,7 @@ impl<'a> Validity<'a> {
             to: None,
             to_precision: None,
             attested_at: None,
+            from_grade: None,
         }
     }
 
@@ -732,17 +737,17 @@ async fn insert_fact_inner(
             "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id,
                                 valid_from, valid_from_precision,
                                 valid_to, valid_to_precision, confidence,
-                                attested_from, attested_to)
+                                attested_from, attested_to, valid_from_grade)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()),
-                     CASE WHEN $9::text = 'unknown' THEN COALESCE($11, now()) END)"
+                     CASE WHEN $9::text = 'unknown' THEN COALESCE($11, now()) END, $12)"
         }
         FactObject::Value(_) => {
             "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_value,
                                 valid_from, valid_from_precision,
                                 valid_to, valid_to_precision, confidence,
-                                attested_from, attested_to)
+                                attested_from, attested_to, valid_from_grade)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()),
-                     CASE WHEN $9::text = 'unknown' THEN COALESCE($11, now()) END)"
+                     CASE WHEN $9::text = 'unknown' THEN COALESCE($11, now()) END, $12)"
         }
     };
     let mut ins = sqlx::query(insert_sql)
@@ -760,6 +765,7 @@ async fn insert_fact_inner(
         .bind(validity.to_precision)
         .bind(confidence)
         .bind(validity.attested_at)
+        .bind(validity.from_grade)
         .execute(pool)
         .await?;
 
@@ -960,13 +966,17 @@ pub async fn set_open_validity(
     from_precision: Option<&str>,
     to: Option<chrono::DateTime<chrono::Utc>>,
     to_precision: Option<&str>,
+    // 起点是怎么来的（0045 第 3 刀）。**锚不到（`C`）也要写**：那时两端都是空，
+    // 只有这一列说得出「这句话有时间词、我们没能把它放到轴上」，物化把它带给
+    // 类型化的行，时态引擎才不会让一个猜出来的位置改写前任的历史
+    grade: Option<&str>,
 ) -> AppResult<()> {
     let from = from.map(|t| truncate_to(t, from_precision));
     let to = to.map(|t| truncate_to(t, to_precision));
     let done = sqlx::query(
         "UPDATE facts
             SET valid_from = $2, valid_from_precision = $3,
-                valid_to = $4, valid_to_precision = $5,
+                valid_to = $4, valid_to_precision = $5, valid_from_grade = $6,
                 attested_to = CASE WHEN $4 IS NULL AND $5 = 'unknown'
                                    THEN COALESCE(attested_to, attested_from) END
           WHERE id = $1 AND layer = 'open' AND invalidated_at IS NULL",
@@ -976,6 +986,7 @@ pub async fn set_open_validity(
     .bind(from_precision)
     .bind(to)
     .bind(to_precision)
+    .bind(grade)
     .execute(pool)
     .await?;
     if done.rows_affected() == 0 {
@@ -2747,6 +2758,7 @@ mod temporal_shape_tests {
             to: Some(at("2025-01-01T00:00:00Z")),
             to_precision: Some("day"),
             attested_at: None,
+            from_grade: None,
         }
         .under(Temporal::Event);
         assert_eq!(span.from, Some(at("2024-03-15T00:00:00Z")));
@@ -2762,6 +2774,7 @@ mod temporal_shape_tests {
             to: Some(at("2024-05-01T00:00:00Z")),
             to_precision: Some("month"),
             attested_at: None,
+            from_grade: None,
         }
         .under(Temporal::Event);
         assert_eq!(end_only.from, Some(at("2024-05-01T00:00:00Z")));

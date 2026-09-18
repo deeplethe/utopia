@@ -114,7 +114,14 @@ Deciding the anchor now is what makes deferring video cost nothing.
 Facts extracted from a `described` chunk are inserted with a confidence below
 `AUTO_CLOSE_MIN_CONFIDENCE`. The temporal engine already refuses to auto-close on such a fact:
 where it would have closed the open interval, it records a `low_confidence` conflict and a person
-decides. No new branch in `temporal.rs` is needed. The fact still enters the graph, search and
+decides. No new branch in `temporal.rs` is needed.
+
+> Revised by [0045](0045-a-time-mention-is-resolved-against-its-document.md) cut 3, which took
+> confidence out of the temporal engine. The guarantee is unchanged and now stands on the chunk's
+> origin: the engine reads whether a row's evidence is described and opens a `described_evidence`
+> conflict where it would have closed. This is the branch in `temporal.rs` that this decision
+> expected not to need. The confidence ceiling stays, below the review threshold, so the fact also
+> shows up in the low-confidence queue. The fact still enters the graph, search and
 chat. It can be read, found and cited; it cannot, alone, rewrite what the ledger holds.
 
 The conflict queue is the right place because it only sees the facts that would act. Most

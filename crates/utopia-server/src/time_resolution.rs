@@ -522,12 +522,22 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     let mut dated = 0usize;
     for (fact_id, (when, ended)) in per_fact {
         let r = combine(when, ended);
-        if r.from.is_none() && r.to.is_none() && r.to_p.is_none() {
+        // 起点的等级只看起点那条提及。combine 在起点锚不到时借结束端的等级来报数，
+        // 这里不借：引擎问的是「这一行的起点是怎么来的」（0045 第 3 刀）
+        let grade = when.map(|w| w.grade);
+        let placed = r.from.is_some() || r.to.is_some() || r.to_p.is_some();
+        // 什么都没算出来也要写等级 C：只有这一列说得出「这句话有时间词、我们没能把它
+        // 放到轴上」，否则它和「整句没有时间词」在库里长得一模一样
+        if !placed && grade != Some("C") {
             continue;
         }
-        utopia_store::graph::set_open_validity(pool, fact_id, r.from, r.from_p, r.to, r.to_p)
-            .await?;
-        dated += 1;
+        utopia_store::graph::set_open_validity(
+            pool, fact_id, r.from, r.from_p, r.to, r.to_p, grade,
+        )
+        .await?;
+        if placed {
+            dated += 1;
+        }
     }
     tracing::info!(
         %document_id,

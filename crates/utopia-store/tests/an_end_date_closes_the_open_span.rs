@@ -25,6 +25,7 @@ fn span(
         to: to.map(day),
         to_precision: to.map(|_| "day"),
         attested_at: Some(day(attested)),
+        from_grade: None,
     }
 }
 
@@ -52,6 +53,7 @@ fn ends(to: &str, attested: &str) -> utopia_store::graph::Validity<'static> {
         to: Some(day(to)),
         to_precision: Some("day"),
         attested_at: Some(day(attested)),
+        from_grade: None,
     }
 }
 
@@ -144,6 +146,7 @@ async fn an_end_date_closes_the_open_span() -> anyhow::Result<()> {
             to: None,
             to_precision: None,
             attested_at: Some(day("2025-08-01")),
+            from_grade: None,
         },
         0.9,
     )

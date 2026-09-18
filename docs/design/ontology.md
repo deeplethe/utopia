@@ -149,8 +149,7 @@ the prompt, a description is read by people and by the aligner.
 
 - **Alignment** (0044 cut 2), the rest: implication rules proposed by the aligner, approved on
   the workbench, executed by code with cached readings (the sign of "下降 1.4%" is such a
-  reading); a signature that tells a figure from words on the value side; merging the typed rows
-  that several statements produce for one triple, with the timeline's refinement rules. The prototype aligner reached 14.7% and
+  reading); a signature that tells a figure from words on the value side. The prototype aligner reached 14.7% and
   12.1% of gold recall in two runs against 15.5% for the withdrawn bound pass, so the bar for cut 2
   is parity over two clean runs [0044, #729].
 - **The workbench** (0044 cut 5): the ontology page fed by suggestions from the open graph (frequent

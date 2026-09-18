@@ -25,8 +25,10 @@ guards every read path [0010].
 **Evidence.** `fact_evidence (fact, chunk NOT NULL, quote, proposed_predicate, quote_start,
 quote_end)`, one row per observation; offsets are computed on the server. A chunk carries `origin`
 (stated, ocr, transcribed, described), `origin_model` and an `anchor` into the original bytes, so
-evidence says how the words were obtained [0040]. A fact from a described chunk is inserted below
-`AUTO_CLOSE_MIN_CONFIDENCE`, so it opens a conflict instead of closing a correct fact [0040 d4].
+evidence says how the words were obtained [0040]. A fact from a described chunk closes nothing
+by itself: the temporal engine reads the chunk's origin and opens a `described_evidence` conflict
+instead of closing a correct fact [0040 d4, 0045 cut 3]. Its confidence is also capped below the
+review threshold, which is what puts it in front of a person.
 
 **Beside the row.** `statement_qualifiers (fact, role, value | entity)` keyed by the document's role
 word for open statements; `fact_qualifiers (fact, qualifier_type, value | entity)` keyed by a

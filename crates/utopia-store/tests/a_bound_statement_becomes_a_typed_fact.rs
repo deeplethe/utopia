@@ -94,8 +94,8 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         for (id, phrase) in [(stated, "is based in"), (planned, "will move to"), (again, "is based in")] {
             sqlx::query(
                 "INSERT INTO facts (id, kb_id, subject_id, object_id, layer, phrase, confidence,
-                                    valid_from, valid_from_precision)
-                 VALUES ($1, $2, $3, $4, 'open', $5, 0.9, '2019-01-01', 'year')",
+                                    valid_from, valid_from_precision, valid_from_grade)
+                 VALUES ($1, $2, $3, $4, 'open', $5, 0.9, '2019-01-01', 'year', 'B')",
             )
             .bind(id)
             .bind(kb)
@@ -181,8 +181,9 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         let first = materialize(&pool, kb).await?;
         assert_eq!(first, Outcome { retired: 0, added: 2, merged: 1 });
         let live = |pool: PgPool| async move {
-            sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, Uuid, Option<chrono::DateTime<chrono::Utc>>)>(
-                "SELECT id, subject_id, object_id, predicate_id, from_statement_id, valid_from
+            sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, Uuid, Option<chrono::DateTime<chrono::Utc>>, Option<String>)>(
+                "SELECT id, subject_id, object_id, predicate_id, from_statement_id, valid_from,
+                        valid_from_grade
                    FROM facts WHERE kb_id = $1 AND layer = 'typed' AND invalidated_at IS NULL",
             )
             .bind(kb)
@@ -191,9 +192,11 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         };
         let rows = live(pool.clone()).await?;
         assert_eq!(rows.len(), 1, "同一个三元组只有一行");
-        let (typed_id, subject, object, predicate, from, vf) = rows[0];
+        let (typed_id, subject, object, predicate, from, vf, grade) = rows[0].clone();
         assert_eq!((subject, object, predicate, from), (bakery, port, hq, stated));
         assert!(vf.is_some(), "世界轴时间抄过来");
+        // 起点是怎么来的也抄过来：时态引擎在类型化的行上判，读不到等级就只能回去猜（0045 第 3 刀）
+        assert_eq!(grade.as_deref(), Some("B"), "起点的来历随日期一起抄过来");
         let sources: i64 =
             sqlx::query_scalar("SELECT count(*) FROM typed_fact_sources WHERE fact_id = $1")
                 .bind(typed_id)

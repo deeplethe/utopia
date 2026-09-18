@@ -2036,6 +2036,8 @@ export const en = {
     conflictReason: {
       no_time: "new fact has no date",
       simultaneous: "same start date",
+      described_evidence: "the newer fact was read off a picture",
+      low_confidence: "the newer fact was not sure enough",
     } as Record<string, string>,
     conflictVs: "vs",
     conflictSince: (d: string) => `since ${d}`,

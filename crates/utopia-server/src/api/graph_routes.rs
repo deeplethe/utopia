@@ -388,6 +388,8 @@ pub async fn update_fact_time(
         from_precision: req.valid_from_precision.as_deref(),
         to: req.valid_to,
         to_precision: req.valid_to_precision.as_deref(),
+        // 人改的区间：日期是直接给的，没经过时间解析（0045 第 3 刀按 A 算）
+        from_grade: None,
         // 修正行从被替代的行继承锚点（correct_interval 的 SQL 里）：改区间是重述
         // 同一份证据，不是更新的证据
         attested_at: None,

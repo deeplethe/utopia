@@ -1777,6 +1777,8 @@ export const zh: Strings = {
     conflictReason: {
       no_time: "新事实没有日期",
       simultaneous: "起始日期相同",
+      described_evidence: "新的那条是看图读出来的",
+      low_confidence: "新的那条不够确信",
     },
     conflictVs: "对",
     conflictSince: (d: string) => `自 ${d} 起`,
