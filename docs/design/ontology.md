@@ -49,6 +49,12 @@ classes of context neighbours, interleaved and never scored together; a class in
 subtree applied on its own, a cross-axis class sent to a person, each pair acknowledged once) runs
 from the ontology page; extraction no longer enqueues it [0001, 0016, #736].
 
+**One statement draws one edge** [#PRN5]. The typed graph is a view, so the canvas and the entity
+panel show one edge per statement: the property's name when a live typed row was computed from it,
+the document's phrase when none was. The document's wording is not lost with the folded edge, it
+rides on the typed one (`said_as`, the phrases of every statement behind that row) and the interface
+shows it. Both rows stay in the ledger; this is a rule about the picture, not about what is kept.
+
 **A relation phrase binds to a property per signature** [0044 cut 2, #751]. A signature is a
 phrase as the documents wrote it, the class of its subject and the class of its object, or "value"
 when the object is a figure, a title or a status; the classes come from the kind-word bindings, and
