@@ -443,9 +443,16 @@ async fn a_mention_is_read_then_computed_then_written_to_the_open_row() -> anyho
             .bind(f.beta)
             .execute(&pool)
             .await?;
-        let refused =
-            graph::set_open_validity(&pool, typed, Some(day(2011, 3, 4)), Some("day"), None, None, None)
-                .await;
+        let refused = graph::set_open_validity(
+            &pool,
+            typed,
+            Some(day(2011, 3, 4)),
+            Some("day"),
+            None,
+            None,
+            None,
+        )
+        .await;
         assert!(refused.is_err(), "a typed row keeps to insert_fact_inner");
         assert_eq!(
             span_of(&pool, typed).await?,

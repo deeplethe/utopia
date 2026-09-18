@@ -1817,9 +1817,12 @@ mod tests {
         );
         // 两条都没起点
         assert_eq!(plan_closures(&[v(None, None), v(None, None)]), (0, 1));
-        // 起点更早的那条置信度不够，不许它改写历史
+        // 起点更早的那条锚不到，不许它改写历史
         assert_eq!(
-            plan_closures(&[v(Some((2023, 1, 1)), Some("C")), v(Some((2024, 1, 1)), None)]),
+            plan_closures(&[
+                v(Some((2023, 1, 1)), Some("C")),
+                v(Some((2024, 1, 1)), None)
+            ]),
             (0, 1)
         );
         // 后任没起点：它止于前任的起点（落库时的"旧事实无起点也适用"）
