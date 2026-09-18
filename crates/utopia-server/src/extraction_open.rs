@@ -215,6 +215,15 @@ pub(crate) async fn run_open(
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取调用失败，跳过该分块");
+                drop_signal(
+                    state,
+                    kb_id,
+                    document_id,
+                    reason::CHUNK_UNEXTRACTED,
+                    "调用失败，这一块没有进图",
+                    Some(&format!("#{}：{e}", chunk.seq)),
+                )
+                .await;
                 unextracted.push((chunk.seq, format!("调用失败：{e}")));
                 continue;
             }
@@ -224,6 +233,15 @@ pub(crate) async fn run_open(
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取回复解析失败，跳过该分块");
+                drop_signal(
+                    state,
+                    kb_id,
+                    document_id,
+                    reason::CHUNK_UNEXTRACTED,
+                    "回复解析不了，这一块没有进图",
+                    Some(&format!("#{}：{e}", chunk.seq)),
+                )
+                .await;
                 unextracted.push((chunk.seq, format!("回复解析失败：{e}")));
                 continue;
             }

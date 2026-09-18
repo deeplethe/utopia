@@ -509,6 +509,7 @@ export const en = {
       quote_not_in_chunk: "Kept, but the quoted sentence is not in the text verbatim",
       time_not_in_quote: "A time mention's words are not in the text",
       unknown_ref: "The item points at nothing in the reply",
+      chunk_unextracted: "A passage the endpoint could not answer for",
       phrase_is_value: "Kept, but the phrase is the value itself",
       phrase_is_subject: "Kept, but the phrase is the subject's own name",
     } as Record<string, string>,
