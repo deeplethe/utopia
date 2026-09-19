@@ -68,13 +68,13 @@ describe("rehypeCitations", () => {
             {
               type: "element",
               tagName: "a",
-              properties: { href: "cite:2" },
+              properties: { href: "#cite-2" },
               children: [{ type: "text", value: "[2]" }],
             },
             {
               type: "element",
               tagName: "a",
-              properties: { href: "cite:3" },
+              properties: { href: "#cite-3" },
               children: [{ type: "text", value: "[3]" }],
             },
           ],
@@ -102,13 +102,13 @@ describe("rehypeCitations", () => {
 
 describe("citeHref", () => {
   it("reads back what the plugin wrote", () => {
-    expect(citeHref("cite:4")).toEqual([4]);
-    expect(citeHref("cite:4,5")).toEqual([4, 5]);
+    expect(citeHref("#cite-4")).toEqual([4]);
+    expect(citeHref("#cite-4,5")).toEqual([4, 5]);
   });
 
   it("passes an ordinary link through", () => {
     expect(citeHref("https://example.com")).toBeNull();
     expect(citeHref(undefined)).toBeNull();
-    expect(citeHref("cite:")).toBeNull();
+    expect(citeHref("#cite-")).toBeNull();
   });
 });

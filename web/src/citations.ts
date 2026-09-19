@@ -56,11 +56,17 @@ type HastNode = {
  *  代码块里的 `[0]` 是下标 */
 const OPAQUE = new Set(["a", "code", "pre"]);
 
-/** 正文里的 `[n]` 变成 `<a href="cite:n">`。
+const CITE_PREFIX = "#cite-";
+
+/** 正文里的 `[n]` 变成 `<a href="#cite-n">`。
  *
  *  **为什么是 `a` 而不是一个自定义标签**：react-markdown 把 hast 属性转成 JSX
  *  属性，`href` 是它本来就认得的那一个，于是 `components.a` 拿到的是有类型的
- *  props；自定义标签得从 `node.properties` 里摸，摸出来的是 `unknown`。 */
+ *  props；自定义标签得从 `node.properties` 里摸，摸出来的是 `unknown`。
+ *
+ *  **为什么是锚点而不是自造一个 `cite:` 协议**：react-markdown 默认只放行
+ *  http/https/mailto/tel 与相对地址，别的协议会被洗成空串——角标于是退化成一个
+ *  下划线的链接，点不开。`#` 开头是相对地址。 */
 export function rehypeCitations() {
   return (tree: HastNode) => walk(tree);
 }
@@ -85,7 +91,7 @@ function walk(node: HastNode): void {
           out.push({
             type: "element",
             tagName: "a",
-            properties: { href: `cite:${p.cite.join(",")}` },
+            properties: { href: `${CITE_PREFIX}${p.cite.join(",")}` },
             children: [{ type: "text", value: `[${p.cite.join(", ")}]` }],
           });
         }
@@ -100,9 +106,9 @@ function walk(node: HastNode): void {
   if (changed) node.children = out;
 }
 
-/** `cite:1,2` → `[1, 2]`；不是引用链接就给 null */
+/** `#cite-1,2` → `[1, 2]`；不是引用链接就给 null */
 export function citeHref(href: string | undefined): number[] | null {
-  if (!href?.startsWith("cite:")) return null;
-  const ns = citeNumbers(href.slice(5));
+  if (!href?.startsWith(CITE_PREFIX)) return null;
+  const ns = citeNumbers(href.slice(CITE_PREFIX.length));
   return ns.length ? ns : null;
 }
