@@ -303,6 +303,14 @@ async fn bench_entity_detail_against_real_tables() -> anyhow::Result<()> {
     }
     samples.sort();
 
+    // 自建自拆：装的这一份语料到此为止。组织一删，工作区、库、文档、分块、事实
+    // 一路级联跟着走（外键都是 ON DELETE CASCADE）。**量完立刻拆**，不放到写报告
+    // 之后——报告写不出来也不该把上百万行留在别人的库里
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(_org_id)
+        .execute(&pool)
+        .await?;
+
     let p50 = percentile(&samples, 50.0);
     let p95 = percentile(&samples, 95.0);
     let p99 = percentile(&samples, 99.0);
@@ -334,11 +342,11 @@ async fn bench_entity_detail_against_real_tables() -> anyhow::Result<()> {
     report.push("## Read path latency".to_string());
     report.push("| metric | value |".to_string());
     report.push("|---|---|".to_string());
-    report.push(format!("| p50 | {:.2?}", p50));
-    report.push(format!("| p95 | {:.2?}", p95));
-    report.push(format!("| p99 | {:.2?}", p99));
-    report.push(format!("| mean | {:.2?}", mean));
-    report.push(format!("| throughput | {:.1} req/s", throughput));
+    report.push(format!("| p50 | {:.2?} |", p50));
+    report.push(format!("| p95 | {:.2?} |", p95));
+    report.push(format!("| p99 | {:.2?} |", p99));
+    report.push(format!("| mean | {:.2?} |", mean));
+    report.push(format!("| throughput | {:.1} req/s |", throughput));
 
     let path = report_path();
     write_report(&path, &report)?;
