@@ -1266,6 +1266,13 @@ pub async fn replace_chunks(
     pieces: &[ChunkPiece],
 ) -> AppResult<Vec<(String, String)>> {
     let mut tx = pool.begin().await?;
+    // Two queued runs can process the same document at once. Lock the parent
+    // before reading the claim pool, including when it has no chunks yet, so
+    // the second run adopts the first run's rows instead of inserting duplicates.
+    sqlx::query("SELECT id FROM documents WHERE id = $1 FOR UPDATE")
+        .bind(document_id)
+        .execute(&mut *tx)
+        .await?;
     let (version,): (i32,) = sqlx::query_as(
         "SELECT COALESCE(MAX(version), 1) FROM document_versions WHERE document_id = $1",
     )
