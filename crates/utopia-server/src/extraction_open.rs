@@ -580,20 +580,6 @@ pub(crate) async fn run_open(
                     }
                 }
             }
-            // **表格单元的期间在它那一列的表头上**（#729）。模型自己说了时间就不动它——
-            // 它看得见整块原文，说得出的比一根列头多。这一条不是模型报的，所以不走
-            // `time_not_in_quote`：它的出处是位置（这个值在这一行的第几格），
-            // 而那一格的表头上写着期间。它是不是一个期间，由时间解析去判（0045：
-            // 模型读、代码算），这里一个字眼都不认
-            if !time_words.iter().any(|(_, _, role)| *role == "when") {
-                if let (Some(v), Some((q, _))) = (stated_value, quote) {
-                    if let Some((head, at)) = utopia_ingest::column_header(&chunk.text, q, v) {
-                        if let Ok(at) = i32::try_from(at) {
-                            time_words.push((head, at, "when"));
-                        }
-                    }
-                }
-            }
             if await_nod {
                 // 记忆日志：一切原样进待确认表（0015），人点头时 `pending::confirm` 才把它
                 // 落成开放陈述——同样的短语、限定、时间词、引文偏移

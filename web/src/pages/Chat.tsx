@@ -3,7 +3,7 @@
    行动轨迹(steps)与引用(sources)随消息落库,历史回放与实时流共用渲染。 */
 import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -33,8 +33,11 @@ import {
   streamChat,
   type ChatStep,
   type ConversationRow,
+  type Source,
 } from "../api";
 import { S } from "../i18n";
+import { rehypeCitations } from "../citations";
+import { chatMarkdown, SourceList, SourcesProvider } from "./chatCitations";
 import { toast } from "../toast";
 import {
   DropdownMenu,
@@ -53,7 +56,6 @@ import {
   RAIL_CLS,
   REVEAL,
   Row,
-  ROW_HOVER,
   Textarea,
 } from "../ui";
 import { convMarks, useLive, useUnread } from "../unread";
@@ -73,6 +75,10 @@ import { NextStep, nextStep, useReadiness } from "./NextStep";
 /** 同标签页记忆：上次会话（按库）与未发送草稿——切页回来还原，新标签页从头开始 */
 const lastKey = (kbId: string) => `chat:last:${kbId}`;
 const DRAFT_KEY = "chat:draft";
+
+/** 还没有来源的那一轮共用这一个空数组：新建一个会让 context 每次渲染都变，
+ *  正文里每个角标跟着重画 */
+const NO_SOURCES: Source[] = [];
 
 export function Chat() {
   const kbId = useKbId();
@@ -770,7 +776,14 @@ function stepIcon(kind: ChatStep["kind"]) {
 const Segment = memo(function Segment({ text }: { text: string }) {
   return (
     <div className="u-chat-prose">
-      <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
+      {/* rehypeCitations 把正文里的 `[n]` 变成角标（见 citations.ts）。
+          它在 rehype 这一层跑，所以看得见「这个方括号在链接里还是在代码里」——
+          在正文上做字符串替换看不见，会把 markdown 链接的锚文本也改了 */}
+      <Markdown
+        remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeHighlight, rehypeCitations]}
+        components={chatMarkdown}
+      >
         {text}
       </Markdown>
     </div>
@@ -815,6 +828,7 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
   const lastStep = turn.steps?.[turn.steps.length - 1];
 
   return (
+    <SourcesProvider value={turn.sources ?? NO_SOURCES}>
     <div className="max-w-[95%]">
       {/* agent 回复无气泡：正文直接落在画布上（用户消息保留气泡以区分角色） */}
       <div className="py-1 text-title text-ink leading-relaxed">
@@ -861,50 +875,15 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
           就挂在一段还没写完的话下面，一边长一边把正文往上推。它是答案的落款，
           不是过程的一部分——过程已经由上面的轨迹交代了 */}
       {/* 一个面板装多行（DESIGN.md 6）：引用是同构的一组，悬停归行。
-          只列正文引到的那几条（见 citedSources）：检索到的不等于用到的 */}
-      {!live && cited.length > 0 && (
-        <div className="mt-2 glass rounded-panel divide-y divide-line">
-          {cited.map((s) =>
-            s.kind === "charter" ? (
-              /* 手册引用：视觉上与数据引用隔离（BookOpen），跳排版好的 /docs 小节 */
-              <Link
-                key={s.n}
-                to="/docs/$slug"
-                params={{ slug: s.slug! }}
-                hash={s.anchor || undefined}
-                title={s.excerpt}
-                className={`u-card-link flex items-center gap-2 text-small text-ink-2 px-3 py-2 ${ROW_HOVER}`}
-              >
-                <span className="u-num text-accent">[{s.n}]</span>
-                <BookOpen size={11} className="shrink-0 text-ink-2" />
-                <span className="truncate">
-                  {/* 引言节 heading 即文章名，避免 "X › X" */}
-                  {s.heading && s.heading !== s.filename
-                    ? `${s.filename} › ${s.heading}`
-                    : s.filename}
-                </span>
-              </Link>
-            ) : (
-              <Link
-                key={s.n}
-                to="/kb/$kbId/doc/$docId"
-                params={{ kbId, docId: s.document_id! }}
-                search={{ chunk: s.chunk_id }}
-                title={s.excerpt}
-                className={`u-card-link block text-small text-ink-2 px-3 py-2 ${ROW_HOVER}`}
-              >
-                <span className="u-num text-accent">[{s.n}]</span> {s.filename} ·{" "}
-                {s.excerpt.slice(0, 60)}…
-              </Link>
-            ),
-          )}
-        </div>
-      )}
+          只列正文引到的那几条（见 citedSources）：检索到的不等于用到的。
+          点一行先开预览，不直接跳走——见 chatCitations */}
+      {!live && cited.length > 0 && <SourceList sources={cited} />}
       {/* 没有引用时，引用那一格换成一句「未引用任何来源」（#547）：
           缺席没人读得出来，得写出来。判据见 answeredWithoutSources */}
       {answeredWithoutSources(turn, !!live) && (
         <div className="mt-2 text-small text-ink-2">{S.ask.noSources}</div>
       )}
     </div>
+    </SourcesProvider>
   );
 }
