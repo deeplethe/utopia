@@ -3,7 +3,8 @@
 use anyhow::Context;
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
+use std::process::Command;
 
 /// 文本解码：chardetng 探测编码（覆盖 GBK/GB18030/BIG5 等中文常见编码）。
 pub fn plain_text(bytes: &[u8]) -> String {
@@ -15,8 +16,111 @@ pub fn plain_text(bytes: &[u8]) -> String {
     text.into_owned()
 }
 
+/// 这份 PDF 的内容流里有没有画出字形：任何一个画字的算子（`Tj`、`TJ`、`'`、`"`）
+/// 带着非空的串就算。
+///
+/// **这是「扫描件」与「我们读不了」之间唯一靠得住的分界。** 两种情况下 `pdftotext` 都是
+/// 空输出、退出码 0：一张扫描的图本来就没有字可取，而一份用 `GBK-EUC-H` 这类预定义 CMap
+/// 的文件是取字的人不认那张表（#739）。读不出结构就算作没有——宁可让一份文件多走一趟 OCR，
+/// 也不要把它挡在库外
+fn draws_text(bytes: &[u8]) -> bool {
+    let Ok(doc) = lopdf::Document::load_mem(bytes) else {
+        return false;
+    };
+    let drawn = |object: &lopdf::Object| match object {
+        lopdf::Object::String(s, _) => !s.is_empty(),
+        lopdf::Object::Array(items) => items
+            .iter()
+            .any(|i| matches!(i, lopdf::Object::String(s, _) if !s.is_empty())),
+        _ => false,
+    };
+    let pages: Vec<lopdf::ObjectId> = doc.page_iter().collect();
+    pages.into_iter().any(|id| {
+        doc.get_page_content(id)
+            .ok()
+            .and_then(|data| lopdf::content::Content::decode(&data).ok())
+            .is_some_and(|content| {
+                content.operations.iter().any(|op| {
+                    matches!(op.operator.as_str(), "Tj" | "TJ" | "'" | "\"")
+                        && op.operands.iter().any(drawn)
+                })
+            })
+    })
+}
+
+/// PDF 的文字层。取不出来时交给外面的 `pdftotext`——它是另一个进程，所以那边再崩也带不走
+/// 一个工作线程。
+///
+/// 回退也空手而归时，[`draws_text`] 决定该说哪句话：这份文件没画过字，那是扫描件，交给
+/// OCR 那条路（`NeedsReader`）；画了字却一个都没取到，那是我们读不了它，带着第一个解析器
+/// 的原话往外抛。报错的那句话值得较真：说成「没有文字层」会把人支去配一个 OCR 服务，而
+/// 这份文件的文字层好端端地在那儿（#739：同名的 `pdftotext` 有两个实现，Xpdf 那个和缺了
+/// CJK CMap 数据的 Poppler 都会静静地返回空）
 pub fn pdf(bytes: &[u8]) -> anyhow::Result<String> {
-    pdf_extract::extract_text_from_mem(bytes).context("PDF text-layer extraction failed")
+    let extracted = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes));
+    let original_error = match extracted {
+        Ok(Ok(text)) if !text.trim().is_empty() => return Ok(text),
+        Ok(Ok(_)) => None,
+        Ok(Err(error)) => Some(error.to_string()),
+        Err(panic) => Some(
+            panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    panic
+                        .downcast_ref::<&str>()
+                        .map(|message| (*message).to_owned())
+                })
+                .unwrap_or_else(|| "PDF parser panicked".to_owned()),
+        ),
+    };
+
+    let fallback = pdf_with_poppler(bytes);
+    if let Ok(text) = &fallback {
+        if !text.trim().is_empty() {
+            return Ok(text.clone());
+        }
+    }
+    // The first extractor read the file and found no text layer: the OCR path takes it from here.
+    let Some(original) = original_error else {
+        return Ok(String::new());
+    };
+    // It could not read the file. A file that draws no glyphs is a scan even so.
+    if !draws_text(bytes) {
+        return Ok(String::new());
+    }
+    match fallback {
+        Ok(_) => anyhow::bail!(
+            "PDF text-layer extraction failed: {original}; the fallback read no text from a file \
+that draws it (is pdftotext Poppler, with its CJK CMap data?)"
+        ),
+        Err(error) => anyhow::bail!(
+            "PDF text-layer extraction failed: {original}; Poppler fallback failed: {error:#}"
+        ),
+    }
+}
+
+fn pdf_with_poppler(bytes: &[u8]) -> anyhow::Result<String> {
+    let mut input = tempfile::NamedTempFile::new().context("Could not create a temporary PDF")?;
+    input
+        .write_all(bytes)
+        .context("Could not write the temporary PDF")?;
+    input.flush().context("Could not flush the temporary PDF")?;
+
+    let output = Command::new("pdftotext")
+        .args(["-enc", "UTF-8", "-nopgbrk"])
+        .arg(input.path())
+        .arg("-")
+        .output()
+        .context("Could not run pdftotext")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "pdftotext exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    String::from_utf8(output.stdout).context("pdftotext returned invalid UTF-8")
 }
 
 /// docx：解压 word/document.xml。正文 w:t 取字、w:p 分段；表格（w:tbl）收成网格交给

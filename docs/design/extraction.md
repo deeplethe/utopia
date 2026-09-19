@@ -142,7 +142,15 @@ item 1); `identity.mjs`, `govern.mjs`, `temporal.mjs`
 and the lease bench cover the other domains. The judge's own variance is measured: the same 909
 statements judged twice came out misworded 5.0% and 3.6% with 97% of verdicts identical, and
 reads-alone 4.8%, 8.6% and 10.7% across three passes, so a difference under two points of misworded
-between two runs is noise and reads-alone is reported but not compared between single runs [#749]. Every cut reports at least three domains, two runs per configuration,
+between two runs is noise and reads-alone is reported but not compared between single runs [#749].
+**Extraction has its own spread, measured the same way**: the four filings extracted twice under one
+configuration give 885 and 824 statements, misworded 3.7% and 4.2%, not stated 0.0% and 0.2%,
+figures in tables reaching no statement 2% and 4%. A run moves the statement count by about seven
+per cent and misworded by half a point, so the two spreads together are what a claim has to clear.
+`figures.mjs` counts every figure a passage writes against every statement drawn from that passage,
+reads no model, and separates table rows from prose; the judge counts a statement once per piece of
+evidence, so its denominator is statement-evidence pairs rather than statements (845 against 824 on
+the second run). Every cut reports at least three domains, two runs per configuration,
 with the judge's calibration stated; no F1 against Re-DocRED, whose gold omits true
 facts [0044]. Thresholds: not stated at most 2%, entity-pair recall no lower than before, prompt
 tokens per document reported. Measured at cut 1: not stated at or under 2% in 16 of 18
@@ -160,9 +168,9 @@ and clauses [0012]. The ledger rules those records made stand (see [ledger](ledg
 
 ## Proposed and not built
 
-- Alignment producing typed facts from statements [0044 cut 2]; time interpretation and the document
-  time context [0045]; identity profiles [0044 d6]; a layer marker in the interface (an open row
-  renders as an unnamed relation labelled by its phrase).
+- Identity profiles [0044 d6]; a layer marker in the interface (an open row renders as an unnamed
+  relation labelled by its phrase). Alignment producing typed facts [0044 cut 2] and time
+  interpretation against the document [0045 cuts 1 to 3] were on this list and are built.
 - A second pass asking which figures and dates are not yet in a statement (dense sentences drop the
   amount); the period column of a financial-table cell [#729].
 - The errata agent over the typed graph [0044 d7].

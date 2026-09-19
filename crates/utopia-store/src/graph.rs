@@ -1809,7 +1809,10 @@ pub async fn document_extractions(
                 f.subject_id, s.canonical_name AS subject,
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate,
                 r.id IS NULL AS inferred,
-                f.object_id, o.canonical_name AS object,
+                -- 宾语是一样东西就用它的名字，是字面值（名字、金额、百分比）就用那个值。
+                -- 只取 canonical_name 的话，每一条值宾语的陈述在阅读页右栏都是主语加短语、
+                -- 后面空着一片——「Hugging Face, Inc. known as」后面什么都没有
+                f.object_id, COALESCE(o.canonical_name, f.object_value #>> '{value}') AS object,
                 f.valid_from, f.valid_to, f.confidence
          FROM fact_evidence fe
          JOIN chunks c ON c.id = fe.chunk_id AND c.document_id = $1

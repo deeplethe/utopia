@@ -23,12 +23,18 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - name: Install PDF text extraction tools
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils poppler-data
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+        # 装了 Poppler 就必须真的用它测：没有它时 PDF 回退的那个测试会跳过，
+        # 而一个静静跳过的测试等于没写（#248）
+        env:
+          UTOPIA_TEST_REQUIRE_PDFTOTEXT: "1"
       - name: Build
         run: cargo build --workspace
 

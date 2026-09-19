@@ -27,6 +27,12 @@ pub mod reason {
     pub const MALFORMED_ITEM: &str = "malformed_item";
     /// 模型输出被截断（撞上 max_tokens）→ 已完整的那些留下，尾巴丢掉
     pub const TRUNCATED_REPLY: &str = "truncated_reply";
+    /// 这条陈述的值不在它自己的引文里（#729）：证据没写着这个数。
+    ///
+    /// 表格是这个错的产地——模型把一行五列压成五条只有值不同的陈述，引文却指向表上面
+    /// 那句导语。五条里至多一条对，而图上没有任何东西分得出是哪一条。**引文是这条陈述
+    /// 的全部依据**：值不在里面，它就不是文档说的
+    pub const VALUE_NOT_IN_QUOTE: &str = "value_not_in_quote";
     /// 模型报的别名（或它的引文）不在这一块原文里（0041 决定 2）：不记这个名字。
     /// 名字是召回的桥，一座凭空的桥会把两个不相干的实体接到一起
     pub const NAME_NOT_IN_TEXT: &str = "name_not_in_text";

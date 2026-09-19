@@ -43,6 +43,8 @@ Both branches are protected: pull request required, CI (`backend` and `web`) mus
 
 Requires Docker, Rust 1.85+, Node 20+, pnpm.
 
+PDF text extraction also uses `pdftotext` when the Rust parser cannot read a file. Source installs need Poppler and its CJK CMap data (`poppler-utils poppler-data` on Debian); the Docker image includes both. Without them the PDF fallback test skips, and a PDF that draws text we cannot read reports a reader failure rather than claiming the file is a scan.
+
 ```bash
 docker compose up -d db                 # Postgres with pgvector
 cargo run -p utopia-server              # runs migrations, :1516
