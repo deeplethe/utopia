@@ -246,7 +246,7 @@ async fn align_types_locked(
             }
             let record = serde_json::json!({ "first": a, "second": b });
             if !agree(a, b) {
-                type_bindings::decide(
+                if type_bindings::decide(
                     pool,
                     kb_id,
                     &s.kind_word,
@@ -256,8 +256,15 @@ async fn align_types_locked(
                     &record,
                     "agent",
                 )
-                .await?;
-                undecided += 1;
+                .await?
+                {
+                    // The old binding no longer supplies a class. Otherwise phrase
+                    // alignment would keep using it through entities.type_id.
+                    if type_bindings::unapply(pool, kb_id, &s.kind_word).await? > 0 {
+                        state.emit_graph(kb_id);
+                    }
+                    undecided += 1;
+                }
                 continue;
             }
             match a.as_deref().and_then(|k| by_key.get(k)) {
@@ -342,3 +349,7 @@ async fn align_types_locked(
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "type_alignment_tests.rs"]
+mod tests;
