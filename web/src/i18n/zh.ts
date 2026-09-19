@@ -700,6 +700,7 @@ export const zh: Strings = {
     deleteBtn: "删除",
     cancel: "取消",
     noSources: "未引用任何来源",
+    openOriginal: "打开原文",
   },
   graph: {
     untyped: "未分类",
