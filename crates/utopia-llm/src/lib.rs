@@ -457,8 +457,7 @@ impl LlmClient {
         let (mut saw_frame, mut ended) = (false, false);
         while let Some(part) = bytes.next().await {
             let part = part.map_err(Unreachable)?;
-            // A network chunk can end inside a UTF-8 code point. Decode only
-            // after the complete SSE frame has arrived.
+            // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
             buf.extend_from_slice(&part);
             // SSE 帧以空行分隔；最后一个不完整的帧留在 buf 里等下一片
             while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
@@ -636,8 +635,7 @@ impl LlmClient {
             let mut done = false;
             'outer: while let Some(part) = bytes.next().await {
                 let part = part?;
-                // A network chunk can end inside a UTF-8 code point. Decode only
-                // after the complete SSE frame has arrived.
+                // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
                 buf.extend_from_slice(&part);
                 while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
                     let frame = String::from_utf8_lossy(&buf[..pos]).into_owned();
@@ -727,8 +725,7 @@ impl LlmClient {
             let mut buf = Vec::new();
             while let Some(part) = bytes.next().await {
                 let part = part?;
-                // A network chunk can end inside a UTF-8 code point. Decode only
-                // after the complete SSE frame has arrived.
+                // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
                 buf.extend_from_slice(&part);
                 // SSE 帧以空行分隔；逐帧取出已完整到达的部分
                 while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
@@ -920,7 +917,7 @@ mod tests {
         (addr, server)
     }
 
-    // HTTP chunk boundaries may split any UTF-8 character, independently of SSE frames.
+    // HTTP 分块可以断在 UTF-8 字符中间，与 SSE 帧边界无关。
     async fn bytewise_sse(body: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
