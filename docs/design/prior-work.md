@@ -174,11 +174,19 @@ built.
    contract was chosen by measurement (#731); the quote is the first slot of a statement, so the
    model copies the sentence before it writes from it (#748: on the four NVDA releases 909 statements
    against 901, misworded 5% in both, prose misworded 6% against 9% and prose that does not read
-   alone 5% against 11%). *Open:* clause-level quotes measured against minimal ones; a run-to-run
-   stability number.
+   alone 5% against 11%). The same four filings extracted twice under one configuration give 885 and
+   824 statements, misworded 3.7% and 4.2%, not stated 0.0% and 0.2%, reads alone 10.7% and 8.2%:
+   **a run is worth about half a point of misworded and seven per cent of its statements**, which is
+   the band any two numbers here have to clear. *Open:* clause-level quotes measured against
+   minimal ones.
 10. **Numbers need their own patterns.** Open numerical extraction is its own problem
-    [Saha 2017]; the dense-sentence figures we drop are that class. *Open:* the second-look pass of
-    item 5.
+    [Saha 2017]; the dense-sentence figures we drop are that class. **Measured, and the pass is not
+    built.** The four filings are the densest text we have, 25 figures per thousand characters
+    against 7 for the next corpus, and a structural bench that reads no model counts every figure a
+    passage writes against every statement drawn from it: over two runs, prose figures reaching no
+    statement are 0 and 1 of 35, table figures 7 and 18 of 451. A second look would chase a dozen
+    table cells for a second call on every chunk, and a chunk costs 150 seconds. *Open:* a corpus
+    where prose figures are lost often enough for the pass to move the number.
 
 ### Alignment
 
