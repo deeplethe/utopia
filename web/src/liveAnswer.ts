@@ -19,6 +19,7 @@
 // 于是改成一张表：谁开场谁拿句柄，读谁写谁都有名有姓。`send` 的守卫不用改——
 // 它本来问的就是「这一场在不在流」，现在这个问题终于只关于这一场。
 import type { ChatStep, Source } from "./api";
+import { citeNumbers, citeRe } from "./citations";
 
 export interface Turn {
   role: "user" | "assistant";
@@ -37,8 +38,8 @@ export interface Turn {
 export function citedSources(turn: Turn): Source[] {
   if (!turn.sources?.length) return [];
   const cited = new Set<number>();
-  for (const m of turn.content.matchAll(/\[(\d+(?:\s*[,，]\s*\d+)*)\]/g)) {
-    for (const n of m[1].split(/[,，]/)) cited.add(Number(n.trim()));
+  for (const m of turn.content.matchAll(citeRe())) {
+    for (const n of citeNumbers(m[1])) cited.add(n);
   }
   return turn.sources.filter((s) => cited.has(s.n));
 }
