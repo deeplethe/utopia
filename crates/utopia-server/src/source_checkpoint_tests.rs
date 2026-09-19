@@ -73,9 +73,15 @@ async fn retry_reads_the_uncovered_window(
             assert!(failed.last_sync_at.is_some(), "attempt time still drives scheduling and diagnostics");
             server.reset().await;
         }
+        // **把真正发出去的下界记下来**：只断言那条漏掉的更新回来了是不够的，
+        // 假如下界根本没发（每次都全量拉），这个断言照样过，而增量就悄悄没了
+        let asked: std::sync::Arc<std::sync::Mutex<Vec<Option<chrono::DateTime<chrono::Utc>>>>> =
+            Default::default();
+        let seen = asked.clone();
         Mock::given(method("GET")).respond_with(move |request: &Request| {
             let since = request.url.query_pairs().find(|(k,_)| k == "since")
                 .map(|(_,v)| chrono::DateTime::parse_from_rfc3339(&v).unwrap().with_timezone(&chrono::Utc));
+            seen.lock().unwrap().push(since);
             let items = if since.is_none_or(|s| s <= changed) {
                 serde_json::json!([{"id":"missed", "title":"Missed update", "content":"An update from the uncovered window"}])
             } else { serde_json::json!([]) };
@@ -87,6 +93,19 @@ async fn retry_reads_the_uncovered_window(
         anyhow::ensure!(count == 1, "incremental cursor skipped an unimported update: {count} documents");
         let ok = utopia_store::sources::get(&pool, source).await?;
         assert_eq!(ok.last_sync_status, "ok");
+        // 下界取自上一次**成功**那一轮的开始，不是上一次尝试的结束，也不是没有下界
+        let asked = asked.lock().unwrap().clone();
+        let last = asked.last().copied().flatten();
+        if prior_success {
+            let last = last.expect("没有带下界：增量拉取整个没了");
+            assert!(
+                (last - started).num_seconds().abs() <= 1,
+                "下界应当是上一次成功那轮的开始 {started}，实得 {last}"
+            );
+            assert!(last < changed, "下界晚于那次改动，漏掉的窗口又被跳过了");
+        } else {
+            assert!(last.is_none(), "没有成功过的源不该带下界，实得 {last:?}");
+        }
         Ok::<_, anyhow::Error>(())
     }.await;
     sqlx::query("DELETE FROM knowledge_bases WHERE id=$1")
