@@ -653,6 +653,9 @@ impl LlmClient {
                         let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
                             continue;
                         };
+                        if v["choices"][0]["finish_reason"].is_string() {
+                            done = true;
+                        }
                         let delta = &v["choices"][0]["delta"];
                         if let Some(text) = delta["content"].as_str() {
                             if !text.is_empty() {
@@ -685,7 +688,11 @@ impl LlmClient {
                     }
                 }
             }
-            let _ = done;
+            // A clean HTTP EOF can still truncate an SSE conversation. Do not
+            // hand unfinished tool calls to the agent as a completed turn.
+            if !done {
+                Err(Interrupted { got: content.len() })?;
+            }
             calls.retain(|c| !c.name.is_empty());
             let content = if content.is_empty() { None } else { Some(content) };
             yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls });
@@ -725,6 +732,8 @@ impl LlmClient {
         let mut bytes = resp.bytes_stream();
         let stream = async_stream::try_stream! {
             let mut buf = String::new();
+            let mut ended = false;
+            let mut got = 0;
             while let Some(part) = bytes.next().await {
                 let part = part?;
                 buf.push_str(&String::from_utf8_lossy(&part));
@@ -740,14 +749,21 @@ impl LlmClient {
                             return;
                         }
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(data) {
+                            if v["choices"][0]["finish_reason"].is_string() {
+                                ended = true;
+                            }
                             if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
                                 if !delta.is_empty() {
+                                    got += delta.len();
                                     yield delta.to_string();
                                 }
                             }
                         }
                     }
                 }
+            }
+            if !ended {
+                Err(Interrupted { got })?;
             }
         };
         Ok(stream)
@@ -951,6 +967,77 @@ mod tests {
         };
         assert!(!is_unreachable(&error));
         assert!(error.to_string().contains(diagnosis), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn a_raw_stream_cut_before_its_finish_is_an_error() {
+        use futures_util::TryStreamExt;
+        let sse = format!(
+            "data: {}\n\n",
+            json!({
+                "choices": [{"delta": {"content": "partial answer"}}]
+            })
+        );
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+        let stream = client_at(addr).chat_stream_raw(&[]).await.unwrap();
+        let error = stream.try_collect::<Vec<_>>().await.unwrap_err();
+        server.await.unwrap();
+        assert!(error.downcast_ref::<Interrupted>().is_some(), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn a_tool_stream_cut_before_its_finish_is_an_error() {
+        use futures_util::TryStreamExt;
+        let sse = format!(
+            "data: {}\n\n",
+            json!({
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "id": "call_1", "function": {
+                        "name": "lookup", "arguments": "{\"name\":"
+                    }
+                }]}}]
+            })
+        );
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+        let stream = client_at(addr)
+            .chat_tools_stream_with(&[], None, None)
+            .await
+            .unwrap();
+        let error = stream.try_collect::<Vec<_>>().await.unwrap_err();
+        server.await.unwrap();
+        assert!(error.downcast_ref::<Interrupted>().is_some(), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn either_finish_signal_completes_raw_and_tool_streams() {
+        use futures_util::TryStreamExt;
+        for ending in [
+            "data: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        ] {
+            let sse = format!(
+                "data: {}\n\n{ending}",
+                json!({
+                    "choices": [{"delta": {"content": "whole answer"}}]
+                })
+            );
+            let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+            let stream = client_at(addr).chat_stream_raw(&[]).await.unwrap();
+            let chunks: Vec<String> = stream.try_collect().await.unwrap();
+            server.await.unwrap();
+            assert_eq!(chunks.concat(), "whole answer");
+            let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+            let stream = client_at(addr)
+                .chat_tools_stream_with(&[], None, None)
+                .await
+                .unwrap();
+            let items: Vec<ToolStreamItem> = stream.try_collect().await.unwrap();
+            server.await.unwrap();
+            let Some(ToolStreamItem::Turn(turn)) = items.last() else {
+                panic!("missing completed turn")
+            };
+            assert_eq!(turn.content.as_deref(), Some("whole answer"));
+        }
     }
 
     /// 流式的一次问答收成整段：只要 `delta.content`，推理的增量不进返回值，
