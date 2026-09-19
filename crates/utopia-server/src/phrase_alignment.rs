@@ -35,9 +35,19 @@ type Vote = Option<(String, Direction)>;
 
 /// 签名两端的类落在属性声明的域/值域里（没声明的不限，没绑到类的一端只被没声明的
 /// 一端接受）；正反两个方向都算。
-fn fits(p: &RelationTypeView, sig: &PhraseSignature) -> bool {
+fn fits(
+    p: &RelationTypeView,
+    sig: &PhraseSignature,
+    ancestors: &HashMap<Uuid, HashSet<Uuid>>,
+) -> bool {
     let within = |declared: &[Uuid], class: Option<Uuid>| -> bool {
-        declared.is_empty() || class.is_some_and(|c| declared.contains(&c))
+        declared.is_empty()
+            || class.is_some_and(|c| {
+                declared.contains(&c)
+                    || ancestors
+                        .get(&c)
+                        .is_some_and(|parents| declared.iter().any(|id| parents.contains(id)))
+            })
     };
     if sig.object_is_value {
         p.kind == "attribute" && within(&p.domains, sig.subject_type_id)
@@ -47,6 +57,25 @@ fn fits(p: &RelationTypeView, sig: &PhraseSignature) -> bool {
                 || (within(&p.domains, sig.object_type_id)
                     && within(&p.ranges, sig.subject_type_id)))
     }
+}
+
+fn class_ancestors(
+    parents: &HashMap<Uuid, &[Uuid]>,
+    roots: &HashSet<Uuid>,
+) -> HashMap<Uuid, HashSet<Uuid>> {
+    roots
+        .iter()
+        .map(|&class| {
+            let mut seen = HashSet::new();
+            let mut pending = vec![class];
+            while let Some(id) = pending.pop() {
+                if parents.contains_key(&id) && seen.insert(id) {
+                    pending.extend(parents[&id].iter().copied());
+                }
+            }
+            (class, seen)
+        })
+        .collect()
 }
 
 /// 对一个库跑一遍：新出现的和过期的签名各判一次。
@@ -109,6 +138,18 @@ async fn align_phrases_locked(
             Some(b) => b.decided_by != "person" && stale.contains(&s.key()),
         })
         .collect();
+    // Keep ancestry per class: a union across endpoints would admit unrelated classes.
+    // Restrict traversal to this base and visit each node once, including imported cycles.
+    let parents: HashMap<_, _> = classes
+        .iter()
+        .map(|c| (c.id, c.parents.as_slice()))
+        .collect();
+    let roots = todo
+        .iter()
+        .flat_map(|s| [s.subject_type_id, s.object_type_id])
+        .flatten()
+        .collect();
+    let ancestors = class_ancestors(&parents, &roots);
     let attempted: HashSet<_> = todo.iter().map(|s| s.key()).collect();
     tracing::info!(%kb_id, signatures = sigs.len(), to_decide = todo.len(), properties = props.len(), "短语对齐开始");
 
@@ -123,7 +164,7 @@ async fn align_phrases_locked(
     for batch in todo.chunks(BATCH) {
         let cands: Vec<Vec<&RelationTypeView>> = batch
             .iter()
-            .map(|s| props.iter().filter(|p| fits(p, s)).collect())
+            .map(|s| props.iter().filter(|p| fits(p, s, &ancestors)).collect())
             .collect();
         let mut votes: Vec<(Vote, Vote)> = vec![(None, None); batch.len()];
         let mut answered = vec![(false, false); batch.len()];
@@ -333,6 +374,58 @@ async fn align_phrases_locked(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fits(p: &RelationTypeView, sig: &PhraseSignature) -> bool {
+        super::fits(p, sig, &HashMap::new())
+    }
+
+    #[test]
+    fn ancestry_is_directional_scoped_and_cycle_safe() {
+        let (root, child, other, leaf, foreign) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        let child_parents = [root];
+        let other_parents = [root];
+        let leaf_parents = [child, other, foreign];
+        let parents = HashMap::from([
+            (root, &[][..]),
+            (child, &child_parents[..]),
+            (other, &other_parents[..]),
+            (leaf, &leaf_parents[..]),
+        ]);
+        let ancestry = class_ancestors(&parents, &parents.keys().copied().collect());
+        assert_eq!(
+            ancestry[&leaf].len(),
+            4,
+            "diamond is deduplicated and foreign nodes excluded"
+        );
+        assert!(!super::fits(
+            &view("attribute", vec![child], vec![]),
+            &sig(Some(root), None, true),
+            &ancestry
+        ));
+        assert!(!super::fits(
+            &view("attribute", vec![child], vec![]),
+            &sig(Some(other), None, true),
+            &ancestry
+        ));
+        assert!(!super::fits(
+            &view("attribute", vec![foreign], vec![]),
+            &sig(Some(leaf), None, true),
+            &ancestry
+        ));
+        let a = [child];
+        let b = [root];
+        let cycle = class_ancestors(
+            &HashMap::from([(root, &a[..]), (child, &b[..])]),
+            &HashSet::from([root]),
+        );
+        assert_eq!(cycle[&root].len(), 2);
+    }
 
     fn view(kind: &str, domains: Vec<Uuid>, ranges: Vec<Uuid>) -> RelationTypeView {
         RelationTypeView {

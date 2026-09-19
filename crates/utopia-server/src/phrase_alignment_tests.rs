@@ -717,3 +717,334 @@ async fn an_over_limit_stale_binding_is_not_falsely_rejected() -> anyhow::Result
     f.cleanup().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn subclasses_reach_the_real_phrase_requests() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let place = f.class("place", &[]).await?;
+    let manufacturer = f.class("manufacturer", &[f.class]).await?;
+    let precision = f.class("precision", &[manufacturer]).await?;
+    let service = f.class("service", &[f.class]).await?;
+    let unrelated = f.class("person", &[]).await?;
+    let diamond = f.class("diamond", &[unrelated, precision, service]).await?;
+    let city = utopia_store::resolution::resolve_mention(
+        &f.pool,
+        f.kb,
+        Some(place),
+        "City",
+        None,
+        None,
+        &[],
+    )
+    .await?
+    .entity_id;
+    f.property("located_in", "relation", &[f.class], &[place])
+        .await?;
+    for (name, class) in [
+        ("direct", Some(f.class)),
+        ("child", Some(manufacturer)),
+        ("grandchild", Some(precision)),
+        ("diamond", Some(diamond)),
+        ("unrelated", Some(unrelated)),
+        ("unknown", None),
+    ] {
+        f.statement(name, class, city, "located in").await?;
+    }
+    f.run().await?;
+    let requests = f.requests();
+    assert_eq!(requests.len(), 2, "two complete model passes");
+    for request in requests {
+        let prompt = request["messages"][1]["content"].as_str().unwrap();
+        assert!(
+            prompt.contains("subject class: organization"),
+            "direct control reached model"
+        );
+        for key in ["manufacturer", "precision", "diamond"] {
+            assert!(
+                prompt.contains(&format!("subject class: {key}")),
+                "subclass {key} missing from actual worker request: {prompt}"
+            );
+        }
+        assert!(!prompt.contains("subject class: person"));
+        assert!(!prompt.contains("subject class: ?"));
+    }
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM facts WHERE kb_id=$1 AND layer='typed' AND from_statement_id IS NOT NULL AND invalidated_at IS NULL",
+    )
+    .bind(f.kb)
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(live, 4, "accepted signatures materialize");
+    let evidence: i64 = sqlx::query_scalar("SELECT count(*) FROM fact_evidence e JOIN facts f ON f.id=e.fact_id WHERE f.kb_id=$1 AND f.from_statement_id IS NOT NULL AND f.invalidated_at IS NULL").bind(f.kb).fetch_one(&f.pool).await?;
+    assert_eq!(evidence, 4, "source quotes are carried to the projection");
+    f.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn inherited_reverse_and_literal_preserve_sources_and_human_choice() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let place = f.class("place", &[]).await?;
+    let child = f.class("manufacturer", &[f.class]).await?;
+    let factory = utopia_store::resolution::resolve_mention(
+        &f.pool,
+        f.kb,
+        Some(child),
+        "Factory",
+        None,
+        None,
+        &[],
+    )
+    .await?
+    .entity_id;
+    f.property("located_in", "relation", &[f.class], &[place])
+        .await?;
+    f.property("revenue", "attribute", &[f.class], &[]).await?;
+    let reverse = f.statement("City", Some(place), factory, "hosts").await?;
+    let value = json!({"value":100});
+    let literal = utopia_store::graph::insert_open_statement(
+        &f.pool,
+        f.kb,
+        factory,
+        "reported revenue",
+        utopia_store::graph::FactObject::Value(&value),
+        None,
+        1.0,
+    )
+    .await?
+    .0;
+    let human = utopia_store::graph::insert_open_statement(
+        &f.pool,
+        f.kb,
+        factory,
+        "human rejected",
+        utopia_store::graph::FactObject::Value(&value),
+        None,
+        1.0,
+    )
+    .await?
+    .0;
+    let sig = phrase_bindings::signatures(&f.pool, f.kb)
+        .await?
+        .into_iter()
+        .find(|s| s.phrase == "human rejected")
+        .unwrap();
+    phrase_bindings::decide(
+        &f.pool,
+        f.kb,
+        &sig,
+        Decision {
+            relation_type_id: None,
+            direction: None,
+            status: "none",
+            votes: &json!({"reason":"person"}),
+            decided_by: "person",
+        },
+    )
+    .await?;
+    f.run().await?;
+    for statement in [reverse, literal] {
+        let subject: Uuid = sqlx::query_scalar("SELECT t.subject_id FROM facts t JOIN typed_fact_sources s ON s.fact_id=t.id WHERE s.statement_id=$1 AND t.invalidated_at IS NULL")
+            .bind(statement).fetch_one(&f.pool).await?;
+        assert_eq!(subject, factory);
+    }
+    let human_sources: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM typed_fact_sources WHERE statement_id=$1")
+            .bind(human)
+            .fetch_one(&f.pool)
+            .await?;
+    assert_eq!(human_sources, 0);
+    assert_eq!(f.requests().len(), 2);
+    f.run().await?;
+    assert_eq!(f.requests().len(), 2, "unchanged bindings are cached");
+    f.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn identical_class_keys_in_another_base_do_not_supply_ancestors() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let foreign = Fx::new().await?.unwrap();
+    foreign.class("manufacturer", &[foreign.class]).await?;
+    let local = f.class("manufacturer", &[]).await?;
+    let place = f.class("place", &[]).await?;
+    let city = utopia_store::resolution::resolve_mention(
+        &f.pool,
+        f.kb,
+        Some(place),
+        "City",
+        None,
+        None,
+        &[],
+    )
+    .await?
+    .entity_id;
+    f.property("located_in", "relation", &[f.class], &[place])
+        .await?;
+    f.statement("Factory", Some(local), city, "located in")
+        .await?;
+    f.run().await?;
+    assert!(
+        f.requests().is_empty(),
+        "same-name foreign inheritance cannot admit this signature"
+    );
+    foreign.cleanup().await?;
+    f.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_property_edit_reopens_a_negative_subclass_binding() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let child = f.class("manufacturer", &[]).await?;
+    let place = f.class("place", &[]).await?;
+    let city = utopia_store::resolution::resolve_mention(
+        &f.pool,
+        f.kb,
+        Some(place),
+        "City",
+        None,
+        None,
+        &[],
+    )
+    .await?
+    .entity_id;
+    let property = f
+        .property("located_in", "relation", &[f.class], &[place])
+        .await?;
+    // This admissible but unrelated candidate lets the fixture return a real negative
+    // decision before the class acquires its Organization parent.
+    f.property("unrelated_relation", "relation", &[], &[])
+        .await?;
+    f.statement("Factory", Some(child), city, "located in")
+        .await?;
+    f.run().await?;
+    assert_eq!(
+        phrase_bindings::bindings(&f.pool, f.kb).await?[0].status,
+        "none"
+    );
+    utopia_store::ontology::update_entity_type(
+        &f.pool,
+        f.kb,
+        child,
+        "Manufacturer",
+        None,
+        "circle",
+        &[f.class],
+        "An organization that manufactures products",
+    )
+    .await?;
+    utopia_store::ontology::update_relation_type(
+        &f.pool,
+        f.kb,
+        property,
+        "locatedIn",
+        "state",
+        Default::default(),
+        "Where an organization operates",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
+    assert_eq!(phrase_bindings::stale(&f.pool, f.kb).await?.len(), 1);
+    f.run().await?;
+    let binding = phrase_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+    assert_eq!(binding.status, "bound");
+    assert_eq!(binding.relation_type_id, Some(property));
+    assert_eq!(
+        f.requests().len(),
+        4,
+        "a normal property edit reopens the negative cache"
+    );
+    f.cleanup().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_inherited_binding_retires_when_its_domain_stops_admitting_it() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let child = f.class("manufacturer", &[f.class]).await?;
+    let place = f.class("place", &[]).await?;
+    let person = f.class("person", &[]).await?;
+    let city = utopia_store::resolution::resolve_mention(
+        &f.pool,
+        f.kb,
+        Some(place),
+        "City",
+        None,
+        None,
+        &[],
+    )
+    .await?
+    .entity_id;
+    let property = f
+        .property("located_in", "relation", &[f.class], &[place])
+        .await?;
+    let statement = f
+        .statement("Factory", Some(child), city, "located in")
+        .await?;
+    f.run().await?;
+    let binding = phrase_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+    assert_eq!(
+        binding.status, "bound",
+        "the inherited domain admits the endpoint"
+    );
+    let typed: Uuid = sqlx::query_scalar(
+        "SELECT id FROM facts WHERE from_statement_id=$1 AND invalidated_at IS NULL",
+    )
+    .bind(statement)
+    .fetch_one(&f.pool)
+    .await?;
+    utopia_store::ontology::update_relation_type(
+        &f.pool,
+        f.kb,
+        property,
+        "locatedIn",
+        "state",
+        Default::default(),
+        "Only a person can use this relation",
+        None,
+        None,
+        Some(&[person]),
+        Some(&[place]),
+    )
+    .await?;
+    f.run().await?;
+    assert_eq!(
+        f.requests().len(),
+        2,
+        "structural retirement needs no further model call"
+    );
+    assert_eq!(
+        phrase_bindings::bindings(&f.pool, f.kb).await?[0].status,
+        "none"
+    );
+    let retired: bool =
+        sqlx::query_scalar("SELECT invalidated_at IS NOT NULL FROM facts WHERE id=$1")
+            .bind(typed)
+            .fetch_one(&f.pool)
+            .await?;
+    assert!(retired);
+    let evidence: i64 = sqlx::query_scalar("SELECT count(*) FROM facts f JOIN fact_evidence e ON e.fact_id=f.id WHERE f.id=$1 AND f.invalidated_at IS NULL").bind(statement).fetch_one(&f.pool).await?;
+    assert_eq!(evidence, 1, "the open statement and quote survive");
+    f.run().await?;
+    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE payload->>'kb_id'=$1")
+        .bind(f.kb.to_string())
+        .fetch_one(&f.pool)
+        .await?;
+    assert_eq!(jobs, 0);
+    f.cleanup().await?;
+    Ok(())
+}

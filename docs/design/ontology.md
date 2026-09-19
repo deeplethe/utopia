@@ -60,8 +60,10 @@ phrase as the documents wrote it, the class of its subject and the class of its 
 when the object is a figure, a title or a status; the classes come from the kind-word bindings, and
 a side whose kind word is bound to no class is its own signature. Each signature is decided once,
 after the kind words, by the same shape as [#741]: candidates are the properties whose declared
-domain and range admit the two ends in either direction (an undeclared end admits anything), the
-model sees the signature with three of its statements and their quotes, and two votes with the
+domain and range admit the two ends in either direction (an undeclared end admits anything). The
+candidate filter follows all parent edges transitively within the base, including non-primary
+parents, without treating a parent instance as an instance of its child. The model sees the signature
+with three of its statements and their quotes, and two votes with the
 candidates in opposite orders must agree on the property and the direction (forward when the
 statement's subject is the property's subject, reverse when its object is) for the signature to
 bind. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
@@ -71,7 +73,16 @@ materialisation while preserving human decisions and other valid sources. Exceed
 limit is not a negative decision: such signatures remain skipped, and a stale over-limit binding
 can still cause repeated runs; this change does not resolve that scheduling limitation. Unbound
 statements stay in the open graph and their signatures count toward the
-workbench's suggestions. Bindings live in `phrase_bindings`: a bound result goes stale when its
+workbench's suggestions.
+
+Candidate selection uses class ancestry for new or otherwise stale signatures. Deployment and
+class-parent edits alone do not reopen cached decisions: freshness still depends on property
+timestamps. A normal edit to a relevant property can reopen affected automatic bindings; no
+bulk reevaluation operation is introduced here. Input-version tracking (related to #795) remains
+necessary for hierarchy edits and in-flight changes. Do not rewrite decision timestamps or delete
+bindings to simulate reevaluation.
+
+Bindings live in `phrase_bindings`: a bound result goes stale when its
 selected property changes; `none` and `undecided` go stale when any property in the base is added
 or updated, since an existing property's revised definition may now fit [#773]. Kind-word bindings
 use the same rule for classes. Both use `updated_at`, so cosmetic edits can also trigger
