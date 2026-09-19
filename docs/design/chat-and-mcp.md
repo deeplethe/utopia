@@ -2,7 +2,7 @@
 
 Records: [0042] (the loop), [0014] (MCP tools and scope), [0015] (`remember` and the nod), [0020]
 (the read contract), [0021] (rule tools), [0019] and [0022] (timed reads), [0035] (retrieval),
-[0011] and [0036] (mappings in the prompt), [0040] (origin in results).
+[0011] and [0036] (mappings in the prompt), [0040] (origin in results), [0046] (where an app gets built).
 
 ## What it does today
 
@@ -61,6 +61,9 @@ which #547 marks on the answer [0042].
   the person judges from something [0015].
 - **The nod gate removes the confused-deputy objection to writes over MCP** [0014, 0015].
 - **One tool implementation for chat and MCP**, or the two drift [0014].
+- **MCP is where an application on this knowledge gets built** — in the customer's own agent
+  platform, language and sandbox, against the read contract. This product hosts no app center,
+  no catalog and no sandbox of its own, and the refused design is kept in the record [0046].
 
 ## Proposed and not built
 
