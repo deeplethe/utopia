@@ -85,9 +85,8 @@ $ utopia restore --from <PATH> [flags]
   --yes                      # skip the "are you sure?" prompt
 ```
 
-This is **stubbed in this cut** — `restore` parses its flags, prints
-the plan, then `bail!`s with a pointer to the design doc. Two reasons
-to land `backup` first and `restore` second:
+Both halves are implemented. `backup` landed first, and `restore`
+followed in the same crate, for two reasons worth keeping on the record:
 
 1. The backup side is independently useful — operators want to *take*
    backups even before they have a working restore, because the
@@ -148,7 +147,6 @@ binary first, the image second.
 
 ## What this cut does NOT do
 
-- No restore implementation (stubbed, see above).
 - No docker image change (see Open question #3).
 - No `UTOPIA_BACKUP_DIR` config (see Open question #5).
 - No automatic migration of older manifests — `restore` will only
