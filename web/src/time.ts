@@ -48,12 +48,13 @@ export function parseDateInput(
     );
   if (!shape) return null;
   const [, y, m, d, hh, mi, ss, zone] = shape;
+  const iso = `${y}-${m ?? "01"}-${d ?? "01"}T00:00:00.000Z`;
+  const calendar = new Date(iso);
+  if (Number.isNaN(calendar.getTime())) return null;
+  // Validate the written calendar date before applying its offset: Date silently
+  // rolls February 30 into March, while a valid offset can legitimately change the day.
+  if (calendar.toISOString().slice(0, 10) !== iso.slice(0, 10)) return null;
   if (hh === undefined) {
-    const iso = `${y}-${m ?? "01"}-${d ?? "01"}T00:00:00.000Z`;
-    const parsed = new Date(iso);
-    if (Number.isNaN(parsed.getTime())) return null;
-    // 溢出静默：2023-13-01 会变成 2024-01-01，2023-02-30 会变成 3 月
-    if (parsed.toISOString().slice(0, 10) !== iso.slice(0, 10)) return null;
     return { iso, precision: d ? "day" : m ? "month" : "year" };
   }
   // 钟点（0024）：没有时区就不是一个时刻——不猜，让人补上 Z 或 +08:00；
