@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/utopia-core",
+    "crates/utopia-cli",
     "crates/utopia-store",
     "crates/utopia-server",
     "crates/utopia-ingest",
