@@ -136,7 +136,7 @@ async fn align_types_locked(
     // 没有类可绑：每个词都是「没有」，并提成建议；类出现后 `stale` 会把它们再交回来
     if classes.is_empty() {
         for s in &todo {
-            type_bindings::decide(
+            type_bindings::decide_and_apply(
                 pool,
                 kb_id,
                 &s.kind_word,
@@ -246,7 +246,7 @@ async fn align_types_locked(
             }
             let record = serde_json::json!({ "first": a, "second": b });
             if !agree(a, b) {
-                if type_bindings::decide(
+                if type_bindings::decide_and_apply(
                     pool,
                     kb_id,
                     &s.kind_word,
@@ -258,18 +258,13 @@ async fn align_types_locked(
                 )
                 .await?
                 {
-                    // The old binding no longer supplies a class. Otherwise phrase
-                    // alignment would keep using it through entities.type_id.
-                    if type_bindings::unapply(pool, kb_id, &s.kind_word).await? > 0 {
-                        state.emit_graph(kb_id);
-                    }
                     undecided += 1;
                 }
                 continue;
             }
             match a.as_deref().and_then(|k| by_key.get(k)) {
                 Some(class) => {
-                    if type_bindings::decide(
+                    if type_bindings::decide_and_apply(
                         pool,
                         kb_id,
                         &s.kind_word,
@@ -281,12 +276,11 @@ async fn align_types_locked(
                     )
                     .await?
                     {
-                        type_bindings::apply(pool, kb_id, &s.kind_word, class.id).await?;
                         bound += 1;
                     }
                 }
                 None => {
-                    if type_bindings::decide(
+                    if type_bindings::decide_and_apply(
                         pool,
                         kb_id,
                         &s.kind_word,
@@ -298,7 +292,6 @@ async fn align_types_locked(
                     )
                     .await?
                     {
-                        type_bindings::unapply(pool, kb_id, &s.kind_word).await?;
                         type_bindings::propose(
                             pool,
                             kb_id,
@@ -313,7 +306,7 @@ async fn align_types_locked(
         }
     }
     tracing::info!(%kb_id, bound, none, undecided, skipped, failed, "类别词对齐完成");
-    if bound > 0 {
+    if bound + none + undecided > 0 {
         state.emit_graph(kb_id);
     }
     // 同短语对齐：失败过、来了没试过的新词、本轮判完的又过期了，就再排一次

@@ -280,3 +280,87 @@ async fn agreed_votes_keep_their_existing_behavior() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+// Pause the agent exactly at its entity write, using a PostgreSQL row lock.
+// No wall-clock delay is used to choose which decision wins.
+#[tokio::test]
+async fn human_none_wins_when_agent_is_already_writing_its_projection() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![]).await? else {
+        return Ok(());
+    };
+    let mut gate = f.pool.begin().await?;
+    let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *gate)
+        .await?;
+    sqlx::query("SELECT id FROM entities WHERE id=$1 FOR UPDATE")
+        .bind(f.entity)
+        .fetch_one(&mut *gate)
+        .await?;
+    let pool = f.pool.clone();
+    let kb = f.kb;
+    let class = f.class;
+    let agent = tokio::spawn(async move {
+        type_bindings::decide_and_apply(
+            &pool,
+            kb,
+            "company",
+            &[],
+            Some(class),
+            "bound",
+            &json!({}),
+            "agent",
+        )
+        .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10),async {
+        loop {
+            let waiting:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))")
+                .bind(blocker).fetch_one(&f.pool).await?;
+            if waiting { break; }
+            tokio::task::yield_now().await;
+        }
+        anyhow::Ok(())
+    }).await??;
+    let pool = f.pool.clone();
+    let person = tokio::spawn(async move {
+        type_bindings::decide_and_apply(
+            &pool,
+            kb,
+            "company",
+            &[],
+            None,
+            "none",
+            &json!({}),
+            "person",
+        )
+        .await
+    });
+    // Before the fix the person can commit because no binding transaction holds
+    // the row. With the fix the person waits for the agent's binding lock.
+    tokio::time::timeout(std::time::Duration::from_secs(10),async {
+        loop {
+            if person.is_finished() { break; }
+            let waiting:bool=sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity p WHERE EXISTS (SELECT 1 FROM unnest(pg_blocking_pids(p.pid)) b(pid) WHERE $1=ANY(pg_blocking_pids(b.pid))))")
+                .bind(blocker).fetch_one(&f.pool).await?;
+            if waiting { break; }
+            tokio::task::yield_now().await;
+        }
+        anyhow::Ok(())
+    }).await??;
+    gate.commit().await?;
+    assert!(agent.await??);
+    assert!(person.await??);
+    let binding = type_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+    let projected: Option<Uuid> = sqlx::query_scalar("SELECT type_id FROM entities WHERE id=$1")
+        .bind(f.entity)
+        .fetch_one(&f.pool)
+        .await?;
+    f.cleanup().await?;
+    assert_eq!(binding.decided_by, "person");
+    assert_eq!(binding.status, "none");
+    assert_eq!(
+        projected, None,
+        "the older agent must not undo the person's none decision"
+    );
+    Ok(())
+}
