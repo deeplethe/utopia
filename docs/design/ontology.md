@@ -65,7 +65,12 @@ model sees the signature with three of its statements and their quotes, and two 
 candidates in opposite orders must agree on the property and the direction (forward when the
 statement's subject is the property's subject, reverse when its object is) for the signature to
 bind. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
-fitting property is `none`, its statements stay in the open graph and it counts toward the
+fitting property is `none`, including a structural decision recorded without model votes when
+no property admits its endpoints. This retires an old automatic projection through normal
+materialisation while preserving human decisions and other valid sources. Exceeding the candidate
+limit is not a negative decision: such signatures remain skipped, and a stale over-limit binding
+can still cause repeated runs; this change does not resolve that scheduling limitation. Unbound
+statements stay in the open graph and their signatures count toward the
 workbench's suggestions. Bindings live in `phrase_bindings`: a bound result goes stale when its
 selected property changes; `none` and `undecided` go stale when any property in the base is added
 or updated, since an existing property's revised definition may now fit [#773]. Kind-word bindings

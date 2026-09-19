@@ -112,26 +112,6 @@ async fn align_phrases_locked(
     let attempted: HashSet<_> = todo.iter().map(|s| s.key()).collect();
     tracing::info!(%kb_id, signatures = sigs.len(), to_decide = todo.len(), properties = props.len(), "短语对齐开始");
 
-    // 没有属性可绑：每条都是「没有」；属性出现后 `stale` 会把它们再交回来
-    if props.is_empty() {
-        for s in &todo {
-            phrase_bindings::decide(
-                pool,
-                kb_id,
-                s,
-                Decision {
-                    relation_type_id: None,
-                    direction: None,
-                    status: "none",
-                    votes: &serde_json::json!({ "reason": "no properties" }),
-                    decided_by: "agent",
-                },
-            )
-            .await?;
-        }
-        return Ok(());
-    }
-
     let keys_of = |ids: &[Uuid]| -> Vec<&str> {
         ids.iter()
             .filter_map(|id| class_key.get(id).copied())
@@ -143,14 +123,7 @@ async fn align_phrases_locked(
     for batch in todo.chunks(BATCH) {
         let cands: Vec<Vec<&RelationTypeView>> = batch
             .iter()
-            .map(|s| {
-                let fitting: Vec<&RelationTypeView> = props.iter().filter(|p| fits(p, s)).collect();
-                if fitting.len() > CANDIDATE_LIMIT {
-                    Vec::new()
-                } else {
-                    fitting
-                }
-            })
+            .map(|s| props.iter().filter(|p| fits(p, s)).collect())
             .collect();
         let mut votes: Vec<(Vote, Vote)> = vec![(None, None); batch.len()];
         let mut answered = vec![(false, false); batch.len()];
@@ -158,7 +131,7 @@ async fn align_phrases_locked(
             let items: Vec<PhraseItem<'_>> = batch
                 .iter()
                 .enumerate()
-                .filter(|(i, _)| !cands[*i].is_empty())
+                .filter(|(i, _)| !cands[*i].is_empty() && cands[*i].len() <= CANDIDATE_LIMIT)
                 .map(|(i, s)| {
                     let mut list: Vec<&RelationTypeView> = cands[i].clone();
                     if pass == 1 {
@@ -228,6 +201,28 @@ async fn align_phrases_locked(
         }
         for (i, s) in batch.iter().enumerate() {
             if cands[i].is_empty() {
+                // Structural absence is a decision, not two fabricated model votes.
+                // The normal person guard and materializer protect human choices and
+                // retire only projections whose last supporting binding disappeared.
+                if phrase_bindings::decide(
+                    pool,
+                    kb_id,
+                    s,
+                    Decision {
+                        relation_type_id: None,
+                        direction: None,
+                        status: "none",
+                        votes: &serde_json::json!({ "reason": "no admissible properties" }),
+                        decided_by: "agent",
+                    },
+                )
+                .await?
+                {
+                    none += 1;
+                }
+                continue;
+            }
+            if cands[i].len() > CANDIDATE_LIMIT {
                 skipped += 1;
                 continue;
             }
@@ -411,3 +406,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "phrase_alignment_tests.rs"]
+mod worker_tests;
