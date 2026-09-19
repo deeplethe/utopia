@@ -162,9 +162,12 @@ export const liveAnswer = {
     const slot: Slot = { live: { kbId, conversationId, turns, streaming: true }, abort };
     lives.set(key, slot);
     flush();
+    // A follow-up reuses the conversation key. Late callbacks from the old
+    // stream must still belong to its original slot, not the replacement.
+    const owned = () => (lives.get(key) === slot ? slot : undefined);
     return {
       identify: (id: string) => {
-        const current = lives.get(key);
+        const current = owned();
         if (!current) return;
         lives.delete(key);
         key = id;
@@ -173,7 +176,7 @@ export const liveAnswer = {
         flush();
       },
       patchLast: (f) => {
-        const current = lives.get(key);
+        const current = owned();
         if (!current || current.live.turns.length === 0) return;
         const turns = [...current.live.turns];
         turns[turns.length - 1] = f(turns[turns.length - 1]);
@@ -181,13 +184,13 @@ export const liveAnswer = {
         emit();
       },
       finish: () => {
-        const current = lives.get(key);
+        const current = owned();
         if (!current || !current.live.streaming) return;
         current.live = { ...current.live, streaming: false };
         flush();
       },
       setAbort: (a) => {
-        const current = lives.get(key);
+        const current = owned();
         if (current) current.abort = a;
       },
     };

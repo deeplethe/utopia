@@ -202,7 +202,7 @@ async fn align_phrases_locked(
                         continue;
                     }
                 };
-            let (choices, malformed) = match parse_phrase_response(&reply, &items) {
+            let (choices, malformed) = match parse_phrase_response(&reply.text, &items) {
                 Ok(x) => x,
                 Err(e) => {
                     tracing::warn!(%kb_id, error = %e, "短语对齐回复解析失败，这一批留到下次");
