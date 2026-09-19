@@ -769,8 +769,34 @@ impl LlmClient {
         let data = body["data"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
-        let mut out = Vec::with_capacity(data.len());
-        for item in data {
+        // Callers zip these vectors with the input texts. An explicit response
+        // index is the association, even if a gateway returns entries out of order.
+        // Some compatible endpoints omit all indices; keep their positional format.
+        let items: Vec<&serde_json::Value> = if data.iter().any(|item| item.get("index").is_some())
+        {
+            let mut ordered = vec![None; texts.len()];
+            for item in data {
+                let index = item["index"]
+                    .as_u64()
+                    .and_then(|i| usize::try_from(i).ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Embedding response has a missing or invalid index")
+                    })?;
+                let slot = ordered
+                    .get_mut(index)
+                    .ok_or_else(|| anyhow::anyhow!("Embedding response index is out of range"))?;
+                anyhow::ensure!(slot.is_none(), "Embedding response has a duplicate index");
+                *slot = Some(item);
+            }
+            ordered
+                .into_iter()
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| anyhow::anyhow!("Embedding response is missing an input index"))?
+        } else {
+            data.iter().collect()
+        };
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
             let v = item["embedding"]
                 .as_array()
                 .ok_or_else(|| anyhow::anyhow!("Embedding 响应缺少向量"))?
@@ -1555,5 +1581,51 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
     async fn a_clean_api_error_is_a_different_problem() {
         let e = anyhow::anyhow!("LLM request failed (401 Unauthorized): bad key");
         assert!(!is_unreachable(&e));
+    }
+    async fn embeddings_from(data: serde_json::Value) -> anyhow::Result<Vec<Vec<f32>>> {
+        let body = json!({ "data": data }).to_string();
+        let (addr, server) = an_http_response("200 OK", "application/json", &body).await;
+        let result = client_at(addr)
+            .embed(&["first".into(), "second".into()])
+            .await;
+        server.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn indexed_embeddings_follow_the_input_order() {
+        let out = embeddings_from(json!([
+            {"index": 1, "embedding": [2.0, 20.0]},
+            {"index": 0, "embedding": [1.0, 10.0]}
+        ]))
+        .await
+        .unwrap();
+        assert_eq!(out, vec![vec![1.0, 10.0], vec![2.0, 20.0]]);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_embedding_indices_are_rejected() {
+        for data in [
+            json!([{"index": 0, "embedding": [1.0]}, {"index": 0, "embedding": [2.0]}]),
+            json!([{"index": 0, "embedding": [1.0]}, {"index": 2, "embedding": [2.0]}]),
+            json!([{"index": 0, "embedding": [1.0]}, {"embedding": [2.0]}]),
+            json!([{"index": 0, "embedding": [1.0]}, {"index": -1, "embedding": [2.0]}]),
+            json!([{"index": 0, "embedding": [1.0]}]),
+        ] {
+            assert!(
+                embeddings_from(data.clone()).await.is_err(),
+                "accepted {data}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn embeddings_without_indices_keep_positional_compatibility() {
+        let out = embeddings_from(json!([
+            {"embedding": [1.0, 10.0]}, {"embedding": [2.0, 20.0]}
+        ]))
+        .await
+        .unwrap();
+        assert_eq!(out, vec![vec![1.0, 10.0], vec![2.0, 20.0]]);
     }
 }
