@@ -1265,14 +1265,46 @@ pub async fn replace_chunks(
     document_id: Uuid,
     pieces: &[ChunkPiece],
 ) -> AppResult<Vec<(String, String)>> {
+    Ok(
+        replace_chunks_for_snapshot(pool, kb_id, document_id, pieces, None)
+            .await?
+            .unwrap_or_default(),
+    )
+}
+
+/// 慢读取不能覆盖新版本分块，也不能重新填入已删除文档。
+/// 返回 None 表示输入已过期，调用方应结束本次处理。
+pub async fn replace_chunks_if_current(
+    pool: &PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+    pieces: &[ChunkPiece],
+    sha256: &str,
+) -> AppResult<Option<Vec<(String, String)>>> {
+    replace_chunks_for_snapshot(pool, kb_id, document_id, pieces, Some(sha256)).await
+}
+
+async fn replace_chunks_for_snapshot(
+    pool: &PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+    pieces: &[ChunkPiece],
+    sha256: Option<&str>,
+) -> AppResult<Option<Vec<(String, String)>>> {
     let mut tx = pool.begin().await?;
-    // Two queued runs can process the same document at once. Lock the parent
-    // before reading the claim pool, including when it has no chunks yet, so
-    // the second run adopts the first run's rows instead of inserting duplicates.
-    sqlx::query("SELECT id FROM documents WHERE id = $1 FOR UPDATE")
-        .bind(document_id)
-        .execute(&mut *tx)
-        .await?;
+    // 两个任务可能同时处理同一文档。先锁父记录，即使还没有分块，
+    // 后一个任务也能认领前一个任务写入的行，避免重复插入。
+    let current: Option<(String, bool)> = sqlx::query_as(
+        "SELECT sha256, deleted_at IS NOT NULL FROM documents WHERE id = $1 FOR UPDATE",
+    )
+    .bind(document_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(expected) = sha256 {
+        if !matches!(current, Some((ref sha, false)) if sha == expected) {
+            return Ok(None);
+        }
+    }
     let (version,): (i32,) = sqlx::query_as(
         "SELECT COALESCE(MAX(version), 1) FROM document_versions WHERE document_id = $1",
     )
@@ -1395,7 +1427,7 @@ pub async fn replace_chunks(
         .await?;
     }
     tx.commit().await?;
-    Ok(out)
+    Ok(Some(out))
 }
 
 /// 抽取完成一个分块即打标（认领的块携带标记跳过重抽；也让中断的抽取可续跑）。
