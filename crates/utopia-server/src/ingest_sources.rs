@@ -435,7 +435,7 @@ fn filename_from_url(url: &str, mime: &str) -> String {
         .trim_start_matches("https://")
         .trim_start_matches("http://")
         .trim_end_matches('/');
-    let mut slug: String = stripped
+    let slug: String = stripped
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '.' || c == '-' {
@@ -445,7 +445,7 @@ fn filename_from_url(url: &str, mime: &str) -> String {
             }
         })
         .collect();
-    slug.truncate(120);
+    let slug = truncate_utf8(&slug, 120);
     let has_ext = slug
         .rsplit('.')
         .next()
@@ -895,11 +895,11 @@ async fn sync_jira_issues(state: &AppState, source: &Source) -> anyhow::Result<S
 
 /// 标题 → 文件名安全的片段。与 RSS 那条路同一个口径（非字母数字换成 -，截断）。
 fn slugify(title: &str) -> String {
-    let mut s: String = title
+    let s: String = title
         .chars()
         .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect();
-    s.truncate(60);
+    let s = truncate_utf8(&s, 60);
     s.trim_matches('-').to_string()
 }
 
@@ -1208,3 +1208,7 @@ mod tests {
         assert!(rss_entry_key(entry, Some("https://example.com/article")).is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "source_filename_tests.rs"]
+mod source_filename_tests;
