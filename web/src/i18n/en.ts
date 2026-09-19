@@ -762,6 +762,8 @@ export const en = {
     cancel: "Cancel",
     // 这条回答背后一条来源都没有（#547）。是事实陈述，所以每条都挂，不猜哪条该挂
     noSources: "No sources consulted",
+    // 预览浮窗右上角那条出路：看完这一段还想看整篇的人走这里
+    openOriginal: "Open original",
   },
   graph: {
     // 还没判出类型的实体（0009）。不是一个类，是"这一格还空着"
