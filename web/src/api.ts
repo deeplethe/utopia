@@ -433,7 +433,12 @@ export interface BlockedDerivation {
   premises: string[];
 }
 
-/** 证明的一步：一条断言前提，带它的证据。前提一律是断言，所以证明是链不是树 */
+/** 证明的一步：一条前提，连同它的证据（0002 R2）。
+ *
+ * 那一步自己的前提在 `premises` 里再往下一层。所以证明是一棵树，
+ * 深度与推理同一条上限。断言那一步 `premises` 是空的——它的叶子是
+ * `evidence` 里的原句，不必再往下问
+ */
 export interface ProofStep {
   seq: number;
   fact_id: string;
@@ -449,6 +454,8 @@ export interface ProofStep {
   /** 这条前提后来被撤了；派生随之失效，证明仍要读得出当时靠的是什么 */
   retracted: boolean;
   evidence: Evidence[];
+  /** 这一步自己的前提（0030）：按 seq 展开的子证明。叶子的 premises 为空 */
+  premises: ProofStep[];
 }
 
 export interface Proof {
