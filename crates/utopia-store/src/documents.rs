@@ -1078,7 +1078,8 @@ async fn lock_cited_timelines(
 
 /// 撤销一次删除：文档、这次打标的分块、这次作废的事实原路复活，形状照 `revert_merge`。
 ///
-/// 只救 `document_deletions` 名单上的——更早版本的旧分块、删除之前就作废的事实
+/// 只救 `document_deletions` 名单上的（包括最后一个共同出处删除时的名单）——
+/// 更早版本的旧分块、删除之前就作废的事实
 /// 都不在名单里。三条路都从这里走：人点撤销、同步撞见墓碑、同内容重传
 pub async fn restore(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Document> {
     let mut tx = pool.begin().await?;
@@ -1135,17 +1136,40 @@ async fn restore_tx(
         .bind(&chunk_ids)
         .execute(&mut **tx)
         .await?;
+    // 甲乙共同作证时，只有最后删除的乙会把事实记进作废名单。恢复甲也应救回它，
+    // 但只认删除事务留下的作废时间；后来另行撤回的事实不能借旧名单复活。
+    let shared: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT DISTINCT f.id, f.invalidated_at FROM facts f
+           JOIN fact_evidence fe ON fe.fact_id = f.id
+           JOIN chunks c ON c.id = fe.chunk_id
+          WHERE f.kb_id = $1 AND c.document_id = $2 AND f.invalidated_at IS NOT NULL
+            AND EXISTS (SELECT 1 FROM document_deletions dd
+                         JOIN documents d ON d.id = dd.document_id
+                        WHERE dd.kb_id = $1 AND dd.reverted_at IS NULL
+                          AND f.id = ANY(dd.invalidated_facts)
+                          AND f.invalidated_at = d.deleted_at)",
+    )
+    .bind(kb_id)
+    .bind(id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let (shared_ids, shared_stamps): (Vec<_>, Vec<_>) = shared.into_iter().unzip();
+    let restored: Vec<Uuid> = fact_ids.iter().chain(&shared_ids).copied().collect();
     // 复活的事实回到各自的时间线上；一直引用着这篇文档的事实，排序用的日期也回来了。
-    // 先锁、再复活、再重算（同删除）
-    let (cited, timelines) = lock_cited_timelines(tx, kb_id, id, &fact_ids).await?;
+    // 先锁、再复活、再重算（同删除）；等锁期间若又作废，不覆盖新的决定。
+    let (cited, timelines) = lock_cited_timelines(tx, kb_id, id, &restored).await?;
     sqlx::query(
         "UPDATE facts SET invalidated_at = NULL
-          WHERE id = ANY($1) AND invalidated_at IS NOT NULL",
+          WHERE invalidated_at IS NOT NULL
+            AND (id = ANY($1) OR (id, invalidated_at) IN
+                 (SELECT * FROM unnest($2::uuid[], $3::timestamptz[])))",
     )
     .bind(&fact_ids)
+    .bind(&shared_ids)
+    .bind(&shared_stamps)
     .execute(&mut **tx)
     .await?;
-    let touched: Vec<Uuid> = cited.iter().chain(&fact_ids).copied().collect();
+    let touched: Vec<Uuid> = cited.iter().chain(&restored).copied().collect();
     reattest_tx(tx, &touched).await?;
     crate::temporal::tidy_timelines_tx(tx, kb_id, &timelines).await?;
     sqlx::query("UPDATE document_deletions SET reverted_at = now() WHERE id = $1")
