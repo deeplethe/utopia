@@ -475,6 +475,20 @@ pub async fn touch_sync_time(pool: &PgPool, id: Uuid, at: DateTime<Utc>) -> AppR
 // 同步运行记录（渠道审计历史）
 // ---------------------------------------------------------------------------
 
+/// 调度时钟包含失败尝试，不能作增量游标。回到上次成功运行的开始，
+/// 让那次拉取期间发生的更新也能在下一轮读到；没有成功记录就重新全量读取。
+pub async fn last_successful_sync_start(
+    pool: &PgPool,
+    source_id: Uuid,
+) -> AppResult<Option<DateTime<Utc>>> {
+    Ok(sqlx::query_scalar(
+        "SELECT max(started_at) FROM source_sync_runs WHERE source_id = $1 AND status = 'ok'",
+    )
+    .bind(source_id)
+    .fetch_one(pool)
+    .await?)
+}
+
 pub async fn start_run(pool: &PgPool, source_id: Uuid) -> AppResult<Uuid> {
     let id = Uuid::now_v7();
     sqlx::query("INSERT INTO source_sync_runs (id, source_id) VALUES ($1, $2)")

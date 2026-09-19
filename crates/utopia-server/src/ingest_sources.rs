@@ -62,17 +62,24 @@ impl SyncStats {
 
 pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()> {
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
+    let kind = SourceKind::parse(&source.kind);
+    let since = match kind {
+        Some(SourceKind::Custom | SourceKind::GithubIssues | SourceKind::JiraIssues) => {
+            utopia_store::sources::last_successful_sync_start(&state.pool, source_id).await?
+        }
+        _ => None,
+    };
     utopia_store::sources::mark_running(&state.pool, source_id).await?;
     let run_id = utopia_store::sources::start_run(&state.pool, source_id).await?;
     state.emit_source(source.kb_id);
 
     // 按枚举穷举：加一种来源就得在这里决定它怎么同步，编译器不放过漏掉的那一支
-    let outcome = match SourceKind::parse(&source.kind) {
+    let outcome = match kind {
         Some(SourceKind::Url) => sync_urls(state, &source).await,
         Some(SourceKind::Rss) => sync_rss(state, &source).await,
-        Some(SourceKind::Custom) => sync_custom(state, &source).await,
-        Some(SourceKind::GithubIssues) => sync_github_issues(state, &source).await,
-        Some(SourceKind::JiraIssues) => sync_jira_issues(state, &source).await,
+        Some(SourceKind::Custom) => sync_custom(state, &source, since).await,
+        Some(SourceKind::GithubIssues) => sync_github_issues(state, &source, since).await,
+        Some(SourceKind::JiraIssues) => sync_jira_issues(state, &source, since).await,
         Some(SourceKind::S3 | SourceKind::AzureBlob | SourceKind::Gcs) => {
             sync_object_storage(state, &source).await
         }
@@ -729,7 +736,11 @@ async fn sync_rss(state: &AppState, source: &Source) -> anyhow::Result<SyncStats
 /// `doc_time` 取 `updated_at` 而不是 `created_at`：每次同步捕获的是"此刻这张
 /// 工单是什么样"，认知时间该说这个状态是何时成立的。新增一条评论会改
 /// `updated_at`，于是内容变了、记一个新版本、`doc_time` 也跟着走。
-async fn sync_github_issues(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+async fn sync_github_issues(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+) -> anyhow::Result<SyncStats> {
     let repo = source.config["repo"]
         .as_str()
         .map(str::trim)
@@ -762,7 +773,7 @@ async fn sync_github_issues(state: &AppState, source: &Source) -> anyhow::Result
     // 增量：GitHub 的 since 是"这之后更新过的"
     let mut issue_q: Vec<(&str, String)> = vec![("state", "all".into())];
     let mut comment_q: Vec<(&str, String)> = Vec::new();
-    if let Some(t) = source.last_sync_at {
+    if let Some(t) = since {
         issue_q.push(("since", t.to_rfc3339()));
         comment_q.push(("since", t.to_rfc3339()));
     }
@@ -822,7 +833,11 @@ async fn sync_github_issues(state: &AppState, source: &Source) -> anyhow::Result
 ///
 /// `doc_time` 取 `updated`，与 github_issues 同一口径：每次同步捕获的是
 /// "此刻这张工单是什么样"，认知时间该说这个状态何时成立。
-async fn sync_jira_issues(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+async fn sync_jira_issues(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+) -> anyhow::Result<SyncStats> {
     let base_url = source.config["base_url"]
         .as_str()
         .map(str::trim)
@@ -850,7 +865,7 @@ async fn sync_jira_issues(state: &AppState, source: &Source) -> anyhow::Result<S
     )
     .await?;
 
-    let jql = crate::jira_issues::jql(project, source.last_sync_at);
+    let jql = crate::jira_issues::jql(project, since);
     let (issues, total) = crate::jira_issues::fetch_all(&http, base_url, &jql, auth).await?;
     // **截断了就说出来。** 一个跑了多年的项目动辄上万张工单，翻页上限意味着
     // 这一轮只覆盖了一段；不报的话界面上"同步完成"就是一句误导
@@ -904,18 +919,22 @@ fn slugify(title: &str) -> String {
 }
 
 /// 自定义拉取器 —— Utopia Ingest Interface：
-/// `GET {endpoint}?since=<上次同步 RFC3339>`（首次同步不带 since；可配 Authorization 头），
+/// `GET {endpoint}?since=<上次成功同步开始时间 RFC3339>`（首次同步不带 since；可配 Authorization 头），
 /// 响应 `{"items":[{"id":"稳定唯一ID","title":"文档名","content":"正文(纯文本/Markdown/HTML)",
 ///                  "doc_time":"RFC3339 可选","mime":"text/markdown 可选"}]}`。
 /// id → external_key（custom:{id}），三路判定生效：同 id 同内容跳过、新内容原地更新。
-async fn sync_custom(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+async fn sync_custom(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+) -> anyhow::Result<SyncStats> {
     let endpoint = source.config["endpoint"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("custom source is missing config.endpoint"))?;
     let mut url =
         reqwest::Url::parse(endpoint).map_err(|e| anyhow::anyhow!("Invalid endpoint URL: {e}"))?;
-    if let Some(t) = source.last_sync_at {
+    if let Some(t) = since {
         url.query_pairs_mut().append_pair("since", &t.to_rfc3339());
     }
 
@@ -1208,3 +1227,7 @@ mod tests {
         assert!(rss_entry_key(entry, Some("https://example.com/article")).is_some());
     }
 }
+
+#[cfg(test)]
+#[path = "source_checkpoint_tests.rs"]
+mod source_checkpoint_tests;
