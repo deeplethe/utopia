@@ -37,7 +37,8 @@ the same `UTOPIA_DATA_DIR` that the server uses), but nothing else.
 $ utopia backup [flags]
 
   --output <PATH>            # archive path; default utopia-<timestamp>.tar.gz
-  --include-data-dir         # also tar the data/ directory
+  --include-data-dir         # also tar the data/ directory (without secret.key)
+  --include-secret-key       # …and the sealing key as well, deliberately
   --dry-run                  # print the plan, don't write anything
   --pg-dump <PATH>           # path to pg_dump binary
   --tar <PATH>               # path to tar binary
@@ -151,6 +152,13 @@ binary first, the image second.
 - No `UTOPIA_BACKUP_DIR` config (see Open question #5).
 - No automatic migration of older manifests — `restore` will only
   read `schema_version == current`.
+- **The sealing key is left out of the archive by default.** The dump carries
+  credentials sealed with `data/secret.key`, and an archive is the artifact that
+  gets copied between hosts and handed to whoever runs the restore, so shipping
+  both halves in one file is not an unencrypted archive — it is no sealing at
+  all. `--include-secret-key` puts it in on purpose, the manifest records
+  whether it is there, and a restore without it says so rather than letting the
+  server fail to open its own credentials later.
 - No encryption-at-rest. Out of scope; the operator's filesystem
   encryption (LUKS, EBS encryption, etc.) is the right layer.
 - No streaming upload to S3. Out of scope; the operator can pipe

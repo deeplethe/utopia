@@ -23,6 +23,11 @@ enum Command2 {
 struct BackupArgs {
     output: Option<PathBuf>,
     include_data_dir: bool,
+    /// Put `secret.key` in the archive too. Off by default: the dump carries
+    /// credentials sealed with that key, and an archive is the one artifact that
+    /// is copied between hosts and handed to whoever runs the restore. Both
+    /// halves in one file is not an encrypted archive, it is no sealing at all.
+    include_secret_key: bool,
     dry_run: bool,
     pg_dump: Option<PathBuf>,
     tar: Option<PathBuf>,
@@ -65,6 +70,10 @@ struct ManifestComponent {
 struct ManifestDataDir {
     path: String,
     present: bool,
+    /// Whether the sealing key is inside this archive, so that an archive can be
+    /// audited without being unpacked and restore can say what it will install.
+    #[serde(default)]
+    secret_key: bool,
 }
 
 /// Manifest version the running binary writes. Restore refuses a manifest
@@ -126,6 +135,7 @@ fn parse_backup<'a, I: Iterator<Item = &'a String>>(iter: &mut I) -> anyhow::Res
         match flag.as_str() {
             "--output" => a.output = iter.next().map(PathBuf::from),
             "--include-data-dir" => a.include_data_dir = true,
+            "--include-secret-key" => a.include_secret_key = true,
             "--dry-run" => a.dry_run = true,
             "--pg-dump" => a.pg_dump = iter.next().map(PathBuf::from),
             "--tar" => a.tar = iter.next().map(PathBuf::from),
@@ -254,6 +264,7 @@ fn run_backup(args: BackupArgs) -> anyhow::Result<()> {
         &pg_dump_path,
         &data_dir,
         args.include_data_dir,
+        args.include_secret_key,
         &conn,
     )?;
 
@@ -325,12 +336,14 @@ fn run_pg_dump(bin: &Path, conn: &str, out: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_tarball(
     tar_bin: &Path,
     output: &Path,
     pg_dump_path: &Path,
     data_dir: &Path,
     include_data_dir: bool,
+    include_secret_key: bool,
     conn: &str,
 ) -> anyhow::Result<()> {
     // Write manifest.json next to the dump inside a staging dir, then tar
@@ -360,6 +373,7 @@ fn build_tarball(
             data_dir: ManifestDataDir {
                 path: "data".to_string(),
                 present: include_data_dir,
+                secret_key: include_secret_key,
             },
         },
         checksums: HashMap::from([(
@@ -371,7 +385,12 @@ fn build_tarball(
     // Move the dump into the stage.
     std::fs::copy(pg_dump_path, stage.join("pg_dump.custom"))?;
     if include_data_dir {
-        copy_dir_recursive(data_dir, &stage.join("data"))?;
+        copy_dir_recursive(data_dir, &stage.join("data"), include_secret_key)?;
+        if !include_secret_key && data_dir.join(SECRET_KEY_FILE).exists() {
+            tracing::info!(
+                "left {SECRET_KEY_FILE} out of the archive; pass --include-secret-key to carry it,                  or set UTOPIA_SECRET_KEY on the host that restores"
+            );
+        }
     }
     // tar -C <stage> -czf <output> .
     let status = Command::new(tar_bin)
@@ -392,15 +411,24 @@ fn build_tarball(
     Ok(())
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) -> anyhow::Result<()> {
+/// The file the server seals credentials with (`utopia-server`'s `secret_key_file`).
+const SECRET_KEY_FILE: &str = "secret.key";
+
+/// Copy a directory into the staging area. `with_secret_key` off leaves the
+/// sealing key behind: everything else in `data/` is content, that one file is
+/// the key to the dump's ciphertext.
+fn copy_dir_recursive(src: &Path, dst: &Path, with_secret_key: bool) -> anyhow::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let from = entry.path();
+        if !with_secret_key && entry.file_name() == SECRET_KEY_FILE {
+            continue;
+        }
         let to = dst.join(entry.file_name());
         let ty = entry.file_type()?;
         if ty.is_dir() {
-            copy_dir_recursive(&from, &to)?;
+            copy_dir_recursive(&from, &to, with_secret_key)?;
         } else if ty.is_symlink() {
             // Skip symlinks — they don't survive backup/restore in a portable way.
             tracing::warn!(path = %from.display(), "skipping symlink in data dir");
@@ -680,7 +708,15 @@ fn apply_restore(
                     target_data_dir.display()
                 );
             }
-            copy_dir_recursive(&archive_data_dir, target_data_dir)?;
+            // 恢复时照搬压缩包里有的：包里没有密钥，是打包那一步的决定，不是这里的
+            copy_dir_recursive(&archive_data_dir, target_data_dir, true)?;
+            if !manifest.components.data_dir.secret_key {
+                // 没有钥匙，库里那些封存的凭据就打不开。与其让人在服务起来之后
+                // 看见一串解不开的错误，不如现在说清楚该做什么
+                tracing::warn!(
+                    "this archive carries no {SECRET_KEY_FILE}: sealed credentials (model keys,                      source credentials) will not open. Set UTOPIA_SECRET_KEY on this host to the                      key the backup was taken with, or re-enter them after starting the server"
+                );
+            }
         } else {
             tracing::warn!(
                 path = %archive_data_dir.display(),
@@ -743,6 +779,39 @@ mod tests {
     fn parses_restore_requires_from() {
         let args = vec!["restore".to_string()];
         assert!(parse(&args).is_err());
+    }
+
+    /// 备份包里默认没有封存密钥。库里存的凭据是用它加密的，两样装在同一个
+    /// 压缩包里，封存就等于没有——而压缩包恰恰是那个会被拷来拷去、交给别人去
+    /// 恢复的东西
+    #[test]
+    fn the_sealing_key_stays_out_of_the_archive_unless_asked() {
+        let src = std::env::temp_dir().join(format!("utopia-seckey-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&src);
+        std::fs::create_dir_all(src.join("files")).unwrap();
+        std::fs::write(src.join(SECRET_KEY_FILE), b"not-a-real-key").unwrap();
+        std::fs::write(src.join("files").join("a.bin"), b"content").unwrap();
+
+        let without = src.with_extension("without");
+        let _ = std::fs::remove_dir_all(&without);
+        copy_dir_recursive(&src, &without, false).unwrap();
+        assert!(
+            !without.join(SECRET_KEY_FILE).exists(),
+            "默认把密钥带进去了"
+        );
+        assert!(
+            without.join("files").join("a.bin").exists(),
+            "别的内容不该少"
+        );
+
+        let with = src.with_extension("with");
+        let _ = std::fs::remove_dir_all(&with);
+        copy_dir_recursive(&src, &with, true).unwrap();
+        assert!(with.join(SECRET_KEY_FILE).exists(), "说了要带却没带");
+
+        for d in [src, without, with] {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 
     #[test]
@@ -825,6 +894,7 @@ mod tests {
                 data_dir: ManifestDataDir {
                     path: "data".to_string(),
                     present: true,
+                    secret_key: false,
                 },
             },
             checksums,
