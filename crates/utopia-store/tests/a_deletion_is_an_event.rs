@@ -315,3 +315,61 @@ async fn a_deletion_is_an_event() -> anyhow::Result<()> {
         .await;
     run
 }
+
+async fn shared_source_restore(purge_last: bool) -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let result = async {
+        let a = document(&pool, &f, "a.md", "restore-a").await?;
+        let b = document(&pool, &f, "b.md", "restore-b").await?;
+        let a1 = chunk(&pool, &f, a, 1).await?;
+        let b1 = chunk(&pool, &f, b, 1).await?;
+        let x = entity(&pool, &f, "X").await?;
+        let y = entity(&pool, &f, "Y").await?;
+        let shared = fact(&pool, &f, x, y, &[a1, b1]).await?;
+        let z = entity(&pool, &f, "Z").await?;
+        let only_b = fact(&pool, &f, x, z, &[b1]).await?;
+        let already_gone = fact(&pool, &f, y, x, &[a1, b1]).await?;
+        sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
+            .bind(already_gone).execute(&pool).await?;
+        assert_eq!(documents::delete(&pool, f.kb, a, None).await?.invalidated_facts, 0);
+        assert_eq!(documents::delete(&pool, f.kb, b, None).await?.invalidated_facts, 2);
+        assert!(!live(&pool, shared).await?);
+        if purge_last {
+            documents::purge(&pool, f.kb, b).await?;
+        }
+        documents::restore(&pool, f.kb, a).await?;
+        let restored_shared = live(&pool, shared).await?;
+        let restored_old = live(&pool, already_gone).await?;
+        assert!(!live(&pool, only_b).await?, "b's exclusive fact stays retired");
+        assert!(listed(&pool, &f, a).await?);
+        assert!(!listed(&pool, &f, b).await?);
+        assert!(chunk_live(&pool, a1).await?.0);
+        assert!(!restored_old, "a fact retired before either deletion stays retired");
+        anyhow::ensure!(restored_shared, "restoring the first source must recover the shared fact retired by deleting the second source");
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    result
+}
+
+#[tokio::test]
+async fn restoring_either_source_recovers_a_shared_fact() -> anyhow::Result<()> {
+    shared_source_restore(false).await
+}
+
+#[tokio::test]
+async fn restoring_a_source_recovers_a_fact_after_the_last_source_was_purged() -> anyhow::Result<()>
+{
+    shared_source_restore(true).await
+}

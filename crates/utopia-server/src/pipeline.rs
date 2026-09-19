@@ -151,9 +151,20 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         }
     };
     let text_len = text.chars().count() as i32;
-    let chunk_pairs =
-        utopia_store::documents::replace_chunks(&state.pool, doc.kb_id, document_id, &pieces)
-            .await?;
+    let Some(chunk_pairs) = utopia_store::documents::replace_chunks_if_current(
+        &state.pool,
+        doc.kb_id,
+        document_id,
+        &pieces,
+        &doc.sha256,
+    )
+    .await?
+    else {
+        // 读取期间源文档可能已更新或删除，丢弃过期结果，
+        // 不再改写新任务的索引、状态和抽取队列。
+        tracing::info!(%document_id, "discarding a superseded document read");
+        return Ok(());
+    };
     let chunk_count = chunk_pairs.len() as i32;
 
     // 3. 全文索引（Tantivy）

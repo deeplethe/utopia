@@ -382,7 +382,7 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
             let reply =
                 chat_retrying_rate_limits_at(state, &settings, &client, &messages, Some(0.0))
                     .await?;
-            let mut dating = parse_dating_response(&reply)?;
+            let mut dating = parse_dating_response(&reply.text)?;
             // 日期词要在开头里核对得到（与名字、引文同一条规矩）；核不到的日期不算
             match dating.date_words.as_deref() {
                 Some(words) if span_in_quote(words, &opening) => {}
@@ -449,7 +449,7 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
                     continue;
                 }
             };
-        let (interps, skipped) = match parse_interpretation_response(&reply, &ids) {
+        let (interps, skipped) = match parse_interpretation_response(&reply.text, &ids) {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(%document_id, error = %e, "时间解释回复解析失败，这一批留作未解析");
