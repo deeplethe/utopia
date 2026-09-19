@@ -1331,7 +1331,7 @@ pub async fn decide_alignment_kind_word(
         ),
     };
     let votes = json!({ "person": req.class });
-    let written = utopia_store::type_bindings::decide(
+    let written = utopia_store::type_bindings::decide_and_apply(
         &state.pool,
         kb_id,
         &kind_word,
@@ -1344,14 +1344,6 @@ pub async fn decide_alignment_kind_word(
     .await?;
     if !written {
         return Err(utopia_core::AppError::NotFound.into());
-    }
-    match class {
-        Some(id) => {
-            utopia_store::type_bindings::apply(&state.pool, kb_id, &kind_word, id).await?;
-        }
-        None => {
-            utopia_store::type_bindings::unapply(&state.pool, kb_id, &kind_word).await?;
-        }
     }
     utopia_store::jobs::enqueue_unless_queued(
         &state.pool,

@@ -433,7 +433,10 @@ impl Temporal {
 
 /// 谓词的时间语义。没有谓词（0010）按状态——三者里唯一不丢信息的那个，与导入本体时
 /// 的判断一致
-pub async fn predicate_temporal(pool: &PgPool, predicate_id: Option<Uuid>) -> AppResult<Temporal> {
+pub async fn predicate_temporal<'e>(
+    pool: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    predicate_id: Option<Uuid>,
+) -> AppResult<Temporal> {
     let Some(id) = predicate_id else {
         return Ok(Temporal::State);
     };
@@ -537,9 +540,35 @@ async fn insert_fact_inner(
     validity: Validity<'_>,
     confidence: f32,
 ) -> AppResult<(Uuid, bool)> {
+    let mut conn = pool.acquire().await?;
+    insert_fact_on(
+        &mut conn,
+        kb_id,
+        subject_id,
+        predicate_id,
+        object,
+        validity,
+        confidence,
+    )
+    .await
+}
+
+/// The same insertion semantics on a caller-owned connection/transaction.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn insert_fact_on(
+    conn: &mut sqlx::PgConnection,
+    kb_id: Uuid,
+    subject_id: Uuid,
+    // None = 本体里没有对应的关系。原意不丢——它在证据的 proposed_predicate 里，
+    // 显示时由 fact_surface_predicate() 取回（见 `facts.predicate_id`）
+    predicate_id: Option<Uuid>,
+    object: FactObject<'_>,
+    validity: Validity<'_>,
+    confidence: f32,
+) -> AppResult<(Uuid, bool)> {
     // 按谓词的时间语义归一（0031）：事件两端同一刻，恒常无日期。写在这里而不是各个
     // 写入者那儿——抽取、点头、人自己写的事实都经过这一个门
-    let temporal = predicate_temporal(pool, predicate_id).await?;
+    let temporal = predicate_temporal(&mut *conn, predicate_id).await?;
     let validity = validity.under(temporal).truncated();
     let same_sql = match object {
         FactObject::Entity(_) => {
@@ -561,7 +590,7 @@ async fn insert_fact_inner(
         FactObject::Entity(id) => q.bind(id),
         FactObject::Value(v) => q.bind(v),
     };
-    let same: Vec<FactSpanRow> = q.fetch_all(pool).await?;
+    let same: Vec<FactSpanRow> = q.fetch_all(&mut *conn).await?;
     // 「结束了，不知哪天」的观察撞上同断言的**开放行**（0022 / #393）：关上它。
     // 不并进去——并进去等于把「它结束了」这唯一带来的信息丢掉（同 valid_from 那条
     // 精确重复的路会这么干）；也不另立一行——另立一行让两条各说各话，开放的那条
@@ -578,7 +607,8 @@ async fn insert_fact_inner(
             .max_by_key(|(_, vf, _, _)| *vf);
         if let Some((open, _, _, _)) = open {
             if let Some(closed) =
-                crate::temporal::close_with_unknown_end(pool, *open, validity.attested_at).await?
+                crate::temporal::close_with_unknown_end(&mut *conn, *open, validity.attested_at)
+                    .await?
             {
                 return Ok((closed, true));
             }
@@ -592,11 +622,12 @@ async fn insert_fact_inner(
                 && validity.from.is_none_or(|f| Some(f) == *vf)
         }) {
             if let Some(stated) =
-                crate::temporal::state_derived_end(pool, *ended, None, validity.attested_at).await?
+                crate::temporal::state_derived_end(&mut *conn, *ended, None, validity.attested_at)
+                    .await?
             {
                 return Ok((stated, true));
             }
-            attest_earlier(pool, *ended, validity.attested_at).await?;
+            attest_earlier(&mut *conn, *ended, validity.attested_at).await?;
             return Ok((*ended, false));
         }
     }
@@ -611,7 +642,7 @@ async fn insert_fact_inner(
             if let Some((ended, _, _, _)) = same.iter().find(|(_, _, vt, _)| *vt == Some(to)) {
                 let precision = validity.to_precision.unwrap_or("day");
                 if let Some(stated) = crate::temporal::state_derived_end(
-                    pool,
+                    &mut *conn,
                     *ended,
                     Some((to, precision)),
                     validity.attested_at,
@@ -620,7 +651,7 @@ async fn insert_fact_inner(
                 {
                     return Ok((stated, true));
                 }
-                attest_earlier(pool, *ended, validity.attested_at).await?;
+                attest_earlier(&mut *conn, *ended, validity.attested_at).await?;
                 return Ok((*ended, false));
             }
             let open = same
@@ -631,7 +662,7 @@ async fn insert_fact_inner(
                 .max_by_key(|(_, vf, _, _)| *vf);
             if let Some((open, _, _, _)) = open {
                 if let Some(closed) = crate::temporal::close_superseded(
-                    pool,
+                    &mut *conn,
                     *open,
                     to,
                     validity.to_precision.unwrap_or("day"),
@@ -649,7 +680,7 @@ async fn insert_fact_inner(
         if temporal == Temporal::State && vt.is_none() && vtp.is_none() {
             if let Some(to) = validity.to {
                 if let Some(closed) = crate::temporal::close_superseded(
-                    pool,
+                    &mut *conn,
                     *existing,
                     to,
                     validity.to_precision.unwrap_or("day"),
@@ -665,14 +696,18 @@ async fn insert_fact_inner(
             let stated_to = validity
                 .to
                 .map(|to| (to, validity.to_precision.unwrap_or("day")));
-            if let Some(stated) =
-                crate::temporal::state_derived_end(pool, *existing, stated_to, validity.attested_at)
-                    .await?
+            if let Some(stated) = crate::temporal::state_derived_end(
+                &mut *conn,
+                *existing,
+                stated_to,
+                validity.attested_at,
+            )
+            .await?
             {
                 return Ok((stated, true));
             }
         }
-        attest_earlier(pool, *existing, validity.attested_at).await?;
+        attest_earlier(&mut *conn, *existing, validity.attested_at).await?;
         return Ok((*existing, false));
     }
     // 弱化陈述：新观察无时间，同断言已有开放行 → 并入（取起点最新的开放行）。
@@ -684,7 +719,7 @@ async fn insert_fact_inner(
             .filter(|(_, _, vt, _)| vt.is_none() || temporal == Temporal::Event)
             .max_by_key(|(_, vf, _, _)| *vf)
         {
-            attest_earlier(pool, *existing, validity.attested_at).await?;
+            attest_earlier(&mut *conn, *existing, validity.attested_at).await?;
             return Ok((*existing, false));
         }
         // 没有开放行，但这次观察的文档日期落在某条**已关上**的行里：说的是那一段，不是
@@ -696,7 +731,7 @@ async fn insert_fact_inner(
                 .iter()
                 .find(|(_, vf, vt, _)| vt.is_some_and(|t| at <= t) && vf.is_none_or(|f| f <= at))
             {
-                attest_earlier(pool, *existing, validity.attested_at).await?;
+                attest_earlier(&mut *conn, *existing, validity.attested_at).await?;
                 return Ok((*existing, false));
             }
         }
@@ -766,19 +801,19 @@ async fn insert_fact_inner(
         .bind(confidence)
         .bind(validity.attested_at)
         .bind(validity.from_grade)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
 
     // 时间精化：裸行（无时无终的同断言）被本次带时间的观察取代——作废+链上，证据随行
     if let Some(old_id) = refine_target {
         sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = $1")
             .bind(old_id)
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query("UPDATE facts SET supersedes = $2 WHERE id = $1")
             .bind(id)
             .bind(old_id)
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         sqlx::query(
             // 表层谓词随证据一起搬：精化的是时间，不是原文说了什么。引文的偏移一起搬
@@ -791,7 +826,7 @@ async fn insert_fact_inner(
         )
         .bind(id)
         .bind(old_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         // 边上的属性也随行（0037）：裸行上已有的金额、职务不因为精化了时间而丢
         sqlx::query(
@@ -802,7 +837,7 @@ async fn insert_fact_inner(
         )
         .bind(id)
         .bind(old_id)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     }
     Ok((id, true))
@@ -811,8 +846,8 @@ async fn insert_fact_inner(
 /// 同一断言又被观察到一次：锚点只往早挪（0022）。更早的文档是更早的证据；
 /// 更晚的什么也不改——一条事实从有证据的那一刻起成立，之后再被提到不会把它
 /// 往后推。`None`（此刻）也不动它：此刻不会早于任何已有的证据。
-async fn attest_earlier(
-    pool: &PgPool,
+async fn attest_earlier<'e>(
+    pool: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     fact_id: Uuid,
     at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<()> {

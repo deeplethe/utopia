@@ -869,8 +869,8 @@ pub async fn retract(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<boo
 /// 作废 + 改写成**写明的**终点：旧行记 invalidated_at（认知轴），插入闭合区间的修正行
 /// （世界轴），证据引用随行复制。原文说它在哪天结束、人裁决把它关上，都走这里——
 /// 这个终点此后不再由引擎重算。返回修正行 id；`None` = 这条已被作废，没动。
-pub async fn close_superseded(
-    pool: &PgPool,
+pub async fn close_superseded<'a>(
+    pool: impl sqlx::Acquire<'a, Database = Postgres>,
     fact_id: Uuid,
     valid_to: DateTime<Utc>,
     valid_to_precision: &str,
@@ -891,8 +891,8 @@ pub async fn close_superseded(
 /// `attested_from` 从旧行继承——没起点的裸行靠它记着第一份证据，读出来是「从那时起」。
 /// 这是原文写明的结束，引擎不重算。证据引用随行复制。返回修正行 id；`None` = 这条已不是
 /// 开放行，没动。
-pub async fn close_with_unknown_end(
-    pool: &PgPool,
+pub async fn close_with_unknown_end<'a>(
+    pool: impl sqlx::Acquire<'a, Database = Postgres>,
     fact_id: Uuid,
     attested_at: Option<DateTime<Utc>>,
 ) -> AppResult<Option<Uuid>> {
@@ -906,8 +906,8 @@ pub async fn close_with_unknown_end(
 /// 原文说出了一条**引擎关上**的行的终点：改写成原文说的，此后不再重算（#679 第三轮评审）。
 /// `valid_to` 为 `None` 是「结束了，不知哪天」，锚在 `attested_at`。返回修正行 id；
 /// 行已作废，或它的终点本来就是写明的，返回 `None`
-pub async fn state_derived_end(
-    pool: &PgPool,
+pub async fn state_derived_end<'a>(
+    pool: impl sqlx::Acquire<'a, Database = Postgres>,
     fact_id: Uuid,
     valid_to: Option<(DateTime<Utc>, &str)>,
     attested_at: Option<DateTime<Utc>>,

@@ -2520,65 +2520,85 @@ function ProofChain({ kbId, d }: { kbId: string; d: DerivedFact }) {
   );
 }
 
-/** 证明的步，落了地的与没落地的派生共用：前提是同一种东西 */
+/** 证明的步，落了地的与没落地的派生共用：前提是同一种东西。
+ *
+ * 递归：每一步的 `premises` 是它的子证明，在自己的 `<li>` 里再嵌一个
+ * `<ol>`。深度的视觉上限由服务器决定（0030 推理的同一道闸），不在
+ * 客户端重画——叶子那一步 `premises` 为空，递归停在这里
+ */
 function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
   return (
     <ol className="space-y-2">
-      {steps.map((st) => (
-        <li key={st.fact_id} className="text-fine">
-          <div className="flex items-baseline gap-2 flex-wrap">
-            <span className="u-num text-fine text-ink-2 shrink-0">
-              {S.graph.proofStep(st.seq + 1)}
-            </span>
-            <span className={st.retracted ? "text-ink-2 line-through" : "text-ink-2"}>
-              {st.subject}
-              <span className="text-ink-2"> — {st.predicate ?? "?"} → </span>
-              {st.object ?? "?"}
-            </span>
-            {st.retracted && (
-              <Chip tone="warn" className="text-fine">{S.graph.proofRetracted}</Chip>
-            )}
-          </div>
-          <div className="mt-1 space-y-1 pl-2">
-            {st.evidence.map((ev) => (
-              <Link
-                key={ev.chunk_id}
-                to="/kb/$kbId/doc/$docId"
-                params={{ kbId, docId: ev.document_id }}
-                search={{ chunk: ev.chunk_id }}
-                className="u-hover-ink block text-ink-2"
-              >
-                <div className="line-clamp-2 italic">
-                  {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
-                </div>
-                <div className="mt-1 text-ink-2">
-                  {S.graph.sectionRef(ev.filename, ev.seq + 1)}
-                  {ev.stale && (
-                    <span
-                      className="ml-2 u-num text-fine text-ink-2"
-                      title={S.graph.staleEvidenceHint}
-                    >
-                      {S.graph.fromVersion(ev.doc_version)}
-                    </span>
-                  )}
-                  {ev.document_deleted && (
-                    <span
-                      className="ml-2 text-fine text-contest"
-                      title={S.graph.sourceDeletedHint}
-                    >
-                      {S.graph.sourceDeleted}
-                    </span>
-                  )}
-                </div>
-              </Link>
-            ))}
-            {st.evidence.length === 0 && (
-              <p className="text-ink-2">{S.graph.noEvidence}</p>
-            )}
-          </div>
-        </li>
-      ))}
+      {steps.map((st) => <ProofStepRow key={st.fact_id} kbId={kbId} step={st} />)}
     </ol>
+  );
+}
+
+/** 单条证明步：它的「子证明」在 `step.premises` 里再渲染一次 ProofSteps。
+ *
+ * 拆出来是为了让递归有界——这一个组件自己只画一层，premises 是再调
+ * 一次顶层组件（同一份渲染逻辑，不另写一份），靠 `premises` 数组
+ * 自然终止。深度的递归深度上限由服务器（0030），不在客户端画
+ */
+function ProofStepRow({ kbId, step }: { kbId: string; step: ProofStep }) {
+  return (
+    <li className="text-fine">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="u-num text-fine text-ink-2 shrink-0">
+          {S.graph.proofStep(step.seq + 1)}
+        </span>
+        <span className={step.retracted ? "text-ink-2 line-through" : "text-ink-2"}>
+          {step.subject}
+          <span className="text-ink-2"> — {step.predicate ?? "?"} → </span>
+          {step.object ?? "?"}
+        </span>
+        {step.retracted && (
+          <Chip tone="warn" className="text-fine">{S.graph.proofRetracted}</Chip>
+        )}
+      </div>
+      <div className="mt-1 space-y-1 pl-2">
+        {step.evidence.map((ev) => (
+          <Link
+            key={ev.chunk_id}
+            to="/kb/$kbId/doc/$docId"
+            params={{ kbId, docId: ev.document_id }}
+            search={{ chunk: ev.chunk_id }}
+            className="u-hover-ink block text-ink-2"
+          >
+            <div className="line-clamp-2 italic">
+              {ev.quote ? `“${ev.quote}”` : S.graph.noQuote}
+            </div>
+            <div className="mt-1 text-ink-2">
+              {S.graph.sectionRef(ev.filename, ev.seq + 1)}
+              {ev.stale && (
+                <span
+                  className="ml-2 u-num text-fine text-ink-2"
+                  title={S.graph.staleEvidenceHint}
+                >
+                  {S.graph.fromVersion(ev.doc_version)}
+                </span>
+              )}
+              {ev.document_deleted && (
+                <span
+                  className="ml-2 text-fine text-contest"
+                  title={S.graph.sourceDeletedHint}
+                >
+                  {S.graph.sourceDeleted}
+                </span>
+              )}
+            </div>
+          </Link>
+        ))}
+        {step.evidence.length === 0 && (
+          <p className="text-ink-2">{S.graph.noEvidence}</p>
+        )}
+      </div>
+      {step.premises.length > 0 && (
+        <div className="mt-1 ml-4 border-l border-edge pl-3">
+          <ProofSteps kbId={kbId} steps={step.premises} />
+        </div>
+      )}
+    </li>
   );
 }
 

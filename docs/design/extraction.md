@@ -79,6 +79,32 @@ reads 6.9% of statements as misworded against 3.7%, where judging the same graph
 number by 1.4. **The lever is measured and left alone.** The read timeout it was meant to answer is
 already answered by streaming.
 
+**Where a long answer stops** [#760]. The extraction and alignment calls send an explicit
+`max_tokens` of 65,536. Without it the ceiling is whatever the endpoint defaults to: with reasoning
+disabled a dense passage's answer stopped at exactly 4,096 completion tokens with
+`finish_reason: length`, and that JSON could not be parsed.
+
+The number is measured against the completion, not against the answer, because `max_tokens` does not
+mean the same thing everywhere: Anthropic counts thinking inside it and OpenAI's
+`max_completion_tokens` counts reasoning tokens. On an endpoint that counts reasoning, a ceiling
+chosen to fit the answer would be a budget for the thinking instead, and that is the lever measured
+and rejected under **What a reasoning cap costs** above: holding this model to about 16,000 reasoning
+tokens cost 885 statements against 729, and took table figures reaching no statement from 2% to 16%.
+The largest completion measured on this path is 45,428 tokens, so 65,536 sits above it and can only
+ever guard against the endpoint's own default. The answer itself is about 1,500 tokens, nowhere near
+either line.
+
+Sending it is not a guarantee. The same endpoint ignores the field with reasoning on, where a call
+capped at 4,096 returned 45,428 completion tokens and finished normally; it is honoured with
+reasoning off, which is where the truncation was seen. The field costs nothing where it is not read.
+
+`finish_reason` travels with the answer rather than being dropped once the stream is known to have
+ended, because a reply cut at the ceiling is a valid string and looks complete to the parser. With
+the reason carried through, a chunk that hits the ceiling says so — the drop row reads *hit the
+token ceiling* instead of only *could not be parsed* — and the two causes stay apart: an answer that
+is too long is a number to change, a reply that does not fit the shape is not. Across all bases in
+the e2e database `truncated_reply` has fired 10 times, and those rows keep every complete item.
+
 **Server checks, each a drop reason in `extraction_drops`.** Every quote must occur in the chunk
 (`quote_not_in_chunk`); every name in its quote (`name_not_in_text`); a time mention only when its
 words occur in the statement's own quote (`time_not_in_quote`), because the model otherwise attaches

@@ -207,17 +207,23 @@ const xTickIdx = [...new Set(
  * 必须分两张：`prefers-color-scheme` 写在 SVG 里不算数，README 里的 SVG
  * 是当图片加载的，那条媒体查询问的是操作系统，不是 GitHub 的主题设置，
  * 两者不一致的人就会看到一张空白的图。`<picture>` 问的才是 GitHub 自己。 */
+/** **图自带底色，不靠透明。** 从前这两张是透底的，在 README 里看着没问题——
+ *  页面底色透上来正好。可它一离开 README 就散：raw 的 SVG 直接打开是白页，
+ *  而深色那张画的是白线，于是一张空图；聊天软件的预览、聚合站、导出的 PDF
+ *  同理。一张图该知道自己画在什么底上。取 GitHub 两个主题的画布色，与 README
+ *  里那个 picture 元素选中的那一张对上 */
 const THEMES = {
-  dark: { ink: "#8b949e", accent: "#ffffff", grid: "#8b949e33" },
-  light: { ink: "#6e7781", accent: "#1f2328", grid: "#6e778133" },
+  dark: { ink: "#8b949e", accent: "#ffffff", grid: "#8b949e33", bg: "#0d1117" },
+  light: { ink: "#6e7781", accent: "#1f2328", grid: "#6e778133", bg: "#ffffff" },
 };
 
-function render({ ink, accent, grid }) {
+function render({ ink, accent, grid, bg }) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,Helvetica,Arial,sans-serif">
 <defs><linearGradient id="fill" x1="0" y1="0" x2="0" y2="1">
 <stop offset="0%" stop-color="${accent}" stop-opacity="0.22"/>
 <stop offset="100%" stop-color="${accent}" stop-opacity="0"/>
 </linearGradient></defs>
+<rect width="100%" height="100%" fill="${bg}"/>
 <text x="${PAD.left}" y="24" fill="${ink}" font-size="13">${owner}/${repo}</text>
 ${ticks(maxV).map((v) => `<g><line x1="${PAD.left}" y1="${y(v).toFixed(1)}" x2="${W - PAD.right}" y2="${y(v).toFixed(1)}" stroke="${grid}"/><text x="${PAD.left - 10}" y="${(y(v) + 4).toFixed(1)}" fill="${ink}" font-size="11" text-anchor="end">${v.toLocaleString("en-US")}</text></g>`).join("")}
 ${xTickIdx.map((i) => `<text x="${x(i).toFixed(1)}" y="${H - 16}" fill="${ink}" font-size="11" text-anchor="middle">${fmtDate(series[i].t)}</text>`).join("")}
