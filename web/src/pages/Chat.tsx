@@ -484,7 +484,11 @@ export function Chat() {
             variant="secondary"
             className="shrink-0"
           >
-            <Square size={11} fill="currentColor" />
+            {/* **尺寸写在 class 上，不写在 size 上**：按钮那档皮有
+                `[&_svg:not([class*="size-"])]:size-4`，lucide 的 size 属性会被它盖掉，
+                于是一个实心方块按 16 画出来——32 的按钮里塞半格白，比旁边那个细线
+                箭头重一大截。10 是实心记号在这档按钮里该有的分量 */}
+            <Square className="size-2.5" fill="currentColor" strokeWidth={0} />
           </IconButton>
         ) : (
           <IconButton

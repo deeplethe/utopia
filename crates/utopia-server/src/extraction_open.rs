@@ -59,6 +59,20 @@ fn locate(hay: &str, needle: &str) -> Option<(i32, i32)> {
 /// 时间词在块里的字符起点。**必须在这条陈述自己的那句引文里**：模型会把一个时间词挂到
 /// 好几条陈述上（FDA 语料实测「week 4」挂到了「不应由过敏患者服用」上，六条带时间的陈述错了三条），
 /// 整块里搜得到不等于这句说了它。引文里有、但引文本身没在块里定位到的，起点退回整块里的第一处
+/// 这条陈述的值有没有真的写在它的引文里（#729）。
+///
+/// 千分位逗号、空白和货币符号两边都不算数；别的按原样比。**故意放得松**：这是一条丢弃
+/// 规则，放过一条可疑的，好过丢掉一条对的
+fn shows_value(quote: &str, value: &str) -> bool {
+    let strip = |s: &str| {
+        s.chars()
+            .filter(|c| !c.is_whitespace() && *c != ',' && !matches!(c, '$' | '￥' | '€' | '£'))
+            .collect::<String>()
+    };
+    let v = strip(value);
+    v.is_empty() || strip(quote).contains(&v)
+}
+
 fn locate_time(chunk: &str, quote: Option<(&str, Option<(i32, i32)>)>, words: &str) -> Option<i32> {
     let (q, span) = quote?;
     if let Some((inner, _)) = locate(q, words) {
@@ -376,6 +390,9 @@ pub(crate) async fn run_open(
                 .as_deref()
                 .map(str::trim)
                 .filter(|v| v.chars().any(char::is_alphanumeric));
+            // 模型自己写的那个值，在下面被「宾语没声明」顶替之前记下来：引文要核的是它，
+            // 不是一个实体的名字（#729）
+            let stated_value = value;
             let object = match s.object.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
                 Some(name) => match place(
                     pool,
@@ -478,6 +495,23 @@ pub(crate) async fn run_open(
                 )
                 .await;
             }
+            // **值必须出现在它自己的引文里**（#729）。一行五列被压成五条只有值不同的
+            // 陈述、引文却是表上面那句导语时，五条里至多一条对，而谁也分不出是哪一条。
+            // 只查带数字的值：实体名当值写的那一类（object_undeclared）不在此列
+            if let (Some(v), Some((q, _))) = (stated_value, quote) {
+                if v.chars().any(|c| c.is_ascii_digit()) && !shows_value(q, v) {
+                    drop_signal(
+                        state,
+                        kb_id,
+                        document_id,
+                        reason::VALUE_NOT_IN_QUOTE,
+                        "a statement's value is not in its own quoted sentence",
+                        Some(v),
+                    )
+                    .await;
+                    continue;
+                }
+            }
             // 开放陈述没有模型自报的置信度：它说的是「文档这么说了」。看图描述出来的块
             // 照旧压上限（0040 决定 4）
             let confidence = origin_ceiling(&chunk.origin, 1.0);
@@ -523,6 +557,20 @@ pub(crate) async fn run_open(
                             Some(words),
                         )
                         .await;
+                    }
+                }
+            }
+            // **表格单元的期间在它那一列的表头上**（#729）。模型自己说了时间就不动它——
+            // 它看得见整块原文，说得出的比一根列头多。这一条不是模型报的，所以不走
+            // `time_not_in_quote`：它的出处是位置（这个值在这一行的第几格），
+            // 而那一格的表头上写着期间。它是不是一个期间，由时间解析去判（0045：
+            // 模型读、代码算），这里一个字眼都不认
+            if !time_words.iter().any(|(_, _, role)| *role == "when") {
+                if let (Some(v), Some((q, _))) = (stated_value, quote) {
+                    if let Some((head, at)) = utopia_ingest::column_header(&chunk.text, q, v) {
+                        if let Ok(at) = i32::try_from(at) {
+                            time_words.push((head, at, "when"));
+                        }
                     }
                 }
             }
@@ -768,6 +816,31 @@ pub(crate) async fn run_open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #729：引文里没有这个数，这条陈述就没有依据。丢弃规则要宁松勿紧
+    #[test]
+    fn a_value_must_be_in_the_sentence_that_is_quoted() {
+        let row = "| Cost of revenue | $46 | $47 | $93 |";
+        assert!(shows_value(row, "$46"));
+        assert!(shows_value(row, "46"), "货币符号不算数");
+        assert!(
+            shows_value("| Accounts payable | 1,915 |", "1915"),
+            "千分位不算数"
+        );
+        assert!(shows_value("revenue was $ 1,234", "$1,234"), "空白不算数");
+        assert!(
+            !shows_value(
+                "(A) Acquisition-related costs are comprised of amortization.",
+                "$46"
+            ),
+            "导语里没有这个数——正是压平表格那一行的错法"
+        );
+        assert!(shows_value("anything", ""), "没有值就没什么可核的");
+        assert!(
+            shows_value("| a | 4,600 |", "46"),
+            "放得松：像是命中就放过，丢错一条比留下一条可疑的更糟"
+        );
+    }
 
     #[test]
     fn offsets_are_in_characters_not_bytes() {
