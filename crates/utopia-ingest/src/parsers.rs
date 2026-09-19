@@ -221,6 +221,24 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
                     None => out.push_str(&s),
                 }
             }
+            Ok(Event::CData(t)) if in_text => {
+                let s = t.xml_content(quick_xml::XmlVersion::Implicit1_0);
+                match cell.as_mut() {
+                    Some(c) => c.0.push_str(&s),
+                    None => out.push_str(&s),
+                }
+            }
+            // 字符引用是独立事件，丢掉它会把 R&amp;D 这样的正文变成 RD。
+            // 未识别的引用保留原样，不能因此让整篇导入失败。
+            Ok(Event::GeneralRef(e)) if in_text => {
+                let reference = format!("&{};", e.into_inner());
+                let s = quick_xml::escape::unescape(&reference)
+                    .unwrap_or(std::borrow::Cow::Borrowed(&reference));
+                match cell.as_mut() {
+                    Some(c) => c.0.push_str(&s),
+                    None => out.push_str(&s),
+                }
+            }
             Ok(Event::Eof) => break,
             Err(e) => anyhow::bail!("XML parse error: {e}"),
             _ => {}
@@ -373,6 +391,16 @@ fn extract_xml_text(xml: &str, text_tag: &str, para_tag: &str) -> anyhow::Result
             }
             Ok(Event::Text(t)) if in_text => {
                 out.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
+            }
+            Ok(Event::CData(t)) if in_text => {
+                out.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
+            }
+            Ok(Event::GeneralRef(e)) if in_text => {
+                let reference = format!("&{};", e.into_inner());
+                match quick_xml::escape::unescape(&reference) {
+                    Ok(s) => out.push_str(&s),
+                    Err(_) => out.push_str(&reference),
+                }
             }
             Ok(Event::Eof) => break,
             Err(e) => anyhow::bail!("XML parse error: {e}"),
