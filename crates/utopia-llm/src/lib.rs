@@ -480,7 +480,9 @@ impl LlmClient {
         // 端点开口了又半路没了：拼到一半的回复长得像成功，不做成错误就会被当成
         // 模型给的全部答案
         if !ended {
-            return Err(anyhow::Error::new(Interrupted { got: answer.len() }));
+            return Err(anyhow::Error::new(Interrupted {
+                got: answer.chars().count(),
+            }));
         }
         Ok(strip_reasoning(&answer).to_string())
     }
@@ -688,10 +690,10 @@ impl LlmClient {
                     }
                 }
             }
-            // A clean HTTP EOF can still truncate an SSE conversation. Do not
-            // hand unfinished tool calls to the agent as a completed turn.
+            // HTTP 正常结束也可能只送到半个模型回合，不能把没收完的工具调用
+            // 当作完整回合交给 agent。
             if !done {
-                Err(Interrupted { got: content.len() })?;
+                Err(Interrupted { got: content.chars().count() })?;
             }
             calls.retain(|c| !c.name.is_empty());
             let content = if content.is_empty() { None } else { Some(content) };
@@ -754,7 +756,7 @@ impl LlmClient {
                             }
                             if let Some(delta) = v["choices"][0]["delta"]["content"].as_str() {
                                 if !delta.is_empty() {
-                                    got += delta.len();
+                                    got += delta.chars().count();
                                     yield delta.to_string();
                                 }
                             }
@@ -967,6 +969,42 @@ mod tests {
         };
         assert!(!is_unreachable(&error));
         assert!(error.to_string().contains(diagnosis), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn an_interruption_counts_characters_in_all_three_readers() {
+        use futures_util::TryStreamExt;
+        let sse = format!(
+            "data: {}\n\n",
+            json!({ "choices": [{"delta": {"content": "你好🦀"}}] })
+        );
+        for reader in ["collected", "raw", "tools"] {
+            let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+            let client = client_at(addr);
+            let error = match reader {
+                "collected" => client.chat_at_streaming(&[], None).await.unwrap_err(),
+                "raw" => client
+                    .chat_stream_raw(&[])
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap_err(),
+                _ => client
+                    .chat_tools_stream_with(&[], None, None)
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap_err(),
+            };
+            server.await.unwrap();
+            assert_eq!(
+                error.downcast_ref::<Interrupted>().unwrap().got,
+                3,
+                "{reader}"
+            );
+        }
     }
 
     #[tokio::test]
