@@ -80,11 +80,19 @@ number by 1.4. **The lever is measured and left alone.** The read timeout it was
 already answered by streaming.
 
 **Where a long answer stops** [#760]. The extraction and alignment calls send an explicit
-`max_tokens` of 16,384. Without it the ceiling is whatever the endpoint defaults to: with reasoning
+`max_tokens` of 65,536. Without it the ceiling is whatever the endpoint defaults to: with reasoning
 disabled a dense passage's answer stopped at exactly 4,096 completion tokens with
-`finish_reason: length`, and that JSON could not be parsed. The number is four times the longest
-answer measured on this path — about 1,500 tokens for a dense chunk — so a dense chunk's JSON
-finishes while the ceiling is still ours rather than the endpoint's.
+`finish_reason: length`, and that JSON could not be parsed.
+
+The number is measured against the completion, not against the answer, because `max_tokens` does not
+mean the same thing everywhere: Anthropic counts thinking inside it and OpenAI's
+`max_completion_tokens` counts reasoning tokens. On an endpoint that counts reasoning, a ceiling
+chosen to fit the answer would be a budget for the thinking instead, and that is the lever measured
+and rejected under **What a reasoning cap costs** above: holding this model to about 16,000 reasoning
+tokens cost 885 statements against 729, and took table figures reaching no statement from 2% to 16%.
+The largest completion measured on this path is 45,428 tokens, so 65,536 sits above it and can only
+ever guard against the endpoint's own default. The answer itself is about 1,500 tokens, nowhere near
+either line.
 
 Sending it is not a guarantee. The same endpoint ignores the field with reasoning on, where a call
 capped at 4,096 returned 45,428 completion tokens and finished normally; it is honoured with
