@@ -11,6 +11,10 @@ use utopia_core::models::Source;
 use utopia_core::models::SourceKind;
 use uuid::Uuid;
 
+#[cfg(test)]
+#[path = "source_checkpoint_tests.rs"]
+mod source_checkpoint_tests;
+
 /// 单次同步的新文档上限（防超长 feed/URL 列表拖垮任务）
 const MAX_NEW_PER_SYNC: usize = 200;
 const MAX_FEED_BYTES: usize = 4 * 1024 * 1024;
@@ -1227,7 +1231,3 @@ mod tests {
         assert!(rss_entry_key(entry, Some("https://example.com/article")).is_some());
     }
 }
-
-#[cfg(test)]
-#[path = "source_checkpoint_tests.rs"]
-mod source_checkpoint_tests;
