@@ -4,6 +4,10 @@
 //! 全部走 sha256 去重（重复内容静默跳过），新文档进标准摄入管道（process_document）。
 //! folder 是纯容器（上传入内），api 是推送型——两者无拉取语义。
 
+#[cfg(test)]
+#[path = "github_history_tests.rs"]
+mod github_history_tests;
+
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
@@ -730,6 +734,22 @@ async fn sync_rss(state: &AppState, source: &Source) -> anyhow::Result<SyncStats
 /// 工单是什么样"，认知时间该说这个状态是何时成立的。新增一条评论会改
 /// `updated_at`，于是内容变了、记一个新版本、`doc_time` 也跟着走。
 async fn sync_github_issues(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    // api.github.com 是固定的公网主机，所以按内容级的严格度收（`Reach::Content`）
+    let http = crate::http_fetch::client_for(
+        &reqwest::Url::parse("https://api.github.com/")?,
+        crate::http_fetch::Reach::Content,
+        crate::http_fetch::Limits::default(),
+    )
+    .await?;
+    sync_github_issues_with_client(state, source, &http, "https://api.github.com").await
+}
+
+async fn sync_github_issues_with_client(
+    state: &AppState,
+    source: &Source,
+    http: &reqwest::Client,
+    api_root: &str,
+) -> anyhow::Result<SyncStats> {
     let repo = source.config["repo"]
         .as_str()
         .map(str::trim)
@@ -750,43 +770,37 @@ async fn sync_github_issues(state: &AppState, source: &Source) -> anyhow::Result
         .as_bool()
         .unwrap_or(false);
 
-    // api.github.com 是固定的公网主机，所以按内容级的严格度收（`Reach::Content`）
-    let http = crate::http_fetch::client_for(
-        &reqwest::Url::parse("https://api.github.com/")?,
-        crate::http_fetch::Reach::Content,
-        crate::http_fetch::Limits::default(),
-    )
-    .await?;
-    let base = format!("https://api.github.com/repos/{repo}");
+    let base = format!("{api_root}/repos/{repo}");
 
     // 增量：GitHub 的 since 是"这之后更新过的"
     let mut issue_q: Vec<(&str, String)> = vec![("state", "all".into())];
-    let mut comment_q: Vec<(&str, String)> = Vec::new();
     if let Some(t) = source.last_sync_at {
         issue_q.push(("since", t.to_rfc3339()));
-        comment_q.push(("since", t.to_rfc3339()));
     }
 
     let issues: Vec<crate::github_issues::Issue> =
-        crate::github_issues::fetch_all(&http, &format!("{base}/issues"), &issue_q, auth).await?;
-    let comments: Vec<crate::github_issues::Comment> = crate::github_issues::fetch_all(
-        &http,
-        &format!("{base}/issues/comments"),
-        &comment_q,
-        auth,
-    )
-    .await?;
+        crate::github_issues::fetch_all(http, &format!("{base}/issues"), &issue_q, auth).await?;
     let mut stats = SyncStats::default();
-    for (issue, cs) in crate::github_issues::group_comments(&issues, &comments)
-        .into_iter()
-        .filter(|(i, _)| include_prs || i.pull_request.is_none())
+    for issue in issues
+        .iter()
+        .filter(|i| include_prs || i.pull_request.is_none())
         .take(MAX_NEW_PER_SYNC)
     {
+        // 整篇快照会替换旧正文：评论必须重取，不能只保留 since 之后的增量。
+        let comments: Vec<crate::github_issues::Comment> = crate::github_issues::fetch_all(
+            http,
+            &format!("{base}/issues/{}/comments", issue.number),
+            &[],
+            auth,
+        )
+        .await?;
+        let grouped = crate::github_issues::group_comments(std::slice::from_ref(issue), &comments);
+        let cs = &grouped[0].1;
         // 逐工单取事件。N 只是本轮要写入的工单数——首次同步等于总数，
         // 之后有 since 兜着通常是个位数
         let events = crate::github_issues::sort_events(
             crate::github_issues::fetch_all(
-                &http,
+                http,
                 &format!("{base}/issues/{}/events", issue.number),
                 &[],
                 auth,
@@ -794,7 +808,7 @@ async fn sync_github_issues(state: &AppState, source: &Source) -> anyhow::Result
             .await?,
         );
         let es: Vec<&crate::github_issues::Event> = events.iter().collect();
-        let body = crate::github_issues::render(issue, &cs, &es);
+        let body = crate::github_issues::render(issue, cs, &es);
         // 逻辑身份带上仓库：同一个知识库里接两个仓库时，#18 不会互相覆盖
         let key = format!("github:{repo}#{}", issue.number);
         let filename = format!("{}-{}.md", issue.number, slugify(&issue.title));
