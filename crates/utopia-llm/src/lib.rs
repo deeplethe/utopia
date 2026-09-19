@@ -769,11 +769,17 @@ impl LlmClient {
         let data = body["data"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
-        // Callers zip these vectors with the input texts. An explicit response
-        // index is the association, even if a gateway returns entries out of order.
-        // Some compatible endpoints omit all indices; keep their positional format.
-        let items: Vec<&serde_json::Value> = if data.iter().any(|item| item.get("index").is_some())
-        {
+        // 调用方把这些向量和输入的文本按位置配对。响应里写了 index，那它才是配对的
+        // 依据——网关把条目打乱了顺序也认得回来。
+        //
+        // **看值，不看键**：`get("index")` 对 `"index": null` 也返回 Some，而兼容端点
+        // 写个空值、写成字符串的都有。按键判断会把它们送进索引分支，再在 `as_u64` 上
+        // 报错，于是今天能用的响应明天整批失败。取不出数就当它没有索引，照旧按位置配。
+        let items: Vec<&serde_json::Value> = if data.iter().any(|item| {
+            item.get("index")
+                .and_then(serde_json::Value::as_u64)
+                .is_some()
+        }) {
             let mut ordered = vec![None; texts.len()];
             for item in data {
                 let index = item["index"]
@@ -1590,6 +1596,22 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
             .await;
         server.await.unwrap();
         result
+    }
+
+    /// 写了 index 却取不出数的（`null`、字符串、浮点）按没有索引算。这些形状今天能用，
+    /// 按键判断会把它们送进索引分支再报错，于是整批失败
+    #[tokio::test]
+    async fn an_index_that_is_not_a_number_falls_back_to_position() {
+        for data in [
+            json!([{"index": null, "embedding": [1.0]}, {"index": null, "embedding": [2.0]}]),
+            json!([{"index": "0", "embedding": [1.0]}, {"index": "1", "embedding": [2.0]}]),
+            json!([{"index": 0.5, "embedding": [1.0]}, {"index": 1.5, "embedding": [2.0]}]),
+        ] {
+            let out = embeddings_from(data.clone())
+                .await
+                .unwrap_or_else(|e| panic!("{data} 该按位置配对，却报错：{e}"));
+            assert_eq!(out, vec![vec![1.0], vec![2.0]], "{data}");
+        }
     }
 
     #[tokio::test]
