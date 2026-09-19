@@ -216,6 +216,31 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
             "文档页看不见没有说法的事实"
         );
 
+        // 宾语是字面值的那条：阅读页右栏只认 canonical_name 的时候，它在界面上是
+        // 主语加短语、后面空着一片（「Hugging Face, Inc. known as」）
+        let valued = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO facts (id, kb_id, subject_id, layer, phrase, object_value, confidence)
+             VALUES ($1, $2, $3, 'open', 'known as', jsonb_build_object('value', 'Acme Inc.'), 0.9)",
+        )
+        .bind(valued)
+        .bind(f.kb)
+        .bind(f.subject)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO fact_evidence (fact_id, chunk_id, document_id, quote)
+             SELECT $1, chunk_id, document_id, 'Acme Inc.' FROM fact_evidence WHERE fact_id = $2 LIMIT 1",
+        )
+        .bind(valued)
+        .bind(f.surfaced)
+        .execute(&pool)
+        .await?;
+        let chunk_facts = utopia_store::graph::document_extractions(&pool, f.doc).await?;
+        let v = chunk_facts.iter().find(|c| c.fact_id == valued).unwrap();
+        assert_eq!(v.object.as_deref(), Some("Acme Inc."), "值宾语在文档页是空的");
+        assert!(v.object_id.is_none(), "字面值没有实体可跳");
+
         // 5. 实体历史（外层 FROM 是 CTE，别名写错会直接报 missing FROM-clause）
         let (hist, _) = utopia_store::graph::entity_history(&pool, f.kb, f.subject, 50, 0).await?;
         let h = hist.iter().find(|e| e.fact_id == Some(f.surfaced));
