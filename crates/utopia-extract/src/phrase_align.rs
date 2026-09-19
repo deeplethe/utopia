@@ -83,7 +83,8 @@ the object is a figure, a title or a status; a few statements with that signatur
 sentence it was taken from; and the candidate properties, each with its key, its label, its \
 definition, its kind (a relation between two things, or an attribute whose object is a value), \
 its domain and its range. A class written as \"?\" means the documents' kind word for that side \
-is bound to no class yet.\n\
+is bound to no class yet. A class annotated as subclass of another class satisfies that \
+ancestor class domain or range; inheritance does not work in the opposite direction.\n\
 For each item, answer with the key of the one property that every statement of this signature \
 states by that property's definition, and the direction: \"forward\" when the statement's \
 subject is the property's subject, \"reverse\" when the statement's object is; or null.\n\

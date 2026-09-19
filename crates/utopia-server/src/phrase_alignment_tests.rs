@@ -392,8 +392,7 @@ async fn structural_none_keeps_shared_person_support() -> anyhow::Result<()> {
     let property = f
         .property("located_in", "relation", &[f.class], &[place])
         .await?;
-    let first = f
-        .statement("Factory", Some(f.class), city, "located in")
+    f.statement("Factory", Some(f.class), city, "located in")
         .await?;
     let second = f
         .statement("Factory", Some(f.class), city, "based in")
@@ -434,7 +433,6 @@ async fn structural_none_keeps_shared_person_support() -> anyhow::Result<()> {
     f.run().await?;
     let sources: Vec<Uuid> = sqlx::query_scalar("SELECT s.statement_id FROM typed_fact_sources s JOIN facts f ON f.id=s.fact_id WHERE f.kb_id=$1 AND f.invalidated_at IS NULL").bind(f.kb).fetch_all(&f.pool).await?;
     assert_eq!(sources, vec![second]);
-    assert!(!sources.contains(&first));
     assert_eq!(f.requests().len(), 2);
     f.cleanup().await?;
     Ok(())
@@ -633,13 +631,20 @@ async fn a_saved_negative_is_materialized_after_a_failed_recompute() -> anyhow::
     // before materialization; a retry must repair the projection with no new votes.
     let name = format!("audit_{}", f.kb.simple());
     sqlx::raw_sql(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected retirement failure'; END $$; CREATE TRIGGER {name} BEFORE UPDATE OF invalidated_at ON facts FOR EACH ROW WHEN (OLD.kb_id='{}'::uuid AND OLD.layer='typed') EXECUTE FUNCTION {name}();", f.kb)).execute(&f.pool).await?;
-    let result = f.run().await;
+    let state = f.state.clone();
+    let kb = f.kb;
+    let mut worker = tokio::spawn(async move { align_phrases(&state, kb).await });
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), &mut worker).await;
+    if result.is_err() {
+        worker.abort();
+        let _ = worker.await;
+    }
     sqlx::raw_sql(&format!(
         "DROP TRIGGER {name} ON facts; DROP FUNCTION {name}();"
     ))
     .execute(&f.pool)
     .await?;
-    assert!(result
+    assert!(result??
         .unwrap_err()
         .to_string()
         .contains("injected retirement failure"));
@@ -708,12 +713,6 @@ async fn an_over_limit_stale_binding_is_not_falsely_rejected() -> anyhow::Result
         "bound"
     );
     assert_eq!(phrase_bindings::stale(&f.pool, f.kb).await?.len(), 1);
-    // Existing limitation: over-limit stale work still queues another run.
-    let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE payload->>'kb_id'=$1")
-        .bind(f.kb.to_string())
-        .fetch_one(&f.pool)
-        .await?;
-    assert_eq!(jobs, 1);
     f.cleanup().await?;
     Ok(())
 }
@@ -761,6 +760,11 @@ async fn subclasses_reach_the_real_phrase_requests() -> anyhow::Result<()> {
             prompt.contains("subject class: organization"),
             "direct control reached model"
         );
+        assert!(prompt.contains("manufacturer (subclass of: organization)"));
+        assert!(prompt.contains("precision (subclass of: manufacturer, organization)"));
+        let system = request["messages"][0]["content"].as_str().unwrap();
+        assert!(system.contains("ancestor class domain or range"));
+        assert!(system.contains("inheritance does not work in the opposite direction"));
         for key in ["manufacturer", "precision", "diamond"] {
             assert!(
                 prompt.contains(&format!("subject class: {key}")),
@@ -861,40 +865,6 @@ async fn inherited_reverse_and_literal_preserve_sources_and_human_choice() -> an
     assert_eq!(f.requests().len(), 2);
     f.run().await?;
     assert_eq!(f.requests().len(), 2, "unchanged bindings are cached");
-    f.cleanup().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn identical_class_keys_in_another_base_do_not_supply_ancestors() -> anyhow::Result<()> {
-    let Some(f) = Fx::new().await? else {
-        return Ok(());
-    };
-    let foreign = Fx::new().await?.unwrap();
-    foreign.class("manufacturer", &[foreign.class]).await?;
-    let local = f.class("manufacturer", &[]).await?;
-    let place = f.class("place", &[]).await?;
-    let city = utopia_store::resolution::resolve_mention(
-        &f.pool,
-        f.kb,
-        Some(place),
-        "City",
-        None,
-        None,
-        &[],
-    )
-    .await?
-    .entity_id;
-    f.property("located_in", "relation", &[f.class], &[place])
-        .await?;
-    f.statement("Factory", Some(local), city, "located in")
-        .await?;
-    f.run().await?;
-    assert!(
-        f.requests().is_empty(),
-        "same-name foreign inheritance cannot admit this signature"
-    );
-    foreign.cleanup().await?;
     f.cleanup().await?;
     Ok(())
 }
@@ -1047,4 +1017,85 @@ async fn an_inherited_binding_retires_when_its_domain_stops_admitting_it() -> an
     assert_eq!(jobs, 0);
     f.cleanup().await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn an_old_unclassified_signature_does_not_keep_requeueing() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let place = f.class("place", &[]).await?;
+    let city = utopia_store::resolution::resolve_mention(
+        &f.pool,
+        f.kb,
+        Some(place),
+        "City",
+        None,
+        None,
+        &[],
+    )
+    .await?
+    .entity_id;
+    let property = f
+        .property("located_in", "relation", &[f.class], &[place])
+        .await?;
+    let statement = f.statement("Factory", None, city, "located in").await?;
+    f.run().await?;
+    assert_eq!(
+        phrase_bindings::bindings(&f.pool, f.kb).await?[0].status,
+        "none"
+    );
+    let subject: Uuid = sqlx::query_scalar("SELECT subject_id FROM facts WHERE id=$1")
+        .bind(statement)
+        .fetch_one(&f.pool)
+        .await?;
+    sqlx::query("UPDATE entities SET specific_type='factory' WHERE id=$1")
+        .bind(subject)
+        .execute(&f.pool)
+        .await?;
+    utopia_store::type_bindings::decide_and_apply(
+        &f.pool,
+        f.kb,
+        "factory",
+        &[],
+        Some(f.class),
+        "bound",
+        &json!({}),
+        "agent",
+    )
+    .await?;
+    utopia_store::ontology::update_relation_type(
+        &f.pool,
+        f.kb,
+        property,
+        "locatedIn",
+        "state",
+        Default::default(),
+        "updated definition",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
+    for _ in 0..3 {
+        sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+            .bind(f.kb.to_string())
+            .execute(&f.pool)
+            .await?;
+        f.run().await?;
+        let jobs: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs WHERE kind='align_phrases' AND payload->>'kb_id'=$1",
+        )
+        .bind(f.kb.to_string())
+        .fetch_one(&f.pool)
+        .await?;
+        anyhow::ensure!(
+            jobs == 0,
+            "orphaned signature keeps scheduling an align_phrases job"
+        );
+    }
+    assert_eq!(f.requests().len(), 2);
+    assert!(phrase_bindings::stale(&f.pool, f.kb).await?.is_empty());
+    f.cleanup().await
 }

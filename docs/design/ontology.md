@@ -62,9 +62,10 @@ a side whose kind word is bound to no class is its own signature. Each signature
 after the kind words, by the same shape as [#741]: candidates are the properties whose declared
 domain and range admit the two ends in either direction (an undeclared end admits anything). The
 candidate filter follows all parent edges transitively within the base, including non-primary
-parents, without treating a parent instance as an instance of its child. The model sees the signature
-with three of its statements and their quotes, and two votes with the
-candidates in opposite orders must agree on the property and the direction (forward when the
+parents, without treating a parent instance as an instance of its child. The model sees the
+endpoint classes annotated with their ancestors and is told that subclasses satisfy an ancestor's
+domain or range, not the reverse. It also sees three of its statements and their quotes, and two
+votes with the candidates in opposite orders must agree on the property and the direction (forward when the
 statement's subject is the property's subject, reverse when its object is) for the signature to
 bind. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, including a structural decision recorded without model votes when
@@ -76,13 +77,17 @@ statements stay in the open graph and their signatures count toward the
 workbench's suggestions.
 
 Candidate selection uses class ancestry for new or otherwise stale signatures. Deployment and
-class-parent edits alone do not reopen cached decisions: freshness still depends on property
-timestamps. A normal edit to a relevant property can reopen affected automatic bindings; no
-bulk reevaluation operation is introduced here. Input-version tracking (related to #795) remains
-necessary for hierarchy edits and in-flight changes. Do not rewrite decision timestamps or delete
-bindings to simulate reevaluation.
+class-parent edits alone do not invalidate cached decisions: freshness still depends on property
+timestamps. Adding a parent does not reopen a cached negative; removing a parent does not retire
+an inherited bound decision or its typed projection. The regression reopens a negative by editing
+a property, not by the hierarchy edit alone. A normal property edit can reopen affected automatic
+bindings; no bulk reevaluation operation is introduced here. Hierarchy and in-flight input
+freshness remain outside this change (related to #795).
 
-Bindings live in `phrase_bindings`: a bound result goes stale when its
+Bindings live in `phrase_bindings`. Stale work includes only signatures still supported by live
+open statements: after endpoint classes change or all statements disappear, orphaned rows no
+longer trigger reevaluation jobs. The rows themselves are retained, including human decisions.
+For live signatures, a bound result goes stale when its
 selected property changes; `none` and `undecided` go stale when any property in the base is added
 or updated, since an existing property's revised definition may now fit [#773]. Kind-word bindings
 use the same rule for classes. Both use `updated_at`, so cosmetic edits can also trigger

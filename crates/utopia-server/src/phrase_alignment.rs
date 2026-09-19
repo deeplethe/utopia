@@ -8,9 +8,9 @@
 //! 图谱，什么都不丢，签名计入工作台的建议。绑定按属性的 `updated_at` 与库里最新的属性
 //! 判过期，本体一改只重判过期的。这一片只记判定；按绑定把陈述算成类型化事实是下一片。
 //!
-//! 候选属性怎么来：先按声明的定义域/值域筛——签名两端的类落在属性的域/值域里的，或者
-//! 属性没声明域/值域的（两个方向都算，绑定可以是反向的）。**一端没绑到类的签名，只有
-//! 没声明那一端的属性才算候选**：类别词还没绑上时把声明了域的属性也给模型，NVDA 四篇上
+//! 候选属性怎么来：按定义域/值域筛，签名端点的类或其任一传递父类落在声明范围内，
+//! 或者属性没声明该端的范围（两个方向都算，绑定可以是反向的）。继承依据同时给模型看。
+//! **一端没绑到类的签名，只有没声明那一端的属性才算候选**：类别词还没绑上时把声明了域的属性也给模型，NVDA 四篇上
 //! 现金流量表的每一行都绑到了泛泛的 value（主语 NVIDIA 没类，value 的域是指标）——裁判
 //! 判成写错的一半是它。筛完仍超过上限就不判，瞎判比不判糟。
 
@@ -33,7 +33,7 @@ const CANDIDATE_LIMIT: usize = 60;
 /// 一票：这条签名选了哪个属性、哪个方向（None = 没有属性对得上）。
 type Vote = Option<(String, Direction)>;
 
-/// 签名两端的类落在属性声明的域/值域里（没声明的不限，没绑到类的一端只被没声明的
+/// 签名两端的类或其祖先落在属性声明的域/值域里（没声明的不限，没绑到类的一端只被没声明的
 /// 一端接受）；正反两个方向都算。
 fn fits(
     p: &RelationTypeView,
@@ -59,6 +59,7 @@ fn fits(
     }
 }
 
+/// 当前库里每个端点的自反传递闭包：包含自己，菱形去重，异常环也会终止。
 fn class_ancestors(
     parents: &HashMap<Uuid, &[Uuid]>,
     roots: &HashSet<Uuid>,
@@ -138,8 +139,7 @@ async fn align_phrases_locked(
             Some(b) => b.decided_by != "person" && stale.contains(&s.key()),
         })
         .collect();
-    // Keep ancestry per class: a union across endpoints would admit unrelated classes.
-    // Restrict traversal to this base and visit each node once, including imported cycles.
+    // 各端点分别展开本库的祖先；取并集会把另一个端点的父类误认作自己的。
     let parents: HashMap<_, _> = classes
         .iter()
         .map(|c| (c.id, c.parents.as_slice()))
@@ -150,6 +150,26 @@ async fn align_phrases_locked(
         .flatten()
         .collect();
     let ancestors = class_ancestors(&parents, &roots);
+    // 把继承依据给模型看，不能只在代码里放行却让提示词仍像类型不匹配。
+    let class_labels: HashMap<Uuid, String> = classes
+        .iter()
+        .map(|c| {
+            let mut inherited: Vec<&str> = ancestors
+                .get(&c.id)
+                .into_iter()
+                .flatten()
+                .filter(|id| **id != c.id)
+                .filter_map(|id| class_key.get(id).copied())
+                .collect();
+            inherited.sort_unstable();
+            let label = if inherited.is_empty() {
+                c.key.clone()
+            } else {
+                format!("{} (subclass of: {})", c.key, inherited.join(", "))
+            };
+            (c.id, label)
+        })
+        .collect();
     let attempted: HashSet<_> = todo.iter().map(|s| s.key()).collect();
     tracing::info!(%kb_id, signatures = sigs.len(), to_decide = todo.len(), properties = props.len(), "短语对齐开始");
 
@@ -181,8 +201,12 @@ async fn align_phrases_locked(
                     PhraseItem {
                         id: i as i64,
                         phrase: &s.phrase,
-                        subject_class: s.subject_type_key.as_deref(),
-                        object_class: s.object_type_key.as_deref(),
+                        subject_class: s
+                            .subject_type_id
+                            .and_then(|id| class_labels.get(&id).map(String::as_str)),
+                        object_class: s
+                            .object_type_id
+                            .and_then(|id| class_labels.get(&id).map(String::as_str)),
                         object_is_value: s.object_is_value,
                         statement_count: s.count,
                         examples: &s.examples,
@@ -242,9 +266,8 @@ async fn align_phrases_locked(
         }
         for (i, s) in batch.iter().enumerate() {
             if cands[i].is_empty() {
-                // Structural absence is a decision, not two fabricated model votes.
-                // The normal person guard and materializer protect human choices and
-                // retire only projections whose last supporting binding disappeared.
+                // 结构上没有候选直接记判定，不伪造两张模型票。
+                // 复用人工决定保护和物化流程，只退休最后一份有效支持已消失的投影。
                 if phrase_bindings::decide(
                     pool,
                     kb_id,

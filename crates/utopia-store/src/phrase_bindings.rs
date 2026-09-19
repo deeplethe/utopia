@@ -178,20 +178,31 @@ pub async fn bindings(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
 
 /// 不再成立的绑定：绑到的属性在判定之后改过；或判成 none / undecided 之后库里有属性
 /// 新建或修改。负向判定没有选中的属性，已有属性的新定义也可能让它对得上。
-/// 属性或类被删了的，行已随级联消失。
+/// 属性或类被删了的，行已随级联消失。旧签名没有活陈述时，不再作为可重判工作返回。
 pub async fn stale(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
-    Ok(sqlx::query_as(
+    Ok(sqlx::query_as(&format!(
         "SELECT b.phrase, b.subject_type_id, b.object_type_id, b.object_is_value,
                 b.relation_type_id, b.direction, b.status, b.decided_at, b.decided_by
          FROM phrase_bindings b
          LEFT JOIN relation_types r ON r.id = b.relation_type_id
          WHERE b.kb_id = $1
+           AND EXISTS (
+               SELECT 1 FROM facts f
+               JOIN entities s ON s.id=f.subject_id
+               LEFT JOIN entities o ON o.id=f.object_id
+               WHERE f.kb_id=b.kb_id AND f.layer='open' AND f.invalidated_at IS NULL
+                 AND {phrase}=b.phrase
+                 AND s.type_id IS NOT DISTINCT FROM b.subject_type_id
+                 AND o.type_id IS NOT DISTINCT FROM b.object_type_id
+                 AND (f.object_id IS NULL)=b.object_is_value
+           )
            AND ((b.status = 'bound' AND r.updated_at > b.decided_at)
                 OR (b.status IN ('none', 'undecided')
                     AND b.decided_at < (SELECT max(updated_at) FROM relation_types
                                         WHERE kb_id = $1)))
          ORDER BY b.phrase",
-    )
+        phrase = phrase_sql("f.phrase")
+    ))
     .bind(kb_id)
     .fetch_all(pool)
     .await?)
