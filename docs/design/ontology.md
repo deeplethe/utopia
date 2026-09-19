@@ -66,9 +66,15 @@ candidates in opposite orders must agree on the property and the direction (forw
 statement's subject is the property's subject, reverse when its object is) for the signature to
 bind. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
-workbench's suggestions. Bindings live in `phrase_bindings` and go stale when the property they
-bound to changes or a property is added; a burst of ontology edits debounces into one run rather
-than one run each [#757]; a person's decision is never overwritten by the agent. On
+workbench's suggestions. Bindings live in `phrase_bindings`: a bound result goes stale when its
+selected property changes; `none` and `undecided` go stale when any property in the base is added
+or updated, since an existing property's revised definition may now fit [#773]. Kind-word bindings
+use the same rule for classes. Both use `updated_at`, so cosmetic edits can also trigger
+reevaluation. Even one edit can reopen all older automatic negative bindings on that side of the
+base, requiring two votes per eligible item through batched model requests; debouncing reduces
+the number of runs, not the items reconsidered. A burst of ontology edits debounces into one run
+rather than one run each [#757];
+a person's decision is never overwritten by the agent. On
 the 25-document batch with a hand-written ontology of 14 classes and 28 properties, and 60 of
 400 kind words bound, 423 signatures cover 861 statements: 36 bind (184 statements), 110 bind to
 nothing, 1 splits the votes and 276 have no admissible property because an end is unbound; a
