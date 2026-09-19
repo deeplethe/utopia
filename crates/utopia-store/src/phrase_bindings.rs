@@ -50,8 +50,8 @@ pub struct PhraseSignature {
 
 /// 库里每条 distinct 的签名：活着的开放陈述，按短语、两端的类、宾语是不是字面值分组。
 pub async fn signatures(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<PhraseSignature>> {
-    // Evidence is one-to-many: pick one stable quote per statement before counting
-    // or sampling, otherwise one well-attested statement crowds out the others.
+    // 一条陈述可以有多条证据。计数、取例句前先为每条陈述选一条稳定的引用，
+    // 优先有完整位置的证据，避免证据多的陈述挤掉其他陈述。
     let sql = format!(
         "WITH live AS (
              SELECT f.id, {phrase} AS phrase,
