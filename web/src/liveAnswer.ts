@@ -19,6 +19,7 @@
 // 于是改成一张表：谁开场谁拿句柄，读谁写谁都有名有姓。`send` 的守卫不用改——
 // 它本来问的就是「这一场在不在流」，现在这个问题终于只关于这一场。
 import type { ChatStep, Source } from "./api";
+import { citeNumbers, citeRe } from "./citations";
 
 export interface Turn {
   role: "user" | "assistant";
@@ -37,8 +38,8 @@ export interface Turn {
 export function citedSources(turn: Turn): Source[] {
   if (!turn.sources?.length) return [];
   const cited = new Set<number>();
-  for (const m of turn.content.matchAll(/\[(\d+(?:\s*[,，]\s*\d+)*)\]/g)) {
-    for (const n of m[1].split(/[,，]/)) cited.add(Number(n.trim()));
+  for (const m of turn.content.matchAll(citeRe())) {
+    for (const n of citeNumbers(m[1])) cited.add(n);
   }
   return turn.sources.filter((s) => cited.has(s.n));
 }
@@ -161,9 +162,12 @@ export const liveAnswer = {
     const slot: Slot = { live: { kbId, conversationId, turns, streaming: true }, abort };
     lives.set(key, slot);
     flush();
+    // A follow-up reuses the conversation key. Late callbacks from the old
+    // stream must still belong to its original slot, not the replacement.
+    const owned = () => (lives.get(key) === slot ? slot : undefined);
     return {
       identify: (id: string) => {
-        const current = lives.get(key);
+        const current = owned();
         if (!current) return;
         lives.delete(key);
         key = id;
@@ -172,7 +176,7 @@ export const liveAnswer = {
         flush();
       },
       patchLast: (f) => {
-        const current = lives.get(key);
+        const current = owned();
         if (!current || current.live.turns.length === 0) return;
         const turns = [...current.live.turns];
         turns[turns.length - 1] = f(turns[turns.length - 1]);
@@ -180,13 +184,13 @@ export const liveAnswer = {
         emit();
       },
       finish: () => {
-        const current = lives.get(key);
+        const current = owned();
         if (!current || !current.live.streaming) return;
         current.live = { ...current.live, streaming: false };
         flush();
       },
       setAbort: (a) => {
-        const current = lives.get(key);
+        const current = owned();
         if (current) current.abort = a;
       },
     };
