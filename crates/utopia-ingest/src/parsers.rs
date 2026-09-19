@@ -221,6 +221,23 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
                     None => out.push_str(&s),
                 }
             }
+            Ok(Event::CData(t)) if in_text => {
+                let s = t.xml_content(quick_xml::XmlVersion::Implicit1_0);
+                match cell.as_mut() {
+                    Some(c) => c.0.push_str(&s),
+                    None => out.push_str(&s),
+                }
+            }
+            // References are separate events, not part of Text. Dropping them
+            // changes ordinary document content such as R&amp;D into RD.
+            Ok(Event::GeneralRef(e)) if in_text => {
+                let reference = format!("&{};", e.into_inner());
+                let s = quick_xml::escape::unescape(&reference)?;
+                match cell.as_mut() {
+                    Some(c) => c.0.push_str(&s),
+                    None => out.push_str(&s),
+                }
+            }
             Ok(Event::Eof) => break,
             Err(e) => anyhow::bail!("XML parse error: {e}"),
             _ => {}
@@ -373,6 +390,13 @@ fn extract_xml_text(xml: &str, text_tag: &str, para_tag: &str) -> anyhow::Result
             }
             Ok(Event::Text(t)) if in_text => {
                 out.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
+            }
+            Ok(Event::CData(t)) if in_text => {
+                out.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
+            }
+            Ok(Event::GeneralRef(e)) if in_text => {
+                let reference = format!("&{};", e.into_inner());
+                out.push_str(&quick_xml::escape::unescape(&reference)?);
             }
             Ok(Event::Eof) => break,
             Err(e) => anyhow::bail!("XML parse error: {e}"),
