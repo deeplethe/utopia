@@ -1294,8 +1294,13 @@ async fn replace_chunks_for_snapshot(
     let mut tx = pool.begin().await?;
     // 两个任务可能同时处理同一文档。先锁父记录，即使还没有分块，
     // 后一个任务也能认领前一个任务写入的行，避免重复插入。
+    //
+    // **`FOR NO KEY UPDATE`，不是 `FOR UPDATE`**：后者与外键检查要的 `FOR KEY SHARE`
+    // 冲突，于是这个事务活着的时候，这份文档所有子表的插入都被挡住（chunks、
+    // document_versions、memory::append），而这个事务是每个分块一个来回——四千块的
+    // 文档要锁四秒。两者对另一个 `replace_chunks` 的互斥是一样的
     let current: Option<(String, bool)> = sqlx::query_as(
-        "SELECT sha256, deleted_at IS NOT NULL FROM documents WHERE id = $1 FOR UPDATE",
+        "SELECT sha256, deleted_at IS NOT NULL FROM documents WHERE id = $1 FOR NO KEY UPDATE",
     )
     .bind(document_id)
     .fetch_optional(&mut *tx)
