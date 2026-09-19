@@ -132,17 +132,25 @@ export function DocViewer() {
                   {c.text}
                 </div>
 
-                {/* 抽取对照栏：这个分块产出了哪些事实（实体可跳图谱） */}
+                {/* 抽取对照栏：这个分块产出了哪些事实（实体可跳图谱）。
+                    **宽度跟着屏幕走**：每一条都是一个三元组，窄栏里一条要折三行，
+                    读者要在原文和它之间来回看，折行越多越难对上。384 的时候大多数
+                    三元组占一到两行 */}
                 {facts.length > 0 && (
-                  <aside className="w-64 shrink-0 rounded-panel border border-line bg-surface p-3">
+                  <aside className="w-64 shrink-0 rounded-panel border border-line bg-surface p-3 xl:w-80 2xl:w-96">
                     <GroupLabel className="mb-2" count={facts.length}>
                       {S.doc.extracted}
                     </GroupLabel>
-                    <div className="space-y-2">
+                    {/* **条与条之间画一条线**：一条折了三行、下一条折了两行，只靠 8px 的
+                        间距分不开，一栏读下来是一团字。线比加大间距省地方 */}
+                    <div className="divide-y divide-line">
                       {facts.map((f) => {
                         const range = factRange(f);
                         return (
-                          <div key={f.fact_id} className="text-small leading-snug">
+                          <div
+                            key={f.fact_id}
+                            className="py-2 text-small leading-snug first:pt-0 last:pb-0"
+                          >
                             <div>
                               <Link
                                 to="/kb/$kbId/graph"
@@ -177,7 +185,10 @@ export function DocViewer() {
                                   {f.object}
                                 </Link>
                               ) : (
-                                <span className="text-ink-2">{f.object ?? ""}</span>
+                                /* 字面值的宾语与实体的宾语**一样深**：浅一档的话它和
+                                   中间的短语同色，三元组读起来就断不开哪里是关系、
+                                   哪里是值 */
+                                <span className="text-ink">{f.object ?? ""}</span>
                               )}
                             </div>
                             {range && <div className="u-num text-fine text-ink-2">{range}</div>}

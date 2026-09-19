@@ -10,6 +10,10 @@ text-splitter.workspace = true
 tiktoken-rs.workspace = true
 pulldown-cmark.workspace = true
 pdf-extract.workspace = true
+tempfile.workspace = true
+# 只用来回答一个问题：这份 PDF 的内容流里有没有画出字形（见 parsers::draws_text）。
+# pdf-extract 本来就依赖它，所以这里不添新的编译负担
+lopdf = { version = "0.42", default-features = false }
 calamine.workspace = true
 htmd.workspace = true
 dom_smoothie.workspace = true

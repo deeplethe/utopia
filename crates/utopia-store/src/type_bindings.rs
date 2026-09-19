@@ -110,8 +110,9 @@ pub async fn bindings(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
     .await?)
 }
 
-/// 不再成立的绑定：绑到的类在判定之后改过；或判成 none / undecided 之后库里长出了
-/// 新类（也许对得上）。绑到的类被删了的，行已随级联消失，这里不会出现。
+/// 不再成立的绑定：绑到的类在判定之后改过；或判成 none / undecided 之后库里有类
+/// 新建或修改。负向判定没有选中的类，已有类的新定义也可能让它对得上。
+/// 绑到的类被删了的，行已随级联消失，这里不会出现。
 pub async fn stale(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<String>> {
     Ok(sqlx::query_scalar(
         "SELECT b.kind_word
@@ -120,7 +121,7 @@ pub async fn stale(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<String>> {
          WHERE b.kb_id = $1
            AND ((b.status = 'bound' AND t.updated_at > b.decided_at)
                 OR (b.status IN ('none', 'undecided')
-                    AND b.decided_at < (SELECT max(created_at) FROM entity_types
+                    AND b.decided_at < (SELECT max(updated_at) FROM entity_types
                                         WHERE kb_id = $1)))
          ORDER BY b.kind_word",
     )
