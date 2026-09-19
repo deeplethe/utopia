@@ -37,7 +37,7 @@ fn a_pptx_keeps_references_in_slide_text() {
 }
 
 #[test]
-fn office_cdata_is_literal_and_text_outside_runs_is_ignored() {
+fn office_cdata_is_preserved_literally() {
     for (filename, part, xml) in [
         ("report.docx", "word/document.xml", "<w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>outside&amp;<w:p><w:r><w:t>Before <![CDATA[R&D &amp;]]> after</w:t></w:r></w:p></w:body></w:document>"),
         ("report.pptx", "ppt/slides/slide1.xml", "<a:p xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">outside&amp;<a:r><a:t>Before <![CDATA[R&D &amp;]]> after</a:t></a:r></a:p>"),
@@ -45,5 +45,28 @@ fn office_cdata_is_literal_and_text_outside_runs_is_ignored() {
         let parsed = utopia_ingest::parse(filename, &package(part, xml)).unwrap();
         assert!(parsed.text.contains("Before R&D &amp; after"), "{}", parsed.text);
         assert!(!parsed.text.contains("outside"), "{}", parsed.text);
+    }
+}
+
+#[test]
+fn unknown_office_references_do_not_abort_the_import() {
+    for (filename, part, xml) in [
+        (
+            "report.docx",
+            "word/document.xml",
+            r#"<!DOCTYPE w:document [<!ENTITY team "Research">]><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Paris&nbsp;2024 and R&amp;D &team;</w:t></w:r></w:p></w:body></w:document>"#,
+        ),
+        (
+            "report.pptx",
+            "ppt/slides/slide1.xml",
+            r#"<!DOCTYPE a:p [<!ENTITY team "Research">]><a:p xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:r><a:t>Paris&nbsp;2024 and R&amp;D &team;</a:t></a:r></a:p>"#,
+        ),
+    ] {
+        let parsed = utopia_ingest::parse(filename, &package(part, xml)).unwrap();
+        assert!(
+            parsed.text.contains("Paris&nbsp;2024 and R&D &team;"),
+            "{}",
+            parsed.text
+        );
     }
 }
