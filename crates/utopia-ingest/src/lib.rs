@@ -173,12 +173,10 @@ mod table;
 pub mod transcript;
 
 pub use chunker::{chunk_segments, chunk_text, chunk_with_budget, ChunkPiece, BUDGET_TOKENS};
-// 抽取那一侧要按值找回它那一列的表头（#729）：写出这个表格式的模块，也负责读回它
 /// Decode fetched text with the same encoding detection as file ingestion.
 pub use parsers::plain_text as decode_text;
 pub use provenance::{Origin, Provenance, Segment};
 pub use reading::Reading;
-pub use table::column_header;
 
 /// 解析产物：纯文本 + 可选结构信息。
 #[derive(Debug)]

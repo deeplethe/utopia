@@ -176,8 +176,9 @@ pub async fn bindings(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
     .await?)
 }
 
-/// 不再成立的绑定：绑到的属性在判定之后改过；或判成 none / undecided 之后库里长出了
-/// 新属性。属性或类被删了的，行已随级联消失。
+/// 不再成立的绑定：绑到的属性在判定之后改过；或判成 none / undecided 之后库里有属性
+/// 新建或修改。负向判定没有选中的属性，已有属性的新定义也可能让它对得上。
+/// 属性或类被删了的，行已随级联消失。
 pub async fn stale(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
     Ok(sqlx::query_as(
         "SELECT b.phrase, b.subject_type_id, b.object_type_id, b.object_is_value,
@@ -187,7 +188,7 @@ pub async fn stale(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
          WHERE b.kb_id = $1
            AND ((b.status = 'bound' AND r.updated_at > b.decided_at)
                 OR (b.status IN ('none', 'undecided')
-                    AND b.decided_at < (SELECT max(created_at) FROM relation_types
+                    AND b.decided_at < (SELECT max(updated_at) FROM relation_types
                                         WHERE kb_id = $1)))
          ORDER BY b.phrase",
     )

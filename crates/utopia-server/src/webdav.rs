@@ -58,11 +58,11 @@ struct Entry {
 /// 不是规范，而 rclone 与 Nextcloud 在这一点上就不一致。
 fn parse_multistatus(xml: &str) -> anyhow::Result<Vec<Entry>> {
     let mut r = Reader::from_str(xml);
-    r.config_mut().trim_text(true);
 
     let mut out = Vec::new();
     let mut cur: Option<Entry> = None;
     let mut field = String::new();
+    let mut text = String::new();
     let mut buf = Vec::new();
 
     loop {
@@ -83,7 +83,10 @@ fn parse_multistatus(xml: &str) -> anyhow::Result<Vec<Entry>> {
                             c.is_dir = true;
                         }
                     }
-                    other => field = other.to_string(),
+                    other => {
+                        field = other.to_string();
+                        text.clear();
+                    }
                 }
             }
             // `<collection/>` 通常是自闭合标签，走 Empty 而不是 Start——
@@ -95,30 +98,57 @@ fn parse_multistatus(xml: &str) -> anyhow::Result<Vec<Entry>> {
                     }
                 }
             }
+            // XML references and CDATA arrive as separate events. Replacing the
+            // field at each Text event truncates an href such as A&amp;B.txt to B.txt.
             Ok(Event::Text(t)) => {
-                let Some(c) = cur.as_mut() else { continue };
-                let v = t
-                    .xml_content(quick_xml::XmlVersion::Implicit1_0)
-                    .to_string();
-                match field.as_str() {
-                    "href" => c.href = percent_decode(&v),
-                    "getcontentlength" => c.len = v.trim().parse().unwrap_or(0),
-                    "getlastmodified" => {
-                        // RFC 1123，`Wed, 02 Sep 2026 15:04:05 GMT`
-                        c.modified = DateTime::parse_from_rfc2822(v.trim())
-                            .ok()
-                            .map(|d| d.with_timezone(&Utc));
-                    }
-                    _ => {}
+                text.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
+            }
+            Ok(Event::CData(t)) => {
+                text.push_str(&t.xml_content(quick_xml::XmlVersion::Implicit1_0));
+            }
+            Ok(Event::GeneralRef(e))
+                if matches!(
+                    field.as_str(),
+                    "href" | "getcontentlength" | "getlastmodified"
+                ) =>
+            {
+                let reference = format!("&{};", e.into_inner());
+                // 认不出的实体只影响它自己那一条：照原样留着。整张 PROPFIND 因为一个
+                // `&nbsp;` 就报错的话，一个目录里所有文件都同步不了
+                match quick_xml::escape::unescape(&reference) {
+                    Ok(v) => text.push_str(&v),
+                    Err(_) => text.push_str(&reference),
                 }
             }
             Ok(Event::End(e)) => {
-                if local_name(e.name().into_inner()) == "response" {
+                let name = local_name(e.name().into_inner());
+                // **空的不回写**：Nextcloud / SabreDAV 一条 response 常带两块 propstat，
+                // 200 那块给值、404 那块把没找到的属性再列一遍。成对写法
+                // （`<getcontentlength></getcontentlength>`）会开一次 field 再关一次，
+                // 照写就把好值盖成空——而 `fetch` 跳过长度为 0 的条目，文件照样掉出同步，
+                // 正是这一刀要修的症状换了个门
+                if name == field && !text.trim().is_empty() {
+                    if let Some(c) = cur.as_mut() {
+                        match field.as_str() {
+                            "href" => c.href = percent_decode(text.trim()),
+                            "getcontentlength" => c.len = text.trim().parse().unwrap_or(0),
+                            "getlastmodified" => {
+                                // RFC 1123，`Wed, 02 Sep 2026 15:04:05 GMT`
+                                c.modified = DateTime::parse_from_rfc2822(text.trim())
+                                    .ok()
+                                    .map(|d| d.with_timezone(&Utc));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if name == "response" {
                     if let Some(c) = cur.take() {
                         out.push(c);
                     }
                 }
                 field.clear();
+                text.clear();
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(anyhow::anyhow!("PROPFIND 响应解析失败: {e}")),
@@ -291,6 +321,106 @@ fn strip_base(href: &str, base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 同一个属性被声明两次：200 那块给值，404 那块把没找到的再列一遍。
+    /// 空的那次不许盖掉好值——盖掉之后长度是 0，`fetch` 会把这个文件跳过去
+    #[test]
+    fn an_empty_redeclaration_does_not_clobber_a_property() {
+        let paired = r#"<multistatus xmlns="DAV:"><response>
+            <href>/docs/a.txt</href>
+            <propstat><prop><getcontentlength>5</getcontentlength>
+              <getlastmodified>Wed, 02 Sep 2026 15:04:05 GMT</getlastmodified></prop>
+              <status>HTTP/1.1 200 OK</status></propstat>
+            <propstat><prop><getcontentlength></getcontentlength>
+              <getlastmodified></getlastmodified></prop>
+              <status>HTTP/1.1 404 Not Found</status></propstat>
+            </response></multistatus>"#;
+        for xml in [
+            paired.to_string(),
+            // 自闭合的那种写法走 Event::Empty，本来就不开 field；两种都要过
+            paired
+                .replace(
+                    "<getcontentlength></getcontentlength>",
+                    "<getcontentlength/>",
+                )
+                .replace("<getlastmodified></getlastmodified>", "<getlastmodified/>"),
+        ] {
+            let e = parse_multistatus(&xml).unwrap();
+            assert_eq!(e.len(), 1);
+            assert_eq!(e[0].len, 5, "空的那次把长度盖成了 0：{xml}");
+            assert!(e[0].modified.is_some(), "空的那次把时间盖没了");
+        }
+    }
+
+    /// 认不出的实体只影响它自己那一条，不掀掉整张列表
+    #[test]
+    fn an_unknown_entity_does_not_abort_the_listing() {
+        let xml = r#"<multistatus xmlns="DAV:">
+            <response><href>/docs/a&nbsp;b.txt</href><propstat><prop>
+              <getcontentlength>5</getcontentlength></prop></propstat></response>
+            <response><href>/docs/c.txt</href><propstat><prop>
+              <getcontentlength>7</getcontentlength></prop></propstat></response>
+            </multistatus>"#;
+        let e = parse_multistatus(xml).expect("一个怪实体不该让整张列表失败");
+        assert_eq!(e.len(), 2, "另一条也跟着没了");
+        assert_eq!(e[1].href, "/docs/c.txt");
+    }
+
+    #[test]
+    fn xml_text_fragments_keep_the_complete_href_and_properties() {
+        for href in [
+            "/docs/A&amp;B.txt",
+            "/docs/A&#38;B.txt",
+            "/docs/A&#x26;B.txt",
+            "<![CDATA[/docs/A&B.txt]]>",
+            "/docs/A<![CDATA[&]]>B.txt",
+        ] {
+            let xml = format!(
+                r#"<multistatus xmlns="DAV:"><response>
+                <href>{href}</href><propstat><prop>
+                <getcontentlength>&#53;</getcontentlength>
+                <getlastmodified>Wed, 02 Sep 2026 15:04:05 GMT</getlastmodified>
+                </prop></propstat></response></multistatus>"#
+            );
+            let entries = parse_multistatus(&xml).unwrap();
+            assert_eq!(entries[0].href, "/docs/A&B.txt", "{href}");
+            assert_eq!(entries[0].len, 5);
+            assert!(entries[0].modified.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_xml_escaped_filename_is_fetched_from_its_full_path() {
+        use axum::{
+            routing::{any, get},
+            Router,
+        };
+        const XML: &str = r#"<multistatus xmlns="DAV:"><response>
+            <href>/docs/A&amp;B.txt</href><propstat><prop>
+            <getcontentlength>5</getcontentlength>
+            </prop></propstat></response></multistatus>"#;
+        let app = Router::new()
+            .route(
+                "/docs",
+                any(|| async { (axum::http::StatusCode::MULTI_STATUS, XML) }),
+            )
+            .route("/docs/A&B.txt", get(|| async { "hello" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = fetch(&reqwest::Client::new(), &base, "/docs", None).await;
+        server.abort();
+        let (files, truncated) = result.unwrap();
+        assert!(!truncated);
+        assert_eq!(
+            files.len(),
+            1,
+            "the escaped href must not be silently skipped"
+        );
+        assert_eq!(files[0].filename, "A&B.txt");
+        assert_eq!(files[0].bytes, b"hello");
+        assert!(files[0].external_key.ends_with("/docs/A&B.txt"));
+    }
 
     /// **命名空间前缀是任意的。** 同一份响应换个前缀必须解出同样的东西，
     /// 否则换一台服务端就「同步成功，零个文件」——最难查的那种失败。

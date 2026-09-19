@@ -700,6 +700,155 @@ async fn with_transcriber(f: &Fx, fake: &FakeTranscriber, model: &str) -> anyhow
 
 const MP3: [u8; 12] = [b'I', b'D', b'3', 4, 0, 0, 0, 0, 0, 0, 0xFF, 0xFB];
 
+async fn pause_transcription(
+    f: &Fx,
+    doc: Uuid,
+) -> anyhow::Result<(
+    Arc<tokio::sync::Notify>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tokio::task::JoinHandle<()>,
+)> {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let app = axum::Router::new().route(
+        "/audio/transcriptions",
+        axum::routing::post({
+            let entered = entered.clone();
+            let resume = resume.clone();
+            move || {
+                let entered = entered.clone();
+                let resume = resume.clone();
+                async move {
+                    entered.notify_one();
+                    resume.notified().await;
+                    axum::Json(serde_json::json!({"segments": [{
+                        "speaker": "A", "start": 0.0, "end": 1.0,
+                        "text": "The OLD budget is 100."
+                    }]}))
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    utopia_store::settings::upsert_transcribe(
+        &f.pool,
+        f.ws,
+        Some(&base),
+        None,
+        Some("gpt-4o-transcribe-diarize"),
+    )
+    .await?;
+    let state = f.state.clone();
+    let processing = tokio::spawn(async move { super::process_document(&state, doc).await });
+    tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+    Ok((resume, processing, server))
+}
+
+#[tokio::test]
+async fn a_late_reader_preserves_a_newer_processed_revision() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let doc = f.document_with_bytes("budget.mp3", &MP3).await?;
+    let source = Uuid::now_v7();
+    sqlx::query("INSERT INTO sources (id, kb_id, kind, name) VALUES ($1,$2,'api','audit')")
+        .bind(source)
+        .bind(f.kb)
+        .execute(&f.pool)
+        .await?;
+    sqlx::query("UPDATE documents SET source_id=$2, external_key='budget' WHERE id=$1")
+        .bind(doc)
+        .bind(source)
+        .execute(&f.pool)
+        .await?;
+    let (resume, old, server) = pause_transcription(&f, doc).await?;
+    let text = "The NEW budget is 200.";
+    use sha2::{Digest, Sha256};
+    let sha: String = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    f.state.blob.put(&sha, text.as_bytes()).await?;
+    let mut tx = f.pool.begin().await?;
+    let updated = utopia_store::documents::upsert_source_document_tx(
+        &mut tx,
+        f.kb,
+        source,
+        "budget",
+        "budget.txt",
+        "text/plain",
+        text.len() as i64,
+        &sha,
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    assert_eq!(updated.id, doc);
+    super::process_document(&f.state, doc).await?;
+    // 新版本任务已经完成；旧读取若覆盖其分块，不会再有后续重试修复。
+    let job: i64 = sqlx::query_scalar(
+        "SELECT id FROM jobs WHERE kind = 'process_document' AND payload->>'document_id' = $1",
+    )
+    .bind(doc.to_string())
+    .fetch_one(&f.pool)
+    .await?;
+    sqlx::query("UPDATE jobs SET status = 'done', updated_at = now() WHERE id = $1")
+        .bind(job)
+        .execute(&f.pool)
+        .await?;
+    let completed = utopia_store::documents::get(&f.pool, doc).await?;
+    resume.notify_one();
+    let old_result = old.await?;
+    server.abort();
+    let live: Vec<String> = sqlx::query_scalar(
+        "SELECT text FROM chunks WHERE document_id=$1 AND superseded_at IS NULL ORDER BY seq",
+    )
+    .bind(doc)
+    .fetch_all(&f.pool)
+    .await?;
+    let current = utopia_store::documents::get(&f.pool, doc).await?;
+    f.cleanup().await?;
+    old_result?;
+    assert_eq!(current.sha256, sha);
+    assert_eq!(current.status, "ready");
+    assert_eq!(current.text_len, completed.text_len);
+    assert_eq!(
+        live,
+        vec![text.to_string()],
+        "a completed newer revision must not be replaced by an old read"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_late_reader_does_not_repopulate_a_deleted_document() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::from_millis(5))).await? else {
+        return Ok(());
+    };
+    let doc = f.document_with_bytes("budget.mp3", &MP3).await?;
+    let (resume, processing, server) = pause_transcription(&f, doc).await?;
+    utopia_store::documents::delete(&f.pool, f.kb, doc, None).await?;
+    let deleted = utopia_store::documents::get(&f.pool, doc).await?;
+    resume.notify_one();
+    let result = processing.await?;
+    server.abort();
+    let live: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chunks WHERE document_id=$1 AND superseded_at IS NULL",
+    )
+    .bind(doc)
+    .fetch_one(&f.pool)
+    .await?;
+    let current = utopia_store::documents::get(&f.pool, doc).await?;
+    f.cleanup().await?;
+    result?;
+    assert!(current.deleted_at.is_some());
+    assert_eq!(current.status, deleted.status);
+    assert_eq!(live, 0);
+    Ok(())
+}
+
 /// 0040 第三刀：录音交给会标说话人的转写模型。说话人写进正文，每块记着起止时刻和说话人
 #[tokio::test]
 async fn a_recording_is_read_with_who_said_what() -> anyhow::Result<()> {
