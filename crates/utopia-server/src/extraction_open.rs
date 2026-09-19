@@ -242,18 +242,34 @@ pub(crate) async fn run_open(
                 continue;
             }
         };
-        tracing::debug!(%document_id, seq = chunk.seq, reply = %reply, "开放抽取的原始回复");
-        let extraction = match utopia_extract::open::parse_open_response(&reply) {
+        tracing::debug!(%document_id, seq = chunk.seq, reply = %reply.text, "开放抽取的原始回复");
+        // 端点说它是撞上 token 上限停的。解析器只看得见 JSON 少了尾巴，看不见
+        // 少的原因，所以这句话得从回复里带过来（#760）
+        let cut_by_ceiling = reply.hit_token_ceiling();
+        let extraction = match utopia_extract::open::parse_open_response(&reply.text) {
             Ok(x) => x,
             Err(e) => {
-                tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取回复解析失败，跳过该分块");
+                tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = cut_by_ceiling, "开放抽取回复解析失败，跳过该分块");
+                // 一整块没进图，而原因不同：撞上上限是「答案太长」，改得动；
+                // 别的解析失败是「回复不合结构」。两种都写成同一句话就分不开了
+                let (why, detail) = if cut_by_ceiling {
+                    (
+                        "回复撞上 token 上限被截断，剩下的解析不了，这一块没有进图",
+                        format!("#{}：hit the token ceiling；{e}", chunk.seq),
+                    )
+                } else {
+                    (
+                        "回复解析不了，这一块没有进图",
+                        format!("#{}：{e}", chunk.seq),
+                    )
+                };
                 drop_signal(
                     state,
                     kb_id,
                     document_id,
                     reason::CHUNK_UNEXTRACTED,
-                    "回复解析不了，这一块没有进图",
-                    Some(&format!("#{}：{e}", chunk.seq)),
+                    why,
+                    Some(&detail),
                 )
                 .await;
                 unextracted.push((chunk.seq, format!("回复解析失败：{e}")));
@@ -266,7 +282,11 @@ pub(crate) async fn run_open(
                 kb_id,
                 document_id,
                 reason::TRUNCATED_REPLY,
-                "the open reply was cut off; kept up to the last complete item",
+                if cut_by_ceiling {
+                    "the open reply hit the token ceiling; kept up to the last complete item"
+                } else {
+                    "the open reply was cut off; kept up to the last complete item"
+                },
                 None,
             )
             .await;

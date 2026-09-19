@@ -52,7 +52,7 @@ pub(crate) async fn chat_retrying_rate_limits_at(
     client: &utopia_llm::LlmClient,
     messages: &[utopia_llm::ChatMessage],
     temperature: Option<f32>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<utopia_llm::Reply> {
     let mut backoff = Duration::from_secs(2);
     for attempt in 1..=RATE_LIMIT_TRIES {
         // 许可只包住调用本身，出了这个块就还回去。

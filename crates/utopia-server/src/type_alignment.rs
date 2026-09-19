@@ -209,7 +209,7 @@ async fn align_types_locked(
                         continue;
                     }
                 };
-            let (choices, malformed) = match parse_kind_word_response(&reply, &items) {
+            let (choices, malformed) = match parse_kind_word_response(&reply.text, &items) {
                 Ok(x) => x,
                 Err(e) => {
                     tracing::warn!(%kb_id, error = %e, "类别词对齐回复解析失败，这一批留到下次");

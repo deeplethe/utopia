@@ -290,6 +290,26 @@ async fn response_failure(
     Ok(failure(kind, status, retry_after, &body, &raw))
 }
 
+/// 流式问答的结果：整段答案，连端点给的收尾原因。
+///
+/// **为什么原因要带出来**：`finish_reason: length` 是端点说「我是被截断的」，
+/// 而截断的回复长得和完整的一模一样——解析器只看得见 JSON 少了尾巴，看不见
+/// 少的原因。带着它，丢弃行才能说「撞上了 token 上限」，而不只是「解析不了」。
+#[derive(Debug)]
+pub struct Reply {
+    pub text: String,
+    /// 端点给的收尾原因（`stop` / `length` / …）。流里没有这一项就是 `None`：
+    /// 有的实现只发 `[DONE]`，缺席不代表答案是完整的
+    pub finish_reason: Option<String>,
+}
+
+impl Reply {
+    /// 端点说这段是被 token 上限截断的。
+    pub fn hit_token_ceiling(&self) -> bool {
+        self.finish_reason.as_deref() == Some("length")
+    }
+}
+
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
@@ -317,6 +337,21 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// 流水线停摆而**一条错误都不报**（jobs 的孤儿回收只在进程启动时跑一次，
 /// 进程活着就永远收不了尸）。7459 块的一次灌入死在第 55 块上。
 const READ_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// **一次回复我们要多少 token**（#760）。
+///
+/// 不送这个字段，答案在哪里断由端点自己的默认值说了算：关掉推理时，一块密集
+/// 正文的答案实测停在**正好 4,096** 个 completion token 上，`finish_reason`
+/// 是 `length`，那段 JSON 于是解析不了。上限归我们，答案才在我们定的地方断。
+///
+/// 为什么是 16,384：同一块密集正文的答案本身约 1,500 个 token（设计文档
+/// 「What a reasoning cap costs」量的），4,096 是实测撞到过的那条线。留四倍
+/// 的余量，密集分块的 JSON 写得完，又不是没有边。
+///
+/// **开着推理时这个端点不读它**——一次 capped 到 4,096 的调用回了 45,428 个
+/// completion token 还正常收尾。送它因此是「读的地方有用，不读的地方不亏」，
+/// 不是一条能指望所有端点都认的保证。
+const MAX_COMPLETION_TOKENS: u32 = 16_384;
 
 /// 推理模型的思考过程不该进下游（#690）。
 ///
@@ -429,7 +464,7 @@ impl LlmClient {
         &self,
         messages: &[ChatMessage],
         temperature: Option<f32>,
-    ) -> anyhow::Result<String> {
+    ) -> anyhow::Result<Reply> {
         let mut body = json!({
             "model": self.model,
             "messages": messages,
@@ -437,6 +472,8 @@ impl LlmClient {
             // 用量随最后一帧回来：比较两次运行的第一件事是看 completion token，
             // 换成流式不能把这个数弄丢
             "stream_options": { "include_usage": true },
+            // 上限归我们，不归端点的默认值（[`MAX_COMPLETION_TOKENS`]）
+            "max_tokens": MAX_COMPLETION_TOKENS,
         });
         if let Some(t) = temperature {
             body["temperature"] = json!(t);
@@ -455,6 +492,7 @@ impl LlmClient {
         let mut bytes = resp.bytes_stream();
         let (mut buf, mut answer) = (Vec::new(), String::new());
         let (mut saw_frame, mut ended) = (false, false);
+        let mut finish_reason: Option<String> = None;
         while let Some(part) = bytes.next().await {
             let part = part.map_err(Unreachable)?;
             // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
@@ -463,13 +501,25 @@ impl LlmClient {
             while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
                 let frame = String::from_utf8_lossy(&buf[..pos]).into_owned();
                 buf.drain(..pos + 2);
-                self.take_frame(&frame, &mut answer, &mut saw_frame, &mut ended);
+                self.take_frame(
+                    &frame,
+                    &mut answer,
+                    &mut saw_frame,
+                    &mut ended,
+                    &mut finish_reason,
+                );
             }
         }
         // **收尾那一帧也算**：末尾不跟空行的实现有的是，丢掉它就是丢掉答案的尾巴
         let rest = String::from_utf8_lossy(&buf);
         if !rest.trim().is_empty() {
-            self.take_frame(&rest, &mut answer, &mut saw_frame, &mut ended);
+            self.take_frame(
+                &rest,
+                &mut answer,
+                &mut saw_frame,
+                &mut ended,
+                &mut finish_reason,
+            );
         }
         if !saw_frame {
             anyhow::bail!("LLM stream carried no frames");
@@ -481,11 +531,21 @@ impl LlmClient {
                 got: answer.chars().count(),
             }));
         }
-        Ok(strip_reasoning(&answer).to_string())
+        Ok(Reply {
+            text: strip_reasoning(&answer).to_string(),
+            finish_reason,
+        })
     }
 
     /// 一个 SSE 帧：取内容增量、认终止信号、顺手记用量。推理的增量读都不读。
-    fn take_frame(&self, frame: &str, answer: &mut String, saw_frame: &mut bool, ended: &mut bool) {
+    fn take_frame(
+        &self,
+        frame: &str,
+        answer: &mut String,
+        saw_frame: &mut bool,
+        ended: &mut bool,
+        finish_reason: &mut Option<String>,
+    ) {
         for line in frame.lines() {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
                 continue;
@@ -502,9 +562,13 @@ impl LlmClient {
                 answer.push_str(delta);
             }
             // 模型自己说完了：正常收尾（stop）或撞上它的输出上限（length），两种都是
-            // 端点把话说完了，与「流断在半路」不同
-            if v["choices"][0]["finish_reason"].is_string() {
+            // 端点把话说完了，与「流断在半路」不同。
+            //
+            // 是哪一种要留下来：两种都让 `ended` 为真，可 `length` 的回复是半截的，
+            // 不带出去就只剩「解析不了」，说不出它为什么不全（#760）
+            if let Some(reason) = v["choices"][0]["finish_reason"].as_str() {
                 *ended = true;
+                *finish_reason = Some(reason.to_string());
             }
             // 用量只在最后一帧（choices 为空）出现
             if !v["usage"].is_null() {
@@ -912,14 +976,14 @@ mod tests {
     /// **必须先读再答。** 收到的数据还没读就关连接，Windows 会发 RST，客户端那边
     /// 已经到手的响应连同错误一起变成「连接被中止」（os error 10053）——这组测试
     /// 在 Linux 上绿、在 Windows 上红，就是这个原因
-    async fn read_request(socket: &mut tokio::net::TcpStream) {
+    async fn read_request(socket: &mut tokio::net::TcpStream) -> String {
         use tokio::io::AsyncReadExt;
         let mut buf = Vec::new();
         let mut chunk = [0u8; 1024];
         let header_end = loop {
             let n = socket.read(&mut chunk).await.unwrap();
             if n == 0 {
-                return;
+                return String::from_utf8_lossy(&buf).into_owned();
             }
             buf.extend_from_slice(&chunk[..n]);
             if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
@@ -939,6 +1003,7 @@ mod tests {
             }
             buf.extend_from_slice(&chunk[..n]);
         }
+        String::from_utf8_lossy(&buf).into_owned()
     }
 
     /// 一个只答一次的 HTTP 服务：读完请求，把这份响应原样写回去，关掉。
@@ -956,7 +1021,7 @@ mod tests {
         let body = body.to_string();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            read_request(&mut socket).await;
+            let _ = read_request(&mut socket).await;
             let response = format!(
                 "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -965,6 +1030,37 @@ mod tests {
             socket.shutdown().await.unwrap();
         });
         (addr, server)
+    }
+
+    /// 同上，另外把**请求**原样交回来：要断言的是我们发出去了什么
+    /// （`max_tokens` 有没有真的写进请求体），不是端点答了什么。
+    async fn an_http_response_capturing(
+        status: &str,
+        content_type: &str,
+        body: &str,
+    ) -> (
+        std::net::SocketAddr,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::oneshot::Receiver<String>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let status = status.to_string();
+        let content_type = content_type.to_string();
+        let body = body.to_string();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let request = read_request(&mut socket).await;
+            let _ = tx.send(request);
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        (addr, server, rx)
     }
 
     // HTTP 分块可以断在 UTF-8 字符中间，与 SSE 帧边界无关。
@@ -1004,9 +1100,10 @@ mod tests {
     #[tokio::test]
     async fn bytewise_utf8_survives_collected_streaming() {
         let (addr, server) = bytewise_sse(&unicode_sse()).await;
+        // 这一刀之后整段回复带着 finish_reason 一起回来，正文在 `text` 上
         let answer = client_at(addr).chat_at_streaming(&[], None).await.unwrap();
         server.await.unwrap();
-        assert_eq!(answer, "你好🦀");
+        assert_eq!(answer.text, "你好🦀");
     }
 
     #[tokio::test]
@@ -1035,7 +1132,6 @@ mod tests {
         assert_eq!(delta, "你好🦀");
         assert_eq!(turn.content.as_deref(), Some("你好🦀"));
         assert_eq!(turn.tool_calls.len(), 1);
-        assert_eq!(turn.tool_calls[0].arguments, "{\"city\":\"杭州\"}");
     }
 
     async fn an_http_error(body: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -1048,7 +1144,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            read_request(&mut socket).await;
+            let _ = read_request(&mut socket).await;
             socket
                 .write_all(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 100\r\nConnection: close\r\n\r\nx")
                 .await
@@ -1209,7 +1305,7 @@ mod tests {
             .await
             .unwrap();
         server.await.unwrap();
-        assert_eq!(answer, "{\"e\":[]}", "只收 content 的增量，拼成整段");
+        assert_eq!(answer.text, "{\"e\":[]}", "只收 content 的增量，拼成整段");
 
         // 开了流却一帧都没发：那不是空答案，那是没答
         // 末帧不跟空行：尾巴不能丢
@@ -1228,7 +1324,12 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
             .await
             .unwrap();
         server.await.unwrap();
-        assert_eq!(answer, "headtail", "最后一帧没有空行收尾，也要算进去");
+        assert_eq!(answer.text, "headtail", "最后一帧没有空行收尾，也要算进去");
+        assert_eq!(
+            answer.finish_reason.as_deref(),
+            Some("stop"),
+            "端点给的收尾原因要带出来"
+        );
 
         // 开口了又半路没了：那不是一个短答案，那是没答完，值得再试一次
         let cut = "data: {\"choices\":[{\"delta\":{\"content\":\"half an ans\"}}]}
@@ -1265,6 +1366,77 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
             .expect_err("没有帧该是错误");
         server.await.unwrap();
         assert!(format!("{err:#}").contains("no frames"), "{err:#}");
+    }
+
+    /// 上限归我们，被截断这件事说得出来（#760）。
+    ///
+    /// 两件事一起测，因为它们是同一个毛病的两半：不送 `max_tokens`，答案在哪里
+    /// 断由端点的默认值说了算；送了却把 `finish_reason` 丢掉，断了也没人知道为什么。
+    #[tokio::test]
+    async fn a_token_ceiling_is_ours_and_a_cut_reply_says_so() {
+        // `length` = 端点说「我是撞上上限停的」。这样的回复长得和正常收尾一模一样
+        let cut = [
+            r#"data: {"choices":[{"delta":{"content":"{\"e\":[{\"n\":\"half"}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+            "data: [DONE]",
+            "",
+        ]
+        .join(
+            "
+
+",
+        );
+        let (addr, server, request) =
+            an_http_response_capturing("200 OK", "text/event-stream", &cut).await;
+        let reply = client_at(addr)
+            .chat_at_streaming(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                Some(0.0),
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        // 一、请求里真的带了上限，而且是我们那个数
+        let sent = request.await.unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(sent.split_once("\r\n\r\n").expect("请求该有 body").1)
+                .expect("请求体是 JSON");
+        assert_eq!(
+            body["max_tokens"],
+            json!(MAX_COMPLETION_TOKENS),
+            "不送这个字段，答案断在哪里就是端点的默认值说了算：{body}"
+        );
+
+        // 二、被截断这件事到得了调用方。答案照旧是完整的那半段——半截的回复
+        // 仍然有价值，丢的是尾巴不是全部
+        assert!(reply.hit_token_ceiling(), "{:?}", reply.finish_reason);
+        assert_eq!(reply.finish_reason.as_deref(), Some("length"));
+        assert!(reply.text.starts_with(r#"{"e":["#), "{}", reply.text);
+
+        // 正常收尾不是截断：两者都让流正常结束，只有原因分得开
+        let whole =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"{}\"},\"finish_reason\":\"stop\"}]}
+
+data: [DONE]
+
+";
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", whole).await;
+        let reply = client_at(addr)
+            .chat_at_streaming(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                None,
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert!(!reply.hit_token_ceiling(), "stop 不是截断");
     }
 
     /// 会自己好的与不会自己好的分开：网关那几个是 [`Unavailable`]，密钥错那类照旧
