@@ -453,24 +453,22 @@ impl LlmClient {
             return Err(response_failure("LLM", status, retry_after, resp).await?);
         }
         let mut bytes = resp.bytes_stream();
-        let (mut buf, mut answer) = (String::new(), String::new());
+        let (mut buf, mut answer) = (Vec::new(), String::new());
         let (mut saw_frame, mut ended) = (false, false);
         while let Some(part) = bytes.next().await {
             let part = part.map_err(Unreachable)?;
-            buf.push_str(&String::from_utf8_lossy(&part));
+            // A network chunk can end inside a UTF-8 code point. Decode only
+            // after the complete SSE frame has arrived.
+            buf.extend_from_slice(&part);
             // SSE 帧以空行分隔；最后一个不完整的帧留在 buf 里等下一片
-            while let Some(pos) = buf.find(
-                "
-
-",
-            ) {
-                let frame = buf[..pos].to_string();
+            while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+                let frame = String::from_utf8_lossy(&buf[..pos]).into_owned();
                 buf.drain(..pos + 2);
                 self.take_frame(&frame, &mut answer, &mut saw_frame, &mut ended);
             }
         }
         // **收尾那一帧也算**：末尾不跟空行的实现有的是，丢掉它就是丢掉答案的尾巴
-        let rest = std::mem::take(&mut buf);
+        let rest = String::from_utf8_lossy(&buf);
         if !rest.trim().is_empty() {
             self.take_frame(&rest, &mut answer, &mut saw_frame, &mut ended);
         }
@@ -632,15 +630,17 @@ impl LlmClient {
 
         let mut bytes = resp.bytes_stream();
         let stream = async_stream::try_stream! {
-            let mut buf = String::new();
+            let mut buf = Vec::new();
             let mut content = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
             let mut done = false;
             'outer: while let Some(part) = bytes.next().await {
                 let part = part?;
-                buf.push_str(&String::from_utf8_lossy(&part));
-                while let Some(pos) = buf.find("\n\n") {
-                    let frame = buf[..pos].to_string();
+                // A network chunk can end inside a UTF-8 code point. Decode only
+                // after the complete SSE frame has arrived.
+                buf.extend_from_slice(&part);
+                while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+                    let frame = String::from_utf8_lossy(&buf[..pos]).into_owned();
                     buf.drain(..pos + 2);
                     for line in frame.lines() {
                         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
@@ -724,13 +724,15 @@ impl LlmClient {
 
         let mut bytes = resp.bytes_stream();
         let stream = async_stream::try_stream! {
-            let mut buf = String::new();
+            let mut buf = Vec::new();
             while let Some(part) = bytes.next().await {
                 let part = part?;
-                buf.push_str(&String::from_utf8_lossy(&part));
+                // A network chunk can end inside a UTF-8 code point. Decode only
+                // after the complete SSE frame has arrived.
+                buf.extend_from_slice(&part);
                 // SSE 帧以空行分隔；逐帧取出已完整到达的部分
-                while let Some(pos) = buf.find("\n\n") {
-                    let frame = buf[..pos].to_string();
+                while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
+                    let frame = String::from_utf8_lossy(&buf[..pos]).into_owned();
                     buf.drain(..pos + 2);
                     for line in frame.lines() {
                         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
@@ -916,6 +918,77 @@ mod tests {
             socket.shutdown().await.unwrap();
         });
         (addr, server)
+    }
+
+    // HTTP chunk boundaries may split any UTF-8 character, independently of SSE frames.
+    async fn bytewise_sse(body: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.as_bytes().to_vec();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            read_request(&mut socket).await;
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n").await.unwrap();
+            for byte in body {
+                socket
+                    .write_all(&[b'1', b'\r', b'\n', byte, b'\r', b'\n'])
+                    .await
+                    .unwrap();
+            }
+            socket.write_all(b"0\r\n\r\n").await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+        (addr, server)
+    }
+
+    fn unicode_sse() -> String {
+        format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            json!({
+                "choices": [{"delta": {"content": "你好🦀", "tool_calls": [{
+                    "index": 0, "id": "call_1", "function": {
+                        "name": "search", "arguments": "{\"city\":\"杭州\"}"
+                    }
+                }]}}]
+            })
+        )
+    }
+
+    #[tokio::test]
+    async fn bytewise_utf8_survives_collected_streaming() {
+        let (addr, server) = bytewise_sse(&unicode_sse()).await;
+        let answer = client_at(addr).chat_at_streaming(&[], None).await.unwrap();
+        server.await.unwrap();
+        assert_eq!(answer, "你好🦀");
+    }
+
+    #[tokio::test]
+    async fn bytewise_utf8_survives_raw_streaming() {
+        use futures_util::TryStreamExt;
+        let (addr, server) = bytewise_sse(&unicode_sse()).await;
+        let stream = client_at(addr).chat_stream_raw(&[]).await.unwrap();
+        let answer: Vec<String> = stream.try_collect().await.unwrap();
+        server.await.unwrap();
+        assert_eq!(answer.concat(), "你好🦀");
+    }
+
+    #[tokio::test]
+    async fn bytewise_utf8_survives_tool_streaming() {
+        use futures_util::TryStreamExt;
+        let (addr, server) = bytewise_sse(&unicode_sse()).await;
+        let stream = client_at(addr)
+            .chat_tools_stream_with(&[], None, None)
+            .await
+            .unwrap();
+        let items: Vec<ToolStreamItem> = stream.try_collect().await.unwrap();
+        server.await.unwrap();
+        let [ToolStreamItem::Delta(delta), ToolStreamItem::Turn(turn)] = items.as_slice() else {
+            panic!("expected a delta and completed turn: {items:?}");
+        };
+        assert_eq!(delta, "你好🦀");
+        assert_eq!(turn.content.as_deref(), Some("你好🦀"));
+        assert_eq!(turn.tool_calls.len(), 1);
+        assert_eq!(turn.tool_calls[0].arguments, "{\"city\":\"杭州\"}");
     }
 
     async fn an_http_error(body: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
