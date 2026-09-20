@@ -66,6 +66,11 @@ rebuilding a graph is not an identity-preserving operation. `?base=https://examp
 instead mints `https://example.org/kb/{kb_id}/{kind}/{id}`. Keep the same base when
 joining exports. Imported classes and relations retain their original IRIs.
 
+Ontology export includes explicitly stored `owl:inverseOf` and
+`rdfs:subPropertyOf` links, using the target property's imported IRI or existing
+key-based IRI. It copies declarations within the base; it does not add reciprocal
+links or compute a transitive closure.
+
 MCP remains the agent-facing surface. The structured results below use the same
 UUIDs, so an integration can join a selected result to the exported ledger.
 Ordinary `/api/v1` UI response shapes are **not** a compatibility promise: they

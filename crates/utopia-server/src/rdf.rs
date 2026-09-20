@@ -378,6 +378,15 @@ pub fn emit_relation(
             sink.r(&iri, &nn(rdf::TYPE.as_str()), &owl(term))?;
         }
     }
+    // 只复制已声明的边；不补反向声明或传递闭包，目标也只在本库词汇表中找。
+    for (target, predicate) in [
+        (r.inverse_of, owl("inverseOf")),
+        (r.sub_property_of, nn(rdfs::SUB_PROPERTY_OF.as_str())),
+    ] {
+        if let Some(target) = target.and_then(|id| vocab.relation(id)) {
+            sink.r(&iri, &predicate, target)?;
+        }
+    }
     // 时间语义也照抄（0031）：一个 event 谓词的事实两端是同一刻，一个 eternal 谓词的
     // 事实没有日期——读的人不看这一条，会把前者读成一天的状态、后者读成从不知何时起。
     // 状态是默认，不写
@@ -708,6 +717,8 @@ mod tests {
             is_symmetric: false,
             is_asymmetric: false,
             is_irreflexive: false,
+            inverse_of: None,
+            sub_property_of: None,
             domains: vec![],
             ranges: vec![],
         }
@@ -1065,6 +1076,67 @@ mod tests {
             vec!["\"Gas-bearing well\""],
             "推理活动要以规则名示人"
         );
+    }
+
+    #[test]
+    fn declared_property_links_are_local_explicit_and_order_independent() {
+        let root = relation(21, "root", Some("https://example.test/root"), "relation");
+        let mut inverse = relation(22, "inverse", None, "relation");
+        inverse.inverse_of = Some(root.id);
+        let mut child = relation(23, "child", None, "relation");
+        child.sub_property_of = Some(root.id);
+        let mut leaf = relation(24, "leaf", None, "relation");
+        leaf.sub_property_of = Some(child.id);
+        let mut missing = relation(25, "unresolved", None, "relation");
+        missing.inverse_of = Some(id(98));
+        missing.sub_property_of = Some(id(99));
+        let mut relations = vec![root, inverse, child, leaf, missing];
+        let mut sets = Vec::new();
+        for reverse in [false, true] {
+            if reverse {
+                relations.reverse();
+            }
+            for format in [Format::Turtle, Format::JsonLd] {
+                let quads = export(format, |sink, names, _| {
+                    let vocab = vocabulary(names, &[], &relations);
+                    for r in &relations {
+                        emit_relation(sink, &vocab, r).unwrap();
+                    }
+                });
+                let names = Names::new(kb(), None).unwrap();
+                let iri = |n| names.relation(relations.iter().find(|r| r.id == id(n)).unwrap());
+                let expected: std::collections::HashSet<_> = [
+                    (iri(22).into(), owl("inverseOf"), Term::from(iri(21))),
+                    (
+                        iri(23).into(),
+                        nn(rdfs::SUB_PROPERTY_OF.as_str()),
+                        Term::from(iri(21)),
+                    ),
+                    (
+                        iri(24).into(),
+                        nn(rdfs::SUB_PROPERTY_OF.as_str()),
+                        Term::from(iri(23)),
+                    ),
+                ]
+                .into_iter()
+                .collect();
+                let links: std::collections::HashSet<_> = quads
+                    .iter()
+                    .filter(|q| {
+                        q.predicate == owl("inverseOf") || q.predicate == rdfs::SUB_PROPERTY_OF
+                    })
+                    .map(|q| (q.subject.clone(), q.predicate.clone(), q.object.clone()))
+                    .collect();
+                assert_eq!(
+                    links, expected,
+                    "only stored, local links should be emitted"
+                );
+                sets.push(quads.into_iter().collect::<std::collections::HashSet<_>>());
+            }
+        }
+        for set in &sets[1..] {
+            assert_eq!(&sets[0], set);
+        }
     }
 
     #[test]
