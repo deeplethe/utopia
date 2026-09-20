@@ -985,6 +985,122 @@ async fn document_reads_preserve_text_empty_and_unavailable_results() -> anyhow:
 }
 
 #[tokio::test]
+async fn failed_memory_writes_are_tool_errors() -> anyhow::Result<()> {
+    let Some(mut f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let denied = f
+        .request(
+            f.kb,
+            "tools/call",
+            json!({"name":"remember","arguments":{"text":"denied"}}),
+        )
+        .await
+        .map_err(|e| e.0)?
+        .0;
+    assert_eq!(denied["error"]["code"], -32601);
+    let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+    sqlx::query("UPDATE kb_members SET role='editor' WHERE kb_id=$1 AND user_id=$2")
+        .bind(f.kb)
+        .bind(auth.user_id)
+        .execute(&f.state.pool)
+        .await?;
+    f.token = utopia_store::tokens::issue(
+        &f.state.pool,
+        auth.user_id,
+        "memory error test",
+        "write",
+        Some(&[f.kb]),
+        None,
+    )
+    .await?
+    .1;
+    let success = f.call("remember", json!({"text":"recorded"})).await?;
+    assert_eq!(success["isError"], false);
+    assert!(success["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("Recorded the sentence"));
+    sqlx::query("DELETE FROM jobs WHERE kind='memory_ingest' AND payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$1)")
+        .bind(f.kb).execute(&f.state.pool).await?;
+    // As in failed_reads_do_not_become_successful_empty_results, close only this
+    // fixture's pool. append_episode fails before writing or enqueueing anything.
+    f.state.pool.close().await;
+    let ctx = ToolCtx {
+        state: &f.state,
+        kb_id: f.kb,
+        workspace_id: f.ws,
+        mounted_sources: &[],
+        can_write: true,
+        actor: Some(auth.user_id),
+        via_token: None,
+        question: None,
+    };
+    let failed = tool_result(
+        tools::dispatch(
+            &ctx,
+            &mut ToolSink::default(),
+            "remember",
+            &json!({"text":"not recorded"}),
+        )
+        .await,
+    );
+    f.state.pool = sqlx::PgPool::connect(&utopia_store::test_db::url().unwrap()).await?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chunks WHERE kb_id=$1 AND text LIKE '%not recorded%'",
+    )
+    .bind(f.kb)
+    .fetch_one(&f.state.pool)
+    .await?;
+    assert_eq!(count, 0);
+    f.clean().await?;
+    assert!(failed["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("Failed to record:"));
+    assert_eq!(failed["isError"], true, "{failed}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn memory_text_empty_after_nul_removal_is_a_tool_error() -> anyhow::Result<()> {
+    let Some(mut f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+    sqlx::query("UPDATE kb_members SET role='editor' WHERE kb_id=$1 AND user_id=$2")
+        .bind(f.kb)
+        .bind(auth.user_id)
+        .execute(&f.state.pool)
+        .await?;
+    f.token = utopia_store::tokens::issue(
+        &f.state.pool,
+        auth.user_id,
+        "empty memory test",
+        "write",
+        Some(&[f.kb]),
+        None,
+    )
+    .await?
+    .1;
+    let result = f.call("remember", json!({"text":"\u{0} \u{0}"})).await?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM documents WHERE kb_id=$1 AND external_key='memory:log'",
+    )
+    .bind(f.kb)
+    .fetch_one(&f.state.pool)
+    .await?;
+    assert_eq!(count, 0);
+    f.clean().await?;
+    assert_eq!(
+        result["content"][0]["text"],
+        "remember requires non-empty text."
+    );
+    assert_eq!(result["isError"], true);
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_document_chunks_do_not_become_a_successful_empty_document() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
