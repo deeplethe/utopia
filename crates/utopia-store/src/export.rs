@@ -46,6 +46,8 @@ pub struct ExportRelation {
     pub is_symmetric: bool,
     pub is_asymmetric: bool,
     pub is_irreflexive: bool,
+    pub inverse_of: Option<Uuid>,
+    pub sub_property_of: Option<Uuid>,
     pub domains: Vec<Uuid>,
     pub ranges: Vec<Uuid>,
 }
@@ -148,6 +150,7 @@ pub async fn relations(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<ExportRelati
         "SELECT r.id, r.key, r.label, r.description, r.iri, r.kind, r.datatype, r.unit,
                 r.temporal, r.functional, r.inverse_functional,
                 r.is_transitive, r.is_symmetric, r.is_asymmetric, r.is_irreflexive,
+                r.inverse_of, r.sub_property_of,
                 COALESCE(ARRAY(SELECT d.entity_type_id FROM relation_type_domains d
                                 WHERE d.relation_type_id = r.id ORDER BY 1), '{}') AS domains,
                 COALESCE(ARRAY(SELECT g.entity_type_id FROM relation_type_ranges g

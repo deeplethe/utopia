@@ -198,6 +198,116 @@ fn uuid(value: &Value) -> Uuid {
 }
 
 #[tokio::test]
+async fn record_axis_subseconds_survive_authenticated_rdf_export() -> anyhow::Result<()> {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use oxrdf::{vocab::xsd, Term};
+    use tower::ServiceExt;
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let generated: chrono::DateTime<chrono::Utc> = "2026-03-01T00:00:00.100001Z".parse()?;
+        let invalidated: chrono::DateTime<chrono::Utc> = "2026-03-01T00:00:00.100002Z".parse()?;
+        for (table, created, deleted, id) in [
+            ("facts", "recorded_at", "invalidated_at", f.fact),
+            ("derived_facts", "derived_at", "invalidated_at", f.derived),
+            ("documents", "created_at", "deleted_at", f.document),
+        ] {
+            sqlx::query(&format!(
+                "UPDATE {table} SET {created}=$2,{deleted}=$3 WHERE id=$1"
+            ))
+            .bind(id)
+            .bind(generated)
+            .bind(invalidated)
+            .execute(&f.state.pool)
+            .await?;
+        }
+        let snapshot_sql = "SELECT jsonb_build_array(
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM facts t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM documents t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM derived_facts t WHERE kb_id=$1))";
+        let before: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        let names = crate::rdf::Names::new(f.kb, None).map_err(anyhow::Error::msg)?;
+        let subjects = [
+            names.fact(f.fact),
+            names.derived(f.derived),
+            names.document(f.document),
+        ];
+        let mut exports = Vec::new();
+        for (format, parser_format) in [
+            ("turtle", oxrdfio::RdfFormat::Turtle),
+            (
+                "jsonld",
+                oxrdfio::RdfFormat::JsonLd {
+                    profile: oxrdfio::JsonLdProfileSet::empty(),
+                },
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/v1/kbs/{}/export?format={format}", f.kb))
+                        .header("authorization", format!("Bearer {jwt}"))
+                        .body(Body::empty())?,
+                )
+                .await?;
+            anyhow::ensure!(response.status() == StatusCode::OK, "export rejected");
+            let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+            let quads = oxrdfio::RdfParser::from_format(parser_format)
+                .for_slice(&bytes)
+                .collect::<Result<std::collections::HashSet<_>, _>>()?;
+            for subject in &subjects {
+                for (predicate, expected) in [
+                    ("generatedAtTime", generated),
+                    ("invalidatedAtTime", invalidated),
+                ] {
+                    let q = quads
+                        .iter()
+                        .find(|q| {
+                            q.subject == subject.clone().into()
+                                && q.predicate.as_str()
+                                    == format!("http://www.w3.org/ns/prov#{predicate}")
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("missing {predicate} for {subject}"))?;
+                    let Term::Literal(literal) = &q.object else {
+                        anyhow::bail!("timestamp is not literal");
+                    };
+                    anyhow::ensure!(
+                        literal.datatype() == xsd::DATE_TIME,
+                        "timestamp type changed"
+                    );
+                    let actual: chrono::DateTime<chrono::Utc> = literal.value().parse()?;
+                    anyhow::ensure!(
+                        actual == expected,
+                        "record timestamp truncated: {actual} != {expected}"
+                    );
+                }
+            }
+            exports.push(quads);
+        }
+        anyhow::ensure!(exports[0] == exports[1], "formats disagree");
+        let after: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        anyhow::ensure!(before == after, "export changed records");
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
+#[tokio::test]
 async fn refused_and_executed_calls_are_each_audited_once() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
@@ -683,6 +793,83 @@ async fn changes_returns_fact_ids_and_a_reusable_correction_timestamp() -> anyho
 }
 
 #[tokio::test]
+async fn opposite_directions_reach_authenticated_path_output() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let (a, b, p) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO relation_types(id,kb_id,key,label) VALUES ($1,$2,'supplies','supplies')",
+        )
+        .bind(p)
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+        for (id, name) in [(a, "A"), (b, "B")] {
+            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,$3)")
+                .bind(id)
+                .bind(f.kb)
+                .bind(name)
+                .execute(&f.state.pool)
+                .await?;
+        }
+        for (s, o) in [(a, b), (b, a)] {
+            utopia_store::graph::insert_fact(
+                &f.state.pool,
+                f.kb,
+                s,
+                Some(p),
+                o,
+                utopia_store::graph::Validity::starting(
+                    Some("2026-01-01T00:00:00Z".parse()?),
+                    Some("day"),
+                ),
+                0.9,
+            )
+            .await?;
+        }
+        let snapshot_sql = "SELECT jsonb_build_array(
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM facts t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM entities t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM relation_types t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM derived_facts t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM rules t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM jobs t WHERE payload->>'kb_id'=$1::text))";
+        let before: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        for (from, to, left, right) in [
+            (a, b, "A —supplies→ B", "A ←supplies— B"),
+            (b, a, "B —supplies→ A", "B ←supplies— A"),
+        ] {
+            let result = f
+                .call(
+                    "paths_between",
+                    json!({"from":from,"to":to,"max_hops":1,"at":"2026-06-01"}),
+                )
+                .await?;
+            let text = result["content"][0]["text"].as_str().unwrap_or_default();
+            anyhow::ensure!(
+                text.contains(left) && text.contains(right),
+                "opposite path lost: {text}"
+            );
+            anyhow::ensure!(text.contains("2 paths"), "unexpected path count: {text}");
+        }
+        let after: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        anyhow::ensure!(before == after, "path read changed business data");
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
+#[tokio::test]
 async fn missing_entities_and_empty_graph_reads_keep_their_results() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
@@ -864,6 +1051,265 @@ async fn remembered_clock_times_do_not_receive_the_date_only_offset() -> anyhow:
     sqlx::query("DELETE FROM jobs WHERE kind='memory_ingest' AND payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$1)")
         .bind(f.kb).execute(&f.state.pool).await?;
     f.clean().await
+}
+
+#[tokio::test]
+async fn declared_property_links_survive_authenticated_rdf_export() -> anyhow::Result<()> {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+    use utopia_core::models::RelationAxioms;
+    use utopia_store::ontology::{
+        create_relation_type, create_relation_with_iri, update_relation_type,
+    };
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        const IMPORTED: &str = "https://example.test/worksFor";
+        let root = create_relation_with_iri(
+            &f.state.pool,
+            f.kb,
+            "employment",
+            "Employment",
+            "",
+            IMPORTED,
+            false,
+            false,
+            &[],
+            &[],
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("missing imported relation"))?;
+        let mut declared = Vec::new();
+        let mut parent = root;
+        for key in ["manages", "directs", "leads"] {
+            let ax = RelationAxioms {
+                sub_property_of: Some(parent),
+                ..Default::default()
+            };
+            let id = create_relation_type(
+                &f.state.pool,
+                f.kb,
+                key,
+                key,
+                "state",
+                ax,
+                "",
+                "relation",
+                &[],
+                &[],
+                None,
+                None,
+            )
+            .await?;
+            declared.push((id, key, parent));
+            parent = id;
+        }
+        let inverse = create_relation_type(
+            &f.state.pool,
+            f.kb,
+            "employs",
+            "Employs",
+            "state",
+            RelationAxioms {
+                inverse_of: Some(root),
+                ..Default::default()
+            },
+            "",
+            "relation",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await?;
+        // Store exactly the reciprocal declaration too; export must not manufacture it.
+        update_relation_type(
+            &f.state.pool,
+            f.kb,
+            root,
+            "Employment",
+            "state",
+            RelationAxioms {
+                inverse_of: Some(inverse),
+                ..Default::default()
+            },
+            "",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+        let other = create_relation_type(
+            &f.state.pool,
+            f.other_kb,
+            "employment",
+            "Employment",
+            "state",
+            Default::default(),
+            "",
+            "relation",
+            &[],
+            &[],
+            None,
+            None,
+        )
+        .await?;
+        anyhow::ensure!(
+            create_relation_type(
+                &f.state.pool,
+                f.kb,
+                "bad_cross_base",
+                "Bad",
+                "state",
+                RelationAxioms {
+                    inverse_of: Some(other),
+                    ..Default::default()
+                },
+                "",
+                "relation",
+                &[],
+                &[],
+                None,
+                None
+            )
+            .await
+            .is_err(),
+            "cross-base input must be refused by the real write path"
+        );
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        let names = crate::rdf::Names::new(f.kb, None).map_err(anyhow::Error::msg)?;
+        let relation_iri = |key: &str| format!("<urn:utopia:kb:{}:relation:{key}>", f.kb);
+        let inverse_term = "<http://www.w3.org/2002/07/owl#inverseOf>".to_string();
+        let sub_term = "<http://www.w3.org/2000/01/rdf-schema#subPropertyOf>".to_string();
+        let expected: std::collections::HashSet<_> = [
+            (
+                relation_iri("employs"),
+                inverse_term.clone(),
+                format!("<{IMPORTED}>"),
+            ),
+            (
+                format!("<{IMPORTED}>"),
+                inverse_term.clone(),
+                relation_iri("employs"),
+            ),
+            (
+                relation_iri("manages"),
+                sub_term.clone(),
+                format!("<{IMPORTED}>"),
+            ),
+            (
+                relation_iri("directs"),
+                sub_term.clone(),
+                relation_iri("manages"),
+            ),
+            (
+                relation_iri("leads"),
+                sub_term.clone(),
+                relation_iri("directs"),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        for renamed in [false, true] {
+            if renamed {
+                update_relation_type(
+                    &f.state.pool,
+                    f.kb,
+                    declared[0].0,
+                    "New label",
+                    "state",
+                    RelationAxioms {
+                        sub_property_of: Some(root),
+                        ..Default::default()
+                    },
+                    "",
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await?;
+            }
+            let snapshot_sql = "SELECT jsonb_build_array(
+                (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM relation_types t WHERE kb_id=$1),
+                (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM facts t WHERE kb_id=$1),
+                (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM derived_facts t WHERE kb_id=$1),
+                (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM jobs t WHERE payload->>'kb_id'=$1::text))";
+            let before: Value = sqlx::query_scalar(snapshot_sql)
+                .bind(f.kb)
+                .fetch_one(&f.state.pool)
+                .await?;
+            let mut exports = Vec::new();
+            for (format, parser_format) in [
+                ("turtle", oxrdfio::RdfFormat::Turtle),
+                (
+                    "jsonld",
+                    oxrdfio::RdfFormat::JsonLd {
+                        profile: oxrdfio::JsonLdProfileSet::empty(),
+                    },
+                ),
+            ] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/v1/kbs/{}/export?format={format}", f.kb))
+                            .header("authorization", format!("Bearer {jwt}"))
+                            .body(Body::empty())?,
+                    )
+                    .await?;
+                anyhow::ensure!(response.status() == StatusCode::OK, "export rejected");
+                let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+                let quads = oxrdfio::RdfParser::from_format(parser_format)
+                    .for_slice(&bytes)
+                    .collect::<Result<std::collections::HashSet<_>, _>>()?;
+                let links: std::collections::HashSet<_> = quads
+                    .iter()
+                    .filter(|q| {
+                        [inverse_term.as_str(), sub_term.as_str()]
+                            .contains(&q.predicate.to_string().as_str())
+                    })
+                    .map(|q| {
+                        (
+                            q.subject.to_string(),
+                            q.predicate.to_string(),
+                            q.object.to_string(),
+                        )
+                    })
+                    .collect();
+                anyhow::ensure!(
+                    links == expected,
+                    "declared property links missing or invented: {links:?}"
+                );
+                anyhow::ensure!(
+                    quads
+                        .iter()
+                        .any(|q| q.subject == names.fact(f.corrected).into()),
+                    "lost existing facts"
+                );
+                exports.push(quads);
+            }
+            anyhow::ensure!(exports[0] == exports[1], "formats disagree");
+            let after: Value = sqlx::query_scalar(snapshot_sql)
+                .bind(f.kb)
+                .fetch_one(&f.state.pool)
+                .await?;
+            anyhow::ensure!(
+                before == after,
+                "export changed stored declarations/facts/jobs"
+            );
+        }
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
 }
 
 #[tokio::test]
@@ -1725,4 +2171,157 @@ async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Re
         0
     );
     f.clean().await
+}
+
+// Reuse the authenticated ledger fixture so RDF exercises the same stored records
+// as structured MCP reads, including evidence and retracted history.
+#[tokio::test]
+async fn rdf_export_preserves_unbound_literal_objects() -> anyhow::Result<()> {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use oxrdf::{vocab::rdf, Literal, Term};
+    use tower::ServiceExt;
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let value = json!({"value": "待复检"});
+        let (statement, _) = utopia_store::graph::insert_open_statement(
+            &f.state.pool,
+            f.kb,
+            f.subject,
+            "状态",
+            utopia_store::graph::FactObject::Value(&value),
+            Some("2026-01-01T00:00:00Z".parse()?),
+            0.9,
+        )
+        .await?;
+        sqlx::query("UPDATE facts SET recorded_at='2026-02-01' WHERE id=$1")
+            .bind(statement)
+            .execute(&f.state.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO fact_evidence(fact_id,chunk_id,document_id,doc_version,quote)
+                     VALUES ($1,$2,$3,1,'设备 A 待复检')",
+        )
+        .bind(statement)
+        .bind(f.chunk)
+        .bind(f.document)
+        .execute(&f.state.pool)
+        .await?;
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        let names = crate::rdf::Names::new(f.kb, None).map_err(anyhow::Error::msg)?;
+        let stmt = names.fact(statement);
+        let mut formats = Vec::new();
+        for retracted in [false, true] {
+            if retracted {
+                sqlx::query("UPDATE facts SET invalidated_at='2026-03-01' WHERE id=$1")
+                    .bind(statement)
+                    .execute(&f.state.pool)
+                    .await?;
+            }
+            // Snapshot every KB-scoped business table, including queues and adoption
+            // records. Request audit is deliberately excluded from this read-only check.
+            let tables: Vec<String> = sqlx::query_scalar(
+                "SELECT table_name FROM information_schema.columns
+                 WHERE table_schema='public' AND column_name='kb_id'
+                   AND table_name <> 'audit_events' ORDER BY table_name",
+            )
+            .fetch_all(&f.state.pool)
+            .await?;
+            let snapshot = async {
+                let mut rows = Vec::new();
+                for table in &tables {
+                    let sql = format!("SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) FROM \"{}\" t WHERE kb_id=$1", table.replace('"', "\"\""));
+                    rows.push(
+                        sqlx::query_scalar::<_, Value>(&sql)
+                            .bind(f.kb)
+                            .fetch_one(&f.state.pool)
+                            .await?,
+                    );
+                }
+                Ok::<_, anyhow::Error>(rows)
+            };
+            let before = snapshot.await?;
+            let extra_sql = "SELECT jsonb_build_array(
+                (SELECT COALESCE(jsonb_agg(to_jsonb(e) ORDER BY to_jsonb(e)::text), '[]')
+                 FROM fact_evidence e JOIN facts f ON f.id=e.fact_id WHERE f.kb_id=$1),
+                (SELECT COALESCE(jsonb_agg(to_jsonb(j) ORDER BY j.id), '[]') FROM jobs j
+                 WHERE payload->>'kb_id'=$1::text OR payload->>'document_id' IN
+                     (SELECT id::text FROM documents WHERE kb_id=$1)))";
+            let extra_before: Value = sqlx::query_scalar(extra_sql)
+                .bind(f.kb)
+                .fetch_one(&f.state.pool)
+                .await?;
+            for format in ["turtle", "jsonld"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/v1/kbs/{}/export?format={format}", f.kb))
+                            .header("authorization", format!("Bearer {jwt}"))
+                            .body(Body::empty())?,
+                    )
+                    .await?;
+                anyhow::ensure!(response.status() == StatusCode::OK, "export rejected");
+                let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+                let format = if format == "turtle" {
+                    oxrdfio::RdfFormat::Turtle
+                } else {
+                    oxrdfio::RdfFormat::JsonLd {
+                        profile: oxrdfio::JsonLdProfileSet::empty(),
+                    }
+                };
+                let quads = oxrdfio::RdfParser::from_format(format)
+                    .for_slice(&bytes)
+                    .collect::<Result<std::collections::HashSet<_>, _>>()?;
+                anyhow::ensure!(
+                    quads.iter().any(|q| q.subject == stmt.clone().into()
+                        && q.predicate == rdf::OBJECT
+                        && q.object == Term::Literal(Literal::new_simple_literal("待复检"))),
+                    "unbound statement lost its rdf:object in authenticated export"
+                );
+                anyhow::ensure!(
+                    !quads
+                        .iter()
+                        .any(|q| q.subject == stmt.clone().into() && q.predicate == rdf::PREDICATE),
+                    "invented a bound predicate"
+                );
+                anyhow::ensure!(
+                    quads.iter().any(|q| q.subject == stmt.clone().into()
+                        && q.predicate.as_str() == "http://www.w3.org/ns/prov#wasDerivedFrom"
+                        && q.object == names.document(f.document).into()),
+                    "lost evidence source"
+                );
+                formats.push(quads);
+            }
+            anyhow::ensure!(
+                formats[formats.len() - 1] == formats[formats.len() - 2],
+                "formats disagree"
+            );
+            let extra_after: Value = sqlx::query_scalar(extra_sql)
+                .bind(f.kb)
+                .fetch_one(&f.state.pool)
+                .await?;
+            anyhow::ensure!(
+                extra_before == extra_after,
+                "export changed evidence or jobs"
+            );
+            for (table, expected) in tables.iter().zip(before) {
+                let sql = format!("SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) FROM \"{}\" t WHERE kb_id=$1", table.replace('"', "\"\""));
+                let actual: Value = sqlx::query_scalar(&sql)
+                    .bind(f.kb)
+                    .fetch_one(&f.state.pool)
+                    .await?;
+                anyhow::ensure!(actual == expected, "export changed {table}");
+            }
+        }
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
 }
