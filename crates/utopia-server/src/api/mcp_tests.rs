@@ -1632,3 +1632,113 @@ async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Re
     );
     f.clean().await
 }
+
+#[tokio::test]
+async fn record_axis_subseconds_survive_authenticated_rdf_export() -> anyhow::Result<()> {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use oxrdf::{vocab::xsd, Term};
+    use tower::ServiceExt;
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let generated: chrono::DateTime<chrono::Utc> = "2026-03-01T00:00:00.100001Z".parse()?;
+        let invalidated: chrono::DateTime<chrono::Utc> = "2026-03-01T00:00:00.100002Z".parse()?;
+        for (table, created, deleted, id) in [
+            ("facts", "recorded_at", "invalidated_at", f.fact),
+            ("derived_facts", "derived_at", "invalidated_at", f.derived),
+            ("documents", "created_at", "deleted_at", f.document),
+        ] {
+            sqlx::query(&format!(
+                "UPDATE {table} SET {created}=$2,{deleted}=$3 WHERE id=$1"
+            ))
+            .bind(id)
+            .bind(generated)
+            .bind(invalidated)
+            .execute(&f.state.pool)
+            .await?;
+        }
+        let snapshot_sql = "SELECT jsonb_build_array(
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM facts t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM documents t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM derived_facts t WHERE kb_id=$1))";
+        let before: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        let names = crate::rdf::Names::new(f.kb, None).map_err(anyhow::Error::msg)?;
+        let subjects = [
+            names.fact(f.fact),
+            names.derived(f.derived),
+            names.document(f.document),
+        ];
+        let mut exports = Vec::new();
+        for (format, parser_format) in [
+            ("turtle", oxrdfio::RdfFormat::Turtle),
+            (
+                "jsonld",
+                oxrdfio::RdfFormat::JsonLd {
+                    profile: oxrdfio::JsonLdProfileSet::empty(),
+                },
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/v1/kbs/{}/export?format={format}", f.kb))
+                        .header("authorization", format!("Bearer {jwt}"))
+                        .body(Body::empty())?,
+                )
+                .await?;
+            anyhow::ensure!(response.status() == StatusCode::OK, "export rejected");
+            let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+            let quads = oxrdfio::RdfParser::from_format(parser_format)
+                .for_slice(&bytes)
+                .collect::<Result<std::collections::HashSet<_>, _>>()?;
+            for subject in &subjects {
+                for (predicate, expected) in [
+                    ("generatedAtTime", generated),
+                    ("invalidatedAtTime", invalidated),
+                ] {
+                    let q = quads
+                        .iter()
+                        .find(|q| {
+                            q.subject == subject.clone().into()
+                                && q.predicate.as_str()
+                                    == format!("http://www.w3.org/ns/prov#{predicate}")
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("missing {predicate} for {subject}"))?;
+                    let Term::Literal(literal) = &q.object else {
+                        anyhow::bail!("timestamp is not literal");
+                    };
+                    anyhow::ensure!(
+                        literal.datatype() == xsd::DATE_TIME,
+                        "timestamp type changed"
+                    );
+                    let actual: chrono::DateTime<chrono::Utc> = literal.value().parse()?;
+                    anyhow::ensure!(
+                        actual == expected,
+                        "record timestamp truncated: {actual} != {expected}"
+                    );
+                }
+            }
+            exports.push(quads);
+        }
+        anyhow::ensure!(exports[0] == exports[1], "formats disagree");
+        let after: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        anyhow::ensure!(before == after, "export changed records");
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
