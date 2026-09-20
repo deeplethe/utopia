@@ -50,7 +50,7 @@ below marks these records from this note; their own status lines predate it and 
 `current`: every decision in the record holds. `partly superseded (by NNNN)`: a later record, or
 the note above, overturned some of its decisions and the rest hold; the record's own revision notes
 say which. `superseded (by NNNN)`: none of its decisions hold. `proposed`: the direction is accepted
-and the record is not yet on `dev` (0034 has no code; 0043 was in PR #699, closed on 2026-09-17 to re-land on the open graph after alignment; 0044 and 0045 sit in
+and the code is not yet on `dev` (0034 has no code; 0043's cut 1 was in PR #699, closed on 2026-09-17 to re-land on the open graph after alignment, while the record itself is on `dev`; 0044 and 0045 sit in
 PRs #710 and #724, and 0044's cut 1 has landed ahead of the record). The record's own status line
 is the source of truth for what is built; this table only adds whether a later record has overtaken
 it.
