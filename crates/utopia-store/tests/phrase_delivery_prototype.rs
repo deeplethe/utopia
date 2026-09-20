@@ -213,3 +213,137 @@ async fn delivery_protocol_rollback_busy_late_arrivals_recovery_and_cost() -> an
     control.close().await;
     run
 }
+
+// The integration-test executable is also a subprocess probe. This ignored entry
+// runs only with explicit per-fixture environment from the parent, never in CI.
+#[test]
+#[ignore = "spawned only by the isolated crash-window experiment"]
+fn crash_child() {
+    let phase = std::env::var("UTOPIA_PROBE_PHASE").expect("explicit probe phase");
+    let kb: Uuid = std::env::var("UTOPIA_PROBE_KB").unwrap().parse().unwrap();
+    let property: Uuid = std::env::var("UTOPIA_PROBE_PROPERTY")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let ready = std::env::var("UTOPIA_PROBE_READY").unwrap();
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let pool = PgPool::connect(&utopia_store::test_db::url().unwrap())
+            .await
+            .unwrap();
+        let signature = phrase_bindings::signatures(&pool, kb)
+            .await
+            .unwrap()
+            .remove(0);
+        let mut tx = pool.begin().await.unwrap();
+        phrase_bindings::decide_on(
+            &mut tx,
+            kb,
+            &signature,
+            phrase_bindings::Decision {
+                relation_type_id: Some(property),
+                direction: Some("forward"),
+                status: "bound",
+                votes: &json!({}),
+                decided_by: "person",
+            },
+        )
+        .await
+        .unwrap();
+        let id = jobs::enqueue_with_max_attempts_tx(
+            &mut tx,
+            "prototype_materialize_typed",
+            json!({"kb_id":kb}),
+            3,
+        )
+        .await
+        .unwrap();
+        if phase == "uncommitted" {
+            std::fs::write(&ready, id.to_string()).unwrap();
+            std::future::pending::<()>().await;
+        }
+        tx.commit().await.unwrap();
+        if phase == "unacked" {
+            claim(&pool, id).await.unwrap();
+            materialize::try_materialize(&pool, kb)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        std::fs::write(&ready, id.to_string()).unwrap();
+        std::future::pending::<()>().await;
+    });
+}
+
+struct ChildGuard(std::process::Child);
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[tokio::test]
+async fn process_exit_preserves_the_committed_delivery_boundary() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let (org, ws, kb, subject, object, property) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::raw_sql(&format!("INSERT INTO organizations(id,name) VALUES('{org}','crash-probe');
+      INSERT INTO workspaces(id,org_id,name) VALUES('{ws}','{org}','crash-probe');
+      INSERT INTO knowledge_bases(id,workspace_id,name) VALUES('{kb}','{ws}','crash-probe');
+      INSERT INTO entities(id,kb_id,canonical_name) VALUES('{subject}','{kb}','S'),('{object}','{kb}','O');
+      INSERT INTO relation_types(id,kb_id,key,label) VALUES('{property}','{kb}','rel','Rel');
+      INSERT INTO facts(id,kb_id,subject_id,object_id,layer,phrase) VALUES('{}','{kb}','{subject}','{object}','open','rel');",Uuid::now_v7())).execute(&pool).await?;
+    let run=async {
+        for phase in ["uncommitted","accepted","unacked"] {
+            let ready=std::env::temp_dir().join(format!("utopia-crash-{}",Uuid::now_v7()));
+            let mut child=ChildGuard(std::process::Command::new(std::env::current_exe()?)
+                .args(["--exact","crash_child","--ignored","--nocapture"])
+                .env("UTOPIA_PROBE_PHASE",phase).env("UTOPIA_PROBE_KB",kb.to_string())
+                .env("UTOPIA_PROBE_PROPERTY",property.to_string()).env("UTOPIA_PROBE_READY",&ready)
+                .spawn()?);
+            let id=tokio::time::timeout(Duration::from_secs(15),async {
+                loop {
+                    if let Ok(value)=std::fs::read_to_string(&ready) {break value.parse::<i64>();}
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await??;
+            child.0.kill()?;child.0.wait()?;
+            let _=std::fs::remove_file(&ready);
+            if phase=="uncommitted" {
+                anyhow::ensure!(phrase_bindings::bindings(&pool,kb).await?.is_empty());
+                let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM jobs WHERE id=$1)").bind(id).fetch_one(&pool).await?;
+                anyhow::ensure!(!exists);
+            } else {
+                anyhow::ensure!(phrase_bindings::bindings(&pool,kb).await?[0].status=="bound");
+                anyhow::ensure!(status(&pool,id).await?==if phase=="accepted" {"queued"} else {"running"});
+                // Exercise the same single-instance recovery update, scoped to
+                // our job. Actual run_worker startup is tested separately above.
+                sqlx::query("UPDATE jobs SET status='queued',locked_at=NULL WHERE id=$1 AND status='running'").bind(id).execute(&pool).await?;
+                handle(&pool,kb,&claim(&pool,id).await?).await?;
+                anyhow::ensure!(materialize::count(&pool,kb).await?==1);
+                anyhow::ensure!(materialize::try_materialize(&pool,kb).await?==Some(materialize::Outcome::default()));
+            }
+            println!("OS process kill phase={phase}: PASS");
+        }
+        anyhow::Ok(())
+    }.await;
+    sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+        .bind(kb.to_string())
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    run
+}
