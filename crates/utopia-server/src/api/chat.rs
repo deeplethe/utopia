@@ -208,6 +208,17 @@ pub(super) fn check_call(
                 ),
             ));
         }
+        let is_string =
+            function.is_some_and(|f| f["parameters"]["properties"][key]["type"] == "string");
+        if is_string && !args[key].is_string() {
+            return Err(refuse(
+                &format!("invalid {key}"),
+                format!(
+                    "{name} needs `{key}`, which must be a string, so the call was not run. \
+                     Call it again with `{key}` set to a string."
+                ),
+            ));
+        }
     }
     Ok(args)
 }
@@ -1157,6 +1168,55 @@ mod tests {
     use super::*;
 
     // --- check_call ---------------------------------------------------------
+
+    #[test]
+    fn required_strings_reject_other_json_types_without_coercion() {
+        let tools = tools_schema(true, &[]);
+        for (name, key) in [("search_chunks", "query"), ("remember", "text")] {
+            for value in [
+                json!(123),
+                json!(false),
+                json!(["pressure"]),
+                json!({"text":"pressure"}),
+            ] {
+                let args = json!({key: value});
+                let err = check_call(&tools, name, &args.to_string())
+                    .expect_err("a required string must be a string");
+                assert_eq!(err.1["detail"], format!("invalid {key}"));
+                assert!(err.0.contains("must be a string"));
+            }
+        }
+        for text in ["pressure", "  压力  "] {
+            let args = json!({"query":text,"limit":5});
+            assert_eq!(
+                check_call(&tools, "search_chunks", &args.to_string()).unwrap(),
+                args
+            );
+        }
+        // Keep the existing missing/UUID error precedence, even for a wrong type.
+        assert!(check_call(&tools, "get_document", r#"{"document_id":123}"#)
+            .unwrap_err()
+            .0
+            .contains("uuid"));
+        assert_eq!(
+            check_call(&tools, "search_chunks", r#"{"query":null}"#)
+                .unwrap_err()
+                .1["detail"],
+            "missing query"
+        );
+        let custom = json!([{"function":{"name":"typed_control","parameters":{
+            "required":["count","items"],"properties":{"count":{"type":"integer"},"items":{"type":"array"},"optional":{"type":"string"}}
+        }}}]);
+        let args = json!({"count":3,"items":["a"],"optional":false});
+        assert_eq!(
+            check_call(&custom, "typed_control", &args.to_string()).unwrap(),
+            args
+        );
+        assert_eq!(
+            check_call(&tools, "unknown_tool", &args.to_string()).unwrap(),
+            args
+        );
+    }
 
     /// 参数在半路断掉——模型撞上 token 上限时就长这样。
     ///
