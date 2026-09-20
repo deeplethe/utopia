@@ -103,6 +103,17 @@ async fn expression_operands_round_trip_and_execute_through_authenticated_routes
             anyhow::ensure!(call("PATCH",path.clone(),patch).await?.0 == StatusCode::UNPROCESSABLE_ENTITY);
             anyhow::ensure!(call("GET",base.clone(),json!(null)).await?.1 == before);
         }
+        let foreign_kb=Uuid::now_v7(); let foreign=Uuid::now_v7(); let relation=Uuid::now_v7();
+        sqlx::query("INSERT INTO knowledge_bases(id,workspace_id,name) VALUES($1,$2,'foreign')").bind(foreign_kb).bind(ws).execute(&pool).await?;
+        sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,kind) VALUES($1,$2,'foreign','Foreign','attribute'),($3,$4,'edge','Edge','relation')")
+            .bind(foreign).bind(foreign_kb).bind(relation).bind(kb).execute(&pool).await?;
+        for (reference,code) in [(foreign,"unknown_predicate"),(relation,"not_an_attribute")] {
+            let mut request=definition.clone(); request["name"]=json!("Rejected");
+            request["conditions"][0]["operand"]=json!({"attr":reference});
+            let (status,error)=call("POST",base.clone(),request).await?;
+            anyhow::ensure!(status==StatusCode::UNPROCESSABLE_ENTITY && error["code"]==code);
+            anyhow::ensure!(call("GET",base.clone(),json!(null)).await?.1==before);
+        }
         // Existing scalar, set, range, presence contracts stay separate.
         for (op, operand) in [("gt",json!(5)),("gte",json!("5")),("lt",json!(500)),("lte",json!("500")),("between",json!([0,100])),("in",json!([100])),("not_in",json!([0])),("present",Value::Null)] {
             let c = json!([{"predicate_id":input,"op":op,"operand":operand}]);
