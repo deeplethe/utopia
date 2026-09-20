@@ -247,34 +247,276 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
     Ok(out)
 }
 
-/// pptx: 按页码顺序解析 ppt/slides/slideN.xml，取 a:t 文本。
+/// PPTX: extract a:t text in the presentation's logical slide order.
 pub fn pptx(bytes: &[u8]) -> anyhow::Result<String> {
     let mut archive =
         zip::ZipArchive::new(Cursor::new(bytes.to_vec())).context("Failed to unzip pptx")?;
-    let mut slides: Vec<(u32, String)> = Vec::new();
-    for i in 0..archive.len() {
-        let name = archive.by_index(i)?.name().to_string();
-        if let Some(num) = name
-            .strip_prefix("ppt/slides/slide")
-            .and_then(|s| s.strip_suffix(".xml"))
-            .and_then(|s| s.parse::<u32>().ok())
-        {
-            slides.push((num, name));
+    let slides = if let Some(names) = pptx_order(&mut archive)? {
+        names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| (i as u32 + 1, name))
+            .collect()
+    } else {
+        let mut slides: Vec<(u32, String)> = Vec::new();
+        for i in 0..archive.len() {
+            let name = archive.by_index(i)?.name().to_string();
+            if let Some(num) = name
+                .strip_prefix("ppt/slides/slide")
+                .and_then(|s| s.strip_suffix(".xml"))
+                .and_then(|s| s.parse::<u32>().ok())
+            {
+                slides.push((num, name));
+            }
         }
-    }
-    slides.sort();
+        slides.sort();
+
+        slides
+    };
 
     let mut out = String::new();
     for (num, name) in slides {
-        let mut entry = archive.by_name(&name)?;
-        let mut xml = String::new();
-        entry.read_to_string(&mut xml)?;
+        let xml = pptx_part(&mut archive, &name)?;
         let text = extract_xml_text(&xml, "a:t", "a:p")?;
         if !text.trim().is_empty() {
             out.push_str(&format!("\n## Slide {num}\n{text}\n"));
         }
     }
     Ok(out)
+}
+
+const PPT_NS: &str = "http://schemas.openxmlformats.org/presentationml/2006/main";
+const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const PACKAGE_REL_NS: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
+
+fn pptx_part(archive: &mut zip::ZipArchive<Cursor<Vec<u8>>>, name: &str) -> anyhow::Result<String> {
+    let mut xml = String::new();
+    archive
+        .by_name(name)
+        .with_context(|| format!("Missing PPTX part: {name}"))?
+        .read_to_string(&mut xml)?;
+    Ok(xml)
+}
+
+// Relationship targets are package URIs, never paths to open or URLs to fetch.
+fn pptx_target(source: &str, target: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        !target.contains([':', '\\', '?', '#']) && !target.starts_with("//"),
+        "Invalid PPTX part target"
+    );
+    let target = percent_encoding::percent_decode_str(target).decode_utf8()?;
+    anyhow::ensure!(
+        !target.contains([':', '\\', '?', '#', '\0']) && !target.starts_with("//"),
+        "Invalid PPTX part target"
+    );
+    let mut parts: Vec<&str> = if target.starts_with('/') {
+        Vec::new()
+    } else {
+        source
+            .rsplit_once('/')
+            .map(|(dir, _)| dir.split('/').collect())
+            .unwrap_or_default()
+    };
+    for part in target.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                anyhow::ensure!(parts.pop().is_some(), "PPTX target escapes package");
+            }
+            _ => parts.push(part),
+        }
+    }
+    anyhow::ensure!(!parts.is_empty(), "Empty PPTX part target");
+    Ok(parts.join("/"))
+}
+
+// Only the requested relationship type is returned. Other types (notes, masters,
+// hyperlinks) cannot become slides. Reject ambiguity rather than silently losing pages.
+fn pptx_relationships(
+    xml: &str,
+    kind: &str,
+    source: &str,
+) -> anyhow::Result<std::collections::HashMap<String, String>> {
+    use quick_xml::name::{Namespace, ResolveResult};
+    let mut reader = quick_xml::NsReader::from_str(xml);
+    let mut depth = 0;
+    let mut root = false;
+    let mut ids = std::collections::HashSet::new();
+    let mut targets = std::collections::HashMap::new();
+    loop {
+        let event = reader.read_event()?;
+        match &event {
+            Event::Start(e) | Event::Empty(e) => {
+                let (ns, local) = reader.resolver().resolve_element(e.name());
+                let package = ns == ResolveResult::Bound(Namespace(PACKAGE_REL_NS));
+                if depth == 0 {
+                    anyhow::ensure!(
+                        !root && package && local.as_ref() == "Relationships",
+                        "Invalid PPTX relationships root"
+                    );
+                    root = true;
+                } else if depth == 1 && package && local.as_ref() == "Relationship" {
+                    let attrs: std::collections::HashMap<_, _> = e
+                        .attributes()
+                        .map(|a| {
+                            let a = a?;
+                            Ok((
+                                a.key.as_ref().to_string(),
+                                a.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                                    .into_owned(),
+                            ))
+                        })
+                        .collect::<anyhow::Result<_>>()?;
+                    let id = attrs.get("Id").context("PPTX relationship has no Id")?;
+                    anyhow::ensure!(ids.insert(id.clone()), "Duplicate PPTX relationship Id");
+                    let ty = attrs.get("Type").context("PPTX relationship has no Type")?;
+                    if ty == &format!("{REL_NS}/{kind}")
+                        || ty
+                            == &format!(
+                                "http://purl.oclc.org/ooxml/officeDocument/relationships/{kind}"
+                            )
+                    {
+                        anyhow::ensure!(
+                            attrs.get("TargetMode").is_none_or(|m| m == "Internal"),
+                            "External PPTX {kind} relationship is unsupported"
+                        );
+                        let target = attrs
+                            .get("Target")
+                            .context("PPTX relationship has no Target")?;
+                        targets.insert(id.clone(), pptx_target(source, target)?);
+                    }
+                }
+                if matches!(event, Event::Start(_)) {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => depth -= 1,
+            Event::Eof => {
+                anyhow::ensure!(root && depth == 0, "Incomplete PPTX relationships");
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok(targets)
+}
+
+fn pptx_slide_ids(xml: &str) -> anyhow::Result<Vec<String>> {
+    use quick_xml::name::{Namespace, ResolveResult};
+    let mut reader = quick_xml::NsReader::from_str(xml);
+    let mut depth = 0;
+    let mut root = false;
+    let mut in_list = false;
+    let mut seen_list = false;
+    let mut ids = Vec::new();
+    loop {
+        let event = reader.read_event()?;
+        match &event {
+            Event::Start(e) | Event::Empty(e) => {
+                let (ns, local) = reader.resolver().resolve_element(e.name());
+                let presentation = matches!(
+                    ns,
+                    ResolveResult::Bound(Namespace(
+                        PPT_NS | "http://purl.oclc.org/ooxml/presentationml/main"
+                    ))
+                );
+                if depth == 0 {
+                    anyhow::ensure!(
+                        !root && presentation && local.as_ref() == "presentation",
+                        "Invalid PPTX presentation root"
+                    );
+                    root = true;
+                } else if depth == 1 && presentation && local.as_ref() == "sldIdLst" {
+                    anyhow::ensure!(!seen_list, "Duplicate PPTX slide list");
+                    seen_list = true;
+                    in_list = matches!(event, Event::Start(_));
+                } else if depth == 2 && in_list {
+                    anyhow::ensure!(
+                        presentation && local.as_ref() == "sldId",
+                        "Invalid PPTX slide-list entry"
+                    );
+                    let mut id = None;
+                    for a in e.attributes() {
+                        let a = a?;
+                        let (ns, local) = reader.resolver().resolve_attribute(a.key);
+                        if local.as_ref() == "id"
+                            && matches!(
+                                ns,
+                                ResolveResult::Bound(Namespace(
+                                    REL_NS
+                                        | "http://purl.oclc.org/ooxml/officeDocument/relationships"
+                                ))
+                            )
+                        {
+                            anyhow::ensure!(id.is_none(), "Duplicate PPTX slide relationship");
+                            id = Some(
+                                a.normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                                    .into_owned(),
+                            );
+                        }
+                    }
+                    ids.push(id.context("PPTX slide has no relationship id")?);
+                }
+                if matches!(event, Event::Start(_)) {
+                    depth += 1;
+                }
+            }
+            Event::End(_) => {
+                depth -= 1;
+                if depth == 1 {
+                    in_list = false;
+                }
+            }
+            Event::Eof => {
+                anyhow::ensure!(root && depth == 0, "Incomplete PPTX presentation");
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok(ids)
+}
+
+fn pptx_order(
+    archive: &mut zip::ZipArchive<Cursor<Vec<u8>>>,
+) -> anyhow::Result<Option<Vec<String>>> {
+    let has_root = archive.file_names().any(|n| n == "_rels/.rels");
+    let main = if has_root {
+        let xml = pptx_part(archive, "_rels/.rels")?;
+        let mut roots = pptx_relationships(&xml, "officeDocument", "")?.into_values();
+        let main = roots
+            .next()
+            .context("PPTX has no presentation relationship")?;
+        anyhow::ensure!(roots.next().is_none(), "PPTX has multiple presentations");
+        main
+    } else if archive.file_names().any(|n| n == "ppt/presentation.xml") {
+        "ppt/presentation.xml".to_string()
+    } else {
+        // Preserve the existing behavior for legacy partial packages. If a
+        // manifest exists, errors must never fall back to guessed filename order.
+        return Ok(None);
+    };
+    let ids = pptx_slide_ids(&pptx_part(archive, &main)?)?;
+    if ids.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let (dir, file) = main.rsplit_once('/').unwrap_or(("", main.as_str()));
+    let rels = if dir.is_empty() {
+        format!("_rels/{file}.rels")
+    } else {
+        format!("{dir}/_rels/{file}.rels")
+    };
+    let relationships = pptx_relationships(&pptx_part(archive, &rels)?, "slide", &main)?;
+    let slides = ids
+        .into_iter()
+        .map(|id| {
+            relationships
+                .get(&id)
+                .cloned()
+                .with_context(|| format!("Missing PPTX slide relationship: {id}"))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    Ok(Some(slides))
 }
 
 /// xlsx / xls / ods: calamine 全格式读取，每 sheet 输出制表符表格（限前 2000 行）。
