@@ -451,6 +451,8 @@ type MatchRow = (
     Option<String>,
     Option<chrono::DateTime<chrono::Utc>>,
     Option<chrono::DateTime<chrono::Utc>>,
+    Option<String>,
+    Option<String>,
     Vec<String>,
 );
 
@@ -481,7 +483,7 @@ pub async fn matches(
                 COALESCE(ct.label,
                          d.object_value #>> '{value}',
                          d.object_value ->> 'class'),
-                d.valid_from, d.valid_to,
+                d.valid_from, d.valid_to, d.valid_from_precision, d.valid_to_precision,
                 COALESCE(
                     (SELECT array_agg(
                                 COALESCE(pr.label, '?') || ' = '
@@ -510,17 +512,21 @@ pub async fn matches(
 
     Ok((
         rows.into_iter()
-            .map(|(id, entity_id, name, concluded, from, to, premises)| {
-                json!({
-                    "derived_id": id,
-                    "entity_id": entity_id,
-                    "entity": name,
-                    "concluded": concluded,
-                    "valid_from": from,
-                    "valid_to": to,
-                    "premises": premises,
-                })
-            })
+            .map(
+                |(id, entity_id, name, concluded, from, to, fp, tp, premises)| {
+                    json!({
+                        "derived_id": id,
+                        "entity_id": entity_id,
+                        "entity": name,
+                        "concluded": concluded,
+                        "valid_from": from,
+                        "valid_to": to,
+                        "valid_from_precision": fp,
+                        "valid_to_precision": tp,
+                        "premises": premises,
+                    })
+                },
+            )
             .collect(),
         total.0,
     ))

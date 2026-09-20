@@ -514,8 +514,19 @@ pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
                         .join(", ")
                 })
                 .unwrap_or_default();
+            // This query includes historical conclusions. A missing bound does
+            // not establish that the conclusion holds now.
+            let bound = |key: &str, precision: &str, unknown: &str| {
+                m[key]
+                    .as_str()
+                    .and_then(|s| s.parse().ok())
+                    .map(|t| crate::time_text::world(t, m[precision].as_str()))
+                    .unwrap_or_else(|| unknown.to_string())
+            };
+            let from = bound("valid_from", "valid_from_precision", "unknown start");
+            let to = bound("valid_to", "valid_to_precision", "unknown end");
             format!(
-                "{} ⇒ {} (because {}) [{}]",
+                "{} ⇒ {} (because {}) [validity: {from} → {to}] [{}]",
                 m["entity"].as_str().unwrap_or("?"),
                 m["concluded"]
                     .as_str()
@@ -529,13 +540,13 @@ pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
         .join("\n");
     // 截断要说出来：模型看到 50 条会当成全部，而库里可能有两百
     let text = if total > rows.len() as i64 {
-        format!("{text}\n(showing {} of {total})", rows.len())
+        format!("{text}\n(showing {} of {total} matches)", rows.len())
     } else {
         text
     };
     ToolResult::new(
         text,
-        json!({ "kind": "tool", "label": "rule_matches", "detail": format!("{total} entities") }),
+        json!({ "kind": "tool", "label": "rule_matches", "detail": format!("{total} matches") }),
     )
 }
 

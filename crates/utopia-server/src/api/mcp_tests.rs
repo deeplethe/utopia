@@ -1459,3 +1459,176 @@ async fn rule_descriptions_preserve_condition_groups() -> anyhow::Result<()> {
     }
     f.clean().await
 }
+
+#[tokio::test]
+async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Result<()> {
+    use utopia_store::business_rules::{self, ConditionInput};
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let ty: Uuid = sqlx::query_scalar("SELECT type_id FROM entities WHERE id=$1")
+        .bind(f.subject)
+        .fetch_one(&f.state.pool)
+        .await?;
+    let (reading, result, is_a, marked) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    for (id, key, datatype, builtin) in [
+        (reading, "reading", "number", false),
+        (result, "result", "number", false),
+        (is_a, "is_a", "text", true),
+    ] {
+        sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,kind,datatype,builtin) VALUES ($1,$2,$3,$3,'attribute',$4,$5)")
+            .bind(id).bind(f.kb).bind(key).bind(datatype).bind(builtin).execute(&f.state.pool).await?;
+    }
+    sqlx::query("INSERT INTO entity_types(id,kb_id,key,label) VALUES ($1,$2,'marked','Marked')")
+        .bind(marked)
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+    let conditions = [ConditionInput {
+        group: 0,
+        predicate_id: reading,
+        op: "gt".into(),
+        operand: Some(json!(0)),
+    }];
+    let typing = business_rules::create(
+        &f.state.pool,
+        f.kb,
+        "historical typing",
+        "",
+        ty,
+        "typing",
+        Some(marked),
+        None,
+        None,
+        None,
+        &conditions,
+    )
+    .await?;
+    let attribute = business_rules::create(
+        &f.state.pool,
+        f.kb,
+        "historical attribute",
+        "",
+        ty,
+        "attribute",
+        None,
+        Some(result),
+        Some(json!(8)),
+        None,
+        &conditions,
+    )
+    .await?;
+    // Source readings use deliberately disjoint, fixed historical intervals.
+    // The derived rows and their precision are produced by the real materializer.
+    for (from, to, fp, tp) in [
+        (
+            "2020-01-01T00:00:00Z",
+            "2021-03-01T00:00:00Z",
+            "year",
+            "month",
+        ),
+        (
+            "2023-06-01T00:00:00Z",
+            "2024-07-15T00:00:00Z",
+            "month",
+            "day",
+        ),
+    ] {
+        sqlx::query("INSERT INTO facts(id,kb_id,subject_id,predicate_id,object_value,valid_from,valid_to,valid_from_precision,valid_to_precision) VALUES ($1,$2,$3,$4,'{\"value\":10}',$5,$6,$7,$8)")
+            .bind(Uuid::now_v7()).bind(f.kb).bind(f.subject).bind(reading)
+            .bind(from.parse::<chrono::DateTime<chrono::Utc>>()?).bind(to.parse::<chrono::DateTime<chrono::Utc>>()?)
+            .bind(fp).bind(tp).execute(&f.state.pool).await?;
+    }
+    utopia_store::reasoning::materialize(&f.state.pool, f.kb).await?;
+    let before: Value = sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY id),'[]') FROM derived_facts d WHERE kb_id=$1")
+        .bind(f.kb).fetch_one(&f.state.pool).await?;
+    let rules_before = business_rules::list(&f.state.pool, f.kb).await?;
+    let jobs_before: Value=sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(j) ORDER BY id),'[]') FROM jobs j WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)")
+        .bind(f.kb.to_string()).bind(f.kb).fetch_one(&f.state.pool).await?;
+    for (rule, conclusion) in [(typing, "Marked"), (attribute, "8")] {
+        let (rows, total) = business_rules::matches(&f.state.pool, f.kb, rule, 50, 0).await?;
+        assert_eq!(total, 2, "real materialization must retain both intervals");
+        assert!(rows.iter().all(|r| uuid(&r["entity_id"]) == f.subject));
+        let response = f.call("rule_matches", json!({"rule_id":rule})).await?;
+        assert_eq!(response["isError"], false);
+        let text = response["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("validity: 2020 → 2021-03"), "{text}");
+        assert!(text.contains("validity: 2023-06 → 2024-07-15"), "{text}");
+        assert_eq!(
+            text.matches(&format!("Alice ⇒ {conclusion} (because reading = 10)"))
+                .count(),
+            2,
+            "{text}"
+        );
+        let page = f
+            .call("rule_matches", json!({"rule_id":rule,"limit":1}))
+            .await?;
+        assert!(page["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with("(showing 1 of 2 matches)"));
+        let ctx = ToolCtx {
+            state: &f.state,
+            kb_id: f.kb,
+            workspace_id: f.ws,
+            mounted_sources: &[],
+            can_write: false,
+            actor: None,
+            via_token: None,
+            question: None,
+        };
+        let card = tools::rule_matches(&ctx, &json!({"rule_id":rule})).await;
+        assert_eq!(card.step["detail"], "2 matches");
+    }
+    let after: Value=sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY id),'[]') FROM derived_facts d WHERE kb_id=$1")
+        .bind(f.kb).fetch_one(&f.state.pool).await?;
+    assert_eq!(before, after);
+    assert_eq!(
+        rules_before,
+        business_rules::list(&f.state.pool, f.kb).await?
+    );
+    let jobs_after: Value=sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(j) ORDER BY id),'[]') FROM jobs j WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)")
+        .bind(f.kb.to_string()).bind(f.kb).fetch_one(&f.state.pool).await?;
+    assert_eq!(jobs_before, jobs_after);
+    // Legacy/anchor-derived rows may have no stated precision or boundary.
+    let row = uuid(
+        &business_rules::matches(&f.state.pool, f.kb, typing, 50, 0)
+            .await?
+            .0[0]["derived_id"],
+    );
+    for (from, expected) in [
+        (
+            Some("2020-01-01T12:34:56.123456Z"),
+            "2020-01-01T12:34:56.123456Z → unknown end",
+        ),
+        (None, "unknown start → unknown end"),
+    ] {
+        let from = from
+            .map(str::parse::<chrono::DateTime<chrono::Utc>>)
+            .transpose()?;
+        sqlx::query("UPDATE derived_facts SET valid_from=$2,valid_to=NULL,valid_from_precision=NULL,valid_to_precision=NULL WHERE id=$1")
+            .bind(row).bind(from).execute(&f.state.pool).await?;
+        let response = f.call("rule_matches", json!({"rule_id":typing})).await?;
+        let text = response["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains(expected), "{text}");
+        assert!(!text.contains("→ now"));
+    }
+    sqlx::query("UPDATE derived_facts SET invalidated_at=now() WHERE attribute_rule_id=$1 AND valid_from IS NULL")
+        .bind(typing).execute(&f.state.pool).await?;
+    let response = f.call("rule_matches", json!({"rule_id":typing})).await?;
+    let text = response["content"][0]["text"].as_str().unwrap();
+    assert_eq!(text.lines().count(), 1);
+    assert!(text.contains("2023-06 → 2024-07-15"));
+    assert_eq!(
+        business_rules::matches(&f.state.pool, f.other_kb, typing, 50, 0)
+            .await?
+            .1,
+        0
+    );
+    f.clean().await
+}
