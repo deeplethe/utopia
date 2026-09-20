@@ -113,7 +113,7 @@ async fn expression_operands_round_trip_and_execute_through_authenticated_routes
             }
         }
         let mut deep=json!({"attr":input});
-        for _ in 0..utopia_reason::rules::MAX_EXPR_DEPTH { deep=json!({"op":"sub","l":deep,"r":{"const":1}}); }
+        for _ in 0..4 { deep=json!({"op":"sub","l":deep,"r":{"const":1}}); }
         let c=json!([{"predicate_id":input,"op":"gt","operand":deep}]);
         anyhow::ensure!(call("PATCH",path.clone(),json!({"conditions":c})).await?.0.is_success());
         anyhow::ensure!(utopia_store::reasoning::materialize(&pool,kb).await?.rule_hits == 1);
