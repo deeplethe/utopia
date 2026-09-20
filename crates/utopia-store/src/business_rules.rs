@@ -366,6 +366,77 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
         .collect())
 }
 
+/// Read-only descriptions of stored computation trees. Reuse the write-side
+/// shape/depth check, then resolve every leaf in one query scoped to this base.
+/// Invalid trees or unavailable attributes are reported as unavailable, not null.
+pub async fn describe_expressions(
+    pool: &PgPool,
+    kb_id: Uuid,
+    expressions: &[&serde_json::Value],
+) -> AppResult<Vec<Option<String>>> {
+    let reads: Vec<_> = expressions
+        .iter()
+        .map(|e| validate_expr(e, 0).ok())
+        .collect();
+    let mut ids: Vec<Uuid> = reads.iter().flatten().flatten().copied().collect();
+    ids.sort();
+    ids.dedup();
+    let mut names = std::collections::HashMap::new();
+    if !ids.is_empty() {
+        let rows: Vec<(Uuid, String, String)> = sqlx::query_as(
+            "SELECT id, key, label FROM relation_types WHERE kb_id=$1 AND id=ANY($2)",
+        )
+        .bind(kb_id)
+        .bind(&ids)
+        .fetch_all(pool)
+        .await?;
+        for (id, key, label) in rows {
+            // Keys keep distinct attributes identifiable even when labels coincide.
+            let name = if label.is_empty() || label == key {
+                key
+            } else {
+                format!("{label} [{key}]")
+            };
+            names.insert(id, name);
+        }
+    }
+    Ok(expressions
+        .iter()
+        .zip(reads)
+        .map(|(e, valid)| valid.and_then(|_| expression_text(e, &names)))
+        .collect())
+}
+
+// Only called after validate_expr has accepted the tree and bounded its depth.
+fn expression_text(
+    raw: &serde_json::Value,
+    names: &std::collections::HashMap<Uuid, String>,
+) -> Option<String> {
+    use utopia_reason::rules::Arith;
+    if let Some(attr) = raw.get("attr") {
+        return names.get(&attr.as_str()?.parse::<Uuid>().ok()?).cloned();
+    }
+    if let Some(value) = raw.get("const") {
+        return Some(
+            value
+                .as_str()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| value.to_string()),
+        );
+    }
+    let op = match Arith::parse(raw.get("op")?.as_str()?)? {
+        Arith::Add => "+",
+        Arith::Sub => "-",
+        Arith::Mul => "*",
+        Arith::Div => "/",
+    };
+    Some(format!(
+        "({} {op} {})",
+        expression_text(raw.get("l")?, names)?,
+        expression_text(raw.get("r")?, names)?
+    ))
+}
+
 /// 命中查询回来的一行：派生 id、实体 id 与名字、结论、区间两端、前提的可读形态
 type MatchRow = (
     Uuid,
