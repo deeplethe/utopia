@@ -1709,3 +1709,156 @@ async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Re
     );
     f.clean().await
 }
+
+// Reuse the authenticated ledger fixture so RDF exercises the same stored records
+// as structured MCP reads, including evidence and retracted history.
+#[tokio::test]
+async fn rdf_export_preserves_unbound_literal_objects() -> anyhow::Result<()> {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use oxrdf::{vocab::rdf, Literal, Term};
+    use tower::ServiceExt;
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let value = json!({"value": "待复检"});
+        let (statement, _) = utopia_store::graph::insert_open_statement(
+            &f.state.pool,
+            f.kb,
+            f.subject,
+            "状态",
+            utopia_store::graph::FactObject::Value(&value),
+            Some("2026-01-01T00:00:00Z".parse()?),
+            0.9,
+        )
+        .await?;
+        sqlx::query("UPDATE facts SET recorded_at='2026-02-01' WHERE id=$1")
+            .bind(statement)
+            .execute(&f.state.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO fact_evidence(fact_id,chunk_id,document_id,doc_version,quote)
+                     VALUES ($1,$2,$3,1,'设备 A 待复检')",
+        )
+        .bind(statement)
+        .bind(f.chunk)
+        .bind(f.document)
+        .execute(&f.state.pool)
+        .await?;
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        let names = crate::rdf::Names::new(f.kb, None).map_err(anyhow::Error::msg)?;
+        let stmt = names.fact(statement);
+        let mut formats = Vec::new();
+        for retracted in [false, true] {
+            if retracted {
+                sqlx::query("UPDATE facts SET invalidated_at='2026-03-01' WHERE id=$1")
+                    .bind(statement)
+                    .execute(&f.state.pool)
+                    .await?;
+            }
+            // Snapshot every KB-scoped business table, including queues and adoption
+            // records. Request audit is deliberately excluded from this read-only check.
+            let tables: Vec<String> = sqlx::query_scalar(
+                "SELECT table_name FROM information_schema.columns
+                 WHERE table_schema='public' AND column_name='kb_id'
+                   AND table_name <> 'audit_events' ORDER BY table_name",
+            )
+            .fetch_all(&f.state.pool)
+            .await?;
+            let snapshot = async {
+                let mut rows = Vec::new();
+                for table in &tables {
+                    let sql = format!("SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) FROM \"{}\" t WHERE kb_id=$1", table.replace('"', "\"\""));
+                    rows.push(
+                        sqlx::query_scalar::<_, Value>(&sql)
+                            .bind(f.kb)
+                            .fetch_one(&f.state.pool)
+                            .await?,
+                    );
+                }
+                Ok::<_, anyhow::Error>(rows)
+            };
+            let before = snapshot.await?;
+            let extra_sql = "SELECT jsonb_build_array(
+                (SELECT COALESCE(jsonb_agg(to_jsonb(e) ORDER BY to_jsonb(e)::text), '[]')
+                 FROM fact_evidence e JOIN facts f ON f.id=e.fact_id WHERE f.kb_id=$1),
+                (SELECT COALESCE(jsonb_agg(to_jsonb(j) ORDER BY j.id), '[]') FROM jobs j
+                 WHERE payload->>'kb_id'=$1::text OR payload->>'document_id' IN
+                     (SELECT id::text FROM documents WHERE kb_id=$1)))";
+            let extra_before: Value = sqlx::query_scalar(extra_sql)
+                .bind(f.kb)
+                .fetch_one(&f.state.pool)
+                .await?;
+            for format in ["turtle", "jsonld"] {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/v1/kbs/{}/export?format={format}", f.kb))
+                            .header("authorization", format!("Bearer {jwt}"))
+                            .body(Body::empty())?,
+                    )
+                    .await?;
+                anyhow::ensure!(response.status() == StatusCode::OK, "export rejected");
+                let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+                let format = if format == "turtle" {
+                    oxrdfio::RdfFormat::Turtle
+                } else {
+                    oxrdfio::RdfFormat::JsonLd {
+                        profile: oxrdfio::JsonLdProfileSet::empty(),
+                    }
+                };
+                let quads = oxrdfio::RdfParser::from_format(format)
+                    .for_slice(&bytes)
+                    .collect::<Result<std::collections::HashSet<_>, _>>()?;
+                anyhow::ensure!(
+                    quads.iter().any(|q| q.subject == stmt.clone().into()
+                        && q.predicate == rdf::OBJECT
+                        && q.object == Term::Literal(Literal::new_simple_literal("待复检"))),
+                    "unbound statement lost its rdf:object in authenticated export"
+                );
+                anyhow::ensure!(
+                    !quads
+                        .iter()
+                        .any(|q| q.subject == stmt.clone().into() && q.predicate == rdf::PREDICATE),
+                    "invented a bound predicate"
+                );
+                anyhow::ensure!(
+                    quads.iter().any(|q| q.subject == stmt.clone().into()
+                        && q.predicate.as_str() == "http://www.w3.org/ns/prov#wasDerivedFrom"
+                        && q.object == names.document(f.document).into()),
+                    "lost evidence source"
+                );
+                formats.push(quads);
+            }
+            anyhow::ensure!(
+                formats[formats.len() - 1] == formats[formats.len() - 2],
+                "formats disagree"
+            );
+            let extra_after: Value = sqlx::query_scalar(extra_sql)
+                .bind(f.kb)
+                .fetch_one(&f.state.pool)
+                .await?;
+            anyhow::ensure!(
+                extra_before == extra_after,
+                "export changed evidence or jobs"
+            );
+            for (table, expected) in tables.iter().zip(before) {
+                let sql = format!("SELECT COALESCE(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]'::jsonb) FROM \"{}\" t WHERE kb_id=$1", table.replace('"', "\"\""));
+                let actual: Value = sqlx::query_scalar(&sql)
+                    .bind(f.kb)
+                    .fetch_one(&f.state.pool)
+                    .await?;
+                anyhow::ensure!(actual == expected, "export changed {table}");
+            }
+        }
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
