@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="13" fill="#0a0a0a"/>
+  <rect x="0.5" y="0.5" width="63" height="63" rx="12.5" fill="none" stroke="#ffffff" stroke-opacity="0.14"/>
+  <text x="32" y="45.5" text-anchor="middle"
+        font-family="Marcellus, Georgia, 'Times New Roman', serif"
+        font-size="40" fill="#ededed">U</text>
+</svg>
