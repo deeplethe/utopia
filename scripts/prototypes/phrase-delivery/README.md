@@ -52,11 +52,11 @@ test consumes jobs; never point it at another session's database):
 ```sh
 export UTOPIA_DATABASE_URL='postgres://.../dedicated_delivery_experiment'
 export UTOPIA_TEST_REQUIRE_DB=1
-cargo test --locked -p utopia-store --test phrase_delivery_prototype -- --test-threads=1 --nocapture
+cargo test --locked -p utopia-store --test phrase_delivery_prototype -- --ignored --skip crash_child --test-threads=1 --nocapture
 ```
 
 Linux PostgreSQL 16: **two experiment tests passed**. The ignored `crash_child` entry
-is an explicit subprocess probe; the parent invokes it three times with per-fixture
+is an explicit subprocess probe; both parent tests are also opt-in to avoid consuming unrelated test jobs in a shared test database. The command above runs the parents explicitly; the parent invokes it three times with per-fixture
 identifiers and kills/waits for those children. It is not a silently skipped crash
 case. Evidence includes:
 

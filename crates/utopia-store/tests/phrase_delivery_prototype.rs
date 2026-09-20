@@ -64,6 +64,7 @@ async fn status(pool: &PgPool, id: i64) -> anyhow::Result<String> {
 }
 
 #[tokio::test]
+#[ignore = "opt-in protocol experiment; requires a dedicated idle database"]
 async fn delivery_protocol_rollback_busy_late_arrivals_recovery_and_cost() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
@@ -283,6 +284,7 @@ impl Drop for ChildGuard {
 }
 
 #[tokio::test]
+#[ignore = "opt-in subprocess experiment; requires a dedicated idle database"]
 async fn process_exit_preserves_the_committed_delivery_boundary() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
