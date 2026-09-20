@@ -1339,6 +1339,100 @@ async fn computed_rule_descriptions_keep_the_expression_tree_and_identity() -> a
 }
 
 #[tokio::test]
+async fn written_magnitudes_keep_fractions_through_authenticated_adoption() -> anyhow::Result<()> {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        sqlx::query("UPDATE kb_members SET role='editor' WHERE kb_id=$1 AND user_id=$2")
+            .bind(f.kb)
+            .bind(auth.user_id)
+            .execute(&f.state.pool)
+            .await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        for (index, input) in ["1.00000025 million", "100.000025万"]
+            .into_iter()
+            .enumerate()
+        {
+            let form = format!("fractional_amount_{index}");
+            let raw = json!({"value":input,"unit":"$"});
+            // This endpoint adopts unbound typed value facts. Open statements are
+            // intentionally not used: their alignment is a different write path.
+            let (old, _) = utopia_store::graph::insert_value_fact(
+                &f.state.pool,
+                f.kb,
+                f.subject,
+                None,
+                &raw,
+                utopia_store::graph::Validity::default(),
+                0.9,
+            )
+            .await?;
+            sqlx::query("INSERT INTO fact_evidence(fact_id,chunk_id,document_id,doc_version,quote,proposed_predicate)
+                         VALUES ($1,$2,$3,1,$4,$5)")
+                .bind(old).bind(f.chunk).bind(f.document).bind(input).bind(&form).execute(&f.state.pool).await?;
+            let waiting = utopia_store::graph::value_facts_for_forms(
+                &f.state.pool,
+                f.kb,
+                std::slice::from_ref(&form),
+            )
+            .await?;
+            anyhow::ensure!(
+                waiting.len() == 1 && waiting[0].0 == old,
+                "fixture is not supported by adoption"
+            );
+            let response = app.clone().oneshot(Request::builder().method("POST")
+                .uri(format!("/api/v1/kbs/{}/ontology/adopt-predicate",f.kb))
+                .header("authorization",format!("Bearer {jwt}"))
+                .header("content-type","application/json")
+                .body(Body::from(json!({"key":form,"label":form,"forms":[form],"kind":"attribute","datatype":"number"}).to_string()))?).await?;
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+            anyhow::ensure!(
+                status == StatusCode::OK,
+                "adoption rejected: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+            let result: Value = serde_json::from_slice(&bytes)?;
+            anyhow::ensure!(result["remapped"] == 1, "no fact adopted: {result}");
+            let attribute = uuid(&result["id"]);
+            let (new, stored, supersedes): (Uuid,Value,Option<Uuid>) = sqlx::query_as(
+                "SELECT id,object_value,supersedes FROM facts WHERE kb_id=$1 AND predicate_id=$2 AND invalidated_at IS NULL")
+                .bind(f.kb).bind(attribute).fetch_one(&f.state.pool).await?;
+            anyhow::ensure!(
+                stored["value"].as_f64() == Some(1000000.25),
+                "adoption rounded away .25: {stored}"
+            );
+            anyhow::ensure!(
+                stored["unit"] == "$" && supersedes == Some(old),
+                "unit or history lost"
+            );
+            let original: Value = sqlx::query_scalar("SELECT object_value FROM facts WHERE id=$1")
+                .bind(old)
+                .fetch_one(&f.state.pool)
+                .await?;
+            anyhow::ensure!(original == raw, "historical value rewritten");
+            let evidence: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM fact_evidence WHERE fact_id=$1 AND quote=$2 AND document_id=$3)")
+                .bind(new).bind(input).bind(f.document).fetch_one(&f.state.pool).await?;
+            anyhow::ensure!(evidence, "adopted fact lost source evidence");
+            let audit: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE kb_id=$1 AND action='ontology.attribute_adopted' AND target_id=$2")
+                .bind(f.kb).bind(attribute).fetch_one(&f.state.pool).await?;
+            anyhow::ensure!(audit == 1, "missing adoption audit");
+        }
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
+#[tokio::test]
 async fn rule_reads_preserve_matches_and_empty_results() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
