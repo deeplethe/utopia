@@ -802,40 +802,6 @@ mod tests {
     const WORKS_FOR: &str = "https://schema.org/worksFor";
 
     #[test]
-    fn record_axis_subseconds_round_trip_without_changing_world_precision() {
-        for timestamp in [
-            "2026-09-20T00:00:00Z",
-            "2026-09-20T00:00:00.100Z",
-            "2026-09-20T00:00:00.100001Z",
-            "2026-09-20T00:00:00.100002Z",
-            "2026-09-20T00:00:00.123456789Z",
-        ] {
-            let original = at(timestamp);
-            let literal = dt(original);
-            assert_eq!(literal.datatype(), xsd::DATE_TIME);
-            assert_eq!(literal.value().parse::<DateTime<Utc>>().unwrap(), original);
-        }
-        assert_eq!(
-            dt(at("2026-09-20T00:00:00Z")).value(),
-            "2026-09-20T00:00:00Z"
-        );
-        let instant = at("2026-09-20T12:34:56.123456Z");
-        for (precision, lexical, datatype) in [
-            ("year", "2026", xsd::G_YEAR),
-            ("month", "2026-09", xsd::G_YEAR_MONTH),
-            ("day", "2026-09-20", xsd::DATE),
-            ("hour", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
-            ("minute", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
-            ("second", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
-        ] {
-            assert_eq!(
-                world_time(instant, Some(precision)),
-                Literal::new_typed_literal(lexical, datatype)
-            );
-        }
-    }
-
-    #[test]
     fn an_imported_class_keeps_its_own_iri() {
         let quads = export(Format::Turtle, |_, _, _| {});
         // 导入来的 schema.org 类导出去还是 schema:Person
@@ -922,6 +888,40 @@ mod tests {
             objects(&quads, STMT, "http://www.w3.org/ns/prov#invalidatedAtTime"),
             vec!["\"2026-03-01T00:00:00Z\"^^<http://www.w3.org/2001/XMLSchema#dateTime>"]
         );
+    }
+
+    #[test]
+    fn record_axis_subseconds_round_trip_without_changing_world_precision() {
+        for timestamp in [
+            "2026-09-20T00:00:00Z",
+            "2026-09-20T00:00:00.100Z",
+            "2026-09-20T00:00:00.100001Z",
+            "2026-09-20T00:00:00.100002Z",
+            "2026-09-20T00:00:00.123456789Z",
+        ] {
+            let original = at(timestamp);
+            let literal = dt(original);
+            assert_eq!(literal.datatype(), xsd::DATE_TIME);
+            assert_eq!(literal.value().parse::<DateTime<Utc>>().unwrap(), original);
+        }
+        assert_eq!(
+            dt(at("2026-09-20T00:00:00Z")).value(),
+            "2026-09-20T00:00:00Z"
+        );
+        let instant = at("2026-09-20T12:34:56.123456Z");
+        for (precision, lexical, datatype) in [
+            ("year", "2026", xsd::G_YEAR),
+            ("month", "2026-09", xsd::G_YEAR_MONTH),
+            ("day", "2026-09-20", xsd::DATE),
+            ("hour", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
+            ("minute", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
+            ("second", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
+        ] {
+            assert_eq!(
+                world_time(instant, Some(precision)),
+                Literal::new_typed_literal(lexical, datatype)
+            );
+        }
     }
 
     #[test]
