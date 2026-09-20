@@ -93,6 +93,17 @@ pub struct ConditionInput {
     pub operand: Option<serde_json::Value>,
 }
 
+fn validate_name(name: &str) -> AppResult<&str> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(AppError::invalid(
+            "bad_rule_name",
+            "A rule needs a name of 1-80 characters.",
+        ));
+    }
+    Ok(name)
+}
+
 /// 建一条规则。**校验在这里做完**：条件的 op 与操作数形状、谓词必须是属性、
 /// 结论的两种形状各自完整——库里的 CHECK 是最后一道，报错信息却是给人看的。
 #[allow(clippy::too_many_arguments)]
@@ -110,13 +121,7 @@ pub async fn create(
     conclude_expr: Option<serde_json::Value>,
     conditions: &[ConditionInput],
 ) -> AppResult<Uuid> {
-    let name = name.trim();
-    if name.is_empty() || name.chars().count() > 80 {
-        return Err(AppError::invalid(
-            "bad_rule_name",
-            "A rule needs a name of 1-80 characters.",
-        ));
-    }
+    let name = validate_name(name)?;
     if conditions.is_empty() {
         // 空合取恒真，会把整个类归进去——挡在入口比在求值器里默默不推更早
         return Err(AppError::invalid(
@@ -207,6 +212,7 @@ pub async fn update(
     conditions: Option<&[ConditionInput]>,
     conclusion: Option<&ConclusionInput>,
 ) -> AppResult<()> {
+    let name = name.map(validate_name).transpose()?;
     if let Some(cs) = conditions {
         if cs.is_empty() {
             return Err(AppError::invalid(
@@ -238,7 +244,7 @@ pub async fn update(
     )
     .bind(kb_id)
     .bind(rule_id)
-    .bind(name.map(str::trim))
+    .bind(name)
     .bind(description.map(str::trim))
     .bind(enabled)
     .bind(conclusion.map(|c| c.kind.as_str()))

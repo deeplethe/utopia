@@ -853,3 +853,117 @@ async fn a_rule_that_says_not_one_of_is_not_silently_skipped() -> anyhow::Result
         .await?;
     run
 }
+
+#[tokio::test]
+async fn renaming_a_rule_uses_the_creation_name_limits_before_any_write() -> anyhow::Result<()> {
+    use utopia_store::business_rules::{self, ConclusionInput, ConditionInput};
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let f = seed(&pool).await?;
+    let conditions = [ConditionInput {
+        group: 0,
+        predicate_id: f.thc,
+        op: "gt".into(),
+        operand: Some(serde_json::json!(5)),
+    }];
+    let id = business_rules::create(
+        &pool,
+        f.kb,
+        "original",
+        "",
+        f.well,
+        "typing",
+        Some(f.gas_bearing),
+        None,
+        None,
+        None,
+        &conditions,
+    )
+    .await?;
+    let changed = [ConditionInput {
+        group: 9,
+        predicate_id: f.thc,
+        op: "lt".into(),
+        operand: Some(serde_json::json!(10)),
+    }];
+    let conclusion = ConclusionInput {
+        kind: "attribute".into(),
+        type_id: None,
+        predicate_id: Some(f.category),
+        value: Some(serde_json::json!({"value":"changed"})),
+        expr: None,
+    };
+    for invalid in [
+        String::new(),
+        " \t\n ".into(),
+        "a".repeat(81),
+        "界".repeat(81),
+    ] {
+        let before = business_rules::list(&pool, f.kb).await?;
+        let result = business_rules::update(
+            &pool,
+            f.kb,
+            id,
+            Some(&invalid),
+            Some("changed"),
+            Some(false),
+            Some(&changed),
+            Some(&conclusion),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(utopia_core::AppError::Invalid {
+                    code: "bad_rule_name",
+                    ..
+                })
+            ),
+            "invalid name {:?}: {:?}",
+            invalid,
+            result
+        );
+        assert_eq!(
+            business_rules::list(&pool, f.kb).await?,
+            before,
+            "a rejected combined update must leave name, conditions and conclusion unchanged"
+        );
+    }
+    for valid in ["a".repeat(80), "界".repeat(80), "  trimmed  ".into()] {
+        business_rules::update(&pool, f.kb, id, Some(&valid), None, None, None, None).await?;
+        let rows = business_rules::list(&pool, f.kb).await?;
+        assert_eq!(rows[0]["name"], valid.trim());
+        // Saving the same name remains valid.
+        business_rules::update(&pool, f.kb, id, Some(&valid), None, None, None, None).await?;
+    }
+    business_rules::update(
+        &pool,
+        f.kb,
+        id,
+        None,
+        Some("changed"),
+        Some(false),
+        Some(&changed),
+        Some(&conclusion),
+    )
+    .await?;
+    let rows = business_rules::list(&pool, f.kb).await?;
+    assert_eq!(rows[0]["name"], "trimmed");
+    assert_eq!(rows[0]["description"], "changed");
+    assert_eq!(rows[0]["enabled"], false);
+    assert_eq!(rows[0]["conditions"][0]["group"], 9);
+    assert_eq!(rows[0]["conditions"][0]["op"], "lt");
+    assert_eq!(rows[0]["conclusion"], "attribute");
+    assert_eq!(
+        rows[0]["conclude_value"],
+        serde_json::json!({"value":"changed"})
+    );
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    Ok(())
+}
