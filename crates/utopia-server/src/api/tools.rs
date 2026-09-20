@@ -684,7 +684,8 @@ pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult
         return ToolResult::new(
             "remember requires non-empty text.".to_string(),
             json!({ "kind": "tool", "label": "remember", "detail": "empty" }),
-        );
+        )
+        .error();
     }
     match utopia_store::memory::append_episode(&ctx.state.pool, ctx.kb_id, text, occurred_at).await
     {
@@ -723,7 +724,8 @@ pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult
         Err(e) => ToolResult::new(
             format!("Failed to record: {e}"),
             json!({ "kind": "tool", "label": "remember", "detail": "failed" }),
-        ),
+        )
+        .error(),
     }
 }
 
