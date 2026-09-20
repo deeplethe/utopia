@@ -281,6 +281,68 @@ async fn find_entities_returns_ranked_ids_and_keeps_text() -> anyhow::Result<()>
 }
 
 #[tokio::test]
+async fn wrong_string_types_are_refused_and_audited_without_writing_memory() -> anyhow::Result<()> {
+    let Some(mut f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+    sqlx::query("UPDATE kb_members SET role='editor' WHERE kb_id=$1 AND user_id=$2")
+        .bind(f.kb)
+        .bind(auth.user_id)
+        .execute(&f.state.pool)
+        .await?;
+    f.token = utopia_store::tokens::issue(
+        &f.state.pool,
+        auth.user_id,
+        "argument types",
+        "write",
+        Some(&[f.kb]),
+        None,
+    )
+    .await?
+    .1;
+    let mut calls = 0_i64;
+    for (name, key) in [("search_chunks", "query"), ("remember", "text")] {
+        for value in [
+            json!(123),
+            json!(false),
+            json!(["pressure"]),
+            json!({"text":"pressure"}),
+        ] {
+            let response = f.call(name, json!({key:value})).await?;
+            assert_eq!(response["isError"], true, "{response}");
+            assert!(response["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("must be a string"));
+            assert!(response.get("structuredContent").is_none());
+            calls += 1;
+            let audited: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM audit_events WHERE kb_id=$1 AND action='mcp.tool_called'",
+            )
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+            assert_eq!(audited, calls);
+        }
+    }
+    let memories: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM documents WHERE kb_id=$1 AND external_key='memory:log'",
+    )
+    .bind(f.kb)
+    .fetch_one(&f.state.pool)
+    .await?;
+    assert_eq!(memories, 0);
+    let good = f.call("search_chunks", json!({"query":"orchard"})).await?;
+    assert_eq!(good["isError"], false);
+    assert!(!good["structuredContent"]["chunks"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    f.clean().await
+}
+
+#[tokio::test]
 async fn search_chunks_returns_chunk_and_document_ids_with_the_same_excerpt() -> anyhow::Result<()>
 {
     let Some(f) = Fixture::new().await? else {
