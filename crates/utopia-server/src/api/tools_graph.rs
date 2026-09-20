@@ -259,7 +259,10 @@ fn qualifiers_text(f: &EntityFact) -> String {
                 .value
                 .as_ref()
                 .and_then(|v| v.get("value"))
-                .map(|v| v.to_string().trim_matches('"').to_string())
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
                 .or_else(|| q.entity_name.clone())
                 .unwrap_or_else(|| "?".to_string());
             let u = q
@@ -1400,5 +1403,39 @@ mod tests {
             path_text(&back),
             "Anthropic ←founder— Dario Amodei (2021 → now) [90%]; Dario Amodei ←employee— OpenAI (2021 → now) [90%]"
         );
+    }
+    #[test]
+    fn qualifier_strings_are_text_not_json_encodings() {
+        use utopia_core::models::FactQualifier;
+        let mut f = fact("out", "works_for", "Acme", None);
+        assert_eq!(qualifiers_text(&f), "");
+        for (value, expected) in [
+            (json!({"value":"等级 \"A\""}), "等级 \"A\""),
+            (json!({"value":"ends\""}), "ends\""),
+            (json!({"value":"C:\\reports\\a.txt"}), "C:\\reports\\a.txt"),
+            (json!({"value":"line one\n第二行"}), "line one\n第二行"),
+            (json!({"value":"中文“引号”"}), "中文“引号”"),
+            (json!({"value":10}), "10"),
+            (json!({"value":true}), "true"),
+            (json!({"value":false}), "false"),
+            (json!({"value":10,"unit":"kg"}), "10 kg"),
+            (json!({"value":null}), "null"),
+        ] {
+            f.qualifiers = vec![FactQualifier {
+                qualifier_type_id: Uuid::now_v7(),
+                key: "detail".into(),
+                label: "Detail".into(),
+                value: Some(value),
+                entity_id: None,
+                entity_name: None,
+            }];
+            assert_eq!(qualifiers_text(&f), format!(" [detail: {expected}]"));
+        }
+        f.qualifiers[0].value = None;
+        f.qualifiers[0].entity_id = f.other_id;
+        f.qualifiers[0].entity_name = Some("Acme".into());
+        assert_eq!(qualifiers_text(&f), " [detail: Acme]");
+        f.qualifiers[0].entity_name = None;
+        assert_eq!(qualifiers_text(&f), " [detail: ?]");
     }
 }

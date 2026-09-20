@@ -347,6 +347,41 @@ async fn search_chunks_returns_chunk_and_document_ids_with_the_same_excerpt() ->
 }
 
 #[tokio::test]
+async fn entity_fact_qualifier_text_preserves_the_stored_string() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let value = json!({"value":"等级 \"A\" / C:\\reports\\a.txt\n第二行\""});
+    sqlx::query("UPDATE fact_qualifiers SET value=$2 WHERE fact_id=$1")
+        .bind(f.corrected)
+        .bind(&value)
+        .execute(&f.state.pool)
+        .await?;
+    let result = f
+        .call("entity_facts", json!({"entity_id":f.subject}))
+        .await?;
+    assert_eq!(result["isError"], false);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains(&format!("[weight: {}]", value["value"].as_str().unwrap())),
+        "{text}"
+    );
+    let fact = result["structuredContent"]["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|fact| fact["id"] == f.corrected.to_string())
+        .unwrap();
+    assert_eq!(fact["qualifiers"][0]["value"], value);
+    let stored: Value = sqlx::query_scalar("SELECT value FROM fact_qualifiers WHERE fact_id=$1")
+        .bind(f.corrected)
+        .fetch_one(&f.state.pool)
+        .await?;
+    assert_eq!(stored, value);
+    f.clean().await
+}
+
+#[tokio::test]
 async fn entity_facts_keeps_identity_values_filters_and_both_clocks() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
