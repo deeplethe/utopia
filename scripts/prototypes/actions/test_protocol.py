@@ -223,6 +223,47 @@ class ProtocolTests(unittest.TestCase):
             else:
                 os.environ['HTTP_PROXY'] = old
 
+    def test_real_process_exit_before_and_after_dispatch_boundary(self):
+        import subprocess
+        import sys
+        import selectors
+        for phase in ['prepared', 'dispatching', 'sending']:
+            key = uuid.uuid4()
+            child_code = """
+import os,sys,time
+from protocol import Model
+m=Model.__new__(Model)
+m.dsn=os.environ['UTOPIA_DATABASE_URL'];m.schema=sys.argv[1];m.port=int(sys.argv[2])
+row,_=m.prepare(sys.argv[3], {})
+if sys.argv[4]!='prepared': token=m.gate(row['id'],1)
+print('ready',flush=True)
+if sys.argv[4]=='sending': m.send(row['id'],token,'/drop')
+time.sleep(30)
+"""
+            child = subprocess.Popen([sys.executable, '-c', child_code, self.model.schema,
+                                      str(self.remote.server_port), str(key), phase],
+                                     stdout=subprocess.PIPE, text=True)
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(child.stdout, selectors.EVENT_READ)
+                    self.assertTrue(selector.select(timeout=5), 'child boundary deadline')
+                    self.assertEqual(child.stdout.readline().strip(), 'ready')
+                if phase == 'sending':
+                    self.assertTrue(self.remote.effect_committed.wait(3))
+                child.kill()
+                child.wait(timeout=5)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=5)
+                child.stdout.close()
+                if phase == 'sending':
+                    self.remote.release.set()
+            self.model.recover()
+            row = self.model.execute(key, {})
+            self.assertEqual(row['state'], 'prepared' if phase == 'prepared' else 'outcome_unknown')
+        self.assertEqual(self.remote.effects, 1)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
