@@ -1222,6 +1222,8 @@ export const en = {
     refineShort: "Refine types",
     /* ---- 业务规则（0021 / #277）---- */
     rulesShort: "Business rules",
+    ruleExpressionReadOnly: "This definition is read-only in this form. You can edit its name and description without changing its expressions or conditions.",
+    ruleUnknownExpression: "Unsupported expression (read-only)",
     rulesTitle: "Business rules",
     /* 说清三件事：谁写的、结论是什么身份、什么时候重算。第三件最容易被误解成
        「保存就生效」，而它其实等下一轮物化 */

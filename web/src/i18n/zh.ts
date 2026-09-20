@@ -1098,6 +1098,8 @@ export const zh: Strings = {
     uniquenessShort: "并存",
     refineShort: "类型消解",
     rulesShort: "业务规则",
+    ruleExpressionReadOnly: "此表单只读展示这条规则的定义。可修改名称和说明，表达式和条件保持原样。",
+    ruleUnknownExpression: "暂不支持的表达式（只读）",
     rulesTitle: "业务规则",
     rulesHint: "按实体自己的属性判定类别、或算出取值的规则。结论是派生的，依据没了就自动失效。",
     rulesEmpty: "还没有规则。",

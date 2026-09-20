@@ -610,3 +610,6 @@ async fn jobs_noop(
     let id = utopia_store::jobs::enqueue(&state.pool, "noop", json!({})).await?;
     Ok(Json(json!({ "job_id": id })))
 }
+
+#[cfg(test)]
+mod rule_metadata_tests;
