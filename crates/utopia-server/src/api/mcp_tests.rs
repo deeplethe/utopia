@@ -722,6 +722,116 @@ async fn missing_entities_and_empty_graph_reads_keep_their_results() -> anyhow::
 }
 
 #[tokio::test]
+async fn remembered_clock_times_do_not_receive_the_date_only_offset() -> anyhow::Result<()> {
+    let Some(mut f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+    sqlx::query("UPDATE kb_members SET role='editor' WHERE kb_id=$1 AND user_id=$2")
+        .bind(f.kb)
+        .bind(auth.user_id)
+        .execute(&f.state.pool)
+        .await?;
+    f.token = utopia_store::tokens::issue(
+        &f.state.pool,
+        auth.user_id,
+        "memory time test",
+        "write",
+        Some(&[f.kb]),
+        None,
+    )
+    .await?
+    .1;
+    for (input, stored, echoed) in [
+        ("2026", "2026-01-01 12:00", "2026"),
+        ("2026-09", "2026-09-01 12:00", "2026-09"),
+        ("2026-09-20", "2026-09-20 12:00", "2026-09-20"),
+        (
+            "2026-09-20T18:30:00Z",
+            "2026-09-20 18:30",
+            "2026-09-20T18:30:00Z",
+        ),
+        (
+            "2026-09-20T18:30:45.123Z",
+            "2026-09-20 18:30",
+            "2026-09-20T18:30:45Z",
+        ),
+        (
+            "2026-09-20T18:30:00+08:00",
+            "2026-09-20 10:30",
+            "2026-09-20T10:30:00Z",
+        ),
+        (
+            "2026-09-20T18:30:00-04:00",
+            "2026-09-20 22:30",
+            "2026-09-20T22:30:00Z",
+        ),
+        ("2026-09-20T23Z", "2026-09-20 23:00", "2026-09-20T23Z"),
+        ("2026-09-20T23:45Z", "2026-09-20 23:45", "2026-09-20T23:45Z"),
+        ("2026-09-20T23+02:00", "2026-09-20 21:00", "2026-09-20T21Z"),
+        (
+            "2026-09-20T23:45-02:00",
+            "2026-09-21 01:45",
+            "2026-09-21T01:45Z",
+        ),
+        // The shared parser deliberately falls back to day precision without a zone.
+        ("2026-09-20T18:30:00", "2026-09-20 12:00", "2026-09-20"),
+    ] {
+        let sentence = format!("inspection at {input}");
+        let result = f
+            .call("remember", json!({"text":sentence,"occurred_at":input}))
+            .await?;
+        assert_eq!(result["isError"], false);
+        assert!(result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("(effective {echoed})")));
+        let text: String = sqlx::query_scalar(
+            "SELECT text FROM chunks WHERE kb_id=$1 ORDER BY created_at DESC,seq DESC LIMIT 1",
+        )
+        .bind(f.kb)
+        .fetch_one(&f.state.pool)
+        .await?;
+        assert_eq!(text, format!("[{stored}] {sentence}"), "input: {input}");
+    }
+    // Missing/invalid input keeps the existing 'now' fallback.
+    for input in [Value::Null, json!(""), json!("not-a-date")] {
+        let before = chrono::Utc::now();
+        let result = f
+            .call("remember", json!({"text":"fallback","occurred_at":input}))
+            .await?;
+        let after = chrono::Utc::now();
+        assert_eq!(result["isError"], false);
+        let reply = result["content"][0]["text"].as_str().unwrap();
+        let echoed = reply
+            .split("(effective ")
+            .nth(1)
+            .unwrap()
+            .split(')')
+            .next()
+            .unwrap();
+        let time: chrono::DateTime<chrono::Utc> = echoed.parse()?;
+        assert!(before <= time && time <= after);
+        let text: String = sqlx::query_scalar(
+            "SELECT text FROM chunks WHERE kb_id=$1 ORDER BY created_at DESC,seq DESC LIMIT 1",
+        )
+        .bind(f.kb)
+        .fetch_one(&f.state.pool)
+        .await?;
+        assert_eq!(
+            text,
+            format!("[{}] fallback", time.format("%Y-%m-%d %H:%M"))
+        );
+    }
+    let queued: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE kind='memory_ingest' AND payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$1)")
+        .bind(f.kb).fetch_one(&f.state.pool).await?;
+    assert_eq!(queued, 15);
+    sqlx::query("DELETE FROM jobs WHERE kind='memory_ingest' AND payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$1)")
+        .bind(f.kb).execute(&f.state.pool).await?;
+    f.clean().await
+}
+
+#[tokio::test]
 async fn failed_reads_do_not_become_successful_empty_results() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());

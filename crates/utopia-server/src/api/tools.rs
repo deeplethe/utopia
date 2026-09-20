@@ -664,7 +664,11 @@ pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult
     let (occurred_at, occurred_text) = match args["occurred_at"].as_str().map(str::trim) {
         Some(s) if !s.is_empty() => match utopia_extract::parse_time(s) {
             Some((d, precision)) => (
-                d + chrono::Duration::hours(12),
+                if matches!(precision, "year" | "month" | "day") {
+                    d + chrono::Duration::hours(12)
+                } else {
+                    d
+                },
                 crate::time_text::world(d, Some(precision)),
             ),
             None => match parse_when(s) {
