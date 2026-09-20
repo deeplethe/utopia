@@ -2589,6 +2589,22 @@ export function walkProofSteps(
   return out;
 }
 
+/** 缩进到这一层为止。再深就不缩了——每层 ml-4 + pl-3 是 28 px，六层已经
+ *  吃掉 168 px，而面板只有 384 px 宽。服务器那道递归上限（0030）管的是链
+ *  能有多长，这里管的是窄屏里还看得清 */
+export const PROOF_INDENT_CAP = 6;
+
+/** 子证明那一块的缩进类。
+ *
+ * **按条件拼基础类，不叠覆盖类**：`cn` 是纯拼接（见 `ui/index.tsx`），仓库里
+ * 也没有 tailwind-merge。`ml-4` 与 `ml-0` 同时出现时，谁生效由生成的样式表
+ * 顺序决定，跟这里写的先后无关——那样的封顶等于没封 */
+export function proofIndentClass(depth: number): string {
+  return depth >= PROOF_INDENT_CAP
+    ? "mt-1"
+    : "mt-1 ml-4 pl-3 border-l border-edge";
+}
+
 /** 单条证明步：它的「子证明」在 `step.premises` 里再渲染一次 ProofSteps。
  *
  * 拆出来是为了让递归有界——这一个组件自己只画一层，premises 是再调
@@ -2657,16 +2673,7 @@ function ProofStepRow({
         )}
       </div>
       {step.premises.length > 0 && (
-        // 递归缩进：每层 ml-4 pl-3 在 384 px 面板里大约撑得过 6 层（24 × 6 =
-        // 144 px 边距），再深就把窄屏挤出网格。固定 6 层就停，避免深证明把
-        // 整块挤到右边。服务器（推理同一道闸）给了深度的上限，6 是给视
-        // 觉的安全余量
-        <div
-          className={
-            "mt-1 ml-4 pl-3 border-l border-edge " +
-            (depth >= 6 ? "ml-0 pl-0 border-l-0" : "")
-          }
-        >
+        <div className={proofIndentClass(depth)}>
           <ProofSteps kbId={kbId} steps={step.premises} depth={depth + 1} />
         </div>
       )}

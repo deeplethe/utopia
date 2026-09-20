@@ -18,7 +18,12 @@ vi.hoisted(() => {
   }
 });
 
-import { fmtInterval, walkProofSteps } from "./Graph";
+import {
+  fmtInterval,
+  proofIndentClass,
+  PROOF_INDENT_CAP,
+  walkProofSteps,
+} from "./Graph";
 import type { EntityFact, ProofStep } from "../api";
 
 const base: EntityFact = {
@@ -235,5 +240,50 @@ describe("walkProofSteps", () => {
     const at2 = walkProofSteps(tree, 2);
     expect(at0.map((r) => r.depth)).toEqual([0, 1]);
     expect(at2.map((r) => r.depth)).toEqual([2, 3]);
+  });
+});
+
+// 缩进封顶：`cn` 是纯拼接、仓库里没有 tailwind-merge，所以同时发出 `ml-4`
+// 与 `ml-0` 时谁生效由样式表顺序决定——那样的封顶形同虚设。这里钉住的是
+// 「深到一定层数就不再发缩进类」，而不是「再发一个类把它盖掉」
+describe("proofIndentClass", () => {
+  it("封顶以内：带缩进、内边距与那条竖线", () => {
+    for (let depth = 0; depth < PROOF_INDENT_CAP; depth++) {
+      const cls = proofIndentClass(depth);
+      expect(cls).toContain("ml-4");
+      expect(cls).toContain("pl-3");
+      expect(cls).toContain("border-l");
+    }
+  });
+
+  it("到了封顶就不再发缩进类", () => {
+    for (const depth of [PROOF_INDENT_CAP, PROOF_INDENT_CAP + 1, 12]) {
+      const cls = proofIndentClass(depth);
+      expect(cls).not.toContain("ml-4");
+      expect(cls).not.toContain("pl-3");
+      expect(cls).not.toContain("border-l");
+    }
+  });
+
+  it("任何深度都不会同时发出互相冲突的两个类", () => {
+    for (let depth = 0; depth <= 12; depth++) {
+      const parts = proofIndentClass(depth).split(/\s+/).filter(Boolean);
+      for (const [a, b] of [
+        ["ml-4", "ml-0"],
+        ["pl-3", "pl-0"],
+        ["border-l", "border-l-0"],
+      ]) {
+        expect(parts.includes(a) && parts.includes(b)).toBe(false);
+      }
+      // 同一个属性组里也不该出现两个取值
+      const margins = parts.filter((c) => /^ml-/.test(c));
+      expect(margins.length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("每一层都留着 mt-1，封顶只去掉横向的缩进", () => {
+    for (let depth = 0; depth <= 12; depth++) {
+      expect(proofIndentClass(depth)).toContain("mt-1");
+    }
   });
 });
