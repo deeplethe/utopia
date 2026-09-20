@@ -1914,6 +1914,7 @@ export const en = {
     alignmentStatements: (n: number) => (n === 1 ? "1 statement" : `${n} statements`),
     alignmentEntities: (n: number) => (n === 1 ? "1 thing" : `${n} things`),
     alignmentVotes: (first: string, second: string) => `Votes: ${first} · ${second}`,
+    alignmentKindWordBusy: "This kind word is being updated by another operation. Please try again shortly.",
     alignmentTyped: (kept: number, retired: number) =>
       `Typed graph recomputed: ${kept} statements typed, ${retired} rows retired`,
     defects: "Ontology contradicts itself",
