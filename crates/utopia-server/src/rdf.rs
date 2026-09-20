@@ -234,7 +234,7 @@ impl Format {
 
 fn dt(at: DateTime<Utc>) -> Literal {
     Literal::new_typed_literal(
-        at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
         xsd::DATE_TIME,
     )
 }
@@ -462,10 +462,11 @@ pub fn emit_fact(
     let predicate = f.predicate_id.and_then(|p| vocab.relation(p)).cloned();
     let object: Option<Term> = match (f.object_id, &f.object_value) {
         (Some(o), _) => Some(names.entity(o).into()),
-        (None, Some(v)) => f.predicate_id.map(|p| {
-            let (datatype, _) = vocab.literal_shape(p);
-            literal_value(v, datatype).into()
-        }),
+        (None, Some(v)) => {
+            // An unbound statement still has an object; only its datatype is unknown.
+            let datatype = f.predicate_id.and_then(|p| vocab.literal_shape(p).0);
+            Some(literal_value(v, datatype).into())
+        }
         _ => None,
     };
 
@@ -813,6 +814,100 @@ mod tests {
     const WORKS_FOR: &str = "https://schema.org/worksFor";
 
     #[test]
+    fn unbound_literal_objects_survive_both_formats() {
+        for value in [
+            serde_json::json!({"value": "待复检"}),
+            serde_json::json!({"value": "quote: \" and slash: \\"}),
+            serde_json::json!({"value": ""}),
+            serde_json::json!({"value": 0}),
+            serde_json::json!({"value": false}),
+            serde_json::json!({"value": null, "summary": "not specified"}),
+            serde_json::Value::Null,
+        ] {
+            let mut f = fact(5);
+            f.predicate_id = None;
+            f.surface_predicate = Some("状态".into());
+            f.object_id = None;
+            f.object_value = Some(value.clone());
+            f.documents = vec![id(20)];
+            f.quotes = vec!["设备 A 待复检".into()];
+            f.supersedes = Some(id(6));
+            for retracted in [false, true] {
+                f.invalidated_at = retracted.then(|| at("2026-02-01T00:00:00Z"));
+                let mut sets = Vec::new();
+                for format in [Format::Turtle, Format::JsonLd] {
+                    let quads = export(format, |sink, names, vocab| {
+                        emit_fact(sink, names, vocab, &f, at("2026-06-01T00:00:00Z")).unwrap();
+                    });
+                    assert_eq!(
+                        objects(&quads, STMT, rdf::OBJECT.as_str()),
+                        vec![literal_value(&value, None).to_string()],
+                        "unbound statement lost its literal object: {value}"
+                    );
+                    assert!(objects(&quads, STMT, rdf::PREDICATE.as_str()).is_empty());
+                    assert!(!quads.iter().any(|q| q.subject.to_string() == SUBJ));
+                    sets.push(quads.into_iter().collect::<std::collections::HashSet<_>>());
+                }
+                assert_eq!(sets[0], sets[1]);
+            }
+        }
+    }
+
+    #[test]
+    fn bound_literal_datatypes_survive_both_formats() {
+        for (datatype, value, expected) in [
+            (
+                "number",
+                serde_json::json!(0),
+                Literal::new_typed_literal("0", xsd::DECIMAL),
+            ),
+            (
+                "text",
+                serde_json::json!("待复检"),
+                Literal::new_simple_literal("待复检"),
+            ),
+            (
+                "bool",
+                serde_json::json!(false),
+                Literal::new_typed_literal("false", xsd::BOOLEAN),
+            ),
+        ] {
+            let mut f = fact(5);
+            f.predicate_id = Some(id(4));
+            f.object_id = None;
+            f.object_value = Some(serde_json::json!({"value": value}));
+            for format in [Format::Turtle, Format::JsonLd] {
+                let quads = export(format, |sink, names, _| {
+                    let mut property = relation(4, "value", None, "attribute");
+                    property.datatype = Some(datatype.into());
+                    let vocab = vocabulary(names, &[], &[property]);
+                    emit_fact(sink, names, &vocab, &f, at("2026-06-01T00:00:00Z")).unwrap();
+                });
+                assert_eq!(
+                    objects(&quads, STMT, rdf::OBJECT.as_str()),
+                    vec![expected.to_string()]
+                );
+                assert!(quads.iter().any(|q| q.subject.to_string() == SUBJ
+                    && q.object == Term::Literal(expected.clone())));
+            }
+        }
+    }
+
+    #[test]
+    fn an_absent_object_is_not_an_empty_literal() {
+        let mut f = fact(5);
+        f.predicate_id = None;
+        f.object_id = None;
+        f.object_value = None;
+        for format in [Format::Turtle, Format::JsonLd] {
+            let quads = export(format, |sink, names, vocab| {
+                emit_fact(sink, names, vocab, &f, at("2026-06-01T00:00:00Z")).unwrap();
+            });
+            assert!(objects(&quads, STMT, rdf::OBJECT.as_str()).is_empty());
+        }
+    }
+
+    #[test]
     fn an_imported_class_keeps_its_own_iri() {
         let quads = export(Format::Turtle, |_, _, _| {});
         // 导入来的 schema.org 类导出去还是 schema:Person
@@ -899,6 +994,40 @@ mod tests {
             objects(&quads, STMT, "http://www.w3.org/ns/prov#invalidatedAtTime"),
             vec!["\"2026-03-01T00:00:00Z\"^^<http://www.w3.org/2001/XMLSchema#dateTime>"]
         );
+    }
+
+    #[test]
+    fn record_axis_subseconds_round_trip_without_changing_world_precision() {
+        for timestamp in [
+            "2026-09-20T00:00:00Z",
+            "2026-09-20T00:00:00.100Z",
+            "2026-09-20T00:00:00.100001Z",
+            "2026-09-20T00:00:00.100002Z",
+            "2026-09-20T00:00:00.123456789Z",
+        ] {
+            let original = at(timestamp);
+            let literal = dt(original);
+            assert_eq!(literal.datatype(), xsd::DATE_TIME);
+            assert_eq!(literal.value().parse::<DateTime<Utc>>().unwrap(), original);
+        }
+        assert_eq!(
+            dt(at("2026-09-20T00:00:00Z")).value(),
+            "2026-09-20T00:00:00Z"
+        );
+        let instant = at("2026-09-20T12:34:56.123456Z");
+        for (precision, lexical, datatype) in [
+            ("year", "2026", xsd::G_YEAR),
+            ("month", "2026-09", xsd::G_YEAR_MONTH),
+            ("day", "2026-09-20", xsd::DATE),
+            ("hour", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
+            ("minute", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
+            ("second", "2026-09-20T12:34:56Z", xsd::DATE_TIME),
+        ] {
+            assert_eq!(
+                world_time(instant, Some(precision)),
+                Literal::new_typed_literal(lexical, datatype)
+            );
+        }
     }
 
     #[test]
