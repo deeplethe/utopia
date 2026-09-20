@@ -132,3 +132,12 @@ Today's extractor stays as it is until cut 2 passes its thresholds.
 - Whether derivation rules recover the implicit facts that write-time binding found (Re-DocRED's country and located-in relations are a fifth of its pairs).
 - Competency questions for a new knowledge base that has none yet.
 - How much of identity the deterministic evidence settles before the adjudicator is needed.
+
+## Proposed delivery follow-up · 2026-09-21 (not accepted or implemented)
+
+[The phrase-delivery experiment](../../scripts/prototypes/phrase-delivery/README.md)
+proposes persisting each human phrase decision with its materialization-only job.
+It records real database, process-exit and mutation evidence, and the unresolved
+HTTP/UI and recovery contract. This does not alter the accepted projection semantics
+above and registers no production handler. Agree and land the delivery record before
+wiring the public route; unused prototype helpers alone do not resolve #800.
