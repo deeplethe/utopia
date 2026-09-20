@@ -2526,12 +2526,67 @@ function ProofChain({ kbId, d }: { kbId: string; d: DerivedFact }) {
  * `<ol>`。深度的视觉上限由服务器决定（0030 推理的同一道闸），不在
  * 客户端重画——叶子那一步 `premises` 为空，递归停在这里
  */
-function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
+export function ProofSteps({
+  kbId,
+  steps,
+  depth = 0,
+}: {
+  kbId: string;
+  steps: ProofStep[];
+  /** 递归深度：顶层从 0 开始，子证明每层加 1。超过 6 不再缩进（窄屏） */
+  depth?: number;
+}) {
   return (
     <ol className="space-y-2">
-      {steps.map((st) => <ProofStepRow key={st.fact_id} kbId={kbId} step={st} />)}
+      {steps.map((st) => (
+        <ProofStepRow key={st.fact_id} kbId={kbId} step={st} depth={depth} />
+      ))}
     </ol>
   );
+}
+
+/** 证明树压平后的一行：保留深度与父链，单测据此断言 */
+export interface WalkedRow {
+  fact_id: string;
+  depth: number;
+  subject: string;
+  predicate: string | null;
+  object: string | null;
+  retracted: boolean;
+  has_premises: boolean;
+  evidence_count: number;
+}
+
+/** 把递归 `premises` 树压平成一行行。深度优先，子证明排在父之后。
+ *
+ * 这是递归渲染的「骨架」：组件递归地走 `premises`，单测通过这个函数
+ * 断言「三层嵌套时，叶子不再展开，深度单调递增，相邻行深度差不超过 1」。
+ * 渲染是组件的事，shape 是 walker 的事
+ */
+export function walkProofSteps(
+  steps: ProofStep[],
+  depth = 0,
+): WalkedRow[] {
+  const out: WalkedRow[] = [];
+  const visit = (nodes: ProofStep[], d: number) => {
+    for (const s of nodes) {
+      out.push({
+        fact_id: s.fact_id,
+        depth: d,
+        subject: s.subject,
+        predicate: s.predicate,
+        object: s.object,
+        retracted: s.retracted,
+        has_premises: s.premises.length > 0,
+        evidence_count: s.evidence.length,
+      });
+      if (s.premises.length > 0) {
+        visit(s.premises, d + 1);
+      }
+    }
+  };
+  visit(steps, depth);
+  return out;
 }
 
 /** 单条证明步：它的「子证明」在 `step.premises` 里再渲染一次 ProofSteps。
@@ -2540,7 +2595,15 @@ function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
  * 一次顶层组件（同一份渲染逻辑，不另写一份），靠 `premises` 数组
  * 自然终止。深度的递归深度上限由服务器（0030），不在客户端画
  */
-function ProofStepRow({ kbId, step }: { kbId: string; step: ProofStep }) {
+function ProofStepRow({
+  kbId,
+  step,
+  depth,
+}: {
+  kbId: string;
+  step: ProofStep;
+  depth: number;
+}) {
   return (
     <li className="text-fine">
       <div className="flex items-baseline gap-2 flex-wrap">
@@ -2594,8 +2657,17 @@ function ProofStepRow({ kbId, step }: { kbId: string; step: ProofStep }) {
         )}
       </div>
       {step.premises.length > 0 && (
-        <div className="mt-1 ml-4 border-l border-edge pl-3">
-          <ProofSteps kbId={kbId} steps={step.premises} />
+        // 递归缩进：每层 ml-4 pl-3 在 384 px 面板里大约撑得过 6 层（24 × 6 =
+        // 144 px 边距），再深就把窄屏挤出网格。固定 6 层就停，避免深证明把
+        // 整块挤到右边。服务器（推理同一道闸）给了深度的上限，6 是给视
+        // 觉的安全余量
+        <div
+          className={
+            "mt-1 ml-4 pl-3 border-l border-edge " +
+            (depth >= 6 ? "ml-0 pl-0 border-l-0" : "")
+          }
+        >
+          <ProofSteps kbId={kbId} steps={step.premises} depth={depth + 1} />
         </div>
       )}
     </li>

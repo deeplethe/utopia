@@ -18,8 +18,8 @@ vi.hoisted(() => {
   }
 });
 
-import { fmtInterval } from "./Graph";
-import type { EntityFact } from "../api";
+import { fmtInterval, walkProofSteps } from "./Graph";
+import type { EntityFact, ProofStep } from "../api";
 
 const base: EntityFact = {
   id: "f",
@@ -139,5 +139,101 @@ describe("fmtInterval", () => {
 
   it("state 什么都没有时返回空串", () => {
     expect(fmtInterval({ ...base, temporal: "state" })).toBe("");
+  });
+});
+
+// 递归证明树（0030）的形状：服务端 proof() 返回的 ProofStep 现在带
+// premises: ProofStep[]，前端把它压平成 WalkedRow[] 喂给渲染组件。
+// 这里断言三件事：
+//   1. 深度单调 + 跨过 has_premises 边界才 +1（叶子的 premises 为空就停）
+//   2. 三层嵌套的 9-节点树产出 9 行，深度序列为 [0,1,2,3,2,3,1,2,3]，
+//      即 DFS 前序：父 → 第一个子 → 第一个孙 → … → 第一个叶 → 兄弟 →
+//   3. 叶子行的 has_premises=false；不是叶子的行它必为 true
+//       A
+//      / \
+//     B   C
+//    / \   \
+//   D   E   F
+//   |   |   |
+//   G   H   I   ← 叶子（premises 为空，walker 不下钻）
+
+function step(
+  id: string,
+  premises: ProofStep[] = [],
+  partial: Partial<ProofStep> = {},
+): ProofStep {
+  return {
+    seq: 0,
+    fact_id: id,
+    subject_id: id,
+    subject: id,
+    predicate_id: null,
+    predicate: "→",
+    object_id: null,
+    object: id,
+    valid_from: null,
+    valid_to: null,
+    confidence: 1,
+    retracted: false,
+    evidence: [],
+    premises,
+    ...partial,
+  };
+}
+
+describe("walkProofSteps", () => {
+  it("叶子（premises 为空）只有一个深度 0 的行", () => {
+    const tree = [step("leaf")];
+    const rows = walkProofSteps(tree);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].depth).toBe(0);
+    expect(rows[0].has_premises).toBe(false);
+    expect(rows[0].fact_id).toBe("leaf");
+  });
+
+  it("三层嵌套的树产出 9 行，深度 0..3 单调", () => {
+    const tree = [
+      step("A", [
+        step("B", [step("D", [step("G")]), step("E", [step("H")])]),
+        step("C", [step("F", [step("I")])]),
+      ]),
+    ];
+    const rows = walkProofSteps(tree);
+    expect(rows.map((r) => r.fact_id)).toEqual([
+      "A", "B", "D", "G", "E", "H", "C", "F", "I",
+    ]);
+    expect(rows.map((r) => r.depth)).toEqual([
+      0, 1, 2, 3, 2, 3, 1, 2, 3,
+    ]);
+    // 深度从不超过 4（一个 `premises` 边只 +1）；从不低于 0；
+    // 同一行 `premises` 内的 depth 差只可能是 +1（刚下钻）或非正（爬回祖先或平移到同层）
+    for (const r of rows) {
+      expect(r.depth).toBeGreaterThanOrEqual(0);
+      expect(r.depth).toBeLessThanOrEqual(3);
+    }
+    // 进入 premises 时 +1，退出时不强制 -1（可以一次回到祖先）
+    for (let i = 1; i < rows.length; i++) {
+      const diff = rows[i].depth - rows[i - 1].depth;
+      expect(diff).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("叶子行 has_premises=false；非叶子行必为 true", () => {
+    const tree = [
+      step("A", [step("B", [step("leaf")])]),
+    ];
+    const rows = walkProofSteps(tree);
+    const byId = Object.fromEntries(rows.map((r) => [r.fact_id, r]));
+    expect(byId["A"].has_premises).toBe(true);
+    expect(byId["B"].has_premises).toBe(true);
+    expect(byId["leaf"].has_premises).toBe(false);
+  });
+
+  it("深度起点偏移：depth=2 时整棵树每个节点的深度都比直接调用多 2", () => {
+    const tree = [step("A", [step("B")])];
+    const at0 = walkProofSteps(tree, 0);
+    const at2 = walkProofSteps(tree, 2);
+    expect(at0.map((r) => r.depth)).toEqual([0, 1]);
+    expect(at2.map((r) => r.depth)).toEqual([2, 3]);
   });
 });
