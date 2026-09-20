@@ -381,20 +381,41 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
             let conditions = r["conditions"]
                 .as_array()
                 .map(|cs| {
-                    cs.iter()
-                        .map(|c| {
-                            format!(
-                                "{} {} {}",
-                                c["predicate_label"].as_str().unwrap_or("?"),
-                                c["op"].as_str().unwrap_or("?"),
-                                c["operand"]
-                                    .as_str()
-                                    .map(str::to_string)
-                                    .unwrap_or_else(|| c["operand"].to_string()),
-                            )
+                    // The store orders conditions by group and sequence. Keep that
+                    // order while showing the same OR-of-ANDs the evaluator uses.
+                    let mut groups: Vec<(i64, Vec<String>)> = Vec::new();
+                    for c in cs {
+                        let group = c["group"].as_i64().unwrap_or(0);
+                        let condition = format!(
+                            "{} {} {}",
+                            c["predicate_label"].as_str().unwrap_or("?"),
+                            c["op"].as_str().unwrap_or("?"),
+                            c["operand"]
+                                .as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| c["operand"].to_string()),
+                        );
+                        if let Some((_, conditions)) =
+                            groups.last_mut().filter(|(g, _)| *g == group)
+                        {
+                            conditions.push(condition);
+                        } else {
+                            groups.push((group, vec![condition]));
+                        }
+                    }
+                    let alternatives = groups.len() > 1;
+                    groups
+                        .into_iter()
+                        .map(|(_, conditions)| {
+                            let text = conditions.join(" AND ");
+                            if alternatives && conditions.len() > 1 {
+                                format!("({text})")
+                            } else {
+                                text
+                            }
                         })
                         .collect::<Vec<_>>()
-                        .join(" AND ")
+                        .join(" OR ")
                 })
                 .unwrap_or_default();
             let concludes = if r["conclusion"] == "typing" {

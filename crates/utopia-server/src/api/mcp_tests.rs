@@ -919,3 +919,82 @@ async fn rule_reads_preserve_matches_and_empty_results() -> anyhow::Result<()> {
     );
     f.clean().await
 }
+
+#[tokio::test]
+async fn rule_descriptions_preserve_condition_groups() -> anyhow::Result<()> {
+    use utopia_store::business_rules::{self, ConditionInput};
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (ty, attr): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT subject_type_id, conclude_predicate_id FROM attribute_rules WHERE kb_id=$1",
+    )
+    .bind(f.kb)
+    .fetch_one(&f.state.pool)
+    .await?;
+    for (name, groups, expected) in [
+        (
+            "single",
+            [0, 0, 0],
+            "weight gt 1 AND weight lt 9 AND weight gte 7",
+        ),
+        (
+            "mixed",
+            [0, 0, 1],
+            "(weight gt 1 AND weight lt 9) OR weight gte 7",
+        ),
+        (
+            "sparse",
+            [2, 2, 9],
+            "(weight gt 1 AND weight lt 9) OR weight gte 7",
+        ),
+        (
+            "singletons",
+            [2, 9, 12],
+            "weight gt 1 OR weight lt 9 OR weight gte 7",
+        ),
+    ] {
+        let cs: Vec<_> = groups
+            .into_iter()
+            .zip([("gt", 1), ("lt", 9), ("gte", 7)])
+            .map(|(group, (op, n))| ConditionInput {
+                group,
+                predicate_id: attr,
+                op: op.into(),
+                operand: Some(json!(n)),
+            })
+            .collect();
+        business_rules::create(
+            &f.state.pool,
+            f.kb,
+            name,
+            "",
+            ty,
+            "attribute",
+            None,
+            Some(attr),
+            Some(json!({"value":8})),
+            None,
+            &cs,
+        )
+        .await?;
+        let before = business_rules::list(&f.state.pool, f.kb).await?;
+        let facts_before: Value = sqlx::query_scalar(
+            "SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY id),'[]') FROM derived_facts d WHERE kb_id=$1"
+        ).bind(f.kb).fetch_one(&f.state.pool).await?;
+        let response = f.call("list_rules", json!({})).await?;
+        assert_eq!(response["isError"], false);
+        let text = response["content"][0]["text"].as_str().unwrap();
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(&format!("{name} [")))
+            .unwrap();
+        assert!(line.contains(&format!("where {expected} ⇒")), "{line}");
+        assert_eq!(business_rules::list(&f.state.pool, f.kb).await?, before);
+        let facts_after: Value = sqlx::query_scalar(
+            "SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY id),'[]') FROM derived_facts d WHERE kb_id=$1"
+        ).bind(f.kb).fetch_one(&f.state.pool).await?;
+        assert_eq!(facts_after, facts_before);
+    }
+    f.clean().await
+}
