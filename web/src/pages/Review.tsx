@@ -1,10 +1,10 @@
+import { alignmentErrorMessage } from "./reviewErrors";
 import { useEffect, useState } from "react";
 import { LayoutDashboard } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   api,
-  ApiError,
   type AgentDecision,
   type AgentPrecedent,
   type AxiomViolation,
@@ -1365,9 +1365,7 @@ export function Review() {
     mutationFn: ({ kindWord, cls }: { kindWord: string; cls: string | null }) =>
       api.decideAlignmentKindWord(kb!.id, kindWord, cls),
     onError: (e) => toast.error(
-      e instanceof ApiError && e.status === 409
-        ? S.review.alignmentKindWordBusy
-        : (e as Error).message,
+      alignmentErrorMessage(e),
     ),
     onSettled: invalidate,
   });

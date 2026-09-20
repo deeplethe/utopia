@@ -262,10 +262,11 @@ pub async fn decide_and_apply_human(
             if matches!(&error, AppError::Db(sqlx::Error::Database(e))
                 if e.code().as_deref() == Some("55P03"))
             {
-                return Err(AppError::Conflict(
-                    "This kind word is being updated by another operation. Please try again shortly."
+                return Err(AppError::CodedConflict {
+                    code: "alignment_busy",
+                    message: "This kind word is being updated by another operation. Please try again shortly."
                         .into(),
-                ));
+                });
             }
             Err(error)
         }
