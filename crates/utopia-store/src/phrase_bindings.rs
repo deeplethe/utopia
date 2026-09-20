@@ -226,6 +226,17 @@ pub async fn decide(
     sig: &PhraseSignature,
     d: Decision<'_>,
 ) -> AppResult<bool> {
+    let mut connection = pool.acquire().await?;
+    decide_on(&mut connection, kb_id, sig, d).await
+}
+
+/// Isolated delivery prototype: caller owns the decision/enqueue transaction.
+pub async fn decide_on(
+    connection: &mut sqlx::PgConnection,
+    kb_id: Uuid,
+    sig: &PhraseSignature,
+    d: Decision<'_>,
+) -> AppResult<bool> {
     if !matches!(d.status, "bound" | "none" | "undecided") {
         return Err(AppError::Validation(format!(
             "unknown binding status {:?}",
@@ -287,7 +298,7 @@ pub async fn decide(
     .bind(i32::try_from(sig.count).unwrap_or(i32::MAX))
     .bind(&sig.examples)
     .bind(d.decided_by)
-    .execute(pool)
+    .execute(connection)
     .await?;
     Ok(res.rows_affected() > 0)
 }
