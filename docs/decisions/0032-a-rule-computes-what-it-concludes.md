@@ -66,3 +66,10 @@ If it is ever wanted it needs its own record, answering what a completeness clai
 - **How deep before the picker loses.** Stated above as a concession, not settled. One operator is certainly a picker; nobody has yet said what they need beyond that.
 - **Does a computed conclusion feed the next rule?** It should — [0030](0030-a-rule-may-read-what-a-rule-concluded.md) puts a concluded value back in the fact pool and says nothing about how the value was arrived at. Worth a test rather than an assumption.
 - **Rounding and display.** A ratio of two readings is a long decimal. What the ledger stores and what the panel shows are not necessarily the same, and neither is decided here.
+
+## Proposed revision · 2026-09-21 (not accepted or implemented)
+
+An isolated protocol experiment and the exact decisions requested are recorded in
+[the experiment report](../../scripts/prototypes/expressions/README.md).
+This proposal does not change the accepted decisions or implementation status above.
+It must be reviewed before enabling the corresponding production write/sender path.
