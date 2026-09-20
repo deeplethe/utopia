@@ -120,3 +120,10 @@ A run is synchronous in this cut: a person presses Run and waits for the row. Wh
 - **A second kind.** Email, or a tool over MCP, would share the parameters, the grants and the log and differ only in the runner. The `kind` column is the door; each kind is its own record.
 - **Who asks for a grant.** A base admin who wants an action has to find the deployment admin. A request queue is the shape data sources never grew either.
 - **Naming.** `audit_events.action` names what a person did; an action here is a declared call. The two words meet only in the ledger, where a row reads `action.run`.
+
+## Proposed revision · 2026-09-21 (not accepted or implemented)
+
+An isolated protocol experiment and the exact decisions requested are recorded in
+[the experiment report](../../scripts/prototypes/actions/README.md).
+This proposal does not change the accepted decisions or implementation status above.
+It must be reviewed before enabling the corresponding production write/sender path.
