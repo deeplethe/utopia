@@ -683,6 +683,83 @@ async fn changes_returns_fact_ids_and_a_reusable_correction_timestamp() -> anyho
 }
 
 #[tokio::test]
+async fn opposite_directions_reach_authenticated_path_output() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let (a, b, p) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO relation_types(id,kb_id,key,label) VALUES ($1,$2,'supplies','supplies')",
+        )
+        .bind(p)
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+        for (id, name) in [(a, "A"), (b, "B")] {
+            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,$3)")
+                .bind(id)
+                .bind(f.kb)
+                .bind(name)
+                .execute(&f.state.pool)
+                .await?;
+        }
+        for (s, o) in [(a, b), (b, a)] {
+            utopia_store::graph::insert_fact(
+                &f.state.pool,
+                f.kb,
+                s,
+                Some(p),
+                o,
+                utopia_store::graph::Validity::starting(
+                    Some("2026-01-01T00:00:00Z".parse()?),
+                    Some("day"),
+                ),
+                0.9,
+            )
+            .await?;
+        }
+        let snapshot_sql = "SELECT jsonb_build_array(
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM facts t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM entities t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM relation_types t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM derived_facts t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM rules t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM jobs t WHERE payload->>'kb_id'=$1::text))";
+        let before: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        for (from, to, left, right) in [
+            (a, b, "A —supplies→ B", "A ←supplies— B"),
+            (b, a, "B —supplies→ A", "B ←supplies— A"),
+        ] {
+            let result = f
+                .call(
+                    "paths_between",
+                    json!({"from":from,"to":to,"max_hops":1,"at":"2026-06-01"}),
+                )
+                .await?;
+            let text = result["content"][0]["text"].as_str().unwrap_or_default();
+            anyhow::ensure!(
+                text.contains(left) && text.contains(right),
+                "opposite path lost: {text}"
+            );
+            anyhow::ensure!(text.contains("2 paths"), "unexpected path count: {text}");
+        }
+        let after: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        anyhow::ensure!(before == after, "path read changed business data");
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
+#[tokio::test]
 async fn missing_entities_and_empty_graph_reads_keep_their_results() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
@@ -1631,81 +1708,4 @@ async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Re
         0
     );
     f.clean().await
-}
-
-#[tokio::test]
-async fn opposite_directions_reach_authenticated_path_output() -> anyhow::Result<()> {
-    let Some(f) = Fixture::new().await? else {
-        return Ok(());
-    };
-    async fn check(f: &Fixture) -> anyhow::Result<()> {
-        let (a, b, p) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
-        sqlx::query(
-            "INSERT INTO relation_types(id,kb_id,key,label) VALUES ($1,$2,'supplies','supplies')",
-        )
-        .bind(p)
-        .bind(f.kb)
-        .execute(&f.state.pool)
-        .await?;
-        for (id, name) in [(a, "A"), (b, "B")] {
-            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,$3)")
-                .bind(id)
-                .bind(f.kb)
-                .bind(name)
-                .execute(&f.state.pool)
-                .await?;
-        }
-        for (s, o) in [(a, b), (b, a)] {
-            utopia_store::graph::insert_fact(
-                &f.state.pool,
-                f.kb,
-                s,
-                Some(p),
-                o,
-                utopia_store::graph::Validity::starting(
-                    Some("2026-01-01T00:00:00Z".parse()?),
-                    Some("day"),
-                ),
-                0.9,
-            )
-            .await?;
-        }
-        let snapshot_sql = "SELECT jsonb_build_array(
-            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM facts t WHERE kb_id=$1),
-            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM entities t WHERE kb_id=$1),
-            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM relation_types t WHERE kb_id=$1),
-            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM derived_facts t WHERE kb_id=$1),
-            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM rules t WHERE kb_id=$1),
-            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM jobs t WHERE payload->>'kb_id'=$1::text))";
-        let before: Value = sqlx::query_scalar(snapshot_sql)
-            .bind(f.kb)
-            .fetch_one(&f.state.pool)
-            .await?;
-        for (from, to, left, right) in [
-            (a, b, "A —supplies→ B", "A ←supplies— B"),
-            (b, a, "B —supplies→ A", "B ←supplies— A"),
-        ] {
-            let result = f
-                .call(
-                    "paths_between",
-                    json!({"from":from,"to":to,"max_hops":1,"at":"2026-06-01"}),
-                )
-                .await?;
-            let text = result["content"][0]["text"].as_str().unwrap_or_default();
-            anyhow::ensure!(
-                text.contains(left) && text.contains(right),
-                "opposite path lost: {text}"
-            );
-            anyhow::ensure!(text.contains("2 paths"), "unexpected path count: {text}");
-        }
-        let after: Value = sqlx::query_scalar(snapshot_sql)
-            .bind(f.kb)
-            .fetch_one(&f.state.pool)
-            .await?;
-        anyhow::ensure!(before == after, "path read changed business data");
-        Ok(())
-    }
-    let result = check(&f).await;
-    let cleanup = f.clean().await;
-    result.and(cleanup)
 }
