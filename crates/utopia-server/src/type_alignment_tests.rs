@@ -364,3 +364,279 @@ async fn human_none_wins_when_agent_is_already_writing_its_projection() -> anyho
     );
     Ok(())
 }
+
+// Exercise the public route, including authentication and its success side effects.
+mod review_locks {
+    use super::*;
+    use axum::http::StatusCode;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    async fn editor(f: &Fx) -> anyhow::Result<(Uuid, String)> {
+        let user = Uuid::now_v7();
+        sqlx::query("INSERT INTO users(id,org_id,email,password_hash,display_name) VALUES($1,$2,$3,'unused','Lock test')")
+            .bind(user).bind(f.org).bind(format!("{user}@example.test")).execute(&f.pool).await?;
+        sqlx::query("INSERT INTO kb_members(kb_id,user_id,role) VALUES($1,$2,'editor')")
+            .bind(f.kb)
+            .bind(user)
+            .execute(&f.pool)
+            .await?;
+        Ok((user, crate::auth::issue_token(&f.state, user)?))
+    }
+
+    async fn request(
+        state: AppState,
+        kb: Uuid,
+        token: &str,
+        class: Option<&str>,
+    ) -> anyhow::Result<(StatusCode, Value)> {
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri(format!(
+                "/api/v1/kbs/{kb}/review/alignment/kind-words/company"
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(json!({"class":class}).to_string()))?;
+        let response = crate::api::router(state, &Default::default())
+            .oneshot(request)
+            .await?;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 4096).await?;
+        Ok((status, serde_json::from_slice(&body)?))
+    }
+
+    async fn snapshot(f: &Fx) -> anyhow::Result<Value> {
+        let binding: Value =
+            sqlx::query_scalar("SELECT to_jsonb(b) FROM type_bindings b WHERE kb_id=$1")
+                .bind(f.kb)
+                .fetch_one(&f.pool)
+                .await?;
+        let entities: Value = sqlx::query_scalar(
+            "SELECT jsonb_agg(to_jsonb(e) ORDER BY id) FROM entities e WHERE kb_id=$1",
+        )
+        .bind(f.kb)
+        .fetch_one(&f.pool)
+        .await?;
+        let jobs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE payload->>'kb_id'=$1")
+            .bind(f.kb.to_string())
+            .fetch_one(&f.pool)
+            .await?;
+        let audit: i64 = sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE kb_id=$1 AND action='alignment.kind_word_decided'")
+            .bind(f.kb).fetch_one(&f.pool).await?;
+        Ok(json!({"binding":binding,"entities":entities,"jobs":jobs,"audit":audit}))
+    }
+
+    async fn wait_for_lock(pool: &sqlx::PgPool, blocker: i32) -> anyhow::Result<()> {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let waiting: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))")
+                    .bind(blocker).fetch_one(pool).await?;
+                if waiting { return anyhow::Ok(()); }
+                tokio::task::yield_now().await;
+            }
+        }).await?
+    }
+
+    // A single-connection request pool proves reuse, rather than accidentally
+    // checking a different connection whose session settings were never changed.
+    async fn request_pool() -> anyhow::Result<sqlx::PgPool> {
+        Ok(sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|c, _| {
+                Box::pin(async move {
+                    sqlx::query("SET lock_timeout = '7s'").execute(c).await?;
+                    Ok(())
+                })
+            })
+            .connect(&utopia_store::test_db::url().expect("fixture has a database"))
+            .await?)
+    }
+
+    async fn session(pool: &sqlx::PgPool) -> anyhow::Result<(i32, String)> {
+        Ok(
+            sqlx::query_as("SELECT pg_backend_pid(), current_setting('lock_timeout')")
+                .fetch_one(pool)
+                .await?,
+        )
+    }
+
+    async fn contention(binding_lock: bool, unapply: bool) -> anyhow::Result<()> {
+        let Some(f) = Fx::new(vec![]).await? else {
+            return Ok(());
+        };
+        let result = async {
+            f.seed_bound().await?;
+            let human = Uuid::now_v7();
+            let other = Uuid::now_v7();
+            sqlx::query("INSERT INTO entity_types(id,kb_id,key,label) VALUES($1,$2,'other','Other')")
+                .bind(other).bind(f.kb).execute(&f.pool).await?;
+            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name,specific_type,type_id,type_source) VALUES($1,$2,'Human choice','company',$3,'human')")
+                .bind(human).bind(f.kb).bind(f.class).execute(&f.pool).await?;
+            let (_, token) = editor(&f).await?;
+            let pool = request_pool().await?;
+            let original_session = session(&pool).await?;
+            let mut state = f.state.clone();
+            state.pool = pool.clone();
+            let mut events = state.events.subscribe();
+            let before = snapshot(&f).await?;
+            let mut gate = f.pool.begin().await?;
+            let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *gate).await?;
+            if binding_lock {
+                sqlx::query("SELECT id FROM type_bindings WHERE kb_id=$1 FOR UPDATE")
+                    .bind(f.kb).fetch_one(&mut *gate).await?;
+            } else {
+                sqlx::query("SELECT id FROM entities WHERE id=$1 FOR UPDATE")
+                    .bind(f.entity).fetch_one(&mut *gate).await?;
+            }
+            let class = if unapply { None } else { Some("other") };
+            let mut tasks = tokio::task::JoinSet::new();
+            let kb = f.kb;
+            let state_copy = state.clone();
+            let token_copy = token.clone();
+            tasks.spawn(async move { request(state_copy, kb, &token_copy, class).await });
+            let outcome = async {
+                wait_for_lock(&f.pool, blocker).await?;
+                let (status, body) = tokio::time::timeout(Duration::from_secs(6), tasks.join_next())
+                    .await?.expect("request task")??;
+                anyhow::ensure!(status == StatusCode::CONFLICT, "expected 409, got {status}: {body}");
+                anyhow::ensure!(body["code"] == "alignment_busy");
+                anyhow::ensure!(snapshot(&f).await? == before, "timeout left a partial write");
+                anyhow::ensure!(events.try_recv().is_err(), "failed request emitted success");
+                anyhow::ensure!(session(&pool).await? == original_session, "session setting leaked");
+                anyhow::Ok(())
+            }.await;
+            // Also run on assertion failure or outer timeout; JoinSet aborts any
+            // remaining request when dropped, and the fixture is cleaned below.
+            gate.rollback().await?;
+            tasks.abort_all();
+            while tasks.join_next().await.is_some() {}
+            outcome?;
+            let (status, _) = request(state, f.kb, &token, class).await?;
+            anyhow::ensure!(status == StatusCode::OK);
+            anyhow::ensure!(session(&pool).await? == original_session);
+            let after = snapshot(&f).await?;
+            anyhow::ensure!(after["binding"]["decided_by"] == "person");
+            anyhow::ensure!(after["binding"]["status"] == if unapply {"none"} else {"bound"});
+            anyhow::ensure!(after["jobs"] == 1 && after["audit"] == 1);
+            let projected: Option<Uuid> = sqlx::query_scalar("SELECT type_id FROM entities WHERE id=$1")
+                .bind(f.entity).fetch_one(&f.pool).await?;
+            anyhow::ensure!(projected == if unapply { None } else { Some(other) });
+            let preserved: Uuid = sqlx::query_scalar("SELECT type_id FROM entities WHERE id=$1")
+                .bind(human).fetch_one(&f.pool).await?;
+            anyhow::ensure!(preserved == f.class);
+            anyhow::ensure!(events.try_recv()?.kind == "review");
+            anyhow::ensure!(events.try_recv()?.kind == "graph");
+            anyhow::ensure!(!type_bindings::decide_and_apply(&pool, f.kb, "company", &[], Some(f.class), "bound", &json!({}), "agent").await?);
+            anyhow::ensure!(snapshot(&f).await? == after, "older agent overwrote human");
+            pool.close().await;
+            anyhow::Ok(())
+        }.await;
+        f.cleanup().await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn binding_lock_returns_conflict_then_retries() -> anyhow::Result<()> {
+        contention(true, false).await
+    }
+    #[tokio::test]
+    async fn projection_lock_rolls_back_the_binding() -> anyhow::Result<()> {
+        contention(false, false).await
+    }
+    #[tokio::test]
+    async fn unapply_lock_rolls_back_the_binding() -> anyhow::Result<()> {
+        contention(false, true).await
+    }
+
+    #[tokio::test]
+    async fn unrelated_errors_and_permissions_keep_their_meaning() -> anyhow::Result<()> {
+        let Some(f) = Fx::new(vec![]).await? else {
+            return Ok(());
+        };
+        let result = async {
+            f.seed_bound().await?;
+            let (user, token) = editor(&f).await?;
+            let before = snapshot(&f).await?;
+            anyhow::ensure!(request(f.state.clone(), f.kb, "invalid", None).await?.0 == StatusCode::UNAUTHORIZED);
+            anyhow::ensure!(request(f.state.clone(), f.kb, &token, Some("missing")).await?.0 == StatusCode::UNPROCESSABLE_ENTITY);
+            anyhow::ensure!(request(f.state.clone(), Uuid::now_v7(), &token, None).await?.0 == StatusCode::NOT_FOUND);
+            let other_kb = Uuid::now_v7();
+            sqlx::query("INSERT INTO knowledge_bases(id,workspace_id,name,visibility) SELECT $1,workspace_id,'Other base','restricted' FROM knowledge_bases WHERE id=$2")
+                .bind(other_kb).bind(f.kb).execute(&f.pool).await?;
+            anyhow::ensure!(request(f.state.clone(), other_kb, &token, None).await?.0 == StatusCode::NOT_FOUND);
+            sqlx::query("UPDATE kb_members SET role='viewer' WHERE user_id=$1").bind(user).execute(&f.pool).await?;
+            anyhow::ensure!(request(f.state.clone(), f.kb, &token, None).await?.0 == StatusCode::FORBIDDEN);
+            let pool = request_pool().await?;
+            let original = session(&pool).await?;
+            let error = type_bindings::decide_and_apply_human(&pool, f.kb, "company", Some(Uuid::now_v7()), &json!({})).await.unwrap_err();
+            anyhow::ensure!(matches!(error, utopia_core::AppError::Db(sqlx::Error::Database(e)) if e.code().as_deref()==Some("23503")));
+            anyhow::ensure!(session(&pool).await? == original);
+            anyhow::ensure!(snapshot(&f).await? == before);
+            pool.close().await;
+            anyhow::Ok(())
+        }.await;
+        f.cleanup().await?;
+        result
+    }
+
+    #[tokio::test]
+    async fn agent_keeps_its_session_wait_policy() -> anyhow::Result<()> {
+        let Some(f) = Fx::new(vec![]).await? else {
+            return Ok(());
+        };
+        let result = async {
+            let pool = request_pool().await?;
+            let original = session(&pool).await?;
+            let mut gate = f.pool.begin().await?;
+            let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *gate)
+                .await?;
+            sqlx::query("SELECT id FROM entities WHERE id=$1 FOR UPDATE")
+                .bind(f.entity)
+                .fetch_one(&mut *gate)
+                .await?;
+            let mut tasks = tokio::task::JoinSet::new();
+            let (kb, class, request_pool) = (f.kb, f.class, pool.clone());
+            tasks.spawn(async move {
+                type_bindings::decide_and_apply(
+                    &request_pool,
+                    kb,
+                    "company",
+                    &[],
+                    Some(class),
+                    "bound",
+                    &json!({}),
+                    "agent",
+                )
+                .await
+            });
+            let outcome = async {
+                wait_for_lock(&f.pool, blocker).await?;
+                anyhow::ensure!(
+                    tokio::time::timeout(Duration::from_millis(2300), tasks.join_next())
+                        .await
+                        .is_err(),
+                    "agent received the human timeout"
+                );
+                anyhow::Ok(())
+            }
+            .await;
+            gate.rollback().await?;
+            if outcome.is_err() {
+                tasks.abort_all();
+            }
+            let completed =
+                tokio::time::timeout(Duration::from_secs(10), tasks.join_next()).await?;
+            outcome?;
+            anyhow::ensure!(completed.expect("agent result")??);
+            anyhow::ensure!(session(&pool).await? == original);
+            pool.close().await;
+            anyhow::Ok(())
+        }
+        .await;
+        f.cleanup().await?;
+        result
+    }
+}

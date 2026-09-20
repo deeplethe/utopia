@@ -210,21 +210,101 @@ pub async fn decide_and_apply(
     decided_by: &str,
 ) -> AppResult<bool> {
     let mut tx = pool.begin().await?;
+    let written = write_decision_and_projection(
+        &mut tx, kb_id, kind_word, words, type_id, status, votes, decided_by,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(written)
+}
+
+/// The review request may wait briefly for a concurrent writer, but must not
+/// pin a connection indefinitely. This is per lock acquisition, not a request
+/// deadline, and does not change the background aligner's waiting policy.
+pub async fn decide_and_apply_human(
+    pool: &PgPool,
+    kb_id: Uuid,
+    kind_word: &str,
+    type_id: Option<Uuid>,
+    votes: &serde_json::Value,
+) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    let result = async {
+        sqlx::query("SET LOCAL lock_timeout = '2s'")
+            .execute(&mut *tx)
+            .await?;
+        write_decision_and_projection(
+            &mut tx,
+            kb_id,
+            kind_word,
+            &[],
+            type_id,
+            if type_id.is_some() { "bound" } else { "none" },
+            votes,
+            "person",
+        )
+        .await
+    }
+    .await;
+    match result {
+        Ok(written) => {
+            tx.commit().await?;
+            Ok(written)
+        }
+        Err(error) => {
+            // Finish rollback before returning a retryable response or reusing
+            // the connection. Preserve both errors if cleanup itself fails.
+            if let Err(rollback) = tx.rollback().await {
+                return Err(AppError::Other(anyhow::Error::new(error).context(format!(
+                    "rolling back human kind-word decision: {rollback}"
+                ))));
+            }
+            if matches!(&error, AppError::Db(sqlx::Error::Database(e))
+                if e.code().as_deref() == Some("55P03"))
+            {
+                return Err(AppError::CodedConflict {
+                    code: "alignment_busy",
+                    message: "This kind word is being updated by another operation. Please try again shortly."
+                        .into(),
+                });
+            }
+            Err(error)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_decision_and_projection(
+    connection: &mut sqlx::PgConnection,
+    kb_id: Uuid,
+    kind_word: &str,
+    words: &[String],
+    type_id: Option<Uuid>,
+    status: &str,
+    votes: &serde_json::Value,
+    decided_by: &str,
+) -> AppResult<bool> {
     let written = decide(
-        &mut *tx, kb_id, kind_word, words, type_id, status, votes, decided_by,
+        &mut *connection,
+        kb_id,
+        kind_word,
+        words,
+        type_id,
+        status,
+        votes,
+        decided_by,
     )
     .await?;
     if written {
         match type_id {
             Some(id) => {
-                apply(&mut *tx, kb_id, kind_word, id).await?;
+                apply(&mut *connection, kb_id, kind_word, id).await?;
             }
             None => {
-                unapply(&mut *tx, kb_id, kind_word).await?;
+                unapply(&mut *connection, kb_id, kind_word).await?;
             }
         }
     }
-    tx.commit().await?;
     Ok(written)
 }
 

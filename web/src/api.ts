@@ -382,7 +382,10 @@ export interface RuleMatch {
   premises: string[];
 }
 
-export interface BusinessRule extends RuleInput {
+export interface BusinessRule extends Omit<RuleInput, "conclusion"> {
+  conclusion: "typing" | "attribute" | "computed";
+  /** Raw server tree; unsupported nodes must remain read-only. */
+  conclude_expr?: unknown;
   id: string;
   enabled: boolean;
   subject_label: string;

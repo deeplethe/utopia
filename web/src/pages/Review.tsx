@@ -1,3 +1,4 @@
+import { alignmentErrorMessage } from "./reviewErrors";
 import { useEffect, useState } from "react";
 import { LayoutDashboard } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -1363,6 +1364,9 @@ export function Review() {
   const alignmentKindWordAction = useMutation({
     mutationFn: ({ kindWord, cls }: { kindWord: string; cls: string | null }) =>
       api.decideAlignmentKindWord(kb!.id, kindWord, cls),
+    onError: (e) => toast.error(
+      alignmentErrorMessage(e),
+    ),
     onSettled: invalidate,
   });
   const violationAction = useMutation({
