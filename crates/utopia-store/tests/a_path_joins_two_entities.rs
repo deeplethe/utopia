@@ -356,3 +356,67 @@ async fn a_path_reads_the_base_as_it_was() -> anyhow::Result<()> {
     teardown(&pool, &f).await?;
     run
 }
+
+#[tokio::test]
+async fn opposite_directions_remain_distinct_at_every_hop_count() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let result = async {
+        let nodes = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+        for node in nodes {
+            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name,created_at) VALUES ($1,$2,$1::text,'2020-01-01')")
+                .bind(node).bind(f.kb).execute(&pool).await?;
+        }
+        let mut facts = Vec::new();
+        for (s, o, year, confidence) in [
+            (nodes[0], nodes[1], "2021-01-01T00:00:00Z", 0.9),
+            (nodes[0], nodes[1], "2022-01-01T00:00:00Z", 0.7),
+            (nodes[1], nodes[0], "2021-01-01T00:00:00Z", 0.8),
+            (nodes[1], nodes[2], "2021-01-01T00:00:00Z", 0.9),
+            (nodes[2], nodes[3], "2021-01-01T00:00:00Z", 0.9),
+        ] {
+            facts.push(utopia_store::graph::insert_fact(&pool, f.kb, s, Some(f.partner), o,
+                Validity::starting(Some(t(year)), Some("day")), confidence).await?.0);
+        }
+        sqlx::query("UPDATE facts SET recorded_at='2022-01-01' WHERE id=ANY($1)")
+            .bind(&facts).execute(&pool).await?;
+        let snapshot_sql = "SELECT jsonb_agg(to_jsonb(f) ORDER BY id) FROM facts f WHERE kb_id=$1";
+        let before: serde_json::Value = sqlx::query_scalar(snapshot_sql).bind(f.kb).fetch_one(&pool).await?;
+        let at = Some(t("2023-01-01T00:00:00Z"));
+        for hops in 1..=3 {
+            for (from, to) in [(nodes[0], nodes[hops]), (nodes[hops], nodes[0])] {
+                let limits = Limits { max_hops: hops, ..Limits::default() };
+                let paths = paths_between(&pool, f.kb, from, to, at, at, limits).await?;
+                anyhow::ensure!(paths.len() == 2, "{hops}-hop query lost an opposite direction: {paths:?}");
+                let signatures: std::collections::HashSet<_> = paths.iter().map(|p|
+                    p.edges.iter().map(|e| (e.subject_id, e.object_id)).collect::<Vec<_>>()
+                ).collect();
+                anyhow::ensure!(signatures.len() == 2, "duplicate direction survived");
+                anyhow::ensure!(paths.iter().all(|p| !p.edges.iter().any(|e| e.fact_id == facts[1])),
+                    "lower-confidence duplicate displaced the preferred observation");
+                let capped = paths_between(&pool, f.kb, from, to, at, at,
+                    Limits { max_paths: 1, ..limits }).await?;
+                anyhow::ensure!(capped.len() == 1 && capped[0].edges.iter().map(|e| e.fact_id).collect::<Vec<_>>()
+                    == paths[0].edges.iter().map(|e| e.fact_id).collect::<Vec<_>>(), "cap/ranking changed");
+                anyhow::ensure!(paths_between(&pool, Uuid::now_v7(), from, to, at, at, limits).await?.is_empty(),
+                    "cross-KB path escaped isolation");
+            }
+        }
+        let after: serde_json::Value = sqlx::query_scalar(snapshot_sql).bind(f.kb).fetch_one(&pool).await?;
+        anyhow::ensure!(before == after, "path reads changed facts");
+        sqlx::query("UPDATE facts SET invalidated_at='2024-01-01' WHERE id=$1")
+            .bind(facts[2]).execute(&pool).await?;
+        let historic = paths_between(&pool, f.kb, nodes[0], nodes[1], at, at, Limits::default()).await?;
+        let current = paths_between(&pool, f.kb, nodes[0], nodes[1], at,
+            Some(t("2025-01-01T00:00:00Z")), Limits::default()).await?;
+        anyhow::ensure!(historic.len() == 2 && current.len() == 1, "record-axis retraction changed");
+        anyhow::ensure!(paths_between(&pool, f.kb, nodes[0], nodes[1],
+            Some(t("2019-01-01T00:00:00Z")), at, Limits::default()).await?.is_empty(), "world-axis filter changed");
+        Ok(())
+    }.await;
+    let cleanup = teardown(&pool, &f).await;
+    result.and(cleanup)
+}

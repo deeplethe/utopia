@@ -1331,15 +1331,12 @@ pub async fn decide_alignment_kind_word(
         ),
     };
     let votes = json!({ "person": req.class });
-    let written = utopia_store::type_bindings::decide_and_apply(
+    let written = utopia_store::type_bindings::decide_and_apply_human(
         &state.pool,
         kb_id,
         &kind_word,
-        &[],
         class,
-        if class.is_some() { "bound" } else { "none" },
         &votes,
-        "person",
     )
     .await?;
     if !written {

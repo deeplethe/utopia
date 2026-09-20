@@ -8,7 +8,7 @@
  *
  *  样式按 web/DESIGN.md 那五条：字号五档、间距六档、颜色只用 token、控件与状态
  *  一律从 ui/ 来。 */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Play, Plus, Search, Trash2 } from "lucide-react";
 import {
@@ -39,6 +39,7 @@ import {
   Tr,
 } from "../ui";
 import { toast } from "../toast";
+import { expressionText, metadataOnly, metadataPatch } from "./ruleExpressions";
 
 /** op → 那句话里的动词。**数字与集合两类分开**，因为它们的操作数长得不一样 */
 const OPS: {
@@ -61,15 +62,16 @@ const operandKind = (op: string) =>
 
 /** 一条规则可以被搜到的全部文本。**判据也算**——「哪条规则用到了 Clearance」
     是找规则最常见的问法，只搜名字的话得先记住自己当初叫它什么 */
-function searchText(r: BusinessRule): string {
+function searchText(r: BusinessRule, attributes: RelationTypeView[]): string {
   return [
     r.name,
     r.description ?? "",
     r.subject_label,
     r.conclude_type_label ?? "",
     r.conclude_predicate_label ?? "",
+    r.conclusion === "computed" ? expressionText(r.conclude_expr, attributes, S.ontology.ruleUnknownExpression) : "",
     ...r.conditions.map(
-      (c) => `${c.predicate_label} ${operandText(c.op, c.operand)}`,
+      (c) => `${c.predicate_label} ${operandText(c.op, c.operand, attributes)}`,
     ),
   ]
     .join(" ")
@@ -77,7 +79,10 @@ function searchText(r: BusinessRule): string {
 }
 
 /** 条件的操作数 → 输入框里的文本。回读要与写入是同一套，否则编辑一次就变形 */
-function operandText(op: string, operand: unknown): string {
+function operandText(op: string, operand: unknown, attributes: RelationTypeView[] = []): string {
+  if (operand && typeof operand === "object" && !Array.isArray(operand)) {
+    return expressionText(operand, attributes, S.ontology.ruleUnknownExpression);
+  }
   const kind = operandKind(op);
   if (kind === "none") return "";
   if (kind === "set") return Array.isArray(operand) ? operand.join(", ") : "";
@@ -152,6 +157,7 @@ const emptyDraft = (
 
 /** 已有规则 → 草稿。**回读要与写入是同一套形状**，否则编辑一次就变形。 */
 function draftOf(r: BusinessRule): Draft {
+  if (metadataOnly(r)) throw new Error(S.ontology.ruleExpressionReadOnly);
   const groups = byGroup(r.conditions).map((g) =>
     g.map((c) => ({
       predicate_id: c.predicate_id,
@@ -164,7 +170,7 @@ function draftOf(r: BusinessRule): Draft {
     name: r.name,
     description: r.description ?? "",
     subject_type_id: r.subject_type_id,
-    conclusion: r.conclusion,
+    conclusion: r.conclusion as Draft["conclusion"],
     conclude_type_id: r.conclude_type_id ?? "",
     conclude_predicate_id: r.conclude_predicate_id ?? "",
     conclude_value:
@@ -245,6 +251,8 @@ export function RulesPanel({
     queryFn: () => api.rules(kbId),
   });
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [metadataRule, setMetadataRule] = useState<BusinessRule | null>(null);
+  useEffect(() => { setDraft(null); setMetadataRule(null); }, [kbId]);
   /** 待确认删除的那一条。删规则会带走它推出的全部结论，值得停一下 */
   const [doomed, setDoomed] = useState<BusinessRule | null>(null);
   /** 展开了哪条规则的命中列表。一次只展开一条——两份长列表并排读不了 */
@@ -338,7 +346,7 @@ export function RulesPanel({
   const all = rules.data?.rules ?? [];
   const needle = filter.trim().toLowerCase();
   const list = needle
-    ? all.filter((r) => searchText(r).includes(needle))
+    ? all.filter((r) => searchText(r, attributes).includes(needle))
     : all;
   /** 命中列表看的是哪一条。一次一条——两份长列表并排读不了 */
   const opening = list.find((r) => r.id === opened) ?? null;
@@ -436,15 +444,13 @@ export function RulesPanel({
                     )}
                   </Td>
                   <Td>
-                    <RuleCriterion rule={r} />
+                    <RuleCriterion rule={r} attributes={attributes} />
                   </Td>
                   {/* **主类跟结论写在一起**：一条规则说的是「这样的 Person 是个
                       Veteran」，主类是这句话的左半边，不是判据的一部分 */}
-                  <Td className="whitespace-nowrap text-small text-ink">
+                  <Td className="max-w-96 break-words text-small text-ink">
                     <span className="text-ink-2">{r.subject_label} → </span>
-                    {r.conclusion === "typing"
-                      ? r.conclude_type_label
-                      : `${r.conclude_predicate_label} = ${JSON.stringify(r.conclude_value)}`}
+                    <RuleConclusion rule={r} attributes={attributes} />
                   </Td>
                   <Td className="whitespace-nowrap">
                     {/* 此刻凭它成立的结论条数。**点得动**——二十个实体还能一个个
@@ -487,7 +493,7 @@ export function RulesPanel({
                     <IconButton
                       label={S.ontology.ruleEdit}
                       size="sm"
-                      onClick={() => setDraft(draftOf(r))}
+                      onClick={() => metadataOnly(r) ? setMetadataRule(r) : setDraft(draftOf(r))}
                     >
                       <Pencil size={12} />
                     </IconButton>
@@ -518,6 +524,10 @@ export function RulesPanel({
         {opening && <Matches kbId={kbId} ruleId={opening.id} />}
       </Dialog>
 
+      {metadataRule && (
+        <RuleMetadataDialog key={`${kbId}/${metadataRule.id}`} kbId={kbId} rule={metadataRule}
+          attributes={attributes} onClose={() => setMetadataRule(null)} onSaved={invalidate} />
+      )}
       {draft && (
         <RuleDialog
           draft={draft}
@@ -540,7 +550,7 @@ export function RulesPanel({
  *
  *  从前这里是一句连排的话，`A and B or C` 里两个连词一样重，谁先结合读不出来
  *  ——而那正是规则最容易被误读的地方。 */
-function RuleCriterion({ rule }: { rule: BusinessRule }) {
+function RuleCriterion({ rule, attributes }: { rule: BusinessRule; attributes: RelationTypeView[] }) {
   const groups = byGroup(rule.conditions);
   return (
     <div className="space-y-1">
@@ -555,7 +565,7 @@ function RuleCriterion({ rule }: { rule: BusinessRule }) {
             <span className="text-small text-ink-2">
               <span className="text-ink">{c.predicate_label}</span>{" "}
               {OPS.find((o) => o.value === c.op)?.label() ?? c.op}{" "}
-              <span className="u-num text-ink">{operandText(c.op, c.operand)}</span>
+              <span className="u-num text-ink">{operandText(c.op, c.operand, attributes)}</span>
             </span>
           </div>
         )),
@@ -804,4 +814,37 @@ function RuleDialog({
       </div>
     </Dialog>
   );
+}
+
+
+function RuleConclusion({ rule: r, attributes }: { rule: BusinessRule; attributes: RelationTypeView[] }) {
+  if (r.conclusion === "typing") return <>{r.conclude_type_label}</>;
+  if (r.conclusion === "computed") return <>{r.conclude_predicate_label} = {expressionText(r.conclude_expr, attributes, S.ontology.ruleUnknownExpression)}</>;
+  if (r.conclusion === "attribute") return <>{r.conclude_predicate_label} = {JSON.stringify(r.conclude_value)}</>;
+  return <>{S.ontology.ruleUnknownExpression}</>;
+}
+
+function RuleMetadataDialog({ kbId, rule, attributes, onClose, onSaved }: {
+  kbId: string; rule: BusinessRule; attributes: RelationTypeView[]; onClose: () => void; onSaved: () => void;
+}) {
+  const [name, setName] = useState(rule.name);
+  const [description, setDescription] = useState(rule.description ?? "");
+  const save = useMutation({
+    mutationFn: () => api.updateRule(kbId, rule.id, metadataPatch(name, description)),
+    onSuccess: () => { toast.success(S.ontology.ruleSaved); onSaved(); onClose(); },
+  });
+  return <Dialog open onOpenChange={(open) => !open && onClose()} title={S.ontology.ruleEditing}
+    closeLabel={S.ui.close} width="lg" footer={<>
+      <Button size="sm" variant="secondary" onClick={onClose}>{S.graph.editCancel}</Button>
+      <Button size="sm" variant="primary" disabled={save.isPending || !name.trim()} onClick={() => save.mutate()}>{S.ontology.ruleSave}</Button>
+    </>}>
+    <div className="space-y-4">
+      <Field label={S.ontology.ruleName}><Input autoFocus className="w-full" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+      <Field label={S.ontology.ruleDescription}><Input className="w-full" value={description} onChange={(e) => setDescription(e.target.value)} /></Field>
+      <p className="text-small text-ink-2">{S.ontology.ruleExpressionReadOnly}</p>
+      <Field label={S.ontology.ruleConditions}><RuleCriterion rule={rule} attributes={attributes} /></Field>
+      <Field label={S.ontology.ruleConcludes}><p className="break-words text-body text-ink">{rule.subject_label} → <RuleConclusion rule={rule} attributes={attributes} /></p></Field>
+      {save.error && <p role="alert" className="text-small text-danger">{(save.error as Error).message}</p>}
+    </div>
+  </Dialog>;
 }

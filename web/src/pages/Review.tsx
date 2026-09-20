@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   api,
+  ApiError,
   type AgentDecision,
   type AgentPrecedent,
   type AxiomViolation,
@@ -1363,6 +1364,11 @@ export function Review() {
   const alignmentKindWordAction = useMutation({
     mutationFn: ({ kindWord, cls }: { kindWord: string; cls: string | null }) =>
       api.decideAlignmentKindWord(kb!.id, kindWord, cls),
+    onError: (e) => toast.error(
+      e instanceof ApiError && e.status === 409
+        ? S.review.alignmentKindWordBusy
+        : (e as Error).message,
+    ),
     onSettled: invalidate,
   });
   const violationAction = useMutation({

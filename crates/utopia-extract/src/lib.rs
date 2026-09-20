@@ -371,16 +371,16 @@ pub(crate) fn currency_unit(tok: &str) -> Option<&'static str> {
     )
 }
 
-/// 量级词：英文全写，中文千/万/亿。**不认单字母**（`3M` 是一家公司）。
-fn magnitude(tok: &str) -> Option<f64> {
+/// 量级词对应的十进制指数：英文全写，中文千/万/亿。**不认单字母**（`3M` 是一家公司）。
+fn magnitude(tok: &str) -> Option<u8> {
     Some(match tok {
-        "thousand" | "千" => 1e3,
-        "万" => 1e4,
-        "million" | "百万" => 1e6,
-        "千万" => 1e7,
-        "亿" => 1e8,
-        "billion" | "十亿" => 1e9,
-        "trillion" | "万亿" => 1e12,
+        "thousand" | "千" => 3,
+        "万" => 4,
+        "million" | "百万" => 6,
+        "千万" => 7,
+        "亿" => 8,
+        "billion" | "十亿" => 9,
+        "trillion" | "万亿" => 12,
         _ => return None,
     })
 }
@@ -435,7 +435,10 @@ fn scan_quantity(s: &str, strict: bool) -> Option<(f64, Option<String>)> {
         let (tok, next) = next_token(tail);
         if !ate_magnitude {
             if let Some(m) = magnitude(tok) {
-                n *= m;
+                // Parse the written decimal with its scale in one conversion. Multiplying
+                // an already rounded f64 needs an epsilon that can erase real fractions.
+                // The suffix is at most three bytes (e12), so allocation stays O(num.len()).
+                n = format!("{cleaned}e{m}").parse().ok()?;
                 ate_magnitude = true;
                 tail = next.trim_start();
                 continue;
@@ -455,10 +458,6 @@ fn scan_quantity(s: &str, strict: bool) -> Option<(f64, Option<String>)> {
     }
     if !n.is_finite() {
         return None;
-    }
-    // 9.2 × 1e8 在二进制浮点里是 919999999.9999999；乘过量级词的数本来就是整数，收回去
-    if ate_magnitude && (n - n.round()).abs() < 1e-6 * n.abs().max(1.0) {
-        n = n.round();
     }
     let unit = if percent {
         Some("%".to_string())
@@ -756,6 +755,97 @@ mod tests {
         assert_eq!(block.matches('租').count(), OPENING_BUDGET_CHARS);
         assert!(block.contains(" …"));
         assert_eq!(opening_block(Some("   ")), "");
+    }
+
+    #[test]
+    fn written_magnitudes_preserve_fractional_values() {
+        for (input, expected) in [
+            ("1.00000025 million", 1000000.25),
+            ("100.000025万", 1000000.25),
+            ("-1.00000025 million", -1000000.25),
+            ("+100.000025万", 1000000.25),
+            ("9.2亿", 920000000.0),
+            ("0.00000000025 thousand", 0.00000025),
+            ("0 million", 0.0),
+            ("1,000.00025 thousand", 1000000.25),
+        ] {
+            assert_eq!(parse_quantity(input), Some((expected, None)), "{input}");
+            assert_eq!(
+                parse_leading_quantity(input),
+                Some((expected, None)),
+                "{input}"
+            );
+            assert_eq!(
+                normalize_attr_value("number", &serde_json::json!(input)),
+                Some(serde_json::json!(expected)),
+                "{input}"
+            );
+        }
+        assert_eq!(
+            parse_quantity("$1.00000025 million"),
+            Some((1000000.25, Some("$".into())))
+        );
+        assert_eq!(
+            parse_leading_quantity("1.00000025 million people worldwide"),
+            Some((1000000.25, Some("people".into())))
+        );
+        for rejected in [
+            "3M",
+            "5k",
+            "1e3 million",
+            "1.2.3 million",
+            "--1 million",
+            "1 million people",
+        ] {
+            assert_eq!(parse_quantity(rejected), None, "{rejected}");
+        }
+        assert_eq!(
+            parse_quantity(&format!("{} trillion", "9".repeat(400))),
+            None
+        );
+        assert_eq!(
+            parse_quantity(&format!("{}1.00000025 million", "0".repeat(20_000))),
+            Some((1000000.25, None))
+        );
+    }
+
+    #[test]
+    fn written_magnitudes_match_integer_decimal_oracles() {
+        // The oracle shifts exact u128 integers, then parses an ordinary decimal.
+        // No float multiplication or epsilon can erase a meaningful remainder.
+        for (word, exponent) in [
+            ("thousand", 3),
+            ("万", 4),
+            ("million", 6),
+            ("千万", 7),
+            ("亿", 8),
+            ("billion", 9),
+            ("trillion", 12),
+        ] {
+            for coefficient in [0u128, 1, 25, 100000025, 9200000000, 9007199254740991] {
+                for places in 0..=15u32 {
+                    let divisor = 10u128.pow(places);
+                    let expanded = coefficient * 10u128.pow(exponent);
+                    let decimal = |n: u128| {
+                        if places == 0 {
+                            n.to_string()
+                        } else {
+                            format!(
+                                "{}.{:0width$}",
+                                n / divisor,
+                                n % divisor,
+                                width = places as usize
+                            )
+                        }
+                    };
+                    for sign in ["", "-"] {
+                        let input = format!("{sign}{} {word}", decimal(coefficient));
+                        let expected: f64 = format!("{sign}{}", decimal(expanded)).parse().unwrap();
+                        assert_eq!(parse_quantity(&input), Some((expected, None)), "{input}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
