@@ -940,6 +940,144 @@ fn text_only_results_do_not_acquire_a_structured_payload() {
 }
 
 #[tokio::test]
+async fn computed_rule_descriptions_keep_the_expression_tree_and_identity() -> anyhow::Result<()> {
+    use utopia_store::business_rules::{self, ConditionInput};
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let ty: Uuid = sqlx::query_scalar("SELECT type_id FROM entities WHERE id=$1")
+        .bind(f.subject)
+        .fetch_one(&f.state.pool)
+        .await?;
+    let (revenue, cost, margin) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    for (id, key) in [(revenue, "revenue"), (cost, "cost"), (margin, "margin")] {
+        sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,kind,datatype) VALUES ($1,$2,$3,$3,'attribute','number')")
+            .bind(id).bind(f.kb).bind(key).execute(&f.state.pool).await?;
+    }
+    let conditions = [ConditionInput {
+        group: 2,
+        predicate_id: revenue,
+        op: "present".into(),
+        operand: None,
+    }];
+    let sub = json!({"op":"sub","l":{"attr":revenue},"r":{"attr":cost}});
+    for (name, expr, expected) in [
+        ("difference", sub.clone(), "(revenue - cost)"),
+        (
+            "ratio",
+            json!({"op":"div","l":sub,"r":{"attr":revenue}}),
+            "((revenue - cost) / revenue)",
+        ),
+        (
+            "nested",
+            json!({"op":"sub","l":{"attr":revenue},"r":{"op":"sub","l":{"attr":cost},"r":{"const":2}}}),
+            "(revenue - (cost - 2))",
+        ),
+        (
+            "zero",
+            json!({"op":"add","l":{"attr":revenue},"r":{"const":0}}),
+            "(revenue + 0)",
+        ),
+        (
+            "negative",
+            json!({"op":"mul","l":{"attr":revenue},"r":{"const":"-2.5"}}),
+            "(revenue * -2.5)",
+        ),
+    ] {
+        business_rules::create(
+            &f.state.pool,
+            f.kb,
+            name,
+            "",
+            ty,
+            "computed",
+            None,
+            Some(margin),
+            None,
+            Some(expr),
+            &conditions,
+        )
+        .await?;
+        let before = business_rules::list(&f.state.pool, f.kb).await?;
+        let derived_before: Value=sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY id),'[]') FROM derived_facts d WHERE kb_id=$1")
+            .bind(f.kb).fetch_one(&f.state.pool).await?;
+        let jobs_before: Value=sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(j) ORDER BY id),'[]') FROM jobs j WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)")
+            .bind(f.kb.to_string()).bind(f.kb).fetch_one(&f.state.pool).await?;
+        let result = f.call("list_rules", json!({})).await?;
+        assert_eq!(result["isError"], false);
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with(&format!("{name} [")))
+            .unwrap();
+        assert!(line.contains(&format!("⇒ margin = {expected} ·")), "{line}");
+        assert!(text.contains("⇒ weight = {\"unit\":\"kg\",\"value\":8}"));
+        assert_eq!(business_rules::list(&f.state.pool, f.kb).await?, before);
+        let derived_after: Value=sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY id),'[]') FROM derived_facts d WHERE kb_id=$1")
+            .bind(f.kb).fetch_one(&f.state.pool).await?;
+        assert_eq!(derived_before, derived_after);
+        let jobs_after: Value=sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(j) ORDER BY id),'[]') FROM jobs j WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)")
+            .bind(f.kb.to_string()).bind(f.kb).fetch_one(&f.state.pool).await?;
+        assert_eq!(jobs_before, jobs_after);
+    }
+    business_rules::create(
+        &f.state.pool,
+        f.kb,
+        "typing control",
+        "",
+        ty,
+        "typing",
+        Some(ty),
+        None,
+        None,
+        None,
+        &conditions,
+    )
+    .await?;
+    sqlx::query("UPDATE relation_types SET label='收入' WHERE id=ANY($1)")
+        .bind(vec![revenue, cost])
+        .execute(&f.state.pool)
+        .await?;
+    let result = f.call("list_rules", json!({})).await?;
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("(收入 [revenue] - 收入 [cost])"), "{text}");
+    assert!(text
+        .lines()
+        .find(|l| l.starts_with("typing control ["))
+        .unwrap()
+        .contains("⇒ Thing ·"));
+    // Corrupt/stale stored references must not expose another base's label or
+    // fabricate a formula. Creation itself continues to reject such inputs.
+    let foreign = Uuid::now_v7();
+    sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,kind,datatype) VALUES ($1,$2,'hidden','Foreign secret','attribute','number')")
+        .bind(foreign).bind(f.other_kb).execute(&f.state.pool).await?;
+    for expr in [
+        json!({"attr":foreign}),
+        json!({"op":"unknown"}),
+        json!({"const":null}),
+    ] {
+        sqlx::query(
+            "UPDATE attribute_rules SET conclude_expr=$2 WHERE kb_id=$1 AND name='difference'",
+        )
+        .bind(f.kb)
+        .bind(expr)
+        .execute(&f.state.pool)
+        .await?;
+        let result = f.call("list_rules", json!({})).await?;
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.lines()
+                .find(|l| l.starts_with("difference ["))
+                .unwrap()
+                .contains("margin = (expression unavailable)"),
+            "{text}"
+        );
+        assert!(!text.contains("Foreign secret"));
+    }
+    f.clean().await
+}
+
+#[tokio::test]
 async fn rule_reads_preserve_matches_and_empty_results() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());

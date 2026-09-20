@@ -375,6 +375,25 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
             json!({ "kind": "tool", "label": "list_rules", "detail": "none" }),
         );
     }
+    let expressions: Vec<_> = rules
+        .iter()
+        .filter(|r| r["conclusion"] == "computed")
+        .map(|r| &r["conclude_expr"])
+        .collect();
+    let Ok(descriptions) = utopia_store::business_rules::describe_expressions(
+        &ctx.state.pool,
+        ctx.kb_id,
+        &expressions,
+    )
+    .await
+    else {
+        return ToolResult::new(
+            "Could not read the rules.".to_string(),
+            json!({ "kind": "tool", "label": "list_rules", "detail": "failed" }),
+        )
+        .error();
+    };
+    let mut descriptions = descriptions.into_iter();
     let text = rules
         .iter()
         .map(|r| {
@@ -399,6 +418,15 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
                 .unwrap_or_default();
             let concludes = if r["conclusion"] == "typing" {
                 r["conclude_type_label"].as_str().unwrap_or("?").to_string()
+            } else if r["conclusion"] == "computed" {
+                format!(
+                    "{} = {}",
+                    r["conclude_predicate_label"].as_str().unwrap_or("?"),
+                    descriptions
+                        .next()
+                        .flatten()
+                        .unwrap_or_else(|| "(expression unavailable)".to_string()),
+                )
             } else {
                 format!(
                     "{} = {}",
