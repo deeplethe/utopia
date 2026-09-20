@@ -151,6 +151,16 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
     };
     loop {
         match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e))
+                if matches!(e.name().as_ref(), "w:br" | "w:cr") =>
+            {
+                // Cells are flattened later, but an explicit break still separates
+                // text: dropping it turns two readings such as 10 and 20 into 1020.
+                match cell.as_mut() {
+                    Some(c) => c.0.push(' '),
+                    None => out.push('\n'),
+                }
+            }
             Ok(Event::Start(e)) => match e.name().as_ref() {
                 "w:t" => in_text = true,
                 "w:tbl" => {
@@ -186,7 +196,6 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
                     Some(c) => c.0.push(' '),
                     None => out.push(' '),
                 },
-                "w:br" | "w:cr" if cell.is_none() => out.push('\n'),
                 _ => {}
             },
             Ok(Event::End(e)) => match e.name().as_ref() {
