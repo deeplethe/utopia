@@ -1,0 +1,31 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Expression policy experiment</title>
+<style>body{font:16px system-ui;background:#111827;color:#eee;max-width:1000px;margin:40px auto;padding:20px}fieldset{border:1px solid #64748b;margin:12px 0;padding:16px}input,select,button{font:inherit;padding:8px;margin:4px;color:inherit;background:#243247;border:1px solid #94a3b8;border-radius:4px}label{display:inline-block}pre{white-space:pre-wrap}#error{color:#fca5a5}small{color:#cbd5e1}</style>
+<h1>Expression policy experiment</h1><p>Proposed declaration rules — isolated prototype, no production API writes.</p>
+<label>Name <input id="name" value="Net amount"></label>
+<label>Target <select id="target"><option value="r">Amount [revenue] · USD</option><option value="ratio">Ratio · proposed “1”</option></select></label>
+<label><input id="unitless" type="checkbox">Experiment with explicit unitless “1”</label>
+<div id="editor"></div><p id="error" role="status"></p><pre id="preview"></pre>
+<button id="save">Save local draft</button><button id="reopen">Reopen saved tree</button><button id="cancel">Cancel</button><button id="unknown">Load unknown legacy tree</button>
+<label><input id="fail" type="checkbox">Inject save failure</label><h2>Last local payload</h2><pre id="payload">No writes</pre>
+<script type="module">
+import {conclude,reopen,preview,patch} from './policy.mjs';
+const attrs=[{id:'r',key:'revenue',label:'Amount',datatype:'number',unit:'USD'},{id:'c',key:'cost',label:'Amount',datatype:'number',unit:'USD'},{id:'ratio',key:'ratio',label:'Ratio',datatype:'number',unit:'1'}];
+let saved={op:'sub',l:{attr:'r'},r:{attr:'c'}},draft=reopen(saved),writes=0;
+const $=id=>document.getElementById(id);
+function check(){try{if(!draft){$('preview').textContent=JSON.stringify(saved);$('error').textContent='Unknown legacy definition: metadata only';return null;}const ast=conclude(draft,$('target').value,attrs,{allowUnitless:$('unitless').checked});$('preview').textContent=preview(ast,attrs);$('error').textContent='';return ast;}catch(e){$('error').textContent=e.message;return null;}}
+function node(d,replace,depth=0,path='expression'){
+ const f=document.createElement('fieldset'); const legend=document.createElement('legend');legend.textContent=path;f.append(legend);
+ const sel=document.createElement('select');sel.setAttribute('aria-label',path+' node');
+ for(const kind of ['empty','attr','const','arith']){const o=document.createElement('option');o.value=kind;o.textContent=kind;sel.append(o);}sel.value=d.kind;f.append(sel);
+ sel.onchange=()=>{replace(sel.value==='arith'?{kind:'arith',op:'add',l:{kind:'empty'},r:{kind:'empty'}}:sel.value==='attr'?{kind:'attr',id:null}:sel.value==='const'?{kind:'const',raw:''}:{kind:'empty'});render();};
+ if(d.kind==='attr'){const a=document.createElement('select');a.setAttribute('aria-label',path+' attribute');const blank=document.createElement('option');blank.value='';blank.textContent='Choose attribute';a.append(blank);for(const item of attrs){const o=document.createElement('option');o.value=item.id;o.textContent=`${item.label} [${item.key}] · ${item.unit}`;a.append(o);}a.value=d.id??'';a.onchange=()=>{d.id=a.value||null;check();};f.append(a);}
+ if(d.kind==='const'){const n=document.createElement('input');n.setAttribute('aria-label',path+' constant');n.value=d.raw;n.oninput=()=>{d.raw=n.value;check();};f.append(n);}
+ if(d.kind==='arith'){const op=document.createElement('select');op.setAttribute('aria-label',path+' operator');for(const value of ['add','sub','mul','div']){const o=document.createElement('option');o.value=value;o.textContent=value;op.append(o);}op.value=d.op;op.onchange=()=>{d.op=op.value;check();};f.append(op);if(depth<=4){f.append(node(d.l,x=>d.l=x,depth+1,path+' left'),node(d.r,x=>d.r=x,depth+1,path+' right'));}}
+ return f;
+}
+function render(){$('editor').replaceChildren();if(draft)$('editor').append(node(draft,x=>draft=x));check();}
+$('target').onchange=check;$('unitless').onchange=check;
+$('save').onclick=()=>{const ast=check();if(draft&&!ast)return;const original={conclude_expr:saved};const payload=patch(original,{name:$('name').value,description:''},ast?{conclude_expr:ast}:null);if($('fail').checked){$('error').textContent='Injected failure: draft retained';return;}if(ast)saved=structuredClone(ast);$('payload').textContent=JSON.stringify({writes:++writes,payload},null,2);};
+$('reopen').onclick=()=>{draft=reopen(saved);render();};$('cancel').onclick=$('reopen').onclick;
+$('unknown').onclick=()=>{saved={future:{attr:'r'}};draft=null;render();};render();
+</script></html>
