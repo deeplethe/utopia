@@ -101,7 +101,8 @@ No dollar-cost claim is made from token counts. One frozen set is not a universa
 
 ## Deterministic and combined checks
 
-On dev implementation `0ce696f`, with real PostgreSQL fixtures and PDF extraction enabled:
+On the formatted dev tree `eafd85f` (the same runtime implementation as `0ce696f`),
+with real PostgreSQL fixtures and PDF extraction enabled:
 
 - `cargo fmt --all --check`, strict workspace/all-target clippy, locked workspace build: pass.
 - `cargo test --locked --workspace`: **997 passed, 0 failed, 1 ignored**. The ignored test is
@@ -133,6 +134,7 @@ then failing a runtime assertion (not merely failing compilation): restore the o
 request; add the routing preamble back; drop the last evidence result; permit a third answer;
 ignore assistant persistence failure. Restoring the source passed the targeted suite.
 The final focused-policy and early-budget changes subsequently passed the full checks above.
+All 506 tracked build-input files were hash-compared with that checked Linux tree.
 
 ## Reproduction and privacy
 
