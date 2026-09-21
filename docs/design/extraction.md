@@ -18,7 +18,10 @@ are extraction's rules [0039].
 description, the document's kind word, and whether it is named or described. `s`: statements, each
 opening with its own verbatim quote and then naming its subject and object in words, the relation
 phrase as written, an object name or a literal value, qualifiers keyed by the document's role
-words, and `when` / `ended` time words. `n`: other names the document gives a thing. Statements name their sides in words
+words, and `when` / `ended` time words. `n`: other names the document gives a thing, and only a
+proper name or fixed term may become one. A role or generic phrase whose referent the passage
+decides stays description or qualifier words even when it points at a listed or already recorded
+thing [#770]. Statements name their sides in words
 and carry their own quote because a numbered contract mixed the ids up on dense passages (misworded
 10 to 14% with ids, 2 to 7% with names) [#731]. Parsing is per item: a malformed item is counted and
 a truncated reply is repaired to its last complete item.
