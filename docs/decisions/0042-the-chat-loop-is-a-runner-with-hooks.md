@@ -67,8 +67,9 @@ What changed is that the miss is recorded: the call and the model's reason are i
 ## Budget finalization is an answer boundary (#844, revised 2026-09-21)
 
 The endpoint can emit tool-control syntax in `delta.content` after tools are withdrawn.
-In six captured failures, the raw upstream body already contained DSML; the actual
-`LlmClient` parser reproduced that content without converting structured tool calls.
+Captured upstream failures contained DSML in `delta.content`, a `stop` finish reason,
+and no structured tool calls. Replaying those responses through the actual `LlmClient`
+parser reproduced the content exactly; the adapter had not converted valid calls to prose.
 Explicit `tool_choice: none` did not eliminate the problem in a fixed-evidence comparison.
 This establishes an upstream-content failure for those samples, not the provider's internal
 root cause. Run-by-run measurements and historical implementation identifiers are kept in
