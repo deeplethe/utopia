@@ -8,6 +8,9 @@ pub enum AppError {
     Forbidden,
     #[error("{0}")]
     Conflict(String),
+    /// Localizable conflict; legacy internal callers may still use Conflict.
+    #[error("{message}")]
+    CodedConflict { code: &'static str, message: String },
     #[error("{0}")]
     Validation(String),
     /// 带稳定 code 的校验错误。**message 仍是英文原句**——它是给不做本地化的
