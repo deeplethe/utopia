@@ -86,15 +86,44 @@ pub(crate) fn finalization_error(
     if !question.to_ascii_lowercase().contains("dsml") {
         // Accommodate the known ASCII/full-width and doubled-pipe spellings.
         // Inspect the assembled turn, so SSE chunk boundaries do not matter.
-        let prefix: String = text
-            .chars()
-            .take(80)
-            .filter(|c| !c.is_whitespace() && *c != '|' && *c != '｜')
-            .collect();
-        if ["<DSMLcalls>", "<DSMLtool_calls>", "<DSMLinvokename="]
-            .iter()
-            .any(|marker| prefix.starts_with(marker))
-        {
+        let is_control = |candidate: &str| {
+            let prefix: String = candidate
+                .chars()
+                .take(80)
+                .filter(|c| !c.is_whitespace() && *c != '|' && *c != '｜')
+                .collect();
+            ["<DSMLcalls>", "<DSMLtool_calls>", "<DSMLinvokename="]
+                .iter()
+                .any(|marker| prefix.starts_with(marker))
+        };
+        // A real endpoint prefixed its final control block with "Let me examine
+        // it." in the SAME turn. Check bare line starts too, without treating
+        // inline mentions, block quotes, or Markdown fenced examples as calls.
+        let mut fence: Option<(char, usize)> = None;
+        let mut bare_control = is_control(text);
+        for line in text.lines() {
+            let line = line.trim_start();
+            if let Some(marker @ ('`' | '~')) = line.chars().next() {
+                let len = line.chars().take_while(|c| *c == marker).count();
+                if len >= 3 {
+                    match fence {
+                        None => fence = Some((marker, len)),
+                        Some((open, size))
+                            if marker == open && len >= size && line[len..].trim().is_empty() =>
+                        {
+                            fence = None;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+            }
+            if fence.is_none() && is_control(line) {
+                bare_control = true;
+                break;
+            }
+        }
+        if bare_control {
             return Some("Model returned tool-control text instead of a final answer");
         }
     }
@@ -532,6 +561,24 @@ pub fn known_entities_block(entities: &[Value], limit: usize) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finalization_checks_narrated_control_but_preserves_protocol_examples() {
+        let control =
+            "Let me examine it.\n\n<｜｜DSML｜｜ calls>\n<｜DSML｜ invoke name=\"lookup\">{}";
+        assert!(finalization_error(control, false, "What happened?").is_some());
+        assert!(finalization_error(control, false, "Explain DSML").is_none());
+        for explanation in [
+            "The encoding includes <｜DSML｜ calls> as a marker.",
+            "Example:\n```xml\n<｜DSML｜ calls>\n```\nThis is the encoding.",
+            "Example:\n~~~~xml\n```\n<｜DSML｜ calls>\n~~~~",
+            "> <｜DSML｜ calls>\nThis quotes the encoding.",
+        ] {
+            assert!(finalization_error(explanation, false, "Explain the encoding").is_none());
+        }
+        let after_example = "```xml\n<｜DSML｜ calls>\n```\nLet me check.\n<|DSML|calls>";
+        assert!(finalization_error(after_example, false, "What happened?").is_some());
+    }
 
     /// 上一轮的工具往返插在它的结论之前，tool 消息找回自己的工具名
     #[test]

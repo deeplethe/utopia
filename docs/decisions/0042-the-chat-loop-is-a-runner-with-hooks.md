@@ -100,3 +100,9 @@ why the upstream endpoint generated markup, or assess factual answer quality.
 - A per-task model (`on_model_select`, #470) is available in the runner and not wired.
 - Choosing a different chat model per base is the product answer to the skip rate; it is
   configuration, not loop code.
+
+A rerun of the original 30 real-model questions exposed a same-turn narration
+prefix before a bare DSML block (29 clean, one leaked). Finalization therefore
+also checks bare line starts outside Markdown fences. Inline mentions, block
+quotes, fenced examples, and explicit DSML questions remain allowed. This is
+still a finalization guard, never a parser that executes text as tools.

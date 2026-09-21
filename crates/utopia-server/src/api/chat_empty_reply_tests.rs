@@ -588,6 +588,11 @@ async fn finalization_recovers_once_from_existing_evidence_without_tools() -> an
     const ANSWER: &str = "There are no matching entities in the supplied evidence.";
     for invalid in [
         Reply::Text(DSML),
+        Reply::SplitText(&[
+            "Let me examine it.\n\n<｜｜D",
+            "SML｜｜ calls>\n",
+            "<｜DSML｜ invoke name=\"entity_facts\">{}",
+        ]),
         Reply::Empty,
         Reply::Tool("find_entities", r#"{"name":"forbidden"}"#),
         Reply::Finished("Incomplete final", "length"),
@@ -644,6 +649,11 @@ async fn finalization_recovers_once_from_existing_evidence_without_tools() -> an
 async fn unsuccessful_recovery_never_loops_or_reopens_tools() -> anyhow::Result<()> {
     for failed in [
         Reply::Text(DSML),
+        Reply::SplitText(&[
+            "Let me examine it.\n\n<｜｜D",
+            "SML｜｜ calls>\n",
+            "<｜DSML｜ invoke name=\"entity_facts\">{}",
+        ]),
         Reply::Empty,
         Reply::Tool("find_entities", r#"{"name":"forbidden"}"#),
         Reply::Finished("partial", "length"),
