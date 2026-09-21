@@ -976,6 +976,10 @@ fn sse_from(
             return;
         };
         yield to_event(&snapshot.to_frame());
+        if let Some(terminal) = snapshot.terminal() {
+            yield to_event(&terminal);
+            return;
+        }
         loop {
             match rx.recv().await {
                 Ok(frame) => {
@@ -1338,3 +1342,7 @@ mod chat_empty_reply_tests;
 #[cfg(test)]
 #[path = "chat_terminal_tests.rs"]
 mod chat_terminal_tests;
+
+#[cfg(test)]
+#[path = "chat_stream_tests.rs"]
+mod stream_tests;

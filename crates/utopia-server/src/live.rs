@@ -39,6 +39,7 @@ pub struct Snapshot {
     pub content: String,
     pub steps: Vec<serde_json::Value>,
     pub sources: Vec<serde_json::Value>,
+    terminal: Option<Frame>,
 }
 
 impl Snapshot {
@@ -66,6 +67,10 @@ impl Snapshot {
             }
             _ => {}
         }
+    }
+
+    pub(crate) fn terminal(&self) -> Option<Frame> {
+        self.terminal.clone()
     }
 
     pub fn to_frame(&self) -> Frame {
@@ -107,7 +112,15 @@ impl Handle {
     /// 于是接上的时刻要么整个在这次 emit 之前，要么整个在它之后
     pub async fn emit(&self, frame: Frame) {
         let mut snap = self.snap.write().await;
+        // The snapshot and the subscription boundary must include the terminal:
+        // a subscriber arriving after this broadcast still needs the same outcome.
+        if snap.terminal.is_some() {
+            return;
+        }
         snap.apply(&frame);
+        if matches!(frame.event, "done" | "error") {
+            snap.terminal = Some(frame.clone());
+        }
         // 没有订阅者是常态（人走了），不是错
         let _ = self.tx.send(frame);
     }
