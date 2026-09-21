@@ -1,9 +1,12 @@
-# Proposed delivery contract for human phrase decisions
+# 0051 · A human phrase decision carries its materialization work
 
-Status: **isolated prototype; not a production #800 implementation**. No job kind
-is registered and no HTTP/UI response changes. Refs #800. This branch exists to
-review the protocol before introducing the public API/job contract required by
-CONTRIBUTING. Do not deploy or merge the helpers as a standalone solution.
+- **Status**: proposed; domain contract pending review. Shared store refactors and real regressions only; no production job kind or HTTP/UI change.
+- **Written**: 2026-09-21
+- **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md); [PR #841](https://github.com/deeplethe/utopia/pull/841).
+
+## Problem
+
+A human binding may commit after a running aligner's final read. Depending on that aligner's late recheck can therefore leave the accepted decision without a projection. The proposed delivery unit is the accepted decision and its own durable work, rather than a guess that another running job will cover it.
 
 ## Decision requested
 
@@ -38,47 +41,19 @@ click, a single snapshot across the whole multi-statement recompute, or progress
 through permanent failures. Existing human priority and statement/evidence/temporal
 semantics belong to the reused materializer, not the queue.
 
-## Executable evidence
+## Reusable code and regression evidence
 
-On the isolated branch, `phrase_bindings::decide_on` factors the existing single SQL
-write so the test can compose it with `enqueue_with_max_attempts_tx`. The existing
-pool caller remains. `materialize_in_tx` mechanically shares the original body;
-`try_materialize` uses the exact existing lock key. No production caller uses the
-new entry points. These are experiment support, pending the contract above.
+The production `phrase_bindings::decide` calls `decide_on`; production `materialize` calls private `materialize_in_tx`. They share the existing SQL and transaction body with tests. No unused public try-lock entry point is exported. Busy orchestration belongs in module-local `cfg(test)` code, while normal recomputation uses the existing public materializer.
 
-Run against a **dedicated, otherwise idle test database** (the actual worker recovery
-test consumes jobs; never point it at another session's database):
+The retained integration target is [`human_phrase_materialization_delivery`](../../crates/utopia-store/tests/human_phrase_materialization_delivery.rs). Its module header documents opt-in execution on a dedicated, otherwise idle database, including real worker startup and OS subprocess termination. Busy coverage is in `materialize`'s module-local tests. These test adapters do not register a production handler.
 
-```sh
-export UTOPIA_DATABASE_URL='postgres://.../dedicated_delivery_experiment'
-export UTOPIA_TEST_REQUIRE_DB=1
-cargo test --locked -p utopia-store --test phrase_delivery_prototype -- --ignored --skip crash_child --test-threads=1 --nocapture
-```
+Historical evidence at `e83f015f9a3949e53b1ae849b8d6dad0e2c4546e` on Linux / PostgreSQL 16.15 comprised two explicit parent tests and three actual killed subprocesses: before decision/job commit, after acceptance commit, and after projection commit before ack. Enqueue-helper failure rolled back both rows; Busy deferred the same job and released a two-connection pool; late arrivals, reverse processing and duplicates converged; actual worker startup reclaimed running work; exhausted deferral became visible failed and scoped requeue recovered it. The enqueue failure is helper-boundary injection, not a disk failure at COMMIT.
 
-Linux PostgreSQL 16: **two experiment tests passed**. The ignored `crash_child` entry
-is an explicit subprocess probe; both parent tests are also opt-in to avoid consuming unrelated test jobs in a shared test database. The command above runs the parents explicitly; the parent invokes it three times with per-fixture
-identifiers and kills/waits for those children. It is not a silently skipped crash
-case. Evidence includes:
+Three historical runtime mutations were rejected: splitting decision and enqueue transactions left an orphan; acknowledging Busy marked unfinished work done; adding a model prerequisite stopped pure recomputation. These results concern real store behavior but do not establish an asynchronous production route. The renamed tests preserve those assertions; new validation must be reported against its own head rather than reusing these counts.
 
-- The real enqueue helper rejects an invalid budget after the binding write; neither
-  binding nor job commits. This is fault injection at the helper boundary, not a
-  simulated disk failure during COMMIT.
-- A held real advisory lock does not stall acceptance; the same job is Deferred and
-  the two-connection pool remains available through repeated busy attempts.
-- A decision after an old projection's final read has its own job; reverse-order and
-  duplicate processing preserve final none and the open statement.
-- Actual `run_worker` startup reclaims a running job and idempotently recomputes; no
-  model path is present in the prototype handler.
-- Actual OS subprocess termination before commit rolls back both rows; termination
-  after accept preserves the queued job; termination after projection commit before
-  ack preserves a running job and recomputation creates no duplicate typed fact.
-- Exhausted deferral/failure budget becomes visible failed and explicit scoped
-  requeue can recover. No sleep guesses which SQL lock is held.
+## Alternatives
 
-Three runtime mutations failed their specific assertions: writing the binding via
-an independent pool transaction left an orphan decision; treating Busy as success
-marked the job done; adding a model-config prerequisite prevented pure recomputation.
-Restoring the prototype passes both experiments again.
+A late recheck cannot cover a decision committed after that check. Skipping enqueue when a worker is running loses this independent delivery obligation. Replaying a decision's old property payload can overwrite a later human choice. Blocking on the materialization lock retains scarce connections; a bounded Deferred outcome preserves work without claiming completion. A global lease/recovery redesign would expand the present single-process queue contract and is outside this proposal.
 
 ## Measured cost, not a throughput claim
 

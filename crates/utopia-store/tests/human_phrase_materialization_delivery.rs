@@ -1,4 +1,4 @@
-//! Isolated protocol experiment; no production job kind or HTTP route is registered.
+//! Isolated delivery regression; no production job kind or HTTP route is registered.
 use serde_json::json;
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::time::{Duration, Instant};
@@ -30,7 +30,7 @@ async fn accept(
     );
     let id = jobs::enqueue_with_max_attempts_tx(
         &mut tx,
-        "prototype_materialize_typed",
+        "test_human_phrase_materialize",
         json!({"kb_id":kb}),
         budget,
     )
@@ -39,21 +39,16 @@ async fn accept(
     Ok(id)
 }
 async fn claim(pool: &PgPool, id: i64) -> anyhow::Result<jobs::Job> {
-    // Restrict the production claim SQL to this experiment's job, never steal work.
+    // Restrict the production claim SQL to this test's job, never steal work.
     Ok(sqlx::query_as("UPDATE jobs SET status='running', attempts=attempts+1, locked_at=now() WHERE id=$1 AND status='queued' RETURNING id,kind,payload,attempts,max_attempts")
         .bind(id).fetch_one(pool).await?)
 }
 async fn handle(pool: &PgPool, kb: Uuid, job: &jobs::Job) -> anyhow::Result<()> {
-    if materialize::try_materialize(pool, kb).await?.is_some() {
-        sqlx::query("UPDATE jobs SET status='done',last_error=NULL WHERE id=$1")
-            .bind(job.id)
-            .execute(pool)
-            .await?;
-    } else {
-        let e = anyhow::anyhow!("typed projection busy")
-            .context(utopia_core::Deferred::new(Duration::from_secs(1)));
-        jobs::mark_failed(pool, job, &e).await?;
-    }
+    materialize::materialize(pool, kb).await?;
+    sqlx::query("UPDATE jobs SET status='done',last_error=NULL WHERE id=$1")
+        .bind(job.id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 async fn status(pool: &PgPool, id: i64) -> anyhow::Result<String> {
@@ -64,8 +59,8 @@ async fn status(pool: &PgPool, id: i64) -> anyhow::Result<String> {
 }
 
 #[tokio::test]
-#[ignore = "opt-in protocol experiment; requires a dedicated idle database"]
-async fn delivery_protocol_rollback_busy_late_arrivals_recovery_and_cost() -> anyhow::Result<()> {
+#[ignore = "opt-in delivery regression; requires a dedicated idle database"]
+async fn delivery_rollback_late_arrivals_recovery_and_cost() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
@@ -119,17 +114,7 @@ async fn delivery_protocol_rollback_busy_late_arrivals_recovery_and_cost() -> an
         anyhow::ensure!(count==0);
         println!("B-T01/T02 PASS same-transaction enqueue failure rolls back decision");
 
-        let mut blocker=control.begin().await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('typed_materialize'),hashtext($1))").bind(kb.to_string()).execute(&mut *blocker).await?;
-        let start=Instant::now();
-        let id=tokio::time::timeout(Duration::from_secs(2),accept(&pool,kb,&signature,Some(property),3)).await??;
-        let job=claim(&pool,id).await?;
-        tokio::time::timeout(Duration::from_secs(2),handle(&pool,kb,&job)).await??;
-        anyhow::ensure!(status(&pool,id).await?=="queued");
-        for _ in 0..10 { anyhow::ensure!(tokio::time::timeout(Duration::from_secs(1),materialize::try_materialize(&pool,kb)).await??.is_none()); }
-        anyhow::ensure!(tokio::time::timeout(Duration::from_secs(1),pool.acquire()).await?.is_ok());
-        println!("B-T04/T07/T21 PASS busy deferred same job; two-connection pool available; elapsed_ms={}",start.elapsed().as_millis());
-        blocker.rollback().await?;
+        let id=accept(&pool,kb,&signature,Some(property),3).await?;
         handle(&pool,kb,&claim(&pool,id).await?).await?;
         anyhow::ensure!(materialize::count(&pool,kb).await?==1);
 
@@ -137,7 +122,7 @@ async fn delivery_protocol_rollback_busy_late_arrivals_recovery_and_cost() -> an
         // Pause before ack by not acking the first completed projection yet.
         let old=accept(&pool,kb,&signature,Some(property),3).await?;
         let old_job=claim(&pool,old).await?;
-        anyhow::ensure!(materialize::try_materialize(&pool,kb).await?.is_some());
+        materialize::materialize(&pool,kb).await?;
         let newer=accept(&pool,kb,&signature,None,3).await?;
         anyhow::ensure!(status(&pool,newer).await?=="queued");
         handle(&pool,kb,&claim(&pool,newer).await?).await?;
@@ -151,15 +136,15 @@ async fn delivery_protocol_rollback_busy_late_arrivals_recovery_and_cost() -> an
         // Actual queue recovery (task restart, not an OS process crash).
         let recovery=accept(&pool,kb,&signature,Some(property),3).await?;
         let _unacked=claim(&pool,recovery).await?;
-        materialize::try_materialize(&pool,kb).await?;
+        materialize::materialize(&pool,kb).await?;
         let (sent,mut received)=tokio::sync::mpsc::unbounded_channel();
         let worker_pool=pool.clone();
         let run_pool=pool.clone();
         let worker=tokio::spawn(jobs::run_worker(worker_pool,std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(1)),move |job| {
             let pool=run_pool.clone(); let sent=sent.clone();
             async move {
-                anyhow::ensure!(job.kind=="prototype_materialize_typed");
-                anyhow::ensure!(materialize::try_materialize(&pool,kb).await?.is_some());
+                anyhow::ensure!(job.kind=="test_human_phrase_materialize");
+                materialize::materialize(&pool,kb).await?;
                 sent.send(job.id)?;
                 Ok(())
             }
@@ -169,7 +154,7 @@ async fn delivery_protocol_rollback_busy_late_arrivals_recovery_and_cost() -> an
             tokio::time::timeout(Duration::from_secs(5),async {
                 while status(&pool,recovery).await? != "done" {tokio::task::yield_now().await;}
                 anyhow::Ok(())
-            }).await?
+            }).await.unwrap_or_else(|e| Err(e.into()))
         } else { Err(anyhow::anyhow!("worker did not recover expected job: {result:?}")) };
         worker.abort(); let _=worker.await; acknowledged?;
         anyhow::ensure!(materialize::count(&pool,kb).await?==1);
@@ -181,7 +166,7 @@ async fn delivery_protocol_rollback_busy_late_arrivals_recovery_and_cost() -> an
         let job=claim(&pool,failure).await?;
         jobs::mark_failed(&pool,&job,&anyhow::anyhow!("still busy").context(utopia_core::Deferred::new(Duration::from_secs(1)))).await?;
         anyhow::ensure!(status(&pool,failure).await?=="failed");
-        anyhow::ensure!(jobs::requeue_failed(&pool,jobs::RequeueScope{kb_id:Some(kb),kind:Some("prototype_materialize_typed"),failed_since:None}).await?==1);
+        anyhow::ensure!(jobs::requeue_failed(&pool,jobs::RequeueScope{kb_id:Some(kb),kind:Some("test_human_phrase_materialize"),failed_since:None}).await?==1);
         handle(&pool,kb,&claim(&pool,failure).await?).await?;
         anyhow::ensure!(status(&pool,failure).await?=="done");
         println!("B-T08 PASS finite deferral exhaustion stays visible and can be explicitly requeued (not a process-crash test)");
@@ -252,7 +237,7 @@ fn crash_child() {
         .unwrap();
         let id = jobs::enqueue_with_max_attempts_tx(
             &mut tx,
-            "prototype_materialize_typed",
+            "test_human_phrase_materialize",
             json!({"kb_id":kb}),
             3,
         )
@@ -265,26 +250,24 @@ fn crash_child() {
         tx.commit().await.unwrap();
         if phase == "unacked" {
             claim(&pool, id).await.unwrap();
-            materialize::try_materialize(&pool, kb)
-                .await
-                .unwrap()
-                .unwrap();
+            materialize::materialize(&pool, kb).await.unwrap();
         }
         std::fs::write(&ready, id.to_string()).unwrap();
         std::future::pending::<()>().await;
     });
 }
 
-struct ChildGuard(std::process::Child);
+struct ChildGuard(std::process::Child, std::path::PathBuf);
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        let _ = std::fs::remove_file(&self.1);
     }
 }
 
 #[tokio::test]
-#[ignore = "opt-in subprocess experiment; requires a dedicated idle database"]
+#[ignore = "opt-in subprocess regression; requires a dedicated idle database"]
 async fn process_exit_preserves_the_committed_delivery_boundary() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
@@ -312,7 +295,7 @@ async fn process_exit_preserves_the_committed_delivery_boundary() -> anyhow::Res
                 .args(["--exact","crash_child","--ignored","--nocapture"])
                 .env("UTOPIA_PROBE_PHASE",phase).env("UTOPIA_PROBE_KB",kb.to_string())
                 .env("UTOPIA_PROBE_PROPERTY",property.to_string()).env("UTOPIA_PROBE_READY",&ready)
-                .spawn()?);
+                .spawn()?, ready.clone());
             let id=tokio::time::timeout(Duration::from_secs(15),async {
                 loop {
                     if let Ok(value)=std::fs::read_to_string(&ready) {break value.parse::<i64>();}
@@ -333,7 +316,7 @@ async fn process_exit_preserves_the_committed_delivery_boundary() -> anyhow::Res
                 sqlx::query("UPDATE jobs SET status='queued',locked_at=NULL WHERE id=$1 AND status='running'").bind(id).execute(&pool).await?;
                 handle(&pool,kb,&claim(&pool,id).await?).await?;
                 anyhow::ensure!(materialize::count(&pool,kb).await?==1);
-                anyhow::ensure!(materialize::try_materialize(&pool,kb).await?==Some(materialize::Outcome::default()));
+                anyhow::ensure!(materialize::materialize(&pool,kb).await?==materialize::Outcome::default());
             }
             println!("OS process kill phase={phase}: PASS");
         }

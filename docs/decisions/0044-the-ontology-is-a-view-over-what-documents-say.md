@@ -68,6 +68,9 @@ This is how the facts a reader draws without the text stating them (a place's co
 
 When the ontology changes, only facts under changed signatures and rules are recomputed. A signature with no property stays in the open graph, loses nothing, and counts toward the workbench's suggestions.
 
+**Revision proposed 2026-09-21:** [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md) addresses delivery after a human binding commits beyond an older materializer’s final read. It proposes a decision and its own durable job in one transaction, while retaining the current projection semantics. The asynchronous HTTP/job/UI contract remains unimplemented.
+
+
 ### 4. The ontology is built on a workbench from three sources
 
 The ontology page becomes a workbench. Its elements come from three sources: **suggestions from the open graph** (the most frequent unbound signatures, the type words in use, and an ontology agent that reads them against competency questions and proposes object types, link types, properties and rules with definitions, examples and the signatures they would bind); **an imported file** (a pack of 0008, schema.org, an OWL or JSON-LD file); and **online editing**. People approve through actions; every approved element carries regression cases drawn from the open graph, and changing a definition reruns them. The ontology is judged by whether the competency questions can be answered correctly. Structure the slice and the rules depend on (class hierarchy, equivalences, domains, ranges) is part of approval, and duplicate properties are merged as part of governance.
@@ -132,12 +135,3 @@ Today's extractor stays as it is until cut 2 passes its thresholds.
 - Whether derivation rules recover the implicit facts that write-time binding found (Re-DocRED's country and located-in relations are a fifth of its pairs).
 - Competency questions for a new knowledge base that has none yet.
 - How much of identity the deterministic evidence settles before the adjudicator is needed.
-
-## Proposed delivery follow-up · 2026-09-21 (not accepted or implemented)
-
-[The phrase-delivery experiment](../../scripts/prototypes/phrase-delivery/README.md)
-proposes persisting each human phrase decision with its materialization-only job.
-It records real database, process-exit and mutation evidence, and the unresolved
-HTTP/UI and recovery contract. This does not alter the accepted projection semantics
-above and registers no production handler. Agree and land the delivery record before
-wiring the public route; unused prototype helpers alone do not resolve #800.

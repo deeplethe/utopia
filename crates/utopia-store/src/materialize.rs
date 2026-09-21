@@ -71,24 +71,6 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
     Ok(outcome)
 }
 
-/// Isolated delivery prototype: Busy never means materialization completed.
-pub async fn try_materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Option<Outcome>> {
-    let mut tx = pool.begin().await?;
-    let acquired: bool = sqlx::query_scalar(
-        "SELECT pg_try_advisory_xact_lock(hashtext('typed_materialize'), hashtext($1))",
-    )
-    .bind(kb_id.to_string())
-    .fetch_one(&mut *tx)
-    .await?;
-    if !acquired {
-        tx.rollback().await?;
-        return Ok(None);
-    }
-    let outcome = materialize_in_tx(&mut tx, kb_id).await?;
-    tx.commit().await?;
-    Ok(Some(outcome))
-}
-
 async fn materialize_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     kb_id: Uuid,
@@ -286,3 +268,7 @@ pub async fn count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
     .fetch_one(pool)
     .await?)
 }
+
+#[cfg(test)]
+#[path = "materialize_delivery_tests.rs"]
+mod delivery_tests;
