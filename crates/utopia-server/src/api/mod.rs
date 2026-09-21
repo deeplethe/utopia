@@ -400,6 +400,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/documents/{id}",
             get(documents_routes::detail).delete(documents_routes::delete),
         )
+        .route("/documents/{id}/content", get(documents_routes::content))
+        .route("/documents/{id}/versions", get(documents_routes::versions))
         // 撤销删除（#268）：删除是墓碑，所以有得撤
         .route("/documents/{id}/restore", post(documents_routes::restore))
         // 真删（#268 下半）：只对已删除的开放，库管理员

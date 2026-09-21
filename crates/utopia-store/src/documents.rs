@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use pgvector::Vector;
+use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction};
 use utopia_core::models::{ChunkView, Document, DocumentPage};
 use utopia_core::{AppError, AppResult};
@@ -542,6 +543,29 @@ pub async fn get(pool: &PgPool, id: Uuid) -> AppResult<Document> {
         .fetch_optional(pool)
         .await?
         .ok_or(AppError::NotFound)
+}
+
+/// A recorded original, with only the facts the ingestion ledger guarantees.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct DocumentVersion {
+    pub version: i32,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub ingested_at: DateTime<Utc>,
+}
+
+/// Every retained original version, oldest first.
+///
+/// This deliberately includes soft-deleted documents: their bytes remain part
+/// of the auditable record until the separate purge action removes them.
+pub async fn versions(pool: &PgPool, id: Uuid) -> AppResult<Vec<DocumentVersion>> {
+    Ok(sqlx::query_as(
+        "SELECT version, sha256, size_bytes, ingested_at
+           FROM document_versions WHERE document_id = $1 ORDER BY version",
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?)
 }
 
 /// 按 kb 收窄的取文档。**id 由模型给出时只能走这一支**：`get` 只按 id 查，

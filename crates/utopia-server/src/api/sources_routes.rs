@@ -15,7 +15,7 @@ use crate::error::ApiResult;
 use crate::state::AppState;
 
 /// 生成 api 来源的推送密钥。
-fn new_ingest_token() -> String {
+pub(crate) fn new_ingest_token() -> String {
     format!("utp_{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 
