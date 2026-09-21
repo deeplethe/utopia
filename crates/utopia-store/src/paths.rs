@@ -328,7 +328,7 @@ async fn touching(
             AND ({subject} = ANY($2) OR {object} = ANY($2))
             AND {subject} <> {object}
             AND {held} AND {hold}",
-        held = record_axis::facts_held_at("f", 3),
+        held = record_axis::facts_held_at("f", as_of.map(|_| 3)),
         hold = world_axis::facts_hold_at("f", 4),
     ))
     .bind(kb_id)
@@ -360,7 +360,7 @@ async fn degrees(
                        AND ({subject} = n.id OR {object} = n.id)
                        AND {held} AND {hold}
           GROUP BY n.id",
-        held = record_axis::facts_held_at("f", 3),
+        held = record_axis::facts_held_at("f", as_of.map(|_| 3)),
         hold = world_axis::facts_hold_at("f", 4),
     ))
     .bind(kb_id)
