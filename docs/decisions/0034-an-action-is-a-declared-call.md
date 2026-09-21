@@ -98,6 +98,9 @@ GET    /kbs/{id}/action-runs            ?action &ok &page &per                  
 
 A run is synchronous in this cut: a person presses Run and waits for the row. When rules fire, the same `run_action` is called from a job.
 
+**Revision proposed 2026-09-21:** [0050](0050-an-action-attempt-keeps-its-identity-and-uncertain-outcome.md) revisits this synchronous run-then-record boundary after observing a remote effect with a lost response. It proposes durable identity and explicit uncertainty, with no automatic retry or redirect; these changes await approval and no sender is introduced.
+
+
 ## Phasing
 
 1. **Capability.** Schema, `utopia-store::actions`, the runner in `utopia-server` (render, send, record), the routes, this record. Tests: the store's (create, grant, a viewer never sees the auth block, a run lands as a row) and the runner's against wiremock (rendering by kind, a placeholder in the host refused, an unknown argument refused, a bound enforced, a redirect into the intranet from a public host refused, the body cap, the deadline).
@@ -120,10 +123,3 @@ A run is synchronous in this cut: a person presses Run and waits for the row. Wh
 - **A second kind.** Email, or a tool over MCP, would share the parameters, the grants and the log and differ only in the runner. The `kind` column is the door; each kind is its own record.
 - **Who asks for a grant.** A base admin who wants an action has to find the deployment admin. A request queue is the shape data sources never grew either.
 - **Naming.** `audit_events.action` names what a person did; an action here is a declared call. The two words meet only in the ledger, where a row reads `action.run`.
-
-## Proposed revision · 2026-09-21 (not accepted or implemented)
-
-An isolated protocol experiment and the exact decisions requested are recorded in
-[the experiment report](../../scripts/prototypes/actions/README.md).
-This proposal does not change the accepted decisions or implementation status above.
-It must be reviewed before enabling the corresponding production write/sender path.

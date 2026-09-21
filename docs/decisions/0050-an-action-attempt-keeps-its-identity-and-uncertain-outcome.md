@@ -1,15 +1,12 @@
-# Proposed amendment to 0034: an action attempt keeps its identity
+# 0050 · An action attempt keeps its identity and uncertain outcome
 
-Status: **proposed, executable protocol experiment only**. This does not supersede
-0034, add production tables/routes, or enable action sending. Refs #530.
+- **Status**: proposed; domain contract pending review. Documentation only; no production schema, sender or routes.
+- **Written**: 2026-09-21
+- **Related**: [0034](0034-an-action-is-a-declared-call.md); [PR #840](https://github.com/deeplethe/utopia/pull/840).
 
-0034's synchronous “run, then one row” leaves two facts indistinguishable: a call
-that was never sent, and a call whose remote effect happened but whose response
-was lost. A client retry then risks repeating a non-idempotent action. The example
-is not hypothetical: the loopback endpoint in this experiment increments its
-side-effect counter, waits on a barrier, and drops the connection before replying.
-The observed result is one remote effect and an unknown local outcome. Replaying
-the same execution request does not increase the counter.
+## Problem
+
+0034's synchronous run-then-record shape cannot distinguish an unsent call from a remote effect whose response was lost. Retrying the same user operation can then repeat a non-idempotent effect. Persisting intent before dispatch and preserving uncertainty makes that distinction reviewable without promising knowledge of the remote business outcome.
 
 ## Decision requested
 
@@ -58,21 +55,9 @@ side effect too. A response body failure must not erase already observed headers
 A final database-write failure may leave dispatching; retry only persisting the
 observation if it remains available, never the external call.
 
-## What was executed
+## Historical investigation
 
-Run from `scripts/prototypes/actions` with an **isolated PostgreSQL 16 database**:
-
-```sh
-python -m venv .venv
-.venv/bin/pip install -r requirements.txt
-export UTOPIA_DATABASE_URL='postgres://.../isolated_test_database'
-.venv/bin/python -m unittest -v test_protocol
-```
-
-The model creates/drops only a random `action_model_*` schema. The HTTP server binds
-loopback and the sender's target is hard-coded loopback; it cannot be repurposed as
-a production managed sender. The test dependency is isolated, not a Utopia runtime
-dependency. Each test shuts down its server and drops its schema.
+The investigation at `dc1145f21e62a1b371d6e662af13821e07813d8f` used Python 3.13 and PostgreSQL 16.15 on Linux with a random isolated schema and a loopback-only HTTP endpoint. The source and logs were archived outside the repository before removing the model and its dependency file. These are historical protocol-model results, not fresh Rust or production-sender tests.
 
 Linux Python 3.13 / PostgreSQL 16: **19 tests passed**. They cover concurrent duplicate
 registry submissions, nullable uniqueness, KB scope, input conflict, authorization
@@ -103,3 +88,9 @@ first disables new dispatch, preserves runs, and cannot reverse remote effects.
 
 The experiment supports an **at-most-once application dispatch attempt**, not external
 exactly-once execution, packet-level guarantees or arbitrary remote business semantics.
+
+## Alternatives and approval boundary
+
+Recording only after send loses intent if the process exits. Retrying an unknown outcome can duplicate a remote effect. Transferring a prepared/dispatching attempt to recovery cannot prove the original owner did not send. Exactly-once business execution requires a remote contract this project cannot invent. The conservative first cut sacrifices automatic completion to preserve a truthful, auditable uncertainty boundary.
+
+Approval is requested for request identity and revision binding, the single original-flow dispatch grant, and no automatic retries, redirects or recovery takeover. Those decisions revise 0034's suggested redirect/retry behavior; they are not already accepted by moving this record. Registry, authorization and sender implementation follow only after agreement.
