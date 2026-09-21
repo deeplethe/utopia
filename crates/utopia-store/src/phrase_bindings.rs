@@ -226,6 +226,12 @@ pub async fn decide(
     sig: &PhraseSignature,
     d: Decision<'_>,
 ) -> AppResult<bool> {
+    validate_decision(sig, &d)?;
+    let mut connection = pool.acquire().await?;
+    decide_on(&mut connection, kb_id, sig, d).await
+}
+
+fn validate_decision(sig: &PhraseSignature, d: &Decision<'_>) -> AppResult<String> {
     if !matches!(d.status, "bound" | "none" | "undecided") {
         return Err(AppError::Validation(format!(
             "unknown binding status {:?}",
@@ -253,6 +259,17 @@ pub async fn decide(
     if phrase.is_empty() {
         return Err(AppError::Validation("an empty phrase binds nothing".into()));
     }
+    Ok(phrase)
+}
+
+/// Write on the caller's connection, so related durable work can share its transaction.
+pub async fn decide_on(
+    connection: &mut sqlx::PgConnection,
+    kb_id: Uuid,
+    sig: &PhraseSignature,
+    d: Decision<'_>,
+) -> AppResult<bool> {
+    let phrase = validate_decision(sig, &d)?;
     let res = sqlx::query(
         "INSERT INTO phrase_bindings
              (id, kb_id, phrase, subject_type_id, object_type_id, object_is_value,
@@ -287,7 +304,7 @@ pub async fn decide(
     .bind(i32::try_from(sig.count).unwrap_or(i32::MAX))
     .bind(&sig.examples)
     .bind(d.decided_by)
-    .execute(pool)
+    .execute(connection)
     .await?;
     Ok(res.rows_affected() > 0)
 }
