@@ -620,6 +620,12 @@ impl LlmClient {
         body
     }
 
+    /// Exact serialized streaming request size, including model and protocol fields.
+    /// Used by the bounded answer phase before any network I/O.
+    pub fn tool_free_request_bytes(&self, messages: &[serde_json::Value]) -> usize {
+        self.tools_body(messages, None, None, true).to_string().len()
+    }
+
     /// 工具对话（非流式），工具清单与 `tool_choice` 都可选。
     pub async fn chat_tools_with(
         &self,
