@@ -150,7 +150,13 @@ async fn exercise(search_first: bool) -> anyhow::Result<()> {
             "document sources missing before final answer: {:?}",
             snapshot.sources
         );
-        let events = frames(&live, "sources");
+        // Count publication during tool execution, independently of a final
+        // persisted-source replay (e.g. the finalization work in #845).
+        // The last graph step adds no sources, so all citation-changing and
+        // duplicate document reads are before this boundary.
+        let live_text = String::from_utf8_lossy(&live);
+        let last_step = live_text.rfind("event: step\n").expect("graph step");
+        let events = frames(&live_text.as_bytes()[..last_step], "sources");
         anyhow::ensure!(
             events.len() == if search_first { 2 } else { 1 },
             "only source changes should publish: {events:?}"
