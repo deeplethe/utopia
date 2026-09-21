@@ -10,6 +10,36 @@
 import type { Strings } from "./en";
 
 export const zh: Strings = {
+  expressionDraft: {
+    title: "表达式草稿探索",
+    unsaved: "仅为未保存的草稿，不会写入知识库，也不检查单位兼容性。",
+    undeclared: "未声明",
+    attribute: "属性",
+    constant: "数字",
+    add: "加 (+)",
+    sub: "减 (−)",
+    mul: "乘 (×)",
+    div: "除 (÷)",
+    expression: "表达式",
+    left: "左操作数",
+    right: "右操作数",
+    kind: "节点类型",
+    depthLimit: "已达嵌套深度上限，请选择属性或数字。",
+    choose: "搜索并选择…",
+    missing: "属性已不可用",
+    loading: "正在读取属性和规则…",
+    loadError: "无法读取此知识库，请检查访问权限后重试。",
+    retry: "重试",
+    empty: "此知识库尚无属性。",
+    conclusion: "结论",
+    condition: "条件",
+    existing: "探索已有表达式",
+    unsupported: "此表达式结构尚不支持，未对其进行转换。名称和说明仍可在原规则编辑器中修改。",
+    preview: "草稿预览（未保存）",
+    incomplete: "请为每个操作数选择可用属性或填写有限数字以预览。",
+    reset: "新建草稿",
+    count: (n: number) => `已读取此知识库的 ${n} 个属性`,
+  },
   app: {
     name: "Utopia",
     /* 标语与出处都与 Utopia / Persona / Charter 同类：品牌的一部分，两种语言同值 */

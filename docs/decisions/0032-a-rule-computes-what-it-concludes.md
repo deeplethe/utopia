@@ -59,6 +59,9 @@ If it is ever wanted it needs its own record, answering what a completeness clai
 
 **Units and datatypes have to be checked when the expression is written, and today nothing checks them.** `relation_types` carries `unit` and `datatype` and no code compares them. `revenue (USD) − cost (EUR)` must be refused by the picker, not silently subtracted; the result's type has to match the concluded predicate's. This is new work that the constant case never needed.
 
+**Revision proposed 2026-09-21:** [0049](0049-expression-declarations-are-checked-when-a-rule-is-written.md) answers the missing declaration semantics and write-time locking question below. Missing units are not assumed unitless; exact `1`, the allowlist and first-cut operations remain proposals. The accepted expression semantics and metadata-only fallback are unchanged.
+
+
 **A missing reading is not a zero, and neither is a division by zero.** If any attribute in the expression has no reading on the interval, the expression has no value and nothing is concluded — consistent with 0029. Division by zero is the same: no conclusion, **reported** the way `capped` is, because "not computed here" and "the criterion was not met" look identical in the result otherwise.
 
 ## Open
@@ -66,10 +69,3 @@ If it is ever wanted it needs its own record, answering what a completeness clai
 - **How deep before the picker loses.** Stated above as a concession, not settled. One operator is certainly a picker; nobody has yet said what they need beyond that.
 - **Does a computed conclusion feed the next rule?** It should — [0030](0030-a-rule-may-read-what-a-rule-concluded.md) puts a concluded value back in the fact pool and says nothing about how the value was arrived at. Worth a test rather than an assumption.
 - **Rounding and display.** A ratio of two readings is a long decimal. What the ledger stores and what the panel shows are not necessarily the same, and neither is decided here.
-
-## Proposed revision · 2026-09-21 (not accepted or implemented)
-
-An isolated protocol experiment and the exact decisions requested are recorded in
-[the experiment report](../../scripts/prototypes/expressions/README.md).
-This proposal does not change the accepted decisions or implementation status above.
-It must be reviewed before enabling the corresponding production write/sender path.

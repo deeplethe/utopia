@@ -3,6 +3,36 @@
 //
 // 加新文案时先加在这里，再补其余语言包——顺序反了会得到一个类型错误，那正是本意。
 export const en = {
+  expressionDraft: {
+    title: "Expression draft exploration",
+    unsaved: "Unsaved draft only. Nothing here is saved to the knowledge base. Unit compatibility is not checked.",
+    undeclared: "Undeclared",
+    attribute: "Attribute",
+    constant: "Number",
+    add: "Add (+)",
+    sub: "Subtract (−)",
+    mul: "Multiply (×)",
+    div: "Divide (÷)",
+    expression: "Expression",
+    left: "Left operand",
+    right: "Right operand",
+    kind: "Node type",
+    depthLimit: "Depth limit reached: choose an attribute or a number.",
+    choose: "Search and choose…",
+    missing: "Attribute no longer available",
+    loading: "Loading attributes and rules…",
+    loadError: "Could not load this knowledge base. Check your access and retry.",
+    retry: "Retry",
+    empty: "This knowledge base has no attributes yet.",
+    conclusion: "Conclusion",
+    condition: "Condition",
+    existing: "Explore an existing expression",
+    unsupported: "This expression has an unsupported shape. It has not been converted. Use the existing rule editor for metadata changes.",
+    preview: "Draft preview — not saved",
+    incomplete: "Complete every operand with an available attribute or a finite number to preview.",
+    reset: "Start a new draft",
+    count: (n: number) => `${n} attributes loaded from this knowledge base`,
+  },
   app: {
     name: "Utopia",
     // 化用《乌托邦》全书最后一句（Burnet 1684 译本）：
