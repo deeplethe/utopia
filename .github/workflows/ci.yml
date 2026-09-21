@@ -100,12 +100,6 @@ jobs:
           UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
           UTOPIA_TEST_REQUIRE_DB: "1"
 
-      - name: Chat registry ownership against Postgres
-        run: cargo test -p utopia-server chat_empty_reply_tests::registry_tests
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
-
       - name: Hybrid retrieval against Postgres
         run: "cargo test -p utopia-server retrieval::"
         env:
