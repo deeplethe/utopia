@@ -1497,7 +1497,7 @@ pub async fn entity_detail(
 ) -> AppResult<(GraphNode, Vec<EntityFact>)> {
     let node: GraphNode = sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND e.id = $2",
-        node_sql(Some(3), as_of.map(|_| 3))
+        node_sql(as_of.map(|_| 3), as_of.map(|_| 3))
     ))
     .bind(kb_id)
     .bind(entity_id)

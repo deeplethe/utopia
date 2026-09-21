@@ -148,3 +148,65 @@ pub fn owner_at(fact_alias: &str, column: &str, as_of: Option<usize>, on_object:
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 「现在」那条路必须退化成单支。这不是风格问题：`IS NULL OR > now()` 让
+    /// 优化器证不出 `invalidated_at IS NULL`，`facts_live_subject_idx` 这类
+    /// 部分索引整棵不可用（实测双支走 `facts_live_time_idx` 每次扫 9,877 行，
+    /// 单支走 BitmapOr 扫 4 行）。性能这条性质在别处没有守卫，只有这里。
+    #[test]
+    fn a_predicate_for_now_has_no_second_branch() {
+        for (what, sql) in [
+            ("facts_held_at", facts_held_at("f", None)),
+            ("derived_held_at", derived_held_at("d", None)),
+            ("violation_open_at", violation_open_at("v", None)),
+            ("conflict_open_at", conflict_open_at("c", None)),
+            ("document_live_at", document_live_at("d", None)),
+            ("chunk_live_at", chunk_live_at("c", None)),
+            ("merge_in_effect_at", merge_in_effect_at("m", None)),
+        ] {
+            assert!(
+                !sql.contains(" OR "),
+                "{what} 在「现在」下还留着双支：{sql}"
+            );
+            assert!(
+                !sql.contains('$'),
+                "{what} 在「现在」下不该有绑定参数：{sql}"
+            );
+            assert!(
+                !sql.contains("now()"),
+                "{what} 在「现在」下不该比时刻：{sql}"
+            );
+        }
+    }
+
+    /// 回放那条路原样保留：带上时刻参数、两支都在。少了哪一支，三月的图上就会
+    /// 多出今天才作废的行，或者少掉当时还活着的行。
+    #[test]
+    fn a_predicate_for_a_moment_keeps_both_branches() {
+        let sql = facts_held_at("f", Some(3));
+        assert!(
+            sql.contains("f.recorded_at <= coalesce($3, now())"),
+            "{sql}"
+        );
+        assert!(
+            sql.contains("f.invalidated_at IS NULL OR f.invalidated_at > coalesce($3, now())"),
+            "{sql}"
+        );
+    }
+
+    /// `entity_visible_at(None)` 顶替读路径上的 `merged_into IS NULL`：它换成了
+    /// 对 `entity_merges` 的反连接（多一次 hash anti join），但不再按实体行判。
+    /// 传了时刻才额外要求「那时已经建出来了」。
+    #[test]
+    fn an_entity_is_visible_now_unless_a_live_merge_swallowed_it() {
+        let now = entity_visible_at("e", None);
+        assert!(now.starts_with("NOT EXISTS"), "{now}");
+        assert!(now.contains("m.reverted_at IS NULL"), "{now}");
+        assert!(!now.contains("e.created_at"), "{now}");
+        assert!(entity_visible_at("e", Some(2)).contains("e.created_at <= coalesce($2, now())"));
+    }
+}
