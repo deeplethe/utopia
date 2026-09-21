@@ -2445,10 +2445,7 @@ pub async fn blocked_for_entity(
     entity_id: Uuid,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Vec<utopia_core::models::BlockedDerivation>> {
-    let violation_open = match as_of {
-        Some(_) => crate::record_axis::violation_open_at("v", 3),
-        None => "v.status = 'open'".to_string(),
-    };
+    let violation_open = crate::record_axis::violation_open_at("v", as_of.map(|_| 3));
     Ok(sqlx::query_as(&format!(
         "SELECT v.id AS violation_id,
                 (v.detail->>'subject_id')::uuid AS subject_id,
@@ -2613,7 +2610,7 @@ pub async fn derived_for_entity(
             AND {derived_hold}
           ORDER BY d.derived_at DESC",
         derived_hold = crate::world_axis::derived_hold_at("d", 3),
-        derived_held = crate::record_axis::derived_held_at("d", 4),
+        derived_held = crate::record_axis::derived_held_at("d", as_of.map(|_| 4)),
     ))
     .bind(kb_id)
     .bind(entity_id)

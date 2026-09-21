@@ -168,7 +168,7 @@ pub async fn for_entity(
             AND {owner} = $2 AND {held}
           ORDER BY canonical DESC, f.recorded_at",
         owner = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
-        held = crate::record_axis::facts_held_at("f", 3),
+        held = crate::record_axis::facts_held_at("f", as_of.map(|_| 3)),
     ))
     .bind(kb_id)
     .bind(entity_id)

@@ -474,7 +474,7 @@ async fn a_revert_does_not_rewrite_what_the_merge_window_held() -> anyhow::Resul
         let pool = pool.clone();
         let (kb, pred, lease) = (f.kb, f.deadline, f.lease);
         async move {
-            let held = utopia_store::record_axis::facts_held_at("f", 2);
+            let held = utopia_store::record_axis::facts_held_at("f", Some(2));
             let owner = utopia_store::record_axis::owner_at("f", "subject_id", Some(2), false);
             let rows: Vec<(String, Option<String>, bool)> = sqlx::query_as(&format!(
                 "SELECT object_value #>> '{{value}}', to_char(valid_to, 'YYYY-MM-DD'), {owner} = $3

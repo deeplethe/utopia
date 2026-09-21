@@ -1127,10 +1127,7 @@ pub async fn add_evidence_located(
 /// `owner`：**只在真的传了时刻时**才绑（#336）。`fact_owner_at` 包住列之后
 /// `facts` 上按主宾的索引就用不上了，而「现在」是每次画图都要走的那条路
 fn node_sql(as_of: Option<usize>, owner: Option<usize>) -> String {
-    let held = match as_of {
-        Some(param) => crate::record_axis::facts_held_at("f", param),
-        None => "f.invalidated_at IS NULL".to_string(),
-    };
+    let held = crate::record_axis::facts_held_at("f", as_of);
     // 主宾也跟着倒：三月被合并掉的实体，在二月身上还挂着它自己的那些事实（#336）
     let subject = crate::record_axis::owner_at("f", "subject_id", owner, false);
     let object = crate::record_axis::owner_at("f", "object_id", owner, true);
@@ -1169,8 +1166,8 @@ pub async fn overview(
 ) -> AppResult<(Vec<GraphNode>, Vec<GraphEdge>, i64, i64)> {
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND {visible} ORDER BY degree DESC, e.created_at LIMIT $2",
-        node_sql(Some(3), as_of.map(|_| 3)),
-        visible = crate::record_axis::entity_visible_at("e", 3),
+        node_sql(as_of.map(|_| 3), as_of.map(|_| 3)),
+        visible = crate::record_axis::entity_visible_at("e", as_of.map(|_| 3)),
     ))
     .bind(kb_id)
     .bind(limit)
@@ -1190,7 +1187,7 @@ pub async fn overview(
     // 三月并掉的那个，在二月既该出现在画布上，也该数进这个总数里
     let total_nodes: i64 = sqlx::query_scalar(&format!(
         "SELECT count(*) FROM entities e WHERE e.kb_id = $1 AND {visible}",
-        visible = crate::record_axis::entity_visible_at("e", 2),
+        visible = crate::record_axis::entity_visible_at("e", as_of.map(|_| 2)),
     ))
     .bind(kb_id)
     .bind(as_of)
@@ -1204,8 +1201,8 @@ pub async fn overview(
                   WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL)
               + (SELECT count(*) FROM derived_facts d
                   WHERE d.kb_id = $1 AND {derived_held} AND d.object_id IS NOT NULL)",
-        facts_held = crate::record_axis::facts_held_at("f", 2),
-        derived_held = crate::record_axis::derived_held_at("d", 2),
+        facts_held = crate::record_axis::facts_held_at("f", as_of.map(|_| 2)),
+        derived_held = crate::record_axis::derived_held_at("d", as_of.map(|_| 2)),
     ))
     .bind(kb_id)
     .bind(as_of)
@@ -1328,10 +1325,10 @@ async fn edges_among(
         ),
         holds_from = crate::world_axis::facts_holds_from("f"),
         holds_to = crate::world_axis::facts_holds_to("f"),
-        facts_held = crate::record_axis::facts_held_at("f", 4),
-        derived_held = crate::record_axis::derived_held_at("d", 4),
-        violation_open = crate::record_axis::violation_open_at("v", 4),
-        conflict_open = crate::record_axis::conflict_open_at("c", 4),
+        facts_held = crate::record_axis::facts_held_at("f", as_of.map(|_| 4)),
+        derived_held = crate::record_axis::derived_held_at("d", as_of.map(|_| 4)),
+        violation_open = crate::record_axis::violation_open_at("v", as_of.map(|_| 4)),
+        conflict_open = crate::record_axis::conflict_open_at("c", as_of.map(|_| 4)),
         // 派生边不跟着倒：它们由引擎按当时的断言推出，主宾从来没被合并改写过
         subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 4), false),
         object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 4), true),
@@ -1378,7 +1375,7 @@ pub async fn neighborhood(
             "SELECT {subject}, {object} FROM facts f
              WHERE f.kb_id = $1 AND {facts_held} AND f.object_id IS NOT NULL
                AND ({subject} = ANY($2) OR {object} = ANY($2))",
-            facts_held = crate::record_axis::facts_held_at("f", 3),
+            facts_held = crate::record_axis::facts_held_at("f", as_of.map(|_| 3)),
             subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
             object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 3), true),
         ))
@@ -1405,8 +1402,8 @@ pub async fn neighborhood(
     let ids: Vec<Uuid> = seen.into_iter().collect();
     let nodes: Vec<GraphNode> = sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND e.id = ANY($2) AND {visible}",
-        node_sql(Some(3), as_of.map(|_| 3)),
-        visible = crate::record_axis::entity_visible_at("e", 3),
+        node_sql(as_of.map(|_| 3), as_of.map(|_| 3)),
+        visible = crate::record_axis::entity_visible_at("e", as_of.map(|_| 3)),
     ))
     .bind(kb_id)
     .bind(&ids)
@@ -1456,10 +1453,7 @@ pub async fn search_entities(
     let pattern = format!("%{}%", text.trim());
     let named = crate::names::has_name_like("e", 2);
     // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
-    let visible = |param: usize| match as_of {
-        Some(_) => crate::record_axis::entity_visible_at("e", param),
-        None => "e.merged_into IS NULL".to_string(),
-    };
+    let visible = |param: usize| crate::record_axis::entity_visible_at("e", as_of.map(|_| param));
     let rewind = as_of.map(|_| 5);
     let sql = format!(
         "{} WHERE e.kb_id = $1 AND {visible}
@@ -1566,15 +1560,15 @@ pub async fn entity_detail(
         not_name = crate::names::not_a_name("f"),
         said_as = said_as("f"),
         represented = represented_by_typed("f"),
-        facts_held = crate::record_axis::facts_held_at("f", 3),
+        facts_held = crate::record_axis::facts_held_at("f", as_of.map(|_| 3)),
         facts_hold = crate::world_axis::facts_hold_at("f", 4),
         holds_from = crate::world_axis::facts_holds_from("f"),
         holds_to = crate::world_axis::facts_holds_to("f"),
         subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
         object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 3), true),
-        chunk_live = crate::record_axis::chunk_live_at("c", 3),
-        violation_open = crate::record_axis::violation_open_at("v", 3),
-        conflict_open = crate::record_axis::conflict_open_at("c", 3),
+        chunk_live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
+        violation_open = crate::record_axis::violation_open_at("v", as_of.map(|_| 3)),
+        conflict_open = crate::record_axis::conflict_open_at("c", as_of.map(|_| 3)),
     ))
     .bind(kb_id)
     .bind(entity_id)
@@ -1716,10 +1710,7 @@ pub async fn same_name_peers(
     entity_id: Uuid,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Vec<GraphNode>> {
-    let visible = match as_of {
-        Some(_) => crate::record_axis::entity_visible_at("e", 3),
-        None => "e.merged_into IS NULL".to_string(),
-    };
+    let visible = crate::record_axis::entity_visible_at("e", as_of.map(|_| 3));
     sqlx::query_as(&format!(
         "{} WHERE e.kb_id = $1 AND {visible} AND e.id <> $2
            AND lower(e.canonical_name) = (SELECT lower(canonical_name) FROM entities WHERE id = $2)
