@@ -80,7 +80,7 @@ struct ManifestDataDir {
 /// whose `schema_version` is greater than this (forward-incompatible) and
 /// warns when older. Kept as a constant — bumping is a deliberate decision,
 /// not a side effect of a code change.
-const CURRENT_SCHEMA_VERSION: u32 = 69;
+const CURRENT_SCHEMA_VERSION: u32 = 70;
 
 fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
