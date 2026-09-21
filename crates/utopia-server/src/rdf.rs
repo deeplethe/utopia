@@ -748,6 +748,14 @@ mod tests {
             documents: vec![],
             quotes: vec![],
             quote_origins: vec![],
+            subject_kb: Some(kb()),
+            object_kb: Some(kb()),
+            predicate_kb: Some(kb()),
+            supersedes_kb: None,
+            foreign_document: false,
+            foreign_chunk: false,
+            subject_merged: false,
+            object_merged: false,
         }
     }
 
@@ -1164,6 +1172,15 @@ mod tests {
             rule_name: Some("Gas-bearing well".into()),
             premises: vec![id(5)],
             premises_derived: Vec::new(),
+            subject_kb: Some(kb()),
+            object_kb: None,
+            predicate_kb: Some(kb()),
+            rule_kb: None,
+            attribute_rule_kb: Some(kb()),
+            foreign_fact_premise: false,
+            foreign_derived_premise: false,
+            subject_merged: false,
+            object_merged: false,
         };
         let quads = export(Format::Turtle, |sink, names, vocab| {
             emit_derived(sink, names, vocab, &derived).unwrap();
@@ -1289,6 +1306,15 @@ mod tests {
             rule_name: None,
             premises: vec![id(5)],
             premises_derived: vec![id(6)],
+            subject_kb: Some(kb()),
+            object_kb: Some(kb()),
+            predicate_kb: Some(kb()),
+            rule_kb: Some(kb()),
+            attribute_rule_kb: None,
+            foreign_fact_premise: false,
+            foreign_derived_premise: false,
+            subject_merged: false,
+            object_merged: false,
         };
         for format in [Format::Turtle, Format::JsonLd] {
             let quads = export(format, |sink, names, vocab| {
