@@ -449,5 +449,152 @@ test(
         }
       },
     );
+    await t.test(
+      "idle reattachment rereads a just-completed history exactly once",
+      async () => {
+        let reads = 0,
+          posts = 0;
+        const f = await open("/kb/one/chat/a", async (route, p) => {
+          if (p.endsWith("/conversations/a")) {
+            reads++;
+            await route.fulfill({
+              json: {
+                messages:
+                  reads === 1
+                    ? [message("Question", "user")]
+                    : [
+                        message("Question", "user"),
+                        message("Saved between reads"),
+                      ],
+              },
+            });
+            return true;
+          }
+          if (p.endsWith("/chat") && route.request().method() === "POST") {
+            posts++;
+            return false;
+          }
+        });
+        try {
+          await f.page
+            .getByText("Saved between reads", { exact: true })
+            .waitFor();
+          assert.equal(reads, 2);
+          assert.equal(posts, 0);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    await t.test(
+      "idle plus unanswered history is bounded without resending",
+      async () => {
+        let reads = 0;
+        const f = await open("/kb/one/chat/a", async (route, p) => {
+          if (p.endsWith("/conversations/a")) {
+            reads++;
+            await route.fulfill({
+              json: { messages: [message("Still unanswered", "user")] },
+            });
+            return true;
+          }
+        });
+        try {
+          await f.page
+            .getByText(
+              "No active answer was found. You can send a new message.",
+              { exact: true },
+            )
+            .waitFor();
+          assert.equal(reads, 2);
+          assert.deepEqual(f.errors, []);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    await t.test(
+      "late idle refresh cannot overwrite another conversation",
+      async () => {
+        let reads = 0;
+        const pending = deferred();
+        const f = await open("/kb/one/chat/a", async (route, p) => {
+          if (p.endsWith("/conversations/a")) {
+            if (++reads === 1)
+              await route.fulfill({
+                json: { messages: [message("Question", "user")] },
+              });
+            else pending.resolve(route);
+            return true;
+          }
+        });
+        try {
+          const refill = await Promise.race([
+            pending.promise,
+            new Promise((_, reject) =>
+              setTimeout(
+                () => reject(new Error("expected idle refresh request")),
+                5000,
+              ),
+            ),
+          ]);
+          await f.page.evaluate(() => window.__go("/kb/one/chat/b"));
+          await f.page.getByText("Answer beta", { exact: true }).waitFor();
+          await refill.fulfill({
+            json: { messages: [message("Obsolete saved answer")] },
+          });
+          await f.page.evaluate(() => new Promise(requestAnimationFrame));
+          assert.equal(
+            await f.page.getByText("Answer beta", { exact: true }).count(),
+            1,
+          );
+          assert.equal(
+            await f.page
+              .getByText("Obsolete saved answer", { exact: true })
+              .count(),
+            0,
+          );
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    await t.test(
+      "an idle refresh failure can be retried without a POST",
+      async () => {
+        let reads = 0;
+        const f = await open("/kb/one/chat/a", async (route, p) => {
+          if (p.endsWith("/conversations/a")) {
+            reads++;
+            await route.fulfill(
+              reads === 2
+                ? { status: 500, json: { error: "refresh failed" } }
+                : {
+                    json: {
+                      messages:
+                        reads === 1
+                          ? [message("Question", "user")]
+                          : [message("Recovered saved answer")],
+                    },
+                  },
+            );
+            return true;
+          }
+        });
+        try {
+          await f.page.getByRole("alert").waitFor();
+          await f.page
+            .getByRole("button", { name: "Retry", exact: true })
+            .click();
+          await f.page
+            .getByText("Recovered saved answer", { exact: true })
+            .waitFor();
+          assert.equal(reads, 3);
+          assert.deepEqual(f.errors, []);
+        } finally {
+          await f.close();
+        }
+      },
+    );
   },
 );

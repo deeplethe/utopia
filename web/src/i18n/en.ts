@@ -766,6 +766,7 @@ export const en = {
   },
   ask: {
     streamInterrupted: "The answer stream was interrupted. Reopen the conversation to check its status.",
+    noActiveAnswer: "No active answer was found. You can send a new message.",
     historyLoadFailed: "Could not load this conversation.",
     retryHistory: "Retry",
     loadingHistory: "Loading conversation…",

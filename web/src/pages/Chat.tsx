@@ -34,6 +34,7 @@ import {
   streamChat,
   type ChatStep,
   type ConversationRow,
+  type ConversationMessage,
   type Source,
 } from "../api";
 import { S } from "../i18n";
@@ -82,6 +83,12 @@ const DRAFT_KEY = "chat:draft";
 const NO_SOURCES: Source[] = [];
 
 type ViewRequest = { kbId: string; id: string | null };
+const historyTurns = (messages: ConversationMessage[]): Turn[] => messages.map((m) => ({
+  role: m.role,
+  content: m.content,
+  steps: m.steps.length ? m.steps : undefined,
+  sources: m.sources.length ? m.sources : undefined,
+}));
 const viewKey = (kbId: string, id: string | null) => `${kbId}/${id ?? ""}`;
 
 export function Chat() {
@@ -112,6 +119,7 @@ export function Chat() {
   // 已经结束的那些轮次，从库里读来。**进行中的那一次不在这里**——见下
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const [idleHistoryKey, setIdleHistoryKey] = useState<string | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   // Object identity is the viewing epoch: A → B → A creates three owners.
@@ -271,6 +279,7 @@ export function Chat() {
   const attachIfRunning = (id: string, history: Turn[], owner: ViewRequest) => {
     let abort = () => {};
     let handle: LiveHandle | null = null;
+    let checkedIdle = false;
     const stop = reattachChat(owner.kbId, id, {
       onConversation: () => {},
       /* **快照到了才建这一轮。** 先摆一个空位再等回答的话，没有在跑的会话
@@ -307,13 +316,29 @@ export function Chat() {
         handle?.patchLast((t) => ({ ...t, error: message }));
         handle?.finish();
       },
-      onIdle: () => {},
+      onIdle: async () => {
+        if (checkedIdle || handle || !ownsView(owner)) return;
+        checkedIdle = true;
+        try {
+          // The answer may have committed between the history read and attach.
+          // One read closes that handoff; never re-POST or recursively attach.
+          const { messages } = await conversationsApi.detail(owner.kbId, id);
+          if (!ownsView(owner)) return;
+          const refreshed = historyTurns(messages);
+          setTurns(refreshed);
+          setLoadedKey(viewKey(owner.kbId, id));
+          setIdleHistoryKey(refreshed.at(-1)?.role === "user" ? viewKey(owner.kbId, id) : null);
+        } catch (error) {
+          if (ownsView(owner)) setHistoryError(error instanceof Error ? error.message : String(error));
+        }
+      },
     });
     abort = stop;
   };
 
   const loadConversation = async (id: string) => {
     const owner = claimView(id);
+    setIdleHistoryKey(null);
     setHistoryError(null);
     setLoadingHistory(false);
     // 回到正在写的那一场：直接认领，别去库里读——库里要等它写完才有那一行
@@ -331,12 +356,7 @@ export function Chat() {
       const { messages } = await conversationsApi.detail(owner.kbId, id);
       if (!ownsView(owner)) return;
       sessionStorage.setItem(lastKey(owner.kbId), id);
-      const history: Turn[] = messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        steps: m.steps.length ? m.steps : undefined,
-        sources: m.sources.length ? m.sources : undefined,
-      }));
+      const history = historyTurns(messages);
       setTurns(history);
       setLoadedKey(viewKey(owner.kbId, id));
       /* **刷新之后接回去。** 上面那个 store 只活在这一个页面里；刷新、
@@ -394,6 +414,7 @@ export function Chat() {
     const q = input.trim();
     if (!q || streaming || !kb || kb.id !== kbId || loadingHistory || historyError) return;
     const owner = claimView(activeId);
+    setIdleHistoryKey(null);
     setInput("");
     sessionStorage.removeItem(DRAFT_KEY);
     if (inputRef.current) inputRef.current.style.height = "auto";
@@ -711,6 +732,9 @@ export function Chat() {
       {/* 对话区：新对话首屏 = 问候 + 居中 composer（ChatGPT/Claude 惯例）；
           有消息后 composer 停靠底部 */}
       <div className="flex-1 min-w-0 flex flex-col">
+        {idleHistoryKey === viewKey(kbId, currentId) && !streaming && (
+          <p role="status" className="px-4 pt-4 text-body text-ink-2">{S.ask.noActiveAnswer}</p>
+        )}
         {historyError ? (
           <div role="alert" className="p-6 text-body">
             <p>{S.ask.historyLoadFailed}</p>
