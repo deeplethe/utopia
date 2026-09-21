@@ -8,7 +8,7 @@
  *
  *  样式按 web/DESIGN.md 那五条：字号五档、间距六档、颜色只用 token、控件与状态
  *  一律从 ui/ 来。 */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Play, Plus, Search, Trash2 } from "lucide-react";
 import {
@@ -40,6 +40,7 @@ import {
 } from "../ui";
 import { toast } from "../toast";
 import { expressionText, metadataOnly, metadataPatch } from "./ruleExpressions";
+import { ruleDependencies } from "./ruleDependencies";
 
 /** op → 那句话里的动词。**数字与集合两类分开**，因为它们的操作数长得不一样 */
 const OPS: {
@@ -258,6 +259,15 @@ export function RulesPanel({
   /** 展开了哪条规则的命中列表。一次只展开一条——两份长列表并排读不了 */
   const [opened, setOpened] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [dependenciesOf, setDependenciesOf] = useState<string | null>(null);
+  const [navigation, setNavigation] = useState<{ id: string } | null>(null);
+  useEffect(() => { setDependenciesOf(null); setNavigation(null); }, [kbId]);
+  useEffect(() => {
+    if (!navigation) return;
+    const row = document.getElementById(`rule-${kbId}-${navigation.id}`);
+    row?.scrollIntoView({ block: "center" });
+    row?.focus();
+  }, [kbId, navigation]);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["rules", kbId] });
@@ -344,6 +354,11 @@ export function RulesPanel({
   });
 
   const all = rules.data?.rules ?? [];
+  const dependencies = useMemo(() => ruleDependencies(rules.data?.rules ?? [], classes, attributes), [rules.data, classes, attributes]);
+  const inspecting = all.find((r) => r.id === dependenciesOf);
+  const navigateRule = (id: string) => {
+    setFilter(""); setDependenciesOf(null); setNavigation({ id });
+  };
   const needle = filter.trim().toLowerCase();
   const list = needle
     ? all.filter((r) => searchText(r, attributes).includes(needle))
@@ -432,13 +447,16 @@ export function RulesPanel({
               {list.map((r) => (
                 <Tr
                   key={r.id}
+                  id={`rule-${kbId}-${r.id}`}
+                  tabIndex={-1}
                   className={cn(
                     !r.enabled && "opacity-55",
-                    r.id === focusId && "u-picked bg-surface-2",
+                    (r.id === focusId || r.id === navigation?.id) && "u-picked bg-surface-2",
                   )}
                 >
                   <Td>
                     <div className="text-body text-ink">{r.name}</div>
+                    <LinkButton onClick={() => setDependenciesOf(r.id)}>{S.ontology.ruleDependencies}</LinkButton>
                     {r.description && (
                       <div className="text-fine text-ink-2">{r.description}</div>
                     )}
@@ -512,6 +530,17 @@ export function RulesPanel({
           </Table>
         </div>
       )}
+
+      <Dialog open={!!inspecting} onOpenChange={(open) => !open && setDependenciesOf(null)}
+        closeLabel={S.ui.close} title={inspecting?.name ?? ""} description={S.ontology.ruleDependenciesHint}>
+        {inspecting && <div className="space-y-4">
+          {dependencies.incomplete && <p className="text-small text-warn">{S.ontology.ruleDependenciesIncomplete}</p>}
+          <RuleDependencyList title={S.ontology.rulePotentialProducers}
+            rules={all.filter((r) => dependencies.links.get(inspecting.id)?.producers.has(r.id))} onSelect={navigateRule} />
+          <RuleDependencyList title={S.ontology.rulePotentialConsumers}
+            rules={all.filter((r) => dependencies.links.get(inspecting.id)?.consumers.has(r.id))} onSelect={navigateRule} />
+        </div>}
+      </Dialog>
 
       {/* 命中：这一条此刻推出了哪些结论 */}
       <Dialog
@@ -847,4 +876,16 @@ function RuleMetadataDialog({ kbId, rule, attributes, onClose, onSaved }: {
       {save.error && <p role="alert" className="text-small text-danger">{(save.error as Error).message}</p>}
     </div>
   </Dialog>;
+}
+
+export function RuleDependencyList({ title, rules, onSelect }: {
+  title: string; rules: BusinessRule[]; onSelect: (id: string) => void;
+}) {
+  return <section className="space-y-2">
+    <h3 className="text-body font-medium text-ink">{title}</h3>
+    {rules.length ? rules.map((r) => <div key={r.id} className="flex flex-wrap items-baseline gap-2">
+      <LinkButton onClick={() => onSelect(r.id)}>{r.name}</LinkButton>
+      <span className="text-fine text-ink-2">{r.subject_label} · {r.enabled ? S.ontology.ruleEnabled : S.ontology.ruleDisabled}</span>
+    </div>) : <p className="text-small text-ink-2">{S.ontology.ruleDependenciesEmpty}</p>}
+  </section>;
 }

@@ -1224,6 +1224,12 @@ export const en = {
     rulesShort: "Business rules",
     ruleExpressionReadOnly: "This definition is read-only in this form. You can edit its name and description without changing its expressions or conditions.",
     ruleUnknownExpression: "Unsupported expression (read-only)",
+    ruleDependencies: "Potential dependencies",
+    ruleDependenciesHint: "Candidates from rule definitions, not proof of execution. Readings, conditions and time determine what actually runs; disabled definitions are included.",
+    ruleDependenciesIncomplete: "Some definitions or classes could not be read completely. This list may be incomplete.",
+    rulePotentialProducers: "May receive input from",
+    rulePotentialConsumers: "May provide input to",
+    ruleDependenciesEmpty: "No candidates found in the readable definitions.",
     rulesTitle: "Business rules",
     /* 说清三件事：谁写的、结论是什么身份、什么时候重算。第三件最容易被误解成
        「保存就生效」，而它其实等下一轮物化 */
@@ -1916,6 +1922,7 @@ export const en = {
     alignmentStatements: (n: number) => (n === 1 ? "1 statement" : `${n} statements`),
     alignmentEntities: (n: number) => (n === 1 ? "1 thing" : `${n} things`),
     alignmentVotes: (first: string, second: string) => `Votes: ${first} · ${second}`,
+    alignmentConflict: "This decision conflicts with the current state. Refresh and review it before trying again.",
     alignmentKindWordBusy: "This kind word is being updated by another operation. Please try again shortly.",
     alignmentTyped: (kept: number, retired: number) =>
       `Typed graph recomputed: ${kept} statements typed, ${retired} rows retired`,
