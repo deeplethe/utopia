@@ -677,6 +677,9 @@ export const zh: Strings = {
   },
   ask: {
     streamInterrupted: "回答连接已中断，请重新打开会话查看状态。",
+    historyLoadFailed: "无法读取此会话。",
+    retryHistory: "重试",
+    loadingHistory: "正在读取会话…",
     greeting: "问问 Utopia 都记住了什么",
     emptyTitle: "对话",
     emptyBody:
