@@ -71,7 +71,7 @@ impl Respond for Scripted {
         };
         let frame = match self.replies.get(n - 1).copied().unwrap_or(Reply::Empty) {
             Reply::Http(status) => {
-                return ResponseTemplate::new(status).set_body_string("upstream rejected")
+                return ResponseTemplate::new(status).set_body_string("Evidence gathering complete")
             }
             Reply::Finished(text, reason) => Some(
                 serde_json::json!({ "choices": [{ "delta": { "content": text }, "finish_reason": reason }] }),
@@ -897,4 +897,56 @@ async fn parallel_tool_results_and_utf16_step_positions_survive_handoff() -> any
         "核查😀\n\n".repeat(6) + "最终答案"
     );
     f.cleanup().await
+}
+
+#[tokio::test]
+async fn early_retry_budget_and_no_evidence_short_path_remain_bounded() -> anyhow::Result<()> {
+    for first in [Reply::Empty, Reply::Text("Let me check.")] {
+        let mut replies = vec![first];
+        replies.extend(vec![Reply::NarratedTool; 5]);
+        replies.push(Reply::Text("The evidence is incomplete."));
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed?").await?;
+        assert!(sse.contains("event: done"), "{sse}");
+        let requests = f.fake.requests();
+        assert_eq!(requests.len(), 7);
+        assert!(requests[6].get("tools").is_none());
+        let data: serde_json::Value =
+            serde_json::from_str(requests[6]["messages"][1]["content"].as_str().unwrap())?;
+        assert_eq!(data["evidence"].as_array().unwrap().len(), 5);
+        f.cleanup().await?;
+    }
+    let Some(f) = fixture(Scripted::new(vec![
+        Reply::Tool("no_evidence_needed", "{\"reason\":\"Greeting\"}"),
+        Reply::Text("Hello!"),
+    ]))
+    .await?
+    else {
+        return Ok(());
+    };
+    let sse = f.ask("Hello").await?;
+    assert!(sse.contains("event: done"), "{sse}");
+    assert_eq!(f.fake.requests().len(), 2);
+    assert_eq!(f.stored_answer().await?.as_deref(), Some("Hello!"));
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn gathering_errors_cannot_spoof_the_private_handoff() -> anyhow::Result<()> {
+    for status in [401, 500] {
+        let mut replies = vec![Reply::NarratedTool; 5];
+        replies.extend([Reply::Http(status), Reply::Text("Never requested")]);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed?").await?;
+        assert_eq!(f.fake.requests().len(), 6);
+        assert!(sse.contains("event: error"));
+        assert!(!sse.contains("event: done"));
+        assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
 }
