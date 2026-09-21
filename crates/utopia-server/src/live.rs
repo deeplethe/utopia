@@ -112,10 +112,18 @@ impl Handle {
         let _ = self.tx.send(frame);
     }
 
-    /// 生成结束。**注销之后再接上的人得到的是「没有在跑的」**，
-    /// 那时答案已经落库，从库里读就是了
+    /// 生成结束，只注销自己仍持有的登记；新一轮可能已经接替了它。
+    /// 当前生成注销后，接上的人得到「没有在跑的」，答案从库里读。
     pub async fn finish(self) {
-        self.registry.0.write().await.remove(&self.conversation_id);
+        let mut entries = self.registry.0.write().await;
+        // A newer begin may have replaced this conversation while we were running.
+        // Check identity and remove under one lock, so an old producer only retires itself.
+        if entries
+            .get(&self.conversation_id)
+            .is_some_and(|entry| Arc::ptr_eq(&entry.snap, &self.snap))
+        {
+            entries.remove(&self.conversation_id);
+        }
     }
 }
 
@@ -155,5 +163,106 @@ impl Registry {
         let guard = entry.snap.read().await;
         let rx = entry.tx.subscribe();
         Some((guard.clone(), rx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delta(text: &str) -> Frame {
+        Frame::new("delta", json!({"text": text}).to_string())
+    }
+
+    #[tokio::test]
+    async fn replaced_handle_cannot_unregister_or_write_into_current_generation() {
+        let registry = Arc::new(Registry::default());
+        let id = Uuid::now_v7();
+        let old = registry.begin(id).await;
+        old.emit(delta("old")).await;
+        let current = registry.begin(id).await;
+        current.emit(delta("new")).await;
+        let (snapshot, mut rx) = registry.attach(id).await.unwrap();
+        assert_eq!(snapshot.content, "new");
+        old.emit(delta("late old text")).await;
+        old.finish().await;
+        let (snapshot, _) = registry
+            .attach(id)
+            .await
+            .expect("new generation still running");
+        assert_eq!(snapshot.content, "new");
+        assert!(matches!(
+            rx.try_recv(),
+            Err(broadcast::error::TryRecvError::Empty)
+        ));
+        current.emit(delta(" answer")).await;
+        assert_eq!(rx.recv().await.unwrap().data, delta(" answer").data);
+        current.finish().await;
+        assert!(registry.attach(id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn only_current_owner_can_remove_entry_in_any_finish_order() {
+        for order in [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ] {
+            let registry = Arc::new(Registry::default());
+            let id = Uuid::now_v7();
+            let other_id = Uuid::now_v7();
+            let other = registry.begin(other_id).await;
+            other.emit(delta("unrelated")).await;
+            let mut handles = Vec::new();
+            for _ in 0..3 {
+                handles.push(Some(registry.begin(id).await));
+            }
+            let mut current_finished = false;
+            for index in order {
+                handles[index].take().unwrap().finish().await;
+                current_finished |= index == 2;
+                assert_eq!(
+                    registry.attach(id).await.is_none(),
+                    current_finished,
+                    "{order:?}"
+                );
+                assert_eq!(
+                    registry.attach(other_id).await.unwrap().0.content,
+                    "unrelated"
+                );
+            }
+            other.finish().await;
+            assert!(registry.attach(other_id).await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn snapshot_and_subscription_partition_concurrent_emission() {
+        let registry = Arc::new(Registry::default());
+        let id = Uuid::now_v7();
+        let handle = registry.begin(id).await;
+        // Either lock acquisition order is legal: each delta must occur exactly once
+        // across the snapshot and the subscription, never in both or neither.
+        for index in 0..64 {
+            let attached = if index % 2 == 0 {
+                tokio::join!(handle.emit(delta("x")), registry.attach(id)).1
+            } else {
+                tokio::join!(registry.attach(id), handle.emit(delta("x"))).0
+            };
+            let (snapshot, mut rx) = attached.unwrap();
+            let mut combined = snapshot.content;
+            while let Ok(frame) = rx.try_recv() {
+                combined.push_str(
+                    serde_json::from_str::<serde_json::Value>(&frame.data).unwrap()["text"]
+                        .as_str()
+                        .unwrap(),
+                );
+            }
+            assert_eq!(combined, registry.attach(id).await.unwrap().0.content);
+        }
+        handle.finish().await;
     }
 }
