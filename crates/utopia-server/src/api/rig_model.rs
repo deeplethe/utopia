@@ -77,11 +77,10 @@ impl CompletionModel for RigModel {
             }
             Err(e) => return Err(completion_error(e)),
         };
-        Ok(CompletionResponse::new(
-            choice_of(&turn),
-            Usage::new(),
-            PROVIDER,
-        ))
+        Ok(
+            CompletionResponse::new(choice_of(&turn), Usage::new(), PROVIDER)
+                .with_optional_finish_reason(turn.finish_reason.as_deref().map(finish_reason)),
+        )
     }
 
     async fn stream(
@@ -107,10 +106,11 @@ impl CompletionModel for RigModel {
                             )))
                         })
                         .collect();
-                    v.push(Ok(RawStreamingChoice::FinalResponse(StreamFinal::new(
-                        PROVIDER,
-                        Usage::new(),
-                    ))));
+                    v.push(Ok(RawStreamingChoice::FinalResponse(
+                        StreamFinal::new(PROVIDER, Usage::new()).with_optional_finish_reason(
+                            turn.finish_reason.as_deref().map(finish_reason),
+                        ),
+                    )));
                     v
                 }
                 Err(e) => vec![Err(completion_error(e))],
@@ -121,6 +121,17 @@ impl CompletionModel for RigModel {
             PROVIDER,
             Box::pin(inner),
         ))
+    }
+}
+
+fn finish_reason(reason: &str) -> rig_core::completion::FinishReason {
+    use rig_core::completion::FinishReason;
+    match reason {
+        "stop" => FinishReason::Stop,
+        "length" => FinishReason::Length,
+        "tool_calls" => FinishReason::ToolCalls,
+        "content_filter" => FinishReason::ContentFilter,
+        other => FinishReason::Other(other.to_string()),
     }
 }
 
@@ -485,6 +496,7 @@ mod tests {
     #[test]
     fn a_turn_becomes_text_then_tool_calls() {
         let turn = AssistantTurn {
+            finish_reason: None,
             content: Some("hm".into()),
             tool_calls: vec![utopia_llm::ToolCall {
                 id: "c9".into(),

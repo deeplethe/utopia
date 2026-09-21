@@ -33,6 +33,8 @@ pub(super) enum Reply {
     SplitText(&'static [&'static str]),
     NarratedTool,
     OversizedText,
+    Finished(&'static str, &'static str),
+    Http(u16),
     /// 调一个工具：(名字, 参数 JSON)
     Tool(&'static str, &'static str),
 }
@@ -66,6 +68,12 @@ impl Respond for Scripted {
             seen.len()
         };
         let frame = match self.replies.get(n - 1).copied().unwrap_or(Reply::Empty) {
+            Reply::Http(status) => {
+                return ResponseTemplate::new(status).set_body_string("upstream rejected")
+            }
+            Reply::Finished(text, reason) => Some(
+                serde_json::json!({ "choices": [{ "delta": { "content": text }, "finish_reason": reason }] }),
+            ),
             Reply::OversizedText => {
                 let text = "x".repeat(4096);
                 let frame = serde_json::json!({ "choices": [{ "delta": { "content": text } }] });
@@ -356,8 +364,12 @@ async fn budget_case(last: Reply, question: &str, answer: Option<&str>) -> anyho
     let sse = f.ask(question).await?;
     assert_eq!(
         f.fake.requests().len(),
-        7,
-        "six tool rounds and one final call"
+        if answer.is_none() && !matches!(last, Reply::OversizedText) {
+            8
+        } else {
+            7
+        },
+        "six tool rounds, one final call, and at most one answer-only recovery"
     );
     assert_eq!(
         sse.matches("event: step").count(),
@@ -515,7 +527,14 @@ async fn budget_finalization_survives_disconnect_and_reattach() -> anyhow::Resul
             }
         })
         .await?;
-        assert_eq!(f.fake.requests().len(), 7);
+        assert_eq!(
+            f.fake.requests().len(),
+            if matches!(last, Reply::Text(DSML)) {
+                8
+            } else {
+                7
+            }
+        );
         if matches!(last, Reply::Text(DSML)) {
             assert!(events.contains(&"error"));
             assert!(!events.contains(&"done"));
@@ -545,12 +564,101 @@ async fn early_retries_do_not_extend_the_tool_budget() -> anyhow::Result<()> {
             return Ok(());
         };
         let sse = f.ask("What changed at Acme?").await?;
-        assert_eq!(f.fake.requests().len(), 7);
+        assert_eq!(f.fake.requests().len(), 8);
         assert_eq!(sse.matches("event: step").count(), 5);
         assert!(f.fake.requests()[6].get("tools").is_none());
         assert!(sse.contains("event: error"));
         assert!(!sse.contains("event: done"));
         assert!(!sse.contains("DSML"));
+        assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn finalization_recovers_once_from_existing_evidence_without_tools() -> anyhow::Result<()> {
+    const ANSWER: &str = "There are no matching entities in the supplied evidence.";
+    for invalid in [
+        Reply::Text(DSML),
+        Reply::Empty,
+        Reply::Tool("find_entities", r#"{"name":"forbidden"}"#),
+        Reply::Finished("Incomplete final", "length"),
+    ] {
+        let mut replies = vec![Reply::NarratedTool; 6];
+        replies.extend([invalid, Reply::Finished(ANSWER, "stop")]);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed at Acme?").await?;
+        assert!(sse.contains("event: done"), "{sse}");
+        assert!(!sse.contains("event: error"), "{sse}");
+        assert!(!sse.contains("DSML"));
+        assert!(!sse.contains("Incomplete final"));
+        assert_eq!(sse.matches(ANSWER).count(), 1);
+        assert_eq!(sse.matches("event: step").count(), 6);
+        assert_eq!(
+            f.stored_answer().await?.unwrap(),
+            "I will check the evidence.\n\n".repeat(6) + ANSWER
+        );
+        let reqs = f.fake.requests();
+        assert_eq!(reqs.len(), 8);
+        let recovery = &reqs[7];
+        assert!(recovery.get("tools").is_none());
+        assert!(recovery.get("tool_choice").is_none());
+        let msgs = recovery["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs
+            .iter()
+            .all(|m| m.get("tool_calls").is_none() && m["role"] != "tool"));
+        let data: serde_json::Value = serde_json::from_str(msgs[1]["content"].as_str().unwrap())?;
+        assert_eq!(data["question"], "What changed at Acme?");
+        let original: Vec<_> = reqs[6]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .collect();
+        assert_eq!(data["evidence"].as_array().unwrap().len(), original.len());
+        for (copied, original) in data["evidence"].as_array().unwrap().iter().zip(original) {
+            assert_eq!(
+                copied["result"], original["content"],
+                "evidence is copied exactly"
+            );
+            assert_eq!(copied["id"], original["tool_call_id"]);
+        }
+        assert!(!msgs[1]["content"].as_str().unwrap().contains("DSML"));
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsuccessful_recovery_never_loops_or_reopens_tools() -> anyhow::Result<()> {
+    for failed in [
+        Reply::Text(DSML),
+        Reply::Empty,
+        Reply::Tool("find_entities", r#"{"name":"forbidden"}"#),
+        Reply::Finished("partial", "length"),
+        Reply::Http(422),
+        Reply::Http(401),
+    ] {
+        let mut replies = vec![Reply::NarratedTool; 6];
+        replies.extend([
+            Reply::Text(DSML),
+            failed,
+            Reply::Text("Must never be requested"),
+        ]);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed at Acme?").await?;
+        assert_eq!(f.fake.requests().len(), 8);
+        assert_eq!(sse.matches("event: step").count(), 6);
+        assert!(sse.contains("event: error"));
+        assert!(!sse.contains("event: done"));
+        assert!(!sse.contains("DSML"));
+        assert!(!sse.contains("partial"));
         assert!(f.stored_answer().await?.is_none());
         f.cleanup().await?;
     }

@@ -2,6 +2,9 @@
 //! 事件序列：step*（行动轨迹）| sources（引用清单，随检索增量更新）| delta*（增量文本）→ done | error。
 //! 模型不支持 tool-calling 时自动降级为一次性 RAG 注入。
 
+#[path = "chat_finalization.rs"]
+mod finalization;
+
 use super::agent;
 use super::rig_model::{self, RigModel};
 use crate::live::Frame;
@@ -738,6 +741,7 @@ pub async fn chat(
         let mut turn_calls: Vec<serde_json::Value> = Vec::new();
         let mut finished = false;
         let mut published_sources = 0;
+        let mut recover = false;
 
         while let Some(item) = run.next().await {
             match item {
@@ -842,6 +846,12 @@ pub async fn chat(
                 Ok(_) => {}
                 Err(e) => {
                     let (message, rejected) = describe(&e);
+                    if shared.finalization_rejected()
+                        || (shared.finalizing() && !turn_calls.is_empty()) {
+                        tracing::warn!(model = shared.model, reason = %message, "Recovering a rejected final answer once without tools");
+                        recover = true;
+                        break;
+                    }
                     // **只有「端点拒绝了带工具的请求」才降级**为一次性 RAG。从前首轮
                     // 的任何错误都走这条路：一次到 SiliconFlow 的网络抖动被记成
                     // 「tool-calling 不可用」，然后 RAG 死在同一个抖动上
@@ -862,6 +872,23 @@ pub async fn chat(
                         return;
                     }
                     yield error_event(&message);
+                    return;
+                }
+            }
+        }
+        // Drop the exhausted runner before issuing the one explicitly budgeted
+        // recovery call. It has no tools or tool server, and cannot loop.
+        drop(run);
+        if recover {
+            let sources = shared.sink.lock().await.sources.clone();
+            match finalization::recover(&client, &system_prompt, &query, &history.turns, &exchange_acc, &sources).await {
+                Ok(answer) => {
+                    turn_text = answer;
+                    turn_calls.clear();
+                    finished = true;
+                }
+                Err(e) => {
+                    yield error_event(&format!("Model could not produce a final answer after one recovery: {e}"));
                     return;
                 }
             }

@@ -69,9 +69,10 @@ What changed is that the miss is recorded: the call and the model's reason are i
 Withdrawing tools does not prevent an endpoint from emitting tool-control syntax in
 `delta.content`. A nonempty accumulator may also contain only narration from earlier tool
 turns. The terminal candidate must therefore be checked separately: at the budget boundary,
-empty text, structured tool calls, and unexpected bare DSML control output stop the run with
-an error. The pre-tool hook independently refuses execution during finalization. DSML text
-is never interpreted as a tool call; ordinary explanations, fenced quotations, and explicit
+empty text, structured tool calls, unexpected bare DSML control output, or a reported
+non-natural finish stop the tool runner. The pre-tool hook independently refuses execution
+during finalization. DSML text is never interpreted as a tool call; ordinary explanations,
+fenced quotations, and explicit
 DSML requests remain allowed.
 
 Only the budget-finalization text is buffered, up to 1 MiB, before publication. Earlier
@@ -80,11 +81,19 @@ the final text and persisting the assistant message, so a rejected candidate doe
 the live snapshot or normal conversation history. This uses the existing background producer
 and error event; disconnecting the browser does not cancel generation.
 
-The six tool-capable turns and seven logical model-call limit are unchanged. There is no
-extra recovery request at the exhausted boundary, including for an empty answer: a retry
-without remaining call budget is not recovery. Provider-specific request changes and
-finish-reason propagation require separate work; this guard does not establish why the
-upstream endpoint generated markup, or assess factual answer quality.
+The tool runner retains its six tool-capable turns and seven logical model-call limit.
+After a rejected final candidate, the route permits exactly one additional physical request,
+with no tools or request-shape fallback and a 120-second deadline. It copies existing tool
+results and source IDs into an explicitly untrusted evidence payload, retaining conversation
+context but omitting the rejected candidate and protocol-role messages. It never performs
+another search or summarizes away evidence. Input and output are each bounded at 1 MiB;
+oversize input fails explicitly instead of silently dropping evidence. Thus recovery cannot
+execute tools or retry itself, and a failed recovery emits an error without persistence.
+
+Tool turns preserve the provider's finish reason through the adapter: missing stays missing,
+unknown stays unknown, and an explicit length/tool-call/filter finish cannot pass this final
+answer boundary. Normal early answers keep their existing behavior. This does not establish
+why the upstream endpoint generated markup, or assess factual answer quality.
 
 ## Not done
 

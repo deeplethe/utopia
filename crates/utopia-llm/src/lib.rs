@@ -24,6 +24,8 @@ pub struct ToolCall {
 /// 工具对话的一个 assistant 回合：文本与工具调用至少其一。
 #[derive(Debug)]
 pub struct AssistantTurn {
+    /// Preserve the provider value; absent is not an implicit `stop`.
+    pub finish_reason: Option<String>,
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
 }
@@ -666,6 +668,9 @@ impl LlmClient {
         Ok(AssistantTurn {
             content,
             tool_calls,
+            finish_reason: body["choices"][0]["finish_reason"]
+                .as_str()
+                .map(String::from),
         })
     }
 
@@ -704,6 +709,7 @@ impl LlmClient {
             let mut buf = Vec::new();
             let mut content = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
+            let mut finish_reason = None;
             let mut done = false;
             'outer: while let Some(part) = bytes.next().await {
                 let part = part?;
@@ -723,7 +729,8 @@ impl LlmClient {
                         let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
                             continue;
                         };
-                        if v["choices"][0]["finish_reason"].is_string() {
+                        if let Some(reason) = v["choices"][0]["finish_reason"].as_str() {
+                            finish_reason = Some(reason.to_string());
                             done = true;
                         }
                         let delta = &v["choices"][0]["delta"];
@@ -765,7 +772,7 @@ impl LlmClient {
             }
             calls.retain(|c| !c.name.is_empty());
             let content = if content.is_empty() { None } else { Some(content) };
-            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls });
+            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls, finish_reason });
         };
         Ok(stream)
     }
@@ -1248,6 +1255,42 @@ mod tests {
         let error = stream.try_collect::<Vec<_>>().await.unwrap_err();
         server.await.unwrap();
         assert!(error.downcast_ref::<Interrupted>().is_some(), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn tool_turns_preserve_finish_reasons_in_both_transports() {
+        use futures_util::TryStreamExt;
+        for reason in [
+            None,
+            Some("stop"),
+            Some("length"),
+            Some("tool_calls"),
+            Some("content_filter"),
+            Some("vendor_specific"),
+        ] {
+            let body = json!({"choices":[{"message":{"content":"answer"},"finish_reason":reason}]})
+                .to_string();
+            let (addr, server) = an_http_response("200 OK", "application/json", &body).await;
+            let turn = client_at(addr)
+                .chat_tools_with(&[], None, None)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            assert_eq!(turn.finish_reason.as_deref(), reason);
+            let frame = json!({"choices":[{"delta":{"content":"answer"},"finish_reason":reason}]});
+            let sse = format!("data: {frame}\n\ndata: [DONE]\n\n");
+            let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+            let stream = client_at(addr)
+                .chat_tools_stream_with(&[], None, None)
+                .await
+                .unwrap();
+            let items: Vec<ToolStreamItem> = stream.try_collect().await.unwrap();
+            server.await.unwrap();
+            let Some(ToolStreamItem::Turn(turn)) = items.last() else {
+                panic!("missing turn")
+            };
+            assert_eq!(turn.finish_reason.as_deref(), reason);
+        }
     }
 
     #[tokio::test]

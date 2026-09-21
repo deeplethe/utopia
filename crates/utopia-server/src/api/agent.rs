@@ -17,9 +17,9 @@
 use super::tools::{self, ToolCtx, ToolSink};
 use crate::state::AppState;
 use rig_agent::agent::{
-    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, ModelTurnAction,
-    ModelTurnFinished, RequestPatch, RetryRequest, ToolCall as ToolCallEvent, ToolCallAction,
-    ToolResultAction, ToolResultEvent,
+    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, InvalidToolCallAction,
+    InvalidToolCallContext, ModelTurnAction, ModelTurnFinished, RequestPatch, RetryRequest,
+    ToolCall as ToolCallEvent, ToolCallAction, ToolResultAction, ToolResultEvent,
 };
 use rig_agent::tool::{DynamicTool, ToolContext, ToolOutput};
 use rig_core::message::{AssistantContent, Message, ToolChoice};
@@ -131,6 +131,9 @@ pub struct Shared {
     asked_again: AtomicBool,
     /// Set before the final request so the route can withhold unvalidated text.
     finalizing: AtomicBool,
+    /// Only a rejected model candidate authorizes the one-shot recovery, not an
+    /// authentication, credit, transport, or database error.
+    finalization_rejected: AtomicBool,
 }
 
 impl Shared {
@@ -162,11 +165,16 @@ impl Shared {
             nudged: AtomicBool::new(false),
             asked_again: AtomicBool::new(false),
             finalizing: AtomicBool::new(false),
+            finalization_rejected: AtomicBool::new(false),
         })
     }
 
     pub fn finalizing(&self) -> bool {
         self.finalizing.load(Ordering::Relaxed)
+    }
+
+    pub fn finalization_rejected(&self) -> bool {
+        self.finalization_rejected.load(Ordering::Relaxed)
     }
 
     fn keep_step(&self, internal_call_id: &str, step: Value) {
@@ -329,14 +337,20 @@ impl AgentHook for Policy {
                 _ => None,
             })
             .collect();
+        let incomplete = event
+            .finish_reason
+            .is_some_and(|reason| !matches!(reason, rig_core::completion::FinishReason::Stop));
         let turn = event.turn;
         let shared = self.shared.clone();
         let max_rounds = self.max_rounds;
         async move {
-            // There is no model-call budget left here. Stop honestly instead of asking
-            // for a retry that the runner cannot perform, or executing another tool.
+            // Stop the tool runner. The route owns one separate, tool-free recovery
+            // call, so neither retries nor malformed calls can extend the tool budget.
             if turn > max_rounds {
-                if let Some(reason) = finalization_error(&text, has_tool_call, &shared.question) {
+                let reason = finalization_error(&text, has_tool_call, &shared.question)
+                    .or(incomplete.then_some("Model did not finish its final answer"));
+                if let Some(reason) = reason {
+                    shared.finalization_rejected.store(true, Ordering::Relaxed);
                     return ModelTurnAction::Stop(reason.into());
                 }
                 return ModelTurnAction::Continue;
@@ -373,6 +387,25 @@ impl AgentHook for Policy {
         }
     }
 
+    fn on_invalid_tool_call(
+        &self,
+        _ctx: &HookContext,
+        _event: &InvalidToolCallContext,
+    ) -> impl std::future::Future<Output = Option<InvalidToolCallAction>> + Send {
+        // Rig rejects calls disallowed by ToolChoice::None before on_tool_call.
+        // Mark that candidate for the same answer-only recovery; never ask the
+        // runner to retry a forbidden tool call.
+        let action = if self.shared.finalizing() {
+            self.shared
+                .finalization_rejected
+                .store(true, Ordering::Relaxed);
+            Some(InvalidToolCallAction::fail())
+        } else {
+            None
+        };
+        async move { action }
+    }
+
     fn on_tool_call(
         &self,
         _ctx: &HookContext,
@@ -381,6 +414,9 @@ impl AgentHook for Policy {
         // **说不清自己要做什么的调用不执行。** 把话回给模型，让它重来；
         // 界面上照样显示成一次没做成的调用
         let action = if self.shared.finalizing() {
+            self.shared
+                .finalization_rejected
+                .store(true, Ordering::Relaxed);
             ToolCallAction::Stop(FINAL_TOOL_CALL.into())
         } else {
             match super::chat::check_call(&self.shared.schema, event.tool_name, event.args) {
