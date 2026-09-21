@@ -596,5 +596,55 @@ test(
         }
       },
     );
+
+    await t.test(
+      "a pending idle refresh cannot overwrite a new send",
+      async () => {
+        const pending = deferred();
+        let reads = 0;
+        let posts = 0;
+        const f = await open("/kb/one/chat/a", async (route, p) => {
+          if (p.endsWith("/conversations/a")) {
+            if (++reads === 1)
+              await route.fulfill({
+                json: { messages: [message("Earlier question", "user")] },
+              });
+            else pending.resolve(route);
+            return true;
+          }
+          if (p.endsWith("/chat") && route.request().method() === "POST") {
+            posts++;
+            await route.fulfill({
+              contentType: "text/event-stream",
+              body: 'event: conversation\ndata: {"id":"a"}\n\nevent: delta\ndata: {"text":"New answer"}\n\nevent: done\ndata: {}\n\n',
+            });
+            return true;
+          }
+        });
+        try {
+          const old = await pending.promise;
+          await f.page.getByPlaceholder("Ask anything…").fill("New question");
+          await f.page.getByPlaceholder("Ask anything…").press("Enter");
+          await f.page.getByText("New answer", { exact: true }).waitFor();
+          await old.fulfill({
+            json: { messages: [message("Obsolete refreshed answer")] },
+          });
+          await f.page.evaluate(() => new Promise(requestAnimationFrame));
+          assert.equal(
+            await f.page.getByText("New answer", { exact: true }).count(),
+            1,
+          );
+          assert.equal(
+            await f.page
+              .getByText("Obsolete refreshed answer", { exact: true })
+              .count(),
+            0,
+          );
+          assert.equal(posts, 1);
+        } finally {
+          await f.close();
+        }
+      },
+    );
   },
 );

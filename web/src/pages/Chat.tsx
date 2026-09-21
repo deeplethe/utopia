@@ -275,7 +275,7 @@ export function Chat() {
     });
   };
 
-  /** 接回一个正在生成的回答。没有在跑的话服务端回 `idle`，什么都不发生。 */
+  /** 接回一个正在生成的回答。没有在跑的话服务端回 `idle`，补读一次已保存历史。 */
   const attachIfRunning = (id: string, history: Turn[], owner: ViewRequest) => {
     let abort = () => {};
     let handle: LiveHandle | null = null;
@@ -732,7 +732,7 @@ export function Chat() {
       {/* 对话区：新对话首屏 = 问候 + 居中 composer（ChatGPT/Claude 惯例）；
           有消息后 composer 停靠底部 */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {idleHistoryKey === viewKey(kbId, currentId) && !streaming && (
+        {idleHistoryKey === loadedKey && idleHistoryKey === viewKey(kbId, currentId) && !streaming && (
           <p role="status" className="px-4 pt-4 text-body text-ink-2">{S.ask.noActiveAnswer}</p>
         )}
         {historyError ? (
