@@ -1,0 +1,187 @@
+//! 一次对话轮次恰好有一个**挣来的**终结（#857）。
+//!
+//! 这不是为某一个洞写的回归。#845 / #850 / #851 / #852 各自堵住一处「下面失败了、
+//! 上面报成功」，每条都带着自己的回归——**四个各抓一个的测试，抓不住第五个**。
+//! 第五个会被下一个人用同样的方式写出来：在第一个字节发出之后又加了一条会失败的路，
+//! 而「循环跑完了」依然够得着 `done`。
+//!
+//! 所以这里钉的是规矩本身。表里一行是一个注入点，每一行都过同样三条：
+//!
+//!   1. 客户端收不到 `event: done`
+//!   2. 恰好观察到一个终结（`done` 与 `error` 加起来正好一次）
+//!   3. 那个终结说得出理由（`error` 的 data 不为空）
+//!
+//! **新增一条会失败的路，代价是加一行**；加不出那一行，说明这条路自己也没想清楚
+//! 该怎么收尾。评审该盯的就是「新开了会失败的路却没加行」。
+//!
+//! ## 还没进表的注入点
+//!
+//! 下面这几个的注入手段随对应 PR 一起到：检索中途出错要在工具请求落地后关掉夹具
+//! 连接池（#850）；助手 INSERT 被拒要一个夹具作用域的触发器（#852）；流在答案
+//! 中途被切、以及终结广播早于注册项移除丢失，要 Registry 那一层的夹具（#851）。
+//! 每一个落地后就是这张表多一行，而不是多一个测试文件。
+
+use super::chat_empty_reply_tests::{fixture, Reply, Scripted};
+
+/// 这一轮该怎么收尾。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Ends {
+    /// 答案成立：一个 `done`，没有 `error`
+    Done,
+    /// 答案不成立：一个 `error`，**没有** `done`
+    Error,
+}
+
+/// 表里的一行：一个注入点。
+struct Case {
+    /// 出了什么事——断言失败时打的就是这句
+    what: &'static str,
+    /// 假模型这一轮按这个脚本回话
+    replies: Vec<Reply>,
+    /// 该怎么收尾
+    ends: Ends,
+    /// 还没修的话，是哪条 PR 在修。**那条 PR 落地时删掉这个字段**，这一行
+    /// 就开始被强制——留着 `Some` 而不是把行删掉，是为了让「已知没修」看得见
+    pending: Option<&'static str>,
+}
+
+/// 数一数这条 SSE 里出现了几个终结。
+///
+/// 按帧数而不是按子串数：`event: done` 也可能出现在某个 `data:` 的正文里
+/// （模型完全可以在答案里讨论 SSE），那不是一个终结
+fn terminals(sse: &str) -> (usize, usize, Vec<String>) {
+    let (mut done, mut error, mut reasons) = (0usize, 0usize, Vec::new());
+    for frame in sse.split("\n\n") {
+        let mut kind = "";
+        let mut data = String::new();
+        for line in frame.split('\n') {
+            if let Some(rest) = line.strip_prefix("event:") {
+                kind = rest.trim();
+            } else if let Some(rest) = line.strip_prefix("data:") {
+                data.push_str(rest.trim());
+            }
+        }
+        match kind {
+            "done" => done += 1,
+            "error" => {
+                error += 1;
+                reasons.push(data);
+            }
+            _ => {}
+        }
+    }
+    (done, error, reasons)
+}
+
+/// 三条断言，每一行都过同一遍。
+fn assert_one_earned_terminal(what: &str, ends: Ends, sse: &str) {
+    let (done, error, reasons) = terminals(sse);
+
+    assert_eq!(
+        done + error,
+        1,
+        "{what}：恰好一个终结，实际 done={done} error={error}\n{sse}"
+    );
+
+    match ends {
+        Ends::Done => assert_eq!(done, 1, "{what}：答案成立时该是 done\n{sse}"),
+        Ends::Error => {
+            assert_eq!(
+                done, 0,
+                "{what}：失败不许报成 done——这正是 #857 那一族\n{sse}"
+            );
+            let reason = reasons.first().map(String::as_str).unwrap_or_default();
+            assert!(
+                !reason.is_empty(),
+                "{what}：终结得说得出理由，不能是个空 error\n{sse}"
+            );
+        }
+    }
+}
+
+/// 一个工具调用，让这一轮走完整的取证路径再收尾。
+const TOOL: Reply = Reply::Tool("find_entities", r#"{"name":"Acme"}"#);
+
+fn table() -> Vec<Case> {
+    vec![
+        // 对照行：正常回答必须是 done。没有它，上面那三条断言可以靠
+        // 「永远不发 done」自动满足，整张表就是空的
+        Case {
+            what: "模型正常作答",
+            replies: vec![TOOL, Reply::Text("Acme 去年第四季度换了 CFO。")],
+            ends: Ends::Done,
+            pending: None,
+        },
+        // 已修：重试之后仍然是空正文
+        Case {
+            what: "重试之后正文仍然为空",
+            replies: vec![TOOL, Reply::Empty, Reply::Empty],
+            ends: Ends::Error,
+            pending: None,
+        },
+        // #845：端点在预算耗尽后把工具控制文本当正文吐出来
+        Case {
+            what: "最后一轮吐的是裸的工具控制标记",
+            replies: vec![
+                TOOL,
+                Reply::Text("<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>"),
+            ],
+            ends: Ends::Error,
+            pending: Some("#845"),
+        },
+        // #845：同上，但前面先有一段像样的叙述——分帧边界不该影响判断
+        Case {
+            what: "叙述之后接上工具控制标记",
+            replies: vec![
+                TOOL,
+                Reply::Text("我去核对一下证据。<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>"),
+            ],
+            ends: Ends::Error,
+            pending: Some("#845"),
+        },
+    ]
+}
+
+#[tokio::test]
+async fn a_turn_ends_in_exactly_one_earned_terminal() -> anyhow::Result<()> {
+    let mut skipped: Vec<&str> = Vec::new();
+    let mut ran = 0usize;
+
+    for case in table() {
+        if let Some(pr) = case.pending {
+            skipped.push(pr);
+            eprintln!("跳过「{}」：等 {pr} 落地", case.what);
+            continue;
+        }
+        let Some(f) = fixture(Scripted::new(case.replies.clone())).await? else {
+            eprintln!("没有 UTOPIA_DATABASE_URL，整张表跳过");
+            return Ok(());
+        };
+        let sse = f.ask("Acme 去年第四季度有什么变化？").await?;
+        assert_one_earned_terminal(case.what, case.ends, &sse);
+        f.cleanup().await?;
+        ran += 1;
+    }
+
+    assert!(ran > 0, "整张表被跳空了，等于没测");
+    if !skipped.is_empty() {
+        eprintln!("还没强制的行，等这些 PR：{skipped:?}");
+    }
+    Ok(())
+}
+
+/// 终结计数按帧算，不按子串算。
+///
+/// 单列出来是因为它是上面三条断言的地基：`terminals` 要是把答案正文里的
+/// `event: done` 数进去，整张表就会在模型讨论 SSE 的那天集体变绿或集体变红
+#[test]
+fn a_terminal_is_a_frame_not_a_substring() {
+    let sse = "event: delta\ndata: {\"text\": \"SSE 里用 event: done 表示结束\"}\n\n\
+               event: done\ndata: {}\n\n";
+    assert_eq!(terminals(sse).0, 1, "正文里提到的 done 不算终结");
+
+    let sse = "event: error\ndata: Model returned an empty answer\n\n";
+    let (done, error, reasons) = terminals(sse);
+    assert_eq!((done, error), (0, 1));
+    assert_eq!(reasons, vec!["Model returned an empty answer".to_string()]);
+}

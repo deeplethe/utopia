@@ -26,7 +26,7 @@ use wiremock::{
 
 /// 假模型的一次回复
 #[derive(Clone, Copy)]
-enum Reply {
+pub(super) enum Reply {
     /// 没有正文，也不调工具
     Empty,
     Text(&'static str),
@@ -37,13 +37,13 @@ enum Reply {
 /// 按脚本回话的假模型。`replies[i]` 是第 i+1 次请求的回复，脚本读完之后一律回空。
 /// 每次请求的正文都记下来，好查重问那一次问了什么
 #[derive(Clone)]
-struct Scripted {
+pub(super) struct Scripted {
     replies: Arc<Vec<Reply>>,
     seen: Arc<Mutex<Vec<serde_json::Value>>>,
 }
 
 impl Scripted {
-    fn new(replies: Vec<Reply>) -> Self {
+    pub(super) fn new(replies: Vec<Reply>) -> Self {
         Self {
             replies: Arc::new(replies),
             seen: Arc::new(Mutex::new(Vec::new())),
@@ -87,7 +87,7 @@ impl Respond for Scripted {
     }
 }
 
-struct Fx {
+pub(super) struct Fx {
     state: AppState,
     pool: sqlx::PgPool,
     org: Uuid,
@@ -98,7 +98,7 @@ struct Fx {
     dir: std::path::PathBuf,
 }
 
-async fn fixture(fake: Scripted) -> anyhow::Result<Option<Fx>> {
+pub(super) async fn fixture(fake: Scripted) -> anyhow::Result<Option<Fx>> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(None);
     };
@@ -184,7 +184,7 @@ async fn fixture(fake: Scripted) -> anyhow::Result<Option<Fx>> {
 
 impl Fx {
     /// 问一句，把整条 SSE 收成文本
-    async fn ask(&self, message: &str) -> anyhow::Result<String> {
+    pub(super) async fn ask(&self, message: &str) -> anyhow::Result<String> {
         let sse = chat(
             State(self.state.clone()),
             AuthUser(self.user.clone()),
@@ -212,7 +212,7 @@ impl Fx {
         .await?)
     }
 
-    async fn cleanup(self) -> anyhow::Result<()> {
+    pub(super) async fn cleanup(self) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM organizations WHERE id=$1")
             .bind(self.org)
             .execute(&self.pool)

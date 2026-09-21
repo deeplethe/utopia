@@ -1334,3 +1334,7 @@ mod tests {
 #[cfg(test)]
 #[path = "chat_empty_reply_tests.rs"]
 mod chat_empty_reply_tests;
+
+#[cfg(test)]
+#[path = "chat_terminal_tests.rs"]
+mod chat_terminal_tests;
