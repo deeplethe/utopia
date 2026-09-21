@@ -2526,12 +2526,83 @@ function ProofChain({ kbId, d }: { kbId: string; d: DerivedFact }) {
  * `<ol>`。深度的视觉上限由服务器决定（0030 推理的同一道闸），不在
  * 客户端重画——叶子那一步 `premises` 为空，递归停在这里
  */
-function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
+export function ProofSteps({
+  kbId,
+  steps,
+  depth = 0,
+}: {
+  kbId: string;
+  steps: ProofStep[];
+  /** 递归深度：顶层从 0 开始，子证明每层加 1。超过 6 不再缩进（窄屏） */
+  depth?: number;
+}) {
   return (
     <ol className="space-y-2">
-      {steps.map((st) => <ProofStepRow key={st.fact_id} kbId={kbId} step={st} />)}
+      {steps.map((st) => (
+        <ProofStepRow key={st.fact_id} kbId={kbId} step={st} depth={depth} />
+      ))}
     </ol>
   );
+}
+
+/** 证明树压平后的一行：保留深度与父链，单测据此断言 */
+export interface WalkedRow {
+  fact_id: string;
+  depth: number;
+  subject: string;
+  predicate: string | null;
+  object: string | null;
+  retracted: boolean;
+  has_premises: boolean;
+  evidence_count: number;
+}
+
+/** 把递归 `premises` 树压平成一行行。深度优先，子证明排在父之后。
+ *
+ * 这是递归渲染的「骨架」：组件递归地走 `premises`，单测通过这个函数
+ * 断言「三层嵌套时，叶子不再展开，深度单调递增，相邻行深度差不超过 1」。
+ * 渲染是组件的事，shape 是 walker 的事
+ */
+export function walkProofSteps(
+  steps: ProofStep[],
+  depth = 0,
+): WalkedRow[] {
+  const out: WalkedRow[] = [];
+  const visit = (nodes: ProofStep[], d: number) => {
+    for (const s of nodes) {
+      out.push({
+        fact_id: s.fact_id,
+        depth: d,
+        subject: s.subject,
+        predicate: s.predicate,
+        object: s.object,
+        retracted: s.retracted,
+        has_premises: s.premises.length > 0,
+        evidence_count: s.evidence.length,
+      });
+      if (s.premises.length > 0) {
+        visit(s.premises, d + 1);
+      }
+    }
+  };
+  visit(steps, depth);
+  return out;
+}
+
+/** 缩进到这一层为止。再深就不缩了——每层 ml-4 + pl-3 是 28 px，六层已经
+ *  吃掉 168 px，而面板只有 384 px 宽。服务器那道递归上限（0030）管的是链
+ *  能有多长，这里管的是窄屏里还看得清 */
+export const PROOF_INDENT_CAP = 6;
+
+/** 子证明那一块的缩进类。
+ *
+ * **按条件拼基础类，不叠覆盖类**：`cn` 是纯拼接（见 `ui/index.tsx`），仓库里
+ * 也没有 tailwind-merge。`ml-4` 与 `ml-0` 同时出现时，谁生效由生成的样式表
+ * 顺序决定，跟这里写的先后无关——那样的封顶等于没封 */
+export function proofIndentClass(depth: number): string {
+  return depth >= PROOF_INDENT_CAP
+    ? "mt-1"
+    : "mt-1 ml-4 pl-3 border-l border-edge";
 }
 
 /** 单条证明步：它的「子证明」在 `step.premises` 里再渲染一次 ProofSteps。
@@ -2540,7 +2611,15 @@ function ProofSteps({ kbId, steps }: { kbId: string; steps: ProofStep[] }) {
  * 一次顶层组件（同一份渲染逻辑，不另写一份），靠 `premises` 数组
  * 自然终止。深度的递归深度上限由服务器（0030），不在客户端画
  */
-function ProofStepRow({ kbId, step }: { kbId: string; step: ProofStep }) {
+function ProofStepRow({
+  kbId,
+  step,
+  depth,
+}: {
+  kbId: string;
+  step: ProofStep;
+  depth: number;
+}) {
   return (
     <li className="text-fine">
       <div className="flex items-baseline gap-2 flex-wrap">
@@ -2594,8 +2673,8 @@ function ProofStepRow({ kbId, step }: { kbId: string; step: ProofStep }) {
         )}
       </div>
       {step.premises.length > 0 && (
-        <div className="mt-1 ml-4 border-l border-edge pl-3">
-          <ProofSteps kbId={kbId} steps={step.premises} />
+        <div className={proofIndentClass(depth)}>
+          <ProofSteps kbId={kbId} steps={step.premises} depth={depth + 1} />
         </div>
       )}
     </li>

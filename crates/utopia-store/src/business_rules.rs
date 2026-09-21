@@ -688,6 +688,23 @@ async fn validate_conditions(
             )
         })?;
         attribute_predicate(pool, kb_id, c.predicate_id).await?;
+        // ADR 0032 already permits expression thresholds. Validate the same AST
+        // and same-base attribute references as computed conclusions; sets,
+        // ranges and presence retain their separate operand contracts.
+        if matches!(
+            op,
+            utopia_reason::rules::Op::Gt
+                | utopia_reason::rules::Op::Gte
+                | utopia_reason::rules::Op::Lt
+                | utopia_reason::rules::Op::Lte
+        ) {
+            if let Some(expr) = c.operand.as_ref().filter(|v| v.is_object()) {
+                for predicate in validate_expr(expr, 0)? {
+                    attribute_predicate(pool, kb_id, predicate).await?;
+                }
+                continue;
+            }
+        }
         let shaped = match op {
             utopia_reason::rules::Op::Present => c.operand.is_none(),
             utopia_reason::rules::Op::NotIn => c

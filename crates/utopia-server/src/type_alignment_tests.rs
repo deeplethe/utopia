@@ -501,7 +501,7 @@ mod review_locks {
                 let (status, body) = tokio::time::timeout(Duration::from_secs(6), tasks.join_next())
                     .await?.expect("request task")??;
                 anyhow::ensure!(status == StatusCode::CONFLICT, "expected 409, got {status}: {body}");
-                anyhow::ensure!(body["error"].as_str().unwrap().contains("try again"));
+                anyhow::ensure!(body["code"] == "alignment_busy");
                 anyhow::ensure!(snapshot(&f).await? == before, "timeout left a partial write");
                 anyhow::ensure!(events.try_recv().is_err(), "failed request emitted success");
                 anyhow::ensure!(session(&pool).await? == original_session, "session setting leaked");
