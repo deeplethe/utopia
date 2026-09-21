@@ -2,7 +2,7 @@
    会话持久化：左栏会话列表;上下文由服务端拼,前端只发 conversation_id + 新消息;
    行动轨迹(steps)与引用(sources)随消息落库,历史回放与实时流共用渲染。 */
 import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -210,12 +210,21 @@ export function Chat() {
     };
   }, [scopeOpen]);
 
-  const convs = useQuery({
-    queryKey: ["conversations", kb?.id, convSearch],
-    queryFn: () => conversationsApi.list(kb!.id, convSearch),
-    enabled: !!kb,
-    placeholderData: (prev) => prev,
+  const convs = useInfiniteQuery({
+    queryKey: ["conversations", kbId, convSearch],
+    queryFn: ({ pageParam }) => conversationsApi.list(kbId, convSearch, 30, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((count, page) => count + page.conversations.length, 0);
+      return last.conversations.length > 0 && loaded < last.total ? loaded : undefined;
+    },
+    enabled: !!kbId && kb?.id === kbId,
   });
+  // Updated conversations can move between offset pages. Deduplicate by identity;
+  // invalidation refetches the loaded page range rather than appending stale offsets.
+  const conversations = [...new Map(
+    (convs.data?.pages.flatMap((page) => page.conversations) ?? []).map((c) => [c.id, c]),
+  ).values()];
   // 改标题：**就地编辑**，不弹对话框——改一个名字不值得打断整页
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -628,7 +637,7 @@ export function Chat() {
         </div>
         {recentOpen && (
         <div className="u-rail-list u-scroll flex-1 overflow-y-auto px-2 pb-3">
-          {(convs.data?.conversations ?? []).map((c: ConversationRow) => (
+          {conversations.map((c: ConversationRow) => (
             <div
               key={c.id}
               className="group relative"
@@ -716,9 +725,20 @@ export function Chat() {
               )}
             </div>
           ))}
+          {convs.isError && (
+            <div role="alert" className="px-3 py-2 text-small text-ink-2">
+              <p>{S.ask.conversationsLoadFailed}</p>
+              <Button size="sm" variant="ghost" onClick={() => convs.isFetchNextPageError ? convs.fetchNextPage() : convs.refetch()}>{S.ask.retryConversations}</Button>
+            </div>
+          )}
+          {convs.hasNextPage && !convs.isFetchNextPageError && (
+            <Button size="sm" variant="ghost" disabled={convs.isFetching} onClick={() => convs.fetchNextPage()}>
+              {S.ask.loadEarlierConversations}
+            </Button>
+          )}
           {/* 文字从 20 起：栏的 px-2（8）加行自己的 px-3（12），与「最近」和
               上面每条会话的标题同一条线。写成 px-2 就落在 16，差那 4px 一眼看得出 */}
-          {convs.data?.conversations.length === 0 && (
+          {convs.isSuccess && conversations.length === 0 && (
             /* 34 = 行内距 12 + 图标 14 + 间距 8：这句话与上面每一条会话的
                标题同一条竖线，而不是自己另起一列 */
             <p className="py-2 pl-[34px] pr-3 text-small text-ink-2">

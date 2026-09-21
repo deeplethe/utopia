@@ -711,6 +711,9 @@ export const zh: Strings = {
     historyLoadFailed: "无法读取此会话。",
     retryHistory: "重试",
     loadingHistory: "正在读取会话…",
+    loadEarlierConversations: "加载更早的会话",
+    conversationsLoadFailed: "无法读取会话列表。",
+    retryConversations: "重试",
     greeting: "问问 Utopia 都记住了什么",
     emptyTitle: "对话",
     emptyBody:
