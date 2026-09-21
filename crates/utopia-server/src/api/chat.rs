@@ -742,9 +742,19 @@ pub async fn chat(
         while let Some(item) = run.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
-                    answer_acc.push_str(&t.text);
-                    turn_text.push_str(&t.text);
-                    yield delta_event(&t.text);
+                    // Tool-round narration stays live. Withhold only the final call:
+                    // validation after streaming cannot retract protocol garbage.
+                    if shared.finalizing() {
+                        if turn_text.len().saturating_add(t.text.len()) > agent::MAX_FINAL_ANSWER_BYTES {
+                            yield error_event("Model final answer exceeded the size limit");
+                            return;
+                        }
+                        turn_text.push_str(&t.text);
+                    } else {
+                        answer_acc.push_str(&t.text);
+                        turn_text.push_str(&t.text);
+                        yield delta_event(&t.text);
+                    }
                 }
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::ToolCall {
                     tool_call, ..
@@ -860,7 +870,16 @@ pub async fn chat(
             yield error_event("LLM stream ended unexpectedly");
             return;
         }
-        if answer_acc.is_empty() {
+        // Check the terminal candidate, not earlier narration. The hook is the
+        // policy boundary; this is the last guard before publication and storage.
+        if shared.finalizing() {
+            if let Some(reason) = agent::finalization_error(&turn_text, !turn_calls.is_empty(), &query) {
+                yield error_event(reason);
+                return;
+            }
+            answer_acc.push_str(&turn_text);
+            yield delta_event(&turn_text);
+        } else if turn_text.trim().is_empty() {
             yield error_event("Model returned an empty answer");
             return;
         }

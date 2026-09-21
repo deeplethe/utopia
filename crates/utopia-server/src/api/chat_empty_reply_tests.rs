@@ -30,6 +30,9 @@ pub(super) enum Reply {
     /// 没有正文，也不调工具
     Empty,
     Text(&'static str),
+    SplitText(&'static [&'static str]),
+    NarratedTool,
+    OversizedText,
     /// 调一个工具：(名字, 参数 JSON)
     Tool(&'static str, &'static str),
 }
@@ -63,6 +66,32 @@ impl Respond for Scripted {
             seen.len()
         };
         let frame = match self.replies.get(n - 1).copied().unwrap_or(Reply::Empty) {
+            Reply::OversizedText => {
+                let text = "x".repeat(4096);
+                let frame = serde_json::json!({ "choices": [{ "delta": { "content": text } }] });
+                let sse = format!("data: {frame}\n\n").repeat(257) + "data: [DONE]\n\n";
+                return ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse);
+            }
+            Reply::SplitText(parts) => {
+                let mut sse = String::new();
+                for text in parts {
+                    let frame =
+                        serde_json::json!({ "choices": [{ "delta": { "content": text } }] });
+                    sse.push_str(&format!("data: {frame}\n\n"));
+                }
+                sse.push_str("data: [DONE]\n\n");
+                return ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse);
+            }
+            Reply::NarratedTool => Some(serde_json::json!({ "choices": [{ "delta": {
+                "content": "I will check the evidence.",
+                "tool_calls": [{ "index": 0, "id": format!("call_{n}"),
+                    "function": { "name": "find_entities", "arguments": "{\"name\":\"Acme\"}" }
+                }]
+            } }] })),
             Reply::Empty => None,
             Reply::Text(text) => {
                 Some(serde_json::json!({ "choices": [{ "delta": { "content": text } }] }))
@@ -314,3 +343,216 @@ mod persistence_tests;
 mod registry_tests;
 #[path = "chat_sources_tests.rs"]
 mod sources_tests;
+
+// These are synthetic upstream responses, not a replay of the reported model incident.
+const DSML: &str = "<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"entity_facts\">{}</｜DSML｜ invoke>\n</｜DSML｜ calls>";
+
+async fn budget_case(last: Reply, question: &str, answer: Option<&str>) -> anyhow::Result<()> {
+    let mut replies = vec![Reply::NarratedTool; 6];
+    replies.push(last);
+    let Some(f) = fixture(Scripted::new(replies)).await? else {
+        return Ok(());
+    };
+    let sse = f.ask(question).await?;
+    assert_eq!(
+        f.fake.requests().len(),
+        7,
+        "six tool rounds and one final call"
+    );
+    assert_eq!(
+        sse.matches("event: step").count(),
+        6,
+        "no budget-overrun tool execution: {sse}"
+    );
+    let requests = f.fake.requests();
+    assert!(requests[..6].iter().all(|r| r.get("tools").is_some()));
+    assert!(requests[6].get("tools").is_none());
+    assert!(requests[6].get("tool_choice").is_none());
+    assert!(requests[6]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["role"] == "tool"));
+    match answer {
+        Some(answer) => {
+            assert!(sse.contains("event: done"), "{sse}");
+            assert!(!sse.contains("event: error"), "{sse}");
+            let expected = "I will check the evidence.\n\n".repeat(6) + answer;
+            assert_eq!(f.stored_answer().await?.as_deref(), Some(expected.as_str()));
+            let streamed: String = sse
+                .split("\n\n")
+                .filter(|frame| frame.starts_with("event: delta\n"))
+                .map(|frame| {
+                    let data = frame.strip_prefix("event: delta\ndata: ").unwrap();
+                    serde_json::from_str::<serde_json::Value>(data).unwrap()["text"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(streamed, expected, "final text is published exactly once");
+        }
+        None => {
+            assert!(sse.contains("event: error"), "{sse}");
+            assert!(!sse.contains("event: done"), "{sse}");
+            assert!(
+                !sse.contains("DSML"),
+                "protocol text must not escape in deltas: {sse}"
+            );
+            assert!(f.stored_answer().await?.is_none());
+        }
+    }
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn budget_finalization_rejects_protocol_text_despite_earlier_narration() -> anyhow::Result<()>
+{
+    budget_case(Reply::Text(DSML), "What changed at Acme?", None).await
+}
+
+#[tokio::test]
+async fn budget_finalization_rejects_split_protocol_variants() -> anyhow::Result<()> {
+    for parts in [
+        &[
+            "<｜DS",
+            "ML｜tool_calls>",
+            "<｜DSML｜invoke name=\"entity_facts\">{}",
+        ] as &[&str],
+        &[
+            "<｜｜",
+            "DSML",
+            "｜｜ calls>",
+            "<｜｜DSML｜｜ invoke name=\"entity_facts\">{}",
+        ],
+        &[
+            "<|DS",
+            "ML|calls>",
+            "<|DSML|invoke name=\"entity_facts\">{}",
+        ],
+    ] {
+        budget_case(Reply::SplitText(parts), "What changed at Acme?", None).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn budget_finalization_refuses_structured_calls() -> anyhow::Result<()> {
+    budget_case(
+        Reply::Tool("find_entities", r#"{"name":"Over budget"}"#),
+        "What changed at Acme?",
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn budget_finalization_refuses_blank_terminal_text() -> anyhow::Result<()> {
+    budget_case(Reply::Text(" \n\t"), "What changed at Acme?", None).await
+}
+
+#[tokio::test]
+async fn budget_finalization_accepts_an_answer_and_protocol_explanations() -> anyhow::Result<()> {
+    for answer in [
+        "No matching evidence was found.",
+        "DSML is a tool-call encoding. For example: <｜DSML｜ calls>...",
+        "```xml\n<｜DSML｜ calls>...\n```\nThis is a tool call encoding.",
+    ] {
+        budget_case(
+            Reply::Text(answer),
+            "Explain the tool protocol",
+            Some(answer),
+        )
+        .await?;
+    }
+    budget_case(
+        Reply::Text(DSML),
+        "Return a DSML example verbatim.",
+        Some(DSML),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn budget_finalization_bounds_unpublished_text() -> anyhow::Result<()> {
+    budget_case(Reply::OversizedText, "What changed at Acme?", None).await
+}
+
+#[tokio::test]
+async fn budget_finalization_survives_disconnect_and_reattach() -> anyhow::Result<()> {
+    for last in [Reply::Text("The final answer."), Reply::Text(DSML)] {
+        let mut replies = vec![Reply::NarratedTool; 6];
+        replies.push(last);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let id = utopia_store::conversations::create(&f.pool, f.kb, f.user.id, "question").await?;
+        let response = chat(
+            State(f.state.clone()),
+            AuthUser(f.user.clone()),
+            Path(f.kb),
+            Json(ChatReq {
+                conversation_id: Some(id),
+                message: "What changed at Acme?".into(),
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("chat handler refused the request"))?;
+        // Drop the original HTTP consumer before consuming any SSE bytes.
+        drop(response);
+        let (snapshot, mut rx) = f
+            .state
+            .live
+            .attach(id)
+            .await
+            .expect("background producer is running");
+        assert!(!snapshot.content.contains("DSML"));
+        let mut events = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Ok(frame) = rx.recv().await {
+                assert!(!frame.data.contains("DSML"));
+                events.push(frame.event);
+            }
+        })
+        .await?;
+        assert_eq!(f.fake.requests().len(), 7);
+        if matches!(last, Reply::Text(DSML)) {
+            assert!(events.contains(&"error"));
+            assert!(!events.contains(&"done"));
+            assert!(f.stored_answer().await?.is_none());
+        } else {
+            assert!(events.contains(&"done"));
+            assert!(!events.contains(&"error"));
+            assert!(f
+                .stored_answer()
+                .await?
+                .unwrap()
+                .ends_with("The final answer."));
+        }
+        assert!(f.state.live.attach(id).await.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn early_retries_do_not_extend_the_tool_budget() -> anyhow::Result<()> {
+    for early in [Reply::Empty, Reply::Text("I will look into it.")] {
+        let mut replies = vec![early];
+        replies.extend(vec![Reply::NarratedTool; 5]);
+        replies.push(Reply::Text(DSML));
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed at Acme?").await?;
+        assert_eq!(f.fake.requests().len(), 7);
+        assert_eq!(sse.matches("event: step").count(), 5);
+        assert!(f.fake.requests()[6].get("tools").is_none());
+        assert!(sse.contains("event: error"));
+        assert!(!sse.contains("event: done"));
+        assert!(!sse.contains("DSML"));
+        assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}

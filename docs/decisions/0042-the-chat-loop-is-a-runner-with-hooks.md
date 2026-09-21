@@ -64,6 +64,28 @@ Neither prompt wording nor the terminal's result moved the rate (measured in #54
 What changed is that the miss is recorded: the call and the model's reason are in
 `tool_exchange`, and `sources` is empty, which is what #547 marks.
 
+## Budget finalization is an answer boundary (#844)
+
+Withdrawing tools does not prevent an endpoint from emitting tool-control syntax in
+`delta.content`. A nonempty accumulator may also contain only narration from earlier tool
+turns. The terminal candidate must therefore be checked separately: at the budget boundary,
+empty text, structured tool calls, and unexpected bare DSML control output stop the run with
+an error. The pre-tool hook independently refuses execution during finalization. DSML text
+is never interpreted as a tool call; ordinary explanations, fenced quotations, and explicit
+DSML requests remain allowed.
+
+Only the budget-finalization text is buffered, up to 1 MiB, before publication. Earlier
+narration and tool steps still stream normally. The chat route checks again before emitting
+the final text and persisting the assistant message, so a rejected candidate does not enter
+the live snapshot or normal conversation history. This uses the existing background producer
+and error event; disconnecting the browser does not cancel generation.
+
+The six tool-capable turns and seven logical model-call limit are unchanged. There is no
+extra recovery request at the exhausted boundary, including for an empty answer: a retry
+without remaining call budget is not recovery. Provider-specific request changes and
+finish-reason propagation require separate work; this guard does not establish why the
+upstream endpoint generated markup, or assess factual answer quality.
+
 ## Not done
 
 - A per-task model (`on_model_select`, #470) is available in the runner and not wired.

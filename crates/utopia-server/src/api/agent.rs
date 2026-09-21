@@ -63,6 +63,44 @@ pub(crate) const EMPTY_REPLY_RETRY: &str = "(system) Your previous reply was emp
 const BUDGET_EXHAUSTED: &str =
     "\n\n(system) Tool budget exhausted. Answer now from the evidence gathered above.";
 
+/// Bounded buffering applies only to the tool-free terminal call. This is a byte
+/// limit, independent of the provider's token accounting.
+pub(crate) const MAX_FINAL_ANSWER_BYTES: usize = 1024 * 1024;
+const FINAL_TOOL_CALL: &str = "Model attempted a tool call after the tool budget was exhausted";
+
+/// Deliberately scoped to budget finalization and bare control output. Explanations
+/// and fenced examples are prose, and an explicit request about DSML may legitimately
+/// ask for the raw encoding. Never interpret this text as an executable tool call.
+pub(crate) fn finalization_error(
+    text: &str,
+    has_calls: bool,
+    question: &str,
+) -> Option<&'static str> {
+    if has_calls {
+        return Some(FINAL_TOOL_CALL);
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Some("Model returned an empty answer");
+    }
+    if !question.to_ascii_lowercase().contains("dsml") {
+        // Accommodate the known ASCII/full-width and doubled-pipe spellings.
+        // Inspect the assembled turn, so SSE chunk boundaries do not matter.
+        let prefix: String = text
+            .chars()
+            .take(80)
+            .filter(|c| !c.is_whitespace() && *c != '|' && *c != '｜')
+            .collect();
+        if ["<DSMLcalls>", "<DSMLtool_calls>", "<DSMLinvokename="]
+            .iter()
+            .any(|marker| prefix.starts_with(marker))
+        {
+            return Some("Model returned tool-control text instead of a final answer");
+        }
+    }
+    None
+}
+
 /// 一场对话里工具共用的东西：库、权限、引用清单，以及给界面的轨迹。
 ///
 /// rig 并发跑同一轮的多个工具，而引用编号是有状态的（`[3]` 取决于之前引过几个），
@@ -91,6 +129,8 @@ pub struct Shared {
     nudged: AtomicBool,
     /// 空回复的重问也只给一次（见 `EMPTY_REPLY_RETRY`）
     asked_again: AtomicBool,
+    /// Set before the final request so the route can withhold unvalidated text.
+    finalizing: AtomicBool,
 }
 
 impl Shared {
@@ -121,7 +161,12 @@ impl Shared {
             gate_passed: AtomicBool::new(false),
             nudged: AtomicBool::new(false),
             asked_again: AtomicBool::new(false),
+            finalizing: AtomicBool::new(false),
         })
+    }
+
+    pub fn finalizing(&self) -> bool {
+        self.finalizing.load(Ordering::Relaxed)
     }
 
     fn keep_step(&self, internal_call_id: &str, step: Value) {
@@ -242,6 +287,9 @@ impl AgentHook for Policy {
         event: CompletionCallEvent<'_>,
     ) -> impl std::future::Future<Output = CompletionCallAction> + Send {
         let turn = event.turn;
+        self.shared
+            .finalizing
+            .store(turn > self.max_rounds, Ordering::Relaxed);
         let action = if turn > self.max_rounds {
             // 弹药耗尽：撤走工具（`RigModel` 对 None 的处理是根本不带工具字段），
             // 系统提示末尾命令它就现有证据作答
@@ -273,10 +321,26 @@ impl AgentHook for Policy {
             .content
             .iter()
             .any(|c| matches!(c, AssistantContent::Text(t) if !t.text.trim().is_empty()));
+        let text: String = event
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                AssistantContent::Text(t) => Some(t.text.as_str()),
+                _ => None,
+            })
+            .collect();
         let turn = event.turn;
         let shared = self.shared.clone();
         let max_rounds = self.max_rounds;
         async move {
+            // There is no model-call budget left here. Stop honestly instead of asking
+            // for a retry that the runner cannot perform, or executing another tool.
+            if turn > max_rounds {
+                if let Some(reason) = finalization_error(&text, has_tool_call, &shared.question) {
+                    return ModelTurnAction::Stop(reason.into());
+                }
+                return ModelTurnAction::Continue;
+            }
             // 空回复重问一次；再空就放它结束，`chat` 那边以「Model returned an empty
             // answer」收尾。**不再叠加下面那次退回**：一个始终不说话的端点只多问一次
             if !has_tool_call && !has_text {
@@ -316,12 +380,15 @@ impl AgentHook for Policy {
     ) -> impl std::future::Future<Output = ToolCallAction> + Send {
         // **说不清自己要做什么的调用不执行。** 把话回给模型，让它重来；
         // 界面上照样显示成一次没做成的调用
-        let action = match super::chat::check_call(&self.shared.schema, event.tool_name, event.args)
-        {
-            Ok(_) => ToolCallAction::Run,
-            Err((message, step)) => {
-                self.shared.keep_step(event.internal_call_id, step);
-                ToolCallAction::Skip(message)
+        let action = if self.shared.finalizing() {
+            ToolCallAction::Stop(FINAL_TOOL_CALL.into())
+        } else {
+            match super::chat::check_call(&self.shared.schema, event.tool_name, event.args) {
+                Ok(_) => ToolCallAction::Run,
+                Err((message, step)) => {
+                    self.shared.keep_step(event.internal_call_id, step);
+                    ToolCallAction::Skip(message)
+                }
             }
         };
         async move { action }
