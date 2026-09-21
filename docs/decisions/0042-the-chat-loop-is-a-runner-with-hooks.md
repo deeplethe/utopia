@@ -71,7 +71,13 @@ In six captured failures, the raw upstream body already contained DSML; the actu
 `LlmClient` parser reproduced that content without converting structured tool calls.
 Explicit `tool_choice: none` did not eliminate the problem in a fixed-evidence comparison.
 This establishes an upstream-content failure for those samples, not the provider's internal
-root cause. See [the versioned validation](0042-evidence-finalization-validation.md).
+root cause. Run-by-run measurements and historical implementation identifiers are kept in
+[PR #845](https://github.com/deeplethe/utopia/pull/845), rather than a second decision record.
+
+The evidence-only handoff is chosen over passive recovery because it avoids issuing the
+known failure-prone protocol-history request at the budget boundary. The focused answer
+policy preserves the evidence while limiting unnecessary elaboration. This is a protocol
+reliability decision, not a latency or universal factual-correctness guarantee.
 
 The gathering policy still has six tool-capable logical turns, including early empty-reply
 and required-tool nudges. An ordinary early answer or `no_evidence_needed` keeps its existing
@@ -120,8 +126,7 @@ continues through the existing background producer and persisted body/source map
 
 This boundary is not a factuality oracle. The evaluation separately records required fact
 slots, citation syntax/mapping, additional unsupported statements and false insufficiency.
-The historical 29/30 run belongs to an older head; it must not be reported as the result of
-the current implementation. A clean result on one frozen set is not a zero-failure guarantee.
+A clean result on one frozen set is not a zero-failure guarantee.
 
 ## Not done
 
