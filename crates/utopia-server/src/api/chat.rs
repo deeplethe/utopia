@@ -944,7 +944,7 @@ fn legacy_rag(
                         Err(e) => { yield error_event(&e.to_string()); return; }
                     }
                 }
-                let _ = utopia_store::conversations::append_message(
+                if let Err(error) = utopia_store::conversations::append_message(
                     &state.pool, conversation_id, "assistant", &answer_acc,
                     &utopia_store::conversations::TurnRecord {
                         steps: serde_json::Value::Array(Vec::new()),
@@ -952,7 +952,11 @@ fn legacy_rag(
                         resolved: serde_json::Value::Array(Vec::new()),
                         tool_exchange: serde_json::Value::Array(Vec::new()),
                     },
-                ).await;
+                ).await {
+                    tracing::error!(%error, "fallback answer persistence was not confirmed");
+                    yield error_event("Could not confirm that the answer was saved.");
+                    return;
+                }
                 yield done_event();
             }
             Err(e) => yield error_event(&e.to_string()),
