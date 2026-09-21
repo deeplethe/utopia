@@ -29,6 +29,7 @@ use wiremock::{
 pub(super) enum Reply {
     /// 没有正文，也不调工具
     Empty,
+    Document(Uuid),
     Text(&'static str),
     SplitText(&'static [&'static str]),
     NarratedTool,
@@ -98,6 +99,12 @@ impl Respond for Scripted {
                 "content": "I will check the evidence.",
                 "tool_calls": [{ "index": 0, "id": format!("call_{n}"),
                     "function": { "name": "find_entities", "arguments": "{\"name\":\"Acme\"}" }
+                }]
+            } }] })),
+            Reply::Document(id) => Some(serde_json::json!({ "choices": [{ "delta": {
+                "tool_calls": [{ "index": 0, "id": format!("call_{n}"),
+                    "function": { "name": "get_document", "arguments":
+                        serde_json::json!({"document_id": id}).to_string() }
                 }]
             } }] })),
             Reply::Empty => None,
@@ -660,6 +667,52 @@ async fn unsuccessful_recovery_never_loops_or_reopens_tools() -> anyhow::Result<
         assert!(!sse.contains("DSML"));
         assert!(!sse.contains("partial"));
         assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_sources_include_document_citations_live_and_after_reload() -> anyhow::Result<()> {
+    for recover in [false, true] {
+        let document = Uuid::now_v7();
+        let mut replies = vec![Reply::Document(document); if recover { 6 } else { 1 }];
+        if recover {
+            replies.push(Reply::Text("<DSMLtool_calls>"));
+        }
+        replies.push(Reply::Text("The documented target is 95% [1]."));
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        sqlx::query("INSERT INTO documents(id,kb_id,filename,sha256) VALUES($1,$2,'target.md',repeat('0',64))")
+            .bind(document).bind(f.kb).execute(&f.pool).await?;
+        sqlx::query("INSERT INTO chunks(id,kb_id,document_id,seq,text) VALUES($1,$2,$3,0,'The planned target is 95%, not a measured result.')")
+            .bind(Uuid::now_v7()).bind(f.kb).bind(document).execute(&f.pool).await?;
+        let sse = f.ask("What is the documented target?").await?;
+        assert!(sse.contains("event: done"), "{sse}");
+        assert!(!sse.contains("event: error"), "{sse}");
+        let sources_frame = sse
+            .split("\n\n")
+            .filter(|frame| frame.starts_with("event: sources\n"))
+            .last()
+            .expect("final sources frame");
+        let sources: serde_json::Value = serde_json::from_str(
+            sources_frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap(),
+        )?;
+        assert_eq!(sources.as_array().unwrap().len(), 1);
+        assert_eq!(sources[0]["n"], 1);
+        let stored: serde_json::Value = sqlx::query_scalar(
+            "SELECT m.sources FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.kb_id=$1 AND m.role='assistant'"
+        ).bind(f.kb).fetch_one(&f.pool).await?;
+        assert_eq!(sources, stored);
+        assert_eq!(
+            f.stored_answer().await?.as_deref(),
+            Some("The documented target is 95% [1].")
+        );
+        assert_eq!(f.fake.requests().len(), if recover { 8 } else { 2 });
         f.cleanup().await?;
     }
     Ok(())

@@ -911,6 +911,12 @@ pub async fn chat(
             return;
         }
         let sink = shared.sink.lock().await;
+        // Tools such as get_document can add citations after the last search.
+        // Publish the same complete snapshot that is persisted, before done.
+        yield Frame::new(
+            "sources",
+            serde_json::to_string(&sink.sources).unwrap_or_else(|_| "[]".into()),
+        );
         let _ = utopia_store::conversations::append_message(
             &state.pool, conversation_id, "assistant", &answer_acc,
             &utopia_store::conversations::TurnRecord {
