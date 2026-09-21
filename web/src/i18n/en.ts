@@ -735,6 +735,7 @@ export const en = {
     chunkOf: (filename: string, seq: number) => `${filename} · section ${seq}`,
   },
   ask: {
+    streamInterrupted: "The answer stream was interrupted. Reopen the conversation to check its status.",
     /* 新对话首屏问候：碑铭衬线，品牌名入句（标题不带句号） */
     greeting: "Ask Utopia what it remembers",
     emptyTitle: "Chat",

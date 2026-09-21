@@ -1644,7 +1644,7 @@ pub async fn vector_search(
              LIMIT $3
          )
          SELECT id FROM nearest ORDER BY {resort}",
-        live = crate::record_axis::chunk_live_at("c", 4),
+        live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 4)),
         same_dims = crate::vector_index::same_dims("c.embedding", dims),
         distance = crate::vector_index::distance("c.embedding", 2, dims),
         resort = crate::vector_index::RESORT,
@@ -1674,8 +1674,8 @@ pub async fn chunks_by_ids(
          FROM chunks c JOIN documents d ON d.id = c.document_id
          WHERE c.kb_id = $1 AND c.id = ANY($2)
            AND {live} AND {doc_live}",
-        live = crate::record_axis::chunk_live_at("c", 3),
-        doc_live = crate::record_axis::document_live_at("d", 3),
+        live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
+        doc_live = crate::record_axis::document_live_at("d", as_of.map(|_| 3)),
     ))
     .bind(kb_id)
     .bind(ids)
