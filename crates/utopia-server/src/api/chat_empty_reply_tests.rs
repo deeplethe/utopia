@@ -305,3 +305,6 @@ async fn a_reply_that_stays_empty_is_an_error_after_one_retry() -> anyhow::Resul
     );
     f.cleanup().await
 }
+
+#[path = "chat_sources_tests.rs"]
+mod sources_tests;

@@ -737,6 +737,7 @@ pub async fn chat(
         let mut turn_text = String::new();
         let mut turn_calls: Vec<serde_json::Value> = Vec::new();
         let mut finished = false;
+        let mut published_sources = 0;
 
         while let Some(item) = run.next().await {
             match item {
@@ -800,13 +801,20 @@ pub async fn chat(
                         }
                         steps_acc.push(step.clone());
                         yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
-                        if step["kind"] == "search" || step["kind"] == "docs" {
-                            let sources = shared.sink.lock().await.sources.clone();
-                            yield Frame::new(
-                                "sources",
-                                serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()),
-                            );
+                    }
+                    // cite() only appends: document reads can add citations too, regardless
+                    // of the UI step kind. Release the sink before yielding to subscribers.
+                    let sources = {
+                        let sink = shared.sink.lock().await;
+                        if sink.sources.len() != published_sources {
+                            published_sources = sink.sources.len();
+                            Some(sink.sources.clone())
+                        } else {
+                            None
                         }
+                    };
+                    if let Some(sources) = sources {
+                        yield Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()));
                     }
                     exchange_acc.push(tool_result_message(tool_result.call.as_str(), &text));
                 }
