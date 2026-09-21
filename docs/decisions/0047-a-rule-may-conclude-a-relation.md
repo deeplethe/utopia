@@ -1,6 +1,6 @@
 # 0047 · A rule may conclude a relation
 
-- **Status**: Proposed 2026-09-20 · nothing built · revises the edge exclusion stated in [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md), and asks the question [0030](0030-a-rule-may-read-what-a-rule-concluded.md) parked as "nobody has asked it"
+- **Status**: Implemented 2026-09-22 · pending review · revises the edge exclusion stated in [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md), and asks the question [0030](0030-a-rule-may-read-what-a-rule-concluded.md) parked as "nobody has asked it"
 - **Written**: 2026-09-20 (conventions in the [README](README.md))
 - **Related**: [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md) built the rule and excluded an edge conclusion; [0030](0030-a-rule-may-read-what-a-rule-concluded.md) replaced that exclusion's acyclicity argument with a finiteness one on the value channel, and this record carries it to the edge channel; **[0032](0032-a-rule-computes-what-it-concludes.md) already decided that a rule may reach a value across one relation** and has not built it — this record depends on that loader rather than re-deciding it; [0002](0002-reasoning-engine.md) built the axiom fixed point and left R3 open; [0024](0024-the-world-axis-reaches-the-second.md) governs the precision of a derived bound; [0013](0013-a-source-should-hand-over-its-history.md) forbids reading a previous run's output, which stays forbidden. From #818.
 

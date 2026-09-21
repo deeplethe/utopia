@@ -598,6 +598,7 @@ async fn changing_the_conclusion_retires_the_old_one() -> anyhow::Result<()> {
                 predicate_id: Some(verdict),
                 value: Some(serde_json::json!("含气")),
                 expr: None,
+                join_predicate_id: None,
             }),
         )
         .await?;
@@ -865,6 +866,7 @@ async fn renaming_a_rule_uses_the_creation_name_limits_before_any_write() -> any
     let f = seed(&pool).await?;
     let conditions = [ConditionInput {
         group: 0,
+        side: "x".into(),
         predicate_id: f.thc,
         op: "gt".into(),
         operand: Some(serde_json::json!(5)),
@@ -880,11 +882,13 @@ async fn renaming_a_rule_uses_the_creation_name_limits_before_any_write() -> any
         None,
         None,
         None,
+        None,
         &conditions,
     )
     .await?;
     let changed = [ConditionInput {
         group: 9,
+        side: "x".into(),
         predicate_id: f.thc,
         op: "lt".into(),
         operand: Some(serde_json::json!(10)),
@@ -895,6 +899,7 @@ async fn renaming_a_rule_uses_the_creation_name_limits_before_any_write() -> any
         predicate_id: Some(f.category),
         value: Some(serde_json::json!({"value":"changed"})),
         expr: None,
+        join_predicate_id: None,
     };
     for invalid in [
         String::new(),

@@ -63,13 +63,15 @@ const operandKind = (op: string) =>
 
 /** 一条规则可以被搜到的全部文本。**判据也算**——「哪条规则用到了 Clearance」
     是找规则最常见的问法，只搜名字的话得先记住自己当初叫它什么 */
-function searchText(r: BusinessRule, attributes: RelationTypeView[]): string {
+function searchText(r: BusinessRule, attributes: RelationTypeView[], relations: RelationTypeView[]): string {
   return [
     r.name,
     r.description ?? "",
     r.subject_label,
     r.conclude_type_label ?? "",
     r.conclude_predicate_label ?? "",
+    r.join_predicate_label ?? "",
+    ...r.conditions.map((c) => c.side),
     r.conclusion === "computed" ? expressionText(r.conclude_expr, attributes, S.ontology.ruleUnknownExpression) : "",
     ...r.conditions.map(
       (c) => `${c.predicate_label} ${operandText(c.op, c.operand, attributes)}`,
@@ -122,9 +124,13 @@ function byGroup<T extends { group?: number }>(conditions: T[]): T[][] {
     .map((n) => conditions.filter((c) => g(c) === n));
 }
 
+/** Type views make both dropdowns readable, so the API only has to carry ids. */
+const labelOptions = (items: RelationTypeView[]) =>
+  items.map((item) => ({ value: item.id, label: item.label }));
+
 /** 表单里的一行条件。**文本原样留着**——解析放到保存那一刻，否则打字打到
     一半的「1」会被当成写完的数 */
-type Row = { predicate_id: string; op: string; text: string };
+type Row = { side: "x" | "y"; predicate_id: string; op: string; text: string };
 
 type Draft = {
   /** 改的是哪一条；新建时为 null。**同一份草稿两种用途**——两套表单会漂移 */
@@ -132,9 +138,10 @@ type Draft = {
   name: string;
   description: string;
   subject_type_id: string;
-  conclusion: "typing" | "attribute";
+  conclusion: "typing" | "attribute" | "relation";
   conclude_type_id: string;
   conclude_predicate_id: string;
+  join_predicate_id: string;
   conclude_value: string;
   /** 一块是一个合取，块之间是析取。**空数组只允许出现在唯一一块上**——
       那是「还没写条件」，不是「无条件成立」（空合取恒真，会归进整个类） */
@@ -144,6 +151,7 @@ type Draft = {
 const emptyDraft = (
   classes: EntityTypeView[],
   attrs: RelationTypeView[],
+  relations: RelationTypeView[],
 ): Draft => ({
   id: null,
   name: "",
@@ -152,8 +160,12 @@ const emptyDraft = (
   conclusion: "typing",
   conclude_type_id: classes[0]?.id ?? "",
   conclude_predicate_id: attrs[0]?.id ?? "",
+  join_predicate_id: relations[0]?.id ?? "",
   conclude_value: "",
-  groups: attrs[0] ? [[{ predicate_id: attrs[0].id, op: "gt", text: "" }]] : [[]],
+  groups:
+    attrs[0]
+      ? [[{ side: "x", predicate_id: attrs[0].id, op: "gt", text: "" }]]
+      : [[]],
 });
 
 /** 已有规则 → 草稿。**回读要与写入是同一套形状**，否则编辑一次就变形。 */
@@ -161,6 +173,7 @@ function draftOf(r: BusinessRule): Draft {
   if (metadataOnly(r)) throw new Error(S.ontology.ruleExpressionReadOnly);
   const groups = byGroup(r.conditions).map((g) =>
     g.map((c) => ({
+      side: c.side ?? "x",
       predicate_id: c.predicate_id,
       op: c.op,
       text: operandText(c.op, c.operand),
@@ -174,6 +187,7 @@ function draftOf(r: BusinessRule): Draft {
     conclusion: r.conclusion as Draft["conclusion"],
     conclude_type_id: r.conclude_type_id ?? "",
     conclude_predicate_id: r.conclude_predicate_id ?? "",
+    join_predicate_id: r.join_predicate_id ?? "",
     conclude_value:
       typeof r.conclude_value === "string"
         ? r.conclude_value
@@ -203,7 +217,13 @@ function Matches({ kbId, ruleId }: { kbId: string; ruleId: string }) {
         <div key={m.derived_id} className="space-y-1">
           <div className="flex flex-wrap items-baseline gap-2">
             <span className="text-small text-ink">{m.entity}</span>
-            <span className="text-fine text-ink-2">→ {m.concluded}</span>
+            {m.object_entity ? (
+              <span className="text-fine text-ink-2">
+                → {m.relation_predicate ?? m.concluded} {m.object_entity}
+              </span>
+            ) : (
+              <span className="text-fine text-ink-2">→ {m.concluded}</span>
+            )}
             {/* 同一个实体会因为不同时段的读数出现好几次，写出这一段才不像重复 */}
             {m.valid_from && (
               <span className="u-num text-fine text-ink-2">
@@ -236,6 +256,7 @@ export function RulesPanel({
   focusId,
   classes,
   attributes,
+  relations,
   onError,
 }: {
   kbId: string;
@@ -244,6 +265,8 @@ export function RulesPanel({
   classes: EntityTypeView[];
   /** kind='attribute' 的谓词——规则只读实体自己的字面值 */
   attributes: RelationTypeView[];
+  /** kind='relation' 的谓词——一条 joined rule 只走其中一条边 */
+  relations: RelationTypeView[];
   onError: (e: unknown) => void;
 }) {
   const qc = useQueryClient();
@@ -286,7 +309,7 @@ export function RulesPanel({
           if (operandKind(c.op) !== "none" && operand === undefined) {
             throw new Error(S.ontology.ruleNeedsCondition);
           }
-          return { group: gi, predicate_id: c.predicate_id, op: c.op, operand };
+          return { group: gi, side: c.side, predicate_id: c.predicate_id, op: c.op, operand };
         }),
       );
       if (!conditions.length) throw new Error(S.ontology.ruleNeedsCondition);
@@ -295,9 +318,11 @@ export function RulesPanel({
         conclude_type_id:
           d.conclusion === "typing" ? d.conclude_type_id : undefined,
         conclude_predicate_id:
-          d.conclusion === "attribute" ? d.conclude_predicate_id : undefined,
+          d.conclusion === "typing" ? undefined : d.conclude_predicate_id,
         conclude_value:
           d.conclusion === "attribute" ? d.conclude_value : undefined,
+        join_predicate_id:
+          d.conclusion === "relation" ? d.join_predicate_id : undefined,
       };
       // 改一条已有的规则走 PATCH，主类不动——换主类等于换一条规则，
       // 那时候删了重写比原地改诚实
@@ -361,7 +386,7 @@ export function RulesPanel({
   };
   const needle = filter.trim().toLowerCase();
   const list = needle
-    ? all.filter((r) => searchText(r, attributes).includes(needle))
+    ? all.filter((r) => searchText(r, attributes, relations).includes(needle))
     : all;
   /** 命中列表看的是哪一条。一次一条——两份长列表并排读不了 */
   const opening = list.find((r) => r.id === opened) ?? null;
@@ -414,7 +439,7 @@ export function RulesPanel({
           <Button
             size="sm"
             variant="primary"
-            onClick={() => setDraft(emptyDraft(classes, attributes))}
+            onClick={() => setDraft(emptyDraft(classes, attributes, relations))}
           >
             <Plus size={12} />
             {S.ontology.ruleNew}
@@ -563,6 +588,7 @@ export function RulesPanel({
           setDraft={setDraft}
           classes={classes}
           attributes={attributes}
+          relations={relations}
           busy={save.isPending}
           onSave={() => save.mutate()}
         />
@@ -592,6 +618,9 @@ function RuleCriterion({ rule, attributes }: { rule: BusinessRule; attributes: R
               {gi > 0 && i === 0 ? S.ontology.ruleOr : ""}
             </span>
             <span className="text-small text-ink-2">
+              <span className="mr-1 u-num text-fine text-ink-2">
+                {c.side === "y" ? S.ontology.ruleSideY : S.ontology.ruleSideX}
+              </span>{" "}
               <span className="text-ink">{c.predicate_label}</span>{" "}
               {OPS.find((o) => o.value === c.op)?.label() ?? c.op}{" "}
               <span className="u-num text-ink">{operandText(c.op, c.operand, attributes)}</span>
@@ -610,6 +639,7 @@ function RuleDialog({
   setDraft,
   classes,
   attributes,
+  relations,
   busy,
   onSave,
 }: {
@@ -617,15 +647,18 @@ function RuleDialog({
   setDraft: (d: Draft | null) => void;
   classes: EntityTypeView[];
   attributes: RelationTypeView[];
+  relations: RelationTypeView[];
   busy: boolean;
   onSave: () => void;
 }) {
   const ready =
     !!draft.name.trim() &&
     !!draft.subject_type_id &&
+    (draft.conclusion !== "relation" || (!!draft.join_predicate_id && !!draft.conclude_predicate_id)) &&
     draft.groups.some((g) => g.length > 0);
 
   const newRow = (): Row => ({
+    side: "x",
     predicate_id: attributes[0]?.id ?? "",
     op: "gt",
     text: "",
@@ -739,11 +772,22 @@ function RuleDialog({
                     <span className="w-10 shrink-0 text-right text-fine text-ink-2">
                       {i === 0 ? "" : S.ontology.ruleAnd}
                     </span>
+                    {draft.conclusion === "relation" && (
+                      <Dropdown
+                        className="w-16"
+                        value={c.side}
+                        onChange={(v) => editRow(gi, i, { side: v as Row["side"] })}
+                        options={[
+                          { value: "x", label: S.ontology.ruleSideX },
+                          { value: "y", label: S.ontology.ruleSideY },
+                        ]}
+                      />
+                    )}
                     <Dropdown
                       className="flex-1"
                       value={c.predicate_id}
                       onChange={(v) => editRow(gi, i, { predicate_id: v })}
-                      options={attributes.map((a) => ({ value: a.id, label: a.label }))}
+                      options={labelOptions(attributes)}
                     />
                     <Dropdown
                       className="w-32"
@@ -806,12 +850,26 @@ function RuleDialog({
             <Dropdown
               className="w-40"
               value={draft.conclusion}
-              onChange={(v) =>
-                setDraft({ ...draft, conclusion: v as "typing" | "attribute" })
-              }
+              onChange={(v) => {
+                const conclusion = v as Draft["conclusion"];
+                setDraft({
+                  ...draft,
+                  conclusion,
+                  join_predicate_id:
+                    conclusion === "relation"
+                      ? draft.join_predicate_id || relations[0]?.id || ""
+                      : "",
+                  conclude_predicate_id:
+                    conclusion === "relation"
+                      ? draft.conclude_predicate_id || relations[0]?.id || ""
+                      : draft.conclude_predicate_id,
+                  conclude_value: conclusion === "attribute" ? draft.conclude_value : "",
+                });
+              }}
               options={[
                 { value: "typing", label: S.ontology.ruleConcludesTyping },
                 { value: "attribute", label: S.ontology.ruleConcludesAttribute },
+                { value: "relation", label: S.ontology.ruleConcludesRelation },
               ]}
             />
             {draft.conclusion === "typing" ? (
@@ -823,19 +881,39 @@ function RuleDialog({
               />
             ) : (
               <>
-                <Dropdown
-                  className="w-48"
-                  value={draft.conclude_predicate_id}
-                  onChange={(v) => setDraft({ ...draft, conclude_predicate_id: v })}
-                  options={attributes.map((a) => ({ value: a.id, label: a.label }))}
-                />
-                <Input
-                  className="w-40"
-                  value={draft.conclude_value}
-                  onChange={(e) =>
-                    setDraft({ ...draft, conclude_value: e.target.value })
-                  }
-                />
+                {draft.conclusion === "relation" && (
+                  <>
+                    <Dropdown
+                      className="w-48"
+                      value={draft.join_predicate_id}
+                      onChange={(v) => setDraft({ ...draft, join_predicate_id: v })}
+                      options={labelOptions(relations)}
+                    />
+                    <Dropdown
+                      className="w-48"
+                      value={draft.conclude_predicate_id}
+                      onChange={(v) => setDraft({ ...draft, conclude_predicate_id: v })}
+                      options={labelOptions(relations)}
+                    />
+                  </>
+                )}
+                {draft.conclusion === "attribute" && (
+                  <>
+                    <Dropdown
+                      className="w-48"
+                      value={draft.conclude_predicate_id}
+                      onChange={(v) => setDraft({ ...draft, conclude_predicate_id: v })}
+                      options={labelOptions(attributes)}
+                    />
+                    <Input
+                      className="w-40"
+                      value={draft.conclude_value}
+                      onChange={(e) =>
+                        setDraft({ ...draft, conclude_value: e.target.value })
+                      }
+                    />
+                  </>
+                )}
               </>
             )}
           </div>
@@ -850,6 +928,15 @@ function RuleConclusion({ rule: r, attributes }: { rule: BusinessRule; attribute
   if (r.conclusion === "typing") return <>{r.conclude_type_label}</>;
   if (r.conclusion === "computed") return <>{r.conclude_predicate_label} = {expressionText(r.conclude_expr, attributes, S.ontology.ruleUnknownExpression)}</>;
   if (r.conclusion === "attribute") return <>{r.conclude_predicate_label} = {JSON.stringify(r.conclude_value)}</>;
+  if (r.conclusion === "relation")
+    return (
+      <>
+        {S.ontology.ruleConcludesRelationText(
+          r.join_predicate_label ?? r.join_predicate_id ?? "",
+          r.conclude_predicate_label ?? r.conclude_predicate_id ?? "",
+        )}
+      </>
+    );
   return <>{S.ontology.ruleUnknownExpression}</>;
 }
 

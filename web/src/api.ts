@@ -357,16 +357,19 @@ export interface RuleCondition {
   /** 数字 / [lo,hi] / 字符串数组；present 不带 */
   operand?: unknown;
   predicate_label?: string;
+  /** x = rule subject (default); y = the entity reached by the one declared join */
+  side?: "x" | "y";
 }
 
 export interface RuleInput {
   name: string;
   description?: string;
   subject_type_id: string;
-  /** typing = 推出一个类；attribute = 推出一个属性值 */
-  conclusion: "typing" | "attribute";
+  /** typing = class; attribute = value; relation = an edge to the joined Y */
+  conclusion: "typing" | "attribute" | "relation";
   conclude_type_id?: string;
   conclude_predicate_id?: string;
+  join_predicate_id?: string;
   conclude_value?: unknown;
   conditions: RuleCondition[];
 }
@@ -379,12 +382,15 @@ export interface RuleMatch {
   concluded: string | null;
   valid_from: string | null;
   valid_to: string | null;
+  object_id?: string | null;
+  object_entity?: string | null;
+  relation_predicate?: string | null;
   /** 「全烃 = 12.3」这种可读形态，按前提顺序 */
   premises: string[];
 }
 
-export interface BusinessRule extends Omit<RuleInput, "conclusion"> {
-  conclusion: "typing" | "attribute" | "computed";
+export interface BusinessRule extends Omit<RuleInput, "conclusion" | "join_predicate_id"> {
+  conclusion: "typing" | "attribute" | "computed" | "relation";
   /** Raw server tree; unsupported nodes must remain read-only. */
   conclude_expr?: unknown;
   id: string;
@@ -392,6 +398,8 @@ export interface BusinessRule extends Omit<RuleInput, "conclusion"> {
   subject_label: string;
   conclude_type_label: string | null;
   conclude_predicate_label: string | null;
+  join_predicate_id?: string | null;
+  join_predicate_label?: string | null;
   /** 此刻凭它成立的结论条数 */
   derived_count: number;
   /** 上次跑的时候有几个实体的读数组合没展开完。**大于零就意味着少推了** */
@@ -1953,9 +1961,10 @@ export const api = {
       enabled?: boolean;
       conditions?: RuleCondition[];
       /** 结论整组替换：三格互相定义，只改一格会留下半截状态 */
-      conclusion?: "typing" | "attribute";
+      conclusion?: "typing" | "attribute" | "relation";
       conclude_type_id?: string;
       conclude_predicate_id?: string;
+      join_predicate_id?: string;
       conclude_value?: unknown;
     },
   ) =>

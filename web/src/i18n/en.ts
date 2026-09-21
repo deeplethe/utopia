@@ -1306,6 +1306,11 @@ export const en = {
     ruleConcludes: "Concludes",
     ruleConcludesTyping: "the class",
     ruleConcludesAttribute: "the attribute",
+    ruleConcludesRelation: "the relation",
+    ruleConcludesRelationText: (join: string, conclude: string): string =>
+      `${conclude} from X through ${join}`,
+    ruleSideX: "X",
+    ruleSideY: "Y",
     /* 从前是「当以下全部成立」。**一条规则现在可以写第二种情况**，那句话就
        不再是真的——标签退回一个「当」，全不全由下面那句说明交代 */
     ruleConditions: "When",

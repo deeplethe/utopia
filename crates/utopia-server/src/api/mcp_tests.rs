@@ -1745,6 +1745,7 @@ async fn computed_rule_descriptions_keep_the_expression_tree_and_identity() -> a
     }
     let conditions = [ConditionInput {
         group: 2,
+        side: "x".into(),
         predicate_id: revenue,
         op: "present".into(),
         operand: None,
@@ -1784,6 +1785,7 @@ async fn computed_rule_descriptions_keep_the_expression_tree_and_identity() -> a
             Some(margin),
             None,
             Some(expr),
+            None,
             &conditions,
         )
         .await?;
@@ -1817,6 +1819,7 @@ async fn computed_rule_descriptions_keep_the_expression_tree_and_identity() -> a
         ty,
         "typing",
         Some(ty),
+        None,
         None,
         None,
         None,
@@ -2042,6 +2045,7 @@ async fn rule_descriptions_preserve_condition_groups() -> anyhow::Result<()> {
             .zip([("gt", 1), ("lt", 9), ("gte", 7)])
             .map(|(group, (op, n))| ConditionInput {
                 group,
+                side: "x".into(),
                 predicate_id: attr,
                 op: op.into(),
                 operand: Some(json!(n)),
@@ -2057,6 +2061,7 @@ async fn rule_descriptions_preserve_condition_groups() -> anyhow::Result<()> {
             None,
             Some(attr),
             Some(json!({"value":8})),
+            None,
             None,
             &cs,
         )
@@ -2113,6 +2118,7 @@ async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Re
         .await?;
     let conditions = [ConditionInput {
         group: 0,
+        side: "x".into(),
         predicate_id: reading,
         op: "gt".into(),
         operand: Some(json!(0)),
@@ -2125,6 +2131,7 @@ async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Re
         ty,
         "typing",
         Some(marked),
+        None,
         None,
         None,
         None,
@@ -2141,6 +2148,7 @@ async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Re
         None,
         Some(result),
         Some(json!(8)),
+        None,
         None,
         &conditions,
     )

@@ -33,6 +33,8 @@ pub struct RuleReq {
     /// 算出来的结论那棵树（0032）：`conclusion = "computed"` 时给
     #[serde(default)]
     pub conclude_expr: Option<serde_json::Value>,
+    #[serde(default)]
+    pub join_predicate_id: Option<Uuid>,
     pub conditions: Vec<ConditionInput>,
 }
 
@@ -58,6 +60,8 @@ pub struct RulePatch {
     pub conclude_value: Option<serde_json::Value>,
     #[serde(default)]
     pub conclude_expr: Option<serde_json::Value>,
+    #[serde(default)]
+    pub join_predicate_id: Option<Uuid>,
 }
 
 pub async fn list(
@@ -88,6 +92,7 @@ pub async fn create(
         req.conclude_predicate_id,
         req.conclude_value.clone(),
         req.conclude_expr.clone(),
+        req.join_predicate_id,
         &req.conditions,
     )
     .await?;
@@ -117,6 +122,7 @@ pub async fn update(
         predicate_id: req.conclude_predicate_id,
         value: req.conclude_value.clone(),
         expr: req.conclude_expr.clone(),
+        join_predicate_id: req.join_predicate_id,
     });
     utopia_store::business_rules::update(
         &state.pool,

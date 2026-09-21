@@ -47,28 +47,26 @@ pub async fn ensure_is_a(pool: &PgPool, kb_id: Uuid) -> AppResult<Uuid> {
 
 pub const IS_A: &str = "is_a";
 
-/// 列表查询回来的一行规则：id、名字、说明、主类及其标签、结论那几列、
-/// 开关，以及「此刻凭它成立的结论条数」。
-///
-/// 起个名字而不是让它当匿名元组：这一行有十三格，读的人对不上位置
-type RuleRow = (
-    Uuid,
-    String,
-    String,
-    Uuid,
-    Option<String>,
-    String,
-    Option<Uuid>,
-    Option<String>,
-    Option<Uuid>,
-    Option<String>,
-    Option<serde_json::Value>,
-    // 算出来的结论那棵树（0032）
-    Option<serde_json::Value>,
-    bool,
-    i64,
-    i32,
-);
+#[derive(sqlx::FromRow)]
+struct RuleRow {
+    id: Uuid,
+    name: String,
+    description: String,
+    subject_type_id: Uuid,
+    subject_label: Option<String>,
+    conclusion: String,
+    conclude_type_id: Option<Uuid>,
+    conclude_type_label: Option<String>,
+    conclude_predicate_id: Option<Uuid>,
+    conclude_predicate_label: Option<String>,
+    conclude_value: Option<serde_json::Value>,
+    conclude_expr: Option<serde_json::Value>,
+    enabled: bool,
+    join_predicate_id: Option<Uuid>,
+    join_predicate_label: Option<String>,
+    derived_count: i64,
+    capped: i32,
+}
 
 /// 条件查询回来的一行：规则、组号、属性谓词及其标签、比较方式、操作数
 type ConditionRow = (
@@ -78,6 +76,7 @@ type ConditionRow = (
     Option<String>,
     String,
     Option<serde_json::Value>,
+    String,
 );
 
 /// 一条条件，界面与 API 共用的形状。
@@ -91,6 +90,14 @@ pub struct ConditionInput {
     pub op: String,
     #[serde(default)]
     pub operand: Option<serde_json::Value>,
+    /// Which side of a joined pair this condition reads: `x` is the rule
+    /// subject and `y` is the entity reached by the one declared join edge.
+    #[serde(default = "default_condition_side")]
+    pub side: String,
+}
+
+fn default_condition_side() -> String {
+    "x".to_string()
 }
 
 fn validate_name(name: &str) -> AppResult<&str> {
@@ -119,6 +126,7 @@ pub async fn create(
     conclude_value: Option<serde_json::Value>,
     // 算出来的结论那棵树（0032）
     conclude_expr: Option<serde_json::Value>,
+    join_predicate_id: Option<Uuid>,
     conditions: &[ConditionInput],
 ) -> AppResult<Uuid> {
     let name = validate_name(name)?;
@@ -129,7 +137,7 @@ pub async fn create(
             "A rule needs at least one condition; without one it would conclude for every entity of the class.",
         ));
     }
-    validate_conditions(pool, kb_id, conditions).await?;
+    validate_conditions(pool, kb_id, conditions, conclusion == "relation").await?;
 
     validate_conclusion(
         pool,
@@ -140,9 +148,11 @@ pub async fn create(
             predicate_id: conclude_predicate_id,
             value: conclude_value.clone(),
             expr: conclude_expr.clone(),
+            join_predicate_id,
         },
     )
     .await?;
+    validate_join_shape(conclusion, join_predicate_id)?;
     exists(
         pool,
         kb_id,
@@ -158,8 +168,9 @@ pub async fn create(
     sqlx::query(
         "INSERT INTO attribute_rules
              (id, kb_id, name, description, subject_type_id, conclusion,
-              conclude_type_id, conclude_predicate_id, conclude_value, conclude_expr)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+              conclude_type_id, conclude_predicate_id, conclude_value, conclude_expr,
+              join_predicate_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(id)
     .bind(kb_id)
@@ -171,6 +182,7 @@ pub async fn create(
     .bind(conclude_predicate_id)
     .bind(&conclude_value)
     .bind(&conclude_expr)
+    .bind(join_predicate_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| match e {
@@ -199,6 +211,8 @@ pub struct ConclusionInput {
     pub value: Option<serde_json::Value>,
     /// 算出来的结论那棵树（0032）。`computed` 时必给，别的两支必空
     pub expr: Option<serde_json::Value>,
+    /// X --join--> Y 的那条边，只在 relation 结论时非空
+    pub join_predicate_id: Option<Uuid>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -220,10 +234,30 @@ pub async fn update(
                 "A rule needs at least one condition.",
             ));
         }
-        validate_conditions(pool, kb_id, cs).await?;
+        let (old_conclusion, old_join) = sqlx::query_as::<_, (String, Option<Uuid>)>(
+            "SELECT conclusion, join_predicate_id
+               FROM attribute_rules
+              WHERE id = $2 AND kb_id = $1",
+        )
+        .bind(kb_id)
+        .bind(rule_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
+        let joined = conclusion
+            .map(|c| c.kind.as_str() == "relation")
+            .unwrap_or(old_conclusion == "relation");
+        validate_conditions(pool, kb_id, cs, joined).await?;
+        let join = if joined {
+            conclusion.and_then(|c| c.join_predicate_id).or(old_join)
+        } else {
+            None
+        };
+        validate_join_shape(if joined { "relation" } else { "other" }, join)?;
     }
     if let Some(c) = conclusion {
         validate_conclusion(pool, kb_id, c).await?;
+        validate_join_shape(&c.kind, c.join_predicate_id)?;
     }
     let mut tx = pool.begin().await?;
     let res = sqlx::query(
@@ -239,6 +273,7 @@ pub async fn update(
                 conclude_predicate_id = CASE WHEN $6 IS NULL THEN conclude_predicate_id ELSE $8 END,
                 conclude_value        = CASE WHEN $6 IS NULL THEN conclude_value        ELSE $9 END,
                 conclude_expr         = CASE WHEN $6 IS NULL THEN conclude_expr         ELSE $10 END,
+                join_predicate_id     = CASE WHEN $6 IS NULL THEN join_predicate_id     ELSE $11 END,
                 updated_at = now()
           WHERE id = $2 AND kb_id = $1",
     )
@@ -252,6 +287,7 @@ pub async fn update(
     .bind(conclusion.and_then(|c| c.predicate_id))
     .bind(conclusion.and_then(|c| c.value.clone()))
     .bind(conclusion.and_then(|c| c.expr.clone()))
+    .bind(conclusion.and_then(|c| c.join_predicate_id))
     .execute(&mut *tx)
     .await?;
     if res.rows_affected() == 0 {
@@ -285,16 +321,21 @@ pub async fn delete(pool: &PgPool, kb_id: Uuid, rule_id: Uuid) -> AppResult<()> 
 /// 列出规则，连同条件与「现在推出了多少条」。
 pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value>> {
     let rules: Vec<RuleRow> = sqlx::query_as(
-        "SELECT r.id, r.name, r.description, r.subject_type_id, st.label,
-                r.conclusion, r.conclude_type_id, ct.label,
-                r.conclude_predicate_id, cp.label, r.conclude_value, r.conclude_expr, r.enabled,
+        "SELECT r.id, r.name, r.description, r.subject_type_id,
+                st.label AS subject_label,
+                r.conclusion, r.conclude_type_id, ct.label AS conclude_type_label,
+                r.conclude_predicate_id, cp.label AS conclude_predicate_label,
+                r.conclude_value, r.conclude_expr, r.enabled,
+                r.join_predicate_id, jp.label AS join_predicate_label,
                 (SELECT count(*) FROM derived_facts d
-                  WHERE d.attribute_rule_id = r.id AND d.invalidated_at IS NULL),
-                r.capped_at_last_run
+                  WHERE d.attribute_rule_id = r.id AND d.invalidated_at IS NULL)
+                    AS derived_count,
+                r.capped_at_last_run AS capped
            FROM attribute_rules r
            JOIN entity_types st ON st.id = r.subject_type_id
            LEFT JOIN entity_types ct ON ct.id = r.conclude_type_id
            LEFT JOIN relation_types cp ON cp.id = r.conclude_predicate_id
+           LEFT JOIN relation_types jp ON jp.id = r.join_predicate_id
           WHERE r.kb_id = $1
           ORDER BY r.created_at",
     )
@@ -304,9 +345,10 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
     if rules.is_empty() {
         return Ok(Vec::new());
     }
-    let ids: Vec<Uuid> = rules.iter().map(|r| r.0).collect();
+    let ids: Vec<Uuid> = rules.iter().map(|r| r.id).collect();
     let conds: Vec<ConditionRow> = sqlx::query_as(
-        "SELECT c.rule_id, c.group_seq, c.predicate_id, p.label, c.op, c.operand
+        "SELECT c.rule_id, c.group_seq, c.predicate_id, p.label, c.op, c.operand,
+                c.subject_side
                FROM attribute_rule_conditions c
                JOIN relation_types p ON p.id = c.predicate_id
               WHERE c.rule_id = ANY($1)
@@ -318,57 +360,42 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
 
     Ok(rules
         .into_iter()
-        .map(
-            |(
-                id,
-                name,
-                description,
-                subject_type_id,
-                subject_label,
-                conclusion,
-                ct,
-                ct_label,
-                cp,
-                cp_label,
-                cv,
-                cx,
-                enabled,
-                derived,
-                capped,
-            )| {
-                let conditions: Vec<serde_json::Value> = conds
-                    .iter()
-                    .filter(|c| c.0 == id)
-                    .map(|(_, group, pid, plabel, op, operand)| {
-                        json!({
-                            "group": group,
-                            "predicate_id": pid,
-                            "predicate_label": plabel,
-                            "op": op,
-                            "operand": operand,
-                        })
+        .map(|r| {
+            let conditions: Vec<serde_json::Value> = conds
+                .iter()
+                .filter(|c| c.0 == r.id)
+                .map(|(_, group, pid, plabel, op, operand, side)| {
+                    json!({
+                        "group": group,
+                        "side": side,
+                        "predicate_id": pid,
+                        "predicate_label": plabel,
+                        "op": op,
+                        "operand": operand,
                     })
-                    .collect();
-                json!({
-                    "id": id,
-                    "name": name,
-                    "description": description,
-                    "subject_type_id": subject_type_id,
-                    "subject_label": subject_label,
-                    "conclusion": conclusion,
-                    "conclude_type_id": ct,
-                    "conclude_type_label": ct_label,
-                    "conclude_predicate_id": cp,
-                    "conclude_predicate_label": cp_label,
-                    "conclude_value": cv,
-                    "conclude_expr": cx,
-                    "enabled": enabled,
-                    "derived_count": derived,
-                    "capped": capped,
-                    "conditions": conditions,
                 })
-            },
-        )
+                .collect();
+            json!({
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "subject_type_id": r.subject_type_id,
+                "subject_label": r.subject_label,
+                "conclusion": r.conclusion,
+                "conclude_type_id": r.conclude_type_id,
+                "conclude_type_label": r.conclude_type_label,
+                "conclude_predicate_id": r.conclude_predicate_id,
+                "conclude_predicate_label": r.conclude_predicate_label,
+                "conclude_value": r.conclude_value,
+                "conclude_expr": r.conclude_expr,
+                "join_predicate_id": r.join_predicate_id,
+                "join_predicate_label": r.join_predicate_label,
+                "enabled": r.enabled,
+                "derived_count": r.derived_count,
+                "capped": r.capped,
+                "conditions": conditions,
+            })
+        })
         .collect())
 }
 
@@ -448,6 +475,9 @@ type MatchRow = (
     Uuid,
     Uuid,
     String,
+    Option<Uuid>,
+    Option<String>,
+    Option<String>,
     Option<String>,
     Option<chrono::DateTime<chrono::Utc>>,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -480,9 +510,11 @@ pub async fn matches(
         // 结论读出来要是人看的那个名字。库里存的是类的 key/IRI（归类）或
         // 字面值（属性），两者都不该原样端上来
         "SELECT d.id, e.id, e.canonical_name,
+                o.id, o.canonical_name,
                 COALESCE(ct.label,
                          d.object_value #>> '{value}',
                          d.object_value ->> 'class'),
+                rp.label,
                 d.valid_from, d.valid_to, d.valid_from_precision, d.valid_to_precision,
                 COALESCE(
                     (SELECT array_agg(
@@ -497,8 +529,10 @@ pub async fn matches(
                 )
            FROM derived_facts d
            JOIN entities e ON e.id = d.subject_id
+           LEFT JOIN entities o ON o.id = d.object_id
            JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
+           LEFT JOIN relation_types rp ON rp.id = d.predicate_id
           WHERE d.kb_id = $1 AND d.attribute_rule_id = $2 AND d.invalidated_at IS NULL
           ORDER BY e.canonical_name, d.valid_from, d.id
           LIMIT $3 OFFSET $4",
@@ -513,12 +547,28 @@ pub async fn matches(
     Ok((
         rows.into_iter()
             .map(
-                |(id, entity_id, name, concluded, from, to, fp, tp, premises)| {
+                |(
+                    id,
+                    entity_id,
+                    name,
+                    object_id,
+                    object_name,
+                    concluded,
+                    relation_label,
+                    from,
+                    to,
+                    fp,
+                    tp,
+                    premises,
+                )| {
                     json!({
                         "derived_id": id,
                         "entity_id": entity_id,
                         "entity": name,
+                        "object_id": object_id,
+                        "object_entity": object_name,
                         "concluded": concluded,
+                        "relation_predicate": relation_label,
                         "valid_from": from,
                         "valid_to": to,
                         "valid_from_precision": fp,
@@ -543,8 +593,8 @@ async fn insert_conditions(
         let seq = next.entry(c.group).or_insert(0);
         sqlx::query(
             "INSERT INTO attribute_rule_conditions
-                (id, rule_id, group_seq, seq, predicate_id, op, operand)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                (id, rule_id, group_seq, seq, predicate_id, op, operand, subject_side)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(Uuid::now_v7())
         .bind(rule_id)
@@ -553,6 +603,7 @@ async fn insert_conditions(
         .bind(c.predicate_id)
         .bind(&c.op)
         .bind(&c.operand)
+        .bind(&c.side)
         .execute(&mut **tx)
         .await?;
         *seq += 1;
@@ -625,9 +676,21 @@ async fn validate_conclusion(pool: &PgPool, kb_id: Uuid, c: &ConclusionInput) ->
             }
             attribute_predicate(pool, kb_id, p).await
         }
+        // A relation conclusion names the edge itself, so both ends are
+        // entities. The join edge and the conclusion may be different declared
+        // predicates: supplies supplies(Y, Z) can conclude upstream_of(X, Z).
+        "relation" => {
+            let p = c.predicate_id.ok_or_else(|| {
+                AppError::invalid(
+                    "no_predicate",
+                    "A relation rule needs the relation it concludes.",
+                )
+            })?;
+            relation_predicate(pool, kb_id, p).await
+        }
         _ => Err(AppError::invalid(
             "bad_conclusion",
-            "A conclusion is a typing, an attribute or a computed attribute.",
+            "A conclusion is a typing, an attribute, a computed attribute or a relation.",
         )),
     }
 }
@@ -679,6 +742,7 @@ async fn validate_conditions(
     pool: &PgPool,
     kb_id: Uuid,
     conditions: &[ConditionInput],
+    joined: bool,
 ) -> AppResult<()> {
     for c in conditions {
         let op = utopia_reason::rules::Op::parse(&c.op).ok_or_else(|| {
@@ -687,6 +751,18 @@ async fn validate_conditions(
                 "A condition compares with >, >=, <, <=, a range, a set (in or not in), or presence.",
             )
         })?;
+        let side = utopia_reason::rules::Side::parse(&c.side).ok_or_else(|| {
+            AppError::invalid(
+                "bad_condition_side",
+                "A condition reads x (the rule's subject) or y (the joined entity).",
+            )
+        })?;
+        if !joined && side != utopia_reason::rules::Side::X {
+            return Err(AppError::invalid(
+                "condition_side_without_join",
+                "Only a joined rule can read the other side of an edge.",
+            ));
+        }
         attribute_predicate(pool, kb_id, c.predicate_id).await?;
         // ADR 0032 already permits expression thresholds. Validate the same AST
         // and same-base attribute references as computed conclusions; sets,
@@ -757,6 +833,42 @@ async fn attribute_predicate(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<
         None => Err(AppError::invalid(
             "unknown_predicate",
             "That attribute is not in this base.",
+        )),
+    }
+}
+
+async fn relation_predicate(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<()> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT kind FROM relation_types WHERE id = $2 AND kb_id = $1")
+            .bind(kb_id)
+            .bind(id)
+            .fetch_optional(pool)
+            .await?;
+    match row.as_ref().map(|(k,)| k.as_str()) {
+        Some("relation") => Ok(()),
+        Some(_) => Err(AppError::invalid(
+            "not_a_relation",
+            "A join or relation conclusion names an edge between two entities.",
+        )),
+        None => Err(AppError::invalid(
+            "unknown_predicate",
+            "That relation is not in this base.",
+        )),
+    }
+}
+
+/// Keep the conclusion and its join edge as one replaceable shape. The database
+/// CHECK is the last line of defence; these errors say which half is missing.
+fn validate_join_shape(kind: &str, join_predicate_id: Option<Uuid>) -> AppResult<()> {
+    match (kind == "relation", join_predicate_id.is_some()) {
+        (true, true) | (false, false) => Ok(()),
+        (true, false) => Err(AppError::invalid(
+            "no_join_predicate",
+            "A relation rule needs the relation that connects X to Y.",
+        )),
+        (false, true) => Err(AppError::invalid(
+            "join_without_relation",
+            "Only a relation conclusion can name a join predicate.",
         )),
     }
 }

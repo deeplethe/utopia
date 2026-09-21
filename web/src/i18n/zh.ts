@@ -1170,6 +1170,11 @@ export const zh: Strings = {
     ruleConcludes: "得出",
     ruleConcludesTyping: "这个类",
     ruleConcludesAttribute: "这个属性",
+    ruleConcludesRelation: "这条关系",
+    ruleConcludesRelationText: (join: string, conclude: string): string =>
+      `经「${join}」从 X 到「${conclude}」`,
+    ruleSideX: "X",
+    ruleSideY: "Y",
     ruleConditions: "当满足",
     ruleConditionsHint: "一块里的条件要同时成立；再加一块就是另一种情况，任意一块成立即可。",
     ruleAddCondition: "加一个条件",

@@ -519,6 +519,7 @@ export function Ontology() {
                   focusId={sel.kind === "rules" ? sel.focusId : undefined}
                   classes={entity_types}
                   attributes={relation_types.filter((r) => r.kind === "attribute")}
+                  relations={relation_types.filter((r) => r.kind === "relation")}
                   onError={onError}
                 />
               </div>

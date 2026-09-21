@@ -405,8 +405,11 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
                     let mut groups: Vec<(i64, Vec<String>)> = Vec::new();
                     for c in cs {
                         let group = c["group"].as_i64().unwrap_or(0);
+                        // Legacy conditions have no side and mean the subject;
+                        // keep their familiar unprefixed text while disambiguating Y.
+                        let side = if c["side"] == "y" { "Y." } else { "" };
                         let condition = format!(
-                            "{} {} {}",
+                            "{side}{} {} {}",
                             c["predicate_label"].as_str().unwrap_or("?"),
                             c["op"].as_str().unwrap_or("?"),
                             c["operand"]
@@ -447,6 +450,12 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
                         .next()
                         .flatten()
                         .unwrap_or_else(|| "(expression unavailable)".to_string()),
+                )
+            } else if r["conclusion"] == "relation" {
+                format!(
+                    "{} from X to the Y reached by {}",
+                    r["conclude_predicate_label"].as_str().unwrap_or("?"),
+                    r["join_predicate_label"].as_str().unwrap_or("?"),
                 )
             } else {
                 format!(
@@ -525,13 +534,23 @@ pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
             };
             let from = bound("valid_from", "valid_from_precision", "unknown start");
             let to = bound("valid_to", "valid_to_precision", "unknown end");
-            format!(
-                "{} ⇒ {} (because {}) [validity: {from} → {to}] [{}]",
-                m["entity"].as_str().unwrap_or("?"),
+            let concluded = if m["object_entity"].is_null() {
                 m["concluded"]
                     .as_str()
                     .map(str::to_string)
-                    .unwrap_or_else(|| m["concluded"].to_string()),
+                    .unwrap_or_else(|| m["concluded"].to_string())
+            } else {
+                format!(
+                    "{} {}",
+                    m["relation_predicate"]
+                        .as_str()
+                        .unwrap_or_else(|| m["concluded"].as_str().unwrap_or("?")),
+                    m["object_entity"].as_str().unwrap_or("?"),
+                )
+            };
+            format!(
+                "{} ⇒ {concluded} (because {}) [validity: {from} → {to}] [{}]",
+                m["entity"].as_str().unwrap_or("?"),
                 premises,
                 m["entity_id"].as_str().unwrap_or("?"),
             )
