@@ -918,9 +918,14 @@ fn legacy_rag(
     client: utopia_llm::LlmClient,
 ) -> impl Stream<Item = Frame> {
     async_stream::stream! {
-        let chunks = retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None)
-            .await
-            .unwrap_or_default();
+        let chunks = match retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None).await {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                tracing::warn!(%error, "fallback document retrieval failed");
+                yield error_event("Could not search the documents.");
+                return;
+            }
+        };
         let legacy_sources: Vec<serde_json::Value> = chunks
             .iter()
             .enumerate()
