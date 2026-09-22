@@ -416,3 +416,129 @@ async fn date_detection_keeps_upload_access_and_folder_checks() -> anyhow::Resul
     assert_eq!(count, 0);
     f.cleanup().await
 }
+
+/// #859：上传后 `/content` 把原字节发回来；`/versions` 给版本台账
+#[tokio::test]
+async fn content_route_serves_uploaded_bytes_and_versions_lists_them() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let payload = "hello, original bytes\nline 2";
+    let (status, response) = f
+        .upload(
+            f.kb,
+            &format!("?source={}", f.folder),
+            &[("original.txt", payload)],
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    let docs = f.created_docs(&response).await?;
+    assert_eq!(docs.len(), 1);
+    let doc_id = docs[0].id;
+
+    // /content：拿到的字节与上传的完全一致
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/documents/{doc_id}/content"))
+                .header("Authorization", format!("Bearer {}", f.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1024).await?;
+    assert_eq!(body.as_ref(), payload.as_bytes());
+    // （这里不查 Content-Length / ETag / Content-Type —— 它们由 axum 直接发；
+    //  HTTP 头检查不是这一刀的目的，保持一个最小的字节往返）
+
+    // /versions：版本台账至少包含刚上传的这一版
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/documents/{doc_id}/versions"))
+                .header("Authorization", format!("Bearer {}", f.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let v: Value = serde_json::from_slice(&to_bytes(response.into_body(), 8192).await?)?;
+    assert_eq!(v["document_id"], json!(doc_id));
+    let versions = v["versions"].as_array().expect("versions is an array");
+    assert!(
+        !versions.is_empty(),
+        "the upload should have registered at least one version"
+    );
+    let v1 = versions
+        .iter()
+        .find(|x| x["version"] == 1)
+        .expect("version 1 present");
+    // sha 是 64 字符十六进制
+    assert_eq!(v1["sha256"].as_str().unwrap().len(), 64);
+    assert_eq!(v1["size_bytes"], json!(payload.len() as i64));
+    f.cleanup().await
+}
+
+/// #859：`/content?version=N` 找不到登记的版本时答 404，不退回默认版本
+#[tokio::test]
+async fn content_with_unknown_version_answers_404_not_the_default() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (status, response) = f
+        .upload(f.kb, &format!("?source={}", f.folder), &[("only.txt", "x")])
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let docs = f.created_docs(&response).await?;
+    let doc_id = docs[0].id;
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/documents/{doc_id}/content?version=999"))
+                .header("Authorization", format!("Bearer {}", f.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    f.cleanup().await
+}
+
+/// #859：`purged_at` 上的文档答 410 Gone，字节已抹掉
+#[tokio::test]
+async fn content_on_a_purged_document_answers_410() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (status, response) = f
+        .upload(
+            f.kb,
+            &format!("?source={}", f.folder),
+            &[("purge.txt", "y")],
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    let docs = f.created_docs(&response).await?;
+    let doc_id = docs[0].id;
+    // 把这一份的真删状态标上 —— 不走 `purge` 全流程，只设列（fixture 没有依赖别处）
+    sqlx::query("UPDATE documents SET purged_at = now() WHERE id = $1")
+        .bind(doc_id)
+        .execute(&f.pool)
+        .await?;
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/documents/{doc_id}/content"))
+                .header("Authorization", format!("Bearer {}", f.token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::GONE);
+    f.cleanup().await
+}

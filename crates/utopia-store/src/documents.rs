@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use pgvector::Vector;
 use sqlx::{PgPool, Postgres, Transaction};
-use utopia_core::models::{ChunkView, Document, DocumentPage};
+use utopia_core::models::{ChunkView, Document, DocumentPage, DocumentVersion};
 use utopia_core::{AppError, AppResult};
 use utopia_ingest::ChunkPiece;
 use uuid::Uuid;
@@ -693,6 +693,41 @@ pub async fn update_location(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// 列出该文档的全部已记录版本，按 version 升序（旧的在前，给人类读）；
+/// 路径 `/documents/{id}/versions` 的数据来源（#859）。
+///
+/// 不带版本筛选——筛选 `?version=N` 在调用方（API 层）做：找不到时 404，
+/// 而这条函数总返回整张表，调用方只看
+pub async fn list_versions(pool: &PgPool, document_id: Uuid) -> AppResult<Vec<DocumentVersion>> {
+    Ok(sqlx::query_as::<_, DocumentVersion>(
+        "SELECT id, document_id, version, sha256, size_bytes, ingested_at
+         FROM document_versions
+         WHERE document_id = $1
+         ORDER BY version ASC",
+    )
+    .bind(document_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 取该文档的某一个指定版本；不存在时返回 `None`，由 API 层答 404
+/// （#859 的语义：没记录的版本不算「已被采用」，诚实回答没有）
+pub async fn get_version(
+    pool: &PgPool,
+    document_id: Uuid,
+    version: i32,
+) -> AppResult<Option<DocumentVersion>> {
+    Ok(sqlx::query_as::<_, DocumentVersion>(
+        "SELECT id, document_id, version, sha256, size_bytes, ingested_at
+         FROM document_versions
+         WHERE document_id = $1 AND version = $2",
+    )
+    .bind(document_id)
+    .bind(version)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// 记录一个内容版本（版本号自增）。

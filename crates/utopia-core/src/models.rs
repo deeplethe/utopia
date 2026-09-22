@@ -126,6 +126,20 @@ pub struct Document {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 一份文档的某一版内容（`document_versions`）。同一份文档的多版共享
+/// `document_id`、按 `version` 严格递增，sha 一栏给的是该版字节的指纹。
+/// 0032：内容寻址——多版之间不可变，可以全保（回放的物质基础）；`purged_at`
+/// 不与这一张表直接挂钩，由文档行的状态决定本次请求如何应答
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct DocumentVersion {
+    pub id: Uuid,
+    pub document_id: Uuid,
+    pub version: i32,
+    pub sha256: String,
+    pub size_bytes: i64,
+    pub ingested_at: DateTime<Utc>,
+}
+
 impl Document {
     /// 文档自己的日期：只认正文或来源系统给的（`content` / `source`）。上传、同步、
     /// 抽取的时刻是记录时间，不是文档的日期（0045 决定 3，#714）——别的来源一律 `None`

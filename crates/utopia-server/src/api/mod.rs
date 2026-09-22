@@ -400,10 +400,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/documents/{id}",
             get(documents_routes::detail).delete(documents_routes::delete),
         )
-        // 撤销删除（#268）：删除是墓碑，所以有得撤
+        // 撤回删除（#268）：删除是墓碑，所以有得撤
         .route("/documents/{id}/restore", post(documents_routes::restore))
         // 真删（#268 下半）：只对已删除的开放，库管理员
         .route("/documents/{id}/purge", post(documents_routes::purge))
+        // 原始字节的读路径（#859）：导出 0020 的 digests 可核验；与 `/documents/{id}`
+        // 同一权限闸（Viewer）；缺失/损坏的字节不假装 404 —— 直接 500
+        .route("/documents/{id}/content", get(documents_routes::content))
+        // 版本台账（#859）：按 document_id 列出 `document_versions` 全部已登记版本
+        .route("/documents/{id}/versions", get(documents_routes::versions))
         .route("/documents/{id}/extract", post(graph_routes::extract))
         .route("/kbs/{id}/graph/overview", get(graph_routes::overview))
         .route(

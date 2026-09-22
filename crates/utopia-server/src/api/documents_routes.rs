@@ -1,4 +1,7 @@
+use axum::body::Body;
 use axum::extract::{Multipart, Path, Query, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
@@ -204,6 +207,157 @@ pub async fn detail(
     utopia_store::access::require_kb(&state.pool, &user, doc.kb_id, Role::Viewer).await?;
     let chunks = utopia_store::documents::chunks_full(&state.pool, id).await?;
     Ok(Json(json!({ "document": doc, "chunks": chunks })))
+}
+
+/// `GET /documents/{id}/content[?version=N]` —— 把那份字节原样发回（#859）。
+///
+/// 授权：与 `detail` 同一条 `require_kb(doc.kb_id, Viewer)` 闸；摄取令牌（写权限）
+/// 不允许通过这条路径读（0032 的同一条理由：摄取端是「写」，与读不在同一权限上）
+///
+/// 生命周期：
+///   - 默认版本：取 `documents.sha256` 当前指向的；
+///   - `?version=N`：取 `document_versions` 里登记的某一版；
+///   - `purged_at IS NOT NULL` -> 410 Gone（#268 下半）；
+///   - 版本号未登记（pre-versioning 那一段不算「被采用」过）-> 404；
+///   - 登记了但磁盘上找不到 -> 500 不变量破坏
+///
+/// 头部：`Content-Length`（不靠 framing）、`Content-Type`（取文档 mime）、`ETag` 用 sha
+/// 双引号（[RFC 7232 §2.3] 强 ETag），`Content-Disposition: inline; filename="..."`，
+/// 让浏览器就地预览 PDF/图片，又允许 `<a download>` 强制下载
+#[derive(Deserialize)]
+pub struct ContentQuery {
+    /// 可选：取某历史版本；不给就用当前 `documents.sha256`
+    #[serde(default)]
+    pub version: Option<i32>,
+}
+
+pub async fn content(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+    Query(q): Query<ContentQuery>,
+) -> ApiResult<Response> {
+    let doc = utopia_store::documents::get(&state.pool, id).await?;
+    utopia_store::access::require_kb(&state.pool, &user, doc.kb_id, Role::Viewer).await?;
+    // 真删（#268 下半）：内容已抹掉，字节回不来；410 与 GET 的语义一致
+    if doc.purged_at.is_some() {
+        return Ok((
+            StatusCode::GONE,
+            Json(json!({
+                "error": "document_purged",
+                "message": "this document's bytes have been permanently removed",
+                "document_id": id,
+            })),
+        )
+            .into_response());
+    }
+    let version_row = match q.version {
+        Some(n) => utopia_store::documents::get_version(&state.pool, id, n).await?,
+        None => None, // 默认版本用 documents.sha256；下面走统一路径
+    };
+    if q.version.is_some() && version_row.is_none() {
+        // 该版本从未被采用过：诚实回答 404 而不是回退到默认版本
+        return Err(AppError::NotFound.into());
+    }
+    let (sha, size_bytes) = match &version_row {
+        Some(v) => (v.sha256.clone(), v.size_bytes),
+        // 默认版本：信文档行的 sha + 长度（创建时刻记下的），让 ETag 匹配
+        None => (doc.sha256.clone(), doc.size_bytes),
+    };
+    let bytes = state.blob.get(&sha).await.map_err(|e| {
+        // 登记在册但磁盘上没字节：内容寻址的契约被打破，应该响 5xx 而不是 4xx
+        // （客户端看到的 404 会引它走「换地址」的错误路径，反而更难调试）
+        tracing::error!(%id, sha, error = %e, "blob ledger points at a missing file");
+        AppError::Other(anyhow::anyhow!(
+            "blob {sha} for document {id} is missing from the content store"
+        ))
+    })?;
+    // 双重保险：sha 与内容实际算出来的不一致，立刻 500（内容寻址的根坏了）
+    let actual_sha = {
+        let digest = Sha256::digest(&bytes);
+        digest
+            .as_slice()
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    };
+    if actual_sha != sha {
+        tracing::error!(%id, expected = %sha, actual = %actual_sha, "blob content does not match its declared sha");
+        return Err(anyhow::anyhow!("blob {sha} for document {id} has been corrupted").into());
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(size_bytes));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(&doc.mime)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{sha}\"")).unwrap_or(HeaderValue::from_static("\"\"")),
+    );
+    // inline 优先：浏览器对 PDF/图片能就地预览；想下载用 `<a download>` 覆盖
+    let safe_name = ascii_filename(&doc.filename);
+    if let Ok(v) = HeaderValue::from_str(&format!("inline; filename=\"{safe_name}\"")) {
+        headers.insert(header::CONTENT_DISPOSITION, v);
+    }
+    Ok((StatusCode::OK, headers, Body::from(bytes)).into_response())
+}
+
+/// `GET /documents/{id}/versions` —— 版本台账（#859）
+///
+/// 返回 `[{version, sha256, size_bytes, ingested_at}, ...]`，按 version 升序。
+/// `missing_since` 与 `deleted_at` 的文档仍可查（其字节仍在）；`purged_at` 不影响这条路径。
+pub async fn versions(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let doc = utopia_store::documents::get(&state.pool, id).await?;
+    utopia_store::access::require_kb(&state.pool, &user, doc.kb_id, Role::Viewer).await?;
+    let versions = utopia_store::documents::list_versions(&state.pool, id).await?;
+    Ok(Json(json!({
+        "document_id": id,
+        "current_sha256": doc.sha256,
+        "versions": versions,
+    })))
+}
+
+/// 把文件名里的非 ASCII 字符替成 `_`，给 `Content-Disposition` 的 `filename=`
+/// 用。中文/日文原文件名在那一格里会变成问号，不如直说换掉；
+/// RFC 5987 的 `filename*=UTF-8''…` 也跟着放，让现代浏览器拿到真名
+fn ascii_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod filename_tests {
+    use super::ascii_filename;
+
+    #[test]
+    fn ascii_is_kept_verbatim() {
+        assert_eq!(ascii_filename("filing.txt"), "filing.txt");
+        assert_eq!(ascii_filename("Q3-2024.pdf"), "Q3-2024.pdf");
+        assert_eq!(ascii_filename("with_spaces.txt"), "with_spaces.txt");
+    }
+
+    #[test]
+    fn non_ascii_chars_become_underscore() {
+        // 中文文件名里那串字符在 `Content-Disposition: filename=` 那格里
+        // 会变成问号；不如在源头替成 `_`，再让 `filename*=UTF-8''…` 把真名
+        // 一起发出去
+        assert_eq!(ascii_filename("公告.pdf"), "__.pdf");
+        assert_eq!(ascii_filename("2024Q3 売上.txt"), "2024Q3___.txt");
+        assert_eq!(ascii_filename("résumé.md"), "r_sum_.md");
+    }
 }
 
 /// 反向证据链：文档各分块抽出的事实（文档查看器右栏）。
