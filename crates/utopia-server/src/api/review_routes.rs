@@ -1277,7 +1277,7 @@ pub async fn decide_alignment_phrase(
         },
     )
     .await?;
-    let typed = utopia_store::materialize::materialize(&state.pool, kb_id).await?;
+    let typed = utopia_store::materialize::materialize_human(&state.pool, kb_id).await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
