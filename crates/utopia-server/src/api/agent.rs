@@ -17,9 +17,9 @@
 use super::tools::{self, ToolCtx, ToolSink};
 use crate::state::AppState;
 use rig_agent::agent::{
-    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, ModelTurnAction,
-    ModelTurnFinished, RequestPatch, RetryRequest, ToolCall as ToolCallEvent, ToolCallAction,
-    ToolResultAction, ToolResultEvent,
+    AgentHook, CompletionCallAction, CompletionCallEvent, HookContext, InvalidToolCallAction,
+    InvalidToolCallContext, ModelTurnAction, ModelTurnFinished, RequestPatch, RetryRequest,
+    ToolCall as ToolCallEvent, ToolCallAction, ToolResultAction, ToolResultEvent,
 };
 use rig_agent::tool::{DynamicTool, ToolContext, ToolOutput};
 use rig_core::message::{AssistantContent, Message, ToolChoice};
@@ -59,9 +59,79 @@ pub(crate) const EMPTY_REPLY_RETRY: &str = "(system) Your previous reply was emp
     the user now: answer from the evidence gathered above, or call a tool if you still need \
     evidence.";
 
-/// 弹药耗尽那一轮的系统提示补语；工具同时被撤走，模型只能作答
-const BUDGET_EXHAUSTED: &str =
-    "\n\n(system) Tool budget exhausted. Answer now from the evidence gathered above.";
+/// Bounded buffering applies only to the tool-free terminal call. This is a byte
+/// limit, independent of the provider's token accounting.
+pub(crate) const MAX_FINAL_ANSWER_BYTES: usize = 1024 * 1024;
+const FINAL_TOOL_CALL: &str = "Model attempted a tool call after the tool budget was exhausted";
+
+/// Deliberately scoped to budget finalization and bare control output. Explanations
+/// and fenced examples are prose, and an explicit request about DSML may legitimately
+/// ask for the raw encoding. Never interpret this text as an executable tool call.
+pub(crate) fn finalization_error(
+    text: &str,
+    has_calls: bool,
+    question: &str,
+) -> Option<&'static str> {
+    if has_calls {
+        return Some(FINAL_TOOL_CALL);
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        return Some("Model returned an empty answer");
+    }
+    let request = question.to_ascii_lowercase();
+    let asks_for_encoding = request.contains("dsml")
+        && ["example", "verbatim", "示例", "原样"]
+            .iter()
+            .any(|term| request.contains(term))
+        && !request.contains("business")
+        && !request.contains("业务");
+    if !asks_for_encoding {
+        // Accommodate the known ASCII/full-width and doubled-pipe spellings.
+        // Inspect the assembled turn, so SSE chunk boundaries do not matter.
+        let is_control = |candidate: &str| {
+            let prefix: String = candidate
+                .chars()
+                .take(80)
+                .filter(|c| !c.is_whitespace() && *c != '|' && *c != '｜')
+                .collect();
+            ["<DSMLcalls>", "<DSMLtool_calls>", "<DSMLinvokename="]
+                .iter()
+                .any(|marker| prefix.starts_with(marker))
+        };
+        // A real endpoint prefixed its final control block with "Let me examine
+        // it." in the SAME turn. Check bare line starts too, without treating
+        // inline mentions, block quotes, or Markdown fenced examples as calls.
+        let mut fence: Option<(char, usize)> = None;
+        let mut bare_control = is_control(text);
+        for line in text.lines() {
+            let line = line.trim_start();
+            if let Some(marker @ ('`' | '~')) = line.chars().next() {
+                let len = line.chars().take_while(|c| *c == marker).count();
+                if len >= 3 {
+                    match fence {
+                        None => fence = Some((marker, len)),
+                        Some((open, size))
+                            if marker == open && len >= size && line[len..].trim().is_empty() =>
+                        {
+                            fence = None;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+            }
+            if fence.is_none() && is_control(line) {
+                bare_control = true;
+                break;
+            }
+        }
+        if bare_control {
+            return Some("Model returned tool-control text instead of a final answer");
+        }
+    }
+    None
+}
 
 /// 一场对话里工具共用的东西：库、权限、引用清单，以及给界面的轨迹。
 ///
@@ -84,13 +154,18 @@ pub struct Shared {
     pub sink: tokio::sync::Mutex<ToolSink>,
     /// 工具跑完留给界面的一步，按 rig 的 internal_call_id 取；
     /// `check_call` 拒掉的调用也在这里留一步
-    steps: Mutex<HashMap<String, Value>>,
+    steps: Mutex<HashMap<String, (Value, bool)>>,
     /// 任何工具（含 `no_evidence_needed`）跑过一次：`required` 的闸门就过了
     gate_passed: AtomicBool,
     /// 端点无视 `required` 时的退回只给一次
     nudged: AtomicBool,
     /// 空回复的重问也只给一次（见 `EMPTY_REPLY_RETRY`）
     asked_again: AtomicBool,
+    /// Set before the final request so the route can withhold unvalidated text.
+    finalizing: AtomicBool,
+    /// Only a rejected model candidate authorizes the one-shot recovery, not an
+    /// authentication, credit, transport, or database error.
+    answer_requested: AtomicBool,
 }
 
 impl Shared {
@@ -121,18 +196,28 @@ impl Shared {
             gate_passed: AtomicBool::new(false),
             nudged: AtomicBool::new(false),
             asked_again: AtomicBool::new(false),
+            finalizing: AtomicBool::new(false),
+            answer_requested: AtomicBool::new(false),
         })
     }
 
-    fn keep_step(&self, internal_call_id: &str, step: Value) {
+    pub fn finalizing(&self) -> bool {
+        self.finalizing.load(Ordering::Relaxed)
+    }
+
+    pub fn take_answer_request(&self) -> bool {
+        self.answer_requested.swap(false, Ordering::Relaxed)
+    }
+
+    fn keep_step(&self, internal_call_id: &str, step: Value, is_error: bool) {
         self.steps
             .lock()
             .expect("steps lock")
-            .insert(internal_call_id.to_string(), step);
+            .insert(internal_call_id.to_string(), (step, is_error));
     }
 
     /// 取走这次调用留给界面的那一步（没有 = 未知工具，或不留痕的闸门工具）
-    pub fn take_step(&self, internal_call_id: &str) -> Option<Value> {
+    pub fn take_step(&self, internal_call_id: &str) -> Option<(Value, bool)> {
         self.steps
             .lock()
             .expect("steps lock")
@@ -156,7 +241,7 @@ impl Shared {
 
 /// 工具跑完留在 rig 工具上下文里的那一步，`on_tool_result` 从那里取
 #[derive(Clone)]
-struct Step(Value);
+struct Step(Value, bool);
 
 /// 工具清单变成 rig 的动态工具：名字、描述、参数 schema 都来自 `tools_schema`，
 /// 执行还是 `tools::dispatch`。**清单是唯一的真相**，这里不抄第二份
@@ -181,13 +266,16 @@ pub fn dynamic_tools(shared: &Arc<Shared>) -> Vec<DynamicTool> {
                     // dispatch 现在回一个结构体（#601 给 MCP 加了 structuredContent 与
                     // is_error）。网页端对话只要正文与界面那一步，与 dev 上手写循环取的一样
                     let tools::ToolResult {
-                        text: result, step, ..
+                        text: result,
+                        step,
+                        is_error,
+                        ..
                     } = {
                         let mut sink = shared.sink.lock().await;
                         tools::dispatch(&tool_ctx, &mut sink, &name, &args).await
                     };
                     shared.gate_passed.store(true, Ordering::Relaxed);
-                    ctx.insert_result(Step(step));
+                    ctx.insert_result(Step(step, is_error));
                     Ok(ToolOutput::text(result))
                 })
             },
@@ -229,9 +317,7 @@ pub fn dynamic_tools(shared: &Arc<Shared>) -> Vec<DynamicTool> {
 #[derive(Clone)]
 pub struct Policy {
     pub shared: Arc<Shared>,
-    /// 系统提示原文：弹药耗尽那一轮要在它后面补一句
-    pub preamble: String,
-    /// 允许的工具轮数；第 `max_rounds + 1` 次请求撤走工具、命令作答
+    /// The next logical call hands off before provider I/O; it cannot run tools.
     pub max_rounds: usize,
 }
 
@@ -242,14 +328,14 @@ impl AgentHook for Policy {
         event: CompletionCallEvent<'_>,
     ) -> impl std::future::Future<Output = CompletionCallAction> + Send {
         let turn = event.turn;
+        self.shared
+            .finalizing
+            .store(turn > self.max_rounds, Ordering::Relaxed);
         let action = if turn > self.max_rounds {
-            // 弹药耗尽：撤走工具（`RigModel` 对 None 的处理是根本不带工具字段），
-            // 系统提示末尾命令它就现有证据作答
-            CompletionCallAction::Patch(
-                RequestPatch::new()
-                    .tool_choice(ToolChoice::None)
-                    .preamble(format!("{}{BUDGET_EXHAUSTED}", self.preamble)),
-            )
+            // Rig 0.42 resolves this hook before model selection or provider I/O.
+            // The route consumes this per-run state only with PromptCancelled.
+            self.shared.answer_requested.store(true, Ordering::Relaxed);
+            CompletionCallAction::Stop("Evidence gathering complete".into())
         } else if !self.shared.gate_passed.load(Ordering::Relaxed) {
             // 一个工具都还没跑：这一轮必须调一个
             CompletionCallAction::Patch(RequestPatch::new().tool_choice(ToolChoice::Required))
@@ -309,6 +395,22 @@ impl AgentHook for Policy {
         }
     }
 
+    fn on_invalid_tool_call(
+        &self,
+        _ctx: &HookContext,
+        _event: &InvalidToolCallContext,
+    ) -> impl std::future::Future<Output = Option<InvalidToolCallAction>> + Send {
+        // Rig rejects calls disallowed by ToolChoice::None before on_tool_call.
+        // Mark that candidate for the same answer-only recovery; never ask the
+        // runner to retry a forbidden tool call.
+        let action = if self.shared.finalizing() {
+            Some(InvalidToolCallAction::fail())
+        } else {
+            None
+        };
+        async move { action }
+    }
+
     fn on_tool_call(
         &self,
         _ctx: &HookContext,
@@ -316,12 +418,15 @@ impl AgentHook for Policy {
     ) -> impl std::future::Future<Output = ToolCallAction> + Send {
         // **说不清自己要做什么的调用不执行。** 把话回给模型，让它重来；
         // 界面上照样显示成一次没做成的调用
-        let action = match super::chat::check_call(&self.shared.schema, event.tool_name, event.args)
-        {
-            Ok(_) => ToolCallAction::Run,
-            Err((message, step)) => {
-                self.shared.keep_step(event.internal_call_id, step);
-                ToolCallAction::Skip(message)
+        let action = if self.shared.finalizing() {
+            ToolCallAction::Stop(FINAL_TOOL_CALL.into())
+        } else {
+            match super::chat::check_call(&self.shared.schema, event.tool_name, event.args) {
+                Ok(_) => ToolCallAction::Run,
+                Err((message, step)) => {
+                    self.shared.keep_step(event.internal_call_id, step, true);
+                    ToolCallAction::Skip(message)
+                }
             }
         };
         async move { action }
@@ -332,8 +437,9 @@ impl AgentHook for Policy {
         _ctx: &HookContext,
         event: ToolResultEvent<'_>,
     ) -> impl std::future::Future<Output = ToolResultAction> + Send {
-        if let Some(Step(step)) = event.tool_context.result::<Step>() {
-            self.shared.keep_step(event.internal_call_id, step.clone());
+        if let Some(Step(step, is_error)) = event.tool_context.result::<Step>() {
+            self.shared
+                .keep_step(event.internal_call_id, step.clone(), *is_error);
         }
         async { ToolResultAction::Keep }
     }
@@ -429,6 +535,30 @@ pub fn known_entities_block(entities: &[Value], limit: usize) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finalization_checks_narrated_control_but_preserves_protocol_examples() {
+        let control =
+            "Let me examine it.\n\n<｜｜DSML｜｜ calls>\n<｜DSML｜ invoke name=\"lookup\">{}";
+        assert!(finalization_error(control, false, "What happened?").is_some());
+        assert!(finalization_error(control, false, "Return a DSML example verbatim").is_none());
+        assert!(finalization_error(
+            control,
+            false,
+            "请解释为什么出现 DSML，但请直接回答业务问题"
+        )
+        .is_some());
+        for explanation in [
+            "The encoding includes <｜DSML｜ calls> as a marker.",
+            "Example:\n```xml\n<｜DSML｜ calls>\n```\nThis is the encoding.",
+            "Example:\n~~~~xml\n```\n<｜DSML｜ calls>\n~~~~",
+            "> <｜DSML｜ calls>\nThis quotes the encoding.",
+        ] {
+            assert!(finalization_error(explanation, false, "Explain the encoding").is_none());
+        }
+        let after_example = "```xml\n<｜DSML｜ calls>\n```\nLet me check.\n<|DSML|calls>";
+        assert!(finalization_error(after_example, false, "What happened?").is_some());
+    }
 
     /// 上一轮的工具往返插在它的结论之前，tool 消息找回自己的工具名
     #[test]
