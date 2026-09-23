@@ -58,7 +58,10 @@ async fn teardown(pool: &PgPool, f: &Fixture) -> anyhow::Result<()> {
 
 async fn mention(pool: &PgPool, f: &Fixture, name: &str) -> anyhow::Result<resolution::Resolution> {
     // 不给向量：召回到候选就走「并到事实最多的那个」，量的正是召回找不找得到
-    Ok(resolution::resolve_mention(pool, f.kb, Some(f.equipment), name, None, None, &[]).await?)
+    Ok(
+        resolution::resolve_mention(pool, f.kb, Some(f.equipment), name, None, None, None, &[])
+            .await?,
+    )
 }
 
 fn values(v: &[utopia_core::models::NameView]) -> Vec<String> {

@@ -42,7 +42,16 @@ async fn a_name_created_twice_at_once_is_one_entity() -> anyhow::Result<()> {
 
     let name = format!("澜图数据-{tag}");
     let go = || {
-        utopia_store::resolution::resolve_mention(&pool, kb, Some(class), &name, None, None, &[])
+        utopia_store::resolution::resolve_mention(
+            &pool,
+            kb,
+            Some(class),
+            &name,
+            None,
+            None,
+            None,
+            &[],
+        )
     };
     let (a, b, c, d) = tokio::join!(go(), go(), go(), go());
     let ids = [a?.entity_id, b?.entity_id, c?.entity_id, d?.entity_id];

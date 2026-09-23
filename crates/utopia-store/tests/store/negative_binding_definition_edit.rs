@@ -63,6 +63,7 @@ impl BindingKind {
                         status,
                         votes: &votes,
                         decided_by: actor,
+                        basis: None,
                     },
                 )
                 .await?

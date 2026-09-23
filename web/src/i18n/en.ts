@@ -1794,6 +1794,7 @@ export const en = {
     railViolations: "Axioms",
     railDefects: "Ontology",
     railAlignment: "Alignment",
+    railErrata: "Errata",
     railDecisions: "Decisions",
     railMerges: "Merges",
     railAgent: "Agent",
@@ -1895,6 +1896,8 @@ export const en = {
       /* 画像分不开时的并列：分数是真的，所以百分比照常显示（与 namesake 的哨兵值不同） */
       namesake_tie: "Same name, and the profiles cannot tell them apart",
       shared_name: "Another entity already has this name",
+      /* 名字向量召回（0041 第 2 刀）：简称、另一种文字的同一个名字；只提议，裁决器判 */
+      name_vector: "A similar name, found by vector recall",
       /* 名字互相包含：等值召回看不见，简称会静默变成第二个实体 */
       contains: "One name contains the other",
       ambiguous_name: "Same name, context did not settle it",
@@ -1953,10 +1956,43 @@ export const en = {
     alignmentStatements: (n: number) => (n === 1 ? "1 statement" : `${n} statements`),
     alignmentEntities: (n: number) => (n === 1 ? "1 thing" : `${n} things`),
     alignmentVotes: (first: string, second: string) => `Votes: ${first} · ${second}`,
+    alignmentRuleImplies: (property: string) => `also implies ${property}`,
+    alignmentRuleObjectIsStatement: "object: the statement's own object",
+    alignmentRuleReading: (reading: string) => `object: read from the words as ${reading.replace(/_/g, " ")}`,
+    alignmentRuleKindWord: (word: string) => `things called "${word}"`,
+    alignmentApprove: "Approve rule",
+    alignmentReject: "Reject",
+    alignmentRuleAccepted: "Saved. Implied facts are being computed in the background.",
+    // 勘误队列（0044 决定 7）
+    errata: "The errata agent held these for you",
+    errataHint:
+      "After extraction an agent rereads each document's typed facts, structural flags first, and retracts, revises or adds with the document's own words as evidence. An action that would reach outside the graph (a derived fact rests on it, someone asked about it, or it would give a one-value property two values) waits here for a person.",
+    errataRetract: "wants to retract",
+    errataRevise: "wants to revise to",
+    errataAdd: "wants to add",
+    errataFlag: (flag: string) =>
+      ({
+        domain: "flagged: subject outside the property's kinds",
+        range: "flagged: object outside the property's kinds",
+        name_absent: "flagged: a name not in the document",
+        no_date: "flagged: date property without a date",
+      })[flag] ?? flag,
+    errataHeld: (detail: string) => {
+      const [kind, ...rest] = detail.split(" ");
+      const value = rest.join(" ");
+      if (kind === "derived") return `Held: ${value} derived fact(s) rest on it`;
+      if (kind === "answered") return `Held: it was named in ${value} answer(s)`;
+      if (kind === "contradiction") return `Held: "${value}" allows one value and would get two`;
+      return `Held: ${detail}`;
+    },
+    errataQuote: "Document says:",
+    errataApprove: "Apply",
+    errataReject: "Reject",
+    errataDecided: "Saved.",
+    alignmentTooMany: (n: number) => `${n} properties could apply; too many to ask the model. Pick one or leave it open.`,
     alignmentConflict: "This decision conflicts with the current state. Refresh and review it before trying again.",
     alignmentKindWordBusy: "This kind word is being updated by another operation. Please try again shortly.",
-    alignmentTyped: (kept: number, retired: number) =>
-      `Typed graph recomputed: ${kept} statements typed, ${retired} rows retired`,
+    alignmentAccepted: "Decision saved. The typed graph is being recomputed and will refresh here when it is done.",
     defects: "Ontology contradicts itself",
     defectsHint:
       "Problems in the definitions themselves — no facts involved. These come first: while a definition contradicts itself, every fact-level finding that rests on it is suspect.",

@@ -43,6 +43,7 @@ async fn an_untyped_mention_attaches_to_its_untyped_namesake() -> anyhow::Result
         "Securities and Exchange Commission",
         None,
         None,
+        None,
         &[],
     )
     .await?;
@@ -52,6 +53,7 @@ async fn an_untyped_mention_attaches_to_its_untyped_namesake() -> anyhow::Result
         kb,
         None,
         "SECURITIES AND EXCHANGE COMMISSION",
+        None,
         None,
         None,
         &[],

@@ -119,7 +119,8 @@ for 589 pairs [0025 d10].
   unconfirmed queues (unconfirmed becomes an automatic re-attach with an alert), mappings leave the
   Review page. Kept: `agent_decisions`, `execution_gate`, the temporal engine, name facts,
   `pending_facts`, the audit ledger. Sequence: after 0044 cuts 1 and 2, with no legacy layer.
-- The errata agent on the typed graph through the gate [0044 d7].
+- The errata agent on the typed graph through the gate [0044 d7] is built (migration 0074): its
+  held actions are the errata queue on the Review page; see [design/ontology](ontology.md).
 - Decision memory as retrieval and corrections aggregated into ontology signals [0001 P4b, P4c].
 
 ## Open questions

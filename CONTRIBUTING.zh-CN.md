@@ -75,10 +75,11 @@ let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
 
 它们守的是**编译器看不见的东西**：SQL 里的表别名、`NULL` 参与比较时的行为、`INNER JOIN` 悄悄滤掉的行、递归 CTE 在菱形继承下会不会把同一个祖先展开两次。`cargo check` 和 clippy 对这些一个字都不说。
 
-碰了 `crates/utopia-store/` 里的 SQL，请把它设上再跑一遍：
+碰了 `crates/utopia-store/` 里的 SQL，请把它设上再跑一遍。库要先迁移好——绝大多数连库测试不自己跑迁移，对着空库直接跑会成片报 relation does not exist：
 
 ```bash
 export UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:5432/utopia
+cargo run -p utopia-store --example migrate   # 空库先迁移；CI 的 backend job 也是这么做的
 cargo test --workspace
 ```
 

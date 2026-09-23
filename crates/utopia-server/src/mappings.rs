@@ -400,6 +400,7 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
             name,
             None,
             None,
+            None,
             &[],
         )
         .await?;

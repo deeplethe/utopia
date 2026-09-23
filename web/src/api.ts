@@ -479,6 +479,8 @@ export type ReviewQueue =
   | "defects"
   // 对齐器两票不一致的签名与类别词（#725，0044 决定 3）
   | "alignment"
+  // 勘误 agent 被闸门拦下、等人答的动作（0044 决定 7）
+  | "errata"
   | "merges"
   // agent 的每一笔（0025）：建议、自动裁决与人的回答
   | "agent";
@@ -502,6 +504,8 @@ export interface ReviewCounts {
   defects: number;
   /** 对齐器拿不定的签名与类别词（#725） */
   alignment: number;
+  /** 勘误 agent 留给人的动作（0044 决定 7） */
+  errata: number;
   merges: number;
   /** agent 写下、等人回答的建议（0025） */
   agent: number;
@@ -719,7 +723,13 @@ export type AlignmentItem =
       object_is_value: boolean;
       statement_count: number;
       examples: string[];
-      votes: { first?: AlignmentVote | null; second?: AlignmentVote | null } | null;
+      /** 两票；候选多到没问模型时两票为空、`reason` 说明（0053） */
+      votes: {
+        first?: AlignmentVote | null;
+        second?: AlignmentVote | null;
+        reason?: string;
+        candidates?: number;
+      } | null;
       decided_at: string;
     }
   | {
@@ -731,7 +741,41 @@ export type AlignmentItem =
       entity_count: number;
       votes: { first?: string | null; second?: string | null } | null;
       decided_at: string;
+    }
+  | {
+      /** 对齐器提的一条蕴含规则（0044 决定 3 第五片） */
+      kind: "rule";
+      id: string;
+      trigger: "phrase" | "kind_word";
+      phrase: string;
+      subject_class: string | null;
+      object_class: string | null;
+      object_is_value: boolean;
+      property: string;
+      property_label: string;
+      reading: string | null;
+      statement_count: number;
+      examples: string[];
+      votes: { agent?: { property: string; reading: string | null } | null } | null;
+      decided_at: string;
     };
+/** 勘误 agent 被闸门拦下的一笔（0044 决定 7）：它想撤、改或加什么，凭哪句原话，为什么留给人 */
+export interface ErrataItem {
+  id: string;
+  document_id: string;
+  document: string;
+  action: "retract" | "revise" | "add";
+  /** 结构报的理由；空 = 抽样看到的 */
+  flag: "domain" | "range" | "name_absent" | "no_date" | null;
+  fact_id: string | null;
+  /** 动作指向的那条事实：撤的就是看的那条，改的是改成的，加的是加的 */
+  proposed: { subject: string; property: string; object: string } | null;
+  reason: string;
+  quote: string | null;
+  /** 闸门的理由：`derived 2` / `answered 1` / `contradiction CEO of`（0027 的写法） */
+  detail: string | null;
+  created_at: string;
+}
 export interface AlignmentVote {
   property: string;
   direction: "forward" | "reverse";
@@ -879,7 +923,8 @@ export interface ReviewSummary {
     | "lowconf"
     | "violations"
     | "defects"
-    | "alignment",
+    | "alignment"
+    | "errata",
     QueueWait
   >;
   decided: {
@@ -2308,17 +2353,31 @@ export const api = {
       defects_found: number;
       defects_new: number;
     }>(`/api/v1/kbs/${kbId}/consistency/check`, { method: "POST" }),
-  /** 人定一条短语签名：属性与方向，或没有（陈述留在开放图谱）。类型化图谱立刻重算 */
+  /** 人定一条短语签名：属性与方向，或没有（陈述留在开放图谱）。判定和它的重算任务
+   *  一次提交，答 202 和 job id（0051）；类型化图谱在后台重算，`review` / `graph`
+   *  事件到了就是算完了，也可以拿 job id 去 `/kbs/{id}/jobs/{job_id}` 问 */
   decideAlignmentPhrase: (
     kbId: string,
     bindingId: string,
     property: string | null,
     direction: "forward" | "reverse",
   ) =>
-    request<{ ok: boolean; typed: { added: number; merged: number; retired: number } }>(
+    request<{ ok: boolean; job_id: number; status: "accepted" }>(
       `/api/v1/kbs/${kbId}/review/alignment/phrases/${bindingId}`,
       { method: "POST", body: JSON.stringify({ property, direction }) },
     ),
+  /** 人批或驳一条蕴含规则：答 202 和 job id，隐含事实在后台算（0044 决定 3 第五片） */
+  decideAlignmentRule: (kbId: string, ruleId: string, approve: boolean) =>
+    request<{ ok: boolean; job_id: number; status: "accepted" }>(
+      `/api/v1/kbs/${kbId}/review/alignment/rules/${ruleId}`,
+      { method: "POST", body: JSON.stringify({ approve }) },
+    ),
+  /** 人答勘误 agent 留下的一笔（0044 决定 7）：批了就执行，否了只记 */
+  decideErrata: (kbId: string, actionId: string, approve: boolean) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/review/errata/${actionId}`, {
+      method: "POST",
+      body: JSON.stringify({ approve }),
+    }),
   /** 人定一个类别词：类，或没有。它名下的实体换类，短语签名跟着重判 */
   decideAlignmentKindWord: (kbId: string, kindWord: string, cls: string | null) =>
     request<{ ok: boolean }>(

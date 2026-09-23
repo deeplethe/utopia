@@ -14,7 +14,7 @@
 //! 没有」的（陈述, 绑定）对补上——有同断言的行就并进去，没有才新建。没有模型调用。
 
 use sqlx::PgPool;
-use utopia_core::{AppError, AppResult};
+use utopia_core::AppResult;
 use uuid::Uuid;
 
 use crate::graph::{insert_fact_on, FactObject, Validity};
@@ -36,6 +36,8 @@ pub struct Outcome {
     pub added: u64,
     /// 并进已有行的陈述数
     pub merged: u64,
+    /// 规则算出来的隐含行（0044 决定 3 第五片），新建的
+    pub implied: u64,
 }
 
 /// 一条该物化的（陈述, 绑定）对，连陈述上要抄的东西。
@@ -74,55 +76,29 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
     Ok(outcome)
 }
 
-/// 人的入口（#798 跟进、#800 复盘）：与 `materialize` 同样的活，外加一个
-/// 事务级的 `lock_timeout` 预算，超时映射到表「语言可读的重试提示」。
+/// 任务里的入口（0051）：**试锁，不等**。拿到 `typed_materialize` 就在这条连接上
+/// 跑完整的重算并提交；拿不到就回滚、返回 `None`，由调用方挂成 `Deferred` 稍后再来。
 ///
-/// 设计要点（沿用 #828 的同一条理由）：
-/// - `lock_timeout` 是**等锁的预算**，不是请求总预算，也不是查询执行预算
-/// - worker 不动也不动：背景不会因为 5xx 醒不了，没人在屏幕前面等
-/// - advisory 锁本身在事务提交时释放（pg_advisory_xact_lock），所以这里的
-///   等待只在等 worker 的 1 次 materialize 完成；不会等下一个做多次锁
-/// - `55P03` 是 `lock_not_available`，PostgreSQL 唯一的「这个锁等不到」错
-pub async fn materialize_human(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
+/// 为什么不像 `materialize` 那样等锁：等锁的是一条池里的连接，几个决定连着点下来，
+/// 每个 job 都抱着一条连接排队，池就空了（0051 §Alternatives）。也为什么不像旧的
+/// 人工入口那样给等待设 2 秒预算：job 没人在屏幕前面等，超时只是把同一次重算推到
+/// 下一次重试，不如一开始就不等。人的那一次点击只提交决定和这个 job（同一事务，
+/// `phrase_bindings::decide_with_delivery`），屏幕上等的是事件，不是锁。
+pub async fn try_materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Option<Outcome>> {
     let mut tx = pool.begin().await?;
-    let result = async {
-        // 2 秒是 0033 的「人点一下」的预算：再长就显成 spinner 了。
-        // worker 的等待策略不在这一格里——它走 `materialize`，没预算
-        sqlx::query("SET LOCAL lock_timeout = '2s'")
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('typed_materialize'), hashtext($1))")
-            .bind(kb_id.to_string())
-            .execute(&mut *tx)
-            .await?;
-        materialize_in_tx(&mut tx, kb_id).await
+    let acquired: bool = sqlx::query_scalar(
+        "SELECT pg_try_advisory_xact_lock(hashtext('typed_materialize'), hashtext($1))",
+    )
+    .bind(kb_id.to_string())
+    .fetch_one(&mut *tx)
+    .await?;
+    if !acquired {
+        tx.rollback().await?;
+        return Ok(None);
     }
-    .await;
-    match result {
-        Ok(outcome) => {
-            tx.commit().await?;
-            Ok(outcome)
-        }
-        Err(error) => {
-            // 关掉失败路径的回滚要先把连接释放掉，再走错误映射。
-            // 双重错误（回滚也炸了）保留两者，别只报回滚
-            if let Err(rollback) = tx.rollback().await {
-                return Err(AppError::Other(anyhow::Error::new(error).context(format!(
-                    "rolling back human materialization: {rollback}"
-                ))));
-            }
-            if matches!(&error, AppError::Db(sqlx::Error::Database(e))
-                if e.code().as_deref() == Some("55P03"))
-            {
-                return Err(AppError::CodedConflict {
-                    code: "alignment_busy",
-                    message: "This base is being recomputed by another operation. Please try again shortly."
-                        .into(),
-                });
-            }
-            Err(error)
-        }
-    }
+    let outcome = materialize_in_tx(&mut tx, kb_id).await?;
+    tx.commit().await?;
+    Ok(Some(outcome))
 }
 
 async fn materialize_in_tx(
@@ -154,13 +130,38 @@ async fn materialize_in_tx(
     .execute(&mut **tx)
     .await?;
 
-    // 2. 作废来源全空的类型化行：只动算出来的行（带 from_statement_id 的），人写的不碰
+    // 1b. 隐含行的来源：规则不再批准、触发它的陈述死了或换了签名、实体没了或换了类别词，
+    //     来源就删；与 1 同一条规矩，只是来源表是另一张（implied_fact_sources）
+    sqlx::query(&format!(
+        "DELETE FROM implied_fact_sources i
+          USING implication_rules r
+          WHERE i.rule_id = r.id AND r.kb_id = $1
+            AND (r.status <> 'approved'
+                 OR (i.statement_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM facts s
+                          JOIN entities se ON se.id = s.subject_id
+                     LEFT JOIN entities oe ON oe.id = s.object_id
+                         WHERE s.id = i.statement_id AND s.layer = 'open' AND s.invalidated_at IS NULL
+                           AND r.trigger = 'phrase' AND {RULE_MATCH}))
+                 OR (i.entity_id IS NOT NULL AND NOT EXISTS (
+                        SELECT 1 FROM entities e
+                         WHERE e.id = i.entity_id AND e.merged_into IS NULL
+                           AND r.trigger = 'kind_word' AND {KIND} = r.phrase)))",
+        RULE_MATCH = crate::implication_rules::RULE_MATCH,
+        KIND = kind_word_sql("e.specific_type"),
+    ))
+    .bind(kb_id)
+    .execute(&mut **tx)
+    .await?;
+
+    // 2. 作废来源全空的类型化行：只动算出来的行（带 from_statement_id 的、或规则算的），人写的不碰
     let retired = sqlx::query(
         "UPDATE facts t
             SET invalidated_at = now()
           WHERE t.kb_id = $1 AND t.layer = 'typed' AND t.invalidated_at IS NULL
-            AND t.from_statement_id IS NOT NULL
-            AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src WHERE src.fact_id = t.id)",
+            AND (t.from_statement_id IS NOT NULL OR t.implied)
+            AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src WHERE src.fact_id = t.id)
+            AND NOT EXISTS (SELECT 1 FROM implied_fact_sources i WHERE i.fact_id = t.id)",
     )
     .bind(kb_id)
     .execute(&mut **tx)
@@ -184,6 +185,10 @@ async fn materialize_in_tx(
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
                              WHERE q.fact_id = s.id AND q.role = 'mood')
+            -- 勘误撤过的（陈述, 属性）不再算（0044 决定 7）：撤销要站得住
+            AND NOT EXISTS (SELECT 1 FROM errata_actions ea
+                             WHERE ea.statement_id = s.id AND ea.predicate_id = b.relation_type_id
+                               AND ea.status = 'applied' AND ea.action IN ('retract', 'revise'))
             AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src JOIN facts t ON t.id = src.fact_id
                              WHERE src.statement_id = s.id AND t.invalidated_at IS NULL
                                AND t.predicate_id = b.relation_type_id)
@@ -304,11 +309,161 @@ async fn materialize_in_tx(
         .execute(&mut **tx)
         .await?;
     }
+    // 3b. 已批准的规则算隐含行（0044 决定 3 第五片）。读数只查缓存：缓存里没有的这一轮
+    //     不算，`read_phrases` 填上之后再来。短语规则按陈述触发，类别词规则按实体触发
+    let implied = imply_in_tx(tx, kb_id).await?;
     Ok(Outcome {
         retired,
         added,
         merged,
+        implied,
     })
+}
+
+#[derive(sqlx::FromRow)]
+struct Implied {
+    rule: Uuid,
+    statement: Option<Uuid>,
+    entity: Option<Uuid>,
+    subject_id: Uuid,
+    property: Uuid,
+    object_id: Option<Uuid>,
+    object_value: Option<serde_json::Value>,
+    valid_from: Option<chrono::DateTime<chrono::Utc>>,
+    valid_from_precision: Option<String>,
+    valid_from_grade: Option<String>,
+    valid_to: Option<chrono::DateTime<chrono::Utc>>,
+    valid_to_precision: Option<String>,
+    attested_from: Option<chrono::DateTime<chrono::Utc>>,
+    confidence: f32,
+}
+
+async fn imply_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kb_id: Uuid,
+) -> AppResult<u64> {
+    // 短语规则：签名下活着的、没 mood 的陈述；宾语是读数的答案（缓存里的实体或值），
+    // 没有读数时就是陈述的宾语。已经有活着的隐含行以这条陈述为来源的不再算
+    let by_statement: Vec<Implied> = sqlx::query_as(&format!(
+        "SELECT r.id AS rule, s.id AS statement, NULL::uuid AS entity,
+                s.subject_id, r.conclude_property_id AS property,
+                CASE WHEN r.reading IS NULL THEN s.object_id ELSE pr.entity_id END AS object_id,
+                CASE WHEN r.reading IS NULL THEN s.object_value ELSE pr.value END AS object_value,
+                s.valid_from, s.valid_from_precision, s.valid_from_grade, s.valid_to, s.valid_to_precision,
+                s.attested_from, s.confidence
+           FROM implication_rules r
+           JOIN facts s ON s.kb_id = r.kb_id AND s.layer = 'open' AND s.invalidated_at IS NULL
+           JOIN entities se ON se.id = s.subject_id
+      LEFT JOIN entities oe ON oe.id = s.object_id
+      LEFT JOIN phrase_readings pr ON r.reading IS NOT NULL AND pr.kb_id = r.kb_id
+                                   AND pr.reading = r.reading AND pr.phrase = {TEXT}
+          WHERE r.kb_id = $1 AND r.status = 'approved' AND r.trigger = 'phrase'
+            AND {RULE_MATCH}
+            AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q WHERE q.fact_id = s.id AND q.role = 'mood')
+            AND (r.reading IS NULL OR pr.entity_id IS NOT NULL OR pr.value IS NOT NULL)
+            AND NOT EXISTS (SELECT 1 FROM errata_actions ea
+                             WHERE ea.statement_id = s.id AND ea.predicate_id = r.conclude_property_id
+                               AND ea.status = 'applied' AND ea.action IN ('retract', 'revise'))
+            AND NOT EXISTS (SELECT 1 FROM implied_fact_sources i JOIN facts t ON t.id = i.fact_id
+                             WHERE i.rule_id = r.id AND i.statement_id = s.id AND t.invalidated_at IS NULL)
+          ORDER BY s.id",
+        TEXT = crate::implication_rules::object_text_sql(),
+        RULE_MATCH = crate::implication_rules::RULE_MATCH,
+    ))
+    .bind(kb_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    // 类别词规则：带这个类别词的活着的实体；宾语必须来自读数（类别词自己没有宾语）
+    let by_entity: Vec<Implied> = sqlx::query_as(&format!(
+        "SELECT r.id AS rule, NULL::uuid AS statement, e.id AS entity,
+                e.id AS subject_id, r.conclude_property_id AS property,
+                pr.entity_id AS object_id, pr.value AS object_value,
+                NULL::timestamptz AS valid_from, NULL::text AS valid_from_precision, NULL::text AS valid_from_grade,
+                NULL::timestamptz AS valid_to, NULL::text AS valid_to_precision,
+                NULL::timestamptz AS attested_from, 0.9::real AS confidence
+           FROM implication_rules r
+           JOIN entities e ON e.kb_id = r.kb_id AND e.merged_into IS NULL AND {KIND} = r.phrase
+           JOIN phrase_readings pr ON pr.kb_id = r.kb_id AND pr.reading = r.reading AND pr.phrase = r.phrase
+          WHERE r.kb_id = $1 AND r.status = 'approved' AND r.trigger = 'kind_word' AND r.reading IS NOT NULL
+            AND (pr.entity_id IS NOT NULL OR pr.value IS NOT NULL)
+            AND NOT EXISTS (SELECT 1 FROM implied_fact_sources i JOIN facts t ON t.id = i.fact_id
+                             WHERE i.rule_id = r.id AND i.entity_id = e.id AND t.invalidated_at IS NULL)
+          ORDER BY e.id",
+        KIND = kind_word_sql("e.specific_type"),
+    ))
+    .bind(kb_id)
+    .fetch_all(&mut **tx)
+    .await?;
+
+    let mut implied = 0u64;
+    for d in by_statement.iter().chain(by_entity.iter()) {
+        let validity = Validity {
+            from: d.valid_from,
+            from_precision: d.valid_from_precision.as_deref(),
+            from_grade: d.valid_from_grade.as_deref(),
+            to: d.valid_to,
+            to_precision: d.valid_to_precision.as_deref(),
+            attested_at: d.attested_from,
+        };
+        let object = match (d.object_id, &d.object_value) {
+            (Some(o), _) => FactObject::Entity(o),
+            (None, Some(v)) => FactObject::Value(v),
+            _ => continue,
+        };
+        // 一个东西不蕴含自己：读数把「Virginia」读成「United States」是对的，把「France」
+        // 读成「France」就是一条自环
+        if matches!(object, FactObject::Entity(o) if o == d.subject_id) {
+            continue;
+        }
+        let (fact, new) = insert_fact_on(
+            tx,
+            kb_id,
+            d.subject_id,
+            Some(d.property),
+            object,
+            validity,
+            d.confidence,
+        )
+        .await?;
+        if new {
+            implied += 1;
+            sqlx::query("UPDATE facts SET implied = TRUE WHERE id = $1")
+                .bind(fact)
+                .execute(&mut **tx)
+                .await?;
+        }
+        sqlx::query(
+            "INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id, entity_id)
+             VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+        )
+        .bind(fact)
+        .bind(d.rule)
+        .bind(d.statement)
+        .bind(d.entity)
+        .execute(&mut **tx)
+        .await?;
+        // 证据：短语规则抄触发它的那条陈述的引文——读的人从这句得出的结论，证据就是这句
+        if let Some(statement) = d.statement {
+            sqlx::query(
+                "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, doc_version,
+                                            proposed_predicate, quote_start, quote_end)
+                 SELECT $1, chunk_id, quote, document_id, doc_version, proposed_predicate,
+                        quote_start, quote_end
+                   FROM fact_evidence WHERE fact_id = $2
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(fact)
+            .bind(statement)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+    Ok(implied)
+}
+
+/// 类别词的归一（同 type_bindings）：这里要在 SQL 里对上实体的 specific_type
+fn kind_word_sql(col: &str) -> String {
+    format!("lower(btrim(regexp_replace({col}, '\\s+', ' ', 'g')))")
 }
 
 /// 库里活着的、从陈述算出来的类型化行数。
