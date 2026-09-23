@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # dev 也要跑，为的是缓存：GitHub 只让 PR 读到自己、base 分支和默认分支的缓存，
+    # 而此前没有任何一次 CI 在 dev 上跑过，于是 PR 之间互相看不见对方存的东西，
+    # 每次都从零编 300 多个依赖——今天 12 次 backend 运行，恢复缓存全是 No cache found。
+    # 顺带把「合并后的 dev 从没被 CI 跑过」这个口子堵上（见下面 migrations job 的注释）
+    branches: [main, dev]
   pull_request:
 
 # **显式只读。** 没有这一块时它继承仓库级默认，而那个默认要为
@@ -38,7 +42,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # 只有 push（dev / main）那次运行才写缓存，PR 只读。此前每个 PR 各存约 2GB，
+      # 仓库上限 10GB，五六个 PR 就挤满，按 LRU 淘汰——同一个 PR 第二次跑时自己上次
+      # 存的也已经没了：17 条缓存的最后访问时间全等于创建时间，从来没人读到过
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - name: Install PDF text extraction tools
         run: sudo apt-get update && sudo apt-get install -y poppler-utils poppler-data
       - name: Format
@@ -93,7 +102,10 @@ jobs:
             exit 1
           fi
       - uses: dtolnay/rust-toolchain@stable
+      # 只在 push 时写缓存，理由见 backend job 同一处的注释
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - name: 装 sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
       - name: 全新库上跑一遍
