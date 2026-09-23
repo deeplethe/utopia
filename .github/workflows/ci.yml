@@ -76,11 +76,22 @@ jobs:
         run: cargo run -p utopia-store --example migrate
         env:
           UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
+      # 用 nextest 跑：cargo test 把 140 个测试二进制串行执行，运行阶段 86s；nextest 跨二进制
+      # 并行，本地 136s → 60s。隔离规则在 .config/nextest.toml 里，那里解释了为什么
+      # store 的测试要串行、哪一个要独占。装的是官方预编译二进制（几秒），用 cargo install
+      # 要编三四分钟；版本钉死，升级要有人看一眼；装过的话在 ~/.cargo/bin 缓存里，跳过
+      - name: 装 nextest
+        run: |
+          command -v cargo-nextest && exit 0
+          curl -LsSf https://get.nexte.st/0.9.146/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
       - name: Test
-        run: cargo test --workspace
         # 装了 Poppler 就必须真的用它测：没有它时 PDF 回退的那个测试会跳过，
         # 而一个静静跳过的测试等于没写（#248）。库同理：有库就**必须**连
-        # （UTOPIA_TEST_REQUIRE_DB），连库测试没跑成要红，不能跳过显示绿色
+        # （UTOPIA_TEST_REQUIRE_DB），连库测试没跑成要红，不能跳过显示绿色。
+        # nextest 不跑 doctest，第二条补上——现在一个都没有，但有了不该悄悄不跑
+        run: |
+          cargo nextest run --workspace
+          cargo test --workspace --doc
         env:
           UTOPIA_TEST_REQUIRE_PDFTOTEXT: "1"
           UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia

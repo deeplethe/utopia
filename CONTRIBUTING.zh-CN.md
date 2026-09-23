@@ -79,9 +79,11 @@ let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
 
 ```bash
 export UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:5432/utopia
-cargo run -p utopia-store --example migrate   # 空库先迁移；CI 的 backend job 也是这么做的
+cargo run -p utopia-store --example migrate   # 空库先迁移；CI 的 test job 也是这么做的
 cargo test --workspace
 ```
+
+CI 实际用的是 `cargo nextest run --workspace`（快一倍，跨二进制并行），隔离规则在 `.config/nextest.toml`。本地装了 nextest 的话用它更接近 CI；没装 `cargo test` 也一样能过。
 
 ## 几条会被 review 拦下来的
 

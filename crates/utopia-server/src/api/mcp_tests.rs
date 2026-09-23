@@ -193,8 +193,21 @@ impl Fixture {
             .await?;
         let dir = self.dir.clone();
         drop(self);
-        std::fs::remove_dir_all(dir)?;
-        Ok(())
+        // drop 掉的 tantivy IndexWriter 不等合并线程：它们还会往 search/ 里写几个段文件，
+        // 立刻删目录会撞 "Directory not empty"——nextest 下每个测试独占进程、时序更紧，
+        // 五次里能碰上一次。等它们写完再删，几十毫秒的事；其余 fixture 都是 `let _ =`
+        // 直接忽略，这里保留报错是为了目录真删不掉时看得见
+        let mut attempt = 0;
+        loop {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => return Ok(()),
+                Err(_) if attempt < 50 => {
+                    attempt += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 }
 

@@ -1,0 +1,24 @@
+# CI 用 cargo-nextest 跑测试（`cargo test --workspace` 本地照常能用，这里的分组它不认）。
+#
+# nextest 把每个测试放进独立进程、跨二进制并行。cargo test 是 140 个二进制**串行**、
+# 各自内部并行——多数二进制只有一两个测试，机器大部分时间在等一个测试跑完再起下一个进程；
+# 换 nextest 后运行阶段本地 136s → 60s。代价是 cargo test 里隐含的两条隔离假设不再成立，
+# 下面两条规则就是把它们显式写出来：
+#
+# 1. store 的集成测试之间**不能并行**。它们共用一个库，好几处断言的是全库状态——
+#    「只排了一个向量索引构建任务」、timeline 重算时的行锁——别的文件同时写就会多数或死锁。
+#    cargo test 时它们各在自己的二进制里顺序跑，天然满足；这里用一个 max-threads = 1 的组复现。
+# 2. a_queued_job_wakes_an_idle_worker 的三个测试共用 utopia_jobs 通知频道，靠进程内的
+#    静态 Mutex 串行，而且要求库里没有别的进程在排任务。每个测试一个进程后 Mutex 失效，
+#    别的测试入队的通知也会把它叫醒。threads-required = num-cpus 让它独占全部并发槽：
+#    跑它时别的测试一个都不跑，比 Mutex 更强。
+[test-groups]
+store-serial = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = 'binary(a_queued_job_wakes_an_idle_worker)'
+threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = 'package(utopia-store)'
+test-group = 'store-serial'
