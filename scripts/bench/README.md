@@ -508,6 +508,11 @@ node scripts/bench/typed.mjs --label run2 --judge 200            # 再来一组�
 node scripts/bench/typed.mjs --kb <id> --score                   # 只重新打分
 ```
 
+加 `--errata` 就在对齐之后排一次勘误 agent（0044 决定 7）：报它看了多少、撤改加各几条、留给人几条、
+花了多少 token，再打一次分；带 `--judge` 时裁判也判撤掉的行——判 stated 的就是撤错的。0044 §7 的
+度量正是这两个数：precision gained against correct facts removed（原型：76.1% → 89.5%，撤 278 条，
+约四分之一是对的）。
+
 报的数：gold recall（**同句与跨句分开**，门槛只看同句；跨句的等派生规则）、judged precision
 （裁判抽样；金标漏标严重，精度只信裁判）、entity-pair recall（开放陈述那一层）、绑定的
 bound / none / undecided。0044 的门槛：裁判精度不低于完整原型的 75.3%，同句召回不低于完整原型，

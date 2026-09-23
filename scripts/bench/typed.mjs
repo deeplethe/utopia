@@ -20,6 +20,8 @@
 //   node scripts/bench/typed.mjs --label run1 --judge 200     # 加裁判抽样 200 条
 //   node scripts/bench/typed.mjs --kb <id> --score            # 只对已有的库重新打分
 //   node scripts/bench/typed.mjs --label dry --dry-run        # 建库、装本体、灌语料、等解析，不抽取：验管线
+//   node scripts/bench/typed.mjs --label run1 --judge 200 --errata   # 对齐之后再跑勘误 agent，报前后两份分与撤错多少
+//   node scripts/bench/typed.mjs --kb <id> --score --errata --judge 200   # 已有的库：跑勘误、打分
 // 环境：BENCH_BASE（默认 http://localhost:1516）、BENCH_EMAIL / BENCH_PASSWORD（lib.mjs）、
 //       BENCH_PSQL（指向应用库的 psql 命令行）、BENCH_JUDGE_BASE / _KEY / _MODEL（裁判端点）
 
@@ -160,6 +162,64 @@ async function align(KB) {
   }, 15000, 20 * 60000);
   const failed = num(`SELECT count(*) FROM jobs WHERE kind IN ('align_types','align_phrases','materialize_typed') AND status='failed' AND payload->>'kb_id'='${KB}'`);
   if (failed) log(`注意：${failed} 个对齐任务失败（看 jobs.last_error）`);
+}
+
+// 勘误（0044 决定 7）：物化之后排一次 errata_review，等它把每篇文档看完。度量按 errata_runs 与
+// errata_actions 报：撤了几条、改了几条、加了几条、留给人几条、拒了几条、花了多少 token
+async function errata(KB) {
+  psql(`INSERT INTO jobs (kind, payload) VALUES ('errata_review', '{"kb_id":"${KB}"}')`);
+  await until(() => {
+    const left = num(`SELECT count(*) FROM jobs WHERE kind='errata_review' AND status IN ('queued','running') AND payload->>'kb_id'='${KB}'`);
+    const seen = num(`SELECT count(*) FROM errata_actions WHERE kb_id='${KB}'`);
+    log(`勘误：${left} 个任务在跑，记了 ${seen} 笔`);
+    return left === 0 ? true : seen;
+  }, 15000, 30 * 60000);
+  const failed = num(`SELECT count(*) FROM jobs WHERE kind='errata_review' AND status='failed' AND payload->>'kb_id'='${KB}'`);
+  if (failed) log(`注意：${failed} 个勘误任务失败（看 jobs.last_error）`);
+  const count = (where) => num(`SELECT count(*) FROM errata_actions WHERE kb_id='${KB}' AND ${where}`);
+  const out = {
+    documents: num(`SELECT count(DISTINCT document_id) FROM errata_runs WHERE kb_id='${KB}'`),
+    reviewed: count(`fact_id IS NOT NULL`),
+    flagged: count(`flag IS NOT NULL`),
+    retracted: count(`action='retract' AND status='applied'`),
+    revised: count(`action='revise' AND status='applied'`),
+    added: count(`action='add' AND status='applied'`),
+    held: count(`status='held'`),
+    refused: count(`status='refused'`),
+    requests: num(`SELECT coalesce(sum(requests),0) FROM errata_runs WHERE kb_id='${KB}'`),
+    prompt_tokens: num(`SELECT coalesce(sum(prompt_tokens),0) FROM errata_runs WHERE kb_id='${KB}'`),
+    completion_tokens: num(`SELECT coalesce(sum(completion_tokens),0) FROM errata_runs WHERE kb_id='${KB}'`),
+  };
+  console.log(`勘误看了 ${out.documents} 篇 ${out.reviewed} 条（结构报的 ${out.flagged}）：撤 ${out.retracted}，改 ${out.revised}，加 ${out.added}，留给人 ${out.held}，拒 ${out.refused}；${out.requests} 次请求，token ${out.prompt_tokens}+${out.completion_tokens}`);
+  return out;
+}
+
+// 撤掉的行里有多少是对的（0044 §7 的另一半：precision gained against correct facts removed）：
+// 把勘误撤掉的类型化行交给裁判，按原文判 stated 的就是撤错的
+async function judgeRetracted(KB) {
+  const ep = judgeEndpoint(KB);
+  const all = rows(`
+    SELECT f.id, d.filename, s.canonical_name, r.label, coalesce(o.canonical_name, f.object_value->>'value', f.object_value#>>'{}', '')
+      FROM errata_actions ea JOIN facts f ON f.id=ea.fact_id
+      JOIN relation_types r ON r.id=f.predicate_id JOIN entities s ON s.id=f.subject_id LEFT JOIN entities o ON o.id=f.object_id
+      JOIN documents d ON d.id=ea.document_id
+     WHERE ea.kb_id='${KB}' AND ea.action IN ('retract','revise') AND ea.status='applied' ORDER BY f.id`);
+  const text = Object.fromEntries(corpus.docs.map((d) => [d.filename, d.text]));
+  const byFile = new Map();
+  for (const r of all) (byFile.get(r[1]) || byFile.set(r[1], []).get(r[1])).push(r);
+  const counts = { stated: 0, misworded: 0, not_stated: 0, unjudged: 0 };
+  for (const [file, items] of byFile) {
+    const list = items.map((r, i) => `${i}. ${r[2]} — ${r[3]} — ${r[4]}`).join("\n");
+    let verdicts = {};
+    try {
+      const reply = await chat(ep, [{ role: "system", content: JUDGE }, { role: "user", content: `Document:\n${text[file]}\n\nFacts:\n${list}` }]);
+      const m = reply.match(/\{[\s\S]*\}/);
+      for (const r of (m ? JSON.parse(m[0]).results : [])) verdicts[r.i] = r.verdict;
+    } catch (e) { log(`裁判失败 ${file}: ${String(e).slice(0, 120)}`); }
+    items.forEach((_, i) => { counts[["stated", "misworded", "not_stated"].includes(verdicts[i]) ? verdicts[i] : "unjudged"] += 1; });
+  }
+  console.log(`撤改掉的 ${all.length} 条里裁判判 stated ${counts.stated}（撤错的），misworded ${counts.misworded}，not_stated ${counts.not_stated}（原型撤了 278 条，约四分之一是对的）`);
+  return { removed: all.length, ...counts };
 }
 
 // ---- 打分 ----
@@ -307,6 +367,17 @@ if (!KB) {
 }
 const result = score(KB);
 if (args.judge) result.judge = await judge(KB, Number(args.judge) || 200, Number(args.seed || 1));
+if (args.errata) {
+  // 勘误前的分留着，勘误后再打一次：0044 §7 的度量是两份分的差，与撤错了多少
+  result.before_errata = { gold_recall: result.gold_recall, gold_recall_same_sentence: result.gold_recall_same_sentence, typed_facts: result.typed_facts, judge: result.judge };
+  result.errata = await errata(KB);
+  const after = score(KB);
+  result.after_errata = { gold_recall: after.gold_recall, gold_recall_same_sentence: after.gold_recall_same_sentence, typed_facts: after.typed_facts };
+  if (args.judge) {
+    result.after_errata.judge = await judge(KB, Number(args.judge) || 200, Number(args.seed || 1));
+    result.errata.removed = await judgeRetracted(KB);
+  }
+}
 result.minutes = Math.round((Date.now() - started) / 60000);
 fs.writeFileSync(OUT, JSON.stringify(result, null, 1));
 console.log(`结果写到 ${OUT}（${result.minutes} 分钟）`);
