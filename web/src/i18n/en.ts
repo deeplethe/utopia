@@ -766,6 +766,13 @@ export const en = {
   },
   ask: {
     streamInterrupted: "The answer stream was interrupted. Reopen the conversation to check its status.",
+    noActiveAnswer: "No active answer was found. You can send a new message.",
+    historyLoadFailed: "Could not load this conversation.",
+    retryHistory: "Retry",
+    loadingHistory: "Loading conversation…",
+    loadEarlierConversations: "Load earlier conversations",
+    conversationsLoadFailed: "Could not load conversations.",
+    retryConversations: "Retry",
     /* 新对话首屏问候：碑铭衬线，品牌名入句（标题不带句号） */
     greeting: "Ask Utopia what it remembers",
     emptyTitle: "Chat",
