@@ -1,6 +1,6 @@
 # 0053 · A phrase decision records the inputs it considered
 
-- **Status**: implemented 2026-09-23 on `feat/alignment-cut2` (PR number added at merge) · `phrase_bindings.basis` (migration 0072), candidates admitted through the class hierarchy and shown to the model as such, structural outcomes recorded instead of skipped, the requeue condition reads live signatures only · closes the lifecycle half of #807 and the phrase half of #795; the kind-word aligner keeps its timestamp staleness for now
+- **Status**: implemented 2026-09-23 in PR #878 · `phrase_bindings.basis` (migration 0072), candidates admitted through the class hierarchy and shown to the model as such, structural outcomes recorded instead of skipped, the requeue condition reads live signatures only · closes the lifecycle half of #807 and the phrase half of #795; the kind-word aligner keeps its timestamp staleness for now
 - **Written**: 2026-09-23
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754
 
