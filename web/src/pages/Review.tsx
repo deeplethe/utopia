@@ -12,6 +12,7 @@ import {
   type ReviewTypeFilter,
   type OntologyDefect,
   type AlignmentItem,
+  type ErrataItem,
   type EntityTypeView,
   type RelationTypeView,
   type ConflictItem,
@@ -707,6 +708,50 @@ function voteText(v: { property: string; direction: string } | string | null | u
 }
 
 /** 对齐器提的一条蕴含规则（0044 决定 3 第五片）：这种形状还蕴含哪条属性、宾语怎么来；人批或驳 */
+/** 勘误 agent 留给人的一笔（0044 决定 7）：哪份文档、想对哪条事实做什么、凭哪句原话、为什么留下 */
+function ErrataRow({
+  item,
+  busy,
+  onDecide,
+}: {
+  item: ErrataItem;
+  busy: boolean;
+  onDecide: (approve: boolean) => void;
+}) {
+  const verb =
+    item.action === "retract"
+      ? S.review.errataRetract
+      : item.action === "revise"
+        ? S.review.errataRevise
+        : S.review.errataAdd;
+  const p = item.proposed;
+  return (
+    <div className="glass rounded-panel p-3">
+      <div className="text-small text-ink-2">{item.document}</div>
+      <div className="mt-1 text-body">
+        <span className="font-medium">{verb}</span>{" "}
+        {p ? `${p.subject} —${p.property}→ ${p.object}` : ""}
+      </div>
+      {item.flag && <div className="mt-1 text-small text-ink-2">{S.review.errataFlag(item.flag)}</div>}
+      {item.reason && <div className="mt-1 text-small">{item.reason}</div>}
+      {item.quote && (
+        <div className="mt-1 text-small text-ink-2">
+          {S.review.errataQuote} “{item.quote}”
+        </div>
+      )}
+      {item.detail && <div className="mt-1 text-small text-warn">{S.review.errataHeld(item.detail)}</div>}
+      <div className={CARD_ACTIONS}>
+        <Button size="sm" disabled={busy} onClick={() => onDecide(true)}>
+          {S.review.errataApprove}
+        </Button>
+        <Button size="sm" disabled={busy} onClick={() => onDecide(false)}>
+          {S.review.errataReject}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function AlignmentRuleRow({
   item,
   busy,
@@ -1180,6 +1225,8 @@ type Sel =
   | "defects"
   // 对齐器两票不一致的签名与类别词（#725，0044 决定 3）：问的是「这个说法是本体的哪个属性」
   | "alignment"
+  // 勘误 agent 被闸门拦下的动作（0044 决定 7）
+  | "errata"
   // agent 的每一笔（0025）：建议等人答，自动裁的可撤。它不是七档之一——
   // 七档问「这条知识对不对」，这一档问「机器替你办的对不对」
   | "agent"
@@ -1196,6 +1243,7 @@ const QUEUE_FETCHED: ReviewQueue[] = [
   "violations",
   "defects",
   "alignment",
+  "errata",
   "merges",
   "agent",
 ];
@@ -1209,6 +1257,7 @@ const QUEUE_ORDER: Sel[] = [
   "violations",
   "defects",
   "alignment",
+  "errata",
 ];
 /** 有内容区、要翻页的那些档——总览不翻页 */
 type Paged = Exclude<Sel, "overview">;
@@ -1222,6 +1271,7 @@ const PAGE_SIZE: Record<Paged, number> = {
   violations: FACT_PAGE,
   defects: FACT_PAGE,
   alignment: FACT_PAGE,
+  errata: FACT_PAGE,
   merges: MERGE_PAGE,
   decisions: 20,
   agent: 20,
@@ -1419,6 +1469,13 @@ export function Review() {
     ),
     onSettled: invalidate,
   });
+  const errataAction = useMutation({
+    mutationFn: ({ id, approve }: { id: string; approve: boolean }) =>
+      api.decideErrata(kb!.id, id, approve),
+    onSuccess: () => toast.success(S.review.errataDecided),
+    onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
+    onSettled: invalidate,
+  });
   const violationAction = useMutation({
     mutationFn: ({
       id,
@@ -1490,6 +1547,7 @@ export function Review() {
     violations: c?.violations ?? 0,
     defects: c?.defects ?? 0,
     alignment: c?.alignment ?? 0,
+    errata: c?.errata ?? 0,
     merges: c?.merges ?? 0,
     decisions: history.data?.total ?? 0,
     agent: c?.agent ?? 0,
@@ -1504,6 +1562,7 @@ export function Review() {
   const asViolations = () => rows as AxiomViolation[];
   const asDefects = () => rows as OntologyDefect[];
   const asAlignment = () => rows as AlignmentItem[];
+  const asErrata = () => rows as ErrataItem[];
   // 对齐卡片要列本体的类与属性给人选；只在这一档拉
   const ontology = useQuery({
     queryKey: ["ontology", kb?.id],
@@ -1547,6 +1606,7 @@ export function Review() {
     },
     defects: { title: S.review.defects, hint: S.review.defectsHint },
     alignment: { title: S.review.alignment, hint: S.review.alignmentHint },
+    errata: { title: S.review.errata, hint: S.review.errataHint },
     decisions: { title: S.review.decisionsTitle, hint: S.review.decisionsHint },
     merges: { title: S.review.mergeHistory, hint: null },
     agent: { title: S.review.agentTitle, hint: S.review.agentHint },
@@ -1626,6 +1686,13 @@ export function Review() {
             onClick={() => select("alignment")}
           >
             {S.review.railAlignment}
+          </RailItem>
+          <RailItem
+            active={active === "errata"}
+            count={counts.errata}
+            onClick={() => select("errata")}
+          >
+            {S.review.railErrata}
           </RailItem>
           {/* agent 的队列（0025）：徽标是等人回答的建议数 */}
           <RailItem
@@ -1944,6 +2011,24 @@ export function Review() {
                       onDecide={(resolution) =>
                         defectAction.mutate({ id: d.id, resolution })
                       }
+                    />
+                  ))}
+                </div>
+              )}
+
+              {active === "errata" && (
+                <div className="space-y-3">
+                  {counts.errata === 0 && (
+                    <div className="glass rounded-panel p-8 text-center text-body text-ink-2">
+                      {S.review.categoryEmpty}
+                    </div>
+                  )}
+                  {asErrata().map((item) => (
+                    <ErrataRow
+                      key={item.id}
+                      item={item}
+                      busy={errataAction.isPending && errataAction.variables?.id === item.id}
+                      onDecide={(approve) => errataAction.mutate({ id: item.id, approve })}
                     />
                   ))}
                 </div>

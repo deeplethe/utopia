@@ -121,6 +121,8 @@ pub async fn list(
         "alignment" => {
             json!(utopia_store::alignment_queue::list(&state.pool, kb_id, limit, offset).await?)
         }
+        // 勘误 agent 留给人的动作（0044 决定 7）：闸门拦下的撤、改、加
+        "errata" => json!(utopia_store::errata::held(&state.pool, kb_id, limit, offset).await?),
         "violations" => {
             json!(
                 utopia_store::reasoning::open_violations(&state.pool, kb_id, limit, offset).await?
@@ -1411,6 +1413,40 @@ pub async fn decide_alignment_kind_word(
         "type_binding",
         None,
         json!({ "kind_word": kind_word, "class": req.class }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    state.emit_graph(kb_id);
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct DecideErrataReq {
+    pub approve: bool,
+}
+
+/// 人答勘误 agent 留下的一笔（0044 决定 7）：批了就执行那个动作，否了只记一笔
+pub async fn decide_errata(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, action_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideErrataReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let found =
+        utopia_store::errata::decide_held(&state.pool, kb_id, action_id, req.approve, user.id)
+            .await?;
+    if !found {
+        return Err(utopia_core::AppError::NotFound.into());
+    }
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "errata.decided",
+        "errata_action",
+        Some(action_id),
+        json!({ "approve": req.approve }),
     )
     .await;
     state.emit_review(kb_id);

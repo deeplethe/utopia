@@ -6,6 +6,7 @@ mod blob;
 mod bootstrap_ontology;
 mod client_ctx;
 mod docs_corpus;
+mod errata;
 mod error;
 mod extraction;
 mod extraction_open;
@@ -529,6 +530,15 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                         .await;
                         st.emit_graph(kb_id);
                     }
+                    // 有新行才值得勘误看一眼；没新行的重算不排
+                    if typed.added > 0 {
+                        utopia_store::jobs::enqueue_unless_queued(
+                            &st.pool,
+                            utopia_store::errata::JOB_KIND,
+                            serde_json::json!({ "kb_id": kb_id }),
+                        )
+                        .await?;
+                    }
                     // 队列卡片按绑定的状态显示，重算完了才算这条判定「落地」
                     st.emit_review(kb_id);
                     Ok(())
@@ -547,6 +557,16 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
             implication::read_phrases(st, kb_id).await
+        }
+        // 勘误 agent（0044 决定 7）：物化出了新行的文档，按文档复审类型化图谱
+        utopia_store::errata::JOB_KIND => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            errata::review(st, kb_id).await
         }
         "align_types" => {
             let kb_id: Uuid = job

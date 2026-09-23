@@ -510,6 +510,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/review/alignment/kind-words/{kind_word}",
             post(review_routes::decide_alignment_kind_word),
         )
+        // 勘误队列（0044 决定 7）：人批或否 agent 被闸门拦下的一笔
+        .route(
+            "/kbs/{id}/review/errata/{action_id}",
+            post(review_routes::decide_errata),
+        )
         // 人批或驳一条蕴含规则（0044 决定 3 第五片）
         .route(
             "/kbs/{id}/review/alignment/rules/{rule_id}",

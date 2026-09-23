@@ -1794,6 +1794,7 @@ export const en = {
     railViolations: "Axioms",
     railDefects: "Ontology",
     railAlignment: "Alignment",
+    railErrata: "Errata",
     railDecisions: "Decisions",
     railMerges: "Merges",
     railAgent: "Agent",
@@ -1960,6 +1961,32 @@ export const en = {
     alignmentApprove: "Approve rule",
     alignmentReject: "Reject",
     alignmentRuleAccepted: "Saved. Implied facts are being computed in the background.",
+    // 勘误队列（0044 决定 7）
+    errata: "The errata agent held these for you",
+    errataHint:
+      "After extraction an agent rereads each document's typed facts, structural flags first, and retracts, revises or adds with the document's own words as evidence. An action that would reach outside the graph (a derived fact rests on it, someone asked about it, or it would give a one-value property two values) waits here for a person.",
+    errataRetract: "wants to retract",
+    errataRevise: "wants to revise to",
+    errataAdd: "wants to add",
+    errataFlag: (flag: string) =>
+      ({
+        domain: "flagged: subject outside the property's kinds",
+        range: "flagged: object outside the property's kinds",
+        name_absent: "flagged: a name not in the document",
+        no_date: "flagged: date property without a date",
+      })[flag] ?? flag,
+    errataHeld: (detail: string) => {
+      const [kind, ...rest] = detail.split(" ");
+      const value = rest.join(" ");
+      if (kind === "derived") return `Held: ${value} derived fact(s) rest on it`;
+      if (kind === "answered") return `Held: it was named in ${value} answer(s)`;
+      if (kind === "contradiction") return `Held: "${value}" allows one value and would get two`;
+      return `Held: ${detail}`;
+    },
+    errataQuote: "Document says:",
+    errataApprove: "Apply",
+    errataReject: "Reject",
+    errataDecided: "Saved.",
     alignmentTooMany: (n: number) => `${n} properties could apply; too many to ask the model. Pick one or leave it open.`,
     alignmentConflict: "This decision conflicts with the current state. Refresh and review it before trying again.",
     alignmentKindWordBusy: "This kind word is being updated by another operation. Please try again shortly.",

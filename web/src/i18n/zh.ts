@@ -1575,6 +1575,7 @@ export const zh: Strings = {
     railViolations: "公理",
     railDefects: "本体",
     railAlignment: "对齐",
+    railErrata: "勘误",
     railDecisions: "决定",
     railMerges: "合并",
     railAgent: "Agent",
@@ -1719,6 +1720,32 @@ export const zh: Strings = {
     alignmentApprove: "批准规则",
     alignmentReject: "驳回",
     alignmentRuleAccepted: "已保存，隐含事实正在后台计算。",
+    // 勘误队列（0044 决定 7）
+    errata: "勘误 agent 留给你的",
+    errataHint:
+      "抽取之后，一个 agent 按文档复读类型化事实，结构报了的先看，撤、改、加都以文档原话为证据。会牵动图外东西的动作（有派生靠着它、有人问过它、会让只许一个值的属性有两个值）留在这里等人。",
+    errataRetract: "想撤掉",
+    errataRevise: "想改成",
+    errataAdd: "想加上",
+    errataFlag: (flag: string) =>
+      ({
+        domain: "结构报的：主语不在属性允许的类里",
+        range: "结构报的：宾语不在属性允许的类里",
+        name_absent: "结构报的：名字不在文档里",
+        no_date: "结构报的：日期属性没有日期",
+      })[flag] ?? flag,
+    errataHeld: (detail: string) => {
+      const [kind, ...rest] = detail.split(" ");
+      const value = rest.join(" ");
+      if (kind === "derived") return `留下的原因：有 ${value} 条派生靠着它`;
+      if (kind === "answered") return `留下的原因：它在 ${value} 次回答里被提到`;
+      if (kind === "contradiction") return `留下的原因：「${value}」只许一个值，这样会有两个`;
+      return `留下的原因：${detail}`;
+    },
+    errataQuote: "文档原话：",
+    errataApprove: "执行",
+    errataReject: "否",
+    errataDecided: "已保存。",
     alignmentTooMany: (n: number) => `有 ${n} 条属性都可能对得上，多到没法问模型。请选一条或留在开放图谱。`,
     alignmentConflict: "此决定与当前状态冲突。请刷新并核对后再试。",
     alignmentKindWordBusy: "这个类别词正在被其他操作更新，请稍后重试。",

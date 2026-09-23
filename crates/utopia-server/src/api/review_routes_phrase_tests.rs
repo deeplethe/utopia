@@ -321,3 +321,81 @@ async fn a_rule_decision_is_accepted_with_its_job() -> anyhow::Result<()> {
     f.cleanup().await?;
     run
 }
+
+/// 勘误队列（0044 决定 7）：人批闸门留下的一笔，动作执行、答 200；答过的再答 404；别的库 404；Viewer 403
+#[tokio::test]
+async fn a_held_errata_action_is_decided_by_a_person() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        let (doc, chunk, typed_fact, run_id, action) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        let (subject, property): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT e.id, r.id FROM entities e, relation_types r
+              WHERE e.kb_id=$1 AND e.canonical_name='Acme' AND r.kb_id=$1 AND r.key='based_in'",
+        )
+        .bind(f.kb)
+        .fetch_one(&f.pool)
+        .await?;
+        let object: Uuid =
+            sqlx::query_scalar("SELECT id FROM entities WHERE kb_id=$1 AND canonical_name='London'")
+                .bind(f.kb)
+                .fetch_one(&f.pool)
+                .await?;
+        sqlx::raw_sql(&format!(
+            "INSERT INTO documents(id,kb_id,filename,sha256) VALUES ('{doc}','{}','acme.txt','x');
+             INSERT INTO chunks(id,kb_id,document_id,seq,text) VALUES ('{chunk}','{}','{doc}',0,'Acme is based in London.');
+             INSERT INTO facts(id,kb_id,subject_id,predicate_id,object_id,layer) VALUES
+                 ('{typed_fact}','{}','{subject}','{property}','{object}','typed');
+             INSERT INTO errata_runs(id,kb_id,document_id) VALUES ('{run_id}','{}','{doc}');
+             INSERT INTO errata_actions(id,kb_id,run_id,document_id,fact_id,predicate_id,action,reason,quote,proposed,status,detail)
+             VALUES ('{action}','{}','{run_id}','{doc}','{typed_fact}','{property}','retract','wrong','Acme is based in London',
+                     '{{\"subject\":\"Acme\",\"property\":\"based_in\",\"object\":\"London\",\"subject_id\":\"{subject}\",\"predicate_id\":\"{property}\",\"object_id\":\"{object}\"}}',
+                     'held','derived 1');",
+            f.kb, f.kb, f.kb, f.kb, f.kb
+        ))
+        .execute(&f.pool)
+        .await?;
+        let path = format!("/api/v1/kbs/{}/review/errata/{}", f.kb, action);
+        let (status, _) = f
+            .call(&f.viewer, "POST", &path, Some(json!({ "approve": true })))
+            .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let other = format!("/api/v1/kbs/{}/review/errata/{}", f.other_kb, action);
+        let (status, _) = f
+            .call(&f.editor, "POST", &other, Some(json!({ "approve": true })))
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // 队列里有它
+        let (status, body) = f
+            .call(&f.editor, "GET", &format!("/api/v1/kbs/{}/review?queue=errata&limit=10&offset=0", f.kb), None)
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["counts"]["errata"], 1);
+        assert_eq!(body["items"][0]["proposed"]["object"], "London");
+        assert_eq!(body["items"][0]["detail"], "derived 1");
+        let (status, body) = f
+            .call(&f.editor, "POST", &path, Some(json!({ "approve": true })))
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let live: bool = sqlx::query_scalar("SELECT invalidated_at IS NULL FROM facts WHERE id=$1")
+            .bind(typed_fact)
+            .fetch_one(&f.pool)
+            .await?;
+        assert!(!live, "approving a held retraction retracts");
+        let (status, _) = f
+            .call(&f.editor, "POST", &path, Some(json!({ "approve": false })))
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered once");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}

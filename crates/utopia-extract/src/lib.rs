@@ -10,6 +10,7 @@ use serde::Deserialize;
 use utopia_llm::ChatMessage;
 
 pub mod align;
+pub mod errata;
 pub mod governor;
 pub mod implication;
 pub mod open;

@@ -63,6 +63,8 @@ struct WaitingRow {
     defects_oldest: Option<DateTime<Utc>>,
     alignment: i64,
     alignment_oldest: Option<DateTime<Utc>>,
+    errata: i64,
+    errata_oldest: Option<DateTime<Utc>>,
 }
 
 async fn waiting(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewWaiting> {
@@ -102,7 +104,9 @@ async fn waiting(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewWaiting> {
            (SELECT count(*) FROM (SELECT 1 FROM phrase_bindings WHERE kb_id = $1 AND status = 'undecided'
                                   UNION ALL SELECT 1 FROM type_bindings WHERE kb_id = $1 AND status = 'undecided') a) AS alignment,
            (SELECT min(decided_at) FROM (SELECT decided_at FROM phrase_bindings WHERE kb_id = $1 AND status = 'undecided'
-                                          UNION ALL SELECT decided_at FROM type_bindings WHERE kb_id = $1 AND status = 'undecided') a) AS alignment_oldest",
+                                          UNION ALL SELECT decided_at FROM type_bindings WHERE kb_id = $1 AND status = 'undecided') a) AS alignment_oldest,
+           (SELECT count(*) FROM errata_actions WHERE kb_id = $1 AND status = 'held') AS errata,
+           (SELECT min(created_at) FROM errata_actions WHERE kb_id = $1 AND status = 'held') AS errata_oldest",
         unconfirmed = UNCONFIRMED_FACT,
     );
     let r: WaitingRow = sqlx::query_as(&sql)
@@ -120,6 +124,7 @@ async fn waiting(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewWaiting> {
         violations: wait(r.violations, r.violations_oldest),
         defects: wait(r.defects, r.defects_oldest),
         alignment: wait(r.alignment, r.alignment_oldest),
+        errata: wait(r.errata, r.errata_oldest),
     })
 }
 

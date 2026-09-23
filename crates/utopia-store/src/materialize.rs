@@ -185,6 +185,10 @@ async fn materialize_in_tx(
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
                              WHERE q.fact_id = s.id AND q.role = 'mood')
+            -- 勘误撤过的（陈述, 属性）不再算（0044 决定 7）：撤销要站得住
+            AND NOT EXISTS (SELECT 1 FROM errata_actions ea
+                             WHERE ea.statement_id = s.id AND ea.predicate_id = b.relation_type_id
+                               AND ea.status = 'applied' AND ea.action IN ('retract', 'revise'))
             AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src JOIN facts t ON t.id = src.fact_id
                              WHERE src.statement_id = s.id AND t.invalidated_at IS NULL
                                AND t.predicate_id = b.relation_type_id)
@@ -357,6 +361,9 @@ async fn imply_in_tx(
             AND {RULE_MATCH}
             AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q WHERE q.fact_id = s.id AND q.role = 'mood')
             AND (r.reading IS NULL OR pr.entity_id IS NOT NULL OR pr.value IS NOT NULL)
+            AND NOT EXISTS (SELECT 1 FROM errata_actions ea
+                             WHERE ea.statement_id = s.id AND ea.predicate_id = r.conclude_property_id
+                               AND ea.status = 'applied' AND ea.action IN ('retract', 'revise'))
             AND NOT EXISTS (SELECT 1 FROM implied_fact_sources i JOIN facts t ON t.id = i.fact_id
                              WHERE i.rule_id = r.id AND i.statement_id = s.id AND t.invalidated_at IS NULL)
           ORDER BY s.id",

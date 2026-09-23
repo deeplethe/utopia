@@ -303,6 +303,15 @@ pub struct Reply {
     /// 端点给的收尾原因（`stop` / `length` / …）。流里没有这一项就是 `None`：
     /// 有的实现只发 `[DONE]`，缺席不代表答案是完整的
     pub finish_reason: Option<String>,
+    /// 端点报的用量（最后一帧）。不报就是 `None`——账上不编数字
+    pub usage: Option<Usage>,
+}
+
+/// 一次调用的 token 用量，端点自己报的
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
 }
 
 impl Reply {
@@ -501,6 +510,7 @@ impl LlmClient {
         let (mut buf, mut answer) = (Vec::new(), String::new());
         let (mut saw_frame, mut ended) = (false, false);
         let mut finish_reason: Option<String> = None;
+        let mut usage: Option<Usage> = None;
         while let Some(part) = bytes.next().await {
             let part = part.map_err(Unreachable)?;
             // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
@@ -515,6 +525,7 @@ impl LlmClient {
                     &mut saw_frame,
                     &mut ended,
                     &mut finish_reason,
+                    &mut usage,
                 );
             }
         }
@@ -527,6 +538,7 @@ impl LlmClient {
                 &mut saw_frame,
                 &mut ended,
                 &mut finish_reason,
+                &mut usage,
             );
         }
         if !saw_frame {
@@ -542,6 +554,7 @@ impl LlmClient {
         Ok(Reply {
             text: strip_reasoning(&answer).to_string(),
             finish_reason,
+            usage,
         })
     }
 
@@ -553,6 +566,7 @@ impl LlmClient {
         saw_frame: &mut bool,
         ended: &mut bool,
         finish_reason: &mut Option<String>,
+        usage: &mut Option<Usage>,
     ) {
         for line in frame.lines() {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
@@ -581,6 +595,11 @@ impl LlmClient {
             // 用量只在最后一帧（choices 为空）出现
             if !v["usage"].is_null() {
                 log_usage(&self.model, &v);
+                let u = &v["usage"];
+                *usage = Some(Usage {
+                    prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0),
+                    completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0),
+                });
             }
         }
     }

@@ -11,6 +11,7 @@ pub mod conversations;
 pub mod datasources;
 pub mod db;
 pub mod documents;
+pub mod errata;
 pub mod execution_gate;
 pub mod exploration_runs;
 pub mod export;

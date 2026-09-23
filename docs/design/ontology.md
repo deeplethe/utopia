@@ -86,7 +86,30 @@ them on the alignment queue, and the decision commits with its job. Readings are
 once per distinct phrase by the `read_phrases` job and cached in `phrase_readings`, including "no
 answer"; materialisation never calls a model — it reads the cache, writes the implied facts with the
 triggering statement's evidence, marks them `implied` (the export carries the flag), and retires
-them by source like any other typed row. Even one edit can reopen all older automatic negative bindings on that side of the
+them by source like any other typed row.
+
+**An errata agent reviews the typed graph after extraction** [0044 decision 7, migration 0074]. Once
+materialisation has written new rows, the `errata_review` job takes each document with typed facts
+nobody has looked at and sends them to the model with the document, the ontology's properties and,
+for each fact, the structural flag it earned: `domain` or `range` (an end outside the property's
+declared kinds, through the class hierarchy), `name_absent` (a name that does not occur in the
+document), `no_date` (a date property holding something that is not a date). Flagged facts go
+first, the rest is sampled, and a document gets a budget of two requests. The model answers a JSON
+action protocol — keep, retract, revise, or add once every given fact is answered — and every
+retract, revise and add must quote the document's own words; a quote that is not in the document,
+a name that is not in the base or a property that does not exist is recorded as refused and never
+applied (the agent creates nothing). Each verdict is a row in `errata_actions`, keep included, so
+a fact is reviewed once. An action passes the 0027 gate before it touches the graph: a fact with a
+derived fact resting on it or whose subject was named in an answer, or a write that would give a
+one-value property two values, is held for a person on the errata queue of the Review page, where
+the card shows the document, the proposed change, the quote and the reason it was held. A
+retraction sticks: materialisation and implication skip a (statement, property) pair an applied
+errata action retracted or revised, while another document's statement of the same thing still
+materialises. `errata_runs` keeps the per-document account (facts flagged and sampled, requests,
+the endpoint's token usage) for the measure 0044 names: precision gained against correct facts
+removed, at what cost.
+
+Even one edit can reopen all older automatic negative bindings on that side of the
 base, requiring two votes per eligible item through batched model requests; debouncing reduces
 the number of runs, not the items reconsidered. A burst of ontology edits debounces into one run
 rather than one run each [#757];
