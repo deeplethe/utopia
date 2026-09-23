@@ -332,9 +332,13 @@ async fn the_embedding_gate_is_never_held_beyond_its_ceiling() -> anyhow::Result
         super::EMBED_JOBS
     );
     assert!(peak >= 2, "batches actually overlap; peak was {peak}");
+    // 总耗时只用来兜底「闸门把批次完全串行化了」，真正守上限和重叠的是上面两条。
+    // 这条不能卡得太紧：理想 450ms，可 CI 的 runner 只有 4 个 vCPU，同一进程里还有
+    // 三百多个测试在并行，dev 上有一次跑到 1.03s——超过串行的一半就红了，而那次
+    // 峰值并发完全正常。放到串行的四分之三：完全串行是 1.8s，仍能一眼分辨
     let serial = delay * batches as u32;
     assert!(
-        elapsed < serial / 2,
+        elapsed < serial * 3 / 4,
         "twelve batches took {elapsed:?}; serial would be {serial:?}"
     );
     f.cleanup().await
