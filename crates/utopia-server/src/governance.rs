@@ -366,6 +366,7 @@ fn pair_of(item: &ReviewItem, p: &Precedents) -> utopia_extract::AdjudicationPai
         left: side(&item.left),
         right: side(&item.right),
         precedents: gov::render_lines(p),
+        proposed_because: utopia_extract::proposed_because(item.reason.as_deref()),
     }
 }
 

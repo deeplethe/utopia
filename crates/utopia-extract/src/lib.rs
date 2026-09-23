@@ -146,6 +146,23 @@ pub struct AdjudicationPair {
     pub right: AdjudicationSide,
     /// 这个库里的人对这一对、这个名字、这种类型对做过什么（0025）。空就不提
     pub precedents: Vec<String>,
+    /// 这一对是**怎么**被提出来的，只在提议依据不是「同名」时写：名字向量召回（0041 第 2 刀）
+    /// 提的是两个**不同的字符串**，裁决器不知道这一点就会把「张伟」当成「财务部总监张伟」
+    /// 去掉限定词后的同一个人——测量台上那次错合就是这么来的。空就不提，同名对照旧
+    pub proposed_because: Option<String>,
+}
+
+/// 审核对的 `reason` 变成裁决器读得懂的一句提议依据。只认名字向量召回（`name_vector|<余弦>`）：
+/// 其余原因（同名灰区、同名并列、包含）都是「同一个字符串」的家族，裁决器的规则本来就是
+/// 为它们写的
+pub fn proposed_because(reason: Option<&str>) -> Option<String> {
+    let reason = reason?;
+    let cosine = reason.strip_prefix("name_vector|")?;
+    Some(format!(
+        "the names are similar but NOT the same string (name-vector cosine {cosine}): this may be a \
+         short form, another script, or a different thing with a similar name; a dropped qualifier is \
+         not evidence here, the facts are"
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -291,8 +308,13 @@ pub fn build_adjudication_messages(pairs: &[AdjudicationPair]) -> Vec<ChatMessag
                 .join("\n");
             format!("Precedents (decided by people in this base):\n{lines}\n")
         };
+        let why_paired = p
+            .proposed_because
+            .as_deref()
+            .map(|w| format!("Why paired: {w}\n"))
+            .unwrap_or_default();
         user.push_str(&format!(
-            "Pair {i}:\nRecord A: {}\nRecord B: {}\n{precedents}\n",
+            "Pair {i}:\nRecord A: {}\nRecord B: {}\n{why_paired}{precedents}\n",
             fmt(&p.left),
             fmt(&p.right)
         ));
@@ -1065,6 +1087,55 @@ mod tests {
             read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
             Some(("2020-03-17".to_string(), "day"))
         );
+    }
+
+    #[test]
+    fn a_similarity_proposed_pair_says_so_in_the_prompt() {
+        let side = |name: &str| AdjudicationSide {
+            name: name.into(),
+            type_label: "person".into(),
+            facts: vec![],
+        };
+        let pairs = vec![
+            AdjudicationPair {
+                left: side("张伟"),
+                right: side("财务部总监张伟"),
+                precedents: vec![],
+                proposed_because: proposed_because(Some("name_vector|0.78")),
+            },
+            AdjudicationPair {
+                left: side("张伟"),
+                right: side("张伟"),
+                precedents: vec![],
+                proposed_because: proposed_because(Some("ambiguous_name|0.41")),
+            },
+        ];
+        let user = &build_adjudication_messages(&pairs)[1].content;
+        let first = &user[..user.find("Pair 1:").unwrap()];
+        let second = &user[user.find("Pair 1:").unwrap()..];
+        assert!(
+            first.contains("Why paired:") && first.contains("cosine 0.78"),
+            "{first}"
+        );
+        assert!(
+            !second.contains("Why paired:"),
+            "同名对不该带这一行：{second}"
+        );
+    }
+
+    #[test]
+    fn only_name_vector_reasons_become_a_proposal_note() {
+        assert!(proposed_because(Some("name_vector|0.62")).is_some());
+        for r in [
+            "ambiguous_name|0.41",
+            "namesake_tie|0.55",
+            "shared_name|张伟",
+            "contains",
+            "",
+        ] {
+            assert!(proposed_because(Some(r)).is_none(), "{r}");
+        }
+        assert!(proposed_because(None).is_none());
     }
 
     #[test]

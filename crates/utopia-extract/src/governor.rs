@@ -149,8 +149,13 @@ pub fn messages(pair: &AdjudicationPair, earlier: &EarlierLook) -> Vec<Value> {
         format!("Precedents (decided by people in this base):\n{lines}\n")
     };
     let why = earlier.why.map(|w| format!(" — {w}")).unwrap_or_default();
+    let why_paired = pair
+        .proposed_because
+        .as_deref()
+        .map(|w| format!("Why paired: {w}\n"))
+        .unwrap_or_default();
     let user = format!(
-        "{}\n{}\n{precedents}The earlier look said: {} ({:.2}){why}.",
+        "{}\n{}\n{why_paired}{precedents}The earlier look said: {} ({:.2}){why}.",
         side("A", &pair.left),
         side("B", &pair.right),
         earlier.verdict,
@@ -288,6 +293,7 @@ mod tests {
                 facts: vec![],
             },
             precedents: vec!["this same pair was kept apart by a person on 2026-09-01".into()],
+            proposed_because: None,
         };
         let m = messages(
             &pair,
