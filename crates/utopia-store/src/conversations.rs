@@ -138,6 +138,8 @@ pub async fn messages(pool: &PgPool, conversation_id: Uuid) -> AppResult<Vec<Con
 ///
 /// 折中是**只回放最近一轮**：需要的是「我刚做过什么」，不是二十轮的输出。
 pub struct History {
+    /// Identities parallel to turns, so callers can exclude their own appended question.
+    pub turn_ids: Vec<Uuid>,
     /// `(role, content)`，按时间序
     pub turns: Vec<(String, String)>,
     /// 这场对话里已经认下的实体（去重）
@@ -153,13 +155,14 @@ pub struct History {
 
 pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> AppResult<History> {
     let mut rows: Vec<(
+        Uuid,
         String,
         String,
         serde_json::Value,
         serde_json::Value,
         DateTime<Utc>,
     )> = sqlx::query_as(
-        "SELECT role, content, resolved, tool_exchange, created_at FROM conversation_messages
+        "SELECT id, role, content, resolved, tool_exchange, created_at FROM conversation_messages
          WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2",
     )
     .bind(conversation_id)
@@ -171,7 +174,7 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
     // 每轮各列一遍只是把同一件事说三遍
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut entities: Vec<serde_json::Value> = Vec::new();
-    for (_, _, res, _, _) in &rows {
+    for (_, _, _, res, _, _) in &rows {
         for e in res.as_array().into_iter().flatten() {
             let Some(id) = e["id"].as_str() else { continue };
             if seen.insert(id.to_string()) {
@@ -183,11 +186,12 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
     let last_tool_exchange = rows
         .iter()
         .rev()
-        .find(|(role, _, _, _, _)| role == "assistant")
-        .and_then(|(_, _, _, ex, _)| ex.as_array().cloned())
+        .find(|(_, role, _, _, _, _)| role == "assistant")
+        .and_then(|(_, _, _, _, ex, _)| ex.as_array().cloned())
         .unwrap_or_default();
     Ok(History {
-        turns: rows.into_iter().map(|(r, c, _, _, _)| (r, c)).collect(),
+        turn_ids: rows.iter().map(|(id, ..)| *id).collect(),
+        turns: rows.into_iter().map(|(_, r, c, _, _, _)| (r, c)).collect(),
         entities,
         last_tool_exchange,
     })

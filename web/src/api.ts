@@ -2562,6 +2562,7 @@ export function reattachChat(
         signal,
       }),
     handlers,
+    true,
   );
 }
 
@@ -2587,57 +2588,95 @@ export function streamChat(
 function consumeChatStream(
   open: (signal: AbortSignal) => Promise<Response>,
   handlers: ChatHandlers,
+  allowIdle = false,
 ): () => void {
   const controller = new AbortController();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let terminal = false;
+  const fail = (message: string) => {
+    if (terminal || controller.signal.aborted) return;
+    terminal = true;
+    handlers.onError(message);
+  };
   (async () => {
     try {
       const res = await open(controller.signal);
+      if (controller.signal.aborted) {
+        await res.body?.cancel();
+        return;
+      }
       if (!res.ok || !res.body) {
         let message = res.statusText;
         try {
           const body = (await res.json()) as { error?: string };
           if (body.error) message = body.error;
-        } catch {
-          /* ignore */
-        }
-        handlers.onError(message);
+        } catch { /* keep the HTTP status */ }
+        fail(message);
         return;
       }
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let buf = "";
-      for (;;) {
+      let line = "";
+      let skipLf = false;
+      let event = "message";
+      let data: string[] = [];
+      const dispatch = () => {
+        if (data.length === 0) return;
+        const value = data.join("\n");
+        if (event === "done") { terminal = true; handlers.onDone(); }
+        else if (event === "error") fail(value);
+        else if (event === "idle") {
+          if (allowIdle) { terminal = true; handlers.onIdle?.(); }
+          else fail(S.ask.streamInterrupted);
+        } else if (event === "conversation") handlers.onConversation(JSON.parse(value).id);
+        else if (event === "sources") handlers.onSources(JSON.parse(value));
+        else if (event === "step") handlers.onStep(JSON.parse(value));
+        else if (event === "delta") handlers.onDelta(JSON.parse(value).text);
+        else if (event === "snapshot") handlers.onSnapshot?.(JSON.parse(value));
+      };
+      const finishLine = () => {
+        if (line === "") {
+          dispatch();
+          event = "message";
+          data = [];
+        } else {
+          const colon = line.indexOf(":");
+          const field = colon < 0 ? line : line.slice(0, colon);
+          let value = colon < 0 ? "" : line.slice(colon + 1);
+          if (value.startsWith(" ")) value = value.slice(1);
+          if (field === "event") event = value;
+          else if (field === "data") data.push(value);
+        }
+        line = "";
+      };
+      while (!terminal && !controller.signal.aborted) {
         const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf("\n\n")) >= 0) {
-          const frame = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          let event = "message";
-          let data = "";
-          for (const line of frame.split("\n")) {
-            if (line.startsWith("event:")) event = line.slice(6).trim();
-            else if (line.startsWith("data:")) data += line.slice(5).trim();
-          }
-          if (event === "conversation")
-            handlers.onConversation((JSON.parse(data) as { id: string }).id);
-          else if (event === "sources")
-            handlers.onSources(JSON.parse(data || "[]"));
-          else if (event === "step")
-            handlers.onStep(JSON.parse(data) as ChatStep);
-          else if (event === "delta")
-            handlers.onDelta((JSON.parse(data) as { text: string }).text);
-          else if (event === "snapshot") handlers.onSnapshot?.(JSON.parse(data));
-          else if (event === "idle") handlers.onIdle?.();
-          else if (event === "done") handlers.onDone();
-          else if (event === "error") handlers.onError(data);
+        if (done || controller.signal.aborted) break;
+        // CR is a complete line ending, even when its optional LF arrives in the
+        // next byte chunk. TextDecoder independently preserves split UTF-8.
+        for (const char of decoder.decode(value, { stream: true })) {
+          if (skipLf && char === "\n") { skipLf = false; continue; }
+          skipLf = false;
+          if (char === "\r" || char === "\n") {
+            finishLine();
+            skipLf = char === "\r";
+          } else line += char;
+          if (terminal || controller.signal.aborted) break;
         }
       }
-      handlers.onDone();
+      // EOF never dispatches an incomplete frame and is not an application done.
+      fail(S.ask.streamInterrupted);
     } catch (e) {
-      if (!controller.signal.aborted) handlers.onError(String(e));
+      fail(e instanceof SyntaxError ? S.ask.streamInterrupted : String(e));
+    } finally {
+      if (reader) {
+        try { await reader.cancel(); } catch { /* terminal/abort already decided */ }
+        reader.releaseLock();
+      }
     }
   })();
-  return () => controller.abort();
+  return () => {
+    controller.abort();
+    void reader?.cancel().catch(() => {});
+  };
 }
