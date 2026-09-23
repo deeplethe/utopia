@@ -13,6 +13,11 @@ use crate::{AdjudicationPair, IDENTITY_RULES};
 /// 一对最多查几次再表态。够看两侧的事实与原文各一次、翻一次台账，还剩一次
 pub const MAX_STEPS: usize = 6;
 
+/// 查够了还想查时的回话：不给结果，只提醒收尾
+pub const LIMIT_REACHED: &str = "Lookup limit reached: you have seen what can be seen. \
+     Answer now with decide (same or different, with your confidence) or defer (with the \
+     question a person should answer).";
+
 /// 攒批那一眼说了什么：带进第二眼，模型知道自己上次为什么没定
 pub struct EarlierLook<'a> {
     /// same | different | unsure
