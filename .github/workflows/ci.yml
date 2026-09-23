@@ -94,31 +94,17 @@ jobs:
           failed=$(grep -o '[0-9]* failed' store-tests.log | awk '{s+=$1} END {print s+0}')
           echo "utopia-store against Postgres: **${passed} passed**, ${failed} failed — a missing database fails this job instead of skipping" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: MCP structured reads against Postgres
-        run: cargo test -p utopia-server api::mcp::tests
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
-
-      - name: Chat module against Postgres
-        # The namespace includes finalization and all nested chat regression modules.
-        run: "cargo test -p utopia-server api::chat::"
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
-
-      # 文档路由测试（含 #860 新增的 PAT 作用域、purged → 410、账本引用但 blob 缺失 → 500）
-      # 全部以 test_db::url() 为门槛：backend job 没有库，它们静默跳过并显示绿色；
-      # 而这个 job 之前只跑 mcp / chat / retrieval 三个过滤器，于是它们从未在 CI 执行过（#248）。
-      # 模块由 documents_routes.rs 里的 #[path] 声明，路径是 api::documents_routes::tests::…
-      - name: Documents routes against Postgres
-        run: "cargo test -p utopia-server api::documents_routes::"
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
-
-      - name: Hybrid retrieval against Postgres
-        run: "cargo test -p utopia-server retrieval::"
+      # utopia-server 里连库的测试同样以 test_db::url() 为门槛，backend job 没有库就静默跳过。
+      # 从前这里靠一张过滤器清单（mcp / chat / retrieval / documents_routes）逐个点名，
+      # 清单外的模块——jobs_routes、rule_*、pipeline、ingest_sources、type_alignment、
+      # extraction、query_engine::postgres——一个都没在 CI 上跑过（#248、#868）。
+      # 改成整个 crate 一起跑，和上面的 utopia-store 一样，新模块不用再记得来登记。
+      # 不连库的测试跟着再跑一遍，代价只有几秒：编译早就付过了（此前第一个过滤器步骤
+      # 就要编一遍测试二进制），385 个测试本身跑完不到 10 秒。
+      # 依赖前面「全新库上跑一遍」已把库迁移好：chat 等 fixture 不自己跑迁移，
+      # 空库上并发起 385 个测试会撞 relation "organizations" does not exist。
+      - name: utopia-server against Postgres
+        run: cargo test -p utopia-server
         env:
           UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
           UTOPIA_TEST_REQUIRE_DB: "1"
