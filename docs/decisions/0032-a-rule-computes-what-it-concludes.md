@@ -59,6 +59,9 @@ If it is ever wanted it needs its own record, answering what a completeness clai
 
 **Units and datatypes have to be checked when the expression is written, and today nothing checks them.** `relation_types` carries `unit` and `datatype` and no code compares them. `revenue (USD) − cost (EUR)` must be refused by the picker, not silently subtracted; the result's type has to match the concluded predicate's. This is new work that the constant case never needed.
 
+**Revision proposed 2026-09-21:** [0049](0049-expression-declarations-are-checked-when-a-rule-is-written.md) answers the missing declaration semantics and write-time locking question below. Missing units are not assumed unitless; exact `1`, the allowlist and first-cut operations remain proposals. The accepted expression semantics and metadata-only fallback are unchanged.
+
+
 **A missing reading is not a zero, and neither is a division by zero.** If any attribute in the expression has no reading on the interval, the expression has no value and nothing is concluded — consistent with 0029. Division by zero is the same: no conclusion, **reported** the way `capped` is, because "not computed here" and "the criterion was not met" look identical in the result otherwise.
 
 ## Open

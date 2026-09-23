@@ -628,12 +628,18 @@ pub async fn open_violations(
                             JOIN triple pt ON pt.id = x.id), '[]'::jsonb) AS path,
                 {left_holds_to} IS NULL AS left_open,
                 lf.confidence AS left_confidence,
+                -- 先按主键拿到两个实体，再各自问一句「同库里还有同名的吗」（走
+                -- entities_kb_name_idx）。从前写成 e JOIN x 再 WHERE e.id IN (...)：
+                -- 表刚成批写完、还没来得及 ANALYZE 时，规划器从 x 那一侧起步，每条违规
+                -- 扫全部实体再逐个回查，一页 37 条要 1.6 秒，翻页越靠后越慢；有统计信息时
+                -- 也要 40ms。改后两种情况都是十几毫秒，结果逐行相同
                 EXISTS (
                     SELECT 1 FROM entities e
-                    JOIN entities x ON x.kb_id = e.kb_id AND x.id <> e.id
-                                   AND x.merged_into IS NULL
-                                   AND lower(x.canonical_name) = lower(e.canonical_name)
                     WHERE e.id IN (lf.subject_id, lf.object_id)
+                      AND EXISTS (SELECT 1 FROM entities x
+                                   WHERE x.kb_id = e.kb_id AND x.id <> e.id
+                                     AND x.merged_into IS NULL
+                                     AND lower(x.canonical_name) = lower(e.canonical_name))
                 ) AS same_name_peers
            FROM axiom_violations v
            JOIN triple l  ON l.id  = v.left_fact

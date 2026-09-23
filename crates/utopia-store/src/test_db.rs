@@ -2,10 +2,13 @@
 //!
 //! 每个连库测试都以同一句开头：没有 `UTOPIA_DATABASE_URL` 就跳过而不是失败，
 //! 本地随手 `cargo test` 不必先起库。可 CI 上也这么跳，绿色就成了假的：backend job
-//! 没有库，24 个 store 集成测试全部静默返回，而有库的 migrations job 只跑了一个。
+//! 曾经没有库，24 个 store 集成测试全部静默返回，而有库的 migrations job 只跑了一个。
 //!
-//! 所以跳过要分场合：设了 `UTOPIA_TEST_REQUIRE_DB` 的地方（CI 的连库 job），
-//! 没有库就是失败——「本该跑的没跑」得看得见。
+//! 所以跳过要分场合：设了 `UTOPIA_TEST_REQUIRE_DB` 的地方（CI 的 backend job，
+//! 它现在自带 Postgres），没有库就是失败——「本该跑的没跑」得看得见。
+//!
+//! 这里只给地址，不迁移：绝大多数调用方假定库已经迁好。空库先跑
+//! `cargo run -p utopia-store --example migrate`，CI 也是这么做的。
 
 /// 连库测试用的数据库地址。`None` = 这次跳过。
 ///

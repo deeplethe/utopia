@@ -1,0 +1,1323 @@
+{
+ "source": "labels: Wikidata; domains/ranges: Re-DocRED train_revised.json",
+ "properties": [
+  {
+   "key": "P1001",
+   "label": "applies to jurisdiction",
+   "description": "the item (institution, law, public office, public register, etc) or statement belongs to or has power over or applies to the value (a territorial jurisdiction: a country, state, municipality, etc)",
+   "domains": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 1207
+  },
+  {
+   "key": "P102",
+   "label": "member of political party",
+   "description": "the political party of which a person is or has been a member or otherwise affiliated",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "ORG"
+   ],
+   "train_count": 403
+  },
+  {
+   "key": "P1056",
+   "label": "product or material produced",
+   "description": "material or product, including services, produced or provided by an organization, industry, facility, or process",
+   "domains": [
+    "ORG"
+   ],
+   "ranges": [
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 65
+  },
+  {
+   "key": "P108",
+   "label": "employer",
+   "description": "person or organization for which the subject works or worked",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 421
+  },
+  {
+   "key": "P112",
+   "label": "founder",
+   "description": "founder or co-founder of this organization, religion, place or entity",
+   "domains": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 204
+  },
+  {
+   "key": "P118",
+   "label": "league or competition",
+   "description": "league or competition in which team or player has played, or in which an event occurs",
+   "domains": [
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 356
+  },
+  {
+   "key": "P1198",
+   "label": "unemployment rate",
+   "description": "portion of a workforce population that is not employed",
+   "domains": [
+    "LOC"
+   ],
+   "ranges": [
+    "TIME",
+    "NUM"
+   ],
+   "train_count": 2
+  },
+  {
+   "key": "P123",
+   "label": "publisher",
+   "description": "organization or person responsible for publishing a work, such as a book, periodical, printed music, podcast, game or software",
+   "domains": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 298
+  },
+  {
+   "key": "P127",
+   "label": "owned by",
+   "description": "owner of the subject",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 389
+  },
+  {
+   "key": "P131",
+   "label": "located in the administrative territorial entity",
+   "description": "the item is located on the territory of the following administrative entity. Use P276 for specifying locations that are non-administrative places and for items about events. Use P1382 if the item falls only partially into the administrative entity",
+   "domains": [
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 20402
+  },
+  {
+   "key": "P1336",
+   "label": "territory claimed by",
+   "description": "administrative divisions that claim control of a given area",
+   "domains": [
+    "LOC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 59
+  },
+  {
+   "key": "P1344",
+   "label": "participant in",
+   "description": "event in which a person, organization or creative work was/is a participant; inverse of P710 or P1923",
+   "domains": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "MISC"
+   ],
+   "train_count": 1168
+  },
+  {
+   "key": "P136",
+   "label": "genre",
+   "description": "creative work's genre or an artist's field of work (P101). Use main subject (P921) to relate creative works to their topic",
+   "domains": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 239
+  },
+  {
+   "key": "P1365",
+   "label": "replaces",
+   "description": "person, state or item replaced. Use \"structure replaces\" (P1398) for structures. Use \"follows\" (P155) if the previous item was not replaced or predecessor and successor are identical",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 96
+  },
+  {
+   "key": "P1366",
+   "label": "replaced by",
+   "description": "other person or item which continues the item by replacing it in its role. Use P156 (\"followed by\") if the item is not replaced nor identical, but adds to the series (e.g. books in a series)",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 96
+  },
+  {
+   "key": "P137",
+   "label": "operator",
+   "description": "person, profession, organization or entity that operates the equipment, facility, or service",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 192
+  },
+  {
+   "key": "P1376",
+   "label": "capital of",
+   "description": "country, state, department, canton or other administrative division of which the municipality is the governmental seat",
+   "domains": [
+    "LOC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 178
+  },
+  {
+   "key": "P140",
+   "label": "religion or worldview",
+   "description": "religion of a person, organization or religious building, or associated with this subject",
+   "domains": [
+    "PER",
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 357
+  },
+  {
+   "key": "P1412",
+   "label": "languages spoken, written or signed",
+   "description": "language(s) that a person or a people speaks, writes or signs, including the native language(s)",
+   "domains": [
+    "PER",
+    "LOC"
+   ],
+   "ranges": [
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 366
+  },
+  {
+   "key": "P1441",
+   "label": "present in work",
+   "description": "this (fictional or fictionalized) entity, place, or person appears in that work as part of the narration (use P2860 for works citing other works, P361/P1433 for works being part of other works, P1343 for entities described in non-fictional accounts)",
+   "domains": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "MISC"
+   ],
+   "train_count": 669
+  },
+  {
+   "key": "P150",
+   "label": "contains the administrative territorial entity",
+   "description": "(list of) direct subdivisions of an administrative territorial entity",
+   "domains": [
+    "LOC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 3369
+  },
+  {
+   "key": "P155",
+   "label": "follows",
+   "description": "immediately prior item in a series of which the subject is a part, preferably use as qualifier of P179 [if the subject has replaced the preceding item, e.g. political offices, use \"replaces\" (P1365)]",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 506
+  },
+  {
+   "key": "P156",
+   "label": "followed by",
+   "description": "immediately following item in a series of which the subject is a part, preferably use as qualifier of P179 [if the subject has been replaced, e.g. political offices, use \"replaced by\" (P1366)]",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 506
+  },
+  {
+   "key": "P159",
+   "label": "headquarters location",
+   "description": "city or town where an organization's headquarters is or has been situated. Use P276 qualifier for specific building",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 263
+  },
+  {
+   "key": "P161",
+   "label": "cast member",
+   "description": "actor in the subject production [use \"character role\" (P453) and/or \"name of the character role\" (P4633) as qualifiers] [use \"voice actor\" (P725) for voice-only role] - [use \"recorded participant\" (P11108) for non-fiction productions]",
+   "domains": [
+    "PER",
+    "MISC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 919
+  },
+  {
+   "key": "P162",
+   "label": "producer",
+   "description": "person(s) who produced the film, musical work, theatrical production, etc. (for film, this does not include executive producers, associate producers, etc.) [for production company, use P272, video games - use P178]",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG"
+   ],
+   "train_count": 249
+  },
+  {
+   "key": "P166",
+   "label": "award received",
+   "description": "award or recognition received by a person, organization or creative work",
+   "domains": [
+    "PER",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 340
+  },
+  {
+   "key": "P17",
+   "label": "country",
+   "description": "sovereign state that this subject item is in (not to be used for human beings)",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 14401
+  },
+  {
+   "key": "P170",
+   "label": "creator",
+   "description": "maker of this creative work or other object (where no more specific property exists)",
+   "domains": [
+    "PER",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG"
+   ],
+   "train_count": 410
+  },
+  {
+   "key": "P171",
+   "label": "parent taxon",
+   "description": "closest parent taxon of the taxon in question",
+   "domains": [
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 117
+  },
+  {
+   "key": "P172",
+   "label": "ethnic group",
+   "description": "subject's ethnicity (consensus is that a VERY high standard of proof is needed for this field to be used. In general this means 1) the subject claims it themselves, or 2) it is widely agreed on by scholars, or 3) is fictional and portrayed as such)",
+   "domains": [
+    "PER",
+    "LOC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 155
+  },
+  {
+   "key": "P175",
+   "label": "performer",
+   "description": "actor, musician, band or other performer associated with this role or musical work",
+   "domains": [
+    "PER",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 1773
+  },
+  {
+   "key": "P176",
+   "label": "manufacturer",
+   "description": "(main or final) manufacturer or producer of this product",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 144
+  },
+  {
+   "key": "P178",
+   "label": "developer",
+   "description": "organization or person that developed the item",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG"
+   ],
+   "train_count": 402
+  },
+  {
+   "key": "P179",
+   "label": "part of the series",
+   "description": "series which contains the subject",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "MISC"
+   ],
+   "train_count": 245
+  },
+  {
+   "key": "P19",
+   "label": "place of birth",
+   "description": "most specific known birth location of a person, animal or fictional character",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 692
+  },
+  {
+   "key": "P194",
+   "label": "legislative body",
+   "description": "legislative body governing this entity; political institution with elected representatives, such as a parliament/legislature or council",
+   "domains": [
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 305
+  },
+  {
+   "key": "P20",
+   "label": "place of death",
+   "description": "most specific known (e.g. city instead of country, or hospital instead of city) death location of a person, animal or fictional character",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 281
+  },
+  {
+   "key": "P205",
+   "label": "basin country",
+   "description": "country that have drainage to/from or border the body of water",
+   "domains": [
+    "LOC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 174
+  },
+  {
+   "key": "P206",
+   "label": "located in or next to body of water",
+   "description": "body of water on or next to which a place is located",
+   "domains": [
+    "LOC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 431
+  },
+  {
+   "key": "P22",
+   "label": "father",
+   "description": "male parent of the subject. For stepfather, use \"stepparent\" (P3448)",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 466
+  },
+  {
+   "key": "P241",
+   "label": "military branch",
+   "description": "branch to which this military unit, award, office, or person belongs, e.g. Royal Navy",
+   "domains": [
+    "PER",
+    "ORG"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 191
+  },
+  {
+   "key": "P25",
+   "label": "mother",
+   "description": "female parent of the subject. For stepmother, use \"stepparent\" (P3448)",
+   "domains": [
+    "PER",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "MISC"
+   ],
+   "train_count": 168
+  },
+  {
+   "key": "P26",
+   "label": "spouse",
+   "description": "the subject has the object as their spouse (husband, wife, partner, etc.). Use \"unmarried partner\" (P451) for non-married companions",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 640
+  },
+  {
+   "key": "P264",
+   "label": "record label",
+   "description": "brand and trademark associated with the marketing of subject music recordings and music videos",
+   "domains": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 923
+  },
+  {
+   "key": "P27",
+   "label": "country of citizenship",
+   "description": "the object is a country that recognizes the subject as its citizen",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 4665
+  },
+  {
+   "key": "P272",
+   "label": "production company",
+   "description": "company that produced this film, audio or performing arts work",
+   "domains": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 152
+  },
+  {
+   "key": "P276",
+   "label": "location",
+   "description": "location of the object, structure or event; use P131 to indicate the containing administrative entity, P8138 for statistical entities, or P706 for geographic entities; use P7153 for locations associated with the object",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 336
+  },
+  {
+   "key": "P279",
+   "label": "subclass of",
+   "description": "this item is a subclass (subset) of that item; ALL instances of this item are instances of that item; different from P31 (instance of), e.g.: volcano is a subclass of mountain; Everest is an instance of mountain",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 152
+  },
+  {
+   "key": "P30",
+   "label": "continent",
+   "description": "continent of which the subject is a part",
+   "domains": [
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 761
+  },
+  {
+   "key": "P31",
+   "label": "instance of",
+   "description": "type to which this subject corresponds/belongs. Different from P279 (subclass of); for example: K2 is an instance of mountain; volcano is a subclass of mountain",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 225
+  },
+  {
+   "key": "P3373",
+   "label": "sibling",
+   "description": "the subject and the object have at least one common parent (brother, sister, etc. including half-siblings); use \"relative\" (P1038) for siblings-in-law (brother-in-law, sister-in-law, etc.) and step-siblings (step-brothers, step-sisters, etc.)",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 712
+  },
+  {
+   "key": "P35",
+   "label": "head of state",
+   "description": "official with the highest formal authority in a country/state",
+   "domains": [
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 292
+  },
+  {
+   "key": "P355",
+   "label": "child organization or unit",
+   "description": "child organization/unit of an org./unit; usually a fully owned separate org.; for non-independent sub-units, see org. division (P199); opposite of parent org./unit (P749); use instance of (P31) to distinguish org. (Q43229) and org. unit (Q10387680)",
+   "domains": [
+    "ORG"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 230
+  },
+  {
+   "key": "P36",
+   "label": "capital",
+   "description": "seat of government of a country, province, state or other type of administrative territorial entity",
+   "domains": [
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 178
+  },
+  {
+   "key": "P361",
+   "label": "part of",
+   "description": "object of which the subject is a part (if this subject is already part of object A which is a part of object B, then please only make the subject part of object A), inverse property of \"has part\" (P527, see also \"has parts of the class\" (P2670))",
+   "domains": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 2112
+  },
+  {
+   "key": "P364",
+   "label": "original language of film or TV show",
+   "description": "language in which a film or a performance work was originally created. Deprecated for written works and songs; use P407 (\"language of work or name\") instead.",
+   "domains": [
+    "PER",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 107
+  },
+  {
+   "key": "P37",
+   "label": "official language",
+   "description": "language designated as official by this item",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 281
+  },
+  {
+   "key": "P39",
+   "label": "position held",
+   "description": "subject currently or formerly holds the object position or public office",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 49
+  },
+  {
+   "key": "P40",
+   "label": "child",
+   "description": "subject has object as child. Do not use for stepchildren—use \"relative\" (P1038), qualified with \"kinship to subject\" (P1039)",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 703
+  },
+  {
+   "key": "P400",
+   "label": "platform",
+   "description": "platform for which a work was developed or released, or the specific platform version of a software product",
+   "domains": [
+    "PER",
+    "MISC"
+   ],
+   "ranges": [
+    "MISC"
+   ],
+   "train_count": 460
+  },
+  {
+   "key": "P403",
+   "label": "mouth of the watercourse",
+   "description": "the body of water to which the watercourse drains",
+   "domains": [
+    "LOC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 200
+  },
+  {
+   "key": "P449",
+   "label": "original broadcaster",
+   "description": "network(s) or service(s) that originally broadcast a radio or television program",
+   "domains": [
+    "PER",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 264
+  },
+  {
+   "key": "P463",
+   "label": "member of",
+   "description": "organization, club or musical group to which the subject belongs. Do not use for membership in ethnic or social groups, nor for holding a political position, such as a member of parliament (use P39 for that)",
+   "domains": [
+    "PER",
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 1299
+  },
+  {
+   "key": "P488",
+   "label": "chairman",
+   "description": "presiding member of an organization, group or body",
+   "domains": [
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 145
+  },
+  {
+   "key": "P495",
+   "label": "country of origin",
+   "description": "country of origin of this item (creative work, food, phrase, product, etc.)",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 948
+  },
+  {
+   "key": "P50",
+   "label": "author",
+   "description": "main creator(s) of a written work (use on works, not humans); use P2093 (author name string) when Wikidata item is unknown or does not exist",
+   "domains": [
+    "PER",
+    "MISC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 489
+  },
+  {
+   "key": "P527",
+   "label": "has part(s)",
+   "description": "part of this subject; inverse property of \"part of\" (P361). See also \"has parts of the class\" (P2670).",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 2313
+  },
+  {
+   "key": "P54",
+   "label": "member of sports team",
+   "description": "sports teams or clubs that the subject represents or represented",
+   "domains": [
+    "PER",
+    "NUM"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 379
+  },
+  {
+   "key": "P551",
+   "label": "residence",
+   "description": "the place where the person is or has been, resident",
+   "domains": [
+    "PER",
+    "ORG"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 66
+  },
+  {
+   "key": "P569",
+   "label": "date of birth",
+   "description": "date on which the subject was born",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "TIME"
+   ],
+   "train_count": 1172
+  },
+  {
+   "key": "P57",
+   "label": "director",
+   "description": "director(s) of film, TV-series, stageplay, video game or similar",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 341
+  },
+  {
+   "key": "P570",
+   "label": "date of death",
+   "description": "date on which the subject died",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "TIME"
+   ],
+   "train_count": 1000
+  },
+  {
+   "key": "P571",
+   "label": "inception",
+   "description": "time when an entity begins to exist; for date of official opening use P1619",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "TIME"
+   ],
+   "train_count": 868
+  },
+  {
+   "key": "P576",
+   "label": "dissolved, abolished or demolished",
+   "description": "point in time at which the subject (organisation, building) ceased to exist; see \"date of official closure\" (P3999) for closing a facility, \"service retirement\" (P730) for retiring equipment, \"discontinued date\" (P2669) for stopping a product",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "TIME"
+   ],
+   "train_count": 181
+  },
+  {
+   "key": "P577",
+   "label": "publication date",
+   "description": "date or point in time when a work or product was first published or released",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "TIME"
+   ],
+   "train_count": 1621
+  },
+  {
+   "key": "P58",
+   "label": "screenwriter",
+   "description": "person(s) who wrote the script for subject item",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 237
+  },
+  {
+   "key": "P580",
+   "label": "start time",
+   "description": "time an entity begins to exist or a statement starts being valid",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "TIME"
+   ],
+   "train_count": 222
+  },
+  {
+   "key": "P582",
+   "label": "end time",
+   "description": "moment when an entity ceases to exist and a statement stops being entirely valid or no longer be true",
+   "domains": [
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "TIME"
+   ],
+   "train_count": 105
+  },
+  {
+   "key": "P585",
+   "label": "point in time",
+   "description": "date something took place, existed or a statement was true; for providing time use the \"refine date\" property (P4241)",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "TIME"
+   ],
+   "train_count": 191
+  },
+  {
+   "key": "P6",
+   "label": "head of government",
+   "description": "head of the executive power of this town, city, municipality, state, country, or other governmental body",
+   "domains": [
+    "LOC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 368
+  },
+  {
+   "key": "P607",
+   "label": "participated in conflict",
+   "description": "battles, wars or other military engagements in which the person or item participated",
+   "domains": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "MISC"
+   ],
+   "train_count": 575
+  },
+  {
+   "key": "P674",
+   "label": "characters",
+   "description": "characters which appear in this item (like plays, operas, operettas, books, comics, films, TV series, video games)",
+   "domains": [
+    "PER",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "MISC"
+   ],
+   "train_count": 370
+  },
+  {
+   "key": "P676",
+   "label": "lyricist",
+   "description": "author of song lyrics",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 79
+  },
+  {
+   "key": "P69",
+   "label": "educated at",
+   "description": "educational institution attended by subject",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 503
+  },
+  {
+   "key": "P706",
+   "label": "located in/on physical feature",
+   "description": "located on the specified (geo)physical feature. Should not be used when the value is only political/administrative (P131) or a mountain range (P4552). Use P206 for things in/on bodies of water.",
+   "domains": [
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 293
+  },
+  {
+   "key": "P710",
+   "label": "participant",
+   "description": "person, group of people or organization (object) that actively takes/took part in an event or process (subject). Preferably qualify with \"object has role\" (P3831). Use P1923 for participants that are teams.",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "train_count": 1168
+  },
+  {
+   "key": "P737",
+   "label": "influenced by",
+   "description": "the subject (person, idea, etc.) was influenced or inspired by this object entity, e.g. \"Heidegger was influenced by Aristotle\"",
+   "domains": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "train_count": 22
+  },
+  {
+   "key": "P740",
+   "label": "location of formation",
+   "description": "location where a group or organization was formed",
+   "domains": [
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 102
+  },
+  {
+   "key": "P749",
+   "label": "parent organization or unit",
+   "description": "parent organization or unit of an organization or unit, opposite of child organization or unit (P355); use instance of (P31) to distinguish organization (Q43229) and organization unit (Q10387680)",
+   "domains": [
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "ORG"
+   ],
+   "train_count": 230
+  },
+  {
+   "key": "P800",
+   "label": "notable work",
+   "description": "notable scientific, artistic or literary work, or other work of significance among subject's works",
+   "domains": [
+    "PER",
+    "ORG",
+    "MISC"
+   ],
+   "ranges": [
+    "PER",
+    "MISC"
+   ],
+   "train_count": 3055
+  },
+  {
+   "key": "P807",
+   "label": "separated from",
+   "description": "subject was founded or started by separating from identified object",
+   "domains": [
+    "ORG",
+    "LOC"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 8
+  },
+  {
+   "key": "P840",
+   "label": "narrative location",
+   "description": "the narrative of the work is set in this location",
+   "domains": [
+    "PER",
+    "ORG",
+    "LOC",
+    "MISC"
+   ],
+   "ranges": [
+    "LOC"
+   ],
+   "train_count": 83
+  },
+  {
+   "key": "P86",
+   "label": "composer",
+   "description": "person(s) who wrote the music [for lyricist, use \"lyrics by\" (P676)]",
+   "domains": [
+    "MISC"
+   ],
+   "ranges": [
+    "PER"
+   ],
+   "train_count": 171
+  },
+  {
+   "key": "P937",
+   "label": "work location",
+   "description": "location where persons or organisations were actively participating in employment, business or other work",
+   "domains": [
+    "PER"
+   ],
+   "ranges": [
+    "ORG",
+    "LOC"
+   ],
+   "train_count": 204
+  }
+ ]
+}

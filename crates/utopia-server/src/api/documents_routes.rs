@@ -1,13 +1,21 @@
+use axum::extract::FromRequestParts;
 use axum::extract::{Multipart, Path, Query, State};
+use axum::http::request::Parts;
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
+use axum_extra::extract::cookie::CookieJar;
+use percent_encoding::{percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use utopia_core::models::{Document, Role};
 use utopia_core::AppError;
+use utopia_store::tokens::Authenticated;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
+use crate::error::ApiErr;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -16,6 +24,219 @@ pub struct UploadQuery {
     /// 目标 folder 来源：上传直接归入该文件夹（仅 kind=folder 接受上传）
     #[serde(default)]
     pub source: Option<Uuid>,
+}
+
+const PAT_PREFIX: &str = utopia_store::tokens::PREFIX;
+
+/// Web session or personal access token, resolved far enough to enforce both
+/// identity and token scope.
+///
+/// `AuthUser` cannot play this role: it interprets every bearer string as a
+/// JWT, so the PAT designed for API clients would become a 401 before the
+/// route could apply its Viewer check.
+pub struct DocumentReader {
+    pub user: utopia_core::models::User,
+    pub pat: Option<Authenticated>,
+}
+
+impl FromRequestParts<AppState> for DocumentReader {
+    type Rejection = ApiErr;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let raw = CookieJar::from_headers(&parts.headers)
+            .get(crate::auth::COOKIE_NAME)
+            .map(|cookie| cookie.value().to_string())
+            .or_else(|| {
+                parts
+                    .headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.strip_prefix("Bearer "))
+                    .map(str::to_owned)
+            })
+            .ok_or(AppError::Unauthorized)?;
+
+        if raw.starts_with(PAT_PREFIX) {
+            let auth = utopia_store::tokens::authenticate(&state.pool, raw.trim()).await?;
+            let user = utopia_store::accounts::find_user_by_id(&state.pool, auth.user_id)
+                .await?
+                .ok_or(AppError::Unauthorized)?;
+            return Ok(Self {
+                user,
+                pat: Some(auth),
+            });
+        }
+
+        let user_id = crate::auth::decode_user_id(state, &raw)?;
+        let user = utopia_store::accounts::find_user_by_id(&state.pool, user_id)
+            .await?
+            .ok_or(AppError::Unauthorized)?;
+        Ok(Self { user, pat: None })
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ContentQuery {
+    #[serde(default)]
+    pub version: Option<i32>,
+}
+
+const PURGED_MESSAGE: &str = "The document contents have been purged";
+
+fn gone(message: &'static str) -> Response {
+    (StatusCode::GONE, Json(json!({ "error": message }))).into_response()
+}
+
+fn missing_blob_invariant(document_id: Uuid, sha256: &str) -> AppError {
+    AppError::Other(anyhow::anyhow!(
+        "document {document_id} ledger references unavailable blob {sha256}"
+    ))
+}
+
+fn content_disposition(filename: &str) -> String {
+    const FILENAME: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'.').remove(b'_');
+
+    let fallback: String = filename
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let encoded = percent_encode(filename.as_bytes(), FILENAME);
+    format!("attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}")
+}
+
+fn content_headers(
+    document: &Document,
+    version: &utopia_store::documents::DocumentVersion,
+    byte_count: usize,
+) -> ApiResult<HeaderMap> {
+    let mime = HeaderValue::from_str(&document.mime)
+        .map_err(|_| anyhow::anyhow!("document {} has an invalid MIME header", document.id))?;
+    let disposition = HeaderValue::from_str(&content_disposition(&document.filename))
+        .map_err(|_| anyhow::anyhow!("document {} has an unsafe filename", document.id))?;
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, mime);
+    headers.insert(
+        header::CONTENT_LENGTH,
+        HeaderValue::from_str(&byte_count.to_string())
+            .map_err(|_| anyhow::anyhow!("content length is not a valid header"))?,
+    );
+    headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&format!("\"{}\"", version.sha256))
+            .map_err(|_| anyhow::anyhow!("document digest is not a valid header"))?,
+    );
+    headers.insert(header::CONTENT_DISPOSITION, disposition);
+    Ok(headers)
+}
+
+async fn require_reader_kb(
+    state: &AppState,
+    reader: &DocumentReader,
+    kb_id: Uuid,
+) -> ApiResult<()> {
+    utopia_store::access::require_kb(&state.pool, &reader.user, kb_id, Role::Viewer).await?;
+    if let Some(pat) = &reader.pat {
+        if !pat.covers(kb_id) {
+            return Err(AppError::NotFound.into());
+        }
+    }
+    Ok(())
+}
+
+/// Serve the retained original named by the document ledger.
+pub async fn content(
+    State(state): State<AppState>,
+    reader: DocumentReader,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ContentQuery>,
+) -> ApiResult<Response> {
+    if query.version.is_some_and(|version| version < 1) {
+        return Err(AppError::invalid("bad_version", "Version must be 1 or greater").into());
+    }
+    let document = utopia_store::documents::get(&state.pool, id).await?;
+    require_reader_kb(&state, &reader, document.kb_id).await?;
+    if document.purged_at.is_some() {
+        return Ok(gone(PURGED_MESSAGE));
+    }
+
+    // Hold the row lock through the blob read. Replacement and purge otherwise
+    // can move or delete the selected blob after the ledger says we may serve it.
+    let mut tx = state.pool.begin().await?;
+    let document: Document =
+        sqlx::query_as("SELECT * FROM documents WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if document.purged_at.is_some() {
+        return Ok(gone(PURGED_MESSAGE));
+    }
+    let version: utopia_store::documents::DocumentVersion = match query.version {
+        Some(requested) => sqlx::query_as(
+            "SELECT version, sha256, size_bytes, ingested_at
+               FROM document_versions WHERE document_id = $1 AND version = $2",
+        )
+        .bind(id)
+        .bind(requested)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?,
+        None => sqlx::query_as(
+            "SELECT version, sha256, size_bytes, ingested_at
+               FROM document_versions WHERE document_id = $1 AND sha256 = $2
+               ORDER BY version DESC LIMIT 1",
+        )
+        .bind(id)
+        .bind(&document.sha256)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "document {} has no ledger version for its current digest",
+                id
+            )
+        })?,
+    };
+    let bytes = state
+        .blob
+        .get(&version.sha256)
+        .await
+        .map_err(|_| missing_blob_invariant(id, &version.sha256))?;
+    tx.commit().await?;
+
+    if version.size_bytes != bytes.len() as i64 {
+        return Err(anyhow::anyhow!(
+            "document {} version {} has an inaccurate ledger size",
+            id,
+            version.version
+        )
+        .into());
+    }
+    let headers = content_headers(&document, &version, bytes.len())?;
+    Ok((StatusCode::OK, headers, bytes).into_response())
+}
+
+/// Name the exact retained versions the content route can address.
+pub async fn versions(
+    State(state): State<AppState>,
+    reader: DocumentReader,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Response> {
+    let document = utopia_store::documents::get(&state.pool, id).await?;
+    require_reader_kb(&state, &reader, document.kb_id).await?;
+    if document.purged_at.is_some() {
+        return Ok(gone(PURGED_MESSAGE));
+    }
+    let versions = utopia_store::documents::versions(&state.pool, id).await?;
+    Ok((StatusCode::OK, Json(json!({ "versions": versions }))).into_response())
 }
 
 /// 批量上传（multipart，可多文件）。重复内容（同 KB 同 sha256）跳过。

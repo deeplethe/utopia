@@ -1,3 +1,4 @@
+import { ExpressionDraftLab } from "./pages/ExpressionDraftLab";
 import {
   createRootRoute,
   createRoute,
@@ -131,6 +132,13 @@ const libraryRoute = createRoute({
     src: typeof search.src === "string" ? search.src : undefined,
   }),
   component: Library,
+});
+
+// Unlisted opt-in exploration: authenticated reads, local drafts, no persistence.
+const expressionDraftRoute = createRoute({
+  getParentRoute: () => kbRoute,
+  path: "expression-draft",
+  component: ExpressionDraftLab,
 });
 
 const ontologyRoute = createRoute({
@@ -309,6 +317,7 @@ const routeTree = rootRoute.addChildren([
       libraryRoute,
       reviewRoute,
       ontologyRoute,
+      expressionDraftRoute,
       mappingsRoute,
       kbSettingsRoute,
     ]),

@@ -32,6 +32,10 @@ pub struct PropertyCandidate<'a> {
     /// 定义域、值域的类键；空表示没声明
     pub domains: Vec<&'a str>,
     pub ranges: Vec<&'a str>,
+    /// 这条候选是经继承命中的：声明在祖先上，签名的类是它的子类。把依据写给模型看，
+    /// 不然它对着一条 domain 是 legal_entity 的属性和一个 organization 的主语会答 null
+    /// （#807：只在代码里放宽候选是不够的，模型得看见继承的依据）
+    pub via: Vec<String>,
 }
 
 /// 一条待绑定的签名：短语、两端的类、例句与引文、候选属性
@@ -83,7 +87,8 @@ the object is a figure, a title or a status; a few statements with that signatur
 sentence it was taken from; and the candidate properties, each with its key, its label, its \
 definition, its kind (a relation between two things, or an attribute whose object is a value), \
 its domain and its range. A class written as \"?\" means the documents' kind word for that side \
-is bound to no class yet.\n\
+is bound to no class yet. A candidate marked \"fits by inheritance\" declares its domain or range on \
+an ancestor of the item's class; that is a fit, not a mismatch.\n\
 For each item, answer with the key of the one property that every statement of this signature \
 states by that property's definition, and the direction: \"forward\" when the statement's \
 subject is the property's subject, \"reverse\" when the statement's object is; or null.\n\
@@ -108,13 +113,16 @@ forward; for \"X —owns→ Y\", if subsidiary_of is the only fitting candidate,
 5. Never invent a key, never answer with a label, never choose for an item a key that is not \
 among its candidates. One triple per item, every item answered.";
 
-fn candidate_line(c: &PropertyCandidate<'_>) -> String {
+pub fn candidate_line(c: &PropertyCandidate<'_>) -> String {
     let mut line = format!("- {} · {} · {}", c.key, c.label, c.kind);
     if !c.domains.is_empty() {
         line.push_str(&format!(" · domain: {}", c.domains.join(", ")));
     }
     if !c.ranges.is_empty() {
         line.push_str(&format!(" · range: {}", c.ranges.join(", ")));
+    }
+    if !c.via.is_empty() {
+        line.push_str(&format!(" · fits by inheritance: {}", c.via.join("; ")));
     }
     line.push_str(&format!(" · {}", c.description));
     line
@@ -244,6 +252,7 @@ mod tests {
                 kind: "relation",
                 domains: vec!["organization"],
                 ranges: vec!["place"],
+                via: Vec::new(),
             },
             PropertyCandidate {
                 key: "subsidiary_of",
@@ -252,6 +261,7 @@ mod tests {
                 kind: "relation",
                 domains: vec!["organization"],
                 ranges: vec!["organization"],
+                via: Vec::new(),
             },
             PropertyCandidate {
                 key: "revenue",
@@ -260,6 +270,7 @@ mod tests {
                 kind: "attribute",
                 domains: vec!["organization"],
                 ranges: vec![],
+                via: Vec::new(),
             },
         ]
     }

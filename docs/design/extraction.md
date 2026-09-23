@@ -199,7 +199,8 @@ and clauses [0012]. The ledger rules those records made stand (see [ledger](ledg
   interpretation against the document [0045 cuts 1 to 3] were on this list and are built.
 - A second pass asking which figures and dates are not yet in a statement (dense sentences drop the
   amount); the period column of a financial-table cell [#729].
-- The errata agent over the typed graph [0044 d7].
+- The errata agent over the typed graph [0044 d7] was on this list and is built: see
+  [design/ontology](ontology.md).
 
 ## Open questions
 

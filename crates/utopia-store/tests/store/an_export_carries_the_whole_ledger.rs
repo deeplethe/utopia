@@ -222,7 +222,7 @@ async fn an_export_reads_the_whole_ledger_not_the_current_view() -> anyhow::Resu
     let f = seed(&pool).await?;
 
     // 1. 事实：撤回的那条**在**。界面把它藏起来是对的，导出把它藏起来就是骗人
-    let facts = utopia_store::export::facts_page(&pool, f.kb, None).await?;
+    let facts = utopia_store::export::facts_page(&mut pool.begin().await?, f.kb, None).await?;
     let ids: Vec<Uuid> = facts.iter().map(|x| x.id).collect();
     assert!(ids.contains(&f.live));
     assert!(
@@ -244,7 +244,8 @@ async fn an_export_reads_the_whole_ledger_not_the_current_view() -> anyhow::Resu
     assert_eq!(bare.surface_predicate.as_deref(), Some("advises"));
 
     // 4. 实体：合并掉的那个是唯一该消失的东西
-    let entities = utopia_store::export::entities_page(&pool, f.kb, None).await?;
+    let entities =
+        utopia_store::export::entities_page(&mut pool.begin().await?, f.kb, None).await?;
     let ids: Vec<Uuid> = entities.iter().map(|e| e.id).collect();
     assert!(ids.contains(&f.kept));
     assert!(
@@ -253,21 +254,21 @@ async fn an_export_reads_the_whole_ledger_not_the_current_view() -> anyhow::Resu
     );
 
     // 5. 文档：删掉的留着墓碑（#268）。抹掉出处等于抹掉证据链
-    let docs = utopia_store::export::documents_page(&pool, f.kb, None).await?;
+    let docs = utopia_store::export::documents_page(&mut pool.begin().await?, f.kb, None).await?;
     let deleted = docs.iter().find(|d| d.id == f.deleted_doc).unwrap();
     assert!(deleted.deleted_at.is_some());
 
     // 6. 派生：带着规则和前提，审计顺着它走得到断言
-    let derived = utopia_store::export::derived_page(&pool, f.kb, None).await?;
+    let derived = utopia_store::export::derived_page(&mut pool.begin().await?, f.kb, None).await?;
     let d = derived.iter().find(|d| d.id == f.derived).unwrap();
     assert_eq!(d.rule, "transitive");
     assert_eq!(d.premises, vec![f.live]);
 
     // 7. 词汇表：导入来的类留着原 IRI，公理位照抄
-    let classes = utopia_store::export::classes(&pool, f.kb).await?;
+    let classes = utopia_store::export::classes(&mut pool.begin().await?, f.kb).await?;
     let person = classes.iter().find(|c| c.key == "person").unwrap();
     assert_eq!(person.iri.as_deref(), Some("https://schema.org/Person"));
-    let relations = utopia_store::export::relations(&pool, f.kb).await?;
+    let relations = utopia_store::export::relations(&mut pool.begin().await?, f.kb).await?;
     assert!(relations
         .iter()
         .any(|r| r.key == "works_for" && r.functional));

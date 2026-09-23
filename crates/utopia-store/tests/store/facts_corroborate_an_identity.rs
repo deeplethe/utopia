@@ -147,6 +147,7 @@ async fn a_fact_in_the_text_settles_a_namesake_tie() -> anyhow::Result<()> {
             Some(f.person),
             "Zhang Wei",
             Some(&ctx),
+            None,
             Some("Zhang Wei of Finance signed off on the quarterly report."),
             &[],
         )
@@ -182,6 +183,7 @@ async fn a_clue_that_points_at_both_settles_nothing() -> anyhow::Result<()> {
             Some(f.person),
             "Zhang Wei",
             Some(&ctx),
+            None,
             Some("Platform Engineering and Finance both sent a Zhang Wei to the review."),
             &[],
         )
@@ -214,6 +216,7 @@ async fn an_employer_they_share_is_not_a_clue() -> anyhow::Result<()> {
             Some(f.person),
             "Zhang Wei",
             Some(&ctx),
+            None,
             Some("Zhang Wei has worked at Nebula Holdings for six years."),
             &[],
         )
@@ -249,6 +252,7 @@ async fn text_that_names_neither_changes_nothing() -> anyhow::Result<()> {
             Some(f.person),
             "Zhang Wei",
             Some(&ctx),
+            None,
             // 提到的是第三家公司：一致的证据没有，"不一致"也不算证据
             Some("Zhang Wei moonlights at Zenith Robotics on weekends."),
             &[],
@@ -290,6 +294,7 @@ async fn the_grey_zone_listens_to_the_facts_too() -> anyhow::Result<()> {
             Some(f.person),
             "Zhang Wei",
             Some(&ctx),
+            None,
             Some("The Finance lead, Zhang Wei, approved it."),
             &[],
         )

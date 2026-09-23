@@ -100,7 +100,7 @@ async fn a_described_thing_has_a_description_and_no_name() -> anyhow::Result<()>
         assert_eq!(recalled, None);
         // 后来一条同样措辞的提及走消解：另建一个，不归到被描述的那个身上
         let later =
-            resolution::resolve_mention(&pool, f.kb, None, description, None, None, &[]).await?;
+            resolution::resolve_mention(&pool, f.kb, None, description, None, None, None, &[]).await?;
         assert!(later.created, "描述不是桥，提及不归到它身上");
         assert_ne!(later.entity_id, id);
 

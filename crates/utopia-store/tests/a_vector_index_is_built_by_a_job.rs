@@ -88,3 +88,57 @@ async fn the_first_write_of_a_dimension_queues_one_build() -> anyhow::Result<()>
         .await?;
     run
 }
+
+/// 两个维度同时建，旁边还有事务在碰 `chunks`。两条 `CREATE INDEX CONCURRENTLY` 各自要等
+/// 表上其他事务结束，也各自算对方要等的事务，于是 Postgres 报 deadlock detected：本地复现
+/// 一轮约一半概率，错开 10ms 以上就不会（#886 把测试合成一个进程时 3/3 撞上；server 的
+/// worker 并发认领两条 build_vector_index 任务是同一件事，并发默认 64）。
+/// `build` 里的会话级咨询锁让后到的那条等前一条建完。连做八轮，不加锁时几乎必红
+#[tokio::test]
+async fn two_dimensions_built_at_once_take_turns() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    // 这个测试独占的两个维度
+    const A: usize = 11;
+    const B: usize = 13;
+    let mut outcome = Ok(());
+    for round in 0..8 {
+        for dims in [A, B] {
+            vector_index::drop(&pool, Target::Chunks, dims).await?;
+        }
+        // 摄取还在往 chunks 写：CIC 要等这些事务，死锁就靠它凑齐
+        let writer = async {
+            for _ in 0..20 {
+                let mut tx = pool.begin().await?;
+                sqlx::query("SELECT count(*) FROM chunks")
+                    .execute(&mut *tx)
+                    .await?;
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                tx.commit().await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        };
+        let (a, b, w) = tokio::join!(
+            vector_index::build(&pool, Target::Chunks, A),
+            vector_index::build(&pool, Target::Chunks, B),
+            writer
+        );
+        w?;
+        match (a, b) {
+            (Ok(a), Ok(b)) => assert!(
+                a.created && b.created,
+                "第 {round} 轮两条都建成：{a:?} {b:?}"
+            ),
+            (a, b) => {
+                outcome = Err(anyhow::anyhow!("第 {round} 轮：{a:?} / {b:?}"));
+                break;
+            }
+        }
+    }
+    for dims in [A, B] {
+        let _ = vector_index::drop(&pool, Target::Chunks, dims).await;
+    }
+    outcome
+}

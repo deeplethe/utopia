@@ -51,6 +51,21 @@ pub async fn failed_in_kb(
     Ok(Json(json!({ "failed": failed })))
 }
 
+/// 一个任务跑完了没（0051）。人定一条短语签名时拿到的是 job id 而不是结果，
+/// 结果要么从 `review` / `graph` 事件里等到，要么来这里问。Viewer 就能问：
+/// 任务属于这个库才答，否则 404，与库里看不见的东西一个口径
+pub async fn job_in_kb(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, job_id)): Path<(Uuid, i64)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let job = utopia_store::jobs::status_in_kb(&state.pool, kb_id, job_id)
+        .await?
+        .ok_or(utopia_core::AppError::NotFound)?;
+    Ok(Json(json!({ "job": job })))
+}
+
 pub async fn requeue_in_kb(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,

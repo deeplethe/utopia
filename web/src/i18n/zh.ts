@@ -10,6 +10,36 @@
 import type { Strings } from "./en";
 
 export const zh: Strings = {
+  expressionDraft: {
+    title: "表达式草稿探索",
+    unsaved: "仅为未保存的草稿，不会写入知识库，也不检查单位兼容性。",
+    undeclared: "未声明",
+    attribute: "属性",
+    constant: "数字",
+    add: "加 (+)",
+    sub: "减 (−)",
+    mul: "乘 (×)",
+    div: "除 (÷)",
+    expression: "表达式",
+    left: "左操作数",
+    right: "右操作数",
+    kind: "节点类型",
+    depthLimit: "已达嵌套深度上限，请选择属性或数字。",
+    choose: "搜索并选择…",
+    missing: "属性已不可用",
+    loading: "正在读取属性和规则…",
+    loadError: "无法读取此知识库，请检查访问权限后重试。",
+    retry: "重试",
+    empty: "此知识库尚无属性。",
+    conclusion: "结论",
+    condition: "条件",
+    existing: "探索已有表达式",
+    unsupported: "此表达式结构尚不支持，未对其进行转换。名称和说明仍可在原规则编辑器中修改。",
+    preview: "草稿预览（未保存）",
+    incomplete: "请为每个操作数选择可用属性或填写有限数字以预览。",
+    reset: "新建草稿",
+    count: (n: number) => `已读取此知识库的 ${n} 个属性`,
+  },
   app: {
     name: "Utopia",
     /* 标语与出处都与 Utopia / Persona / Charter 同类：品牌的一部分，两种语言同值 */
@@ -1548,6 +1578,7 @@ export const zh: Strings = {
     railViolations: "公理",
     railDefects: "本体",
     railAlignment: "对齐",
+    railErrata: "勘误",
     railDecisions: "决定",
     railMerges: "合并",
     railAgent: "Agent",
@@ -1636,6 +1667,7 @@ export const zh: Strings = {
       namesake: "同一篇文档里有两个同名实体",
       namesake_tie: "同名，画像分不出谁是谁",
       shared_name: "另一个实体已经叫这个名字",
+      name_vector: "名字相近（向量召回），等裁决",
       contains: "一个名字包含另一个",
       ambiguous_name: "同名，但上下文没能定夺",
       type_drift: "同名，但类型不同",
@@ -1685,9 +1717,43 @@ export const zh: Strings = {
     alignmentStatements: (n: number) => `${n} 条陈述`,
     alignmentEntities: (n: number) => `${n} 样东西`,
     alignmentVotes: (first: string, second: string) => `两票：${first} · ${second}`,
+    alignmentRuleImplies: (property: string) => `同时蕴含 ${property}`,
+    alignmentRuleObjectIsStatement: "宾语：陈述自己的宾语",
+    alignmentRuleReading: (reading: string) => `宾语：按「${reading.replace(/_/g, " ")}」从字里读出`,
+    alignmentRuleKindWord: (word: string) => `叫作「${word}」的东西`,
+    alignmentApprove: "批准规则",
+    alignmentReject: "驳回",
+    alignmentRuleAccepted: "已保存，隐含事实正在后台计算。",
+    // 勘误队列（0044 决定 7）
+    errata: "勘误 agent 留给你的",
+    errataHint:
+      "抽取之后，一个 agent 按文档复读类型化事实，结构报了的先看，撤、改、加都以文档原话为证据。会牵动图外东西的动作（有派生靠着它、有人问过它、会让只许一个值的属性有两个值）留在这里等人。",
+    errataRetract: "想撤掉",
+    errataRevise: "想改成",
+    errataAdd: "想加上",
+    errataFlag: (flag: string) =>
+      ({
+        domain: "结构报的：主语不在属性允许的类里",
+        range: "结构报的：宾语不在属性允许的类里",
+        name_absent: "结构报的：名字不在文档里",
+        no_date: "结构报的：日期属性没有日期",
+      })[flag] ?? flag,
+    errataHeld: (detail: string) => {
+      const [kind, ...rest] = detail.split(" ");
+      const value = rest.join(" ");
+      if (kind === "derived") return `留下的原因：有 ${value} 条派生靠着它`;
+      if (kind === "answered") return `留下的原因：它在 ${value} 次回答里被提到`;
+      if (kind === "contradiction") return `留下的原因：「${value}」只许一个值，这样会有两个`;
+      return `留下的原因：${detail}`;
+    },
+    errataQuote: "文档原话：",
+    errataApprove: "执行",
+    errataReject: "否",
+    errataDecided: "已保存。",
+    alignmentTooMany: (n: number) => `有 ${n} 条属性都可能对得上，多到没法问模型。请选一条或留在开放图谱。`,
     alignmentConflict: "此决定与当前状态冲突。请刷新并核对后再试。",
     alignmentKindWordBusy: "这个类别词正在被其他操作更新，请稍后重试。",
-    alignmentTyped: (kept: number, retired: number) => `类型化图谱已重算：${kept} 条成了类型化事实，${retired} 行作废`,
+    alignmentAccepted: "已保存。类型化图谱正在后台重算，算完会在这里自动刷新。",
     defects: "本体自相矛盾",
     defectsHint:
       "定义本身的问题，没有牵涉任何事实。这一档排在前面：定义站不住的时候，据它报出来的每一条事实级结论都可疑。",

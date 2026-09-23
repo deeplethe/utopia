@@ -233,9 +233,84 @@ impl ReviewStage {
     }
 }
 
-/// 单条 mention 消解。`context` 为 mention 所在分块的向量（无 embedding 模型时为 None，
-/// 退化为 v1 行为：同名归并到事实最多的候选）。
+/// 消解一个 mention。召回走两条通道（0041 决定 3）：名字字面相等（通道 1，
+/// `resolve_by_name` 里的那条 SQL）和名字向量最近邻（通道 2，给了 `name_vector` 才走）。
+///
+/// **通道 2 只提议，不决定。** 它召回到的实体这一刀不参与归并——决定该由证据来做，
+/// 那是 0041 的第 3 刀，还没建——只给裁决器排一对（`name_vector|<余弦>`），让它拿两份
+/// 画像和先例去判是不是一个。于是这一刀加的是「多问一句」，不是「多合一次」：错合
+/// 是静默的、要人回头拆，多问只是贵一点。
+///
+/// 同一个字面名字不走通道 2：那是通道 1 的地盘，它已经按画像判过了，再排一对等于
+/// 让裁决器复议一个刚做过的决定。大类对不上的也不提议（海探1 是设备，不会是一个人）。
+#[allow(clippy::too_many_arguments)]
 pub async fn resolve_mention(
+    pool: &PgPool,
+    kb_id: Uuid,
+    type_id: Option<Uuid>,
+    raw_name: &str,
+    context: Option<&[f32]>,
+    // mention 名字本身的向量（不是块的）。None = 没配嵌入模型，或这次没算
+    name_vector: Option<&[f32]>,
+    text: Option<&str>,
+    exclude: &[Uuid],
+) -> AppResult<Resolution> {
+    let mut r = resolve_by_name(pool, kb_id, type_id, raw_name, context, text, exclude).await?;
+    let Some(query) = name_vector else {
+        return Ok(r);
+    };
+    let mention_name = normalize_name(raw_name).to_lowercase();
+    let mention_family = match type_id {
+        Some(t) => type_label(pool, t)
+            .await?
+            .as_deref()
+            .and_then(crate::governance::type_family),
+        None => None,
+    };
+    let mut seen: HashSet<Uuid> = r.reviews.iter().map(|v| v.other_id).collect();
+    seen.insert(r.entity_id);
+    seen.extend(exclude.iter().copied());
+    for near in crate::name_vectors::nearest(pool, kb_id, query, crate::name_vectors::TOP_K).await?
+    {
+        if near.similarity < crate::name_vectors::SIM_FLOOR {
+            break; // 降序：后面的更远
+        }
+        if near.name.to_lowercase() == mention_name || !seen.insert(near.entity_id) {
+            continue;
+        }
+        let near_family = near
+            .type_label
+            .as_deref()
+            .and_then(crate::governance::type_family);
+        if let (Some(a), Some(b)) = (mention_family, near_family) {
+            if a != b {
+                continue;
+            }
+        }
+        r.reviews.push(ReviewRequest {
+            other_id: near.entity_id,
+            score: near.similarity,
+            reason: format!("name_vector|{:.2}", near.similarity),
+            stage: ReviewStage::Adjudicating,
+        });
+    }
+    Ok(r)
+}
+
+async fn type_label(pool: &PgPool, type_id: Uuid) -> AppResult<Option<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT label FROM entity_types WHERE id = $1")
+            .bind(type_id)
+            .fetch_optional(pool)
+            .await?,
+    )
+}
+
+/// 通道 1：名字字面相等的候选，按画像分层归并或新建（原 `resolve_mention` 的全部）。
+/// `context` 为 mention 所在分块的向量（无 embedding 模型时为 None，退化为 v1 行为：
+/// 同名归并到事实最多的候选）。
+#[allow(clippy::too_many_arguments)]
+async fn resolve_by_name(
     pool: &PgPool,
     kb_id: Uuid,
     // None = 抽取器给的类型不在本体里，或库里根本没有类（0009）

@@ -205,13 +205,15 @@ async fn resolve_uncached(
     type_id: Option<Uuid>,
     name: &str,
     ctx: Option<&[f32]>,
+    name_vec: Option<&[f32]>,
     text: Option<&str>,
     exclude: &[Uuid],
     needs_adjudication: &mut bool,
 ) -> anyhow::Result<Uuid> {
-    let r =
-        utopia_store::resolution::resolve_mention(pool, kb_id, type_id, name, ctx, text, exclude)
-            .await?;
+    let r = utopia_store::resolution::resolve_mention(
+        pool, kb_id, type_id, name, ctx, name_vec, text, exclude,
+    )
+    .await?;
     // 疑似重复对（画像灰区 / 类型漂移 / 同名并列）入审核队列。多数走批量裁决器，
     // 同名并列（`ReviewStage::Human`）分不出谁是谁，只能等人裁——它自己带着 stage。
     for review in &r.reviews {
@@ -263,6 +265,7 @@ pub(crate) async fn resolve_handle(
     type_id: Option<Uuid>,
     name: &str,
     ctx: Option<&[f32]>,
+    name_vec: Option<&[f32]>,
     text: Option<&str>,
     response_claims: &mut HashMap<String, Vec<Uuid>>,
     handled_by_name: &mut HashMap<String, Vec<Uuid>>,
@@ -302,6 +305,7 @@ pub(crate) async fn resolve_handle(
                 type_id,
                 name,
                 ctx,
+                name_vec,
                 text,
                 &excluded,
                 needs_adjudication,
@@ -466,12 +470,12 @@ mod tests {
                 "Zhang Wei",
                 None,
                 None,
+                None,
                 &mut response_claims,
                 &mut document_claims,
                 &mut bare_cache,
                 &mut needs_adjudication,
-                &mut human_reviews,
-            )
+                &mut human_reviews)
             .await?;
             let b = resolve_handle(
                 &pool,
@@ -480,12 +484,12 @@ mod tests {
                 "Zhang Wei",
                 None,
                 None,
+                None,
                 &mut response_claims,
                 &mut document_claims,
                 &mut bare_cache,
                 &mut needs_adjudication,
-                &mut human_reviews,
-            )
+                &mut human_reviews)
             .await?;
             assert_ne!(a, b);
             assert!(human_reviews);
@@ -558,12 +562,12 @@ mod tests {
                 "Zhang Wei",
                 None,
                 None,
+                None,
                 &mut later_response_claims,
                 &mut document_claims,
                 &mut bare_cache,
                 &mut needs_adjudication,
-                &mut human_reviews,
-            )
+                &mut human_reviews)
             .await?;
             assert_ne!(c, a);
             assert_ne!(c, b);
@@ -586,12 +590,12 @@ mod tests {
                 "Zhang Wei",
                 None,
                 None,
+                None,
                 &mut another_response_claims,
                 &mut document_claims,
                 &mut bare_cache,
                 &mut needs_adjudication,
-                &mut human_reviews,
-            )
+                &mut human_reviews)
             .await?;
             assert_eq!(
                 c_again, c,
@@ -712,6 +716,7 @@ mod tests {
                 Some(person),
                 "Zhang Wei",
                 Some(&ctx),
+                None,
                 None,
                 &mut response_claims,
                 &mut document_claims,

@@ -2,7 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # dev 也要跑，为的是缓存：GitHub 只让 PR 读到自己、base 分支和默认分支的缓存，
+    # 而此前没有任何一次 CI 在 dev 上跑过，于是 PR 之间互相看不见对方存的东西，
+    # 每次都从零编 300 多个依赖——今天 12 次 backend 运行，恢复缓存全是 No cache found。
+    # 顺带把「合并后的 dev 从没被 CI 跑过」这个口子堵上（见下面 migrations job 的注释）
+    branches: [main, dev]
   pull_request:
 
 # **显式只读。** 没有这一块时它继承仓库级默认，而那个默认要为
@@ -15,28 +19,98 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  backend:
+  # lint / test / build 三个 job 并行。它们互不共享产物：clippy 是 check 模式，build 是
+  # 非测试的 codegen，test 是 test profile——串在一个 job 里只是把 clippy 和 build
+  # 排到了关键路径上（缓存命中后各 36s 和 39s，未命中 143s 和 51s）。
+  # 分支保护按名字要求 backend 与 web 通过，所以 backend 保留为下面的汇总 job；
+  # 直接改名会让 clippy 和 build 悄悄退出合并门槛
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # 只有 push（dev / main）那次运行才写缓存，PR 只读。此前每个 PR 各存约 2GB，
+      # 仓库上限 10GB，五六个 PR 就挤满，按 LRU 淘汰——同一个 PR 第二次跑时自己上次
+      # 存的也已经没了：17 条缓存的最后访问时间全等于创建时间，从来没人读到过
       - uses: Swatinem/rust-cache@v2
-      - name: Install PDF text extraction tools
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils poppler-data
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # 连库测试在这里跑。从前它们放在下面的 migrations job：那边有库、这边没有，
+  # 于是同一批测试二进制被编了两遍——`cargo test --workspace` 编一遍然后全部跳过，
+  # migrations 再编一遍才真的跑。给这个 job 也起一个 Postgres，一次编译全部跑完，
+  # migrations job 只留迁移本身的检查。连库测试由此进了 backend 汇总，才真正成为合并门槛
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: utopia
+          POSTGRES_PASSWORD: utopia
+          POSTGRES_DB: utopia
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # 只在 push 时写缓存，理由见 lint job 同一处的注释
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Install PDF text extraction tools
+        run: sudo apt-get update && sudo apt-get install -y poppler-utils poppler-data
+      # 库要先迁移好：store 的一百多个集成测试和 server 的多数 fixture 不自己跑迁移，
+      # 对着空库并发起几百个测试会成片撞 relation "organizations" does not exist（#869）。
+      # 不用 sqlx-cli——装它要一分多钟，而这个 job 在关键路径上；这个 example 复用
+      # 测试本来就要编的 utopia-store，几乎不花额外时间
+      - name: 迁移测试库
+        run: cargo run -p utopia-store --example migrate
+        env:
+          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
       - name: Test
         run: cargo test --workspace
         # 装了 Poppler 就必须真的用它测：没有它时 PDF 回退的那个测试会跳过，
-        # 而一个静静跳过的测试等于没写（#248）
+        # 而一个静静跳过的测试等于没写（#248）。库同理：有库就**必须**连
+        # （UTOPIA_TEST_REQUIRE_DB），连库测试没跑成要红，不能跳过显示绿色
         env:
           UTOPIA_TEST_REQUIRE_PDFTOTEXT: "1"
+          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
+          UTOPIA_TEST_REQUIRE_DB: "1"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # 只在 push 时写缓存，理由见 lint job 同一处的注释
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - name: Build
         run: cargo build --workspace
+
+  # 汇总。分支保护要求的检查名是 backend，上面三个 job 任何一个不是 success 它就红——
+  # `if: always()` 是为了上游失败或取消时它也跑，而不是被跳过后显示为「未报告」
+  backend:
+    runs-on: ubuntu-latest
+    needs: [lint, test, build]
+    if: always()
+    steps:
+      - name: 汇总
+        run: |
+          echo "lint=${{ needs.lint.result }} test=${{ needs.test.result }} build=${{ needs.build.result }}"
+          test "${{ needs.lint.result }}" = success
+          test "${{ needs.test.result }}" = success
+          test "${{ needs.build.result }}" = success
 
   # 迁移得真的在库上跑一遍。此前 CI 只有 fmt/clippy/test/build，于是两个 PR
   # 各带一个 0025、各自通过，合进 main 之后服务直接起不来——sqlx 按版本号索引，
@@ -66,7 +140,10 @@ jobs:
             exit 1
           fi
       - uses: dtolnay/rust-toolchain@stable
+      # 只在 push 时写缓存，理由见 backend job 同一处的注释
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - name: 装 sqlx-cli
         run: cargo install sqlx-cli --no-default-features --features rustls,postgres --locked
       - name: 全新库上跑一遍
@@ -74,37 +151,9 @@ jobs:
       # 第二遍必须也过：迁移改号后要能在已经跑过旧号的库上安全重放
       - name: 再跑一遍
         run: sqlx migrate run --database-url postgres://utopia:utopia@localhost:5432/utopia
-      # 连库的测试只有这个 job 跑得动——rust job 没有数据库，那些测试在那边
-      # 会跳过并显示绿色。不在这里跑一遍，等于写了测试却永远没执行过，
-      # 比没写更糟：它会让人以为 SQL 有覆盖
-      # 整套 store 集成测试都在这里跑，而且**没有库就失败**（UTOPIA_TEST_REQUIRE_DB）：
-      # 从前只跑 graph_changes，其余二十几个在没有库的 backend job 里静默跳过，
-      # 绿色是假的（#248）
-      - name: 连库测试
-        run: |
-          set -o pipefail
-          cargo test -p utopia-store 2>&1 | tee store-tests.log
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
-      - name: 摘要
-        if: always()
-        run: |
-          passed=$(grep -o '[0-9]* passed' store-tests.log | awk '{s+=$1} END {print s+0}')
-          failed=$(grep -o '[0-9]* failed' store-tests.log | awk '{s+=$1} END {print s+0}')
-          echo "utopia-store against Postgres: **${passed} passed**, ${failed} failed — a missing database fails this job instead of skipping" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: MCP structured reads against Postgres
-        run: cargo test -p utopia-server api::mcp::tests
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
-
-      - name: Hybrid retrieval against Postgres
-        run: "cargo test -p utopia-server retrieval::"
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
+      # 连库测试不在这里：它们随 backend job 的 `cargo test --workspace` 一起跑，
+      # 那边同样有库、同样设了 UTOPIA_TEST_REQUIRE_DB。曾经放在这里是因为只有这个 job
+      # 有库，代价是同一批测试二进制编两遍；这个 job 现在只管迁移本身能不能跑、能不能重放
 
   web:
     runs-on: ubuntu-latest

@@ -6,12 +6,14 @@ mod blob;
 mod bootstrap_ontology;
 mod client_ctx;
 mod docs_corpus;
+mod errata;
 mod error;
 mod extraction;
 mod extraction_open;
 mod github_issues;
 mod governance;
 mod http_fetch;
+mod implication;
 mod ingest_sources;
 mod jira_issues;
 mod live;
@@ -498,6 +500,74 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
         }
         // 时间提及按文档解析（0045）：抽完一篇排一个，重排一次就是重新解析
         // 类别词绑到类（0044 对齐的第一片）：库级任务，抽完一篇排一个，本体改了再排
+        // 人定了一条短语签名，随判定同事务排下的重算（0051）。试锁不等：拿不到就
+        // 挂 `Deferred` 十秒后再来，占着连接排队的是别人的池子；拿到了就是一次完整
+        // 的按绑定重算，读的是当前绑定而不是判定时的载荷
+        utopia_store::phrase_bindings::MATERIALIZE_KIND => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            match utopia_store::materialize::try_materialize(&st.pool, kb_id).await? {
+                Some(typed) => {
+                    if typed.added > 0 || typed.merged > 0 || typed.retired > 0 {
+                        let _ = utopia_store::audit::record(
+                            &st.pool,
+                            Some(kb_id),
+                            Uuid::nil(),
+                            "alignment.materialized",
+                            "knowledge_base",
+                            Some(kb_id),
+                            serde_json::json!({
+                                "job_id": job.id,
+                                "added": typed.added,
+                                "merged": typed.merged,
+                                "retired": typed.retired,
+                            }),
+                        )
+                        .await;
+                        st.emit_graph(kb_id);
+                    }
+                    // 有新行才值得勘误看一眼；没新行的重算不排
+                    if typed.added > 0 {
+                        utopia_store::jobs::enqueue_unless_queued(
+                            &st.pool,
+                            utopia_store::errata::JOB_KIND,
+                            serde_json::json!({ "kb_id": kb_id }),
+                        )
+                        .await?;
+                    }
+                    // 队列卡片按绑定的状态显示，重算完了才算这条判定「落地」
+                    st.emit_review(kb_id);
+                    Ok(())
+                }
+                None => Err(anyhow::anyhow!("typed projection busy").context(
+                    utopia_core::Deferred::new(std::time::Duration::from_secs(10)),
+                )),
+            }
+        }
+        // 已批准的蕴含规则要的读数（0044 决定 3 第五片）：问模型、填缓存、排物化
+        utopia_store::implication_rules::READ_KIND => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            implication::read_phrases(st, kb_id).await
+        }
+        // 勘误 agent（0044 决定 7）：物化出了新行的文档，按文档复审类型化图谱
+        utopia_store::errata::JOB_KIND => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            errata::review(st, kb_id).await
+        }
         "align_types" => {
             let kb_id: Uuid = job
                 .payload

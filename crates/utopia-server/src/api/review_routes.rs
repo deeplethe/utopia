@@ -12,6 +12,10 @@ use crate::auth::AuthUser;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
+#[cfg(test)]
+#[path = "review_routes_phrase_tests.rs"]
+mod phrase_tests;
+
 /// 一页多少条。**服务端的默认，不是上限**——前端可以要更少，多则被 clamp 挡住
 const REVIEW_PAGE: i64 = 10;
 
@@ -117,6 +121,8 @@ pub async fn list(
         "alignment" => {
             json!(utopia_store::alignment_queue::list(&state.pool, kb_id, limit, offset).await?)
         }
+        // 勘误 agent 留给人的动作（0044 决定 7）：闸门拦下的撤、改、加
+        "errata" => json!(utopia_store::errata::held(&state.pool, kb_id, limit, offset).await?),
         "violations" => {
             json!(
                 utopia_store::reasoning::open_violations(&state.pool, kb_id, limit, offset).await?
@@ -1223,12 +1229,58 @@ pub struct DecideAlignmentPhraseReq {
 
 /// 人定一条短语签名绑到哪个属性（#725 对齐队列）。写成人的判定，代理此后不再改它；
 /// 类型化图谱立刻按新绑定重算。
+#[derive(Deserialize)]
+pub struct DecideAlignmentRuleReq {
+    pub approve: bool,
+}
+
+/// 人批或驳一条蕴含规则（0044 决定 3 第五片）。与短语判定同一套：决定和它的后续工作
+/// 一次提交，答 202 和 job id。批准且要读数的先排 `read_phrases`（填缓存后自己排物化），
+/// 否则直接排物化——驳回也要重算，隐含行得退掉
+pub async fn decide_alignment_rule(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, rule_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideAlignmentRuleReq>,
+) -> ApiResult<(axum::http::StatusCode, Json<serde_json::Value>)> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let rule = utopia_store::implication_rules::get(&state.pool, kb_id, rule_id)
+        .await?
+        .ok_or(utopia_core::AppError::NotFound)?;
+    let votes = json!({ "person": if req.approve { "approve" } else { "reject" } });
+    let job_id = utopia_store::implication_rules::decide_with_delivery(
+        &state.pool,
+        kb_id,
+        rule_id,
+        req.approve,
+        &votes,
+    )
+    .await?
+    .ok_or(utopia_core::AppError::NotFound)?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "alignment.rule_decided",
+        "implication_rule",
+        Some(rule_id),
+        json!({ "trigger": rule.trigger, "phrase": rule.phrase, "reading": rule.reading,
+                "approve": req.approve, "job_id": job_id }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "ok": true, "job_id": job_id, "status": "accepted" })),
+    ))
+}
+
 pub async fn decide_alignment_phrase(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path((kb_id, binding_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<DecideAlignmentPhraseReq>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<(axum::http::StatusCode, Json<serde_json::Value>)> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let sig = utopia_store::phrase_bindings::signature_of(&state.pool, kb_id, binding_id)
         .await?
@@ -1264,7 +1316,10 @@ pub async fn decide_alignment_phrase(
         }
     };
     let votes = json!({ "person": { "property": req.property, "direction": direction } });
-    utopia_store::phrase_bindings::decide(
+    // 判定和它的重算任务一次提交（0051）。这里**不再**同步重算：等物化锁占的是池里的
+    // 连接，而正在跑的那次对齐可能已经读完最后一遍，谁也不替这条判定投影。一个 job
+    // 只在判定提交后可见，worker 读的是当前绑定；屏幕上等的是 `review` / `graph` 事件
+    let job_id = utopia_store::phrase_bindings::decide_with_delivery(
         &state.pool,
         kb_id,
         &sig,
@@ -1274,10 +1329,11 @@ pub async fn decide_alignment_phrase(
             status: if property.is_some() { "bound" } else { "none" },
             votes: &votes,
             decided_by: "person",
+            basis: None,
         },
     )
-    .await?;
-    let typed = utopia_store::materialize::materialize(&state.pool, kb_id).await?;
+    .await?
+    .ok_or_else(|| utopia_core::AppError::Conflict("the decision was not written".into()))?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -1286,13 +1342,14 @@ pub async fn decide_alignment_phrase(
         "phrase_binding",
         Some(binding_id),
         json!({ "phrase": sig.phrase, "property": req.property, "direction": direction,
-                "typed_added": typed.added, "typed_retired": typed.retired }),
+                "job_id": job_id }),
     )
     .await;
     state.emit_review(kb_id);
-    state.emit_graph(kb_id);
-    Ok(Json(
-        json!({ "ok": true, "typed": { "added": typed.added, "merged": typed.merged, "retired": typed.retired } }),
+    // 202：收下了，投影在路上。不编一个 typed: {added: 0} 出来——那不是这次请求知道的事
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "ok": true, "job_id": job_id, "status": "accepted" })),
     ))
 }
 
@@ -1356,6 +1413,40 @@ pub async fn decide_alignment_kind_word(
         "type_binding",
         None,
         json!({ "kind_word": kind_word, "class": req.class }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    state.emit_graph(kb_id);
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct DecideErrataReq {
+    pub approve: bool,
+}
+
+/// 人答勘误 agent 留下的一笔（0044 决定 7）：批了就执行那个动作，否了只记一笔
+pub async fn decide_errata(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, action_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideErrataReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let found =
+        utopia_store::errata::decide_held(&state.pool, kb_id, action_id, req.approve, user.id)
+            .await?;
+    if !found {
+        return Err(utopia_core::AppError::NotFound.into());
+    }
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "errata.decided",
+        "errata_action",
+        Some(action_id),
+        json!({ "approve": req.approve }),
     )
     .await;
     state.emit_review(kb_id);

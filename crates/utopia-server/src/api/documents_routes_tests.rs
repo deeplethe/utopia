@@ -1,6 +1,6 @@
 use super::content_time;
 use axum::body::{to_bytes, Body};
-use axum::http::{Request, StatusCode};
+use axum::http::{HeaderMap, Request, StatusCode};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -48,6 +48,238 @@ fn only_a_complete_opening_dateline_sets_the_date() {
     ] {
         assert_eq!(content_time(filename, b"2024-02-29"), None);
     }
+}
+
+impl Fixture {
+    async fn get_raw(
+        &self,
+        path: &str,
+        token: Option<&str>,
+    ) -> anyhow::Result<(StatusCode, HeaderMap, Vec<u8>)> {
+        let mut request = Request::get(path);
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        let response = self
+            .app
+            .clone()
+            .oneshot(request.body(Body::empty())?)
+            .await?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        let bytes = to_bytes(response.into_body(), 128 * 1024 * 1024)
+            .await?
+            .to_vec();
+        Ok((status, headers, bytes))
+    }
+
+    async fn get_json(
+        &self,
+        path: &str,
+        token: Option<&str>,
+    ) -> anyhow::Result<(StatusCode, Value)> {
+        let (status, _, bytes) = self.get_raw(path, token).await?;
+        Ok((status, serde_json::from_slice(&bytes)?))
+    }
+}
+
+fn content_headers(headers: &HeaderMap, sha256: &str, size: usize) {
+    assert_eq!(
+        headers["content-type"], "application/x-audit-record",
+        "the ledger's MIME, not a guessed type"
+    );
+    assert_eq!(headers["content-length"], size.to_string());
+    assert_eq!(headers["etag"], format!("\"{sha256}\""));
+    assert_eq!(
+        headers["content-disposition"],
+        "attachment; filename=\"audit.bin\"; filename*=UTF-8''audit.bin"
+    );
+}
+
+#[tokio::test]
+async fn document_content_serves_the_current_and_recorded_versions() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let original = b"generation one".to_vec();
+    let doc = f.create_retained(f.kb, &original).await?;
+
+    let path = format!("/api/v1/documents/{}/content", doc.id);
+    let (status, headers, bytes) = f.get_raw(&path, Some(&f.token)).await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(bytes, original);
+    content_headers(&headers, &doc.sha256, original.len());
+
+    let revised = b"generation two has grown".to_vec();
+    use sha2::{Digest, Sha256};
+    let revised_sha = super::hex(&Sha256::digest(&revised));
+    f.state.blob.put(&revised_sha, &revised).await?;
+    documents::replace_content_and_enqueue_processing(
+        &f.pool,
+        doc.id,
+        &doc.filename,
+        &doc.mime,
+        revised.len() as i64,
+        &revised_sha,
+        None,
+    )
+    .await?;
+    let (status, headers, bytes) = f
+        .get_raw(&format!("{path}?version=2"), Some(&f.token))
+        .await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(bytes, revised);
+    content_headers(&headers, &revised_sha, revised.len());
+
+    let (status, headers, bytes) = f
+        .get_raw(&format!("{path}?version=1"), Some(&f.token))
+        .await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(bytes, original);
+    content_headers(&headers, &doc.sha256, original.len());
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn versions_ledger_names_what_content_can_serve() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let original = b"auditable history";
+    let doc = f.create_retained(f.kb, original).await?;
+
+    let (status, body) = f
+        .get_json(
+            &format!("/api/v1/documents/{}/versions", doc.id),
+            Some(&f.token),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let versions = body["versions"].as_array().expect("version ledger");
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0]["version"], 1);
+    assert_eq!(versions[0]["sha256"], doc.sha256);
+    assert_eq!(versions[0]["size_bytes"], original.len() as i64);
+    assert!(versions[0]["ingested_at"].is_string());
+
+    let path = format!("/api/v1/documents/{}/content?version=99", doc.id);
+    let (status, _, bytes) = f.get_raw(&path, Some(&f.token)).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{:?}", bytes);
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn deleted_bytes_stay_readable_and_purged_tombstones_answer_gone() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let original = b"retained after deletion";
+    let doc = f.create_retained(f.kb, original).await?;
+    documents::delete(&f.pool, f.kb, doc.id, None).await?;
+
+    let path = format!("/api/v1/documents/{}/content", doc.id);
+    let (status, _, bytes) = f.get_raw(&path, Some(&f.token)).await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(bytes, original);
+
+    documents::purge(&f.pool, f.kb, doc.id).await?;
+    let (status, _, bytes) = f.get_raw(&path, Some(&f.token)).await?;
+    assert_eq!(status, StatusCode::GONE, "{:?}", bytes);
+    let versions_path = format!("/api/v1/documents/{}/versions", doc.id);
+    let (status, _, bytes) = f.get_raw(&versions_path, Some(&f.token)).await?;
+    assert_eq!(status, StatusCode::GONE, "{:?}", bytes);
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn a_ledger_referenced_missing_blob_is_an_invariant_failure() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (status, created) = f
+        .upload(f.kb, "", &[("audit.bin", "still promised")])
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let doc = f.created_docs(&created).await?.remove(0);
+    f.state.blob.delete(&doc.sha256).await?;
+
+    let path = format!("/api/v1/documents/{}/content", doc.id);
+    let (status, _, bytes) = f.get_raw(&path, Some(&f.token)).await?;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{:?}", bytes);
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn content_reads_keep_viewer_access_pat_scope_and_reject_source_tokens() -> anyhow::Result<()>
+{
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let doc = f.create_retained(f.kb, b"scoped bytes").await?;
+    let content_path = format!("/api/v1/documents/{}/content", doc.id);
+    let versions_path = format!("/api/v1/documents/{}/versions", doc.id);
+
+    sqlx::query("UPDATE kb_members SET role='viewer' WHERE kb_id=$1 AND user_id=$2")
+        .bind(f.kb)
+        .bind(f.user)
+        .execute(&f.pool)
+        .await?;
+    let (status, _, bytes) = f.get_raw(&content_path, Some(&f.token)).await?;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{}",
+        String::from_utf8_lossy(&bytes)
+    );
+
+    let (_, pat) =
+        utopia_store::tokens::issue(&f.pool, f.user, "audit", "read", None, None).await?;
+    for path in [&content_path, &versions_path] {
+        let (status, _, bytes) = f.get_raw(path, Some(&pat)).await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+    }
+
+    let (_, scoped_pat) = utopia_store::tokens::issue(
+        &f.pool,
+        f.user,
+        "other base only",
+        "read",
+        Some(&[f.other_kb]),
+        None,
+    )
+    .await?;
+    let (status, _, bytes) = f.get_raw(&content_path, Some(&scoped_pat)).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{:?}", bytes);
+
+    let source_token = crate::api::sources_routes::new_ingest_token();
+    let (status, _, bytes) = f.get_raw(&content_path, Some(&source_token)).await?;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{:?}", bytes);
+    f.cleanup().await
 }
 
 #[test]
@@ -158,6 +390,25 @@ impl Fixture {
             token,
             _dir: dir,
         }))
+    }
+
+    async fn create_retained(&self, kb: Uuid, bytes: &[u8]) -> anyhow::Result<Document> {
+        use sha2::{Digest, Sha256};
+
+        let sha256 = super::hex(&Sha256::digest(bytes));
+        self.state.blob.put(&sha256, bytes).await?;
+        Ok(documents::create_with_version_and_processing(
+            &self.pool,
+            kb,
+            "audit.bin",
+            "application/x-audit-record",
+            bytes.len() as i64,
+            &sha256,
+            None,
+            None,
+            None,
+        )
+        .await?)
     }
 
     async fn upload(

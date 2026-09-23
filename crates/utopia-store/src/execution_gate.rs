@@ -149,6 +149,73 @@ pub async fn impact_of(pool: &PgPool, kb_id: Uuid, a: Uuid, b: Uuid) -> AppResul
     })
 }
 
+/// 撤一条事实会牵动什么（0044 决定 7 的勘误 agent 走这同一道闸门）：以它为前提、还成立的
+/// 派生；把它的主语认下过的回答（回答记的是它认下的东西，不是引的事实——主语被问过，
+/// 关于它的一条事实就可能进过答案；与合并同一个口径）。矛盾一栏空着：撤掉一条不会开出违规
+pub async fn impact_of_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<Impact> {
+    let derived: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT d.id) FROM fact_derivations fd
+           JOIN derived_facts d ON d.id = fd.derived_fact_id
+          WHERE fd.premise_fact_id = $2 AND d.kb_id = $1 AND d.invalidated_at IS NULL",
+    )
+    .bind(kb_id)
+    .bind(fact_id)
+    .fetch_one(pool)
+    .await?;
+    let answered: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM conversation_messages m
+           JOIN conversations c ON c.id = m.conversation_id
+          WHERE c.kb_id = $1 AND m.role = 'assistant'
+            AND EXISTS (SELECT 1 FROM jsonb_array_elements(m.resolved) e
+                         WHERE e->>'id' = (SELECT subject_id::text FROM facts WHERE id = $2))",
+    )
+    .bind(kb_id)
+    .bind(fact_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(Impact {
+        contradictions: vec![],
+        derived,
+        answered,
+    })
+}
+
+/// 写一条事实会牵动什么：谓词只许一个值而主语已经有另一个东西——一致性检查下一次跑就
+/// 开出 `functional` 违规。与 0027 §5 同一个口径：只看实体宾语的边，不看时间，不看字面值
+pub async fn impact_of_write(
+    pool: &PgPool,
+    kb_id: Uuid,
+    subject_id: Uuid,
+    predicate_id: Uuid,
+    object_id: Option<Uuid>,
+    // 这次写是要取代的那一行：改一条事实时旧行还活着，它不算撞
+    replacing: Option<Uuid>,
+) -> AppResult<Impact> {
+    let Some(object) = object_id else {
+        return Ok(Impact::default());
+    };
+    let clash: Option<String> = sqlx::query_scalar(
+        "SELECT r.label FROM relation_types r
+          WHERE r.id = $2 AND r.kb_id = $1 AND r.functional
+            AND EXISTS (SELECT 1 FROM facts f
+                         WHERE f.kb_id = $1 AND f.subject_id = $3 AND f.predicate_id = $2
+                           AND f.invalidated_at IS NULL AND f.object_id IS NOT NULL
+                           AND f.object_id <> $4 AND f.id IS DISTINCT FROM $5)",
+    )
+    .bind(kb_id)
+    .bind(predicate_id)
+    .bind(subject_id)
+    .bind(object)
+    .bind(replacing)
+    .fetch_optional(pool)
+    .await?;
+    Ok(Impact {
+        contradictions: clash.into_iter().collect(),
+        derived: 0,
+        answered: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

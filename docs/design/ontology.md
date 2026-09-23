@@ -66,15 +66,57 @@ candidates in opposite orders must agree on the property and the direction (forw
 statement's subject is the property's subject, reverse when its object is) for the signature to
 bind. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
-workbench's suggestions. Bindings live in `phrase_bindings`: a bound result goes stale when its
-selected property changes; `none` and `undecided` go stale when any property in the base is added
-or updated, since an existing property's revised definition may now fit [#773]. Kind-word bindings
-use the same rule for classes. Both use `updated_at`, so cosmetic edits can also trigger
-reevaluation. Even one edit can reopen all older automatic negative bindings on that side of the
+workbench's suggestions. Bindings live in `phrase_bindings`. Candidates are the properties whose
+declared domain and range admit the endpoint classes **or an ancestor of them**, and a candidate
+that fits only by inheritance says so to the model. A decision stores a fingerprint of what it
+considered (both ancestor closures, the admitted candidates with their `updated_at`); it is stale
+when the fingerprint of the current inputs differs, which is what timestamps could not see: a
+parent edge added or removed, an edit committed while the model was answering [0053, #807, #795].
+A signature with no admissible property is recorded as `none` (its projection retires); one with
+more candidates than the limit is `undecided` for the queue, not silently skipped. Kind-word
+bindings still use `updated_at`, so cosmetic edits can also trigger their reevaluation.
+
+**A shape of statement can imply a fact of another property** [0044 decision 3, migration 0073].
+An implication rule is keyed like a binding (a signature) or by a kind word, names the property it
+concludes, and takes its object from the statement's own object or from a *reading* of the object's
+words: the country a demonym names, the country a place lies in, the year a phrase gives. The
+aligner proposes rules once per decided signature and once per kind word (a "nothing implied"
+answer is recorded so it is not asked again until the basis changes); a person approves or rejects
+them on the alignment queue, and the decision commits with its job. Readings are asked of the model
+once per distinct phrase by the `read_phrases` job and cached in `phrase_readings`, including "no
+answer"; materialisation never calls a model — it reads the cache, writes the implied facts with the
+triggering statement's evidence, marks them `implied` (the export carries the flag), and retires
+them by source like any other typed row.
+
+**An errata agent reviews the typed graph after extraction** [0044 decision 7, migration 0074]. Once
+materialisation has written new rows, the `errata_review` job takes each document with typed facts
+nobody has looked at and sends them to the model with the document, the ontology's properties and,
+for each fact, the structural flag it earned: `domain` or `range` (an end outside the property's
+declared kinds, through the class hierarchy), `name_absent` (a name that does not occur in the
+document), `no_date` (a date property holding something that is not a date). Flagged facts go
+first, the rest is sampled, and a document gets a budget of two requests. The model answers a JSON
+action protocol — keep, retract, revise, or add once every given fact is answered — and every
+retract, revise and add must quote the document's own words; a quote that is not in the document,
+a name that is not in the base or a property that does not exist is recorded as refused and never
+applied (the agent creates nothing). Each verdict is a row in `errata_actions`, keep included, so
+a fact is reviewed once. An action passes the 0027 gate before it touches the graph: a fact with a
+derived fact resting on it or whose subject was named in an answer, or a write that would give a
+one-value property two values, is held for a person on the errata queue of the Review page, where
+the card shows the document, the proposed change, the quote and the reason it was held. A
+retraction sticks: materialisation and implication skip a (statement, property) pair an applied
+errata action retracted or revised, while another document's statement of the same thing still
+materialises. `errata_runs` keeps the per-document account (facts flagged and sampled, requests,
+the endpoint's token usage) for the measure 0044 names: precision gained against correct facts
+removed, at what cost.
+
+Even one edit can reopen all older automatic negative bindings on that side of the
 base, requiring two votes per eligible item through batched model requests; debouncing reduces
 the number of runs, not the items reconsidered. A burst of ontology edits debounces into one run
 rather than one run each [#757];
-a person's decision is never overwritten by the agent. On
+a person's decision is never overwritten by the agent. A person's phrase decision commits together
+with its own recomputation job and the request answers `202` with the job id; the typed graph is
+recomputed by that job, never by the request, and the page learns of it through the `review` and
+`graph` events or `GET /kbs/{id}/jobs/{job_id}` [0051]. On
 the 25-document batch with a hand-written ontology of 14 classes and 28 properties, and 60 of
 400 kind words bound, 423 signatures cover 861 statements: 36 bind (184 statements), 110 bind to
 nothing, 1 splits the votes and 276 have no admissible property because an end is unbound; a
@@ -153,9 +195,8 @@ the prompt, a description is read by people and by the aligner.
 
 ## Proposed and not built
 
-- **Alignment** (0044 cut 2), the rest: implication rules proposed by the aligner, approved on
-  the workbench, executed by code with cached readings (the sign of "下降 1.4%" is such a
-  reading); a signature that tells a figure from words on the value side. The prototype aligner reached 14.7% and
+- **Alignment** (0044 cut 2), the rest: a signature that tells a figure from words on the value
+  side; the parity run against the withdrawn bound pass on the typed-graph bench (#880). The prototype aligner reached 14.7% and
   12.1% of gold recall in two runs against 15.5% for the withdrawn bound pass, so the bar for cut 2
   is parity over two clean runs [0044, #729].
 - **The workbench** (0044 cut 5): the ontology page fed by suggestions from the open graph (frequent

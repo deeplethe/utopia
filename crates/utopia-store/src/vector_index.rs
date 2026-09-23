@@ -35,6 +35,16 @@ use utopia_core::{AppError, AppResult};
 /// 任务种类，`main.rs` 的分发按这个名字认
 pub const JOB_KIND: &str = "build_vector_index";
 
+/// 建索引的会话级咨询锁（见 [`build`]）。key 用字符串哈希，和 temporal 里的时间线锁同一套写法。
+/// 只用 **try** 版本：阻塞的 `pg_advisory_lock` 等锁时那条语句自己就是一个带快照的事务，
+/// 而 CONCURRENTLY 建到最后一步要等所有比它老的快照结束——建的等排队的、排队的等建的，
+/// 换了个地方死锁（本地复现每轮必中）。探一下就返回、不留快照，等待放在客户端
+const BUILD_TRY_LOCK: &str =
+    "SELECT pg_try_advisory_lock(hashtextextended('vector_index:build', 0))";
+const BUILD_UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended('vector_index:build', 0))";
+/// 没抢到锁时隔多久再探。建一次索引几十秒到几分钟，四分之一秒的粒度够了
+const BUILD_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// pgvector 的 HNSW 对 `vector` 类型的上限。超过的维度（text-embedding-3-large
 /// 是 3072）不建索引，查询照常走精确路径。`halfvec` 能到 4000，但那是另一种
 /// 精度，等有人用到再说
@@ -47,6 +57,8 @@ pub enum Target {
     Chunks,
     /// `entities.profile_embedding`：实体画像，类型消解按主语逐个扫它（#514）
     EntityProfiles,
+    /// `name_vectors.embedding`：名字字符串的向量，召回的第二条通道（0041 第 2 刀）
+    NameVectors,
 }
 
 impl Target {
@@ -54,6 +66,7 @@ impl Target {
         match self {
             Target::Chunks => "chunks",
             Target::EntityProfiles => "entities",
+            Target::NameVectors => "name_vectors",
         }
     }
 
@@ -61,6 +74,7 @@ impl Target {
         match self {
             Target::Chunks => "embedding",
             Target::EntityProfiles => "profile_embedding",
+            Target::NameVectors => "embedding",
         }
     }
 
@@ -73,6 +87,7 @@ impl Target {
         match key {
             "chunks" => Some(Target::Chunks),
             "entities" => Some(Target::EntityProfiles),
+            "name_vectors" => Some(Target::NameVectors),
             _ => None,
         }
     }
@@ -188,6 +203,21 @@ pub async fn build(pool: &PgPool, target: Target, dims: usize) -> AppResult<Buil
     let name = index_name(target, dims);
     let started = std::time::Instant::now();
     let mut conn = pool.acquire().await?;
+    // 一次只建一条。同一张表上两条 CONCURRENTLY 各自要等表上其他事务结束、也各自算
+    // 对方要等的事务，旁边再有摄取往 chunks 写就凑成死锁（40P01；复现在
+    // a_vector_index_is_built_by_a_job，一轮约一半概率）。worker 并发默认 64，两个维度的
+    // 构建任务被同时认领就是这个局面。锁是会话级的：CONCURRENTLY 不能进事务，事务级
+    // 咨询锁没处放；跟着这条连接走，跨 worker、跨实例都排队。建索引一次几十秒到几分钟，
+    // 排队比死锁后重试便宜
+    loop {
+        let got: bool = sqlx::query_scalar(BUILD_TRY_LOCK)
+            .fetch_one(&mut *conn)
+            .await?;
+        if got {
+            break;
+        }
+        tokio::time::sleep(BUILD_LOCK_POLL).await;
+    }
     let outcome = async {
         conn.execute("SET max_parallel_maintenance_workers = 0")
             .await?;
@@ -216,9 +246,13 @@ pub async fn build(pool: &PgPool, target: Target, dims: usize) -> AppResult<Buil
         Ok::<bool, AppError>(!existed)
     }
     .await;
-    // 会话级 SET 跟着连接回池，成败都复位
+    // 会话级 SET 跟着连接回池，成败都复位。锁也一样——解不掉就把这条连接关掉而不是
+    // 还回池子：带着锁回池，之后所有构建都会卡在它后面
     let _ = conn.execute("RESET max_parallel_maintenance_workers").await;
     let _ = conn.execute("RESET maintenance_work_mem").await;
+    if conn.execute(BUILD_UNLOCK).await.is_err() {
+        let _ = conn.close().await;
+    }
     let created = outcome?;
     remember(&name);
     Ok(Built {

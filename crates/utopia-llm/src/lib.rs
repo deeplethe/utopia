@@ -24,6 +24,8 @@ pub struct ToolCall {
 /// 工具对话的一个 assistant 回合：文本与工具调用至少其一。
 #[derive(Debug)]
 pub struct AssistantTurn {
+    /// Preserve the provider value; absent is not an implicit `stop`.
+    pub finish_reason: Option<String>,
     pub content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
 }
@@ -301,6 +303,15 @@ pub struct Reply {
     /// 端点给的收尾原因（`stop` / `length` / …）。流里没有这一项就是 `None`：
     /// 有的实现只发 `[DONE]`，缺席不代表答案是完整的
     pub finish_reason: Option<String>,
+    /// 端点报的用量（最后一帧）。不报就是 `None`——账上不编数字
+    pub usage: Option<Usage>,
+}
+
+/// 一次调用的 token 用量，端点自己报的
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
 }
 
 impl Reply {
@@ -499,6 +510,7 @@ impl LlmClient {
         let (mut buf, mut answer) = (Vec::new(), String::new());
         let (mut saw_frame, mut ended) = (false, false);
         let mut finish_reason: Option<String> = None;
+        let mut usage: Option<Usage> = None;
         while let Some(part) = bytes.next().await {
             let part = part.map_err(Unreachable)?;
             // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
@@ -513,6 +525,7 @@ impl LlmClient {
                     &mut saw_frame,
                     &mut ended,
                     &mut finish_reason,
+                    &mut usage,
                 );
             }
         }
@@ -525,6 +538,7 @@ impl LlmClient {
                 &mut saw_frame,
                 &mut ended,
                 &mut finish_reason,
+                &mut usage,
             );
         }
         if !saw_frame {
@@ -540,6 +554,7 @@ impl LlmClient {
         Ok(Reply {
             text: strip_reasoning(&answer).to_string(),
             finish_reason,
+            usage,
         })
     }
 
@@ -551,6 +566,7 @@ impl LlmClient {
         saw_frame: &mut bool,
         ended: &mut bool,
         finish_reason: &mut Option<String>,
+        usage: &mut Option<Usage>,
     ) {
         for line in frame.lines() {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
@@ -579,6 +595,11 @@ impl LlmClient {
             // 用量只在最后一帧（choices 为空）出现
             if !v["usage"].is_null() {
                 log_usage(&self.model, &v);
+                let u = &v["usage"];
+                *usage = Some(Usage {
+                    prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0),
+                    completion_tokens: u["completion_tokens"].as_u64().unwrap_or(0),
+                });
             }
         }
     }
@@ -616,6 +637,14 @@ impl LlmClient {
             }
         }
         body
+    }
+
+    /// Exact serialized streaming request size, including model and protocol fields.
+    /// Used by the bounded answer phase before any network I/O.
+    pub fn tool_free_request_bytes(&self, messages: &[serde_json::Value]) -> usize {
+        self.tools_body(messages, None, None, true)
+            .to_string()
+            .len()
     }
 
     /// 工具对话（非流式），工具清单与 `tool_choice` 都可选。
@@ -666,6 +695,9 @@ impl LlmClient {
         Ok(AssistantTurn {
             content,
             tool_calls,
+            finish_reason: body["choices"][0]["finish_reason"]
+                .as_str()
+                .map(String::from),
         })
     }
 
@@ -704,6 +736,7 @@ impl LlmClient {
             let mut buf = Vec::new();
             let mut content = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
+            let mut finish_reason = None;
             let mut done = false;
             'outer: while let Some(part) = bytes.next().await {
                 let part = part?;
@@ -723,7 +756,8 @@ impl LlmClient {
                         let Ok(v) = serde_json::from_str::<serde_json::Value>(data) else {
                             continue;
                         };
-                        if v["choices"][0]["finish_reason"].is_string() {
+                        if let Some(reason) = v["choices"][0]["finish_reason"].as_str() {
+                            finish_reason = Some(reason.to_string());
                             done = true;
                         }
                         let delta = &v["choices"][0]["delta"];
@@ -765,7 +799,7 @@ impl LlmClient {
             }
             calls.retain(|c| !c.name.is_empty());
             let content = if content.is_empty() { None } else { Some(content) };
-            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls });
+            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls, finish_reason });
         };
         Ok(stream)
     }
@@ -1248,6 +1282,42 @@ mod tests {
         let error = stream.try_collect::<Vec<_>>().await.unwrap_err();
         server.await.unwrap();
         assert!(error.downcast_ref::<Interrupted>().is_some(), "{error:#}");
+    }
+
+    #[tokio::test]
+    async fn tool_turns_preserve_finish_reasons_in_both_transports() {
+        use futures_util::TryStreamExt;
+        for reason in [
+            None,
+            Some("stop"),
+            Some("length"),
+            Some("tool_calls"),
+            Some("content_filter"),
+            Some("vendor_specific"),
+        ] {
+            let body = json!({"choices":[{"message":{"content":"answer"},"finish_reason":reason}]})
+                .to_string();
+            let (addr, server) = an_http_response("200 OK", "application/json", &body).await;
+            let turn = client_at(addr)
+                .chat_tools_with(&[], None, None)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            assert_eq!(turn.finish_reason.as_deref(), reason);
+            let frame = json!({"choices":[{"delta":{"content":"answer"},"finish_reason":reason}]});
+            let sse = format!("data: {frame}\n\ndata: [DONE]\n\n");
+            let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+            let stream = client_at(addr)
+                .chat_tools_stream_with(&[], None, None)
+                .await
+                .unwrap();
+            let items: Vec<ToolStreamItem> = stream.try_collect().await.unwrap();
+            server.await.unwrap();
+            let Some(ToolStreamItem::Turn(turn)) = items.last() else {
+                panic!("missing turn")
+            };
+            assert_eq!(turn.finish_reason.as_deref(), reason);
+        }
     }
 
     #[tokio::test]

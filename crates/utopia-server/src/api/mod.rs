@@ -174,6 +174,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/jobs/failed", get(jobs_routes::failed_in_kb))
         .route("/kbs/{id}/jobs/requeue", post(jobs_routes::requeue_in_kb))
         .route("/jobs/requeue", post(jobs_routes::requeue_all))
+        // 一个任务的状态（0051）：人定完短语签名拿到 job id 后来这里问跑完没
+        .route("/kbs/{id}/jobs/{job_id}", get(jobs_routes::job_in_kb))
         .route(
             "/kbs/{id}/members/{user_id}",
             axum::routing::put(kbs::set_member).delete(kbs::remove_member),
@@ -400,6 +402,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/documents/{id}",
             get(documents_routes::detail).delete(documents_routes::delete),
         )
+        .route("/documents/{id}/content", get(documents_routes::content))
+        .route("/documents/{id}/versions", get(documents_routes::versions))
         // 撤销删除（#268）：删除是墓碑，所以有得撤
         .route("/documents/{id}/restore", post(documents_routes::restore))
         // 真删（#268 下半）：只对已删除的开放，库管理员
@@ -505,6 +509,16 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route(
             "/kbs/{id}/review/alignment/kind-words/{kind_word}",
             post(review_routes::decide_alignment_kind_word),
+        )
+        // 勘误队列（0044 决定 7）：人批或否 agent 被闸门拦下的一笔
+        .route(
+            "/kbs/{id}/review/errata/{action_id}",
+            post(review_routes::decide_errata),
+        )
+        // 人批或驳一条蕴含规则（0044 决定 3 第五片）
+        .route(
+            "/kbs/{id}/review/alignment/rules/{rule_id}",
+            post(review_routes::decide_alignment_rule),
         )
         // 语义层映射的表态（0011）。跟消解审核并排——都是「引擎提议、人裁决」
         .route(
