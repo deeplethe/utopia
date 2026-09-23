@@ -70,6 +70,12 @@ async fn a_described_thing_has_a_description_and_no_name() -> anyhow::Result<()>
         assert!(type_id.is_none(), "文档的类别词不是本体的类");
         assert_eq!(specific.as_deref(), Some("subsidiary"));
 
+        // 一条迟到的别名也不能把描述变成召回桥：record 得拒绝它，而不是照单全收
+        assert_eq!(
+            names::record(&pool, f.kb, id, "the Shanghai buyer", None, None).await?,
+            None
+        );
+
         // 没有一条以它为主语的事实——尤其没有 known_as
         let facts: i64 = sqlx::query_scalar("SELECT count(*) FROM facts WHERE subject_id = $1")
             .bind(id)

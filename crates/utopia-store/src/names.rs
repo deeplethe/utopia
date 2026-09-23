@@ -75,6 +75,9 @@ pub struct NameSource<'a> {
 ///
 /// 同一个实体同一个名字只有一行（`insert_value_fact` 按主语、谓词、值去重），
 /// 再被提到只是多一条证据、证据日期往早挪。
+///
+/// 被描述的东西一个别名也不收（#770）：`description` 是它的身份，名字事实是召回
+/// 的桥；模型违反契约把描述写进 `n` 时，这里是最后一道结构闸门。
 pub async fn record(
     pool: &PgPool,
     kb_id: Uuid,
@@ -85,6 +88,19 @@ pub async fn record(
 ) -> AppResult<Option<Uuid>> {
     let name = normalize_name(name);
     if name.is_empty() {
+        return Ok(None);
+    }
+    let described: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM entities
+             WHERE id = $1 AND kb_id = $2 AND description IS NOT NULL
+         )",
+    )
+    .bind(entity_id)
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    if described {
         return Ok(None);
     }
     let attr = ensure_known_as(pool, kb_id).await?;

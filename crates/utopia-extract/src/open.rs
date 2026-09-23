@@ -184,8 +184,10 @@ the passage does not. Each is null when the passage gives none.\n\
 slot of an \"s\" entry, the last slot of an \"n\" entry.\n\
 7. \"n\" lists other names, one entry each: [name as listed, other name, quote] — a short form, \
 a former name, a spelling in another script that this passage uses for a thing in \"e\" or a \
-thing already recorded. Only names actually written in the passage; never a pronoun or a \
-description.\n\
+thing already recorded. Only a proper name or a fixed term may become another name; a role or \
+generic phrase whose referent the passage decides is never another name, even when it refers to \
+a thing in \"e\" or a thing already recorded; it stays the description or the qualifier words. \
+Only names actually written in the passage; never a pronoun or a description.\n\
 8. State nothing the passage does not state, and state each thing once: with a value or with \
 an object, not both. The Document line, the opening of the document and the list of things \
 already recorded only say where the passage comes from; write nothing about them. If the \
@@ -730,6 +732,23 @@ mod tests {
         let x = parse_open_response(raw).unwrap();
         assert_eq!(x.entities.len(), 1);
         assert!(!x.truncated);
+    }
+
+    /// `named = 0` only matters if that decision follows the thing into `n`: an
+    /// anaphoric role can pass both server checks because its words and referent
+    /// really are in the passage.
+    #[test]
+    fn a_passage_resolved_phrase_is_not_another_name() {
+        let msgs = build_open_messages("filing.txt", &[], None, "text");
+        let system = &msgs[0].content;
+        assert!(system.contains("Only a proper name or a fixed term may become another name"));
+        assert!(system.contains(
+            "a role or generic phrase whose referent the passage decides is never another name"
+        ));
+        assert!(
+            system.contains("even when it refers to a thing in \"e\" or a thing already recorded")
+        );
+        assert!(system.contains("it stays the description or the qualifier words"));
     }
 
     fn known(handle: &str, name: &str, type_key: &str) -> KnownEntity {
