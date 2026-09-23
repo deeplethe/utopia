@@ -102,6 +102,15 @@ fn assert_one_earned_terminal(what: &str, ends: Ends, sse: &str) {
 /// 一个工具调用，让这一轮走完整的取证路径再收尾。
 const TOOL: Reply = Reply::Tool("find_entities", r#"{"name":"Acme"}"#);
 
+// #845 guards the exhausted gathering boundary, not every ordinary early answer.
+// Reach that boundary before injecting a final candidate; do not widen the policy
+// just to make a one-tool fixture exercise a six-turn handoff.
+fn at_budget(candidate: Reply) -> Vec<Reply> {
+    let mut replies = vec![TOOL; 6];
+    replies.push(candidate);
+    replies
+}
+
 fn table() -> Vec<Case> {
     vec![
         // 对照行：正常回答必须是 done。没有它，上面那三条断言可以靠
@@ -122,22 +131,20 @@ fn table() -> Vec<Case> {
         // #845：端点在预算耗尽后把工具控制文本当正文吐出来
         Case {
             what: "最后一轮吐的是裸的工具控制标记",
-            replies: vec![
-                TOOL,
-                Reply::Text("<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>"),
-            ],
+            replies: at_budget(Reply::Text(
+                "<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>",
+            )),
             ends: Ends::Error,
-            pending: Some("#845"),
+            pending: None,
         },
         // #845：同上，但前面先有一段像样的叙述——分帧边界不该影响判断
         Case {
             what: "叙述之后接上工具控制标记",
-            replies: vec![
-                TOOL,
-                Reply::Text("我去核对一下证据。<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>"),
-            ],
+            replies: at_budget(Reply::Text(
+                "我去核对一下证据。\n<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>",
+            )),
             ends: Ends::Error,
-            pending: Some("#845"),
+            pending: None,
         },
     ]
 }
@@ -159,6 +166,7 @@ async fn a_turn_ends_in_exactly_one_earned_terminal() -> anyhow::Result<()> {
         };
         let sse = f.ask("Acme 去年第四季度有什么变化？").await?;
         assert_one_earned_terminal(case.what, case.ends, &sse);
+        eprintln!("verified terminal contract: {}", case.what);
         f.cleanup().await?;
         ran += 1;
     }

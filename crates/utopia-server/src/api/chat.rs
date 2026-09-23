@@ -2,6 +2,9 @@
 //! 事件序列：step*（行动轨迹）| sources（引用清单，随检索增量更新）| delta*（增量文本）→ done | error。
 //! 模型不支持 tool-calling 时自动降级为一次性 RAG 注入。
 
+#[path = "chat_finalization.rs"]
+mod finalization;
+
 use super::agent;
 use super::rig_model::{self, RigModel};
 use crate::live::Frame;
@@ -586,7 +589,7 @@ pub async fn chat(
         }
         None => utopia_store::conversations::create(&state.pool, kb_id, user.id, &query).await?,
     };
-    utopia_store::conversations::append_message(
+    let user_message_id = utopia_store::conversations::append_message(
         &state.pool,
         conversation_id,
         "user",
@@ -701,7 +704,6 @@ pub async fn chat(
         );
         let policy = agent::Policy {
             shared: shared.clone(),
-            preamble: system_prompt.clone(),
             max_rounds: MAX_ROUNDS,
         };
         let tool_server = ToolServer::new()
@@ -709,7 +711,7 @@ pub async fn chat(
             .run();
         let rig_agent = AgentBuilder::new(RigModel::new(client.clone()))
             .preamble(&system_prompt)
-            // 工具轮 + 最后那一轮作答；第 MAX_ROUNDS+1 次请求由钩子撤走工具
+            // 工具轮 + 最后那一轮作答；第 MAX_ROUNDS+1 次请求由钩子在 I/O 前交给纯作答阶段
             .default_max_turns(MAX_ROUNDS + 1)
             .add_hook(policy)
             .tool_server_handle(tool_server)
@@ -737,13 +739,25 @@ pub async fn chat(
         let mut turn_text = String::new();
         let mut turn_calls: Vec<serde_json::Value> = Vec::new();
         let mut finished = false;
+        let mut published_sources = 0;
+        let mut answer_requested = false;
 
         while let Some(item) = run.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
-                    answer_acc.push_str(&t.text);
-                    turn_text.push_str(&t.text);
-                    yield delta_event(&t.text);
+                    // Tool-round narration stays live. Withhold only the final call:
+                    // validation after streaming cannot retract protocol garbage.
+                    if shared.finalizing() {
+                        if turn_text.len().saturating_add(t.text.len()) > agent::MAX_FINAL_ANSWER_BYTES {
+                            yield error_event("Model final answer exceeded the size limit");
+                            return;
+                        }
+                        turn_text.push_str(&t.text);
+                    } else {
+                        answer_acc.push_str(&t.text);
+                        turn_text.push_str(&t.text);
+                        yield delta_event(&t.text);
+                    }
                 }
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::ToolCall {
                     tool_call, ..
@@ -780,10 +794,12 @@ pub async fn chat(
                     }
                     let text = rig_model::tool_result_text(&tool_result.content);
                     // 闸门工具不留轨迹：「你好」下面挂一条「声明不用查」是噪音
+                    let mut is_error = None;
                     if tool_result.name != agent::NO_EVIDENCE_TOOL {
-                        let mut step = shared.take_step(&internal_call_id).unwrap_or_else(|| {
-                            json!({ "kind": "tool", "label": tool_result.name, "detail": "unknown" })
-                        });
+                        let mut step = match shared.take_step(&internal_call_id) {
+                            Some((step, failed)) => { is_error = Some(failed); step }
+                            None => json!({ "kind": "tool", "label": tool_result.name, "detail": "unknown" }),
+                        };
                         // **这一步发生在正文的哪个位置。**
                         //
                         // 模型是边说边调的：说一句、查一下、再说一句。SSE 上 `delta` 与
@@ -800,15 +816,24 @@ pub async fn chat(
                         }
                         steps_acc.push(step.clone());
                         yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
-                        if step["kind"] == "search" || step["kind"] == "docs" {
-                            let sources = shared.sink.lock().await.sources.clone();
-                            yield Frame::new(
-                                "sources",
-                                serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()),
-                            );
-                        }
                     }
-                    exchange_acc.push(tool_result_message(tool_result.call.as_str(), &text));
+                    // cite() only appends: document reads can add citations too, regardless
+                    // of the UI step kind. Release the sink before yielding to subscribers.
+                    let sources = {
+                        let sink = shared.sink.lock().await;
+                        if sink.sources.len() != published_sources {
+                            published_sources = sink.sources.len();
+                            Some(sink.sources.clone())
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(sources) = sources {
+                        yield Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()));
+                    }
+                    let mut recorded = tool_result_message(tool_result.call.as_str(), &text);
+                    if let Some(failed) = is_error { recorded["is_error"] = json!(failed); }
+                    exchange_acc.push(recorded);
                 }
                 // 钩子把一个只说不查的回合退了回去：那段话已经流给用户，收不回来；
                 // 接下来的正文另起一段
@@ -824,6 +849,11 @@ pub async fn chat(
                 Ok(_) => {}
                 Err(e) => {
                     let (message, rejected) = describe(&e);
+                    if matches!(&e, StreamingError::Prompt(pe) if matches!(pe.as_ref(), PromptError::PromptCancelled { .. }))
+                        && shared.take_answer_request() {
+                        answer_requested = true;
+                        break;
+                    }
                     // **只有「端点拒绝了带工具的请求」才降级**为一次性 RAG。从前首轮
                     // 的任何错误都走这条路：一次到 SiliconFlow 的网络抖动被记成
                     // 「tool-calling 不可用」，然后 RAG 死在同一个抖动上
@@ -848,24 +878,60 @@ pub async fn chat(
                 }
             }
         }
+        // Drop the cancelled runner before the reserved, tool-free answer call.
+        drop(run);
+        if answer_requested {
+            let (sources, resolved) = {
+                let sink = shared.sink.lock().await;
+                (sink.sources.clone(), sink.resolved.clone())
+            };
+            let current = history.turn_ids.iter().position(|id| *id == user_message_id);
+            let input = finalization::AnswerContext {
+                question: &query, history: &history.turns, current,
+                prior_exchange: &history.last_tool_exchange,
+                exchange: &exchange_acc, sources: &sources, resolved: &resolved,
+            };
+            match finalization::answer(&client, input).await {
+                Ok(answer) => { turn_text = answer; turn_calls.clear(); finished = true; }
+                Err(e) => { yield error_event(&format!("Model could not produce a final answer: {e}")); return; }
+            }
+        }
         if !finished {
             yield error_event("LLM stream ended unexpectedly");
             return;
         }
-        if answer_acc.is_empty() {
+        // Check the terminal candidate, not earlier narration. The hook is the
+        // policy boundary; this is the last guard before publication and storage.
+        if shared.finalizing() {
+            if let Some(reason) = agent::finalization_error(&turn_text, !turn_calls.is_empty(), &query) {
+                yield error_event(reason);
+                return;
+            }
+            answer_acc.push_str(&turn_text);
+        } else if turn_text.trim().is_empty() {
             yield error_event("Model returned an empty answer");
             return;
         }
-        let sink = shared.sink.lock().await;
-        let _ = utopia_store::conversations::append_message(
+        let (sources, resolved) = {
+            let sink = shared.sink.lock().await;
+            (sink.sources.clone(), sink.resolved.clone())
+        };
+        let saved = utopia_store::conversations::append_message(
             &state.pool, conversation_id, "assistant", &answer_acc,
             &utopia_store::conversations::TurnRecord {
                 steps: serde_json::Value::Array(steps_acc),
-                sources: serde_json::Value::Array(sink.sources.clone()),
-                resolved: serde_json::Value::Array(sink.resolved.clone()),
+                sources: serde_json::Value::Array(sources.clone()),
+                resolved: serde_json::Value::Array(resolved),
                 tool_exchange: serde_json::Value::Array(exchange_acc),
             },
         ).await;
+        if let Err(error) = saved {
+            tracing::error!(%error, %conversation_id, "Could not persist final answer");
+            yield error_event("Could not save the answer. Please try again later.");
+            return;
+        }
+        yield Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()));
+        if shared.finalizing() { yield delta_event(&turn_text); }
         yield done_event();
     };
 
@@ -918,9 +984,14 @@ fn legacy_rag(
     client: utopia_llm::LlmClient,
 ) -> impl Stream<Item = Frame> {
     async_stream::stream! {
-        let chunks = retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None)
-            .await
-            .unwrap_or_default();
+        let chunks = match retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None).await {
+            Ok(chunks) => chunks,
+            Err(error) => {
+                tracing::warn!(%error, "fallback document retrieval failed");
+                yield error_event("Could not search the documents.");
+                return;
+            }
+        };
         let legacy_sources: Vec<serde_json::Value> = chunks
             .iter()
             .enumerate()
@@ -944,7 +1015,7 @@ fn legacy_rag(
                         Err(e) => { yield error_event(&e.to_string()); return; }
                     }
                 }
-                let _ = utopia_store::conversations::append_message(
+                if let Err(error) = utopia_store::conversations::append_message(
                     &state.pool, conversation_id, "assistant", &answer_acc,
                     &utopia_store::conversations::TurnRecord {
                         steps: serde_json::Value::Array(Vec::new()),
@@ -952,7 +1023,11 @@ fn legacy_rag(
                         resolved: serde_json::Value::Array(Vec::new()),
                         tool_exchange: serde_json::Value::Array(Vec::new()),
                     },
-                ).await;
+                ).await {
+                    tracing::error!(%error, "fallback answer persistence was not confirmed");
+                    yield error_event("Could not confirm that the answer was saved.");
+                    return;
+                }
                 yield done_event();
             }
             Err(e) => yield error_event(&e.to_string()),
@@ -976,6 +1051,10 @@ fn sse_from(
             return;
         };
         yield to_event(&snapshot.to_frame());
+        if let Some(terminal) = snapshot.terminal() {
+            yield to_event(&terminal);
+            return;
+        }
         loop {
             match rx.recv().await {
                 Ok(frame) => {
@@ -1338,3 +1417,7 @@ mod chat_empty_reply_tests;
 #[cfg(test)]
 #[path = "chat_terminal_tests.rs"]
 mod chat_terminal_tests;
+
+#[cfg(test)]
+#[path = "chat_stream_tests.rs"]
+mod stream_tests;

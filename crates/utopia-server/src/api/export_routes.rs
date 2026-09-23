@@ -4,6 +4,10 @@
 //! 一个十万条事实的库正是最需要导出的那种库，也正是「先拼成一个 String」会
 //! 把服务打死的那种库。
 //!
+//! **同一份快照**：体检、词汇表与每一页查询跑在同一条只读 REPEATABLE READ
+//! 事务里。若每页各自拿一条连接，词汇表发完之后才提交的规则会在派生页里
+//! 留下一条指向它的 `wasGeneratedBy`——图里就出现没有本体的引用。
+//!
 //! 中途出错只能截断——HTTP 头早就发出去了。所以错误进日志，而客户端拿到的是
 //! 一份短了一截的文件；这比先攒后发要好，那种做法在同样的库上根本发不出来。
 
@@ -44,7 +48,9 @@ pub async fn export(
     })?;
     let names = Names::new(kb_id, q.base.as_deref()).map_err(AppError::Validation)?;
 
-    // 导出是一次「整个库离开这台机器」的动作，台账要记下（0014 的同一条理由）
+    // 导出是一次「整个库离开这台机器」的动作，台账要记下（0014 的同一条理由）。
+    // 必须在快照事务之前写完并放掉连接：下面那条事务一占就是整个流的时长，
+    // 占着它再回头要连接，会把最小池（两条）上的并发导出互相饿死
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -56,13 +62,24 @@ pub async fn export(
     )
     .await;
 
-    let pool = state.pool.clone();
+    // 整份导出占一条连接上的只读 REPEATABLE READ 事务：下面的预检与流里
+    // 每一页查询读同一个快照，事务活到流结束
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+
+    // 出处链越库一律拒导（0070 挡新行，这里挡存量坏行）：宁可不发一个字节，
+    // 也不能把别库的对象安上本库的 IRI——那份文件看着完整、实则悬空。
+    // 在流开始之前拦下：客户端拿到的是确定性的错误，不是一截断掉的文件
+    utopia_store::export::provenance_integrity(&mut tx, kb_id).await?;
+
     let stream = async_stream::try_stream! {
         let buf = SharedBuf::default();
         let mut sink = Sink::new(format, buf.clone());
 
-        let classes = utopia_store::export::classes(&pool, kb_id).await.map_err(io)?;
-        let relations = utopia_store::export::relations(&pool, kb_id).await.map_err(io)?;
+        let classes = utopia_store::export::classes(&mut tx, kb_id).await.map_err(io)?;
+        let relations = utopia_store::export::relations(&mut tx, kb_id).await.map_err(io)?;
         let vocab = rdf::vocabulary(&names, &classes, &relations);
         for c in &classes {
             rdf::emit_class(&mut sink, &vocab, c)?;
@@ -74,7 +91,7 @@ pub async fn export(
 
         let mut after = None;
         loop {
-            let page = utopia_store::export::documents_page(&pool, kb_id, after).await.map_err(io)?;
+            let page = utopia_store::export::documents_page(&mut tx, kb_id, after).await.map_err(io)?;
             let Some(last) = page.last() else { break };
             after = Some(last.id);
             for d in &page {
@@ -85,7 +102,7 @@ pub async fn export(
 
         let mut after = None;
         loop {
-            let page = utopia_store::export::entities_page(&pool, kb_id, after).await.map_err(io)?;
+            let page = utopia_store::export::entities_page(&mut tx, kb_id, after).await.map_err(io)?;
             let Some(last) = page.last() else { break };
             after = Some(last.id);
             for e in &page {
@@ -99,7 +116,7 @@ pub async fn export(
         let now = chrono::Utc::now();
         let mut after = None;
         loop {
-            let page = utopia_store::export::facts_page(&pool, kb_id, after).await.map_err(io)?;
+            let page = utopia_store::export::facts_page(&mut tx, kb_id, after).await.map_err(io)?;
             let Some(last) = page.last() else { break };
             after = Some(last.id);
             for f in &page {
@@ -110,7 +127,7 @@ pub async fn export(
 
         let mut after = None;
         loop {
-            let page = utopia_store::export::derived_page(&pool, kb_id, after).await.map_err(io)?;
+            let page = utopia_store::export::derived_page(&mut tx, kb_id, after).await.map_err(io)?;
             let Some(last) = page.last() else { break };
             after = Some(last.id);
             for d in &page {

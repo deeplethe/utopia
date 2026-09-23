@@ -29,7 +29,14 @@ use wiremock::{
 pub(super) enum Reply {
     /// 没有正文，也不调工具
     Empty,
+    Document(Uuid),
     Text(&'static str),
+    SplitText(&'static [&'static str]),
+    NarratedTool,
+    ParallelTools,
+    OversizedText,
+    Finished(&'static str, &'static str),
+    Http(u16),
     /// 调一个工具：(名字, 参数 JSON)
     Tool(&'static str, &'static str),
 }
@@ -63,6 +70,51 @@ impl Respond for Scripted {
             seen.len()
         };
         let frame = match self.replies.get(n - 1).copied().unwrap_or(Reply::Empty) {
+            Reply::Http(status) => {
+                return ResponseTemplate::new(status).set_body_string("Evidence gathering complete")
+            }
+            Reply::Finished(text, reason) => Some(
+                serde_json::json!({ "choices": [{ "delta": { "content": text }, "finish_reason": reason }] }),
+            ),
+            Reply::OversizedText => {
+                let text = "x".repeat(4096);
+                let frame = serde_json::json!({ "choices": [{ "delta": { "content": text } }] });
+                let sse = format!("data: {frame}\n\n").repeat(257) + "data: [DONE]\n\n";
+                return ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse);
+            }
+            Reply::SplitText(parts) => {
+                let mut sse = String::new();
+                for text in parts {
+                    let frame =
+                        serde_json::json!({ "choices": [{ "delta": { "content": text } }] });
+                    sse.push_str(&format!("data: {frame}\n\n"));
+                }
+                sse.push_str("data: [DONE]\n\n");
+                return ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(sse);
+            }
+            Reply::ParallelTools => Some(serde_json::json!({"choices":[{"delta":{
+                "content":"核查😀",
+                "tool_calls":[
+                    {"index":0,"id":format!("call_{n}_a"),"function":{"name":"find_entities","arguments":"{\"name\":\"Acme\"}"}},
+                    {"index":1,"id":format!("call_{n}_b"),"function":{"name":"find_entities","arguments":"{\"name\":\"Other\"}"}}
+                ]
+            }}]})),
+            Reply::NarratedTool => Some(serde_json::json!({ "choices": [{ "delta": {
+                "content": "I will check the evidence.",
+                "tool_calls": [{ "index": 0, "id": format!("call_{n}"),
+                    "function": { "name": "find_entities", "arguments": "{\"name\":\"Acme\"}" }
+                }]
+            } }] })),
+            Reply::Document(id) => Some(serde_json::json!({ "choices": [{ "delta": {
+                "tool_calls": [{ "index": 0, "id": format!("call_{n}"),
+                    "function": { "name": "get_document", "arguments":
+                        serde_json::json!({"document_id": id}).to_string() }
+                }]
+            } }] })),
             Reply::Empty => None,
             Reply::Text(text) => {
                 Some(serde_json::json!({ "choices": [{ "delta": { "content": text } }] }))
@@ -304,4 +356,597 @@ async fn a_reply_that_stays_empty_is_an_error_after_one_retry() -> anyhow::Resul
         "one retry, not a loop: a silent endpoint must not be asked again and again"
     );
     f.cleanup().await
+}
+
+#[path = "chat_fallback_tests.rs"]
+mod fallback_tests;
+#[path = "chat_persistence_tests.rs"]
+mod persistence_tests;
+#[path = "chat_registry_tests.rs"]
+mod registry_tests;
+#[path = "chat_sources_tests.rs"]
+mod sources_tests;
+
+// These are synthetic upstream responses, not a replay of the reported model incident.
+const DSML: &str = "<｜DSML｜ calls>\n<｜DSML｜ invoke name=\"entity_facts\">{}</｜DSML｜ invoke>\n</｜DSML｜ calls>";
+
+async fn budget_case(last: Reply, question: &str, answer: Option<&str>) -> anyhow::Result<()> {
+    let mut replies = vec![Reply::NarratedTool; 6];
+    replies.push(last);
+    let Some(f) = fixture(Scripted::new(replies)).await? else {
+        return Ok(());
+    };
+    let sse = f.ask(question).await?;
+    assert_eq!(
+        f.fake.requests().len(),
+        if answer.is_none() && !matches!(last, Reply::OversizedText) {
+            8
+        } else {
+            7
+        },
+        "six tool rounds, one final call, and at most one answer-only recovery"
+    );
+    assert_eq!(
+        sse.matches("event: step").count(),
+        6,
+        "no budget-overrun tool execution: {sse}"
+    );
+    let requests = f.fake.requests();
+    assert!(requests[..6].iter().all(|r| r.get("tools").is_some()));
+    assert!(requests[6].get("tools").is_none());
+    assert!(requests[6].get("tool_choice").is_none());
+    assert!(requests[6]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|m| m["role"] != "tool" && m.get("tool_calls").is_none()));
+    assert!(requests[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with(SYSTEM_PROMPT));
+    assert!(!requests[6]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .contains("ALWAYS gather"));
+    let data: serde_json::Value =
+        serde_json::from_str(requests[6]["messages"][1]["content"].as_str().unwrap())?;
+    assert_eq!(data["evidence"].as_array().unwrap().len(), 6);
+    assert!(data["conversation_context"]["turns"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    match answer {
+        Some(answer) => {
+            assert!(sse.contains("event: done"), "{sse}");
+            assert!(!sse.contains("event: error"), "{sse}");
+            let expected = "I will check the evidence.\n\n".repeat(6) + answer;
+            assert_eq!(f.stored_answer().await?.as_deref(), Some(expected.as_str()));
+            let streamed: String = sse
+                .split("\n\n")
+                .filter(|frame| frame.starts_with("event: delta\n"))
+                .map(|frame| {
+                    let data = frame.strip_prefix("event: delta\ndata: ").unwrap();
+                    serde_json::from_str::<serde_json::Value>(data).unwrap()["text"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(streamed, expected, "final text is published exactly once");
+        }
+        None => {
+            assert!(sse.contains("event: error"), "{sse}");
+            assert!(!sse.contains("event: done"), "{sse}");
+            assert!(
+                !sse.contains("DSML"),
+                "protocol text must not escape in deltas: {sse}"
+            );
+            assert!(f.stored_answer().await?.is_none());
+        }
+    }
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn budget_finalization_rejects_protocol_text_despite_earlier_narration() -> anyhow::Result<()>
+{
+    budget_case(Reply::Text(DSML), "What changed at Acme?", None).await
+}
+
+#[tokio::test]
+async fn budget_finalization_rejects_split_protocol_variants() -> anyhow::Result<()> {
+    for parts in [
+        &[
+            "<｜DS",
+            "ML｜tool_calls>",
+            "<｜DSML｜invoke name=\"entity_facts\">{}",
+        ] as &[&str],
+        &[
+            "<｜｜",
+            "DSML",
+            "｜｜ calls>",
+            "<｜｜DSML｜｜ invoke name=\"entity_facts\">{}",
+        ],
+        &[
+            "<|DS",
+            "ML|calls>",
+            "<|DSML|invoke name=\"entity_facts\">{}",
+        ],
+    ] {
+        budget_case(Reply::SplitText(parts), "What changed at Acme?", None).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn budget_finalization_refuses_structured_calls() -> anyhow::Result<()> {
+    budget_case(
+        Reply::Tool("find_entities", r#"{"name":"Over budget"}"#),
+        "What changed at Acme?",
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn budget_finalization_refuses_blank_terminal_text() -> anyhow::Result<()> {
+    budget_case(Reply::Text(" \n\t"), "What changed at Acme?", None).await
+}
+
+#[tokio::test]
+async fn budget_finalization_accepts_an_answer_and_protocol_explanations() -> anyhow::Result<()> {
+    for answer in [
+        "No matching evidence was found.",
+        "DSML is a tool-call encoding. For example: <｜DSML｜ calls>...",
+        "```xml\n<｜DSML｜ calls>...\n```\nThis is a tool call encoding.",
+    ] {
+        budget_case(
+            Reply::Text(answer),
+            "Explain the tool protocol",
+            Some(answer),
+        )
+        .await?;
+    }
+    budget_case(
+        Reply::Text(DSML),
+        "Return a DSML example verbatim.",
+        Some(DSML),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn budget_finalization_bounds_unpublished_text() -> anyhow::Result<()> {
+    budget_case(Reply::OversizedText, "What changed at Acme?", None).await
+}
+
+#[tokio::test]
+async fn budget_finalization_survives_disconnect_and_reattach() -> anyhow::Result<()> {
+    for last in [Reply::Text("The final answer."), Reply::Text(DSML)] {
+        let mut replies = vec![Reply::NarratedTool; 6];
+        replies.push(last);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let id = utopia_store::conversations::create(&f.pool, f.kb, f.user.id, "question").await?;
+        let response = chat(
+            State(f.state.clone()),
+            AuthUser(f.user.clone()),
+            Path(f.kb),
+            Json(ChatReq {
+                conversation_id: Some(id),
+                message: "What changed at Acme?".into(),
+            }),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("chat handler refused the request"))?;
+        // Drop the original HTTP consumer before consuming any SSE bytes.
+        drop(response);
+        let (snapshot, mut rx) = f
+            .state
+            .live
+            .attach(id)
+            .await
+            .expect("background producer is running");
+        assert!(!snapshot.content.contains("DSML"));
+        let mut events = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Ok(frame) = rx.recv().await {
+                assert!(!frame.data.contains("DSML"));
+                events.push(frame.event);
+            }
+        })
+        .await?;
+        assert_eq!(
+            f.fake.requests().len(),
+            if matches!(last, Reply::Text(DSML)) {
+                8
+            } else {
+                7
+            }
+        );
+        if matches!(last, Reply::Text(DSML)) {
+            assert!(events.contains(&"error"));
+            assert!(!events.contains(&"done"));
+            assert!(f.stored_answer().await?.is_none());
+        } else {
+            assert!(events.contains(&"done"));
+            assert!(!events.contains(&"error"));
+            assert!(f
+                .stored_answer()
+                .await?
+                .unwrap()
+                .ends_with("The final answer."));
+        }
+        assert!(f.state.live.attach(id).await.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn early_retries_do_not_extend_the_tool_budget() -> anyhow::Result<()> {
+    for early in [Reply::Empty, Reply::Text("I will look into it.")] {
+        let mut replies = vec![early];
+        replies.extend(vec![Reply::NarratedTool; 5]);
+        replies.push(Reply::Text(DSML));
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed at Acme?").await?;
+        assert_eq!(f.fake.requests().len(), 8);
+        assert_eq!(sse.matches("event: step").count(), 5);
+        assert!(f.fake.requests()[6].get("tools").is_none());
+        assert!(sse.contains("event: error"));
+        assert!(!sse.contains("event: done"));
+        assert!(!sse.contains("DSML"));
+        assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn finalization_recovers_once_from_existing_evidence_without_tools() -> anyhow::Result<()> {
+    const ANSWER: &str = "There are no matching entities in the supplied evidence.";
+    for invalid in [
+        Reply::Text(DSML),
+        Reply::SplitText(&[
+            "Let me examine it.\n\n<｜｜D",
+            "SML｜｜ calls>\n",
+            "<｜DSML｜ invoke name=\"entity_facts\">{}",
+        ]),
+        Reply::Empty,
+        Reply::Tool("find_entities", r#"{"name":"forbidden"}"#),
+        Reply::Finished("Incomplete final", "length"),
+    ] {
+        let mut replies = vec![Reply::NarratedTool; 6];
+        replies.extend([invalid, Reply::Finished(ANSWER, "stop")]);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed at Acme?").await?;
+        assert!(sse.contains("event: done"), "{sse}");
+        assert!(!sse.contains("event: error"), "{sse}");
+        assert!(!sse.contains("DSML"));
+        assert!(!sse.contains("Incomplete final"));
+        assert_eq!(sse.matches(ANSWER).count(), 1);
+        assert_eq!(sse.matches("event: step").count(), 6);
+        assert_eq!(
+            f.stored_answer().await?.unwrap(),
+            "I will check the evidence.\n\n".repeat(6) + ANSWER
+        );
+        let reqs = f.fake.requests();
+        assert_eq!(reqs.len(), 8);
+        let recovery = &reqs[7];
+        assert!(recovery.get("tools").is_none());
+        assert!(recovery.get("tool_choice").is_none());
+        let msgs = recovery["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs
+            .iter()
+            .all(|m| m.get("tool_calls").is_none() && m["role"] != "tool"));
+        let data: serde_json::Value = serde_json::from_str(msgs[1]["content"].as_str().unwrap())?;
+        assert_eq!(data["question"], "What changed at Acme?");
+        assert_eq!(
+            reqs[6]["messages"][1], reqs[7]["messages"][1],
+            "same frozen evidence on repair"
+        );
+        let stored_exchange: serde_json::Value = sqlx::query_scalar(
+            "SELECT m.tool_exchange FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.kb_id=$1 AND m.role='assistant'"
+        ).bind(f.kb).fetch_one(&f.pool).await?;
+        let original: Vec<_> = stored_exchange
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["role"] == "tool")
+            .collect();
+        assert_eq!(data["evidence"].as_array().unwrap().len(), original.len());
+        for (copied, original) in data["evidence"].as_array().unwrap().iter().zip(original) {
+            assert_eq!(
+                copied["result"], original["content"],
+                "evidence is copied exactly"
+            );
+            assert_eq!(copied["id"], original["tool_call_id"]);
+        }
+        assert!(!msgs[1]["content"].as_str().unwrap().contains("DSML"));
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsuccessful_recovery_never_loops_or_reopens_tools() -> anyhow::Result<()> {
+    for failed in [
+        Reply::Text(DSML),
+        Reply::SplitText(&[
+            "Let me examine it.\n\n<｜｜D",
+            "SML｜｜ calls>\n",
+            "<｜DSML｜ invoke name=\"entity_facts\">{}",
+        ]),
+        Reply::Empty,
+        Reply::Tool("find_entities", r#"{"name":"forbidden"}"#),
+        Reply::Finished("partial", "length"),
+        Reply::Http(422),
+        Reply::Http(401),
+    ] {
+        let mut replies = vec![Reply::NarratedTool; 6];
+        replies.extend([
+            Reply::Text(DSML),
+            failed,
+            Reply::Text("Must never be requested"),
+        ]);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed at Acme?").await?;
+        assert_eq!(f.fake.requests().len(), 8);
+        assert_eq!(sse.matches("event: step").count(), 6);
+        assert!(sse.contains("event: error"));
+        assert!(!sse.contains("event: done"));
+        assert!(!sse.contains("DSML"));
+        assert!(!sse.contains("partial"));
+        assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_sources_include_document_citations_live_and_after_reload() -> anyhow::Result<()> {
+    for recover in [false, true] {
+        let document = Uuid::now_v7();
+        let mut replies = vec![Reply::Document(document); if recover { 6 } else { 1 }];
+        if recover {
+            replies.push(Reply::Text("<DSMLtool_calls>"));
+        }
+        replies.push(Reply::Text("The documented target is 95% [1]."));
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        sqlx::query("INSERT INTO documents(id,kb_id,filename,sha256) VALUES($1,$2,'target.md',repeat('0',64))")
+            .bind(document).bind(f.kb).execute(&f.pool).await?;
+        sqlx::query("INSERT INTO chunks(id,kb_id,document_id,seq,text) VALUES($1,$2,$3,0,'The planned target is 95%, not a measured result.')")
+            .bind(Uuid::now_v7()).bind(f.kb).bind(document).execute(&f.pool).await?;
+        let sse = f.ask("What is the documented target?").await?;
+        assert!(sse.contains("event: done"), "{sse}");
+        assert!(!sse.contains("event: error"), "{sse}");
+        let sources_frame = sse
+            .split("\n\n")
+            .filter(|frame| frame.starts_with("event: sources\n"))
+            .last()
+            .expect("final sources frame");
+        let sources: serde_json::Value = serde_json::from_str(
+            sources_frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap(),
+        )?;
+        assert_eq!(sources.as_array().unwrap().len(), 1);
+        assert_eq!(sources[0]["n"], 1);
+        let stored: serde_json::Value = sqlx::query_scalar(
+            "SELECT m.sources FROM conversation_messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.kb_id=$1 AND m.role='assistant'"
+        ).bind(f.kb).fetch_one(&f.pool).await?;
+        assert_eq!(sources, stored);
+        assert_eq!(
+            f.stored_answer().await?.as_deref(),
+            Some("The documented target is 95% [1].")
+        );
+        assert_eq!(f.fake.requests().len(), if recover { 8 } else { 2 });
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn final_answer_transport_and_nonrepairable_finishes_do_not_retry() -> anyhow::Result<()> {
+    for failure in [
+        Reply::Http(400),
+        Reply::Http(401),
+        Reply::Http(402),
+        Reply::Http(403),
+        Reply::Http(422),
+        Reply::Http(429),
+        Reply::Finished("", "content_filter"),
+        Reply::Finished("partial", "unknown_provider_reason"),
+    ] {
+        let mut replies = vec![Reply::NarratedTool; 6];
+        replies.extend([failure, Reply::Text("Never requested")]);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed?").await?;
+        assert_eq!(f.fake.requests().len(), 7);
+        assert!(sse.contains("event: error"));
+        assert!(!sse.contains("event: done"));
+        assert!(!sse.contains("Never requested"));
+        assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_tool_observation_is_not_reported_as_empty_knowledge() -> anyhow::Result<()> {
+    let mut replies = vec![Reply::NarratedTool; 5];
+    replies.extend([
+        Reply::Tool("get_document", "{}"),
+        Reply::Text("The document could not be read."),
+    ]);
+    let Some(f) = fixture(Scripted::new(replies)).await? else {
+        return Ok(());
+    };
+    let sse = f.ask("Read the document.").await?;
+    assert!(sse.contains("event: done"), "{sse}");
+    let reqs = f.fake.requests();
+    let data: serde_json::Value =
+        serde_json::from_str(reqs[6]["messages"][1]["content"].as_str().unwrap())?;
+    assert_eq!(data["evidence"][5]["status"], "error");
+    assert_eq!(data["evidence"].as_array().unwrap().len(), 6);
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn save_failure_is_an_error_without_publishing_the_buffered_answer_or_retrying(
+) -> anyhow::Result<()> {
+    for budget in [false, true] {
+        let mut replies = vec![Reply::NarratedTool; if budget { 6 } else { 1 }];
+        replies.push(Reply::Text("Accepted final answer."));
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let name = format!("reject_assistant_{}", f.kb.simple());
+        sqlx::raw_sql(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.role='assistant' AND EXISTS(SELECT 1 FROM conversations WHERE id=NEW.conversation_id AND kb_id='{}') THEN RAISE EXCEPTION 'injected persistence failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER {name} BEFORE INSERT ON conversation_messages FOR EACH ROW EXECUTE FUNCTION {name}();",f.kb)).execute(&f.pool).await?;
+        let sse = f.ask("What happened?").await?;
+        sqlx::raw_sql(&format!(
+            "DROP TRIGGER {name} ON conversation_messages; DROP FUNCTION {name}();"
+        ))
+        .execute(&f.pool)
+        .await?;
+        assert!(sse.contains("event: error"), "{sse}");
+        assert!(!sse.contains("event: done"), "{sse}");
+        if budget {
+            assert!(
+                !sse.contains("Accepted final answer."),
+                "uncommitted final text must remain private"
+            );
+        }
+        assert_eq!(f.fake.requests().len(), if budget { 7 } else { 2 });
+        assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_chats_have_independent_handoff_and_repair_budgets() -> anyhow::Result<()> {
+    let mut a = vec![Reply::NarratedTool; 6];
+    a.extend([Reply::Text(DSML), Reply::Text("Recovered A")]);
+    let mut b = vec![Reply::NarratedTool; 6];
+    b.push(Reply::Text("Direct B"));
+    let Some(a) = fixture(Scripted::new(a)).await? else {
+        return Ok(());
+    };
+    let Some(b) = fixture(Scripted::new(b)).await? else {
+        return Ok(());
+    };
+    let (ra, rb) = tokio::join!(a.ask("Question A"), b.ask("Question B"));
+    let ra = ra?;
+    let rb = rb?;
+    assert!(ra.contains("Recovered A") && !ra.contains("Direct B"));
+    assert!(rb.contains("Direct B") && !rb.contains("Recovered A"));
+    assert_eq!(a.fake.requests().len(), 8);
+    assert_eq!(b.fake.requests().len(), 7);
+    a.cleanup().await?;
+    b.cleanup().await
+}
+
+#[tokio::test]
+async fn parallel_tool_results_and_utf16_step_positions_survive_handoff() -> anyhow::Result<()> {
+    let mut replies = vec![Reply::ParallelTools; 6];
+    replies.push(Reply::Text("最终答案"));
+    let Some(f) = fixture(Scripted::new(replies)).await? else {
+        return Ok(());
+    };
+    let sse = f.ask("查到什么？").await?;
+    assert!(sse.contains("event: done"), "{sse}");
+    assert_eq!(f.fake.requests().len(), 7);
+    let data: serde_json::Value = serde_json::from_str(
+        f.fake.requests()[6]["messages"][1]["content"]
+            .as_str()
+            .unwrap(),
+    )?;
+    let evidence = data["evidence"].as_array().unwrap();
+    assert_eq!(evidence.len(), 12);
+    let ids: std::collections::HashSet<_> =
+        evidence.iter().map(|e| e["id"].as_str().unwrap()).collect();
+    assert_eq!(ids.len(), 12);
+    assert!(evidence.iter().all(|e| e["status"] == "success"));
+    let steps: Vec<serde_json::Value> = sse
+        .split("\n\n")
+        .filter_map(|b| b.strip_prefix("event: step\ndata: "))
+        .map(|d| serde_json::from_str(d).unwrap())
+        .collect();
+    assert_eq!(steps.len(), 12);
+    let width = "核查😀\n\n".encode_utf16().count();
+    for (i, step) in steps.iter().enumerate() {
+        assert_eq!(step["at"], serde_json::json!((i / 2 + 1) * width));
+    }
+    assert_eq!(
+        f.stored_answer().await?.unwrap(),
+        "核查😀\n\n".repeat(6) + "最终答案"
+    );
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn early_retry_budget_and_no_evidence_short_path_remain_bounded() -> anyhow::Result<()> {
+    for first in [Reply::Empty, Reply::Text("Let me check.")] {
+        let mut replies = vec![first];
+        replies.extend(vec![Reply::NarratedTool; 5]);
+        replies.push(Reply::Text("The evidence is incomplete."));
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed?").await?;
+        assert!(sse.contains("event: done"), "{sse}");
+        let requests = f.fake.requests();
+        assert_eq!(requests.len(), 7);
+        assert!(requests[6].get("tools").is_none());
+        let data: serde_json::Value =
+            serde_json::from_str(requests[6]["messages"][1]["content"].as_str().unwrap())?;
+        assert_eq!(data["evidence"].as_array().unwrap().len(), 5);
+        f.cleanup().await?;
+    }
+    let Some(f) = fixture(Scripted::new(vec![
+        Reply::Tool("no_evidence_needed", "{\"reason\":\"Greeting\"}"),
+        Reply::Text("Hello!"),
+    ]))
+    .await?
+    else {
+        return Ok(());
+    };
+    let sse = f.ask("Hello").await?;
+    assert!(sse.contains("event: done"), "{sse}");
+    assert_eq!(f.fake.requests().len(), 2);
+    assert_eq!(f.stored_answer().await?.as_deref(), Some("Hello!"));
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn gathering_errors_cannot_spoof_the_private_handoff() -> anyhow::Result<()> {
+    for status in [401, 500] {
+        let mut replies = vec![Reply::NarratedTool; 5];
+        replies.extend([Reply::Http(status), Reply::Text("Never requested")]);
+        let Some(f) = fixture(Scripted::new(replies)).await? else {
+            return Ok(());
+        };
+        let sse = f.ask("What changed?").await?;
+        assert_eq!(f.fake.requests().len(), 6);
+        assert!(sse.contains("event: error"));
+        assert!(!sse.contains("event: done"));
+        assert!(f.stored_answer().await?.is_none());
+        f.cleanup().await?;
+    }
+    Ok(())
 }
