@@ -10,8 +10,10 @@ use serde_json::{json, Value};
 
 use crate::{AdjudicationPair, IDENTITY_RULES};
 
-/// 一对最多查几次再表态。够看两侧的事实与原文各一次、翻一次台账，还剩一次
-pub const MAX_STEPS: usize = 6;
+/// 一对最多查几次再表态。模型按菜单走：两侧的事实、两侧的原文、两个名字的台账、
+/// 同名者、合并会碰到什么——八次。原来给六次，identity bench 上第二眼三分之一
+/// 「看了没收尾」：轨迹显示它把最后两次花在被拒的同名者与后果查询上，没回合表态
+pub const MAX_STEPS: usize = 8;
 
 /// 查够了还想查时的回话：不给结果，只提醒收尾
 pub const LIMIT_REACHED: &str = "Lookup limit reached: you have seen what can be seen. \
