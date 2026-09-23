@@ -194,10 +194,14 @@ async fn an_approved_rule_waits_for_its_reading_then_implies_a_fact_with_evidenc
         let rows = implied_rows(&pool, f.kb).await?;
         assert_eq!(rows, vec![(f.loud_tour, f.country, Some(us))]);
         // 证据从触发它的陈述抄来；来源记着规则与陈述
-        let src: (Uuid, Option<Uuid>) =
-            sqlx::query_as("SELECT rule_id, statement_id FROM implied_fact_sources")
-                .fetch_one(&pool)
-                .await?;
+        // 按库过滤：CI 上各测试并行共用一个库，别的库的来源行会被 fetch_one 先拿到
+        let src: (Uuid, Option<Uuid>) = sqlx::query_as(
+            "SELECT i.rule_id, i.statement_id FROM implied_fact_sources i
+               JOIN facts t ON t.id = i.fact_id WHERE t.kb_id = $1",
+        )
+        .bind(f.kb)
+        .fetch_one(&pool)
+        .await?;
         assert_eq!(src, (id, Some(f.statement)));
         // 再跑一遍什么都不动
         let o = materialize::materialize(&pool, f.kb).await?;
