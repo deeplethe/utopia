@@ -74,7 +74,19 @@ when the fingerprint of the current inputs differs, which is what timestamps cou
 parent edge added or removed, an edit committed while the model was answering [0053, #807, #795].
 A signature with no admissible property is recorded as `none` (its projection retires); one with
 more candidates than the limit is `undecided` for the queue, not silently skipped. Kind-word
-bindings still use `updated_at`, so cosmetic edits can also trigger their reevaluation. Even one edit can reopen all older automatic negative bindings on that side of the
+bindings still use `updated_at`, so cosmetic edits can also trigger their reevaluation.
+
+**A shape of statement can imply a fact of another property** [0044 decision 3, migration 0073].
+An implication rule is keyed like a binding (a signature) or by a kind word, names the property it
+concludes, and takes its object from the statement's own object or from a *reading* of the object's
+words: the country a demonym names, the country a place lies in, the year a phrase gives. The
+aligner proposes rules once per decided signature and once per kind word (a "nothing implied"
+answer is recorded so it is not asked again until the basis changes); a person approves or rejects
+them on the alignment queue, and the decision commits with its job. Readings are asked of the model
+once per distinct phrase by the `read_phrases` job and cached in `phrase_readings`, including "no
+answer"; materialisation never calls a model — it reads the cache, writes the implied facts with the
+triggering statement's evidence, marks them `implied` (the export carries the flag), and retires
+them by source like any other typed row. Even one edit can reopen all older automatic negative bindings on that side of the
 base, requiring two votes per eligible item through batched model requests; debouncing reduces
 the number of runs, not the items reconsidered. A burst of ontology edits debounces into one run
 rather than one run each [#757];
@@ -160,9 +172,8 @@ the prompt, a description is read by people and by the aligner.
 
 ## Proposed and not built
 
-- **Alignment** (0044 cut 2), the rest: implication rules proposed by the aligner, approved on
-  the workbench, executed by code with cached readings (the sign of "下降 1.4%" is such a
-  reading); a signature that tells a figure from words on the value side. The prototype aligner reached 14.7% and
+- **Alignment** (0044 cut 2), the rest: a signature that tells a figure from words on the value
+  side; the parity run against the withdrawn bound pass on the typed-graph bench (#880). The prototype aligner reached 14.7% and
   12.1% of gold recall in two runs against 15.5% for the withdrawn bound pass, so the bar for cut 2
   is parity over two clean runs [0044, #729].
 - **The workbench** (0044 cut 5): the ontology page fed by suggestions from the open graph (frequent

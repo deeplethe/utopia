@@ -470,6 +470,94 @@ async fn align_phrases_locked(
         }
     }
     tracing::info!(%kb_id, bound, none, undecided, skipped, failed, "短语对齐完成");
+    // 提规则（0044 决定 3 第五片）：本轮刚判过的签名，和带类别词的东西，问模型「这种形状
+    // 还蕴含什么」。只问本轮判过的：指纹没变的形状上一轮已经问过，答案（提案或代理驳回）
+    // 还在 implication_rules 里；指纹变了它就在 todo 里，自然再问
+    {
+        let decided_now: HashMap<_, _> = phrase_bindings::bindings(pool, kb_id)
+            .await?
+            .into_iter()
+            .map(|b| (b.key(), b))
+            .collect();
+        let kind_words = utopia_store::type_bindings::signatures(pool, kb_id).await?;
+        let existing_rules = utopia_store::implication_rules::list(pool, kb_id, None).await?;
+        let asked_kind: HashSet<&str> = existing_rules
+            .iter()
+            .filter(|r| r.trigger == "kind_word")
+            .map(|r| r.phrase.as_str())
+            .collect();
+        let mut asks: Vec<crate::implication::RuleAsk<'_>> = Vec::new();
+        for s in &todo {
+            let Some(b) = decided_now.get(&s.key()) else {
+                continue;
+            };
+            if b.status == "undecided" {
+                continue;
+            }
+            let (fitting, basis) = &considered[&s.key()];
+            let bound_to = b
+                .relation_type_id
+                .and_then(|id| props.iter().find(|p| p.id == id))
+                .map(|p| p.key.as_str());
+            asks.push(crate::implication::RuleAsk {
+                phrase: Some(s),
+                kind_word: None,
+                bound_to,
+                candidates: fitting
+                    .iter()
+                    .copied()
+                    .filter(|p| Some(p.key.as_str()) != bound_to)
+                    .collect(),
+                basis,
+            });
+        }
+        // 类别词：每个词问一次；候选是主语能落在它绑到的类（或没声明）的关系属性
+        let kind_basis: Vec<String> = kind_words
+            .iter()
+            .map(|k| {
+                phrase_bindings::basis_of(
+                    &[],
+                    &[],
+                    false,
+                    &versions
+                        .iter()
+                        .map(|(id, at)| (*id, *at))
+                        .collect::<Vec<_>>(),
+                ) + ":"
+                    + &k.kind_word
+            })
+            .collect();
+        for (k, basis) in kind_words.iter().zip(kind_basis.iter()) {
+            if asked_kind.contains(k.kind_word.as_str()) {
+                continue;
+            }
+            asks.push(crate::implication::RuleAsk {
+                phrase: None,
+                kind_word: Some(k),
+                bound_to: None,
+                candidates: props
+                    .iter()
+                    .filter(|p| p.kind == "relation" || p.kind == "attribute")
+                    .collect(),
+                basis,
+            });
+        }
+        if !asks.is_empty() {
+            match crate::implication::propose_rules(
+                state, kb_id, settings, client, &asks, &class_key, &by_key,
+            )
+            .await
+            {
+                Ok((proposed, rule_failed)) => {
+                    tracing::info!(%kb_id, asked = asks.len(), proposed, failed = rule_failed, "提规则完成");
+                    if proposed > 0 {
+                        state.emit_review(kb_id);
+                    }
+                }
+                Err(e) => tracing::warn!(%kb_id, error = %e, "提规则失败，下一轮再提"),
+            }
+        }
+    }
     // 绑定定了，视图跟着算：绑上的签名下的陈述成类型化行，绑定变了的行作废（0067）
     let typed = utopia_store::materialize::materialize(pool, kb_id).await?;
     tracing::info!(%kb_id, added = typed.added, merged = typed.merged, retired = typed.retired, "类型化事实按绑定算完");

@@ -510,6 +510,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/review/alignment/kind-words/{kind_word}",
             post(review_routes::decide_alignment_kind_word),
         )
+        // 人批或驳一条蕴含规则（0044 决定 3 第五片）
+        .route(
+            "/kbs/{id}/review/alignment/rules/{rule_id}",
+            post(review_routes::decide_alignment_rule),
+        )
         // 语义层映射的表态（0011）。跟消解审核并排——都是「引擎提议、人裁决」
         .route(
             "/kbs/{id}/review/mappings/{mapping_id}",

@@ -245,3 +245,79 @@ async fn a_phrase_decision_is_accepted_with_its_job() -> anyhow::Result<()> {
     f.cleanup().await?;
     run
 }
+
+#[tokio::test]
+async fn a_rule_decision_is_accepted_with_its_job() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        let property: Uuid =
+            sqlx::query_scalar("SELECT id FROM relation_types WHERE kb_id=$1 AND key='based_in'")
+                .bind(f.kb)
+                .fetch_one(&f.pool)
+                .await?;
+        let votes = json!({});
+        let rule = utopia_store::implication_rules::propose(
+            &f.pool,
+            f.kb,
+            &utopia_store::implication_rules::Proposal {
+                trigger: "phrase",
+                phrase: "based in",
+                subject_type_id: None,
+                object_type_id: None,
+                object_is_value: false,
+                conclude_property_id: property,
+                reading: Some("country_of_place"),
+                status: "proposed",
+                votes: &votes,
+                basis: "b",
+                statement_count: 1,
+                examples: &[],
+            },
+        )
+        .await?
+        .expect("proposed");
+        let path = format!("/api/v1/kbs/{}/review/alignment/rules/{}", f.kb, rule);
+        // Viewer 不能批
+        let (status, _) = f
+            .call(&f.viewer, "POST", &path, Some(json!({ "approve": true })))
+            .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, body) = f
+            .call(&f.editor, "POST", &path, Some(json!({ "approve": true })))
+            .await?;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let job_id = body["job_id"].as_i64().expect("job id");
+        let kind: String = sqlx::query_scalar("SELECT kind FROM jobs WHERE id=$1")
+            .bind(job_id)
+            .fetch_one(&f.pool)
+            .await?;
+        assert_eq!(
+            kind,
+            utopia_store::implication_rules::READ_KIND,
+            "a reading is needed first"
+        );
+        let r = utopia_store::implication_rules::get(&f.pool, f.kb, rule)
+            .await?
+            .unwrap();
+        assert_eq!(
+            (r.status.as_str(), r.decided_by.as_str()),
+            ("approved", "person")
+        );
+        // 换个库的 id 答 404
+        let (status, _) = f
+            .call(
+                &f.editor,
+                "POST",
+                &format!("/api/v1/kbs/{}/review/alignment/rules/{}", f.other_kb, rule),
+                Some(json!({ "approve": false })),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}

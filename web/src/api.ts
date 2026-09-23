@@ -737,6 +737,23 @@ export type AlignmentItem =
       entity_count: number;
       votes: { first?: string | null; second?: string | null } | null;
       decided_at: string;
+    }
+  | {
+      /** 对齐器提的一条蕴含规则（0044 决定 3 第五片） */
+      kind: "rule";
+      id: string;
+      trigger: "phrase" | "kind_word";
+      phrase: string;
+      subject_class: string | null;
+      object_class: string | null;
+      object_is_value: boolean;
+      property: string;
+      property_label: string;
+      reading: string | null;
+      statement_count: number;
+      examples: string[];
+      votes: { agent?: { property: string; reading: string | null } | null } | null;
+      decided_at: string;
     };
 export interface AlignmentVote {
   property: string;
@@ -2326,6 +2343,12 @@ export const api = {
     request<{ ok: boolean; job_id: number; status: "accepted" }>(
       `/api/v1/kbs/${kbId}/review/alignment/phrases/${bindingId}`,
       { method: "POST", body: JSON.stringify({ property, direction }) },
+    ),
+  /** 人批或驳一条蕴含规则：答 202 和 job id，隐含事实在后台算（0044 决定 3 第五片） */
+  decideAlignmentRule: (kbId: string, ruleId: string, approve: boolean) =>
+    request<{ ok: boolean; job_id: number; status: "accepted" }>(
+      `/api/v1/kbs/${kbId}/review/alignment/rules/${ruleId}`,
+      { method: "POST", body: JSON.stringify({ approve }) },
     ),
   /** 人定一个类别词：类，或没有。它名下的实体换类，短语签名跟着重判 */
   decideAlignmentKindWord: (kbId: string, kindWord: string, cls: string | null) =>

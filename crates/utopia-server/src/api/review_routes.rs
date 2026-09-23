@@ -1227,6 +1227,52 @@ pub struct DecideAlignmentPhraseReq {
 
 /// 人定一条短语签名绑到哪个属性（#725 对齐队列）。写成人的判定，代理此后不再改它；
 /// 类型化图谱立刻按新绑定重算。
+#[derive(Deserialize)]
+pub struct DecideAlignmentRuleReq {
+    pub approve: bool,
+}
+
+/// 人批或驳一条蕴含规则（0044 决定 3 第五片）。与短语判定同一套：决定和它的后续工作
+/// 一次提交，答 202 和 job id。批准且要读数的先排 `read_phrases`（填缓存后自己排物化），
+/// 否则直接排物化——驳回也要重算，隐含行得退掉
+pub async fn decide_alignment_rule(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, rule_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideAlignmentRuleReq>,
+) -> ApiResult<(axum::http::StatusCode, Json<serde_json::Value>)> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let rule = utopia_store::implication_rules::get(&state.pool, kb_id, rule_id)
+        .await?
+        .ok_or(utopia_core::AppError::NotFound)?;
+    let votes = json!({ "person": if req.approve { "approve" } else { "reject" } });
+    let job_id = utopia_store::implication_rules::decide_with_delivery(
+        &state.pool,
+        kb_id,
+        rule_id,
+        req.approve,
+        &votes,
+    )
+    .await?
+    .ok_or(utopia_core::AppError::NotFound)?;
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        Some(kb_id),
+        user.id,
+        "alignment.rule_decided",
+        "implication_rule",
+        Some(rule_id),
+        json!({ "trigger": rule.trigger, "phrase": rule.phrase, "reading": rule.reading,
+                "approve": req.approve, "job_id": job_id }),
+    )
+    .await;
+    state.emit_review(kb_id);
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "ok": true, "job_id": job_id, "status": "accepted" })),
+    ))
+}
+
 pub async fn decide_alignment_phrase(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,

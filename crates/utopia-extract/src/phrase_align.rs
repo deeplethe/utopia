@@ -113,7 +113,7 @@ forward; for \"X —owns→ Y\", if subsidiary_of is the only fitting candidate,
 5. Never invent a key, never answer with a label, never choose for an item a key that is not \
 among its candidates. One triple per item, every item answered.";
 
-fn candidate_line(c: &PropertyCandidate<'_>) -> String {
+pub fn candidate_line(c: &PropertyCandidate<'_>) -> String {
     let mut line = format!("- {} · {} · {}", c.key, c.label, c.kind);
     if !c.domains.is_empty() {
         line.push_str(&format!(" · domain: {}", c.domains.join(", ")));

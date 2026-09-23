@@ -706,6 +706,46 @@ function voteText(v: { property: string; direction: string } | string | null | u
   return `${v.property} · ${v.direction === "reverse" ? S.review.alignmentReverse : S.review.alignmentForward}`;
 }
 
+/** 对齐器提的一条蕴含规则（0044 决定 3 第五片）：这种形状还蕴含哪条属性、宾语怎么来；人批或驳 */
+function AlignmentRuleRow({
+  item,
+  busy,
+  onDecide,
+}: {
+  item: Extract<AlignmentItem, { kind: "rule" }>;
+  busy: boolean;
+  onDecide: (approve: boolean) => void;
+}) {
+  const shape =
+    item.trigger === "kind_word"
+      ? S.review.alignmentRuleKindWord(item.phrase)
+      : `${item.subject_class ?? "?"} —${item.phrase}→ ${item.object_is_value ? "value" : (item.object_class ?? "?")}`;
+  return (
+    <div className="glass rounded-panel p-3">
+      <div className="text-body font-medium">{shape}</div>
+      <div className="mt-1 text-small">
+        {S.review.alignmentRuleImplies(item.property_label || item.property)} ·{" "}
+        {item.reading ? S.review.alignmentRuleReading(item.reading) : S.review.alignmentRuleObjectIsStatement}
+      </div>
+      {item.examples.length > 0 && (
+        <div className="mt-1 space-y-1 text-small text-ink-2">
+          {item.examples.map((e, i) => (
+            <div key={i}>{e}</div>
+          ))}
+        </div>
+      )}
+      <div className={CARD_ACTIONS}>
+        <Button size="sm" disabled={busy} onClick={() => onDecide(true)}>
+          {S.review.alignmentApprove}
+        </Button>
+        <Button size="sm" disabled={busy} onClick={() => onDecide(false)}>
+          {S.review.alignmentReject}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** 一条短语签名：短语、两端的类、例句、两票；人选属性与方向，或「没有」 */
 function AlignmentPhraseRow({
   item,
@@ -1365,6 +1405,12 @@ export function Review() {
     onSuccess: () => toast.success(S.review.alignmentAccepted),
     onSettled: invalidate,
   });
+  const alignmentRuleAction = useMutation({
+    mutationFn: ({ id, approve }: { id: string; approve: boolean }) =>
+      api.decideAlignmentRule(kb!.id, id, approve),
+    onSuccess: () => toast.success(S.review.alignmentRuleAccepted),
+    onSettled: invalidate,
+  });
   const alignmentKindWordAction = useMutation({
     mutationFn: ({ kindWord, cls }: { kindWord: string; cls: string | null }) =>
       api.decideAlignmentKindWord(kb!.id, kindWord, cls),
@@ -1923,6 +1969,16 @@ export function Review() {
                         onDecide={(property, direction) =>
                           alignmentPhraseAction.mutate({ id: item.id, property, direction })
                         }
+                      />
+                    ) : item.kind === "rule" ? (
+                      <AlignmentRuleRow
+                        key={item.id}
+                        item={item}
+                        busy={
+                          alignmentRuleAction.isPending &&
+                          alignmentRuleAction.variables?.id === item.id
+                        }
+                        onDecide={(approve) => alignmentRuleAction.mutate({ id: item.id, approve })}
                       />
                     ) : (
                       <AlignmentKindWordRow

@@ -39,6 +39,39 @@ pub enum AlignmentItem {
         votes: Option<serde_json::Value>,
         decided_at: DateTime<Utc>,
     },
+    /// 对齐器提的一条蕴含规则（0044 决定 3 第五片）：这种形状蕴含哪条属性、宾语怎么读
+    Rule {
+        id: Uuid,
+        trigger: String,
+        phrase: String,
+        subject_class: Option<String>,
+        object_class: Option<String>,
+        object_is_value: bool,
+        property: String,
+        property_label: String,
+        reading: Option<String>,
+        statement_count: i32,
+        examples: Vec<String>,
+        votes: Option<serde_json::Value>,
+        decided_at: DateTime<Utc>,
+    },
+}
+
+#[derive(sqlx::FromRow)]
+struct RuleRow {
+    id: Uuid,
+    trigger: String,
+    phrase: String,
+    subject_class: Option<String>,
+    object_class: Option<String>,
+    object_is_value: bool,
+    property: String,
+    property_label: String,
+    reading: Option<String>,
+    statement_count: i32,
+    examples: Vec<String>,
+    votes: Option<serde_json::Value>,
+    decided_at: DateTime<Utc>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -76,6 +109,19 @@ pub async fn list(
       LEFT JOIN entity_types st ON st.id = b.subject_type_id
       LEFT JOIN entity_types ot ON ot.id = b.object_type_id
           WHERE b.kb_id = $1 AND b.status = 'undecided'",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    let rules: Vec<RuleRow> = sqlx::query_as(
+        "SELECT r.id, r.trigger, r.phrase, st.key AS subject_class, ot.key AS object_class,
+                r.object_is_value, p.key AS property, p.label AS property_label, r.reading,
+                r.statement_count, r.examples, r.votes, r.decided_at
+           FROM implication_rules r
+           JOIN relation_types p ON p.id = r.conclude_property_id
+      LEFT JOIN entity_types st ON st.id = r.subject_type_id
+      LEFT JOIN entity_types ot ON ot.id = r.object_type_id
+          WHERE r.kb_id = $1 AND r.status = 'proposed'",
     )
     .bind(kb_id)
     .fetch_all(pool)
@@ -127,6 +173,26 @@ pub async fn list(
             },
         ));
     }
+    for r in rules {
+        items.push((
+            r.decided_at,
+            AlignmentItem::Rule {
+                id: r.id,
+                trigger: r.trigger,
+                phrase: r.phrase,
+                subject_class: r.subject_class,
+                object_class: r.object_class,
+                object_is_value: r.object_is_value,
+                property: r.property,
+                property_label: r.property_label,
+                reading: r.reading,
+                statement_count: r.statement_count,
+                examples: r.examples,
+                votes: r.votes,
+                decided_at: r.decided_at,
+            },
+        ));
+    }
     items.sort_by_key(|(at, _)| *at);
     Ok(items
         .into_iter()
@@ -143,6 +209,8 @@ pub async fn waiting(pool: &PgPool, kb_id: Uuid) -> AppResult<(i64, Option<DateT
             SELECT decided_at FROM phrase_bindings WHERE kb_id = $1 AND status = 'undecided'
             UNION ALL
             SELECT decided_at FROM type_bindings WHERE kb_id = $1 AND status = 'undecided'
+            UNION ALL
+            SELECT decided_at FROM implication_rules WHERE kb_id = $1 AND status = 'proposed'
          ) q",
     )
     .bind(kb_id)

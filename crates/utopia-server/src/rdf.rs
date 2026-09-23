@@ -499,6 +499,10 @@ pub fn emit_fact(
         sink.l(&stmt, &prov("invalidatedAtTime"), &dt(t))?;
     }
     sink.l(&stmt, &utopia("confidence"), &confidence(f.confidence))?;
+    // 规则算出来的（0044 决定 3 第五片）：不是文档直接陈述的，审计的人要看得见这一层
+    if f.implied {
+        sink.l(&stmt, &utopia("implied"), &flag(true))?;
+    }
     if let Some(old) = f.supersedes {
         let old = names.fact(old);
         sink.r(&stmt, &utopia("supersedes"), &old)?;
@@ -744,6 +748,7 @@ mod tests {
             recorded_at: at("2026-01-01T00:00:00Z"),
             invalidated_at: None,
             confidence: 0.9,
+            implied: false,
             supersedes: None,
             documents: vec![],
             quotes: vec![],

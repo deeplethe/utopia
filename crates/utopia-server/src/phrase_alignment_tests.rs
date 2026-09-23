@@ -208,14 +208,19 @@ impl Fx {
 fn vote(key: Option<&str>, dir: Option<&str>) -> Value {
     json!({"b":[[0, key, dir]]})
 }
+/// 两票之后对齐还会问一次「这种形状还蕴含什么」（0044 决定 3 第五片）：脚本里答「没有」
+fn nothing_implied() -> Value {
+    json!({"i":[[0,null,null]]})
+}
 fn bound() -> Vec<Value> {
     vec![
         vote(Some("based_in"), Some("forward")),
         vote(Some("based_in"), Some("forward")),
+        nothing_implied(),
     ]
 }
 fn none() -> Vec<Value> {
-    vec![vote(None, None), vote(None, None)]
+    vec![vote(None, None), vote(None, None), nothing_implied()]
 }
 
 #[tokio::test]
@@ -227,7 +232,11 @@ async fn a_property_declared_on_an_ancestor_is_offered_with_its_basis_and_bound(
     let run = async {
         f.script(bound());
         f.run().await?;
-        assert_eq!(f.requests().len(), 2, "two votes");
+        assert_eq!(
+            f.requests().len(),
+            2,
+            "two votes; bound to the only property, so no rule question"
+        );
         let prompt = f.prompt_of(0);
         assert!(prompt.contains("based_in"), "{prompt}");
         assert!(
@@ -427,7 +436,7 @@ async fn an_edit_during_the_model_request_leaves_the_decision_stale() -> anyhow:
         f.clear_jobs().await?;
         f.script(bound());
         f.run().await?;
-        assert_eq!(f.requests().len(), 4, "asked again because the basis differs, not the clock");
+        assert_eq!(f.requests().len(), 5, "two votes, one rule question (nothing implied), then two votes again: the basis differs, not the clock");
         assert_eq!(f.binding().await?.status, "bound");
         anyhow::Ok(())
     }

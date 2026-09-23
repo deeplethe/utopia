@@ -11,6 +11,7 @@ use utopia_llm::ChatMessage;
 
 pub mod align;
 pub mod governor;
+pub mod implication;
 pub mod open;
 pub mod phrase_align;
 pub mod time;

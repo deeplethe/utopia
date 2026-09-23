@@ -12,6 +12,7 @@ mod extraction_open;
 mod github_issues;
 mod governance;
 mod http_fetch;
+mod implication;
 mod ingest_sources;
 mod jira_issues;
 mod live;
@@ -536,6 +537,16 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                     utopia_core::Deferred::new(std::time::Duration::from_secs(10)),
                 )),
             }
+        }
+        // 已批准的蕴含规则要的读数（0044 决定 3 第五片）：问模型、填缓存、排物化
+        utopia_store::implication_rules::READ_KIND => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            implication::read_phrases(st, kb_id).await
         }
         "align_types" => {
             let kb_id: Uuid = job

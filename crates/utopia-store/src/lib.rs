@@ -17,6 +17,7 @@ pub mod export;
 pub mod extraction_drops;
 pub mod governance;
 pub mod graph;
+pub mod implication_rules;
 pub mod jobs;
 pub mod kbs;
 pub mod mappings;

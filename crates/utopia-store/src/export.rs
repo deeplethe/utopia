@@ -357,6 +357,8 @@ pub struct ExportFact {
     pub recorded_at: DateTime<Utc>,
     pub invalidated_at: Option<DateTime<Utc>>,
     pub confidence: f32,
+    /// 规则算出来的隐含行（0044 决定 3 第五片）：读的人要能分辨它不是陈述直接说的
+    pub implied: bool,
     pub supersedes: Option<Uuid>,
     pub documents: Vec<Uuid>,
     pub quotes: Vec<String>,
@@ -564,7 +566,7 @@ pub async fn facts_page(
                 f.object_id, f.object_value,
                 f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision,
                 {holds_from} AS holds_from, {holds_to} AS holds_to,
-                f.recorded_at, f.invalidated_at, f.confidence, f.supersedes,
+                f.recorded_at, f.invalidated_at, f.confidence, f.implied, f.supersedes,
                 COALESCE(ARRAY(SELECT DISTINCT e.document_id FROM fact_evidence e
                                 WHERE e.fact_id = f.id AND e.document_id IS NOT NULL), '{{}}')
                   AS documents,
