@@ -490,3 +490,25 @@ bootstrap_ontology.rs 里那句「functional 永不自动」在这里被量了�
 - 一条 `salary` 值被抽取丢掉过一次（`extraction_drops` 里的 `malformed_item`）：
   声明了 `number` 之后，模型写成 "28000 CNY" 的那一次没能通过校验。宁缺勿脏是
   写死的取舍，这里只记它发生过。
+
+## 类型图的测量台（2026-09-23）
+
+`typed.mjs` 量的是 0044 §Measurement 里「Typed graph」那一行：**对齐把开放陈述算成类型化事实之后，
+金标召回了多少、裁判认多少是对的。** 语料是 Re-DocRED（MIT）测试集抽的 100 篇，它的 95 条属性当
+已批准的本体；`fetch-redocred.mjs` 生成语料、答案卷和本体文件，原始数据不进仓库。
+
+属性的定义域/值域**从训练集统计**（`truth/redocred-ontology.json`），不留空：不声明的属性对每条
+签名都是候选，95 条一齐进候选就超过对齐器的上限，每条签名都溢出成 undecided。训练集学、
+测试集评。值域只有时间/数值的属性建成 attribute，别的建成 relation。
+
+```
+node scripts/bench/fetch-redocred.mjs --n 100 --seed 1          # 一次：生成 corpora/ 与 truth/ 下的三份文件
+node scripts/bench/typed.mjs --label run1 --judge 200            # 一组：新库 → 本体 → 语料 → 抽取 → 对齐 → 打分
+node scripts/bench/typed.mjs --label run2 --judge 200            # 再来一组：门槛按两轮报
+node scripts/bench/typed.mjs --kb <id> --score                   # 只重新打分
+```
+
+报的数：gold recall（**同句与跨句分开**，门槛只看同句；跨句的等派生规则）、judged precision
+（裁判抽样；金标漏标严重，精度只信裁判）、entity-pair recall（开放陈述那一层）、绑定的
+bound / none / undecided。0044 的门槛：裁判精度不低于完整原型的 75.3%，同句召回不低于完整原型，
+两轮各报一次，每篇文档的 token 不到原型的五分之一。
