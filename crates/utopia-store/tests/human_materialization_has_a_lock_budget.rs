@@ -214,17 +214,23 @@ async fn human_materialization_with_no_contention_matches_succeeds() -> anyhow::
     let outcome = materialize::materialize_human(&pool, kb).await?;
     assert_eq!(outcome.added, 1, "one typed fact should be added");
 
-    // Removing the lock_timeout setting on the connection must not leak
-    // across requests — the test verifies the SET LOCAL was scoped to the
-    // transaction that the function opened.
-    let still_set: Option<String> = sqlx::query_scalar("SHOW lock_timeout")
+    // The SET LOCAL inside materialize_human must not leak to the session —
+    // otherwise the next caller on this connection inherits our 2-second
+    // budget, which would be wrong for a worker. Capture the value before and
+    // after, and assert they're equal. Postgres' session default is `0`
+    // (wait forever) on a clean connection; we don't depend on that.
+    let before: Option<String> = sqlx::query_scalar("SHOW lock_timeout")
         .fetch_optional(&pool)
         .await?;
-    // Session-level value should be unset (`SHOW` returns the empty string
-    // when no SET has been issued at session level).
-    assert!(
-        still_set.as_deref().unwrap_or("").is_empty(),
-        "lock_timeout should not leak out of materialize_human's transaction; got {still_set:?}"
+    // Run materialize_human once more — if SET LOCAL had leaked, this second
+    // call would still see `2s` (which we never set at session level).
+    let _ = materialize::materialize_human(&pool, kb).await?;
+    let after: Option<String> = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_optional(&pool)
+        .await?;
+    assert_eq!(
+        before, after,
+        "lock_timeout should not leak out of materialize_human's transaction; before={before:?} after={after:?}"
     );
 
     sqlx::query("DELETE FROM organizations WHERE id=$1")
