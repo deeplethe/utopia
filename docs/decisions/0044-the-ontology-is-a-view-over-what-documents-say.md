@@ -68,6 +68,9 @@ This is how the facts a reader draws without the text stating them (a place's co
 
 When the ontology changes, only facts under changed signatures and rules are recomputed. A signature with no property stays in the open graph, loses nothing, and counts toward the workbench's suggestions.
 
+**Revision proposed 2026-09-21:** [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md) addresses delivery after a human binding commits beyond an older materializer’s final read. It proposes a decision and its own durable job in one transaction, while retaining the current projection semantics. The asynchronous HTTP/job/UI contract remains unimplemented.
+
+
 ### 4. The ontology is built on a workbench from three sources
 
 The ontology page becomes a workbench. Its elements come from three sources: **suggestions from the open graph** (the most frequent unbound signatures, the type words in use, and an ontology agent that reads them against competency questions and proposes object types, link types, properties and rules with definitions, examples and the signatures they would bind); **an imported file** (a pack of 0008, schema.org, an OWL or JSON-LD file); and **online editing**. People approve through actions; every approved element carries regression cases drawn from the open graph, and changing a definition reruns them. The ontology is judged by whether the competency questions can be answered correctly. Structure the slice and the rules depend on (class hierarchy, equivalences, domains, ranges) is part of approval, and duplicate properties are merged as part of governance.

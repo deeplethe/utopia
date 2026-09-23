@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 /// 明文令牌的前缀。与 `sources.ingest_token` 的 `utp_` 区分开——
 /// 两者能干的事差很远，在日志或配置文件里一眼要认得出是哪一种
-const PREFIX: &str = "utp_pat_";
+pub const PREFIX: &str = "utp_pat_";
 /// 列表里给人认的那一小截（含前缀）。够对上配置文件里那一串，又不足以复原
 const SHOWN: usize = 16;
 

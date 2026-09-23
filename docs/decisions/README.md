@@ -76,6 +76,7 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0048 | [Provenance references stay inside the knowledge base](0048-provenance-references-stay-inside-the-knowledge-base.md) | Proposed 2026-09-20 · implemented in PR #832 (migration 0070), pending review · a column foreign key proves the target exists, not that it is the same KB's — every reference an export can resolve gets a schema-level same-KB invariant: composite `(kb_id, ref)` foreign keys on the 26 edges whose row carries its own `kb_id` (same-table self-references deferred to commit), row triggers on the 13 whose kb authority is a parent row, `kb_id` immutability on every owned table, and a precondition scan that fails the migration closed on an already-cross-KB ledger · measured populate cost within noise; mechanism question open as issue #842 |
 | 0049 | [Expression declarations are checked when a rule is written](0049-expression-declarations-are-checked-when-a-rule-is-written.md) | Proposed · declaration policy pending; opt-in web draft only |
 | 0050 | [An action attempt keeps its identity and uncertain outcome](0050-an-action-attempt-keeps-its-identity-and-uncertain-outcome.md) | Proposed · durable execution identity and uncertain outcomes; no sender |
+| 0051 | [A human phrase decision carries its materialization work](0051-a-human-phrase-decision-carries-its-materialization-work.md) | Proposed · decision and materialization delivery; shared refactors and real regressions only |
 
 | | Record | Domain | Status |
 |---|---|---|---|
@@ -129,6 +130,7 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0048 | [Provenance references stay inside the knowledge base](0048-provenance-references-stay-inside-the-knowledge-base.md) | ledger | current |
 | 0049 | [Expression declarations are checked when a rule is written](0049-expression-declarations-are-checked-when-a-rule-is-written.md) | rules | proposed |
 | 0050 | [An action attempt keeps its identity and uncertain outcome](0050-an-action-attempt-keeps-its-identity-and-uncertain-outcome.md) | lakehouse-and-actions | proposed |
+| 0051 | [A human phrase decision carries its materialization work](0051-a-human-phrase-decision-carries-its-materialization-work.md) | ontology | proposed |
 
 The status word is whether a later record has overtaken this one; what is built is in the record's own status line. Domains are the files of [../design/](../design/README.md), where every record is dated and the status words are defined.
 

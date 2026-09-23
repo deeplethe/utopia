@@ -226,7 +226,8 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
             .expect("a path walks the open statement");
         assert_eq!(direct.edges[0].predicate.as_deref(), Some("acquired"));
 
-        let exported = utopia_store::export::facts_page(&pool, f.kb, None).await?;
+        let exported =
+            utopia_store::export::facts_page(&mut pool.begin().await?, f.kb, None).await?;
         let x = exported
             .iter()
             .find(|x| x.id == fact)

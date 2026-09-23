@@ -14,7 +14,7 @@
 //! 没有」的（陈述, 绑定）对补上——有同断言的行就并进去，没有才新建。没有模型调用。
 
 use sqlx::PgPool;
-use utopia_core::AppResult;
+use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
 use crate::graph::{insert_fact_on, FactObject, Validity};
@@ -57,6 +57,9 @@ struct Due {
 }
 
 /// 对一个库重算一遍。
+///
+/// Worker 走这一条：等多久都行，因为它没人在屏幕前面等。人的判定不走这条：
+/// 见 `materialize_human`，那是另一条带预算的入口
 pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
     // A worker and a human review can recompute the same base concurrently.
     // Serialize before reading due statements, and use this connection for the
@@ -66,6 +69,66 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
         .bind(kb_id.to_string())
         .execute(&mut *tx)
         .await?;
+    let outcome = materialize_in_tx(&mut tx, kb_id).await?;
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+/// 人的入口（#798 跟进、#800 复盘）：与 `materialize` 同样的活，外加一个
+/// 事务级的 `lock_timeout` 预算，超时映射到表「语言可读的重试提示」。
+///
+/// 设计要点（沿用 #828 的同一条理由）：
+/// - `lock_timeout` 是**等锁的预算**，不是请求总预算，也不是查询执行预算
+/// - worker 不动也不动：背景不会因为 5xx 醒不了，没人在屏幕前面等
+/// - advisory 锁本身在事务提交时释放（pg_advisory_xact_lock），所以这里的
+///   等待只在等 worker 的 1 次 materialize 完成；不会等下一个做多次锁
+/// - `55P03` 是 `lock_not_available`，PostgreSQL 唯一的「这个锁等不到」错
+pub async fn materialize_human(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
+    let mut tx = pool.begin().await?;
+    let result = async {
+        // 2 秒是 0033 的「人点一下」的预算：再长就显成 spinner 了。
+        // worker 的等待策略不在这一格里——它走 `materialize`，没预算
+        sqlx::query("SET LOCAL lock_timeout = '2s'")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('typed_materialize'), hashtext($1))")
+            .bind(kb_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+        materialize_in_tx(&mut tx, kb_id).await
+    }
+    .await;
+    match result {
+        Ok(outcome) => {
+            tx.commit().await?;
+            Ok(outcome)
+        }
+        Err(error) => {
+            // 关掉失败路径的回滚要先把连接释放掉，再走错误映射。
+            // 双重错误（回滚也炸了）保留两者，别只报回滚
+            if let Err(rollback) = tx.rollback().await {
+                return Err(AppError::Other(anyhow::Error::new(error).context(format!(
+                    "rolling back human materialization: {rollback}"
+                ))));
+            }
+            if matches!(&error, AppError::Db(sqlx::Error::Database(e))
+                if e.code().as_deref() == Some("55P03"))
+            {
+                return Err(AppError::CodedConflict {
+                    code: "alignment_busy",
+                    message: "This base is being recomputed by another operation. Please try again shortly."
+                        .into(),
+                });
+            }
+            Err(error)
+        }
+    }
+}
+
+async fn materialize_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kb_id: Uuid,
+) -> AppResult<Outcome> {
     // 1. 删不再成立的来源：陈述死了、行死了、签名没绑着、属性或方向变了、陈述带了 mood
     sqlx::query(&format!(
         "DELETE FROM typed_fact_sources src
@@ -88,7 +151,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
                                     WHERE q.fact_id = s.id AND q.role = 'mood'))"
     ))
     .bind(kb_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
 
     // 2. 作废来源全空的类型化行：只动算出来的行（带 from_statement_id 的），人写的不碰
@@ -100,7 +163,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
             AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src WHERE src.fact_id = t.id)",
     )
     .bind(kb_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?
     .rows_affected();
 
@@ -127,7 +190,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
           ORDER BY s.id"
     ))
     .bind(kb_id)
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut **tx)
     .await?;
 
     let (mut added, mut merged) = (0u64, 0u64);
@@ -144,7 +207,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
         let (fact, new) = match (reverse, d.object_id, &d.object_value) {
             (true, Some(object), _) => {
                 insert_fact_on(
-                    &mut tx,
+                    tx,
                     kb_id,
                     object,
                     Some(d.property),
@@ -156,7 +219,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
             }
             (false, Some(object), _) => {
                 insert_fact_on(
-                    &mut tx,
+                    tx,
                     kb_id,
                     d.subject_id,
                     Some(d.property),
@@ -168,7 +231,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
             }
             (false, None, Some(value)) => {
                 insert_fact_on(
-                    &mut tx,
+                    tx,
                     kb_id,
                     d.subject_id,
                     Some(d.property),
@@ -185,7 +248,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
             sqlx::query("UPDATE facts SET from_statement_id = $2 WHERE id = $1 AND from_statement_id IS NULL")
                 .bind(fact)
                 .bind(d.statement)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
             // 新行取代了一条裸行（时间精化，supersedes 链上）：被取代那行的来源跟着搬过来，
             // 这一轮就收敛，不等下一轮把旧来源当「不成立」删掉再补
@@ -197,7 +260,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
                  ON CONFLICT DO NOTHING",
             )
             .bind(fact)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             sqlx::query(
                 "DELETE FROM typed_fact_sources src
@@ -205,7 +268,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
                   WHERE n.id = $1 AND src.fact_id = n.supersedes",
             )
             .bind(fact)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         } else {
             merged += 1;
@@ -216,7 +279,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
         )
         .bind(fact)
         .bind(d.statement)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         // 证据与限定各抄一份：证据是同一段原文的同一处引文；限定照角色词原样带过去
         sqlx::query(
@@ -229,7 +292,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
         )
         .bind(fact)
         .bind(d.statement)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         sqlx::query(
             "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id)
@@ -238,10 +301,9 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
         )
         .bind(fact)
         .bind(d.statement)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
     }
-    tx.commit().await?;
     Ok(Outcome {
         retired,
         added,
@@ -260,3 +322,7 @@ pub async fn count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
     .fetch_one(pool)
     .await?)
 }
+
+#[cfg(test)]
+#[path = "materialize_delivery_tests.rs"]
+mod delivery_tests;

@@ -30,6 +30,11 @@ impl Fixture {
             return Ok(None);
         };
         let pool = sqlx::PgPool::connect(&url).await?;
+        Self::with_pool(pool).await.map(Some)
+    }
+
+    /// 同一份种子，池子由调用方给——连池参数的测试（比如最小池）走这里
+    async fn with_pool(pool: sqlx::PgPool) -> anyhow::Result<Self> {
         utopia_store::db::migrate(&pool).await?;
         let dir = std::env::temp_dir().join(format!("utopia-mcp-{}", Uuid::now_v7()));
         let search = Arc::new(utopia_search::SearchIndex::open(&dir.join("search"))?);
@@ -148,7 +153,7 @@ impl Fixture {
             &f.document.to_string(),
             &[(f.chunk.to_string(), "orchard ".repeat(120))],
         )?;
-        Ok(Some(f))
+        Ok(f)
     }
 
     async fn request(
@@ -305,6 +310,82 @@ async fn record_axis_subseconds_survive_authenticated_rdf_export() -> anyhow::Re
     let result = check(&f).await;
     let cleanup = f.clean().await;
     result.and(cleanup)
+}
+
+/// 每个导出的快照事务活满整个流——它占住一条连接直到文件发完。台账如果排在
+/// 事务之后写，就是在「已经占了一条」的情况下再向池子要第二条：支持的最小池
+/// （2 条连接）上两个并发导出会互相把对方的审计饿死到超时。所以顺序必须是：
+/// 先写完台账、放掉连接，再开始占着不放的长事务。两个导出都该落得下一行
+/// kb.exported，而不是在等一条永远不会来的连接
+#[tokio::test]
+async fn concurrent_exports_on_a_minimum_pool_still_record_their_audits() -> anyhow::Result<()> {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    // 支持的最小池：两条连接。短的 acquire 超时只是为了不让失败的探测等太久——
+    // 断言不依赖时钟，依赖台账行在不在
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .acquire_timeout(std::time::Duration::from_millis(400))
+        .connect(&url)
+        .await?;
+    let f = Fixture::with_pool(pool).await?;
+
+    let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+    let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+    let app = crate::api::router(f.state.clone(), &Default::default());
+    let uri = format!("/api/v1/kbs/{}/export?format=turtle", f.kb);
+
+    let export = |app: axum::Router| {
+        let uri = uri.clone();
+        let jwt = jwt.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(uri)
+                        .header("authorization", format!("Bearer {jwt}"))
+                        .body(Body::empty())?,
+                )
+                .await?;
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), 8 * 1024 * 1024).await?;
+            Ok::<(StatusCode, axum::body::Bytes), anyhow::Error>((status, bytes))
+        }
+    };
+    // 一次性失败上限：真饿死也只是多等几秒，不该挂着不走
+    let (a, b) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        let (a, b) = tokio::join!(export(app.clone()), export(app));
+        (a.unwrap(), b.unwrap())
+    })
+    .await?;
+    anyhow::ensure!(a.0 == StatusCode::OK, "export A rejected: {}", a.0);
+    anyhow::ensure!(b.0 == StatusCode::OK, "export B rejected: {}", b.0);
+    anyhow::ensure!(!a.1.is_empty() && !b.1.is_empty(), "export body empty");
+
+    // 两份导出，两行台账——任何一份的审计被池子饿死这里都露馅
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_events WHERE kb_id = $1 AND action = 'kb.exported'",
+    )
+    .bind(f.kb)
+    .fetch_one(&f.state.pool)
+    .await?;
+    anyhow::ensure!(
+        audits == 2,
+        "two exports must each record kb.exported, got {audits}"
+    );
+
+    // 两条流发完之后连接都得回家：接着借满整个池（两条）都该立刻拿到——
+    // 快照事务没放下的话，这里就会撞 acquire 超时
+    let c1 = f.state.pool.acquire().await?;
+    let c2 = f.state.pool.acquire().await?;
+    drop(c2);
+    drop(c1);
+    f.clean().await
 }
 
 #[tokio::test]
@@ -622,7 +703,8 @@ async fn entity_facts_keeps_identity_values_filters_and_both_clocks() -> anyhow:
     assert!(derived["rule_id"].is_null());
     uuid(&derived["attribute_rule_id"]);
     // The same UUID is the RDF statement's identity, not a newly minted response ID.
-    let exported = utopia_store::export::facts_page(&f.state.pool, f.kb, None).await?;
+    let exported =
+        utopia_store::export::facts_page(&mut f.state.pool.begin().await?, f.kb, None).await?;
     assert!(exported
         .iter()
         .any(|r| r.id == uuid(&corrected["id"]) && r.documents == vec![f.document]));

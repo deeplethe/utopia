@@ -12,9 +12,11 @@ afterEach(() => {
 });
 
 describe("live answer generation ownership", () => {
-  it("keeps a follow-up streaming when the previous SSE connection closes", async () => {
+  it("keeps a follow-up streaming when the previous SSE cleanup finishes", async () => {
     let wire!: ReadableStreamDefaultController<Uint8Array>;
-    const body = new ReadableStream<Uint8Array>({ start(c) { wire = c; } });
+    let finishCleanup!: () => void;
+    const cancel = vi.fn(() => new Promise<void>((resolve) => { finishCleanup = resolve; }));
+    const body = new ReadableStream<Uint8Array>({ start(c) { wire = c; }, cancel });
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body)));
     const previous = liveAnswer.begin("kb", "conversation", turns(), () => {});
     const done = vi.fn(() => previous.finish());
@@ -29,8 +31,10 @@ describe("live answer generation ownership", () => {
     wire.enqueue(new TextEncoder().encode('event: done\ndata: {}\n\n'));
     await vi.waitFor(() => expect(done).toHaveBeenCalledTimes(1));
     const followUp = liveAnswer.begin("kb", "conversation", turns(), () => {});
-    wire.close();
-    await vi.waitFor(() => expect(done).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+    finishCleanup();
+    await vi.waitFor(() => expect(body.locked).toBe(false));
+    expect(done).toHaveBeenCalledTimes(1);
     expect(liveAnswer.entry("kb", "conversation")?.streaming).toBe(true);
     followUp.finish();
   });

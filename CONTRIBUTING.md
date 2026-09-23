@@ -83,6 +83,27 @@ export UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:5432/utopia
 cargo test --workspace
 ```
 
+### Human phrase delivery regressions
+
+`human_phrase_materialization_delivery` exercises the real store and kills child
+processes at three commit boundaries. It starts the actual queue worker, so run
+it **only against a dedicated, otherwise idle test database**, separately from the
+workspace suite. Busy-lock coverage calls the private materialization body from
+`cfg(test)` and observes the existing production entry point waiting on the lock.
+These tests do not register an asynchronous production handler.
+
+```bash
+export UTOPIA_DATABASE_URL=postgres://.../dedicated_delivery_tests
+export UTOPIA_TEST_REQUIRE_DB=1
+cargo test --locked -p utopia-store --test human_phrase_materialization_delivery -- --ignored --skip crash_child --test-threads=1 --nocapture
+cargo test --locked -p utopia-store --lib materialize::delivery_tests::busy_defers_without_retaining_connections -- --ignored --test-threads=1 --nocapture
+```
+
+The first command explicitly runs both parents; the process-exit parent invokes
+`crash_child` itself and kills and waits for each child. Do not run that child by
+hand. See [0051](docs/decisions/0051-a-human-phrase-decision-carries-its-materialization-work.md)
+for the proposed delivery contract and remaining production acceptance.
+
 ## Things review will send back
 
 **Don't collide migration numbers.** `migrations/` rolls forward by number. Check the latest number on `main` before opening a PR — two branches each writing an `0011_` has happened, and after the merge neither one runs.
