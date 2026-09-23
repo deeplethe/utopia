@@ -30,14 +30,30 @@ async fn multiple_evidence_does_not_multiply_statements_or_examples() -> anyhow:
         .await?;
         let mut statements = Vec::new();
         for name in ["甲", "乙", "丙", "丁"] {
-            let subject =
-                utopia_store::resolution::resolve_mention(&pool, kb, None, name, None, None, &[])
-                    .await?
-                    .entity_id;
-            let object =
-                utopia_store::resolution::resolve_mention(&pool, kb, None, "买方", None, None, &[])
-                    .await?
-                    .entity_id;
+            let subject = utopia_store::resolution::resolve_mention(
+                &pool,
+                kb,
+                None,
+                name,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .await?
+            .entity_id;
+            let object = utopia_store::resolution::resolve_mention(
+                &pool,
+                kb,
+                None,
+                "买方",
+                None,
+                None,
+                None,
+                &[],
+            )
+            .await?
+            .entity_id;
             statements.push(
                 graph::insert_open_statement(
                     &pool,

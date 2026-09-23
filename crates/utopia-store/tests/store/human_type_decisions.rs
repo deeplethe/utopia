@@ -228,6 +228,7 @@ async fn extraction_does_not_fill_in_a_type_a_human_left_empty() -> anyhow::Resu
                 &name,
                 Some(&ctx),
                 None,
+                None,
                 &[],
             )
             .await?;

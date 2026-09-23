@@ -1896,6 +1896,8 @@ export const en = {
       /* 画像分不开时的并列：分数是真的，所以百分比照常显示（与 namesake 的哨兵值不同） */
       namesake_tie: "Same name, and the profiles cannot tell them apart",
       shared_name: "Another entity already has this name",
+      /* 名字向量召回（0041 第 2 刀）：简称、另一种文字的同一个名字；只提议，裁决器判 */
+      name_vector: "A similar name, found by vector recall",
       /* 名字互相包含：等值召回看不见，简称会静默变成第二个实体 */
       contains: "One name contains the other",
       ambiguous_name: "Same name, context did not settle it",

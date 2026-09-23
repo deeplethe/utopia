@@ -1664,6 +1664,7 @@ export const zh: Strings = {
       namesake: "同一篇文档里有两个同名实体",
       namesake_tie: "同名，画像分不出谁是谁",
       shared_name: "另一个实体已经叫这个名字",
+      name_vector: "名字相近（向量召回），等裁决",
       contains: "一个名字包含另一个",
       ambiguous_name: "同名，但上下文没能定夺",
       type_drift: "同名，但类型不同",

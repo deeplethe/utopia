@@ -103,6 +103,77 @@ fn locate_time(chunk: &str, quote: Option<(&str, Option<(i32, i32)>)>, words: &s
 
 /// 名字的查找键：空白折叠、小写。陈述里写的名字和 `e` 里列的名字要一字不差，
 /// 差的只许是空白和大小写
+/// 一次送去嵌入的名字数。嵌入端点按请求限批，与 `pipeline` 的 chunk 批同一档
+const NAME_EMBED_BATCH: usize = 16;
+/// 抽完一篇文档补多少条还没有向量的名字。一次一批，剩下的下一篇再补
+const NAME_VECTOR_PENDING: i64 = 256;
+
+/// 一批名字各算一条向量，键是 `name_key`。数量对不上整批放弃（配对按位置，错一条全体
+/// 错位，与 `pipeline::embed_pending` 同一条规矩）；任何失败只记日志、返回空——名字向量
+/// 是召回的辅助，抽取不因它失败
+async fn embed_names(
+    state: &AppState,
+    settings: &LlmSettings,
+    client: &utopia_llm::LlmClient,
+    names: &[(String, String)],
+) -> HashMap<String, Vec<f32>> {
+    let mut out: HashMap<String, Vec<f32>> = HashMap::new();
+    for batch in names.chunks(NAME_EMBED_BATCH) {
+        let texts: Vec<String> = batch.iter().map(|(_, t)| t.clone()).collect();
+        let _permit = crate::llm_util::acquire_embed(state, settings).await;
+        match client.embed(&texts).await {
+            Ok(vectors) if vectors.len() == batch.len() => {
+                out.extend(batch.iter().map(|(k, _)| k.clone()).zip(vectors));
+            }
+            Ok(vectors) => {
+                tracing::warn!(
+                    sent = batch.len(),
+                    got = vectors.len(),
+                    "名字向量数量对不上，这一批放弃"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "名字向量没算出来，这一批退回字面召回");
+            }
+        }
+    }
+    out
+}
+
+/// 抽完一篇文档，把这个库里还没有向量的名字事实补上一批（这篇新写的名字都在里面）。
+/// 消解时算过的那些这里会再算一次——消解拿不到名字事实的 id（本名在 `create_entity`
+/// 的一条语句里落下）；省的只是一次嵌入调用，不值得为它改消解的返回值
+async fn embed_pending_names(
+    state: &AppState,
+    settings: &LlmSettings,
+    client: &utopia_llm::LlmClient,
+    kb_id: Uuid,
+) -> anyhow::Result<usize> {
+    let pending =
+        utopia_store::name_vectors::pending(&state.pool, kb_id, NAME_VECTOR_PENDING).await?;
+    if pending.is_empty() {
+        return Ok(0);
+    }
+    let mut items: Vec<(Uuid, Uuid, Vec<f32>)> = Vec::with_capacity(pending.len());
+    for batch in pending.chunks(NAME_EMBED_BATCH) {
+        let texts: Vec<String> = batch.iter().map(|(_, _, n)| n.clone()).collect();
+        let _permit = crate::llm_util::acquire_embed(state, settings).await;
+        let vectors = client.embed(&texts).await?;
+        if vectors.len() != batch.len() {
+            anyhow::bail!("嵌入返回 {} 条，送去的是 {} 条", vectors.len(), batch.len());
+        }
+        items.extend(
+            batch
+                .iter()
+                .map(|(f, e, _)| (*f, *e))
+                .zip(vectors)
+                .map(|((f, e), v)| (f, e, v)),
+        );
+    }
+    utopia_store::name_vectors::set(&state.pool, kb_id, &items).await?;
+    Ok(items.len())
+}
+
 fn name_key(name: &str) -> String {
     name.split_whitespace()
         .collect::<Vec<_>>()
@@ -194,6 +265,9 @@ pub(crate) async fn run_open(
     let mut human_reviews_found = false;
     let mut statement_count = 0usize;
 
+    // 名字向量的嵌入客户端（0041 决定 3 通道 2）。没配嵌入模型就是 None：召回退回
+    // 字面相等，抽取照常
+    let embed = crate::llm_util::embed_client(settings);
     for chunk in chunks.iter() {
         // 被接管则安静退场（重抽自增 epoch）：检查放在调用模型之前
         if utopia_store::documents::extract_epoch(pool, document_id).await? != my_epoch {
@@ -306,6 +380,24 @@ pub(crate) async fn run_open(
             .await;
         }
 
+        // 名字向量（0041 决定 3 通道 2）：这一块里有名字的东西，名字字符串各算一条，
+        // 消解时拿它在同库的名字向量里找近邻。一块一批；算不出来（端点抖了）不拦抽取，
+        // 只是这一块少一条召回通道
+        let name_vecs: HashMap<String, Vec<f32>> = match &embed {
+            Some(client) => {
+                let mut wanted: Vec<(String, String)> = Vec::new();
+                let mut seen: HashSet<String> = HashSet::new();
+                for e in &extraction.entities {
+                    let n = e.name.trim();
+                    if e.named && !n.is_empty() && seen.insert(name_key(n)) {
+                        wanted.push((name_key(n), n.to_string()));
+                    }
+                }
+                embed_names(state, settings, client, &wanted).await
+            }
+            None => HashMap::new(),
+        };
+
         // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
         let mut response_claims: HashMap<String, Vec<Uuid>> = HashMap::new();
         let mut local: HashMap<String, Uuid> = HashMap::new();
@@ -331,6 +423,7 @@ pub(crate) async fn run_open(
                     bound,
                     name,
                     ctx,
+                    name_vecs.get(&key).map(Vec::as_slice),
                     Some(&chunk.text),
                     &mut response_claims,
                     &mut handled_by_name,
@@ -791,6 +884,16 @@ pub(crate) async fn run_open(
         tracing::info!(%document_id, pending_count, "记忆抽出的陈述进了待确认队列");
         state.emit_pending(kb_id);
         state.emit_review(kb_id);
+    }
+
+    // 名字向量：这篇新写的名字事实，向量补上（0041 决定 3 通道 2）。算不出来只记日志——
+    // 文档已经抽完了，不能因为召回的辅助数据没算而把它标成 failed
+    if let Some(client) = &embed {
+        match embed_pending_names(state, settings, client, kb_id).await {
+            Ok(n) if n > 0 => tracing::info!(%document_id, names = n, "名字向量已补"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(%document_id, error = %e, "名字向量没补上，下一篇再补"),
+        }
     }
 
     // 灰区对进了审核队列 → 治理 / 裁决任务，同库已排着的不重复。

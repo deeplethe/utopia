@@ -47,6 +47,8 @@ pub enum Target {
     Chunks,
     /// `entities.profile_embedding`：实体画像，类型消解按主语逐个扫它（#514）
     EntityProfiles,
+    /// `name_vectors.embedding`：名字字符串的向量，召回的第二条通道（0041 第 2 刀）
+    NameVectors,
 }
 
 impl Target {
@@ -54,6 +56,7 @@ impl Target {
         match self {
             Target::Chunks => "chunks",
             Target::EntityProfiles => "entities",
+            Target::NameVectors => "name_vectors",
         }
     }
 
@@ -61,6 +64,7 @@ impl Target {
         match self {
             Target::Chunks => "embedding",
             Target::EntityProfiles => "profile_embedding",
+            Target::NameVectors => "embedding",
         }
     }
 
@@ -73,6 +77,7 @@ impl Target {
         match key {
             "chunks" => Some(Target::Chunks),
             "entities" => Some(Target::EntityProfiles),
+            "name_vectors" => Some(Target::NameVectors),
             _ => None,
         }
     }
