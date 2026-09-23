@@ -1354,11 +1354,9 @@ export function Review() {
       property: string | null;
       direction: "forward" | "reverse";
     }) => api.decideAlignmentPhrase(kb!.id, id, property, direction),
-    onSuccess: (r) => {
-      if (r.typed.added + r.typed.merged + r.typed.retired > 0) {
-        toast.success(S.review.alignmentTyped(r.typed.added + r.typed.merged, r.typed.retired));
-      }
-    },
+    // 202：判定收下了，类型化图谱在后台重算；算完 `review` / `graph` 事件会把
+    // 队列和图刷一遍，这里只告诉人「已保存」，不编一个数字出来
+    onSuccess: () => toast.success(S.review.alignmentAccepted),
     onSettled: invalidate,
   });
   const alignmentKindWordAction = useMutation({

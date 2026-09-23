@@ -174,6 +174,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/jobs/failed", get(jobs_routes::failed_in_kb))
         .route("/kbs/{id}/jobs/requeue", post(jobs_routes::requeue_in_kb))
         .route("/jobs/requeue", post(jobs_routes::requeue_all))
+        // 一个任务的状态（0051）：人定完短语签名拿到 job id 后来这里问跑完没
+        .route("/kbs/{id}/jobs/{job_id}", get(jobs_routes::job_in_kb))
         .route(
             "/kbs/{id}/members/{user_id}",
             axum::routing::put(kbs::set_member).delete(kbs::remove_member),

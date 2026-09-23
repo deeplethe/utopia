@@ -74,7 +74,10 @@ reevaluation. Even one edit can reopen all older automatic negative bindings on 
 base, requiring two votes per eligible item through batched model requests; debouncing reduces
 the number of runs, not the items reconsidered. A burst of ontology edits debounces into one run
 rather than one run each [#757];
-a person's decision is never overwritten by the agent. On
+a person's decision is never overwritten by the agent. A person's phrase decision commits together
+with its own recomputation job and the request answers `202` with the job id; the typed graph is
+recomputed by that job, never by the request, and the page learns of it through the `review` and
+`graph` events or `GET /kbs/{id}/jobs/{job_id}` [0051]. On
 the 25-document batch with a hand-written ontology of 14 classes and 28 properties, and 60 of
 400 kind words bound, 423 signatures cover 861 statements: 36 bind (184 statements), 110 bind to
 nothing, 1 splits the votes and 276 have no admissible property because an end is unbound; a

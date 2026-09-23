@@ -1714,7 +1714,7 @@ export const zh: Strings = {
     alignmentVotes: (first: string, second: string) => `两票：${first} · ${second}`,
     alignmentConflict: "此决定与当前状态冲突。请刷新并核对后再试。",
     alignmentKindWordBusy: "这个类别词正在被其他操作更新，请稍后重试。",
-    alignmentTyped: (kept: number, retired: number) => `类型化图谱已重算：${kept} 条成了类型化事实，${retired} 行作废`,
+    alignmentAccepted: "已保存。类型化图谱正在后台重算，算完会在这里自动刷新。",
     defects: "本体自相矛盾",
     defectsHint:
       "定义本身的问题，没有牵涉任何事实。这一档排在前面：定义站不住的时候，据它报出来的每一条事实级结论都可疑。",

@@ -259,6 +259,34 @@ pub async fn failed_count(pool: &PgPool, kb_id: Option<Uuid>) -> AppResult<i64> 
     Ok(sqlx::query_scalar(&sql).bind(kb_id).fetch_one(pool).await?)
 }
 
+/// 一个任务此刻的样子，给「我刚排下去的那件事跑完了没」这个问题用（0051）。
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct JobStatus {
+    pub id: i64,
+    pub kind: String,
+    pub status: String,
+    pub attempts: i32,
+    pub max_attempts: i32,
+    pub last_error: Option<String>,
+    pub run_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// 按 id 读一个任务，**且只在它属于这个库时**。授权跟着库走：能看这个库的人能看
+/// 它的任务；别的库的任务 id 猜对了也只得到 None，与看不见的文档一样答 404。
+pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Option<JobStatus>> {
+    let sql = format!(
+        "SELECT j.id, j.kind, j.status, j.attempts, j.max_attempts, j.last_error, j.run_at, j.updated_at
+           FROM jobs j WHERE j.id = $1 AND {}",
+        KB_SCOPE.replace("$KB", "$2")
+    );
+    Ok(sqlx::query_as(&sql)
+        .bind(id)
+        .bind(kb_id)
+        .fetch_optional(pool)
+        .await?)
+}
+
 /// 认领一个到期任务；没有则返回 None。
 async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
     let job = sqlx::query_as(

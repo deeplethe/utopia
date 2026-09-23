@@ -1955,8 +1955,7 @@ export const en = {
     alignmentVotes: (first: string, second: string) => `Votes: ${first} · ${second}`,
     alignmentConflict: "This decision conflicts with the current state. Refresh and review it before trying again.",
     alignmentKindWordBusy: "This kind word is being updated by another operation. Please try again shortly.",
-    alignmentTyped: (kept: number, retired: number) =>
-      `Typed graph recomputed: ${kept} statements typed, ${retired} rows retired`,
+    alignmentAccepted: "Decision saved. The typed graph is being recomputed and will refresh here when it is done.",
     defects: "Ontology contradicts itself",
     defectsHint:
       "Problems in the definitions themselves — no facts involved. These come first: while a definition contradicts itself, every fact-level finding that rests on it is suspect.",

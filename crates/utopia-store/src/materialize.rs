@@ -14,7 +14,7 @@
 //! 没有」的（陈述, 绑定）对补上——有同断言的行就并进去，没有才新建。没有模型调用。
 
 use sqlx::PgPool;
-use utopia_core::{AppError, AppResult};
+use utopia_core::AppResult;
 use uuid::Uuid;
 
 use crate::graph::{insert_fact_on, FactObject, Validity};
@@ -74,55 +74,29 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
     Ok(outcome)
 }
 
-/// 人的入口（#798 跟进、#800 复盘）：与 `materialize` 同样的活，外加一个
-/// 事务级的 `lock_timeout` 预算，超时映射到表「语言可读的重试提示」。
+/// 任务里的入口（0051）：**试锁，不等**。拿到 `typed_materialize` 就在这条连接上
+/// 跑完整的重算并提交；拿不到就回滚、返回 `None`，由调用方挂成 `Deferred` 稍后再来。
 ///
-/// 设计要点（沿用 #828 的同一条理由）：
-/// - `lock_timeout` 是**等锁的预算**，不是请求总预算，也不是查询执行预算
-/// - worker 不动也不动：背景不会因为 5xx 醒不了，没人在屏幕前面等
-/// - advisory 锁本身在事务提交时释放（pg_advisory_xact_lock），所以这里的
-///   等待只在等 worker 的 1 次 materialize 完成；不会等下一个做多次锁
-/// - `55P03` 是 `lock_not_available`，PostgreSQL 唯一的「这个锁等不到」错
-pub async fn materialize_human(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
+/// 为什么不像 `materialize` 那样等锁：等锁的是一条池里的连接，几个决定连着点下来，
+/// 每个 job 都抱着一条连接排队，池就空了（0051 §Alternatives）。也为什么不像旧的
+/// 人工入口那样给等待设 2 秒预算：job 没人在屏幕前面等，超时只是把同一次重算推到
+/// 下一次重试，不如一开始就不等。人的那一次点击只提交决定和这个 job（同一事务，
+/// `phrase_bindings::decide_with_delivery`），屏幕上等的是事件，不是锁。
+pub async fn try_materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Option<Outcome>> {
     let mut tx = pool.begin().await?;
-    let result = async {
-        // 2 秒是 0033 的「人点一下」的预算：再长就显成 spinner 了。
-        // worker 的等待策略不在这一格里——它走 `materialize`，没预算
-        sqlx::query("SET LOCAL lock_timeout = '2s'")
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('typed_materialize'), hashtext($1))")
-            .bind(kb_id.to_string())
-            .execute(&mut *tx)
-            .await?;
-        materialize_in_tx(&mut tx, kb_id).await
+    let acquired: bool = sqlx::query_scalar(
+        "SELECT pg_try_advisory_xact_lock(hashtext('typed_materialize'), hashtext($1))",
+    )
+    .bind(kb_id.to_string())
+    .fetch_one(&mut *tx)
+    .await?;
+    if !acquired {
+        tx.rollback().await?;
+        return Ok(None);
     }
-    .await;
-    match result {
-        Ok(outcome) => {
-            tx.commit().await?;
-            Ok(outcome)
-        }
-        Err(error) => {
-            // 关掉失败路径的回滚要先把连接释放掉，再走错误映射。
-            // 双重错误（回滚也炸了）保留两者，别只报回滚
-            if let Err(rollback) = tx.rollback().await {
-                return Err(AppError::Other(anyhow::Error::new(error).context(format!(
-                    "rolling back human materialization: {rollback}"
-                ))));
-            }
-            if matches!(&error, AppError::Db(sqlx::Error::Database(e))
-                if e.code().as_deref() == Some("55P03"))
-            {
-                return Err(AppError::CodedConflict {
-                    code: "alignment_busy",
-                    message: "This base is being recomputed by another operation. Please try again shortly."
-                        .into(),
-                });
-            }
-            Err(error)
-        }
-    }
+    let outcome = materialize_in_tx(&mut tx, kb_id).await?;
+    tx.commit().await?;
+    Ok(Some(outcome))
 }
 
 async fn materialize_in_tx(

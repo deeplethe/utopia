@@ -2308,14 +2308,16 @@ export const api = {
       defects_found: number;
       defects_new: number;
     }>(`/api/v1/kbs/${kbId}/consistency/check`, { method: "POST" }),
-  /** 人定一条短语签名：属性与方向，或没有（陈述留在开放图谱）。类型化图谱立刻重算 */
+  /** 人定一条短语签名：属性与方向，或没有（陈述留在开放图谱）。判定和它的重算任务
+   *  一次提交，答 202 和 job id（0051）；类型化图谱在后台重算，`review` / `graph`
+   *  事件到了就是算完了，也可以拿 job id 去 `/kbs/{id}/jobs/{job_id}` 问 */
   decideAlignmentPhrase: (
     kbId: string,
     bindingId: string,
     property: string | null,
     direction: "forward" | "reverse",
   ) =>
-    request<{ ok: boolean; typed: { added: number; merged: number; retired: number } }>(
+    request<{ ok: boolean; job_id: number; status: "accepted" }>(
       `/api/v1/kbs/${kbId}/review/alignment/phrases/${bindingId}`,
       { method: "POST", body: JSON.stringify({ property, direction }) },
     ),

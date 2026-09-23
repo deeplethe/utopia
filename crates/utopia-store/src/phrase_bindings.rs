@@ -262,6 +262,53 @@ fn validate_decision(sig: &PhraseSignature, d: &Decision<'_>) -> AppResult<Strin
     Ok(phrase)
 }
 
+/// 人的判定落库时随手排下的重算任务的种类。`main` 按它分发；载荷只有 `kb_id`——
+/// job 读的是**当前**的绑定，不回放判定时的属性（0051：回放旧载荷会盖掉后来的人）。
+pub const MATERIALIZE_KIND: &str = "materialize_typed";
+
+/// 人的判定与它自己的重算任务**同一事务**提交（0051）。
+///
+/// 为什么不是「判定落库，然后看有没有 worker 在跑」：正在跑的那次对齐可能已经做完
+/// 最后一次读，这条判定就没有任何人替它算类型化行——它被接受了，却永远不投影。
+/// 一条判定配一个自己的 job，job 只在判定提交后可见，被谁先处理都读到最新的绑定，
+/// 于是最后一次判定总会被算到。代价是 N 次判定 N 次重算，后面的多半是空跑（0051
+/// 量过：100 次判定总收敛 593 ms）；「有一个在跑就不排」省下的正是那条会丢的投影。
+///
+/// 返回 job id；代理不能盖人（`decide_on` 的规则）时什么都没写，返回 `None`。
+pub async fn decide_with_delivery(
+    pool: &PgPool,
+    kb_id: Uuid,
+    sig: &PhraseSignature,
+    d: Decision<'_>,
+) -> AppResult<Option<i64>> {
+    decide_with_delivery_budget(pool, kb_id, sig, d, 3).await
+}
+
+/// 预算单独成参只为了测「排队失败要连判定一起回滚」：0 会被 `enqueue` 拒掉，
+/// 那正是一次发生在判定写入之后的真实失败。生产入口固定给 3。
+async fn decide_with_delivery_budget(
+    pool: &PgPool,
+    kb_id: Uuid,
+    sig: &PhraseSignature,
+    d: Decision<'_>,
+    max_attempts: i32,
+) -> AppResult<Option<i64>> {
+    let mut tx = pool.begin().await?;
+    if !decide_on(&mut tx, kb_id, sig, d).await? {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+    let id = crate::jobs::enqueue_with_max_attempts_tx(
+        &mut tx,
+        MATERIALIZE_KIND,
+        serde_json::json!({ "kb_id": kb_id }),
+        max_attempts,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Some(id))
+}
+
 /// Write on the caller's connection, so related durable work can share its transaction.
 pub async fn decide_on(
     connection: &mut sqlx::PgConnection,
@@ -308,6 +355,10 @@ pub async fn decide_on(
     .await?;
     Ok(res.rows_affected() > 0)
 }
+
+#[cfg(test)]
+#[path = "phrase_bindings_delivery_tests.rs"]
+mod delivery_tests;
 
 #[cfg(test)]
 mod tests {

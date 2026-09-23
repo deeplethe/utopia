@@ -12,6 +12,10 @@ use crate::auth::AuthUser;
 use crate::error::ApiResult;
 use crate::state::AppState;
 
+#[cfg(test)]
+#[path = "review_routes_phrase_tests.rs"]
+mod phrase_tests;
+
 /// 一页多少条。**服务端的默认，不是上限**——前端可以要更少，多则被 clamp 挡住
 const REVIEW_PAGE: i64 = 10;
 
@@ -1228,7 +1232,7 @@ pub async fn decide_alignment_phrase(
     AuthUser(user): AuthUser,
     Path((kb_id, binding_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<DecideAlignmentPhraseReq>,
-) -> ApiResult<Json<serde_json::Value>> {
+) -> ApiResult<(axum::http::StatusCode, Json<serde_json::Value>)> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let sig = utopia_store::phrase_bindings::signature_of(&state.pool, kb_id, binding_id)
         .await?
@@ -1264,7 +1268,10 @@ pub async fn decide_alignment_phrase(
         }
     };
     let votes = json!({ "person": { "property": req.property, "direction": direction } });
-    utopia_store::phrase_bindings::decide(
+    // 判定和它的重算任务一次提交（0051）。这里**不再**同步重算：等物化锁占的是池里的
+    // 连接，而正在跑的那次对齐可能已经读完最后一遍，谁也不替这条判定投影。一个 job
+    // 只在判定提交后可见，worker 读的是当前绑定；屏幕上等的是 `review` / `graph` 事件
+    let job_id = utopia_store::phrase_bindings::decide_with_delivery(
         &state.pool,
         kb_id,
         &sig,
@@ -1276,8 +1283,8 @@ pub async fn decide_alignment_phrase(
             decided_by: "person",
         },
     )
-    .await?;
-    let typed = utopia_store::materialize::materialize_human(&state.pool, kb_id).await?;
+    .await?
+    .ok_or_else(|| utopia_core::AppError::Conflict("the decision was not written".into()))?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -1286,13 +1293,14 @@ pub async fn decide_alignment_phrase(
         "phrase_binding",
         Some(binding_id),
         json!({ "phrase": sig.phrase, "property": req.property, "direction": direction,
-                "typed_added": typed.added, "typed_retired": typed.retired }),
+                "job_id": job_id }),
     )
     .await;
     state.emit_review(kb_id);
-    state.emit_graph(kb_id);
-    Ok(Json(
-        json!({ "ok": true, "typed": { "added": typed.added, "merged": typed.merged, "retired": typed.retired } }),
+    // 202：收下了，投影在路上。不编一个 typed: {added: 0} 出来——那不是这次请求知道的事
+    Ok((
+        axum::http::StatusCode::ACCEPTED,
+        Json(json!({ "ok": true, "job_id": job_id, "status": "accepted" })),
     ))
 }
 
