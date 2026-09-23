@@ -19,12 +19,34 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # 连库测试也在这里跑。从前它们放在下面的 migrations job：那边有库、这边没有，
-  # 于是同一批测试二进制被编了两遍——backend 的 `cargo test --workspace` 编一遍
-  # 然后全部跳过，migrations 再编一遍才真的跑（store 约 150s、server 约 130s 全是重复编译）。
-  # 给这个 job 也起一个 Postgres，一次编译全部跑完，migrations job 只留迁移本身的检查。
-  # 附带的好处：分支保护只要求 backend 与 web 通过，连库测试挪进来才真正成为合并门槛
-  backend:
+  # lint / test / build 三个 job 并行。它们互不共享产物：clippy 是 check 模式，build 是
+  # 非测试的 codegen，test 是 test profile——串在一个 job 里只是把 clippy 和 build
+  # 排到了关键路径上（缓存命中后各 36s 和 39s，未命中 143s 和 51s）。
+  # 分支保护按名字要求 backend 与 web 通过，所以 backend 保留为下面的汇总 job；
+  # 直接改名会让 clippy 和 build 悄悄退出合并门槛
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # 只有 push（dev / main）那次运行才写缓存，PR 只读。此前每个 PR 各存约 2GB，
+      # 仓库上限 10GB，五六个 PR 就挤满，按 LRU 淘汰——同一个 PR 第二次跑时自己上次
+      # 存的也已经没了：17 条缓存的最后访问时间全等于创建时间，从来没人读到过
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # 连库测试在这里跑。从前它们放在下面的 migrations job：那边有库、这边没有，
+  # 于是同一批测试二进制被编了两遍——`cargo test --workspace` 编一遍然后全部跳过，
+  # migrations 再编一遍才真的跑。给这个 job 也起一个 Postgres，一次编译全部跑完，
+  # migrations job 只留迁移本身的检查。连库测试由此进了 backend 汇总，才真正成为合并门槛
+  test:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -40,20 +62,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      # 只有 push（dev / main）那次运行才写缓存，PR 只读。此前每个 PR 各存约 2GB，
-      # 仓库上限 10GB，五六个 PR 就挤满，按 LRU 淘汰——同一个 PR 第二次跑时自己上次
-      # 存的也已经没了：17 条缓存的最后访问时间全等于创建时间，从来没人读到过
+      # 只在 push 时写缓存，理由见 lint job 同一处的注释
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'push' }}
       - name: Install PDF text extraction tools
         run: sudo apt-get update && sudo apt-get install -y poppler-utils poppler-data
-      - name: Format
-        run: cargo fmt --all --check
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
       # 库要先迁移好：store 的一百多个集成测试和 server 的多数 fixture 不自己跑迁移，
       # 对着空库并发起几百个测试会成片撞 relation "organizations" does not exist（#869）。
       # 不用 sqlx-cli——装它要一分多钟，而这个 job 在关键路径上；这个 example 复用
@@ -71,8 +85,32 @@ jobs:
           UTOPIA_TEST_REQUIRE_PDFTOTEXT: "1"
           UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
           UTOPIA_TEST_REQUIRE_DB: "1"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # 只在 push 时写缓存，理由见 lint job 同一处的注释
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name == 'push' }}
       - name: Build
         run: cargo build --workspace
+
+  # 汇总。分支保护要求的检查名是 backend，上面三个 job 任何一个不是 success 它就红——
+  # `if: always()` 是为了上游失败或取消时它也跑，而不是被跳过后显示为「未报告」
+  backend:
+    runs-on: ubuntu-latest
+    needs: [lint, test, build]
+    if: always()
+    steps:
+      - name: 汇总
+        run: |
+          echo "lint=${{ needs.lint.result }} test=${{ needs.test.result }} build=${{ needs.build.result }}"
+          test "${{ needs.lint.result }}" = success
+          test "${{ needs.test.result }}" = success
+          test "${{ needs.build.result }}" = success
 
   # 迁移得真的在库上跑一遍。此前 CI 只有 fmt/clippy/test/build，于是两个 PR
   # 各带一个 0025、各自通过，合进 main 之后服务直接起不来——sqlx 按版本号索引，
