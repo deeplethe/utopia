@@ -15,8 +15,24 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # 连库测试也在这里跑。从前它们放在下面的 migrations job：那边有库、这边没有，
+  # 于是同一批测试二进制被编了两遍——backend 的 `cargo test --workspace` 编一遍
+  # 然后全部跳过，migrations 再编一遍才真的跑（store 约 150s、server 约 130s 全是重复编译）。
+  # 给这个 job 也起一个 Postgres，一次编译全部跑完，migrations job 只留迁移本身的检查。
+  # 附带的好处：分支保护只要求 backend 与 web 通过，连库测试挪进来才真正成为合并门槛
   backend:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: utopia
+          POSTGRES_PASSWORD: utopia
+          POSTGRES_DB: utopia
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -29,12 +45,23 @@ jobs:
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # 库要先迁移好：store 的一百多个集成测试和 server 的多数 fixture 不自己跑迁移，
+      # 对着空库并发起几百个测试会成片撞 relation "organizations" does not exist（#869）。
+      # 不用 sqlx-cli——装它要一分多钟，而这个 job 在关键路径上；这个 example 复用
+      # 测试本来就要编的 utopia-store，几乎不花额外时间
+      - name: 迁移测试库
+        run: cargo run -p utopia-store --example migrate
+        env:
+          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
       - name: Test
         run: cargo test --workspace
         # 装了 Poppler 就必须真的用它测：没有它时 PDF 回退的那个测试会跳过，
-        # 而一个静静跳过的测试等于没写（#248）
+        # 而一个静静跳过的测试等于没写（#248）。库同理：有库就**必须**连
+        # （UTOPIA_TEST_REQUIRE_DB），连库测试没跑成要红，不能跳过显示绿色
         env:
           UTOPIA_TEST_REQUIRE_PDFTOTEXT: "1"
+          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
+          UTOPIA_TEST_REQUIRE_DB: "1"
       - name: Build
         run: cargo build --workspace
 
@@ -74,40 +101,9 @@ jobs:
       # 第二遍必须也过：迁移改号后要能在已经跑过旧号的库上安全重放
       - name: 再跑一遍
         run: sqlx migrate run --database-url postgres://utopia:utopia@localhost:5432/utopia
-      # 连库的测试只有这个 job 跑得动——rust job 没有数据库，那些测试在那边
-      # 会跳过并显示绿色。不在这里跑一遍，等于写了测试却永远没执行过，
-      # 比没写更糟：它会让人以为 SQL 有覆盖
-      # 整套 store 集成测试都在这里跑，而且**没有库就失败**（UTOPIA_TEST_REQUIRE_DB）：
-      # 从前只跑 graph_changes，其余二十几个在没有库的 backend job 里静默跳过，
-      # 绿色是假的（#248）
-      - name: 连库测试
-        run: |
-          set -o pipefail
-          cargo test -p utopia-store 2>&1 | tee store-tests.log
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
-      - name: 摘要
-        if: always()
-        run: |
-          passed=$(grep -o '[0-9]* passed' store-tests.log | awk '{s+=$1} END {print s+0}')
-          failed=$(grep -o '[0-9]* failed' store-tests.log | awk '{s+=$1} END {print s+0}')
-          echo "utopia-store against Postgres: **${passed} passed**, ${failed} failed — a missing database fails this job instead of skipping" >> "$GITHUB_STEP_SUMMARY"
-
-      # utopia-server 里连库的测试同样以 test_db::url() 为门槛，backend job 没有库就静默跳过。
-      # 从前这里靠一张过滤器清单（mcp / chat / retrieval / documents_routes）逐个点名，
-      # 清单外的模块——jobs_routes、rule_*、pipeline、ingest_sources、type_alignment、
-      # extraction、query_engine::postgres——一个都没在 CI 上跑过（#248、#868）。
-      # 改成整个 crate 一起跑，和上面的 utopia-store 一样，新模块不用再记得来登记。
-      # 不连库的测试跟着再跑一遍，代价只有几秒：编译早就付过了（此前第一个过滤器步骤
-      # 就要编一遍测试二进制），385 个测试本身跑完不到 10 秒。
-      # 依赖前面「全新库上跑一遍」已把库迁移好：chat 等 fixture 不自己跑迁移，
-      # 空库上并发起 385 个测试会撞 relation "organizations" does not exist。
-      - name: utopia-server against Postgres
-        run: cargo test -p utopia-server
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
+      # 连库测试不在这里：它们随 backend job 的 `cargo test --workspace` 一起跑，
+      # 那边同样有库、同样设了 UTOPIA_TEST_REQUIRE_DB。曾经放在这里是因为只有这个 job
+      # 有库，代价是同一批测试二进制编两遍；这个 job 现在只管迁移本身能不能跑、能不能重放
 
   web:
     runs-on: ubuntu-latest
