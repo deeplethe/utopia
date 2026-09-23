@@ -128,6 +128,9 @@ export function Chat() {
     const key = viewKey(kbId, routeConvId ?? null);
     if (previousRoute.current === key) return;
     previousRoute.current = key;
+    // 新建会话的 URL 同步也会走这里：旧 send owner 失效、activeIdRef 清空，
+    // 因而 route-sync 会调用 loadConversation。onConversation 已先 identify 生成句柄，
+    // loadConversation 必须先检查 liveAnswer.entry，直接认领，避免流中途读库覆盖。
     claimView(routeConvId ?? null);
     activeIdRef.current = null;
     setActiveId(routeConvId ?? null);
@@ -417,7 +420,7 @@ export function Chat() {
           handle.identify(id);
           invalidateList();
           if (!ownsView(owner)) return;
-          // 先同步写 ref 再换 URL：路由同步 effect 因 id 相等而跳过重载，不打断流
+          // 先 identify 生成句柄再换 URL；layout effect 重置视图后，loadConversation 会认领该句柄。
           activeIdRef.current = id;
           setActiveId(id);
           sessionStorage.setItem(lastKey(kb.id), id);
