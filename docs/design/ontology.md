@@ -66,11 +66,15 @@ candidates in opposite orders must agree on the property and the direction (forw
 statement's subject is the property's subject, reverse when its object is) for the signature to
 bind. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
-workbench's suggestions. Bindings live in `phrase_bindings`: a bound result goes stale when its
-selected property changes; `none` and `undecided` go stale when any property in the base is added
-or updated, since an existing property's revised definition may now fit [#773]. Kind-word bindings
-use the same rule for classes. Both use `updated_at`, so cosmetic edits can also trigger
-reevaluation. Even one edit can reopen all older automatic negative bindings on that side of the
+workbench's suggestions. Bindings live in `phrase_bindings`. Candidates are the properties whose
+declared domain and range admit the endpoint classes **or an ancestor of them**, and a candidate
+that fits only by inheritance says so to the model. A decision stores a fingerprint of what it
+considered (both ancestor closures, the admitted candidates with their `updated_at`); it is stale
+when the fingerprint of the current inputs differs, which is what timestamps could not see: a
+parent edge added or removed, an edit committed while the model was answering [0053, #807, #795].
+A signature with no admissible property is recorded as `none` (its projection retires); one with
+more candidates than the limit is `undecided` for the queue, not silently skipped. Kind-word
+bindings still use `updated_at`, so cosmetic edits can also trigger their reevaluation. Even one edit can reopen all older automatic negative bindings on that side of the
 base, requiring two votes per eligible item through batched model requests; debouncing reduces
 the number of runs, not the items reconsidered. A burst of ontology edits debounces into one run
 rather than one run each [#757];

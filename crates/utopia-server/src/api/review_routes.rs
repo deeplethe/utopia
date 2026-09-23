@@ -1281,6 +1281,7 @@ pub async fn decide_alignment_phrase(
             status: if property.is_some() { "bound" } else { "none" },
             votes: &votes,
             decided_by: "person",
+            basis: None,
         },
     )
     .await?

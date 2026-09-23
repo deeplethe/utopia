@@ -68,6 +68,8 @@ This is how the facts a reader draws without the text stating them (a place's co
 
 When the ontology changes, only facts under changed signatures and rules are recomputed. A signature with no property stays in the open graph, loses nothing, and counts toward the workbench's suggestions.
 
+**Revision 2026-09-23:** [0053](0053-a-phrase-decision-records-the-inputs-it-considered.md) replaces "a binding goes stale by timestamp" with a recorded basis: candidates are admitted through the class hierarchy, a decision stores a fingerprint of the closures and candidates it saw, and it is stale when the current fingerprint differs. No-candidate and overflow become recorded outcomes; the requeue condition reads live signatures only (#807, #795).
+
 **Revision proposed 2026-09-21:** [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md) addresses delivery after a human binding commits beyond an older materializer’s final read. It proposes a decision and its own durable job in one transaction, while retaining the current projection semantics. The asynchronous HTTP/job/UI contract remains unimplemented.
 
 

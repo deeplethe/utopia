@@ -1953,6 +1953,7 @@ export const en = {
     alignmentStatements: (n: number) => (n === 1 ? "1 statement" : `${n} statements`),
     alignmentEntities: (n: number) => (n === 1 ? "1 thing" : `${n} things`),
     alignmentVotes: (first: string, second: string) => `Votes: ${first} · ${second}`,
+    alignmentTooMany: (n: number) => `${n} properties could apply; too many to ask the model. Pick one or leave it open.`,
     alignmentConflict: "This decision conflicts with the current state. Refresh and review it before trying again.",
     alignmentKindWordBusy: "This kind word is being updated by another operation. Please try again shortly.",
     alignmentAccepted: "Decision saved. The typed graph is being recomputed and will refresh here when it is done.",

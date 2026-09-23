@@ -74,6 +74,7 @@ impl Fx {
                 status: "undecided",
                 votes: &json!({}),
                 decided_by: "agent",
+                basis: None,
             },
         )
         .await?;

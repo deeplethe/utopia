@@ -51,6 +51,7 @@ async fn accept(
                 status: if property.is_some() { "bound" } else { "none" },
                 votes: &json!({}),
                 decided_by: "person",
+                basis: None,
             }
         )
         .await?

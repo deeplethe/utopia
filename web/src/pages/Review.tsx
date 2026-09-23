@@ -747,6 +747,12 @@ function AlignmentPhraseRow({
       <div className="mt-1 text-small text-ink-2">
         {S.review.alignmentVotes(voteText(first), voteText(second))}
       </div>
+      {/* 候选多到没问模型的签名（0053）：说清是这个原因，不是两票都投了空 */}
+      {item.votes?.reason === "too_many_candidates" && (
+        <div className="mt-1 text-small text-ink-2">
+          {S.review.alignmentTooMany(item.votes?.candidates ?? 0)}
+        </div>
+      )}
       <div className={CARD_ACTIONS}>
         <SearchSelect
           size="sm"

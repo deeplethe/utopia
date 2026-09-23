@@ -719,7 +719,13 @@ export type AlignmentItem =
       object_is_value: boolean;
       statement_count: number;
       examples: string[];
-      votes: { first?: AlignmentVote | null; second?: AlignmentVote | null } | null;
+      /** 两票；候选多到没问模型时两票为空、`reason` 说明（0053） */
+      votes: {
+        first?: AlignmentVote | null;
+        second?: AlignmentVote | null;
+        reason?: string;
+        candidates?: number;
+      } | null;
       decided_at: string;
     }
   | {

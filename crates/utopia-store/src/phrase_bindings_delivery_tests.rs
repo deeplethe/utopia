@@ -83,6 +83,7 @@ fn bound(property: Uuid) -> Decision<'static> {
         status: "bound",
         votes: &serde_json::Value::Null,
         decided_by: "person",
+        basis: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn none() -> Decision<'static> {
         status: "none",
         votes: &serde_json::Value::Null,
         decided_by: "person",
+        basis: None,
     }
 }
 

@@ -77,6 +77,8 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0049 | [Expression declarations are checked when a rule is written](0049-expression-declarations-are-checked-when-a-rule-is-written.md) | Proposed · declaration policy pending; opt-in web draft only |
 | 0050 | [An action attempt keeps its identity and uncertain outcome](0050-an-action-attempt-keeps-its-identity-and-uncertain-outcome.md) | Proposed · durable execution identity and uncertain outcomes; no sender |
 | 0051 | [A human phrase decision carries its materialization work](0051-a-human-phrase-decision-carries-its-materialization-work.md) | Proposed · decision and materialization delivery; shared refactors and real regressions only |
+| 0052 | [Document content is a read contract over the retained ledger](0052-document-content-is-a-read-contract.md) | Proposed 2026-09-21 · implemented in #860 · two Viewer-level reads serve the retained originals the export already names by digest: `/documents/{id}/content[?version=N]` and `/documents/{id}/versions`; the handler locks the document and its ledger row through the blob read, purge answers 410, a ledger-referenced missing blob is a 500 invariant failure, a session or a scoped PAT may read, ingest tokens may not
+| 0053 | [A phrase decision records the inputs it considered](0053-a-phrase-decision-records-the-inputs-it-considered.md) | Implemented 2026-09-23 · a decision stores a fingerprint of the ancestor closures and admitted candidates it saw; stale means the fingerprint of the current inputs differs, which is what timestamps could not see (#807, #795): inheritance, parent edges, edits during the request; no-candidate and overflow become recorded outcomes; requeue reads live signatures only, so orphaned rows stop looping
 
 | | Record | Domain | Status |
 |---|---|---|---|
@@ -131,6 +133,8 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 | 0049 | [Expression declarations are checked when a rule is written](0049-expression-declarations-are-checked-when-a-rule-is-written.md) | rules | proposed |
 | 0050 | [An action attempt keeps its identity and uncertain outcome](0050-an-action-attempt-keeps-its-identity-and-uncertain-outcome.md) | lakehouse-and-actions | proposed |
 | 0051 | [A human phrase decision carries its materialization work](0051-a-human-phrase-decision-carries-its-materialization-work.md) | ontology | proposed |
+| 0052 | [Document content is a read contract over the retained ledger](0052-document-content-is-a-read-contract.md) | sources | current |
+| 0053 | [A phrase decision records the inputs it considered](0053-a-phrase-decision-records-the-inputs-it-considered.md) | ontology | current |
 
 The status word is whether a later record has overtaken this one; what is built is in the record's own status line. Domains are the files of [../design/](../design/README.md), where every record is dated and the status words are defined.
 
