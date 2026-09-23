@@ -22,6 +22,7 @@
 //   node scripts/bench/typed.mjs --label dry --dry-run        # 建库、装本体、灌语料、等解析，不抽取：验管线
 //   node scripts/bench/typed.mjs --label run1 --judge 200 --errata   # 对齐之后再跑勘误 agent，报前后两份分与撤错多少
 //   node scripts/bench/typed.mjs --kb <id> --score --errata --judge 200   # 已有的库：跑勘误、打分
+//   node scripts/bench/typed.mjs --kb <id> --score --approve-rules         # 替审核人批下全部蕴含规则、读数、物化，再打分
 // 环境：BENCH_BASE（默认 http://localhost:1516）、BENCH_EMAIL / BENCH_PASSWORD（lib.mjs）、
 //       BENCH_PSQL（指向应用库的 psql 命令行）、BENCH_JUDGE_BASE / _KEY / _MODEL（裁判端点）
 
@@ -143,7 +144,10 @@ async function extract(KB) {
   await until(() => {
     const done = num(live.replace("count(*)", "count(c.extracted_at)"));
     const total = num(live);
-    const left = num(`SELECT count(*) FROM jobs WHERE kind IN ('extract_document','process_document') AND status IN ('queued','running') AND payload->>'kb_id'='${KB}'`);
+    // 抽取任务的 payload 只带 document_id（没有 kb_id）：按文档所属的库数，否则这里永远是 0，
+    // 台子会在第一篇抽完时就去排对齐，对齐跑在半截语料上
+    const left = num(`SELECT count(*) FROM jobs j WHERE j.kind IN ('extract_document','process_document') AND j.status IN ('queued','running')
+      AND (j.payload->>'kb_id'='${KB}' OR j.payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id='${KB}'))`);
     log(`抽取：${done}/${total} 块，${left} 个任务`);
     return left === 0 && done > 0 ? true : done;
   }, 15000, 15 * 60000);
@@ -154,14 +158,36 @@ async function align(KB) {
   // 类别词先绑到类，短语签名才定型；类别词对齐结束时自己会排短语对齐，短语对齐结束时物化
   psql(`INSERT INTO jobs (kind, payload) VALUES ('align_types', '{"kb_id":"${KB}"}')`);
   await until(() => {
-    const left = num(`SELECT count(*) FROM jobs WHERE kind IN ('align_types','align_phrases','materialize_typed') AND status IN ('queued','running') AND payload->>'kb_id'='${KB}'`);
+    const left = num(`SELECT count(*) FROM jobs WHERE kind IN ('align_types','align_phrases','materialize_typed','read_phrases') AND status IN ('queued','running') AND payload->>'kb_id'='${KB}'`);
     const bound = num(`SELECT count(*) FROM phrase_bindings WHERE kb_id='${KB}' AND status='bound'`);
+    const decided = num(`SELECT count(*) FROM phrase_bindings WHERE kb_id='${KB}'`) + num(`SELECT count(*) FROM type_bindings WHERE kb_id='${KB}'`);
+    // 签名判完之后还有一段提规则（0044 决定 3 第五片）：每条判定过的签名问一次，规则行慢慢增加，
+    // 绑定数却不再动——进展得把它也算上，否则这一段会被当成卡死
+    const rules = num(`SELECT count(*) FROM implication_rules WHERE kb_id='${KB}'`);
     const typed = num(`SELECT count(*) FROM facts WHERE kb_id='${KB}' AND layer='typed' AND from_statement_id IS NOT NULL AND invalidated_at IS NULL`);
-    log(`对齐：${left} 个任务在跑，绑定 ${bound}，类型化 ${typed}`);
-    return left === 0 && num(`SELECT count(*) FROM phrase_bindings WHERE kb_id='${KB}'`) > 0 ? true : bound * 100000 + typed;
-  }, 15000, 20 * 60000);
+    log(`对齐：${left} 个任务在跑，判定 ${decided}，绑定 ${bound}，规则 ${rules}，类型化 ${typed}`);
+    // `until` 只把数字当进展：四个数拼成一个单调的数
+    return left === 0 && num(`SELECT count(*) FROM phrase_bindings WHERE kb_id='${KB}'`) > 0 ? true : decided * 1e9 + bound * 1e6 + rules * 1e3 + typed;
+  }, 15000, 30 * 60000);
   const failed = num(`SELECT count(*) FROM jobs WHERE kind IN ('align_types','align_phrases','materialize_typed') AND status='failed' AND payload->>'kb_id'='${KB}'`);
   if (failed) log(`注意：${failed} 个对齐任务失败（看 jobs.last_error）`);
+}
+
+// --approve-rules：替审核人把对齐器提的蕴含规则全批了（0044 决定 3 第五片的上限：真人会驳回一部分），
+// 排读数任务（读数完了自己排物化），等隐含行算出来。不带这个开关时提议只是躺在队列里，隐含行为 0
+async function approveRules(KB) {
+  const n = num(`SELECT count(*) FROM implication_rules WHERE kb_id='${KB}' AND status='proposed'`);
+  psql(`UPDATE implication_rules SET status='approved', decided_by='person', decided_at=now() WHERE kb_id='${KB}' AND status='proposed'`);
+  psql(`INSERT INTO jobs (kind, payload) VALUES ('read_phrases', '{"kb_id":"${KB}"}')`);
+  log(`批了 ${n} 条规则，排读数与物化`);
+  await until(() => {
+    const left = num(`SELECT count(*) FROM jobs WHERE kind IN ('read_phrases','materialize_typed') AND status IN ('queued','running') AND payload->>'kb_id'='${KB}'`);
+    const read = num(`SELECT count(*) FROM phrase_readings WHERE kb_id='${KB}'`);
+    const implied = num(`SELECT count(*) FROM facts WHERE kb_id='${KB}' AND implied AND invalidated_at IS NULL`);
+    log(`读数：${left} 个任务在跑，缓存 ${read} 条，隐含 ${implied} 条`);
+    return left === 0 ? true : read * 100000 + implied;
+  }, 15000, 30 * 60000);
+  return { approved: n, readings: num(`SELECT count(*) FROM phrase_readings WHERE kb_id='${KB}'`), implied: num(`SELECT count(*) FROM facts WHERE kb_id='${KB}' AND implied AND invalidated_at IS NULL`) };
 }
 
 // 勘误（0044 决定 7）：物化之后排一次 errata_review，等它把每篇文档看完。度量按 errata_runs 与
@@ -236,23 +262,37 @@ function valueMatches(gold, got) {
   return gn.size > 0 && vn.size > 0 && [...gn].some((n) => vn.has(n));
 }
 
-function score(KB) {
-  // 每篇文档里的类型化事实：主语名集合、属性键、宾语名集合或值
-  const typed = rows(`
+// scope：'after' 是库现在的样子（勘误撤掉的不算、勘误加上的算），'before' 是勘误之前
+// （撤掉的算回来、加上的不算）。0044 的门槛看勘误前，勘误的度量看两者之差
+function score(KB, scope = "after") {
+  // 每篇文档里的类型化事实：主语名集合、属性键、宾语名集合或值。
+  // 名字之间用 ¦ 接：psql -A 的列分隔符是 |，名字里再用 | 会把列切错（第一轮就是这么错到 0 的）
+  const rowsOf = rows(`
     SELECT d.filename, r.key,
-           s.canonical_name || '|' || coalesce((SELECT string_agg(n.object_value->>'value','|') FROM facts n JOIN relation_types nr ON nr.id=n.predicate_id
+           s.canonical_name || '¦' || coalesce((SELECT string_agg(n.object_value->>'value','¦') FROM facts n JOIN relation_types nr ON nr.id=n.predicate_id
                  WHERE n.subject_id=s.id AND nr.key='known_as' AND n.invalidated_at IS NULL AND n.object_value IS NOT NULL),''),
-           coalesce(o.canonical_name || '|' || coalesce((SELECT string_agg(n.object_value->>'value','|') FROM facts n JOIN relation_types nr ON nr.id=n.predicate_id
+           coalesce(o.canonical_name || '¦' || coalesce((SELECT string_agg(n.object_value->>'value','¦') FROM facts n JOIN relation_types nr ON nr.id=n.predicate_id
                  WHERE n.subject_id=o.id AND nr.key='known_as' AND n.invalidated_at IS NULL AND n.object_value IS NOT NULL),''), ''),
-           coalesce(f.object_value->>'value', f.object_value#>>'{}', '')
+           coalesce(f.object_value->>'value', f.object_value#>>'{}', ''),
+           EXISTS (SELECT 1 FROM errata_actions ea WHERE ea.fact_id=f.id AND ea.action IN ('retract','revise') AND ea.status='applied') AS removed,
+           -- 只算「只有勘误这一个来源」的行：加的事实撞上已有的行时 insert_fact_on 复用那一行，它仍是陈述算出来的
+           (f.from_statement_id IS NULL AND NOT f.implied
+              AND EXISTS (SELECT 1 FROM errata_actions ea WHERE ea.new_fact_id=f.id AND ea.status='applied')) AS added
       FROM facts f
       JOIN relation_types r ON r.id=f.predicate_id
       JOIN entities s ON s.id=f.subject_id
  LEFT JOIN entities o ON o.id=f.object_id
       JOIN LATERAL (SELECT document_id FROM fact_evidence WHERE fact_id=f.id LIMIT 1) ev ON true
       JOIN documents d ON d.id=ev.document_id
-     WHERE f.kb_id='${KB}' AND f.layer='typed' AND f.from_statement_id IS NOT NULL AND f.invalidated_at IS NULL`
-  ).map(([file, key, subj, obj, val]) => ({ file, key: key.toUpperCase(), subj: subj.split("|").map(norm).filter(Boolean), obj: obj.split("|").map(norm).filter(Boolean), val }));
+     WHERE f.kb_id='${KB}' AND f.layer='typed' AND NOT r.builtin
+       AND (f.from_statement_id IS NOT NULL OR f.implied
+            OR EXISTS (SELECT 1 FROM errata_actions ea WHERE ea.new_fact_id=f.id AND ea.status='applied'))
+       AND (f.invalidated_at IS NULL
+            OR EXISTS (SELECT 1 FROM errata_actions ea WHERE ea.fact_id=f.id AND ea.action IN ('retract','revise') AND ea.status='applied'))`
+  );
+  const typed = rowsOf
+    .map(([file, key, subj, obj, val, removed, added]) => ({ file, key: key.toUpperCase(), subj: subj.split("¦").map(norm).filter(Boolean), obj: obj.split("¦").map(norm).filter(Boolean), val, removed: removed === "t", added: added === "t" }))
+    .filter((t) => (scope === "before" ? !t.added : !t.removed));
   // 开放陈述连上的实体对（抽取那一层）
   const open = rows(`
     SELECT d.filename, s.canonical_name, coalesce(o.canonical_name, f.object_value->>'value', '')
@@ -286,7 +326,7 @@ function score(KB) {
   }
   const pct = (a, b) => (b ? (100 * a / b).toFixed(1) + "%" : "-");
   const result = {
-    label: LABEL, kb: KB, corpus: CORPUS, at: new Date().toISOString(),
+    label: LABEL, kb: KB, corpus: CORPUS, scope, at: new Date().toISOString(),
     typed_facts: typed.length, open_statements: open.length,
     gold, gold_recall: hit / (gold || 1), gold_recall_same_sentence: hitSame / (goldSame || 1),
     gold_recall_cross_sentence: (hit - hitSame) / ((gold - goldSame) || 1),
@@ -330,7 +370,9 @@ async function judge(KB, n, seed) {
     SELECT f.id, d.filename, s.canonical_name, r.label, coalesce(o.canonical_name, f.object_value->>'value', f.object_value#>>'{}', '')
       FROM facts f JOIN relation_types r ON r.id=f.predicate_id JOIN entities s ON s.id=f.subject_id LEFT JOIN entities o ON o.id=f.object_id
       JOIN LATERAL (SELECT document_id FROM fact_evidence WHERE fact_id=f.id LIMIT 1) ev ON true JOIN documents d ON d.id=ev.document_id
-     WHERE f.kb_id='${KB}' AND f.layer='typed' AND f.from_statement_id IS NOT NULL AND f.invalidated_at IS NULL ORDER BY f.id`);
+     WHERE f.kb_id='${KB}' AND f.layer='typed' AND NOT r.builtin AND f.invalidated_at IS NULL
+       AND (f.from_statement_id IS NOT NULL OR f.implied
+            OR EXISTS (SELECT 1 FROM errata_actions ea WHERE ea.new_fact_id=f.id AND ea.status='applied')) ORDER BY f.id`);
   // 可复现抽样
   let a = (seed >>> 0) || 1; const rnd = () => { a = (a * 1103515245 + 12345) >>> 0; return a / 4294967296; };
   const sample = all.map((r) => [rnd(), r]).sort((x, y) => x[0] - y[0]).slice(0, n).map(([, r]) => r);
@@ -365,13 +407,17 @@ if (!KB) {
 } else {
   await login();
 }
-const result = score(KB);
+let rules = null;
+if (args["approve-rules"]) rules = await approveRules(KB);
+// 勘误前的分：已经跑过勘误的库也能按 scope 算回来（撤掉的算回来、加上的不算）
+const result = score(KB, "before");
+if (rules) result.rules = rules;
 if (args.judge) result.judge = await judge(KB, Number(args.judge) || 200, Number(args.seed || 1));
 if (args.errata) {
   // 勘误前的分留着，勘误后再打一次：0044 §7 的度量是两份分的差，与撤错了多少
   result.before_errata = { gold_recall: result.gold_recall, gold_recall_same_sentence: result.gold_recall_same_sentence, typed_facts: result.typed_facts, judge: result.judge };
   result.errata = await errata(KB);
-  const after = score(KB);
+  const after = score(KB, "after");
   result.after_errata = { gold_recall: after.gold_recall, gold_recall_same_sentence: after.gold_recall_same_sentence, typed_facts: after.typed_facts };
   if (args.judge) {
     result.after_errata.judge = await judge(KB, Number(args.judge) || 200, Number(args.seed || 1));
