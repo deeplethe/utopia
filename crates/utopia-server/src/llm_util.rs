@@ -86,8 +86,12 @@ pub async fn acquire(
 /// 第一次真跑里把对齐也压到 minimal，裁判判 misworded 的从 4% 涨到 31%（bench README，
 /// 2026-09-24）——它挑了「相近」而不是「就是」的属性
 pub fn chat_client_thinking(s: &LlmSettings) -> Option<LlmClient> {
-    chat_client(s).map(|c| c.with_reasoning_effort(None))
+    chat_client(s).map(|c| c.with_reasoning_effort(JUDGEMENT_EFFORT.map(String::from)))
 }
+
+/// 判断题（对齐两票）用的推理强度。`None` = 端点默认；`Some("low")` 是省一半思考 token 的
+/// 折中，精度差多少由 bench 量：全关（minimal）时 misworded 31%，默认强度 12%
+pub const JUDGEMENT_EFFORT: Option<&str> = Some("low");
 
 /// `acquire` 的便捷形式：直接从工作区设置取 chat 模型的身份。
 pub async fn acquire_chat(state: &AppState, s: &LlmSettings) -> Option<OwnedSemaphorePermit> {
