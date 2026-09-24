@@ -579,10 +579,10 @@ async fn align_phrases_locked(
                 );
                 failed += 1;
                 continue;
+            }
             if malformed > 0 {
                 // 坏票长什么样得看得见：第一次真跑里一半签名被判坏票，查了一天才知道模型答的是标签
                 tracing::info!(%kb_id, malformed, reply = %snippet(&reply.text), "短语对齐的回复里有坏票");
-            }
             }
             for c in choices {
                 let Ok(i) = usize::try_from(c.id) else {

@@ -637,6 +637,7 @@ mod tests {
             examples,
             quotes,
             candidates: candidates(),
+            also_allowed: vec![],
         };
         vec![
             mk(0, "owns", false),
