@@ -59,9 +59,9 @@ source documents, and derivations linked to their rules and premise statements.
 It uses RDF reification, PROV-O and schema.org. This mapping is the compatibility
 boundary: a breaking change needs a decision record explaining why.
 
-Entities, assertions, derivations and documents have UUID-based IRIs:
-`urn:utopia:kb:{kb_id}:entity:{id}`, `…:fact:{id}`, `…:derived:{id}` and
-`…:document:{id}`. The same stored object keeps its identity across exports;
+Entities, assertions, derivations, rules and documents have UUID-based IRIs:
+`urn:utopia:kb:{kb_id}:entity:{id}`, `…:fact:{id}`, `…:derived:{id}`,
+`…:rule:{id}` and `…:document:{id}`. The same stored object keeps its identity across exports;
 rebuilding a graph is not an identity-preserving operation. `?base=https://example.org/`
 instead mints `https://example.org/kb/{kb_id}/{kind}/{id}`. Keep the same base when
 joining exports. Imported classes and relations retain their original IRIs.
@@ -70,6 +70,14 @@ Ontology export includes explicitly stored `owl:inverseOf` and
 `rdfs:subPropertyOf` links, using the target property's imported IRI or existing
 key-based IRI. It copies declarations within the base; it does not add reciprocal
 links or compute a transitive closure.
+
+A derivation links to `…:rule:{id}` through `prov:wasGeneratedBy`. The rule
+resource is typed `prov:Activity` and carries an `rdfs:label`: the business
+rule's name, or the axiom rule's kind. The label is human-readable text, not a
+machine-readable rule definition; it does not reliably identify the rule family.
+Rule criteria, operands and expressions are not currently exported. Their RDF
+representation is under discussion in [#902](https://github.com/deeplethe/utopia/issues/902).
+A rule IRI identifies the stored rule, not a historical version of its definition.
 
 MCP remains the agent-facing surface. The structured results below use the same
 UUIDs, so an integration can join a selected result to the exported ledger.
