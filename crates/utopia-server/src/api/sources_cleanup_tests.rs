@@ -105,11 +105,13 @@ impl Fixture {
             None,
             None,
             None,
+            None,
             &[ConditionInput {
                 group: 0,
                 predicate_id: location,
                 op: "in".into(),
                 operand: Some(json!(["desk"])),
+                side: "x".into(),
             }],
         )
         .await?;

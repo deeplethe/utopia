@@ -161,6 +161,7 @@ async fn step_rule(
             predicate_id: *predicate,
             op: "in".into(),
             operand: Some(json!([place])),
+            side: "x".into(),
         })
         .collect();
     Ok(business_rules::create(
@@ -171,6 +172,7 @@ async fn step_rule(
         class,
         "typing",
         Some(ready),
+        None,
         None,
         None,
         None,

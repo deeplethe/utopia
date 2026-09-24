@@ -501,26 +501,24 @@ fn joined_evaluate(
         pool_by_subject.entry(f.subject).or_default().push(f);
     }
 
-    let matching: Vec<&RuleEdge> = edges
-        .iter()
-        .filter(|e| e.predicate == join_predicate)
-        .collect();
-    let x_subjects: Vec<Uuid> = {
-        let mut xs: Vec<Uuid> = matching.iter().map(|e| e.subject).collect();
-        xs.sort_unstable();
-        xs.dedup();
-        xs
-    };
+    // 连接边按 X 分桶，一次扫完：对每个 X 再去全部边里找它的，是 X 数乘边数——
+    // 十万对上量出来是 5.9 s 对 1 万对的 82 ms，分桶之后随对数线性
+    let mut edges_by_x: HashMap<Uuid, Vec<&RuleEdge>> = HashMap::new();
+    for e in edges.iter().filter(|e| e.predicate == join_predicate) {
+        edges_by_x.entry(e.subject).or_default().push(e);
+    }
+    let mut x_subjects: Vec<Uuid> = edges_by_x.keys().copied().collect();
+    x_subjects.sort_unstable();
+    let groups = group_conditions(&rule.conditions);
 
     for x in x_subjects {
         let x_facts = x_by_subject.get(&x).map(Vec::as_slice).unwrap_or_default();
-        for edge in matching.iter().filter(|e| e.subject == x) {
+        for edge in &edges_by_x[&x] {
             let y = edge.object;
             let y_facts = pool_by_subject
                 .get(&y)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            let groups = group_conditions(&rule.conditions);
             // 同一对上的多个组可能推出同一结论。留先到的组作证明，与单实体
             // 规则的去重规则一致
             let mut seen: Vec<(Option<i64>, Option<i64>, Option<u64>)> = Vec::new();

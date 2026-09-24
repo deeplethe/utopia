@@ -42,6 +42,10 @@ pub enum Rule {
     Inverse,
     /// `A p B` ∧ `p ⊑ q` ⟹ `A q B`。主宾不动，只升谓词
     SubProperty,
+    /// 一条业务规则推出的关系边（0047）。不是公理：`derive()` 从不产出它，
+    /// 它只作为**候选**进矛盾检查，让撞上断言或别的派生时能像公理派生一样被报出来。
+    /// 触发它的规则行在 `attribute_rules` 里，不在公理规则表里
+    Business,
 }
 
 impl Rule {
@@ -51,6 +55,7 @@ impl Rule {
             Rule::Symmetric => "symmetric",
             Rule::Inverse => "inverse",
             Rule::SubProperty => "sub_property",
+            Rule::Business => "business_rule",
         }
     }
 }
@@ -156,18 +161,6 @@ type Triple = (Uuid, Uuid, Uuid);
 /// 三条一跳规则（对称／逆／子属性）与传递放在同一轮里，因为它们互为输入——
 /// 逆推出来的边可能让某条传递链接得上，反之亦然。
 pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation {
-    derive_with_blocked(edges, axioms, &HashSet::new())
-}
-
-/// Derive while refusing the named conclusions.
-///
-/// A relation that lost a contradiction check is still visible as an input for
-/// that check, but it cannot become a premise in the next fixed-point round.
-pub fn derive_with_blocked(
-    edges: &[TimedEdge],
-    axioms: &HashMap<Uuid, Axioms>,
-    blocked: &HashSet<(Uuid, Uuid, Uuid)>,
-) -> Derivation {
     let mut out = Derivation::default();
 
     // 断言过的三元组。**派生撞上它就让路**——asserted > derived 是硬性的
@@ -244,9 +237,6 @@ pub fn derive_with_blocked(
                 hops.push(((sup, subj, obj), Rule::SubProperty));
             }
             for (t, rule) in hops {
-                if blocked.contains(&t) {
-                    continue;
-                }
                 if emit(
                     t,
                     pred,
@@ -274,9 +264,6 @@ pub fn derive_with_blocked(
                     // **不推自环。** `A p A` 在一个传递+反对称的谓词上是矛盾
                     // 而不是知识，R0 那边会把这个环连路径一起报出来
                     if subj == c {
-                        continue;
-                    }
-                    if blocked.contains(&(pred, subj, c)) {
                         continue;
                     }
                     let Some((nf, nt)) = overlap((acc.from, acc.to), (from, to)) else {

@@ -164,6 +164,34 @@ async fn edge(
     Ok(id)
 }
 
+/// 同一条谓词、同一个主语，宾语另指：给 functional 那条公理一个可以撞的对象
+async fn edge_to(
+    pool: &PgPool,
+    f: &Fixture,
+    predicate: Uuid,
+    object: Uuid,
+    from: &str,
+    to: &str,
+) -> anyhow::Result<Uuid> {
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id,
+                            valid_from, valid_from_precision,
+                            valid_to, valid_to_precision, confidence)
+         VALUES ($1, $2, $3, $4, $5, $6, 'day', $7, 'day', 0.9)",
+    )
+    .bind(id)
+    .bind(f.kb)
+    .bind(f.x)
+    .bind(predicate)
+    .bind(object)
+    .bind(from.parse::<chrono::DateTime<chrono::Utc>>()?)
+    .bind(to.parse::<chrono::DateTime<chrono::Utc>>()?)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
 fn conditions(f: &Fixture) -> [ConditionInput; 2] {
     [
         ConditionInput {
@@ -273,6 +301,124 @@ async fn a_joined_rule_reads_the_other_side_of_a_declared_edge() -> anyhow::Resu
             "both sides and the edge are the complete proof"
         );
         assert!(premises.iter().all(|(_, d)| d.is_none()));
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 一条规则推出的关系边撞上断言时不落地，而审核队列要看得见它（0017，0047 决定 3）：
+/// `run()` 与 `materialize()` 从同一次求解取候选，被拦下的关系候选留在候选里，
+/// 队列那一行说明它是哪条业务规则推出来的、撞在哪条断言上
+#[tokio::test]
+async fn a_relation_the_graph_refuses_still_reaches_the_review_queue() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        // upstream_of 是 functional：X 已经断言了另一个上游 Z，规则推出的 X → Y
+        // 与它区间相交，asserted > derived，这条派生不落地
+        sqlx::query("UPDATE relation_types SET functional = true WHERE id = $1")
+            .bind(f.upstream_of)
+            .execute(&pool)
+            .await?;
+        let z = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO entities (id, kb_id, type_id, canonical_name)
+             VALUES ($1, $2, (SELECT type_id FROM entities WHERE id = $3), 'F-3')",
+        )
+        .bind(z)
+        .bind(f.kb)
+        .bind(f.y)
+        .execute(&pool)
+        .await?;
+        let other_upstream = edge_to(
+            &pool,
+            &f,
+            f.upstream_of,
+            z,
+            "2024-01-01T00:00:00Z",
+            "2024-12-31T00:00:00Z",
+        )
+        .await?;
+        attr(&pool, &f, f.x, f.pressure, 120.0, "2024-01-01T00:00:00Z").await?;
+        attr(&pool, &f, f.y, f.depth, 300.0, "2024-01-15T00:00:00Z").await?;
+        let join = edge(
+            &pool,
+            &f,
+            f.supplies,
+            "2024-01-01T00:00:00Z",
+            "2024-02-01T00:00:00Z",
+        )
+        .await?;
+        let rule = utopia_store::business_rules::create(
+            &pool,
+            f.kb,
+            "upstream high pressure",
+            "",
+            f.well,
+            "relation",
+            None,
+            Some(f.upstream_of),
+            None,
+            None,
+            Some(f.supplies),
+            &conditions(&f),
+        )
+        .await?;
+
+        let report = utopia_store::reasoning::materialize(&pool, f.kb).await?;
+        assert_eq!(
+            report.blocked, 1,
+            "the relation lost to the asserted upstream"
+        );
+        assert_eq!(report.inserted, 0, "{report:?}");
+        assert_eq!(
+            report.rule_hits, 0,
+            "a refused conclusion is not a conclusion that stands"
+        );
+        let (derived_rows,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM derived_facts WHERE kb_id = $1 AND invalidated_at IS NULL",
+        )
+        .bind(f.kb)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(derived_rows, 0, "nothing lands");
+
+        let check = utopia_store::reasoning::run(&pool, f.kb).await?;
+        assert_eq!(check.contradictions, 1, "{check:?}");
+        let rows: Vec<(Uuid, Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT left_fact, right_fact, detail FROM axiom_violations
+              WHERE kb_id = $1 AND kind = 'derived_contradiction' AND status = 'open'",
+        )
+        .bind(f.kb)
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        let (left, right, detail) = &rows[0];
+        assert_eq!(*left, other_upstream, "against the asserted upstream");
+        assert_eq!(
+            *right, join,
+            "keyed by the last asserted premise: the join edge"
+        );
+        assert_eq!(detail["rule"], "business_rule");
+        assert_eq!(detail["axiom"], "functional");
+        assert_eq!(detail["attribute_rule_id"], serde_json::json!(rule));
+        assert_eq!(detail["object_id"], serde_json::json!(f.y));
+
+        // 同一次求解，第二遍不多不少：队列跟图对得上
+        let again = utopia_store::reasoning::run(&pool, f.kb).await?;
+        assert_eq!(again.inserted, 0, "{again:?}");
+        assert_eq!(again.cleared, 0, "{again:?}");
         Ok::<_, anyhow::Error>(())
     }
     .await;

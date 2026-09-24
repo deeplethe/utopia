@@ -216,8 +216,22 @@ pub async fn record_signature_breaks(
 
 /// 跑一遍检查，把结果落库。
 pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
-    let (timed, spans, _) = timed_edges(pool, kb_id).await?;
-    let axioms = axioms(pool, kb_id).await?;
+    // 与 `materialize` 同一次求解：候选里有规则推出的关系边，被拦下的也在——
+    // 队列报的正是那边拦下的（0017，0047 决定 3）
+    let Resolved {
+        edges: timed,
+        spans,
+        axioms,
+        asserted_ids,
+        checked,
+        ..
+    } = resolve(pool, kb_id).await?;
+    let Checked {
+        candidates: derivation,
+        candidate_rule,
+        clashes,
+        ..
+    } = checked;
     // 带着区间查：互斥的三类只在同时成立时才算（#634）。从前这里把区间剥掉再查，
     // 每一次调薪、每一次换负责人都进了 Review
     let checked = check_all(&timed, &axioms);
@@ -236,18 +250,23 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
 
     // 第六类（0017）：推出来却落不了地的派生。与 `materialize` 用同一个函数算，
     // 所以这里报的正是那边拦下的——两边各算一套的话，队列会跟图对不上
-    let derivation = utopia_reason::derive::derive(&timed, &axioms);
-    let clashes = utopia_reason::derive::contradictions(&derivation, &timed, &axioms, &spans);
     let names = names_for(pool, &derivation, &clashes).await?;
     let mut details: HashMap<(Uuid, Uuid), serde_json::Value> = HashMap::new();
     let mut per_pred: HashMap<Uuid, usize> = HashMap::new();
     let mut contradictions_capped = 0usize;
     for c in &clashes.with_assertions {
         let d = &derivation.facts[c.derived];
-        let Some(&last) = d.premises.last() else {
+        // 键与外键都要 `facts` 里的行。链经过规则推出的关系边时，最后一条前提是
+        // 它的临时 id——每轮都不同——退到链上最后一条断言；自环的 `against` 也是它
+        let Some(&last) = d.premises.iter().rev().find(|p| asserted_ids.contains(p)) else {
             continue;
         };
-        let key = (c.against, last);
+        let against = if asserted_ids.contains(&c.against) {
+            c.against
+        } else {
+            last
+        };
+        let key = (against, last);
         if details.contains_key(&key) {
             continue;
         }
@@ -263,6 +282,8 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
             json!({
                 "axiom": c.axiom.as_str(),
                 "rule": d.rule.as_str(),
+                // 规则推出的关系边：是哪条业务规则（0047）。公理派生没有
+                "attribute_rule_id": candidate_rule.get(&c.derived),
                 "via": d.via,
                 "via_label": names.predicate(d.via),
                 "subject_id": d.subject,
@@ -278,7 +299,7 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         );
         violations.push(Violation {
             kind: Kind::DerivedContradiction,
-            left: c.against,
+            left: against,
             right: last,
             path: d.premises.clone(),
         });
@@ -1196,45 +1217,6 @@ type DerivedKey = (
 
 type AssertedEdges = HashMap<(Uuid, Uuid, Uuid), Vec<(Option<i64>, Option<i64>)>>;
 
-fn merge_axiom_derivation(
-    derivation: &utopia_reason::derive::Derivation,
-    blocked: &HashSet<usize>,
-    spans: &HashMap<Uuid, (Option<i64>, Option<i64>)>,
-    rules: &HashMap<(Uuid, RuleKind), Uuid>,
-    wanted: &mut HashMap<DerivedKey, Wanted>,
-) -> (usize, usize) {
-    let before = wanted.len();
-    let mut unruled = 0usize;
-    for (i, d) in derivation.facts.iter().enumerate() {
-        if blocked.contains(&i) {
-            continue;
-        }
-        let Some((from, to)) = utopia_reason::derive::validity(&d.premises, spans) else {
-            continue;
-        };
-        // **按 `via` 查，不是 `predicate`。** 跨谓词的规则里，派生出来的谓词
-        // 是另一个；落到账本前必须先找到触发它的规则行。
-        let Some(&rule_id) = rules.get(&(d.via, d.rule.as_str())) else {
-            unruled += 1;
-            continue;
-        };
-        wanted
-            .entry((d.subject, d.predicate, Some(d.object), None, from, to))
-            .or_insert(Wanted {
-                subject: d.subject,
-                predicate: d.predicate,
-                object_id: Some(d.object),
-                object_value: None,
-                from,
-                to,
-                premises: d.premises.clone(),
-                rule_id: Some(rule_id),
-                attribute_rule_id: None,
-            });
-    }
-    (wanted.len() - before, unruled)
-}
-
 /// 这一轮要落库的一条派生。公理推出来的与规则推出来的在这里合流——
 /// **合流是必须的**：陈旧行的对账扫的是整张表，两趟各做各的 diff 会把对方的
 /// 行每轮都判成陈旧作废掉。
@@ -1754,19 +1736,78 @@ async fn attribute_facts(
 ///
 /// **调用方负责检查 `materialize_inferences` 开关。** 这一层不判——它也被
 /// 「预览一下会推出什么」那条路用，而预览不该受开关约束。
-pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> {
-    let ax = axioms(pool, kb_id).await?;
-    let rules = compile_rules(pool, kb_id, &ax).await?;
-    let (edges, mut spans, mut meta) = timed_edges(pool, kb_id).await?;
+/// 一条业务规则推出的关系边在不动点里的身份（0047 决定 3）。
+///
+/// 站得住的：以临时 id 进池子当一条普通带区间的边，并作为候选进矛盾检查。
+/// 被拦下的（`refused`）：退出池子、退出 `wanted`，但**留在候选里**——审核队列
+/// 报的正是它为什么没落地；两边各算一套的话，队列会跟图对不上（0017）
+struct RelationCandidate {
+    edge: utopia_reason::rules::RuleEdge,
+    key: DerivedKey,
+    premises: Vec<Uuid>,
+    rule_id: Uuid,
+    refused: bool,
+}
 
-    let derivation = utopia_reason::derive::derive(&edges, &ax);
+/// 一遍检查的产出：池子上的公理派生 + 规则推出的关系候选，和它们撞了什么。
+struct Checked {
+    /// 前 `axiom_count` 条是池子上的公理派生，其后是关系候选（站得住的与被拦下的都在，
+    /// 标签 `Rule::Business`）
+    candidates: Derivation,
+    axiom_count: usize,
+    /// 候选下标 → 推出它的业务规则。公理派生没有
+    candidate_rule: HashMap<usize, Uuid>,
+    clashes: Contradictions,
+    /// 不落地的候选下标：撞上断言且没被认可并存的，和撞上别的派生的
+    blocked: HashSet<usize>,
+}
+
+/// 在「断言边 + 站得住的关系边」的池子上跑一遍公理推导，再拿公理量一遍候选。
+///
+/// 断言那一侧只给断言：关系边是派生，它与别的派生（含经它推出的公理派生）互撞
+/// 走派生之间那一路，于是 `against` 始终是 `facts` 里的一行——审核队列的外键
+/// 指的就是那张表
+fn check(
+    edges: &[TimedEdge],
+    relation: &[RelationCandidate],
+    axioms: &HashMap<Uuid, Axioms>,
+    spans: &HashMap<Uuid, (Option<i64>, Option<i64>)>,
+    accepted: &HashSet<(Uuid, Uuid, Uuid, Uuid)>,
+) -> Checked {
+    let mut timed: Vec<TimedEdge> = edges.to_vec();
+    timed.extend(relation.iter().filter(|r| !r.refused).map(|r| {
+        let (from, to) = spans.get(&r.edge.id).copied().unwrap_or_default();
+        TimedEdge {
+            edge: Edge {
+                fact: r.edge.id,
+                predicate: r.edge.predicate,
+                subject: r.edge.subject,
+                object: r.edge.object,
+            },
+            from,
+            to,
+        }
+    }));
+    let mut candidates = utopia_reason::derive::derive(&timed, axioms);
+    let axiom_count = candidates.facts.len();
+    let mut candidate_rule: HashMap<usize, Uuid> = HashMap::new();
+    for r in relation {
+        candidate_rule.insert(candidates.facts.len(), r.rule_id);
+        candidates.facts.push(utopia_reason::derive::Derived {
+            predicate: r.edge.predicate,
+            via: r.edge.predicate,
+            subject: r.edge.subject,
+            object: r.edge.object,
+            rule: utopia_reason::derive::Rule::Business,
+            premises: r.premises.clone(),
+        });
+    }
+    let clashes = utopia_reason::derive::contradictions(&candidates, edges, axioms, spans);
     // asserted > derived 是硬性的（0002）：撞上断言的派生不落地。人认可过并存的
     // 除外；派生之间互撞的两边都不落，认可与否只影响报不报（0017）
-    let clashes = utopia_reason::derive::contradictions(&derivation, &edges, &ax, &spans);
-    let accepted = accepted_clashes(pool, kb_id).await?;
     let mut blocked: HashSet<usize> = HashSet::new();
     for c in &clashes.with_assertions {
-        let d = &derivation.facts[c.derived];
+        let d = &candidates.facts[c.derived];
         if !accepted.contains(&(d.subject, d.predicate, d.object, c.against)) {
             blocked.insert(c.derived);
         }
@@ -1777,43 +1818,143 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
             blocked.insert(*j);
         }
     }
-    let mut blocked_triples: HashSet<(Uuid, Uuid, Uuid)> = blocked
-        .iter()
-        .map(|&i| {
-            let d = &derivation.facts[i];
-            (d.subject, d.predicate, d.object)
-        })
-        .collect();
+    Checked {
+        candidates,
+        axiom_count,
+        candidate_rule,
+        clashes,
+        blocked,
+    }
+}
 
-    let mut report = DeriveReport {
-        rules: rules.len(),
-        edges: edges.len(),
-        derived: 0,
-        capped: derivation.capped.len(),
-        blocked: blocked.len(),
-        ..Default::default()
-    };
+/// 被拦下的关系边退出去之后，站在它上面的结论一起退场：读了它的规则结论、再站在
+/// 那些结论上的结论，直到没有新的为止——一条派生随前提失效（0002），在不动点里
+/// 也成立。前提没了的关系候选不是被拦下的，是推不出来了：整个退出，候选也不留
+fn retire(
+    seed: HashSet<Uuid>,
+    wanted: &mut HashMap<DerivedKey, Wanted>,
+    provisional: &mut HashMap<DerivedKey, Uuid>,
+    fact_pool: &mut Vec<utopia_reason::rules::AttrFact>,
+    relation: &mut Vec<RelationCandidate>,
+) {
+    let mut gone = seed;
+    loop {
+        let dropped: Vec<DerivedKey> = wanted
+            .iter()
+            .filter(|(_, w)| w.premises.iter().any(|p| gone.contains(p)))
+            .map(|(k, _)| k.clone())
+            .collect();
+        if dropped.is_empty() {
+            break;
+        }
+        for key in dropped {
+            wanted.remove(&key);
+            if let Some(prov) = provisional.remove(&key) {
+                gone.insert(prov);
+            }
+        }
+    }
+    fact_pool.retain(|f| !gone.contains(&f.id));
+    relation.retain(|r| r.refused || !gone.contains(&r.edge.id));
+}
+
+/// 把这一遍检查拦下的关系候选退出池子。回有没有退出的：退了就得再检查一遍，
+/// 池子变了
+fn refuse_blocked(
+    checked: &Checked,
+    relation: &mut Vec<RelationCandidate>,
+    wanted: &mut HashMap<DerivedKey, Wanted>,
+    provisional: &mut HashMap<DerivedKey, Uuid>,
+    fact_pool: &mut Vec<utopia_reason::rules::AttrFact>,
+) -> bool {
+    let mut retired: HashSet<Uuid> = HashSet::new();
+    for &i in &checked.blocked {
+        let Some(r) = i
+            .checked_sub(checked.axiom_count)
+            .and_then(|k| relation.get_mut(k))
+        else {
+            continue;
+        };
+        if r.refused {
+            continue;
+        }
+        r.refused = true;
+        retired.insert(r.edge.id);
+        wanted.remove(&r.key);
+        provisional.remove(&r.key);
+    }
+    if retired.is_empty() {
+        return false;
+    }
+    retire(retired, wanted, provisional, fact_pool, relation);
+    true
+}
+
+/// `run()`（审核队列）与 `materialize()`（落库）共用的一次求解。
+///
+/// 输入只有断言（0013）；输出是最后一轮的池子上的公理派生、规则的结论，和被拦下的
+/// 候选——两边从同一份取，队列才跟图对得上（0017）。规则推出的关系边进池子当一条
+/// 普通的边，公理推导每轮重跑一遍（0047 决定 3）；一条被拦下的关系边退出池子而留在
+/// 候选里，站在它上面的结论随它退场
+struct Resolved {
+    /// 断言的边
+    edges: Vec<TimedEdge>,
+    spans: HashMap<Uuid, (Option<i64>, Option<i64>)>,
+    meta: HashMap<Uuid, PremiseMeta>,
+    axioms: HashMap<Uuid, Axioms>,
+    /// 公理规则行：(声明所在的谓词, 种类) → 规则 id
+    rules: HashMap<(Uuid, RuleKind), Uuid>,
+    /// `facts` 里的行：边与属性事实。审核队列的键与外键只认这些
+    asserted_ids: HashSet<Uuid>,
+    /// 最后一遍检查
+    checked: Checked,
+    /// 规则的结论：属性的，和站得住的关系
+    wanted: HashMap<DerivedKey, Wanted>,
+    /// 一条规则结论的临时 id → 它最后落在哪一行。链上的前提指的是前者，
+    /// `fact_derivations` 要存的是后者（0030）。键是派生键，值是临时 id
+    provisional: HashMap<DerivedKey, Uuid>,
+    loaded: LoadedRules,
+    capped_by_rule: HashMap<Uuid, usize>,
+    rounds: usize,
+    rule_rounds_capped: bool,
+}
+
+async fn resolve(pool: &PgPool, kb_id: Uuid) -> AppResult<Resolved> {
+    let axioms = axioms(pool, kb_id).await?;
+    let rules = compile_rules(pool, kb_id, &axioms).await?;
+    let (edges, mut spans, mut meta) = timed_edges(pool, kb_id).await?;
+    let accepted = accepted_clashes(pool, kb_id).await?;
+    let loaded = attribute_rules(pool, kb_id).await?;
+    let mut asserted_ids: HashSet<Uuid> = edges.iter().map(|e| e.edge.fact).collect();
 
     let mut wanted: HashMap<DerivedKey, Wanted> = HashMap::new();
-    let (initial_axioms, unruled) =
-        merge_axiom_derivation(&derivation, &blocked, &spans, &rules, &mut wanted);
-    report.derived += initial_axioms;
-    report.unruled += unruled;
-
-    // 第二趟：属性事实上的业务规则（0021）。**并进同一个 `wanted`**——
-    // 下面的陈旧对账扫的是整张 `derived_facts`，两趟各做各的 diff 会把对方
-    // 落的行每一轮都判成陈旧
-    let loaded = attribute_rules(pool, kb_id).await?;
-    report.attribute_rules = loaded.rules.len();
-    // 一条规则结论的临时 id → 它最后落在哪一行。链上的前提指的是前者，
-    // `fact_derivations` 要存的是后者（0030）。键是派生键，值是临时 id
     let mut provisional: HashMap<DerivedKey, Uuid> = HashMap::new();
+    let mut relation: Vec<RelationCandidate> = Vec::new();
+    let mut capped_by_rule: HashMap<Uuid, usize> = HashMap::new();
+    let mut rounds = 0usize;
+    let mut checked = check(&edges, &relation, &axioms, &spans, &accepted);
+
+    // 第二趟：属性事实上的业务规则（0021）。结论**并进同一个 `wanted`**——
+    // 落库那边的陈旧对账扫的是整张 `derived_facts`，两趟各做各的 diff 会把对方
+    // 落的行每一轮都判成陈旧
     if !loaded.rules.is_empty() {
         let (asserted, attr_spans, attr_meta, type_of) = attribute_facts(pool, kb_id).await?;
+        asserted_ids.extend(asserted.iter().map(|f| f.id));
         // 前提的精度与置信度：落地那一段与不动点这一段共用，所以两份 meta 先合起来；
         // 区间也要——认出派生的哪一端是被前提的锚点顶上来的，靠的就是它
         meta.extend(attr_meta);
         spans.extend(attr_spans);
+        // 断言边上公理已经推出的键：规则再推出同一条关系时不另立一行——与属性结论
+        // 「上一轮已经推出过同一条」同一条规矩
+        let axiom_keys: HashSet<DerivedKey> = checked
+            .candidates
+            .facts
+            .iter()
+            .filter_map(|d| {
+                let (from, to) = utopia_reason::derive::validity(&d.premises, &spans)?;
+                Some((d.subject, d.predicate, Some(d.object), None, from, to))
+            })
+            .collect();
         let edge_pool: Vec<utopia_reason::rules::RuleEdge> = edges
             .iter()
             .map(|e| utopia_reason::rules::RuleEdge {
@@ -1823,9 +1964,6 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                 object: e.edge.object,
             })
             .collect();
-        let mut relation_edges: Vec<utopia_reason::rules::RuleEdge> = Vec::new();
-        let mut relation_keys: Vec<DerivedKey> = Vec::new();
-        let mut relation_candidates: HashMap<DerivedKey, Wanted> = HashMap::new();
         let asserted_edges: AssertedEdges = edges
             .iter()
             .map(|e| {
@@ -1851,116 +1989,31 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
         // 每个实体被**推**出来的类。断言的类在 `type_of` 里，两者进规则的方式
         // 不一样：断言的类没有区间，是个筛子；推出来的类有区间，得当条件
         let mut derived_types: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
-        let mut capped_by_rule: HashMap<Uuid, usize> = HashMap::new();
-        let mut rounds = 0usize;
+        // 上一轮加了关系边，池子还没过检查
+        let mut dirty = false;
         for _ in 0..utopia_reason::MAX_DEPTH {
             rounds += 1;
-            // Rule edges have provisional ids in `spans`. They enter the axiom
-            // pool as ordinary timed edges, while the derivation and clash check
-            // also see them as candidate conclusions for this round.
-            let mut timed: Vec<utopia_reason::derive::TimedEdge> = edges.clone();
-            timed.extend(relation_edges.iter().map(|e| {
-                let (from, to) = spans.get(&e.id).copied().unwrap_or_default();
-                utopia_reason::derive::TimedEdge {
-                    edge: utopia_reason::Edge {
-                        fact: e.id,
-                        predicate: e.predicate,
-                        subject: e.subject,
-                        object: e.object,
-                    },
-                    from,
-                    to,
-                }
-            }));
-            let derivation =
-                utopia_reason::derive::derive_with_blocked(&timed, &ax, &blocked_triples);
-            let mut candidates = derivation.facts.clone();
-            for (edge, key) in relation_edges.iter().zip(&relation_keys) {
-                let wanted = relation_candidates
-                    .get(key)
-                    .expect("relation candidate exists");
-                candidates.push(utopia_reason::derive::Derived {
-                    predicate: edge.predicate,
-                    via: edge.predicate,
-                    subject: edge.subject,
-                    object: edge.object,
-                    // The axiom enum cannot name a business rule. This value is
-                    // only used to group clash reports; blocked indexes below
-                    // map back to the relation candidate before persistence.
-                    rule: utopia_reason::derive::Rule::Transitive,
-                    premises: wanted.premises.clone(),
-                });
+            // 规则推出的关系边先过公理与矛盾检查（0047 决定 3）：站得住的这一轮起
+            // 当一条普通的边，被拦下的退出池子。退了池子就变了，再查一遍，直到稳住
+            let mut refused_now = false;
+            while dirty {
+                checked = check(&edges, &relation, &axioms, &spans, &accepted);
+                dirty = refuse_blocked(
+                    &checked,
+                    &mut relation,
+                    &mut wanted,
+                    &mut provisional,
+                    &mut fact_pool,
+                );
+                refused_now |= dirty;
             }
-            let candidate_derivation = utopia_reason::derive::Derivation {
-                facts: candidates,
-                capped: derivation.capped.clone(),
-            };
-            let clashes =
-                utopia_reason::derive::contradictions(&candidate_derivation, &timed, &ax, &spans);
-            let mut blocked = clashes.blocked();
-            blocked.retain(|&i| {
-                if let Some(c) = clashes.with_assertions.iter().find(|c| c.derived == i) {
-                    let d = &candidate_derivation.facts[i];
-                    return !accepted.contains(&(d.subject, d.predicate, d.object, c.against));
-                }
-                true
-            });
-            blocked_triples = blocked
-                .iter()
-                .map(|&i| {
-                    let d = &candidate_derivation.facts[i];
-                    (d.subject, d.predicate, d.object)
-                })
-                .collect();
-            let axiom_fact_count = derivation.facts.len();
-            let blocked_relations: HashSet<usize> = blocked
-                .iter()
-                .filter(|&&i| i >= axiom_fact_count)
-                .map(|i| i - axiom_fact_count)
-                .collect();
-            if !blocked_relations.is_empty() {
-                let mut edges = Vec::new();
-                let mut keys = Vec::new();
-                let mut candidates = HashMap::new();
-                for (i, (edge, key)) in relation_edges
-                    .iter()
-                    .cloned()
-                    .zip(relation_keys.iter().cloned())
-                    .enumerate()
-                {
-                    if blocked_relations.contains(&i) {
-                        continue;
-                    }
-                    let wanted = relation_candidates.get(&key).cloned().expect("candidate");
-                    edges.push(edge);
-                    keys.push(key.clone());
-                    candidates.insert(key, wanted);
-                }
-                let blocked_keys: HashSet<DerivedKey> = blocked_relations
-                    .iter()
-                    .filter_map(|&i| relation_keys.get(i))
-                    .cloned()
-                    .collect();
-                relation_edges = edges;
-                relation_keys = keys;
-                relation_candidates = candidates;
-                for key in &blocked_keys {
-                    provisional.remove(key);
-                    wanted.remove(key);
-                }
-            }
-            wanted.retain(|key, _| {
-                key.2
-                    .is_none_or(|object| !blocked_triples.contains(&(key.0, key.1, object)))
-            });
-
-            let (new_axioms, _) =
-                merge_axiom_derivation(&derivation, &blocked, &spans, &rules, &mut wanted);
-            report.derived += new_axioms;
-            report.capped = derivation.capped.len();
-            report.blocked = blocked.len();
             let mut evaluation_edges = edge_pool.clone();
-            evaluation_edges.extend(relation_edges.iter().cloned());
+            evaluation_edges.extend(
+                relation
+                    .iter()
+                    .filter(|r| !r.refused)
+                    .map(|r| r.edge.clone()),
+            );
             // 一轮之内先算完再入池：同一轮里规则读到的是上一轮结束时的池子，
             // 谁先谁后就不影响结果
             let mut fresh: Vec<(usize, utopia_reason::rules::RuleHit)> = Vec::new();
@@ -2015,7 +2068,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                 *capped_by_rule.entry(lr.rule.id).or_default() += capped;
             }
 
-            let before = wanted.len();
+            let before = provisional.len();
             for (ri, h) in fresh {
                 let lr = &loaded.rules[ri];
                 if matches!(
@@ -2031,9 +2084,15 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                         h.from,
                         h.to,
                     );
-                    if wanted.contains_key(&key) {
+                    // 上一轮已经推出过同一条（站得住的、被拦下的都算——被拦下的
+                    // 不再试第二次，不然它每轮进一次退一次，不动点就到不了）
+                    if wanted.contains_key(&key)
+                        || axiom_keys.contains(&key)
+                        || relation.iter().any(|r| r.key == key)
+                    {
                         continue;
                     }
+                    // 同一条边已经断言在案、区间还交：asserted > derived，不另立一行
                     let overlaps_assertion = asserted_edges
                         .get(&(h.subject, lr.conclude_predicate, object))
                         .is_some_and(|spans| {
@@ -2048,28 +2107,34 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                     let pm = premise_meta(&h.premises, h.from, h.to, &spans, &meta);
                     spans.insert(prov, (h.from, h.to));
                     meta.insert(prov, pm);
-                    relation_edges.push(utopia_reason::rules::RuleEdge {
-                        id: prov,
-                        predicate: lr.conclude_predicate,
-                        subject: h.subject,
-                        object,
+                    relation.push(RelationCandidate {
+                        edge: utopia_reason::rules::RuleEdge {
+                            id: prov,
+                            predicate: lr.conclude_predicate,
+                            subject: h.subject,
+                            object,
+                        },
+                        key: key.clone(),
+                        premises: h.premises.clone(),
+                        rule_id: lr.rule.id,
+                        refused: false,
                     });
-                    relation_keys.push(key.clone());
-                    let candidate = Wanted {
-                        subject: h.subject,
-                        predicate: lr.conclude_predicate,
-                        object_id: Some(object),
-                        object_value: None,
-                        from: h.from,
-                        to: h.to,
-                        premises: h.premises,
-                        rule_id: None,
-                        attribute_rule_id: Some(lr.rule.id),
-                    };
-                    relation_candidates.insert(key.clone(), candidate.clone());
-                    let wanted_candidate = candidate.clone();
                     provisional.insert(key.clone(), prov);
-                    wanted.insert(key, wanted_candidate);
+                    wanted.insert(
+                        key,
+                        Wanted {
+                            subject: h.subject,
+                            predicate: lr.conclude_predicate,
+                            object_id: Some(object),
+                            object_value: None,
+                            from: h.from,
+                            to: h.to,
+                            premises: h.premises,
+                            rule_id: None,
+                            attribute_rule_id: Some(lr.rule.id),
+                        },
+                    );
+                    dirty = true;
                     continue;
                 }
                 let (value, inner) = match &lr.rule.conclusion {
@@ -2140,30 +2205,129 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                     },
                 );
             }
-            // 这一轮什么新东西都没推出来：不动点到了
-            if provisional.len() == before {
+            // 这一轮什么新东西都没推出来、也没退出去什么：不动点到了
+            if provisional.len() == before && !refused_now {
                 break;
             }
         }
-        report.rule_rounds = rounds;
+        // 最后一轮加的关系边还没过检查：查到稳住为止，只是不再跑规则
+        while dirty {
+            checked = check(&edges, &relation, &axioms, &spans, &accepted);
+            dirty = refuse_blocked(
+                &checked,
+                &mut relation,
+                &mut wanted,
+                &mut provisional,
+                &mut fact_pool,
+            );
+        }
+    }
+
+    Ok(Resolved {
+        edges,
+        spans,
+        meta,
+        axioms,
+        rules,
+        asserted_ids,
+        checked,
+        wanted,
+        provisional,
+        loaded,
+        capped_by_rule,
+        rounds,
+        rule_rounds_capped: rounds == utopia_reason::MAX_DEPTH,
+    })
+}
+
+pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> {
+    let Resolved {
+        edges,
+        spans,
+        meta,
+        rules,
+        checked,
+        mut wanted,
+        provisional,
+        loaded,
+        capped_by_rule,
+        rounds,
+        rule_rounds_capped,
+        ..
+    } = resolve(pool, kb_id).await?;
+    let Checked {
+        candidates,
+        axiom_count,
+        blocked,
+        ..
+    } = checked;
+
+    // 站得住的关系结论已经在 `provisional` 里；候选里在它们之外的是被拦下的那些
+    let live_relations = wanted
+        .values()
+        .filter(|w| w.attribute_rule_id.is_some() && w.object_id.is_some())
+        .count();
+    let mut report = DeriveReport {
+        rules: rules.len(),
+        edges: edges.len(),
+        // 引擎推出的派生数：最后一轮池子上的公理派生与关系候选（拦下的也推出来了），
+        // 加上规则的**不同结论**数——不动点里同一条结论每轮都会被重新算出来，
+        // 按次数累加就成了轮数的函数
+        derived: candidates.facts.len() + provisional.len() - live_relations,
+        capped: candidates.capped.len(),
+        blocked: blocked.len(),
+        attribute_rules: loaded.rules.len(),
+        rule_rounds: rounds,
         // 跑满了轮数还在产出：链比 MAX_DEPTH 长，后面的没接上。**得报出来**——
         // 「没推到」与「不满足」在结果里长得一模一样（组合封顶那条是同一个道理）
-        report.rule_rounds_capped = rounds == utopia_reason::MAX_DEPTH;
-        for lr in &loaded.rules {
-            // 展不完的组合数按规则写回：这个数字在表里常驻，而不只在「跑完那一刻」
-            // 的提示里闪一下。取最后一轮的数——那一轮扫的是最全的池子
-            let capped = capped_by_rule.get(&lr.rule.id).copied().unwrap_or(0);
-            sqlx::query("UPDATE attribute_rules SET capped_at_last_run = $2 WHERE id = $1")
-                .bind(lr.rule.id)
-                .bind(capped as i32)
-                .execute(pool)
-                .await?;
-            report.rule_capped += capped;
+        rule_rounds_capped,
+        rule_hits: provisional.len(),
+        ..Default::default()
+    };
+
+    // 公理派生并进同一个 `wanted`——**合流是必须的**：陈旧行的对账扫的是整张表，
+    // 两趟各做各的 diff 会把对方的行每轮都判成陈旧作废掉。取的是最后一轮池子上的
+    // 那一份：站在退出的关系边上的派生已经不在里面
+    for (i, d) in candidates.facts.iter().take(axiom_count).enumerate() {
+        if blocked.contains(&i) {
+            continue;
         }
-        // 命中数按**不同的结论**数，不按算出来多少次：不动点里同一条结论每轮都
-        // 会被重新算出来，累加就成了轮数的函数
-        report.rule_hits = provisional.len();
-        report.derived += provisional.len();
+        let Some((from, to)) = utopia_reason::derive::validity(&d.premises, &spans) else {
+            continue;
+        };
+        // **按 `via` 查，不是 `predicate`。** 规则行是给「声明了公理的那个
+        // 谓词」编的；跨谓词的两条规则里，派生出来的谓词是另一个
+        let Some(&rule_id) = rules.get(&(d.via, d.rule.as_str())) else {
+            // 查不到规则是**编译与推导不一致**，不是正常情况。数出来，
+            // 别再让它静默消失一次
+            report.unruled += 1;
+            continue;
+        };
+        // 规则推出的同一条关系先到：那一行带着规则的证明落，公理那份不另立
+        wanted
+            .entry((d.subject, d.predicate, Some(d.object), None, from, to))
+            .or_insert(Wanted {
+                subject: d.subject,
+                predicate: d.predicate,
+                object_id: Some(d.object),
+                object_value: None,
+                from,
+                to,
+                premises: d.premises.clone(),
+                rule_id: Some(rule_id),
+                attribute_rule_id: None,
+            });
+    }
+    for lr in &loaded.rules {
+        // 展不完的组合数按规则写回：这个数字在表里常驻，而不只在「跑完那一刻」
+        // 的提示里闪一下。取最后一轮的数——那一轮扫的是最全的池子
+        let capped = capped_by_rule.get(&lr.rule.id).copied().unwrap_or(0);
+        sqlx::query("UPDATE attribute_rules SET capped_at_last_run = $2 WHERE id = $1")
+            .bind(lr.rule.id)
+            .bind(capped as i32)
+            .execute(pool)
+            .await?;
+        report.rule_capped += capped;
     }
 
     let mut tx = pool.begin().await?;
