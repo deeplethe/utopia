@@ -24,6 +24,41 @@ async fn queued(pool: &PgPool, dims: usize) -> anyhow::Result<i64> {
 }
 
 #[tokio::test]
+async fn dropping_an_index_waits_for_a_build() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let mut holder = pool.acquire().await?;
+    let lock = "SELECT pg_try_advisory_lock(hashtextextended('vector_index:build', 0))";
+    loop {
+        if sqlx::query_scalar::<_, bool>(lock)
+            .fetch_one(&mut *holder)
+            .await?
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // An absent index makes DROP CONCURRENTLY quick unless it takes the build lock.
+    let blocked = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        vector_index::drop(&pool, Target::Chunks, 17),
+    )
+    .await
+    .is_err();
+    let unlocked: bool =
+        sqlx::query_scalar("SELECT pg_advisory_unlock(hashtextextended('vector_index:build', 0))")
+            .fetch_one(&mut *holder)
+            .await?;
+    assert!(unlocked);
+    assert!(blocked, "DROP must wait for an in-progress index build");
+    vector_index::drop(&pool, Target::Chunks, 17).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_first_write_of_a_dimension_queues_one_build() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
