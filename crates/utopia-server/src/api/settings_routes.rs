@@ -24,6 +24,7 @@ pub async fn get(
         Some(s) => json!({
             "chat_base_url": s.chat_base_url,
             "chat_model": s.chat_model,
+            "chat_reasoning_effort": s.chat_reasoning_effort,
             "has_chat_key": s.chat_api_key.as_deref().is_some_and(|k| !k.is_empty()),
             "embed_base_url": s.embed_base_url,
             "embed_model": s.embed_model,
@@ -45,6 +46,8 @@ pub struct PutSettingsReq {
     /// None 或空串 = 保留旧密钥
     pub chat_api_key: Option<String>,
     pub chat_model: Option<String>,
+    /// minimal | low | medium | high；空 = 不带字段，端点按默认。缺席 = 不改
+    pub chat_reasoning_effort: Option<String>,
     pub embed_base_url: Option<String>,
     pub embed_api_key: Option<String>,
     pub embed_model: Option<String>,
@@ -76,6 +79,24 @@ pub async fn put(
         req.embed_dim,
     )
     .await?;
+    if let Some(effort) = &req.chat_reasoning_effort {
+        let effort = nonempty(&Some(effort.clone()));
+        if let Some(e) = effort.as_deref() {
+            if !matches!(e, "minimal" | "low" | "medium" | "high") {
+                return Err(utopia_core::AppError::invalid(
+                    "bad_reasoning_effort",
+                    "reasoning effort is one of minimal, low, medium, high, or empty",
+                )
+                .into());
+            }
+        }
+        utopia_store::settings::set_chat_reasoning_effort(
+            &state.pool,
+            workspace_id,
+            effort.as_deref(),
+        )
+        .await?;
+    }
     // **配好嵌入模型的这一刻，就是本体索引能开工的最早时刻。**
     //
     // 注册时自动建的默认库会装上本体包，而那一刻还没有模型：`embed_ontology`

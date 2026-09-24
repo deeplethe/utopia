@@ -257,6 +257,8 @@ export interface Readiness {
 export interface LlmSettingsView {
   chat_base_url?: string | null;
   chat_model?: string | null;
+  /** 推理强度：minimal | low | medium | high；空 = 端点默认 */
+  chat_reasoning_effort?: string | null;
   has_chat_key?: boolean;
   embed_base_url?: string | null;
   embed_model?: string | null;

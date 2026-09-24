@@ -1196,6 +1196,10 @@ export const en = {
     modelsIntro:
       "OpenAI-compatible protocol — DeepSeek, Qwen, GLM, Ollama, vLLM all work. Fully on-prem friendly.",
     chatModel: "Chat model",
+    reasoningEffort: "Reasoning effort",
+    reasoningDefault: "endpoint default",
+    reasoningHint:
+      "Reasoning models think before they answer; for extraction nine tenths of the output was thinking. minimal turns it off without changing the answer.",
     embedModel: "Embedding model (optional, enables semantic search)",
     baseUrl: "Base URL",
     model: "Model",

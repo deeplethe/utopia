@@ -13,11 +13,14 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
     if !s.chat_ready() {
         return None;
     }
-    Some(LlmClient::new(
-        s.chat_base_url.as_deref()?,
-        s.chat_api_key.as_deref(),
-        s.chat_model.as_deref()?,
-    ))
+    Some(
+        LlmClient::new(
+            s.chat_base_url.as_deref()?,
+            s.chat_api_key.as_deref(),
+            s.chat_model.as_deref()?,
+        )
+        .with_reasoning_effort(s.chat_reasoning_effort.clone()),
+    )
 }
 
 pub fn embed_client(s: &LlmSettings) -> Option<LlmClient> {

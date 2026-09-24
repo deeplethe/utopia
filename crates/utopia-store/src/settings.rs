@@ -81,6 +81,23 @@ pub async fn upsert(
     opened(row)
 }
 
+/// 对话模型的推理强度，单独改：它跟着对话模型那张卡走，但 `upsert` 的整体替换不认识它，
+/// 老调用方不传也不该把它清掉。`None` = 清空（回到端点默认）
+pub async fn set_chat_reasoning_effort(
+    pool: &PgPool,
+    workspace_id: Uuid,
+    effort: Option<&str>,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE llm_settings SET chat_reasoning_effort = $2, updated_at = now() WHERE workspace_id = $1",
+    )
+    .bind(workspace_id)
+    .bind(effort)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// 版面识别服务的设置，单独存：它在管理页上是自己的一张卡片，存它不该碰对话和嵌入那几列
 /// （反过来也一样——`upsert` 不写这三列）。`api_key` 传 None 保留旧值；地址传 None = 关掉
 pub async fn upsert_ocr(

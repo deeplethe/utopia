@@ -327,6 +327,8 @@ pub struct LlmClient {
     base_url: String,
     api_key: Option<String>,
     pub model: String,
+    /// OpenAI 兼容口的 `reasoning_effort`；设了就带进每个对话请求体
+    reasoning_effort: Option<String>,
 }
 
 /// 建连多久算失败。
@@ -396,6 +398,20 @@ impl LlmClient {
         Self::with_timeouts(base_url, api_key, model, CONNECT_TIMEOUT, READ_TIMEOUT)
     }
 
+    /// 推理强度（`reasoning_effort`）。推理模型默认边想边答，抽取一次调用出的 token 九成是
+    /// 思考；minimal 把它归零而答案不变（bench README，2026-09-24）。空 = 不带字段
+    pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort.filter(|e| !e.trim().is_empty());
+        self
+    }
+
+    fn with_effort(&self, mut body: serde_json::Value) -> serde_json::Value {
+        if let Some(e) = &self.reasoning_effort {
+            body["reasoning_effort"] = json!(e);
+        }
+        body
+    }
+
     /// 超时可注入，只为**测得动**——生产走 [`LlmClient::new`]。
     /// 拿 300 秒去测一次挂死要跑 5 分钟，那样的测试没人会留着。
     pub fn with_timeouts(
@@ -419,6 +435,7 @@ impl LlmClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.map(String::from),
             model: model.to_string(),
+            reasoning_effort: None,
         }
     }
 
@@ -442,7 +459,8 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f32>,
     ) -> anyhow::Result<String> {
-        let mut body = json!({ "model": self.model, "messages": messages, "stream": false });
+        let mut body =
+            self.with_effort(json!({ "model": self.model, "messages": messages, "stream": false }));
         if let Some(t) = temperature {
             body["temperature"] = json!(t);
         }
@@ -482,7 +500,7 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f32>,
     ) -> anyhow::Result<Reply> {
-        let mut body = json!({
+        let body = json!({
             "model": self.model,
             "messages": messages,
             "stream": true,
@@ -492,6 +510,7 @@ impl LlmClient {
             // 上限归我们，不归端点的默认值（[`MAX_COMPLETION_TOKENS`]）
             "max_tokens": MAX_COMPLETION_TOKENS,
         });
+        let mut body = self.with_effort(body);
         if let Some(t) = temperature {
             body["temperature"] = json!(t);
         }
@@ -634,11 +653,11 @@ impl LlmClient {
         tool_choice: Option<&serde_json::Value>,
         stream: bool,
     ) -> serde_json::Value {
-        let mut body = json!({
+        let mut body = self.with_effort(json!({
             "model": self.model,
             "messages": messages,
             "stream": stream,
-        });
+        }));
         if let Some(tools) = tools {
             body["tools"] = tools.clone();
             if let Some(choice) = tool_choice {
@@ -830,12 +849,14 @@ impl LlmClient {
         &self,
         messages: &[serde_json::Value],
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<String>> + Send + use<>> {
-        let resp = self
-            .request("/chat/completions")
-            .json(&json!({ "model": self.model, "messages": messages, "stream": true }))
-            .send()
-            .await
-            .map_err(Unreachable)?;
+        let resp =
+            self.request("/chat/completions")
+                .json(&self.with_effort(
+                    json!({ "model": self.model, "messages": messages, "stream": true }),
+                ))
+                .send()
+                .await
+                .map_err(Unreachable)?;
         if !resp.status().is_success() {
             let status = resp.status();
             let retry_after = retry_after_of(resp.headers());
@@ -1009,6 +1030,22 @@ fn says_out_of_credit(body: &serde_json::Value) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reasoning_effort_rides_in_every_chat_body_only_when_set() {
+        let plain = LlmClient::new("http://x", None, "m");
+        let body = plain.tools_body(&[], None, None, false);
+        assert!(body.get("reasoning_effort").is_none());
+        let eager =
+            LlmClient::new("http://x", None, "m").with_reasoning_effort(Some("minimal".into()));
+        let body = eager.tools_body(&[], None, None, true);
+        assert_eq!(body["reasoning_effort"], "minimal");
+        let blank = LlmClient::new("http://x", None, "m").with_reasoning_effort(Some("  ".into()));
+        assert!(blank
+            .tools_body(&[], None, None, false)
+            .get("reasoning_effort")
+            .is_none());
+    }
+
     use super::*;
     use tokio::io::AsyncWriteExt;
 

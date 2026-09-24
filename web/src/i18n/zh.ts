@@ -1075,6 +1075,9 @@ export const zh: Strings = {
     modelsIntro:
       "OpenAI 兼容协议——DeepSeek、Qwen、GLM、Ollama、vLLM 都可用。完全内网友好。",
     chatModel: "对话模型",
+    reasoningEffort: "推理强度",
+    reasoningDefault: "端点默认",
+    reasoningHint: "推理模型先想再答，抽取一次调用九成的输出是思考；minimal 关掉它，答案不变。",
     embedModel: "向量模型（可选，启用语义检索）",
     baseUrl: "接口地址",
     model: "模型",
