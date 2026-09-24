@@ -278,6 +278,8 @@ pub enum SourceKind {
     Webdav,
     Notion,
     Api,
+    /// 推送的不是文档而是陈述本身（0054）：请求体就是开放抽取契约，抽取不问模型
+    Statements,
     Custom,
     /// 每个库自带的记忆来源，不可建不可删（0015）
     Memory,

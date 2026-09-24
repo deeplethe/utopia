@@ -535,6 +535,7 @@ export const zh: Strings = {
       url: "网页",
       rss: "RSS 订阅",
       api: "API",
+      statements: "陈述",
       custom: "自定义",
       github_issues: "GitHub 工单",
       jira_issues: "Jira 工单",
@@ -572,6 +573,8 @@ export const zh: Strings = {
         "同步一个 Notion 集成能看见的页面——把页面分享给集成，它就会出现在这里。" +
         "日期取页面最后一次编辑的时刻，那是页面自己的时钟，不是我们抓它的时刻。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
+      statements:
+        "外部系统把已经是抽取契约形状的陈述推送到这里，不经模型；发事件，别发整张表的状态。",
       custom:
         "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Utopia 保持同步。",
       memory:

@@ -475,6 +475,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/ingest", post(sources_routes::ingest))
         // api 来源推送：来源专属密钥认证（Bearer），无会话
         .route("/sources/{source_id}/ingest", post(sources_routes::push))
+        // 推陈述而不是推文档（0054）：请求体就是开放抽取契约，抽取不问模型
+        // 请求体在验钥匙之前就已读完，所以这里压一个远小于缺省 2 MiB 的上限；
+        // 门口的 64 KiB 判定仍是 422，这个上限只挡明显不是一份载荷的东西
+        .route(
+            "/sources/{source_id}/statements",
+            post(sources_routes::push_statements).layer(DefaultBodyLimit::max(
+                4 * sources_routes::STATEMENTS_MAX_BYTES,
+            )),
+        )
         .route(
             "/kbs/{id}/sources/{source_id}/token",
             get(sources_routes::get_token),

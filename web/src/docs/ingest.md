@@ -4,12 +4,13 @@ Utopia pulls or receives documents through **sources**. Two source kinds speak J
 
 ## Choosing between them
 
-| | Custom (pull) | API (push) |
-|---|---|---|
-| Who initiates | Utopia, on a schedule | Your service, any time |
-| Auth | Optional header you configure | Per-source Bearer token |
-| Fits | Feeds, exports, periodic snapshots | Event-driven systems, scripts, CI |
-| Deletion signal | `deleted` array in the response | `deleted: true` in a push |
+| | Custom (pull) | API (push) | Statements (push) |
+|---|---|---|---|
+| Who initiates | Utopia, on a schedule | Your service, any time | Your service, any time |
+| Auth | Optional header you configure | Per-source Bearer token | Per-source Bearer token |
+| What you send | Items with text | Documents with text | Statements already in the extraction contract; no model reads them |
+| Fits | Feeds, exports, periodic snapshots | Event-driven systems, scripts, CI | Sensors, event buses, anything that already knows `{thing, relation, value, when}` |
+| Deletion signal | `deleted` array in the response | `deleted: true` in a push | `deleted: true` in a push |
 
 ---
 
@@ -119,9 +120,49 @@ curl -X POST "https://utopia.example.com/api/v1/sources/01a0…/ingest" \
 
 ---
 
+## Statements source — the structured push interface
+
+Create a **Statements** source; it gets its own push token like an API source. Use it when your system already holds the statement and would otherwise have to write it out as prose for a model to read back. Nothing here calls a model: the body is stored as the document and read by the same parser that reads the extractor's reply, so a pushed statement is an open statement in every respect a document's is. It reaches the typed graph the same way, through alignment, never before.
+
+```
+POST {your-utopia-base}/api/v1/sources/{source_id}/statements
+Authorization: Bearer utp_…
+Content-Type: application/json
+```
+
+```json
+{
+  "external_id": "obs-000412",
+  "doc_time": "2026-09-23T08:14:03Z",
+  "e": [["cup-7", "cup", true], ["kitchen table", "table", true]],
+  "s": [[null, "cup-7", "is on", "kitchen table", null, {}, "08:14:03", null]],
+  "n": []
+}
+```
+
+| Field | Required | Meaning |
+|---|---|---|
+| `external_id` | yes | Stable identity. Same identity + new content → update in place, with a version recorded. |
+| `doc_time` | no | RFC 3339; the observation's own time. Without it the item is undated. |
+| `e` | yes | Things: `[name, kind word, named]`. `named` is `true` for a name, `false` for a description. |
+| `s` | yes | Statements: `[quote, subject, phrase, object, value, qualifiers, when, ended]`. `quote` must be `null`; `subject` and `object` name things listed in `e`; give `object` or `value`, not both; `qualifiers` is an object keyed by your own role words; `when` / `ended` are time words as you would write them. |
+| `n` | yes | Other names: `[entity name, other name, quote]`, `quote` null. May be empty. |
+| `deleted` | no | `true` marks the identified item "Not in source". |
+
+Any other key is refused with `422`, so a mistaken `predicate` or `class` field cannot pass as a typed fact: the contract has no slot for one. A `subject`, or the entity of an `n` row, that is not listed in `e` is refused the same way, rather than dropped later in silence. A body over 64 KiB or with more than 200 statements is refused too.
+
+Two things to know before wiring a system to it:
+
+- **Send events, not state.** A row that *is* the current state of a system belongs on a mounted database, read at query time. Pushing it here copies state into the ledger and the two drift.
+- **A new push under the same identity does not close the old statement.** The earlier one becomes stale and goes to review; deciding that an interval ended is done on the typed layer, by alignment and the temporal engine, not by the push.
+
+The response is the API push's: `{ "action": "created" }` · `updated` · `unchanged` · `marked_missing`.
+
+---
+
 ## Shared semantics
 
-- **Identity, not filenames.** Documents are tracked by `custom:{id}` / `api:{external_id}` keys. Renames are recognized as moves; content changes update the same document.
+- **Identity, not filenames.** Documents are tracked by `custom:{id}` / `api:{external_id}` / `statements:{external_id}` keys. Renames are recognized as moves; content changes update the same document.
 - **Updates keep history.** Every content change records a version; earlier extracted knowledge keeps its provenance.
 - **Deletion is a marker.** Tombstones set a "Not in source" flag; the Library shows a cleanup action, and a human confirms actual deletion.
 - **`doc_time` drives the time axis.** Documents without it fall back to their ingestion time — real timestamps make the temporal graph meaningfully better.

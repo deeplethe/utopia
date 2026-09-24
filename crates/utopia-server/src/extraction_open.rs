@@ -174,7 +174,7 @@ async fn embed_pending_names(
     Ok(items.len())
 }
 
-fn name_key(name: &str) -> String {
+pub(crate) fn name_key(name: &str) -> String {
     name.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -222,17 +222,20 @@ async fn place(
 }
 
 /// `await_nod`：这是记忆日志（0015）——陈述不直接落库，原样进待确认表，人点头时才成为开放陈述。
-/// `proposer`：那句话是谁、经哪枚令牌说的（0026），随待确认项一起记
+/// `proposer`：那句话是谁、经哪枚令牌说的（0026），随待确认项一起记。
+/// `pushed`：块本身就是契约（0054 的 `statements` 来源）——不建提示词、不问模型，直接解析；
+/// 这时 `client`（对话模型）为 None；`settings` 有就照传，名字向量的嵌入模型从它来。其余一步不变
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_open(
     state: &AppState,
     doc: &Document,
     kb: &KnowledgeBase,
-    settings: &LlmSettings,
-    client: &utopia_llm::LlmClient,
+    settings: Option<&LlmSettings>,
+    client: Option<&utopia_llm::LlmClient>,
     my_epoch: i32,
     proposer: Proposer,
     await_nod: bool,
+    pushed: bool,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
     let document_id = doc.id;
@@ -267,7 +270,7 @@ pub(crate) async fn run_open(
 
     // 名字向量的嵌入客户端（0041 决定 3 通道 2）。没配嵌入模型就是 None：召回退回
     // 字面相等，抽取照常
-    let embed = crate::llm_util::embed_client(settings);
+    let embed = settings.and_then(crate::llm_util::embed_client);
     for chunk in chunks.iter() {
         // 被接管则安静退场（重抽自增 epoch）：检查放在调用模型之前
         if utopia_store::documents::extract_epoch(pool, document_id).await? != my_epoch {
@@ -288,39 +291,53 @@ pub(crate) async fn run_open(
             .as_ref()
             .filter(|(id, _)| *id != chunk.id)
             .map(|(_, text)| text.as_str());
-        let messages =
-            utopia_extract::open::build_open_messages(&doc.filename, &known, opening, &chunk.text);
-        // 温度 0：照抄原文的活不该靠采样。端点缺省 1.0 时同一块两次回复密度差三倍
-        let reply = match chat_retrying_rate_limits_at(
-            state,
-            settings,
-            client,
-            &messages,
-            Some(0.0),
-        )
-        .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取调用失败，跳过该分块");
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::CHUNK_UNEXTRACTED,
-                    "调用失败，这一块没有进图",
-                    Some(&format!("#{}：{e}", chunk.seq)),
-                )
-                .await;
-                unextracted.push((chunk.seq, format!("调用失败：{e}")));
-                continue;
-            }
+        // 推送来的陈述：块就是契约，解析它而不是问模型（0054）。下面从解析起一步不变
+        let (reply_text, cut_by_ceiling) = if pushed {
+            (chunk.text.clone(), false)
+        } else {
+            let (settings, client) = match (settings, client) {
+                (Some(s), Some(c)) => (s, c),
+                _ => anyhow::bail!("Chat model not configured; cannot extract"),
+            };
+            let messages = utopia_extract::open::build_open_messages(
+                &doc.filename,
+                &known,
+                opening,
+                &chunk.text,
+            );
+            // 温度 0：照抄原文的活不该靠采样。端点缺省 1.0 时同一块两次回复密度差三倍
+            let reply = match chat_retrying_rate_limits_at(
+                state,
+                settings,
+                client,
+                &messages,
+                Some(0.0),
+            )
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取调用失败，跳过该分块");
+                    drop_signal(
+                        state,
+                        kb_id,
+                        document_id,
+                        reason::CHUNK_UNEXTRACTED,
+                        "调用失败，这一块没有进图",
+                        Some(&format!("#{}：{e}", chunk.seq)),
+                    )
+                    .await;
+                    unextracted.push((chunk.seq, format!("调用失败：{e}")));
+                    continue;
+                }
+            };
+            tracing::debug!(%document_id, seq = chunk.seq, reply = %reply.text, "开放抽取的原始回复");
+            // 端点说它是撞上 token 上限停的。解析器只看得见 JSON 少了尾巴，看不见
+            // 少的原因，所以这句话得从回复里带过来（#760）
+            let cut_by_ceiling = reply.hit_token_ceiling();
+            (reply.text, cut_by_ceiling)
         };
-        tracing::debug!(%document_id, seq = chunk.seq, reply = %reply.text, "开放抽取的原始回复");
-        // 端点说它是撞上 token 上限停的。解析器只看得见 JSON 少了尾巴，看不见
-        // 少的原因，所以这句话得从回复里带过来（#760）
-        let cut_by_ceiling = reply.hit_token_ceiling();
-        let extraction = match utopia_extract::open::parse_open_response(&reply.text) {
+        let extraction = match utopia_extract::open::parse_open_response(&reply_text) {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = cut_by_ceiling, "开放抽取回复解析失败，跳过该分块");
@@ -383,8 +400,8 @@ pub(crate) async fn run_open(
         // 名字向量（0041 决定 3 通道 2）：这一块里有名字的东西，名字字符串各算一条，
         // 消解时拿它在同库的名字向量里找近邻。一块一批；算不出来（端点抖了）不拦抽取，
         // 只是这一块少一条召回通道
-        let name_vecs: HashMap<String, Vec<f32>> = match &embed {
-            Some(client) => {
+        let name_vecs: HashMap<String, Vec<f32>> = match (settings, &embed) {
+            (Some(settings), Some(client)) => {
                 let mut wanted: Vec<(String, String)> = Vec::new();
                 let mut seen: HashSet<String> = HashSet::new();
                 for e in &extraction.entities {
@@ -395,7 +412,7 @@ pub(crate) async fn run_open(
                 }
                 embed_names(state, settings, client, &wanted).await
             }
-            None => HashMap::new(),
+            _ => HashMap::new(),
         };
 
         // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
@@ -658,7 +675,14 @@ pub(crate) async fn run_open(
                 .filter_map(|(role, words)| Some((role, words?.trim())))
                 .filter(|(_, w)| !w.is_empty())
             {
-                match locate_time(&chunk.text, quote, words) {
+                // 推送来的陈述没有引文：条目自己就是证据（0054 决定 4），这一块就是这一份
+                // 载荷，时间词在块里找。走 `locate_time` 会在 `quote?` 上退出，起止就都丢了
+                let located = if pushed {
+                    locate(&chunk.text, words).map(|(start, _)| start)
+                } else {
+                    locate_time(&chunk.text, quote, words)
+                };
+                match located {
                     Some(start) => time_words.push((words, start, role)),
                     None => {
                         drop_signal(
@@ -888,7 +912,7 @@ pub(crate) async fn run_open(
 
     // 名字向量：这篇新写的名字事实，向量补上（0041 决定 3 通道 2）。算不出来只记日志——
     // 文档已经抽完了，不能因为召回的辅助数据没算而把它标成 failed
-    if let Some(client) = &embed {
+    if let (Some(settings), Some(client)) = (settings, &embed) {
         match embed_pending_names(state, settings, client, kb_id).await {
             Ok(n) if n > 0 => tracing::info!(%document_id, names = n, "名字向量已补"),
             Ok(_) => {}

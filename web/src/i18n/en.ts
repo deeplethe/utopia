@@ -586,6 +586,7 @@ export const en = {
       url: "URLs",
       rss: "RSS feed",
       api: "API",
+      statements: "Statements",
       custom: "Custom",
       github_issues: "GitHub issues",
       jira_issues: "Jira issues",
@@ -626,6 +627,8 @@ export const en = {
         "and it appears here. Dated by when the page was last edited, which is the page's " +
         "own clock rather than ours.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
+      statements:
+        "Your system pushes statements already in the extraction contract; no model reads them. Send events, not the state of a table.",
       custom:
         "Polls a URL you control on a schedule — your service returns JSON items and Utopia keeps them in sync.",
       memory:
