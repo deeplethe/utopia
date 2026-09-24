@@ -62,6 +62,9 @@ pub struct PhraseItem<'a> {
     pub examples: &'a [String],
     pub quotes: &'a [String],
     pub candidates: Vec<PropertyCandidate<'a>>,
+    /// 结构上也对得上、但没进短名单的键：模型在批里的属性表里看见了它、选了它，照样算票——
+    /// 短名单是省 token 的手段，不是限制
+    pub also_allowed: Vec<&'a str>,
 }
 
 /// 模型对一条签名的裁决：Some = (候选的键, 方向)；None = 不绑
@@ -348,7 +351,12 @@ fn candidate_key(item: &PhraseItem<'_>, written: &str) -> Option<String> {
     if written.is_empty() {
         return None;
     }
-    let keys = || item.candidates.iter().map(|c| c.key.trim());
+    let keys = || {
+        item.candidates
+            .iter()
+            .map(|c| c.key.trim())
+            .chain(item.also_allowed.iter().map(|k| k.trim()))
+    };
     if let Some(exact) = keys().find(|k| *k == written) {
         return Some(exact.to_string());
     }
@@ -412,6 +420,7 @@ mod tests {
             examples: &examples,
             quotes: &quotes,
             candidates: candidates(),
+            also_allowed: vec![],
         }];
         let msgs = build_phrase_messages(&items);
         let user = &msgs[1].content;
@@ -441,6 +450,34 @@ mod tests {
     }
 
     #[test]
+    fn a_key_the_shortlist_hid_still_counts_when_it_fits_structurally() {
+        let examples = strings(&[]);
+        let quotes = strings(&[]);
+        let items = vec![PhraseItem {
+            id: 0,
+            phrase: "is based in",
+            subject_class: Some("organization"),
+            object_class: None,
+            object_is_value: false,
+            statement_count: 1,
+            examples: &examples,
+            quotes: &quotes,
+            candidates: candidates(),
+            also_allowed: vec!["located_in"],
+        }];
+        let (choices, malformed) =
+            parse_phrase_response(r#"{"b":[[0,"located_in","forward"]]}"#, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices[0].property.as_ref().map(|(k, _)| k.as_str()),
+            Some("located_in")
+        );
+        let (_, malformed) =
+            parse_phrase_response(r#"{"b":[[0,"made_up","forward"]]}"#, &items).unwrap();
+        assert_eq!(malformed, 1, "a key that fits nowhere is still malformed");
+    }
+
+    #[test]
     fn a_value_signature_says_value_for_its_object() {
         let examples = strings(&["Harbor Bakery —revenue→ $2 million"]);
         let quotes = strings(&["Harbor Bakery's revenue was $2 million."]);
@@ -454,6 +491,7 @@ mod tests {
             examples: &examples,
             quotes: &quotes,
             candidates: candidates(),
+            also_allowed: vec![],
         }];
         let user = &build_phrase_messages(&items)[1].content;
         assert!(user.contains("· object: value ·"), "{user}");
@@ -474,6 +512,7 @@ mod tests {
             examples: &examples,
             quotes: &quotes,
             candidates: candidates(),
+            also_allowed: vec![],
         };
         let items = vec![
             mk(0, "owns"),
@@ -520,6 +559,7 @@ mod tests {
                 examples: &examples,
                 quotes: &quotes,
                 candidates: candidates(),
+                also_allowed: vec![],
             },
             PhraseItem {
                 id: 1,
@@ -531,6 +571,7 @@ mod tests {
                 examples: &examples,
                 quotes: &quotes,
                 candidates: candidates(),
+                also_allowed: vec![],
             },
         ];
         let raw = r#"{"b": [[0, "revenue", "forward"], [1, "subsid"#;

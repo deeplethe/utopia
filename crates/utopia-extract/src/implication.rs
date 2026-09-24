@@ -61,7 +61,22 @@ fn readings_text(readings: &[(&str, &str)]) -> String {
 }
 
 pub fn build_rule_messages(items: &[RuleItem<'_>], readings: &[(&str, &str)]) -> Vec<ChatMessage> {
+    // 候选表一批只写一遍，各项只列键（与 `phrase_align::build_phrase_messages` 同一条理由：
+    // 每项带整张表时一次请求五万多 token）
+    let mut glossary: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for c in items.iter().flat_map(|i| i.candidates.iter()) {
+        if seen.insert(c.key.trim()) {
+            glossary.push(candidate_line(&PropertyCandidate {
+                via: Vec::new(),
+                ..c.clone()
+            }));
+        }
+    }
     let mut user = String::new();
+    if !glossary.is_empty() {
+        user.push_str(&format!("Properties:\n{}\n\n", glossary.join("\n")));
+    }
     for item in items {
         let shape = if item.trigger == "kind_word" {
             format!("kind word \"{}\"", item.phrase)
@@ -92,8 +107,8 @@ pub fn build_rule_messages(items: &[RuleItem<'_>], readings: &[(&str, &str)]) ->
         let candidates = if item.candidates.is_empty() {
             " (none)".to_string()
         } else {
-            let lines: Vec<String> = item.candidates.iter().map(candidate_line).collect();
-            format!("\n{}", lines.join("\n"))
+            let keys: Vec<&str> = item.candidates.iter().map(|c| c.key.trim()).collect();
+            format!(" {}", keys.join(", "))
         };
         user.push_str(&format!(
             "Item {}: {shape}{bound}\nExamples:{examples}\nCandidates:{candidates}\n\n",

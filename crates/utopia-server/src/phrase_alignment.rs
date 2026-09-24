@@ -265,6 +265,53 @@ async fn shortlist(
     Ok(out)
 }
 
+/// 类别词 → 留给提规则看的属性 id（按相关度）。词的文本加几个例名嵌入，取最近的
+/// [`SHORTLIST`] 条；没配嵌入模型、属性没向量的不进表
+async fn shortlist_kind_words(
+    state: &AppState,
+    settings: &utopia_core::models::LlmSettings,
+    kb_id: Uuid,
+    words: &[&utopia_store::type_bindings::KindWordSignature],
+) -> anyhow::Result<HashMap<String, Vec<Uuid>>> {
+    let mut out = HashMap::new();
+    let Some(client) = llm_util::embed_client(settings) else {
+        return Ok(out);
+    };
+    if words.is_empty() {
+        return Ok(out);
+    }
+    for batch in words.chunks(SHORTLIST_EMBED_BATCH) {
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|k| format!("{} · {}", k.kind_word, k.examples.join(", ")))
+            .collect();
+        let vectors = {
+            let _permit = llm_util::acquire_embed(state, settings).await;
+            match client.embed(&texts).await {
+                Ok(v) if v.len() == batch.len() => v,
+                Ok(_) | Err(_) => {
+                    tracing::warn!(%kb_id, "类别词向量没算出来，这一批看全部候选");
+                    continue;
+                }
+            }
+        };
+        for (k, vector) in batch.iter().zip(vectors) {
+            let near = utopia_store::ontology::nearest_relation_type_ids(
+                &state.pool,
+                kb_id,
+                &vector,
+                SHORTLIST as i64,
+                None,
+            )
+            .await?;
+            if !near.is_empty() {
+                out.insert(k.kind_word.clone(), near);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// 标签里有一个像样的词（四个字母以上）出现在短语里
 fn label_in_phrase(label: &str, phrase: &str) -> bool {
     let phrase = phrase.to_lowercase();
@@ -463,6 +510,13 @@ async fn align_phrases_locked(
                                     })
                                     .unwrap_or_default(),
                             })
+                            .collect(),
+                        // 结构对得上却没进短名单的键：模型若从批里的属性表选了它，算票
+                        also_allowed: full[&s.key()]
+                            .0
+                            .iter()
+                            .filter(|p| !cands[i].iter().any(|c| c.id == p.id))
+                            .map(|p| p.key.as_str())
                             .collect(),
                     }
                 })
@@ -703,18 +757,29 @@ async fn align_phrases_locked(
                     + &k.kind_word
             })
             .collect();
+        // 类别词的候选也开短名单：词加例名嵌入后取最近的属性；没有向量时看全部
+        let fresh: Vec<&utopia_store::type_bindings::KindWordSignature> = kind_words
+            .iter()
+            .filter(|k| !asked_kind.contains(k.kind_word.as_str()))
+            .collect();
+        let kind_short = shortlist_kind_words(state, settings, kb_id, &fresh).await?;
         for (k, basis) in kind_words.iter().zip(kind_basis.iter()) {
             if asked_kind.contains(k.kind_word.as_str()) {
                 continue;
+            }
+            let mut candidates: Vec<&RelationTypeView> = props
+                .iter()
+                .filter(|p| p.kind == "relation" || p.kind == "attribute")
+                .collect();
+            if let Some(keep) = kind_short.get(&k.kind_word) {
+                candidates.retain(|p| keep.contains(&p.id));
+                candidates.sort_by_key(|p| keep.iter().position(|id| *id == p.id));
             }
             asks.push(crate::implication::RuleAsk {
                 phrase: None,
                 kind_word: Some(k),
                 bound_to: None,
-                candidates: props
-                    .iter()
-                    .filter(|p| p.kind == "relation" || p.kind == "attribute")
-                    .collect(),
+                candidates,
                 basis,
             });
         }
