@@ -627,7 +627,7 @@ pub(crate) async fn insert_fact_on(
             {
                 return Ok((stated, true));
             }
-            attest_earlier(&mut *conn, *ended, validity.attested_at).await?;
+            attest_earlier(&mut *conn, *ended, validity.attested_at, true).await?;
             return Ok((*ended, false));
         }
     }
@@ -651,7 +651,7 @@ pub(crate) async fn insert_fact_on(
                 {
                     return Ok((stated, true));
                 }
-                attest_earlier(&mut *conn, *ended, validity.attested_at).await?;
+                attest_earlier(&mut *conn, *ended, validity.attested_at, true).await?;
                 return Ok((*ended, false));
             }
             let open = same
@@ -707,7 +707,13 @@ pub(crate) async fn insert_fact_on(
                 return Ok((stated, true));
             }
         }
-        attest_earlier(&mut *conn, *existing, validity.attested_at).await?;
+        attest_earlier(
+            &mut *conn,
+            *existing,
+            validity.attested_at,
+            validity.has_ended(),
+        )
+        .await?;
         return Ok((*existing, false));
     }
     // 弱化陈述：新观察无时间，同断言已有开放行 → 并入（取起点最新的开放行）。
@@ -719,7 +725,7 @@ pub(crate) async fn insert_fact_on(
             .filter(|(_, _, vt, _)| vt.is_none() || temporal == Temporal::Event)
             .max_by_key(|(_, vf, _, _)| *vf)
         {
-            attest_earlier(&mut *conn, *existing, validity.attested_at).await?;
+            attest_earlier(&mut *conn, *existing, validity.attested_at, false).await?;
             return Ok((*existing, false));
         }
         // 没有开放行，但这次观察的文档日期落在某条**已关上**的行里：说的是那一段，不是
@@ -731,7 +737,7 @@ pub(crate) async fn insert_fact_on(
                 .iter()
                 .find(|(_, vf, vt, _)| vt.is_some_and(|t| at <= t) && vf.is_none_or(|f| f <= at))
             {
-                attest_earlier(&mut *conn, *existing, validity.attested_at).await?;
+                attest_earlier(&mut *conn, *existing, validity.attested_at, false).await?;
                 return Ok((*existing, false));
             }
         }
@@ -846,24 +852,29 @@ pub(crate) async fn insert_fact_on(
 /// 同一断言又被观察到一次：锚点只往早挪（0022）。更早的文档是更早的证据；
 /// 更晚的什么也不改——一条事实从有证据的那一刻起成立，之后再被提到不会把它
 /// 往后推。`None`（此刻）也不动它：此刻不会早于任何已有的证据。
+///
+/// `ended`：这次观察说的是「它结束了」。只有它是结束得更早的证据，终点锚才跟着挪；
+/// 说它成立的观察只挪起点锚。从前两个一起挪，一条晚到的、日期更早的「成立」并进一行
+/// 「结束了，不知哪天」，终点锚就挪到了它自己身上，区间缩成空的（#875 的回放）
 async fn attest_earlier<'e>(
     pool: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     fact_id: Uuid,
     at: Option<chrono::DateTime<chrono::Utc>>,
+    ended: bool,
 ) -> AppResult<()> {
     if let Some(at) = at {
-        // 两个锚点都只往早挪：更早的文档既是它成立的更早证据，若它说的是结束，也是
-        // 结束得更早的证据。attested_to 只在结束未知的行上有，NULL 的留 NULL
+        // attested_to 只在结束未知的行上有，NULL 的留 NULL
         sqlx::query(
             // LEAST 会跳过 NULL——开放行的 attested_to 是 NULL，直接 least 会给它凭空长出一个
             // 终点锚，撞上 CHECK。NULL 的留 NULL
             "UPDATE facts SET attested_from = least(attested_from, $2),
-                              attested_to = CASE WHEN attested_to IS NULL THEN NULL
+                              attested_to = CASE WHEN attested_to IS NULL OR NOT $3 THEN attested_to
                                                  ELSE least(attested_to, $2) END
               WHERE id = $1",
         )
         .bind(fact_id)
         .bind(at)
+        .bind(ended)
         .execute(pool)
         .await?;
     }
@@ -953,7 +964,9 @@ pub async fn insert_open_statement(
     };
     let same: Option<Uuid> = q.fetch_optional(pool).await?;
     if let Some(existing) = same {
-        attest_earlier(pool, existing, attested_at).await?;
+        // 开放陈述落库时还不知道这次提及说的是成立还是结束（时间词在 0045 的任务里才读），
+        // 这里照旧两个锚点一起挪
+        attest_earlier(pool, existing, attested_at, true).await?;
         return Ok((existing, false));
     }
 
