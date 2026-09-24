@@ -13,6 +13,14 @@
 //! 回复是紧凑 JSON：`{"b": [[id, "key" | null, "forward" | "reverse" | null]]}`。解析同
 //! 类别词那边：坏的一条计数、不毁掉整批；键不在候选里、id 不在批里、绑了却没方向、
 //! 同一个 id 的第二次都算坏；没答到的 id 是「再问」，不是 null。
+//!
+//! **形状也宽容**（同类别词那边的教训）：模型（实测 DeepSeek-V3.2）并不总照样例写。它会
+//! 把整段答成按 id 作键的对象（`{"0": ["headquartered_in", "forward"], "1": null}`），
+//! 会把一条写成 `{"id": 0, "key": ..., "direction": ...}`，会把 `b` 写成对象、不要外层
+//! 对象只给数组、或在值里先抄一遍 id。这些说的都是同一件事，读法只有一种；温度为零时
+//! 同一段提示词回来的形状还是同一个，读不出就是每一轮都读不出——从前这种回复解出来是
+//! 「零条、零坏」，调用方当成「有一票没答到」静静跳过，没有日志也不再问。读不出的键与
+//! id 算坏项，不当缺席。
 
 use std::collections::{HashMap, HashSet};
 
@@ -179,15 +187,11 @@ pub fn parse_phrase_response(
 ) -> anyhow::Result<(Vec<PhraseChoice>, usize)> {
     let value = parse_value(raw)?;
     let by_id: HashMap<i64, &PhraseItem<'_>> = items.iter().map(|i| (i.id, i)).collect();
-    let triples = value
-        .get("b")
-        .and_then(Value::as_array)
-        .map_or(&[][..], Vec::as_slice);
     let mut choices = Vec::new();
     let mut malformed = 0usize;
     let mut seen = HashSet::new();
-    for t in triples {
-        match parse_triple(t, &by_id) {
+    for (id, key, direction) in answers(&value) {
+        match parse_triple(&id, &key, &direction, &by_id) {
             Some(choice) if seen.insert(choice.id) => choices.push(choice),
             _ => malformed += 1,
         }
@@ -195,21 +199,113 @@ pub fn parse_phrase_response(
     Ok((choices, malformed))
 }
 
-/// `[id, key | null, direction | null]`：绑了就得有方向，方向不认识算坏
-fn parse_triple(v: &Value, by_id: &HashMap<i64, &PhraseItem<'_>>) -> Option<PhraseChoice> {
-    let arr = v.as_array()?;
-    if arr.len() < 2 {
-        return None;
+/// 回复里的每一条答案：（id，键，方向）三个原始值，形状还没验。
+///
+/// 认这几种写法，说的都是「这个 id 选了这个键、这个方向」：`{"b": [[id, key, dir]]}`
+/// （样例）、`{"b": {"id": [key, dir]}}`、没有 `b` 的顶层对象 `{"id": [key, dir]}`、
+/// 顶层数组 `[[id, key, dir]]`；一条也可以写成 `{"id": .., "key": .., "direction": ..}`，
+/// 按 id 作键时值也可以是 `{"key": .., "direction": ..}`、`null`（不绑）或先抄一遍 id 的
+/// `[id, key, dir]`。`b` 在就只看 `b`，顶层别的键是模型的旁白，不是答案。缺了 `b` 又
+/// 不是对象或数组的，一条都没有
+fn answers(value: &Value) -> Vec<(Value, Value, Value)> {
+    let listed = value.get("b").unwrap_or(value);
+    match listed {
+        Value::Array(entries) => entries
+            .iter()
+            .map(|entry| match entry {
+                Value::Array(list) if list.len() >= 2 => {
+                    let (key, direction) = key_and_direction(&list[1..]);
+                    (list[0].clone(), key, direction)
+                }
+                Value::Object(map) => {
+                    let (key, direction) = fields(map);
+                    (
+                        map.get("id").cloned().unwrap_or(Value::Null),
+                        key,
+                        direction,
+                    )
+                }
+                other => (other.clone(), Value::Null, Value::Null),
+            })
+            .collect(),
+        Value::Object(map) => map
+            .iter()
+            .map(|(id, v)| {
+                let (key, direction) = match v {
+                    Value::Array(list) => {
+                        // 值里先抄一遍 id 再给键：`{"0": [0, "headquartered_in", "forward"]}`
+                        let copied = list
+                            .first()
+                            .and_then(item_id)
+                            .is_some_and(|first| id.trim().parse::<i64>().ok() == Some(first));
+                        let list = if copied { &list[1..] } else { &list[..] };
+                        key_and_direction(list)
+                    }
+                    Value::Object(inner) => fields(inner),
+                    other => (other.clone(), Value::Null),
+                };
+                (Value::String(id.clone()), key, direction)
+            })
+            .collect(),
+        _ => Vec::new(),
     }
-    let id = item_id(&arr[0])?;
+}
+
+/// `[key, dir]` 的两格；只有一格就没有方向（null 的答案常只写一格）。空数组是「什么
+/// 都没写」，读成 null 键会把没答到说成不绑——留成对象，调用方算坏
+fn key_and_direction(list: &[Value]) -> (Value, Value) {
+    match list {
+        [] => (Value::Array(Vec::new()), Value::Null),
+        [key] => (key.clone(), Value::Null),
+        [key, direction, ..] => (key.clone(), direction.clone()),
+    }
+}
+
+/// 一条写成对象时的两个字段：键叫 key / property / p，方向叫 direction / dir / d
+fn fields(map: &serde_json::Map<String, Value>) -> (Value, Value) {
+    let pick = |names: &[&str]| {
+        names
+            .iter()
+            .find_map(|n| map.get(*n))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    (
+        pick(&["key", "property", "p"]),
+        pick(&["direction", "dir", "d"]),
+    )
+}
+
+/// 一条答案：id 得是这批里的；键是 null（不绑）或候选里的一个，绑了就得有方向，方向
+/// 不认识算坏。键包在数组里的（`["headquartered_in", "forward"]` 塞在第二格）照样读，
+/// 方向从数组里取
+fn parse_triple(
+    id: &Value,
+    key: &Value,
+    direction: &Value,
+    by_id: &HashMap<i64, &PhraseItem<'_>>,
+) -> Option<PhraseChoice> {
+    let id = item_id(id)?;
     let item = by_id.get(&id)?;
-    let property = match &arr[1] {
+    let (key, direction) = match key {
+        Value::Array(list) if !list.is_empty() => {
+            let (k, d) = key_and_direction(list);
+            let d = if d.is_null() { direction.clone() } else { d };
+            (k, d)
+        }
+        other => (other.clone(), direction.clone()),
+    };
+    let property = match &key {
         Value::Null => None,
         Value::String(written) => {
             let key = candidate_key(item, written)?;
-            let direction = match arr.get(2).and_then(Value::as_str).map(str::trim) {
-                Some("forward") | Some("Forward") => Direction::Forward,
-                Some("reverse") | Some("Reverse") => Direction::Reverse,
+            let direction = match direction
+                .as_str()
+                .map(|d| d.trim().to_lowercase())
+                .as_deref()
+            {
+                Some("forward") => Direction::Forward,
+                Some("reverse") => Direction::Reverse,
                 _ => return None,
             };
             Some((key, direction))
@@ -401,5 +497,166 @@ mod tests {
         let (choices, _) = parse_phrase_response(raw, &items).unwrap();
         assert_eq!(choices.len(), 1);
         assert_eq!(choices[0].id, 0);
+    }
+
+    /// 三条签名：owns（应反向绑 subsidiary_of）、said（应 null）、revenue（值）
+    fn three_items<'a>(examples: &'a [String], quotes: &'a [String]) -> Vec<PhraseItem<'a>> {
+        let mk = |id: i64, phrase: &'static str, value: bool| PhraseItem {
+            id,
+            phrase,
+            subject_class: Some("organization"),
+            object_class: (!value).then_some("organization"),
+            object_is_value: value,
+            statement_count: 1,
+            examples,
+            quotes,
+            candidates: candidates(),
+        };
+        vec![
+            mk(0, "owns", false),
+            mk(1, "said", false),
+            mk(2, "revenue", true),
+        ]
+    }
+
+    fn bound(id: i64, key: &str, direction: Direction) -> PhraseChoice {
+        PhraseChoice {
+            id,
+            property: Some((key.to_string(), direction)),
+        }
+    }
+
+    fn unbound(id: i64) -> PhraseChoice {
+        PhraseChoice { id, property: None }
+    }
+
+    /// 类别词那边实测的写法搬到短语上：整段是按 id 作键的对象，没有 `b`，值是
+    /// `[key, dir]`。解出来必须和样例形状一模一样
+    #[test]
+    fn an_id_keyed_object_with_pairs_is_read_as_the_triple_list() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let items = three_items(&examples, &quotes);
+        let raw = r#"{ "0": ["subsidiary_of", "reverse"], "1": [null, null], "2": ["revenue", "forward"] }"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![
+                bound(0, "subsidiary_of", Direction::Reverse),
+                unbound(1),
+                bound(2, "revenue", Direction::Forward),
+            ]
+        );
+        // 不绑的写成裸 null 或只有一格；绑了却只有一格是没方向，算坏
+        let raw = r#"{"0": ["subsidiary_of"], "1": null, "2": [null]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 1, "bound without a direction");
+        assert_eq!(choices, vec![unbound(1), unbound(2)]);
+        // 值里先抄一遍 id 再给键与方向
+        let raw = r#"{"0": [0, "subsidiary_of", "reverse"], "1": [1, null, null]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![bound(0, "subsidiary_of", Direction::Reverse), unbound(1)]
+        );
+        // 空数组不是一个答案
+        let raw = r#"{"0": [], "1": [null]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 1);
+        assert_eq!(choices, vec![unbound(1)]);
+    }
+
+    /// 按 id 作键、值是对象：`{"key": .., "direction": ..}`，字段名的几种别名都认
+    #[test]
+    fn an_id_keyed_object_with_object_values_parses() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let items = three_items(&examples, &quotes);
+        let raw = r#"{"0": {"key": "subsidiary_of", "direction": "Reverse"}, "1": {"key": null, "direction": null}, "2": {"property": "revenue", "dir": "FORWARD"}}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![
+                bound(0, "subsidiary_of", Direction::Reverse),
+                unbound(1),
+                bound(2, "revenue", Direction::Forward),
+            ]
+        );
+    }
+
+    /// `b` 下面是对象而不是数组：一样读；`b` 在就只看 `b`，顶层别的键是旁白
+    #[test]
+    fn b_as_an_object_parses_and_other_top_level_keys_are_ignored() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let items = three_items(&examples, &quotes);
+        let raw = r#"{"note": "done", "b": {"0": ["subsidiary_of", "reverse"], "1": null}}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![bound(0, "subsidiary_of", Direction::Reverse), unbound(1)]
+        );
+        let raw = r#"{"b": {"0": {"key": "subsidiary_of", "direction": "reverse"}}}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(choices, vec![bound(0, "subsidiary_of", Direction::Reverse)]);
+    }
+
+    /// 数组里的一条写成对象、或整段不要外层对象只给数组：照读
+    #[test]
+    fn object_triples_and_a_bare_array_parse() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let items = three_items(&examples, &quotes);
+        let raw = r#"{"b": [{"id": 0, "key": "subsidiary_of", "direction": "reverse"}, {"id": "1", "key": null, "direction": null}]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![bound(0, "subsidiary_of", Direction::Reverse), unbound(1)]
+        );
+        let raw = concat!(
+            "```json\n",
+            r#"[[0, "subsidiary_of", "reverse"], [2, "revenue", "forward"]]"#,
+            "\n```"
+        );
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![
+                bound(0, "subsidiary_of", Direction::Reverse),
+                bound(2, "revenue", Direction::Forward)
+            ]
+        );
+        // 样例形状里第二格又包了一层：`[id, [key, dir]]`
+        let raw = r#"{"b": [[0, ["subsidiary_of", "reverse"]], [1, [null]]]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![bound(0, "subsidiary_of", Direction::Reverse), unbound(1)]
+        );
+    }
+
+    /// `b` 是空的：一项都没答，不是坏项。没有 `b`、键又不是 id 的：那是读不出的答案，
+    /// 算坏项——从前这种回复算「一项都没答」，调用方静静跳过，什么痕迹都不留
+    #[test]
+    fn an_empty_b_answers_nothing_but_an_unreadable_reply_is_malformed() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let items = three_items(&examples, &quotes);
+        for raw in [r#"{"b": []}"#, r#"{"b": {}}"#] {
+            let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+            assert!(choices.is_empty(), "{raw}");
+            assert_eq!(malformed, 0, "{raw}");
+        }
+        let raw = r#"{"answer": "subsidiary_of", "direction": "reverse"}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert!(choices.is_empty());
+        assert_eq!(malformed, 2);
+        // `b` 是标量：一条都没有
+        let (choices, malformed) = parse_phrase_response(r#"{"b": 1}"#, &items).unwrap();
+        assert!(choices.is_empty());
+        assert_eq!(malformed, 0);
     }
 }

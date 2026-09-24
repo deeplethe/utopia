@@ -589,7 +589,14 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-            phrase_alignment::align_phrases(st, kb_id).await
+            // 自己再排的那份带着第几次；文档、本体、类别词对齐排的没有这一项
+            let reask = job
+                .payload
+                .get("reask")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0);
+            phrase_alignment::align_phrases_reasking(st, kb_id, reask).await
         }
         "resolve_time" => {
             let id = payload_document_id(&job.payload)?;

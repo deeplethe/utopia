@@ -168,14 +168,22 @@ pub fn parse_kind_word_response(
 
 /// 先按常规取块（第一个 `{` 到最后一个 `}`）；解不开才从第一个 `{` 取到结尾去修补。
 /// 取块与修补的分工同 `open.rs`：紧凑回复里 `}` 只在结尾出现，截断的回复要么没有 `}`，
-/// 要么最后一个 `}` 不是结尾
+/// 要么最后一个 `}` 不是结尾。回复不要外层对象、直接给数组的，取第一个 `[` 到最后
+/// 一个 `]`——只在文字本身以 `[` 开头时这么读，别把对象里的一对当成整段
 pub(crate) fn parse_value(raw: &str) -> anyhow::Result<Value> {
+    let text = json_text(raw).trim();
+    if text.starts_with('[') {
+        if let Some(end) = text.rfind(']') {
+            if let Ok(v) = serde_json::from_str::<Value>(&text[..=end]) {
+                return Ok(v);
+            }
+        }
+    }
     let block = json_block(raw)
         .and_then(|b| serde_json::from_str::<Value>(&b).map_err(anyhow::Error::from));
     match block {
         Ok(v) => Ok(v),
         Err(e) => {
-            let text = json_text(raw);
             let fixed = text
                 .find('{')
                 .map(|s| &text[s..])
