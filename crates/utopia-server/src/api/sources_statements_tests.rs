@@ -90,6 +90,8 @@ struct Fixture {
     api_source: Uuid,
     token: String,
     api_token: String,
+    /// 编辑者的会话令牌：查看和轮换密钥走会话认证，不走推送密钥
+    session: String,
     _dir: tempfile::TempDir,
 }
 
@@ -136,6 +138,7 @@ impl Fixture {
             &dir.path().join("search"),
         )?);
         let state = crate::state::AppState::new(pool.clone(), &cfg, search, "test-only".into());
+        let session = crate::auth::issue_token(&state, user)?;
         let app = super::super::router(state.clone(), &cfg);
         Ok(Some(Self {
             pool,
@@ -147,6 +150,7 @@ impl Fixture {
             api_source,
             token,
             api_token,
+            session,
             _dir: dir,
         }))
     }
@@ -177,6 +181,25 @@ impl Fixture {
             .app
             .clone()
             .oneshot(request.body(Body::from(body))?)
+            .await?;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1 << 20).await?;
+        let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        Ok((status, value))
+    }
+
+    /// 以编辑者会话调一个来源接口（查看 / 轮换密钥）
+    async fn as_editor(&self, method: &str, path: &str) -> anyhow::Result<(StatusCode, Value)> {
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(format!("/api/v1/kbs/{}/sources/{path}", self.kb))
+                    .header("Authorization", format!("Bearer {}", self.session))
+                    .body(Body::empty())?,
+            )
             .await?;
         let status = response.status();
         let bytes = to_bytes(response.into_body(), 1 << 20).await?;
@@ -462,5 +485,47 @@ async fn a_tombstone_marks_the_item_missing_and_a_new_push_revives_it() -> anyho
             .is_none(),
         "a tombstone never creates a document"
     );
+    f.cleanup().await
+}
+
+/// 密钥的查看和轮换对 `statements` 来源和 `api` 来源一样可用：创建时给过一次的密钥
+/// 之后还查得到，轮换后旧密钥立刻失效、新密钥能推。端到端跑服务时抓到的：这两个接口
+/// 原来只认 `api`
+#[tokio::test]
+async fn the_push_token_can_be_viewed_and_rotated_like_an_api_source() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (status, body) = f.as_editor("GET", &format!("{}/token", f.source)).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["ingest_token"], f.token,
+        "the token given at creation is viewable"
+    );
+    let (status, body) = f
+        .as_editor("POST", &format!("{}/rotate-token", f.source))
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rotated = body["ingest_token"]
+        .as_str()
+        .expect("a new token")
+        .to_string();
+    assert_ne!(rotated, f.token);
+    let (status, _) = f
+        .push(
+            f.source,
+            &f.token,
+            &observation("08:14:03", "kitchen table"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the old token is dead");
+    let (status, body) = f
+        .push(
+            f.source,
+            &rotated,
+            &observation("08:14:03", "kitchen table"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
     f.cleanup().await
 }

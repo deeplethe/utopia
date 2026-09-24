@@ -115,7 +115,7 @@ pub async fn create(
     }
     // api 来源：生成专属推送密钥（此后可随时经 get_token 查看）
     let mut ingest_token: Option<String> = None;
-    if matches!(source.kind.as_str(), "api" | "statements") {
+    if has_push_token(&source) {
         let token = new_ingest_token();
         utopia_store::sources::set_ingest_token(&state.pool, source.id, &token).await?;
         ingest_token = Some(token);
@@ -136,7 +136,13 @@ pub async fn create(
     ))
 }
 
-/// 查看 api 来源的推送密钥（Editor；列表响应从不携带，查看走这里）。
+/// 有推送密钥的来源：`api` 推文档，`statements` 推陈述（0054）。两种的密钥同一套
+/// 生成、查看、轮换
+fn has_push_token(source: &utopia_core::models::Source) -> bool {
+    matches!(source.kind.as_str(), "api" | "statements")
+}
+
+/// 查看推送密钥（Editor；列表响应从不携带，查看走这里）。
 pub async fn get_token(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -144,13 +150,13 @@ pub async fn get_token(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let source = source_in_kb(&state, kb_id, source_id).await?;
-    if source.kind != "api" {
+    if !has_push_token(&source) {
         return Err(utopia_core::AppError::NotFound.into());
     }
     Ok(Json(json!({ "ingest_token": source.ingest_token })))
 }
 
-/// 轮换 api 来源的推送密钥：旧密钥立即失效。
+/// 轮换推送密钥：旧密钥立即失效。
 pub async fn rotate_token(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -158,7 +164,7 @@ pub async fn rotate_token(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let source = source_in_kb(&state, kb_id, source_id).await?;
-    if source.kind != "api" {
+    if !has_push_token(&source) {
         return Err(utopia_core::AppError::NotFound.into());
     }
     let token = new_ingest_token();
