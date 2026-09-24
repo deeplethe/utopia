@@ -156,8 +156,9 @@ pub fn parse_rule_response(
             let reading = arr.get(2).and_then(|x| x.as_str());
             let implies = match key {
                 None => None,
-                Some(k) => {
-                    if !item.candidates.iter().any(|c| c.key == k) || item.bound_to == Some(k) {
+                Some(written) => {
+                    let k = resolve_key(item, written)?;
+                    if item.bound_to == Some(k) {
                         return None;
                     }
                     if let Some(r) = reading {
@@ -296,6 +297,30 @@ pub fn parse_reading_response(
 }
 
 /// 回复里可能裹着 ```json 围栏或前后的话：取第一个 { 到最后一个 }
+/// 模型写的键：候选里的键（大小写不论），或唯一对上的标签——键是 `p569` 这种代号时模型
+/// 常答标签（与 `phrase_align::candidate_key` 同一条理由）
+fn resolve_key<'a>(item: &RuleItem<'a>, written: &str) -> Option<&'a str> {
+    let written = written.trim();
+    if let Some(c) = item.candidates.iter().find(|c| c.key.trim() == written) {
+        return Some(c.key);
+    }
+    let lower = written.to_lowercase();
+    let mut by_key = item
+        .candidates
+        .iter()
+        .filter(|c| c.key.trim().to_lowercase() == lower);
+    if let Some(c) = by_key.next() {
+        return by_key.next().is_none().then_some(c.key);
+    }
+    let folded = crate::phrase_align::fold(written);
+    let mut by_label = item
+        .candidates
+        .iter()
+        .filter(|c| crate::phrase_align::fold(c.label) == folded);
+    let c = by_label.next()?;
+    by_label.next().is_none().then_some(c.key)
+}
+
 fn extract_json(raw: &str) -> &str {
     match (raw.find('{'), raw.rfind('}')) {
         (Some(a), Some(b)) if b > a => &raw[a..=b],

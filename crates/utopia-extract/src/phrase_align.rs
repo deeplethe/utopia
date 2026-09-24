@@ -362,8 +362,27 @@ fn candidate_key(item: &PhraseItem<'_>, written: &str) -> Option<String> {
     }
     let lower = written.to_lowercase();
     let mut hits = keys().filter(|k| k.to_lowercase() == lower);
-    let first = hits.next()?;
-    hits.next().is_none().then(|| first.to_string())
+    if let Some(first) = hits.next() {
+        return hits.next().is_none().then(|| first.to_string());
+    }
+    // 键是 `p569` 这种代号时模型十有八九答标签（"dateOfBirth"）：第一次真跑里一半的签名
+    // 因此判成坏票（bench README，2026-09-24）。标签唯一对上就认它的键；对上两个不认
+    let folded = fold(written);
+    let mut by_label = item
+        .candidates
+        .iter()
+        .filter(|c| fold(c.label) == folded)
+        .map(|c| c.key.trim());
+    let first = by_label.next()?;
+    by_label.next().is_none().then(|| first.to_string())
+}
+
+/// 标签比较用的折叠：大小写、空格、下划线、连字符都不算
+pub fn fold(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != '_' && *c != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]
@@ -475,6 +494,32 @@ mod tests {
         let (_, malformed) =
             parse_phrase_response(r#"{"b":[[0,"made_up","forward"]]}"#, &items).unwrap();
         assert_eq!(malformed, 1, "a key that fits nowhere is still malformed");
+    }
+
+    #[test]
+    fn a_label_answer_maps_to_its_key_when_unique() {
+        let examples = strings(&[]);
+        let quotes = strings(&[]);
+        let items = vec![PhraseItem {
+            id: 0,
+            phrase: "is based in",
+            subject_class: Some("organization"),
+            object_class: None,
+            object_is_value: false,
+            statement_count: 1,
+            examples: &examples,
+            quotes: &quotes,
+            candidates: candidates(),
+            also_allowed: vec![],
+        }];
+        let (choices, malformed) =
+            parse_phrase_response(r#"{"b":[[0,"Headquartered In","forward"]]}"#, &items).unwrap();
+        assert_eq!(malformed, 0, "a label, folded, names the key");
+        assert_eq!(
+            choices[0].property.as_ref().map(|(k, _)| k.as_str()),
+            Some("headquartered_in")
+        );
+        assert_eq!(fold("Date of Birth"), "dateofbirth");
     }
 
     #[test]
