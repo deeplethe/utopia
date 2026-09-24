@@ -178,6 +178,8 @@ fn snippet(text: &str) -> String {
 /// 签名平均拖着几十条候选（六个粗类切不掉什么），一次请求 1.8 万 token，对齐占了一轮
 /// 八成的用量（bench README，2026-09-24）；十条里若没有对的，多半是本体里就没有
 const SHORTLIST: usize = 10;
+/// 同时在飞的对齐批次数；模型闸门（工作区的并发上限）在下面再限一次
+const PARALLEL_BATCHES: usize = 4;
 /// 一次嵌入多少条签名的文本
 const SHORTLIST_EMBED_BATCH: usize = 32;
 
@@ -452,7 +454,21 @@ async fn align_phrases_locked(
     let mut failed = 0usize;
     // 问了、模型也答了、却没答到的签名：两票缺一票就不下结论
     let mut unanswered = 0usize;
-    for batch in todo.chunks(BATCH) {
+    // 批与批并行（[`PARALLEL_BATCHES`] 个在飞，模型闸门再限一次）：一批两票串行要等模型
+    // 想两回，串着跑 22 批就是半小时，其中一次卡住的调用能把整轮拖住 18 分钟（bench README，
+    // 2026-09-24）。每批各记各的数，回来再加
+    {
+        use futures_util::StreamExt;
+        // 只把引用搬进各批的 future
+        let (considered, full, closure, class_key, by_key) =
+            (&considered, &full, &closure, &class_key, &by_key);
+        // 先把每批的 future 造出来再排队：直接在 map 里返回 async 块会让借用的生命周期
+        // 满足不了 tokio::spawn 要的 Send
+        let futures: Vec<_> = todo
+            .chunks(BATCH)
+            .map(|batch| async move {
+                let (mut bound, mut none, mut undecided, mut skipped, mut failed, mut unanswered) =
+                    (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         // 候选超过上限的不问模型：记成 undecided 交给人，指纹照记——属性少下去指纹就变，
         // 到时再问。从前超限和无候选一样静默跳过，签名永远排着又永远不可执行（#807）
         let cands: Vec<Vec<&RelationTypeView>> = batch
@@ -693,6 +709,20 @@ async fn align_phrases_locked(
                     }
                 }
             }
+        }
+
+                Ok::<_, anyhow::Error>((bound, none, undecided, skipped, failed, unanswered))
+            })
+            .collect();
+        let mut results = futures_util::stream::iter(futures).buffer_unordered(PARALLEL_BATCHES);
+        while let Some(r) = results.next().await {
+            let (b, n, u, sk, f, un) = r?;
+            bound += b;
+            none += n;
+            undecided += u;
+            skipped += sk;
+            failed += f;
+            unanswered += un;
         }
     }
     tracing::info!(%kb_id, bound, none, undecided, skipped, failed, unanswered, "短语对齐完成");

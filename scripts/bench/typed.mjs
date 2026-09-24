@@ -245,7 +245,8 @@ async function judgeRetracted(KB) {
   const byFile = new Map();
   for (const r of all) (byFile.get(r[1]) || byFile.set(r[1], []).get(r[1])).push(r);
   const counts = { stated: 0, misworded: 0, not_stated: 0, unjudged: 0 };
-  for (const [file, items] of byFile) {
+  // 一篇一次裁判调用，四篇并行：串着跑 100 篇要等模型想 100 回
+  await parallel([...byFile], 4, async ([file, items]) => {
     const list = items.map((r, i) => `${i}. ${r[2]} — ${r[3]} — ${r[4]}`).join("\n");
     let verdicts = {};
     try {
@@ -254,9 +255,18 @@ async function judgeRetracted(KB) {
       for (const r of (m ? JSON.parse(m[0]).results : [])) verdicts[r.i] = r.verdict;
     } catch (e) { log(`裁判失败 ${file}: ${String(e).slice(0, 120)}`); }
     items.forEach((_, i) => { counts[["stated", "misworded", "not_stated"].includes(verdicts[i]) ? verdicts[i] : "unjudged"] += 1; });
-  }
+  });
   console.log(`撤改掉的 ${all.length} 条里裁判判 stated ${counts.stated}（撤错的），misworded ${counts.misworded}，not_stated ${counts.not_stated}（原型撤了 278 条，约四分之一是对的）`);
   return { removed: all.length, ...counts };
+}
+
+/** 有限并行：最多 n 个在飞 */
+async function parallel(items, n, fn) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) { const i = next++; await fn(items[i]); }
+  });
+  await Promise.all(workers);
 }
 
 // ---- 打分 ----
@@ -391,7 +401,8 @@ async function judge(KB, n, seed) {
   const byFile = new Map();
   for (const r of sample) (byFile.get(r[1]) || byFile.set(r[1], []).get(r[1])).push(r);
   const counts = { stated: 0, misworded: 0, not_stated: 0, unjudged: 0 };
-  for (const [file, items] of byFile) {
+  // 一篇一次裁判调用，四篇并行：串着跑 100 篇要等模型想 100 回
+  await parallel([...byFile], 4, async ([file, items]) => {
     const list = items.map((r, i) => `${i}. ${r[2]} — ${r[3]} — ${r[4]}`).join("\n");
     let verdicts = {};
     try {
@@ -400,7 +411,7 @@ async function judge(KB, n, seed) {
       for (const r of (m ? JSON.parse(m[0]).results : [])) verdicts[r.i] = r.verdict;
     } catch (e) { log(`裁判失败 ${file}: ${String(e).slice(0, 120)}`); }
     items.forEach((_, i) => { counts[["stated", "misworded", "not_stated"].includes(verdicts[i]) ? verdicts[i] : "unjudged"] += 1; });
-  }
+  });
   const judged = counts.stated + counts.misworded + counts.not_stated;
   console.log(`裁判 ${sample.length} 条（判了 ${judged}）：stated ${counts.stated}，misworded ${counts.misworded}，not_stated ${counts.not_stated} → judged precision ${judged ? (100 * counts.stated / judged).toFixed(1) + "%" : "-"}（原型勘误前 75.3% 是门槛）`);
   return { sampled: sample.length, ...counts, judged_precision: judged ? counts.stated / judged : null };
