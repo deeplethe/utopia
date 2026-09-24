@@ -79,7 +79,11 @@ They guard what the compiler cannot see: table aliases inside SQL strings, how `
 If you touched SQL under `crates/utopia-store/`, set it and run again:
 
 ```bash
-export UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:5432/utopia
+# 1517 is the host-side port: docker-compose.yml deliberately avoids 5432
+# so a locally installed Postgres does not collide with the dev container.
+# Inside the compose network the app still talks to db:5432; 1517 is only
+# for code on the host reaching the container.
+export UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:1517/utopia
 cargo test --workspace
 ```
 

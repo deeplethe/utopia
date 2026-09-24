@@ -172,7 +172,11 @@ async fn main() -> anyhow::Result<()> {
     // worker 并发数：系统设置持久化，启动时装载；运行中经同一 AtomicUsize 热调
     let n = utopia_store::access::worker_concurrency(&pool)
         .await
-        .unwrap_or(32);
+        // 与 `deployment_settings.worker_concurrency` 的列缺省保持一致（迁移 0011）。
+        // access::worker_concurrency 自己已经在「行不存在」时兜底到 64；这里再加一层
+        // 是因为**函数本身报错**（DB 连不上、查询超时）也会落进来——这条路径上
+        // 系统正在降级，让它跑 64 而不是 32 是迁移 0011 想避免的那个并发不足。
+        .unwrap_or(64);
     state.worker_concurrency.store(
         n.clamp(1, 256) as usize,
         std::sync::atomic::Ordering::Relaxed,

@@ -544,6 +544,14 @@ impl LlmClient {
         if !saw_frame {
             anyhow::bail!("LLM stream carried no frames");
         }
+        if let Some(u) = usage {
+            tracing::info!(
+                model = %self.model,
+                prompt = u.prompt_tokens,
+                completion = u.completion_tokens,
+                "llm usage"
+            );
+        }
         // 端点开口了又半路没了：拼到一半的回复长得像成功，不做成错误就会被当成
         // 模型给的全部答案
         if !ended {
@@ -593,8 +601,9 @@ impl LlmClient {
                 *finish_reason = Some(reason.to_string());
             }
             // 用量只在最后一帧（choices 为空）出现
+            // 有的网关每一帧都带累计用量：这里只记下来，流结束时记一次日志，否则一次调用
+            // 在日志里成了几百行「用量」，按行加总的人会把 token 高估几百倍
             if !v["usage"].is_null() {
-                log_usage(&self.model, &v);
                 let u = &v["usage"];
                 *usage = Some(Usage {
                     prompt_tokens: u["prompt_tokens"].as_u64().unwrap_or(0),
