@@ -346,3 +346,60 @@ fn rank(r: Role) -> i32 {
         Role::Owner => 3,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use utopia_core::models::Role;
+
+    /// 角色序的「三处一致」：本模块的 `rank()`、派生 `PartialOrd`（来自 `Role` 的
+    /// 声明顺序）、以及 [`VISIBLE`] 里那条 CASE 写在同一行串里。
+    ///
+    /// 这一组不变量用「不要让我去查 git blame」的方式锁住：任一处漂了，三条断言
+    /// 里至少一条会爆。代价是测试本身写得啰嗦——但这是 `alerts.min_role` 比大小的
+    /// 命脉，错一档意味着「viewer 看得到 editor 才能看的告警」或反过来。
+    #[test]
+    fn role_rank_order_is_the_same_in_rust_and_sql() {
+        // 1. Rust `rank()` 与派生 PartialOrd 同序
+        assert!(rank(Role::Viewer) < rank(Role::Editor));
+        assert!(rank(Role::Editor) < rank(Role::Admin));
+        assert!(rank(Role::Admin) < rank(Role::Owner));
+        assert!(Role::Viewer < Role::Editor);
+        assert!(Role::Editor < Role::Admin);
+        assert!(Role::Admin < Role::Owner);
+
+        // 2. SQL 里 CASE 的 WHEN 子句按从低到高排列、数值等于 `rank()`
+        //    —— 用 `as_str()` 走一处事实来源，不在测试里再写一遍小写字面量
+        //    —— 切掉多余空白再比：实际 SQL 有「'admin'  THEN」（对齐用两空格），
+        //       直接 contains 一行对不齐就白测了
+        let visible_compact: String = VISIBLE.split_whitespace().collect::<Vec<_>>().join(" ");
+        let expected_lines = [(Role::Viewer, 0), (Role::Editor, 1), (Role::Admin, 2)];
+        for (role, want_rank) in expected_lines {
+            let needle = format!("WHEN '{}' THEN {}", role.as_str(), want_rank);
+            assert!(
+                visible_compact.contains(&needle),
+                "{needle:?} 不在 VISIBLE 里。Role 的序数改了或 CASE 没跟上时这条会爆——\n{VISIBLE}"
+            );
+        }
+        // Owner 不显式出现：在 CASE 里走 `ELSE 3`，数值必须等于 rank(Owner)
+        // —— 不然 Owner 看得见 Admin 看不见的告警，或反过来
+        assert!(
+            VISIBLE.contains("ELSE 3 END"),
+            "Owner 在 VISIBLE 里走 ELSE 兜底，期望 'ELSE 3 END'。drift 后这条会爆"
+        );
+        assert_eq!(
+            rank(Role::Owner),
+            3,
+            "rank(Owner) != 3：要么 rank() 改了，要么 ELSE 那条数没跟上"
+        );
+
+        // 3. `Role` 的声明顺序就是 `PartialOrd` 的序——任何手动调整过 `Role` 的
+        //    人都会看到上面两条先爆；这条作为最后兜底
+        assert!(
+            (Role::Viewer as usize) < (Role::Editor as usize)
+                && (Role::Editor as usize) < (Role::Admin as usize)
+                && (Role::Admin as usize) < (Role::Owner as usize),
+            "Role 的声明顺序与 PartialOrd 不再一致——上游 impl 改了？"
+        );
+    }
+}
