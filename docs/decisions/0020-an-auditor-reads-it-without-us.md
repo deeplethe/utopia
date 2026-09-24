@@ -62,6 +62,11 @@ One of the five built-in packs is PROV-O, so a base that has it loaded already k
 - **Conflict/review state and chunk identity behind a quote.** Quotes and source
   documents are exported, but these are separate gaps; conflict state is tracked
   in [#564](https://github.com/deeplethe/utopia/issues/564).
+- **Machine-readable rule definitions.** A generating rule is currently exported
+  as `prov:Activity` with an `rdfs:label`, under `…:rule:{id}`. Its criteria,
+  operands and expressions are not exported; [#902](https://github.com/deeplethe/utopia/issues/902)
+  discusses that extension. Business rules are edited in place, so their stable
+  identifiers do not identify the definitions that were used for older conclusions.
 - **Historical proof snapshots.** Premise links can be rewritten when a conclusion
   is reproved. The record-time lifetime survives; earlier versions of the proof
   do not (0019). RDF's `prov:used` edges identify premises, not their sequence.

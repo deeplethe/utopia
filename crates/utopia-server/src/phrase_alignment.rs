@@ -156,8 +156,30 @@ fn consider<'a>(
         .collect()
 }
 
+/// 日志里放得下的一段回复：空白折成一个空格，最多这么多字符。
+const SNIPPET_CHARS: usize = 240;
+
+fn snippet(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out: String = flat.chars().take(SNIPPET_CHARS).collect();
+    if flat.chars().count() > SNIPPET_CHARS {
+        out.push('…');
+    }
+    out
+}
+
+/// 一轮里没判完的（调用失败、回复读不出、模型漏答）自己再排几次；超过这个数就等
+/// 下一篇文档或本体的改动再问。不设上限的话，温度为零下一段每次都读不出的回复会让
+/// 任务每隔几十秒把同一段提示词再送一遍，没有尽头（同类别词对齐）
+pub(crate) const MAX_REASK: u32 = 3;
+
 /// 对一个库跑一遍：新出现的和过期的签名各判一次。
-pub async fn align_phrases(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
+/// `reask` 是这份任务已经是第几次自己排的（文档、本体、类别词对齐排的是 0）。
+pub async fn align_phrases_reasking(
+    state: &AppState,
+    kb_id: Uuid,
+    reask: u32,
+) -> anyhow::Result<()> {
     let pool = &state.pool;
     let kb = utopia_store::kbs::get(pool, kb_id).await?;
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
@@ -178,7 +200,7 @@ pub async fn align_phrases(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> 
         tracing::info!(%kb_id, "短语对齐已有一份在跑，这次跳过");
         return Ok(());
     }
-    let result = align_phrases_locked(state, kb_id, &settings, &client).await;
+    let result = align_phrases_locked(state, kb_id, reask, &settings, &client).await;
     let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext('align_phrases'), hashtext($1))")
         .bind(kb_id.to_string())
         .execute(&mut *guard)
@@ -189,6 +211,7 @@ pub async fn align_phrases(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> 
 async fn align_phrases_locked(
     state: &AppState,
     kb_id: Uuid,
+    reask: u32,
     settings: &utopia_core::models::LlmSettings,
     client: &utopia_llm::LlmClient,
 ) -> anyhow::Result<()> {
@@ -252,6 +275,8 @@ async fn align_phrases_locked(
     let (mut bound, mut none, mut undecided, mut skipped) = (0usize, 0usize, 0usize, 0usize);
     // 调用或解析失败的批次：这轮跳过，结束时自己再排一次
     let mut failed = 0usize;
+    // 问了、模型也答了、却没答到的签名：两票缺一票就不下结论
+    let mut unanswered = 0usize;
     for batch in todo.chunks(BATCH) {
         // 候选超过上限的不问模型：记成 undecided 交给人，指纹照记——属性少下去指纹就变，
         // 到时再问。从前超限和无候选一样静默跳过，签名永远排着又永远不可执行（#807）
@@ -339,6 +364,24 @@ async fn align_phrases_locked(
                 }
             };
             skipped += malformed;
+            if choices.is_empty() {
+                // 解出来了却一条都没读到：回复的形状不是我们认得的。这和解析失败是一回事，
+                // 按失败算、留到下次。从前这里什么都不说，每一条签名都当「有一票没答到」
+                // 静静跳过，日志里只有一串「完成 bound=0」——回复的开头要进日志，下次才
+                // 知道它长什么样（同类别词对齐）
+                tracing::warn!(
+                    %kb_id,
+                    pass,
+                    items = items.len(),
+                    malformed,
+                    finish_reason = ?reply.finish_reason,
+                    chars = reply.text.chars().count(),
+                    reply = %snippet(&reply.text),
+                    "短语对齐回复读不出一条，这一批留到下次"
+                );
+                failed += 1;
+                continue;
+            }
             for c in choices {
                 let Ok(i) = usize::try_from(c.id) else {
                     continue;
@@ -398,6 +441,7 @@ async fn align_phrases_locked(
             let (ans_a, ans_b) = answered[i];
             if !ans_a || !ans_b {
                 // 有一票没答到：不下结论，下次再问
+                unanswered += 1;
                 continue;
             }
             let show = |v: &Vote| {
@@ -469,7 +513,10 @@ async fn align_phrases_locked(
             }
         }
     }
-    tracing::info!(%kb_id, bound, none, undecided, skipped, failed, "短语对齐完成");
+    tracing::info!(%kb_id, bound, none, undecided, skipped, failed, unanswered, "短语对齐完成");
+    if unanswered > 0 {
+        tracing::warn!(%kb_id, unanswered, "短语对齐有签名模型没答到，这些签名这轮没有结论");
+    }
     // 提规则（0044 决定 3 第五片）：本轮刚判过的签名，和带类别词的东西，问模型「这种形状
     // 还蕴含什么」。只问本轮判过的：指纹没变的形状上一轮已经问过，答案（提案或代理驳回）
     // 还在 implication_rules 里；指纹变了它就在 todo 里，自然再问
@@ -565,11 +612,11 @@ async fn align_phrases_locked(
         state.emit_graph(kb_id);
     }
     // 这一轮跑着的时候世界没停：新文档带来新签名，改了的属性、动了的父边让刚判的绑定
-    // 过期，本轮没排上的触发也都落在这里。有失败的批次、有没试过的新签名、有本轮判完
-    // 指纹又变了的绑定（请求途中的编辑，#795），就再排一次。
+    // 过期，本轮没排上的触发也都落在这里。有没试过的新签名、有本轮判完指纹又变了的绑定
+    // （请求途中的编辑，#795），就再排一次（从头算一份，新签名换了提示词）。
     // 只看**活着的**签名：端点的类换了，旧签名的行没有陈述可判，它永远「过期」却永远
     // 不可执行——从前 `stale` 把这种孤儿每轮交回来，一条孤儿排一次 job，三轮三次（#807）
-    let again = failed > 0 || {
+    let changed = {
         // **重新加载**，不是拿开跑时的快照比：快照就是判定写下的那份指纹，跟它比永远
         // 相等。模型答着的时候改了定义（#795）、加了父边、来了新文档，只有再读一遍才看得见
         let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
@@ -591,13 +638,30 @@ async fn align_phrases_locked(
             }
         })
     };
-    if again {
+    // 本轮没判完的（调用失败、回复读不出、模型漏答了几条）自己再排，最多 MAX_REASK 次，
+    // 每次多等一会。从前只有失败的批次会再排，读不出的回复解成「零条、零坏」不算失败，
+    // 漏答的签名就只能等下一篇文档来排——最后一篇之后没有下一篇，它们就永远没有结论；
+    // 而漏答不写任何行，审核队列也看不见（同类别词对齐）
+    let unfinished = failed > 0 || unanswered > 0;
+    if changed {
         utopia_store::jobs::enqueue_unless_queued(
             pool,
             "align_phrases",
             serde_json::json!({ "kb_id": kb_id }),
         )
         .await?;
+    } else if unfinished && reask < MAX_REASK {
+        let delay = std::time::Duration::from_secs(20 * u64::from(reask + 1));
+        tracing::info!(%kb_id, failed, unanswered, reask = reask + 1, delay_secs = delay.as_secs(), "短语对齐没判完，稍后再问");
+        utopia_store::jobs::enqueue_unless_pending(
+            pool,
+            "align_phrases",
+            serde_json::json!({ "kb_id": kb_id, "reask": reask + 1 }),
+            delay,
+        )
+        .await?;
+    } else if unfinished {
+        tracing::warn!(%kb_id, failed, unanswered, reask, "短语对齐问了几轮仍没判完，等下一篇文档或本体改动再问");
     }
     Ok(())
 }
