@@ -27,7 +27,7 @@
 //! 占表大头的库才走 HNSW（实测 6 万行：20 行和 1 万行的库走精确，5 万的走索引）。
 //! 应用侧不设阈值——阈值是对规划器的猜测，猜错了两边都慢。
 
-use sqlx::{Executor, PgPool, Postgres, Transaction};
+use sqlx::{Executor, PgConnection, PgPool, Postgres, Transaction};
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use utopia_core::{AppError, AppResult};
@@ -44,6 +44,25 @@ const BUILD_TRY_LOCK: &str =
 const BUILD_UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended('vector_index:build', 0))";
 /// 没抢到锁时隔多久再探。建一次索引几十秒到几分钟，四分之一秒的粒度够了
 const BUILD_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+async fn lock_build(conn: &mut PgConnection) -> AppResult<()> {
+    loop {
+        let got: bool = sqlx::query_scalar(BUILD_TRY_LOCK)
+            .fetch_one(&mut *conn)
+            .await?;
+        if got {
+            return Ok(());
+        }
+        tokio::time::sleep(BUILD_LOCK_POLL).await;
+    }
+}
+
+async fn unlock_build(mut conn: sqlx::pool::PoolConnection<Postgres>) {
+    let unlocked: Result<bool, _> = sqlx::query_scalar(BUILD_UNLOCK).fetch_one(&mut *conn).await;
+    if !matches!(unlocked, Ok(true)) {
+        let _ = conn.close().await;
+    }
+}
 
 /// pgvector 的 HNSW 对 `vector` 类型的上限。超过的维度（text-embedding-3-large
 /// 是 3072）不建索引，查询照常走精确路径。`halfvec` 能到 4000，但那是另一种
@@ -209,15 +228,7 @@ pub async fn build(pool: &PgPool, target: Target, dims: usize) -> AppResult<Buil
     // 构建任务被同时认领就是这个局面。锁是会话级的：CONCURRENTLY 不能进事务，事务级
     // 咨询锁没处放；跟着这条连接走，跨 worker、跨实例都排队。建索引一次几十秒到几分钟，
     // 排队比死锁后重试便宜
-    loop {
-        let got: bool = sqlx::query_scalar(BUILD_TRY_LOCK)
-            .fetch_one(&mut *conn)
-            .await?;
-        if got {
-            break;
-        }
-        tokio::time::sleep(BUILD_LOCK_POLL).await;
-    }
+    lock_build(&mut conn).await?;
     let outcome = async {
         conn.execute("SET max_parallel_maintenance_workers = 0")
             .await?;
@@ -250,11 +261,11 @@ pub async fn build(pool: &PgPool, target: Target, dims: usize) -> AppResult<Buil
     // 还回池子：带着锁回池，之后所有构建都会卡在它后面
     let _ = conn.execute("RESET max_parallel_maintenance_workers").await;
     let _ = conn.execute("RESET maintenance_work_mem").await;
-    if conn.execute(BUILD_UNLOCK).await.is_err() {
-        let _ = conn.close().await;
+    if outcome.is_ok() {
+        remember(&name);
     }
+    unlock_build(conn).await;
     let created = outcome?;
-    remember(&name);
     Ok(Built {
         name,
         created,
@@ -265,10 +276,18 @@ pub async fn build(pool: &PgPool, target: Target, dims: usize) -> AppResult<Buil
 /// 删掉（测试与手工维护用；写路径不会走到这里）
 pub async fn drop(pool: &PgPool, target: Target, dims: usize) -> AppResult<()> {
     let name = index_name(target, dims);
-    forget(&name);
     let mut conn = pool.acquire().await?;
-    conn.execute(format!("DROP INDEX CONCURRENTLY IF EXISTS {name}").as_str())
-        .await?;
+    // Dropping an index must take the same lock as building one: separate
+    // concurrent index operations on the table can deadlock each other.
+    lock_build(&mut conn).await?;
+    let outcome = conn
+        .execute(format!("DROP INDEX CONCURRENTLY IF EXISTS {name}").as_str())
+        .await;
+    if outcome.is_ok() {
+        forget(&name);
+    }
+    unlock_build(conn).await;
+    outcome?;
     Ok(())
 }
 

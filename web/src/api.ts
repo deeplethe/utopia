@@ -1,5 +1,6 @@
 import type { SourceKind } from "./sourceKinds";
 import { S, lang } from "./i18n";
+import { createParser } from "eventsource-parser";
 
 export class ApiError extends Error {
   status: number;
@@ -2675,13 +2676,9 @@ function consumeChatStream(
       }
       reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let line = "";
-      let skipLf = false;
-      let event = "message";
-      let data: string[] = [];
-      const dispatch = () => {
-        if (data.length === 0) return;
-        const value = data.join("\n");
+      let trailingCr = false;
+      const parser = createParser({ onEvent: ({ event, data: value }) => {
+        if (terminal || controller.signal.aborted) return;
         if (event === "done") { terminal = true; handlers.onDone(); }
         else if (event === "error") fail(value);
         else if (event === "idle") {
@@ -2692,36 +2689,18 @@ function consumeChatStream(
         else if (event === "step") handlers.onStep(JSON.parse(value));
         else if (event === "delta") handlers.onDelta(JSON.parse(value).text);
         else if (event === "snapshot") handlers.onSnapshot?.(JSON.parse(value));
-      };
-      const finishLine = () => {
-        if (line === "") {
-          dispatch();
-          event = "message";
-          data = [];
-        } else {
-          const colon = line.indexOf(":");
-          const field = colon < 0 ? line : line.slice(0, colon);
-          let value = colon < 0 ? "" : line.slice(colon + 1);
-          if (value.startsWith(" ")) value = value.slice(1);
-          if (field === "event") event = value;
-          else if (field === "data") data.push(value);
-        }
-        line = "";
-      };
+      } });
       while (!terminal && !controller.signal.aborted) {
         const { done, value } = await reader.read();
-        if (done || controller.signal.aborted) break;
-        // CR is a complete line ending, even when its optional LF arrives in the
-        // next byte chunk. TextDecoder independently preserves split UTF-8.
-        for (const char of decoder.decode(value, { stream: true })) {
-          if (skipLf && char === "\n") { skipLf = false; continue; }
-          skipLf = false;
-          if (char === "\r" || char === "\n") {
-            finishLine();
-            skipLf = char === "\r";
-          } else line += char;
-          if (terminal || controller.signal.aborted) break;
+        if (done) {
+          // v3 holds a final CR until the next character confirms its line ending.
+          if (trailingCr) parser.feed("\n");
+          break;
         }
+        if (controller.signal.aborted) break;
+        const chunk = decoder.decode(value, { stream: true });
+        if (chunk) trailingCr = chunk.endsWith("\r");
+        parser.feed(chunk);
       }
       // EOF never dispatches an incomplete frame and is not an application done.
       fail(S.ask.streamInterrupted);

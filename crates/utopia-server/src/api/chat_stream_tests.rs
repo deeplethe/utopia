@@ -57,6 +57,27 @@ async fn lagged_subscribers_receive_an_error_not_done() {
 }
 
 #[tokio::test]
+async fn producer_disappearing_without_an_outcome_ends_in_one_error() {
+    let registry = Arc::new(crate::live::Registry::default());
+    let id = Uuid::now_v7();
+    let handle = registry.begin(id).await;
+    let stream = sse_from(registry.attach(id).await);
+    handle.emit(delta_event("partial")).await;
+    handle.finish().await;
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        axum::body::to_bytes(stream.into_response().into_body(), 65536),
+    )
+    .await
+    .expect("closed producer must end the stream")
+    .unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert_eq!(text.matches("event: error").count(), 1, "{text}");
+    assert!(!text.contains("event: done"), "{text}");
+    assert!(text.contains("Answer stream ended unexpectedly"), "{text}");
+}
+
+#[tokio::test]
 async fn first_terminal_freezes_the_snapshot_and_broadcast() {
     let registry = Arc::new(crate::live::Registry::default());
     let id = Uuid::now_v7();
