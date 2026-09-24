@@ -512,7 +512,7 @@ async fn align_phrases_locked(
                                 kind: &p.kind,
                                 domains: keys_of(&p.domains),
                                 ranges: keys_of(&p.ranges),
-                                via: fits(p, s, &closure)
+                                via: fits(p, s, closure)
                                     .map(|f| {
                                         f.via
                                             .iter()
