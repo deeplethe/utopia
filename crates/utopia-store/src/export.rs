@@ -261,6 +261,9 @@ pub struct ExportDerived {
     pub confidence: f32,
     /// transitive | symmetric | inverse | sub_property，或 business
     pub rule: String,
+    /// 公理规则声明在哪个谓词上（`rules.predicate_id`）。inverse 与 sub_property 时它
+    /// 不是结论的谓词，导出要写明（0020 的 2026-09-25 revision，#902）。业务规则为 None
+    pub rule_predicate: Option<Uuid>,
     /// 业务规则的名字，进 RDF 当这条推理活动的标签
     pub rule_name: Option<String>,
     /// 前提事实。审计要顺着它往下走到句子
@@ -632,7 +635,8 @@ pub async fn derived_page(
                 d.rule_id, d.attribute_rule_id,
                 d.valid_from, d.valid_from_precision, d.valid_to, d.valid_to_precision,
                 d.derived_at, d.invalidated_at, d.confidence,
-                COALESCE(ru.kind, 'business') AS rule, ar.name AS rule_name,
+                COALESCE(ru.kind, 'business') AS rule, ru.predicate_id AS rule_predicate,
+                ar.name AS rule_name,
                 COALESCE(ARRAY(SELECT fd.premise_fact_id FROM fact_derivations fd
                                 WHERE fd.derived_fact_id = d.id
                                   AND fd.premise_fact_id IS NOT NULL

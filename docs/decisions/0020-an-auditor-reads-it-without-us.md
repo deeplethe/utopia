@@ -53,6 +53,19 @@ Facts **currently held and currently valid** are additionally written as the pla
 
 ## Lineage is PROV-O because that is what PROV-O is
 
+**Revision 2026-09-25 ([#902](https://github.com/deeplethe/utopia/issues/902)).**
+The rule a derivation is `prov:wasGeneratedBy` used to carry only an `rdfs:label`,
+so a reader parsed a label to learn whether it came from an axiom or a business
+rule, and for `inverse` and `sub_property` could not recover which predicate the
+axiom was declared on without re-deriving the engine's convention from the exported
+`owl:inverseOf` / `rdfs:subPropertyOf`. Three minted terms close that: every rule
+resource is typed `utopia:AxiomRule` or `utopia:BusinessRule`; an axiom rule
+carries `utopia:axiomKind` (the closed enum `transitive`, `symmetric`, `inverse`,
+`sub_property`) and `utopia:declaredOn`, the IRI of the predicate the declaration
+sits on, which for `inverse` and `sub_property` differs from the conclusion's
+`rdf:predicate`. The label stays. Nothing about business-rule bodies is added, for
+the reason under **What is not here**. Storage names stay out of the vocabulary.
+
 Each statement is `prov:wasDerivedFrom` the documents its evidence chunks belong to, and carries the quoted sentence. Documents are `prov:Entity` with their title and the source key they arrived under. Derived facts ([0002](0002-reasoning-engine.md)) are `prov:wasGeneratedBy` the rule that produced them, with `prov:used` on each premise statement, so a reader can walk from a conclusion to the sentences underneath it without our API — which is the sentence in the README that this record exists to make true.
 
 One of the five built-in packs is PROV-O, so a base that has it loaded already knows these terms.
@@ -62,11 +75,15 @@ One of the five built-in packs is PROV-O, so a base that has it loaded already k
 - **Conflict/review state and chunk identity behind a quote.** Quotes and source
   documents are exported, but these are separate gaps; conflict state is tracked
   in [#564](https://github.com/deeplethe/utopia/issues/564).
-- **Machine-readable rule definitions.** A generating rule is currently exported
-  as `prov:Activity` with an `rdfs:label`, under `…:rule:{id}`. Its criteria,
-  operands and expressions are not exported; [#902](https://github.com/deeplethe/utopia/issues/902)
-  discusses that extension. Business rules are edited in place, so their stable
-  identifiers do not identify the definitions that were used for older conclusions.
+- **Business-rule criteria.** A generating rule is exported as `prov:Activity`
+  under `…:rule:{id}` with an `rdfs:label`; since the revision below it also says
+  which family it belongs to, and an axiom rule says its kind and the predicate it
+  is declared on. A business rule's conditions, operands and expressions are still
+  not exported, and the reason is not effort: a business rule is edited in place,
+  so `…:rule:{id}` cannot vouch for the definition an older conclusion was drawn
+  under, and exporting today's threshold on it would tell an auditor something
+  false about yesterday's conclusion. That waits for rule versioning, a storage
+  and provenance change of its own ([#902](https://github.com/deeplethe/utopia/issues/902)).
 - **Historical proof snapshots.** Premise links can be rewritten when a conclusion
   is reproved. The record-time lifetime survives; earlier versions of the proof
   do not (0019). RDF's `prov:used` edges identify premises, not their sequence.

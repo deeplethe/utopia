@@ -605,6 +605,19 @@ pub fn emit_derived(
     sink.l(&stmt, &utopia("confidence"), &confidence(d.confidence))?;
     sink.r(&stmt, &prov("wasGeneratedBy"), &rule)?;
     sink.r(&rule, &nn(rdf::TYPE.as_str()), &prov("Activity"))?;
+    // 规则的家族与身份（0020 的 2026-09-25 revision，#902）：读的人不再从标签里猜它来自
+    // 哪张表。公理规则再写出种类（闭合枚举）和声明所在的谓词——inverse 与 sub_property
+    // 时它不是结论的谓词，从导出的 owl:inverseOf / rdfs:subPropertyOf 反推是有歧义的。
+    // 业务规则的条件与表达式不导出：规则原地更新，这个 IRI 担保不了旧结论当时依据的定义
+    if d.rule_id.is_some() {
+        sink.r(&rule, &nn(rdf::TYPE.as_str()), &utopia("AxiomRule"))?;
+        sink.l(&rule, &utopia("axiomKind"), &text(d.rule.clone()))?;
+        if let Some(p) = d.rule_predicate.and_then(|p| vocab.relation(p).cloned()) {
+            sink.r(&rule, &utopia("declaredOn"), &p)?;
+        }
+    } else {
+        sink.r(&rule, &nn(rdf::TYPE.as_str()), &utopia("BusinessRule"))?;
+    }
     // 标签用规则自己的名字（业务规则），公理退回它的种类名——审计读到的是
     // 「Gas-bearing well」而不是「business」
     sink.l(
@@ -1288,6 +1301,7 @@ mod tests {
             invalidated_at: None,
             confidence: 0.9,
             rule: "business".into(),
+            rule_predicate: None,
             rule_name: Some("Gas-bearing well".into()),
             premises: vec![id(5)],
             premises_derived: Vec::new(),
@@ -1325,6 +1339,16 @@ mod tests {
             "分类结论的宾语该是类名本身的字符串字面量，拿到的是 {}",
             obj[0]
         );
+        // 规则资源说出自己的家族（#902）：业务规则，没有公理种类可言
+        let rule = Names::new(kb(), None).unwrap().rule(id(9)).to_string();
+        assert!(has(
+            &quads,
+            &rule,
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+            "<urn:utopia:ns:BusinessRule>"
+        ));
+        assert!(objects(&quads, &rule, "urn:utopia:ns:axiomKind").is_empty());
+        assert!(objects(&quads, &rule, "urn:utopia:ns:declaredOn").is_empty());
         // 前提照常挂着：审计顺着 prov:used 走得到那两条读数
         assert_eq!(
             objects(&quads, stmt, "http://www.w3.org/ns/prov#used").len(),
@@ -1423,6 +1447,7 @@ mod tests {
             invalidated_at: None,
             confidence: 0.8,
             rule: "transitive".into(),
+            rule_predicate: Some(id(2)),
             rule_name: None,
             premises: vec![id(5)],
             premises_derived: vec![id(6)],
@@ -1457,6 +1482,27 @@ mod tests {
             assert!(
                 !has(&quads, SUBJ, WORKS_FOR, OBJ),
                 "推出来的边不写成平铺三元组：那会让人把引擎的结论当成文档里的话"
+            );
+            // 规则资源说出自己的家族、种类和声明所在的谓词（#902）：读的人不再
+            // 从 rdfs:label 里猜。这里声明谓词就是结论谓词（传递），指向同一个 IRI
+            let rule = Names::new(kb(), None).unwrap().rule(id(8)).to_string();
+            assert!(has(
+                &quads,
+                &rule,
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+                "<urn:utopia:ns:AxiomRule>"
+            ));
+            assert_eq!(
+                objects(&quads, &rule, "urn:utopia:ns:axiomKind"),
+                vec!["\"transitive\""]
+            );
+            assert_eq!(
+                objects(&quads, &rule, "urn:utopia:ns:declaredOn"),
+                objects(
+                    &quads,
+                    stmt,
+                    "http://www.w3.org/1999/02/22-rdf-syntax-ns#predicate"
+                )
             );
         }
     }

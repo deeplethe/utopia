@@ -72,12 +72,15 @@ key-based IRI. It copies declarations within the base; it does not add reciproca
 links or compute a transitive closure.
 
 A derivation links to `…:rule:{id}` through `prov:wasGeneratedBy`. The rule
-resource is typed `prov:Activity` and carries an `rdfs:label`: the business
-rule's name, or the axiom rule's kind. The label is human-readable text, not a
-machine-readable rule definition; it does not reliably identify the rule family.
-Rule criteria, operands and expressions are not currently exported. Their RDF
-representation is under discussion in [#902](https://github.com/deeplethe/utopia/issues/902).
-A rule IRI identifies the stored rule, not a historical version of its definition.
+resource is typed `prov:Activity` and, by family, `urn:utopia:ns:AxiomRule` or
+`urn:utopia:ns:BusinessRule`; it carries an `rdfs:label` (the business rule's
+name, or the axiom rule's kind). An axiom rule also states `urn:utopia:ns:axiomKind`
+(`transitive`, `symmetric`, `inverse` or `sub_property`) and
+`urn:utopia:ns:declaredOn`, the predicate the axiom is declared on, which for
+`inverse` and `sub_property` is not the conclusion's predicate. A business rule's
+criteria, operands and expressions are not exported: a rule IRI identifies the
+stored rule, not a historical version of its definition, and a business rule is
+edited in place ([#902](https://github.com/deeplethe/utopia/issues/902)).
 
 MCP remains the agent-facing surface. The structured results below use the same
 UUIDs, so an integration can join a selected result to the exported ledger.
