@@ -116,6 +116,24 @@ async fn an_earlier_mention_that_it_held_keeps_the_stated_end() -> anyhow::Resul
             Some(t2),
             "a mention that it held is no evidence that it ended earlier"
         );
+        // 另一条路径仍要前移：这份更早的证据确实说它已结束，而不是只说它成立。
+        let ended = graph::insert_value_fact(
+            &pool,
+            kb,
+            cup,
+            Some(location),
+            &desk,
+            Validity::default().attested(Some(t1)).ended_when_unknown(),
+            1.0,
+        )
+        .await?;
+        assert_eq!(ended, (closed, false));
+        let anchors: (DateTime<Utc>, Option<DateTime<Utc>>) =
+            sqlx::query_as("SELECT attested_from, attested_to FROM facts WHERE id = $1")
+                .bind(closed)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(anchors, (t0, Some(t1)), "earlier ended evidence moves only the end here");
         anyhow::Ok(())
     }
     .await;
