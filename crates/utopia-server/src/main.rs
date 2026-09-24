@@ -575,7 +575,14 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-            type_alignment::align_types(st, kb_id).await
+            // 自己再排的那份带着第几次；文档、建类排的没有这一项
+            let reask = job
+                .payload
+                .get("reask")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0);
+            type_alignment::align_types_reasking(st, kb_id, reask).await
         }
         // 关系短语按签名绑到属性（0044 对齐的第二片）：类别词绑完排一个，属性改了再排
         "align_phrases" => {
