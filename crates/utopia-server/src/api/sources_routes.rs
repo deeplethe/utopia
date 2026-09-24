@@ -280,6 +280,11 @@ pub async fn cleanup_missing(
             .map_err(|e| utopia_core::AppError::Other(e.into()))?
             .map_err(utopia_core::AppError::Other)?;
     }
+    // 与单篇删除同一个收尾：前提没了，派生当场跟上，而不是挂到下一轮定时推导（#875）。
+    // 一批只推一遍
+    if !ids.is_empty() {
+        super::documents_routes::settle_derivations(&state, kb_id).await?;
+    }
     state.emit_source(kb_id);
     Ok(Json(json!({ "deleted": ids.len() })))
 }
@@ -578,6 +583,10 @@ pub async fn re_extract(
     .await;
     Ok(Json(json!({ "queued": ids.len() })))
 }
+
+#[cfg(test)]
+#[path = "sources_cleanup_tests.rs"]
+mod cleanup_tests;
 
 #[cfg(test)]
 mod tests {
