@@ -97,7 +97,11 @@ pub fn build_errata_messages(
         .map(property_line)
         .collect::<Vec<_>>()
         .join("\n");
-    let list = facts.iter().map(fact_line).collect::<Vec<_>>().join("\n");
+    let mut list = facts.iter().map(fact_line).collect::<Vec<_>>().join("\n");
+    if list.is_empty() {
+        // 没有类型化事实的文档也送去看：清单为空，agent 只能加
+        list.push_str("(none yet: add what the document states plainly)");
+    }
     vec![
         ChatMessage {
             role: "system".into(),
@@ -243,6 +247,58 @@ pub fn parse_errata_response(
     Ok(out)
 }
 
+/// 第二票（撤改要两票）：agent 说撤或改的那几条再问一遍，只问「文档说了没有」。
+/// 第一票带着整份清单和结构的理由，容易顺着理由撤掉原文其实说了的事；第二票只看事实与原文
+pub const CONFIRM_SYSTEM: &str = "You check facts against ONE document. For each numbered fact answer whether the document states it, \
+in its own words or in other words with the same meaning. Answer stated when the document supports the fact even if a name is \
+abbreviated or the wording differs; answer not_stated only when the document does not say it or says otherwise. \
+Judge only from the document. Answer with JSON only: {\"c\":[[id,\"stated\"|\"not_stated\"]]}";
+
+pub fn build_confirm_messages(document: &str, facts: &[ErrataFact<'_>]) -> Vec<ChatMessage> {
+    let list = facts
+        .iter()
+        .map(|f| format!("{}: {} —{}→ {}", f.id, f.subject, f.property, f.object))
+        .collect::<Vec<_>>()
+        .join("\n");
+    vec![
+        ChatMessage {
+            role: "system".into(),
+            content: CONFIRM_SYSTEM.to_string(),
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: format!("DOCUMENT:\n{document}\n\nFACTS:\n{list}"),
+        },
+    ]
+}
+
+/// 第二票的回复：哪些 id 被判 not_stated。没答到的、答成别的都不算票——撤要两票齐，缺一票就留着
+pub fn parse_confirm_response(
+    raw: &str,
+    ids: &[i64],
+) -> Result<std::collections::HashSet<i64>, String> {
+    let v: serde_json::Value =
+        serde_json::from_str(extract_json(raw)).map_err(|e| e.to_string())?;
+    let rows = v
+        .get("c")
+        .and_then(|x| x.as_array())
+        .ok_or_else(|| "no \"c\" array".to_string())?;
+    let mut not_stated = std::collections::HashSet::new();
+    for row in rows {
+        let Some(arr) = row.as_array() else { continue };
+        let (Some(id), Some(verdict)) = (
+            arr.first().and_then(|x| x.as_i64()),
+            arr.get(1).and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        if ids.contains(&id) && verdict == "not_stated" {
+            not_stated.insert(id);
+        }
+    }
+    Ok(not_stated)
+}
+
 fn extract_json(raw: &str) -> &str {
     match (raw.find('{'), raw.rfind('}')) {
         (Some(a), Some(b)) if b > a => &raw[a..=b],
@@ -341,6 +397,24 @@ mod tests {
         assert_eq!(r.additions[0].object, "Jane Roe");
         assert_eq!(r.additions[0].quote, "Jane Roe runs Acme");
         assert_eq!(r.malformed, 1);
+    }
+
+    #[test]
+    fn the_second_vote_only_counts_an_explicit_not_stated() {
+        let m = build_confirm_messages("Acme is based in London.", &facts()[..1]);
+        assert!(m[1].content.contains("0: Acme —based_in→ Paris"));
+        let ids = [0, 1];
+        let r = parse_confirm_response(
+            r#"{"c":[[0,"not_stated"],[1,"stated"],[7,"not_stated"],[2]]}"#,
+            &ids,
+        )
+        .unwrap();
+        assert!(r.contains(&0) && !r.contains(&1) && !r.contains(&7));
+        // 没答到的不算票
+        assert!(parse_confirm_response(r#"{"c":[]}"#, &ids)
+            .unwrap()
+            .is_empty());
+        assert!(parse_confirm_response("nope", &ids).is_err());
     }
 
     #[test]

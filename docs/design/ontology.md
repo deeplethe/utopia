@@ -109,6 +109,17 @@ materialises. `errata_runs` keeps the per-document account (facts flagged and sa
 the endpoint's token usage) for the measure 0044 names: precision gained against correct facts
 removed, at what cost.
 
+The first measured runs (bench README, 2026-09-24) showed the agent retracting mostly what the
+document did say and adding mostly what it did: so a retraction or revision now needs **two votes
+and a flag**. A fact the structure did not doubt is never retracted by the agent alone; its retraction
+is held for a person with the reason `unflagged`. A flagged fact the agent wants to retract is asked
+about a second time, alone with the document and without the first prompt's reasons; only an explicit
+"not stated" retracts, anything else becomes a keep recorded as `second vote: stated`. Additions were
+opened the other way: a name the document contains but the base lacks becomes a new entity with its
+name fact (a name the document does not contain is still refused), and a document that came out of
+extraction with no typed facts at all is sent once with an empty list, so the agent can add what
+alignment could not bind.
+
 Even one edit can reopen all older automatic negative bindings on that side of the
 base, requiring two votes per eligible item through batched model requests; debouncing reduces
 the number of runs, not the items reconsidered. A burst of ontology edits debounces into one run

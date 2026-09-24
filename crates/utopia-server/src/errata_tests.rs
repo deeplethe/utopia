@@ -173,12 +173,16 @@ async fn the_agent_reviews_flagged_facts_first_and_each_verdict_is_a_recorded_ac
         [null,"add",{"subject":"Acme","property":"ceo","object":"Jane Roe"},"stated","Jane Roe runs Acme"],
         [null,"add",{"subject":"Acme","property":"ceo","object":"Jane Roe"},"made up","Jane Roe owns Acme"]
     ]});
-    let Some(f) = Fx::new(vec![script]).await? else {
+    // 第二票：Paris 那条结构报了，agent 要撤，再问一遍；答 not_stated 才撤
+    let second = json!({"c":[[0,"not_stated"]]});
+    let Some(f) = Fx::new(vec![script, second]).await? else {
         return Ok(());
     };
     let run = async {
         review(&f.state, f.kb).await?;
         let prompt = f.prompt_of(0);
+        let confirm = f.prompt_of(1);
+        assert!(confirm.contains("0: Acme —based_in→ Paris") && !confirm.contains("London (place)"), "{confirm}");
         assert!(prompt.contains("DOCUMENT:\nAcme is based in London. Jane Roe runs Acme."), "{prompt}");
         assert!(prompt.contains("0: Acme (organization) —based_in→ Paris (place) FLAG name_absent"), "{prompt}");
         assert!(prompt.contains("1: Acme (organization) —based_in→ London (place)"), "{prompt}");
@@ -216,10 +220,10 @@ async fn the_agent_reviews_flagged_facts_first_and_each_verdict_is_a_recorded_ac
         .bind(f.kb)
         .fetch_one(&f.pool)
         .await?;
-        assert_eq!(run_row, (1, 1, 1, Some(123), Some(45), true));
+        assert_eq!(run_row, (1, 1, 2, Some(246), Some(90), true), "two requests: the verdicts and the second vote");
         // 看完了：再跑不问模型（脚本空了，问了就 panic），也不排下一次
         review(&f.state, f.kb).await?;
-        assert_eq!(f.model.requests.lock().unwrap().len(), 1);
+        assert_eq!(f.model.requests.lock().unwrap().len(), 2);
         let queued: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM jobs WHERE kind=$1 AND payload->>'kb_id'=$2",
         )
@@ -265,6 +269,36 @@ async fn an_unreadable_reply_leaves_the_facts_unreviewed_and_the_job_retries() -
             utopia_store::errata::documents_due(&f.pool, f.kb, 10).await?,
             vec![f.doc]
         );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+#[tokio::test]
+async fn a_retraction_the_second_vote_calls_stated_becomes_a_keep() -> anyhow::Result<()> {
+    let script = json!({"a":[
+        [0,"retract","Paris is not in the document","Acme is based in London"],
+        [1,"keep"]
+    ]});
+    let second = json!({"c":[[0,"stated"]]});
+    let Some(f) = Fx::new(vec![script, second]).await? else {
+        return Ok(());
+    };
+    let run = async {
+        review(&f.state, f.kb).await?;
+        assert!(f.live(f.absent).await?, "one vote does not retract");
+        let actions: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT action, status, reason FROM errata_actions WHERE kb_id=$1 ORDER BY created_at, id",
+        )
+        .bind(f.kb)
+        .fetch_all(&f.pool)
+        .await?;
+        assert_eq!(actions[0].0, "keep");
+        assert_eq!(actions[0].1, "applied");
+        assert!(actions[0].2.starts_with("second vote: stated"), "{}", actions[0].2);
+        assert_eq!(actions.len(), 2);
         anyhow::Ok(())
     }
     .await;

@@ -10,7 +10,8 @@
 
 use std::collections::HashMap;
 use utopia_extract::errata::{
-    build_errata_messages, parse_errata_response, ErrataFact, ErrataProperty, Verdict,
+    build_confirm_messages, build_errata_messages, parse_confirm_response, parse_errata_response,
+    ErrataFact, ErrataProperty, Verdict,
 };
 use utopia_store::errata::{self, ActionInput, Candidate, Proposed};
 use uuid::Uuid;
@@ -27,7 +28,7 @@ pub const FACTS_PER_DOCUMENT: usize = 40;
 pub const SAMPLE: usize = 10;
 /// 一次请求最多几条
 pub const FACTS_PER_REQUEST: usize = 20;
-/// 一份文档最多问几次
+/// 一份文档最多问几次（撤改的第二票另算，每批至多一次）
 pub const REQUESTS_PER_DOCUMENT: usize = 2;
 /// 正文最多带多少字；再长的文档截断，截掉的部分这一轮看不到
 pub const DOC_CHARS: usize = 16_000;
@@ -134,7 +135,8 @@ pub async fn review_document(
     let all = errata::candidates(pool, kb_id, document_id).await?;
     let chosen = choose(&all);
     let mut outcome = DocumentOutcome::default();
-    if chosen.is_empty() {
+    // 没有可看的行：第一次见这份文档就送一份空清单去（agent 只能加）；看过的不再送
+    if chosen.is_empty() && errata::runs_of(pool, document_id).await? > 0 {
         return Ok(outcome);
     }
     let flagged = chosen.iter().filter(|c| c.flag.is_some()).count();
@@ -150,7 +152,15 @@ pub async fn review_document(
     let document = truncate(&text, DOC_CHARS);
     let (mut prompt_tokens, mut completion_tokens, mut saw_usage) = (0u64, 0u64, false);
     let mut error = None;
-    for batch in chosen.chunks(FACTS_PER_REQUEST).take(REQUESTS_PER_DOCUMENT) {
+    let batches: Vec<&[Candidate]> = if chosen.is_empty() {
+        vec![&chosen[..]]
+    } else {
+        chosen
+            .chunks(FACTS_PER_REQUEST)
+            .take(REQUESTS_PER_DOCUMENT)
+            .collect()
+    };
+    for batch in batches {
         let items: Vec<ErrataFact<'_>> = batch
             .iter()
             .enumerate()
@@ -192,7 +202,52 @@ pub async fn review_document(
             tracing::info!(%kb_id, %document_id, malformed = parsed.malformed,
                 additions_refused = parsed.additions_refused, "勘误回复里有坏项");
         }
-        for v in &parsed.verdicts {
+        // 第二票：结构报了的、agent 要撤或改的，再问一遍文档说了没有；没拿到 not_stated 的
+        // 改成 keep（没报的那些由库留给人，不用问）
+        let mut verdicts = parsed.verdicts;
+        let doubted: Vec<ErrataFact<'_>> = verdicts
+            .iter()
+            .filter(|v| v.verdict != Verdict::Keep)
+            .filter_map(|v| usize::try_from(v.id).ok().and_then(|i| items.get(i)))
+            .filter(|f| f.flag.is_some())
+            .cloned()
+            .collect();
+        if !doubted.is_empty() {
+            let ids: Vec<i64> = doubted.iter().map(|f| f.id).collect();
+            let messages = build_confirm_messages(document, &doubted);
+            outcome.requests += 1;
+            let reply =
+                match chat_retrying_rate_limits_at(state, settings, client, &messages, Some(0.0))
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error = Some(e);
+                        break;
+                    }
+                };
+            if let Some(u) = reply.usage {
+                saw_usage = true;
+                prompt_tokens += u.prompt_tokens;
+                completion_tokens += u.completion_tokens;
+            }
+            let not_stated = match parse_confirm_response(&reply.text, &ids) {
+                Ok(x) => x,
+                Err(e) => {
+                    error = Some(anyhow::anyhow!("errata second vote unreadable: {e}"));
+                    break;
+                }
+            };
+            for v in verdicts.iter_mut() {
+                if v.verdict != Verdict::Keep && ids.contains(&v.id) && !not_stated.contains(&v.id)
+                {
+                    v.verdict = Verdict::Keep;
+                    v.reason = format!("second vote: stated ({})", v.reason);
+                    v.quote = None;
+                }
+            }
+        }
+        for v in &verdicts {
             let Some(c) = usize::try_from(v.id).ok().and_then(|i| batch.get(i)) else {
                 continue;
             };

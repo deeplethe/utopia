@@ -1748,6 +1748,7 @@ export const zh: Strings = {
       if (kind === "derived") return `留下的原因：有 ${value} 条派生靠着它`;
       if (kind === "answered") return `留下的原因：它在 ${value} 次回答里被提到`;
       if (kind === "contradiction") return `留下的原因：「${value}」只许一个值，这样会有两个`;
+      if (kind === "unflagged") return "留下的原因：结构没报过这条，撤或改要人确认";
       return `留下的原因：${detail}`;
     },
     errataQuote: "文档原话：",

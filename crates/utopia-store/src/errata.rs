@@ -137,12 +137,14 @@ pub async fn document_text(pool: &PgPool, document_id: Uuid) -> AppResult<String
     Ok(text.unwrap_or_default())
 }
 
-/// 还有活着的类型化行没看过的文档，最早摄入的在前
+/// 该看的文档：还有活着的类型化行没看过的，以及抽完了却一次都没看过的（它可能一条类型化行
+/// 都没有——对齐没绑上——这时 agent 能做的只有加，而加正是第一次真跑里最值的那一半）。
+/// 最早摄入的在前
 pub async fn documents_due(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
         "SELECT d.id FROM documents d
           WHERE d.kb_id = $1 AND d.deleted_at IS NULL
-            AND EXISTS (
+            AND (EXISTS (
               SELECT 1 FROM fact_evidence fe
                 JOIN (SELECT fact_id, statement_id FROM typed_fact_sources
                       UNION ALL
@@ -151,6 +153,8 @@ pub async fn documents_due(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<
                 JOIN facts t ON t.id = src.fact_id
                WHERE fe.document_id = d.id AND t.invalidated_at IS NULL
                  AND NOT EXISTS (SELECT 1 FROM errata_actions ea WHERE ea.fact_id = t.id))
+              OR (d.graph_status = 'done'
+                  AND NOT EXISTS (SELECT 1 FROM errata_runs r WHERE r.document_id = d.id)))
           ORDER BY d.created_at, d.id
           LIMIT $2",
     )
@@ -158,6 +162,16 @@ pub async fn documents_due(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<
     .bind(limit)
     .fetch_all(pool)
     .await?)
+}
+
+/// 这份文档看过几次
+pub async fn runs_of(pool: &PgPool, document_id: Uuid) -> AppResult<i64> {
+    Ok(
+        sqlx::query_scalar("SELECT count(*) FROM errata_runs WHERE document_id = $1")
+            .bind(document_id)
+            .fetch_one(pool)
+            .await?,
+    )
 }
 
 /// 一次复审开账
@@ -316,22 +330,45 @@ async fn property_by_key(
     )
 }
 
-/// 宾语的文本按属性的种类解：关系要库里已有的名字（勘误不造东西），属性落成值
+/// 一个名字解成库里的东西：已有的按名字找；没有的，只要这个名字是文档的原话，就按 0041 建一个
+/// 带名字事实的实体——文档说了一个新东西，勘误加事实不该因为抽取没把它当实体而作罢。不在文档
+/// 里的名字不建：那是 agent 编的
+async fn thing_named(
+    pool: &PgPool,
+    kb_id: Uuid,
+    name: &str,
+    document_text: &str,
+) -> AppResult<Result<Uuid, String>> {
+    if let Some(id) = crate::resolution::existing_by_name(pool, kb_id, name).await? {
+        return Ok(Ok(id));
+    }
+    if quote_in(document_text, name) {
+        return Ok(Ok(crate::implication_rules::resolve_or_create_named(
+            pool, kb_id, name,
+        )
+        .await?));
+    }
+    Ok(Err(format!(
+        "no thing named \"{name}\" and the document does not name it"
+    )))
+}
+
+/// 宾语的文本按属性的种类解：关系要一样东西（见 `thing_named`），属性落成值
 async fn object_of(
     pool: &PgPool,
     kb_id: Uuid,
     kind: &str,
     text: &str,
+    document_text: &str,
 ) -> AppResult<Result<(Option<Uuid>, Option<Value>), String>> {
     let text = text.trim();
     if text.is_empty() {
         return Ok(Err("empty object".into()));
     }
     if kind == "relation" {
-        match crate::resolution::existing_by_name(pool, kb_id, text).await? {
-            Some(id) => Ok(Ok((Some(id), None))),
-            None => Ok(Err(format!("no thing named \"{text}\""))),
-        }
+        Ok(thing_named(pool, kb_id, text, document_text)
+            .await?
+            .map(|id| (Some(id), None)))
     } else {
         Ok(Ok((None, Some(json!({ "value": text })))))
     }
@@ -394,7 +431,9 @@ pub async fn record(pool: &PgPool, kb_id: Uuid, input: ActionInput<'_>) -> AppRe
                             .fetch_one(pool)
                             .await?;
                     let obj = match object.as_deref() {
-                        Some(text) => object_of(pool, kb_id, &kind, text).await?,
+                        Some(text) => {
+                            object_of(pool, kb_id, &kind, text, input.document_text).await?
+                        }
                         None => Ok(old.clone()),
                     };
                     match obj {
@@ -430,13 +469,12 @@ pub async fn record(pool: &PgPool, kb_id: Uuid, input: ActionInput<'_>) -> AppRe
             property,
             object,
         } => {
-            let subject_id =
-                crate::resolution::existing_by_name(pool, kb_id, subject.trim()).await?;
+            let subject_id = thing_named(pool, kb_id, subject.trim(), input.document_text).await?;
             match (subject_id, property_by_key(pool, kb_id, property).await?) {
-                (None, _) => Err(format!("no thing named \"{}\"", subject.trim())),
+                (Err(e), _) => Err(e),
                 (_, None) => Err(format!("no property with key \"{}\"", property.trim())),
-                (Some(subject_id), Some((predicate_id, kind))) => {
-                    match object_of(pool, kb_id, &kind, object).await? {
+                (Ok(subject_id), Some((predicate_id, kind))) => {
+                    match object_of(pool, kb_id, &kind, object, input.document_text).await? {
                         Err(e) => Err(e),
                         Ok((object_id, object_value)) => Ok(Some(Target {
                             subject_id,
@@ -496,9 +534,14 @@ pub async fn record(pool: &PgPool, kb_id: Uuid, input: ActionInput<'_>) -> AppRe
         }
         _ => None,
     };
+    // 结构没报过的事实，agent 单方面要撤或改：留给人。第一次真跑里撤掉的行十之八九原文其实说了
+    // （bench README），而结构报了的那几条才是它该动的；抽样看到的，人确认了再动
+    let unflagged = c.is_some_and(|c| c.flag.is_none())
+        && matches!(input.proposed, Proposed::Retract | Proposed::Revise { .. });
     let (status, detail): (&'static str, Option<String>) = match (&resolved, &hold) {
         (Err(e), _) => ("refused", Some(e.clone())),
         (Ok(_), Some(h)) => ("held", Some(h.to_string())),
+        (Ok(_), None) if unflagged => ("held", Some("unflagged".into())),
         (Ok(_), None) => ("applied", None),
     };
     sqlx::query(

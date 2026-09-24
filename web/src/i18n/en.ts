@@ -1990,6 +1990,7 @@ export const en = {
       if (kind === "derived") return `Held: ${value} derived fact(s) rest on it`;
       if (kind === "answered") return `Held: it was named in ${value} answer(s)`;
       if (kind === "contradiction") return `Held: "${value}" allows one value and would get two`;
+      if (kind === "unflagged") return "Held: the structure did not doubt this fact; a person confirms the change";
       return `Held: ${detail}`;
     },
     errataQuote: "Document says:",
