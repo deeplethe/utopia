@@ -149,7 +149,7 @@ impl Fx {
         *self.model.replies.lock().unwrap() = replies;
     }
     async fn run(&self) -> anyhow::Result<()> {
-        align_phrases(&self.state, self.kb).await
+        align_phrases_reasking(&self.state, self.kb, 0).await
     }
     fn requests(&self) -> Vec<Value> {
         self.model.requests.lock().unwrap().clone()
@@ -418,7 +418,7 @@ async fn an_edit_during_the_model_request_leaves_the_decision_stale() -> anyhow:
         f.script(none());
         let state = f.state.clone();
         let kb = f.kb;
-        let worker = tokio::spawn(async move { align_phrases(&state, kb).await });
+        let worker = tokio::spawn(async move { align_phrases_reasking(&state, kb, 0).await });
         tokio::time::timeout(std::time::Duration::from_secs(10), f.model.entered.notified()).await?;
         // 模型还在答，定义改了：两票读的都是旧定义
         sqlx::query("UPDATE relation_types SET description='NEW definition', updated_at=clock_timestamp() WHERE id=$1")
@@ -457,7 +457,7 @@ async fn a_person_decision_made_during_the_request_is_not_overwritten() -> anyho
         f.script(none());
         let state = f.state.clone();
         let kb = f.kb;
-        let worker = tokio::spawn(async move { align_phrases(&state, kb).await });
+        let worker = tokio::spawn(async move { align_phrases_reasking(&state, kb, 0).await });
         tokio::time::timeout(
             std::time::Duration::from_secs(10),
             f.model.entered.notified(),
@@ -489,6 +489,89 @@ async fn a_person_decision_made_during_the_request_is_not_overwritten() -> anyho
             !f.requeued().await?,
             "a person's decision is never re-evaluated"
         );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 类别词那边 bench 里「12 篇文档一个词都没绑上」的回复形状搬到短语上：DeepSeek-V3.2
+/// 把整段答成按 id 作键的对象，第二票把 `b` 写成对象、值写成 `{"key","direction"}`。
+/// 两票都得读出来，签名才绑得上
+#[tokio::test]
+async fn an_id_keyed_reply_still_binds_the_phrase() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(vec![
+            json!({"0": ["based_in", "forward"]}),
+            json!({"b": {"0": {"key": "based_in", "direction": "forward"}}}),
+            nothing_implied(),
+        ]);
+        f.run().await?;
+        assert_eq!(f.requests().len(), 2, "two votes, both read");
+        let b = f.binding().await?;
+        assert_eq!(
+            (b.status.as_str(), b.decided_by.as_str()),
+            ("bound", "agent")
+        );
+        assert_eq!(b.relation_type_id, Some(f.based_in));
+        assert_eq!(b.direction.as_deref(), Some("forward"));
+        assert_eq!(f.typed().await?, 1, "the projection follows");
+        assert!(!f.requeued().await?, "nothing left to ask");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 读不出的回复不再是「一项都没答」然后没了：这一轮不下结论、不写任何行，任务自己
+/// 再排一份（带 reask），排够 MAX_REASK 次就停，等下一篇文档或本体改动
+#[tokio::test]
+async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(vec![
+            json!({"answer": "based_in", "direction": "forward"}),
+            json!({"answer": "based_in", "direction": "forward"}),
+            json!({"answer": "based_in", "direction": "forward"}),
+            json!({"answer": "based_in", "direction": "forward"}),
+        ]);
+        f.run().await?;
+        assert_eq!(f.requests().len(), 2, "two votes, neither readable");
+        assert!(
+            phrase_bindings::bindings(&f.pool, f.kb).await?.is_empty(),
+            "an unreadable reply writes no decision"
+        );
+        let reasks: Vec<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT status, (payload->>'reask')::bigint FROM jobs
+             WHERE kind='align_phrases' AND payload->>'kb_id'=$1 ORDER BY id",
+        )
+        .bind(f.kb.to_string())
+        .fetch_all(&f.pool)
+        .await?;
+        assert_eq!(
+            reasks,
+            vec![("queued".to_string(), Some(1))],
+            "after the first round it queues itself once with reask=1"
+        );
+        f.clear_jobs().await?;
+        // 已经是最后一次自己排的：不再排
+        align_phrases_reasking(&f.state, f.kb, MAX_REASK).await?;
+        assert_eq!(f.requests().len(), 4, "the last allowed round still asks");
+        let after: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs WHERE kind='align_phrases' AND payload->>'kb_id'=$1",
+        )
+        .bind(f.kb.to_string())
+        .fetch_one(&f.pool)
+        .await?;
+        assert_eq!(after, 0, "past MAX_REASK it stops queueing itself");
+        assert!(phrase_bindings::bindings(&f.pool, f.kb).await?.is_empty());
         anyhow::Ok(())
     }
     .await;

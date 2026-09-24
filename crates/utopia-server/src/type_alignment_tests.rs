@@ -125,7 +125,7 @@ impl Fx {
         }))
     }
     async fn run(&self) -> anyhow::Result<()> {
-        align_types(&self.state, self.kb).await
+        align_types_reasking(&self.state, self.kb, 0).await
     }
     fn requests(&self) -> Vec<Value> {
         self.model.requests.lock().unwrap().clone()
@@ -225,7 +225,7 @@ async fn human_decision_during_disagreement_survives() -> anyhow::Result<()> {
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let state = f.state.clone();
     let kb = f.kb;
-    let worker = tokio::spawn(async move { align_types(&state, kb).await });
+    let worker = tokio::spawn(async move { align_types_reasking(&state, kb, 0).await });
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         f.model.entered.notified(),
@@ -639,4 +639,80 @@ mod review_locks {
         f.cleanup().await?;
         result
     }
+}
+
+/// bench 里「12 篇文档 type_id 全空」的回复：DeepSeek-V3.2 把整段答成按 id 作键的对象，
+/// 第二票还把键包进单元素数组。两票都得读出来，词才绑得上
+#[tokio::test]
+async fn an_id_keyed_reply_still_binds_the_kind_word() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![
+        json!({"0": "organization"}),
+        json!({"b": {"0": ["organization"]}}),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    f.run().await?;
+    let binding = type_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+    let projected: Option<Uuid> = sqlx::query_scalar("SELECT type_id FROM entities WHERE id=$1")
+        .bind(f.entity)
+        .fetch_one(&f.pool)
+        .await?;
+    let count = f.requests().len();
+    let class = f.class;
+    f.cleanup().await?;
+    assert_eq!(count, 2);
+    assert_eq!(binding.status, "bound");
+    assert_eq!(binding.type_id, Some(class));
+    assert_eq!(projected, Some(class));
+    Ok(())
+}
+
+/// 读不出的回复不再是「一项都没答」然后没了：这一轮不下结论，任务自己再排一份
+/// （带 reask），排够 MAX_REASK 次就停，等下一篇文档或本体改动。
+#[tokio::test]
+async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![
+        json!({"answer": "organization"}),
+        json!({"answer": "organization"}),
+        json!({"answer": "organization"}),
+        json!({"answer": "organization"}),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    f.run().await?;
+    let bindings = type_bindings::bindings(&f.pool, f.kb).await?.len();
+    let reasks: Vec<(String, Option<i64>)> = sqlx::query_as(
+        "SELECT status, (payload->>'reask')::bigint FROM jobs
+         WHERE kind='align_types' AND payload->>'kb_id'=$1 ORDER BY id",
+    )
+    .bind(f.kb.to_string())
+    .fetch_all(&f.pool)
+    .await?;
+    sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+        .bind(f.kb.to_string())
+        .execute(&f.pool)
+        .await?;
+    // 已经是最后一次自己排的：不再排
+    align_types_reasking(&f.state, f.kb, MAX_REASK).await?;
+    let after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind='align_types' AND payload->>'kb_id'=$1",
+    )
+    .bind(f.kb.to_string())
+    .fetch_one(&f.pool)
+    .await?;
+    let count = f.requests().len();
+    f.cleanup().await?;
+    assert_eq!(count, 4, "两轮各问两票");
+    assert_eq!(bindings, 0, "读不出的回复不写任何判定");
+    assert_eq!(
+        reasks,
+        vec![("queued".to_string(), Some(1))],
+        "第一轮之后自己排一份 reask=1"
+    );
+    assert_eq!(after, 0, "排够次数就不再排");
+    Ok(())
 }
