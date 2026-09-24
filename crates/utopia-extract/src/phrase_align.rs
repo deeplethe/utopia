@@ -92,11 +92,12 @@ You bind the relation phrases documents use to the properties of a knowledge bas
 Each numbered item is one signature: a phrase as the documents wrote it, the class of the thing \
 it is said of (its subject) and the class of what it points at (its object), or \"value\" when \
 the object is a figure, a title or a status; a few statements with that signature, each with the \
-sentence it was taken from; and the candidate properties, each with its key, its label, its \
-definition, its kind (a relation between two things, or an attribute whose object is a value), \
-its domain and its range. A class written as \"?\" means the documents' kind word for that side \
-is bound to no class yet. A candidate marked \"fits by inheritance\" declares its domain or range on \
-an ancestor of the item's class; that is a fit, not a mismatch.\n\
+sentence it was taken from; and the keys of its candidate properties. The properties themselves \
+are listed once under \"Properties\", each with its key, its label, its kind (a relation between two \
+things, or an attribute whose object is a value), its domain, its range and its definition. A class \
+written as \"?\" means the documents' kind word for that side is bound to no class yet. A candidate \
+key marked \"fits by inheritance\" declares its domain or range on an ancestor of the item's class; \
+that is a fit, not a mismatch.\n\
 For each item, answer with the key of the one property that every statement of this signature \
 states by that property's definition, and the direction: \"forward\" when the statement's \
 subject is the property's subject, \"reverse\" when the statement's object is; or null.\n\
@@ -137,8 +138,24 @@ pub fn candidate_line(c: &PropertyCandidate<'_>) -> String {
 }
 
 /// 构造两条消息：常量系统消息 + 逐项的用户消息。每项：id、短语、两端的类、例句与引文、候选。
+/// 候选属性表在一批里只写一遍（Properties），每项只列它的候选键；从前每项都带整张表
+/// （最多 60 条、各带定义），12 项一批就是三万多 token，一轮跑下来对齐占了八成的用量
+/// （bench README，2026-09-24）。「按继承对上」是项与候选之间的事，写在项的键后面
 pub fn build_phrase_messages(items: &[PhraseItem<'_>]) -> Vec<ChatMessage> {
+    let mut glossary: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for c in items.iter().flat_map(|i| i.candidates.iter()) {
+        if seen.insert(c.key.trim()) {
+            glossary.push(candidate_line(&PropertyCandidate {
+                via: Vec::new(),
+                ..c.clone()
+            }));
+        }
+    }
     let mut user = String::new();
+    if !glossary.is_empty() {
+        user.push_str(&format!("Properties:\n{}\n\n", glossary.join("\n")));
+    }
     for item in items {
         let object = if item.object_is_value {
             "value".to_string()
@@ -156,8 +173,18 @@ pub fn build_phrase_messages(items: &[PhraseItem<'_>]) -> Vec<ChatMessage> {
         let candidates = if item.candidates.is_empty() {
             " (none)".to_string()
         } else {
-            let lines: Vec<String> = item.candidates.iter().map(candidate_line).collect();
-            format!("\n{}", lines.join("\n"))
+            let keys: Vec<String> = item
+                .candidates
+                .iter()
+                .map(|c| {
+                    if c.via.is_empty() {
+                        c.key.to_string()
+                    } else {
+                        format!("{} (fits by inheritance: {})", c.key, c.via.join("; "))
+                    }
+                })
+                .collect();
+            format!(" {}", keys.join(", "))
         };
         user.push_str(&format!(
             "Item {}: phrase \"{}\" · subject class: {} · object: {} · {} statements\nStatements:{examples}\nCandidates:{candidates}\n\n",
@@ -391,6 +418,19 @@ mod tests {
         assert!(user.contains("Item 3: phrase \"is based in\" · subject class: organization · object: ? · 4 statements"), "{user}");
         assert!(user.contains("· Harbor Bakery —is based in→ Port Ellen\n    \"Harbor Bakery is based in Port Ellen.\""), "{user}");
         assert!(user.contains("- headquartered_in · headquartered in · relation · domain: organization · range: place · The organization's"), "{user}");
+        assert!(
+            user.starts_with("Properties:\n- "),
+            "the glossary comes first, once: {user}"
+        );
+        assert!(
+            user.contains("Candidates: headquartered_in"),
+            "items list keys only: {user}"
+        );
+        assert_eq!(
+            user.matches("- headquartered_in ·").count(),
+            1,
+            "each property is described once: {user}"
+        );
         assert!(
             user.contains("- revenue · revenue · attribute · domain: organization · Total income"),
             "{user}"

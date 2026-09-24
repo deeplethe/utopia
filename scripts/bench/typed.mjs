@@ -89,7 +89,8 @@ async function setup() {
   const KB = kb.id;
   log(`新库 ${KB}（工作区 ${ws.id}）`);
   // 本体固定：不让抽取长本体、不跑老的类型消解、不做公理派生；治理按产品默认
-  psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE WHERE id='${KB}'`);
+  // 治理 agent（0025 的裁决）也关掉：它在第三轮里花了约 500 次调用，量的不是类型图
+  psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE, governance=FALSE WHERE id='${KB}'`);
   const classId = {};
   for (const [t, [key, label, description]] of Object.entries(CLASSES)) {
     const r = await api("POST", `/api/v1/kbs/${KB}/ontology/entity-types`, { key, label, description, parents: [] });

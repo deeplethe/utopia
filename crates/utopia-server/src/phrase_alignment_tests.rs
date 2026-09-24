@@ -436,7 +436,11 @@ async fn an_edit_during_the_model_request_leaves_the_decision_stale() -> anyhow:
         f.clear_jobs().await?;
         f.script(bound());
         f.run().await?;
-        assert_eq!(f.requests().len(), 5, "two votes, one rule question (nothing implied), then two votes again: the basis differs, not the clock");
+        assert_eq!(
+            f.requests().len(),
+            4,
+            "two votes, then two votes again (a none is not asked for rules): the basis differs, not the clock"
+        );
         assert_eq!(f.binding().await?.status, "bound");
         anyhow::Ok(())
     }

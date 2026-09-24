@@ -538,7 +538,9 @@ async fn align_phrases_locked(
             let Some(b) = decided_now.get(&s.key()) else {
                 continue;
             };
-            if b.status == "undecided" {
+            // 只问绑上的签名：判「无」的形状一轮 1121 条问下来提了不到 1% 的规则，却占了
+            // 提规则一半以上的调用（bench README，2026-09-24）；拿不定的等人先定
+            if b.status != "bound" {
                 continue;
             }
             let (fitting, basis) = &considered[&s.key()];
