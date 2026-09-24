@@ -41,6 +41,9 @@ pub async fn propose_rules(
     class_key: &HashMap<Uuid, &str>,
     by_key: &HashMap<&str, &RelationTypeView>,
 ) -> anyhow::Result<(usize, usize)> {
+    // 提规则按 low 想：它问的是「这种形状还蕴含什么」，默认强度一次答 4.6k 思考 token，
+    // 是所有阶段里最贵的一种调用（bench README，2026-09-24），而答案多半是「无」
+    let client = &client.clone().with_reasoning_effort(Some("low".into()));
     let pool = &state.pool;
     let keys_of = |ids: &[Uuid]| -> Vec<&str> {
         ids.iter()

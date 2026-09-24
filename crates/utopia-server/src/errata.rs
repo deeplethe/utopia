@@ -150,6 +150,10 @@ pub async fn review_document(
     .await?;
     let text = errata::document_text(pool, document_id).await?;
     let document = truncate(&text, DOC_CHARS);
+    // 属性表按这份文档裁：整份本体每次都带是勘误一次请求 4.7k token 里的 4k（bench README，
+    // 2026-09-24）。文档的向量取最近的几十条，再并上清单里事实已用的属性；没有向量就带全部
+    let glossary = shortlist_glossary(state, settings, kb_id, document, glossary, &chosen).await;
+    let glossary = &glossary[..];
     let (mut prompt_tokens, mut completion_tokens, mut saw_usage) = (0u64, 0u64, false);
     let mut error = None;
     let batches: Vec<&[Candidate]> = if chosen.is_empty() {
@@ -312,6 +316,52 @@ pub async fn review_document(
         Some(e) => Err(e),
         None => Ok(outcome),
     }
+}
+
+/// 勘误一次请求带多少条属性（有向量时）
+const GLOSSARY_NEAREST: i64 = 24;
+
+/// 这份文档看得到的属性：向量最近的 [`GLOSSARY_NEAREST`] 条，加上清单里事实已经用的。
+/// 没配嵌入模型、属性没向量、嵌入失败：全部
+async fn shortlist_glossary<'a>(
+    state: &AppState,
+    settings: &utopia_core::models::LlmSettings,
+    kb_id: Uuid,
+    document: &str,
+    all: &[ErrataProperty<'a>],
+    chosen: &[Candidate],
+) -> Vec<ErrataProperty<'a>> {
+    let Some(client) = crate::llm_util::embed_client(settings) else {
+        return all.to_vec();
+    };
+    let vector = {
+        let _permit = crate::llm_util::acquire_embed(state, settings).await;
+        match client.embed(&[document.to_string()]).await {
+            Ok(mut v) if v.len() == 1 => v.remove(0),
+            _ => return all.to_vec(),
+        }
+    };
+    let near = match utopia_store::ontology::nearest_relation_types(
+        &state.pool,
+        kb_id,
+        &vector,
+        GLOSSARY_NEAREST,
+        None,
+    )
+    .await
+    {
+        Ok(n) if !n.is_empty() => n,
+        _ => return all.to_vec(),
+    };
+    let keep: std::collections::HashSet<&str> = near
+        .iter()
+        .map(|t| t.key.as_str())
+        .chain(chosen.iter().map(|c| c.property.as_str()))
+        .collect();
+    all.iter()
+        .filter(|p| keep.contains(p.key))
+        .cloned()
+        .collect()
 }
 
 /// keep 落地不算「动了图」；撤改加落地算
