@@ -37,7 +37,7 @@ A pushed statement carries no quote: the passage that states it is the item itse
 
 **5. There is no slot for a type.**
 
-The contract has positions for a phrase, a subject, an object or a value, qualifiers and time words. It has none for a property, a class or a predicate id, and this record adds none. A payload with keys outside the envelope and the contract is refused at the door, not silently ignored, so that a client cannot believe it wrote a typed fact.
+The contract has positions for a phrase, a subject, an object or a value, qualifiers and time words. It has none for a property, a class or a predicate id, and this record adds none. A payload with keys outside the envelope and the contract is refused at the door, not silently ignored, so that a client cannot believe it wrote a typed fact. For the same reason a statement whose subject, or a name whose thing, is not listed in `e` is refused at the door too: extraction would drop it silently as an unknown reference, and the client would believe it landed. An object not listed in `e` is not refused; it lands as a literal value, as it does for a model's reply.
 
 **6. Events, not state.**
 
@@ -68,7 +68,7 @@ Content-Type: application/json
 - `external_id` is required and is the identity (`statements:{external_id}`); a second push with new content updates in place and records a version; `deleted: true` tombstones it.
 - `doc_time` is the observation's own time and lands on the world axis; push time is the record axis (0022). Without it the item is undated, as an upload is.
 - Each `s` item is `[quote, subject, phrase, object, value, qualifiers, when, ended]`; `quote` must be `null`. Each `e` item is `[name, kind word, named]`; each `n` item is `[entity name, other name, quote]` with `quote` null.
-- Keys other than `external_id`, `doc_time`, `deleted`, `e`, `s`, `n` are refused with 422. A body over 64 KiB or with more than 200 statements is refused with 422; those are cut-1 limits, not contracts.
+- Keys other than `external_id`, `doc_time`, `deleted`, `e`, `s`, `n` are refused with 422, as is a subject or an `n` entity not listed in `e`. A body over 64 KiB or with more than 200 statements is refused with 422; those are cut-1 limits, not contracts.
 - The response is the `api` push's: `{"action": "created" | "updated" | "unchanged" | "marked_missing"}`.
 
 ## Not doing

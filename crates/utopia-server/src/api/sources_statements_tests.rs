@@ -55,6 +55,29 @@ fn the_door_refuses_what_the_contract_has_no_slot_for() {
     let mut empty = ok.clone();
     empty["s"] = json!([]);
     refuse(empty, "at least one");
+    // 主语没在 `e` 里：抽取会把它作为 UNKNOWN_REF 静默丢掉，门口就得说不
+    let mut stray = ok.clone();
+    stray["s"][0][1] = json!("cup-8");
+    refuse(stray, "not a thing listed in e");
+    // 只差空白和大小写的算同一个名字（与抽取的 `name_key` 同一条折叠规则）
+    let mut folded = ok.clone();
+    folded["s"][0][1] = json!("  Cup-7 ");
+    super::validate_statements_payload(folded.to_string().as_bytes())
+        .expect("whitespace and case do not make a different thing");
+    // 别名所属的东西也一样；别名的引文格同样必须为空
+    let mut alias = ok.clone();
+    alias["n"] = json!([["mug-7", "the cup", null]]);
+    refuse(alias, "n[0][0]");
+    let mut alias_quoted = ok.clone();
+    alias_quoted["n"] = json!([["cup-7", "the cup", "the cup sat there"]]);
+    refuse(alias_quoted, "n[0][2]");
+    // 条数和字节数的上限：第一刀的限制，超过直说而不是截断
+    let mut many = ok.clone();
+    many["s"] = json!(vec![ok["s"][0].clone(); 201]);
+    refuse(many, "limit is 200");
+    let mut fat = ok.clone();
+    fat["s"][0][5] = json!({ "note": "x".repeat(64 * 1024) });
+    refuse(fat, "limit is 65536");
 }
 
 struct Fixture {
@@ -134,15 +157,26 @@ impl Fixture {
         token: &str,
         body: &Value,
     ) -> anyhow::Result<(StatusCode, Value)> {
+        self.push_raw(source, Some(token), body.to_string().into_bytes())
+            .await
+    }
+
+    /// 不带 Authorization 头（`None`）或推原始字节：门口的 401 和字节上限要从 HTTP 这一侧看
+    async fn push_raw(
+        &self,
+        source: Uuid,
+        token: Option<&str>,
+        body: Vec<u8>,
+    ) -> anyhow::Result<(StatusCode, Value)> {
+        let mut request = Request::post(format!("/api/v1/sources/{source}/statements"))
+            .header("Content-Type", "application/json");
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
         let response = self
             .app
             .clone()
-            .oneshot(
-                Request::post(format!("/api/v1/sources/{source}/statements"))
-                    .header("Authorization", format!("Bearer {token}"))
-                    .header("Content-Type", "application/json")
-                    .body(Body::from(body.to_string()))?,
-            )
+            .oneshot(request.body(Body::from(body))?)
             .await?;
         let status = response.status();
         let bytes = to_bytes(response.into_body(), 1 << 20).await?;
@@ -255,6 +289,17 @@ async fn a_pushed_statement_reaches_the_open_graph_without_a_model() -> anyhow::
         entities, 2,
         "both things are entities with the pushed names"
     );
+    // 时间词落成提及（0054 决定 3）：没有引文时在载荷自己里找，而不是走引文路退出
+    let mentions: Vec<(String, String)> =
+        sqlx::query_as("SELECT text, role FROM time_mentions WHERE fact_id = $1")
+            .bind(facts[0].0)
+            .fetch_all(&f.pool)
+            .await?;
+    assert_eq!(
+        mentions,
+        vec![("08:14:03".to_string(), "when".to_string())],
+        "the pushed `when` is a time mention on the fact"
+    );
     f.cleanup().await
 }
 
@@ -329,5 +374,93 @@ async fn the_route_answers_422_404_and_401_at_the_door() -> anyhow::Result<()> {
         )
         .await?;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = f
+        .push_raw(
+            f.source,
+            None,
+            observation("08:14:03", "kitchen table")
+                .to_string()
+                .into_bytes(),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "no header is no key");
+    // 64 KiB 上限从 HTTP 这一侧看仍是 422 带说明，不是路由层的 413
+    let mut fat = observation("08:14:03", "kitchen table");
+    fat["s"][0][5] = json!({ "note": "x".repeat(64 * 1024) });
+    let (status, body) = f.push(f.source, &f.token, &fat).await?;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert!(
+        body.to_string().contains("limit is 65536"),
+        "the refusal names the limit: {body}"
+    );
+    f.cleanup().await
+}
+
+/// 墓碑与复活，和 `api` 推送同一语义：`deleted: true` 给该身份打 "Not in source" 标记而不删；
+/// 同一身份再推内容就把标记清掉。没见过的身份打墓碑是空操作，照样回 marked_missing
+#[tokio::test]
+async fn a_tombstone_marks_the_item_missing_and_a_new_push_revives_it() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (status, body) = f
+        .push(
+            f.source,
+            &f.token,
+            &observation("08:14:03", "kitchen table"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = f
+        .push(
+            f.source,
+            &f.token,
+            &json!({ "external_id": "obs-000412", "deleted": true }),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["action"], "marked_missing");
+    let doc = documents::find_by_external_key(&f.pool, f.source, "statements:obs-000412")
+        .await?
+        .expect("a tombstone marks, it does not delete");
+    let missing: (bool, bool) = sqlx::query_as(
+        "SELECT missing_since IS NOT NULL, deleted_at IS NULL FROM documents WHERE id = $1",
+    )
+    .bind(doc.id)
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(missing, (true, true), "marked missing, still present");
+    // 复活：同一身份、同样内容——文档没变（unchanged），但标记清掉了
+    let (status, body) = f
+        .push(
+            f.source,
+            &f.token,
+            &observation("08:14:03", "kitchen table"),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["action"], "unchanged");
+    let (revived,): (bool,) =
+        sqlx::query_as("SELECT missing_since IS NULL FROM documents WHERE id = $1")
+            .bind(doc.id)
+            .fetch_one(&f.pool)
+            .await?;
+    assert!(revived, "a new push under the identity clears the marker");
+    // 没见过的身份：打不到任何文档，也不算错
+    let (status, body) = f
+        .push(
+            f.source,
+            &f.token,
+            &json!({ "external_id": "never-pushed", "deleted": true }),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["action"], "marked_missing");
+    assert!(
+        documents::find_by_external_key(&f.pool, f.source, "statements:never-pushed")
+            .await?
+            .is_none(),
+        "a tombstone never creates a document"
+    );
     f.cleanup().await
 }

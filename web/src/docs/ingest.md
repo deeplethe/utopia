@@ -149,7 +149,7 @@ Content-Type: application/json
 | `n` | yes | Other names: `[entity name, other name, quote]`, `quote` null. May be empty. |
 | `deleted` | no | `true` marks the identified item "Not in source". |
 
-Any other key is refused with `422`, so a mistaken `predicate` or `class` field cannot pass as a typed fact: the contract has no slot for one. A body over 64 KiB or with more than 200 statements is refused too.
+Any other key is refused with `422`, so a mistaken `predicate` or `class` field cannot pass as a typed fact: the contract has no slot for one. A `subject`, or the entity of an `n` row, that is not listed in `e` is refused the same way, rather than dropped later in silence. A body over 64 KiB or with more than 200 statements is refused too.
 
 Two things to know before wiring a system to it:
 

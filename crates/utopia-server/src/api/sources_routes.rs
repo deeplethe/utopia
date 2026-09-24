@@ -597,7 +597,7 @@ pub async fn push_statements(
 
 /// 一次推送最多多少字节、多少条陈述。第一刀的上限，不是契约：一块就是一份载荷，
 /// 这两个数只是不让一份载荷大到审核卡片和证据视图没法呈现
-const STATEMENTS_MAX_BYTES: usize = 64 * 1024;
+pub(crate) const STATEMENTS_MAX_BYTES: usize = 64 * 1024;
 const STATEMENTS_MAX_ITEMS: usize = 200;
 /// 信封里允许的键。契约的三个数组之外，只有 `api` 推送也有的那三个
 const STATEMENTS_ENVELOPE: [&str; 6] = ["external_id", "doc_time", "deleted", "e", "s", "n"];
@@ -704,6 +704,30 @@ fn validate_statements_payload(raw: &[u8]) -> Result<(StatementsBody, Option<Str
     }
     if parsed.statements.is_empty() {
         return Err("no statement survived parsing".into());
+    }
+    // 主语和别名所属的东西必须在 `e` 里（0054 决定 5）：抽取时找不到的会作为 UNKNOWN_REF
+    // 静默丢掉，而门口的职责就是不让调用方以为它写进去了。折叠规则与抽取的 `name_key`
+    // 同一条：只许空白和大小写不同。宾语不在此列——它落成字面值，陈述照落
+    let listed: std::collections::HashSet<String> = parsed
+        .entities
+        .iter()
+        .map(|e| crate::extraction_open::name_key(&e.name))
+        .collect();
+    for (i, st) in parsed.statements.iter().enumerate() {
+        if !listed.contains(&crate::extraction_open::name_key(&st.subject)) {
+            return Err(format!(
+                "s[{i}][1] (subject) {:?} is not a thing listed in e",
+                st.subject
+            ));
+        }
+    }
+    for (i, n) in parsed.names.iter().enumerate() {
+        if !listed.contains(&crate::extraction_open::name_key(&n.entity)) {
+            return Err(format!(
+                "n[{i}][0] (entity) {:?} is not a thing listed in e",
+                n.entity
+            ));
+        }
     }
     Ok((body, Some(content)))
 }

@@ -174,7 +174,7 @@ async fn embed_pending_names(
     Ok(items.len())
 }
 
-fn name_key(name: &str) -> String {
+pub(crate) fn name_key(name: &str) -> String {
     name.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
@@ -675,7 +675,14 @@ pub(crate) async fn run_open(
                 .filter_map(|(role, words)| Some((role, words?.trim())))
                 .filter(|(_, w)| !w.is_empty())
             {
-                match locate_time(&chunk.text, quote, words) {
+                // 推送来的陈述没有引文：条目自己就是证据（0054 决定 4），这一块就是这一份
+                // 载荷，时间词在块里找。走 `locate_time` 会在 `quote?` 上退出，起止就都丢了
+                let located = if pushed {
+                    locate(&chunk.text, words).map(|(start, _)| start)
+                } else {
+                    locate_time(&chunk.text, quote, words)
+                };
+                match located {
                     Some(start) => time_words.push((words, start, role)),
                     None => {
                         drop_signal(
