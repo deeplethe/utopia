@@ -1,8 +1,8 @@
 # 0048 · Provenance references stay inside the knowledge base
 
-- **Status**: Proposed 2026-09-20 · implemented in PR #832 (migration 0070), pending review
+- **Status**: Implemented in PR #832 (migration 0070)
 - **Written**: 2026-09-20 (conventions in the [README](README.md))
-- **Related**: [0009](0009-no-type-is-a-type.md)'s "NULL means undecided" is why several edges below are nullable and therefore cannot lean on `MATCH FULL`; [0002](0002-reasoning-engine.md) owns the derivation model whose premise edges are covered here. Design question opened as issue #842.
+- **Related**: [0009](0009-no-type-is-a-type.md)'s "NULL means undecided" is why several edges below are nullable and therefore cannot lean on `MATCH FULL`; [0002](0002-reasoning-engine.md) owns the derivation model whose premise edges are covered here. Mechanism choice resolved by PR #832; discussion tracked in issue #842.
 
 > The exporter writes `urn:utopia:kb:A:fact:{id}` and asserts the id belongs to knowledge base A. Nothing in the schema made that true — a foreign key proves the row exists, not which base it lives in. A cross-KB `supersedes` would mint a local IRI naming a foreign fact; a cross-KB `type_id` would resolve to nothing and the statement would silently lose its class. This record decides where the same-KB invariant is enforced, and with what.
 
@@ -56,7 +56,7 @@ Thirty-nine reference edges are protected. The split is decided by a single ques
 
 - `pg_restore --disable-triggers` and any `session_replication_role = replica` load suppress *user* triggers wholesale. Declarative foreign keys are internal constraint triggers and are **not** suppressed — so the 26 declarative edges hold even in a replica-mode load, which is a second reason to prefer them wherever the schema can say them. The 13 trigger-covered edges admit the gap and are backstopped by the export-side `provenance_integrity` check and the §0 audit query, which doubles as a post-load audit.
 - The migration pins `search_path = pg_catalog` in every function body and qualifies every identifier `public.*`, because restore empties the session `search_path` and a hostile first schema must not redirect name resolution. `migration_0070_runs_under_any_search_path` installs the whole migration under a normal, an empty, and a decoy-first `search_path`.
-- The coverage itself is guarded by a catalog-derived regression in the same test file: it enumerates every column-level reference inside the ledger surface from `pg_catalog` and fails when an edge resolves to no declared composite-FK, owner-derived-trigger, or explicit exclusion — so a reference column added later cannot silently slip past the invariant.
+- The coverage itself is guarded by a catalog-derived regression in the same test file: it enumerates every column-level reference inside the ledger surface from `pg_catalog` and fails when an edge resolves to no declared composite-FK, owner-derived-trigger, or explicit exclusion — so a reference column added later cannot silently slip past the invariant. The same guard also reads the exact preflight scan the export runs (`export_provenance_integrity.sql`) and fails when a protected edge has no scan branch — or a scan branch no longer names a protected edge — so schema protection and export preflight cannot drift apart.
 
 ## The precondition scan
 
@@ -84,7 +84,10 @@ The medians differ by −4% with fully overlapping ranges — **no measurable wr
 - **Application-layer checks.** The exporter already filters cross-KB references defensively; that is a backstop for readers, not an invariant for writers. The schema is the only layer every write path — present and future — passes through.
 - **`MATCH FULL` composite keys** were considered for nullable edges and rejected: `MATCH SIMPLE` (skip the check when the reference is NULL) preserves the existing nullable-edge semantics exactly; nothing here makes a NULL reference meaningful.
 
+## Revisions
+
+- 2026-09-23 (#874): the original rationale said replica-mode loading silenced user triggers while declarative foreign-key enforcement stayed active. That was wrong — PostgreSQL foreign keys are enforced by constraint triggers, and `session_replication_role = replica` suppresses those checks as well, so replica mode does not distinguish the two mechanisms. The hybrid stands for the narrower reason recorded above: composite foreign keys are the native, smaller mechanism where the referencing row carries its own `kb_id`, while owner-derived rows cannot express that authority declaratively without a denormalized `kb_id` and a second invariant keeping it equal. The same correction is why the export-side scan covers all 39 edges rather than only the trigger-covered ones. Migration 0070's own header still carries the earlier wording — an applied SQLx migration is checksum-addressed and stays byte-stable, so the corrected operational rule lives here rather than in an edit to that file: replica-mode loading can bypass user triggers and FK constraint-trigger checks alike, and export preflight is the post-load backstop.
+
 ## Open questions
 
-- Whether maintainers prefer the hybrid split recorded here or uniform triggers (issue #842). The trigger machinery is additive — moving an edge from §1b to §1c is a one-line change in either direction, so the decision is cheap to revisit.
 - Whether the eight supporting `UNIQUE (kb_id, id)` indexes should be partial indexes over live rows instead; measured cost does not currently justify the extra subtlety.

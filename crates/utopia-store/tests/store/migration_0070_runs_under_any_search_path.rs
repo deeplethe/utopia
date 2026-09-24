@@ -13,7 +13,7 @@
 //! 不是跳过：地址都给了还说「没库」是假话，那个绿色等于这条检查没跑过。
 
 use sqlx::{Acquire, PgPool};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use uuid::Uuid;
 
 fn admin_url() -> Option<String> {
@@ -483,6 +483,10 @@ struct Coverage {
     declarative: Vec<String>,
     trigger_covered: Vec<String>,
     non_scope: Vec<String>,
+    /// 归进 declarative / trigger_covered 的边的结构身份
+    /// (src_table, src_col, tgt_table, tgt_col)——体检核对按四元组,
+    /// 两条边共用一个报错 label 也得各算一条
+    protected: BTreeSet<EdgeKey>,
     /// owner-derived 表上 catalog 有、登记没有的边
     unknown: Vec<String>,
     /// 登记/豁免/owner 声明在 catalog 里对不上的边
@@ -493,10 +497,16 @@ struct Coverage {
     unprotected_trigger: Vec<String>,
     /// 责任面与已装机制对不上
     surface_drift: Vec<String>,
+    /// schema 保护了、但 preflight 没有对应扫描分支的边
+    preflight_missing: Vec<String>,
+    /// preflight 扫描声明的边在 catalog 保护集里对不上——
+    /// 表/列改名后留下的腐掉分支
+    stale_preflight: Vec<String>,
 }
 
 impl Coverage {
     /// 完备 = 没有未归类的边、没有腐掉的登记、面与机制互证得上,
+    /// 每条受保护边都进了导出体检、体检里没有腐掉的分支,
     /// 且两类已覆盖边的数量与迁移记录的 26/13 一致。
     fn assert_complete(&self) -> anyhow::Result<()> {
         let mut problems = String::new();
@@ -510,6 +520,8 @@ impl Coverage {
         dump("UNPROTECTED_DIRECT", &self.unprotected_direct);
         dump("UNPROTECTED_TRIGGER", &self.unprotected_trigger);
         dump("SURFACE_DRIFT", &self.surface_drift);
+        dump("PREFLIGHT_MISSING", &self.preflight_missing);
+        dump("STALE_PREFLIGHT", &self.stale_preflight);
         if self.declarative.len() != 26 {
             problems.push_str(&format!(
                 "  DECLARATIVE_EDGES = {} (expected 26)\n",
@@ -530,6 +542,160 @@ impl Coverage {
             ))
         }
     }
+}
+
+/// preflight SQL 里一条结构边标记的四元组
+/// (src_table, src_col, tgt_table, tgt_col)
+type EdgeKey = (String, String, String, String);
+
+/// 从 export_provenance_integrity.sql 解析出的覆盖面——测试读的就是
+/// 运行时执行的那一份(include_str! 同一条路径),不存在「登记给测试看、
+/// 跑的是另一份」的缝隙。edges = 每条 cross_kb 分支声明的结构边;
+/// labels = 结构边 → 报错 label;filters = 「同库但不在导出集」的
+/// merged 检查——它护的是导出过滤口径,不是 schema 引用边
+#[derive(Default)]
+struct PreflightSurface {
+    edges: BTreeSet<EdgeKey>,
+    labels: HashMap<EdgeKey, String>,
+    filters: BTreeSet<String>,
+}
+
+/// 一段 SQL 文本里的字符串字面量,按出现顺序——每个扫描分支的
+/// 头两个字面量就是它的报错 label 与 kind('cross_kb'/'unexported')
+fn quoted_literals(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\'' {
+            continue;
+        }
+        let mut lit = String::new();
+        for c2 in chars.by_ref() {
+            if c2 == '\'' {
+                break;
+            }
+            lit.push(c2);
+        }
+        out.push(lit);
+    }
+    out
+}
+
+/// 'src_table.src_col -> tgt_table.tgt_col' → 四元组
+fn parse_edge_key(marker: &str) -> Option<EdgeKey> {
+    let (src, tgt) = marker.split_once("->")?;
+    let (st, sc) = src.trim().rsplit_once('.')?;
+    let (tt, tc) = tgt.trim().rsplit_once('.')?;
+    Some((st.into(), sc.into(), tt.into(), tc.into()))
+}
+
+/// 把 preflight SQL 按 UNION ALL 切成扫描分支,逐条核对标记:
+/// cross_kb 分支恰好一条 @edge、unexported 分支恰好一条与 label 同名的
+/// @filter;@edge 报出的表/列要在分支本体里真的出现——标记指错方向、
+/// 分支漏标记、一条边两条分支,都在这里炸出来
+fn preflight_surface() -> anyhow::Result<PreflightSurface> {
+    const SRC: &str = include_str!("../../src/export_provenance_integrity.sql");
+    let mut surface = PreflightSurface::default();
+    let mut problems = String::new();
+    for (i, chunk) in SRC.split("UNION ALL").enumerate() {
+        let mut edge_markers = Vec::new();
+        let mut filter_markers = Vec::new();
+        for line in chunk.lines() {
+            let l = line.trim();
+            if let Some(m) = l.strip_prefix("-- @edge ") {
+                edge_markers.push(m.trim().to_string());
+            } else if let Some(m) = l.strip_prefix("-- @filter ") {
+                filter_markers.push(m.trim().to_string());
+            }
+        }
+        let literals = quoted_literals(chunk);
+        // 注释里写到 "UNION ALL" 也会切出一段——那种碎片没有 SELECT,跳过;
+        // 真分支缺字面量仍然是错
+        let (Some(label), Some(kind)) = (literals.first(), literals.get(1)) else {
+            if chunk.contains("SELECT") {
+                problems.push_str(&format!("  branch {i}: no 'label'/'kind' literals found\n"));
+            }
+            continue;
+        };
+        match kind.as_str() {
+            "cross_kb" => {
+                if edge_markers.len() != 1 || !filter_markers.is_empty() {
+                    problems.push_str(&format!(
+                        "  {label}: a cross_kb branch must carry exactly one @edge marker\n"
+                    ));
+                    continue;
+                }
+                let Some(key) = parse_edge_key(&edge_markers[0]) else {
+                    problems.push_str(&format!(
+                        "  {label}: malformed @edge marker '{}'\n",
+                        edge_markers[0]
+                    ));
+                    continue;
+                };
+                for needle in [&key.0, &key.1, &key.2] {
+                    if !chunk.contains(needle.as_str()) {
+                        problems.push_str(&format!(
+                            "  {label}: @edge names '{needle}' but the branch never mentions it\n"
+                        ));
+                    }
+                }
+                if !surface.edges.insert(key.clone()) {
+                    problems.push_str(&format!(
+                        "  {label}: @edge '{}' duplicates an earlier branch\n",
+                        edge_markers[0]
+                    ));
+                }
+                surface.labels.insert(key, label.clone());
+            }
+            "unexported" => {
+                if filter_markers.len() != 1 || !edge_markers.is_empty() {
+                    problems.push_str(&format!(
+                        "  {label}: an unexported branch must carry exactly one @filter marker\n"
+                    ));
+                    continue;
+                }
+                if filter_markers[0] != *label {
+                    problems.push_str(&format!(
+                        "  {label}: @filter names '{}' — the marker must equal the branch label\n",
+                        filter_markers[0]
+                    ));
+                }
+                surface.filters.insert(label.clone());
+            }
+            other => problems.push_str(&format!("  {label}: unknown kind '{other}'\n")),
+        }
+    }
+    if problems.is_empty() {
+        Ok(surface)
+    } else {
+        Err(anyhow::anyhow!(
+            "preflight scan markers are inconsistent:\n{problems}"
+        ))
+    }
+}
+
+/// 每个归类为保护边的 catalog 边,都必须在同一份 preflight SQL 里有
+/// 一条声明同样结构身份的扫描分支;反过来,preflight 声称的每条边也
+/// 必须仍是 catalog 保护集的一员——表/列改名后留着的旧分支照样红
+fn check_preflight(cov: &mut Coverage) -> anyhow::Result<()> {
+    let surface = preflight_surface()?;
+    for key in &surface.edges {
+        if !cov.protected.contains(key) {
+            cov.stale_preflight.push(format!(
+                "{}.{}\u{2192}{}.{} ('{}'): preflight watches an edge the catalog guard does not protect",
+                key.0, key.1, key.2, key.3, surface.labels[key]
+            ));
+        }
+    }
+    for key in &cov.protected {
+        if !surface.edges.contains(key) {
+            cov.preflight_missing.push(format!(
+                "{}.{}\u{2192}{}.{}: protected in the schema but absent from export preflight",
+                key.0, key.1, key.2, key.3
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 每条相关边归到恰好一类。相关 = 源表在责任面、引用列不是 kb_id
@@ -621,7 +787,10 @@ fn classify(
                 }
             } else if let Some(tg) = registry.get(&(e.src_table.as_str(), e.src_col.as_str())) {
                 match triggers.get(&(e.src_table.clone(), (*tg).to_string())) {
-                    Some(cols) if cols.contains(&e.src_col) => cov.trigger_covered.push(label),
+                    Some(cols) if cols.contains(&e.src_col) => {
+                        cov.trigger_covered.push(label);
+                        cov.protected.insert(edge_key(e));
+                    }
                     Some(_) => cov
                         .unprotected_trigger
                         .push(format!("{label}: trigger {tg} does not watch this column")),
@@ -653,10 +822,20 @@ fn classify(
                 ));
             } else {
                 cov.declarative.push(label);
+                cov.protected.insert(edge_key(e));
             }
         }
     }
     cov
+}
+
+fn edge_key(e: &RefEdge) -> EdgeKey {
+    (
+        e.src_table.clone(),
+        e.src_col.clone(),
+        e.tgt_table.clone(),
+        e.tgt_col.clone(),
+    )
 }
 
 async fn classify_reference_edges(pool: &PgPool) -> anyhow::Result<Coverage> {
@@ -666,7 +845,9 @@ async fn classify_reference_edges(pool: &PgPool) -> anyhow::Result<Coverage> {
         trigger_watch_lists(pool),
         mechanism_tables(pool),
     )?;
-    Ok(classify(&edges, &kb_scoped, &triggers, &mechanism))
+    let mut cov = classify(&edges, &kb_scoped, &triggers, &mechanism);
+    check_preflight(&mut cov)?;
+    Ok(cov)
 }
 
 #[tokio::test]
@@ -726,6 +907,107 @@ async fn a_new_reference_on_an_owner_derived_row_fails_the_guard() -> anyhow::Re
         Ok(())
     })
     .await
+}
+
+/// 漂移探针 C:kb 自持行上新增一条**保护方式完全正确**的复合外键边——
+/// schema 侧挑不出毛病(归进 DECLARATIVE),但没人给它补导出体检。
+/// 只查 schema 的守卫会放行;这条边必须落进 PREFLIGHT_MISSING,
+/// 报错里点名是哪条结构边
+#[tokio::test]
+async fn a_protected_edge_missing_from_preflight_fails_the_guard() -> anyhow::Result<()> {
+    with_scratch("driftp", |pool| async move {
+        migration_70_under(&pool, "public").await?;
+        sqlx::query(
+            "ALTER TABLE public.time_mentions
+             ADD COLUMN probe_ref uuid,
+             ADD CONSTRAINT time_mentions_probe_same_kb
+                 FOREIGN KEY (kb_id, probe_ref) REFERENCES public.relation_types (kb_id, id)",
+        )
+        .execute(&pool)
+        .await?;
+        let cov = classify_reference_edges(&pool).await?;
+        assert!(
+            cov.declarative
+                .iter()
+                .any(|e| e.starts_with("time_mentions.probe_ref\u{2192}")),
+            "保护方式正确的探针边必须归进 DECLARATIVE——schema 侧没有问题: {cov:?}"
+        );
+        assert!(
+            cov.preflight_missing
+                .iter()
+                .any(|e| e.contains("time_mentions.probe_ref")),
+            "漏登记的探针边必须落进 PREFLIGHT_MISSING: {cov:?}"
+        );
+        let err = cov.assert_complete().unwrap_err().to_string();
+        assert!(
+            err.contains("PREFLIGHT_MISSING") && err.contains("time_mentions.probe_ref"),
+            "报错必须点名缺体检的结构边: {err}"
+        );
+        Ok(())
+    })
+    .await
+}
+
+/// 比对器自身的敏感度:少一条已声明边 → MISSING;多一条 catalog 保护集
+/// 没有的 → STALE。守卫本身不能是「怎么都过」的摆设
+#[test]
+fn the_preflight_check_notices_a_dropped_or_stray_edge() -> anyhow::Result<()> {
+    let surface = preflight_surface()?;
+    // 同一份文件两个方向各数一次:39 条结构边 + 5 条 merged 过滤检查
+    assert_eq!(surface.edges.len(), 39, "preflight 必须覆盖全部保护边");
+    assert_eq!(
+        surface.filters,
+        [
+            "derived.object(merged)",
+            "derived.subject(merged)",
+            "fact.object(merged)",
+            "fact.subject(merged)",
+            "qualifier.entity(merged)",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
+        "merged 过滤完整性检查是单独一类,不许静默增减"
+    );
+
+    // 保护集 = 体检声明集时两桶皆空
+    let mut cov = Coverage {
+        protected: surface.edges.clone(),
+        ..Coverage::default()
+    };
+    check_preflight(&mut cov)?;
+    assert!(
+        cov.preflight_missing.is_empty() && cov.stale_preflight.is_empty(),
+        "声明集与保护集一致时不许误报: {cov:?}"
+    );
+
+    // 漏一条:假定未来某条边从 SQL 里被删掉而 schema 仍在保护它
+    let mut missing = Coverage {
+        protected: surface.edges.clone(),
+        ..Coverage::default()
+    };
+    missing.protected.insert((
+        "phantom_table".into(),
+        "phantom_col".into(),
+        "entities".into(),
+        "id".into(),
+    ));
+    check_preflight(&mut missing)?;
+    assert_eq!(
+        missing.preflight_missing.len(),
+        1,
+        "catalog 有而 preflight 没有的边必须落进 MISSING"
+    );
+
+    // 反过来:preflight 还在看一条 catalog 不再保护的边
+    let mut stale = Coverage::default();
+    check_preflight(&mut stale)?;
+    assert_eq!(
+        stale.stale_preflight.len(),
+        surface.edges.len(),
+        "catalog 保护集之外的分支必须全部落进 STALE"
+    );
+    Ok(())
 }
 
 #[tokio::test]
