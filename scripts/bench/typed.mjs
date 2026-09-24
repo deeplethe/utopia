@@ -114,6 +114,16 @@ async function setup() {
   log(`本体：${Object.keys(CLASSES).length} 类，${ontology.properties.length} 属性（${attributes} 条是 attribute）`);
   // 建本体排下的对齐任务在语料到之前没意义，清掉，抽完再排
   psql(`DELETE FROM jobs WHERE kind IN ('align_types','align_phrases') AND payload->>'kb_id'='${KB}' AND status='queued'`);
+  // 配了嵌入模型就先把属性的向量建好：对齐按它给候选开短名单，没向量就退回全部结构候选
+  const embedModel = psql(`SELECT s.embed_model FROM llm_settings s JOIN knowledge_bases k ON k.workspace_id=s.workspace_id WHERE k.id='${KB}'`);
+  if (embedModel) {
+    psql(`INSERT INTO jobs (kind, payload) VALUES ('embed_ontology', '{"kb_id":"${KB}"}')`);
+    await until(() => {
+      const missing = num(`SELECT count(*) FROM relation_types WHERE kb_id='${KB}' AND NOT builtin AND embedding IS NULL`);
+      log(`属性向量：还差 ${missing}`);
+      return missing === 0 ? true : missing;
+    }, 5000, 10 * 60000);
+  }
   return KB;
 }
 

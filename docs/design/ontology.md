@@ -64,7 +64,12 @@ domain and range admit the two ends in either direction (an undeclared end admit
 model sees the signature with three of its statements and their quotes, and two votes with the
 candidates in opposite orders must agree on the property and the direction (forward when the
 statement's subject is the property's subject, reverse when its object is) for the signature to
-bind. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
+bind. When the structure fits more than ten properties (a coarse class hierarchy fits most of them),
+the aligner opens a **shortlist**: the signature's phrase and one example sentence are embedded and
+the ten properties nearest by the ontology's own vectors (`embed_ontology`) are shown, plus any whose
+label shares a word with the phrase; without an embedding model the model sees every structural
+candidate. The shortlist is part of the decision's basis, so a changed list re-asks. The candidate
+properties are described once per batch and each item names only its keys. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings`. Candidates are the properties whose
 declared domain and range admit the endpoint classes **or an ancestor of them**, and a candidate
