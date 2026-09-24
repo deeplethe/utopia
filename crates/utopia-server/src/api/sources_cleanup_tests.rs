@@ -1,6 +1,6 @@
 //! 墓碑清理之后，派生要跟上（#875）。`DELETE /documents/{id}` 删完一篇就按库的开关重推一遍
 //! （`settle_derivations`：删除、撤销、同步复活共用）；`POST .../missing/cleanup` 一次删一批
-//! 墓碑文档，删完却不重推——凭这些文档成立的结论照旧挂着，直到下一轮定时推导。
+//! 墓碑文档，从前删完却不重推——凭这些文档成立的结论照旧挂着，直到下一轮定时推导。
 //! 同一份夹具两条路各走一遍，单篇删除是对照。
 //!
 //! 连库的测试，没有 `UTOPIA_DATABASE_URL` 就跳过（同 documents_routes_tests）。
@@ -149,7 +149,7 @@ impl Fixture {
         .bind(self.source)
         .bind(format!("{name}.json"))
         .bind(format!("sha-{doc}"))
-        .bind(format!("statements:{name}"))
+        .bind(format!("api:{name}"))
         .execute(&self.pool)
         .await?;
         sqlx::query(
@@ -215,6 +215,15 @@ impl Fixture {
         Ok(n > 0)
     }
 
+    async fn conclusion_ids(&self, thing: Uuid) -> anyhow::Result<Vec<Uuid>> {
+        Ok(sqlx::query_scalar(
+            "SELECT id FROM derived_facts WHERE subject_id = $1 AND invalidated_at IS NULL ORDER BY id",
+        )
+        .bind(thing)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     async fn cleanup(self) -> anyhow::Result<()> {
         // 库先走：删除记录（document_deletions）随库级联，它记着删的人，人要留到最后
         sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
@@ -238,8 +247,12 @@ async fn a_cleanup_retires_what_its_documents_concluded() -> anyhow::Result<()> 
     let run = async {
         let (deleted, by_delete, _) = f.reading("cup-1").await?;
         let (_, by_cleanup, reading) = f.reading("cup-2").await?;
+        let (_, unrelated, _) = f.reading("cup-3").await?;
         utopia_store::reasoning::materialize(&f.pool, f.kb).await?;
         assert!(f.concluded(by_delete).await? && f.concluded(by_cleanup).await?);
+        let cleanup_before = f.conclusion_ids(by_cleanup).await?;
+        let unrelated_before = f.conclusion_ids(unrelated).await?;
+        assert_eq!(unrelated_before.len(), 1);
 
         // 对照：删一篇，删完即按开关重推
         let (status, body) = f
@@ -250,9 +263,11 @@ async fn a_cleanup_retires_what_its_documents_concluded() -> anyhow::Result<()> 
             !f.concluded(by_delete).await?,
             "a single delete settles the derivations"
         );
+        assert_eq!(f.conclusion_ids(by_cleanup).await?, cleanup_before);
+        assert_eq!(f.conclusion_ids(unrelated).await?, unrelated_before);
 
         // 墓碑 + 清理：同一件事按批做
-        utopia_store::documents::mark_missing_keys(&f.pool, f.source, &["statements:cup-2".into()])
+        utopia_store::documents::mark_missing_keys(&f.pool, f.source, &["api:cup-2".into()])
             .await?;
         let (status, body) = f
             .call(
@@ -271,6 +286,11 @@ async fn a_cleanup_retires_what_its_documents_concluded() -> anyhow::Result<()> 
         assert!(
             !f.concluded(by_cleanup).await?,
             "the conclusion that reading supported must be retired as after a single delete"
+        );
+        assert_eq!(
+            f.conclusion_ids(unrelated).await?,
+            unrelated_before,
+            "cleanup must preserve the pre-existing unrelated conclusion row"
         );
         anyhow::Ok(())
     }

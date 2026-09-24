@@ -289,6 +289,10 @@ pub async fn cleanup_missing(
     Ok(Json(json!({ "deleted": ids.len() })))
 }
 
+#[cfg(test)]
+#[path = "sources_cleanup_tests.rs"]
+mod cleanup_tests;
+
 pub async fn delete(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -583,10 +587,6 @@ pub async fn re_extract(
     .await;
     Ok(Json(json!({ "queued": ids.len() })))
 }
-
-#[cfg(test)]
-#[path = "sources_cleanup_tests.rs"]
-mod cleanup_tests;
 
 #[cfg(test)]
 mod tests {
