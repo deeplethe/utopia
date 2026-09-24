@@ -356,7 +356,8 @@ pub async fn align_phrases_reasking(
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
-    let client = llm_util::chat_client(&settings)
+    // 对齐是判断题：让模型按端点默认的强度想，不用工作区给抽取设的 minimal
+    let client = llm_util::chat_client_thinking(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
     // 一个库同时只跑一份，理由同类别词对齐（并行跑会把端点打出 502）
     let mut guard = pool.acquire().await?;
