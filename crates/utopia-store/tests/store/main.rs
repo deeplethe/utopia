@@ -58,6 +58,7 @@ mod a_number_is_one_number_however_written;
 mod a_page_never_skips_a_row;
 mod a_path_joins_two_entities;
 mod a_pending_statement_keeps_the_documents_words;
+mod a_plan_step_follows_its_premise;
 mod a_proof_reaches_the_sentence;
 mod a_purge_is_final;
 mod a_purge_judges_its_blobs_once;
