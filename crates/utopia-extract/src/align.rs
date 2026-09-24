@@ -12,6 +12,13 @@
 //! 整批；键不在那一项的候选里、id 不在批里、同一个 id 的第二次都算坏；截断的回复退到
 //! 最后一个完整的对。没答到的 id 就是没答到——调用方按 id 对账，缺席是「再问」，
 //! 不是 null。
+//!
+//! **形状也宽容**：模型（实测 DeepSeek-V3.2）并不总照样例写。它会把整段答成按 id
+//! 作键的对象（`{"0": null, "1": "organization"}`），会把键包进单元素数组
+//! （`{"0": ["organization"], "4": [null]}`），也会把 `b` 写成对象、把一对写成
+//! `{"id": 0, "key": ...}`、或者不要外层对象只给数组。这些说的都是同一件事，读法
+//! 只有一种；温度为零时同一段提示词回来的形状还是同一个，读不出就是每一轮都读不出——
+//! 一个库连着十二篇文档一个词都没绑上，就是这么来的。读不出的键与 id 算坏项，不当缺席。
 
 use std::collections::{HashMap, HashSet};
 
@@ -157,8 +164,8 @@ pub fn parse_kind_word_response(
     let mut choices = Vec::new();
     let mut malformed = 0usize;
     let mut seen = HashSet::new();
-    for pair in pairs(&value) {
-        match parse_pair(pair, &by_id) {
+    for (id, key) in answers(&value) {
+        match parse_pair(&id, &key, &by_id) {
             Some(choice) if seen.insert(choice.id) => choices.push(choice),
             _ => malformed += 1,
         }
@@ -168,14 +175,22 @@ pub fn parse_kind_word_response(
 
 /// 先按常规取块（第一个 `{` 到最后一个 `}`）；解不开才从第一个 `{` 取到结尾去修补。
 /// 取块与修补的分工同 `open.rs`：紧凑回复里 `}` 只在结尾出现，截断的回复要么没有 `}`，
-/// 要么最后一个 `}` 不是结尾
+/// 要么最后一个 `}` 不是结尾。回复不要外层对象、直接给数组的，取第一个 `[` 到最后
+/// 一个 `]`——只在文字本身以 `[` 开头时这么读，别把对象里的一对当成整段
 pub(crate) fn parse_value(raw: &str) -> anyhow::Result<Value> {
+    let text = json_text(raw).trim();
+    if text.starts_with('[') {
+        if let Some(end) = text.rfind(']') {
+            if let Ok(v) = serde_json::from_str::<Value>(&text[..=end]) {
+                return Ok(v);
+            }
+        }
+    }
     let block = json_block(raw)
         .and_then(|b| serde_json::from_str::<Value>(&b).map_err(anyhow::Error::from));
     match block {
         Ok(v) => Ok(v),
         Err(e) => {
-            let text = json_text(raw);
             let fixed = text
                 .find('{')
                 .map(|s| &text[s..])
@@ -187,28 +202,76 @@ pub(crate) fn parse_value(raw: &str) -> anyhow::Result<Value> {
     }
 }
 
-/// 顶层 `b` 下的数组；缺了或不是数组就当空——那不是坏项，是一项都没答
-fn pairs(value: &Value) -> &[Value] {
-    value
-        .get("b")
-        .and_then(Value::as_array)
-        .map_or(&[], Vec::as_slice)
+/// 回复里的每一条答案：（id，键）两个原始值，形状还没验。
+///
+/// 认四种写法，说的都是「这个 id 选了这个键」：`{"b": [[id, key]]}`（样例）、
+/// `{"b": {"id": key}}`、没有 `b` 的顶层对象 `{"id": key}`、顶层数组 `[[id, key]]`；
+/// 数组里的一条也可以是 `{"id": .., "key": ..}`。`b` 在就只看 `b`，顶层别的键是
+/// 模型的旁白，不是答案。缺了 `b` 又不是对象或数组的，一条都没有
+fn answers(value: &Value) -> Vec<(Value, Value)> {
+    let listed = value.get("b").unwrap_or(value);
+    match listed {
+        Value::Array(entries) => entries
+            .iter()
+            .map(|entry| match entry {
+                Value::Array(pair) if pair.len() >= 2 => (pair[0].clone(), pair[1].clone()),
+                Value::Object(map) => (
+                    map.get("id").cloned().unwrap_or(Value::Null),
+                    map.get("key")
+                        .or_else(|| map.get("class"))
+                        .or_else(|| map.get("b"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                ),
+                other => (other.clone(), Value::Null),
+            })
+            .collect(),
+        Value::Object(map) => map
+            .iter()
+            .map(|(k, v)| (Value::String(k.clone()), v.clone()))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
-/// `[id, key | null]`
-fn parse_pair(v: &Value, by_id: &HashMap<i64, &KindWordItem<'_>>) -> Option<KindWordChoice> {
-    let arr = v.as_array()?;
-    if arr.len() < 2 {
-        return None;
-    }
-    let id = item_id(&arr[0])?;
+/// 一条答案：id 得是这批里的，键得是 null 或候选里的一个（数组里包着的也算，
+/// `["organization"]`、`[null]`、`["organization", "机构 — 定义"]` 是模型的另几种写法，
+/// 不是另一种答案）
+fn parse_pair(
+    id: &Value,
+    key: &Value,
+    by_id: &HashMap<i64, &KindWordItem<'_>>,
+) -> Option<KindWordChoice> {
+    let id = item_id(id)?;
     let item = by_id.get(&id)?;
-    let key = match &arr[1] {
+    let key = match unwrapped(item, id, key)? {
         Value::Null => None,
         Value::String(written) => Some(candidate_key(item, written)?),
         _ => return None,
     };
     Some(KindWordChoice { id, key })
+}
+
+/// 数组里的第一个值：模型会把键包进数组，后面有时跟着那个候选的标签与定义
+/// （`["organization", "机构 — 研究院、研究所……"]`），前面有时又抄一遍 id
+/// （`{"0": [0, "organization"]}`）——抄的 id 跳过。后面跟的若是**另一个候选的键**，
+/// 那是两个答案，不是一个——None，调用方算坏。空数组也是 None；不是数组的原样
+fn unwrapped<'v>(item: &KindWordItem<'_>, id: i64, v: &'v Value) -> Option<&'v Value> {
+    match v {
+        Value::Array(list) => {
+            let list = match list.first() {
+                Some(first) if item_id(first) == Some(id) => &list[1..],
+                _ => &list[..],
+            };
+            let (first, rest) = list.split_first()?;
+            let another_key = rest
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|s| candidate_key(item, s).is_some());
+            (!another_key).then_some(first)
+        }
+        other => Some(other),
+    }
 }
 
 /// id 是 JSON 整数；模型偶尔把它写成字符串，照数字读
@@ -405,7 +468,8 @@ mod tests {
         assert!(parse_kind_word_response("no json here", &items).is_err());
     }
 
-    /// 没有 `b` 或不是数组：一项都没答，不是坏项
+    /// `b` 是空的：一项都没答，不是坏项。没有 `b`、键又不是 id 的：那是读不出的答案，
+    /// 算坏项——从前这种回复算「一项都没答」，一个库十几轮下来什么痕迹都不留
     #[test]
     fn a_reply_without_pairs_gives_no_choices() {
         let f = Fixture::new();
@@ -413,9 +477,94 @@ mod tests {
         let (choices, malformed) = parse_kind_word_response(r#"{"b": {}}"#, &items).unwrap();
         assert!(choices.is_empty());
         assert_eq!(malformed, 0);
-        let (choices, malformed) = parse_kind_word_response(r#"{"x": 1}"#, &items).unwrap();
+        let (choices, malformed) = parse_kind_word_response(r#"{"b": []}"#, &items).unwrap();
         assert!(choices.is_empty());
         assert_eq!(malformed, 0);
+        let (choices, malformed) = parse_kind_word_response(r#"{"x": 1}"#, &items).unwrap();
+        assert!(choices.is_empty());
+        assert_eq!(malformed, 1);
+    }
+
+    /// DeepSeek-V3.2 实测的写法：整段是按 id 作键的对象，没有 `b`。这就是 bench 里
+    /// 「12 篇文档 type_id 全空」的回复——它解出来必须和样例形状一模一样
+    #[test]
+    fn an_id_keyed_object_is_read_as_the_pair_list() {
+        let f = Fixture::new();
+        let items = f.items();
+        let raw = r#"{ "12": "organization", "13": null, "14": "structure" }"#;
+        let (choices, malformed) = parse_kind_word_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![
+                choice(12, Some("organization")),
+                choice(13, None),
+                choice(14, Some("structure")),
+            ]
+        );
+        // `b` 下面是对象而不是数组：一样读
+        let raw = r#"{"b": {"12": "organization", "13": null}}"#;
+        let (choices, malformed) = parse_kind_word_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(choices.len(), 2);
+    }
+
+    /// 同一个模型的另一种写法：键包在单元素数组里。空数组与两个键不是一个答案
+    #[test]
+    fn a_key_wrapped_in_a_one_element_array_is_unwrapped() {
+        let f = Fixture::new();
+        let items = f.items();
+        let raw = r#"{ "12": ["organization"], "13": [null], "14": [] }"#;
+        let (choices, malformed) = parse_kind_word_response(raw, &items).unwrap();
+        assert_eq!(malformed, 1, "空数组不是一个答案");
+        assert_eq!(
+            choices,
+            vec![choice(12, Some("organization")), choice(13, None)]
+        );
+        let raw = r#"{"b": [[12, ["organization", "person"]]]}"#;
+        let (choices, malformed) = parse_kind_word_response(raw, &items).unwrap();
+        assert_eq!(malformed, 1, "两个键不是一个答案");
+        assert!(choices.is_empty());
+        // 值里先抄一遍 id 再给键：`{"0": [0, "organization"]}`
+        let raw = r#"{"12": [12, "organization"], "13": [13, null]}"#;
+        let (choices, malformed) = parse_kind_word_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![choice(12, Some("organization")), choice(13, None)]
+        );
+        // 键后面跟着候选行（标签与定义）：那是抄了一遍候选，不是第二个答案
+        let raw = r#"{"12": ["organization", "Organization — An organized group of people"], "13": [null, "no candidate fits"]}"#;
+        let (choices, malformed) = parse_kind_word_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![choice(12, Some("organization")), choice(13, None)]
+        );
+    }
+
+    /// 一对写成对象、或者整段不要外层对象只给数组：照读
+    #[test]
+    fn object_pairs_and_a_bare_array_parse() {
+        let f = Fixture::new();
+        let items = f.items();
+        let raw = r#"{"b": [{"id": 12, "key": "organization"}, {"id": 13, "key": null}]}"#;
+        let (choices, malformed) = parse_kind_word_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![choice(12, Some("organization")), choice(13, None)]
+        );
+        let raw = "```json\n[[12, \"organization\"], [14, \"structure\"]]\n```";
+        let (choices, malformed) = parse_kind_word_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![
+                choice(12, Some("organization")),
+                choice(14, Some("structure"))
+            ]
+        );
     }
 
     /// 同一个 id 答了两次：留第一次，第二次计入坏项

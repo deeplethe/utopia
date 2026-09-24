@@ -78,7 +78,10 @@ let Ok(url) = std::env::var("UTOPIA_DATABASE_URL") else {
 碰了 `crates/utopia-store/` 里的 SQL，请把它设上再跑一遍。库要先迁移好——绝大多数连库测试不自己跑迁移，对着空库直接跑会成片报 relation does not exist：
 
 ```bash
-export UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:5432/utopia
+# 1517 是宿主机侧端口：docker-compose.yml 显式避开 5432，以免和本地已经
+# 跑着的 PG 撞上。容器内仍是 5432，app 在 compose 网络里走 db:5432；
+# 这条 1517 只给宿主机上跑的代码连容器用。
+export UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:1517/utopia
 cargo run -p utopia-store --example migrate   # 空库先迁移；CI 的 backend job 也是这么做的
 cargo test --workspace
 ```
