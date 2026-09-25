@@ -31,10 +31,16 @@ use uuid::Uuid;
 
 /// 证据文件**自带**的最早日期，按 `facts` 的别名 `f` 投影。只认正文（`content`）与来源
 /// （`source`）给的日期：上传时刻、文件修改时间不是文档自己的日期——拿它们排序，
-/// 每条没起点的旧行都会被读成「此刻还在」。删掉的文档不再作证
-const DATED_AT: &str = "(SELECT min(d.doc_time) FROM fact_evidence fe
+/// 每条没起点的旧行都会被读成「此刻还在」。删掉的文档不再作证。
+///
+/// 日期取证据**所在那一版**的（`document_versions.doc_time`，#900）：同一身份再推一份
+/// 新内容会把文档的 `doc_time` 换成新的，证据停在旧版上的行若还按文档当前的日期算，
+/// 就和新行「同时」开始，时间线关不上前一段。老版本没记日期的退回文档的日期
+const DATED_AT: &str = "(SELECT min(COALESCE(v.doc_time, d.doc_time)) FROM fact_evidence fe
                          JOIN documents d ON d.id = fe.document_id
-                         WHERE fe.fact_id = f.id AND d.doc_time IS NOT NULL
+                    LEFT JOIN document_versions v ON v.document_id = fe.document_id
+                                                 AND v.version = fe.doc_version
+                         WHERE fe.fact_id = f.id AND COALESCE(v.doc_time, d.doc_time) IS NOT NULL
                            AND d.deleted_at IS NULL
                            AND d.doc_time_source IN ('content', 'source'))";
 
@@ -771,8 +777,9 @@ pub async fn reconcile_moved_facts(
 }
 
 /// 一批事实所在的每条时间线：批里的事实逐条「来到」时间线上（记下该交给人的），整条
-/// 重算一遍。一条时间线一个事务
-async fn reconcile_facts(
+/// 重算一遍。一条时间线一个事务。物化把陈述算成类型化行之后也走这里（#899）：
+/// 这些行是「新落库的观察」，和抽取、点头写下的一样要对账
+pub(crate) async fn reconcile_facts(
     pool: &PgPool,
     kb_id: Uuid,
     fact_ids: &[Uuid],
@@ -970,10 +977,12 @@ async fn rewrite_end_tx(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, supersedes,
-                            attested_from, attested_to, end_derived)
+                            attested_from, attested_to, end_derived,
+                            from_statement_id, implied)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
                 valid_from, valid_from_precision, $3, $4, confidence, id,
-                attested_from, CASE WHEN $4::text = 'unknown' THEN COALESCE($5, now()) END, $6
+                attested_from, CASE WHEN $4::text = 'unknown' THEN COALESCE($5, now()) END, $6,
+                from_statement_id, implied
          FROM facts WHERE id = $2",
     )
     .bind(corrected)
@@ -991,7 +1000,38 @@ async fn rewrite_end_tx(
         .await?;
     copy_evidence(tx, fact_id, corrected).await?;
     copy_qualifiers(tx, fact_id, corrected).await?;
+    copy_materialization_links(tx, fact_id, corrected).await?;
     Ok(Some(corrected))
+}
+
+/// 物化出来的行改写之后还是物化出来的行（#899）：它由哪些陈述、哪条规则算出
+/// （`typed_fact_sources` / `implied_fact_sources`）随修正行复制，`from_statement_id` 和
+/// `implied` 在 INSERT 里一起带过去。不带的话下一轮物化看见陈述没有活着的类型化行，
+/// 会再算一行——旧行的来源由物化自己清（它只删挂在作废行上的）
+async fn copy_materialization_links(
+    tx: &mut Transaction<'_, Postgres>,
+    from: Uuid,
+    to: Uuid,
+) -> AppResult<()> {
+    sqlx::query(
+        "INSERT INTO typed_fact_sources (fact_id, statement_id)
+         SELECT $2, statement_id FROM typed_fact_sources WHERE fact_id = $1
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id, entity_id)
+         SELECT $2, rule_id, statement_id, entity_id FROM implied_fact_sources WHERE fact_id = $1
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// 作废 + 改写一行的持有者：主语或宾语换成另一个实体，其余照旧（证据、边上的属性随行）。
@@ -1016,10 +1056,12 @@ pub async fn rehome_tx(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                             valid_from, valid_from_precision, valid_to, valid_to_precision,
                             confidence, derived_by_rule, supersedes,
-                            attested_from, attested_to, end_derived)
+                            attested_from, attested_to, end_derived,
+                            from_statement_id, implied)
          SELECT $1, kb_id, COALESCE($3, subject_id), predicate_id, COALESCE($4, object_id),
                 object_value, valid_from, valid_from_precision, valid_to, valid_to_precision,
-                confidence, derived_by_rule, id, attested_from, attested_to, end_derived
+                confidence, derived_by_rule, id, attested_from, attested_to, end_derived,
+                from_statement_id, implied
          FROM facts WHERE id = $2",
     )
     .bind(moved)
@@ -1037,6 +1079,7 @@ pub async fn rehome_tx(
         .await?;
     copy_evidence(tx, fact_id, moved).await?;
     copy_qualifiers(tx, fact_id, moved).await?;
+    copy_materialization_links(tx, fact_id, moved).await?;
     Ok(Some(moved))
 }
 

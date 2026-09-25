@@ -631,7 +631,7 @@ async fn typed_desk(pool: &PgPool, f: &Fixture) -> anyhow::Result<Vec<Row>> {
     .await?)
 }
 
-/// 两份观察各是一份文档（一次观察一个身份）。显式对账之后桌面那一段关在第二份的日期上，
+/// 两份观察各是一份文档（一次观察一个身份）。物化随手对账，桌面那一段关在第二份的日期上，
 /// 步骤跟着退场——`POST /kbs/{id}/ontology/relation-types/{type_id}/reconcile` 就是这一步
 #[tokio::test]
 async fn an_explicit_reconcile_closes_the_earlier_place_and_the_step_leaves() -> anyhow::Result<()>
@@ -658,13 +658,15 @@ async fn an_explicit_reconcile_closes_the_earlier_place_and_the_step_leaves() ->
         statement(&pool, &f, c2, "shelf", T2).await?;
         bind_is_on(&pool, &f).await?;
         let typed = materialize::materialize(&pool, f.kb).await?;
-        assert_eq!(typed.added, 2, "{typed:?}");
+        // 物化自己就对账了（#899）：桌面那一段在这里关上。显式对账仍然可用，只是没剩下
+        // 要改的
+        assert_eq!((typed.added, typed.corrected), (2, 1), "{typed:?}");
 
         let report = temporal::reconcile_predicate(&pool, f.kb, f.location).await?;
         assert_eq!(
             (report.corrected.len(), report.conflicts),
-            (1, 0),
-            "{report:?}"
+            (0, 0),
+            "nothing left for the explicit reconcile: {report:?}"
         );
         let desk = typed_desk(&pool, &f).await?;
         assert_eq!(desk.len(), 1);
@@ -677,6 +679,145 @@ async fn an_explicit_reconcile_closes_the_earlier_place_and_the_step_leaves() ->
         reasoning::materialize(&pool, f.kb).await?;
         assert!(!holds_at(&pool, &f, f.a, rule, NOW, None).await?);
         assert!(holds_at(&pool, &f, f.a, rule, T_MID, None).await?);
+        anyhow::Ok(())
+    }
+    .await;
+
+    cleanup(&pool, f.org).await?;
+    run
+}
+
+/// #899：两份观察各是一份文档，绑定之后**物化自己**就把桌面那一段关上，不用再显式对账——
+/// 物化出来的行和抽取、点头写下的一样是新观察，写完就沿唯一性时间线重算
+#[tokio::test]
+async fn a_later_bound_statement_closes_the_earlier_place() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "issue899-materialize-timeline").await?;
+
+    let run = async {
+        let rule = step_rule(
+            &pool,
+            &f,
+            "S_A pick cup from desk",
+            f.cup,
+            f.sa_ready,
+            &[(f.location, "desk")],
+        )
+        .await?;
+        let (_, c1) = document(&pool, &f, "obs-1.json", T1, "cup-7 is on desk").await?;
+        let (_, c2) = document(&pool, &f, "obs-2.json", T2, "cup-7 is on shelf").await?;
+        statement(&pool, &f, c1, "desk", T1).await?;
+        statement(&pool, &f, c2, "shelf", T2).await?;
+        bind_is_on(&pool, &f).await?;
+        let typed = materialize::materialize(&pool, f.kb).await?;
+        assert_eq!(
+            (typed.added, typed.corrected, typed.conflicts),
+            (2, 1, 0),
+            "{typed:?}"
+        );
+        let desk = typed_desk(&pool, &f).await?;
+        assert_eq!(desk.len(), 1);
+        assert_eq!(
+            desk[0].valid_to_precision.as_deref(),
+            Some("unknown"),
+            "location is functional and a later place was materialized: the desk row is closed \
+             without an explicit reconcile: {desk:?}"
+        );
+        // 再跑一遍是空转：没有新行，也不再对账
+        let again = materialize::materialize(&pool, f.kb).await?;
+        assert_eq!(
+            (again.added, again.merged, again.corrected, again.conflicts),
+            (0, 0, 0, 0),
+            "{again:?}"
+        );
+        reasoning::materialize(&pool, f.kb).await?;
+        assert!(!holds_at(&pool, &f, f.a, rule, NOW, None).await?);
+        assert!(holds_at(&pool, &f, f.a, rule, T_MID, None).await?);
+        anyhow::Ok(())
+    }
+    .await;
+
+    cleanup(&pool, f.org).await?;
+    run
+}
+
+/// #900：同一身份再推一份新内容（原地替换、记版本、`doc_time` 换成新的，新块顶替旧块）。
+/// 停在旧版上的证据按**它那一版**的日期算，所以后一次观察关得上前一段，而不是记成
+/// 「同时」的冲突
+#[tokio::test]
+async fn a_same_identity_update_closes_the_earlier_place() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "issue900-same-identity").await?;
+
+    let run = async {
+        let (doc, c1) = document(&pool, &f, "cup-7.json", T1, "cup-7 is on desk").await?;
+        // 直接写进库的文档没有版本行：第一版按现在的日期补上，和摄入路径写下的一样
+        utopia_store::documents::record_version(&pool, doc, "cup-7-v1", 17).await?;
+        statement(&pool, &f, c1, "desk", T1).await?;
+        bind_is_on(&pool, &f).await?;
+        let first = materialize::materialize(&pool, f.kb).await?;
+        assert_eq!(first.added, 1, "{first:?}");
+
+        // 第二次推送：原地替换、记版本、doc_time 换成新的（ingest_item 的那一步），新块顶替旧块
+        utopia_store::documents::replace_content_and_enqueue_processing(
+            &pool,
+            doc,
+            "cup-7.json",
+            "application/json",
+            17,
+            "cup-7-v2",
+            Some(t(T2)),
+        )
+        .await?;
+        // 那一步排下的处理任务这里不跑：抽取的结果由下面几行写出来
+        sqlx::query("DELETE FROM jobs WHERE payload->>'document_id' = $1")
+            .bind(doc.to_string())
+            .execute(&pool)
+            .await?;
+        let text = "cup-7 is on shelf".to_string();
+        let piece = utopia_ingest::ChunkPiece {
+            seq: 0,
+            char_start: 0,
+            char_end: text.chars().count() as i32,
+            heading: None,
+            provenance: utopia_ingest::Provenance::stated(),
+            text: text.clone(),
+        };
+        utopia_store::documents::replace_chunks(&pool, f.kb, doc, &[piece]).await?;
+        let (c2,): (Uuid,) = sqlx::query_as(
+            "SELECT id FROM chunks WHERE document_id = $1 AND superseded_at IS NULL",
+        )
+        .bind(doc)
+        .fetch_one(&pool)
+        .await?;
+        statement(&pool, &f, c2, "shelf", T2).await?;
+        let second = materialize::materialize(&pool, f.kb).await?;
+        assert_eq!(
+            (second.added, second.corrected, second.conflicts),
+            (1, 1, 0),
+            "the desk row dates at version 1's time, the shelf row at version 2's: {second:?}"
+        );
+        let desk = typed_desk(&pool, &f).await?;
+        assert_eq!(desk.len(), 1);
+        assert_eq!(
+            desk[0].valid_to_precision.as_deref(),
+            Some("unknown"),
+            "after a same-identity update the desk row is closed: {desk:?}"
+        );
+        // 版本表记着各自的日期
+        let dates: Vec<(i32, Option<DateTime<Utc>>)> = sqlx::query_as(
+            "SELECT version, doc_time FROM document_versions WHERE document_id = $1 ORDER BY version",
+        )
+        .bind(doc)
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(dates, vec![(1, Some(t(T1))), (2, Some(t(T2)))]);
         anyhow::Ok(())
     }
     .await;

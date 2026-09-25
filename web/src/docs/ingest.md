@@ -142,7 +142,7 @@ Content-Type: application/json
 
 | Field | Required | Meaning |
 |---|---|---|
-| `external_id` | yes | Stable identity. Same identity + new content → update in place, with a version recorded. |
+| `external_id` | yes | Stable identity. Same identity + new content → update in place, with a version recorded. One observation, one identity: the same payload under a new identity is a second observation with its own `doc_time`, never a rename. |
 | `doc_time` | no | RFC 3339; the observation's own time. Without it the item is undated. |
 | `e` | yes | Things: `[name, kind word, named]`. `named` is `true` for a name, `false` for a description. |
 | `s` | yes | Statements: `[quote, subject, phrase, object, value, qualifiers, when, ended]`. `quote` must be `null`; `subject` and `object` name things listed in `e`; give `object` or `value`, not both; `qualifiers` is an object keyed by your own role words; `when` / `ended` are time words as you would write them. |

@@ -23,8 +23,19 @@ fn the_door_refuses_what_the_contract_has_no_slot_for() {
     let (_, content) = super::validate_statements_payload(ok.to_string().as_bytes())
         .expect("a well-formed contract passes");
     let content = content.expect("a non-tombstone yields the document text");
-    // 存的是我们重新序列化的那份：没有信封，能被抽取用的同一个解析器读回
-    assert!(!content.contains("external_id"));
+    // 存的是我们重新序列化的那份：带着这次观测的身份，能被抽取用的同一个解析器读回
+    // （它只读三个数组，身份和日期两个键它不看）
+    let stored: Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(stored["external_id"], "obs-1");
+    assert!(
+        stored.get("doc_time").is_none(),
+        "no date was given, none is stored"
+    );
+    assert_eq!(
+        stored.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["e", "external_id", "n", "s"],
+        "identity plus the three arrays, nothing else"
+    );
     let parsed = utopia_extract::open::parse_open_response(&content).unwrap();
     assert_eq!(parsed.statements.len(), 1);
     assert_eq!(parsed.statements[0].phrase, "is on");
@@ -527,5 +538,42 @@ async fn the_push_token_can_be_viewed_and_rotated_like_an_api_source() -> anyhow
         )
         .await?;
     assert_eq!(status, StatusCode::OK, "{body}");
+    f.cleanup().await
+}
+
+/// 同一份载荷在新身份下是另一次观测（#900）：两次看到杯子在桌上就是两篇文档，各带自己的
+/// 日期。身份写在正文里，所以两篇正文不同，库里「一份内容一篇文档」的唯一性和文件型
+/// 来源那条「同内容出现在新路径 = 改名」的识别都碰不到它
+#[tokio::test]
+async fn the_same_payload_under_a_new_identity_is_a_second_observation() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let mut first = observation("08:14:03", "kitchen table");
+    first["external_id"] = json!("obs-1");
+    first["doc_time"] = json!("2026-09-23T08:14:03Z");
+    let (status, body) = f.push(f.source, &f.token, &first).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["action"], "created");
+    let mut second = first.clone();
+    second["external_id"] = json!("obs-2");
+    second["doc_time"] = json!("2026-09-23T08:20:00Z");
+    let (status, body) = f.push(f.source, &f.token, &second).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["action"], "created", "not a move");
+    for (key, when) in [
+        ("statements:obs-1", "2026-09-23T08:14:03Z"),
+        ("statements:obs-2", "2026-09-23T08:20:00Z"),
+    ] {
+        let doc = documents::find_by_external_key(&f.pool, f.source, key)
+            .await?
+            .unwrap_or_else(|| panic!("{key} is its own document"));
+        assert_eq!(
+            doc.doc_time
+                .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
+            Some(when.to_string()),
+            "each observation keeps its own date"
+        );
+    }
     f.cleanup().await
 }

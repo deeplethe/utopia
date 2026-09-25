@@ -25,7 +25,7 @@ A `statements` source accepts the open extraction shape verbatim: `e`, `s` and `
 
 **2. The payload is the document, in one piece.**
 
-The `{e, s, n}` object is stored as the document's content and as its single chunk, verbatim. Identity, versions, tombstones and the run history are exactly the `api` source's; the document appears in the Library under its source like any other. The chunker is not consulted: its budget exists so that a model reads a passage it can hold, and no model reads this.
+The `{e, s, n}` object is stored as the document's content and as its single chunk, verbatim, preceded by the observation's `external_id` and `doc_time` so that the document says which observation it is (revised 2026-09-25: two observations that saw the same thing are two documents, and a base keeps one document per content). Identity, versions, tombstones and the run history are exactly the `api` source's; the document appears in the Library under its source like any other. The chunker is not consulted: its budget exists so that a model reads a passage it can hold, and no model reads this.
 
 **3. No model, the same path.**
 
@@ -65,7 +65,7 @@ Content-Type: application/json
 }
 ```
 
-- `external_id` is required and is the identity (`statements:{external_id}`); a second push with new content updates in place and records a version; `deleted: true` tombstones it.
+- `external_id` is required and is the identity (`statements:{external_id}`); a second push with new content updates in place and records a version; `deleted: true` tombstones it. One observation, one identity: the same payload under a new `external_id` is a second observation with its own date, never a rename of the first.
 - `doc_time` is the observation's own time and lands on the world axis; push time is the record axis (0022). Without it the item is undated, as an upload is.
 - Each `s` item is `[quote, subject, phrase, object, value, qualifiers, when, ended]`; `quote` must be `null`. Each `e` item is `[name, kind word, named]`; each `n` item is `[entity name, other name, quote]` with `quote` null.
 - Keys other than `external_id`, `doc_time`, `deleted`, `e`, `s`, `n` are refused with 422, as is a subject or an `n` entity not listed in `e`. A body over 64 KiB or with more than 200 statements is refused with 422; those are cut-1 limits, not contracts.
@@ -88,3 +88,7 @@ Content-Type: application/json
 
 - Whether a statement with no offsets should look any different on a Review card. Today it does not.
 - Whether `when` should accept an RFC 3339 instant directly rather than time words, once the `instant` precision on the roadmap exists (0045).
+
+## Revisions
+
+- 2026-09-25 (#899, #900): typed materialization now reconciles the rows it writes along their uniqueness timelines, as the write path always did, so a later observation of a functional attribute closes the earlier one without a manual reconcile. A document version records the `doc_time` it was pushed with, and a fact's evidence date is taken from its own version, so a same-identity update no longer makes the earlier statement look simultaneous with the later one. The stored document carries the observation's identity and date ahead of the three arrays, so the same payload under a new identity is a second document, never a rename of the first.

@@ -633,8 +633,8 @@ struct StatementsBody {
 }
 
 /// 门口的校验：形状对不对、有没有契约之外的键、每条陈述的引文格是不是空的。
-/// 通过就把 `{e, s, n}` 按契约重新序列化成文档正文——存的是我们自己写出来的那份，
-/// 不是调用方发来的字节，于是文档里没有信封、没有多余空白，块就是契约本身
+/// 通过就按契约重新序列化成文档正文——存的是我们自己写出来的那份，不是调用方发来的
+/// 字节：身份、日期（有的话）和 `{e, s, n}`，键序固定、没有多余空白，块就是契约本身
 fn validate_statements_payload(raw: &[u8]) -> Result<(StatementsBody, Option<String>), String> {
     if raw.len() > STATEMENTS_MAX_BYTES {
         return Err(format!(
@@ -706,8 +706,20 @@ fn validate_statements_payload(raw: &[u8]) -> Result<(StatementsBody, Option<Str
             return Err(format!("n[{i}][2] (quote) must be null"));
         }
     }
+    // 存下的文档带着这次观测的身份和日期，再是契约的三个数组（#900）。身份在正文里，
+    // 两次看到同一件事就是两篇正文不同的文档：库里一份内容只能有一篇（`documents_kb_sha_idx`），
+    // 文件型来源那条「同内容出现在新路径 = 改名」的识别也就永远碰不到它。解析器只读
+    // `e` / `s` / `n`，多出的两个键它不看
     // 只有契约能通过 parse_open_response：这一步在门口跑一遍，抽取时不会再有别的答案
-    let content = serde_json::to_string_pretty(&json!({ "e": body.e, "s": body.s, "n": body.n }))
+    let mut stored = serde_json::Map::new();
+    stored.insert("external_id".into(), json!(body.external_id.trim()));
+    if let Some(at) = body.doc_time {
+        stored.insert("doc_time".into(), json!(at));
+    }
+    stored.insert("e".into(), body.e.clone());
+    stored.insert("s".into(), body.s.clone());
+    stored.insert("n".into(), body.n.clone());
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(stored))
         .map_err(|e| format!("cannot serialise the contract: {e}"))?;
     let parsed = utopia_extract::open::parse_open_response(&content)
         .map_err(|e| format!("the contract does not parse: {e}"))?;

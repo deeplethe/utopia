@@ -27,7 +27,7 @@ async fn try_materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Option<Outcome
         tx.rollback().await?;
         return Ok(None);
     }
-    let outcome = materialize_in_tx(&mut tx, kb_id).await?;
+    let (outcome, _written) = materialize_in_tx(&mut tx, kb_id).await?;
     tx.commit().await?;
     Ok(Some(outcome))
 }
