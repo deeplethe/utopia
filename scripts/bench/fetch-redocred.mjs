@@ -25,6 +25,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv);
 const N = Number(args.n || 100);
 const SEED = Number(args.seed || 1);
+// 第二批（温库的边际度量）：换个种子、排除第一批的条目、文件名带自己的前缀，本体文件不重写——
+// 第二批灌进的是第一批建好的库，属性就是那 95 条
+const NAME = args.name || `redocred-${N}`;
+const EXCLUDE = args.exclude ? new Set(JSON.parse(fs.readFileSync(args.exclude, "utf8")).docs.map((d) => d.title)) : new Set();
 const DIR = args.dir || path.join(process.env.TMPDIR || "/tmp", "redocred");
 fs.mkdirSync(DIR, { recursive: true });
 
@@ -56,13 +60,14 @@ const train = JSON.parse(fs.readFileSync(await fetchTo("train_revised.json", RAW
 
 const rand = rng(SEED);
 const order = test.map((d, i) => [rand(), i]).sort((a, b) => a[0] - b[0]).map(([, i]) => i);
-const picked = order.slice(0, N).sort((a, b) => a - b).map((i) => test[i]);
+const picked = order.filter((i) => !EXCLUDE.has(test[i].title)).slice(0, N).sort((a, b) => a - b).map((i) => test[i]);
 
 // 属性标签：先看本地的 rel_info.json，没有就问 Wikidata（批量 50）
 const relInfoPath = path.join(DIR, "rel_info.json");
 let relInfo = fs.existsSync(relInfoPath) ? JSON.parse(fs.readFileSync(relInfoPath, "utf8")) : {};
 const used = [...new Set(test.flatMap((d) => d.labels.map((l) => l.r)))].sort();
-const missing = used.filter((p) => !relInfo[p]);
+// 第二批不问 Wikidata：属性是第一批那 95 条，标签在本体文件里；第二批里多出来的属性反正召不回，键当标签
+const missing = args.exclude ? [] : used.filter((p) => !relInfo[p]);
 for (let i = 0; i < missing.length; i += 50) {
   const ids = missing.slice(i, i + 50);
   const url = "https://www.wikidata.org/w/api.php?" + new URLSearchParams({
@@ -104,7 +109,7 @@ const ontology = used.map((pid) => {
 
 // 语料：标题 + 句子；实体提及名照原文
 const corpus = picked.map((d, i) => ({
-  filename: `redocred-${String(i).padStart(3, "0")}.txt`,
+  filename: `${NAME}-${String(i).padStart(3, "0")}.txt`,
   title: d.title,
   text: `${d.title}\n\n${d.sents.map((s) => s.join(" ")).join(" ")}`,
 }));
@@ -122,9 +127,9 @@ const truth = picked.map((d, i) => {
 });
 
 const out = (rel, data) => { const p = path.join(HERE, rel); fs.writeFileSync(p, JSON.stringify(data, null, 1)); return p; };
-console.log(out(`corpora/redocred-${N}.json`, { source: "Re-DocRED test_revised.json (MIT, tonytan48/Re-DocRED)", seed: SEED, docs: corpus }));
-console.log(out(`truth/redocred-${N}.json`, { seed: SEED, docs: truth }));
-console.log(out(`truth/redocred-ontology.json`, { source: "labels: Wikidata; domains/ranges: Re-DocRED train_revised.json", properties: ontology }));
+console.log(out(`corpora/${NAME}.json`, { source: "Re-DocRED test_revised.json (MIT, tonytan48/Re-DocRED)", seed: SEED, excludes: args.exclude || null, docs: corpus }));
+console.log(out(`truth/${NAME}.json`, { seed: SEED, docs: truth }));
+if (!args.exclude) console.log(out(`truth/redocred-ontology.json`, { source: "labels: Wikidata; domains/ranges: Re-DocRED train_revised.json", properties: ontology }));
 const gold = truth.reduce((n, d) => n + d.facts.length, 0);
 const same = truth.reduce((n, d) => n + d.facts.filter((f) => f.same_sentence).length, 0);
 console.log(`${N} 篇，${gold} 条金标（同句 ${same}，跨句 ${gold - same}），${ontology.length} 条属性`);
