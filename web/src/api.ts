@@ -13,6 +13,26 @@ export class ApiError extends Error {
   }
 }
 
+/** 服务端拒绝时回的正文 */
+type Refusal = { error?: string; code?: string; detail?: string };
+
+/** 一次拒绝给人看的那句话。
+ *
+ *  有 code 就查 i18n，没有（或这一条还没进表）就退回服务端的英文原句——
+ *  服务端永远说英文，因为界面语言在客户端（docs/decisions/0004）。
+ *  **普通请求与对话流共用这一处**：对话流从前只读 `error`，于是明明有译文的
+ *  `no_chat_model` 在中文界面上也是一句英文 */
+function refusalMessage(body: Refusal, fallback: string): string {
+  let message = body.error || fallback;
+  // code 来自网络，不是字面量——这一处 cast 换来 err 表本身的全量类型检查
+  const worded = body.code
+    ? (S.err as Record<string, string | undefined>)[body.code]
+    : undefined;
+  if (worded) message = worded;
+  if (body.detail) message = S.errDetail(message, body.detail);
+  return message;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     credentials: "include",
@@ -23,25 +43,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    // 措辞在这一个收口点定：22 个文件里的 toast.error(e.message) 一处都不用改。
-    // 有 code 就查 i18n，没有（或这一条还没进表）就退回服务端的英文原句——
-    // 服务端永远说英文，因为界面语言在客户端（docs/decisions/0004）
+    // 措辞在这一个收口点定：22 个文件里的 toast.error(e.message) 一处都不用改
     let message = res.statusText;
     let code: string | undefined;
     try {
-      const body = (await res.json()) as {
-        error?: string;
-        code?: string;
-        detail?: string;
-      };
-      if (body.error) message = body.error;
+      const body = (await res.json()) as Refusal;
       code = body.code;
-      // code 来自网络，不是字面量——这一处 cast 换来 err 表本身的全量类型检查
-      const worded = code
-        ? (S.err as Record<string, string | undefined>)[code]
-        : undefined;
-      if (worded) message = worded;
-      if (body.detail) message = S.errDetail(message, body.detail);
+      message = refusalMessage(body, message);
     } catch {
       // 非 JSON 响应体，保留 statusText
     }
@@ -2707,8 +2715,7 @@ function consumeChatStream(
       if (!res.ok || !res.body) {
         let message = res.statusText;
         try {
-          const body = (await res.json()) as { error?: string };
-          if (body.error) message = body.error;
+          message = refusalMessage((await res.json()) as Refusal, message);
         } catch { /* keep the HTTP status */ }
         fail(message);
         return;
