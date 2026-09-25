@@ -957,6 +957,8 @@ pub struct DeriveReport {
     /// 第二条依据，而对账的键里没有前提——不重写的话那一行会一直挂着上一轮
     /// 的理由，链上还可能挂着一条刚刚作废的前提
     pub reproved: usize,
+    /// 结论没变、规则定义换了版本、行留着改指新版本的（0060）
+    pub redefined: usize,
 }
 
 /// 一条派生从它的前提上得到的精度与置信度（0024）。
@@ -1232,6 +1234,8 @@ struct Wanted {
     /// 公理规则（`rules.id`）或业务规则（`attribute_rules.id`），恰好一个
     rule_id: Option<Uuid>,
     attribute_rule_id: Option<Uuid>,
+    /// 业务规则推的：凭定义的哪一版（0060）
+    attribute_rule_version_id: Option<Uuid>,
 }
 
 /// JSON 值的规范化文本形态，只用来做键。
@@ -1356,6 +1360,9 @@ struct LoadedRule {
     subject_classes: Vec<String>,
     /// 结论落在哪个谓词上：归类落 `is_a`，属性落它自己那个
     conclude_predicate: Uuid,
+    /// 这一轮读的是规则定义的哪一版（0060）：推出来的行记它，证明才说得出
+    /// 「当时规则怎么说」。迁移给每条规则补了第 1 版，所以正常总有
+    version: Option<Uuid>,
 }
 
 /// 编译出来的一批规则，外加接链要用的两样东西（0030）。
@@ -1382,6 +1389,8 @@ type RuleDefRow = (
     Option<String>,
     Option<String>,
     Option<Uuid>,
+    // 当前版本的 id（0060）
+    Option<Uuid>,
 );
 
 /// 取业务规则。条件形状不合法的规则**整条跳过而不是报错退出**——一条写坏的
@@ -1395,7 +1404,9 @@ async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
     let rows: Vec<RuleDefRow> = sqlx::query_as(
         "SELECT r.id, r.subject_type_id, r.conclusion,
                 r.conclude_type_id, r.conclude_predicate_id, r.conclude_value,
-                r.conclude_expr, ct.iri, ct.key, r.join_predicate_id
+                r.conclude_expr, ct.iri, ct.key, r.join_predicate_id,
+                (SELECT v.id FROM attribute_rule_versions v
+                  WHERE v.rule_id = r.id AND v.superseded_at IS NULL) AS version_id
            FROM attribute_rules r
            LEFT JOIN entity_types ct ON ct.id = r.conclude_type_id
           WHERE r.kb_id = $1 AND r.enabled
@@ -1478,6 +1489,7 @@ async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
         iri,
         key,
         join_predicate,
+        version,
     ) in rows
     {
         if broken.contains(&id) {
@@ -1544,6 +1556,7 @@ async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
             subject_types,
             subject_classes,
             conclude_predicate: predicate,
+            version,
         });
     }
     Ok(LoadedRules {
@@ -2132,6 +2145,7 @@ async fn resolve(pool: &PgPool, kb_id: Uuid) -> AppResult<Resolved> {
                             premises: h.premises,
                             rule_id: None,
                             attribute_rule_id: Some(lr.rule.id),
+                            attribute_rule_version_id: lr.version,
                         },
                     );
                     dirty = true;
@@ -2202,6 +2216,7 @@ async fn resolve(pool: &PgPool, kb_id: Uuid) -> AppResult<Resolved> {
                         premises: h.premises,
                         rule_id: None,
                         attribute_rule_id: Some(lr.rule.id),
+                        attribute_rule_version_id: lr.version,
                     },
                 );
             }
@@ -2316,6 +2331,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
                 premises: d.premises.clone(),
                 rule_id: Some(rule_id),
                 attribute_rule_id: None,
+                attribute_rule_version_id: None,
             });
     }
     for lr in &loaded.rules {
@@ -2404,8 +2420,9 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
             "INSERT INTO derived_facts (id, kb_id, subject_id, predicate_id, object_id,
                                         object_value, valid_from, valid_to,
                                         valid_from_precision, valid_to_precision,
-                                        confidence, rule_id, attribute_rule_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
+                                        confidence, rule_id, attribute_rule_id,
+                                        attribute_rule_version_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
         )
         .bind(id)
         .bind(kb_id)
@@ -2420,9 +2437,27 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
         .bind(conf)
         .bind(d.rule_id)
         .bind(d.attribute_rule_id)
+        .bind(d.attribute_rule_version_id)
         .execute(&mut *tx)
         .await?;
         report.inserted += 1;
+    }
+
+    // 结论没变、定义变了：这一行现在是凭规则的新版本成立的（0060）。行留着——
+    // 对账的键里没有版本，结论本身没变——版本换过来，证明才说得出它现在凭什么
+    for (id, d) in &kept {
+        let Some(version) = d.attribute_rule_version_id else {
+            continue;
+        };
+        let res = sqlx::query(
+            "UPDATE derived_facts SET attribute_rule_version_id = $2
+              WHERE id = $1 AND attribute_rule_version_id IS DISTINCT FROM $2",
+        )
+        .bind(id)
+        .bind(version)
+        .execute(&mut *tx)
+        .await?;
+        report.redefined += res.rows_affected() as usize;
     }
 
     // 结论没变、理由变了：**同一句话可以有第二条依据**（换了一条读数，或者换了
@@ -2914,6 +2949,7 @@ async fn derived_one(
                 r.label AS predicate,
                 COALESCE(ru.kind, 'business') AS rule,
                 ar.name AS rule_name,
+                v.seq AS rule_version, v.definition AS rule_definition,
                 d.valid_from, d.valid_to, d.confidence, d.derived_at,
                 COALESCE(
                     (SELECT array_agg(
@@ -2937,6 +2973,7 @@ async fn derived_one(
            JOIN relation_types r ON r.id = d.predicate_id
            LEFT JOIN rules ru ON ru.id = d.rule_id
            LEFT JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
+           LEFT JOIN attribute_rule_versions v ON v.id = d.attribute_rule_version_id
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
           WHERE d.kb_id = $1 AND d.id = $2",
     )
@@ -2979,6 +3016,7 @@ pub async fn derived_for_entity(
                 r.label AS predicate,
                 COALESCE(ru.kind, 'business') AS rule,
                 ar.name AS rule_name,
+                v.seq AS rule_version, v.definition AS rule_definition,
                 d.valid_from, d.valid_to, d.confidence, d.derived_at,
                 COALESCE(
                     (SELECT array_agg(
@@ -3002,6 +3040,7 @@ pub async fn derived_for_entity(
            JOIN relation_types r ON r.id = d.predicate_id
            LEFT JOIN rules ru ON ru.id = d.rule_id
            LEFT JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
+           LEFT JOIN attribute_rule_versions v ON v.id = d.attribute_rule_version_id
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
           WHERE d.kb_id = $1 AND {derived_held}
             AND (d.subject_id = $2 OR d.object_id = $2)

@@ -251,6 +251,71 @@ function Matches({ kbId, ruleId }: { kbId: string; ruleId: string }) {
   );
 }
 
+/** 一条规则的定义史（0060）。每一版按现在的写法读出来：判据、结论、时段、此刻凭它成立几条 */
+function History({ kbId, ruleId, attributes }: { kbId: string; ruleId: string; attributes: RelationTypeView[] }) {
+  const q = useQuery({
+    queryKey: ["ruleVersions", kbId, ruleId],
+    queryFn: () => api.ruleVersions(kbId, ruleId),
+  });
+  const versions = q.data?.versions ?? [];
+  if (!versions.length) {
+    return <p className="text-small text-ink-2">{S.ontology.ruleHistoryEmpty}</p>;
+  }
+  return (
+    <div className="space-y-4">
+      {versions.map((v) => {
+        const label = (id: string | null) => (id ? (v.labels[id] ?? id) : "");
+        // 借判据与结论两个渲染器：历史里的一版就是一条规则当时的样子
+        const asRule = {
+          id: v.id,
+          name: "",
+          description: "",
+          enabled: true,
+          version: v.seq,
+          subject_type_id: v.definition.subject_type_id,
+          subject_label: label(v.definition.subject_type_id),
+          conclusion: v.definition.conclusion,
+          conclude_type_id: v.definition.conclude_type_id,
+          conclude_type_label: v.definition.conclude_type_id ? label(v.definition.conclude_type_id) : null,
+          conclude_predicate_id: v.definition.conclude_predicate_id,
+          conclude_predicate_label: v.definition.conclude_predicate_id ? label(v.definition.conclude_predicate_id) : null,
+          conclude_value: v.definition.conclude_value,
+          conclude_expr: v.definition.conclude_expr,
+          join_predicate_id: v.definition.join_predicate_id,
+          join_predicate_label: v.definition.join_predicate_id ? label(v.definition.join_predicate_id) : null,
+          conditions: v.definition.conditions.map((c) => ({
+            group: c.group,
+            side: c.side,
+            predicate_id: c.predicate_id,
+            predicate_label: label(c.predicate_id),
+            op: c.op,
+            operand: c.operand,
+          })),
+          derived_count: v.derived_count,
+          capped: 0,
+        } as unknown as BusinessRule;
+        return (
+          <div key={v.id} className="space-y-1">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="u-num text-small text-ink">{S.ontology.ruleVersion(v.seq)}</span>
+              {!v.superseded_at && <Chip tone="success">{S.ontology.ruleVersionCurrent}</Chip>}
+              <span className="u-num text-fine text-ink-2">
+                {S.ontology.ruleVersionSince(v.recorded_at.slice(0, 10), v.superseded_at ? v.superseded_at.slice(0, 10) : null)}
+              </span>
+              <span className="u-num text-fine text-ink-2">{S.ontology.ruleVersionStanding(v.derived_count)}</span>
+            </div>
+            <RuleCriterion rule={asRule} attributes={attributes} />
+            <div className="text-small text-ink">
+              <span className="text-ink-2">{asRule.subject_label} → </span>
+              <RuleConclusion rule={asRule} attributes={attributes} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function RulesPanel({
   kbId,
   focusId,
@@ -281,6 +346,7 @@ export function RulesPanel({
   const [doomed, setDoomed] = useState<BusinessRule | null>(null);
   /** 展开了哪条规则的命中列表。一次只展开一条——两份长列表并排读不了 */
   const [opened, setOpened] = useState<string | null>(null);
+  const [historyOf, setHistoryOf] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [dependenciesOf, setDependenciesOf] = useState<string | null>(null);
   const [navigation, setNavigation] = useState<{ id: string } | null>(null);
@@ -482,6 +548,10 @@ export function RulesPanel({
                   <Td>
                     <div className="text-body text-ink">{r.name}</div>
                     <LinkButton onClick={() => setDependenciesOf(r.id)}>{S.ontology.ruleDependencies}</LinkButton>
+                    {/* 第几版，点开是定义史：改了判据的规则，旧结论凭的是旧版 */}
+                    <LinkButton className="u-num ml-2" onClick={() => setHistoryOf(r.id)}>
+                      {S.ontology.ruleVersion(r.version ?? 1)}
+                    </LinkButton>
                     {r.description && (
                       <div className="text-fine text-ink-2">{r.description}</div>
                     )}
@@ -576,6 +646,17 @@ export function RulesPanel({
         description={S.ontology.ruleMatchesTitle}
       >
         {opening && <Matches kbId={kbId} ruleId={opening.id} />}
+      </Dialog>
+
+      {/* 定义史：这一条改过几次、每一版怎么说 */}
+      <Dialog
+        open={!!historyOf}
+        onOpenChange={(o) => !o && setHistoryOf(null)}
+        closeLabel={S.ui.close}
+        title={list.find((r) => r.id === historyOf)?.name ?? ""}
+        description={S.ontology.ruleHistoryTitle}
+      >
+        {historyOf && <History kbId={kbId} ruleId={historyOf} attributes={attributes} />}
       </Dialog>
 
       {metadataRule && (

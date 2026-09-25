@@ -183,6 +183,17 @@ pub async fn matches(
     Ok(Json(json!({ "matches": rows, "total": total })))
 }
 
+/// 一条规则的定义史（0060）：每一版说了什么、从什么时候到什么时候、此刻凭它成立几条
+pub async fn versions(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, rule_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let versions = utopia_store::business_rules::versions(&state.pool, kb_id, rule_id).await?;
+    Ok(Json(json!({ "versions": versions })))
+}
+
 #[derive(Deserialize)]
 pub struct MatchQuery {
     #[serde(default)]

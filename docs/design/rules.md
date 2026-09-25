@@ -49,6 +49,12 @@ invalidates what is not in it [0030].
 passage; derived edges are gold behind a toggle; blocked derivations are ghost edges; MCP has
 `list_rules` and `rule_matches`, read-only [0002, 0017, 0021].
 
+**A definition has a history.** Every edit that changes what a rule says opens a version (a full
+snapshot with a record time) and closes the previous one; renaming or switching a rule off does
+not. A derivation names the version it was drawn under, a kept conclusion moves to the new
+version, and the proof, the rules panel's history and `GET /kbs/{id}/rules/{rule_id}/versions`
+read it, so an invalidated conclusion still says what the rule said when it was drawn [0060].
+
 ## Why
 
 - **A reasoner amplifies defects**: 185 `part_of` facts became 828 under closure, with cycles from

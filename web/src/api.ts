@@ -404,6 +404,29 @@ export interface BusinessRule extends Omit<RuleInput, "conclusion" | "join_predi
   derived_count: number;
   /** 上次跑的时候有几个实体的读数组合没展开完。**大于零就意味着少推了** */
   capped: number;
+  /** 当前定义是第几版。改判据或结论就加一，改名不算。老的夹具没有它，界面按第 1 版读 */
+  version?: number;
+}
+
+/** 规则定义史的一版：说了什么、从什么时候到什么时候、此刻凭它成立几条 */
+export interface RuleVersion {
+  id: string;
+  seq: number;
+  definition: {
+    subject_type_id: string;
+    conclusion: BusinessRule["conclusion"];
+    conclude_type_id: string | null;
+    conclude_predicate_id: string | null;
+    conclude_value: unknown;
+    conclude_expr: unknown;
+    join_predicate_id: string | null;
+    conditions: { group: number; seq: number; side: string; predicate_id: string; op: string; operand: unknown }[];
+  };
+  recorded_at: string;
+  superseded_at: string | null;
+  derived_count: number;
+  /** 定义里提到的类与谓词现在叫什么；改名或删掉的查不到，界面就显示 id */
+  labels: Record<string, string>;
 }
 
 export interface DerivedFact {
@@ -419,6 +442,8 @@ export interface DerivedFact {
   rule: "transitive" | "symmetric" | "inverse" | "sub_property" | "business";
   /** 业务规则的名字。公理推的为 null——公理没有名字 */
   rule_name?: string | null;
+  /** 凭业务规则定义的哪一版推出的。公理推的为 null */
+  rule_version?: number | null;
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
@@ -1977,6 +2002,9 @@ export const api = {
     request<{ matches: RuleMatch[]; total: number }>(
       `/api/v1/kbs/${kbId}/rules/${ruleId}/matches?page=${page}&per=${per}`,
     ),
+  /** 一条规则的定义史：改过几次、每一版怎么说 */
+  ruleVersions: (kbId: string, ruleId: string) =>
+    request<{ versions: RuleVersion[] }>(`/api/v1/kbs/${kbId}/rules/${ruleId}/versions`),
   deleteRule: (kbId: string, ruleId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/rules/${ruleId}`, {
       method: "DELETE",
