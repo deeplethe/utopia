@@ -1214,6 +1214,12 @@ export const zh: Strings = {
     ruleEditing: "正在编辑",
     ruleMatchesTitle: "它标住了谁",
     ruleMatchesEmpty: "此刻一个也没有。",
+    ruleVersion: (n: number) => `v${n}`,
+    ruleHistoryTitle: "这条规则改过几次、每一版怎么说",
+    ruleHistoryEmpty: "还没有历史。",
+    ruleVersionCurrent: "当前",
+    ruleVersionSince: (from: string, to: string | null) => (to ? `${from} 至 ${to}` : `自 ${from}`),
+    ruleVersionStanding: (n: number) => `此刻凭它成立 ${n} 条`,
     ruleMatchBecause: (premises: string) => `凭 ${premises}`,
     ruleMatchSpan: (from: string, to: string | null) =>
       to ? `${from} 至 ${to}` : `${from} 起`,

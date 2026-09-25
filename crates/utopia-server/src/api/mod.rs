@@ -295,6 +295,11 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/rules/{rule_id}/matches",
             get(rule_routes::matches),
         )
+        // 定义史（0060）：一条规则改过几次、每一版怎么说
+        .route(
+            "/kbs/{id}/rules/{rule_id}/versions",
+            get(rule_routes::versions),
+        )
         .route(
             "/kbs/{id}/ontology/type-resolution/preview",
             post(ontology_routes::type_resolution_preview),

@@ -50,6 +50,8 @@ pub const IS_A: &str = "is_a";
 #[derive(sqlx::FromRow)]
 struct RuleRow {
     id: Uuid,
+    /// 当前定义是第几版（0060）。迁移给每条老规则补了第 1 版，所以总有
+    version: Option<i32>,
     name: String,
     description: String,
     subject_type_id: Uuid,
@@ -193,6 +195,7 @@ pub async fn create(
         other => AppError::Db(other),
     })?;
     insert_conditions(&mut tx, id, conditions).await?;
+    record_version(&mut tx, kb_id, id).await?;
     tx.commit().await?;
     Ok(id)
 }
@@ -300,8 +303,168 @@ pub async fn update(
             .await?;
         insert_conditions(&mut tx, rule_id, cs).await?;
     }
+    // 定义变了才开新版本；改名、改描述、开关不算（0060）
+    record_version(&mut tx, kb_id, rule_id).await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// 定义的快照（0060）：规则说了什么——主类、结论那几格、连接谓词、条件。名字、
+/// 描述和开关不在其中，它们是标签和开关，改了不等于规则换了说法。
+///
+/// **与迁移 0076 里回填第 1 版的表达式一字不差**：版本变没变是拿这份 JSON 比出来的，
+/// 两处形状不一样就会把没改的规则也开成新版本
+const DEFINITION_SQL: &str = "jsonb_build_object(
+           'subject_type_id', r.subject_type_id,
+           'conclusion', r.conclusion,
+           'conclude_type_id', r.conclude_type_id,
+           'conclude_predicate_id', r.conclude_predicate_id,
+           'conclude_value', r.conclude_value,
+           'conclude_expr', r.conclude_expr,
+           'join_predicate_id', r.join_predicate_id,
+           'conditions', COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                   'group', c.group_seq, 'seq', c.seq, 'side', c.subject_side,
+                   'predicate_id', c.predicate_id, 'op', c.op, 'operand', c.operand)
+                   ORDER BY c.group_seq, c.seq)
+               FROM attribute_rule_conditions c WHERE c.rule_id = r.id), '[]'::jsonb))";
+
+/// 定义变了就开新版本：关掉当前的，序号加一。没变什么都不做。回当前版本的 id。
+///
+/// 在写规则的同一个事务里跑：定义和它的版本要么一起落，要么一起不落
+async fn record_version(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kb_id: Uuid,
+    rule_id: Uuid,
+) -> AppResult<Uuid> {
+    let now: serde_json::Value = sqlx::query_scalar(&format!(
+        "SELECT {DEFINITION_SQL} FROM attribute_rules r WHERE r.id = $1"
+    ))
+    .bind(rule_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let current: Option<(Uuid, i32, serde_json::Value)> = sqlx::query_as(
+        "SELECT id, seq, definition FROM attribute_rule_versions
+          WHERE rule_id = $1 AND superseded_at IS NULL",
+    )
+    .bind(rule_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let seq = match current {
+        Some((id, _, definition)) if definition == now => return Ok(id),
+        Some((id, seq, _)) => {
+            sqlx::query("UPDATE attribute_rule_versions SET superseded_at = now() WHERE id = $1")
+                .bind(id)
+                .execute(&mut **tx)
+                .await?;
+            seq + 1
+        }
+        None => 1,
+    };
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO attribute_rule_versions (id, kb_id, rule_id, seq, definition)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .bind(rule_id)
+    .bind(seq)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(id)
+}
+
+/// 一版：id、序号、定义、记录时间起止、此刻凭它成立的结论条数
+type VersionRow = (
+    Uuid,
+    i32,
+    serde_json::Value,
+    chrono::DateTime<chrono::Utc>,
+    Option<chrono::DateTime<chrono::Utc>>,
+    i64,
+);
+
+/// 一条规则的定义史，新的在前（0060）。每一版带它的记录时间起止、此刻凭它成立的
+/// 结论条数，和定义里提到的类与谓词的标签——历史里的 id 可能已经改名甚至删掉，
+/// 标签按现在能查到的给，查不到的界面显示 id
+pub async fn versions(
+    pool: &PgPool,
+    kb_id: Uuid,
+    rule_id: Uuid,
+) -> AppResult<Vec<serde_json::Value>> {
+    let rows: Vec<VersionRow> = sqlx::query_as(
+        "SELECT v.id, v.seq, v.definition, v.recorded_at, v.superseded_at,
+                (SELECT count(*) FROM derived_facts d
+                  WHERE d.attribute_rule_version_id = v.id AND d.invalidated_at IS NULL)
+           FROM attribute_rule_versions v
+          WHERE v.kb_id = $1 AND v.rule_id = $2
+          ORDER BY v.seq DESC",
+    )
+    .bind(kb_id)
+    .bind(rule_id)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        // 规则不存在，或不在这个库：两者对调用方都是 404
+        let known: Option<Uuid> =
+            sqlx::query_scalar("SELECT id FROM attribute_rules WHERE id = $2 AND kb_id = $1")
+                .bind(kb_id)
+                .bind(rule_id)
+                .fetch_optional(pool)
+                .await?;
+        if known.is_none() {
+            return Err(AppError::NotFound);
+        }
+    }
+    let uuid_at =
+        |v: &serde_json::Value, k: &str| -> Option<Uuid> { v.get(k)?.as_str()?.parse().ok() };
+    let mut classes: Vec<Uuid> = Vec::new();
+    let mut predicates: Vec<Uuid> = Vec::new();
+    for (_, _, d, _, _, _) in &rows {
+        classes.extend(uuid_at(d, "subject_type_id"));
+        classes.extend(uuid_at(d, "conclude_type_id"));
+        predicates.extend(uuid_at(d, "conclude_predicate_id"));
+        predicates.extend(uuid_at(d, "join_predicate_id"));
+        for c in d
+            .get("conditions")
+            .and_then(|c| c.as_array())
+            .into_iter()
+            .flatten()
+        {
+            predicates.extend(uuid_at(c, "predicate_id"));
+        }
+    }
+    let mut labels: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+    for (table, ids) in [("entity_types", classes), ("relation_types", predicates)] {
+        if ids.is_empty() {
+            continue;
+        }
+        let found: Vec<(Uuid, String)> =
+            sqlx::query_as(&format!("SELECT id, label FROM {table} WHERE id = ANY($1)"))
+                .bind(&ids)
+                .fetch_all(pool)
+                .await?;
+        for (id, label) in found {
+            labels.insert(id.to_string(), serde_json::Value::String(label));
+        }
+    }
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, seq, definition, recorded_at, superseded_at, derived_count)| {
+                json!({
+                    "id": id,
+                    "seq": seq,
+                    "definition": definition,
+                    "recorded_at": recorded_at,
+                    "superseded_at": superseded_at,
+                    "derived_count": derived_count,
+                    "labels": labels,
+                })
+            },
+        )
+        .collect())
 }
 
 /// 删一条规则。它推出来的派生行随 `ON DELETE CASCADE` 一起走——**规则没了，
@@ -327,6 +490,8 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
                 r.conclude_predicate_id, cp.label AS conclude_predicate_label,
                 r.conclude_value, r.conclude_expr, r.enabled,
                 r.join_predicate_id, jp.label AS join_predicate_label,
+                (SELECT v.seq FROM attribute_rule_versions v
+                  WHERE v.rule_id = r.id AND v.superseded_at IS NULL) AS version,
                 (SELECT count(*) FROM derived_facts d
                   WHERE d.attribute_rule_id = r.id AND d.invalidated_at IS NULL)
                     AS derived_count,
@@ -391,6 +556,7 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value
                 "join_predicate_id": r.join_predicate_id,
                 "join_predicate_label": r.join_predicate_label,
                 "enabled": r.enabled,
+                "version": r.version.unwrap_or(1),
                 "derived_count": r.derived_count,
                 "capped": r.capped,
                 "conditions": conditions,

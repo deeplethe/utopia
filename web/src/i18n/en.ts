@@ -1359,6 +1359,12 @@ export const en = {
     ruleEditing: "Editing",
     ruleMatchesTitle: "What it marks",
     ruleMatchesEmpty: "Nothing right now.",
+    ruleVersion: (n: number) => `v${n}`,
+    ruleHistoryTitle: "How this rule has read",
+    ruleHistoryEmpty: "No history yet.",
+    ruleVersionCurrent: "current",
+    ruleVersionSince: (from: string, to: string | null) => (to ? `${from} to ${to}` : `since ${from}`),
+    ruleVersionStanding: (n: number) => (n === 1 ? "1 conclusion stands on it" : `${n} conclusions stand on it`),
     /* 前提要读成「凭什么」，所以用 because 起头而不是干列 */
     ruleMatchBecause: (premises: string) => `because ${premises}`,
     /* 同一个实体会因为不同时段的读数出现好几次——不写出这一段就像重复了 */

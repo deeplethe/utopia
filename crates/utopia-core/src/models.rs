@@ -1338,6 +1338,9 @@ pub struct DerivedFactView {
     pub rule: String,
     /// 业务规则的名字。公理推的为 None——公理没有名字，`rule` 那一列就是它的全部身份
     pub rule_name: Option<String>,
+    /// 凭业务规则定义的哪一版推出的（0060），和那一版的定义本身。公理推的为 None
+    pub rule_version: Option<i32>,
+    pub rule_definition: Option<serde_json::Value>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confidence: f32,
