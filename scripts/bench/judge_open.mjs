@@ -54,6 +54,8 @@ function judgeEndpoint(kb) {
                     FROM llm_settings s JOIN knowledge_bases k ON k.workspace_id = s.workspace_id WHERE k.id = '${kb}'`);
   const [base, key, model] = row.split("");
   if (!base || !model) throw new Error("工作区没配对话模型，也没给 BENCH_JUDGE_*");
+  // 库里的密钥是封印过的（服务端用 secret.key 封），读出来是密文，拿它调用只会 401
+  if (key.startsWith("enc:")) throw new Error("库里的 chat_api_key 是封印过的密文，裁判读不了它：给 BENCH_JUDGE_BASE / _KEY / _MODEL");
   console.error("裁判用的是工作区的对话模型——和抽取同一个模型，数字要打折看");
   return { base, key, model };
 }

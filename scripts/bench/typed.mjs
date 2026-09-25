@@ -367,6 +367,8 @@ function judgeEndpoint(KB) {
   if (process.env.BENCH_JUDGE_BASE) return { base: process.env.BENCH_JUDGE_BASE, key: process.env.BENCH_JUDGE_KEY || "", model: process.env.BENCH_JUDGE_MODEL || "" };
   const [base, key, model] = psql(`SELECT s.chat_base_url, s.chat_api_key, s.chat_model FROM llm_settings s JOIN knowledge_bases k ON k.workspace_id=s.workspace_id WHERE k.id='${KB}'`).split("|");
   if (!base || !model) throw new Error("工作区没配对话模型，也没给 BENCH_JUDGE_*");
+  // 库里的密钥是封印过的（服务端用 secret.key 封），读出来是密文，拿它调用只会 401
+  if (key.startsWith("enc:")) throw new Error("库里的 chat_api_key 是封印过的密文，裁判读不了它：给 BENCH_JUDGE_BASE / _KEY / _MODEL");
   log("裁判与抽取是同一个模型，数字要打折看（judge_open.mjs 同一条提醒）");
   return { base, key, model };
 }
