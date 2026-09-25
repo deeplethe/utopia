@@ -96,7 +96,7 @@ pub async fn align_types_reasking(state: &AppState, kb_id: Uuid, reask: u32) -> 
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
-    let client = llm_util::chat_client(&settings)
+    let client = llm_util::chat_client_thinking(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
     // 一个库同时只跑一份：抽完每篇、建每个类都会排一次，排队去重只挡「排队中」的，
     // 后一个开跑时前一个还在跑就并行了——实测种 14 个类跑出 14 份并行任务，把模型端点

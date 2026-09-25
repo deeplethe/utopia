@@ -135,9 +135,11 @@ pub async fn refresh_scoped(
     // 日志照样写着"已补齐",看日志的人以为没事
     if failed > 0 {
         tracing::warn!(%kb_id, count = done, failed, "本体向量补了一部分，其余留给下一轮");
-    } else {
-        tracing::info!(%kb_id, count = done, "本体向量已补齐");
+        // 「留给下一轮」得真有下一轮：从前这里照样报成功，没人再排它，缺向量的属性就一直缺
+        // （对齐的短名单退回全部候选，台子等到超时）。报错让任务按预算重试
+        anyhow::bail!("{failed} batches of ontology vectors failed; the job retries");
     }
+    tracing::info!(%kb_id, count = done, "本体向量已补齐");
     Ok(done)
 }
 

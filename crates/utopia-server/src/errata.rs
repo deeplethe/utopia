@@ -10,7 +10,8 @@
 
 use std::collections::HashMap;
 use utopia_extract::errata::{
-    build_errata_messages, parse_errata_response, ErrataFact, ErrataProperty, Verdict,
+    build_confirm_messages, build_errata_messages, parse_confirm_response, parse_errata_response,
+    ErrataFact, ErrataProperty, Verdict,
 };
 use utopia_store::errata::{self, ActionInput, Candidate, Proposed};
 use uuid::Uuid;
@@ -27,7 +28,7 @@ pub const FACTS_PER_DOCUMENT: usize = 40;
 pub const SAMPLE: usize = 10;
 /// 一次请求最多几条
 pub const FACTS_PER_REQUEST: usize = 20;
-/// 一份文档最多问几次
+/// 一份文档最多问几次（撤改的第二票另算，每批至多一次）
 pub const REQUESTS_PER_DOCUMENT: usize = 2;
 /// 正文最多带多少字；再长的文档截断，截掉的部分这一轮看不到
 pub const DOC_CHARS: usize = 16_000;
@@ -134,7 +135,8 @@ pub async fn review_document(
     let all = errata::candidates(pool, kb_id, document_id).await?;
     let chosen = choose(&all);
     let mut outcome = DocumentOutcome::default();
-    if chosen.is_empty() {
+    // 没有可看的行：第一次见这份文档就送一份空清单去（agent 只能加）；看过的不再送
+    if chosen.is_empty() && errata::runs_of(pool, document_id).await? > 0 {
         return Ok(outcome);
     }
     let flagged = chosen.iter().filter(|c| c.flag.is_some()).count();
@@ -148,9 +150,21 @@ pub async fn review_document(
     .await?;
     let text = errata::document_text(pool, document_id).await?;
     let document = truncate(&text, DOC_CHARS);
+    // 属性表按这份文档裁：整份本体每次都带是勘误一次请求 4.7k token 里的 4k（bench README，
+    // 2026-09-24）。文档的向量取最近的几十条，再并上清单里事实已用的属性；没有向量就带全部
+    let glossary = shortlist_glossary(state, settings, kb_id, document, glossary, &chosen).await;
+    let glossary = &glossary[..];
     let (mut prompt_tokens, mut completion_tokens, mut saw_usage) = (0u64, 0u64, false);
     let mut error = None;
-    for batch in chosen.chunks(FACTS_PER_REQUEST).take(REQUESTS_PER_DOCUMENT) {
+    let batches: Vec<&[Candidate]> = if chosen.is_empty() {
+        vec![&chosen[..]]
+    } else {
+        chosen
+            .chunks(FACTS_PER_REQUEST)
+            .take(REQUESTS_PER_DOCUMENT)
+            .collect()
+    };
+    for batch in batches {
         let items: Vec<ErrataFact<'_>> = batch
             .iter()
             .enumerate()
@@ -192,7 +206,52 @@ pub async fn review_document(
             tracing::info!(%kb_id, %document_id, malformed = parsed.malformed,
                 additions_refused = parsed.additions_refused, "勘误回复里有坏项");
         }
-        for v in &parsed.verdicts {
+        // 第二票：结构报了的、agent 要撤或改的，再问一遍文档说了没有；没拿到 not_stated 的
+        // 改成 keep（没报的那些由库留给人，不用问）
+        let mut verdicts = parsed.verdicts;
+        let doubted: Vec<ErrataFact<'_>> = verdicts
+            .iter()
+            .filter(|v| v.verdict != Verdict::Keep)
+            .filter_map(|v| usize::try_from(v.id).ok().and_then(|i| items.get(i)))
+            .filter(|f| f.flag.is_some())
+            .cloned()
+            .collect();
+        if !doubted.is_empty() {
+            let ids: Vec<i64> = doubted.iter().map(|f| f.id).collect();
+            let messages = build_confirm_messages(document, &doubted);
+            outcome.requests += 1;
+            let reply =
+                match chat_retrying_rate_limits_at(state, settings, client, &messages, Some(0.0))
+                    .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error = Some(e);
+                        break;
+                    }
+                };
+            if let Some(u) = reply.usage {
+                saw_usage = true;
+                prompt_tokens += u.prompt_tokens;
+                completion_tokens += u.completion_tokens;
+            }
+            let not_stated = match parse_confirm_response(&reply.text, &ids) {
+                Ok(x) => x,
+                Err(e) => {
+                    error = Some(anyhow::anyhow!("errata second vote unreadable: {e}"));
+                    break;
+                }
+            };
+            for v in verdicts.iter_mut() {
+                if v.verdict != Verdict::Keep && ids.contains(&v.id) && !not_stated.contains(&v.id)
+                {
+                    v.verdict = Verdict::Keep;
+                    v.reason = format!("second vote: stated ({})", v.reason);
+                    v.quote = None;
+                }
+            }
+        }
+        for v in &verdicts {
             let Some(c) = usize::try_from(v.id).ok().and_then(|i| batch.get(i)) else {
                 continue;
             };
@@ -257,6 +316,52 @@ pub async fn review_document(
         Some(e) => Err(e),
         None => Ok(outcome),
     }
+}
+
+/// 勘误一次请求带多少条属性（有向量时）
+const GLOSSARY_NEAREST: i64 = 24;
+
+/// 这份文档看得到的属性：向量最近的 [`GLOSSARY_NEAREST`] 条，加上清单里事实已经用的。
+/// 没配嵌入模型、属性没向量、嵌入失败：全部
+async fn shortlist_glossary<'a>(
+    state: &AppState,
+    settings: &utopia_core::models::LlmSettings,
+    kb_id: Uuid,
+    document: &str,
+    all: &[ErrataProperty<'a>],
+    chosen: &[Candidate],
+) -> Vec<ErrataProperty<'a>> {
+    let Some(client) = crate::llm_util::embed_client(settings) else {
+        return all.to_vec();
+    };
+    let vector = {
+        let _permit = crate::llm_util::acquire_embed(state, settings).await;
+        match client.embed(&[document.to_string()]).await {
+            Ok(mut v) if v.len() == 1 => v.remove(0),
+            _ => return all.to_vec(),
+        }
+    };
+    let near = match utopia_store::ontology::nearest_relation_types(
+        &state.pool,
+        kb_id,
+        &vector,
+        GLOSSARY_NEAREST,
+        None,
+    )
+    .await
+    {
+        Ok(n) if !n.is_empty() => n,
+        _ => return all.to_vec(),
+    };
+    let keep: std::collections::HashSet<&str> = near
+        .iter()
+        .map(|t| t.key.as_str())
+        .chain(chosen.iter().map(|c| c.property.as_str()))
+        .collect();
+    all.iter()
+        .filter(|p| keep.contains(p.key))
+        .cloned()
+        .collect()
 }
 
 /// keep 落地不算「动了图」；撤改加落地算

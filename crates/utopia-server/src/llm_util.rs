@@ -13,11 +13,14 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
     if !s.chat_ready() {
         return None;
     }
-    Some(LlmClient::new(
-        s.chat_base_url.as_deref()?,
-        s.chat_api_key.as_deref(),
-        s.chat_model.as_deref()?,
-    ))
+    Some(
+        LlmClient::new(
+            s.chat_base_url.as_deref()?,
+            s.chat_api_key.as_deref(),
+            s.chat_model.as_deref()?,
+        )
+        .with_reasoning_effort(s.chat_reasoning_effort.clone()),
+    )
 }
 
 pub fn embed_client(s: &LlmSettings) -> Option<LlmClient> {
@@ -77,6 +80,18 @@ pub async fn acquire(
         .await
         .ok()
 }
+
+/// 要模型**想过再答**的那几处用这个：对齐与提规则是判断题，几十次调用，思考 token
+/// 值得付；抽取、读数、勘误是照原文写 JSON 的活，按工作区设的推理强度（多半是 minimal）。
+/// 第一次真跑里把对齐也压到 minimal，裁判判 misworded 的从 4% 涨到 31%（bench README，
+/// 2026-09-24）——它挑了「相近」而不是「就是」的属性
+pub fn chat_client_thinking(s: &LlmSettings) -> Option<LlmClient> {
+    chat_client(s).map(|c| c.with_reasoning_effort(JUDGEMENT_EFFORT.map(String::from)))
+}
+
+/// 判断题（对齐两票）用的推理强度。`None` = 端点默认；`Some("low")` 是省一半思考 token 的
+/// 折中，精度差多少由 bench 量：全关（minimal）时 misworded 31%，默认强度 12%
+pub const JUDGEMENT_EFFORT: Option<&str> = Some("low");
 
 /// `acquire` 的便捷形式：直接从工作区设置取 chat 模型的身份。
 pub async fn acquire_chat(state: &AppState, s: &LlmSettings) -> Option<OwnedSemaphorePermit> {

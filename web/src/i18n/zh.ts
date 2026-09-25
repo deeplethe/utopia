@@ -1078,6 +1078,9 @@ export const zh: Strings = {
     modelsIntro:
       "OpenAI 兼容协议——DeepSeek、Qwen、GLM、Ollama、vLLM 都可用。完全内网友好。",
     chatModel: "对话模型",
+    reasoningEffort: "推理强度",
+    reasoningDefault: "端点默认",
+    reasoningHint: "推理模型先想再答，抽取一次调用九成的输出是思考；minimal 关掉它，答案不变。",
     embedModel: "向量模型（可选，启用语义检索）",
     baseUrl: "接口地址",
     model: "模型",
@@ -1762,6 +1765,7 @@ export const zh: Strings = {
       if (kind === "derived") return `留下的原因：有 ${value} 条派生靠着它`;
       if (kind === "answered") return `留下的原因：它在 ${value} 次回答里被提到`;
       if (kind === "contradiction") return `留下的原因：「${value}」只许一个值，这样会有两个`;
+      if (kind === "unflagged") return "留下的原因：结构没报过这条，撤或改要人确认";
       return `留下的原因：${detail}`;
     },
     errataQuote: "文档原话：",

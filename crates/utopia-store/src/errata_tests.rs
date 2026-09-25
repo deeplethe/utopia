@@ -26,7 +26,7 @@ struct Fx {
     text: &'static str,
 }
 
-const TEXT: &str = "Acme is based in London. Jane Roe runs Acme. Acme was founded in 1999.";
+const TEXT: &str = "Acme is based in London. Jane Roe runs Acme. Acme was founded in 1999. Zeta Corp is based in London.";
 
 /// 一个库：organization / place / person；based_in（organization → place）、ceo（organization →
 /// person，只许一个）、founded（日期属性）；一份文档一块正文；Acme、London、Paris、Jane Roe、
@@ -281,6 +281,18 @@ async fn structure_flags_facts_and_the_flagged_come_first() -> anyhow::Result<()
         assert_eq!(r.status, "applied");
         assert_eq!(candidates(&pool, f.kb, f.doc).await?.len(), 6);
         assert_eq!(documents_due(&pool, f.kb, 10).await?, vec![f.doc]);
+        // 抽完了、一条类型化行都没有的文档也该看一次（agent 只能加）；看过一次就不再排
+        let empty_doc = Uuid::now_v7();
+        sqlx::query("INSERT INTO documents(id,kb_id,filename,sha256,graph_status) VALUES ($1,$2,'empty.txt','y','done')")
+            .bind(empty_doc)
+            .bind(f.kb)
+            .execute(&pool)
+            .await?;
+        assert_eq!(documents_due(&pool, f.kb, 10).await?, vec![f.doc, empty_doc]);
+        let empty_run = start_run(&pool, f.kb, empty_doc, 0, 0).await?;
+        assert_eq!(runs_of(&pool, empty_doc).await?, 1);
+        finish_run(&pool, empty_run, 1, None, None).await?;
+        assert_eq!(documents_due(&pool, f.kb, 10).await?, vec![f.doc]);
         finish_run(&pool, run, 1, Some(100), Some(20)).await?;
         let usage: (i32, Option<i64>) =
             sqlx::query_as("SELECT requests, prompt_tokens FROM errata_runs WHERE id=$1")
@@ -409,6 +421,55 @@ async fn a_retraction_something_rests_on_is_held_until_a_person_decides() -> any
 }
 
 #[tokio::test]
+async fn an_unflagged_fact_is_retracted_only_by_a_person() -> anyhow::Result<()> {
+    let Some(url) = crate::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    crate::db::migrate(&pool).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        let (_, fine) = typed(
+            &pool,
+            &f,
+            f.acme,
+            "based in",
+            f.based_in,
+            Some(f.london),
+            None,
+        )
+        .await?;
+        let c = candidates(&pool, f.kb, f.doc).await?;
+        assert_eq!(c[0].flag, None);
+        let run = start_run(&pool, f.kb, f.doc, 0, 1).await?;
+        let r = record(
+            &pool,
+            f.kb,
+            input(
+                &f,
+                run,
+                Some(&c[0]),
+                Proposed::Retract,
+                Some("Acme is based in London"),
+            ),
+        )
+        .await?;
+        assert_eq!((r.status, r.detail.as_deref()), ("held", Some("unflagged")));
+        assert!(live(&pool, fine).await?);
+        assert_eq!(
+            held(&pool, f.kb, 10, 0).await?[0].detail.as_deref(),
+            Some("unflagged")
+        );
+        assert!(decide_held(&pool, f.kb, r.id, true, f.user).await?);
+        assert!(!live(&pool, fine).await?);
+        anyhow::Ok(())
+    }
+    .await;
+    cleanup(&pool, &f).await?;
+    run
+}
+
+#[tokio::test]
 async fn a_revision_and_an_addition_write_typed_facts_with_the_documents_words(
 ) -> anyhow::Result<()> {
     let Some(url) = crate::test_db::url() else {
@@ -467,7 +528,25 @@ async fn a_revision_and_an_addition_write_typed_facts_with_the_documents_words(
         )
         .await?;
         assert_eq!(r.status, "refused");
-        assert_eq!(r.detail.as_deref(), Some("no thing named \"Bob\""));
+        assert_eq!(
+            r.detail.as_deref(),
+            Some("no thing named \"Bob\" and the document does not name it")
+        );
+        // 文档提到的新东西：建一个带名字的实体，事实落下
+        let r = record(
+            &pool,
+            f.kb,
+            input(&f, run, None, Proposed::Add { subject: "Zeta Corp".into(), property: "based_in".into(), object: "London".into() }, Some("Zeta Corp is based in London")),
+        )
+        .await?;
+        assert_eq!((r.status, r.detail.clone()), ("applied", None));
+        let zeta: (String, Option<Uuid>) = sqlx::query_as(
+            "SELECT e.canonical_name, f.object_id FROM facts f JOIN entities e ON e.id = f.subject_id WHERE f.id = $1",
+        )
+        .bind(r.new_fact_id.unwrap())
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(zeta, ("Zeta Corp".into(), Some(f.london)));
         // 只许一个值的谓词已经有 Jane：再加一个 London 会开出违规，留给人
         let r = record(
             &pool,

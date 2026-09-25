@@ -41,6 +41,9 @@ pub async fn propose_rules(
     class_key: &HashMap<Uuid, &str>,
     by_key: &HashMap<&str, &RelationTypeView>,
 ) -> anyhow::Result<(usize, usize)> {
+    // 提规则按 low 想：它问的是「这种形状还蕴含什么」，默认强度一次答 4.6k 思考 token，
+    // 是所有阶段里最贵的一种调用（bench README，2026-09-24），而答案多半是「无」
+    let client = &client.clone().with_reasoning_effort(Some("low".into()));
     let pool = &state.pool;
     let keys_of = |ids: &[Uuid]| -> Vec<&str> {
         ids.iter()
@@ -49,7 +52,14 @@ pub async fn propose_rules(
     };
     let (mut proposed, mut failed) = (0usize, 0usize);
     let asks: Vec<&RuleAsk<'_>> = asks.iter().filter(|a| !a.candidates.is_empty()).collect();
-    for batch in asks.chunks(BATCH) {
+    // 批与批并行（与短语对齐同一条理由：串着等模型想 20 回就是十分钟）
+    {
+        use futures_util::StreamExt;
+        let (keys_of, by_key) = (&keys_of, &by_key);
+        let futures: Vec<_> = asks
+            .chunks(BATCH)
+            .map(|batch| async move {
+                let mut proposed = 0usize;
         let items: Vec<RuleItem<'_>> = batch
             .iter()
             .enumerate()
@@ -101,16 +111,14 @@ pub async fn propose_rules(
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!(%kb_id, error = %e, "提规则调用失败，这一批留到下次");
-                    failed += 1;
-                    continue;
+                    return Ok::<_, anyhow::Error>((0usize, 1usize));
                 }
             };
         let (choices, malformed) = match parse_rule_response(&reply.text, &items, READINGS) {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(%kb_id, error = %e, "提规则回复解析失败，这一批留到下次");
-                failed += 1;
-                continue;
+                return Ok::<_, anyhow::Error>((0usize, 1usize));
             }
         };
         if malformed > 0 {
@@ -207,6 +215,16 @@ pub async fn propose_rules(
                     .await?;
                 }
             }
+        }
+
+                Ok::<_, anyhow::Error>((proposed, 0usize))
+            })
+            .collect();
+        let mut results = futures_util::stream::iter(futures).buffer_unordered(4);
+        while let Some(r) = results.next().await {
+            let (p, f) = r?;
+            proposed += p;
+            failed += f;
         }
     }
     Ok((proposed, failed))

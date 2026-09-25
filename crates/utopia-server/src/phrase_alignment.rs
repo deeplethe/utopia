@@ -128,14 +128,20 @@ fn consider<'a>(
     props: &'a [RelationTypeView],
     closure: &Closure,
     versions: &HashMap<Uuid, chrono::DateTime<chrono::Utc>>,
+    shortlist: Option<&Shortlist>,
 ) -> Considered<'a> {
     let empty: Vec<Uuid> = Vec::new();
     sigs.iter()
         .map(|s| {
-            let fitting: Vec<&RelationTypeView> = props
+            let mut fitting: Vec<&RelationTypeView> = props
                 .iter()
                 .filter(|p| fits(p, s, closure).is_some())
                 .collect();
+            // 结构对得上的太多时只留最近的几条（见 `shortlist`），按相关度排：第一票先看最像的
+            if let Some(keep) = shortlist.and_then(|m| m.get(&s.key())) {
+                fitting.retain(|p| keep.contains(&p.id));
+                fitting.sort_by_key(|p| keep.iter().position(|k| *k == p.id));
+            }
             let cands: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = fitting
                 .iter()
                 .filter_map(|p| versions.get(&p.id).map(|at| (p.id, *at)))
@@ -168,6 +174,173 @@ fn snippet(text: &str) -> String {
     out
 }
 
+/// 一条签名结构对得上的属性多过这个数，就按相关度只留这么多给模型看。第一次真跑里每条
+/// 签名平均拖着几十条候选（六个粗类切不掉什么），一次请求 1.8 万 token，对齐占了一轮
+/// 八成的用量（bench README，2026-09-24）；十条里若没有对的，多半是本体里就没有
+const SHORTLIST: usize = 10;
+/// 同时在飞的对齐批次数；模型闸门（工作区的并发上限）在下面再限一次
+const PARALLEL_BATCHES: usize = 4;
+/// 一次嵌入多少条签名的文本
+const SHORTLIST_EMBED_BATCH: usize = 32;
+
+/// 签名 → 留给模型看的候选 id（按相关度）。没进表的签名照旧看全部结构候选
+type Shortlist = HashMap<SignatureKey, Vec<Uuid>>;
+
+/// 按相关度给候选多的签名开短名单：签名的文本（短语加一条例句）嵌入后，与属性的向量比
+/// 近（`embed_ontology` 建的那份），留最近的 [`SHORTLIST`] 条；标签里的词出现在短语里的
+/// 属性无论远近都留着（"based in" 对 "based in"）。没配嵌入模型、属性还没向量、或候选本来
+/// 就不多的签名不进表——那时模型看的还是全部结构候选
+async fn shortlist(
+    state: &AppState,
+    settings: &utopia_core::models::LlmSettings,
+    kb_id: Uuid,
+    sigs: &[PhraseSignature],
+    full: &Considered<'_>,
+) -> anyhow::Result<Shortlist> {
+    let mut out = Shortlist::new();
+    let Some(client) = llm_util::embed_client(settings) else {
+        return Ok(out);
+    };
+    let wide: Vec<&PhraseSignature> = sigs
+        .iter()
+        .filter(|s| full.get(&s.key()).is_some_and(|(f, _)| f.len() > SHORTLIST))
+        .collect();
+    if wide.is_empty() {
+        return Ok(out);
+    }
+    let pool = &state.pool;
+    for batch in wide.chunks(SHORTLIST_EMBED_BATCH) {
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|s| match (s.examples.first(), s.quotes.first()) {
+                (Some(e), Some(q)) => format!("{} · {e} · {q}", s.phrase),
+                (Some(e), None) => format!("{} · {e}", s.phrase),
+                _ => s.phrase.clone(),
+            })
+            .collect();
+        let vectors = {
+            let _permit = llm_util::acquire_embed(state, settings).await;
+            match client.embed(&texts).await {
+                Ok(v) if v.len() == batch.len() => v,
+                Ok(v) => {
+                    tracing::warn!(%kb_id, sent = batch.len(), got = v.len(), "签名向量数量对不上，这一批不开短名单");
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(%kb_id, error = %e, "签名向量没算出来，这一批不开短名单");
+                    continue;
+                }
+            }
+        };
+        for (s, vector) in batch.iter().zip(vectors) {
+            let (fitting, _) = &full[&s.key()];
+            let kind = if s.object_is_value {
+                "attribute"
+            } else {
+                "relation"
+            };
+            let near = utopia_store::ontology::nearest_relation_type_ids(
+                pool,
+                kb_id,
+                &vector,
+                (fitting.len() * 2) as i64,
+                Some(kind),
+            )
+            .await?;
+            if near.is_empty() {
+                // 属性还没有向量：不开短名单，模型看全部
+                continue;
+            }
+            let fitting_ids: Vec<Uuid> = fitting.iter().map(|p| p.id).collect();
+            let must_keep: Vec<Uuid> = fitting
+                .iter()
+                .filter(|p| label_in_phrase(&p.label, &s.phrase))
+                .map(|p| p.id)
+                .collect();
+            out.insert(
+                s.key(),
+                pick_shortlist(&near, &fitting_ids, &must_keep, SHORTLIST),
+            );
+        }
+    }
+    tracing::info!(%kb_id, wide = wide.len(), shortlisted = out.len(), "候选短名单开好");
+    Ok(out)
+}
+
+/// 类别词 → 留给提规则看的属性 id（按相关度）。词的文本加几个例名嵌入，取最近的
+/// [`SHORTLIST`] 条；没配嵌入模型、属性没向量的不进表
+async fn shortlist_kind_words(
+    state: &AppState,
+    settings: &utopia_core::models::LlmSettings,
+    kb_id: Uuid,
+    words: &[&utopia_store::type_bindings::KindWordSignature],
+) -> anyhow::Result<HashMap<String, Vec<Uuid>>> {
+    let mut out = HashMap::new();
+    let Some(client) = llm_util::embed_client(settings) else {
+        return Ok(out);
+    };
+    if words.is_empty() {
+        return Ok(out);
+    }
+    for batch in words.chunks(SHORTLIST_EMBED_BATCH) {
+        let texts: Vec<String> = batch
+            .iter()
+            .map(|k| format!("{} · {}", k.kind_word, k.examples.join(", ")))
+            .collect();
+        let vectors = {
+            let _permit = llm_util::acquire_embed(state, settings).await;
+            match client.embed(&texts).await {
+                Ok(v) if v.len() == batch.len() => v,
+                Ok(_) | Err(_) => {
+                    tracing::warn!(%kb_id, "类别词向量没算出来，这一批看全部候选");
+                    continue;
+                }
+            }
+        };
+        for (k, vector) in batch.iter().zip(vectors) {
+            let near = utopia_store::ontology::nearest_relation_type_ids(
+                &state.pool,
+                kb_id,
+                &vector,
+                SHORTLIST as i64,
+                None,
+            )
+            .await?;
+            if !near.is_empty() {
+                out.insert(k.kind_word.clone(), near);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// 标签里有一个像样的词（四个字母以上）出现在短语里
+fn label_in_phrase(label: &str, phrase: &str) -> bool {
+    let phrase = phrase.to_lowercase();
+    label
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w.len() >= 4 && phrase.contains(w))
+}
+
+/// 短名单：先是标签对上的（无论远近），再按向量距离补到上限；都是结构对得上的
+fn pick_shortlist(near: &[Uuid], fitting: &[Uuid], must_keep: &[Uuid], limit: usize) -> Vec<Uuid> {
+    let mut out: Vec<Uuid> = must_keep
+        .iter()
+        .copied()
+        .filter(|id| fitting.contains(id))
+        .collect();
+    for id in near {
+        if out.len() >= limit {
+            break;
+        }
+        if fitting.contains(id) && !out.contains(id) {
+            out.push(*id);
+        }
+    }
+    out
+}
+
 /// 一轮里没判完的（调用失败、回复读不出、模型漏答）自己再排几次；超过这个数就等
 /// 下一篇文档或本体的改动再问。不设上限的话，温度为零下一段每次都读不出的回复会让
 /// 任务每隔几十秒把同一段提示词再送一遍，没有尽头（同类别词对齐）
@@ -185,7 +358,8 @@ pub async fn align_phrases_reasking(
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
-    let client = llm_util::chat_client(&settings)
+    // 对齐是判断题：让模型按端点默认的强度想，不用工作区给抽取设的 minimal
+    let client = llm_util::chat_client_thinking(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
     // 一个库同时只跑一份，理由同类别词对齐（并行跑会把端点打出 502）
     let mut guard = pool.acquire().await?;
@@ -229,8 +403,11 @@ async fn align_phrases_locked(
         .into_iter()
         .map(|b| (b.key(), b))
         .collect();
-    // 每条活着的签名此刻的候选与指纹。候选按继承命中；指纹是判定看到的全部输入（0053）
-    let considered = consider(&sigs, &props, &closure, &versions);
+    // 每条活着的签名此刻的候选与指纹。候选按继承命中，多了再按相关度开短名单；指纹是判定
+    // 看到的全部输入（0053），短名单也算在内——名单变了就再问
+    let full = consider(&sigs, &props, &closure, &versions, None);
+    let short = shortlist(state, settings, kb_id, &sigs, &full).await?;
+    let considered = consider(&sigs, &props, &closure, &versions, Some(&short));
     // 过期 = 存下的指纹和此刻的不一样（没有指纹的是这一列出现前判的，各重判一次）。
     // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定不重判
     let todo: Vec<&PhraseSignature> = sigs
@@ -277,7 +454,21 @@ async fn align_phrases_locked(
     let mut failed = 0usize;
     // 问了、模型也答了、却没答到的签名：两票缺一票就不下结论
     let mut unanswered = 0usize;
-    for batch in todo.chunks(BATCH) {
+    // 批与批并行（[`PARALLEL_BATCHES`] 个在飞，模型闸门再限一次）：一批两票串行要等模型
+    // 想两回，串着跑 22 批就是半小时，其中一次卡住的调用能把整轮拖住 18 分钟（bench README，
+    // 2026-09-24）。每批各记各的数，回来再加
+    {
+        use futures_util::StreamExt;
+        // 只把引用搬进各批的 future
+        let (considered, full, closure, class_key, by_key) =
+            (&considered, &full, &closure, &class_key, &by_key);
+        // 先把每批的 future 造出来再排队：直接在 map 里返回 async 块会让借用的生命周期
+        // 满足不了 tokio::spawn 要的 Send
+        let futures: Vec<_> = todo
+            .chunks(BATCH)
+            .map(|batch| async move {
+                let (mut bound, mut none, mut undecided, mut skipped, mut failed, mut unanswered) =
+                    (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
         // 候选超过上限的不问模型：记成 undecided 交给人，指纹照记——属性少下去指纹就变，
         // 到时再问。从前超限和无候选一样静默跳过，签名永远排着又永远不可执行（#807）
         let cands: Vec<Vec<&RelationTypeView>> = batch
@@ -321,7 +512,7 @@ async fn align_phrases_locked(
                                 kind: &p.kind,
                                 domains: keys_of(&p.domains),
                                 ranges: keys_of(&p.ranges),
-                                via: fits(p, s, &closure)
+                                via: fits(p, s, closure)
                                     .map(|f| {
                                         f.via
                                             .iter()
@@ -336,6 +527,13 @@ async fn align_phrases_locked(
                                     })
                                     .unwrap_or_default(),
                             })
+                            .collect(),
+                        // 结构对得上却没进短名单的键：模型若从批里的属性表选了它，算票
+                        also_allowed: full[&s.key()]
+                            .0
+                            .iter()
+                            .filter(|p| !cands[i].iter().any(|c| c.id == p.id))
+                            .map(|p| p.key.as_str())
                             .collect(),
                     }
                 })
@@ -381,6 +579,10 @@ async fn align_phrases_locked(
                 );
                 failed += 1;
                 continue;
+            }
+            if malformed > 0 {
+                // 坏票长什么样得看得见：第一次真跑里一半签名被判坏票，查了一天才知道模型答的是标签
+                tracing::info!(%kb_id, malformed, reply = %snippet(&reply.text), "短语对齐的回复里有坏票");
             }
             for c in choices {
                 let Ok(i) = usize::try_from(c.id) else {
@@ -512,6 +714,20 @@ async fn align_phrases_locked(
                 }
             }
         }
+
+                Ok::<_, anyhow::Error>((bound, none, undecided, skipped, failed, unanswered))
+            })
+            .collect();
+        let mut results = futures_util::stream::iter(futures).buffer_unordered(PARALLEL_BATCHES);
+        while let Some(r) = results.next().await {
+            let (b, n, u, sk, f, un) = r?;
+            bound += b;
+            none += n;
+            undecided += u;
+            skipped += sk;
+            failed += f;
+            unanswered += un;
+        }
     }
     tracing::info!(%kb_id, bound, none, undecided, skipped, failed, unanswered, "短语对齐完成");
     if unanswered > 0 {
@@ -538,7 +754,9 @@ async fn align_phrases_locked(
             let Some(b) = decided_now.get(&s.key()) else {
                 continue;
             };
-            if b.status == "undecided" {
+            // 只问绑上的签名：判「无」的形状一轮 1121 条问下来提了不到 1% 的规则，却占了
+            // 提规则一半以上的调用（bench README，2026-09-24）；拿不定的等人先定
+            if b.status != "bound" {
                 continue;
             }
             let (fitting, basis) = &considered[&s.key()];
@@ -574,18 +792,29 @@ async fn align_phrases_locked(
                     + &k.kind_word
             })
             .collect();
+        // 类别词的候选也开短名单：词加例名嵌入后取最近的属性；没有向量时看全部
+        let fresh: Vec<&utopia_store::type_bindings::KindWordSignature> = kind_words
+            .iter()
+            .filter(|k| !asked_kind.contains(k.kind_word.as_str()))
+            .collect();
+        let kind_short = shortlist_kind_words(state, settings, kb_id, &fresh).await?;
         for (k, basis) in kind_words.iter().zip(kind_basis.iter()) {
             if asked_kind.contains(k.kind_word.as_str()) {
                 continue;
+            }
+            let mut candidates: Vec<&RelationTypeView> = props
+                .iter()
+                .filter(|p| p.kind == "relation" || p.kind == "attribute")
+                .collect();
+            if let Some(keep) = kind_short.get(&k.kind_word) {
+                candidates.retain(|p| keep.contains(&p.id));
+                candidates.sort_by_key(|p| keep.iter().position(|id| *id == p.id));
             }
             asks.push(crate::implication::RuleAsk {
                 phrase: None,
                 kind_word: Some(k),
                 bound_to: None,
-                candidates: props
-                    .iter()
-                    .filter(|p| p.kind == "relation" || p.kind == "attribute")
-                    .collect(),
+                candidates,
                 basis,
             });
         }
@@ -624,7 +853,8 @@ async fn align_phrases_locked(
         let closure = closures(classes.iter().map(|c| (c.id, c.parents.as_slice())));
         let versions = phrase_bindings::property_versions(pool, kb_id).await?;
         let sigs = phrase_bindings::signatures(pool, kb_id).await?;
-        let now_considered = consider(&sigs, &props, &closure, &versions);
+        // 短名单沿用开跑时算的那份：向量没变，名单就没变；变了的签名本轮之后自然再问
+        let now_considered = consider(&sigs, &props, &closure, &versions, Some(&short));
         let now: HashMap<_, _> = phrase_bindings::bindings(pool, kb_id)
             .await?
             .into_iter()
@@ -672,6 +902,25 @@ mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_shortlist_keeps_label_matches_and_fills_by_distance_within_the_fitting_set() {
+        let ids: Vec<Uuid> = (0..6).map(|_| Uuid::now_v7()).collect();
+        // near 按距离：ids[3] 最近，但不在结构候选里；ids[5] 标签对上，排在最后也留
+        let near = vec![ids[3], ids[0], ids[1], ids[2], ids[4], ids[5]];
+        let fitting = vec![ids[0], ids[1], ids[2], ids[4], ids[5]];
+        let picked = pick_shortlist(&near, &fitting, &[ids[5]], 3);
+        assert_eq!(picked, vec![ids[5], ids[0], ids[1]]);
+        assert!(label_in_phrase(
+            "headquarters location",
+            "has its headquarters in"
+        ));
+        assert!(!label_in_phrase("country", "is based in"));
+        assert!(
+            !label_in_phrase("in", "is based in"),
+            "short words do not count"
+        );
+    }
+
     use super::*;
 
     fn view(kind: &str, domains: Vec<Uuid>, ranges: Vec<Uuid>) -> RelationTypeView {

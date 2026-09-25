@@ -1,0 +1,7025 @@
+{
+ "seed": 1,
+ "docs": [
+  {
+   "filename": "redocred-000.txt",
+   "entities": [
+    {
+     "names": [
+      "Vladimir Mitrofanovich Orlov",
+      "Orlov"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "July 15 , 1895"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "July 28 , 1938"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Russian"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Soviet Naval Forces"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "July 1931"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "July 1937"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Kherson"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Legal"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "St Petersburg University"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Baltic Fleet"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1916"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Bogatyr"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "1919"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "20"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Nikolai Yudenich"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Petrograd"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "the 1920s"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1923"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1926"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1930"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Black Sea Fleet"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1931"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Soviet Navy"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1937",
+      "10 July 1937"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "28 July 1938"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1956"
+     ],
+     "type": "TIME"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P69",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P570",
+     "t": 25,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P19",
+     "t": 7,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P570",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P241",
+     "t": 23,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P241",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 21,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P137",
+     "t": 10,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P361",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P241",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 7,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P527",
+     "t": 23,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 16,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P361",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P361",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P527",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P527",
+     "t": 21,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-001.txt",
+   "entities": [
+    {
+     "names": [
+      "Emiliano Esono Michá",
+      "Michá"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Equatoguinean"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "US State Department"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Amnesty International"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Progress Party of Equatorial Guinea",
+      "PPGE"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Democratic Party of Equatorial Guinea"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "March 2008"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Cruz Obiang Ebele"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Gumersindo Ramírez Faustino"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Juan Ecomo Ndong"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Gerardo Angüe Mangue"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Bonifacio Nguema Ndong"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "two months"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "May 2008"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "six"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "Saturnino Ncogo",
+      "Ncogo"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "March"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Simon Mann"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "UK"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "2004"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "one"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "five years"
+     ],
+     "type": "NUM"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P102",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P102",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P102",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 9,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P102",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P102",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P102",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 17,
+     "r": "P27",
+     "t": 18,
+     "same_sentence": true
+    },
+    {
+     "h": 15,
+     "r": "P102",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P570",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P463",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P463",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 7,
+     "r": "P463",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P463",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 9,
+     "r": "P463",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P463",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 15,
+     "r": "P463",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 15,
+     "r": "P570",
+     "t": 16,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-002.txt",
+   "entities": [
+    {
+     "names": [
+      "Latourell Falls"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Columbia River Gorge"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "U.S."
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Oregon"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Guy W. Talbot State Park"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Historic Columbia River Highway"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Latourell"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Columbia Gorge waterfalls"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Multnomah Falls"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 1,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P361",
+     "t": 7,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P527",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-003.txt",
+   "entities": [
+    {
+     "names": [
+      "Low Pass"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Lane County"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Oregon"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "United States"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Long Tom River"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Blachly"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Cheshire"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Oregon Route 36"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Low Pass Transfer Station"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Coast Range"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "High Pass"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Bureau of Land Management"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Long Tom Station"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "United States Board on Geographic Names"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1985"
+     ],
+     "type": "TIME"
+    }
+   ],
+   "facts": [
+    {
+     "h": 1,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P1001",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 9,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 12,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P361",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P706",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 9,
+     "r": "P527",
+     "t": 10,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 12,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-004.txt",
+   "entities": [
+    {
+     "names": [
+      "Paraguay",
+      "Paraguayan"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Dora Acuña"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1903"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1987"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Gladys Carmagnola"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1939"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Raquel Chaves"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Susy Delgado"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1949"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Spanish"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Guarani"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Renée Ferrer de Arréllaga"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1944"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Josefina Pla"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1999"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Spanish"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Mercedes Sandoval de Hempel"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1919"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "2005"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Carmen Soler"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1924"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1985"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Argentina"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Elsa Wiezell"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1926"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "2014"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Faith Wilding"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1943"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "American"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 1,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P569",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P570",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P569",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P569",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P569",
+     "t": 8,
+     "same_sentence": true
+    },
+    {
+     "h": 7,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P1412",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 7,
+     "r": "P1412",
+     "t": 10,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P569",
+     "t": 12,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P569",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P570",
+     "t": 14,
+     "same_sentence": true
+    },
+    {
+     "h": 19,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P569",
+     "t": 20,
+     "same_sentence": true
+    },
+    {
+     "h": 19,
+     "r": "P570",
+     "t": 21,
+     "same_sentence": true
+    },
+    {
+     "h": 23,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P569",
+     "t": 24,
+     "same_sentence": true
+    },
+    {
+     "h": 23,
+     "r": "P570",
+     "t": 25,
+     "same_sentence": true
+    },
+    {
+     "h": 16,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P569",
+     "t": 17,
+     "same_sentence": true
+    },
+    {
+     "h": 16,
+     "r": "P570",
+     "t": 18,
+     "same_sentence": true
+    },
+    {
+     "h": 26,
+     "r": "P569",
+     "t": 27,
+     "same_sentence": true
+    },
+    {
+     "h": 26,
+     "r": "P27",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P1412",
+     "t": 9,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-005.txt",
+   "entities": [
+    {
+     "names": [
+      "Each Time You Break My Heart"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "United Kingdom",
+      "British"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Nick Kamen",
+      "Kamen"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1987"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Sire Records"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "2 November 1986",
+      "1986"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "7-inch"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "12-inch"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "1985"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Levi 's"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Sire"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Madonna"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Stephen Bray"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "True Blue"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Jean-Baptiste Mondino"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Billboard magazine"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "New and Noteworthy"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Bee Gees"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "France"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Germany"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Ireland"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Italy"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Netherlands"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Sweden"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Switzerland"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "the United Kingdom"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "United States"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P175",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P264",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P577",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P264",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P162",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P86",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P86",
+     "t": 12,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P264",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P264",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P264",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P162",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P175",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P577",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P577",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P27",
+     "t": 25,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P27",
+     "t": 18,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P162",
+     "t": 12,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P175",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P800",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P800",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 12,
+     "r": "P800",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P800",
+     "t": 13,
+     "same_sentence": true
+    }
+   ]
+  },
+  {
+   "filename": "redocred-006.txt",
+   "entities": [
+    {
+     "names": [
+      "Walter Newman",
+      "Newman"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "11 February 1916"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "14 October 1993"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "American"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "the late 1940s"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "the early 1990s"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "three"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "Academy Awards"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Ace in the Hole"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Cat Ballou"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Bloodbrothers"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Harrow Alley"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Hollywood"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Escape"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Suspense"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "The Halls of Ivy"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Gunsmoke"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "The Magnificent Seven"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "The Great Escape"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "John Sturges"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "New York City"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Sherman Oaks"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "California"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Los Angeles"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P20",
+     "t": 21,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P570",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 20,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 23,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P495",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P495",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P495",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P495",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P495",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P57",
+     "t": 19,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P20",
+     "t": 23,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P20",
+     "t": 22,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 22,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P19",
+     "t": 20,
+     "same_sentence": true
+    },
+    {
+     "h": 18,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 22,
+     "r": "P150",
+     "t": 23,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P50",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 22,
+     "same_sentence": true
+    },
+    {
+     "h": 18,
+     "r": "P57",
+     "t": 19,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P50",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 23,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P131",
+     "t": 22,
+     "same_sentence": true
+    },
+    {
+     "h": 22,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 15,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 15,
+     "r": "P50",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 16,
+     "r": "P58",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P31",
+     "t": 7,
+     "same_sentence": true
+    },
+    {
+     "h": 9,
+     "r": "P31",
+     "t": 7,
+     "same_sentence": true
+    },
+    {
+     "h": 22,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P31",
+     "t": 7,
+     "same_sentence": true
+    },
+    {
+     "h": 12,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P800",
+     "t": 17,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P800",
+     "t": 11,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P800",
+     "t": 18,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P800",
+     "t": 13,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P800",
+     "t": 15,
+     "same_sentence": true
+    },
+    {
+     "h": 20,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-007.txt",
+   "entities": [
+    {
+     "names": [
+      "Eclipse"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Twilight Saga"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Stephenie Meyer"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Bella Swan",
+      "Bella"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Edward Cullen",
+      "Edward"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Jacob Black"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Seattle"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "New Moon"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Breaking Dawn"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "August 7, 2007"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "one million copies"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "150,000"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "24 hours"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "2008"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Twilight"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "June 30, 2010"
+     ],
+     "type": "TIME"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P179",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P50",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P674",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P674",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P577",
+     "t": 9,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P527",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P50",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P674",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P674",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P674",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P527",
+     "t": 7,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P527",
+     "t": 8,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P800",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P1441",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P170",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P26",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P1441",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P170",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P26",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P1441",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P170",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P179",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P50",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P674",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P179",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P50",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P155",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P179",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P50",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P674",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P155",
+     "t": 7,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P674",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P674",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P527",
+     "t": 14,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P156",
+     "t": 8,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P170",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P800",
+     "t": 14,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P674",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P1441",
+     "t": 14,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P840",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P674",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P800",
+     "t": 7,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P1441",
+     "t": 14,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P155",
+     "t": 7,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P156",
+     "t": 8,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P1441",
+     "t": 7,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P156",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P800",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P1441",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P1441",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P361",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 7,
+     "r": "P361",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P361",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P800",
+     "t": 8,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P1441",
+     "t": 8,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P361",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P1441",
+     "t": 8,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P1441",
+     "t": 7,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-008.txt",
+   "entities": [
+    {
+     "names": [
+      "Jon A. Lund"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "November 6, 1928"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "American"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Maine"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Lund"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Republican"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1972"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1975"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Kennebec County"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Augusta City Council"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "two"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "Maine House of Representatives"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1965"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1966"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1969"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Maine Senate"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1967"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1968"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Dickey - Lincoln Dam"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Northern Maine"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1984"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Bowdoin College"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Harvard Law School"
+     ],
+     "type": "ORG"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P102",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P69",
+     "t": 21,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P69",
+     "t": 22,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P194",
+     "t": 11,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P1001",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P1001",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 19,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P463",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 18,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P69",
+     "t": 21,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P27",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 8,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 8,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P131",
+     "t": 19,
+     "same_sentence": true
+    },
+    {
+     "h": 21,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P194",
+     "t": 15,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P69",
+     "t": 22,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    }
+   ]
+  },
+  {
+   "filename": "redocred-009.txt",
+   "entities": [
+    {
+     "names": [
+      "Zamoyski Palace"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Polish"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Pałac Zamoyskich"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Nowy Świat Street"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Warsaw"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Poland"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1667"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Jan Wielopolski",
+      "Wielopolski"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1744"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1745"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Piotr Hiż"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Franciszek Ksawery Branicki"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Szymon Bogumił Zug"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1802"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Anna Jadwiga Sapieżyna"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Stanisław Staszic"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1826"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1839"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Andrzej Artur Zamoyski"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Enrico Marconi"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "January Uprising"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "1863"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Imperial Army"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Ministry of Interior and Administration"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Warsaw Uprising"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "1948"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1950"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Faculty of Journalism and Politics"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "University of Warsaw"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Institute of Applied Social Sciences"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "\" Artes - Liberales \" Faculty"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Institute for Scientific Information"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Bibliographic Studies"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Historical Faculty of the University of Warsaw"
+     ],
+     "type": "ORG"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 23,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 29,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 29,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 15,
+     "r": "P20",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P570",
+     "t": 16,
+     "same_sentence": true
+    },
+    {
+     "h": 28,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 24,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 20,
+     "r": "P585",
+     "t": 21,
+     "same_sentence": true
+    },
+    {
+     "h": 28,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 24,
+     "r": "P276",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 24,
+     "r": "P276",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 18,
+     "r": "P27",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 27,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P37",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 20,
+     "r": "P580",
+     "t": 21,
+     "same_sentence": true
+    },
+    {
+     "h": 33,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 33,
+     "r": "P361",
+     "t": 28,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 15,
+     "r": "P1412",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P27",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 33,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 27,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P1001",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 20,
+     "r": "P276",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P127",
+     "t": 11,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P127",
+     "t": 18,
+     "same_sentence": false
+    },
+    {
+     "h": 31,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 30,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P127",
+     "t": 18,
+     "same_sentence": false
+    },
+    {
+     "h": 28,
+     "r": "P527",
+     "t": 33,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 23,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 29,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 28,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 27,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 33,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 31,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 30,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-010.txt",
+   "entities": [
+    {
+     "names": [
+      "Auguste Dreyfus",
+      "Dreyfus"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "28 June 1827"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "25 May 1897"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "French"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Peruvian"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Lima"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Peru"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1869"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Europe"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Chile"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1879"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1883"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "France"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Paris"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 12,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 12,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P17",
+     "t": 12,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P570",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P150",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P150",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-011.txt",
+   "entities": [
+    {
+     "names": [
+      "Schwandner",
+      "Ernst-Ludwig Schwandner"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "2 June 1938"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Berlin"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "German"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1975"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Technischen Universität München"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Germany"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Aphaia",
+      "Der Ältere Tempel der Aphaia auf Aegina"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Aegina"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "German"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "2004"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "German Archaeological Institute",
+      "federal German archeological survey"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "2002"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Winkelmann Institute"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Humboldt University"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Greek"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 2,
+     "r": "P17",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P19",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P463",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P150",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P17",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 7,
+     "r": "P17",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P17",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P108",
+     "t": 14,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P17",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P108",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P69",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 9,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P937",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P108",
+     "t": 13,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P37",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P1412",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 9,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 9,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 9,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-012.txt",
+   "entities": [
+    {
+     "names": [
+      "John Houseal Furse",
+      "Furse"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "20 April 1880"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "30 September 1907"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "United States Navy"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1901"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1907"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "South Carolina"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "United States Naval Academy"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Asiatic Station"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Manila"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "the United States"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Illinois"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Illinois ( BB-7 )"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "29 September 1904"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Cuban"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P241",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P570",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P17",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P17",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P137",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P570",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P17",
+     "t": 10,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P69",
+     "t": 7,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P19",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P150",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P137",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P150",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P17",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P17",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 10,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 10,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-013.txt",
+   "entities": [
+    {
+     "names": [
+      "Lombardia",
+      "Lombardy"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Italy",
+      "Italian"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Lombardy"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Franciacorta"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Oltrepò Pavese"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Nebbiolo"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Valtellina"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Trebbiano di Lugana"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Chiaretto"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Lake Garda"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "15"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "Denominazione di origine controllata",
+      "DOC"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "3"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "Denominazione di Origine Controllata e Garantita",
+      "DOCG"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "13"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "Indicazione Geografica Tipica",
+      "IGT"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Milan"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Bergamo"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Brescia"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1.3 million"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "Friuli-Venezia Giulia"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Marche"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Trentino - Alto Adige / Südtirol"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Umbria"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P150",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 20,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P150",
+     "t": 23,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P150",
+     "t": 21,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P150",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 23,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P150",
+     "t": 20,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 21,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 20,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P150",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P150",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P150",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P205",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P150",
+     "t": 22,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 16,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-014.txt",
+   "entities": [
+    {
+     "names": [
+      "Paul E. Pfeifer",
+      "Pfeifer"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "October 15, 1942"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "American"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Ohio General Assembly"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Ohio Republican party"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Supreme Court of Ohio"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Bucyrus"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1942"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Yorkshire"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1963"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Ohio State University"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1966"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "College of Law"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Crawford County"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Julia"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "three"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "four"
+     ],
+     "type": "NUM"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 7,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P69",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P69",
+     "t": 12,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P102",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P19",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P361",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P26",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P26",
+     "t": 14,
+     "same_sentence": true
+    },
+    {
+     "h": 10,
+     "r": "P527",
+     "t": 12,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-015.txt",
+   "entities": [
+    {
+     "names": [
+      "Lavaca Bay"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Matagorda Bay"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Calhoun County"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Texas"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "United States"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Port Lavaca"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Point Comfort"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Linnville"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Great Raid of 1840"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Indianola"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1886"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Olivia"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Alamo Beach"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Magnolia Beach"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Corpus Christi"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Houston"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "San Antonio"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Alcoa"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 1,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P150",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 12,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P403",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 16,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P17",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 1,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 1,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 12,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 6,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 5,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 4,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-016.txt",
+   "entities": [
+    {
+     "names": [
+      "Cine-Allianz Tonfilm",
+      "Cine-Allianz",
+      "Cine - Allianz"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "German"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "1932"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Arnold Pressburger"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Gregor Rabinovitch",
+      "Rabinovitch"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Weimar Republic"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Nazi"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Jewish"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "UFA"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1942"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "France"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "I Was an Adventuress"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "1938"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "1951"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "The Lost One"
+     ],
+     "type": "MISC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 5,
+     "r": "P1366",
+     "t": 6,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P495",
+     "t": 10,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P577",
+     "t": 12,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P272",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P571",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P112",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P112",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P577",
+     "t": 13,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P272",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P576",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P162",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 10,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P27",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P1365",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 4,
+     "r": "P800",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 10,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 1,
+     "same_sentence": true
+    }
+   ]
+  },
+  {
+   "filename": "redocred-017.txt",
+   "entities": [
+    {
+     "names": [
+      "Drum Boogie"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "1941",
+      "January 17, 1941"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "boogie - woogie"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Gene Krupa",
+      "Krupa"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Roy Eldridge"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Irene Daye"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Anita O'Day"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Chicago"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Ball of Fire"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Barbara Stanwyck"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Martha Tilton"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "1942"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "Ella Fitzgerald"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "Gene Krupa Orchestra"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "1953"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "US"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Ernie Pyle Theatre"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Tokyo"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "The Pittsburgh Courier"
+     ],
+     "type": "ORG"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P577",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P577",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P161",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P161",
+     "t": 9,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P86",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P136",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 6,
+     "r": "P136",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P86",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P136",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P136",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P27",
+     "t": 15,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P175",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P136",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 18,
+     "r": "P17",
+     "t": 15,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P136",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 17,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P175",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P800",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P800",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P800",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 18,
+     "r": "P131",
+     "t": 15,
+     "same_sentence": true
+    }
+   ]
+  },
+  {
+   "filename": "redocred-018.txt",
+   "entities": [
+    {
+     "names": [
+      "Chicualacuala District",
+      "Distrito de Chicualacuala",
+      "Chicuacuala District",
+      "Chicualacuala"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Portuguese"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Gaza Province"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Mozambique"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "41,638"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "2011"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "2.1"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "17.5"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "Massangena District"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Chigubo District"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Mabalane District"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Massingir District"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "South Africa"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Zimbabwe"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Limpopo River"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Dumela"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Mbuzi"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Kunguma"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Mawene"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Xicumba"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Xicumbane"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Ngala"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Panhame"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Mabuzane"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Xitshutswini"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "four"
+     ],
+     "type": "NUM"
+    }
+   ],
+   "facts": [
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 2,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 20,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 22,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 24,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 9,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 9,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 0,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 11,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 11,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P150",
+     "t": 8,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 10,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P150",
+     "t": 8,
+     "same_sentence": false
+    },
+    {
+     "h": 20,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 20,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 24,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 22,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 2,
+     "r": "P37",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P17",
+     "t": 13,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 22,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 24,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P131",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P37",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 2,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 9,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 21,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 10,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 16,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 19,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 20,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 22,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 23,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 24,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 17,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 18,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 13,
+     "same_sentence": false
+    }
+   ]
+  },
+  {
+   "filename": "redocred-019.txt",
+   "entities": [
+    {
+     "names": [
+      "John Schofield VC"
+     ],
+     "type": "PER"
+    },
+    {
+     "names": [
+      "4 March 1892"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "9 April 1918"
+     ],
+     "type": "TIME"
+    },
+    {
+     "names": [
+      "England",
+      "English"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "VC",
+      "Victoria Cross"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "British"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Commonwealth"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Arnold School"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Blackpool"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "26"
+     ],
+     "type": "NUM"
+    },
+    {
+     "names": [
+      "2/5th Battalion"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "Lancashire Fusiliers"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "British Army"
+     ],
+     "type": "ORG"
+    },
+    {
+     "names": [
+      "First World War"
+     ],
+     "type": "MISC"
+    },
+    {
+     "names": [
+      "Fusilier Museum"
+     ],
+     "type": "LOC"
+    },
+    {
+     "names": [
+      "Bury"
+     ],
+     "type": "LOC"
+    }
+   ],
+   "facts": [
+    {
+     "h": 8,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P166",
+     "t": 4,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P569",
+     "t": 1,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P570",
+     "t": 2,
+     "same_sentence": true
+    },
+    {
+     "h": 4,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 15,
+     "same_sentence": true
+    },
+    {
+     "h": 15,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P241",
+     "t": 12,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P607",
+     "t": 13,
+     "same_sentence": true
+    },
+    {
+     "h": 12,
+     "r": "P607",
+     "t": 13,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P607",
+     "t": 13,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 8,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P27",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 3,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P463",
+     "t": 6,
+     "same_sentence": true
+    },
+    {
+     "h": 5,
+     "r": "P150",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P241",
+     "t": 11,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 0,
+     "r": "P69",
+     "t": 7,
+     "same_sentence": false
+    },
+    {
+     "h": 3,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": true
+    },
+    {
+     "h": 11,
+     "r": "P17",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P17",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P710",
+     "t": 11,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P710",
+     "t": 12,
+     "same_sentence": true
+    },
+    {
+     "h": 13,
+     "r": "P710",
+     "t": 0,
+     "same_sentence": false
+    },
+    {
+     "h": 8,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 12,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P1344",
+     "t": 13,
+     "same_sentence": true
+    },
+    {
+     "h": 12,
+     "r": "P1344",
+     "t": 13,
+     "same_sentence": true
+    },
+    {
+     "h": 0,
+     "r": "P1344",
+     "t": 13,
+     "same_sentence": false
+    },
+    {
+     "h": 7,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 11,
+     "r": "P131",
+     "t": 5,
+     "same_sentence": false
+    },
+    {
+     "h": 15,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    },
+    {
+     "h": 14,
+     "r": "P131",
+     "t": 3,
+     "same_sentence": true
+    }
+   ]
+  }
+ ]
+}

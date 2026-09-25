@@ -62,6 +62,9 @@ pub struct PhraseItem<'a> {
     pub examples: &'a [String],
     pub quotes: &'a [String],
     pub candidates: Vec<PropertyCandidate<'a>>,
+    /// 结构上也对得上、但没进短名单的键：模型在批里的属性表里看见了它、选了它，照样算票——
+    /// 短名单是省 token 的手段，不是限制
+    pub also_allowed: Vec<&'a str>,
 }
 
 /// 模型对一条签名的裁决：Some = (候选的键, 方向)；None = 不绑
@@ -92,11 +95,12 @@ You bind the relation phrases documents use to the properties of a knowledge bas
 Each numbered item is one signature: a phrase as the documents wrote it, the class of the thing \
 it is said of (its subject) and the class of what it points at (its object), or \"value\" when \
 the object is a figure, a title or a status; a few statements with that signature, each with the \
-sentence it was taken from; and the candidate properties, each with its key, its label, its \
-definition, its kind (a relation between two things, or an attribute whose object is a value), \
-its domain and its range. A class written as \"?\" means the documents' kind word for that side \
-is bound to no class yet. A candidate marked \"fits by inheritance\" declares its domain or range on \
-an ancestor of the item's class; that is a fit, not a mismatch.\n\
+sentence it was taken from; and the keys of its candidate properties. The properties themselves \
+are listed once under \"Properties\", each with its key, its label, its kind (a relation between two \
+things, or an attribute whose object is a value), its domain, its range and its definition. A class \
+written as \"?\" means the documents' kind word for that side is bound to no class yet. A candidate \
+key marked \"fits by inheritance\" declares its domain or range on an ancestor of the item's class; \
+that is a fit, not a mismatch.\n\
 For each item, answer with the key of the one property that every statement of this signature \
 states by that property's definition, and the direction: \"forward\" when the statement's \
 subject is the property's subject, \"reverse\" when the statement's object is; or null.\n\
@@ -137,8 +141,24 @@ pub fn candidate_line(c: &PropertyCandidate<'_>) -> String {
 }
 
 /// 构造两条消息：常量系统消息 + 逐项的用户消息。每项：id、短语、两端的类、例句与引文、候选。
+/// 候选属性表在一批里只写一遍（Properties），每项只列它的候选键；从前每项都带整张表
+/// （最多 60 条、各带定义），12 项一批就是三万多 token，一轮跑下来对齐占了八成的用量
+/// （bench README，2026-09-24）。「按继承对上」是项与候选之间的事，写在项的键后面
 pub fn build_phrase_messages(items: &[PhraseItem<'_>]) -> Vec<ChatMessage> {
+    let mut glossary: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for c in items.iter().flat_map(|i| i.candidates.iter()) {
+        if seen.insert(c.key.trim()) {
+            glossary.push(candidate_line(&PropertyCandidate {
+                via: Vec::new(),
+                ..c.clone()
+            }));
+        }
+    }
     let mut user = String::new();
+    if !glossary.is_empty() {
+        user.push_str(&format!("Properties:\n{}\n\n", glossary.join("\n")));
+    }
     for item in items {
         let object = if item.object_is_value {
             "value".to_string()
@@ -156,8 +176,18 @@ pub fn build_phrase_messages(items: &[PhraseItem<'_>]) -> Vec<ChatMessage> {
         let candidates = if item.candidates.is_empty() {
             " (none)".to_string()
         } else {
-            let lines: Vec<String> = item.candidates.iter().map(candidate_line).collect();
-            format!("\n{}", lines.join("\n"))
+            let keys: Vec<String> = item
+                .candidates
+                .iter()
+                .map(|c| {
+                    if c.via.is_empty() {
+                        c.key.to_string()
+                    } else {
+                        format!("{} (fits by inheritance: {})", c.key, c.via.join("; "))
+                    }
+                })
+                .collect();
+            format!(" {}", keys.join(", "))
         };
         user.push_str(&format!(
             "Item {}: phrase \"{}\" · subject class: {} · object: {} · {} statements\nStatements:{examples}\nCandidates:{candidates}\n\n",
@@ -321,14 +351,38 @@ fn candidate_key(item: &PhraseItem<'_>, written: &str) -> Option<String> {
     if written.is_empty() {
         return None;
     }
-    let keys = || item.candidates.iter().map(|c| c.key.trim());
+    let keys = || {
+        item.candidates
+            .iter()
+            .map(|c| c.key.trim())
+            .chain(item.also_allowed.iter().map(|k| k.trim()))
+    };
     if let Some(exact) = keys().find(|k| *k == written) {
         return Some(exact.to_string());
     }
     let lower = written.to_lowercase();
     let mut hits = keys().filter(|k| k.to_lowercase() == lower);
-    let first = hits.next()?;
-    hits.next().is_none().then(|| first.to_string())
+    if let Some(first) = hits.next() {
+        return hits.next().is_none().then(|| first.to_string());
+    }
+    // 键是 `p569` 这种代号时模型十有八九答标签（"dateOfBirth"）：第一次真跑里一半的签名
+    // 因此判成坏票（bench README，2026-09-24）。标签唯一对上就认它的键；对上两个不认
+    let folded = fold(written);
+    let mut by_label = item
+        .candidates
+        .iter()
+        .filter(|c| fold(c.label) == folded)
+        .map(|c| c.key.trim());
+    let first = by_label.next()?;
+    by_label.next().is_none().then(|| first.to_string())
+}
+
+/// 标签比较用的折叠：大小写、空格、下划线、连字符都不算
+pub fn fold(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_whitespace() && *c != '_' && *c != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[cfg(test)]
@@ -385,6 +439,7 @@ mod tests {
             examples: &examples,
             quotes: &quotes,
             candidates: candidates(),
+            also_allowed: vec![],
         }];
         let msgs = build_phrase_messages(&items);
         let user = &msgs[1].content;
@@ -392,12 +447,79 @@ mod tests {
         assert!(user.contains("· Harbor Bakery —is based in→ Port Ellen\n    \"Harbor Bakery is based in Port Ellen.\""), "{user}");
         assert!(user.contains("- headquartered_in · headquartered in · relation · domain: organization · range: place · The organization's"), "{user}");
         assert!(
+            user.starts_with("Properties:\n- "),
+            "the glossary comes first, once: {user}"
+        );
+        assert!(
+            user.contains("Candidates: headquartered_in"),
+            "items list keys only: {user}"
+        );
+        assert_eq!(
+            user.matches("- headquartered_in ·").count(),
+            1,
+            "each property is described once: {user}"
+        );
+        assert!(
             user.contains("- revenue · revenue · attribute · domain: organization · Total income"),
             "{user}"
         );
         assert!(msgs[0]
             .content
             .contains("every statement of this signature"));
+    }
+
+    #[test]
+    fn a_key_the_shortlist_hid_still_counts_when_it_fits_structurally() {
+        let examples = strings(&[]);
+        let quotes = strings(&[]);
+        let items = vec![PhraseItem {
+            id: 0,
+            phrase: "is based in",
+            subject_class: Some("organization"),
+            object_class: None,
+            object_is_value: false,
+            statement_count: 1,
+            examples: &examples,
+            quotes: &quotes,
+            candidates: candidates(),
+            also_allowed: vec!["located_in"],
+        }];
+        let (choices, malformed) =
+            parse_phrase_response(r#"{"b":[[0,"located_in","forward"]]}"#, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices[0].property.as_ref().map(|(k, _)| k.as_str()),
+            Some("located_in")
+        );
+        let (_, malformed) =
+            parse_phrase_response(r#"{"b":[[0,"made_up","forward"]]}"#, &items).unwrap();
+        assert_eq!(malformed, 1, "a key that fits nowhere is still malformed");
+    }
+
+    #[test]
+    fn a_label_answer_maps_to_its_key_when_unique() {
+        let examples = strings(&[]);
+        let quotes = strings(&[]);
+        let items = vec![PhraseItem {
+            id: 0,
+            phrase: "is based in",
+            subject_class: Some("organization"),
+            object_class: None,
+            object_is_value: false,
+            statement_count: 1,
+            examples: &examples,
+            quotes: &quotes,
+            candidates: candidates(),
+            also_allowed: vec![],
+        }];
+        let (choices, malformed) =
+            parse_phrase_response(r#"{"b":[[0,"Headquartered In","forward"]]}"#, &items).unwrap();
+        assert_eq!(malformed, 0, "a label, folded, names the key");
+        assert_eq!(
+            choices[0].property.as_ref().map(|(k, _)| k.as_str()),
+            Some("headquartered_in")
+        );
+        assert_eq!(fold("Date of Birth"), "dateofbirth");
     }
 
     #[test]
@@ -414,6 +536,7 @@ mod tests {
             examples: &examples,
             quotes: &quotes,
             candidates: candidates(),
+            also_allowed: vec![],
         }];
         let user = &build_phrase_messages(&items)[1].content;
         assert!(user.contains("· object: value ·"), "{user}");
@@ -434,6 +557,7 @@ mod tests {
             examples: &examples,
             quotes: &quotes,
             candidates: candidates(),
+            also_allowed: vec![],
         };
         let items = vec![
             mk(0, "owns"),
@@ -480,6 +604,7 @@ mod tests {
                 examples: &examples,
                 quotes: &quotes,
                 candidates: candidates(),
+                also_allowed: vec![],
             },
             PhraseItem {
                 id: 1,
@@ -491,6 +616,7 @@ mod tests {
                 examples: &examples,
                 quotes: &quotes,
                 candidates: candidates(),
+                also_allowed: vec![],
             },
         ];
         let raw = r#"{"b": [[0, "revenue", "forward"], [1, "subsid"#;
@@ -511,6 +637,7 @@ mod tests {
             examples,
             quotes,
             candidates: candidates(),
+            also_allowed: vec![],
         };
         vec![
             mk(0, "owns", false),

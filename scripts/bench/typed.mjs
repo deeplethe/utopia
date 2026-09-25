@@ -89,7 +89,8 @@ async function setup() {
   const KB = kb.id;
   log(`新库 ${KB}（工作区 ${ws.id}）`);
   // 本体固定：不让抽取长本体、不跑老的类型消解、不做公理派生；治理按产品默认
-  psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE WHERE id='${KB}'`);
+  // 治理 agent（0025 的裁决）也关掉：它在第三轮里花了约 500 次调用，量的不是类型图
+  psql(`UPDATE knowledge_bases SET auto_extend_ontology=FALSE, auto_type_resolution=FALSE, materialize_inferences=FALSE, governance=FALSE WHERE id='${KB}'`);
   const classId = {};
   for (const [t, [key, label, description]] of Object.entries(CLASSES)) {
     const r = await api("POST", `/api/v1/kbs/${KB}/ontology/entity-types`, { key, label, description, parents: [] });
@@ -113,6 +114,16 @@ async function setup() {
   log(`本体：${Object.keys(CLASSES).length} 类，${ontology.properties.length} 属性（${attributes} 条是 attribute）`);
   // 建本体排下的对齐任务在语料到之前没意义，清掉，抽完再排
   psql(`DELETE FROM jobs WHERE kind IN ('align_types','align_phrases') AND payload->>'kb_id'='${KB}' AND status='queued'`);
+  // 配了嵌入模型就先把属性的向量建好：对齐按它给候选开短名单，没向量就退回全部结构候选
+  const embedModel = psql(`SELECT s.embed_model FROM llm_settings s JOIN knowledge_bases k ON k.workspace_id=s.workspace_id WHERE k.id='${KB}'`);
+  if (embedModel) {
+    psql(`INSERT INTO jobs (kind, payload) VALUES ('embed_ontology', '{"kb_id":"${KB}"}')`);
+    await until(() => {
+      const missing = num(`SELECT count(*) FROM relation_types WHERE kb_id='${KB}' AND NOT builtin AND embedding IS NULL`);
+      log(`属性向量：还差 ${missing}`);
+      return missing === 0 ? true : missing;
+    }, 5000, 10 * 60000);
+  }
   return KB;
 }
 
@@ -234,7 +245,8 @@ async function judgeRetracted(KB) {
   const byFile = new Map();
   for (const r of all) (byFile.get(r[1]) || byFile.set(r[1], []).get(r[1])).push(r);
   const counts = { stated: 0, misworded: 0, not_stated: 0, unjudged: 0 };
-  for (const [file, items] of byFile) {
+  // 一篇一次裁判调用，四篇并行：串着跑 100 篇要等模型想 100 回
+  await parallel([...byFile], 4, async ([file, items]) => {
     const list = items.map((r, i) => `${i}. ${r[2]} — ${r[3]} — ${r[4]}`).join("\n");
     let verdicts = {};
     try {
@@ -243,9 +255,18 @@ async function judgeRetracted(KB) {
       for (const r of (m ? JSON.parse(m[0]).results : [])) verdicts[r.i] = r.verdict;
     } catch (e) { log(`裁判失败 ${file}: ${String(e).slice(0, 120)}`); }
     items.forEach((_, i) => { counts[["stated", "misworded", "not_stated"].includes(verdicts[i]) ? verdicts[i] : "unjudged"] += 1; });
-  }
+  });
   console.log(`撤改掉的 ${all.length} 条里裁判判 stated ${counts.stated}（撤错的），misworded ${counts.misworded}，not_stated ${counts.not_stated}（原型撤了 278 条，约四分之一是对的）`);
   return { removed: all.length, ...counts };
+}
+
+/** 有限并行：最多 n 个在飞 */
+async function parallel(items, n, fn) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) { const i = next++; await fn(items[i]); }
+  });
+  await Promise.all(workers);
 }
 
 // ---- 打分 ----
@@ -380,7 +401,8 @@ async function judge(KB, n, seed) {
   const byFile = new Map();
   for (const r of sample) (byFile.get(r[1]) || byFile.set(r[1], []).get(r[1])).push(r);
   const counts = { stated: 0, misworded: 0, not_stated: 0, unjudged: 0 };
-  for (const [file, items] of byFile) {
+  // 一篇一次裁判调用，四篇并行：串着跑 100 篇要等模型想 100 回
+  await parallel([...byFile], 4, async ([file, items]) => {
     const list = items.map((r, i) => `${i}. ${r[2]} — ${r[3]} — ${r[4]}`).join("\n");
     let verdicts = {};
     try {
@@ -389,7 +411,7 @@ async function judge(KB, n, seed) {
       for (const r of (m ? JSON.parse(m[0]).results : [])) verdicts[r.i] = r.verdict;
     } catch (e) { log(`裁判失败 ${file}: ${String(e).slice(0, 120)}`); }
     items.forEach((_, i) => { counts[["stated", "misworded", "not_stated"].includes(verdicts[i]) ? verdicts[i] : "unjudged"] += 1; });
-  }
+  });
   const judged = counts.stated + counts.misworded + counts.not_stated;
   console.log(`裁判 ${sample.length} 条（判了 ${judged}）：stated ${counts.stated}，misworded ${counts.misworded}，not_stated ${counts.not_stated} → judged precision ${judged ? (100 * counts.stated / judged).toFixed(1) + "%" : "-"}（原型勘误前 75.3% 是门槛）`);
   return { sampled: sample.length, ...counts, judged_precision: judged ? counts.stated / judged : null };

@@ -1199,6 +1199,10 @@ export const en = {
     modelsIntro:
       "OpenAI-compatible protocol — DeepSeek, Qwen, GLM, Ollama, vLLM all work. Fully on-prem friendly.",
     chatModel: "Chat model",
+    reasoningEffort: "Reasoning effort",
+    reasoningDefault: "endpoint default",
+    reasoningHint:
+      "Reasoning models think before they answer; for extraction nine tenths of the output was thinking. minimal turns it off without changing the answer.",
     embedModel: "Embedding model (optional, enables semantic search)",
     baseUrl: "Base URL",
     model: "Model",
@@ -2004,6 +2008,7 @@ export const en = {
       if (kind === "derived") return `Held: ${value} derived fact(s) rest on it`;
       if (kind === "answered") return `Held: it was named in ${value} answer(s)`;
       if (kind === "contradiction") return `Held: "${value}" allows one value and would get two`;
+      if (kind === "unflagged") return "Held: the structure did not doubt this fact; a person confirms the change";
       return `Held: ${detail}`;
     },
     errataQuote: "Document says:",

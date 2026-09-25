@@ -61,7 +61,22 @@ fn readings_text(readings: &[(&str, &str)]) -> String {
 }
 
 pub fn build_rule_messages(items: &[RuleItem<'_>], readings: &[(&str, &str)]) -> Vec<ChatMessage> {
+    // 候选表一批只写一遍，各项只列键（与 `phrase_align::build_phrase_messages` 同一条理由：
+    // 每项带整张表时一次请求五万多 token）
+    let mut glossary: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for c in items.iter().flat_map(|i| i.candidates.iter()) {
+        if seen.insert(c.key.trim()) {
+            glossary.push(candidate_line(&PropertyCandidate {
+                via: Vec::new(),
+                ..c.clone()
+            }));
+        }
+    }
     let mut user = String::new();
+    if !glossary.is_empty() {
+        user.push_str(&format!("Properties:\n{}\n\n", glossary.join("\n")));
+    }
     for item in items {
         let shape = if item.trigger == "kind_word" {
             format!("kind word \"{}\"", item.phrase)
@@ -92,8 +107,8 @@ pub fn build_rule_messages(items: &[RuleItem<'_>], readings: &[(&str, &str)]) ->
         let candidates = if item.candidates.is_empty() {
             " (none)".to_string()
         } else {
-            let lines: Vec<String> = item.candidates.iter().map(candidate_line).collect();
-            format!("\n{}", lines.join("\n"))
+            let keys: Vec<&str> = item.candidates.iter().map(|c| c.key.trim()).collect();
+            format!(" {}", keys.join(", "))
         };
         user.push_str(&format!(
             "Item {}: {shape}{bound}\nExamples:{examples}\nCandidates:{candidates}\n\n",
@@ -141,8 +156,9 @@ pub fn parse_rule_response(
             let reading = arr.get(2).and_then(|x| x.as_str());
             let implies = match key {
                 None => None,
-                Some(k) => {
-                    if !item.candidates.iter().any(|c| c.key == k) || item.bound_to == Some(k) {
+                Some(written) => {
+                    let k = resolve_key(item, written)?;
+                    if item.bound_to == Some(k) {
                         return None;
                     }
                     if let Some(r) = reading {
@@ -281,6 +297,30 @@ pub fn parse_reading_response(
 }
 
 /// 回复里可能裹着 ```json 围栏或前后的话：取第一个 { 到最后一个 }
+/// 模型写的键：候选里的键（大小写不论），或唯一对上的标签——键是 `p569` 这种代号时模型
+/// 常答标签（与 `phrase_align::candidate_key` 同一条理由）
+fn resolve_key<'a>(item: &RuleItem<'a>, written: &str) -> Option<&'a str> {
+    let written = written.trim();
+    if let Some(c) = item.candidates.iter().find(|c| c.key.trim() == written) {
+        return Some(c.key);
+    }
+    let lower = written.to_lowercase();
+    let mut by_key = item
+        .candidates
+        .iter()
+        .filter(|c| c.key.trim().to_lowercase() == lower);
+    if let Some(c) = by_key.next() {
+        return by_key.next().is_none().then_some(c.key);
+    }
+    let folded = crate::phrase_align::fold(written);
+    let mut by_label = item
+        .candidates
+        .iter()
+        .filter(|c| crate::phrase_align::fold(c.label) == folded);
+    let c = by_label.next()?;
+    by_label.next().is_none().then_some(c.key)
+}
+
 fn extract_json(raw: &str) -> &str {
     match (raw.find('{'), raw.rfind('}')) {
         (Some(a), Some(b)) if b > a => &raw[a..=b],
