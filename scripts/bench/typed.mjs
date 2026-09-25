@@ -17,7 +17,7 @@
 //
 // 用法：
 //   node scripts/bench/typed.mjs --label run1                 # 完整一组
-//   node scripts/bench/typed.mjs --label run1 --judge 200     # 加裁判抽样 200 条
+//   node scripts/bench/typed.mjs --label run1 --judge 600     # 加裁判抽样 600 条（200 条时同一个库两次裁能差十个点）
 //   node scripts/bench/typed.mjs --kb <id> --score            # 只对已有的库重新打分
 //   node scripts/bench/typed.mjs --label dry --dry-run        # 建库、装本体、灌语料、等解析，不抽取：验管线
 //   node scripts/bench/typed.mjs --label run1 --judge 200 --errata   # 对齐之后再跑勘误 agent，报前后两份分与撤错多少
@@ -490,7 +490,7 @@ if (args["approve-rules"]) rules = await approveRules(KB);
 // 勘误前的分：已经跑过勘误的库也能按 scope 算回来（撤掉的算回来、加上的不算）
 const result = score(KB, "before");
 if (rules) result.rules = rules;
-if (args.judge) result.judge = await judge(KB, Number(args.judge) || 200, Number(args.seed || 1));
+if (args.judge) result.judge = await judge(KB, Number(args.judge) || 600, Number(args.seed || 1));
 if (args.errata) {
   // 勘误前的分留着，勘误后再打一次：0044 §7 的度量是两份分的差，与撤错了多少
   result.before_errata = { gold_recall: result.gold_recall, gold_recall_same_sentence: result.gold_recall_same_sentence, typed_facts: result.typed_facts, judge: result.judge };
@@ -500,7 +500,7 @@ if (args.errata) {
   const after = score(KB, "after");
   result.after_errata = { gold_recall: after.gold_recall, gold_recall_same_sentence: after.gold_recall_same_sentence, typed_facts: after.typed_facts };
   if (args.judge) {
-    result.after_errata.judge = await judge(KB, Number(args.judge) || 200, Number(args.seed || 1));
+    result.after_errata.judge = await judge(KB, Number(args.judge) || 600, Number(args.seed || 1));
     result.errata.removed = await judgeRetracted(KB);
   }
 }
