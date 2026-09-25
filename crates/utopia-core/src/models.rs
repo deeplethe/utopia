@@ -278,6 +278,8 @@ pub enum SourceKind {
     Webdav,
     Notion,
     Api,
+    /// 推送的不是文档而是陈述本身（0054）：请求体就是开放抽取契约，抽取不问模型
+    Statements,
     Custom,
     /// 每个库自带的记忆来源，不可建不可删（0015）
     Memory,
@@ -1339,6 +1341,9 @@ pub struct DerivedFactView {
     pub rule: String,
     /// 业务规则的名字。公理推的为 None——公理没有名字，`rule` 那一列就是它的全部身份
     pub rule_name: Option<String>,
+    /// 凭业务规则定义的哪一版推出的（0060），和那一版的定义本身。公理推的为 None
+    pub rule_version: Option<i32>,
+    pub rule_definition: Option<serde_json::Value>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     pub confidence: f32,

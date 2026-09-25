@@ -42,6 +42,10 @@ pub enum Rule {
     Inverse,
     /// `A p B` ∧ `p ⊑ q` ⟹ `A q B`。主宾不动，只升谓词
     SubProperty,
+    /// 一条业务规则推出的关系边（0047）。不是公理：`derive()` 从不产出它，
+    /// 它只作为**候选**进矛盾检查，让撞上断言或别的派生时能像公理派生一样被报出来。
+    /// 触发它的规则行在 `attribute_rules` 里，不在公理规则表里
+    Business,
 }
 
 impl Rule {
@@ -51,6 +55,7 @@ impl Rule {
             Rule::Symmetric => "symmetric",
             Rule::Inverse => "inverse",
             Rule::SubProperty => "sub_property",
+            Rule::Business => "business_rule",
         }
     }
 }
@@ -99,7 +104,7 @@ pub struct TimedEdge {
 }
 
 /// 交集。`None` 表示无界那一侧。
-pub(crate) fn overlap(
+pub fn overlap(
     a: (Option<i64>, Option<i64>),
     b: (Option<i64>, Option<i64>),
 ) -> Option<(Option<i64>, Option<i64>)> {

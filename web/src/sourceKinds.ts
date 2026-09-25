@@ -20,6 +20,7 @@ export const CREATABLE_SOURCE_KINDS = [
   "webdav",
   "notion",
   "api",
+  "statements",
   "custom",
 ] as const;
 

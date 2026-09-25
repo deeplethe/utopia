@@ -1,5 +1,6 @@
 import type { SourceKind } from "./sourceKinds";
 import { S, lang } from "./i18n";
+import { createParser } from "eventsource-parser";
 
 export class ApiError extends Error {
   status: number;
@@ -358,16 +359,19 @@ export interface RuleCondition {
   /** 数字 / [lo,hi] / 字符串数组；present 不带 */
   operand?: unknown;
   predicate_label?: string;
+  /** x = rule subject (default); y = the entity reached by the one declared join */
+  side?: "x" | "y";
 }
 
 export interface RuleInput {
   name: string;
   description?: string;
   subject_type_id: string;
-  /** typing = 推出一个类；attribute = 推出一个属性值 */
-  conclusion: "typing" | "attribute";
+  /** typing = class; attribute = value; relation = an edge to the joined Y */
+  conclusion: "typing" | "attribute" | "relation";
   conclude_type_id?: string;
   conclude_predicate_id?: string;
+  join_predicate_id?: string;
   conclude_value?: unknown;
   conditions: RuleCondition[];
 }
@@ -380,12 +384,15 @@ export interface RuleMatch {
   concluded: string | null;
   valid_from: string | null;
   valid_to: string | null;
+  object_id?: string | null;
+  object_entity?: string | null;
+  relation_predicate?: string | null;
   /** 「全烃 = 12.3」这种可读形态，按前提顺序 */
   premises: string[];
 }
 
-export interface BusinessRule extends Omit<RuleInput, "conclusion"> {
-  conclusion: "typing" | "attribute" | "computed";
+export interface BusinessRule extends Omit<RuleInput, "conclusion" | "join_predicate_id"> {
+  conclusion: "typing" | "attribute" | "computed" | "relation";
   /** Raw server tree; unsupported nodes must remain read-only. */
   conclude_expr?: unknown;
   id: string;
@@ -393,10 +400,35 @@ export interface BusinessRule extends Omit<RuleInput, "conclusion"> {
   subject_label: string;
   conclude_type_label: string | null;
   conclude_predicate_label: string | null;
+  join_predicate_id?: string | null;
+  join_predicate_label?: string | null;
   /** 此刻凭它成立的结论条数 */
   derived_count: number;
   /** 上次跑的时候有几个实体的读数组合没展开完。**大于零就意味着少推了** */
   capped: number;
+  /** 当前定义是第几版。改判据或结论就加一，改名不算。老的夹具没有它，界面按第 1 版读 */
+  version?: number;
+}
+
+/** 规则定义史的一版：说了什么、从什么时候到什么时候、此刻凭它成立几条 */
+export interface RuleVersion {
+  id: string;
+  seq: number;
+  definition: {
+    subject_type_id: string;
+    conclusion: BusinessRule["conclusion"];
+    conclude_type_id: string | null;
+    conclude_predicate_id: string | null;
+    conclude_value: unknown;
+    conclude_expr: unknown;
+    join_predicate_id: string | null;
+    conditions: { group: number; seq: number; side: string; predicate_id: string; op: string; operand: unknown }[];
+  };
+  recorded_at: string;
+  superseded_at: string | null;
+  derived_count: number;
+  /** 定义里提到的类与谓词现在叫什么；改名或删掉的查不到，界面就显示 id */
+  labels: Record<string, string>;
 }
 
 export interface DerivedFact {
@@ -412,6 +444,8 @@ export interface DerivedFact {
   rule: "transitive" | "symmetric" | "inverse" | "sub_property" | "business";
   /** 业务规则的名字。公理推的为 null——公理没有名字 */
   rule_name?: string | null;
+  /** 凭业务规则定义的哪一版推出的。公理推的为 null */
+  rule_version?: number | null;
   valid_from: string | null;
   valid_to: string | null;
   confidence: number;
@@ -1954,9 +1988,10 @@ export const api = {
       enabled?: boolean;
       conditions?: RuleCondition[];
       /** 结论整组替换：三格互相定义，只改一格会留下半截状态 */
-      conclusion?: "typing" | "attribute";
+      conclusion?: "typing" | "attribute" | "relation";
       conclude_type_id?: string;
       conclude_predicate_id?: string;
+      join_predicate_id?: string;
       conclude_value?: unknown;
     },
   ) =>
@@ -1969,6 +2004,9 @@ export const api = {
     request<{ matches: RuleMatch[]; total: number }>(
       `/api/v1/kbs/${kbId}/rules/${ruleId}/matches?page=${page}&per=${per}`,
     ),
+  /** 一条规则的定义史：改过几次、每一版怎么说 */
+  ruleVersions: (kbId: string, ruleId: string) =>
+    request<{ versions: RuleVersion[] }>(`/api/v1/kbs/${kbId}/rules/${ruleId}/versions`),
   deleteRule: (kbId: string, ruleId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/rules/${ruleId}`, {
       method: "DELETE",
@@ -2677,13 +2715,9 @@ function consumeChatStream(
       }
       reader = res.body.getReader();
       const decoder = new TextDecoder();
-      let line = "";
-      let skipLf = false;
-      let event = "message";
-      let data: string[] = [];
-      const dispatch = () => {
-        if (data.length === 0) return;
-        const value = data.join("\n");
+      let trailingCr = false;
+      const parser = createParser({ onEvent: ({ event, data: value }) => {
+        if (terminal || controller.signal.aborted) return;
         if (event === "done") { terminal = true; handlers.onDone(); }
         else if (event === "error") fail(value);
         else if (event === "idle") {
@@ -2694,36 +2728,18 @@ function consumeChatStream(
         else if (event === "step") handlers.onStep(JSON.parse(value));
         else if (event === "delta") handlers.onDelta(JSON.parse(value).text);
         else if (event === "snapshot") handlers.onSnapshot?.(JSON.parse(value));
-      };
-      const finishLine = () => {
-        if (line === "") {
-          dispatch();
-          event = "message";
-          data = [];
-        } else {
-          const colon = line.indexOf(":");
-          const field = colon < 0 ? line : line.slice(0, colon);
-          let value = colon < 0 ? "" : line.slice(colon + 1);
-          if (value.startsWith(" ")) value = value.slice(1);
-          if (field === "event") event = value;
-          else if (field === "data") data.push(value);
-        }
-        line = "";
-      };
+      } });
       while (!terminal && !controller.signal.aborted) {
         const { done, value } = await reader.read();
-        if (done || controller.signal.aborted) break;
-        // CR is a complete line ending, even when its optional LF arrives in the
-        // next byte chunk. TextDecoder independently preserves split UTF-8.
-        for (const char of decoder.decode(value, { stream: true })) {
-          if (skipLf && char === "\n") { skipLf = false; continue; }
-          skipLf = false;
-          if (char === "\r" || char === "\n") {
-            finishLine();
-            skipLf = char === "\r";
-          } else line += char;
-          if (terminal || controller.signal.aborted) break;
+        if (done) {
+          // v3 holds a final CR until the next character confirms its line ending.
+          if (trailingCr) parser.feed("\n");
+          break;
         }
+        if (controller.signal.aborted) break;
+        const chunk = decoder.decode(value, { stream: true });
+        if (chunk) trailingCr = chunk.endsWith("\r");
+        parser.feed(chunk);
       }
       // EOF never dispatches an incomplete frame and is not an application done.
       fail(S.ask.streamInterrupted);

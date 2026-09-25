@@ -179,7 +179,7 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         // 来源搬过来），第三条并进去（merged 1）——最后一行，三条来源，两条证据；带 mood 的
         // 那条不算
         let first = materialize(&pool, kb).await?;
-        assert_eq!(first, Outcome { retired: 0, added: 2, merged: 1, implied: 0 });
+        assert_eq!(first, Outcome { retired: 0, added: 2, merged: 1, implied: 0, corrected: 0, conflicts: 0 });
         let live = |pool: PgPool| async move {
             sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, Uuid, Option<chrono::DateTime<chrono::Utc>>, Option<String>)>(
                 "SELECT id, subject_id, object_id, predicate_id, from_statement_id, valid_from,
@@ -238,7 +238,7 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
             .execute(&pool)
             .await?;
         // 旧行的来源全不成立了：作废 1；反向重算时裸的那条先成行、带时间的再取代它：新建 2
-        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 2, merged: 0, implied: 0 });
+        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 2, merged: 0, implied: 0, corrected: 0, conflicts: 0 });
         let rows = live(pool.clone()).await?;
         assert_eq!(rows.len(), 1);
         assert_eq!((rows[0].1, rows[0].2), (port, bakery), "方向反了主宾对调");
@@ -258,7 +258,7 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         .bind(kb)
         .execute(&pool)
         .await?;
-        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 0, merged: 0, implied: 0 });
+        assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 0, merged: 0, implied: 0, corrected: 0, conflicts: 0 });
         assert_eq!(utopia_store::materialize::count(&pool, kb).await?, 0);
         anyhow::Ok(())
     }

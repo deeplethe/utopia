@@ -31,8 +31,9 @@ describe("application chat terminal outcomes", () => {
     const text = 'event: delta\ndata: {"text":"中文🙂"}\n\nevent: done\ndata: {}\n\n'.replaceAll("\n", nl);
     expect(await replay(text, false, true)).toEqual([["delta","中文🙂"],["done",null]]);
   });
-  it("preserves multiline error data and ignores everything after it", async () => {
-    expect(await replay("event: error\ndata: first\ndata:  second\n\nevent: done\ndata: {}\n\nevent: delta\ndata: not-json\n\n"))
+  it.each(["\n", "\r\n", "\r"])("preserves multiline error data with %j and ignores later events", async (nl) => {
+    const text = "event: error\ndata: first\ndata:  second\n\nevent: done\ndata: {}\n\nevent: delta\ndata: not-json\n\n".replaceAll("\n", nl);
+    expect(await replay(text, false, true))
       .toEqual([["error","first\n second"]]);
   });
   it("does not turn partial output plus EOF into success", async () => {
@@ -45,7 +46,7 @@ describe("application chat terminal outcomes", () => {
   it("ignores frames after the first done", async () => {
     expect(await replay('event: done\ndata: {}\n\nevent: delta\ndata: {"text":"late"}\n\nevent: error\ndata: late error\n\n')).toEqual([["done",null]]);
   });
-  it.each(["event: done\ndata: {}\n", "event: done\ndata: {}", "", "event: delta\ndata: {broken}\n\n"])("requires a complete terminal frame: %s", async (s) => {
+  it.each(["event: done\ndata: {}\n", "event: done\ndata: {}\r", "event: done\ndata: {}", "", "event: delta\ndata: {broken}\n\n"])("requires a complete terminal frame: %s", async (s) => {
     const result = await replay(s);
     expect(result).toHaveLength(1); expect(result[0][0]).toBe("error");
   });

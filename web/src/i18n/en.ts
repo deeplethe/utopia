@@ -586,6 +586,7 @@ export const en = {
       url: "URLs",
       rss: "RSS feed",
       api: "API",
+      statements: "Statements",
       custom: "Custom",
       github_issues: "GitHub issues",
       jira_issues: "Jira issues",
@@ -626,6 +627,8 @@ export const en = {
         "and it appears here. Dated by when the page was last edited, which is the page's " +
         "own clock rather than ours.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
+      statements:
+        "Your system pushes statements already in the extraction contract; no model reads them. Send events, not the state of a table.",
       custom:
         "Polls a URL you control on a schedule — your service returns JSON items and Utopia keeps them in sync.",
       memory:
@@ -1310,6 +1313,11 @@ export const en = {
     ruleConcludes: "Concludes",
     ruleConcludesTyping: "the class",
     ruleConcludesAttribute: "the attribute",
+    ruleConcludesRelation: "the relation",
+    ruleConcludesRelationText: (join: string, conclude: string): string =>
+      `${conclude} from X through ${join}`,
+    ruleSideX: "X",
+    ruleSideY: "Y",
     /* 从前是「当以下全部成立」。**一条规则现在可以写第二种情况**，那句话就
        不再是真的——标签退回一个「当」，全不全由下面那句说明交代 */
     ruleConditions: "When",
@@ -1355,6 +1363,12 @@ export const en = {
     ruleEditing: "Editing",
     ruleMatchesTitle: "What it marks",
     ruleMatchesEmpty: "Nothing right now.",
+    ruleVersion: (n: number) => `v${n}`,
+    ruleHistoryTitle: "How this rule has read",
+    ruleHistoryEmpty: "No history yet.",
+    ruleVersionCurrent: "current",
+    ruleVersionSince: (from: string, to: string | null) => (to ? `${from} to ${to}` : `since ${from}`),
+    ruleVersionStanding: (n: number) => (n === 1 ? "1 conclusion stands on it" : `${n} conclusions stand on it`),
     /* 前提要读成「凭什么」，所以用 because 起头而不是干列 */
     ruleMatchBecause: (premises: string) => `because ${premises}`,
     /* 同一个实体会因为不同时段的读数出现好几次——不写出这一段就像重复了 */

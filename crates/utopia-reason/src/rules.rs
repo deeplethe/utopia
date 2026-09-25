@@ -24,6 +24,39 @@ pub struct AttrFact {
     pub value: serde_json::Value,
 }
 
+/// 一条参与规则连接的实体—实体边。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuleEdge {
+    pub id: Uuid,
+    pub predicate: Uuid,
+    pub subject: Uuid,
+    pub object: Uuid,
+}
+
+/// 连接边的两侧。`X` 是规则的主语；`Y` 是这条边把它连到的另一个实体。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Side {
+    X,
+    Y,
+}
+
+impl Side {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Side::X => "x",
+            Side::Y => "y",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "x" | "X" => Side::X,
+            "y" | "Y" => Side::Y,
+            _ => return None,
+        })
+    }
+}
+
 /// 条件的比较方式。与 `attribute_rule_conditions.op` 的 CHECK 一一对应。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
@@ -188,6 +221,8 @@ impl Expr {
 pub struct Condition {
     /// 同组的条件用「与」连，组与组之间用「或」连（0029）。老规则全是第 0 组
     pub group: i32,
+    /// 这一条件读连接的哪一侧。没有连接的老规则读的永远是 X
+    pub side: Side,
     pub predicate: Uuid,
     pub op: Op,
     pub operand: Operand,
@@ -206,12 +241,16 @@ pub enum Conclusion {
         predicate: Uuid,
         value: serde_json::Value,
     },
+    /// 派生关系：从 X 经规则声明的连接指向 Y（0047）
+    Relation { predicate: Uuid },
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BusinessRule {
     pub id: Uuid,
     pub conclusion: Conclusion,
+    /// 把 X 与 Y 连起来的那条谓词。`None` 就是老的单实体规则
+    pub join_predicate: Option<Uuid>,
     /// 条件。**组内合取、组间析取**（0029）：同一组里全部满足才算这一组成立，
     /// 任何一组成立这条规则就命中。空条件集永不命中——一条没有判据的规则应当
     /// 什么都不推，而不是把整个类都归进去
@@ -223,6 +262,8 @@ pub struct BusinessRule {
 pub struct RuleHit {
     pub rule: Uuid,
     pub subject: Uuid,
+    /// 关系结论的宾语；其他结论没有实体宾语
+    pub object: Option<Uuid>,
     pub premises: Vec<Uuid>,
     pub from: Option<i64>,
     pub to: Option<i64>,
@@ -267,6 +308,21 @@ pub fn evaluate(
     rules: &[BusinessRule],
     facts: &[AttrFact],
     spans: &HashMap<Uuid, (Option<i64>, Option<i64>)>,
+    edges: &[RuleEdge],
+) -> (Vec<RuleHit>, RuleReport) {
+    evaluate_with_pool(rules, facts, facts, spans, edges)
+}
+
+/// Evaluate rules with the facts available to a joined `Y` supplied separately.
+///
+/// `facts` stays scoped to the conclusion's subject type. A one-hop join can
+/// reach another entity type, so its conditions read from `pool_facts`.
+pub fn evaluate_with_pool(
+    rules: &[BusinessRule],
+    facts: &[AttrFact],
+    pool_facts: &[AttrFact],
+    spans: &HashMap<Uuid, (Option<i64>, Option<i64>)>,
+    edges: &[RuleEdge],
 ) -> (Vec<RuleHit>, RuleReport) {
     let mut report = RuleReport {
         rules: rules.len(),
@@ -274,15 +330,28 @@ pub fn evaluate(
     };
     let mut hits: Vec<RuleHit> = Vec::new();
 
-    // 按实体分组：规则谈的是「一个实体自己的属性」，跨实体不参与
-    let mut by_subject: HashMap<Uuid, Vec<&AttrFact>> = HashMap::new();
-    for f in facts {
-        by_subject.entry(f.subject).or_default().push(f);
-    }
-
     for rule in rules {
         if rule.conditions.is_empty() {
             continue;
+        }
+        if let Some(join_predicate) = rule.join_predicate {
+            joined_evaluate(
+                rule,
+                join_predicate,
+                facts,
+                pool_facts,
+                spans,
+                edges,
+                &mut hits,
+                &mut report,
+            );
+            continue;
+        }
+
+        // 按实体分组：这条规则谈的还是一个实体自己的属性
+        let mut by_subject: HashMap<Uuid, Vec<&AttrFact>> = HashMap::new();
+        for f in facts {
+            by_subject.entry(f.subject).or_default().push(f);
         }
         // 按组切开，组序保持稳定：同一区间被两组同时推出时，留下的是**组序在前**
         // 的那条证明，而不是 HashMap 顺序决定的随机一条
@@ -388,6 +457,7 @@ pub fn evaluate(
                     hits.push(RuleHit {
                         rule: rule.id,
                         subject: *subject,
+                        object: None,
                         premises: combo,
                         from,
                         to,
@@ -402,6 +472,186 @@ pub fn evaluate(
     }
     report.hits = hits.len();
     (hits, report)
+}
+
+/// 求值一条跨两个实体的规则（0047）。
+///
+/// **一条连接边是一对 `(X, Y)`，不是一次笛卡尔连接。** ADR 只放行一跳，并且
+/// 让每条边自己成为前提：两条同谓词边哪怕首尾一样，也可能各有一段成立期。
+/// 封顶因此按 `(rule, X, Y)` 报，与单实体规则的 `(rule, X)` 保持同一种含义。
+#[allow(clippy::too_many_arguments)]
+fn joined_evaluate(
+    rule: &BusinessRule,
+    join_predicate: Uuid,
+    facts: &[AttrFact],
+    pool_facts: &[AttrFact],
+    spans: &HashMap<Uuid, (Option<i64>, Option<i64>)>,
+    edges: &[RuleEdge],
+    hits: &mut Vec<RuleHit>,
+    report: &mut RuleReport,
+) {
+    // X is already scoped to the rule's subject type. The join, however, is
+    // the way the rule reaches a differently typed Y.
+    let mut x_by_subject: HashMap<Uuid, Vec<&AttrFact>> = HashMap::new();
+    for f in facts {
+        x_by_subject.entry(f.subject).or_default().push(f);
+    }
+    let mut pool_by_subject: HashMap<Uuid, Vec<&AttrFact>> = HashMap::new();
+    for f in pool_facts {
+        pool_by_subject.entry(f.subject).or_default().push(f);
+    }
+
+    // 连接边按 X 分桶，一次扫完：对每个 X 再去全部边里找它的，是 X 数乘边数——
+    // 十万对上量出来是 5.9 s 对 1 万对的 82 ms，分桶之后随对数线性
+    let mut edges_by_x: HashMap<Uuid, Vec<&RuleEdge>> = HashMap::new();
+    for e in edges.iter().filter(|e| e.predicate == join_predicate) {
+        edges_by_x.entry(e.subject).or_default().push(e);
+    }
+    let mut x_subjects: Vec<Uuid> = edges_by_x.keys().copied().collect();
+    x_subjects.sort_unstable();
+    let groups = group_conditions(&rule.conditions);
+
+    for x in x_subjects {
+        let x_facts = x_by_subject.get(&x).map(Vec::as_slice).unwrap_or_default();
+        for edge in &edges_by_x[&x] {
+            let y = edge.object;
+            let y_facts = pool_by_subject
+                .get(&y)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            // 同一对上的多个组可能推出同一结论。留先到的组作证明，与单实体
+            // 规则的去重规则一致
+            let mut seen: Vec<(Option<i64>, Option<i64>, Option<u64>)> = Vec::new();
+            let mut capped_here = false;
+            for group in &groups {
+                let mut slots: Vec<(Side, Uuid)> =
+                    group.iter().map(|c| (c.side, c.predicate)).collect();
+                let mut extra: Vec<(Side, Uuid)> = Vec::new();
+                for c in group {
+                    if let Operand::Calc(e) = &c.operand {
+                        expr_predicates(e, c.side, &mut extra);
+                    }
+                }
+                if let Conclusion::Computed { expr, .. } = &rule.conclusion {
+                    expr_predicates(expr, Side::X, &mut extra);
+                }
+                for slot in extra {
+                    if !slots.contains(&slot) {
+                        slots.push(slot);
+                    }
+                }
+
+                let mut per_slot: Vec<Vec<Uuid>> = Vec::with_capacity(slots.len());
+                let mut satisfiable = true;
+                for (side, predicate) in &slots {
+                    let side_facts = match side {
+                        Side::X => x_facts,
+                        Side::Y => y_facts,
+                    };
+                    let matched: Vec<Uuid> = side_facts
+                        .iter()
+                        .filter(|f| f.predicate == *predicate)
+                        .map(|f| f.id)
+                        .collect();
+                    if matched.is_empty() {
+                        satisfiable = false;
+                        break;
+                    }
+                    per_slot.push(matched);
+                }
+                if !satisfiable {
+                    continue;
+                }
+                let combos: usize = per_slot.iter().map(|v| v.len()).product();
+                if combos > MAX_COMBOS {
+                    capped_here = true;
+                    continue;
+                }
+
+                let x_by_id: HashMap<Uuid, &AttrFact> =
+                    x_facts.iter().map(|f| (f.id, *f)).collect();
+                let y_by_id: HashMap<Uuid, &AttrFact> =
+                    y_facts.iter().map(|f| (f.id, *f)).collect();
+                for combo in cartesian(&per_slot) {
+                    let mut x_bound: HashMap<Uuid, &AttrFact> = HashMap::new();
+                    let mut y_bound: HashMap<Uuid, &AttrFact> = HashMap::new();
+                    for ((side, predicate), id) in slots.iter().zip(combo.iter()) {
+                        let bound = match side {
+                            Side::X => &mut x_bound,
+                            Side::Y => &mut y_bound,
+                        };
+                        let facts_by_id = match side {
+                            Side::X => &x_by_id,
+                            Side::Y => &y_by_id,
+                        };
+                        if let Some(f) = facts_by_id.get(id) {
+                            bound.entry(*predicate).or_insert(*f);
+                        }
+                    }
+                    let holds = group.iter().enumerate().all(|(i, c)| {
+                        let bound = match c.side {
+                            Side::X => &x_bound,
+                            Side::Y => &y_bound,
+                        };
+                        combo
+                            .get(i)
+                            .and_then(|id| match c.side {
+                                Side::X => x_by_id.get(id),
+                                Side::Y => y_by_id.get(id),
+                            })
+                            .is_some_and(|f| satisfies(c, &f.value, bound))
+                    });
+                    if !holds {
+                        continue;
+                    }
+                    // Relation is the only joined conclusion. Store validation
+                    // keeps computed conclusions on the old single-entity path,
+                    // so this branch need not invent a value for an edge.
+                    if !matches!(rule.conclusion, Conclusion::Relation { .. }) {
+                        continue;
+                    }
+                    let mut premises = combo;
+                    premises.push(edge.id);
+                    let Some((from, to)) = validity(&premises, spans) else {
+                        continue;
+                    };
+                    let key = (from, to, None);
+                    if seen.contains(&key) {
+                        continue;
+                    }
+                    seen.push(key);
+                    hits.push(RuleHit {
+                        rule: rule.id,
+                        subject: x,
+                        object: Some(y),
+                        premises,
+                        from,
+                        to,
+                        value: None,
+                    });
+                }
+            }
+            if capped_here {
+                report.capped += 1;
+            }
+        }
+    }
+}
+
+fn expr_predicates(expr: &Expr, side: Side, out: &mut Vec<(Side, Uuid)>) {
+    match expr {
+        Expr::Attr(predicate) => {
+            let slot = (side, *predicate);
+            if !out.contains(&slot) {
+                out.push(slot);
+            }
+        }
+        Expr::Const(_) => {}
+        Expr::Arith { l, r, .. } => {
+            expr_predicates(l, side, out);
+            expr_predicates(r, side, out);
+        }
+    }
 }
 
 /// 按 `group` 切成几组，**组序按 group_seq 升序**——两组推出同一区间时，
@@ -489,6 +739,94 @@ fn text(v: &serde_json::Value) -> Option<String> {
 }
 
 #[cfg(test)]
+mod joined_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn id(n: u8) -> Uuid {
+        Uuid::from_bytes([n; 16])
+    }
+
+    fn fact(fid: u8, subject: u8, pred: u8, value: serde_json::Value) -> AttrFact {
+        AttrFact {
+            id: id(fid),
+            subject: id(subject),
+            predicate: id(pred),
+            value,
+        }
+    }
+
+    /// A joined rule sees a second entity across exactly one declared edge.
+    /// Both sides' readings, and the edge itself, are premises.
+    #[test]
+    fn a_rule_joins_one_entity_and_concludes_a_relation() {
+        let rule = BusinessRule {
+            id: id(90),
+            join_predicate: Some(id(1)),
+            conclusion: Conclusion::Relation { predicate: id(2) },
+            conditions: vec![
+                Condition {
+                    group: 0,
+                    side: Side::X,
+                    predicate: id(10),
+                    op: Op::Gt,
+                    operand: Operand::Num(50.0),
+                },
+                Condition {
+                    group: 0,
+                    side: Side::Y,
+                    predicate: id(11),
+                    op: Op::Gt,
+                    operand: Operand::Num(50.0),
+                },
+            ],
+        };
+        let facts = vec![fact(1, 50, 10, json!(60.0)), fact(2, 51, 11, json!(70.0))];
+        let edges = vec![RuleEdge {
+            id: id(9),
+            predicate: id(1),
+            subject: id(50),
+            object: id(51),
+        }];
+        let spans = HashMap::from([
+            (id(1), (Some(100), Some(200))),
+            (id(2), (Some(150), Some(300))),
+            (id(9), (Some(120), None)),
+        ]);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &edges);
+
+        assert_eq!(hits.len(), 1, "one edge yields one joined conclusion");
+        assert_eq!(hits[0].subject, id(50));
+        assert_eq!(hits[0].object, Some(id(51)));
+        assert_eq!((hits[0].from, hits[0].to), (Some(150), Some(200)));
+        assert!(hits[0].premises.contains(&id(1)));
+        assert!(hits[0].premises.contains(&id(2)));
+        assert!(hits[0].premises.contains(&id(9)));
+    }
+
+    /// A condition on Y cannot manufacture the edge that binds it to X.
+    #[test]
+    fn a_joined_condition_without_the_edge_fires_nothing() {
+        let rule = BusinessRule {
+            id: id(90),
+            join_predicate: Some(id(1)),
+            conclusion: Conclusion::Relation { predicate: id(2) },
+            conditions: vec![Condition {
+                group: 0,
+                side: Side::Y,
+                predicate: id(11),
+                op: Op::Gt,
+                operand: Operand::Num(50.0),
+            }],
+        };
+        let facts = vec![fact(2, 51, 11, json!(70.0))];
+        let spans = HashMap::from([(id(2), (Some(100), Some(200)))]);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
+        assert!(hits.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -511,18 +849,21 @@ mod tests {
     fn a_conjunction_fires_and_names_the_two_readings() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "GasBearingWell".into(),
             },
             conditions: vec![
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(10),
                     op: Op::Gt,
                     operand: Operand::Num(8.0),
                 },
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(11),
                     op: Op::In,
                     operand: Operand::Set(vec!["气测异常".into(), "气测异常后效".into()]),
@@ -534,7 +875,7 @@ mod tests {
             fact(2, 50, 11, json!("气测异常")),
         ];
         let spans = HashMap::from([(id(1), (Some(100), None)), (id(2), (Some(100), None))]);
-        let (hits, report) = evaluate(&[rule], &facts, &spans);
+        let (hits, report) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].subject, id(50));
         assert_eq!(hits[0].premises, vec![id(1), id(2)]);
@@ -548,18 +889,21 @@ mod tests {
     fn a_missing_condition_fires_nothing() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "GasBearingWell".into(),
             },
             conditions: vec![
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(10),
                     op: Op::Gt,
                     operand: Operand::Num(8.0),
                 },
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(11),
                     op: Op::Present,
                     operand: Operand::None,
@@ -568,7 +912,7 @@ mod tests {
         };
         let facts = vec![fact(1, 50, 10, json!(12.3))];
         let spans = HashMap::from([(id(1), (Some(100), None))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert!(hits.is_empty(), "第二个条件没有任何事实，不该命中");
     }
 
@@ -577,11 +921,13 @@ mod tests {
     fn two_readings_give_two_intervals() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "GasBearingWell".into(),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Gt,
                 operand: Operand::Num(8.0),
@@ -593,7 +939,7 @@ mod tests {
             (id(1), (Some(100), Some(200))),
             (id(2), (Some(300), Some(400))),
         ]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 2, "两次读数各自成立");
         let mut spans_out: Vec<_> = hits.iter().map(|h| (h.from, h.to)).collect();
         spans_out.sort();
@@ -609,18 +955,21 @@ mod tests {
     fn premises_that_never_overlapped_fire_nothing() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "GasBearingWell".into(),
             },
             conditions: vec![
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(10),
                     op: Op::Gt,
                     operand: Operand::Num(8.0),
                 },
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(11),
                     op: Op::In,
                     operand: Operand::Set(vec!["气测异常".into()]),
@@ -635,7 +984,7 @@ mod tests {
             (id(1), (Some(100), Some(200))),
             (id(2), (Some(300), Some(400))),
         ]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert!(hits.is_empty(), "两条前提没有同时成立的时段");
     }
 
@@ -645,6 +994,7 @@ mod tests {
     fn either_group_can_fire_and_carries_only_its_own_premises() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "GasBearingWell".into(),
             },
@@ -652,18 +1002,21 @@ mod tests {
                 // 第 0 组：全烃 > 8 且 解释 ∈ {气测异常}
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(10),
                     op: Op::Gt,
                     operand: Operand::Num(8.0),
                 },
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(11),
                     op: Op::In,
                     operand: Operand::Set(vec!["气测异常".into()]),
                 },
                 // 第 1 组：综合解释 ∈ {气层}
                 Condition {
+                    side: Side::X,
                     group: 1,
                     predicate: id(12),
                     op: Op::In,
@@ -674,7 +1027,7 @@ mod tests {
         // 只有第二组的那条读数
         let facts = vec![fact(3, 50, 12, json!("气层"))];
         let spans = HashMap::from([(id(3), (Some(100), Some(200)))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 1, "第二组独自成立");
         assert_eq!(hits[0].premises, vec![id(3)]);
         assert_eq!((hits[0].from, hits[0].to), (Some(100), Some(200)));
@@ -686,17 +1039,20 @@ mod tests {
     fn two_groups_on_the_same_interval_are_one_hit() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "GasBearingWell".into(),
             },
             conditions: vec![
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(10),
                     op: Op::Gt,
                     operand: Operand::Num(8.0),
                 },
                 Condition {
+                    side: Side::X,
                     group: 1,
                     predicate: id(11),
                     op: Op::In,
@@ -710,7 +1066,7 @@ mod tests {
             (id(1), (Some(100), Some(200))),
             (id(2), (Some(100), Some(200))),
         ]);
-        let (hits, report) = evaluate(&[rule], &facts, &spans);
+        let (hits, report) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 1);
         assert_eq!(
             hits[0].premises,
@@ -736,17 +1092,20 @@ mod tests {
         spans.insert(id(200), (Some(100), Some(200)));
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "GasBearingWell".into(),
             },
             conditions: vec![
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(10),
                     op: Op::Gt,
                     operand: Operand::Num(8.0),
                 },
                 Condition {
+                    side: Side::X,
                     group: 1,
                     predicate: id(11),
                     op: Op::In,
@@ -754,7 +1113,7 @@ mod tests {
                 },
             ],
         };
-        let (hits, report) = evaluate(&[rule], &facts, &spans);
+        let (hits, report) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 1, "第二组照样出结论");
         assert_eq!(hits[0].premises, vec![id(200)]);
         assert_eq!(report.capped, 1, "(规则, 实体) 只报一次");
@@ -766,11 +1125,13 @@ mod tests {
     fn not_one_of_needs_a_reading_to_be_true() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "NonGas".into(),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(11),
                 op: Op::NotIn,
                 operand: Operand::Set(vec!["气层".into()]),
@@ -781,15 +1142,17 @@ mod tests {
             std::slice::from_ref(&rule),
             &[fact(1, 50, 11, json!("水层"))],
             &spans,
+            &[],
         );
         assert_eq!(hit.len(), 1, "读数在集合外");
         let (miss, _) = evaluate(
             std::slice::from_ref(&rule),
             &[fact(1, 50, 11, json!("气层"))],
             &spans,
+            &[],
         );
         assert!(miss.is_empty(), "读数在集合里");
-        let (none, _) = evaluate(&[rule], &[], &HashMap::new());
+        let (none, _) = evaluate(&[rule], &[], &HashMap::new(), &[]);
         assert!(none.is_empty(), "没有这条读数：不成立，而不是「不是它」");
     }
 
@@ -799,12 +1162,14 @@ mod tests {
     fn a_number_in_quotes_still_compares() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Attribute {
                 predicate: id(20),
                 value: json!("good"),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Gte,
                 operand: Operand::Num(12.0),
@@ -812,7 +1177,7 @@ mod tests {
         };
         let facts = vec![fact(1, 50, 10, json!(" 12.3 "))];
         let spans = HashMap::from([(id(1), (None, None))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 1);
     }
 
@@ -823,18 +1188,20 @@ mod tests {
         let spans = HashMap::from([(id(1), (None, None))]);
         let mk = |threshold: f64| BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "GasBearingWell".into(),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Gt,
                 operand: Operand::Num(threshold),
             }],
         };
-        assert_eq!(evaluate(&[mk(8.0)], &facts, &spans).0.len(), 1);
-        assert!(evaluate(&[mk(20.0)], &facts, &spans).0.is_empty());
+        assert_eq!(evaluate(&[mk(8.0)], &facts, &spans, &[]).0.len(), 1);
+        assert!(evaluate(&[mk(20.0)], &facts, &spans, &[]).0.is_empty());
     }
 
     /// 没有条件的规则什么都不推。空合取在逻辑上恒真，会把整个类归进去——
@@ -843,12 +1210,13 @@ mod tests {
     fn a_rule_without_conditions_concludes_nothing() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing { class: "X".into() },
             conditions: vec![],
         };
         let facts = vec![fact(1, 50, 10, json!(12.3))];
         let spans = HashMap::from([(id(1), (None, None))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert!(hits.is_empty());
     }
 
@@ -857,16 +1225,19 @@ mod tests {
     fn too_many_combinations_are_reported() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing { class: "X".into() },
             conditions: vec![
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(10),
                     op: Op::Present,
                     operand: Operand::None,
                 },
                 Condition {
                     group: 0,
+                    side: Side::X,
                     predicate: id(11),
                     op: Op::Present,
                     operand: Operand::None,
@@ -881,7 +1252,7 @@ mod tests {
             spans.insert(id(i), (None, None));
             spans.insert(id(i + 100), (None, None));
         }
-        let (hits, report) = evaluate(&[rule], &facts, &spans);
+        let (hits, report) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(report.capped, 1, "100 种组合超过上限，要计数");
         assert!(hits.is_empty());
     }
@@ -903,12 +1274,14 @@ mod tests {
     fn a_computed_conclusion_carries_the_readings_it_read() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Computed {
                 predicate: id(12),
                 expr: arith(Arith::Sub, attr(10), attr(11)),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Present,
                 operand: Operand::None,
@@ -916,7 +1289,7 @@ mod tests {
         };
         let facts = vec![fact(1, 50, 10, json!(300.0)), fact(2, 50, 11, json!(120.0))];
         let spans = HashMap::from([(id(1), (Some(100), None)), (id(2), (Some(100), None))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].value, Some(180.0));
         // 条件只提到 revenue，可 cost 也读了——它照样是前提
@@ -930,12 +1303,14 @@ mod tests {
     fn each_combination_of_readings_computes_its_own_value() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Computed {
                 predicate: id(12),
                 expr: arith(Arith::Sub, attr(10), attr(11)),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Present,
                 operand: Operand::None,
@@ -951,7 +1326,7 @@ mod tests {
             (id(2), (Some(200), Some(300))),
             (id(3), (Some(100), Some(300))),
         ]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 2, "两条 revenue 各算一个 margin");
         let mut values: Vec<f64> = hits.iter().filter_map(|h| h.value).collect();
         values.sort_by(f64::total_cmp);
@@ -964,12 +1339,14 @@ mod tests {
     fn a_missing_reading_computes_nothing_rather_than_zero() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Computed {
                 predicate: id(12),
                 expr: arith(Arith::Sub, attr(10), attr(11)),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Present,
                 operand: Operand::None,
@@ -977,7 +1354,7 @@ mod tests {
         };
         let facts = vec![fact(1, 50, 10, json!(300.0))];
         let spans = HashMap::from([(id(1), (Some(100), None))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert!(hits.is_empty(), "cost 没记，margin 就不该有");
     }
 
@@ -986,12 +1363,14 @@ mod tests {
     fn dividing_by_zero_computes_nothing() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Computed {
                 predicate: id(12),
                 expr: arith(Arith::Div, attr(10), attr(11)),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Present,
                 operand: Operand::None,
@@ -999,7 +1378,7 @@ mod tests {
         };
         let facts = vec![fact(1, 50, 10, json!(300.0)), fact(2, 50, 11, json!(0.0))];
         let spans = HashMap::from([(id(1), (Some(100), None)), (id(2), (Some(100), None))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert!(hits.is_empty());
     }
 
@@ -1009,11 +1388,13 @@ mod tests {
     fn a_threshold_can_be_computed_from_another_reading() {
         let rule = |factor: f64| BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Typing {
                 class: "Healthy".into(),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Gt,
                 operand: Operand::Calc(arith(Arith::Mul, attr(11), Expr::Const(factor))),
@@ -1022,11 +1403,11 @@ mod tests {
         let facts = vec![fact(1, 50, 10, json!(300.0)), fact(2, 50, 11, json!(120.0))];
         let spans = HashMap::from([(id(1), (Some(100), None)), (id(2), (Some(100), None))]);
 
-        let (hits, _) = evaluate(&[rule(1.5)], &facts, &spans);
+        let (hits, _) = evaluate(&[rule(1.5)], &facts, &spans, &[]);
         assert_eq!(hits.len(), 1, "300 > 120 × 1.5");
         assert_eq!(hits[0].premises.len(), 2, "门槛读的那条也是前提");
 
-        let (none, _) = evaluate(&[rule(3.0)], &facts, &spans);
+        let (none, _) = evaluate(&[rule(3.0)], &facts, &spans, &[]);
         assert!(none.is_empty(), "300 不大于 120 × 3");
     }
 
@@ -1036,12 +1417,14 @@ mod tests {
     fn two_values_on_one_interval_are_two_hits() {
         let rule = BusinessRule {
             id: id(90),
+            join_predicate: None,
             conclusion: Conclusion::Computed {
                 predicate: id(12),
                 expr: attr(10),
             },
             conditions: vec![Condition {
                 group: 0,
+                side: Side::X,
                 predicate: id(10),
                 op: Op::Present,
                 operand: Operand::None,
@@ -1049,7 +1432,7 @@ mod tests {
         };
         let facts = vec![fact(1, 50, 10, json!(300.0)), fact(2, 50, 10, json!(400.0))];
         let spans = HashMap::from([(id(1), (Some(100), None)), (id(2), (Some(100), None))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 2, "同一段区间，两个值");
     }
 

@@ -4,11 +4,18 @@
 use utopia_search::{DocsIndex, DocsSection};
 
 /// (slug, 标题, 正文)。slug 必须与前端 DOCS 清单一致（引用链接 /docs/{slug} 才对得上）。
-const ARTICLES: &[(&str, &str, &str)] = &[(
-    "ingest",
-    "Ingest interfaces",
-    include_str!("../../../web/src/docs/ingest.md"),
-)];
+const ARTICLES: &[(&str, &str, &str)] = &[
+    (
+        "ingest",
+        "Ingest interfaces",
+        include_str!("../../../web/src/docs/ingest.md"),
+    ),
+    (
+        "mcp",
+        "Agents over MCP",
+        include_str!("../../../web/src/docs/mcp.md"),
+    ),
+];
 
 /// 启动时建索引；语料是编译期常量，失败即程序错误，响亮地死。
 pub fn build_index() -> DocsIndex {
@@ -99,5 +106,43 @@ mod tests {
         assert!(secs
             .iter()
             .any(|s| s.anchor.is_empty() && s.heading == "Ingest interfaces"));
+    }
+
+    /// 每一份语料文件都得进 `ARTICLES`，否则 chat 的 search_docs 工具找不到它——
+    /// 这一行是把 `web/src/docs/*.md` 当事实来源核对一遍，防「前端能看、chat 搜不到」
+    /// 的漂移（之前 `mcp.md` 就落过这一摔）。
+    ///
+    /// **不要**写「ARTICLES 里有几个就检查几个」：那样加文件时反而不报错；这里的
+    /// 不变式是「文件 → 索引」单向覆盖，文件多出来就算 bug。
+    #[test]
+    fn every_corpus_md_file_is_indexed() {
+        let docs_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/docs");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&docs_dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", docs_dir.display()))
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(".md") {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        on_disk.sort();
+
+        let indexed: Vec<String> = ARTICLES
+            .iter()
+            .map(|(slug, _, _)| format!("{slug}.md"))
+            .collect();
+        // indexed 也得排序好让两条 assert 一对一
+        let mut indexed_sorted = indexed.clone();
+        indexed_sorted.sort();
+
+        assert_eq!(
+            on_disk, indexed_sorted,
+            "web/src/docs/*.md 列表与 ARTICLES 不一致：\n  on disk: {on_disk:?}\n  indexed:  {indexed:?}\n\
+             新增一份语料要在两边都登记；删一份同理。drift = chat 搜不到。"
+        );
     }
 }

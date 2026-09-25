@@ -922,7 +922,8 @@ function SourceBar({
   onToken: () => void;
 }) {
   const isPull = SYNCING_KINDS.has(source.kind);
-  const isApi = source.kind === "api";
+  // 推送类来源：api 推文档，statements 推陈述（0054）；界面上同一套状态、令牌与指南
+  const isApi = source.kind === "api" || source.kind === "statements";
   const busy = source.last_sync_status === "running" || source.last_sync_status === "queued";
   // 历史数据的 config 可能是 jsonb null（缺省 Value::Null 落库所致）——防御性兜底
   const cfg = source.config ?? {};
@@ -1002,7 +1003,7 @@ function SourceBar({
         )}
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {/* 集成型来源（custom 拉取 / api 推送）：接口文档随手可达 */}
-          {(source.kind === "custom" || source.kind === "api") && (
+          {(source.kind === "custom" || isApi) && (
             <Link
               to="/docs/$slug"
               params={{ slug: "ingest" }}
@@ -1021,7 +1022,7 @@ function SourceBar({
             </Button>
           )}
           {/* History 对拉取型与 api 推送型都开放：推送失败（格式错等）也记 run */}
-          {(isPull || source.kind === "api") && (
+          {(isPull || isApi) && (
             /* 激活态用反色（与弹窗类型 tab、图标选中同一语汇），一眼可辨 */
             <Button variant="secondary" size="sm"
               onClick={onToggleHistory}
@@ -1040,7 +1041,7 @@ function SourceBar({
               {S.library.syncNow}
             </Button>
           )}
-          {source.kind === "api" && (
+          {isApi && (
             <Button variant="secondary" size="sm" className="flex items-center gap-2"
               onClick={onToken}
             >
@@ -1451,7 +1452,7 @@ function SourceModal({
         ...(syncing ? schedule : { sync_interval_minutes: null, sync_cron: null }),
       });
     },
-    onSuccess: (data) => onDone(data.source.id, kind === "api"),
+    onSuccess: (data) => onDone(data.source.id, kind === "api" || kind === "statements"),
   });
 
   const valid =

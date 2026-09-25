@@ -33,6 +33,8 @@ pub struct RuleReq {
     /// 算出来的结论那棵树（0032）：`conclusion = "computed"` 时给
     #[serde(default)]
     pub conclude_expr: Option<serde_json::Value>,
+    #[serde(default)]
+    pub join_predicate_id: Option<Uuid>,
     pub conditions: Vec<ConditionInput>,
 }
 
@@ -58,6 +60,8 @@ pub struct RulePatch {
     pub conclude_value: Option<serde_json::Value>,
     #[serde(default)]
     pub conclude_expr: Option<serde_json::Value>,
+    #[serde(default)]
+    pub join_predicate_id: Option<Uuid>,
 }
 
 pub async fn list(
@@ -88,6 +92,7 @@ pub async fn create(
         req.conclude_predicate_id,
         req.conclude_value.clone(),
         req.conclude_expr.clone(),
+        req.join_predicate_id,
         &req.conditions,
     )
     .await?;
@@ -117,6 +122,7 @@ pub async fn update(
         predicate_id: req.conclude_predicate_id,
         value: req.conclude_value.clone(),
         expr: req.conclude_expr.clone(),
+        join_predicate_id: req.join_predicate_id,
     });
     utopia_store::business_rules::update(
         &state.pool,
@@ -175,6 +181,17 @@ pub async fn matches(
     let (rows, total) =
         utopia_store::business_rules::matches(&state.pool, kb_id, rule_id, per, page * per).await?;
     Ok(Json(json!({ "matches": rows, "total": total })))
+}
+
+/// 一条规则的定义史（0060）：每一版说了什么、从什么时候到什么时候、此刻凭它成立几条
+pub async fn versions(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, rule_id)): Path<(Uuid, Uuid)>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let versions = utopia_store::business_rules::versions(&state.pool, kb_id, rule_id).await?;
+    Ok(Json(json!({ "versions": versions })))
 }
 
 #[derive(Deserialize)]

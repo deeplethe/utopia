@@ -14,12 +14,13 @@
 //! **新增一条会失败的路，代价是加一行**；加不出那一行，说明这条路自己也没想清楚
 //! 该怎么收尾。评审该盯的就是「新开了会失败的路却没加行」。
 //!
-//! ## 还没进表的注入点
+//! ## 不在表里的路
 //!
-//! 下面这几个的注入手段随对应 PR 一起到：检索中途出错要在工具请求落地后关掉夹具
-//! 连接池（#850）；助手 INSERT 被拒要一个夹具作用域的触发器（#852）；流在答案
-//! 中途被切、以及终结广播早于注册项移除丢失，要 Registry 那一层的夹具（#851）。
-//! 每一个落地后就是这张表多一行，而不是多一个测试文件。
+//! 有几条路的注入手段是夹具级的，进不了这张按回复脚本排的表，各自在同目录的定向测试里：
+//! 检索中途出错要关掉夹具连接池，助手 INSERT 被拒要夹具作用域的触发器——
+//! `chat_persistence_tests.rs`；降级回答的请求形状——`chat_fallback_tests.rs`；
+//! 流在答案中途被切、终结广播早于注册项移除丢失——`chat_registry_tests.rs`。
+//! 新开一条这样的路，先看这三个文件里有没有位置，再考虑新文件。
 
 use super::chat_empty_reply_tests::{fixture, Reply, Scripted};
 
@@ -40,9 +41,7 @@ struct Case {
     replies: Vec<Reply>,
     /// 该怎么收尾
     ends: Ends,
-    /// 还没修的话，是哪条 PR 在修。**那条 PR 落地时删掉这个字段**，这一行
-    /// 就开始被强制——留着 `Some` 而不是把行删掉，是为了让「已知没修」看得见
-    pending: Option<&'static str>,
+    fallback: bool,
 }
 
 /// 数一数这条 SSE 里出现了几个终结。
@@ -119,14 +118,20 @@ fn table() -> Vec<Case> {
             what: "模型正常作答",
             replies: vec![TOOL, Reply::Text("Acme 去年第四季度换了 CFO。")],
             ends: Ends::Done,
-            pending: None,
+            fallback: false,
         },
         // 已修：重试之后仍然是空正文
         Case {
             what: "重试之后正文仍然为空",
             replies: vec![TOOL, Reply::Empty, Reply::Empty],
             ends: Ends::Error,
-            pending: None,
+            fallback: false,
+        },
+        Case {
+            what: "降级模型仍然返回空答案",
+            replies: vec![Reply::Http(400), Reply::Http(400), Reply::Empty],
+            ends: Ends::Error,
+            fallback: true,
         },
         // #845：端点在预算耗尽后把工具控制文本当正文吐出来
         Case {
@@ -135,7 +140,7 @@ fn table() -> Vec<Case> {
                 "<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>",
             )),
             ends: Ends::Error,
-            pending: None,
+            fallback: false,
         },
         // #845：同上，但前面先有一段像样的叙述——分帧边界不该影响判断
         Case {
@@ -144,37 +149,43 @@ fn table() -> Vec<Case> {
                 "我去核对一下证据。\n<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>",
             )),
             ends: Ends::Error,
-            pending: None,
+            fallback: false,
         },
     ]
 }
 
 #[tokio::test]
 async fn a_turn_ends_in_exactly_one_earned_terminal() -> anyhow::Result<()> {
-    let mut skipped: Vec<&str> = Vec::new();
     let mut ran = 0usize;
 
     for case in table() {
-        if let Some(pr) = case.pending {
-            skipped.push(pr);
-            eprintln!("跳过「{}」：等 {pr} 落地", case.what);
-            continue;
-        }
         let Some(f) = fixture(Scripted::new(case.replies.clone())).await? else {
             eprintln!("没有 UTOPIA_DATABASE_URL，整张表跳过");
             return Ok(());
         };
         let sse = f.ask("Acme 去年第四季度有什么变化？").await?;
         assert_one_earned_terminal(case.what, case.ends, &sse);
+        if case.fallback {
+            let requests = f.requests();
+            assert!(
+                requests.len() > 1 && requests.last().is_some_and(|r| r.get("tools").is_none()),
+                "{}：必须真的进入无工具的降级回答请求：{requests:?}",
+                case.what
+            );
+        }
+        if case.ends == Ends::Error {
+            assert!(
+                f.stored_answer().await?.is_none(),
+                "{}：失败时不能保存助手消息",
+                case.what
+            );
+        }
         eprintln!("verified terminal contract: {}", case.what);
         f.cleanup().await?;
         ran += 1;
     }
 
     assert!(ran > 0, "整张表被跳空了，等于没测");
-    if !skipped.is_empty() {
-        eprintln!("还没强制的行，等这些 PR：{skipped:?}");
-    }
     Ok(())
 }
 

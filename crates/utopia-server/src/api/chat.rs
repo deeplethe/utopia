@@ -39,6 +39,11 @@ const KNOWN_ENTITY_LIMIT: usize = 20;
 const MAX_HISTORY: usize = 20;
 const MAX_ROUNDS: usize = 6;
 
+enum ProducerEvent {
+    Progress(Frame),
+    Outcome(Result<Uuid, String>),
+}
+
 /// `remember` 曾整个停用过一段（见 `docs/decisions/0015`）：它那时会把一句话直接
 /// 变成图上一条活边，实测里「记住 Acme 把总部搬到了深圳」落成的是一条**空谓词、
 /// 0.9 置信**的边，而助手宣称的和图里得到的不是一回事。
@@ -687,7 +692,7 @@ pub async fn chat(
         }
 
         // 会话 id 先行下发（新会话由此告知前端）
-        yield Frame::new("conversation", json!({ "id": conversation_id }).to_string());
+        yield ProducerEvent::Progress(Frame::new("conversation", json!({ "id": conversation_id }).to_string()));
 
         // 循环是 rig 的（#546）：工具、策略钩子、历史、实体清单都交给它；
         // 这里只把它的事件翻成前端认得的帧，并在结束时落库
@@ -749,14 +754,14 @@ pub async fn chat(
                     // validation after streaming cannot retract protocol garbage.
                     if shared.finalizing() {
                         if turn_text.len().saturating_add(t.text.len()) > agent::MAX_FINAL_ANSWER_BYTES {
-                            yield error_event("Model final answer exceeded the size limit");
+                            yield ProducerEvent::Outcome(Err("Model final answer exceeded the size limit".into()));
                             return;
                         }
                         turn_text.push_str(&t.text);
                     } else {
                         answer_acc.push_str(&t.text);
                         turn_text.push_str(&t.text);
-                        yield delta_event(&t.text);
+                        yield ProducerEvent::Progress(delta_event(&t.text));
                     }
                 }
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::ToolCall {
@@ -779,7 +784,7 @@ pub async fn chat(
                         // 工具轮带了叙述文本：与后续轮次的正文之间补一个段落分隔
                         if !turn_text.is_empty() {
                             answer_acc.push_str("\n\n");
-                            yield delta_event("\n\n");
+                            yield ProducerEvent::Progress(delta_event("\n\n"));
                         }
                         exchange_acc.push(json!({
                             "role": "assistant",
@@ -815,7 +820,7 @@ pub async fn chat(
                             obj.insert("at".into(), json!(answer_acc.encode_utf16().count()));
                         }
                         steps_acc.push(step.clone());
-                        yield Frame::new("step", serde_json::to_string(&step).unwrap_or_default());
+                        yield ProducerEvent::Progress(Frame::new("step", serde_json::to_string(&step).unwrap_or_default()));
                     }
                     // cite() only appends: document reads can add citations too, regardless
                     // of the UI step kind. Release the sink before yielding to subscribers.
@@ -829,7 +834,7 @@ pub async fn chat(
                         }
                     };
                     if let Some(sources) = sources {
-                        yield Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()));
+                        yield ProducerEvent::Progress(Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
                     }
                     let mut recorded = tool_result_message(tool_result.call.as_str(), &text);
                     if let Some(failed) = is_error { recorded["is_error"] = json!(failed); }
@@ -840,7 +845,7 @@ pub async fn chat(
                 Ok(MultiTurnStreamItem::ModelTurnRetried { .. }) => {
                     if !turn_text.is_empty() {
                         answer_acc.push_str("\n\n");
-                        yield delta_event("\n\n");
+                        yield ProducerEvent::Progress(delta_event("\n\n"));
                     }
                     turn_text.clear();
                     turn_calls.clear();
@@ -873,7 +878,7 @@ pub async fn chat(
                         }
                         return;
                     }
-                    yield error_event(&message);
+                    yield ProducerEvent::Outcome(Err(message));
                     return;
                 }
             }
@@ -893,23 +898,23 @@ pub async fn chat(
             };
             match finalization::answer(&client, input).await {
                 Ok(answer) => { turn_text = answer; turn_calls.clear(); finished = true; }
-                Err(e) => { yield error_event(&format!("Model could not produce a final answer: {e}")); return; }
+                Err(e) => { yield ProducerEvent::Outcome(Err(format!("Model could not produce a final answer: {e}"))); return; }
             }
         }
         if !finished {
-            yield error_event("LLM stream ended unexpectedly");
+            yield ProducerEvent::Outcome(Err("LLM stream ended unexpectedly".into()));
             return;
         }
         // Check the terminal candidate, not earlier narration. The hook is the
         // policy boundary; this is the last guard before publication and storage.
         if shared.finalizing() {
             if let Some(reason) = agent::finalization_error(&turn_text, !turn_calls.is_empty(), &query) {
-                yield error_event(reason);
+                yield ProducerEvent::Outcome(Err(reason.into()));
                 return;
             }
             answer_acc.push_str(&turn_text);
         } else if turn_text.trim().is_empty() {
-            yield error_event("Model returned an empty answer");
+            yield ProducerEvent::Outcome(Err("Model returned an empty answer".into()));
             return;
         }
         let (sources, resolved) = {
@@ -925,14 +930,17 @@ pub async fn chat(
                 tool_exchange: serde_json::Value::Array(exchange_acc),
             },
         ).await;
-        if let Err(error) = saved {
-            tracing::error!(%error, %conversation_id, "Could not persist final answer");
-            yield error_event("Could not save the answer. Please try again later.");
-            return;
-        }
-        yield Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into()));
-        if shared.finalizing() { yield delta_event(&turn_text); }
-        yield done_event();
+        let saved_id = match saved {
+            Ok(id) => id,
+            Err(error) => {
+                tracing::error!(%error, %conversation_id, "Could not persist final answer");
+                yield ProducerEvent::Outcome(Err("Could not save the answer. Please try again later.".into()));
+                return;
+            }
+        };
+        yield ProducerEvent::Progress(Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
+        if shared.finalizing() { yield ProducerEvent::Progress(delta_event(&turn_text)); }
+        yield ProducerEvent::Outcome(Ok(saved_id));
     };
 
     // 生成登记在案，然后**这条连接也只是去「接上」它**——与刷新之后
@@ -941,11 +949,34 @@ pub async fn chat(
     let attached = live.attach(conversation_id).await;
     tokio::spawn(async move {
         let mut producer = std::pin::pin!(producer);
-        while let Some(frame) = producer.next().await {
+        let mut outcome = None;
+        while let Some(event) = producer.next().await {
             // 没有订阅者是常态（人走了）。**照发不误**：这里中断就等于
             // 把「切走一次丢一个回答」原样搬回来
-            handle.emit(frame).await;
+            match event {
+                ProducerEvent::Progress(frame) => {
+                    if matches!(frame.event, "done" | "error") {
+                        outcome = Some(Err("Producer sent a terminal as progress".into()));
+                        break;
+                    }
+                    handle.emit(frame).await;
+                }
+                ProducerEvent::Outcome(result) => {
+                    outcome = Some(result);
+                    break;
+                }
+            }
         }
+        let terminal = match outcome {
+            Some(Ok(_saved_id)) => done_event(),
+            Some(Err(message)) => error_event(if message.trim().is_empty() {
+                "Answer failed"
+            } else {
+                &message
+            }),
+            None => error_event("Answer stream ended unexpectedly"),
+        };
+        handle.emit(terminal).await;
         // 注销之后再接上的人得到「没有在跑的」，那时答案已经落库
         handle.finish().await;
     });
@@ -982,13 +1013,13 @@ fn legacy_rag(
     query: String,
     turns: Vec<(String, String)>,
     client: utopia_llm::LlmClient,
-) -> impl Stream<Item = Frame> {
+) -> impl Stream<Item = ProducerEvent> {
     async_stream::stream! {
         let chunks = match retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None).await {
             Ok(chunks) => chunks,
             Err(error) => {
                 tracing::warn!(%error, "fallback document retrieval failed");
-                yield error_event("Could not search the documents.");
+                yield ProducerEvent::Outcome(Err("Could not search the documents.".into()));
                 return;
             }
         };
@@ -997,10 +1028,10 @@ fn legacy_rag(
             .enumerate()
             .map(|(i, c)| source_json(i + 1, c))
             .collect();
-        yield Frame::new(
+        yield ProducerEvent::Progress(Frame::new(
             "sources",
             serde_json::to_string(&legacy_sources).unwrap_or_else(|_| "[]".into()),
-        );
+        ));
         let mut lmsgs = vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
         for (role, content) in &turns {
             lmsgs.push(json!({ "role": role, "content": content }));
@@ -1011,11 +1042,15 @@ fn legacy_rag(
                 let mut deltas = std::pin::pin!(deltas);
                 while let Some(item) = deltas.next().await {
                     match item {
-                        Ok(text) => { answer_acc.push_str(&text); yield delta_event(&text); }
-                        Err(e) => { yield error_event(&e.to_string()); return; }
+                        Ok(text) => { answer_acc.push_str(&text); yield ProducerEvent::Progress(delta_event(&text)); }
+                        Err(e) => { yield ProducerEvent::Outcome(Err(e.to_string())); return; }
                     }
                 }
-                if let Err(error) = utopia_store::conversations::append_message(
+                if answer_acc.trim().is_empty() {
+                    yield ProducerEvent::Outcome(Err("Model returned an empty answer".into()));
+                    return;
+                }
+                let saved = utopia_store::conversations::append_message(
                     &state.pool, conversation_id, "assistant", &answer_acc,
                     &utopia_store::conversations::TurnRecord {
                         steps: serde_json::Value::Array(Vec::new()),
@@ -1023,14 +1058,16 @@ fn legacy_rag(
                         resolved: serde_json::Value::Array(Vec::new()),
                         tool_exchange: serde_json::Value::Array(Vec::new()),
                     },
-                ).await {
-                    tracing::error!(%error, "fallback answer persistence was not confirmed");
-                    yield error_event("Could not confirm that the answer was saved.");
-                    return;
+                ).await;
+                match saved {
+                    Ok(id) => yield ProducerEvent::Outcome(Ok(id)),
+                    Err(error) => {
+                        tracing::error!(%error, "fallback answer persistence was not confirmed");
+                        yield ProducerEvent::Outcome(Err("Could not confirm that the answer was saved.".into()));
+                    }
                 }
-                yield done_event();
             }
-            Err(e) => yield error_event(&e.to_string()),
+            Err(e) => yield ProducerEvent::Outcome(Err(e.to_string())),
         }
     }
 }
@@ -1062,8 +1099,10 @@ fn sse_from(
                     yield to_event(&frame);
                     if done { return; }
                 }
-                // 生成结束、发送端销毁：正常收尾
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    yield to_event(&error_event("Answer stream ended unexpectedly"));
+                    return;
+                }
                 // 这个客户端读得太慢，被广播缓冲甩下了。**说出来**——
                 // 静默继续会让它少掉中间一段而毫不知情
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {

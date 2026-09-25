@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Archive,
   BookOpen,
+  Braces,
   Brain,
   Briefcase,
   CircleDot,
@@ -68,6 +69,7 @@ export const KIND_ICON: Record<SourceKind, LucideIcon> = {
   url: Globe,
   rss: Rss,
   api: Webhook,
+  statements: Braces,
   custom: Puzzle,
   github_issues: CircleDot,
   jira_issues: SquareKanban,
@@ -181,7 +183,7 @@ export function SourcesRail({
               icon={<Icon size={14} />}
               count={s.doc_count}
               dot={
-                SYNCING_KINDS.has(s.kind) || s.kind === "api"
+                SYNCING_KINDS.has(s.kind) || s.kind === "api" || s.kind === "statements"
                   ? SYNC_DOT[s.last_sync_status]
                   : undefined
               }
