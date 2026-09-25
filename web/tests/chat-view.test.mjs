@@ -646,5 +646,85 @@ test(
         }
       },
     );
+
+    await t.test(
+      "a reader who scrolled up stays put while an answer streams",
+      async () => {
+        const history = Array.from({ length: 40 }, (_, i) =>
+          message(`Turn ${i}`, i % 2 ? "assistant" : "user"),
+        );
+        const f = await open("/kb/one/chat/a", async (route, p) => {
+          if (p.endsWith("/conversations/a")) {
+            await route.fulfill({ json: { messages: history } });
+            return true;
+          }
+        });
+        try {
+          await f.page.getByText("Turn 39", { exact: true }).waitFor();
+          const view = f.page.locator(".u-chat-fade");
+          // This fixture loads no stylesheet, so the transcript is not a scroll box by
+          // itself: give it the bounded height and overflow the app's layout gives it.
+          await view.evaluate((el) => {
+            el.style.height = "400px";
+            el.style.overflowY = "auto";
+          });
+          // The answer grows through the same store a POST writes into.
+          await f.page.evaluate(() => {
+            const turns = Array.from({ length: 40 }, (_, i) => ({
+              role: i % 2 ? "assistant" : "user",
+              content: `Turn ${i}`,
+            }));
+            window.__answer = window.__live.begin(
+              "one",
+              "a",
+              [
+                ...turns,
+                { role: "user", content: "And then?" },
+                { role: "assistant", content: "" },
+              ],
+              () => {},
+            );
+          });
+          const grow = async () => {
+            for (let i = 0; i < 5; i++) {
+              await f.page.evaluate(() =>
+                window.__answer.patchLast((turn) => ({
+                  ...turn,
+                  content: `${turn.content}One more line of the answer.\n\n`,
+                })),
+              );
+              await f.page.waitForTimeout(60);
+            }
+          };
+          assert.ok(
+            await view.evaluate((el) => el.scrollHeight > el.clientHeight + 200),
+            "the transcript must be taller than the view",
+          );
+          // Scrolled up to read: the growing answer leaves the reader where they are.
+          await view.evaluate((el) => {
+            el.scrollTop = 0;
+          });
+          await f.page.waitForTimeout(60);
+          await grow();
+          assert.equal(await view.evaluate((el) => el.scrollTop), 0);
+          // Back at the bottom: the answer is followed again.
+          await view.evaluate((el) => {
+            el.scrollTop = el.scrollHeight;
+          });
+          await f.page.waitForTimeout(60);
+          await grow();
+          assert.ok(
+            await view.evaluate(
+              (el) => el.scrollHeight - el.scrollTop - el.clientHeight <= 48,
+            ),
+            "a reader at the bottom follows the answer",
+          );
+          await f.page.evaluate(() => window.__answer.finish());
+          assert.deepEqual(f.errors, []);
+        } finally {
+          await f.close();
+        }
+      },
+    );
   },
 );
