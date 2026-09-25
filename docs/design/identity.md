@@ -25,8 +25,10 @@ vectors of the base (`name_vectors`, one row per name fact, embedded after each 
 script meets its entity through a question rather than a silent second entity [0041 d3 channel 2,
 #709]. Such a pair says in the adjudicator's prompt that its names are similar, not the same
 string, and a batch verdict of *same* on it is never applied directly: it takes the tool-using
-second look first, whatever its confidence, because the identity bench showed the batch step
-merging 张伟 into 财务部总监张伟 on name alone. Only the first channel decides anything: a context vector (`profile_embedding`, the running mean of chunk vectors) attaches at cosine
+second look first, whatever its confidence, and when that look cannot run (the daily loop budget
+is spent, the model fails) the pair goes to a person as `second_look_unavailable` instead, with the
+batch verdict left out of the verdict cache; the same rule holds with governance on. The identity
+bench showed the batch step merging 张伟 into 财务部总监张伟 on name alone. Only the first channel decides anything: a context vector (`profile_embedding`, the running mean of chunk vectors) attaches at cosine
 0.55 or above, makes a new entity below 0.35, and in between makes a new entity and a pair for the
 adjudicator; two same-name candidates within a tie margin go to a person unless a candidate's object
 name appears in the chunk [0041, #270, #331]. A name another entity of a compatible type already

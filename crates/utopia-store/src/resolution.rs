@@ -290,7 +290,11 @@ pub async fn resolve_mention(
         r.reviews.push(ReviewRequest {
             other_id: near.entity_id,
             score: near.similarity,
-            reason: format!("name_vector|{:.2}", near.similarity),
+            reason: format!(
+                "{}{:.2}",
+                utopia_core::review_reasons::NAME_VECTOR,
+                near.similarity
+            ),
             stage: ReviewStage::Adjudicating,
         });
     }

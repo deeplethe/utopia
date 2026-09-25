@@ -366,7 +366,9 @@ fn pair_of(item: &ReviewItem, p: &Precedents) -> utopia_extract::AdjudicationPai
         left: side(&item.left),
         right: side(&item.right),
         precedents: gov::render_lines(p),
-        proposed_because: utopia_extract::proposed_because(item.reason.as_deref()),
+        proposed_because: utopia_extract::proposed_because(
+            utopia_core::review_reasons::name_vector_cosine(item.reason.as_deref()),
+        ),
     }
 }
 
@@ -387,10 +389,15 @@ fn wants_second_look(item: &ReviewItem, p: &Precedents, look: &Look) -> bool {
         && look.calls == 0;
     let doubted_merge =
         name_doubts(shape) && !types_conflict && look.same == Some(true) && look.calls == 0;
+    // 名字向量提的对说 same：不论把握多高都先带工具看一遍（与不带治理的裁决同一条规矩，
+    // `adjudication::batch_verdict_may_apply`）；只看第一层的，第二层看过的不再看
+    let similarity_same =
+        !crate::adjudication::batch_verdict_may_apply(item, look.same) && look.calls == 0;
     ((gov::gate(look.same, look.conf, types_conflict, shape, p) == Gate::Propose
         && look.uncertain())
         || doubted_split
-        || doubted_merge)
+        || doubted_merge
+        || similarity_same)
         && p.reverts.is_empty()
 }
 
@@ -495,6 +502,29 @@ async fn apply(ctx: &Ctx<'_>, item: &ReviewItem, p: &Precedents, look: Look) -> 
         calls: look.calls,
     };
 
+    // 第二眼没跑成（预算用完、模型出错）的相似提的 same：过闸也不合，上交给人，
+    // 看法照记成建议——名字相近不是同一个东西的证据，事实才是
+    if look.same == Some(true)
+        && look.calls == 0
+        && !crate::adjudication::batch_verdict_may_apply(item, look.same)
+    {
+        utopia_store::resolution::escalate_review(
+            pool,
+            item.id,
+            crate::adjudication::SECOND_LOOK_UNAVAILABLE,
+        )
+        .await?;
+        gov::record(
+            pool,
+            kb_id,
+            NewDecision {
+                reason: Some("held for a person: the names are similar, not the same string, and the second look did not run"),
+                ..decision("proposed", None)
+            },
+        )
+        .await?;
+        return Ok(());
+    }
     match gov::gate(look.same, look.conf, types_conflict, shape, p) {
         Gate::Apply if look.same == Some(true) => {
             let reason = format!("governed|{conf:.2}");
@@ -612,7 +642,7 @@ async fn investigate(
     let mut lookups = 0;
 
     // 回合上限 = 查询次数 + 撞两次上限 + 一次提醒 + 收尾那一次。模型多半一回合只查一件事，
-    // 六次查完常常还想再查：撞上限的那一回合得算在预算外，不然它连收尾的机会都没有
+    // 查够 MAX_STEPS 次常常还想再查：撞上限的那一回合得算在预算外，不然它连收尾的机会都没有
     // （identity bench 上，第二眼「看了没收尾」九次里有五次是这么来的）
     for _ in 0..(governor::MAX_STEPS + 4) {
         let turn = {

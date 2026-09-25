@@ -152,12 +152,12 @@ pub struct AdjudicationPair {
     pub proposed_because: Option<String>,
 }
 
-/// 审核对的 `reason` 变成裁决器读得懂的一句提议依据。只认名字向量召回（`name_vector|<余弦>`）：
-/// 其余原因（同名灰区、同名并列、包含）都是「同一个字符串」的家族，裁决器的规则本来就是
-/// 为它们写的
-pub fn proposed_because(reason: Option<&str>) -> Option<String> {
-    let reason = reason?;
-    let cosine = reason.strip_prefix("name_vector|")?;
+/// 名字向量召回提的对，写成裁决器读得懂的一句提议依据；`cosine` 是召回记下的余弦文本
+/// （`utopia_core::review_reasons::name_vector_cosine` 从审核对的 reason 里取）。其余原因
+/// （同名灰区、同名并列、包含）都是「同一个字符串」的家族，裁决器的规则本来就是为它们写的，
+/// 传 None
+pub fn proposed_because(cosine: Option<&str>) -> Option<String> {
+    let cosine = cosine?;
     Some(format!(
         "the names are similar but NOT the same string (name-vector cosine {cosine}): this may be a \
          short form, another script, or a different thing with a similar name; a dropped qualifier is \
@@ -1101,13 +1101,13 @@ mod tests {
                 left: side("张伟"),
                 right: side("财务部总监张伟"),
                 precedents: vec![],
-                proposed_because: proposed_because(Some("name_vector|0.78")),
+                proposed_because: proposed_because(Some("0.78")),
             },
             AdjudicationPair {
                 left: side("张伟"),
                 right: side("张伟"),
                 precedents: vec![],
-                proposed_because: proposed_because(Some("ambiguous_name|0.41")),
+                proposed_because: proposed_because(None),
             },
         ];
         let user = &build_adjudication_messages(&pairs)[1].content;
@@ -1124,17 +1124,8 @@ mod tests {
     }
 
     #[test]
-    fn only_name_vector_reasons_become_a_proposal_note() {
-        assert!(proposed_because(Some("name_vector|0.62")).is_some());
-        for r in [
-            "ambiguous_name|0.41",
-            "namesake_tie|0.55",
-            "shared_name|张伟",
-            "contains",
-            "",
-        ] {
-            assert!(proposed_because(Some(r)).is_none(), "{r}");
-        }
+    fn a_proposal_note_needs_a_cosine() {
+        assert!(proposed_because(Some("0.62")).is_some());
         assert!(proposed_because(None).is_none());
     }
 

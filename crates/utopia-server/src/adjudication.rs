@@ -63,9 +63,7 @@ fn wants_another_look(
 /// 照旧，分开是安全的方向。不看 `ruled` 与撤回：那两条是「再看也改不了」的省事，这里要的
 /// 恰恰是再看
 fn similarity_proposed(item: &ReviewItem) -> bool {
-    item.reason
-        .as_deref()
-        .is_some_and(|r| r.starts_with("name_vector|"))
+    utopia_core::review_reasons::similarity_proposed(item.reason.as_deref())
 }
 
 fn needs_second_look(
@@ -74,8 +72,18 @@ fn needs_second_look(
     same: Option<bool>,
     conf: f32,
 ) -> bool {
-    wants_another_look(item, p, same, conf) || (similarity_proposed(item) && same == Some(true))
+    wants_another_look(item, p, same, conf) || !batch_verdict_may_apply(item, same)
 }
+
+/// 攒批那一眼的看法能不能不经第二眼就落地。名字向量提的对说 same 不能：第二眼没跑成
+/// （预算用完、模型出错）就上交给人，不照攒批的看法合，也不把那个看法记进缓存——记了
+/// 之后这一对每次再来都从缓存直接合，第二眼永远轮不到（#889 评审）
+pub(crate) fn batch_verdict_may_apply(item: &ReviewItem, same: Option<bool>) -> bool {
+    !(similarity_proposed(item) && same == Some(true))
+}
+
+/// 第二眼没跑成时上交的理由
+pub(crate) const SECOND_LOOK_UNAVAILABLE: &str = "escalate_unsure|second_look_unavailable";
 
 /// 一次裁决落地成了什么：第二层的行按它记 applied 还是 proposed
 enum Outcome {
@@ -222,7 +230,9 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
                         facts: item.right.top_facts.clone(),
                     },
                     precedents: precedents.clone(),
-                    proposed_because: utopia_extract::proposed_because(item.reason.as_deref()),
+                    proposed_because: utopia_extract::proposed_because(
+                        utopia_core::review_reasons::name_vector_cosine(item.reason.as_deref()),
+                    ),
                 },
             )
             .collect();
@@ -293,6 +303,16 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
                                 Outcome::Escalated
                             };
                             record_look(state, kb_id, run_id, item, p, &look, &outcome).await?;
+                            continue;
+                        }
+                        // 第二眼没跑成：相似提的 same 不能照攒批的看法合，也不进缓存
+                        if !batch_verdict_may_apply(item, same) {
+                            utopia_store::resolution::escalate_review(
+                                &state.pool,
+                                item.id,
+                                SECOND_LOOK_UNAVAILABLE,
+                            )
+                            .await?;
                             continue;
                         }
                     }
@@ -494,6 +514,28 @@ mod tests {
             "分开是安全方向，照旧落地"
         );
         assert!(needs_second_look(&it, &p, None, 0.5), "没定的本来就要再看");
+    }
+
+    /// 第二眼没跑成时：相似提的 same 不落地也不进缓存；其余照攒批的看法办
+    #[test]
+    fn a_similarity_proposed_same_never_applies_on_the_batch_verdict_alone() {
+        assert!(!batch_verdict_may_apply(
+            &item("name_vector|0.78"),
+            Some(true)
+        ));
+        assert!(batch_verdict_may_apply(
+            &item("name_vector|0.78"),
+            Some(false)
+        ));
+        assert!(batch_verdict_may_apply(&item("name_vector|0.78"), None));
+        assert!(batch_verdict_may_apply(
+            &item("ambiguous_name|0.41"),
+            Some(true)
+        ));
+        assert!(batch_verdict_may_apply(
+            &item("shared_name|张伟"),
+            Some(true)
+        ));
     }
 
     /// 同名家族的对不受影响：够线就照旧自动落地
