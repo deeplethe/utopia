@@ -90,9 +90,13 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         Some(SourceKind::Webdav) => sync_webdav(state, &source).await,
         Some(SourceKind::Notion) => sync_notion(state, &source).await,
         // 被动容器：folder / api / memory / upload 没有拉取语义
-        Some(SourceKind::Folder | SourceKind::Api | SourceKind::Memory | SourceKind::Upload) => {
-            Ok(SyncStats::default())
-        }
+        Some(
+            SourceKind::Folder
+            | SourceKind::Api
+            | SourceKind::Statements
+            | SourceKind::Memory
+            | SourceKind::Upload,
+        ) => Ok(SyncStats::default()),
         None => Err(anyhow::anyhow!("unknown source kind `{}`", source.kind)),
     };
 

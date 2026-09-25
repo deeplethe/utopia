@@ -101,6 +101,7 @@ async fn attr(pool: &PgPool, f: &Fixture, predicate: Uuid, value: f64) -> anyhow
 fn present_revenue(f: &Fixture) -> Vec<ConditionInput> {
     vec![ConditionInput {
         group: 0,
+        side: "x".into(),
         predicate_id: f.revenue,
         op: "present".into(),
         operand: None,
@@ -140,6 +141,7 @@ async fn a_computed_conclusion_lands_with_the_readings_it_read() -> anyhow::Resu
             Some(f.margin),
             None,
             Some(margin_expr(&f)),
+            None,
             &present_revenue(&f),
         )
         .await?;
@@ -236,6 +238,7 @@ async fn a_missing_reading_lands_nothing() -> anyhow::Result<()> {
             Some(f.margin),
             None,
             Some(margin_expr(&f)),
+            None,
             &present_revenue(&f),
         )
         .await?;
@@ -303,6 +306,7 @@ async fn a_broken_expression_is_refused_where_it_is_written() -> anyhow::Result<
                 Some(f.margin),
                 None,
                 Some(expr),
+                None,
                 &present_revenue(&f),
             )
             .await;

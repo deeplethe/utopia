@@ -535,6 +535,7 @@ export const zh: Strings = {
       url: "网页",
       rss: "RSS 订阅",
       api: "API",
+      statements: "陈述",
       custom: "自定义",
       github_issues: "GitHub 工单",
       jira_issues: "Jira 工单",
@@ -572,6 +573,8 @@ export const zh: Strings = {
         "同步一个 Notion 集成能看见的页面——把页面分享给集成，它就会出现在这里。" +
         "日期取页面最后一次编辑的时刻，那是页面自己的时钟，不是我们抓它的时刻。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
+      statements:
+        "外部系统把已经是抽取契约形状的陈述推送到这里，不经模型；发事件，别发整张表的状态。",
       custom:
         "按计划轮询一个你控制的 URL——你的服务返回 JSON 条目，Utopia 保持同步。",
       memory:
@@ -707,6 +710,13 @@ export const zh: Strings = {
   },
   ask: {
     streamInterrupted: "回答连接已中断，请重新打开会话查看状态。",
+    noActiveAnswer: "未发现正在生成的回答，你可以发送新消息。",
+    historyLoadFailed: "无法读取此会话。",
+    retryHistory: "重试",
+    loadingHistory: "正在读取会话…",
+    loadEarlierConversations: "加载更早的会话",
+    conversationsLoadFailed: "无法读取会话列表。",
+    retryConversations: "重试",
     greeting: "问问 Utopia 都记住了什么",
     emptyTitle: "对话",
     emptyBody:
@@ -1163,6 +1173,11 @@ export const zh: Strings = {
     ruleConcludes: "得出",
     ruleConcludesTyping: "这个类",
     ruleConcludesAttribute: "这个属性",
+    ruleConcludesRelation: "这条关系",
+    ruleConcludesRelationText: (join: string, conclude: string): string =>
+      `经「${join}」从 X 到「${conclude}」`,
+    ruleSideX: "X",
+    ruleSideY: "Y",
     ruleConditions: "当满足",
     ruleConditionsHint: "一块里的条件要同时成立；再加一块就是另一种情况，任意一块成立即可。",
     ruleAddCondition: "加一个条件",
@@ -1199,6 +1214,12 @@ export const zh: Strings = {
     ruleEditing: "正在编辑",
     ruleMatchesTitle: "它标住了谁",
     ruleMatchesEmpty: "此刻一个也没有。",
+    ruleVersion: (n: number) => `v${n}`,
+    ruleHistoryTitle: "这条规则改过几次、每一版怎么说",
+    ruleHistoryEmpty: "还没有历史。",
+    ruleVersionCurrent: "当前",
+    ruleVersionSince: (from: string, to: string | null) => (to ? `${from} 至 ${to}` : `自 ${from}`),
+    ruleVersionStanding: (n: number) => `此刻凭它成立 ${n} 条`,
     ruleMatchBecause: (premises: string) => `凭 ${premises}`,
     ruleMatchSpan: (from: string, to: string | null) =>
       to ? `${from} 至 ${to}` : `${from} 起`,

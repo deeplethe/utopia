@@ -465,7 +465,10 @@ pub fn emit_fact(
         (None, Some(v)) => {
             // An unbound statement still has an object; only its datatype is unknown.
             let datatype = f.predicate_id.and_then(|p| vocab.literal_shape(p).0);
-            Some(literal_value(v, datatype).into())
+            // #821：解析不出来就别写，避免 rdf:object="" 这种空字面量把审计
+            // 工具误导成「事实无对象」。老代码的漏洞是 `v.get("value").unwrap_or(v)`
+            // 在 `{"summary": ...}` 形状里把整个对象序列化成字面文本（#831）。
+            literal_value(v, datatype).map(Term::from)
         }
         _ => None,
     };
@@ -525,7 +528,10 @@ pub fn emit_fact(
         };
         if let Some(v) = &q.value {
             let (datatype, _) = vocab.literal_shape(q.qualifier_type_id);
-            sink.l(&stmt, p, &literal_value(v, datatype))?;
+            // #821 + #831：解析不出来就别写这条边上的属性，别塞个空字面量
+            if let Some(lit) = literal_value(v, datatype) {
+                sink.l(&stmt, p, &lit)?;
+            }
         } else if let Some(e) = q.entity_id {
             sink.r(&stmt, p, &names.entity(e))?;
         }
@@ -576,11 +582,10 @@ pub fn emit_derived(
         (Some(o), _) => sink.r(&stmt, &nn(rdf::OBJECT.as_str()), &names.entity(o))?,
         (None, Some(v)) => {
             let (datatype, _) = vocab.literal_shape(d.predicate_id);
-            sink.l(
-                &stmt,
-                &nn(rdf::OBJECT.as_str()),
-                &literal_value(v, datatype),
-            )?;
+            // #821 + #831：解析不出来就别写这条宾语
+            if let Some(lit) = literal_value(v, datatype) {
+                sink.l(&stmt, &nn(rdf::OBJECT.as_str()), &lit)?;
+            }
         }
         (None, None) => {}
     }
@@ -600,6 +605,19 @@ pub fn emit_derived(
     sink.l(&stmt, &utopia("confidence"), &confidence(d.confidence))?;
     sink.r(&stmt, &prov("wasGeneratedBy"), &rule)?;
     sink.r(&rule, &nn(rdf::TYPE.as_str()), &prov("Activity"))?;
+    // 规则的家族与身份（0020 的 2026-09-25 revision，#902）：读的人不再从标签里猜它来自
+    // 哪张表。公理规则再写出种类（闭合枚举）和声明所在的谓词——inverse 与 sub_property
+    // 时它不是结论的谓词，从导出的 owl:inverseOf / rdfs:subPropertyOf 反推是有歧义的。
+    // 业务规则的条件与表达式不导出：规则原地更新，这个 IRI 担保不了旧结论当时依据的定义
+    if d.rule_id.is_some() {
+        sink.r(&rule, &nn(rdf::TYPE.as_str()), &utopia("AxiomRule"))?;
+        sink.l(&rule, &utopia("axiomKind"), &text(d.rule.clone()))?;
+        if let Some(p) = d.rule_predicate.and_then(|p| vocab.relation(p).cloned()) {
+            sink.r(&rule, &utopia("declaredOn"), &p)?;
+        }
+    } else {
+        sink.r(&rule, &nn(rdf::TYPE.as_str()), &utopia("BusinessRule"))?;
+    }
     // 标签用规则自己的名字（业务规则），公理退回它的种类名——审计读到的是
     // 「Gas-bearing well」而不是「business」
     sink.l(
@@ -653,27 +671,63 @@ fn is_relative(v: &serde_json::Value) -> bool {
     v.get("relative").and_then(|r| r.as_bool()) == Some(true)
 }
 
-/// 属性事实的字面值。`{"value": …, "unit": …}` 或 `{"summary": …}`。
+/// `{"value": …, "unit": …}` 或 `{"summary": …}` 等情况下抽出字面量。
+///
+/// **Resolves the text first and returns `None` when nothing resolves.** The
+/// audit invariant #821 (`an_absent_object_is_not_an_empty_literal`) says that an
+/// absent object should produce no `rdf:object` triple at all; the same principle
+/// applies here when the value resolves to nothing — better to omit than to emit
+/// a literal whose lexical form is `""`, since that turns into JSON serialisation
+/// for an object value and is a parser-puzzle for downstream consumers.
+///
 /// 相对的值写成普通字符串：`"45 days after the Trigger Date"^^xsd:date` 是个不合法的字面量
-fn literal_value(v: &serde_json::Value, datatype: Option<&str>) -> Literal {
-    let raw = v.get("value").unwrap_or(v);
-    let as_text = match raw {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => v
-            .get("summary")
-            .and_then(|s| s.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        other => other.to_string(),
-    };
+fn literal_value(v: &serde_json::Value, datatype: Option<&str>) -> Option<Literal> {
+    let (text, prose) = literal_text(v)?;
     let ty: NamedNodeRef<'_> = match datatype {
-        _ if is_relative(v) => xsd::STRING,
+        _ if prose || is_relative(v) => xsd::STRING,
         Some("number") => xsd::DECIMAL,
         Some("date") => xsd::DATE,
         Some("bool") => xsd::BOOLEAN,
         _ => xsd::STRING,
     };
-    Literal::new_typed_literal(as_text, ty)
+    Some(Literal::new_typed_literal(text, ty))
+}
+
+/// 把事实的 `object_value` 形状抽出可写的字面文本，以及这段文本是不是人写的散文。
+///
+/// 认得的形态（其它都视作缺值）：
+/// 1. 直接给字符串 / 数字 / 布尔
+/// 2. `{"value": …}`：`value` 是标量就取它
+/// 3. `{"summary": …}`：`value` 缺席或为空时才看它（`models.rs` 把两者记作二选一，
+///    `api/tools.rs` 也是先 `value` 后 `summary`；这里不另立顺序）
+/// 4. `{"class": …}`：规则的分类结论（`reasoning.rs` 写的就是这个形状，五处按键读回）
+///
+/// 老的行为是 `v.get("value").unwrap_or(v)`：键缺失时把整个对象当作字面值，于是
+/// `{"summary": …}` 会被序列化成 `{"summary":"…"}` 这种字面文本（#831）。新行为是先解析成
+/// 一段真实文字；解析不到（既不是标量，又没有认得的键）就返回 `None`，调用方就不写
+/// `rdf:object` 这条三元组。第二个返回值为 `true` 表示文本来自 `summary` / `class`：
+/// 那是给人读的散文或一个类名，不该套属性声明的 `xsd:decimal` / `xsd:date`
+fn literal_text(v: &serde_json::Value) -> Option<(String, bool)> {
+    match v {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(b) => Some((b.to_string(), false)),
+        serde_json::Value::Number(n) => Some((n.to_string(), false)),
+        serde_json::Value::String(s) => Some((s.clone(), false)),
+        serde_json::Value::Array(_) => None,
+        serde_json::Value::Object(map) => {
+            if let Some((text, _)) = map.get("value").and_then(literal_text) {
+                return Some((text, false));
+            }
+            for key in ["summary", "class"] {
+                if let Some(text) = map.get(key).and_then(|s| s.as_str()) {
+                    if !text.is_empty() {
+                        return Some((text.to_string(), true));
+                    }
+                }
+            }
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -852,9 +906,13 @@ mod tests {
                     let quads = export(format, |sink, names, vocab| {
                         emit_fact(sink, names, vocab, &f, at("2026-06-01T00:00:00Z")).unwrap();
                     });
+                    let expected: Vec<String> = literal_value(&value, None)
+                        .map(|lit| lit.to_string())
+                        .into_iter()
+                        .collect();
                     assert_eq!(
                         objects(&quads, STMT, rdf::OBJECT.as_str()),
-                        vec![literal_value(&value, None).to_string()],
+                        expected,
                         "unbound statement lost its literal object: {value}"
                     );
                     assert!(objects(&quads, STMT, rdf::PREDICATE.as_str()).is_empty());
@@ -917,6 +975,73 @@ mod tests {
                 emit_fact(sink, names, vocab, &f, at("2026-06-01T00:00:00Z")).unwrap();
             });
             assert!(objects(&quads, STMT, rdf::OBJECT.as_str()).is_empty());
+        }
+    }
+
+    /// #831：导出时如果 `object_value` 是 `{"summary": "..."}` 或 `{"value": "..."}` 这种带结构
+    /// 的对象，老代码 `v.get("value").unwrap_or(v)` 会把整个对象序列化成 JSON 字符串当字面量。
+    /// 修复后 `value` 优先，`summary` 是它的替补（与 `models.rs` 和 `api/tools.rs` 一致）；
+    /// `summary` 和 `class` 是散文或类名，落成 `xsd:string` 而不套属性声明的类型；
+    /// 解析失败就**没有 `rdf:object`**，和 #821 同一套原则。
+    ///
+    /// 七种情形：value 优先于 summary；只有 value；只有 summary（xsd:string）；
+    /// summary 为空时退回 value；null value 且无 summary → 不写；分类结论 `{"class": …}`
+    /// 落成 xsd:string；不认得的键 → 不写。
+    #[test]
+    fn an_object_value_with_summary_or_value_does_not_emit_a_json_literal() {
+        let cases: &[(&str, serde_json::Value, &[&str])] = &[
+            (
+                "value wins over summary when both are present",
+                serde_json::json!({ "value": "2026-01-15", "summary": "around mid-January" }),
+                &["\"2026-01-15\"^^<http://www.w3.org/2001/XMLSchema#decimal>"],
+            ),
+            (
+                "value alone resolves to its scalar string",
+                serde_json::json!({ "value": "45 days after the Trigger Date" }),
+                &["\"45 days after the Trigger Date\"^^<http://www.w3.org/2001/XMLSchema#decimal>"],
+            ),
+            (
+                "summary alone is prose: a string, never the declared type",
+                serde_json::json!({ "summary": "before the merge" }),
+                &["\"before the merge\""],
+            ),
+            (
+                "empty summary with a value resolves to the value",
+                serde_json::json!({ "summary": "", "value": "actual text" }),
+                &["\"actual text\"^^<http://www.w3.org/2001/XMLSchema#decimal>"],
+            ),
+            (
+                "null value and no summary → no rdf:object",
+                serde_json::json!({ "value": null }),
+                &[],
+            ),
+            (
+                "a typing conclusion keeps its class as a string",
+                serde_json::json!({ "class": "gas_well" }),
+                &["\"gas_well\""],
+            ),
+            (
+                "object with no recognised key → no rdf:object",
+                serde_json::json!({ "confidence": 0.9 }),
+                &[],
+            ),
+        ];
+
+        for (what, value, expected_objects) in cases {
+            let mut f = fact(5);
+            f.predicate_id = Some(id(4));
+            f.object_id = None;
+            f.object_value = Some(value.clone());
+            for format in [Format::Turtle, Format::JsonLd] {
+                let quads = export(format, |sink, names, vocab| {
+                    emit_fact(sink, names, vocab, &f, at("2026-06-01T00:00:00Z")).unwrap();
+                });
+                let got: Vec<String> = objects(&quads, STMT, rdf::OBJECT.as_str());
+                assert_eq!(
+                    got, *expected_objects,
+                    "{what} (format={format:?}): got {got:?} expected {expected_objects:?}"
+                );
+            }
         }
     }
 
@@ -1124,12 +1249,14 @@ mod tests {
     /// 写成 xsd:date 的字面量不合法，严格的解析器会整份拒收
     #[test]
     fn a_relative_deadline_is_a_string_that_says_it_is_relative() {
-        let dated = literal_value(&serde_json::json!({ "value": "2020-06-23" }), Some("date"));
+        let dated =
+            literal_value(&serde_json::json!({ "value": "2020-06-23" }), Some("date")).unwrap();
         assert_eq!(dated.datatype(), xsd::DATE);
         let relative = literal_value(
             &serde_json::json!({ "value": "45 days after the Trigger Date", "relative": true }),
             Some("date"),
-        );
+        )
+        .unwrap();
         assert_eq!(relative.datatype(), xsd::STRING);
         assert_eq!(relative.value(), "45 days after the Trigger Date");
 
@@ -1174,6 +1301,7 @@ mod tests {
             invalidated_at: None,
             confidence: 0.9,
             rule: "business".into(),
+            rule_predicate: None,
             rule_name: Some("Gas-bearing well".into()),
             premises: vec![id(5)],
             premises_derived: Vec::new(),
@@ -1198,18 +1326,29 @@ mod tests {
             "urn:utopia:ns:derived",
             "\"true\"^^<http://www.w3.org/2001/XMLSchema#boolean>"
         ));
-        // 宾语是字面值而不是一个实体 IRI
+        // 宾语是字面值而不是一个实体 IRI：分类结论 `{"class": …}` 按键解析成类名，
+        // 落成 xsd:string。老代码把整个对象序列化成 `{"class":"gas_well"}` 当字面量（#831）
         let obj = objects(
             &quads,
             stmt,
             "http://www.w3.org/1999/02/22-rdf-syntax-ns#object",
         );
         assert_eq!(obj.len(), 1, "结论要有宾语");
-        assert!(
-            obj[0].starts_with('"'),
-            "字面值结论的宾语该是字面量，拿到的是 {}",
+        assert_eq!(
+            obj[0], "\"gas_well\"",
+            "分类结论的宾语该是类名本身的字符串字面量，拿到的是 {}",
             obj[0]
         );
+        // 规则资源说出自己的家族（#902）：业务规则，没有公理种类可言
+        let rule = Names::new(kb(), None).unwrap().rule(id(9)).to_string();
+        assert!(has(
+            &quads,
+            &rule,
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+            "<urn:utopia:ns:BusinessRule>"
+        ));
+        assert!(objects(&quads, &rule, "urn:utopia:ns:axiomKind").is_empty());
+        assert!(objects(&quads, &rule, "urn:utopia:ns:declaredOn").is_empty());
         // 前提照常挂着：审计顺着 prov:used 走得到那两条读数
         assert_eq!(
             objects(&quads, stmt, "http://www.w3.org/ns/prov#used").len(),
@@ -1308,6 +1447,7 @@ mod tests {
             invalidated_at: None,
             confidence: 0.8,
             rule: "transitive".into(),
+            rule_predicate: Some(id(2)),
             rule_name: None,
             premises: vec![id(5)],
             premises_derived: vec![id(6)],
@@ -1342,6 +1482,27 @@ mod tests {
             assert!(
                 !has(&quads, SUBJ, WORKS_FOR, OBJ),
                 "推出来的边不写成平铺三元组：那会让人把引擎的结论当成文档里的话"
+            );
+            // 规则资源说出自己的家族、种类和声明所在的谓词（#902）：读的人不再
+            // 从 rdfs:label 里猜。这里声明谓词就是结论谓词（传递），指向同一个 IRI
+            let rule = Names::new(kb(), None).unwrap().rule(id(8)).to_string();
+            assert!(has(
+                &quads,
+                &rule,
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+                "<urn:utopia:ns:AxiomRule>"
+            ));
+            assert_eq!(
+                objects(&quads, &rule, "urn:utopia:ns:axiomKind"),
+                vec!["\"transitive\""]
+            );
+            assert_eq!(
+                objects(&quads, &rule, "urn:utopia:ns:declaredOn"),
+                objects(
+                    &quads,
+                    stmt,
+                    "http://www.w3.org/1999/02/22-rdf-syntax-ns#predicate"
+                )
             );
         }
     }

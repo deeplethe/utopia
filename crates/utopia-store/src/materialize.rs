@@ -12,6 +12,11 @@
 //! 重算是集合运算，跑多少遍结果一样：先删「不再成立」的来源（陈述作废了、签名不再绑着、
 //! 绑到了别的属性或反了方向、行本身作废了），再作废来源全空的类型化行，最后给「该有而
 //! 没有」的（陈述, 绑定）对补上——有同断言的行就并进去，没有才新建。没有模型调用。
+//!
+//! 写下的行随后**对账**（#899）：写路径上抽取和点头写完一条 state 事实都会沿它的唯一性
+//! 方向重算时间线（`temporal::reconcile_new_fact`），物化出来的行是同一种观察，不该
+//! 少这一步——否则一个函数型属性的两个值各开着一段，后一次观察关不上前一次。重算
+//! 提交之后再对账：对账按时间线各自开事务、拿自己的锁，不在物化的事务里做
 
 use sqlx::PgPool;
 use utopia_core::AppResult;
@@ -38,6 +43,10 @@ pub struct Outcome {
     pub merged: u64,
     /// 规则算出来的隐含行（0044 决定 3 第五片），新建的
     pub implied: u64,
+    /// 对账自动闭合而改写出来的修正行数（#899）
+    pub corrected: u64,
+    /// 对账裁不了、交给人的冲突数
+    pub conflicts: u32,
 }
 
 /// 一条该物化的（陈述, 绑定）对，连陈述上要抄的东西。
@@ -71,8 +80,24 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Outcome> {
         .bind(kb_id.to_string())
         .execute(&mut *tx)
         .await?;
-    let outcome = materialize_in_tx(&mut tx, kb_id).await?;
+    let (outcome, written) = materialize_in_tx(&mut tx, kb_id).await?;
     tx.commit().await?;
+    reconcile_written(pool, kb_id, outcome, &written).await
+}
+
+/// 这一轮写下（新建或并入）的类型化行沿各自的唯一性时间线对账（#899）。只有 state 且
+/// 声明了唯一性的谓词有时间线，`timelines_of` 自己筛；其余的行这里是空转
+async fn reconcile_written(
+    pool: &PgPool,
+    kb_id: Uuid,
+    mut outcome: Outcome,
+    written: &[Uuid],
+) -> AppResult<Outcome> {
+    if !written.is_empty() {
+        let report = crate::temporal::reconcile_facts(pool, kb_id, written).await?;
+        outcome.corrected = report.corrected.len() as u64;
+        outcome.conflicts = report.conflicts;
+    }
     Ok(outcome)
 }
 
@@ -96,15 +121,19 @@ pub async fn try_materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<Option<Out
         tx.rollback().await?;
         return Ok(None);
     }
-    let outcome = materialize_in_tx(&mut tx, kb_id).await?;
+    let (outcome, written) = materialize_in_tx(&mut tx, kb_id).await?;
     tx.commit().await?;
-    Ok(Some(outcome))
+    Ok(Some(
+        reconcile_written(pool, kb_id, outcome, &written).await?,
+    ))
 }
 
 async fn materialize_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     kb_id: Uuid,
-) -> AppResult<Outcome> {
+) -> AppResult<(Outcome, Vec<Uuid>)> {
+    // 这一轮写下的行（新建的和并入的），提交后对账
+    let mut written: Vec<Uuid> = Vec::new();
     // 1. 删不再成立的来源：陈述死了、行死了、签名没绑着、属性或方向变了、陈述带了 mood
     sqlx::query(&format!(
         "DELETE FROM typed_fact_sources src
@@ -248,6 +277,7 @@ async fn materialize_in_tx(
             }
             _ => continue,
         };
+        written.push(fact);
         if new {
             added += 1;
             sqlx::query("UPDATE facts SET from_statement_id = $2 WHERE id = $1 AND from_statement_id IS NULL")
@@ -311,13 +341,18 @@ async fn materialize_in_tx(
     }
     // 3b. 已批准的规则算隐含行（0044 决定 3 第五片）。读数只查缓存：缓存里没有的这一轮
     //     不算，`read_phrases` 填上之后再来。短语规则按陈述触发，类别词规则按实体触发
-    let implied = imply_in_tx(tx, kb_id).await?;
-    Ok(Outcome {
-        retired,
-        added,
-        merged,
-        implied,
-    })
+    let implied = imply_in_tx(tx, kb_id, &mut written).await?;
+    Ok((
+        Outcome {
+            retired,
+            added,
+            merged,
+            implied,
+            corrected: 0,
+            conflicts: 0,
+        },
+        written,
+    ))
 }
 
 #[derive(sqlx::FromRow)]
@@ -341,6 +376,7 @@ struct Implied {
 async fn imply_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     kb_id: Uuid,
+    written: &mut Vec<Uuid>,
 ) -> AppResult<u64> {
     // 短语规则：签名下活着的、没 mood 的陈述；宾语是读数的答案（缓存里的实体或值），
     // 没有读数时就是陈述的宾语。已经有活着的隐含行以这条陈述为来源的不再算
@@ -425,6 +461,7 @@ async fn imply_in_tx(
             d.confidence,
         )
         .await?;
+        written.push(fact);
         if new {
             implied += 1;
             sqlx::query("UPDATE facts SET implied = TRUE WHERE id = $1")

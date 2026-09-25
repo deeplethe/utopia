@@ -155,8 +155,8 @@ pub async fn create_with_version_and_processing(
         _ => AppError::Db(e),
     })?;
     sqlx::query(
-        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes)
-         VALUES ($1, $2, 1, $3, $4)",
+        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
+         VALUES ($1, $2, 1, $3, $4, (SELECT doc_time FROM documents WHERE id = $2))",
     )
     .bind(Uuid::now_v7())
     .bind(document.id)
@@ -210,10 +210,10 @@ pub async fn replace_content_and_enqueue_processing(
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes)
+        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
          VALUES ($1, $2,
                  (SELECT coalesce(max(version), 0) + 1 FROM document_versions WHERE document_id = $2),
-                 $3, $4)",
+                 $3, $4, (SELECT doc_time FROM documents WHERE id = $2))",
     )
     .bind(Uuid::now_v7())
     .bind(id)
@@ -285,10 +285,10 @@ pub async fn upsert_source_document_tx(
         .execute(&mut **tx)
         .await?;
         sqlx::query(
-            "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes)
+            "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
              VALUES ($1, $2,
                      (SELECT coalesce(max(version), 0) + 1 FROM document_versions WHERE document_id = $2),
-                     $3, $4)",
+                     $3, $4, (SELECT doc_time FROM documents WHERE id = $2))",
         )
         .bind(Uuid::now_v7())
         .bind(document.id)
@@ -340,10 +340,10 @@ pub async fn upsert_source_document_tx(
             .execute(&mut **tx)
             .await?;
             sqlx::query(
-                "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes)
+                "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
                  VALUES ($1, $2,
                          (SELECT coalesce(max(version), 0) + 1 FROM document_versions WHERE document_id = $2),
-                         $3, $4)",
+                         $3, $4, (SELECT doc_time FROM documents WHERE id = $2))",
             )
             .bind(Uuid::now_v7())
             .bind(document.id)
@@ -390,8 +390,8 @@ pub async fn upsert_source_document_tx(
         _ => AppError::Db(e),
     })?;
     sqlx::query(
-        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes)
-         VALUES ($1, $2, 1, $3, $4)",
+        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
+         VALUES ($1, $2, 1, $3, $4, (SELECT doc_time FROM documents WHERE id = $2))",
     )
     .bind(Uuid::now_v7())
     .bind(document.id)
@@ -727,10 +727,10 @@ pub async fn record_version(
     size_bytes: i64,
 ) -> AppResult<()> {
     sqlx::query(
-        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes)
+        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
          VALUES ($1, $2,
                  (SELECT coalesce(max(version), 0) + 1 FROM document_versions WHERE document_id = $2),
-                 $3, $4)",
+                 $3, $4, (SELECT doc_time FROM documents WHERE id = $2))",
     )
     .bind(Uuid::now_v7())
     .bind(document_id)

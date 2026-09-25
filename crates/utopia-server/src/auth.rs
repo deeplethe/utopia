@@ -44,6 +44,22 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 「邮箱不存在」分支用的常量时间伙伴：一个用真实参数算出来的 argon2 哈希，明文是随机
+/// 字节、算完即弃。要点只有一个——它必须能被 `PasswordHash::new` 解析并带着与
+/// `hash_password` 相同的参数，这样那条分支和「邮箱存在、密码错」走的是同一段计算。
+/// 它不匹配任何口令；结果本来就被丢弃。从 `hash_password` 派生而不是硬编码，是为了
+/// 参数永不漂移：`Argon2::default()` 一变，这里跟着变，没有测试会静静过时。
+pub fn dummy_password_hash() -> &'static str {
+    static HASH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HASH.get_or_init(|| {
+        use argon2::password_hash::rand_core::RngCore;
+        let mut bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut bytes);
+        let plaintext: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        hash_password(&plaintext).expect("hashing random bytes cannot fail")
+    })
+}
+
 pub fn issue_token(state: &AppState, user_id: Uuid) -> Result<String, AppError> {
     let claims = Claims {
         sub: user_id,
@@ -238,5 +254,26 @@ mod tests {
 
         // 配置强制打开：给不发这个头的代理兜底
         assert!(behind_tls(&headers_with(None), true));
+    }
+
+    /// 「邮箱不存在」分支用的 dummy 哈希：唯一要紧的属性是它和真实哈希用同一套参数，
+    /// 这样两条分支跑的是同一段 argon2 计算。明文是什么无关紧要——`verify_password`
+    /// 解析成功后就完整跑一遍，匹配与否都花同样的时间
+    #[test]
+    fn the_dummy_hash_costs_the_same_as_a_real_one() {
+        let dummy = PasswordHash::new(dummy_password_hash()).expect("the dummy parses");
+        let real_str = hash_password("anything").unwrap();
+        let real = PasswordHash::new(&real_str).unwrap();
+        assert_eq!(dummy.algorithm, real.algorithm);
+        assert_eq!(
+            dummy.params, real.params,
+            "the dummy must cost what a real verify costs"
+        );
+        assert_eq!(
+            dummy.salt.map(|s| s.len()),
+            real.salt.map(|s| s.len()),
+            "same salt length as a real hash"
+        );
+        assert!(!verify_password("anything", dummy_password_hash()));
     }
 }

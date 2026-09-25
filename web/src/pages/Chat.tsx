@@ -1,8 +1,8 @@
 /* Chat：agentic 对话（检索/图谱工具 + remember 记忆）。
    会话持久化：左栏会话列表;上下文由服务端拼,前端只发 conversation_id + 新消息;
    行动轨迹(steps)与引用(sources)随消息落库,历史回放与实时流共用渲染。 */
-import { memo, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -28,11 +28,13 @@ import {
 } from "lucide-react";
 import {
   api,
+  ApiError,
   conversationsApi,
   reattachChat,
   streamChat,
   type ChatStep,
   type ConversationRow,
+  type ConversationMessage,
   type Source,
 } from "../api";
 import { S } from "../i18n";
@@ -80,6 +82,15 @@ const DRAFT_KEY = "chat:draft";
  *  正文里每个角标跟着重画 */
 const NO_SOURCES: Source[] = [];
 
+type ViewRequest = { kbId: string; id: string | null };
+const historyTurns = (messages: ConversationMessage[]): Turn[] => messages.map((m) => ({
+  role: m.role,
+  content: m.content,
+  steps: m.steps.length ? m.steps : undefined,
+  sources: m.sources.length ? m.sources : undefined,
+}));
+const viewKey = (kbId: string, id: string | null) => `${kbId}/${id ?? ""}`;
+
 export function Chat() {
   const kbId = useKbId();
   const { kb, kbs, setKb } = useKb();
@@ -107,6 +118,39 @@ export function Chat() {
   const activeIdRef = useRef<string | null>(null);
   // 已经结束的那些轮次，从库里读来。**进行中的那一次不在这里**——见下
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const [idleHistoryKey, setIdleHistoryKey] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  // Object identity is the viewing epoch: A → B → A creates three owners.
+  // Generation handles live separately and continue after this view leaves.
+  const viewRequest = useRef<ViewRequest>({ kbId, id: routeConvId ?? null });
+  const claimView = (id: string | null): ViewRequest => {
+    const request = { kbId, id };
+    viewRequest.current = request;
+    return request;
+  };
+  const ownsView = (request: ViewRequest) => viewRequest.current === request;
+  const previousRoute = useRef(viewKey(kbId, routeConvId ?? null));
+  useLayoutEffect(() => {
+    const key = viewKey(kbId, routeConvId ?? null);
+    if (previousRoute.current === key) return;
+    previousRoute.current = key;
+    // 新建会话的 URL 同步也会走这里：旧 send owner 失效、activeIdRef 清空，
+    // 因而 route-sync 会调用 loadConversation。onConversation 已先 identify 生成句柄，
+    // loadConversation 必须先检查 liveAnswer.entry，直接认领，避免流中途读库覆盖。
+    claimView(routeConvId ?? null);
+    activeIdRef.current = null;
+    setActiveId(routeConvId ?? null);
+    setTurns([]);
+    setLoadedKey(null);
+    setHistoryError(null);
+    setLoadingHistory(false);
+  }, [kbId, routeConvId]);
+  useLayoutEffect(() => () => {
+    viewRequest.current = { ...viewRequest.current };
+    activeIdRef.current = null; // StrictMode's next setup must issue its own read.
+  }, []);
   const [input, setInput] = useState(() => sessionStorage.getItem(DRAFT_KEY) ?? "");
   /* **按 URL 认领，不按 state。** 这个文件开头就写着「URL 是当前会话的唯一
      事实来源」，而这里一度用了 `activeId`——它是 state，切走再回来时更新得
@@ -119,14 +163,14 @@ export function Chat() {
   // 跳过重渲染，别场逐字增长不再打扰当前会话
   const liveHere = useSyncExternalStore(
     liveAnswer.subscribe,
-    () => liveAnswer.entry(kb?.id ?? null, currentId),
+    () => liveAnswer.entry(kbId || null, currentId),
   );
   /* **是「这一场」在流，不是「有一场」在流。**
      写成全局的话，另一场在生成时这一场的输入框也会变成停止按钮、发不出消息，
      而且最后一轮会被当成还在流——引用于是被藏起来（那条判据见 TurnView）。
      一个正在别处生成的回答不该改变这里的任何东西 */
   const streaming = liveHere?.streaming ?? false;
-  const shown = liveHere ? liveHere.turns : turns;
+  const shown = liveHere ? liveHere.turns : loadedKey === viewKey(kbId, currentId) ? turns : [];
   const [scopeOpen, setScopeOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ConversationRow | null>(null);
   // 会话搜索。**搜标题也搜正文**——人记得住的往往是问过的那句话
@@ -166,12 +210,21 @@ export function Chat() {
     };
   }, [scopeOpen]);
 
-  const convs = useQuery({
-    queryKey: ["conversations", kb?.id, convSearch],
-    queryFn: () => conversationsApi.list(kb!.id, convSearch),
-    enabled: !!kb,
-    placeholderData: (prev) => prev,
+  const convs = useInfiniteQuery({
+    queryKey: ["conversations", kbId, convSearch],
+    queryFn: ({ pageParam }) => conversationsApi.list(kbId, convSearch, 30, pageParam),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => {
+      const loaded = pages.reduce((count, page) => count + page.conversations.length, 0);
+      return last.conversations.length > 0 && loaded < last.total ? loaded : undefined;
+    },
+    enabled: !!kbId && kb?.id === kbId,
   });
+  // Updated conversations can move between offset pages. Deduplicate by identity;
+  // invalidation refetches the loaded page range rather than appending stale offsets.
+  const conversations = [...new Map(
+    (convs.data?.pages.flatMap((page) => page.conversations) ?? []).map((c) => [c.id, c]),
+  ).values()];
   // 改标题：**就地编辑**，不弹对话框——改一个名字不值得打断整页
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -190,24 +243,9 @@ export function Chat() {
     bottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, [shown]);
 
-  // 切库回到新会话（首次拿到 kb 不算切换——直刷 /chat/$id 时不能把 URL 冲掉）
-  const prevKbRef = useRef<string | null>(null);
-  useEffect(() => {
-    const prev = prevKbRef.current;
-    prevKbRef.current = kb?.id ?? null;
-    if (prev && kb && prev !== kb.id) {
-      // **不 abort**：换库不该杀掉另一个库里正在写的回答，它落到那边的会话里
-      activeIdRef.current = null;
-      setActiveId(null);
-      setTurns([]);
-      navigate({ to: "/kb/$kbId/chat", params: { kbId }, replace: true });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kb?.id]);
-
   // 路由 → 会话装载；裸 /chat 还原本库上次会话（切页回来仍在原对话）
   useEffect(() => {
-    if (!kb) return;
+    if (!kb || kb.id !== kbId) return;
     if (!routeConvId) {
       const last = sessionStorage.getItem(lastKey(kb.id));
       if (last) {
@@ -222,7 +260,7 @@ export function Chat() {
     if (routeConvId === activeIdRef.current) return; // 流式新建会话后仅 URL 同步，勿重载
     loadConversation(routeConvId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kb?.id, routeConvId]);
+  }, [kb?.id, kbId, routeConvId]);
 
   // 还原的草稿撑开输入框（高度平时由 onChange 维护）
   useEffect(() => {
@@ -237,24 +275,30 @@ export function Chat() {
     queryClient.invalidateQueries({ queryKey: ["conversations", kb?.id] });
 
   /** 列表点击只改 URL，装载由路由同步 effect 负责 */
-  const openConversation = (id: string) =>
+  const openConversation = (id: string) => {
+    if (id === currentId) return;
+    claimView(id);
     navigate({
       to: "/kb/$kbId/chat/$conversationId",
       params: { kbId, conversationId: id },
     });
+  };
 
-  /** 接回一个正在生成的回答。没有在跑的话服务端回 `idle`，什么都不发生。 */
-  const attachIfRunning = (id: string, history: Turn[]) => {
+  /** 接回一个正在生成的回答。没有在跑的话服务端回 `idle`，补读一次已保存历史。 */
+  const attachIfRunning = (id: string, history: Turn[], owner: ViewRequest) => {
     let abort = () => {};
     let handle: LiveHandle | null = null;
-    const stop = reattachChat(kb!.id, id, {
+    let checkedIdle = false;
+    const stop = reattachChat(owner.kbId, id, {
       onConversation: () => {},
       /* **快照到了才建这一轮。** 先摆一个空位再等回答的话，没有在跑的会话
          上会闪一下空的助手气泡——而那是绝大多数情况。
          快照是覆盖：它是那个回答此刻的全貌，不是增量 */
       onSnapshot: (s) => {
+        if (!ownsView(owner)) { abort(); return; }
+        if (handle) return;
         handle = liveAnswer.begin(
-          kb!.id,
+          owner.kbId,
           id,
           [
             ...history,
@@ -277,15 +321,35 @@ export function Chat() {
         invalidateList();
       },
       onError: (message) => {
+        if (!handle && ownsView(owner)) setHistoryError(message);
         handle?.patchLast((t) => ({ ...t, error: message }));
         handle?.finish();
       },
-      onIdle: () => {},
+      onIdle: async () => {
+        if (checkedIdle || handle || !ownsView(owner)) return;
+        checkedIdle = true;
+        try {
+          // The answer may have committed between the history read and attach.
+          // One read closes that handoff; never re-POST or recursively attach.
+          const { messages } = await conversationsApi.detail(owner.kbId, id);
+          if (!ownsView(owner)) return;
+          const refreshed = historyTurns(messages);
+          setTurns(refreshed);
+          setLoadedKey(viewKey(owner.kbId, id));
+          setIdleHistoryKey(refreshed.at(-1)?.role === "user" ? viewKey(owner.kbId, id) : null);
+        } catch (error) {
+          if (ownsView(owner)) setHistoryError(error instanceof Error ? error.message : String(error));
+        }
+      },
     });
     abort = stop;
   };
 
   const loadConversation = async (id: string) => {
+    const owner = claimView(id);
+    setIdleHistoryKey(null);
+    setHistoryError(null);
+    setLoadingHistory(false);
     // 回到正在写的那一场：直接认领，别去库里读——库里要等它写完才有那一行
     if (liveAnswer.entry(kb!.id, id)) {
       activeIdRef.current = id;
@@ -294,35 +358,46 @@ export function Chat() {
     }
     activeIdRef.current = id;
     setActiveId(id);
+    setTurns([]);
+    setLoadedKey(null);
+    setLoadingHistory(true);
     try {
-      const { messages } = await conversationsApi.detail(kb!.id, id);
-      sessionStorage.setItem(lastKey(kb!.id), id);
-      const history: Turn[] = messages.map((m) => ({
-        role: m.role,
-        content: m.content,
-        steps: m.steps.length ? m.steps : undefined,
-        sources: m.sources.length ? m.sources : undefined,
-      }));
+      const { messages } = await conversationsApi.detail(owner.kbId, id);
+      if (!ownsView(owner)) return;
+      sessionStorage.setItem(lastKey(owner.kbId), id);
+      const history = historyTurns(messages);
       setTurns(history);
+      setLoadedKey(viewKey(owner.kbId, id));
       /* **刷新之后接回去。** 上面那个 store 只活在这一个页面里；刷新、
          新标签页、换台机器都拿不到它，而服务端那边生成还在跑。问一句
          「这个会话有没有在跑的」——没有是最常见的答案，代价是一次会
          立刻回 `idle` 的请求。
          最后一条是用户说的话时才问：那正好是「问了但还没答上」的形状 */
       if (history[history.length - 1]?.role === "user") {
-        attachIfRunning(id, history);
+        attachIfRunning(id, history, owner);
       }
-    } catch {
+    } catch (error) {
+      if (!ownsView(owner)) return;
+      if (!(error instanceof ApiError && [401, 403, 404].includes(error.status))) {
+        setHistoryError(error instanceof Error ? error.message : String(error));
+        return;
+      }
       // 失效链接（会话已删 / 属于别的库）：安静回到新对话
       sessionStorage.removeItem(lastKey(kb!.id));
       activeIdRef.current = null;
       setActiveId(null);
       setTurns([]);
-      navigate({ to: "/kb/$kbId/chat", params: { kbId }, replace: true });
+      navigate({ to: "/kb/$kbId/chat", params: { kbId: owner.kbId }, replace: true });
+    } finally {
+      if (ownsView(owner)) setLoadingHistory(false);
     }
   };
 
   const newChat = () => {
+    claimView(null);
+    setHistoryError(null);
+    setLoadingHistory(false);
+    setLoadedKey(null);
     // 同样不 abort：开一场新的不等于放弃上一场
     if (kb) sessionStorage.removeItem(lastKey(kb.id));
     activeIdRef.current = null;
@@ -333,6 +408,7 @@ export function Chat() {
   };
 
   const removeConversation = async (id: string) => {
+    const owner = viewRequest.current;
     await conversationsApi.remove(kb!.id, id);
     // 记号跟着会话走，否则这个 id 会一直留在浏览器的那张表里
     convMarks.forget(id);
@@ -340,12 +416,14 @@ export function Chat() {
       sessionStorage.removeItem(lastKey(kb!.id));
     }
     invalidateList();
-    if (id === activeId) newChat();
+    if (ownsView(owner) && id === activeIdRef.current) newChat();
   };
 
   const send = () => {
     const q = input.trim();
-    if (!q || streaming || !kb) return;
+    if (!q || streaming || !kb || kb.id !== kbId || loadingHistory || historyError) return;
+    const owner = claimView(activeId);
+    setIdleHistoryKey(null);
     setInput("");
     sessionStorage.removeItem(DRAFT_KEY);
     if (inputRef.current) inputRef.current.style.height = "auto";
@@ -370,7 +448,9 @@ export function Chat() {
       {
         onConversation: (id) => {
           handle.identify(id);
-          // 先同步写 ref 再换 URL：路由同步 effect 因 id 相等而跳过重载，不打断流
+          invalidateList();
+          if (!ownsView(owner)) return;
+          // 先 identify 生成句柄再换 URL；layout effect 重置视图后，loadConversation 会认领该句柄。
           activeIdRef.current = id;
           setActiveId(id);
           sessionStorage.setItem(lastKey(kb.id), id);
@@ -379,7 +459,6 @@ export function Chat() {
             params: { kbId, conversationId: id },
             replace: true,
           });
-          invalidateList();
         },
         onSources: (sources) => handle.patchLast((t) => ({ ...t, sources })),
         onStep: (step) =>
@@ -467,7 +546,7 @@ export function Chat() {
                       }
                       onClick={() => {
                         setScopeOpen(false);
-                        if (k.id !== kb?.id) setKb(k.id);
+                        if (k.id !== kb?.id) { claimView(null); setKb(k.id); }
                       }}
                     >
                       <span className="truncate">{k.name}</span>
@@ -501,7 +580,7 @@ export function Chat() {
             variant={input.trim() ? "primary" : "secondary"}
             className="shrink-0"
             label={S.ask.send}
-            disabled={!input.trim()}
+            disabled={!input.trim() || loadingHistory || !!historyError}
             onClick={send}
           >
             <ArrowUp size={15} strokeWidth={2.4} />
@@ -558,7 +637,7 @@ export function Chat() {
         </div>
         {recentOpen && (
         <div className="u-rail-list u-scroll flex-1 overflow-y-auto px-2 pb-3">
-          {(convs.data?.conversations ?? []).map((c: ConversationRow) => (
+          {conversations.map((c: ConversationRow) => (
             <div
               key={c.id}
               className="group relative"
@@ -646,9 +725,20 @@ export function Chat() {
               )}
             </div>
           ))}
+          {convs.isError && (
+            <div role="alert" className="px-3 py-2 text-small text-ink-2">
+              <p>{S.ask.conversationsLoadFailed}</p>
+              <Button size="sm" variant="ghost" onClick={() => convs.isFetchNextPageError ? convs.fetchNextPage() : convs.refetch()}>{S.ask.retryConversations}</Button>
+            </div>
+          )}
+          {convs.hasNextPage && !convs.isFetchNextPageError && (
+            <Button size="sm" variant="ghost" disabled={convs.isFetching} onClick={() => convs.fetchNextPage()}>
+              {S.ask.loadEarlierConversations}
+            </Button>
+          )}
           {/* 文字从 20 起：栏的 px-2（8）加行自己的 px-3（12），与「最近」和
               上面每条会话的标题同一条线。写成 px-2 就落在 16，差那 4px 一眼看得出 */}
-          {convs.data?.conversations.length === 0 && (
+          {convs.isSuccess && conversations.length === 0 && (
             /* 34 = 行内距 12 + 图标 14 + 间距 8：这句话与上面每一条会话的
                标题同一条竖线，而不是自己另起一列 */
             <p className="py-2 pl-[34px] pr-3 text-small text-ink-2">
@@ -662,7 +752,18 @@ export function Chat() {
       {/* 对话区：新对话首屏 = 问候 + 居中 composer（ChatGPT/Claude 惯例）；
           有消息后 composer 停靠底部 */}
       <div className="flex-1 min-w-0 flex flex-col">
-        {shown.length === 0 ? (
+        {idleHistoryKey === loadedKey && idleHistoryKey === viewKey(kbId, currentId) && !streaming && (
+          <p role="status" className="px-4 pt-4 text-body text-ink-2">{S.ask.noActiveAnswer}</p>
+        )}
+        {historyError ? (
+          <div role="alert" className="p-6 text-body">
+            <p>{S.ask.historyLoadFailed}</p>
+            <p className="text-ink-2">{historyError}</p>
+            <Button onClick={() => currentId && loadConversation(currentId)}>{S.ask.retryHistory}</Button>
+          </div>
+        ) : loadingHistory && !liveHere ? (
+          <div role="status" className="p-6 text-body text-ink-2">{S.ask.loadingHistory}</div>
+        ) : shown.length === 0 ? (
           /* 锚定上三分之一而非垂直居中：居中在高窗口下会显得下坠。
              22vh + 顶部 chrome(~100px) ≈ 问候落在 37% 高度、composer 中心 ~49% */
           <div className="flex-1 px-4 pt-[22vh]">

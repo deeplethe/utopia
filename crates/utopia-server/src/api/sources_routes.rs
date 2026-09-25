@@ -115,7 +115,7 @@ pub async fn create(
     }
     // api 来源：生成专属推送密钥（此后可随时经 get_token 查看）
     let mut ingest_token: Option<String> = None;
-    if source.kind == "api" {
+    if has_push_token(&source) {
         let token = new_ingest_token();
         utopia_store::sources::set_ingest_token(&state.pool, source.id, &token).await?;
         ingest_token = Some(token);
@@ -136,7 +136,13 @@ pub async fn create(
     ))
 }
 
-/// 查看 api 来源的推送密钥（Editor；列表响应从不携带，查看走这里）。
+/// 有推送密钥的来源：`api` 推文档，`statements` 推陈述（0054）。两种的密钥同一套
+/// 生成、查看、轮换
+fn has_push_token(source: &utopia_core::models::Source) -> bool {
+    matches!(source.kind.as_str(), "api" | "statements")
+}
+
+/// 查看推送密钥（Editor；列表响应从不携带，查看走这里）。
 pub async fn get_token(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -144,13 +150,13 @@ pub async fn get_token(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let source = source_in_kb(&state, kb_id, source_id).await?;
-    if source.kind != "api" {
+    if !has_push_token(&source) {
         return Err(utopia_core::AppError::NotFound.into());
     }
     Ok(Json(json!({ "ingest_token": source.ingest_token })))
 }
 
-/// 轮换 api 来源的推送密钥：旧密钥立即失效。
+/// 轮换推送密钥：旧密钥立即失效。
 pub async fn rotate_token(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -158,7 +164,7 @@ pub async fn rotate_token(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let source = source_in_kb(&state, kb_id, source_id).await?;
-    if source.kind != "api" {
+    if !has_push_token(&source) {
         return Err(utopia_core::AppError::NotFound.into());
     }
     let token = new_ingest_token();
@@ -280,9 +286,18 @@ pub async fn cleanup_missing(
             .map_err(|e| utopia_core::AppError::Other(e.into()))?
             .map_err(utopia_core::AppError::Other)?;
     }
+    // 与单篇删除同一个收尾：前提没了，派生当场跟上，而不是挂到下一轮定时推导（#875）。
+    // 一批只推一遍
+    if !ids.is_empty() {
+        super::documents_routes::settle_derivations(&state, kb_id).await?;
+    }
     state.emit_source(kb_id);
     Ok(Json(json!({ "deleted": ids.len() })))
 }
+
+#[cfg(test)]
+#[path = "sources_cleanup_tests.rs"]
+mod cleanup_tests;
 
 pub async fn delete(
     State(state): State<AppState>,
@@ -539,6 +554,244 @@ pub async fn push(
     }
 }
 
+/// 推陈述（0054）：请求体就是开放抽取契约（`e` / `s` / `n`），外加 `api` 推送的那层信封。
+///
+/// 和 `push` 同一把钥匙、同一套身份语义（`statements:{external_id}`）、同一份 run 记录；
+/// 不同的只有两点，都在门口定死：**载荷照原样成为文档，一整块**，抽取时按契约解析而不问
+/// 模型；**信封与契约之外的任何键都拒收**——契约里本来就没有属性、类或谓词的格子，
+/// 一个写了 `predicate` 的调用方应当在这里得到 422，而不是在图里找不到它以为写进去的类型事实。
+pub async fn push_statements(
+    State(state): State<AppState>,
+    Path(source_id): Path<Uuid>,
+    headers: HeaderMap,
+    bytes: axum::body::Bytes,
+) -> ApiResult<Json<serde_json::Value>> {
+    let source = utopia_store::sources::get(&state.pool, source_id).await?;
+    if source.kind != "statements" {
+        return Err(utopia_core::AppError::NotFound.into());
+    }
+    let token = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or(utopia_core::AppError::Unauthorized)?;
+    if !push_key_matches(source.ingest_token.as_deref(), token) {
+        return Err(utopia_core::AppError::Unauthorized.into());
+    }
+
+    let run = utopia_store::sources::start_run(&state.pool, source.id).await?;
+    match handle_statements_push(&state, &source, &bytes).await {
+        Ok(action) => {
+            let (created, updated) = match action {
+                crate::ingest_sources::IngestAction::Created => (1, 0),
+                crate::ingest_sources::IngestAction::Updated
+                | crate::ingest_sources::IngestAction::Moved => (0, 1),
+                crate::ingest_sources::IngestAction::Unchanged
+                | crate::ingest_sources::IngestAction::Tombstoned => (0, 0),
+            };
+            utopia_store::sources::finish_run(&state.pool, run, source.id, None, created, updated)
+                .await?;
+            utopia_store::sources::finish_sync(&state.pool, source.id, None, created).await?;
+            state.emit_source(source.kb_id);
+            Ok(Json(json!({ "action": action_str(action) })))
+        }
+        Err(err) => {
+            let msg = err.message().to_string();
+            utopia_store::sources::finish_run(&state.pool, run, source.id, Some(&msg), 0, 0)
+                .await?;
+            if let PushError::Failed(_) = err {
+                utopia_store::sources::finish_sync(&state.pool, source.id, Some(&msg), 0).await?;
+            }
+            state.emit_source(source.kb_id);
+            Err(utopia_core::AppError::Validation(msg).into())
+        }
+    }
+}
+
+/// 一次推送最多多少字节、多少条陈述。第一刀的上限，不是契约：一块就是一份载荷，
+/// 这两个数只是不让一份载荷大到审核卡片和证据视图没法呈现
+pub(crate) const STATEMENTS_MAX_BYTES: usize = 64 * 1024;
+const STATEMENTS_MAX_ITEMS: usize = 200;
+/// 信封里允许的键。契约的三个数组之外，只有 `api` 推送也有的那三个
+const STATEMENTS_ENVELOPE: [&str; 6] = ["external_id", "doc_time", "deleted", "e", "s", "n"];
+
+#[derive(serde::Deserialize)]
+struct StatementsBody {
+    external_id: String,
+    #[serde(default)]
+    doc_time: Option<DateTime<Utc>>,
+    #[serde(default)]
+    deleted: bool,
+    #[serde(default)]
+    e: serde_json::Value,
+    #[serde(default)]
+    s: serde_json::Value,
+    #[serde(default)]
+    n: serde_json::Value,
+}
+
+/// 门口的校验：形状对不对、有没有契约之外的键、每条陈述的引文格是不是空的。
+/// 通过就按契约重新序列化成文档正文——存的是我们自己写出来的那份，不是调用方发来的
+/// 字节：身份、日期（有的话）和 `{e, s, n}`，键序固定、没有多余空白，块就是契约本身
+fn validate_statements_payload(raw: &[u8]) -> Result<(StatementsBody, Option<String>), String> {
+    if raw.len() > STATEMENTS_MAX_BYTES {
+        return Err(format!(
+            "payload is {} bytes; the limit is {STATEMENTS_MAX_BYTES}",
+            raw.len()
+        ));
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(raw).map_err(|e| format!("Invalid JSON payload: {e}"))?;
+    let Some(map) = value.as_object() else {
+        return Err("the payload must be a JSON object".into());
+    };
+    if let Some(extra) = map
+        .keys()
+        .find(|k| !STATEMENTS_ENVELOPE.contains(&k.as_str()))
+    {
+        return Err(format!(
+            "unknown key {extra:?}: the contract has no slot for it (allowed: external_id, doc_time, deleted, e, s, n)"
+        ));
+    }
+    let body: StatementsBody =
+        serde_json::from_value(value).map_err(|e| format!("Invalid payload: {e}"))?;
+    if body.external_id.trim().is_empty() {
+        return Err("external_id is required".into());
+    }
+    if body.deleted {
+        return Ok((body, None));
+    }
+    let arrays = [("e", &body.e), ("s", &body.s), ("n", &body.n)];
+    for (key, v) in arrays {
+        if !v.is_array() {
+            return Err(format!("{key} must be an array"));
+        }
+    }
+    let statements = body.s.as_array().expect("checked above");
+    if statements.is_empty() {
+        return Err("s must hold at least one statement".into());
+    }
+    if statements.len() > STATEMENTS_MAX_ITEMS {
+        return Err(format!(
+            "{} statements; the limit is {STATEMENTS_MAX_ITEMS} per push",
+            statements.len()
+        ));
+    }
+    for (i, item) in statements.iter().enumerate() {
+        let Some(arr) = item.as_array() else {
+            return Err(format!("s[{i}] must be an array of eight slots"));
+        };
+        if arr.len() != 8 {
+            return Err(format!(
+                "s[{i}] has {} slots; the contract has eight",
+                arr.len()
+            ));
+        }
+        if !arr[0].is_null() {
+            return Err(format!(
+                "s[{i}][0] (quote) must be null: the item is its own evidence"
+            ));
+        }
+        if !arr[5].is_null() && !arr[5].is_object() {
+            return Err(format!("s[{i}][5] (qualifiers) must be an object or null"));
+        }
+    }
+    for (i, item) in body.n.as_array().expect("checked above").iter().enumerate() {
+        let Some(arr) = item.as_array() else {
+            return Err(format!("n[{i}] must be an array"));
+        };
+        if arr.len() > 2 && !arr[2].is_null() {
+            return Err(format!("n[{i}][2] (quote) must be null"));
+        }
+    }
+    // 存下的文档带着这次观测的身份和日期，再是契约的三个数组（#900）。身份在正文里，
+    // 两次看到同一件事就是两篇正文不同的文档：库里一份内容只能有一篇（`documents_kb_sha_idx`），
+    // 文件型来源那条「同内容出现在新路径 = 改名」的识别也就永远碰不到它。解析器只读
+    // `e` / `s` / `n`，多出的两个键它不看
+    // 只有契约能通过 parse_open_response：这一步在门口跑一遍，抽取时不会再有别的答案
+    let mut stored = serde_json::Map::new();
+    stored.insert("external_id".into(), json!(body.external_id.trim()));
+    if let Some(at) = body.doc_time {
+        stored.insert("doc_time".into(), json!(at));
+    }
+    stored.insert("e".into(), body.e.clone());
+    stored.insert("s".into(), body.s.clone());
+    stored.insert("n".into(), body.n.clone());
+    let content = serde_json::to_string_pretty(&serde_json::Value::Object(stored))
+        .map_err(|e| format!("cannot serialise the contract: {e}"))?;
+    let parsed = utopia_extract::open::parse_open_response(&content)
+        .map_err(|e| format!("the contract does not parse: {e}"))?;
+    if parsed.skipped > 0 {
+        return Err(format!(
+            "{} item(s) are malformed for the contract (e: [name, kind, named]; s: [null, subject, phrase, object, value, qualifiers, when, ended]; n: [entity, name, null])",
+            parsed.skipped
+        ));
+    }
+    if parsed.statements.is_empty() {
+        return Err("no statement survived parsing".into());
+    }
+    // 主语和别名所属的东西必须在 `e` 里（0054 决定 5）：抽取时找不到的会作为 UNKNOWN_REF
+    // 静默丢掉，而门口的职责就是不让调用方以为它写进去了。折叠规则与抽取的 `name_key`
+    // 同一条：只许空白和大小写不同。宾语不在此列——它落成字面值，陈述照落
+    let listed: std::collections::HashSet<String> = parsed
+        .entities
+        .iter()
+        .map(|e| crate::extraction_open::name_key(&e.name))
+        .collect();
+    for (i, st) in parsed.statements.iter().enumerate() {
+        if !listed.contains(&crate::extraction_open::name_key(&st.subject)) {
+            return Err(format!(
+                "s[{i}][1] (subject) {:?} is not a thing listed in e",
+                st.subject
+            ));
+        }
+    }
+    for (i, n) in parsed.names.iter().enumerate() {
+        if !listed.contains(&crate::extraction_open::name_key(&n.entity)) {
+            return Err(format!(
+                "n[{i}][0] (entity) {:?} is not a thing listed in e",
+                n.entity
+            ));
+        }
+    }
+    Ok((body, Some(content)))
+}
+
+async fn handle_statements_push(
+    state: &AppState,
+    source: &utopia_core::models::Source,
+    bytes: &[u8],
+) -> Result<crate::ingest_sources::IngestAction, PushError> {
+    let (body, content) = validate_statements_payload(bytes).map_err(PushError::Rejected)?;
+    let identity = body.external_id.trim().to_string();
+    let key = format!("statements:{identity}");
+    let Some(content) = content else {
+        utopia_store::documents::mark_missing_keys(&state.pool, source.id, &[key])
+            .await
+            .map_err(|e| PushError::Failed(e.to_string()))?;
+        return Ok(crate::ingest_sources::IngestAction::Tombstoned);
+    };
+    let filename = format!("{identity}.json");
+    let action = crate::ingest_sources::ingest_item(
+        state,
+        source.kb_id,
+        source.id,
+        &key,
+        &filename,
+        "application/json",
+        content.as_bytes(),
+        body.doc_time,
+    )
+    .await
+    .map_err(|e| PushError::Failed(e.to_string()))?;
+    utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
+        .await
+        .map_err(|e| PushError::Failed(e.to_string()))?;
+    Ok(action)
+}
+
 /// 来源级全量重抽（增量语义）：该来源下所有 ready 文档重新过一遍抽取。
 /// 走正常管道——实体消解、事实去重、时态冲突照常，既有人工决策全部保留。
 pub async fn re_extract(
@@ -578,6 +831,10 @@ pub async fn re_extract(
     .await;
     Ok(Json(json!({ "queued": ids.len() })))
 }
+
+#[cfg(test)]
+#[path = "sources_statements_tests.rs"]
+mod statements_tests;
 
 #[cfg(test)]
 mod tests {

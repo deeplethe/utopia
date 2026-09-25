@@ -172,7 +172,11 @@ async fn main() -> anyhow::Result<()> {
     // worker 并发数：系统设置持久化，启动时装载；运行中经同一 AtomicUsize 热调
     let n = utopia_store::access::worker_concurrency(&pool)
         .await
-        .unwrap_or(32);
+        // 与 `deployment_settings.worker_concurrency` 的列缺省保持一致（迁移 0011）。
+        // access::worker_concurrency 自己已经在「行不存在」时兜底到 64；这里再加一层
+        // 是因为**函数本身报错**（DB 连不上、查询超时）也会落进来——这条路径上
+        // 系统正在降级，让它跑 64 而不是 32 是迁移 0011 想避免的那个并发不足。
+        .unwrap_or(64);
     state.worker_concurrency.store(
         n.clamp(1, 256) as usize,
         std::sync::atomic::Ordering::Relaxed,
@@ -575,7 +579,14 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-            type_alignment::align_types(st, kb_id).await
+            // 自己再排的那份带着第几次；文档、建类排的没有这一项
+            let reask = job
+                .payload
+                .get("reask")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0);
+            type_alignment::align_types_reasking(st, kb_id, reask).await
         }
         // 关系短语按签名绑到属性（0044 对齐的第二片）：类别词绑完排一个，属性改了再排
         "align_phrases" => {
@@ -585,7 +596,14 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-            phrase_alignment::align_phrases(st, kb_id).await
+            // 自己再排的那份带着第几次；文档、本体、类别词对齐排的没有这一项
+            let reask = job
+                .payload
+                .get("reask")
+                .and_then(|v| v.as_u64())
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0);
+            phrase_alignment::align_phrases_reasking(st, kb_id, reask).await
         }
         "resolve_time" => {
             let id = payload_document_id(&job.payload)?;

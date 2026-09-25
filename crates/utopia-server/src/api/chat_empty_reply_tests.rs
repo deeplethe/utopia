@@ -252,7 +252,7 @@ impl Fx {
         Ok(String::from_utf8_lossy(&body).into_owned())
     }
 
-    async fn stored_answer(&self) -> anyhow::Result<Option<String>> {
+    pub(super) async fn stored_answer(&self) -> anyhow::Result<Option<String>> {
         Ok(sqlx::query_scalar(
             "SELECT m.content FROM conversation_messages m
                JOIN conversations c ON c.id = m.conversation_id
@@ -262,6 +262,10 @@ impl Fx {
         .bind(self.kb)
         .fetch_optional(&self.pool)
         .await?)
+    }
+
+    pub(super) fn requests(&self) -> Vec<serde_json::Value> {
+        self.fake.requests()
     }
 
     pub(super) async fn cleanup(self) -> anyhow::Result<()> {

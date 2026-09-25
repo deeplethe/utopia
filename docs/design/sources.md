@@ -21,6 +21,8 @@ keeps the stored value; a truncated round says so [0013]. A ticket is one docume
 carries its history as dated declarative sentences and a `## History` list; GitHub fetches events
 per ticket; timestamps are written to the second [0013].
 
+**Statements.** A `statements` source takes the open extraction contract itself (`e`, `s`, `n`) on `POST /sources/{id}/statements`, with the `api` push's identity, versions, tombstones and run history; the payload is the document and its single chunk, and extraction parses the chunk instead of prompting a model, then runs the unchanged path, so a pushed statement is an open statement with the item as its evidence (null offsets) and reaches the typed graph only through alignment. The contract has no slot for a property or a class and unknown keys are refused; a second push under the same identity marks the earlier statements stale rather than closing them; tables belong on a mount, not here [0054].
+
 **RSS.** Observations are not documents: one table with baseline, candidate and no_source rows;
 jobs own attempts, documents own identity; an entry without a GUID or an article link is skipped;
 purge and reappearance are fenced by database time; one Readability extractor serves linked pages

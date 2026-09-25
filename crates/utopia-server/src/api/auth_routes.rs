@@ -125,14 +125,30 @@ pub async fn login(
     Json(req): Json<LoginReq>,
 ) -> ApiResult<(CookieJar, Json<serde_json::Value>)> {
     let email = req.email.trim();
-    let Some(user) = utopia_store::accounts::find_user_by_email(&state.pool, email).await? else {
-        record_login_failure(&state, email, "unknown_email").await;
-        return Err(AppError::Unauthorized.into());
+    let user = utopia_store::accounts::find_user_by_email(&state.pool, email).await?;
+    // 邮箱存在与否的分支要走一样的代码路径：少了 argon2 的那一支能通过
+    // 响应时间差枚举出哪些邮箱注册过（一份密码库扫完后剩下能登录的就是
+    // 真用户）。在「邮箱不存在」分支里跑一次 argon2 校验，结果忽略——
+    // 这条分支因此和「邮箱存在、密码错」一样慢。
+    let password_valid = match &user {
+        Some(u) => auth::verify_password(&req.password, &u.password_hash),
+        None => {
+            let _ = auth::verify_password(&req.password, auth::dummy_password_hash());
+            false
+        }
     };
-    if !auth::verify_password(&req.password, &user.password_hash) {
-        record_login_failure(&state, email, "bad_password").await;
+    if !password_valid {
+        let reason = if user.is_some() {
+            "bad_password"
+        } else {
+            "unknown_email"
+        };
+        record_login_failure(&state, email, reason).await;
         return Err(AppError::Unauthorized.into());
     }
+    let Some(user) = user else {
+        unreachable!("password_valid is only true for an existing user")
+    };
     let token = auth::issue_token(&state, user.id)?;
     let secure = auth::behind_tls(&headers, state.cookie_secure);
     let jar = jar.add(auth::auth_cookie(token.clone(), secure));

@@ -9,6 +9,19 @@ use utopia_llm::LlmClient;
 use uuid::Uuid;
 
 /// 这份文档的来源要不要抽取。没有来源的文档（直接上传、记忆片段）照旧抽。
+/// 文档所属来源的种类；没有来源（上传）为 None。抽取那边也要问同一个问题（0054）
+pub(crate) async fn source_kind(
+    state: &AppState,
+    source_id: Option<Uuid>,
+) -> anyhow::Result<Option<String>> {
+    let Some(id) = source_id else {
+        return Ok(None);
+    };
+    Ok(Some(
+        utopia_store::sources::get(&state.pool, id).await?.kind,
+    ))
+}
+
 async fn source_extracts(state: &AppState, source_id: Option<Uuid>) -> anyhow::Result<bool> {
     let Some(id) = source_id else {
         return Ok(true);
@@ -107,6 +120,8 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             .await?;
     let kb_row = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb_row.workspace_id).await?;
+    let pushed_statements =
+        source_kind(state, doc.source_id).await?.as_deref() == Some("statements");
 
     // 2. 分块 + 入库
     let (text, pieces) = match parsed {
@@ -115,7 +130,20 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             // 那条路共用 `utopia_core::without_nul`（#665）。剥必须在算长度、分块之前：之后的
             // text_len、分块偏移、全文索引、嵌入读的都是这一份，彼此才对得上
             let text = utopia_core::without_nul(&parsed.text).into_owned();
-            let pieces = utopia_ingest::chunk_with_budget(&text, state.chunk_tokens);
+            // 推送来的陈述（0054）：载荷就是契约，整份是一块。分块预算是给模型的注意力
+            // 定的，这条路没有模型读；切开了契约就解析不回来
+            let pieces = if pushed_statements {
+                vec![utopia_ingest::ChunkPiece {
+                    seq: 0,
+                    char_start: 0,
+                    char_end: text.chars().count() as i32,
+                    heading: None,
+                    provenance: utopia_ingest::Provenance::stated(),
+                    text: text.clone(),
+                }]
+            } else {
+                utopia_ingest::chunk_with_budget(&text, state.chunk_tokens)
+            };
             (text, pieces)
         }
         // 没有文本层的扫描件、图片：工作区配了版面识别服务就交给它读（0040 第二刀），
@@ -197,8 +225,9 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // 两段式：索引就绪后，若配置了对话模型则排队图谱抽取（不阻塞可搜可问）
-    if settings.as_ref().is_some_and(|s| s.chat_ready()) {
+    // 两段式：索引就绪后，若配置了对话模型则排队图谱抽取（不阻塞可搜可问）。
+    // 推送来的陈述不问模型（0054），没配也排
+    if pushed_statements || settings.as_ref().is_some_and(|s| s.chat_ready()) {
         utopia_store::documents::set_graph_status(&state.pool, document_id, "queued").await?;
         utopia_store::jobs::enqueue(
             &state.pool,

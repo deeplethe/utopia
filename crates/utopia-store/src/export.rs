@@ -19,9 +19,11 @@
 //! kb_id 与行本体**原子地一并选出**，校验在内存里跑。不能「先取一页、再去库里
 //! 问一次」——第二次问的是另一个时刻的状态，留下的行早已不是它。
 //!
-//! 校验范围只覆盖**这份导出真正解析的引用**：会被铸成本库 IRI 的、会被按 id
-//! 进本库词汇表查的。导出还没读的边（规则表自身、陈述属性、时间提及、
-//! 文档版本定位器等）不在这里管——它们随各自的导出面一起带上自己的校验。
+//! 体检范围覆盖 **0070 保护的每一条结构引用边**——不只这份导出真正解析的
+//! 那些。导出还没读的边（规则表自身、陈述属性、时间提及等）也在同一个快照里
+//! 先查：catalog 守卫（migration_0070_runs_under_any_search_path.rs）核对
+//! export_provenance_integrity.sql 的每条扫描分支都对应一条受保护的
+//! catalog 边，将来新加的受保护引用漏登记体检就直接红。
 
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, Transaction};
@@ -30,6 +32,10 @@ use uuid::Uuid;
 
 /// 一次取多少行。够大以免把往返次数拉满，够小以免一页就撑爆内存。
 pub const PAGE: i64 = 500;
+
+/// 出处体检的唯一一份 SQL：运行时就跑它，catalog 守卫读的也是它——
+/// 边集合只有这一处登记，没有第二份要手工对齐的清单
+const PREFLIGHT_SQL: &str = include_str!("export_provenance_integrity.sql");
 
 /// 出处链越界的一类引用。同库外键只认 id、不认库：A 库的
 /// 行可以引用 B 库的对象，schema 什么都不拦。0070 的触发器挡新行；这里拦的是
@@ -95,8 +101,10 @@ fn foreign(ref_kb: Option<Uuid>, kb_id: Uuid) -> bool {
 /// （`unexported`——合并掉的实体）。只报哪条边坏了、坏了几行——具体哪些行
 /// 坏是库里的事，不进面向导出的报错
 ///
-/// 扫的边与导出面一一对应：只查这份导出会解析的引用（IRI 会铸出去的、
-/// 词汇表会按 id 查的）。**必须在导出用的那条事务里跑**（REPEATABLE READ）：
+/// 扫的边 = **0070 保护的全部结构引用边**（export_provenance_integrity.sql，
+/// 每条分支带一条 `@edge`/`@filter` 标记给 catalog 守卫核对）——连导出尚未
+/// 序列化的边也算：一份账本上任何一条受保护的同库引用断了，这份导出都不可信，
+/// 宁可整份拒。**必须在导出用的那条事务里跑**（REPEATABLE READ）：
 /// 体检与每一页查询看的是同一个快照，先体检后换连接会在两个时刻之间
 /// 漏掉刚提交的坏行
 pub async fn provenance_integrity(
@@ -109,157 +117,10 @@ pub async fn provenance_integrity(
         kind: String,
         rows: i64,
     }
-    let violations: Vec<ScanViolation> = sqlx::query_as(
-        "SELECT edge, kind, COUNT(*) AS rows FROM (
-             -- 证据的段落：quote_origins 按它 JOIN chunks 取 origin——别库/悬空
-             -- 的段落会让引文来源静默消失
-             SELECT 'evidence.chunk'::text AS edge, 'cross_kb'::text AS kind,
-                    c.kb_id IS DISTINCT FROM f.kb_id AS bad
-               FROM fact_evidence e
-               JOIN facts f ON f.id = e.fact_id
-               LEFT JOIN chunks c ON c.id = e.chunk_id
-              WHERE f.kb_id = $1
-             UNION ALL
-             -- 证据的文档指针：铸成 prov:wasDerivedFrom 的文档 IRI
-             SELECT 'evidence.document', 'cross_kb', d.kb_id IS DISTINCT FROM f.kb_id
-               FROM fact_evidence e
-               JOIN facts f ON f.id = e.fact_id
-               LEFT JOIN documents d ON d.id = e.document_id
-              WHERE f.kb_id = $1 AND e.document_id IS NOT NULL
-             UNION ALL
-             -- 派生前提：铸成 prov:used 的事实/派生 IRI
-             SELECT 'derivation.premise_fact', 'cross_kb', p.kb_id IS DISTINCT FROM d.kb_id
-               FROM fact_derivations fd
-               JOIN derived_facts d ON d.id = fd.derived_fact_id
-               LEFT JOIN facts p ON p.id = fd.premise_fact_id
-              WHERE d.kb_id = $1 AND fd.premise_fact_id IS NOT NULL
-             UNION ALL
-             SELECT 'derivation.premise_derived', 'cross_kb', p.kb_id IS DISTINCT FROM d.kb_id
-               FROM fact_derivations fd
-               JOIN derived_facts d ON d.id = fd.derived_fact_id
-               LEFT JOIN derived_facts p ON p.id = fd.premise_derived_id
-              WHERE d.kb_id = $1 AND fd.premise_derived_id IS NOT NULL
-             UNION ALL
-             -- 边上的属性：类型进词汇表按 id 查（查不着静默丢），实体值铸 IRI
-             SELECT 'qualifier.type', 'cross_kb', r.kb_id IS DISTINCT FROM f.kb_id
-               FROM fact_qualifiers q
-               JOIN facts f ON f.id = q.fact_id
-               LEFT JOIN relation_types r ON r.id = q.qualifier_type_id
-              WHERE f.kb_id = $1
-             UNION ALL
-             SELECT 'qualifier.entity', 'cross_kb', e.kb_id IS DISTINCT FROM f.kb_id
-               FROM fact_qualifiers q
-               JOIN facts f ON f.id = q.fact_id
-               LEFT JOIN entities e ON e.id = q.entity_id
-              WHERE f.kb_id = $1 AND q.entity_id IS NOT NULL
-             UNION ALL
-             SELECT 'qualifier.entity(merged)', 'unexported', TRUE
-               FROM fact_qualifiers q
-               JOIN facts f ON f.id = q.fact_id
-               JOIN entities e ON e.id = q.entity_id AND e.merged_into IS NOT NULL
-              WHERE f.kb_id = $1
-             UNION ALL
-             -- 事实本体：主语铸 entity IRI，谓词进词汇表，supersedes 铸 fact IRI
-             SELECT 'fact.subject', 'cross_kb', s.kb_id IS DISTINCT FROM f.kb_id
-               FROM facts f LEFT JOIN entities s ON s.id = f.subject_id
-              WHERE f.kb_id = $1
-             UNION ALL
-             SELECT 'fact.subject(merged)', 'unexported', TRUE
-               FROM facts f JOIN entities s ON s.id = f.subject_id AND s.merged_into IS NOT NULL
-              WHERE f.kb_id = $1
-             UNION ALL
-             SELECT 'fact.object', 'cross_kb', o.kb_id IS DISTINCT FROM f.kb_id
-               FROM facts f LEFT JOIN entities o ON o.id = f.object_id
-              WHERE f.kb_id = $1 AND f.object_id IS NOT NULL
-             UNION ALL
-             SELECT 'fact.object(merged)', 'unexported', TRUE
-               FROM facts f JOIN entities o ON o.id = f.object_id AND o.merged_into IS NOT NULL
-              WHERE f.kb_id = $1
-             UNION ALL
-             SELECT 'fact.predicate', 'cross_kb', r.kb_id IS DISTINCT FROM f.kb_id
-               FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
-              WHERE f.kb_id = $1 AND f.predicate_id IS NOT NULL
-             UNION ALL
-             SELECT 'fact.supersedes', 'cross_kb', s.kb_id IS DISTINCT FROM f.kb_id
-               FROM facts f LEFT JOIN facts s ON s.id = f.supersedes
-              WHERE f.kb_id = $1 AND f.supersedes IS NOT NULL
-             UNION ALL
-             -- 派生本体：规则 id 铸成 wasGeneratedBy 的 Activity IRI
-             SELECT 'derived.subject', 'cross_kb', s.kb_id IS DISTINCT FROM d.kb_id
-               FROM derived_facts d LEFT JOIN entities s ON s.id = d.subject_id
-              WHERE d.kb_id = $1
-             UNION ALL
-             SELECT 'derived.subject(merged)', 'unexported', TRUE
-               FROM derived_facts d JOIN entities s ON s.id = d.subject_id AND s.merged_into IS NOT NULL
-              WHERE d.kb_id = $1
-             UNION ALL
-             SELECT 'derived.object', 'cross_kb', o.kb_id IS DISTINCT FROM d.kb_id
-               FROM derived_facts d LEFT JOIN entities o ON o.id = d.object_id
-              WHERE d.kb_id = $1 AND d.object_id IS NOT NULL
-             UNION ALL
-             SELECT 'derived.object(merged)', 'unexported', TRUE
-               FROM derived_facts d JOIN entities o ON o.id = d.object_id AND o.merged_into IS NOT NULL
-              WHERE d.kb_id = $1
-             UNION ALL
-             SELECT 'derived.predicate', 'cross_kb', r.kb_id IS DISTINCT FROM d.kb_id
-               FROM derived_facts d LEFT JOIN relation_types r ON r.id = d.predicate_id
-              WHERE d.kb_id = $1
-             UNION ALL
-             SELECT 'derived.rule', 'cross_kb', r.kb_id IS DISTINCT FROM d.kb_id
-               FROM derived_facts d LEFT JOIN rules r ON r.id = d.rule_id
-              WHERE d.kb_id = $1 AND d.rule_id IS NOT NULL
-             UNION ALL
-             SELECT 'derived.attribute_rule', 'cross_kb', r.kb_id IS DISTINCT FROM d.kb_id
-               FROM derived_facts d LEFT JOIN attribute_rules r ON r.id = d.attribute_rule_id
-              WHERE d.kb_id = $1 AND d.attribute_rule_id IS NOT NULL
-             UNION ALL
-             -- 实体的类进词汇表按 id 查
-             SELECT 'entity.type', 'cross_kb', t.kb_id IS DISTINCT FROM e.kb_id
-               FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
-              WHERE e.kb_id = $1 AND e.type_id IS NOT NULL
-             UNION ALL
-             -- 类层级与互斥都进词汇表按 id 查
-             SELECT 'class.parent', 'cross_kb', p.kb_id IS DISTINCT FROM c.kb_id
-               FROM entity_type_parents x
-               JOIN entity_types c ON c.id = x.child_id
-               LEFT JOIN entity_types p ON p.id = x.parent_id
-              WHERE c.kb_id = $1
-             UNION ALL
-             SELECT 'class.disjoint', 'cross_kb', a.kb_id IS DISTINCT FROM dd.kb_id
-               FROM entity_type_disjoint dd
-               LEFT JOIN entity_types a ON a.id = dd.a_id
-              WHERE dd.kb_id = $1
-             UNION ALL
-             SELECT 'class.disjoint', 'cross_kb', b.kb_id IS DISTINCT FROM dd.kb_id
-               FROM entity_type_disjoint dd
-               LEFT JOIN entity_types b ON b.id = dd.b_id
-              WHERE dd.kb_id = $1
-             UNION ALL
-             -- domain/range 进词汇表按 id 查；inverse/sub_property 铸关系 IRI
-             SELECT 'relation.domain', 'cross_kb', t.kb_id IS DISTINCT FROM r.kb_id
-               FROM relation_type_domains x
-               JOIN relation_types r ON r.id = x.relation_type_id
-               LEFT JOIN entity_types t ON t.id = x.entity_type_id
-              WHERE r.kb_id = $1
-             UNION ALL
-             SELECT 'relation.range', 'cross_kb', t.kb_id IS DISTINCT FROM r.kb_id
-               FROM relation_type_ranges x
-               JOIN relation_types r ON r.id = x.relation_type_id
-               LEFT JOIN entity_types t ON t.id = x.entity_type_id
-              WHERE r.kb_id = $1
-             UNION ALL
-             SELECT 'relation.inverse', 'cross_kb', t.kb_id IS DISTINCT FROM r.kb_id
-               FROM relation_types r LEFT JOIN relation_types t ON t.id = r.inverse_of
-              WHERE r.kb_id = $1 AND r.inverse_of IS NOT NULL
-             UNION ALL
-             SELECT 'relation.sub_property', 'cross_kb', t.kb_id IS DISTINCT FROM r.kb_id
-               FROM relation_types r LEFT JOIN relation_types t ON t.id = r.sub_property_of
-              WHERE r.kb_id = $1 AND r.sub_property_of IS NOT NULL
-         ) refs WHERE bad GROUP BY edge, kind",
-    )
-    .bind(kb_id)
-    .fetch_all(&mut **tx)
-    .await?;
+    let violations: Vec<ScanViolation> = sqlx::query_as(PREFLIGHT_SQL)
+        .bind(kb_id)
+        .fetch_all(&mut **tx)
+        .await?;
     let cross_kb: Vec<CrossKbViolation> = violations
         .iter()
         .filter(|v| v.kind == "cross_kb")
@@ -400,6 +261,9 @@ pub struct ExportDerived {
     pub confidence: f32,
     /// transitive | symmetric | inverse | sub_property，或 business
     pub rule: String,
+    /// 公理规则声明在哪个谓词上（`rules.predicate_id`）。inverse 与 sub_property 时它
+    /// 不是结论的谓词，导出要写明（0020 的 2026-09-25 revision，#902）。业务规则为 None
+    pub rule_predicate: Option<Uuid>,
     /// 业务规则的名字，进 RDF 当这条推理活动的标签
     pub rule_name: Option<String>,
     /// 前提事实。审计要顺着它往下走到句子
@@ -771,7 +635,8 @@ pub async fn derived_page(
                 d.rule_id, d.attribute_rule_id,
                 d.valid_from, d.valid_from_precision, d.valid_to, d.valid_to_precision,
                 d.derived_at, d.invalidated_at, d.confidence,
-                COALESCE(ru.kind, 'business') AS rule, ar.name AS rule_name,
+                COALESCE(ru.kind, 'business') AS rule, ru.predicate_id AS rule_predicate,
+                ar.name AS rule_name,
                 COALESCE(ARRAY(SELECT fd.premise_fact_id FROM fact_derivations fd
                                 WHERE fd.derived_fact_id = d.id
                                   AND fd.premise_fact_id IS NOT NULL

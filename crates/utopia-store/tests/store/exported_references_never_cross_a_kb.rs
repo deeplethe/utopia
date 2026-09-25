@@ -1,5 +1,5 @@
-//! 写入侧：导出会触碰的每条边都被 0070 的外键/触发器挡住；导出侧只复查
-//! 这份导出真正解析的那些引用——别库/悬空的行宁可整份拒导，也不许
+//! 写入侧：导出会触碰的每条边都被 0070 的外键/触发器挡住；导出侧体检
+//! 覆盖 0070 保护的**全部**结构引用边——别库/悬空的行宁可整份拒导，也不许
 //! 伪造 IRI 或静默丢语义。落到别库的下场分两种：
 //!   - 铸成本库 IRI 的引用（实体、事实、派生、文档、段落、规则）→ 伪造身份；
 //!   - 进本库词汇表按 id 查的引用（谓词、属性类型、实体类型、父类）→ 静默消失。
@@ -18,6 +18,7 @@ struct Fixture {
     a: Uuid,
     b: Uuid,
     doc_a: Uuid,
+    doc_b: Uuid,
     chunk_a: Uuid,
     chunk_b: Uuid,
     ent_a: Uuid,
@@ -185,6 +186,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         a,
         b,
         doc_a,
+        doc_b,
         chunk_a,
         chunk_b,
         ent_a,
@@ -718,25 +720,207 @@ async fn malformed_rows_fail_every_exported_edge_closed() -> anyhow::Result<()> 
     .bind(f.cls_b)
     .execute(&mut *tx)
     .await?;
+
+    // —— 体检现在覆盖 0070 保护的全部结构边:剩下每条边也各造一行坏行 ——
+    // 证据的段落指针与冗余文档指针
+    sqlx::query("INSERT INTO fact_evidence (fact_id, chunk_id) VALUES ($1, $2)")
+        .bind(f.fact_a)
+        .bind(f.chunk_b)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO fact_evidence (fact_id, chunk_id, document_id) VALUES ($1, $2, $3)")
+        .bind(f.fact_a)
+        .bind(f.chunk_a)
+        .bind(f.doc_b)
+        .execute(&mut *tx)
+        .await?;
+    // 段落挂在别库文档下
+    sqlx::query(
+        "INSERT INTO chunks (id, kb_id, document_id, seq, text) VALUES ($1, $2, $3, 9, 'x')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.doc_b)
+    .execute(&mut *tx)
+    .await?;
+    // 事实本体的主语/宾语/谓词
+    sqlx::query(
+        "UPDATE facts SET subject_id = $2, object_id = $2, predicate_id = $3 WHERE id = $1",
+    )
+    .bind(f.fact_a)
+    .bind(f.ent_b)
+    .bind(f.rel_b)
+    .execute(&mut *tx)
+    .await?;
+    // 派生本体的主语/宾语/谓词;另一条派生走业务规则——attribute_rule 别库
+    sqlx::query(
+        "UPDATE derived_facts SET subject_id = $2, object_id = $2, predicate_id = $3 WHERE id = $1",
+    )
+    .bind(f.der_a)
+    .bind(f.ent_b)
+    .bind(f.rel_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO derived_facts (id, kb_id, subject_id, predicate_id, object_id, attribute_rule_id)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.ent_a)
+    .bind(f.rel_a)
+    .bind(f.ent_a)
+    .bind(f.arule_b)
+    .execute(&mut *tx)
+    .await?;
+    // 类互斥的两个引用列是两条结构边、共用一个报错 label——
+    // a_id 别库一行、b_id 别库一行(CHECK 不许 a_id = b_id)
+    sqlx::query("INSERT INTO entity_type_disjoint (kb_id, a_id, b_id) VALUES ($1, $2, $3)")
+        .bind(f.a)
+        .bind(f.cls_b)
+        .bind(f.cls_a)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO entity_type_disjoint (kb_id, a_id, b_id) VALUES ($1, $2, $3)")
+        .bind(f.a)
+        .bind(f.cls_a)
+        .bind(f.cls_b)
+        .execute(&mut *tx)
+        .await?;
+    // range 与关系声明的边属性
+    sqlx::query(
+        "INSERT INTO relation_type_ranges (relation_type_id, entity_type_id) VALUES ($1, $2)",
+    )
+    .bind(f.rel_a)
+    .bind(f.cls_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO relation_type_qualifiers (relation_type_id, qualifier_type_id) VALUES ($1, $2)",
+    )
+    .bind(f.rel_a)
+    .bind(f.rel_b)
+    .execute(&mut *tx)
+    .await?;
+    // 关系的同表自指
+    sqlx::query("UPDATE relation_types SET inverse_of = $2, sub_property_of = $2 WHERE id = $1")
+        .bind(f.rel_a)
+        .bind(f.rel_b)
+        .execute(&mut *tx)
+        .await?;
+    // 公理的谓词
+    sqlx::query("UPDATE rules SET predicate_id = $2 WHERE id = $1")
+        .bind(f.rule_a)
+        .bind(f.rel_b)
+        .execute(&mut *tx)
+        .await?;
+    // 业务规则的两个引用列、typing 结论的类、条件的谓词
+    sqlx::query(
+        "UPDATE attribute_rules SET subject_type_id = $2, conclude_predicate_id = $3 WHERE id = $1",
+    )
+    .bind(f.arule_a)
+    .bind(f.cls_b)
+    .bind(f.rel_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO attribute_rules (id, kb_id, name, subject_type_id, conclusion, conclude_type_id)
+         VALUES ($1, $2, 'ar-t', $3, 'typing', $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.cls_a)
+    .bind(f.cls_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO attribute_rule_conditions (id, rule_id, seq, predicate_id, op)
+         VALUES ($1, $2, 0, $3, 'present')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.arule_a)
+    .bind(f.rel_b)
+    .execute(&mut *tx)
+    .await?;
+    // 时间提及指着别库事实(段落同库)——timemention.fact 这一条单独验
+    sqlx::query(
+        "INSERT INTO time_mentions (id, kb_id, fact_id, chunk_id, text, char_start)
+         VALUES ($1, $2, $3, $4, '明年', 4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.fact_b)
+    .bind(f.chunk_a)
+    .execute(&mut *tx)
+    .await?;
+    // 短语绑定的两个类型引用列
+    sqlx::query(
+        "INSERT INTO phrase_bindings (id, kb_id, phrase, subject_type_id, status)
+         VALUES ($1, $2, 'runs-sub', $3, 'none')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.cls_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO phrase_bindings (id, kb_id, phrase, object_type_id, status)
+         VALUES ($1, $2, 'runs-obj', $3, 'none')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.cls_b)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     drop(conn);
 
     let err = utopia_store::export::provenance_integrity(&mut pool.begin().await?, f.a).await;
     let msg = format!("{err:?}");
     assert!(err.is_err(), "库 A 的体检必须拒导");
-    // 体检只报这份导出真正解析的边：陈述来源、开放陈述属性、时间提及、
-    // 类型/短语绑定这些行上面同样埋了坏行，但导出现在不读它们——它们随
-    // 各自的导出面一起带上自己的校验
+    // 体检覆盖 0070 保护的全部结构边——埋下去的每一类坏行都要被点名,
+    // 导出还没序列化的边(规则、绑定、时间提及、条件)也一样:受保护的
+    // 同库引用断在账本上,这份导出就不可信。38 个报错 label 对应 39 条
+    // 结构边(class.disjoint 的 a_id/b_id 共用一个 label)
     for edge in [
+        "evidence.chunk",
+        "evidence.document",
+        "chunk.document",
         "derivation.premise_fact",
         "derivation.premise_derived",
         "qualifier.type",
         "qualifier.entity",
+        "fact.subject",
+        "fact.object",
+        "fact.predicate",
         "fact.supersedes",
+        "fact.from_statement",
+        "derived.subject",
+        "derived.object",
+        "derived.predicate",
         "derived.rule",
+        "derived.attribute_rule",
         "entity.type",
         "class.parent",
+        "class.disjoint",
         "relation.domain",
+        "relation.range",
+        "relation.qualifier",
+        "relation.inverse",
+        "relation.sub_property",
+        "rule.predicate",
+        "arule.subject_type",
+        "arule.conclude_type",
+        "arule.conclude_predicate",
+        "condition.predicate",
+        "factsource.statement",
+        "squalifier.entity",
+        "timemention.fact",
+        "timemention.chunk",
+        "binding.type",
+        "pbinding.subject_type",
+        "pbinding.object_type",
+        "pbinding.relation",
     ] {
         assert!(msg.contains(edge), "体检该报 {edge}: {msg}");
     }
