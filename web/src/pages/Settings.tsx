@@ -1198,22 +1198,23 @@ export function Settings() {
                   </div>
                   <div>
                     <label className={label}>{S.settings.reasoningEffort}</label>
-                    {/* 推理模型默认边想边答，抽取一次调用九成的输出是思考；照原文写 JSON 的活用 minimal */}
-                    <select
-                      className="w-full rounded-md border border-line bg-transparent px-2 py-1.5 text-body"
+                    {/* 推理模型默认边想边答，抽取一次调用九成的输出是思考；照原文写 JSON 的活用 minimal。
+                        小而有界的枚举：Dropdown（web/DESIGN.md 规矩 5，页面上没有原生 select） */}
+                    <Dropdown
+                      className="w-full"
                       value={form.chat_reasoning_effort}
-                      onChange={(e) => {
-                        const v = e.target.value;
+                      onChange={(v) => {
                         setForm((f) => ({ ...f, chat_reasoning_effort: v }));
                         setDirty((d) => ({ ...d, chat: true }));
                       }}
-                    >
-                      <option value="">{S.settings.reasoningDefault}</option>
-                      <option value="minimal">minimal</option>
-                      <option value="low">low</option>
-                      <option value="medium">medium</option>
-                      <option value="high">high</option>
-                    </select>
+                      options={[
+                        { value: "", label: S.settings.reasoningDefault },
+                        { value: "minimal", label: "minimal" },
+                        { value: "low", label: "low" },
+                        { value: "medium", label: "medium" },
+                        { value: "high", label: "high" },
+                      ]}
+                    />
                     <div className="mt-1 text-small text-ink-2">{S.settings.reasoningHint}</div>
                   </div>
                   <div>
