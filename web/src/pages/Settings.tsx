@@ -563,8 +563,11 @@ function NewDataSourceDialog({
       onCreated();
     },
   });
+  // 对话框上一次只说一个结果：试连和新增各有自己的错误，两个都留着就是同一句话出现两次
+  // （#921）。改字段、换动作，前一个结果就不作数了
   const set = (key: string, v: string) => {
     probe.reset();
+    create.reset();
     setValues((prev) => ({ ...prev, [key]: v }));
   };
 
@@ -580,7 +583,10 @@ function NewDataSourceDialog({
           {/* 试连在左边：它不是"完成"，是完成之前的那一步 */}
           <Button variant="secondary" size="sm" className="mr-auto"
             disabled={!filled || probe.isPending}
-            onClick={() => probe.mutate()}
+            onClick={() => {
+              create.reset();
+              probe.mutate();
+            }}
           >
             {probe.isPending
               ? S.settings.datasources.testing
@@ -591,7 +597,10 @@ function NewDataSourceDialog({
           </Button>
           <Button variant="primary" size="sm"
             disabled={!ready || create.isPending}
-            onClick={() => create.mutate()}
+            onClick={() => {
+              probe.reset();
+              create.mutate();
+            }}
           >
             {S.settings.datasources.add}
           </Button>
@@ -615,6 +624,7 @@ function NewDataSourceDialog({
                 setEngineId(v);
                 setValues({});
                 probe.reset();
+                create.reset();
               }}
               options={specs.map((s) => ({ value: s.id, label: s.label }))}
             />
