@@ -110,6 +110,20 @@ pub async fn govern(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
         tracing::info!(%kb_id, "治理：没有配聊天模型，队列原地等");
         return Ok(());
     };
+    // 一个库一次只跑一个治理任务。每篇文档抽完都排一个，而排队的去重只挡排着的、不挡在跑的：
+    // 抢不到锁就说明有人在治理这个库，它会把队列走完，走完还有积压会再排一个。它读完队头
+    // 之后才进来的对它看不见，所以这里隔一分钟再排一个——排着的至多一个，跑着的也只有它
+    let Some(base_lock) = gov::try_lock_base(&state.pool, kb_id).await? else {
+        tracing::info!(%kb_id, "治理：这个库已有任务在跑，一分钟后再看一眼");
+        utopia_store::jobs::enqueue_unless_queued_after(
+            &state.pool,
+            "govern",
+            json!({ "kb_id": kb_id }),
+            std::time::Duration::from_secs(60),
+        )
+        .await?;
+        return Ok(());
+    };
     let ctx = Ctx {
         state,
         kb_id,
@@ -124,6 +138,7 @@ pub async fn govern(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
     if let Err(e) = gov::release_locks(&state.pool, kb_id).await {
         tracing::warn!(%kb_id, error = %e, "治理：放锁失败");
     }
+    base_lock.release().await;
     state.emit_review(kb_id);
     let more = outcome?;
 
@@ -534,11 +549,14 @@ async fn apply(ctx: &Ctx<'_>, item: &ReviewItem, p: &Precedents, look: Look) -> 
                 utopia_store::resolution::survivor(pool, kb_id, item.right.id).await?,
             );
             if l == r {
-                // 两边已经是同一个实体：只剩把审核行关上
-                utopia_store::resolution::close_review_auto(pool, item.id, "merged", &reason)
-                    .await?;
-                let id = gov::record(pool, kb_id, decision("applied", None)).await?;
-                audit(ctx, "review.merge", item, conf, id).await;
+                // 两边已经是同一个实体：只剩把审核行关上。关不上是已经有人关了，不再记一条
+                let closed =
+                    utopia_store::resolution::close_review_auto(pool, item.id, "merged", &reason)
+                        .await?;
+                if closed > 0 {
+                    let id = gov::record(pool, kb_id, decision("applied", None)).await?;
+                    audit(ctx, "review.merge", item, conf, id).await;
+                }
                 return Ok(());
             }
             // 执行闸门（0027）：合并会立刻送出图外的东西——违规、派生、答案——留给人，
@@ -602,9 +620,13 @@ async fn apply(ctx: &Ctx<'_>, item: &ReviewItem, p: &Precedents, look: Look) -> 
         }
         Gate::Apply => {
             let reason = format!("governed|{conf:.2}");
-            utopia_store::resolution::close_review_auto(pool, item.id, "kept", &reason).await?;
-            let id = gov::record(pool, kb_id, decision("applied", None)).await?;
-            audit(ctx, "review.keep", item, conf, id).await;
+            // 关不上是这一对已经不是 pending（人裁了，或另一条路先到）：不再记一条一样的裁决
+            let closed =
+                utopia_store::resolution::close_review_auto(pool, item.id, "kept", &reason).await?;
+            if closed > 0 {
+                let id = gov::record(pool, kb_id, decision("applied", None)).await?;
+                audit(ctx, "review.keep", item, conf, id).await;
+            }
         }
         Gate::Propose => {
             utopia_store::resolution::escalate_review(pool, item.id, "proposed").await?;

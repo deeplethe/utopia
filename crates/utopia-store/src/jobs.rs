@@ -86,6 +86,33 @@ pub async fn enqueue_unless_queued(
     Ok(row.map(|(id,)| id))
 }
 
+/// 同 [`enqueue_unless_queued`]，但晚一点跑。挡的只是排着的，不挡在跑的——调用方
+/// 正是那个在跑的任务、想给自己之后再排一个的时候，用这个而不是 `enqueue_unless_pending`
+pub async fn enqueue_unless_queued_after(
+    pool: &PgPool,
+    kind: &str,
+    payload: serde_json::Value,
+    after: Duration,
+) -> AppResult<Option<i64>> {
+    let mut tx = pool.begin().await?;
+    let row: Option<(i64,)> = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload, run_at)
+         SELECT $1, $2, now() + make_interval(secs => $3)
+          WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind = $1 AND payload = $2 AND status = 'queued')
+         RETURNING id",
+    )
+    .bind(kind)
+    .bind(payload)
+    .bind(after.as_secs_f64())
+    .fetch_optional(&mut *tx)
+    .await?;
+    if row.is_some() {
+        notify_worker_tx(&mut tx).await?;
+    }
+    tx.commit().await?;
+    Ok(row.map(|(id,)| id))
+}
+
 pub async fn enqueue(pool: &PgPool, kind: &str, payload: serde_json::Value) -> AppResult<i64> {
     enqueue_with_max_attempts(pool, kind, payload, 3).await
 }

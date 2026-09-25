@@ -10,7 +10,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres};
 use utopia_core::models::{AgentDecisionView, ReviewItem};
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -615,9 +615,50 @@ pub fn settled_by_people(
     it.all(|x| x.merged() == first).then_some(first)
 }
 
-/// 有一条开着的建议的对不进队列：agent 已经问过了，等人答
+/// 有一条开着的建议的对不进队列：agent 已经问过了，等人答。正在裁的（`adjudicating`）
+/// 也不进：那是这一次任务自己手里的簇，读队头时它们还没落地
 const OPEN_PROPOSAL: &str = "NOT EXISTS (SELECT 1 FROM agent_decisions d
-    WHERE d.target_kind = 'review' AND d.target_id = rr.id AND d.status = 'proposed')";
+    WHERE d.target_kind = 'review' AND d.target_id = rr.id AND d.status = 'proposed')
+    AND rr.stage <> 'adjudicating'";
+
+/// 一个库同一时刻只有一个治理任务在跑：会话级咨询锁，跟着这条连接走。
+///
+/// 每篇文档抽完都排一个治理任务，而 `jobs::enqueue_unless_queued` 只挡排着的、不挡在跑的：
+/// 64 个 worker 把它们一起接起来，十个任务同时读同一个队头、同一簇裁十遍——一次 100 篇的
+/// 跑里 1346 个对被判了 8888 次，三分之一的 token 花在这上面。只用 **try**：抢不到就说明
+/// 有人在治理这个库，那个任务会把队列走完、有积压时再排一个
+const BASE_TRY_LOCK: &str = "SELECT pg_try_advisory_lock(hashtextextended('governance:' || $1, 0))";
+const BASE_UNLOCK: &str = "SELECT pg_advisory_unlock(hashtextextended('governance:' || $1, 0))";
+
+/// 抢到的锁。放掉要显式调 [`BaseLock::release`]；直接丢掉的话连接回池子时锁还挂着，
+/// 所以 `release` 解不开就关连接，让 Postgres 收回它
+pub struct BaseLock {
+    conn: sqlx::pool::PoolConnection<Postgres>,
+    key: String,
+}
+
+impl BaseLock {
+    pub async fn release(mut self) {
+        let unlocked: Result<bool, _> = sqlx::query_scalar(BASE_UNLOCK)
+            .bind(&self.key)
+            .fetch_one(&mut *self.conn)
+            .await;
+        if !matches!(unlocked, Ok(true)) {
+            let _ = self.conn.close().await;
+        }
+    }
+}
+
+/// 试着拿这个库的治理锁。`None` = 别的任务正拿着
+pub async fn try_lock_base(pool: &PgPool, kb_id: Uuid) -> AppResult<Option<BaseLock>> {
+    let mut conn = pool.acquire().await?;
+    let key = kb_id.to_string();
+    let got: bool = sqlx::query_scalar(BASE_TRY_LOCK)
+        .bind(&key)
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(got.then_some(BaseLock { conn, key }))
+}
 
 /// 等人的重复对，先进先出
 pub async fn queue(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<ReviewItem>> {

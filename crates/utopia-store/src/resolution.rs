@@ -1665,13 +1665,14 @@ pub async fn escalate_review(pool: &PgPool, review_id: Uuid, reason: &str) -> Ap
 }
 
 /// 自动定夺（LLM 高置信）：merged / kept。合并动作本身由调用方先执行。
+/// 回关上了几行：0 = 这一对已经不是 pending（人裁了，或另一条路先到），调用方别再记一条一样的裁决
 pub async fn close_review_auto(
     pool: &PgPool,
     review_id: Uuid,
     status: &str,
     reason: &str,
-) -> AppResult<()> {
-    sqlx::query(
+) -> AppResult<u64> {
+    let res = sqlx::query(
         "UPDATE resolution_reviews SET status = $2, reason = $3, decided_at = now()
          WHERE id = $1 AND status = 'pending'",
     )
@@ -1680,7 +1681,7 @@ pub async fn close_review_auto(
     .bind(reason)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(res.rows_affected())
 }
 
 /// 人工定夺。merge 方向：度数高（事实多）的一方作为存活目标，平局取更早创建的。
