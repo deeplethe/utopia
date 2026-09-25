@@ -371,6 +371,11 @@ async fn align_types_locked(
     // 每次多等一会。从前只有失败的批次会再排，漏答的词就只能等下一篇文档来排——最后
     // 一篇之后没有下一篇，它们就永远没有结论；而漏答不写任何行，本体页也看不见
     let unfinished = failed > 0 || unanswered > 0;
+    // 还有下一轮（来了新词、有过期的，或没判完要再问）就先不排短语对齐：两端的类还在变，
+    // 这时判的签名指纹一变就得重判——100 篇的一次跑里，短语对齐第一轮判的 1010 条签名
+    // 里有 713 条因为类别词第二轮改了类而重判。最后一轮（不再排自己）才排它；再问的
+    // 次数用尽那一支也排：判定不会再变了
+    let mut another_round = false;
     if changed {
         utopia_store::jobs::enqueue_unless_queued(
             pool,
@@ -378,6 +383,7 @@ async fn align_types_locked(
             serde_json::json!({ "kb_id": kb_id }),
         )
         .await?;
+        another_round = true;
     } else if unfinished && reask < MAX_REASK {
         let delay = std::time::Duration::from_secs(20 * u64::from(reask + 1));
         tracing::info!(%kb_id, failed, unanswered, reask = reask + 1, delay_secs = delay.as_secs(), "类别词对齐没判完，稍后再问");
@@ -388,16 +394,19 @@ async fn align_types_locked(
             delay,
         )
         .await?;
+        another_round = true;
     } else if unfinished {
         tracing::warn!(%kb_id, failed, unanswered, reask, "类别词对齐问了几轮仍没判完，等下一篇文档或本体改动再问");
     }
-    // 两端的类定了，短语的签名才定：短语对齐排在它后面
-    utopia_store::jobs::enqueue_unless_queued(
-        pool,
-        "align_phrases",
-        serde_json::json!({ "kb_id": kb_id }),
-    )
-    .await?;
+    // 两端的类定了，短语的签名才定：短语对齐排在类别词对齐**收尾**之后
+    if !another_round {
+        utopia_store::jobs::enqueue_unless_queued(
+            pool,
+            "align_phrases",
+            serde_json::json!({ "kb_id": kb_id }),
+        )
+        .await?;
+    }
     Ok(())
 }
 

@@ -361,6 +361,25 @@ pub async fn align_phrases_reasking(
     // 对齐是判断题：让模型按端点默认的强度想，不用工作区给抽取设的 minimal
     let client = llm_util::chat_client_thinking(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
+    // 类别词对齐还排着或跑着：两端的类还没定，现在判的签名指纹马上就变，判了也是重判。
+    // 等它收尾再来——排一份半分钟后的，排着的至多一份。别的入口（本体页、审核页、每篇文档
+    // 抽完）排的短语对齐也从这里过，所以这一道守住就够
+    if utopia_store::jobs::pending_for_kb(pool, "align_types", kb_id).await? {
+        tracing::info!(%kb_id, "短语对齐：类别词对齐还没收尾，半分钟后再看");
+        let payload = if reask == 0 {
+            serde_json::json!({ "kb_id": kb_id })
+        } else {
+            serde_json::json!({ "kb_id": kb_id, "reask": reask })
+        };
+        utopia_store::jobs::enqueue_unless_queued_after(
+            pool,
+            "align_phrases",
+            payload,
+            std::time::Duration::from_secs(30),
+        )
+        .await?;
+        return Ok(());
+    }
     // 一个库同时只跑一份，理由同类别词对齐（并行跑会把端点打出 502）
     let mut guard = pool.acquire().await?;
     let locked: bool =

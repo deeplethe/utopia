@@ -223,6 +223,57 @@ fn none() -> Vec<Value> {
     vec![vote(None, None), vote(None, None), nothing_implied()]
 }
 
+/// 类别词对齐还排着时短语对齐不动手：两端的类还没定，判了也是重判。它给自己排一份半分钟
+/// 后的，类别词对齐收尾后照常判
+#[tokio::test]
+async fn phrase_alignment_waits_while_a_kind_word_round_is_pending() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(bound());
+        sqlx::query("INSERT INTO jobs (kind, payload) VALUES ('align_types', $1)")
+            .bind(json!({ "kb_id": f.kb }))
+            .execute(&f.pool)
+            .await?;
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            0,
+            "nothing is asked while kind words are still being decided"
+        );
+        let deferred: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT status, run_at > now() FROM jobs
+             WHERE kind='align_phrases' AND payload->>'kb_id'=$1",
+        )
+        .bind(f.kb.to_string())
+        .fetch_all(&f.pool)
+        .await?;
+        assert_eq!(
+            deferred,
+            vec![("queued".to_string(), true)],
+            "one phrase round is queued for later"
+        );
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            0,
+            "still waiting: the kind-word job is still queued"
+        );
+        f.clear_jobs().await?;
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            2,
+            "the kind-word round gone, the two votes are asked"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
 #[tokio::test]
 async fn a_property_declared_on_an_ancestor_is_offered_with_its_basis_and_bound(
 ) -> anyhow::Result<()> {

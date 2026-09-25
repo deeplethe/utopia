@@ -113,6 +113,20 @@ pub async fn enqueue_unless_queued_after(
     Ok(row.map(|(id,)| id))
 }
 
+/// 这个库有没有这一种任务排着或跑着（按 payload 里的 kb_id 看，不比整份 payload：
+/// 同一种任务的 payload 可能多带一个 reask）
+pub async fn pending_for_kb(pool: &PgPool, kind: &str, kb_id: Uuid) -> AppResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM jobs
+                         WHERE kind = $1 AND status IN ('queued', 'running')
+                           AND payload->>'kb_id' = $2)",
+    )
+    .bind(kind)
+    .bind(kb_id.to_string())
+    .fetch_one(pool)
+    .await?)
+}
+
 pub async fn enqueue(pool: &PgPool, kind: &str, payload: serde_json::Value) -> AppResult<i64> {
     enqueue_with_max_attempts(pool, kind, payload, 3).await
 }

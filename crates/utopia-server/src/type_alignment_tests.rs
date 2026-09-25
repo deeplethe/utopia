@@ -692,6 +692,13 @@ async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyho
     .bind(f.kb.to_string())
     .fetch_all(&f.pool)
     .await?;
+    // 还要再问一轮：短语对齐先不排，两端的类还没定
+    let phrases_queued_early: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind='align_phrases' AND payload->>'kb_id'=$1",
+    )
+    .bind(f.kb.to_string())
+    .fetch_one(&f.pool)
+    .await?;
     sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
         .bind(f.kb.to_string())
         .execute(&f.pool)
@@ -700,6 +707,13 @@ async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyho
     align_types_reasking(&f.state, f.kb, MAX_REASK).await?;
     let after: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM jobs WHERE kind='align_types' AND payload->>'kb_id'=$1",
+    )
+    .bind(f.kb.to_string())
+    .fetch_one(&f.pool)
+    .await?;
+    // 这是最后一轮：短语对齐现在排
+    let phrases_queued_late: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind='align_phrases' AND payload->>'kb_id'=$1",
     )
     .bind(f.kb.to_string())
     .fetch_one(&f.pool)
@@ -714,5 +728,7 @@ async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyho
         "第一轮之后自己排一份 reask=1"
     );
     assert_eq!(after, 0, "排够次数就不再排");
+    assert_eq!(phrases_queued_early, 0, "还要再问时短语对齐不排");
+    assert_eq!(phrases_queued_late, 1, "最后一轮排短语对齐");
     Ok(())
 }
