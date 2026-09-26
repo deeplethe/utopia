@@ -1,7 +1,8 @@
 # 0004 · Language follows the reader of each text
 
 - **Status**: Built · UI strings in `web/src/i18n/`; user-reachable server errors carry a
-  `code` (`AppError::Invalid`, 81 sites; 23 `Validation` guards stay English);
+  `code` (`AppError::Invalid`, 81 sites; 23 `Validation` guards stay English), and so do
+  the chat stream's `error` frames, in the same `{error, code}` body (2026-09-26);
   `description` follows `knowledge_bases.ontology_lang`; LLM output for people takes
   `locale` from the request; extracted data stays verbatim; the UI does not guess the
   browser language yet.
