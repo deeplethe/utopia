@@ -892,6 +892,24 @@ async fn align_phrases_locked(
     // 漏答的签名就只能等下一篇文档来排——最后一篇之后没有下一篇，它们就永远没有结论；
     // 而漏答不写任何行，审核队列也看不见（同类别词对齐）
     let unfinished = failed > 0 || unanswered > 0;
+    // 对齐收尾：没绑上的形状够多，叫本体代理来看（0061 决定 2）。代理自己跳过提过的，
+    // 所以这里只数不筛；一分钟的去抖让连着几篇文档只叫一次
+    if !changed && !unfinished {
+        let unbound = phrase_bindings::bindings(pool, kb_id)
+            .await?
+            .iter()
+            .filter(|b| matches!(b.status.as_str(), "none" | "undecided"))
+            .count();
+        if unbound >= crate::ontology_agent::TRIGGER_UNBOUND {
+            utopia_store::jobs::enqueue_unless_pending(
+                pool,
+                "propose_ontology",
+                serde_json::json!({ "kb_id": kb_id }),
+                std::time::Duration::from_secs(60),
+            )
+            .await?;
+        }
+    }
     if changed {
         utopia_store::jobs::enqueue_unless_queued(
             pool,

@@ -1223,6 +1223,21 @@ export interface RelationTypeView {
   usage: number;
 }
 
+/** 一条能力问题（0061 决定 1）：本体该答得上来的问题，代理提本体时照着看 */
+export interface CompetencyQuestion {
+  id: string;
+  kb_id: string;
+  question: string;
+  expected_answer: string | null;
+  needs: unknown | null;
+  origin: "person" | "agent";
+  status: "accepted" | "proposed" | "rejected" | "retired";
+  created_at: string;
+  updated_at: string;
+  last_checked_at: string | null;
+  last_result: unknown | null;
+}
+
 export interface OntologyMiss {
   kind: "entity_type" | "relation_type";
   key: string;
@@ -1264,14 +1279,38 @@ export interface UniquenessCandidate {
 /** `description` 与 `reason` 不是一回事：description 逐字进抽取提示词，是模型判断
     "什么算这个类"的唯一依据；reason 只是给人看的"为什么该加"。喂错了这个类会成为
     下一个倾倒场——实测 technology 就是这么来的。 */
+/** 代理提的一条多带的几格（0061）：谁提的、服务哪些问题、会绑上哪些形状。
+    Suggest 的一份没有这些，渲染照旧 */
+export interface AgentProposalFields {
+  proposed_by?: "suggest" | "agent";
+  /** 服务的能力问题 id */
+  serves?: string[];
+  /** 会归到这个类下的类别词 */
+  kind_words?: string[];
+  /** 原文里的几句，给人核对定义用 */
+  examples?: string[];
+  domains?: string[];
+  ranges?: string[];
+  parents?: string[];
+  signatures?: {
+    phrases?: {
+      phrase: string;
+      subject: string | null;
+      object: string | null;
+      value: boolean;
+    }[];
+    kind_words?: string[];
+  };
+}
+
 export interface OntologyProposals {
-  entity_types: {
+  entity_types: (AgentProposalFields & {
     key: string;
     label: string;
     description?: string;
     reason?: string;
-  }[];
-  relation_types: {
+  })[];
+  relation_types: (AgentProposalFields & {
     key: string;
     label: string;
     temporal?: string;
@@ -1280,7 +1319,7 @@ export interface OntologyProposals {
     reason?: string;
     /** 这条关系归并了哪些表层说法。有它才谈得上把等待的事实改写过去 */
     forms?: string[];
-  }[];
+  })[];
   /**
    * 宾语是字面值的说法（"成立日期 = 2015"）。
    *
@@ -1288,7 +1327,7 @@ export interface OntologyProposals {
    * 而把它当关系建出来，那个值就会变成一个假实体。domain 不在这里——
    * 服务端从事实的主语类型里取，猜错会让整条被丢弃
    */
-  attribute_types?: {
+  attribute_types?: (AgentProposalFields & {
     key: string;
     label: string;
     datatype?: string;
@@ -1296,7 +1335,7 @@ export interface OntologyProposals {
     description?: string;
     reason?: string;
     forms?: string[];
-  }[];
+  })[];
   /**
    * 本体里**已经有**这个意思，只需把说法挂过去。
    *
@@ -2159,10 +2198,64 @@ export const api = {
     section: string,
     key: string,
     status: "adopted" | "rejected",
+    /** 拒绝的理由（0061）：下一轮代理读得到 */
+    reason?: string,
   ) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/proposals`, {
       method: "POST",
-      body: JSON.stringify({ section, key, status }),
+      body: JSON.stringify({ section, key, status, reason }),
+    }),
+  /** 叫本体代理来看一眼（0061 决定 2）：排一份任务，结果落在 storedProposals */
+  proposeOntology: (kbId: string) =>
+    request<{ queued: boolean }>(`/api/v1/kbs/${kbId}/ontology/propose`, {
+      method: "POST",
+      body: "{}",
+    }),
+  /** 采纳代理的一条提案（0061 决定 3）：服务端建元素、标记、排对齐 */
+  adoptProposal: (
+    kbId: string,
+    section: string,
+    key: string,
+    edits?: {
+      label?: string;
+      description?: string;
+      datatype?: string;
+      domains?: string[];
+      ranges?: string[];
+      parents?: string[];
+    },
+  ) =>
+    request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/proposals/adopt`, {
+      method: "POST",
+      body: JSON.stringify({ section, key, ...(edits ?? {}) }),
+    }),
+  /** 能力问题（0061 决定 1） */
+  listQuestions: (kbId: string) =>
+    request<CompetencyQuestion[]>(`/api/v1/kbs/${kbId}/questions`),
+  createQuestion: (
+    kbId: string,
+    body: { question: string; expected_answer?: string },
+  ) =>
+    request<{ id: string }>(`/api/v1/kbs/${kbId}/questions`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  updateQuestion: (
+    kbId: string,
+    qid: string,
+    body: {
+      question?: string;
+      expected_answer?: string;
+      status?: "accepted" | "rejected" | "retired";
+    },
+  ) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/questions/${qid}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+  deleteQuestion: (kbId: string, qid: string) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/questions/${qid}`, {
+      method: "DELETE",
     }),
   dismissMiss: (kbId: string, kind: string, key: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/dismiss`, {

@@ -1,0 +1,51 @@
+# 0061 · The ontology is proposed from the open graph and judged by its questions
+
+- **Status**: Accepted 2026-09-26 · 0044 cut 5 · cut 1 built (#947, migration 0077): competency questions are rows, the agent proposes from unbound signatures and kind words into `ontology_proposals`, adoption writes the element and re-decides its shapes through alignment · cuts 2–4 open · the ontology agent reads the open graph's unbound signatures and kind words against the base's competency questions and proposes types, properties and rules with definitions, examples and the signatures they would bind; approval writes the ontology and re-decides those signatures; every approved element carries regression cases; the ontology is measured by the questions it answers
+- **Written**: 2026-09-26 (conventions in the [README](README.md))
+- **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) §4 decided the workbench and named this cut; [0003](0003-ontology-growth-loop.md) grew the ontology from `ontology_misses` and surface predicates, which [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) cut 1 left idle and #725 retires; [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) makes every element a contract a person signed, which this record keeps; [0053](0053-a-phrase-decision-records-the-inputs-it-considered.md) is what makes approval re-decide signatures without a new mechanism; [0008](0008-ontology-packs-as-cold-start.md) is the second of the three sources; [0043](0043-every-review-queue-is-governed.md) and #725 give the queue its shape. From #725's "Ontology proposals" row and 0044's open question about a base with no questions.
+
+> A base has 1,178 phrase signatures the aligner decided bind to nothing and 500 kind words with no class. Each of those is a thing the documents say and the ontology cannot hold. Today they sit as rows: the workbench's `Suggest` reads `ontology_misses` and surface predicates from the extractor that no longer runs, and its proposals carry a label and a reason but not the statements they would type, not a definition the aligner could use, and no notion of whether anyone needs them. Nothing says what the ontology is *for*, so nothing can say whether a proposal is worth approving, and an approved property changes the typed graph only if someone remembers to run alignment again.
+
+## What exists
+
+The open graph holds statements with their phrases, quotes, kind words and names [0044 cut 1]. Alignment decides each signature (phrase, subject class, object class, value or not) once, against the properties whose declared structure fits, with a fingerprint of what it considered [0053]; `phrase_bindings` keeps `none` and `undecided` with `statement_count` and `examples`, `type_bindings` keeps kind words with no class. `ontology_proposals` stores the growth loop's four sections (`entity_types`, `relation_types`, `attribute_types`, `map_to`) as JSON with `open / adopted / rejected`; `decide_proposal` flips the status and the adopted element is created by the old path. Definitions live on `entity_types.description` and `relation_types.description`; alignment shows them to the model. Nothing records what a base is meant to answer.
+
+## Decisions
+
+**1. A competency question is a row of the base, and the ontology is judged by it.** `competency_questions` holds a question in the person's words, optionally the expected answer or the shape it needs (the classes and properties an answer must traverse), who wrote it, and the last time it was checked and how it went. Questions are the standard 0044 §4 named: an ontology element earns its place by helping answer one. A base with no questions is not blocked: the agent proposes questions from what the open graph says most (the most frequent signatures and kind words, the most connected entities), marked `proposed` until a person accepts, edits or rejects them. This answers 0044's open question; it does not let the agent decide what the base is for.
+
+**2. The ontology agent proposes from the open graph, against the questions.** Its inputs are the signatures decided `none` or `undecided` with their statement counts and example quotes, the kind words with no class, the current ontology, and the accepted questions. It proposes object types, link types, properties and implication rules, and every proposal carries a definition written for the aligner, the example statements that motivated it, the signatures it would bind, and the questions it serves. Proposals land in `ontology_proposals`, one row per element key, refreshed rather than duplicated. The job runs on demand from the workbench and after alignment settles when unbound signatures have accumulated past a threshold; it never writes the ontology. It replaces the 0003 `Suggest` that read `ontology_misses`, whose own comment records that 86.7% of what it showed the model was single-document noise.
+
+**3. Approval is an action that writes the ontology and re-decides the signatures.** Adopting a proposal creates or edits the element with its definition, domains and ranges: structure is part of approval [0044 §4], so a property arrives with the classes it joins, not as a bare label. The signatures the proposal named are then re-decided by alignment with no new mechanism: their basis changed, which is exactly what 0053 made re-decision mean. Edit-and-approve is the same path with the person's text. A signature a person decided stays as the person left it. Rejecting records the reason so the agent does not propose the same element again for the same signatures.
+
+**4. Every approved element carries regression cases.** The example statements that motivated a proposal become `ontology_regression_cases` on adoption: a statement and the property or class it is expected to bind to. A later edit to the element's definition, domains or ranges reruns alignment on exactly those signatures and records which cases still bind. A failing case is shown on the workbench beside the edit; it is not reverted for the person, because a definition may be tightened on purpose. A person can add a case from any statement ("this should bind here"), which is the "make a rule" action #725 names.
+
+**5. Two numbers measure the ontology.** Questions answered correctly: each accepted question is asked over the typed graph the way a person would ask it in chat, and the answer is judged against the expected answer where one is written, or against whether the shape it needs exists and holds facts. Proposals people change: the share of the agent's proposals rejected or edited before adoption. Both are reported per base and by the bench 0044's table names, FDA and statistics corpora with written questions.
+
+**6. Not in this record.** No automatic adoption: the ontology is a contract a person signed [0012], and the agent's confidence does not change that. No edits to imported IRIs [0001]. No change to how questions are answered: the chat and its tools stay as they are; this record gives them a standard, not a new engine. Retiring the old machinery (`ontology_misses`, adoption from `proposed_predicate`, the type-resolution path) is #725's list and follows once the agent produces; the old `Suggest` stays reachable until then.
+
+## What it costs
+
+- **Model calls per proposal round** are bounded by unbound signatures, batched like alignment (twelve a call with the glossary once per batch, 0044 decision 3's cost lesson) plus one call per batch of question proposals. A round on a 100-document Re-DocRED base is about a hundred calls; the number is measured with the cut.
+- **Alignment reruns on adoption**, bounded to the signatures the proposal named, so the typed graph moves within a minute of a decision rather than at the next full round.
+- **Two tables and a queue**: `competency_questions`, `ontology_regression_cases`, and the workbench's proposals list becomes #725's "Ontology proposals" queue with approve, edit-and-approve, reject, defer.
+- **Definitions become load-bearing.** The aligner reads them; a proposal's definition is written for it, and an edit is checked against regression cases. That is the cost of making definitions matter, and the reason regression cases exist.
+
+## Dead ends
+
+- **Proposing from `ontology_misses` and surface predicates.** No statements behind them, no signatures, no counts that mean anything after the extractor changed; the 0003 loop measured 86.7% noise on its own input and never knew whether a proposal was needed.
+- **Letting the agent adopt above a confidence.** An ontology element is a contract every later alignment reads; a wrong one types facts wrongly across the base until someone notices. 0012 was written after exactly that.
+- **Judging the ontology by coverage** (share of signatures bound). Coverage rewards binding everything; the questions reward binding what the base is for. A signature that no question needs may rightly stay open.
+
+## Cuts
+
+1. `competency_questions` with its API and workbench list; the agent job proposing types, properties and rules with definition, examples, signatures and questions; `ontology_proposals` payload extended; adoption writes the element with its structure and re-decides the named signatures; rejection with a reason.
+2. Regression cases: written on adoption, rerun on edit, shown on the workbench; "make a case" from a statement.
+3. Questions for a base that has none, proposed by the agent; the competency bench (`scripts/bench/competency.mjs`) on the FDA and statistics corpora with written questions, reporting the two numbers of decision 5.
+4. Retire the 0003 `Suggest` path, `ontology_misses` and adoption from `proposed_predicate` per #725, once the agent has replaced them on a real base.
+
+## Open questions
+
+- What "answered correctly" means for a question with no expected answer written: the shape check is weaker than a judged answer, and a question that the open graph alone can answer does not need the ontology at all.
+- Proposals against an imported pack: a proposed property that a pack already has under another name should become a `map_to`, and the agent needs the pack's definitions to see it.
+- Whether a rejected proposal's reason should suppress the element for a time or until the signatures behind it change.

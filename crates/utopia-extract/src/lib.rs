@@ -13,6 +13,7 @@ pub mod align;
 pub mod errata;
 pub mod governor;
 pub mod implication;
+pub mod ontology_agent;
 pub mod open;
 pub mod phrase_align;
 pub mod time;
