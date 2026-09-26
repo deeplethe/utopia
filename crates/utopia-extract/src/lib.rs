@@ -335,10 +335,62 @@ pub fn build_adjudication_messages(pairs: &[AdjudicationPair]) -> Vec<ChatMessag
 }
 
 pub fn parse_adjudication(raw: &str) -> anyhow::Result<Vec<AdjudicationVerdict>> {
+    parse_adjudication_repairing(raw).map(|(verdicts, _)| verdicts)
+}
+
+/// 同 `parse_adjudication`，另回一个「修补过没有」。
+///
+/// 模型在引号里的理由中间直接换行——JSON 不许字符串里出现裸控制字符，serde
+/// 会报 `control character (\u0000-\u001F) found while parsing a string`。一批
+/// 几十对的裁决为一个换行整批作废、重试三次同样的回复再整批作废，队里的对
+/// 就一直挂着（Re-DocRED 一百篇上挂了 2903 条）。先按原样解；解不开就把字符串
+/// 字面量里的控制字符转义成 `\n`、`\t`、`\u00XX` 再解一次。字符串外的
+/// 换行本来就是合法空白，不动。修补与否只改 bool，裁决本身一样：形状好的回复
+/// 走第一条路，与从前没有分别。调用方拿到 true 就记一条 WARN 说明是哪一批
+pub fn parse_adjudication_repairing(raw: &str) -> anyhow::Result<(Vec<AdjudicationVerdict>, bool)> {
     let json_str = json_block(raw)?;
-    let reply: AdjudicationReply = serde_json::from_str(&json_str)
-        .map_err(|e| anyhow::anyhow!("Failed to parse adjudication JSON: {e}"))?;
-    Ok(reply.verdicts)
+    match serde_json::from_str::<AdjudicationReply>(&json_str) {
+        Ok(reply) => Ok((reply.verdicts, false)),
+        Err(first) => {
+            let escaped = escape_control_in_strings(&json_str);
+            if escaped == json_str {
+                anyhow::bail!("Failed to parse adjudication JSON: {first}");
+            }
+            let reply: AdjudicationReply = serde_json::from_str(&escaped)
+                .map_err(|e| anyhow::anyhow!("Failed to parse adjudication JSON: {e}"))?;
+            Ok((reply.verdicts, true))
+        }
+    }
+}
+
+/// 把字符串字面量里的裸控制字符（U+0000–U+001F）写成 JSON 转义；字面量外的原样。
+/// 引号与反斜杠的跟踪同 `close_brackets`：`\"` 不结束字符串
+pub(crate) fn escape_control_in_strings(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let (mut in_str, mut esc) = (false, false);
+    for c in text.chars() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            } else if c.is_control() && (c as u32) < 0x20 {
+                match c {
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    other => out.push_str(&format!("\\u{:04x}", other as u32)),
+                }
+                continue;
+            }
+        } else if c == '"' {
+            in_str = true;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// 一个**整体就是一个量**的字符串 → (数值, 单位)。
@@ -1138,6 +1190,57 @@ mod tests {
         assert_eq!(v.len(), 2);
         assert_eq!(v[0].verdict, "same");
         assert_eq!(v[1].confidence, None);
+    }
+
+    /// 形状好的回复不算修补过，裁决与 `parse_adjudication` 一字不差
+    #[test]
+    fn a_well_formed_reply_is_not_repaired() {
+        let raw = "{\"verdicts\":[{\"i\":0,\"verdict\":\"same\",\"confidence\":0.92,\"why\":\"one line\"}]}";
+        let (v, repaired) = parse_adjudication_repairing(raw).unwrap();
+        assert!(!repaired);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].why.as_deref(), Some("one line"));
+        assert_eq!(v[0].confidence, Some(0.92));
+        let plain = parse_adjudication(raw).unwrap();
+        assert_eq!(plain.len(), 1);
+        assert_eq!(plain[0].why, v[0].why);
+    }
+
+    /// 模型在引号里的理由中间直接换行（gemini-3.5-flash 经网关就这么写）：
+    /// serde 报 control character；修补后整批照读，换行留在理由里，标记修补过
+    #[test]
+    fn a_raw_newline_inside_a_reason_string_is_repaired() {
+        let raw = "```json\n{\"verdicts\":[\n  {\"i\":0,\"verdict\":\"different\",\"confidence\":0.9,\n   \"reason\":\"Rule 2: a version is not the series.\nRecord A is Claude 3, Record B is the family.\",\n   \"why\":\"a version\nis not the series\"},\n  {\"i\":1,\"verdict\":\"same\",\"confidence\":0.8,\"why\":\"tab\there\"}\n]}\n```";
+        assert!(parse_adjudication_repairing(
+            "{\"verdicts\":[{\"i\":0,\"verdict\":\"same\",\"why\":\"a\""
+        )
+        .is_err());
+        let (v, repaired) = parse_adjudication_repairing(raw).unwrap();
+        assert!(repaired);
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].verdict, "different");
+        assert_eq!(v[0].why.as_deref(), Some("a version\nis not the series"));
+        assert_eq!(v[1].why.as_deref(), Some("tab\there"));
+        // 直接走 `parse_adjudication` 也一样读得出来
+        assert_eq!(parse_adjudication(raw).unwrap().len(), 2);
+    }
+
+    /// 转义只碰字符串里的：引号外的换行是合法空白；`\"` 不结束字符串；已转义的 `\\n` 不动
+    #[test]
+    fn only_control_characters_inside_strings_are_escaped() {
+        let text =
+            "{\n  \"a\": \"x\ny\",\n  \"b\": \"q\\\"\nz\",\n  \"c\": \"already\\nescaped\"\n}";
+        let fixed = escape_control_in_strings(text);
+        assert_eq!(
+            fixed,
+            "{\n  \"a\": \"x\\ny\",\n  \"b\": \"q\\\"\\nz\",\n  \"c\": \"already\\nescaped\"\n}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&fixed).unwrap();
+        assert_eq!(v["a"], "x\ny");
+        assert_eq!(v["b"], "q\"\nz");
+        assert_eq!(v["c"], "already\nescaped");
+        let clean = "{\"a\": \"fine\"}";
+        assert_eq!(escape_control_in_strings(clean), clean);
     }
 
     #[test]

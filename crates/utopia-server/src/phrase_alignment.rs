@@ -363,9 +363,20 @@ pub async fn align_phrases_reasking(
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
     // 类别词对齐还排着或跑着：两端的类还没定，现在判的签名指纹马上就变，判了也是重判。
     // 等它收尾再来——排一份半分钟后的，排着的至多一份。别的入口（本体页、审核页、每篇文档
-    // 抽完）排的短语对齐也从这里过，所以这一道守住就够
-    if utopia_store::jobs::pending_for_kb(pool, "align_types", kb_id).await? {
-        tracing::info!(%kb_id, "短语对齐：类别词对齐还没收尾，半分钟后再看");
+    // 抽完）排的短语对齐也从这里过，所以这一道守住就够。
+    //
+    // 本体向量还在补也等：编辑器建了属性先排 `embed_ontology` 再排这个任务，没向量的属性
+    // 进不了短名单，形状的指纹不变，现在判了它照样不在候选里（`bordered_by` 第一次真跑
+    // 就是这么漏的）。补齐任务几秒到几分钟，等得起
+    let waiting_on = if utopia_store::jobs::pending_for_kb(pool, "align_types", kb_id).await? {
+        Some("类别词对齐")
+    } else if utopia_store::jobs::pending_for_kb(pool, "embed_ontology", kb_id).await? {
+        Some("本体向量补齐")
+    } else {
+        None
+    };
+    if let Some(what) = waiting_on {
+        tracing::info!(%kb_id, "短语对齐：{what}还没收尾，半分钟后再看");
         let payload = if reask == 0 {
             serde_json::json!({ "kb_id": kb_id })
         } else {

@@ -318,7 +318,17 @@ async fn batch_looks(ctx: &Ctx<'_>, c: &Cluster) -> anyhow::Result<Vec<(usize, L
         let _permit = permit(ctx).await;
         ctx.client.chat(&messages).await?
     };
-    let verdicts = utopia_extract::parse_adjudication(&reply)?;
+    let (verdicts, repaired) = utopia_extract::parse_adjudication_repairing(&reply)?;
+    if repaired {
+        // 模型在引号里的理由中间直接换行：修补后照读，但记下是哪一簇（#894/#895 同款）
+        tracing::warn!(
+            kb_id = %ctx.kb_id,
+            run_id = %ctx.run_id,
+            pairs = batch.len(),
+            first_pair = %crate::adjudication::batch_name(&batch),
+            "裁决回复的字符串里有裸控制字符，转义后才解开"
+        );
+    }
     let by_i: HashMap<usize, &utopia_extract::AdjudicationVerdict> =
         verdicts.iter().map(|v| (v.i, v)).collect();
     Ok(asked

@@ -95,6 +95,43 @@ pub struct EntityTypeReq {
     pub description: Option<String>,
 }
 
+/// 编辑器改了本体之后：先补向量索引，再排对齐。
+///
+/// **新元素要有向量，对齐的短名单才看得见它。** 候选多于短名单长度时按向量挑
+/// （`phrase_alignment::shortlist`），类别词的候选类也按向量检索
+/// （`type_alignment::candidates_for`）；没向量的元素永远进不了名单，形状的指纹就不变，
+/// 建了也不重判——第一次真跑 `bordered_by` 就是这样（0061 cut 1.1 的采纳路径已经补了，
+/// 这里是编辑器的四个入口）。描述改了也算：向量按「当时嵌的原文」判陈，改了描述的行
+/// 会被同一个任务重嵌。
+///
+/// **排任务，不就地跑。** 就地嵌一次要付一趟嵌入请求的固定开销，本体页一口气建 28 条
+/// 属性就是 28 趟；排任务的话一批编辑只嵌一次。挡的只是排着的（`enqueue_unless_queued_after`），
+/// 不挡在跑的：在跑的那份已经读完待嵌集合，这条编辑它看不见，得再排一份。
+/// 去抖比对齐短，对齐任务开跑前还会看一眼这个任务有没有排着或跑着，排着就等
+/// （见 `align_phrases_reasking` / `align_types_reasking`）。
+async fn reindex_then_align(
+    state: &AppState,
+    kb_id: Uuid,
+    align_kind: &str,
+) -> Result<(), AppError> {
+    utopia_store::jobs::enqueue_unless_queued_after(
+        &state.pool,
+        "embed_ontology",
+        json!({ "kb_id": kb_id }),
+        std::time::Duration::from_secs(2),
+    )
+    .await?;
+    utopia_store::jobs::enqueue_unless_pending(
+        &state.pool,
+        align_kind,
+        json!({ "kb_id": kb_id }),
+        // 去抖：一批编辑（导一个包、建一串属性）只排一次
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn create_entity_type(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -138,15 +175,9 @@ pub async fn create_entity_type(
         json!({ "key": key, "label": req.label.trim() }),
     )
     .await;
-    // 本体多了一个类：类别词的绑定里那些「没有」和「没定」的要重判（0044 对齐第一片）
-    let _ = utopia_store::jobs::enqueue_unless_pending(
-        &state.pool,
-        "align_types",
-        json!({ "kb_id": kb_id }),
-        // 去抖：一批编辑（导一个包、建一串属性）只排一次
-        std::time::Duration::from_secs(5),
-    )
-    .await;
+    // 本体多了一个类：类别词的绑定里那些「没有」和「没定」的要重判（0044 对齐第一片）。
+    // 先补它的向量，候选类的检索才找得到它
+    let _ = reindex_then_align(&state, kb_id, "align_types").await;
     Ok(Json(json!({ "id": id })))
 }
 
@@ -185,15 +216,8 @@ pub async fn update_entity_type(
                 "description": req.description }),
     )
     .await;
-    // 类的定义改了：绑到它的类别词过期，重判
-    let _ = utopia_store::jobs::enqueue_unless_pending(
-        &state.pool,
-        "align_types",
-        json!({ "kb_id": kb_id }),
-        // 去抖：一批编辑（导一个包、建一串属性）只排一次
-        std::time::Duration::from_secs(5),
-    )
-    .await;
+    // 类的定义改了：绑到它的类别词过期，重判。标签或描述改了向量也陈了，先重嵌
+    let _ = reindex_then_align(&state, kb_id, "align_types").await;
     // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
     state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
@@ -331,15 +355,9 @@ pub async fn create_relation_type(
     if let Some(q) = req.qualifiers.as_deref() {
         utopia_store::ontology::set_relation_qualifiers(&state.pool, kb_id, id, q).await?;
     }
-    // 多了一个属性：判成 none / undecided 的签名也许对得上了（0044 对齐第二片）
-    utopia_store::jobs::enqueue_unless_pending(
-        &state.pool,
-        "align_phrases",
-        serde_json::json!({ "kb_id": kb_id }),
-        // 去抖：一批编辑（导一个包、建一串属性）只排一次
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
+    // 多了一个属性：判成 none / undecided 的签名也许对得上了（0044 对齐第二片）。
+    // 先补它的向量，短名单才看得见它
+    reindex_then_align(&state, kb_id, "align_phrases").await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -378,15 +396,9 @@ pub async fn update_relation_type(
     if let Some(q) = req.qualifiers.as_deref() {
         utopia_store::ontology::set_relation_qualifiers(&state.pool, kb_id, id, q).await?;
     }
-    // 属性改了定义或域/值域：绑到它的签名过期，判成 none 的也许对得上了
-    utopia_store::jobs::enqueue_unless_pending(
-        &state.pool,
-        "align_phrases",
-        serde_json::json!({ "kb_id": kb_id }),
-        // 去抖：一批编辑（导一个包、建一串属性）只排一次
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
+    // 属性改了定义或域/值域：绑到它的签名过期，判成 none 的也许对得上了。
+    // 标签或描述改了向量也陈了，先重嵌（只改域/值域的话补齐任务一查就退）
+    reindex_then_align(&state, kb_id, "align_phrases").await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),

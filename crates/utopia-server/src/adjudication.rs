@@ -147,6 +147,14 @@ async fn record_look(
 static PER_KB: LazyLock<Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>> =
     LazyLock::new(Default::default);
 
+/// 一批的名字：第一对的两个名字。日志里认得出是哪一批就够了，整批的名字太长
+pub(crate) fn batch_name(pairs: &[utopia_extract::AdjudicationPair]) -> String {
+    match pairs.first() {
+        Some(p) => format!("{} / {}", p.left.name, p.right.name),
+        None => "(empty)".into(),
+    }
+}
+
 fn lock_for(kb_id: Uuid) -> Arc<tokio::sync::Mutex<()>> {
     PER_KB
         .lock()
@@ -244,7 +252,16 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
             None => None,
         };
         let reply = client.chat(&messages).await?;
-        let verdicts = utopia_extract::parse_adjudication(&reply)?;
+        let (verdicts, repaired) = utopia_extract::parse_adjudication_repairing(&reply)?;
+        if repaired {
+            // 模型在引号里的理由中间直接换行：修补后照读，但记下是哪一批（#894/#895 同款）
+            tracing::warn!(
+                %kb_id,
+                pairs = pairs.len(),
+                first_pair = %batch_name(&pairs),
+                "裁决回复的字符串里有裸控制字符，转义后才解开"
+            );
+        }
         let by_i: HashMap<usize, &utopia_extract::AdjudicationVerdict> =
             verdicts.iter().map(|v| (v.i, v)).collect();
 
