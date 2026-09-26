@@ -1238,6 +1238,20 @@ export interface CompetencyQuestion {
   last_result: unknown | null;
 }
 
+/** 本体的两个数（0061 决定 5） */
+export interface QuestionReport {
+  questions: { accepted: number; proposed: number; checked: number; answered: number };
+  proposals: {
+    open: number;
+    adopted: number;
+    adopted_edited: number;
+    rejected: number;
+    decided: number;
+    changed: number;
+    changed_share: number | null;
+  };
+}
+
 export interface OntologyMiss {
   kind: "entity_type" | "relation_type";
   key: string;
@@ -2261,6 +2275,15 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/questions/${qid}`, {
       method: "DELETE",
     }),
+  /** 让代理给库提问题（0061 决定 1）：排任务，结果是 proposed 的问题 */
+  proposeQuestions: (kbId: string) =>
+    request<{ queued: boolean }>(`/api/v1/kbs/${kbId}/questions/propose`, {
+      method: "POST",
+      body: "{}",
+    }),
+  /** 两个数（0061 决定 5） */
+  questionReport: (kbId: string) =>
+    request<QuestionReport>(`/api/v1/kbs/${kbId}/questions/report`),
   dismissMiss: (kbId: string, kind: string, key: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/dismiss`, {
       method: "POST",

@@ -16,6 +16,7 @@ pub mod implication;
 pub mod ontology_agent;
 pub mod open;
 pub mod phrase_align;
+pub mod question_agent;
 pub mod time;
 
 /// Response-scoped reference to a persistent entity; database UUIDs must never enter prompts.

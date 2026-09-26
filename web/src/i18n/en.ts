@@ -1693,6 +1693,21 @@ export const en = {
     deleteQuestion: "Delete",
     questionAdded: "Question added",
     questionRetired: "Question retired",
+    askQuestions: "Ask the agent for questions",
+    askQuestionsHint:
+      "Proposes questions from what the documents say most. They wait here until you accept them.",
+    questionsQueued: "The agent is writing questions — they appear here when it is done.",
+    acceptQuestion: "Accept",
+    questionAnswered: "answered",
+    questionUnanswered: "not answered",
+    questionsScore: (answered: number, checked: number) =>
+      `${answered} of ${checked} answered`,
+    questionsScoreHint:
+      "Accepted questions the competency bench asked over the graph, and how many it answered.",
+    proposalsChanged: (changed: number, decided: number) =>
+      `${changed} of ${decided} proposals changed`,
+    proposalsChangedHint:
+      "Of the agent's proposals people decided on, how many were rejected or edited before adoption.",
     /* ---- Schema diagram ---- */
     schemaDiagram: "Schema diagram",
     /* 从前这句把「先加个类或导入 OWL 文件」说成了开始的前提，而本体本来就

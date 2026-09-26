@@ -1486,6 +1486,18 @@ export const zh: Strings = {
     deleteQuestion: "删除",
     questionAdded: "已添加问题",
     questionRetired: "问题已退役",
+    askQuestions: "请代理提问题",
+    askQuestionsHint: "从文档说得最多的东西里提问题，等你接受了才算数。",
+    questionsQueued: "代理在写问题——写完了会出现在这里。",
+    acceptQuestion: "接受",
+    questionAnswered: "答上了",
+    questionUnanswered: "没答上",
+    questionsScore: (answered: number, checked: number) =>
+      `${checked} 条问过，${answered} 条答上`,
+    questionsScoreHint: "competency bench 对图谱问过的已接受问题，答上了几条。",
+    proposalsChanged: (changed: number, decided: number) =>
+      `${decided} 条提案表过态，${changed} 条被改或被拒`,
+    proposalsChangedHint: "代理的提案里人表过态的，有几条被拒或改过再采纳。",
     /* ---- 模式图 ---- */
     schemaDiagram: "模式图",
     schemaEmpty: "还没有类。文档进来时会自动补上。",

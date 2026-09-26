@@ -226,6 +226,25 @@ node scripts/bench/ask.mjs --kb <id> --recall 8       # 只量检索：那条对
 `lib.mjs` 是两个测量台共用的地基——**判等必须是同一份**，各写一份 `same()`
 迟早漂移，而一旦漂移，「提议对了几条」与「答案对了几条」就不是同一把尺子量出来的。
 
+## 本体的两个数（0061 决定 5）
+
+`competency.mjs` 把一个库**接受了的**能力问题按人在 chat 里问的方式问一遍（走 `/kbs/{id}/chat`，
+不另造引擎），判答没答上，把结果写回问题（`last_result`），再读服务端算的两个数：
+
+```
+BENCH_BASE=http://127.0.0.1:1524 BENCH_PSQL="docker exec ... -d utopia_bench4 -tAc" \
+BENCH_JUDGE_BASE=... BENCH_JUDGE_KEY=... BENCH_JUDGE_MODEL=... \
+node scripts/bench/competency.mjs --kb <kb-id> --seed scripts/bench/truth/redocred-typed.questions.json
+```
+
+- 有期望答案的问题交给裁判模型判"回答里说了期望答案没有"；没有的只查它需要的形状
+  （`needs` 里的类与属性）是否都在、属性是否有类型化事实。后者弱得多——一条开放图谱就能答的问题
+  不需要本体，这是 0061 的开放问题。
+- 第二个数从 `ontology_proposals` 算：代理提的里人表过态的，有几条被拒或改过再采纳。
+- `--seed` 把写好的问题灌进库（同一句跳过），`--only-report` 只读数不问。
+- `truth/redocred-typed.questions.json` 是给 `typed.mjs` 那份 100 篇 Re-DocRED 库写的十一条：十条有期望答案
+  （其中两条要代理采纳过的 `bordered_by`、`p40` 才答得上），一条只有形状。换一个库要另写。
+
 ## 读数怎么算
 
 - `prompt_tokens_est` 是**本体段**的估算，不是整个提示词。实测 4.0 字符 ≈ 1 token

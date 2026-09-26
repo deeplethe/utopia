@@ -170,3 +170,56 @@ pub async fn delete(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<()> {
     }
     Ok(())
 }
+
+/// 一条问题问过了：什么时候、答成了什么（0061 决定 5）。`result` 至少带 `answered: bool`
+pub async fn record_result(
+    pool: &PgPool,
+    kb_id: Uuid,
+    id: Uuid,
+    result: &serde_json::Value,
+) -> AppResult<bool> {
+    let res = sqlx::query(
+        "UPDATE competency_questions SET last_checked_at = now(), last_result = $3
+          WHERE kb_id = $1 AND id = $2",
+    )
+    .bind(kb_id)
+    .bind(id)
+    .bind(result)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// 同一句话（不分大小写、去首尾空白）已经在库里了吗——代理提问题不重复人的
+pub async fn exists_text(pool: &PgPool, kb_id: Uuid, question: &str) -> AppResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM competency_questions
+                         WHERE kb_id = $1 AND lower(btrim(question)) = lower(btrim($2)))",
+    )
+    .bind(kb_id)
+    .bind(question)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// 两个数里的第一个：接受了的问题里，问过的、答对的各几条
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct QuestionReport {
+    pub accepted: i64,
+    pub proposed: i64,
+    pub checked: i64,
+    pub answered: i64,
+}
+
+pub async fn report(pool: &PgPool, kb_id: Uuid) -> AppResult<QuestionReport> {
+    Ok(sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE status = 'accepted') AS accepted,
+                count(*) FILTER (WHERE status = 'proposed') AS proposed,
+                count(*) FILTER (WHERE status = 'accepted' AND last_checked_at IS NOT NULL) AS checked,
+                count(*) FILTER (WHERE status = 'accepted' AND (last_result->>'answered')::boolean) AS answered
+           FROM competency_questions WHERE kb_id = $1",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?)
+}

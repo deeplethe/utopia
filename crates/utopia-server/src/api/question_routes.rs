@@ -128,6 +128,82 @@ pub async fn delete(
     Ok(Json(json!({ "ok": true })))
 }
 
+/// 让代理给这个库提问题：排一份任务。结果是 status = proposed 的问题，人接受了才算
+pub async fn propose_questions(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Editor).await?;
+    let queued = utopia_store::jobs::enqueue_unless_queued(
+        &state.pool,
+        "propose_questions",
+        json!({ "kb_id": kb_id }),
+    )
+    .await?;
+    Ok(Json(json!({ "queued": queued.is_some() })))
+}
+
+#[derive(Deserialize)]
+pub struct QuestionResultReq {
+    pub answered: bool,
+    /// 拿到的回答（截断存）
+    #[serde(default)]
+    pub answer: Option<String>,
+    /// expected | shape：按期望答案判的，还是只查了它需要的形状
+    #[serde(default)]
+    pub judged_by: Option<String>,
+    #[serde(default)]
+    pub detail: Option<serde_json::Value>,
+}
+
+/// 一条问题问过了（决定 5）。问的是 competency bench，它按人在 chat 里问的方式问；
+/// 服务端只记结果，不自己问——chat 还没有一个进程内的入口
+pub async fn record_result(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, qid)): Path<(Uuid, Uuid)>,
+    Json(req): Json<QuestionResultReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Editor).await?;
+    let answer: Option<String> = req.answer.map(|a| a.chars().take(4000).collect());
+    let result = json!({
+        "answered": req.answered,
+        "answer": answer,
+        "judged_by": req.judged_by.unwrap_or_else(|| "expected".into()),
+        "detail": req.detail,
+    });
+    if !questions::record_result(&state.pool, kb_id, qid, &result).await? {
+        return Err(AppError::NotFound.into());
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// 两个数（决定 5）：问题答对了几条；代理的提案人改过或拒掉的占几成
+pub async fn report(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
+    let q = questions::report(&state.pool, kb_id).await?;
+    let p = utopia_store::ontology::agent_proposal_report(&state.pool, kb_id).await?;
+    let decided = p.adopted + p.rejected;
+    let changed = p.adopted_edited + p.rejected;
+    Ok(Json(json!({
+        "questions": q,
+        "proposals": {
+            "open": p.open,
+            "adopted": p.adopted,
+            "adopted_edited": p.adopted_edited,
+            "rejected": p.rejected,
+            "decided": decided,
+            "changed": changed,
+            "changed_share": if decided > 0 { Some(changed as f64 / decided as f64) } else { None },
+        }
+    })))
+}
+
 /// 叫代理来看一眼：排一份任务，马上回。结果落在 `ontology_proposals`，界面从那里读
 pub async fn propose(
     State(state): State<AppState>,

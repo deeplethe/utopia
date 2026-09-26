@@ -370,6 +370,15 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/questions/{qid}",
             patch(question_routes::update).delete(question_routes::delete),
         )
+        .route(
+            "/kbs/{id}/questions/propose",
+            post(question_routes::propose_questions),
+        )
+        .route("/kbs/{id}/questions/report", get(question_routes::report))
+        .route(
+            "/kbs/{id}/questions/{qid}/result",
+            post(question_routes::record_result),
+        )
         .route("/kbs/{id}/ontology/propose", post(question_routes::propose))
         .route(
             "/kbs/{id}/ontology/proposals/adopt",

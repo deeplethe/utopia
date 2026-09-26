@@ -646,6 +646,17 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
             ontology_agent::propose(st, kb_id).await
         }
+        "propose_questions" => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            ontology_agent::propose_questions(st, kb_id)
+                .await
+                .map(|_| ())
+        }
         "sync_source" => {
             let source_id: Uuid = job
                 .payload
