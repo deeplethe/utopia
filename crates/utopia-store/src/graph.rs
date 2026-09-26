@@ -1457,6 +1457,10 @@ pub async fn profile_distances(
 
 /// 按名字找实体。**一并回总数**——「宁分勿合」本来就会造出一堆同名，
 /// 固定十条的时候，想找的那个可能根本不在这十条里而界面上看不出来。
+///
+/// **名字完全相同的排在最前**（规范名或现行的别名），再按度数。只按度数的话，
+/// 问「Apple」而库里有九个事实更多的「Apple Store …」，叫 Apple 的那个排到第十，
+/// 对话与 MCP 的工具只读前八条——它找不到，按名字读事实时读成了另一个
 pub async fn search_entities(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1469,21 +1473,26 @@ pub async fn search_entities(
 ) -> AppResult<(Vec<GraphNode>, i64)> {
     let pattern = format!("%{}%", text.trim());
     let named = crate::names::has_name_like("e", 2);
+    // 同名的键与召回同一种写法（`resolution` 里 `has_name_in` 的用法）：规整之后小写
+    let exact = vec![crate::resolution::normalize_name(text).to_lowercase()];
     // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
     let visible = |param: usize| crate::record_axis::entity_visible_at("e", as_of.map(|_| param));
-    let rewind = as_of.map(|_| 5);
+    let rewind = as_of.map(|_| 6);
     let sql = format!(
         "{} WHERE e.kb_id = $1 AND {visible}
          AND (e.canonical_name ILIKE $2 OR {named})
-         ORDER BY degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
+         ORDER BY (lower(e.canonical_name) = ANY($5) OR {same_name}) DESC,
+                  degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
         node_sql(rewind, rewind),
-        visible = visible(5),
+        visible = visible(6),
+        same_name = crate::names::has_name_in("e", 1, 5),
     );
     let mut nodes_query = sqlx::query_as::<_, GraphNode>(&sql)
         .bind(kb_id)
         .bind(&pattern)
         .bind(limit)
-        .bind(offset);
+        .bind(offset)
+        .bind(&exact);
     if let Some(t) = as_of {
         nodes_query = nodes_query.bind(t);
     }

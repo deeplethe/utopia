@@ -219,10 +219,12 @@ the prompt, a description is read by people and by the aligner.
   side; the parity run against the withdrawn bound pass on the typed-graph bench (#880). The prototype aligner reached 14.7% and
   12.1% of gold recall in two runs against 15.5% for the withdrawn bound pass, so the bar for cut 2
   is parity over two clean runs [0044, #729].
-- **The workbench** (0044 cut 5): the ontology page fed by suggestions from the open graph (frequent
-  unbound signatures, type words in use, an ontology agent reading them against competency
-  questions), by imported files, and by editing; every approved element carries regression cases;
-  duplicate properties merged as governance.
+- **The workbench** (0044 cut 5, decided in 0061): competency questions as rows of the base and the
+  standard an element is judged by; an ontology agent reading the unbound signatures and classless
+  kind words against them and proposing types, properties and rules with definitions, the statements
+  they would bind and the questions they serve; approval writes the element with its structure and
+  re-decides those signatures; every approved element carries regression cases rerun when its
+  definition changes; duplicate properties merged as governance.
 - **Exploration proposes an alignment per table** through `ontology_proposals`, adopted as one
   thing; `Metric` / `Dimension` retire (#554, #556) [0036].
 - Filtering reified-shell relations (`Action`, `Offer`) out of pack import [0012]; Chinese

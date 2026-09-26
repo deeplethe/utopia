@@ -1665,6 +1665,34 @@ export const en = {
       `Some could not be added: ${keys.join(", ")} — the rest went through.`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
+    /* ---- 0061: the ontology agent and its questions ---- */
+    askAgent: "Ask the agent",
+    askAgentHint:
+      "Proposes classes and properties from phrases and kind words the ontology does not cover yet, judged against the competency questions.",
+    agentQueued: "The agent is looking — proposals appear here when it is done.",
+    agentWaiting: "Agent working…",
+    agentChip: "agent",
+    servesQuestions: (n: number) =>
+      n === 1 ? "serves 1 question" : `serves ${n} questions`,
+    bindsShapes: (n: number) =>
+      n === 1 ? "binds 1 phrase shape" : `binds ${n} phrase shapes`,
+    bindsKindWords: (n: number) =>
+      n === 1 ? "1 kind word" : `${n} kind words`,
+    rejectProposal: "Reject",
+    rejectReasonPrompt:
+      "Why not? (optional — the agent reads it before proposing again)",
+    rejectedProposal: "Rejected",
+    questions: "Competency questions",
+    questionsHint:
+      "What this knowledge base should be able to answer. The agent proposes classes and properties that serve these; they are the ontology's acceptance test.",
+    questionPlaceholder: "e.g. Which companies did each founder start, and when?",
+    addQuestion: "Add",
+    noQuestions:
+      "No questions yet. Without them the agent judges proposals only by the phrases documents use.",
+    retireQuestion: "Retire",
+    deleteQuestion: "Delete",
+    questionAdded: "Question added",
+    questionRetired: "Question retired",
     /* ---- Schema diagram ---- */
     schemaDiagram: "Schema diagram",
     /* 从前这句把「先加个类或导入 OWL 文件」说成了开始的前提，而本体本来就

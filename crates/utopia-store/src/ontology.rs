@@ -2037,12 +2037,112 @@ pub async fn set_disjoint_for(
 // 本体提案（见 `ontology_proposals`）
 // ---------------------------------------------------------------------------
 
-/// 一条落库的提案。`payload` 是接口原样返回的那一条。
+/// 一条落库的提案。`payload` 是接口原样返回的那一条。代理提的（0061）多带三样：
+/// 它服务的问题、它会绑上的形状，和谁提的
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct StoredProposal {
     pub section: String,
     pub key: String,
     pub payload: serde_json::Value,
+    /// suggest | agent
+    pub proposed_by: String,
+    pub serves: Vec<Uuid>,
+    pub signatures: serde_json::Value,
+}
+
+/// 代理的一条提案（0061 决定 2）：形状同 `save_proposals` 的一项，外加它服务的问题与会绑的形状
+pub struct AgentProposal {
+    pub section: String,
+    pub key: String,
+    pub payload: serde_json::Value,
+    pub serves: Vec<Uuid>,
+    pub signatures: serde_json::Value,
+}
+
+/// 把代理的一轮提案写下来。已经有人表过态的不动（同 `save_proposals`）；同一个键再提是刷新，
+/// 服务的问题与形状一起刷
+pub async fn save_agent_proposals(
+    pool: &PgPool,
+    kb_id: Uuid,
+    items: &[AgentProposal],
+) -> AppResult<()> {
+    for it in items {
+        sqlx::query(
+            "INSERT INTO ontology_proposals
+                 (id, kb_id, section, key, payload, proposed_by, serves, signatures)
+             VALUES ($1, $2, $3, $4, $5, 'agent', $6, $7)
+             ON CONFLICT (kb_id, section, key) DO UPDATE
+               SET payload = EXCLUDED.payload, proposed_by = 'agent',
+                   serves = EXCLUDED.serves, signatures = EXCLUDED.signatures,
+                   created_at = now()
+               WHERE ontology_proposals.status = 'open'",
+        )
+        .bind(Uuid::now_v7())
+        .bind(kb_id)
+        .bind(&it.section)
+        .bind(&it.key)
+        .bind(&it.payload)
+        .bind(&it.serves)
+        .bind(&it.signatures)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// 代理已经提过的形状（不论人怎么表的态）：下一轮不再为它们提——被拒的尤其不再提
+pub async fn signatures_already_proposed(
+    pool: &PgPool,
+    kb_id: Uuid,
+) -> AppResult<Vec<serde_json::Value>> {
+    Ok(sqlx::query_scalar(
+        "SELECT signatures FROM ontology_proposals WHERE kb_id = $1 AND proposed_by = 'agent'",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// 一条提案被拒了，连理由。改状态不删行（同 `decide_proposal`）
+pub async fn reject_proposal(
+    pool: &PgPool,
+    kb_id: Uuid,
+    section: &str,
+    key: &str,
+    reason: Option<&str>,
+    actor: Uuid,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE ontology_proposals
+            SET status = 'rejected', reason = $4, decided_by = $5, decided_at = now()
+          WHERE kb_id = $1 AND section = $2 AND key = $3 AND status = 'open'",
+    )
+    .bind(kb_id)
+    .bind(section)
+    .bind(key)
+    .bind(reason.map(str::trim).filter(|r| !r.is_empty()))
+    .bind(actor)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// 一条还开着的提案，按键取（采纳时要读它的 payload）
+pub async fn open_proposal(
+    pool: &PgPool,
+    kb_id: Uuid,
+    section: &str,
+    key: &str,
+) -> AppResult<Option<StoredProposal>> {
+    Ok(sqlx::query_as(
+        "SELECT section, key, payload, proposed_by, serves, signatures FROM ontology_proposals
+         WHERE kb_id = $1 AND section = $2 AND key = $3 AND status = 'open'",
+    )
+    .bind(kb_id)
+    .bind(section)
+    .bind(key)
+    .fetch_optional(pool)
+    .await?)
 }
 
 /// 把一轮 Suggest 的结果写下来。
@@ -2077,7 +2177,7 @@ pub async fn save_proposals(
 /// 还等着人看的提案。新的排前面——旧的那批已经被看过好几眼了。
 pub async fn open_proposals(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<StoredProposal>> {
     Ok(sqlx::query_as(
-        "SELECT section, key, payload FROM ontology_proposals
+        "SELECT section, key, payload, proposed_by, serves, signatures FROM ontology_proposals
          WHERE kb_id = $1 AND status = 'open'
          ORDER BY created_at DESC, key",
     )

@@ -599,7 +599,17 @@ pub async fn stored_proposals(
     });
     for p in stored {
         if let Some(arr) = out.get_mut(&p.section).and_then(|v| v.as_array_mut()) {
-            arr.push(p.payload);
+            let mut item = p.payload;
+            // 代理提的多带三格：谁提的、服务哪些问题、会绑上哪些形状（0061）。Suggest 的
+            // 一份没有，前端照旧
+            if p.proposed_by == "agent" {
+                if let Some(o) = item.as_object_mut() {
+                    o.insert("proposed_by".into(), json!("agent"));
+                    o.insert("serves".into(), json!(p.serves));
+                    o.insert("signatures".into(), p.signatures);
+                }
+            }
+            arr.push(item);
         }
     }
     Ok(Json(out))
@@ -611,6 +621,9 @@ pub struct DecideProposalReq {
     pub key: String,
     /// adopted | rejected
     pub status: String,
+    /// 拒绝的理由（0061：下一轮代理读得到）。采纳时忽略
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// 一条提案有人表态了。**改状态不删行**：采纳发生过、拒绝也发生过，
@@ -625,15 +638,32 @@ pub async fn decide_proposal(
     if !matches!(req.status.as_str(), "adopted" | "rejected") {
         return Err(AppError::invalid("bad_status", "status 只能是 adopted 或 rejected").into());
     }
-    utopia_store::ontology::decide_proposal(
-        &state.pool,
-        kb_id,
-        &req.section,
-        &req.key,
-        &req.status,
-        user.id,
-    )
-    .await?;
+    let reason = req
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if req.status == "rejected" && reason.is_some() {
+        utopia_store::ontology::reject_proposal(
+            &state.pool,
+            kb_id,
+            &req.section,
+            &req.key,
+            reason,
+            user.id,
+        )
+        .await?;
+    } else {
+        utopia_store::ontology::decide_proposal(
+            &state.pool,
+            kb_id,
+            &req.section,
+            &req.key,
+            &req.status,
+            user.id,
+        )
+        .await?;
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
