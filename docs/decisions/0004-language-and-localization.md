@@ -4,8 +4,9 @@
   `code` (`AppError::Invalid`, 81 sites; 23 `Validation` guards stay English), and so do
   the chat stream's `error` frames, in the same `{error, code}` body (2026-09-26);
   `description` follows `knowledge_bases.ontology_lang`; LLM output for people takes
-  `locale` from the request; extracted data stays verbatim; the UI does not guess the
-  browser language yet.
+  `locale` from the request; extracted data stays verbatim; the chat's step trail carries
+  fields the client words (`status`, counts, moments), and keeps its English `detail` for
+  stored messages (2026-09-26); the UI does not guess the browser language yet.
 - **Written**: 2026-08-29 · condensed into English 2026-09-03
 - **Related**: [0001](0001-ontology-import-and-governance.md) made `description`
   load-bearing; [0003](0003-ontology-growth-loop.md) separated `reason` from

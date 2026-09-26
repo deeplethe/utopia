@@ -742,6 +742,37 @@ export const zh: Strings = {
     send: "发送",
     stop: "停止",
     thinking: "思考中…",
+    step: {
+      failed: "失败",
+      documentNotFound: "未找到文档",
+      entityNotFound: "未找到实体",
+      sourceNotFound: "没有这个数据源",
+      unknownTool: "未知工具",
+      unparsed: "参数不完整",
+      missing: (param: string) => `缺少 ${param}`,
+      invalid: (param: string) => `${param} 无效`,
+      sources: (n: number) => `${n} 个来源`,
+      sections: (n: number) => `${n} 段`,
+      matches: (n: number, total?: number) =>
+        total === undefined ? `${n} 个匹配` : `${n} 个匹配（共 ${total} 个）`,
+      facts: (n: number, at: string | null, recorded: string | null) =>
+        `${at ? `${at} 时的 ` : ""}${n} 条事实${recorded ? `，${recorded}` : ""}`,
+      recordedBy: (t: string) => `按 ${t} 时的记录`,
+      recordedBefore: (t: string) => `按 ${t} 之前的记录`,
+      linked: (n: number, total: number) =>
+        n === total ? `关联 ${n} 个` : `关联 ${total} 个，列出 ${n} 个`,
+      dated: (n: number, total: number) =>
+        n === total ? `${n} 条有日期的事实` : `${total} 条有日期的事实，列出 ${n} 条`,
+      paths: (n: number, more: boolean, hops: number) =>
+        n === 0 ? "没有路径" : `${n}${more ? "+" : ""} 条路径，最短 ${hops} 跳`,
+      changes: (n: number, more: boolean) =>
+        n === 0 ? "没有变更" : `${n}${more ? "+" : ""} 处变更`,
+      now: "现在",
+      rows: (n: number, more: boolean) => `${n}${more ? "+" : ""} 行`,
+      rules: (n: number) => (n === 0 ? "无" : `${n} 条规则`),
+      marked: (n: number) => `标出 ${n} 处`,
+      sql: "SQL",
+    },
     newChat: "新对话",
     recent: "最近",
     untitled: "未命名",

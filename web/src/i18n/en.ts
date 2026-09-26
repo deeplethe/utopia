@@ -806,6 +806,53 @@ export const en = {
     send: "Send",
     stop: "Stop",
     thinking: "Thinking…",
+    /* 轨迹上每一步的话（#942）。服务端只给字段：状态、数、时刻，怎么说在这里定。
+       查询、实体名、来源名、问数的目的、记下的那句话是数据，原样显示；
+       没有这些字段的旧消息仍显示当时存下的英文 */
+    step: {
+      failed: "failed",
+      documentNotFound: "document not found",
+      entityNotFound: "entity not found",
+      sourceNotFound: "no such data source",
+      unknownTool: "unknown tool",
+      /* 参数整个解析不出来：多半是模型的输出撞上上限，在半路断了 */
+      unparsed: "incomplete arguments",
+      missing: (param: string) => `missing ${param}`,
+      invalid: (param: string) => `invalid ${param}`,
+      sources: (n: number) => `${n} source${n === 1 ? "" : "s"}`,
+      sections: (n: number) => `${n} section${n === 1 ? "" : "s"}`,
+      matches: (n: number, total?: number) =>
+        total === undefined
+          ? `${n} match${n === 1 ? "" : "es"}`
+          : `${n} of ${total} matches`,
+      /* `at` 是世界时间（那时成立的），`recorded` 是下面两句之一（那时记下的） */
+      facts: (n: number, at: string | null, recorded: string | null) =>
+        `${n} fact${n === 1 ? "" : "s"}${at ? ` at ${at}` : ""}${recorded ? `, ${recorded}` : ""}`,
+      recordedBy: (t: string) => `as recorded by ${t}`,
+      recordedBefore: (t: string) => `as recorded before ${t}`,
+      linked: (n: number, total: number) =>
+        n === total ? `${n} linked` : `${n} of ${total} linked`,
+      dated: (n: number, total: number) =>
+        n === total
+          ? `${n} dated fact${n === 1 ? "" : "s"}`
+          : `${n} of ${total} dated facts`,
+      /* `more`：列到上限就停了，后面可能还有 */
+      paths: (n: number, more: boolean, hops: number) =>
+        n === 0
+          ? "no path"
+          : `${n}${more ? "+" : ""} path${n === 1 && !more ? "" : "s"}, shortest ${hops} hop${hops === 1 ? "" : "s"}`,
+      changes: (n: number, more: boolean) =>
+        n === 0 ? "no changes" : `${n}${more ? "+" : ""} change${n === 1 && !more ? "" : "s"}`,
+      /* 没给 until 的窗口开到现在：「2026-09-01 → now」 */
+      now: "now",
+      rows: (n: number, more: boolean) =>
+        `${n}${more ? "+" : ""} row${n === 1 && !more ? "" : "s"}`,
+      rules: (n: number) => (n === 0 ? "none" : `${n} rule${n === 1 ? "" : "s"}`),
+      /* rule_matches：这条规则此刻标出了几处 */
+      marked: (n: number) => `${n} marked`,
+      /* 问数那一步可以展开看它跑的 SQL（#936） */
+      sql: "SQL",
+    },
     newChat: "New chat",
     recent: "Recent",
     untitled: "Untitled",

@@ -57,6 +57,7 @@ import {
   DangerConfirm,
   IconButton,
   Input,
+  LinkButton,
   RAIL_CLS,
   REVEAL,
   Row,
@@ -71,6 +72,7 @@ import {
   type Turn,
 } from "../liveAnswer";
 import { NodCard } from "./PendingFacts";
+import { stepDetail, stepLabel } from "../steps";
 import { NextStep, nextStep, useReadiness } from "./NextStep";
 
 /* `Turn` 定义在 liveAnswer 里：进行中的那一次也是一串 Turn，
@@ -893,6 +895,47 @@ function stepIcon(kind: ChatStep["kind"]) {
   return <Wrench size={11} />;
 }
 
+/** 轨迹上的一行。话按读者的语言说（`stepDetail`，#942）；没做成的那一步用危险色。
+ *
+ *  问数那一步可以展开它跑的 SQL（#936）：答案里的数是这条语句算出来的，
+ *  读的人该能自己核，而不只看到一句「查了一下」。 */
+function StepRow({ step, kbId }: { step: ChatStep; kbId: string }) {
+  const [sqlOpen, setSqlOpen] = useState(false);
+  return (
+    <div>
+      <div className="flex items-center gap-2 text-small">
+        <span className="text-ink-2">{stepIcon(step.kind)}</span>
+        <span className="text-ink-2 truncate">{stepLabel(step)}</span>
+        <span
+          className={cn(
+            "shrink-0",
+            step.status === "failed" ? "text-danger" : "text-ink-2",
+          )}
+        >
+          · {stepDetail(step)}
+        </span>
+        {step.sql && (
+          <LinkButton
+            className="shrink-0"
+            aria-expanded={sqlOpen}
+            onClick={() => setSqlOpen((open) => !open)}
+          >
+            {S.ask.step.sql}
+          </LinkButton>
+        )}
+      </div>
+      {sqlOpen && step.sql && (
+        <pre className="mt-1 rounded-panel bg-well px-3 py-2 font-mono text-small text-ink-2 whitespace-pre-wrap break-words">
+          {step.sql}
+        </pre>
+      )}
+      {/* remember 那一步后面跟着确认卡（0015）：这句话抽出的事实先等人点头。
+          抽取是异步的，卡片在任务完成时才长出来；回放时按同一个 chunk 重画 */}
+      {step.chunk_id && <NodCard kbId={kbId} chunkId={step.chunk_id} />}
+    </div>
+  );
+}
+
 /** 工具步骤 → 球体状态：思考球讲当前动作的语言 */
 /** 一段 markdown。**按文本记忆化**：一次生成里每来一个词元，整条消息都要重渲染，
  *  而 react-markdown 每次都把那一段从头解析一遍——答案越长每个词元越贵，读起来
@@ -928,7 +971,7 @@ const Segment = memo(function Segment({ text }: { text: string }) {
 function Thinking({ step }: { step?: ChatStep }) {
   return (
     <span className="u-thinking text-small truncate">
-      {step ? `${step.label} · ${step.detail}` : S.ask.thinking}
+      {step ? `${stepLabel(step)} · ${stepDetail(step)}` : S.ask.thinking}
     </span>
   );
 }
@@ -969,16 +1012,7 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
               className="my-3 space-y-1 border-l border-line-strong pl-3"
             >
               {seg.steps.map((s, j) => (
-                <div key={j}>
-                  <div className="flex items-center gap-2 text-small">
-                    <span className="text-ink-2">{stepIcon(s.kind)}</span>
-                    <span className="text-ink-2 truncate">{s.label}</span>
-                    <span className="text-ink-2 shrink-0">· {s.detail}</span>
-                  </div>
-                  {/* remember 那一步后面跟着确认卡（0015）：这句话抽出的事实先等人点头。
-                      抽取是异步的，卡片在任务完成时才长出来；回放时按同一个 chunk 重画 */}
-                  {s.chunk_id && <NodCard kbId={kbId} chunkId={s.chunk_id} />}
-                </div>
+                <StepRow key={j} step={s} kbId={kbId} />
               ))}
             </div>
           ) : (
