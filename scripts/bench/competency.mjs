@@ -11,7 +11,7 @@
 // 有期望答案的问题交给裁判模型判；没有的只查它需要的形状（needs 里的类与属性）是否存在并且有事实。
 // 服务端不自己问：chat 还没有进程内入口，而"按人问的方式问"正是走接口的意思。
 //
-// 答案经没经过图谱也记下来（`via`）：chat 的 step 事件里 facts / neighbors / timeline / paths 是图谱
+// 答案经没经过图谱也记下来（`via`）：chat 的 step 事件里 facts / neighbors / timeline / path 是图谱
 // 工具，search / document 是正文。答对但只走了正文的问题不需要本体——这是 0061 的开放问题，
 // 现在至少能数出来。
 import fs from "node:fs";
@@ -22,7 +22,8 @@ const KB = args.kb;
 if (!KB) { console.error("--kb <knowledge base id> 是必须的"); process.exit(2); }
 
 // 一轮回答走了哪条路。graph = 只从图谱工具拿到过事实；text = 只读了正文；both；none
-const GRAPH_KINDS = new Set(["facts", "neighbors", "timeline", "paths"]);
+// 服务端写的 kind：paths_between 那一步叫 "path"（tools_graph.rs）
+const GRAPH_KINDS = new Set(["facts", "neighbors", "timeline", "path"]);
 const TEXT_KINDS = new Set(["search", "document"]);
 function viaOf(steps) {
   const count = (s) => Number((/^(\d+)/.exec(String(s.count ?? s.detail ?? "")) ?? [])[1] ?? 0);

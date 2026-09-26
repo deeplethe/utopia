@@ -1547,6 +1547,7 @@ export const zh: Strings = {
     acceptQuestion: "接受",
     questionAnswered: "答上了",
     questionUnanswered: "没答上",
+    questionVia: { graph: "来自图谱", text: "来自正文", both: "图谱与正文" },
     questionsScore: (answered: number, checked: number) =>
       `${checked} 条问过，${answered} 条答上`,
     questionsScoreHint: "competency bench 对图谱问过的已接受问题，答上了几条。",

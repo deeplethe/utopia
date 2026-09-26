@@ -1780,6 +1780,8 @@ export const en = {
     acceptQuestion: "Accept",
     questionAnswered: "answered",
     questionUnanswered: "not answered",
+    /* 回答从哪里来的（competency.mjs 记的 via） */
+    questionVia: { graph: "from the graph", text: "from text", both: "graph and text" } as Record<string, string>,
     questionsScore: (answered: number, checked: number) =>
       `${answered} of ${checked} answered`,
     questionsScoreHint:

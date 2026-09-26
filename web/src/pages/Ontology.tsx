@@ -2053,9 +2053,8 @@ function QuestionsPanel({
                     {(q.last_result as { answered?: boolean }).answered
                       ? S.ontology.questionAnswered
                       : S.ontology.questionUnanswered}
-                    {(q.last_result as { via?: string }).via &&
-                      (q.last_result as { via?: string }).via !== "none" &&
-                      ` · ${(q.last_result as { via?: string }).via}`}
+                    {S.ontology.questionVia[(q.last_result as { via?: string }).via ?? ""] &&
+                      ` · ${S.ontology.questionVia[(q.last_result as { via?: string }).via ?? ""]}`}
                   </Chip>
                 )}
               {q.status === "proposed" && (
