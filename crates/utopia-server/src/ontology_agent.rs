@@ -9,9 +9,11 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use utopia_core::models::RelationAxioms;
 use utopia_core::AppError;
 use utopia_extract::ontology_agent as agent;
+use utopia_store::agent_reviews::{self, Review};
 use utopia_store::phrase_bindings::PhraseSignature;
 use utopia_store::type_bindings::KindWordSignature;
 use utopia_store::{competency_questions, phrase_bindings, type_bindings};
@@ -72,6 +74,10 @@ pub async fn propose(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
 /// 一条合并后的提案：同一个键在几批里都被提了，形状、类别词、问题并起来，定义取第一次的
 struct Merged {
     proposal: agent::Proposal,
+    /// Some = 这是「本体里已经有」：relation | attribute | class，进 map_to
+    map_kind: Option<String>,
+    /// map_to 的属性：形状读属性的方向
+    direction: Option<String>,
     shapes: Vec<Value>,
     phrases: Vec<String>,
     words: Vec<String>,
@@ -91,11 +97,43 @@ async fn propose_locked(
     let class_key: HashMap<Uuid, &str> = classes.iter().map(|c| (c.id, c.key.as_str())).collect();
     let class_keys: HashSet<&str> = classes.iter().map(|c| c.key.as_str()).collect();
     let prop_keys: HashSet<&str> = props.iter().map(|p| p.key.as_str()).collect();
+    let prop_kind: HashMap<&str, &str> = props
+        .iter()
+        .map(|p| (p.key.as_str(), p.kind.as_str()))
+        .collect();
+    // 词表的指纹：类键 + 属性键。代理看过没提、或答「已有」的形状，词表不变就不再送
+    let basis = {
+        let mut keys: Vec<&str> = class_keys.iter().copied().collect();
+        keys.sort_unstable();
+        let mut pkeys: Vec<&str> = prop_keys.iter().copied().collect();
+        pkeys.sort_unstable();
+        let digest = Sha256::digest(format!("{}##{}", keys.join(" "), pkeys.join(" ")).as_bytes());
+        digest
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
 
     // 已经提过的（不论表态与否）不再提：采纳的等对齐重判；拒绝的人已经说过不要；
-    // 还开着的人还没看
+    // 还开着的人还没看。看过没提的和答「已有」的，词表变了才再送（cut 1.1：第一次真跑
+    // 120 条里 85 条没进提案，下一轮又排在最前）
     let mut proposed_shapes: HashSet<String> = HashSet::new();
     let mut proposed_words: HashSet<String> = HashSet::new();
+    for r in agent_reviews::list(pool, kb_id).await? {
+        if r.outcome != "proposed" && r.basis != basis {
+            continue;
+        }
+        match r.kind.as_str() {
+            "phrase" => {
+                proposed_shapes.insert(r.shape.to_string());
+            }
+            _ => {
+                if let Some(w) = r.shape.get("kind_word").and_then(Value::as_str) {
+                    proposed_words.insert(w.to_string());
+                }
+            }
+        }
+    }
     for s in utopia_store::ontology::signatures_already_proposed(pool, kb_id).await? {
         for p in s
             .get("phrases")
@@ -232,6 +270,8 @@ async fn propose_locked(
 
     let mut merged: HashMap<String, Merged> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
+    // 这一轮看过的每条形状的去向（调用失败的批次不记，下一轮再送）
+    let mut reviews: Vec<Review> = Vec::new();
     let (mut failed, mut malformed, mut skipped_existing) = (0usize, 0usize, 0usize);
     for b in 0..calls {
         let sig_batch = sig_items
@@ -268,6 +308,62 @@ async fn propose_locked(
             }
         };
         malformed += parsed.malformed;
+        let mut sig_outcome: HashMap<i64, (&str, String)> = HashMap::new();
+        let mut word_outcome: HashMap<i64, (&str, String)> = HashMap::new();
+        // 「本体里已经有」：存成 map_to 提案，人点「用已有的」就是一次人的绑定判定
+        for e in &parsed.existing {
+            let map_kind = if let Some(k) = prop_kind.get(e.key.as_str()) {
+                (*k).to_string()
+            } else if class_keys.contains(e.key.as_str()) {
+                "class".to_string()
+            } else {
+                malformed += 1;
+                continue;
+            };
+            let slot = format!("map_to:{}", e.key);
+            let entry = merged.entry(slot.clone()).or_insert_with(|| {
+                order.push(slot);
+                Merged {
+                    proposal: agent::Proposal {
+                        kind: "existing".into(),
+                        key: e.key.clone(),
+                        label: e.key.clone(),
+                        definition: String::new(),
+                        value: false,
+                        datatype: None,
+                        domains: Vec::new(),
+                        ranges: Vec::new(),
+                        parents: Vec::new(),
+                        signatures: Vec::new(),
+                        kind_words: Vec::new(),
+                        questions: Vec::new(),
+                    },
+                    map_kind: Some(map_kind),
+                    direction: e.direction.clone(),
+                    shapes: Vec::new(),
+                    phrases: Vec::new(),
+                    words: Vec::new(),
+                    quotes: Vec::new(),
+                    serves: Vec::new(),
+                }
+            });
+            if map_kind_is_class(entry) {
+                // 类接的是类别词；形状指给类是答错了格，不记
+                for id in &e.kind_words {
+                    if let Some(w) = open_words.get(*id as usize) {
+                        push_word(entry, w);
+                        word_outcome.insert(*id, ("existing", e.key.clone()));
+                    }
+                }
+            } else {
+                for id in &e.signatures {
+                    if let Some(sig) = open.get(*id as usize) {
+                        push_shape(entry, sig);
+                        sig_outcome.insert(*id, ("existing", e.key.clone()));
+                    }
+                }
+            }
+        }
         for p in parsed.proposals {
             // 模型被告知已有的不要提；还是提了就当它没说（对齐那边会把形状挂上去）
             let taken = match p.kind.as_str() {
@@ -288,6 +384,8 @@ async fn propose_locked(
                         questions: Vec::new(),
                         ..p.clone()
                     },
+                    map_kind: None,
+                    direction: None,
                     shapes: Vec::new(),
                     phrases: Vec::new(),
                     words: Vec::new(),
@@ -295,36 +393,20 @@ async fn propose_locked(
                     serves: Vec::new(),
                 }
             });
+            let target = format!("{}:{}", section_of(&p), p.key);
             for id in p.signatures {
                 let Some(s) = open.get(id as usize) else {
                     continue;
                 };
-                let shape = shape_of(s);
-                if entry.shapes.contains(&shape) {
-                    continue;
-                }
-                entry.shapes.push(shape);
-                if !entry.phrases.contains(&s.phrase) {
-                    entry.phrases.push(s.phrase.clone());
-                }
-                for q in s.quotes.iter().take(1) {
-                    if entry.quotes.len() < 3 && !entry.quotes.contains(q) {
-                        entry.quotes.push(q.clone());
-                    }
-                }
+                push_shape(entry, s);
+                sig_outcome.insert(id, ("proposed", target.clone()));
             }
             for id in p.kind_words {
                 let Some(w) = open_words.get(id as usize) else {
                     continue;
                 };
-                if !entry.words.contains(&w.kind_word) {
-                    entry.words.push(w.kind_word.clone());
-                    for e in w.examples.iter().take(1) {
-                        if entry.quotes.len() < 3 && !entry.quotes.contains(e) {
-                            entry.quotes.push(e.clone());
-                        }
-                    }
-                }
+                push_word(entry, w);
+                word_outcome.insert(id, ("proposed", target.clone()));
             }
             for id in p.questions {
                 let Some(q) = questions.get(id as usize) else {
@@ -335,6 +417,32 @@ async fn propose_locked(
                 }
             }
         }
+        for si in sig_batch {
+            let (outcome, target) = sig_outcome
+                .get(&si.id)
+                .map(|(o, t)| (*o, Some(t.clone())))
+                .unwrap_or(("declined", None));
+            reviews.push(Review {
+                kind: "phrase".into(),
+                shape: shape_of(open[si.id as usize]),
+                outcome: outcome.into(),
+                target,
+                basis: basis.clone(),
+            });
+        }
+        for wi in word_batch {
+            let (outcome, target) = word_outcome
+                .get(&wi.id)
+                .map(|(o, t)| (*o, Some(t.clone())))
+                .unwrap_or(("declined", None));
+            reviews.push(Review {
+                kind: "kind_word".into(),
+                shape: json!({ "kind_word": wi.kind_word }),
+                outcome: outcome.into(),
+                target,
+                basis: basis.clone(),
+            });
+        }
     }
 
     let items: Vec<utopia_store::ontology::AgentProposal> = order
@@ -343,11 +451,24 @@ async fn propose_locked(
         .filter(|m| !m.shapes.is_empty() || !m.words.is_empty())
         .map(|m| {
             let p = &m.proposal;
-            let section = match (p.kind.as_str(), p.value) {
-                ("class", _) => "entity_types",
-                (_, true) => "attribute_types",
-                _ => "relation_types",
-            };
+            if let Some(map_kind) = &m.map_kind {
+                return utopia_store::ontology::AgentProposal {
+                    section: "map_to".into(),
+                    key: p.key.clone(),
+                    payload: json!({
+                        "key": p.key,
+                        "kind": map_kind,
+                        "direction": m.direction,
+                        "forms": m.phrases,
+                        "kind_words": m.words,
+                        "examples": m.quotes,
+                        "proposed_by": "agent",
+                    }),
+                    serves: Vec::new(),
+                    signatures: json!({ "phrases": m.shapes, "kind_words": m.words }),
+                };
+            }
+            let section = section_of(p);
             let mut payload = json!({
                 "key": p.key,
                 "label": p.label,
@@ -381,11 +502,52 @@ async fn propose_locked(
         })
         .collect();
     utopia_store::ontology::save_agent_proposals(pool, kb_id, &items).await?;
+    agent_reviews::record(pool, kb_id, &reviews).await?;
     tracing::info!(%kb_id, proposals = items.len(), failed, malformed, skipped_existing, "本体代理结束");
     if !items.is_empty() {
         state.emit_pending(kb_id);
     }
     Ok(())
+}
+
+fn section_of(p: &agent::Proposal) -> &'static str {
+    match (p.kind.as_str(), p.value) {
+        ("class", _) => "entity_types",
+        (_, true) => "attribute_types",
+        _ => "relation_types",
+    }
+}
+
+fn map_kind_is_class(m: &Merged) -> bool {
+    m.map_kind.as_deref() == Some("class")
+}
+
+fn push_shape(entry: &mut Merged, s: &PhraseSignature) {
+    let shape = shape_of(s);
+    if entry.shapes.contains(&shape) {
+        return;
+    }
+    entry.shapes.push(shape);
+    if !entry.phrases.contains(&s.phrase) {
+        entry.phrases.push(s.phrase.clone());
+    }
+    for q in s.quotes.iter().take(1) {
+        if entry.quotes.len() < 3 && !entry.quotes.contains(q) {
+            entry.quotes.push(q.clone());
+        }
+    }
+}
+
+fn push_word(entry: &mut Merged, w: &KindWordSignature) {
+    if entry.words.contains(&w.kind_word) {
+        return;
+    }
+    entry.words.push(w.kind_word.clone());
+    for e in w.examples.iter().take(1) {
+        if entry.quotes.len() < 3 && !entry.quotes.contains(e) {
+            entry.quotes.push(e.clone());
+        }
+    }
 }
 
 fn datatype_or_text(d: Option<&str>) -> &str {
@@ -455,6 +617,8 @@ pub async fn adopt(
         .trim()
         .to_string();
     let id = match section {
+        // 「用已有的」：形状各写一条人的绑定判定（同审核页），类别词各归到那个类
+        "map_to" => adopt_map_to(state, kb_id, &p, &classes).await?,
         "entity_types" => {
             let parents = resolve(
                 edits
@@ -543,7 +707,7 @@ pub async fn adopt(
         _ => {
             return Err(AppError::invalid(
                 "bad_section",
-                "section 只能是 entity_types、relation_types 或 attribute_types",
+                "section 只能是 map_to、entity_types、relation_types 或 attribute_types",
             ))
         }
     };
@@ -560,6 +724,81 @@ pub async fn adopt(
     .await;
     state.emit_graph(kb_id);
     Ok(id)
+}
+
+/// map_to 的采纳：目标是属性，提案里的每条形状写成人的绑定（属性 + 方向），投影跟着
+/// 排（同审核页的 `decide_alignment_phrase`）；目标是类，每个类别词归到它。返回目标的 id
+async fn adopt_map_to(
+    state: &AppState,
+    kb_id: Uuid,
+    p: &utopia_store::ontology::StoredProposal,
+    classes: &[utopia_core::models::EntityType],
+) -> Result<Uuid, AppError> {
+    let pool = &state.pool;
+    let kind = p
+        .payload
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("relation");
+    if kind == "class" {
+        let class = classes
+            .iter()
+            .find(|c| c.key == p.key)
+            .map(|c| c.id)
+            .ok_or_else(|| AppError::invalid("unknown_class", "no class with that key"))?;
+        for w in strings(p.signatures.get("kind_words")) {
+            type_bindings::decide_and_apply_human(
+                pool,
+                kb_id,
+                &w,
+                Some(class),
+                &json!({ "person": p.key, "via": "ontology_agent" }),
+            )
+            .await?;
+        }
+        return Ok(class);
+    }
+    let property = utopia_store::ontology::relation_type_views(pool, kb_id)
+        .await?
+        .into_iter()
+        .find(|r| r.key == p.key)
+        .map(|r| r.id)
+        .ok_or_else(|| AppError::invalid("unknown_property", "no property with that key"))?;
+    let direction = match p.payload.get("direction").and_then(Value::as_str) {
+        Some("reverse") => "reverse",
+        _ => "forward",
+    };
+    let sigs = phrase_bindings::signatures(pool, kb_id).await?;
+    let votes =
+        json!({ "person": { "property": p.key, "direction": direction, "via": "ontology_agent" } });
+    for shape in p
+        .signatures
+        .get("phrases")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        // 形状的身份：短语 + 两端的类键 + 宾语是不是字面值。此刻已经没有陈述的形状跳过
+        let Some(sig) = sigs.iter().find(|s| shape_of(s) == *shape) else {
+            continue;
+        };
+        phrase_bindings::decide_with_delivery(
+            pool,
+            kb_id,
+            sig,
+            phrase_bindings::Decision {
+                relation_type_id: Some(property),
+                direction: Some(direction),
+                status: "bound",
+                votes: &votes,
+                decided_by: "person",
+                basis: None,
+            },
+        )
+        .await?;
+    }
+    state.emit_review(kb_id);
+    Ok(property)
 }
 
 #[cfg(test)]

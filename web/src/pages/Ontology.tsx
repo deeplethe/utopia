@@ -1813,6 +1813,7 @@ function UniquenessPanel({
 function agentCount(d: OntologyProposals | null | undefined): number {
   if (!d) return 0;
   return [
+    ...(d.map_to ?? []),
     ...d.entity_types,
     ...d.relation_types,
     ...(d.attribute_types ?? []),
@@ -2027,7 +2028,8 @@ function MissesPanel({
       const empty =
         !d.entity_types?.length &&
         !d.relation_types?.length &&
-        !d.attribute_types?.length;
+        !d.attribute_types?.length &&
+        !d.map_to?.length;
       if (!empty) setProposals(d);
     }
   }, [storedProposals.data, proposals]);
@@ -2078,7 +2080,7 @@ function MissesPanel({
       key,
       reason,
     }: {
-      section: "entity_types" | "relation_types" | "attribute_types";
+      section: "map_to" | "entity_types" | "relation_types" | "attribute_types";
       key: string;
       reason?: string;
     }) => api.decideProposal(kbId, section, key, "rejected", reason),
@@ -2095,7 +2097,7 @@ function MissesPanel({
     onError,
   });
   const reject = (
-    section: "entity_types" | "relation_types" | "attribute_types",
+    section: "map_to" | "entity_types" | "relation_types" | "attribute_types",
     key: string,
   ) => {
     const reason = window.prompt(S.ontology.rejectReasonPrompt) ?? "";
@@ -2259,14 +2261,24 @@ function MissesPanel({
   // 映射到已有类型：不建东西，只把这些说法的事实挂过去。
   // 跟新建走同一个采纳入口，因为它对图做的事一模一样——也因此同样可撤销
   const approveMapping = useMutation({
-    mutationFn: (p: { key: string; kind?: string; forms?: string[] }) =>
-      api.adoptPredicate(kbId, {
-        key: p.key,
-        existing: true,
-        // 目标是属性时值要按它的 datatype 换算，服务端据此分道
-        kind: p.kind === "attribute" ? "attribute" : "relation",
-        forms: p.forms ?? [],
-      }),
+    // 代理提的「已有」：形状各写一条人的绑定判定（0061 cut 1.1），走采纳端点
+    mutationFn: (p: {
+      key: string;
+      kind?: string;
+      forms?: string[];
+      proposed_by?: string;
+    }) =>
+      p.proposed_by === "agent"
+        ? api
+            .adoptProposal(kbId, "map_to", p.key)
+            .then(() => ({}) as Awaited<ReturnType<typeof api.adoptPredicate>>)
+        : api.adoptPredicate(kbId, {
+            key: p.key,
+            existing: true,
+            // 目标是属性时值要按它的 datatype 换算，服务端据此分道
+            kind: p.kind === "attribute" ? "attribute" : "relation",
+            forms: p.forms ?? [],
+          }),
     onSuccess: (data, p) => {
       const moved = data.remapped ?? 0;
       const left = data.unconvertible ?? 0;
@@ -2628,6 +2640,7 @@ function MissesPanel({
                     {p.reason}
                   </span>
                 )}
+                <AgentMeta p={p} />
                 <Button variant="primary"
                   size="sm"
                   className="ml-auto"
@@ -2636,6 +2649,16 @@ function MissesPanel({
                 >
                   {S.ontology.mapOver}
                 </Button>
+                {p.proposed_by === "agent" && (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => reject("map_to", p.key)}
+                    disabled={rejectProposal.isPending}
+                  >
+                    {S.ontology.rejectProposal}
+                  </Button>
+                )}
               </div>
             ))}
             {proposals.entity_types.map((p) => (

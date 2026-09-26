@@ -35,6 +35,7 @@ struct Fx {
     kb: Uuid,
     organization: Uuid,
     place: Uuid,
+    located_in: Uuid,
     /// 采纳的人（decided_by 是外键）
     user: Uuid,
     model: Model,
@@ -43,14 +44,18 @@ struct Fx {
 }
 
 impl Fx {
-    /// 一个库：organization、place 两个类，没有属性；Acme —founded in→ London 一条开放陈述
+    /// 一个库：organization、place 两个类，一条属性 located_in（organization → place）；
+    /// Acme —founded in→ London、Acme —located in→ London 两条开放陈述（形状按短语排：
+    /// s0 = founded in，s1 = located in）
     async fn new(replies: Vec<Value>) -> anyhow::Result<Option<Self>> {
         let Some(url) = utopia_store::test_db::url() else {
             return Ok(None);
         };
         let pool = sqlx::PgPool::connect(&url).await?;
         utopia_store::db::migrate(&pool).await?;
-        let (org, ws, kb, organization, place, acme, london, statement, user) = (
+        let (org, ws, kb, organization, place, acme, london, statement, user, located_in, st2) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
             Uuid::now_v7(),
             Uuid::now_v7(),
             Uuid::now_v7(),
@@ -71,8 +76,13 @@ impl Fx {
                  ('{place}','{kb}','place','Place','#000','circle','a geographic location');
              INSERT INTO entities(id,kb_id,canonical_name,type_id) VALUES
                  ('{acme}','{kb}','Acme','{organization}'), ('{london}','{kb}','London','{place}');
+             INSERT INTO relation_types(id,kb_id,key,label,kind,temporal,description) VALUES
+                 ('{located_in}','{kb}','located_in','located in','relation','state','where an organization sits');
+             INSERT INTO relation_type_domains(relation_type_id,entity_type_id) VALUES ('{located_in}','{organization}');
+             INSERT INTO relation_type_ranges(relation_type_id,entity_type_id) VALUES ('{located_in}','{place}');
              INSERT INTO facts(id,kb_id,subject_id,object_id,layer,phrase) VALUES
-                 ('{statement}','{kb}','{acme}','{london}','open','founded in');"
+                 ('{statement}','{kb}','{acme}','{london}','open','founded in'),
+                 ('{st2}','{kb}','{acme}','{london}','open','located in');"
         ))
         .execute(&pool)
         .await?;
@@ -114,6 +124,7 @@ impl Fx {
             kb,
             organization,
             place,
+            located_in,
             user,
             model,
             server,
@@ -121,25 +132,31 @@ impl Fx {
         }))
     }
 
-    /// 对齐判过这条形状：没有属性可绑
+    /// 对齐判过这两条形状：没有属性可绑
     async fn decide_none(&self) -> anyhow::Result<()> {
         let sigs = phrase_bindings::signatures(&self.pool, self.kb).await?;
-        assert_eq!(sigs.len(), 1, "one open statement, one signature");
-        phrase_bindings::decide(
-            &self.pool,
-            self.kb,
-            &sigs[0],
-            Decision {
-                relation_type_id: None,
-                direction: None,
-                status: "none",
-                votes: &json!({ "reason": "no_properties" }),
-                decided_by: "agent",
-                basis: Some("test"),
-            },
-        )
-        .await?;
+        assert_eq!(sigs.len(), 2, "two open statements, two signatures");
+        for sig in &sigs {
+            phrase_bindings::decide(
+                &self.pool,
+                self.kb,
+                sig,
+                Decision {
+                    relation_type_id: None,
+                    direction: None,
+                    status: "none",
+                    votes: &json!({ "reason": "no_candidates" }),
+                    decided_by: "agent",
+                    basis: Some("test"),
+                },
+            )
+            .await?;
+        }
         Ok(())
+    }
+
+    async fn requests(&self) -> usize {
+        self.model.requests.lock().unwrap().len()
     }
 
     async fn cleanup(self) -> anyhow::Result<()> {
@@ -149,6 +166,10 @@ impl Fx {
             .execute(&self.pool)
             .await?;
         // decided_by 指向 users，不级联：先清提案再删组织
+        sqlx::query("DELETE FROM ontology_agent_reviews WHERE kb_id=$1")
+            .bind(self.kb)
+            .execute(&self.pool)
+            .await?;
         sqlx::query("DELETE FROM ontology_proposals WHERE kb_id=$1")
             .bind(self.kb)
             .execute(&self.pool)
@@ -219,6 +240,10 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
         "the glossary is offered: {text}"
     );
     assert!(
+        text.contains("located_in"),
+        "existing properties are in the glossary: {text}"
+    );
+    assert!(
         text.contains("Where was each organization founded?"),
         "the accepted question is offered: {text}"
     );
@@ -245,12 +270,26 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
         "the place where an organization was founded"
     );
 
-    // 提过的形状下一轮不再送：没有模型调用
+    // 提过的形状、看过没提的形状（located in）下一轮都不再送：没有模型调用
+    let outcomes: Vec<(String, String)> = sqlx::query_as(
+        "SELECT shape->>'phrase', outcome FROM ontology_agent_reviews WHERE kb_id=$1 ORDER BY 1",
+    )
+    .bind(f.kb)
+    .fetch_all(&f.pool)
+    .await?;
+    assert_eq!(
+        outcomes,
+        vec![
+            ("founded in".to_string(), "proposed".to_string()),
+            ("located in".to_string(), "declined".to_string())
+        ],
+        "every offered shape is recorded with its outcome"
+    );
     propose(&f.state, f.kb).await?;
     assert_eq!(
-        f.model.requests.lock().unwrap().len(),
+        f.requests().await,
         1,
-        "an already-proposed shape is not offered again"
+        "already-proposed and declined shapes are not offered again"
     );
 
     // 采纳：属性建出来，签名域值域照提案，提案标记 adopted，短语对齐排上
@@ -343,5 +382,101 @@ async fn a_proposal_for_an_existing_key_or_binding_nothing_is_dropped() -> anyho
     assert_eq!(open[0].key, "founding_note");
     assert_eq!(open[0].payload["datatype"], "text");
     assert!(open[0].serves.is_empty());
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn a_declined_shape_returns_when_the_glossary_changes_and_an_existing_answer_becomes_a_binding(
+) -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![
+        // 第一轮：founded in 没提；located in 本体里已经有（located_in，正向）
+        json!({ "p": [], "existing": [{ "key": "located_in", "dir": "forward", "s": [1], "k": [] }] }),
+        // 第三轮（词表变了之后）：只剩 founded in 送来，还是没提
+        json!({ "p": [], "existing": [] }),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    f.decide_none().await?;
+
+    propose(&f.state, f.kb).await?;
+    assert_eq!(f.requests().await, 1);
+    let open = utopia_store::ontology::open_proposals(&f.pool, f.kb).await?;
+    assert_eq!(
+        open.len(),
+        1,
+        "the existing answer is a map_to proposal: {open:?}"
+    );
+    let m = &open[0];
+    assert_eq!(m.section, "map_to");
+    assert_eq!(m.key, "located_in");
+    assert_eq!(m.proposed_by, "agent");
+    assert_eq!(m.payload["kind"], "relation");
+    assert_eq!(m.payload["direction"], "forward");
+    assert_eq!(m.payload["forms"][0], "located in");
+    assert_eq!(m.signatures["phrases"][0]["phrase"], "located in");
+
+    // 第二轮：一条提过（map_to）、一条看过没提，词表没变——不问
+    propose(&f.state, f.kb).await?;
+    assert_eq!(f.requests().await, 1, "nothing new to look at");
+
+    // 词表变了（多了一个类）：看过没提的 founded in 再送一次；map_to 已经提过的不送
+    utopia_store::ontology::create_entity_type(
+        &f.pool,
+        f.kb,
+        "city",
+        "City",
+        "#000",
+        "circle",
+        &[f.place],
+        "a city",
+    )
+    .await?;
+    propose(&f.state, f.kb).await?;
+    assert_eq!(
+        f.requests().await,
+        2,
+        "a changed glossary re-offers declined shapes"
+    );
+    let text = user_text(&f.model.requests.lock().unwrap()[1]);
+    assert!(
+        text.contains("founded in"),
+        "the declined shape is offered again: {text}"
+    );
+    assert!(
+        !text.contains("s1"),
+        "the shape already proposed as map_to is not offered: {text}"
+    );
+
+    // 采纳 map_to：located in 这条形状成了人的绑定，绑到 located_in，正向
+    let id = adopt(
+        &f.state,
+        f.kb,
+        "map_to",
+        "located_in",
+        AdoptEdits::default(),
+        f.user,
+    )
+    .await?;
+    assert_eq!(id, f.located_in);
+    let b = phrase_bindings::bindings(&f.pool, f.kb)
+        .await?
+        .into_iter()
+        .find(|b| b.phrase == "located in")
+        .expect("the binding exists");
+    assert_eq!(b.status, "bound");
+    assert_eq!(b.decided_by, "person");
+    assert_eq!(b.relation_type_id, Some(f.located_in));
+    assert_eq!(b.direction.as_deref(), Some("forward"));
+    assert!(
+        utopia_store::ontology::open_proposals(&f.pool, f.kb)
+            .await?
+            .is_empty(),
+        "the map_to proposal is adopted"
+    );
+    // 第四轮：founded in 刚看过没提、located in 已经绑上——不问
+    propose(&f.state, f.kb).await?;
+    assert_eq!(f.requests().await, 2);
     f.cleanup().await
 }

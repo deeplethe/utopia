@@ -90,6 +90,8 @@ pub struct Proposal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Existing {
     pub key: String,
+    /// forward | reverse：形状的主语是不是属性的主语。类别词对类的没有方向
+    pub direction: Option<String>,
     pub signatures: Vec<i64>,
     pub kind_words: Vec<i64>,
 }
@@ -121,12 +123,15 @@ datatype (number | date | text | bool) and no ranges. Otherwise value=false with
 as class keys, existing or proposed in this same answer.\n\
 - Keys are snake_case ASCII. Reuse an existing key only under existing, never as a proposal.\n\
 - If an existing property or class already holds a shape, list it under existing with the shape ids \
-instead of proposing.\n\
+instead of proposing, with dir: forward when the shape's subject is the property's subject, reverse \
+when the shape reads the property backwards (\"X wrote Y\" is author read in reverse).\n\
+- Do not propose the inverse of an existing property: list the shape under that property with dir \
+reverse.\n\
 Answer with one JSON object and nothing else:\n\
 {\"p\":[{\"kind\":\"property\",\"key\":\"...\",\"label\":\"...\",\"definition\":\"...\",\"value\":false,\
 \"datatype\":null,\"domains\":[\"class_key\"],\"ranges\":[\"class_key\"],\"s\":[ids],\"k\":[ids],\"q\":[ids]},\
 {\"kind\":\"class\",\"key\":\"...\",\"label\":\"...\",\"definition\":\"...\",\"parents\":[\"class_key\"],\
-\"s\":[],\"k\":[ids],\"q\":[ids]}],\"existing\":[{\"key\":\"existing_key\",\"s\":[ids],\"k\":[ids]}]}";
+\"s\":[],\"k\":[ids],\"q\":[ids]}],\"existing\":[{\"key\":\"existing_key\",\"dir\":\"forward\",\"s\":[ids],\"k\":[ids]}]}";
 
 pub fn build_proposal_messages(
     signatures: &[OpenSignature<'_>],
@@ -385,8 +390,17 @@ pub fn parse_proposal_response(
                 reply.malformed += 1;
                 continue;
             }
+            let direction = match obj.get("dir").and_then(Value::as_str).map(str::trim) {
+                Some("reverse") => Some("reverse".to_string()),
+                Some("forward") | None | Some("") => Some("forward".to_string()),
+                Some(_) => {
+                    reply.malformed += 1;
+                    continue;
+                }
+            };
             reply.existing.push(Existing {
                 key,
+                direction,
                 signatures,
                 kind_words,
             });
@@ -405,7 +419,7 @@ mod tests {
 
     #[test]
     fn a_well_formed_reply_yields_proposals_and_existing() {
-        let raw = r#"{"p":[{"kind":"property","key":"supplies","label":"supplies","definition":"The subject organisation delivers goods to the object organisation. Not for one-off sales.","value":false,"datatype":null,"domains":["organization"],"ranges":["organization"],"s":[0,2],"k":[],"q":[1]},{"kind":"class","key":"supplier","label":"Supplier","definition":"An organisation that supplies others.","parents":["organization"],"s":[],"k":[0],"q":[]}],"existing":[{"key":"located_in","s":[1],"k":[]}]}"#;
+        let raw = r#"{"p":[{"kind":"property","key":"supplies","label":"supplies","definition":"The subject organisation delivers goods to the object organisation. Not for one-off sales.","value":false,"datatype":null,"domains":["organization"],"ranges":["organization"],"s":[0,2],"k":[],"q":[1]},{"kind":"class","key":"supplier","label":"Supplier","definition":"An organisation that supplies others.","parents":["organization"],"s":[],"k":[0],"q":[]}],"existing":[{"key":"located_in","dir":"reverse","s":[1],"k":[]}]}"#;
         let r = parse_proposal_response(raw, &ids_of(&[0, 1, 2]), &ids_of(&[0]), &ids_of(&[1]))
             .unwrap();
         assert_eq!(r.malformed, 0);
@@ -420,6 +434,7 @@ mod tests {
             r.existing,
             vec![Existing {
                 key: "located_in".into(),
+                direction: Some("reverse".into()),
                 signatures: vec![1],
                 kind_words: vec![]
             }]
