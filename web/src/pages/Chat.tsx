@@ -224,6 +224,10 @@ export function Chat() {
       return last.conversations.length > 0 && loaded < last.total ? loaded : undefined;
     },
     enabled: !!kbId && kb?.id === kbId,
+    // 换搜索词时留着上一屏，别每敲一个字就清空再冒出来（Graph、Library 同理）。
+    // 换了库不留：另一个库的会话一刻也不该出现在这里
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey[1] === kbId ? prev : undefined,
   });
   // Updated conversations can move between offset pages. Deduplicate by identity;
   // invalidation refetches the loaded page range rather than appending stale offsets.
@@ -416,7 +420,13 @@ export function Chat() {
 
   const removeConversation = async (id: string) => {
     const owner = viewRequest.current;
-    await conversationsApi.remove(kb!.id, id);
+    try {
+      await conversationsApi.remove(kb!.id, id);
+    } catch (e) {
+      // 确认框已经关了：删不掉不说出来的话，这一行只是安静地留在列表里
+      toast.error(e instanceof Error ? e.message : String(e));
+      return;
+    }
     // 记号跟着会话走，否则这个 id 会一直留在浏览器的那张表里
     convMarks.forget(id);
     if (sessionStorage.getItem(lastKey(kb!.id)) === id) {

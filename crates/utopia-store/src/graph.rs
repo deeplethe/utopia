@@ -1513,6 +1513,25 @@ pub async fn search_entities(
     Ok((nodes, total))
 }
 
+/// 一个实体节点本身，不带事实：只想知道它在不在这个库、叫什么的时候用。
+/// `entity_detail` 会把全部事实一起读出来，一个枢纽实体就是几百行
+pub async fn entity_node(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+) -> AppResult<Option<GraphNode>> {
+    Ok(sqlx::query_as(&format!(
+        "{} WHERE e.kb_id = $1 AND e.id = $2",
+        node_sql(as_of.map(|_| 3), as_of.map(|_| 3))
+    ))
+    .bind(kb_id)
+    .bind(entity_id)
+    .bind(as_of)
+    .fetch_optional(pool)
+    .await?)
+}
+
 /// 实体详情：节点信息 + 事实时间线。
 pub async fn entity_detail(
     pool: &PgPool,
@@ -1521,16 +1540,9 @@ pub async fn entity_detail(
     at: Option<chrono::DateTime<chrono::Utc>>,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(GraphNode, Vec<EntityFact>)> {
-    let node: GraphNode = sqlx::query_as(&format!(
-        "{} WHERE e.kb_id = $1 AND e.id = $2",
-        node_sql(as_of.map(|_| 3), as_of.map(|_| 3))
-    ))
-    .bind(kb_id)
-    .bind(entity_id)
-    .bind(as_of)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let node = entity_node(pool, kb_id, entity_id, as_of)
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let mut facts: Vec<EntityFact> = sqlx::query_as(&format!(
         "SELECT f.id, {said_as} AS said_as, f.recorded_at, f.invalidated_at, f.supersedes,

@@ -18,13 +18,13 @@ const entry = `
 import React from 'react'; import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {createRouter,createRootRoute,createRoute,RouterProvider,Outlet} from '@tanstack/react-router';
-import {Chat} from '/src/pages/Chat.tsx'; import {liveAnswer} from '/src/liveAnswer.ts';
+import {Chat} from '/src/pages/Chat.tsx'; import {liveAnswer} from '/src/liveAnswer.ts'; import {ToastHost} from '/src/toast.tsx';
 const parent=createRootRoute({component:Outlet});
 const routes=['/kb/$kbId/chat','/kb/$kbId/chat/$conversationId'].map(path=>createRoute({getParentRoute:()=>parent,path,component:Chat}));
 const router=createRouter({routeTree:parent.addChildren(routes)});
 window.__go=to=>router.navigate({to}); window.__live=liveAnswer;
 const client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
-const tree=React.createElement(QueryClientProvider,{client},React.createElement(RouterProvider,{router}));
+const tree=React.createElement(QueryClientProvider,{client},React.createElement(RouterProvider,{router}),React.createElement(ToastHost));
 createRoot(document.getElementById('root')).render(location.search.includes('strict')?React.createElement(React.StrictMode,null,tree):tree);
 `;
 function plugin() {
@@ -726,5 +726,85 @@ test(
         }
       },
     );
+    const row = (id, title = `Conversation ${id}`) => ({
+      id,
+      title,
+      created_at: "2026-01-01",
+      updated_at: "2026-01-01",
+    });
+    await t.test("a delete that fails says so and keeps the conversation", async () => {
+      const f = await open("/kb/one/chat/b", async (route, p) => {
+        if (route.request().method() === "DELETE" && p.endsWith("/conversations/a")) {
+          await route.fulfill({ status: 500, json: { error: "Could not delete it" } });
+          return true;
+        }
+      });
+      try {
+        await f.page.getByText("Answer beta", { exact: true }).waitFor();
+        await f.page.getByRole("button", { name: "More", exact: true }).first().click();
+        await f.page.getByRole("menuitem", { name: "Delete conversation" }).click();
+        await f.page.getByRole("button", { name: "Delete", exact: true }).click();
+        await f.page.getByText("Could not delete it", { exact: true }).waitFor();
+        assert.equal(
+          await f.page.getByText("Conversation a", { exact: true }).count(),
+          1,
+        );
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
+    await t.test("a search keeps the listed conversations until its results arrive", async () => {
+      const held = deferred();
+      const f = await open("/kb/one/chat/b", async (route, p, url) => {
+        if (p.endsWith("/conversations") && url.searchParams.get("q")) {
+          held.resolve(route);
+          return true;
+        }
+      });
+      try {
+        await f.page.getByText("Answer beta", { exact: true }).waitFor();
+        await f.page.getByPlaceholder("Search chats").fill("alp");
+        const search = await held.promise;
+        for (const title of ["Conversation a", "Conversation b"])
+          assert.equal(await f.page.getByText(title, { exact: true }).count(), 1, title);
+        await search.fulfill({ json: { conversations: [row("a")], total: 1 } });
+        await f.page
+          .getByText("Conversation b", { exact: true })
+          .waitFor({ state: "detached" });
+        assert.equal(
+          await f.page.getByText("Conversation a", { exact: true }).count(),
+          1,
+        );
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
+    await t.test("another library's conversations never stand in for this one's", async () => {
+      const held = deferred();
+      const f = await open("/kb/one/chat", async (route, p) => {
+        if (p === "/api/v1/kbs/two/conversations") {
+          held.resolve(route);
+          return true;
+        }
+      });
+      try {
+        await f.page.getByText("Conversation a", { exact: true }).waitFor();
+        await f.page.evaluate(() => window.__go("/kb/two/chat"));
+        const list = await held.promise;
+        assert.equal(
+          await f.page.getByText("Conversation a", { exact: true }).count(),
+          0,
+        );
+        await list.fulfill({
+          json: { conversations: [row("c", "Other library chat")], total: 1 },
+        });
+        await f.page.getByText("Other library chat", { exact: true }).waitFor();
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
   },
 );
