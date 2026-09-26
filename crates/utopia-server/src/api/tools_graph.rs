@@ -97,6 +97,8 @@ struct Resolved {
     id: Uuid,
     name: String,
     note: Option<String>,
+    /// 参数本来就是一个 id：没在库里查过，`name` 也只是那串 id
+    by_id: bool,
 }
 
 enum ResolveError {
@@ -120,6 +122,7 @@ async fn resolve(
             id,
             name: raw.to_string(),
             note: None,
+            by_id: true,
         });
     }
     let hits = lookup(ctx, raw).await.map_err(|e| {
@@ -166,6 +169,7 @@ async fn resolve(
         id: first.id,
         name: first.name.clone(),
         note: Some(note),
+        by_id: false,
     })
 }
 
@@ -1042,6 +1046,19 @@ pub(super) fn path_text(p: &Path) -> String {
     parts.join("; ")
 }
 
+/// 一个端点在这条路径上的名字：路径两头的边写着它
+fn name_on_path(p: &Path, id: Uuid) -> Option<&str> {
+    p.edges.iter().find_map(|e| {
+        if e.subject_id == id {
+            Some(e.subject_name.as_str())
+        } else if e.object_id == id {
+            Some(e.object_name.as_str())
+        } else {
+            None
+        }
+    })
+}
+
 pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
     let mut notes = Vec::new();
     let mut ends = Vec::new();
@@ -1068,7 +1085,6 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             }
         }
     }
-    let (from, to) = (&ends[0], &ends[1]);
     let m = moments(args);
     let max_hops = args["max_hops"]
         .as_u64()
@@ -1082,8 +1098,8 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
     let paths = match utopia_store::paths::paths_between(
         &ctx.state.pool,
         ctx.kb_id,
-        from.id,
-        to.id,
+        ends[0].id,
+        ends[1].id,
         m.at,
         m.as_of,
         limits,
@@ -1100,6 +1116,41 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             .error();
         }
     };
+    // 以 id 给出的一端没在库里查过。找到了路径，它就在路上，名字写在边上；没找到，
+    // 可能只是这个 id 不在这个库（抄错的、别的库的）——那时「两者之间没有路径」
+    // 读起来像一个关于图的事实，所以先认一遍，认不出就照实说
+    for (key, end) in ["from", "to"].into_iter().zip(ends.iter_mut()) {
+        if !end.by_id {
+            continue;
+        }
+        if let Some(p) = paths.first() {
+            if let Some(name) = name_on_path(p, end.id) {
+                end.name = name.to_string();
+            }
+            continue;
+        }
+        match utopia_store::graph::entity_node(&ctx.state.pool, ctx.kb_id, end.id, m.as_of).await {
+            Ok(Some(node)) => end.name = node.name,
+            Ok(None) => {
+                return ToolResult::new(
+                    format!(
+                        "Unknown `{key}`: no entity with id {} in this base.",
+                        end.id
+                    ),
+                    json!({ "kind": "path", "label": "?", "detail": "unknown entity" }),
+                )
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Entity lookup failed");
+                return ToolResult::new(
+                    "Could not look up entities.".into(),
+                    json!({ "kind": "path", "label": "?", "detail": "failed" }),
+                )
+                .error();
+            }
+        }
+    }
+    let (from, to) = (&ends[0], &ends[1]);
     let label = format!("{} ↔ {}", from.name, to.name);
     let when = match (m.at, m.before, m.as_of) {
         (Some(t), _, _) => format!(" at {}", crate::time_text::world(t, Some("day"))),

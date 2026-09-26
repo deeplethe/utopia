@@ -1276,6 +1276,61 @@ async fn opposite_directions_reach_authenticated_path_output() -> anyhow::Result
     result.and(cleanup)
 }
 
+/// 以 id 给出的一端要真在这个库里。从前一个不存在的 id（抄错的、别的库的）得到的是
+/// 「两者之间没有路径」，读起来像一个关于图的事实；结果里的名字也只是那串 id
+#[tokio::test]
+async fn a_path_to_an_unknown_id_says_so() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (missing, foreign, loner) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    sqlx::query(
+        "INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,'Elsewhere'), ($3,$4,'Loner')",
+    )
+    .bind(foreign)
+    .bind(f.other_kb)
+    .bind(loner)
+    .bind(f.kb)
+    .execute(&f.state.pool)
+    .await?;
+    for (args, text) in [
+        (
+            json!({"from":missing,"to":f.object}),
+            format!("Unknown `from`: no entity with id {missing} in this base."),
+        ),
+        (
+            json!({"from":f.subject,"to":foreign}),
+            format!("Unknown `to`: no entity with id {foreign} in this base."),
+        ),
+    ] {
+        let result = f.call("paths_between", args).await?;
+        assert_eq!(result["isError"], false, "{result}");
+        assert_eq!(result["content"][0]["text"], text.as_str());
+    }
+    // 在库里的 id：没有路径时照常说没有，而且说的是名字
+    let none = f
+        .call("paths_between", json!({"from":f.subject,"to":loner}))
+        .await?;
+    assert_eq!(none["isError"], false);
+    let text = none["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("No path of up to 3 hops between Alice and Loner."),
+        "{text}"
+    );
+    // 找到路径时，开头那一行也写名字
+    let found = f
+        .call("paths_between", json!({"from":f.subject,"to":f.object}))
+        .await?;
+    let header = found["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap();
+    assert!(header.contains(" between Alice and Acme "), "{header}");
+    f.clean().await
+}
+
 #[tokio::test]
 async fn missing_entities_and_empty_graph_reads_keep_their_results() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
