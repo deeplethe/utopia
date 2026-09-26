@@ -9,7 +9,7 @@
 //!
 //!   1. 客户端收不到 `event: done`
 //!   2. 恰好观察到一个终结（`done` 与 `error` 加起来正好一次）
-//!   3. 那个终结说得出理由（`error` 的 data 不为空）
+//!   3. 那个终结说得出理由：`error` 的 data 是带 `code` 与英文原句的 JSON（0004）
 //!
 //! **新增一条会失败的路，代价是加一行**；加不出那一行，说明这条路自己也没想清楚
 //! 该怎么收尾。评审该盯的就是「新开了会失败的路却没加行」。
@@ -93,6 +93,13 @@ fn assert_one_earned_terminal(what: &str, ends: Ends, sse: &str) {
             assert!(
                 !reason.is_empty(),
                 "{what}：终结得说得出理由，不能是个空 error\n{sse}"
+            );
+            // 理由带 code：界面拿它查措辞，英文原句只给日志与不做本地化的客户端（0004）
+            let body: serde_json::Value = serde_json::from_str(reason).unwrap_or_default();
+            assert!(
+                body["code"].as_str().is_some_and(|c| !c.is_empty())
+                    && body["error"].as_str().is_some_and(|e| !e.is_empty()),
+                "{what}：error 帧要带 code 和原句：{reason}"
             );
         }
     }
