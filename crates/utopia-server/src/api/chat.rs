@@ -42,7 +42,68 @@ const MAX_ROUNDS: usize = 6;
 
 enum ProducerEvent {
     Progress(Frame),
-    Outcome(Result<Uuid, String>),
+    Outcome(Result<Uuid, Failure>),
+}
+
+/// 一次没答成的生成（0004）：`code` 给界面去 `err.*` 表里查措辞，英文原句留给日志、
+/// MCP 和不做本地化的客户端。**服务端不出显示文本**——`error` 帧与请求被拒用的是
+/// 同一个信封 `{error, code}`，前端用同一个函数读
+struct Failure {
+    code: &'static str,
+    message: String,
+}
+
+impl Failure {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// 模型那一侧的失败，按 `utopia_llm` 的错误类型给 code；认不出的算作答失败
+    fn model(err: &anyhow::Error, message: impl Into<String>) -> Self {
+        Self::new(model_failure_code(err).unwrap_or("answer_failed"), message)
+    }
+}
+
+/// 模型端点的失败换成稳定的 code。类型是 `utopia_llm` 早就分好的：欠费、限流、
+/// 暂时不可用、请求没送到或断在半路、其余的拒绝。这里只是把它们说给界面听
+fn model_failure_code(err: &anyhow::Error) -> Option<&'static str> {
+    if utopia_llm::out_of_credit(err).is_some() {
+        Some("model_out_of_credit")
+    } else if utopia_llm::rate_limited(err).is_some() {
+        Some("model_rate_limited")
+    } else if utopia_llm::unavailable(err).is_some() {
+        Some("model_unavailable")
+    } else if utopia_llm::is_unreachable(err)
+        || err.chain().any(|e| e.is::<utopia_llm::Interrupted>())
+    {
+        Some("model_unreachable")
+    } else if utopia_llm::rejected(err).is_some() {
+        Some("model_rejected")
+    } else {
+        None
+    }
+}
+
+/// 收尾关口（`agent::finalization_error`）拦下候选答案时说的那几句，换成 code。
+/// 这几句以文本的形式穿过 `chat_finalization` 的边界，所以按原文认；测试直接拿
+/// `finalization_error` 的输出来对，改了措辞会在那里失败，而不是悄悄丢掉 code
+fn unpublishable_code(message: &str) -> Option<&'static str> {
+    if message.contains("tool-control text") {
+        Some("answer_tool_text")
+    } else if message.contains("attempted a tool call")
+        || message.contains("Tool calls are not answers")
+    {
+        Some("answer_tool_call")
+    } else if message.contains("empty answer") {
+        Some("answer_empty")
+    } else if message.contains("size limit") {
+        Some("answer_too_long")
+    } else {
+        None
+    }
 }
 
 /// `remember` 曾整个停用过一段（见 `docs/decisions/0015`）：它那时会把一句话直接
@@ -775,7 +836,7 @@ pub async fn chat(
                     // protocol garbage.
                     if shared.finalizing() {
                         if turn_text.len().saturating_add(t.text.len()) > agent::MAX_FINAL_ANSWER_BYTES {
-                            yield ProducerEvent::Outcome(Err("Model final answer exceeded the size limit".into()));
+                            yield ProducerEvent::Outcome(Err(Failure::new("answer_too_long", "Model final answer exceeded the size limit")));
                             return;
                         }
                         turn_text.push_str(&t.text);
@@ -894,7 +955,7 @@ pub async fn chat(
                 Ok(MultiTurnStreamItem::FinalResponse(_)) => finished = true,
                 Ok(_) => {}
                 Err(e) => {
-                    let (message, rejected) = describe(&e);
+                    let (failure, rejected) = describe(&e);
                     if matches!(&e, StreamingError::Prompt(pe) if matches!(pe.as_ref(), PromptError::PromptCancelled { .. }))
                         && shared.take_answer_request() {
                         answer_requested = true;
@@ -904,7 +965,7 @@ pub async fn chat(
                     // 的任何错误都走这条路：一次到 SiliconFlow 的网络抖动被记成
                     // 「tool-calling 不可用」，然后 RAG 死在同一个抖动上
                     if rejected && answer_acc.is_empty() && steps_acc.is_empty() {
-                        tracing::warn!(error = %message, "端点拒绝工具调用，降级为一次性 RAG");
+                        tracing::warn!(error = %failure.message, "端点拒绝工具调用，降级为一次性 RAG");
                         let mut legacy = std::pin::pin!(legacy_rag(
                             state.clone(),
                             kb_id,
@@ -919,7 +980,7 @@ pub async fn chat(
                         }
                         return;
                     }
-                    yield ProducerEvent::Outcome(Err(message));
+                    yield ProducerEvent::Outcome(Err(failure));
                     return;
                 }
             }
@@ -938,18 +999,25 @@ pub async fn chat(
             };
             match finalization::answer(&client, input).await {
                 Ok(answer) => { turn_text = answer; turn_calls.clear(); finished = true; }
-                Err(e) => { yield ProducerEvent::Outcome(Err(format!("Model could not produce a final answer: {e}"))); return; }
+                Err(e) => {
+                    let message = format!("Model could not produce a final answer: {e}");
+                    let code = model_failure_code(&e)
+                        .or_else(|| unpublishable_code(&message))
+                        .unwrap_or("answer_failed");
+                    yield ProducerEvent::Outcome(Err(Failure::new(code, message)));
+                    return;
+                }
             }
         }
         if !finished {
-            yield ProducerEvent::Outcome(Err("LLM stream ended unexpectedly".into()));
+            yield ProducerEvent::Outcome(Err(Failure::new("answer_failed", "LLM stream ended unexpectedly")));
             return;
         }
         // Check the terminal candidate, not earlier narration. The hook is the
         // policy boundary; this is the last guard before publication and storage.
         if shared.finalizing() {
             if let Some(reason) = agent::finalization_error(&turn_text, !turn_calls.is_empty(), &query) {
-                yield ProducerEvent::Outcome(Err(reason.into()));
+                yield ProducerEvent::Outcome(Err(Failure::new(unpublishable_code(reason).unwrap_or("answer_failed"), reason)));
                 return;
             }
             answer_acc.push_str(&turn_text);
@@ -958,7 +1026,7 @@ pub async fn chat(
             // 一次，这是第二次：报错，不存（#937）。不是（例如围栏里的示例），补发
             if turn_published < turn_text.len() {
                 if agent::tool_call_text(&turn_text, &query) {
-                    yield ProducerEvent::Outcome(Err(agent::CONTROL_TEXT.into()));
+                    yield ProducerEvent::Outcome(Err(Failure::new("answer_tool_text", agent::CONTROL_TEXT)));
                     return;
                 }
                 let rest = turn_text[turn_published..].to_string();
@@ -966,7 +1034,7 @@ pub async fn chat(
                 yield ProducerEvent::Progress(delta_event(&rest));
             }
             if turn_text.trim().is_empty() {
-                yield ProducerEvent::Outcome(Err("Model returned an empty answer".into()));
+                yield ProducerEvent::Outcome(Err(Failure::new("answer_empty", "Model returned an empty answer")));
                 return;
             }
         }
@@ -999,7 +1067,7 @@ pub async fn chat(
             Ok(id) => id,
             Err(error) => {
                 tracing::error!(%error, %conversation_id, "Could not persist final answer");
-                yield ProducerEvent::Outcome(Err("Could not save the answer. Please try again later.".into()));
+                yield ProducerEvent::Outcome(Err(Failure::new("answer_not_saved", "Could not save the answer. Please try again later.")));
                 return;
             }
         };
@@ -1021,7 +1089,10 @@ pub async fn chat(
             match event {
                 ProducerEvent::Progress(frame) => {
                     if matches!(frame.event, "done" | "error") {
-                        outcome = Some(Err("Producer sent a terminal as progress".into()));
+                        outcome = Some(Err(Failure::new(
+                            "answer_failed",
+                            "Producer sent a terminal as progress",
+                        )));
                         break;
                     }
                     handle.emit(frame).await;
@@ -1034,12 +1105,15 @@ pub async fn chat(
         }
         let terminal = match outcome {
             Some(Ok(_saved_id)) => done_event(),
-            Some(Err(message)) => error_event(if message.trim().is_empty() {
-                "Answer failed"
-            } else {
-                &message
-            }),
-            None => error_event("Answer stream ended unexpectedly"),
+            Some(Err(failure)) => error_event(
+                failure.code,
+                if failure.message.trim().is_empty() {
+                    "Answer failed"
+                } else {
+                    &failure.message
+                },
+            ),
+            None => error_event("stream_ended", "Answer stream ended unexpectedly"),
         };
         handle.emit(terminal).await;
         // 注销之后再接上的人得到「没有在跑的」，那时答案已经落库
@@ -1049,21 +1123,26 @@ pub async fn chat(
     Ok(sse_from(attached))
 }
 
-/// rig 的错误变成给用户的一句话，外加「是不是端点拒绝了工具调用」。
+/// rig 的错误变成一次失败（code 与英文原句），外加「是不是端点拒绝了工具调用」。
 /// 我们自己的错误链（限流、欠费、被拒）从 `rig_model` 里取回来，文本与从前一样
-fn describe(err: &StreamingError) -> (String, bool) {
-    fn completion(ce: &CompletionError) -> (String, bool) {
+fn describe(err: &StreamingError) -> (Failure, bool) {
+    fn completion(ce: &CompletionError) -> (Failure, bool) {
         match rig_model::llm_failure(ce) {
-            Some(ours) => (ours.to_string(), rig_model::tool_calling_rejected(ce)),
-            None => (ce.to_string(), false),
+            Some(ours) => (
+                Failure::model(ours, ours.to_string()),
+                rig_model::tool_calling_rejected(ce),
+            ),
+            None => (Failure::new("answer_failed", ce.to_string()), false),
         }
     }
     match err {
         StreamingError::Completion(ce) => completion(ce),
         StreamingError::Prompt(pe) => match pe.as_ref() {
             PromptError::CompletionError(ce) => completion(ce),
-            PromptError::PromptCancelled { reason, .. } => (reason.clone(), false),
-            other => (other.to_string(), false),
+            PromptError::PromptCancelled { reason, .. } => {
+                (Failure::new("answer_failed", reason.clone()), false)
+            }
+            other => (Failure::new("answer_failed", other.to_string()), false),
         },
     }
 }
@@ -1084,7 +1163,7 @@ fn legacy_rag(
             Ok(chunks) => chunks,
             Err(error) => {
                 tracing::warn!(%error, "fallback document retrieval failed");
-                yield ProducerEvent::Outcome(Err("Could not search the documents.".into()));
+                yield ProducerEvent::Outcome(Err(Failure::new("search_failed", "Could not search the documents.")));
                 return;
             }
         };
@@ -1108,11 +1187,11 @@ fn legacy_rag(
                 while let Some(item) = deltas.next().await {
                     match item {
                         Ok(text) => { answer_acc.push_str(&text); yield ProducerEvent::Progress(delta_event(&text)); }
-                        Err(e) => { yield ProducerEvent::Outcome(Err(e.to_string())); return; }
+                        Err(e) => { yield ProducerEvent::Outcome(Err(Failure::model(&e, e.to_string()))); return; }
                     }
                 }
                 if answer_acc.trim().is_empty() {
-                    yield ProducerEvent::Outcome(Err("Model returned an empty answer".into()));
+                    yield ProducerEvent::Outcome(Err(Failure::new("answer_empty", "Model returned an empty answer")));
                     return;
                 }
                 let saved = utopia_store::conversations::append_message(
@@ -1128,11 +1207,11 @@ fn legacy_rag(
                     Ok(id) => yield ProducerEvent::Outcome(Ok(id)),
                     Err(error) => {
                         tracing::error!(%error, "fallback answer persistence was not confirmed");
-                        yield ProducerEvent::Outcome(Err("Could not confirm that the answer was saved.".into()));
+                        yield ProducerEvent::Outcome(Err(Failure::new("answer_not_saved", "Could not confirm that the answer was saved.")));
                     }
                 }
             }
-            Err(e) => yield ProducerEvent::Outcome(Err(e.to_string())),
+            Err(e) => yield ProducerEvent::Outcome(Err(Failure::model(&e, e.to_string()))),
         }
     }
 }
@@ -1165,15 +1244,15 @@ fn sse_from(
                     if done { return; }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    yield to_event(&error_event("Answer stream ended unexpectedly"));
+                    yield to_event(&error_event("stream_ended", "Answer stream ended unexpectedly"));
                     return;
                 }
                 // 这个客户端读得太慢，被广播缓冲甩下了。**说出来**——
                 // 静默继续会让它少掉中间一段而毫不知情
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    yield to_event(&Frame::new(
-                        "error",
-                        format!("Fell behind the stream by {n} messages; reopen the conversation"),
+                    yield to_event(&error_event(
+                        "stream_lagged",
+                        &format!("Fell behind the stream by {n} messages; reopen the conversation"),
                     ));
                     return;
                 }
@@ -1213,8 +1292,12 @@ fn done_event() -> Frame {
     Frame::new("done", "{}".into())
 }
 
-fn error_event(message: &str) -> Frame {
-    Frame::new("error", message.into())
+/// 与请求被拒同一个信封：`error` 是英文原句，`code` 给界面查措辞（0004）
+fn error_event(code: &str, message: &str) -> Frame {
+    Frame::new(
+        "error",
+        json!({ "error": message, "code": code }).to_string(),
+    )
 }
 
 /// 正文里的引用号，与界面画角标的 `citeRe` 同一个形状：`[1]`、`[1][2]`、`[1, 2]`、
