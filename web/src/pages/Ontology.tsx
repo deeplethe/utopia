@@ -1809,6 +1809,27 @@ function UniquenessPanel({
   );
 }
 
+/** Suggest 提的那部分：批量加入只吃它们。代理提的每条都是人签的契约（0012），不进「全部加入」 */
+function manualOnly(d: OntologyProposals): OntologyProposals {
+  const own = <T extends { proposed_by?: string }>(xs: T[] | undefined) =>
+    (xs ?? []).filter((x) => x.proposed_by !== "agent");
+  return {
+    entity_types: own(d.entity_types),
+    relation_types: own(d.relation_types),
+    attribute_types: own(d.attribute_types),
+    map_to: own(d.map_to),
+  };
+}
+function manualCount(d: OntologyProposals): number {
+  const m = manualOnly(d);
+  return (
+    m.entity_types.length +
+    m.relation_types.length +
+    (m.attribute_types?.length ?? 0) +
+    (m.map_to?.length ?? 0)
+  );
+}
+
 /** 库里现在有几条代理提的提案：等代理答完的判据 */
 function agentCount(d: OntologyProposals | null | undefined): number {
   if (!d) return 0;
@@ -1832,7 +1853,8 @@ function AgentMeta({
   const shapeText = shapes
     .map(
       (sh) =>
-        `${sh.subject ?? "?"} — ${sh.phrase} → ${sh.value ? "value" : (sh.object ?? "?")}`,
+        `${sh.subject ?? "?"} — ${sh.phrase} → ${sh.value ? "value" : (sh.object ?? "?")}` +
+        (sh.direction === "reverse" ? " (reverse)" : ""),
     )
     .join("\n");
   const examples = (p.examples ?? []).join("\n");
@@ -2592,26 +2614,17 @@ function MissesPanel({
               {S.ontology.proposals}
             </h4>
             {/* 常见情形是"这些都对"——一条条点是把一个决定拆成八个 */}
-            {proposals.relation_types.length +
-              proposals.entity_types.length +
-              (proposals.attribute_types?.length ?? 0) +
-              (proposals.map_to?.length ?? 0) >
-              1 && (
+            {manualCount(proposals) > 1 && (
               <Button
                 size="sm"
                 variant="secondary"
                 className="ml-auto"
                 disabled={addAll.isPending}
-                onClick={() => addAll.mutate(proposals)}
+                onClick={() => addAll.mutate(manualOnly(proposals))}
               >
                 {addAll.isPending
                   ? S.ontology.addingAll
-                  : S.ontology.addAll(
-                      proposals.relation_types.length +
-                        proposals.entity_types.length +
-                        (proposals.attribute_types?.length ?? 0) +
-                        (proposals.map_to?.length ?? 0),
-                    )}
+                  : S.ontology.addAll(manualCount(proposals))}
               </Button>
             )}
           </div>
@@ -2622,6 +2635,7 @@ function MissesPanel({
               <div key={`map-${p.key}`} className="flex items-center gap-2 text-body">
                 <Chip tone="success">=</Chip>
                 <span className="font-mono text-ink-2">{p.key}</span>
+                {p.label && <span className="text-ink">{p.label}</span>}
                 {!!p.forms?.length && (
                   <span
                     className="text-small text-ink-2 truncate"
@@ -2630,7 +2644,8 @@ function MissesPanel({
                     {p.forms.join(" · ")}
                   </span>
                 )}
-                {!!p.forms?.length && (
+                {/* 改写多少条是 0003 那条路的账；代理提的走绑定，形状数在 AgentMeta 里 */}
+                {!!p.forms?.length && p.proposed_by !== "agent" && (
                   <span className="text-small text-accent">
                     {S.ontology.willRemap(factsWaiting(p.forms))}
                   </span>
@@ -2700,7 +2715,7 @@ function MissesPanel({
                 {p.temporal && <Chip tone="neutral">{p.temporal}</Chip>}
                 {/* 影响面：采纳后会改写多少条、归并了哪些写法。没有这个，
                     "approve" 就只是凭空多一个空关系 */}
-                {!!p.forms?.length && (
+                {!!p.forms?.length && p.proposed_by !== "agent" && (
                   <span
                     className="text-small text-accent"
                     title={p.forms.join(" · ")}
@@ -2742,7 +2757,7 @@ function MissesPanel({
                 <span className="text-ink">{p.label}</span>
                 <Chip tone="neutral">{p.datatype ?? "text"}</Chip>
                 {p.unit && <Chip tone="neutral">{p.unit}</Chip>}
-                {!!p.forms?.length && (
+                {!!p.forms?.length && p.proposed_by !== "agent" && (
                   <span
                     className="text-small text-accent"
                     title={p.forms.join(" · ")}

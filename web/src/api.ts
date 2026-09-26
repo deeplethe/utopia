@@ -1298,6 +1298,8 @@ export interface AgentProposalFields {
       subject: string | null;
       object: string | null;
       value: boolean;
+      /** map_to 的形状：读属性的方向 forward | reverse */
+      direction?: string;
     }[];
     kind_words?: string[];
   };
@@ -1347,8 +1349,8 @@ export interface OntologyProposals {
     /** 服务端标的：目标落在关系还是属性上。两条改写路径不一样，
         而模型只答得出一个 key，看不出它在哪一档。代理提的还有 class */
     kind?: string;
-    /** 代理提的：形状读属性的方向 forward | reverse */
-    direction?: string;
+    /** 代理提的：目标的标签，人看键看不懂 */
+    label?: string;
     forms?: string[];
     reason?: string;
   })[];

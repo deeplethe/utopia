@@ -386,13 +386,13 @@ async fn a_proposal_for_an_existing_key_or_binding_nothing_is_dropped() -> anyho
 }
 
 #[tokio::test]
-async fn a_declined_shape_returns_when_the_glossary_changes_and_an_existing_answer_becomes_a_binding(
+async fn a_declined_shape_returns_when_its_statements_double_and_an_existing_answer_becomes_a_binding(
 ) -> anyhow::Result<()> {
     let Some(f) = Fx::new(vec![
         // 第一轮：founded in 没提；located in 本体里已经有（located_in，正向）
         json!({ "p": [], "existing": [{ "key": "located_in", "dir": "forward", "s": [1], "k": [] }] }),
-        // 第三轮（词表变了之后）：只剩 founded in 送来，还是没提
-        json!({ "p": [], "existing": [] }),
+        // 陈述翻倍之后的那轮：只有 founded in 送来（这一批里它是 s0），答成 located_in 反着读
+        json!({ "p": [], "existing": [{ "key": "located_in", "dir": "reverse", "s": [0], "k": [] }] }),
     ])
     .await?
     else {
@@ -413,15 +413,19 @@ async fn a_declined_shape_returns_when_the_glossary_changes_and_an_existing_answ
     assert_eq!(m.key, "located_in");
     assert_eq!(m.proposed_by, "agent");
     assert_eq!(m.payload["kind"], "relation");
-    assert_eq!(m.payload["direction"], "forward");
+    assert_eq!(
+        m.payload["label"], "located in",
+        "the target's label travels with it"
+    );
     assert_eq!(m.payload["forms"][0], "located in");
     assert_eq!(m.signatures["phrases"][0]["phrase"], "located in");
+    assert_eq!(m.signatures["phrases"][0]["direction"], "forward");
 
     // 第二轮：一条提过（map_to）、一条看过没提，词表没变——不问
     propose(&f.state, f.kb).await?;
     assert_eq!(f.requests().await, 1, "nothing new to look at");
 
-    // 词表变了（多了一个类）：看过没提的 founded in 再送一次；map_to 已经提过的不送
+    // 词表变了（多了一个类）：看过没提的不再问——对齐自己会拿新元素去重判，问代理只是烧 token
     utopia_store::ontology::create_entity_type(
         &f.pool,
         f.kb,
@@ -436,8 +440,25 @@ async fn a_declined_shape_returns_when_the_glossary_changes_and_an_existing_answ
     propose(&f.state, f.kb).await?;
     assert_eq!(
         f.requests().await,
+        1,
+        "a changed glossary alone does not re-offer declined shapes"
+    );
+
+    // founded in 的陈述翻倍了（1 → 2）：再送一次；map_to 已经提过的 located in 不送
+    sqlx::query(
+        "INSERT INTO facts(id,kb_id,subject_id,object_id,layer,phrase)
+         SELECT $1, kb_id, subject_id, object_id, 'open', 'founded in' FROM facts
+          WHERE kb_id=$2 AND phrase='founded in' LIMIT 1",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.kb)
+    .execute(&f.pool)
+    .await?;
+    propose(&f.state, f.kb).await?;
+    assert_eq!(
+        f.requests().await,
         2,
-        "a changed glossary re-offers declined shapes"
+        "a declined shape with twice the statements is offered again"
     );
     let text = user_text(&f.model.requests.lock().unwrap()[1]);
     assert!(
@@ -449,7 +470,25 @@ async fn a_declined_shape_returns_when_the_glossary_changes_and_an_existing_answ
         "the shape already proposed as map_to is not offered: {text}"
     );
 
-    // 采纳 map_to：located in 这条形状成了人的绑定，绑到 located_in，正向
+    // 这一轮的答案并进同一条 map_to：两条形状，各自的方向
+    let open = utopia_store::ontology::open_proposals(&f.pool, f.kb).await?;
+    assert_eq!(open.len(), 1, "still one map_to row: {open:?}");
+    let shapes = open[0].signatures["phrases"].as_array().unwrap().clone();
+    assert_eq!(
+        shapes.len(),
+        2,
+        "shapes from both rounds are kept: {shapes:?}"
+    );
+    assert_eq!(shapes[0]["phrase"], "located in");
+    assert_eq!(shapes[0]["direction"], "forward");
+    assert_eq!(shapes[1]["phrase"], "founded in");
+    assert_eq!(shapes[1]["direction"], "reverse");
+    assert_eq!(
+        open[0].payload["forms"],
+        json!(["located in", "founded in"])
+    );
+
+    // 采纳 map_to：两条形状都成了人的绑定，绑到 located_in，各按自己的方向
     let id = adopt(
         &f.state,
         f.kb,
@@ -460,22 +499,24 @@ async fn a_declined_shape_returns_when_the_glossary_changes_and_an_existing_answ
     )
     .await?;
     assert_eq!(id, f.located_in);
-    let b = phrase_bindings::bindings(&f.pool, f.kb)
-        .await?
-        .into_iter()
-        .find(|b| b.phrase == "located in")
-        .expect("the binding exists");
-    assert_eq!(b.status, "bound");
-    assert_eq!(b.decided_by, "person");
-    assert_eq!(b.relation_type_id, Some(f.located_in));
-    assert_eq!(b.direction.as_deref(), Some("forward"));
+    let bindings = phrase_bindings::bindings(&f.pool, f.kb).await?;
+    for (phrase, dir) in [("located in", "forward"), ("founded in", "reverse")] {
+        let b = bindings
+            .iter()
+            .find(|b| b.phrase == phrase)
+            .expect("the binding exists");
+        assert_eq!(b.status, "bound", "{phrase}");
+        assert_eq!(b.decided_by, "person", "{phrase}");
+        assert_eq!(b.relation_type_id, Some(f.located_in), "{phrase}");
+        assert_eq!(b.direction.as_deref(), Some(dir), "{phrase}");
+    }
     assert!(
         utopia_store::ontology::open_proposals(&f.pool, f.kb)
             .await?
             .is_empty(),
         "the map_to proposal is adopted"
     );
-    // 第四轮：founded in 刚看过没提、located in 已经绑上——不问
+    // 再来一轮：两条都绑上了——不问
     propose(&f.state, f.kb).await?;
     assert_eq!(f.requests().await, 2);
     f.cleanup().await
