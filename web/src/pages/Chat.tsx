@@ -41,6 +41,7 @@ import { S } from "../i18n";
 import { rehypeCitations } from "../citations";
 import { followsBottom } from "../chatScroll";
 import { chatMarkdown, SourceList, SourcesProvider } from "./chatCitations";
+import { CopyButton } from "./chatCopy";
 import { toast } from "../toast";
 import {
   DropdownMenu,
@@ -1006,6 +1007,13 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
           缺席没人读得出来，得写出来。判据见 answeredWithoutSources */}
       {answeredWithoutSources(turn, !!live) && (
         <div className="mt-2 text-small text-ink-2">{S.ask.noSources}</div>
+      )}
+      {/* 回答上的动作（#936），同样等说完了才出。复制的是存下的 Markdown，
+          角标 `[n]` 照写——表格、代码块贴到别处还是原样 */}
+      {!live && turn.content && (
+        <div className="mt-2 flex items-center">
+          <CopyButton label={S.ask.copyAnswer} text={() => turn.content} />
+        </div>
       )}
     </div>
     </SourcesProvider>

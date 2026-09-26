@@ -742,6 +742,10 @@ export const zh: Strings = {
     cancel: "取消",
     noSources: "未引用任何来源",
     openOriginal: "打开原文",
+    copyAnswer: "复制回答",
+    copyCode: "复制代码",
+    copied: "已复制",
+    copyFailed: "无法复制，请选中文字后手动复制。",
   },
   graph: {
     untyped: "未分类",
