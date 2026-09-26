@@ -39,6 +39,7 @@ import {
 } from "../api";
 import { S } from "../i18n";
 import { rehypeCitations } from "../citations";
+import { followsBottom } from "../chatScroll";
 import { chatMarkdown, SourceList, SourcesProvider } from "./chatCitations";
 import { toast } from "../toast";
 import {
@@ -116,6 +117,9 @@ export function Chat() {
   // 路由同步 effect 的判据：state 的提交时序晚于 navigate 触发的重渲染，
   // 用 ref 同步写入才能让"流式新建后仅换 URL"的守卫可靠命中
   const activeIdRef = useRef<string | null>(null);
+  // 读者是不是停在对话底部（见 chatScroll.ts）。换会话、发新消息都回到「跟着」：
+  // 那一刻人要看的就是底部
+  const following = useRef(true);
   // 已经结束的那些轮次，从库里读来。**进行中的那一次不在这里**——见下
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
@@ -141,6 +145,7 @@ export function Chat() {
     // loadConversation 必须先检查 liveAnswer.entry，直接认领，避免流中途读库覆盖。
     claimView(routeConvId ?? null);
     activeIdRef.current = null;
+    following.current = true;
     setActiveId(routeConvId ?? null);
     setTurns([]);
     setLoadedKey(null);
@@ -238,9 +243,10 @@ export function Chat() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  // 直落底部（instant）：平滑滚动在流式追加下会一路慢爬
+  // 直落底部（instant）：平滑滚动在流式追加下会一路慢爬。**只在人停在底部时落**：
+  // 生成期间 `shown` 每 33ms 变一次，翻上去读前文的人不该被每一批新字拽回来
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    if (following.current) bottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, [shown]);
 
   // 路由 → 会话装载；裸 /chat 还原本库上次会话（切页回来仍在原对话）
@@ -401,6 +407,7 @@ export function Chat() {
     // 同样不 abort：开一场新的不等于放弃上一场
     if (kb) sessionStorage.removeItem(lastKey(kb.id));
     activeIdRef.current = null;
+    following.current = true;
     setActiveId(null);
     setTurns([]);
     navigate({ to: "/kb/$kbId/chat", params: { kbId } });
@@ -423,6 +430,7 @@ export function Chat() {
     const q = input.trim();
     if (!q || streaming || !kb || kb.id !== kbId || loadingHistory || historyError) return;
     const owner = claimView(activeId);
+    following.current = true;
     setIdleHistoryKey(null);
     setInput("");
     sessionStorage.removeItem(DRAFT_KEY);
@@ -784,7 +792,12 @@ export function Chat() {
           </div>
         ) : (
           <>
-            <div className="flex-1 overflow-y-auto u-scroll u-chat-fade px-4 pt-6 pb-12">
+            <div
+              className="flex-1 overflow-y-auto u-scroll u-chat-fade px-4 pt-6 pb-12"
+              onScroll={(e) => {
+                following.current = followsBottom(e.currentTarget);
+              }}
+            >
               <div className="max-w-3xl mx-auto space-y-4">
                 {shown.map((t, i) => (
                   <TurnView key={i} turn={t} live={streaming && i === shown.length - 1} />

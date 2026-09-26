@@ -35,6 +35,13 @@ struct Fixture {
     arule_b: Uuid,
     der_a: Uuid,
     der_b: Uuid,
+    irule_a: Uuid,
+    irule_b: Uuid,
+    arv_a: Uuid,
+    arv_b: Uuid,
+    erun_a: Uuid,
+    erun_b: Uuid,
+    eact_a: Uuid,
 }
 
 /// 两库，每库一套能被引用的零件：文档/段落/实体/事实/谓词/类/公理规则/业务规则/派生
@@ -54,6 +61,10 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
     let (rule_a, rule_b) = (Uuid::now_v7(), Uuid::now_v7());
     let (arule_a, arule_b) = (Uuid::now_v7(), Uuid::now_v7());
     let (der_a, der_b) = (Uuid::now_v7(), Uuid::now_v7());
+    let (irule_a, irule_b) = (Uuid::now_v7(), Uuid::now_v7());
+    let (arv_a, arv_b) = (Uuid::now_v7(), Uuid::now_v7());
+    let (erun_a, erun_b) = (Uuid::now_v7(), Uuid::now_v7());
+    let eact_a = Uuid::now_v7();
 
     sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, 'xkb-ref-test')")
         .bind(org)
@@ -181,6 +192,62 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         .execute(pool)
         .await?;
     }
+    // 0073 之后进库的同库家族成员:蕴含规则、读数缓存、勘误账、定义史——
+    // 每库一套,供越库断言取用
+    for (id, kb, pred) in [(irule_a, a, rel_a), (irule_b, b, rel_b)] {
+        sqlx::query(
+            "INSERT INTO implication_rules (id, kb_id, trigger, phrase,
+                                           conclude_property_id, status)
+             VALUES ($1, $2, 'phrase', 'p', $3, 'approved')",
+        )
+        .bind(id)
+        .bind(kb)
+        .bind(pred)
+        .execute(pool)
+        .await?;
+    }
+    for (id, kb, rule) in [(arv_a, a, arule_a), (arv_b, b, arule_b)] {
+        sqlx::query(
+            "INSERT INTO attribute_rule_versions (id, kb_id, rule_id, seq, definition)
+             VALUES ($1, $2, $3, 1, '{}'::jsonb)",
+        )
+        .bind(id)
+        .bind(kb)
+        .bind(rule)
+        .execute(pool)
+        .await?;
+    }
+    for (id, kb, doc) in [(erun_a, a, doc_a), (erun_b, b, doc_b)] {
+        sqlx::query("INSERT INTO errata_runs (id, kb_id, document_id) VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(kb)
+            .bind(doc)
+            .execute(pool)
+            .await?;
+    }
+    for (id, kb, run, doc) in [(eact_a, a, erun_a, doc_a)] {
+        sqlx::query(
+            "INSERT INTO errata_actions (id, kb_id, run_id, document_id, action, status)
+             VALUES ($1, $2, $3, $4, 'keep', 'held')",
+        )
+        .bind(id)
+        .bind(kb)
+        .bind(run)
+        .bind(doc)
+        .execute(pool)
+        .await?;
+    }
+    // 读数缓存没有 id 列——键是 (kb_id, reading, phrase)
+    for (kb, ent) in [(a, ent_a), (b, ent_b)] {
+        sqlx::query(
+            "INSERT INTO phrase_readings (kb_id, reading, phrase, entity_id)
+             VALUES ($1, 'nationality', 'r', $2)",
+        )
+        .bind(kb)
+        .bind(ent)
+        .execute(pool)
+        .await?;
+    }
     Ok(Fixture {
         org,
         a,
@@ -203,6 +270,13 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         arule_b,
         der_a,
         der_b,
+        irule_a,
+        irule_b,
+        arv_a,
+        arv_b,
+        erun_a,
+        erun_b,
+        eact_a,
     })
 }
 
@@ -537,6 +611,206 @@ async fn new_cross_kb_writes_are_rejected_on_every_exported_edge() -> anyhow::Re
     .await;
     assert!(err.is_err(), "arule.conclude_predicate→foreign 必须被拒");
 
+    // —— #901:0070 之后进库的表也归同一条不变量 ——
+    // 蕴含规则本体的三个引用列（复合外键）
+    for (col, foreign_id, what) in [
+        ("subject_type_id", f.cls_b, "irule.subject_type"),
+        ("object_type_id", f.cls_b, "irule.object_type"),
+    ] {
+        let err = sqlx::query(&format!(
+            "INSERT INTO implication_rules (id, kb_id, trigger, phrase,
+                                           conclude_property_id, status, {col})
+             VALUES ($1, $2, 'phrase', 'p', $3, 'approved', $4)",
+        ))
+        .bind(Uuid::now_v7())
+        .bind(f.a)
+        .bind(f.rel_a)
+        .bind(foreign_id)
+        .execute(&pool)
+        .await;
+        assert!(err.is_err(), "{what}→foreign 必须被拒");
+    }
+    let err = sqlx::query(
+        "INSERT INTO implication_rules (id, kb_id, trigger, phrase,
+                                       conclude_property_id, status)
+         VALUES ($1, $2, 'phrase', 'p', $3, 'approved')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.rel_b)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "irule.conclude_property→foreign 必须被拒");
+
+    // 读数缓存答出的实体（复合外键）；UPDATE 路径同样拦
+    let err = sqlx::query(
+        "INSERT INTO phrase_readings (kb_id, reading, phrase, entity_id)
+         VALUES ($1, 'nationality', 'x', $2)",
+    )
+    .bind(f.a)
+    .bind(f.ent_b)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "reading.entity→foreign 必须被拒");
+    let err =
+        sqlx::query("UPDATE phrase_readings SET entity_id = $1 WHERE kb_id = $2 AND phrase = 'r'")
+            .bind(f.ent_b)
+            .bind(f.a)
+            .execute(&pool)
+            .await;
+    assert!(err.is_err(), "reading.entity 改成别库也必须被拒");
+
+    // 隐含事实的出处（owner-derived 触发器）：规则、触发的陈述、触发的实体
+    // 都按所属 fact 的库判；CHECK 要求 statement/entity 恰好一个非空
+    let err = sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(f.fact_a)
+    .bind(f.irule_b)
+    .bind(f.fact_a)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "implied.rule→foreign 必须被拒");
+    let err = sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(f.fact_a)
+    .bind(f.irule_a)
+    .bind(f.fact_b)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "implied.statement→foreign 必须被拒");
+    let err = sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, entity_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(f.fact_a)
+    .bind(f.irule_a)
+    .bind(f.ent_b)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "implied.entity→foreign 必须被拒");
+    // UPDATE 路径：先落合法行，再把 rule 改成别库的——UPDATE OF 盯得住
+    sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, entity_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(f.fact_b)
+    .bind(f.irule_b)
+    .bind(f.ent_b)
+    .execute(&pool)
+    .await?;
+    let err = sqlx::query("UPDATE implied_fact_sources SET rule_id = $1 WHERE fact_id = $2")
+        .bind(f.irule_a)
+        .bind(f.fact_b)
+        .execute(&pool)
+        .await;
+    assert!(err.is_err(), "implied.rule 改成别库也必须被拒");
+
+    // 勘误账：run 盯的文档、action 上的六个引用列全是复合外键
+    let err = sqlx::query("INSERT INTO errata_runs (id, kb_id, document_id) VALUES ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(f.a)
+        .bind(f.doc_b)
+        .execute(&pool)
+        .await;
+    assert!(err.is_err(), "erratarun.document→foreign 必须被拒");
+    for (col, foreign_id, what) in [
+        ("fact_id", f.fact_b, "errata.fact"),
+        ("statement_id", f.fact_b, "errata.statement"),
+        ("predicate_id", f.rel_b, "errata.predicate"),
+        ("new_fact_id", f.fact_b, "errata.new_fact"),
+    ] {
+        let err = sqlx::query(&format!(
+            "INSERT INTO errata_actions (id, kb_id, run_id, document_id, action, status, {col})
+             VALUES ($1, $2, $3, $4, 'keep', 'held', $5)",
+        ))
+        .bind(Uuid::now_v7())
+        .bind(f.a)
+        .bind(f.erun_a)
+        .bind(f.doc_a)
+        .bind(foreign_id)
+        .execute(&pool)
+        .await;
+        assert!(err.is_err(), "{what}→foreign 必须被拒");
+    }
+    // run/document 两列走 UPDATE 路径验:把已有 action 挪到别库的
+    // run 或文档上,复合外键照样当场拒
+    for (col, foreign_id, what) in [
+        ("run_id", f.erun_b, "errata.run"),
+        ("document_id", f.doc_b, "errata.document"),
+    ] {
+        let err = sqlx::query(&format!(
+            "UPDATE errata_actions SET {col} = $1 WHERE id = $2",
+        ))
+        .bind(foreign_id)
+        .bind(f.eact_a)
+        .execute(&pool)
+        .await;
+        assert!(err.is_err(), "{what} 改成别库也必须被拒");
+    }
+
+    // 规则定义史与凭它推出的派生（#913 的表也在面内）
+    // superseded 的版本不占「每规则一条 current」的唯一索引——让行只剩
+    // 跨库这一个毛病,拒它的才是那条复合外键
+    let err = sqlx::query(
+        "INSERT INTO attribute_rule_versions (id, kb_id, rule_id, seq, definition,
+                                              superseded_at)
+         VALUES ($1, $2, $3, 9, '{}'::jsonb, now())",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.arule_b)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "arversion.rule→foreign 必须被拒");
+    // 派生的「凭哪一版定义推出」不许指别库(identity 键不含规则列,
+    // object_value 换个值躲开与已落派生的身份撞车)
+    let err = sqlx::query(
+        "INSERT INTO derived_facts (id, kb_id, subject_id, predicate_id, object_value,
+                                    attribute_rule_id, attribute_rule_version_id)
+         VALUES ($1, $2, $3, $4, '\"v\"'::jsonb, $5, $6)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.ent_a)
+    .bind(f.rel_a)
+    .bind(f.arule_a)
+    .bind(f.arv_b)
+    .execute(&pool)
+    .await;
+    assert!(
+        err.is_err(),
+        "derived.attribute_rule_version→foreign 必须被拒"
+    );
+
+    // 0071/0080 出生就带复合键、却一直不在体检里的两条边
+    let err = sqlx::query(
+        "INSERT INTO attribute_rules (id, kb_id, name, subject_type_id, conclusion,
+                                      conclude_predicate_id, join_predicate_id)
+         VALUES ($1, $2, 'ar-r', $3, 'relation', $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.cls_a)
+    .bind(f.rel_a)
+    .bind(f.rel_b)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "arule.join_predicate→foreign 必须被拒");
+    let err = sqlx::query(
+        "INSERT INTO name_vectors (fact_id, kb_id, entity_id, embedding)
+         VALUES ($1, $2, $3, '[0]'::vector)",
+    )
+    .bind(f.fact_b)
+    .bind(f.a)
+    .bind(f.ent_a)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "namevector.fact→foreign 必须被拒");
+
     // —— kb 过户：把已被引用的行挪到别的库，等于把指着它的行一次全变坏行
     for (table, id, what) in [
         ("entities", f.ent_a, "entities.kb_id"),
@@ -545,6 +819,14 @@ async fn new_cross_kb_writes_are_rejected_on_every_exported_edge() -> anyhow::Re
         ("derived_facts", f.der_a, "derived_facts.kb_id"),
         ("rules", f.rule_a, "rules.kb_id"),
         ("attribute_rules", f.arule_a, "attribute_rules.kb_id"),
+        ("implication_rules", f.irule_a, "implication_rules.kb_id"),
+        ("errata_runs", f.erun_a, "errata_runs.kb_id"),
+        ("errata_actions", f.eact_a, "errata_actions.kb_id"),
+        (
+            "attribute_rule_versions",
+            f.arv_a,
+            "attribute_rule_versions.kb_id",
+        ),
     ] {
         let err = sqlx::query(&format!("UPDATE {table} SET kb_id = $2 WHERE id = $1"))
             .bind(id)
@@ -553,6 +835,14 @@ async fn new_cross_kb_writes_are_rejected_on_every_exported_edge() -> anyhow::Re
             .await;
         assert!(err.is_err(), "{what} 过户必须被拒");
     }
+    // 读数缓存的键不是 id——按 (kb_id, reading, phrase) 挪库同样不许
+    let err =
+        sqlx::query("UPDATE phrase_readings SET kb_id = $1 WHERE kb_id = $2 AND phrase = 'r'")
+            .bind(f.b)
+            .bind(f.a)
+            .execute(&pool)
+            .await;
+    assert!(err.is_err(), "phrase_readings.kb_id 过户必须被拒");
 
     // —— 防误伤：同库的合法写入照常
     sqlx::query(
@@ -569,6 +859,62 @@ async fn new_cross_kb_writes_are_rejected_on_every_exported_edge() -> anyhow::Re
     )
     .bind(f.fact_a)
     .bind(f.rel_a)
+    .bind(f.ent_a)
+    .execute(&pool)
+    .await?;
+    // 新家族同库写入也要照常：出处、读数、勘误、定义史、名字向量
+    sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(f.fact_a)
+    .bind(f.irule_a)
+    .bind(f.fact_a)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO phrase_readings (kb_id, reading, phrase, entity_id)
+         VALUES ($1, 'nationality', 'y', $2)",
+    )
+    .bind(f.a)
+    .bind(f.ent_a)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO errata_actions (id, kb_id, run_id, document_id, fact_id,
+                                     statement_id, predicate_id, new_fact_id,
+                                     action, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'revise', 'held')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.erun_a)
+    .bind(f.doc_a)
+    .bind(f.fact_a)
+    .bind(f.fact_a)
+    .bind(f.rel_a)
+    .bind(f.fact_a)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO derived_facts (id, kb_id, subject_id, predicate_id, object_value,
+                                    attribute_rule_id, attribute_rule_version_id)
+         VALUES ($1, $2, $3, $4, '\"ok\"'::jsonb, $5, $6)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.ent_a)
+    .bind(f.rel_a)
+    .bind(f.arule_a)
+    .bind(f.arv_a)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO name_vectors (fact_id, kb_id, entity_id, embedding)
+         VALUES ($1, $2, $3, '[0]'::vector)",
+    )
+    .bind(f.fact_a)
+    .bind(f.a)
     .bind(f.ent_a)
     .execute(&pool)
     .await?;
@@ -872,15 +1218,217 @@ async fn malformed_rows_fail_every_exported_edge_closed() -> anyhow::Result<()> 
     .bind(f.cls_b)
     .execute(&mut *tx)
     .await?;
+
+    // —— #901 新家族的坏行:0091 保护的 15 条新边 + 两条早就带复合键、
+    //    却一直没人登记体检的边(join_predicate、name_vectors) ——
+    // 蕴含规则本体的三个引用列
+    sqlx::query(
+        "INSERT INTO implication_rules (id, kb_id, trigger, phrase, conclude_property_id,
+                                        status, subject_type_id)
+         VALUES ($1, $2, 'phrase', 'p', $3, 'approved', $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.rel_a)
+    .bind(f.cls_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO implication_rules (id, kb_id, trigger, phrase, conclude_property_id,
+                                        status, object_type_id)
+         VALUES ($1, $2, 'phrase', 'p', $3, 'approved', $4)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.rel_a)
+    .bind(f.cls_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO implication_rules (id, kb_id, trigger, phrase, conclude_property_id,
+                                        status)
+         VALUES ($1, $2, 'phrase', 'p', $3, 'approved')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.rel_b)
+    .execute(&mut *tx)
+    .await?;
+    // 读数缓存答了别库的实体
+    sqlx::query(
+        "INSERT INTO phrase_readings (kb_id, reading, phrase, entity_id)
+         VALUES ($1, 'nationality', 'bad', $2)",
+    )
+    .bind(f.a)
+    .bind(f.ent_b)
+    .execute(&mut *tx)
+    .await?;
+    // 隐含事实的出处三种坏法(CHECK:statement/entity 恰好一个;
+    // 主键是 (fact_id, rule_id),再落一条同库事实把三行错开)
+    sqlx::query(
+        "INSERT INTO facts (id, kb_id, subject_id, object_id, confidence)
+         VALUES ($1, $2, $3, $3, 0.9)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.ent_a)
+    .execute(&mut *tx)
+    .await?;
+    let fact_a2: Uuid = sqlx::query_scalar(
+        "SELECT id FROM facts WHERE kb_id = $1 AND id <> $2 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(f.a)
+    .bind(f.fact_a)
+    .fetch_one(&mut *tx)
+    .await?;
+    // 再落一条本库规则:三行各占一个 (fact_id, rule_id) 主键
+    let irule_a2 = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO implication_rules (id, kb_id, trigger, phrase,
+                                        conclude_property_id, status)
+         VALUES ($1, $2, 'phrase', 'q', $3, 'approved')",
+    )
+    .bind(irule_a2)
+    .bind(f.a)
+    .bind(f.rel_a)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(f.fact_a)
+    .bind(f.irule_b)
+    .bind(f.fact_a)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(fact_a2)
+    .bind(f.irule_a)
+    .bind(f.fact_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO implied_fact_sources (fact_id, rule_id, entity_id)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(fact_a2)
+    .bind(irule_a2)
+    .bind(f.ent_b)
+    .execute(&mut *tx)
+    .await?;
+    // 定义史挂到别库规则;派生记下别库的版本(版本行标 superseded,
+    // 不与种子里那条 current 撞「每规则一条」的唯一索引)
+    sqlx::query(
+        "INSERT INTO attribute_rule_versions (id, kb_id, rule_id, seq, definition,
+                                              superseded_at)
+         VALUES ($1, $2, $3, 9, '{}'::jsonb, now())",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.arule_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO derived_facts (id, kb_id, subject_id, predicate_id, object_value,
+                                    attribute_rule_id, attribute_rule_version_id)
+         VALUES ($1, $2, $3, $4, '\"bad\"'::jsonb, $5, $6)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.ent_a)
+    .bind(f.rel_a)
+    .bind(f.arule_a)
+    .bind(f.arv_b)
+    .execute(&mut *tx)
+    .await?;
+    // 勘误账:run 盯别库文档一行;action 上的 run/document 各坏一行,
+    // 其余四列塞进同一行
+    sqlx::query("INSERT INTO errata_runs (id, kb_id, document_id) VALUES ($1, $2, $3)")
+        .bind(Uuid::now_v7())
+        .bind(f.a)
+        .bind(f.doc_b)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "INSERT INTO errata_actions (id, kb_id, run_id, document_id, action, status)
+         VALUES ($1, $2, $3, $4, 'keep', 'held')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.erun_b)
+    .bind(f.doc_a)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO errata_actions (id, kb_id, run_id, document_id, action, status)
+         VALUES ($1, $2, $3, $4, 'keep', 'held')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.erun_a)
+    .bind(f.doc_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO errata_actions (id, kb_id, run_id, document_id, fact_id,
+                                     statement_id, predicate_id, new_fact_id,
+                                     action, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'revise', 'held')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.erun_a)
+    .bind(f.doc_a)
+    .bind(f.fact_b)
+    .bind(f.fact_b)
+    .bind(f.rel_b)
+    .bind(f.fact_b)
+    .execute(&mut *tx)
+    .await?;
+    // relation 形状的 join 谓词指别库;名字向量两头各坏一行
+    sqlx::query(
+        "INSERT INTO attribute_rules (id, kb_id, name, subject_type_id, conclusion,
+                                      conclude_predicate_id, join_predicate_id)
+         VALUES ($1, $2, 'ar-j', $3, 'relation', $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.a)
+    .bind(f.cls_a)
+    .bind(f.rel_a)
+    .bind(f.rel_b)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO name_vectors (fact_id, kb_id, entity_id, embedding)
+         VALUES ($1, $2, $3, '[0]'::vector)",
+    )
+    .bind(f.fact_b)
+    .bind(f.a)
+    .bind(f.ent_a)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO name_vectors (fact_id, kb_id, entity_id, embedding)
+         VALUES ($1, $2, $3, '[0]'::vector)",
+    )
+    .bind(f.fact_a)
+    .bind(f.a)
+    .bind(f.ent_b)
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     drop(conn);
 
     let err = utopia_store::export::provenance_integrity(&mut pool.begin().await?, f.a).await;
     let msg = format!("{err:?}");
     assert!(err.is_err(), "库 A 的体检必须拒导");
-    // 体检覆盖 0070 保护的全部结构边——埋下去的每一类坏行都要被点名,
+    // 体检覆盖 0070/0091 保护的全部结构边——埋下去的每一类坏行都要被点名,
     // 导出还没序列化的边(规则、绑定、时间提及、条件)也一样:受保护的
-    // 同库引用断在账本上,这份导出就不可信。38 个报错 label 对应 39 条
+    // 同库引用断在账本上,这份导出就不可信。57 个报错 label 对应 58 条
     // 结构边(class.disjoint 的 a_id/b_id 共用一个 label)
     for edge in [
         "evidence.chunk",
@@ -900,6 +1448,7 @@ async fn malformed_rows_fail_every_exported_edge_closed() -> anyhow::Result<()> 
         "derived.predicate",
         "derived.rule",
         "derived.attribute_rule",
+        "derived.attribute_rule_version",
         "entity.type",
         "class.parent",
         "class.disjoint",
@@ -912,6 +1461,8 @@ async fn malformed_rows_fail_every_exported_edge_closed() -> anyhow::Result<()> 
         "arule.subject_type",
         "arule.conclude_type",
         "arule.conclude_predicate",
+        "arule.join_predicate",
+        "arversion.rule",
         "condition.predicate",
         "factsource.statement",
         "squalifier.entity",
@@ -921,6 +1472,22 @@ async fn malformed_rows_fail_every_exported_edge_closed() -> anyhow::Result<()> 
         "pbinding.subject_type",
         "pbinding.object_type",
         "pbinding.relation",
+        "irule.subject_type",
+        "irule.object_type",
+        "irule.conclude_property",
+        "reading.entity",
+        "implied.rule",
+        "implied.statement",
+        "implied.entity",
+        "erratarun.document",
+        "errata.run",
+        "errata.document",
+        "errata.fact",
+        "errata.statement",
+        "errata.predicate",
+        "errata.new_fact",
+        "namevector.fact",
+        "namevector.entity",
     ] {
         assert!(msg.contains(edge), "体检该报 {edge}: {msg}");
     }

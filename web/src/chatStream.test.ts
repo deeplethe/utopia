@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { reattachChat, streamChat, type ChatHandlers } from "./api";
-vi.mock("./i18n", () => ({ S: { ask: { streamInterrupted: "Stream interrupted" } }, lang: "en" }));
+vi.mock("./i18n", () => ({
+  S: {
+    ask: { streamInterrupted: "Stream interrupted" },
+    err: { no_chat_model: "Worded: configure a chat model" },
+    errDetail: (message: string, detail: string) => `${message} (${detail})`,
+  },
+  lang: "en",
+}));
 afterEach(() => vi.unstubAllGlobals());
 
 const encoder = new TextEncoder();
@@ -25,6 +32,34 @@ async function replay(text: string, attach = false, bytewise = false) {
   expect(fetch).toHaveBeenCalledTimes(1);
   return events;
 }
+
+/** The chat request is refused before any stream opens */
+async function refuse(status: number, body: unknown) {
+  const events: [string, unknown][] = [];
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status })));
+  streamChat("kb", { message: "hello" }, {
+    onConversation: vi.fn(), onSources: vi.fn(), onStep: vi.fn(), onDelta: vi.fn(),
+    onDone: () => events.push(["done", null]), onError: (v) => events.push(["error", v]),
+  });
+  await vi.waitFor(() => expect(events).toHaveLength(1));
+  return events;
+}
+
+describe("a refused chat request", () => {
+  it("is worded from its stable code, like every other request", async () => {
+    expect(await refuse(422, { error: "Chat model not configured. Go to Settings → Models.", code: "no_chat_model" }))
+      .toEqual([["error", "Worded: configure a chat model"]]);
+  });
+  it("keeps the server's sentence when there is no code to word it by", async () => {
+    expect(await refuse(404, { error: "Not found" })).toEqual([["error", "Not found"]]);
+    expect(await refuse(422, { error: "Not in the table yet", code: "unlisted_code" }))
+      .toEqual([["error", "Not in the table yet"]]);
+  });
+  it("keeps the server's detail beside the wording", async () => {
+    expect(await refuse(422, { error: "x", code: "no_chat_model", detail: "no endpoint" }))
+      .toEqual([["error", "Worded: configure a chat model (no endpoint)"]]);
+  });
+});
 
 describe("application chat terminal outcomes", () => {
   it.each(["\n", "\r\n", "\r"])("reads %j line endings once, including split UTF-8", async (nl) => {

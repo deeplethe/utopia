@@ -80,9 +80,15 @@ fn node_line(n: &GraphNode) -> String {
     )
 }
 
+/// 记下这一轮认下的实体。下一轮会被告知「直接用这些 id，别再按名字查」，所以这里
+/// 只能是真的读过、或者搜索明确指向的那个——同一轮先按名字认、再按 id 读，只记一次
 fn remember(sink: &mut ToolSink, n: &GraphNode) {
+    let id = n.id.to_string();
+    if sink.resolved.iter().any(|e| e["id"] == id.as_str()) {
+        return;
+    }
     sink.resolved.push(json!({
-        "id": n.id.to_string(), "name": n.name, "type": n.type_label
+        "id": id, "name": n.name, "type": n.type_label
     }));
 }
 
@@ -209,9 +215,10 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
         }
     };
     let (ranked, by_question) = rank_by_question(ctx, rank(hits, &name), &name).await;
+    let clear = by_question || dominant(&ranked, &name);
     let text = if ranked.is_empty() {
         "No matching entities.".to_string()
-    } else if by_question || dominant(&ranked, &name) {
+    } else if clear {
         let mut lines = vec![format!("Best match: {}", node_line(&ranked[0]))];
         if ranked.len() > 1 {
             lines.push("Other matches:".to_string());
@@ -225,8 +232,12 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
         lines.extend(ranked.iter().map(node_line));
         lines.join("\n")
     };
-    for n in &ranked {
-        remember(sink, n);
+    // 同名歧义时候选只是搜索结果，不是认下的实体。从前这里全记，下一轮就收到一串
+    // 同名的 id 和一句「直接用这些」，没选的那个还常常排在前面。选中的那个在它被
+    // 读的时候记（entity_facts / neighbors / timeline）；上一轮的候选另有工具往返
+    // 的回放可查
+    if let Some(best) = ranked.first().filter(|_| clear) {
+        remember(sink, best);
     }
     ToolResult::new(
         text,
@@ -605,6 +616,9 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
                 .error();
             }
         };
+    // 按 id 读的也是认下：模型常常先搜到一串同名的，再按 id 读其中一个，读的这个
+    // 才是这一轮说的那个（按名字认下的 `resolve` 已记过，这里不会重复）
+    remember(sink, &node);
     // 规则的结论也是这个实体的一部分（0021）。**不给的话模型会拿那些读数自己再判
     // 一遍**——而阈值写在规则里，它看不见，于是两处判断迟早不一致
     let derived = match
@@ -800,6 +814,7 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
                 .error();
             }
         };
+    remember(sink, &node);
     // 邻居是对端**实体**；属性值不算邻居，entity_facts 里有
     let (matched, aligned) = filtered(ctx, &facts, &filter).await;
     let linked: Vec<&EntityFact> = matched
@@ -926,6 +941,7 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
                 .error();
             }
         };
+    remember(sink, &node);
     // 只要**说出了世界时间**的事实。没日期的那些起点是摄取时刻，排进时间线只会
     // 把一篇文章的日期当成事件的日期
     let (matched, aligned) = filtered(ctx, &facts, &filter).await;
