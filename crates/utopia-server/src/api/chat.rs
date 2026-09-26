@@ -221,15 +221,12 @@ pub(super) fn check_call(
     name: &str,
     raw_args: &str,
 ) -> Result<serde_json::Value, (String, serde_json::Value)> {
-    let refuse = |detail: &str, message: String| {
-        (
-            message,
-            json!({ "kind": "tool", "label": name, "detail": detail }),
-        )
-    };
+    // 界面按字段说（#942）：哪个参数、没给还是给错了；整个解析不出来的没有 `param`
+    let step = |detail: &str| super::tools::Step::new("tool", name, detail);
+    let refuse = |step: super::tools::Step, message: String| (message, step.json());
     let Ok(args) = serde_json::from_str::<serde_json::Value>(raw_args) else {
         return Err(refuse(
-            "bad arguments",
+            step("bad arguments").status("invalid"),
             format!(
                 "The arguments for {name} were not valid JSON, so the call was not run. \
                  They were probably cut off. Call it again with complete arguments."
@@ -253,7 +250,7 @@ pub(super) fn check_call(
         };
         if missing {
             return Err(refuse(
-                &format!("missing {key}"),
+                step(&format!("missing {key}")).missing(key),
                 format!(
                     "{name} needs `{key}`, and it was missing or empty, so the call was not \
                      run. Call it again with `{key}` set."
@@ -271,7 +268,7 @@ pub(super) fn check_call(
                 .is_none_or(|s| s.trim().parse::<Uuid>().is_err())
         {
             return Err(refuse(
-                &format!("invalid {key}"),
+                step(&format!("invalid {key}")).invalid(key),
                 format!(
                     "{name} needs `{key}` to be a uuid returned by another tool, and it was \
                      not, so the call was not run. Look the id up first, then call it again."
@@ -282,7 +279,7 @@ pub(super) fn check_call(
             function.is_some_and(|f| f["parameters"]["properties"][key]["type"] == "string");
         if is_string && !args[key].is_string() {
             return Err(refuse(
-                &format!("invalid {key}"),
+                step(&format!("invalid {key}")).invalid(key),
                 format!(
                     "{name} needs `{key}`, which must be a string, so the call was not run. \
                      Call it again with `{key}` set to a string."
@@ -903,7 +900,7 @@ pub async fn chat(
                     if tool_result.name != agent::NO_EVIDENCE_TOOL {
                         let mut step = match shared.take_step(&internal_call_id) {
                             Some((step, failed)) => { is_error = Some(failed); step }
-                            None => json!({ "kind": "tool", "label": tool_result.name, "detail": "unknown" }),
+                            None => super::tools::Step::new("tool", tool_result.name.as_str(), "unknown").status("not_found").json(),
                         };
                         // **这一步发生在正文的哪个位置。**
                         //
@@ -1574,6 +1571,30 @@ mod tests {
             };
             assert_eq!(err.1["detail"], "missing query", "{raw}");
         }
+    }
+
+    /// 拒绝的那一步也按字段说（#942）：哪个参数、没给还是给错了。参数名是数据，
+    /// 界面照写；整个解析不出来的没有 `param`。存下的英文 detail 一个字不改
+    #[test]
+    fn a_refused_call_names_its_parameter_for_the_interface() {
+        let tools = tools_schema(false, &[]);
+        let missing = check_call(&tools, "search_chunks", "{}").unwrap_err().1;
+        assert_eq!(missing["status"], "invalid", "{missing}");
+        assert_eq!(missing["param"], "query", "{missing}");
+        assert_eq!(missing["missing"], true, "{missing}");
+        assert_eq!(missing["detail"], "missing query");
+        let wrong = check_call(&tools, "get_document", "{\"document_id\": \"notes.txt\"}")
+            .unwrap_err()
+            .1;
+        assert_eq!(wrong["status"], "invalid", "{wrong}");
+        assert_eq!(wrong["param"], "document_id", "{wrong}");
+        assert!(wrong.get("missing").is_none(), "{wrong}");
+        let cut = check_call(&tools, "search_chunks", "{\"query\": \"Acme")
+            .unwrap_err()
+            .1;
+        assert_eq!(cut["status"], "invalid", "{cut}");
+        assert!(cut.get("param").is_none(), "{cut}");
+        assert_eq!(cut["detail"], "bad arguments");
     }
 
     /// **判据取自工具表本身。** 这条守的是「加了必填参数却忘了改校验」——

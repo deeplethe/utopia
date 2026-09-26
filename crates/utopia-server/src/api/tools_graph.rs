@@ -12,8 +12,8 @@
 //! 写在结果最上面，模型不同意就拿 id 再来一次。
 
 use super::tools::{
-    entity_facts_detail, fact_line, just_before, literal_text, parse_when, ToolCtx, ToolResult,
-    ToolSink,
+    entity_facts_detail, fact_line, just_before, literal_text, parse_when, Step, ToolCtx,
+    ToolResult, ToolSink,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -213,7 +213,7 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             tracing::warn!(error = %e, "Entity lookup failed");
             return ToolResult::new(
                 "Could not look up entities.".into(),
-                json!({"kind": "entity", "label": name, "detail": "failed"}),
+                Step::new("entity", name, "failed").status("failed").json(),
             )
             .error();
         }
@@ -252,11 +252,12 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
     if let Some(best) = ranked.first().filter(|_| clear) {
         remember(sink, best);
     }
-    ToolResult::new(
-        text,
-        json!({ "kind": "entity", "label": name, "detail": format!("{} matches", ranked.len()) }),
-    )
-    .structured(json!({
+    let mut step =
+        Step::new("entity", name.as_str(), format!("{} matches", ranked.len())).count(ranked.len());
+    if let Some(total) = total.filter(|t| *t > read as i64) {
+        step = step.total(total as usize);
+    }
+    ToolResult::new(text, step.json()).structured(json!({
         "kb_id": ctx.kb_id,
         "entities": ranked.iter().map(|n| json!({
             "id": n.id, "name": n.name, "type_key": n.type_key,
@@ -599,7 +600,7 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
         Err(ResolveError::ReadFailed) => {
             return ToolResult::new(
                 "Could not look up entities.".into(),
-                json!({ "kind": "facts", "label": "?", "detail": "failed" }),
+                Step::new("facts", "?", "failed").status("failed").json(),
             )
             .error();
         }
@@ -608,7 +609,9 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
                 format!(
                     "Invalid entity: {e} (expected a name, or the uuid returned by find_entities)."
                 ),
-                json!({ "kind": "facts", "label": "?", "detail": "invalid id" }),
+                Step::new("facts", "?", "invalid id")
+                    .status("not_found")
+                    .json(),
             )
             .error()
         }
@@ -630,7 +633,7 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
                 };
                 return ToolResult::new(
                     text.into(),
-                    json!({"kind": "facts", "label": "?", "detail": "failed"}),
+                    Step::new("facts", "?", "failed").status("failed").json(),
                 )
                 .error();
             }
@@ -654,7 +657,7 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
             Err(e) => {
                 tracing::warn!(error = %e, "Derived facts lookup failed");
                 return ToolResult::new("Could not read the derived facts.".into(),
-                    json!({"kind": "facts", "label": node.name, "detail": "failed"})).error();
+                    Step::new("facts", node.name, "failed").status("failed").json()).error();
             }
         };
     let derived_lines: Vec<String> = derived
@@ -741,7 +744,10 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
     let detail = entity_facts_detail(shown.len(), m.at, m.as_of, m.before);
     ToolResult::new(
         lines.join("\n"),
-        json!({ "kind": "facts", "label": node.name, "detail": detail }),
+        Step::new("facts", node.name.as_str(), detail)
+            .count(shown.len())
+            .moments(m.at, m.as_of, m.before)
+            .json(),
     )
     .structured(json!({
         "kb_id": ctx.kb_id,
@@ -799,14 +805,18 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
         Err(ResolveError::ReadFailed) => {
             return ToolResult::new(
                 "Could not look up entities.".into(),
-                json!({ "kind": "neighbors", "label": "?", "detail": "failed" }),
+                Step::new("neighbors", "?", "failed")
+                    .status("failed")
+                    .json(),
             )
             .error();
         }
         Err(ResolveError::Unresolved(e)) => {
             return ToolResult::new(
                 format!("Unknown entity: {e}."),
-                json!({ "kind": "neighbors", "label": "?", "detail": "unknown entity" }),
+                Step::new("neighbors", "?", "unknown entity")
+                    .status("not_found")
+                    .json(),
             )
         }
     };
@@ -821,14 +831,18 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
             Err(utopia_core::AppError::NotFound) => {
                 return ToolResult::new(
                     "Entity not found.".to_string(),
-                    json!({ "kind": "neighbors", "label": "?", "detail": "not found" }),
+                    Step::new("neighbors", "?", "not found")
+                        .status("not_found")
+                        .json(),
                 );
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Entity neighbors lookup failed");
                 return ToolResult::new(
                     "Could not read the entity facts.".into(),
-                    json!({ "kind": "neighbors", "label": "?", "detail": "failed" }),
+                    Step::new("neighbors", "?", "failed")
+                        .status("failed")
+                        .json(),
                 )
                 .error();
             }
@@ -910,7 +924,10 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
     let detail = format!("{} of {} linked", shown.len(), linked.len());
     ToolResult::new(
         lines.join("\n"),
-        json!({ "kind": "neighbors", "label": node.name, "detail": detail }),
+        Step::new("neighbors", node.name, detail)
+            .count(shown.len())
+            .total(linked.len())
+            .json(),
     )
 }
 
@@ -926,14 +943,16 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
         Err(ResolveError::ReadFailed) => {
             return ToolResult::new(
                 "Could not look up entities.".into(),
-                json!({ "kind": "timeline", "label": "?", "detail": "failed" }),
+                Step::new("timeline", "?", "failed").status("failed").json(),
             )
             .error();
         }
         Err(ResolveError::Unresolved(e)) => {
             return ToolResult::new(
                 format!("Unknown entity: {e}."),
-                json!({ "kind": "timeline", "label": "?", "detail": "unknown entity" }),
+                Step::new("timeline", "?", "unknown entity")
+                    .status("not_found")
+                    .json(),
             )
         }
     };
@@ -948,14 +967,16 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
             Err(utopia_core::AppError::NotFound) => {
                 return ToolResult::new(
                     "Entity not found.".to_string(),
-                    json!({ "kind": "timeline", "label": "?", "detail": "not found" }),
+                    Step::new("timeline", "?", "not found")
+                        .status("not_found")
+                        .json(),
                 );
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Entity timeline lookup failed");
                 return ToolResult::new(
                     "Could not read the entity facts.".into(),
-                    json!({ "kind": "timeline", "label": "?", "detail": "failed" }),
+                    Step::new("timeline", "?", "failed").status("failed").json(),
                 )
                 .error();
             }
@@ -1017,7 +1038,10 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
     let detail = format!("{} of {} dated", shown.len(), dated.len());
     ToolResult::new(
         lines.join("\n"),
-        json!({ "kind": "timeline", "label": node.name, "detail": detail }),
+        Step::new("timeline", node.name, detail)
+            .count(shown.len())
+            .total(dated.len())
+            .json(),
     )
 }
 
@@ -1088,14 +1112,16 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             Err(ResolveError::ReadFailed) => {
                 return ToolResult::new(
                     "Could not look up entities.".into(),
-                    json!({ "kind": "path", "label": "?", "detail": "failed" }),
+                    Step::new("path", "?", "failed").status("failed").json(),
                 )
                 .error();
             }
             Err(ResolveError::Unresolved(e)) => {
                 return ToolResult::new(
                     format!("Unknown `{key}`: {e}."),
-                    json!({ "kind": "path", "label": "?", "detail": "unknown entity" }),
+                    Step::new("path", "?", "unknown entity")
+                        .status("not_found")
+                        .json(),
                 )
             }
         }
@@ -1126,7 +1152,7 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             tracing::warn!(error = %e, "Path search failed");
             return ToolResult::new(
                 "Could not search paths.".into(),
-                json!({ "kind": "path", "label": "?", "detail": "failed" }),
+                Step::new("path", "?", "failed").status("failed").json(),
             )
             .error();
         }
@@ -1152,14 +1178,16 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
                         "Unknown `{key}`: no entity with id {} in this base.",
                         end.id
                     ),
-                    json!({ "kind": "path", "label": "?", "detail": "unknown entity" }),
+                    Step::new("path", "?", "unknown entity")
+                        .status("not_found")
+                        .json(),
                 )
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Entity lookup failed");
                 return ToolResult::new(
                     "Could not look up entities.".into(),
-                    json!({ "kind": "path", "label": "?", "detail": "failed" }),
+                    Step::new("path", "?", "failed").status("failed").json(),
                 )
                 .error();
             }
@@ -1184,7 +1212,7 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
         ));
         return ToolResult::new(
             lines.join("\n"),
-            json!({ "kind": "path", "label": label, "detail": "no path" }),
+            Step::new("path", label, "no path").count(0).json(),
         );
     }
     let shortest = paths[0].hops();
@@ -1212,7 +1240,11 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
     );
     ToolResult::new(
         lines.join("\n"),
-        json!({ "kind": "path", "label": label, "detail": detail }),
+        Step::new("path", label, detail)
+            .count(paths.len())
+            .more(paths.len() >= limits.max_paths)
+            .field("hops", shortest)
+            .json(),
     )
 }
 

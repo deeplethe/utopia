@@ -82,6 +82,96 @@ pub struct ToolSink {
     pub resolved: Vec<serde_json::Value>,
 }
 
+/// 界面上的一步（#942）。
+///
+/// `kind` 与 `label`（数据：查询、实体名、来源名）照旧；`detail` 是给存量消息和不做
+/// 本地化的读者的英文。界面按结构化字段用读者的语言说（0004）：`status`、`count` /
+/// `total`、时间点，以及个别步骤自己的几样。**成功的一步也写 `status: ok`**——有
+/// status 的按字段说，没有的（这之前存下的消息）退回 detail
+pub(crate) struct Step(serde_json::Map<String, serde_json::Value>);
+
+impl Step {
+    pub(crate) fn new(
+        kind: &str,
+        label: impl Into<serde_json::Value>,
+        detail: impl Into<String>,
+    ) -> Self {
+        let mut step = serde_json::Map::new();
+        step.insert("kind".into(), json!(kind));
+        step.insert("label".into(), label.into());
+        step.insert("detail".into(), json!(detail.into()));
+        step.insert("status".into(), json!("ok"));
+        Self(step)
+    }
+
+    /// `ok | failed | not_found | invalid`
+    pub(crate) fn status(self, status: &'static str) -> Self {
+        self.field("status", status)
+    }
+
+    pub(crate) fn count(self, n: usize) -> Self {
+        self.field("count", n)
+    }
+
+    /// 列出来的少于有的：`count` of `total`
+    pub(crate) fn total(self, n: usize) -> Self {
+        self.field("total", n)
+    }
+
+    /// 参数不对，这次调用什么也没做。`param` 是哪一个——参数名是数据，界面照写
+    pub(crate) fn invalid(self, param: &str) -> Self {
+        self.status("invalid").field("param", param)
+    }
+
+    /// 参数没给，或给的是空的
+    pub(crate) fn missing(self, param: &str) -> Self {
+        self.invalid(param).field("missing", true)
+    }
+
+    /// 截在上限、总数不知道（「40+」）
+    pub(crate) fn more(self, more: bool) -> Self {
+        if more {
+            self.field("more", true)
+        } else {
+            self
+        }
+    }
+
+    /// 世界轴的时刻写作 `valid_at`，记录轴写 `before` 或 `as_of`。给了 before 就只写
+    /// before：那是人问的那一刻，as_of 是从它减了一微秒算出来的。
+    ///
+    /// **世界轴那个不能叫 `at`**：对话落库的每一步都有 `at`——这一步发生时正文已有多长
+    /// （UTF-16 码元），回放靠它把轨迹穿回正文；写进来会被它覆盖
+    pub(crate) fn moments(
+        mut self,
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
+        before: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        use crate::time_text::instant;
+        if let Some(t) = at {
+            self = self.field("valid_at", instant(t));
+        }
+        match (before, as_of) {
+            (Some(b), _) => self.field("before", instant(b)),
+            (None, Some(r)) => self.field("as_of", instant(r)),
+            (None, None) => self,
+        }
+    }
+
+    pub(crate) fn field(mut self, key: &str, value: impl serde::Serialize) -> Self {
+        self.0.insert(
+            key.into(),
+            serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
+        );
+        self
+    }
+
+    pub(crate) fn json(self) -> serde_json::Value {
+        serde_json::Value::Object(self.0)
+    }
+}
+
 /// 一次调用的文本、界面步骤与可选机器读取结果；不放进跨调用累计的 ToolSink。
 pub struct ToolResult {
     pub text: String,
@@ -138,7 +228,9 @@ pub async fn dispatch(
         "remember" if ctx.can_write => remember(ctx, args).await,
         other => ToolResult::new(
             format!("Unknown tool: {other}"),
-            json!({ "kind": "tool", "label": other, "detail": "unknown" }),
+            Step::new("tool", other, "unknown")
+                .status("not_found")
+                .json(),
         ),
     }
 }
@@ -182,7 +274,7 @@ pub async fn search_chunks(
             tracing::warn!(error = %e, "MCP chunk search failed");
             return ToolResult::new(
                 "Could not search the documents.".into(),
-                json!({"kind": "search", "label": q, "detail": "failed"}),
+                Step::new("search", q, "failed").status("failed").json(),
             )
             .error();
         }
@@ -206,7 +298,9 @@ pub async fn search_chunks(
     };
     ToolResult::new(
         text,
-        json!({ "kind": "search", "label": q, "detail": format!("{} sources", chunks.len()) }),
+        Step::new("search", q.as_str(), format!("{} sources", chunks.len()))
+            .count(chunks.len())
+            .json(),
     )
     .structured(json!({
         "kb_id": ctx.kb_id, "as_of": as_of,
@@ -228,27 +322,27 @@ pub async fn get_document(
     sink: &mut ToolSink,
     args: &serde_json::Value,
 ) -> ToolResult {
-    let refuse = |detail: &str| {
+    let refuse = |step: Step| {
         ToolResult::new(
             "No document with that id in this knowledge base.".to_string(),
-            json!({ "kind": "document", "label": "?", "detail": detail }),
+            step.json(),
         )
     };
     let Some(id) = args["document_id"]
         .as_str()
         .and_then(|s| s.trim().parse::<Uuid>().ok())
     else {
-        return refuse("invalid id");
+        return refuse(Step::new("document", "?", "invalid id").invalid("document_id"));
     };
     // 本库之外的 id 一律当作不存在——分不出「没有」和「不给你看」才是对的
     let doc = match utopia_store::documents::find_in_kb(&ctx.state.pool, ctx.kb_id, id).await {
         Ok(Some(doc)) => doc,
-        Ok(None) => return refuse("not found"),
+        Ok(None) => return refuse(Step::new("document", "?", "not found").status("not_found")),
         Err(e) => {
             tracing::warn!(error = %e, "MCP document lookup failed");
             return ToolResult::new(
                 "Could not read the document.".into(),
-                json!({"kind": "document", "label": "?", "detail": "failed"}),
+                Step::new("document", "?", "failed").status("failed").json(),
             )
             .error();
         }
@@ -260,7 +354,9 @@ pub async fn get_document(
                 tracing::warn!(error = %e, "MCP document chunk read failed");
                 return ToolResult::new(
                     "Could not read the document.".into(),
-                    json!({"kind": "document", "label": doc.filename, "detail": "failed"}),
+                    Step::new("document", doc.filename, "failed")
+                        .status("failed")
+                        .json(),
                 )
                 .error();
             }
@@ -313,10 +409,13 @@ pub async fn get_document(
     };
     ToolResult::new(
         text,
-        json!({
-            "kind": "document", "label": doc.filename,
-            "detail": format!("{} sections", chunks.len()),
-        }),
+        Step::new(
+            "document",
+            doc.filename.as_str(),
+            format!("{} sections", chunks.len()),
+        )
+        .count(chunks.len())
+        .json(),
     )
 }
 
@@ -356,7 +455,9 @@ pub async fn search_docs(
     };
     ToolResult::new(
         text,
-        json!({ "kind": "docs", "label": q, "detail": format!("{} sections", hits.len()) }),
+        Step::new("docs", q.as_str(), format!("{} sections", hits.len()))
+            .count(hits.len())
+            .json(),
     )
 }
 
@@ -366,14 +467,16 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
     let Ok(rules) = utopia_store::business_rules::list(&ctx.state.pool, ctx.kb_id).await else {
         return ToolResult::new(
             "Could not read the rules.".to_string(),
-            json!({ "kind": "tool", "label": "list_rules", "detail": "failed" }),
+            Step::new("tool", "list_rules", "failed")
+                .status("failed")
+                .json(),
         )
         .error();
     };
     if rules.is_empty() {
         return ToolResult::new(
             "This base has no business rules.".to_string(),
-            json!({ "kind": "tool", "label": "list_rules", "detail": "none" }),
+            Step::new("tool", "list_rules", "none").count(0).json(),
         );
     }
     let expressions: Vec<_> = rules
@@ -390,7 +493,9 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
     else {
         return ToolResult::new(
             "Could not read the rules.".to_string(),
-            json!({ "kind": "tool", "label": "list_rules", "detail": "failed" }),
+            Step::new("tool", "list_rules", "failed")
+                .status("failed")
+                .json(),
         )
         .error();
     };
@@ -481,7 +586,9 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
     let n = rules.len();
     ToolResult::new(
         text,
-        json!({ "kind": "tool", "label": "list_rules", "detail": format!("{n} rules") }),
+        Step::new("tool", "list_rules", format!("{n} rules"))
+            .count(n)
+            .json(),
     )
 }
 
@@ -493,7 +600,9 @@ pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
     else {
         return ToolResult::new(
             "Invalid rule_id (expected the uuid returned by list_rules).".to_string(),
-            json!({ "kind": "tool", "label": "rule_matches", "detail": "invalid id" }),
+            Step::new("tool", "rule_matches", "invalid id")
+                .invalid("rule_id")
+                .json(),
         );
     };
     let limit = args["limit"].as_i64().unwrap_or(50).clamp(1, 200);
@@ -502,14 +611,16 @@ pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
     else {
         return ToolResult::new(
             "Could not read what that rule marks.".to_string(),
-            json!({ "kind": "tool", "label": "rule_matches", "detail": "failed" }),
+            Step::new("tool", "rule_matches", "failed")
+                .status("failed")
+                .json(),
         )
         .error();
     };
     if rows.is_empty() {
         return ToolResult::new(
             "That rule marks nothing right now.".to_string(),
-            json!({ "kind": "tool", "label": "rule_matches", "detail": "0" }),
+            Step::new("tool", "rule_matches", "0").count(0).json(),
         );
     }
     let text = rows
@@ -566,7 +677,9 @@ pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
     };
     ToolResult::new(
         text,
-        json!({ "kind": "tool", "label": "rule_matches", "detail": format!("{total} matches") }),
+        Step::new("tool", "rule_matches", format!("{total} matches"))
+            .field("count", total)
+            .json(),
     )
 }
 
@@ -581,10 +694,14 @@ pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult 
         .as_str()
         .and_then(utopia_extract::parse_time)
         .map(|(t, p)| period_last_day(t.date_naive(), p));
+    // 窗口的两头按问的那天交给界面：label 里的 "now" 是英文
+    let (since_day, until_day) = (since, until);
     let Some((since, until, window)) = changes_window(since, until, chrono::Utc::now()) else {
         return ToolResult::new(
             "Invalid or missing `since` (expected YYYY-MM-DD).".to_string(),
-            json!({ "kind": "changes", "label": "?", "detail": "invalid since" }),
+            Step::new("changes", "?", "invalid since")
+                .invalid("since")
+                .json(),
         )
         .error();
     };
@@ -613,7 +730,9 @@ pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult 
             tracing::warn!(error = %e, "Graph changes lookup failed");
             return ToolResult::new(
                 "Could not read the graph changes.".into(),
-                json!({"kind": "changes", "label": window, "detail": "failed"}),
+                Step::new("changes", window, "failed")
+                    .status("failed")
+                    .json(),
             )
             .error();
         }
@@ -638,11 +757,16 @@ pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult 
     } else {
         format!("{} changes", rows.len())
     };
-    ToolResult::new(
-        text,
-        json!({ "kind": "changes", "label": window, "detail": detail }),
-    )
-    .structured(json!({
+    let mut step = Step::new("changes", window.as_str(), detail)
+        .count(rows.len())
+        .more(rows.len() as i64 == CHANGES_LIMIT);
+    if let Some(day) = since_day {
+        step = step.field("since", day.to_string());
+    }
+    if let Some(day) = until_day {
+        step = step.field("until", day.to_string());
+    }
+    ToolResult::new(text, step.json()).structured(json!({
         "kb_id": ctx.kb_id, "since": since, "until": until,
         "limit": CHANGES_LIMIT, "limit_reached": rows.len() as i64 == CHANGES_LIMIT,
         "changes": rows.iter().map(|r| json!({
@@ -668,30 +792,36 @@ pub async fn query_data(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResu
         .mounted_sources
         .iter()
         .find(|d| d.name.eq_ignore_ascii_case(ds_name));
-    let text = match found {
-        None => format!(
-            "Unknown data source '{ds_name}'. Mounted sources: {}",
-            ctx.mounted_sources
-                .iter()
-                .map(|d| d.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Some(ds) => match run_query(ctx.state, ds.id, sql).await {
-            Ok(out) => out,
-            // 错误透传：模型可据此修正 SQL 重试
-            Err(e) => format!("Query failed: {e}"),
-        },
-    };
     let detail = if purpose.is_empty() {
         sql.chars().take(60).collect::<String>()
     } else {
         purpose.to_string()
     };
-    ToolResult::new(
-        text,
-        json!({ "kind": "query", "label": ds_name, "detail": detail }),
-    )
+    // 界面上的这一步带着写下的那条 SQL（#936）：读者能展开看到数是怎么算出来的；
+    // 查询出错、源不存在各是一种结果，不再和「查到了」长得一样
+    let step = Step::new("query", ds_name, detail).field("sql", sql);
+    let (text, step) = match found {
+        None => (
+            format!(
+                "Unknown data source '{ds_name}'. Mounted sources: {}",
+                ctx.mounted_sources
+                    .iter()
+                    .map(|d| d.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            step.status("not_found"),
+        ),
+        Some(ds) => match execute_query(ctx.state, ds.id, sql).await {
+            Ok(result) => (
+                query_text(&result),
+                step.count(result.rows.len()).more(result.truncated),
+            ),
+            // 错误透传：模型可据此修正 SQL 重试
+            Err(e) => (format!("Query failed: {e}"), step.status("failed")),
+        },
+    };
+    ToolResult::new(text, step.json())
 }
 
 pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult {
@@ -728,7 +858,9 @@ pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult
     if text.is_empty() {
         return ToolResult::new(
             "remember requires non-empty text.".to_string(),
-            json!({ "kind": "tool", "label": "remember", "detail": "empty" }),
+            Step::new("tool", "remember", "empty")
+                .missing("text")
+                .json(),
         )
         .error();
     }
@@ -758,17 +890,21 @@ pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult
                      any fact has been added to the knowledge graph.",
                     occurred_text
                 ),
-                json!({
-                    "kind": "tool", "label": "remember",
-                    "detail": text.chars().take(60).collect::<String>(),
-                    // 对话里那张确认卡按它取待确认项；回放时也据此重画
-                    "chunk_id": chunk_id,
-                }),
+                // 对话里那张确认卡按 chunk_id 取待确认项；回放时也据此重画
+                Step::new(
+                    "tool",
+                    "remember",
+                    text.chars().take(60).collect::<String>(),
+                )
+                .field("chunk_id", chunk_id)
+                .json(),
             )
         }
         Err(e) => ToolResult::new(
             format!("Failed to record: {e}"),
-            json!({ "kind": "tool", "label": "remember", "detail": "failed" }),
+            Step::new("tool", "remember", "failed")
+                .status("failed")
+                .json(),
         )
         .error(),
     }
@@ -803,12 +939,25 @@ pub(super) fn charter_source_json(n: usize, h: &utopia_search::DocsSection) -> s
 
 /// 问数执行：安全闸（解析白名单）→ 引擎执行（只读会话 + 强制 LIMIT + 超时）→ JSON 行。
 pub(crate) async fn run_query(state: &AppState, ds_id: Uuid, sql: &str) -> anyhow::Result<String> {
+    Ok(query_text(&execute_query(state, ds_id, sql).await?))
+}
+
+/// 同 `run_query`，但交回行与截断标记本身：对话里那一步要行数和截断（#936）
+async fn execute_query(
+    state: &AppState,
+    ds_id: Uuid,
+    sql: &str,
+) -> anyhow::Result<crate::query_engine::QueryResult> {
     let (engine, conn) = utopia_store::datasources::engine_and_conn(&state.pool, ds_id).await?;
     // 闸门按引擎选方言：Databricks 的反引号、Snowflake 的 :: 转型都得先过得了解析
     let guarded = crate::query_engine::guard_sql_for(&engine, sql)?;
-    let result = crate::query_engine::engine_for(&engine, &conn)?
+    crate::query_engine::engine_for(&engine, &conn)?
         .execute(&guarded)
-        .await?;
+        .await
+}
+
+/// 结果给模型读的样子：每行一个 JSON 对象，末尾是行数与截断说明
+fn query_text(result: &crate::query_engine::QueryResult) -> String {
     let mut out = String::new();
     if result.rows.is_empty() {
         out.push_str("(no rows)");
@@ -823,7 +972,7 @@ pub(crate) async fn run_query(state: &AppState, ds_id: Uuid, sql: &str) -> anyho
         }
         out.push(')');
     }
-    Ok(out)
+    out
 }
 
 /// 事实行："works at → 星云科技 (2023-08 → now) [90%]"，in 方向用 ←。

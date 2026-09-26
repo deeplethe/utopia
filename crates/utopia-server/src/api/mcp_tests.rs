@@ -202,6 +202,39 @@ fn uuid(value: &Value) -> Uuid {
     value.as_str().unwrap().parse().unwrap()
 }
 
+/// 调一个工具，取它交给界面的那一步（#942）。MCP 的回复里没有这一步，所以直接调
+async fn step_of(
+    f: &Fixture,
+    sources: &[utopia_core::models::DataSourceView],
+    name: &str,
+    args: Value,
+) -> Value {
+    let ctx = ToolCtx {
+        state: &f.state,
+        kb_id: f.kb,
+        workspace_id: f.ws,
+        mounted_sources: sources,
+        can_write: false,
+        actor: None,
+        via_token: None,
+        question: None,
+    };
+    tools::dispatch(&ctx, &mut ToolSink::default(), name, &args)
+        .await
+        .step
+}
+
+/// `want` 里的每一项这一步都有、而且相等；写成 null 的那一项必须没有
+fn step_has(step: &Value, want: Value) -> anyhow::Result<()> {
+    for (key, value) in want.as_object().expect("the fields to check") {
+        anyhow::ensure!(
+            step.get(key).unwrap_or(&Value::Null) == value,
+            "`{key}` should be {value} in {step}"
+        );
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn record_axis_subseconds_survive_authenticated_rdf_export() -> anyhow::Result<()> {
     use axum::body::{to_bytes, Body};
@@ -1864,8 +1897,10 @@ async fn failed_reads_do_not_become_successful_empty_results() -> anyhow::Result
             "Could not read the graph changes.",
         ),
     ] {
-        let result =
-            tool_result(tools::dispatch(&ctx, &mut ToolSink::default(), name, &args).await);
+        let called = tools::dispatch(&ctx, &mut ToolSink::default(), name, &args).await;
+        // 界面上的那一步也是失败，不是一个「0 个」（#942）
+        assert_eq!(called.step["status"], "failed", "{name}: {}", called.step);
+        let result = tool_result(called);
         assert_eq!(result["isError"], true, "{name}: {result}");
         assert_eq!(result["content"][0]["text"], text, "{name}: {args}");
         assert!(result.get("structuredContent").is_none());
@@ -2594,6 +2629,8 @@ async fn rule_matches_keep_materialized_intervals_and_count_rows() -> anyhow::Re
         };
         let card = tools::rule_matches(&ctx, &json!({"rule_id":rule})).await;
         assert_eq!(card.step["detail"], "2 matches");
+        assert_eq!(card.step["status"], "ok");
+        assert_eq!(card.step["count"], 2);
     }
     let after: Value=sqlx::query_scalar("SELECT coalesce(jsonb_agg(to_jsonb(d) ORDER BY id),'[]') FROM derived_facts d WHERE kb_id=$1")
         .bind(f.kb).fetch_one(&f.state.pool).await?;
@@ -2895,6 +2932,27 @@ async fn a_list_cut_at_its_limit_says_so() -> anyhow::Result<()> {
             .await?;
         anyhow::ensure!(!text(&few).contains("most recent changes"), "{few}");
         anyhow::ensure!(few["structuredContent"]["limit_reached"] == false, "{few}");
+        // 界面上的那一步同样说「40+」：`more`，窗口的两头按问的那两天（#942）
+        step_has(
+            &step_of(
+                f,
+                &[],
+                "changes",
+                json!({"since":"2025-01","until":"2025-01"}),
+            )
+            .await,
+            json!({"status":"ok","count":40,"more":true,"since":"2025-01-01","until":"2025-01-31"}),
+        )?;
+        step_has(
+            &step_of(
+                f,
+                &[],
+                "changes",
+                json!({"since":"2025-03","until":"2025-03"}),
+            )
+            .await,
+            json!({"status":"ok","count":3,"more":null}),
+        )?;
 
         // find_entities: ten widgets, three gadgets
         for i in 1..=10 {
@@ -2912,6 +2970,14 @@ async fn a_list_cut_at_its_limit_says_so() -> anyhow::Result<()> {
         );
         let gadgets = f.call("find_entities", json!({"name":"Gadget"})).await?;
         anyhow::ensure!(!text(&gadgets).contains("were read"), "{gadgets}");
+        step_has(
+            &step_of(f, &[], "find_entities", json!({"name":"Widget"})).await,
+            json!({"status":"ok","count":8,"total":10}),
+        )?;
+        step_has(
+            &step_of(f, &[], "find_entities", json!({"name":"Gadget"})).await,
+            json!({"status":"ok","count":3,"total":null}),
+        )?;
 
         // paths_between: eleven two-hop paths, then two
         let (start, end) = (
@@ -2944,9 +3010,295 @@ async fn a_list_cut_at_its_limit_says_so() -> anyhow::Result<()> {
             .await?;
         anyhow::ensure!(text(&two).starts_with("2 paths between"), "{two}");
         anyhow::ensure!(!text(&two).contains("are listed"), "{two}");
+        step_has(
+            &step_of(f, &[], "paths_between", json!({"from":start,"to":end})).await,
+            json!({"status":"ok","count":10,"more":true,"hops":2}),
+        )?;
+        step_has(
+            &step_of(f, &[], "paths_between", json!({"from":near,"to":far})).await,
+            json!({"status":"ok","count":2,"more":null,"hops":2}),
+        )?;
         Ok(())
     }
     let result = check(&f).await;
     let cleanup = f.clean().await;
     result.and(cleanup)
+}
+
+/// 每一步交给界面的是字段，不只是一句英文（#942）：界面按读者的语言说，
+/// `detail` 留给存下的旧消息和不做本地化的读者，一个字不改
+#[tokio::test]
+async fn each_step_carries_the_fields_the_interface_words() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let search = step_of(f, &[], "search_chunks", json!({"query":"orchard"})).await;
+        step_has(
+            &search,
+            json!({"kind":"search","label":"orchard","status":"ok"}),
+        )?;
+        anyhow::ensure!(
+            search["detail"] == format!("{} sources", search["count"]),
+            "{search}"
+        );
+
+        step_has(
+            &step_of(f, &[], "get_document", json!({"document_id":f.document})).await,
+            json!({"kind":"document","label":"orchard.md","detail":"2 sections",
+                "status":"ok","count":2}),
+        )?;
+        step_has(
+            &step_of(f, &[], "get_document", json!({"document_id":"orchard.md"})).await,
+            json!({"detail":"invalid id","status":"invalid","param":"document_id",
+                "missing":null}),
+        )?;
+        step_has(
+            &step_of(
+                f,
+                &[],
+                "get_document",
+                json!({"document_id":Uuid::now_v7()}),
+            )
+            .await,
+            json!({"detail":"not found","status":"not_found"}),
+        )?;
+
+        let docs = step_of(f, &[], "search_docs", json!({"query":"entity"})).await;
+        step_has(&docs, json!({"kind":"docs","status":"ok"}))?;
+        anyhow::ensure!(
+            docs["detail"] == format!("{} sections", docs["count"]),
+            "{docs}"
+        );
+
+        step_has(
+            &step_of(f, &[], "find_entities", json!({"name":"Alice"})).await,
+            json!({"kind":"entity","label":"Alice","detail":"1 matches","status":"ok",
+                "count":1,"total":null}),
+        )?;
+
+        // 世界时间一个，记录时间一个：给了 before 就只写 before，那是人问的那一刻
+        let facts = step_of(
+            f,
+            &[],
+            "entity_facts",
+            json!({"entity_id":f.subject,"at":"2026-02-15","before":CORRECTION}),
+        )
+        .await;
+        step_has(
+            &facts,
+            json!({"kind":"facts","label":"Alice","status":"ok",
+                "valid_at":"2026-02-15T00:00:00Z","before":CORRECTION,"as_of":null,
+                "at":null}),
+        )?;
+        anyhow::ensure!(
+            facts["detail"]
+                .as_str()
+                .is_some_and(|d| d.starts_with(&format!("{} facts at ", facts["count"]))),
+            "{facts}"
+        );
+        step_has(
+            &step_of(
+                f,
+                &[],
+                "entity_facts",
+                json!({"entity_id":f.subject,"as_of":CORRECTION}),
+            )
+            .await,
+            json!({"status":"ok","as_of":CORRECTION,"before":null,"valid_at":null}),
+        )?;
+        step_has(
+            &step_of(f, &[], "entity_facts", json!({"entity_id":"Nobody"})).await,
+            json!({"kind":"facts","status":"not_found"}),
+        )?;
+
+        for kind in ["neighbors", "timeline"] {
+            let step = step_of(f, &[], kind, json!({"entity":f.subject})).await;
+            step_has(&step, json!({"kind":kind,"label":"Alice","status":"ok"}))?;
+            let word = if kind == "neighbors" {
+                "linked"
+            } else {
+                "dated"
+            };
+            anyhow::ensure!(
+                step["detail"] == format!("{} of {} {word}", step["count"], step["total"]),
+                "{step}"
+            );
+            step_has(
+                &step_of(f, &[], kind, json!({"entity":"Nobody"})).await,
+                json!({"kind":kind,"status":"not_found"}),
+            )?;
+        }
+
+        // 两个方向各算一条（见 opposite_directions_reach_authenticated_path_output）：
+        // 数不写死，与存下的那句英文对上
+        let path = step_of(
+            f,
+            &[],
+            "paths_between",
+            json!({"from":f.subject,"to":f.object}),
+        )
+        .await;
+        step_has(
+            &path,
+            json!({"kind":"path","status":"ok","hops":1,"more":null}),
+        )?;
+        anyhow::ensure!(
+            path["detail"]
+                .as_str()
+                .is_some_and(|d| d.starts_with(&format!("{} path", path["count"]))),
+            "{path}"
+        );
+        step_has(
+            &step_of(
+                f,
+                &[],
+                "paths_between",
+                json!({"from":f.subject,"to":Uuid::now_v7()}),
+            )
+            .await,
+            json!({"kind":"path","status":"not_found"}),
+        )?;
+
+        // 窗口的两头按问的那两天，没有 until 就不写：label 里那个 "now" 是英文
+        let window = step_of(
+            f,
+            &[],
+            "changes",
+            json!({"since":"2026-03-01","until":"2026-03-31"}),
+        )
+        .await;
+        step_has(
+            &window,
+            json!({"kind":"changes","label":"2026-03-01 → 2026-03-31","status":"ok",
+                "since":"2026-03-01","until":"2026-03-31","more":null}),
+        )?;
+        anyhow::ensure!(
+            window["detail"] == format!("{} changes", window["count"]),
+            "{window}"
+        );
+        step_has(
+            &step_of(f, &[], "changes", json!({"since":"2026-03"})).await,
+            json!({"label":"2026-03-01 → now","since":"2026-03-01","until":null}),
+        )?;
+        step_has(
+            &step_of(f, &[], "changes", json!({"since":"sometime"})).await,
+            json!({"status":"invalid","param":"since"}),
+        )?;
+
+        let rules = step_of(f, &[], "list_rules", json!({})).await;
+        step_has(
+            &rules,
+            json!({"kind":"tool","label":"list_rules","status":"ok"}),
+        )?;
+        anyhow::ensure!(rules["count"].is_u64(), "{rules}");
+        step_has(
+            &step_of(f, &[], "rule_matches", json!({"rule_id":"weight"})).await,
+            json!({"label":"rule_matches","status":"invalid","param":"rule_id"}),
+        )?;
+        step_has(
+            &step_of(f, &[], "rule_matches", json!({"rule_id":Uuid::now_v7()})).await,
+            json!({"label":"rule_matches","status":"ok","count":0}),
+        )?;
+        step_has(
+            &step_of(f, &[], "no_such_tool", json!({})).await,
+            json!({"kind":"tool","label":"no_such_tool","status":"not_found"}),
+        )?;
+
+        // 只剩 NUL 的一句：什么也没写，这一步说缺的是 text
+        let writer = ToolCtx {
+            state: &f.state,
+            kb_id: f.kb,
+            workspace_id: f.ws,
+            mounted_sources: &[],
+            can_write: true,
+            actor: None,
+            via_token: None,
+            question: None,
+        };
+        let empty = tools::dispatch(
+            &writer,
+            &mut ToolSink::default(),
+            "remember",
+            &json!({"text":"\u{0}"}),
+        )
+        .await;
+        step_has(
+            &empty.step,
+            json!({"label":"remember","status":"invalid","param":"text","missing":true}),
+        )
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
+/// 问数那一步带着它跑的 SQL、读到几行、成没成（#936）：界面可以展开那条 SQL，
+/// 出错的查询是失败的一步，不再和「查到了」长得一样
+#[tokio::test]
+async fn a_query_step_carries_its_sql_rows_and_failure() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    // 数据源指向测试库本身：只读会话里跑 SELECT，什么也不改
+    let user: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE org_id=$1")
+        .bind(f.org)
+        .fetch_one(&f.state.pool)
+        .await?;
+    let name = format!("steps-{}", Uuid::now_v7().simple());
+    let id = utopia_store::datasources::create(
+        &f.state.pool,
+        &name,
+        "postgres",
+        &utopia_store::test_db::url().unwrap(),
+        user,
+    )
+    .await?;
+    let sources = [utopia_core::models::DataSourceView {
+        id,
+        name: name.clone(),
+        engine: "postgres".into(),
+        summary: String::new(),
+        created_at: chrono::Utc::now(),
+        last_test_at: None,
+        last_test_ok: None,
+    }];
+    let check = async {
+        step_has(
+            &step_of(
+                &f,
+                &sources,
+                "query_data",
+                json!({"data_source":name,"sql":"SELECT 1 AS x","purpose":"a probe"}),
+            )
+            .await,
+            json!({"kind":"query","label":name,"detail":"a probe","status":"ok",
+                "count":1,"more":null,"sql":"SELECT 1 AS x"}),
+        )?;
+        step_has(
+            &step_of(
+                &f,
+                &sources,
+                "query_data",
+                json!({"data_source":name,"sql":"SELECT x FROM no_such_table_for_steps"}),
+            )
+            .await,
+            json!({"status":"failed","count":null,
+                "sql":"SELECT x FROM no_such_table_for_steps"}),
+        )?;
+        step_has(
+            &step_of(
+                &f,
+                &sources,
+                "query_data",
+                json!({"data_source":"elsewhere","sql":"SELECT 1"}),
+            )
+            .await,
+            json!({"label":"elsewhere","status":"not_found","sql":"SELECT 1"}),
+        )
+    };
+    let result = check.await;
+    let removed = utopia_store::datasources::delete(&f.state.pool, id).await;
+    let cleanup = f.clean().await;
+    result.and(removed.map_err(Into::into)).and(cleanup)
 }

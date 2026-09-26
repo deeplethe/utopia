@@ -855,5 +855,51 @@ test(
         }
       }
     });
+    await t.test("a query step says what it read and opens the SQL it ran", async () => {
+      const sql =
+        "SELECT month, sum(amount) AS revenue FROM orders GROUP BY month ORDER BY month";
+      const f = await open("/kb/one/chat/a", async (route, p) => {
+        if (p.endsWith("/conversations/a")) {
+          await route.fulfill({
+            json: {
+              messages: [
+                {
+                  ...message("Revenue grew every month."),
+                  steps: [
+                    { kind: "query", label: "warehouse", detail: "revenue by month",
+                      status: "ok", count: 12, sql, at: 0 },
+                    { kind: "query", label: "warehouse", detail: "revenue by region",
+                      status: "failed", sql: "SELECT region FROM nowhere", at: 0 },
+                  ],
+                },
+              ],
+            },
+          });
+          return true;
+        }
+      });
+      try {
+        await f.page
+          .getByText("· revenue by month · 12 rows", { exact: true })
+          .waitFor();
+        const failed = f.page.getByText("· revenue by region · failed", {
+          exact: true,
+        });
+        assert.match(await failed.getAttribute("class"), /\btext-danger\b/);
+        assert.equal(await f.page.getByText(sql, { exact: true }).count(), 0);
+        const toggles = f.page.getByRole("button", { name: "SQL", exact: true });
+        assert.equal(await toggles.count(), 2);
+        await toggles.first().click();
+        await f.page.getByText(sql, { exact: true }).waitFor();
+        assert.equal(await toggles.first().getAttribute("aria-expanded"), "true");
+        assert.equal(
+          await f.page.getByText("SELECT region FROM nowhere", { exact: true }).count(),
+          0,
+        );
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
   },
 );

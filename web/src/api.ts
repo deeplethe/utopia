@@ -1463,6 +1463,7 @@ export interface Source {
 export interface ChatStep {
   kind:
     | "search"
+    | "document"
     | "docs"
     | "entity"
     | "facts"
@@ -1472,8 +1473,32 @@ export interface ChatStep {
     | "changes"
     | "query"
     | "tool";
+  /** 数据：查询、实体名、来源名、工具名。照原样显示 */
   label: string;
+  /** 服务端写的英文。**有 `status` 的步骤不读它**，界面按下面的字段自己说（#942）；
+   *  那之前存下的消息只有它。问数与 remember 的 detail 是数据（目的、记下的那句话） */
   detail: string;
+  status?: "ok" | "failed" | "not_found" | "invalid";
+  /** 列出了几个；`total` 是一共有几个（列出来的少于有的时候） */
+  count?: number;
+  total?: number;
+  /** 列到上限就停了，后面可能还有，总数不知道 */
+  more?: boolean;
+  /** 世界时间：问的是那时成立的事实。RFC 3339 */
+  valid_at?: string;
+  /** 记录时间：按那时（`as_of`）或那之前（`before`）记下的。RFC 3339 */
+  as_of?: string;
+  before?: string;
+  /** changes 的窗口，YYYY-MM-DD；没有 until 就是开到现在 */
+  since?: string;
+  until?: string;
+  /** paths_between：最短的那条几跳 */
+  hops?: number;
+  /** 参数不对时是哪一个；`missing` 分开没给与给错了 */
+  param?: string;
+  missing?: boolean;
+  /** 问数跑的那条 SQL（#936） */
+  sql?: string;
   /** `remember` 那一步带着它：那句记忆落成的 chunk。对话里的确认卡按它取
    *  待确认项（0015）；回放时也据此重画 */
   chunk_id?: string;

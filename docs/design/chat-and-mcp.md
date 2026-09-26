@@ -9,7 +9,8 @@ Records: [0042] (the loop), [0014] (MCP tools and scope), [0015] (`remember` and
 **The loop** is rig's multi-turn runner (`rig-core` / `rig-agent`, no default features); every
 policy is one `AgentHook` in `api/agent.rs`: `tool_choice: required` until a tool has run, then the
 budget withdraws the tools and orders an answer; a malformed call is refused with the same message
-as before; a tool's UI step goes to the stream; an empty turn is asked again once; a text-only first
+as before; a tool's UI step goes to the stream, with fields the client words (#942); an empty turn is
+asked again once; a text-only first
 turn from an endpoint that ignored `required` is sent back once; a turn that writes its tool call as
 text is held back from the stream and sent back once, and a second one is an error [0042]. A turn
 cannot end before a tool has run; `no_evidence_needed` is the exit for a greeting or "make it
