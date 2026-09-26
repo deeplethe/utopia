@@ -153,6 +153,9 @@ pub struct QuestionResultReq {
     /// expected | shape：按期望答案判的，还是只查了它需要的形状
     #[serde(default)]
     pub judged_by: Option<String>,
+    /// graph | text | both | none：回答从哪里来的（图谱工具拿到过事实，还是只读了正文）
+    #[serde(default)]
+    pub via: Option<String>,
     #[serde(default)]
     pub detail: Option<serde_json::Value>,
 }
@@ -167,10 +170,16 @@ pub async fn record_result(
 ) -> ApiResult<Json<serde_json::Value>> {
     utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Editor).await?;
     let answer: Option<String> = req.answer.map(|a| a.chars().take(4000).collect());
+    let via = req
+        .via
+        .as_deref()
+        .filter(|v| matches!(*v, "graph" | "text" | "both" | "none"))
+        .unwrap_or("none");
     let result = json!({
         "answered": req.answered,
         "answer": answer,
         "judged_by": req.judged_by.unwrap_or_else(|| "expected".into()),
+        "via": via,
         "detail": req.detail,
     });
     if !questions::record_result(&state.pool, kb_id, qid, &result).await? {

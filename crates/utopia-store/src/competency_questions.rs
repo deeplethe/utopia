@@ -209,6 +209,10 @@ pub struct QuestionReport {
     pub proposed: i64,
     pub checked: i64,
     pub answered: i64,
+    /// 答上了、而且回答途中从图谱工具拿到过事实（via graph 或 both）
+    pub answered_with_graph: i64,
+    /// 答上了、而且只走了图谱没读正文：本体本身答的
+    pub answered_graph_only: i64,
 }
 
 pub async fn report(pool: &PgPool, kb_id: Uuid) -> AppResult<QuestionReport> {
@@ -216,7 +220,11 @@ pub async fn report(pool: &PgPool, kb_id: Uuid) -> AppResult<QuestionReport> {
         "SELECT count(*) FILTER (WHERE status = 'accepted') AS accepted,
                 count(*) FILTER (WHERE status = 'proposed') AS proposed,
                 count(*) FILTER (WHERE status = 'accepted' AND last_checked_at IS NOT NULL) AS checked,
-                count(*) FILTER (WHERE status = 'accepted' AND (last_result->>'answered')::boolean) AS answered
+                count(*) FILTER (WHERE status = 'accepted' AND (last_result->>'answered')::boolean) AS answered,
+                count(*) FILTER (WHERE status = 'accepted' AND (last_result->>'answered')::boolean
+                                   AND last_result->>'via' IN ('graph', 'both')) AS answered_with_graph,
+                count(*) FILTER (WHERE status = 'accepted' AND (last_result->>'answered')::boolean
+                                   AND last_result->>'via' = 'graph') AS answered_graph_only
            FROM competency_questions WHERE kb_id = $1",
     )
     .bind(kb_id)

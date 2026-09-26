@@ -10,12 +10,27 @@
 // 而判分口径会改（同 ask.mjs）。
 // 有期望答案的问题交给裁判模型判；没有的只查它需要的形状（needs 里的类与属性）是否存在并且有事实。
 // 服务端不自己问：chat 还没有进程内入口，而"按人问的方式问"正是走接口的意思。
+//
+// 答案经没经过图谱也记下来（`via`）：chat 的 step 事件里 facts / neighbors / timeline / paths 是图谱
+// 工具，search / document 是正文。答对但只走了正文的问题不需要本体——这是 0061 的开放问题，
+// 现在至少能数出来。
 import fs from "node:fs";
 import { api, login, askChat, parseArgs, log, psql } from "./lib.mjs";
 
 const args = parseArgs(process.argv);
 const KB = args.kb;
 if (!KB) { console.error("--kb <knowledge base id> 是必须的"); process.exit(2); }
+
+// 一轮回答走了哪条路。graph = 只从图谱工具拿到过事实；text = 只读了正文；both；none
+const GRAPH_KINDS = new Set(["facts", "neighbors", "timeline", "paths"]);
+const TEXT_KINDS = new Set(["search", "document"]);
+function viaOf(steps) {
+  const count = (s) => Number((/^(\d+)/.exec(String(s.count ?? s.detail ?? "")) ?? [])[1] ?? 0);
+  const graph = steps.filter((s) => GRAPH_KINDS.has(s.kind) && count(s) > 0).length;
+  const text = steps.filter((s) => TEXT_KINDS.has(s.kind) && count(s) > 0).length;
+  return { via: graph && text ? "both" : graph ? "graph" : text ? "text" : "none", graph_steps: graph, text_steps: text,
+    steps: steps.map((s) => `${s.kind}:${s.label ?? ""}:${s.count ?? s.detail ?? ""}`).slice(0, 20) };
+}
 
 function judgeEndpoint() {
   if (process.env.BENCH_JUDGE_BASE) return { base: process.env.BENCH_JUDGE_BASE, key: process.env.BENCH_JUDGE_KEY || "", model: process.env.BENCH_JUDGE_MODEL || "" };
@@ -59,15 +74,19 @@ async function main() {
     const ep = judgeEndpoint();
     for (const q of questions) {
       const t0 = Date.now();
-      let answered = false, judged_by, detail = {}, answer = "";
+      let answered = false, judged_by, detail = {}, answer = "", via = q.last_result?.via ?? "none";
       try {
         if (args.rejudge) {
           answer = q.last_result?.answer ?? "";
           if (!answer) throw new Error("no stored answer to rejudge");
+          detail = { ...(q.last_result?.detail ?? {}) };
         } else {
           const r = await askChat(KB, q.question);
           answer = r.text;
           if (r.error) detail.error = String(r.error).slice(0, 300);
+          const v = viaOf(r.steps);
+          via = v.via;
+          detail = { graph_steps: v.graph_steps, text_steps: v.text_steps, steps: v.steps };
         }
         if (q.expected_answer) {
           judged_by = "expected";
@@ -85,7 +104,7 @@ async function main() {
           const missingClasses = (needs.classes ?? []).filter((k) => !classKeys.has(k));
           const missingProps = (needs.properties ?? []).filter((k) => !propByKey.has(k));
           const emptyProps = (needs.properties ?? []).filter((k) => propByKey.has(k) && !(propByKey.get(k).usage > 0));
-          detail = { missing_classes: missingClasses, missing_properties: missingProps, empty_properties: emptyProps };
+          detail = { ...detail, missing_classes: missingClasses, missing_properties: missingProps, empty_properties: emptyProps };
           answered = missingClasses.length === 0 && missingProps.length === 0 && emptyProps.length === 0
             && ((needs.classes ?? []).length + (needs.properties ?? []).length > 0);
         }
@@ -93,13 +112,13 @@ async function main() {
         detail.error = String(e.message || e).slice(0, 300);
       }
       detail.seconds = Math.round((Date.now() - t0) / 1000);
-      await api("POST", `/api/v1/kbs/${KB}/questions/${q.id}/result`, { answered, answer, judged_by, detail });
-      log(`${answered ? "✓" : "✗"} [${judged_by}] ${q.question} — ${detail.why ?? JSON.stringify(detail)}`);
+      await api("POST", `/api/v1/kbs/${KB}/questions/${q.id}/result`, { answered, answer, judged_by, via, detail });
+      log(`${answered ? "✓" : "✗"} [${judged_by}, via ${via}] ${q.question} — ${detail.why ?? JSON.stringify(detail).slice(0, 200)}`);
     }
   }
   const report = await api("GET", `/api/v1/kbs/${KB}/questions/report`);
   const qs = report.questions, ps = report.proposals;
-  console.log(`questions: ${qs.answered}/${qs.checked} answered (${qs.accepted} accepted, ${qs.proposed} proposed)`);
+  console.log(`questions: ${qs.answered}/${qs.checked} answered (${qs.accepted} accepted, ${qs.proposed} proposed); with graph facts ${qs.answered_with_graph}, graph only ${qs.answered_graph_only}`);
   console.log(`proposals: ${ps.changed}/${ps.decided} changed before adoption or rejected` + (ps.changed_share != null ? ` (${(ps.changed_share * 100).toFixed(0)}%)` : "") + `, ${ps.open} open`);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

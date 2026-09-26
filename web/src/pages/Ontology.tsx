@@ -1978,6 +1978,14 @@ function QuestionsPanel({
             )}
           </Chip>
         )}
+        {report.data && report.data.questions.answered > 0 && (
+          <Chip tone="neutral" title={S.ontology.viaGraphHint}>
+            {S.ontology.viaGraph(
+              report.data.questions.answered_with_graph,
+              report.data.questions.answered_graph_only,
+            )}
+          </Chip>
+        )}
         {report.data && report.data.proposals.decided > 0 && (
           <Chip tone="neutral" title={S.ontology.proposalsChangedHint}>
             {S.ontology.proposalsChanged(
@@ -2045,6 +2053,9 @@ function QuestionsPanel({
                     {(q.last_result as { answered?: boolean }).answered
                       ? S.ontology.questionAnswered
                       : S.ontology.questionUnanswered}
+                    {(q.last_result as { via?: string }).via &&
+                      (q.last_result as { via?: string }).via !== "none" &&
+                      ` · ${(q.last_result as { via?: string }).via}`}
                   </Chip>
                 )}
               {q.status === "proposed" && (

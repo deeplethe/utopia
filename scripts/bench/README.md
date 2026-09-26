@@ -240,6 +240,9 @@ node scripts/bench/competency.mjs --kb <kb-id> --seed scripts/bench/truth/redocr
 - 有期望答案的问题交给裁判模型判"回答里说了期望答案没有"；没有的只查它需要的形状
   （`needs` 里的类与属性）是否都在、属性是否有类型化事实。后者弱得多——一条开放图谱就能答的问题
   不需要本体，这是 0061 的开放问题。
+- 回答经没经过图谱也记下来（`via`：graph / text / both / none，看 chat 的 step 事件里 facts、neighbors、
+  timeline、paths 这些图谱工具有没有拿到事实，search、document 有没有读正文）。报告里"答上"之外另给
+  "经过图谱"和"只靠图谱"两个数：只靠正文答上的不需要本体，这个数才是本体自己的。
 - 第二个数从 `ontology_proposals` 算：代理提的里人表过态的，有几条被拒或改过再采纳。
 - `--seed` 把写好的问题灌进库（同一句跳过），`--only-report` 只读数不问。
 - `truth/redocred-typed.questions.json` 是给 `typed.mjs` 那份 100 篇 Re-DocRED 库写的十一条：十条有期望答案

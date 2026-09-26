@@ -1250,7 +1250,16 @@ export interface CompetencyQuestion {
 
 /** 本体的两个数（0061 决定 5） */
 export interface QuestionReport {
-  questions: { accepted: number; proposed: number; checked: number; answered: number };
+  questions: {
+    accepted: number;
+    proposed: number;
+    checked: number;
+    answered: number;
+    /** 答上了且途中从图谱拿到过事实 */
+    answered_with_graph: number;
+    /** 答上了且只走了图谱：本体本身答的 */
+    answered_graph_only: number;
+  };
   proposals: {
     open: number;
     adopted: number;

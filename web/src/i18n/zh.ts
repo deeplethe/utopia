@@ -1545,6 +1545,10 @@ export const zh: Strings = {
     questionsScore: (answered: number, checked: number) =>
       `${checked} 条问过，${answered} 条答上`,
     questionsScoreHint: "competency bench 对图谱问过的已接受问题，答上了几条。",
+    viaGraph: (withGraph: number, graphOnly: number) =>
+      `${withGraph} 条经过图谱 · ${graphOnly} 条只靠图谱`,
+    viaGraphHint:
+      "答上的问题里，几条途中从图谱拿到过事实，几条根本没读正文。只靠正文答上的不需要本体。",
     proposalsChanged: (changed: number, decided: number) =>
       `${decided} 条提案表过态，${changed} 条被改或被拒`,
     proposalsChangedHint: "代理的提案里人表过态的，有几条被拒或改过再采纳。",

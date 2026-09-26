@@ -1776,6 +1776,10 @@ export const en = {
       `${answered} of ${checked} answered`,
     questionsScoreHint:
       "Accepted questions the competency bench asked over the graph, and how many it answered.",
+    viaGraph: (withGraph: number, graphOnly: number) =>
+      `${withGraph} with graph facts · ${graphOnly} graph only`,
+    viaGraphHint:
+      "Of the answered questions, how many were answered after fetching facts from the graph, and how many without reading document text at all. An answer read from text alone did not need the ontology.",
     proposalsChanged: (changed: number, decided: number) =>
       `${changed} of ${decided} proposals changed`,
     proposalsChangedHint:
