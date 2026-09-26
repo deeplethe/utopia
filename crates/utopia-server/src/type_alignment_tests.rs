@@ -33,6 +33,13 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResp
         format!("data: {frame}\n\ndata: [DONE]\n\n"),
     )
 }
+/// 嵌入端点一直坏着：只有配了嵌入模型的测试会走到这里
+async fn embeddings_down() -> impl IntoResponse {
+    (
+        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        "embedding backend down",
+    )
+}
 struct Fx {
     pool: sqlx::PgPool,
     state: AppState,
@@ -87,6 +94,7 @@ impl Fx {
         let endpoint = format!("http://{}", listener.local_addr()?);
         let router = Router::new()
             .route("/chat/completions", post(reply))
+            .route("/embeddings", post(embeddings_down))
             .with_state(model.clone());
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -250,11 +258,16 @@ async fn human_decision_during_disagreement_survives() -> anyhow::Result<()> {
         .bind(f.entity)
         .fetch_one(&f.pool)
         .await?;
+    let requeued = align_types_jobs(&f).await?;
     let class = f.class;
     f.cleanup().await?;
     assert_eq!(binding.decided_by, "person");
     assert_eq!(binding.type_id, Some(class));
     assert_eq!(projected, Some(class));
+    assert!(
+        requeued.is_empty(),
+        "a person's decision carries no basis and is never asked about again"
+    );
     Ok(())
 }
 
@@ -731,4 +744,248 @@ async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyho
     assert_eq!(phrases_queued_early, 0, "还要再问时短语对齐不排");
     assert_eq!(phrases_queued_late, 1, "最后一轮排短语对齐");
     Ok(())
+}
+
+/// #795：模型还在答的时候类的定义改了。两票读的都是旧定义，它们的答案不能当成对新定义
+/// 的判定留下来；下一轮要拿新定义再问，问完之后输入没变就不再问
+#[tokio::test]
+async fn an_edit_during_the_model_request_is_asked_again() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![
+        vote(None),
+        vote(None),
+        vote(Some("organization")),
+        vote(Some("organization")),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let run = async {
+        f.model
+            .hold
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let state = f.state.clone();
+        let kb = f.kb;
+        let worker = tokio::spawn(async move { align_types_reasking(&state, kb, 0).await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            f.model.entered.notified(),
+        )
+        .await?;
+        sqlx::query(
+            "UPDATE entity_types SET description='NEW definition', updated_at=clock_timestamp()
+              WHERE id=$1",
+        )
+        .bind(f.class)
+        .execute(&f.pool)
+        .await?;
+        f.model.release.notify_one();
+        worker.await??;
+        let first = f.requests();
+        anyhow::ensure!(first.len() == 2, "two votes, got {}", first.len());
+        anyhow::ensure!(
+            first
+                .iter()
+                .all(|r| r.to_string().contains("OLD definition")),
+            "both votes were built before the edit"
+        );
+        sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+            .bind(f.kb.to_string())
+            .execute(&f.pool)
+            .await?;
+        f.run().await?;
+        let second = f.requests();
+        anyhow::ensure!(
+            second.len() == 4,
+            "the edit made during the request was taken as seen: the next run asked {} more",
+            second.len() - 2
+        );
+        anyhow::ensure!(
+            second[2..]
+                .iter()
+                .all(|r| r.to_string().contains("NEW definition")),
+            "the next run asks with the new definition"
+        );
+        let binding = type_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+        anyhow::ensure!(binding.status == "bound" && binding.type_id == Some(f.class));
+        f.run().await?;
+        anyhow::ensure!(f.requests().len() == 4, "unchanged inputs ask nothing");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+async fn align_types_jobs(f: &Fx) -> anyhow::Result<Vec<Option<i64>>> {
+    Ok(sqlx::query_scalar(
+        "SELECT (payload->>'reask')::bigint FROM jobs
+          WHERE kind='align_types' AND payload->>'kb_id'=$1 ORDER BY id",
+    )
+    .bind(f.kb.to_string())
+    .fetch_all(&f.pool)
+    .await?)
+}
+
+async fn clear_jobs(f: &Fx) -> anyhow::Result<()> {
+    sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+        .bind(f.kb.to_string())
+        .execute(&f.pool)
+        .await?;
+    Ok(())
+}
+
+/// 父边的增删不碰 `updated_at`，时间戳看不见它；指纹里有祖先闭包，看得见
+#[tokio::test]
+async fn a_parent_edge_makes_an_agent_binding_stale() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![
+        vote(Some("organization")),
+        vote(Some("organization")),
+        vote(Some("organization")),
+        vote(Some("organization")),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let run = async {
+        let legal = Uuid::now_v7();
+        sqlx::query("INSERT INTO entity_types(id,kb_id,key,label,description) VALUES($1,$2,'legal_entity','Legal entity','A body the law treats as a person')")
+            .bind(legal).bind(f.kb).execute(&f.pool).await?;
+        f.run().await?;
+        anyhow::ensure!(f.requests().len() == 2);
+        clear_jobs(&f).await?;
+        let versions = "SELECT id, updated_at FROM entity_types WHERE kb_id=$1 ORDER BY id";
+        let before: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(versions)
+            .bind(f.kb)
+            .fetch_all(&f.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO entity_type_parents(child_id,parent_id,is_primary) VALUES($1,$2,true)",
+        )
+        .bind(f.class)
+        .bind(legal)
+        .execute(&f.pool)
+        .await?;
+        let after: Vec<(Uuid, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(versions)
+            .bind(f.kb)
+            .fetch_all(&f.pool)
+            .await?;
+        anyhow::ensure!(before == after, "a parent edge leaves updated_at alone");
+        f.run().await?;
+        anyhow::ensure!(
+            f.requests().len() == 4,
+            "the ancestor closure is part of the basis, so the word is asked again"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 这一列出现之前代理判的行没有指纹：各重判一次，之后不再问
+#[tokio::test]
+async fn rows_without_a_basis_are_decided_again_once() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![vote(Some("organization")), vote(Some("organization"))]).await?
+    else {
+        return Ok(());
+    };
+    let run = async {
+        f.seed_bound().await?;
+        f.run().await?;
+        anyhow::ensure!(f.requests().len() == 2);
+        let binding = type_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+        anyhow::ensure!(binding.basis.is_some() && binding.decided_by == "agent");
+        f.run().await?;
+        anyhow::ensure!(
+            f.requests().len() == 2,
+            "a recorded basis that still matches asks nothing"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 过期的词这一轮问了却没问出结论（端点一直报错、回复读不出）：走有上限的延时再问，
+/// 不能因为「还过期」立刻再排——那样一个永久报错的端点会让任务一轮接一轮地跑
+#[tokio::test]
+async fn a_stale_word_whose_batch_fails_takes_the_bounded_reask() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![
+        json!({"answer": "organization"}),
+        json!({"answer": "organization"}),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    let run = async {
+        f.seed_bound().await?;
+        f.run().await?;
+        anyhow::ensure!(f.requests().len() == 2);
+        let jobs = align_types_jobs(&f).await?;
+        anyhow::ensure!(
+            jobs == vec![Some(1)],
+            "only the delayed re-ask is queued, got {jobs:?}"
+        );
+        let binding = type_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+        anyhow::ensure!(binding.basis.is_none(), "nothing was decided this round");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 嵌入端点一直坏着：检索退回整表，小库照样绑得上（#894 修过的「整库没有类型」不能回来）；
+/// 一直坏下去候选不变、指纹不变，也不会每轮再问一遍
+#[tokio::test]
+async fn a_retrieval_error_falls_back_to_the_whole_class_list() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![vote(Some("organization")), vote(Some("organization"))]).await?
+    else {
+        return Ok(());
+    };
+    let run = async {
+        let ws: Uuid = sqlx::query_scalar("SELECT workspace_id FROM knowledge_bases WHERE id=$1")
+            .bind(f.kb)
+            .fetch_one(&f.pool)
+            .await?;
+        let chat = utopia_store::settings::get(&f.pool, ws)
+            .await?
+            .and_then(|s| s.chat_base_url)
+            .expect("fixture endpoint");
+        // upsert 整行覆盖（只有密钥传 None 才保留旧值），对话端点得原样再给一次
+        utopia_store::settings::upsert(
+            &f.pool,
+            ws,
+            Some(&chat),
+            None,
+            Some("scripted"),
+            Some(&chat),
+            None,
+            Some("scripted-embedding"),
+            Some(4),
+        )
+        .await?;
+        f.run().await?;
+        anyhow::ensure!(f.requests().len() == 2, "the fallback still asks");
+        let binding = type_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+        anyhow::ensure!(binding.status == "bound" && binding.type_id == Some(f.class));
+        let jobs = align_types_jobs(&f).await?;
+        anyhow::ensure!(
+            jobs.is_empty(),
+            "a settled word queues nothing, got {jobs:?}"
+        );
+        f.run().await?;
+        anyhow::ensure!(
+            f.requests().len() == 2,
+            "while retrieval keeps failing the candidates, and so the basis, stay the same"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
 }

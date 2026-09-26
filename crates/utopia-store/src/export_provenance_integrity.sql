@@ -1,6 +1,6 @@
 -- 导出前的出处体检（export::provenance_integrity 的唯一查询）。
 --
--- 覆盖面 = 0070 保护的全部结构引用边：catalog 守卫
+-- 覆盖面 = 0070/0091 保护的全部结构引用边：catalog 守卫
 -- （migration_0070_runs_under_any_search_path.rs）从 pg_catalog 数出每一条
 -- 受保护的列级引用，再回来核对这份文件里的扫描分支——一边漏登记都是 CI 红。
 -- 所以每条边不是「导出会解析才查」，而是「schema 保护了就必须在发出第一个
@@ -302,4 +302,129 @@ SELECT edge, kind, COUNT(*) AS rows FROM (
       FROM phrase_bindings b
       LEFT JOIN relation_types r ON r.id = b.relation_type_id
      WHERE b.kb_id = $1 AND b.relation_type_id IS NOT NULL
+    UNION ALL
+    -- @edge attribute_rules.join_predicate_id -> relation_types.id
+    -- 0071 出生就有复合键，但体检一直没跟到
+    SELECT 'arule.join_predicate', 'cross_kb', p.kb_id IS DISTINCT FROM a.kb_id
+      FROM attribute_rules a
+      LEFT JOIN relation_types p ON p.id = a.join_predicate_id
+     WHERE a.kb_id = $1 AND a.join_predicate_id IS NOT NULL
+    UNION ALL
+    -- @edge implication_rules.subject_type_id -> entity_types.id
+    -- 蕴含规则本体：签名两端的类与结论属性都进本库词汇表按 id 查
+    SELECT 'irule.subject_type', 'cross_kb', t.kb_id IS DISTINCT FROM r.kb_id
+      FROM implication_rules r
+      LEFT JOIN entity_types t ON t.id = r.subject_type_id
+     WHERE r.kb_id = $1 AND r.subject_type_id IS NOT NULL
+    UNION ALL
+    -- @edge implication_rules.object_type_id -> entity_types.id
+    SELECT 'irule.object_type', 'cross_kb', t.kb_id IS DISTINCT FROM r.kb_id
+      FROM implication_rules r
+      LEFT JOIN entity_types t ON t.id = r.object_type_id
+     WHERE r.kb_id = $1 AND r.object_type_id IS NOT NULL
+    UNION ALL
+    -- @edge implication_rules.conclude_property_id -> relation_types.id
+    SELECT 'irule.conclude_property', 'cross_kb', p.kb_id IS DISTINCT FROM r.kb_id
+      FROM implication_rules r
+      LEFT JOIN relation_types p ON p.id = r.conclude_property_id
+     WHERE r.kb_id = $1
+    UNION ALL
+    -- @edge phrase_readings.entity_id -> entities.id
+    -- 读数缓存：答出的实体喂给蕴含——别库的实体等于把别库语义读进本库
+    SELECT 'reading.entity', 'cross_kb', e.kb_id IS DISTINCT FROM pr.kb_id
+      FROM phrase_readings pr
+      LEFT JOIN entities e ON e.id = pr.entity_id
+     WHERE pr.kb_id = $1 AND pr.entity_id IS NOT NULL
+    UNION ALL
+    -- @edge implied_fact_sources.rule_id -> implication_rules.id
+    -- 隐含事实的出处：行自己没有 kb 列，归属按所属 fact 的库判
+    SELECT 'implied.rule', 'cross_kb', r.kb_id IS DISTINCT FROM f.kb_id
+      FROM implied_fact_sources i
+      JOIN facts f ON f.id = i.fact_id
+      LEFT JOIN implication_rules r ON r.id = i.rule_id
+     WHERE f.kb_id = $1
+    UNION ALL
+    -- @edge implied_fact_sources.statement_id -> facts.id
+    SELECT 'implied.statement', 'cross_kb', s.kb_id IS DISTINCT FROM f.kb_id
+      FROM implied_fact_sources i
+      JOIN facts f ON f.id = i.fact_id
+      LEFT JOIN facts s ON s.id = i.statement_id
+     WHERE f.kb_id = $1 AND i.statement_id IS NOT NULL
+    UNION ALL
+    -- @edge implied_fact_sources.entity_id -> entities.id
+    SELECT 'implied.entity', 'cross_kb', e.kb_id IS DISTINCT FROM f.kb_id
+      FROM implied_fact_sources i
+      JOIN facts f ON f.id = i.fact_id
+      LEFT JOIN entities e ON e.id = i.entity_id
+     WHERE f.kb_id = $1 AND i.entity_id IS NOT NULL
+    UNION ALL
+    -- @edge attribute_rule_versions.rule_id -> attribute_rules.id
+    -- 定义史：版本行自己有 kb_id，且必须等于所属规则的库
+    SELECT 'arversion.rule', 'cross_kb', r.kb_id IS DISTINCT FROM v.kb_id
+      FROM attribute_rule_versions v
+      LEFT JOIN attribute_rules r ON r.id = v.rule_id
+     WHERE v.kb_id = $1
+    UNION ALL
+    -- @edge derived_facts.attribute_rule_version_id -> attribute_rule_versions.id
+    -- 派生记下凭哪一版定义推出：那版定义不许在别库
+    SELECT 'derived.attribute_rule_version', 'cross_kb', v.kb_id IS DISTINCT FROM d.kb_id
+      FROM derived_facts d
+      LEFT JOIN attribute_rule_versions v ON v.id = d.attribute_rule_version_id
+     WHERE d.kb_id = $1 AND d.attribute_rule_version_id IS NOT NULL
+    UNION ALL
+    -- @edge errata_runs.document_id -> documents.id
+    -- 勘误账：复审的是本库的文档；撤销键物化每轮都要读
+    SELECT 'erratarun.document', 'cross_kb', d.kb_id IS DISTINCT FROM r.kb_id
+      FROM errata_runs r
+      LEFT JOIN documents d ON d.id = r.document_id
+     WHERE r.kb_id = $1
+    UNION ALL
+    -- @edge errata_actions.run_id -> errata_runs.id
+    SELECT 'errata.run', 'cross_kb', r.kb_id IS DISTINCT FROM a.kb_id
+      FROM errata_actions a
+      LEFT JOIN errata_runs r ON r.id = a.run_id
+     WHERE a.kb_id = $1
+    UNION ALL
+    -- @edge errata_actions.document_id -> documents.id
+    SELECT 'errata.document', 'cross_kb', d.kb_id IS DISTINCT FROM a.kb_id
+      FROM errata_actions a
+      LEFT JOIN documents d ON d.id = a.document_id
+     WHERE a.kb_id = $1
+    UNION ALL
+    -- @edge errata_actions.fact_id -> facts.id
+    SELECT 'errata.fact', 'cross_kb', f.kb_id IS DISTINCT FROM a.kb_id
+      FROM errata_actions a
+      LEFT JOIN facts f ON f.id = a.fact_id
+     WHERE a.kb_id = $1 AND a.fact_id IS NOT NULL
+    UNION ALL
+    -- @edge errata_actions.statement_id -> facts.id
+    SELECT 'errata.statement', 'cross_kb', f.kb_id IS DISTINCT FROM a.kb_id
+      FROM errata_actions a
+      LEFT JOIN facts f ON f.id = a.statement_id
+     WHERE a.kb_id = $1 AND a.statement_id IS NOT NULL
+    UNION ALL
+    -- @edge errata_actions.predicate_id -> relation_types.id
+    SELECT 'errata.predicate', 'cross_kb', p.kb_id IS DISTINCT FROM a.kb_id
+      FROM errata_actions a
+      LEFT JOIN relation_types p ON p.id = a.predicate_id
+     WHERE a.kb_id = $1 AND a.predicate_id IS NOT NULL
+    UNION ALL
+    -- @edge errata_actions.new_fact_id -> facts.id
+    SELECT 'errata.new_fact', 'cross_kb', f.kb_id IS DISTINCT FROM a.kb_id
+      FROM errata_actions a
+      LEFT JOIN facts f ON f.id = a.new_fact_id
+     WHERE a.kb_id = $1 AND a.new_fact_id IS NOT NULL
+    UNION ALL
+    -- @edge name_vectors.fact_id -> facts.id
+    -- 名字向量：召回通道按本库事实/实体取——复合键 0080 就装了，体检补上
+    SELECT 'namevector.fact', 'cross_kb', f.kb_id IS DISTINCT FROM n.kb_id
+      FROM name_vectors n
+      LEFT JOIN facts f ON f.id = n.fact_id
+     WHERE n.kb_id = $1
+    UNION ALL
+    -- @edge name_vectors.entity_id -> entities.id
+    SELECT 'namevector.entity', 'cross_kb', e.kb_id IS DISTINCT FROM n.kb_id
+      FROM name_vectors n
+      LEFT JOIN entities e ON e.id = n.entity_id
+     WHERE n.kb_id = $1
 ) refs WHERE bad GROUP BY edge, kind

@@ -1,6 +1,6 @@
 # 0053 · A phrase decision records the inputs it considered
 
-- **Status**: implemented 2026-09-23 in PR #878 · `phrase_bindings.basis` (migration 0072), candidates admitted through the class hierarchy and shown to the model as such, structural outcomes recorded instead of skipped, the requeue condition reads live signatures only · closes the lifecycle half of #807 and the phrase half of #795; the kind-word aligner keeps its timestamp staleness for now
+- **Status**: implemented 2026-09-23 in PR #878 · `phrase_bindings.basis` (migration 0072), candidates admitted through the class hierarchy and shown to the model as such, structural outcomes recorded instead of skipped, the requeue condition reads live signatures only · closes the lifecycle half of #807 and the phrase half of #795 · kind words since 2026-09-26: `type_bindings.basis` (migration 0092), read from one snapshot and compared again when a reply is accepted, see [the revision below](#revision-2026-09-26-kind-words)
 - **Written**: 2026-09-23
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754
 
@@ -73,7 +73,8 @@ property stops fitting keeps its projection: the person said so.
 
 - Fingerprinting the kind-word aligner. #795's reproduction is on `align_types`; the same design
   applies and is the obvious next cut, but its inputs (kind words, class definitions, the
-  hierarchy) are a different set and this record does not claim them.
+  hierarchy) are a different set and this record does not claim them. Done since, as the
+  [revision below](#revision-2026-09-26-kind-words).
 - A revision table of decisions. The old decision is overwritten in place as before; the audit
   ledger keeps the person's decisions and the projection changes. #807 asked what records are
   retained: the answer here is the current decision plus its basis, nothing historical.
@@ -92,3 +93,53 @@ for the next run; a person's decision made during a request is not overwritten.
 The cost is one fingerprint per live signature per run, computed from data the run already loads,
 plus one query for property versions. Rows decided before this record have no basis and are
 re-decided once.
+
+## Revision 2026-09-26 (kind words)
+
+The kind-word aligner records a basis too (`type_bindings.basis`, migration 0092, #795). Its inputs
+are not a phrase's: the model is shown a kind word's candidate classes with their labels and
+definitions, so the fingerprint covers each candidate class's `updated_at` and ancestor closure.
+Candidates come from embedding retrieval, or the whole class list when there is no embedding model
+and few classes. They are retrieved once per run for every live kind word, and the same lists are
+reused when the run checks for staleness at its end.
+
+Two things go further than the phrase half, which records its basis and catches an edit during
+the request at the next run:
+
+- **One snapshot.** The classes, their versions and parent edges, the signatures and the existing
+  decisions are read in one `REPEATABLE READ, READ ONLY` transaction that closes before the first
+  model call, so the definitions in the prompt and the versions in the fingerprint are one state.
+- **Acceptance compares.** Writing an agent decision first locks the candidate class rows
+  `FOR SHARE`, the order a class delete takes before it cascades to the binding, then recomputes
+  the fingerprint from the rows as they are now. A reply whose fingerprint moved is discarded and
+  the run queues another. Updates and deletes of the candidates wait for that transaction; a parent
+  edge or a new class committed in the same window is not blocked, and leaves the decision
+  detectably stale for the next run.
+
+A failed retrieval falls back to the whole class list, as the phrase shortlist does: the words
+decided during the failure carry that list in their fingerprints and are asked once more when
+retrieval recovers. Deciding nothing instead would leave a small base untyped for as long as its
+embedding endpoint is broken.
+
+A stale word the run asked about but could not settle (a failed call, an unreadable reply, a
+missing vote, no candidates) takes the bounded re-ask rather than the immediate requeue, so an
+endpoint that fails every time cannot requeue the job round after round. A person's kind-word
+decision commits together with its `align_phrases` job, the way 0051 pairs a phrase decision with
+its materialisation. Every statement that changes a class's label or definition moves `updated_at`,
+parent edges are in the closure, and the vector refresh (`set_type_embeddings`) changes neither, so
+no semantic change escapes the fingerprint and re-embedding does not make decisions stale. What
+imports and packs still lack is a shared writers' guard, which would only narrow the window above
+from "stale next run" to "rejected now".
+
+The cost is one retrieval per live kind word per run, one embedding request per 64 words and one
+nearest-class query per word, where before only the words being decided were retrieved; the phrase
+shortlist likewise embeds its wide signatures on every run. Rows decided before this revision have
+no basis and are decided again once.
+
+Regression coverage, with a scripted model and a real PostgreSQL: an edit during the model request
+is not accepted and the next run asks with the new definition (red before this revision); a parent
+edge alone makes an agent binding stale; rows without a basis are decided again once; a stale word
+whose batch fails takes the bounded re-ask; a failed retrieval falls back and is not asked again
+while it keeps failing; a person's decision carries no basis, is not overwritten, and commits with
+its job; an acceptance and a class delete wait for each other instead of deadlocking, and a
+candidate deleted before the check turns the reply away.

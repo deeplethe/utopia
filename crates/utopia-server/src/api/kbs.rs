@@ -394,6 +394,9 @@ pub async fn audit_log(
 ///
 /// 没有默认包（#580）：注册建的 General 库与对话框里新建的库都空着起步，
 /// 装哪个包是建库的人选的。
+/// 只被 `create_kb` 调（0062 的前提）：新库没有事实就没有违规可对账，
+/// 所以这里不像 `apply_import` 那样做基线 + 判据对账。哪天它被复用到
+/// 既有库上，这条注释就不再成立——先把对账补上再复用
 pub(super) async fn install_packs(
     state: &AppState,
     kb_id: Uuid,

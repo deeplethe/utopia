@@ -2074,7 +2074,9 @@ pub async fn merge_entities(
     // 只报：对搬动过的事实查一遍 domain / range，违反的进 `axiom_violations`
     //（kind = signature），与其它公理违规同一个队列、同样三个出路。
     // 放在事务之后：目标实体的类型在事务里刚调和过，提交了才看得见
-    match crate::reasoning::signature_breaks(pool, kb_id, Some(&moved_all)).await {
+    match crate::reasoning::signature_breaks(&mut *pool.acquire().await?, kb_id, Some(&moved_all))
+        .await
+    {
         Ok(broken) if !broken.is_empty() => {
             if let Err(e) = crate::reasoning::record_signature_breaks(pool, kb_id, &broken).await {
                 tracing::warn!(%kb_id, error = %e, "合并后的签名违规没能入库");

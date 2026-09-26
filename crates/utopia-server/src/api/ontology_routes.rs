@@ -194,6 +194,8 @@ pub async fn update_entity_type(
         std::time::Duration::from_secs(5),
     )
     .await;
+    // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
+    state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -214,6 +216,8 @@ pub async fn delete_entity_type(
         json!({}),
     )
     .await;
+    // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
+    state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -257,14 +261,14 @@ pub struct RelationTypeReq {
     #[serde(default)]
     pub kind: Option<String>,
     /// 可以当主语的类。attribute 至少一个；relation 留空 = 不限。
-    /// **更新时缺省 = 不动**，所以是 Option 而不是 Vec——不管 domain 的
-    /// 调用方（属性表单）不该因为一次改名就把 domain 清空
+    /// **两者都缺省才是不动**：签名是一组一起提交的——只送 ranges 会把
+    /// domains 清空，不是「ranges 动、domains 留」
     #[serde(default)]
     pub domains: Option<Vec<Uuid>>,
     /// 这条关系的边能带哪些属性（0037）：属性定义的 id。None = 不动
     #[serde(default)]
     pub qualifiers: Option<Vec<Uuid>>,
-    /// 可以当宾语的类。只对 relation 有意义
+    /// 可以当宾语的类。只对 relation 有意义；与 domains 同一条成组提交规矩
     #[serde(default)]
     pub ranges: Option<Vec<Uuid>>,
     /// attribute 专用：text | number | date | bool
@@ -395,6 +399,8 @@ pub async fn update_relation_type(
                 "description": req.description }),
     )
     .await;
+    // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
+    state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -415,6 +421,8 @@ pub async fn delete_relation_type(
         json!({}),
     )
     .await;
+    // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
+    state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1299,18 +1307,45 @@ pub async fn apply_import(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let (filename, bytes) = read_upload(multipart).await?;
+    // 导入会改判据（公理链、domain/range、父边）：先把旧本体下会检出的违规
+    // 记下来（0062），apply 落库后按新本体对账——在旧判据下检出过的陈行以
+    // criterion_changed 收场，不是整批抹掉；对账失败如实报错，不假装干净
+    // 基线跑在同一条事务里：autocommit 连接上每条语句各看一个快照，
+    // 半途有别的提交进来会把两个时刻混成一份基线
+    let mut baseline_tx = state.pool.begin().await?;
+    let was_detected = utopia_store::reasoning::detection_keys(&mut baseline_tx, kb_id).await?;
+    baseline_tx.commit().await?;
     let (import_id, plan) =
-        crate::owl_import::apply(&state, kb_id, user.id, &filename, &bytes).await?;
-    // 公理刚变，这是最该重算一致性的时刻——用户导进来的正是判据本身。
-    // 失败不影响导入本身：本体已经落库了，检查跑不动是另一件事，
-    // Review 页那个按钮还能再跑一次
-    let violations = match utopia_store::reasoning::run(&state.pool, kb_id).await {
-        Ok(r) => r.found,
-        Err(e) => {
-            tracing::warn!(?e, "导入后的一致性检查没跑成");
-            0
-        }
-    };
+        match crate::owl_import::apply(&state, kb_id, user.id, &filename, &bytes).await {
+            Ok(v) => v,
+            Err(e) => {
+                // apply 是多笔提交：中途失败时一部分判据已经落了。尽力对账——
+                // 已提交的判据是「当前本体」，open 行不能带着旧判据过夜。对账
+                // 自身失败只记告警，原错误照样返回，不吞
+                match state.pool.begin().await {
+                    Ok(mut tx) => {
+                        if let Err(re) = utopia_store::reasoning::reconcile_ontology(
+                            &mut tx,
+                            kb_id,
+                            &was_detected,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = ?re, "导入失败后的违规对账也没跑成");
+                        } else if let Err(ce) = tx.commit().await {
+                            tracing::warn!(error = ?ce, "导入失败后的违规对账提交失败");
+                        }
+                    }
+                    Err(be) => tracing::warn!(error = ?be, "导入失败后连对账事务都开不了"),
+                }
+                return Err(e.into());
+            }
+        };
+    // apply 自己分多笔提交，这笔事务只做对账：`open` 的意思是对账于当前本体
+    let mut tx = state.pool.begin().await?;
+    let violations =
+        utopia_store::reasoning::reconcile_ontology(&mut tx, kb_id, &was_detected).await?;
+    tx.commit().await?;
     state.emit_review(kb_id);
     Ok(Json(
         json!({ "import_id": import_id, "plan": plan, "violations": violations }),
@@ -1407,6 +1442,8 @@ async fn adopt_attribute(
                 "remapped": done.remapped, "unconvertible": done.unconvertible }),
     )
     .await;
+    // 空关系改判会跑判据对账（0062），队列可能刚变过
+    state.emit_review(kb_id);
     // unconvertible 要回给调用方：改写了 3 条、丢下 2 条，界面得说得出后半句
     Ok(Json(json!({
         "id": done.attribute_id, "batch": done.batch_id,

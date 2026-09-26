@@ -20,7 +20,8 @@ use chrono::{DateTime, Utc};
 use oxrdf::vocab::{rdf, rdfs, xsd};
 use oxrdf::{Literal, NamedNode, NamedNodeRef, Term, TripleRef};
 use utopia_store::export::{
-    ExportClass, ExportDerived, ExportDocument, ExportEntity, ExportFact, ExportRelation,
+    ExportAxiomViolation, ExportClass, ExportDerived, ExportDocument, ExportEntity, ExportFact,
+    ExportFactConflict, ExportRelation,
 };
 use uuid::Uuid;
 
@@ -104,6 +105,14 @@ impl Names {
     }
     pub fn rule(&self, id: Uuid) -> NamedNode {
         self.mint("rule", &id.to_string())
+    }
+    /// 事实争议（0062）：`…:conflict:{uuid}`
+    pub fn fact_conflict(&self, id: Uuid) -> NamedNode {
+        self.mint("conflict", &id.to_string())
+    }
+    /// 公理违规发现（0062）：`…:violation:{uuid}`
+    pub fn axiom_violation(&self, id: Uuid) -> NamedNode {
+        self.mint("violation", &id.to_string())
     }
     /// 本体自己长出来的类/关系用 **key** 而不是 uuid：key 是这个库内部就在用的
     /// 标识（`UNIQUE (kb_id, key)`，抽取提示词和 API 用的都是它），文件因此读得懂。
@@ -635,6 +644,123 @@ pub fn emit_derived(
         sink.r(&stmt, &prov("used"), &p)?;
     }
     Ok(())
+}
+
+/// 一条事实争议（0062）：同一槽位上的两条断言互不相让。
+///
+/// `status` 照原样给：open 是「还在争」；resolved + `utopia:resolution` 是人的
+/// 裁决；`withdrawn` 不是裁决——一边作废了题就没了，`utopia:closedAt` 记的是
+/// 作废时刻（0051），不是有人打开过审核页的时刻
+pub fn emit_fact_conflict(
+    sink: &mut Sink,
+    names: &Names,
+    c: &ExportFactConflict,
+) -> std::io::Result<()> {
+    let iri = names.fact_conflict(c.id);
+    sink.r(&iri, &nn(rdf::TYPE.as_str()), &utopia("FactConflict"))?;
+    // 两席分清方向：压着的断言与新到的那条不是对称的（0062）
+    for (pred, fact) in [
+        (utopia("priorStatement"), c.old_fact_id),
+        (utopia("incomingStatement"), c.new_fact_id),
+    ] {
+        sink.r(&iri, &pred, &names.fact(fact))?;
+    }
+    sink.l(&iri, &utopia("reason"), &text(c.reason.clone()))?;
+    sink.l(&iri, &utopia("status"), &text(c.status.clone()))?;
+    if let Some(r) = &c.resolution {
+        sink.l(&iri, &utopia("resolution"), &text(r.clone()))?;
+    }
+    sink.l(&iri, &prov("generatedAtTime"), &dt(c.created_at))?;
+    if let Some(t) = c.resolved_at {
+        sink.l(&iri, &utopia("closedAt"), &dt(t))?;
+    }
+    Ok(())
+}
+
+/// 一条公理违规发现（0062）。这是**可变的当前状态**，不是历史：`open` 的意思是
+/// 已对账于当前本体——所以判据只连在 open 行上，resolved 的行不假装知道自己是
+/// 按哪一版本体结案的
+pub fn emit_axiom_violation(
+    sink: &mut Sink,
+    names: &Names,
+    vocab: &Vocabulary,
+    v: &ExportAxiomViolation,
+) -> std::io::Result<()> {
+    let iri = names.axiom_violation(v.id);
+    sink.r(&iri, &nn(rdf::TYPE.as_str()), &utopia("AxiomViolation"))?;
+    sink.l(&iri, &utopia("kind"), &text(v.kind.clone()))?;
+    // self_loop/signature 的左右是同一事实——RDF 集合语义下重发无害，但 Turtle
+    // 文件里会是一条重复三元组
+    let endpoints: &[Uuid] = if v.left_fact == v.right_fact {
+        &[v.left_fact]
+    } else {
+        &[v.left_fact, v.right_fact]
+    };
+    for fact in endpoints {
+        sink.r(&iri, &utopia("onStatement"), &names.fact(*fact))?;
+    }
+    // 环是有序的证据链（0054）：拍扁成一组无序的 facts，「A→B→C→A」就读不回来了。
+    // rdf:List 是 Turtle/JSON-LD 都认的保序结构
+    if !v.path.is_empty() {
+        let items: Vec<Term> = v.path.iter().map(|f| names.fact(*f).into()).collect();
+        let head = emit_list(sink, &items)?;
+        sink.triple(TripleRef::new(
+            iri.as_ref(),
+            utopia("evidencePath").as_ref(),
+            head.as_ref(),
+        ))?;
+    }
+    sink.l(&iri, &utopia("status"), &text(v.status.clone()))?;
+    if let Some(r) = &v.resolution {
+        sink.l(&iri, &utopia("resolution"), &text(r.clone()))?;
+    }
+    sink.l(&iri, &utopia("detectedAt"), &dt(v.detected_at))?;
+    if let Some(t) = v.decided_at {
+        sink.l(&iri, &utopia("closedAt"), &dt(t))?;
+    }
+    // 判据（0062 §4）：open = 已对账于当前本体，必然指得回一条关系与一个
+    // OWL/rdfs 词。signature 的判据是一对签名，两个词都发（行不记哪一侧破的）。
+    // resolved 的行不发——它的判据可能早已不在本体里
+    if v.status == "open" {
+        for term in v.criterion_terms().unwrap_or(&[]) {
+            sink.r(&iri, &utopia("criterion"), &criterion_node(term))?;
+        }
+        if let Some(rel) = v
+            .criterion_predicate
+            .and_then(|p| vocab.relation(p))
+            .cloned()
+        {
+            sink.r(&iri, &utopia("onRelation"), &rel)?;
+        }
+    }
+    Ok(())
+}
+
+/// `utopia:criterion` 的词项：`criterion_terms` 只产 `owl:`/`rdfs:` 两种，
+/// 其余值不可能走到这里（export 侧已经拒导）
+fn criterion_node(term: &str) -> NamedNode {
+    if let Some(t) = term.strip_prefix("owl:") {
+        owl(t)
+    } else {
+        match term {
+            "rdfs:domain" => rdfs::DOMAIN.into(),
+            "rdfs:range" => rdfs::RANGE.into(),
+            _ => unreachable!("criterion_terms 只产 owl:/rdfs: 词"),
+        }
+    }
+}
+
+/// 一串有序资源写成 rdf:List，返回表头节点（空表返回 rdf:nil）。
+/// 从尾往前搭：每个空白节点落地时就知道自己的 rest
+fn emit_list(sink: &mut Sink, items: &[Term]) -> std::io::Result<Term> {
+    let mut head: Term = nn(rdf::NIL.as_str()).into();
+    for item in items.iter().rev() {
+        let node = oxrdf::BlankNode::default();
+        sink.triple(TripleRef::new(node.as_ref(), rdf::FIRST, item.as_ref()))?;
+        sink.triple(TripleRef::new(node.as_ref(), rdf::REST, head.as_ref()))?;
+        head = node.into();
+    }
+    Ok(head)
 }
 
 fn emit_validity(
@@ -1550,5 +1676,264 @@ mod tests {
         // 非 http 的 base 拒掉：拼出来的会是一份谁也解析不了的文件
         assert!(Names::new(kb(), Some("javascript:alert(1)")).is_err());
         assert!(Names::new(kb(), Some("https://acme.example/a b")).is_err());
+    }
+
+    const CONFLICT: &str = "<urn:utopia:kb:01a06dc4-f40a-7013-b09f-1b499e2e7441:conflict:07070707-0707-0707-0707-070707070707>";
+    const VIOLATION: &str = "<urn:utopia:kb:01a06dc4-f40a-7013-b09f-1b499e2e7441:violation:08080808-0808-0808-0808-080808080808>";
+
+    fn conflict(status: &str, resolution: Option<&str>) -> ExportFactConflict {
+        ExportFactConflict {
+            id: id(7),
+            old_fact_id: id(5),
+            new_fact_id: id(6),
+            reason: "simultaneous".into(),
+            created_at: at("2026-03-10T00:00:00Z"),
+            status: status.into(),
+            resolution: resolution.map(str::to_string),
+            resolved_at: (status != "open").then(|| at("2026-03-20T00:00:00Z")),
+            old_fact_kb: Some(kb()),
+            new_fact_kb: Some(kb()),
+        }
+    }
+
+    fn violation(
+        kind: &str,
+        status: &str,
+        resolution: Option<&str>,
+        path: Vec<Uuid>,
+    ) -> ExportAxiomViolation {
+        ExportAxiomViolation {
+            id: id(8),
+            kind: kind.into(),
+            left_fact: id(5),
+            right_fact: id(6),
+            path,
+            status: status.into(),
+            resolution: resolution.map(str::to_string),
+            detected_at: at("2026-03-15T00:00:00Z"),
+            decided_at: (status != "open").then(|| at("2026-03-20T00:00:00Z")),
+            criterion_predicate: (status == "open").then_some(id(2)),
+            criterion_axiom: (status == "open").then_some(kind.to_string()),
+            left_kb: Some(kb()),
+            right_kb: Some(kb()),
+            criterion_predicate_kb: Some(kb()),
+            foreign_path: false,
+        }
+    }
+
+    #[test]
+    fn a_contest_names_both_sides_and_its_disposition() {
+        let open = conflict("open", None);
+        let quads = export(Format::Turtle, |sink, names, _| {
+            emit_fact_conflict(sink, names, &open).unwrap();
+        });
+        assert!(has(
+            &quads,
+            CONFLICT,
+            rdf::TYPE.as_str(),
+            "urn:utopia:ns:FactConflict"
+        ));
+        let names = Names::new(kb(), None).unwrap();
+        // 两席有方向：旧断言是 prior，新到的是 incoming
+        assert_eq!(
+            objects(&quads, CONFLICT, "urn:utopia:ns:priorStatement"),
+            vec![names.fact(id(5)).to_string()]
+        );
+        assert_eq!(
+            objects(&quads, CONFLICT, "urn:utopia:ns:incomingStatement"),
+            vec![names.fact(id(6)).to_string()]
+        );
+        assert_eq!(
+            objects(&quads, CONFLICT, "urn:utopia:ns:reason"),
+            vec!["\"simultaneous\""]
+        );
+        assert_eq!(
+            objects(&quads, CONFLICT, "urn:utopia:ns:status"),
+            vec!["\"open\""]
+        );
+        assert!(objects(&quads, CONFLICT, "urn:utopia:ns:resolution").is_empty());
+        assert!(!objects(
+            &quads,
+            CONFLICT,
+            "http://www.w3.org/ns/prov#generatedAtTime"
+        )
+        .is_empty());
+        assert!(objects(&quads, CONFLICT, "urn:utopia:ns:closedAt").is_empty());
+
+        // 人裁过的带裁决词；作废的不是裁决——closedAt 记的是作废时刻（0051），
+        // 不带 resolution
+        for (status, resolution) in [("resolved", Some("kept_both")), ("withdrawn", None)] {
+            let c = conflict(status, resolution);
+            let quads = export(Format::Turtle, |sink, names, _| {
+                emit_fact_conflict(sink, names, &c).unwrap();
+            });
+            assert_eq!(
+                objects(&quads, CONFLICT, "urn:utopia:ns:status"),
+                vec![format!("\"{status}\"")]
+            );
+            assert_eq!(
+                objects(&quads, CONFLICT, "urn:utopia:ns:resolution"),
+                resolution
+                    .map(|r| vec![format!("\"{r}\"")])
+                    .unwrap_or_default()
+            );
+            assert!(!objects(&quads, CONFLICT, "urn:utopia:ns:closedAt").is_empty());
+        }
+    }
+
+    #[test]
+    fn an_open_violation_points_at_its_criterion() {
+        let v = violation("asymmetry", "open", None, vec![]);
+        let quads = export(Format::Turtle, |sink, names, vocab| {
+            emit_axiom_violation(sink, names, vocab, &v).unwrap();
+        });
+        assert!(has(
+            &quads,
+            VIOLATION,
+            rdf::TYPE.as_str(),
+            "urn:utopia:ns:AxiomViolation"
+        ));
+        assert_eq!(
+            objects(&quads, VIOLATION, "urn:utopia:ns:kind"),
+            vec!["\"asymmetry\""]
+        );
+        assert_eq!(
+            objects(&quads, VIOLATION, "urn:utopia:ns:onStatement").len(),
+            2,
+            "违规必须指回两条事实"
+        );
+        // 判据 = OWL 词 + 住在哪条关系上（0062）
+        assert_eq!(
+            objects(&quads, VIOLATION, "urn:utopia:ns:criterion"),
+            vec!["<http://www.w3.org/2002/07/owl#AsymmetricProperty>"]
+        );
+        assert_eq!(
+            objects(&quads, VIOLATION, "urn:utopia:ns:onRelation"),
+            vec![format!("<{WORKS_FOR}>")]
+        );
+        assert!(!objects(&quads, VIOLATION, "urn:utopia:ns:detectedAt").is_empty());
+        assert!(objects(&quads, VIOLATION, "urn:utopia:ns:closedAt").is_empty());
+    }
+
+    #[test]
+    fn a_signature_violation_points_at_the_whole_signature() {
+        // signature 的判据是 domain+range 这一对（0062）：行不记哪一侧破的，
+        // 合同也就不装知道——两个词都发
+        let v = violation("signature", "open", None, vec![]);
+        let quads = export(Format::Turtle, |sink, names, vocab| {
+            emit_axiom_violation(sink, names, vocab, &v).unwrap();
+        });
+        let mut criterion = objects(&quads, VIOLATION, "urn:utopia:ns:criterion");
+        criterion.sort();
+        assert_eq!(
+            criterion,
+            vec![
+                "<http://www.w3.org/2000/01/rdf-schema#domain>".to_string(),
+                "<http://www.w3.org/2000/01/rdf-schema#range>".to_string()
+            ]
+        );
+        assert_eq!(
+            objects(&quads, VIOLATION, "urn:utopia:ns:onRelation"),
+            vec![format!("<{WORKS_FOR}>")]
+        );
+    }
+
+    #[test]
+    fn a_closed_violation_does_not_claim_a_criterion() {
+        // resolved 的行不连判据：促成它结案的本体可能早已不在（0062）
+        let v = violation("signature", "resolved", Some("criterion_changed"), vec![]);
+        let quads = export(Format::Turtle, |sink, names, vocab| {
+            emit_axiom_violation(sink, names, vocab, &v).unwrap();
+        });
+        assert!(objects(&quads, VIOLATION, "urn:utopia:ns:criterion").is_empty());
+        assert!(objects(&quads, VIOLATION, "urn:utopia:ns:onRelation").is_empty());
+        assert_eq!(
+            objects(&quads, VIOLATION, "urn:utopia:ns:resolution"),
+            vec!["\"criterion_changed\""]
+        );
+        assert!(!objects(&quads, VIOLATION, "urn:utopia:ns:closedAt").is_empty());
+    }
+
+    /// 顺着 rdf:List 走一遍，把成员按序收回来
+    fn list_items(quads: &[Quad], violation_iri: &str) -> Vec<String> {
+        let nil: Term = nn(rdf::NIL.as_str()).into();
+        let head = quads
+            .iter()
+            .find(|q| {
+                q.subject.to_string() == violation_iri
+                    && q.predicate.as_str() == "urn:utopia:ns:evidencePath"
+            })
+            .map(|q| q.object.clone())
+            .expect("环必须带着 path");
+        let mut items = Vec::new();
+        let mut node = head;
+        while node != nil {
+            let first = quads
+                .iter()
+                .find(|q| {
+                    q.subject.to_string() == node.to_string()
+                        && q.predicate.as_str() == rdf::FIRST.as_str()
+                })
+                .map(|q| q.object.clone())
+                .expect("list 节点必有 first");
+            items.push(first.to_string());
+            node = quads
+                .iter()
+                .find(|q| {
+                    q.subject.to_string() == node.to_string()
+                        && q.predicate.as_str() == rdf::REST.as_str()
+                })
+                .map(|q| q.object.clone())
+                .expect("list 节点必有 rest");
+        }
+        items
+    }
+
+    #[test]
+    fn a_cycle_keeps_its_facts_in_order() {
+        let path = vec![id(5), id(9), id(6)];
+        let v = violation("cycle", "open", None, path.clone());
+        let names = Names::new(kb(), None).unwrap();
+        let expected: Vec<String> = path.iter().map(|f| names.fact(*f).to_string()).collect();
+        for format in [Format::Turtle, Format::JsonLd] {
+            let quads = export(format, |sink, names, vocab| {
+                emit_axiom_violation(sink, names, vocab, &v).unwrap();
+            });
+            assert_eq!(
+                list_items(&quads, VIOLATION),
+                expected,
+                "{format:?} 里环的顺序丢了"
+            );
+        }
+    }
+
+    #[test]
+    fn contest_and_finding_survive_both_formats() {
+        let emit = |sink: &mut Sink, names: &Names, vocab: &Vocabulary| {
+            emit_fact_conflict(sink, names, &conflict("resolved", Some("rejected_new"))).unwrap();
+            emit_axiom_violation(
+                sink,
+                names,
+                vocab,
+                &violation("asymmetry", "open", None, vec![id(5), id(9)]),
+            )
+            .unwrap();
+        };
+        let ttl = export(Format::Turtle, emit);
+        let jsonld = export(Format::JsonLd, emit);
+        assert_eq!(
+            ttl.len(),
+            jsonld.len(),
+            "两种格式是同一张图的两种写法，三元组数目必须一样"
+        );
+        // 空白节点在两种写法里各自匿名，集合同比不了——比所有非匿名的角，
+        // 环那份证据的顺序交给 a_cycle_keeps_its_facts_in_order 按格式各验一遍
+        let named = |qs: &[Quad]| {
+            qs.iter()
+                .filter(|q| q.subject.is_named_node() && !matches!(q.object, Term::BlankNode(_)))
+                .cloned()
+                .collect::<std::collections::HashSet<_>>()
+        };
+        assert_eq!(named(&ttl), named(&jsonld));
     }
 }

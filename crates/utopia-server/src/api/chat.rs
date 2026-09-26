@@ -608,6 +608,14 @@ pub async fn chat(
         MAX_HISTORY as i64,
     )
     .await?;
+    // 这一问已经落库，所以它在历史里；runner 又把它当 prompt 发一次。两份都发，
+    // 每个请求里就有两条一样的 user，已认下的实体那条 system 也夹到了两份中间
+    // （#548 起如此）。按落库 id 剔除，不按文本：同一会话里并发的另一问可能排在
+    // 它后面。收尾那一步用同一个位置把当前问题从背景里剔出去
+    let current = history
+        .turn_ids
+        .iter()
+        .position(|id| *id == user_message_id);
     let workspace_id = kb.workspace_id;
     // 数据描述（探索从 schema 写的）与约定（人写的）跟着进 system prompt。
     // **每次都在，不靠检索碰运气**：约定写成一页文档只靠检索也到过 14/18，
@@ -721,9 +729,16 @@ pub async fn chat(
             .add_hook(policy)
             .tool_server_handle(tool_server)
             .build();
+        let prior: Vec<(String, String)> = history
+            .turns
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != current)
+            .map(|(_, turn)| turn.clone())
+            .collect();
         let mut runner = rig_agent
             .runner(Message::user(query.clone()))
-            .history(agent::history_messages(&history.turns, &history.last_tool_exchange));
+            .history(agent::history_messages(&prior, &history.last_tool_exchange));
         // 贴在历史之后、当前问题之前——位置就是服从性，跟抽取里 known_block
         // 紧挨正文是同一条理由（角色与位置由 `rig_model::wire` 定）
         if let Some(block) = agent::known_entities_block(&history.entities, KNOWN_ENTITY_LIMIT) {
@@ -890,7 +905,6 @@ pub async fn chat(
                 let sink = shared.sink.lock().await;
                 (sink.sources.clone(), sink.resolved.clone())
             };
-            let current = history.turn_ids.iter().position(|id| *id == user_message_id);
             let input = finalization::AnswerContext {
                 question: &query, history: &history.turns, current,
                 prior_exchange: &history.last_tool_exchange,

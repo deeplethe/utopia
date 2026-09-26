@@ -1,7 +1,8 @@
 //! 本体编辑器仓储：类型/关系 CRUD（带使用量与删除保护）+ 未匹配统计。
 
 use pgvector::Vector;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
+use std::collections::HashSet;
 use utopia_core::models::{
     EntityInstance, EntityTypeView, OntologyImportView, OntologyMiss, RelationAxioms,
     RelationTypeView, TypeCandidate,
@@ -171,7 +172,7 @@ pub async fn create_entity_type(
         }
         _ => AppError::Db(e),
     })?;
-    set_parents(pool, kb_id, id, parents).await?;
+    set_parents(&mut *pool.acquire().await?, kb_id, id, parents).await?;
     Ok(id)
 }
 
@@ -191,6 +192,21 @@ pub async fn update_entity_type(
     description: &str,
 ) -> AppResult<()> {
     validate_shape(shape)?;
+    let mut tx = pool.begin().await?;
+    // 父链是签名判据（0062）：违规按祖先链算。只比父集——label、颜色那些
+    // 不改判据的字段照常写，不必跑检测
+    let old_parents: Vec<Uuid> =
+        sqlx::query_scalar("SELECT parent_id FROM entity_type_parents WHERE child_id = $1")
+            .bind(id)
+            .fetch_all(&mut *tx)
+            .await?;
+    let parents_changed =
+        parents.len() != old_parents.len() || !parents.iter().all(|p| old_parents.contains(p));
+    let was_detected = if parents_changed {
+        Some(crate::reasoning::detection_keys(&mut tx, kb_id).await?)
+    } else {
+        None
+    };
     let res = sqlx::query(
         "UPDATE entity_types SET label = $3, color = COALESCE($4, color), shape = $5,
                 description = $6, updated_at = now()
@@ -202,12 +218,16 @@ pub async fn update_entity_type(
     .bind(color)
     .bind(shape)
     .bind(description)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
-    set_parents(pool, kb_id, id, parents).await?;
+    set_parents(&mut tx, kb_id, id, parents).await?;
+    if let Some(was) = was_detected {
+        crate::reasoning::reconcile_ontology(&mut tx, kb_id, &was).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -216,8 +236,8 @@ pub async fn update_entity_type(
 /// **先查环再写**。单父时代只需要挡自环，一条链天然不会成环；DAG 里 A→B→A
 /// 完全可能，而 `type_matches_domain` 沿父链上溯，成环就是死循环。
 /// SQL 拦不住这个——外键只挡自环，更长的要应用来查。
-pub async fn set_parents(
-    pool: &PgPool,
+async fn set_parents(
+    conn: &mut PgConnection,
     kb_id: Uuid,
     child: Uuid,
     parents: &[Uuid],
@@ -240,7 +260,7 @@ pub async fn set_parents(
         )
         .bind(child)
         .bind(parents)
-        .fetch_one(pool)
+        .fetch_one(&mut *conn)
         .await?;
         if cycles > 0 {
             return Err(AppError::invalid(
@@ -251,7 +271,7 @@ pub async fn set_parents(
     }
     sqlx::query("DELETE FROM entity_type_parents WHERE child_id = $1")
         .bind(child)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     for (i, p) in parents.iter().enumerate() {
         sqlx::query(
@@ -262,7 +282,7 @@ pub async fn set_parents(
         .bind(p)
         // 第一个当主父：界面上说明了"画在第一个下面"，不再多一个控件
         .bind(i == 0)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     }
     let _ = kb_id;
@@ -270,18 +290,38 @@ pub async fn set_parents(
 }
 
 pub async fn delete_entity_type(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
     let (usage,): (i64,) = sqlx::query_as("SELECT count(*) FROM entities WHERE type_id = $1")
         .bind(id)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
     if usage > 0 {
         return Err(AppError::Conflict(format!(
             "Cannot delete: {usage} entities use this type"
         )));
     }
+    // 这个类若牵着签名判据——是某个类的父类，或挂在某条关系的
+    // domain / range 上——删掉它就改了「哪些违规成立」（0062）。
+    // 动笔前把旧判据下的检出键集记下来，提交前对账
+    let affects_criteria: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM entity_type_parents WHERE parent_id = $1)
+            OR EXISTS(SELECT 1 FROM relation_type_domains WHERE entity_type_id = $1)
+            OR EXISTS(SELECT 1 FROM relation_type_ranges WHERE entity_type_id = $1)",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    let was_detected = if affects_criteria {
+        Some(crate::reasoning::detection_keys(&mut tx, kb_id).await?)
+    } else {
+        None
+    };
     // 只剩这一个 domain 的属性随类一起走：属性必须挂在类上，
     // 留一个没有 domain 的属性等于留一个不会出现在任何地方的死行。
-    // 还挂在别的类上的则只掉一条关联（外键 CASCADE 负责）
+    // 还挂在别的类上的则只掉一条关联（外键 CASCADE 负责）。
+    // 连带效果（0070 的 FK CASCADE）：属性没了 → 用它做谓词的事实没了 →
+    // 指向那些事实的违规行也被物理删掉。这些行不走 `criterion_changed`——
+    // 它们的判据没换，是事实本身没了，与 `run` 对消失事实的清陈同一条规矩
     sqlx::query(
         "DELETE FROM relation_types r
          WHERE r.kind = 'attribute' AND r.kb_id = $1
@@ -292,18 +332,22 @@ pub async fn delete_entity_type(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResu
     )
     .bind(kb_id)
     .bind(id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     let res = sqlx::query("DELETE FROM entity_types WHERE id = $2 AND kb_id = $1 AND NOT builtin")
         .bind(kb_id)
         .bind(id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::Conflict(
             "Built-in types cannot be deleted".into(),
         ));
     }
+    if let Some(was) = was_detected {
+        crate::reasoning::reconcile_ontology(&mut tx, kb_id, &was).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -347,7 +391,7 @@ fn validate_attribute_fields(
 /// 子属性不能是自己（DB 有 CHECK，但撞上去是 500，得在这里给出人话）。
 /// 而**逆是自己允许**——那等于对称，R0 会提示改用 `symmetric` 更直白，不算错。
 async fn validate_property_links(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     kb_id: Uuid,
     self_id: Option<Uuid>,
     kind: &str,
@@ -374,7 +418,7 @@ async fn validate_property_links(
             sqlx::query_as("SELECT kind FROM relation_types WHERE id = $1 AND kb_id = $2")
                 .bind(target)
                 .bind(kb_id)
-                .fetch_optional(pool)
+                .fetch_optional(&mut *conn)
                 .await?;
         match ok {
             // 不区分「不存在」与「在别的库」：能问出哪个 UUID 存在于别处，
@@ -421,7 +465,7 @@ pub async fn create_relation_type(
     validate_attribute_fields(kind, domains, datatype)?;
     let label = &lower_camel(label);
     // 新建的行 id 还不存在，指向自己无从谈起——所以 self_id 传 None
-    validate_property_links(pool, kb_id, None, kind, ax).await?;
+    validate_property_links(&mut *pool.acquire().await?, kb_id, None, kind, ax).await?;
     let is_attr = kind == "attribute";
     let id = Uuid::now_v7();
     sqlx::query(
@@ -461,14 +505,20 @@ pub async fn create_relation_type(
         _ => AppError::Db(e),
     })?;
     // attribute 不写 range：它的值域是字面量类型，落在 datatype 上
-    set_domains_ranges(pool, id, domains, if is_attr { &[] } else { ranges }).await?;
+    set_domains_ranges(
+        &mut *pool.acquire().await?,
+        id,
+        domains,
+        if is_attr { &[] } else { ranges },
+    )
+    .await?;
     Ok(id)
 }
 
 /// 覆盖式写入 domain / range。**先删后插**，所以它既能用于新建也能用于重导入，
 /// 且不会留下上一轮的残余。
 async fn set_domains_ranges(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     relation_type_id: Uuid,
     domains: &[Uuid],
     ranges: &[Uuid],
@@ -479,7 +529,7 @@ async fn set_domains_ranges(
     ] {
         sqlx::query(&format!("DELETE FROM {table} WHERE relation_type_id = $1"))
             .bind(relation_type_id)
-            .execute(pool)
+            .execute(&mut *conn)
             .await?;
         if ids.is_empty() {
             continue;
@@ -492,7 +542,7 @@ async fn set_domains_ranges(
         ))
         .bind(relation_type_id)
         .bind(ids)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     }
     Ok(())
@@ -602,11 +652,16 @@ pub async fn update_relation_type(
     description: &str,
     datatype: Option<&str>,
     unit: Option<&str>,
-    // None = 不动。不管 domain 的调用方（属性表单）传 None，
-    // 否则一次不相干的改名就会把属性的 domain 清空
+    // 整组语义：两侧都 None = 签名不动；任一侧 Some = 两侧都按传入值重写
+    // （没传的那一侧清空）。不管签名的调用方（如纯改公理位）必须两侧都传
+    // None——`domains=Some(..)` + `ranges=None` 会把 range 清空
     domains: Option<&[Uuid]>,
     ranges: Option<&[Uuid]>,
 ) -> AppResult<()> {
+    // 整条改动进一条事务：判据变了的话，落笔前要先记下旧本体下检出的违规，
+    // 落笔后按新本体重检、收编旧判据的行——`open` 的意思是「已对账于当前本体」
+    //（0062），不许留一行只对旧判据成立的 open 违规走出提交点
+    let mut tx = pool.begin().await?;
     // 名字属性是内建的（0041）：标成 functional 会让每个第二个名字都成一条冲突、
     // 甚至把本名关掉；改名、改时态也一样没有正当用途
     let name_attribute: Option<(bool,)> = sqlx::query_as(
@@ -614,7 +669,7 @@ pub async fn update_relation_type(
     )
     .bind(id)
     .bind(kb_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
     if name_attribute == Some((true,)) {
         return Err(AppError::invalid(
@@ -634,22 +689,81 @@ pub async fn update_relation_type(
             "datatype must be text / number / date / bool".into(),
         ));
     }
+    // 旧判据先取下来：公理位、时态、两条关系链、domain/range 一起决定
+    // 「哪些违规成立」。行不在就是 NotFound——UPDATE 反正会空
+    let old: Option<OldCriteria> = sqlx::query_as(
+        "SELECT kind, temporal, functional, inverse_functional, is_transitive,
+                is_symmetric, is_asymmetric, is_irreflexive, inverse_of, sub_property_of
+           FROM relation_types WHERE id = $1 AND kb_id = $2",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(old) = old else {
+        return Err(AppError::NotFound);
+    };
     // 指向别的关系的两条要先问过库：目标在不在本库、是不是关系。
     // 只在真的填了的时候查——清空（两个都 None）没有目标可验
     if ax.inverse_of.is_some() || ax.sub_property_of.is_some() {
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT kind FROM relation_types WHERE id = $1 AND kb_id = $2")
-                .bind(id)
-                .bind(kb_id)
-                .fetch_optional(pool)
-                .await?;
-        let (kind,) = row.ok_or(AppError::NotFound)?;
-        validate_property_links(pool, kb_id, Some(id), &kind, ax).await?;
+        validate_property_links(&mut tx, kb_id, Some(id), &old.kind, ax).await?;
     }
-    // kind 不可变（改它会让存量事实语义错乱）。domain/range 可改——
-    // 它们是签名不是身份，"这个属性也适用于承包商" 是个正当的编辑。
-    // datatype/unit 只对 attribute 行生效，datatype 缺省保持原值
-    //
+    // domain/range 可改——它们是签名不是身份，"这个属性也适用于承包商" 是个正当的
+    // 编辑。kind 不可变（改它会让存量事实语义错乱）
+    let signature_touched = domains.is_some() || ranges.is_some();
+    let mut signature_changed = false;
+    let next_domains: &[Uuid] = domains.unwrap_or(&[]);
+    let next_ranges: &[Uuid] = if old.kind == "attribute" {
+        // 属性没有 range：它的值域是字面量类型，落在 datatype 上
+        &[]
+    } else {
+        ranges.unwrap_or(&[])
+    };
+    if signature_touched {
+        if old.kind == "attribute" && next_domains.is_empty() {
+            return Err(AppError::invalid(
+                "attr_needs_class",
+                "An attribute needs a class (domain)",
+            ));
+        }
+        let old_domains: HashSet<Uuid> = sqlx::query_scalar(
+            "SELECT entity_type_id FROM relation_type_domains WHERE relation_type_id = $1",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+        let old_ranges: HashSet<Uuid> = sqlx::query_scalar(
+            "SELECT entity_type_id FROM relation_type_ranges WHERE relation_type_id = $1",
+        )
+        .bind(id)
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
+        signature_changed = old_domains != next_domains.iter().copied().collect::<HashSet<_>>()
+            || old_ranges != next_ranges.iter().copied().collect::<HashSet<_>>();
+    }
+    // label / description / datatype / unit 不进这里：它们不动判据，
+    // 改了不值得跑一遍检测
+    let criteria_changed = old.temporal != temporal
+        || old.functional != ax.functional
+        || old.inverse_functional != ax.inverse_functional
+        || old.is_transitive != ax.transitive
+        || old.is_symmetric != ax.symmetric
+        || old.is_asymmetric != ax.asymmetric
+        || old.is_irreflexive != ax.irreflexive
+        || old.inverse_of != ax.inverse_of
+        || old.sub_property_of != ax.sub_property_of
+        || signature_changed;
+    // 检出必须在写入**之前**：此刻库里还是旧本体，记下的正是「旧判据下
+    // 会算出来的违规」，提交前对照用
+    let was_detected = if criteria_changed {
+        Some(crate::reasoning::detection_keys(&mut tx, kb_id).await?)
+    } else {
+        None
+    };
     // 两条链**跟着六位公理一起覆盖式写**：缺省 = 清空，不是「不动」。
     // 与 `is_transitive` 那几位同一条规矩——它们是同一个表单里同时提交的
     // 一组声明，一半覆盖一半保留才是真正会出事的语义
@@ -679,55 +793,76 @@ pub async fn update_relation_type(
     .bind(ax.irreflexive)
     .bind(ax.inverse_of)
     .bind(ax.sub_property_of)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
-    if domains.is_some() || ranges.is_some() {
-        let (kind,): (String,) = sqlx::query_as("SELECT kind FROM relation_types WHERE id = $1")
-            .bind(id)
-            .fetch_one(pool)
-            .await?;
-        let next_domains = domains.unwrap_or(&[]);
-        if kind == "attribute" && next_domains.is_empty() {
-            return Err(AppError::invalid(
-                "attr_needs_class",
-                "An attribute needs a class (domain)",
-            ));
-        }
-        // 属性没有 range：它的值域是字面量类型，落在 datatype 上
-        let next_ranges: &[Uuid] = if kind == "attribute" {
-            &[]
-        } else {
-            ranges.unwrap_or(&[])
-        };
-        set_domains_ranges(pool, id, next_domains, next_ranges).await?;
+    if signature_touched {
+        set_domains_ranges(&mut tx, id, next_domains, next_ranges).await?;
     }
+    if let Some(was) = was_detected {
+        crate::reasoning::reconcile_ontology(&mut tx, kb_id, &was).await?;
+    }
+    tx.commit().await?;
     Ok(())
 }
 
+/// `relation_types` 一行里跟「哪些违规成立」有关的列（0062 对账用的旧判据快照）。
+/// label / description / datatype / unit 不在——它们不动判据
+#[derive(sqlx::FromRow)]
+struct OldCriteria {
+    kind: String,
+    temporal: String,
+    functional: bool,
+    inverse_functional: bool,
+    is_transitive: bool,
+    is_symmetric: bool,
+    is_asymmetric: bool,
+    is_irreflexive: bool,
+    inverse_of: Option<Uuid>,
+    sub_property_of: Option<Uuid>,
+}
+
 pub async fn delete_relation_type(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
     let (usage,): (i64,) = sqlx::query_as("SELECT count(*) FROM facts WHERE predicate_id = $1")
         .bind(id)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
     if usage > 0 {
         return Err(AppError::Conflict(format!(
             "Cannot delete: {usage} facts use this relation"
         )));
     }
+    // 判据贡献不只「有没有人引用它」这一半：这行自己的旗标与出向
+    // inverse_of/sub_property_of 链接喂着别的谓词的派生链，rules_disagree
+    // 缺陷行也以谓词 id 指着它。枚举哪些列算判据已被证明会漏——删除又足够
+    // 稀少，不为省检测设门槛，一律记下旧判据下的检出键集（0062）
+    let was_detected = crate::reasoning::detection_keys(&mut tx, kb_id).await?;
+    // 0070 把这两条外键建成 DEFERRABLE 的 SET NULL——级联动作提交时才落地，
+    // 而对账检测要看见改完的判据，所以先在事务里显式断链
+    sqlx::query("UPDATE relation_types SET inverse_of = NULL WHERE inverse_of = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE relation_types SET sub_property_of = NULL WHERE sub_property_of = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     let res =
         sqlx::query("DELETE FROM relation_types WHERE id = $2 AND kb_id = $1 AND NOT builtin")
             .bind(kb_id)
             .bind(id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::Conflict(
             "Built-in relations cannot be deleted".into(),
         ));
     }
+    crate::reasoning::reconcile_ontology(&mut tx, kb_id, &was_detected).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -948,7 +1083,7 @@ pub async fn create_attribute_with_iri(
     let Some((new_id,)) = row else {
         return Ok(None);
     };
-    set_domains_ranges(pool, new_id, domains, &[]).await?;
+    set_domains_ranges(&mut *pool.acquire().await?, new_id, domains, &[]).await?;
     Ok(Some(new_id))
 }
 
@@ -996,7 +1131,7 @@ pub async fn create_relation_with_iri(
     let Some((new_id,)) = row else {
         return Ok(None);
     };
-    set_domains_ranges(pool, new_id, domains, ranges).await?;
+    set_domains_ranges(&mut *pool.acquire().await?, new_id, domains, ranges).await?;
     Ok(Some(new_id))
 }
 
@@ -1029,7 +1164,7 @@ pub async fn update_relation_from_import(
     let Some((id,)) = row else {
         return Ok(false);
     };
-    set_domains_ranges(pool, id, domains, ranges).await?;
+    set_domains_ranges(&mut *pool.acquire().await?, id, domains, ranges).await?;
     Ok(true)
 }
 
@@ -1441,22 +1576,50 @@ pub async fn attribute_from_unused_relation(
     unit: Option<&str>,
 ) -> AppResult<Option<Uuid>> {
     validate_attribute_fields("attribute", domains, Some(datatype))?;
-    let row: Option<(Uuid,)> = sqlx::query_as(
-        "UPDATE relation_types SET kind = 'attribute', datatype = $3, unit = $4,
-                inverse_of = NULL, sub_property_of = NULL
-         WHERE kb_id = $1 AND key = $2 AND kind = 'relation'
-           AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.predicate_id = relation_types.id)
-         RETURNING id",
+    let mut tx = pool.begin().await?;
+    // 零事实不等于零判据：公理旗标与 inverse_of/sub_property_of 会让这条关系
+    // 成为派生目标（违规的 detail.predicate_id 指到它）。改判清了那些贡献，
+    // 按同一条对账规矩走（0062）——先记旧判据下的检出，写完再对账
+    let candidate: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM relation_types
+          WHERE kb_id = $1 AND key = $2 AND kind = 'relation'
+            AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.predicate_id = relation_types.id)",
     )
     .bind(kb_id)
     .bind(key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((id,)) = candidate else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
+    let was_detected = crate::reasoning::detection_keys(&mut tx, kb_id).await?;
+    // 属性不声明判据：旗标与双向链接都清掉（axioms() 不按 kind 过滤，
+    // 留着它们等於留着一套无人问的公理）
+    sqlx::query(
+        "UPDATE relation_types SET kind = 'attribute', datatype = $2, unit = $3,
+                inverse_of = NULL, sub_property_of = NULL,
+                is_transitive = false, is_symmetric = false, is_asymmetric = false,
+                is_irreflexive = false, functional = false, inverse_functional = false
+         WHERE id = $1",
+    )
+    .bind(id)
     .bind(datatype)
     .bind(unit)
-    .fetch_optional(pool)
+    .execute(&mut *tx)
     .await?;
-    let Some((id,)) = row else { return Ok(None) };
+    sqlx::query("UPDATE relation_types SET inverse_of = NULL WHERE inverse_of = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE relation_types SET sub_property_of = NULL WHERE sub_property_of = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
     // domain / range 在各自的表里，不是列。属性没有 range——值域落在 datatype 上
-    set_domains_ranges(pool, id, domains, &[]).await?;
+    set_domains_ranges(&mut tx, id, domains, &[]).await?;
+    crate::reasoning::reconcile_ontology(&mut tx, kb_id, &was_detected).await?;
+    tx.commit().await?;
     Ok(Some(id))
 }
 

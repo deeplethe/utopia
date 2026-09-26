@@ -312,6 +312,331 @@ async fn record_axis_subseconds_survive_authenticated_rdf_export() -> anyhow::Re
     result.and(cleanup)
 }
 
+/// 争议与违规要作为**独立的资源**进导出（0062），而不是把争议藏进事实的注脚；
+/// 导出本身是只读的——跑完一遍，库里那两行原样还在
+#[tokio::test]
+async fn contest_state_survives_authenticated_rdf_export() -> anyhow::Result<()> {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use oxrdf::Term;
+    use tower::ServiceExt;
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let (conflict, settled, violation, retired, cycle) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        sqlx::raw_sql(&format!(
+            "INSERT INTO fact_conflicts (id, kb_id, old_fact_id, new_fact_id, reason)
+             VALUES ('{conflict}', '{kb}', '{fact}', '{corrected}', 'simultaneous');
+             INSERT INTO fact_conflicts
+                 (id, kb_id, old_fact_id, new_fact_id, reason, status, resolution, resolved_at)
+             VALUES ('{settled}', '{kb}', '{attribute}', '{corrected}', 'no_time',
+                     'resolved', 'kept_both', '2026-03-21');
+             INSERT INTO axiom_violations (id, kb_id, kind, left_fact, right_fact)
+             VALUES ('{violation}', '{kb}', 'asymmetry', '{fact}', '{corrected}');
+             INSERT INTO axiom_violations
+                 (id, kb_id, kind, left_fact, right_fact, status, resolution, decided_at)
+             VALUES ('{retired}', '{kb}', 'functional', '{fact}', '{fact}',
+                     'resolved', 'criterion_changed', '2026-03-22');
+             INSERT INTO axiom_violations (id, kb_id, kind, left_fact, right_fact, path)
+             VALUES ('{cycle}', '{kb}', 'cycle', '{fact}', '{attribute}',
+                     '{{{fact},{corrected},{attribute}}}');",
+            kb = f.kb,
+            fact = f.fact,
+            corrected = f.corrected,
+            attribute = f.attribute,
+        ))
+        .execute(&f.state.pool)
+        .await?;
+        // 导出不许碰这两张表：它是只读快照，不是清陈的扳机
+        let snapshot_sql = "SELECT jsonb_build_array(
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM fact_conflicts t WHERE kb_id=$1),
+            (SELECT jsonb_agg(to_jsonb(t) ORDER BY id) FROM axiom_violations t WHERE kb_id=$1))";
+        let before: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        let names = crate::rdf::Names::new(f.kb, None).map_err(anyhow::Error::msg)?;
+        let rdf_type = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+        let has = |quads: &std::collections::HashSet<oxrdf::Quad>,
+                   s: &oxrdf::NamedNode,
+                   p: &str,
+                   o: &str| {
+            quads.iter().any(|q| {
+                q.subject == s.clone().into()
+                    && q.predicate.as_str() == p
+                    && (q.object.to_string() == o || q.object.to_string() == format!("<{o}>"))
+            })
+        };
+        for (format, parser_format) in [
+            ("turtle", oxrdfio::RdfFormat::Turtle),
+            (
+                "jsonld",
+                oxrdfio::RdfFormat::JsonLd {
+                    profile: oxrdfio::JsonLdProfileSet::empty(),
+                },
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/v1/kbs/{}/export?format={format}", f.kb))
+                        .header("authorization", format!("Bearer {jwt}"))
+                        .body(Body::empty())?,
+                )
+                .await?;
+            anyhow::ensure!(response.status() == StatusCode::OK, "export rejected");
+            let bytes = to_bytes(response.into_body(), 1024 * 1024).await?;
+            let quads = oxrdfio::RdfParser::from_format(parser_format)
+                .for_slice(&bytes)
+                .collect::<Result<std::collections::HashSet<_>, _>>()?;
+
+            // 争议：两类资源各自成类，各连两条事实；open 违规指回它的判据
+            let c = names.fact_conflict(conflict);
+            anyhow::ensure!(has(&quads, &c, rdf_type, "urn:utopia:ns:FactConflict"));
+            for (pred, fact) in [
+                ("priorStatement", f.fact),
+                ("incomingStatement", f.corrected),
+            ] {
+                anyhow::ensure!(
+                    has(
+                        &quads,
+                        &c,
+                        &format!("urn:utopia:ns:{pred}"),
+                        &names.fact(fact).to_string()
+                    ),
+                    "conflict lost its {pred}"
+                );
+            }
+            let s = names.fact_conflict(settled);
+            anyhow::ensure!(
+                has(&quads, &s, "urn:utopia:ns:resolution", "\"kept_both\""),
+                "resolved conflict lost its disposition"
+            );
+
+            let v = names.axiom_violation(violation);
+            anyhow::ensure!(has(&quads, &v, rdf_type, "urn:utopia:ns:AxiomViolation"));
+            anyhow::ensure!(has(
+                &quads,
+                &v,
+                "urn:utopia:ns:onStatement",
+                &names.fact(f.fact).to_string()
+            ));
+            anyhow::ensure!(
+                has(
+                    &quads,
+                    &v,
+                    "urn:utopia:ns:criterion",
+                    "http://www.w3.org/2002/07/owl#AsymmetricProperty"
+                ),
+                "open violation lost its criterion"
+            );
+            // fixture 的 works_for 没有导入 IRI，判据挂在它自己的稳定标识上
+            let relation_iri = format!("urn:utopia:kb:{}:relation:works_for", f.kb);
+            anyhow::ensure!(
+                has(&quads, &v, "urn:utopia:ns:onRelation", &relation_iri),
+                "open violation lost the relation its criterion lives on"
+            );
+            // 结案的行不报判据：促成它的本体版本可能已经不在了
+            let r = names.axiom_violation(retired);
+            anyhow::ensure!(
+                quads.iter().all(|q| {
+                    !(q.subject == r.clone().into()
+                        && (q.predicate.as_str() == "urn:utopia:ns:criterion"
+                            || q.predicate.as_str() == "urn:utopia:ns:onRelation"))
+                }),
+                "resolved violation claimed a criterion"
+            );
+
+            // 环的 path 是有序证据：顺着 rdf:List 走一遍，次序不许变
+            let cy = names.axiom_violation(cycle);
+            let mut node = quads
+                .iter()
+                .find(|q| {
+                    q.subject == cy.clone().into()
+                        && q.predicate.as_str() == "urn:utopia:ns:evidencePath"
+                })
+                .map(|q| q.object.clone())
+                .ok_or_else(|| anyhow::anyhow!("cycle lost its path"))?;
+            let nil = Term::from(oxrdf::NamedNode::new_unchecked(
+                "http://www.w3.org/1999/02/22-rdf-syntax-ns#nil",
+            ));
+            let mut walked = Vec::new();
+            while node != nil {
+                let first = quads
+                    .iter()
+                    .find(|q| {
+                        q.subject.to_string() == node.to_string()
+                            && q.predicate.as_str()
+                                == "http://www.w3.org/1999/02/22-rdf-syntax-ns#first"
+                    })
+                    .map(|q| q.object.clone())
+                    .ok_or_else(|| anyhow::anyhow!("list node without first"))?;
+                walked.push(first.to_string());
+                node = quads
+                    .iter()
+                    .find(|q| {
+                        q.subject.to_string() == node.to_string()
+                            && q.predicate.as_str()
+                                == "http://www.w3.org/1999/02/22-rdf-syntax-ns#rest"
+                    })
+                    .map(|q| q.object.clone())
+                    .ok_or_else(|| anyhow::anyhow!("list node without rest"))?;
+            }
+            let expected: Vec<String> = [f.fact, f.corrected, f.attribute]
+                .iter()
+                .map(|x| names.fact(*x).to_string())
+                .collect();
+            anyhow::ensure!(walked == expected, "cycle order did not survive {format}");
+
+            // 争着的事实照旧是普通事实：争议是旁边的一份资源，不是标签
+            for fact in [f.fact, f.corrected] {
+                anyhow::ensure!(
+                    has(
+                        &quads,
+                        &names.fact(fact),
+                        rdf_type,
+                        "http://www.w3.org/1999/02/22-rdf-syntax-ns#Statement"
+                    ),
+                    "contested fact stopped being a statement"
+                );
+            }
+        }
+        let after: Value = sqlx::query_scalar(snapshot_sql)
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        anyhow::ensure!(before == after, "export changed conflict/violation records");
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
+/// `criterion_changed` 是系统写的东西（0062：本体改动的事务收编旧判据的行），
+/// 不是人递得进来的裁决——裁决口收下它就等于让人替机器签名
+#[tokio::test]
+async fn criterion_changed_is_not_a_human_disposition() -> anyhow::Result<()> {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        // 裁决要编辑权——fixture 里的成员是 viewer
+        sqlx::query("UPDATE kb_members SET role = 'editor' WHERE kb_id = $1")
+            .bind(f.kb)
+            .execute(&f.state.pool)
+            .await?;
+        let violation = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO axiom_violations (id, kb_id, kind, left_fact, right_fact)
+             VALUES ($1, $2, 'functional', $3, $3)",
+        )
+        .bind(violation)
+        .bind(f.kb)
+        .bind(f.fact)
+        .execute(&f.state.pool)
+        .await?;
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/v1/kbs/{}/review/violations/{violation}",
+                        f.kb
+                    ))
+                    .header("authorization", format!("Bearer {jwt}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"resolution":"criterion_changed"}"#))?,
+            )
+            .await?;
+        anyhow::ensure!(
+            response.status() == StatusCode::UNPROCESSABLE_ENTITY,
+            "a system disposition was accepted as a human decision: {}",
+            response.status()
+        );
+        let still_open: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM axiom_violations
+                            WHERE id = $1 AND status = 'open' AND resolution IS NULL)",
+        )
+        .bind(violation)
+        .fetch_one(&f.state.pool)
+        .await?;
+        anyhow::ensure!(still_open, "rejected decision still touched the row");
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
+/// open 违规上解不开的判据让整份导出被拒绝（0062）：带着悬空判据的资源
+/// 发出去，读的人会拿到一个指不到任何关系的 criterion——宁可是确定性错误
+/// 也不是一份半个谎的文件
+#[tokio::test]
+async fn an_unresolvable_criterion_fails_the_export_closed() -> anyhow::Result<()> {
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        // detail.predicate_id 指着一个不存在的谓词：open 行的判据解不出来，
+        // contest_integrity 要在第一个字节之前拦下
+        let dangling = Uuid::now_v7();
+        sqlx::query(&format!(
+            "INSERT INTO axiom_violations (id, kb_id, kind, left_fact, right_fact, detail)
+             VALUES ('{}', '{}', 'derived_contradiction', '{}', '{}',
+                     '{{\"axiom\":\"self_loop\",\"predicate_id\":\"{dangling}\"}}'::jsonb)",
+            Uuid::now_v7(),
+            f.kb,
+            f.fact,
+            f.fact,
+        ))
+        .execute(&f.state.pool)
+        .await?;
+        let auth = utopia_store::tokens::authenticate(&f.state.pool, &f.token).await?;
+        let jwt = crate::auth::issue_token(&f.state, auth.user_id)?;
+        let app = crate::api::router(f.state.clone(), &Default::default());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/kbs/{}/export?format=turtle", f.kb))
+                    .header("authorization", format!("Bearer {jwt}"))
+                    .body(axum::body::Body::empty())?,
+            )
+            .await?;
+        anyhow::ensure!(
+            response.status() == StatusCode::UNPROCESSABLE_ENTITY,
+            "expected the contested-state contract to refuse the export, got {}",
+            response.status()
+        );
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
+
 /// 每个导出的快照事务活满整个流——它占住一条连接直到文件发完。台账如果排在
 /// 事务之后写，就是在「已经占了一条」的情况下再向池子要第二条：支持的最小池
 /// （2 条连接）上两个并发导出会互相把对方的审计饿死到超时。所以顺序必须是：

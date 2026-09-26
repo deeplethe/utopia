@@ -13,7 +13,7 @@
 //! 什么都不做——已经在库里的那一行，无论 open 还是 resolved，都按原样留着。
 
 use serde_json::json;
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 use std::collections::{HashMap, HashSet};
 use utopia_core::models::{AxiomViolation, DerivedFactView, OntologyDefect};
 /// 规则种类的字面量。用 &'static str 而不是枚举:它直接进 SQL 也直接做键
@@ -60,7 +60,7 @@ const MAX_CLASHES_PER_PREDICATE: usize = 50;
 /// 会跳过），白白占内存。而且这个条数本身有意义——它是「有没有判据」的度量，
 /// 报告里要用。
 #[allow(clippy::type_complexity)]
-async fn axioms(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> {
+async fn axioms(conn: &mut PgConnection, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> {
     let rows: Vec<(
         Uuid,
         bool,
@@ -81,7 +81,7 @@ async fn axioms(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> 
                      OR inverse_of IS NOT NULL OR sub_property_of IS NOT NULL)",
     )
     .bind(kb_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     let mut map: HashMap<Uuid, Axioms> = rows
         .into_iter()
@@ -147,7 +147,7 @@ async fn axioms(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<Uuid, Axioms>> 
 ///
 /// `only` 给了就只看这些事实（合并之后对搬动过的那几条立刻查）；None 是全量。
 pub async fn signature_breaks(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     kb_id: Uuid,
     only: Option<&[Uuid]>,
 ) -> AppResult<Vec<Uuid>> {
@@ -182,7 +182,7 @@ pub async fn signature_breaks(
     )
     .bind(kb_id)
     .bind(only)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
@@ -214,8 +214,28 @@ pub async fn record_signature_breaks(
     Ok(inserted)
 }
 
-/// 跑一遍检查，把结果落库。
-pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
+/// 一次检测的全部读侧产物：断言边与公理取进来、规则候选解完不动点、五类检查
+/// 算出来、第六类（派生撞上断言）带着人读的细节。**只读不写**——`run` 与本体
+/// 事务里的对账共用同一套取数与过滤（0062）。
+struct Detection {
+    /// 这一轮算出来的违规全集（还没扣掉人认可过的并存组）
+    violations: Vec<Violation>,
+    /// `derived_contradiction` 的 detail 按 (left, right) 放——它指着不存在的行，
+    /// 落库时才贴到对应违规上
+    details: HashMap<(Uuid, Uuid), serde_json::Value>,
+    /// 环没搜完的谓词（#642）：它们的 open 环行这一轮不判陈
+    cycles_capped: Vec<Uuid>,
+    /// 人认可过并存的互斥组：(种类, 组里的事实集)
+    accepted: Vec<(String, HashSet<Uuid>)>,
+    derivation: Derivation,
+    clashes: Contradictions,
+    names: Names,
+    edges: usize,
+    predicates_with_axioms: usize,
+    contradictions_capped: usize,
+}
+
+async fn detect(conn: &mut PgConnection, kb_id: Uuid) -> AppResult<Detection> {
     // 与 `materialize` 同一次求解：候选里有规则推出的关系边，被拦下的也在——
     // 队列报的正是那边拦下的（0017，0047 决定 3）
     let Resolved {
@@ -225,7 +245,7 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         asserted_ids,
         checked,
         ..
-    } = resolve(pool, kb_id).await?;
+    } = resolve(conn, kb_id).await?;
     let Checked {
         candidates: derivation,
         candidate_rule,
@@ -239,7 +259,7 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
     let mut violations = checked.violations;
     // 第五类不在纯逻辑引擎里：它要看实体的类型与谓词的 domain / range，那是库里的
     // 东西。算出来后与其它四类走同一条落库与清陈规矩
-    for fact in signature_breaks(pool, kb_id, None).await? {
+    for fact in signature_breaks(conn, kb_id, None).await? {
         violations.push(Violation {
             kind: Kind::Signature,
             left: fact,
@@ -250,7 +270,7 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
 
     // 第六类（0017）：推出来却落不了地的派生。与 `materialize` 用同一个函数算，
     // 所以这里报的正是那边拦下的——两边各算一套的话，队列会跟图对不上
-    let names = names_for(pool, &derivation, &clashes).await?;
+    let names = names_for(conn, &derivation, &clashes).await?;
     let mut details: HashMap<(Uuid, Uuid), serde_json::Value> = HashMap::new();
     let mut per_pred: HashMap<Uuid, usize> = HashMap::new();
     let mut contradictions_capped = 0usize;
@@ -259,6 +279,8 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         // 键与外键都要 `facts` 里的行。链经过规则推出的关系边时，最后一条前提是
         // 它的临时 id——每轮都不同——退到链上最后一条断言；自环的 `against` 也是它
         let Some(&last) = d.premises.iter().rev().find(|p| asserted_ids.contains(p)) else {
+            // 整条前提链都是规则推出的临时 id：没有可落库的键与外键（队列的行
+            // 必须回到 `facts`），这个撞法不落行——`check` 的 blocked 侧仍然拦它
             continue;
         };
         let against = if asserted_ids.contains(&c.against) {
@@ -301,46 +323,66 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
             kind: Kind::DerivedContradiction,
             left: against,
             right: last,
-            path: d.premises.clone(),
+            // 证据链只留断言 id：链经规则推出的关系边时 premises 里混着那一轮的
+            // 临时 id（0047 决定 3）——它不属于任何表，出库后永远解析不出。落库的
+            // path 是给人看、给导出点名的证据链，成员必须回得到 `facts` 的行
+            path: d
+                .premises
+                .iter()
+                .copied()
+                .filter(|p| asserted_ids.contains(p))
+                .collect(),
         });
     }
 
-    let mut report = Report {
+    let accepted = accepted_groups(conn, kb_id).await?;
+    Ok(Detection {
         edges: timed.len(),
         predicates_with_axioms: axioms.len(),
-        found: violations.len(),
-        contradictions: details.len(),
         contradictions_capped,
-        rules_disagree: clashes.between_derivations.len(),
-        cycles_capped: cycles_capped.len(),
-        ..Default::default()
-    };
+        cycles_capped,
+        accepted,
+        derivation,
+        clashes,
+        names,
+        violations,
+        details,
+    })
+}
 
-    let accepted = accepted_groups(pool, kb_id).await?;
+/// 人认可过「这几条可以并存」，这一轮的组又全在那几条里——比如其中一条后来
+/// 撤了，剩下的组首尾变了、键也变了——仍然是那句认可管着，不再端上来。
+/// 组里有一条认可时没见过的，就不拦：那是新情况
+fn suppressed(v: &Violation, accepted: &[(String, HashSet<Uuid>)]) -> bool {
+    is_grouped(v.kind)
+        && accepted
+            .iter()
+            .any(|(k, facts)| k == v.kind.as_str() && v.path.iter().all(|f| facts.contains(f)))
+}
 
-    // 事务里做，否则「插新的」与「清陈旧的」之间有个窗口，那一瞬间 Review 页
-    // 会短暂地少东西
-    let mut tx = pool.begin().await?;
-    let mut fresh: Vec<Uuid> = Vec::with_capacity(violations.len());
-    for v in &violations {
+/// 一轮检测的落库侧：违规按行键 upsert（证据刷成这一轮的），resolved 的破约行
+/// 重开；**没算出来的 open 行不在这一层处置**——`run` 删掉它们，本体事务里的
+/// 对账把它们分档（0062）。返回「这一轮仍成立」的行 id 与 (新插, 重开) 计数。
+async fn settle_violations(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    det: &Detection,
+) -> AppResult<(Vec<Uuid>, usize, usize)> {
+    let mut fresh: Vec<Uuid> = Vec::with_capacity(det.violations.len());
+    let mut inserted = 0usize;
+    let mut reopened = 0usize;
+    for v in &det.violations {
         let Violation {
             kind,
             left,
             right,
             path,
         } = v;
-        let grouped = is_grouped(*kind);
-        // 人认可过「这几条可以并存」，这一轮的组又全在那几条里——比如其中一条后来
-        // 撤了，剩下的组首尾变了、键也变了——仍然是那句认可管着，不再端上来。
-        // 组里有一条认可时没见过的，就不在这里拦：那是新情况
-        if grouped
-            && accepted
-                .iter()
-                .any(|(k, facts)| k == kind.as_str() && path.iter().all(|f| facts.contains(f)))
-        {
+        if suppressed(v, &det.accepted) {
             continue;
         }
-        let detail = details
+        let detail = det
+            .details
             .get(&(*left, *right))
             .cloned()
             .unwrap_or_else(|| json!({}));
@@ -360,8 +402,9 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         //
         // 无论新插的还是本来就在的，都算「这一轮仍然成立」。
         // 本来就在而且 resolved 的要再看一眼：`fact_retracted` / `fact_closed` /
-        // `axiom_relaxed` 都是「世界会变」的承诺——事实没了、区间闭了、公理放宽了，
-        // 违规就不该再算出来。又算出来了，承诺就是没兑现，那行回到 open，人再看一次。
+        // `axiom_relaxed` / `criterion_changed` 都是「世界会变」的承诺——事实没了、
+        // 区间闭了、判据换了，违规就不该再算出来。又算出来了，承诺就是没兑现，
+        // 那行回到 open，人再看一次。
         // `accepted` 是有意并存，重算多少次都沉默（#202）——只要还是认可时那几条。
         // 互斥的组走到这里说明上面没拦住：同一个键下多了一条，那行也回到 open
         // 两条部分唯一索引各管一类，冲突目标要把索引的 WHERE 原样写出来才推断得到
@@ -389,13 +432,14 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
                 .bind(right)
                 .bind(path)
                 .bind(&detail)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
         if is_new {
-            report.inserted += 1;
+            inserted += 1;
         }
+        let grouped = is_grouped(*kind);
         let broken = match resolution.as_deref() {
-            Some("fact_retracted" | "fact_closed" | "axiom_relaxed") => true,
+            Some("fact_retracted" | "fact_closed" | "axiom_relaxed" | "criterion_changed") => true,
             Some("accepted") => grouped,
             _ => false,
         };
@@ -407,9 +451,9 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
                   WHERE id = $1",
             )
             .bind(keep)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-            report.reopened += 1;
+            reopened += 1;
         }
         fresh.push(keep);
     }
@@ -417,7 +461,7 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
     // 环没搜完的谓词，上一轮的 open 环这一轮不清（#642）：没搜到不等于不存在。
     // 撞上上限时报出的是按数据排定的那一批，数据不变就是同一批；数据变了，旧的那几行
     // 也宁可留着等人看，不能因为这一轮搜不到就当它没了
-    if !cycles_capped.is_empty() {
+    if !det.cycles_capped.is_empty() {
         let kept: Vec<Uuid> = sqlx::query_scalar(
             "SELECT v.id FROM axiom_violations v
                JOIN facts f ON f.id = v.left_fact
@@ -425,37 +469,32 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
                 AND f.predicate_id = ANY($2)",
         )
         .bind(kb_id)
-        .bind(&cycles_capped)
-        .fetch_all(&mut *tx)
+        .bind(&det.cycles_capped)
+        .fetch_all(&mut **tx)
         .await?;
         fresh.extend(kept);
     }
+    Ok((fresh, inserted, reopened))
+}
 
-    // 这一轮没算出来的 open 行是陈的：事实被撤了，或者公理放宽了。
-    // resolved 的不动——那是人的决定，不是派生状态
-    let cleared = sqlx::query(
-        "DELETE FROM axiom_violations
-          WHERE kb_id = $1 AND status = 'open' AND NOT (id = ANY($2))",
-    )
-    .bind(kb_id)
-    .bind(&fresh)
-    .execute(&mut *tx)
-    .await?;
-    report.cleared = cleared.rows_affected() as usize;
-
-    // 派生之间互撞的按规则对进 `ontology_defects`——根子是那两条声明，不是哪条事实。
-    // 同一对谓词上可能有几种撞法（functional 与 asymmetric 各撞各的），唯一键只到
-    // 谓词对，所以合成一行，几种撞法都写进 detail
+/// 派生之间互撞的按规则对进 `ontology_defects`——根子是那两条声明，不是哪条事实。
+/// 同一对谓词上可能有几种撞法（functional 与 asymmetric 各撞各的），唯一键只到
+/// 谓词对，所以合成一行，几种撞法都写进 detail
+async fn settle_defects(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    det: &Detection,
+) -> AppResult<()> {
     let mut by_pair: HashMap<(Uuid, Uuid), Vec<serde_json::Value>> = HashMap::new();
     let mut order: Vec<(Uuid, Uuid)> = Vec::new();
-    for rc in &clashes.between_derivations {
+    for rc in &det.clashes.between_derivations {
         let triple = |i: usize| {
-            let d = &derivation.facts[i];
+            let d = &det.derivation.facts[i];
             format!(
                 "{} · {} · {}",
-                names.entity(d.subject),
-                names.predicate(d.predicate),
-                names.entity(d.object)
+                det.names.entity(d.subject),
+                det.names.predicate(d.predicate),
+                det.names.entity(d.object)
             )
         };
         let examples: Vec<serde_json::Value> = rc
@@ -470,9 +509,9 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         }
         by_pair.entry(key).or_default().push(json!({
             "rule_a": rc.a.1.as_str(),
-            "via_a": names.predicate(rc.a.0),
+            "via_a": det.names.predicate(rc.a.0),
             "rule_b": rc.b.1.as_str(),
-            "via_b": names.predicate(rc.b.0),
+            "via_b": det.names.predicate(rc.b.0),
             "axiom": rc.axiom.as_str(),
             "count": rc.pairs.len(),
             "examples": examples,
@@ -497,7 +536,7 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
         .bind(key.0)
         .bind(key.1)
         .bind(json!({ "count": count, "rules": rules }))
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await?;
         fresh_defects.push(id);
     }
@@ -508,10 +547,142 @@ pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
     )
     .bind(kb_id)
     .bind(&fresh_defects)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// 跑一遍检查，把结果落库。
+pub async fn run(pool: &PgPool, kb_id: Uuid) -> AppResult<Report> {
+    // 检测与落库进同一条事务：读侧看见的是这条事务启动后每条语句前的最新提交，
+    // 与原先池上各取一条连接等价；写侧则没有「插新的」与「清陈旧的」之间的窗口
+    let mut tx = pool.begin().await?;
+    let det = detect(&mut tx, kb_id).await?;
+    let mut report = Report {
+        edges: det.edges,
+        predicates_with_axioms: det.predicates_with_axioms,
+        found: det.violations.len(),
+        contradictions: det.details.len(),
+        contradictions_capped: det.contradictions_capped,
+        rules_disagree: det.clashes.between_derivations.len(),
+        cycles_capped: det.cycles_capped.len(),
+        ..Default::default()
+    };
+
+    let (fresh, inserted, reopened) = settle_violations(&mut tx, kb_id, &det).await?;
+    report.inserted = inserted;
+    report.reopened = reopened;
+
+    // 这一轮没算出来的 open 行是陈的：事实被撤了，或者公理放宽了。
+    // resolved 的不动——那是人的决定，不是派生状态
+    let cleared = sqlx::query(
+        "DELETE FROM axiom_violations
+          WHERE kb_id = $1 AND status = 'open' AND NOT (id = ANY($2))",
+    )
+    .bind(kb_id)
+    .bind(&fresh)
     .execute(&mut *tx)
     .await?;
+    report.cleared = cleared.rows_affected() as usize;
+
+    settle_defects(&mut tx, kb_id, &det).await?;
     tx.commit().await?;
     Ok(report)
+}
+
+/// 一处违规在库里的身份：与两条唯一索引同形状——环按整条 `path`，其余按
+/// `(kind, left_fact, right_fact)`（0054）。
+///
+/// **分档归一化**：非环种类的 `path` 存的是这一轮的证据（前提集/组员），
+/// 检出重算时它可以变而行还是那一处违规——拿它分档会把「旧判据下确实检出」
+/// 的行误认成「早就陈了」，从 `criterion_changed` 掉成硬删。所以对账键
+/// 里非环行的 path 一律归成空
+pub type ViolationKey = (String, Uuid, Uuid, Vec<Uuid>);
+
+fn partition_key(kind: &str, left: Uuid, right: Uuid, path: &[Uuid]) -> ViolationKey {
+    (
+        kind.to_string(),
+        left,
+        right,
+        if kind == "cycle" {
+            path.to_vec()
+        } else {
+            Vec::new()
+        },
+    )
+}
+
+/// 当前本体下**会算出来**的违规键集（0062）。不改违规状态——但 `detect` 沿
+/// `resolve` 会顺手把确定性编译出的规则行补齐（`INSERT ... ON CONFLICT DO
+/// NOTHING`），所以它不是字面上的只读。改判据的那条事务在动笔之前调它，
+/// 拿到的就是旧本体下的基线。
+pub async fn detection_keys(
+    conn: &mut PgConnection,
+    kb_id: Uuid,
+) -> AppResult<HashSet<ViolationKey>> {
+    let det = detect(conn, kb_id).await?;
+    Ok(det
+        .violations
+        .iter()
+        .filter(|v| !suppressed(v, &det.accepted))
+        .map(|v| partition_key(v.kind.as_str(), v.left, v.right, &v.path))
+        .collect())
+}
+
+/// 判据在同一条事务里刚被改过（0062）：按新本体重新检出、落库，
+/// 然后给陈旧的 open 行一个诚实的下场——
+///
+/// - 旧基线里有的：它的判据在这次改动里被端掉了，以 `criterion_changed` 收场。
+///   不是人裁的（`decided_by` 空），是公理/签名变了；下次又被算出来时重开规矩
+///   与 `axiom_relaxed` 同一支
+/// - 旧基线里没有的：它在改动前就已经陈了（事实没了之类），照旧删掉，与
+///   `run` 同一条清陈规矩
+///
+/// 保住的不变式：`status='open'` 的一行必然已对账于**当前**本体。
+/// 返回这一轮检出的违规数（与 `run` 的 `report.found` 同一口径）
+pub async fn reconcile_ontology(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    was_detected: &HashSet<ViolationKey>,
+) -> AppResult<usize> {
+    let det = detect(tx, kb_id).await?;
+    let (fresh, _, _) = settle_violations(tx, kb_id, &det).await?;
+    let stale: Vec<(Uuid, String, Uuid, Uuid, Vec<Uuid>)> = sqlx::query_as(
+        "SELECT id, kind, left_fact, right_fact, path FROM axiom_violations
+          WHERE kb_id = $1 AND status = 'open' AND NOT (id = ANY($2))",
+    )
+    .bind(kb_id)
+    .bind(&fresh)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut disqualified: Vec<Uuid> = Vec::new();
+    let mut evaporated: Vec<Uuid> = Vec::new();
+    for (id, kind, left, right, path) in stale {
+        if was_detected.contains(&partition_key(&kind, left, right, &path)) {
+            disqualified.push(id);
+        } else {
+            evaporated.push(id);
+        }
+    }
+    if !disqualified.is_empty() {
+        sqlx::query(
+            "UPDATE axiom_violations
+                SET status = 'resolved', resolution = 'criterion_changed',
+                    decided_by = NULL, decided_at = now()
+              WHERE id = ANY($1)",
+        )
+        .bind(&disqualified)
+        .execute(&mut **tx)
+        .await?;
+    }
+    if !evaporated.is_empty() {
+        sqlx::query("DELETE FROM axiom_violations WHERE id = ANY($1)")
+            .bind(&evaporated)
+            .execute(&mut **tx)
+            .await?;
+    }
+    settle_defects(tx, kb_id, &det).await?;
+    Ok(det.violations.len())
 }
 
 /// 互斥的三类：一处违规是一组同时成立、彼此冲突的事实（`path` 是整组）。
@@ -526,14 +697,17 @@ fn is_grouped(kind: Kind) -> bool {
 ///
 /// 认可说的是「这几条可以同时成立」，所以按事实集合比，不按键比——组里撤掉一条，
 /// 剩下的首尾换了、键也换了，那句认可照样管着它们（#624）。
-async fn accepted_groups(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<(String, HashSet<Uuid>)>> {
+async fn accepted_groups(
+    conn: &mut PgConnection,
+    kb_id: Uuid,
+) -> AppResult<Vec<(String, HashSet<Uuid>)>> {
     let rows: Vec<(String, Uuid, Uuid, Vec<Uuid>)> = sqlx::query_as(
         "SELECT kind, left_fact, right_fact, path FROM axiom_violations
           WHERE kb_id = $1 AND status = 'resolved' AND resolution = 'accepted'
             AND kind IN ('asymmetry', 'functional', 'inverse_functional')",
     )
     .bind(kb_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows
         .into_iter()
@@ -569,7 +743,7 @@ impl Names {
 }
 
 async fn names_for(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     derivation: &Derivation,
     clashes: &Contradictions,
 ) -> AppResult<Names> {
@@ -600,12 +774,12 @@ async fn names_for(
     let entities: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id, canonical_name FROM entities WHERE id = ANY($1)")
             .bind(&ents)
-            .fetch_all(pool)
+            .fetch_all(&mut *conn)
             .await?;
     let predicates: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id, label FROM relation_types WHERE id = ANY($1)")
             .bind(&preds)
-            .fetch_all(pool)
+            .fetch_all(&mut *conn)
             .await?;
     Ok(Names {
         entities: entities.into_iter().collect(),
@@ -738,7 +912,7 @@ fn hint_for(r: &ViolationRow) -> Option<&'static str> {
 
 /// 人裁决一处违规。
 ///
-/// **三个出路,不是两个。** 时态冲突问「哪条对」,而这里可能是定义错了——
+/// **四个出路,不是两个。** 时态冲突问「哪条对」,而这里可能是定义错了——
 /// 用户导的本体把某个属性声明成反对称,而他自己的语料里那关系其实双向。
 /// `axiom_relaxed` 记的就是这种:该改的是本体,不是二十条事实。
 ///
@@ -839,7 +1013,7 @@ pub struct OntologyReport {
 /// 与 [`run`] 同一套重跑规矩：`open` 是派生状态、可以被重算掉，`resolved`
 /// 是人的决定、一行不动。
 pub async fn check_ontology(pool: &PgPool, kb_id: Uuid) -> AppResult<OntologyReport> {
-    let ax = axioms(pool, kb_id).await?;
+    let ax = axioms(&mut *pool.acquire().await?, kb_id).await?;
     let parents: Vec<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT child_id, parent_id FROM entity_type_parents p
                           JOIN entity_types t ON t.id = p.child_id
@@ -1106,7 +1280,7 @@ fn read_span(
     (f, t, from_anchored, to_anchored)
 }
 
-async fn timed_edges(pool: &PgPool, kb_id: Uuid) -> AppResult<TimedEdges> {
+async fn timed_edges(conn: &mut PgConnection, kb_id: Uuid) -> AppResult<TimedEdges> {
     // 输入**只有断言**。派生住在另一张表，所以这里连过滤都不必写——那正是
     // 分表买到的东西：忘了排除的后果是推不出东西，不是把自己的输出喂回自己
     let rows: Vec<EdgeRow> = sqlx::query_as(
@@ -1120,14 +1294,14 @@ async fn timed_edges(pool: &PgPool, kb_id: Uuid) -> AppResult<TimedEdges> {
             AND object_id IS NOT NULL",
     )
     .bind(kb_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     // 谓词的时间语义（0031）：事件按它的桶读，恒常两端开放。一次取全，按谓词查
     let temporal_of: HashMap<Uuid, crate::graph::Temporal> = sqlx::query_as::<_, (Uuid, String)>(
         "SELECT id, temporal FROM relation_types WHERE kb_id = $1",
     )
     .bind(kb_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?
     .into_iter()
     .map(|(id, t)| (id, crate::graph::Temporal::parse(&t)))
@@ -1168,7 +1342,7 @@ async fn timed_edges(pool: &PgPool, kb_id: Uuid) -> AppResult<TimedEdges> {
 
 /// 人认可过并存的（派生三元组, 断言）对：这些派生下一轮照常落地（0017 §2）。
 async fn accepted_clashes(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     kb_id: Uuid,
 ) -> AppResult<HashSet<(Uuid, Uuid, Uuid, Uuid)>> {
     let rows: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
@@ -1176,7 +1350,7 @@ async fn accepted_clashes(
           WHERE kb_id = $1 AND kind = 'derived_contradiction' AND resolution = 'accepted'",
     )
     .bind(kb_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     let id = |v: &serde_json::Value, k: &str| {
         v.get(k)
@@ -1277,7 +1451,7 @@ fn coarsest(a: Option<&str>, b: Option<&str>) -> Option<String> {
 /// 需要它还在；而它不再出现在返回值里，据它推出来的事实由下面的对账作废。
 /// 规则一个库也就几条，留着不占地方。
 async fn compile_rules(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     kb_id: Uuid,
     ax: &HashMap<Uuid, Axioms>,
 ) -> AppResult<HashMap<(Uuid, RuleKind), Uuid>> {
@@ -1310,7 +1484,7 @@ async fn compile_rules(
         .bind(kb_id)
         .bind(pred)
         .bind(kind)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
         let (id,): (Uuid,) = sqlx::query_as(
             "SELECT id FROM rules WHERE kb_id = $1 AND predicate_id = $2 AND kind = $3",
@@ -1318,7 +1492,7 @@ async fn compile_rules(
         .bind(kb_id)
         .bind(pred)
         .bind(kind)
-        .fetch_one(pool)
+        .fetch_one(&mut *conn)
         .await?;
         out.insert((pred, kind), id);
     }
@@ -1395,7 +1569,7 @@ type RuleDefRow = (
 
 /// 取业务规则。条件形状不合法的规则**整条跳过而不是报错退出**——一条写坏的
 /// 规则不该让整轮物化停摆，而它不产出这件事在报告的条数里看得见。
-async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
+async fn attribute_rules(conn: &mut PgConnection, kb_id: Uuid) -> AppResult<LoadedRules> {
     use utopia_reason::rules::{BusinessRule, Conclusion, Condition, Op};
 
     // **按 id 排序**：规则之间撞上同一个结论时留下的是先到的那条证明，而
@@ -1413,7 +1587,7 @@ async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
           ORDER BY r.id",
     )
     .bind(kb_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     if rows.is_empty() {
         return Ok(LoadedRules {
@@ -1428,7 +1602,7 @@ async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
     let type_rows: Vec<(Uuid, Option<String>, Option<String>)> =
         sqlx::query_as("SELECT id, iri, key FROM entity_types WHERE kb_id = $1")
             .bind(kb_id)
-            .fetch_all(pool)
+            .fetch_all(&mut *conn)
             .await?;
     let mut class_ids: HashMap<String, Uuid> = HashMap::new();
     let mut class_name: HashMap<Uuid, String> = HashMap::new();
@@ -1443,7 +1617,7 @@ async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
     let is_a: Option<(Uuid,)> =
         sqlx::query_as("SELECT id FROM relation_types WHERE kb_id = $1 AND key = 'is_a'")
             .bind(kb_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *conn)
             .await?;
 
     let ids: Vec<Uuid> = rows.iter().map(|r| r.0).collect();
@@ -1455,7 +1629,7 @@ async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
           ORDER BY rule_id, group_seq, seq",
     )
     .bind(&ids)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     let mut by_rule: HashMap<Uuid, Vec<Condition>> = HashMap::new();
     let mut broken: HashSet<Uuid> = HashSet::new();
@@ -1541,7 +1715,7 @@ async fn attribute_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<LoadedRules> {
             }
             _ => continue,
         };
-        let subject_types = descendants_of(pool, kb_id, subject_type).await?;
+        let subject_types = descendants_of(&mut *conn, kb_id, subject_type).await?;
         let subject_classes = subject_types
             .iter()
             .filter_map(|t| class_name.get(t).cloned())
@@ -1637,7 +1811,7 @@ fn parse_operand(
 }
 
 /// 一个类连同它的全部子类。规则写在 `Well` 上，`HorizontalWell` 的实体也该被看。
-async fn descendants_of(pool: &PgPool, kb_id: Uuid, root: Uuid) -> AppResult<Vec<Uuid>> {
+async fn descendants_of(conn: &mut PgConnection, kb_id: Uuid, root: Uuid) -> AppResult<Vec<Uuid>> {
     let rows: Vec<(Uuid,)> = sqlx::query_as(
         "WITH RECURSIVE sub AS (
              SELECT id FROM entity_types WHERE id = $2 AND kb_id = $1
@@ -1648,7 +1822,7 @@ async fn descendants_of(pool: &PgPool, kb_id: Uuid, root: Uuid) -> AppResult<Vec
     )
     .bind(kb_id)
     .bind(root)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
@@ -1675,7 +1849,7 @@ type AttrFactRow = (
 /// 与 `timed_edges` 是对偶的一份——那边取 `object_id IS NOT NULL` 的边，
 /// 这边取 `object_value IS NOT NULL` 的字面值。两边都只看断言。
 async fn attribute_facts(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     kb_id: Uuid,
 ) -> AppResult<(
     Vec<utopia_reason::rules::AttrFact>,
@@ -1696,7 +1870,7 @@ async fn attribute_facts(
             AND e.merged_into IS NULL",
     )
     .bind(kb_id)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
 
     let mut facts = Vec::with_capacity(rows.len());
@@ -1932,12 +2106,12 @@ struct Resolved {
     rule_rounds_capped: bool,
 }
 
-async fn resolve(pool: &PgPool, kb_id: Uuid) -> AppResult<Resolved> {
-    let axioms = axioms(pool, kb_id).await?;
-    let rules = compile_rules(pool, kb_id, &axioms).await?;
-    let (edges, mut spans, mut meta) = timed_edges(pool, kb_id).await?;
-    let accepted = accepted_clashes(pool, kb_id).await?;
-    let loaded = attribute_rules(pool, kb_id).await?;
+async fn resolve(conn: &mut PgConnection, kb_id: Uuid) -> AppResult<Resolved> {
+    let axioms = axioms(&mut *conn, kb_id).await?;
+    let rules = compile_rules(&mut *conn, kb_id, &axioms).await?;
+    let (edges, mut spans, mut meta) = timed_edges(&mut *conn, kb_id).await?;
+    let accepted = accepted_clashes(&mut *conn, kb_id).await?;
+    let loaded = attribute_rules(&mut *conn, kb_id).await?;
     let mut asserted_ids: HashSet<Uuid> = edges.iter().map(|e| e.edge.fact).collect();
 
     let mut wanted: HashMap<DerivedKey, Wanted> = HashMap::new();
@@ -1951,7 +2125,7 @@ async fn resolve(pool: &PgPool, kb_id: Uuid) -> AppResult<Resolved> {
     // 落库那边的陈旧对账扫的是整张 `derived_facts`，两趟各做各的 diff 会把对方
     // 落的行每一轮都判成陈旧
     if !loaded.rules.is_empty() {
-        let (asserted, attr_spans, attr_meta, type_of) = attribute_facts(pool, kb_id).await?;
+        let (asserted, attr_spans, attr_meta, type_of) = attribute_facts(&mut *conn, kb_id).await?;
         asserted_ids.extend(asserted.iter().map(|f| f.id));
         // 前提的精度与置信度：落地那一段与不动点这一段共用，所以两份 meta 先合起来；
         // 区间也要——认出派生的哪一端是被前提的锚点顶上来的，靠的就是它
@@ -2269,7 +2443,7 @@ pub async fn materialize(pool: &PgPool, kb_id: Uuid) -> AppResult<DeriveReport> 
         rounds,
         rule_rounds_capped,
         ..
-    } = resolve(pool, kb_id).await?;
+    } = resolve(&mut *pool.acquire().await?, kb_id).await?;
     let Checked {
         candidates,
         axiom_count,

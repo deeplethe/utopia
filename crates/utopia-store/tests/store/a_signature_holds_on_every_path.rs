@@ -285,8 +285,11 @@ async fn adoption_and_merge_respect_the_signature() -> anyhow::Result<()> {
         .bind(f.alice)
         .execute(&pool)
         .await?;
+        let mut conn = pool.acquire().await?;
         assert!(
-            utopia_store::reasoning::signature_breaks(&pool, f.kb, None).await?.is_empty(),
+            utopia_store::reasoning::signature_breaks(&mut conn, f.kb, None)
+                .await?
+                .is_empty(),
             "an untyped subject is unknown, not wrong"
         );
         let _ = (f.company, f.person);
