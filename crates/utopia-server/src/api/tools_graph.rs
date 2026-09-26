@@ -122,7 +122,7 @@ async fn resolve(
             note: None,
         });
     }
-    let hits = lookup(ctx, raw).await.map_err(|e| {
+    let (hits, _) = lookup(ctx, raw).await.map_err(|e| {
         tracing::warn!(error = %e, "Entity lookup failed");
         ResolveError::ReadFailed
     })?;
@@ -203,8 +203,8 @@ fn contains_ci(haystack: Option<&str>, needle: &str) -> bool {
 
 pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
     let name = args["name"].as_str().unwrap_or("").to_string();
-    let hits = match lookup(ctx, &name).await {
-        Ok(hits) => hits,
+    let (hits, total) = match lookup(ctx, &name).await {
+        Ok(found) => found,
         Err(e) => {
             tracing::warn!(error = %e, "Entity lookup failed");
             return ToolResult::new(
@@ -214,9 +214,10 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             .error();
         }
     };
+    let read = hits.len();
     let (ranked, by_question) = rank_by_question(ctx, rank(hits, &name), &name).await;
     let clear = by_question || dominant(&ranked, &name);
-    let text = if ranked.is_empty() {
+    let mut text = if ranked.is_empty() {
         "No matching entities.".to_string()
     } else if clear {
         let mut lines = vec![format!("Best match: {}", node_line(&ranked[0]))];
@@ -232,6 +233,14 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
         lines.extend(ranked.iter().map(node_line));
         lines.join("\n")
     };
+    // 截断要说出来（与 `rule_matches` 同一条）：只读了前几个，模型会把它们当成这个
+    // 名字的全部，然后告诉人「库里只有这几个」
+    if let Some(total) = total.filter(|t| *t > read as i64) {
+        text.push_str(&format!(
+            "\n({total} entities have a name containing \"{name}\"; only the first {read} were \
+             read. A longer or more exact name narrows the search.)"
+        ));
+    }
     // 同名歧义时候选只是搜索结果，不是认下的实体。从前这里全记，下一轮就收到一串
     // 同名的 id 和一句「直接用这些」，没选的那个还常常排在前面。选中的那个在它被
     // 读的时候记（entity_facts / neighbors / timeline）；上一轮的候选另有工具往返
@@ -363,18 +372,24 @@ pub(super) fn predicates_of(facts: &[EntityFact]) -> String {
 /// 子串找不到时按词找：每个词各去库里捞一把，名字里含的词数达到「全部减一、至少两个」
 /// 的候选算命中（"OpenAI board members" → "OpenAI's board of directors"）。
 /// 模型给的名字常带一个库里没有的词（members、公司、这个），全词命中会把它们全漏掉
-async fn lookup(ctx: &ToolCtx<'_>, raw: &str) -> utopia_core::AppResult<Vec<GraphNode>> {
+///
+/// 回的是查到的实体，以及这个名字一共命中几个。只读前八个，总数用来告诉模型这不是
+/// 全部；按词拼凑的那一路没有总数
+async fn lookup(
+    ctx: &ToolCtx<'_>,
+    raw: &str,
+) -> utopia_core::AppResult<(Vec<GraphNode>, Option<i64>)> {
     // 工具调用来自聊天 / MCP：当下的问题，不在回放里。传 None 让 `degree` 按
     // 现在算——和现状一致，回放图上的搜索框另走 `/kbs/{id}/entities` 自己挂
     // 时刻
-    let (hits, _) =
+    let (hits, total) =
         utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, raw, 8, 0, None).await?;
     if !hits.is_empty() {
-        return Ok(hits);
+        return Ok((hits, Some(total)));
     }
     let words: Vec<&str> = raw.split_whitespace().filter(|w| w.len() >= 2).collect();
     if words.len() < 2 {
-        return Ok(hits);
+        return Ok((hits, Some(total)));
     }
     let mut pool: Vec<GraphNode> = Vec::new();
     for w in &words {
@@ -394,7 +409,7 @@ async fn lookup(ctx: &ToolCtx<'_>, raw: &str) -> utopia_core::AppResult<Vec<Grap
         .filter(|(s, _)| *s >= need)
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.degree.cmp(&a.1.degree)));
-    Ok(scored.into_iter().map(|(_, n)| n).take(8).collect())
+    Ok((scored.into_iter().map(|(_, n)| n).take(8).collect(), None))
 }
 
 /// 名字里含了几个词（大小写不敏感）
@@ -1131,6 +1146,12 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
     ));
     for (i, p) in paths.iter().enumerate() {
         lines.push(format!("{}. {}", i + 1, path_text(p)));
+    }
+    if paths.len() >= limits.max_paths {
+        lines.push(format!(
+            "(Only the first {} paths, shortest first, are listed; there may be more.)",
+            limits.max_paths
+        ));
     }
     let detail = format!(
         "{} path{}, shortest {shortest} hop{}",
