@@ -79,7 +79,11 @@ when the fingerprint of the current inputs differs, which is what timestamps cou
 parent edge added or removed, an edit committed while the model was answering [0053, #807, #795].
 A signature with no admissible property is recorded as `none` (its projection retires); one with
 more candidates than the limit is `undecided` for the queue, not silently skipped. Kind-word
-bindings still use `updated_at`, so cosmetic edits can also trigger their reevaluation.
+bindings carry a basis as well: each candidate class the model was shown, with its `updated_at`
+and ancestor closure, read from one snapshot before the model is called. A reply is accepted only
+if that basis still matches the rows when it is written; otherwise it is discarded and the kind
+word asked again [0053 revision, #795]. Cosmetic edits to a candidate class still count as a
+change.
 
 **A shape of statement can imply a fact of another property** [0044 decision 3, migration 0073].
 An implication rule is keyed like a binding (a signature) or by a kind word, names the property it
