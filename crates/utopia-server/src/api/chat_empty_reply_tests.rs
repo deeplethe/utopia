@@ -252,6 +252,7 @@ impl Fx {
             Json(ChatReq {
                 conversation_id: None,
                 message: message.into(),
+                retry_message_id: None,
             }),
         )
         .await
@@ -388,6 +389,8 @@ mod registry_tests;
 mod resolved_tests;
 #[path = "chat_restated_tests.rs"]
 mod restated_tests;
+#[path = "chat_retry_tests.rs"]
+mod retry_tests;
 #[path = "chat_sources_tests.rs"]
 mod sources_tests;
 
@@ -560,6 +563,7 @@ async fn budget_finalization_survives_disconnect_and_reattach() -> anyhow::Resul
             Json(ChatReq {
                 conversation_id: Some(id),
                 message: "What changed at Acme?".into(),
+                retry_message_id: None,
             }),
         )
         .await

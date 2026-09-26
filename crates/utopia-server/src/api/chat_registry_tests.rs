@@ -51,7 +51,7 @@ async fn finishing_old_chat_preserves_reattachment_to_new_chat() -> anyhow::Resu
     let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let first = chat(
             State(f.state.clone()), AuthUser(f.user.clone()), Path(f.kb),
-            Json(ChatReq { conversation_id: None, message: "first greeting".into() }),
+            Json(ChatReq { conversation_id: None, message: "first greeting".into(), retry_message_id: None }),
         ).await.map_err(|_| anyhow::anyhow!("first chat refused"))?;
         gates.ready[0].notified().await;
         let id: Uuid = sqlx::query_scalar("SELECT id FROM conversations WHERE kb_id=$1")
@@ -59,7 +59,7 @@ async fn finishing_old_chat_preserves_reattachment_to_new_chat() -> anyhow::Resu
         let (_, mut old_events) = f.state.live.attach(id).await.unwrap();
         let second = chat(
             State(f.state.clone()), AuthUser(f.user.clone()), Path(f.kb),
-            Json(ChatReq { conversation_id: Some(id), message: "second greeting".into() }),
+            Json(ChatReq { conversation_id: Some(id), message: "second greeting".into(), retry_message_id: None }),
         ).await.map_err(|_| anyhow::anyhow!("second chat refused"))?;
         gates.ready[1].notified().await;
         gates.release[0].notify_one();

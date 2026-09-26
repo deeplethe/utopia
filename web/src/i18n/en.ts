@@ -74,6 +74,11 @@ export const en = {
       "The model endpoint gave no usable answer. Check its address under Administration → Models.",
     model_rejected:
       "The model endpoint refused the request. Check the model settings under Administration → Models.",
+    // 重答（#936）被拒。生成中又来一个新问题（#961）也是 409；两边用同一个 code
+    answer_running: "An answer is still being written in this conversation. Wait for it to finish.",
+    retry_answered: "That question already has an answer, or the conversation went on after it.",
+    retry_not_question: "Only a question can be answered again.",
+    retry_needs_conversation: "A retry needs the conversation its question is in.",
     bad_upload: "That upload could not be read.",
     upload_read_failed: "The file could not be read to the end.",
     no_files: "No file was attached.",
@@ -790,9 +795,12 @@ export const en = {
   },
   ask: {
     streamInterrupted: "The answer stream was interrupted. Reopen the conversation to check its status.",
-    noActiveAnswer: "No active answer was found. You can send a new message.",
+    /* 重开会话时，最后一问没有回答、也没有在写的回答（多半是答到一半失败了） */
+    noActiveAnswer: "The last question has no answer. Retry it, or send a new message.",
     historyLoadFailed: "Could not load this conversation.",
     retryHistory: "Retry",
+    // 重答最后那个没有回答的问题（#936）
+    retryQuestion: "Retry",
     loadingHistory: "Loading conversation…",
     loadEarlierConversations: "Load earlier conversations",
     conversationsLoadFailed: "Could not load conversations.",

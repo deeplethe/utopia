@@ -117,6 +117,17 @@ describe("application chat terminal outcomes", () => {
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
     expect(h.onDone).toHaveBeenCalledTimes(1); expect(h.onError).not.toHaveBeenCalled();
   });
+  // 这一问存下的 id 随 conversation 帧一起到：答到一半失败时，页面凭它重答（#936）
+  it("hands the stored id of the question to the page with the conversation", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      'event: conversation\ndata: {"id":"c1","message_id":"m1"}\n\nevent: done\ndata: {}\n\n',
+    )));
+    const h = {onConversation:vi.fn(),onSources:vi.fn(),onStep:vi.fn(),onDelta:vi.fn(),onDone:vi.fn(),onError:vi.fn()};
+    streamChat("kb", {message:"hello"}, h);
+    await vi.waitFor(() => expect(h.onDone).toHaveBeenCalledTimes(1));
+    expect(h.onConversation).toHaveBeenCalledWith("c1", "m1");
+    expect(h.onError).not.toHaveBeenCalled();
+  });
   it("active abort is silent and cancels the reader", async () => {
     const cancelled = vi.fn();
     const body = new ReadableStream<Uint8Array>({ cancel: cancelled });

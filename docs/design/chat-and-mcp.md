@@ -19,7 +19,9 @@ shorter"; `STALL_NUDGE` and `DONE` are gone [0042 d3]. The wire stays `LlmClient
 error bodies, the classification of a failure as out of credit, rate limited, unavailable or nothing
 of the kind, and cache logging; earlier
 entities become a `system` message right before the question; degradation to one-shot RAG happens
-only on a 400 or 422 to the first request with tools [0042 d2].
+only on a 400 or 422 to the first request with tools [0042 d2]. A question whose answer failed stays
+stored without one; a retry names it (`retry_message_id`) and answers it in place, only while it is
+the conversation's last message and no answer is being written there (#936).
 
 **Tools** live once in `tools.rs` and serve chat and MCP alike: `search_chunks`, `search_docs`,
 `find_entities`, `entity_facts` (names marked as names, derived rows with their rule, `as_of` and

@@ -19,6 +19,7 @@ import {
   History,
   Layers,
   MoreHorizontal,
+  RotateCcw,
   Search,
   Search as SearchIcon,
   Square,
@@ -90,11 +91,26 @@ const NO_SOURCES: Source[] = [];
 type ViewRequest = { kbId: string; id: string | null };
 const historyTurns = (messages: ConversationMessage[]): Turn[] => messages.map((m) => ({
   role: m.role,
+  id: m.id,
   content: m.content,
   steps: m.steps.length ? m.steps : undefined,
   sources: m.sources.length ? m.sources : undefined,
 }));
 const viewKey = (kbId: string, id: string | null) => `${kbId}/${id ?? ""}`;
+
+/** 能重答的那一问在屏上的位置（#936），没有就是 -1。只看最后一问：它后面要么什么
+ *  也没有（重开会话时的样子），要么只有一条出错的回答（刚答到一半失败）。
+ *  服务端同样只答会话的最后一条，答过的、后面又有人接着问的都不答 */
+function retryableQuestion(shown: Turn[]): number {
+  const last = shown.at(-1);
+  const at =
+    last?.role === "assistant" && last.error
+      ? shown.length - 2
+      : last?.role === "user"
+        ? shown.length - 1
+        : -1;
+  return at >= 0 && shown[at].role === "user" && shown[at].id ? at : -1;
+}
 
 export function Chat() {
   const kbId = useKbId();
@@ -180,6 +196,7 @@ export function Chat() {
      一个正在别处生成的回答不该改变这里的任何东西 */
   const streaming = liveHere?.streaming ?? false;
   const shown = liveHere ? liveHere.turns : loadedKey === viewKey(kbId, currentId) ? turns : [];
+  const retryAt = retryableQuestion(shown);
   const [scopeOpen, setScopeOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<ConversationRow | null>(null);
   // 会话搜索。**搜标题也搜正文**——人记得住的往往是问过的那句话
@@ -450,53 +467,74 @@ export function Chat() {
     sessionStorage.removeItem(DRAFT_KEY);
     if (inputRef.current) inputRef.current.style.height = "auto";
 
-    /* **结果留在 store 里，不交回组件状态。**
-       交回去要经过一个 `setTurns`，而流结束时这个组件可能早就卸载了——
-       那一下是空操作，内容就此消失（切回来一片空白，问题气泡都没有）。
-       留在 store 里，谁挂载谁认领。这一场从开场起就有名有姓：先建条目、
-       后开流，回调顺着句柄只写自己这一场 */
-    const handle = liveAnswer.begin(
+    answer(
+      owner,
       kb.id,
-      activeId,
       // 从屏上正在显示的那些轮续接，而不是组件 state——流结束后内容只落在
       // store 里，state 还是上次装 conversation 时的库内历史，用它会让
       // 上一条回答从画面里消失
       [...(liveHere?.turns ?? turns), { role: "user", content: q }, { role: "assistant", content: "" }],
-      () => {},
-    );
-    const abort = streamChat(
-      kb.id,
       { conversation_id: activeId ?? undefined, message: q },
-      {
-        onConversation: (id) => {
-          handle.identify(id);
-          invalidateList();
-          if (!ownsView(owner)) return;
-          // 先 identify 生成句柄再换 URL；layout effect 重置视图后，loadConversation 会认领该句柄。
-          activeIdRef.current = id;
-          setActiveId(id);
-          sessionStorage.setItem(lastKey(kb.id), id);
-          navigate({
-            to: "/kb/$kbId/chat/$conversationId",
-            params: { kbId, conversationId: id },
-            replace: true,
-          });
-        },
-        onSources: (sources) => handle.patchLast((t) => ({ ...t, sources })),
-        onStep: (step) =>
-          handle.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
-        onDelta: (text) =>
-          handle.patchLast((t) => ({ ...t, content: t.content + text })),
-        onDone: () => {
-          handle.finish();
-          invalidateList();
-        },
-        onError: (message) => {
-          handle.patchLast((t) => ({ ...t, error: message }));
-          handle.finish();
-        },
-      },
     );
+  };
+
+  /** 重答最后那个没有回答的问题（#936）。问题已经在库里，不再存一遍：屏上它后面
+   *  若挂着一条出错的回答，换成一条空的，带着它存下的 id 重新开流 */
+  const retry = () => {
+    const at = retryableQuestion(shown);
+    if (at < 0 || streaming || !kb || kb.id !== kbId || !activeId || loadingHistory || historyError) return;
+    const question = shown[at];
+    const owner = claimView(activeId);
+    following.current = true;
+    setIdleHistoryKey(null);
+    answer(owner, kb.id, [...shown.slice(0, at + 1), { role: "assistant", content: "" }], {
+      conversation_id: activeId,
+      message: question.content,
+      retry_message_id: question.id,
+    });
+  };
+
+  /* **结果留在 store 里，不交回组件状态。**
+     交回去要经过一个 `setTurns`，而流结束时这个组件可能早就卸载了——
+     那一下是空操作，内容就此消失（切回来一片空白，问题气泡都没有）。
+     留在 store 里，谁挂载谁认领。这一场从开场起就有名有姓：先建条目、
+     后开流，回调顺着句柄只写自己这一场。新问题与重答走同一段 */
+  const answer = (
+    owner: ViewRequest,
+    kbNow: string,
+    start: Turn[],
+    body: Parameters<typeof streamChat>[1],
+  ) => {
+    const handle = liveAnswer.begin(kbNow, activeId, start, () => {});
+    const abort = streamChat(kbNow, body, {
+      onConversation: (id, questionId) => {
+        handle.identify(id, questionId);
+        invalidateList();
+        if (!ownsView(owner)) return;
+        // 先 identify 生成句柄再换 URL；layout effect 重置视图后，loadConversation 会认领该句柄。
+        activeIdRef.current = id;
+        setActiveId(id);
+        sessionStorage.setItem(lastKey(kbNow), id);
+        navigate({
+          to: "/kb/$kbId/chat/$conversationId",
+          params: { kbId, conversationId: id },
+          replace: true,
+        });
+      },
+      onSources: (sources) => handle.patchLast((t) => ({ ...t, sources })),
+      onStep: (step) =>
+        handle.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
+      onDelta: (text) =>
+        handle.patchLast((t) => ({ ...t, content: t.content + text })),
+      onDone: () => {
+        handle.finish();
+        invalidateList();
+      },
+      onError: (message) => {
+        handle.patchLast((t) => ({ ...t, error: message }));
+        handle.finish();
+      },
+    });
     // streamChat 的 abort 要等它返回才有；真 abort 到手前，句柄上先占着空操作
     handle.setAbort(abort);
   };
@@ -775,7 +813,14 @@ export function Chat() {
           有消息后 composer 停靠底部 */}
       <div className="flex-1 min-w-0 flex flex-col">
         {idleHistoryKey === loadedKey && idleHistoryKey === viewKey(kbId, currentId) && !streaming && (
-          <p role="status" className="px-4 pt-4 text-body text-ink-2">{S.ask.noActiveAnswer}</p>
+          <div role="status" className="px-4 pt-4 flex flex-wrap items-center gap-2 text-body text-ink-2">
+            <span>{S.ask.noActiveAnswer}</span>
+            {retryAt === shown.length - 1 && (
+              <Button variant="secondary" size="sm" icon={<RotateCcw size={12} />} onClick={retry}>
+                {S.ask.retryQuestion}
+              </Button>
+            )}
+          </div>
         )}
         {historyError ? (
           <div role="alert" className="p-6 text-body">
@@ -814,7 +859,16 @@ export function Chat() {
             >
               <div className="max-w-3xl mx-auto space-y-4">
                 {shown.map((t, i) => (
-                  <TurnView key={i} turn={t} live={streaming && i === shown.length - 1} />
+                  <TurnView
+                    key={i}
+                    turn={t}
+                    live={streaming && i === shown.length - 1}
+                    onRetry={
+                      !streaming && i === shown.length - 1 && t.role === "assistant" && retryAt >= 0
+                        ? retry
+                        : undefined
+                    }
+                  />
                 ))}
                 <div ref={bottomRef} />
               </div>
@@ -977,7 +1031,16 @@ function Thinking({ step }: { step?: ChatStep }) {
   );
 }
 
-function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
+function TurnView({
+  turn,
+  live,
+  onRetry,
+}: {
+  turn: Turn;
+  live?: boolean;
+  /** 这是出错的最后一轮、它的问题存着 id 时才有：重答那一问（#936） */
+  onRetry?: () => void;
+}) {
   const kbId = useKbId();
   if (turn.role === "user") {
     return (
@@ -1044,10 +1107,16 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
         <div className="mt-2 text-small text-ink-2">{S.ask.noSources}</div>
       )}
       {/* 回答上的动作（#936），同样等说完了才出。复制的是存下的 Markdown，
-          角标 `[n]` 照写——表格、代码块贴到别处还是原样 */}
-      {!live && turn.content && (
-        <div className="mt-2 flex items-center">
-          <CopyButton label={S.ask.copyAnswer} text={() => turn.content} />
+          角标 `[n]` 照写——表格、代码块贴到别处还是原样。答到一半失败的那一轮
+          多一个重试：问题已经在库里，重答不再存一遍 */}
+      {!live && (turn.content || onRetry) && (
+        <div className="mt-2 flex items-center gap-2">
+          {turn.content && <CopyButton label={S.ask.copyAnswer} text={() => turn.content} />}
+          {onRetry && (
+            <Button variant="secondary" size="sm" icon={<RotateCcw size={12} />} onClick={onRetry}>
+              {S.ask.retryQuestion}
+            </Button>
+          )}
         </div>
       )}
     </div>

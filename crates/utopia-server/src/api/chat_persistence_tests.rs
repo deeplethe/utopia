@@ -44,6 +44,7 @@ async fn exercise(deny: bool, disconnect: bool) -> anyhow::Result<()> {
                 Json(ChatReq {
                     conversation_id: Some(id),
                     message: "hello".into(),
+                    retry_message_id: None,
                 }),
             )
             .await

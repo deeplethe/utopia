@@ -92,6 +92,7 @@ async fn a_turn_remembers_the_entity_it_read_not_every_candidate() -> anyhow::Re
         Json(ChatReq {
             conversation_id: Some(id),
             message: "When did he join?".into(),
+            retry_message_id: None,
         }),
     )
     .await

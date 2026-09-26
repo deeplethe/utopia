@@ -125,6 +125,42 @@ pub async fn messages(pool: &PgPool, conversation_id: Uuid) -> AppResult<Vec<Con
     Ok(rows)
 }
 
+/// 重答（#936）要找的那条消息：它的角色、正文，以及它是不是这场对话的最后一条。
+pub struct RetryTarget {
+    pub role: String,
+    pub content: String,
+    pub last: bool,
+}
+
+/// 读出要重答的那条消息；不在这场对话里的 id 交回 `None`。
+///
+/// 回答与问题之间没有连线，靠的是顺序（`created_at`，同一刻再按 id）。所以「还没有
+/// 回答」只能这样判断：这一问后面什么也没有。后面有回答，是答过了；后面有人接着问，
+/// 这时再答，答案会落在那些轮之后，顺序就乱了。两种都不能原地重答
+pub async fn retry_target(
+    pool: &PgPool,
+    conversation_id: Uuid,
+    message_id: Uuid,
+) -> AppResult<Option<RetryTarget>> {
+    let row: Option<(String, String, bool)> = sqlx::query_as(
+        "SELECT m.role, m.content, NOT EXISTS (
+             SELECT 1 FROM conversation_messages later
+              WHERE later.conversation_id = m.conversation_id
+                AND (later.created_at, later.id) > (m.created_at, m.id))
+           FROM conversation_messages m
+          WHERE m.id = $2 AND m.conversation_id = $1",
+    )
+    .bind(conversation_id)
+    .bind(message_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(role, content, last)| RetryTarget {
+        role,
+        content,
+        last,
+    }))
+}
+
 /// 一轮回放的历史。
 ///
 /// 三样东西，各自回答一个不同的问题：正文（说过什么）、实体（认下了谁）、

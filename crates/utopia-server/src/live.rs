@@ -91,6 +91,12 @@ struct Entry {
     snap: Arc<RwLock<Snapshot>>,
 }
 
+/// 登记还在、终态还没发出，才算在跑。发出终态之后到生成者注销之间还有一小段，
+/// 那时的登记已经说完了：出错之后马上按重试，不该被它挡住
+async fn running(entry: &Entry) -> bool {
+    entry.snap.read().await.terminal.is_none()
+}
+
 /// 进行中的生成，按会话查。
 #[derive(Default)]
 pub struct Registry(RwLock<HashMap<Uuid, Entry>>);
@@ -144,9 +150,38 @@ impl Registry {
     /// 登记一次生成。同一个会话重复登记会顶掉旧的——正常情况下不会发生，
     /// 真发生了也是新的那次说了算
     pub async fn begin(self: &Arc<Self>, conversation_id: Uuid) -> Handle {
+        let mut entries = self.0.write().await;
+        self.register(&mut entries, conversation_id)
+    }
+
+    /// 只在这个会话没有在跑的生成时登记（#936 的重答）。**查和登记在同一把写锁下**：
+    /// 连按两次重试，只有一次拿得到把手，另一次得到 `None`
+    pub async fn begin_if_idle(self: &Arc<Self>, conversation_id: Uuid) -> Option<Handle> {
+        let mut entries = self.0.write().await;
+        if let Some(entry) = entries.get(&conversation_id) {
+            if running(entry).await {
+                return None;
+            }
+        }
+        Some(self.register(&mut entries, conversation_id))
+    }
+
+    /// 这个会话此刻有没有在跑的生成
+    pub async fn is_running(&self, conversation_id: Uuid) -> bool {
+        match self.0.read().await.get(&conversation_id) {
+            Some(entry) => running(entry).await,
+            None => false,
+        }
+    }
+
+    fn register(
+        self: &Arc<Self>,
+        entries: &mut HashMap<Uuid, Entry>,
+        conversation_id: Uuid,
+    ) -> Handle {
         let (tx, _) = broadcast::channel(256);
         let snap = Arc::new(RwLock::new(Snapshot::default()));
-        self.0.write().await.insert(
+        entries.insert(
             conversation_id,
             Entry {
                 tx: tx.clone(),

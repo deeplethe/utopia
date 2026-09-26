@@ -112,6 +112,7 @@ async fn exercise(search_first: bool) -> anyhow::Result<()> {
             Json(ChatReq {
                 conversation_id: None,
                 message: "Read the second section".into(),
+                retry_message_id: None,
             }),
         )
         .await

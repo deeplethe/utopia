@@ -36,6 +36,7 @@ pub(super) async fn ask_in(f: &Fx, conversation_id: Uuid, message: &str) -> anyh
         Json(ChatReq {
             conversation_id: Some(conversation_id),
             message: message.into(),
+            retry_message_id: None,
         }),
     )
     .await

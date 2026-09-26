@@ -23,6 +23,9 @@ import { citedNumbers } from "./citations";
 
 export interface Turn {
   role: "user" | "assistant";
+  /** 这一条存下的 id。问题要有它才能重答（#936）：库里的历史带着，刚发出的那一问
+   *  由服务端的 `conversation` 帧告诉 */
+  id?: string;
   content: string;
   steps?: ChatStep[];
   sources?: Source[];
@@ -111,8 +114,9 @@ function flush() {
 let pendingSeq = 0;
 
 export interface LiveHandle {
-  /** 新会话从服务端拿到 id：把这个条目从占位 token 重映射到真 id */
-  identify: (conversationId: string) => void;
+  /** 新会话从服务端拿到 id：把这个条目从占位 token 重映射到真 id。
+   *  `questionId` 是这一问存下的 id，记到最后那条用户消息上 */
+  identify: (conversationId: string, questionId?: string) => void;
   /** 改这场回答的最后一条（助手那一轮）。生成期间只有它在变 */
   patchLast: (f: (t: Turn) => Turn) => void;
   /** 结束（正常、出错、或人按了停止）。
@@ -163,12 +167,20 @@ export const liveAnswer = {
     // stream must still belong to its original slot, not the replacement.
     const owned = () => (lives.get(key) === slot ? slot : undefined);
     return {
-      identify: (id: string) => {
+      identify: (id: string, questionId?: string) => {
         const current = owned();
         if (!current) return;
         lives.delete(key);
         key = id;
-        current.live = { ...current.live, conversationId: id };
+        let turns = current.live.turns;
+        if (questionId) {
+          const at = turns.map((t) => t.role).lastIndexOf("user");
+          if (at >= 0) {
+            turns = [...turns];
+            turns[at] = { ...turns[at], id: questionId };
+          }
+        }
+        current.live = { ...current.live, conversationId: id, turns };
         lives.set(key, current);
         flush();
       },

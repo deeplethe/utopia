@@ -120,7 +120,74 @@ pub struct ChatReq {
     /// 缺省 = 新建会话（SSE 首个 `conversation` 事件回传 id）
     #[serde(default)]
     pub conversation_id: Option<Uuid>,
+    /// 新问题的正文。重答时不读它：问的是库里存着的那一句
     pub message: String,
+    /// 重答这场对话最后那个还没有回答的问题（#936）：不再存一遍，就地回答它
+    #[serde(default)]
+    pub retry_message_id: Option<Uuid>,
+}
+
+/// 要重答的那一问
+struct Retry {
+    conversation_id: Uuid,
+    question_id: Uuid,
+    question: String,
+}
+
+/// 重答（#936）之前的检查：要答的必须是这场对话最后那条消息，而且是一个问题，
+/// 这场对话也没有在跑的生成。
+///
+/// 每一步都只读不写：在这里被拒，库里什么也没变，模型也没被调用。从前想再问一次
+/// 只能重发，同一个问题就在历史里存了两遍，没有回答的那一遍还会在之后每一问里
+/// 作为「没回答的一轮」回放给模型
+async fn retry_question(
+    state: &AppState,
+    kb_id: Uuid,
+    user_id: Uuid,
+    conversation_id: Option<Uuid>,
+    question_id: Uuid,
+) -> Result<Retry, AppError> {
+    let Some(conversation_id) = conversation_id else {
+        return Err(AppError::invalid(
+            "retry_needs_conversation",
+            "A retry names the conversation its question is in",
+        ));
+    };
+    utopia_store::conversations::require_owned(&state.pool, kb_id, user_id, conversation_id)
+        .await?;
+    let target =
+        utopia_store::conversations::retry_target(&state.pool, conversation_id, question_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    if target.role != "user" {
+        return Err(AppError::invalid(
+            "retry_not_question",
+            "Only a question can be answered again",
+        ));
+    }
+    if !target.last {
+        return Err(AppError::CodedConflict {
+            code: "retry_answered",
+            message: "That question already has an answer, or the conversation went on after it"
+                .into(),
+        });
+    }
+    if state.live.is_running(conversation_id).await {
+        return Err(answer_running());
+    }
+    Ok(Retry {
+        conversation_id,
+        question_id,
+        question: target.content,
+    })
+}
+
+/// 这场对话里正有一个回答在写。#961 给「生成中又来一个新问题」的也是 409；后落地的那个沿用先落地的 code
+fn answer_running() -> AppError {
+    AppError::CodedConflict {
+        code: "answer_running",
+        message: "An answer is already being written in this conversation".into(),
+    }
 }
 
 /// 工具清单。**MCP 也用这一份**（`mcp.rs`）：名字、描述、参数 schema 抄成
@@ -623,7 +690,18 @@ pub async fn chat(
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| AppError::invalid("no_chat_model", NO_MODEL))?;
 
-    let query = req.message.trim().to_string();
+    // 重答（#936）问的是库里那一句还没有回答的问题，不是请求里的正文
+    let retry = match req.retry_message_id {
+        Some(question_id) => {
+            Some(retry_question(&state, kb_id, user.id, req.conversation_id, question_id).await?)
+        }
+        None => None,
+    };
+    let retrying = retry.is_some();
+    let query = match &retry {
+        Some(retry) => retry.question.trim().to_string(),
+        None => req.message.trim().to_string(),
+    };
     if query.is_empty() {
         return Err(AppError::Validation("Missing user message".into()).into());
     }
@@ -646,21 +724,31 @@ pub async fn chat(
 
     // 会话持久化：有 id 则校验归属，无则以首句为题新建；用户消息即刻落库,
     // 上下文由服务端从库里拼——前端只送新消息
-    let conversation_id = match req.conversation_id {
-        Some(id) => {
-            utopia_store::conversations::require_owned(&state.pool, kb_id, user.id, id).await?;
-            id
+    // 重答的那一问已经在库里，就地回答它，不再存一遍
+    let (conversation_id, user_message_id) = match retry {
+        Some(retry) => (retry.conversation_id, retry.question_id),
+        None => {
+            let conversation_id = match req.conversation_id {
+                Some(id) => {
+                    utopia_store::conversations::require_owned(&state.pool, kb_id, user.id, id)
+                        .await?;
+                    id
+                }
+                None => {
+                    utopia_store::conversations::create(&state.pool, kb_id, user.id, &query).await?
+                }
+            };
+            let user_message_id = utopia_store::conversations::append_message(
+                &state.pool,
+                conversation_id,
+                "user",
+                &query,
+                &utopia_store::conversations::TurnRecord::empty(),
+            )
+            .await?;
+            (conversation_id, user_message_id)
         }
-        None => utopia_store::conversations::create(&state.pool, kb_id, user.id, &query).await?,
     };
-    let user_message_id = utopia_store::conversations::append_message(
-        &state.pool,
-        conversation_id,
-        "user",
-        &query,
-        &utopia_store::conversations::TurnRecord::empty(),
-    )
-    .await?;
     let history = utopia_store::conversations::recent_context(
         &state.pool,
         conversation_id,
@@ -759,7 +847,8 @@ pub async fn chat(
         }
 
         // 会话 id 先行下发（新会话由此告知前端）
-        yield ProducerEvent::Progress(Frame::new("conversation", json!({ "id": conversation_id }).to_string()));
+        // 这一问存下的 id 一起下发：答到一半失败了，界面凭它重答（#936）
+        yield ProducerEvent::Progress(Frame::new("conversation", json!({ "id": conversation_id, "message_id": user_message_id }).to_string()));
 
         // 循环是 rig 的（#546）：工具、策略钩子、历史、实体清单都交给它；
         // 这里只把它的事件翻成前端认得的帧，并在结束时落库
@@ -1075,7 +1164,15 @@ pub async fn chat(
 
     // 生成登记在案，然后**这条连接也只是去「接上」它**——与刷新之后
     // 那条重连走的是同一段代码。两条路分开写的话，迟早只有一条是对的
-    let handle = live.begin(conversation_id).await;
+    let handle = if retrying {
+        // 上面检查过没有在跑的生成，但两次检查之间别的请求可能已经开了一次（比如连按
+        // 两下重试）。查和登记在一把锁下再做一次；这条路到这里还没写过任何东西
+        live.begin_if_idle(conversation_id)
+            .await
+            .ok_or_else(answer_running)?
+    } else {
+        live.begin(conversation_id).await
+    };
     let attached = live.attach(conversation_id).await;
     tokio::spawn(async move {
         let mut producer = std::pin::pin!(producer);

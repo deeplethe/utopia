@@ -504,7 +504,7 @@ test(
         try {
           await f.page
             .getByText(
-              "No active answer was found. You can send a new message.",
+              "The last question has no answer. Retry it, or send a new message.",
               { exact: true },
             )
             .waitFor();
@@ -896,6 +896,79 @@ test(
           await f.page.getByText("SELECT region FROM nowhere", { exact: true }).count(),
           0,
         );
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
+    // #936 (2): a question whose answer failed is answered again in place, under its own id
+    const answered = (id, text) =>
+      `event: conversation\ndata: {"id":"${id}","message_id":"q1"}\n\n` +
+      `event: delta\ndata: ${JSON.stringify({ text })}\n\nevent: done\ndata: {}\n\n`;
+    await t.test("a reopened question left without an answer can be retried in place", async () => {
+      const asked = [];
+      const f = await open("/kb/one/chat/a", async (route, p) => {
+        if (p.endsWith("/conversations/a")) {
+          await route.fulfill({
+            json: { messages: [{ ...message("What changed at Acme?", "user"), id: "q1" }] },
+          });
+          return true;
+        }
+        if (p === "/api/v1/kbs/one/chat") {
+          asked.push(route.request().postDataJSON());
+          await route.fulfill({
+            contentType: "text/event-stream",
+            body: answered("a", "Acme moved to Berlin."),
+          });
+          return true;
+        }
+      });
+      try {
+        await f.page.getByRole("button", { name: "Retry", exact: true }).click();
+        await f.page.getByText("Acme moved to Berlin.", { exact: true }).waitFor();
+        assert.deepEqual(asked, [
+          { conversation_id: "a", message: "What changed at Acme?", retry_message_id: "q1" },
+        ]);
+        assert.equal(
+          await f.page.getByText("What changed at Acme?", { exact: true }).count(),
+          1,
+        );
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
+    await t.test("an answer that failed can be retried from under its error", async () => {
+      const asked = [];
+      const failed = "The model endpoint is unavailable right now. Try again shortly.";
+      const f = await open("/kb/one/chat/b", async (route, p) => {
+        if (p === "/api/v1/kbs/one/chat") {
+          const body = route.request().postDataJSON();
+          asked.push(body);
+          await route.fulfill({
+            contentType: "text/event-stream",
+            body: body.retry_message_id
+              ? answered("b", "Globex is fine.")
+              : 'event: conversation\ndata: {"id":"b","message_id":"q1"}\n\n' +
+                'event: error\ndata: {"error":"Model unavailable","code":"model_unavailable"}\n\n',
+          });
+          return true;
+        }
+      });
+      try {
+        await f.page.getByText("Answer beta", { exact: true }).waitFor();
+        await f.page.locator("textarea").fill("How is Globex?");
+        await f.page.locator("textarea").press("Enter");
+        await f.page.getByText(failed, { exact: true }).waitFor();
+        await f.page.getByRole("button", { name: "Retry", exact: true }).click();
+        await f.page.getByText("Globex is fine.", { exact: true }).waitFor();
+        assert.deepEqual(asked, [
+          { conversation_id: "b", message: "How is Globex?" },
+          { conversation_id: "b", message: "How is Globex?", retry_message_id: "q1" },
+        ]);
+        // One question, one answer: the failed turn is replaced, not repeated
+        assert.equal(await f.page.getByText("How is Globex?", { exact: true }).count(), 1);
+        assert.equal(await f.page.getByText(failed, { exact: true }).count(), 0);
         assert.deepEqual(f.errors, []);
       } finally {
         await f.close();

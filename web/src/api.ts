@@ -2806,7 +2806,8 @@ export const conversationsApi = {
 };
 
 export interface ChatHandlers {
-  onConversation: (id: string) => void;
+  /** `messageId`：这一问存下的 id。答到一半失败了，凭它重答（#936）；老的服务端不发 */
+  onConversation: (id: string, messageId?: string) => void;
   onSources: (s: Source[]) => void;
   onStep: (s: ChatStep) => void;
   onDelta: (text: string) => void;
@@ -2839,7 +2840,8 @@ export function reattachChat(
 
 export function streamChat(
   kbId: string,
-  body: { conversation_id?: string; message: string },
+  /** `retry_message_id`：重答这场对话最后那个没有回答的问题（#936），不再存一遍 */
+  body: { conversation_id?: string; message: string; retry_message_id?: string },
   handlers: ChatHandlers,
 ): () => void {
   return consumeChatStream(
@@ -2894,7 +2896,10 @@ function consumeChatStream(
         else if (event === "idle") {
           if (allowIdle) { terminal = true; handlers.onIdle?.(); }
           else fail(S.ask.streamInterrupted);
-        } else if (event === "conversation") handlers.onConversation(JSON.parse(value).id);
+        } else if (event === "conversation") {
+          const frame = JSON.parse(value);
+          handlers.onConversation(frame.id, frame.message_id);
+        }
         else if (event === "sources") handlers.onSources(JSON.parse(value));
         else if (event === "step") handlers.onStep(JSON.parse(value));
         else if (event === "delta") handlers.onDelta(JSON.parse(value).text);
