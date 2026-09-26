@@ -19,7 +19,7 @@
 // 于是改成一张表：谁开场谁拿句柄，读谁写谁都有名有姓。`send` 的守卫不用改——
 // 它本来问的就是「这一场在不在流」，现在这个问题终于只关于这一场。
 import type { ChatStep, Source } from "./api";
-import { citeNumbers, citeRe } from "./citations";
+import { citedNumbers } from "./citations";
 
 export interface Turn {
   role: "user" | "assistant";
@@ -33,14 +33,11 @@ export interface Turn {
  *
  *  `sources` 是这一轮**检索到**的全部，不是回答**用到**的：打个招呼也可能顺手搜了
  *  一次，六条摘录挂在「你好」下面，读起来像是这句问候有六个出处。所以只列正文里
- *  出现过 `[n]` 的那几条，编号照原样不重排，与正文里的标记对得上。
- *  `[1][2]`、`[1, 2]`、`[1，2]` 都认 */
+ *  画成了角标的那几条，编号照原样不重排，与正文里的标记对得上。
+ *  `[1][2]`、`[1, 2]`、`[1，2]` 都认；代码与链接里的方括号不算，正文里也不画 */
 export function citedSources(turn: Turn): Source[] {
   if (!turn.sources?.length) return [];
-  const cited = new Set<number>();
-  for (const m of turn.content.matchAll(citeRe())) {
-    for (const n of citeNumbers(m[1])) cited.add(n);
-  }
+  const cited = citedNumbers(turn.content);
   return turn.sources.filter((s) => cited.has(s.n));
 }
 
