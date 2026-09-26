@@ -90,10 +90,12 @@ test(
     t.after(() => server.close());
     await server.listen();
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-    async function open(path, custom) {
+    async function open(path, custom, init) {
       const context = await browser.newContext();
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
+      // Runs in the page before the app, e.g. to replace browser APIs
+      if (init) await page.addInitScript(init);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/api/**", async (route) => {
@@ -804,6 +806,53 @@ test(
         assert.deepEqual(f.errors, []);
       } finally {
         await f.close();
+      }
+    });
+    await t.test("an answer and each of its code blocks can be copied, with or without the Clipboard API", async () => {
+      const sql = "SELECT month, sum(amount) AS revenue FROM orders GROUP BY month";
+      const answer = `Revenue by month:\n\n\`\`\`sql\n${sql}\n\`\`\`\n\nIt grew every month.`;
+      // A page served over https or localhost has navigator.clipboard
+      const withApi = () => {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: { writeText: async (text) => { window.__copied = text; } },
+        });
+      };
+      // A base opened over plain http on a local network does not; record what
+      // execCommand("copy") would copy: the selected text of a text area
+      const withoutApi = () => {
+        Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+        document.execCommand = (command) => {
+          const area = [...document.querySelectorAll("textarea")].find(
+            (a) => a.selectionEnd > a.selectionStart,
+          );
+          if (command !== "copy" || !area) return false;
+          window.__copied = area.value.slice(area.selectionStart, area.selectionEnd);
+          return true;
+        };
+      };
+      for (const init of [withApi, withoutApi]) {
+        const f = await open(
+          "/kb/one/chat/a",
+          async (route, p) => {
+            if (p.endsWith("/conversations/a")) {
+              await route.fulfill({ json: { messages: [message(answer)] } });
+              return true;
+            }
+          },
+          init,
+        );
+        try {
+          await f.page.getByText("It grew every month.", { exact: true }).waitFor();
+          await f.page.getByRole("button", { name: "Copy code", exact: true }).click();
+          await f.page.getByRole("button", { name: "Copied", exact: true }).waitFor();
+          assert.equal(await f.page.evaluate(() => window.__copied), sql, init.name);
+          await f.page.getByRole("button", { name: "Copy answer", exact: true }).click();
+          assert.equal(await f.page.evaluate(() => window.__copied), answer, init.name);
+          assert.deepEqual(f.errors, [], init.name);
+        } finally {
+          await f.close();
+        }
       }
     });
   },

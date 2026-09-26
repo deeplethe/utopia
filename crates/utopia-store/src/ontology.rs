@@ -2486,3 +2486,44 @@ mod name_shape_tests {
         }
     }
 }
+
+/// 两个数里的第二个（0061 决定 5）：代理的提案里，人表过态的有几条，其中拒掉的、改过再采纳的各几条
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct AgentProposalReport {
+    pub open: i64,
+    pub adopted: i64,
+    pub adopted_edited: i64,
+    pub rejected: i64,
+}
+
+pub async fn agent_proposal_report(pool: &PgPool, kb_id: Uuid) -> AppResult<AgentProposalReport> {
+    Ok(sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE status = 'open') AS open,
+                count(*) FILTER (WHERE status = 'adopted') AS adopted,
+                count(*) FILTER (WHERE status = 'adopted' AND edited) AS adopted_edited,
+                count(*) FILTER (WHERE status = 'rejected') AS rejected
+           FROM ontology_proposals WHERE kb_id = $1 AND proposed_by = 'agent'",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// 采纳时人改过：记下来，占比才算得出
+pub async fn mark_proposal_edited(
+    pool: &PgPool,
+    kb_id: Uuid,
+    section: &str,
+    key: &str,
+) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE ontology_proposals SET edited = true
+          WHERE kb_id = $1 AND section = $2 AND key = $3",
+    )
+    .bind(kb_id)
+    .bind(section)
+    .bind(key)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

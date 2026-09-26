@@ -1614,6 +1614,17 @@ a:hover > .u-mark-arrow {
   background: transparent;
   padding: 0;
 }
+/* 代码块外面的一层，复制按钮贴它的右上角（#936）。上下外边距从 pre 挪到这一层：
+   它才是正文的直接子元素，`> :first-child` / `> :last-child` 的收边要管得到它。
+   右内边距给按钮让位，短行不会被它盖住 */
+.u-chat-prose .u-codeblock {
+  position: relative;
+  margin: 0.5em 0;
+}
+.u-chat-prose .u-codeblock pre {
+  margin: 0;
+  padding-right: 2.75em;
+}
 .u-chat-prose table {
   border-collapse: collapse;
   margin: 0.5em 0;

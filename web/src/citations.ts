@@ -3,9 +3,16 @@
 // 模型写的是 `[1]`、`[1][2]`、`[1, 2]`、`[1，2]`。**哪些被画成角标，和哪些被列进
 // 落款，必须是同一套判定**——否则正文里点得动的那个号在下面找不到对应的行。
 // 所以这里只有一处形状，`liveAnswer.citedSources` 与 `rehypeCitations` 共用它。
+// **判定也只有一处**：落款从前对整段原文跑正则，代码块里的 `[1, 2]`、链接
+// `[1](…)` 都算进去了，而角标只画在正文文字上；`citedNumbers` 用渲染同一个解析器，
+// 跳过同样的元素。
 //
 // 每次现造一个正则：`g` 的 `lastIndex` 跟着上一次调用走，共用一个实例会让
 // 第二段文本从中间开始匹配。
+
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
 
 /** `[1]` / `[1][2]` / `[1, 2]` / `[1，2]`——括号里只有数字与分隔符才算引用 */
 export const citeRe = () => /\[(\d+(?:\s*[,，]\s*\d+)*)\]/g;
@@ -37,6 +44,47 @@ export function splitCitations(text: string): CitePiece[] {
   if (!out.length) return [{ text }];
   if (last < text.length) out.push({ text: text.slice(last) });
   return out;
+}
+
+/* ── 落款：正文里画成了角标的那些号 ──────────────────────────────────────── */
+
+/** mdast 里我们读的那几个字段（同下面 hast 的理由：结构类型，不多一个依赖） */
+type MdNode = { type: string; value?: string; children?: MdNode[] };
+
+/** `OPAQUE`（a / code / pre）在 mdast 里的名字，外加原样 HTML：
+ *  react-markdown 把它当 raw 节点交给 rehype，`rehypeCitations` 不在里面画角标 */
+const MD_OPAQUE = new Set(["link", "linkReference", "inlineCode", "code", "html"]);
+
+/** 与渲染同一套 remark 解析（remark-gfm 管表格与自动链接） */
+const markdown = unified().use(remarkParse).use(remarkGfm);
+
+/** 按正文记忆：一轮对话里每来一个词元都要重算一遍，收了尾的回答文本不再变 */
+const citedMemo = new Map<string, ReadonlySet<number>>();
+const CITED_MEMO_LIMIT = 200;
+
+/** 正文里会被画成角标的那些号。 */
+export function citedNumbers(text: string): ReadonlySet<number> {
+  const hit = citedMemo.get(text);
+  if (hit) return hit;
+  const cited = new Set<number>();
+  collectCited(markdown.parse(text) as MdNode, cited);
+  if (citedMemo.size >= CITED_MEMO_LIMIT) {
+    const oldest = citedMemo.keys().next().value;
+    if (oldest !== undefined) citedMemo.delete(oldest);
+  }
+  citedMemo.set(text, cited);
+  return cited;
+}
+
+function collectCited(node: MdNode, into: Set<number>): void {
+  if (node.type === "text" && typeof node.value === "string") {
+    for (const piece of splitCitations(node.value)) {
+      if ("cite" in piece) for (const n of piece.cite) into.add(n);
+    }
+    return;
+  }
+  if (MD_OPAQUE.has(node.type)) return;
+  for (const child of node.children ?? []) collectCited(child, into);
 }
 
 /* ── rehype 插件 ────────────────────────────────────────────────────────── */

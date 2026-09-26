@@ -1,0 +1,13 @@
+[
+  { "question": "Which districts border Chicualacuala District?", "expected_answer": "Massangena District and Chigubo District (also Mabalane District)", "needs": { "classes": ["location"], "properties": ["bordered_by"] } },
+  { "question": "Who are the children of Pedro II?", "expected_answer": "Afonso and Isabel", "needs": { "classes": ["person"], "properties": ["p40"] } },
+  { "question": "Who is the father of Abdullah I bin Sabah Al-Sabah?", "expected_answer": "Sabah bin Jaber", "needs": { "classes": ["person"], "properties": ["p40"] } },
+  { "question": "Who directed The Umbrellas of Cherbourg?", "expected_answer": "Jacques Demy", "needs": { "properties": ["p57"] } },
+  { "question": "Who wrote Natural Selection?", "expected_answer": "Bill Dare", "needs": { "properties": ["p50"] } },
+  { "question": "Where is the Foundling Museum located?", "expected_answer": "Brunswick Square", "needs": { "properties": ["p131"] } },
+  { "question": "When was Anna Karenina published?", "expected_answer": "1878", "needs": { "properties": ["p577"] } },
+  { "question": "Which award did Andrew Alexander Cole receive?", "expected_answer": "PFA Young Player of the Year", "needs": { "properties": ["p166"] } },
+  { "question": "Where did Allen Francis Moore die?", "expected_answer": "Monticello Cemetery", "needs": { "properties": ["p20"] } },
+  { "question": "What position did Allen Francis Moore hold?", "expected_answer": "a seat in the Sixty-ninth Congress", "needs": { "properties": ["p39"] } },
+  { "question": "Which organizations does each place house?", "expected_answer": null, "needs": { "classes": ["location", "organization"], "properties": ["houses"] } }
+]

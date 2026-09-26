@@ -1900,12 +1900,44 @@ function QuestionsPanel({
   onError: (e: unknown) => void;
 }) {
   const qc = useQueryClient();
+  // 叫了代理之后等它提问题：隔几秒看一眼，多出 proposed 的就停
+  const [awaiting, setAwaiting] = useState<{ since: number; had: number } | null>(null);
   const questions = useQuery({
     queryKey: ["questions", kbId],
     queryFn: () => api.listQuestions(kbId),
+    refetchInterval: awaiting ? 4000 : false,
   });
+  const report = useQuery({
+    queryKey: ["questionReport", kbId],
+    queryFn: () => api.questionReport(kbId),
+  });
+  useEffect(() => {
+    if (!awaiting || !questions.data) return;
+    const now = questions.data.filter((q) => q.status === "proposed").length;
+    if (now > awaiting.had || Date.now() - awaiting.since > 120_000) setAwaiting(null);
+  }, [awaiting, questions.data]);
   const [draft, setDraft] = useState("");
-  const refresh = () => qc.invalidateQueries({ queryKey: ["questions", kbId] });
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["questions", kbId] });
+    qc.invalidateQueries({ queryKey: ["questionReport", kbId] });
+  };
+  const askForQuestions = useMutation({
+    mutationFn: () => api.proposeQuestions(kbId),
+    onSuccess: () => {
+      toast.info(S.ontology.questionsQueued);
+      setAwaiting({
+        since: Date.now(),
+        had: (questions.data ?? []).filter((q) => q.status === "proposed").length,
+      });
+    },
+    onError,
+  });
+  const decide = useMutation({
+    mutationFn: ({ q, status }: { q: CompetencyQuestion; status: "accepted" | "rejected" }) =>
+      api.updateQuestion(kbId, q.id, { status }),
+    onSuccess: refresh,
+    onError,
+  });
   const add = useMutation({
     mutationFn: (question: string) => api.createQuestion(kbId, { question }),
     onSuccess: () => {
@@ -1936,7 +1968,35 @@ function QuestionsPanel({
   };
   return (
     <div className="mt-6 border-t border-line pt-3">
-      <h4 className="text-small font-semibold text-ink-2">{S.ontology.questions}</h4>
+      <div className="flex items-center gap-2">
+        <h4 className="text-small font-semibold text-ink-2">{S.ontology.questions}</h4>
+        {report.data && report.data.questions.checked > 0 && (
+          <Chip tone="info" title={S.ontology.questionsScoreHint}>
+            {S.ontology.questionsScore(
+              report.data.questions.answered,
+              report.data.questions.checked,
+            )}
+          </Chip>
+        )}
+        {report.data && report.data.proposals.decided > 0 && (
+          <Chip tone="neutral" title={S.ontology.proposalsChangedHint}>
+            {S.ontology.proposalsChanged(
+              report.data.proposals.changed,
+              report.data.proposals.decided,
+            )}
+          </Chip>
+        )}
+        <Button
+          size="sm"
+          variant="secondary"
+          className="ml-auto"
+          title={S.ontology.askQuestionsHint}
+          onClick={() => askForQuestions.mutate()}
+          disabled={askForQuestions.isPending || awaiting !== null}
+        >
+          {awaiting ? S.ontology.agentWaiting : S.ontology.askQuestions}
+        </Button>
+      </div>
       <p className="mb-2 text-small text-ink-2">{S.ontology.questionsHint}</p>
       <div className="mb-2 flex items-center gap-2">
         <Input
@@ -1975,6 +2035,37 @@ function QuestionsPanel({
               </span>
               {q.origin === "agent" && (
                 <Chip tone="success">{S.ontology.agentChip}</Chip>
+              )}
+              {q.last_result != null &&
+                typeof q.last_result === "object" &&
+                "answered" in q.last_result && (
+                  <Chip
+                    tone={(q.last_result as { answered?: boolean }).answered ? "success" : "warn"}
+                  >
+                    {(q.last_result as { answered?: boolean }).answered
+                      ? S.ontology.questionAnswered
+                      : S.ontology.questionUnanswered}
+                  </Chip>
+                )}
+              {q.status === "proposed" && (
+                <>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => decide.mutate({ q, status: "accepted" })}
+                    disabled={decide.isPending}
+                  >
+                    {S.ontology.acceptQuestion}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => decide.mutate({ q, status: "rejected" })}
+                    disabled={decide.isPending}
+                  >
+                    {S.ontology.rejectProposal}
+                  </Button>
+                </>
               )}
               {q.status === "accepted" && (
                 <Button

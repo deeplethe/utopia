@@ -33,6 +33,16 @@ function refusalMessage(body: Refusal, fallback: string): string {
   return message;
 }
 
+/** 对话流里的 `error` 帧：与请求被拒是同一个信封 `{error, code}`，用同一个函数读。
+ *  读不成 JSON 的是旧格式的一句英文，原样显示 */
+function streamFailure(data: string): string {
+  try {
+    const body: unknown = JSON.parse(data);
+    if (body && typeof body === "object") return refusalMessage(body as Refusal, data);
+  } catch { /* 旧格式：纯文本 */ }
+  return data;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     credentials: "include",
@@ -1238,6 +1248,20 @@ export interface CompetencyQuestion {
   last_result: unknown | null;
 }
 
+/** 本体的两个数（0061 决定 5） */
+export interface QuestionReport {
+  questions: { accepted: number; proposed: number; checked: number; answered: number };
+  proposals: {
+    open: number;
+    adopted: number;
+    adopted_edited: number;
+    rejected: number;
+    decided: number;
+    changed: number;
+    changed_share: number | null;
+  };
+}
+
 export interface OntologyMiss {
   kind: "entity_type" | "relation_type";
   key: string;
@@ -2261,6 +2285,15 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/questions/${qid}`, {
       method: "DELETE",
     }),
+  /** 让代理给库提问题（0061 决定 1）：排任务，结果是 proposed 的问题 */
+  proposeQuestions: (kbId: string) =>
+    request<{ queued: boolean }>(`/api/v1/kbs/${kbId}/questions/propose`, {
+      method: "POST",
+      body: "{}",
+    }),
+  /** 两个数（0061 决定 5） */
+  questionReport: (kbId: string) =>
+    request<QuestionReport>(`/api/v1/kbs/${kbId}/questions/report`),
   dismissMiss: (kbId: string, kind: string, key: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/dismiss`, {
       method: "POST",
@@ -2823,7 +2856,7 @@ function consumeChatStream(
       const parser = createParser({ onEvent: ({ event, data: value }) => {
         if (terminal || controller.signal.aborted) return;
         if (event === "done") { terminal = true; handlers.onDone(); }
-        else if (event === "error") fail(value);
+        else if (event === "error") fail(streamFailure(value));
         else if (event === "idle") {
           if (allowIdle) { terminal = true; handlers.onIdle?.(); }
           else fail(S.ask.streamInterrupted);

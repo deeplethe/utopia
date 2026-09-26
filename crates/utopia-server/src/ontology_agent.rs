@@ -23,6 +23,13 @@ use crate::extraction::chat_retrying_rate_limits_at;
 use crate::llm_util;
 use crate::state::AppState;
 
+/// 给没问题的库一次提这么多问题
+pub(crate) const QUESTIONS_PER_ROUND: usize = 10;
+/// 提问题时看多少条说得最多的形状 / 类别词 / 实体
+const TOP_SIGNATURES: usize = 40;
+const TOP_KIND_WORDS: usize = 20;
+const TOP_ENTITIES: usize = 20;
+
 /// 一次调用交给模型的形状数（0044 决定 3 的成本教训：词表每批只带一次）
 pub(crate) const SIGNATURES_PER_CALL: usize = 12;
 /// 每批跟着的类别词至多这么多
@@ -239,6 +246,12 @@ async fn propose_locked(
     }
     open_words.truncate(calls * KIND_WORDS_PER_CALL);
 
+    // 一条问题都没有的库（决定 1）：先让代理提问题，人接受了下一轮才算数；这一轮照旧按说法提
+    if competency_questions::list(pool, kb_id).await?.is_empty() {
+        if let Err(e) = propose_questions_with(state, kb_id, settings, client).await {
+            tracing::warn!(%kb_id, error = %e, "本体代理：提问题失败，这一轮不带问题");
+        }
+    }
     let questions = competency_questions::accepted(pool, kb_id).await?;
     let q_items: Vec<agent::QuestionItem<'_>> = questions
         .iter()
@@ -715,6 +728,13 @@ pub async fn adopt(
     let Some(p) = utopia_store::ontology::open_proposal(pool, kb_id, section, key).await? else {
         return Err(AppError::NotFound);
     };
+    // 人改过几格：决定 5 的第二个数要它
+    let edited = edits.label.is_some()
+        || edits.description.is_some()
+        || edits.datatype.is_some()
+        || edits.domains.is_some()
+        || edits.ranges.is_some()
+        || edits.parents.is_some();
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
     let by_key: HashMap<&str, Uuid> = classes.iter().map(|c| (c.key.as_str(), c.id)).collect();
     let resolve = |keys: Vec<String>| -> Result<Vec<Uuid>, AppError> {
@@ -845,6 +865,9 @@ pub async fn adopt(
         }
     }
     utopia_store::ontology::decide_proposal(pool, kb_id, section, key, "adopted", actor).await?;
+    if edited {
+        utopia_store::ontology::mark_proposal_edited(pool, kb_id, section, key).await?;
+    }
     let _ = utopia_store::audit::record(
         pool,
         Some(kb_id),
@@ -931,6 +954,174 @@ async fn adopt_map_to(
     }
     state.emit_review(kb_id);
     Ok(property)
+}
+
+/// 任务入口：给库提问题（决定 1 的"没有问题的库不被卡住"）。界面上点、或本体代理发现库里
+/// 一条问题都没有时走这里
+pub async fn propose_questions(state: &AppState, kb_id: Uuid) -> anyhow::Result<usize> {
+    let pool = &state.pool;
+    let kb = utopia_store::kbs::get(pool, kb_id).await?;
+    let settings = utopia_store::settings::get(pool, kb.workspace_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot propose questions"))?;
+    let client = llm_util::chat_client_thinking(&settings)
+        .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot propose questions"))?;
+    propose_questions_with(state, kb_id, &settings, &client).await
+}
+
+#[derive(sqlx::FromRow)]
+struct EntityDegree {
+    name: String,
+    class: Option<String>,
+    degree: i64,
+}
+
+async fn propose_questions_with(
+    state: &AppState,
+    kb_id: Uuid,
+    settings: &utopia_core::models::LlmSettings,
+    client: &utopia_llm::LlmClient,
+) -> anyhow::Result<usize> {
+    use utopia_extract::question_agent as qa;
+    let pool = &state.pool;
+    let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
+    let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
+    let class_key: HashMap<Uuid, &str> = classes.iter().map(|c| (c.id, c.key.as_str())).collect();
+    let prop_key: HashMap<Uuid, &str> = props.iter().map(|p| (p.id, p.key.as_str())).collect();
+    let keys_of = |ids: &[Uuid]| -> Vec<&str> {
+        ids.iter()
+            .filter_map(|id| class_key.get(id).copied())
+            .collect()
+    };
+    let glossary = agent::Glossary {
+        classes: classes
+            .iter()
+            .map(|c| (c.key.as_str(), c.label.as_str(), c.description.as_str()))
+            .collect(),
+        properties: props
+            .iter()
+            .map(|p| {
+                (
+                    p.key.as_str(),
+                    p.label.as_str(),
+                    p.kind.as_str(),
+                    keys_of(&p.domains),
+                    keys_of(&p.ranges),
+                    p.description.as_str(),
+                )
+            })
+            .collect(),
+    };
+    // 说得最多的形状，带上对齐绑到的属性
+    let mut sigs = phrase_bindings::signatures(pool, kb_id).await?;
+    sigs.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.phrase.cmp(&b.phrase)));
+    sigs.truncate(TOP_SIGNATURES);
+    let bindings: HashMap<_, _> = phrase_bindings::bindings(pool, kb_id)
+        .await?
+        .into_iter()
+        .map(|b| (b.key(), b))
+        .collect();
+    let top_sigs: Vec<qa::TopSignature<'_>> = sigs
+        .iter()
+        .map(|s| qa::TopSignature {
+            phrase: &s.phrase,
+            subject_class: s.subject_type_key.as_deref(),
+            object_class: s.object_type_key.as_deref(),
+            object_is_value: s.object_is_value,
+            statement_count: s.count,
+            property: bindings
+                .get(&s.key())
+                .filter(|b| b.status == "bound")
+                .and_then(|b| b.relation_type_id)
+                .and_then(|id| prop_key.get(&id).copied()),
+            example: s.quotes.first().map(String::as_str),
+        })
+        .collect();
+    let mut words = type_bindings::signatures(pool, kb_id).await?;
+    words.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.kind_word.cmp(&b.kind_word))
+    });
+    words.truncate(TOP_KIND_WORDS);
+    let top_words: Vec<qa::TopKindWord<'_>> = words
+        .iter()
+        .map(|w| qa::TopKindWord {
+            kind_word: &w.kind_word,
+            count: w.count,
+        })
+        .collect();
+    let degrees: Vec<EntityDegree> = sqlx::query_as(
+        "SELECT e.canonical_name AS name, t.key AS class, count(f.id) AS degree
+           FROM entities e
+           LEFT JOIN entity_types t ON t.id = e.type_id
+           JOIN facts f ON f.kb_id = e.kb_id AND (f.subject_id = e.id OR f.object_id = e.id)
+                        AND f.invalidated_at IS NULL
+          WHERE e.kb_id = $1
+          GROUP BY e.id, e.canonical_name, t.key
+          ORDER BY count(f.id) DESC, e.canonical_name
+          LIMIT $2",
+    )
+    .bind(kb_id)
+    .bind(TOP_ENTITIES as i64)
+    .fetch_all(pool)
+    .await?;
+    let top_entities: Vec<qa::TopEntity<'_>> = degrees
+        .iter()
+        .map(|d| qa::TopEntity {
+            name: &d.name,
+            class: d.class.as_deref(),
+            degree: d.degree,
+        })
+        .collect();
+    let have = competency_questions::list(pool, kb_id).await?;
+    let existing: Vec<&str> = have
+        .iter()
+        .filter(|q| q.status != "rejected")
+        .map(|q| q.question.as_str())
+        .collect();
+    if top_sigs.is_empty() && top_words.is_empty() && top_entities.is_empty() {
+        tracing::info!(%kb_id, "提问题：库里还没有东西可问");
+        return Ok(0);
+    }
+    let messages = qa::build_question_messages(
+        &top_sigs,
+        &top_words,
+        &top_entities,
+        &glossary,
+        &existing,
+        QUESTIONS_PER_ROUND,
+    );
+    let reply = chat_retrying_rate_limits_at(state, settings, client, &messages, Some(0.0)).await?;
+    let class_keys: HashSet<&str> = classes.iter().map(|c| c.key.as_str()).collect();
+    let prop_keys: HashSet<&str> = props.iter().map(|p| p.key.as_str()).collect();
+    let (proposed, malformed) = qa::parse_question_response(&reply.text, &class_keys, &prop_keys)?;
+    let mut written = 0usize;
+    for q in proposed.iter().take(QUESTIONS_PER_ROUND) {
+        if competency_questions::exists_text(pool, kb_id, &q.question).await? {
+            continue;
+        }
+        let needs = json!({ "classes": q.classes, "properties": q.properties });
+        competency_questions::create(
+            pool,
+            kb_id,
+            competency_questions::NewQuestion {
+                question: &q.question,
+                expected_answer: None,
+                needs: Some(&needs),
+                origin: "agent",
+                status: "proposed",
+                created_by: None,
+            },
+        )
+        .await?;
+        written += 1;
+    }
+    tracing::info!(%kb_id, proposed = proposed.len(), written, malformed, "提问题结束");
+    if written > 0 {
+        state.emit_pending(kb_id);
+    }
+    Ok(written)
 }
 
 #[cfg(test)]

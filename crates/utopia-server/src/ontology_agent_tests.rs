@@ -155,6 +155,23 @@ impl Fx {
         Ok(())
     }
 
+    /// 库里有一条人写的问题：本体代理就不先去提问题（那是没问题的库才走的一步）
+    async fn seed_question(&self) -> anyhow::Result<Uuid> {
+        Ok(competency_questions::create(
+            &self.pool,
+            self.kb,
+            competency_questions::NewQuestion {
+                question: "Where was each organization founded?",
+                expected_answer: None,
+                needs: None,
+                origin: "person",
+                status: "accepted",
+                created_by: None,
+            },
+        )
+        .await?)
+    }
+
     async fn requests(&self) -> usize {
         self.model.requests.lock().unwrap().len()
     }
@@ -211,19 +228,7 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
         return Ok(());
     };
     f.decide_none().await?;
-    let qid = competency_questions::create(
-        &f.pool,
-        f.kb,
-        competency_questions::NewQuestion {
-            question: "Where was each organization founded?",
-            expected_answer: None,
-            needs: None,
-            origin: "person",
-            status: "accepted",
-            created_by: None,
-        },
-    )
-    .await?;
+    let qid = f.seed_question().await?;
 
     propose(&f.state, f.kb).await?;
 
@@ -375,6 +380,7 @@ async fn a_proposal_for_an_existing_key_or_binding_nothing_is_dropped() -> anyho
         return Ok(());
     };
     f.decide_none().await?;
+    f.seed_question().await?;
     propose(&f.state, f.kb).await?;
     let open = utopia_store::ontology::open_proposals(&f.pool, f.kb).await?;
     assert_eq!(open.len(), 1, "only the attribute survives: {open:?}");
@@ -399,6 +405,7 @@ async fn a_declined_shape_returns_when_its_statements_double_and_an_existing_ans
         return Ok(());
     };
     f.decide_none().await?;
+    f.seed_question().await?;
 
     propose(&f.state, f.kb).await?;
     assert_eq!(f.requests().await, 1);
@@ -519,5 +526,93 @@ async fn a_declined_shape_returns_when_its_statements_double_and_an_existing_ans
     // 再来一轮：两条都绑上了——不问
     propose(&f.state, f.kb).await?;
     assert_eq!(f.requests().await, 2);
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn a_base_with_no_questions_gets_them_proposed_and_the_report_counts_them(
+) -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![
+        // 本体代理发现库里一条问题都没有：先提问题（这一轮的第一次调用）
+        json!({ "q": [
+            { "question": "Where is each organization located?", "classes": ["organization", "place"], "properties": ["located_in", "made_up"] },
+            { "question": "Why?", "classes": [], "properties": [] }
+        ] }),
+        // 然后照旧按说法提本体
+        json!({ "p": [], "existing": [] }),
+        // 界面上再叫一次提问题：同一句不重复，新的进来
+        json!({ "q": [
+            { "question": "where is each ORGANIZATION located?", "classes": [], "properties": [] },
+            { "question": "Which organizations were founded in each place?", "classes": ["organization"], "properties": [] }
+        ] }),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    f.decide_none().await?;
+
+    propose(&f.state, f.kb).await?;
+    assert_eq!(
+        f.requests().await,
+        2,
+        "questions first, then the ontology round"
+    );
+    let text = user_text(&f.model.requests.lock().unwrap()[0]);
+    assert!(text.contains("Most frequent statement shapes"), "{text}");
+    assert!(
+        text.contains("\"founded in\""),
+        "the shapes are offered: {text}"
+    );
+    assert!(
+        text.contains("Acme (organization)"),
+        "the connected entities are offered: {text}"
+    );
+    let qs = competency_questions::list(&f.pool, f.kb).await?;
+    assert_eq!(qs.len(), 1, "the short one is dropped: {qs:?}");
+    assert_eq!(qs[0].origin, "agent");
+    assert_eq!(qs[0].status, "proposed");
+    assert_eq!(
+        qs[0].needs,
+        Some(json!({ "classes": ["organization", "place"], "properties": ["located_in"] })),
+        "keys the ontology lacks are dropped from needs"
+    );
+    // 提出来的还没接受：本体那一轮没有问题可用
+    let text = user_text(&f.model.requests.lock().unwrap()[1]);
+    assert!(text.contains("(none written yet"), "{text}");
+
+    let written = propose_questions(&f.state, f.kb).await?;
+    assert_eq!(written, 1, "the duplicate is skipped, the new one written");
+    assert_eq!(f.requests().await, 3);
+    let text = user_text(&f.model.requests.lock().unwrap()[2]);
+    assert!(text.contains("do not repeat them"), "{text}");
+    assert!(
+        text.contains("Where is each organization located?"),
+        "{text}"
+    );
+
+    // 接受一条、问过一条：报告数得出来
+    let qs = competency_questions::list(&f.pool, f.kb).await?;
+    competency_questions::set_status(&f.pool, f.kb, qs[0].id, "accepted").await?;
+    competency_questions::set_status(&f.pool, f.kb, qs[1].id, "accepted").await?;
+    assert!(
+        competency_questions::record_result(
+            &f.pool,
+            f.kb,
+            qs[0].id,
+            &json!({ "answered": true, "judged_by": "shape" })
+        )
+        .await?
+    );
+    let r = competency_questions::report(&f.pool, f.kb).await?;
+    assert_eq!(
+        (r.accepted, r.proposed, r.checked, r.answered),
+        (2, 0, 1, 1)
+    );
+    let p = utopia_store::ontology::agent_proposal_report(&f.pool, f.kb).await?;
+    assert_eq!(
+        (p.open, p.adopted, p.adopted_edited, p.rejected),
+        (0, 0, 0, 0)
+    );
     f.cleanup().await
 }
