@@ -1,5 +1,15 @@
 # 发布容器镜像到 ghcr.io。没有这个，README 承诺的"一条命令"实际是
 # "在自己机器上编译 Rust release + LTO 二十分钟，还得先拉得到 rust/node 基础镜像"。
+#
+# 镜像是多平台的：linux/amd64 + linux/arm64。rc7 及之前只有 amd64，Apple Silicon
+# 和 Graviton 上 `docker pull` 直接报 "no matching manifest for linux/arm64/v8"，
+# 强制 --platform 之后又是在 QEMU 里跑。
+#
+# 两个平台各自在**自己架构的 runner 上原生**构建（矩阵），而不是在一台 amd64 机器上
+# 用 QEMU 交叉构建：Rust release + LTO 在 QEMU 下要一小时以上，原生二十分钟。
+# 各平台冒烟通过后按 digest 推送（不打标签），最后一个 job 把两个 digest 合成一个
+# manifest list 并打上全部标签——标签只在两个平台都验证过之后才会移动。
+# 做法照 docker/build-push-action 的 "Distribute build across multiple runners"。
 name: Release
 
 on:
@@ -17,10 +27,27 @@ permissions:
   packages: write
 
 jobs:
-  image:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      # 一个平台冒烟失败就没有可发布的东西，另一个不必接着跑
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          # 公开仓库可免费用 GitHub 托管的 arm64 runner
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+
+      # ghcr 要求镜像名全小写；github.repository 在 fork 里可能带大写
+      # （metadata-action 自己会转小写，但按 digest 推送时名字是我们直接给的）
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -30,32 +57,25 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # 这里只要 labels；标签在 merge job 里打到 manifest list 上
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            # **预发布不动 latest。** `{{major}}.{{minor}}` 那两条
-            # metadata-action 自己会跳过预发布，而这条 raw 不会——推一个
-            # `v0.1.0-rc1` 就把 latest 拖了过去，而那正好是 rc 要避免的事。
-            # 判据是 tag 里有没有连字符：semver 用它标预发布
-            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
-            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+          images: ${{ steps.image.outputs.name }}
 
       # 先只 load 到本地跑一遍。"镜像构建成功"证明不了"容器能起来"——
       # glibc 跨发行版不匹配就是构建全绿、启动即死。
-      # amd64 only：arm64 得走 QEMU，Rust release + LTO 会拖到一小时以上。
+      # 缓存按平台分 scope：两个架构的层互不相干，混在一个 scope 里只会互相挤掉。
       - name: Build for smoke test
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
+          platforms: ${{ matrix.platform }}
           load: true
           tags: utopia:smoke
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
 
       - name: Smoke test — boot it, migrate, register a user
         run: |
@@ -101,16 +121,90 @@ jobs:
             echo "::error::register returned $code"; cat /tmp/reg.json; docker logs app; exit 1
           fi
           grep -q '"token"' /tmp/reg.json || { echo "::error::no token issued"; cat /tmp/reg.json; exit 1; }
-          echo "smoke test passed: healthy, migrated, user registered, token issued"
+          echo "smoke test passed on ${{ matrix.platform }}: healthy, migrated, user registered, token issued"
 
-      # 冒烟通过才发布。缓存已热，这步基本是瞬间完成。
-      - name: Push
+      # 冒烟通过才推送，而且只按 digest 推、不打标签：这一层在仓库里没有名字，
+      # 用户拉不到。标签由 merge job 在两个平台都通过之后一起打。
+      # 缓存已热，这步基本是瞬间完成。
+      - name: Push by digest
+        id: push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          outputs: type=image,name=${{ steps.image.outputs.name }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
+
+      # 把 digest 以文件名的形式交给 merge job（一个空文件，名字就是 sha256 后面那串）
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.push.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # 两个平台的 digest 合成一个 manifest list，打上全部标签
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # **预发布不动 latest。** `{{major}}.{{minor}}` 那两条
+            # metadata-action 自己会跳过预发布，而这条 raw 不会——推一个
+            # `v0.1.0-rc1` 就把 latest 拖了过去，而那正好是 rc 要避免的事。
+            # 判据是 tag 里有没有连字符：semver 用它标预发布
+            type=raw,value=latest,enable=${{ github.ref_type == 'tag' && !contains(github.ref_name, '-') }}
+            type=raw,value=${{ inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
+
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2046  # 两处 $(...) 都要按空格拆成多个参数
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ steps.image.outputs.name }}@sha256:%s ' *)
+
+      # 核对推上去的 manifest list 确实同时含 amd64 与 arm64。attestation 那些
+      # unknown/unknown 的条目要过滤掉，所以只看 os=linux 的
+      - name: Inspect
+        run: |
+          set -euo pipefail
+          ref="${{ steps.image.outputs.name }}:${{ steps.meta.outputs.version }}"
+          docker buildx imagetools inspect "$ref"
+          docker buildx imagetools inspect --raw "$ref" \
+            | jq -e '[.manifests[].platform | select(.os == "linux") | .architecture]
+                     | contains(["amd64", "arm64"])' >/dev/null \
+            || { echo "::error::$ref does not carry both linux/amd64 and linux/arm64"; exit 1; }
