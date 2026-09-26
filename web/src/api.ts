@@ -33,6 +33,16 @@ function refusalMessage(body: Refusal, fallback: string): string {
   return message;
 }
 
+/** 对话流里的 `error` 帧：与请求被拒是同一个信封 `{error, code}`，用同一个函数读。
+ *  读不成 JSON 的是旧格式的一句英文，原样显示 */
+function streamFailure(data: string): string {
+  try {
+    const body: unknown = JSON.parse(data);
+    if (body && typeof body === "object") return refusalMessage(body as Refusal, data);
+  } catch { /* 旧格式：纯文本 */ }
+  return data;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     credentials: "include",
@@ -2823,7 +2833,7 @@ function consumeChatStream(
       const parser = createParser({ onEvent: ({ event, data: value }) => {
         if (terminal || controller.signal.aborted) return;
         if (event === "done") { terminal = true; handlers.onDone(); }
-        else if (event === "error") fail(value);
+        else if (event === "error") fail(streamFailure(value));
         else if (event === "idle") {
           if (allowIdle) { terminal = true; handlers.onIdle?.(); }
           else fail(S.ask.streamInterrupted);
