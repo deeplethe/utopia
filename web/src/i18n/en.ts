@@ -824,6 +824,11 @@ export const en = {
     noSources: "No sources cited",
     // 预览浮窗右上角那条出路：看完这一段还想看整篇的人走这里
     openOriginal: "Open original",
+    // 复制（#936）：回答整段一个，代码块各一个
+    copyAnswer: "Copy answer",
+    copyCode: "Copy code",
+    copied: "Copied",
+    copyFailed: "Could not copy. Select the text and copy it by hand.",
   },
   graph: {
     // 还没判出类型的实体（0009）。不是一个类，是"这一格还空着"
