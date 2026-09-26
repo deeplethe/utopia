@@ -23,7 +23,8 @@ const TOOL_CHUNK_CHARS: usize = 800;
 const DOCUMENT_CHARS: usize = 24_000;
 /// 一次 changes 最多回多少条。刚灌完的库里 asserted 是成百上千条，全发出去
 /// 只会把上下文填满而不增加信息——有信息量的是 corrected/rejected，那类事件
-/// 本来就稀少。截断时 detail 写 "40+"，模型据此知道该收窄窗口
+/// 本来就稀少。截断时正文末尾写明，模型据此收窄窗口：界面上那一步的 "40+"
+/// 只给人看，模型读不到
 const CHANGES_LIMIT: i64 = 40;
 
 /// 一次工具调用看得见的世界。**只读**——工具改不了它。
@@ -620,7 +621,17 @@ pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult 
     let text = if rows.is_empty() {
         format!("No recorded changes in {window}.")
     } else {
-        rows.iter().map(change_line).collect::<Vec<_>>().join("\n")
+        let mut lines: Vec<String> = rows.iter().map(change_line).collect();
+        // 取的是**最近**的四十条，更早的被截掉。不说的话模型会把这四十条当成窗口的
+        // 全部，而要找的那次更正可能正好在更早的地方
+        if rows.len() as i64 == CHANGES_LIMIT {
+            lines.push(format!(
+                "(Only the {CHANGES_LIMIT} most recent changes in this window are listed; it may \
+                 hold more. Narrow since/until, or pass kinds such as [\"corrected\", \
+                 \"rejected\"], to see the rest.)"
+            ));
+        }
+        lines.join("\n")
     };
     let detail = if rows.len() as i64 == CHANGES_LIMIT {
         format!("{CHANGES_LIMIT}+ changes")

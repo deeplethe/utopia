@@ -73,6 +73,7 @@ mod a_rule_computes_what_it_concludes;
 mod a_rule_concludes_a_type;
 mod a_rule_reads_what_a_rule_concluded;
 mod a_schema_document_is_searched_not_extracted;
+mod a_search_puts_the_exact_name_first;
 mod a_search_reads_the_base_as_it_was;
 mod a_secret_is_sealed_at_rest;
 mod a_signature_holds_on_every_path;
