@@ -368,6 +368,8 @@ mod fallback_tests;
 mod persistence_tests;
 #[path = "chat_registry_tests.rs"]
 mod registry_tests;
+#[path = "chat_resolved_tests.rs"]
+mod resolved_tests;
 #[path = "chat_sources_tests.rs"]
 mod sources_tests;
 
