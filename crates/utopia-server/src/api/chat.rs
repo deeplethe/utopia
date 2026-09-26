@@ -758,6 +758,9 @@ pub async fn chat(
         // 当前模型回合里说的话与发出的调用；回合的结果一到，攒成一条 assistant 消息
         let mut turn_text = String::new();
         let mut turn_calls: Vec<serde_json::Value> = Vec::new();
+        // 这一回合的正文发出去了多少；后面的扣着，因为那可能是写成正文的工具调用（#937）
+        let mut turn_published = 0usize;
+        let mut turn_holding = false;
         let mut finished = false;
         let mut published_sources = 0;
         let mut answer_requested = false;
@@ -765,8 +768,10 @@ pub async fn chat(
         while let Some(item) = run.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
-                    // Tool-round narration stays live. Withhold only the final call:
-                    // validation after streaming cannot retract protocol garbage.
+                    // Tool-round narration stays live, line by line; a line that is or
+                    // may become a tool call written as text is held (#937). Withhold the
+                    // final call whole: validation after streaming cannot retract
+                    // protocol garbage.
                     if shared.finalizing() {
                         if turn_text.len().saturating_add(t.text.len()) > agent::MAX_FINAL_ANSWER_BYTES {
                             yield ProducerEvent::Outcome(Err("Model final answer exceeded the size limit".into()));
@@ -774,9 +779,14 @@ pub async fn chat(
                         }
                         turn_text.push_str(&t.text);
                     } else {
-                        answer_acc.push_str(&t.text);
                         turn_text.push_str(&t.text);
-                        yield ProducerEvent::Progress(delta_event(&t.text));
+                        let upto = agent::publishable(&turn_text, turn_published, &mut turn_holding);
+                        if upto > turn_published {
+                            let fresh = turn_text[turn_published..upto].to_string();
+                            turn_published = upto;
+                            answer_acc.push_str(&fresh);
+                            yield ProducerEvent::Progress(delta_event(&fresh));
+                        }
                     }
                 }
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::ToolCall {
@@ -796,6 +806,17 @@ pub async fn chat(
                     internal_call_id,
                 })) => {
                     if !turn_calls.is_empty() {
+                        // 这一回合真的调了工具。扣着的是标记就丢掉，也不回放给模型；
+                        // 不是（例如围栏里的示例）就补发，赶在这一步之前，`at` 才对得上
+                        if turn_published < turn_text.len() {
+                            if agent::tool_call_text(&turn_text, &query) {
+                                turn_text.truncate(turn_published);
+                            } else {
+                                let rest = turn_text[turn_published..].to_string();
+                                answer_acc.push_str(&rest);
+                                yield ProducerEvent::Progress(delta_event(&rest));
+                            }
+                        }
                         // 工具轮带了叙述文本：与后续轮次的正文之间补一个段落分隔
                         if !turn_text.is_empty() {
                             answer_acc.push_str("\n\n");
@@ -811,6 +832,8 @@ pub async fn chat(
                             "tool_calls": std::mem::take(&mut turn_calls),
                         }));
                         turn_text.clear();
+                        turn_published = 0;
+                        turn_holding = false;
                     }
                     let text = rig_model::tool_result_text(&tool_result.content);
                     // 闸门工具不留轨迹：「你好」下面挂一条「声明不用查」是噪音
@@ -855,15 +878,17 @@ pub async fn chat(
                     if let Some(failed) = is_error { recorded["is_error"] = json!(failed); }
                     exchange_acc.push(recorded);
                 }
-                // 钩子把一个只说不查的回合退了回去：那段话已经流给用户，收不回来；
-                // 接下来的正文另起一段
+                // 钩子把这一回合退了回去。已经流给用户的话收不回来，接下来的正文
+                // 另起一段；还扣着的（写成正文的工具调用）随这一回合丢掉
                 Ok(MultiTurnStreamItem::ModelTurnRetried { .. }) => {
-                    if !turn_text.is_empty() {
+                    if turn_published > 0 {
                         answer_acc.push_str("\n\n");
                         yield ProducerEvent::Progress(delta_event("\n\n"));
                     }
                     turn_text.clear();
                     turn_calls.clear();
+                    turn_published = 0;
+                    turn_holding = false;
                 }
                 Ok(MultiTurnStreamItem::FinalResponse(_)) => finished = true,
                 Ok(_) => {}
@@ -927,9 +952,22 @@ pub async fn chat(
                 return;
             }
             answer_acc.push_str(&turn_text);
-        } else if turn_text.trim().is_empty() {
-            yield ProducerEvent::Outcome(Err("Model returned an empty answer".into()));
-            return;
+        } else {
+            // 纯文字的最后一回合还扣着东西。是写成正文的工具调用，钩子已经退回过
+            // 一次，这是第二次：报错，不存（#937）。不是（例如围栏里的示例），补发
+            if turn_published < turn_text.len() {
+                if agent::tool_call_text(&turn_text, &query) {
+                    yield ProducerEvent::Outcome(Err(agent::CONTROL_TEXT.into()));
+                    return;
+                }
+                let rest = turn_text[turn_published..].to_string();
+                answer_acc.push_str(&rest);
+                yield ProducerEvent::Progress(delta_event(&rest));
+            }
+            if turn_text.trim().is_empty() {
+                yield ProducerEvent::Outcome(Err("Model returned an empty answer".into()));
+                return;
+            }
         }
         let (sources, resolved) = {
             let sink = shared.sink.lock().await;

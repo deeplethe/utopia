@@ -101,9 +101,10 @@ fn assert_one_earned_terminal(what: &str, ends: Ends, sse: &str) {
 /// 一个工具调用，让这一轮走完整的取证路径再收尾。
 const TOOL: Reply = Reply::Tool("find_entities", r#"{"name":"Acme"}"#);
 
-// #845 guards the exhausted gathering boundary, not every ordinary early answer.
-// Reach that boundary before injecting a final candidate; do not widen the policy
-// just to make a one-tool fixture exercise a six-turn handoff.
+// The #845 rows test the exhausted gathering boundary, so they reach it before
+// injecting a final candidate; a one-tool fixture would exercise an ordinary turn
+// instead. Since #937 an ordinary turn is checked for tool-control text as well,
+// in a row of its own.
 fn at_budget(candidate: Reply) -> Vec<Reply> {
     let mut replies = vec![TOOL; 6];
     replies.push(candidate);
@@ -148,6 +149,17 @@ fn table() -> Vec<Case> {
             replies: at_budget(Reply::Text(
                 "我去核对一下证据。\n<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>",
             )),
+            ends: Ends::Error,
+            fallback: false,
+        },
+        // #937：普通回合把工具调用写成正文，退回一次之后又写了一次
+        Case {
+            what: "普通回合连续两次把工具调用写成正文",
+            replies: vec![
+                TOOL,
+                Reply::Text("<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>"),
+                Reply::Text("<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>"),
+            ],
             ends: Ends::Error,
             fallback: false,
         },

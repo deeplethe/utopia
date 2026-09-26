@@ -2,7 +2,8 @@
 
 - **Status**: Implemented (#548) · the loop is rig's runner (`rig-core` / `rig-agent` 0.42, no
   default features) · policy is one `AgentHook` in `api/agent.rs` · the wire stays `LlmClient`
-  behind `api/rig_model.rs`
+  behind `api/rig_model.rs` · revised 2026-09-26 (#937: tool-control text is checked in every
+  turn, not only the boundary answer)
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: #546 (the issue and its findings), #509 / #543 (the stall and the guard this
   replaces), #547 (the mark on answers that cite nothing), #631 (the empty-reply retry, moved
@@ -35,7 +36,7 @@ a branch in a loop body:
 | `on_completion_call` | `tool_choice: required` until a tool has run; at the budget boundary, stop before provider I/O and hand evidence to the answer call |
 | `on_tool_call` | `check_call` refuses a malformed call, and the model gets the same message as before |
 | `on_tool_result` | the tool's UI step goes to the stream |
-| `on_model_turn_finished` | an empty turn is asked again once (#631); a text-only first turn from an endpoint that ignored `required` is sent back once |
+| `on_model_turn_finished` | an empty turn is asked again once (#631); a text-only first turn from an endpoint that ignored `required` is sent back once; a turn that writes its tool call as text is sent back once (#937) |
 
 rig was chosen over swiftide-agents because it is maintained and does not bring its own context
 model. Neither has a provider we want: see decision 2.
@@ -124,6 +125,21 @@ model or database I/O. The assistant INSERT must succeed before the buffered ans
 `done` are published. A save error emits an error, without another model call or a successful
 terminal event. Already-streamed early narration cannot be retracted. Disconnect/reattach
 continues through the existing background producer and persisted body/source mapping.
+
+> **Revised 2026-09-26 (#937): tool-control text is checked in every turn.** The two paragraphs
+> above kept the check to the boundary answer. An ordinary turn could still write its call as
+> text, with no structured call: DeepSeek's native `<｜tool▁call▁begin｜>` markup (2 of the 35
+> questions in the bench's chat run failed this way) or DSML. Nothing ran, yet the markup
+> streamed to the reader, was stored as the answer and ended in `done`; in a first turn the
+> required-tool nudge got a real call, but the markup stayed at the head of the stored answer.
+> The check now runs on every turn and also knows DeepSeek's two opening markers. While a tool
+> round streams, a line that is or may still become a marker is held back, and after a marker
+> the rest of the turn is held with it; other narration streams as before. A text-only turn
+> that is tool-control text is sent back once (`MARKUP_RETRY`, keeping the turn so the model
+> sees what it wrote); a second one is an error and nothing is stored. Held text beside a
+> structured call is dropped if it is markup and released otherwise, and a fenced example is
+> released when its turn ends. It is still a publication guard, not a parser, and Qwen-style
+> `<tool_call>` tags are not recognised.
 
 This boundary is not a factuality oracle. The evaluation separately records required fact
 slots, citation syntax/mapping, additional unsupported statements and false insufficiency.

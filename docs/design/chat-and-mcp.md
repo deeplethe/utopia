@@ -10,9 +10,11 @@ Records: [0042] (the loop), [0014] (MCP tools and scope), [0015] (`remember` and
 policy is one `AgentHook` in `api/agent.rs`: `tool_choice: required` until a tool has run, then the
 budget withdraws the tools and orders an answer; a malformed call is refused with the same message
 as before; a tool's UI step goes to the stream; an empty turn is asked again once; a text-only first
-turn from an endpoint that ignored `required` is sent back once [0042]. A turn cannot end before a
-tool has run; `no_evidence_needed` is the exit for a greeting or "make it shorter"; `STALL_NUDGE`
-and `DONE` are gone [0042 d3]. The wire stays `LlmClient` behind `RigModel`: the read timeout,
+turn from an endpoint that ignored `required` is sent back once; a turn that writes its tool call as
+text is held back from the stream and sent back once, and a second one is an error [0042]. A turn
+cannot end before a tool has run; `no_evidence_needed` is the exit for a greeting or "make it
+shorter"; `STALL_NUDGE` and `DONE` are gone [0042 d3]. The wire stays `LlmClient` behind
+`RigModel`: the read timeout,
 error bodies, the classification of a failure as out of credit, rate limited, unavailable or nothing
 of the kind, and cache logging; earlier
 entities become a `system` message right before the question; degradation to one-shot RAG happens
