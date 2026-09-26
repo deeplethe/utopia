@@ -370,6 +370,8 @@ async fn a_reply_that_stays_empty_is_an_error_after_one_retry() -> anyhow::Resul
     f.cleanup().await
 }
 
+#[path = "chat_error_code_tests.rs"]
+mod error_code_tests;
 #[path = "chat_fallback_tests.rs"]
 mod fallback_tests;
 #[path = "chat_history_tests.rs"]
@@ -384,6 +386,8 @@ mod persistence_tests;
 mod registry_tests;
 #[path = "chat_resolved_tests.rs"]
 mod resolved_tests;
+#[path = "chat_restated_tests.rs"]
+mod restated_tests;
 #[path = "chat_sources_tests.rs"]
 mod sources_tests;
 

@@ -3,7 +3,10 @@ import { reattachChat, streamChat, type ChatHandlers } from "./api";
 vi.mock("./i18n", () => ({
   S: {
     ask: { streamInterrupted: "Stream interrupted" },
-    err: { no_chat_model: "Worded: configure a chat model" },
+    err: {
+      no_chat_model: "Worded: configure a chat model",
+      model_out_of_credit: "Worded: the model account cannot pay",
+    },
     errDetail: (message: string, detail: string) => `${message} (${detail})`,
   },
   lang: "en",
@@ -58,6 +61,23 @@ describe("a refused chat request", () => {
   it("keeps the server's detail beside the wording", async () => {
     expect(await refuse(422, { error: "x", code: "no_chat_model", detail: "no endpoint" }))
       .toEqual([["error", "Worded: configure a chat model (no endpoint)"]]);
+  });
+});
+
+describe("a chat stream that fails", () => {
+  const failed = (body: unknown) => `event: error\ndata: ${JSON.stringify(body)}\n\n`;
+  it("is worded from its stable code, as a refused request is", async () => {
+    const text = failed({ error: "LLM account cannot pay for this request (402): x", code: "model_out_of_credit" });
+    expect(await replay(text)).toEqual([["error", "Worded: the model account cannot pay"]]);
+    expect(await replay(text, true)).toEqual([["error", "Worded: the model account cannot pay"]]);
+  });
+  it("keeps the server's sentence for a code the table does not have", async () => {
+    expect(await replay(failed({ error: "Some new failure", code: "unlisted_code" })))
+      .toEqual([["error", "Some new failure"]]);
+  });
+  it("shows a plain-text error frame as it came", async () => {
+    expect(await replay("event: error\ndata: Model returned an empty answer\n\n"))
+      .toEqual([["error", "Model returned an empty answer"]]);
   });
 });
 

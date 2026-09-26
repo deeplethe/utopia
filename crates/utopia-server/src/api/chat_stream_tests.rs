@@ -75,6 +75,7 @@ async fn producer_disappearing_without_an_outcome_ends_in_one_error() {
     assert_eq!(text.matches("event: error").count(), 1, "{text}");
     assert!(!text.contains("event: done"), "{text}");
     assert!(text.contains("Answer stream ended unexpectedly"), "{text}");
+    assert!(text.contains(r#""code":"stream_ended""#), "{text}");
 }
 
 #[tokio::test]
@@ -83,7 +84,9 @@ async fn first_terminal_freezes_the_snapshot_and_broadcast() {
     let id = Uuid::now_v7();
     let handle = registry.begin(id).await;
     handle.emit(delta_event("kept")).await;
-    handle.emit(error_event("original error")).await;
+    handle
+        .emit(error_event("answer_failed", "original error"))
+        .await;
     handle.emit(delta_event("discarded")).await;
     handle.emit(done_event()).await;
     let (snapshot, _) = registry.attach(id).await.unwrap();
