@@ -2795,3 +2795,158 @@ async fn rdf_export_preserves_unbound_literal_objects() -> anyhow::Result<()> {
     let cleanup = f.clean().await;
     result.and(cleanup)
 }
+
+/// A list cut at its limit says so in the text the model reads. `changes` lists the newest
+/// 40 events, `find_entities` reads the first 8 names, `paths_between` keeps 10 paths; a
+/// model shown a full list takes it for all there is. `structuredContent` keeps its own
+/// `limit_reached`. Each full case is paired with one that fits and must stay quiet.
+#[tokio::test]
+async fn a_list_cut_at_its_limit_says_so() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn entity(f: &Fixture, ty: Uuid, name: &str) -> anyhow::Result<Uuid> {
+        let id = Uuid::now_v7();
+        sqlx::query("INSERT INTO entities(id,kb_id,type_id,canonical_name) VALUES ($1,$2,$3,$4)")
+            .bind(id)
+            .bind(f.kb)
+            .bind(ty)
+            .bind(name)
+            .execute(&f.state.pool)
+            .await?;
+        Ok(id)
+    }
+    async fn link(
+        f: &Fixture,
+        rel: Uuid,
+        from: Uuid,
+        to: Uuid,
+        recorded: &str,
+    ) -> anyhow::Result<()> {
+        let recorded: chrono::DateTime<chrono::Utc> = recorded.parse()?;
+        sqlx::query(
+            "INSERT INTO facts(id,kb_id,subject_id,predicate_id,object_id,recorded_at)
+             VALUES ($1,$2,$3,$4,$5,$6)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(f.kb)
+        .bind(from)
+        .bind(rel)
+        .bind(to)
+        .bind(recorded)
+        .execute(&f.state.pool)
+        .await?;
+        Ok(())
+    }
+    fn text(result: &Value) -> &str {
+        result["content"][0]["text"].as_str().unwrap_or_default()
+    }
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let (ty, rel) = (Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query("INSERT INTO entity_types(id,kb_id,key,label) VALUES ($1,$2,'probe','Probe')")
+            .bind(ty)
+            .bind(f.kb)
+            .execute(&f.state.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO relation_types(id,kb_id,key,label,kind)
+             VALUES ($1,$2,'links','links','relation')",
+        )
+        .bind(rel)
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+
+        // changes: 41 events in January, 3 in March
+        let (a, b) = (
+            entity(f, ty, "Ledger A").await?,
+            entity(f, ty, "Ledger B").await?,
+        );
+        for i in 0..41 {
+            link(
+                f,
+                rel,
+                a,
+                b,
+                &format!("2025-01-{:02}T08:00:00Z", 1 + i % 28),
+            )
+            .await?;
+        }
+        for day in 1..=3 {
+            link(f, rel, a, b, &format!("2025-03-{day:02}T08:00:00Z")).await?;
+        }
+        let full = f
+            .call("changes", json!({"since":"2025-01","until":"2025-01"}))
+            .await?;
+        anyhow::ensure!(
+            text(&full).contains("Only the 40 most recent changes in this window are listed"),
+            "a full window must say it was cut: {full}"
+        );
+        anyhow::ensure!(full["structuredContent"]["limit_reached"] == true, "{full}");
+        anyhow::ensure!(
+            full["structuredContent"]["changes"]
+                .as_array()
+                .map(Vec::len)
+                == Some(40),
+            "{full}"
+        );
+        let few = f
+            .call("changes", json!({"since":"2025-03","until":"2025-03"}))
+            .await?;
+        anyhow::ensure!(!text(&few).contains("most recent changes"), "{few}");
+        anyhow::ensure!(few["structuredContent"]["limit_reached"] == false, "{few}");
+
+        // find_entities: ten widgets, three gadgets
+        for i in 1..=10 {
+            entity(f, ty, &format!("Widget {i}")).await?;
+        }
+        for i in 1..=3 {
+            entity(f, ty, &format!("Gadget {i}")).await?;
+        }
+        let widgets = f.call("find_entities", json!({"name":"Widget"})).await?;
+        anyhow::ensure!(
+            text(&widgets).contains(
+                "10 entities have a name containing \"Widget\"; only the first 8 were read"
+            ),
+            "a search that read only the first names must say so: {widgets}"
+        );
+        let gadgets = f.call("find_entities", json!({"name":"Gadget"})).await?;
+        anyhow::ensure!(!text(&gadgets).contains("were read"), "{gadgets}");
+
+        // paths_between: eleven two-hop paths, then two
+        let (start, end) = (
+            entity(f, ty, "Path Start").await?,
+            entity(f, ty, "Path End").await?,
+        );
+        for i in 1..=11 {
+            let via = entity(f, ty, &format!("Via {i}")).await?;
+            link(f, rel, start, via, "2025-06-01T08:00:00Z").await?;
+            link(f, rel, via, end, "2025-06-01T08:00:00Z").await?;
+        }
+        let (near, far) = (
+            entity(f, ty, "Short Start").await?,
+            entity(f, ty, "Short End").await?,
+        );
+        for i in 1..=2 {
+            let hop = entity(f, ty, &format!("Hop {i}")).await?;
+            link(f, rel, near, hop, "2025-06-01T08:00:00Z").await?;
+            link(f, rel, hop, far, "2025-06-01T08:00:00Z").await?;
+        }
+        let many = f
+            .call("paths_between", json!({"from":start,"to":end}))
+            .await?;
+        anyhow::ensure!(
+            text(&many).contains("Only the first 10 paths, shortest first, are listed"),
+            "a capped path list must say so: {many}"
+        );
+        let two = f
+            .call("paths_between", json!({"from":near,"to":far}))
+            .await?;
+        anyhow::ensure!(text(&two).starts_with("2 paths between"), "{two}");
+        anyhow::ensure!(!text(&two).contains("are listed"), "{two}");
+        Ok(())
+    }
+    let result = check(&f).await;
+    let cleanup = f.clean().await;
+    result.and(cleanup)
+}
