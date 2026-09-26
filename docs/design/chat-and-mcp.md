@@ -25,7 +25,8 @@ only on a 400 or 422 to the first request with tools [0042 d2].
 `at` respected), `changes`, `list_rules`, `rule_matches`, `remember`; MCP results carry
 `structuredContent` with ledger UUIDs and each evidence row's origin [0014, 0021, 0041, 0019,
 0022, 0040]. The previous turn's tool calls are replayed so the model knows what it did, not only
-what it said [0015].
+what it said [0015]; a turn that gathers nothing, such as a restatement, keeps the previous answer's
+sources for the citation numbers it repeats (#943).
 
 **Retrieval.** Hybrid: vector recall on `chunks.embedding` through the per-dimension HNSW index with
 `relaxed_order` iterative scan, plus full text in embedded Tantivy; both take `as_of`; full text is

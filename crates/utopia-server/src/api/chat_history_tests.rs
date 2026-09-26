@@ -28,7 +28,7 @@ fn last_user(request: &serde_json::Value) -> String {
 }
 
 /// Ask in an existing conversation and collect the whole SSE body
-async fn ask_in(f: &Fx, conversation_id: Uuid, message: &str) -> anyhow::Result<String> {
+pub(super) async fn ask_in(f: &Fx, conversation_id: Uuid, message: &str) -> anyhow::Result<String> {
     let sse = chat(
         State(f.state.clone()),
         AuthUser(f.user.clone()),
