@@ -486,3 +486,399 @@ async fn a_kind_word_is_counted_once_bound_once_and_applied_to_its_entities() ->
         .await?;
     run
 }
+
+/// 自己的组织名：上面那个测试开跑时按名字清场，共用名字会互相删掉对方的数据
+const BASIS_ORG: &str = "kind-word-basis-test";
+
+/// 代理的判定只在它读到的输入还成立时才收（#795）；人的判定不带指纹，代理不覆盖；
+/// 人定的判定与它的短语对齐任务同一事务提交
+#[tokio::test]
+async fn an_agent_decision_is_accepted_only_for_the_inputs_it_read() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    sqlx::query("DELETE FROM organizations WHERE name = $1")
+        .bind(BASIS_ORG)
+        .execute(&pool)
+        .await?;
+    let (org, ws, kb, class, acme) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, $2)")
+        .bind(org)
+        .bind(BASIS_ORG)
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces (id, org_id, name) VALUES ($1, $2, $3)")
+        .bind(ws)
+        .bind(org)
+        .bind(BASIS_ORG)
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO knowledge_bases (id, workspace_id, name) VALUES ($1, $2, $3)")
+        .bind(kb)
+        .bind(ws)
+        .bind(BASIS_ORG)
+        .execute(&pool)
+        .await?;
+
+    let run = async {
+        sqlx::query(
+            "INSERT INTO entity_types (id, kb_id, key, label, description)
+             VALUES ($1, $2, 'organization', 'Organization', 'OLD definition')",
+        )
+        .bind(class)
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO entities (id, kb_id, canonical_name, specific_type)
+             VALUES ($1, $2, 'Acme', 'company')",
+        )
+        .bind(acme)
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+        let shown = [class];
+        let before = type_bindings::class_snapshot(&pool, kb)
+            .await?
+            .basis(&shown);
+
+        // 模型答题期间定义改了：这份回复答的是旧定义，不收，什么都不写
+        sqlx::query(
+            "UPDATE entity_types SET description = 'NEW definition', updated_at = clock_timestamp()
+              WHERE id = $1",
+        )
+        .bind(class)
+        .execute(&pool)
+        .await?;
+        let votes = serde_json::json!({ "first": "organization", "second": "organization" });
+        assert_eq!(
+            type_bindings::decide_and_apply_if_current(
+                &pool,
+                kb,
+                "company",
+                &[],
+                Some(class),
+                "bound",
+                &votes,
+                &before,
+                &shown,
+            )
+            .await?,
+            type_bindings::Acceptance::Moved
+        );
+        assert!(type_bindings::bindings(&pool, kb).await?.is_empty());
+        assert_eq!(typed(&pool, acme).await?.type_id, None);
+
+        // 按新输入问出来的：收下，指纹一起存
+        let current = type_bindings::class_snapshot(&pool, kb)
+            .await?
+            .basis(&shown);
+        assert_ne!(before, current);
+        assert_eq!(
+            type_bindings::decide_and_apply_if_current(
+                &pool,
+                kb,
+                "company",
+                &[],
+                Some(class),
+                "bound",
+                &votes,
+                &current,
+                &shown,
+            )
+            .await?,
+            type_bindings::Acceptance::Written
+        );
+        let b = type_bindings::bindings(&pool, kb).await?.remove(0);
+        assert_eq!(b.basis.as_deref(), Some(current.as_str()));
+        assert_eq!(typed(&pool, acme).await?.type_id, Some(class));
+
+        // 人判的：不带指纹；它的短语对齐任务与判定一起提交
+        assert!(type_bindings::decide_and_apply_human(&pool, kb, "company", None, &votes).await?);
+        let b = type_bindings::bindings(&pool, kb).await?.remove(0);
+        assert_eq!((b.decided_by.as_str(), b.basis), ("person", None));
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs
+              WHERE kind = 'align_phrases' AND payload->>'kb_id' = $1 AND status = 'queued'",
+        )
+        .bind(kb.to_string())
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(queued, 1);
+
+        // 代理晚到的回复不覆盖人
+        assert_eq!(
+            type_bindings::decide_and_apply_if_current(
+                &pool,
+                kb,
+                "company",
+                &[],
+                Some(class),
+                "bound",
+                &votes,
+                &current,
+                &shown,
+            )
+            .await?,
+            type_bindings::Acceptance::KeptPerson
+        );
+        assert_eq!(
+            type_bindings::bindings(&pool, kb)
+                .await?
+                .remove(0)
+                .decided_by,
+            "person"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id' = $1")
+        .bind(kb.to_string())
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE name = $1")
+        .bind(BASIS_ORG)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 锁顺序的两个测试用：一个类、一个带类别词的实体、一行绑在这个类上的代理判定。
+/// 判定不投影——`entities.type_id` 删类时是 RESTRICT，实体一指着这个类，删类本身就会失败，
+/// 测的就不是锁了。返回 (库, 类)
+async fn seed_lock_order(pool: &PgPool, name: &str) -> anyhow::Result<(Uuid, Uuid)> {
+    let (org, ws, kb, class) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, $2)")
+        .bind(org)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces (id, org_id, name) VALUES ($1, $2, $3)")
+        .bind(ws)
+        .bind(org)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    sqlx::query("INSERT INTO knowledge_bases (id, workspace_id, name) VALUES ($1, $2, $3)")
+        .bind(kb)
+        .bind(ws)
+        .bind(name)
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, 'organization', 'Organization')",
+    )
+    .bind(class)
+    .bind(kb)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "INSERT INTO entities (id, kb_id, canonical_name, specific_type)
+         VALUES ($1, $2, 'Acme', 'company')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(kb)
+    .execute(pool)
+    .await?;
+    type_bindings::decide(
+        pool,
+        kb,
+        "company",
+        &[],
+        Some(class),
+        "bound",
+        &serde_json::json!({}),
+        "agent",
+    )
+    .await?;
+    Ok((kb, class))
+}
+
+/// 等到有人排在 `pid` 后面等锁。`chain` 时等的是更长的一串：有人排在一个正排在 `pid`
+/// 后面的人后面
+async fn wait_behind(pool: &PgPool, pid: i32, chain: bool) -> anyhow::Result<()> {
+    let sql = if chain {
+        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity p
+                         WHERE EXISTS (SELECT 1 FROM unnest(pg_blocking_pids(p.pid)) b(pid)
+                                        WHERE $1 = ANY(pg_blocking_pids(b.pid))))"
+    } else {
+        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))"
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar(sql).bind(pid).fetch_one(pool).await?;
+            if waiting {
+                return anyhow::Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?
+}
+
+/// 代理收判定时先锁候选类、再写判定行，与删类的顺序一致（删类先拿类的行，再级联到判定行）。
+/// 反过来就是死锁：代理拿着判定行等类，删类拿着类等判定行。这里让代理停在两步之间，
+/// 删类排到它后面，再放行：两边都得走完，谁也不报 40P01
+#[tokio::test]
+async fn an_acceptance_and_a_class_delete_wait_for_each_other_instead_of_deadlocking(
+) -> anyhow::Result<()> {
+    const NAME: &str = "kind-word-lock-order-test";
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    sqlx::query("DELETE FROM organizations WHERE name = $1")
+        .bind(NAME)
+        .execute(&pool)
+        .await?;
+    let (kb, class) = seed_lock_order(&pool, NAME).await?;
+
+    let run = async {
+        let shown = [class];
+        let basis = type_bindings::class_snapshot(&pool, kb)
+            .await?
+            .basis(&shown);
+        // 闸门拿着判定行：代理锁完候选类、算完指纹，停在写判定这一步
+        let mut gate = pool.begin().await?;
+        let gate_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *gate)
+            .await?;
+        sqlx::query("SELECT id FROM type_bindings WHERE kb_id = $1 FOR UPDATE")
+            .bind(kb)
+            .fetch_one(&mut *gate)
+            .await?;
+        let agent = {
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                type_bindings::decide_and_apply_if_current(
+                    &pool,
+                    kb,
+                    "company",
+                    &[],
+                    None,
+                    "undecided",
+                    &serde_json::json!({}),
+                    &basis,
+                    &shown,
+                )
+                .await
+            })
+        };
+        wait_behind(&pool, gate_pid, false).await?;
+        let deleter = {
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                sqlx::query("DELETE FROM entity_types WHERE id = $1")
+                    .bind(class)
+                    .execute(&pool)
+                    .await
+            })
+        };
+        // 删类排在代理后面（代理拿着类的共享锁），代理排在闸门后面
+        wait_behind(&pool, gate_pid, true).await?;
+        gate.rollback().await?;
+        let accepted = tokio::time::timeout(Duration::from_secs(10), agent).await???;
+        tokio::time::timeout(Duration::from_secs(10), deleter).await???;
+        assert_eq!(accepted, type_bindings::Acceptance::Written);
+        let b = type_bindings::bindings(&pool, kb).await?;
+        assert_eq!(
+            b.len(),
+            1,
+            "the undecided row no longer points at the class"
+        );
+        assert_eq!((b[0].status.as_str(), b[0].type_id), ("undecided", None));
+        let classes: i64 = sqlx::query_scalar("SELECT count(*) FROM entity_types WHERE kb_id = $1")
+            .bind(kb)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(
+            classes, 0,
+            "the delete went through after the agent committed"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE name = $1")
+        .bind(NAME)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 候选类在收判定之前被删了：代理等删类提交，读到的类已经不在，指纹对不上，这份回复
+/// 不收；判定行随级联走了，代理也不把它写回来
+#[tokio::test]
+async fn a_candidate_deleted_while_the_reply_waits_moves_it() -> anyhow::Result<()> {
+    const NAME: &str = "kind-word-deleted-candidate-test";
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    sqlx::query("DELETE FROM organizations WHERE name = $1")
+        .bind(NAME)
+        .execute(&pool)
+        .await?;
+    let (kb, class) = seed_lock_order(&pool, NAME).await?;
+
+    let run = async {
+        let shown = [class];
+        let basis = type_bindings::class_snapshot(&pool, kb)
+            .await?
+            .basis(&shown);
+        let mut deleter = pool.begin().await?;
+        let deleter_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *deleter)
+            .await?;
+        sqlx::query("DELETE FROM entity_types WHERE id = $1")
+            .bind(class)
+            .execute(&mut *deleter)
+            .await?;
+        let agent = {
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                type_bindings::decide_and_apply_if_current(
+                    &pool,
+                    kb,
+                    "company",
+                    &[],
+                    None,
+                    "none",
+                    &serde_json::json!({}),
+                    &basis,
+                    &shown,
+                )
+                .await
+            })
+        };
+        wait_behind(&pool, deleter_pid, false).await?;
+        deleter.commit().await?;
+        let accepted = tokio::time::timeout(Duration::from_secs(10), agent).await???;
+        assert_eq!(accepted, type_bindings::Acceptance::Moved);
+        assert!(
+            type_bindings::bindings(&pool, kb).await?.is_empty(),
+            "the cascade took the row and the moved reply did not write it back"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE name = $1")
+        .bind(NAME)
+        .execute(&pool)
+        .await?;
+    run
+}

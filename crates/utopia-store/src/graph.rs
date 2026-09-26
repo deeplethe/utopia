@@ -39,7 +39,11 @@ const ADOPT_MERGED: &str = "merged";
 // 剩下的那个函数于是只是在遍历一张空表。**本体从建库第一天起就只有
 // 用户自己导入的词表**——与 0009 删掉内置实体类是同一件事的下半段。
 
-pub async fn entity_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<EntityType>> {
+/// 库里全部类。执行器取泛型：类别词对齐要在调模型之前的同一个快照事务里读它（#795）。
+pub async fn entity_types<'e>(
+    pool: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    kb_id: Uuid,
+) -> AppResult<Vec<EntityType>> {
     Ok(
         // 又一次 SELECT *：parents 在关联表里，`*` 取不到。
         // 这是同一个陷阱的第三次——SQL 在字符串里，cargo check 全绿，

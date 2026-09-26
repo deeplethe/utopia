@@ -82,7 +82,7 @@ struct ManifestDataDir {
 /// not a side effect of a code change.
 // 是迁移文件的**个数**，不是最大的编号（守卫 `schema_version_policy_compares_against_current`
 // 按个数比）：编号有空缺时两者不同——0071 由一个开放 PR 占着，0072 先落，个数是 71
-const CURRENT_SCHEMA_VERSION: u32 = 78;
+const CURRENT_SCHEMA_VERSION: u32 = 79;
 
 fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
