@@ -117,6 +117,25 @@ pub async fn align_types_reasking(state: &AppState, kb_id: Uuid, reask: u32) -> 
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
     let client = llm_util::chat_client_thinking(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
+    // 本体向量还在补：编辑器建了类先排 `embed_ontology` 再排这个任务，候选类按向量检索
+    // （`candidates_for`），没向量的类检索不到，现在判了它也不在候选里。等它收尾再来——
+    // 排一份半分钟后的，排着的至多一份。短语对齐等这个任务，所以顺序是向量 → 类别词 → 短语
+    if utopia_store::jobs::pending_for_kb(pool, "embed_ontology", kb_id).await? {
+        tracing::info!(%kb_id, "类别词对齐：本体向量还在补，半分钟后再看");
+        let payload = if reask == 0 {
+            serde_json::json!({ "kb_id": kb_id })
+        } else {
+            serde_json::json!({ "kb_id": kb_id, "reask": reask })
+        };
+        utopia_store::jobs::enqueue_unless_queued_after(
+            pool,
+            "align_types",
+            payload,
+            std::time::Duration::from_secs(30),
+        )
+        .await?;
+        return Ok(());
+    }
     // 一个库同时只跑一份：抽完每篇、建每个类都会排一次，排队去重只挡「排队中」的，
     // 后一个开跑时前一个还在跑就并行了——实测种 14 个类跑出 14 份并行任务，把模型端点
     // 打出 502。拿不到锁的直接退出，正在跑的那份会看到同一批词；本轮没判到的下一轮再来

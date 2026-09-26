@@ -68,7 +68,13 @@ bind. When the structure fits more than ten properties (a coarse class hierarchy
 the aligner opens a **shortlist**: the signature's phrase and one example sentence are embedded and
 the ten properties nearest by the ontology's own vectors (`embed_ontology`) are shown, plus any whose
 label shares a word with the phrase; without an embedding model the model sees every structural
-candidate. The shortlist is part of the decision's basis, so a changed list re-asks. The candidate
+candidate. A property without a vector never enters the shortlist, so the fingerprint of the
+shapes it could bind does not change and they are never re-decided: every path that adds or
+relabels an element therefore refreshes the index before alignment. The ontology agent's adoption
+refreshes it in place [0061 cut 1.1]; the editor's create and update handlers queue
+`embed_ontology` ahead of the alignment job, and both aligners wait while that job is queued or
+running, so the order is vectors, then kind words, then phrases. The shortlist is part of the
+decision's basis, so a changed list re-asks. The candidate
 properties are described once per batch and each item names only its keys. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings`. Candidates are the properties whose

@@ -176,6 +176,54 @@ fn vote(class: Option<&str>) -> Value {
     json!({"b":[[0,class]]})
 }
 
+/// 本体向量还在补时类别词对齐不动手：编辑器建了类先排 `embed_ontology` 再排这个任务，
+/// 候选类按向量检索，没向量的类检索不到。它给自己排一份半分钟后的，补齐收尾后照常判
+#[tokio::test]
+async fn kind_word_alignment_waits_while_the_ontology_index_is_refreshing() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![vote(Some("organization")), vote(Some("organization"))]).await?
+    else {
+        return Ok(());
+    };
+    let run = async {
+        sqlx::query("INSERT INTO jobs (kind, payload) VALUES ('embed_ontology', $1)")
+            .bind(json!({ "kb_id": f.kb }))
+            .execute(&f.pool)
+            .await?;
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            0,
+            "nothing is asked while the ontology index is still being refreshed"
+        );
+        let deferred: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT status, run_at > now() FROM jobs
+             WHERE kind='align_types' AND payload->>'kb_id'=$1",
+        )
+        .bind(f.kb.to_string())
+        .fetch_all(&f.pool)
+        .await?;
+        assert_eq!(
+            deferred,
+            vec![("queued".to_string(), true)],
+            "one kind-word round is queued for later"
+        );
+        sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+            .bind(f.kb.to_string())
+            .execute(&f.pool)
+            .await?;
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            2,
+            "the refresh gone, the two votes are asked"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
 #[tokio::test]
 async fn disagreement_retracts_previous_aligned_type() -> anyhow::Result<()> {
     let Some(f) = Fx::new(vec![vote(Some("organization")), vote(None)]).await? else {
