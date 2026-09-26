@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { copyText } from "./clipboard";
+import { copyAndSay, copyText } from "./clipboard";
+import { S } from "./i18n";
+import { toast } from "./toast";
 
-afterEach(() => vi.unstubAllGlobals());
+vi.mock("./toast", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.clearAllMocks();
+});
 
 interface FakeArea {
   value: string;
@@ -96,5 +102,23 @@ describe("copyText", () => {
       expect(await copyText("SELECT 1")).toBe(false);
       expect(areas.every((a) => !a.attached)).toBe(true);
     }
+  });
+});
+
+describe("copyAndSay", () => {
+  it("says what was copied when the copy worked", async () => {
+    vi.stubGlobal("navigator", {});
+    page(true);
+    expect(await copyAndSay("ingest-token", "Token copied")).toBe(true);
+    expect(toast.success).toHaveBeenCalledWith("Token copied");
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("says it could not copy when neither way worked", async () => {
+    vi.stubGlobal("navigator", {});
+    page(false);
+    expect(await copyAndSay("ingest-token", "Token copied")).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith(S.toast.copyFailed);
+    expect(toast.success).not.toHaveBeenCalled();
   });
 });

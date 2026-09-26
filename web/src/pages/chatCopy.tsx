@@ -22,7 +22,7 @@ export function CopyButton({ label, text }: { label: string; text: () => string 
       label={copied ? S.ask.copied : label}
       onClick={async () => {
         if (await copyText(text())) setCopied(true);
-        else toast.error(S.ask.copyFailed);
+        else toast.error(S.toast.copyFailed);
       }}
     >
       {copied ? <Check size={12} /> : <Copy size={12} />}

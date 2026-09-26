@@ -29,16 +29,10 @@ import {
   Tr,
   buttonLike,} from "../ui";
 import { toast } from "../toast";
+import { copyAndSay } from "../clipboard";
 
 const ymd = (iso: string) => iso.slice(0, 10);
 const EXPIRY_CHOICES = [30, 90, 365, 0] as const;
-
-function copyText(text: string) {
-  navigator.clipboard
-    ?.writeText(text)
-    .then(() => toast.success(S.account.copied))
-    .catch(() => {});
-}
 
 /** Claude Code / Claude Desktop 一族的 Streamable HTTP 写法。每个库一个端点（0014：
  *  令牌限定到库，端点也按库分），所以片段里要把库选出来 */
@@ -64,8 +58,10 @@ function CopyButton({ text, small }: { text: string; small?: boolean }) {
   return (
     <Button variant="secondary" size="sm"
       className={buttonLike("ghost", small ? "sm" : "md")}
-      onClick={() => {
-        copyText(text);
+      onClick={async () => {
+        // 复制成了才换成「已复制」。从前先换字再复制，在 http 打开的页面上什么也没
+        // 复制，按钮也照样说已复制
+        if (!(await copyAndSay(text, S.account.copied))) return;
         setDone(true);
         setTimeout(() => setDone(false), 1500);
       }}
