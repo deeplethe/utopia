@@ -40,6 +40,7 @@ import {
 import { S } from "../i18n";
 import { rehypeCitations } from "../citations";
 import { followsBottom } from "../chatScroll";
+import { copyAndSay } from "../clipboard";
 import { chatMarkdown, SourceList, SourcesProvider } from "./chatCitations";
 import { CopyButton } from "./chatCopy";
 import { toast } from "../toast";
@@ -731,7 +732,7 @@ export function Chat() {
                       {S.ask.rename}
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      onSelect={() => navigator.clipboard?.writeText(c.title || "")}
+                      onSelect={() => copyAndSay(c.title || "", S.ask.copied)}
                     >
                       {S.ask.copyTitle}
                     </DropdownMenuItem>

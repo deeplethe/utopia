@@ -140,6 +140,8 @@ export const en = {
     created: "Created",
     deleted: "Deleted",
     added: "Added to the ontology",
+    // 哪一处复制不成都说这一句：页面没有剪贴板 API，浏览器也不让用老办法复制
+    copyFailed: "Could not copy. Select the text and copy it by hand.",
   },
   account: {
     /* 账户区字标：Persona——你在这座城里的身份面具 */
@@ -875,7 +877,6 @@ export const en = {
     copyAnswer: "Copy answer",
     copyCode: "Copy code",
     copied: "Copied",
-    copyFailed: "Could not copy. Select the text and copy it by hand.",
   },
   graph: {
     // 还没判出类型的实体（0009）。不是一个类，是"这一格还空着"

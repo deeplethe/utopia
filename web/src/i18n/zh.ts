@@ -127,6 +127,7 @@ export const zh: Strings = {
     created: "已创建",
     deleted: "已删除",
     added: "已加入本体",
+    copyFailed: "无法复制，请选中文字后手动复制。",
   },
   account: {
     brand: "Utopia Persona",
@@ -791,7 +792,6 @@ export const zh: Strings = {
     copyAnswer: "复制回答",
     copyCode: "复制代码",
     copied: "已复制",
-    copyFailed: "无法复制，请选中文字后手动复制。",
   },
   graph: {
     untyped: "未分类",

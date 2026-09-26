@@ -20,6 +20,7 @@ import {
 } from "../sourceKinds";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
+import { copyAndSay } from "../clipboard";
 import {
   Button,
   Checkbox,
@@ -1151,12 +1152,7 @@ function ErrorModal({
           <Button
             variant="secondary"
             size="sm"
-            onClick={() =>
-              navigator.clipboard
-                .writeText(text)
-                .then(() => toast.success(S.library.errorCopied))
-                .catch(() => {})
-            }
+            onClick={() => copyAndSay(text, S.library.errorCopied)}
           >
             {S.library.copyError}
           </Button>
@@ -1198,8 +1194,6 @@ function TokenModal({
   });
   const token = tokenQuery.data?.ingest_token ?? null;
 
-  const copy = (text: string, msg: string) =>
-    navigator.clipboard.writeText(text).then(() => toast.success(msg)).catch(() => {});
   const endpoint = `${location.origin}/api/v1/sources/${sourceId}/ingest`;
   return (
     <Dialog
@@ -1239,7 +1233,7 @@ function TokenModal({
                 variant="secondary"
                 className="h-auto w-full justify-start whitespace-normal break-all py-3 text-left font-mono"
                 title={S.library.copyEndpoint}
-                onClick={() => copy(token, S.library.tokenCopied)}
+                onClick={() => copyAndSay(token, S.library.tokenCopied)}
               >
                 {token}
               </Button>
@@ -1252,7 +1246,7 @@ function TokenModal({
                   variant="secondary"
                   className="h-auto w-full justify-start whitespace-pre-wrap break-all py-2 text-left font-mono text-ink-2"
                   title={S.library.copyEndpoint}
-                  onClick={() => copy(endpoint, S.library.endpointCopied)}
+                  onClick={() => copyAndSay(endpoint, S.library.endpointCopied)}
                 >
                   POST {endpoint}
                   {"\n"}Authorization: Bearer &lt;token&gt;

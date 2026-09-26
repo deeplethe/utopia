@@ -1,3 +1,6 @@
+import { S } from "./i18n";
+import { toast } from "./toast";
+
 /** 把一段文字放进剪贴板，交回放没放成。
  *
  *  `navigator.clipboard` 只在安全上下文里有：https，或者 localhost。在局域网里用
@@ -34,4 +37,13 @@ export async function copyText(text: string): Promise<boolean> {
     area.remove();
     focused?.focus?.();
   }
+}
+
+/** 复制，再用一条提示说出结果：成了说 `copied`，不成说复制不了。
+ *  各页的复制按钮都走这里；对话里那几个自己换图标，只在失败时提示 */
+export async function copyAndSay(text: string, copied: string): Promise<boolean> {
+  const ok = await copyText(text);
+  if (ok) toast.success(copied);
+  else toast.error(S.toast.copyFailed);
+  return ok;
 }

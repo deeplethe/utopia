@@ -808,29 +808,29 @@ test(
         await f.close();
       }
     });
+    // A page served over https or localhost has navigator.clipboard
+    const withApi = () => {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: async (text) => { window.__copied = text; } },
+      });
+    };
+    // A base opened over plain http on a local network does not; record what
+    // execCommand("copy") would copy: the selected text of a text area
+    const withoutApi = () => {
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+      document.execCommand = (command) => {
+        const area = [...document.querySelectorAll("textarea")].find(
+          (a) => a.selectionEnd > a.selectionStart,
+        );
+        if (command !== "copy" || !area) return false;
+        window.__copied = area.value.slice(area.selectionStart, area.selectionEnd);
+        return true;
+      };
+    };
     await t.test("an answer and each of its code blocks can be copied, with or without the Clipboard API", async () => {
       const sql = "SELECT month, sum(amount) AS revenue FROM orders GROUP BY month";
       const answer = `Revenue by month:\n\n\`\`\`sql\n${sql}\n\`\`\`\n\nIt grew every month.`;
-      // A page served over https or localhost has navigator.clipboard
-      const withApi = () => {
-        Object.defineProperty(navigator, "clipboard", {
-          configurable: true,
-          value: { writeText: async (text) => { window.__copied = text; } },
-        });
-      };
-      // A base opened over plain http on a local network does not; record what
-      // execCommand("copy") would copy: the selected text of a text area
-      const withoutApi = () => {
-        Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
-        document.execCommand = (command) => {
-          const area = [...document.querySelectorAll("textarea")].find(
-            (a) => a.selectionEnd > a.selectionStart,
-          );
-          if (command !== "copy" || !area) return false;
-          window.__copied = area.value.slice(area.selectionStart, area.selectionEnd);
-          return true;
-        };
-      };
       for (const init of [withApi, withoutApi]) {
         const f = await open(
           "/kb/one/chat/a",
@@ -899,6 +899,22 @@ test(
         assert.deepEqual(f.errors, []);
       } finally {
         await f.close();
+      }
+    });
+    await t.test("a conversation's title is copied from its menu, with or without the Clipboard API", async () => {
+      for (const init of [withApi, withoutApi]) {
+        const f = await open("/kb/one/chat/b", undefined, init);
+        try {
+          await f.page.getByText("Answer beta", { exact: true }).waitFor();
+          await f.page.getByRole("button", { name: "More", exact: true }).first().click();
+          await f.page.getByRole("menuitem", { name: "Copy title" }).click();
+          // The copy says so, and the title is what reached the clipboard
+          await f.page.getByText("Copied", { exact: true }).waitFor();
+          assert.equal(await f.page.evaluate(() => window.__copied), "Conversation a", init.name);
+          assert.deepEqual(f.errors, [], init.name);
+        } finally {
+          await f.close();
+        }
       }
     });
   },
