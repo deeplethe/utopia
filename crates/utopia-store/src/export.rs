@@ -19,7 +19,7 @@
 //! kb_id 与行本体**原子地一并选出**，校验在内存里跑。不能「先取一页、再去库里
 //! 问一次」——第二次问的是另一个时刻的状态，留下的行早已不是它。
 //!
-//! 体检范围覆盖 **0070 保护的每一条结构引用边**——不只这份导出真正解析的
+//! 体检范围覆盖 **0070/0091 保护的每一条结构引用边**——不只这份导出真正解析的
 //! 那些。导出还没读的边（规则表自身、陈述属性、时间提及等）也在同一个快照里
 //! 先查：catalog 守卫（migration_0070_runs_under_any_search_path.rs）核对
 //! export_provenance_integrity.sql 的每条扫描分支都对应一条受保护的
@@ -101,7 +101,7 @@ fn foreign(ref_kb: Option<Uuid>, kb_id: Uuid) -> bool {
 /// （`unexported`——合并掉的实体）。只报哪条边坏了、坏了几行——具体哪些行
 /// 坏是库里的事，不进面向导出的报错
 ///
-/// 扫的边 = **0070 保护的全部结构引用边**（export_provenance_integrity.sql，
+/// 扫的边 = **0070/0091 保护的全部结构引用边**（export_provenance_integrity.sql，
 /// 每条分支带一条 `@edge`/`@filter` 标记给 catalog 守卫核对）——连导出尚未
 /// 序列化的边也算：一份账本上任何一条受保护的同库引用断了，这份导出都不可信，
 /// 宁可整份拒。**必须在导出用的那条事务里跑**（REPEATABLE READ）：
@@ -752,4 +752,353 @@ pub async fn documents_page(
     .bind(PAGE)
     .fetch_all(&mut **tx)
     .await?)
+}
+
+/* ---- 认知状态（0062）----
+ *
+ * 两张表两种东西，不合成一类：
+ *   fact_conflicts   同一槽位上两条断言互不相让——数据里有争议，判据没毛病
+ *   axiom_violations 当前数据撞上当前判据——数据或本体至少一边要动
+ *
+ * 只读：不走 `temporal::list_conflicts` 那种带惰性清理的读面（0051 已把它删了），
+ * 也不触发检出。导出的是库里记下的状态。 */
+
+/// 两条事实争同一个槽位。`resolved` 的行也在——它记的是有过的争议，不是
+/// 待办；`withdrawn` 的是事实作废后由触发器退场的（0051），`resolved_at` 记的是
+/// 作废时刻，不是有人开过页面
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ExportFactConflict {
+    pub id: Uuid,
+    pub old_fact_id: Uuid,
+    pub new_fact_id: Uuid,
+    /// 争议怎么被记下的：no_time | simultaneous | low_confidence | described_evidence
+    /// （此列无 CHECK，库里的旧值也可能进来；合同词表以 contest_integrity 为准）
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+    /// open | resolved | withdrawn
+    pub status: String,
+    /// closed | kept_both | rejected_new；只在 resolved 时有
+    pub resolution: Option<String>,
+    /// resolved：裁决时刻；withdrawn：先作废那一边的时刻（0051）
+    pub resolved_at: Option<DateTime<Utc>>,
+    /// 两条事实的 kb，随行原子地一并选出：越库/悬空 → 拒导
+    pub old_fact_kb: Option<Uuid>,
+    pub new_fact_kb: Option<Uuid>,
+}
+
+pub async fn fact_conflicts_page(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    after: Option<Uuid>,
+) -> AppResult<Vec<ExportFactConflict>> {
+    let page: Vec<ExportFactConflict> = sqlx::query_as(
+        "SELECT c.id, c.old_fact_id, c.new_fact_id, c.reason, c.created_at,
+                c.status, c.resolution, c.resolved_at,
+                of_.kb_id AS old_fact_kb, nf.kb_id AS new_fact_kb
+           FROM fact_conflicts c
+           LEFT JOIN facts of_ ON of_.id = c.old_fact_id
+           LEFT JOIN facts nf ON nf.id = c.new_fact_id
+          WHERE c.kb_id = $1 AND ($2 IS NULL OR c.id > $2)
+          ORDER BY c.id LIMIT $3",
+    )
+    .bind(kb_id)
+    .bind(after)
+    .bind(PAGE)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut violations = Vec::new();
+    for c in &page {
+        tally(
+            &mut violations,
+            "conflict.old_fact",
+            foreign(c.old_fact_kb, kb_id) as i64,
+        );
+        tally(
+            &mut violations,
+            "conflict.new_fact",
+            foreign(c.new_fact_kb, kb_id) as i64,
+        );
+    }
+    if !violations.is_empty() {
+        return Err(cross_kb_error(&violations));
+    }
+    Ok(page)
+}
+
+/// 一条「当前数据与当前判据不一致」的发现。`open` 意味着它已对账于**当前**
+/// 本体（0062）——改判据的那笔事务把它收编或重检出过了。
+///
+/// 行是**可变的当前状态**，不是追加历史：resolved 之后又被算出来的同一处
+/// 违规会重开，`detected_at` 记的是最近一次检出/重开的时刻；更早的循环
+/// 不留在行里，导出也就照实不说它。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ExportAxiomViolation {
+    pub id: Uuid,
+    pub kind: String,
+    pub left_fact: Uuid,
+    pub right_fact: Uuid,
+    /// 环按顺序的完整事实链（其余种类存检出的证据，自环/签名为空）
+    pub path: Vec<Uuid>,
+    pub status: String,
+    /// fact_retracted | fact_closed | axiom_relaxed | accepted | criterion_changed
+    pub resolution: Option<String>,
+    /// 最近一次检出或重开的时刻（不是第一次发现）
+    pub detected_at: DateTime<Utc>,
+    /// 不再是 open 的时刻（收编或人裁）
+    pub decided_at: Option<DateTime<Utc>>,
+    /// 以下两列**只在 open 行上解析**（0062）：open = 已按当前本体对账，
+    /// 判据必然指得回去；resolved 的行不连判据——促成它结案的本体可能早已不在
+    pub criterion_predicate: Option<Uuid>,
+    /// 判据的词：kind 本身，或 derived_contradiction 记下的 detail.axiom
+    /// （self_loop | asymmetry | cycle | functional | inverse_functional | signature）
+    pub criterion_axiom: Option<String>,
+    /// 被引行的 kb，随行原子地一并选出
+    pub left_kb: Option<Uuid>,
+    pub right_kb: Option<Uuid>,
+    pub criterion_predicate_kb: Option<Uuid>,
+    /// path 里是否有越库或悬空的事实（环的证据链会按序铸成 IRI）
+    pub foreign_path: bool,
+}
+
+/// detail.predicate_id 存成 JSON 文本，落到 uuid 前先验形——
+/// 畸形的值宁可解析失败（→ 拒导）也不能静默指错关系
+const UUID_TEXT_RE: &str =
+    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+
+/// open 行的判据谓词解析式：derived_contradiction 的判据挂在 detail 记下的
+/// **派生谓词**上（axiom 声明在它那里）；其余种类就是 left_fact 的谓词。
+/// 分页与预检共用同一串——两处各写一份迟早漂移
+fn criterion_predicate_sql() -> String {
+    format!(
+        "CASE WHEN v.kind = 'derived_contradiction'
+              THEN CASE WHEN v.detail->>'predicate_id' ~ '{UUID_TEXT_RE}'
+                        THEN (v.detail->>'predicate_id')::uuid END
+              ELSE lf.predicate_id END"
+    )
+}
+
+/// open 行的判据词解析式：derived_contradiction 看 detail.axiom，其余看 kind
+const CRITERION_AXIOM_SQL: &str =
+    "CASE WHEN v.kind = 'derived_contradiction' THEN v.detail->>'axiom' ELSE v.kind END";
+
+/// kind / detail.axiom 的存储值 → 判据该用的词（0062 §4）。
+/// signature 的判据是一对签名（行不记哪一侧破的，合同也不装知道）。
+/// None = 不认识的存储值——open 行撞上它就要拒导，不能静默丢判据
+fn criterion_terms(axiom: &str) -> Option<&'static [&'static str]> {
+    Some(match axiom {
+        "self_loop" => &["owl:IrreflexiveProperty"],
+        "asymmetry" => &["owl:AsymmetricProperty"],
+        "cycle" => &["owl:TransitiveProperty"],
+        "functional" => &["owl:FunctionalProperty"],
+        "inverse_functional" => &["owl:InverseFunctionalProperty"],
+        "signature" => &["rdfs:domain", "rdfs:range"],
+        _ => return None,
+    })
+}
+
+impl ExportAxiomViolation {
+    /// 判据的 RDF 词项（`utopia:criterion` 的宾语，可能不止一个）。
+    /// open 行必然取得到——取不到说明存储值进了合同不认识的东西，拒导而不是瞎编
+    pub fn criterion_terms(&self) -> Option<&'static [&'static str]> {
+        self.criterion_axiom.as_deref().and_then(criterion_terms)
+    }
+}
+
+pub async fn axiom_violations_page(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    after: Option<Uuid>,
+) -> AppResult<Vec<ExportAxiomViolation>> {
+    let page: Vec<ExportAxiomViolation> = sqlx::query_as(&format!(
+        "SELECT v.id, v.kind, v.left_fact, v.right_fact, v.path, v.status, v.resolution,
+                v.detected_at, v.decided_at,
+                CASE WHEN v.status = 'open' THEN {criterion_predicate}
+                END AS criterion_predicate,
+                CASE WHEN v.status = 'open' THEN {criterion_axiom}
+                END AS criterion_axiom,
+                lf.kb_id AS left_kb, rf.kb_id AS right_kb, cp.kb_id AS criterion_predicate_kb,
+                EXISTS(SELECT 1 FROM unnest(v.path) AS member(fact_id)
+                        WHERE NOT EXISTS(SELECT 1 FROM facts pf
+                                          WHERE pf.id = member.fact_id
+                                            AND pf.kb_id = v.kb_id)) AS foreign_path
+           FROM axiom_violations v
+           LEFT JOIN facts lf ON lf.id = v.left_fact
+           LEFT JOIN facts rf ON rf.id = v.right_fact
+           LEFT JOIN relation_types cp ON cp.id =
+                CASE WHEN v.status = 'open' THEN {criterion_predicate} END
+          WHERE v.kb_id = $1 AND ($2 IS NULL OR v.id > $2)
+          ORDER BY v.id LIMIT $3",
+        criterion_predicate = criterion_predicate_sql(),
+        criterion_axiom = CRITERION_AXIOM_SQL,
+    ))
+    .bind(kb_id)
+    .bind(after)
+    .bind(PAGE)
+    .fetch_all(&mut **tx)
+    .await?;
+    let mut violations = Vec::new();
+    let mut unresolvable = Vec::new();
+    for v in &page {
+        tally(
+            &mut violations,
+            "violation.left_fact",
+            foreign(v.left_kb, kb_id) as i64,
+        );
+        tally(
+            &mut violations,
+            "violation.right_fact",
+            foreign(v.right_kb, kb_id) as i64,
+        );
+        tally(&mut violations, "violation.path", v.foreign_path as i64);
+        if v.status == "open" {
+            // open 的承诺是「已按当前本体对账」：判据指不回去，这份导出就在
+            // 替一个坏掉的不变式背书——拒导与越库同一条纪律
+            if v.criterion_predicate.is_none() || v.criterion_terms().is_none() {
+                unresolvable.push(CrossKbViolation {
+                    edge: "violation.criterion".into(),
+                    rows: 1,
+                });
+            } else {
+                tally(
+                    &mut violations,
+                    "violation.criterion",
+                    foreign(v.criterion_predicate_kb, kb_id) as i64,
+                );
+            }
+        }
+    }
+    if !violations.is_empty() {
+        return Err(cross_kb_error(&violations));
+    }
+    if !unresolvable.is_empty() {
+        let detail = unresolvable
+            .iter()
+            .map(|v| format!("{}: {} row(s)", v.edge, v.rows))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AppError::invalid_detail(
+            "unresolvable_criterion",
+            "export refused: an open axiom violation has no governing criterion to link",
+            detail,
+        ));
+    }
+    Ok(page)
+}
+
+/// 认知状态的**流前预检**（0062）：分页查询里也带同一批检查，但那时文件头
+/// 已经发出去，只能截断——所以先在这里数一遍，有一行就整份拒。
+///
+/// 三类问题：
+/// - **越库/悬空**：conflict 的两条事实、violation 的 left/right/path 成员必须
+///   是本库的 facts 行（悬空=铸出不存在的 IRI，与越库同罪）
+/// - **合同外的值**：status/resolution/kind/reason 落进词表以外、或
+///   status↔resolution 不自洽（open 带着 resolution 之类）的脏行——
+///   `fact_conflicts.reason` 没有 CHECK 挡着，其余列有但 CHECK 只在新写时
+///   生效，存量脏行一样照实拒，不 echo 出去
+/// - **open 行判据不可解析**：open = 已对账于当前本体，判据必然指得回本库
+///   一条关系与一个合同认识的词（derived_contradiction 的 detail.predicate_id
+///   畸形也算——静默退到 left_fact 的谓词等于瞎指）
+pub async fn contest_integrity(tx: &mut Transaction<'_, Postgres>, kb_id: Uuid) -> AppResult<()> {
+    #[derive(sqlx::FromRow)]
+    struct ContestViolation {
+        edge: String,
+        kind: String,
+        rows: i64,
+    }
+    let violations: Vec<ContestViolation> = sqlx::query_as(&format!(
+        "SELECT edge, kind, count(*) AS rows FROM (
+             SELECT 'conflict.old_fact' AS edge, 'cross_kb' AS kind
+               FROM fact_conflicts c LEFT JOIN facts f ON f.id = c.old_fact_id
+              WHERE c.kb_id = $1 AND f.kb_id IS DISTINCT FROM c.kb_id
+             UNION ALL
+             SELECT 'conflict.new_fact', 'cross_kb'
+               FROM fact_conflicts c LEFT JOIN facts f ON f.id = c.new_fact_id
+              WHERE c.kb_id = $1 AND f.kb_id IS DISTINCT FROM c.kb_id
+             UNION ALL
+             SELECT 'conflict.vocabulary', 'contract'
+               FROM fact_conflicts c
+              WHERE c.kb_id = $1 AND (
+                    COALESCE(c.status, '') NOT IN ('open', 'resolved', 'withdrawn')
+                    OR COALESCE(c.reason, '') NOT IN
+                       ('no_time', 'simultaneous', 'low_confidence', 'described_evidence')
+                    OR c.resolution IS NOT NULL
+                       AND c.resolution NOT IN ('closed', 'kept_both', 'rejected_new')
+                    -- 0051：resolved=人裁了（resolution 必有值），其余状态不该有
+                    OR c.status = 'resolved' AND c.resolution IS NULL
+                    OR c.status IN ('open', 'withdrawn') AND c.resolution IS NOT NULL)
+             UNION ALL
+             SELECT 'violation.left_fact', 'cross_kb'
+               FROM axiom_violations v LEFT JOIN facts f ON f.id = v.left_fact
+              WHERE v.kb_id = $1 AND f.kb_id IS DISTINCT FROM v.kb_id
+             UNION ALL
+             SELECT 'violation.right_fact', 'cross_kb'
+               FROM axiom_violations v LEFT JOIN facts f ON f.id = v.right_fact
+              WHERE v.kb_id = $1 AND f.kb_id IS DISTINCT FROM v.kb_id
+             UNION ALL
+             SELECT 'violation.path', 'cross_kb'
+               FROM axiom_violations v
+              WHERE v.kb_id = $1 AND EXISTS(
+                    SELECT 1 FROM unnest(v.path) AS member(fact_id)
+                     WHERE NOT EXISTS(SELECT 1 FROM facts pf
+                                       WHERE pf.id = member.fact_id
+                                         AND pf.kb_id = v.kb_id))
+             UNION ALL
+             SELECT 'violation.vocabulary', 'contract'
+               FROM axiom_violations v
+              WHERE v.kb_id = $1 AND (
+                    COALESCE(v.kind, '') NOT IN
+                       ('self_loop', 'asymmetry', 'cycle', 'functional',
+                        'inverse_functional', 'signature', 'derived_contradiction')
+                    OR COALESCE(v.status, '') NOT IN ('open', 'resolved')
+                    OR v.resolution IS NOT NULL AND v.resolution NOT IN
+                       ('fact_retracted', 'fact_closed', 'axiom_relaxed', 'accepted',
+                        'criterion_changed')
+                    -- 写路从来都是成对落（决定+时间戳）；open 带着 resolution
+                    -- 或 resolved 丢了 resolution 都是自相矛盾的脏行
+                    OR v.status = 'resolved' AND v.resolution IS NULL
+                    OR v.status = 'open' AND v.resolution IS NOT NULL)
+             UNION ALL
+             SELECT 'violation.criterion', 'unresolvable'
+               FROM axiom_violations v
+               LEFT JOIN facts lf ON lf.id = v.left_fact
+              WHERE v.kb_id = $1 AND v.status = 'open' AND (
+                    COALESCE({criterion_axiom}, '') NOT IN
+                       ('self_loop', 'asymmetry', 'cycle', 'functional',
+                        'inverse_functional', 'signature')
+                    OR NOT EXISTS(
+                        SELECT 1 FROM relation_types rt
+                         WHERE rt.kb_id = v.kb_id
+                           AND rt.id = {criterion_predicate}))
+        ) t GROUP BY edge, kind",
+        criterion_axiom = CRITERION_AXIOM_SQL,
+        criterion_predicate = criterion_predicate_sql(),
+    ))
+    .bind(kb_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    let cross_kb: Vec<CrossKbViolation> = violations
+        .iter()
+        .filter(|v| v.kind == "cross_kb")
+        .map(|v| CrossKbViolation {
+            edge: v.edge.clone(),
+            rows: v.rows,
+        })
+        .collect();
+    if !cross_kb.is_empty() {
+        return Err(cross_kb_error(&cross_kb));
+    }
+    let rest: Vec<&ContestViolation> = violations.iter().filter(|v| v.kind != "cross_kb").collect();
+    if !rest.is_empty() {
+        let detail = rest
+            .iter()
+            .map(|v| format!("{}: {} row(s)", v.edge, v.rows))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AppError::invalid_detail(
+            "contested_state_contract",
+            "export refused: contested-state rows fall outside the contract vocabulary or an open violation has no resolvable criterion",
+            detail,
+        ));
+    }
+    Ok(())
 }

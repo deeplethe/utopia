@@ -361,6 +361,36 @@ pub async fn align_phrases_reasking(
     // 对齐是判断题：让模型按端点默认的强度想，不用工作区给抽取设的 minimal
     let client = llm_util::chat_client_thinking(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
+    // 类别词对齐还排着或跑着：两端的类还没定，现在判的签名指纹马上就变，判了也是重判。
+    // 等它收尾再来——排一份半分钟后的，排着的至多一份。别的入口（本体页、审核页、每篇文档
+    // 抽完）排的短语对齐也从这里过，所以这一道守住就够。
+    //
+    // 本体向量还在补也等：编辑器建了属性先排 `embed_ontology` 再排这个任务，没向量的属性
+    // 进不了短名单，形状的指纹不变，现在判了它照样不在候选里（`bordered_by` 第一次真跑
+    // 就是这么漏的）。补齐任务几秒到几分钟，等得起
+    let waiting_on = if utopia_store::jobs::pending_for_kb(pool, "align_types", kb_id).await? {
+        Some("类别词对齐")
+    } else if utopia_store::jobs::pending_for_kb(pool, "embed_ontology", kb_id).await? {
+        Some("本体向量补齐")
+    } else {
+        None
+    };
+    if let Some(what) = waiting_on {
+        tracing::info!(%kb_id, "短语对齐：{what}还没收尾，半分钟后再看");
+        let payload = if reask == 0 {
+            serde_json::json!({ "kb_id": kb_id })
+        } else {
+            serde_json::json!({ "kb_id": kb_id, "reask": reask })
+        };
+        utopia_store::jobs::enqueue_unless_queued_after(
+            pool,
+            "align_phrases",
+            payload,
+            std::time::Duration::from_secs(30),
+        )
+        .await?;
+        return Ok(());
+    }
     // 一个库同时只跑一份，理由同类别词对齐（并行跑会把端点打出 502）
     let mut guard = pool.acquire().await?;
     let locked: bool =
@@ -873,6 +903,24 @@ async fn align_phrases_locked(
     // 漏答的签名就只能等下一篇文档来排——最后一篇之后没有下一篇，它们就永远没有结论；
     // 而漏答不写任何行，审核队列也看不见（同类别词对齐）
     let unfinished = failed > 0 || unanswered > 0;
+    // 对齐收尾：没绑上的形状够多，叫本体代理来看（0061 决定 2）。代理自己跳过提过的，
+    // 所以这里只数不筛；一分钟的去抖让连着几篇文档只叫一次
+    if !changed && !unfinished {
+        let unbound = phrase_bindings::bindings(pool, kb_id)
+            .await?
+            .iter()
+            .filter(|b| matches!(b.status.as_str(), "none" | "undecided"))
+            .count();
+        if unbound >= crate::ontology_agent::TRIGGER_UNBOUND {
+            utopia_store::jobs::enqueue_unless_pending(
+                pool,
+                "propose_ontology",
+                serde_json::json!({ "kb_id": kb_id }),
+                std::time::Duration::from_secs(60),
+            )
+            .await?;
+        }
+    }
     if changed {
         utopia_store::jobs::enqueue_unless_queued(
             pool,

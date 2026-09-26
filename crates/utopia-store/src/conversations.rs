@@ -1,7 +1,6 @@
 //! Chat 会话持久化：对话/消息仓储。轨迹（steps）与引用（sources）随
 //! assistant 消息落库，历史回放与实时流共用同一数据形状。
 
-use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use utopia_core::models::{ConversationMessage, ConversationView};
 use utopia_core::{AppError, AppResult};
@@ -151,18 +150,25 @@ pub struct History {
     /// 另一批同名实体）。搬二十轮的工具输出回来是另一回事，那正是当初
     /// 只存正文的理由。
     pub last_tool_exchange: Vec<serde_json::Value>,
+    /// 同一条助手消息的来源（#943）。不查东西的改写会照抄那条回答的 `[n]`，
+    /// 这一轮拿它们接上，号才点得开
+    pub last_sources: Vec<serde_json::Value>,
+}
+
+/// `recent_context` 读的一行消息
+#[derive(sqlx::FromRow)]
+struct ContextRow {
+    id: Uuid,
+    role: String,
+    content: String,
+    resolved: serde_json::Value,
+    tool_exchange: serde_json::Value,
+    sources: serde_json::Value,
 }
 
 pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> AppResult<History> {
-    let mut rows: Vec<(
-        Uuid,
-        String,
-        String,
-        serde_json::Value,
-        serde_json::Value,
-        DateTime<Utc>,
-    )> = sqlx::query_as(
-        "SELECT id, role, content, resolved, tool_exchange, created_at FROM conversation_messages
+    let mut rows: Vec<ContextRow> = sqlx::query_as(
+        "SELECT id, role, content, resolved, tool_exchange, sources FROM conversation_messages
          WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2",
     )
     .bind(conversation_id)
@@ -174,8 +180,8 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
     // 每轮各列一遍只是把同一件事说三遍
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut entities: Vec<serde_json::Value> = Vec::new();
-    for (_, _, _, res, _, _) in &rows {
-        for e in res.as_array().into_iter().flatten() {
+    for row in &rows {
+        for e in row.resolved.as_array().into_iter().flatten() {
             let Some(id) = e["id"].as_str() else { continue };
             if seen.insert(id.to_string()) {
                 entities.push(e.clone());
@@ -183,17 +189,22 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
         }
     }
     // 最后一条助手消息的那一段。**倒着找**——最后一条通常是刚落库的用户消息
-    let last_tool_exchange = rows
-        .iter()
-        .rev()
-        .find(|(_, role, _, _, _, _)| role == "assistant")
-        .and_then(|(_, _, _, _, ex, _)| ex.as_array().cloned())
+    let last_assistant = rows.iter().rev().find(|row| row.role == "assistant");
+    let last_tool_exchange = last_assistant
+        .and_then(|row| row.tool_exchange.as_array().cloned())
+        .unwrap_or_default();
+    let last_sources = last_assistant
+        .and_then(|row| row.sources.as_array().cloned())
         .unwrap_or_default();
     Ok(History {
-        turn_ids: rows.iter().map(|(id, ..)| *id).collect(),
-        turns: rows.into_iter().map(|(_, r, c, _, _, _)| (r, c)).collect(),
+        turn_ids: rows.iter().map(|row| row.id).collect(),
+        turns: rows
+            .into_iter()
+            .map(|row| (row.role, row.content))
+            .collect(),
         entities,
         last_tool_exchange,
+        last_sources,
     })
 }
 

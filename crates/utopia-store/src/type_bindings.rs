@@ -9,6 +9,12 @@
 //! 类别词在 Rust 与 SQL 两侧用同一种归一：空白折成一个空格、去两端、小写。
 //! [`normalize`] 与 [`KIND_WORD_SQL`] 必须说同一件事，否则 `signatures` 数出来的词
 //! `apply` 找不着。
+//!
+//! 代理的判定记下它看到的输入（`basis`，0053 的类别词那一半，#795）：给模型看的每个
+//! 候选类的 id、`updated_at` 与祖先闭包（[`ClassSnapshot::basis`]）。过期 = 按现在的类
+//! 重算出来的指纹对不上，不再比时刻——判定写在模型答完之后，答题期间改的定义时间戳
+//! 看不见，父边的增删也不碰 `updated_at`。写判定时在同一事务里再算一遍，对不上的回复
+//! 不收（[`decide_and_apply_if_current`]）。
 
 use chrono::{DateTime, Utc};
 use sqlx::{Executor, PgPool, Postgres};
@@ -48,7 +54,10 @@ pub struct KindWordSignature {
 }
 
 /// 库里每个 distinct 的类别词：活着的（`merged_into` 空）、带类别词的实体。
-pub async fn signatures(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<KindWordSignature>> {
+pub async fn signatures<'e>(
+    pool: impl Executor<'e, Database = Postgres>,
+    kb_id: Uuid,
+) -> AppResult<Vec<KindWordSignature>> {
     let sql = format!(
         "WITH live AS (
              SELECT e.id, e.canonical_name, e.description, e.created_at,
@@ -97,12 +106,18 @@ pub struct Binding {
     pub decided_at: DateTime<Utc>,
     /// agent / person
     pub decided_by: String,
+    /// 代理判定时输入的指纹（[`ClassSnapshot::basis`]）。人的判定不带——人不按指纹重判；
+    /// 这一列出现之前的代理判定也为空，各重判一次
+    pub basis: Option<String>,
 }
 
 /// 库里全部绑定，按词序。
-pub async fn bindings(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
+pub async fn bindings<'e>(
+    pool: impl Executor<'e, Database = Postgres>,
+    kb_id: Uuid,
+) -> AppResult<Vec<Binding>> {
     Ok(sqlx::query_as(
-        "SELECT kind_word, type_id, status, decided_at, decided_by
+        "SELECT kind_word, type_id, status, decided_at, decided_by, basis
          FROM type_bindings WHERE kb_id = $1 ORDER BY kind_word",
     )
     .bind(kb_id)
@@ -110,9 +125,92 @@ pub async fn bindings(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
     .await?)
 }
 
+/// 一个库此刻的类：每个类的 `updated_at` 与直接父类。判定的指纹从它算——开跑时在调模型
+/// 之前的快照事务里读一份，写判定时在写的事务里再读一份，两份算出来不一样就是答题
+/// 期间候选类变了
+#[derive(Debug, Clone, Default)]
+pub struct ClassSnapshot {
+    versions: HashMap<Uuid, DateTime<Utc>>,
+    parents: HashMap<Uuid, Vec<Uuid>>,
+}
+
+/// 读一个库的 [`ClassSnapshot`]。
+pub async fn class_snapshot<'e>(
+    pool: impl Executor<'e, Database = Postgres>,
+    kb_id: Uuid,
+) -> AppResult<ClassSnapshot> {
+    let rows: Vec<(Uuid, DateTime<Utc>, Vec<Uuid>)> = sqlx::query_as(
+        "SELECT t.id, t.updated_at,
+                ARRAY(SELECT p.parent_id FROM entity_type_parents p WHERE p.child_id = t.id)
+         FROM entity_types t WHERE t.kb_id = $1",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    let mut snapshot = ClassSnapshot::default();
+    for (id, at, parents) in rows {
+        snapshot.versions.insert(id, at);
+        snapshot.parents.insert(id, parents);
+    }
+    Ok(snapshot)
+}
+
+impl ClassSnapshot {
+    /// 一个类别词判定的指纹：给模型看的每个候选类的 id、`updated_at` 与祖先闭包。
+    /// 候选的先后不算（第二票本来就倒着给）；候选已经不在了记成 gone，同样算变了。
+    /// 父边的增删不碰 `updated_at`，所以闭包要单独算进来。
+    pub fn basis(&self, candidates: &[Uuid]) -> String {
+        let mut parts: Vec<String> = candidates
+            .iter()
+            .map(|id| match self.versions.get(id) {
+                Some(at) => {
+                    let up: Vec<String> = self.ancestors(*id).iter().map(Uuid::to_string).collect();
+                    format!("{id}@{}^{}", at.to_rfc3339(), up.join(","))
+                }
+                None => format!("{id}@gone"),
+            })
+            .collect();
+        parts.sort();
+        parts.dedup();
+        fingerprint(&parts.join(";"))
+    }
+
+    /// 一个类的全部祖先（不含自己），排好序。多继承与菱形按并集走，同一个祖先只进一次；
+    /// 编辑器不允许环，见过就不再走，万一有环也走得完
+    fn ancestors(&self, id: Uuid) -> Vec<Uuid> {
+        let mut seen: Vec<Uuid> = Vec::new();
+        let mut stack: Vec<Uuid> = self.parents.get(&id).cloned().unwrap_or_default();
+        while let Some(p) = stack.pop() {
+            if p == id || seen.contains(&p) {
+                continue;
+            }
+            seen.push(p);
+            if let Some(up) = self.parents.get(&p) {
+                stack.extend_from_slice(up);
+            }
+        }
+        seen.sort();
+        seen
+    }
+}
+
+/// 与 `phrase_bindings::basis_of` 同一个哈希：FNV-1a 64 位。只是缓存失效的键，不是安全
+/// 用途，不值得为它拉一个哈希依赖；也不去动那边——那边的值一变，全部短语判定都得重判
+fn fingerprint(text: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in text.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
 /// 不再成立的绑定：绑到的类在判定之后改过；或判成 none / undecided 之后库里有类
 /// 新建或修改。负向判定没有选中的类，已有类的新定义也可能让它对得上。
 /// 绑到的类被删了的，行已随级联消失，这里不会出现。
+///
+/// 对齐的 worker 已不读它：时间戳看不见模型答题期间的编辑（#795），过期改按指纹判
+/// （[`ClassSnapshot::basis`]）。留着给只要粗信号的调用方。
 pub async fn stale(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<String>> {
     Ok(sqlx::query_scalar(
         "SELECT b.kind_word
@@ -134,7 +232,7 @@ pub async fn stale(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<String>> {
 ///
 /// **人的判定不被代理覆盖**：已有行是人判的而这次是代理，原样留着、返回 false。
 /// 反过来人可以改代理的。`words` 传空时保留已有的写法——人在界面上拍板时手里
-/// 未必有签名。
+/// 未必有签名。这里写下的判定不带指纹：代理的判定走 [`decide_and_apply_if_current`]。
 #[allow(clippy::too_many_arguments)]
 pub async fn decide<'e>(
     pool: impl Executor<'e, Database = Postgres>,
@@ -145,6 +243,24 @@ pub async fn decide<'e>(
     status: &str,
     votes: &serde_json::Value,
     decided_by: &str,
+) -> AppResult<bool> {
+    decide_with_basis(
+        pool, kb_id, kind_word, words, type_id, status, votes, decided_by, None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn decide_with_basis<'e>(
+    pool: impl Executor<'e, Database = Postgres>,
+    kb_id: Uuid,
+    kind_word: &str,
+    words: &[String],
+    type_id: Option<Uuid>,
+    status: &str,
+    votes: &serde_json::Value,
+    decided_by: &str,
+    basis: Option<&str>,
 ) -> AppResult<bool> {
     if !matches!(status, "bound" | "none" | "undecided") {
         return Err(AppError::Validation(format!(
@@ -169,8 +285,8 @@ pub async fn decide<'e>(
     }
     let res = sqlx::query(
         "INSERT INTO type_bindings
-             (id, kb_id, kind_word, words, type_id, status, votes, decided_at, decided_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8)
+             (id, kb_id, kind_word, words, type_id, status, votes, decided_at, decided_by, basis)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9)
          ON CONFLICT (kb_id, kind_word) DO UPDATE
             SET words = CASE WHEN cardinality(EXCLUDED.words) = 0
                              THEN type_bindings.words ELSE EXCLUDED.words END,
@@ -178,7 +294,8 @@ pub async fn decide<'e>(
                 status = EXCLUDED.status,
                 votes = EXCLUDED.votes,
                 decided_at = now(),
-                decided_by = EXCLUDED.decided_by
+                decided_by = EXCLUDED.decided_by,
+                basis = EXCLUDED.basis
           WHERE NOT (type_bindings.decided_by = 'person' AND EXCLUDED.decided_by = 'agent')",
     )
     .bind(Uuid::now_v7())
@@ -189,6 +306,7 @@ pub async fn decide<'e>(
     .bind(status)
     .bind(votes)
     .bind(decided_by)
+    .bind(basis)
     .execute(pool)
     .await?;
     Ok(res.rows_affected() > 0)
@@ -211,16 +329,89 @@ pub async fn decide_and_apply(
 ) -> AppResult<bool> {
     let mut tx = pool.begin().await?;
     let written = write_decision_and_projection(
-        &mut tx, kb_id, kind_word, words, type_id, status, votes, decided_by,
+        &mut tx, kb_id, kind_word, words, type_id, status, votes, decided_by, None,
     )
     .await?;
     tx.commit().await?;
     Ok(written)
 }
 
+/// What became of an agent decision offered to [`decide_and_apply_if_current`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Acceptance {
+    /// The decision and its projection are written, with the basis.
+    Written,
+    /// A person decided this kind word; the agent's answer does not replace it.
+    KeptPerson,
+    /// The candidate classes changed while the model was answering. The answer
+    /// is about inputs that no longer exist, so nothing is written.
+    Moved,
+}
+
+/// Accept an agent decision only for the inputs it actually read (#795).
+///
+/// `basis` is what the run computed from its snapshot before calling the model.
+/// The candidate classes are locked `FOR SHARE` before the binding row is written:
+/// a class delete takes the class row first and then cascades to the binding, so
+/// taking them in the same order cannot deadlock with it. The basis is then
+/// recomputed from the rows as they are now; a mismatch means the model answered
+/// about a definition or hierarchy that has since changed, and nothing is written.
+///
+/// A parent edge or a new class committed after this check is not blocked. The
+/// stored basis then no longer matches the current inputs, so the next run finds
+/// the decision stale and asks again.
+#[allow(clippy::too_many_arguments)]
+pub async fn decide_and_apply_if_current(
+    pool: &PgPool,
+    kb_id: Uuid,
+    kind_word: &str,
+    words: &[String],
+    type_id: Option<Uuid>,
+    status: &str,
+    votes: &serde_json::Value,
+    basis: &str,
+    candidates: &[Uuid],
+) -> AppResult<Acceptance> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "SELECT id FROM entity_types WHERE kb_id = $1 AND id = ANY($2) ORDER BY id FOR SHARE",
+    )
+    .bind(kb_id)
+    .bind(candidates)
+    .fetch_all(&mut *tx)
+    .await?;
+    if class_snapshot(&mut *tx, kb_id).await?.basis(candidates) != basis {
+        tx.rollback().await?;
+        return Ok(Acceptance::Moved);
+    }
+    let written = write_decision_and_projection(
+        &mut tx,
+        kb_id,
+        kind_word,
+        words,
+        type_id,
+        status,
+        votes,
+        "agent",
+        Some(basis),
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(if written {
+        Acceptance::Written
+    } else {
+        Acceptance::KeptPerson
+    })
+}
+
 /// The review request may wait briefly for a concurrent writer, but must not
 /// pin a connection indefinitely. This is per lock acquisition, not a request
 /// deadline, and does not change the background aligner's waiting policy.
+///
+/// The decision, its projection and the phrase alignment it makes necessary
+/// commit together: a changed class moves the phrase signatures of every entity
+/// under this kind word, and a job queued after the commit could be lost with
+/// the process in between.
 pub async fn decide_and_apply_human(
     pool: &PgPool,
     kb_id: Uuid,
@@ -233,7 +424,7 @@ pub async fn decide_and_apply_human(
         sqlx::query("SET LOCAL lock_timeout = '2s'")
             .execute(&mut *tx)
             .await?;
-        write_decision_and_projection(
+        let written = write_decision_and_projection(
             &mut tx,
             kb_id,
             kind_word,
@@ -242,8 +433,18 @@ pub async fn decide_and_apply_human(
             if type_id.is_some() { "bound" } else { "none" },
             votes,
             "person",
+            None,
         )
-        .await
+        .await?;
+        if written {
+            crate::jobs::enqueue_unless_queued_tx(
+                &mut tx,
+                "align_phrases",
+                serde_json::json!({ "kb_id": kb_id }),
+            )
+            .await?;
+        }
+        Ok::<bool, AppError>(written)
     }
     .await;
     match result {
@@ -283,8 +484,9 @@ async fn write_decision_and_projection(
     status: &str,
     votes: &serde_json::Value,
     decided_by: &str,
+    basis: Option<&str>,
 ) -> AppResult<bool> {
-    let written = decide(
+    let written = decide_with_basis(
         &mut *connection,
         kb_id,
         kind_word,
@@ -293,6 +495,7 @@ async fn write_decision_and_projection(
         status,
         votes,
         decided_by,
+        basis,
     )
     .await?;
     if written {
@@ -405,7 +608,9 @@ pub async fn propose(
 
 #[cfg(test)]
 mod tests {
-    use super::normalize;
+    use super::{normalize, ClassSnapshot};
+    use chrono::{DateTime, Utc};
+    use uuid::Uuid;
 
     #[test]
     fn a_kind_word_is_one_word_however_spaced_or_cased() {
@@ -416,5 +621,75 @@ mod tests {
         assert_eq!(normalize("Company"), "company");
         assert_eq!(normalize("指标"), "指标");
         assert_eq!(normalize("   "), "");
+    }
+
+    fn at(s: &str) -> DateTime<Utc> {
+        s.parse().expect("timestamp")
+    }
+
+    /// organization ⊂ legal_entity；agent 暂时没有父类
+    fn snapshot() -> (ClassSnapshot, [Uuid; 3]) {
+        let ids = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+        let [org, legal, _] = ids;
+        let mut s = ClassSnapshot::default();
+        for id in ids {
+            s.versions.insert(id, at("2026-09-26T00:00:00Z"));
+            s.parents.insert(id, Vec::new());
+        }
+        s.parents.insert(org, vec![legal]);
+        (s, ids)
+    }
+
+    #[test]
+    fn a_basis_names_what_was_shown_not_the_order_it_was_shown_in() {
+        let (s, [org, legal, _]) = snapshot();
+        assert_eq!(s.basis(&[org, legal]), s.basis(&[legal, org]));
+        assert_eq!(s.basis(&[org, legal]), s.basis(&[org, legal, org]));
+        assert_ne!(s.basis(&[org, legal]), s.basis(&[org]));
+    }
+
+    #[test]
+    fn an_edit_a_grandparent_edge_or_a_deleted_candidate_changes_the_basis() {
+        let (s, [org, legal, agent]) = snapshot();
+        let before = s.basis(&[org]);
+
+        let mut edited = s.clone();
+        edited.versions.insert(org, at("2026-09-26T00:00:01Z"));
+        assert_ne!(before, edited.basis(&[org]), "an edit moves updated_at");
+
+        // 父边的增删不碰 updated_at：org 的祖父变了，org 的指纹也得变
+        let mut rooted = s.clone();
+        rooted.parents.insert(legal, vec![agent]);
+        assert_ne!(
+            before,
+            rooted.basis(&[org]),
+            "a grandparent is in the closure"
+        );
+
+        let mut gone = s.clone();
+        gone.versions.remove(&org);
+        gone.parents.remove(&org);
+        assert_ne!(
+            before,
+            gone.basis(&[org]),
+            "a deleted candidate is a change"
+        );
+    }
+
+    #[test]
+    fn a_diamond_or_a_cycle_still_gives_one_closure() {
+        let (mut s, [org, legal, agent]) = snapshot();
+        // 菱形：org → legal、org → agent，legal → agent
+        s.parents.insert(org, vec![legal, agent]);
+        s.parents.insert(legal, vec![agent]);
+        assert_eq!(s.ancestors(org), {
+            let mut v = vec![legal, agent];
+            v.sort();
+            v
+        });
+        // 编辑器不许环；万一有，走得完且不把自己算进祖先
+        s.parents.insert(agent, vec![org]);
+        assert!(!s.ancestors(org).contains(&org));
+        let _ = s.basis(&[org, legal, agent]);
     }
 }

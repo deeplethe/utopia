@@ -39,7 +39,11 @@ const ADOPT_MERGED: &str = "merged";
 // 剩下的那个函数于是只是在遍历一张空表。**本体从建库第一天起就只有
 // 用户自己导入的词表**——与 0009 删掉内置实体类是同一件事的下半段。
 
-pub async fn entity_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<EntityType>> {
+/// 库里全部类。执行器取泛型：类别词对齐要在调模型之前的同一个快照事务里读它（#795）。
+pub async fn entity_types<'e>(
+    pool: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    kb_id: Uuid,
+) -> AppResult<Vec<EntityType>> {
     Ok(
         // 又一次 SELECT *：parents 在关联表里，`*` 取不到。
         // 这是同一个陷阱的第三次——SQL 在字符串里，cargo check 全绿，
@@ -1453,6 +1457,10 @@ pub async fn profile_distances(
 
 /// 按名字找实体。**一并回总数**——「宁分勿合」本来就会造出一堆同名，
 /// 固定十条的时候，想找的那个可能根本不在这十条里而界面上看不出来。
+///
+/// **名字完全相同的排在最前**（规范名或现行的别名），再按度数。只按度数的话，
+/// 问「Apple」而库里有九个事实更多的「Apple Store …」，叫 Apple 的那个排到第十，
+/// 对话与 MCP 的工具只读前八条——它找不到，按名字读事实时读成了另一个
 pub async fn search_entities(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1465,21 +1473,26 @@ pub async fn search_entities(
 ) -> AppResult<(Vec<GraphNode>, i64)> {
     let pattern = format!("%{}%", text.trim());
     let named = crate::names::has_name_like("e", 2);
+    // 同名的键与召回同一种写法（`resolution` 里 `has_name_in` 的用法）：规整之后小写
+    let exact = vec![crate::resolution::normalize_name(text).to_lowercase()];
     // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
     let visible = |param: usize| crate::record_axis::entity_visible_at("e", as_of.map(|_| param));
-    let rewind = as_of.map(|_| 5);
+    let rewind = as_of.map(|_| 6);
     let sql = format!(
         "{} WHERE e.kb_id = $1 AND {visible}
          AND (e.canonical_name ILIKE $2 OR {named})
-         ORDER BY degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
+         ORDER BY (lower(e.canonical_name) = ANY($5) OR {same_name}) DESC,
+                  degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
         node_sql(rewind, rewind),
-        visible = visible(5),
+        visible = visible(6),
+        same_name = crate::names::has_name_in("e", 1, 5),
     );
     let mut nodes_query = sqlx::query_as::<_, GraphNode>(&sql)
         .bind(kb_id)
         .bind(&pattern)
         .bind(limit)
-        .bind(offset);
+        .bind(offset)
+        .bind(&exact);
     if let Some(t) = as_of {
         nodes_query = nodes_query.bind(t);
     }
@@ -1500,6 +1513,25 @@ pub async fn search_entities(
     Ok((nodes, total))
 }
 
+/// 一个实体节点本身，不带事实：只想知道它在不在这个库、叫什么的时候用。
+/// `entity_detail` 会把全部事实一起读出来，一个枢纽实体就是几百行
+pub async fn entity_node(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+) -> AppResult<Option<GraphNode>> {
+    Ok(sqlx::query_as(&format!(
+        "{} WHERE e.kb_id = $1 AND e.id = $2",
+        node_sql(as_of.map(|_| 3), as_of.map(|_| 3))
+    ))
+    .bind(kb_id)
+    .bind(entity_id)
+    .bind(as_of)
+    .fetch_optional(pool)
+    .await?)
+}
+
 /// 实体详情：节点信息 + 事实时间线。
 pub async fn entity_detail(
     pool: &PgPool,
@@ -1508,16 +1540,9 @@ pub async fn entity_detail(
     at: Option<chrono::DateTime<chrono::Utc>>,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<(GraphNode, Vec<EntityFact>)> {
-    let node: GraphNode = sqlx::query_as(&format!(
-        "{} WHERE e.kb_id = $1 AND e.id = $2",
-        node_sql(as_of.map(|_| 3), as_of.map(|_| 3))
-    ))
-    .bind(kb_id)
-    .bind(entity_id)
-    .bind(as_of)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let node = entity_node(pool, kb_id, entity_id, as_of)
+        .await?
+        .ok_or(AppError::NotFound)?;
 
     let mut facts: Vec<EntityFact> = sqlx::query_as(&format!(
         "SELECT f.id, {said_as} AS said_as, f.recorded_at, f.invalidated_at, f.supersedes,

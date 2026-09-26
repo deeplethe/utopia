@@ -39,13 +39,42 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResp
     )
 }
 
+/// 脚本化的嵌入端点：每段文字一个由字节算出的四维向量。只要求确定、条数对得上——
+/// 这里测的是「向量有没有」，不是近不近
+async fn embed(Json(body): Json<Value>) -> impl IntoResponse {
+    let data: Vec<Value> = body["input"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|t| {
+            let bytes = t.as_str().unwrap_or("").as_bytes();
+            let v: Vec<f32> = (0..4)
+                .map(|i| {
+                    bytes
+                        .iter()
+                        .skip(i)
+                        .step_by(4)
+                        .map(|b| *b as f32)
+                        .sum::<f32>()
+                        / 255.0
+                })
+                .collect();
+            json!({ "embedding": v })
+        })
+        .collect();
+    Json(json!({ "data": data }))
+}
+
 struct Fx {
     pool: sqlx::PgPool,
     state: AppState,
     org: Uuid,
+    ws: Uuid,
     kb: Uuid,
     legal_entity: Uuid,
     organization: Uuid,
+    place: Uuid,
     acme: Uuid,
     based_in: Uuid,
     model: Model,
@@ -106,6 +135,7 @@ impl Fx {
         let endpoint = format!("http://{}", listener.local_addr()?);
         let router = Router::new()
             .route("/chat/completions", post(reply))
+            .route("/embeddings", post(embed))
             .with_state(model.clone());
         let server = tokio::spawn(async move {
             axum::serve(listener, router).await.unwrap();
@@ -135,9 +165,11 @@ impl Fx {
             pool,
             state,
             org,
+            ws,
             kb,
             legal_entity,
             organization,
+            place,
             acme,
             based_in,
             model,
@@ -147,6 +179,71 @@ impl Fx {
     }
     fn script(&self, replies: Vec<Value>) {
         *self.model.replies.lock().unwrap() = replies;
+    }
+    /// 给工作区配上嵌入模型（同一个脚本化端点）。缺省不配：多数场景测的是结构候选，
+    /// 配了嵌入会让本体向量补齐与短名单掺进来
+    async fn enable_embeddings(&self) -> anyhow::Result<()> {
+        let settings = utopia_store::settings::get(&self.pool, self.ws)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("fixture settings missing"))?;
+        let endpoint = settings.chat_base_url.clone();
+        utopia_store::settings::upsert(
+            &self.pool,
+            self.ws,
+            endpoint.as_deref(),
+            None,
+            Some("scripted"),
+            endpoint.as_deref(),
+            None,
+            Some("scripted-embed"),
+            None,
+        )
+        .await?;
+        Ok(())
+    }
+    /// 这个库的一个编辑：走 API 处理函数要有人
+    async fn editor(&self) -> anyhow::Result<utopia_core::models::User> {
+        let id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO users(id,org_id,email,password_hash,display_name) VALUES($1,$2,$3,'x','Editor')",
+        )
+        .bind(id)
+        .bind(self.org)
+        .bind(format!("editor-{id}@example.test"))
+        .execute(&self.pool)
+        .await?;
+        sqlx::query("INSERT INTO kb_members(kb_id,user_id,role) VALUES($1,$2,'editor')")
+            .bind(self.kb)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(utopia_core::models::User {
+            id,
+            org_id: self.org,
+            email: format!("editor-{id}@example.test"),
+            password_hash: "x".into(),
+            display_name: "Editor".into(),
+            is_admin: false,
+            created_at: chrono::Utc::now(),
+        })
+    }
+    /// 这个库排着的任务，按先后
+    async fn queued(&self) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT kind FROM jobs WHERE status='queued' AND payload->>'kb_id'=$1 ORDER BY run_at, id",
+        )
+        .bind(self.kb.to_string())
+        .fetch_all(&self.pool)
+        .await?)
+    }
+    /// 一条关系/属性有没有向量，以及嵌的是哪段字
+    async fn vector_of(&self, id: Uuid) -> anyhow::Result<(bool, Option<String>)> {
+        Ok(sqlx::query_as(
+            "SELECT embedding IS NOT NULL, embedded_text FROM relation_types WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?)
     }
     async fn run(&self) -> anyhow::Result<()> {
         align_phrases_reasking(&self.state, self.kb, 0).await
@@ -221,6 +318,57 @@ fn bound() -> Vec<Value> {
 }
 fn none() -> Vec<Value> {
     vec![vote(None, None), vote(None, None), nothing_implied()]
+}
+
+/// 类别词对齐还排着时短语对齐不动手：两端的类还没定，判了也是重判。它给自己排一份半分钟
+/// 后的，类别词对齐收尾后照常判
+#[tokio::test]
+async fn phrase_alignment_waits_while_a_kind_word_round_is_pending() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(bound());
+        sqlx::query("INSERT INTO jobs (kind, payload) VALUES ('align_types', $1)")
+            .bind(json!({ "kb_id": f.kb }))
+            .execute(&f.pool)
+            .await?;
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            0,
+            "nothing is asked while kind words are still being decided"
+        );
+        let deferred: Vec<(String, bool)> = sqlx::query_as(
+            "SELECT status, run_at > now() FROM jobs
+             WHERE kind='align_phrases' AND payload->>'kb_id'=$1",
+        )
+        .bind(f.kb.to_string())
+        .fetch_all(&f.pool)
+        .await?;
+        assert_eq!(
+            deferred,
+            vec![("queued".to_string(), true)],
+            "one phrase round is queued for later"
+        );
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            0,
+            "still waiting: the kind-word job is still queued"
+        );
+        f.clear_jobs().await?;
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            2,
+            "the kind-word round gone, the two votes are asked"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
 }
 
 #[tokio::test]
@@ -576,6 +724,138 @@ async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyho
         .await?;
         assert_eq!(after, 0, "past MAX_REASK it stops queueing itself");
         assert!(phrase_bindings::bindings(&f.pool, f.kb).await?.is_empty());
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 编辑器建的属性先有向量，短语对齐才开跑：处理函数把 `embed_ontology` 排在
+/// `align_phrases` 前面，对齐看见补齐还排着就等；补齐跑完向量在表里，对齐才问模型，
+/// 而且新属性在候选里。改了描述再走一遍：存下的原文对不上，同一个任务把它重嵌
+#[tokio::test]
+async fn a_property_created_in_the_editor_has_its_vector_before_phrases_are_aligned(
+) -> anyhow::Result<()> {
+    use crate::api::ontology_routes::{
+        create_relation_type, update_relation_type, RelationTypeReq,
+    };
+    use crate::auth::AuthUser;
+    use axum::extract::{Path, State};
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.enable_embeddings().await?;
+        let editor = f.editor().await?;
+        let req: RelationTypeReq = serde_json::from_value(json!({
+            "key": "headquartered_in",
+            "label": "headquartered in",
+            "kind": "relation",
+            "description": "where the main office of an entity is",
+            "domains": [f.legal_entity],
+            "ranges": [f.place],
+        }))?;
+        let created = create_relation_type(
+            State(f.state.clone()),
+            AuthUser(editor.clone()),
+            Path(f.kb),
+            axum::Json(req),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("create_relation_type: {:?}", e.0))?;
+        let id: Uuid = serde_json::from_value(created.0["id"].clone())?;
+
+        assert_eq!(
+            f.queued().await?,
+            vec!["embed_ontology".to_string(), "align_phrases".to_string()],
+            "the index refresh is queued ahead of the alignment"
+        );
+        assert_eq!(
+            f.vector_of(id).await?,
+            (false, None),
+            "the handler itself does not embed"
+        );
+
+        // 对齐先到：补齐还排着，不问模型，自己排到后面
+        f.script(bound());
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            0,
+            "nothing is asked while the index refresh is still queued"
+        );
+        assert_eq!(
+            f.queued().await?,
+            vec!["embed_ontology".to_string(), "align_phrases".to_string()],
+            "the alignment is queued again behind the refresh"
+        );
+
+        // worker 到补齐这一份：跑它的主体，标成完成
+        let embedded = crate::ontology_index::refresh(&f.state, f.kb).await?;
+        assert_eq!(
+            embedded, 8,
+            "the three classes twice over (full text and label) plus based_in and the new property"
+        );
+        sqlx::query(
+            "UPDATE jobs SET status='done' WHERE kind='embed_ontology' AND payload->>'kb_id'=$1",
+        )
+        .bind(f.kb.to_string())
+        .execute(&f.pool)
+        .await?;
+        let (present, text) = f.vector_of(id).await?;
+        assert!(
+            present,
+            "the property is in the vector table before align_phrases runs"
+        );
+        assert_eq!(
+            text.as_deref(),
+            Some("headquarteredIn\nwhere the main office of an entity is"),
+            "label (camel-cased by the store) and description are what was embedded"
+        );
+
+        // 现在对齐开跑，而且新属性在候选里
+        f.run().await?;
+        assert!(
+            !f.requests().is_empty(),
+            "the refresh done, the model is asked"
+        );
+        let prompt = f.prompt_of(0);
+        assert!(
+            prompt.contains("headquartered_in"),
+            "the new property is offered: {prompt}"
+        );
+
+        // 改描述：存下的原文对不上，补齐任务再排、只重嵌这一条
+        f.clear_jobs().await?;
+        let req: RelationTypeReq = serde_json::from_value(json!({
+            "label": "headquartered in",
+            "kind": "relation",
+            "description": "where the head office of an organization sits",
+        }))?;
+        let updated = update_relation_type(
+            State(f.state.clone()),
+            AuthUser(editor),
+            Path((f.kb, id)),
+            axum::Json(req),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("update_relation_type: {:?}", e.0))?;
+        assert_eq!(updated.0["ok"], json!(true));
+        assert_eq!(
+            f.queued().await?,
+            vec!["embed_ontology".to_string(), "align_phrases".to_string()],
+            "a changed description queues the refresh ahead of the alignment again"
+        );
+        assert_eq!(
+            crate::ontology_index::refresh(&f.state, f.kb).await?,
+            1,
+            "only the row whose text changed is re-embedded"
+        );
+        assert_eq!(
+            f.vector_of(id).await?.1.as_deref(),
+            Some("headquarteredIn\nwhere the head office of an organization sits"),
+        );
         anyhow::Ok(())
     }
     .await;

@@ -9,7 +9,7 @@
 //!
 //!   1. 客户端收不到 `event: done`
 //!   2. 恰好观察到一个终结（`done` 与 `error` 加起来正好一次）
-//!   3. 那个终结说得出理由（`error` 的 data 不为空）
+//!   3. 那个终结说得出理由：`error` 的 data 是带 `code` 与英文原句的 JSON（0004）
 //!
 //! **新增一条会失败的路，代价是加一行**；加不出那一行，说明这条路自己也没想清楚
 //! 该怎么收尾。评审该盯的就是「新开了会失败的路却没加行」。
@@ -94,6 +94,13 @@ fn assert_one_earned_terminal(what: &str, ends: Ends, sse: &str) {
                 !reason.is_empty(),
                 "{what}：终结得说得出理由，不能是个空 error\n{sse}"
             );
+            // 理由带 code：界面拿它查措辞，英文原句只给日志与不做本地化的客户端（0004）
+            let body: serde_json::Value = serde_json::from_str(reason).unwrap_or_default();
+            assert!(
+                body["code"].as_str().is_some_and(|c| !c.is_empty())
+                    && body["error"].as_str().is_some_and(|e| !e.is_empty()),
+                "{what}：error 帧要带 code 和原句：{reason}"
+            );
         }
     }
 }
@@ -101,9 +108,10 @@ fn assert_one_earned_terminal(what: &str, ends: Ends, sse: &str) {
 /// 一个工具调用，让这一轮走完整的取证路径再收尾。
 const TOOL: Reply = Reply::Tool("find_entities", r#"{"name":"Acme"}"#);
 
-// #845 guards the exhausted gathering boundary, not every ordinary early answer.
-// Reach that boundary before injecting a final candidate; do not widen the policy
-// just to make a one-tool fixture exercise a six-turn handoff.
+// The #845 rows test the exhausted gathering boundary, so they reach it before
+// injecting a final candidate; a one-tool fixture would exercise an ordinary turn
+// instead. Since #937 an ordinary turn is checked for tool-control text as well,
+// in a row of its own.
 fn at_budget(candidate: Reply) -> Vec<Reply> {
     let mut replies = vec![TOOL; 6];
     replies.push(candidate);
@@ -148,6 +156,17 @@ fn table() -> Vec<Case> {
             replies: at_budget(Reply::Text(
                 "我去核对一下证据。\n<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>",
             )),
+            ends: Ends::Error,
+            fallback: false,
+        },
+        // #937：普通回合把工具调用写成正文，退回一次之后又写了一次
+        Case {
+            what: "普通回合连续两次把工具调用写成正文",
+            replies: vec![
+                TOOL,
+                Reply::Text("<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>"),
+                Reply::Text("<DSMLcalls><DSMLinvoke name=\"search\"></DSMLinvoke></DSMLcalls>"),
+            ],
             ends: Ends::Error,
             fallback: false,
         },

@@ -39,7 +39,9 @@ import {
 } from "../api";
 import { S } from "../i18n";
 import { rehypeCitations } from "../citations";
+import { followsBottom } from "../chatScroll";
 import { chatMarkdown, SourceList, SourcesProvider } from "./chatCitations";
+import { CopyButton } from "./chatCopy";
 import { toast } from "../toast";
 import {
   DropdownMenu,
@@ -116,6 +118,9 @@ export function Chat() {
   // 路由同步 effect 的判据：state 的提交时序晚于 navigate 触发的重渲染，
   // 用 ref 同步写入才能让"流式新建后仅换 URL"的守卫可靠命中
   const activeIdRef = useRef<string | null>(null);
+  // 读者是不是停在对话底部（见 chatScroll.ts）。换会话、发新消息都回到「跟着」：
+  // 那一刻人要看的就是底部
+  const following = useRef(true);
   // 已经结束的那些轮次，从库里读来。**进行中的那一次不在这里**——见下
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
@@ -141,6 +146,7 @@ export function Chat() {
     // loadConversation 必须先检查 liveAnswer.entry，直接认领，避免流中途读库覆盖。
     claimView(routeConvId ?? null);
     activeIdRef.current = null;
+    following.current = true;
     setActiveId(routeConvId ?? null);
     setTurns([]);
     setLoadedKey(null);
@@ -219,6 +225,10 @@ export function Chat() {
       return last.conversations.length > 0 && loaded < last.total ? loaded : undefined;
     },
     enabled: !!kbId && kb?.id === kbId,
+    // 换搜索词时留着上一屏，别每敲一个字就清空再冒出来（Graph、Library 同理）。
+    // 换了库不留：另一个库的会话一刻也不该出现在这里
+    placeholderData: (prev, prevQuery) =>
+      prevQuery?.queryKey[1] === kbId ? prev : undefined,
   });
   // Updated conversations can move between offset pages. Deduplicate by identity;
   // invalidation refetches the loaded page range rather than appending stale offsets.
@@ -238,9 +248,10 @@ export function Chat() {
     onError: (e: Error) => toast.error(e.message),
   });
 
-  // 直落底部（instant）：平滑滚动在流式追加下会一路慢爬
+  // 直落底部（instant）：平滑滚动在流式追加下会一路慢爬。**只在人停在底部时落**：
+  // 生成期间 `shown` 每 33ms 变一次，翻上去读前文的人不该被每一批新字拽回来
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "instant" });
+    if (following.current) bottomRef.current?.scrollIntoView({ behavior: "instant" });
   }, [shown]);
 
   // 路由 → 会话装载；裸 /chat 还原本库上次会话（切页回来仍在原对话）
@@ -401,6 +412,7 @@ export function Chat() {
     // 同样不 abort：开一场新的不等于放弃上一场
     if (kb) sessionStorage.removeItem(lastKey(kb.id));
     activeIdRef.current = null;
+    following.current = true;
     setActiveId(null);
     setTurns([]);
     navigate({ to: "/kb/$kbId/chat", params: { kbId } });
@@ -409,7 +421,13 @@ export function Chat() {
 
   const removeConversation = async (id: string) => {
     const owner = viewRequest.current;
-    await conversationsApi.remove(kb!.id, id);
+    try {
+      await conversationsApi.remove(kb!.id, id);
+    } catch (e) {
+      // 确认框已经关了：删不掉不说出来的话，这一行只是安静地留在列表里
+      toast.error(e instanceof Error ? e.message : String(e));
+      return;
+    }
     // 记号跟着会话走，否则这个 id 会一直留在浏览器的那张表里
     convMarks.forget(id);
     if (sessionStorage.getItem(lastKey(kb!.id)) === id) {
@@ -423,6 +441,7 @@ export function Chat() {
     const q = input.trim();
     if (!q || streaming || !kb || kb.id !== kbId || loadingHistory || historyError) return;
     const owner = claimView(activeId);
+    following.current = true;
     setIdleHistoryKey(null);
     setInput("");
     sessionStorage.removeItem(DRAFT_KEY);
@@ -784,7 +803,12 @@ export function Chat() {
           </div>
         ) : (
           <>
-            <div className="flex-1 overflow-y-auto u-scroll u-chat-fade px-4 pt-6 pb-12">
+            <div
+              className="flex-1 overflow-y-auto u-scroll u-chat-fade px-4 pt-6 pb-12"
+              onScroll={(e) => {
+                following.current = followsBottom(e.currentTarget);
+              }}
+            >
               <div className="max-w-3xl mx-auto space-y-4">
                 {shown.map((t, i) => (
                   <TurnView key={i} turn={t} live={streaming && i === shown.length - 1} />
@@ -983,6 +1007,13 @@ function TurnView({ turn, live }: { turn: Turn; live?: boolean }) {
           缺席没人读得出来，得写出来。判据见 answeredWithoutSources */}
       {answeredWithoutSources(turn, !!live) && (
         <div className="mt-2 text-small text-ink-2">{S.ask.noSources}</div>
+      )}
+      {/* 回答上的动作（#936），同样等说完了才出。复制的是存下的 Markdown，
+          角标 `[n]` 照写——表格、代码块贴到别处还是原样 */}
+      {!live && turn.content && (
+        <div className="mt-2 flex items-center">
+          <CopyButton label={S.ask.copyAnswer} text={() => turn.content} />
+        </div>
       )}
     </div>
     </SourcesProvider>

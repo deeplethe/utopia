@@ -55,6 +55,25 @@ export const en = {
       "Sign-up is closed on this deployment — ask an administrator for an account.",
     no_chat_model:
       "No chat model configured yet. Set one under Administration → Models.",
+    // 对话流里没答成的那一轮：`error` 帧带的 code（服务端的英文原句只给日志）
+    answer_empty: "The model returned an empty answer. Ask again.",
+    answer_tool_text: "The model wrote a tool call as text instead of answering. Ask again.",
+    answer_tool_call: "The model kept calling tools after its lookups ran out. Ask again.",
+    answer_too_long: "The answer went past the size limit and was not kept.",
+    answer_failed: "The answer could not be completed. Ask again.",
+    answer_not_saved: "The answer could not be saved. Try again later.",
+    search_failed: "The documents could not be searched.",
+    stream_ended:
+      "The answer stream ended unexpectedly. Reopen the conversation to check its status.",
+    stream_lagged: "This page fell behind the answer stream. Reopen the conversation.",
+    model_out_of_credit:
+      "The model account cannot pay for this request. Top it up, or pick another endpoint under Administration → Models.",
+    model_rate_limited: "The model endpoint is rate limiting. Wait a moment and ask again.",
+    model_unavailable: "The model endpoint is unavailable right now. Try again shortly.",
+    model_unreachable:
+      "The model endpoint gave no usable answer. Check its address under Administration → Models.",
+    model_rejected:
+      "The model endpoint refused the request. Check the model settings under Administration → Models.",
     bad_upload: "That upload could not be read.",
     upload_read_failed: "The file could not be read to the end.",
     no_files: "No file was attached.",
@@ -802,9 +821,14 @@ export const en = {
     deleteBtn: "Delete",
     cancel: "Cancel",
     // 这条回答背后一条来源都没有（#547）。是事实陈述，所以每条都挂，不猜哪条该挂
-    noSources: "No sources consulted",
+    noSources: "No sources cited",
     // 预览浮窗右上角那条出路：看完这一段还想看整篇的人走这里
     openOriginal: "Open original",
+    // 复制（#936）：回答整段一个，代码块各一个
+    copyAnswer: "Copy answer",
+    copyCode: "Copy code",
+    copied: "Copied",
+    copyFailed: "Could not copy. Select the text and copy it by hand.",
   },
   graph: {
     // 还没判出类型的实体（0009）。不是一个类，是"这一格还空着"
@@ -1665,6 +1689,49 @@ export const en = {
       `Some could not be added: ${keys.join(", ")} — the rest went through.`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
+    /* ---- 0061: the ontology agent and its questions ---- */
+    askAgent: "Ask the agent",
+    askAgentHint:
+      "Proposes classes and properties from phrases and kind words the ontology does not cover yet, judged against the competency questions.",
+    agentQueued: "The agent is looking — proposals appear here when it is done.",
+    agentWaiting: "Agent working…",
+    agentChip: "agent",
+    servesQuestions: (n: number) =>
+      n === 1 ? "serves 1 question" : `serves ${n} questions`,
+    bindsShapes: (n: number) =>
+      n === 1 ? "binds 1 phrase shape" : `binds ${n} phrase shapes`,
+    bindsKindWords: (n: number) =>
+      n === 1 ? "1 kind word" : `${n} kind words`,
+    rejectProposal: "Reject",
+    rejectReasonPrompt:
+      "Why not? (optional — the agent reads it before proposing again)",
+    rejectedProposal: "Rejected",
+    questions: "Competency questions",
+    questionsHint:
+      "What this knowledge base should be able to answer. The agent proposes classes and properties that serve these; they are the ontology's acceptance test.",
+    questionPlaceholder: "e.g. Which companies did each founder start, and when?",
+    addQuestion: "Add",
+    noQuestions:
+      "No questions yet. Without them the agent judges proposals only by the phrases documents use.",
+    retireQuestion: "Retire",
+    deleteQuestion: "Delete",
+    questionAdded: "Question added",
+    questionRetired: "Question retired",
+    askQuestions: "Ask the agent for questions",
+    askQuestionsHint:
+      "Proposes questions from what the documents say most. They wait here until you accept them.",
+    questionsQueued: "The agent is writing questions — they appear here when it is done.",
+    acceptQuestion: "Accept",
+    questionAnswered: "answered",
+    questionUnanswered: "not answered",
+    questionsScore: (answered: number, checked: number) =>
+      `${answered} of ${checked} answered`,
+    questionsScoreHint:
+      "Accepted questions the competency bench asked over the graph, and how many it answered.",
+    proposalsChanged: (changed: number, decided: number) =>
+      `${changed} of ${decided} proposals changed`,
+    proposalsChangedHint:
+      "Of the agent's proposals people decided on, how many were rejected or edited before adoption.",
     /* ---- Schema diagram ---- */
     schemaDiagram: "Schema diagram",
     /* 从前这句把「先加个类或导入 OWL 文件」说成了开始的前提，而本体本来就

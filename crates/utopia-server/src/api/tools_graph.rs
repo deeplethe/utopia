@@ -80,9 +80,15 @@ fn node_line(n: &GraphNode) -> String {
     )
 }
 
+/// 记下这一轮认下的实体。下一轮会被告知「直接用这些 id，别再按名字查」，所以这里
+/// 只能是真的读过、或者搜索明确指向的那个——同一轮先按名字认、再按 id 读，只记一次
 fn remember(sink: &mut ToolSink, n: &GraphNode) {
+    let id = n.id.to_string();
+    if sink.resolved.iter().any(|e| e["id"] == id.as_str()) {
+        return;
+    }
     sink.resolved.push(json!({
-        "id": n.id.to_string(), "name": n.name, "type": n.type_label
+        "id": id, "name": n.name, "type": n.type_label
     }));
 }
 
@@ -91,6 +97,8 @@ struct Resolved {
     id: Uuid,
     name: String,
     note: Option<String>,
+    /// 参数本来就是一个 id：没在库里查过，`name` 也只是那串 id
+    by_id: bool,
 }
 
 enum ResolveError {
@@ -114,9 +122,10 @@ async fn resolve(
             id,
             name: raw.to_string(),
             note: None,
+            by_id: true,
         });
     }
-    let hits = lookup(ctx, raw).await.map_err(|e| {
+    let (hits, _) = lookup(ctx, raw).await.map_err(|e| {
         tracing::warn!(error = %e, "Entity lookup failed");
         ResolveError::ReadFailed
     })?;
@@ -160,6 +169,7 @@ async fn resolve(
         id: first.id,
         name: first.name.clone(),
         note: Some(note),
+        by_id: false,
     })
 }
 
@@ -197,8 +207,8 @@ fn contains_ci(haystack: Option<&str>, needle: &str) -> bool {
 
 pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
     let name = args["name"].as_str().unwrap_or("").to_string();
-    let hits = match lookup(ctx, &name).await {
-        Ok(hits) => hits,
+    let (hits, total) = match lookup(ctx, &name).await {
+        Ok(found) => found,
         Err(e) => {
             tracing::warn!(error = %e, "Entity lookup failed");
             return ToolResult::new(
@@ -208,10 +218,12 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             .error();
         }
     };
+    let read = hits.len();
     let (ranked, by_question) = rank_by_question(ctx, rank(hits, &name), &name).await;
-    let text = if ranked.is_empty() {
+    let clear = by_question || dominant(&ranked, &name);
+    let mut text = if ranked.is_empty() {
         "No matching entities.".to_string()
-    } else if by_question || dominant(&ranked, &name) {
+    } else if clear {
         let mut lines = vec![format!("Best match: {}", node_line(&ranked[0]))];
         if ranked.len() > 1 {
             lines.push("Other matches:".to_string());
@@ -225,8 +237,20 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
         lines.extend(ranked.iter().map(node_line));
         lines.join("\n")
     };
-    for n in &ranked {
-        remember(sink, n);
+    // 截断要说出来（与 `rule_matches` 同一条）：只读了前几个，模型会把它们当成这个
+    // 名字的全部，然后告诉人「库里只有这几个」
+    if let Some(total) = total.filter(|t| *t > read as i64) {
+        text.push_str(&format!(
+            "\n({total} entities have a name containing \"{name}\"; only the first {read} were \
+             read. A longer or more exact name narrows the search.)"
+        ));
+    }
+    // 同名歧义时候选只是搜索结果，不是认下的实体。从前这里全记，下一轮就收到一串
+    // 同名的 id 和一句「直接用这些」，没选的那个还常常排在前面。选中的那个在它被
+    // 读的时候记（entity_facts / neighbors / timeline）；上一轮的候选另有工具往返
+    // 的回放可查
+    if let Some(best) = ranked.first().filter(|_| clear) {
+        remember(sink, best);
     }
     ToolResult::new(
         text,
@@ -352,18 +376,24 @@ pub(super) fn predicates_of(facts: &[EntityFact]) -> String {
 /// 子串找不到时按词找：每个词各去库里捞一把，名字里含的词数达到「全部减一、至少两个」
 /// 的候选算命中（"OpenAI board members" → "OpenAI's board of directors"）。
 /// 模型给的名字常带一个库里没有的词（members、公司、这个），全词命中会把它们全漏掉
-async fn lookup(ctx: &ToolCtx<'_>, raw: &str) -> utopia_core::AppResult<Vec<GraphNode>> {
+///
+/// 回的是查到的实体，以及这个名字一共命中几个。只读前八个，总数用来告诉模型这不是
+/// 全部；按词拼凑的那一路没有总数
+async fn lookup(
+    ctx: &ToolCtx<'_>,
+    raw: &str,
+) -> utopia_core::AppResult<(Vec<GraphNode>, Option<i64>)> {
     // 工具调用来自聊天 / MCP：当下的问题，不在回放里。传 None 让 `degree` 按
     // 现在算——和现状一致，回放图上的搜索框另走 `/kbs/{id}/entities` 自己挂
     // 时刻
-    let (hits, _) =
+    let (hits, total) =
         utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, raw, 8, 0, None).await?;
     if !hits.is_empty() {
-        return Ok(hits);
+        return Ok((hits, Some(total)));
     }
     let words: Vec<&str> = raw.split_whitespace().filter(|w| w.len() >= 2).collect();
     if words.len() < 2 {
-        return Ok(hits);
+        return Ok((hits, Some(total)));
     }
     let mut pool: Vec<GraphNode> = Vec::new();
     for w in &words {
@@ -383,7 +413,7 @@ async fn lookup(ctx: &ToolCtx<'_>, raw: &str) -> utopia_core::AppResult<Vec<Grap
         .filter(|(s, _)| *s >= need)
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.degree.cmp(&a.1.degree)));
-    Ok(scored.into_iter().map(|(_, n)| n).take(8).collect())
+    Ok((scored.into_iter().map(|(_, n)| n).take(8).collect(), None))
 }
 
 /// 名字里含了几个词（大小写不敏感）
@@ -605,6 +635,9 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
                 .error();
             }
         };
+    // 按 id 读的也是认下：模型常常先搜到一串同名的，再按 id 读其中一个，读的这个
+    // 才是这一轮说的那个（按名字认下的 `resolve` 已记过，这里不会重复）
+    remember(sink, &node);
     // 规则的结论也是这个实体的一部分（0021）。**不给的话模型会拿那些读数自己再判
     // 一遍**——而阈值写在规则里，它看不见，于是两处判断迟早不一致
     let derived = match
@@ -800,6 +833,7 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
                 .error();
             }
         };
+    remember(sink, &node);
     // 邻居是对端**实体**；属性值不算邻居，entity_facts 里有
     let (matched, aligned) = filtered(ctx, &facts, &filter).await;
     let linked: Vec<&EntityFact> = matched
@@ -926,6 +960,7 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
                 .error();
             }
         };
+    remember(sink, &node);
     // 只要**说出了世界时间**的事实。没日期的那些起点是摄取时刻，排进时间线只会
     // 把一篇文章的日期当成事件的日期
     let (matched, aligned) = filtered(ctx, &facts, &filter).await;
@@ -1026,6 +1061,19 @@ pub(super) fn path_text(p: &Path) -> String {
     parts.join("; ")
 }
 
+/// 一个端点在这条路径上的名字：路径两头的边写着它
+fn name_on_path(p: &Path, id: Uuid) -> Option<&str> {
+    p.edges.iter().find_map(|e| {
+        if e.subject_id == id {
+            Some(e.subject_name.as_str())
+        } else if e.object_id == id {
+            Some(e.object_name.as_str())
+        } else {
+            None
+        }
+    })
+}
+
 pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
     let mut notes = Vec::new();
     let mut ends = Vec::new();
@@ -1052,7 +1100,6 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             }
         }
     }
-    let (from, to) = (&ends[0], &ends[1]);
     let m = moments(args);
     let max_hops = args["max_hops"]
         .as_u64()
@@ -1066,8 +1113,8 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
     let paths = match utopia_store::paths::paths_between(
         &ctx.state.pool,
         ctx.kb_id,
-        from.id,
-        to.id,
+        ends[0].id,
+        ends[1].id,
         m.at,
         m.as_of,
         limits,
@@ -1084,6 +1131,41 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             .error();
         }
     };
+    // 以 id 给出的一端没在库里查过。找到了路径，它就在路上，名字写在边上；没找到，
+    // 可能只是这个 id 不在这个库（抄错的、别的库的）——那时「两者之间没有路径」
+    // 读起来像一个关于图的事实，所以先认一遍，认不出就照实说
+    for (key, end) in ["from", "to"].into_iter().zip(ends.iter_mut()) {
+        if !end.by_id {
+            continue;
+        }
+        if let Some(p) = paths.first() {
+            if let Some(name) = name_on_path(p, end.id) {
+                end.name = name.to_string();
+            }
+            continue;
+        }
+        match utopia_store::graph::entity_node(&ctx.state.pool, ctx.kb_id, end.id, m.as_of).await {
+            Ok(Some(node)) => end.name = node.name,
+            Ok(None) => {
+                return ToolResult::new(
+                    format!(
+                        "Unknown `{key}`: no entity with id {} in this base.",
+                        end.id
+                    ),
+                    json!({ "kind": "path", "label": "?", "detail": "unknown entity" }),
+                )
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Entity lookup failed");
+                return ToolResult::new(
+                    "Could not look up entities.".into(),
+                    json!({ "kind": "path", "label": "?", "detail": "failed" }),
+                )
+                .error();
+            }
+        }
+    }
+    let (from, to) = (&ends[0], &ends[1]);
     let label = format!("{} ↔ {}", from.name, to.name);
     let when = match (m.at, m.before, m.as_of) {
         (Some(t), _, _) => format!(" at {}", crate::time_text::world(t, Some("day"))),
@@ -1115,6 +1197,12 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
     ));
     for (i, p) in paths.iter().enumerate() {
         lines.push(format!("{}. {}", i + 1, path_text(p)));
+    }
+    if paths.len() >= limits.max_paths {
+        lines.push(format!(
+            "(Only the first {} paths, shortest first, are listed; there may be more.)",
+            limits.max_paths
+        ));
     }
     let detail = format!(
         "{} path{}, shortest {shortest} hop{}",

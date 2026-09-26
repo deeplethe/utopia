@@ -69,6 +69,19 @@ pub async fn enqueue_unless_queued(
     payload: serde_json::Value,
 ) -> AppResult<Option<i64>> {
     let mut tx = pool.begin().await?;
+    let id = enqueue_unless_queued_tx(&mut tx, kind, payload).await?;
+    tx.commit().await?;
+    Ok(id)
+}
+
+/// 同 [`enqueue_unless_queued`]，但排在调用方的事务里：任务与事务里别的写一起提交、
+/// 一起回滚。人定一个类别词时，判定和它的短语对齐任务要么都在、要么都不在——先提交
+/// 判定再排，进程在两步之间退出就只剩判定，它改了的签名没人去重判
+pub async fn enqueue_unless_queued_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    kind: &str,
+    payload: serde_json::Value,
+) -> AppResult<Option<i64>> {
     let row: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO jobs (kind, payload)
          SELECT $1, $2
@@ -77,12 +90,11 @@ pub async fn enqueue_unless_queued(
     )
     .bind(kind)
     .bind(payload)
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut **tx)
     .await?;
     if row.is_some() {
-        notify_worker_tx(&mut tx).await?;
+        notify_worker_tx(tx).await?;
     }
-    tx.commit().await?;
     Ok(row.map(|(id,)| id))
 }
 
@@ -111,6 +123,20 @@ pub async fn enqueue_unless_queued_after(
     }
     tx.commit().await?;
     Ok(row.map(|(id,)| id))
+}
+
+/// 这个库有没有这一种任务排着或跑着（按 payload 里的 kb_id 看，不比整份 payload：
+/// 同一种任务的 payload 可能多带一个 reask）
+pub async fn pending_for_kb(pool: &PgPool, kind: &str, kb_id: Uuid) -> AppResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM jobs
+                         WHERE kind = $1 AND status IN ('queued', 'running')
+                           AND payload->>'kb_id' = $2)",
+    )
+    .bind(kind)
+    .bind(kb_id.to_string())
+    .fetch_one(pool)
+    .await?)
 }
 
 pub async fn enqueue(pool: &PgPool, kind: &str, payload: serde_json::Value) -> AppResult<i64> {

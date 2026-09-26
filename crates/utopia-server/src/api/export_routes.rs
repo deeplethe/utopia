@@ -73,6 +73,9 @@ pub async fn export(
     // 也不能把别库的对象安上本库的 IRI——那份文件看着完整、实则悬空。
     // 在流开始之前拦下：客户端拿到的是确定性的错误，不是一截断掉的文件
     utopia_store::export::provenance_integrity(&mut tx, kb_id).await?;
+    // 认知状态同一条纪律（0062）：越库引用、词表以外的存储值、以及 open
+    // 违规上解不开的判据，都在发第一个字节之前拦下
+    utopia_store::export::contest_integrity(&mut tx, kb_id).await?;
 
     let stream = async_stream::try_stream! {
         let buf = SharedBuf::default();
@@ -132,6 +135,29 @@ pub async fn export(
             after = Some(last.id);
             for d in &page {
                 rdf::emit_derived(&mut sink, &names, &vocab, d)?;
+            }
+            yield axum::body::Bytes::from(buf.take());
+        }
+
+        // 认知状态（0062）：争议与违规都指着事实的 IRI，放在事实与派生之后
+        let mut after = None;
+        loop {
+            let page = utopia_store::export::fact_conflicts_page(&mut tx, kb_id, after).await.map_err(io)?;
+            let Some(last) = page.last() else { break };
+            after = Some(last.id);
+            for c in &page {
+                rdf::emit_fact_conflict(&mut sink, &names, c)?;
+            }
+            yield axum::body::Bytes::from(buf.take());
+        }
+
+        let mut after = None;
+        loop {
+            let page = utopia_store::export::axiom_violations_page(&mut tx, kb_id, after).await.map_err(io)?;
+            let Some(last) = page.last() else { break };
+            after = Some(last.id);
+            for v in &page {
+                rdf::emit_axiom_violation(&mut sink, &names, &vocab, v)?;
             }
             yield axum::body::Bytes::from(buf.take());
         }

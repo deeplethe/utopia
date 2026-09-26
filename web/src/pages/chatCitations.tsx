@@ -11,6 +11,7 @@ import { S } from "../i18n";
 import { useKbId } from "../kb";
 import { originLabel } from "../origin";
 import { CiteChip, CiteMark, CiteRow, PreviewCard } from "../ui/citation";
+import { CodeBlock } from "./chatCopy";
 
 /** 这一轮回答的来源。
  *
@@ -47,6 +48,8 @@ export const chatMarkdown: Components = {
       </>
     );
   },
+  // 代码块带一个复制（#936）：人从回答里抄走的，最常见的就是 SQL
+  pre: ({ node: _node, ...rest }) => <CodeBlock {...rest} />,
 };
 
 function InlineCite({ n }: { n: number }) {

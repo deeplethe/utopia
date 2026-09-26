@@ -26,6 +26,7 @@ Merging `dev → main` is done by maintainers on their own schedule; contributor
 
 - **Back-merge `main` into `dev` right after a release.** The `dev → main` merge commit lives only on `main`, so without this `main` reads as ahead even though the trees are identical, and the gap grows by one every release.
 - **Urgent fixes go through `dev` too.** A PR opened straight against `main` is the one thing that makes the two branches genuinely diverge, and then someone has to reconcile them by hand.
+- **A release moves the compose pin.** `docker-compose.yml` defaults `UTOPIA_IMAGE` to a fixed tag, and that tag is what the README's one-command start actually runs. Cutting a release is: merge `dev → main`, tag and publish, then a PR on `dev` that points the pin at the new tag. rc6 and rc7 shipped with the pin still on rc5, so everyone who followed the README ran a three-week-old build. Tags from rc8 on are multi-arch; until the pin reaches one of them, arm64 hosts cannot pull the default image.
 
 Both branches are protected: pull request required, CI (`backend` and `web`) must pass, no force pushes, no deletions, and admins are held to the same rules.
 

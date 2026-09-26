@@ -1,13 +1,17 @@
-//! 0070 的 DDL 不许依赖会话的 search_path：`CREATE FUNCTION`、
+//! 不变量家族（0070、0091）的 DDL 不许依赖会话的 search_path：`CREATE FUNCTION`、
 //! `CREATE TRIGGER ... ON`、`EXECUTE FUNCTION` 全部限定到 `public.*`——
 //! pg_restore 会把会话 search_path 置空再灌数据，首位被占住的会话也不能
 //! 把函数建到别的 schema 去。落在别处的触发器等于没有触发器。
 //!
-//! 三种会话下逐个验证：
+//! 三种会话下逐个验证（0070 与 0091 各跑一遍）：
 //!   - 正常 search_path（默认）→ 装上；
 //!   - `SET LOCAL search_path = ''` → 同样装上，函数落在 public；
 //!   - `SET LOCAL search_path = 'decoy'`（先在首位摆上同名干扰物）→
 //!     照样装进 public，干扰物一个不被调用。
+//!
+//! 完备性守卫的 scratch 库迁到**当前链尾**，不停在 0070：链停在哪，责任面
+//! 就停在哪——0073 之后进库的表对停在 0070 的守卫结构性不可见（#901 的
+//! 盲区就是这么来的）。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过；设了地址却连不上、或建不了库——**失败**，
 //! 不是跳过：地址都给了还说「没库」是假话，那个绿色等于这条检查没跑过。
@@ -22,11 +26,15 @@ fn admin_url() -> Option<String> {
     Some(format!("{head}/postgres"))
 }
 
-/// 按文件顺序跑 ≤ `through` 的迁移，各自一个事务（与 sqlx::migrate 同一形状）
-async fn migrate_to(pool: &PgPool, through: i64) -> anyhow::Result<()> {
+/// 按文件顺序跑 `after < version <= through` 的迁移，各自一个事务
+/// （与 sqlx::migrate 同一形状）
+async fn migrate_range(pool: &PgPool, after: i64, through: i64) -> anyhow::Result<()> {
     let migrator = sqlx::migrate!("../../migrations");
     let mut conn = pool.acquire().await?;
-    for m in migrator.iter().filter(|m| m.version <= through) {
+    for m in migrator
+        .iter()
+        .filter(|m| m.version > after && m.version <= through)
+    {
         let mut tx = conn.begin().await?;
         sqlx::raw_sql(&m.sql).execute(&mut *tx).await?;
         tx.commit().await?;
@@ -34,13 +42,17 @@ async fn migrate_to(pool: &PgPool, through: i64) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 在 `search_path` 为 `path` 的事务里跑 0070 本体
-async fn migration_70_under(pool: &PgPool, path: &str) -> Result<(), sqlx::Error> {
+async fn migrate_to(pool: &PgPool, through: i64) -> anyhow::Result<()> {
+    migrate_range(pool, 0, through).await
+}
+
+/// 在 `search_path` 为 `path` 的事务里跑 `version` 那份迁移本体
+async fn migration_under(pool: &PgPool, version: i64, path: &str) -> Result<(), sqlx::Error> {
     let migrator = sqlx::migrate!("../../migrations");
     let m = migrator
         .iter()
-        .find(|m| m.version == 70)
-        .expect("0070 必须在迁移集里");
+        .find(|m| m.version == version)
+        .unwrap_or_else(|| panic!("{version} 必须在迁移集里"));
     let mut conn = pool.acquire().await?;
     let mut tx = conn.begin().await?;
     sqlx::query(&format!("SET LOCAL search_path = {path}"))
@@ -54,6 +66,10 @@ async fn migration_70_under(pool: &PgPool, path: &str) -> Result<(), sqlx::Error
             Err(e)
         }
     }
+}
+
+async fn migration_70_under(pool: &PgPool, path: &str) -> Result<(), sqlx::Error> {
+    migration_under(pool, 70, path).await
 }
 
 /// 隔离库：建 → 迁到 0069 → 返回（库名, 连接池）。
@@ -114,6 +130,28 @@ where
         Ok(inner) => inner,
         Err(p) => std::panic::resume_unwind(p),
     }
+}
+
+/// 完备性守卫的隔离库:scratch 迁到 0069 之后,把链上剩下的全部跑完——
+/// 停在 0070 的守卫对后进的表结构性不可见,post-0070 的引用列要靠
+/// 「迁到当前链尾」才数得出来。
+async fn with_full_chain<Fut>(suffix: &str, f: impl FnOnce(PgPool) -> Fut) -> anyhow::Result<()>
+where
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    with_scratch(suffix, |pool| async move {
+        migrate_range(&pool, 69, i64::MAX).await?;
+        f(pool).await
+    })
+    .await
+}
+
+/// 装完 0070 之后把链推进到 0090,再在被测的 search_path 下装 0091。
+/// 中间段的 search_path 不属被测面,走默认路径与真实升级同序。
+async fn finish_chain_then_91_under(pool: &PgPool, path: &str) -> anyhow::Result<()> {
+    migrate_range(pool, 70, 90).await?;
+    migration_under(pool, 91, path).await?;
+    Ok(())
 }
 
 /// 装完后要点名的几件东西：声明式边 26 条复合外键、父行作证边 10 个触发器、
@@ -206,6 +244,56 @@ async fn assert_installed(pool: &PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 0091 必须完成的装配:新触发器函数落 public、13 条新复合键、
+/// 3 个 `(kb_id,id)` 支撑唯一约束、5 个 kb 不可过户触发器 +
+/// implied_fact_sources 的归属推导触发器,一个都不能少。
+async fn assert_0091_installed(pool: &PgPool) -> anyhow::Result<()> {
+    let fns: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+          WHERE n.nspname = 'public' AND p.proname = 'implied_source_stays_inside_its_kb'",
+    )
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(fns, 1, "触发器函数必须落在 public schema");
+
+    let fks: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pg_constraint WHERE contype = 'f' AND conname IN (
+           'implication_rules_subject_type_same_kb','implication_rules_object_type_same_kb',
+           'implication_rules_conclude_property_same_kb',
+           'phrase_readings_entity_same_kb',
+           'attribute_rule_versions_rule_same_kb',
+           'derived_facts_attribute_rule_version_same_kb',
+           'errata_runs_document_same_kb',
+           'errata_actions_run_same_kb','errata_actions_document_same_kb',
+           'errata_actions_fact_same_kb','errata_actions_statement_same_kb',
+           'errata_actions_predicate_same_kb','errata_actions_new_fact_same_kb')",
+    )
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(fks, 13, "0091 的复合外键要么全在要么全不在");
+
+    let uniques: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pg_constraint WHERE contype = 'u' AND conname IN (
+           'implication_rules_kb_id_key','attribute_rule_versions_kb_id_key',
+           'errata_runs_kb_id_key')",
+    )
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(uniques, 3, "每个新被引表一条 (kb_id, id) 唯一约束");
+
+    let trg: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN (
+           'implied_fact_sources_same_kb',
+           'implication_rules_keep_their_kb','phrase_readings_keep_their_kb',
+           'errata_runs_keep_their_kb','errata_actions_keep_their_kb',
+           'attribute_rule_versions_keep_their_kb')",
+    )
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(trg, 6, "归属推导与不可过户触发器,一个都不能少");
+    Ok(())
+}
+
 // =====================================================================
 // 完备性守卫:0070 的覆盖面不靠「数过的约束名/触发器名」维持——那种数法
 // 会在有人往账本里加了一条引用列、却没人回来改 0070 的时候保持全绿。
@@ -218,6 +306,7 @@ async fn assert_installed(pool: &PgPool) -> anyhow::Result<()> {
 /// 它的引用边才轮到逐条归类;面外表(审计、暂存、运维)不归这条不变量管。
 const LEDGER_TABLES: &[&str] = &[
     // 自带 kb_id 的语义行
+    "attribute_rule_versions",
     "attribute_rules",
     "chunks",
     "derived_facts",
@@ -225,8 +314,13 @@ const LEDGER_TABLES: &[&str] = &[
     "entities",
     "entity_type_disjoint",
     "entity_types",
+    "errata_actions",
+    "errata_runs",
     "facts",
+    "implication_rules",
+    "name_vectors",
     "phrase_bindings",
+    "phrase_readings",
     "relation_types",
     "rules",
     "time_mentions",
@@ -237,6 +331,7 @@ const LEDGER_TABLES: &[&str] = &[
     "fact_derivations",
     "fact_evidence",
     "fact_qualifiers",
+    "implied_fact_sources",
     "relation_type_domains",
     "relation_type_qualifiers",
     "relation_type_ranges",
@@ -253,6 +348,7 @@ const OWNER_ROWS: &[(&str, &str, &str)] = &[
     ("fact_derivations", "derived_fact_id", "derived_facts"),
     ("fact_evidence", "fact_id", "facts"),
     ("fact_qualifiers", "fact_id", "facts"),
+    ("implied_fact_sources", "fact_id", "facts"),
     (
         "relation_type_domains",
         "relation_type_id",
@@ -300,6 +396,21 @@ const TRIGGER_EDGES: &[(&str, &str, &str)] = &[
         "fact_qualifiers",
         "qualifier_type_id",
         "fact_qualifiers_same_kb",
+    ),
+    (
+        "implied_fact_sources",
+        "entity_id",
+        "implied_fact_sources_same_kb",
+    ),
+    (
+        "implied_fact_sources",
+        "rule_id",
+        "implied_fact_sources_same_kb",
+    ),
+    (
+        "implied_fact_sources",
+        "statement_id",
+        "implied_fact_sources_same_kb",
     ),
     (
         "relation_type_domains",
@@ -522,15 +633,15 @@ impl Coverage {
         dump("SURFACE_DRIFT", &self.surface_drift);
         dump("PREFLIGHT_MISSING", &self.preflight_missing);
         dump("STALE_PREFLIGHT", &self.stale_preflight);
-        if self.declarative.len() != 26 {
+        if self.declarative.len() != 42 {
             problems.push_str(&format!(
-                "  DECLARATIVE_EDGES = {} (expected 26)\n",
+                "  DECLARATIVE_EDGES = {} (expected 42)\n",
                 self.declarative.len()
             ));
         }
-        if self.trigger_covered.len() != 13 {
+        if self.trigger_covered.len() != 16 {
             problems.push_str(&format!(
-                "  TRIGGER_EDGES = {} (expected 13)\n",
+                "  TRIGGER_EDGES = {} (expected 16)\n",
                 self.trigger_covered.len()
             ));
         }
@@ -852,19 +963,17 @@ async fn classify_reference_edges(pool: &PgPool) -> anyhow::Result<Coverage> {
 
 #[tokio::test]
 async fn every_reference_edge_on_the_ledger_is_classified() -> anyhow::Result<()> {
-    with_scratch("cover", |pool| async move {
-        migration_70_under(&pool, "public").await?;
+    with_full_chain("cover", |pool| async move {
         classify_reference_edges(&pool).await?.assert_complete()
     })
     .await
 }
 
 /// 漂移探针 A:kb 自持行上新增一条单列外键(不配 kb_id)。
-/// 「26 个名字还在」挡不住它——catalog 会把它数出来,归不进任何一类。
+/// 「名字还在」挡不住它——catalog 会把它数出来,归不进任何一类。
 #[tokio::test]
 async fn a_new_reference_on_a_kb_owned_row_fails_the_guard() -> anyhow::Result<()> {
-    with_scratch("driftd", |pool| async move {
-        migration_70_under(&pool, "public").await?;
+    with_full_chain("driftd", |pool| async move {
         sqlx::query(
             "ALTER TABLE public.time_mentions
              ADD COLUMN probe_ref uuid REFERENCES public.relation_types(id)",
@@ -888,8 +997,7 @@ async fn a_new_reference_on_a_kb_owned_row_fails_the_guard() -> anyhow::Result<(
 /// 触发器。「表上有触发器」不许让这条新列显得已被覆盖——登记是列级的。
 #[tokio::test]
 async fn a_new_reference_on_an_owner_derived_row_fails_the_guard() -> anyhow::Result<()> {
-    with_scratch("driftt", |pool| async move {
-        migration_70_under(&pool, "public").await?;
+    with_full_chain("driftt", |pool| async move {
         sqlx::query(
             "ALTER TABLE public.fact_evidence
              ADD COLUMN probe_rel uuid REFERENCES public.relation_types(id)",
@@ -915,8 +1023,7 @@ async fn a_new_reference_on_an_owner_derived_row_fails_the_guard() -> anyhow::Re
 /// 报错里点名是哪条结构边
 #[tokio::test]
 async fn a_protected_edge_missing_from_preflight_fails_the_guard() -> anyhow::Result<()> {
-    with_scratch("driftp", |pool| async move {
-        migration_70_under(&pool, "public").await?;
+    with_full_chain("driftp", |pool| async move {
         sqlx::query(
             "ALTER TABLE public.time_mentions
              ADD COLUMN probe_ref uuid,
@@ -953,8 +1060,8 @@ async fn a_protected_edge_missing_from_preflight_fails_the_guard() -> anyhow::Re
 #[test]
 fn the_preflight_check_notices_a_dropped_or_stray_edge() -> anyhow::Result<()> {
     let surface = preflight_surface()?;
-    // 同一份文件两个方向各数一次:39 条结构边 + 5 条 merged 过滤检查
-    assert_eq!(surface.edges.len(), 39, "preflight 必须覆盖全部保护边");
+    // 同一份文件两个方向各数一次:58 条结构边 + 5 条 merged 过滤检查
+    assert_eq!(surface.edges.len(), 58, "preflight 必须覆盖全部保护边");
     assert_eq!(
         surface.filters,
         [
@@ -1015,7 +1122,10 @@ async fn the_migration_installs_under_an_empty_search_path() -> anyhow::Result<(
     with_scratch("empty", |pool| async move {
         let r = migration_70_under(&pool, "''").await;
         assert!(r.is_ok(), "search_path 为空时装得上 0070: {r:?}");
-        assert_installed(&pool).await
+        assert_installed(&pool).await?;
+        let r = finish_chain_then_91_under(&pool, "''").await;
+        assert!(r.is_ok(), "search_path 为空时装得上 0091: {r:?}");
+        assert_0091_installed(&pool).await
     })
     .await
 }
@@ -1035,18 +1145,28 @@ async fn the_migration_installs_under_a_hostile_search_path() -> anyhow::Result<
         )
         .execute(&pool)
         .await?;
+        sqlx::query(
+            "CREATE FUNCTION decoy.implied_source_stays_inside_its_kb() RETURNS trigger
+             LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END; $$",
+        )
+        .execute(&pool)
+        .await?;
 
         let r = migration_70_under(&pool, "decoy, public").await;
         assert!(r.is_ok(), "首位被占的 search_path 下也装得上 0070: {r:?}");
         assert_installed(&pool).await?;
+        let r = finish_chain_then_91_under(&pool, "decoy, public").await;
+        assert!(r.is_ok(), "首位被占的 search_path 下也装得上 0091: {r:?}");
+        assert_0091_installed(&pool).await?;
         // 干扰物原样留着：一次都没被选中
         let decoy_fn: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-              WHERE n.nspname = 'decoy' AND p.proname = 'kb_ownership_is_not_reassigned'",
+              WHERE n.nspname = 'decoy' AND p.proname IN
+                ('kb_ownership_is_not_reassigned','implied_source_stays_inside_its_kb')",
         )
         .fetch_one(&pool)
         .await?;
-        assert_eq!(decoy_fn, 1, "decoy 函数不该被覆盖也不该被删掉");
+        assert_eq!(decoy_fn, 2, "decoy 函数不该被覆盖也不该被删掉");
         Ok(())
     })
     .await
@@ -1057,7 +1177,79 @@ async fn the_migration_installs_under_a_normal_search_path() -> anyhow::Result<(
     with_scratch("norm", |pool| async move {
         let r = migration_70_under(&pool, "public").await;
         assert!(r.is_ok(), "正常 search_path 下装得上 0070: {r:?}");
-        assert_installed(&pool).await
+        assert_installed(&pool).await?;
+        let r = finish_chain_then_91_under(&pool, "public").await;
+        assert!(r.is_ok(), "正常 search_path 下装得上 0091: {r:?}");
+        assert_0091_installed(&pool).await
+    })
+    .await
+}
+
+/// 0091 的前置检查:账本上已经躺着越库出处的库,装 0091 必须整份中止——
+/// 装上不变量却对已违反它的账本报喜,等于替坏数据背书。中止必须连锅端:
+/// 报了哪条边、一行新机制都不许留下。
+#[tokio::test]
+async fn migration_91_refuses_a_ledger_with_cross_kb_sources() -> anyhow::Result<()> {
+    with_scratch("dirty", |pool| async move {
+        migration_70_under(&pool, "public").await?;
+        migrate_range(&pool, 70, 90).await?;
+
+        // 两库、各一实体/属性/规则/事实;出处行的事实在本库、规则在别库
+        sqlx::query(
+            "WITH org AS (
+                INSERT INTO organizations (id, name) VALUES (gen_random_uuid(), 't')
+                RETURNING id
+             ), ws AS (
+                INSERT INTO workspaces (id, org_id, name)
+                SELECT gen_random_uuid(), id, 't' FROM org RETURNING id
+             ), kbs AS (
+                INSERT INTO knowledge_bases (id, workspace_id, name)
+                SELECT gen_random_uuid(), ws.id, 'kb' || i FROM ws, generate_series(1, 2) i
+                RETURNING id
+             ), a AS (SELECT id FROM kbs ORDER BY id LIMIT 1),
+                  b AS (SELECT id FROM kbs ORDER BY id OFFSET 1),
+             ents AS (
+                INSERT INTO entities (id, kb_id, canonical_name)
+                SELECT gen_random_uuid(), id, 'e' FROM kbs RETURNING id, kb_id
+             ), rels AS (
+                INSERT INTO relation_types (id, kb_id, key, label)
+                SELECT gen_random_uuid(), id, 'r', 'r' FROM kbs RETURNING id, kb_id
+             ), fcts AS (
+                INSERT INTO facts (id, kb_id, subject_id, object_id, confidence)
+                SELECT gen_random_uuid(), e.kb_id, e.id, e.id, 0.9 FROM ents e
+                RETURNING id, kb_id
+             ), rules_ AS (
+                INSERT INTO implication_rules
+                    (id, kb_id, trigger, phrase, conclude_property_id, status)
+                SELECT gen_random_uuid(), r.kb_id, 'phrase', 'p', r.id, 'approved' FROM rels r
+                RETURNING id, kb_id
+             )
+             -- statement_id 是本库事实(CHECK 要求 statement/entity 恰好一个):
+             -- 只坏 rule 那一头,报错的边名才好对
+             INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id)
+             SELECT f.id, i.id, f.id FROM fcts f, rules_ i
+              WHERE f.kb_id = (SELECT id FROM a) AND i.kb_id = (SELECT id FROM b)",
+        )
+        .execute(&pool)
+        .await?;
+
+        let r = migration_under(&pool, 91, "public").await;
+        let err = r.expect_err("已有越库出处的账本必须装不上 0091");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cross-KB references already present") && msg.contains("implied.rule"),
+            "报错必须点名是哪条边: {msg}"
+        );
+
+        // 中止要干净:一行新机制都不能留
+        let leftovers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_constraint
+              WHERE contype = 'f' AND conname LIKE 'implication_rules%_same_kb'",
+        )
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(leftovers, 0, "失败的迁移不许留半套装上的机制");
+        Ok(())
     })
     .await
 }

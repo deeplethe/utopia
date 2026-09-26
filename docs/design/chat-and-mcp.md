@@ -10,9 +10,11 @@ Records: [0042] (the loop), [0014] (MCP tools and scope), [0015] (`remember` and
 policy is one `AgentHook` in `api/agent.rs`: `tool_choice: required` until a tool has run, then the
 budget withdraws the tools and orders an answer; a malformed call is refused with the same message
 as before; a tool's UI step goes to the stream; an empty turn is asked again once; a text-only first
-turn from an endpoint that ignored `required` is sent back once [0042]. A turn cannot end before a
-tool has run; `no_evidence_needed` is the exit for a greeting or "make it shorter"; `STALL_NUDGE`
-and `DONE` are gone [0042 d3]. The wire stays `LlmClient` behind `RigModel`: the read timeout,
+turn from an endpoint that ignored `required` is sent back once; a turn that writes its tool call as
+text is held back from the stream and sent back once, and a second one is an error [0042]. A turn
+cannot end before a tool has run; `no_evidence_needed` is the exit for a greeting or "make it
+shorter"; `STALL_NUDGE` and `DONE` are gone [0042 d3]. The wire stays `LlmClient` behind
+`RigModel`: the read timeout,
 error bodies, the classification of a failure as out of credit, rate limited, unavailable or nothing
 of the kind, and cache logging; earlier
 entities become a `system` message right before the question; degradation to one-shot RAG happens
@@ -23,7 +25,8 @@ only on a 400 or 422 to the first request with tools [0042 d2].
 `at` respected), `changes`, `list_rules`, `rule_matches`, `remember`; MCP results carry
 `structuredContent` with ledger UUIDs and each evidence row's origin [0014, 0021, 0041, 0019,
 0022, 0040]. The previous turn's tool calls are replayed so the model knows what it did, not only
-what it said [0015].
+what it said [0015]; a turn that gathers nothing, such as a restatement, keeps the previous answer's
+sources for the citation numbers it repeats (#943).
 
 **Retrieval.** Hybrid: vector recall on `chunks.embedding` through the per-dimension HNSW index with
 `relaxed_order` iterative scan, plus full text in embedded Tantivy; both take `as_of`; full text is

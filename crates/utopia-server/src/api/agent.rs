@@ -59,14 +59,144 @@ pub(crate) const EMPTY_REPLY_RETRY: &str = "(system) Your previous reply was emp
     the user now: answer from the evidence gathered above, or call a tool if you still need \
     evidence.";
 
+/// 模型把工具调用写进了正文时退回去的那句（#937）。
+///
+/// 端点偶尔不走协议里的 `tool_calls`，而是把调用的标记原样写成正文：DeepSeek 的
+/// `<｜tool▁call▁begin｜>function…`（台子上对话那一路 35 题里错了 2 题），或者 DSML。
+/// 什么都没执行，那段也不是答案。退回时保留那一回合，模型看得见自己想调什么；
+/// 只给一次，再写一次就以 [`CONTROL_TEXT`] 报错
+pub(crate) const MARKUP_RETRY: &str = "(system) Your previous reply wrote a tool call out as \
+    text, so nothing ran. Make the call as a tool call, or answer the user in plain text.";
+
 /// Bounded buffering applies only to the tool-free terminal call. This is a byte
 /// limit, independent of the provider's token accounting.
 pub(crate) const MAX_FINAL_ANSWER_BYTES: usize = 1024 * 1024;
 const FINAL_TOOL_CALL: &str = "Model attempted a tool call after the tool budget was exhausted";
+pub(crate) const CONTROL_TEXT: &str = "Model returned tool-control text instead of a final answer";
 
-/// Deliberately scoped to budget finalization and bare control output. Explanations
-/// and fenced examples are prose, and an explicit request about DSML may legitimately
-/// ask for the raw encoding. Never interpret this text as an executable tool call.
+/// Line starts that open a tool call written as text, as [`control_key`] spells
+/// them: DSML, and DeepSeek's native markup (#937).
+const CONTROL_MARKERS: [&str; 5] = [
+    "<DSMLcalls>",
+    "<DSMLtool_calls>",
+    "<DSMLinvokename=",
+    "<tool▁calls▁begin>",
+    "<tool▁call▁begin>",
+];
+
+/// Accommodate the known ASCII/full-width and doubled-pipe spellings.
+fn control_key(candidate: &str) -> String {
+    candidate
+        .chars()
+        .take(80)
+        .filter(|c| !c.is_whitespace() && *c != '|' && *c != '｜')
+        .collect()
+}
+
+fn is_control(candidate: &str) -> bool {
+    let key = control_key(candidate);
+    CONTROL_MARKERS.iter().any(|marker| key.starts_with(marker))
+}
+
+/// A line still being written that could yet turn out to be a marker.
+fn may_become_control(candidate: &str) -> bool {
+    let key = control_key(candidate);
+    CONTROL_MARKERS
+        .iter()
+        .any(|marker| marker.starts_with(key.as_str()))
+}
+
+/// Whether a reply is a tool call written out as text (#845, #937). Explanations
+/// and fenced examples are prose, and an explicit request about the encoding may
+/// legitimately ask for the raw markup. This is a publication guard: never
+/// interpret this text as an executable tool call.
+pub(crate) fn tool_call_text(text: &str, question: &str) -> bool {
+    let request = question.to_ascii_lowercase();
+    let asks_for_encoding = (request.contains("dsml") || request.contains("tool▁call"))
+        && ["example", "verbatim", "示例", "原样"]
+            .iter()
+            .any(|term| request.contains(term))
+        && !request.contains("business")
+        && !request.contains("业务");
+    if asks_for_encoding {
+        return false;
+    }
+    // Inspect the assembled turn, so SSE chunk boundaries do not matter.
+    let text = text.trim();
+    if is_control(text) {
+        return true;
+    }
+    // A real endpoint prefixed its final control block with "Let me examine
+    // it." in the SAME turn. Check bare line starts too, without treating
+    // inline mentions, block quotes, or Markdown fenced examples as calls.
+    let mut fence: Option<(char, usize)> = None;
+    for line in text.lines() {
+        let line = line.trim_start();
+        if let Some(marker @ ('`' | '~')) = line.chars().next() {
+            let len = line.chars().take_while(|c| *c == marker).count();
+            if len >= 3 {
+                match fence {
+                    None => fence = Some((marker, len)),
+                    Some((open, size))
+                        if marker == open && len >= size && line[len..].trim().is_empty() =>
+                    {
+                        fence = None;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+        }
+        if fence.is_none() && is_control(line) {
+            return true;
+        }
+    }
+    false
+}
+
+/// How much of a tool round's text can go out while it is still streaming (#937).
+///
+/// Text goes out line by line. A line is held while it could still become a
+/// tool-call marker; once one has, the rest of the turn is held with it, to be
+/// sent back or dropped. `from` is how much has gone out already, and the line
+/// it ends in was judged then. Fences are not tracked here: a marker in a fenced
+/// example is held until the turn ends, when [`tool_call_text`] releases it.
+pub(crate) fn publishable(text: &str, from: usize, holding: &mut bool) -> usize {
+    if *holding {
+        return from;
+    }
+    let mut at = if from == 0 || text[..from].ends_with('\n') {
+        from
+    } else {
+        match text[from..].find('\n') {
+            Some(i) => from + i + 1,
+            None => return text.len(),
+        }
+    };
+    while at < text.len() {
+        let rest = &text[at..];
+        let (line, finished) = match rest.find('\n') {
+            Some(i) => (&rest[..i], true),
+            None => (rest, false),
+        };
+        if is_control(line) {
+            *holding = true;
+            return at;
+        }
+        if !finished {
+            return if may_become_control(line) {
+                at
+            } else {
+                text.len()
+            };
+        }
+        at += line.len() + 1;
+    }
+    at
+}
+
+/// What keeps a budget-boundary candidate from being published: a structured
+/// call, blank text, or a tool call written as text.
 pub(crate) fn finalization_error(
     text: &str,
     has_calls: bool,
@@ -75,62 +205,10 @@ pub(crate) fn finalization_error(
     if has_calls {
         return Some(FINAL_TOOL_CALL);
     }
-    let text = text.trim();
-    if text.is_empty() {
+    if text.trim().is_empty() {
         return Some("Model returned an empty answer");
     }
-    let request = question.to_ascii_lowercase();
-    let asks_for_encoding = request.contains("dsml")
-        && ["example", "verbatim", "示例", "原样"]
-            .iter()
-            .any(|term| request.contains(term))
-        && !request.contains("business")
-        && !request.contains("业务");
-    if !asks_for_encoding {
-        // Accommodate the known ASCII/full-width and doubled-pipe spellings.
-        // Inspect the assembled turn, so SSE chunk boundaries do not matter.
-        let is_control = |candidate: &str| {
-            let prefix: String = candidate
-                .chars()
-                .take(80)
-                .filter(|c| !c.is_whitespace() && *c != '|' && *c != '｜')
-                .collect();
-            ["<DSMLcalls>", "<DSMLtool_calls>", "<DSMLinvokename="]
-                .iter()
-                .any(|marker| prefix.starts_with(marker))
-        };
-        // A real endpoint prefixed its final control block with "Let me examine
-        // it." in the SAME turn. Check bare line starts too, without treating
-        // inline mentions, block quotes, or Markdown fenced examples as calls.
-        let mut fence: Option<(char, usize)> = None;
-        let mut bare_control = is_control(text);
-        for line in text.lines() {
-            let line = line.trim_start();
-            if let Some(marker @ ('`' | '~')) = line.chars().next() {
-                let len = line.chars().take_while(|c| *c == marker).count();
-                if len >= 3 {
-                    match fence {
-                        None => fence = Some((marker, len)),
-                        Some((open, size))
-                            if marker == open && len >= size && line[len..].trim().is_empty() =>
-                        {
-                            fence = None;
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-            }
-            if fence.is_none() && is_control(line) {
-                bare_control = true;
-                break;
-            }
-        }
-        if bare_control {
-            return Some("Model returned tool-control text instead of a final answer");
-        }
-    }
-    None
+    tool_call_text(text, question).then_some(CONTROL_TEXT)
 }
 
 /// 一场对话里工具共用的东西：库、权限、引用清单，以及给界面的轨迹。
@@ -161,6 +239,8 @@ pub struct Shared {
     nudged: AtomicBool,
     /// 空回复的重问也只给一次（见 `EMPTY_REPLY_RETRY`）
     asked_again: AtomicBool,
+    /// 把工具调用写成正文的退回也只给一次（见 `MARKUP_RETRY`）
+    markup_retried: AtomicBool,
     /// Set before the final request so the route can withhold unvalidated text.
     finalizing: AtomicBool,
     /// Only a rejected model candidate authorizes the one-shot recovery, not an
@@ -196,6 +276,7 @@ impl Shared {
             gate_passed: AtomicBool::new(false),
             nudged: AtomicBool::new(false),
             asked_again: AtomicBool::new(false),
+            markup_retried: AtomicBool::new(false),
             finalizing: AtomicBool::new(false),
             answer_requested: AtomicBool::new(false),
         })
@@ -359,6 +440,17 @@ impl AgentHook for Policy {
             .content
             .iter()
             .any(|c| matches!(c, AssistantContent::Text(t) if !t.text.trim().is_empty()));
+        let written_call = !has_tool_call && {
+            let text: String = event
+                .content
+                .iter()
+                .filter_map(|c| match c {
+                    AssistantContent::Text(t) => Some(t.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            tool_call_text(&text, &self.shared.question)
+        };
         let turn = event.turn;
         let shared = self.shared.clone();
         let max_rounds = self.max_rounds;
@@ -372,6 +464,25 @@ impl AgentHook for Policy {
                         EMPTY_REPLY_RETRY.into(),
                     ));
                 }
+                return ModelTurnAction::Continue;
+            }
+            // 工具调用写成了正文：什么都没执行，这一回合也不是答案（#937）。哪一轮都
+            // 一样，不只是首轮。退回一次；再这样就放它结束，`chat` 那边扣着没发的
+            // 标记，以 `CONTROL_TEXT` 收尾，不存
+            if written_call {
+                if !shared.markup_retried.swap(true, Ordering::Relaxed) {
+                    tracing::warn!(
+                        model = shared.model,
+                        turn,
+                        "模型把工具调用写成了正文，退回一次"
+                    );
+                    return ModelTurnAction::Retry(RetryRequest::Feedback(MARKUP_RETRY.into()));
+                }
+                tracing::warn!(
+                    model = shared.model,
+                    turn,
+                    "退回一次后仍把工具调用写成正文，按错误收尾"
+                );
                 return ModelTurnAction::Continue;
             }
             if has_tool_call || shared.gate_passed.load(Ordering::Relaxed) || turn > max_rounds {
@@ -558,6 +669,77 @@ mod tests {
         }
         let after_example = "```xml\n<｜DSML｜ calls>\n```\nLet me check.\n<|DSML|calls>";
         assert!(finalization_error(after_example, false, "What happened?").is_some());
+    }
+
+    /// DeepSeek 的原生标记也是写成正文的工具调用（#937）：两种竖线、叙述之后的行首都认；
+    /// 行内提及、引用、围栏里的示例、明确要原样示例的问题都不算
+    #[test]
+    fn deepseek_markup_is_a_tool_call_written_as_text() {
+        let call =
+            "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>search_chunks\n\
+                    ```json\n{\"query\":\"Acme\"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>";
+        let question = "What changed at Acme?";
+        assert!(tool_call_text(call, question));
+        assert!(tool_call_text(&call.replace('｜', "|"), question));
+        assert!(tool_call_text(
+            &format!("Let me search.\n\n{call}"),
+            question
+        ));
+        assert!(tool_call_text(
+            "<｜tool▁call▁begin｜>function<｜tool▁sep｜>search_chunks",
+            question
+        ));
+        for prose in [
+            "The reply contained <｜tool▁calls▁begin｜> in the middle of a sentence.",
+            "> <｜tool▁calls▁begin｜>\nThat line quotes the markup.",
+            "It looks like this:\n~~~\n<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>\n~~~",
+            "Acme's revenue rose 5% [1].",
+        ] {
+            assert!(!tool_call_text(prose, question), "{prose}");
+        }
+        assert!(!tool_call_text(
+            call,
+            "Show a <｜tool▁calls▁begin｜> example verbatim"
+        ));
+        assert_eq!(
+            finalization_error(call, false, question),
+            Some(CONTROL_TEXT)
+        );
+    }
+
+    /// 流式外发按行：可能长成标记的那一行扣着，成了标记就连同这一回合剩下的都扣着；
+    /// 其余照常外发，已经发出去一半的那一行不再判断
+    #[test]
+    fn a_line_is_held_while_it_may_become_a_tool_call() {
+        // (本回合正文, 已发出的字节数, 应当发到哪里为止, 之后是否整回合扣住)
+        for (text, from, out, held) in [
+            ("Let me search.\n<｜to", 0, "Let me search.\n", false),
+            (
+                "Let me search.\n<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>",
+                15,
+                "Let me search.\n",
+                true,
+            ),
+            ("One.\n\nTwo.\n  ", 0, "One.\n\nTwo.\n", false),
+            ("<", 0, "", false),
+            ("<b>Acme</b> grew", 0, "<b>Acme</b> grew", false),
+            ("Acme grew\n<b>", 9, "Acme grew\n<b>", false),
+            (
+                "Acme grew <｜tool▁calls▁begin｜> inline",
+                9,
+                "Acme grew <｜tool▁calls▁begin｜> inline",
+                false,
+            ),
+            ("Acme grew\n<|tool▁call▁begin|>", 9, "Acme grew\n", true),
+            ("<|DSML|calls>\nMore.", 0, "", true),
+        ] {
+            let mut holding = false;
+            let upto = publishable(text, from, &mut holding);
+            assert_eq!(&text[..upto], out, "{text:?} from {from}");
+            assert_eq!(holding, held, "{text:?} from {from}");
+        }
+        let mut holding = true;
+        assert_eq!(publishable("Held.\nStill held.", 0, &mut holding), 0);
     }
 
     /// 上一轮的工具往返插在它的结论之前，tool 消息找回自己的工具名

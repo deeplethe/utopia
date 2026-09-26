@@ -20,6 +20,7 @@ use rig_core::message::Message;
 use rig_core::streaming::{StreamedAssistantContent, StreamedUserContent};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use utopia_core::models::{ChunkView, Role};
 use utopia_core::AppError;
@@ -41,7 +42,68 @@ const MAX_ROUNDS: usize = 6;
 
 enum ProducerEvent {
     Progress(Frame),
-    Outcome(Result<Uuid, String>),
+    Outcome(Result<Uuid, Failure>),
+}
+
+/// 一次没答成的生成（0004）：`code` 给界面去 `err.*` 表里查措辞，英文原句留给日志、
+/// MCP 和不做本地化的客户端。**服务端不出显示文本**——`error` 帧与请求被拒用的是
+/// 同一个信封 `{error, code}`，前端用同一个函数读
+struct Failure {
+    code: &'static str,
+    message: String,
+}
+
+impl Failure {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// 模型那一侧的失败，按 `utopia_llm` 的错误类型给 code；认不出的算作答失败
+    fn model(err: &anyhow::Error, message: impl Into<String>) -> Self {
+        Self::new(model_failure_code(err).unwrap_or("answer_failed"), message)
+    }
+}
+
+/// 模型端点的失败换成稳定的 code。类型是 `utopia_llm` 早就分好的：欠费、限流、
+/// 暂时不可用、请求没送到或断在半路、其余的拒绝。这里只是把它们说给界面听
+fn model_failure_code(err: &anyhow::Error) -> Option<&'static str> {
+    if utopia_llm::out_of_credit(err).is_some() {
+        Some("model_out_of_credit")
+    } else if utopia_llm::rate_limited(err).is_some() {
+        Some("model_rate_limited")
+    } else if utopia_llm::unavailable(err).is_some() {
+        Some("model_unavailable")
+    } else if utopia_llm::is_unreachable(err)
+        || err.chain().any(|e| e.is::<utopia_llm::Interrupted>())
+    {
+        Some("model_unreachable")
+    } else if utopia_llm::rejected(err).is_some() {
+        Some("model_rejected")
+    } else {
+        None
+    }
+}
+
+/// 收尾关口（`agent::finalization_error`）拦下候选答案时说的那几句，换成 code。
+/// 这几句以文本的形式穿过 `chat_finalization` 的边界，所以按原文认；测试直接拿
+/// `finalization_error` 的输出来对，改了措辞会在那里失败，而不是悄悄丢掉 code
+fn unpublishable_code(message: &str) -> Option<&'static str> {
+    if message.contains("tool-control text") {
+        Some("answer_tool_text")
+    } else if message.contains("attempted a tool call")
+        || message.contains("Tool calls are not answers")
+    {
+        Some("answer_tool_call")
+    } else if message.contains("empty answer") {
+        Some("answer_empty")
+    } else if message.contains("size limit") {
+        Some("answer_too_long")
+    } else {
+        None
+    }
 }
 
 /// `remember` 曾整个停用过一段（见 `docs/decisions/0015`）：它那时会把一句话直接
@@ -608,6 +670,14 @@ pub async fn chat(
         MAX_HISTORY as i64,
     )
     .await?;
+    // 这一问已经落库，所以它在历史里；runner 又把它当 prompt 发一次。两份都发，
+    // 每个请求里就有两条一样的 user，已认下的实体那条 system 也夹到了两份中间
+    // （#548 起如此）。按落库 id 剔除，不按文本：同一会话里并发的另一问可能排在
+    // 它后面。收尾那一步用同一个位置把当前问题从背景里剔出去
+    let current = history
+        .turn_ids
+        .iter()
+        .position(|id| *id == user_message_id);
     let workspace_id = kb.workspace_id;
     // 数据描述（探索从 schema 写的）与约定（人写的）跟着进 system prompt。
     // **每次都在，不靠检索碰运气**：约定写成一页文档只靠检索也到过 14/18，
@@ -721,9 +791,16 @@ pub async fn chat(
             .add_hook(policy)
             .tool_server_handle(tool_server)
             .build();
+        let prior: Vec<(String, String)> = history
+            .turns
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != current)
+            .map(|(_, turn)| turn.clone())
+            .collect();
         let mut runner = rig_agent
             .runner(Message::user(query.clone()))
-            .history(agent::history_messages(&history.turns, &history.last_tool_exchange));
+            .history(agent::history_messages(&prior, &history.last_tool_exchange));
         // 贴在历史之后、当前问题之前——位置就是服从性，跟抽取里 known_block
         // 紧挨正文是同一条理由（角色与位置由 `rig_model::wire` 定）
         if let Some(block) = agent::known_entities_block(&history.entities, KNOWN_ENTITY_LIMIT) {
@@ -743,6 +820,9 @@ pub async fn chat(
         // 当前模型回合里说的话与发出的调用；回合的结果一到，攒成一条 assistant 消息
         let mut turn_text = String::new();
         let mut turn_calls: Vec<serde_json::Value> = Vec::new();
+        // 这一回合的正文发出去了多少；后面的扣着，因为那可能是写成正文的工具调用（#937）
+        let mut turn_published = 0usize;
+        let mut turn_holding = false;
         let mut finished = false;
         let mut published_sources = 0;
         let mut answer_requested = false;
@@ -750,18 +830,25 @@ pub async fn chat(
         while let Some(item) = run.next().await {
             match item {
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
-                    // Tool-round narration stays live. Withhold only the final call:
-                    // validation after streaming cannot retract protocol garbage.
+                    // Tool-round narration stays live, line by line; a line that is or
+                    // may become a tool call written as text is held (#937). Withhold the
+                    // final call whole: validation after streaming cannot retract
+                    // protocol garbage.
                     if shared.finalizing() {
                         if turn_text.len().saturating_add(t.text.len()) > agent::MAX_FINAL_ANSWER_BYTES {
-                            yield ProducerEvent::Outcome(Err("Model final answer exceeded the size limit".into()));
+                            yield ProducerEvent::Outcome(Err(Failure::new("answer_too_long", "Model final answer exceeded the size limit")));
                             return;
                         }
                         turn_text.push_str(&t.text);
                     } else {
-                        answer_acc.push_str(&t.text);
                         turn_text.push_str(&t.text);
-                        yield ProducerEvent::Progress(delta_event(&t.text));
+                        let upto = agent::publishable(&turn_text, turn_published, &mut turn_holding);
+                        if upto > turn_published {
+                            let fresh = turn_text[turn_published..upto].to_string();
+                            turn_published = upto;
+                            answer_acc.push_str(&fresh);
+                            yield ProducerEvent::Progress(delta_event(&fresh));
+                        }
                     }
                 }
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::ToolCall {
@@ -781,6 +868,17 @@ pub async fn chat(
                     internal_call_id,
                 })) => {
                     if !turn_calls.is_empty() {
+                        // 这一回合真的调了工具。扣着的是标记就丢掉，也不回放给模型；
+                        // 不是（例如围栏里的示例）就补发，赶在这一步之前，`at` 才对得上
+                        if turn_published < turn_text.len() {
+                            if agent::tool_call_text(&turn_text, &query) {
+                                turn_text.truncate(turn_published);
+                            } else {
+                                let rest = turn_text[turn_published..].to_string();
+                                answer_acc.push_str(&rest);
+                                yield ProducerEvent::Progress(delta_event(&rest));
+                            }
+                        }
                         // 工具轮带了叙述文本：与后续轮次的正文之间补一个段落分隔
                         if !turn_text.is_empty() {
                             answer_acc.push_str("\n\n");
@@ -796,6 +894,8 @@ pub async fn chat(
                             "tool_calls": std::mem::take(&mut turn_calls),
                         }));
                         turn_text.clear();
+                        turn_published = 0;
+                        turn_holding = false;
                     }
                     let text = rig_model::tool_result_text(&tool_result.content);
                     // 闸门工具不留轨迹：「你好」下面挂一条「声明不用查」是噪音
@@ -840,20 +940,22 @@ pub async fn chat(
                     if let Some(failed) = is_error { recorded["is_error"] = json!(failed); }
                     exchange_acc.push(recorded);
                 }
-                // 钩子把一个只说不查的回合退了回去：那段话已经流给用户，收不回来；
-                // 接下来的正文另起一段
+                // 钩子把这一回合退了回去。已经流给用户的话收不回来，接下来的正文
+                // 另起一段；还扣着的（写成正文的工具调用）随这一回合丢掉
                 Ok(MultiTurnStreamItem::ModelTurnRetried { .. }) => {
-                    if !turn_text.is_empty() {
+                    if turn_published > 0 {
                         answer_acc.push_str("\n\n");
                         yield ProducerEvent::Progress(delta_event("\n\n"));
                     }
                     turn_text.clear();
                     turn_calls.clear();
+                    turn_published = 0;
+                    turn_holding = false;
                 }
                 Ok(MultiTurnStreamItem::FinalResponse(_)) => finished = true,
                 Ok(_) => {}
                 Err(e) => {
-                    let (message, rejected) = describe(&e);
+                    let (failure, rejected) = describe(&e);
                     if matches!(&e, StreamingError::Prompt(pe) if matches!(pe.as_ref(), PromptError::PromptCancelled { .. }))
                         && shared.take_answer_request() {
                         answer_requested = true;
@@ -863,7 +965,7 @@ pub async fn chat(
                     // 的任何错误都走这条路：一次到 SiliconFlow 的网络抖动被记成
                     // 「tool-calling 不可用」，然后 RAG 死在同一个抖动上
                     if rejected && answer_acc.is_empty() && steps_acc.is_empty() {
-                        tracing::warn!(error = %message, "端点拒绝工具调用，降级为一次性 RAG");
+                        tracing::warn!(error = %failure.message, "端点拒绝工具调用，降级为一次性 RAG");
                         let mut legacy = std::pin::pin!(legacy_rag(
                             state.clone(),
                             kb_id,
@@ -878,7 +980,7 @@ pub async fn chat(
                         }
                         return;
                     }
-                    yield ProducerEvent::Outcome(Err(message));
+                    yield ProducerEvent::Outcome(Err(failure));
                     return;
                 }
             }
@@ -890,7 +992,6 @@ pub async fn chat(
                 let sink = shared.sink.lock().await;
                 (sink.sources.clone(), sink.resolved.clone())
             };
-            let current = history.turn_ids.iter().position(|id| *id == user_message_id);
             let input = finalization::AnswerContext {
                 question: &query, history: &history.turns, current,
                 prior_exchange: &history.last_tool_exchange,
@@ -898,29 +999,61 @@ pub async fn chat(
             };
             match finalization::answer(&client, input).await {
                 Ok(answer) => { turn_text = answer; turn_calls.clear(); finished = true; }
-                Err(e) => { yield ProducerEvent::Outcome(Err(format!("Model could not produce a final answer: {e}"))); return; }
+                Err(e) => {
+                    let message = format!("Model could not produce a final answer: {e}");
+                    let code = model_failure_code(&e)
+                        .or_else(|| unpublishable_code(&message))
+                        .unwrap_or("answer_failed");
+                    yield ProducerEvent::Outcome(Err(Failure::new(code, message)));
+                    return;
+                }
             }
         }
         if !finished {
-            yield ProducerEvent::Outcome(Err("LLM stream ended unexpectedly".into()));
+            yield ProducerEvent::Outcome(Err(Failure::new("answer_failed", "LLM stream ended unexpectedly")));
             return;
         }
         // Check the terminal candidate, not earlier narration. The hook is the
         // policy boundary; this is the last guard before publication and storage.
         if shared.finalizing() {
             if let Some(reason) = agent::finalization_error(&turn_text, !turn_calls.is_empty(), &query) {
-                yield ProducerEvent::Outcome(Err(reason.into()));
+                yield ProducerEvent::Outcome(Err(Failure::new(unpublishable_code(reason).unwrap_or("answer_failed"), reason)));
                 return;
             }
             answer_acc.push_str(&turn_text);
-        } else if turn_text.trim().is_empty() {
-            yield ProducerEvent::Outcome(Err("Model returned an empty answer".into()));
-            return;
+        } else {
+            // 纯文字的最后一回合还扣着东西。是写成正文的工具调用，钩子已经退回过
+            // 一次，这是第二次：报错，不存（#937）。不是（例如围栏里的示例），补发
+            if turn_published < turn_text.len() {
+                if agent::tool_call_text(&turn_text, &query) {
+                    yield ProducerEvent::Outcome(Err(Failure::new("answer_tool_text", agent::CONTROL_TEXT)));
+                    return;
+                }
+                let rest = turn_text[turn_published..].to_string();
+                answer_acc.push_str(&rest);
+                yield ProducerEvent::Progress(delta_event(&rest));
+            }
+            if turn_text.trim().is_empty() {
+                yield ProducerEvent::Outcome(Err(Failure::new("answer_empty", "Model returned an empty answer")));
+                return;
+            }
         }
-        let (sources, resolved) = {
+        let (mut sources, resolved) = {
             let sink = shared.sink.lock().await;
             (sink.sources.clone(), sink.resolved.clone())
         };
+        // 一个工具都没查的一轮（翻译、说短一点）照抄的是上一条回答的 [n]。沿用那些号
+        // 在上一条里的来源，角标才点得开（#943）；查过东西的一轮只认自己查到的
+        if !shared.finalizing() && steps_acc.is_empty() && sources.is_empty() {
+            let previous = history
+                .turns
+                .iter()
+                .rev()
+                .find(|(role, _)| role == "assistant")
+                .map(|(_, content)| content.as_str())
+                .unwrap_or_default();
+            sources = carried_sources(&answer_acc, previous, &history.last_sources);
+        }
         let saved = utopia_store::conversations::append_message(
             &state.pool, conversation_id, "assistant", &answer_acc,
             &utopia_store::conversations::TurnRecord {
@@ -934,7 +1067,7 @@ pub async fn chat(
             Ok(id) => id,
             Err(error) => {
                 tracing::error!(%error, %conversation_id, "Could not persist final answer");
-                yield ProducerEvent::Outcome(Err("Could not save the answer. Please try again later.".into()));
+                yield ProducerEvent::Outcome(Err(Failure::new("answer_not_saved", "Could not save the answer. Please try again later.")));
                 return;
             }
         };
@@ -956,7 +1089,10 @@ pub async fn chat(
             match event {
                 ProducerEvent::Progress(frame) => {
                     if matches!(frame.event, "done" | "error") {
-                        outcome = Some(Err("Producer sent a terminal as progress".into()));
+                        outcome = Some(Err(Failure::new(
+                            "answer_failed",
+                            "Producer sent a terminal as progress",
+                        )));
                         break;
                     }
                     handle.emit(frame).await;
@@ -969,12 +1105,15 @@ pub async fn chat(
         }
         let terminal = match outcome {
             Some(Ok(_saved_id)) => done_event(),
-            Some(Err(message)) => error_event(if message.trim().is_empty() {
-                "Answer failed"
-            } else {
-                &message
-            }),
-            None => error_event("Answer stream ended unexpectedly"),
+            Some(Err(failure)) => error_event(
+                failure.code,
+                if failure.message.trim().is_empty() {
+                    "Answer failed"
+                } else {
+                    &failure.message
+                },
+            ),
+            None => error_event("stream_ended", "Answer stream ended unexpectedly"),
         };
         handle.emit(terminal).await;
         // 注销之后再接上的人得到「没有在跑的」，那时答案已经落库
@@ -984,21 +1123,26 @@ pub async fn chat(
     Ok(sse_from(attached))
 }
 
-/// rig 的错误变成给用户的一句话，外加「是不是端点拒绝了工具调用」。
+/// rig 的错误变成一次失败（code 与英文原句），外加「是不是端点拒绝了工具调用」。
 /// 我们自己的错误链（限流、欠费、被拒）从 `rig_model` 里取回来，文本与从前一样
-fn describe(err: &StreamingError) -> (String, bool) {
-    fn completion(ce: &CompletionError) -> (String, bool) {
+fn describe(err: &StreamingError) -> (Failure, bool) {
+    fn completion(ce: &CompletionError) -> (Failure, bool) {
         match rig_model::llm_failure(ce) {
-            Some(ours) => (ours.to_string(), rig_model::tool_calling_rejected(ce)),
-            None => (ce.to_string(), false),
+            Some(ours) => (
+                Failure::model(ours, ours.to_string()),
+                rig_model::tool_calling_rejected(ce),
+            ),
+            None => (Failure::new("answer_failed", ce.to_string()), false),
         }
     }
     match err {
         StreamingError::Completion(ce) => completion(ce),
         StreamingError::Prompt(pe) => match pe.as_ref() {
             PromptError::CompletionError(ce) => completion(ce),
-            PromptError::PromptCancelled { reason, .. } => (reason.clone(), false),
-            other => (other.to_string(), false),
+            PromptError::PromptCancelled { reason, .. } => {
+                (Failure::new("answer_failed", reason.clone()), false)
+            }
+            other => (Failure::new("answer_failed", other.to_string()), false),
         },
     }
 }
@@ -1019,7 +1163,7 @@ fn legacy_rag(
             Ok(chunks) => chunks,
             Err(error) => {
                 tracing::warn!(%error, "fallback document retrieval failed");
-                yield ProducerEvent::Outcome(Err("Could not search the documents.".into()));
+                yield ProducerEvent::Outcome(Err(Failure::new("search_failed", "Could not search the documents.")));
                 return;
             }
         };
@@ -1043,11 +1187,11 @@ fn legacy_rag(
                 while let Some(item) = deltas.next().await {
                     match item {
                         Ok(text) => { answer_acc.push_str(&text); yield ProducerEvent::Progress(delta_event(&text)); }
-                        Err(e) => { yield ProducerEvent::Outcome(Err(e.to_string())); return; }
+                        Err(e) => { yield ProducerEvent::Outcome(Err(Failure::model(&e, e.to_string()))); return; }
                     }
                 }
                 if answer_acc.trim().is_empty() {
-                    yield ProducerEvent::Outcome(Err("Model returned an empty answer".into()));
+                    yield ProducerEvent::Outcome(Err(Failure::new("answer_empty", "Model returned an empty answer")));
                     return;
                 }
                 let saved = utopia_store::conversations::append_message(
@@ -1063,11 +1207,11 @@ fn legacy_rag(
                     Ok(id) => yield ProducerEvent::Outcome(Ok(id)),
                     Err(error) => {
                         tracing::error!(%error, "fallback answer persistence was not confirmed");
-                        yield ProducerEvent::Outcome(Err("Could not confirm that the answer was saved.".into()));
+                        yield ProducerEvent::Outcome(Err(Failure::new("answer_not_saved", "Could not confirm that the answer was saved.")));
                     }
                 }
             }
-            Err(e) => yield ProducerEvent::Outcome(Err(e.to_string())),
+            Err(e) => yield ProducerEvent::Outcome(Err(Failure::model(&e, e.to_string()))),
         }
     }
 }
@@ -1100,15 +1244,15 @@ fn sse_from(
                     if done { return; }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    yield to_event(&error_event("Answer stream ended unexpectedly"));
+                    yield to_event(&error_event("stream_ended", "Answer stream ended unexpectedly"));
                     return;
                 }
                 // 这个客户端读得太慢，被广播缓冲甩下了。**说出来**——
                 // 静默继续会让它少掉中间一段而毫不知情
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    yield to_event(&Frame::new(
-                        "error",
-                        format!("Fell behind the stream by {n} messages; reopen the conversation"),
+                    yield to_event(&error_event(
+                        "stream_lagged",
+                        &format!("Fell behind the stream by {n} messages; reopen the conversation"),
                     ));
                     return;
                 }
@@ -1148,8 +1292,67 @@ fn done_event() -> Frame {
     Frame::new("done", "{}".into())
 }
 
-fn error_event(message: &str) -> Frame {
-    Frame::new("error", message.into())
+/// 与请求被拒同一个信封：`error` 是英文原句，`code` 给界面查措辞（0004）
+fn error_event(code: &str, message: &str) -> Frame {
+    Frame::new(
+        "error",
+        json!({ "error": message, "code": code }).to_string(),
+    )
+}
+
+/// 正文里的引用号，与界面画角标的 `citeRe` 同一个形状：`[1]`、`[1][2]`、`[1, 2]`、
+/// `[1，2]`——方括号里只有数字与分隔符，分隔符两边可以有空白，0 不是号
+fn cited_numbers(text: &str) -> BTreeSet<u64> {
+    let mut out = BTreeSet::new();
+    for (at, _) in text.match_indices('[') {
+        let rest = &text[at + 1..];
+        let Some(close) = rest.find(']') else {
+            continue;
+        };
+        let parts: Vec<&str> = rest[..close].split([',', '，']).collect();
+        let mut nums = Vec::new();
+        for (k, part) in parts.iter().enumerate() {
+            let mut digits = *part;
+            if k > 0 {
+                digits = digits.trim_start();
+            }
+            if k + 1 < parts.len() {
+                digits = digits.trim_end();
+            }
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                nums.clear();
+                break;
+            }
+            match digits.parse::<u64>() {
+                Ok(n) => nums.push(n),
+                Err(_) => {
+                    nums.clear();
+                    break;
+                }
+            }
+        }
+        out.extend(nums.into_iter().filter(|n| *n > 0));
+    }
+    out
+}
+
+/// 不查东西的一轮沿用上一条回答的来源（#943）。只在这一轮引用的号**全都**在上一条
+/// 回答里引用过时才给，取上一条存下的来源里被引用到的那几条，号不变；否则一条不给——
+/// 不去猜这些号原本属于哪一轮
+fn carried_sources(
+    answer: &str,
+    previous_answer: &str,
+    previous_sources: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let cited = cited_numbers(answer);
+    if cited.is_empty() || !cited.is_subset(&cited_numbers(previous_answer)) {
+        return Vec::new();
+    }
+    previous_sources
+        .iter()
+        .filter(|s| s["n"].as_u64().is_some_and(|n| cited.contains(&n)))
+        .cloned()
+        .collect()
 }
 
 fn source_json(n: usize, c: &ChunkView) -> serde_json::Value {

@@ -15,6 +15,7 @@ mod mcp;
 mod members_routes;
 mod oidc_routes;
 pub(crate) mod ontology_routes;
+mod question_routes;
 mod review_routes;
 mod rig_model;
 pub(crate) mod rule_routes;
@@ -359,6 +360,29 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route(
             "/kbs/{id}/ontology/proposals",
             get(ontology_routes::stored_proposals).post(ontology_routes::decide_proposal),
+        )
+        // 0061：能力问题是本体的验收标准；代理从开放图提本体，人采纳
+        .route(
+            "/kbs/{id}/questions",
+            get(question_routes::list).post(question_routes::create),
+        )
+        .route(
+            "/kbs/{id}/questions/{qid}",
+            patch(question_routes::update).delete(question_routes::delete),
+        )
+        .route(
+            "/kbs/{id}/questions/propose",
+            post(question_routes::propose_questions),
+        )
+        .route("/kbs/{id}/questions/report", get(question_routes::report))
+        .route(
+            "/kbs/{id}/questions/{qid}/result",
+            post(question_routes::record_result),
+        )
+        .route("/kbs/{id}/ontology/propose", post(question_routes::propose))
+        .route(
+            "/kbs/{id}/ontology/proposals/adopt",
+            post(question_routes::adopt),
         )
         // OWL 导入：预览与落库分开两个端点，绝不让上传即改本体。
         // 两者跑同一个 plan——分开的代码路径会分叉，而分叉意味着确认之后

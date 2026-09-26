@@ -95,6 +95,43 @@ pub struct EntityTypeReq {
     pub description: Option<String>,
 }
 
+/// 编辑器改了本体之后：先补向量索引，再排对齐。
+///
+/// **新元素要有向量，对齐的短名单才看得见它。** 候选多于短名单长度时按向量挑
+/// （`phrase_alignment::shortlist`），类别词的候选类也按向量检索
+/// （`type_alignment::candidates_for`）；没向量的元素永远进不了名单，形状的指纹就不变，
+/// 建了也不重判——第一次真跑 `bordered_by` 就是这样（0061 cut 1.1 的采纳路径已经补了，
+/// 这里是编辑器的四个入口）。描述改了也算：向量按「当时嵌的原文」判陈，改了描述的行
+/// 会被同一个任务重嵌。
+///
+/// **排任务，不就地跑。** 就地嵌一次要付一趟嵌入请求的固定开销，本体页一口气建 28 条
+/// 属性就是 28 趟；排任务的话一批编辑只嵌一次。挡的只是排着的（`enqueue_unless_queued_after`），
+/// 不挡在跑的：在跑的那份已经读完待嵌集合，这条编辑它看不见，得再排一份。
+/// 去抖比对齐短，对齐任务开跑前还会看一眼这个任务有没有排着或跑着，排着就等
+/// （见 `align_phrases_reasking` / `align_types_reasking`）。
+async fn reindex_then_align(
+    state: &AppState,
+    kb_id: Uuid,
+    align_kind: &str,
+) -> Result<(), AppError> {
+    utopia_store::jobs::enqueue_unless_queued_after(
+        &state.pool,
+        "embed_ontology",
+        json!({ "kb_id": kb_id }),
+        std::time::Duration::from_secs(2),
+    )
+    .await?;
+    utopia_store::jobs::enqueue_unless_pending(
+        &state.pool,
+        align_kind,
+        json!({ "kb_id": kb_id }),
+        // 去抖：一批编辑（导一个包、建一串属性）只排一次
+        std::time::Duration::from_secs(5),
+    )
+    .await?;
+    Ok(())
+}
+
 pub async fn create_entity_type(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -138,15 +175,9 @@ pub async fn create_entity_type(
         json!({ "key": key, "label": req.label.trim() }),
     )
     .await;
-    // 本体多了一个类：类别词的绑定里那些「没有」和「没定」的要重判（0044 对齐第一片）
-    let _ = utopia_store::jobs::enqueue_unless_pending(
-        &state.pool,
-        "align_types",
-        json!({ "kb_id": kb_id }),
-        // 去抖：一批编辑（导一个包、建一串属性）只排一次
-        std::time::Duration::from_secs(5),
-    )
-    .await;
+    // 本体多了一个类：类别词的绑定里那些「没有」和「没定」的要重判（0044 对齐第一片）。
+    // 先补它的向量，候选类的检索才找得到它
+    let _ = reindex_then_align(&state, kb_id, "align_types").await;
     Ok(Json(json!({ "id": id })))
 }
 
@@ -185,15 +216,10 @@ pub async fn update_entity_type(
                 "description": req.description }),
     )
     .await;
-    // 类的定义改了：绑到它的类别词过期，重判
-    let _ = utopia_store::jobs::enqueue_unless_pending(
-        &state.pool,
-        "align_types",
-        json!({ "kb_id": kb_id }),
-        // 去抖：一批编辑（导一个包、建一串属性）只排一次
-        std::time::Duration::from_secs(5),
-    )
-    .await;
+    // 类的定义改了：绑到它的类别词过期，重判。标签或描述改了向量也陈了，先重嵌
+    let _ = reindex_then_align(&state, kb_id, "align_types").await;
+    // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
+    state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -214,6 +240,8 @@ pub async fn delete_entity_type(
         json!({}),
     )
     .await;
+    // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
+    state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -257,14 +285,14 @@ pub struct RelationTypeReq {
     #[serde(default)]
     pub kind: Option<String>,
     /// 可以当主语的类。attribute 至少一个；relation 留空 = 不限。
-    /// **更新时缺省 = 不动**，所以是 Option 而不是 Vec——不管 domain 的
-    /// 调用方（属性表单）不该因为一次改名就把 domain 清空
+    /// **两者都缺省才是不动**：签名是一组一起提交的——只送 ranges 会把
+    /// domains 清空，不是「ranges 动、domains 留」
     #[serde(default)]
     pub domains: Option<Vec<Uuid>>,
     /// 这条关系的边能带哪些属性（0037）：属性定义的 id。None = 不动
     #[serde(default)]
     pub qualifiers: Option<Vec<Uuid>>,
-    /// 可以当宾语的类。只对 relation 有意义
+    /// 可以当宾语的类。只对 relation 有意义；与 domains 同一条成组提交规矩
     #[serde(default)]
     pub ranges: Option<Vec<Uuid>>,
     /// attribute 专用：text | number | date | bool
@@ -327,15 +355,9 @@ pub async fn create_relation_type(
     if let Some(q) = req.qualifiers.as_deref() {
         utopia_store::ontology::set_relation_qualifiers(&state.pool, kb_id, id, q).await?;
     }
-    // 多了一个属性：判成 none / undecided 的签名也许对得上了（0044 对齐第二片）
-    utopia_store::jobs::enqueue_unless_pending(
-        &state.pool,
-        "align_phrases",
-        serde_json::json!({ "kb_id": kb_id }),
-        // 去抖：一批编辑（导一个包、建一串属性）只排一次
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
+    // 多了一个属性：判成 none / undecided 的签名也许对得上了（0044 对齐第二片）。
+    // 先补它的向量，短名单才看得见它
+    reindex_then_align(&state, kb_id, "align_phrases").await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -374,15 +396,9 @@ pub async fn update_relation_type(
     if let Some(q) = req.qualifiers.as_deref() {
         utopia_store::ontology::set_relation_qualifiers(&state.pool, kb_id, id, q).await?;
     }
-    // 属性改了定义或域/值域：绑到它的签名过期，判成 none 的也许对得上了
-    utopia_store::jobs::enqueue_unless_pending(
-        &state.pool,
-        "align_phrases",
-        serde_json::json!({ "kb_id": kb_id }),
-        // 去抖：一批编辑（导一个包、建一串属性）只排一次
-        std::time::Duration::from_secs(5),
-    )
-    .await?;
+    // 属性改了定义或域/值域：绑到它的签名过期，判成 none 的也许对得上了。
+    // 标签或描述改了向量也陈了，先重嵌（只改域/值域的话补齐任务一查就退）
+    reindex_then_align(&state, kb_id, "align_phrases").await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
@@ -395,6 +411,8 @@ pub async fn update_relation_type(
                 "description": req.description }),
     )
     .await;
+    // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
+    state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -415,6 +433,8 @@ pub async fn delete_relation_type(
         json!({}),
     )
     .await;
+    // 对账可能在同一事务里收/开过违规行——审核队列变了，说一声（0062）
+    state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -591,7 +611,17 @@ pub async fn stored_proposals(
     });
     for p in stored {
         if let Some(arr) = out.get_mut(&p.section).and_then(|v| v.as_array_mut()) {
-            arr.push(p.payload);
+            let mut item = p.payload;
+            // 代理提的多带三格：谁提的、服务哪些问题、会绑上哪些形状（0061）。Suggest 的
+            // 一份没有，前端照旧
+            if p.proposed_by == "agent" {
+                if let Some(o) = item.as_object_mut() {
+                    o.insert("proposed_by".into(), json!("agent"));
+                    o.insert("serves".into(), json!(p.serves));
+                    o.insert("signatures".into(), p.signatures);
+                }
+            }
+            arr.push(item);
         }
     }
     Ok(Json(out))
@@ -603,6 +633,9 @@ pub struct DecideProposalReq {
     pub key: String,
     /// adopted | rejected
     pub status: String,
+    /// 拒绝的理由（0061：下一轮代理读得到）。采纳时忽略
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// 一条提案有人表态了。**改状态不删行**：采纳发生过、拒绝也发生过，
@@ -617,15 +650,32 @@ pub async fn decide_proposal(
     if !matches!(req.status.as_str(), "adopted" | "rejected") {
         return Err(AppError::invalid("bad_status", "status 只能是 adopted 或 rejected").into());
     }
-    utopia_store::ontology::decide_proposal(
-        &state.pool,
-        kb_id,
-        &req.section,
-        &req.key,
-        &req.status,
-        user.id,
-    )
-    .await?;
+    let reason = req
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if req.status == "rejected" && reason.is_some() {
+        utopia_store::ontology::reject_proposal(
+            &state.pool,
+            kb_id,
+            &req.section,
+            &req.key,
+            reason,
+            user.id,
+        )
+        .await?;
+    } else {
+        utopia_store::ontology::decide_proposal(
+            &state.pool,
+            kb_id,
+            &req.section,
+            &req.key,
+            &req.status,
+            user.id,
+        )
+        .await?;
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1299,18 +1349,45 @@ pub async fn apply_import(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let (filename, bytes) = read_upload(multipart).await?;
+    // 导入会改判据（公理链、domain/range、父边）：先把旧本体下会检出的违规
+    // 记下来（0062），apply 落库后按新本体对账——在旧判据下检出过的陈行以
+    // criterion_changed 收场，不是整批抹掉；对账失败如实报错，不假装干净
+    // 基线跑在同一条事务里：autocommit 连接上每条语句各看一个快照，
+    // 半途有别的提交进来会把两个时刻混成一份基线
+    let mut baseline_tx = state.pool.begin().await?;
+    let was_detected = utopia_store::reasoning::detection_keys(&mut baseline_tx, kb_id).await?;
+    baseline_tx.commit().await?;
     let (import_id, plan) =
-        crate::owl_import::apply(&state, kb_id, user.id, &filename, &bytes).await?;
-    // 公理刚变，这是最该重算一致性的时刻——用户导进来的正是判据本身。
-    // 失败不影响导入本身：本体已经落库了，检查跑不动是另一件事，
-    // Review 页那个按钮还能再跑一次
-    let violations = match utopia_store::reasoning::run(&state.pool, kb_id).await {
-        Ok(r) => r.found,
-        Err(e) => {
-            tracing::warn!(?e, "导入后的一致性检查没跑成");
-            0
-        }
-    };
+        match crate::owl_import::apply(&state, kb_id, user.id, &filename, &bytes).await {
+            Ok(v) => v,
+            Err(e) => {
+                // apply 是多笔提交：中途失败时一部分判据已经落了。尽力对账——
+                // 已提交的判据是「当前本体」，open 行不能带着旧判据过夜。对账
+                // 自身失败只记告警，原错误照样返回，不吞
+                match state.pool.begin().await {
+                    Ok(mut tx) => {
+                        if let Err(re) = utopia_store::reasoning::reconcile_ontology(
+                            &mut tx,
+                            kb_id,
+                            &was_detected,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = ?re, "导入失败后的违规对账也没跑成");
+                        } else if let Err(ce) = tx.commit().await {
+                            tracing::warn!(error = ?ce, "导入失败后的违规对账提交失败");
+                        }
+                    }
+                    Err(be) => tracing::warn!(error = ?be, "导入失败后连对账事务都开不了"),
+                }
+                return Err(e.into());
+            }
+        };
+    // apply 自己分多笔提交，这笔事务只做对账：`open` 的意思是对账于当前本体
+    let mut tx = state.pool.begin().await?;
+    let violations =
+        utopia_store::reasoning::reconcile_ontology(&mut tx, kb_id, &was_detected).await?;
+    tx.commit().await?;
     state.emit_review(kb_id);
     Ok(Json(
         json!({ "import_id": import_id, "plan": plan, "violations": violations }),
@@ -1407,6 +1484,8 @@ async fn adopt_attribute(
                 "remapped": done.remapped, "unconvertible": done.unconvertible }),
     )
     .await;
+    // 空关系改判会跑判据对账（0062），队列可能刚变过
+    state.emit_review(kb_id);
     // unconvertible 要回给调用方：改写了 3 条、丢下 2 条，界面得说得出后半句
     Ok(Json(json!({
         "id": done.attribute_id, "batch": done.batch_id,

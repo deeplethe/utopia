@@ -48,6 +48,19 @@ We gave it a somewhat romantic name, **Utopia**. Ptolemy's geocentric model was 
 
 Where existing vector stores and knowledge graphs work to get present knowledge right, one of Utopia's founding aims is to record the whole course of changing understanding. Engineered, that becomes a **bitemporal knowledge graph**. When a decision is reviewed later, the system can produce the full course it took and the grounds it rested on. To make this hold up in practice we have iterated at length against public corpora spanning enterprise records, education, finance, law and research. Temporality is only one facet; for how knowledge is taken in, how the future is reasoned about, and how logic bounds action, see [utopia.bi/philosophy](https://utopia.bi/philosophy).
 
+## Use cases
+
+What Utopia is for, in the shape of the question someone brings. Each is available today unless it says otherwise; each needs a chat model configured, and each leaves the doubtful cases to a person in Review.
+
+| Who and what | Input | Question, and what comes back | What the base adds over search or RAG |
+|---|---|---|---|
+| **A contract chain.** Legal or procurement, a master agreement amended several times. | The agreement and its amendments, as PDF or Word. | *Which payment terms applied on 15 March 2024, and who were the parties?* The terms in force on that date, the amendment they came from, the sentence. | Each fact carries when it held and where it was said; a later amendment closes the earlier term instead of overwriting it. The [contracts corpus](scripts/bench/corpora/contracts/README.md) is this scenario, with the questions it has to answer. |
+| **Who held what, when.** HR, finance or research records that change: handovers, corrections, restatements. | Announcements, minutes, filings, dated as they were written. | *Who led project X in Q2 2023, and what did we believe about it at the time?* The holder for that period, and separately what the base knew then. | Two clocks: when something was true, and when the base learned it. A correction links to what it replaced. The [temporal QA bench](scripts/bench/README.md) measures this. |
+| **An agent that reads the base.** Engineering or operations teams with Claude Desktop, Cursor or their own agent. | An existing base; the agent connects over MCP with a token scoped to it. | *Facts about this entity as of a date; the path between two things; what changed last week.* Structured answers with stable identifiers and evidence; anything the agent wants to record goes to a person first. | Reads are typed and dated, not passages; writes are proposals. The [MCP guide](web/src/docs/mcp.md) lists the tools. |
+| **Observations from a system.** Robotics, monitoring, security tooling: a system that already knows what it saw and when. | One push per observation, in the extraction contract itself, with the observation's time. New in rc7. | *Where was this object at 08:05, and where is it now?* The value that held at that moment and the observation it rests on. | No model between the system and the graph; a functional attribute closes its earlier value when a later observation arrives. The [walkthrough](docs/walkthrough.md) runs this end to end with `curl`. |
+
+The walkthrough is the shortest way to see the whole path: sample data, ingestion, a question, the answer with its evidence, and what the base does not do.
+
 ## Features
 
 One Rust binary and one Postgres. Full-text search is embedded in the binary, vectors go in pgvector, and the job queue is a table: nothing else to run.
@@ -73,6 +86,8 @@ One Rust binary and one Postgres. Full-text search is embedded in the binary, ve
 ## Quick start
 
 Requirements: Docker (local development also needs Rust 1.85+, Node 20+, pnpm).
+
+The prebuilt image is published for `linux/amd64` and `linux/arm64`, so it runs natively on x86-64 hosts as well as Apple Silicon and AWS Graviton. Tags up to `0.1.0-rc7` are amd64 only.
 
 Start from the prebuilt image:
 

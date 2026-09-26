@@ -1361,7 +1361,8 @@ pub struct DecideAlignmentKindWordReq {
 }
 
 /// 人定一个类别词绑到哪个类（#725 对齐队列）。绑上的类写到它名下的实体上；两端的类变了，
-/// 短语签名跟着变，所以再排一次短语对齐。
+/// 短语签名跟着变，所以再排一次短语对齐——与判定同一事务排下（`decide_and_apply_human`），
+/// 提交之后再排的话，进程在两步之间退出就只剩判定。
 pub async fn decide_alignment_kind_word(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -1399,12 +1400,6 @@ pub async fn decide_alignment_kind_word(
     if !written {
         return Err(utopia_core::AppError::NotFound.into());
     }
-    utopia_store::jobs::enqueue_unless_queued(
-        &state.pool,
-        "align_phrases",
-        json!({ "kb_id": kb_id }),
-    )
-    .await?;
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),

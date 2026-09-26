@@ -68,7 +68,13 @@ bind. When the structure fits more than ten properties (a coarse class hierarchy
 the aligner opens a **shortlist**: the signature's phrase and one example sentence are embedded and
 the ten properties nearest by the ontology's own vectors (`embed_ontology`) are shown, plus any whose
 label shares a word with the phrase; without an embedding model the model sees every structural
-candidate. The shortlist is part of the decision's basis, so a changed list re-asks. The candidate
+candidate. A property without a vector never enters the shortlist, so the fingerprint of the
+shapes it could bind does not change and they are never re-decided: every path that adds or
+relabels an element therefore refreshes the index before alignment. The ontology agent's adoption
+refreshes it in place [0061 cut 1.1]; the editor's create and update handlers queue
+`embed_ontology` ahead of the alignment job, and both aligners wait while that job is queued or
+running, so the order is vectors, then kind words, then phrases. The shortlist is part of the
+decision's basis, so a changed list re-asks. The candidate
 properties are described once per batch and each item names only its keys. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings`. Candidates are the properties whose
@@ -79,7 +85,11 @@ when the fingerprint of the current inputs differs, which is what timestamps cou
 parent edge added or removed, an edit committed while the model was answering [0053, #807, #795].
 A signature with no admissible property is recorded as `none` (its projection retires); one with
 more candidates than the limit is `undecided` for the queue, not silently skipped. Kind-word
-bindings still use `updated_at`, so cosmetic edits can also trigger their reevaluation.
+bindings carry a basis as well: each candidate class the model was shown, with its `updated_at`
+and ancestor closure, read from one snapshot before the model is called. A reply is accepted only
+if that basis still matches the rows when it is written; otherwise it is discarded and the kind
+word asked again [0053 revision, #795]. Cosmetic edits to a candidate class still count as a
+change.
 
 **A shape of statement can imply a fact of another property** [0044 decision 3, migration 0073].
 An implication rule is keyed like a binding (a signature) or by a kind word, names the property it
@@ -215,10 +225,12 @@ the prompt, a description is read by people and by the aligner.
   side; the parity run against the withdrawn bound pass on the typed-graph bench (#880). The prototype aligner reached 14.7% and
   12.1% of gold recall in two runs against 15.5% for the withdrawn bound pass, so the bar for cut 2
   is parity over two clean runs [0044, #729].
-- **The workbench** (0044 cut 5): the ontology page fed by suggestions from the open graph (frequent
-  unbound signatures, type words in use, an ontology agent reading them against competency
-  questions), by imported files, and by editing; every approved element carries regression cases;
-  duplicate properties merged as governance.
+- **The workbench** (0044 cut 5, decided in 0061): competency questions as rows of the base and the
+  standard an element is judged by; an ontology agent reading the unbound signatures and classless
+  kind words against them and proposing types, properties and rules with definitions, the statements
+  they would bind and the questions they serve; approval writes the element with its structure and
+  re-decides those signatures; every approved element carries regression cases rerun when its
+  definition changes; duplicate properties merged as governance.
 - **Exploration proposes an alignment per table** through `ontology_proposals`, adopted as one
   thing; `Metric` / `Dimension` retire (#554, #556) [0036].
 - Filtering reified-shell relations (`Action`, `Offer`) out of pack import [0012]; Chinese

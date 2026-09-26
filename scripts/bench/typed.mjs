@@ -17,12 +17,15 @@
 //
 // 用法：
 //   node scripts/bench/typed.mjs --label run1                 # 完整一组
-//   node scripts/bench/typed.mjs --label run1 --judge 200     # 加裁判抽样 200 条
+//   node scripts/bench/typed.mjs --label run1 --judge 600     # 加裁判抽样 600 条（200 条时同一个库两次裁能差十个点）
 //   node scripts/bench/typed.mjs --kb <id> --score            # 只对已有的库重新打分
 //   node scripts/bench/typed.mjs --label dry --dry-run        # 建库、装本体、灌语料、等解析，不抽取：验管线
 //   node scripts/bench/typed.mjs --label run1 --judge 200 --errata   # 对齐之后再跑勘误 agent，报前后两份分与撤错多少
 //   node scripts/bench/typed.mjs --kb <id> --score --errata --judge 200   # 已有的库：跑勘误、打分
 //   node scripts/bench/typed.mjs --kb <id> --score --approve-rules         # 替审核人批下全部蕴含规则、读数、物化，再打分
+//   node scripts/bench/typed.mjs --into <id> --corpus redocred-100b --label warm1   # 温库第二批：往跑过的库里再灌一批新文档，
+//                                                                    # 只对新文档打分、只算这一批的 token——产品口径的每篇边际成本
+// 给 BENCH_SERVER_LOG（服务端日志路径）时，结果里带各阶段的模型用量（按 `llm usage` 行的时间戳归到阶段）
 // 环境：BENCH_BASE（默认 http://localhost:1516）、BENCH_EMAIL / BENCH_PASSWORD（lib.mjs）、
 //       BENCH_PSQL（指向应用库的 psql 命令行）、BENCH_JUDGE_BASE / _KEY / _MODEL（裁判端点）
 
@@ -49,6 +52,28 @@ const q = (s) => String(s).replace(/'/g, "''");
 const corpus = JSON.parse(fs.readFileSync(path.join(HERE, "corpora", `${CORPUS}.json`), "utf8"));
 const truth = JSON.parse(fs.readFileSync(path.join(HERE, "truth", `${CORPUS}.json`), "utf8"));
 const ontology = JSON.parse(fs.readFileSync(path.join(HERE, "truth", "redocred-ontology.json"), "utf8"));
+// 温库第二批：库里的属性是第一批建的 95 条，第二批答案卷里不在其中的属性谁也召不回，不算进分母
+const INTO = args.into || null;
+if (INTO) {
+  const known = new Set(ontology.properties.map((p) => p.key.toUpperCase()));
+  for (const d of truth.docs) d.facts = d.facts.filter((f) => known.has(String(f.r).toUpperCase()));
+}
+// 本批文档的文件名，给温库模式的 SQL 用
+const MINE_SQL = corpus.docs.map((d) => `'${q(d.filename)}'`).join(",");
+// 服务端日志里的模型用量，按时间窗归到阶段
+const SERVER_LOG = process.env.BENCH_SERVER_LOG || null;
+const stamps = {};
+const mark = (name) => { stamps[name] = new Date().toISOString(); };
+function usageBetween(a, b) {
+  if (!SERVER_LOG || !fs.existsSync(SERVER_LOG)) return null;
+  let calls = 0, prompt = 0, completion = 0;
+  for (const line of fs.readFileSync(SERVER_LOG, "utf8").split("\n")) {
+    const m = /^(\S+Z)\s.*llm usage model=\S+ prompt=(\d+) completion=(\d+)/.exec(line.replace(/\x1b\[[0-9;]*m/g, ""));
+    if (!m || m[1] < a || m[1] >= b) continue;
+    calls += 1; prompt += Number(m[2]); completion += Number(m[3]);
+  }
+  return { calls, prompt, completion, total: prompt + completion };
+}
 
 // Re-DocRED 的 6 个粗类型 → 库里的类。类别词对齐把文档的类别词绑到这几个类上；
 // 类的定义写给模型看，所以要说人话，不能只写 PER
@@ -148,7 +173,9 @@ import { cookieHeader } from "./lib.mjs";
 const cookieOf = () => cookieHeader();
 
 async function extract(KB) {
-  const docs = (await api("GET", `/api/v1/kbs/${KB}/documents?limit=500`)).docs;
+  // 温库第二批：只排这一批的文档，老文档的图不动
+  const mine = new Set(corpus.docs.map((d) => d.filename));
+  const docs = (await api("GET", `/api/v1/kbs/${KB}/documents?limit=500`)).docs.filter((d) => !INTO || mine.has(d.filename));
   for (const d of docs) await api("POST", `/api/v1/documents/${d.id}/extract`, {});
   log(`排队抽取 ${docs.length} 篇`);
   const live = `SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.kb_id='${KB}' AND c.superseded_at IS NULL`;
@@ -240,7 +267,8 @@ async function judgeRetracted(KB) {
       FROM errata_actions ea JOIN facts f ON f.id=ea.fact_id
       JOIN relation_types r ON r.id=f.predicate_id JOIN entities s ON s.id=f.subject_id LEFT JOIN entities o ON o.id=f.object_id
       JOIN documents d ON d.id=ea.document_id
-     WHERE ea.kb_id='${KB}' AND ea.action IN ('retract','revise') AND ea.status='applied' ORDER BY f.id`);
+     WHERE ea.kb_id='${KB}' AND ea.action IN ('retract','revise') AND ea.status='applied'
+       ${INTO ? `AND d.filename IN (${MINE_SQL})` : ""} ORDER BY f.id`);
   const text = Object.fromEntries(corpus.docs.map((d) => [d.filename, d.text]));
   const byFile = new Map();
   for (const r of all) (byFile.get(r[1]) || byFile.set(r[1], []).get(r[1])).push(r);
@@ -303,7 +331,11 @@ function score(KB, scope = "after") {
       JOIN relation_types r ON r.id=f.predicate_id
       JOIN entities s ON s.id=f.subject_id
  LEFT JOIN entities o ON o.id=f.object_id
-      JOIN LATERAL (SELECT document_id FROM fact_evidence WHERE fact_id=f.id LIMIT 1) ev ON true
+      ${INTO
+        // 温库：同一条事实在两批文档里都有证据时，`insert_fact_on` 复用那一行，只看一条证据会把它算到
+        // 老文档头上；这里按它的每一份证据各算一次，新文档的金标才对得上
+        ? "JOIN (SELECT DISTINCT fact_id, document_id FROM fact_evidence) ev ON ev.fact_id=f.id"
+        : "JOIN LATERAL (SELECT document_id FROM fact_evidence WHERE fact_id=f.id LIMIT 1) ev ON true"}
       JOIN documents d ON d.id=ev.document_id
      WHERE f.kb_id='${KB}' AND f.layer='typed' AND NOT r.builtin
        AND (f.from_statement_id IS NOT NULL OR f.implied
@@ -318,11 +350,13 @@ function score(KB, scope = "after") {
   const open = rows(`
     SELECT d.filename, s.canonical_name, coalesce(o.canonical_name, f.object_value->>'value', '')
       FROM facts f JOIN entities s ON s.id=f.subject_id LEFT JOIN entities o ON o.id=f.object_id
-      JOIN LATERAL (SELECT document_id FROM fact_evidence WHERE fact_id=f.id LIMIT 1) ev ON true
+      ${INTO ? "JOIN (SELECT DISTINCT fact_id, document_id FROM fact_evidence) ev ON ev.fact_id=f.id" : "JOIN LATERAL (SELECT document_id FROM fact_evidence WHERE fact_id=f.id LIMIT 1) ev ON true"}
       JOIN documents d ON d.id=ev.document_id
      WHERE f.kb_id='${KB}' AND f.layer='open' AND f.invalidated_at IS NULL`
   ).map(([file, s, o]) => ({ file, s: norm(s), o: norm(o) }));
 
+  const mine = new Set(truth.docs.map((d) => d.filename));
+  if (INTO) { typed.splice(0, typed.length, ...typed.filter((t) => mine.has(t.file))); open.splice(0, open.length, ...open.filter((t) => mine.has(t.file))); }
   const byFile = new Map();
   for (const t of typed) (byFile.get(t.file) || byFile.set(t.file, []).get(t.file)).push(t);
   const openByFile = new Map();
@@ -389,10 +423,12 @@ Output one JSON object: {"results":[{"i":0,"verdict":"stated|misworded|not_state
 
 async function judge(KB, n, seed) {
   const ep = judgeEndpoint(KB);
+  // 温库第二批：只抽本批文档有证据的事实，并按本批那份证据读——全库抽样会抽到第一批的事实，
+  // 而正文表里只有这一批，模型读到 undefined 就判 not_stated
   const all = rows(`
     SELECT f.id, d.filename, s.canonical_name, r.label, coalesce(o.canonical_name, f.object_value->>'value', f.object_value#>>'{}', '')
       FROM facts f JOIN relation_types r ON r.id=f.predicate_id JOIN entities s ON s.id=f.subject_id LEFT JOIN entities o ON o.id=f.object_id
-      JOIN LATERAL (SELECT document_id FROM fact_evidence WHERE fact_id=f.id LIMIT 1) ev ON true JOIN documents d ON d.id=ev.document_id
+      JOIN LATERAL (SELECT e.document_id FROM fact_evidence e ${INTO ? `JOIN documents dd ON dd.id=e.document_id AND dd.filename IN (${MINE_SQL})` : ""} WHERE e.fact_id=f.id LIMIT 1) ev ON true JOIN documents d ON d.id=ev.document_id
      WHERE f.kb_id='${KB}' AND f.layer='typed' AND NOT r.builtin AND f.invalidated_at IS NULL
        AND (f.from_statement_id IS NOT NULL OR f.implied
             OR EXISTS (SELECT 1 FROM errata_actions ea WHERE ea.new_fact_id=f.id AND ea.status='applied')) ORDER BY f.id`);
@@ -422,12 +458,30 @@ async function judge(KB, n, seed) {
 // ---- 主流程 ----
 const started = Date.now();
 let KB = args.kb;
-if (!KB) {
+mark("start");
+if (INTO && args.score) {
+  // 已经灌过、跑过的第二批：只重新打分（裁判、勘误都按这一批）
+  await login();
+  KB = INTO;
+} else if (INTO) {
+  // 温库第二批：库、本体、第一批都在；灌新文档、抽、对齐，然后只对新文档打分
+  await login();
+  KB = INTO;
+  await ingest(KB);
+  mark("ingested");
+  await extract(KB);
+  mark("extracted");
+  await align(KB);
+  mark("aligned");
+} else if (!KB) {
   KB = await setup();
   await ingest(KB);
+  mark("ingested");
   if (args["dry-run"]) { log("干跑到此为止：库、本体、语料都在，没抽取"); console.log(JSON.stringify({ kb: KB, dry_run: true })); process.exit(0); }
   await extract(KB);
+  mark("extracted");
   await align(KB);
+  mark("aligned");
 } else {
   await login();
 }
@@ -436,18 +490,34 @@ if (args["approve-rules"]) rules = await approveRules(KB);
 // 勘误前的分：已经跑过勘误的库也能按 scope 算回来（撤掉的算回来、加上的不算）
 const result = score(KB, "before");
 if (rules) result.rules = rules;
-if (args.judge) result.judge = await judge(KB, Number(args.judge) || 200, Number(args.seed || 1));
+if (args.judge) result.judge = await judge(KB, Number(args.judge) || 600, Number(args.seed || 1));
 if (args.errata) {
   // 勘误前的分留着，勘误后再打一次：0044 §7 的度量是两份分的差，与撤错了多少
   result.before_errata = { gold_recall: result.gold_recall, gold_recall_same_sentence: result.gold_recall_same_sentence, typed_facts: result.typed_facts, judge: result.judge };
+  mark("errata_start");
   result.errata = await errata(KB);
+  mark("errata_end");
   const after = score(KB, "after");
   result.after_errata = { gold_recall: after.gold_recall, gold_recall_same_sentence: after.gold_recall_same_sentence, typed_facts: after.typed_facts };
   if (args.judge) {
-    result.after_errata.judge = await judge(KB, Number(args.judge) || 200, Number(args.seed || 1));
+    result.after_errata.judge = await judge(KB, Number(args.judge) || 600, Number(args.seed || 1));
     result.errata.removed = await judgeRetracted(KB);
   }
 }
 result.minutes = Math.round((Date.now() - started) / 60000);
+mark("end");
+if (SERVER_LOG) {
+  // 各阶段的模型用量：抽取、对齐（含提规则）、勘误；裁判走脚本直连端点，不在服务端日志里
+  const docs = truth.docs.length || 1;
+  const perDoc = (u) => (u ? { ...u, per_document: Math.round(u.total / docs) } : null);
+  result.tokens = {
+    extract: perDoc(stamps.ingested && stamps.extracted ? usageBetween(stamps.ingested, stamps.extracted) : null),
+    align: perDoc(stamps.extracted && stamps.aligned ? usageBetween(stamps.extracted, stamps.aligned) : null),
+    errata: perDoc(stamps.errata_start && stamps.errata_end ? usageBetween(stamps.errata_start, stamps.errata_end) : null),
+    total: perDoc(usageBetween(stamps.start, stamps.end)),
+  };
+  const t = result.tokens;
+  console.log(`token（服务端日志）：抽取 ${t.extract?.total ?? "-"}，对齐 ${t.align?.total ?? "-"}，勘误 ${t.errata?.total ?? "-"}，合计 ${t.total?.total ?? "-"}，每篇 ${t.total?.per_document ?? "-"}`);
+}
 fs.writeFileSync(OUT, JSON.stringify(result, null, 1));
 console.log(`结果写到 ${OUT}（${result.minutes} 分钟）`);
