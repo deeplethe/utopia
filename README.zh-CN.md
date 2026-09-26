@@ -88,6 +88,8 @@ Utopia 能解决什么问题，按人带着来的那个问题来说。除注明�
 
 依赖：Docker（本地开发另需 Rust 1.85+、Node 20+、pnpm）。
 
+预构建镜像同时发布 `linux/amd64` 与 `linux/arm64` 两个平台，在 x86-64 主机和 Apple Silicon、AWS Graviton 上都原生运行。`0.1.0-rc7` 及之前的标签只有 amd64。
+
 通过预构建镜像快速启动：
 
 ```bash

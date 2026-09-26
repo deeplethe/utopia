@@ -87,6 +87,8 @@ One Rust binary and one Postgres. Full-text search is embedded in the binary, ve
 
 Requirements: Docker (local development also needs Rust 1.85+, Node 20+, pnpm).
 
+The prebuilt image is published for `linux/amd64` and `linux/arm64`, so it runs natively on x86-64 hosts as well as Apple Silicon and AWS Graviton. Tags up to `0.1.0-rc7` are amd64 only.
+
 Start from the prebuilt image:
 
 ```bash
