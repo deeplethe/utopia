@@ -384,6 +384,8 @@ mod persistence_tests;
 mod registry_tests;
 #[path = "chat_resolved_tests.rs"]
 mod resolved_tests;
+#[path = "chat_restated_tests.rs"]
+mod restated_tests;
 #[path = "chat_sources_tests.rs"]
 mod sources_tests;
 

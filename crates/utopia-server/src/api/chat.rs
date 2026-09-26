@@ -20,6 +20,7 @@ use rig_core::message::Message;
 use rig_core::streaming::{StreamedAssistantContent, StreamedUserContent};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 use utopia_core::models::{ChunkView, Role};
 use utopia_core::AppError;
@@ -969,10 +970,22 @@ pub async fn chat(
                 return;
             }
         }
-        let (sources, resolved) = {
+        let (mut sources, resolved) = {
             let sink = shared.sink.lock().await;
             (sink.sources.clone(), sink.resolved.clone())
         };
+        // 一个工具都没查的一轮（翻译、说短一点）照抄的是上一条回答的 [n]。沿用那些号
+        // 在上一条里的来源，角标才点得开（#943）；查过东西的一轮只认自己查到的
+        if !shared.finalizing() && steps_acc.is_empty() && sources.is_empty() {
+            let previous = history
+                .turns
+                .iter()
+                .rev()
+                .find(|(role, _)| role == "assistant")
+                .map(|(_, content)| content.as_str())
+                .unwrap_or_default();
+            sources = carried_sources(&answer_acc, previous, &history.last_sources);
+        }
         let saved = utopia_store::conversations::append_message(
             &state.pool, conversation_id, "assistant", &answer_acc,
             &utopia_store::conversations::TurnRecord {
@@ -1202,6 +1215,61 @@ fn done_event() -> Frame {
 
 fn error_event(message: &str) -> Frame {
     Frame::new("error", message.into())
+}
+
+/// 正文里的引用号，与界面画角标的 `citeRe` 同一个形状：`[1]`、`[1][2]`、`[1, 2]`、
+/// `[1，2]`——方括号里只有数字与分隔符，分隔符两边可以有空白，0 不是号
+fn cited_numbers(text: &str) -> BTreeSet<u64> {
+    let mut out = BTreeSet::new();
+    for (at, _) in text.match_indices('[') {
+        let rest = &text[at + 1..];
+        let Some(close) = rest.find(']') else {
+            continue;
+        };
+        let parts: Vec<&str> = rest[..close].split([',', '，']).collect();
+        let mut nums = Vec::new();
+        for (k, part) in parts.iter().enumerate() {
+            let mut digits = *part;
+            if k > 0 {
+                digits = digits.trim_start();
+            }
+            if k + 1 < parts.len() {
+                digits = digits.trim_end();
+            }
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                nums.clear();
+                break;
+            }
+            match digits.parse::<u64>() {
+                Ok(n) => nums.push(n),
+                Err(_) => {
+                    nums.clear();
+                    break;
+                }
+            }
+        }
+        out.extend(nums.into_iter().filter(|n| *n > 0));
+    }
+    out
+}
+
+/// 不查东西的一轮沿用上一条回答的来源（#943）。只在这一轮引用的号**全都**在上一条
+/// 回答里引用过时才给，取上一条存下的来源里被引用到的那几条，号不变；否则一条不给——
+/// 不去猜这些号原本属于哪一轮
+fn carried_sources(
+    answer: &str,
+    previous_answer: &str,
+    previous_sources: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    let cited = cited_numbers(answer);
+    if cited.is_empty() || !cited.is_subset(&cited_numbers(previous_answer)) {
+        return Vec::new();
+    }
+    previous_sources
+        .iter()
+        .filter(|s| s["n"].as_u64().is_some_and(|n| cited.contains(&n)))
+        .cloned()
+        .collect()
 }
 
 fn source_json(n: usize, c: &ChunkView) -> serde_json::Value {
