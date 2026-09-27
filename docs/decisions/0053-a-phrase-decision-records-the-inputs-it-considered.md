@@ -1,6 +1,6 @@
 # 0053 · A phrase decision records the inputs it considered
 
-- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0097)
+- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0098)
 - **Written**: 2026-09-23
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754, #966
 
@@ -154,14 +154,14 @@ document's own "works for … from 2023-06-01", depending on which statement was
 (#966).
 
 **A binding to a state property says what a single date marks.** `phrase_bindings.marks`
-(migration 0097) is `start`, `end` or `none`; NULL is unknown.
+(migration 0098) is `start`, `end` or `none`; NULL is unknown.
 
 - **The aligner asks it with the binding, once.** Each candidate line says whether the property is a
   state, an event or timeless, and the reply carries a fourth value per item.
   - When both votes bind the same state property in the same direction, the binding is written. The
     value is written with it only when both votes give the same one.
   - Otherwise the binding carries no value and records that it was asked (`marks_asked_at`,
-    migration 0097). It is listed in the alignment queue and is not asked again until its
+    migration 0098). It is listed in the alignment queue and is not asked again until its
     fingerprint changes. A model that never gives the value costs one decision, not a request per
     run.
   - Events and timeless properties are not asked. A fourth value under one is ignored, readable or
