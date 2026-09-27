@@ -34,7 +34,6 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::ApiResult;
-use crate::llm_util;
 use crate::retrieval;
 use crate::state::AppState;
 
@@ -80,6 +79,8 @@ fn model_failure_code(err: &anyhow::Error) -> Option<&'static str> {
         || err.chain().any(|e| e.is::<utopia_llm::Interrupted>())
     {
         Some("model_unreachable")
+    } else if utopia_llm::context_too_long(err).is_some() {
+        Some("context_too_long")
     } else if utopia_llm::rejected(err).is_some() {
         Some("model_rejected")
     } else {
@@ -629,6 +630,9 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
        results carry them, and so does each fact line of entity_facts, neighbors, timeline and \
        paths_between: its [n] opens the passage that fact was read from. A fact line without \
        a number (a derived fact, or one whose documents are gone) is stated without a bracket. \
+       An end marked `end derived` was set by the timeline when a later fact began, and a range \
+       marked `corrected` was changed by a person: neither is in the passage the line's [n] \
+       opens, so never attribute it to that passage. \
        If the evidence is insufficient, say so explicitly — never fabricate.\n\
     5. Always respond in the same language as the user's question.";
 
@@ -657,7 +661,9 @@ pub async fn chat(
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
         .ok_or_else(|| AppError::invalid("no_chat_model", NO_MODEL))?;
-    let client = llm_util::chat_client(&settings)
+    let client = state
+        .chat_clients
+        .get(kb.workspace_id, &settings)
         .ok_or_else(|| AppError::invalid("no_chat_model", NO_MODEL))?;
 
     let query = req.message.trim().to_string();
@@ -763,11 +769,15 @@ pub async fn chat(
         // 三十条的上限之下量的，一百条口径靠字典序截断就不成立了（#574）。
         // 挑口径要调嵌入模型，所以放在生成器里：Stop 丢掉生成器，这个请求跟着取消（0063）。
         // 代价是它失败得晚了：从前是什么都没写的 500，现在问题已经存下，失败是一帧 error
+        // 这一轮的嵌入缓存从挑口径起就在：问题在这里嵌一次，随后检索分块、按名字查实体
+        // 都拿同一个向量（#971 的后续）。下面建好 sink 就把它交过去
+        let mut embeddings = crate::llm_util::EmbedCache::default();
         let mappings = if mounted_sources.is_empty() {
             Vec::new()
         } else {
             match crate::mapping_index::relevant(
                 &state, kb_id, workspace_id, &query, crate::mapping_index::DEFINITIONS_IN_PROMPT,
+                Some(&mut embeddings),
             ).await {
                 Ok(mappings) => mappings,
                 Err(error) => {
@@ -849,6 +859,7 @@ pub async fn chat(
             settings.chat_model.clone().unwrap_or_default(),
             query.clone(),
         );
+        shared.sink.lock().await.embeddings = embeddings;
         let policy = agent::Policy {
             shared: shared.clone(),
             max_rounds: MAX_ROUNDS,
@@ -857,13 +868,6 @@ pub async fn chat(
         let tool_server = ToolServer::new()
             .dynamic_tools(agent::dynamic_tools(&shared))
             .run();
-        let rig_agent = AgentBuilder::new(RigModel::new(client.clone()))
-            .preamble(&system_prompt)
-            // 工具轮 + 最后那一轮作答；第 MAX_ROUNDS+1 次请求由钩子在 I/O 前交给纯作答阶段
-            .default_max_turns(MAX_ROUNDS + 1)
-            .add_hook(policy)
-            .tool_server_handle(tool_server)
-            .build();
         let prior: Vec<(String, String)> = history
             .turns
             .iter()
@@ -871,6 +875,16 @@ pub async fn chat(
             .filter(|(i, _)| Some(*i) != current)
             .map(|(_, turn)| turn.clone())
             .collect();
+        let context = super::chat_context::Context::new(
+            prior.clone(), history.last_tool_exchange.clone(), client.history_char_budget(),
+        );
+        let rig_agent = AgentBuilder::new(RigModel::with_context(client.clone(), context.clone()))
+            .preamble(&system_prompt)
+            // 工具轮 + 最后那一轮作答；第 MAX_ROUNDS+1 次请求由钩子在 I/O 前交给纯作答阶段
+            .default_max_turns(MAX_ROUNDS + 1)
+            .add_hook(policy)
+            .tool_server_handle(tool_server)
+            .build();
         let mut runner = rig_agent
             .runner(Message::user(query.clone()))
             .history(agent::history_messages(&prior, &history.last_tool_exchange));
@@ -897,7 +911,7 @@ pub async fn chat(
         let mut turn_published = 0usize;
         let mut turn_holding = false;
         let mut finished = false;
-        let mut published_sources = 0;
+        let mut published_sources: Vec<serde_json::Value> = Vec::new();
         let mut answer_requested = false;
 
         while let Some(item) = run.next().await {
@@ -996,12 +1010,14 @@ pub async fn chat(
                         steps_acc.push(step.clone());
                         published_step = Some(step);
                     }
-                    // cite() only appends: document reads can add citations too, regardless
-                    // of the UI step kind. Release the sink before yielding to subscribers.
+                    // cite() appends, and a graph citation can add a quote to an entry a search
+                    // registered (#968's follow-up): publish when the list changed at all, not
+                    // only when it grew. Document reads can add citations too, regardless of the
+                    // UI step kind. Release the sink before yielding to subscribers.
                     let sources = {
                         let sink = shared.sink.lock().await;
-                        if sink.sources.len() != published_sources {
-                            published_sources = sink.sources.len();
+                        if sink.sources != published_sources {
+                            published_sources = sink.sources.clone();
                             Some(sink.sources.clone())
                         } else {
                             None
@@ -1056,7 +1072,7 @@ pub async fn chat(
                             kb_id,
                             workspace_id,
                             query.clone(),
-                            history.turns.clone(),
+                            context.clone(),
                             client.clone(),
                         ));
                         while let Some(frame) = legacy.next().await {
@@ -1076,12 +1092,13 @@ pub async fn chat(
                 let sink = shared.sink.lock().await;
                 (sink.sources.clone(), sink.resolved.clone())
             };
+            let (bounded_history, bounded_exchange) = context.snapshot();
             let input = finalization::AnswerContext {
-                question: &query, history: &history.turns, current,
-                prior_exchange: &history.last_tool_exchange,
+                question: &query, history: &bounded_history, current: None,
+                prior_exchange: &bounded_exchange,
                 exchange: &exchange_acc, sources: &sources, resolved: &resolved,
             };
-            match finalization::answer(&client, input).await {
+            match finalization::answer_with_context(&client, input, &context).await {
                 Ok(answer) => { turn_text = answer; turn_calls.clear(); finished = true; }
                 Err(e) => {
                     let message = format!("Model could not produce a final answer: {e}");
@@ -1197,11 +1214,12 @@ fn legacy_rag(
     kb_id: Uuid,
     workspace_id: Uuid,
     query: String,
-    turns: Vec<(String, String)>,
+    context: super::chat_context::Context,
     client: utopia_llm::LlmClient,
 ) -> impl Stream<Item = ProducerEvent> {
     async_stream::stream! {
-        let chunks = match retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None).await {
+        // 兜底这一路一轮只走一次，问题自己嵌：它没有这一轮的 sink（#971 的缓存在那上面）
+        let chunks = match retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None, None).await {
             Ok(chunks) => chunks,
             Err(error) => {
                 tracing::warn!(%error, "fallback document retrieval failed");
@@ -1218,12 +1236,20 @@ fn legacy_rag(
             "sources",
             serde_json::to_string(&legacy_sources).unwrap_or_else(|_| "[]".into()),
         ));
-        let mut lmsgs = vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
-        for (role, content) in &turns {
-            lmsgs.push(json!({ "role": role, "content": content }));
-        }
         let mut answer_acc = String::new();
-        match client.chat_stream_raw(&lmsgs).await {
+        let deltas = loop {
+            let (turns, _) = context.snapshot();
+            let mut lmsgs = vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
+            for (role, content) in &turns {
+                lmsgs.push(json!({ "role": role, "content": content }));
+            }
+            lmsgs.push(json!({"role":"user", "content":query}));
+            match client.chat_stream_raw(&lmsgs).await {
+                Err(e) if context.recover(&client, &e) => continue,
+                result => break result,
+            }
+        };
+        match deltas {
             Ok(deltas) => {
                 let mut deltas = std::pin::pin!(deltas);
                 while let Some(item) = deltas.next().await {

@@ -45,6 +45,7 @@ mod a_dirty_ledger_stops_the_migration;
 mod a_disambiguator_follows_the_ontology;
 mod a_document_opening_is_its_first_live_chunk;
 mod a_fact_awaits_a_nod;
+mod a_fact_says_where_its_dates_came_from;
 mod a_failed_job_finds_its_way_back;
 mod a_forward_reference_is_judged_at_commit;
 mod a_governor_reads_the_ledger;

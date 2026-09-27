@@ -1,6 +1,6 @@
 # 0042 · The chat loop is a runner with hooks
 
-- **Status**: Implemented (#548) · revised 2026-09-26 (#937)
+- **Status**: Implemented (#548) · revised 2026-09-26 (#937) · revised 2026-09-27 (#973)
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: #546 (the issue and its findings), #509 / #543 (the stall and the guard this
   replaces), #547 (the mark on answers that cite nothing), #631 (the empty-reply retry, moved
@@ -47,7 +47,10 @@ earlier entities become a `system` message right before the question, and `ToolC
 omits tool fields on the wire.
 
 Degradation to one-shot RAG happens only when the first request that carries tools comes back
-400 or 422 (`utopia_llm::Rejected`). A network failure is an error frame.
+400 or 422 (`utopia_llm::Rejected`). A network failure is an error frame. Revised 2026-09-27
+(#973): a context-window refusal is `ContextTooLong`, not `Rejected`; it drops older history and
+sends the request once more, see
+[below](#a-context-refusal-trims-history-once-973-revised-2026-09-27).
 
 ### 3. A turn cannot end before a tool has run
 
@@ -141,6 +144,35 @@ continues through the existing background producer and persisted body/source map
 This boundary is not a factuality oracle. The evaluation separately records required fact
 slots, citation syntax/mapping, additional unsupported statements and false insufficiency.
 A clean result on one frozen set is not a zero-failure guarantee.
+
+## A context refusal trims history once (#973, revised 2026-09-27)
+
+The 20-message window alone let ten large answers make every later turn fail (#964). The
+endpoint's context refusal was read as unsupported tools, so removing `tool_choice` and then
+falling back to RAG sent the same oversized history twice more. Three things change.
+
+**The refusal has its own class.** `utopia-llm` reads `context_length_exceeded` from the error
+code first, then the vendor's wording (`maximum context length`, `context window`, `too many
+tokens`, `prompt is too long`, `exceeds the available context`), next to
+`stated_completion_ceiling`, and `rejected_shape` is false for it. DeepSeek's 400 carries only the
+generic `invalid_request_error` code; its sentence "This model's maximum context length is 1048576
+tokens. However, you requested …" is what is recognized (confirmed 2026-09-27).
+
+**History is bounded by size as well as by count.** Inside the 20-message window at most 32,000
+characters of history are sent, the oldest whole exchanges dropped first; a failed question and
+a stopped answer count like any other, and an orphan answer at the count boundary is not sent.
+The previous turn's tool exchange is the first thing to go: one `get_document` result can be
+24,000 characters, and tying it to the last answer meant a follow-up such as "make it shorter"
+went out with no history at all. The budget is a character heuristic, not token accounting.
+
+**One recovery per user turn.** On a recognized refusal the remaining history is halved and the
+request sent once more; the current question, the system prompt and the current turn's tool
+results stay whole, and no tool runs again. Tool calling, the RAG fallback and the final
+evidence-only answer share that one retry. When nothing can be dropped there is no retry. A
+second refusal ends the turn with `context_too_long`, worded as the conversation being too long
+for the model. The workspace's conversation client remembers a stated window of at least 1,024
+tokens across turns and clones; the budget becomes half that many characters and never falls
+below 2,000; changing the model settings forgets it. Stored messages are never altered.
 
 ## Not done
 

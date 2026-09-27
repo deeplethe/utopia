@@ -72,6 +72,7 @@ export const en = {
     model_unavailable: "The model endpoint is unavailable right now. Try again shortly.",
     model_unreachable:
       "The model endpoint gave no usable answer. Check its address under Administration → Models.",
+    context_too_long: "This conversation is too long for the model. Start a new conversation.",
     model_rejected:
       "The model endpoint refused the request. Check the model settings under Administration → Models.",
     // 重答（#936）被拒。生成中又来一个新问题（#961）也是 409；两边用同一个 code
@@ -1141,6 +1142,10 @@ export const en = {
     loading: "Loading…",
     extracted: "Extracted",
     ongoing: "now",
+    /** `#610`：`doc_time` 是从文件里读出来的日期；与上传时刻是两件事 */
+    docDate: "Document date",
+    docDateFromContent: "Detected from the filename or first line",
+    uploadedAt: "Uploaded",
   },
   settings: {
     title: "Administration",

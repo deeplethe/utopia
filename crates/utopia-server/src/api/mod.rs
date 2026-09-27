@@ -3,6 +3,7 @@ mod agent;
 mod alerts_routes;
 mod auth_routes;
 mod chat;
+mod chat_context;
 mod datasource_routes;
 pub(crate) mod documents_routes;
 mod events_routes;

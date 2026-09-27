@@ -139,21 +139,38 @@ async fn answer_once(
     anyhow::bail!("LLM stream ended unexpectedly")
 }
 
-pub(super) async fn answer(client: &LlmClient, input: AnswerContext<'_>) -> anyhow::Result<String> {
-    answer_with_deadline(client, input, ANSWER_DEADLINE).await
+pub(super) async fn answer_with_context(
+    client: &LlmClient,
+    input: AnswerContext<'_>,
+    context: &super::super::chat_context::Context,
+) -> anyhow::Result<String> {
+    answer_with_deadline(client, input, ANSWER_DEADLINE, Some(context)).await
 }
 
 async fn answer_with_deadline(
     client: &LlmClient,
     input: AnswerContext<'_>,
     deadline: Duration,
+    context: Option<&super::super::chat_context::Context>,
 ) -> anyhow::Result<String> {
     let mut messages = messages(&input);
     // A total deadline covers BOTH attempts, not a fresh allowance per retry.
     tokio::time::timeout(deadline, async {
         for attempt in 1..=2 {
             tracing::info!(attempt, "Requesting evidence-only final answer");
-            match answer_once(client, &messages, input.question).await? {
+            let candidate = loop {
+                match answer_once(client, &messages, input.question).await {
+                    Err(e) if context.is_some_and(|c| c.recover(client, &e)) => {
+                        let (history, prior_exchange) = context.unwrap().snapshot();
+                        let bounded = AnswerContext { history: &history, current: None, prior_exchange: &prior_exchange, ..input };
+                        let refreshed = self::messages(&bounded);
+                        // 只换背景那一条：第二次尝试时修正指令还在
+                        messages[1] = refreshed[1].clone();
+                    }
+                    result => break result?,
+                }
+            };
+            match candidate {
                 Candidate::Accepted(text) => return Ok(text),
                 Candidate::Repairable(reason) if attempt == 1 => {
                     // Only the reason category crosses the boundary, never rejected prose.
@@ -170,6 +187,70 @@ async fn answer_with_deadline(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn context_recovery_changes_only_background_and_shares_the_turn_retry() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+        let server = MockServer::start().await;
+        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let captured = seen.clone();
+        Mock::given(wiremock::matchers::method("POST")).respond_with(move |r: &Request| {
+            let mut seen = captured.lock().unwrap();
+            seen.push(r.body_json().unwrap());
+            if seen.len() == 1 {
+                ResponseTemplate::new(400).set_body_json(json!({"error":{"code":"context_length_exceeded","message":"Prompt is too long"}}))
+            } else {
+                ResponseTemplate::new(200).insert_header("content-type", "text/event-stream")
+                    .set_body_string("data: {\"choices\":[{\"delta\":{\"content\":\"Answer from evidence.\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+            }
+        }).mount(&server).await;
+        let history = vec![
+            ("user".into(), "old question".into()),
+            ("assistant".into(), "x".repeat(8000)),
+        ];
+        let context =
+            super::super::super::chat_context::Context::new(history.clone(), vec![], 32_000);
+        let evidence = vec![
+            json!({"role":"tool","tool_call_id":"c","content":"[1] immutable evidence","is_error":false}),
+        ];
+        let sources = vec![json!({"n":1,"document_id":"source"})];
+        let input = AnswerContext {
+            question: "current",
+            history: &history,
+            current: None,
+            prior_exchange: &[],
+            exchange: &evidence,
+            sources: &sources,
+            resolved: &[],
+        };
+        let client = LlmClient::new(&server.uri(), None, "test");
+        assert_eq!(
+            answer_with_context(&client, input, &context).await.unwrap(),
+            "Answer from evidence."
+        );
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0]["messages"][0], seen[1]["messages"][0]);
+        let before: Value =
+            serde_json::from_str(seen[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
+        let after: Value =
+            serde_json::from_str(seen[1]["messages"][1]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(after["conversation_context"]["turns"], json!([]));
+        for key in ["question", "evidence", "sources", "resolved_entities"] {
+            assert_eq!(before[key], after[key]);
+        }
+        let err = anyhow::Error::new(utopia_llm::ContextTooLong {
+            status: 400,
+            reason: "400 Bad Request".into(),
+            detail: "again".into(),
+            window: None,
+        });
+        assert!(
+            !context.recover(&client, &err),
+            "a different phase cannot spend another recovery"
+        );
+    }
+
     #[test]
     fn evidence_and_citations_are_data_not_protocol_messages() {
         let exchange = vec![
@@ -239,7 +320,10 @@ mod tests {
             resolved: &[],
         };
         let client = LlmClient::new("http://127.0.0.1:1", None, "test");
-        let error = answer(&client, input).await.unwrap_err();
+        let context = super::super::super::chat_context::Context::new(vec![], vec![], 32_000);
+        let error = answer_with_context(&client, input, &context)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("context limit"));
     }
     #[tokio::test]
@@ -268,7 +352,7 @@ mod tests {
             sources: &[],
             resolved: &[],
         };
-        let err = answer_with_deadline(&client, input, Duration::from_millis(200))
+        let err = answer_with_deadline(&client, input, Duration::from_millis(200), None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("timed out"));

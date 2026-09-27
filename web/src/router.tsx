@@ -1,4 +1,5 @@
 import { ExpressionDraftLab } from "./pages/ExpressionDraftLab";
+import { docSearch } from "./quotes";
 import {
   createRootRoute,
   createRoute,
@@ -119,9 +120,7 @@ const graphRoute = createRoute({
 const docRoute = createRoute({
   getParentRoute: () => kbRoute,
   path: "doc/$docId",
-  validateSearch: (search: Record<string, unknown>): { chunk?: string } => ({
-    chunk: typeof search.chunk === "string" ? search.chunk : undefined,
-  }),
+  validateSearch: docSearch,
   component: DocViewer,
 });
 
