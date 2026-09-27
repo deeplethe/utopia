@@ -371,6 +371,8 @@ fn range_text(f: &EntityFact) -> String {
         to_precision: f.valid_to_precision.as_deref(),
         holds_from: f.holds_from,
         holds_to: f.holds_to,
+        end_derived: f.end_derived,
+        corrected: f.time_corrected,
     });
     if range.is_empty() {
         range
@@ -1123,6 +1125,8 @@ pub(super) fn edge_text(prev: Uuid, e: &PathEdge) -> String {
         to_precision: e.valid_to_precision.as_deref(),
         holds_from: e.holds_from,
         holds_to: e.holds_to,
+        end_derived: e.end_derived,
+        corrected: e.time_corrected,
     });
     let range = if range.is_empty() {
         range
@@ -1450,6 +1454,8 @@ mod tests {
             evidence_count: 1,
             stale: false,
             corrected: false,
+            end_derived: false,
+            time_corrected: false,
             last_evidence_time: None,
             contested: None,
         }
@@ -1577,6 +1583,8 @@ mod tests {
             holds_from: Some("2021-01-01T00:00:00Z".parse().unwrap()),
             holds_to: None,
             confidence: 0.9,
+            end_derived: false,
+            time_corrected: false,
         };
         let p = Path {
             nodes: vec![a, x, b],

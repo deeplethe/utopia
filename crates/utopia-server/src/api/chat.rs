@@ -629,6 +629,9 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
        results carry them, and so does each fact line of entity_facts, neighbors, timeline and \
        paths_between: its [n] opens the passage that fact was read from. A fact line without \
        a number (a derived fact, or one whose documents are gone) is stated without a bracket. \
+       An end marked `end derived` was set by the timeline when a later fact began, and a range \
+       marked `corrected` was changed by a person: neither is in the passage the line's [n] \
+       opens, so never attribute it to that passage. \
        If the evidence is insufficient, say so explicitly — never fabricate.\n\
     5. Always respond in the same language as the user's question.";
 

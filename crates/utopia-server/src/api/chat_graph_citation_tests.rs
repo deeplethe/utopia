@@ -10,6 +10,8 @@
 //! - 派生事实那一行不带号，它的前提各带各的
 //! - MCP 的文字一字不改，来源清单是空的（号码对没有清单的调用方没有意义）
 //! - 整条对话：工具印的号随 `sources` 帧发出去、跟着回答落库，模型读到的事实行带着号
+//! - 原句里没有的日期在行上说出来（#970）：时间线推出来的终点写 `end derived`，人改过的
+//!   区间写 `corrected`，号照旧；对话与 MCP 一样，规则 4 说不许把它们归到原句
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 use super::*;
@@ -317,6 +319,160 @@ async fn a_graph_answer_publishes_and_stores_its_sources() -> anyhow::Result<()>
         let requests = f.requests();
         let sent = requests[1]["messages"].to_string();
         assert!(sent.contains("Li Si") && sent.contains("%] ["), "{sent}");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// #970 的两处：周七 2025-09-01 接手，时间线把李四那一段关在那天；人把张三的起点从章程的
+/// 2023-01-10 改成 2023-02-01。两行的号仍打开它们读出来的原句，而原句里没有这两个日期，
+/// 所以行上说出日期从哪来
+#[tokio::test]
+async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()> {
+    let Some(f) = fixture(Scripted::new(vec![])).await? else {
+        return Ok(());
+    };
+    let run = async {
+        let s = seed(&f.pool, f.kb).await?;
+        let (leads, person, aurora): (Uuid, Uuid, Uuid) = sqlx::query_as(
+            "SELECT r.id, t.id, e.id FROM relation_types r, entity_types t, entities e
+              WHERE r.kb_id = $1 AND r.key = 'leads' AND t.kb_id = $1 AND t.key = 'person'
+                AND e.kb_id = $1 AND e.canonical_name = 'Project Aurora'",
+        )
+        .bind(f.kb)
+        .fetch_one(&f.pool)
+        .await?;
+        let row_of = |name: &'static str| {
+            let pool = f.pool.clone();
+            let kb = f.kb;
+            async move {
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT f.id FROM facts f JOIN entities e ON e.id = f.subject_id
+                      WHERE f.kb_id = $1 AND e.canonical_name = $2 AND f.predicate_id = $3
+                        AND f.invalidated_at IS NULL",
+                )
+                .bind(kb)
+                .bind(name)
+                .bind(leads)
+                .fetch_one(&pool)
+                .await
+            }
+        };
+        let (zhang, li) = (row_of("Zhang San").await?, row_of("Li Si").await?);
+        let (zhou, d_update, update, zhou_fact) =
+            (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        // 插进去的只有本地生成的 UUID 和写死的日期
+        sqlx::raw_sql(&format!(
+            r#"
+            INSERT INTO entities(id,kb_id,type_id,canonical_name,created_at) VALUES
+                ('{zhou}','{kb}','{person}','Zhou Qi','2026-01-01');
+            INSERT INTO documents(id,kb_id,filename,sha256,created_at,doc_time) VALUES
+                ('{d_update}','{kb}','leadership-update.md',repeat('5',64),'2026-01-01','2025-09-01');
+            INSERT INTO chunks(id,kb_id,document_id,seq,text,created_at) VALUES
+                ('{update}','{kb}','{d_update}',0,'Zhou Qi leads Project Aurora from 2025-09-01.','2026-01-01');
+            INSERT INTO facts(id,kb_id,subject_id,predicate_id,object_id,valid_from,valid_from_precision,
+                              recorded_at,confidence) VALUES
+                ('{zhou_fact}','{kb}','{zhou}','{leads}','{aurora}','2025-09-01','day','2026-01-01',0.9);
+            INSERT INTO fact_evidence(fact_id,chunk_id,document_id,doc_version,quote) VALUES
+                ('{zhou_fact}','{update}','{d_update}',1,'Zhou Qi leads Project Aurora from 2025-09-01.');
+            UPDATE relation_types SET inverse_functional = TRUE WHERE id = '{leads}';
+            "#,
+            kb = f.kb
+        ))
+        .execute(&f.pool)
+        .await?;
+        // 一个项目同时只有一个 lead：对账把李四那一段关在周七接手那天
+        utopia_store::temporal::reconcile_moved_facts(&f.pool, f.kb, &[li, zhou_fact]).await?;
+        // 人改张三的起点，终点照旧；审计记在被改的那一行上（PATCH /facts/{id} 同一条路）
+        let day = |s: &str| s.parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+        utopia_store::temporal::correct_interval(
+            &f.pool,
+            zhang,
+            utopia_store::graph::Validity {
+                from: Some(day("2023-02-01T00:00:00Z")),
+                from_precision: Some("day"),
+                to: Some(day("2024-07-05T00:00:00Z")),
+                to_precision: Some("day"),
+                attested_at: None,
+                from_grade: None,
+            },
+        )
+        .await?
+        .expect("the row was live");
+        utopia_store::audit::record(
+            &f.pool,
+            Some(f.kb),
+            f.user.id,
+            "fact.time_corrected",
+            "fact",
+            Some(zhang),
+            json!({ "note": "The charter date was the approval date" }),
+        )
+        .await?;
+
+        let chat = ctx(&f, None);
+        let mut sink = ToolSink::default();
+        for tool in ["entity_facts", "neighbors", "timeline"] {
+            let text = dispatch(&chat, &mut sink, tool, &json!({"entity": "Project Aurora"}))
+                .await
+                .text;
+            let zhang_line = line(&text, "Zhang San");
+            assert!(
+                zhang_line.contains("2023-02-01 → 2024-07-05, corrected)"),
+                "{tool}: {text}"
+            );
+            let li_line = line(&text, "Li Si");
+            assert!(
+                li_line.contains("2024-07-05 → 2025-09-01, end derived)"),
+                "{tool}: {text}"
+            );
+            assert!(
+                line(&text, "Zhou Qi").contains("2025-09-01 → now)"),
+                "{tool}: {text}"
+            );
+            // 号照旧：打开的仍是那条事实读出来的原句
+            let (z, l) = (marks(zhang_line), marks(li_line));
+            assert_eq!((z.len(), l.len()), (1, 1), "{tool}: {text}");
+            assert_eq!(chunk_of(&sink, z[0]), s.charter, "{tool}");
+            assert_eq!(chunk_of(&sink, l[0]), s.handover, "{tool}");
+        }
+        let path = dispatch(
+            &chat,
+            &mut sink,
+            "paths_between",
+            &json!({"from": "Wang Wu", "to": "Li Si"}),
+        )
+        .await
+        .text;
+        assert!(
+            path.contains("2024-07-05 → 2025-09-01, end derived)"),
+            "{path}"
+        );
+
+        // MCP 的文字带着同样的标记：它们是这一行的事实，不是引用
+        let mcp = ctx(&f, Some(Uuid::now_v7()));
+        let plain = dispatch(
+            &mcp,
+            &mut ToolSink::default(),
+            "entity_facts",
+            &json!({"entity": "Project Aurora"}),
+        )
+        .await
+        .text;
+        assert!(
+            plain.contains(", corrected)") && plain.contains(", end derived)"),
+            "{plain}"
+        );
+        assert!(marks(&plain).is_empty(), "{plain}");
+
+        // 规则 4 说这两种日期不在原句里
+        assert!(
+            SYSTEM_PROMPT.contains("An end marked `end derived`")
+                && SYSTEM_PROMPT.contains("a range marked `corrected`"),
+            "{SYSTEM_PROMPT}"
+        );
         anyhow::Ok(())
     }
     .await;

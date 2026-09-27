@@ -1532,6 +1532,26 @@ pub async fn entity_node(
     .await?)
 }
 
+/// 本库被人改过区间的行（`fact.time_corrected` 审计记在被改的那一行上，#970）。查询开头
+/// 取一次，每一行只顺着自己的 supersedes 链对它：`audit_events` 没有 target_id 的索引，
+/// 逐行去扫一个库的审计会随审计的多少变慢。`$1` 是库
+pub(crate) const TIME_CORRECTED_TARGETS: &str = "time_corrected_targets AS MATERIALIZED (
+         SELECT DISTINCT target_id FROM audit_events
+          WHERE kb_id = $1 AND action = 'fact.time_corrected' AND target_id IS NOT NULL)";
+
+/// 这一行的区间是不是人改过的：它的 supersedes 链上有一行在 [`TIME_CORRECTED_TARGETS`] 里。
+/// 改完之后时间线再关它、合并再搬它，都是在链上往下接，往上仍找得到那一次人改
+pub(crate) fn time_corrected_sql(alias: &str) -> String {
+    format!(
+        "EXISTS (WITH RECURSIVE chain(id) AS (
+                     SELECT {alias}.supersedes WHERE {alias}.supersedes IS NOT NULL
+                     UNION
+                     SELECT p.supersedes FROM facts p JOIN chain ON p.id = chain.id
+                      WHERE p.supersedes IS NOT NULL)
+                 SELECT 1 FROM chain JOIN time_corrected_targets t ON t.target_id = chain.id)"
+    )
+}
+
 /// 实体详情：节点信息 + 事实时间线。
 pub async fn entity_detail(
     pool: &PgPool,
@@ -1545,7 +1565,8 @@ pub async fn entity_detail(
         .ok_or(AppError::NotFound)?;
 
     let mut facts: Vec<EntityFact> = sqlx::query_as(&format!(
-        "SELECT f.id, {said_as} AS said_as, f.recorded_at, f.invalidated_at, f.supersedes,
+        "WITH {targets}
+         SELECT f.id, {said_as} AS said_as, f.recorded_at, f.invalidated_at, f.supersedes,
                 ARRAY(SELECT DISTINCT fe.document_id FROM fact_evidence fe
                       WHERE fe.fact_id = f.id AND fe.document_id IS NOT NULL
                       ORDER BY fe.document_id) AS document_ids,
@@ -1564,6 +1585,7 @@ pub async fn entity_detail(
                                  WHERE fe.fact_id = f.id AND {chunk_live})
                 ) AS stale,
                 (f.supersedes IS NOT NULL) AS corrected,
+                f.end_derived, {time_corrected} AS time_corrected,
                 (SELECT MAX(COALESCE(d.doc_time, d.created_at))
                  FROM fact_evidence fe JOIN documents d ON d.id = fe.document_id
                  WHERE fe.fact_id = f.id) AS last_evidence_time,
@@ -1595,6 +1617,8 @@ pub async fn entity_detail(
            AND ({subject} = $2 OR {object} = $2)
            AND {not_name}
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
+        targets = TIME_CORRECTED_TARGETS,
+        time_corrected = time_corrected_sql("f"),
         not_name = crate::names::not_a_name("f"),
         said_as = said_as("f"),
         represented = represented_by_typed("f"),
