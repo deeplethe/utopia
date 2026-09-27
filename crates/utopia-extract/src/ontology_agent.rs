@@ -105,6 +105,15 @@ pub struct ProposalReply {
     pub existing: Vec<Existing>,
     /// 读不出的项数
     pub malformed: usize,
+    /// 每个坏项为什么坏：测量台数它们，日志里也看得见
+    pub reasons: Vec<String>,
+}
+
+impl ProposalReply {
+    fn bad(&mut self, why: String) {
+        self.malformed += 1;
+        self.reasons.push(why);
+    }
 }
 
 const SYSTEM: &str = "\
@@ -130,6 +139,8 @@ instead of proposing, with dir: forward when the shape's subject is the property
 when the shape reads the property backwards (\"X wrote Y\" is author read in reverse).\n\
 - Do not propose the inverse of an existing property: list the shape under that property with dir \
 reverse.\n\
+- An existing entry holds shapes, not questions: every entry under existing lists at least one \
+shape id in s or k. Do not add an entry only to say that a property serves a question.\n\
 Answer with one JSON object and nothing else:\n\
 {\"p\":[{\"kind\":\"property\",\"key\":\"...\",\"label\":\"...\",\"definition\":\"...\",\"value\":false,\
 \"datatype\":null,\"domains\":[\"class_key\"],\"ranges\":[\"class_key\"],\"s\":[ids],\"k\":[ids],\"q\":[ids]},\
@@ -293,14 +304,14 @@ pub fn parse_proposal_response(
         Some(Value::Object(m)) => m.values().collect(),
         Some(Value::Null) | None => Vec::new(),
         Some(_) => {
-            reply.malformed += 1;
+            reply.bad("`p` is not a list".to_string());
             Vec::new()
         }
     };
     let mut seen: HashSet<String> = HashSet::new();
     for it in items {
         let Some(obj) = it.as_object() else {
-            reply.malformed += 1;
+            reply.bad("a proposal is not an object".to_string());
             continue;
         };
         let kind = obj
@@ -318,7 +329,7 @@ pub fn parse_proposal_response(
             || !valid_key(&key)
             || !seen.insert(key.clone())
         {
-            reply.malformed += 1;
+            reply.bad(format!("bad kind, bad key or repeated key: {kind} {key:?}"));
             continue;
         }
         let label = obj
@@ -345,7 +356,9 @@ pub fn parse_proposal_response(
             strings(obj.get("ranges")),
             strings(obj.get("parents")),
         ) else {
-            reply.malformed += 1;
+            reply.bad(format!(
+                "domains, ranges or parents are not lists of strings: {key}"
+            ));
             continue;
         };
         let (Ok(signatures), Ok(kind_words), Ok(questions)) = (
@@ -353,12 +366,12 @@ pub fn parse_proposal_response(
             ids(obj.get("k"), 'k', kind_word_ids),
             ids(obj.get("q"), 'q', question_ids),
         ) else {
-            reply.malformed += 1;
+            reply.bad(format!("a shape or question id outside the batch: {key}"));
             continue;
         };
         // 什么形状都不绑的提案不是从图谱里长出来的：不收
         if signatures.is_empty() && kind_words.is_empty() {
-            reply.malformed += 1;
+            reply.bad(format!("binds no shape: {key}"));
             continue;
         }
         reply.proposals.push(Proposal {
@@ -383,7 +396,7 @@ pub fn parse_proposal_response(
     if let Some(Value::Array(ex)) = v.get("existing") {
         for it in ex {
             let Some(obj) = it.as_object() else {
-                reply.malformed += 1;
+                reply.bad("an existing entry is not an object".to_string());
                 continue;
             };
             let key = obj
@@ -395,18 +408,18 @@ pub fn parse_proposal_response(
                 ids(obj.get("s"), 's', signature_ids),
                 ids(obj.get("k"), 'k', kind_word_ids),
             ) else {
-                reply.malformed += 1;
+                reply.bad(format!("existing: a shape id outside the batch: {key}"));
                 continue;
             };
             if key.is_empty() || (signatures.is_empty() && kind_words.is_empty()) {
-                reply.malformed += 1;
+                reply.bad(format!("existing: no key or no shapes: {key:?}"));
                 continue;
             }
             let direction = match obj.get("dir").and_then(Value::as_str).map(str::trim) {
                 Some("reverse") => Some("reverse".to_string()),
                 Some("forward") | None | Some("") => Some("forward".to_string()),
                 Some(_) => {
-                    reply.malformed += 1;
+                    reply.bad(format!("existing: unknown direction: {key}"));
                     continue;
                 }
             };

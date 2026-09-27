@@ -1528,6 +1528,7 @@ export const zh: Strings = {
     servesQuestions: (n: number) => `服务 ${n} 个问题`,
     bindsShapes: (n: number) => `会绑 ${n} 种短语形状`,
     bindsKindWords: (n: number) => `${n} 个类别词`,
+    closestExisting: (key: string, label: string) => `最近的已有：${key} ${label}`,
     rejectProposal: "拒绝",
     rejectReasonPrompt: "为什么不要？（可不填——代理下次提案前会读）",
     rejectedProposal: "已拒绝",

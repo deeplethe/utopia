@@ -248,6 +248,41 @@ node scripts/bench/competency.mjs --kb <kb-id> --seed scripts/bench/truth/redocr
 - `truth/redocred-typed.questions.json` 是给 `typed.mjs` 那份 100 篇 Re-DocRED 库写的十一条：十条有期望答案
   （其中两条要代理采纳过的 `bordered_by`、`p40` 才答得上），一条只有形状。换一个库要另写。
 
+## 本体代理的测量台（0061）
+
+`agent.mjs` 在同一个库状态、同一批形状上各臂跑一轮：每臂开跑前把代理没采纳的提案和看过的形状记录删掉
+（所以只在测量库上用，要显式给 `--reset`），从服务端日志读失败批次、坏项及原因、token，再让裁判拿着
+**全词表**判每条新提案是不是已有元素的重复或反向，判每条「已有」答案对不对、方向对不对。
+`POST /ontology/propose` 的 `glossary: full` 是给全词表那一臂用的旋钮，产品路径不开。
+
+```
+BENCH_BASE=http://127.0.0.1:1524 BENCH_PSQL="docker exec ... -d utopia_bench4 -tAc" \
+BENCH_SERVER_LOG=/path/to/server.log BENCH_JUDGE_BASE=... BENCH_JUDGE_KEY=... BENCH_JUDGE_MODEL=... \
+node scripts/bench/agent.mjs --kb <kb-id> --db utopia_bench4 --reset --arms trimmed,full,trimmed,full
+```
+
+**2026-09-27，bench4（100 篇 Re-DocRED，98 条属性），gemini-3.5-flash，每轮 120 条形状 + 69 个类别词、12 次调用：**
+
+| | 全词表 | 按结构裁（#963） | 按结构裁 + 意思最近 5 条 |
+|---|---|---|---|
+| 轮数 | 4 | 7 | 4 |
+| 失败批次 | 0 / 48 | 0 / 84 | 0 / 48 |
+| 提示 token / 次 | 7.1k | 4.3k | 5.0k |
+| 一轮 token | 111k | 78k | 87k |
+| 新元素提案 | 135 | 292 | 178 |
+| 其中重复或反向已有属性 | 1（0.7%） | 18（6.2%） | 6（3.4%） |
+| 「已有」答案判对 | 44 / 65（68%） | 60 / 85（71%） | 44 / 56（79%） |
+
+- 裁词表不让调用失败，也不让模型提已存在的键；让它**重提定义被裁掉的属性**。按结构裁时重的集中在
+  positionHeld、workLocation、performer、awardReceived：形状一端没类型或宾语是字面值，结构上对不上，
+  定义就没送。再按意思带上最近的 5 条，重复降了一半，多花 0.7k token 一次。
+- 每轮固定出现的十来个坏项是"existing 条目没有形状"，两臂都有，数目等于库里的问题数：模型把"这条属性
+  服务某个问题"写进了 existing。解析时丢掉，无害；提示词里已补一句。
+- **同一臂两轮之间的差别比两臂之间大**：同样的输入、温度 0，两轮只有一半提案键相同。单轮对比说明不了
+  质量，至少四轮合起来看。
+- 提案旁边显示的"最近的已有元素"（按向量取两条）只罩住了被判重复的 16 条里的 6 条，是给人看的线索，
+  不是防线。
+
 ## 读数怎么算
 
 - `prompt_tokens_est` 是**本体段**的估算，不是整个提示词。实测 4.0 字符 ≈ 1 token

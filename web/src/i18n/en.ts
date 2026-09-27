@@ -1758,6 +1758,7 @@ export const en = {
       n === 1 ? "binds 1 phrase shape" : `binds ${n} phrase shapes`,
     bindsKindWords: (n: number) =>
       n === 1 ? "1 kind word" : `${n} kind words`,
+    closestExisting: (key: string, label: string) => `closest: ${key} ${label}`,
     rejectProposal: "Reject",
     rejectReasonPrompt:
       "Why not? (optional — the agent reads it before proposing again)",

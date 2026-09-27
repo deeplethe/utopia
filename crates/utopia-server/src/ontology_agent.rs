@@ -32,6 +32,8 @@ const TOP_ENTITIES: usize = 20;
 
 /// 一条形状结构上对得上的属性多过这个数，就按向量只留最近的这么多带定义（同对齐的短名单）
 const GLOSSARY_PER_SHAPE: usize = 10;
+/// 每条形状按意思最近的这么多条属性，结构对不上也带定义
+const GLOSSARY_NEAREST_ANYWAY: usize = 5;
 
 /// 一次调用交给模型的形状数（0044 决定 3 的成本教训：词表每批只带一次）
 pub(crate) const SIGNATURES_PER_CALL: usize = 12;
@@ -328,6 +330,12 @@ async fn propose_locked(
                 .iter()
                 .filter(|p| crate::phrase_alignment::structurally_fits(p, s, &closure))
                 .collect();
+            // 意思最近的几条不管结构对不对得上都给定义：一端没类型、或宾语是字面值的形状，
+            // 结构上对不上 positionHeld / workLocation，模型看不到定义就把它们又提了一遍
+            // （受控对比里重复提案 1% → 6%，十条里七条是这样来的）
+            if let Some(near) = near {
+                full.extend(near.iter().take(GLOSSARY_NEAREST_ANYWAY).copied());
+            }
             if fitting.len() > GLOSSARY_PER_SHAPE {
                 if let Some(near) = near.filter(|n| !n.is_empty()) {
                     full.extend(
@@ -435,6 +443,9 @@ async fn propose_locked(
             }
         };
         malformed += parsed.malformed;
+        for why in &parsed.reasons {
+            tracing::warn!(%kb_id, batch = b, why = %why, "本体代理：坏项");
+        }
         let mut sig_outcome: HashMap<i64, (&str, String)> = HashMap::new();
         let mut word_outcome: HashMap<i64, (&str, String)> = HashMap::new();
         // 「本体里已经有」：存成 map_to 提案，人点「用已有的」就是一次人的绑定判定
@@ -445,6 +456,7 @@ async fn propose_locked(
                 "class".to_string()
             } else {
                 malformed += 1;
+                tracing::warn!(%kb_id, batch = b, why = %format!("existing: no such key in the ontology: {}", e.key), "本体代理：坏项");
                 continue;
             };
             let slot = format!("map_to:{}", e.key);
@@ -647,6 +659,48 @@ async fn propose_locked(
         .collect();
     // 同一个目标上一轮已经答过一批形状：并起来，不是盖掉（第一次真跑第三轮盖掉了第二轮的）
     let mut items = items;
+    // 每条新元素带上本体里离它最近的两个已有元素（按向量，不问模型）。裁过的词表下模型看不到
+    // 大部分属性的定义，受控对比里重复或反向已有属性的提案从 1% 升到 5%（awardReceived、
+    // performer 这几条）；审的人要在采纳前看见"它最像谁"
+    for class_side in [false, true] {
+        let idx: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.section != "map_to" && (it.section == "entity_types") == class_side
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let queries: Vec<String> = idx
+            .iter()
+            .map(|i| {
+                let p = &items[*i].payload;
+                format!(
+                    "{} · {}",
+                    p.get("label").and_then(Value::as_str).unwrap_or(""),
+                    p.get("description").and_then(Value::as_str).unwrap_or("")
+                )
+            })
+            .collect();
+        let target = if class_side {
+            crate::ontology_index::Target::Class
+        } else {
+            crate::ontology_index::Target::Predicate(None)
+        };
+        match crate::ontology_index::nearest_for_each(state, kb_id, &queries, 2, target).await {
+            Ok(found) => {
+                for (i, cands) in idx.into_iter().zip(found) {
+                    items[i].payload["closest"] = json!(cands
+                        .iter()
+                        .map(|c| json!({ "key": c.key, "label": c.label, "distance": c.distance }))
+                        .collect::<Vec<_>>());
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%kb_id, error = %e, "本体代理：最近的已有元素没算出来，提案不带这一格");
+            }
+        }
+    }
     for it in items.iter_mut().filter(|it| it.section == "map_to") {
         if let Some(prev) =
             utopia_store::ontology::open_proposal(pool, kb_id, "map_to", &it.key).await?

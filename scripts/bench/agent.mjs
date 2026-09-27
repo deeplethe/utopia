@@ -74,6 +74,12 @@ async function arm(name) {
   const text = logWindow(from);
   const started = /本体代理开始 .*shapes=(\d+) kind_words=(\d+) questions=(\d+) calls=(\d+)/.exec(text);
   const ended = /本体代理结束 .*proposals=(\d+) failed=(\d+) malformed=(\d+) skipped_existing=(\d+)/.exec(text);
+  // 坏项各是为什么坏的（按原因归并，键去掉）
+  const why = {};
+  for (const m of text.matchAll(/本体代理：坏项 .*why=(.*)$/gm)) {
+    const k = m[1].replace(/^"|"$/g, "").replace(/:\s[^:]*$/, "").trim();
+    why[k] = (why[k] ?? 0) + 1;
+  }
   const usage = [...text.matchAll(/llm usage .*prompt=(\d+) completion=(\d+)/g)];
   const prompt = usage.reduce((n, m) => n + Number(m[1]), 0), completion = usage.reduce((n, m) => n + Number(m[2]), 0);
   const rows = JSON.parse(q(`SELECT coalesce(json_agg(json_build_object('section',section,'key',key,'payload',payload,'signatures',signatures) ORDER BY section, key),'[]') FROM ontology_proposals WHERE kb_id='${KB}' AND proposed_by='agent' AND status='open'`));
@@ -88,7 +94,8 @@ async function arm(name) {
     "Classes:", ...ontology.entity_types.map((c) => `- ${c.key} · ${c.label} · ${c.description ?? ""}`),
     "Properties:", ...ontology.relation_types.map((r) => `- ${r.key} · ${r.label} · ${r.kind} · ${(r.domains ?? []).map((d) => classKey.get(d)).join("|")} → ${(r.ranges ?? []).map((d) => classKey.get(d)).join("|")} · ${r.description ?? ""}`),
   ].join("\n");
-  const dup = { duplicate: 0, inverse: 0, new: 0, unjudged: 0, items: [] };
+  // shown = 被判重复/反向的里，服务端给的"最近的已有元素"里就有裁判说的那一个：审的人看得见
+  const dup = { duplicate: 0, inverse: 0, new: 0, unjudged: 0, shown: 0, items: [] };
   for (let i = 0; i < proposals.length; i += 15) {
     const batch = proposals.slice(i, i + 15);
     const list = batch.map((p, j) => `${j}: [${p.section}] ${p.key} · ${p.payload.label} · ${(p.payload.domains ?? p.payload.parents ?? []).join("|")} → ${(p.payload.ranges ?? []).join("|")} · ${p.payload.description} · phrases: ${(p.payload.forms ?? []).join("; ")}${(p.payload.kind_words ?? []).length ? " · kind words: " + p.payload.kind_words.join("; ") : ""}`).join("\n");
@@ -96,7 +103,10 @@ async function arm(name) {
     batch.forEach((p, j) => {
       const r = out?.results?.find((x) => Number(x.i) === j);
       const v = ["duplicate", "inverse", "new"].includes(r?.verdict) ? r.verdict : "unjudged";
-      dup[v]++; dup.items.push({ key: p.key, verdict: v, of: r?.of ?? null });
+      const closest = (p.payload.closest ?? []).map((c) => c.key);
+      const shown = (v === "duplicate" || v === "inverse") && closest.includes(String(r?.of ?? ""));
+      if (shown) dup.shown++;
+      dup[v]++; dup.items.push({ key: p.key, verdict: v, of: r?.of ?? null, closest, shown });
     });
   }
   // 裁判二：「已有」答得对不对。每条形状配一条例句
@@ -125,6 +135,7 @@ async function arm(name) {
     offered: started ? { shapes: +started[1], kind_words: +started[2], questions: +started[3], calls: +started[4] } : null,
     run: ended ? { proposals_and_maps: +ended[1], failed_batches: +ended[2], malformed_items: +ended[3], proposed_existing_key: +ended[4] } : null,
     tokens: { calls: usage.length, prompt, completion, total: prompt + completion, prompt_per_call: usage.length ? Math.round(prompt / usage.length) : 0 },
+    malformed_reasons: why,
     proposals: proposals.length, map_to: maps.length, map_to_shapes: shapes.length, reviews, duplicates: dup, existing: exist,
   };
 }
@@ -140,18 +151,21 @@ async function main() {
   row("calls", (r) => r.tokens.calls);
   row("failed batches (call or unreadable reply)", (r) => r.run?.failed_batches);
   row("malformed items", (r) => r.run?.malformed_items);
+  row("  reasons", (r) => Object.entries(r.malformed_reasons).map(([k, n]) => `${n}×${k}`).join("; ").slice(0, 14) || "–");
   row("proposed a key that already exists", (r) => r.run?.proposed_existing_key);
   row("prompt tokens / call", (r) => r.tokens.prompt_per_call);
   row("tokens / round", (r) => r.tokens.total);
   row("proposals (new elements)", (r) => r.proposals);
   row("  judged duplicate of an existing element", (r) => `${r.duplicates.duplicate} (${pct(r.duplicates.duplicate, r.proposals)})`);
   row("  judged inverse of an existing property", (r) => `${r.duplicates.inverse} (${pct(r.duplicates.inverse, r.proposals)})`);
+  row("  of those, the existing one is shown beside", (r) => `${r.duplicates.shown} of ${r.duplicates.duplicate + r.duplicates.inverse}`);
   row("  judged new", (r) => `${r.duplicates.new} (${pct(r.duplicates.new, r.proposals)})`);
   row("\"already in the ontology\" shapes", (r) => r.map_to_shapes);
   row("  judged right", (r) => `${r.existing.right} (${pct(r.existing.right, r.map_to_shapes)})`);
   row("  judged wrong direction", (r) => `${r.existing.wrong_direction} (${pct(r.existing.wrong_direction, r.map_to_shapes)})`);
   row("  judged wrong", (r) => `${r.existing.wrong} (${pct(r.existing.wrong, r.map_to_shapes)})`);
   row("shapes declined", (r) => r.reviews["phrase/declined"] ?? 0);
+  for (const r of results) if (Object.keys(r.malformed_reasons).length) console.log(`malformed in ${r.arm}: ${JSON.stringify(r.malformed_reasons)}`);
   if (args.out) fs.writeFileSync(args.out, JSON.stringify(results, null, 1));
 }
 main().catch((e) => { console.error(e); process.exit(1); });
