@@ -1,6 +1,6 @@
 # 0063 · Stopping a chat ends the generation
 
-- **Status**: Implemented 2026-09-27 ([#961](https://github.com/deeplethe/utopia/pull/961), migration 0095)
+- **Status**: Implemented 2026-09-27 (#969, migration 0095)
 - **Written**: 2026-09-26 (conventions in the [README](README.md))
 - **Related**: [#934](https://github.com/deeplethe/utopia/issues/934), [0042](0042-the-chat-loop-is-a-runner-with-hooks.md)
 

@@ -1,6 +1,6 @@
 # 0062 · The export says what is contested
 
-- **Status**: accepted 2026-09-26 (#922) · implements [#564](https://github.com/deeplethe/utopia/issues/564) · precondition: the current-ontology invariant described under [The `open` invariant](#the-open-invariant)
+- **Status**: Implemented 2026-09-26 (#922, migration 0093)
 - **Written**: 2026-09-25 (conventions in the [README](README.md))
 - **Related**: [0020](0020-an-auditor-reads-it-without-us.md) (the export this extends); [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) (axiom violations); [0017](0017-a-contradiction-points-upstream.md) (`derived_contradiction`); [#550](https://github.com/deeplethe/utopia/issues/550) (the export is the supported machine-readable read contract); #612, #613, #618, #619 (the storage-side findings this record had to respect)
 
@@ -109,3 +109,9 @@ None of this enters the contract, now or later, just because it exists in storag
 ## Vocabulary added
 
 Everything without a standard spelling mints under `urn:utopia:ns:`: the classes `FactConflict` and `AxiomViolation`; the links `priorStatement`, `incomingStatement`, `onStatement`, `evidencePath`, `onRelation`, `criterion`; and the literals `reason`, `kind`, `status`, `resolution`, `detectedAt`, `closedAt`. The value sets above are the contract: readers should treat unknown values as a newer contract, not silently.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> accepted 2026-09-26 (#922) · implements [#564](https://github.com/deeplethe/utopia/issues/564) · precondition: the current-ontology invariant described under [The `open` invariant](#the-open-invariant)

@@ -1,6 +1,6 @@
 # 0043 · Every review queue is governed
 
-- **Status**: Decided 2026-09-14 · **no code on `dev`** · cut 1 was built in PR #699 — migration 0058 widening `agent_decisions` to `fact` and `conflict` with `summary` and `detail`, `queue_agent` walking low-confidence and stale facts then temporal conflicts after the duplicate rounds of the same `govern` job, every applied action revertible from the Agent queue — and that PR was **closed on 2026-09-17**, to re-land on the open graph once [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) cut 2 has settled alignment · violations, ontology defects and concept mappings are cut 2 · **the decisions below stand; only the code was withdrawn**
+- **Status**: Accepted 2026-09-14 · no code on `dev` (#699 closed) · open: re-land on the open graph
 - **Restored to `dev` 2026-09-20.** The file left `dev` with PR #699 and its number stayed allocated and cited — [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) links to it, `docs/design/governance.md` and `docs/design/time.md` reason from its decisions 5 and 1, and `docs/design/README.md` has carried it as `proposed` throughout. A record is the reasoning, and the reasoning was never withdrawn, so the file belongs here whatever happened to the branch. The status line above is the only thing rewritten.
 - **Written**: 2026-09-14 (conventions in the [README](README.md))
 - **Related**: [0025](0025-governance-reads-the-ledger-before-it-decides.md) (the governor this extends; its open question "Other queues"), [0026](0026-a-decision-records-why.md) (a person's why becomes a precedent), [0027](0027-an-automatic-merge-is-gated-by-what-it-can-undo.md) (act on what can be undone), [0022](0022-an-unknown-date-is-not-an-open-one.md) (the temporal engine whose conflicts this settles), [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) (nods, which stay with people), #695
@@ -68,3 +68,9 @@ Agent rows for facts and conflicts carry their summary in place of two names. A 
 - **Cut 2: violations, ontology defects, concept mappings.** A violation's `fact_retracted` and `fact_closed` fit this shape. `axiom_relaxed` changes the ontology, and `fixed` for a defect means a person changed it; both need a gate before an agent applies them.
 - **The second look.** The fact and conflict queues have no tool loop yet (0025 decision 5); the batch sees the evidence directly. Add one when proposals keep asking for something the batch could not see.
 - **The interface.** The Agent queue shows these rows with minimal changes; the queue cards themselves don't yet show the agent's proposal inline, as duplicate cards do.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Decided 2026-09-14 · **no code on `dev`** · cut 1 was built in PR #699 — migration 0058 widening `agent_decisions` to `fact` and `conflict` with `summary` and `detail`, `queue_agent` walking low-confidence and stale facts then temporal conflicts after the duplicate rounds of the same `govern` job, every applied action revertible from the Agent queue — and that PR was **closed on 2026-09-17**, to re-land on the open graph once [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) cut 2 has settled alignment · violations, ontology defects and concept mappings are cut 2 · **the decisions below stand; only the code was withdrawn**

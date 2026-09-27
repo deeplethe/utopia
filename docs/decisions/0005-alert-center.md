@@ -1,9 +1,6 @@
 # 0005 · The alert center
 
-- **Status**: Built · five kinds live (`source.sync_failed`, `llm.unreachable`,
-  `llm.rate_limited` #160, `llm.out_of_credit` #182, `data_source.schema_sync_failed`);
-  the panel has search and per-group paging; decisions 1 and 2 were overturned during
-  implementation; `document.no_text_layer` still unwired.
+- **Status**: Implemented · open: `document.no_text_layer` is unwired
 - **Written**: 2026-08-29 · condensed into English 2026-09-03
 - **Related**: adjacent to the Review queue
   ([0001](0001-ontology-import-and-governance.md) P4);
@@ -127,3 +124,9 @@ channel: something in this document did not land. None of it goes to Review.
   endpoint, so the message can say "no text layer; configure OCR and reprocess". When
   wired, do not ask when it is fixed: one row per scan, the panel folds adjacent rows,
   reprocessing needs no cleanup.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Built · five kinds live (`source.sync_failed`, `llm.unreachable`, `llm.rate_limited` #160, `llm.out_of_credit` #182, `data_source.schema_sync_failed`); the panel has search and per-group paging; decisions 1 and 2 were overturned during implementation; `document.no_text_layer` still unwired.

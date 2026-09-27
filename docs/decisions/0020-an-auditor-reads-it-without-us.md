@@ -1,6 +1,6 @@
 # 0020 · An auditor reads it without us
 
-- **Status**: implemented · `GET /api/v1/kbs/{id}/export?format=turtle|jsonld` streams the base as RDF; `rdf.rs` holds the mapping, `oxrdfio` the serialisers · SPARQL is still not here, and this record says why it can wait
+- **Status**: Implemented · revised 2026-09-25 (#902) · open: SPARQL (#308)
 - **Written**: 2026-09-05 (conventions in the [README](README.md))
 - **Related**: [0001](0001-ontology-import-and-governance.md) kept the imported file verbatim and projected what today's consumers can use — this is the first consumer pointing the other way. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) and [0019](0019-the-second-clock-can-be-rewound.md) are what makes the export worth reading: the intervals and the lineage are the content, not the triples
 
@@ -91,3 +91,9 @@ One of the five built-in packs is PROV-O, so a base that has it loaded already k
 - **A SPARQL endpoint.** The escape hatch over an in-memory Oxigraph projection was the original plan and stays a later cut. Someone who asked for "the reasoning behind this decision" wants a file they can keep; a query endpoint is the second thing they ask for, not the first.
 - **Import of our own export.** The export is not a backup format, and reading it back would need entity resolution to be told "these IRIs are already resolved". Nothing stops it later; nothing depends on it now.
 - **A button.** The API is the deliverable; where the download lives in the interface is a separate cut.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented · `GET /api/v1/kbs/{id}/export?format=turtle|jsonld` streams the base as RDF; `rdf.rs` holds the mapping, `oxrdfio` the serialisers · SPARQL is still not here, and this record says why it can wait

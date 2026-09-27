@@ -1,7 +1,6 @@
 # 0046 · The app surface is MCP
 
-- **Status**: Decided 2026-09-19 · no app center, no component runtime, no sandbox. The design that
-  was refused is kept below so the question is not reopened from nothing
+- **Status**: Accepted 2026-09-19 · a refusal: no app center, no component runtime, no sandbox
 - **Written**: 2026-09-19 (conventions in the [README](README.md))
 - **Related**: [0014](0014-identity-from-the-person-scope-from-the-token.md) and
   [0020](0020-an-auditor-reads-it-without-us.md) are the surface this record points at;

@@ -1,15 +1,6 @@
 # 0009 · An undecided type stays empty
 
-- **Status**: Implemented · `entities.type_id` and `entity_retypes.from_type_id` are
-  nullable; the nine builtin classes and the seeding function left with the seed relations
-  (#110 / #125 / #128 / [0011](0011-a-mapping-is-not-a-fact.md)) · `owl:disjointWith` now
-  reaches resolution (0016 B3): a declared disjointness, inherited down both hierarchies, keeps
-  same-name entities apart ahead of every heuristic; since #226 same-name entities of kin classes
-  (ancestor, descendant or a shared non-root ancestor) go to Review; `CONFUSABLE_TYPE_KEYS` stays
-  as the fallback when nothing is declared · `metric` /
-  `dimension` were created on demand by mapping exploration (#231); **they are to retire**
-  under [0036](0036-exploration-aligns-a-schema-to-the-ontology.md), which found them to be
-  the same species this record removed
+- **Status**: Implemented · open: `metric` and `dimension` retire under 0036
 - **Written**: 2026-08-30 · condensed into English 2026-09-03
 - **Related**: [0008](0008-ontology-packs-as-cold-start.md) makes a real vocabulary the
   optional start; [0001](0001-ontology-import-and-governance.md) IRI/key split behind the
@@ -114,3 +105,9 @@ in the ontology as a class, as if someone had decided it.
 - **Where `metric` / `dimension` belong.** Today they are builtin-on-demand. A "Utopia
   semantic layer" pack would move the last builtin classes out of code into something
   optional, with IRIs, replaceable (0016 D2).
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented · `entities.type_id` and `entity_retypes.from_type_id` are nullable; the nine builtin classes and the seeding function left with the seed relations (#110 / #125 / #128 / [0011](0011-a-mapping-is-not-a-fact.md)) · `owl:disjointWith` now reaches resolution (0016 B3): a declared disjointness, inherited down both hierarchies, keeps same-name entities apart ahead of every heuristic; since #226 same-name entities of kin classes (ancestor, descendant or a shared non-root ancestor) go to Review; `CONFUSABLE_TYPE_KEYS` stays as the fallback when nothing is declared · `metric` / `dimension` were created on demand by mapping exploration (#231); **they are to retire** under [0036](0036-exploration-aligns-a-schema-to-the-ontology.md), which found them to be the same species this record removed

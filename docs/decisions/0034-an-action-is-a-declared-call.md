@@ -1,6 +1,6 @@
 # 0034 · An action is a declared call
 
-- **Status**: cut 1 · this record. No code yet
+- **Status**: Proposed · no code
 - **Written**: 2026-09-08 (conventions in the [README](README.md))
 - **Related**: [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md) built the rule whose conclusion will one day fire an action; this record builds the thing it will fire and stops there. [0032](0032-a-rule-computes-what-it-concludes.md) drew the line this record keeps: everything a person authors is structured, so the page shows what runs. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) is why an agent will not call one without a nod. [0020](0020-an-auditor-reads-it-without-us.md) is why every run is a row. The managed fetch path (#330, `http_fetch`) is the road a call travels. The grant layer follows what `data_source_grants` did for warehouses.
 

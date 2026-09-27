@@ -1,15 +1,6 @@
 # 0036 · Exploration aligns a schema to the ontology
 
-- **Status**: written · decision 7 implemented (#553 → #561: the schema document is
-  indexed and never extracted, `sources.config.extract`, `graph_status = skipped`; the
-  column-name entities went from 93 to 12 on the wide bench base) · a definition can be
-  written by hand (#562 → #563), the door the seeded upper bound simulated · the
-  conventions-as-prose dead end was measured at 14/18 and revised in place (see Dead ends) ·
-  cuts remaining: #554 alignment, #555 the conversion tree, #556 retiring the two classes ·
-  overturns where a mapping hangs, and keeps what [0011](0011-a-mapping-is-not-a-fact.md)
-  said about what a mapping is · the two builtin classes `metric` / `dimension` are to
-  retire (their revision notes are on 0009 and 0011) · the migration that carries the
-  exploration ledger (#503) is unaffected
+- **Status**: In progress · decision 7 built (#561, #563) · open: #554, #555, #556
 - **Written**: 2026-09-09 (conventions in the [README](README.md))
 - **Related**: [0011](0011-a-mapping-is-not-a-fact.md) moved a mapping out of the ledger and
   is right that it is configuration; this record moves the *concept* out of the entity table.
@@ -231,3 +222,9 @@ changes one thing 0011 did not decide but its implementation assumed — that th
 mapping hangs from is an entity of a class called Metric. The concept is an attribute of a
 real class, or a rule over such attributes, and the mapping is how a column becomes that
 attribute's value.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> written · decision 7 implemented (#553 → #561: the schema document is indexed and never extracted, `sources.config.extract`, `graph_status = skipped`; the column-name entities went from 93 to 12 on the wide bench base) · a definition can be written by hand (#562 → #563), the door the seeded upper bound simulated · the conventions-as-prose dead end was measured at 14/18 and revised in place (see Dead ends) · cuts remaining: #554 alignment, #555 the conversion tree, #556 retiring the two classes · overturns where a mapping hangs, and keeps what [0011](0011-a-mapping-is-not-a-fact.md) said about what a mapping is · the two builtin classes `metric` / `dimension` are to retire (their revision notes are on 0009 and 0011) · the migration that carries the exploration ledger (#503) is unaffected

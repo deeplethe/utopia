@@ -1,6 +1,6 @@
 # 0017 · A contradiction points at an error upstream
 
-- **Status**: implemented · B2a (#238): engine and queue — `derive::contradictions`, migration 0020, the Review card with clues and repairs · B2b: contested edges in the alert colour and ghost edges for blocked derivations on the graph, the disputed chip on panel rows, the "did not land" section of the Derived tab with its proof chain · B2 of 0016, wider than the one line written there: contradictions become visible everywhere, not only as a new kind in the queue
+- **Status**: Implemented (#238, #243)
 - **Written**: 2026-09-03 (conventions in [README](README.md))
 - **Related**: the two unbuilt rows of the "derived vs asserted" table in [0002](0002-reasoning-engine.md) §2; [0016](0016-close-the-open-seams-before-cutting-new-ones.md) B2; the proof chain (B1, #227) supplies the "premises expand to the sentence" half of the card below
 
@@ -203,3 +203,9 @@ B1 (#227) merges first after a rebase; B2a branches from it.
   selected.
 - **Does the disputed status need its own SSE event?** The `review` event is already sent;
   graph and panel can refetch on it. No new event.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented · B2a (#238): engine and queue — `derive::contradictions`, migration 0020, the Review card with clues and repairs · B2b: contested edges in the alert colour and ghost edges for blocked derivations on the graph, the disputed chip on panel rows, the "did not land" section of the Derived tab with its proof chain · B2 of 0016, wider than the one line written there: contradictions become visible everywhere, not only as a new kind in the queue

@@ -1,11 +1,6 @@
 # 0002 · Reasoning engine
 
-- **Status**: R0 built: six fact-level violation kinds in `axiom_violations` (five checks plus
-  `derived_contradiction`, 0017), eight ontology defect kinds in `ontology_defects`, two Review tabs. R1 built behind the KB switch `materialize_inferences`
-  (default on since 0050; off when this was written), rules from four axiom kinds (#132, #177, #179). R2 built as a proof chain
-  (`GET /kbs/{id}/derived/{id}/proof`, 0016 B1). Contradiction signals for derivations built per
-  [0017](0017-a-contradiction-points-upstream.md). R3 not built: every run recomputes the whole KB,
-  on `inference_interval_minutes` (default 60).
+- **Status**: In progress · R0, R1 and R2 built · open: R3, incremental maintenance
 - **Written**: 2026-08-28 · condensed into English 2026-09-03
 - **Related**: [0001](0001-ontology-import-and-governance.md) P5 (this record replaces its schedule);
   [0010](0010-no-relation-is-no-relation.md);
@@ -98,3 +93,9 @@ corpus is cleaned, then materialization is switched on.
 - Materialize or evaluate at query time: 4.5× expansion on a small corpus, unknown at scale. For now
   a per-predicate cap and a periodic full recompute.
 - R3 incremental maintenance: correctness is the hardest to verify, and full recompute holds.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> R0 built: six fact-level violation kinds in `axiom_violations` (five checks plus `derived_contradiction`, 0017), eight ontology defect kinds in `ontology_defects`, two Review tabs. R1 built behind the KB switch `materialize_inferences` (default on since 0050; off when this was written), rules from four axiom kinds (#132, #177, #179). R2 built as a proof chain (`GET /kbs/{id}/derived/{id}/proof`, 0016 B1). Contradiction signals for derivations built per [0017](0017-a-contradiction-points-upstream.md). R3 not built: every run recomputes the whole KB, on `inference_interval_minutes` (default 60).

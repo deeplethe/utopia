@@ -1,10 +1,6 @@
 # 0038 · The interface has a light side
 
-- **Status**: Implemented (#599) · a `data-theme` on `<html>`, a second token block in
-  `styles.css`, the canvas reads its colours from the tokens and re-reads them on a switch,
-  a `raw-colour` rule in the style guard · not in this cut: an entity palette tuned for
-  paper (the data colours are the same in both themes and must stay equal to the server's
-  copy), a theme choice that follows the account across browsers
+- **Status**: Implemented (#599) · open: a palette for paper, a theme that follows the account
 - **Written**: 2026-09-11 (conventions in the [README](README.md))
 - **Related**: [0004](0004-language-and-localization.md) put the reader's language in the
   reader's hands; the theme is the same kind of choice and lives in the same place, the
@@ -131,3 +127,9 @@ rule for interface work is "look first" and not "green first".
 - **`styles.css` under the guard.** The token blocks are the only place a value may appear
   in the stylesheet; nothing enforces it. A rule that scans the stylesheet below its token
   blocks is a small addition when it is next touched.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented (#599) · a `data-theme` on `<html>`, a second token block in `styles.css`, the canvas reads its colours from the tokens and re-reads them on a switch, a `raw-colour` rule in the style guard · not in this cut: an entity palette tuned for paper (the data colours are the same in both themes and must stay equal to the server's copy), a theme choice that follows the account across browsers

@@ -1,6 +1,6 @@
 # 0014 · Identity from the person, scope from the token
 
-- **Status**: implemented (#161 record, #180 code) · `personal_tokens` and a Streamable HTTP MCP server at `POST /api/v1/kbs/{kb_id}/mcp` with five read-only tools, `application/json` responses rather than SSE · the account-level "Agents & tokens" page at `/account/tokens` (0016 A2): plaintext shown once beside a per-base client config snippet, the list keeps the prefix, revocation leaves a trace · `can_write` is still hard-coded `false`, so a `write` scope changes nothing yet
+- **Status**: Implemented (#180) · open: `can_write` is hard-coded false
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: migration `0014_data_source_grants` gave data sources a grant layer; this is the same question where a machine knocks. [0004](0004-language-and-localization.md) has the server speak English only, MCP error codes included. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) removes the main objection to opening `remember` over MCP.
 
@@ -80,3 +80,9 @@ push documents in.
   still unanswered.
 - **Tokens across workspaces.** `kb_ids` is a base-level whitelist; a workspace-level grant
   would look much like `data_source_grants`, and the two concepts may merge then.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented (#161 record, #180 code) · `personal_tokens` and a Streamable HTTP MCP server at `POST /api/v1/kbs/{kb_id}/mcp` with five read-only tools, `application/json` responses rather than SSE · the account-level "Agents & tokens" page at `/account/tokens` (0016 A2): plaintext shown once beside a per-base client config snippet, the list keeps the prefix, revocation leaves a trace · `can_write` is still hard-coded `false`, so a `write` scope changes nothing yet

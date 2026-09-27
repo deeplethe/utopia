@@ -1,9 +1,6 @@
 # 0006 · Ontology scale and the extraction prompt
 
-- **Status**: Built · the character budget (`deployment_settings.ontology_prompt_budget`,
-  24,000) and per-chunk retrieval are live, values unchanged; the "built-in classes always
-  present" floor is replaced by ancestor completion; the per-chunk list keeps to the same budget
-  and carries first sentences (#701); answer keys are still hand-filled.
+- **Status**: Superseded by 0044 · was built
 - **Written**: 2026-08-29 · condensed into English 2026-09-03
 - **Related**: [0008](0008-ontology-packs-as-cold-start.md) packs are now the starting
   ontology; [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) measured the bias
@@ -90,3 +87,9 @@ classes), hence no hit rate.
   attributes) are guesses; tuning before the corpus question is settled only tightens the
   overfit. `run.mjs --packs schema-org,prov-o` walks the real cold-start path, but that
   comparison has not been run.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Built · the character budget (`deployment_settings.ontology_prompt_budget`, 24,000) and per-chunk retrieval are live, values unchanged; the "built-in classes always present" floor is replaced by ancestor completion; the per-chunk list keeps to the same budget and carries first sentences (#701); answer keys are still hand-filled.

@@ -1,6 +1,6 @@
 # 0050 · An action attempt keeps its identity and uncertain outcome
 
-- **Status**: proposed; domain contract pending review. Documentation only; no production schema, sender or routes.
+- **Status**: Proposed · documentation only
 - **Written**: 2026-09-21
 - **Related**: [0034](0034-an-action-is-a-declared-call.md); [PR #840](https://github.com/deeplethe/utopia/pull/840).
 

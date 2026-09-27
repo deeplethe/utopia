@@ -1,6 +1,6 @@
 # 0029 · A rule may say "or", once
 
-- **Status**: implemented · `group_seq` on `attribute_rule_conditions` (migration `0039`, existing conditions default to group 0 so every rule keeps its meaning), the evaluator runs group by group with the combination cap per group and one dedupe by interval across groups, `not_in` beside `in` · the API carries `group` on a condition and defaults it to 0, so a caller that sends a flat list still sends one conjunction · the rule editor writes blocks and the table reads the sentence back with its "or" in it
+- **Status**: Implemented (migration 0039)
 - **Written**: 2026-09-08 (conventions in the [README](README.md))
 - **Related**: [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md) built the rule and made its conditions a conjunction; this record widens that shape by exactly one level and says why not further. [0002](0002-reasoning-engine.md) ruled out a user-defined rule language, which is the boundary this record stays inside. From #476.
 
@@ -45,3 +45,9 @@ The rule reads as one sentence in the table — `A and B or C` — because it is
 
 - **Chaining is a separate question** (#477): a rule still cannot read what another rule concluded, and this record does not change that. The two are independent — this one is the shape of one rule, that one is how rules feed each other.
 - **Set membership is still literal.** `in` and `not_in` compare strings exactly, so the same category in another language does not match. 0021 left this open and it stays open.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented · `group_seq` on `attribute_rule_conditions` (migration `0039`, existing conditions default to group 0 so every rule keeps its meaning), the evaluator runs group by group with the combination cap per group and one dedupe by interval across groups, `not_in` beside `in` · the API carries `group` on a condition and defaults it to 0, so a caller that sends a flat list still sends one conjunction · the rule editor writes blocks and the table reads the sentence back with its "or" in it

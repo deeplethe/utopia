@@ -1,6 +1,6 @@
 # 0027 · An automatic merge is gated by what it can undo
 
-- **Status**: Implemented · `execution_gate` in the store: `impact_of` reads what a merge would touch, `hold` is the pure judgement; the batch adjudicator and the governor both ask it before an automatic merge, and a held pair goes to a person as `escalate_impact|<kind> <value>`; the governor records its look as a proposal whose reason begins `held for a person` · exports and a per-deployment opt-in stay open · the roadmap's execution gate for agents' calls is this module's next caller
+- **Status**: Implemented · open: exports, a per-deployment opt-in
 - **Written**: 2026-09-08 (conventions in the [README](README.md))
 - **Related**: #357 asked for it. [0019](0019-the-second-clock-can-be-rewound.md) made a merge undoable inside the graph, which is what makes inside and outside different things. The 0025 gate (confidence, precedents, two hard rules) is unchanged; this one sits after it. The things a merge can reach are [0002](0002-reasoning-engine.md)'s derivations, [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md)'s violations and the alerts of [0005](0005-alert-center.md), the answers of the chat, and the exports of [0020](0020-an-auditor-reads-it-without-us.md).
 
@@ -58,3 +58,9 @@ A pair the adjudicator would have merged shows in Duplicates with the held reaso
 - **Alerts as such.** The alert center's kinds are about pipelines and switches, not the graph; the path from a merge to an alert runs through the consistency check, which is why the contradiction stands in for it. If a direct path appears, it joins `impact_of`.
 - **Answers that cited a side without resolving it.** `sources` carries chunks and facts; `resolved` is the honest entity-level signal today.
 - **How often it holds.** Run the bench with reasoning on and count `escalate_impact`; if derivations hold most of a base, the derived rule wants a finer question than "any".
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented · `execution_gate` in the store: `impact_of` reads what a merge would touch, `hold` is the pure judgement; the batch adjudicator and the governor both ask it before an automatic merge, and a held pair goes to a person as `escalate_impact|<kind> <value>`; the governor records its look as a proposal whose reason begins `held for a person` · exports and a per-deployment opt-in stay open · the roadmap's execution gate for agents' calls is this module's next caller

@@ -1,22 +1,6 @@
 # 0040 · A chunk says where its words came from
 
-- **Status**: Cut 1 implemented (2026-09-15) · `chunks.origin` / `origin_model` / `anchor`
-  with the anchor shape checked (migration 0058), the packer never mixes provenances
-  (`chunk_segments`), the ceiling on described facts, origin in the evidence API, the MCP
-  changes feed and the RDF export (`utopia:evidenceOrigin`) · a file that needs a reader no
-  longer becomes garbage text: images and recordings are recognised by header or extension, a
-  PDF with an empty text layer is a scan, and without the model the document fails once with
-  `documents.reader_needed` and a `document.needs_reader` alert · revised 2026-09-15: scans and
-  images are read by a MinerU service instead of a Docling sidecar, and a transcript must label
-  speakers · cut 2 implemented (2026-09-15): scans and images are read by a workspace's MinerU
-  service (`llm_settings.ocr_*`, migration 0059), one segment per page with the covered regions'
-  box in the anchor; the processing job waits on the service with `Deferred` and remembers the
-  remote task on the document; saving the service queues the waiting documents again · the
-  settings cards are their own interface cut · cut 3 implemented (2026-09-16): recordings are read
-  by a workspace's transcription model (`llm_settings.transcribe_*`, migration 0060) through
-  `/audio/transcriptions` with `diarized_json`; speakers are written into the text and a chunk's
-  anchor carries its times and speakers; a transcript without speaker labels degrades like a
-  missing model
+- **Status**: Implemented · cuts 1–3, 2026-09-15 and 2026-09-16 (migrations 0058–0060)
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: [0039](0039-a-chunk-is-what-extraction-sees.md) (#633, not merged yet) puts Docling
   behind the block model as its cut 2 and leaves "evidence that points at a table cell or an image
@@ -268,3 +252,9 @@ the recording at `start_ms` — is a separate cut after the capability, not part
 | Route described facts to `pending_facts` (0015) | That queue waits for a nod on sentences a person said to the base. A single slide deck would bury those nods under hundreds of image facts, and a described fact is not anyone's assertion. |
 | Copy images out as blobs of their own | The original file already holds them, content-addressed and versioned. An anchor into it costs nothing and cannot drift. |
 | Reuse the chat model for vision and transcription | Sensitivity differs by modality, and one setting sends the most sensitive material wherever chat is hosted. |
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Cut 1 implemented (2026-09-15) · `chunks.origin` / `origin_model` / `anchor` with the anchor shape checked (migration 0058), the packer never mixes provenances (`chunk_segments`), the ceiling on described facts, origin in the evidence API, the MCP changes feed and the RDF export (`utopia:evidenceOrigin`) · a file that needs a reader no longer becomes garbage text: images and recordings are recognised by header or extension, a PDF with an empty text layer is a scan, and without the model the document fails once with `documents.reader_needed` and a `document.needs_reader` alert · revised 2026-09-15: scans and images are read by a MinerU service instead of a Docling sidecar, and a transcript must label speakers · cut 2 implemented (2026-09-15): scans and images are read by a workspace's MinerU service (`llm_settings.ocr_*`, migration 0059), one segment per page with the covered regions' box in the anchor; the processing job waits on the service with `Deferred` and remembers the remote task on the document; saving the service queues the waiting documents again · the settings cards are their own interface cut · cut 3 implemented (2026-09-16): recordings are read by a workspace's transcription model (`llm_settings.transcribe_*`, migration 0060) through `/audio/transcriptions` with `diarized_json`; speakers are written into the text and a chunk's anchor carries its times and speakers; a transcript without speaker labels degrades like a missing model

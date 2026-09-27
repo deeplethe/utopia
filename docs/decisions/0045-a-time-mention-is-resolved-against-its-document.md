@@ -1,6 +1,6 @@
 # 0045 · A time mention is resolved against its document
 
-- **Status**: Accepted 2026-09-17 · cuts 1, 2 and 3 built (#740, #761): a document is dated from its own text, each time mention is interpreted by the model and computed by code, upload time is used nowhere, and a timeline closes on how a start was got rather than on a confidence number · cut 4 (re-resolution when a person sets a document's date, the time-anchor review queue) not built · current state in [design/time](../design/time.md) · expands decision 5 of [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) and revises decision 3 of [0022](0022-an-unknown-date-is-not-an-open-one.md) for undated documents · #714 closed
+- **Status**: In progress · accepted 2026-09-17 · cuts 1–3 built (#740, #761) · open: cut 4
 - **Written**: 2026-09-16 (conventions in the [README](README.md))
 - **Related**: [0019](0019-the-second-clock-can-be-rewound.md) and [0022](0022-an-unknown-date-is-not-an-open-one.md) gave facts a world axis, a record axis and an attestation; [0024](0024-the-world-axis-reaches-the-second.md) fixed the precision ladder; [0031](0031-an-event-holds-at-the-moment-it-names.md) made a predicate's temporal kind normalise what is written; #679 made a timeline independent of arrival order; #680 read the opening of a document into every chunk; #688 accepted spelled-out dates; #714 found upload time used as the document date; [0041](0041-a-name-is-a-claim-about-an-entity.md) is the pattern this record copies for time.
 
@@ -96,3 +96,9 @@ Thresholds before cut 2 lands: mention normalisation at or above 95% on absolute
 - A document that defines more than one calendar (a company's fiscal year and a subsidiary's).
 - Whether a period-valued attribute (a figure for a quarter) is one statement with an interval or a value with a period mention; 0031's event bucket suggests the former.
 - Time zones for events stated with a clock time and no zone (0024 folds them to the day).
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Accepted 2026-09-17 · cuts 1, 2 and 3 built (#740, #761): a document is dated from its own text, each time mention is interpreted by the model and computed by code, upload time is used nowhere, and a timeline closes on how a start was got rather than on a confidence number · cut 4 (re-resolution when a person sets a document's date, the time-anchor review queue) not built · current state in [design/time](../design/time.md) · expands decision 5 of [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) and revises decision 3 of [0022](0022-an-unknown-date-is-not-an-open-one.md) for undated documents · #714 closed
