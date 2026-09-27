@@ -660,7 +660,7 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
     4. Stop calling tools as soon as you have enough evidence. Then answer concisely: cite \
        with [n] at the end of supported sentences, using only numbers a tool printed. Search \
        results carry them, and so does each fact line of entity_facts, neighbors, timeline and \
-       paths_between: its [n] opens the sentence that fact was read from. A fact line without \
+       paths_between: its [n] opens the passage that fact was read from. A fact line without \
        a number (a derived fact, or one whose documents are gone) is stated without a bracket. \
        If the evidence is insufficient, say so explicitly — never fabricate.\n\
     5. Always respond in the same language as the user's question.";

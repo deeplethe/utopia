@@ -1898,7 +1898,8 @@ pub async fn document_extractions(
 ///
 /// 有效 = 分块是现行版本、文档没删；给了 `as_of` 就按那一刻判，与读事实的那一刻一致
 /// （record_axis）。几条都有效时取最早说出它的那篇文档里的第一块。一条有效证据都没有
-/// 的事实不在结果里——宁可不给号，也不给一个点开是旧版或已删文档的号
+/// 的事实不在结果里——宁可不给号，也不给一个在读的那一刻已是旧版或已删文档的号
+/// （给了 `as_of` 时引的就是那一刻还在的段落，哪怕它后来被替换或删了）
 pub async fn first_live_evidence(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1923,7 +1924,7 @@ pub async fn first_live_evidence(
            JOIN chunks c ON c.id = fe.chunk_id
            JOIN documents d ON d.id = c.document_id
           WHERE fe.fact_id = ANY($1) AND d.kb_id = $2 AND {chunk_live} AND {document_live}
-          ORDER BY fe.fact_id, COALESCE(d.doc_time, d.created_at), d.id, c.seq",
+          ORDER BY fe.fact_id, COALESCE(d.doc_time, d.created_at), d.id, c.seq, c.id",
         chunk_live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
         document_live = crate::record_axis::document_live_at("d", as_of.map(|_| 3)),
     ))
