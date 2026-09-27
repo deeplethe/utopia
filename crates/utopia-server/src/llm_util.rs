@@ -23,6 +23,44 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
     )
 }
 
+// A workspace keeps its conversation client across turns, including the context
+// window learned from a refusal. Changing any model setting replaces it, and no
+// credentials or learned limit cross workspace boundaries.
+type ChatConfig = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+#[derive(Default)]
+pub struct ConversationClients {
+    inner: std::sync::Mutex<HashMap<uuid::Uuid, (ChatConfig, LlmClient)>>,
+}
+
+impl ConversationClients {
+    pub fn get(&self, workspace: uuid::Uuid, s: &LlmSettings) -> Option<LlmClient> {
+        let mut clients = self.inner.lock().unwrap();
+        if !s.chat_ready() {
+            clients.remove(&workspace);
+            return None;
+        }
+        let config = (
+            s.chat_base_url.clone(),
+            s.chat_api_key.clone(),
+            s.chat_model.clone(),
+            s.chat_reasoning_effort.clone(),
+        );
+        if let Some((previous, client)) = clients.get(&workspace) {
+            if previous == &config {
+                return Some(client.clone());
+            }
+        }
+        let client = chat_client(s)?;
+        clients.insert(workspace, (config, client.clone()));
+        Some(client)
+    }
+}
+
 pub fn embed_client(s: &LlmSettings) -> Option<LlmClient> {
     if !s.embed_ready() {
         return None;

@@ -39,6 +39,7 @@ pub(super) enum Reply {
     OversizedText,
     Finished(&'static str, &'static str),
     Http(u16),
+    HttpError(u16, &'static str),
     /// 调一个工具：(名字, 参数 JSON)
     Tool(&'static str, &'static str),
 }
@@ -72,6 +73,9 @@ impl Respond for Scripted {
             seen.len()
         };
         let frame = match self.replies.get(n - 1).copied().unwrap_or(Reply::Empty) {
+            Reply::HttpError(status, body) => {
+                return ResponseTemplate::new(status).set_body_string(body)
+            }
             Reply::Http(status) => {
                 return ResponseTemplate::new(status).set_body_string("Evidence gathering complete")
             }
@@ -982,3 +986,6 @@ async fn gathering_errors_cannot_spoof_the_private_handoff() -> anyhow::Result<(
     }
     Ok(())
 }
+
+#[path = "chat_context_tests.rs"]
+mod context_tests;

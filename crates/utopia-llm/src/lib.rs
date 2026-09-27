@@ -204,6 +204,18 @@ pub fn rejected(err: &anyhow::Error) -> Option<&Rejected> {
     err.chain().find_map(|e| e.downcast_ref::<Rejected>())
 }
 
+/// The prompt exceeds the model's context window, not its tool-calling protocol.
+#[derive(Debug, thiserror::Error)]
+#[error("LLM conversation is too long for the model: {detail}")]
+pub struct ContextTooLong {
+    pub detail: String,
+    pub window: Option<u32>,
+}
+
+pub fn context_too_long(err: &anyhow::Error) -> Option<&ContextTooLong> {
+    err.chain().find_map(|e| e.downcast_ref::<ContextTooLong>())
+}
+
 /// `Retry-After` 的整数秒形态。
 ///
 /// 规范还允许 HTTP-date，这里**不解析**：为一个很少有人发的头引一个日期库不划算，
@@ -262,6 +274,15 @@ fn failure(
         return anyhow::Error::new(Unavailable {
             status: status.as_u16(),
             retry_after,
+            detail,
+        });
+    }
+    if kind == "LLM"
+        && matches!(status.as_u16(), 400 | 413 | 422)
+        && says_context_too_long(body, &detail)
+    {
+        return anyhow::Error::new(ContextTooLong {
+            window: stated_context_window(&detail),
             detail,
         });
     }
@@ -333,6 +354,7 @@ pub struct LlmClient {
     /// 上限后记在这里，同一个客户端（含它的克隆）此后都按它发，一个进程只吃一次拒绝
     /// （#891，#892 评审）。只降不升
     completion_ceiling: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    context_window: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
 /// 建连多久算失败。
@@ -440,9 +462,26 @@ impl LlmClient {
             api_key: api_key.map(String::from),
             model: model.to_string(),
             reasoning_effort: None,
+            context_window: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
             completion_ceiling: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
                 MAX_COMPLETION_TOKENS,
             )),
+        }
+    }
+
+    /// A character budget, not a tokenizer estimate: reserve half a stated window
+    /// at two characters per token for history. Prompts, tools and the answer need
+    /// the rest. The one recovery handles vendors/languages for which this is off.
+    pub fn history_char_budget(&self) -> usize {
+        self.context_window
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .min(32_000) as usize
+    }
+
+    pub fn remember_context_window(&self, err: &anyhow::Error) {
+        if let Some(window) = context_too_long(err).and_then(|e| e.window) {
+            self.context_window
+                .fetch_min(window, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -544,7 +583,10 @@ impl LlmClient {
             }
             let raw = resp.text().await.map_err(Unreachable)?;
             let parsed = serde_json::from_str(&raw).unwrap_or_default();
-            if status == reqwest::StatusCode::BAD_REQUEST && !lowered {
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && !lowered
+                && !says_context_too_long(&parsed, &err_detail(&parsed, &raw))
+            {
                 if let Some(lower) = stated_completion_ceiling(&err_detail(&parsed, &raw), ceiling)
                 {
                     tracing::info!(model = %self.model, sent = ceiling, stated = lower, "端点说了自己的补全上限，按它重试并记住");
@@ -1059,6 +1101,61 @@ fn says_out_of_credit(body: &serde_json::Value) -> bool {
         .any(|v| v == "insufficient_quota")
 }
 
+fn says_context_too_long(body: &serde_json::Value, detail: &str) -> bool {
+    // Read the structured code BEFORE err_detail discards it for the message.
+    [
+        body.pointer("/error/code"),
+        body.pointer("/error/type"),
+        body.get("code"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|v| v.as_str())
+    .any(|code| code == "context_length_exceeded")
+        || context_wording(detail)
+}
+
+fn context_wording(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    [
+        "maximum context length",
+        "context window",
+        "too many tokens",
+        "prompt is too long",
+        "exceeds the available context",
+    ]
+    .iter()
+    .any(|wording| detail.contains(wording))
+}
+
+fn stated_context_window(detail: &str) -> Option<u32> {
+    let lower = detail.to_ascii_lowercase();
+    for marker in ["maximum context length", "context window"] {
+        let Some((_, rest)) = lower.split_once(marker) else {
+            continue;
+        };
+        // Only a number immediately tied to the WINDOW is a limit. Never learn
+        // the requested prompt size, model release date, or a completion ceiling.
+        let rest = rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ':' | '='));
+        let rest = rest
+            .strip_prefix("is ")
+            .or_else(|| rest.strip_prefix("of "))
+            .unwrap_or(rest);
+        let mut words = rest.split_whitespace();
+        let Some(number) = words.next().and_then(number_with_separators) else {
+            continue;
+        };
+        if number > 0
+            && words
+                .next()
+                .is_some_and(|s| s.trim_end_matches(['.', ',', ';', ':']) == "tokens")
+        {
+            return Some(number);
+        }
+    }
+    None
+}
+
 /// The ceiling the endpoint says it has, read out of the 400 it refused us with (#891).
 ///
 /// `MAX_COMPLETION_TOKENS` is deliberately above the largest completion this
@@ -1081,11 +1178,12 @@ fn says_out_of_credit(body: &serde_json::Value) -> bool {
 /// those at or above what we sent are the echo of our own request ("whereas you
 /// provided 65536"); the largest of the rest is taken, and nothing below 1,024 is,
 /// because no completion limit is that small and a stray small number would turn a
-/// refusal into a silently cut reply. A context-window refusal ("maximum context
-/// length is 32768 tokens") yields a number that may still be too large for the
-/// prompt; the retry then fails with the same 400, which is what happens today.
+/// refusal into a silently cut reply. A context-window refusal belongs to history
+/// recovery; treating its window as an output ceiling repeats the oversized prompt.
 fn stated_completion_ceiling(detail: &str, sent: u32) -> Option<u32> {
-    if !detail.contains("max_tokens") && !detail.contains("max_completion_tokens") {
+    if context_wording(detail)
+        || (!detail.contains("max_tokens") && !detail.contains("max_completion_tokens"))
+    {
         return None;
     }
     let words: Vec<&str> = detail
@@ -1125,6 +1223,41 @@ fn number_with_separators(word: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn context_refusals_keep_the_code_and_only_learn_a_stated_window() {
+        for (body, raw, window) in [
+            (json!({"error":{"code":"context_length_exceeded","message":"Request rejected"}}), "", None),
+            (json!({}), "Maximum context length is 16,384 tokens. You requested 24000 tokens for model v2026.", Some(16_384)),
+            (json!({}), "The context window is 8192 tokens", Some(8192)),
+            (json!({}), "too many tokens: 123456", None),
+            (json!({}), "Prompt is too long", None),
+            (json!({}), "request (105140 tokens) exceeds the available context", None),
+        ] {
+            let err = failure("LLM", reqwest::StatusCode::BAD_REQUEST, None, &body, raw).context("wrapped");
+            assert_eq!(context_too_long(&err).expect("context refusal").window, window);
+            assert!(rejected(&err).is_none());
+            assert!(transient(&err).is_none());
+            let client = LlmClient::new("http://unused", None, "m");
+            client.remember_context_window(&err);
+            assert_eq!(client.clone().history_char_budget(), window.unwrap_or(32_000) as usize);
+        }
+        for raw in [
+            "tools are unsupported",
+            "max_tokens is too large: 16384 completion tokens",
+            "Invalid temperature",
+        ] {
+            let err = failure(
+                "LLM",
+                reqwest::StatusCode::BAD_REQUEST,
+                None,
+                &json!({}),
+                raw,
+            );
+            assert!(context_too_long(&err).is_none());
+            assert!(rejected(&err).is_some());
+        }
+    }
+
     #[test]
     fn reasoning_effort_rides_in_every_chat_body_only_when_set() {
         let plain = LlmClient::new("http://x", None, "m");
@@ -1764,8 +1897,8 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
         );
         assert_eq!(
             stated_completion_ceiling("This model's maximum context length is 32768 tokens. However, you requested 65636 tokens (100 in the messages, 65536 in the completion). Please reduce the length of the messages or max_tokens.", sent),
-            Some(32_768),
-            "a context-window refusal lowers to the window; the retry may still fail, as today"
+            None,
+            "a context window is not a completion ceiling"
         );
         assert_eq!(
             stated_completion_ceiling("max_completion_tokens must be at most 8 tokens", sent),
