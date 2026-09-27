@@ -129,6 +129,9 @@ pub struct ChatReq {
 
 /// 已占住会话后检查重试资格，避免检查与登记之间另一轮已经写入回答。
 /// 只接受本会话最后一条未回答的用户消息；拒绝时不改历史，也不调用模型。
+///
+/// 为什么要有重答（#936）：从前想再问一次只能重发，同一个问题就在历史里存了两遍，
+/// 没有回答的那一遍还会在之后每一问里作为「没回答的一轮」回放给模型
 async fn retry_question(
     state: &AppState,
     conversation_id: Uuid,
@@ -672,6 +675,8 @@ pub async fn chat(
         }
         None => utopia_store::conversations::create(&state.pool, kb_id, user.id, &query).await?,
     };
+    // 会话持久化：用户消息即刻落库，上下文由服务端从库里拼——前端只送新消息。
+    // 重答的那一问已经在库里，就地回答它，不再存一遍
     // 新问题和重试共用入口：先占住会话，再查重试资格或存问题。
     // 准备失败时 Drop 自动释放；被拒的新问题不会混入历史。
     let handle = state.live.begin(conversation_id).await?;
@@ -745,9 +750,16 @@ pub async fn chat(
     // 而 `MAX_ROUNDS` 已经给了上限。send 失败（接收端没了）不中断，那正是要点。
     let producer = async_stream::stream! {
         // 依赖模型的准备工作之前先发送身份，早到的 Stop 也能指向本轮。
+        // 会话 id 先行下发（新会话由此告知前端）；这一问存下的 id 一起下发：
+        // 答到一半失败了，界面凭它重答（#936）
         yield ProducerEvent::Progress(Frame::new("conversation", json!({
             "id": conversation_id, "message_id": user_message_id, "generation_id": generation_id,
         }).to_string()));
+        // 语义层：跟这个问题有关的那几条确认口径进 system prompt——问数优先用确认口径，
+        // 而不是每次从 schema 猜。按问题挑而不是全塞：二十七条的上界 17/18 是在
+        // 三十条的上限之下量的，一百条口径靠字典序截断就不成立了（#574）。
+        // 挑口径要调嵌入模型，所以放在生成器里：Stop 丢掉生成器，这个请求跟着取消（0063）。
+        // 代价是它失败得晚了：从前是什么都没写的 500，现在问题已经存下，失败是一帧 error
         let mappings = if mounted_sources.is_empty() {
             Vec::new()
         } else {
