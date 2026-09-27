@@ -219,6 +219,7 @@ mod tests {
                 vec!["location"],
                 "",
             )],
+            others: vec![("p999", "somethingElse")],
         };
         let sigs = [TopSignature {
             phrase: "died in",

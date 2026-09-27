@@ -35,9 +35,9 @@ type Vote = Option<(String, Direction)>;
 
 /// 一个类连同它的全部祖先。候选按它命中：属性的定义域声明在 legal_entity 上，
 /// organization 是它的子类，这条属性对 organization 的签名就是候选（#807 第一条）。
-type Closure = HashMap<Uuid, Vec<Uuid>>;
+pub(crate) type Closure = HashMap<Uuid, Vec<Uuid>>;
 
-fn closures<'a>(classes: impl IntoIterator<Item = (Uuid, &'a [Uuid])>) -> Closure {
+pub(crate) fn closures<'a>(classes: impl IntoIterator<Item = (Uuid, &'a [Uuid])>) -> Closure {
     let classes: Vec<(Uuid, &[Uuid])> = classes.into_iter().collect();
     let parents: HashMap<Uuid, &[Uuid]> = classes.iter().copied().collect();
     classes
@@ -85,6 +85,15 @@ fn within(
         .iter()
         .find(|d| up.contains(d))
         .map(|d| Some((*d, c)))
+}
+
+/// 结构上对得上（本体代理给每批裁词表时用的判据，同对齐的候选）
+pub(crate) fn structurally_fits(
+    p: &RelationTypeView,
+    sig: &PhraseSignature,
+    closure: &Closure,
+) -> bool {
+    fits(p, sig, closure).is_some()
 }
 
 /// 签名两端的类落在属性声明的域/值域里，经继承也算；正反两个方向都算。

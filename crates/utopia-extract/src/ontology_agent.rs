@@ -44,6 +44,9 @@ pub struct Glossary<'a> {
     pub classes: Vec<(&'a str, &'a str, &'a str)>,
     /// (key, label, kind, domains, ranges, description)
     pub properties: Vec<GlossaryProperty<'a>>,
+    /// 这一批用不上、只报个名字的属性：(key, label)。模型要知道它们存在，才不会重提；
+    /// 定义只给结构对得上、或按向量最近的那些（同对齐的短名单，0044 决定 3 的成本教训）
+    pub others: Vec<(&'a str, &'a str)>,
 }
 
 /// 词表里的一条属性：(key, label, kind, domains, ranges, description)
@@ -167,6 +170,15 @@ pub fn build_proposal_messages(
             user.push_str(&format!(" · {}", description.trim()));
         }
         user.push('\n');
+    }
+    if !glossary.others.is_empty() {
+        user.push_str(
+            "Other existing properties (key · label only; none of them fits these shapes by \
+             structure or meaning, but do not propose a key already here):\n",
+        );
+        for (key, label) in &glossary.others {
+            user.push_str(&format!("- {key} · {label}\n"));
+        }
     }
     user.push_str("\nCompetency questions:\n");
     if questions.is_empty() {
@@ -491,6 +503,7 @@ mod tests {
                 vec!["location"],
                 "where a thing is",
             )],
+            others: vec![("p999", "somethingElse")],
         };
         let qs = vec![QuestionItem {
             id: 1,
@@ -499,6 +512,8 @@ mod tests {
         let m = build_proposal_messages(&sigs, &kws, &glossary, &qs);
         assert_eq!(m.len(), 2);
         let user = &m[1].content;
+        assert!(user.contains("Other existing properties"), "{user}");
+        assert!(user.contains("- p999 · somethingElse"), "{user}");
         for needle in [
             "s0: phrase \"supplies\"",
             "k0: kind word \"supplier\"",

@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use utopia_core::models::RelationAxioms;
+use utopia_core::models::{RelationAxioms, RelationTypeView};
 use utopia_core::AppError;
 use utopia_extract::ontology_agent as agent;
 use utopia_store::agent_reviews::{self, Review};
@@ -29,6 +29,9 @@ pub(crate) const QUESTIONS_PER_ROUND: usize = 10;
 const TOP_SIGNATURES: usize = 40;
 const TOP_KIND_WORDS: usize = 20;
 const TOP_ENTITIES: usize = 20;
+
+/// 一条形状结构上对得上的属性多过这个数，就按向量只留最近的这么多带定义（同对齐的短名单）
+const GLOSSARY_PER_SHAPE: usize = 10;
 
 /// 一次调用交给模型的形状数（0044 决定 3 的成本教训：词表每批只带一次）
 pub(crate) const SIGNATURES_PER_CALL: usize = 12;
@@ -267,24 +270,87 @@ async fn propose_locked(
             .filter_map(|id| class_key.get(id).copied())
             .collect()
     };
-    let glossary = agent::Glossary {
-        classes: classes
+    // 词表按批裁（第一次真跑：98 条属性带定义每次调用 4k token，占一次调用的一半多）。
+    // 每条形状只给结构对得上的属性定义；对得上的太多就按向量留最近的几条——判据和对齐的
+    // 候选、短名单是同一套。其余属性只报键和标签，让模型知道它们在
+    let closure =
+        crate::phrase_alignment::closures(classes.iter().map(|c| (c.id, c.parents.as_slice())));
+    let nearest: Vec<Vec<Uuid>> = {
+        let queries: Vec<String> = open
             .iter()
-            .map(|c| (c.key.as_str(), c.label.as_str(), c.description.as_str()))
-            .collect(),
-        properties: props
-            .iter()
-            .map(|p| {
-                (
-                    p.key.as_str(),
-                    p.label.as_str(),
-                    p.kind.as_str(),
-                    keys_of(&p.domains),
-                    keys_of(&p.ranges),
-                    p.description.as_str(),
-                )
+            .map(|s| match (s.examples.first(), s.quotes.first()) {
+                (Some(e), Some(q)) => format!("{} · {e} · {q}", s.phrase),
+                (Some(e), None) => format!("{} · {e}", s.phrase),
+                _ => s.phrase.clone(),
             })
-            .collect(),
+            .collect();
+        match crate::ontology_index::nearest_for_each(
+            state,
+            kb_id,
+            &queries,
+            GLOSSARY_PER_SHAPE as i64,
+            crate::ontology_index::Target::Predicate(None),
+        )
+        .await
+        {
+            Ok(v) => v
+                .into_iter()
+                .map(|cands| cands.into_iter().map(|c| c.id).collect())
+                .collect(),
+            Err(e) => {
+                tracing::warn!(%kb_id, error = %e, "本体代理：形状向量没算出来，词表按结构裁");
+                vec![Vec::new(); open.len()]
+            }
+        }
+    };
+    let glossary_for = |ids: std::ops::Range<usize>| -> agent::Glossary<'_> {
+        let mut full: HashSet<Uuid> = HashSet::new();
+        for i in ids {
+            let (Some(s), near) = (open.get(i), nearest.get(i)) else {
+                continue;
+            };
+            let fitting: Vec<&RelationTypeView> = props
+                .iter()
+                .filter(|p| crate::phrase_alignment::structurally_fits(p, s, &closure))
+                .collect();
+            if fitting.len() > GLOSSARY_PER_SHAPE {
+                if let Some(near) = near.filter(|n| !n.is_empty()) {
+                    full.extend(
+                        fitting
+                            .iter()
+                            .filter(|p| near.contains(&p.id))
+                            .map(|p| p.id),
+                    );
+                    continue;
+                }
+            }
+            full.extend(fitting.iter().map(|p| p.id));
+        }
+        agent::Glossary {
+            classes: classes
+                .iter()
+                .map(|c| (c.key.as_str(), c.label.as_str(), c.description.as_str()))
+                .collect(),
+            properties: props
+                .iter()
+                .filter(|p| full.contains(&p.id))
+                .map(|p| {
+                    (
+                        p.key.as_str(),
+                        p.label.as_str(),
+                        p.kind.as_str(),
+                        keys_of(&p.domains),
+                        keys_of(&p.ranges),
+                        p.description.as_str(),
+                    )
+                })
+                .collect(),
+            others: props
+                .iter()
+                .filter(|p| !full.contains(&p.id))
+                .map(|p| (p.key.as_str(), p.label.as_str()))
+                .collect(),
+        }
     };
     let sig_items: Vec<agent::OpenSignature<'_>> = open
         .iter()
@@ -329,6 +395,7 @@ async fn propose_locked(
             .unwrap_or(&[]);
         let sig_ids: HashSet<i64> = sig_batch.iter().map(|s| s.id).collect();
         let word_ids: HashSet<i64> = word_batch.iter().map(|w| w.id).collect();
+        let glossary = glossary_for(b * SIGNATURES_PER_CALL..(b + 1) * SIGNATURES_PER_CALL);
         let messages = agent::build_proposal_messages(sig_batch, word_batch, &glossary, &q_items);
         let reply =
             match chat_retrying_rate_limits_at(state, settings, client, &messages, Some(0.0)).await
@@ -1011,6 +1078,7 @@ async fn propose_questions_with(
                 )
             })
             .collect(),
+        others: Vec::new(),
     };
     // 说得最多的形状，带上对齐绑到的属性
     let mut sigs = phrase_bindings::signatures(pool, kb_id).await?;
