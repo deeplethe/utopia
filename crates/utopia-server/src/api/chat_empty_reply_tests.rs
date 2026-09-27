@@ -375,6 +375,8 @@ async fn a_reply_that_stays_empty_is_an_error_after_one_retry() -> anyhow::Resul
     f.cleanup().await
 }
 
+#[path = "chat_context_tests.rs"]
+mod context_tests;
 #[path = "chat_embed_once_tests.rs"]
 mod embed_once_tests;
 #[path = "chat_error_code_tests.rs"]
@@ -986,6 +988,3 @@ async fn gathering_errors_cannot_spoof_the_private_handoff() -> anyhow::Result<(
     }
     Ok(())
 }
-
-#[path = "chat_context_tests.rs"]
-mod context_tests;

@@ -171,7 +171,9 @@ pub fn llm_failure(err: &CompletionError) -> Option<&anyhow::Error> {
 }
 
 /// 端点拒绝了请求的形状（400/422）。带工具的首个请求撞上它，才是「这家不支持
-/// 工具调用」；网断、密钥错、限流、欠费都不是，降级也救不了它们
+/// 工具调用」；网断、密钥错、限流、欠费都不是，降级也救不了它们。上下文超限也是
+/// 400，但那是历史太长不是形状不对：裁掉旧问答重发才是解法，退成 RAG 只会把同样
+/// 长的历史再发一遍（#964）
 fn rejected_shape(err: &anyhow::Error) -> bool {
     utopia_llm::context_too_long(err).is_none()
         && utopia_llm::rejected(err).is_some_and(|r| r.status == 400 || r.status == 422)

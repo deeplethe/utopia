@@ -139,11 +139,6 @@ async fn answer_once(
     anyhow::bail!("LLM stream ended unexpectedly")
 }
 
-#[cfg(test)]
-pub(super) async fn answer(client: &LlmClient, input: AnswerContext<'_>) -> anyhow::Result<String> {
-    answer_with_deadline(client, input, ANSWER_DEADLINE, None).await
-}
-
 pub(super) async fn answer_with_context(
     client: &LlmClient,
     input: AnswerContext<'_>,
@@ -169,7 +164,7 @@ async fn answer_with_deadline(
                         let (history, prior_exchange) = context.unwrap().snapshot();
                         let bounded = AnswerContext { history: &history, current: None, prior_exchange: &prior_exchange, ..input };
                         let refreshed = self::messages(&bounded);
-                        // Keep the repair instruction, if this is already candidate two.
+                        // 只换背景那一条：第二次尝试时修正指令还在
                         messages[1] = refreshed[1].clone();
                     }
                     result => break result?,
@@ -245,6 +240,8 @@ mod tests {
             assert_eq!(before[key], after[key]);
         }
         let err = anyhow::Error::new(utopia_llm::ContextTooLong {
+            status: 400,
+            reason: "400 Bad Request".into(),
             detail: "again".into(),
             window: None,
         });
@@ -323,7 +320,10 @@ mod tests {
             resolved: &[],
         };
         let client = LlmClient::new("http://127.0.0.1:1", None, "test");
-        let error = answer(&client, input).await.unwrap_err();
+        let context = super::super::super::chat_context::Context::new(vec![], vec![], 32_000);
+        let error = answer_with_context(&client, input, &context)
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("context limit"));
     }
     #[tokio::test]

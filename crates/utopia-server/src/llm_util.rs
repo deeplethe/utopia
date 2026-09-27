@@ -23,15 +23,19 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
     )
 }
 
-// A workspace keeps its conversation client across turns, including the context
-// window learned from a refusal. Changing any model setting replaces it, and no
-// credentials or learned limit cross workspace boundaries.
+/// 对话模型的设置：地址、密钥、模型、推理力度。任一项变了就是另一个客户端
 type ChatConfig = (
     Option<String>,
     Option<String>,
     Option<String>,
     Option<String>,
 );
+
+/// 各工作区的对话客户端，跨轮次留着。
+///
+/// 端点报过的上下文窗口记在客户端上（`LlmClient::remember_context_window`），每轮新建一个
+/// 就等于每轮都忘，下一轮照样撞上同一个 400（#964）。模型设置一变就换新的：学到的窗口
+/// 是那个模型的，不是这个工作区的。密钥和窗口都不跨工作区
 #[derive(Default)]
 pub struct ConversationClients {
     inner: std::sync::Mutex<HashMap<uuid::Uuid, (ChatConfig, LlmClient)>>,

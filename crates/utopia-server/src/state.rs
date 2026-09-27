@@ -33,7 +33,7 @@ pub struct AppState {
     pub chunk_tokens: usize,
     /// worker 并发数：调度循环每轮热读——系统设置改动即时生效
     pub worker_concurrency: Arc<std::sync::atomic::AtomicUsize>,
-    /// Reuse learned context windows across conversation turns in a workspace.
+    /// 各工作区的对话客户端。端点报过的上下文窗口记在客户端上，留着它下一轮才记得（#964）
     pub chat_clients: Arc<crate::llm_util::ConversationClients>,
     /// 按模型的并发闸门：后台任务调 LLM 前取许可。限额存库，改完即时生效
     pub model_gates: Arc<crate::llm_util::ModelGates>,
