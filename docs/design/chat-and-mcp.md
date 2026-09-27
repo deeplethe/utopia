@@ -55,8 +55,10 @@ entry a graph fact cites carries the sentence the fact was read from (`quotes`, 
 one number however many of its sentences are cited, a search hit gaining the sentence when a graph
 tool cites it), and the preview and the document page mark it, so the number opens the sentence
 itself (#968's follow-up). A date that passage does not state says so on the line, in chat and MCP
-alike: an end the timeline derived reads `…, end derived`, an interval a person corrected
-`…, corrected`, and the prompt says neither is attributed to the passage (#970). The
+alike: an end the timeline derived names the fact that closed the row and cites its sentence,
+`…, closed when Zhou Qi took over [3]` (`…, end derived` when that fact cannot be found), and an
+interval a person corrected reads `…, corrected: <their note>`, uncited. The prompt says to cite the
+closing fact for such an end and to attribute neither to the line's own passage (#970). The
 previous turn's tool calls are replayed so the model knows what it did, not only
 what it said [0015]; a turn that gathers nothing, such as a restatement, keeps the previous answer's
 sources for the citation numbers it repeats (#943).

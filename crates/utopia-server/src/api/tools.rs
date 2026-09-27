@@ -1032,8 +1032,19 @@ fn query_text(result: &crate::query_engine::QueryResult) -> String {
     out
 }
 
-/// 事实行："works at → 星云科技 (2023-08 → now) [90%]"，in 方向用 ←。
-pub(super) fn fact_line(f: &EntityFact) -> String {
+/// 时间线关上一行时接任的那一端怎么写（#970 第二步）：接任者或新宾语的名字，属性事实是
+/// 新的值，写法同事实行上的字面值（`literal_text`）
+pub(super) fn successor_text(
+    name: Option<&str>,
+    value: Option<&serde_json::Value>,
+) -> Option<String> {
+    name.map(str::to_string)
+        .or_else(|| value.and_then(literal_text))
+}
+
+/// 事实行："works at → 星云科技 (2023-08 → now) [90%]"，in 方向用 ←。`closer_mark` 是关上
+/// 它的那一行证据的号（对话里 ` [n]`，MCP 与没有证据时为空）
+pub(super) fn fact_line(f: &EntityFact, closer_mark: &str) -> String {
     // 属性事实没有对端实体，值在 `object_value` 里（0004）。从前这里只看 `other_name`，
     // 于是薪资、职位到了模型眼前是 `salary → ?`——区间和置信度都在，唯独值没到，
     // 模型只能说"没有薪资信息"（#348）。渲染规则与客户端 `fmtObjectValue` 一致
@@ -1077,6 +1088,7 @@ pub(super) fn fact_line(f: &EntityFact) -> String {
     };
     // 两端各按自己的精度写；没起点的从证据起，结束了不知哪天的到说出它的那份文档为止
     //（time_text，0022）。从前一律 %Y-%m-%d，年精度印成 1 月 1 日、结束未知印成 now
+    let successor = successor_text(f.closed_by.as_deref(), f.closed_by_value.as_ref());
     let range = crate::time_text::span(crate::time_text::Span {
         valid_from: f.valid_from,
         from_precision: f.valid_from_precision.as_deref(),
@@ -1086,6 +1098,8 @@ pub(super) fn fact_line(f: &EntityFact) -> String {
         holds_to: f.holds_to,
         end_derived: f.end_derived,
         corrected: f.time_corrected,
+        closed_by: successor.as_deref().map(|who| (who, closer_mark)),
+        correction_note: f.correction_note.as_deref(),
     });
     let range = if range.is_empty() {
         range
@@ -1254,6 +1268,8 @@ fn change_line(c: &GraphChange) -> String {
         // 记录轴上的一次变更，不是事实行：它自己就说了改的是什么
         end_derived: false,
         corrected: false,
+        closed_by: None,
+        correction_note: None,
     });
     let range = if range.is_empty() {
         range
@@ -1488,6 +1504,10 @@ mod tests {
             corrected: false,
             end_derived: false,
             time_corrected: false,
+            closed_by_id: None,
+            closed_by: None,
+            closed_by_value: None,
+            correction_note: None,
             last_evidence_time: None,
             contested: None,
         }
@@ -1497,18 +1517,20 @@ mod tests {
     /// 区间和置信度都在，唯独值没到，模型只能说"没有薪资信息"——而账本里明明有
     #[test]
     fn an_attribute_fact_shows_the_model_its_value() {
-        let line = fact_line(&attribute_fact(
-            serde_json::json!({ "value": 28000, "unit": "CNY" }),
-        ));
+        let line = fact_line(
+            &attribute_fact(serde_json::json!({ "value": 28000, "unit": "CNY" })),
+            "",
+        );
         assert!(line.starts_with("salary → 28000 CNY"), "{line}");
         assert!(line.contains("(2023-06-01 → 2024-02-20)"), "{line}");
 
         // 与客户端 fmtObjectValue 同一条规则：布尔画成 ✓/✗，映射摘要读摘要本身
-        let flag = fact_line(&attribute_fact(serde_json::json!({ "value": true })));
+        let flag = fact_line(&attribute_fact(serde_json::json!({ "value": true })), "");
         assert!(flag.starts_with("salary → ✓"), "{flag}");
-        let mapped = fact_line(&attribute_fact(
-            serde_json::json!({ "summary": "orders.total" }),
-        ));
+        let mapped = fact_line(
+            &attribute_fact(serde_json::json!({ "summary": "orders.total" })),
+            "",
+        );
         assert!(mapped.starts_with("salary → orders.total"), "{mapped}");
     }
 
@@ -1517,7 +1539,11 @@ mod tests {
     fn a_missing_object_still_reads_as_a_question_mark() {
         let mut f = attribute_fact(serde_json::json!(null));
         f.object_value = None;
-        assert!(fact_line(&f).starts_with("salary → ?"), "{}", fact_line(&f));
+        assert!(
+            fact_line(&f, "").starts_with("salary → ?"),
+            "{}",
+            fact_line(&f, "")
+        );
     }
 
     /// 字面值要读成它自己。走 `Value::to_string()` 会把字符串连引号一起印出来，

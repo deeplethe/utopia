@@ -243,6 +243,13 @@ impl Evidence {
         }
     }
 
+    /// 关上这一行的那一行的号（#970 第二步）：推出来的终点在那条事实的原句里写着
+    fn closer_mark(&self, sink: &mut ToolSink, f: &EntityFact) -> String {
+        f.closed_by_id
+            .map(|id| self.mark(sink, id))
+            .unwrap_or_default()
+    }
+
     /// ` [n]`：这条事实的证据登进清单后的号。没有有效证据的事实（派生事实也是）不带号
     fn mark(&self, sink: &mut ToolSink, fact_id: Uuid) -> String {
         match self.0.get(&fact_id) {
@@ -258,6 +265,14 @@ impl Evidence {
             None => String::new(),
         }
     }
+}
+
+/// 显示的事实加上关上它们的那几行（#970 第二步）：一次证据查询把两边的块都读回来
+fn with_closers<'f>(facts: impl IntoIterator<Item = &'f EntityFact>) -> Vec<Uuid> {
+    facts
+        .into_iter()
+        .flat_map(|f| std::iter::once(f.id).chain(f.closed_by_id))
+        .collect()
 }
 
 // ---- find_entities ---------------------------------------------------------------
@@ -373,7 +388,10 @@ fn other_text(f: &EntityFact) -> String {
         .to_string()
 }
 
-fn range_text(f: &EntityFact) -> String {
+/// `closer_mark` 是关上它的那一行证据的号（#970 第二步；MCP 与没有证据时为空）
+fn range_text(f: &EntityFact, closer_mark: &str) -> String {
+    let successor =
+        super::tools::successor_text(f.closed_by.as_deref(), f.closed_by_value.as_ref());
     let range = crate::time_text::span(crate::time_text::Span {
         valid_from: f.valid_from,
         from_precision: f.valid_from_precision.as_deref(),
@@ -383,6 +401,8 @@ fn range_text(f: &EntityFact) -> String {
         holds_to: f.holds_to,
         end_derived: f.end_derived,
         corrected: f.time_corrected,
+        closed_by: successor.as_deref().map(|who| (who, closer_mark)),
+        correction_note: f.correction_note.as_deref(),
     });
     if range.is_empty() {
         range
@@ -791,17 +811,18 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
             ));
         }
         lines.push(head);
-        let ids: Vec<Uuid> = shown.iter().map(|f| f.id).collect();
+        let ids = with_closers(shown.iter().copied());
         let evidence = Evidence::load(ctx, ids, m.as_of).await;
         let shown_owned: Vec<EntityFact> = shown.iter().map(|f| (*f).clone()).collect();
         for (key, group) in grouped(&shown_owned) {
             lines.push(format!("## {key} ({})", group.len()));
             for f in group {
+                let closer = evidence.closer_mark(sink, f);
                 lines.push(format!(
                     "{}{}{} {}{}",
                     other_text(f),
                     qualifiers_text(f),
-                    range_text(f),
+                    range_text(f, &closer),
                     confidence_text(f),
                     evidence.mark(sink, f.id)
                 ));
@@ -953,7 +974,7 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
             }
         ));
     } else {
-        let ids: Vec<Uuid> = shown.iter().map(|f| f.id).collect();
+        let ids = with_closers(shown.iter());
         let evidence = Evidence::load(ctx, ids, m.as_of).await;
         let groups = grouped(&shown);
         // 数的是对端实体，不是事实：同一条边常是两条事实（一条带日期一条不带）
@@ -980,11 +1001,12 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
                         .as_deref()
                         .map(|t| format!(" [{t}]"))
                         .unwrap_or_default();
+                    let closer = evidence.closer_mark(sink, f);
                     format!(
                         "{}{}{} {}{}",
                         other_text(f),
                         ty,
-                        range_text(f),
+                        range_text(f, &closer),
                         confidence_text(f),
                         evidence.mark(sink, f.id)
                     )
@@ -1099,16 +1121,17 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
             ));
         }
         lines.push(head);
-        let ids: Vec<Uuid> = shown.iter().map(|f| f.id).collect();
+        let ids = with_closers(shown.iter().copied());
         let evidence = Evidence::load(ctx, ids, m.as_of).await;
         for f in &shown {
             let stamp = crate::time_text::world(
                 f.valid_from.expect("dated"),
                 f.valid_from_precision.as_deref(),
             );
+            let closer = evidence.closer_mark(sink, f);
             lines.push(format!(
                 "{stamp}  {}{}",
-                fact_line(f),
+                fact_line(f, &closer),
                 evidence.mark(sink, f.id)
             ));
         }
@@ -1126,8 +1149,10 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
 // ---- paths_between ---------------------------------------------------------------
 
 /// 一条边在链上的写法：顺着走 `A —pred→ B`，逆着走 `A ←pred— B`
-pub(super) fn edge_text(prev: Uuid, e: &PathEdge) -> String {
+pub(super) fn edge_text(prev: Uuid, e: &PathEdge, closer_mark: &str) -> String {
     let pred = e.predicate.as_deref().unwrap_or("?");
+    let successor =
+        super::tools::successor_text(e.closed_by.as_deref(), e.closed_by_value.as_ref());
     let range = crate::time_text::span(crate::time_text::Span {
         valid_from: e.valid_from,
         from_precision: e.valid_from_precision.as_deref(),
@@ -1137,6 +1162,8 @@ pub(super) fn edge_text(prev: Uuid, e: &PathEdge) -> String {
         holds_to: e.holds_to,
         end_derived: e.end_derived,
         corrected: e.time_corrected,
+        closed_by: successor.as_deref().map(|who| (who, closer_mark)),
+        correction_note: e.correction_note.as_deref(),
     });
     let range = if range.is_empty() {
         range
@@ -1162,11 +1189,14 @@ pub(super) fn path_text(p: &Path) -> String {
     path_text_marked(p, |_| String::new())
 }
 
-/// 一条路径，每一跳后面跟着 `mark` 给那条事实的东西（对话里是它证据的 `[n]`，#935）
+/// 一条路径，每一跳后面跟着 `mark` 给那条事实的东西（对话里是它证据的 `[n]`，#935）；
+/// 时间线关上的那一跳，关它的那一行也由 `mark` 给号（#970 第二步）
 fn path_text_marked(p: &Path, mut mark: impl FnMut(Uuid) -> String) -> String {
     let mut parts = Vec::new();
     for (i, e) in p.edges.iter().enumerate() {
-        parts.push(format!("{}{}", edge_text(p.nodes[i], e), mark(e.fact_id)));
+        let closer = e.closed_by_id.map(&mut mark).unwrap_or_default();
+        let own = mark(e.fact_id);
+        parts.push(format!("{}{own}", edge_text(p.nodes[i], e, &closer)));
     }
     parts.join("; ")
 }
@@ -1309,10 +1339,14 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
         from.name,
         to.name
     ));
-    // 每一跳是一条事实，各带各的号
+    // 每一跳是一条事实，各带各的号；时间线关上的那一跳，关它的那一行也要号
     let hops: Vec<Uuid> = paths
         .iter()
-        .flat_map(|p| p.edges.iter().map(|e| e.fact_id))
+        .flat_map(|p| {
+            p.edges
+                .iter()
+                .flat_map(|e| std::iter::once(e.fact_id).chain(e.closed_by_id))
+        })
         .collect();
     let evidence = Evidence::load(ctx, hops, m.as_of).await;
     for (i, p) in paths.iter().enumerate() {
@@ -1466,6 +1500,10 @@ mod tests {
             corrected: false,
             end_derived: false,
             time_corrected: false,
+            closed_by_id: None,
+            closed_by: None,
+            closed_by_value: None,
+            correction_note: None,
             last_evidence_time: None,
             contested: None,
         }
@@ -1595,6 +1633,10 @@ mod tests {
             confidence: 0.9,
             end_derived: false,
             time_corrected: false,
+            closed_by_id: None,
+            closed_by: None,
+            closed_by_value: None,
+            correction_note: None,
         };
         let p = Path {
             nodes: vec![a, x, b],

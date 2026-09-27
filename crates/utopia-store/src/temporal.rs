@@ -54,6 +54,11 @@ const DESCRIBED: &str = "(EXISTS (SELECT 1 FROM fact_evidence fe
                                        JOIN chunks ch ON ch.id = fe.chunk_id
                                       WHERE ts.fact_id = f.id AND ch.origin = 'described'))";
 
+/// [`DESCRIBED`] 换成另一个别名：读的时候找关上一行的后任（#970），与引擎排除同样的行
+pub(crate) fn described_sql(alias: &str) -> String {
+    DESCRIBED.replace("= f.id", &format!("= {alias}.id"))
+}
+
 /// 唯一性方向：functional = 主语侧（张三同时只 reports_to 一人）；
 /// inverse functional = 宾语侧（一个项目同时只有一个 leads 它的人）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1826,6 +1831,14 @@ mod tests {
             ]
         );
         assert!(plan.held.is_empty(), "锚不到的一对没有什么可判的");
+    }
+
+    /// 读的时候找关上一行的后任，用的是引擎同一条「看图描述出来的」判据，只换了别名（#970）
+    #[test]
+    fn the_described_check_takes_another_alias() {
+        let n = described_sql("n");
+        assert!(!n.contains("= f.id"), "{n}");
+        assert_eq!(n.matches("= n.id").count(), 2, "{n}");
     }
 
     /// 看图描述出来的后任不许单独关上前任，这一对交给人（0040 决定 4）；

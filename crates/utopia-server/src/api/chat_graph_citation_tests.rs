@@ -14,8 +14,9 @@
 //!   几句；块被新版本取代后换成仍有效的那一块，`as_of` 回到取代之前又是原来那块
 //! - 检索和图谱工具在一轮里共用一个号：图谱引到检索登过的块，号不变、补上那句话；只补了
 //!   引文、条数没变，来源帧也再发一次
-//! - 原句里没有的日期在行上说出来（#970）：时间线推出来的终点写 `end derived`，人改过的
-//!   区间写 `corrected`，号照旧；对话与 MCP 一样，规则 4 说不许把它们归到原句
+//! - 原句里没有的日期在行上说出来（#970）：时间线推出来的终点写出关上它的那一行、带那一行
+//!   的号，人改过的区间写出修正备注、不带号；本行的号照旧。对话与 MCP 一样（MCP 不带号），
+//!   规则 4 说推出的终点引关它的那一行，两种日期都不归到本行的原句
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 use super::*;
@@ -716,23 +717,39 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
                 .text;
             let zhang_line = line(&text, "Zhang San");
             assert!(
-                zhang_line.contains("2023-02-01 → 2024-07-05, corrected)"),
+                zhang_line.contains(
+                    "2023-02-01 → 2024-07-05, corrected: The charter date was the approval date)"
+                ),
                 "{tool}: {text}"
             );
             let li_line = line(&text, "Li Si");
             assert!(
-                li_line.contains("2024-07-05 → 2025-09-01, end derived)"),
+                li_line.contains("2024-07-05 → 2025-09-01, closed when Zhou Qi took over ["),
                 "{tool}: {text}"
             );
-            assert!(
-                line(&text, "Zhou Qi").contains("2025-09-01 → now)"),
-                "{tool}: {text}"
-            );
-            // 号照旧：打开的仍是那条事实读出来的原句
-            let (z, l) = (marks(zhang_line), marks(li_line));
-            assert_eq!((z.len(), l.len()), (1, 1), "{tool}: {text}");
+            // 李四那一行也写着周七（关它的是他），所以按周七那一行自己的区间找
+            let zhou_line = line(&text, "2025-09-01 → now)");
+            assert!(zhou_line.contains("Zhou Qi"), "{tool}: {text}");
+            // 本行的号照旧：打开的仍是那条事实读出来的原句。关上李四那段的号打开周七接手的
+            // 那一块，那里写着 2025-09-01；周七自己那一行也是它，同一块只有一个号。备注不进清单
+            let (z, l, q) = (marks(zhang_line), marks(li_line), marks(zhou_line));
+            assert_eq!((z.len(), l.len(), q.len()), (1, 2, 1), "{tool}: {text}");
             assert_eq!(chunk_of(&sink, z[0]), s.charter, "{tool}");
-            assert_eq!(chunk_of(&sink, l[0]), s.handover, "{tool}");
+            assert_eq!(chunk_of(&sink, l[0]), update, "{tool}: the closing fact's passage");
+            // 那一条带着周七那句原话（#968 的后续）：号打开的就是写着 2025-09-01 的那句
+            assert_eq!(
+                quotes_of(&sink, l[0]),
+                ["Zhou Qi leads Project Aurora from 2025-09-01."],
+                "{tool}: the closer's entry carries the sentence that states the date"
+            );
+            assert_eq!(chunk_of(&sink, l[1]), s.handover, "{tool}: the line's own passage");
+            assert_eq!(q[0], l[0], "{tool}: one number for one chunk");
+            assert!(
+                sink.sources
+                    .iter()
+                    .all(|x| !x.to_string().contains("approval date")),
+                "the note is not a source"
+            );
         }
         let path = dispatch(
             &chat,
@@ -743,7 +760,7 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
         .await
         .text;
         assert!(
-            path.contains("2024-07-05 → 2025-09-01, end derived)"),
+            path.contains("2024-07-05 → 2025-09-01, closed when Zhou Qi took over ["),
             "{path}"
         );
 
@@ -758,14 +775,16 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
         .await
         .text;
         assert!(
-            plain.contains(", corrected)") && plain.contains(", end derived)"),
+            plain.contains(", corrected: The charter date was the approval date)")
+                && plain.contains(", closed when Zhou Qi took over)"),
             "{plain}"
         );
         assert!(marks(&plain).is_empty(), "{plain}");
 
-        // 规则 4 说这两种日期不在原句里
+        // 规则 4：推出的终点引关它的那一行；两种日期都不归到本行的原句
         assert!(
-            SYSTEM_PROMPT.contains("An end marked `end derived`")
+            SYSTEM_PROMPT.contains("An end written `closed when X took over [m]`")
+                && SYSTEM_PROMPT.contains("cite [m] for that end, never the line's own [n]")
                 && SYSTEM_PROMPT.contains("a range marked `corrected`"),
             "{SYSTEM_PROMPT}"
         );

@@ -1532,12 +1532,14 @@ pub async fn entity_node(
     .await?)
 }
 
-/// 本库被人改过区间的行（`fact.time_corrected` 审计记在被改的那一行上，#970）。查询开头
-/// 取一次，每一行只顺着自己的 supersedes 链对它。取的这一次走部分索引
-/// `audit_events_time_corrected_idx`（迁移 0097）：只收这一种动作，不读这个库别的审计。`$1` 是库
+/// 本库被人改过区间的行（`fact.time_corrected` 审计记在被改的那一行上，#970），每行带着
+/// 最近那次修正写下的备注。查询开头取一次，每一行只顺着自己的 supersedes 链对它。取的这一次
+/// 走部分索引 `audit_events_time_corrected_idx`（迁移 0097）：只收这一种动作，不读这个库别的
+/// 审计。`$1` 是库
 pub(crate) const TIME_CORRECTED_TARGETS: &str = "time_corrected_targets AS MATERIALIZED (
-         SELECT DISTINCT target_id FROM audit_events
-          WHERE kb_id = $1 AND action = 'fact.time_corrected' AND target_id IS NOT NULL)";
+         SELECT DISTINCT ON (target_id) target_id, detail->>'note' AS note FROM audit_events
+          WHERE kb_id = $1 AND action = 'fact.time_corrected' AND target_id IS NOT NULL
+          ORDER BY target_id, created_at DESC)";
 
 /// 这一行的区间是不是人改过的：它的 supersedes 链上有一行在 [`TIME_CORRECTED_TARGETS`] 里。
 /// 改完之后时间线再关它、合并再搬它，都是在链上往下接，往上仍找得到那一次人改
@@ -1549,6 +1551,60 @@ pub(crate) fn time_corrected_sql(alias: &str) -> String {
                      SELECT p.supersedes FROM facts p JOIN chain ON p.id = chain.id
                       WHERE p.supersedes IS NOT NULL)
                  SELECT 1 FROM chain JOIN time_corrected_targets t ON t.target_id = chain.id)"
+    )
+}
+
+/// 人改区间时写下的备注（#970 第二步）：链上最近那一次修正的。那一次没写备注就是空的——
+/// 更早一次的备注说的是被它取代的那个区间
+pub(crate) fn correction_note_sql(alias: &str) -> String {
+    format!(
+        "(WITH RECURSIVE chain(id, depth) AS (
+              SELECT {alias}.supersedes, 1 WHERE {alias}.supersedes IS NOT NULL
+              UNION ALL
+              SELECT p.supersedes, chain.depth + 1 FROM facts p JOIN chain ON p.id = chain.id
+               WHERE p.supersedes IS NOT NULL)
+          SELECT t.note FROM chain JOIN time_corrected_targets t ON t.target_id = chain.id
+           ORDER BY chain.depth LIMIT 1)"
+    )
+}
+
+/// 时间线把 `f` 关上时接的那一行（#970 第二步），作为 `closer` 接进查询。
+///
+/// 与引擎关它时同一判法（`temporal::desired_ends`）：同一谓词、同一条时间线——functional
+/// 按主语，inverse functional 按宾语——起点正好是这一行的终点，值不同。起点锚不到的、看图
+/// 描述出来的后任引擎不拿来关，这里也不认；几行都合时取 id 最小的，与引擎的排序一样。
+/// 只找 `end_derived` 的行；后任没有起点（结束了不知哪天）的找不到。
+///
+/// 接任的那一端：同一宾语换了主语（一个项目换了 lead）是新的主语；同一主语换了宾语是新的
+/// 宾语，属性事实是新的值。`subject` / `object` 是 `f` 按记录轴算的属主，`as_of` 是参数位
+pub(crate) fn closed_by_join(subject: &str, object: &str, as_of: Option<usize>) -> String {
+    let n_subject = crate::record_axis::owner_at("n", "subject_id", as_of, false);
+    let n_object = crate::record_axis::owner_at("n", "object_id", as_of, true);
+    let n_held = crate::record_axis::facts_held_at("n", as_of);
+    let described = crate::temporal::described_sql("n");
+    format!(
+        "LEFT JOIN LATERAL (
+             SELECT n.id AS closed_by_id,
+                    CASE WHEN rn.inverse_functional AND {n_object} = {object}
+                         THEN n_s.canonical_name ELSE n_o.canonical_name END AS closed_by,
+                    CASE WHEN rn.inverse_functional AND {n_object} = {object}
+                         THEN NULL ELSE n.object_value END AS closed_by_value
+               FROM facts n
+               JOIN relation_types rn ON rn.id = n.predicate_id
+               LEFT JOIN entities n_s ON n_s.id = {n_subject}
+               LEFT JOIN entities n_o ON n_o.id = {n_object}
+              WHERE f.end_derived AND f.valid_to IS NOT NULL
+                AND n.kb_id = f.kb_id AND n.predicate_id = f.predicate_id AND n.id <> f.id
+                AND {n_held}
+                AND n.valid_from = f.valid_to
+                AND n.valid_from_grade IS DISTINCT FROM 'C'
+                AND NOT {described}
+                AND ((rn.functional AND {n_subject} = {subject}
+                      AND ({n_object} IS DISTINCT FROM {object}
+                           OR n.object_value IS DISTINCT FROM f.object_value))
+                  OR (rn.inverse_functional AND {n_object} = {object}
+                      AND {n_subject} <> {subject}))
+              ORDER BY n.id LIMIT 1) closer ON true"
     )
 }
 
@@ -1586,6 +1642,8 @@ pub async fn entity_detail(
                 ) AS stale,
                 (f.supersedes IS NOT NULL) AS corrected,
                 f.end_derived, {time_corrected} AS time_corrected,
+                closer.closed_by_id, closer.closed_by, closer.closed_by_value,
+                {correction_note} AS correction_note,
                 (SELECT MAX(COALESCE(d.doc_time, d.created_at))
                  FROM fact_evidence fe JOIN documents d ON d.id = fe.document_id
                  WHERE fe.fact_id = f.id) AS last_evidence_time,
@@ -1612,6 +1670,7 @@ pub async fn entity_detail(
          LEFT JOIN entities o
            ON o.id = CASE WHEN {subject} = $2 THEN {object} ELSE {subject} END
          LEFT JOIN entity_types ot ON ot.id = o.type_id
+         {closer}
          WHERE f.kb_id = $1 AND {facts_held} AND {facts_hold}
            AND NOT {represented}
            AND ({subject} = $2 OR {object} = $2)
@@ -1619,6 +1678,12 @@ pub async fn entity_detail(
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
         targets = TIME_CORRECTED_TARGETS,
         time_corrected = time_corrected_sql("f"),
+        correction_note = correction_note_sql("f"),
+        closer = closed_by_join(
+            &crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
+            &crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 3), true),
+            as_of.map(|_| 3),
+        ),
         not_name = crate::names::not_a_name("f"),
         said_as = said_as("f"),
         represented = represented_by_typed("f"),

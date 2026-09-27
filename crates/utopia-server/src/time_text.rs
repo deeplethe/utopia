@@ -46,6 +46,25 @@ pub struct Span<'a> {
     pub end_derived: bool,
     /// 区间是人改过的（supersedes 链上有 `fact.time_corrected`）
     pub corrected: bool,
+    /// 关上它的那一行（#970 第二步）：接任的那一端，和它证据的号（对话里是 ` [n]`，MCP 里空）
+    pub closed_by: Option<(&'a str, &'a str)>,
+    /// 人改区间时写下的备注
+    pub correction_note: Option<&'a str>,
+}
+
+/// 备注在行上最多这么多字：再长就是一段话，不是一个说明
+const NOTE_CHARS: usize = 120;
+
+/// 备注折成一行、去掉两端空白，过长截断。空的就是没写
+fn note_text(note: &str) -> Option<String> {
+    let flat = note.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return None;
+    }
+    if flat.chars().count() > NOTE_CHARS {
+        return Some(flat.chars().take(NOTE_CHARS).collect::<String>() + "…");
+    }
+    Some(flat)
 }
 
 /// `from → to`，给模型看。
@@ -55,9 +74,11 @@ pub struct Span<'a> {
 /// `ended by <锚点>`（没有锚点时写 `ended, date unknown`）；否则 `now`。
 /// 两端都无可写时返回空串，调用方据此决定不带括号。
 ///
-/// 日期不是原文说的就跟在后面说出来（#970）：人改过的区间写 `corrected`，时间线推出来的
-/// 终点写 `end derived`（只在有终点时）。这是这一行的事实，不是引用：`[n]` 仍是那条事实
-/// 读出来的原句，而原句里没有这两种日期
+/// 日期不是原文说的就跟在后面说出来（#970）：人改过的区间写 `corrected`，写了备注就带上
+/// 备注（`corrected: …`，人的话不是原文段落，不带号）；时间线推出来的终点写
+/// `closed when X took over [m]`——`[m]` 打开的是接任那条事实读出来的原句，那里写着这个
+/// 日期——找不到接任的那一行时写 `end derived`。这两样只在有终点时说。行尾的 `[n]` 仍是
+/// 这条事实自己读出来的原句
 pub fn span(s: Span<'_>) -> String {
     let from = match (s.valid_from, s.holds_from) {
         (Some(t), _) => Some(world(t, s.from_precision)),
@@ -83,10 +104,19 @@ pub fn span(s: Span<'_>) -> String {
         (None, Some(t)) => format!("→ {t}"),
         (Some(f), Some(t)) => format!("{f} → {t}"),
     };
-    let marks: Vec<&str> = [(s.corrected, "corrected"), (derived, "end derived")]
-        .into_iter()
-        .filter_map(|(on, mark)| on.then_some(mark))
-        .collect();
+    let mut marks: Vec<String> = Vec::new();
+    if s.corrected {
+        marks.push(match s.correction_note.and_then(note_text) {
+            Some(note) => format!("corrected: {note}"),
+            None => "corrected".to_string(),
+        });
+    }
+    if derived {
+        marks.push(match s.closed_by {
+            Some((who, mark)) => format!("closed when {who} took over{mark}"),
+            None => "end derived".to_string(),
+        });
+    }
     match (range.is_empty(), marks.is_empty()) {
         (_, true) => range,
         (true, false) => marks.join(", "),
@@ -244,6 +274,80 @@ mod tests {
                 ..Span::default()
             }),
             "corrected"
+        );
+    }
+    /// 找得到关上它的那一行时，推出来的终点说出谁接任、带上那一行的号（#970 第二步）；
+    /// MCP 没有号。人改过的区间带着备注：折成一行，过长截断，空的等于没写
+    #[test]
+    fn a_derived_end_names_what_closed_it_and_a_correction_its_note() {
+        let day = |s: &str| Some(t(s));
+        let closed = Span {
+            valid_from: day("2024-07-05T00:00:00Z"),
+            from_precision: Some("day"),
+            valid_to: day("2025-09-01T00:00:00Z"),
+            to_precision: Some("day"),
+            end_derived: true,
+            ..Span::default()
+        };
+        assert_eq!(
+            span(Span {
+                closed_by: Some(("Zhou Qi", " [3]")),
+                ..closed
+            }),
+            "2024-07-05 → 2025-09-01, closed when Zhou Qi took over [3]"
+        );
+        assert_eq!(
+            span(Span {
+                closed_by: Some(("Zhou Qi", "")),
+                ..closed
+            }),
+            "2024-07-05 → 2025-09-01, closed when Zhou Qi took over"
+        );
+        // 开着的行没有终点，也就没有谁接任
+        assert_eq!(
+            span(Span {
+                valid_to: None,
+                to_precision: None,
+                closed_by: Some(("Zhou Qi", " [3]")),
+                ..closed
+            }),
+            "2024-07-05 → now"
+        );
+        let corrected = Span {
+            corrected: true,
+            end_derived: false,
+            ..closed
+        };
+        assert_eq!(
+            span(Span {
+                correction_note: Some("  The charter date\n was the approval date "),
+                ..corrected
+            }),
+            "2024-07-05 → 2025-09-01, corrected: The charter date was the approval date"
+        );
+        assert_eq!(
+            span(Span {
+                correction_note: Some("   "),
+                ..corrected
+            }),
+            "2024-07-05 → 2025-09-01, corrected"
+        );
+        let long = "x".repeat(200);
+        assert_eq!(
+            span(Span {
+                correction_note: Some(&long),
+                ..corrected
+            }),
+            format!("2024-07-05 → 2025-09-01, corrected: {}…", "x".repeat(120))
+        );
+        assert_eq!(
+            span(Span {
+                corrected: true,
+                correction_note: Some("approval date"),
+                closed_by: Some(("Zhou Qi", " [3]")),
+                ..closed
+            }),
+            "2024-07-05 → 2025-09-01, corrected: approval date, closed when Zhou Qi took over [3]"
         );
     }
 }
