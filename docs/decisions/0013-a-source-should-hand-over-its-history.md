@@ -1,6 +1,6 @@
 # 0013 · A source hands over its history
 
-- **Status**: implemented for `github_issues` (#134), `jira_issues` (#135) and `notion` (#213, pages keep their own clock); WebDAV shares and object storage (S3 / Azure / GCS) arrived as plain file sources (#200, #207, #209) · Feishu and Confluence not started · GitHub and Jira write their timestamps to the second (#691, per 0024 §3)
+- **Status**: Implemented for GitHub, Jira and Notion (#134, #135, #213) · open: Feishu, Confluence
 - **Written**: 2026-08-31 · condensed into English 2026-09-03
 - **Related**: the bitemporal ground of [0001](0001-ontology-import-and-governance.md); the same judgment on the corpus side in `scripts/bench/fetch-wiki-history.mjs` (#122); [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) is the other end of the line — this record is about how things come in, that one about the rules they land by; the grant layer added afterwards (#142, `data_source_grants`) decides who may mount a source: provenance visible, destination governed
 
@@ -126,3 +126,9 @@ shape — a class with an IRI drawn as a circle is a picture that lies.
 
 - 2026-09-03: every connector's credentials stay on the server (#246). Until now only `auth_header` was stripped from responses; the object-storage, WebDAV and Notion keys went out to every viewer. The keys now live in one list, `SOURCE_SECRET_KEYS`, shared by the listing, the create / update responses and the update merge (blank or missing keeps the stored value, an explicit `null` removes it). Adding a connector means adding its keys there first.
 - 2026-09-03: the five connectors added under this record could not be created (#247): the store's hand-written `KINDS` allowlist stopped at seven kinds while the sync dispatcher and the UI knew twelve. The kinds now come from one enum, `SourceKind` in `utopia-core`; the allowlist is derived from it, the dispatcher matches it exhaustively, and a test compares the frontend's `web/src/sourceKinds.ts` against it, so the three can no longer drift apart.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented for `github_issues` (#134), `jira_issues` (#135) and `notion` (#213, pages keep their own clock); WebDAV shares and object storage (S3 / Azure / GCS) arrived as plain file sources (#200, #207, #209) · Feishu and Confluence not started · GitHub and Jira write their timestamps to the second (#691, per 0024 §3)

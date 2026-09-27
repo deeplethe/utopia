@@ -18,135 +18,138 @@ The test for writing one: if someone (including us) looks at a piece of code in 
 
 **The PR that implements a record updates its status line.** Three status lines once lagged behind the code in the same PR, written by the same person. So the PR description answers one question: which record does this change implement or overturn, and is its status line updated. (Added 2026-09-02, from [0016](0016-close-the-open-seams-before-cutting-new-ones.md).)
 
+**A status line is one line.** It starts with one of five words, `Proposed`, `Accepted`, `In progress`, `Implemented` or `Superseded by NNNN`, then the date and the PR or migration, then `open:` and what is not built. What a cut contains belongs in the record's body or in the design file, not in the status line. The index below repeats only the first word, so a PR touches this README only when that word changes. (Added 2026-09-27; the longer lines that stood before are kept at the end of each record under Status history.)
+
 **Line numbers drift and file names change.** Prefer function, table and constant names over `file.rs:123`. Migrations were consolidated from 53 files into one per domain (#130, #131); older references to migration files are by domain.
 
 **Language: English.** The first sixteen records were written in Chinese and condensed into English on 2026-09-03; the Chinese originals remain in git history. Code comments are still Chinese; UI, README and records are English.
 
 ## Index
 
-| | Record | Status |
-|---|---|---|
-| 0001 | [Ontology import and governance](0001-ontology-import-and-governance.md) | In progress · P0–P2c built; the P3 budget built, P3a by hand only; P3b built in a different shape; P4b / P4c pending; P5 delivered by 0002; criterion 2 half overturned by 0012 |
-| 0002 | [Reasoning engine](0002-reasoning-engine.md) | R0 checker and R1 materialization (KB switch, default off) built; R2 proof chain (#227); contradiction signals per 0017; R3 incremental maintenance not built |
-| 0003 | [The ontology grows out of the corpus](0003-ontology-growth-loop.md) | Built and running, default on · starting point rewritten by 0010 and the retired seeds · dismissal redone per 0007 · the "new phrasings" reminder pending |
-| 0004 | [Language follows the reader of each text](0004-language-and-localization.md) | Built · UI strings, coded server errors, ontology description language and the locale of generated text · the browser language is not guessed yet |
-| 0005 | [The alert center](0005-alert-center.md) | Built · five alert kinds live, search and paging in the panel · `document.no_text_layer` still unwired |
-| 0006 | [Ontology scale and the extraction prompt](0006-ontology-scale-and-the-prompt.md) | Built · the character budget (24,000) and per-chunk retrieval live, values untested · the per-chunk list keeps to the same budget with first-sentence descriptions (#701) · answer keys still hand-filled |
-| 0007 | [Counting decides what becomes a relation](0007-who-decides-what-becomes-a-relation.md) | Built · adoption decided by counting (`MIN_DOCS = 2`, `MIN_SIGNALS = 3`), proposals persist (#112) · narrative verbs and `_by` folding still open |
-| 0008 | [Ontology packs as the cold start](0008-ontology-packs-as-cold-start.md) | Built · five packs embedded, multi-select at creation · no pack by default and none at registration (#580, measured) · three open questions stay open; Chinese labels got worse |
-| 0009 | [An undecided type stays empty](0009-no-type-is-a-type.md) | Implemented · `type_id` nullable, builtin classes gone · kin classes go to Review (#226), declared `disjointWith` keeps them apart (0016 B3) · `metric` / `dimension` builtin on demand (#231) · `metric` / `dimension` to retire under 0036 |
-| 0010 | [An unnamed relation stays empty](0010-no-relation-is-no-relation.md) | Implemented · `predicate_id` nullable, `related_to` gone, wording recovered by `fact_surface_predicate` · follow-ups done with 0011 |
-| 0011 | [A mapping is configuration](0011-a-mapping-is-not-a-fact.md) | Implemented (#126 / #140 / #148) · Review flow and revision history rebuilt · the evidence chain not built · revised in part by 0036: the concept becomes an attribute or a rule, the table becomes a rendered one |
-| 0012 | [The ontology is a contract](0012-the-ontology-is-a-contract-not-a-suggestion.md) | Implemented · violation rate 57% → 4%, reversals 39 → 0 · guard extended to adoption and merge (#190 / #196) · reified-shell filter at pack import open |
-| 0013 | [A source hands over its history](0013-a-source-should-hand-over-its-history.md) | Implemented for GitHub, Jira and Notion (#134 / #135 / #213) · Feishu and Confluence not started · GitHub and Jira timestamps written to the second (#691) |
-| 0014 | [Identity from the person, scope from the token](0014-identity-from-the-person-scope-from-the-token.md) | Implemented (#180) · five read-only MCP tools over Streamable HTTP · tokens page at `/account/tokens` · `can_write` still hard-coded false |
-| 0015 | [A recorded sentence waits for a nod](0015-recording-a-sentence-is-not-asserting-a-fact.md) | Implemented · memory facts wait in `pending_facts`, nod queue and chat card, `remember` reopened · MCP write is the next cut |
-| 0016 | [Close the open seams before cutting new ones](0016-close-the-open-seams-before-cutting-new-ones.md) | In progress · A done · B done (B4 deferred) · C1 done (#289) · C2 done (#297) · C3–C5 open · D2 worked around (#231); the lakehouse landed ahead of D4 (#239) |
-| 0017 | [A contradiction points at an error upstream](0017-a-contradiction-points-upstream.md) | Implemented · B2a: engine and queue, per-item cap, aggregation by rule pair, cards with clues and repairs (#238) · B2b: contested edges in the alert colour, ghost edges for blocked derivations, the disputed chip and the "did not land" section in the panel (#243) |
-| 0018 | [The lakehouse is one protocol away](0018-the-lakehouse-is-one-protocol-away.md) | Implemented: Trino (Iceberg / Delta / Hive), Databricks and Snowflake behind the same trait, scheme picks the engine (#239) · Trino verified against a real cluster (#327); Databricks and Snowflake still want one (#241, #242) · MaxCompute waits |
-| 0019 | [The second clock can be rewound](0019-the-second-clock-can-be-rewound.md) | Implemented in three cuts · `held_at` and `as_of` on every graph read (#317), entities' own clock by unwinding `entity_merges` (#337), retrieval as of a moment · the entity panel and `entity_facts` rewind derivations too (#549) · the control on the graph page is still open (#307), full-text recall is still "now" only |
-| 0020 | [An auditor reads it without us](0020-an-auditor-reads-it-without-us.md) | Implemented · revised 2026-09-25 (#902: a rule resource says its family, an axiom rule its kind and declaring predicate) · `GET /kbs/{id}/export?format=turtle\|jsonld` streams the base as RDF, `rdf.rs` holds the mapping · SPARQL waits, and the record says why (#308) |
-| 0021 | [A rule reads attributes and concludes a type](0021-a-rule-reads-attributes-and-concludes-a-type.md) | Implemented (#359) · `derived_facts` widened to match `facts`, rules authored in `attribute_rules` from the ontology page, evaluated in the materialisation job, explained in the entity panel with their premises · read-only over MCP, writing a rule stays out · no canvas marker, and a conclusion is rewritten rather than edited |
-| 0022 | [An unknown date is not an open one](0022-an-unknown-date-is-not-an-open-one.md) | Implemented in two cuts (#394 and the derived cut) · `world_axis` predicate beside `record_axis`, `facts.attested_at` anchors a missing start or an undated end at the document that attests it, every read and both client filters on the read interval, an undated ending closes the dated row it ends, derived rows intersect premise intervals as read and carry no precision on an anchored bound · two anchors (`attested_from` / `attested_to`), so a bare open row closes too (#393) · the temporal engine orders a start-less row by its earliest dated evidence and closes its predecessor as ended-unknown there; ends the engine drew are marked and recomputed from the rows a timeline has (0057); a relative deadline is stored as written (#679) |
-| 0023 | [RSS observations are not documents](0023-rss-observations-are-not-documents.md) | Implemented in #326 |
-| 0024 | [The world axis reaches the second](0024-the-world-axis-reaches-the-second.md) | Implemented · the precision ladder runs year → second (not below: no source states less), a stored value is truncated to its precision by CHECK on all three tables, a clock time without a zone is a date, one list spells the ladder in the extractor, the renderers, the export and the evaluator; a derived bound takes the precision of the premise that set it |
-| 0025 | [Governance reads the ledger before it decides](0025-governance-reads-the-ledger-before-it-decides.md) | Cut 1 implemented · a per-base `governance` switch, a `govern` job that works the duplicates queue first in, first out with each head's cluster, precedents pulled from the ledger into the prompt, a gate where the agent's own confidence decides and history lowers the bar or blocks (revised after the first big-file run), every look a row in `agent_decisions`, answers through the person's own decide path · the switch, the Agent queue, the proposal chip and the Overview section in the UI · a pair the batch cannot settle is looked at again with tools and then decided or asked about, within a daily budget · two reverts in a week turn the switch off and raise an alert · identity rules the model reads and two it cannot argue with (name shapes, type families), measured against a hand-labeled set of 411 name pairs by `scripts/bench/govern.mjs` |
-| 0026 | [A decision records why](0026-a-decision-records-why.md) | Implemented · `resolution_reviews.rationale` and `why` on the ledger event from every human decide path, precedents quote it into the prompt and the `ledger_search` tool, the batch adjudicator reads precedents and keys its cache on them, the one-in-ten sample for a person was removed 2026-09-14, the model's own why is kept beside machine decisions · the impact gate (#357) and the investigating adjudicator (#358) follow |
-| 0027 | [An automatic merge is gated by what it can undo](0027-an-automatic-merge-is-gated-by-what-it-can-undo.md) | Implemented · `execution_gate` in the store, asked by the batch adjudicator and the governor before an automatic merge: a contradiction the consistency check would open (read on the time axis since 2026-09-14: a succession is not one), a derivation resting on either side, or an answer that named either side holds the pair for a person as `escalate_impact` whatever the confidence · keeps are not gated · exports and a per-deployment opt-in stay open |
-| 0028 | [The adjudicator looks before it asks](0028-the-adjudicator-looks-before-it-asks.md) | Implemented · `consequences` joins the second look's tools (what a merge would touch, from 0027's gate, and whether the types share a family) · with governance off the batch adjudicator sends its unsettled pairs through the same loop under the same budget, each look a row in `agent_decisions` · the number that justifies or retires it comes from 0026's sample split by `via` |
-| 0029 | [A rule may say "or", once](0029-a-rule-may-say-or-once.md) | Implemented · a `group_seq` on a rule's conditions (migration `0039`): same group joins with **and**, groups join with **or**, one level and no nesting — because a hit carries the readings that made it true and a disjunction has no premises of its own · the combination cap is per group, two groups on one interval are one conclusion with the first group's proof, `not_in` joins the ops · "no such attribute at all" is deliberately not here (no premise, and a missing reading means nobody wrote it down) · the editor writes blocks and the table reads the sentence back with its "or" in it |
-| 0030 | [A rule may read what a rule concluded](0030-a-rule-may-read-what-a-rule-concluded.md) | Cuts 1–2 · A rule could not read another rule's conclusion (`attribute_facts()` reads `facts`, subject scope is `entities.type_id`, one pass), so `A → B → C` has to be written as one flattened rule. The answer is the fixed point the axiom side already runs, **inside one call and in memory** — which answers 0013's objection instead of waiving it, since a run stays a pure function of the asserted facts. A derived typing enters as a **premise**, not a filter, so the conclusion narrows to the window the entity was actually a `B`; a rule may read its own conclusions because the derivable space is finite; `fact_derivations` gains `premise_derived_id` and the proof becomes a tree; retirement cascades for free because recompute is total. The page showing which rules feed which is next |
-| 0031 | [An event holds at the moment it names](0031-an-event-holds-at-the-moment-it-names.md) | Implemented (#486) · `Validity::under` normalises every write by the predicate's `temporal` (an event is one moment written at both ends, an eternal fact has no dates), `world_axis` and `read_span` read an event as the bucket it names and an undated event at no moment, an eternal fact at every moment · the prompt marks `[event]` / `[eternal]` and says what to write · no schema change, old rows read correctly · the panel's point rendering and the ontology hint are the UI cut |
-| 0032 | [A rule computes what it concludes](0032-a-rule-computes-what-it-concludes.md) | Cuts 1–2 · A rule's conclusion was a **constant** (`attribute_rules.conclude_value` is a JSONB literal), so a criterion about a number nobody wrote down — net pay, a margin, a ratio — gets computed elsewhere and typed back in as an assertion, losing the readings it stood on. An operand on either side becomes an expression tree over attributes: its premises are the readings it touched and its interval is their intersection, so retirement needs no new machinery. **Picked, not typed** — not because a parsed string would break the display (it would not; that reason is wrong and recorded as wrong) but because a picker cannot compose an expression over a predicate that does not exist, and because a text box grows a grammar on request. A value may be reached **across a relation** (a path has definite premises and an interval; a to-many path is just a cartesian product the evaluator already walks), while **aggregation is refused**: a `sum` asserts *these are all the readings*, a completeness claim this base cannot hold — and while recompute still retires it correctly, its proof cannot say why it was withdrawn, and nothing incremental could ever wake it. Row count, unit checking and division by zero are the costs |
-| 0033 | [RSS summaries are scoped to the source being listed](0033-rss-source-summaries-are-source-scoped.md) | Implemented · source- and generation-scoped lateral aggregation (#462), then the nested nullable `rss_full_content` contract replacing the eight flat columns (#417); `generation` and `baseline_count` stay internal, and baseline rows are intentionally outside the five work counts |
-| 0034 | [An action is a declared call](0034-an-action-is-a-declared-call.md) | Cut 1 · the record. A base can conclude but cannot act: nothing holds a call it may make, a typed parameter, or what it sent. An action is **data** (method, URL, headers, a sealed auth block, a JSON body template, scalar parameters with bounds or a value set), substituted and never scripted, so the page renders what runs and an unknown placeholder is refused at save. Registered once for the deployment and **granted** to a base, one layer where warehouses have two because nothing is mounted. Every run is a row read by two log pages. The reach is the operator's, with no placeholder in the host. Rules fire actions in the next record |
-| 0035 | [A vector index is built by a job](0035-a-vector-index-is-built-by-a-job.md) | Implemented · a partial HNSW index per dimension on `chunks.embedding` and `entities.profile_embedding`, requested by the first write of that dimension and built by a `build_vector_index` job outside any transaction · the two nearest-neighbour reads write the dimension as a literal, cast both sides and set `hnsw.iterative_scan = relaxed_order` · type resolution gathers its neighbours eight at a time in order and remembers descendant sets per batch (#512, #514) · dimensions above 2000 stay on the exact path |
-| 0036 | [Exploration aligns a schema to the ontology](0036-exploration-aligns-a-schema-to-the-ontology.md) | Written, not implemented · exploration proposes an alignment per table (the class it is a table of, its attributes, its relations, a conversion tree per column) through `ontology_proposals`, adopted as one thing · a definition is a rule over aligned attributes, written by a person; a shared convention is one rule others read · conversions are 0032's expression tree, text parsed by `sqlparser`, never stored as SQL · `Metric` / `Dimension` retire and `concept_mappings` becomes rendered · the schema document leaves extraction · where a rule runs against the source stays open |
-| 0037 | [A relation carries its own attributes](0037-a-relation-carries-its-own-attributes.md) | Written · cut 1 in progress: qualifier tables (0049), declaration, extraction, panel, export · entity-valued qualifier reserved, conflict-as-two-rows and the canvas label next |
-| 0038 | [The interface has a light side](0038-the-interface-has-a-light-side.md) | Implemented (#599) · `data-theme` on `<html>`, chosen by the reader and stored in the browser, `system` resolved to one of the two before first paint · a second token block in `styles.css` and not one rule rewritten: alpha stays, the triplet swaps · the canvas reads its colours from the tokens through one reader file and rebuilds on a switch; edges are flattened over the ground on light because the WebGL shader can only brighten · a `raw-colour` guard rule over `.ts` and `.tsx` · the entity palette is the same in both themes; a paper-tuned set is open |
-| 0039 | [A chunk is what extraction sees](0039-a-chunk-is-what-extraction-sees.md) | Implemented, cut 1 · the parser's Markdown is read into blocks and packed by a token budget (1000, cl100k) · a table travels with its caption and header and a continuation repeats both · headings become a breadcrumb and fill `chunks.heading` · a page-break rule is not a boundary and a table it split is joined back · not measured on its own: the budget · cut 2: an external parser behind the block model, evidence that names a cell or a region |
-| 0040 | [A chunk says where its words came from](0040-a-chunk-says-where-its-words-came-from.md) | Cuts 1–3 implemented (the ledger shape, and a file that needs a reader degrades with an alert instead of becoming garbage text; scans and images read by a workspace's MinerU service, one segment per page, waiting on the service without spending retries; recordings read by a diarizing transcription model, speakers in the text and times in the anchor, an unlabelled transcript degrades) · scans and images through a MinerU service, recordings only with speaker labels (revised 2026-09-15) · a chunk carries an **origin** (`stated`, `ocr`, `transcribed`, `described`) and the model that produced it, and an **anchor** back into the original bytes (a page and region, a time range, an image inside the file) — decided before any media reader, because a transcript stored without its times can never be tied to the recording again · the packer never mixes origins in a chunk · facts from a description enter below `AUTO_CLOSE_MIN_CONFIDENCE`, so a misread chart opens a conflict instead of closing a correct fact · per-modality model settings, media reading as a resumable job, origin and anchor in the API, MCP and RDF · cuts: ledger shape, scans via MinerU, recordings, descriptions, video |
-| 0041 | [A name is a claim about an entity](0041-a-name-is-a-claim-about-an-entity.md) | Cut 0 built (identity bench) · cut 1 implemented (#670): names are value facts on `known_as`, the extractor reports other names, a shared name goes to the adjudicator; forward/reverse F1 0.43/0.54 → 0.68/0.68 · cuts 2–4 (name vectors and neighbours, evidence decides, re-evaluation) not started |
-| 0042 | [The chat loop is a runner with hooks](0042-the-chat-loop-is-a-runner-with-hooks.md) | Implemented (#548) · the loop is rig's runner and every policy is a hook with a typed result · the wire stays `LlmClient` behind `RigModel` · a turn cannot end before a tool has run, `no_evidence_needed` is the exit for questions not about the base · RAG fallback only on a 400/422 to the first request with tools · an empty reply is asked again once · the skip rate is the model's (DeepSeek-V3 1–3 of 12, Qwen2.5-72B 0) and recorded, not prevented · revised 2026-09-26 (#937: a tool call written as text is held back and sent back once, in any turn) |
-| 0043 | [Every review queue is governed](0043-every-review-queue-is-governed.md) | Decided 2026-09-14 · no code on `dev` · 0025 gave one queue — duplicate pairs — to an agent that reads the ledger before it decides, and the rest went on waiting for a person who never came: temporal conflicts, low-confidence facts, facts a new document version left stale. Every queue is governed **except nods**, which stay with the person who said the sentence. Each queue keeps its own actions and they are the people's own store calls, so an agent's decision and a person's leave the graph in the same shape; the model decides and the server checks what can be checked (a close date must appear in the evidence, a stale fact is confirmed by quoting the current version), and a failed check turns a confident verdict into a proposal that says why it was held. Every applied action records its undo. Cut 1 was built in PR #699 and that PR was **closed 2026-09-17** to re-land on the open graph after 0044 cut 2; violations, ontology defects and concept mappings are cut 2 |
-| 0044 | [The ontology is a view over what documents say](0044-the-ontology-is-a-view-over-what-documents-say.md) | Accepted · cut 1 built (#731, #735, #736, #741, #743–#745): extraction writes open statements, memory documents take the same path, the typed path is deleted, kind words bind to classes · cut 2 (alignment producing typed facts, identity profiles, the errata agent) not built · three layers: extraction writes an open graph in the documents' words (0 of 333 statements unstated in the prototype, against 4–9% of facts bound at write time), a small ontology proposed by an agent and approved by people, and a typed graph computed from the open graph on cached signatures · time mentions resolved against a document time context by code · identity across documents on deterministic evidence before the adjudicator · an errata agent reviews the typed graph |
-| 0045 | [A time mention is resolved against its document](0045-a-time-mention-is-resolved-against-its-document.md) | Accepted · cuts 1 and 2 built (#740): a document is dated from its own text, each mention is interpreted by the model and computed by code, upload time is used nowhere · cuts 3 and 4 (grades replace the confidence gate, re-resolution and the anchor queue) not built · a time expression is a mention with its words and place; the model returns shape, anchor, offset and granularity and code computes the interval; a document carries its own date, calendars and anchors across chunks, never its upload time; unresolved mentions wait for an anchor; timelines close on resolution grade instead of confidence |
-| 0046 | [The app surface is MCP](0046-the-app-surface-is-mcp.md) | Decided, with the refused design kept. Asked for an app center: applications built on this knowledge, mounted, run in a sandbox, handed to a team. The answer is that the surface already exists — a personal token carries identity and scope, ten read tools serve chat and MCP from one place, `as_of` reaches every graph read, and a read returns `structuredContent` with stable ledger identities — so a coding agent builds on this base today in its own platform, its own language and its own sandbox. Refused here because the layer an app would read is being replaced under it (typed facts now come only from alignment), because 0016 closes open seams before cutting new ones, and because a catalog, an execution boundary and quotas are three other products. The shape is kept with the four gates it would have to hold (runs as the caller, egress only through a declared action, a declared clock, the existing queue) and the dead ends: a container runtime (withdrawn the day it was written — WeKnora's skills are human-written and assume a shell, and they pay for it), a Wasm component runtime (better on every axis including the determinism re-parse needs, still not built because the reason is priority), a service identity per app, an app as a saved conversation. Reopened by a named customer who needs a button inside the product, by the type layer settling, or after 0034 |
-| 0047 | [A rule may conclude a relation](0047-a-rule-may-conclude-a-relation.md) | Implemented in #861 (migration 0071) 2026-09-25 · caps unchanged, measured in the PR · A rule reads one entity and concludes about that same entity, so a threshold over a chain — a holding above 50% in a company that itself holds above 50% in another — cannot be written at all, and the query-time path walk that answers it produces no interval, no premises and nothing a queue can see. The conclusion becomes a **relation** between the subject and one entity reached across one declared relation, valid on the intersection of every premise interval including the join edge's. The concluded edge rejoins the pool `derive()` reads and the axiom pass runs once per round, coupling the two reasoners for the first time: 0021's cycle objection is answered with the **finiteness** argument [0030](0030-a-rule-may-read-what-a-rule-concluded.md) already put in place of acyclicity, rather than with a fixed ordering that would let a legitimate rule silently never fire. Reading a value across a hop is [0032](0032-a-rule-computes-what-it-concludes.md)'s decision, reused rather than re-decided. Negation, aggregation, a second hop and user-defined recursion stay out; the existing caps stay in place because this cut changes none of them |
-| 0048 | [Provenance references stay inside the knowledge base](0048-provenance-references-stay-inside-the-knowledge-base.md) | Implemented in PR #832 (migration 0070) · a column foreign key proves the target exists, not that it is the same KB's — every reference an export can resolve gets a schema-level same-KB invariant: composite `(kb_id, ref)` foreign keys on the 26 edges whose row carries its own `kb_id` (same-table self-references deferred to commit), row triggers on the 13 whose kb authority is a parent row, `kb_id` immutability on every owned table, and a precondition scan that fails the migration closed on an already-cross-KB ledger · a catalog-derived guard keeps the 39 edges covered in the schema and, with #874, in export preflight · measured populate cost within noise; mechanism choice settled in #832 (discussion in issue #842) |
-| 0049 | [Expression declarations are checked when a rule is written](0049-expression-declarations-are-checked-when-a-rule-is-written.md) | Proposed · declaration policy pending; opt-in web draft only |
-| 0050 | [An action attempt keeps its identity and uncertain outcome](0050-an-action-attempt-keeps-its-identity-and-uncertain-outcome.md) | Proposed · durable execution identity and uncertain outcomes; no sender |
-| 0051 | [A human phrase decision carries its materialization work](0051-a-human-phrase-decision-carries-its-materialization-work.md) | Proposed · decision and materialization delivery; shared refactors and real regressions only |
-| 0052 | [Document content is a read contract over the retained ledger](0052-document-content-is-a-read-contract.md) | Proposed 2026-09-21 · implemented in #860 · two Viewer-level reads serve the retained originals the export already names by digest: `/documents/{id}/content[?version=N]` and `/documents/{id}/versions`; the handler locks the document and its ledger row through the blob read, purge answers 410, a ledger-referenced missing blob is a 500 invariant failure, a session or a scoped PAT may read, ingest tokens may not
-| 0053 | [A phrase decision records the inputs it considered](0053-a-phrase-decision-records-the-inputs-it-considered.md) | Implemented 2026-09-23 · a decision stores a fingerprint of the ancestor closures and admitted candidates it saw; stale means the fingerprint of the current inputs differs, which is what timestamps could not see (#807, #795): inheritance, parent edges, edits during the request; no-candidate and overflow become recorded outcomes; requeue reads live signatures only, so orphaned rows stop looping · revised 2026-09-26: kind words fingerprinted too, read from one snapshot and compared again when a reply is accepted
-| 0054 | [A source may push statements in the open contract](0054-a-source-may-push-statements-in-the-open-contract.md) | Proposed 2026-09-23 · cut 1 in its PR · a `statements` source accepts the open extraction contract (`e`/`s`/`n`) verbatim on `POST /sources/{id}/statements` with the `api` push's identity, versions and tombstones; the payload is stored as one chunk and extraction parses it instead of prompting a model, then runs the unchanged path, so a pushed statement is an open statement and reaches the typed graph only through alignment; there is no slot for a property or class; an update marks earlier statements stale, it does not close them; tables stay on the mount (0036)
-| 0060 | [A rule's definition has a history](0060-a-rule-definition-has-a-history.md) | Implemented 2026-09-25 (#912, migration 0076) · A business rule was edited in place and a derivation pointed at the row, so an invalidated conclusion pointed at a rule that now said something else. Every edit that changes what a rule says opens a **version**, a full snapshot with a record time; a derivation names the version it was drawn under, a kept conclusion moves to the new one, and the proof, the rules panel and a versions endpoint read the history. Name, description and the switch open nothing. Exporting rule bodies per version is now honest and stays #902's second cut |
-| 0061 | [The ontology is proposed from the open graph and judged by its questions](0061-the-ontology-is-proposed-from-the-open-graph-and-judged-by-its-questions.md) | Accepted · cut 1 built (#947): questions, agent proposals, adoption · cut 1.1 (#950): the agent remembers what it saw, existing answers become map_to · cut 3 first slice (#955): proposed questions, the two numbers, `competency.mjs`; second slice (#962): answers record whether they went through the graph · cut 2, rest of 3, 4 open · A base's unbound signatures and classless kind words are what its documents say and its ontology cannot hold, and nothing says what the ontology is *for*. **Competency questions** become rows of the base and the standard an element is judged by; an **ontology agent** reads the unbound signatures and kind words against them and proposes types, properties and rules with a definition, the statements they would bind and the questions they serve; **approval** writes the element with its structure and re-decides those signatures through 0053's basis, and every approved element carries **regression cases** rerun when its definition changes. Measured by questions answered correctly and by the share of proposals people change. No automatic adoption; the 0003 `Suggest` retires once this replaces it |
-| 0062 | [The export says what is contested](0062-the-export-says-what-is-contested.md) | Proposed 2026-09-25 · #564: the RDF export carries `fact_conflicts` and `axiom_violations` as two distinct resource classes — conflicts point at the prior and incoming statements, violations at the statements they are about and (open rows only) the governing criterion and its relation; an ordered `rdf:List` keeps cycle paths; precondition is the current-ontology invariant: `status = 'open'` means reconciled against the current ontology, so criterion-changing ontology edits settle superseded open rows with `criterion_changed` and re-detect in the same transaction
-| 0063 | [Stopping a chat ends the generation](0063-stopping-a-chat-ends-the-generation.md) | Implemented 2026-09-27 (#961, migration 0095) · explicit cancellation, saved partial answers with a stopped flag, one active generation per conversation, and one terminal after persistence |
+By domain; the domains are the files of [../design/](../design/README.md). **Status** is the first word of the record's own status line. **Overtaken** says whether a later record overturned it: `partly (by NNNN)` means some decisions fell and the record's revision notes say which. Open work: `grep 'open:' docs/decisions/0*.md`.
 
-| | Record | Domain | Status |
+### [ontology](../design/ontology.md)
+
+| | Record | Status | Overtaken |
 |---|---|---|---|
-| 0001 | [Ontology import and governance](0001-ontology-import-and-governance.md) | ontology | partly superseded (by 0009, 0010, 0012, 0044) |
-| 0002 | [Reasoning engine](0002-reasoning-engine.md) | rules | current |
-| 0003 | [The ontology grows out of the corpus](0003-ontology-growth-loop.md) | ontology | partly superseded (by 0007, 0010, 0044) |
-| 0004 | [Language follows the reader of each text](0004-language-and-localization.md) | interface | partly superseded (by 0044) |
-| 0005 | [The alert center](0005-alert-center.md) | interface | current |
-| 0006 | [Ontology scale and the extraction prompt](0006-ontology-scale-and-the-prompt.md) | extraction | superseded (by 0044) |
-| 0007 | [Counting decides what becomes a relation](0007-who-decides-what-becomes-a-relation.md) | ontology | partly superseded (by 0044) |
-| 0008 | [Ontology packs as the cold start](0008-ontology-packs-as-cold-start.md) | ontology | current |
-| 0009 | [An undecided type stays empty](0009-no-type-is-a-type.md) | ontology | current |
-| 0010 | [An unnamed relation stays empty](0010-no-relation-is-no-relation.md) | ledger | partly superseded (by 0044) |
-| 0011 | [A mapping is configuration](0011-a-mapping-is-not-a-fact.md) | lakehouse-and-actions | partly superseded (by 0036, 0044) |
-| 0012 | [The ontology is a contract](0012-the-ontology-is-a-contract-not-a-suggestion.md) | ontology | partly superseded (by 0044) |
-| 0013 | [A source hands over its history](0013-a-source-should-hand-over-its-history.md) | sources | current |
-| 0014 | [Identity from the person, scope from the token](0014-identity-from-the-person-scope-from-the-token.md) | access-and-audit | current |
-| 0015 | [A recorded sentence waits for a nod](0015-recording-a-sentence-is-not-asserting-a-fact.md) | governance | current |
-| 0016 | [Close the open seams before cutting new ones](0016-close-the-open-seams-before-cutting-new-ones.md) | process | partly superseded (by 0036) |
-| 0017 | [A contradiction points at an error upstream](0017-a-contradiction-points-upstream.md) | governance | current |
-| 0018 | [The lakehouse is one protocol away](0018-the-lakehouse-is-one-protocol-away.md) | lakehouse-and-actions | current |
-| 0019 | [The second clock can be rewound](0019-the-second-clock-can-be-rewound.md) | time | current |
-| 0020 | [An auditor reads it without us](0020-an-auditor-reads-it-without-us.md) | access-and-audit | current |
-| 0021 | [A rule reads attributes and concludes a type](0021-a-rule-reads-attributes-and-concludes-a-type.md) | rules | current |
-| 0022 | [An unknown date is not an open one](0022-an-unknown-date-is-not-an-open-one.md) | time | partly superseded (by 0045) |
-| 0023 | [RSS observations are not documents](0023-rss-observations-are-not-documents.md) | sources | current |
-| 0024 | [The world axis reaches the second](0024-the-world-axis-reaches-the-second.md) | time | current |
-| 0025 | [Governance reads the ledger before it decides](0025-governance-reads-the-ledger-before-it-decides.md) | governance | current |
-| 0026 | [A decision records why](0026-a-decision-records-why.md) | governance | current |
-| 0027 | [An automatic merge is gated by what it can undo](0027-an-automatic-merge-is-gated-by-what-it-can-undo.md) | governance | current |
-| 0028 | [The adjudicator looks before it asks](0028-the-adjudicator-looks-before-it-asks.md) | governance | current |
-| 0029 | [A rule may say "or", once](0029-a-rule-may-say-or-once.md) | rules | current |
-| 0030 | [A rule may read what a rule concluded](0030-a-rule-may-read-what-a-rule-concluded.md) | rules | current |
-| 0031 | [An event holds at the moment it names](0031-an-event-holds-at-the-moment-it-names.md) | time | current |
-| 0032 | [A rule computes what it concludes](0032-a-rule-computes-what-it-concludes.md) | rules | current |
-| 0033 | [RSS summaries are scoped to the source being listed](0033-rss-source-summaries-are-source-scoped.md) | sources | current |
-| 0034 | [An action is a declared call](0034-an-action-is-a-declared-call.md) | lakehouse-and-actions | proposed |
-| 0035 | [A vector index is built by a job](0035-a-vector-index-is-built-by-a-job.md) | sources | current |
-| 0036 | [Exploration aligns a schema to the ontology](0036-exploration-aligns-a-schema-to-the-ontology.md) | lakehouse-and-actions | current |
-| 0037 | [A relation carries its own attributes](0037-a-relation-carries-its-own-attributes.md) | ledger | partly superseded (by 0044) |
-| 0038 | [The interface has a light side](0038-the-interface-has-a-light-side.md) | interface | current |
-| 0039 | [A chunk is what extraction sees](0039-a-chunk-is-what-extraction-sees.md) | sources | current |
-| 0040 | [A chunk says where its words came from](0040-a-chunk-says-where-its-words-came-from.md) | sources | current |
-| 0041 | [A name is a claim about an entity](0041-a-name-is-a-claim-about-an-entity.md) | identity | current |
-| 0042 | [The chat loop is a runner with hooks](0042-the-chat-loop-is-a-runner-with-hooks.md) | chat-and-mcp | current |
-| 0043 | [Every review queue is governed](0043-every-review-queue-is-governed.md) | governance | current |
-| 0044 | [The ontology is a view over what documents say](0044-the-ontology-is-a-view-over-what-documents-say.md) | ontology | current |
-| 0045 | [A time mention is resolved against its document](0045-a-time-mention-is-resolved-against-its-document.md) | time | current |
-| 0046 | [The app surface is MCP](0046-the-app-surface-is-mcp.md) | chat-and-mcp | current |
-| 0047 | [A rule may conclude a relation](0047-a-rule-may-conclude-a-relation.md) | rules | current |
-| 0048 | [Provenance references stay inside the knowledge base](0048-provenance-references-stay-inside-the-knowledge-base.md) | ledger | current |
-| 0049 | [Expression declarations are checked when a rule is written](0049-expression-declarations-are-checked-when-a-rule-is-written.md) | rules | proposed |
-| 0050 | [An action attempt keeps its identity and uncertain outcome](0050-an-action-attempt-keeps-its-identity-and-uncertain-outcome.md) | lakehouse-and-actions | proposed |
-| 0051 | [A human phrase decision carries its materialization work](0051-a-human-phrase-decision-carries-its-materialization-work.md) | ontology | proposed |
-| 0052 | [Document content is a read contract over the retained ledger](0052-document-content-is-a-read-contract.md) | sources | current |
-| 0053 | [A phrase decision records the inputs it considered](0053-a-phrase-decision-records-the-inputs-it-considered.md) | ontology | current |
-| 0054 | [A source may push statements in the open contract](0054-a-source-may-push-statements-in-the-open-contract.md) | sources | proposed |
-| 0060 | [A rule's definition has a history](0060-a-rule-definition-has-a-history.md) | rules | current |
-| 0061 | [The ontology is proposed from the open graph and judged by its questions](0061-the-ontology-is-proposed-from-the-open-graph-and-judged-by-its-questions.md) | ontology | current |
-| 0062 | [The export says what is contested](0062-the-export-says-what-is-contested.md) | ontology | proposed |
-| 0063 | [Stopping a chat ends the generation](0063-stopping-a-chat-ends-the-generation.md) | chat-and-mcp | current |
+| 0001 | [Ontology import and governance](0001-ontology-import-and-governance.md) | In progress | partly (by 0009, 0010, 0012, 0044) |
+| 0003 | [The ontology grows out of the corpus](0003-ontology-growth-loop.md) | Implemented | partly (by 0007, 0010, 0044) |
+| 0007 | [Counting decides what becomes a relation](0007-who-decides-what-becomes-a-relation.md) | Implemented | partly (by 0044) |
+| 0008 | [Ontology packs as the cold start](0008-ontology-packs-as-cold-start.md) | Implemented |  |
+| 0009 | [An undecided type stays empty](0009-no-type-is-a-type.md) | Implemented |  |
+| 0012 | [The ontology is a contract](0012-the-ontology-is-a-contract-not-a-suggestion.md) | Implemented | partly (by 0044) |
+| 0044 | [The ontology is a view over what documents say](0044-the-ontology-is-a-view-over-what-documents-say.md) | In progress |  |
+| 0051 | [A human phrase decision carries its materialization work](0051-a-human-phrase-decision-carries-its-materialization-work.md) | Implemented |  |
+| 0053 | [A phrase decision records the inputs it considered](0053-a-phrase-decision-records-the-inputs-it-considered.md) | Implemented |  |
+| 0061 | [The ontology is proposed from the open graph and judged by its questions](0061-the-ontology-is-proposed-from-the-open-graph-and-judged-by-its-questions.md) | In progress |  |
+| 0062 | [The export says what is contested](0062-the-export-says-what-is-contested.md) | Implemented |  |
 
-The status word is whether a later record has overtaken this one; what is built is in the record's own status line. Domains are the files of [../design/](../design/README.md), where every record is dated and the status words are defined.
+### [extraction](../design/extraction.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0006 | [Ontology scale and the extraction prompt](0006-ontology-scale-and-the-prompt.md) | Superseded | fully (by 0044) |
+
+### [identity](../design/identity.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0041 | [A name is a claim about an entity](0041-a-name-is-a-claim-about-an-entity.md) | In progress |  |
+
+### [time](../design/time.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0019 | [The second clock can be rewound](0019-the-second-clock-can-be-rewound.md) | Implemented |  |
+| 0022 | [An unknown date is not an open one](0022-an-unknown-date-is-not-an-open-one.md) | Implemented | partly (by 0045) |
+| 0024 | [The world axis reaches the second](0024-the-world-axis-reaches-the-second.md) | Implemented |  |
+| 0031 | [An event holds at the moment it names](0031-an-event-holds-at-the-moment-it-names.md) | Implemented |  |
+| 0045 | [A time mention is resolved against its document](0045-a-time-mention-is-resolved-against-its-document.md) | In progress |  |
+
+### [ledger](../design/ledger.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0010 | [An unnamed relation stays empty](0010-no-relation-is-no-relation.md) | Implemented | partly (by 0044) |
+| 0037 | [A relation carries its own attributes](0037-a-relation-carries-its-own-attributes.md) | In progress | partly (by 0044) |
+| 0048 | [Provenance references stay inside the knowledge base](0048-provenance-references-stay-inside-the-knowledge-base.md) | Implemented |  |
+
+### [governance](../design/governance.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0015 | [A recorded sentence waits for a nod](0015-recording-a-sentence-is-not-asserting-a-fact.md) | Implemented |  |
+| 0017 | [A contradiction points at an error upstream](0017-a-contradiction-points-upstream.md) | Implemented |  |
+| 0025 | [Governance reads the ledger before it decides](0025-governance-reads-the-ledger-before-it-decides.md) | Implemented |  |
+| 0026 | [A decision records why](0026-a-decision-records-why.md) | Implemented |  |
+| 0027 | [An automatic merge is gated by what it can undo](0027-an-automatic-merge-is-gated-by-what-it-can-undo.md) | Implemented |  |
+| 0028 | [The adjudicator looks before it asks](0028-the-adjudicator-looks-before-it-asks.md) | Implemented |  |
+| 0043 | [Every review queue is governed](0043-every-review-queue-is-governed.md) | Accepted |  |
+
+### [rules](../design/rules.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0002 | [Reasoning engine](0002-reasoning-engine.md) | In progress |  |
+| 0021 | [A rule reads attributes and concludes a type](0021-a-rule-reads-attributes-and-concludes-a-type.md) | Implemented |  |
+| 0029 | [A rule may say "or", once](0029-a-rule-may-say-or-once.md) | Implemented |  |
+| 0030 | [A rule may read what a rule concluded](0030-a-rule-may-read-what-a-rule-concluded.md) | In progress |  |
+| 0032 | [A rule computes what it concludes](0032-a-rule-computes-what-it-concludes.md) | In progress |  |
+| 0047 | [A rule may conclude a relation](0047-a-rule-may-conclude-a-relation.md) | Implemented |  |
+| 0049 | [Expression declarations are checked when a rule is written](0049-expression-declarations-are-checked-when-a-rule-is-written.md) | Proposed |  |
+| 0060 | [A rule's definition has a history](0060-a-rule-definition-has-a-history.md) | Implemented |  |
+
+### [sources](../design/sources.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0013 | [A source hands over its history](0013-a-source-should-hand-over-its-history.md) | Implemented |  |
+| 0023 | [RSS observations are not documents](0023-rss-observations-are-not-documents.md) | Implemented |  |
+| 0033 | [RSS summaries are scoped to the source being listed](0033-rss-source-summaries-are-source-scoped.md) | Implemented |  |
+| 0035 | [A vector index is built by a job](0035-a-vector-index-is-built-by-a-job.md) | Implemented |  |
+| 0039 | [A chunk is what extraction sees](0039-a-chunk-is-what-extraction-sees.md) | In progress |  |
+| 0040 | [A chunk says where its words came from](0040-a-chunk-says-where-its-words-came-from.md) | Implemented |  |
+| 0052 | [Document content is a read contract over the retained ledger](0052-document-content-is-a-read-contract.md) | Proposed |  |
+| 0054 | [A source may push statements in the open contract](0054-a-source-may-push-statements-in-the-open-contract.md) | Implemented |  |
+
+### [lakehouse-and-actions](../design/lakehouse-and-actions.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0011 | [A mapping is configuration](0011-a-mapping-is-not-a-fact.md) | Implemented | partly (by 0036, 0044) |
+| 0018 | [The lakehouse is one protocol away](0018-the-lakehouse-is-one-protocol-away.md) | Implemented |  |
+| 0034 | [An action is a declared call](0034-an-action-is-a-declared-call.md) | Proposed |  |
+| 0036 | [Exploration aligns a schema to the ontology](0036-exploration-aligns-a-schema-to-the-ontology.md) | In progress |  |
+| 0050 | [An action attempt keeps its identity and uncertain outcome](0050-an-action-attempt-keeps-its-identity-and-uncertain-outcome.md) | Proposed |  |
+
+### [access-and-audit](../design/access-and-audit.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0014 | [Identity from the person, scope from the token](0014-identity-from-the-person-scope-from-the-token.md) | Implemented |  |
+| 0020 | [An auditor reads it without us](0020-an-auditor-reads-it-without-us.md) | Implemented |  |
+
+### [interface](../design/interface.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0004 | [Language follows the reader of each text](0004-language-and-localization.md) | Implemented | partly (by 0044) |
+| 0005 | [The alert center](0005-alert-center.md) | Implemented |  |
+| 0038 | [The interface has a light side](0038-the-interface-has-a-light-side.md) | Implemented |  |
+
+### [chat-and-mcp](../design/chat-and-mcp.md)
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0042 | [The chat loop is a runner with hooks](0042-the-chat-loop-is-a-runner-with-hooks.md) | Implemented |  |
+| 0046 | [The app surface is MCP](0046-the-app-surface-is-mcp.md) | Accepted |  |
+| 0063 | [Stopping a chat ends the generation](0063-stopping-a-chat-ends-the-generation.md) | Implemented |  |
+
+### process
+
+| | Record | Status | Overtaken |
+|---|---|---|---|
+| 0016 | [Close the open seams before cutting new ones](0016-close-the-open-seams-before-cutting-new-ones.md) | In progress | partly (by 0036) |
 
 ## Not a decision record
 

@@ -1,6 +1,6 @@
 # 0015 · A recorded sentence waits for a nod
 
-- **Status**: implemented · schema in migration `0018` (#180: `pending_facts`, `rejected_facts`) · runtime wired in [0016](0016-close-the-open-seams-before-cutting-new-ones.md) A1: extraction from a memory document goes to `pending_facts`, Review has a "waiting for your nod" queue placed first, a confirmation card grows into the chat after `remember`, `REMEMBER_ENABLED` is `true` again · decision 3 landed with different wording, see Revisions · MCP is still read-only; opening `remember` there is the next cut
+- **Status**: Implemented (#180) · open: `remember` over MCP
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: [0010](0010-no-relation-is-no-relation.md) removed the fallback relation (the empty predicate below is its correct behavior); [0011](0011-a-mapping-is-not-a-fact.md) rejected encoding a binary state as a float, the red line for this implementation; [0014](0014-identity-from-the-person-scope-from-the-token.md) kept MCP read-only mainly because of the confused deputy, which this gate removes
 
@@ -88,3 +88,9 @@ original sentence above the extracted triples; triples alone ask for a judgment 
 
 - Does the gate hold only memories, or every single-item interactive write? Today `remember`
   is the only such path; a future "add an edge by hand" interface should take the same table.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented · schema in migration `0018` (#180: `pending_facts`, `rejected_facts`) · runtime wired in [0016](0016-close-the-open-seams-before-cutting-new-ones.md) A1: extraction from a memory document goes to `pending_facts`, Review has a "waiting for your nod" queue placed first, a confirmation card grows into the chat after `remember`, `REMEMBER_ENABLED` is `true` again · decision 3 landed with different wording, see Revisions · MCP is still read-only; opening `remember` there is the next cut

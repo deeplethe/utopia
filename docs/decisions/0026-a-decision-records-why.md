@@ -1,6 +1,6 @@
 # 0026 · A decision records why
 
-- **Status**: Implemented · migration 0038 adds `resolution_reviews.rationale`; every human decide path (`decide_review`, the batch, an answer to the agent, a manual merge from the entity panel) takes an optional rationale, keeps it on the row and writes it as `why` on the ledger event; `Precedent.why` carries it into the prompt lines and the `ledger_search` tool; the batch adjudicator now reads the same precedents and keys its verdict cache on them; ~~one confident pair in ten goes to a person~~ removed 2026-09-14 (decision 5, revised); the model's own `why` is written beside machine decisions
+- **Status**: Implemented (migration 0038)
 - **Written**: 2026-09-08 (conventions in the [README](README.md))
 - **Related**: [0025](0025-governance-reads-the-ledger-before-it-decides.md) made governance read the ledger; this record makes what it reads worth reading. #356 asked for it. The impact gate (#357) and the investigating adjudicator (#358) build on it; a rationale vocabulary that converges is a rule in the sense of [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md).
 
@@ -58,3 +58,9 @@ The duplicate card has an input beside Keep / Merge; the batch toolbar has one i
 - **An adjudicator that investigates** (#358). Answered by [0028](0028-the-adjudicator-looks-before-it-asks.md): the batch escalates its unsettled pairs into the governor's loop, with governance off too.
 - **The agreement rate.** The sample is gone (decision 5, revised). The rows a person answers under the agent (0025) carry both verdicts; nothing computes the rate yet.
 - **History on a merge target.** The merge shows under the withdrawals it caused in the same second, which is honest chronology and hard to read. Folding consequences under their cause is presentation, and belongs with the rationale it now has.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented · migration 0038 adds `resolution_reviews.rationale`; every human decide path (`decide_review`, the batch, an answer to the agent, a manual merge from the entity panel) takes an optional rationale, keeps it on the row and writes it as `why` on the ledger event; `Precedent.why` carries it into the prompt lines and the `ledger_search` tool; the batch adjudicator now reads the same precedents and keys its verdict cache on them; ~~one confident pair in ten goes to a person~~ removed 2026-09-14 (decision 5, revised); the model's own `why` is written beside machine decisions

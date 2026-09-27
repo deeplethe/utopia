@@ -1,6 +1,6 @@
 # 0033 · RSS summaries are scoped to the source being listed
 
-- **Status**: Implemented · the source- and generation-scoped lateral landed in #462; the nested `rss_full_content` contract landed in #417's second cut
+- **Status**: Implemented (#462, #417)
 - **Written**: 2026-09-06 (conventions in the [README](README.md))
 - **Related**: [0023](0023-rss-observations-are-not-documents.md) established RSS observations as a separate responsibility from documents; #417 changes the public `SourceView` contract while fixing the scope of its RSS summary.
 

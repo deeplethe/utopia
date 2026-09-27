@@ -1,6 +1,6 @@
 # 0035 · A vector index is built by a job
 
-- **Status**: implemented · a partial HNSW index per dimension on `chunks.embedding` and `entities.profile_embedding`, requested by the first write of that dimension and built by a `build_vector_index` job outside any transaction · `vector_search` and `nearest_typed_entities` write the dimension as a literal, cast both sides and set `hnsw.iterative_scan = relaxed_order` · type resolution gathers a batch's neighbours eight at a time, in order, and remembers descendant sets per batch (#512, #514) · dimensions above 2000 stay on the exact path
+- **Status**: Implemented (#512, #514)
 - **Written**: 2026-09-09 (conventions in the [README](README.md))
 - **Related**: the ingest migration said P1 scans sequentially and an HNSW index comes "at volume"; this is that note coming due. [0019](0019-the-second-clock-can-be-rewound.md) is why the record-axis filter stays on the query and the index accommodates it. [0016](0016-close-the-open-seams-before-cutting-new-ones.md) C2 is the loop that scanned the entity table once per subject.
 
@@ -72,3 +72,9 @@ Every question is asked twice, without the index and with it, and the answers mu
 
 - **Recall on a corpus the planner sends to the index.** The entity figure above (0.997) is on real profiles with the index forced; the chunk figures are on real chunks in an adversarial table, a synthetic tenant whose vectors sit closer to every query than the query's own base does, and they reach 1.0 only with the scan memory raised. A real deployment with two large tenants of different subject matter is the case still unmeasured, and `hnsw.ef_search` (40 here; 200 cost 10 ms in the synthetic run and changed nothing on the copy) is the first knob if it disappoints.
 - **A dimension that leaves.** When a workspace changes model, the old dimension's index stays until someone drops it. It is small harm and no mechanism yet.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented · a partial HNSW index per dimension on `chunks.embedding` and `entities.profile_embedding`, requested by the first write of that dimension and built by a `build_vector_index` job outside any transaction · `vector_search` and `nearest_typed_entities` write the dimension as a literal, cast both sides and set `hnsw.iterative_scan = relaxed_order` · type resolution gathers a batch's neighbours eight at a time, in order, and remembers descendant sets per batch (#512, #514) · dimensions above 2000 stay on the exact path

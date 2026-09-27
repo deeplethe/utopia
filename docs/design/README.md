@@ -42,8 +42,8 @@ model reads, the growth loop fed from the model's predicate words, qualifiers ke
 attributes at extraction) and, for the same reason, the write-time direction correction of 0012 and
 the input of 0007's counting loop. Their ledger decisions stand: a predicate may be null and display
 falls back to the source's wording (0010), evidence on every fact and every drop a row (0001),
-qualifiers live beside the edge (0037), an adoption rewrite is an append with undo (0003). The table
-below marks these records from this note; their own status lines predate it and were not touched.
+qualifiers live beside the edge (0037), an adoption rewrite is an append with undo (0003). The index
+marks these records from this note; their own status lines predate it and were not touched.
 
 ## Status words
 
@@ -52,58 +52,12 @@ the note above, overturned some of its decisions and the rest hold; the record's
 say which. `superseded (by NNNN)`: none of its decisions hold. `proposed`: the direction is accepted
 and the code is not yet on `dev` (0034 has no code; 0043's cut 1 was in PR #699, closed on 2026-09-17 to re-land on the open graph after alignment, while the record itself is on `dev`; 0044 and 0045 sit in
 PRs #710 and #724, and 0044's cut 1 has landed ahead of the record). The record's own status line
-is the source of truth for what is built; this table only adds whether a later record has overtaken
+is the source of truth for what is built; the index only adds whether a later record has overtaken
 it.
 
 ## Every record
 
-| | Date | Record | Domain | Status |
-|---|---|---|---|---|
-| 0001 | 2026-08-27 | [Ontology import and governance](../decisions/0001-ontology-import-and-governance.md) | ontology | partly superseded (by 0009, 0010, 0012, 0044) |
-| 0002 | 2026-08-28 | [Reasoning engine](../decisions/0002-reasoning-engine.md) | rules | current |
-| 0003 | 2026-08-28 | [The ontology grows out of the corpus](../decisions/0003-ontology-growth-loop.md) | ontology | partly superseded (by 0007, 0010, 0044) |
-| 0004 | 2026-08-29 | [Language follows the reader of each text](../decisions/0004-language-and-localization.md) | interface | partly superseded (by 0044) |
-| 0005 | 2026-08-29 | [The alert center](../decisions/0005-alert-center.md) | interface | current |
-| 0006 | 2026-08-29 | [Ontology scale and the extraction prompt](../decisions/0006-ontology-scale-and-the-prompt.md) | extraction | superseded (by 0044) |
-| 0007 | 2026-08-30 | [Counting decides what becomes a relation](../decisions/0007-who-decides-what-becomes-a-relation.md) | ontology | partly superseded (by 0044) |
-| 0008 | 2026-08-30 | [Ontology packs as the cold start](../decisions/0008-ontology-packs-as-cold-start.md) | ontology | current |
-| 0009 | 2026-08-30 | [An undecided type stays empty](../decisions/0009-no-type-is-a-type.md) | ontology | current |
-| 0010 | 2026-08-30 | [An unnamed relation stays empty](../decisions/0010-no-relation-is-no-relation.md) | ledger | partly superseded (by 0044) |
-| 0011 | 2026-08-31 | [A mapping is configuration](../decisions/0011-a-mapping-is-not-a-fact.md) | lakehouse-and-actions | partly superseded (by 0036, 0044) |
-| 0012 | 2026-08-31 | [The ontology is a contract](../decisions/0012-the-ontology-is-a-contract-not-a-suggestion.md) | ontology | partly superseded (by 0044) |
-| 0013 | 2026-08-31 | [A source hands over its history](../decisions/0013-a-source-should-hand-over-its-history.md) | sources | current |
-| 0014 | 2026-09-01 | [Identity from the person, scope from the token](../decisions/0014-identity-from-the-person-scope-from-the-token.md) | access-and-audit | current |
-| 0015 | 2026-09-01 | [A recorded sentence waits for a nod](../decisions/0015-recording-a-sentence-is-not-asserting-a-fact.md) | governance | current |
-| 0016 | 2026-09-02 | [Close the open seams before cutting new ones](../decisions/0016-close-the-open-seams-before-cutting-new-ones.md) | process | partly superseded (by 0036) |
-| 0017 | 2026-09-03 | [A contradiction points at an error upstream](../decisions/0017-a-contradiction-points-upstream.md) | governance | current |
-| 0018 | 2026-09-03 | [The lakehouse is one protocol away](../decisions/0018-the-lakehouse-is-one-protocol-away.md) | lakehouse-and-actions | current |
-| 0019 | 2026-09-04 | [The second clock can be rewound](../decisions/0019-the-second-clock-can-be-rewound.md) | time | current |
-| 0020 | 2026-09-05 | [An auditor reads it without us](../decisions/0020-an-auditor-reads-it-without-us.md) | access-and-audit | current |
-| 0021 | 2026-09-05 | [A rule reads attributes and concludes a type](../decisions/0021-a-rule-reads-attributes-and-concludes-a-type.md) | rules | current |
-| 0022 | 2026-09-06 | [An unknown date is not an open one](../decisions/0022-an-unknown-date-is-not-an-open-one.md) | time | partly superseded (by 0045) |
-| 0023 | 2026-09-05 | [RSS observations are not documents](../decisions/0023-rss-observations-are-not-documents.md) | sources | current |
-| 0024 | 2026-09-06 | [The world axis reaches the second](../decisions/0024-the-world-axis-reaches-the-second.md) | time | current |
-| 0025 | 2026-09-06 | [Governance reads the ledger before it decides](../decisions/0025-governance-reads-the-ledger-before-it-decides.md) | governance | current |
-| 0026 | 2026-09-08 | [A decision records why](../decisions/0026-a-decision-records-why.md) | governance | current |
-| 0027 | 2026-09-08 | [An automatic merge is gated by what it can undo](../decisions/0027-an-automatic-merge-is-gated-by-what-it-can-undo.md) | governance | current |
-| 0028 | 2026-09-08 | [The adjudicator looks before it asks](../decisions/0028-the-adjudicator-looks-before-it-asks.md) | governance | current |
-| 0029 | 2026-09-08 | [A rule may say "or", once](../decisions/0029-a-rule-may-say-or-once.md) | rules | current |
-| 0030 | 2026-09-08 | [A rule may read what a rule concluded](../decisions/0030-a-rule-may-read-what-a-rule-concluded.md) | rules | current |
-| 0031 | 2026-09-08 | [An event holds at the moment it names](../decisions/0031-an-event-holds-at-the-moment-it-names.md) | time | current |
-| 0032 | 2026-09-08 | [A rule computes what it concludes](../decisions/0032-a-rule-computes-what-it-concludes.md) | rules | current |
-| 0033 | 2026-09-06 | [RSS summaries are scoped to the source being listed](../decisions/0033-rss-source-summaries-are-source-scoped.md) | sources | current |
-| 0034 | 2026-09-08 | [An action is a declared call](../decisions/0034-an-action-is-a-declared-call.md) | lakehouse-and-actions | proposed |
-| 0035 | 2026-09-09 | [A vector index is built by a job](../decisions/0035-a-vector-index-is-built-by-a-job.md) | sources | current |
-| 0036 | 2026-09-09 | [Exploration aligns a schema to the ontology](../decisions/0036-exploration-aligns-a-schema-to-the-ontology.md) | lakehouse-and-actions | current |
-| 0037 | 2026-09-10 | [A relation carries its own attributes](../decisions/0037-a-relation-carries-its-own-attributes.md) | ledger | partly superseded (by 0044) |
-| 0038 | 2026-09-11 | [The interface has a light side](../decisions/0038-the-interface-has-a-light-side.md) | interface | current |
-| 0039 | 2026-09-13 | [A chunk is what extraction sees](../decisions/0039-a-chunk-is-what-extraction-sees.md) | sources | current |
-| 0040 | 2026-09-13 | [A chunk says where its words came from](../decisions/0040-a-chunk-says-where-its-words-came-from.md) | sources | current |
-| 0041 | 2026-09-13 | [A name is a claim about an entity](../decisions/0041-a-name-is-a-claim-about-an-entity.md) | identity | current |
-| 0042 | 2026-09-13 | [The chat loop is a runner with hooks](../decisions/0042-the-chat-loop-is-a-runner-with-hooks.md) | chat-and-mcp | current |
-| 0043 | 2026-09-14 | Every review queue is governed (was PR #699, closed 2026-09-17; re-lands after 0044 cut 2) | governance | proposed |
-| 0044 | 2026-09-16 | [The ontology is a view over what documents say](../decisions/0044-the-ontology-is-a-view-over-what-documents-say.md) | ontology | proposed |
-| 0045 | 2026-09-16 | [A time mention is resolved against its document](../decisions/0045-a-time-mention-is-resolved-against-its-document.md) | time | proposed |
+The records are listed by domain in the [index](../decisions/README.md#index), with these words in its last column.
 
 [prior-work.md](prior-work.md) is not a domain: it places each layer in the literature it stands on
 and lists the pitfalls taken from it, with what is still open.

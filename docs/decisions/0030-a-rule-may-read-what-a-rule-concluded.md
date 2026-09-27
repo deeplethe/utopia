@@ -1,6 +1,6 @@
 # 0030 · A rule may read what a rule concluded
 
-- **Status**: cuts 1 and 2 implemented · the record, and the runner: a fixed point inside one `materialize()` (rounds bounded by `MAX_DEPTH`, rules loaded in id order so a run is reproducible), a concluded value back in the fact pool, a concluded typing joining the subject scope **as a condition** so it carries its interval and its premise, `fact_derivations` widened by `premise_derived_id` (migration `0040`) with a `derivation_premises` view so all six readers see both kinds, `proof()` walking the tree, and a kept row re-proved when its premises changed · five database tests · the page showing which rules feed which is the next cut
+- **Status**: In progress · cuts 1–2 built (migration 0040) · open: the page showing which rules feed which
 - **Written**: 2026-09-08 (conventions in the [README](README.md))
 - **Related**: [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md) built the rule; [0029](0029-a-rule-may-say-or-once.md) settled the shape of **one** rule, and this record settles how **several** compose — the two are independent. [0002](0002-reasoning-engine.md) built the axiom fixed point this borrows from, and left R3 (incremental maintenance) open, which this record does not close. **[0013](0013-a-source-should-hand-over-its-history.md) is where the invariant this overturns was written down**, in the DDL comment on `fact_derivations`. [0024](0024-the-world-axis-reaches-the-second.md) decides which premise sets a derived bound's precision, and a chained bound obeys it one level up. From #477.
 
@@ -62,3 +62,9 @@ Reading the *previous* run's `derived_facts` as input stays forbidden, for exact
 
 - ~~A kept row can keep a stale proof.~~ **Closed in cut 2.** `wanted` is keyed by subject, predicate, value and interval, with premises outside the key, so a conclusion reached this round by a different path than last round used to keep its old `fact_derivations` — already true with asserted premises, and easier to hit with chains, where the stale premise can be a row that was just invalidated. The run now reads the stored premises of every kept row in one query and rewrites the ones that differ; the count is `reproved` in the report.
 - **How deep is worth drawing.** Twelve rounds is the bound, not the expectation. If real bases produce chains longer than two or three, the panel needs a shape for that rather than an ever-deeper nest.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> cuts 1 and 2 implemented · the record, and the runner: a fixed point inside one `materialize()` (rounds bounded by `MAX_DEPTH`, rules loaded in id order so a run is reproducible), a concluded value back in the fact pool, a concluded typing joining the subject scope **as a condition** so it carries its interval and its premise, `fact_derivations` widened by `premise_derived_id` (migration `0040`) with a `derivation_premises` view so all six readers see both kinds, `proof()` walking the tree, and a kept row re-proved when its premises changed · five database tests · the page showing which rules feed which is the next cut

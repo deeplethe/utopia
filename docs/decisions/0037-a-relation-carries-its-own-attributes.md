@@ -1,11 +1,6 @@
 # 0037 · A relation carries its own attributes
 
-- **Status**: cut 1 merged (#598) · cut 1b (units, auto-declaration, sibling currency; #600) · `relation_type_qualifiers` and `fact_qualifiers`
-  (migration 0049), a relation declares its qualifiers, extraction writes them, the panel and
-  the export read them · not in this cut: an entity-valued qualifier (the column is reserved,
-  nothing writes it), a second row plus a conflict when two mentions of one edge disagree
-  (today the first value stays and the disagreement goes to the drop report), the canvas
-  label, the bootstrap proposing qualifiers for a relation it adopts
+- **Status**: In progress · cuts 1 and 1b built (#598, #600) · open: entity-valued qualifiers, disagreeing mentions, the canvas label
 - **Written**: 2026-09-10 (conventions in the [README](README.md))
 - **Related**: [0031](0031-an-event-holds-at-the-moment-it-names.md) is what makes the same
   edge repeatable — an event's key includes its moment — and this record leans on it for
@@ -148,3 +143,9 @@ rules corpus declared and undeclared, a Chinese corpus declared and undeclared):
   relations are states pointing at reified event nodes, so the natural home of an amount in
   schema.org is the event class, not the edge. No pack relation declares a qualifier by
   default.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> cut 1 merged (#598) · cut 1b (units, auto-declaration, sibling currency; #600) · `relation_type_qualifiers` and `fact_qualifiers` (migration 0049), a relation declares its qualifiers, extraction writes them, the panel and the export read them · not in this cut: an entity-valued qualifier (the column is reserved, nothing writes it), a second row plus a conflict when two mentions of one edge disagree (today the first value stays and the disagreement goes to the drop report), the canvas label, the bootstrap proposing qualifiers for a relation it adopts

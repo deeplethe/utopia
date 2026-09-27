@@ -1,6 +1,6 @@
 # 0051 · A human phrase decision carries its materialization work
 
-- **Status**: implemented 2026-09-23 on the production path (PR #876; the store refactors and regressions landed first in #841) · job kind `materialize_typed` registered in `main`, `phrase_bindings::decide_with_delivery` commits the decision and the job in one transaction, the phrase route answers `202` with the job id and no invented `typed` counts, `GET /kbs/{id}/jobs/{job_id}` is the authorized status read, completion reaches the page as the existing `review` / `graph` events, Review copy in both languages · the synchronous human entry point with a 2-second lock budget (#864, same day) is retired on this route as a consequence: the route no longer waits for the lock at all, so there is nothing left to bound; the kind-word route's #828 timeout is untouched
+- **Status**: Implemented 2026-09-23 (#876)
 - **Written**: 2026-09-21
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md); [PR #841](https://github.com/deeplethe/utopia/pull/841).
 
@@ -93,3 +93,9 @@ an unknown kind. Keep failed work visible; never mark outstanding jobs done just
 make rollback clean. External actions (#530) must not use this retry/recovery path.
 
 **Revision 2026-09-23 (implementation).** The "asynchronous HTTP/job/UI contract" this record left open is now the shape above. Two choices the record left to the implementation: the job's Busy outcome retries after 10 seconds through the existing `Deferred` path and its bounded window, and the status read is scoped by the job payload's `kb_id` so a job of another base answers 404 like an invisible document. The materialization job also writes an `alignment.materialized` audit row when the projection changed, with the job id, so a person can tie a click to what it did once the event has passed.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented 2026-09-23 on the production path (PR #876; the store refactors and regressions landed first in #841) · job kind `materialize_typed` registered in `main`, `phrase_bindings::decide_with_delivery` commits the decision and the job in one transaction, the phrase route answers `202` with the job id and no invented `typed` counts, `GET /kbs/{id}/jobs/{job_id}` is the authorized status read, completion reaches the page as the existing `review` / `graph` events, Review copy in both languages · the synchronous human entry point with a 2-second lock budget (#864, same day) is retired on this route as a consequence: the route no longer waits for the lock at all, so there is nothing left to bound; the kind-word route's #828 timeout is untouched

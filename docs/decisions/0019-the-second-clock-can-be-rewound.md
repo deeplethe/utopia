@@ -1,6 +1,6 @@
 # 0019 · The second clock can be rewound
 
-- **Status**: implemented in three cuts · #317 gave every graph read the `held_at` predicate and `as_of` beside `at`; #337 gave entities their clock by unwinding `entity_merges`; this record's second open question landed with retrieval (superseded chunks keep their vectors, and vector recall and chunk fetch both take `as_of`) · the control on the graph page is still open, and full-text recall is still "now" only · #549 found the one derived read that had kept `invalidated_at IS NULL`: `derived_for_entity` now takes `as_of`, so the entity panel and `entity_facts` over MCP rewind derivations with the assertions
+- **Status**: Implemented (#317, #337, #549) · open: the control on the graph page (#307), full-text recall as of a moment
 - **Written**: 2026-09-04 (conventions in the [README](README.md))
 - **Related**: [0003](0003-ontology-growth-loop.md) put adoption's rewrites on the same append path as human correction, so the prior state is still on disk; [0002](0002-reasoning-engine.md) built the proof chain on the same rows. #268 (deleting a document) is what made the gap urgent, and is deliberately a separate change
 
@@ -38,3 +38,9 @@ Read-only throughout. No new column, no migration.
 - **Retrieval has the same two clocks.** Settled, with one half left standing. `replace_chunks` no longer clears `embedding` on a superseded chunk: the storage that decision saved was the smaller half — the chunk's **text** was already kept — and the price was that history could not be searched at all. Vector recall and chunk fetch now take `as_of`, and a document deleted after T comes back with its chunks (#268 leaves the tombstone). **Full text stays "now"**: Tantivy holds one version of a base, so a timed search returns correct hits and misses the ones only history has. Giving the index versions is a separate piece of work, not a filter.
 - **A proof has one version.** `fact_derivations` is rewritten in place when a kept conclusion is reproved ([0030](0030-a-rule-may-read-what-a-rule-concluded.md), cut 2), and `proof` reads it as it stands. So a rewound panel lists the derivations the engine had drawn by T (#549), but expanding one shows today's premises, with the retracted ones marked. Keeping every proof would mean versioning `fact_derivations` the way `facts` is versioned; the row's `derived_at` already says when the conclusion first stood, and nobody has asked for the rest.
 - **What the control is.** A second slider doubles the surface for a question most people ask rarely; a mode switch on the existing slider is cheaper but risks reading as the same axis, which is the confusion the section above is written to prevent.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented in three cuts · #317 gave every graph read the `held_at` predicate and `as_of` beside `at`; #337 gave entities their clock by unwinding `entity_merges`; this record's second open question landed with retrieval (superseded chunks keep their vectors, and vector recall and chunk fetch both take `as_of`) · the control on the graph page is still open, and full-text recall is still "now" only · #549 found the one derived read that had kept `invalidated_at IS NULL`: `derived_for_entity` now takes `as_of`, so the entity panel and `entity_facts` over MCP rewind derivations with the assertions

@@ -1,6 +1,6 @@
 # 0012 · The ontology is a contract
 
-- **Status**: implemented · five controlled runs on `ai-timeline-ends` × schema.org + W3C Org took the violation rate from 57% to 4% and true reversals from 39 to 0 · the write-time judgment (`ontology::judge_direction`) now also covers adoption and merge (#190 / #196; merge reports `signature` rows into `axiom_violations`, R0 re-checks the same class) · filtering reified-shell relations out of pack import is still not done · since this record the ontology can also declare `inverseOf` / `subPropertyOf` (#177 / #179) and the pack list grew to five; the runs cover only the first two
+- **Status**: Implemented (#190, #196) · open: the reified-shell filter at pack import
 - **Written**: 2026-08-31 (inferred: the source is undated and sits between 0011 and 0013, both dated 2026-08-31) · condensed into English 2026-09-03
 - **Related**: [0008](0008-ontology-packs-as-cold-start.md) built the packs but never asked whether a large ontology holds up on real text; criterion 2 of [0001](0001-ontology-import-and-governance.md) ("the ontology guides, it does not enforce") is overturned by half here; [0010](0010-no-relation-is-no-relation.md) supplies the empty-predicate behavior; [0013](0013-a-source-should-hand-over-its-history.md) is the other end of the same line — how things come in, versus the rules they land by
 
@@ -101,3 +101,9 @@ get picked by name or vector similarity. 0008 should carry this.
   nor retyped; the cause is unknown.
 - Pack import still lays out relations whose domain is a reified shell (`Action`, `Offer`,
   `LoanOrCredit`); shown to the model they can only produce violations.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented · five controlled runs on `ai-timeline-ends` × schema.org + W3C Org took the violation rate from 57% to 4% and true reversals from 39 to 0 · the write-time judgment (`ontology::judge_direction`) now also covers adoption and merge (#190 / #196; merge reports `signature` rows into `axiom_violations`, R0 re-checks the same class) · filtering reified-shell relations out of pack import is still not done · since this record the ontology can also declare `inverseOf` / `subPropertyOf` (#177 / #179) and the pack list grew to five; the runs cover only the first two

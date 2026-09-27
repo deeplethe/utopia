@@ -1,6 +1,6 @@
 # 0032 · A rule computes what it concludes
 
-- **Status**: cuts 1 and 2 implemented · the record, and the capability: `Expr` in `utopia-reason` (`Attr | Const | Arith`, depth capped at `MAX_EXPR_DEPTH`), a third conclusion kind `computed` with the tree in `attribute_rules.conclude_expr` (migration `0041`), an operand that may be an expression on the comparison ops, the evaluator building the combination **before** testing conditions (a computed threshold reads the readings this round picked), every attribute the expression touched landing in the premises, and a malformed tree refused where it is written rather than skipped at materialisation · seven evaluator tests and three database tests · **the picker is the next cut**, so today an expression is reachable through the API and not through the page · reaching an attribute **across a relation** is decided in this record and not yet built
+- **Status**: In progress · cuts 1–2 built (migration 0041) · open: the picker, an attribute reached across a relation
 - **Written**: 2026-09-08 (conventions in the [README](README.md))
 - **Related**: [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md) built the rule and made its conclusion a **constant**; this record makes it computable. [0029](0029-a-rule-may-say-or-once.md) widened the shape of one rule by one level of `or`; [0030](0030-a-rule-may-read-what-a-rule-concluded.md) let rules feed each other — this is the third axis and independent of both. [0002](0002-reasoning-engine.md) ruled out a user rule language, and this record says exactly what that ban does and does not forbid. [0024](0024-the-world-axis-reaches-the-second.md) governs the precision a computed bound inherits. From #488.
 
@@ -69,3 +69,9 @@ If it is ever wanted it needs its own record, answering what a completeness clai
 - **How deep before the picker loses.** Stated above as a concession, not settled. One operator is certainly a picker; nobody has yet said what they need beyond that.
 - **Does a computed conclusion feed the next rule?** It should — [0030](0030-a-rule-may-read-what-a-rule-concluded.md) puts a concluded value back in the fact pool and says nothing about how the value was arrived at. Worth a test rather than an assumption.
 - **Rounding and display.** A ratio of two readings is a long decimal. What the ledger stores and what the panel shows are not necessarily the same, and neither is decided here.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> cuts 1 and 2 implemented · the record, and the capability: `Expr` in `utopia-reason` (`Attr | Const | Arith`, depth capped at `MAX_EXPR_DEPTH`), a third conclusion kind `computed` with the tree in `attribute_rules.conclude_expr` (migration `0041`), an operand that may be an expression on the comparison ops, the evaluator building the combination **before** testing conditions (a computed threshold reads the readings this round picked), every attribute the expression touched landing in the premises, and a malformed tree refused where it is written rather than skipped at materialisation · seven evaluator tests and three database tests · **the picker is the next cut**, so today an expression is reachable through the API and not through the page · reaching an attribute **across a relation** is decided in this record and not yet built

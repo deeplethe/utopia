@@ -1,6 +1,6 @@
 # 0047 · A rule may conclude a relation
 
-- **Status**: Implemented in #861 (migration 0071), 2026-09-25 · caps unchanged, decision 4's measurement is in the PR · revises the edge exclusion stated in [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md), and asks the question [0030](0030-a-rule-may-read-what-a-rule-concluded.md) parked as "nobody has asked it"
+- **Status**: Implemented 2026-09-25 (#861, migration 0071)
 - **Written**: 2026-09-20 (conventions in the [README](README.md))
 - **Related**: [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md) built the rule and excluded an edge conclusion; [0030](0030-a-rule-may-read-what-a-rule-concluded.md) replaced that exclusion's acyclicity argument with a finiteness one on the value channel, and this record carries it to the edge channel; **[0032](0032-a-rule-computes-what-it-concludes.md) already decided that a rule may reach a value across one relation** and has not built it — this record depends on that loader rather than re-deciding it; [0002](0002-reasoning-engine.md) built the axiom fixed point and left R3 open; [0024](0024-the-world-axis-reaches-the-second.md) governs the precision of a derived bound; [0013](0013-a-source-should-hand-over-its-history.md) forbids reading a previous run's output, which stays forbidden. From #818.
 
@@ -66,3 +66,9 @@ Schema and model; the single-hop edge channel 0032 also needs; the evaluator wit
 - **A pair `(X, Y)` reachable by several join edges with different intervals.** Each edge is its own premise set and therefore its own conclusion row, the same way two readings are today [0032]. Worth confirming against a real corpus that it does not multiply rows past usefulness.
 - **Whether the join may run backwards** as `Y --join--> X` without a declared inverse. Declaring `inverse_of` already expresses it and keeps one direction in the model, which argues for refusing the sugar.
 - **Chaining through a concluded predicate is available two ways** once decision 3 holds: another rule joining on it, or the predicate declared transitive so the axiom pass extends it. They produce different proofs for the same conclusion, and nothing here says which one a person should reach for.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented in #861 (migration 0071), 2026-09-25 · caps unchanged, decision 4's measurement is in the PR · revises the edge exclusion stated in [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md), and asks the question [0030](0030-a-rule-may-read-what-a-rule-concluded.md) parked as "nobody has asked it"
