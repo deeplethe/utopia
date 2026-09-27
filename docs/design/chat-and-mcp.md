@@ -56,9 +56,13 @@ one number however many of its sentences are cited, a search hit gaining the sen
 tool cites it), and the preview and the document page mark it, so the number opens the sentence
 itself (#968's follow-up). A date that passage does not state says so on the line, in chat and MCP
 alike: an end the timeline derived names the fact that closed the row and cites its sentence,
-`…, closed when Zhou Qi took over [3]` (`…, end derived` when that fact cannot be found), and an
-interval a person corrected reads `…, corrected: <their note>`, uncited. The prompt says to cite the
-closing fact for such an end and to attribute neither to the line's own passage (#970). The
+`…, closed when Zhou Qi took over [3]` (`…, end derived` when that fact cannot be found), and a
+date a person corrected reads `…, start corrected: <their note>` (`end corrected`, or `corrected`
+for both ends), uncited. Which end a person changed is written with the row
+(`facts.corrected_ends`, in the correction's own transaction, carried by every rewrite), and an end
+the timeline later derived is no longer marked as a person's. The prompt says to cite the closing
+fact for such an end, to attribute neither a derived nor a changed date to the line's own passage,
+and that an unmarked date on the same line still is the passage's (#970). The
 previous turn's tool calls are replayed so the model knows what it did, not only
 what it said [0015]; a turn that gathers nothing, such as a restatement, keeps the previous answer's
 sources for the citation numbers it repeats (#943).

@@ -400,7 +400,7 @@ fn range_text(f: &EntityFact, closer_mark: &str) -> String {
         holds_from: f.holds_from,
         holds_to: f.holds_to,
         end_derived: f.end_derived,
-        corrected: f.time_corrected,
+        corrected: f.corrected_ends.as_deref(),
         closed_by: successor.as_deref().map(|who| (who, closer_mark)),
         correction_note: f.correction_note.as_deref(),
     });
@@ -1161,7 +1161,7 @@ pub(super) fn edge_text(prev: Uuid, e: &PathEdge, closer_mark: &str) -> String {
         holds_from: e.holds_from,
         holds_to: e.holds_to,
         end_derived: e.end_derived,
-        corrected: e.time_corrected,
+        corrected: e.corrected_ends.as_deref(),
         closed_by: successor.as_deref().map(|who| (who, closer_mark)),
         correction_note: e.correction_note.as_deref(),
     });
@@ -1500,6 +1500,7 @@ mod tests {
             corrected: false,
             end_derived: false,
             time_corrected: false,
+            corrected_ends: None,
             closed_by_id: None,
             closed_by: None,
             closed_by_value: None,
@@ -1633,6 +1634,7 @@ mod tests {
             confidence: 0.9,
             end_derived: false,
             time_corrected: false,
+            corrected_ends: None,
             closed_by_id: None,
             closed_by: None,
             closed_by_value: None,

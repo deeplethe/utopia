@@ -983,11 +983,11 @@ async fn rewrite_end_tx(
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, supersedes,
                             attested_from, attested_to, end_derived,
-                            from_statement_id, implied)
+                            from_statement_id, implied, corrected_ends)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
                 valid_from, valid_from_precision, $3, $4, confidence, id,
                 attested_from, CASE WHEN $4::text = 'unknown' THEN COALESCE($5, now()) END, $6,
-                from_statement_id, implied
+                from_statement_id, implied, corrected_ends
          FROM facts WHERE id = $2",
     )
     .bind(corrected)
@@ -1062,11 +1062,11 @@ pub async fn rehome_tx(
                             valid_from, valid_from_precision, valid_to, valid_to_precision,
                             confidence, derived_by_rule, supersedes,
                             attested_from, attested_to, end_derived,
-                            from_statement_id, implied)
+                            from_statement_id, implied, corrected_ends)
          SELECT $1, kb_id, COALESCE($3, subject_id), predicate_id, COALESCE($4, object_id),
                 object_value, valid_from, valid_from_precision, valid_to, valid_to_precision,
                 confidence, derived_by_rule, id, attested_from, attested_to, end_derived,
-                from_statement_id, implied
+                from_statement_id, implied, corrected_ends
          FROM facts WHERE id = $2",
     )
     .bind(moved)
@@ -1173,6 +1173,12 @@ async fn copy_evidence(
 /// 改写同一条规矩（[`copy_materialization_links`]）。不带过去的话，陈述不再被活着的
 /// 类型化行代表，画面上它按原话、原来的区间回来，下一轮物化还照它再算一行。
 ///
+/// 改了哪一端记在修正行上（`corrected_ends`，#970）：值或精度变了的那一端，与旧行已有的
+/// 取并集，与修正同一个事务——事实行据此说「这个日期是人改的」，不再靠事后那条审计。
+/// 人交来的是整段区间，改完两端都是人的（`end_derived` 清掉，时间线不再重画它）：原来
+/// 是时间线推出来的终点，人没改它的值也是把它钉住了，一样算人的；原来就是原文说的那一端
+/// 没改，仍是原文的
+///
 /// 返回修正行 id；`None` 表示这条已被并发改写或作废，本次没有动手。
 pub async fn correct_interval(
     pool: &PgPool,
@@ -1194,13 +1200,29 @@ pub async fn correct_interval(
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, supersedes,
                             attested_from, attested_to,
-                            from_statement_id, implied)
+                            from_statement_id, implied, corrected_ends)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
                 $3, $4, $5, $6, confidence, id,
                 attested_from,
                 CASE WHEN $6::text = 'unknown' THEN COALESCE(attested_to, now()) END,
-                from_statement_id, implied
-         FROM facts WHERE id = $2 AND invalidated_at IS NULL
+                from_statement_id, implied,
+                CASE WHEN start_marked AND end_marked THEN 'both'
+                     WHEN start_marked THEN 'start'
+                     WHEN end_marked THEN 'end' END
+         FROM (SELECT f.*,
+                      c.start_changed OR COALESCE(f.corrected_ends IN ('start', 'both'), false)
+                          AS start_marked,
+                      c.end_changed OR f.end_derived
+                          OR COALESCE(f.corrected_ends IN ('end', 'both'), false)
+                          AS end_marked
+                 FROM facts f,
+                      LATERAL (SELECT f.valid_from IS DISTINCT FROM $3::timestamptz
+                                          OR f.valid_from_precision IS DISTINCT FROM $4::text
+                                          AS start_changed,
+                                      f.valid_to IS DISTINCT FROM $5::timestamptz
+                                          OR f.valid_to_precision IS DISTINCT FROM $6::text
+                                          AS end_changed) c
+                WHERE f.id = $2 AND f.invalidated_at IS NULL) old
          RETURNING id",
     )
     .bind(corrected)

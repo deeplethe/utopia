@@ -1097,7 +1097,7 @@ pub(super) fn fact_line(f: &EntityFact, closer_mark: &str) -> String {
         holds_from: f.holds_from,
         holds_to: f.holds_to,
         end_derived: f.end_derived,
-        corrected: f.time_corrected,
+        corrected: f.corrected_ends.as_deref(),
         closed_by: successor.as_deref().map(|who| (who, closer_mark)),
         correction_note: f.correction_note.as_deref(),
     });
@@ -1267,7 +1267,7 @@ fn change_line(c: &GraphChange) -> String {
         holds_to: None,
         // 记录轴上的一次变更，不是事实行：它自己就说了改的是什么
         end_derived: false,
-        corrected: false,
+        corrected: None,
         closed_by: None,
         correction_note: None,
     });
@@ -1504,6 +1504,7 @@ mod tests {
             corrected: false,
             end_derived: false,
             time_corrected: false,
+            corrected_ends: None,
             closed_by_id: None,
             closed_by: None,
             closed_by_value: None,

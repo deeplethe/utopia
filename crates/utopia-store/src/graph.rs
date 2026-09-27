@@ -1532,25 +1532,23 @@ pub async fn entity_node(
     .await?)
 }
 
-/// 本库被人改过区间的行（`fact.time_corrected` 审计记在被改的那一行上，#970），每行带着
-/// 最近那次修正写下的备注。查询开头取一次，每一行只顺着自己的 supersedes 链对它。取的这一次
-/// 走部分索引 `audit_events_time_corrected_idx`（迁移 0097）：只收这一种动作，不读这个库别的
-/// 审计。`$1` 是库
+/// 本库人改区间时写下的备注（`fact.time_corrected` 审计记在被改的那一行上，#970）：每个被改
+/// 的行取最近那次的。查询开头取一次，只有带着人改标记（[`corrected_ends_sql`]）的行才顺着
+/// 自己的 supersedes 链对它。取的这一次走部分索引 `audit_events_time_corrected_idx`（迁移
+/// 0097）：只收这一种动作，不读这个库别的审计。`$1` 是库
 pub(crate) const TIME_CORRECTED_TARGETS: &str = "time_corrected_targets AS MATERIALIZED (
          SELECT DISTINCT ON (target_id) target_id, detail->>'note' AS note FROM audit_events
           WHERE kb_id = $1 AND action = 'fact.time_corrected' AND target_id IS NOT NULL
           ORDER BY target_id, created_at DESC)";
 
-/// 这一行的区间是不是人改过的：它的 supersedes 链上有一行在 [`TIME_CORRECTED_TARGETS`] 里。
-/// 改完之后时间线再关它、合并再搬它，都是在链上往下接，往上仍找得到那一次人改
-pub(crate) fn time_corrected_sql(alias: &str) -> String {
+/// 人改过这一行的哪一端：`start` / `end` / `both`，NULL 是没改过（`facts.corrected_ends`，
+/// 随修正行在同一个事务里写下，关上、搬移时随行带着，#970）。终点是时间线推出来的
+/// （`end_derived`）就不再说终点是人改的：那一端后来是时间线定的
+pub(crate) fn corrected_ends_sql(alias: &str) -> String {
     format!(
-        "EXISTS (WITH RECURSIVE chain(id) AS (
-                     SELECT {alias}.supersedes WHERE {alias}.supersedes IS NOT NULL
-                     UNION
-                     SELECT p.supersedes FROM facts p JOIN chain ON p.id = chain.id
-                      WHERE p.supersedes IS NOT NULL)
-                 SELECT 1 FROM chain JOIN time_corrected_targets t ON t.target_id = chain.id)"
+        "(CASE WHEN {alias}.end_derived AND {alias}.corrected_ends = 'end' THEN NULL
+               WHEN {alias}.end_derived AND {alias}.corrected_ends = 'both' THEN 'start'
+               ELSE {alias}.corrected_ends END)"
     )
 }
 
@@ -1641,9 +1639,11 @@ pub async fn entity_detail(
                                  WHERE fe.fact_id = f.id AND {chunk_live})
                 ) AS stale,
                 (f.supersedes IS NOT NULL) AS corrected,
-                f.end_derived, {time_corrected} AS time_corrected,
+                f.end_derived, {corrected_ends} AS corrected_ends,
+                {corrected_ends} IS NOT NULL AS time_corrected,
                 closer.closed_by_id, closer.closed_by, closer.closed_by_value,
-                {correction_note} AS correction_note,
+                CASE WHEN {corrected_ends} IS NOT NULL THEN {correction_note} END
+                    AS correction_note,
                 (SELECT MAX(COALESCE(d.doc_time, d.created_at))
                  FROM fact_evidence fe JOIN documents d ON d.id = fe.document_id
                  WHERE fe.fact_id = f.id) AS last_evidence_time,
@@ -1677,7 +1677,7 @@ pub async fn entity_detail(
            AND {not_name}
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
         targets = TIME_CORRECTED_TARGETS,
-        time_corrected = time_corrected_sql("f"),
+        corrected_ends = corrected_ends_sql("f"),
         correction_note = correction_note_sql("f"),
         closer = closed_by_join(
             &crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
@@ -2673,11 +2673,12 @@ async fn adopt(
                     "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                                         valid_from, valid_from_precision,
                                         valid_to, valid_to_precision, confidence, supersedes,
-                                        attested_from, attested_to, end_derived)
+                                        attested_from, attested_to, end_derived,
+                                        corrected_ends)
                      SELECT $1, kb_id, $6, $3, $4, $5,
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, id,
-                            attested_from, attested_to, end_derived
+                            attested_from, attested_to, end_derived, corrected_ends
                      FROM facts WHERE id = $2 AND invalidated_at IS NULL
                      RETURNING id",
                 )

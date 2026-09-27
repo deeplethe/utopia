@@ -44,8 +44,8 @@ pub struct Span<'a> {
     pub holds_to: Option<DateTime<Utc>>,
     /// 终点是后一条事实开始时时间线关上的（`facts.end_derived`）
     pub end_derived: bool,
-    /// 区间是人改过的（supersedes 链上有 `fact.time_corrected`）
-    pub corrected: bool,
+    /// 人改过哪一端：`start` / `end` / `both`（`facts.corrected_ends`）；None 是没改过
+    pub corrected: Option<&'a str>,
     /// 关上它的那一行（#970 第二步）：接任的那一端，和它证据的号（对话里是 ` [n]`，MCP 里空）
     pub closed_by: Option<(&'a str, &'a str)>,
     /// 人改区间时写下的备注
@@ -74,8 +74,9 @@ fn note_text(note: &str) -> Option<String> {
 /// `ended by <锚点>`（没有锚点时写 `ended, date unknown`）；否则 `now`。
 /// 两端都无可写时返回空串，调用方据此决定不带括号。
 ///
-/// 日期不是原文说的就跟在后面说出来（#970）：人改过的区间写 `corrected`，写了备注就带上
-/// 备注（`corrected: …`，人的话不是原文段落，不带号）；时间线推出来的终点写
+/// 日期不是原文说的就跟在后面说出来（#970）：人改过的那一端写 `start corrected` 或
+/// `end corrected`，两端都改过写 `corrected`——没改的那一端仍是原文说的；写了备注就带上
+/// 备注（`start corrected: …`，人的话不是原文段落，不带号）；时间线推出来的终点写
 /// `closed when X took over [m]`——`[m]` 打开的是接任那条事实读出来的原句，那里写着这个
 /// 日期——找不到接任的那一行时写 `end derived`。这两样只在有终点时说。行尾的 `[n]` 仍是
 /// 这条事实自己读出来的原句
@@ -105,10 +106,15 @@ pub fn span(s: Span<'_>) -> String {
         (Some(f), Some(t)) => format!("{f} → {t}"),
     };
     let mut marks: Vec<String> = Vec::new();
-    if s.corrected {
+    if let Some(ends) = s.corrected {
+        let what = match ends {
+            "start" => "start corrected",
+            "end" => "end corrected",
+            _ => "corrected",
+        };
         marks.push(match s.correction_note.and_then(note_text) {
-            Some(note) => format!("corrected: {note}"),
-            None => "corrected".to_string(),
+            Some(note) => format!("{what}: {note}"),
+            None => what.to_string(),
         });
     }
     if derived {
@@ -235,14 +241,14 @@ mod tests {
         );
         assert_eq!(
             span(Span {
-                corrected: true,
+                corrected: Some("both"),
                 ..closed
             }),
             "2024-07-05 → 2025-09-01, corrected"
         );
         assert_eq!(
             span(Span {
-                corrected: true,
+                corrected: Some("both"),
                 end_derived: true,
                 ..closed
             }),
@@ -270,7 +276,7 @@ mod tests {
         );
         assert_eq!(
             span(Span {
-                corrected: true,
+                corrected: Some("both"),
                 ..Span::default()
             }),
             "corrected"
@@ -314,7 +320,7 @@ mod tests {
             "2024-07-05 → now"
         );
         let corrected = Span {
-            corrected: true,
+            corrected: Some("both"),
             end_derived: false,
             ..closed
         };
@@ -342,12 +348,50 @@ mod tests {
         );
         assert_eq!(
             span(Span {
-                corrected: true,
+                corrected: Some("both"),
                 correction_note: Some("approval date"),
                 closed_by: Some(("Zhou Qi", " [3]")),
                 ..closed
             }),
             "2024-07-05 → 2025-09-01, corrected: approval date, closed when Zhou Qi took over [3]"
+        );
+    }
+
+    /// 人只改了一端就只说那一端（#976 的评审）：没改的那一端仍是原文说的，终点仍可以是
+    /// 时间线推出来的
+    #[test]
+    fn a_correction_names_the_end_a_person_changed() {
+        let day = |s: &str| Some(t(s));
+        let row = Span {
+            valid_from: day("2023-02-01T00:00:00Z"),
+            from_precision: Some("day"),
+            valid_to: day("2024-07-05T00:00:00Z"),
+            to_precision: Some("day"),
+            ..Span::default()
+        };
+        assert_eq!(
+            span(Span {
+                corrected: Some("start"),
+                correction_note: Some("The charter date was the approval date"),
+                ..row
+            }),
+            "2023-02-01 → 2024-07-05, start corrected: The charter date was the approval date"
+        );
+        assert_eq!(
+            span(Span {
+                corrected: Some("end"),
+                ..row
+            }),
+            "2023-02-01 → 2024-07-05, end corrected"
+        );
+        assert_eq!(
+            span(Span {
+                corrected: Some("start"),
+                end_derived: true,
+                closed_by: Some(("Li Si", " [2]")),
+                ..row
+            }),
+            "2023-02-01 → 2024-07-05, start corrected, closed when Li Si took over [2]"
         );
     }
 }

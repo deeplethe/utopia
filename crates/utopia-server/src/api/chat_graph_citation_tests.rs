@@ -718,7 +718,7 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
             let zhang_line = line(&text, "Zhang San");
             assert!(
                 zhang_line.contains(
-                    "2023-02-01 → 2024-07-05, corrected: The charter date was the approval date)"
+                    "2023-02-01 → 2024-07-05, start corrected: The charter date was the approval date)"
                 ),
                 "{tool}: {text}"
             );
@@ -763,6 +763,21 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
             path.contains("2024-07-05 → 2025-09-01, closed when Zhou Qi took over ["),
             "{path}"
         );
+        // 路径上被人改过的那条边（#976 的评审）：同样只说被改的那一端
+        let path = dispatch(
+            &chat,
+            &mut sink,
+            "paths_between",
+            &json!({"from": "Wang Wu", "to": "Zhang San"}),
+        )
+        .await
+        .text;
+        assert!(
+            path.contains(
+                "2023-02-01 → 2024-07-05, start corrected: The charter date was the approval date"
+            ),
+            "{path}"
+        );
 
         // MCP 的文字带着同样的标记：它们是这一行的事实，不是引用
         let mcp = ctx(&f, Some(Uuid::now_v7()));
@@ -775,18 +790,60 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
         .await
         .text;
         assert!(
-            plain.contains(", corrected: The charter date was the approval date)")
+            plain.contains(", start corrected: The charter date was the approval date)")
                 && plain.contains(", closed when Zhou Qi took over)"),
             "{plain}"
         );
         assert!(marks(&plain).is_empty(), "{plain}");
 
-        // 规则 4：推出的终点引关它的那一行；两种日期都不归到本行的原句
+        // 规则 4：推出的终点引关它的那一行；推出的与人改的日期都不归到本行的原句，没标记的
+        // 那个日期仍是
         assert!(
             SYSTEM_PROMPT.contains("An end written `closed when X took over [m]`")
                 && SYSTEM_PROMPT.contains("cite [m] for that end, never the line's own [n]")
-                && SYSTEM_PROMPT.contains("a range marked `corrected`"),
+                && SYSTEM_PROMPT.contains("A line marked `start corrected` or `end corrected`")
+                && SYSTEM_PROMPT.contains("a date the line does not mark still is"),
             "{SYSTEM_PROMPT}"
+        );
+
+        // 张三再改一次，这回改终点（#976 的评审）：两端都是人改的，备注取最近那一次
+        let zhang_now = row_of("Zhang San").await?;
+        utopia_store::temporal::correct_interval(
+            &f.pool,
+            zhang_now,
+            utopia_store::graph::Validity {
+                from: Some(day("2023-02-01T00:00:00Z")),
+                from_precision: Some("day"),
+                to: Some(day("2024-07-01T00:00:00Z")),
+                to_precision: Some("day"),
+                attested_at: None,
+                from_grade: None,
+            },
+        )
+        .await?
+        .expect("the row was live");
+        utopia_store::audit::record(
+            &f.pool,
+            Some(f.kb),
+            f.user.id,
+            "fact.time_corrected",
+            "fact",
+            Some(zhang_now),
+            json!({ "note": "The handover was on 1 July" }),
+        )
+        .await?;
+        let text = dispatch(
+            &chat,
+            &mut ToolSink::default(),
+            "entity_facts",
+            &json!({"entity": "Project Aurora"}),
+        )
+        .await
+        .text;
+        assert!(
+            line(&text, "Zhang San")
+                .contains("2023-02-01 → 2024-07-01, corrected: The handover was on 1 July)"),
+            "{text}"
         );
         anyhow::Ok(())
     }

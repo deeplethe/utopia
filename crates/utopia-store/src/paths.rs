@@ -71,9 +71,10 @@ pub struct PathEdge {
     pub holds_from: Option<DateTime<Utc>>,
     pub holds_to: Option<DateTime<Utc>>,
     pub confidence: f32,
-    /// 终点是时间线推出来的；区间是人改过的（#970，同 `EntityFact`）
+    /// 终点是时间线推出来的；区间是人改过的、改的是哪一端（#970，同 `EntityFact`）
     pub end_derived: bool,
     pub time_corrected: bool,
+    pub corrected_ends: Option<String>,
     /// 时间线关上它时接的那一行、接任的那一端，与修正备注（#970 第二步，同 `EntityFact`）
     pub closed_by_id: Option<Uuid>,
     pub closed_by: Option<String>,
@@ -400,9 +401,11 @@ async fn details(
                 COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate,
                 f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision,
                 {holds_from} AS holds_from, {holds_to} AS holds_to, f.confidence,
-                f.end_derived, {time_corrected} AS time_corrected,
+                f.end_derived, {corrected_ends} AS corrected_ends,
+                {corrected_ends} IS NOT NULL AS time_corrected,
                 closer.closed_by_id, closer.closed_by, closer.closed_by_value,
-                {correction_note} AS correction_note
+                CASE WHEN {corrected_ends} IS NOT NULL THEN {correction_note} END
+                    AS correction_note
            FROM facts f
            LEFT JOIN relation_types r ON r.id = f.predicate_id
            JOIN entities s ON s.id = {subject}
@@ -412,7 +415,7 @@ async fn details(
         holds_from = world_axis::facts_holds_from("f"),
         holds_to = world_axis::facts_holds_to("f"),
         targets = crate::graph::TIME_CORRECTED_TARGETS,
-        time_corrected = crate::graph::time_corrected_sql("f"),
+        corrected_ends = crate::graph::corrected_ends_sql("f"),
         correction_note = crate::graph::correction_note_sql("f"),
         closer = crate::graph::closed_by_join(&subject, &object, as_of.map(|_| 3)),
     ))
