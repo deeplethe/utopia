@@ -25,15 +25,16 @@ stored without one; a retry names it (`retry_message_id`) and answers it in plac
 the conversation's last message and no answer is being written there (#936).
 
 **Long conversations.** The 20-message history window also has a 32,000-character default
-budget, including the previous turn's tool exchange. Oldest whole exchanges are removed first;
-failed questions and stopped answers count too. A context-window refusal halves the remaining
-history and retries the request once for the whole user turn. It keeps the current question,
-system prompt and current tool results intact, and does not execute tools again. Tool calling,
+budget. The previous turn's tool exchange is dropped first, then the oldest whole exchanges;
+failed questions and stopped answers count too, and an orphan answer at the count boundary is not
+sent. A context-window refusal halves the remaining history and retries the request once for the
+whole user turn. It keeps the current question, system prompt and current tool results intact,
+does not execute tools again, and does not retry when nothing can be dropped. Tool calling,
 one-shot RAG and the reserved final answer share the same window and retry. A second refusal is
 `context_too_long`, offering a new conversation. The workspace's client remembers a stated
-window for later turns: the history character budget is the smaller of 32,000 and the window's
-token count (a heuristic reserving half the window at two characters per token). Changing the
-model settings resets that learned limit. Stored conversation messages are never deleted.
+window of at least 1,024 tokens for later turns: the history budget becomes half that many
+characters, between 2,000 and 32,000 (a heuristic, not token accounting). Changing the model
+settings resets that learned limit. Stored conversation messages are never deleted [0042].
 
 **Stop** explicitly cancels pending model and tool work, then saves the published partial answer
 once with `stopped: true` before sending `done`. The browser waits for that terminal outcome before
