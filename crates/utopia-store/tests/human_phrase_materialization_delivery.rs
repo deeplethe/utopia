@@ -26,6 +26,7 @@ async fn accept(
                 decided_by: "person",
                 basis: None,
                 marks: None,
+                marks_asked: false,
             }
         )
         .await?
@@ -235,6 +236,7 @@ fn crash_child() {
                 decided_by: "person",
                 basis: None,
                 marks: None,
+                marks_asked: false,
             },
         )
         .await

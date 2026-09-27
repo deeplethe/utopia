@@ -150,6 +150,32 @@ async fn materialize_in_tx(
 ) -> AppResult<(Outcome, Vec<Uuid>)> {
     // 这一轮写下的行（新建的和并入的），提交后对账
     let mut written: Vec<Uuid> = Vec::new();
+    // 0. 起止同值的物化状态行（#966 之前照抄一刻写下的）任何时刻都不成立：作废，它的陈述
+    //    在第 3 步按绑定说的读法重算——「那天加入」与「自那天起」重新落成一段从那天起的状态。
+    //    只认照抄来的：它有一条来源陈述两端正是这一刻（类型化行看 typed_fact_sources，隐含行
+    //    看 implied_fact_sources）。人改成起止相等的行也带着 from_statement_id、implied 和
+    //    来源链接（#967、#911），看上去和算出来的一样，但它的来源陈述不是这一刻，不碰：
+    //    不变量从此挡住新的，旧的由人自己改。排在第 1 步之前：那一刻的陈述在绑定说出读法
+    //    之前不算来源，第 1 步会先删掉这条链接
+    let emptied = sqlx::query(
+        "UPDATE facts t
+            SET invalidated_at = now()
+          WHERE t.kb_id = $1 AND t.layer = 'typed' AND t.invalidated_at IS NULL
+            AND t.valid_from IS NOT NULL AND t.valid_to = t.valid_from
+            AND EXISTS (SELECT 1 FROM relation_types r
+                         WHERE r.id = t.predicate_id AND r.temporal = 'state')
+            AND EXISTS (SELECT 1 FROM facts s
+                         WHERE s.valid_from = t.valid_from AND s.valid_to = t.valid_from
+                           AND (s.id IN (SELECT ts.statement_id FROM typed_fact_sources ts
+                                          WHERE ts.fact_id = t.id)
+                             OR s.id IN (SELECT i.statement_id FROM implied_fact_sources i
+                                          WHERE i.fact_id = t.id)))",
+    )
+    .bind(kb_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+
     // 1. 删不再成立的来源：陈述死了、行死了、签名没绑着、属性或方向变了、陈述带了 mood
     sqlx::query(&format!(
         "DELETE FROM typed_fact_sources src
@@ -208,23 +234,6 @@ async fn materialize_in_tx(
             AND (t.from_statement_id IS NOT NULL OR t.implied)
             AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src WHERE src.fact_id = t.id)
             AND NOT EXISTS (SELECT 1 FROM implied_fact_sources i WHERE i.fact_id = t.id)",
-    )
-    .bind(kb_id)
-    .execute(&mut **tx)
-    .await?
-    .rows_affected();
-
-    // 2b. 起止同值的物化状态行（#966 之前照抄一刻写下的）任何时刻都不成立：作废，它的陈述
-    //     在第 3 步按绑定说的读法重算——「那天加入」与「自那天起」重新落成一段从那天起的状态。
-    //     人写的不碰：不变量从此挡住新的，旧的由人自己改
-    let emptied = sqlx::query(
-        "UPDATE facts t
-            SET invalidated_at = now()
-          WHERE t.kb_id = $1 AND t.layer = 'typed' AND t.invalidated_at IS NULL
-            AND (t.from_statement_id IS NOT NULL OR t.implied)
-            AND t.valid_from IS NOT NULL AND t.valid_to = t.valid_from
-            AND EXISTS (SELECT 1 FROM relation_types r
-                         WHERE r.id = t.predicate_id AND r.temporal = 'state')",
     )
     .bind(kb_id)
     .execute(&mut **tx)

@@ -5,12 +5,14 @@
 //!
 //! - start：从那天起。「joined」在「works for … from 2023-06-01」之前、之后，或只有它
 //!   （#966 的 A、B、C），都是一段从 2023-06-01 起、至今开着的状态；
-//! - end：到那天为止，关上开着的那段；
+//! - end：到那天为止，关上开着的那段。终点说的是一个时段（「2024 年离开」）而开着的那段从
+//!   时段里开始时，关在时段的尽头；
 //! - none 或还没说：不算类型化行，陈述带着日期留在开放图谱。
 //!
-//! 之前照抄写下的空段由物化作废重算，人写的不碰；声明成状态的属性下，两端相等的行写入、
-//! 改区间、关在起点都被拒，没有属性的行照旧；已有的空段不并进后来的观察，也不被它关上；
-//! 勘误改不了一段不成立的时间；规则没有 marks，只说了一刻的陈述不蕴含状态，只有起点的照旧。
+//! 之前照抄写下的空段由物化作废重算，人写的、人改成一刻的不碰；声明成状态的属性下，两端
+//! 相等的行写入、改区间、关在起点都被拒（同时开始的冲突也不能关在那一刻），没有属性的行
+//! 照旧；已有的空段不并进后来的观察，也不被它关上；勘误改不了一段不成立的时间，也不能把
+//! 一刻的事件改成状态；规则没有 marks，只说了一刻的陈述不蕴含状态，只有起点的照旧。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
@@ -119,23 +121,48 @@ impl Base {
         from: Option<DateTime<Utc>>,
         to: Option<DateTime<Utc>>,
     ) -> anyhow::Result<Uuid> {
+        self.statement_in(phrase, from, to, "day").await
+    }
+
+    /// 同 [`Base::statement`]，两端是这个精度（「2024 年离开」是年精度的一刻）
+    async fn statement_in(
+        &self,
+        phrase: &str,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        precision: &str,
+    ) -> anyhow::Result<Uuid> {
+        self.statement_to(phrase, self.meridian, from, to, precision)
+            .await
+    }
+
+    /// 同 [`Base::statement_in`]，宾语是这一个
+    async fn statement_to(
+        &self,
+        phrase: &str,
+        object: Uuid,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+        precision: &str,
+    ) -> anyhow::Result<Uuid> {
         let id = Uuid::now_v7();
         sqlx::query(
             "INSERT INTO facts (id, kb_id, subject_id, object_id, layer, phrase, confidence,
                                 valid_from, valid_from_precision, valid_from_grade,
                                 valid_to, valid_to_precision)
              VALUES ($1, $2, $3, $4, 'open', $5, 0.9,
-                     $6, CASE WHEN $6 IS NULL THEN NULL ELSE 'day' END,
+                     $6, CASE WHEN $6 IS NULL THEN NULL ELSE $8 END,
                      CASE WHEN $6 IS NULL THEN NULL ELSE 'A' END,
-                     $7, CASE WHEN $7 IS NULL THEN NULL ELSE 'day' END)",
+                     $7, CASE WHEN $7 IS NULL THEN NULL ELSE $8 END)",
         )
         .bind(id)
         .bind(self.kb)
         .bind(self.lin)
-        .bind(self.meridian)
+        .bind(object)
         .bind(phrase)
         .bind(from)
         .bind(to)
+        .bind(precision)
         .execute(&self.pool)
         .await?;
         Ok(id)
@@ -568,7 +595,8 @@ async fn a_state_that_ends_where_it_starts_is_never_written() -> anyhow::Result<
 }
 
 /// 护栏：之前写下的空段（这里是人写的，物化不作废它）不把后来「自那天起」的观察并进去，
-/// 也不被「到哪天为止」的观察关上。同一天开始又结束的状态，不管先读到哪一句，都不写成空段
+/// 也不被「到哪天为止」的观察关上。同一天开始又结束的状态，不管先读到哪一句，都不写成空段，
+/// 也不让开着的那段一直开着：关在那一天的尽头
 #[tokio::test]
 async fn a_row_that_holds_at_no_moment_neither_absorbs_nor_closes() -> anyhow::Result<()> {
     let Some(pool) = pool().await? else {
@@ -623,8 +651,8 @@ async fn a_row_that_holds_at_no_moment_neither_absorbs_nor_closes() -> anyhow::R
             }
             assert_eq!(
                 base.rows().await?,
-                vec![(None, Some(day()), 0), (Some(day()), None, 0)],
-                "start first: {start_first}"
+                vec![(Some(day()), Some(t("2023-06-02T00:00:00Z")), 0)],
+                "start first: {start_first}: one row, through that day"
             );
             anyhow::Ok(())
         }
@@ -740,6 +768,55 @@ async fn a_revision_cannot_take_a_time_that_holds_at_no_moment() -> anyhow::Resu
             .fetch_one(&pool)
             .await?;
         assert_eq!(status, "held");
+
+        // 一刻的事件改成状态属性：新行接过来的也是一段不成立的时间，同样拒
+        let (acquisition, _) = graph::insert_fact(
+            &pool,
+            kb,
+            meridian,
+            Some(base.acquired),
+            aster,
+            moment(),
+            0.9,
+        )
+        .await?;
+        let event = Candidate {
+            fact_id: acquisition,
+            predicate_id: base.acquired,
+            subject_id: meridian,
+            subject: "Meridian Systems".into(),
+            subject_class: Some("organization".into()),
+            property: "acquired".into(),
+            property_label: "acquired".into(),
+            object_id: Some(aster),
+            object: "Aster Labs".into(),
+            ..candidate
+        };
+        let recorded = errata::record(
+            &pool,
+            kb,
+            ActionInput {
+                run_id,
+                document_id: doc,
+                candidate: Some(&event),
+                proposed: Proposed::Revise {
+                    property: Some("works_for".into()),
+                    object: None,
+                },
+                reason: "the document says an employment",
+                quote: Some("Lin Zhao joined Aster Labs"),
+                document_text: text,
+            },
+        )
+        .await?;
+        assert_eq!(
+            (recorded.status, recorded.detail.as_deref()),
+            (
+                "refused",
+                Some("a state cannot take a time whose start and end are equal")
+            )
+        );
+        assert_eq!(base.live(acquisition).await?, (true, Some(day())));
         anyhow::Ok(())
     }
     .await;
@@ -785,6 +862,327 @@ async fn a_rule_reads_a_start_date_but_not_a_single_date() -> anyhow::Result<()>
         .fetch_all(&pool)
         .await?;
         assert_eq!(rows, vec![(Some(day()), None, true)]);
+        anyhow::Ok(())
+    }
+    .await;
+    base.remove().await?;
+    run
+}
+
+/// 人改成起止相等的行（#975 评审）：带着 from_statement_id、implied 和来源链接，看上去和照抄
+/// 一刻算出来的一样，可它的来源陈述不是那一刻，物化不作废它。照抄一刻写下的隐含行作废，
+/// 人改过的隐含行不碰
+#[tokio::test]
+async fn a_row_a_person_set_to_a_single_date_is_not_retired() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let base = Base::new(&pool).await?;
+    let run = async {
+        // 「works for … from」算出一行；「was hired by … from」经规则蕴含一行，宾语另是一家，
+        // 两行不并；「signed with」只说了一刻，#966 之前规则照抄出一行空段
+        let works = base.statement("works for", Some(day()), None).await?;
+        base.bind("works for", None).await?;
+        let hired = base
+            .statement_to("was hired by", base.aster, Some(day()), None, "day")
+            .await?;
+        let signed = base
+            .statement("signed with", Some(day()), Some(day()))
+            .await?;
+        let mut rules = Vec::new();
+        for phrase in ["was hired by", "signed with"] {
+            let rule = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO implication_rules
+                     (id, kb_id, trigger, phrase, subject_type_id, object_type_id, object_is_value,
+                      conclude_property_id, status, decided_by)
+                 VALUES ($1, $2, 'phrase', $3, $4, $5, false, $6, 'approved', 'person')",
+            )
+            .bind(rule)
+            .bind(base.kb)
+            .bind(phrase)
+            .bind(base.person)
+            .bind(base.company)
+            .bind(base.works_for)
+            .execute(&pool)
+            .await?;
+            rules.push(rule);
+        }
+        materialize(&pool, base.kb).await?;
+        let row_of = |statement: Uuid, table: &'static str| {
+            let pool = pool.clone();
+            async move {
+                let id: Uuid = sqlx::query_scalar(&format!(
+                    "SELECT fact_id FROM {table} WHERE statement_id = $1"
+                ))
+                .bind(statement)
+                .fetch_one(&pool)
+                .await?;
+                anyhow::Ok(id)
+            }
+        };
+        let typed = row_of(works, "typed_fact_sources").await?;
+        let implied = row_of(hired, "implied_fact_sources").await?;
+        assert_ne!(typed, implied);
+        // 人把两行都改成那一天：不变量出现之前 `correct_interval` 就这样写，行带着它的来源
+        sqlx::query(
+            "UPDATE facts SET valid_to = valid_from, valid_to_precision = valid_from_precision
+              WHERE id = ANY($1)",
+        )
+        .bind(vec![typed, implied])
+        .execute(&pool)
+        .await?;
+        let copied = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, layer,
+                                valid_from, valid_from_precision, valid_to, valid_to_precision,
+                                confidence, implied)
+             VALUES ($1, $2, $3, $4, $5, 'typed', $6, 'day', $6, 'day', 0.9, true)",
+        )
+        .bind(copied)
+        .bind(base.kb)
+        .bind(base.lin)
+        .bind(base.works_for)
+        .bind(base.meridian)
+        .bind(day())
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO implied_fact_sources (fact_id, rule_id, statement_id) VALUES ($1, $2, $3)",
+        )
+        .bind(copied)
+        .bind(rules[1])
+        .bind(signed)
+        .execute(&pool)
+        .await?;
+
+        let outcome = materialize(&pool, base.kb).await?;
+        assert_eq!(
+            (outcome.retired, outcome.added, outcome.implied),
+            (1, 0, 0),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            base.live(copied).await?,
+            (false, Some(day())),
+            "copied: retired"
+        );
+        assert_eq!(
+            base.live(typed).await?,
+            (true, Some(day())),
+            "a typed row a person set to a single date is kept"
+        );
+        assert_eq!(
+            base.live(implied).await?,
+            (true, Some(day())),
+            "an implied row a person set to a single date is kept"
+        );
+        assert_eq!(materialize(&pool, base.kb).await?, Outcome::default());
+        anyhow::Ok(())
+    }
+    .await;
+    base.remove().await?;
+    run
+}
+
+/// 终点说的是一个时段，比的却是时刻（#975 评审）：「left … in 2024」存成 2024-01-01，年精度。
+/// 「works for … from 2024-03-01」从这个时段里开始，关在时段的尽头 2025-01-01，而不是另立一行
+/// `- → 2024`、让它一直开着到 2025 年以后。先读到哪一句都一样
+#[tokio::test]
+async fn a_coarse_end_closes_a_row_that_starts_inside_its_period() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let (march, year, next_year) = (
+        t("2024-03-01T00:00:00Z"),
+        t("2024-01-01T00:00:00Z"),
+        t("2025-01-01T00:00:00Z"),
+    );
+    for order in [["works for", "left"], ["left", "works for"]] {
+        let base = Base::new(&pool).await?;
+        let run = async {
+            for phrase in order {
+                if phrase == "left" {
+                    base.statement_in(phrase, Some(year), Some(year), "year")
+                        .await?;
+                } else {
+                    base.statement(phrase, Some(march), None).await?;
+                }
+            }
+            base.bind("works for", None).await?;
+            base.bind("left", Some("end")).await?;
+            materialize(&pool, base.kb).await?;
+            assert_eq!(
+                base.rows().await?,
+                vec![(Some(march), Some(next_year), 2)],
+                "{order:?}: one span, closed at the end of 2024"
+            );
+            assert_eq!(
+                base.at_meridian("2024-06-01T00:00:00Z").await?,
+                vec!["Lin Zhao".to_string()],
+                "{order:?}"
+            );
+            assert!(
+                base.at_meridian("2025-06-01T00:00:00Z").await?.is_empty(),
+                "{order:?}: not still working there in 2025"
+            );
+            assert_eq!(materialize(&pool, base.kb).await?, Outcome::default());
+            anyhow::Ok(())
+        }
+        .await;
+        base.remove().await?;
+        run?;
+    }
+    Ok(())
+}
+
+/// 同一个时段的终点，对时段之前开始的行照旧关在时段的开头；对时段之后才开始的行不适用——
+/// 那是更早的一段的结束，各自一行，开着的那段照旧开着。先写哪一句都一样
+#[tokio::test]
+async fn a_coarse_end_leaves_rows_outside_its_period_as_before() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let year = t("2024-01-01T00:00:00Z");
+    let left_in_2024 = Validity {
+        to_precision: Some("year"),
+        ..ending(year)
+    };
+    let cases = [
+        (
+            t("2020-01-01T00:00:00Z"),
+            vec![(Some(t("2020-01-01T00:00:00Z")), Some(year), 0)],
+        ),
+        (
+            t("2025-06-01T00:00:00Z"),
+            vec![
+                (None, Some(year), 0),
+                (Some(t("2025-06-01T00:00:00Z")), None, 0),
+            ],
+        ),
+    ];
+    for (start, expected) in cases {
+        for start_first in [true, false] {
+            let base = Base::new(&pool).await?;
+            let run = async {
+                let since = Validity::starting(Some(start), Some("day"));
+                let writes = if start_first {
+                    [since, left_in_2024]
+                } else {
+                    [left_in_2024, since]
+                };
+                for v in writes {
+                    graph::insert_fact(
+                        &pool,
+                        base.kb,
+                        base.lin,
+                        Some(base.works_for),
+                        base.meridian,
+                        v,
+                        0.9,
+                    )
+                    .await?;
+                }
+                assert_eq!(
+                    base.rows().await?,
+                    expected,
+                    "from {start}, start first: {start_first}"
+                );
+                anyhow::Ok(())
+            }
+            .await;
+            base.remove().await?;
+            run?;
+        }
+    }
+    Ok(())
+}
+
+/// 两个值同一刻开始的冲突（works_for 声明成函数性）：人选「关上旧的」却不给日期，旧的就关在
+/// 新的起点——也是它自己的起点，一段不成立的状态，拒绝（`empty_state_span`）。冲突留着等人
+/// 给一个日期
+#[tokio::test]
+async fn closing_a_simultaneous_conflict_at_its_own_start_is_refused() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let base = Base::new(&pool).await?;
+    let run = async {
+        sqlx::query("UPDATE relation_types SET functional = true WHERE id = $1")
+            .bind(base.works_for)
+            .execute(&pool)
+            .await?;
+        let since = Validity::starting(Some(day()), Some("day"));
+        let mut facts = Vec::new();
+        for object in [base.meridian, base.aster] {
+            let (fact, _) = graph::insert_fact(
+                &pool,
+                base.kb,
+                base.lin,
+                Some(base.works_for),
+                object,
+                since,
+                0.9,
+            )
+            .await?;
+            facts.push(fact);
+        }
+        let report = utopia_store::temporal::reconcile_new_fact(
+            &pool,
+            base.kb,
+            facts[1],
+            base.lin,
+            base.works_for,
+            Some(base.aster),
+            None,
+            utopia_store::temporal::Uniqueness::SubjectSide,
+            since,
+            0.9,
+        )
+        .await?;
+        assert_eq!(report.conflicts, 1);
+        let conflicts = utopia_store::temporal::list_conflicts(&pool, base.kb, 10, 0).await?;
+        let [conflict] = conflicts.as_slice() else {
+            anyhow::bail!("one conflict: {conflicts:?}");
+        };
+        assert_eq!(conflict.reason, "simultaneous");
+        let refused = utopia_store::temporal::resolve_conflict(
+            &pool,
+            base.kb,
+            conflict.id,
+            "close",
+            None,
+            "day",
+        )
+        .await
+        .expect_err("closed where it starts");
+        assert!(refused_as_empty(&refused), "{refused:?}");
+        assert_eq!(
+            base.live(facts[0]).await?,
+            (true, None),
+            "the old row is untouched"
+        );
+        assert_eq!(
+            utopia_store::temporal::list_conflicts(&pool, base.kb, 10, 0)
+                .await?
+                .len(),
+            1,
+            "the conflict stays open"
+        );
+        utopia_store::temporal::resolve_conflict(
+            &pool,
+            base.kb,
+            conflict.id,
+            "close",
+            Some(t("2024-01-01T00:00:00Z")),
+            "day",
+        )
+        .await?;
+        assert!(
+            utopia_store::temporal::list_conflicts(&pool, base.kb, 10, 0)
+                .await?
+                .is_empty()
+        );
         anyhow::Ok(())
     }
     .await;

@@ -670,16 +670,29 @@ pub(crate) async fn insert_fact_on(
     另立一行让两条各说各话，开放的那条照旧被读成「至今仍是」——实测「移出失信名单」
     「辞去董事职务」各多出一条 `- → 日期`，而原来那条还开着。事件没有开放行
     （两端同一刻），所以只有状态走这里。修正走 supersede（作废 + 改写，证据和边上的
-    属性随行），与 #393 关「不知哪天」同一条路；起点比终点晚的开放行不是这一段 */
+    属性随行），与 #393 关「不知哪天」同一条路；起点晚于终点所说时段的开放行不是这一段 */
     if temporal == Temporal::State && validity.from.is_none() {
         if let Some(to) = validity.to {
-            // 已经关在这一天的：同一件事，复用那一行（引擎推的终点改成写明的，同上）
-            if let Some((ended, _, _, _)) = same.iter().find(|(_, _, vt, _)| *vt == Some(to)) {
-                let precision = validity.to_precision.unwrap_or("day");
+            let precision = validity.to_precision.unwrap_or("day");
+            // 终点说的是一个时段，比的却是时刻：「2024 年离开」存成 2024-01-01。声明成状态的
+            // 开放行若从这个时段里开始（2024-03-01 起任职），终点落在时段的尽头
+            // （2025-01-01），不另立一行 `- → 2024`、让开放的那段一直开着；在时段之前开始的
+            // 照旧关在时段的开头（0053 修订 2026-09-27）。同一天开始又结束的也是这样：关在
+            // 那一天的尽头，不关在它自己的起点——那是一段不成立的状态（#966）
+            let period_end = declared_state.then(|| bucket_end(to, Some(precision)));
+            let closes_at = |from: Option<chrono::DateTime<chrono::Utc>>| match (from, period_end) {
+                (Some(f), Some(end)) if to <= f && f < end => end,
+                _ => to,
+            };
+            // 已经关在那一刻的：同一件事，复用那一行（引擎推的终点改成写明的，同上）
+            if let Some((ended, from, _, _)) = same
+                .iter()
+                .find(|(_, vf, vt, _)| *vt == Some(closes_at(*vf)))
+            {
                 if let Some(stated) = crate::temporal::state_derived_end(
                     &mut *conn,
                     *ended,
-                    Some((to, precision)),
+                    Some((closes_at(*from), precision)),
                     validity.attested_at,
                 )
                 .await?
@@ -689,21 +702,23 @@ pub(crate) async fn insert_fact_on(
                 attest_earlier(&mut *conn, *ended, validity.attested_at, true).await?;
                 return Ok((*ended, false));
             }
-            // 声明成状态的开放行不在它自己的起点关上：关上就是一段不成立的状态（#966）
             let open = same
                 .iter()
                 .filter(|(_, vf, vt, vtp)| {
                     vt.is_none()
                         && vtp.is_none()
-                        && vf.is_none_or(|f| f < to || (f == to && !declared_state))
+                        && vf.is_none_or(|f| match period_end {
+                            Some(end) => f < end,
+                            None => f <= to,
+                        })
                 })
                 .max_by_key(|(_, vf, _, _)| *vf);
-            if let Some((open, _, _, _)) = open {
+            if let Some((open, from, _, _)) = open {
                 if let Some(closed) = crate::temporal::close_superseded(
                     &mut *conn,
                     *open,
-                    to,
-                    validity.to_precision.unwrap_or("day"),
+                    closes_at(*from),
+                    precision,
                 )
                 .await?
                 {
@@ -784,21 +799,27 @@ pub(crate) async fn insert_fact_on(
     // 文档可能先到），本次观察带了起点 → 落库后作废那行并链上。只知道终点的行，
     // 终点跟着走：这次没说终点就沿用它的，说了就得是同一个
     let mut validity = validity;
-    // 声明成状态的，沿用来的终点若正落在这次的起点上，合起来就是一段不成立的状态（#966）：
-    // 不精化，各自一行
-    let refine_target = if validity.from.is_some() {
-        same.iter()
-            .find(|(_, vf, vt, _)| {
-                vf.is_none()
-                    && (vt.is_none() || validity.to.is_none() || *vt == validity.to)
-                    && !(declared_state
-                        && validity.to.is_none()
-                        && vt.is_some()
-                        && *vt == validity.from)
-            })
-            .map(|(id, _, vt, vtp)| (*id, *vt, vtp.clone()))
-    } else {
-        None
+    // 声明成状态的，沿用来的终点说的是一个时段（同上）：这次的起点落在时段里，终点取时段的
+    // 尽头；落在时段之后，那个结束说的是更早的一段，不精化，各自一行（0053 修订 2026-09-27）
+    let refine_target = match validity.from {
+        Some(from) => same.iter().find_map(|(id, vf, vt, vtp)| {
+            if vf.is_some() {
+                return None;
+            }
+            let end = match (validity.to, *vt) {
+                (None, Some(t)) if declared_state && t <= from => {
+                    let end = bucket_end(t, Some(vtp.as_deref().unwrap_or("day")));
+                    if from >= end {
+                        return None;
+                    }
+                    Some(end)
+                }
+                (Some(to), Some(t)) if to != t => return None,
+                (_, vt) => vt,
+            };
+            Some((*id, end, vtp.clone()))
+        }),
+        None => None,
     };
     if let Some((_, Some(vt), vtp)) = &refine_target {
         if validity.to.is_none() {

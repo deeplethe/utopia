@@ -633,6 +633,7 @@ async fn a_person_decision_made_during_the_request_is_not_overwritten() -> anyho
                 decided_by: "person",
                 basis: None,
                 marks: None,
+                marks_asked: false,
             },
         )
         .await?;
@@ -909,89 +910,104 @@ async fn a_state_binding_carries_what_a_single_date_marks() -> anyhow::Result<()
     run
 }
 
-/// 两票选了同一个属性、同一个方向，却一票说开始、一票说结束：和选了不同的属性一样，交给人
+/// 这条签名在对齐队列里：绑到 based_in、照原文方向，只等人说那个日期标什么
+async fn waits_for_the_date(f: &Fx) -> anyhow::Result<bool> {
+    let items = utopia_store::alignment_queue::list(&f.pool, f.kb, 10, 0).await?;
+    let listed = matches!(
+        items.as_slice(),
+        [utopia_store::alignment_queue::AlignmentItem::Phrase {
+            bound_to: Some(p),
+            direction: Some(d),
+            ..
+        }] if p == "based_in" && d == "forward"
+    );
+    let waiting = utopia_store::alignment_queue::waiting(&f.pool, f.kb)
+        .await?
+        .0;
+    let badge = utopia_store::review::counts(&f.pool, f.kb).await?.alignment;
+    Ok(listed && waiting == 1 && badge == 1)
+}
+
+/// 两票选了同一个属性、同一个方向，却一票说开始、一票说结束，或有一票没说（只答三格）：
+/// 属性两票说定了，照绑；那个日期没说定，marks 空着、记下问过，交给人。不再问，也不给
+/// 自己再排一轮（0053 修订 2026-09-27）。从前没说的算没答到，模型只答三格就永远绑不上
 #[tokio::test]
-async fn two_votes_that_read_the_date_differently_go_to_a_person() -> anyhow::Result<()> {
-    let Some(f) = Fx::new().await? else {
-        return Ok(());
-    };
-    let run = async {
-        f.script(vec![
-            marked(Some("based_in"), Some("forward"), Some("start")),
+async fn two_votes_that_do_not_agree_on_the_date_bind_and_leave_it_to_a_person(
+) -> anyhow::Result<()> {
+    let three_cells = json!({"b":[[0, "based_in", "forward"]]});
+    for (label, first) in [
+        (
+            "end",
             marked(Some("based_in"), Some("forward"), Some("end")),
-        ]);
-        f.run().await?;
-        let b = f.binding().await?;
-        assert_eq!((b.status.as_str(), b.marks.as_deref()), ("undecided", None));
-        let votes: Value = sqlx::query_scalar("SELECT votes FROM phrase_bindings WHERE kb_id=$1")
-            .bind(f.kb)
-            .fetch_one(&f.pool)
-            .await?;
-        assert_eq!(
-            (&votes["first"]["marks"], &votes["second"]["marks"]),
-            (&json!("start"), &json!("end")),
-            "both readings are kept for the person"
-        );
-        let items = utopia_store::alignment_queue::list(&f.pool, f.kb, 10, 0).await?;
-        assert!(
-            matches!(
-                items.as_slice(),
-                [utopia_store::alignment_queue::AlignmentItem::Phrase { bound_to: None, .. }]
-            ),
-            "{items:?}"
-        );
-        assert!(!f.requeued().await?);
-        anyhow::Ok(())
+        ),
+        ("three cells", three_cells),
+    ] {
+        let Some(f) = Fx::new().await? else {
+            return Ok(());
+        };
+        let run = async {
+            f.script(vec![
+                first,
+                marked(Some("based_in"), Some("forward"), Some("start")),
+            ]);
+            f.run().await?;
+            let b = f.binding().await?;
+            assert_eq!(
+                (b.status.as_str(), b.relation_type_id, b.marks.as_deref()),
+                ("bound", Some(f.based_in), None),
+                "{label}"
+            );
+            assert!(b.marks_asked_at.is_some(), "{label}: asked");
+            let votes: Value =
+                sqlx::query_scalar("SELECT votes FROM phrase_bindings WHERE kb_id=$1")
+                    .bind(f.kb)
+                    .fetch_one(&f.pool)
+                    .await?;
+            assert_eq!(
+                &votes["second"]["marks"],
+                &json!("start"),
+                "{label}: both readings are kept for the person"
+            );
+            assert_eq!(f.typed().await?, 1, "{label}: the statement is typed");
+            assert!(waits_for_the_date(&f).await?, "{label}");
+            assert!(!f.requeued().await?, "{label}: no re-ask");
+            f.run().await?;
+            assert_eq!(f.requests().len(), 2, "{label}: asked once");
+            anyhow::Ok(())
+        }
+        .await;
+        f.cleanup().await?;
+        run?;
     }
-    .await;
-    f.cleanup().await?;
-    run
+    Ok(())
 }
 
-/// 一票绑了状态却没说那个日期标什么：这一票没答完，不下结论，有限次地再问
-#[tokio::test]
-async fn a_state_vote_that_leaves_the_date_unread_is_asked_again() -> anyhow::Result<()> {
-    let Some(f) = Fx::new().await? else {
-        return Ok(());
-    };
-    let run = async {
-        f.script(vec![
-            json!({"b":[[0, "based_in", "forward"]]}),
-            marked(Some("based_in"), Some("forward"), Some("start")),
-        ]);
-        f.run().await?;
-        assert_eq!(f.requests().len(), 2);
-        assert!(
-            phrase_bindings::bindings(&f.pool, f.kb).await?.is_empty(),
-            "no decision without both readings"
-        );
-        let reasks: Vec<Option<i64>> = sqlx::query_scalar(
-            "SELECT (payload->>'reask')::bigint FROM jobs
-              WHERE kind='align_phrases' AND status='queued' AND payload->>'kb_id'=$1",
+impl Fx {
+    /// 把绑定改回这一问出现之前的样子：没有 marks，也没问过
+    async fn as_before_the_question(&self) -> anyhow::Result<()> {
+        sqlx::query(
+            "UPDATE phrase_bindings SET marks = NULL, marks_asked_at = NULL WHERE kb_id=$1",
         )
-        .bind(f.kb.to_string())
-        .fetch_all(&f.pool)
+        .bind(self.kb)
+        .execute(&self.pool)
         .await?;
-        assert_eq!(reasks, vec![Some(1)], "it queues itself once more");
-        f.clear_jobs().await?;
-        f.script(vec![
-            marked(Some("based_in"), Some("forward"), Some("start")),
-            marked(Some("based_in"), Some("forward"), Some("start")),
-        ]);
-        align_phrases_reasking(&f.state, f.kb, 1).await?;
-        let b = f.binding().await?;
-        assert_eq!(
-            (b.status.as_str(), b.marks.as_deref()),
-            ("bound", Some("start"))
-        );
-        anyhow::Ok(())
+        Ok(())
     }
-    .await;
-    f.cleanup().await?;
-    run
+    /// 绑定里补问不该动的部分：属性、方向、状态、谁判的、何时判的、指纹、两票
+    async fn decision(&self) -> anyhow::Result<Value> {
+        Ok(sqlx::query_scalar(
+            "SELECT jsonb_build_array(relation_type_id, direction, status, decided_by,
+                                      decided_at, basis, votes)
+               FROM phrase_bindings WHERE kb_id=$1",
+        )
+        .bind(self.kb)
+        .fetch_one(&self.pool)
+        .await?)
+    }
 }
 
-/// 这一问出现之前判下的绑定没有 marks。代理判的：指纹没变也再问一次，补上就不再问。
+/// 这一问出现之前判下的绑定没有 marks。代理判的：指纹没变也问一次，只问那个日期标什么，
+/// 两票都认这条绑定、又说了同一个值就写下，绑定别的不动；问过就不再问。
 /// 人判的：代理不问，它在对齐队列里等人补，属性与方向是现在绑的
 #[tokio::test]
 async fn a_binding_decided_before_the_question_is_asked_once_and_a_persons_waits_in_the_queue(
@@ -1003,10 +1019,8 @@ async fn a_binding_decided_before_the_question_is_asked_once_and_a_persons_waits
         f.script(bound());
         f.run().await?;
         assert_eq!(f.binding().await?.marks.as_deref(), Some("none"));
-        sqlx::query("UPDATE phrase_bindings SET marks = NULL WHERE kb_id=$1")
-            .bind(f.kb)
-            .execute(&f.pool)
-            .await?;
+        f.as_before_the_question().await?;
+        let decided = f.decision().await?;
         f.script(vec![
             marked(Some("based_in"), Some("forward"), Some("start")),
             marked(Some("based_in"), Some("forward"), Some("start")),
@@ -1017,7 +1031,10 @@ async fn a_binding_decided_before_the_question_is_asked_once_and_a_persons_waits
             4,
             "the fingerprint matches, yet the binding is asked for the value it lacks"
         );
-        assert_eq!(f.binding().await?.marks.as_deref(), Some("start"));
+        assert_eq!(f.decision().await?, decided, "only the value is written");
+        let b = f.binding().await?;
+        assert_eq!(b.marks.as_deref(), Some("start"));
+        assert!(b.marks_asked_at.is_some());
         f.run().await?;
         assert_eq!(f.requests().len(), 4, "asked once: it has its value now");
         assert!(!f.requeued().await?);
@@ -1035,34 +1052,108 @@ async fn a_binding_decided_before_the_question_is_asked_once_and_a_persons_waits
                 decided_by: "person",
                 basis: None,
                 marks: None,
+                marks_asked: false,
             },
         )
         .await?;
         f.run().await?;
         assert_eq!(f.requests().len(), 4, "a person's binding is not asked");
-        let items = utopia_store::alignment_queue::list(&f.pool, f.kb, 10, 0).await?;
-        assert!(
-            matches!(
-                items.as_slice(),
-                [utopia_store::alignment_queue::AlignmentItem::Phrase {
-                    bound_to: Some(p),
-                    direction: Some(d),
-                    ..
-                }] if p == "based_in" && d == "forward"
+        assert!(waits_for_the_date(&f).await?);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 模型从来不给第四格（#975 评审）：这一列之前绑上的签名只问一次。绑定原样，它名下的
+/// 类型化行还活着，签名在对齐队列里等人；再跑一轮不再问，也不给自己排下一轮
+#[tokio::test]
+async fn a_model_that_never_gives_the_value_is_asked_once() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(bound());
+        f.run().await?;
+        assert_eq!(f.typed().await?, 1);
+        f.as_before_the_question().await?;
+        let decided = f.decision().await?;
+        let three_cells = json!({"b":[[0, "based_in", "forward"]]});
+        f.script(vec![three_cells.clone(), three_cells]);
+        f.run().await?;
+        assert_eq!(f.requests().len(), 4, "one ask: two votes");
+        assert_eq!(f.decision().await?, decided, "the binding is unchanged");
+        assert_eq!(f.typed().await?, 1, "its typed row is still live");
+        f.run().await?;
+        f.run().await?;
+        assert_eq!(f.requests().len(), 4, "not asked again");
+        let b = f.binding().await?;
+        assert_eq!(
+            (b.marks.as_deref(), b.marks_asked_at.is_some()),
+            (None, true)
+        );
+        assert!(waits_for_the_date(&f).await?);
+        assert!(!f.requeued().await?, "no re-ask is queued");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 补问只能写那个日期标什么，重开不了绑定（#975 评审）：两票没选属性、选了另一个方向、
+/// 说的值不一样，绑定都原样，类型化行还活着，签名交给人；两票都认这条绑定、说了同一个值，
+/// 才写下那个值
+#[tokio::test]
+async fn asking_what_a_date_marks_never_reopens_the_binding() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(bound());
+        f.run().await?;
+        let answers = [
+            ("no property", vote(None, None), vote(None, None), None),
+            (
+                "the other direction",
+                marked(Some("based_in"), Some("reverse"), Some("start")),
+                marked(Some("based_in"), Some("reverse"), Some("start")),
+                None,
             ),
-            "{items:?}"
-        );
-        assert_eq!(
-            utopia_store::alignment_queue::waiting(&f.pool, f.kb)
-                .await?
-                .0,
-            1
-        );
-        assert_eq!(
-            utopia_store::review::counts(&f.pool, f.kb).await?.alignment,
-            1,
-            "the badge counts it too"
-        );
+            (
+                "two readings",
+                marked(Some("based_in"), Some("forward"), Some("start")),
+                marked(Some("based_in"), Some("forward"), Some("end")),
+                None,
+            ),
+            (
+                "one reading",
+                marked(Some("based_in"), Some("forward"), Some("end")),
+                marked(Some("based_in"), Some("forward"), Some("end")),
+                Some("end"),
+            ),
+        ];
+        for (label, first, second, value) in answers {
+            f.as_before_the_question().await?;
+            let decided = f.decision().await?;
+            f.script(vec![first, second]);
+            f.run().await?;
+            assert_eq!(
+                f.decision().await?,
+                decided,
+                "{label}: the binding is unchanged"
+            );
+            assert_eq!(f.typed().await?, 1, "{label}: its typed row is still live");
+            let b = f.binding().await?;
+            assert_eq!(
+                (b.marks.as_deref(), b.marks_asked_at.is_some()),
+                (value, true),
+                "{label}"
+            );
+            assert_eq!(waits_for_the_date(&f).await?, value.is_none(), "{label}");
+            assert!(!f.requeued().await?, "{label}");
+        }
         anyhow::Ok(())
     }
     .await;

@@ -29,8 +29,9 @@ pub enum AlignmentItem {
         /// 两票各选了什么：`{"first": {...} | null, "second": {...} | null}`
         votes: Option<serde_json::Value>,
         decided_at: DateTime<Utc>,
-        /// 人绑过、却没说一刻标哪一端的签名（#966）：现在绑到的属性与方向，界面按它预选、
-        /// 只等人补上 marks。undecided 的条目两个都是 None
+        /// 绑上了、却没说一刻标哪一端的签名（#966）：人绑的，或对齐器问过、两票没说出同一个
+        /// 值的。现在绑到的属性与方向，界面按它预选、只等人补上 marks。undecided 的条目两个
+        /// 都是 None
         bound_to: Option<String>,
         direction: Option<String>,
     },
@@ -93,10 +94,13 @@ struct PhraseRow {
     direction: Option<String>,
 }
 
-/// 等人定的短语签名：两票不一致的，加上人绑到状态属性、却没说一刻标哪一端的（#966）。
-/// 后一种代理不能替人补（人的判定代理不改），不列出来，它名下只说了一刻的陈述就一直不算
+/// 等人定的短语签名：两票不一致的，加上绑到状态属性、却没说一刻标哪一端的（#966）——人绑的
+/// （代理不改人的判定），和对齐器问过、两票没说出同一个值的（只问一次，0053 修订）。不列
+/// 出来，它们名下只说了一刻的陈述就一直不算。这一列之前代理绑上、还没问过的不列：对齐器
+/// 下一轮先问
 pub(crate) const WAITING_PHRASE: &str = "(b.status = 'undecided'
-       OR (b.status = 'bound' AND b.decided_by = 'person' AND b.marks IS NULL
+       OR (b.status = 'bound' AND b.marks IS NULL
+           AND (b.decided_by = 'person' OR b.marks_asked_at IS NOT NULL)
            AND EXISTS (SELECT 1 FROM relation_types rt
                         WHERE rt.id = b.relation_type_id AND rt.temporal = 'state')))";
 

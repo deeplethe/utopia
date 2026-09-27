@@ -76,6 +76,7 @@ impl Fx {
                 decided_by: "agent",
                 basis: None,
                 marks: None,
+                marks_asked: false,
             },
         )
         .await?;

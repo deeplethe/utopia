@@ -1361,6 +1361,7 @@ pub async fn decide_alignment_phrase(
             decided_by: "person",
             basis: None,
             marks,
+            marks_asked: false,
         },
     )
     .await?

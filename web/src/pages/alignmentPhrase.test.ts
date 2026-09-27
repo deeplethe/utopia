@@ -39,7 +39,7 @@ describe("what a single date marks", () => {
     expect(asksMarks(properties, "")).toBe(false);
   });
 
-  it("starts from the first vote, then a person's binding, and reads an unsaid date as neither", () => {
+  it("starts from the binding or the votes, and preselects no reading of a single date", () => {
     expect(
       phraseStart(
         item({
@@ -49,17 +49,24 @@ describe("what a single date marks", () => {
           },
         }),
       ),
-    ).toEqual({ property: "works_for", direction: "forward", marks: "start" });
+    ).toEqual({ property: "works_for", direction: "forward", marks: null });
     expect(
       phraseStart(item({ votes: { first: null, second: { property: "leads", direction: "reverse" } } })),
-    ).toEqual({ property: "leads", direction: "reverse", marks: "none" });
-    // 人绑过、只差 marks 的：按现在的绑定预选
-    expect(phraseStart(item({ bound_to: "works_for", direction: "reverse" }))).toEqual({
-      property: "works_for",
-      direction: "reverse",
-      marks: "none",
-    });
-    expect(phraseStart(item({}))).toEqual({ property: "", direction: "forward", marks: "none" });
+    ).toEqual({ property: "leads", direction: "reverse", marks: null });
+    // 绑上了、只差 marks 的：按现在的绑定预选属性与方向，读法仍留给人选
+    expect(
+      phraseStart(
+        item({
+          bound_to: "works_for",
+          direction: "reverse",
+          votes: {
+            first: { property: "works_for", direction: "reverse", marks: "none" },
+            second: { property: "works_for", direction: "reverse" },
+          },
+        }),
+      ),
+    ).toEqual({ property: "works_for", direction: "reverse", marks: null });
+    expect(phraseStart(item({}))).toEqual({ property: "", direction: "forward", marks: null });
   });
 });
 

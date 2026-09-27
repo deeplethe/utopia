@@ -2,20 +2,20 @@ import type { AlignmentItem, AlignmentMarks, RelationTypeView } from "../api";
 
 type PhraseItem = Extract<AlignmentItem, { kind: "phrase" }>;
 
-/** 一条短语签名打开时预选什么。人绑过、只差 marks 的按现在的绑定；否则按第一票、第二票。
- *  没有票说过单个日期标什么就取「都不是」：只带一个日期的陈述留在开放图谱，是不猜的
- *  那个读法（#966） */
+/** 一条短语签名打开时预选什么。绑上了、只差 marks 的按现在的绑定；否则按第一票、第二票。
+ *  单个日期标什么**不预选**：升级后成批进来的绑定若预选一个读法，一次点击就替人写下了它
+ *  （#975 评审）。状态属性下人得自己选一个，才能绑 */
 export function phraseStart(item: PhraseItem): {
   property: string;
   direction: "forward" | "reverse";
-  marks: AlignmentMarks;
+  marks: AlignmentMarks | null;
 } {
   const first = item.votes?.first ?? null;
   const second = item.votes?.second ?? null;
   return {
     property: item.bound_to ?? first?.property ?? second?.property ?? "",
     direction: item.direction ?? first?.direction ?? second?.direction ?? "forward",
-    marks: first?.marks ?? second?.marks ?? "none",
+    marks: null,
   };
 }
 

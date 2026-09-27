@@ -827,12 +827,14 @@ function AlignmentPhraseRow({
   const start = phraseStart(item);
   const [property, setProperty] = useState<string>(start.property);
   const [direction, setDirection] = useState<"forward" | "reverse">(start.direction);
-  const [marks, setMarks] = useState<AlignmentMarks>(start.marks);
+  const [marks, setMarks] = useState<AlignmentMarks | null>(start.marks);
   // 字面值当宾语的签名只配属性（attribute），两样东西之间的只配关系（relation）
   const fitting = properties.filter((p) =>
     item.object_is_value ? p.kind === "attribute" : p.kind === "relation",
   );
   const state = asksMarks(fitting, property);
+  // 状态属性下单个日期标什么没有预选：人选了才能绑
+  const unread = state && marks === null;
   return (
     <div className="glass rounded-panel p-3">
       <div className="flex items-baseline gap-2 flex-wrap">
@@ -849,11 +851,13 @@ function AlignmentPhraseRow({
           ))}
         </div>
       )}
-      {item.bound_to ? (
+      {item.bound_to && (
         <div className="mt-1 text-small text-ink-2">
           {S.review.alignmentAwaitsMarks(item.bound_to)}
         </div>
-      ) : (
+      )}
+      {/* 绑上了的签名只在代理投过票时列两票：它们各说了单个日期标什么 */}
+      {(!item.bound_to || first || second) && (
         <div className="mt-1 text-small text-ink-2">
           {S.review.alignmentVotes(voteText(first), voteText(second))}
         </div>
@@ -889,10 +893,10 @@ function AlignmentPhraseRow({
         {state && (
           <>
             <span className="text-small text-ink-2">{S.review.alignmentMarks}</span>
-            <Segmented
+            <Segmented<AlignmentMarks | "">
               size="sm"
-              value={marks}
-              onChange={setMarks}
+              value={marks ?? ""}
+              onChange={(m) => setMarks(m || null)}
               options={[
                 {
                   value: "start",
@@ -915,7 +919,8 @@ function AlignmentPhraseRow({
         )}
         <Button
           size="sm"
-          disabled={busy}
+          disabled={busy || unread}
+          title={unread ? S.review.alignmentMarksRequired : undefined}
           onClick={() => onDecide(property || null, direction, state ? marks : null)}
         >
           {property ? S.review.alignmentBind : S.review.alignmentLeaveOpen}

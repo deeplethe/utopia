@@ -2127,8 +2127,9 @@ export const en = {
     alignmentMarksEndHint: "left, resigned from, stepped down as: it ends on that date",
     alignmentMarksNoneHint:
       "only seen to hold then: statements with a single date stay in the open graph",
+    alignmentMarksRequired: "Say what a single date marks first.",
     alignmentAwaitsMarks: (property: string) =>
-      `Bound to ${property} before the aligner asked what a single date marks. Until you say, statements with a single date stay in the open graph.`,
+      `Bound to ${property}, but what a single date marks is not settled. Until you say, statements with a single date stay in the open graph.`,
     alignmentRuleImplies: (property: string) => `also implies ${property}`,
     alignmentRuleObjectIsStatement: "object: the statement's own object",
     alignmentRuleReading: (reading: string) => `object: read from the words as ${reading.replace(/_/g, " ")}`,

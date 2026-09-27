@@ -14,7 +14,8 @@
 //! 只对状态属性有意义（#966）：一条只说了一刻的陈述，那一刻标的是状态的开始（start）、
 //! 结束（end）还是都不是（none）；事件、恒常、不绑都答 null，旧的三格写法照样读（marks
 //! 缺席）。解析同类别词那边：坏的一条计数、不毁掉整批；键不在候选里、id 不在批里、绑了
-//! 却没方向、marks 写了却认不出、同一个 id 的第二次都算坏；没答到的 id 是「再问」，不是 null。
+//! 却没方向、状态属性下 marks 写了却认不出、同一个 id 的第二次都算坏；事件与恒常不读第四格，
+//! 写了什么都不算坏。没答到的 id 是「再问」，不是 null。
 //!
 //! **形状也宽容**（同类别词那边的教训）：模型（实测 DeepSeek-V3.2）并不总照样例写。它会
 //! 把整段答成按 id 作键的对象（`{"0": ["headquartered_in", "forward"], "1": null}`），
@@ -262,11 +263,16 @@ pub fn parse_phrase_response(
 ) -> anyhow::Result<(Vec<PhraseChoice>, usize)> {
     let value = parse_value(raw)?;
     let by_id: HashMap<i64, &PhraseItem<'_>> = items.iter().map(|i| (i.id, i)).collect();
+    // 批里描述过的属性各是什么时间语义：只有状态读第四格
+    let temporal: HashMap<&str, &str> = items
+        .iter()
+        .flat_map(|i| i.candidates.iter().map(|c| (c.key.trim(), c.temporal)))
+        .collect();
     let mut choices = Vec::new();
     let mut malformed = 0usize;
     let mut seen = HashSet::new();
     for (id, key, direction, marks) in answers(&value) {
-        match parse_answer(&id, &key, &direction, &marks, &by_id) {
+        match parse_answer(&id, &key, &direction, &marks, &by_id, &temporal) {
             Some(choice) if seen.insert(choice.id) => choices.push(choice),
             _ => malformed += 1,
         }
@@ -359,13 +365,15 @@ fn fields(map: &serde_json::Map<String, Value>) -> (Value, Value, Value) {
 
 /// 一条答案：id 得是这批里的；键是 null（不绑）或候选里的一个，绑了就得有方向，方向
 /// 不认识算坏。键包在数组里的（`["headquartered_in", "forward"]` 塞在第二格）照样读，
-/// 方向与 marks 从数组里取。marks 只随绑定读：null 或缺席是没说，写了却认不出算坏
+/// 方向与 marks 从数组里取。marks 只在绑到状态属性时读：null 或缺席是没说，写了却认不出
+/// 算坏；事件、恒常（或批里没描述过的键）不读这一格，写了什么都忽略
 fn parse_answer(
     id: &Value,
     key: &Value,
     direction: &Value,
     marks: &Value,
     by_id: &HashMap<i64, &PhraseItem<'_>>,
+    temporal: &HashMap<&str, &str>,
 ) -> Option<PhraseChoice> {
     let id = item_id(id)?;
     let item = by_id.get(&id)?;
@@ -395,10 +403,13 @@ fn parse_answer(
         }
         _ => return None,
     };
-    let marks = match (&property, &marks) {
-        (None, _) | (_, Value::Null) => None,
-        (Some(_), Value::String(written)) => Some(Marks::parse(written)?),
-        (Some(_), _) => return None,
+    let state = property
+        .as_ref()
+        .is_some_and(|(key, _)| temporal.get(key.as_str()) == Some(&"state"));
+    let marks = match (state, &marks) {
+        (false, _) | (_, Value::Null) => None,
+        (true, Value::String(written)) => Some(Marks::parse(written)?),
+        (true, _) => return None,
     };
     Some(PhraseChoice {
         id,
@@ -773,6 +784,35 @@ mod tests {
             vec![marked(0, "subsidiary_of", Direction::Reverse, Marks::Start)]
         );
         assert_eq!(malformed, 1, "an unreadable marks is a bad answer");
+    }
+
+    /// 事件与恒常不读第四格：写了认不出的值不算坏项，写了认得出的也不带。状态属性下
+    /// 认不出照样算坏
+    #[test]
+    fn an_event_property_does_not_read_the_fourth_value() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let mut items = three_items(&examples, &quotes);
+        items[0].candidates.push(PropertyCandidate {
+            key: "acquired",
+            label: "acquired",
+            description: "The organization bought the other organization.",
+            kind: "relation",
+            temporal: "event",
+            domains: vec!["organization"],
+            ranges: vec!["organization"],
+            via: Vec::new(),
+        });
+        let raw =
+            r#"{"b": [[0, "acquired", "forward", "later"], [2, "revenue", "forward", "later"]]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(choices, vec![bound(0, "acquired", Direction::Forward)]);
+        assert_eq!(malformed, 1, "revenue is a state: its fourth value is read");
+        let raw = r#"{"b": [[0, "acquired", "forward", "start"]]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(
+            (choices, malformed),
+            (vec![bound(0, "acquired", Direction::Forward)], 0)
+        );
     }
 
     /// 提示词说出每条属性是不是状态，以及第四格怎么答

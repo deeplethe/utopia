@@ -611,6 +611,7 @@ async fn bind_is_on(pool: &PgPool, f: &Fixture) -> anyhow::Result<()> {
             decided_by: "person",
             basis: None,
             marks: None,
+            marks_asked: false,
         },
     )
     .await?;

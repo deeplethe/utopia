@@ -1847,8 +1847,9 @@ export const zh: Strings = {
     alignmentMarksStartHint: "加入、被任命、接手：从那天起成立",
     alignmentMarksEndHint: "离开、辞去、卸任：到那天为止",
     alignmentMarksNoneHint: "只是那时看到它成立：只带一个日期的陈述留在开放图谱",
+    alignmentMarksRequired: "先说单个日期标的是什么。",
     alignmentAwaitsMarks: (property: string) =>
-      `绑到 ${property} 时对齐器还没问过单个日期标的是什么。你说之前，只带一个日期的陈述留在开放图谱。`,
+      `已绑到 ${property}，单个日期标的是什么还没定。你说之前，只带一个日期的陈述留在开放图谱。`,
     alignmentRuleImplies: (property: string) => `同时蕴含 ${property}`,
     alignmentRuleObjectIsStatement: "宾语：陈述自己的宾语",
     alignmentRuleReading: (reading: string) => `宾语：按「${reading.replace(/_/g, " ")}」从字里读出`,

@@ -85,6 +85,7 @@ fn bound(property: Uuid) -> Decision<'static> {
         decided_by: "person",
         basis: None,
         marks: None,
+        marks_asked: false,
     }
 }
 
@@ -97,6 +98,7 @@ fn none() -> Decision<'static> {
         decided_by: "person",
         basis: None,
         marks: None,
+        marks_asked: false,
     }
 }
 

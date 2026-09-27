@@ -65,6 +65,7 @@ impl BindingKind {
                         decided_by: actor,
                         basis: None,
                         marks: None,
+                        marks_asked: false,
                     },
                 )
                 .await?

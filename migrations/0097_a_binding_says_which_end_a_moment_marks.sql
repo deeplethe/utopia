@@ -10,5 +10,10 @@
 --   end    这一刻结束了状态：在 t 关上开放的那一段
 --   none   只是那时成立：不算类型化行，陈述留在开放图谱里带着它的日期
 -- NULL 是未知（这一列之前的判定、事件与恒常属性）：点形状的陈述在状态属性下不算类型化行。
+--
+-- `marks_asked_at` 是对齐器问过这一格的时刻：随绑到状态的判定一起问，或给这一列之前绑上的
+-- 签名补问一次。问过、两票没说出同一个值的，不再问，列进对齐队列等人。NULL = 没问过
+-- （这一列之前的判定、人的判定、不是状态的属性）。
 ALTER TABLE phrase_bindings
-    ADD COLUMN marks TEXT CHECK (marks IN ('start', 'end', 'none'));
+    ADD COLUMN marks TEXT CHECK (marks IN ('start', 'end', 'none')),
+    ADD COLUMN marks_asked_at TIMESTAMPTZ;
