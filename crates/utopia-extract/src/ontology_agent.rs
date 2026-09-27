@@ -44,6 +44,9 @@ pub struct Glossary<'a> {
     pub classes: Vec<(&'a str, &'a str, &'a str)>,
     /// (key, label, kind, domains, ranges, description)
     pub properties: Vec<GlossaryProperty<'a>>,
+    /// 这一批用不上、只报个名字的属性：(key, label)。模型要知道它们存在，才不会重提；
+    /// 定义只给结构对得上、或按向量最近的那些（同对齐的短名单，0044 决定 3 的成本教训）
+    pub others: Vec<(&'a str, &'a str)>,
 }
 
 /// 词表里的一条属性：(key, label, kind, domains, ranges, description)
@@ -102,6 +105,15 @@ pub struct ProposalReply {
     pub existing: Vec<Existing>,
     /// 读不出的项数
     pub malformed: usize,
+    /// 每个坏项为什么坏：测量台数它们，日志里也看得见
+    pub reasons: Vec<String>,
+}
+
+impl ProposalReply {
+    fn bad(&mut self, why: String) {
+        self.malformed += 1;
+        self.reasons.push(why);
+    }
 }
 
 const SYSTEM: &str = "\
@@ -127,6 +139,8 @@ instead of proposing, with dir: forward when the shape's subject is the property
 when the shape reads the property backwards (\"X wrote Y\" is author read in reverse).\n\
 - Do not propose the inverse of an existing property: list the shape under that property with dir \
 reverse.\n\
+- An existing entry holds shapes, not questions: every entry under existing lists at least one \
+shape id in s or k. Do not add an entry only to say that a property serves a question.\n\
 Answer with one JSON object and nothing else:\n\
 {\"p\":[{\"kind\":\"property\",\"key\":\"...\",\"label\":\"...\",\"definition\":\"...\",\"value\":false,\
 \"datatype\":null,\"domains\":[\"class_key\"],\"ranges\":[\"class_key\"],\"s\":[ids],\"k\":[ids],\"q\":[ids]},\
@@ -167,6 +181,15 @@ pub fn build_proposal_messages(
             user.push_str(&format!(" · {}", description.trim()));
         }
         user.push('\n');
+    }
+    if !glossary.others.is_empty() {
+        user.push_str(
+            "Other existing properties (key · label only; none of them fits these shapes by \
+             structure or meaning, but do not propose a key already here):\n",
+        );
+        for (key, label) in &glossary.others {
+            user.push_str(&format!("- {key} · {label}\n"));
+        }
     }
     user.push_str("\nCompetency questions:\n");
     if questions.is_empty() {
@@ -281,14 +304,14 @@ pub fn parse_proposal_response(
         Some(Value::Object(m)) => m.values().collect(),
         Some(Value::Null) | None => Vec::new(),
         Some(_) => {
-            reply.malformed += 1;
+            reply.bad("`p` is not a list".to_string());
             Vec::new()
         }
     };
     let mut seen: HashSet<String> = HashSet::new();
     for it in items {
         let Some(obj) = it.as_object() else {
-            reply.malformed += 1;
+            reply.bad("a proposal is not an object".to_string());
             continue;
         };
         let kind = obj
@@ -306,7 +329,7 @@ pub fn parse_proposal_response(
             || !valid_key(&key)
             || !seen.insert(key.clone())
         {
-            reply.malformed += 1;
+            reply.bad(format!("bad kind, bad key or repeated key: {kind} {key:?}"));
             continue;
         }
         let label = obj
@@ -333,7 +356,9 @@ pub fn parse_proposal_response(
             strings(obj.get("ranges")),
             strings(obj.get("parents")),
         ) else {
-            reply.malformed += 1;
+            reply.bad(format!(
+                "domains, ranges or parents are not lists of strings: {key}"
+            ));
             continue;
         };
         let (Ok(signatures), Ok(kind_words), Ok(questions)) = (
@@ -341,12 +366,12 @@ pub fn parse_proposal_response(
             ids(obj.get("k"), 'k', kind_word_ids),
             ids(obj.get("q"), 'q', question_ids),
         ) else {
-            reply.malformed += 1;
+            reply.bad(format!("a shape or question id outside the batch: {key}"));
             continue;
         };
         // 什么形状都不绑的提案不是从图谱里长出来的：不收
         if signatures.is_empty() && kind_words.is_empty() {
-            reply.malformed += 1;
+            reply.bad(format!("binds no shape: {key}"));
             continue;
         }
         reply.proposals.push(Proposal {
@@ -371,7 +396,7 @@ pub fn parse_proposal_response(
     if let Some(Value::Array(ex)) = v.get("existing") {
         for it in ex {
             let Some(obj) = it.as_object() else {
-                reply.malformed += 1;
+                reply.bad("an existing entry is not an object".to_string());
                 continue;
             };
             let key = obj
@@ -383,18 +408,18 @@ pub fn parse_proposal_response(
                 ids(obj.get("s"), 's', signature_ids),
                 ids(obj.get("k"), 'k', kind_word_ids),
             ) else {
-                reply.malformed += 1;
+                reply.bad(format!("existing: a shape id outside the batch: {key}"));
                 continue;
             };
             if key.is_empty() || (signatures.is_empty() && kind_words.is_empty()) {
-                reply.malformed += 1;
+                reply.bad(format!("existing: no key or no shapes: {key:?}"));
                 continue;
             }
             let direction = match obj.get("dir").and_then(Value::as_str).map(str::trim) {
                 Some("reverse") => Some("reverse".to_string()),
                 Some("forward") | None | Some("") => Some("forward".to_string()),
                 Some(_) => {
-                    reply.malformed += 1;
+                    reply.bad(format!("existing: unknown direction: {key}"));
                     continue;
                 }
             };
@@ -491,6 +516,7 @@ mod tests {
                 vec!["location"],
                 "where a thing is",
             )],
+            others: vec![("p999", "somethingElse")],
         };
         let qs = vec![QuestionItem {
             id: 1,
@@ -499,6 +525,8 @@ mod tests {
         let m = build_proposal_messages(&sigs, &kws, &glossary, &qs);
         assert_eq!(m.len(), 2);
         let user = &m[1].content;
+        assert!(user.contains("Other existing properties"), "{user}");
+        assert!(user.contains("- p999 · somethingElse"), "{user}");
         for needle in [
             "s0: phrase \"supplies\"",
             "k0: kind word \"supplier\"",

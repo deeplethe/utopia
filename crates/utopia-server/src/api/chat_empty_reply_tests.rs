@@ -375,6 +375,8 @@ async fn a_reply_that_stays_empty_is_an_error_after_one_retry() -> anyhow::Resul
 mod error_code_tests;
 #[path = "chat_fallback_tests.rs"]
 mod fallback_tests;
+#[path = "chat_graph_citation_tests.rs"]
+mod graph_citation_tests;
 #[path = "chat_history_tests.rs"]
 mod history_tests;
 #[path = "chat_lookup_tests.rs"]

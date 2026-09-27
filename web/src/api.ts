@@ -1322,6 +1322,8 @@ export interface AgentProposalFields {
   kind_words?: string[];
   /** 原文里的几句，给人核对定义用 */
   examples?: string[];
+  /** 本体里离这条提案最近的已有元素（按向量）：采纳前看它是不是其实已经有了 */
+  closest?: { key: string; label: string; distance: number }[];
   domains?: string[];
   ranges?: string[];
   parents?: string[];

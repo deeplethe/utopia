@@ -213,19 +213,28 @@ pub async fn report(
     })))
 }
 
+#[derive(Deserialize, Default)]
+pub struct ProposeReq {
+    /// 测量用（bench/agent.mjs）：`full` = 每批送全词表。缺省是按批裁过的
+    #[serde(default)]
+    pub glossary: Option<String>,
+}
+
 /// 叫代理来看一眼：排一份任务，马上回。结果落在 `ontology_proposals`，界面从那里读
 pub async fn propose(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(kb_id): Path<Uuid>,
+    Json(req): Json<ProposeReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Editor).await?;
-    let queued = utopia_store::jobs::enqueue_unless_queued(
-        &state.pool,
-        "propose_ontology",
-        json!({ "kb_id": kb_id }),
-    )
-    .await?;
+    let payload = if req.glossary.as_deref() == Some("full") {
+        json!({ "kb_id": kb_id, "glossary": "full" })
+    } else {
+        json!({ "kb_id": kb_id })
+    };
+    let queued =
+        utopia_store::jobs::enqueue_unless_queued(&state.pool, "propose_ontology", payload).await?;
     Ok(Json(json!({ "queued": queued.is_some() })))
 }
 

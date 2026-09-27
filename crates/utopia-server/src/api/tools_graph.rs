@@ -203,6 +203,53 @@ fn contains_ci(haystack: Option<&str>, needle: &str) -> bool {
     haystack.is_some_and(|h| h.to_lowercase().contains(&needle.to_lowercase()))
 }
 
+// ---- evidence marks (#935) -------------------------------------------------------
+
+/// 这一次显示出来的事实各自的第一条有效证据（#935）。
+///
+/// 事实行上印它的 `[n]`，证据块登进这一轮的来源清单，界面上点开就是那句原话；从前
+/// 图谱答出来的回答一个号也没有，界面只能说「未引用任何来源」。印哪一行时才登记，
+/// 所以号码按出现的顺序排，与检索结果共用一套号（同一块只有一个号）。
+///
+/// 没有来源清单（MCP）、或证据读不出来时是空的：事实行照旧，不带号
+struct Evidence(HashMap<Uuid, utopia_core::models::ChunkView>);
+
+impl Evidence {
+    /// 事实 id 收成自有的 `Vec` 再传进来：借着显示列表的迭代器跨 await 持有，工具的
+    /// future 就不再对所有生命周期都是 `Send`（对话的钩子与 MCP 路由都要求它）
+    async fn load(
+        ctx: &ToolCtx<'_>,
+        fact_ids: Vec<Uuid>,
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        if !ctx.has_source_list() {
+            return Self(HashMap::new());
+        }
+        match utopia_store::graph::first_live_evidence(&ctx.state.pool, ctx.kb_id, &fact_ids, as_of)
+            .await
+        {
+            Ok(rows) => Self(rows.into_iter().collect()),
+            Err(e) => {
+                tracing::warn!(error = %e, "Evidence lookup for citation marks failed");
+                Self(HashMap::new())
+            }
+        }
+    }
+
+    /// ` [n]`：这条事实的证据登进清单后的号。没有有效证据的事实（派生事实也是）不带号
+    fn mark(&self, sink: &mut ToolSink, fact_id: Uuid) -> String {
+        match self.0.get(&fact_id) {
+            Some(chunk) => {
+                let n = super::tools::cite(sink, chunk.id.to_string(), |n| {
+                    super::tools::source_json(n, chunk)
+                });
+                format!(" [{n}]")
+            }
+            None => String::new(),
+        }
+    }
+}
+
 // ---- find_entities ---------------------------------------------------------------
 
 pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
@@ -726,19 +773,23 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
             ));
         }
         lines.push(head);
+        let ids: Vec<Uuid> = shown.iter().map(|f| f.id).collect();
+        let evidence = Evidence::load(ctx, ids, m.as_of).await;
         let shown_owned: Vec<EntityFact> = shown.iter().map(|f| (*f).clone()).collect();
         for (key, group) in grouped(&shown_owned) {
             lines.push(format!("## {key} ({})", group.len()));
             for f in group {
                 lines.push(format!(
-                    "{}{}{} {}",
+                    "{}{}{} {}{}",
                     other_text(f),
                     qualifiers_text(f),
                     range_text(f),
-                    confidence_text(f)
+                    confidence_text(f),
+                    evidence.mark(sink, f.id)
                 ));
             }
         }
+        // 派生事实自己不带号：它是规则算出来的，出处在它的前提上，前提各带各的
         lines.extend(derived_lines);
     }
     let detail = entity_facts_detail(shown.len(), m.at, m.as_of, m.before);
@@ -884,6 +935,8 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
             }
         ));
     } else {
+        let ids: Vec<Uuid> = shown.iter().map(|f| f.id).collect();
+        let evidence = Evidence::load(ctx, ids, m.as_of).await;
         let groups = grouped(&shown);
         // 数的是对端实体，不是事实：同一条边常是两条事实（一条带日期一条不带）
         let entities: HashSet<Uuid> = linked.iter().filter_map(|f| f.other_id).collect();
@@ -910,11 +963,12 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
                         .map(|t| format!(" [{t}]"))
                         .unwrap_or_default();
                     format!(
-                        "{}{}{} {}",
+                        "{}{}{} {}{}",
                         other_text(f),
                         ty,
                         range_text(f),
-                        confidence_text(f)
+                        confidence_text(f),
+                        evidence.mark(sink, f.id)
                     )
                 })
                 .collect();
@@ -1027,12 +1081,18 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
             ));
         }
         lines.push(head);
+        let ids: Vec<Uuid> = shown.iter().map(|f| f.id).collect();
+        let evidence = Evidence::load(ctx, ids, m.as_of).await;
         for f in &shown {
             let stamp = crate::time_text::world(
                 f.valid_from.expect("dated"),
                 f.valid_from_precision.as_deref(),
             );
-            lines.push(format!("{stamp}  {}", fact_line(f)));
+            lines.push(format!(
+                "{stamp}  {}{}",
+                fact_line(f),
+                evidence.mark(sink, f.id)
+            ));
         }
     }
     let detail = format!("{} of {} dated", shown.len(), dated.len());
@@ -1077,10 +1137,16 @@ pub(super) fn edge_text(prev: Uuid, e: &PathEdge) -> String {
     }
 }
 
+#[cfg(test)]
 pub(super) fn path_text(p: &Path) -> String {
+    path_text_marked(p, |_| String::new())
+}
+
+/// 一条路径，每一跳后面跟着 `mark` 给那条事实的东西（对话里是它证据的 `[n]`，#935）
+fn path_text_marked(p: &Path, mut mark: impl FnMut(Uuid) -> String) -> String {
     let mut parts = Vec::new();
     for (i, e) in p.edges.iter().enumerate() {
-        parts.push(edge_text(p.nodes[i], e));
+        parts.push(format!("{}{}", edge_text(p.nodes[i], e), mark(e.fact_id)));
     }
     parts.join("; ")
 }
@@ -1223,8 +1289,15 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
         from.name,
         to.name
     ));
+    // 每一跳是一条事实，各带各的号
+    let hops: Vec<Uuid> = paths
+        .iter()
+        .flat_map(|p| p.edges.iter().map(|e| e.fact_id))
+        .collect();
+    let evidence = Evidence::load(ctx, hops, m.as_of).await;
     for (i, p) in paths.iter().enumerate() {
-        lines.push(format!("{}. {}", i + 1, path_text(p)));
+        let text = path_text_marked(p, |fact| evidence.mark(sink, fact));
+        lines.push(format!("{}. {}", i + 1, text));
     }
     if paths.len() >= limits.max_paths {
         lines.push(format!(

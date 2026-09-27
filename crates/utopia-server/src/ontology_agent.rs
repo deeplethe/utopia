@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use utopia_core::models::RelationAxioms;
+use utopia_core::models::{RelationAxioms, RelationTypeView};
 use utopia_core::AppError;
 use utopia_extract::ontology_agent as agent;
 use utopia_store::agent_reviews::{self, Review};
@@ -29,6 +29,11 @@ pub(crate) const QUESTIONS_PER_ROUND: usize = 10;
 const TOP_SIGNATURES: usize = 40;
 const TOP_KIND_WORDS: usize = 20;
 const TOP_ENTITIES: usize = 20;
+
+/// 一条形状结构上对得上的属性多过这个数，就按向量只留最近的这么多带定义（同对齐的短名单）
+const GLOSSARY_PER_SHAPE: usize = 10;
+/// 每条形状按意思最近的这么多条属性，结构对不上也带定义
+const GLOSSARY_NEAREST_ANYWAY: usize = 5;
 
 /// 一次调用交给模型的形状数（0044 决定 3 的成本教训：词表每批只带一次）
 pub(crate) const SIGNATURES_PER_CALL: usize = 12;
@@ -50,7 +55,18 @@ fn shape_of(sig: &PhraseSignature) -> Value {
 }
 
 /// 任务入口：一个库同时只跑一份（同两种对齐，并行会把端点打出 502）
+#[cfg(test)]
 pub async fn propose(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
+    propose_with(state, kb_id, false).await
+}
+
+/// `full_glossary` 是测量用的旋钮（`scripts/bench/agent.mjs`）：每批都送全部属性的定义，
+/// 好和按批裁过的词表在同一批形状上比失败率、重复提案和 token。产品路径不开它
+pub async fn propose_with(
+    state: &AppState,
+    kb_id: Uuid,
+    full_glossary: bool,
+) -> anyhow::Result<()> {
     let pool = &state.pool;
     let kb = utopia_store::kbs::get(pool, kb_id).await?;
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
@@ -70,7 +86,7 @@ pub async fn propose(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
         tracing::info!(%kb_id, "本体代理已有一份在跑，这次跳过");
         return Ok(());
     }
-    let result = propose_locked(state, kb_id, &settings, &client).await;
+    let result = propose_locked(state, kb_id, &settings, &client, full_glossary).await;
     let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext('propose_ontology'), hashtext($1))")
         .bind(kb_id.to_string())
         .execute(&mut *guard)
@@ -96,6 +112,7 @@ async fn propose_locked(
     kb_id: Uuid,
     settings: &utopia_core::models::LlmSettings,
     client: &utopia_llm::LlmClient,
+    full_glossary: bool,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
@@ -267,24 +284,96 @@ async fn propose_locked(
             .filter_map(|id| class_key.get(id).copied())
             .collect()
     };
-    let glossary = agent::Glossary {
-        classes: classes
+    // 词表按批裁（第一次真跑：98 条属性带定义每次调用 4k token，占一次调用的一半多）。
+    // 每条形状只给结构对得上的属性定义；对得上的太多就按向量留最近的几条——判据和对齐的
+    // 候选、短名单是同一套。其余属性只报键和标签，让模型知道它们在
+    let closure =
+        crate::phrase_alignment::closures(classes.iter().map(|c| (c.id, c.parents.as_slice())));
+    let nearest: Vec<Vec<Uuid>> = {
+        let queries: Vec<String> = open
             .iter()
-            .map(|c| (c.key.as_str(), c.label.as_str(), c.description.as_str()))
-            .collect(),
-        properties: props
-            .iter()
-            .map(|p| {
-                (
-                    p.key.as_str(),
-                    p.label.as_str(),
-                    p.kind.as_str(),
-                    keys_of(&p.domains),
-                    keys_of(&p.ranges),
-                    p.description.as_str(),
-                )
+            .map(|s| match (s.examples.first(), s.quotes.first()) {
+                (Some(e), Some(q)) => format!("{} · {e} · {q}", s.phrase),
+                (Some(e), None) => format!("{} · {e}", s.phrase),
+                _ => s.phrase.clone(),
             })
-            .collect(),
+            .collect();
+        match crate::ontology_index::nearest_for_each(
+            state,
+            kb_id,
+            &queries,
+            GLOSSARY_PER_SHAPE as i64,
+            crate::ontology_index::Target::Predicate(None),
+        )
+        .await
+        {
+            Ok(v) => v
+                .into_iter()
+                .map(|cands| cands.into_iter().map(|c| c.id).collect())
+                .collect(),
+            Err(e) => {
+                tracing::warn!(%kb_id, error = %e, "本体代理：形状向量没算出来，词表按结构裁");
+                vec![Vec::new(); open.len()]
+            }
+        }
+    };
+    let glossary_for = |ids: std::ops::Range<usize>| -> agent::Glossary<'_> {
+        let mut full: HashSet<Uuid> = HashSet::new();
+        if full_glossary {
+            full.extend(props.iter().map(|p| p.id));
+        }
+        for i in ids {
+            let (Some(s), near) = (open.get(i), nearest.get(i)) else {
+                continue;
+            };
+            let fitting: Vec<&RelationTypeView> = props
+                .iter()
+                .filter(|p| crate::phrase_alignment::structurally_fits(p, s, &closure))
+                .collect();
+            // 意思最近的几条不管结构对不对得上都给定义：一端没类型、或宾语是字面值的形状，
+            // 结构上对不上 positionHeld / workLocation，模型看不到定义就把它们又提了一遍
+            // （受控对比里重复提案 1% → 6%，十条里七条是这样来的）
+            if let Some(near) = near {
+                full.extend(near.iter().take(GLOSSARY_NEAREST_ANYWAY).copied());
+            }
+            if fitting.len() > GLOSSARY_PER_SHAPE {
+                if let Some(near) = near.filter(|n| !n.is_empty()) {
+                    full.extend(
+                        fitting
+                            .iter()
+                            .filter(|p| near.contains(&p.id))
+                            .map(|p| p.id),
+                    );
+                    continue;
+                }
+            }
+            full.extend(fitting.iter().map(|p| p.id));
+        }
+        agent::Glossary {
+            classes: classes
+                .iter()
+                .map(|c| (c.key.as_str(), c.label.as_str(), c.description.as_str()))
+                .collect(),
+            properties: props
+                .iter()
+                .filter(|p| full.contains(&p.id))
+                .map(|p| {
+                    (
+                        p.key.as_str(),
+                        p.label.as_str(),
+                        p.kind.as_str(),
+                        keys_of(&p.domains),
+                        keys_of(&p.ranges),
+                        p.description.as_str(),
+                    )
+                })
+                .collect(),
+            others: props
+                .iter()
+                .filter(|p| !full.contains(&p.id))
+                .map(|p| (p.key.as_str(), p.label.as_str()))
+                .collect(),
+        }
     };
     let sig_items: Vec<agent::OpenSignature<'_>> = open
         .iter()
@@ -329,6 +418,7 @@ async fn propose_locked(
             .unwrap_or(&[]);
         let sig_ids: HashSet<i64> = sig_batch.iter().map(|s| s.id).collect();
         let word_ids: HashSet<i64> = word_batch.iter().map(|w| w.id).collect();
+        let glossary = glossary_for(b * SIGNATURES_PER_CALL..(b + 1) * SIGNATURES_PER_CALL);
         let messages = agent::build_proposal_messages(sig_batch, word_batch, &glossary, &q_items);
         let reply =
             match chat_retrying_rate_limits_at(state, settings, client, &messages, Some(0.0)).await
@@ -353,6 +443,9 @@ async fn propose_locked(
             }
         };
         malformed += parsed.malformed;
+        for why in &parsed.reasons {
+            tracing::warn!(%kb_id, batch = b, why = %why, "本体代理：坏项");
+        }
         let mut sig_outcome: HashMap<i64, (&str, String)> = HashMap::new();
         let mut word_outcome: HashMap<i64, (&str, String)> = HashMap::new();
         // 「本体里已经有」：存成 map_to 提案，人点「用已有的」就是一次人的绑定判定
@@ -363,6 +456,7 @@ async fn propose_locked(
                 "class".to_string()
             } else {
                 malformed += 1;
+                tracing::warn!(%kb_id, batch = b, why = %format!("existing: no such key in the ontology: {}", e.key), "本体代理：坏项");
                 continue;
             };
             let slot = format!("map_to:{}", e.key);
@@ -565,6 +659,48 @@ async fn propose_locked(
         .collect();
     // 同一个目标上一轮已经答过一批形状：并起来，不是盖掉（第一次真跑第三轮盖掉了第二轮的）
     let mut items = items;
+    // 每条新元素带上本体里离它最近的两个已有元素（按向量，不问模型）。裁过的词表下模型看不到
+    // 大部分属性的定义，受控对比里重复或反向已有属性的提案从 1% 升到 5%（awardReceived、
+    // performer 这几条）；审的人要在采纳前看见"它最像谁"
+    for class_side in [false, true] {
+        let idx: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| {
+                it.section != "map_to" && (it.section == "entity_types") == class_side
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let queries: Vec<String> = idx
+            .iter()
+            .map(|i| {
+                let p = &items[*i].payload;
+                format!(
+                    "{} · {}",
+                    p.get("label").and_then(Value::as_str).unwrap_or(""),
+                    p.get("description").and_then(Value::as_str).unwrap_or("")
+                )
+            })
+            .collect();
+        let target = if class_side {
+            crate::ontology_index::Target::Class
+        } else {
+            crate::ontology_index::Target::Predicate(None)
+        };
+        match crate::ontology_index::nearest_for_each(state, kb_id, &queries, 2, target).await {
+            Ok(found) => {
+                for (i, cands) in idx.into_iter().zip(found) {
+                    items[i].payload["closest"] = json!(cands
+                        .iter()
+                        .map(|c| json!({ "key": c.key, "label": c.label, "distance": c.distance }))
+                        .collect::<Vec<_>>());
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%kb_id, error = %e, "本体代理：最近的已有元素没算出来，提案不带这一格");
+            }
+        }
+    }
     for it in items.iter_mut().filter(|it| it.section == "map_to") {
         if let Some(prev) =
             utopia_store::ontology::open_proposal(pool, kb_id, "map_to", &it.key).await?
@@ -574,7 +710,7 @@ async fn propose_locked(
     }
     utopia_store::ontology::save_agent_proposals(pool, kb_id, &items).await?;
     agent_reviews::record(pool, kb_id, &reviews).await?;
-    tracing::info!(%kb_id, proposals = items.len(), failed, malformed, skipped_existing, "本体代理结束");
+    tracing::info!(%kb_id, proposals = items.len(), failed, malformed, skipped_existing, calls, glossary = if full_glossary { "full" } else { "trimmed" }, "本体代理结束");
     if !items.is_empty() {
         state.emit_pending(kb_id);
     }
@@ -1011,6 +1147,7 @@ async fn propose_questions_with(
                 )
             })
             .collect(),
+        others: Vec::new(),
     };
     // 说得最多的形状，带上对齐绑到的属性
     let mut sigs = phrase_bindings::signatures(pool, kb_id).await?;

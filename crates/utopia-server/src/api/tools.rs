@@ -49,6 +49,13 @@ pub struct ToolCtx<'a> {
 }
 
 impl ToolCtx<'_> {
+    /// 这一轮有没有来源清单：对话有，MCP 没有（MCP 的调用总带着令牌）。
+    /// 图谱事实行上的 `[n]` 只在有清单时印（#935）——号码指向清单里的一条，
+    /// 对一个手里没有清单的调用方没有意义，它从 `structuredContent` 的 `document_ids` 取出处
+    pub fn has_source_list(&self) -> bool {
+        self.via_token.is_none()
+    }
+
     /// 一段文字的向量，用这个工作区配的嵌入模型。没配、或调用失败时 None：
     /// 图谱工具照常按子串走，向量只是第二阶段
     pub async fn embed(&self, text: &str) -> Option<Vec<f32>> {
@@ -237,7 +244,11 @@ pub async fn dispatch(
 
 /// 已经引过的给回原号，没引过的落一个新号。**同一个 chunk 在一轮对话里
 /// 只能有一个号**，否则模型引 `[2]` 而界面上有两个 `[2]`。
-fn cite(sink: &mut ToolSink, key: String, make: impl FnOnce(usize) -> serde_json::Value) -> usize {
+pub(super) fn cite(
+    sink: &mut ToolSink,
+    key: String,
+    make: impl FnOnce(usize) -> serde_json::Value,
+) -> usize {
     match sink.source_ids.iter().position(|id| *id == key) {
         Some(i) => i + 1,
         None => {

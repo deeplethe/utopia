@@ -1887,6 +1887,16 @@ function AgentMeta({
       {!!p.serves?.length && (
         <Chip tone="info">{S.ontology.servesQuestions(p.serves.length)}</Chip>
       )}
+      {!!p.closest?.length && (
+        <span
+          className="text-small text-ink-2 whitespace-nowrap"
+          title={p.closest
+            .map((c) => `${c.key} · ${c.label} · ${c.distance.toFixed(2)}`)
+            .join("\n")}
+        >
+          {S.ontology.closestExisting(p.closest[0].key, p.closest[0].label)}
+        </span>
+      )}
     </>
   );
 }
