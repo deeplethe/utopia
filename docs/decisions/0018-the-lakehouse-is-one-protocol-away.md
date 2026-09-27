@@ -1,6 +1,6 @@
 # 0018 · The lakehouse is one protocol away
 
-- **Status**: implemented · `trino` / `databricks` / `snowflake` engines in `query_engine/` (migration `0021` widens the `engine` CHECK) · Trino has run against a real cluster and keeps a gated live test (#327); Databricks and Snowflake are covered by protocol replays only (wiremock) and **still want one** (#241, #242) · MaxCompute is not done, see the last section · the MySQL wire family this record skipped landed later in #303 (migration `0025`), so the order below is now "Postgres, MySQL, HTTP" as the `query_engine` header always had it
+- **Status**: Implemented (#239) · open: Databricks and Snowflake against a real cluster (#241, #242), MaxCompute
 - **Written**: 2026-09-03 (conventions in the [README](README.md))
 - **Related**: [0011](0011-a-mapping-is-not-a-fact.md) placed data sources at the deployment level and mounts at the base level; this record leaves that layer alone. [0016](0016-close-the-open-seams-before-cutting-new-ones.md) D4 put the MySQL wire protocol ahead of the lakehouse; the first section explains why the order flipped
 
@@ -56,3 +56,9 @@ It is the one name of the four that is not "JSON in, JSON out": requests are sig
 - **How much schema to fetch.** All three expose `information_schema.columns`, and a lakehouse catalog can hold thousands of tables; `sync_schema_doc` caps at 200. With a schema in the connection string only that schema is read, otherwise the whole catalog. Whether that is enough waits for a real cluster.
 - **The type-restoration table** in `coerce` is hand-written from the three vendors' docs. Snowflake's `fixed` with a scale returns `"42.10"`, which becomes 42.1 and loses the trailing zero; harmless for a model, possibly not for an "exact definition". Revisit when the semantic layer keeps evidence (0016 D1) and decide whether to keep the raw string alongside.
 - **Trino's `ssl` inference**: a password, `ssl=true`, or port 443 / 8443 means https, anything else is plaintext. That is trino-python's rule, and someone who gets it wrong sees a TLS error instead of a hint.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented · `trino` / `databricks` / `snowflake` engines in `query_engine/` (migration `0021` widens the `engine` CHECK) · Trino has run against a real cluster and keeps a gated live test (#327); Databricks and Snowflake are covered by protocol replays only (wiremock) and **still want one** (#241, #242) · MaxCompute is not done, see the last section · the MySQL wire family this record skipped landed later in #303 (migration `0025`), so the order below is now "Postgres, MySQL, HTTP" as the `query_engine` header always had it

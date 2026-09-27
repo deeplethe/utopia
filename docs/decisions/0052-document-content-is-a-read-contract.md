@@ -1,6 +1,6 @@
 # 0052 · Document content is a read contract over the retained ledger
 
-- **Status**: proposed for review
+- **Status**: Proposed
 - **Written**: 2026-09-21
 - **Related**: [#859](https://github.com/deeplethe/utopia/issues/859); [0014](0014-identity-from-the-person-scope-from-the-token.md); [0040](0040-a-chunk-says-where-its-words-came-from.md)
 

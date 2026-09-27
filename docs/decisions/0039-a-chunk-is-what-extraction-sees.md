@@ -1,12 +1,6 @@
 # 0039 · A chunk is what extraction sees
 
-- **Status**: Implemented, cut 1 · the parser's Markdown is read into top-level blocks
-  (`blocks.rs`), the packer works over blocks with a token budget (`chunker.rs`): a table
-  travels with its caption and header, a table too wide for one chunk is split by rows and every
-  continuation repeats caption and header, headings become a breadcrumb prefix and the
-  `chunks.heading` column, a table split by a page break is joined back · not in this cut:
-  an external parser behind the block model (cut 2, Docling for PDF layout and scans), evidence
-  that points at a table cell or an image region, a budget measured for its own sake
+- **Status**: In progress · cut 1 built · open: cut 2, an external parser
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: [0006](0006-ontology-scale-and-the-prompt.md) sets the other half of the prompt
   budget; [0033](0033-rss-source-summaries-are-source-scoped.md) is the recall bench's home;
@@ -238,3 +232,9 @@ not the column names, which is the open question below.
   come out as tab- and pipe-separated lines rather than Markdown tables and are likewise read as
   paragraphs. Emitting real Markdown tables from those four parsers is cheap for the first two
   and is cut 2 for the last two.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented, cut 1 · the parser's Markdown is read into top-level blocks (`blocks.rs`), the packer works over blocks with a token budget (`chunker.rs`): a table travels with its caption and header, a table too wide for one chunk is split by rows and every continuation repeats caption and header, headings become a breadcrumb prefix and the `chunks.heading` column, a table split by a page break is joined back · not in this cut: an external parser behind the block model (cut 2, Docling for PDF layout and scans), evidence that points at a table cell or an image region, a budget measured for its own sake

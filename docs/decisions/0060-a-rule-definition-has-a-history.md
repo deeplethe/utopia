@@ -1,6 +1,6 @@
 # 0060 · A rule's definition has a history
 
-- **Status**: implemented 2026-09-25 in the PR for #912 · `attribute_rule_versions` (migration 0076), a derivation names the version it was drawn under, the proof and the rules panel read it, `GET /kbs/{id}/rules/{rule_id}/versions` · the export of business-rule bodies that [0020](0020-an-auditor-reads-it-without-us.md)'s revision deferred can now follow
+- **Status**: Implemented 2026-09-25 (#913, migration 0076)
 - **Written**: 2026-09-25 (conventions in the [README](README.md))
 - **Related**: [0002](0002-reasoning-engine.md) made a derivation keep its record-time lifetime; [0019](0019-the-second-clock-can-be-rewound.md) is the record axis this record extends to rules; [0021](0021-a-rule-reads-attributes-and-concludes-a-type.md) built the business rule as one row; [0030](0030-a-rule-may-read-what-a-rule-concluded.md) keeps a kept conclusion's row and reproves it; [0020](0020-an-auditor-reads-it-without-us.md) (revision 2026-09-25) declined to export rule bodies for the reason this record removes. From #912, out of #902.
 
@@ -25,3 +25,9 @@
 - **The export of a version's body.** This record makes it honest to export a business rule's conditions and expressions per version, which 0020's revision deferred; the vocabulary for operands, range bounds and expressions is still #902's second cut and is not chosen here.
 - **Restoring an old version.** Editing back to an earlier definition opens a new version with the same content. A "revert" button would be sugar over that and can wait for someone to want it.
 - **Versions of axiom declarations.** An axiom is a flag on a predicate, and a derivation already names the declaring predicate and kind; whether declarations need a history is a different question.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented 2026-09-25 in the PR for #912 · `attribute_rule_versions` (migration 0076), a derivation names the version it was drawn under, the proof and the rules panel read it, `GET /kbs/{id}/rules/{rule_id}/versions` · the export of business-rule bodies that [0020](0020-an-auditor-reads-it-without-us.md)'s revision deferred can now follow

@@ -1,6 +1,6 @@
 # 0023 · RSS observations are not documents
 
-- **Status**: Implemented in #326
+- **Status**: Implemented (#326)
 - **Written**: 2026-09-05
 - **Discussion**: [maintainer feedback on #326](https://github.com/deeplethe/utopia/pull/326#issuecomment-5547020427). This record follows implementation; it does not claim the issue/record-before-code sequence in `CONTRIBUTING.md` was followed.
 

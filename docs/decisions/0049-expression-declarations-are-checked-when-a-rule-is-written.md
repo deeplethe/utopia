@@ -1,6 +1,6 @@
 # 0049 · Expression declarations are checked when a rule is written
 
-- **Status**: proposed; domain contract pending review. The opt-in web draft does not validate units or save rules.
+- **Status**: Proposed
 - **Written**: 2026-09-21
 - **Related**: [0032](0032-a-rule-computes-what-it-concludes.md); [PR #839](https://github.com/deeplethe/utopia/pull/839).
 

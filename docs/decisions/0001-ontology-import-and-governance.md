@@ -1,14 +1,6 @@
 # 0001 · Ontology import and governance
 
-- **Status**: In progress. P0, P1, P2 and P2c built. P3's budget switch built
-  (`deployment_settings.ontology_prompt_budget`, default 24,000 characters; over budget the ontology
-  is retrieved per chunk, [0006](0006-ontology-scale-and-the-prompt.md)). P3a built but runs only by
-  hand. P3b built in a different shape: the surface predicate lands on
-  `fact_evidence.proposed_predicate`, and mapping back is `predicate_match` plus the adoption loop of
-  [0003](0003-ontology-growth-loop.md). P4a built (`entities.type_source`, #114); P4b and P4c pending.
-  P5 delivered by [0002](0002-reasoning-engine.md). The "argument order" half of criterion 2
-  overturned by [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md). Checked against the code
-  2026-09-02.
+- **Status**: In progress · P0–P2c, the P3 budget and P4a built; P5 delivered by 0002 · open: P3a runs by hand only, P4b, P4c
 - **Written**: 2026-08-27 / 28 · condensed into English 2026-09-03
 - **Related**: [0002](0002-reasoning-engine.md) replaces P5's schedule;
   [0003](0003-ontology-growth-loop.md) is what P3b and P4 became;
@@ -263,3 +255,9 @@ since moved to `scripts/bench/` (0012); these numbers are real but no longer com
 - `disjointWith` pruning of merge candidates on the resolution side is not done.
 - The `active` flag has only a governance use left (retired classes take no new entities); whether
   it is worth building waits for a real large ontology.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> In progress. P0, P1, P2 and P2c built. P3's budget switch built (`deployment_settings.ontology_prompt_budget`, default 24,000 characters; over budget the ontology is retrieved per chunk, [0006](0006-ontology-scale-and-the-prompt.md)). P3a built but runs only by hand. P3b built in a different shape: the surface predicate lands on `fact_evidence.proposed_predicate`, and mapping back is `predicate_match` plus the adoption loop of [0003](0003-ontology-growth-loop.md). P4a built (`entities.type_source`, #114); P4b and P4c pending. P5 delivered by [0002](0002-reasoning-engine.md). The "argument order" half of criterion 2 overturned by [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md). Checked against the code 2026-09-02.

@@ -1,6 +1,6 @@
 # 0021 · A rule reads attributes and concludes a type
 
-- **Status**: implemented · all four decisions built and the five phases done (#359) · `derived_facts` widened, `attribute_rules` authored through the ontology page, the evaluator running in the materialisation job, conclusions explained in the entity panel with their premises, and two read-only MCP tools (`list_rules`, `rule_matches`) · writing a rule stays out of MCP, see the open question · a conclusion's own text cannot be edited yet (delete and rewrite), the rule card's entity count is not clickable, and a rule-classified entity carries no canvas marker
+- **Status**: Implemented (#359) · open: editing a conclusion's text, a canvas marker, a clickable entity count
 - **Written**: 2026-09-05 (conventions in the [README](README.md))
 - **Related**: [0002](0002-reasoning-engine.md) built the derivation runner and ruled out a user-defined rule language for ontology axioms; this record adds one narrow rule kind that lives beside the axioms, not inside them. [0009](0009-no-type-is-a-type.md) made `type_id` nullable and a type a considered claim; a rule concludes a *second* type without touching the asserted one. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) draws the asserted / derived line this conclusion sits below. From #277.
 
@@ -80,3 +80,9 @@ A well with a 2023 reading that fires the rule and a 2025 reading that does not 
   rule mark" — is answered by `rule_matches`. Revisit when someone reports losing track of a
   marked entity on the canvas, which is also when it will be clear what the marker should say.
 - **Where authored rules live for export.** If a deployment's rules are part of its ontology, RDF export (#308) has to say how — a rule is not an OWL axiom. Deferred to whenever export lands.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented · all four decisions built and the five phases done (#359) · `derived_facts` widened, `attribute_rules` authored through the ontology page, the evaluator running in the materialisation job, conclusions explained in the entity panel with their premises, and two read-only MCP tools (`list_rules`, `rule_matches`) · writing a rule stays out of MCP, see the open question · a conclusion's own text cannot be edited yet (delete and rewrite), the rule card's entity count is not clickable, and a rule-classified entity carries no canvas marker

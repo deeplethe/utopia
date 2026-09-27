@@ -1,11 +1,6 @@
 # 0011 · A mapping is configuration
 
-- **Status**: Implemented · `concept_mappings` table and wiring (#126, the same commit as
-  this record), a standalone Data Mappings page (#140), moved out of the Review queue (#148)
-  · of the three things to rebuild, the Review flow and history are done, the evidence chain
-  is not · one of two open questions answered (2026-09-02 check) · **revised in part by
-  [0036](0036-exploration-aligns-a-schema-to-the-ontology.md)** (2026-09-09): what a mapping
-  is stands; what a concept is changes, and the table becomes a rendered one
+- **Status**: Implemented (#126, #140, #148) · open: the evidence chain
 - **Written**: 2026-08-31 · condensed into English 2026-09-03
 - **Related**: [0009](0009-no-type-is-a-type.md) removes the builtin entity classes,
   [0010](0010-no-relation-is-no-relation.md) the fallback relation, #125 the other eight
@@ -103,3 +98,9 @@ rebuilding all three.
 - **One concept, several sources.** `(kb_id, concept_id, source)` allows a different
   definition per source, on purpose. Which one does querying use? Today all go into the
   prompt (cap 30) and the model picks; rules are easier to add now that it is a table.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented · `concept_mappings` table and wiring (#126, the same commit as this record), a standalone Data Mappings page (#140), moved out of the Review queue (#148) · of the three things to rebuild, the Review flow and history are done, the evidence chain is not · one of two open questions answered (2026-09-02 check) · **revised in part by [0036](0036-exploration-aligns-a-schema-to-the-ontology.md)** (2026-09-09): what a mapping is stands; what a concept is changes, and the table becomes a rendered one

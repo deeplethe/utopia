@@ -1,14 +1,6 @@
 # 0007 · Counting decides what becomes a relation
 
-- **Status**: Built · adoption by counting (`MIN_DOCS = 2`; an LLM run needs `MIN_SIGNALS
-  = 3`); six defects fixed; proposals persist in `ontology_proposals` (#112); open:
-  narrative verbs in the ontology, `merge_key` not folding `_by`; the starting point (10
-  seeds, the `related_to` share) no longer exists · 2026-09-10: the counting path now
-  takes `temporal` from the proposal it already reads for classes and attributes, instead
-  of writing `state` for every relation it adopts — the comment that justified `state`
-  ("temporal has no consequence unless functional is set") stopped being true at
-  [0031](0031-an-event-holds-at-the-moment-it-names.md), which normalises every write by
-  it; counting still decides *whether*, the model only answers *which kind*.
+- **Status**: Implemented (#112) · open: narrative verbs, `merge_key` not folding `_by`
 - **Written**: 2026-08-30 · condensed into English 2026-09-03
 - **Related**: [0006](0006-ontology-scale-and-the-prompt.md) for the bench and its
   caveats; [0010](0010-no-relation-is-no-relation.md) and
@@ -110,3 +102,9 @@ the corpus is dense in training data.
   `_by` into the group and mark it for swapping.
 - **What a 1,500-term start does to the adoption loop** has not been measured; no
   threshold has moved.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Built · adoption by counting (`MIN_DOCS = 2`; an LLM run needs `MIN_SIGNALS = 3`); six defects fixed; proposals persist in `ontology_proposals` (#112); open: narrative verbs in the ontology, `merge_key` not folding `_by`; the starting point (10 seeds, the `related_to` share) no longer exists · 2026-09-10: the counting path now takes `temporal` from the proposal it already reads for classes and attributes, instead of writing `state` for every relation it adopts — the comment that justified `state` ("temporal has no consequence unless functional is set") stopped being true at [0031](0031-an-event-holds-at-the-moment-it-names.md), which normalises every write by it; counting still decides *whether*, the model only answers *which kind*.

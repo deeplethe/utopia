@@ -1,12 +1,6 @@
 # 0004 · Language follows the reader of each text
 
-- **Status**: Built · UI strings in `web/src/i18n/`; user-reachable server errors carry a
-  `code` (`AppError::Invalid`, 81 sites; 23 `Validation` guards stay English), and so do
-  the chat stream's `error` frames, in the same `{error, code}` body (2026-09-26);
-  `description` follows `knowledge_bases.ontology_lang`; LLM output for people takes
-  `locale` from the request; extracted data stays verbatim; the chat's step trail carries
-  fields the client words (`status`, counts, moments), and keeps its English `detail` for
-  stored messages (2026-09-26); the UI does not guess the browser language yet.
+- **Status**: Implemented · open: the UI does not guess the browser language
 - **Written**: 2026-08-29 · condensed into English 2026-09-03
 - **Related**: [0001](0001-ontology-import-and-governance.md) made `description`
   load-bearing; [0003](0003-ontology-growth-loop.md) separated `reason` from
@@ -84,3 +78,9 @@ The last row is not copy. It is a quotation.
   and the Chinese did not". Edit both together.
 - **Mixed-language corpora in one knowledge base**: one language per KB; design it when it
   happens.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Built · UI strings in `web/src/i18n/`; user-reachable server errors carry a `code` (`AppError::Invalid`, 81 sites; 23 `Validation` guards stay English), and so do the chat stream's `error` frames, in the same `{error, code}` body (2026-09-26); `description` follows `knowledge_bases.ontology_lang`; LLM output for people takes `locale` from the request; extracted data stays verbatim; the chat's step trail carries fields the client words (`status`, counts, moments), and keeps its English `detail` for stored messages (2026-09-26); the UI does not guess the browser language yet.

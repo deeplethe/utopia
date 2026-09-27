@@ -1,10 +1,6 @@
 # 0008 · Ontology packs as the cold start
 
-- **Status**: Built · five packs embedded in the binary (gzip, 1.7 MB → 316 KB),
-  multi-select at KB creation, 22-row static alignment table · a new KB seeds no
-  relations: the packs are the whole ontology · **no pack is checked by default and the
-  base made at registration installs none** (2026-09-10, #580) · the three open questions
-  stay open; the Chinese-label one got worse (2026-09-02 check)
+- **Status**: Implemented · open: the record's three open questions
 - **Written**: 2026-08-30 · condensed into English 2026-09-03
 - **Related**: [0001](0001-ontology-import-and-governance.md) criteria and IRI/key split;
   [0006](0006-ontology-scale-and-the-prompt.md) prompt budget;
@@ -133,3 +129,9 @@ order status).
 - **Starting scale is a variable.** 0007's Snowball run showed that growing the vocabulary
   from 10 to 629 changes matching (49 recalls → 18). Nobody has studied what starting at
   1500 does to the adoption loop; `MIN_DOCS = 2` and `MIN_SIGNALS = 3` were never retuned.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Built · five packs embedded in the binary (gzip, 1.7 MB → 316 KB), multi-select at KB creation, 22-row static alignment table · a new KB seeds no relations: the packs are the whole ontology · **no pack is checked by default and the base made at registration installs none** (2026-09-10, #580) · the three open questions stay open; the Chinese-label one got worse (2026-09-02 check)

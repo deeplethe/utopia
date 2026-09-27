@@ -129,7 +129,7 @@ async fn resolve(
         tracing::warn!(error = %e, "Entity lookup failed");
         ResolveError::ReadFailed
     })?;
-    let (ranked, by_question) = rank_by_question(ctx, rank(hits, raw), raw).await;
+    let (ranked, by_question) = rank_by_question(ctx, sink, rank(hits, raw), raw).await;
     let Some(first) = ranked.first() else {
         return Err(ResolveError::Unresolved(format!(
             "no entity named \"{raw}\" in this base"
@@ -266,7 +266,7 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
         }
     };
     let read = hits.len();
-    let (ranked, by_question) = rank_by_question(ctx, rank(hits, &name), &name).await;
+    let (ranked, by_question) = rank_by_question(ctx, sink, rank(hits, &name), &name).await;
     let clear = by_question || dominant(&ranked, &name);
     let mut text = if ranked.is_empty() {
         "No matching entities.".to_string()
@@ -473,11 +473,13 @@ pub(super) fn word_score(name: &str, words: &[&str]) -> usize {
         .count()
 }
 
-/// 同名候选按问题排：用户的问题嵌一次，与候选的上下文画像比，近的在前。
+/// 同名候选按问题排：用户的问题嵌成向量，与候选的上下文画像比，近的在前。问题一轮
+/// 只嵌一次（`embed_once`）：这一轮里每按名字查一次实体都会走到这里，句子却是同一句。
 /// 精确命中仍在前（问 OpenAI 就先给叫 OpenAI 的），画像只在同一档里排序。
 /// 没有问题（MCP）、没有嵌入模型、只有一个候选：原样返回，第二个值说明有没有用上
 async fn rank_by_question(
     ctx: &ToolCtx<'_>,
+    sink: &mut ToolSink,
     ranked: Vec<GraphNode>,
     query: &str,
 ) -> (Vec<GraphNode>, bool) {
@@ -487,7 +489,7 @@ async fn rank_by_question(
     let Some(question) = ctx.question else {
         return (ranked, false);
     };
-    let Some(vec) = ctx.embed(question).await else {
+    let Some(vec) = ctx.embed_once(sink, question).await else {
         return (ranked, false);
     };
     let ids: Vec<Uuid> = ranked.iter().map(|n| n.id).collect();
@@ -527,8 +529,8 @@ pub(super) fn reorder_by_distance(
 const PREDICATE_DISTANCE: f32 = 0.45;
 const PREDICATE_CANDIDATES: i64 = 5;
 
-async fn aligned_predicates(ctx: &ToolCtx<'_>, word: &str) -> Vec<String> {
-    let Some(vec) = ctx.embed(word).await else {
+async fn aligned_predicates(ctx: &ToolCtx<'_>, sink: &mut ToolSink, word: &str) -> Vec<String> {
+    let Some(vec) = ctx.embed_once(sink, word).await else {
         return Vec::new();
     };
     let near = utopia_store::ontology::nearest_relation_types(
@@ -552,6 +554,7 @@ async fn aligned_predicates(ctx: &ToolCtx<'_>, word: &str) -> Vec<String> {
 /// 过滤；谓词按子串对不上时向量对齐一次，回一句说明给结果开头
 async fn filtered<'f>(
     ctx: &ToolCtx<'_>,
+    sink: &mut ToolSink,
     facts: &'f [EntityFact],
     filter: &FactFilter<'_>,
 ) -> (Vec<&'f EntityFact>, Option<String>) {
@@ -562,7 +565,10 @@ async fn filtered<'f>(
     if !kept.is_empty() || facts.is_empty() {
         return (kept, None);
     }
-    let keys: HashSet<String> = aligned_predicates(ctx, word).await.into_iter().collect();
+    let keys: HashSet<String> = aligned_predicates(ctx, sink, word)
+        .await
+        .into_iter()
+        .collect();
     if keys.is_empty() {
         return (kept, None);
     }
@@ -727,7 +733,7 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
             tracing::warn!(error = %e, "Entity names lookup failed");
             Vec::new()
         });
-    let (kept, aligned) = filtered(ctx, &facts, &filter).await;
+    let (kept, aligned) = filtered(ctx, sink, &facts, &filter).await;
     let shown: Vec<&EntityFact> = kept.iter().copied().take(limit).collect();
     let mut lines: Vec<String> = Vec::new();
     if let Some(note) = &who.note {
@@ -900,7 +906,7 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
         };
     remember(sink, &node);
     // 邻居是对端**实体**；属性值不算邻居，entity_facts 里有
-    let (matched, aligned) = filtered(ctx, &facts, &filter).await;
+    let (matched, aligned) = filtered(ctx, sink, &facts, &filter).await;
     let linked: Vec<&EntityFact> = matched
         .into_iter()
         .filter(|f| f.other_id.is_some())
@@ -1038,7 +1044,7 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
     remember(sink, &node);
     // 只要**说出了世界时间**的事实。没日期的那些起点是摄取时刻，排进时间线只会
     // 把一篇文章的日期当成事件的日期
-    let (matched, aligned) = filtered(ctx, &facts, &filter).await;
+    let (matched, aligned) = filtered(ctx, sink, &facts, &filter).await;
     let mut dated: Vec<&EntityFact> = matched
         .into_iter()
         .filter(|f| f.valid_from.is_some())

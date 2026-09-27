@@ -1,12 +1,6 @@
 # 0003 · The ontology grows out of the corpus
 
-- **Status**: Built and running (#44; switch `knowledge_bases.auto_extend_ontology`, default on). Its
-  starting point has moved: `related_to` is deleted ([0010](0010-no-relation-is-no-relation.md)) and
-  the seed ontology retired (#125, #128), so a new KB starts from an ontology pack
-  ([0008](0008-ontology-packs-as-cold-start.md)) and this loop fills the gaps a pack leaves.
-  "Dismissal has memory" redone per [0007](0007-who-decides-what-becomes-a-relation.md). Two of three
-  known gaps closed (`adopt_proposed_types` + `entity_retypes`; `ontology_proposals`, #112); the "new
-  phrasings since you last looked" reminder still pending. Checked against the code 2026-09-02.
+- **Status**: Implemented (#44) · open: the "new phrasings" reminder
 - **Written**: 2026-08-28 · condensed into English 2026-09-03
 - **Related**: [0001](0001-ontology-import-and-governance.md) P3b and P4 are the plan, this is what
   grew; [0007](0007-who-decides-what-becomes-a-relation.md); [0008](0008-ontology-packs-as-cold-start.md);
@@ -94,3 +88,9 @@ by this loop. The loop itself is unchanged and still on by default.
 - With the switch off there is no "88 new phrasings since you last looked"; the index
   `ontology_proposals_open_idx` was laid for it and the reminder never built. The only banner today
   is `last_auto_extension`, which reports the last automatic run.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Built and running (#44; switch `knowledge_bases.auto_extend_ontology`, default on). Its starting point has moved: `related_to` is deleted ([0010](0010-no-relation-is-no-relation.md)) and the seed ontology retired (#125, #128), so a new KB starts from an ontology pack ([0008](0008-ontology-packs-as-cold-start.md)) and this loop fills the gaps a pack leaves. "Dismissal has memory" redone per [0007](0007-who-decides-what-becomes-a-relation.md). Two of three known gaps closed (`adopt_proposed_types` + `entity_retypes`; `ontology_proposals`, #112); the "new phrasings since you last looked" reminder still pending. Checked against the code 2026-09-02.

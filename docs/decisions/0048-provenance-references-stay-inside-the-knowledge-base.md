@@ -1,6 +1,6 @@
 # 0048 · Provenance references stay inside the knowledge base
 
-- **Status**: Implemented in PR #832 (migration 0070)
+- **Status**: Implemented (#832, migration 0070)
 - **Written**: 2026-09-20 (conventions in the [README](README.md))
 - **Related**: [0009](0009-no-type-is-a-type.md)'s "NULL means undecided" is why several edges below are nullable and therefore cannot lean on `MATCH FULL`; [0002](0002-reasoning-engine.md) owns the derivation model whose premise edges are covered here. Mechanism choice resolved by PR #832; discussion tracked in issue #842.
 

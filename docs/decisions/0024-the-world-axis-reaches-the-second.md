@@ -1,6 +1,6 @@
 # 0024 · The world axis reaches the second
 
-- **Status**: implemented in one cut · migration 0033 widens the ladder to the second and adds the truncation CHECK on `facts`, `pending_facts` and `derived_facts`; `WORLD_PRECISIONS` and `truncate_to` in the store, every writer truncating; `parse_time` reads zoned clock times and folds a zone-less one to the day; `time_text`, `fmtTime` and `rdf::world_time` write the reduced ISO forms; a derived bound takes the precision of the premise that set it
+- **Status**: Implemented (migration 0033)
 - **Written**: 2026-09-06 (conventions in the [README](README.md))
 - **Related**: [0003](0003-ontology-growth-loop.md)'s graph migration gave each end of a fact its own precision and stopped the ladder at the day; [0019](0019-the-second-clock-can-be-rewound.md) keeps the record axis at the clock's own resolution; [0022](0022-an-unknown-date-is-not-an-open-one.md) made an anchor an instant. #351 and #414 made every printed time carry its own precision — and showed that the world axis had nowhere finer than a day to carry.
 
@@ -45,3 +45,9 @@ A fact from the memory log holds from `2026-06-01T14:32Z` instead of from the da
 - **A document's own time zone.** A `documents.time_zone` — set from a source's metadata, or by a person for a folder — would let "at three" become an instant. Deferred until a corpus needs it; the rule above is safe without it.
 - **Machine event logs as facts.** If log lines are ever extracted into facts with millisecond stamps, the second is where they land. Revisit only if a question needs the millisecond.
 - **The duration of a sub-day fact's precision on the canvas.** The slider's histogram buckets by year, month or day; a minute-level fact is drawn at its day. Fine for now, and a UI question, not a ledger one.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> implemented in one cut · migration 0033 widens the ladder to the second and adds the truncation CHECK on `facts`, `pending_facts` and `derived_facts`; `WORLD_PRECISIONS` and `truncate_to` in the store, every writer truncating; `parse_time` reads zoned clock times and folds a zone-less one to the day; `time_text`, `fmtTime` and `rdf::world_time` write the reduced ISO forms; a derived bound takes the precision of the premise that set it

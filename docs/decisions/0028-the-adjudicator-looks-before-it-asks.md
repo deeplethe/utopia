@@ -1,6 +1,6 @@
 # 0028 · The adjudicator looks before it asks
 
-- **Status**: Implemented · `consequences` joins the second look's tools (facts, quotes, ledger, namesakes): what a merge would touch, read from 0027's gate, and whether the two types share a family · with governance off, the batch adjudicator sends the pairs it cannot settle through the same loop under the same daily budget, and every look is a row in `agent_decisions` so the Agent queue and the budget see it · the number that will justify or retire it comes from 0026's sample, split by `via`
+- **Status**: Implemented
 - **Written**: 2026-09-08 (conventions in the [README](README.md))
 - **Related**: #358 asked for it and said when to build it. [0025](0025-governance-reads-the-ledger-before-it-decides.md) cut 2 built the loop this record reuses; [0026](0026-a-decision-records-why.md) keeps the sample that measures it; [0027](0027-an-automatic-merge-is-gated-by-what-it-can-undo.md) draws the boundary the loop now sees before it decides.
 
@@ -51,3 +51,9 @@ With governance off, an unsettled pair that the loop decided shows in Merges or 
 - **The number.** 0026's sampled pairs carry the machine's verdict in the reason and the person's decision in the ledger, with `via` saying whether the batch or the loop produced the verdict. When enough of them exist, the agreement rate split by `via` says whether the loop earns its calls with governance off; nothing computes it yet.
 - **Tools the loop still lacks** (0025's list): the graph beyond a side's direct facts, a full-text search of the corpus, the disambiguator history.
 - **Whether a deferred question should skip the queue** when governance is off and land on the card only. Today it does both.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented · `consequences` joins the second look's tools (facts, quotes, ledger, namesakes): what a merge would touch, read from 0027's gate, and whether the two types share a family · with governance off, the batch adjudicator sends the pairs it cannot settle through the same loop under the same daily budget, and every look is a row in `agent_decisions` so the Agent queue and the budget see it · the number that will justify or retire it comes from 0026's sample, split by `via`

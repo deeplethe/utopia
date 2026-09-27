@@ -73,6 +73,16 @@ impl ToolCtx<'_> {
             }
         }
     }
+
+    /// [`Self::embed`]，同一轮里同样的文字只嵌一次（见 [`ToolSink::embeddings`]）
+    pub async fn embed_once(&self, sink: &mut ToolSink, text: &str) -> Option<Vec<f32>> {
+        if let Some(vec) = sink.embeddings.get(text) {
+            return Some(vec.clone());
+        }
+        let vec = self.embed(text).await?;
+        sink.embeddings.insert(text.to_string(), vec.clone());
+        Some(vec)
+    }
 }
 
 /// 工具执行过程中往外攒的东西。
@@ -87,6 +97,10 @@ pub struct ToolSink {
     pub sources: Vec<serde_json::Value>,
     /// 这一轮认下的实体，落进会话供下一轮回放
     pub resolved: Vec<serde_json::Value>,
+    /// 这一轮嵌过的文字与它的向量，不落库。同名实体每按名字查一次，都拿同一句问题去比
+    /// 画像；谓词对不上时，同一个词也会再嵌。一轮之内文字与模型都不变，嵌一次就够：
+    /// 对话一轮一个 sink，MCP 一次调用一个。只记成功的，失败了下次照样再试
+    pub embeddings: std::collections::HashMap<String, Vec<f32>>,
 }
 
 /// 界面上的一步（#942）。

@@ -1,6 +1,6 @@
 # 0054 · A source may push statements in the open contract
 
-- **Status**: proposed · cut 1 in this record's PR: the `statements` source kind, `POST /sources/{id}/statements`, deterministic extraction, the Library entry · no schema change
+- **Status**: Implemented · cut 1 (#884)
 - **Written**: 2026-09-23
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) owns the contract this reuses and the rule that typed facts come only from alignment; [0001](0001-extraction.md) is why every statement has evidence; [0022](0022-a-fact-has-two-clocks.md) is the two clocks a pushed item lands on; [0036](0036-exploration-aligns-a-schema-to-the-ontology.md) is where structured *state* lives, which this record leaves alone; [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) is why a person's `remember` needs a nod and a source's document does not; #875 is the case that surfaced it.
 

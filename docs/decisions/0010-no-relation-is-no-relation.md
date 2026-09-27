@@ -1,11 +1,6 @@
 # 0010 · An unnamed relation stays empty
 
-- **Status**: Implemented · `facts.predicate_id` is nullable, `related_to` is gone, display
-  falls back to the source's wording through `fact_surface_predicate(uuid)`, guarded by
-  `no_predicate_still_shows.rs` · both `mapped_to` follow-ups done with
-  [0011](0011-a-mapping-is-not-a-fact.md) (#126); the seed table and
-  `ensure_default_ontology` left with #128 · the two pieces of dead code noted 2026-09-02 are
-  cleared
+- **Status**: Implemented
 - **Written**: 2026-08-30 (undated in the original; the day its migration ran) · condensed
   into English 2026-09-03
 - **Related**: [0009](0009-no-type-is-a-type.md) the twin on the type side;
@@ -97,3 +92,9 @@ fake vocabulary word.
 - 2026-09-02: two pieces of dead code. `graph.rs` `confirmed_mappings()` had zero callers
   (chat reads `mappings::confirmed`), and the `r.key = 'mapped_to'` join in `confirm_fact`
   matched zero rows. Both removed since (0016 A3).
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented · `facts.predicate_id` is nullable, `related_to` is gone, display falls back to the source's wording through `fact_surface_predicate(uuid)`, guarded by `no_predicate_still_shows.rs` · both `mapped_to` follow-ups done with [0011](0011-a-mapping-is-not-a-fact.md) (#126); the seed table and `ensure_default_ontology` left with #128 · the two pieces of dead code noted 2026-09-02 are cleared

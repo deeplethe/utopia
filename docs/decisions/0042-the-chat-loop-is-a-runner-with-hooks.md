@@ -1,9 +1,6 @@
 # 0042 · The chat loop is a runner with hooks
 
-- **Status**: Implemented (#548) · the loop is rig's runner (`rig-core` / `rig-agent` 0.42, no
-  default features) · policy is one `AgentHook` in `api/agent.rs` · the wire stays `LlmClient`
-  behind `api/rig_model.rs` · revised 2026-09-26 (#937: tool-control text is checked in every
-  turn, not only the boundary answer)
+- **Status**: Implemented (#548) · revised 2026-09-26 (#937)
 - **Written**: 2026-09-13 (conventions in the [README](README.md))
 - **Related**: #546 (the issue and its findings), #509 / #543 (the stall and the guard this
   replaces), #547 (the mark on answers that cite nothing), #631 (the empty-reply retry, moved
@@ -150,3 +147,9 @@ A clean result on one frozen set is not a zero-failure guarantee.
 - A per-task model (`on_model_select`, #470) is available in the runner and not wired.
 - Choosing a different chat model per base is the product answer to the skip rate; it is
   configuration, not loop code.
+
+## Status history
+
+The status line as it stood on 2026-09-27, before status lines were cut to one line:
+
+> Implemented (#548) · the loop is rig's runner (`rig-core` / `rig-agent` 0.42, no default features) · policy is one `AgentHook` in `api/agent.rs` · the wire stays `LlmClient` behind `api/rig_model.rs` · revised 2026-09-26 (#937: tool-control text is checked in every turn, not only the boundary answer)
