@@ -560,6 +560,19 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/review/alignment/rules/{rule_id}",
             post(review_routes::decide_alignment_rule),
         )
+        // 来自语料的判据审阅（#507 cut 3 / 0064）：提案列表、点头/驳回
+        .route(
+            "/kbs/{id}/review/proposed-rules",
+            get(review_routes::list_proposed_rules),
+        )
+        .route(
+            "/kbs/{id}/review/proposed-rules/count",
+            get(review_routes::count_proposed_rules),
+        )
+        .route(
+            "/kbs/{id}/review/proposed-rules/{rule_id}",
+            post(review_routes::decide_sourced_rule),
+        )
         // 语义层映射的表态（0011）。跟消解审核并排——都是「引擎提议、人裁决」
         .route(
             "/kbs/{id}/review/mappings/{mapping_id}",

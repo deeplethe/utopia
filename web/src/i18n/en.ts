@@ -1366,6 +1366,22 @@ export const en = {
     /* 说清三件事：谁写的、结论是什么身份、什么时候重算。第三件最容易被误解成
        「保存就生效」，而它其实等下一轮物化 */
     rulesHint: "Rules that decide a class or compute a value from an entity's own attributes. A conclusion is derived and lapses when its premises do.",
+    /** 来自语料的判据审阅（#507 cut 3 / 0064 cut 2）：三个状态 + 卡片术语 */
+    sourcedRulesTitle: "Criteria from the corpus",
+    sourcedRulesHint:
+      "The agent reads criteria out of the documents and proposes them here. A proposal concludes nothing until a person nods.",
+    sourcedRuleStateProposed: "Proposed",
+    sourcedRuleStateNodded: "Nodded",
+    sourcedRuleStateDeclined: "Declined",
+    sourcedRuleSource: (filename: string) => `Read from ${filename}`,
+    sourcedRuleApprove: "Approve",
+    sourcedRuleDecline: "Decline",
+    sourcedRuleDeclineReasonPlaceholder: "Why decline? Optional",
+    sourcedRuleProposedBy: (email: string) => `Proposed by ${email}`,
+    sourcedRuleConditions: "When",
+    sourcedRuleConclusion: "Then",
+    sourcedRuleNoProposals: "No criteria from the corpus yet.",
+    sourcedRulePassageHeading: "the paragraph",
     rulesEmpty: "No rules yet.",
     rulesNoMatch: "No rule matches that.",
     /** 搜的是整条规则，不只是名字——判据里的谓词和值也在里面 */

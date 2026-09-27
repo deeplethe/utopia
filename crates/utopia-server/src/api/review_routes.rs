@@ -1420,6 +1420,88 @@ pub struct DecideErrataReq {
     pub approve: bool,
 }
 
+/// 一条提案的 approve/reject 决定（#507 cut 3 / 0064 cut 2）。
+///
+/// approve → `state = 'nodded'`；reject → `state = 'declined'`。
+///
+/// **不**动 `enabled`（0064 d1：人写规则的人的「关掉」与「没人看」是两
+/// 件事，nod 之后这条规则还在原状态——把 enabled 拨到 true 是另一档决定）。
+///
+/// 与 `decide_alignment_rule` 同款形态（路径命名、body 取 `approve`、返
+/// 回 OK/404/invalid）；review history（0043）的 audit 过滤器走
+/// `rule.proposal_nodded` / `rule.proposal_declined` 两条新前缀，filter
+/// 用 `rule.proposal_%` 接住——下一档 PR 跟补（不影响本档功能）。
+#[derive(Deserialize)]
+pub struct DecideSourcedRuleReq {
+    pub approve: bool,
+    /// reject 时可写；0053 同款——理由进 audit_events.detail，不上规则行
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// 一库的待审提案——审阅卡片的数据源。
+///
+/// `state IN ('proposed', 'nodded', 'declined')`：`proposed` 是待审，
+/// `nodded`/`declined` 是已审——同一接口把卡片的两档（待办 vs 历史）都
+/// 拉出来，UI 按 `state` 自分。
+pub async fn list_proposed_rules(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let proposals = utopia_store::business_rules::list_proposals(&state.pool, kb_id).await?;
+    Ok(Json(json!({ "proposals": proposals })))
+}
+
+pub async fn decide_sourced_rule(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, rule_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideSourcedRuleReq>,
+) -> ApiResult<(axum::http::StatusCode, Json<serde_json::Value>)> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let outcome = utopia_store::business_rules::decide_proposal(
+        &state.pool,
+        kb_id,
+        rule_id,
+        user.id,
+        req.approve,
+        req.reason.as_deref(),
+    )
+    .await?;
+    let (status, body) = match outcome {
+        utopia_store::business_rules::DecideProposalOutcome::Nodded => (
+            axum::http::StatusCode::OK,
+            json!({ "ok": true, "state": "nodded" }),
+        ),
+        utopia_store::business_rules::DecideProposalOutcome::Declined => (
+            axum::http::StatusCode::OK,
+            json!({ "ok": true, "state": "declined" }),
+        ),
+        utopia_store::business_rules::DecideProposalOutcome::NotFound => (
+            axum::http::StatusCode::NOT_FOUND,
+            json!({ "ok": false, "error": "rule_not_found" }),
+        ),
+    };
+    state.emit_review(kb_id);
+    Ok((status, Json(body)))
+}
+
+/// 一库「待审提案」的条数——Review 总览徽章。
+///
+/// `state = 'proposed'` 才入徽章：nod 与 decline 之后仍可在「提案历史」
+/// 看到，但不算待办。
+pub async fn count_proposed_rules(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb_id): Path<Uuid>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    let count = utopia_store::business_rules::count_proposals(&state.pool, kb_id).await?;
+    Ok(Json(json!({ "count": count })))
+}
+
 /// 人答勘误 agent 留下的一笔（0044 决定 7）：批了就执行那个动作，否了只记一笔
 pub async fn decide_errata(
     State(state): State<AppState>,
