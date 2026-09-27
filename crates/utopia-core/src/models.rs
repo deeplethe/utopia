@@ -430,6 +430,7 @@ pub struct ConversationMessage {
     pub content: String,
     pub steps: serde_json::Value,
     pub sources: serde_json::Value,
+    pub stopped: bool,
     pub created_at: DateTime<Utc>,
 }
 

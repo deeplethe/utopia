@@ -415,6 +415,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         )
         .route("/kbs/{id}/search", post(search_routes::search))
         .route("/kbs/{id}/chat", post(chat::chat))
+        .route("/kbs/{id}/chat/{conversation_id}/stop", post(chat::stop))
         // 刷新页面后重新接上正在生成的那个回答（见 `live`）
         .route(
             "/kbs/{id}/conversations/{conversation_id}/stream",

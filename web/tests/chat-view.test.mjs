@@ -152,6 +152,128 @@ test(
       await page.waitForFunction(() => !!window.__go);
       return { page, errors, close: () => context.close() };
     }
+    await t.test("Stop before identity waits for server completion and survives reload", async () => {
+      const cancellations = [];
+      const acknowledged = deferred();
+      const f = await open("/kb/one/chat", async (route, p) => {
+        if (p.endsWith("/chat/a/stop")) {
+          cancellations.push(route.request().postDataJSON());
+          await route.fulfill({ json: { ok: true } });
+          acknowledged.resolve();
+          return true;
+        }
+        if (p.endsWith("/conversations/a")) {
+          await route.fulfill({ json: { messages: [
+            message("Question", "user"), { ...message("Partial answer"), stopped: true },
+          ] } });
+          return true;
+        }
+      }, () => {
+        const original = window.fetch;
+        window.__posts = 0;
+        window.fetch = (url, init) => {
+          if (String(url).endsWith("/chat") && init?.method === "POST") {
+            window.__posts++;
+            return Promise.resolve(new Response(new ReadableStream({ start(c) { window.__wire = c; } })));
+          }
+          return original(url, init);
+        };
+      });
+      try {
+        await f.page.locator("textarea").fill("Question");
+        await f.page.getByRole("button", { name: "Send", exact: true }).click();
+        await f.page.getByRole("button", { name: "Stop", exact: true }).click();
+        assert.equal(await f.page.getByRole("button", { name: "Stopping…", exact: true }).isDisabled(), true);
+        assert.deepEqual(cancellations, []);
+        await f.page.evaluate(() => window.__wire.enqueue(new TextEncoder().encode(
+          'event: conversation\ndata: {"id":"a","generation_id":"generation-a"}\n\n' +
+          'event: delta\ndata: {"text":"Partial answer"}\n\n',
+        )));
+        await f.page.getByText("Partial answer", { exact: true }).waitFor();
+        await f.page.waitForFunction(() => window.__live.entry("one", "a")?.stopping);
+        await acknowledged.promise;
+        assert.deepEqual(cancellations, [{ generation_id: "generation-a" }]);
+        await f.page.locator("textarea").fill("Next question");
+        await f.page.locator("textarea").press("Enter");
+        assert.equal(await f.page.evaluate(() => window.__posts), 1);
+        assert.equal(await f.page.getByRole("button", { name: "Stopping…", exact: true }).isDisabled(), true);
+        await f.page.evaluate(() => window.__wire.enqueue(new TextEncoder().encode('event: done\ndata: {"stopped":true}\n\n')));
+        await f.page.getByText("Stopped", { exact: true }).waitFor();
+        assert.equal(await f.page.getByRole("button", { name: "Send", exact: true }).isEnabled(), true);
+        await f.page.reload();
+        await f.page.getByText("Stopped", { exact: true }).waitFor();
+        await f.page.getByText("Partial answer", { exact: true }).waitFor();
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
+    await t.test("a busy conversation restores the draft and attaches without a ghost question", async () => {
+      const pending = deferred();
+      let reads = 0;
+      const f = await open("/kb/one/chat/a", async (route, p) => {
+        if (p.endsWith("/chat") && route.request().method() === "POST") {
+          pending.resolve(route);
+          return true;
+        }
+        if (p.endsWith("/conversations/a")) {
+          reads++;
+          await route.fulfill({ json: { messages: reads === 1
+            ? [message("Old answer")]
+            : [message("Old answer"), message("Other tab question", "user")],
+          } });
+          return true;
+        }
+        if (p.endsWith("/conversations/a/stream")) {
+          await route.fulfill({ contentType: "text/event-stream", body:
+            'event: snapshot\ndata: {"generation_id":"other-generation","content":"Other tab answer","steps":[],"sources":[]}\n\n' +
+            'event: done\ndata: {"stopped":false}\n\n',
+          });
+          return true;
+        }
+      });
+      try {
+        await f.page.getByText("Old answer", { exact: true }).waitFor();
+        await f.page.locator("textarea").fill("Rejected follow-up");
+        await f.page.getByRole("button", { name: "Send", exact: true }).click();
+        const request = await pending.promise;
+        await f.page.locator("textarea").fill("More draft text");
+        await request.fulfill({ status: 409, json: { error: "Conversation is busy", code: "answer_running" } });
+        await f.page.getByText("Other tab answer", { exact: true }).waitFor();
+        assert.equal(await f.page.locator("textarea").inputValue(), "Rejected follow-up\nMore draft text");
+        assert.equal(await f.page.getByText("Rejected follow-up", { exact: true }).count(), 0);
+        assert.equal(await f.page.getByText("Other tab question", { exact: true }).count(), 1);
+        assert.equal(reads, 2);
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
+    await t.test("a late busy response cannot replace another conversation's draft", async () => {
+      const pending = deferred();
+      const f = await open("/kb/one/chat/a", async (route, p) => {
+        if (p.endsWith("/chat") && route.request().method() === "POST") {
+          pending.resolve(route);
+          return true;
+        }
+      });
+      try {
+        await f.page.getByText("Answer alpha", { exact: true }).waitFor();
+        await f.page.locator("textarea").fill("Old request");
+        await f.page.getByRole("button", { name: "Send", exact: true }).click();
+        const request = await pending.promise;
+        await f.page.evaluate(() => window.__go("/kb/one/chat/b"));
+        await f.page.getByText("Answer beta", { exact: true }).waitFor();
+        await f.page.locator("textarea").fill("New view draft");
+        await request.fulfill({ status: 409, json: { error: "Conversation is busy", code: "answer_running" } });
+        await f.page.waitForFunction(() => window.__live.entry("one", "a") === null);
+        assert.equal(await f.page.locator("textarea").inputValue(), "New view draft");
+        assert.equal(await f.page.evaluate(() => sessionStorage.getItem("chat:draft")), "New view draft");
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
     for (const fail of [false, true])
       await t.test(
         `late A ${fail ? "failure" : "success"} cannot replace B`,
@@ -969,6 +1091,60 @@ test(
         // One question, one answer: the failed turn is replaced, not repeated
         assert.equal(await f.page.getByText("How is Globex?", { exact: true }).count(), 1);
         assert.equal(await f.page.getByText(failed, { exact: true }).count(), 0);
+        assert.deepEqual(f.errors, []);
+      } finally {
+        await f.close();
+      }
+    });
+    await t.test("a failed answer retries its stored question and Stop targets the retry generation", async () => {
+      const cancellations = [];
+      const acknowledged = deferred();
+      const f = await open("/kb/one/chat/b", async (route, p) => {
+        if (!p.endsWith("/chat/b/stop")) return;
+        cancellations.push(route.request().postDataJSON());
+        await route.fulfill({ json: { ok: true } });
+        acknowledged.resolve();
+        return true;
+      }, () => {
+        const original = window.fetch;
+        window.__asked = [];
+        window.fetch = (url, init) => {
+          if (!String(url).endsWith("/chat") || init?.method !== "POST") return original(url, init);
+          const body = JSON.parse(init.body);
+          window.__asked.push(body);
+          if (!body.retry_message_id) return Promise.resolve(new Response(
+            'event: conversation\ndata: {"id":"b","message_id":"q1","generation_id":"failed"}\n\n' +
+            'event: error\ndata: {"error":"Failed"}\n\n',
+          ));
+          return Promise.resolve(new Response(new ReadableStream({ start(c) {
+            window.__wire = c;
+            c.enqueue(new TextEncoder().encode(
+              'event: conversation\ndata: {"id":"b","message_id":"q1","generation_id":"retry"}\n\n' +
+              'event: delta\ndata: {"text":"Partial retry"}\n\n',
+            ));
+          } })));
+        };
+      });
+      try {
+        await f.page.getByText("Answer beta", { exact: true }).waitFor();
+        await f.page.locator("textarea").fill("Question");
+        await f.page.locator("textarea").press("Enter");
+        await f.page.getByRole("button", { name: "Retry", exact: true }).evaluate((button) => {
+          button.click();
+          button.click();
+        });
+        await f.page.getByText("Partial retry", { exact: true }).waitFor();
+        await f.page.getByRole("button", { name: "Stop", exact: true }).click();
+        await f.page.waitForFunction(() => window.__live.entry("one", "b")?.stopping);
+        await f.page.evaluate(() => window.__wire.enqueue(new TextEncoder().encode('event: done\ndata: {"stopped":true}\n\n')));
+        await f.page.getByText("Stopped", { exact: true }).waitFor();
+        await acknowledged.promise;
+        assert.deepEqual(cancellations, [{ generation_id: "retry" }]);
+        assert.deepEqual(await f.page.evaluate(() => window.__asked), [
+          { conversation_id: "b", message: "Question" },
+          { conversation_id: "b", message: "Question", retry_message_id: "q1" },
+        ]);
+        assert.equal(await f.page.getByText("Question", { exact: true }).count(), 1);
         assert.deepEqual(f.errors, []);
       } finally {
         await f.close();

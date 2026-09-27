@@ -13,8 +13,9 @@
 //! 不必去想"我重放到哪一条了"。
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::{broadcast, RwLock};
+use std::sync::{Arc, Mutex};
+use tokio::sync::{broadcast, watch, RwLock};
+use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
 
 /// 一个 SSE 事件：事件名 + 已经序列化好的 data。
@@ -36,6 +37,7 @@ impl Frame {
 /// 到此刻为止这个回答长什么样。接上的人先拿到它。
 #[derive(Clone, Default, Debug)]
 pub struct Snapshot {
+    pub generation_id: Uuid,
     pub content: String,
     pub steps: Vec<serde_json::Value>,
     pub sources: Vec<serde_json::Value>,
@@ -77,6 +79,7 @@ impl Snapshot {
         Frame::new(
             "snapshot",
             json!({
+                "generation_id": self.generation_id,
                 "content": self.content,
                 "steps": self.steps,
                 "sources": self.sources,
@@ -87,29 +90,65 @@ impl Snapshot {
 }
 
 struct Entry {
+    generation_id: Uuid,
     tx: broadcast::Sender<Frame>,
     snap: Arc<RwLock<Snapshot>>,
+    cancellation: Cancellation,
 }
 
-/// 登记还在、终态还没发出，才算在跑。发出终态之后到生成者注销之间还有一小段，
-/// 那时的登记已经说完了：出错之后马上按重试，不该被它挡住
-async fn running(entry: &Entry) -> bool {
-    entry.snap.read().await.terminal.is_none()
+/// 保留取消信号：Stop 可能早于生成器开始等待。
+#[derive(Clone)]
+pub struct Cancellation(watch::Sender<bool>);
+
+impl Default for Cancellation {
+    fn default() -> Self {
+        Self(watch::channel(false).0)
+    }
 }
 
-/// 进行中的生成，按会话查。
+impl Cancellation {
+    pub fn cancel(&self) {
+        self.0.send_replace(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.0.borrow()
+    }
+
+    pub async fn cancelled(&self) {
+        let mut receiver = self.0.subscribe();
+        let _ = receiver.wait_for(|cancelled| *cancelled).await;
+    }
+}
+
+/// 按会话登记进行中的生成，在写问题前占位。注册表锁不跨越 await；
+/// 使用同步锁，让准备失败时的 Drop 也能释放占位。
 #[derive(Default)]
-pub struct Registry(RwLock<HashMap<Uuid, Entry>>);
+pub struct Registry(Mutex<HashMap<Uuid, Entry>>);
 
 /// 一次生成期间握着的把手。发事件、结束时注销。
 pub struct Handle {
     conversation_id: Uuid,
+    generation_id: Uuid,
     tx: broadcast::Sender<Frame>,
     snap: Arc<RwLock<Snapshot>>,
+    cancellation: Cancellation,
     registry: Arc<Registry>,
 }
 
 impl Handle {
+    pub fn generation_id(&self) -> Uuid {
+        self.generation_id
+    }
+
+    pub fn cancellation(&self) -> Cancellation {
+        self.cancellation.clone()
+    }
+
+    pub async fn snapshot(&self) -> Snapshot {
+        self.snap.read().await.clone()
+    }
+
     /// 发一个事件：记进快照，然后广播。
     ///
     /// **广播时仍然握着快照的写锁**，这一点是必需的。只保证「先写后发」
@@ -118,8 +157,8 @@ impl Handle {
     /// 于是接上的时刻要么整个在这次 emit 之前，要么整个在它之后
     pub async fn emit(&self, frame: Frame) {
         let mut snap = self.snap.write().await;
-        // The snapshot and the subscription boundary must include the terminal:
-        // a subscriber arriving after this broadcast still needs the same outcome.
+        // 终态也必须记进快照并遵守订阅边界：
+        // 广播后才接入的订阅者仍需要收到同一个结果。
         if snap.terminal.is_some() {
             return;
         }
@@ -131,12 +170,20 @@ impl Handle {
         let _ = self.tx.send(frame);
     }
 
-    /// 生成结束，只注销自己仍持有的登记；新一轮可能已经接替了它。
-    /// 当前生成注销后，接上的人得到「没有在跑的」，答案从库里读。
-    pub async fn finish(self) {
-        let mut entries = self.registry.0.write().await;
-        // A newer begin may have replaced this conversation while we were running.
-        // Check identity and remove under one lock, so an old producer only retires itself.
+    /// 持久化完成后，先释放会话，再通知订阅者可以继续提问；
+    /// 快照和订阅仍保持同一个边界。
+    pub async fn complete(self, terminal: Frame) {
+        let mut snap = self.snap.write().await;
+        self.retire();
+        if snap.terminal.is_some() {
+            return;
+        }
+        snap.terminal = Some(terminal.clone());
+        let _ = self.tx.send(terminal);
+    }
+
+    fn retire(&self) {
+        let mut entries = self.registry.0.lock().expect("live registry lock");
         if entries
             .get(&self.conversation_id)
             .is_some_and(|entry| Arc::ptr_eq(&entry.snap, &self.snap))
@@ -146,53 +193,56 @@ impl Handle {
     }
 }
 
+impl Drop for Handle {
+    fn drop(&mut self) {
+        self.retire();
+    }
+}
+
 impl Registry {
-    /// 登记一次生成。同一个会话重复登记会顶掉旧的——正常情况下不会发生，
-    /// 真发生了也是新的那次说了算
-    pub async fn begin(self: &Arc<Self>, conversation_id: Uuid) -> Handle {
-        let mut entries = self.0.write().await;
-        self.register(&mut entries, conversation_id)
-    }
-
-    /// 只在这个会话没有在跑的生成时登记（#936 的重答）。**查和登记在同一把写锁下**：
-    /// 连按两次重试，只有一次拿得到把手，另一次得到 `None`
-    pub async fn begin_if_idle(self: &Arc<Self>, conversation_id: Uuid) -> Option<Handle> {
-        let mut entries = self.0.write().await;
-        if let Some(entry) = entries.get(&conversation_id) {
-            if running(entry).await {
-                return None;
-            }
+    /// 检查和占位在同一把锁下，新问题与重试都只允许一个生成者。
+    pub async fn begin(self: &Arc<Self>, conversation_id: Uuid) -> AppResult<Handle> {
+        let mut entries = self.0.lock().expect("live registry lock");
+        if entries.contains_key(&conversation_id) {
+            return Err(AppError::CodedConflict {
+                code: "answer_running",
+                message: "This conversation is still generating an answer.".into(),
+            });
         }
-        Some(self.register(&mut entries, conversation_id))
-    }
-
-    /// 这个会话此刻有没有在跑的生成
-    pub async fn is_running(&self, conversation_id: Uuid) -> bool {
-        match self.0.read().await.get(&conversation_id) {
-            Some(entry) => running(entry).await,
-            None => false,
-        }
-    }
-
-    fn register(
-        self: &Arc<Self>,
-        entries: &mut HashMap<Uuid, Entry>,
-        conversation_id: Uuid,
-    ) -> Handle {
+        let generation_id = Uuid::now_v7();
         let (tx, _) = broadcast::channel(256);
-        let snap = Arc::new(RwLock::new(Snapshot::default()));
+        let snap = Arc::new(RwLock::new(Snapshot {
+            generation_id,
+            ..Snapshot::default()
+        }));
+        let cancellation = Cancellation::default();
         entries.insert(
             conversation_id,
             Entry {
+                generation_id,
                 tx: tx.clone(),
                 snap: snap.clone(),
+                cancellation: cancellation.clone(),
             },
         );
-        Handle {
+        Ok(Handle {
             conversation_id,
+            generation_id,
             tx,
             snap,
+            cancellation,
             registry: self.clone(),
+        })
+    }
+
+    /// 延迟或重复的 Stop 不能取消下一轮生成。
+    pub async fn stop(&self, conversation_id: Uuid, generation_id: Uuid) {
+        let entries = self.0.lock().expect("live registry lock");
+        let Some(entry) = entries.get(&conversation_id) else {
+            return;
+        };
+        if entry.generation_id == generation_id {
+            entry.cancellation.cancel();
         }
     }
 
@@ -203,13 +253,16 @@ impl Registry {
         &self,
         conversation_id: Uuid,
     ) -> Option<(Snapshot, broadcast::Receiver<Frame>)> {
-        let map = self.0.read().await;
-        let entry = map.get(&conversation_id)?;
+        let (snap, tx) = {
+            let map = self.0.lock().expect("live registry lock");
+            let entry = map.get(&conversation_id)?;
+            (entry.snap.clone(), entry.tx.clone())
+        };
         // **握着快照的读锁再订阅。** `emit` 是握着写锁广播的，所以这一段
         // 与任何一次 emit 互斥：拿到的快照与订阅起点严丝合缝，
         // 中间那一小段既不会漏、也不会重
-        let guard = entry.snap.read().await;
-        let rx = entry.tx.subscribe();
+        let guard = snap.read().await;
+        let rx = tx.subscribe();
         Some((guard.clone(), rx))
     }
 }
@@ -223,17 +276,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replaced_handle_cannot_unregister_or_write_into_current_generation() {
+    async fn retired_handle_cannot_unregister_or_write_into_current_generation() {
         let registry = Arc::new(Registry::default());
         let id = Uuid::now_v7();
-        let old = registry.begin(id).await;
+        let old = registry.begin(id).await.unwrap();
         old.emit(delta("old")).await;
-        let current = registry.begin(id).await;
+        old.retire();
+        let current = registry.begin(id).await.unwrap();
         current.emit(delta("new")).await;
         let (snapshot, mut rx) = registry.attach(id).await.unwrap();
         assert_eq!(snapshot.content, "new");
         old.emit(delta("late old text")).await;
-        old.finish().await;
+        drop(old);
         let (snapshot, _) = registry
             .attach(id)
             .await
@@ -245,7 +299,7 @@ mod tests {
         ));
         current.emit(delta(" answer")).await;
         assert_eq!(rx.recv().await.unwrap().data, delta(" answer").data);
-        current.finish().await;
+        drop(current);
         assert!(registry.attach(id).await.is_none());
     }
 
@@ -262,15 +316,19 @@ mod tests {
             let registry = Arc::new(Registry::default());
             let id = Uuid::now_v7();
             let other_id = Uuid::now_v7();
-            let other = registry.begin(other_id).await;
+            let other = registry.begin(other_id).await.unwrap();
             other.emit(delta("unrelated")).await;
             let mut handles = Vec::new();
-            for _ in 0..3 {
-                handles.push(Some(registry.begin(id).await));
+            for index in 0..3 {
+                let handle = registry.begin(id).await.unwrap();
+                if index < 2 {
+                    handle.retire();
+                }
+                handles.push(Some(handle));
             }
             let mut current_finished = false;
             for index in order {
-                handles[index].take().unwrap().finish().await;
+                drop(handles[index].take().unwrap());
                 current_finished |= index == 2;
                 assert_eq!(
                     registry.attach(id).await.is_none(),
@@ -282,7 +340,7 @@ mod tests {
                     "unrelated"
                 );
             }
-            other.finish().await;
+            drop(other);
             assert!(registry.attach(other_id).await.is_none());
         }
     }
@@ -291,9 +349,9 @@ mod tests {
     async fn snapshot_and_subscription_partition_concurrent_emission() {
         let registry = Arc::new(Registry::default());
         let id = Uuid::now_v7();
-        let handle = registry.begin(id).await;
-        // Either lock acquisition order is legal: each delta must occur exactly once
-        // across the snapshot and the subscription, never in both or neither.
+        let handle = registry.begin(id).await.unwrap();
+        // 两种拿锁顺序都合法：每个增量必须恰好出现在快照或订阅中一次，
+        // 既不能重复，也不能遗漏。
         for index in 0..64 {
             let attached = if index % 2 == 0 {
                 tokio::join!(handle.emit(delta("x")), registry.attach(id)).1
@@ -311,6 +369,54 @@ mod tests {
             }
             assert_eq!(combined, registry.attach(id).await.unwrap().0.content);
         }
-        handle.finish().await;
+        drop(handle);
+    }
+
+    #[tokio::test]
+    async fn admission_is_exclusive_and_dropping_a_reservation_releases_it() {
+        let registry = Arc::new(Registry::default());
+        let id = Uuid::now_v7();
+        let (first, second) = tokio::join!(registry.begin(id), registry.begin(id));
+        assert_ne!(first.is_ok(), second.is_ok());
+        let (handle, error) = match (first, second) {
+            (Ok(handle), Err(error)) | (Err(error), Ok(handle)) => (handle, error),
+            _ => unreachable!(),
+        };
+        assert!(matches!(
+            error,
+            AppError::CodedConflict {
+                code: "answer_running",
+                ..
+            }
+        ));
+        let old_generation = handle.generation_id();
+        drop(handle);
+        assert!(registry.attach(id).await.is_none());
+
+        let current = registry.begin(id).await.unwrap();
+        let cancellation = current.cancellation();
+        registry.stop(id, old_generation).await;
+        assert!(!cancellation.is_cancelled());
+        registry.stop(id, current.generation_id()).await;
+        registry.stop(id, current.generation_id()).await;
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancellation.cancelled())
+            .await
+            .expect("Stop is retained even before the first waiter");
+    }
+
+    #[tokio::test]
+    async fn the_terminal_is_sent_after_the_conversation_is_available() {
+        let registry = Arc::new(Registry::default());
+        let id = Uuid::now_v7();
+        let handle = registry.begin(id).await.unwrap();
+        let (_, mut receiver) = registry.attach(id).await.unwrap();
+        handle
+            .complete(Frame::new("done", json!({"stopped":true}).to_string()))
+            .await;
+        assert_eq!(receiver.recv().await.unwrap().event, "done");
+        let _next = registry
+            .begin(id)
+            .await
+            .expect("a subscriber may immediately follow up");
     }
 }

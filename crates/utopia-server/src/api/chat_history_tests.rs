@@ -117,6 +117,7 @@ async fn earlier_entities_sit_right_before_the_question() -> anyhow::Result<()> 
         "assistant",
         "Acme was founded by Ada.",
         &utopia_store::conversations::TurnRecord {
+            stopped: false,
             steps: json!([]),
             sources: json!([]),
             resolved: json!([{ "id": Uuid::now_v7(), "name": "Acme", "type": "Organization" }]),

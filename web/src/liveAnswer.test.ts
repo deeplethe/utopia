@@ -102,5 +102,6 @@ describe("answeredWithoutSources (#547)", () => {
     expect(answeredWithoutSources({ role: "user", content: "hi" }, false)).toBe(false);
     expect(answeredWithoutSources(answer({ content: "", error: "boom" }), false)).toBe(false);
     expect(answeredWithoutSources(answer({ error: "stopped" }), false)).toBe(true);
+    expect(answeredWithoutSources(answer({ content: "", stopped: true }), false)).toBe(false);
   });
 });

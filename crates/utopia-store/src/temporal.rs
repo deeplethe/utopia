@@ -1164,6 +1164,10 @@ async fn copy_evidence(
 /// （0019）——改过之后，问三月与问九月应当得到不同的区间。这也是这个函数
 /// 与一条 `UPDATE facts SET valid_from = …` 的全部差别。
 ///
+/// 人改的是时间，不是出处：物化出来的行改完仍是那几条陈述算出来的，与时间线的
+/// 改写同一条规矩（[`copy_materialization_links`]）。不带过去的话，陈述不再被活着的
+/// 类型化行代表，画面上它按原话、原来的区间回来，下一轮物化还照它再算一行。
+///
 /// 返回修正行 id；`None` 表示这条已被并发改写或作废，本次没有动手。
 pub async fn correct_interval(
     pool: &PgPool,
@@ -1184,11 +1188,13 @@ pub async fn correct_interval(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, supersedes,
-                            attested_from, attested_to)
+                            attested_from, attested_to,
+                            from_statement_id, implied)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
                 $3, $4, $5, $6, confidence, id,
                 attested_from,
-                CASE WHEN $6::text = 'unknown' THEN COALESCE(attested_to, now()) END
+                CASE WHEN $6::text = 'unknown' THEN COALESCE(attested_to, now()) END,
+                from_statement_id, implied
          FROM facts WHERE id = $2 AND invalidated_at IS NULL
          RETURNING id",
     )
@@ -1211,6 +1217,7 @@ pub async fn correct_interval(
         .await?;
     copy_evidence(&mut tx, fact_id, corrected).await?;
     copy_qualifiers(&mut tx, fact_id, corrected).await?;
+    copy_materialization_links(&mut tx, fact_id, corrected).await?;
     tx.commit().await?;
     Ok(Some(corrected))
 }

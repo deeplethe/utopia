@@ -116,7 +116,7 @@ pub async fn require_owned(
 
 pub async fn messages(pool: &PgPool, conversation_id: Uuid) -> AppResult<Vec<ConversationMessage>> {
     let rows: Vec<ConversationMessage> = sqlx::query_as(
-        "SELECT id, role, content, steps, sources, created_at
+        "SELECT id, role, content, steps, sources, stopped, created_at
          FROM conversation_messages WHERE conversation_id = $1 ORDER BY created_at",
     )
     .bind(conversation_id)
@@ -200,11 +200,12 @@ struct ContextRow {
     resolved: serde_json::Value,
     tool_exchange: serde_json::Value,
     sources: serde_json::Value,
+    stopped: bool,
 }
 
 pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> AppResult<History> {
     let mut rows: Vec<ContextRow> = sqlx::query_as(
-        "SELECT id, role, content, resolved, tool_exchange, sources FROM conversation_messages
+        "SELECT id, role, content, resolved, tool_exchange, sources, stopped FROM conversation_messages
          WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2",
     )
     .bind(conversation_id)
@@ -236,7 +237,15 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
         turn_ids: rows.iter().map(|row| row.id).collect(),
         turns: rows
             .into_iter()
-            .map(|row| (row.role, row.content))
+            .map(|mut row| {
+                if row.stopped {
+                    row.content = format!(
+                        "[This response was stopped by the user before completion.]\n\n{}",
+                        row.content
+                    );
+                }
+                (row.role, row.content)
+            })
             .collect(),
         entities,
         last_tool_exchange,
@@ -250,6 +259,8 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
 /// 一条能落库、也能读回来、只是内容张冠李戴的记录。与 `RelationAxioms` 同一条理由。
 #[derive(Default)]
 pub struct TurnRecord {
+    /// 用户明确停止了这一轮，正文可能只有一部分或为空。
+    pub stopped: bool,
     /// 行动轨迹：调了什么、拿到多少（界面显示）
     pub steps: serde_json::Value,
     /// 引用清单
@@ -265,6 +276,7 @@ impl TurnRecord {
     /// 用户消息：四样都空。
     pub fn empty() -> Self {
         Self {
+            stopped: false,
             steps: serde_json::json!([]),
             sources: serde_json::json!([]),
             resolved: serde_json::json!([]),
@@ -284,8 +296,8 @@ pub async fn append_message(
     let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO conversation_messages
-             (id, conversation_id, role, content, steps, sources, resolved, tool_exchange)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             (id, conversation_id, role, content, steps, sources, resolved, tool_exchange, stopped)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(id)
     .bind(conversation_id)
@@ -295,6 +307,7 @@ pub async fn append_message(
     .bind(&rec.sources)
     .bind(&rec.resolved)
     .bind(&rec.tool_exchange)
+    .bind(rec.stopped)
     .execute(&mut *tx)
     .await?;
     sqlx::query("UPDATE conversations SET updated_at = now() WHERE id = $1")

@@ -101,6 +101,64 @@ async fn a_restatement_keeps_the_sources_it_repeats() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn a_stopped_restatement_keeps_its_sources_live_and_after_reload() -> anyhow::Result<()> {
+    let document = Uuid::now_v7();
+    let Some(f) = fixture(Scripted::new(vec![Reply::Document(document), FIRST])).await? else {
+        return Ok(());
+    };
+    seed_document(&f, document).await?;
+    let first = f.ask("What is the documented target?").await?;
+    assert!(first.contains("event: done"), "{first}");
+    let id: Uuid = sqlx::query_scalar("SELECT id FROM conversations WHERE kb_id = $1")
+        .bind(f.kb)
+        .fetch_one(&f.pool)
+        .await?;
+    let history = utopia_store::conversations::recent_context(&f.pool, id, 20).await?;
+    let previous_answer = history.turns.last().unwrap().1.clone();
+    let expected_sources = json!(history.last_sources);
+    assert!(!expected_sources.as_array().unwrap().is_empty());
+
+    let handle = f.state.live.begin(id).await?;
+    let cancellation = handle.cancellation();
+    let response = sse_from(f.state.live.attach(id).await);
+    utopia_store::conversations::append_message(
+        &f.pool,
+        id,
+        "user",
+        "Say it shorter",
+        &utopia_store::conversations::TurnRecord::empty(),
+    )
+    .await?;
+    // 改写正文的增量发出后触发真实的停止与保存流程；上游保持等待，
+    // 因此正常完成的答案不能让这个测试误通过。
+    let producer = async_stream::stream! {
+        yield ProducerEvent::Progress(delta_event("Target: 95% [1].\n"));
+        cancellation.cancel();
+        std::future::pending::<()>().await;
+    };
+    generation::run(
+        f.pool.clone(),
+        id,
+        handle,
+        producer,
+        previous_answer,
+        history.last_sources,
+    )
+    .await;
+
+    let body = axum::body::to_bytes(response.into_response().into_body(), 65536).await?;
+    let sse = String::from_utf8_lossy(&body);
+    assert!(sse.contains("\"stopped\":true"), "{sse}");
+    assert_eq!(live_sources(&sse), expected_sources);
+    let messages = utopia_store::conversations::messages(&f.pool, id).await?;
+    assert_eq!(messages.len(), 4);
+    assert!(messages[3].stopped);
+    assert_eq!(messages[3].content, "Target: 95% [1].\n");
+    assert_eq!(messages[3].sources, expected_sources);
+    f.cleanup().await
+}
+
+#[tokio::test]
 async fn a_restatement_citing_a_number_the_last_answer_did_not_keeps_none() -> anyhow::Result<()> {
     let document = Uuid::now_v7();
     let Some(f) = fixture(Scripted::new(vec![

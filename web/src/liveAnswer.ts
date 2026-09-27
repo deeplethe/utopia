@@ -18,7 +18,7 @@
 //
 // 于是改成一张表：谁开场谁拿句柄，读谁写谁都有名有姓。`send` 的守卫不用改——
 // 它本来问的就是「这一场在不在流」，现在这个问题终于只关于这一场。
-import type { ChatStep, Source } from "./api";
+import { conversationsApi, type ChatStep, type Source } from "./api";
 import { citedNumbers } from "./citations";
 
 export interface Turn {
@@ -30,6 +30,7 @@ export interface Turn {
   steps?: ChatStep[];
   sources?: Source[];
   error?: string;
+  stopped?: boolean;
 }
 
 /** 正文里真正引到的那几条来源。
@@ -52,7 +53,7 @@ export function citedSources(turn: Turn): Source[] {
  *  只有报错、一个字没说的那条也不挂，它不是回答，红字已经交代了 */
 export function answeredWithoutSources(turn: Turn, live: boolean): boolean {
   if (turn.role !== "assistant" || live) return false;
-  if (turn.error && !turn.content) return false;
+  if ((turn.error || turn.stopped) && !turn.content) return false;
   return citedSources(turn).length === 0;
 }
 
@@ -61,8 +62,11 @@ export interface Live {
   kbId: string;
   /** 新会话在服务端回 id 之前是 null；kbId 用来区分两个都还没拿到 id 的新会话 */
   conversationId: string | null;
+  generationId: string | null;
   turns: Turn[];
   streaming: boolean;
+  stopping: boolean;
+  stopError?: string;
 }
 
 interface Slot {
@@ -110,13 +114,26 @@ function flush() {
   notify();
 }
 
+async function requestStop(slot: Slot) {
+  const { kbId, conversationId, generationId } = slot.live;
+  if (!conversationId || !generationId) return; // 首帧前的停止意图由 identify 补发。
+  try {
+    await conversationsApi.stop(kbId, conversationId, generationId);
+    // HTTP 只确认收到请求；done 才表示生成结束、部分答案已保存。
+  } catch (error) {
+    if (lives.get(conversationId) !== slot || !slot.live.streaming) return;
+    slot.live = { ...slot.live, stopping: false, stopError: error instanceof Error ? error.message : String(error) };
+    flush();
+  }
+}
+
 // 还没拿到 id 的新会话用内部 token 占位；identify 到真 id 时重映射
 let pendingSeq = 0;
 
 export interface LiveHandle {
   /** 新会话从服务端拿到 id：把这个条目从占位 token 重映射到真 id。
    *  `questionId` 是这一问存下的 id，记到最后那条用户消息上 */
-  identify: (conversationId: string, questionId?: string) => void;
+  identify: (conversationId: string, questionId?: string, generationId?: string) => void;
   /** 改这场回答的最后一条（助手那一轮）。生成期间只有它在变 */
   patchLast: (f: (t: Turn) => Turn) => void;
   /** 结束（正常、出错、或人按了停止）。
@@ -129,7 +146,9 @@ export interface LiveHandle {
    * 那一刻这里是唯一还握着这份内容的地方，所以留着：只把 `streaming`
    * 落下来。下一次 `begin` 会清掉已结束的条目（见 begin），切到别的会话时
    * 认领不上自然去读库。 */
-  finish: () => void;
+  finish: (stopped?: boolean) => void;
+  /** 请求未被接受时丢弃乐观展示；只断开连接，不取消服务端生成。 */
+  discard: () => void;
   /** streamChat 的 abort 要等它返回才有：begin 先给占位，拿到真 abort 再换上 */
   setAbort: (abort: () => void) => void;
 }
@@ -160,14 +179,17 @@ export const liveAnswer = {
   ): LiveHandle => {
     for (const [k, s] of lives) if (!s.live.streaming) lives.delete(k);
     let key = conversationId ?? `__pending__${++pendingSeq}`;
-    const slot: Slot = { live: { kbId, conversationId, turns, streaming: true }, abort };
+    const slot: Slot = {
+      live: { kbId, conversationId, generationId: null, turns, streaming: true, stopping: false },
+      abort,
+    };
     lives.set(key, slot);
     flush();
     // A follow-up reuses the conversation key. Late callbacks from the old
     // stream must still belong to its original slot, not the replacement.
     const owned = () => (lives.get(key) === slot ? slot : undefined);
     return {
-      identify: (id: string, questionId?: string) => {
+      identify: (id, questionId, generationId) => {
         const current = owned();
         if (!current) return;
         lives.delete(key);
@@ -180,22 +202,33 @@ export const liveAnswer = {
             turns[at] = { ...turns[at], id: questionId };
           }
         }
-        current.live = { ...current.live, conversationId: id, turns };
+        current.live = { ...current.live, conversationId: id, generationId: generationId ?? null, turns };
         lives.set(key, current);
         flush();
+        if (current.live.stopping) void requestStop(current);
       },
       patchLast: (f) => {
         const current = owned();
-        if (!current || current.live.turns.length === 0) return;
+        if (!current?.live.streaming || current.live.turns.length === 0) return;
         const turns = [...current.live.turns];
         turns[turns.length - 1] = f(turns[turns.length - 1]);
         current.live = { ...current.live, turns };
         emit();
       },
-      finish: () => {
+      finish: (stopped = false) => {
         const current = owned();
         if (!current || !current.live.streaming) return;
-        current.live = { ...current.live, streaming: false };
+        const turns = stopped
+          ? current.live.turns.map((turn, i, all) => i === all.length - 1 ? { ...turn, stopped: true } : turn)
+          : current.live.turns;
+        current.live = { ...current.live, turns, streaming: false, stopping: false, stopError: undefined };
+        flush();
+      },
+      discard: () => {
+        const current = owned();
+        if (!current) return;
+        current.abort();
+        lives.delete(key);
         flush();
       },
       setAbort: (a) => {
@@ -204,15 +237,12 @@ export const liveAnswer = {
       },
     };
   },
-  /** 停止按钮专用：abort + finish 正在看的这一场。别的场照常写它们自己的条目 */
+  /** 停止按钮专用：请求取消这一代生成，保留连接等服务端收尾。 */
   stop: (kbId: string, conversationId: string | null) => {
-    for (const s of lives.values()) {
-      if (s.live.kbId === kbId && s.live.conversationId === conversationId) {
-        s.abort();
-        s.live = { ...s.live, streaming: false };
-        flush();
-        return;
-      }
-    }
+    const slot = [...lives.values()].find((s) => s.live.kbId === kbId && s.live.conversationId === conversationId);
+    if (!slot?.live.streaming || slot.live.stopping) return;
+    slot.live = { ...slot.live, stopping: true, stopError: undefined };
+    flush();
+    void requestStop(slot);
   },
 };

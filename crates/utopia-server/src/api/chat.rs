@@ -5,6 +5,11 @@
 #[path = "chat_finalization.rs"]
 mod finalization;
 
+#[path = "chat_generation.rs"]
+mod generation;
+
+use generation::{Answer, ProducerEvent};
+
 use super::agent;
 use super::rig_model::{self, RigModel};
 use crate::live::Frame;
@@ -39,11 +44,6 @@ const KNOWN_ENTITY_LIMIT: usize = 20;
 
 const MAX_HISTORY: usize = 20;
 const MAX_ROUNDS: usize = 6;
-
-enum ProducerEvent {
-    Progress(Frame),
-    Outcome(Result<Uuid, Failure>),
-}
 
 /// 一次没答成的生成（0004）：`code` 给界面去 `err.*` 表里查措辞，英文原句留给日志、
 /// MCP 和不做本地化的客户端。**服务端不出显示文本**——`error` 帧与请求被拒用的是
@@ -127,34 +127,16 @@ pub struct ChatReq {
     pub retry_message_id: Option<Uuid>,
 }
 
-/// 要重答的那一问
-struct Retry {
-    conversation_id: Uuid,
-    question_id: Uuid,
-    question: String,
-}
-
-/// 重答（#936）之前的检查：要答的必须是这场对话最后那条消息，而且是一个问题，
-/// 这场对话也没有在跑的生成。
+/// 已占住会话后检查重试资格，避免检查与登记之间另一轮已经写入回答。
+/// 只接受本会话最后一条未回答的用户消息；拒绝时不改历史，也不调用模型。
 ///
-/// 每一步都只读不写：在这里被拒，库里什么也没变，模型也没被调用。从前想再问一次
-/// 只能重发，同一个问题就在历史里存了两遍，没有回答的那一遍还会在之后每一问里
-/// 作为「没回答的一轮」回放给模型
+/// 为什么要有重答（#936）：从前想再问一次只能重发，同一个问题就在历史里存了两遍，
+/// 没有回答的那一遍还会在之后每一问里作为「没回答的一轮」回放给模型
 async fn retry_question(
     state: &AppState,
-    kb_id: Uuid,
-    user_id: Uuid,
-    conversation_id: Option<Uuid>,
+    conversation_id: Uuid,
     question_id: Uuid,
-) -> Result<Retry, AppError> {
-    let Some(conversation_id) = conversation_id else {
-        return Err(AppError::invalid(
-            "retry_needs_conversation",
-            "A retry names the conversation its question is in",
-        ));
-    };
-    utopia_store::conversations::require_owned(&state.pool, kb_id, user_id, conversation_id)
-        .await?;
+) -> Result<String, AppError> {
     let target =
         utopia_store::conversations::retry_target(&state.pool, conversation_id, question_id)
             .await?
@@ -172,22 +154,7 @@ async fn retry_question(
                 .into(),
         });
     }
-    if state.live.is_running(conversation_id).await {
-        return Err(answer_running());
-    }
-    Ok(Retry {
-        conversation_id,
-        question_id,
-        question: target.content,
-    })
-}
-
-/// 这场对话里正有一个回答在写。#961 给「生成中又来一个新问题」的也是 409；后落地的那个沿用先落地的 code
-fn answer_running() -> AppError {
-    AppError::CodedConflict {
-        code: "answer_running",
-        message: "An answer is already being written in this conversation".into(),
-    }
+    Ok(target.content)
 }
 
 /// 工具清单。**MCP 也用这一份**（`mcp.rs`）：名字、描述、参数 schema 抄成
@@ -652,14 +619,17 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
        server reads the base as it stood strictly before that change. Never compute an earlier \
        `as_of` yourself. Keep `at` for the world date asked about.\n\
     2b. For \"what changed / what is new / what did we get wrong since <date>\", call changes — \
-       it needs no entity. Name the document a correction came from in plain prose. Graph tools \
-       return no [n] numbers and no URLs, so never write a bracketed citation or a placeholder \
-       like [Link] after one — the document's name IS the attribution.\n\
+       it needs no entity. Name the document a correction came from in plain prose. changes \
+       returns no [n] numbers and no URLs, so never write a bracketed citation or a placeholder \
+       like [Link] after one of its lines — the document's name IS the attribution.\n\
     3. Several entities can share one name — check the disambiguator and pick the right one; \
        if genuinely ambiguous, ask the user which one they mean.\n\
     4. Stop calling tools as soon as you have enough evidence. Then answer concisely: cite \
-       document sources with [n] (numbers from search results) at the end of supported \
-       sentences. If the evidence is insufficient, say so explicitly — never fabricate.\n\
+       with [n] at the end of supported sentences, using only numbers a tool printed. Search \
+       results carry them, and so does each fact line of entity_facts, neighbors, timeline and \
+       paths_between: its [n] opens the passage that fact was read from. A fact line without \
+       a number (a derived fact, or one whose documents are gone) is stated without a bracket. \
+       If the evidence is insufficient, say so explicitly — never fabricate.\n\
     5. Always respond in the same language as the user's question.";
 
 pub async fn chat(
@@ -690,55 +660,38 @@ pub async fn chat(
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| AppError::invalid("no_chat_model", NO_MODEL))?;
 
-    // 重答（#936）问的是库里那一句还没有回答的问题，不是请求里的正文
-    let retry = match req.retry_message_id {
-        Some(question_id) => {
-            Some(retry_question(&state, kb_id, user.id, req.conversation_id, question_id).await?)
-        }
-        None => None,
-    };
-    let retrying = retry.is_some();
-    let query = match &retry {
-        Some(retry) => retry.question.trim().to_string(),
-        None => req.message.trim().to_string(),
-    };
-    if query.is_empty() {
+    let query = req.message.trim().to_string();
+    if req.retry_message_id.is_none() && query.is_empty() {
         return Err(AppError::Validation("Missing user message".into()).into());
     }
-    // 语义层：跟这个问题有关的那几条确认口径进 system prompt——问数优先用确认口径，
-    // 而不是每次从 schema 猜。按问题挑而不是全塞：二十七条的上界 17/18 是在
-    // 三十条的上限之下量的，一百条口径靠字典序截断就不成立了（#574）
-    let mappings = if mounted_sources.is_empty() {
-        Vec::new()
-    } else {
-        crate::mapping_index::relevant(
-            &state,
-            kb_id,
-            kb.workspace_id,
-            &query,
-            crate::mapping_index::DEFINITIONS_IN_PROMPT,
-        )
-        .await
-        .map_err(AppError::Other)?
+    let conversation_id = match req.conversation_id {
+        Some(id) => {
+            utopia_store::conversations::require_owned(&state.pool, kb_id, user.id, id).await?;
+            id
+        }
+        None if req.retry_message_id.is_some() => {
+            return Err(AppError::invalid(
+                "retry_needs_conversation",
+                "A retry names the conversation its question is in",
+            )
+            .into());
+        }
+        None => utopia_store::conversations::create(&state.pool, kb_id, user.id, &query).await?,
     };
-
-    // 会话持久化：有 id 则校验归属，无则以首句为题新建；用户消息即刻落库,
-    // 上下文由服务端从库里拼——前端只送新消息
+    // 会话持久化：用户消息即刻落库，上下文由服务端从库里拼——前端只送新消息。
     // 重答的那一问已经在库里，就地回答它，不再存一遍
-    let (conversation_id, user_message_id) = match retry {
-        Some(retry) => (retry.conversation_id, retry.question_id),
+    // 新问题和重试共用入口：先占住会话，再查重试资格或存问题。
+    // 准备失败时 Drop 自动释放；被拒的新问题不会混入历史。
+    let handle = state.live.begin(conversation_id).await?;
+    let generation_id = handle.generation_id();
+    let cancellation = handle.cancellation();
+    let (query, user_message_id) = match req.retry_message_id {
+        Some(question_id) => {
+            let question = retry_question(&state, conversation_id, question_id).await?;
+            (question.trim().to_string(), question_id)
+        }
         None => {
-            let conversation_id = match req.conversation_id {
-                Some(id) => {
-                    utopia_store::conversations::require_owned(&state.pool, kb_id, user.id, id)
-                        .await?;
-                    id
-                }
-                None => {
-                    utopia_store::conversations::create(&state.pool, kb_id, user.id, &query).await?
-                }
-            };
-            let user_message_id = utopia_store::conversations::append_message(
+            let question_id = utopia_store::conversations::append_message(
                 &state.pool,
                 conversation_id,
                 "user",
@@ -746,9 +699,12 @@ pub async fn chat(
                 &utopia_store::conversations::TurnRecord::empty(),
             )
             .await?;
-            (conversation_id, user_message_id)
+            (query, question_id)
         }
     };
+    if query.is_empty() {
+        return Err(AppError::Validation("Missing user message".into()).into());
+    }
     let history = utopia_store::conversations::recent_context(
         &state.pool,
         conversation_id,
@@ -772,6 +728,15 @@ pub async fn chat(
 
     // 注册表在生成器之前取出来：下面那个 `async_stream!` 会把 `state` 整个搬走
     let live = state.live.clone();
+    let save_pool = state.pool.clone();
+    let previous_answer = history
+        .turns
+        .iter()
+        .rev()
+        .find(|(role, _)| role == "assistant")
+        .map(|(_, content)| content.clone())
+        .unwrap_or_default();
+    let previous_sources = history.last_sources.clone();
 
     // 生成过程不挂在这条连接上。
     //
@@ -787,6 +752,31 @@ pub async fn chat(
     // 代价说清楚：**没人看的时候仍然在花钱**。这是有意的——丢答案比多跑一轮贵，
     // 而 `MAX_ROUNDS` 已经给了上限。send 失败（接收端没了）不中断，那正是要点。
     let producer = async_stream::stream! {
+        // 依赖模型的准备工作之前先发送身份，早到的 Stop 也能指向本轮。
+        // 会话 id 先行下发（新会话由此告知前端）；这一问存下的 id 一起下发：
+        // 答到一半失败了，界面凭它重答（#936）
+        yield ProducerEvent::Progress(Frame::new("conversation", json!({
+            "id": conversation_id, "message_id": user_message_id, "generation_id": generation_id,
+        }).to_string()));
+        // 语义层：跟这个问题有关的那几条确认口径进 system prompt——问数优先用确认口径，
+        // 而不是每次从 schema 猜。按问题挑而不是全塞：二十七条的上界 17/18 是在
+        // 三十条的上限之下量的，一百条口径靠字典序截断就不成立了（#574）。
+        // 挑口径要调嵌入模型，所以放在生成器里：Stop 丢掉生成器，这个请求跟着取消（0063）。
+        // 代价是它失败得晚了：从前是什么都没写的 500，现在问题已经存下，失败是一帧 error
+        let mappings = if mounted_sources.is_empty() {
+            Vec::new()
+        } else {
+            match crate::mapping_index::relevant(
+                &state, kb_id, workspace_id, &query, crate::mapping_index::DEFINITIONS_IN_PROMPT,
+            ).await {
+                Ok(mappings) => mappings,
+                Err(error) => {
+                    tracing::warn!(%error, "Could not retrieve conversation mappings");
+                    yield ProducerEvent::Outcome(Err(Failure::new("search_failed", "Could not retrieve relevant mappings.")));
+                    return;
+                }
+            }
+        };
         let ds_names: Vec<String> = mounted_sources.iter().map(|d| d.name.clone()).collect();
         let tools = tools_schema(can_write, &ds_names);
         let mut system_prompt = if can_write && REMEMBER_ENABLED {
@@ -846,10 +836,6 @@ pub async fn chat(
             }
         }
 
-        // 会话 id 先行下发（新会话由此告知前端）
-        // 这一问存下的 id 一起下发：答到一半失败了，界面凭它重答（#936）
-        yield ProducerEvent::Progress(Frame::new("conversation", json!({ "id": conversation_id, "message_id": user_message_id }).to_string()));
-
         // 循环是 rig 的（#546）：工具、策略钩子、历史、实体清单都交给它；
         // 这里只把它的事件翻成前端认得的帧，并在结束时落库
         let shared = agent::Shared::new(
@@ -866,6 +852,7 @@ pub async fn chat(
         let policy = agent::Policy {
             shared: shared.clone(),
             max_rounds: MAX_ROUNDS,
+            cancellation,
         };
         let tool_server = ToolServer::new()
             .dynamic_tools(agent::dynamic_tools(&shared))
@@ -986,6 +973,7 @@ pub async fn chat(
                     let text = rig_model::tool_result_text(&tool_result.content);
                     // 闸门工具不留轨迹：「你好」下面挂一条「声明不用查」是噪音
                     let mut is_error = None;
+                    let mut published_step = None;
                     if tool_result.name != agent::NO_EVIDENCE_TOOL {
                         let mut step = match shared.take_step(&internal_call_id) {
                             Some((step, failed)) => { is_error = Some(failed); step }
@@ -1006,7 +994,7 @@ pub async fn chat(
                             obj.insert("at".into(), json!(answer_acc.encode_utf16().count()));
                         }
                         steps_acc.push(step.clone());
-                        yield ProducerEvent::Progress(Frame::new("step", serde_json::to_string(&step).unwrap_or_default()));
+                        published_step = Some(step);
                     }
                     // cite() only appends: document reads can add citations too, regardless
                     // of the UI step kind. Release the sink before yielding to subscribers.
@@ -1019,12 +1007,23 @@ pub async fn chat(
                             None
                         }
                     };
-                    if let Some(sources) = sources {
-                        yield ProducerEvent::Progress(Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
-                    }
                     let mut recorded = tool_result_message(tool_result.call.as_str(), &text);
                     if let Some(failed) = is_error { recorded["is_error"] = json!(failed); }
                     exchange_acc.push(recorded);
+                    // 先保留已完成工具的历史，再把步骤发给可能立即按 Stop 的客户端。
+                    // 保存停止的答案时，生成驱动会移除尚未完成的并行调用。
+                    let resolved = shared.sink.lock().await.resolved.clone();
+                    yield ProducerEvent::Context {
+                        resolved,
+                        tool_exchange: exchange_acc.clone(),
+                        gathered: !steps_acc.is_empty(),
+                    };
+                    if let Some(step) = published_step {
+                        yield ProducerEvent::Progress(Frame::new("step", step.to_string()));
+                    }
+                    if let Some(sources) = sources {
+                        yield ProducerEvent::Progress(Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
+                    }
                 }
                 // 钩子把这一回合退了回去。已经流给用户的话收不回来，接下来的正文
                 // 另起一段；还扣着的（写成正文的工具调用）随这一回合丢掉
@@ -1056,7 +1055,6 @@ pub async fn chat(
                             state.clone(),
                             kb_id,
                             workspace_id,
-                            conversation_id,
                             query.clone(),
                             history.turns.clone(),
                             client.clone(),
@@ -1140,79 +1138,30 @@ pub async fn chat(
                 .unwrap_or_default();
             sources = carried_sources(&answer_acc, previous, &history.last_sources);
         }
-        let saved = utopia_store::conversations::append_message(
-            &state.pool, conversation_id, "assistant", &answer_acc,
-            &utopia_store::conversations::TurnRecord {
+        yield ProducerEvent::Outcome(Ok(Answer {
+            content: answer_acc,
+            record: utopia_store::conversations::TurnRecord {
+                stopped: false,
                 steps: serde_json::Value::Array(steps_acc),
-                sources: serde_json::Value::Array(sources.clone()),
+                sources: serde_json::Value::Array(sources),
                 resolved: serde_json::Value::Array(resolved),
                 tool_exchange: serde_json::Value::Array(exchange_acc),
             },
-        ).await;
-        let saved_id = match saved {
-            Ok(id) => id,
-            Err(error) => {
-                tracing::error!(%error, %conversation_id, "Could not persist final answer");
-                yield ProducerEvent::Outcome(Err(Failure::new("answer_not_saved", "Could not save the answer. Please try again later.")));
-                return;
-            }
-        };
-        yield ProducerEvent::Progress(Frame::new("sources", serde_json::to_string(&sources).unwrap_or_else(|_| "[]".into())));
-        if shared.finalizing() { yield ProducerEvent::Progress(delta_event(&turn_text)); }
-        yield ProducerEvent::Outcome(Ok(saved_id));
+            final_text: shared.finalizing().then_some(turn_text),
+        }));
     };
 
     // 生成登记在案，然后**这条连接也只是去「接上」它**——与刷新之后
     // 那条重连走的是同一段代码。两条路分开写的话，迟早只有一条是对的
-    let handle = if retrying {
-        // 上面检查过没有在跑的生成，但两次检查之间别的请求可能已经开了一次（比如连按
-        // 两下重试）。查和登记在一把锁下再做一次；这条路到这里还没写过任何东西
-        live.begin_if_idle(conversation_id)
-            .await
-            .ok_or_else(answer_running)?
-    } else {
-        live.begin(conversation_id).await
-    };
     let attached = live.attach(conversation_id).await;
-    tokio::spawn(async move {
-        let mut producer = std::pin::pin!(producer);
-        let mut outcome = None;
-        while let Some(event) = producer.next().await {
-            // 没有订阅者是常态（人走了）。**照发不误**：这里中断就等于
-            // 把「切走一次丢一个回答」原样搬回来
-            match event {
-                ProducerEvent::Progress(frame) => {
-                    if matches!(frame.event, "done" | "error") {
-                        outcome = Some(Err(Failure::new(
-                            "answer_failed",
-                            "Producer sent a terminal as progress",
-                        )));
-                        break;
-                    }
-                    handle.emit(frame).await;
-                }
-                ProducerEvent::Outcome(result) => {
-                    outcome = Some(result);
-                    break;
-                }
-            }
-        }
-        let terminal = match outcome {
-            Some(Ok(_saved_id)) => done_event(),
-            Some(Err(failure)) => error_event(
-                failure.code,
-                if failure.message.trim().is_empty() {
-                    "Answer failed"
-                } else {
-                    &failure.message
-                },
-            ),
-            None => error_event("stream_ended", "Answer stream ended unexpectedly"),
-        };
-        handle.emit(terminal).await;
-        // 注销之后再接上的人得到「没有在跑的」，那时答案已经落库
-        handle.finish().await;
-    });
+    tokio::spawn(generation::run(
+        save_pool,
+        conversation_id,
+        handle,
+        producer,
+        previous_answer,
+        previous_sources,
+    ));
 
     Ok(sse_from(attached))
 }
@@ -1247,7 +1196,6 @@ fn legacy_rag(
     state: AppState,
     kb_id: Uuid,
     workspace_id: Uuid,
-    conversation_id: Uuid,
     query: String,
     turns: Vec<(String, String)>,
     client: utopia_llm::LlmClient,
@@ -1288,22 +1236,14 @@ fn legacy_rag(
                     yield ProducerEvent::Outcome(Err(Failure::new("answer_empty", "Model returned an empty answer")));
                     return;
                 }
-                let saved = utopia_store::conversations::append_message(
-                    &state.pool, conversation_id, "assistant", &answer_acc,
-                    &utopia_store::conversations::TurnRecord {
-                        steps: serde_json::Value::Array(Vec::new()),
+                yield ProducerEvent::Outcome(Ok(Answer {
+                    content: answer_acc,
+                    record: utopia_store::conversations::TurnRecord {
                         sources: serde_json::Value::Array(legacy_sources),
-                        resolved: serde_json::Value::Array(Vec::new()),
-                        tool_exchange: serde_json::Value::Array(Vec::new()),
+                        ..utopia_store::conversations::TurnRecord::empty()
                     },
-                ).await;
-                match saved {
-                    Ok(id) => yield ProducerEvent::Outcome(Ok(id)),
-                    Err(error) => {
-                        tracing::error!(%error, "fallback answer persistence was not confirmed");
-                        yield ProducerEvent::Outcome(Err(Failure::new("answer_not_saved", "Could not confirm that the answer was saved.")));
-                    }
-                }
+                    final_text: None,
+                }));
             }
             Err(e) => yield ProducerEvent::Outcome(Err(Failure::model(&e, e.to_string()))),
         }
@@ -1373,6 +1313,25 @@ pub async fn reattach(
     Ok(sse_from(state.live.attach(conversation_id).await))
 }
 
+#[derive(Deserialize)]
+pub struct StopReq {
+    pub generation_id: Uuid,
+}
+
+/// 只通知生成的持有者，由它保存部分答案并发送终态。
+pub async fn stop(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, conversation_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<StopReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
+    utopia_store::conversations::require_owned(&state.pool, kb_id, user.id, conversation_id)
+        .await?;
+    state.live.stop(conversation_id, req.generation_id).await;
+    Ok(Json(json!({ "ok": true })))
+}
+
 /// 生成器产出的是 `Frame`，不是 `axum` 的 `Event`。
 /// **广播与快照都要读回事件的内容**，而 `Event` 读不回来（见 `live`）
 fn delta_event(text: &str) -> Frame {
@@ -1380,10 +1339,6 @@ fn delta_event(text: &str) -> Frame {
         "delta",
         serde_json::to_string(&json!({ "text": text })).unwrap_or_default(),
     )
-}
-
-fn done_event() -> Frame {
-    Frame::new("done", "{}".into())
 }
 
 /// 与请求被拒同一个信封：`error` 是英文原句，`code` 给界面查措辞（0004）

@@ -95,6 +95,7 @@ const historyTurns = (messages: ConversationMessage[]): Turn[] => messages.map((
   content: m.content,
   steps: m.steps.length ? m.steps : undefined,
   sources: m.sources.length ? m.sources : undefined,
+  stopped: m.stopped,
 }));
 const viewKey = (kbId: string, id: string | null) => `${kbId}/${id ?? ""}`;
 
@@ -342,13 +343,14 @@ export function Chat() {
           ],
           abort,
         );
+        handle.identify(id, undefined, s.generation_id);
       },
       onSources: (sources) => handle?.patchLast((t) => ({ ...t, sources })),
       onStep: (step) =>
         handle?.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
       onDelta: (text) => handle?.patchLast((t) => ({ ...t, content: t.content + text })),
-      onDone: () => {
-        handle?.finish();
+      onDone: (stopped) => {
+        handle?.finish(stopped);
         invalidateList();
       },
       onError: (message) => {
@@ -459,7 +461,8 @@ export function Chat() {
 
   const send = () => {
     const q = input.trim();
-    if (!q || streaming || !kb || kb.id !== kbId || loadingHistory || historyError) return;
+    if (!q || !kb || kb.id !== kbId || loadingHistory || historyError) return;
+    if (liveAnswer.entry(kb.id, activeId)?.streaming) return;
     const owner = claimView(activeId);
     following.current = true;
     setIdleHistoryKey(null);
@@ -482,7 +485,8 @@ export function Chat() {
    *  若挂着一条出错的回答，换成一条空的，带着它存下的 id 重新开流 */
   const retry = () => {
     const at = retryableQuestion(shown);
-    if (at < 0 || streaming || !kb || kb.id !== kbId || !activeId || loadingHistory || historyError) return;
+    if (at < 0 || !kb || kb.id !== kbId || !activeId || loadingHistory || historyError) return;
+    if (liveAnswer.entry(kb.id, activeId)?.streaming) return;
     const question = shown[at];
     const owner = claimView(activeId);
     following.current = true;
@@ -507,8 +511,8 @@ export function Chat() {
   ) => {
     const handle = liveAnswer.begin(kbNow, activeId, start, () => {});
     const abort = streamChat(kbNow, body, {
-      onConversation: (id, questionId) => {
-        handle.identify(id, questionId);
+      onConversation: (id, questionId, generationId) => {
+        handle.identify(id, questionId, generationId);
         invalidateList();
         if (!ownsView(owner)) return;
         // 先 identify 生成句柄再换 URL；layout effect 重置视图后，loadConversation 会认领该句柄。
@@ -526,11 +530,22 @@ export function Chat() {
         handle.patchLast((t) => ({ ...t, steps: [...(t.steps ?? []), step] })),
       onDelta: (text) =>
         handle.patchLast((t) => ({ ...t, content: t.content + text })),
-      onDone: () => {
-        handle.finish();
+      onDone: (stopped) => {
+        handle.finish(stopped);
         invalidateList();
       },
-      onError: (message) => {
+      onError: (message, error) => {
+        if (error?.status === 409 && error.code === "answer_running" && body.conversation_id) {
+          handle.discard();
+          if (!ownsView(owner)) return;
+          if (!body.retry_message_id) {
+            const draft = [body.message, inputRef.current?.value ?? sessionStorage.getItem(DRAFT_KEY)].filter(Boolean).join("\n");
+            sessionStorage.setItem(DRAFT_KEY, draft);
+            setInput(draft);
+          }
+          void loadConversation(body.conversation_id);
+          return;
+        }
         handle.patchLast((t) => ({ ...t, error: message }));
         handle.finish();
       },
@@ -563,6 +578,9 @@ export function Chat() {
           }
         }}
       />
+      {liveHere?.stopError && (
+        <div role="alert" className="text-small text-danger">{liveHere.stopError}</div>
+      )}
       <div className="flex items-center justify-between gap-3 pt-1">
         <div className="flex items-center gap-3 min-w-0">
           {/* 作用域 chip：提问点位可见"在问哪个库"，切库沿用现有语义（开新会话） */}
@@ -625,7 +643,8 @@ export function Chat() {
               // 别场照常写它们自己的条目
               if (kb) liveAnswer.stop(kb.id, currentId);
             }}
-            label={S.ask.stop}
+            label={liveHere?.stopping ? S.ask.stopping : S.ask.stop}
+            disabled={liveHere?.stopping}
             variant="secondary"
             className="shrink-0"
           >
@@ -1091,6 +1110,7 @@ function TurnView({
           ),
         )}
         {thinking && <Thinking step={lastStep} />}
+        {turn.stopped && <div className="text-small text-ink-2">{S.ask.stopped}</div>}
         {turn.error && <div className="text-danger">{turn.error}</div>}
       </div>
       {/* **引用等答案说完再出。**

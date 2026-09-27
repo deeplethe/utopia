@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { reattachChat, streamChat, type ChatHandlers } from "./api";
+import { ApiError, reattachChat, streamChat, type ChatHandlers } from "./api";
 vi.mock("./i18n", () => ({
   S: {
     ask: { streamInterrupted: "Stream interrupted" },
     err: {
       no_chat_model: "Worded: configure a chat model",
       model_out_of_credit: "Worded: the model account cannot pay",
+      answer_running: "Worded: this conversation already has an answer in progress",
     },
     errDetail: (message: string, detail: string) => `${message} (${detail})`,
   },
@@ -49,6 +50,19 @@ async function refuse(status: number, body: unknown) {
 }
 
 describe("a refused chat request", () => {
+  it("preserves the HTTP status and code for an already-running conversation", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      error: "Conversation already has an active answer", code: "answer_running",
+    }, { status: 409 })));
+    const onError = vi.fn();
+    streamChat("kb", { conversation_id: "conversation", message: "follow-up" }, {
+      onConversation: vi.fn(), onSources: vi.fn(), onStep: vi.fn(), onDelta: vi.fn(), onDone: vi.fn(), onError,
+    });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledTimes(1));
+    expect(onError.mock.calls[0][1]).toBeInstanceOf(ApiError);
+    expect(onError.mock.calls[0][0]).toBe("Worded: this conversation already has an answer in progress");
+    expect(onError.mock.calls[0][1]).toMatchObject({ status: 409, code: "answer_running" });
+  });
   it("is worded from its stable code, like every other request", async () => {
     expect(await refuse(422, { error: "Chat model not configured. Go to Settings → Models.", code: "no_chat_model" }))
       .toEqual([["error", "Worded: configure a chat model"]]);
@@ -82,6 +96,29 @@ describe("a chat stream that fails", () => {
 });
 
 describe("application chat terminal outcomes", () => {
+  it.each([false, true])("reads the generation identity and stopped outcome on reattach=%s", async (attach) => {
+    const snapshot = { generation_id: "generation", content: "partial", steps: [], sources: [] };
+    const body = new ReadableStream<Uint8Array>({ start(c) {
+      c.enqueue(encoder.encode(
+        'event: conversation\ndata: {"id":"conversation","generation_id":"generation"}\n\n' +
+        `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n` +
+        'event: done\ndata: {"stopped":true}\n\nevent: delta\ndata: {"text":"late"}\n\n',
+      ));
+      c.close();
+    } });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body)));
+    const handlers = {
+      onConversation: vi.fn(), onSnapshot: vi.fn(), onSources: vi.fn(), onStep: vi.fn(),
+      onDelta: vi.fn(), onDone: vi.fn(), onError: vi.fn(),
+    };
+    if (attach) reattachChat("kb", "conversation", handlers);
+    else streamChat("kb", { message: "hello" }, handlers);
+    await vi.waitFor(() => expect(handlers.onDone).toHaveBeenCalledWith(true));
+    expect(handlers.onConversation).toHaveBeenCalledWith("conversation", undefined, "generation");
+    expect(handlers.onSnapshot).toHaveBeenCalledWith(snapshot);
+    expect(handlers.onError).not.toHaveBeenCalled();
+    expect(handlers.onDelta).not.toHaveBeenCalled();
+  });
   it.each(["\n", "\r\n", "\r"])("reads %j line endings once, including split UTF-8", async (nl) => {
     const text = 'event: delta\ndata: {"text":"中文🙂"}\n\nevent: done\ndata: {}\n\n'.replaceAll("\n", nl);
     expect(await replay(text, false, true)).toEqual([["delta","中文🙂"],["done",null]]);
@@ -115,7 +152,7 @@ describe("application chat terminal outcomes", () => {
     streamChat("kb", {message:"hello"}, h);
     await vi.waitFor(() => expect(body.locked).toBe(false));
     await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
-    expect(h.onDone).toHaveBeenCalledTimes(1); expect(h.onError).not.toHaveBeenCalled();
+    expect(h.onDone).toHaveBeenCalledExactlyOnceWith(false); expect(h.onError).not.toHaveBeenCalled();
   });
   // 这一问存下的 id 随 conversation 帧一起到：答到一半失败时，页面凭它重答（#936）
   it("hands the stored id of the question to the page with the conversation", async () => {
@@ -125,7 +162,7 @@ describe("application chat terminal outcomes", () => {
     const h = {onConversation:vi.fn(),onSources:vi.fn(),onStep:vi.fn(),onDelta:vi.fn(),onDone:vi.fn(),onError:vi.fn()};
     streamChat("kb", {message:"hello"}, h);
     await vi.waitFor(() => expect(h.onDone).toHaveBeenCalledTimes(1));
-    expect(h.onConversation).toHaveBeenCalledWith("c1", "m1");
+    expect(h.onConversation).toHaveBeenCalledWith("c1", "m1", undefined);
     expect(h.onError).not.toHaveBeenCalled();
   });
   it("active abort is silent and cancels the reader", async () => {

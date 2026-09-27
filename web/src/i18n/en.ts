@@ -815,6 +815,8 @@ export const en = {
     scopeLabel: "Knowledge base",
     send: "Send",
     stop: "Stop",
+    stopping: "Stopping…",
+    stopped: "Stopped",
     thinking: "Thinking…",
     /* 轨迹上每一步的话（#942）。服务端只给字段：状态、数、时刻，怎么说在这里定。
        查询、实体名、来源名、问数的目的、记下的那句话是数据，原样显示；

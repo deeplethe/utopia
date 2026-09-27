@@ -203,7 +203,7 @@ async fn a_question_is_not_answered_twice_at_once() -> anyhow::Result<()> {
     let conversation_id =
         utopia_store::conversations::create(&f.pool, f.kb, f.user.id, QUESTION).await?;
     let question = append(&f, conversation_id, "user", QUESTION).await?;
-    let running = f.state.live.begin(conversation_id).await;
+    let running = f.state.live.begin(conversation_id).await.unwrap();
     let Outcome::Refused(status, body) = post(&f, retry(conversation_id, question)).await? else {
         panic!("a retry started while an answer was running");
     };
@@ -215,7 +215,7 @@ async fn a_question_is_not_answered_twice_at_once() -> anyhow::Result<()> {
     assert!(f.requests().is_empty(), "the model is not asked");
     assert_eq!(stored(&f, conversation_id).await?.len(), 1);
 
-    running.finish().await;
+    drop(running);
     let Outcome::Streamed(sse) = post(&f, retry(conversation_id, question)).await? else {
         panic!("the retry was refused after the running answer finished");
     };

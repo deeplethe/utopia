@@ -1535,6 +1535,7 @@ export interface ConversationMessage {
   content: string;
   steps: ChatStep[];
   sources: Source[];
+  stopped: boolean;
   created_at: string;
 }
 
@@ -2801,6 +2802,11 @@ export const conversationsApi = {
     request<{ messages: ConversationMessage[] }>(
       `/api/v1/kbs/${kbId}/conversations/${id}`,
     ),
+  stop: (kbId: string, id: string, generationId: string) =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/chat/${id}/stop`, {
+      method: "POST",
+      body: JSON.stringify({ generation_id: generationId }),
+    }),
   remove: (kbId: string, id: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/conversations/${id}`, {
       method: "DELETE",
@@ -2809,14 +2815,14 @@ export const conversationsApi = {
 
 export interface ChatHandlers {
   /** `messageId`：这一问存下的 id。答到一半失败了，凭它重答（#936）；老的服务端不发 */
-  onConversation: (id: string, messageId?: string) => void;
+  onConversation: (id: string, messageId?: string, generationId?: string) => void;
   onSources: (s: Source[]) => void;
   onStep: (s: ChatStep) => void;
   onDelta: (text: string) => void;
-  onDone: () => void;
-  onError: (message: string) => void;
+  onDone: (stopped: boolean) => void;
+  onError: (message: string, error?: ApiError) => void;
   /** 接上一个已经在跑的回答：这是它此刻的样子，**覆盖，不是追加** */
-  onSnapshot?: (s: { content: string; steps: ChatStep[]; sources: Source[] }) => void;
+  onSnapshot?: (s: { generation_id: string; content: string; steps: ChatStep[]; sources: Source[] }) => void;
   /** 这个会话没有在跑的生成——最常见的答案，不是错误 */
   onIdle?: () => void;
 }
@@ -2868,10 +2874,10 @@ function consumeChatStream(
   const controller = new AbortController();
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let terminal = false;
-  const fail = (message: string) => {
+  const fail = (message: string, error?: ApiError) => {
     if (terminal || controller.signal.aborted) return;
     terminal = true;
-    handlers.onError(message);
+    handlers.onError(message, error);
   };
   (async () => {
     try {
@@ -2882,10 +2888,13 @@ function consumeChatStream(
       }
       if (!res.ok || !res.body) {
         let message = res.statusText;
+        let code: string | undefined;
         try {
-          message = refusalMessage((await res.json()) as Refusal, message);
+          const body = (await res.json()) as Refusal;
+          code = body.code;
+          message = refusalMessage(body, message);
         } catch { /* keep the HTTP status */ }
-        fail(message);
+        fail(message, new ApiError(res.status, message, code));
         return;
       }
       reader = res.body.getReader();
@@ -2893,14 +2902,18 @@ function consumeChatStream(
       let trailingCr = false;
       const parser = createParser({ onEvent: ({ event, data: value }) => {
         if (terminal || controller.signal.aborted) return;
-        if (event === "done") { terminal = true; handlers.onDone(); }
+        if (event === "done") {
+          const stopped = JSON.parse(value).stopped === true;
+          terminal = true;
+          handlers.onDone(stopped);
+        }
         else if (event === "error") fail(streamFailure(value));
         else if (event === "idle") {
           if (allowIdle) { terminal = true; handlers.onIdle?.(); }
           else fail(S.ask.streamInterrupted);
         } else if (event === "conversation") {
           const frame = JSON.parse(value);
-          handlers.onConversation(frame.id, frame.message_id);
+          handlers.onConversation(frame.id, frame.message_id, frame.generation_id);
         }
         else if (event === "sources") handlers.onSources(JSON.parse(value));
         else if (event === "step") handlers.onStep(JSON.parse(value));

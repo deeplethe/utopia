@@ -747,6 +747,8 @@ export const zh: Strings = {
     scopeLabel: "知识库",
     send: "发送",
     stop: "停止",
+    stopping: "正在停止…",
+    stopped: "已停止",
     thinking: "思考中…",
     step: {
       failed: "失败",
