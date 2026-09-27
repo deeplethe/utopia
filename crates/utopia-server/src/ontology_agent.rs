@@ -53,7 +53,18 @@ fn shape_of(sig: &PhraseSignature) -> Value {
 }
 
 /// 任务入口：一个库同时只跑一份（同两种对齐，并行会把端点打出 502）
+#[cfg(test)]
 pub async fn propose(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
+    propose_with(state, kb_id, false).await
+}
+
+/// `full_glossary` 是测量用的旋钮（`scripts/bench/agent.mjs`）：每批都送全部属性的定义，
+/// 好和按批裁过的词表在同一批形状上比失败率、重复提案和 token。产品路径不开它
+pub async fn propose_with(
+    state: &AppState,
+    kb_id: Uuid,
+    full_glossary: bool,
+) -> anyhow::Result<()> {
     let pool = &state.pool;
     let kb = utopia_store::kbs::get(pool, kb_id).await?;
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
@@ -73,7 +84,7 @@ pub async fn propose(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
         tracing::info!(%kb_id, "本体代理已有一份在跑，这次跳过");
         return Ok(());
     }
-    let result = propose_locked(state, kb_id, &settings, &client).await;
+    let result = propose_locked(state, kb_id, &settings, &client, full_glossary).await;
     let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext('propose_ontology'), hashtext($1))")
         .bind(kb_id.to_string())
         .execute(&mut *guard)
@@ -99,6 +110,7 @@ async fn propose_locked(
     kb_id: Uuid,
     settings: &utopia_core::models::LlmSettings,
     client: &utopia_llm::LlmClient,
+    full_glossary: bool,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
@@ -305,6 +317,9 @@ async fn propose_locked(
     };
     let glossary_for = |ids: std::ops::Range<usize>| -> agent::Glossary<'_> {
         let mut full: HashSet<Uuid> = HashSet::new();
+        if full_glossary {
+            full.extend(props.iter().map(|p| p.id));
+        }
         for i in ids {
             let (Some(s), near) = (open.get(i), nearest.get(i)) else {
                 continue;
@@ -641,7 +656,7 @@ async fn propose_locked(
     }
     utopia_store::ontology::save_agent_proposals(pool, kb_id, &items).await?;
     agent_reviews::record(pool, kb_id, &reviews).await?;
-    tracing::info!(%kb_id, proposals = items.len(), failed, malformed, skipped_existing, "本体代理结束");
+    tracing::info!(%kb_id, proposals = items.len(), failed, malformed, skipped_existing, calls, glossary = if full_glossary { "full" } else { "trimmed" }, "本体代理结束");
     if !items.is_empty() {
         state.emit_pending(kb_id);
     }

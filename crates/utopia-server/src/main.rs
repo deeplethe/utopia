@@ -644,7 +644,9 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-            ontology_agent::propose(st, kb_id).await
+            // 测量用：payload 里 glossary = full 时每批送全词表（bench/agent.mjs）
+            let full = job.payload.get("glossary").and_then(|v| v.as_str()) == Some("full");
+            ontology_agent::propose_with(st, kb_id, full).await
         }
         "propose_questions" => {
             let kb_id: Uuid = job
