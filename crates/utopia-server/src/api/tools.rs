@@ -99,8 +99,10 @@ pub struct ToolSink {
     pub resolved: Vec<serde_json::Value>,
     /// 这一轮嵌过的文字与它的向量，不落库。同名实体每按名字查一次，都拿同一句问题去比
     /// 画像；谓词对不上时，同一个词也会再嵌。一轮之内文字与模型都不变，嵌一次就够：
-    /// 对话一轮一个 sink，MCP 一次调用一个。只记成功的，失败了下次照样再试
-    pub embeddings: std::collections::HashMap<String, Vec<f32>>,
+    /// 对话一轮一个 sink，MCP 一次调用一个。只记成功的，失败了下次照样再试。
+    /// 挑口径（`mapping_index::relevant`）与检索分块（`search_chunks`）也从这里拿问题的
+    /// 向量、往这里记（#971 的后续）
+    pub embeddings: crate::llm_util::EmbedCache,
 }
 
 /// 界面上的一步（#942）。
@@ -291,6 +293,7 @@ pub async fn search_chunks(
         &q,
         SEARCH_TOP_K,
         as_of,
+        Some(&mut sink.embeddings),
     )
     .await
     {
