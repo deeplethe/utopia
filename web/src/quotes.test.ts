@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { docSearch, quotePieces, sourceLead } from "./quotes";
+import { QUOTE_PARAM_MAX, docSearch, quoteParam, quotePieces, sourceLead } from "./quotes";
 
 const text = "Project Aurora started on 2023-01-10.\n\nZhang San leads Project Aurora from 2023-01-10.";
 
@@ -61,5 +61,18 @@ describe("the document page's search", () => {
     });
     expect(docSearch({ chunk: "c1", quote: "  " })).toEqual({ chunk: "c1", quote: undefined });
     expect(docSearch({ chunk: 3, quote: ["x"] })).toEqual({ chunk: undefined, quote: undefined });
+  });
+});
+
+describe("quoteParam", () => {
+  it("keeps a sentence short enough for the address bar and drops a longer one whole", () => {
+    expect(quoteParam("Li Si leads Project Aurora.")).toBe("Li Si leads Project Aurora.");
+    expect(quoteParam("界".repeat(QUOTE_PARAM_MAX))).toBe("界".repeat(QUOTE_PARAM_MAX));
+    expect(quoteParam("界".repeat(QUOTE_PARAM_MAX + 1))).toBeUndefined();
+    expect(quoteParam("   ")).toBeUndefined();
+    expect(docSearch({ chunk: "c", quote: "x".repeat(QUOTE_PARAM_MAX + 1) })).toEqual({
+      chunk: "c",
+      quote: undefined,
+    });
   });
 });

@@ -46,10 +46,22 @@ export function sourceLead(source: { excerpt: string; quotes?: string[] }): stri
   return source.quotes?.[0] ?? source.excerpt;
 }
 
-/** 文档页的查询参数：引用跳转到哪一块，块里标出哪一句（空白的一句等于没给） */
+/** 进地址栏的那一句最长多少字。地址会留在浏览器历史和代理的访问日志里，刷新时整条重发：
+ *  一个汉字编码后约九个字节，几百字就顶到常见的 8k 请求头上限。超长的一句不带——
+ *  截断了在原文里找不到，标不出来，不如不标 */
+export const QUOTE_PARAM_MAX = 300;
+
+/** 能进地址栏的一句：空白的、超长的都等于没给 */
+export function quoteParam(quote: unknown): string | undefined {
+  return typeof quote === "string" && quote.trim() && quote.length <= QUOTE_PARAM_MAX
+    ? quote
+    : undefined;
+}
+
+/** 文档页的查询参数：引用跳转到哪一块，块里标出哪一句 */
 export function docSearch(search: Record<string, unknown>): { chunk?: string; quote?: string } {
   return {
     chunk: typeof search.chunk === "string" ? search.chunk : undefined,
-    quote: typeof search.quote === "string" && search.quote.trim() ? search.quote : undefined,
+    quote: quoteParam(search.quote),
   };
 }

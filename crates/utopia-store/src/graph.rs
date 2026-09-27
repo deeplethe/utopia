@@ -1928,8 +1928,7 @@ pub async fn first_live_evidence(
            JOIN chunks c ON c.id = fe.chunk_id
            JOIN documents d ON d.id = c.document_id
           WHERE fe.fact_id = ANY($1) AND d.kb_id = $2 AND {chunk_live} AND {document_live}
-          ORDER BY fe.fact_id, COALESCE(d.doc_time, d.created_at), d.id, c.seq, c.id,
-                   fe.quote_start NULLS LAST, fe.quote",
+          ORDER BY fe.fact_id, COALESCE(d.doc_time, d.created_at), d.id, c.seq, c.id",
         chunk_live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
         document_live = crate::record_axis::document_live_at("d", as_of.map(|_| 3)),
     ))

@@ -10,7 +10,7 @@ import { citeHref } from "../citations";
 import { S } from "../i18n";
 import { useKbId } from "../kb";
 import { originLabel } from "../origin";
-import { sourceLead } from "../quotes";
+import { quoteParam, sourceLead } from "../quotes";
 import { CiteChip, CiteMark, CiteRow, PreviewCard, QuotedText } from "../ui/citation";
 import { CodeBlock } from "./chatCopy";
 
@@ -133,7 +133,7 @@ function SourcePreview({ s }: { s: Source }) {
         <Link
           to="/kb/$kbId/doc/$docId"
           params={{ kbId, docId: s.document_id! }}
-          search={{ chunk: s.chunk_id, quote: s.quotes?.[0] }}
+          search={{ chunk: s.chunk_id, quote: quoteParam(s.quotes?.[0]) }}
           className="u-card-link flex items-center gap-1 text-fine text-ink-2"
         >
           {S.ask.openOriginal}
