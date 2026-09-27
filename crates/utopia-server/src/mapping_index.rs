@@ -13,6 +13,9 @@
 //!
 //! 索引是**懒的**：`relevant` 先把没嵌的补上再查。一次问数通常没有要补的；
 //! 刚确认了一批才会有，那一次多等一个嵌入调用。谁都不用记得去刷新。
+//!
+//! 问题的向量走这一轮的缓存（`llm_util::EmbedCache`，#971 的后续）：对话先在这里嵌一次，
+//! 随后的检索分块和按名字查实体都拿同一个向量，一轮只调一次嵌入端点。
 
 use crate::llm_util;
 use crate::state::AppState;
@@ -85,6 +88,7 @@ pub async fn relevant(
     workspace_id: Uuid,
     query: &str,
     k: usize,
+    embeddings: Option<&mut llm_util::EmbedCache>,
 ) -> anyhow::Result<Vec<ConceptMapping>> {
     let query = query.trim();
     if query.is_empty() {
@@ -101,14 +105,14 @@ pub async fn relevant(
         .map(|id| id.to_string())
         .collect();
 
-    let vector: Option<Vec<String>> = match vector_channel(state, kb_id, workspace_id, query).await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(%kb_id, error = %e, "口径向量检索失败，只用词面");
-            None
-        }
-    };
+    let vector: Option<Vec<String>> =
+        match vector_channel(state, kb_id, workspace_id, query, embeddings).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(%kb_id, error = %e, "口径向量检索失败，只用词面");
+                None
+            }
+        };
 
     let mut lists = vec![lexical];
     if let Some(v) = vector {
@@ -123,11 +127,14 @@ pub async fn relevant(
     Ok(utopia_store::mappings::by_ids(&state.pool, kb_id, &ids).await?)
 }
 
+/// 向量那一路。缓存里有这句话的向量就不再嵌（也不占嵌入闸门的名额），模型名还是要
+/// 读设置：只比同一个模型嵌出来的口径
 async fn vector_channel(
     state: &AppState,
     kb_id: Uuid,
     workspace_id: Uuid,
     query: &str,
+    cache: Option<&mut llm_util::EmbedCache>,
 ) -> anyhow::Result<Option<Vec<String>>> {
     let Some(settings) = utopia_store::settings::get(&state.pool, workspace_id).await? else {
         return Ok(None);
@@ -138,18 +145,28 @@ async fn vector_channel(
     ) else {
         return Ok(None);
     };
-    let mut vectors = {
-        let _permit = llm_util::acquire_embed(state, &settings).await;
-        client.embed(&[query.to_string()]).await?
+    let vector = match cache.as_deref().and_then(|c| c.get(query)).cloned() {
+        Some(v) => v,
+        None => {
+            let mut vectors = {
+                let _permit = llm_util::acquire_embed(state, &settings).await;
+                client.embed(&[query.to_string()]).await?
+            };
+            if vectors.is_empty() {
+                return Ok(None);
+            }
+            let v = vectors.remove(0);
+            if let Some(cache) = cache {
+                cache.insert(query.to_string(), v.clone());
+            }
+            v
+        }
     };
-    if vectors.is_empty() {
-        return Ok(None);
-    }
     let ids = utopia_store::mappings::vector_search(
         &state.pool,
         kb_id,
         model,
-        &vectors.remove(0),
+        &vector,
         RECALL_PER_CHANNEL as i64,
     )
     .await?;

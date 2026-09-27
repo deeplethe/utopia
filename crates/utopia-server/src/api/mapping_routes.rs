@@ -175,7 +175,7 @@ pub async fn relevant(
     let k =
         q.k.unwrap_or(crate::mapping_index::DEFINITIONS_IN_PROMPT)
             .clamp(1, 50);
-    let items = crate::mapping_index::relevant(&state, kb_id, kb.workspace_id, &q.q, k)
+    let items = crate::mapping_index::relevant(&state, kb_id, kb.workspace_id, &q.q, k, None)
         .await
         .map_err(AppError::Other)?;
     Ok(Json(json!({ "items": items, "k": k })))

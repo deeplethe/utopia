@@ -47,7 +47,8 @@ sources for the citation numbers it repeats (#943).
 `relaxed_order` iterative scan, plus full text in embedded Tantivy; both take `as_of`; full text is
 "now" only; neither takes `at` [0035, 0019, 0022]. Confirmed mappings and a schema document reach
 the prompt through retrieval; a conventions document works today where a rule would be exact
-[0011, 0036].
+[0011, 0036]. A turn embeds its question once: choosing the mappings, `search_chunks` and the
+graph lookups share the turn's embedding cache (#971).
 
 **`remember`** writes a memory document at once; its statements go through open extraction and wait
 in `pending_facts`; the assistant says the sentence is recorded and its statements will be shown

@@ -23,6 +23,11 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
     )
 }
 
+/// 一轮对话里嵌过的文字与它的向量（#971）。挑口径、检索分块、按名字查实体都要把问题嵌成
+/// 向量，一轮之内是同一句话、同一个模型，嵌一次就够。缓存跟着这一轮的 `ToolSink` 走，不落库，
+/// 只记成功的；没有这一轮的调用方（HTTP 检索、口径页）传 `None`，各嵌各的
+pub type EmbedCache = std::collections::HashMap<String, Vec<f32>>;
+
 pub fn embed_client(s: &LlmSettings) -> Option<LlmClient> {
     if !s.embed_ready() {
         return None;
