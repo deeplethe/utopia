@@ -10,6 +10,10 @@
 //! - 派生事实那一行不带号，它的前提各带各的
 //! - MCP 的文字一字不改，来源清单是空的（号码对没有清单的调用方没有意义）
 //! - 整条对话：工具印的号随 `sources` 帧发出去、跟着回答落库，模型读到的事实行带着号
+//! - 号打开的是那句话（#968 的后续）：条目带着块里说出这条事实的引文，一块被引几句就记
+//!   几句；块被新版本取代后换成仍有效的那一块，`as_of` 回到取代之前又是原来那块
+//! - 检索和图谱工具在一轮里共用一个号：图谱引到检索登过的块，号不变、补上那句话；只补了
+//!   引文、条数没变，来源帧也再发一次
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 use super::*;
@@ -317,6 +321,298 @@ async fn a_graph_answer_publishes_and_stores_its_sources() -> anyhow::Result<()>
         let requests = f.requests();
         let sent = requests[1]["messages"].to_string();
         assert!(sent.contains("Li Si") && sent.contains("%] ["), "{sent}");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 号 `n` 那一条带着的引文
+fn quotes_of(sink: &ToolSink, n: usize) -> Vec<String> {
+    sink.sources[n - 1]["quotes"]
+        .as_array()
+        .map(|q| {
+            q.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 种子里还在的几篇文档进全文索引：检索要找得到它们
+async fn index_seed(f: &Fx) -> anyhow::Result<()> {
+    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
+        "SELECT c.document_id, c.id, c.text FROM chunks c JOIN documents d ON d.id = c.document_id
+          WHERE c.kb_id = $1 AND d.deleted_at IS NULL ORDER BY c.document_id, c.seq",
+    )
+    .bind(f.kb)
+    .fetch_all(&f.pool)
+    .await?;
+    let mut by_doc: std::collections::BTreeMap<Uuid, Vec<(String, String)>> = Default::default();
+    for (doc, chunk, text) in rows {
+        by_doc
+            .entry(doc)
+            .or_default()
+            .push((chunk.to_string(), text));
+    }
+    for (doc, chunks) in by_doc {
+        f.state
+            .search
+            .reindex_document(&f.kb.to_string(), &doc.to_string(), &chunks)?;
+    }
+    Ok(())
+}
+
+/// 号打开的是说出这条事实的那一句：条目带着引文，同一块两条事实两句都在；块被取代后
+/// 换成仍有效的那一块和它那一句，`as_of` 回到取代之前又是原来的
+#[tokio::test]
+async fn a_graph_number_opens_the_sentence_it_was_read_from() -> anyhow::Result<()> {
+    let Some(f) = fixture(Scripted::new(vec![])).await? else {
+        return Ok(());
+    };
+    let run = async {
+        let s = seed(&f.pool, f.kb).await?;
+        let pair: Uuid = sqlx::query_scalar(
+            "SELECT f.id FROM facts f JOIN relation_types r ON r.id = f.predicate_id
+              WHERE f.kb_id = $1 AND r.key = 'works_with'",
+        )
+        .bind(f.kb)
+        .fetch_one(&f.pool)
+        .await?;
+        // 章程那一块说了两句，张三的两条事实各从一句读出来
+        sqlx::query("UPDATE chunks SET text = $2 WHERE id = $1")
+            .bind(s.charter)
+            .bind("Zhang San leads Project Aurora from 2023-01-10. Zhang San works with Li Si.")
+            .execute(&f.pool)
+            .await?;
+        sqlx::query(
+            "UPDATE fact_evidence SET quote = 'Zhang San works with Li Si.' WHERE fact_id = $1",
+        )
+        .bind(pair)
+        .execute(&f.pool)
+        .await?;
+        let chat = ctx(&f, None);
+        let mut sink = ToolSink::default();
+        let text = dispatch(
+            &chat,
+            &mut sink,
+            "entity_facts",
+            &json!({"entity": "Zhang San"}),
+        )
+        .await
+        .text;
+        // 张三 works with 李四有两行：断言的那行带号，规则推出来的那行（`[rule:`）不带
+        let works_line = text
+            .lines()
+            .flat_map(|l| l.split(" · "))
+            .find(|l| l.contains("Li Si") && !l.contains("[rule:"))
+            .unwrap_or_else(|| panic!("no stated works-with line in:\n{text}"));
+        let (leads, works) = (marks(line(&text, "Project Aurora")), marks(works_line));
+        assert_eq!(leads, works, "one chunk, one number: {text}");
+        assert_eq!(chunk_of(&sink, leads[0]), s.charter);
+        let mut quotes = quotes_of(&sink, leads[0]);
+        quotes.sort();
+        assert_eq!(
+            quotes,
+            [
+                "Zhang San leads Project Aurora from 2023-01-10.",
+                "Zhang San works with Li Si."
+            ],
+            "both sentences the chunk was cited for"
+        );
+
+        // 章程那一块被新版本取代：张三领 Aurora 那一条换成仍有效的回顾那一块、那一句
+        sqlx::query("UPDATE chunks SET superseded_at = now() WHERE id = $1")
+            .bind(s.charter)
+            .execute(&f.pool)
+            .await?;
+        let mut now = ToolSink::default();
+        let text = dispatch(
+            &chat,
+            &mut now,
+            "entity_facts",
+            &json!({"entity": "Project Aurora"}),
+        )
+        .await
+        .text;
+        let zhang = marks(line(&text, "Zhang San"));
+        assert_eq!(chunk_of(&now, zhang[0]), s.recap, "{text}");
+        assert_eq!(
+            quotes_of(&now, zhang[0]),
+            ["Zhang San led Project Aurora until the handover."]
+        );
+        // 回到取代之前：那时章程那一块还是现行的
+        let mut then = ToolSink::default();
+        let text = dispatch(
+            &chat,
+            &mut then,
+            "entity_facts",
+            &json!({"entity": "Project Aurora", "as_of": "2026-03-01"}),
+        )
+        .await
+        .text;
+        let zhang = marks(line(&text, "Zhang San"));
+        assert_eq!(chunk_of(&then, zhang[0]), s.charter, "{text}");
+        assert_eq!(
+            quotes_of(&then, zhang[0]),
+            ["Zhang San leads Project Aurora from 2023-01-10."]
+        );
+        // MCP 没有来源清单，也就没有引文
+        let mut empty = ToolSink::default();
+        dispatch(
+            &ctx(&f, Some(Uuid::now_v7())),
+            &mut empty,
+            "entity_facts",
+            &json!({"entity": "Project Aurora"}),
+        )
+        .await;
+        assert!(empty.sources.is_empty());
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 一轮里检索和图谱工具共用一个号：检索先登了交接备忘录那一块，图谱引到它时号不变，
+/// 条目补上李四那句话；反过来也一样，检索不另起一个号，引文留着
+#[tokio::test]
+async fn a_search_and_a_graph_tool_share_one_number() -> anyhow::Result<()> {
+    let Some(f) = fixture(Scripted::new(vec![])).await? else {
+        return Ok(());
+    };
+    let run = async {
+        let s = seed(&f.pool, f.kb).await?;
+        index_seed(&f).await?;
+        let chat = ctx(&f, None);
+        let number_of = |sink: &ToolSink, chunk: Uuid| {
+            sink.sources
+                .iter()
+                .position(|x| x["chunk_id"] == chunk.to_string())
+                .map(|i| i + 1)
+        };
+        let li_says = "Li Si leads Project Aurora from 2024-07-05.";
+
+        let mut sink = ToolSink::default();
+        let found = dispatch(
+            &chat,
+            &mut sink,
+            "search_chunks",
+            &json!({"query": "Li Si leads Project Aurora"}),
+        )
+        .await
+        .text;
+        let n = number_of(&sink, s.handover).unwrap_or_else(|| panic!("the handover hit: {found}"));
+        assert!(
+            quotes_of(&sink, n).is_empty(),
+            "a search hit carries no quote"
+        );
+        let listed = sink.sources.len();
+        let text = dispatch(
+            &chat,
+            &mut sink,
+            "entity_facts",
+            &json!({"entity": "Project Aurora"}),
+        )
+        .await
+        .text;
+        assert_eq!(
+            marks(line(&text, "Li Si")),
+            [n],
+            "the search's number: {text}"
+        );
+        assert_eq!(
+            quotes_of(&sink, n),
+            [li_says],
+            "the entry gains the sentence"
+        );
+        assert_eq!(
+            number_of(&sink, s.handover),
+            Some(n),
+            "still one entry for the chunk"
+        );
+        assert!(sink.sources.len() >= listed);
+
+        let mut reverse = ToolSink::default();
+        let text = dispatch(
+            &chat,
+            &mut reverse,
+            "entity_facts",
+            &json!({"entity": "Project Aurora"}),
+        )
+        .await
+        .text;
+        let m = marks(line(&text, "Li Si"))[0];
+        let listed = reverse.sources.len();
+        dispatch(
+            &chat,
+            &mut reverse,
+            "search_chunks",
+            &json!({"query": "Li Si leads Project Aurora"}),
+        )
+        .await;
+        assert_eq!(
+            number_of(&reverse, s.handover),
+            Some(m),
+            "the graph's number"
+        );
+        assert_eq!(quotes_of(&reverse, m), [li_says], "the quote stays");
+        assert!(reverse.sources.len() >= listed);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 整条对话：检索登了三块，图谱再引其中两块，只补了引文、条数没变——来源帧照样再发
+/// 一次，存下的与最后一帧一致
+#[tokio::test]
+async fn a_quote_added_to_a_search_hit_is_published() -> anyhow::Result<()> {
+    let Some(f) = fixture(Scripted::new(vec![
+        Reply::Tool("search_chunks", r#"{"query":"Project Aurora"}"#),
+        Reply::Tool("entity_facts", r#"{"entity_id":"Li Si"}"#),
+        Reply::Text("Li Si leads Project Aurora."),
+    ]))
+    .await?
+    else {
+        return Ok(());
+    };
+    let run = async {
+        seed(&f.pool, f.kb).await?;
+        index_seed(&f).await?;
+        let sse = f.ask("Who leads Project Aurora?").await?;
+        assert!(sse.contains("event: done"), "{sse}");
+        let published: Vec<serde_json::Value> = sse
+            .split("\n\n")
+            .filter(|frame| frame.lines().any(|l| l == "event: sources"))
+            .filter_map(|frame| frame.lines().find_map(|l| l.strip_prefix("data: ")))
+            .filter_map(|data| serde_json::from_str(data).ok())
+            .collect();
+        assert!(published.len() >= 2, "{published:?}");
+        let (first, last) = (&published[0], published.last().unwrap());
+        assert_eq!(
+            first.as_array().map(Vec::len),
+            last.as_array().map(Vec::len),
+            "the graph step added no entry, only quotes: {published:?}"
+        );
+        assert!(
+            last.as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x["quotes"].as_array().is_some_and(|q| !q.is_empty())),
+            "{last}"
+        );
+        let stored: serde_json::Value = sqlx::query_scalar(
+            "SELECT m.sources FROM conversation_messages m
+               JOIN conversations c ON c.id = m.conversation_id
+              WHERE c.kb_id = $1 AND m.role = 'assistant'",
+        )
+        .bind(f.kb)
+        .fetch_one(&f.pool)
+        .await?;
+        assert_eq!(&stored, last);
         anyhow::Ok(())
     }
     .await;

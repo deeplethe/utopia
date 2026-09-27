@@ -6,6 +6,7 @@ import { S } from "../i18n";
 import { useKbId } from "../kb";
 import { originHint, originLabel } from "../origin";
 import { GroupLabel, PageHeader, Pager, pageSlice } from "../ui";
+import { QuotedText } from "../ui/citation";
 import { SourcesRail } from "./SourcesRail";
 
 const DOC_PAGE = 12;
@@ -20,7 +21,7 @@ function factRange(f: ChunkFact): string | null {
 export function DocViewer() {
   const kbId = useKbId();
   const { docId } = useParams({ from: "/app/kb/$kbId/doc/$docId" });
-  const { chunk } = useSearch({ from: "/app/kb/$kbId/doc/$docId" });
+  const { chunk, quote } = useSearch({ from: "/app/kb/$kbId/doc/$docId" });
   const navigate = useNavigate();
 
   const detail = useQuery({
@@ -129,7 +130,8 @@ export function DocViewer() {
                       </span>
                     )}
                   </div>
-                  {c.text}
+                  {/* 从一条图谱事实的号跳来时，标出说出它的那一句（#968 的后续） */}
+                  {hit && quote ? <QuotedText text={c.text} quotes={[quote]} /> : c.text}
                 </div>
 
                 {/* 抽取对照栏：这个分块产出了哪些事实（实体可跳图谱）。

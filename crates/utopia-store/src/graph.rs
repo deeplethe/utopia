@@ -1905,7 +1905,7 @@ pub async fn first_live_evidence(
     kb_id: Uuid,
     fact_ids: &[Uuid],
     as_of: Option<chrono::DateTime<chrono::Utc>>,
-) -> AppResult<Vec<(Uuid, utopia_core::models::ChunkView)>> {
+) -> AppResult<Vec<(Uuid, utopia_core::models::ChunkView, Option<String>)>> {
     if fact_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -1917,14 +1917,19 @@ pub async fn first_live_evidence(
         seq: i32,
         text: String,
         filename: String,
+        quote: Option<String>,
     }
+    // 连同那条证据的引文一起取（#968 的后续）：号打开的是那一块，引文是块里说出这条事实的
+    // 那句话。同一块里几条证据时取块里最靠前的那一句，排序到此为止才是确定的
     let rows: Vec<Row> = sqlx::query_as(&format!(
-        "SELECT DISTINCT ON (fe.fact_id) fe.fact_id, c.id, c.document_id, c.seq, c.text, d.filename
+        "SELECT DISTINCT ON (fe.fact_id) fe.fact_id, c.id, c.document_id, c.seq, c.text, d.filename,
+                NULLIF(btrim(fe.quote), '') AS quote
            FROM fact_evidence fe
            JOIN chunks c ON c.id = fe.chunk_id
            JOIN documents d ON d.id = c.document_id
           WHERE fe.fact_id = ANY($1) AND d.kb_id = $2 AND {chunk_live} AND {document_live}
-          ORDER BY fe.fact_id, COALESCE(d.doc_time, d.created_at), d.id, c.seq, c.id",
+          ORDER BY fe.fact_id, COALESCE(d.doc_time, d.created_at), d.id, c.seq, c.id,
+                   fe.quote_start NULLS LAST, fe.quote",
         chunk_live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
         document_live = crate::record_axis::document_live_at("d", as_of.map(|_| 3)),
     ))
@@ -1945,6 +1950,7 @@ pub async fn first_live_evidence(
                     text: r.text,
                     filename: r.filename,
                 },
+                r.quote,
             )
         })
         .collect())

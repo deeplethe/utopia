@@ -39,6 +39,10 @@ later turn [0063].
 line with the `[n]` of its first live evidence chunk, registered in the turn's source list the way a
 search hit is, so a graph answer opens to its sentence; a derived fact carries no number and its
 premises carry theirs where they are shown; MCP text stays unnumbered, its evidence being `document_ids` (#935). The
+entry a graph fact cites carries the sentence the fact was read from (`quotes`, one chunk keeping
+one number however many of its sentences are cited, a search hit gaining the sentence when a graph
+tool cites it), and the preview and the document page mark it, so the number opens the sentence
+itself (#968's follow-up). The
 previous turn's tool calls are replayed so the model knows what it did, not only
 what it said [0015]; a turn that gathers nothing, such as a restatement, keeps the previous answer's
 sources for the citation numbers it repeats (#943).

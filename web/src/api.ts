@@ -1468,6 +1468,8 @@ export interface Source {
   heading?: string;
   filename: string;
   excerpt: string;
+  /** 块里被引到的那几句（图谱事实的引文，#968 的后续）：界面在原文里把它们标出来 */
+  quotes?: string[];
 }
 
 /** Agentic 对话的行动轨迹（工具调用一步一条）。 */

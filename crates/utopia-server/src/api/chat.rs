@@ -897,7 +897,7 @@ pub async fn chat(
         let mut turn_published = 0usize;
         let mut turn_holding = false;
         let mut finished = false;
-        let mut published_sources = 0;
+        let mut published_sources: Vec<serde_json::Value> = Vec::new();
         let mut answer_requested = false;
 
         while let Some(item) = run.next().await {
@@ -996,12 +996,14 @@ pub async fn chat(
                         steps_acc.push(step.clone());
                         published_step = Some(step);
                     }
-                    // cite() only appends: document reads can add citations too, regardless
-                    // of the UI step kind. Release the sink before yielding to subscribers.
+                    // cite() appends, and a graph citation can add a quote to an entry a search
+                    // registered (#968's follow-up): publish when the list changed at all, not
+                    // only when it grew. Document reads can add citations too, regardless of the
+                    // UI step kind. Release the sink before yielding to subscribers.
                     let sources = {
                         let sink = shared.sink.lock().await;
-                        if sink.sources.len() != published_sources {
-                            published_sources = sink.sources.len();
+                        if sink.sources != published_sources {
+                            published_sources = sink.sources.clone();
                             Some(sink.sources.clone())
                         } else {
                             None
