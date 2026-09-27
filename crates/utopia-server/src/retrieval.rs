@@ -29,6 +29,7 @@ pub async fn hybrid(
     query: &str,
     top_k: usize,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
+    embeddings: Option<&mut llm_util::EmbedCache>,
 ) -> AppResult<Vec<ChunkView>> {
     let bm25 = {
         let search = state.search.clone();
@@ -40,7 +41,7 @@ pub async fn hybrid(
     // `try_join!` 会把模型故障变成检索报错
     let (bm25, vector) = tokio::join!(
         bm25,
-        vector_channel(state, kb_id, workspace_id, query, as_of)
+        vector_channel(state, kb_id, workspace_id, query, as_of, embeddings)
     );
     let bm25 = bm25
         .map_err(|e| utopia_core::AppError::Other(anyhow::anyhow!("BM25 检索线程退出：{e}")))?
@@ -61,31 +62,45 @@ pub async fn hybrid(
 /// 向量那一路。没配嵌入模型、嵌入请求失败、回了空，都是 `Ok(None)`：检索照常，
 /// 只剩 BM25——这就是模块头说的静默降级。向量查询本身失败仍是 `Err`：那是库的事，
 /// 不是模型的事，吞掉会把坏库伪装成没配模型。
+///
+/// 这一轮已经嵌过这句话（挑口径、按名字查实体都会嵌问题）就直接用那个向量，不再读
+/// 设置、不再调一次嵌入端点（#971 的后续）；新嵌成功的记进去给后面的用
 async fn vector_channel(
     state: &AppState,
     kb_id: Uuid,
     workspace_id: Uuid,
     query: &str,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
+    cache: Option<&mut llm_util::EmbedCache>,
 ) -> AppResult<Option<Vec<String>>> {
-    let settings = utopia_store::settings::get(&state.pool, workspace_id).await?;
-    let Some(client) = settings.as_ref().and_then(llm_util::embed_client) else {
-        return Ok(None);
-    };
-    let mut embeddings = match client.embed(&[query.to_string()]).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::warn!(error = %e, "查询 embedding 失败，降级为纯 BM25");
-            return Ok(None);
+    let vector = match cache.as_deref().and_then(|c| c.get(query)).cloned() {
+        Some(v) => v,
+        None => {
+            let settings = utopia_store::settings::get(&state.pool, workspace_id).await?;
+            let Some(client) = settings.as_ref().and_then(llm_util::embed_client) else {
+                return Ok(None);
+            };
+            let mut embeddings = match client.embed(&[query.to_string()]).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "查询 embedding 失败，降级为纯 BM25");
+                    return Ok(None);
+                }
+            };
+            if embeddings.is_empty() {
+                return Ok(None);
+            }
+            let v = embeddings.remove(0);
+            if let Some(cache) = cache {
+                cache.insert(query.to_string(), v.clone());
+            }
+            v
         }
     };
-    if embeddings.is_empty() {
-        return Ok(None);
-    }
     let ids = utopia_store::documents::vector_search(
         &state.pool,
         kb_id,
-        &embeddings.remove(0),
+        &vector,
         RECALL_PER_CHANNEL as i64,
         as_of,
     )

@@ -118,7 +118,7 @@ impl Fixture {
     }
 
     async fn search(&self, query: &str) -> anyhow::Result<Vec<Uuid>> {
-        let chunks = super::hybrid(&self.state, self.kb, self.ws, query, 8, None).await?;
+        let chunks = super::hybrid(&self.state, self.kb, self.ws, query, 8, None, None).await?;
         Ok(chunks.into_iter().map(|c| c.id).collect())
     }
 
@@ -238,7 +238,7 @@ async fn historical_search_keeps_live_candidates_before_limiting_results() -> an
         .search(&f.kb.to_string(), "apple harvest", 24)?;
     assert_eq!(raw.len(), 7);
     assert_eq!(raw.last().unwrap().chunk_id, f.b.to_string());
-    let current = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 6, None).await?;
+    let current = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 6, None, None).await?;
     assert_eq!(
         current.iter().map(|c| c.id.to_string()).collect::<Vec<_>>(),
         raw.iter()
@@ -251,8 +251,8 @@ async fn historical_search_keeps_live_candidates_before_limiting_results() -> an
     // The first six hits do not exist in March. They must not consume the
     // final limit and discard the one recalled chunk that does exist then.
     let at = Some("2026-03-01T00:00:00Z".parse()?);
-    let six = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 6, at).await?;
-    let seven = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 7, at).await?;
+    let six = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 6, at, None).await?;
+    let seven = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 7, at, None).await?;
     let six: Vec<_> = six.into_iter().map(|c| c.id).collect();
     let seven: Vec<_> = seven.into_iter().map(|c| c.id).collect();
     let expected = vec![f.b];
