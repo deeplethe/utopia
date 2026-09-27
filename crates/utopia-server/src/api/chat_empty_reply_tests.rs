@@ -39,6 +39,7 @@ pub(super) enum Reply {
     OversizedText,
     Finished(&'static str, &'static str),
     Http(u16),
+    HttpError(u16, &'static str),
     /// 调一个工具：(名字, 参数 JSON)
     Tool(&'static str, &'static str),
 }
@@ -72,6 +73,9 @@ impl Respond for Scripted {
             seen.len()
         };
         let frame = match self.replies.get(n - 1).copied().unwrap_or(Reply::Empty) {
+            Reply::HttpError(status, body) => {
+                return ResponseTemplate::new(status).set_body_string(body)
+            }
             Reply::Http(status) => {
                 return ResponseTemplate::new(status).set_body_string("Evidence gathering complete")
             }
@@ -371,6 +375,8 @@ async fn a_reply_that_stays_empty_is_an_error_after_one_retry() -> anyhow::Resul
     f.cleanup().await
 }
 
+#[path = "chat_context_tests.rs"]
+mod context_tests;
 #[path = "chat_embed_once_tests.rs"]
 mod embed_once_tests;
 #[path = "chat_error_code_tests.rs"]

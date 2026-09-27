@@ -23,6 +23,48 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
     )
 }
 
+/// 对话模型的设置：地址、密钥、模型、推理力度。任一项变了就是另一个客户端
+type ChatConfig = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// 各工作区的对话客户端，跨轮次留着。
+///
+/// 端点报过的上下文窗口记在客户端上（`LlmClient::remember_context_window`），每轮新建一个
+/// 就等于每轮都忘，下一轮照样撞上同一个 400（#964）。模型设置一变就换新的：学到的窗口
+/// 是那个模型的，不是这个工作区的。密钥和窗口都不跨工作区
+#[derive(Default)]
+pub struct ConversationClients {
+    inner: std::sync::Mutex<HashMap<uuid::Uuid, (ChatConfig, LlmClient)>>,
+}
+
+impl ConversationClients {
+    pub fn get(&self, workspace: uuid::Uuid, s: &LlmSettings) -> Option<LlmClient> {
+        let mut clients = self.inner.lock().unwrap();
+        if !s.chat_ready() {
+            clients.remove(&workspace);
+            return None;
+        }
+        let config = (
+            s.chat_base_url.clone(),
+            s.chat_api_key.clone(),
+            s.chat_model.clone(),
+            s.chat_reasoning_effort.clone(),
+        );
+        if let Some((previous, client)) = clients.get(&workspace) {
+            if previous == &config {
+                return Some(client.clone());
+            }
+        }
+        let client = chat_client(s)?;
+        clients.insert(workspace, (config, client.clone()));
+        Some(client)
+    }
+}
+
 /// 一轮对话里嵌过的文字与它的向量（#971）。挑口径、检索分块、按名字查实体都要把问题嵌成
 /// 向量，一轮之内是同一句话、同一个模型，嵌一次就够。缓存跟着这一轮的 `ToolSink` 走，不落库，
 /// 只记成功的；没有这一轮的调用方（HTTP 检索、口径页）传 `None`，各嵌各的

@@ -34,7 +34,6 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::ApiResult;
-use crate::llm_util;
 use crate::retrieval;
 use crate::state::AppState;
 
@@ -80,6 +79,8 @@ fn model_failure_code(err: &anyhow::Error) -> Option<&'static str> {
         || err.chain().any(|e| e.is::<utopia_llm::Interrupted>())
     {
         Some("model_unreachable")
+    } else if utopia_llm::context_too_long(err).is_some() {
+        Some("context_too_long")
     } else if utopia_llm::rejected(err).is_some() {
         Some("model_rejected")
     } else {
@@ -660,7 +661,9 @@ pub async fn chat(
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id)
         .await?
         .ok_or_else(|| AppError::invalid("no_chat_model", NO_MODEL))?;
-    let client = llm_util::chat_client(&settings)
+    let client = state
+        .chat_clients
+        .get(kb.workspace_id, &settings)
         .ok_or_else(|| AppError::invalid("no_chat_model", NO_MODEL))?;
 
     let query = req.message.trim().to_string();
@@ -865,13 +868,6 @@ pub async fn chat(
         let tool_server = ToolServer::new()
             .dynamic_tools(agent::dynamic_tools(&shared))
             .run();
-        let rig_agent = AgentBuilder::new(RigModel::new(client.clone()))
-            .preamble(&system_prompt)
-            // 工具轮 + 最后那一轮作答；第 MAX_ROUNDS+1 次请求由钩子在 I/O 前交给纯作答阶段
-            .default_max_turns(MAX_ROUNDS + 1)
-            .add_hook(policy)
-            .tool_server_handle(tool_server)
-            .build();
         let prior: Vec<(String, String)> = history
             .turns
             .iter()
@@ -879,6 +875,16 @@ pub async fn chat(
             .filter(|(i, _)| Some(*i) != current)
             .map(|(_, turn)| turn.clone())
             .collect();
+        let context = super::chat_context::Context::new(
+            prior.clone(), history.last_tool_exchange.clone(), client.history_char_budget(),
+        );
+        let rig_agent = AgentBuilder::new(RigModel::with_context(client.clone(), context.clone()))
+            .preamble(&system_prompt)
+            // 工具轮 + 最后那一轮作答；第 MAX_ROUNDS+1 次请求由钩子在 I/O 前交给纯作答阶段
+            .default_max_turns(MAX_ROUNDS + 1)
+            .add_hook(policy)
+            .tool_server_handle(tool_server)
+            .build();
         let mut runner = rig_agent
             .runner(Message::user(query.clone()))
             .history(agent::history_messages(&prior, &history.last_tool_exchange));
@@ -1066,7 +1072,7 @@ pub async fn chat(
                             kb_id,
                             workspace_id,
                             query.clone(),
-                            history.turns.clone(),
+                            context.clone(),
                             client.clone(),
                         ));
                         while let Some(frame) = legacy.next().await {
@@ -1086,12 +1092,13 @@ pub async fn chat(
                 let sink = shared.sink.lock().await;
                 (sink.sources.clone(), sink.resolved.clone())
             };
+            let (bounded_history, bounded_exchange) = context.snapshot();
             let input = finalization::AnswerContext {
-                question: &query, history: &history.turns, current,
-                prior_exchange: &history.last_tool_exchange,
+                question: &query, history: &bounded_history, current: None,
+                prior_exchange: &bounded_exchange,
                 exchange: &exchange_acc, sources: &sources, resolved: &resolved,
             };
-            match finalization::answer(&client, input).await {
+            match finalization::answer_with_context(&client, input, &context).await {
                 Ok(answer) => { turn_text = answer; turn_calls.clear(); finished = true; }
                 Err(e) => {
                     let message = format!("Model could not produce a final answer: {e}");
@@ -1207,7 +1214,7 @@ fn legacy_rag(
     kb_id: Uuid,
     workspace_id: Uuid,
     query: String,
-    turns: Vec<(String, String)>,
+    context: super::chat_context::Context,
     client: utopia_llm::LlmClient,
 ) -> impl Stream<Item = ProducerEvent> {
     async_stream::stream! {
@@ -1229,12 +1236,20 @@ fn legacy_rag(
             "sources",
             serde_json::to_string(&legacy_sources).unwrap_or_else(|_| "[]".into()),
         ));
-        let mut lmsgs = vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
-        for (role, content) in &turns {
-            lmsgs.push(json!({ "role": role, "content": content }));
-        }
         let mut answer_acc = String::new();
-        match client.chat_stream_raw(&lmsgs).await {
+        let deltas = loop {
+            let (turns, _) = context.snapshot();
+            let mut lmsgs = vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
+            for (role, content) in &turns {
+                lmsgs.push(json!({ "role": role, "content": content }));
+            }
+            lmsgs.push(json!({"role":"user", "content":query}));
+            match client.chat_stream_raw(&lmsgs).await {
+                Err(e) if context.recover(&client, &e) => continue,
+                result => break result,
+            }
+        };
+        match deltas {
             Ok(deltas) => {
                 let mut deltas = std::pin::pin!(deltas);
                 while let Some(item) = deltas.next().await {
