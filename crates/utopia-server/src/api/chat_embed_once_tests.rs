@@ -10,7 +10,10 @@
 //! - 工具层（同一个 sink 就是同一轮）：find_entities、按名字的 entity_facts 与
 //!   neighbors 都挑中近的那个，问题只嵌一次；同一个对不上的谓词问两次，那个词只嵌
 //!   一次；换一个 sink（下一轮），问题再嵌一次
-//! - 整条对话：模型先 find_entities，再按名字 entity_facts，嵌入服务只收到一次请求
+//! - 整条对话：模型先 search_chunks（检索词就是那句问题），再 find_entities、按名字
+//!   entity_facts，嵌入服务只收到一次请求
+//! - 挑口径（`mapping_index::relevant`）、检索分块（`retrieval::hybrid`）和按名字查实体
+//!   共用这一轮的缓存：问题只嵌一次；没有缓存的调用方各嵌各的（#971 的后续）
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 use super::*;
@@ -218,7 +221,9 @@ async fn a_turn_embeds_its_question_and_each_word_once() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn a_chat_turn_embeds_its_question_once() -> anyhow::Result<()> {
+    // 模型先拿那句问题去检索分块：向量那一路把它嵌了，后面按名字查实体拿的是同一个向量
     let Some(f) = fixture(Scripted::new(vec![
+        Reply::Tool("search_chunks", r#"{"query":"Where is the Acme lab?"}"#),
         Reply::Tool("find_entities", r#"{"name":"Acme"}"#),
         Reply::Tool("entity_facts", r#"{"entity_id":"Acme"}"#),
         Reply::Text("The Acme lab is in Harbor."),
@@ -231,8 +236,87 @@ async fn a_chat_turn_embeds_its_question_once() -> anyhow::Result<()> {
     let run = async {
         let sse = f.ask(QUESTION).await?;
         assert!(sse.contains("event: done"), "{sse}");
-        assert_eq!(sse.matches("event: step").count(), 2, "{sse}");
+        assert_eq!(sse.matches("event: step").count(), 3, "{sse}");
         assert_eq!(embedder.requests(), vec![vec![QUESTION.to_string()]]);
+        anyhow::Ok(())
+    }
+    .await;
+    server.abort();
+    f.cleanup().await?;
+    run
+}
+
+/// 挑口径、检索分块、按名字查实体三处拿的是同一个向量；换一句检索词才再嵌一次；
+/// 没有缓存的调用方（HTTP 检索、口径页）各嵌各的
+#[tokio::test]
+async fn mappings_search_and_the_graph_tools_share_one_embedding() -> anyhow::Result<()> {
+    let Some(f) = fixture(Scripted::new(vec![])).await? else {
+        return Ok(());
+    };
+    let (embedder, server, acme) = seed(&f).await?;
+    let run = async {
+        let ws: Uuid = sqlx::query_scalar("SELECT workspace_id FROM knowledge_bases WHERE id = $1")
+            .bind(f.kb)
+            .fetch_one(&f.pool)
+            .await?;
+        let mut cache = crate::llm_util::EmbedCache::default();
+
+        // 这个库一条确认口径都没有：挑口径两路都空，但问题已经嵌了一次
+        let mappings =
+            crate::mapping_index::relevant(&f.state, f.kb, ws, QUESTION, 8, Some(&mut cache))
+                .await?;
+        assert!(mappings.is_empty());
+        assert_eq!(embedder.requests(), vec![vec![QUESTION.to_string()]]);
+        assert!(cache.contains_key(QUESTION));
+
+        // 检索分块拿同一个向量：索引里没有块，向量那一路照样跑，只是不再嵌
+        let chunks =
+            crate::retrieval::hybrid(&f.state, f.kb, ws, QUESTION, 8, None, Some(&mut cache))
+                .await?;
+        assert!(chunks.is_empty());
+        assert_eq!(embedder.requests().len(), 1, "search reuses the vector");
+
+        // 按名字查实体：还是它，挑中画像近的那个
+        let ctx = ctx(&f, Some(QUESTION)).await?;
+        let mut turn = ToolSink {
+            embeddings: cache,
+            ..ToolSink::default()
+        };
+        let found = dispatch(&ctx, &mut turn, "find_entities", &json!({"name": "Acme"})).await;
+        assert!(
+            found
+                .text
+                .starts_with(&format!("Best match: {} |", acme.near)),
+            "{}",
+            found.text
+        );
+        assert_eq!(
+            embedder.requests().len(),
+            1,
+            "the graph lookup reuses it too"
+        );
+
+        // 模型把检索词改了：另一句话，嵌一次，记进同一个缓存
+        let _ = crate::retrieval::hybrid(
+            &f.state,
+            f.kb,
+            ws,
+            "Acme lab address",
+            8,
+            None,
+            Some(&mut turn.embeddings),
+        )
+        .await?;
+        assert_eq!(
+            embedder.requests().last(),
+            Some(&vec!["Acme lab address".to_string()])
+        );
+        assert!(turn.embeddings.contains_key("Acme lab address"));
+
+        // 没有这一轮的调用方各嵌各的
+        let _ = crate::retrieval::hybrid(&f.state, f.kb, ws, QUESTION, 8, None, None).await?;
+        let _ = crate::mapping_index::relevant(&f.state, f.kb, ws, QUESTION, 8, None).await?;
+        assert_eq!(embedder.requests().len(), 4);
         anyhow::Ok(())
     }
     .await;
