@@ -3,6 +3,7 @@
    而跳转会把人从答案里带走，回来时答案已经滚上去了。 */
 import { Popover as RadixPopover } from "radix-ui";
 import type { ReactNode } from "react";
+import { quotePieces } from "../quotes";
 
 /** 正文里的一个 `[n]`。流式中来源还没到的号用 {@link CiteMark} 画成静的 */
 export function CiteChip({
@@ -79,6 +80,23 @@ function PreviewPortal({
 }
 
 /** 浮窗的样子：标题一行、原文一段、右上角一条出路 */
+/** 一段原文，被引到的那几句用检索命中的样子标出来（#968 的后续）。对不上的引文不标 */
+export function QuotedText({ text, quotes }: { text: string; quotes?: readonly string[] }) {
+  return (
+    <>
+      {quotePieces(text, quotes).map((p, i) =>
+        p.quoted ? (
+          <mark key={i} className="u-mark">
+            {p.text}
+          </mark>
+        ) : (
+          <span key={i}>{p.text}</span>
+        ),
+      )}
+    </>
+  );
+}
+
 export function PreviewCard({
   title,
   meta,

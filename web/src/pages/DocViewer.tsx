@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { api, type ChunkFact } from "../api";
+import { api, type ChunkFact, type Doc } from "../api";
 import { S } from "../i18n";
 import { useKbId } from "../kb";
 import { originHint, originLabel } from "../origin";
+import { fmtTime } from "../time";
 import { GroupLabel, PageHeader, Pager, pageSlice } from "../ui";
+import { QuotedText } from "../ui/citation";
 import { SourcesRail } from "./SourcesRail";
 
 const DOC_PAGE = 12;
@@ -20,7 +22,7 @@ function factRange(f: ChunkFact): string | null {
 export function DocViewer() {
   const kbId = useKbId();
   const { docId } = useParams({ from: "/app/kb/$kbId/doc/$docId" });
-  const { chunk } = useSearch({ from: "/app/kb/$kbId/doc/$docId" });
+  const { chunk, quote } = useSearch({ from: "/app/kb/$kbId/doc/$docId" });
   const navigate = useNavigate();
 
   const detail = useQuery({
@@ -86,12 +88,7 @@ export function DocViewer() {
         <div className="px-8 py-6">
         <PageHeader
           title={doc.filename}
-          sub={
-            <>
-              {chunks.length} {S.doc.sections} · {(doc.size_bytes / 1024).toFixed(0)} KB ·{" "}
-              {new Date(doc.created_at).toLocaleDateString()}
-            </>
-          }
+          sub={<DocMeta doc={doc} chunks={chunks.length} />}
           actions={
             <Link to="/kb/$kbId/library" params={{ kbId }} className="u-link shrink-0 text-body">
               {S.doc.backToLibrary}
@@ -129,7 +126,8 @@ export function DocViewer() {
                       </span>
                     )}
                   </div>
-                  {c.text}
+                  {/* 从一条图谱事实的号跳来时，标出说出它的那一句（#968 的后续） */}
+                  {hit && quote ? <QuotedText text={c.text} quotes={[quote]} /> : c.text}
                 </div>
 
                 {/* 抽取对照栏：这个分块产出了哪些事实（实体可跳图谱）。
@@ -206,5 +204,29 @@ export function DocViewer() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** 文档头部的元数据条：段数 · 大小 · 文档日期 · 上传时刻。
+ *
+ *  文档日期（`doc_time`）与上传时刻（`created_at`）分开显示（#610）：合成一格，读的人会把
+ *  上传时间当成文档上写的日期。两者的读法也不同：文档日期是**日历日期**，存的是那一天的
+ *  UTC 午夜，按 UTC 读（`fmtTime`）——按本地读，UTC-5 的人看到的是前一天；上传时刻是一个
+ *  真实的时刻，按看的人所在的时区读。 */
+function DocMeta({ doc, chunks }: { doc: Doc; chunks: number }) {
+  const docDate = fmtTime(doc.doc_time, "day");
+  return (
+    <>
+      {chunks} {S.doc.sections} · {(doc.size_bytes / 1024).toFixed(0)} KB ·{" "}
+      {docDate && (
+        <>
+          <span title={S.doc.docDateFromContent}>
+            {S.doc.docDate}: {docDate}
+          </span>
+          {" · "}
+        </>
+      )}
+      {S.doc.uploadedAt} {new Date(doc.created_at).toLocaleDateString()}
+    </>
   );
 }

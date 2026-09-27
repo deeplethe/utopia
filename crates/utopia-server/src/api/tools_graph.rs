@@ -211,8 +211,11 @@ fn contains_ci(haystack: Option<&str>, needle: &str) -> bool {
 /// 图谱答出来的回答一个号也没有，界面只能说「未引用任何来源」。印哪一行时才登记，
 /// 所以号码按出现的顺序排，与检索结果共用一套号（同一块只有一个号）。
 ///
-/// 没有来源清单（MCP）、或证据读不出来时是空的：事实行照旧，不带号
-struct Evidence(HashMap<Uuid, utopia_core::models::ChunkView>);
+/// 没有来源清单（MCP）、或证据读不出来时是空的：事实行照旧，不带号。
+///
+/// 每条事实还带着那条证据的引文（#968 的后续）：号打开的是那一块，条目里的 `quotes`
+/// 是块里说出它的那一句，界面据此把那句话标出来
+struct Evidence(HashMap<Uuid, (utopia_core::models::ChunkView, Option<String>)>);
 
 impl Evidence {
     /// 事实 id 收成自有的 `Vec` 再传进来：借着显示列表的迭代器跨 await 持有，工具的
@@ -228,7 +231,11 @@ impl Evidence {
         match utopia_store::graph::first_live_evidence(&ctx.state.pool, ctx.kb_id, &fact_ids, as_of)
             .await
         {
-            Ok(rows) => Self(rows.into_iter().collect()),
+            Ok(rows) => Self(
+                rows.into_iter()
+                    .map(|(fact, chunk, quote)| (fact, (chunk, quote)))
+                    .collect(),
+            ),
             Err(e) => {
                 tracing::warn!(error = %e, "Evidence lookup for citation marks failed");
                 Self(HashMap::new())
@@ -239,10 +246,13 @@ impl Evidence {
     /// ` [n]`：这条事实的证据登进清单后的号。没有有效证据的事实（派生事实也是）不带号
     fn mark(&self, sink: &mut ToolSink, fact_id: Uuid) -> String {
         match self.0.get(&fact_id) {
-            Some(chunk) => {
+            Some((chunk, quote)) => {
                 let n = super::tools::cite(sink, chunk.id.to_string(), |n| {
                     super::tools::source_json(n, chunk)
                 });
+                if let Some(quote) = quote {
+                    super::tools::add_quote(sink, n, quote);
+                }
                 format!(" [{n}]")
             }
             None => String::new(),

@@ -275,6 +275,35 @@ pub(super) fn cite(
     }
 }
 
+const QUOTES_PER_SOURCE: usize = 8;
+const QUOTE_CHARS: usize = 400;
+
+/// 给第 `n` 条来源补一句它说出的话（#968 的后续）：号打开的是那一块，`quotes` 是块里被
+/// 引到的那几句，界面按它们在原文里标出来。同一块一个号，块里被引到几句就记几句，去重、
+/// 按引用的先后；检索先登记的块没有这一格，图谱再引到它时补上
+///
+/// 两个上限：清单每调一次工具就整份重发一遍，收尾那次请求也带着它，一块里抽出几十条事实
+/// 不该让它跟着长。超长的一句整句不记而不是截断——界面按原文找这句话，截过的找不到
+pub(super) fn add_quote(sink: &mut ToolSink, n: usize, quote: &str) {
+    if quote.chars().count() > QUOTE_CHARS {
+        return;
+    }
+    let Some(entry) = n.checked_sub(1).and_then(|i| sink.sources.get_mut(i)) else {
+        return;
+    };
+    let Some(map) = entry.as_object_mut() else {
+        return;
+    };
+    let quotes = map
+        .entry("quotes")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    if let Some(list) = quotes.as_array_mut() {
+        if list.len() < QUOTES_PER_SOURCE && !list.iter().any(|q| q.as_str() == Some(quote)) {
+            list.push(serde_json::Value::String(quote.to_string()));
+        }
+    }
+}
+
 pub async fn search_chunks(
     ctx: &ToolCtx<'_>,
     sink: &mut ToolSink,
