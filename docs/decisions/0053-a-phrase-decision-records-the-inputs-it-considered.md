@@ -1,8 +1,8 @@
 # 0053 · A phrase decision records the inputs it considered
 
-- **Status**: implemented 2026-09-23 in PR #878 · `phrase_bindings.basis` (migration 0072), candidates admitted through the class hierarchy and shown to the model as such, structural outcomes recorded instead of skipped, the requeue condition reads live signatures only · closes the lifecycle half of #807 and the phrase half of #795 · kind words since 2026-09-26: `type_bindings.basis` (migration 0092), read from one snapshot and compared again when a reply is accepted, see [the revision below](#revision-2026-09-26-kind-words)
+- **Status**: implemented 2026-09-23 in PR #878 · `phrase_bindings.basis` (migration 0072), candidates admitted through the class hierarchy and shown to the model as such, structural outcomes recorded instead of skipped, the requeue condition reads live signatures only · closes the lifecycle half of #807 and the phrase half of #795 · kind words since 2026-09-26: `type_bindings.basis` (migration 0092), read from one snapshot and compared again when a reply is accepted, see [the revision below](#revision-2026-09-26-kind-words) · what a single date marks since 2026-09-27: `phrase_bindings.marks` (migration 0097), see [the revision below](#revision-2026-09-27-what-a-single-date-marks)
 - **Written**: 2026-09-23
-- **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754
+- **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754, #966
 
 ## Problem
 
@@ -143,3 +143,87 @@ whose batch fails takes the bounded re-ask; a failed retrieval falls back and is
 while it keeps failing; a person's decision carries no basis, is not overwritten, and commits with
 its job; an acceptance and a class delete wait for each other instead of deadlocking, and a
 candidate deleted before the check turns the reply away.
+
+## Revision 2026-09-27 (what a single date marks)
+
+"Lin Zhao joined Meridian Systems on 2023-06-01" has a single date, which time resolution writes
+the way 0031 writes an event: the same instant on both ends. Bound to `works_for`, a state, it was
+materialised as 2023-06-01 → 2023-06-01. The world axis reads a state as holding while
+`valid_from <= T < valid_to`, so that row held at no moment. It also absorbed or closed the
+document's own "works for … from 2023-06-01", depending on which statement was written first
+(#966).
+
+**A binding to a state property says what a single date marks.** `phrase_bindings.marks`
+(migration 0097) is `start`, `end` or `none`; NULL is unknown.
+
+- **The aligner decides it with the binding.** Each candidate line says whether the property is a
+  state, an event or timeless, and the reply carries a fourth value per item. Both votes must agree
+  on it, as on the property and the direction:
+  - two different values put the signature in the alignment queue;
+  - a vote that binds a state and leaves the value out counts as unanswered and takes the bounded
+    re-ask;
+  - events and timeless properties are not asked.
+- **What it depends on is in the fingerprint.** Whether the value is asked depends on the property's
+  time semantics. Every edit to them moves `updated_at`, which the fingerprint covers, so a property
+  that becomes a state is asked again. The value itself is an output, not an input, and is not
+  fingerprinted.
+- **Decisions made before this** have no value.
+  - An agent's binding to a state with no value is asked again on the next run, although its
+    fingerprint matches. Only the run's opening selection does this. The check for work left at the
+    end of a run ignores it, so a model that never answers cannot queue run after run.
+  - A person's binding is never re-asked. It is listed in the alignment queue, with its property and
+    direction preselected, until a person says what the date marks.
+- **A person** sets the value in the alignment queue when binding a state. The decision request
+  carries `marks`, and the API refuses it for anything but a state property.
+
+**Materialisation reads it.** A statement whose two ends are equal, bound to a state property:
+
+- `start`: written as [t, open). With "works for … from t" in the same document, both statements
+  are sources of one row, whichever was written first.
+- `end`: written as an end at t, the path a dated ending takes in `insert_fact_on`: it closes the
+  open row at t.
+- `none` or unknown: no typed row. The statement stays in the open graph with its date.
+
+Rows that hold at no moment because they were materialised before this (a computed state row with
+equal ends) are retired in the next run, and their statements are computed again under these rules.
+A row a person wrote is not touched. A rule carries no value, so a single-date statement whose rule
+concludes a state computes no implied row.
+
+**The invariant.** A state row with equal ends is never written. `Validity::under` refuses it after
+truncation to precision (`empty_state_span`), so an interval correction that would write one gets a
+422. Closing a state row at its own start is refused the same way. Rows without a property keep
+their dates as before: reading them as a state is how they are read, not a declaration.
+
+**The guard.** Under a state property, `insert_fact_on` no longer takes a stored row with equal ends
+for the same observation. Such a row neither absorbs a later observation nor is closed by one, so the
+ledger does not depend on the order of statements. A single date arriving under a state never reaches
+that matching: the invariant refuses it first.
+
+Not doing:
+
+- **A date that means the whole period.** "Revenue in 2023" or "was chairman in 2019" is `none` and
+  stays open. Reading such a date as holding through its bucket, as an event is read, would be a
+  separate decision.
+- **A flip between start and end.** A binding whose value changes from `start` to `end`, or back,
+  keeps the rows already computed from its single-date statements. A change to or from `none`, and a
+  first value on a binding that had none, are computed again.
+- **Reopening.** A row closed by an `end` statement is not reopened when that statement is
+  retracted, as with any dated ending.
+
+Regression coverage, with a real PostgreSQL:
+
+- The three orders from #966 (`joined` before `works for`, after it, and alone) give one row from
+  2023-06-01 when the binding says `start`.
+- A phrase that marks the end closes the open row at its date. With `none` or no value, a single
+  date computes no typed row.
+- A row that held at no moment is retired and computed again.
+- The invariant refuses a write, an interval correction and a closing at the row's own start, and
+  still writes a single date without a property.
+- The guard keeps a stored row with equal ends from absorbing a later observation.
+
+With a scripted model:
+
+- a four-value reply binds with the value;
+- different values go to the queue, and a missing one is re-asked;
+- an agent's binding without a value is asked again and a person's is not;
+- the queue lists a person's binding without a value, and a person's decision writes it.

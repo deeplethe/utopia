@@ -303,7 +303,12 @@ impl Fx {
 }
 
 fn vote(key: Option<&str>, dir: Option<&str>) -> Value {
-    json!({"b":[[0, key, dir]]})
+    marked(key, dir, key.map(|_| "none"))
+}
+/// 一票带第四格：based_in 是状态，绑上它的票要说只带一个日期的陈述那个日期标什么（#966）。
+/// 夹具里的陈述没有日期，平常答 none
+fn marked(key: Option<&str>, dir: Option<&str>, marks: Option<&str>) -> Value {
+    json!({"b":[[0, key, dir, marks]]})
 }
 /// 两票之后对齐还会问一次「这种形状还蕴含什么」（0044 决定 3 第五片）：脚本里答「没有」
 fn nothing_implied() -> Value {
@@ -627,6 +632,7 @@ async fn a_person_decision_made_during_the_request_is_not_overwritten() -> anyho
                 votes: &json!({}),
                 decided_by: "person",
                 basis: None,
+                marks: None,
             },
         )
         .await?;
@@ -658,8 +664,8 @@ async fn an_id_keyed_reply_still_binds_the_phrase() -> anyhow::Result<()> {
     };
     let run = async {
         f.script(vec![
-            json!({"0": ["based_in", "forward"]}),
-            json!({"b": {"0": {"key": "based_in", "direction": "forward"}}}),
+            json!({"0": ["based_in", "forward", "none"]}),
+            json!({"b": {"0": {"key": "based_in", "direction": "forward", "marks": "none"}}}),
             nothing_implied(),
         ]);
         f.run().await?;
@@ -855,6 +861,207 @@ async fn a_property_created_in_the_editor_has_its_vector_before_phrases_are_alig
         assert_eq!(
             f.vector_of(id).await?.1.as_deref(),
             Some("headquarteredIn\nwhere the head office of an organization sits"),
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 状态属性下，两票还要说只带一个日期的陈述那个日期标什么（#966）。候选行写明属性是
+/// 状态；两票说得一样就绑，marks 跟着写下，两票的记录里也有它
+#[tokio::test]
+async fn a_state_binding_carries_what_a_single_date_marks() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(vec![
+            marked(Some("based_in"), Some("forward"), Some("start")),
+            marked(Some("based_in"), Some("forward"), Some("start")),
+        ]);
+        f.run().await?;
+        assert_eq!(f.requests().len(), 2);
+        let prompt = f.prompt_of(0);
+        assert!(
+            prompt.contains("- based_in · based in · relation · state ·"),
+            "the model is told the property is a state: {prompt}"
+        );
+        let b = f.binding().await?;
+        assert_eq!(
+            (b.status.as_str(), b.marks.as_deref()),
+            ("bound", Some("start"))
+        );
+        let votes: Value = sqlx::query_scalar("SELECT votes FROM phrase_bindings WHERE kb_id=$1")
+            .bind(f.kb)
+            .fetch_one(&f.pool)
+            .await?;
+        assert_eq!(
+            (&votes["first"]["marks"], &votes["second"]["marks"]),
+            (&json!("start"), &json!("start"))
+        );
+        assert!(!f.requeued().await?);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 两票选了同一个属性、同一个方向，却一票说开始、一票说结束：和选了不同的属性一样，交给人
+#[tokio::test]
+async fn two_votes_that_read_the_date_differently_go_to_a_person() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(vec![
+            marked(Some("based_in"), Some("forward"), Some("start")),
+            marked(Some("based_in"), Some("forward"), Some("end")),
+        ]);
+        f.run().await?;
+        let b = f.binding().await?;
+        assert_eq!((b.status.as_str(), b.marks.as_deref()), ("undecided", None));
+        let votes: Value = sqlx::query_scalar("SELECT votes FROM phrase_bindings WHERE kb_id=$1")
+            .bind(f.kb)
+            .fetch_one(&f.pool)
+            .await?;
+        assert_eq!(
+            (&votes["first"]["marks"], &votes["second"]["marks"]),
+            (&json!("start"), &json!("end")),
+            "both readings are kept for the person"
+        );
+        let items = utopia_store::alignment_queue::list(&f.pool, f.kb, 10, 0).await?;
+        assert!(
+            matches!(
+                items.as_slice(),
+                [utopia_store::alignment_queue::AlignmentItem::Phrase { bound_to: None, .. }]
+            ),
+            "{items:?}"
+        );
+        assert!(!f.requeued().await?);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 一票绑了状态却没说那个日期标什么：这一票没答完，不下结论，有限次地再问
+#[tokio::test]
+async fn a_state_vote_that_leaves_the_date_unread_is_asked_again() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(vec![
+            json!({"b":[[0, "based_in", "forward"]]}),
+            marked(Some("based_in"), Some("forward"), Some("start")),
+        ]);
+        f.run().await?;
+        assert_eq!(f.requests().len(), 2);
+        assert!(
+            phrase_bindings::bindings(&f.pool, f.kb).await?.is_empty(),
+            "no decision without both readings"
+        );
+        let reasks: Vec<Option<i64>> = sqlx::query_scalar(
+            "SELECT (payload->>'reask')::bigint FROM jobs
+              WHERE kind='align_phrases' AND status='queued' AND payload->>'kb_id'=$1",
+        )
+        .bind(f.kb.to_string())
+        .fetch_all(&f.pool)
+        .await?;
+        assert_eq!(reasks, vec![Some(1)], "it queues itself once more");
+        f.clear_jobs().await?;
+        f.script(vec![
+            marked(Some("based_in"), Some("forward"), Some("start")),
+            marked(Some("based_in"), Some("forward"), Some("start")),
+        ]);
+        align_phrases_reasking(&f.state, f.kb, 1).await?;
+        let b = f.binding().await?;
+        assert_eq!(
+            (b.status.as_str(), b.marks.as_deref()),
+            ("bound", Some("start"))
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 这一问出现之前判下的绑定没有 marks。代理判的：指纹没变也再问一次，补上就不再问。
+/// 人判的：代理不问，它在对齐队列里等人补，属性与方向是现在绑的
+#[tokio::test]
+async fn a_binding_decided_before_the_question_is_asked_once_and_a_persons_waits_in_the_queue(
+) -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(bound());
+        f.run().await?;
+        assert_eq!(f.binding().await?.marks.as_deref(), Some("none"));
+        sqlx::query("UPDATE phrase_bindings SET marks = NULL WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.pool)
+            .await?;
+        f.script(vec![
+            marked(Some("based_in"), Some("forward"), Some("start")),
+            marked(Some("based_in"), Some("forward"), Some("start")),
+        ]);
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            4,
+            "the fingerprint matches, yet the binding is asked for the value it lacks"
+        );
+        assert_eq!(f.binding().await?.marks.as_deref(), Some("start"));
+        f.run().await?;
+        assert_eq!(f.requests().len(), 4, "asked once: it has its value now");
+        assert!(!f.requeued().await?);
+
+        let sig = phrase_bindings::signatures(&f.pool, f.kb).await?.remove(0);
+        phrase_bindings::decide(
+            &f.pool,
+            f.kb,
+            &sig,
+            phrase_bindings::Decision {
+                relation_type_id: Some(f.based_in),
+                direction: Some("forward"),
+                status: "bound",
+                votes: &json!({"person": {"property": "based_in", "direction": "forward"}}),
+                decided_by: "person",
+                basis: None,
+                marks: None,
+            },
+        )
+        .await?;
+        f.run().await?;
+        assert_eq!(f.requests().len(), 4, "a person's binding is not asked");
+        let items = utopia_store::alignment_queue::list(&f.pool, f.kb, 10, 0).await?;
+        assert!(
+            matches!(
+                items.as_slice(),
+                [utopia_store::alignment_queue::AlignmentItem::Phrase {
+                    bound_to: Some(p),
+                    direction: Some(d),
+                    ..
+                }] if p == "based_in" && d == "forward"
+            ),
+            "{items:?}"
+        );
+        assert_eq!(
+            utopia_store::alignment_queue::waiting(&f.pool, f.kb)
+                .await?
+                .0,
+            1
+        );
+        assert_eq!(
+            utopia_store::review::counts(&f.pool, f.kb).await?.alignment,
+            1,
+            "the badge counts it too"
         );
         anyhow::Ok(())
     }

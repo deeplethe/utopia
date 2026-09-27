@@ -149,6 +149,9 @@ pub struct Binding {
     pub decided_by: String,
     /// 判定时输入的指纹；NULL = 这一列出现之前的判定
     pub basis: Option<String>,
+    /// 一条只说了一刻的陈述，那一刻标的是状态的哪一端：start / end / none（#966）。
+    /// NULL = 未知：这一列之前的判定，或属性不是状态
+    pub marks: Option<String>,
 }
 
 impl Binding {
@@ -178,7 +181,7 @@ impl PhraseSignature {
 pub async fn bindings(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
     Ok(sqlx::query_as(
         "SELECT phrase, subject_type_id, object_type_id, object_is_value,
-                relation_type_id, direction, status, decided_at, decided_by, basis
+                relation_type_id, direction, status, decided_at, decided_by, basis, marks
          FROM phrase_bindings WHERE kb_id = $1 ORDER BY phrase",
     )
     .bind(kb_id)
@@ -243,7 +246,8 @@ pub async fn property_versions(
 pub async fn stale(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Binding>> {
     Ok(sqlx::query_as(
         "SELECT b.phrase, b.subject_type_id, b.object_type_id, b.object_is_value,
-                b.relation_type_id, b.direction, b.status, b.decided_at, b.decided_by, b.basis
+                b.relation_type_id, b.direction, b.status, b.decided_at, b.decided_by, b.basis,
+                b.marks
          FROM phrase_bindings b
          LEFT JOIN relation_types r ON r.id = b.relation_type_id
          WHERE b.kb_id = $1
@@ -270,6 +274,9 @@ pub struct Decision<'a> {
     pub decided_by: &'a str,
     /// 判定时输入的指纹（[`basis_of`]）：代理的判定必带，人的判定不带——人不按指纹重判
     pub basis: Option<&'a str>,
+    /// start / end / none：只说了一刻的陈述在状态属性下怎么读（#966）。只有 bound 带；
+    /// None = 未知，那样的陈述不算类型化行
+    pub marks: Option<&'a str>,
 }
 
 /// 记下一条签名的判定（有则改）。返回是否写入了。
@@ -303,6 +310,16 @@ fn validate_decision(sig: &PhraseSignature, d: &Decision<'_>) -> AppResult<Strin
     if let Some(dir) = d.direction {
         if !matches!(dir, "forward" | "reverse") {
             return Err(AppError::Validation(format!("unknown direction {dir:?}")));
+        }
+    }
+    if let Some(marks) = d.marks {
+        if !bound {
+            return Err(AppError::Validation(
+                "only a bound signature says which end a moment marks".into(),
+            ));
+        }
+        if !matches!(marks, "start" | "end" | "none") {
+            return Err(AppError::Validation(format!("unknown marks {marks:?}")));
         }
     }
     if !matches!(d.decided_by, "agent" | "person") {
@@ -377,8 +394,8 @@ pub async fn decide_on(
         "INSERT INTO phrase_bindings
              (id, kb_id, phrase, subject_type_id, object_type_id, object_is_value,
               relation_type_id, direction, status, votes, statement_count, examples,
-              decided_at, decided_by, basis)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13, $14)
+              decided_at, decided_by, basis, marks)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13, $14, $15)
          ON CONFLICT (kb_id, phrase, subject_type_id, object_type_id, object_is_value) DO UPDATE
             SET relation_type_id = EXCLUDED.relation_type_id,
                 direction = EXCLUDED.direction,
@@ -388,7 +405,8 @@ pub async fn decide_on(
                 examples = EXCLUDED.examples,
                 decided_at = now(),
                 decided_by = EXCLUDED.decided_by,
-                basis = EXCLUDED.basis
+                basis = EXCLUDED.basis,
+                marks = EXCLUDED.marks
           WHERE NOT (phrase_bindings.decided_by = 'person' AND EXCLUDED.decided_by = 'agent')",
     )
     .bind(Uuid::now_v7())
@@ -409,6 +427,7 @@ pub async fn decide_on(
     .bind(&sig.examples)
     .bind(d.decided_by)
     .bind(d.basis)
+    .bind(d.marks)
     .execute(connection)
     .await?;
     Ok(res.rows_affected() > 0)

@@ -20,7 +20,7 @@ use crate::state::AppState;
 use std::collections::{HashMap, HashSet};
 use utopia_core::models::RelationTypeView;
 use utopia_extract::phrase_align::{
-    build_phrase_messages, parse_phrase_response, Direction, PhraseItem, PropertyCandidate,
+    build_phrase_messages, parse_phrase_response, Direction, Marks, PhraseItem, PropertyCandidate,
 };
 use utopia_store::phrase_bindings::{self, Decision, PhraseSignature};
 use uuid::Uuid;
@@ -31,7 +31,19 @@ const BATCH: usize = 12;
 const CANDIDATE_LIMIT: usize = 60;
 
 /// 一票：这条签名选了哪个属性、哪个方向（None = 没有属性对得上）。
-type Vote = Option<(String, Direction)>;
+/// 一票：属性的键、方向，以及属性是状态时一刻标哪一端（#966）
+type Vote = Option<(String, Direction, Option<Marks>)>;
+
+/// 代理判过、绑到状态属性、却还没说一刻标哪一端的绑定（#966 之前的判定）：即使指纹没变也
+/// 再问一次，让对齐器补上。只进开跑时的 todo，不进收尾的「变了没有」——模型一直不答
+/// marks 时不能每轮都给自己排一次
+fn awaits_marks(b: &phrase_bindings::Binding, props: &[RelationTypeView]) -> bool {
+    b.status == "bound"
+        && b.marks.is_none()
+        && b.relation_type_id
+            .and_then(|id| props.iter().find(|p| p.id == id))
+            .is_some_and(|p| p.temporal == "state")
+}
 
 /// 一个类连同它的全部祖先。候选按它命中：属性的定义域声明在 legal_entity 上，
 /// organization 是它的子类，这条属性对 organization 的签名就是候选（#807 第一条）。
@@ -448,14 +460,16 @@ async fn align_phrases_locked(
     let short = shortlist(state, settings, kb_id, &sigs, &full).await?;
     let considered = consider(&sigs, &props, &closure, &versions, Some(&short));
     // 过期 = 存下的指纹和此刻的不一样（没有指纹的是这一列出现前判的，各重判一次）。
-    // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定不重判
+    // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定不重判。
+    // 绑到状态属性却没说一刻标哪一端的代理判定也再问（`awaits_marks`，#966）
     let todo: Vec<&PhraseSignature> = sigs
         .iter()
         .filter(|s| match existing.get(&s.key()) {
             None => true,
             Some(b) => {
                 b.decided_by != "person"
-                    && b.basis.as_deref() != Some(considered[&s.key()].1.as_str())
+                    && (b.basis.as_deref() != Some(considered[&s.key()].1.as_str())
+                        || awaits_marks(b, &props))
             }
         })
         .collect();
@@ -476,6 +490,7 @@ async fn align_phrases_locked(
                     votes: &serde_json::json!({ "reason": "no_properties" }),
                     decided_by: "agent",
                     basis: Some(&considered[&s.key()].1),
+                    marks: None,
                 },
             )
             .await?;
@@ -549,6 +564,7 @@ async fn align_phrases_locked(
                                 label: &p.label,
                                 description: &p.description,
                                 kind: &p.kind,
+                                temporal: &p.temporal,
                                 domains: keys_of(&p.domains),
                                 ranges: keys_of(&p.ranges),
                                 via: fits(p, s, closure)
@@ -628,11 +644,12 @@ async fn align_phrases_locked(
                     continue;
                 };
                 if let Some(slot) = votes.get_mut(i) {
+                    let vote = c.property.map(|(key, direction)| (key, direction, c.marks));
                     if pass == 0 {
-                        slot.0 = c.property;
+                        slot.0 = vote;
                         answered[i].0 = true;
                     } else {
-                        slot.1 = c.property;
+                        slot.1 = vote;
                         answered[i].1 = true;
                     }
                 }
@@ -665,6 +682,7 @@ async fn align_phrases_locked(
                         votes: &votes,
                         decided_by: "agent",
                         basis: Some(basis),
+                        marks: None,
                     },
                 )
                 .await?
@@ -687,11 +705,31 @@ async fn align_phrases_locked(
             }
             let show = |v: &Vote| {
                 v.as_ref()
-                    .map(|(k, d)| serde_json::json!({ "property": k, "direction": d.as_str() }))
+                    .map(|(k, d, m)| {
+                        serde_json::json!({ "property": k, "direction": d.as_str(),
+                                            "marks": m.map(Marks::as_str) })
+                    })
                     .unwrap_or(serde_json::Value::Null)
             };
             let record = serde_json::json!({ "first": show(a), "second": show(b) });
-            if a != b {
+            // 两票选的属性与方向（或都说没有）是否一致
+            let agree = match (a, b) {
+                (Some((ka, da, _)), Some((kb, db, _))) => ka == kb && da == db,
+                (None, None) => true,
+                _ => false,
+            };
+            // 属性是状态时，两票还得说出一刻标哪一端（#966）：有一票没说是没答到，下次再问；
+            // 两票说得不一样和选了不同的属性一样，交给人。事件与恒常不问这一格
+            let state = a
+                .as_ref()
+                .and_then(|(k, _, _)| by_key.get(k.as_str()))
+                .is_some_and(|p| p.temporal == "state");
+            let marks_of = |v: &Vote| v.as_ref().and_then(|(_, _, m)| *m);
+            if agree && state && (marks_of(a).is_none() || marks_of(b).is_none()) {
+                unanswered += 1;
+                continue;
+            }
+            if !agree || (state && marks_of(a) != marks_of(b)) {
                 phrase_bindings::decide(
                     pool,
                     kb_id,
@@ -703,6 +741,7 @@ async fn align_phrases_locked(
                         votes: &record,
                         decided_by: "agent",
                         basis: Some(basis),
+                        marks: None,
                     },
                 )
                 .await?;
@@ -711,9 +750,9 @@ async fn align_phrases_locked(
             }
             match a
                 .as_ref()
-                .and_then(|(k, d)| by_key.get(k.as_str()).map(|p| (p, *d)))
+                .and_then(|(k, d, m)| by_key.get(k.as_str()).map(|p| (p, *d, *m)))
             {
-                Some((p, d)) => {
+                Some((p, d, m)) => {
                     if phrase_bindings::decide(
                         pool,
                         kb_id,
@@ -725,6 +764,7 @@ async fn align_phrases_locked(
                             votes: &record,
                             decided_by: "agent",
                             basis: Some(basis),
+                            marks: if state { m.map(Marks::as_str) } else { None },
                         },
                     )
                     .await?
@@ -744,6 +784,7 @@ async fn align_phrases_locked(
                             votes: &record,
                             decided_by: "agent",
                             basis: Some(basis),
+                            marks: None,
                         },
                     )
                     .await?

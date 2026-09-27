@@ -64,6 +64,7 @@ impl BindingKind {
                         votes: &votes,
                         decided_by: actor,
                         basis: None,
+                        marks: None,
                     },
                 )
                 .await?

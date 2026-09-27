@@ -137,6 +137,11 @@ export const en = {
     inference_off:
       "Materialized inference is off for this knowledge base. Turn it on in Settings.",
     bad_resolution: "That is not a valid decision.",
+    empty_state_span:
+      "A state that ends where it starts holds at no moment. Give an end after the start, or leave it open.",
+    unknown_marks: "A single date marks the start, the end, or neither.",
+    marks_needs_state:
+      "Only a state property says what a single date marks. Events and timeless properties don't.",
   },
   /** 机器给的补充（cron 解析器的原话之类）缀在措辞后面 */
   errDetail: (msg: string, detail: string) => `${msg} (${detail})`,
@@ -2113,6 +2118,17 @@ export const en = {
     alignmentStatements: (n: number) => (n === 1 ? "1 statement" : `${n} statements`),
     alignmentEntities: (n: number) => (n === 1 ? "1 thing" : `${n} things`),
     alignmentVotes: (first: string, second: string) => `Votes: ${first} · ${second}`,
+    // 状态属性下，单个日期标的是什么（#966）
+    alignmentMarks: "A single date",
+    alignmentMarksStart: "starts it",
+    alignmentMarksEnd: "ends it",
+    alignmentMarksNone: "neither",
+    alignmentMarksStartHint: "joined, was appointed, took over: it holds from that date",
+    alignmentMarksEndHint: "left, resigned from, stepped down as: it ends on that date",
+    alignmentMarksNoneHint:
+      "only seen to hold then: statements with a single date stay in the open graph",
+    alignmentAwaitsMarks: (property: string) =>
+      `Bound to ${property} before the aligner asked what a single date marks. Until you say, statements with a single date stay in the open graph.`,
     alignmentRuleImplies: (property: string) => `also implies ${property}`,
     alignmentRuleObjectIsStatement: "object: the statement's own object",
     alignmentRuleReading: (reading: string) => `object: read from the words as ${reading.replace(/_/g, " ")}`,
