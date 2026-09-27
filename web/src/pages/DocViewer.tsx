@@ -5,6 +5,7 @@ import { api, type ChunkFact, type Doc } from "../api";
 import { S } from "../i18n";
 import { useKbId } from "../kb";
 import { originHint, originLabel } from "../origin";
+import { fmtTime } from "../time";
 import { GroupLabel, PageHeader, Pager, pageSlice } from "../ui";
 import { SourcesRail } from "./SourcesRail";
 
@@ -204,24 +205,25 @@ export function DocViewer() {
   );
 }
 
-/**
- * 文档头部的元数据条：
- *   段数 · 大小 · 文档日期 · 上传时刻
+/** 文档头部的元数据条：段数 · 大小 · 文档日期 · 上传时刻。
  *
- * `#610` 决定 5：文档日期（`doc_time`）和上传时刻（`created_at`）必须分开显示，
- * 不能合并成一个「上传 / 文档日期」格。否则跨时区归档时，看文档的人会
- * 把上传时间当成文档时间。
- */
+ *  文档日期（`doc_time`）与上传时刻（`created_at`）分开显示（#610）：合成一格，读的人会把
+ *  上传时间当成文档上写的日期。两者的读法也不同：文档日期是**日历日期**，存的是那一天的
+ *  UTC 午夜，按 UTC 读（`fmtTime`）——按本地读，UTC-5 的人看到的是前一天；上传时刻是一个
+ *  真实的时刻，按看的人所在的时区读。 */
 function DocMeta({ doc, chunks }: { doc: Doc; chunks: number }) {
+  const docDate = fmtTime(doc.doc_time, "day");
   return (
     <>
       {chunks} {S.doc.sections} · {(doc.size_bytes / 1024).toFixed(0)} KB ·{" "}
-      {doc.doc_time ? (
-        <span title={S.doc.docDateFromContent}>
-          {S.doc.docDate}: {new Date(doc.doc_time).toLocaleDateString()}
-        </span>
-      ) : null}
-      {doc.doc_time ? " · " : ""}
+      {docDate && (
+        <>
+          <span title={S.doc.docDateFromContent}>
+            {S.doc.docDate}: {docDate}
+          </span>
+          {" · "}
+        </>
+      )}
       {S.doc.uploadedAt} {new Date(doc.created_at).toLocaleDateString()}
     </>
   );

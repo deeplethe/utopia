@@ -599,13 +599,12 @@ fn hex(bytes: &[u8]) -> String {
 /// 文件名叫「2024-02-29_gaoshu.txt」，对读的人来说是一个东西，但只有文件名
 /// 这条路在 multipart 落库之前就拍得到。日期格式与正文保持一致（ISO 或中文全形）。
 fn content_time(filename: &str, bytes: &[u8]) -> Option<chrono::DateTime<chrono::Utc>> {
-    if is_text_extension(filename) {
-        if let Some(day) = parse_filename_date(strip_filename(filename)) {
-            return Some(day.and_hms_opt(0, 0, 0)?.and_utc());
-        }
-    }
     if !is_text_extension(filename) {
         return None;
+    }
+    let stem = std::path::Path::new(filename).file_stem()?.to_str()?;
+    if let Some(day) = parse_filename_date(stem) {
+        return Some(day.and_hms_opt(0, 0, 0)?.and_utc());
     }
     // 只解码头部 4 KiB：日期行只认开头。PDF、Word 这类格式要读日期时，在各自的解析器里
     // 读它们自己的元数据，不在这里猜
@@ -649,17 +648,6 @@ fn is_text_extension(filename: &str) -> bool {
     ["txt", "md", "markdown"]
         .iter()
         .any(|known| ext.eq_ignore_ascii_case(known))
-}
-
-/// 去掉扩展名，留下「主名」——日期要落在主名的开头。
-fn strip_filename(filename: &str) -> &str {
-    let path = std::path::Path::new(filename);
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(filename);
-    // `file_stem` 已经把扩展名剥掉了；这里只是把它收成 `&str` 不再触碰 path
-    stem
 }
 
 /// 解析主名前缀里的 ISO `YYYY-MM-DD` 或中文 `YYYY年M月D日`。
