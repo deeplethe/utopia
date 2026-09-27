@@ -766,11 +766,15 @@ pub async fn chat(
         // 三十条的上限之下量的，一百条口径靠字典序截断就不成立了（#574）。
         // 挑口径要调嵌入模型，所以放在生成器里：Stop 丢掉生成器，这个请求跟着取消（0063）。
         // 代价是它失败得晚了：从前是什么都没写的 500，现在问题已经存下，失败是一帧 error
+        // 这一轮的嵌入缓存从挑口径起就在：问题在这里嵌一次，随后检索分块、按名字查实体
+        // 都拿同一个向量（#971 的后续）。下面建好 sink 就把它交过去
+        let mut embeddings = crate::llm_util::EmbedCache::default();
         let mappings = if mounted_sources.is_empty() {
             Vec::new()
         } else {
             match crate::mapping_index::relevant(
                 &state, kb_id, workspace_id, &query, crate::mapping_index::DEFINITIONS_IN_PROMPT,
+                Some(&mut embeddings),
             ).await {
                 Ok(mappings) => mappings,
                 Err(error) => {
@@ -852,6 +856,7 @@ pub async fn chat(
             settings.chat_model.clone().unwrap_or_default(),
             query.clone(),
         );
+        shared.sink.lock().await.embeddings = embeddings;
         let policy = agent::Policy {
             shared: shared.clone(),
             max_rounds: MAX_ROUNDS,
@@ -900,7 +905,7 @@ pub async fn chat(
         let mut turn_published = 0usize;
         let mut turn_holding = false;
         let mut finished = false;
-        let mut published_sources = 0;
+        let mut published_sources: Vec<serde_json::Value> = Vec::new();
         let mut answer_requested = false;
 
         while let Some(item) = run.next().await {
@@ -999,12 +1004,14 @@ pub async fn chat(
                         steps_acc.push(step.clone());
                         published_step = Some(step);
                     }
-                    // cite() only appends: document reads can add citations too, regardless
-                    // of the UI step kind. Release the sink before yielding to subscribers.
+                    // cite() appends, and a graph citation can add a quote to an entry a search
+                    // registered (#968's follow-up): publish when the list changed at all, not
+                    // only when it grew. Document reads can add citations too, regardless of the
+                    // UI step kind. Release the sink before yielding to subscribers.
                     let sources = {
                         let sink = shared.sink.lock().await;
-                        if sink.sources.len() != published_sources {
-                            published_sources = sink.sources.len();
+                        if sink.sources != published_sources {
+                            published_sources = sink.sources.clone();
                             Some(sink.sources.clone())
                         } else {
                             None
@@ -1204,7 +1211,8 @@ fn legacy_rag(
     client: utopia_llm::LlmClient,
 ) -> impl Stream<Item = ProducerEvent> {
     async_stream::stream! {
-        let chunks = match retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None).await {
+        // 兜底这一路一轮只走一次，问题自己嵌：它没有这一轮的 sink（#971 的缓存在那上面）
+        let chunks = match retrieval::hybrid(&state, kb_id, workspace_id, &query, 8, None, None).await {
             Ok(chunks) => chunks,
             Err(error) => {
                 tracing::warn!(%error, "fallback document retrieval failed");

@@ -1005,6 +1005,10 @@ export const zh: Strings = {
     loading: "加载中…",
     extracted: "已抽取",
     ongoing: "至今",
+    /** `#610`：`doc_time` 是从文件里读出来的日期；与上传时刻是两件事 */
+    docDate: "文档日期",
+    docDateFromContent: "从文件名或正文首行认出来的",
+    uploadedAt: "上传于",
   },
   settings: {
     title: "管理",

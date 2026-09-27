@@ -1533,8 +1533,8 @@ pub async fn entity_node(
 }
 
 /// 本库被人改过区间的行（`fact.time_corrected` 审计记在被改的那一行上，#970）。查询开头
-/// 取一次，每一行只顺着自己的 supersedes 链对它：`audit_events` 没有 target_id 的索引，
-/// 逐行去扫一个库的审计会随审计的多少变慢。`$1` 是库
+/// 取一次，每一行只顺着自己的 supersedes 链对它。取的这一次走部分索引
+/// `audit_events_time_corrected_idx`（迁移 0097）：只收这一种动作，不读这个库别的审计。`$1` 是库
 pub(crate) const TIME_CORRECTED_TARGETS: &str = "time_corrected_targets AS MATERIALIZED (
          SELECT DISTINCT target_id FROM audit_events
           WHERE kb_id = $1 AND action = 'fact.time_corrected' AND target_id IS NOT NULL)";
@@ -1929,7 +1929,7 @@ pub async fn first_live_evidence(
     kb_id: Uuid,
     fact_ids: &[Uuid],
     as_of: Option<chrono::DateTime<chrono::Utc>>,
-) -> AppResult<Vec<(Uuid, utopia_core::models::ChunkView)>> {
+) -> AppResult<Vec<(Uuid, utopia_core::models::ChunkView, Option<String>)>> {
     if fact_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -1941,9 +1941,13 @@ pub async fn first_live_evidence(
         seq: i32,
         text: String,
         filename: String,
+        quote: Option<String>,
     }
+    // 连同那条证据的引文一起取（#968 的后续）：号打开的是那一块，引文是块里说出这条事实的
+    // 那句话。同一块里几条证据时取块里最靠前的那一句，排序到此为止才是确定的
     let rows: Vec<Row> = sqlx::query_as(&format!(
-        "SELECT DISTINCT ON (fe.fact_id) fe.fact_id, c.id, c.document_id, c.seq, c.text, d.filename
+        "SELECT DISTINCT ON (fe.fact_id) fe.fact_id, c.id, c.document_id, c.seq, c.text, d.filename,
+                NULLIF(btrim(fe.quote), '') AS quote
            FROM fact_evidence fe
            JOIN chunks c ON c.id = fe.chunk_id
            JOIN documents d ON d.id = c.document_id
@@ -1969,6 +1973,7 @@ pub async fn first_live_evidence(
                     text: r.text,
                     filename: r.filename,
                 },
+                r.quote,
             )
         })
         .collect())

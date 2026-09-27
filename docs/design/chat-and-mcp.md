@@ -38,10 +38,13 @@ later turn [0063].
 0022, 0040]. In chat, `entity_facts`, `neighbors`, `timeline` and `paths_between` end each fact
 line with the `[n]` of its first live evidence chunk, registered in the turn's source list the way a
 search hit is, so a graph answer opens to its sentence; a derived fact carries no number and its
-premises carry theirs where they are shown; MCP text stays unnumbered, its evidence being `document_ids` (#935). A
-date that passage does not state says so on the line, in chat and MCP alike: an end the timeline
-derived reads `…, end derived`, an interval a person corrected `…, corrected`, and the prompt
-says neither is attributed to the passage (#970). The
+premises carry theirs where they are shown; MCP text stays unnumbered, its evidence being `document_ids` (#935). The
+entry a graph fact cites carries the sentence the fact was read from (`quotes`, one chunk keeping
+one number however many of its sentences are cited, a search hit gaining the sentence when a graph
+tool cites it), and the preview and the document page mark it, so the number opens the sentence
+itself (#968's follow-up). A date that passage does not state says so on the line, in chat and MCP
+alike: an end the timeline derived reads `…, end derived`, an interval a person corrected
+`…, corrected`, and the prompt says neither is attributed to the passage (#970). The
 previous turn's tool calls are replayed so the model knows what it did, not only
 what it said [0015]; a turn that gathers nothing, such as a restatement, keeps the previous answer's
 sources for the citation numbers it repeats (#943).
@@ -50,7 +53,8 @@ sources for the citation numbers it repeats (#943).
 `relaxed_order` iterative scan, plus full text in embedded Tantivy; both take `as_of`; full text is
 "now" only; neither takes `at` [0035, 0019, 0022]. Confirmed mappings and a schema document reach
 the prompt through retrieval; a conventions document works today where a rule would be exact
-[0011, 0036].
+[0011, 0036]. A turn embeds its question once: choosing the mappings, `search_chunks` and the
+graph lookups share the turn's embedding cache (#971).
 
 **`remember`** writes a memory document at once; its statements go through open extraction and wait
 in `pending_facts`; the assistant says the sentence is recorded and its statements will be shown

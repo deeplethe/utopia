@@ -593,13 +593,18 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// 只认开头独立的完整日期行，不把正文里提到的事件日期当作文档日期（#610）。
+///
+/// 顺序：**文件名 → 正文首行**。文件名是 multipart 解析时一定有的；
+/// 公告、备案一类的语料通常按日期命名，是正文里写「2024年2月29日 公告」还是
+/// 文件名叫「2024-02-29_gaoshu.txt」，对读的人来说是一个东西，但只有文件名
+/// 这条路在 multipart 落库之前就拍得到。日期格式与正文保持一致（ISO 或中文全形）。
 fn content_time(filename: &str, bytes: &[u8]) -> Option<chrono::DateTime<chrono::Utc>> {
-    let extension = std::path::Path::new(filename).extension()?.to_str()?;
-    if !["txt", "md", "markdown"]
-        .iter()
-        .any(|ext| extension.eq_ignore_ascii_case(ext))
-    {
+    if !is_text_extension(filename) {
         return None;
+    }
+    let stem = std::path::Path::new(filename).file_stem()?.to_str()?;
+    if let Some(day) = parse_filename_date(stem) {
+        return Some(day.and_hms_opt(0, 0, 0)?.and_utc());
     }
     // 只解码头部 4 KiB：日期行只认开头。PDF、Word 这类格式要读日期时，在各自的解析器里
     // 读它们自己的元数据，不在这里猜
@@ -629,6 +634,93 @@ fn content_time(filename: &str, bytes: &[u8]) -> Option<chrono::DateTime<chrono:
         .ok()?;
     // 与项目已有日精度约定一致：UTC 零点是存储约定，不猜作者所在时区。
     Some(day.and_hms_opt(0, 0, 0)?.and_utc())
+}
+
+/// 文本类的扩展名：只对 `txt` / `md` / `markdown` 试日期解析。
+/// PDF / Word 等格式要读日期时，在各自的解析器里读它们自己的元数据（#610 决定 2）。
+fn is_text_extension(filename: &str) -> bool {
+    let Some(ext) = std::path::Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())
+    else {
+        return false;
+    };
+    ["txt", "md", "markdown"]
+        .iter()
+        .any(|known| ext.eq_ignore_ascii_case(known))
+}
+
+/// 解析主名前缀里的 ISO `YYYY-MM-DD` 或中文 `YYYY年M月D日`。
+///
+/// 不依赖 `regex` 库：手工走一遍就够，错误形态也清楚。
+///  严格匹配：`%Y` 是 4 位数字，`%m` / `%d` 是 1-2 位（与正文解析一致，`chrono`
+///  会拒掉像 `2023-02-29` 这种不可能的日期，但接受 `2024-2-9` 与 `2024-02-09`）。
+fn parse_filename_date(stem: &str) -> Option<chrono::NaiveDate> {
+    let bytes = stem.as_bytes();
+    // 头 4 位必须是数字；这一关漏过去 `chrono` 也会拒，但提前失败省一次分配
+    if bytes.len() < 4 || !bytes[..4].iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    // ISO：`YYYY-MM-DD` 或 `YYYY-M-D`，至少 8 个字符位
+    if bytes.len() >= 8 && bytes[4] == b'-' {
+        // 找到下一处分隔（位置 5+），可以是 `-` 或别的字符（停止位）
+        let after_year = 5;
+        let month_end = find_ascii_digit_end(bytes, after_year);
+        // 月份 1-2 位数字
+        let month_str = std::str::from_utf8(&bytes[after_year..month_end]).ok()?;
+        // 月份后必须是 `-`
+        if month_end >= bytes.len() || bytes[month_end] != b'-' {
+            return None;
+        }
+        let day_start = month_end + 1;
+        let day_end = find_ascii_digit_end(bytes, day_start);
+        let day_str = std::str::from_utf8(&bytes[day_start..day_end]).ok()?;
+        return chrono::NaiveDate::parse_from_str(
+            &format!("{}-{}-{}", &stem[..4], month_str, day_str),
+            "%Y-%m-%d",
+        )
+        .ok();
+    }
+    // 中文：`YYYY年M月D日`，年号后必须是 `年`
+    let year_str = std::str::from_utf8(&bytes[..4]).ok()?;
+    let after_year = 4;
+    let rest = stem.get(after_year..)?;
+    let zh_tail = rest.strip_prefix('年')?;
+    let (month_str, zh_tail) = read_ascii_digits(zh_tail)?;
+    let zh_tail = zh_tail.strip_prefix('月')?;
+    let (day_str, zh_tail) = read_ascii_digits(zh_tail)?;
+    if !zh_tail.starts_with('日') {
+        return None;
+    }
+    chrono::NaiveDate::parse_from_str(
+        &format!("{year_str}年{month_str}月{day_str}日"),
+        "%Y年%m月%d日",
+    )
+    .ok()
+}
+
+/// 从 `start` 起往后读 1-2 位 ASCII 数字，返回 (数字字符串, 剩余的字符串)。
+fn read_ascii_digits(s: &str) -> Option<(&str, &str)> {
+    let end = s
+        .as_bytes()
+        .iter()
+        .take(2)
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    if end == 0 {
+        return None;
+    }
+    Some((&s[..end], &s[end..]))
+}
+
+/// 从 `start` 起往后走 ASCII 数字，返回第一个非数字字符的位置（闭区间右开）。
+/// 全部到尾部也允许：返回 `bytes.len()`。
+fn find_ascii_digit_end(bytes: &[u8], start: usize) -> usize {
+    let mut i = start;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    i
 }
 
 #[cfg(test)]
