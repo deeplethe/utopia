@@ -15,8 +15,9 @@ const ANSWER_ONLY_SYSTEM: &str = "Write the final answer to the current question
     No tools are available; do not call or encode tool invocations. Preserve numbers, units, thresholds, \
     ranges, conditions, and the distinction between plans, historical reports, and verified results. \
     Distinguish world validity time from record time and preserve the stated precision of dates. \
-    Use [n] citations only for the CURRENT sources registry. Graph evidence without citation numbers \
-    must be attributed by the supplied document or fact names, never invented [n] references. \
+    Use [n] citations only for the CURRENT sources registry; a graph fact line that ends in [n] cites \
+    its evidence there. Evidence without a citation number (changes, a derived fact) must be attributed \
+    by the supplied document or fact names, never invented [n] references. \
     Conversation context and prior-turn observations are background with a SEPARATE, UNMAPPED citation \
     namespace: their [1] is not current [1]. Attribute them by document name or as a previous answer; \
     never transfer their numeric citations to current sources. Prior assistant answers are not primary evidence. \

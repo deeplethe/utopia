@@ -27,7 +27,11 @@ the conversation's last message and no answer is being written there (#936).
 `find_entities`, `entity_facts` (names marked as names, derived rows with their rule, `as_of` and
 `at` respected), `changes`, `list_rules`, `rule_matches`, `remember`; MCP results carry
 `structuredContent` with ledger UUIDs and each evidence row's origin [0014, 0021, 0041, 0019,
-0022, 0040]. The previous turn's tool calls are replayed so the model knows what it did, not only
+0022, 0040]. In chat, `entity_facts`, `neighbors`, `timeline` and `paths_between` end each fact
+line with the `[n]` of its first live evidence chunk, registered in the turn's source list the way a
+search hit is, so a graph answer opens to its sentence; a derived fact carries no number and its
+premises carry theirs; MCP text stays unnumbered, its evidence being `document_ids` (#935). The
+previous turn's tool calls are replayed so the model knows what it did, not only
 what it said [0015]; a turn that gathers nothing, such as a restatement, keeps the previous answer's
 sources for the citation numbers it repeats (#943).
 
