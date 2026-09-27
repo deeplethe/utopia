@@ -197,6 +197,12 @@ export interface Doc {
   /** 这份文件的字要靠哪一种模型读、而那种模型没配（0040）：ocr / transcribe；文档此时是 failed */
   reader_needed: "ocr" | "transcribe" | null;
   created_at: string;
+  /** 文档日期——`#610`：从文件名或正文首行解析出来的「文件上写的日期」，
+   *  与 `created_at`（上传时刻）必须分开展示。`null` 表示没认出来（`#610` 决定 3） */
+  doc_time: string | null;
+  /** `doc_time` 是怎么来的：`"content"` = 文件名或正文，`"none"` = 没认出来。
+   *  上传时刻不在这里—— `created_at` 才是 */
+  doc_time_source: "content" | "none";
 }
 
 /** 一类抽取丢弃在一篇文档里的聚合：事实抽出来了，却没能落地。 */

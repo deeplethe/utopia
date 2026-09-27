@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { api, type ChunkFact } from "../api";
+import { api, type ChunkFact, type Doc } from "../api";
 import { S } from "../i18n";
 import { useKbId } from "../kb";
 import { originHint, originLabel } from "../origin";
@@ -86,12 +86,7 @@ export function DocViewer() {
         <div className="px-8 py-6">
         <PageHeader
           title={doc.filename}
-          sub={
-            <>
-              {chunks.length} {S.doc.sections} · {(doc.size_bytes / 1024).toFixed(0)} KB ·{" "}
-              {new Date(doc.created_at).toLocaleDateString()}
-            </>
-          }
+          sub={<DocMeta doc={doc} chunks={chunks.length} />}
           actions={
             <Link to="/kb/$kbId/library" params={{ kbId }} className="u-link shrink-0 text-body">
               {S.doc.backToLibrary}
@@ -206,5 +201,28 @@ export function DocViewer() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * 文档头部的元数据条：
+ *   段数 · 大小 · 文档日期 · 上传时刻
+ *
+ * `#610` 决定 5：文档日期（`doc_time`）和上传时刻（`created_at`）必须分开显示，
+ * 不能合并成一个「上传 / 文档日期」格。否则跨时区归档时，看文档的人会
+ * 把上传时间当成文档时间。
+ */
+function DocMeta({ doc, chunks }: { doc: Doc; chunks: number }) {
+  return (
+    <>
+      {chunks} {S.doc.sections} · {(doc.size_bytes / 1024).toFixed(0)} KB ·{" "}
+      {doc.doc_time ? (
+        <span title={S.doc.docDateFromContent}>
+          {S.doc.docDate}: {new Date(doc.doc_time).toLocaleDateString()}
+        </span>
+      ) : null}
+      {doc.doc_time ? " · " : ""}
+      {S.doc.uploadedAt} {new Date(doc.created_at).toLocaleDateString()}
+    </>
   );
 }
