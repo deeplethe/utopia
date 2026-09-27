@@ -1136,6 +1136,10 @@ export const en = {
     loading: "Loading…",
     extracted: "Extracted",
     ongoing: "now",
+    /** `#610`：`doc_time` 是从文件里读出来的日期；与上传时刻是两件事 */
+    docDate: "Document date",
+    docDateFromContent: "Detected from the filename or first line",
+    uploadedAt: "Uploaded",
   },
   settings: {
     title: "Administration",
