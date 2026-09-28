@@ -517,7 +517,12 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "list_rules",
-                "description": "The business rules this base runs: what each one concludes and                     the exact conditions it tests, thresholds included. A rule is written by a                     person, and its conclusions are already in the graph — read the rule to                     explain WHY something was concluded, or to answer \"what counts as X here\".                     Do not re-implement a rule's comparison yourself; ask entity_facts or                     rule_matches for what it actually concluded.",
+                "description": "The business rules this base runs: what each one concludes and \
+                    the exact conditions it tests, thresholds included. A rule is written by a \
+                    person, and its conclusions are already in the graph — read the rule to \
+                    explain WHY something was concluded, or to answer \"what counts as X here\". \
+                    Do not re-implement a rule's comparison yourself; ask entity_facts or \
+                    rule_matches for what it actually concluded.",
                 "parameters": { "type": "object", "properties": {} }
             }
         },
@@ -525,7 +530,10 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "rule_matches",
-                "description": "Which entities a business rule currently marks, with the                     readings that made each one true. Use it for \"which wells are gas-bearing\"                     style questions — one call instead of checking every entity.                     Get the rule id from list_rules.",
+                "description": "Which entities a business rule currently marks, with the \
+                    readings that made each one true. Use it for \"which wells are gas-bearing\" \
+                    style questions — one call instead of checking every entity. \
+                    Get the rule id from list_rules.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -540,7 +548,21 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "changes",
-                "description": "What the graph LEARNED or REVISED in a window of record time —                     the belief axis. Answers \"what changed since X\", \"what did we get wrong\",                     \"what is new this quarter\", and needs no entity, so use it when the                     question names a period rather than a subject.                     Events: asserted (new claim), corrected (a claim replaced by a revised one),                     rejected (a claim withdrawn), merged (folded into another claim) — each with                     the document it came from.                     NOT the same axis as entity_facts(at): that asks \"what was true on date D\";                     this asks \"what did we change our mind about between D1 and D2\". A fact                     about 2019 can be recorded in 2026 — this windows on when we recorded it.                     Each event starts with its exact UTC RFC3339 record timestamp, including fractional seconds.                     For 'before a correction arrived', find that event here and pass its timestamp, exactly as printed, to entity_facts as `before`. Keep at for the world date asked about.",
+                "description": "What the graph LEARNED or REVISED in a window of record time — \
+                    the belief axis. Answers \"what changed since X\", \"what did we get wrong\", \
+                    \"what is new this quarter\", and needs no entity, so use it when the \
+                    question names a period rather than a subject. \
+                    Events: asserted (new claim), corrected (a claim replaced by a revised one), \
+                    rejected (a claim withdrawn), merged (folded into another claim) — each with \
+                    the document it came from. \
+                    NOT the same axis as entity_facts(at): that asks \"what was true on date D\"; \
+                    this asks \"what did we change our mind about between D1 and D2\". A fact \
+                    about 2019 can be recorded in 2026 — this windows on when we recorded it. \
+                    Each event starts with its exact UTC RFC3339 record timestamp, including \
+                    fractional seconds. \
+                    For 'before a correction arrived', find that event here and pass its \
+                    timestamp, exactly as printed, to entity_facts as `before`. Keep at for the \
+                    world date asked about.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -550,11 +572,13 @@ pub(super) fn base_tools() -> serde_json::Value {
                         },
                         "until": {
                             "type": "string",
-                            "description": "End of the window (YYYY, YYYY-MM or YYYY-MM-DD), inclusive of that                                 whole day, month or year. Omit for 'up to now'."
+                            "description": "End of the window (YYYY, YYYY-MM or YYYY-MM-DD), \
+                                inclusive of that whole day, month or year. Omit for 'up to now'."
                         },
                         "entity_id": {
                             "type": "string",
-                            "description": "Optional entity id from find_entities, to narrow the                                 window to changes touching that one entity."
+                            "description": "Optional entity id from find_entities, to narrow the \
+                                window to changes touching that one entity."
                         },
                         "kinds": {
                             "type": "array",
@@ -562,7 +586,9 @@ pub(super) fn base_tools() -> serde_json::Value {
                                 "type": "string",
                                 "enum": ["asserted", "corrected", "rejected", "merged"]
                             },
-                            "description": "Optional filter. A freshly ingested corpus is nearly                                 all 'asserted'; pass [\"corrected\", \"rejected\"] to isolate                                 the places we actually changed our mind."
+                            "description": "Optional filter. A freshly ingested corpus is nearly \
+                                all 'asserted'; pass [\"corrected\", \"rejected\"] to isolate \
+                                the places we actually changed our mind."
                         }
                     },
                     "required": ["since"]
@@ -1748,6 +1774,36 @@ mod tests {
         assert!(check_call(&tools, "changes", "{}").is_err());
         check_call(&tools, "changes", "{\"since\": \"2026-13-45\"}")
             .expect("格式错的日期不归这一关管，交给 changes_window");
+    }
+
+    /// 描述是写给模型读的，每一轮都在请求里，MCP 客户端的工具列表也照样印：
+    /// 不许有连着的空格。从前 `list_rules`、`rule_matches`、`changes` 的描述在
+    /// 折行处各夹着二十几个空格——`\` 折行被合成了一行，下一行的缩进留在了字符串里。
+    /// 查的是对话与 MCP 看到的全部：带上 `remember` 与 `query_data`
+    #[test]
+    fn every_tool_description_is_written_with_single_spaces() {
+        fn spaced(v: &serde_json::Value, at: &str, found: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    for (key, v) in map {
+                        if key == "description" && v.as_str().is_some_and(|t| t.contains("  ")) {
+                            found.push(format!("{at}: {v}"));
+                        }
+                        spaced(v, &format!("{at}/{key}"), found);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (i, v) in items.iter().enumerate() {
+                        let name = v["function"]["name"].as_str().unwrap_or("");
+                        spaced(v, &format!("{at}[{i}]{name}"), found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        spaced(&tools_schema(true, &["warehouse".into()]), "", &mut found);
+        assert!(found.is_empty(), "{found:#?}");
     }
 }
 
