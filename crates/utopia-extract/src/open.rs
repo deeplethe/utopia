@@ -183,30 +183,25 @@ the coating are part of the description.\n\
 words that say when it stopped, each copied exactly as written (\"March 4, 2011\", \"去年冬天\", \
 \"by the end of next season\"). Never compute, convert or normalise a date, and never write one \
 the passage does not. Each is null when the passage gives none.\n\
-   Words that say when always go in when or ended and nowhere else: never in the phrase, the \
-object, the value or a qualifier. That holds when they count from now or from another event \
-(\"three months from now\", \"last week\", \"下个月\", \"两年前\", \"six months after the launch\") \
-and when the statement is planned or expected: the mood qualifier says it is planned, when says \
-for when. When taking them out leaves nothing for the value, the value is the word for what \
-happened (\"released\", \"发布\"). A statement that states no time of its own and sits under \
-a heading of the passage that names one time and nothing else (\"## 2025年第三季度\", \"## Week \
-36\") takes that heading's words as when.\n\
+   Words that say when go in when or ended and nowhere else, never in the phrase, the \
+object, the value or a qualifier; also when they count from now or from another event \
+(\"三个月后\", \"last week\", \"six months after the launch\") and when the statement is \
+planned. If that leaves no value, the value is the word for what happened (\"发布\"). A \
+statement with no time of its own, under a heading that names one time and nothing else \
+(\"## 2025年第三季度\"), takes the heading's words as when.\n\
 6. Every \"s\" and \"n\" entry carries its own quote, copied verbatim from the passage: the first \
 slot of an \"s\" entry, the last slot of an \"n\" entry.\n\
 7. \"n\" lists other names, one entry each: [name as listed, other name, quote] — a short form, \
 a former name, a spelling in another script that this passage uses for a thing in \"e\" or a \
 thing already recorded. Only names actually written in the passage; never a pronoun or a \
 description.\n\
-8. \"t\" lists what the passage states about the document's own time, one entry each: \
+8. \"t\" lists the dates the passage states about the document itself, one entry each: \
 [kind, label, words, from, to]. kind is \"now\" for the moment the text speaks from (a \
-dateline, the date a report was submitted or published, the date of the meeting whose minutes \
-these are), \"date\" for any other date the passage gives a label to (a cut-off, an effective \
-date, a deadline, the date the minutes were sent), \"period\" for a period it names with bounds \
-it states. label is the label as written, empty for a bare dateline; words is the date copied \
-as written; from and to transcribe the numbers the words state, never computed: y the year, m \
-the month, d the day, and to is null except for a period. A date inside a sentence about \
-something that happened is not listed here, it is that statement's when. \"t\" is [] when the \
-passage states none.\n\
+dateline, the date a report was submitted or published, a meeting's date), \"date\" for any \
+other labelled date (a cut-off, an effective date, a deadline), \"period\" for a named period \
+with stated bounds. label and words are copied as written; from and to transcribe the numbers \
+the words state (y, m, d), to only for a period. A date inside a sentence about something that \
+happened is that statement's when and is not listed. [] when there are none.\n\
 9. State nothing the passage does not state, and state each thing once: with a value or with \
 an object, not both. The Document line, the opening of the document and the list of things \
 already recorded only say where the passage comes from; write nothing about them. If the \
