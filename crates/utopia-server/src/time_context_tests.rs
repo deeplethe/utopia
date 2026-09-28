@@ -180,6 +180,30 @@ async fn last_week_is_counted_from_the_date_of_its_own_section() -> anyhow::Resu
         .fetch_all(&pool)
         .await?;
         let day = |y, m, d| Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap();
+        // 每条陈述由它自己那一节的提报日期作证，连那条日期的名字；不是处理文档的那一刻
+        let attested: Vec<(String, Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
+            "SELECT o.canonical_name, f.attested_from, f.attested_by
+               FROM facts f JOIN entities o ON o.id = f.object_id
+              WHERE f.kb_id = $1 AND f.layer = 'open' ORDER BY o.canonical_name",
+        )
+        .bind(kb)
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(
+            attested,
+            vec![
+                (
+                    "泰国市场".to_string(),
+                    Some(day(2026, 9, 4)),
+                    Some("提报日期 2026年9月4日".to_string())
+                ),
+                (
+                    "韩国市场".to_string(),
+                    Some(day(2026, 8, 28)),
+                    Some("提报日期 2026年8月28日".to_string())
+                ),
+            ]
+        );
         assert_eq!(
             dated,
             vec![

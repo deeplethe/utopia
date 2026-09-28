@@ -1046,6 +1046,9 @@ export const en = {
     historicalNote: (n: number) =>
       `${n} past fact${n === 1 ? "" : "s"} not shown — see Timeline →`,
     undated: "Undated",
+    /* 0064：句子没写时间，文档说了自己是哪天的。是「截至」，不是「自…起」 */
+    asOf: (date: string, by: string | null) =>
+      by ? `as of ${date} · ${by}` : `as of ${date}`,
     /* 实体面板的 Relations：两节的标题、组尾的折、行上的证据开关 */
     fromEntity: (name: string) => `From ${name}`,
     toEntity: (name: string) => `To ${name}`,

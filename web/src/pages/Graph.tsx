@@ -2266,6 +2266,16 @@ function TimeScrubber({
 /* ============ 实体侧栏 ============ */
 
 /* 抽出来供 vitest 测；UI 段（`EntityPanel`）内部闭包用同名 */
+/** 句子自己没写时间，但它所在那一节的文本说了自己是哪天的（0064）：「截至那天」。
+ *
+ * 这不是起点——报告里的「所属市场为全球」说的是那天是这样，不是从那天起——所以不画成
+ * 区间，另写一句，连那条日期在文档里叫什么一起说。恒常的事实没有时间维度，不写 */
+export function asOf(f: EntityFact): string {
+  if (f.temporal === "eternal" || f.valid_from || f.valid_to || !f.holds_from) return "";
+  const date = fmtTime(f.holds_from, "day");
+  return date ? S.graph.asOf(date, f.attested_by ?? null) : "";
+}
+
 export function fmtInterval(f: EntityFact): string {
   // 时态 = 永恒：不画区间。
   // 写端 `Validity::under(Eternal)` 把 from/to 都抹成 null，render 时就空，
@@ -3499,7 +3509,7 @@ function FactRow({
                 interval ? "text-ink-2" : "italic text-ink-2",
               )}
             >
-              {interval || S.graph.undated}
+              {interval || asOf(fact) || S.graph.undated}
             </span>
             {fact.stale && (
               <Chip tone="neutral" className="shrink-0 text-fine">

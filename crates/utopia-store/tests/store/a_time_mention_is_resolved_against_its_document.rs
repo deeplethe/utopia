@@ -404,9 +404,10 @@ async fn a_mention_is_read_then_computed_then_written_to_the_open_row() -> anyho
                 valid_to_precision: Some("unknown".into()),
             }
         );
-        // 结束了不知哪天的有自己的锚点：说出结束的就是这条陈述自己的文档（#393）
+        // 结束了不知哪天的有自己的锚点：说出结束的就是这条陈述自己的文档（#393）。
+        // 这篇文档没说自己是哪天的，陈述没有见证（0064 决定 5），锚点取账本记下它的那一刻
         let anchored: (bool,) = sqlx::query_as(
-            "SELECT attested_to IS NOT NULL AND attested_to = attested_from
+            "SELECT attested_to IS NOT NULL AND attested_to = COALESCE(attested_from, recorded_at)
              FROM facts WHERE id = $1",
         )
         .bind(fact)

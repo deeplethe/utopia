@@ -426,8 +426,26 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
         }
     };
 
-    // 抽取报上来的期间（0064）并进文档命名的期间里：解释时按名字指它
+    // 老路读开头定出来的日期（抽取一条都没报的时候）：它就是整篇的起算点，和抽取报上来的
+    // 一样进条目里，下面给陈述作证、给相对的时间词当基准都从条目里找
     let mut context = context;
+    if context.entries.is_empty() {
+        if let (Some(date), Some(words)) = (context.date.clone(), context.date_words.clone()) {
+            context.entries.push(utopia_extract::time::TimeEntry {
+                kind: "now".into(),
+                name: String::new(),
+                words,
+                from: date,
+                to: None,
+                scope: Vec::new(),
+                chunk: None,
+                char_start: None,
+            });
+        }
+    }
+    attest_statements(state, &doc, &context).await?;
+
+    // 抽取报上来的期间（0064）并进文档命名的期间里：解释时按名字指它
     for e in context
         .entries
         .clone()
@@ -648,6 +666,57 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
         "时间提及解析完成"
     );
     if dated > 0 {
+        state.emit_graph(doc.kb_id);
+    }
+    Ok(())
+}
+
+/// 这篇文档的陈述各由它所在那一节里文本说话的那一刻作证（0064 决定 3）。
+///
+/// 一条陈述在哪一节，看它的引文在它那一块里的位置、那一块正文里的标题；管着它的是范围
+/// 最深的那个 `now`。没有的不写——见证留空，这条陈述在任何时点都成立（决定 5）。
+/// 这是「截至」，不是起点：报告里的「所属市场为全球」说的是那天是这样，不是从那天起
+async fn attest_statements(
+    state: &AppState,
+    doc: &utopia_core::models::Document,
+    context: &DocumentDating,
+) -> anyhow::Result<()> {
+    if !context.entries.iter().any(|e| e.kind == "now") {
+        return Ok(());
+    }
+    let pool = &state.pool;
+    let rows: Vec<(Uuid, String, Option<i32>)> = sqlx::query_as(
+        "SELECT fe.fact_id, c.text, fe.quote_start
+           FROM fact_evidence fe
+           JOIN facts f ON f.id = fe.fact_id
+           JOIN chunks c ON c.id = fe.chunk_id
+          WHERE fe.document_id = $1 AND f.layer = 'open' AND f.invalidated_at IS NULL",
+    )
+    .bind(doc.id)
+    .fetch_all(pool)
+    .await?;
+    let mut moved = 0usize;
+    for (fact_id, text, start) in rows {
+        let path = headings_at(&text, usize::try_from(start.unwrap_or(0)).unwrap_or(0));
+        let Some(now) = now_in_force(&context.entries, &path) else {
+            continue;
+        };
+        let Some((at, _)) = parts_to_time(&now.from) else {
+            continue;
+        };
+        let by = if now.name.is_empty() {
+            now.words.clone()
+        } else {
+            format!("{} {}", now.name, now.words)
+        };
+        if utopia_store::graph::attest_statement(pool, fact_id, at, &by).await? {
+            moved += 1;
+        }
+    }
+    // 已经物化出来的类型化行跟着它们的陈述走
+    let typed = utopia_store::materialize::sync_typed_attestation(pool, doc.kb_id).await?;
+    if moved > 0 || typed > 0 {
+        tracing::info!(document_id = %doc.id, statements = moved, typed, "陈述按它所在那一节的日期作了证");
         state.emit_graph(doc.kb_id);
     }
     Ok(())
