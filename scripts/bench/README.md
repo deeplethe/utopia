@@ -68,6 +68,10 @@ node scripts/bench/recall.mjs --kb <id> --reprocess          # 改了解析器�
 node scripts/bench/judge_open.mjs --kb <id> --sample 200     # 开放陈述有多少不是原文说的（门槛 2%）
 ```
 
+量「后面的分块看不到前面的分块认下了什么」对输出的影响（#588，分块并发调模型之前要知道的数）：
+服务端带 `UTOPIA_EXTRACT_KNOWN_IN_PROMPT=false` 起，照常跑 `recall.mjs`，与不带时的几轮比。
+这个开关只动提示词，落库时按名字认回前面分块的实体照旧。
+
 抽取写的是开放图谱（0044 决定 2，没有带本体的第二条路）：陈述按原文短语落成 `layer='open'` 的
 事实行，限定挂在 `statement_qualifiers`，时间词进 `time_mentions`；打分口径照旧（谓词取
 `proposed_predicate`，限定也拼进那一行），所以下表里带本体那些轮次的分数仍然可比。`judge_open.mjs` 是

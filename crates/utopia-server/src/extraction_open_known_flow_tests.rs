@@ -1,11 +1,16 @@
-//! #588 cut 1：开放图谱抽取把分块循环拆成调+解析（`call_and_parse_one_chunk`）与
-//! apply（`apply_open_extraction`）两半；调+解析的入口已经接住「前面分块认下的
-//! 实体」作为 `known` 送进模型。这一档是 cut 2（并发调用）的前提测试：它把
-//! 「前面块认下的实体在后面块仍然能识别」这一性质钉死。
+//! 前面的分块认下的实体，后面的分块认得（#588 cut 1）。
 //!
-//! 做法与 `phrase_alignment_tests.rs` 同一档：脚本化 HTTP 端点、真库；脚本
-//! 写两份回复——第一块列出 `Acme`，第二块再列 `Acme`。`extract_document`
-//! 跑完之后，`entities` 表里应当只有一行 `Acme`，两份陈述都指着它。
+//! 抽取按分块走：每一块的提示词里列着这篇文档前面的块已经认下的实体（`known`），模型
+//! 在后面的块里提到它，不必再列一遍，落库时认回同一行。分块并发调模型（cut 2）要保住的
+//! 就是这一条，所以先把它钉住：第一块列出 `Acme`，第二块的回复**不列**它、只在陈述里
+//! 提到——两条陈述挂在同一个实体上，而且第二块的提示词里有 `- Acme (organization)`。
+//! 第二块要是自己再列一遍 `Acme`，按名字去库里也认得回来，那测的就不是 `known` 了。
+//!
+//! `extract_known_in_prompt` 关掉之后（召回台子量并发的影响用它）提示词里没有那一行，
+//! 落库照样认回去。
+//!
+//! 脚本化的模型端点、真库，与 `phrase_alignment_tests.rs` 同一个做法。
+//! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 use super::*;
 use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
@@ -51,18 +56,15 @@ struct Fx {
 }
 
 impl Fx {
-    async fn new(replies: Vec<String>) -> anyhow::Result<Option<Self>> {
+    async fn new(replies: Vec<String>, known_in_prompt: bool) -> anyhow::Result<Option<Self>> {
         let Some(url) = utopia_store::test_db::url() else {
             return Ok(None);
         };
         let pool = sqlx::PgPool::connect(&url).await?;
         utopia_store::db::migrate(&pool).await?;
-        let ids: Vec<Uuid> = (0..8).map(|_| Uuid::now_v7()).collect();
-        let (org, ws, kb, doc, chunk0, chunk1, organization, _) = (
-            ids[0], ids[1], ids[2], ids[3], ids[4], ids[5], ids[6], ids[7],
-        );
-        // 两块原文：第二块沿用第一块的「Acme」名字。脚本里把两份回复都设成「Acme」
-        // 出现在 `e`，所以第二块的 `Acme` 必须沿着 `known` 解析到第一块的实体
+        let ids: Vec<Uuid> = (0..6).map(|_| Uuid::now_v7()).collect();
+        let (org, ws, kb, doc, chunk0, chunk1) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+        // 插进去的只有本地生成的 UUID
         sqlx::raw_sql(&format!(
             "INSERT INTO organizations(id,name) VALUES ('{org}','open-known-flow');
              INSERT INTO workspaces(id,org_id,name) VALUES ('{ws}','{org}','open-known-flow');
@@ -99,14 +101,13 @@ impl Fx {
         let dir = tempfile::tempdir()?;
         let cfg = utopia_core::config::AppConfig {
             data_dir: dir.path().to_string_lossy().into_owned(),
+            extract_known_in_prompt: known_in_prompt,
             ..Default::default()
         };
         let search = Arc::new(utopia_search::SearchIndex::open(
             &dir.path().join("search"),
         )?);
         let state = AppState::new(pool.clone(), &cfg, search, "test-only".into());
-        // Touch organization so the linter sees it referenced; type_bindings reads the table.
-        let _ = organization;
         Ok(Some(Self {
             pool,
             state,
@@ -128,77 +129,88 @@ impl Fx {
     }
 }
 
-/// 两块都列 `Acme`：第二块的那条陈述必须挂在第一块新建的 `Acme` 实体上，
-/// 而不是另起一行。`entities` 表里 `Acme` 只有一行；`facts.subject_id`
-/// 在两个 chunk 上的 id 相同。
-#[tokio::test]
-async fn a_thing_listed_by_an_earlier_chunk_reaches_a_later_one_via_known() -> anyhow::Result<()> {
-    let Some(f) = Fx::new(vec![
-        // 第一块的回复：列 `Acme`，做一条陈述把 Acme 钉到一个值上。
-        // 紧凑数组的 8 格是 `[quote, subject, phrase, object, value, qualifiers,
-        // when, ended]`——`value` 必须是字符串或数字，限定词另占第 5 格的对象
+/// 两块的回复：第一块列出 `Acme`，第二块不列、只在陈述里提到它。
+/// 紧凑数组的 8 格是 `[quote, subject, phrase, object, value, qualifiers, when, ended]`
+fn replies() -> Vec<String> {
+    vec![
         json!({
             "e": [["Acme", "organization", 1]],
             "s": [["Acme is based in London.", "Acme", "based in", null, "London", null, null, null]],
             "n": []
         })
         .to_string(),
-        // 第二块的回复：也列 `Acme`（同名），再做一条陈述——这才是要测的：
-        // 这一行的 `Acme` 应当沿着 `known` 命中第一块已经认下的那一行，
-        // 而不是再新建一个
         json!({
-            "e": [["Acme", "organization", 1]],
+            "e": [],
             "s": [["Acme runs the harbour facility.", "Acme", "runs", null, "harbour", null, null, null]],
             "n": []
         })
         .to_string(),
-    ])
-    .await?
-    else {
-        return Ok(());
-    };
+    ]
+}
+
+/// 跑完抽取：只有一个 `Acme`，两条陈述都挂在它上面。交回第二块的提示词
+async fn extract_and_read_the_second_prompt(f: &Fx) -> anyhow::Result<String> {
     crate::extraction::extract_document(&f.state, f.doc, utopia_core::models::Proposer::default())
         .await?;
-    // 同一份文档只该有一个名为 Acme 的实体
-    let acme_rows: Vec<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM entities WHERE kb_id=$1 AND canonical_name='Acme'")
+    let acme: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM entities WHERE kb_id=$1 AND canonical_name='Acme'")
             .bind(f.kb)
             .fetch_all(&f.pool)
             .await?;
-    assert_eq!(
-        acme_rows.len(),
-        1,
-        "expected one Acme entity across both chunks, got {}",
-        acme_rows.len()
+    anyhow::ensure!(
+        acme.len() == 1,
+        "one Acme across both chunks, got {}",
+        acme.len()
     );
-    let acme_id = acme_rows[0].0;
-    // 两个分块上各应当有一条陈述；`subject_id` 都是 Acme 那一行
-    let facts: Vec<(Uuid,)> =
-        sqlx::query_as("SELECT subject_id FROM facts WHERE kb_id=$1 AND layer='open'")
+    let subjects: Vec<Uuid> =
+        sqlx::query_scalar("SELECT subject_id FROM facts WHERE kb_id=$1 AND layer='open'")
             .bind(f.kb)
             .fetch_all(&f.pool)
             .await?;
-    assert_eq!(
-        facts.len(),
-        2,
-        "expected two open facts, got {}",
-        facts.len()
+    anyhow::ensure!(
+        subjects == vec![acme[0], acme[0]],
+        "both statements hang on the one Acme: {subjects:?}"
     );
-    for (sid,) in &facts {
-        assert_eq!(*sid, acme_id, "fact subject must be the Acme entity");
-    }
-    // 第二块的请求里 `known` 不为空：第一块把 `k1 = Acme` 送了过去
-    let second_user_msg = {
-        let requests = f.model.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        requests[1]["messages"][1]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string()
+    let requests = f.model.requests.lock().unwrap();
+    anyhow::ensure!(
+        requests.len() == 2,
+        "one request a chunk, got {}",
+        requests.len()
+    );
+    Ok(requests[1]["messages"][1]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string())
+}
+
+#[tokio::test]
+async fn a_thing_listed_by_an_earlier_chunk_reaches_a_later_one_via_known() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(replies(), true).await? else {
+        return Ok(());
     };
+    let run = extract_and_read_the_second_prompt(&f).await;
+    f.cleanup().await?;
+    let prompt = run?;
     assert!(
-        second_user_msg.contains("Acme"),
-        "second chunk prompt must carry Acme in the known list, got: {second_user_msg}"
+        prompt.contains("- Acme (organization)"),
+        "the second chunk is told what the first one listed: {prompt}"
     );
-    f.cleanup().await
+    Ok(())
+}
+
+/// 旋钮关掉：第二块的提示词里不再列前面认下的实体，落库仍然认回同一个 `Acme`
+#[tokio::test]
+async fn with_known_left_out_of_the_prompt_a_later_chunk_still_lands_on_the_same_entity(
+) -> anyhow::Result<()> {
+    let Some(f) = Fx::new(replies(), false).await? else {
+        return Ok(());
+    };
+    let run = extract_and_read_the_second_prompt(&f).await;
+    f.cleanup().await?;
+    let prompt = run?;
+    assert!(
+        !prompt.contains("- Acme (organization)"),
+        "nothing listed as known: {prompt}"
+    );
+    Ok(())
 }

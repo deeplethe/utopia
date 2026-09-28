@@ -43,26 +43,14 @@ struct ChunkParsed {
     name_vecs: HashMap<String, Vec<f32>>,
 }
 
-/// 调 + 解析半步（#588 cut 1）。
+/// 一个分块的前半步：调模型、解析回复、算名字向量（#588 cut 1）。这半步不写图，
+/// 所以分块之间可以不按顺序做——并发（cut 2）动的就是它；后半步 `apply_open_extraction`
+/// 要按分块顺序。`pushed`（0054）的块本身就是契约，不调模型，直接解析。
 ///
-/// 它做：
-/// 1. `pushed` 为真时把块文本直接当契约解析（0054 的 `statements` 来源）；
-///    否则用 `settings + client` 调模型（温度 0、撞 token 上限就如实带过去）
-/// 2. 解析回复——成功拿 `OpenExtraction`，失败写 `CHUNK_UNEXTRACTED` 的
-///    `drop_signal` 并把 `(seq, reason)` 推给 `unextracted`
-/// 3. 撞上 token 上限 / 回复被截断 / 个别 item 不合结构——三种 `drop_signal`
-///    按解析到的字段各自写
-/// 4. 算这一块的名字向量（0041）；算不出来（端点抖）就 `HashMap::new()`，
-///    与原代码 `(Some(settings), Some(client))` 分支为空的语义一致
+/// `Ok(None)` 是这一块跳过了：调用失败或回复解析不出，原因已经记进 `drop_signal` 和
+/// `unextracted`，主循环接着走下一块。`Err` 只有一种：对话模型没配。
 ///
-/// 返回：
-/// - `Ok(Some(ChunkParsed))` 成功，apply 半步接着跑
-/// - `Ok(None)` 这一块跳过了（调失败或解析失败），原因已落 `drop_signal` 和
-///   `unextracted`。主循环 `continue`
-/// - `Err(_)` 致命错误（db、嵌入客户端等），往上抛
-///
-/// 注意：epoch 检查放在 `run_open` 主循环顶部，不在这里——半段里再读会和
-/// 「上一圈跑完进 apply 之前被接管」这条语义打架
+/// 被接管的检查（epoch）留在主循环顶上，不在这里：它要在调模型之前
 #[allow(clippy::too_many_arguments)]
 async fn call_and_parse_one_chunk(
     state: &AppState,
@@ -202,19 +190,12 @@ async fn call_and_parse_one_chunk(
     }))
 }
 
-/// Apply 半步（#588 cut 1）：把一块已解析的回复按本文档已认下的实体，写成陈述
-/// + 别名落库，并按这一块把 order-sensitive 的状态累积下去。
+/// 一个分块的后半步：把解析出来的回复写成陈述、名字和证据（#588 cut 1）。
 ///
-/// 这块代码和原来 `run_open` 循环体的下半截逐行对应——cut 1 不重写 apply 内部，
-/// 只把它从主循环挪到 helper 里，让主循环只剩「读分块、调 helper、推进状态」。
+/// **要按分块顺序跑**：前面的块认下的实体（`doc_entities`、`known_by_name`）、描述出来的
+/// 东西（`described`）、待裁决的名字，后面的块都要读。调模型那半步并发之后这里仍然串行。
 ///
-/// `&mut <param>` 用 `&mut *param` 再借用——`apply_open_extraction` 拿到的是
-/// `&mut HashMap<...>` / `&mut bool`，内层 `place` / `resolve_handle` 也要 `&mut`，
-/// 直接传 `&mut param` 是 `&mut &mut T`，编译不过。cut 1 的「plain args」就是这样
-/// 落到 helper 里的，cut 2 把它包成结构体能省这一节
-///
-/// `pushed` 标志（0054）：块本身就是契约，apply 半步里时间词的定位不再走
-/// `locate_time` 的「在引文里找」分支——块就是这一份载荷（0054 决定 4）
+/// `pushed`（0054）：块本身就是契约，时间词在整块里定位，不在引文里找（0054 决定 4）
 #[allow(clippy::too_many_arguments)]
 async fn apply_open_extraction(
     state: &AppState,
@@ -269,10 +250,10 @@ async fn apply_open_extraction(
                 name_vecs.get(&key).map(Vec::as_slice),
                 Some(&chunk.text),
                 &mut response_claims,
-                &mut *handled_by_name,
-                &mut *ambiguous_bare_cache,
-                &mut *needs_adjudication,
-                &mut *human_reviews_found,
+                handled_by_name,
+                ambiguous_bare_cache,
+                needs_adjudication,
+                human_reviews_found,
             )
             .await?;
             // 模型说它是什么（「a British film」里的 film）：存成它自己的说法，
@@ -321,7 +302,7 @@ async fn apply_open_extraction(
             &mut local,
             known_by_name,
             &deferred,
-            &mut *described,
+            described,
             &s.subject,
         )
         .await?
@@ -356,7 +337,7 @@ async fn apply_open_extraction(
                 &mut local,
                 known_by_name,
                 &deferred,
-                &mut *described,
+                described,
                 name,
             )
             .await?
@@ -485,7 +466,7 @@ async fn apply_open_extraction(
                 &mut local,
                 known_by_name,
                 &deferred,
-                &mut *described,
+                described,
                 text,
             )
             .await?
@@ -540,13 +521,13 @@ async fn apply_open_extraction(
                     .collect(),
             );
             let time_json = serde_json::Value::Array(
-            time_words
-                .iter()
-                .map(|(text, start, role)| {
-                    serde_json::json!({ "text": text, "char_start": start, "role": role })
-                })
-                .collect(),
-        );
+                time_words
+                    .iter()
+                    .map(|(text, start, role)| {
+                        serde_json::json!({ "text": text, "char_start": start, "role": role })
+                    })
+                    .collect(),
+            );
             let outcome = utopia_store::pending::propose(
                 pool,
                 Proposal {
@@ -629,7 +610,7 @@ async fn apply_open_extraction(
             &mut local,
             known_by_name,
             &deferred,
-            &mut *described,
+            described,
             &n.entity,
         )
         .await?
@@ -960,8 +941,12 @@ pub(crate) async fn run_open(
             .as_ref()
             .filter(|(id, _)| *id != chunk.id)
             .map(|(_, text)| text.as_str());
-        // 调 + 解析半步（#588 cut 1）：模型调用、解析回复、名字向量都在 helper 里。
-        // 主循环这一段只剩「调出来什么就拿什么」，epoch 与 `unextracted` 仍归这里
+        // 提示词里带不带前面分块认下的实体，是个为了量而设的旋钮（#588）；落库那半步不受它管
+        let shown: &[utopia_extract::KnownEntity] = if state.extract_known_in_prompt {
+            &known
+        } else {
+            &[]
+        };
         let parsed = match call_and_parse_one_chunk(
             state,
             settings,
@@ -972,7 +957,7 @@ pub(crate) async fn run_open(
             &doc.filename,
             chunk,
             opening,
-            &known,
+            shown,
             pushed,
             &mut unextracted,
         )
@@ -981,11 +966,10 @@ pub(crate) async fn run_open(
             Some(p) => p,
             None => continue,
         };
-        let extraction = parsed.extraction;
-        let name_vecs = parsed.name_vecs;
-
-        // Apply 半步（#588 cut 1）：apply 的内部代码原本是主循环的下半截，
-        // 现在挪进 `apply_open_extraction` 里——主循环只剩「读分块、调 helper、推进状态」
+        let ChunkParsed {
+            extraction,
+            name_vecs,
+        } = parsed;
         apply_open_extraction(
             state,
             pool,
