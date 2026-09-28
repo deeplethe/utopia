@@ -179,7 +179,7 @@ async function extract(KB) {
   // 配了对话模型的库，文档解析完管线自己排抽取。这里只补没排上的：手动抽取是强制全量
   // （解雇在跑的任务、从头再抽），对每篇都调一次就是每篇抽两遍——2026-09-28 之前的每篇
   // token 都多算了一遍抽取
-  const idle = docs.filter((d) => !["queued", "running", "done"].includes(d.graph_status));
+  const idle = docs.filter((d) => !["queued", "extracting", "done"].includes(d.graph_status));
   for (const d of idle) await api("POST", `/api/v1/documents/${d.id}/extract`, {});
   log(`排队抽取 ${idle.length} 篇（管线已排 ${docs.length - idle.length} 篇）`);
   const live = `SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.kb_id='${KB}' AND c.superseded_at IS NULL`;

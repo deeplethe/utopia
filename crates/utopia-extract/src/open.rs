@@ -240,11 +240,11 @@ fn has_table(passage: &str) -> bool {
 /// 这一段的系统消息：规则不变，只有表格的那几句按段落带或不带
 fn system_for(passage: &str) -> String {
     let table = if has_table(passage) {
-        OPEN_TABLE_RULES
+        format!(" {OPEN_TABLE_RULES}")
     } else {
-        ""
+        String::new()
     };
-    OPEN_SYSTEM.replace("{TABLE}", table)
+    OPEN_SYSTEM.replace("{TABLE}", &table)
 }
 
 /// 构造开放抽取的两条消息：常量系统消息 + `Document:` / 开头 / 已知实体 / `Passage:`。
