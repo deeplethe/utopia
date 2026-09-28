@@ -184,6 +184,45 @@ fn consider<'a>(
         .collect()
 }
 
+/// 把签名分成批，候选相近的放在一起。返回每批里签名的下标。
+///
+/// 属性定义表在一批里只写一遍，占一次调用输入的将近一半：按到来的次序每十二条切一批时，
+/// 同批的签名互不相干（一条讲出生地、一条讲导演、一条讲所属球队），各自十条候选几乎不
+/// 重叠，合起来就是本体的一半（测量库上九十六条属性里约五十条）。这里只改排法：每条签名
+/// 看到的候选一条不少，判断一字不变。
+///
+/// 贪心：每批从还没排的第一条起，每次加进让这一批的候选并集长得最少的那一条，并列时取
+/// 靠前的——结果只由输入决定，同样的签名每次排成同样的批。没有候选的签名不问模型，
+/// 排在最后，不占有候选的批里的位置
+fn batch_by_candidates<K: Copy + Eq + std::hash::Hash>(
+    sets: &[Vec<K>],
+    size: usize,
+) -> Vec<Vec<usize>> {
+    let size = size.max(1);
+    let mut left: Vec<usize> = (0..sets.len()).filter(|i| !sets[*i].is_empty()).collect();
+    let empty: Vec<usize> = (0..sets.len()).filter(|i| sets[*i].is_empty()).collect();
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    while !left.is_empty() {
+        let first = left.remove(0);
+        let mut batch = vec![first];
+        let mut union: HashSet<K> = sets[first].iter().copied().collect();
+        while batch.len() < size && !left.is_empty() {
+            let (at, _) = left
+                .iter()
+                .enumerate()
+                .map(|(at, i)| (at, sets[*i].iter().filter(|k| !union.contains(k)).count()))
+                .min_by_key(|(at, added)| (*added, *at))
+                .expect("left is not empty");
+            let i = left.remove(at);
+            union.extend(sets[i].iter().copied());
+            batch.push(i);
+        }
+        out.push(batch);
+    }
+    out.extend(empty.chunks(size).map(<[usize]>::to_vec));
+    out
+}
+
 /// 日志里放得下的一段回复：空白折成一个空格，最多这么多字符。
 const SNIPPET_CHARS: usize = 240;
 
@@ -538,8 +577,26 @@ async fn align_phrases_locked(
         );
         // 先把每批的 future 造出来再排队：直接在 map 里返回 async 块会让借用的生命周期
         // 满足不了 tokio::spawn 要的 Send
-        let futures: Vec<_> = todo
-            .chunks(BATCH)
+        // 候选相近的签名排进同一批（见 `batch_by_candidates`）：属性表一批只写一遍，同批的
+        // 签名候选重叠得越多，这张表越短
+        let sets: Vec<Vec<Uuid>> = todo
+            .iter()
+            .map(|s| {
+                let fitting = &considered[&s.key()].0;
+                if fitting.len() > CANDIDATE_LIMIT {
+                    Vec::new()
+                } else {
+                    fitting.iter().map(|p| p.id).collect()
+                }
+            })
+            .collect();
+        let batches: Vec<Vec<&PhraseSignature>> = batch_by_candidates(&sets, BATCH)
+            .into_iter()
+            .map(|group| group.into_iter().map(|i| todo[i]).collect())
+            .collect();
+        let futures: Vec<_> = batches
+            .iter()
+            .map(|batch| batch.as_slice())
             .map(|batch| async move {
                 let (mut bound, mut none, mut undecided, mut skipped, mut failed, mut unanswered) =
                     (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
@@ -1071,6 +1128,38 @@ mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn signatures_with_the_same_candidates_share_a_batch() {
+        // 六条签名、三种候选集，交错着来；每批两条
+        let sets: Vec<Vec<u32>> = vec![
+            vec![1, 2],
+            vec![7, 8],
+            vec![],
+            vec![2, 1],
+            vec![8, 9],
+            vec![1, 2, 3],
+        ];
+        let batches = batch_by_candidates(&sets, 2);
+        // 每条签名恰好出现一次
+        let mut all: Vec<usize> = batches.iter().flatten().copied().collect();
+        all.sort_unstable();
+        assert_eq!(all, vec![0, 1, 2, 3, 4, 5]);
+        // 候选一样的排在一起，没有候选的在最后
+        assert_eq!(batches, vec![vec![0, 3], vec![1, 4], vec![5], vec![2]]);
+        // 同样的输入排成同样的批
+        assert_eq!(batch_by_candidates(&sets, 2), batches);
+        // 一批的候选并集比按次序切的小
+        let union = |b: &Vec<usize>| {
+            b.iter()
+                .flat_map(|i| sets[*i].iter())
+                .collect::<HashSet<_>>()
+                .len()
+        };
+        let in_order: usize = [vec![0, 1], vec![2, 3], vec![4, 5]].iter().map(union).sum();
+        let grouped: usize = batches.iter().map(union).sum();
+        assert!(grouped < in_order, "{grouped} < {in_order}");
+    }
+
     #[test]
     fn a_shortlist_keeps_label_matches_and_fills_by_distance_within_the_fitting_set() {
         let ids: Vec<Uuid> = (0..6).map(|_| Uuid::now_v7()).collect();
