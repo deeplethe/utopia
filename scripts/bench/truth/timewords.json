@@ -1,0 +1,66 @@
+{
+  "note": "Documents written for the time bench (ADR 0064). Each expectation names a sentence by a substring of it (key), the kind of time it carries, and the interval its start must fall in. kind none: the statement must have no start. as_of: the date the statement is known at, with the name of the context entry that gives it.",
+  "docs": [
+    {
+      "filename": "zh-weekly.md",
+      "text": "# 码表项目周报\n\n提报日期：2026年9月4日\n\n## 计划\n码表二代将在三个月后发布。\n上周，码表一代在日本市场开售。\n去年，码表一代进入北美市场。\n明年第一季度，码表三代启动立项。\n\n## 回顾\n码表一代于2024年3月在欧洲上市。上市半年后，码表一代销量突破十万台。\n东莞工厂完成验厂后两个月，码表二代开始试产。\n\n## 归属\n码表所属市场为全球。码表所属BU为户外BU。\n",
+      "expect": [
+        { "key": "三个月后发布", "kind": "relative_now", "from": ["2026-12-01", "2026-12-31"] },
+        { "key": "在日本市场开售", "kind": "relative_now", "from": ["2026-08-24", "2026-09-03"] },
+        { "key": "进入北美市场", "kind": "relative_now", "from": ["2025-01-01", "2025-12-31"] },
+        { "key": "三代启动立项", "kind": "relative_now", "from": ["2027-01-01", "2027-03-31"] },
+        { "key": "在欧洲上市", "kind": "absolute", "from": ["2024-03-01", "2024-03-31"] },
+        { "key": "销量突破十万台", "kind": "relative_event", "from": ["2024-09-01", "2024-09-30"] },
+        { "key": "开始试产", "kind": "relative_undated_event", "from": null },
+        { "key": "所属市场为全球", "kind": "none", "as_of": ["2026-09-04", "2026-09-04"], "as_of_name": "提报日期" },
+        { "key": "所属BU为户外BU", "kind": "none", "as_of": ["2026-09-04", "2026-09-04"], "as_of_name": "提报日期" }
+      ]
+    },
+    {
+      "filename": "zh-minutes.md",
+      "text": "# 码表产品评审会议纪要\n\n会议时间：2026年8月20日\n纪要发出：2026年8月22日\n下次评审：2026年9月15日\n\n## 决议\n会议决定下个月启动码表二代试产。\n码表固件负责人为李雷。\n码表二代采用多模GNSS方案。\n\n## 背景\n两年前，码表一代完成立项。\n",
+      "expect": [
+        { "key": "下个月启动码表二代试产", "kind": "relative_now", "from": ["2026-09-01", "2026-09-30"] },
+        { "key": "完成立项", "kind": "relative_now", "from": ["2024-01-01", "2024-12-31"] },
+        { "key": "固件负责人为李雷", "kind": "none", "as_of": ["2026-08-20", "2026-08-20"], "as_of_name": "会议时间" },
+        { "key": "采用多模GNSS方案", "kind": "none", "as_of": ["2026-08-20", "2026-08-20"], "as_of_name": "会议时间" }
+      ]
+    },
+    {
+      "filename": "zh-report.md",
+      "text": "# 码表品类调研报告\n\n提报日期：2026年9月4日\n数据统计截止：2026年8月31日\n\n## 2025年第三季度\n码表销量为12万台。码表退货率为百分之二。\n\n## 供应链\n关键物料交期为8至12周。码表由东莞工厂代工。\n2026年第二季度起，码表主板改用国产芯片。\n",
+      "expect": [
+        { "key": "销量为12万台", "kind": "section", "from": ["2025-07-01", "2025-09-30"] },
+        { "key": "退货率为百分之二", "kind": "section", "from": ["2025-07-01", "2025-09-30"] },
+        { "key": "主板改用国产芯片", "kind": "absolute", "from": ["2026-04-01", "2026-06-30"] },
+        { "key": "关键物料交期", "kind": "none", "as_of": ["2026-08-31", "2026-09-04"], "as_of_name": "数据统计截止" },
+        { "key": "由东莞工厂代工", "kind": "none", "as_of": ["2026-08-31", "2026-09-04"], "as_of_name": "数据统计截止" }
+      ]
+    },
+    {
+      "filename": "en-release.md",
+      "text": "# Acme to acquire Bolt\n\nAUSTIN, March 4, 2011\n\nAcme Corporation today announced the acquisition of Bolt Systems. The deal is expected to close in two months.\n\nBolt Systems was founded in 1998. Last year Acme opened an office in Lyon. Three years after its founding, Bolt Systems released its first compiler.\n\nAcme Corporation is headquartered in Austin. Bolt Systems employs 240 people.\n",
+      "expect": [
+        { "key": "announced the acquisition", "kind": "relative_now", "from": ["2011-03-04", "2011-03-04"] },
+        { "key": "expected to close in two months", "kind": "relative_now", "from": ["2011-05-01", "2011-05-31"] },
+        { "key": "was founded in 1998", "kind": "absolute", "from": ["1998-01-01", "1998-12-31"] },
+        { "key": "opened an office in Lyon", "kind": "relative_now", "from": ["2010-01-01", "2010-12-31"] },
+        { "key": "released its first compiler", "kind": "relative_event", "from": ["2001-01-01", "2001-12-31"] },
+        { "key": "is headquartered in Austin", "kind": "none", "as_of": ["2011-03-04", "2011-03-04"], "as_of_name": "dateline" },
+        { "key": "employs 240 people", "kind": "none", "as_of": ["2011-03-04", "2011-03-04"], "as_of_name": "dateline" }
+      ]
+    },
+    {
+      "filename": "en-report.md",
+      "text": "# Orion programme status\n\nPublished: August 12, 2025\nData as of: June 30, 2025\n\n## Figures\nOrion has 1,200 active users. Orion runs in three regions.\n\n## Plan\nNext quarter the team will launch Orion Mobile. Two weeks ago the team completed the security audit.\n\n## History\nOrion entered beta in January 2024. Six months later Orion reached general availability.\n",
+      "expect": [
+        { "key": "will launch Orion Mobile", "kind": "relative_now", "from": ["2025-10-01", "2025-12-31"] },
+        { "key": "completed the security audit", "kind": "relative_now", "from": ["2025-07-20", "2025-08-05"] },
+        { "key": "entered beta in January 2024", "kind": "absolute", "from": ["2024-01-01", "2024-01-31"] },
+        { "key": "reached general availability", "kind": "relative_event", "from": ["2024-07-01", "2024-07-31"] },
+        { "key": "1,200 active users", "kind": "none", "as_of": ["2025-06-30", "2025-08-12"], "as_of_name": "Data as of" },
+        { "key": "runs in three regions", "kind": "none", "as_of": ["2025-06-30", "2025-08-12"], "as_of_name": "Data as of" }
+      ]
+    }
+  ]
+}
