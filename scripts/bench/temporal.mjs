@@ -586,14 +586,27 @@ function readsGraph(step) {
 
 /// 对话判分：子串匹配，只做一件归一——千位分隔符。模型写 "28,000 CNY"，题上写
 /// 28000，那是同一个数，不是另一个答案；第一版没归一，六道薪资题里答对的也记了错。
-/// 否定句里出现 `not` 的名字仍记错（"没有证据表明王五曾经…"）——这是自然语言
-/// 判分的已知弱点，README 里单独有数，不在这里用一串否定词去猜
+///
+/// 有 `expect` 的题看题目问的那个名字：它得出现，而且 `not` 里的哪一个都不在它前面。
+/// 对的回答常顺带说出前任、后任或后来改成的值（"Li Si led Project Aurora … until
+/// 2025-09-01, when Zhou Qi took over"）；从前一出现就记错，量的是回答提没提别的
+/// 名字，不是答对没有（#986 的评审）。同一处起头的两个取长的那个。先说对了名字、
+/// 后面又说错了别的，照样记对——子串判分分不出来。
+///
+/// `expect: null` 的题没有「谁在前」可比，照旧：`not` 里的名字一出现就记错，否定句
+/// 也一样（"没有证据表明王五曾经…"）——自然语言判分的已知弱点，README 里单独有数，
+/// 不在这里用一串否定词去猜
 function chatVerdict(q, reply) {
   const text = reply.replace(/(?<=\d),(?=\d)/g, "");
-  const ok =
-    (q.expect === null || text.includes(q.expect)) &&
-    !(q.not || []).some((bad) => text.includes(bad));
-  return ok ? "pass" : "fail";
+  const not = q.not || [];
+  if (q.expect === null) return not.some((bad) => text.includes(bad)) ? "fail" : "pass";
+  const at = text.indexOf(q.expect);
+  if (at === -1) return "fail";
+  const before = not.some((bad) => {
+    const i = text.indexOf(bad);
+    return i !== -1 && (i < at || (i === at && bad.length > q.expect.length));
+  });
+  return before ? "fail" : "pass";
 }
 
 main().catch((e) => {
