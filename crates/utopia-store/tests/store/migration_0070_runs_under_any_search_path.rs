@@ -633,9 +633,9 @@ impl Coverage {
         dump("SURFACE_DRIFT", &self.surface_drift);
         dump("PREFLIGHT_MISSING", &self.preflight_missing);
         dump("STALE_PREFLIGHT", &self.stale_preflight);
-        if self.declarative.len() != 42 {
+        if self.declarative.len() != 44 {
             problems.push_str(&format!(
-                "  DECLARATIVE_EDGES = {} (expected 42)\n",
+                "  DECLARATIVE_EDGES = {} (expected 44)\n",
                 self.declarative.len()
             ));
         }
@@ -1061,7 +1061,7 @@ async fn a_protected_edge_missing_from_preflight_fails_the_guard() -> anyhow::Re
 fn the_preflight_check_notices_a_dropped_or_stray_edge() -> anyhow::Result<()> {
     let surface = preflight_surface()?;
     // 同一份文件两个方向各数一次:58 条结构边 + 5 条 merged 过滤检查
-    assert_eq!(surface.edges.len(), 58, "preflight 必须覆盖全部保护边");
+    assert_eq!(surface.edges.len(), 60, "preflight 必须覆盖全部保护边");
     assert_eq!(
         surface.filters,
         [
