@@ -90,7 +90,10 @@ since moved to `scripts/bench/` (0012); these numbers are real but no longer com
     `label` (`@en` / `@zh` preferred); `rdfs:comment` → `description`, load-bearing because it enters
     the extraction prompt and is what P3's retrieval matches on; `owl:ObjectProperty` → relation and
     `owl:DatatypeProperty` → attribute (`relation_types.kind`); `rdfs:domain` / `rdfs:range` →
-    `relation_type_domains` / `relation_type_ranges`, stored as signals, never as gates;
+    `relation_type_domains` / `relation_type_ranges`, stored as signals, never as gates; where a
+    property declares neither, schema.org's `domainIncludes` / `rangeIncludes` and SHACL shapes
+    supply them (the class a node shape targets → domain, `sh:class` / `sh:datatype` on its
+    `sh:property` shape → range);
     `owl:FunctionalProperty` / `InverseFunctionalProperty` → the two flags; the IRI → `iri` column,
     `UNIQUE (kb_id, iri) WHERE iri IS NOT NULL`. Every other axiom stays in the original and is
     reported as not yet projected (P5 has the current list).
@@ -243,6 +246,10 @@ since moved to `scripts/bench/` (0012); these numbers are real but no longer com
 - 2026-09-02: assumed `type_id` was NOT NULL and the coarse type always the first type; 0009 made it
   nullable, and "no type" may be a person's decision.
 - 2026-09-02: assumed argument order was guidance like everything else; 0012 made it enforced.
+- 2026-09-28: assumed a signature is written as `rdfs:domain` / `rdfs:range`. Vocabularies that
+  state their constraints as SHACL shapes (UCO, #923) declare almost none, so every attribute
+  without a domain was skipped at import; decision 13 now reads the shapes where a property
+  declares neither.
 
 ## Open questions
 

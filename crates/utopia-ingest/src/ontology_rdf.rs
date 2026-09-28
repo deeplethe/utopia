@@ -100,6 +100,19 @@ fn is_schema(iri: &str, local: &str) -> bool {
     })
 }
 
+/// SHACL。把约束写在形状上的本体（UCO 是一个，#923）同样几乎没有 `rdfs:domain`：
+/// 属性形状 `sh:property [ sh:path p; sh:class C ]` 挂在节点形状上，节点形状作用于
+/// 哪个类，p 就用在哪个类上。与 schema.org 的 `domainIncludes` 同一个道理——不认它，
+/// 数据属性全都没有 domain，导入时整批跳过
+const SH: &str = "http://www.w3.org/ns/shacl#";
+
+/// 属性形状上的那三条（路径、类、数据类型）：主语是空节点的三元组只为它们留下
+fn is_shape_detail(predicate: &str) -> bool {
+    predicate
+        .strip_prefix(SH)
+        .is_some_and(|local| matches!(local, "path" | "class" | "datatype"))
+}
+
 /// 支持的输入格式。v1 只做这两个——Protégé 导出的绝大多数是它们，
 /// OWL/XML 与 Manchester 语法刻意砍掉（见 0001 P2 的 "v1 砍掉"）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -157,6 +170,9 @@ struct Triple {
     object_iri: Option<String>,
     /// 宾语是字面量时为 Some(值, 语言标记)
     object_lit: Option<(String, Option<String>)>,
+    /// 宾语是空节点时为 Some(`_:id`)。只有 SHACL 那一遍读它：`sh:property` 指向的属性
+    /// 形状多是空节点。其余代码只看 `object_iri`，照旧看不见空节点
+    object_node: Option<String>,
 }
 
 fn read_triples(bytes: &[u8], format: RdfFormat) -> anyhow::Result<Vec<Triple>> {
@@ -165,6 +181,10 @@ fn read_triples(bytes: &[u8], format: RdfFormat) -> anyhow::Result<Vec<Triple>> 
     let mut push = |t: oxrdf::Triple| {
         let subject = match &t.subject {
             oxrdf::NamedOrBlankNode::NamedNode(n) => n.as_str().to_string(),
+            // 属性形状多是空节点：它的路径、类、数据类型留给 SHACL 那一遍
+            oxrdf::NamedOrBlankNode::BlankNode(b) if is_shape_detail(t.predicate.as_str()) => {
+                format!("_:{}", b.as_str())
+            }
             // 空节点是匿名类表达式（owl:Restriction 之类）——投影不碰它们，
             // 原文里留着等推理机
             oxrdf::NamedOrBlankNode::BlankNode(_) => return,
@@ -180,11 +200,16 @@ fn read_triples(bytes: &[u8], format: RdfFormat) -> anyhow::Result<Vec<Triple>> 
             ),
             _ => (None, None),
         };
+        let object_node = match &t.object {
+            Term::BlankNode(b) => Some(format!("_:{}", b.as_str())),
+            _ => None,
+        };
         out.push(Triple {
             subject,
             predicate: t.predicate.as_str().to_string(),
             object_iri,
             object_lit,
+            object_node,
         });
     };
     // **相对 IRI 需要 base 才能解析。** 从字节读没有文档 URL，而 Turtle 规范说
@@ -218,7 +243,11 @@ fn read_triples(bytes: &[u8], format: RdfFormat) -> anyhow::Result<Vec<Triple>> 
 pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection> {
     let triples = read_triples(bytes, format)?;
     let mut proj = OwlProjection {
-        triples: triples.len(),
+        // 为属性形状留下的空节点三元组不算：这个数一直只数主语是 IRI 的那些
+        triples: triples
+            .iter()
+            .filter(|t| !t.subject.starts_with("_:"))
+            .count(),
         ..Default::default()
     };
 
@@ -238,6 +267,8 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let mut irreflexive: BTreeSet<String> = BTreeSet::new();
     let mut plain_props: BTreeSet<String> = BTreeSet::new();
     let mut datatype_roots: BTreeSet<String> = BTreeSet::new();
+    // 声明为 `sh:NodeShape` 的节点：同时是类的，按 SHACL 的隐式类目标作用于自己
+    let mut node_shapes: BTreeSet<String> = BTreeSet::new();
     for t in &triples {
         if t.predicate != RDF_TYPE {
             continue;
@@ -295,6 +326,9 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
                 datatype_roots.insert(t.subject.clone());
                 datatype_roots.insert(x.to_string());
             }
+            x if x == format!("{SH}NodeShape") => {
+                node_shapes.insert(t.subject.clone());
+            }
             _ => {}
         }
     }
@@ -321,6 +355,13 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             || p == format!("{OWL}disjointWith")
             || p == format!("{OWL}inverseOf")
             || is_schema(p, "supersededBy")
+            // 形状那一遍读的五条（`shape_signatures`）
+            || p.strip_prefix(SH).is_some_and(|local| {
+                matches!(
+                    local,
+                    "targetClass" | "property" | "path" | "class" | "datatype"
+                )
+            })
     };
     for t in &triples {
         let p = t.predicate.as_str();
@@ -406,6 +447,22 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
         } else if !known(p) {
             // 报告而不是丢弃：预览页要能说清"这个文件里还有什么我们没消费"
             *proj.unprojected.entry(p.to_string()).or_insert(0) += 1;
+        }
+    }
+
+    // SHACL 形状补上属性自己没写的 domain / range（#923）。**只填空白**：显式的
+    // `rdfs:domain` / `rdfs:range`（和 schema.org 那两个）说了的，形状不改
+    let (shape_domains, shape_ranges) = shape_signatures(&triples, &classes, &node_shapes);
+    for (p, ds) in shape_domains {
+        domains.entry(p).or_insert_with(|| ds.into_iter().collect());
+    }
+    for (p, rs) in shape_ranges {
+        if let std::collections::btree_map::Entry::Vacant(e) = ranges.entry(p) {
+            // 几个类上各自约束成不同的类型，是「哪个都行」，与 rangeIncludes 同理
+            if rs.len() > 1 {
+                union_ranged.insert(e.key().clone());
+            }
+            e.insert(rs.into_iter().collect());
         }
     }
 
@@ -530,6 +587,91 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     }
     order_by_home_namespace(&mut proj);
     Ok(proj)
+}
+
+/// 属性 IRI → 形状给它的 domain 或 range（去重、有序，重导入结果一样）
+type ShapeSignatures = BTreeMap<String, BTreeSet<String>>;
+
+/// SHACL 形状说的 domain 与 range（#923）。
+///
+/// `节点形状 sh:property 属性形状`：属性形状的 `sh:path` 是哪个属性，节点形状作用的
+/// 类就是它的 domain，属性形状上的 `sh:class` / `sh:datatype` 就是它的 range。同一个
+/// 属性约束在几个类上，domain 是这几个类的并集——与 `domainIncludes` 同一个读法。
+///
+/// 节点形状作用于哪些类：`sh:targetClass`，加上 SHACL 的隐式类目标——一个节点既是
+/// 类又是 `sh:NodeShape`，就作用于它自己（UCO 两样都写）。不读的几种，各有理由：
+/// - `sh:targetSubjectsOf` / `sh:targetObjectsOf` 说的是「用了某个属性的节点」，不是
+///   一个类；
+/// - 路径只认一个 IRI：逆向、序列路径是空节点，说的不是这个属性自己的 domain；
+/// - `sh:or` 里的备选类型、`sh:node` 指向的形状，是另一层结构，原文里留着
+fn shape_signatures(
+    triples: &[Triple],
+    classes: &BTreeSet<String>,
+    node_shapes: &BTreeSet<String>,
+) -> (ShapeSignatures, ShapeSignatures) {
+    let mut targets: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for shape in node_shapes.intersection(classes) {
+        targets
+            .entry(shape.as_str())
+            .or_default()
+            .insert(shape.as_str());
+    }
+    // 节点形状 → 它的属性形状；属性形状 → 路径；属性形状 → 类或数据类型
+    let mut members: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut paths: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut values: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for t in triples {
+        let Some(local) = t.predicate.strip_prefix(SH) else {
+            continue;
+        };
+        let object = t.object_iri.as_deref();
+        match local {
+            "targetClass" => {
+                if let Some(class) = object {
+                    targets.entry(t.subject.as_str()).or_default().insert(class);
+                }
+            }
+            "property" => {
+                if let Some(member) = object.or(t.object_node.as_deref()) {
+                    members.entry(t.subject.as_str()).or_default().push(member);
+                }
+            }
+            "path" => {
+                if let Some(path) = object {
+                    paths.entry(t.subject.as_str()).or_insert(path);
+                }
+            }
+            "class" | "datatype" => {
+                if let Some(value) = object {
+                    values.entry(t.subject.as_str()).or_default().push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut domains = ShapeSignatures::new();
+    let mut ranges = ShapeSignatures::new();
+    for (shape, shape_members) in &members {
+        let Some(on) = targets.get(shape) else {
+            continue;
+        };
+        for member in shape_members {
+            let Some(property) = paths.get(member) else {
+                continue;
+            };
+            domains
+                .entry(property.to_string())
+                .or_default()
+                .extend(on.iter().map(|c| c.to_string()));
+            if let Some(vs) = values.get(member) {
+                ranges
+                    .entry(property.to_string())
+                    .or_default()
+                    .extend(vs.iter().map(|v| v.to_string()));
+            }
+        }
+    }
+    (domains, ranges)
 }
 
 /// 把**这份文件自己的**词汇表排到前面。
@@ -1559,5 +1701,153 @@ schema:employees a rdf:Property ; rdfs:label "employees" ;
             !p.unprojected.keys().any(|k| k.contains("inverseOf")),
             "**认了就不该再算进「暂未投影」**"
         );
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    /// SHACL 形状给的 domain / range（#923），每种写法一处：
+    /// - `Account`：UCO 的写法，类自己就是形状，显式 `sh:targetClass` 指向自己，属性形状
+    ///   是空节点，一个带 `sh:class`、一个带 `sh:datatype`；
+    /// - `Identity`：只是类加 `sh:NodeShape`，没写 `sh:targetClass`（隐式类目标）；
+    /// - `DeviceShape`：有名字的节点形状，引用有名字的属性形状；
+    /// - `Tool`：`owner` 在第二个类上又约束一次，值是另一个类；`version` 自己声明了
+    ///   domain 与 range；逆向路径、`sh:or` 不读；`undeclared` 文件里没声明成属性；
+    /// - `Usage`：`sh:targetSubjectsOf` 不是一个类。
+    const SHAPES: &str = r#"
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <https://ex.example/> .
+
+ex:Account a owl:Class, sh:NodeShape ;
+    sh:property [ sh:path ex:owner ; sh:class ex:Identity ; sh:maxCount 1 ] ,
+                [ sh:path ex:accountType ; sh:datatype xsd:string ] ;
+    sh:targetClass ex:Account .
+ex:Identity a owl:Class, sh:NodeShape ;
+    sh:property [ sh:path ex:givenName ; sh:datatype xsd:string ] .
+ex:Device a owl:Class .
+ex:DeviceShape a sh:NodeShape ;
+    sh:targetClass ex:Device ;
+    sh:property ex:serialShape .
+ex:serialShape sh:path ex:serial ; sh:datatype xsd:string .
+ex:Organization a owl:Class .
+ex:Tool a owl:Class, sh:NodeShape ;
+    sh:targetClass ex:Tool ;
+    sh:property [ sh:path ex:owner ; sh:class ex:Organization ] ,
+                [ sh:path ex:version ; sh:datatype xsd:string ] ,
+                [ sh:path [ sh:inversePath ex:uses ] ; sh:class ex:Identity ] ,
+                [ sh:path ex:vendor ; sh:or ( [ sh:class ex:Identity ] [ sh:class ex:Organization ] ) ] ,
+                [ sh:path ex:undeclared ; sh:datatype xsd:string ] .
+ex:Usage a sh:NodeShape ;
+    sh:targetSubjectsOf ex:uses ;
+    sh:property [ sh:path ex:uses ; sh:class ex:Tool ] .
+
+ex:owner a owl:ObjectProperty .
+ex:uses a owl:ObjectProperty .
+ex:vendor a owl:ObjectProperty .
+ex:accountType a owl:DatatypeProperty .
+ex:givenName a owl:DatatypeProperty .
+ex:serial a owl:DatatypeProperty .
+ex:version a owl:DatatypeProperty ; rdfs:domain ex:Device ; rdfs:range xsd:integer .
+"#;
+
+    fn by_iri<'a>(p: &'a OwlProjection, local: &str) -> &'a OwlProperty {
+        let iri = format!("https://ex.example/{local}");
+        p.properties
+            .iter()
+            .find(|x| x.iri == iri)
+            .unwrap_or_else(|| panic!("{iri}"))
+    }
+
+    fn ex(locals: &[&str]) -> Vec<String> {
+        locals
+            .iter()
+            .map(|l| format!("https://ex.example/{l}"))
+            .collect()
+    }
+
+    #[test]
+    fn a_shape_gives_a_property_its_domain_and_range() {
+        let p = project(SHAPES.as_bytes(), RdfFormat::Turtle).unwrap();
+        // 类自己就是形状、显式 targetClass：一个对象属性、一个数据属性
+        let t = by_iri(&p, "accountType");
+        assert_eq!(
+            (t.domains.clone(), t.ranges.clone()),
+            (ex(&["Account"]), vec![format!("{XSD}string")])
+        );
+        assert!(!t.ranges_union);
+        // 隐式类目标：类加 sh:NodeShape，没写 targetClass
+        assert_eq!(by_iri(&p, "givenName").domains, ex(&["Identity"]));
+        // 有名字的节点形状引用有名字的属性形状
+        let s = by_iri(&p, "serial");
+        assert_eq!(
+            (s.domains.clone(), s.ranges.clone()),
+            (ex(&["Device"]), vec![format!("{XSD}string")])
+        );
+        // 约束在两个类上：domain 两个都要，range 是「哪个都行」
+        let o = by_iri(&p, "owner");
+        assert_eq!(o.domains, ex(&["Account", "Tool"]));
+        assert_eq!(o.ranges, ex(&["Identity", "Organization"]));
+        assert!(
+            o.ranges_union,
+            "different classes on different shapes are alternatives"
+        );
+    }
+
+    #[test]
+    fn a_declared_domain_and_range_win_over_a_shape() {
+        let p = project(SHAPES.as_bytes(), RdfFormat::Turtle).unwrap();
+        let v = by_iri(&p, "version");
+        assert_eq!(v.domains, ex(&["Device"]), "not the shape's Tool");
+        assert_eq!(
+            v.ranges,
+            vec![format!("{XSD}integer")],
+            "not the shape's string"
+        );
+    }
+
+    #[test]
+    fn a_shape_reads_no_other_target_path_or_alternative() {
+        let p = project(SHAPES.as_bytes(), RdfFormat::Turtle).unwrap();
+        // 逆向路径说的不是 uses 自己的 domain；targetSubjectsOf 不是一个类
+        let u = by_iri(&p, "uses");
+        assert!(u.domains.is_empty() && u.ranges.is_empty(), "{u:?}");
+        // sh:or 里的备选类型不读，路径本身照读
+        let v = by_iri(&p, "vendor");
+        assert_eq!(v.domains, ex(&["Tool"]));
+        assert!(v.ranges.is_empty(), "{v:?}");
+        // 形状点到的属性要文件里声明过，才建出来
+        assert!(!p.properties.iter().any(|x| x.iri.ends_with("undeclared")));
+    }
+
+    #[test]
+    fn shape_predicates_are_consumed_not_reported_as_unprojected() {
+        let p = project(SHAPES.as_bytes(), RdfFormat::Turtle).unwrap();
+        for consumed in ["targetClass", "property", "path", "class", "datatype"] {
+            assert!(
+                !p.unprojected
+                    .keys()
+                    .any(|k| k == &format!("{SH}{consumed}")),
+                "sh:{consumed} is read: {:?}",
+                p.unprojected
+            );
+        }
+        // 不读的照旧报告
+        assert!(
+            p.unprojected.contains_key(&format!("{SH}targetSubjectsOf")),
+            "{:?}",
+            p.unprojected
+        );
+        // 三元组数照旧只数主语是 IRI 的：为属性形状留下的空节点三元组不算
+        let iri_subjects = oxttl::TurtleParser::new()
+            .for_reader(SHAPES.as_bytes())
+            .map(Result::unwrap)
+            .filter(|t| matches!(t.subject, oxrdf::NamedOrBlankNode::NamedNode(_)))
+            .count();
+        assert_eq!(p.triples, iri_subjects);
     }
 }
