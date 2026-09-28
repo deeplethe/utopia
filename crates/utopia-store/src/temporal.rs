@@ -999,7 +999,11 @@ async fn rewrite_end_tx(
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
                 valid_from, valid_from_precision, $3, $4, confidence, id,
                 attested_from, CASE WHEN $4::text = 'unknown' THEN COALESCE($5, now()) END, $6,
-                from_statement_id, implied, corrected_ends
+                from_statement_id, implied,
+                -- 终点在这里被重新写下（文档说了终点，或时间线推了一个），人改过的终点就不在了；
+                -- 起点那一半照旧
+                CASE corrected_ends WHEN 'both' THEN 'start' WHEN 'end' THEN NULL
+                     ELSE corrected_ends END
          FROM facts WHERE id = $2",
     )
     .bind(corrected)

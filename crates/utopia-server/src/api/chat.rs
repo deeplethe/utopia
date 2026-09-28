@@ -656,7 +656,7 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
        results carry them, and so does each fact line of entity_facts, neighbors, timeline and \
        paths_between: its [n] opens the passage that fact was read from. A fact line without \
        a number (a derived fact, or one whose documents are gone) is stated without a bracket. \
-       An end written `closed when X took over [m]` was set by the timeline when that later fact \
+       An end written `superseded by X [m]` was set by the timeline when that later fact \
        began: cite [m] for that end, never the line's own [n]. An end marked `end derived` came \
        from the timeline too. A line marked `start corrected` or `end corrected` had that date \
        changed by a person, and one marked `corrected` had both (the note after the colon is \

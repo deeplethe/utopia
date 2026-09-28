@@ -57,7 +57,13 @@ const NOTE_CHARS: usize = 120;
 
 /// 备注折成一行、去掉两端空白，过长截断。空的就是没写
 fn note_text(note: &str) -> Option<String> {
-    let flat = note.split_whitespace().collect::<Vec<_>>().join(" ");
+    // 方括号换掉：备注是人写的话，里面一个 `[2]` 落在行上就成了一个像引用的号
+    let flat = note
+        .replace('[', "(")
+        .replace(']', ")")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if flat.is_empty() {
         return None;
     }
@@ -77,7 +83,7 @@ fn note_text(note: &str) -> Option<String> {
 /// 日期不是原文说的就跟在后面说出来（#970）：人改过的那一端写 `start corrected` 或
 /// `end corrected`，两端都改过写 `corrected`——没改的那一端仍是原文说的；写了备注就带上
 /// 备注（`start corrected: …`，人的话不是原文段落，不带号）；时间线推出来的终点写
-/// `closed when X took over [m]`——`[m]` 打开的是接任那条事实读出来的原句，那里写着这个
+/// `superseded by X [m]`——`[m]` 打开的是接任那条事实读出来的原句，那里写着这个
 /// 日期——找不到接任的那一行时写 `end derived`。这两样只在有终点时说。行尾的 `[n]` 仍是
 /// 这条事实自己读出来的原句
 pub fn span(s: Span<'_>) -> String {
@@ -119,7 +125,7 @@ pub fn span(s: Span<'_>) -> String {
     }
     if derived {
         marks.push(match s.closed_by {
-            Some((who, mark)) => format!("closed when {who} took over{mark}"),
+            Some((who, mark)) => format!("superseded by {who}{mark}"),
             None => "end derived".to_string(),
         });
     }
@@ -300,14 +306,14 @@ mod tests {
                 closed_by: Some(("Zhou Qi", " [3]")),
                 ..closed
             }),
-            "2024-07-05 → 2025-09-01, closed when Zhou Qi took over [3]"
+            "2024-07-05 → 2025-09-01, superseded by Zhou Qi [3]"
         );
         assert_eq!(
             span(Span {
                 closed_by: Some(("Zhou Qi", "")),
                 ..closed
             }),
-            "2024-07-05 → 2025-09-01, closed when Zhou Qi took over"
+            "2024-07-05 → 2025-09-01, superseded by Zhou Qi"
         );
         // 开着的行没有终点，也就没有谁接任
         assert_eq!(
@@ -353,7 +359,7 @@ mod tests {
                 closed_by: Some(("Zhou Qi", " [3]")),
                 ..closed
             }),
-            "2024-07-05 → 2025-09-01, corrected: approval date, closed when Zhou Qi took over [3]"
+            "2024-07-05 → 2025-09-01, corrected: approval date, superseded by Zhou Qi [3]"
         );
     }
 
@@ -391,7 +397,7 @@ mod tests {
                 closed_by: Some(("Li Si", " [2]")),
                 ..row
             }),
-            "2023-02-01 → 2024-07-05, start corrected, closed when Li Si took over [2]"
+            "2023-02-01 → 2024-07-05, start corrected, superseded by Li Si [2]"
         );
     }
 }

@@ -724,7 +724,7 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
             );
             let li_line = line(&text, "Li Si");
             assert!(
-                li_line.contains("2024-07-05 → 2025-09-01, closed when Zhou Qi took over ["),
+                li_line.contains("2024-07-05 → 2025-09-01, superseded by Zhou Qi ["),
                 "{tool}: {text}"
             );
             // 李四那一行也写着周七（关它的是他），所以按周七那一行自己的区间找
@@ -760,7 +760,7 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
         .await
         .text;
         assert!(
-            path.contains("2024-07-05 → 2025-09-01, closed when Zhou Qi took over ["),
+            path.contains("2024-07-05 → 2025-09-01, superseded by Zhou Qi ["),
             "{path}"
         );
         // 路径上被人改过的那条边（#976 的评审）：同样只说被改的那一端
@@ -791,7 +791,7 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
         .text;
         assert!(
             plain.contains(", start corrected: The charter date was the approval date)")
-                && plain.contains(", closed when Zhou Qi took over)"),
+                && plain.contains(", superseded by Zhou Qi)"),
             "{plain}"
         );
         assert!(marks(&plain).is_empty(), "{plain}");
@@ -799,7 +799,7 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
         // 规则 4：推出的终点引关它的那一行；推出的与人改的日期都不归到本行的原句，没标记的
         // 那个日期仍是
         assert!(
-            SYSTEM_PROMPT.contains("An end written `closed when X took over [m]`")
+            SYSTEM_PROMPT.contains("An end written `superseded by X [m]`")
                 && SYSTEM_PROMPT.contains("cite [m] for that end, never the line's own [n]")
                 && SYSTEM_PROMPT.contains("A line marked `start corrected` or `end corrected`")
                 && SYSTEM_PROMPT.contains("a date the line does not mark still is"),

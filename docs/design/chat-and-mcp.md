@@ -56,7 +56,7 @@ one number however many of its sentences are cited, a search hit gaining the sen
 tool cites it), and the preview and the document page mark it, so the number opens the sentence
 itself (#968's follow-up). A date that passage does not state says so on the line, in chat and MCP
 alike: an end the timeline derived names the fact that closed the row and cites its sentence,
-`…, closed when Zhou Qi took over [3]` (`…, end derived` when that fact cannot be found), and a
+`…, superseded by Zhou Qi [3]` (`…, end derived` when that fact cannot be found), and a
 date a person corrected reads `…, start corrected: <their note>` (`end corrected`, or `corrected`
 for both ends), uncited. Which end a person changed is written with the row
 (`facts.corrected_ends`, in the correction's own transaction, carried by every rewrite), and an end
