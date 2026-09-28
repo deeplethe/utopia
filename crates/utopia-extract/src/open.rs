@@ -794,10 +794,10 @@ mod tests {
         // 0064：文档自己说到的日期由这一块报上来（`t`），时间词只进 when / ended；
         // 提示词里仍然没有文档日期，也不让模型算
         assert!(
-            system.contains("\"t\" lists what the passage states about the document's own time")
+            system.contains("\"t\" lists the dates the passage states about the document itself")
         );
-        assert!(system.contains("always go in when or ended and nowhere else"));
-        assert!(system.contains("never computed"));
+        assert!(system.contains("go in when or ended and nowhere else"));
+        assert!(system.contains("transcribe the numbers"));
         assert!(system.contains("do not translate it into any vocabulary of your own"));
         assert!(system.contains("written exactly as listed in \"e\""));
         assert!(system.contains("copied verbatim"));
