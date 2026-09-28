@@ -50,11 +50,13 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fx> {
     .execute(pool)
     .await?;
     let src = Uuid::now_v7();
-    sqlx::query("INSERT INTO sources (id, kb_id, kind) VALUES ($1, $2, 'upload')")
-        .bind(src)
-        .bind(kb)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO sources (id, kb_id, kind, name) VALUES ($1, $2, 'upload', 'p507-c4-upload')",
+    )
+    .bind(src)
+    .bind(kb)
+    .execute(pool)
+    .await?;
     sqlx::query(
         "INSERT INTO documents (id, kb_id, source_id, filename, mime, size_bytes, sha256)
          VALUES ($1, $2, $3, 'criteria.txt', 'text/plain', 100, 'deadbeef')",
@@ -73,10 +75,15 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fx> {
     .bind(doc)
     .execute(pool)
     .await?;
-    sqlx::query("INSERT INTO users (id, email) VALUES ($1, 'p507-c4@example.com')")
-        .bind(user)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO users (id, org_id, email, display_name, password_hash)
+         VALUES ($1, $2, $3, 'p507-c4', 'unused')",
+    )
+    .bind(user)
+    .bind(org)
+    .bind(format!("{user}@p507-c4.test"))
+    .execute(pool)
+    .await?;
     sqlx::query("INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, 'well', '井')")
         .bind(well)
         .bind(kb)
