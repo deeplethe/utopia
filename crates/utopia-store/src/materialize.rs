@@ -156,12 +156,14 @@ async fn materialize_in_tx(
     //    看 implied_fact_sources）。人改成起止相等的行也带着 from_statement_id、implied 和
     //    来源链接（#967、#911），看上去和算出来的一样，但它的来源陈述不是这一刻，不碰：
     //    不变量从此挡住新的，旧的由人自己改。排在第 1 步之前：那一刻的陈述在绑定说出读法
-    //    之前不算来源，第 1 步会先删掉这条链接
+    //    之前不算来源，第 1 步会先删掉这条链接。只碰算出来的行（from_statement_id 或
+    //    implied，与第 2 步同一条守卫）：人手写的行并进一条陈述之后也有来源链接，它不是算的
     let emptied = sqlx::query(
         "UPDATE facts t
             SET invalidated_at = now()
           WHERE t.kb_id = $1 AND t.layer = 'typed' AND t.invalidated_at IS NULL
             AND t.valid_from IS NOT NULL AND t.valid_to = t.valid_from
+            AND (t.from_statement_id IS NOT NULL OR t.implied)
             AND EXISTS (SELECT 1 FROM relation_types r
                          WHERE r.id = t.predicate_id AND r.temporal = 'state')
             AND EXISTS (SELECT 1 FROM facts s
