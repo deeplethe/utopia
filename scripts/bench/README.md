@@ -72,6 +72,23 @@ node scripts/bench/judge_open.mjs --kb <id> --sample 200     # 开放陈述有�
 服务端带 `UTOPIA_EXTRACT_KNOWN_IN_PROMPT=false` 起，照常跑 `recall.mjs`，与不带时的几轮比。
 这个开关只动提示词，落库时按名字认回前面分块的实体照旧。
 
+```
+# 服务端照常起：每轮记一份
+node scripts/bench/recall.mjs --kb <id> --known shown --out runs/588
+# 服务端带 UTOPIA_EXTRACT_KNOWN_IN_PROMPT=false 重起：同样几轮
+node scripts/bench/recall.mjs --kb <id> --known empty --out runs/588
+# 按 known 分组排表
+node scripts/bench/recall.mjs --table runs/588
+```
+
+`--known` 只是标签，台子查不到服务端的开关，两边对不上那一轮就作废。每轮除了总分还记每篇的
+分块、事实、实体、**跨块认回**（一个实体出现在这篇两个以上分块的事实里）、**近名对**（名字向量召回给裁决器排的
+`name_vector|` 对，#877；提示词里没有 known 时同一个东西换个写法再列一遍，落在这里而不是静默合并，
+全库总数另按待裁 / 合并 / 分开记）、丢弃账（`extraction_drops`
+按原因）和排队到最后一块抽完的秒数。`--table` 给每组的均值 ± 标准差，再给事实集合（去重的主/谓/宾）
+的重合度：组内两两比是运行间的抖动，跨组两两比是 known 的影响——跨组落在组内的范围里，空 known 就没把
+输出挪出方差。
+
 抽取写的是开放图谱（0044 决定 2，没有带本体的第二条路）：陈述按原文短语落成 `layer='open'` 的
 事实行，限定挂在 `statement_qualifiers`，时间词进 `time_mentions`；打分口径照旧（谓词取
 `proposed_predicate`，限定也拼进那一行），所以下表里带本体那些轮次的分数仍然可比。`judge_open.mjs` 是
