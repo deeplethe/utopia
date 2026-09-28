@@ -1,6 +1,6 @@
 # 0064 · Extraction reads time as it goes
 
-- **Status**: Proposed 2026-09-28 · nothing built · the time context is carried from chunk to chunk during extraction, as [0045](0045-a-time-mention-is-resolved-against-its-document.md) decision 3 wrote it and cut 2 did not build it; a statement without time words may take an as-of from the context; there is no single document date stamped on facts; a fact with no time holds at every moment
+- **Status**: Accepted 2026-09-28 · nothing built · the time context is carried from chunk to chunk during extraction, as [0045](0045-a-time-mention-is-resolved-against-its-document.md) decision 3 wrote it and cut 2 did not build it; a statement without time words may take an as-of from the context; there is no single document date stamped on facts; a fact with no time holds at every moment
 - **Written**: 2026-09-28 (conventions in the [README](README.md))
 - **Related**: [#987](https://github.com/deeplethe/utopia/issues/987) (every relation of an entity reads "undated"); [0045](0045-a-time-mention-is-resolved-against-its-document.md) decisions 1–5, which this record keeps and whose cut 2 it replaces; [0022](0022-an-unknown-date-is-not-an-open-one.md) decision 3 and the lower bound of a start-less row; [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) cut 1 (open statements); [#714](https://github.com/deeplethe/utopia/issues/714); draft [#988](https://github.com/deeplethe/utopia/pull/988), which this supersedes
 
