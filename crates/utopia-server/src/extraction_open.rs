@@ -748,6 +748,19 @@ fn locate_time(chunk: &str, quote: Option<(&str, Option<(i32, i32)>)>, words: &s
     if on_table_row {
         return locate(chunk, words).map(|(s, _)| s);
     }
+    // 标题上的时间（0064）：一节的标题只说了一个时间（「## 2025年第三季度」），它下面没写
+    // 时间的陈述拿它当 when。判据也是结构的：这几个字在块里一行 `#` 开头的标题行上
+    let (start, _) = locate(chunk, words)?;
+    let byte = chunk
+        .char_indices()
+        .nth(start.max(0) as usize)
+        .map_or(chunk.len(), |(b, _)| b);
+    let line_start = chunk[..byte].rfind('\n').map_or(0, |i| i + 1);
+    let line = chunk[line_start..].lines().next().unwrap_or("");
+    let level = line.trim_start().chars().take_while(|c| *c == '#').count();
+    if (1..=6).contains(&level) {
+        return Some(start);
+    }
     None
 }
 
@@ -921,6 +934,10 @@ pub(crate) async fn run_open(
     // 名字向量的嵌入客户端（0041 决定 3 通道 2）。没配嵌入模型就是 None：召回退回
     // 字面相等，抽取照常
     let embed = settings.and_then(crate::llm_util::embed_client);
+    // 文档自己说到的日期（0064 决定 1）：每一块报上来的，连它所在的标题路径。块与块之间
+    // 不传——一条日期管到哪，看的是它自己那一块正文里的标题，块并行抽的时候照样成立（#588）
+    let mut time_entries: Vec<utopia_extract::time::TimeEntry> = Vec::new();
+    let mut extracted_chunks: Vec<Uuid> = Vec::new();
     for chunk in chunks.iter() {
         // 被接管则安静退场（重抽自增 epoch）：检查放在调用模型之前
         if utopia_store::documents::extract_epoch(pool, document_id).await? != my_epoch {
@@ -970,6 +987,36 @@ pub(crate) async fn run_open(
             extraction,
             name_vecs,
         } = parsed;
+        extracted_chunks.push(chunk.id);
+        for entry in &extraction.time {
+            // 字要原样在这一块里（与名字、引文同一条规矩）；核不到的不算
+            let Some((start, _)) = locate(&chunk.text, &entry.words) else {
+                drop_signal(
+                    state,
+                    kb_id,
+                    document_id,
+                    reason::TIME_NOT_IN_QUOTE,
+                    "a date the passage was said to state is not in the passage",
+                    Some(&entry.words),
+                )
+                .await;
+                continue;
+            };
+            let scope =
+                utopia_extract::time::headings_at(&chunk.text, usize::try_from(start).unwrap_or(0));
+            if time_entries
+                .iter()
+                .any(|e| e.kind == entry.kind && e.words == entry.words && e.scope == scope)
+            {
+                continue;
+            }
+            time_entries.push(utopia_extract::time::TimeEntry {
+                scope,
+                chunk: Some(chunk.id.to_string()),
+                char_start: Some(start),
+                ..entry.clone()
+            });
+        }
         apply_open_extraction(
             state,
             pool,
@@ -1013,6 +1060,36 @@ pub(crate) async fn run_open(
     utopia_store::documents::set_graph_status(pool, document_id, "done").await?;
     state.emit_document(kb_id, document_id);
     state.emit_graph(kb_id);
+    // 文档的时间语境（0064）：这一轮各块报上来的日期并进文档上存着的那份。没抽到的块
+    // （增量抽取时认领的未变段落）原来报的留着；这一轮抽过的块以这一轮的为准。
+    // 一条都没有就不写：解析那一步照旧读一次开头（老路是它的兜底）
+    let mut context: utopia_extract::time::DocumentDating = doc
+        .time_context
+        .clone()
+        .and_then(|json| serde_json::from_value(json).ok())
+        .unwrap_or_default();
+    let redone: HashSet<String> = extracted_chunks.iter().map(Uuid::to_string).collect();
+    context
+        .entries
+        .retain(|e| e.chunk.as_ref().is_some_and(|c| !redone.contains(c)));
+    context.entries.extend(time_entries);
+    if !context.entries.is_empty() {
+        // 整篇的起算点：范围最浅的那个 `now`，同一层取先说的。它只是相对时间词在没有更近的
+        // 起算点时的基准，不盖在任何一条事实上（0064 决定 2）
+        let whole = context
+            .entries
+            .iter()
+            .filter(|e| e.kind == "now")
+            .min_by_key(|e| e.scope.len());
+        context.date = whole.map(|e| e.from.clone());
+        context.date_words = whole.map(|e| e.words.clone());
+        utopia_store::documents::set_time_context(
+            pool,
+            document_id,
+            &serde_json::to_value(&context)?,
+        )
+        .await?;
+    }
     // 时间词的解析是它后面的任务（0045）：文档时间上下文 + 每个提及的解释 + 算区间
     utopia_store::jobs::enqueue_unless_queued(
         pool,

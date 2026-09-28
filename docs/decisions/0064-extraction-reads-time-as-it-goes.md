@@ -1,6 +1,6 @@
 # 0064 · Extraction reads time as it goes
 
-- **Status**: Accepted 2026-09-28 · nothing built · the time context is carried from chunk to chunk during extraction, as [0045](0045-a-time-mention-is-resolved-against-its-document.md) decision 3 wrote it and cut 2 did not build it; a statement without time words may take an as-of from the context; there is no single document date stamped on facts; a fact with no time holds at every moment
+- **Status**: In progress · accepted 2026-09-28 · cut 1 built (#990, the bench) · cut 2 built (#PR2): each chunk reports the dates its passage states with the headings they sit under, a relative expression is measured from the reference point of its own section, a heading that names one time dates the statements under it, a quarter and a week are read · open: cut 3 (as-of, null attestation, reads, the workbench line), cut 4 · decision 1 is revised below: the context does not depend on the order chunks are read in
 - **Written**: 2026-09-28 (conventions in the [README](README.md))
 - **Related**: [#987](https://github.com/deeplethe/utopia/issues/987) (every relation of an entity reads "undated"); [0045](0045-a-time-mention-is-resolved-against-its-document.md) decisions 1–5, which this record keeps and whose cut 2 it replaces; [0022](0022-an-unknown-date-is-not-an-open-one.md) decision 3 and the lower bound of a start-less row; [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) cut 1 (open statements); [#714](https://github.com/deeplethe/utopia/issues/714); draft [#988](https://github.com/deeplethe/utopia/pull/988), which this supersedes
 
@@ -27,14 +27,16 @@ Three things are wrong and they are one thing.
 
 ## Decisions
 
-**1. The time context is built while extracting, chunk by chunk.** Chunks of a document are already extracted in order, each seeing the named things recorded before it. The time context travels the same way. Each extraction call receives it and returns, beside statements and time mentions, what the chunk adds to it. It holds four kinds of entry, each with the words as written and the chunk they came from:
+**1. The time context is built while extracting, from what each chunk states.** Each extraction call returns, beside statements and time mentions, the dates its passage states about the document's own time. It holds four kinds of entry, each with the words as written and the chunk they came from:
 
 - **reference points**: the moment the text speaks from ("提报日期 2026年9月4日", a dateline, "会议时间"), with the span it governs: the document, or the section under a heading;
 - **named dates**: every date the text gives a name to ("数据统计截止", "生效日期", "下次评审"), kept with its name, none promoted over another;
 - **periods and calendars**: as 0045 decision 3 has them;
 - **anchors the narrative sets**: an event the text has dated ("上市" is 2024-03), so a later "上市半年后" or "验厂后两个月" has something to be measured from.
 
-The separate dating call over the opening goes away. The context is stored with the document as today.
+The separate dating call over the opening goes away when extraction reported any entry, and stays as the fallback when it reported none. The context is stored with the document as today.
+
+*Revised with cut 2 (2026-09-28).* As first written this decision had the context travel from chunk to chunk in the prompt, the way the list of recorded things does. That ties time to the order chunks are read in, and #588 is moving the model calls of one document to run at once. What an entry governs is decided by structure instead: the chunker opens every chunk with the headings it lives under, so the chunk's own text says which section a date was stated in and which section a time word sits in. The scope of an entry is the heading path at its position; the reference point in force for a mention is the `now` entry with the deepest scope that is a prefix of the mention's path. Nothing is passed between calls, and the result is the same whether chunks are read one after another or together. Narrative anchors (the fourth kind) stay with the mentions of 0045: a dated mention is already an anchor for a later one in the same document.
 
 **2. There is no document date on facts.** A date a source system gives (a feed's publish time, a filing date) enters the context as a reference point like any other. Nothing picks one date for the document and writes it on every statement. `documents.doc_time` stays for sources that date documents and for sorting the library; it is not an attestation.
 
@@ -52,6 +54,8 @@ As-of is not a start. "码表所属市场为全球" in a report of 4 September s
 
 **6. Interpretation rides with extraction.** With the context present, the mention and its interpretation are returned by the same call. The batch interpretation step stays only for re-resolution when an anchor arrives later (0045 cut 4).
 
+*Not built with cut 2.* The batch step stays as it is; it asks once more for the mentions a reply left out, and says in the log which item it could not read. Folding it into the extraction call is measured separately: the extraction prompt is the one every other number depends on.
+
 ## Not doing
 
 - A single date per document chosen by a model, for any purpose.
@@ -65,11 +69,11 @@ A bench before any change, `scripts/bench/timewords.mjs`: documents in Chinese a
 
 | Number | Today | Threshold for cut 2 |
 |---|---|---|
-| time expressions recorded as mentions | 2 of 7 on the weekly report | 90% |
-| recorded mentions resolved to the right interval | 2 of 2 | 95% absolute, 85% anchored (0045's) |
+| time expressions recorded as mentions | 18–20 of 29 (the bench; the first hand check said 2 of 7 on one report and was too low) | 90% · cut 2: 27–29 of 29 |
+| starts right | absolute 4 of 4, relative to now 9 of 15, relative to a dated event 3 of 3, on a heading 0 of 6 | 95% absolute, 85% anchored (0045's) · cut 2: 11 of 12, 42 of 45, 9 of 9, 18 of 18 over three runs |
 | statements with no time words given the right as-of | none | 80%, and none given a start |
-| the same document, three runs: statements dated the same | differs | 90% agree |
-| tokens per chunk | measured with cut 1 | no higher than extraction + dating + interpretation today |
+| the same document, three runs: sentences with the same outcome | 34 of 39 | 90% agree · cut 2: 34 of 39, the differences are sentences not extracted at all |
+| tokens per chunk | 5.7k–7.3k | no higher than today · cut 2: 6.1k–8.5k, about a tenth higher |
 
 ## Cuts
 
