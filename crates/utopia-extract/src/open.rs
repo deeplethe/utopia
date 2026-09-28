@@ -97,7 +97,9 @@ pub struct OpenExtraction {
     pub time: Vec<crate::time::TimeEntry>,
     /// items skipped because they were malformed (counted per array item; must be reported by the caller)
     pub skipped: usize,
-    /// the reply was truncated and repaired to the last complete object
+    /// the reply was not valid JSON as a whole and was read item by item: cut off at the
+    /// end, or miswritten somewhere (the caller tells which by whether the reply hit the
+    /// token ceiling)
     pub truncated: bool,
 }
 
@@ -342,6 +344,114 @@ pub(crate) fn repair_truncated_compact(json: &str) -> Option<String> {
     None
 }
 
+/// 不合法的回复逐条读（整体解不开时才走这里）。返回 `(各类条目, 写坏的条数)`；一条
+/// 都读不出来是 None。
+///
+/// 从前整体解不开就当回复被截断，退到最后一个能补齐括号的位置，之后的全丢。可模型写坏
+/// 的多半不是结尾：`e` 没关就写起了 `s`，或者 `s` 的结尾少一个 `]`——回复正常结束，坏
+/// 在中间。坏在三分之一处，后面三分之二（十几条陈述、别名、文档的日期）就都没了，而
+/// 这一块照样记成抽完（bench README，2026-09-28）。
+///
+/// 这里不要求整体合法：顺着文本走，`"e"`、`"s"`、`"n"`、`"t"` 后面跟着 `: [` 就是换了
+/// 一类；每遇到一个 `[`，取到与它配平的那个括号，单独解。解得开、里面又没有数组的，是
+/// 一条（条目里从来没有数组：限定词是对象）；否则这一条写坏了，从它的下一个字符接着
+/// 找——套在坏条目里的完整条目照样读得出来。写在 `e` 里的八格条目是陈述，归到 `s`。
+/// 真被截断的回复，最后那条配不平，自然不收，与从前一样
+fn salvage(text: &str) -> Option<(Value, usize)> {
+    let bytes = text.as_bytes();
+    // 字符串的结尾（`i` 在开头的引号上）：返回结尾引号之后的位置；没有结尾就是 None
+    let string_end = |mut i: usize| -> Option<usize> {
+        i += 1;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => i += 2,
+                b'"' => return Some(i + 1),
+                _ => i += 1,
+            }
+        }
+        None
+    };
+    // 与 `i` 上的 `[` 配平的括号的位置
+    let balanced_end = |start: usize| -> Option<usize> {
+        let (mut i, mut depth) = (start, 0usize);
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    i = string_end(i)?;
+                    continue;
+                }
+                b'[' | b'{' => depth += 1,
+                b']' | b'}' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    };
+    let mut found: [Vec<Value>; 4] = Default::default();
+    let mut section: Option<usize> = None;
+    let mut broken = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let Some(end) = string_end(i) else { break };
+                let key = ["e", "s", "n", "t"]
+                    .iter()
+                    .position(|k| &text[i + 1..end - 1] == *k);
+                let rest = text[end..].trim_start();
+                let after_colon = rest.strip_prefix(':').map(str::trim_start);
+                match (key, after_colon) {
+                    (Some(k), Some(r)) if r.starts_with('[') => {
+                        section = Some(k);
+                        i = text.len() - r.len() + 1;
+                    }
+                    _ => i = end,
+                }
+            }
+            b'[' => {
+                let item = balanced_end(i).and_then(|end| {
+                    let v = serde_json::from_str::<Value>(&text[i..=end]).ok()?;
+                    let arr = v.as_array()?;
+                    (!arr.is_empty() && !arr.iter().any(Value::is_array)).then_some((end, v))
+                });
+                match (item, section) {
+                    (Some((end, v)), Some(k)) => {
+                        let is_statement = k == 0
+                            && v.as_array().is_some_and(|a| {
+                                a.len() >= 8 && a[..3].iter().all(Value::is_string)
+                            });
+                        found[if is_statement { 1 } else { k }].push(v);
+                        i = end + 1;
+                    }
+                    (Some((end, _)), None) => i = end + 1,
+                    (None, _) => {
+                        // 配得平却解不开（或套着别的条目）才算写坏；配不平的是结尾被截断
+                        if section.is_some() && balanced_end(i).is_some() {
+                            broken += 1;
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    if found.iter().all(Vec::is_empty) {
+        return None;
+    }
+    let [e, s, n, t] = found;
+    Some((
+        serde_json::json!({ "e": e, "s": s, "n": n, "t": t }),
+        broken,
+    ))
+}
+
 /// 顶层某个键下的数组；缺了或不是数组就当空——那不是一条坏记录，是整段没这一类
 fn items<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value
@@ -457,24 +567,25 @@ fn parse_name(arr: &[Value]) -> Option<OpenName> {
 /// 不分大小写）留第一个，其余计入 `skipped`。主语、宾语的名字不在这里对回 `e`
 pub fn parse_open_response(raw: &str) -> anyhow::Result<OpenExtraction> {
     // 先按常规取块（第一个 `{` 到最后一个 `}`）：解得开就是完整回复，结尾之后
-    // 哪怕跟着废话也不算截断。解不开才从第一个 `{` 取到结尾去修
+    // 哪怕跟着废话也不算截断。解不开才从第一个 `{` 取到结尾逐条读（见 `salvage`）
     let block = json_block(raw)
         .and_then(|b| serde_json::from_str::<Value>(&b).map_err(anyhow::Error::from));
+    let mut skipped = 0usize;
     let (value, truncated) = match block {
         Ok(v) => (v, false),
         Err(e) => {
-            let fixed = json_tail(raw)
-                .and_then(repair_truncated_compact)
-                // 补不回来才是真解析失败：连一个完整条目都没有
+            let (v, broken) = json_tail(raw)
+                .and_then(salvage)
+                // 一条都读不出来才是真解析失败
                 .ok_or_else(|| anyhow::anyhow!("Failed to parse open extraction JSON: {e}"))?;
-            let v = serde_json::from_str::<Value>(&fixed)
-                .map_err(|e| anyhow::anyhow!("Failed to parse open extraction JSON: {e}"))?;
+            skipped = broken;
             (v, true)
         }
     };
 
     let mut out = OpenExtraction {
         truncated,
+        skipped,
         ..Default::default()
     };
     let mut seen = HashSet::new();
@@ -607,15 +718,100 @@ mod tests {
         assert_eq!(x.skipped, 0);
     }
 
-    /// 截在一条陈述的限定词之后：修补退到那个 `}`，留下的半条不够八格，计入 skipped
-    /// 而不是收成一条只有引文的陈述
+    /// 截在一条陈述的限定词之后：那半条配不平，不收成一条只有引文的陈述。它不算写坏
+    /// 的条目：少了它是因为回复被截断，`truncated` 已经说了
     #[test]
-    fn a_half_statement_left_by_the_repair_is_counted() {
+    fn a_half_statement_at_the_cut_is_not_kept() {
         let raw = r#"{"e": [["A", "thing", 1]],
             "s": [["A is b.", "A", "is", null, "b", null, null, null], ["A was c.", "A", "was", null, "c", {"at": "home"}, "in 20"#;
         let x = parse_open_response(raw).unwrap();
         assert!(x.truncated);
         assert_eq!(x.statements.len(), 1);
+        assert_eq!(x.skipped, 0);
+    }
+
+    /// `e` 没关就写起了 `s`（回复正常结束，坏在三分之一处）：从前退到坏处之前，后面的
+    /// 陈述、别名全丢，这一块只剩写进 `e` 里的那一条。逐条读，一条不少
+    #[test]
+    fn statements_written_after_an_unclosed_list_are_all_read() {
+        let raw = r#"```json
+{"e": [["Harbor Bakery", "bakery", 1], ["Hillside School", "school", 1], ["bread", "bread", 0],
+["Harbor Bakery supplies Hillside School.", "Harbor Bakery", "supplies", "Hillside School", null, null, null, null],
+"s": [["Harbor Bakery bakes bread [daily].", "Harbor Bakery", "bakes", "bread", null, {"how often": "daily"}, null, null],
+["Harbor Bakery opened in 2005.", "Harbor Bakery", "opened", null, "opened", null, "2005", null]],
+"n": [["Harbor Bakery", "the Bakery", "The Bakery opened in 2005."]],
+"t": []}
+```"#;
+        let x = parse_open_response(raw).unwrap();
+        assert!(x.truncated, "读是读出来了，回复不合法要标出来");
+        assert_eq!(x.entities.len(), 3);
+        assert_eq!(
+            x.statements
+                .iter()
+                .map(|s| s.phrase.as_str())
+                .collect::<Vec<_>>(),
+            ["supplies", "bakes", "opened"],
+            "写在 e 里的那条八格条目是陈述"
+        );
+        assert_eq!(
+            x.statements[1].quote.as_deref(),
+            Some("Harbor Bakery bakes bread [daily].")
+        );
+        assert_eq!(x.names.len(), 1);
+        assert_eq!(x.skipped, 0);
+    }
+
+    /// `s` 的结尾少写一个 `]`：陈述都在，从前丢的是它后面的 `n` 与 `t`——文档的日期
+    /// 没了，这一篇里数着「今天」的时间就都没处数
+    #[test]
+    fn what_follows_a_miswritten_bracket_is_still_read() {
+        let raw = r#"{"e": [["码表", "产品", 1]],
+"s": [["码表平均售价为849元。", "码表", "平均售价", null, "849元", null, "2025年第四季度", null]}
+,
+"n": [],
+"t": [["now", "提报日期", "2026年8月28日", {"y": 2026, "m": 8, "d": 28}, null]]}"#;
+        let x = parse_open_response(raw).unwrap();
+        assert!(x.truncated);
+        assert_eq!(x.statements.len(), 1);
+        assert_eq!(x.time.len(), 1);
+        assert_eq!(x.skipped, 0);
+    }
+
+    /// 一条写坏了（对象少了 `}`）只丢这一条，计数；前后的照收
+    #[test]
+    fn one_miswritten_item_costs_only_itself() {
+        let raw = r#"{"e": [["A", "thing", 1]],
+"s": [["A is b.", "A", "is", null, "b", null, null, null],
+["A was c.", "A", "was", null, "c", {"at": "home"], "in 2019", null],
+["A has d.", "A", "has", null, "d", null, null, null]],
+"n": [], "t": []}"#;
+        let x = parse_open_response(raw).unwrap();
+        assert!(x.truncated);
+        assert_eq!(
+            x.statements
+                .iter()
+                .map(|s| s.phrase.as_str())
+                .collect::<Vec<_>>(),
+            ["is", "has"]
+        );
+        assert_eq!(x.skipped, 1);
+    }
+
+    /// 一条少了结尾的 `]`，把下一条套了进去：套着别的条目的不是一条，里面那条照收
+    #[test]
+    fn an_item_that_swallowed_the_next_one_gives_the_next_one_back() {
+        let raw = r#"{"e": [["A", "thing", 1]],
+"s": [["A is b.", "A", "is", null, "b", null, null, null,
+["A has d.", "A", "has", null, "d", null, null, null]],
+"n": [], "t": []}"#;
+        let x = parse_open_response(raw).unwrap();
+        assert_eq!(
+            x.statements
+                .iter()
+                .map(|s| s.phrase.as_str())
+                .collect::<Vec<_>>(),
+            ["has"]
+        );
         assert_eq!(x.skipped, 1);
     }
 

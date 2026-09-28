@@ -148,7 +148,9 @@ async fn call_and_parse_one_chunk(
             if cut_by_ceiling {
                 "the open reply hit the token ceiling; kept up to the last complete item"
             } else {
-                "the open reply was cut off; kept up to the last complete item"
+                // 回复正常结束而整体不合法：模型写坏了括号。逐条读出来的都收了，写坏的
+                // 条数在下面那条信号里
+                "the open reply was not valid JSON as a whole; read item by item"
             },
             None,
         )
