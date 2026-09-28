@@ -318,8 +318,10 @@ async fn an_attribute_conclusion_resolves_to_a_relation_type() -> anyhow::Result
             "conclude_type_id must be NULL for attribute"
         );
         anyhow::ensure!(row.2 == Some(eval));
-        // conclude_value 留空——值的来源是「判定」过程，不是「定义」过程
-        anyhow::ensure!(row.3.is_none());
+        // attribute 结论的 `conclude_value` 必填（CHECK）——这一档把条件
+        // 的 operand 当成它，Review 看到的就是「评价=8」，落地后改成
+        // 真实的结论值
+        anyhow::ensure!(row.3.is_some());
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -401,7 +403,7 @@ async fn between_value_is_split_into_lo_hi_array() -> anyhow::Result<()> {
                 .fetch_one(&pool)
                 .await?;
         anyhow::ensure!(cond.0 == "between");
-        anyhow::ensure!(cond.1 == Some(serde_json::json!(["3", "5"])));
+        anyhow::ensure!(cond.1 == Some(serde_json::json!([3, 5])));
         Ok::<_, anyhow::Error>(())
     }
     .await;

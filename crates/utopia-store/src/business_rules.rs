@@ -113,6 +113,18 @@ fn validate_name(name: &str) -> AppResult<&str> {
     Ok(name)
 }
 
+/// 把模型写下的阈值解析成 JSON：能读成 `i64` / `f64` 就成 `Number`，否则
+/// 落 `String`。"3"、"3.5"、"0.001" 都进 `Number`；"3%"、"high" 走字面量。
+fn numeric_or_string(value: &str) -> serde_json::Value {
+    if let Ok(n) = value.parse::<i64>() {
+        serde_json::json!(n)
+    } else if let Ok(n) = value.parse::<f64>() {
+        serde_json::json!(n)
+    } else {
+        serde_json::json!(value)
+    }
+}
+
 /// 建一条规则。**校验在这里做完**：条件的 op 与操作数形状、谓词必须是属性、
 /// 结论的两种形状各自完整——库里的 CHECK 是最后一道，报错信息却是给人看的。
 #[allow(clippy::too_many_arguments)]
@@ -1215,17 +1227,15 @@ pub async fn insert_proposal_from_criterion(
         _ => return Ok((InsertOutcome::Unresolved, None)),
     };
     let name = validate_name(rule_name)?;
-    let op_parsed = utopia_reason::rules::Op::parse(op).ok_or_else(|| {
-        AppError::invalid(
-            "bad_op",
-            "A criterion compares with gt/gte/lt/lte/between/in/present.",
-        )
-    })?;
+    let Some(op_parsed) = utopia_reason::rules::Op::parse(op) else {
+        // eq / ne 不在 Op 里（0021）——视同 unresolved，不写一档
+        return Ok((InsertOutcome::Unresolved, None));
+    };
     let operand = match op_parsed {
         utopia_reason::rules::Op::Gt
         | utopia_reason::rules::Op::Gte
         | utopia_reason::rules::Op::Lt
-        | utopia_reason::rules::Op::Lte => serde_json::json!(value),
+        | utopia_reason::rules::Op::Lte => numeric_or_string(value),
         utopia_reason::rules::Op::In | utopia_reason::rules::Op::NotIn => {
             // 模型把集合写成字符串 "{oil, gas}"——拆出来，丢空项
             let inner = value
@@ -1234,14 +1244,14 @@ pub async fn insert_proposal_from_criterion(
                 .split(',')
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
-                .map(|s| serde_json::json!(s))
+                .map(numeric_or_string)
                 .collect::<Vec<_>>();
             serde_json::json!(inner)
         }
         utopia_reason::rules::Op::Between => {
-            // "3% to 5%" → ["3%", "5%"]；trim 单位字符留给 Review 读
+            // "3% to 5%" → [lo, hi]；trim 单位字符留给 Review 读
             let (lo, hi) = value.split_once("to").unwrap_or((value, value));
-            serde_json::json!([lo.trim(), hi.trim()])
+            serde_json::json!([numeric_or_string(lo.trim()), numeric_or_string(hi.trim())])
         }
         utopia_reason::rules::Op::Present => serde_json::Value::Null,
     };
