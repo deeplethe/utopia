@@ -1106,6 +1106,9 @@ export interface EntityFact {
   /** 读出来的区间（0022），与 GraphEdge 同义：「此刻成立」按它判 */
   holds_from: string | null;
   holds_to: string | null;
+  /** 见证从文档的哪条日期来，照文档的字（0064）：「提报日期 2026年9月4日」。没有起止的
+      事实，`holds_from` 就是见证的日期——它是「截至」，不是起点 */
+  attested_by?: string | null;
   valid_from_precision: string | null;
   /** year | month | day，外加 unknown = 原文说它结束了但没说哪天 */
   valid_to_precision: string | null;

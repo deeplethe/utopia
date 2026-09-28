@@ -16,8 +16,9 @@
 //! 塌成一个，0041 的名字事实照记），被描述的东西建成没有名字事实的实体
 //! （`create_described`），免得「一家医院」成了召回的桥。
 //!
-//! 两根时间轴（0022 / #714）：`attested_from` 永远是此刻；`attested_at` 只在文档日期
-//! 来自内容或来源系统时才用它——上传时刻与文件修改时间都不是文档说的日期。
+//! 两根时间轴（0022 / #714 / 0064）：陈述入库时的见证只认来源系统给文档的日期，没有就
+//! 留空——处理文档的时刻不是文档说的日期。文档自己说的日期（各块报上来的 `t`）在抽完
+//! 之后由时间解析那一步按节写到陈述上（`time_resolution::attest_statements`）。
 
 use crate::extraction::{
     chat_retrying_rate_limits_at, drop_signal, incomplete_reason, origin_ceiling, resolve_handle,
