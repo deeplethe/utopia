@@ -29,6 +29,7 @@ mod a_chunk_says_where_its_words_came_from;
 mod a_clash_needs_both_at_once;
 mod a_contradiction_points_upstream;
 mod a_corrected_time_keeps_its_statements;
+mod a_criterion_becomes_a_proposed_rule;
 mod a_cycle_holds_at_one_moment;
 mod a_cycle_is_keyed_by_all_its_facts;
 mod a_cycle_search_that_stops_says_so;
