@@ -10,9 +10,12 @@
 //! 值不是属性量的东西也答 null（股数不是营收）。候选属性的定义、定义域、值域照库里的
 //! 写法给，答案里的键照抄。
 //!
-//! 回复是紧凑 JSON：`{"b": [[id, "key" | null, "forward" | "reverse" | null]]}`。解析同
-//! 类别词那边：坏的一条计数、不毁掉整批；键不在候选里、id 不在批里、绑了却没方向、
-//! 同一个 id 的第二次都算坏；没答到的 id 是「再问」，不是 null。
+//! 回复是紧凑 JSON：`{"b": [[id, "key" | null, "forward" | "reverse" | null, marks]]}`。第四格
+//! 只对状态属性有意义（#966）：一条只说了一刻的陈述，那一刻标的是状态的开始（start）、
+//! 结束（end）还是都不是（none）；事件、恒常、不绑都答 null，旧的三格写法照样读（marks
+//! 缺席）。解析同类别词那边：坏的一条计数、不毁掉整批；键不在候选里、id 不在批里、绑了
+//! 却没方向、状态属性下 marks 写了却认不出、同一个 id 的第二次都算坏；事件与恒常不读第四格，
+//! 写了什么都不算坏。没答到的 id 是「再问」，不是 null。
 //!
 //! **形状也宽容**（同类别词那边的教训）：模型（实测 DeepSeek-V3.2）并不总照样例写。它会
 //! 把整段答成按 id 作键的对象（`{"0": ["headquartered_in", "forward"], "1": null}`），
@@ -37,6 +40,8 @@ pub struct PropertyCandidate<'a> {
     pub description: &'a str,
     /// relation（两样东西之间）或 attribute（宾语是值）
     pub kind: &'a str,
+    /// state / event / eternal（0031）：只有状态有「一刻标哪一端」这个问题（#966）
+    pub temporal: &'a str,
     /// 定义域、值域的类键；空表示没声明
     pub domains: Vec<&'a str>,
     pub ranges: Vec<&'a str>,
@@ -72,6 +77,38 @@ pub struct PhraseItem<'a> {
 pub struct PhraseChoice {
     pub id: i64,
     pub property: Option<(String, Direction)>,
+    /// 绑到状态属性时，一条只说了一刻的陈述那一刻标哪一端（#966）；没答或不适用是 None
+    pub marks: Option<Marks>,
+}
+
+/// 一刻在状态上标的是哪一端（`phrase_bindings.marks`，#966）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Marks {
+    /// joined、was appointed、took over：状态从这一刻起
+    Start,
+    /// left、resigned from：状态到这一刻为止
+    End,
+    /// 只是那时成立：不算类型化行
+    Neither,
+}
+
+impl Marks {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Marks::Start => "start",
+            Marks::End => "end",
+            Marks::Neither => "none",
+        }
+    }
+
+    fn parse(written: &str) -> Option<Self> {
+        match written.trim().to_lowercase().as_str() {
+            "start" => Some(Marks::Start),
+            "end" => Some(Marks::End),
+            "none" | "neither" => Some(Marks::Neither),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,16 +134,19 @@ it is said of (its subject) and the class of what it points at (its object), or 
 the object is a figure, a title or a status; a few statements with that signature, each with the \
 sentence it was taken from; and the keys of its candidate properties. The properties themselves \
 are listed once under \"Properties\", each with its key, its label, its kind (a relation between two \
-things, or an attribute whose object is a value), its domain, its range and its definition. A class \
+things, or an attribute whose object is a value), whether it is a state (holds over a span), an event \
+(happens at a moment) or eternal, its domain, its range and its definition. A class \
 written as \"?\" means the documents' kind word for that side is bound to no class yet. A candidate \
 key marked \"fits by inheritance\" declares its domain or range on an ancestor of the item's class; \
 that is a fit, not a mismatch.\n\
 For each item, answer with the key of the one property that every statement of this signature \
 states by that property's definition, and the direction: \"forward\" when the statement's \
-subject is the property's subject, \"reverse\" when the statement's object is; or null.\n\
+subject is the property's subject, \"reverse\" when the statement's object is; or null. For a \
+state, also say which end of it a statement dated at a single moment marks (rule 6).\n\
 \n\
-Output exactly one JSON object and nothing else, one triple per item:\n\
-{\"b\": [[12, \"headquartered_in\", \"forward\"], [13, null, null]]}\n\
+Output exactly one JSON object and nothing else, one entry per item:\n\
+{\"b\": [[12, \"headquartered_in\", \"forward\", \"none\"], [13, \"member_of\", \"forward\", \"start\"], \
+[14, null, null, null]]}\n\
 \n\
 1. Choose a property only when each of the statements under this signature states that \
 property, by the definition as given. The property may be broader than the phrase: \"opened a \
@@ -123,10 +163,16 @@ what the attribute measures (a share count is not revenue, a date is not an amou
 4. The direction follows the definition: for \"X —is a subsidiary of→ Y\" subsidiary_of is \
 forward; for \"X —owns→ Y\", if subsidiary_of is the only fitting candidate, it is reverse.\n\
 5. Never invent a key, never answer with a label, never choose for an item a key that is not \
-among its candidates. One triple per item, every item answered.";
+among its candidates. One entry per item, every item answered.\n\
+6. When the property you choose is a state, the fourth value says what a statement of this \
+signature dated at a single moment means for that state: \"start\" when the phrase says the state \
+began then (\"joined\", \"was appointed\", \"took over\"), \"end\" when it says the state ended \
+then (\"left\", \"resigned from\", \"stepped down as\"), \"none\" when the date only says the \
+state held at that moment (\"was chairman in 2019\"). For an event or eternal property, or no \
+property, the fourth value is null.";
 
 pub fn candidate_line(c: &PropertyCandidate<'_>) -> String {
-    let mut line = format!("- {} · {} · {}", c.key, c.label, c.kind);
+    let mut line = format!("- {} · {} · {} · {}", c.key, c.label, c.kind, c.temporal);
     if !c.domains.is_empty() {
         line.push_str(&format!(" · domain: {}", c.domains.join(", ")));
     }
@@ -217,11 +263,16 @@ pub fn parse_phrase_response(
 ) -> anyhow::Result<(Vec<PhraseChoice>, usize)> {
     let value = parse_value(raw)?;
     let by_id: HashMap<i64, &PhraseItem<'_>> = items.iter().map(|i| (i.id, i)).collect();
+    // 批里描述过的属性各是什么时间语义：只有状态读第四格
+    let temporal: HashMap<&str, &str> = items
+        .iter()
+        .flat_map(|i| i.candidates.iter().map(|c| (c.key.trim(), c.temporal)))
+        .collect();
     let mut choices = Vec::new();
     let mut malformed = 0usize;
     let mut seen = HashSet::new();
-    for (id, key, direction) in answers(&value) {
-        match parse_triple(&id, &key, &direction, &by_id) {
+    for (id, key, direction, marks) in answers(&value) {
+        match parse_answer(&id, &key, &direction, &marks, &by_id, &temporal) {
             Some(choice) if seen.insert(choice.id) => choices.push(choice),
             _ => malformed += 1,
         }
@@ -229,7 +280,8 @@ pub fn parse_phrase_response(
     Ok((choices, malformed))
 }
 
-/// 回复里的每一条答案：（id，键，方向）三个原始值，形状还没验。
+/// 回复里的每一条答案：（id，键，方向，marks）四个原始值，形状还没验。marks 在第四格或
+/// `marks` 字段里，缺席就是 null（旧的三格写法照样读）。
 ///
 /// 认这几种写法，说的都是「这个 id 选了这个键、这个方向」：`{"b": [[id, key, dir]]}`
 /// （样例）、`{"b": {"id": [key, dir]}}`、没有 `b` 的顶层对象 `{"id": [key, dir]}`、
@@ -237,31 +289,32 @@ pub fn parse_phrase_response(
 /// 按 id 作键时值也可以是 `{"key": .., "direction": ..}`、`null`（不绑）或先抄一遍 id 的
 /// `[id, key, dir]`。`b` 在就只看 `b`，顶层别的键是模型的旁白，不是答案。缺了 `b` 又
 /// 不是对象或数组的，一条都没有
-fn answers(value: &Value) -> Vec<(Value, Value, Value)> {
+fn answers(value: &Value) -> Vec<(Value, Value, Value, Value)> {
     let listed = value.get("b").unwrap_or(value);
     match listed {
         Value::Array(entries) => entries
             .iter()
             .map(|entry| match entry {
                 Value::Array(list) if list.len() >= 2 => {
-                    let (key, direction) = key_and_direction(&list[1..]);
-                    (list[0].clone(), key, direction)
+                    let (key, direction, marks) = key_direction_marks(&list[1..]);
+                    (list[0].clone(), key, direction, marks)
                 }
                 Value::Object(map) => {
-                    let (key, direction) = fields(map);
+                    let (key, direction, marks) = fields(map);
                     (
                         map.get("id").cloned().unwrap_or(Value::Null),
                         key,
                         direction,
+                        marks,
                     )
                 }
-                other => (other.clone(), Value::Null, Value::Null),
+                other => (other.clone(), Value::Null, Value::Null, Value::Null),
             })
             .collect(),
         Value::Object(map) => map
             .iter()
             .map(|(id, v)| {
-                let (key, direction) = match v {
+                let (key, direction, marks) = match v {
                     Value::Array(list) => {
                         // 值里先抄一遍 id 再给键：`{"0": [0, "headquartered_in", "forward"]}`
                         let copied = list
@@ -269,30 +322,33 @@ fn answers(value: &Value) -> Vec<(Value, Value, Value)> {
                             .and_then(item_id)
                             .is_some_and(|first| id.trim().parse::<i64>().ok() == Some(first));
                         let list = if copied { &list[1..] } else { &list[..] };
-                        key_and_direction(list)
+                        key_direction_marks(list)
                     }
                     Value::Object(inner) => fields(inner),
-                    other => (other.clone(), Value::Null),
+                    other => (other.clone(), Value::Null, Value::Null),
                 };
-                (Value::String(id.clone()), key, direction)
+                (Value::String(id.clone()), key, direction, marks)
             })
             .collect(),
         _ => Vec::new(),
     }
 }
 
-/// `[key, dir]` 的两格；只有一格就没有方向（null 的答案常只写一格）。空数组是「什么
-/// 都没写」，读成 null 键会把没答到说成不绑——留成对象，调用方算坏
-fn key_and_direction(list: &[Value]) -> (Value, Value) {
+/// `[key, dir, marks]` 的三格；只有一格就没有方向（null 的答案常只写一格），没有第三格
+/// 就没有 marks。空数组是「什么都没写」，读成 null 键会把没答到说成不绑——留成对象，
+/// 调用方算坏
+fn key_direction_marks(list: &[Value]) -> (Value, Value, Value) {
     match list {
-        [] => (Value::Array(Vec::new()), Value::Null),
-        [key] => (key.clone(), Value::Null),
-        [key, direction, ..] => (key.clone(), direction.clone()),
+        [] => (Value::Array(Vec::new()), Value::Null, Value::Null),
+        [key] => (key.clone(), Value::Null, Value::Null),
+        [key, direction] => (key.clone(), direction.clone(), Value::Null),
+        [key, direction, marks, ..] => (key.clone(), direction.clone(), marks.clone()),
     }
 }
 
-/// 一条写成对象时的两个字段：键叫 key / property / p，方向叫 direction / dir / d
-fn fields(map: &serde_json::Map<String, Value>) -> (Value, Value) {
+/// 一条写成对象时的三个字段：键叫 key / property / p，方向叫 direction / dir / d，
+/// 一刻标哪一端叫 marks / m
+fn fields(map: &serde_json::Map<String, Value>) -> (Value, Value, Value) {
     let pick = |names: &[&str]| {
         names
             .iter()
@@ -303,27 +359,32 @@ fn fields(map: &serde_json::Map<String, Value>) -> (Value, Value) {
     (
         pick(&["key", "property", "p"]),
         pick(&["direction", "dir", "d"]),
+        pick(&["marks", "m"]),
     )
 }
 
 /// 一条答案：id 得是这批里的；键是 null（不绑）或候选里的一个，绑了就得有方向，方向
 /// 不认识算坏。键包在数组里的（`["headquartered_in", "forward"]` 塞在第二格）照样读，
-/// 方向从数组里取
-fn parse_triple(
+/// 方向与 marks 从数组里取。marks 只在绑到状态属性时读：null 或缺席是没说，写了却认不出
+/// 算坏；事件、恒常（或批里没描述过的键）不读这一格，写了什么都忽略
+fn parse_answer(
     id: &Value,
     key: &Value,
     direction: &Value,
+    marks: &Value,
     by_id: &HashMap<i64, &PhraseItem<'_>>,
+    temporal: &HashMap<&str, &str>,
 ) -> Option<PhraseChoice> {
     let id = item_id(id)?;
     let item = by_id.get(&id)?;
-    let (key, direction) = match key {
+    let (key, direction, marks) = match key {
         Value::Array(list) if !list.is_empty() => {
-            let (k, d) = key_and_direction(list);
+            let (k, d, m) = key_direction_marks(list);
             let d = if d.is_null() { direction.clone() } else { d };
-            (k, d)
+            let m = if m.is_null() { marks.clone() } else { m };
+            (k, d, m)
         }
-        other => (other.clone(), direction.clone()),
+        other => (other.clone(), direction.clone(), marks.clone()),
     };
     let property = match &key {
         Value::Null => None,
@@ -342,7 +403,19 @@ fn parse_triple(
         }
         _ => return None,
     };
-    Some(PhraseChoice { id, property })
+    let state = property
+        .as_ref()
+        .is_some_and(|(key, _)| temporal.get(key.as_str()) == Some(&"state"));
+    let marks = match (state, &marks) {
+        (false, _) | (_, Value::Null) => None,
+        (true, Value::String(written)) => Some(Marks::parse(written)?),
+        (true, _) => return None,
+    };
+    Some(PhraseChoice {
+        id,
+        property,
+        marks,
+    })
 }
 
 /// 模型写的键对回这一项的候选：先原样，再不分大小写（只在唯一命中时）
@@ -400,6 +473,7 @@ mod tests {
                 label: "headquartered in",
                 description: "The organization's principal office is at the place.",
                 kind: "relation",
+                temporal: "state",
                 domains: vec!["organization"],
                 ranges: vec!["place"],
                 via: Vec::new(),
@@ -409,6 +483,7 @@ mod tests {
                 label: "subsidiary of",
                 description: "The organization is owned or controlled by the other organization.",
                 kind: "relation",
+                temporal: "state",
                 domains: vec!["organization"],
                 ranges: vec!["organization"],
                 via: Vec::new(),
@@ -418,6 +493,7 @@ mod tests {
                 label: "revenue",
                 description: "Total income from sales for a period, as an amount of money.",
                 kind: "attribute",
+                temporal: "state",
                 domains: vec!["organization"],
                 ranges: vec![],
                 via: Vec::new(),
@@ -445,7 +521,7 @@ mod tests {
         let user = &msgs[1].content;
         assert!(user.contains("Item 3: phrase \"is based in\" · subject class: organization · object: ? · 4 statements"), "{user}");
         assert!(user.contains("· Harbor Bakery —is based in→ Port Ellen\n    \"Harbor Bakery is based in Port Ellen.\""), "{user}");
-        assert!(user.contains("- headquartered_in · headquartered in · relation · domain: organization · range: place · The organization's"), "{user}");
+        assert!(user.contains("- headquartered_in · headquartered in · relation · state · domain: organization · range: place · The organization's"), "{user}");
         assert!(
             user.starts_with("Properties:\n- "),
             "the glossary comes first, once: {user}"
@@ -460,7 +536,9 @@ mod tests {
             "each property is described once: {user}"
         );
         assert!(
-            user.contains("- revenue · revenue · attribute · domain: organization · Total income"),
+            user.contains(
+                "- revenue · revenue · attribute · state · domain: organization · Total income"
+            ),
             "{user}"
         );
         assert!(msgs[0]
@@ -573,15 +651,18 @@ mod tests {
             vec![
                 PhraseChoice {
                     id: 0,
-                    property: Some(("subsidiary_of".into(), Direction::Reverse))
+                    property: Some(("subsidiary_of".into(), Direction::Reverse)),
+                    marks: None,
                 },
                 PhraseChoice {
                     id: 1,
-                    property: None
+                    property: None,
+                    marks: None,
                 },
                 PhraseChoice {
                     id: 4,
-                    property: Some(("revenue".into(), Direction::Forward))
+                    property: Some(("revenue".into(), Direction::Forward)),
+                    marks: None,
                 },
             ]
         );
@@ -650,11 +731,111 @@ mod tests {
         PhraseChoice {
             id,
             property: Some((key.to_string(), direction)),
+            marks: None,
         }
     }
 
     fn unbound(id: i64) -> PhraseChoice {
-        PhraseChoice { id, property: None }
+        PhraseChoice {
+            id,
+            property: None,
+            marks: None,
+        }
+    }
+
+    fn marked(id: i64, key: &str, direction: Direction, marks: Marks) -> PhraseChoice {
+        PhraseChoice {
+            marks: Some(marks),
+            ..bound(id, key, direction)
+        }
+    }
+
+    /// 第四格说一刻标状态的哪一端（#966）：四格数组、对象的 marks 字段、按 id 作键的写法都读；
+    /// 缺席或 null 是没说；不绑的不带；写了却认不出的算坏项
+    #[test]
+    fn the_fourth_value_says_which_end_a_moment_marks() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let items = three_items(&examples, &quotes);
+        let raw = r#"{"b": [[0, "subsidiary_of", "reverse", "start"], [1, null, null, "end"], [2, "revenue", "forward", null]]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![
+                marked(0, "subsidiary_of", Direction::Reverse, Marks::Start),
+                unbound(1),
+                bound(2, "revenue", Direction::Forward),
+            ]
+        );
+        let raw = r#"{"0": ["subsidiary_of", "reverse", "END"], "2": {"key": "revenue", "direction": "forward", "marks": "none"}}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(malformed, 0);
+        assert_eq!(
+            choices,
+            vec![
+                marked(0, "subsidiary_of", Direction::Reverse, Marks::End),
+                marked(2, "revenue", Direction::Forward, Marks::Neither),
+            ]
+        );
+        let raw = r#"{"b": [{"id": 0, "p": "subsidiary_of", "d": "reverse", "m": "start"}, [2, "revenue", "forward", "later"]]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(
+            choices,
+            vec![marked(0, "subsidiary_of", Direction::Reverse, Marks::Start)]
+        );
+        assert_eq!(malformed, 1, "an unreadable marks is a bad answer");
+    }
+
+    /// 事件与恒常不读第四格：写了认不出的值不算坏项，写了认得出的也不带。状态属性下
+    /// 认不出照样算坏
+    #[test]
+    fn an_event_property_does_not_read_the_fourth_value() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let mut items = three_items(&examples, &quotes);
+        items[0].candidates.push(PropertyCandidate {
+            key: "acquired",
+            label: "acquired",
+            description: "The organization bought the other organization.",
+            kind: "relation",
+            temporal: "event",
+            domains: vec!["organization"],
+            ranges: vec!["organization"],
+            via: Vec::new(),
+        });
+        let raw =
+            r#"{"b": [[0, "acquired", "forward", "later"], [2, "revenue", "forward", "later"]]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(choices, vec![bound(0, "acquired", Direction::Forward)]);
+        assert_eq!(malformed, 1, "revenue is a state: its fourth value is read");
+        let raw = r#"{"b": [[0, "acquired", "forward", "start"]]}"#;
+        let (choices, malformed) = parse_phrase_response(raw, &items).unwrap();
+        assert_eq!(
+            (choices, malformed),
+            (vec![bound(0, "acquired", Direction::Forward)], 0)
+        );
+    }
+
+    /// 提示词说出每条属性是不是状态，以及第四格怎么答
+    #[test]
+    fn the_prompt_says_which_properties_are_states_and_asks_for_the_fourth_value() {
+        let (examples, quotes) = (strings(&[]), strings(&[]));
+        let msgs = build_phrase_messages(&three_items(&examples, &quotes));
+        assert!(msgs[1]
+            .content
+            .contains("- subsidiary_of · subsidiary of · relation · state ·"));
+        let system = &msgs[0].content;
+        assert!(
+            system.contains("\"start\" when the phrase says the state began then"),
+            "{system}"
+        );
+        assert!(
+            system.contains("\"end\" when it says the state ended then"),
+            "{system}"
+        );
+        assert!(
+            system.contains("For an event or eternal property"),
+            "{system}"
+        );
     }
 
     /// 类别词那边实测的写法搬到短语上：整段是按 id 作键的对象，没有 `b`，值是

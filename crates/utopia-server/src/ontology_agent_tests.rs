@@ -148,6 +148,8 @@ impl Fx {
                     votes: &json!({ "reason": "no_candidates" }),
                     decided_by: "agent",
                     basis: Some("test"),
+                    marks: None,
+                    marks_asked: false,
                 },
             )
             .await?;

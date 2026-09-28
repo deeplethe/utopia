@@ -954,8 +954,8 @@ async fn rewrite_end_tx(
     derived: bool,
     require_open: bool,
 ) -> AppResult<Option<Uuid>> {
-    let alive: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM facts
+    let alive: Option<(Option<DateTime<Utc>>, Option<Uuid>)> = sqlx::query_as(
+        "SELECT valid_from, predicate_id FROM facts
          WHERE id = $1 AND invalidated_at IS NULL
            AND (NOT $2 OR (valid_to IS NULL AND valid_to_precision IS NULL))
          FOR UPDATE",
@@ -964,8 +964,20 @@ async fn rewrite_end_tx(
     .bind(require_open)
     .fetch_optional(&mut **tx)
     .await?;
-    if alive.is_none() {
+    let Some((from, predicate)) = alive else {
         return Ok(None);
+    };
+    // 声明成状态的行关在它自己的起点，就是一段任何时刻都不成立的状态（#966，与
+    // `Validity::under` 同一条不变量）。人关一条事实走这里；引擎只把一行关在严格更晚的
+    // 起点上，写入路径也不拿开放行自己的起点来关它
+    if let End::At(at, _) = end {
+        if predicate.is_some()
+            && from == Some(*at)
+            && crate::graph::predicate_temporal(&mut **tx, predicate).await?
+                == crate::graph::Temporal::State
+        {
+            return Err(crate::graph::empty_state_span());
+        }
     }
     let (valid_to, precision, anchor) = match end {
         End::Open => (None, None, None),
@@ -1180,8 +1192,14 @@ pub async fn correct_interval(
             .bind(fact_id)
             .fetch_optional(pool)
             .await?;
-    let temporal = crate::graph::predicate_temporal(pool, predicate.flatten()).await?;
-    let validity = validity.under(temporal).truncated();
+    let predicate = predicate.flatten();
+    let temporal = crate::graph::predicate_temporal(pool, predicate).await?;
+    // 两端相等的状态只对声明成状态的属性拒（#966）：开放陈述与空谓词的行按状态读只是
+    // 读法，「那天」照旧写成两端同值
+    let validity = match predicate {
+        Some(_) => validity.truncated().under(temporal)?,
+        None => validity.truncated(),
+    };
     let mut tx = pool.begin().await?;
     let corrected = Uuid::now_v7();
     let inserted: Option<(Uuid,)> = sqlx::query_as(

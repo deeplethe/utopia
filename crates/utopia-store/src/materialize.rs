@@ -32,6 +32,18 @@ const MATCH: &str = "b.kb_id = s.kb_id
        AND b.object_is_value = (s.object_id IS NULL)
        AND (s.object_id IS NULL OR b.object_type_id IS NOT DISTINCT FROM oe.type_id)";
 
+/// 一条只说了一刻的陈述（起止同值）绑在一条状态属性上，而绑定没说那一刻是开始还是
+/// 结束（`marks` 是 none 或未知，#966）：它不算类型化行，留在开放图谱里带着它的日期。
+/// 照抄起止会写成一段任何时刻都不成立的状态。`s` 是陈述，`b` 是绑定。
+///
+/// 每一项都得是真值、不能是 NULL：它在 `NOT` 后面用，`valid_to = valid_from` 在只有起点的
+/// 陈述上是 NULL，`NOT NULL` 还是 NULL，「自那天起」的陈述就整批不算了
+const MOMENT_UNREAD: &str =
+    "(s.valid_from IS NOT NULL AND s.valid_to IS NOT DISTINCT FROM s.valid_from
+       AND EXISTS (SELECT 1 FROM relation_types rt
+                    WHERE rt.id = b.relation_type_id AND rt.temporal = 'state')
+       AND b.marks IS DISTINCT FROM 'start' AND b.marks IS DISTINCT FROM 'end')";
+
 /// 一轮重算写了什么。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Outcome {
@@ -65,6 +77,10 @@ struct Due {
     valid_to_precision: Option<String>,
     attested_from: Option<chrono::DateTime<chrono::Utc>>,
     confidence: f32,
+    /// 绑定说一刻标的是哪一端（start / end / none，NULL 未知）
+    marks: Option<String>,
+    /// 绑到的属性的时间语义
+    temporal: Option<String>,
 }
 
 /// 对一个库重算一遍。
@@ -134,6 +150,34 @@ async fn materialize_in_tx(
 ) -> AppResult<(Outcome, Vec<Uuid>)> {
     // 这一轮写下的行（新建的和并入的），提交后对账
     let mut written: Vec<Uuid> = Vec::new();
+    // 0. 起止同值的物化状态行（#966 之前照抄一刻写下的）任何时刻都不成立：作废，它的陈述
+    //    在第 3 步按绑定说的读法重算——「那天加入」与「自那天起」重新落成一段从那天起的状态。
+    //    只认照抄来的：它有一条来源陈述两端正是这一刻（类型化行看 typed_fact_sources，隐含行
+    //    看 implied_fact_sources）。人改成起止相等的行也带着 from_statement_id、implied 和
+    //    来源链接（#967、#911），看上去和算出来的一样，但它的来源陈述不是这一刻，不碰：
+    //    不变量从此挡住新的，旧的由人自己改。排在第 1 步之前：那一刻的陈述在绑定说出读法
+    //    之前不算来源，第 1 步会先删掉这条链接。只碰算出来的行（from_statement_id 或
+    //    implied，与第 2 步同一条守卫）：人手写的行并进一条陈述之后也有来源链接，它不是算的
+    let emptied = sqlx::query(
+        "UPDATE facts t
+            SET invalidated_at = now()
+          WHERE t.kb_id = $1 AND t.layer = 'typed' AND t.invalidated_at IS NULL
+            AND t.valid_from IS NOT NULL AND t.valid_to = t.valid_from
+            AND (t.from_statement_id IS NOT NULL OR t.implied)
+            AND EXISTS (SELECT 1 FROM relation_types r
+                         WHERE r.id = t.predicate_id AND r.temporal = 'state')
+            AND EXISTS (SELECT 1 FROM facts s
+                         WHERE s.valid_from = t.valid_from AND s.valid_to = t.valid_from
+                           AND (s.id IN (SELECT ts.statement_id FROM typed_fact_sources ts
+                                          WHERE ts.fact_id = t.id)
+                             OR s.id IN (SELECT i.statement_id FROM implied_fact_sources i
+                                          WHERE i.fact_id = t.id)))",
+    )
+    .bind(kb_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+
     // 1. 删不再成立的来源：陈述死了、行死了、签名没绑着、属性或方向变了、陈述带了 mood
     sqlx::query(&format!(
         "DELETE FROM typed_fact_sources src
@@ -153,7 +197,8 @@ async fn materialize_in_tx(
                    AND ((b.direction = 'forward' AND t.subject_id = s.subject_id)
                      OR (b.direction = 'reverse' AND t.subject_id = s.object_id))
                    AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
-                                    WHERE q.fact_id = s.id AND q.role = 'mood'))"
+                                    WHERE q.fact_id = s.id AND q.role = 'mood')
+                   AND NOT {MOMENT_UNREAD})"
     ))
     .bind(kb_id)
     .execute(&mut **tx)
@@ -196,6 +241,7 @@ async fn materialize_in_tx(
     .execute(&mut **tx)
     .await?
     .rows_affected();
+    let retired = retired + emptied;
 
     // 3. 该有而没有的（陈述, 绑定）对：陈述活着、签名绑着、没 mood、还没有活着的行以它为来源
     //    且谓词相同。reverse 只对两样东西之间的关系有意义（字面值当不了主语）
@@ -204,7 +250,9 @@ async fn materialize_in_tx(
                 s.subject_id, s.object_id, s.object_value,
                 s.valid_from, s.valid_from_precision, s.valid_from_grade,
                 s.valid_to, s.valid_to_precision,
-                s.attested_from, s.confidence
+                s.attested_from, s.confidence, b.marks,
+                (SELECT rt.temporal FROM relation_types rt WHERE rt.id = b.relation_type_id)
+                    AS temporal
            FROM facts s
            JOIN entities se ON se.id = s.subject_id
       LEFT JOIN entities oe ON oe.id = s.object_id
@@ -212,6 +260,7 @@ async fn materialize_in_tx(
           WHERE s.kb_id = $1 AND s.layer = 'open' AND s.invalidated_at IS NULL
             AND b.status = 'bound'
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
+            AND NOT {MOMENT_UNREAD}
             AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
                              WHERE q.fact_id = s.id AND q.role = 'mood')
             -- 勘误撤过的（陈述, 属性）不再算（0044 决定 7）：撤销要站得住
@@ -230,13 +279,38 @@ async fn materialize_in_tx(
     let (mut added, mut merged) = (0u64, 0u64);
     for d in &due {
         let reverse = d.direction == "reverse";
-        let validity = Validity {
-            from: d.valid_from,
-            from_precision: d.valid_from_precision.as_deref(),
-            from_grade: d.valid_from_grade.as_deref(),
-            to: d.valid_to,
-            to_precision: d.valid_to_precision.as_deref(),
-            attested_at: d.attested_from,
+        // 一刻的陈述在状态属性下按绑定说的读（#966）：开始写成从那一刻起，结束写成到那一刻
+        // 为止（走 `insert_fact_on`「某天结束了」那条路，关上开放的那段）。什么都不算的
+        // 在查询里已经排掉了（[`MOMENT_UNREAD`]）
+        let moment = d.temporal.as_deref() == Some("state")
+            && d.valid_from.is_some()
+            && d.valid_from == d.valid_to;
+        let validity = match (moment, d.marks.as_deref()) {
+            (false, _) => Validity {
+                from: d.valid_from,
+                from_precision: d.valid_from_precision.as_deref(),
+                from_grade: d.valid_from_grade.as_deref(),
+                to: d.valid_to,
+                to_precision: d.valid_to_precision.as_deref(),
+                attested_at: d.attested_from,
+            },
+            (true, Some("start")) => Validity {
+                from: d.valid_from,
+                from_precision: d.valid_from_precision.as_deref(),
+                from_grade: d.valid_from_grade.as_deref(),
+                to: None,
+                to_precision: None,
+                attested_at: d.attested_from,
+            },
+            (true, Some("end")) => Validity {
+                from: None,
+                from_precision: None,
+                from_grade: None,
+                to: d.valid_from,
+                to_precision: d.valid_from_precision.as_deref(),
+                attested_at: d.attested_from,
+            },
+            (true, _) => continue,
         };
         let (fact, new) = match (reverse, d.object_id, &d.object_value) {
             (true, Some(object), _) => {
@@ -397,6 +471,11 @@ async fn imply_in_tx(
             AND {RULE_MATCH}
             AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q WHERE q.fact_id = s.id AND q.role = 'mood')
             AND (r.reading IS NULL OR pr.entity_id IS NOT NULL OR pr.value IS NOT NULL)
+            -- 规则没有 marks（#966）：一刻的陈述蕴含一条状态属性时，读法未知，不算隐含行。
+            -- 用 IS NOT DISTINCT FROM：只有起点的陈述上 `=` 是 NULL，NOT 之后照样把它排掉
+            AND NOT (s.valid_from IS NOT NULL AND s.valid_to IS NOT DISTINCT FROM s.valid_from
+                     AND EXISTS (SELECT 1 FROM relation_types rt
+                                  WHERE rt.id = r.conclude_property_id AND rt.temporal = 'state'))
             AND NOT EXISTS (SELECT 1 FROM errata_actions ea
                              WHERE ea.statement_id = s.id AND ea.predicate_id = r.conclude_property_id
                                AND ea.status = 'applied' AND ea.action IN ('retract', 'revise'))

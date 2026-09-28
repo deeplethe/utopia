@@ -25,6 +25,8 @@ So choosing `event` was the same as choosing `state` without a uniqueness axiom,
 
 The rule sits in `insert_fact_inner` and `correct_interval`, not in the writers. Extraction, the pending-facts nod (0015), a person's own fact from the API and a person's edit of an interval all pass through those two doors, and nothing outside the store has to know the rule exists.
 
+2026-09-27: under a property declared as a state, the same rule now refuses a row whose two ends are equal, and a single date bound to a state is read by what its binding says it marks. See [0053](0053-a-phrase-decision-records-the-inputs-it-considered.md)'s revision of that date (#966).
+
 Both ends carry the value because that is the one shape the row can explain on its own. A reader that does not consult the predicate — an old client, an export consumer, a hand-written query — sees a fact that held on one day. It cannot see *holds from that day on*, which is what an open end would have told it. The representation fails safe.
 
 An undated observation of an event merges into an existing dated one, the mirror of the refinement path that already lets a dated observation supersede a bare row: "acquired in March" followed by "acquired" is one acquisition, not two.
@@ -62,7 +64,7 @@ An event row from before this record has a start and an open end. `facts_holds_t
 - **A point on the panel.** `fmtInterval` prints an event as `2024-03-15 ~ 2024-03-15` and the timeline draws it as a bar of no length. The point rendering, and a line on the ontology page saying what the three values do, are the UI cut.
 - **The wording the tools give the model.** `time_text` phrases an event's interval the way it phrases a state's. Whether "on 2024-03-15" reads better than "from 2024-03-15 to 2024-03-15" for a timed answer is a prompt question, to be looked at with the tool traces.
 - **An attribute taken at a moment.** Attributes are created as `state` and the UI does not offer otherwise (0021's readings are states that a later reading closes). A reading that is a measurement *at* a time rather than a value *from* a time is not expressible today; nothing has asked for it.
-- **The end convention for states.** Noted above. "Until 2024-07" ends at the start of July under the current read; the bucket reading this record gives events would end it at the start of August. Left alone here.
+- **The end convention for states.** Noted above. "Until 2024-07" ends at the start of July under the current read; the bucket reading this record gives events would end it at the start of August. Left alone here. 2026-09-27: one case is settled in [0053](0053-a-phrase-decision-records-the-inputs-it-considered.md)'s revision of that date. An ending that closes an open row starting inside the period it names closes it at the period's end.
 
 ## Status history
 

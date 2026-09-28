@@ -52,7 +52,19 @@ a conflict; a succession is not, for the consistency check and for the merge gat
 ending is dropped); an eternal fact has no dates; a state keeps its interval. Reads give an event
 the bucket its precision names, an undated event no moment, an eternal fact every moment; a fact
 with no predicate reads as a state [0031]. Rows written before the rule are read correctly and not
-rewritten. The `[event]` / `[eternal]` prompt marks of 0031 d4 and the zoned-time sentence of 0024
+rewritten.
+
+**A state never holds at no moment.** Under a property declared as a state, a row whose two ends
+are equal is refused (`empty_state_span`): `Validity::under` refuses the write or the interval
+correction, and closing a state at its own start is refused the same way, a conflict closed without
+a date included. A row without a property keeps a single date. A statement dated at a single moment
+and bound to a state is read by its binding's `marks`: `start` opens the state there, `end` closes
+the open row there, and `none` or no value computes no typed row, so the statement stays in the open
+graph with its date. An end names its bucket: an open row that starts inside it closes at the
+bucket's end ("left in 2024" closes a row from March 2024 at 2025-01-01), a row that starts before it
+closes at its start. Materialized state rows with equal ends written before this are retired and
+computed again when one of their source statements has those ends; a row a person set to a single
+date is kept [0053 revision, #966]. The `[event]` / `[eternal]` prompt marks of 0031 d4 and the zoned-time sentence of 0024
 belonged to the typed contract and are gone with it; the write rule in the store is what remains.
 
 **Derived rows** store the interval as read: the intersection of premise read intervals, an anchored

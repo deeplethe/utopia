@@ -55,6 +55,7 @@ mod a_late_value_takes_its_place_in_history;
 mod a_mapping_is_not_a_fact;
 mod a_merge_rewinds_with_the_second_clock;
 mod a_merged_target_stays_out_of_the_export;
+mod a_moment_marks_its_state;
 mod a_name_created_twice_at_once_is_one_entity;
 mod a_name_is_a_fact;
 mod a_namesake_tie_goes_to_review_not_a_coin_flip;

@@ -101,13 +101,14 @@ async fn waiting(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewWaiting> {
              WHERE kb_id = $1 AND status = 'open') AS defects,
            (SELECT min(detected_at) FROM ontology_defects
              WHERE kb_id = $1 AND status = 'open') AS defects_oldest,
-           (SELECT count(*) FROM (SELECT 1 FROM phrase_bindings WHERE kb_id = $1 AND status = 'undecided'
+           (SELECT count(*) FROM (SELECT 1 FROM phrase_bindings b WHERE b.kb_id = $1 AND {waiting_phrase}
                                   UNION ALL SELECT 1 FROM type_bindings WHERE kb_id = $1 AND status = 'undecided') a) AS alignment,
-           (SELECT min(decided_at) FROM (SELECT decided_at FROM phrase_bindings WHERE kb_id = $1 AND status = 'undecided'
+           (SELECT min(decided_at) FROM (SELECT b.decided_at FROM phrase_bindings b WHERE b.kb_id = $1 AND {waiting_phrase}
                                           UNION ALL SELECT decided_at FROM type_bindings WHERE kb_id = $1 AND status = 'undecided') a) AS alignment_oldest,
            (SELECT count(*) FROM errata_actions WHERE kb_id = $1 AND status = 'held') AS errata,
            (SELECT min(created_at) FROM errata_actions WHERE kb_id = $1 AND status = 'held') AS errata_oldest",
         unconfirmed = UNCONFIRMED_FACT,
+        waiting_phrase = crate::alignment_queue::WAITING_PHRASE,
     );
     let r: WaitingRow = sqlx::query_as(&sql)
         .bind(kb_id)

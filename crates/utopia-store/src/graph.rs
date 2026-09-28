@@ -488,10 +488,20 @@ impl<'a> Validity<'a> {
     ///   不知哪天」对一刻没有意义，一并抹掉。两端同值是这一行自己就能说清的形状：
     ///   不看谓词的读者顶多把它读成一天的状态，读不成「从那天起一直如此」
     /// - 恒常：日期全抹。原文里的日期说的是别的事，不是这条关系何时成立
-    /// - 状态：原样
-    pub fn under(mut self, temporal: Temporal) -> Self {
+    /// - 状态：原样——**两端相等的不写**（#966）。世界轴按 `from <= T < to` 读状态，起止
+    ///   同值的一段任何时刻都不成立，写下它只会把「那天加入」读成「从没在那儿过」。一刻的
+    ///   陈述在状态属性下读成开始、结束还是什么都不算，由绑定说（`phrase_bindings.marks`），
+    ///   不在这里猜；这里只守住不变量，所以没有哪条写入路径能存下一段不成立的状态
+    ///
+    /// 调用方先截断再归一：截到精度之后才相等的两端（同一天的两个钟点）同样拒绝。
+    /// 没有谓词的行按状态读（0010）只是读法，不是声明：调用方不拿它过这一关
+    pub fn under(mut self, temporal: Temporal) -> AppResult<Self> {
         match temporal {
-            Temporal::State => {}
+            Temporal::State => {
+                if self.from.is_some() && self.from == self.to {
+                    return Err(empty_state_span());
+                }
+            }
             Temporal::Eternal => {
                 self.from = None;
                 self.from_precision = None;
@@ -513,7 +523,7 @@ impl<'a> Validity<'a> {
                 self.to_precision = p;
             }
         }
-        self
+        Ok(self)
     }
 
     /// 原文说它结束了，但没说哪天。
@@ -530,6 +540,15 @@ impl<'a> Validity<'a> {
     pub fn has_ended(&self) -> bool {
         self.to.is_some() || self.to_precision == Some(ENDED_UNKNOWN)
     }
+}
+
+/// 一段起止同值的状态（#966）：写入、改区间、关上都拒它，说的是同一句话
+pub fn empty_state_span() -> AppError {
+    AppError::invalid(
+        "empty_state_span",
+        "A state that ends where it starts holds at no moment: give an end after the start, \
+         or leave it open.",
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -573,7 +592,13 @@ pub(crate) async fn insert_fact_on(
     // 按谓词的时间语义归一（0031）：事件两端同一刻，恒常无日期。写在这里而不是各个
     // 写入者那儿——抽取、点头、人自己写的事实都经过这一个门
     let temporal = predicate_temporal(&mut *conn, predicate_id).await?;
-    let validity = validity.under(temporal).truncated();
+    // 声明成状态的属性才守「两端不相等」（#966）；没有谓词的行按状态读只是读法，照旧写
+    let declared_state = predicate_id.is_some() && temporal == Temporal::State;
+    let validity = if predicate_id.is_some() {
+        validity.truncated().under(temporal)?
+    } else {
+        validity.truncated()
+    };
     let same_sql = match object {
         FactObject::Entity(_) => {
             "SELECT id, valid_from, valid_to, valid_to_precision FROM facts
@@ -594,7 +619,13 @@ pub(crate) async fn insert_fact_on(
         FactObject::Entity(id) => q.bind(id),
         FactObject::Value(v) => q.bind(v),
     };
-    let same: Vec<FactSpanRow> = q.fetch_all(&mut *conn).await?;
+    let mut same: Vec<FactSpanRow> = q.fetch_all(&mut *conn).await?;
+    // 状态属性下起止同值的行（#966 之前写下的）任何时刻都不成立：不关它、也不并进它。
+    // 不然「那天加入」与「自那天起」谁先落账，账本就是两个样子——一刻关上了开放的那段，
+    // 或开放的那段并进了一刻。这样的行由物化作废重算，这里只是不让它牵动别的观察
+    if declared_state {
+        same.retain(|(_, vf, vt, _)| !(vf.is_some() && vf == vt));
+    }
     // 「结束了，不知哪天」的观察撞上同断言的**开放行**（0022 / #393）：关上它。
     // 不并进去——并进去等于把「它结束了」这唯一带来的信息丢掉（同 valid_from 那条
     // 精确重复的路会这么干）；也不另立一行——另立一行让两条各说各话，开放的那条
@@ -639,16 +670,29 @@ pub(crate) async fn insert_fact_on(
     另立一行让两条各说各话，开放的那条照旧被读成「至今仍是」——实测「移出失信名单」
     「辞去董事职务」各多出一条 `- → 日期`，而原来那条还开着。事件没有开放行
     （两端同一刻），所以只有状态走这里。修正走 supersede（作废 + 改写，证据和边上的
-    属性随行），与 #393 关「不知哪天」同一条路；起点比终点晚的开放行不是这一段 */
+    属性随行），与 #393 关「不知哪天」同一条路；起点晚于终点所说时段的开放行不是这一段 */
     if temporal == Temporal::State && validity.from.is_none() {
         if let Some(to) = validity.to {
-            // 已经关在这一天的：同一件事，复用那一行（引擎推的终点改成写明的，同上）
-            if let Some((ended, _, _, _)) = same.iter().find(|(_, _, vt, _)| *vt == Some(to)) {
-                let precision = validity.to_precision.unwrap_or("day");
+            let precision = validity.to_precision.unwrap_or("day");
+            // 终点说的是一个时段，比的却是时刻：「2024 年离开」存成 2024-01-01。声明成状态的
+            // 开放行若从这个时段里开始（2024-03-01 起任职），终点落在时段的尽头
+            // （2025-01-01），不另立一行 `- → 2024`、让开放的那段一直开着；在时段之前开始的
+            // 照旧关在时段的开头（0053 修订 2026-09-27）。同一天开始又结束的也是这样：关在
+            // 那一天的尽头，不关在它自己的起点——那是一段不成立的状态（#966）
+            let period_end = declared_state.then(|| bucket_end(to, Some(precision)));
+            let closes_at = |from: Option<chrono::DateTime<chrono::Utc>>| match (from, period_end) {
+                (Some(f), Some(end)) if to <= f && f < end => end,
+                _ => to,
+            };
+            // 已经关在那一刻的：同一件事，复用那一行（引擎推的终点改成写明的，同上）
+            if let Some((ended, from, _, _)) = same
+                .iter()
+                .find(|(_, vf, vt, _)| *vt == Some(closes_at(*vf)))
+            {
                 if let Some(stated) = crate::temporal::state_derived_end(
                     &mut *conn,
                     *ended,
-                    Some((to, precision)),
+                    Some((closes_at(*from), precision)),
                     validity.attested_at,
                 )
                 .await?
@@ -661,15 +705,20 @@ pub(crate) async fn insert_fact_on(
             let open = same
                 .iter()
                 .filter(|(_, vf, vt, vtp)| {
-                    vt.is_none() && vtp.is_none() && vf.is_none_or(|f| f <= to)
+                    vt.is_none()
+                        && vtp.is_none()
+                        && vf.is_none_or(|f| match period_end {
+                            Some(end) => f < end,
+                            None => f <= to,
+                        })
                 })
                 .max_by_key(|(_, vf, _, _)| *vf);
-            if let Some((open, _, _, _)) = open {
+            if let Some((open, from, _, _)) = open {
                 if let Some(closed) = crate::temporal::close_superseded(
                     &mut *conn,
                     *open,
-                    to,
-                    validity.to_precision.unwrap_or("day"),
+                    closes_at(*from),
+                    precision,
                 )
                 .await?
                 {
@@ -750,14 +799,27 @@ pub(crate) async fn insert_fact_on(
     // 文档可能先到），本次观察带了起点 → 落库后作废那行并链上。只知道终点的行，
     // 终点跟着走：这次没说终点就沿用它的，说了就得是同一个
     let mut validity = validity;
-    let refine_target = if validity.from.is_some() {
-        same.iter()
-            .find(|(_, vf, vt, _)| {
-                vf.is_none() && (vt.is_none() || validity.to.is_none() || *vt == validity.to)
-            })
-            .map(|(id, _, vt, vtp)| (*id, *vt, vtp.clone()))
-    } else {
-        None
+    // 声明成状态的，沿用来的终点说的是一个时段（同上）：这次的起点落在时段里，终点取时段的
+    // 尽头；落在时段之后，那个结束说的是更早的一段，不精化，各自一行（0053 修订 2026-09-27）
+    let refine_target = match validity.from {
+        Some(from) => same.iter().find_map(|(id, vf, vt, vtp)| {
+            if vf.is_some() {
+                return None;
+            }
+            let end = match (validity.to, *vt) {
+                (None, Some(t)) if declared_state && t <= from => {
+                    let end = bucket_end(t, Some(vtp.as_deref().unwrap_or("day")));
+                    if from >= end {
+                        return None;
+                    }
+                    Some(end)
+                }
+                (Some(to), Some(t)) if to != t => return None,
+                (_, vt) => vt,
+            };
+            Some((*id, end, vtp.clone()))
+        }),
+        None => None,
     };
     if let Some((_, Some(vt), vtp)) = &refine_target {
         if validity.to.is_none() {
@@ -2913,7 +2975,8 @@ mod temporal_shape_tests {
             attested_at: None,
             from_grade: None,
         }
-        .under(Temporal::Event);
+        .under(Temporal::Event)
+        .unwrap();
         assert_eq!(span.from, Some(at("2024-03-15T00:00:00Z")));
         assert_eq!(span.to, Some(at("2024-03-15T00:00:00Z")));
         assert_eq!(
@@ -2929,13 +2992,15 @@ mod temporal_shape_tests {
             attested_at: None,
             from_grade: None,
         }
-        .under(Temporal::Event);
+        .under(Temporal::Event)
+        .unwrap();
         assert_eq!(end_only.from, Some(at("2024-05-01T00:00:00Z")));
         assert_eq!(end_only.from_precision, Some("month"));
 
         let unknown = Validity::default()
             .ended_when_unknown()
-            .under(Temporal::Event);
+            .under(Temporal::Event)
+            .unwrap();
         assert_eq!(
             (unknown.from, unknown.to, unknown.to_precision),
             (None, None, None)
@@ -2948,14 +3013,49 @@ mod temporal_shape_tests {
     fn an_eternal_fact_keeps_no_dates_and_a_state_keeps_its_own() {
         let dated = Validity::starting(Some(at("1990-01-01T00:00:00Z")), Some("year"))
             .attested(Some(at("2024-04-01T00:00:00Z")));
-        let eternal = dated.under(Temporal::Eternal);
+        let eternal = dated.under(Temporal::Eternal).unwrap();
         assert_eq!((eternal.from, eternal.from_precision), (None, None));
         assert_eq!(
             eternal.attested_at,
             Some(at("2024-04-01T00:00:00Z")),
             "证据日期照记——读出侧不用它，账本仍知道"
         );
-        let state = dated.under(Temporal::State);
+        let state = dated.under(Temporal::State).unwrap();
         assert_eq!(state.from, Some(at("1990-01-01T00:00:00Z")));
+    }
+
+    /// 状态两端相等就拒绝（#966）：起止同值的一段任何时刻都不成立。事件照旧写成一刻；
+    /// 截到精度之后才相等的两端同样拒绝
+    #[test]
+    fn a_state_that_ends_where_it_starts_is_refused() {
+        let moment = Validity {
+            from: Some(at("2023-06-01T00:00:00Z")),
+            from_precision: Some("day"),
+            to: Some(at("2023-06-01T00:00:00Z")),
+            to_precision: Some("day"),
+            attested_at: None,
+            from_grade: None,
+        };
+        let refused = moment
+            .under(Temporal::State)
+            .expect_err("an empty state span");
+        assert!(
+            format!("{refused:?}").contains("empty_state_span"),
+            "{refused:?}"
+        );
+        assert!(moment.under(Temporal::Event).is_ok());
+        let same_day = Validity {
+            from: Some(at("2023-06-01T09:00:00Z")),
+            to: Some(at("2023-06-01T17:00:00Z")),
+            ..moment
+        };
+        assert!(same_day.truncated().under(Temporal::State).is_err());
+        assert!(Validity {
+            to: None,
+            to_precision: None,
+            ..moment
+        }
+        .under(Temporal::State)
+        .is_ok());
     }
 }

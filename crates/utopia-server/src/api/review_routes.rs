@@ -1225,6 +1225,10 @@ pub struct DecideAlignmentPhraseReq {
     /// forward | reverse；给了属性就得给
     #[serde(default)]
     pub direction: Option<String>,
+    /// start | end | none：状态属性下，带着某一刻的陈述那一刻标的是开始、结束，还是都不是
+    /// （#966）。不给 = 未知：这样的陈述不算类型化行，签名留在队列里等人补
+    #[serde(default)]
+    pub marks: Option<String>,
 }
 
 /// 人定一条短语签名绑到哪个属性（#725 对齐队列）。写成人的判定，代理此后不再改它；
@@ -1293,17 +1297,42 @@ pub async fn decide_alignment_phrase(
     {
         None => None,
         Some(key) => {
-            let id = utopia_store::ontology::relation_type_views(&state.pool, kb_id)
+            let found = utopia_store::ontology::relation_type_views(&state.pool, kb_id)
                 .await?
                 .into_iter()
                 .find(|p| p.key == key)
-                .map(|p| p.id)
+                .map(|p| (p.id, p.temporal == "state"))
                 .ok_or_else(|| {
                     utopia_core::AppError::invalid("unknown_property", "no property with that key")
                 })?;
-            Some(id)
+            Some(found)
         }
     };
+    let marks = match (
+        property,
+        req.marks
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty()),
+    ) {
+        (_, None) => None,
+        (Some((_, true)), Some(m @ ("start" | "end" | "none"))) => Some(m),
+        (Some((_, true)), Some(_)) => {
+            return Err(utopia_core::AppError::invalid(
+                "unknown_marks",
+                "marks is one of start, end or none",
+            )
+            .into())
+        }
+        (_, Some(_)) => {
+            return Err(utopia_core::AppError::invalid(
+                "marks_needs_state",
+                "only a state property says which end a moment marks",
+            )
+            .into())
+        }
+    };
+    let property = property.map(|(id, _)| id);
     let direction = match (property, req.direction.as_deref()) {
         (None, _) => None,
         (Some(_), Some(d @ ("forward" | "reverse"))) => Some(d),
@@ -1315,7 +1344,8 @@ pub async fn decide_alignment_phrase(
             .into())
         }
     };
-    let votes = json!({ "person": { "property": req.property, "direction": direction } });
+    let votes = json!({ "person": { "property": req.property, "direction": direction,
+                                    "marks": marks } });
     // 判定和它的重算任务一次提交（0051）。这里**不再**同步重算：等物化锁占的是池里的
     // 连接，而正在跑的那次对齐可能已经读完最后一遍，谁也不替这条判定投影。一个 job
     // 只在判定提交后可见，worker 读的是当前绑定；屏幕上等的是 `review` / `graph` 事件
@@ -1330,6 +1360,8 @@ pub async fn decide_alignment_phrase(
             votes: &votes,
             decided_by: "person",
             basis: None,
+            marks,
+            marks_asked: false,
         },
     )
     .await?
@@ -1342,7 +1374,7 @@ pub async fn decide_alignment_phrase(
         "phrase_binding",
         Some(binding_id),
         json!({ "phrase": sig.phrase, "property": req.property, "direction": direction,
-                "job_id": job_id }),
+                "marks": marks, "job_id": job_id }),
     )
     .await;
     state.emit_review(kb_id);

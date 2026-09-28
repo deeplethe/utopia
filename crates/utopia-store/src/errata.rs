@@ -436,8 +436,12 @@ pub async fn record(pool: &PgPool, kb_id: Uuid, input: ActionInput<'_>) -> AppRe
                         }
                         None => Ok(old.clone()),
                     };
+                    let no_moment = empty_state_revision(pool, c.fact_id, predicate_id).await?;
                     match obj {
                         Err(e) => Err(e),
+                        Ok(_) if no_moment => {
+                            Err("a state cannot take a time whose start and end are equal".into())
+                        }
                         Ok((object_id, object_value))
                             if predicate_id == c.predicate_id
                                 && object_id == old.0
@@ -618,6 +622,9 @@ async fn apply(
         .bind(fact)
         .fetch_optional(pool)
         .await?;
+        if action == "revise" && empty_state_revision(pool, fact, target.predicate_id).await? {
+            return Err(crate::graph::empty_state_span());
+        }
         match crate::graph::reject_fact(pool, kb_id, fact).await {
             Ok(()) | Err(AppError::NotFound) => {}
             Err(e) => return Err(e),
@@ -687,6 +694,22 @@ async fn apply(
         .await?;
     }
     Ok(Some(new))
+}
+
+/// 改是撤旧写新，新行接旧行的时间。旧行两端相等（一刻的事件，或 #966 之前写下的状态），
+/// 新行的属性又声明成状态时，接过来的那段任何时刻都不成立，`Validity::under` 不写它：
+/// 验证时就拒，执行时先查再撤——不会撤了旧行才发现新行写不进
+async fn empty_state_revision(pool: &PgPool, fact_id: Uuid, predicate_id: Uuid) -> AppResult<bool> {
+    let point: Option<bool> = sqlx::query_scalar(
+        "SELECT valid_from IS NOT NULL AND valid_to IS NOT DISTINCT FROM valid_from
+           FROM facts WHERE id = $1",
+    )
+    .bind(fact_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(point == Some(true)
+        && crate::graph::predicate_temporal(pool, Some(predicate_id)).await?
+            == crate::graph::Temporal::State)
 }
 
 #[derive(Debug, Default, sqlx::FromRow)]

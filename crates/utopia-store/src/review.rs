@@ -68,10 +68,11 @@ pub async fn counts(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewCounts> {
                AND NOT EXISTS (SELECT 1 FROM agent_decisions d
                                 WHERE d.target_kind = 'review' AND d.target_id = rr.id
                                   AND d.status = 'proposed')) AS agent_queue,
-           (SELECT count(*) FROM (SELECT 1 FROM phrase_bindings WHERE kb_id = $1 AND status = 'undecided'
+           (SELECT count(*) FROM (SELECT 1 FROM phrase_bindings b WHERE b.kb_id = $1 AND {waiting_phrase}
                                   UNION ALL SELECT 1 FROM type_bindings WHERE kb_id = $1 AND status = 'undecided') a) AS alignment,
            (SELECT count(*) FROM errata_actions WHERE kb_id = $1 AND status = 'held') AS errata",
         unconfirmed = UNCONFIRMED_FACT,
+        waiting_phrase = crate::alignment_queue::WAITING_PHRASE,
         same = crate::resolution::TypeFilter::Same.clause(),
         conflict = crate::resolution::TypeFilter::Conflict.clause(),
     );

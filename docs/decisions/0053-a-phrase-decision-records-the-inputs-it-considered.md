@@ -1,8 +1,8 @@
 # 0053 · A phrase decision records the inputs it considered
 
-- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092)
+- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0098)
 - **Written**: 2026-09-23
-- **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754
+- **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754, #966
 
 ## Problem
 
@@ -143,6 +143,127 @@ whose batch fails takes the bounded re-ask; a failed retrieval falls back and is
 while it keeps failing; a person's decision carries no basis, is not overwritten, and commits with
 its job; an acceptance and a class delete wait for each other instead of deadlocking, and a
 candidate deleted before the check turns the reply away.
+
+## Revision 2026-09-27 (what a single date marks)
+
+"Lin Zhao joined Meridian Systems on 2023-06-01" has a single date, which time resolution writes
+the way 0031 writes an event: the same instant on both ends. Bound to `works_for`, a state, it was
+materialised as 2023-06-01 → 2023-06-01. The world axis reads a state as holding while
+`valid_from <= T < valid_to`, so that row held at no moment. It also absorbed or closed the
+document's own "works for … from 2023-06-01", depending on which statement was written first
+(#966).
+
+**A binding to a state property says what a single date marks.** `phrase_bindings.marks`
+(migration 0098) is `start`, `end` or `none`; NULL is unknown.
+
+- **The aligner asks it with the binding, once.** Each candidate line says whether the property is a
+  state, an event or timeless, and the reply carries a fourth value per item.
+  - When both votes bind the same state property in the same direction, the binding is written. The
+    value is written with it only when both votes give the same one.
+  - Otherwise the binding carries no value and records that it was asked (`marks_asked_at`,
+    migration 0098). It is listed in the alignment queue and is not asked again until its
+    fingerprint changes. A model that never gives the value costs one decision, not a request per
+    run.
+  - Events and timeless properties are not asked. A fourth value under one is ignored, readable or
+    not.
+- **What it depends on is in the fingerprint.** Whether the value is asked depends on the property's
+  time semantics. Every edit to them moves `updated_at`, which the fingerprint covers, so a property
+  that becomes a state is asked again. The value itself is an output, not an input, and is not
+  fingerprinted.
+- **Decisions made before this** have no value and were never asked.
+  - An agent's binding to a state is asked once, although its fingerprint matches. The question can
+    only write the value. If both votes name the binding's property and direction and give the same
+    value, the value is written. Any other reply, a vote without a property included, leaves the
+    binding exactly as it is.
+  - Either way the binding records that it was asked, so it is not asked again. One still without a
+    value is listed in the alignment queue. Rules are not proposed again for it.
+  - A reply that never came back (a failed call) is not an ask. The run re-asks, as for any
+    signature the model did not answer.
+  - A person's binding is never asked. It is listed in the alignment queue, with its property and
+    direction preselected, until a person says what the date marks.
+- **A person** sets the value in the alignment queue when binding a state. Nothing is preselected,
+  so a binding to a state goes through only after a person picks a value. The decision request
+  carries `marks`, and the API refuses it for anything but a state property.
+
+**Materialisation reads it.** A statement whose two ends are equal, bound to a state property:
+
+- `start`: written as [t, open). With "works for … from t" in the same document, both statements
+  are sources of one row, whichever was written first.
+- `end`: written as an end at t, the path a dated ending takes in `insert_fact_on`: it closes the
+  open row at t. The date names a period, its bucket at its precision: "left in 2024" is stored as
+  2024-01-01 and means all of 2024.
+  - An open row that starts inside that period is closed at the period's end, 2025-01-01, not left
+    open beside a row that only ends.
+  - A row that starts before the period closes at t, as before. The ending says nothing about a row
+    that starts after the period.
+  - Both statement orders give the same row. A dated ending takes the same path, so a state that
+    starts and ends on the same day holds through that day.
+- `none` or unknown: no typed row. The statement stays in the open graph with its date.
+
+Rows that hold at no moment because they were materialised before this (a computed state row with
+equal ends) are retired in the next run, and their statements are computed again under these rules.
+A row is retired only when one of its source statements has the same equal ends: `typed_fact_sources`
+for a typed row, `implied_fact_sources` for an implied one. A row a person set to a single date keeps
+its statement and source links (#967, #911), but none of those statements has that date, so it is
+not touched. A rule carries no value, so a single-date statement whose rule concludes a state
+computes no implied row.
+
+**The invariant.** A state row with equal ends is never written. `Validity::under` refuses it after
+truncation to precision (`empty_state_span`), so an interval correction that would write one gets a
+422.
+
+- Closing a state row at its own start is refused the same way. So is closing the old side of a
+  conflict whose two values start at the same instant without giving a date, since the close would
+  fall on its own start. The conflict stays open until a person gives one.
+- An errata revision that would carry a single date onto a state property is refused when it is
+  recorded, whether the date comes from an old empty span or from an event's moment.
+- Rows without a property keep their dates as before: reading them as a state is how they are read,
+  not a declaration.
+
+**The guard.** Under a state property, `insert_fact_on` no longer takes a stored row with equal ends
+for the same observation. Such a row neither absorbs a later observation nor is closed by one, so the
+ledger does not depend on the order of statements. A single date arriving under a state never reaches
+that matching: the invariant refuses it first.
+
+Not doing:
+
+- **A date that means the whole period.** "Revenue in 2023" or "was chairman in 2019" is `none` and
+  stays open. Reading such a date as holding through its bucket, as an event is read, would be a
+  separate decision.
+- **A flip between start and end.** A binding whose value changes from `start` to `end`, or back,
+  keeps the rows already computed from its single-date statements. A change to or from `none`, and a
+  first value on a binding that had none, are computed again.
+- **Reopening.** A row closed by an `end` statement is not reopened when that statement is
+  retracted, as with any dated ending.
+
+Regression coverage, with a real PostgreSQL:
+
+- The three orders from #966 (`joined` before `works for`, after it, and alone) give one row from
+  2023-06-01 when the binding says `start`.
+- A phrase that marks the end closes the open row at its date. With `none` or no value, a single
+  date computes no typed row.
+- "Left in 2024" closes a row from 2024-03-01 at 2025-01-01, in both orders. A row from 2020 closes
+  at 2024-01-01, a row from 2025-06-01 stays open, and a state that starts and ends on one day holds
+  through it, each in both orders.
+- A row that held at no moment is retired and computed again. A typed or implied row a person set to
+  a single date is not.
+- The invariant refuses a write, an interval correction, a closing at the row's own start and a
+  simultaneous conflict closed without a date. It still writes a single date without a property.
+  Errata cannot revise an old empty span, or an event's moment, onto a state.
+- The guard keeps a stored row with equal ends from absorbing a later observation.
+
+With a scripted model:
+
+- a four-value reply binds with the value, and an unreadable fourth value under an event property is
+  ignored;
+- two different values, or a vote without one, bind without a value, record the ask, list the
+  binding in the queue and queue no re-ask;
+- an agent's binding decided before this is asked once. The value is written when both votes
+  confirm the binding and agree. A vote without a property, the other direction or two values leave
+  the binding and its typed row as they were;
+- a model that never gives the value is asked once, and the binding waits in the queue with its
+  typed row live;
+- a person's binding is not asked, and the queue lists it until a person's decision writes the value.
 
 ## Status history
 

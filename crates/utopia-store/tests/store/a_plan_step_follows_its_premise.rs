@@ -610,6 +610,8 @@ async fn bind_is_on(pool: &PgPool, f: &Fixture) -> anyhow::Result<()> {
             votes: &json!({ "person": { "property": "location", "direction": "forward" } }),
             decided_by: "person",
             basis: None,
+            marks: None,
+            marks_asked: false,
         },
     )
     .await?;

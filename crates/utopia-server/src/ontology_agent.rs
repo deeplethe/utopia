@@ -1084,6 +1084,8 @@ async fn adopt_map_to(
                 votes: &votes,
                 decided_by: "person",
                 basis: None,
+                marks: None,
+                marks_asked: false,
             },
         )
         .await?;
