@@ -242,6 +242,20 @@ SELECT edge, kind, COUNT(*) AS rows FROM (
       LEFT JOIN relation_types p ON p.id = a.conclude_predicate_id
      WHERE a.kb_id = $1 AND a.conclude_predicate_id IS NOT NULL
     UNION ALL
+    -- @edge attribute_rules.source_chunk_id -> chunks.id
+    -- 来自语料的判据挂在段上：段必须落在规则的库
+    SELECT 'arule.source_chunk', 'cross_kb', c.kb_id IS DISTINCT FROM a.kb_id
+      FROM attribute_rules a
+      LEFT JOIN chunks c ON c.id = a.source_chunk_id
+     WHERE a.kb_id = $1 AND a.source_chunk_id IS NOT NULL
+    UNION ALL
+    -- @edge attribute_rules.source_document_id -> documents.id
+    -- 来自语料的判据挂在文档上：文档必须落在规则的库
+    SELECT 'arule.source_document', 'cross_kb', d.kb_id IS DISTINCT FROM a.kb_id
+      FROM attribute_rules a
+      LEFT JOIN documents d ON d.id = a.source_document_id
+     WHERE a.kb_id = $1 AND a.source_document_id IS NOT NULL
+    UNION ALL
     -- @edge attribute_rule_conditions.predicate_id -> relation_types.id
     -- 条件行自己没有 kb 列：归属按所属规则的库判
     SELECT 'condition.predicate', 'cross_kb', p.kb_id IS DISTINCT FROM a.kb_id
