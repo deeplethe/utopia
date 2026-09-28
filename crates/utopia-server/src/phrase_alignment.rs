@@ -184,6 +184,16 @@ fn consider<'a>(
         .collect()
 }
 
+/// 类别词规则的宾语是从类别词自己的字里读出来的（「british film」读出英国），只有中心词
+/// 的类别词（「state」「ship」）没有可读的字：一轮 159 个类别词里 127 个是单个词，提出
+/// 的 8 条规则没有一条读得出宾语（bench README，2026-09-28）。这种不问。
+///
+/// 只认得出用空格分词的写法：一串 ASCII 字母是一个词。带连字符、数字的（「1968」、
+/// 「british-governed」）和不分词的文字（「英国电影」）看不出有没有修饰语，照旧问
+fn has_modifier(kind_word: &str) -> bool {
+    !kind_word.trim().chars().all(|c| c.is_ascii_alphabetic())
+}
+
 /// 把签名分成批，候选相近的放在一起。返回每批里签名的下标。
 ///
 /// 属性定义表在一批里只写一遍，占一次调用输入的将近一半：按到来的次序每十二条切一批时，
@@ -1003,11 +1013,11 @@ async fn align_phrases_locked(
         // 类别词的候选也开短名单：词加例名嵌入后取最近的属性；没有向量时看全部
         let fresh: Vec<&utopia_store::type_bindings::KindWordSignature> = kind_words
             .iter()
-            .filter(|k| !asked_kind.contains(k.kind_word.as_str()))
+            .filter(|k| !asked_kind.contains(k.kind_word.as_str()) && has_modifier(&k.kind_word))
             .collect();
         let kind_short = shortlist_kind_words(state, settings, kb_id, &fresh).await?;
         for (k, basis) in kind_words.iter().zip(kind_basis.iter()) {
-            if asked_kind.contains(k.kind_word.as_str()) {
+            if asked_kind.contains(k.kind_word.as_str()) || !has_modifier(&k.kind_word) {
                 continue;
             }
             let mut candidates: Vec<&RelationTypeView> = props
@@ -1128,6 +1138,22 @@ mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_kind_word_that_is_only_a_head_word_has_nothing_to_read() {
+        for bare in ["state", "ship", " settlement "] {
+            assert!(!has_modifier(bare), "{bare}");
+        }
+        for readable in [
+            "british film",
+            "1968",
+            "british-governed",
+            "英国电影",
+            "wine area",
+        ] {
+            assert!(has_modifier(readable), "{readable}");
+        }
+    }
+
     #[test]
     fn signatures_with_the_same_candidates_share_a_batch() {
         // 六条签名、三种候选集，交错着来；每批两条
