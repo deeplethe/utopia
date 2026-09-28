@@ -29,6 +29,11 @@ pub struct AppConfig {
     /// 一个分块的预算（cl100k token）。是个旋钮而不是常量，因为它要能被量：
     /// 结构（表头跟着走）与大小是两件事，召回台子得能只动一个。`UTOPIA_CHUNK_TOKENS`
     pub chunk_tokens: usize,
+    /// 抽取的提示词里带不带「这篇文档前面的分块已经认下的实体」（`known`）。缺省带。
+    /// 也是个为了量而设的旋钮（#588）：分块并发调模型之后，后面的块看不到前面的块认下了
+    /// 什么；关掉它跑一轮召回台子，就是那种情形下的输出。只动提示词——落库时按名字认回
+    /// 前面分块的实体照旧。`UTOPIA_EXTRACT_KNOWN_IN_PROMPT`
+    pub extract_known_in_prompt: bool,
     /// 数据库连接池上限。缺省 32，与 worker 并发的缺省对齐——池子小于并发时
     /// 症状是请求变慢而不是任何一处说"池子不够"，所以它必须可调。
     pub db_max_connections: Option<u32>,
@@ -50,6 +55,7 @@ impl Default for AppConfig {
             web_dist: "web/dist".into(),
             data_dir: "data".into(),
             chunk_tokens: 300,
+            extract_known_in_prompt: true,
             db_max_connections: None,
             cookie_secure: false,
             open_registration: true,

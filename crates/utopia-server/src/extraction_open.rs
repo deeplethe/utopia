@@ -27,11 +27,661 @@ use crate::state::AppState;
 use sqlx::PgPool;
 use std::collections::{HashMap, HashSet};
 use utopia_core::models::{Document, KnowledgeBase, LlmSettings, Proposer};
+use utopia_extract::KnownEntity;
+use utopia_store::documents::ChunkForExtract;
 use utopia_store::extraction_drops::reason;
 use utopia_store::graph::FactObject;
 use utopia_store::graph::Validity;
 use utopia_store::pending::{Outcome, Proposal};
 use uuid::Uuid;
+
+/// 一块调 + 解析完后的中间产物，apply 半步读它落库（#588 cut 1）。
+/// `name_vecs`（0041 决定 3 通道 2）紧跟解析算出来——apply 里的 `resolve_handle`
+/// 立刻就要它，分两处算只会让 helper 之间传更多参数。
+struct ChunkParsed {
+    extraction: utopia_extract::open::OpenExtraction,
+    name_vecs: HashMap<String, Vec<f32>>,
+}
+
+/// 一个分块的前半步：调模型、解析回复、算名字向量（#588 cut 1）。这半步不写图，
+/// 所以分块之间可以不按顺序做——并发（cut 2）动的就是它；后半步 `apply_open_extraction`
+/// 要按分块顺序。`pushed`（0054）的块本身就是契约，不调模型，直接解析。
+///
+/// `Ok(None)` 是这一块跳过了：调用失败或回复解析不出，原因已经记进 `drop_signal` 和
+/// `unextracted`，主循环接着走下一块。`Err` 只有一种：对话模型没配。
+///
+/// 被接管的检查（epoch）留在主循环顶上，不在这里：它要在调模型之前
+#[allow(clippy::too_many_arguments)]
+async fn call_and_parse_one_chunk(
+    state: &AppState,
+    settings: Option<&LlmSettings>,
+    client: Option<&utopia_llm::LlmClient>,
+    embed_client: Option<&utopia_llm::LlmClient>,
+    kb_id: Uuid,
+    document_id: Uuid,
+    filename: &str,
+    chunk: &ChunkForExtract,
+    opening: Option<&str>,
+    known: &[KnownEntity],
+    pushed: bool,
+    unextracted: &mut Vec<(i32, String)>,
+) -> anyhow::Result<Option<ChunkParsed>> {
+    // 推送来的陈述：块就是契约，解析它而不是问模型（0054）。下面从解析起一步不变
+    let (reply_text, cut_by_ceiling) = if pushed {
+        (chunk.text.clone(), false)
+    } else {
+        let (settings, client) = match (settings, client) {
+            (Some(s), Some(c)) => (s, c),
+            _ => anyhow::bail!("Chat model not configured; cannot extract"),
+        };
+        let messages =
+            utopia_extract::open::build_open_messages(filename, known, opening, &chunk.text);
+        // 温度 0：照抄原文的活不该靠采样。端点缺省 1.0 时同一块两次回复密度差三倍
+        let reply = match chat_retrying_rate_limits_at(
+            state,
+            settings,
+            client,
+            &messages,
+            Some(0.0),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取调用失败，跳过该分块");
+                drop_signal(
+                    state,
+                    kb_id,
+                    document_id,
+                    reason::CHUNK_UNEXTRACTED,
+                    "调用失败，这一块没有进图",
+                    Some(&format!("#{}：{e}", chunk.seq)),
+                )
+                .await;
+                unextracted.push((chunk.seq, format!("调用失败：{e}")));
+                return Ok(None);
+            }
+        };
+        tracing::debug!(%document_id, seq = chunk.seq, reply = %reply.text, "开放抽取的原始回复");
+        // 端点说它是撞上 token 上限停的。解析器只看得见 JSON 少了尾巴，看不见
+        // 少的原因，所以这句话得从回复里带过来（#760）
+        let cut_by_ceiling = reply.hit_token_ceiling();
+        (reply.text, cut_by_ceiling)
+    };
+    let extraction = match utopia_extract::open::parse_open_response(&reply_text) {
+        Ok(x) => x,
+        Err(e) => {
+            tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = cut_by_ceiling, "开放抽取回复解析失败，跳过该分块");
+            // 一整块没进图，而原因不同：撞上上限是「答案太长」，改得动；
+            // 别的解析失败是「回复不合结构」。两种都写成同一句话就分不开了
+            let (why, detail) = if cut_by_ceiling {
+                (
+                    "回复撞上 token 上限被截断，剩下的解析不了，这一块没有进图",
+                    format!("#{}：hit the token ceiling；{e}", chunk.seq),
+                )
+            } else {
+                (
+                    "回复解析不了，这一块没有进图",
+                    format!("#{}：{e}", chunk.seq),
+                )
+            };
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::CHUNK_UNEXTRACTED,
+                why,
+                Some(&detail),
+            )
+            .await;
+            unextracted.push((chunk.seq, format!("回复解析失败：{e}")));
+            return Ok(None);
+        }
+    };
+    if extraction.truncated {
+        drop_signal(
+            state,
+            kb_id,
+            document_id,
+            reason::TRUNCATED_REPLY,
+            if cut_by_ceiling {
+                "the open reply hit the token ceiling; kept up to the last complete item"
+            } else {
+                "the open reply was cut off; kept up to the last complete item"
+            },
+            None,
+        )
+        .await;
+    }
+    if extraction.skipped > 0 {
+        drop_signal(
+            state,
+            kb_id,
+            document_id,
+            reason::MALFORMED_ITEM,
+            &format!(
+                "{} items in the open reply were malformed",
+                extraction.skipped
+            ),
+            None,
+        )
+        .await;
+    }
+    // 名字向量（0041 决定 3 通道 2）：这一块里有名字的东西，名字字符串各算一条，
+    // 消解时拿它在同库的名字向量里找近邻。一块一批；算不出来（端点抖了）不拦抽取，
+    // 只是这一块少一条召回通道
+    let name_vecs: HashMap<String, Vec<f32>> = match (settings, embed_client) {
+        (Some(settings), Some(client)) => {
+            let mut wanted: Vec<(String, String)> = Vec::new();
+            let mut seen: HashSet<String> = HashSet::new();
+            for e in &extraction.entities {
+                let n = e.name.trim();
+                if e.named && !n.is_empty() && seen.insert(name_key(n)) {
+                    wanted.push((name_key(n), n.to_string()));
+                }
+            }
+            embed_names(state, settings, client, &wanted).await
+        }
+        _ => HashMap::new(),
+    };
+    Ok(Some(ChunkParsed {
+        extraction,
+        name_vecs,
+    }))
+}
+
+/// 一个分块的后半步：把解析出来的回复写成陈述、名字和证据（#588 cut 1）。
+///
+/// **要按分块顺序跑**：前面的块认下的实体（`doc_entities`、`known_by_name`）、描述出来的
+/// 东西（`described`）、待裁决的名字，后面的块都要读。调模型那半步并发之后这里仍然串行。
+///
+/// `pushed`（0054）：块本身就是契约，时间词在整块里定位，不在引文里找（0054 决定 4）
+#[allow(clippy::too_many_arguments)]
+async fn apply_open_extraction(
+    state: &AppState,
+    pool: &PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+    chunk: &ChunkForExtract,
+    ctx: Option<&[f32]>,
+    extraction: &utopia_extract::open::OpenExtraction,
+    name_vecs: HashMap<String, Vec<f32>>,
+    attested_at: Option<chrono::DateTime<chrono::Utc>>,
+    bound_types: &HashMap<String, Uuid>,
+    pushed: bool,
+    await_nod: bool,
+    proposer: Proposer,
+    pending_count: &mut usize,
+    statement_count: &mut usize,
+    needs_adjudication: &mut bool,
+    human_reviews_found: &mut bool,
+    doc_entities: &mut Vec<(Uuid, String, String)>,
+    known_by_name: &mut HashMap<String, Uuid>,
+    described: &mut HashMap<String, Uuid>,
+    handled_by_name: &mut HashMap<String, Vec<Uuid>>,
+    ambiguous_bare_cache: &mut HashMap<String, Uuid>,
+    touched_names: &mut HashSet<String>,
+) -> anyhow::Result<()> {
+    // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
+    let mut response_claims: HashMap<String, Vec<Uuid>> = HashMap::new();
+    let mut local: HashMap<String, Uuid> = HashMap::new();
+    // 被描述的东西：先记下名字和类别词，等陈述指到它再建（见 `place`）
+    let mut deferred: HashMap<String, (String, String)> = HashMap::new();
+    for e in &extraction.entities {
+        let name = e.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let kind = e.kind.trim();
+        let key = name_key(name);
+        if local.contains_key(&key) {
+            continue;
+        }
+        let id = if e.named {
+            let bound = bound_types
+                .get(&utopia_store::type_bindings::normalize(kind))
+                .copied();
+            let id = resolve_handle(
+                pool,
+                kb_id,
+                bound,
+                name,
+                ctx,
+                name_vecs.get(&key).map(Vec::as_slice),
+                Some(&chunk.text),
+                &mut response_claims,
+                handled_by_name,
+                ambiguous_bare_cache,
+                needs_adjudication,
+                human_reviews_found,
+            )
+            .await?;
+            // 模型说它是什么（「a British film」里的 film）：存成它自己的说法，
+            // 类的绑定等对齐来做
+            if !kind.is_empty() {
+                let _ = utopia_store::resolution::set_specific_type(pool, id, kind).await;
+            }
+            // 名字就在这一块原文里时，给名字事实补出处（0041）。记忆日志里的不补：
+            // 那一句算不算出处，要等人点头（0018）
+            if !await_nod && span_in_quote(name, &chunk.text) {
+                let _ = utopia_store::names::record(
+                    pool,
+                    kb_id,
+                    id,
+                    name,
+                    Some(utopia_store::names::NameSource {
+                        chunk_id: chunk.id,
+                        quote: name,
+                    }),
+                    attested_at,
+                )
+                .await;
+            }
+            touched_names.insert(utopia_store::resolution::normalize_name(name).to_lowercase());
+            if !doc_entities.iter().any(|(x, _, _)| *x == id) {
+                doc_entities.push((id, kind.to_string(), name.to_string()));
+                known_by_name.entry(key.clone()).or_insert(id);
+            }
+            id
+        } else {
+            deferred.insert(key, (name.to_string(), kind.to_string()));
+            continue;
+        };
+        local.insert(key, id);
+    }
+
+    // ---- 陈述 ----
+    for s in &extraction.statements {
+        let phrase = s.phrase.trim();
+        if phrase.is_empty() {
+            continue;
+        }
+        let Some(subject) = place(
+            pool,
+            kb_id,
+            &mut local,
+            known_by_name,
+            &deferred,
+            described,
+            &s.subject,
+        )
+        .await?
+        else {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::UNKNOWN_REF,
+                "a statement's subject is not a listed thing",
+                Some(&s.subject),
+            )
+            .await;
+            continue;
+        };
+        // 宾语写了名字但没在清单上：模型漏列了它。陈述照落，宾语落成字面值——
+        // 不凭空建实体，也不丢这条话（#559 的那一档）
+        // 一个字母数字都没有的值（表格里的「—」、空格）什么也没说：按没有值处理。
+        // 这是结构判断，不是词表——看的是有没有内容，不是内容是什么
+        let mut value = s
+            .value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| v.chars().any(char::is_alphanumeric));
+        // 模型自己写的那个值，在下面被「宾语没声明」顶替之前记下来：引文要核的是它，
+        // 不是一个实体的名字（#729）
+        let stated_value = value;
+        let object = match s.object.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
+            Some(name) => match place(
+                pool,
+                kb_id,
+                &mut local,
+                known_by_name,
+                &deferred,
+                described,
+                name,
+            )
+            .await?
+            {
+                Some(id) => Some(id),
+                None => {
+                    drop_signal(
+                        state,
+                        kb_id,
+                        document_id,
+                        reason::OBJECT_UNDECLARED,
+                        "a statement's object is not a listed thing; written as a value",
+                        Some(name),
+                    )
+                    .await;
+                    value = value.or(Some(name));
+                    None
+                }
+            },
+            None => None,
+        };
+        // 短语就是值、短语就是主语：表格丢了列头（或没有说明句）时模型的两种写法
+        // （#743 的财报长文里各占一类）。陈述照落——值和主语都在，信息没丢——只记一笔
+        // 让它可量；只比字面，不认词
+        let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
+        if value.is_some_and(|v| same(v, phrase)) {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::PHRASE_IS_VALUE,
+                "kept, but the phrase is the value itself",
+                Some(phrase),
+            )
+            .await;
+        } else if same(&s.subject, phrase) {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::PHRASE_IS_SUBJECT,
+                "kept, but the phrase is the subject's own name",
+                Some(phrase),
+            )
+            .await;
+        }
+        let value_json;
+        let fact_object = match (object, value) {
+            (Some(o), _) if o == subject => {
+                drop_signal(
+                    state,
+                    kb_id,
+                    document_id,
+                    reason::OBJECT_MISSING,
+                    "a statement points at its own subject",
+                    Some(phrase),
+                )
+                .await;
+                continue;
+            }
+            (Some(o), _) => FactObject::Entity(o),
+            (None, Some(v)) => {
+                value_json = serde_json::json!({ "value": v });
+                FactObject::Value(&value_json)
+            }
+            (None, None) => {
+                drop_signal(
+                    state,
+                    kb_id,
+                    document_id,
+                    reason::OBJECT_MISSING,
+                    "a statement has neither an object nor a value",
+                    Some(phrase),
+                )
+                .await;
+                continue;
+            }
+        };
+        // 引文定位。定位不到的那句照样当证据文字记，只是没有偏移，并记一笔——
+        // 模型没照抄的句子是「不是原文说的」那一类的苗头，量它
+        let quote_text = s.quote.as_deref().map(str::trim).filter(|q| !q.is_empty());
+        let quote: Option<(&str, Option<(i32, i32)>)> =
+            quote_text.map(|q| (q, locate(&chunk.text, q)));
+        if let Some((q, None)) = quote {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::QUOTE_NOT_IN_CHUNK,
+                "a quoted sentence is not in the chunk verbatim",
+                Some(q),
+            )
+            .await;
+        }
+        // **值必须出现在它自己的引文里**（#729）。一行五列被压成五条只有值不同的
+        // 陈述、引文却是表上面那句导语时，五条里至多一条对，而谁也分不出是哪一条。
+        // 只查带数字的值：实体名当值写的那一类（object_undeclared）不在此列
+        if let (Some(v), Some((q, _))) = (stated_value, quote) {
+            if v.chars().any(|c| c.is_ascii_digit()) && !shows_value(q, v) {
+                drop_signal(
+                    state,
+                    kb_id,
+                    document_id,
+                    reason::VALUE_NOT_IN_QUOTE,
+                    "a statement's value is not in its own quoted sentence",
+                    Some(v),
+                )
+                .await;
+                continue;
+            }
+        }
+        // 开放陈述没有模型自报的置信度：它说的是「文档这么说了」。看图描述出来的块
+        // 照旧压上限（0040 决定 4）
+        let confidence = origin_ceiling(&chunk.origin, 1.0);
+        // 限定和时间词先算好：直接落库和等人点头两条路用同一份。
+        // 限定：值是清单上某个东西的名字就挂实体，否则挂文字
+        let mut qualifiers: Vec<(&str, Option<serde_json::Value>, Option<Uuid>)> = Vec::new();
+        for (role, text) in &s.qualifiers {
+            let (role, text) = (role.trim(), text.trim());
+            if role.is_empty() || text.is_empty() {
+                continue;
+            }
+            match place(
+                pool,
+                kb_id,
+                &mut local,
+                known_by_name,
+                &deferred,
+                described,
+                text,
+            )
+            .await?
+            {
+                Some(id) => qualifiers.push((role, None, Some(id))),
+                None => qualifiers.push((role, Some(serde_json::json!(text)), None)),
+            }
+        }
+        // 时间词：起与止各是一条提及，必须原样在这条陈述的引文里
+        let mut time_words: Vec<(&str, i32, &str)> = Vec::new();
+        for (role, words) in [("when", s.when.as_deref()), ("ended", s.ended.as_deref())]
+            .into_iter()
+            .filter_map(|(role, words)| Some((role, words?.trim())))
+            .filter(|(_, w)| !w.is_empty())
+        {
+            // 推送来的陈述没有引文：条目自己就是证据（0054 决定 4），这一块就是这一份
+            // 载荷，时间词在块里找。走 `locate_time` 会在 `quote?` 上退出，起止就都丢了
+            let located = if pushed {
+                locate(&chunk.text, words).map(|(start, _)| start)
+            } else {
+                locate_time(&chunk.text, quote, words)
+            };
+            match located {
+                Some(start) => time_words.push((words, start, role)),
+                None => {
+                    drop_signal(
+                        state,
+                        kb_id,
+                        document_id,
+                        reason::TIME_NOT_IN_QUOTE,
+                        "a time mention's words are not in the statement's own sentence",
+                        Some(words),
+                    )
+                    .await;
+                }
+            }
+        }
+        if await_nod {
+            // 记忆日志：一切原样进待确认表（0015），人点头时 `pending::confirm` 才把它
+            // 落成开放陈述——同样的短语、限定、时间词、引文偏移
+            let (object_id, object_value) = match fact_object {
+                FactObject::Entity(id) => (Some(id), None),
+                FactObject::Value(v) => (None, Some(v)),
+            };
+            let qualifiers_json = serde_json::Value::Array(
+                qualifiers
+                    .iter()
+                    .map(|(role, value, entity)| match entity {
+                        Some(id) => serde_json::json!({ "role": role, "entity_id": id }),
+                        None => serde_json::json!({ "role": role, "value": value }),
+                    })
+                    .collect(),
+            );
+            let time_json = serde_json::Value::Array(
+                time_words
+                    .iter()
+                    .map(|(text, start, role)| {
+                        serde_json::json!({ "text": text, "char_start": start, "role": role })
+                    })
+                    .collect(),
+            );
+            let outcome = utopia_store::pending::propose(
+                pool,
+                Proposal {
+                    kb_id,
+                    subject_id: subject,
+                    predicate_id: None,
+                    object_id,
+                    object_value,
+                    proposed_predicate: Some(phrase),
+                    validity: Validity {
+                        attested_at,
+                        ..Default::default()
+                    },
+                    confidence,
+                    chunk_id: chunk.id,
+                    proposed_by: proposer.user_id,
+                    proposed_token: proposer.token_id,
+                    phrase: Some(phrase),
+                    qualifiers: Some(&qualifiers_json),
+                    time_words: Some(&time_json),
+                    quote_span: quote.and_then(|(_, span)| span),
+                },
+            )
+            .await?;
+            if let Outcome::Proposed(_) = outcome {
+                *pending_count += 1;
+            }
+            *statement_count += 1;
+            continue;
+        }
+        let (fact_id, _created) = utopia_store::graph::insert_open_statement(
+            pool,
+            kb_id,
+            subject,
+            phrase,
+            fact_object,
+            attested_at,
+            confidence,
+        )
+        .await?;
+        // 表层谓词也写短语：今天的读路径都从 `fact_surface_predicate` 取名字
+        utopia_store::graph::add_evidence_located(
+            pool,
+            fact_id,
+            chunk.id,
+            quote.map(|(q, _)| q),
+            Some(phrase),
+            quote.and_then(|(_, span)| span),
+        )
+        .await?;
+        for (role, value, entity) in &qualifiers {
+            utopia_store::graph::add_statement_qualifier(
+                pool,
+                fact_id,
+                role,
+                value.as_ref(),
+                *entity,
+            )
+            .await?;
+        }
+        for (words, start, role) in &time_words {
+            utopia_store::time_mentions::record(
+                pool, kb_id, fact_id, chunk.id, words, *start, role,
+            )
+            .await?;
+        }
+        *statement_count += 1;
+    }
+
+    // ---- 别名（0041 决定 2）：服务端只核对名字确实在这一块原文里 ----
+    // 记忆日志里的别名不记：那一句算不算出处要等人点头（0018）
+    for n in extraction.names.iter().filter(|_| !await_nod) {
+        let name = n.name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let Some(id) = place(
+            pool,
+            kb_id,
+            &mut local,
+            known_by_name,
+            &deferred,
+            described,
+            &n.entity,
+        )
+        .await?
+        else {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::UNKNOWN_REF,
+                "a name's thing is not a listed thing",
+                Some(&n.entity),
+            )
+            .await;
+            continue;
+        };
+        if !span_in_quote(name, &chunk.text) {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::NAME_NOT_IN_TEXT,
+                "an extra name is not in the chunk",
+                Some(name),
+            )
+            .await;
+            continue;
+        }
+        // 一个名字不会同时是两样东西的名字：这一块或本文档前面已经把它认成
+        // 另一个实体的，不记
+        let key = utopia_store::resolution::normalize_name(name).to_lowercase();
+        let claimed = handled_by_name
+            .get(&key)
+            .is_some_and(|ids| ids.iter().any(|x| *x != id));
+        if claimed {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::NAME_CLAIMED_BY_ANOTHER,
+                "an extra name is already another thing's name",
+                Some(name),
+            )
+            .await;
+            continue;
+        }
+        let quote = n
+            .quote
+            .as_deref()
+            .map(str::trim)
+            .filter(|q| !q.is_empty())
+            .unwrap_or(&chunk.text);
+        let _ = utopia_store::names::record(
+            pool,
+            kb_id,
+            id,
+            name,
+            Some(utopia_store::names::NameSource {
+                chunk_id: chunk.id,
+                quote,
+            }),
+            attested_at,
+        )
+        .await;
+        touched_names.insert(key);
+    }
+
+    // 本块抽完即打标：更新时被认领的块携带标记跳过；中断的抽取可续跑
+    utopia_store::documents::mark_chunk_extracted(pool, chunk.id).await?;
+
+    Ok(())
+}
 
 /// 文档日期只在它来自内容或来源系统时才算证据日期（与 `temporal::DATED_AT` 同一口径）。
 pub(crate) fn dated_at(doc: &Document) -> Option<chrono::DateTime<chrono::Utc>> {
@@ -291,587 +941,61 @@ pub(crate) async fn run_open(
             .as_ref()
             .filter(|(id, _)| *id != chunk.id)
             .map(|(_, text)| text.as_str());
-        // 推送来的陈述：块就是契约，解析它而不是问模型（0054）。下面从解析起一步不变
-        let (reply_text, cut_by_ceiling) = if pushed {
-            (chunk.text.clone(), false)
+        // 提示词里带不带前面分块认下的实体，是个为了量而设的旋钮（#588）；落库那半步不受它管
+        let shown: &[utopia_extract::KnownEntity] = if state.extract_known_in_prompt {
+            &known
         } else {
-            let (settings, client) = match (settings, client) {
-                (Some(s), Some(c)) => (s, c),
-                _ => anyhow::bail!("Chat model not configured; cannot extract"),
-            };
-            let messages = utopia_extract::open::build_open_messages(
-                &doc.filename,
-                &known,
-                opening,
-                &chunk.text,
-            );
-            // 温度 0：照抄原文的活不该靠采样。端点缺省 1.0 时同一块两次回复密度差三倍
-            let reply = match chat_retrying_rate_limits_at(
-                state,
-                settings,
-                client,
-                &messages,
-                Some(0.0),
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取调用失败，跳过该分块");
-                    drop_signal(
-                        state,
-                        kb_id,
-                        document_id,
-                        reason::CHUNK_UNEXTRACTED,
-                        "调用失败，这一块没有进图",
-                        Some(&format!("#{}：{e}", chunk.seq)),
-                    )
-                    .await;
-                    unextracted.push((chunk.seq, format!("调用失败：{e}")));
-                    continue;
-                }
-            };
-            tracing::debug!(%document_id, seq = chunk.seq, reply = %reply.text, "开放抽取的原始回复");
-            // 端点说它是撞上 token 上限停的。解析器只看得见 JSON 少了尾巴，看不见
-            // 少的原因，所以这句话得从回复里带过来（#760）
-            let cut_by_ceiling = reply.hit_token_ceiling();
-            (reply.text, cut_by_ceiling)
+            &[]
         };
-        let extraction = match utopia_extract::open::parse_open_response(&reply_text) {
-            Ok(x) => x,
-            Err(e) => {
-                tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = cut_by_ceiling, "开放抽取回复解析失败，跳过该分块");
-                // 一整块没进图，而原因不同：撞上上限是「答案太长」，改得动；
-                // 别的解析失败是「回复不合结构」。两种都写成同一句话就分不开了
-                let (why, detail) = if cut_by_ceiling {
-                    (
-                        "回复撞上 token 上限被截断，剩下的解析不了，这一块没有进图",
-                        format!("#{}：hit the token ceiling；{e}", chunk.seq),
-                    )
-                } else {
-                    (
-                        "回复解析不了，这一块没有进图",
-                        format!("#{}：{e}", chunk.seq),
-                    )
-                };
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::CHUNK_UNEXTRACTED,
-                    why,
-                    Some(&detail),
-                )
-                .await;
-                unextracted.push((chunk.seq, format!("回复解析失败：{e}")));
-                continue;
-            }
+        let parsed = match call_and_parse_one_chunk(
+            state,
+            settings,
+            client,
+            embed.as_ref(),
+            kb_id,
+            document_id,
+            &doc.filename,
+            chunk,
+            opening,
+            shown,
+            pushed,
+            &mut unextracted,
+        )
+        .await?
+        {
+            Some(p) => p,
+            None => continue,
         };
-        if extraction.truncated {
-            drop_signal(
-                state,
-                kb_id,
-                document_id,
-                reason::TRUNCATED_REPLY,
-                if cut_by_ceiling {
-                    "the open reply hit the token ceiling; kept up to the last complete item"
-                } else {
-                    "the open reply was cut off; kept up to the last complete item"
-                },
-                None,
-            )
-            .await;
-        }
-        if extraction.skipped > 0 {
-            drop_signal(
-                state,
-                kb_id,
-                document_id,
-                reason::MALFORMED_ITEM,
-                &format!(
-                    "{} items in the open reply were malformed",
-                    extraction.skipped
-                ),
-                None,
-            )
-            .await;
-        }
-
-        // 名字向量（0041 决定 3 通道 2）：这一块里有名字的东西，名字字符串各算一条，
-        // 消解时拿它在同库的名字向量里找近邻。一块一批；算不出来（端点抖了）不拦抽取，
-        // 只是这一块少一条召回通道
-        let name_vecs: HashMap<String, Vec<f32>> = match (settings, &embed) {
-            (Some(settings), Some(client)) => {
-                let mut wanted: Vec<(String, String)> = Vec::new();
-                let mut seen: HashSet<String> = HashSet::new();
-                for e in &extraction.entities {
-                    let n = e.name.trim();
-                    if e.named && !n.is_empty() && seen.insert(name_key(n)) {
-                        wanted.push((name_key(n), n.to_string()));
-                    }
-                }
-                embed_names(state, settings, client, &wanted).await
-            }
-            _ => HashMap::new(),
-        };
-
-        // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
-        let mut response_claims: HashMap<String, Vec<Uuid>> = HashMap::new();
-        let mut local: HashMap<String, Uuid> = HashMap::new();
-        // 被描述的东西：先记下名字和类别词，等陈述指到它再建（见 `place`）
-        let mut deferred: HashMap<String, (String, String)> = HashMap::new();
-        for e in &extraction.entities {
-            let name = e.name.trim();
-            if name.is_empty() {
-                continue;
-            }
-            let kind = e.kind.trim();
-            let key = name_key(name);
-            if local.contains_key(&key) {
-                continue;
-            }
-            let id = if e.named {
-                let bound = bound_types
-                    .get(&utopia_store::type_bindings::normalize(kind))
-                    .copied();
-                let id = resolve_handle(
-                    pool,
-                    kb_id,
-                    bound,
-                    name,
-                    ctx,
-                    name_vecs.get(&key).map(Vec::as_slice),
-                    Some(&chunk.text),
-                    &mut response_claims,
-                    &mut handled_by_name,
-                    &mut ambiguous_bare_cache,
-                    &mut needs_adjudication,
-                    &mut human_reviews_found,
-                )
-                .await?;
-                // 模型说它是什么（「a British film」里的 film）：存成它自己的说法，
-                // 类的绑定等对齐来做
-                if !kind.is_empty() {
-                    let _ = utopia_store::resolution::set_specific_type(pool, id, kind).await;
-                }
-                // 名字就在这一块原文里时，给名字事实补出处（0041）。记忆日志里的不补：
-                // 那一句算不算出处，要等人点头（0018）
-                if !await_nod && span_in_quote(name, &chunk.text) {
-                    let _ = utopia_store::names::record(
-                        pool,
-                        kb_id,
-                        id,
-                        name,
-                        Some(utopia_store::names::NameSource {
-                            chunk_id: chunk.id,
-                            quote: name,
-                        }),
-                        attested_at,
-                    )
-                    .await;
-                }
-                touched_names.insert(utopia_store::resolution::normalize_name(name).to_lowercase());
-                if !doc_entities.iter().any(|(x, _, _)| *x == id) {
-                    doc_entities.push((id, kind.to_string(), name.to_string()));
-                    known_by_name.entry(key.clone()).or_insert(id);
-                }
-                id
-            } else {
-                deferred.insert(key, (name.to_string(), kind.to_string()));
-                continue;
-            };
-            local.insert(key, id);
-        }
-
-        // ---- 陈述 ----
-        for s in &extraction.statements {
-            let phrase = s.phrase.trim();
-            if phrase.is_empty() {
-                continue;
-            }
-            let Some(subject) = place(
-                pool,
-                kb_id,
-                &mut local,
-                &known_by_name,
-                &deferred,
-                &mut described,
-                &s.subject,
-            )
-            .await?
-            else {
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::UNKNOWN_REF,
-                    "a statement's subject is not a listed thing",
-                    Some(&s.subject),
-                )
-                .await;
-                continue;
-            };
-            // 宾语写了名字但没在清单上：模型漏列了它。陈述照落，宾语落成字面值——
-            // 不凭空建实体，也不丢这条话（#559 的那一档）
-            // 一个字母数字都没有的值（表格里的「—」、空格）什么也没说：按没有值处理。
-            // 这是结构判断，不是词表——看的是有没有内容，不是内容是什么
-            let mut value = s
-                .value
-                .as_deref()
-                .map(str::trim)
-                .filter(|v| v.chars().any(char::is_alphanumeric));
-            // 模型自己写的那个值，在下面被「宾语没声明」顶替之前记下来：引文要核的是它，
-            // 不是一个实体的名字（#729）
-            let stated_value = value;
-            let object = match s.object.as_deref().map(str::trim).filter(|o| !o.is_empty()) {
-                Some(name) => match place(
-                    pool,
-                    kb_id,
-                    &mut local,
-                    &known_by_name,
-                    &deferred,
-                    &mut described,
-                    name,
-                )
-                .await?
-                {
-                    Some(id) => Some(id),
-                    None => {
-                        drop_signal(
-                            state,
-                            kb_id,
-                            document_id,
-                            reason::OBJECT_UNDECLARED,
-                            "a statement's object is not a listed thing; written as a value",
-                            Some(name),
-                        )
-                        .await;
-                        value = value.or(Some(name));
-                        None
-                    }
-                },
-                None => None,
-            };
-            // 短语就是值、短语就是主语：表格丢了列头（或没有说明句）时模型的两种写法
-            // （#743 的财报长文里各占一类）。陈述照落——值和主语都在，信息没丢——只记一笔
-            // 让它可量；只比字面，不认词
-            let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b.trim());
-            if value.is_some_and(|v| same(v, phrase)) {
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::PHRASE_IS_VALUE,
-                    "kept, but the phrase is the value itself",
-                    Some(phrase),
-                )
-                .await;
-            } else if same(&s.subject, phrase) {
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::PHRASE_IS_SUBJECT,
-                    "kept, but the phrase is the subject's own name",
-                    Some(phrase),
-                )
-                .await;
-            }
-            let value_json;
-            let fact_object = match (object, value) {
-                (Some(o), _) if o == subject => {
-                    drop_signal(
-                        state,
-                        kb_id,
-                        document_id,
-                        reason::OBJECT_MISSING,
-                        "a statement points at its own subject",
-                        Some(phrase),
-                    )
-                    .await;
-                    continue;
-                }
-                (Some(o), _) => FactObject::Entity(o),
-                (None, Some(v)) => {
-                    value_json = serde_json::json!({ "value": v });
-                    FactObject::Value(&value_json)
-                }
-                (None, None) => {
-                    drop_signal(
-                        state,
-                        kb_id,
-                        document_id,
-                        reason::OBJECT_MISSING,
-                        "a statement has neither an object nor a value",
-                        Some(phrase),
-                    )
-                    .await;
-                    continue;
-                }
-            };
-            // 引文定位。定位不到的那句照样当证据文字记，只是没有偏移，并记一笔——
-            // 模型没照抄的句子是「不是原文说的」那一类的苗头，量它
-            let quote_text = s.quote.as_deref().map(str::trim).filter(|q| !q.is_empty());
-            let quote: Option<(&str, Option<(i32, i32)>)> =
-                quote_text.map(|q| (q, locate(&chunk.text, q)));
-            if let Some((q, None)) = quote {
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::QUOTE_NOT_IN_CHUNK,
-                    "a quoted sentence is not in the chunk verbatim",
-                    Some(q),
-                )
-                .await;
-            }
-            // **值必须出现在它自己的引文里**（#729）。一行五列被压成五条只有值不同的
-            // 陈述、引文却是表上面那句导语时，五条里至多一条对，而谁也分不出是哪一条。
-            // 只查带数字的值：实体名当值写的那一类（object_undeclared）不在此列
-            if let (Some(v), Some((q, _))) = (stated_value, quote) {
-                if v.chars().any(|c| c.is_ascii_digit()) && !shows_value(q, v) {
-                    drop_signal(
-                        state,
-                        kb_id,
-                        document_id,
-                        reason::VALUE_NOT_IN_QUOTE,
-                        "a statement's value is not in its own quoted sentence",
-                        Some(v),
-                    )
-                    .await;
-                    continue;
-                }
-            }
-            // 开放陈述没有模型自报的置信度：它说的是「文档这么说了」。看图描述出来的块
-            // 照旧压上限（0040 决定 4）
-            let confidence = origin_ceiling(&chunk.origin, 1.0);
-            // 限定和时间词先算好：直接落库和等人点头两条路用同一份。
-            // 限定：值是清单上某个东西的名字就挂实体，否则挂文字
-            let mut qualifiers: Vec<(&str, Option<serde_json::Value>, Option<Uuid>)> = Vec::new();
-            for (role, text) in &s.qualifiers {
-                let (role, text) = (role.trim(), text.trim());
-                if role.is_empty() || text.is_empty() {
-                    continue;
-                }
-                match place(
-                    pool,
-                    kb_id,
-                    &mut local,
-                    &known_by_name,
-                    &deferred,
-                    &mut described,
-                    text,
-                )
-                .await?
-                {
-                    Some(id) => qualifiers.push((role, None, Some(id))),
-                    None => qualifiers.push((role, Some(serde_json::json!(text)), None)),
-                }
-            }
-            // 时间词：起与止各是一条提及，必须原样在这条陈述的引文里
-            let mut time_words: Vec<(&str, i32, &str)> = Vec::new();
-            for (role, words) in [("when", s.when.as_deref()), ("ended", s.ended.as_deref())]
-                .into_iter()
-                .filter_map(|(role, words)| Some((role, words?.trim())))
-                .filter(|(_, w)| !w.is_empty())
-            {
-                // 推送来的陈述没有引文：条目自己就是证据（0054 决定 4），这一块就是这一份
-                // 载荷，时间词在块里找。走 `locate_time` 会在 `quote?` 上退出，起止就都丢了
-                let located = if pushed {
-                    locate(&chunk.text, words).map(|(start, _)| start)
-                } else {
-                    locate_time(&chunk.text, quote, words)
-                };
-                match located {
-                    Some(start) => time_words.push((words, start, role)),
-                    None => {
-                        drop_signal(
-                            state,
-                            kb_id,
-                            document_id,
-                            reason::TIME_NOT_IN_QUOTE,
-                            "a time mention's words are not in the statement's own sentence",
-                            Some(words),
-                        )
-                        .await;
-                    }
-                }
-            }
-            if await_nod {
-                // 记忆日志：一切原样进待确认表（0015），人点头时 `pending::confirm` 才把它
-                // 落成开放陈述——同样的短语、限定、时间词、引文偏移
-                let (object_id, object_value) = match fact_object {
-                    FactObject::Entity(id) => (Some(id), None),
-                    FactObject::Value(v) => (None, Some(v)),
-                };
-                let qualifiers_json = serde_json::Value::Array(
-                    qualifiers
-                        .iter()
-                        .map(|(role, value, entity)| match entity {
-                            Some(id) => serde_json::json!({ "role": role, "entity_id": id }),
-                            None => serde_json::json!({ "role": role, "value": value }),
-                        })
-                        .collect(),
-                );
-                let time_json = serde_json::Value::Array(
-                    time_words
-                        .iter()
-                        .map(|(text, start, role)| {
-                            serde_json::json!({ "text": text, "char_start": start, "role": role })
-                        })
-                        .collect(),
-                );
-                let outcome = utopia_store::pending::propose(
-                    pool,
-                    Proposal {
-                        kb_id,
-                        subject_id: subject,
-                        predicate_id: None,
-                        object_id,
-                        object_value,
-                        proposed_predicate: Some(phrase),
-                        validity: Validity {
-                            attested_at,
-                            ..Default::default()
-                        },
-                        confidence,
-                        chunk_id: chunk.id,
-                        proposed_by: proposer.user_id,
-                        proposed_token: proposer.token_id,
-                        phrase: Some(phrase),
-                        qualifiers: Some(&qualifiers_json),
-                        time_words: Some(&time_json),
-                        quote_span: quote.and_then(|(_, span)| span),
-                    },
-                )
-                .await?;
-                if let Outcome::Proposed(_) = outcome {
-                    pending_count += 1;
-                }
-                statement_count += 1;
-                continue;
-            }
-            let (fact_id, _created) = utopia_store::graph::insert_open_statement(
-                pool,
-                kb_id,
-                subject,
-                phrase,
-                fact_object,
-                attested_at,
-                confidence,
-            )
-            .await?;
-            // 表层谓词也写短语：今天的读路径都从 `fact_surface_predicate` 取名字
-            utopia_store::graph::add_evidence_located(
-                pool,
-                fact_id,
-                chunk.id,
-                quote.map(|(q, _)| q),
-                Some(phrase),
-                quote.and_then(|(_, span)| span),
-            )
-            .await?;
-            for (role, value, entity) in &qualifiers {
-                utopia_store::graph::add_statement_qualifier(
-                    pool,
-                    fact_id,
-                    role,
-                    value.as_ref(),
-                    *entity,
-                )
-                .await?;
-            }
-            for (words, start, role) in &time_words {
-                utopia_store::time_mentions::record(
-                    pool, kb_id, fact_id, chunk.id, words, *start, role,
-                )
-                .await?;
-            }
-            statement_count += 1;
-        }
-
-        // ---- 别名（0041 决定 2）：服务端只核对名字确实在这一块原文里 ----
-        // 记忆日志里的别名不记：那一句算不算出处要等人点头（0018）
-        for n in extraction.names.iter().filter(|_| !await_nod) {
-            let name = n.name.trim();
-            if name.is_empty() {
-                continue;
-            }
-            let Some(id) = place(
-                pool,
-                kb_id,
-                &mut local,
-                &known_by_name,
-                &deferred,
-                &mut described,
-                &n.entity,
-            )
-            .await?
-            else {
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::UNKNOWN_REF,
-                    "a name's thing is not a listed thing",
-                    Some(&n.entity),
-                )
-                .await;
-                continue;
-            };
-            if !span_in_quote(name, &chunk.text) {
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::NAME_NOT_IN_TEXT,
-                    "an extra name is not in the chunk",
-                    Some(name),
-                )
-                .await;
-                continue;
-            }
-            // 一个名字不会同时是两样东西的名字：这一块或本文档前面已经把它认成
-            // 另一个实体的，不记
-            let key = utopia_store::resolution::normalize_name(name).to_lowercase();
-            let claimed = handled_by_name
-                .get(&key)
-                .is_some_and(|ids| ids.iter().any(|x| *x != id));
-            if claimed {
-                drop_signal(
-                    state,
-                    kb_id,
-                    document_id,
-                    reason::NAME_CLAIMED_BY_ANOTHER,
-                    "an extra name is already another thing's name",
-                    Some(name),
-                )
-                .await;
-                continue;
-            }
-            let quote = n
-                .quote
-                .as_deref()
-                .map(str::trim)
-                .filter(|q| !q.is_empty())
-                .unwrap_or(&chunk.text);
-            let _ = utopia_store::names::record(
-                pool,
-                kb_id,
-                id,
-                name,
-                Some(utopia_store::names::NameSource {
-                    chunk_id: chunk.id,
-                    quote,
-                }),
-                attested_at,
-            )
-            .await;
-            touched_names.insert(key);
-        }
-
-        // 本块抽完即打标：更新时被认领的块携带标记跳过；中断的抽取可续跑
-        utopia_store::documents::mark_chunk_extracted(pool, chunk.id).await?;
+        let ChunkParsed {
+            extraction,
+            name_vecs,
+        } = parsed;
+        apply_open_extraction(
+            state,
+            pool,
+            kb_id,
+            document_id,
+            chunk,
+            ctx,
+            &extraction,
+            name_vecs,
+            attested_at,
+            &bound_types,
+            pushed,
+            await_nod,
+            proposer,
+            &mut pending_count,
+            &mut statement_count,
+            &mut needs_adjudication,
+            &mut human_reviews_found,
+            &mut doc_entities,
+            &mut known_by_name,
+            &mut described,
+            &mut handled_by_name,
+            &mut ambiguous_bare_cache,
+            &mut touched_names,
+        )
+        .await?;
     }
 
     // 消歧后缀在实体创建时算会早于其事实写入——收尾时对本文档涉及的名字统一刷新
@@ -945,6 +1069,10 @@ pub(crate) async fn run_open(
     tracing::info!(%document_id, statements = statement_count, "开放图谱抽取完成");
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "extraction_open_known_flow_tests.rs"]
+mod known_flow_tests;
 
 #[cfg(test)]
 mod tests {
