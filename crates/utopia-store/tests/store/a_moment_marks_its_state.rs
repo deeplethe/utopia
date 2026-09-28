@@ -170,6 +170,16 @@ impl Base {
 
     /// 签名 (phrase, person, organization) 绑到 works_for，照原文方向，说那个日期标什么
     async fn bind(&self, phrase: &str, marks: Option<&str>) -> anyhow::Result<()> {
+        self.bind_to(phrase, self.works_for, marks).await
+    }
+
+    /// 同 [`Base::bind`]，绑到这条属性
+    async fn bind_to(
+        &self,
+        phrase: &str,
+        property: Uuid,
+        marks: Option<&str>,
+    ) -> anyhow::Result<()> {
         sqlx::query(
             "INSERT INTO phrase_bindings
                  (id, kb_id, phrase, subject_type_id, object_type_id, object_is_value,
@@ -183,7 +193,7 @@ impl Base {
         .bind(phrase)
         .bind(self.person)
         .bind(self.company)
-        .bind(self.works_for)
+        .bind(property)
         .bind(marks)
         .execute(&self.pool)
         .await?;
@@ -1182,6 +1192,82 @@ async fn closing_a_simultaneous_conflict_at_its_own_start_is_refused() -> anyhow
             utopia_store::temporal::list_conflicts(&pool, base.kb, 10, 0)
                 .await?
                 .is_empty()
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    base.remove().await?;
+    run
+}
+
+/// 人写的行不被第 0 步作废（#975 合并时补的守卫）。照它的来路造：属性原是事件，人写下一刻；
+/// 一条只说了那一刻的陈述物化时并进这一行，留下来源链接，行却不因此变成算出来的
+/// （`from_statement_id` 仍空）。后来本体页上把属性改成状态：这一行两端相等、有一条两端同值
+/// 的来源陈述，可它是人写的，不作废。同一句话另算出的那一行（带 `from_statement_id`）照旧作废
+#[tokio::test]
+async fn a_row_a_person_wrote_is_kept_when_a_single_date_merged_into_it() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let base = Base::new(&pool).await?;
+    let run = async {
+        let (by_hand, _) = graph::insert_fact(
+            &pool,
+            base.kb,
+            base.lin,
+            Some(base.acquired),
+            base.meridian,
+            moment(),
+            0.9,
+        )
+        .await?;
+        base.statement("signed with", Some(day()), Some(day()))
+            .await?;
+        let to_aster = base
+            .statement_to("signed with", base.aster, Some(day()), Some(day()), "day")
+            .await?;
+        base.bind_to("signed with", base.acquired, None).await?;
+        let outcome = materialize(&pool, base.kb).await?;
+        assert_eq!(
+            (outcome.added, outcome.merged),
+            (1, 1),
+            "one merged into the person's row, one computed: {outcome:?}"
+        );
+        let computed: Uuid =
+            sqlx::query_scalar("SELECT fact_id FROM typed_fact_sources WHERE statement_id = $1")
+                .bind(to_aster)
+                .fetch_one(&pool)
+                .await?;
+        let (from_statement, links): (Option<Uuid>, i64) = sqlx::query_as(
+            "SELECT from_statement_id,
+                    (SELECT count(*) FROM typed_fact_sources WHERE fact_id = f.id)
+               FROM facts f WHERE id = $1",
+        )
+        .bind(by_hand)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            (from_statement, links),
+            (None, 1),
+            "the statement is a source of the person's row, which stays a person's"
+        );
+
+        // 本体页上把 acquired 改成状态
+        sqlx::query("UPDATE relation_types SET temporal = 'state' WHERE id = $1")
+            .bind(base.acquired)
+            .execute(&pool)
+            .await?;
+        let outcome = materialize(&pool, base.kb).await?;
+        assert_eq!(outcome.retired, 1, "only the computed row: {outcome:?}");
+        assert_eq!(
+            base.live(by_hand).await?,
+            (true, Some(day())),
+            "a row a person wrote is kept"
+        );
+        assert_eq!(
+            base.live(computed).await?,
+            (false, Some(day())),
+            "the computed one is retired"
         );
         anyhow::Ok(())
     }

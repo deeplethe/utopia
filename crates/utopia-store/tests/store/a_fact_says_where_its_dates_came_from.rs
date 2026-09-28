@@ -306,3 +306,108 @@ async fn a_fact_says_where_its_dates_came_from() -> anyhow::Result<()> {
         .await?;
     run
 }
+
+/// 关闭者的两种情形（#986 合并时的评审）：
+/// - 同一天开始的两个后任：时间线按 id 取最先的那一行关上前任，行上说的也是它；
+/// - 关闭者自己后来又被下一任关上，改写成了新的一行：说的是活着的那一版，名字不变
+#[tokio::test]
+async fn a_closer_is_the_row_the_timeline_closed_with() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let ids: Vec<Uuid> = (0..12).map(|_| Uuid::now_v7()).collect();
+    let (org, ws, kb, person, project, leads) = (ids[0], ids[1], ids[2], ids[3], ids[4], ids[5]);
+    let (li, zhou, sun, qian, aurora, helios) = (ids[6], ids[7], ids[8], ids[9], ids[10], ids[11]);
+    // Only locally generated UUIDs are interpolated into fixture SQL.
+    sqlx::raw_sql(&format!(
+        "INSERT INTO organizations (id, name) VALUES ('{org}', 'closers');
+         INSERT INTO workspaces (id, org_id, name) VALUES ('{ws}', '{org}', 'closers');
+         INSERT INTO knowledge_bases (id, workspace_id, name) VALUES ('{kb}', '{ws}', 'closers');
+         INSERT INTO entity_types (id, kb_id, key, label, color, shape) VALUES
+             ('{person}', '{kb}', 'person', 'person', '#7fd0ff', 'circle'),
+             ('{project}', '{kb}', 'project', 'project', '#7fd0ff', 'circle');
+         INSERT INTO relation_types (id, kb_id, key, label, temporal, inverse_functional)
+              VALUES ('{leads}', '{kb}', 'leads', 'leads', 'state', TRUE);
+         INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES
+             ('{li}', '{kb}', '{person}', 'Li Si'), ('{zhou}', '{kb}', '{person}', 'Zhou Qi'),
+             ('{sun}', '{kb}', '{person}', 'Sun Ba'), ('{qian}', '{kb}', '{person}', 'Qian Qi'),
+             ('{aurora}', '{kb}', '{project}', 'Aurora'), ('{helios}', '{kb}', '{project}', 'Helios');"
+    ))
+    .execute(&pool)
+    .await?;
+
+    let run = async {
+        let lead = |who: Uuid, project: Uuid, at: &'static str| {
+            let pool = pool.clone();
+            async move {
+                graph::insert_fact(&pool, kb, who, Some(leads), project, since(at), 0.9)
+                    .await
+                    .map(|(id, _)| id)
+            }
+        };
+        let live = |who: Uuid, project: Uuid| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM facts WHERE kb_id = $1 AND subject_id = $2 AND object_id = $3
+                        AND invalidated_at IS NULL",
+                )
+                .bind(kb)
+                .bind(who)
+                .bind(project)
+                .fetch_one(&pool)
+                .await
+            }
+        };
+
+        // Aurora：周七与孙八同一天接手。一个项目同时只有一个 lead，李四那段关在那一天，
+        // 关它的是 id 在前的周七那一行
+        let li_a = lead(li, aurora, "2024-07-05").await?;
+        let zhou_a = lead(zhou, aurora, "2025-09-01").await?;
+        let sun_a = lead(sun, aurora, "2025-09-01").await?;
+        assert!(zhou_a < sun_a);
+        utopia_store::temporal::reconcile_moved_facts(&pool, kb, &[li_a, zhou_a, sun_a]).await?;
+        let (_, facts) = graph::entity_detail(&pool, kb, aurora, None, None).await?;
+        assert!(flags(&facts, "Li Si").0, "the timeline closed it");
+        assert_eq!(fact_of(&facts, "Li Si").valid_to, Some(day("2025-09-01")));
+        assert_eq!(
+            closer(&facts, "Li Si"),
+            (Some(zhou_a), Some("Zhou Qi".to_string())),
+            "the first of the two by id, as the engine orders them"
+        );
+
+        // Helios：周七接手之后又被钱七接手，周七那一行被关上、改写成新的一行。李四那段的
+        // 关闭者是周七活着的那一版
+        let li_h = lead(li, helios, "2024-07-05").await?;
+        let zhou_h = lead(zhou, helios, "2025-09-01").await?;
+        utopia_store::temporal::reconcile_moved_facts(&pool, kb, &[li_h, zhou_h]).await?;
+        let qian_h = lead(qian, helios, "2026-03-01").await?;
+        utopia_store::temporal::reconcile_moved_facts(&pool, kb, &[qian_h]).await?;
+        let zhou_now = live(zhou, helios).await?;
+        assert_ne!(
+            zhou_now, zhou_h,
+            "the closer was rewritten when Qian Qi took over"
+        );
+        let (_, facts) = graph::entity_detail(&pool, kb, helios, None, None).await?;
+        assert_eq!(fact_of(&facts, "Zhou Qi").valid_to, Some(day("2026-03-01")));
+        assert_eq!(fact_of(&facts, "Li Si").valid_to, Some(day("2025-09-01")));
+        assert_eq!(
+            closer(&facts, "Li Si"),
+            (Some(zhou_now), Some("Zhou Qi".to_string())),
+            "the live version of the closer"
+        );
+        assert_eq!(
+            closer(&facts, "Zhou Qi"),
+            (Some(qian_h), Some("Qian Qi".to_string()))
+        );
+        anyhow::Ok(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    run
+}

@@ -15,8 +15,9 @@
 //! - 检索和图谱工具在一轮里共用一个号：图谱引到检索登过的块，号不变、补上那句话；只补了
 //!   引文、条数没变，来源帧也再发一次
 //! - 原句里没有的日期在行上说出来（#970）：时间线推出来的终点写出关上它的那一行、带那一行
-//!   的号，人改过的区间写出修正备注、不带号；本行的号照旧。对话与 MCP 一样（MCP 不带号），
-//!   规则 4 说推出的终点引关它的那一行，两种日期都不归到本行的原句
+//!   的号（那一行没有有效证据时不带号，清单里也不多一条），人改过的区间写出修正备注、不带号；
+//!   本行的号照旧。对话与 MCP 一样（MCP 不带号），规则 4 说推出的终点引关它的那一行，两种
+//!   日期都不归到本行的原句
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 use super::*;
@@ -625,7 +626,8 @@ async fn a_quote_added_to_a_search_hit_is_published() -> anyhow::Result<()> {
 
 /// #970 的两处：周七 2025-09-01 接手，时间线把李四那一段关在那天；人把张三的起点从章程的
 /// 2023-01-10 改成 2023-02-01。两行的号仍打开它们读出来的原句，而原句里没有这两个日期，
-/// 所以行上说出日期从哪来
+/// 所以行上说出日期从哪来。周七那篇删掉以后，关上李四那段的那一行没有有效证据：行上照旧
+/// 写出是他接手，不带号
 #[tokio::test]
 async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()> {
     let Some(f) = fixture(Scripted::new(vec![])).await? else {
@@ -844,6 +846,44 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
             line(&text, "Zhang San")
                 .contains("2023-02-01 → 2024-07-01, corrected: The handover was on 1 July)"),
             "{text}"
+        );
+
+        // 关上李四那段的那一行没有有效证据了（周七那篇删了，#986 的评审）：行上照旧写出是
+        // 谁接手，只是不带号，清单里也不多一条；本行的号照旧打开交接那篇
+        sqlx::query("UPDATE documents SET deleted_at = now() WHERE id = $1")
+            .bind(d_update)
+            .execute(&f.pool)
+            .await?;
+        let mut sink = ToolSink::default();
+        for tool in ["entity_facts", "neighbors", "timeline"] {
+            let text = dispatch(&chat, &mut sink, tool, &json!({"entity": "Project Aurora"}))
+                .await
+                .text;
+            let li_line = line(&text, "Li Si");
+            assert!(
+                li_line.contains("2024-07-05 → 2025-09-01, superseded by Zhou Qi)"),
+                "{tool}: {text}"
+            );
+            let l = marks(li_line);
+            assert_eq!(l.len(), 1, "{tool}: {text}");
+            assert_eq!(chunk_of(&sink, l[0]), s.handover, "{tool}: the line's own passage");
+        }
+        let path = dispatch(
+            &chat,
+            &mut sink,
+            "paths_between",
+            &json!({"from": "Wang Wu", "to": "Li Si"}),
+        )
+        .await
+        .text;
+        assert!(
+            path.contains("2024-07-05 → 2025-09-01, superseded by Zhou Qi)"),
+            "{path}"
+        );
+        assert!(
+            !sink.source_ids.contains(&update.to_string()),
+            "a closer without live evidence adds no entry: {:?}",
+            sink.sources
         );
         anyhow::Ok(())
     }
