@@ -322,7 +322,7 @@ fn bound() -> Vec<Value> {
     ]
 }
 fn none() -> Vec<Value> {
-    vec![vote(None, None), vote(None, None), nothing_implied()]
+    vec![vote(None, None)]
 }
 
 /// 类别词对齐还排着时短语对齐不动手：两端的类还没定，判了也是重判。它给自己排一份半分钟
@@ -591,8 +591,8 @@ async fn an_edit_during_the_model_request_leaves_the_decision_stale() -> anyhow:
         f.run().await?;
         assert_eq!(
             f.requests().len(),
-            4,
-            "two votes, then two votes again (a none is not asked for rules): the basis differs, not the clock"
+            3,
+            "one vote that says none, then two votes (a none is not asked for rules): the basis differs, not the clock"
         );
         assert_eq!(f.binding().await?.status, "bound");
         anyhow::Ok(())
@@ -657,6 +657,29 @@ async fn a_person_decision_made_during_the_request_is_not_overwritten() -> anyho
 
 /// 类别词那边 bench 里「12 篇文档一个词都没绑上」的回复形状搬到短语上：DeepSeek-V3.2
 /// 把整段答成按 id 作键的对象，第二票把 `b` 写成对象、值写成 `{"key","direction"}`。
+/// 第一票说没有，结论就是没有：第二票不投，也不问规则
+#[tokio::test]
+async fn a_first_vote_that_says_none_is_not_followed_by_a_second() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.script(vec![
+            vote(None, None),
+            vote(Some("based_in"), Some("forward")),
+        ]);
+        f.run().await?;
+        assert_eq!(f.requests().len(), 1, "one vote");
+        assert_eq!(f.binding().await?.status, "none");
+        assert_eq!(f.reason().await?.as_deref(), Some("first_vote_none"));
+        assert_eq!(f.typed().await?, 0);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
 /// 两票都得读出来，签名才绑得上
 #[tokio::test]
 async fn an_id_keyed_reply_still_binds_the_phrase() -> anyhow::Result<()> {
@@ -702,7 +725,11 @@ async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyho
             json!({"answer": "based_in", "direction": "forward"}),
         ]);
         f.run().await?;
-        assert_eq!(f.requests().len(), 2, "two votes, neither readable");
+        assert_eq!(
+            f.requests().len(),
+            1,
+            "the first vote is unreadable, the second is not cast"
+        );
         assert!(
             phrase_bindings::bindings(&f.pool, f.kb).await?.is_empty(),
             "an unreadable reply writes no decision"
@@ -722,7 +749,7 @@ async fn an_unreadable_reply_is_asked_again_a_bounded_number_of_times() -> anyho
         f.clear_jobs().await?;
         // 已经是最后一次自己排的：不再排
         align_phrases_reasking(&f.state, f.kb, MAX_REASK).await?;
-        assert_eq!(f.requests().len(), 4, "the last allowed round still asks");
+        assert_eq!(f.requests().len(), 2, "the last allowed round still asks");
         let after: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM jobs WHERE kind='align_phrases' AND payload->>'kb_id'=$1",
         )

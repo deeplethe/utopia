@@ -184,6 +184,15 @@ fn consider<'a>(
         .collect()
 }
 
+/// 第二票要不要投。第二票防的是「选第一个」冒充一致，要两票一致的是**绑定**；第一票
+/// 说没有一条对得上的签名，第二票怎么答都绑不上：答没有是「无」，答了一条是「拿不定」。
+/// 测量库一轮 864 条签名里第一票说没有的 317 条，没有一条最后绑上（bench README，
+/// 2026-09-28），这一票省下。第一票没答到的也不投：少一票本来就不下结论。
+/// 补问 marks 的照旧投两票：它要两票说同一个值
+fn second_vote_is_due(first: &Vote, first_answered: bool, marks_only: bool) -> bool {
+    marks_only || (first_answered && first.is_some())
+}
+
 /// 类别词规则的宾语是从类别词自己的字里读出来的（「british film」读出英国），只有中心词
 /// 的类别词（「state」「ship」）没有可读的字：一轮 159 个类别词里 127 个是单个词，提出
 /// 的 8 条规则没有一条读得出宾语（bench README，2026-09-28）。这种不问。
@@ -633,6 +642,7 @@ async fn align_phrases_locked(
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| !cands[*i].is_empty())
+                .filter(|(i, s)| pass == 0 || second_vote_is_due(&votes[*i].0, answered[*i].0, marks_only.contains_key(&s.key())))
                 .map(|(i, s)| {
                     let mut list: Vec<&RelationTypeView> = cands[i].clone();
                     if pass == 1 {
@@ -820,7 +830,9 @@ async fn align_phrases_locked(
             }
             let (a, b) = &votes[i];
             let (ans_a, ans_b) = answered[i];
-            if !ans_a || !ans_b {
+            // 第一票说没有的不投第二票（见 `second_vote_is_due`）：结论就是没有
+            let asked_twice = second_vote_is_due(a, ans_a, false);
+            if !ans_a || (asked_twice && !ans_b) {
                 // 有一票没答到：不下结论，下次再问
                 unanswered += 1;
                 continue;
@@ -833,7 +845,11 @@ async fn align_phrases_locked(
                     })
                     .unwrap_or(serde_json::Value::Null)
             };
-            let record = serde_json::json!({ "first": show(a), "second": show(b) });
+            let record = if asked_twice {
+                serde_json::json!({ "first": show(a), "second": show(b) })
+            } else {
+                serde_json::json!({ "first": null, "reason": "first_vote_none" })
+            };
             // 两票选的属性与方向（或都说没有）是否一致
             let agree = match (a, b) {
                 (Some((ka, da, _)), Some((kb, db, _))) => ka == kb && da == db,
