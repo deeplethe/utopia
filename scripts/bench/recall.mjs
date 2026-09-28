@@ -329,6 +329,7 @@ function table(dir) {
   const row = (name, f) => `| ${name} | ${groups.map(([, rs]) => ms(rs.map(f))).join(" | ")} |`;
   const lines = [`| | ${cols.join(" | ")} |`, `| --- |${cols.map(() => " --- |").join("")}`];
   lines.push(row("总分（/52）", (r) => r.score.pass));
+  lines.push(row("抽完后等收尾（秒）", (r) => r.settleSeconds));
   lines.push(row("排给裁决的对（全库）", (r) => r.pairs?.total));
   lines.push(row("其中合并的", (r) => r.pairs?.merged));
   for (const doc of docs) {
@@ -341,6 +342,9 @@ function table(dir) {
     lines.push(row(`${doc} 秒`, (r) => d(r).seconds));
   }
   console.log(lines.join("\n"));
+  // 没等到收尾就记下的轮次（卡住十五分钟才停）：数是快照，单独点名，别混进均值里看不出来
+  const unsettled = runs.filter((r) => r.settled === false);
+  if (unsettled.length) console.log(`\n没等到收尾的轮次：${unsettled.map((r) => `${r.at}（${r.known}）`).join("、")}`);
 
   // 事实集合的 Jaccard：每篇文档各算，再平均
   const jac = (a, b) => {
@@ -431,4 +435,36 @@ for (;;) {
   await sleep(30000);
 }
 
-record(score(), stats(queuedAt), { endpoint, pairs: pairs(queuedAt) });
+// **抽完不等于这一轮完了**：对齐、治理、时间消解、裁决还在后头跑，一边补事实一边裁对子
+// （同一篇财报，抽完那一刻 552 条事实，一小时后 565）。不等它们收尾，每轮记下的就是
+// 「抽完那一刻」各不相同的快照，两组之间多出一份与 known 无关的抖动。
+// 等到没有该跑的任务：running 的，和 run_at 一分钟之内到点的 queued（对齐排队时带几秒防抖，
+// 前一个没完的会带延迟重排；更远的定时任务不算这一轮的）。进展看跑完的任务数，规矩同上：慢不算超时，卡住才算。
+// 秒数那一栏读的是 extracted_at，不受这里等多久影响
+const pendingJobs = `SELECT count(*) FROM jobs WHERE status = 'running'
+                       OR (status = 'queued' AND run_at <= now() + interval '1 minute')`;
+const settleFrom = Date.now();
+let settled = false;
+last = -1;
+stall = 0;
+for (;;) {
+  const left = num(pendingJobs);
+  const finished = num(`SELECT count(*) FROM jobs WHERE status IN ('done','failed')`);
+  if (left === 0) {
+    settled = true;
+    break;
+  }
+  const kinds = psql(`SELECT string_agg(kind || '×' || n, ' ' ORDER BY kind) FROM
+    (SELECT kind, count(*) AS n FROM jobs WHERE status = 'running'
+        OR (status = 'queued' AND run_at <= now() + interval '1 minute') GROUP BY kind) k`);
+  console.log(`${stamp()} 等收尾：还有 ${left} 个任务（${kinds}）`);
+  if (finished === last) {
+    if (++stall > 30) { console.log("十五分钟没有任务跑完，不等了：这一轮记下的不是收尾之后的数"); break; }
+  } else stall = 0;
+  last = finished;
+  await sleep(30000);
+}
+const settleSeconds = Math.round((Date.now() - settleFrom) / 1000);
+if (settled) console.log(`${stamp()} 收尾完了（抽完之后又等了 ${settleSeconds} 秒）`);
+
+record(score(), stats(queuedAt), { endpoint, pairs: pairs(queuedAt), settled, settleSeconds });
