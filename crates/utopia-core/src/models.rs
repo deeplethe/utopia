@@ -839,6 +839,12 @@ pub struct EntityFact {
     pub stale: bool,
     /// 修正行（supersedes 链上）：区间闭合来自引擎对账/人工裁决而非抽取原文
     pub corrected: bool,
+    /// 终点是时间线推出来的（`facts.end_derived`）：后一条事实开始时引擎把它关上，原文没说
+    /// 这一天（#970）
+    pub end_derived: bool,
+    /// 区间是人改过的：supersedes 链上有一条 `fact.time_corrected` 审计（#970）。与
+    /// `corrected` 不同，那一位是任何一次改写：自动接续、审阅裁决、人手改
+    pub time_corrected: bool,
     /// 证据集合里最新的文档时间——开放事实的"最后确认时间"（时效性透明化）
     pub last_evidence_time: Option<DateTime<Utc>>,
     /// 有争议（0017 §3）：`{ kind, ref_id, derived? }`——哪一种（违规的 kind，或

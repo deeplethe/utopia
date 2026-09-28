@@ -10,7 +10,8 @@ import { citeHref } from "../citations";
 import { S } from "../i18n";
 import { useKbId } from "../kb";
 import { originLabel } from "../origin";
-import { CiteChip, CiteMark, CiteRow, PreviewCard } from "../ui/citation";
+import { quoteParam, sourceLead } from "../quotes";
+import { CiteChip, CiteMark, CiteRow, PreviewCard, QuotedText } from "../ui/citation";
 import { CodeBlock } from "./chatCopy";
 
 /** 这一轮回答的来源。
@@ -75,7 +76,7 @@ export function SourceList({ sources }: { sources: Source[] }) {
           ) : (
             <span className="block truncate">
               <span className="u-num text-accent">[{s.n}]</span> {s.filename} ·{" "}
-              {s.excerpt.slice(0, 60)}…
+              {sourceLead(s).slice(0, 60)}…
             </span>
           )}
         </CiteRow>
@@ -127,12 +128,12 @@ function SourcePreview({ s }: { s: Source }) {
     <PreviewCard
       title={s.filename}
       meta={originLabel(chunk?.origin, chunk?.anchor) ?? undefined}
-      body={chunk?.text ?? s.excerpt}
+      body={<QuotedText text={chunk?.text ?? s.excerpt} quotes={s.quotes} />}
       action={
         <Link
           to="/kb/$kbId/doc/$docId"
           params={{ kbId, docId: s.document_id! }}
-          search={{ chunk: s.chunk_id }}
+          search={{ chunk: s.chunk_id, quote: quoteParam(s.quotes?.[0]) }}
           className="u-card-link flex items-center gap-1 text-fine text-ink-2"
         >
           {S.ask.openOriginal}

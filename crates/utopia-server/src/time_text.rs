@@ -31,7 +31,9 @@ pub fn world(t: DateTime<Utc>, precision: Option<&str>) -> String {
     }
 }
 
-/// 一条事实的两端：原文说的（`valid_*` 与精度）和读出来的（`holds_*`，0022）。
+/// 一条事实的两端：原文说的（`valid_*` 与精度）和读出来的（`holds_*`，0022），以及日期
+/// 从哪来（#970）：终点是时间线推出来的、区间是人改过的，这两样都不在那一行 `[n]` 打开的
+/// 原句里。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Span<'a> {
     pub valid_from: Option<DateTime<Utc>>,
@@ -40,6 +42,10 @@ pub struct Span<'a> {
     pub to_precision: Option<&'a str>,
     pub holds_from: Option<DateTime<Utc>>,
     pub holds_to: Option<DateTime<Utc>>,
+    /// 终点是后一条事实开始时时间线关上的（`facts.end_derived`）
+    pub end_derived: bool,
+    /// 区间是人改过的（supersedes 链上有 `fact.time_corrected`）
+    pub corrected: bool,
 }
 
 /// `from → to`，给模型看。
@@ -48,6 +54,10 @@ pub struct Span<'a> {
 /// 只是从那份证据起有据可查。终点：原文给了按精度写；结束了不知哪天写
 /// `ended by <锚点>`（没有锚点时写 `ended, date unknown`）；否则 `now`。
 /// 两端都无可写时返回空串，调用方据此决定不带括号。
+///
+/// 日期不是原文说的就跟在后面说出来（#970）：人改过的区间写 `corrected`，时间线推出来的
+/// 终点写 `end derived`（只在有终点时）。这是这一行的事实，不是引用：`[n]` 仍是那条事实
+/// 读出来的原句，而原句里没有这两种日期
 pub fn span(s: Span<'_>) -> String {
     let from = match (s.valid_from, s.holds_from) {
         (Some(t), _) => Some(world(t, s.from_precision)),
@@ -66,11 +76,21 @@ pub fn span(s: Span<'_>) -> String {
         (None, true, None) => Some("ended, date unknown".to_string()),
         (None, false, _) => None,
     };
-    match (from, to) {
+    let derived = s.end_derived && to.is_some();
+    let range = match (from, to) {
         (None, None) => String::new(),
         (Some(f), None) => format!("{f} → now"),
         (None, Some(t)) => format!("→ {t}"),
         (Some(f), Some(t)) => format!("{f} → {t}"),
+    };
+    let marks: Vec<&str> = [(s.corrected, "corrected"), (derived, "end derived")]
+        .into_iter()
+        .filter_map(|(on, mark)| on.then_some(mark))
+        .collect();
+    match (range.is_empty(), marks.is_empty()) {
+        (_, true) => range,
+        (true, false) => marks.join(", "),
+        (false, false) => format!("{range}, {}", marks.join(", ")),
     }
 }
 
@@ -128,6 +148,7 @@ mod tests {
                 to_precision: Some("month"),
                 holds_from: day("2023-01-01T00:00:00Z"),
                 holds_to: day("2024-07-01T00:00:00Z"),
+                ..Span::default()
             }),
             "2023 → 2024-07"
         );
@@ -148,6 +169,7 @@ mod tests {
                 to_precision: Some("unknown"),
                 holds_from: day("2023-06-01T00:00:00Z"),
                 holds_to: day("2025-10-15T00:00:00Z"),
+                ..Span::default()
             }),
             "2023-06-01 → ended, date unknown"
         );
@@ -160,5 +182,68 @@ mod tests {
             "→ ended, date unknown"
         );
         assert_eq!(span(Span::default()), "");
+    }
+
+    /// 日期不是原文说的，就在区间后面说出来（#970）：时间线关上的终点、人改过的区间。
+    /// 没有终点就没有「推出来的终点」；区间为空却改过，只说改过
+    #[test]
+    fn a_span_says_when_a_date_is_not_the_passages() {
+        let day = |s: &str| Some(t(s));
+        let closed = Span {
+            valid_from: day("2024-07-05T00:00:00Z"),
+            from_precision: Some("day"),
+            valid_to: day("2025-09-01T00:00:00Z"),
+            to_precision: Some("day"),
+            ..Span::default()
+        };
+        assert_eq!(
+            span(Span {
+                end_derived: true,
+                ..closed
+            }),
+            "2024-07-05 → 2025-09-01, end derived"
+        );
+        assert_eq!(
+            span(Span {
+                corrected: true,
+                ..closed
+            }),
+            "2024-07-05 → 2025-09-01, corrected"
+        );
+        assert_eq!(
+            span(Span {
+                corrected: true,
+                end_derived: true,
+                ..closed
+            }),
+            "2024-07-05 → 2025-09-01, corrected, end derived"
+        );
+        // 时间线关在一个没说起点的后任上：结束了不知哪天，也是推出来的
+        assert_eq!(
+            span(Span {
+                valid_to: None,
+                to_precision: Some("unknown"),
+                end_derived: true,
+                ..closed
+            }),
+            "2024-07-05 → ended, date unknown, end derived"
+        );
+        // 开着的行没有终点可推
+        assert_eq!(
+            span(Span {
+                valid_to: None,
+                to_precision: None,
+                end_derived: true,
+                ..closed
+            }),
+            "2024-07-05 → now"
+        );
+        assert_eq!(
+            span(Span {
+                corrected: true,
+                ..Span::default()
+            }),
+            "corrected"
+        );
     }
 }

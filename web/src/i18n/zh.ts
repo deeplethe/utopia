@@ -69,6 +69,7 @@ export const zh: Strings = {
     model_rate_limited: "模型端点在限流，稍等一会儿再问。",
     model_unavailable: "模型端点暂时不可用，请稍后再试。",
     model_unreachable: "模型端点没有给出可用的回答。去「管理 → 模型」里检查端点地址。",
+    context_too_long: "这场对话超出了模型的上下文长度。请新建一场对话。",
     model_rejected: "模型端点拒绝了这次请求。去「管理 → 模型」里检查模型设置。",
     answer_running: "这个对话里还有一个回答正在生成，等它写完再试。",
     retry_answered: "这个问题已经有回答了，或者后面已经接着问了别的。",
@@ -1005,6 +1006,10 @@ export const zh: Strings = {
     loading: "加载中…",
     extracted: "已抽取",
     ongoing: "至今",
+    /** `#610`：`doc_time` 是从文件里读出来的日期；与上传时刻是两件事 */
+    docDate: "文档日期",
+    docDateFromContent: "从文件名或正文首行认出来的",
+    uploadedAt: "上传于",
   },
   settings: {
     title: "管理",

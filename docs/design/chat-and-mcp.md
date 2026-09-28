@@ -20,9 +20,21 @@ shorter"; `STALL_NUDGE` and `DONE` are gone [0042 d3]. The wire stays `LlmClient
 error bodies, the classification of a failure as out of credit, rate limited, unavailable or nothing
 of the kind, and cache logging; earlier
 entities become a `system` message right before the question; degradation to one-shot RAG happens
-only on a 400 or 422 to the first request with tools [0042 d2]. A question whose answer failed stays
+only on a 400 or 422 to the first request with tools that is not a context-window refusal [0042 d2]. A question whose answer failed stays
 stored without one; a retry names it (`retry_message_id`) and answers it in place, only while it is
 the conversation's last message and no answer is being written there (#936).
+
+**Long conversations.** The 20-message history window also has a 32,000-character default
+budget. The previous turn's tool exchange is dropped first, then the oldest whole exchanges;
+failed questions and stopped answers count too, and an orphan answer at the count boundary is not
+sent. A context-window refusal halves the remaining history and retries the request once for the
+whole user turn. It keeps the current question, system prompt and current tool results intact,
+does not execute tools again, and does not retry when nothing can be dropped. Tool calling,
+one-shot RAG and the reserved final answer share the same window and retry. A second refusal is
+`context_too_long`, offering a new conversation. The workspace's client remembers a stated
+window of at least 1,024 tokens for later turns: the history budget becomes half that many
+characters, between 2,000 and 32,000 (a heuristic, not token accounting). Changing the model
+settings resets that learned limit. Stored conversation messages are never deleted [0042].
 
 **Stop** explicitly cancels pending model and tool work, then saves the published partial answer
 once with `stopped: true` before sending `done`. The browser waits for that terminal outcome before
@@ -39,6 +51,12 @@ later turn [0063].
 line with the `[n]` of its first live evidence chunk, registered in the turn's source list the way a
 search hit is, so a graph answer opens to its sentence; a derived fact carries no number and its
 premises carry theirs where they are shown; MCP text stays unnumbered, its evidence being `document_ids` (#935). The
+entry a graph fact cites carries the sentence the fact was read from (`quotes`, one chunk keeping
+one number however many of its sentences are cited, a search hit gaining the sentence when a graph
+tool cites it), and the preview and the document page mark it, so the number opens the sentence
+itself (#968's follow-up). A date that passage does not state says so on the line, in chat and MCP
+alike: an end the timeline derived reads `…, end derived`, an interval a person corrected
+`…, corrected`, and the prompt says neither is attributed to the passage (#970). The
 previous turn's tool calls are replayed so the model knows what it did, not only
 what it said [0015]; a turn that gathers nothing, such as a restatement, keeps the previous answer's
 sources for the citation numbers it repeats (#943).
@@ -47,7 +65,8 @@ sources for the citation numbers it repeats (#943).
 `relaxed_order` iterative scan, plus full text in embedded Tantivy; both take `as_of`; full text is
 "now" only; neither takes `at` [0035, 0019, 0022]. Confirmed mappings and a schema document reach
 the prompt through retrieval; a conventions document works today where a rule would be exact
-[0011, 0036].
+[0011, 0036]. A turn embeds its question once: choosing the mappings, `search_chunks` and the
+graph lookups share the turn's embedding cache (#971).
 
 **`remember`** writes a memory document at once; its statements go through open extraction and wait
 in `pending_facts`; the assistant says the sentence is recorded and its statements will be shown

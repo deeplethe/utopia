@@ -5,6 +5,7 @@ vi.mock("./i18n", () => ({
     ask: { streamInterrupted: "Stream interrupted" },
     err: {
       no_chat_model: "Worded: configure a chat model",
+      context_too_long: "Worded: start a new conversation",
       model_out_of_credit: "Worded: the model account cannot pay",
       answer_running: "Worded: this conversation already has an answer in progress",
     },
@@ -84,6 +85,11 @@ describe("a chat stream that fails", () => {
     const text = failed({ error: "LLM account cannot pay for this request (402): x", code: "model_out_of_credit" });
     expect(await replay(text)).toEqual([["error", "Worded: the model account cannot pay"]]);
     expect(await replay(text, true)).toEqual([["error", "Worded: the model account cannot pay"]]);
+  });
+  it("offers a new conversation for context overflow on both live and reattached streams", async () => {
+    const text = failed({ error: "maximum context length is 16384 tokens", code: "context_too_long" });
+    expect(await replay(text)).toEqual([["error", "Worded: start a new conversation"]]);
+    expect(await replay(text, true)).toEqual([["error", "Worded: start a new conversation"]]);
   });
   it("keeps the server's sentence for a code the table does not have", async () => {
     expect(await replay(failed({ error: "Some new failure", code: "unlisted_code" })))

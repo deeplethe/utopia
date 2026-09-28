@@ -23,11 +23,12 @@ const PROVIDER: &str = "utopia";
 #[derive(Clone)]
 pub struct RigModel {
     client: LlmClient,
+    context: super::chat_context::Context,
 }
 
 impl RigModel {
-    pub fn new(client: LlmClient) -> Self {
-        Self { client }
+    pub(super) fn with_context(client: LlmClient, context: super::chat_context::Context) -> Self {
+        Self { client, context }
     }
 
     /// 开一条流。**端点不接受 `tool_choice` 时去掉它重发一次**：`required` 不在
@@ -38,20 +39,22 @@ impl RigModel {
         w: &Wire,
     ) -> Result<impl Stream<Item = anyhow::Result<ToolStreamItem>> + Send + use<>, CompletionError>
     {
-        match self
-            .client
-            .chat_tools_stream_with(&w.messages, w.tools.as_ref(), w.tool_choice.as_ref())
-            .await
-        {
-            Ok(s) => Ok(s),
-            Err(e) if w.tool_choice.is_some() && rejected_shape(&e) => {
-                tracing::warn!(error = %e, "端点不接受 tool_choice，去掉重发");
-                self.client
-                    .chat_tools_stream_with(&w.messages, w.tools.as_ref(), None)
-                    .await
-                    .map_err(completion_error)
+        let mut choice = w.tool_choice.as_ref();
+        loop {
+            let messages = self.context.apply(&w.messages);
+            match self
+                .client
+                .chat_tools_stream_with(&messages, w.tools.as_ref(), choice)
+                .await
+            {
+                Ok(s) => return Ok(s),
+                Err(e) if self.context.recover(&self.client, &e) => continue,
+                Err(e) if choice.is_some() && rejected_shape(&e) => {
+                    tracing::warn!(error = %e, "端点不接受 tool_choice，去掉重发");
+                    choice = None;
+                }
+                Err(e) => return Err(completion_error(e)),
             }
-            Err(e) => Err(completion_error(e)),
         }
     }
 }
@@ -62,20 +65,22 @@ impl CompletionModel for RigModel {
         request: CompletionRequest,
     ) -> Result<CompletionResponse, CompletionError> {
         let w = wire(&request);
-        let turn = match self
-            .client
-            .chat_tools_with(&w.messages, w.tools.as_ref(), w.tool_choice.as_ref())
-            .await
-        {
-            Ok(t) => t,
-            Err(e) if w.tool_choice.is_some() && rejected_shape(&e) => {
-                tracing::warn!(error = %e, "端点不接受 tool_choice，去掉重发");
-                self.client
-                    .chat_tools_with(&w.messages, w.tools.as_ref(), None)
-                    .await
-                    .map_err(completion_error)?
+        let mut choice = w.tool_choice.as_ref();
+        let turn = loop {
+            let messages = self.context.apply(&w.messages);
+            match self
+                .client
+                .chat_tools_with(&messages, w.tools.as_ref(), choice)
+                .await
+            {
+                Ok(t) => break t,
+                Err(e) if self.context.recover(&self.client, &e) => continue,
+                Err(e) if choice.is_some() && rejected_shape(&e) => {
+                    tracing::warn!(error = %e, "端点不接受 tool_choice，去掉重发");
+                    choice = None;
+                }
+                Err(e) => return Err(completion_error(e)),
             }
-            Err(e) => return Err(completion_error(e)),
         };
         Ok(
             CompletionResponse::new(choice_of(&turn), Usage::new(), PROVIDER)
@@ -166,9 +171,12 @@ pub fn llm_failure(err: &CompletionError) -> Option<&anyhow::Error> {
 }
 
 /// 端点拒绝了请求的形状（400/422）。带工具的首个请求撞上它，才是「这家不支持
-/// 工具调用」；网断、密钥错、限流、欠费都不是，降级也救不了它们
+/// 工具调用」；网断、密钥错、限流、欠费都不是，降级也救不了它们。上下文超限也是
+/// 400，但那是历史太长不是形状不对：裁掉旧问答重发才是解法，退成 RAG 只会把同样
+/// 长的历史再发一遍（#964）
 fn rejected_shape(err: &anyhow::Error) -> bool {
-    utopia_llm::rejected(err).is_some_and(|r| r.status == 400 || r.status == 422)
+    utopia_llm::context_too_long(err).is_none()
+        && utopia_llm::rejected(err).is_some_and(|r| r.status == 400 || r.status == 422)
 }
 
 /// 见 [`rejected_shape`]，从 rig 的错误上判
@@ -259,7 +267,7 @@ fn tool_choice_json(choice: &ToolChoice) -> Option<Value> {
     }
 }
 
-fn push_message(out: &mut Vec<Value>, m: &Message) {
+pub(super) fn push_message(out: &mut Vec<Value>, m: &Message) {
     match m {
         Message::System { content } => out.push(json!({ "role": "system", "content": content })),
         Message::User { content } => {

@@ -1532,6 +1532,26 @@ pub async fn entity_node(
     .await?)
 }
 
+/// 本库被人改过区间的行（`fact.time_corrected` 审计记在被改的那一行上，#970）。查询开头
+/// 取一次，每一行只顺着自己的 supersedes 链对它。取的这一次走部分索引
+/// `audit_events_time_corrected_idx`（迁移 0097）：只收这一种动作，不读这个库别的审计。`$1` 是库
+pub(crate) const TIME_CORRECTED_TARGETS: &str = "time_corrected_targets AS MATERIALIZED (
+         SELECT DISTINCT target_id FROM audit_events
+          WHERE kb_id = $1 AND action = 'fact.time_corrected' AND target_id IS NOT NULL)";
+
+/// 这一行的区间是不是人改过的：它的 supersedes 链上有一行在 [`TIME_CORRECTED_TARGETS`] 里。
+/// 改完之后时间线再关它、合并再搬它，都是在链上往下接，往上仍找得到那一次人改
+pub(crate) fn time_corrected_sql(alias: &str) -> String {
+    format!(
+        "EXISTS (WITH RECURSIVE chain(id) AS (
+                     SELECT {alias}.supersedes WHERE {alias}.supersedes IS NOT NULL
+                     UNION
+                     SELECT p.supersedes FROM facts p JOIN chain ON p.id = chain.id
+                      WHERE p.supersedes IS NOT NULL)
+                 SELECT 1 FROM chain JOIN time_corrected_targets t ON t.target_id = chain.id)"
+    )
+}
+
 /// 实体详情：节点信息 + 事实时间线。
 pub async fn entity_detail(
     pool: &PgPool,
@@ -1545,7 +1565,8 @@ pub async fn entity_detail(
         .ok_or(AppError::NotFound)?;
 
     let mut facts: Vec<EntityFact> = sqlx::query_as(&format!(
-        "SELECT f.id, {said_as} AS said_as, f.recorded_at, f.invalidated_at, f.supersedes,
+        "WITH {targets}
+         SELECT f.id, {said_as} AS said_as, f.recorded_at, f.invalidated_at, f.supersedes,
                 ARRAY(SELECT DISTINCT fe.document_id FROM fact_evidence fe
                       WHERE fe.fact_id = f.id AND fe.document_id IS NOT NULL
                       ORDER BY fe.document_id) AS document_ids,
@@ -1564,6 +1585,7 @@ pub async fn entity_detail(
                                  WHERE fe.fact_id = f.id AND {chunk_live})
                 ) AS stale,
                 (f.supersedes IS NOT NULL) AS corrected,
+                f.end_derived, {time_corrected} AS time_corrected,
                 (SELECT MAX(COALESCE(d.doc_time, d.created_at))
                  FROM fact_evidence fe JOIN documents d ON d.id = fe.document_id
                  WHERE fe.fact_id = f.id) AS last_evidence_time,
@@ -1595,6 +1617,8 @@ pub async fn entity_detail(
            AND ({subject} = $2 OR {object} = $2)
            AND {not_name}
          ORDER BY f.valid_from NULLS LAST, f.recorded_at",
+        targets = TIME_CORRECTED_TARGETS,
+        time_corrected = time_corrected_sql("f"),
         not_name = crate::names::not_a_name("f"),
         said_as = said_as("f"),
         represented = represented_by_typed("f"),
@@ -1905,7 +1929,7 @@ pub async fn first_live_evidence(
     kb_id: Uuid,
     fact_ids: &[Uuid],
     as_of: Option<chrono::DateTime<chrono::Utc>>,
-) -> AppResult<Vec<(Uuid, utopia_core::models::ChunkView)>> {
+) -> AppResult<Vec<(Uuid, utopia_core::models::ChunkView, Option<String>)>> {
     if fact_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -1917,9 +1941,13 @@ pub async fn first_live_evidence(
         seq: i32,
         text: String,
         filename: String,
+        quote: Option<String>,
     }
+    // 连同那条证据的引文一起取（#968 的后续）：号打开的是那一块，引文是块里说出这条事实的
+    // 那句话。同一块里几条证据时取块里最靠前的那一句，排序到此为止才是确定的
     let rows: Vec<Row> = sqlx::query_as(&format!(
-        "SELECT DISTINCT ON (fe.fact_id) fe.fact_id, c.id, c.document_id, c.seq, c.text, d.filename
+        "SELECT DISTINCT ON (fe.fact_id) fe.fact_id, c.id, c.document_id, c.seq, c.text, d.filename,
+                NULLIF(btrim(fe.quote), '') AS quote
            FROM fact_evidence fe
            JOIN chunks c ON c.id = fe.chunk_id
            JOIN documents d ON d.id = c.document_id
@@ -1945,6 +1973,7 @@ pub async fn first_live_evidence(
                     text: r.text,
                     filename: r.filename,
                 },
+                r.quote,
             )
         })
         .collect())
