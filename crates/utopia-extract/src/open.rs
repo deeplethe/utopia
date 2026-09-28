@@ -149,15 +149,7 @@ its units, a percentage, an amount, a count, a title, a status. phrase is how th
 what is measured or stated (\"area\", \"was completed\", \"joined\", \"占地面积\"); value is the \
 literal as written. Wording that names or describes something is not a value: that something \
 goes in \"e\" and is linked by a statement with an object. \"1,200 beekeepers joined\" is the \
-thing \"beekeepers\" with \"joined\" = \"1,200\". Write every figure the passage states. In a \
-table, a cell is a statement about its row's thing whose phrase is the column heading. When \
-the column heading names one time (a date, a quarter, a period), it is when instead, the \
-statement is about the thing the table's caption names (the company of a financial statement) \
-and the phrase is the row label as written, path included (\"Operating expenses › Research and \
-development\"); a heading that names a comparison between periods (a change from the quarter \
-before, a change from a year ago) is not a time, it stays the phrase; a unit the caption or a \
-heading gives (\"In millions\") is a qualifier on each such statement. Leave out cells whose \
-column heading is not in the passage.\n\
+thing \"beekeepers\" with \"joined\" = \"1,200\". Write every figure the passage states.{TABLE}\n\
    A list is one statement per member, and so is a subject or object that joins several things \
 (\"the city and the county funded the bridge\" is two statements).\n\
 3. Nothing in a sentence is dropped. When more than two things take part, or the link carries \
@@ -214,6 +206,47 @@ $2 million on March 4, 2011.\" gives:\n\
  \"n\": [],\n\
  \"t\": []}";
 
+/// 表格的读法，只在这一段里有表格时才进系统消息（见 [`has_table`]）：没有表格的段落
+/// 用不上它，而它占系统消息的一成不到
+const OPEN_TABLE_RULES: &str = "\
+ In a \
+table, a cell is a statement about its row's thing whose phrase is the column heading. When \
+the column heading names one time (a date, a quarter, a period), it is when instead, the \
+statement is about the thing the table's caption names (the company of a financial statement) \
+and the phrase is the row label as written, path included (\"Operating expenses › Research and \
+development\"); a heading that names a comparison between periods (a change from the quarter \
+before, a change from a year ago) is not a time, it stays the phrase; a unit the caption or a \
+heading gives (\"In millions\") is a qualifier on each such statement. Leave out cells whose \
+column heading is not in the passage.";
+
+/// 这一段里有没有表格：Markdown 的竖线、HTML 的单元格、制表符，或者一行里用成串空格
+/// 隔开的三栏以上。宁可多认：认错了只是多带一段规则，和从前一样
+fn has_table(passage: &str) -> bool {
+    let lower = passage.to_ascii_lowercase();
+    passage.contains('|')
+        || passage.contains('\t')
+        || lower.contains("<td")
+        || lower.contains("<th")
+        || lower.contains("<tr")
+        || passage.lines().any(|l| {
+            l.trim()
+                .split("  ")
+                .filter(|c| !c.trim().is_empty())
+                .count()
+                >= 3
+        })
+}
+
+/// 这一段的系统消息：规则不变，只有表格的那几句按段落带或不带
+fn system_for(passage: &str) -> String {
+    let table = if has_table(passage) {
+        OPEN_TABLE_RULES
+    } else {
+        ""
+    };
+    OPEN_SYSTEM.replace("{TABLE}", table)
+}
+
 /// 构造开放抽取的两条消息：常量系统消息 + `Document:` / 开头 / 已知实体 / `Passage:`。
 ///
 /// 没有文档日期、没有类型与关系清单、没有属性——这些都不进提示词。开头与已知实体
@@ -233,7 +266,7 @@ pub fn build_open_messages(
     vec![
         ChatMessage {
             role: "system".into(),
-            content: OPEN_SYSTEM.to_string(),
+            content: system_for(chunk_text),
         },
         ChatMessage {
             role: "user".into(),
@@ -765,6 +798,28 @@ mod tests {
 
     /// 提示词里没有文档日期、没有类型与关系清单、没有编号与句柄；有文件名、开头、
     /// 已知名字与正文，并且按这个顺序
+    #[test]
+    fn the_table_rules_ride_only_with_a_passage_that_has_a_table() {
+        let plain = "The council met on March 4, 2011. It awarded the paving contract.";
+        let system = &build_open_messages("a.md", &[], None, plain)[0].content;
+        assert!(!system.contains("In a table"));
+        assert!(!system.contains("{TABLE}"));
+        assert!(system.contains("Write every figure the passage states.\n"));
+        for table in [
+            "| Item | Q3 2025 |\n|---|---|\n| Revenue | 12 |",
+            "<table><tr><td>Revenue</td><td>12</td></tr></table>",
+            "Revenue\t12\t14",
+            "Revenue      12      14\nCosts        7       8",
+        ] {
+            let system = &build_open_messages("a.md", &[], None, table)[0].content;
+            assert!(
+                system.contains("Write every figure the passage states. In a table, a cell is"),
+                "{table}"
+            );
+            assert!(system.contains("column heading is not in the passage.\n"));
+        }
+    }
+
     #[test]
     fn the_prompt_carries_no_ontology_and_no_document_date() {
         let msgs = build_open_messages(
