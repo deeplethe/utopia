@@ -113,6 +113,18 @@ fn validate_name(name: &str) -> AppResult<&str> {
     Ok(name)
 }
 
+/// 把模型写下的阈值解析成 JSON：能读成 `i64` / `f64` 就成 `Number`，否则
+/// 落 `String`。"3"、"3.5"、"0.001" 都进 `Number`；"3%"、"high" 走字面量。
+fn numeric_or_string(value: &str) -> serde_json::Value {
+    if let Ok(n) = value.parse::<i64>() {
+        serde_json::json!(n)
+    } else if let Ok(n) = value.parse::<f64>() {
+        serde_json::json!(n)
+    } else {
+        serde_json::json!(value)
+    }
+}
+
 /// 建一条规则。**校验在这里做完**：条件的 op 与操作数形状、谓词必须是属性、
 /// 结论的两种形状各自完整——库里的 CHECK 是最后一道，报错信息却是给人看的。
 #[allow(clippy::too_many_arguments)]
@@ -1055,4 +1067,246 @@ async fn exists(
         .await?;
     row.map(|_| ())
         .ok_or_else(|| AppError::invalid(code, message))
+}
+
+/// 把一段来自语料的判据候选落地为 `attribute_rules` 的一行提案。
+///
+/// **不**经过 `create()`：那一档要求 `subject_type_id`、
+/// `conclude_type_id|predicate_id` 与 `attribute_rule_conditions.predicate_id`
+/// 全部是 `kb_id` 内的 UUID，而模型在 `OpenCriterion` 里给出的是原文
+/// 措辞（"well"、"全烃"、"优秀井"）。这一档做的事是：
+///
+///  1. 按 `label`（忽略大小写）把措辞解析成本库里的 UUID
+///  2. **全**解析出来——subject / conclude / 条件谓词——就 INSERT 一行
+///     `state='proposed'`、`source_*` 写好、`attribute_rule_conditions`
+///     写好；INSERT 走事务，audit 由触发器落（#507 cut 1+2 已装）
+///  3. 任一环节没解析出来，**不**INSERT（0064 d3 的「hold」需要单独
+///     的 `pending_rule_drafts` 表，是另一档 PR 的工作；这一档只把
+///     「能落地」的那部分先落）——返回 `InsertOutcome::Unresolved`
+///     让调用方在 chunk 那一档里把这件事写进 `drop_signal`，让
+///     Review 看见「这一段有判据但词表对不上」
+///
+/// **批与单选**：调用方决定每一条判据各自落还是按 (subject, predicate,
+/// op, value) 去重——这一档不去重。原句在 `quote` 里；落两条「全烃大
+/// 于 8」的提案是 0021 既有行为（「A 规则 needs 至少一个条件」那
+/// 一关里没去重）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertOutcome {
+    /// 提案已写入
+    Inserted,
+    /// 至少一处措辞没解析到本库——这一条判据不进 `attribute_rules`
+    Unresolved,
+}
+
+/// 三件措辞——subject class、conclude class、条件谓词——的解析结果。
+/// 「OK」= 在本库里找到唯一匹配的 `label`；「None」= 没找到或
+/// 找到多个（多解算失败，让调用方写 drop_signal 让 Review 看见）。
+async fn resolve_label_to_entity_type(
+    pool: &PgPool,
+    kb_id: Uuid,
+    label: &str,
+) -> AppResult<Option<Uuid>> {
+    let trimmed = label.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    // 按 label 唯一匹配；多解则算没解析到——0064 d3 主张「hold 不
+    // refuse」，但「持有」需要一个能落地的容器，这一档没建
+    // `pending_rule_drafts`，所以走「先拒绝、后建表」的两步路
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM entity_types
+          WHERE kb_id = $1 AND LOWER(label) = LOWER($2)
+          ORDER BY created_at ASC
+          LIMIT 1",
+    )
+    .bind(kb_id)
+    .bind(trimmed)
+    .fetch_optional(pool)
+    .await?;
+    let Some((id,)) = row else { return Ok(None) };
+    let dup: Option<(i64,)> = sqlx::query_as(
+        "SELECT count(*)::bigint FROM entity_types
+          WHERE kb_id = $1 AND LOWER(label) = LOWER($2) AND id <> $3",
+    )
+    .bind(kb_id)
+    .bind(trimmed)
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    if dup.map(|(c,)| c > 0).unwrap_or(false) {
+        return Ok(None);
+    }
+    Ok(Some(id))
+}
+
+async fn resolve_label_to_relation_type(
+    pool: &PgPool,
+    kb_id: Uuid,
+    label: &str,
+    kind: &str,
+) -> AppResult<Option<Uuid>> {
+    let trimmed = label.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    // kind = "attribute" 限定到属性谓词；其它（"class" 走的是
+    // entity_types，看上面那个 helper；"relation" 不进入这一档——
+    // 一个判据的结论要么是归类、要么是属性，不是关系）
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM relation_types
+          WHERE kb_id = $1 AND LOWER(label) = LOWER($2) AND kind = $3
+          ORDER BY created_at ASC
+          LIMIT 1",
+    )
+    .bind(kb_id)
+    .bind(trimmed)
+    .bind(kind)
+    .fetch_optional(pool)
+    .await?;
+    let Some((id,)) = row else { return Ok(None) };
+    let dup: Option<(i64,)> = sqlx::query_as(
+        "SELECT count(*)::bigint FROM relation_types
+          WHERE kb_id = $1 AND LOWER(label) = LOWER($2) AND id <> $3",
+    )
+    .bind(kb_id)
+    .bind(trimmed)
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    if dup.map(|(c,)| c > 0).unwrap_or(false) {
+        return Ok(None);
+    }
+    Ok(Some(id))
+}
+
+/// 把 `OpenCriterion` 落成 `attribute_rules` 的一行提案。`actor` 是谁
+/// 跑出的抽取（一般是 system 或当前用户——这一档写入 `proposed_by`）。
+#[allow(clippy::too_many_arguments)]
+pub async fn insert_proposal_from_criterion(
+    pool: &PgPool,
+    kb_id: Uuid,
+    chunk_id: Uuid,
+    document_id: Uuid,
+    actor: Uuid,
+    rule_name: &str,
+    description: &str,
+    subject_label: &str,
+    predicate_label: &str,
+    op: &str,
+    value: &str,
+    conclude_label: &str,
+    conclude_kind: &str,
+) -> AppResult<(InsertOutcome, Option<Uuid>)> {
+    // 三处解析；任一空就 unresolved
+    let subject = match resolve_label_to_entity_type(pool, kb_id, subject_label).await? {
+        Some(id) => id,
+        None => return Ok((InsertOutcome::Unresolved, None)),
+    };
+    let predicate =
+        match resolve_label_to_relation_type(pool, kb_id, predicate_label, "attribute").await? {
+            Some(id) => id,
+            None => return Ok((InsertOutcome::Unresolved, None)),
+        };
+    let conclude = match conclude_kind {
+        "class" => {
+            let id = resolve_label_to_entity_type(pool, kb_id, conclude_label).await?;
+            match id {
+                Some(id) => ("typing", Some(id), None),
+                None => return Ok((InsertOutcome::Unresolved, None)),
+            }
+        }
+        "attribute" => {
+            let id = match resolve_label_to_relation_type(pool, kb_id, conclude_label, "attribute")
+                .await?
+            {
+                Some(id) => id,
+                None => return Ok((InsertOutcome::Unresolved, None)),
+            };
+            ("attribute", None, Some(id))
+        }
+        _ => return Ok((InsertOutcome::Unresolved, None)),
+    };
+    let name = validate_name(rule_name)?;
+    let Some(op_parsed) = utopia_reason::rules::Op::parse(op) else {
+        // eq / ne 不在 Op 里（0021）——视同 unresolved，不写一档
+        return Ok((InsertOutcome::Unresolved, None));
+    };
+    let operand = match op_parsed {
+        utopia_reason::rules::Op::Gt
+        | utopia_reason::rules::Op::Gte
+        | utopia_reason::rules::Op::Lt
+        | utopia_reason::rules::Op::Lte => numeric_or_string(value),
+        utopia_reason::rules::Op::In | utopia_reason::rules::Op::NotIn => {
+            // 模型把集合写成字符串 "{oil, gas}"——拆出来，丢空项
+            let inner = value
+                .trim()
+                .trim_matches(|c| c == '{' || c == '}')
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(numeric_or_string)
+                .collect::<Vec<_>>();
+            serde_json::json!(inner)
+        }
+        utopia_reason::rules::Op::Between => {
+            // "3% to 5%" → [lo, hi]；trim 单位字符留给 Review 读
+            let (lo, hi) = value.split_once("to").unwrap_or((value, value));
+            serde_json::json!([numeric_or_string(lo.trim()), numeric_or_string(hi.trim())])
+        }
+        utopia_reason::rules::Op::Present => serde_json::Value::Null,
+    };
+    // 列尽 Op 的所有成员：gt / gte / lt / lte / between / in / not_in
+    // / present。eq / ne 不在 Op 里——0021 决定用 Op 的既有成员；
+    // `op='eq'` 走 Gt 的语义不严谨，所以这一档把 eq / ne 视同
+    // unresolved，留待 0032 之后某档扩
+    let id = Uuid::now_v7();
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO attribute_rules
+             (id, kb_id, name, description, subject_type_id, conclusion,
+              conclude_type_id, conclude_predicate_id, conclude_value,
+              enabled,
+              source_kind, source_chunk_id, source_document_id,
+              proposed_at, proposed_by, state)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+                 false,
+                 'text', $10, $11,
+                 now(), $12, 'proposed')",
+    )
+    .bind(id)
+    .bind(kb_id)
+    .bind(name)
+    .bind(description.trim())
+    .bind(subject)
+    .bind(conclude.0)
+    .bind(conclude.1)
+    .bind(conclude.2)
+    .bind(if matches!(conclude.0, "attribute") {
+        Some(operand.clone())
+    } else {
+        None
+    })
+    .bind(chunk_id)
+    .bind(document_id)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO attribute_rule_conditions
+             (id, rule_id, seq, predicate_id, op, operand, subject_side)
+         VALUES ($1, $2, 0, $3, $4, $5, 'x')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(id)
+    .bind(predicate)
+    .bind(op)
+    .bind(if matches!(op_parsed, utopia_reason::rules::Op::Present) {
+        None
+    } else {
+        Some(operand)
+    })
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok((InsertOutcome::Inserted, Some(id)))
 }

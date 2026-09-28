@@ -870,6 +870,132 @@ pub(crate) async fn run_open(
             touched_names.insert(key);
         }
 
+        // 判据这一档（#507 cut 4 / 0064 cut 3）：与事实并列的另一条
+        // 抽取路。同一块原文，独立提示词，回复字段 `c`。**不**跑
+        // 在 `pushed` 路径上——pushed 进来的是契约 JSON，模型不在，
+        // 判据这一档也无从判。只在 `await_nod` 之外跑（合同被人点头
+        // 之前，抽取不该写提案）。
+        //
+        // 跑完 `OpenCriterion::c` 一组；每一条交给
+        // `business_rules::insert_proposal_from_criterion`——三件措辞
+        // 全解析就 INSERT 一行提案，否则 `Unresolved` 让这一档发
+        // `drop_signal` 让 Review 看见「这一段有判据但词表对不上」。
+        if !pushed {
+            if let (Some(s), Some(c)) = (settings, client) {
+                let criteria_messages =
+                    utopia_extract::criteria::build_criteria_messages(&doc.filename, &chunk.text);
+                let criteria_reply = match crate::extraction::chat_retrying_rate_limits_at(
+                    state,
+                    s,
+                    c,
+                    &criteria_messages,
+                    Some(0.0),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(
+                            %document_id,
+                            seq = chunk.seq,
+                            error = %e,
+                            "判据这一档调用失败，跳过该分块"
+                        );
+                        drop_signal(
+                            state,
+                            kb_id,
+                            document_id,
+                            reason::CHUNK_UNEXTRACTED,
+                            "criteria call failed; this chunk's criteria were not proposed",
+                            Some(&format!("#{}: {e}", chunk.seq)),
+                        )
+                        .await;
+                        // 继续走「本块抽完」打标——不要让一次判据失败拦下整批抽取
+                        utopia_store::documents::mark_chunk_extracted(pool, chunk.id).await?;
+                        continue;
+                    }
+                };
+                let criteria = match utopia_extract::criteria::parse_criteria_response(
+                    &criteria_reply.text,
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        tracing::warn!(
+                            %document_id,
+                            seq = chunk.seq,
+                            error = %e,
+                            "判据这一档回复解析失败，跳过该分块"
+                        );
+                        drop_signal(
+                            state,
+                            kb_id,
+                            document_id,
+                            reason::MALFORMED_ITEM,
+                            "criteria reply did not parse as JSON; this chunk's criteria were not proposed",
+                            None,
+                        )
+                        .await;
+                        utopia_extract::criteria::CriteriaExtraction::default()
+                    }
+                };
+                if criteria.skipped > 0 {
+                    drop_signal(
+                        state,
+                        kb_id,
+                        document_id,
+                        reason::MALFORMED_ITEM,
+                        &format!(
+                            "{} items in the criteria reply were malformed",
+                            criteria.skipped
+                        ),
+                        None,
+                    )
+                    .await;
+                }
+                for c in criteria.criteria {
+                    let rule_name = format!("{} {}", c.subject_class, c.quote);
+                    let description: String = c.quote.chars().take(200).collect();
+                    let (outcome, _) =
+                        utopia_store::business_rules::insert_proposal_from_criterion(
+                            pool,
+                            kb_id,
+                            chunk.id,
+                            document_id,
+                            // 「谁提的」：记忆日志的文段尚无用户——
+                            // 留 Uuid::nil 当 system 占位（0098 §1 允许
+                            // proposed_by NULL；后续 PR 给系统挂一个固定
+                            // system actor UUID 再换掉这一行）
+                            Uuid::nil(),
+                            &rule_name,
+                            &description,
+                            &c.subject_class,
+                            &c.predicate,
+                            &c.op,
+                            &c.value,
+                            &c.conclude_class,
+                            &c.conclude_kind,
+                        )
+                        .await
+                        .unwrap_or((
+                            utopia_store::business_rules::InsertOutcome::Unresolved,
+                            None,
+                        ));
+                    if outcome == utopia_store::business_rules::InsertOutcome::Unresolved {
+                        // 词表对不上：让 Review 看见
+                        drop_signal(
+                            state,
+                            kb_id,
+                            document_id,
+                            reason::MALFORMED_ITEM,
+                            "a criterion in this chunk could not be resolved to the base's vocabulary; it is not proposed yet",
+                            Some(&c.quote),
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+
         // 本块抽完即打标：更新时被认领的块携带标记跳过；中断的抽取可续跑
         utopia_store::documents::mark_chunk_extracted(pool, chunk.id).await?;
     }
