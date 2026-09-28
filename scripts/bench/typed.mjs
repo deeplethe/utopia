@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { api, login, parseArgs, sleep, until, log, EMAIL, PASSWORD } from "./lib.mjs";
+import { api, login, parseArgs, sleep, until, log, usageByCall, EMAIL, PASSWORD } from "./lib.mjs";
 import { execFileSync } from "node:child_process";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -518,6 +518,15 @@ if (SERVER_LOG) {
   };
   const t = result.tokens;
   console.log(`token（服务端日志）：抽取 ${t.extract?.total ?? "-"}，对齐 ${t.align?.total ?? "-"}，勘误 ${t.errata?.total ?? "-"}，合计 ${t.total?.total ?? "-"}，每篇 ${t.total?.per_document ?? "-"}`);
+  // 按调用的种类拆（日志里的 `call=`，系统消息的头一句）：阶段是按时间窗口归的，对齐那一段里
+  // 两票、提规则、读数混在一起，只有这一栏分得开
+  const lines = fs.readFileSync(SERVER_LOG, "utf8").split("\n").filter((l) => {
+    const m = /^(?:\x1b\[[0-9;]*m)*(\S+Z)/.exec(l);
+    return m && m[1] >= stamps.start && m[1] < stamps.end;
+  });
+  result.tokens.by_call = usageByCall(lines.join("\n")).map((u) => ({ ...u, per_document: Math.round((u.prompt + u.completion) / docs) }));
+  for (const u of result.tokens.by_call)
+    console.log(`  ${String(u.prompt + u.completion).padStart(9)}  ${String(u.calls).padStart(5)} 次  每篇 ${String(u.per_document).padStart(6)}  ${u.call}`);
 }
 fs.writeFileSync(OUT, JSON.stringify(result, null, 1));
 console.log(`结果写到 ${OUT}（${result.minutes} 分钟）`);
