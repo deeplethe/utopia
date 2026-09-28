@@ -20,7 +20,7 @@ use crate::state::AppState;
 use std::collections::{HashMap, HashSet};
 use utopia_core::models::RelationTypeView;
 use utopia_extract::phrase_align::{
-    build_phrase_messages, parse_phrase_response, Direction, PhraseItem, PropertyCandidate,
+    build_phrase_messages, parse_phrase_response, Direction, Marks, PhraseItem, PropertyCandidate,
 };
 use utopia_store::phrase_bindings::{self, Decision, PhraseSignature};
 use uuid::Uuid;
@@ -30,8 +30,21 @@ const BATCH: usize = 12;
 /// 筛过定义域/值域之后候选属性最多这么多，再多就不判。
 const CANDIDATE_LIMIT: usize = 60;
 
-/// 一票：这条签名选了哪个属性、哪个方向（None = 没有属性对得上）。
-type Vote = Option<(String, Direction)>;
+/// 一票：这条签名选了哪个属性、哪个方向，属性是状态时还有一刻标哪一端（#966）。
+/// None = 没有属性对得上
+type Vote = Option<(String, Direction, Option<Marks>)>;
+
+/// 代理绑到状态属性、却从没问过一刻标哪一端的绑定（这一列之前的判定，#966）：指纹没变也问
+/// 一次，只问这一格，不重判绑定（0053 修订 2026-09-27）。问过的不再问，没得到值的列进对齐
+/// 队列等人。只进开跑时的 todo，不进收尾的「变了没有」
+fn awaits_marks(b: &phrase_bindings::Binding, props: &[RelationTypeView]) -> bool {
+    b.status == "bound"
+        && b.marks.is_none()
+        && b.marks_asked_at.is_none()
+        && b.relation_type_id
+            .and_then(|id| props.iter().find(|p| p.id == id))
+            .is_some_and(|p| p.temporal == "state")
+}
 
 /// 一个类连同它的全部祖先。候选按它命中：属性的定义域声明在 legal_entity 上，
 /// organization 是它的子类，这条属性对 organization 的签名就是候选（#807 第一条）。
@@ -448,18 +461,30 @@ async fn align_phrases_locked(
     let short = shortlist(state, settings, kb_id, &sigs, &full).await?;
     let considered = consider(&sigs, &props, &closure, &versions, Some(&short));
     // 过期 = 存下的指纹和此刻的不一样（没有指纹的是这一列出现前判的，各重判一次）。
-    // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定不重判
+    // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定不重判。
+    // 绑到状态属性、从没问过一刻标哪一端的代理判定也问（`awaits_marks`，#966）
     let todo: Vec<&PhraseSignature> = sigs
         .iter()
         .filter(|s| match existing.get(&s.key()) {
             None => true,
             Some(b) => {
                 b.decided_by != "person"
-                    && b.basis.as_deref() != Some(considered[&s.key()].1.as_str())
+                    && (b.basis.as_deref() != Some(considered[&s.key()].1.as_str())
+                        || awaits_marks(b, &props))
             }
         })
         .collect();
     let attempted: HashSet<_> = todo.iter().map(|s| s.key()).collect();
+    // 其中指纹没变、只为补问 marks 进来的：这一问只能写 marks，绑定原样（0053 修订 2026-09-27）。
+    // 从前整条重判，两票没选属性就把绑上的签名判成 none，它的类型化行跟着作废
+    let marks_only: HashMap<_, &phrase_bindings::Binding> = todo
+        .iter()
+        .filter_map(|s| {
+            let b = existing.get(&s.key())?;
+            (b.basis.as_deref() == Some(considered[&s.key()].1.as_str()) && awaits_marks(b, &props))
+                .then_some((s.key(), b))
+        })
+        .collect();
     tracing::info!(%kb_id, signatures = sigs.len(), to_decide = todo.len(), properties = props.len(), "短语对齐开始");
 
     // 没有属性可绑：每条都是「没有」；属性出现后指纹变了，它们会再交回来
@@ -476,6 +501,8 @@ async fn align_phrases_locked(
                     votes: &serde_json::json!({ "reason": "no_properties" }),
                     decided_by: "agent",
                     basis: Some(&considered[&s.key()].1),
+                    marks: None,
+                    marks_asked: false,
                 },
             )
             .await?;
@@ -493,14 +520,22 @@ async fn align_phrases_locked(
     let mut failed = 0usize;
     // 问了、模型也答了、却没答到的签名：两票缺一票就不下结论
     let mut unanswered = 0usize;
+    // marks：补问写下了值的；问过却没得到两票同一个值、列进对齐队列的
+    let (mut marked, mut unsettled) = (0usize, 0usize);
     // 批与批并行（[`PARALLEL_BATCHES`] 个在飞，模型闸门再限一次）：一批两票串行要等模型
     // 想两回，串着跑 22 批就是半小时，其中一次卡住的调用能把整轮拖住 18 分钟（bench README，
     // 2026-09-24）。每批各记各的数，回来再加
     {
         use futures_util::StreamExt;
         // 只把引用搬进各批的 future
-        let (considered, full, closure, class_key, by_key) =
-            (&considered, &full, &closure, &class_key, &by_key);
+        let (considered, full, closure, class_key, by_key, marks_only) = (
+            &considered,
+            &full,
+            &closure,
+            &class_key,
+            &by_key,
+            &marks_only,
+        );
         // 先把每批的 future 造出来再排队：直接在 map 里返回 async 块会让借用的生命周期
         // 满足不了 tokio::spawn 要的 Send
         let futures: Vec<_> = todo
@@ -508,6 +543,7 @@ async fn align_phrases_locked(
             .map(|batch| async move {
                 let (mut bound, mut none, mut undecided, mut skipped, mut failed, mut unanswered) =
                     (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+                let (mut marked, mut unsettled) = (0usize, 0usize);
         // 候选超过上限的不问模型：记成 undecided 交给人，指纹照记——属性少下去指纹就变，
         // 到时再问。从前超限和无候选一样静默跳过，签名永远排着又永远不可执行（#807）
         let cands: Vec<Vec<&RelationTypeView>> = batch
@@ -523,6 +559,8 @@ async fn align_phrases_locked(
             .collect();
         let mut votes: Vec<(Vote, Vote)> = vec![(None, None); batch.len()];
         let mut answered = vec![(false, false); batch.len()];
+        // 读得出回复的遍数：补问 marks 时，两遍的回复都回来了才算问过
+        let mut replied = 0usize;
         for pass in 0..2 {
             let items: Vec<PhraseItem<'_>> = batch
                 .iter()
@@ -549,6 +587,7 @@ async fn align_phrases_locked(
                                 label: &p.label,
                                 description: &p.description,
                                 kind: &p.kind,
+                                temporal: &p.temporal,
                                 domains: keys_of(&p.domains),
                                 ranges: keys_of(&p.ranges),
                                 via: fits(p, s, closure)
@@ -619,6 +658,7 @@ async fn align_phrases_locked(
                 failed += 1;
                 continue;
             }
+            replied += 1;
             if malformed > 0 {
                 // 坏票长什么样得看得见：第一次真跑里一半签名被判坏票，查了一天才知道模型答的是标签
                 tracing::info!(%kb_id, malformed, reply = %snippet(&reply.text), "短语对齐的回复里有坏票");
@@ -628,11 +668,12 @@ async fn align_phrases_locked(
                     continue;
                 };
                 if let Some(slot) = votes.get_mut(i) {
+                    let vote = c.property.map(|(key, direction)| (key, direction, c.marks));
                     if pass == 0 {
-                        slot.0 = c.property;
+                        slot.0 = vote;
                         answered[i].0 = true;
                     } else {
-                        slot.1 = c.property;
+                        slot.1 = vote;
                         answered[i].1 = true;
                     }
                 }
@@ -640,6 +681,36 @@ async fn align_phrases_locked(
         }
         for (i, s) in batch.iter().enumerate() {
             let basis = considered[&s.key()].1.as_str();
+            if let Some(asked) = marks_only.get(&s.key()) {
+                // 补问 marks（0053 修订 2026-09-27）：两票都认这条绑定的属性与方向、又说了同一个
+                // 值，写下它；别的答案——没选属性、选了别的、没说或说得不一样——都让绑定原样。
+                // 两种都记下问过：不再问，没有值的列进对齐队列等人。回复没回来不算问过，
+                // 下次再问（同没答到的签名）；问不了的（候选超限）直接交给人
+                if !cands[i].is_empty() && replied < 2 {
+                    unanswered += 1;
+                    continue;
+                }
+                // 这一票认的是这条绑定，又说了值：认了就是它说的值
+                let value_of = |v: &Vote| match v {
+                    Some((k, d, m)) => m.filter(|_| {
+                        by_key.get(k.as_str()).map(|p| p.id) == asked.relation_type_id
+                            && asked.direction.as_deref() == Some(d.as_str())
+                    }),
+                    None => None,
+                };
+                let (a, b) = &votes[i];
+                let value = value_of(a).filter(|m| value_of(b) == Some(*m));
+                if phrase_bindings::record_marks(pool, kb_id, asked, value.map(Marks::as_str))
+                    .await?
+                {
+                    if value.is_some() {
+                        marked += 1;
+                    } else {
+                        unsettled += 1;
+                    }
+                }
+                continue;
+            }
             if cands[i].is_empty() {
                 let fitting = considered[&s.key()].0.len();
                 // 两种「没问模型」各自落库，投影才退得掉、队列才收得住：
@@ -665,6 +736,8 @@ async fn align_phrases_locked(
                         votes: &votes,
                         decided_by: "agent",
                         basis: Some(basis),
+                        marks: None,
+                        marks_asked: false,
                     },
                 )
                 .await?
@@ -687,11 +760,20 @@ async fn align_phrases_locked(
             }
             let show = |v: &Vote| {
                 v.as_ref()
-                    .map(|(k, d)| serde_json::json!({ "property": k, "direction": d.as_str() }))
+                    .map(|(k, d, m)| {
+                        serde_json::json!({ "property": k, "direction": d.as_str(),
+                                            "marks": m.map(Marks::as_str) })
+                    })
                     .unwrap_or(serde_json::Value::Null)
             };
             let record = serde_json::json!({ "first": show(a), "second": show(b) });
-            if a != b {
+            // 两票选的属性与方向（或都说没有）是否一致
+            let agree = match (a, b) {
+                (Some((ka, da, _)), Some((kb, db, _))) => ka == kb && da == db,
+                (None, None) => true,
+                _ => false,
+            };
+            if !agree {
                 phrase_bindings::decide(
                     pool,
                     kb_id,
@@ -703,15 +785,29 @@ async fn align_phrases_locked(
                         votes: &record,
                         decided_by: "agent",
                         basis: Some(basis),
+                        marks: None,
+                        marks_asked: false,
                     },
                 )
                 .await?;
                 undecided += 1;
                 continue;
             }
+            // 属性是状态时，两票还说一刻标哪一端（#966）：说了同一个值才写下它。没说、或说得
+            // 不一样，绑定照绑、这一格空着，记下问过——不再问，列进对齐队列等人（0053 修订
+            // 2026-09-27）。从前没说的算没答到，模型一直只答三格时每轮重问、永远绑不上。
+            // 事件与恒常不问这一格
+            let state = a
+                .as_ref()
+                .and_then(|(k, _, _)| by_key.get(k.as_str()))
+                .is_some_and(|p| p.temporal == "state");
+            let marks = match (a, b) {
+                (Some((_, _, ma)), Some((_, _, mb))) if state && ma == mb => *ma,
+                _ => None,
+            };
             match a
                 .as_ref()
-                .and_then(|(k, d)| by_key.get(k.as_str()).map(|p| (p, *d)))
+                .and_then(|(k, d, _)| by_key.get(k.as_str()).map(|p| (p, *d)))
             {
                 Some((p, d)) => {
                     if phrase_bindings::decide(
@@ -725,11 +821,16 @@ async fn align_phrases_locked(
                             votes: &record,
                             decided_by: "agent",
                             basis: Some(basis),
+                            marks: marks.map(Marks::as_str),
+                            marks_asked: state,
                         },
                     )
                     .await?
                     {
                         bound += 1;
+                        if state && marks.is_none() {
+                            unsettled += 1;
+                        }
                     }
                 }
                 None => {
@@ -744,6 +845,8 @@ async fn align_phrases_locked(
                             votes: &record,
                             decided_by: "agent",
                             basis: Some(basis),
+                            marks: None,
+                            marks_asked: false,
                         },
                     )
                     .await?
@@ -754,21 +857,26 @@ async fn align_phrases_locked(
             }
         }
 
-                Ok::<_, anyhow::Error>((bound, none, undecided, skipped, failed, unanswered))
+                Ok::<_, anyhow::Error>((
+                    (bound, none, undecided, skipped, failed, unanswered),
+                    (marked, unsettled),
+                ))
             })
             .collect();
         let mut results = futures_util::stream::iter(futures).buffer_unordered(PARALLEL_BATCHES);
         while let Some(r) = results.next().await {
-            let (b, n, u, sk, f, un) = r?;
+            let ((b, n, u, sk, f, un), (m, us)) = r?;
             bound += b;
             none += n;
             undecided += u;
             skipped += sk;
             failed += f;
             unanswered += un;
+            marked += m;
+            unsettled += us;
         }
     }
-    tracing::info!(%kb_id, bound, none, undecided, skipped, failed, unanswered, "短语对齐完成");
+    tracing::info!(%kb_id, bound, none, undecided, skipped, failed, unanswered, marked, unsettled, "短语对齐完成");
     if unanswered > 0 {
         tracing::warn!(%kb_id, unanswered, "短语对齐有签名模型没答到，这些签名这轮没有结论");
     }
@@ -790,6 +898,10 @@ async fn align_phrases_locked(
             .collect();
         let mut asks: Vec<crate::implication::RuleAsk<'_>> = Vec::new();
         for s in &todo {
+            // 只补问了 marks 的没有重判：指纹没变，它的规则上一轮问过
+            if marks_only.contains_key(&s.key()) {
+                continue;
+            }
             let Some(b) = decided_now.get(&s.key()) else {
                 continue;
             };

@@ -77,7 +77,12 @@ running, so the order is vectors, then kind words, then phrases. The shortlist i
 decision's basis, so a changed list re-asks. The candidate
 properties are described once per batch and each item names only its keys. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
-workbench's suggestions. Bindings live in `phrase_bindings`. Candidates are the properties whose
+workbench's suggestions. Bindings live in `phrase_bindings`. A binding to a state property also
+says what a statement dated at a single moment marks (`marks`: start, end or none). The aligner asks
+it once, with the binding: the value is written when both votes give the same one, and a binding
+without one records the ask (`marks_asked_at`) and waits in the alignment queue, as a person's
+binding without one does. A binding made before the question is asked once, and that question only
+writes the value [0053 revision, #966]. Candidates are the properties whose
 declared domain and range admit the endpoint classes **or an ancestor of them**, and a candidate
 that fits only by inheritance says so to the model. A decision stores a fingerprint of what it
 considered (both ancestor closures, the admitted candidates with their `updated_at`); it is stale

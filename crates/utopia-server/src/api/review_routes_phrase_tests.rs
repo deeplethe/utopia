@@ -75,6 +75,8 @@ impl Fx {
                 votes: &json!({}),
                 decided_by: "agent",
                 basis: None,
+                marks: None,
+                marks_asked: false,
             },
         )
         .await?;
@@ -239,6 +241,99 @@ async fn a_phrase_decision_is_accepted_with_its_job() -> anyhow::Result<()> {
             .await?
             .expect("nobody holds the lock");
         assert_eq!(outcome.added, 1);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 状态属性下，人定签名时说只带一个日期的陈述那个日期标什么（#966）。不说也收下，签名
+/// 留在对齐队列里等人补，属性与方向是现在绑的；说了就写下、出队。认不出的值，或给了不是
+/// 状态的属性（或没有属性），答 422，什么都不写
+#[tokio::test]
+async fn a_phrase_decision_under_a_state_says_what_a_single_date_marks() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        let path = format!(
+            "/api/v1/kbs/{}/review/alignment/phrases/{}",
+            f.kb, f.binding
+        );
+        let queue = format!(
+            "/api/v1/kbs/{}/review?queue=alignment&limit=10&offset=0",
+            f.kb
+        );
+        let (status, body) = f
+            .call(
+                &f.editor,
+                "POST",
+                &path,
+                Some(json!({ "property": "based_in", "direction": "forward" })),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let (status, body) = f.call(&f.editor, "GET", &queue, None).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["counts"]["alignment"], 1, "{body}");
+        assert_eq!(body["items"][0]["bound_to"], "based_in", "{body}");
+        assert_eq!(body["items"][0]["direction"], "forward", "{body}");
+
+        let (status, body) = f
+            .call(
+                &f.editor,
+                "POST",
+                &path,
+                Some(json!({ "property": "based_in", "direction": "forward", "marks": "start" })),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let b = phrase_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+        assert_eq!(
+            (b.decided_by.as_str(), b.marks.as_deref()),
+            ("person", Some("start"))
+        );
+        let votes: Value = sqlx::query_scalar("SELECT votes FROM phrase_bindings WHERE id=$1")
+            .bind(f.binding)
+            .fetch_one(&f.pool)
+            .await?;
+        assert_eq!(votes["person"]["marks"], "start", "{votes}");
+        let (_, body) = f.call(&f.editor, "GET", &queue, None).await?;
+        assert_eq!(body["counts"]["alignment"], 0, "{body}");
+
+        sqlx::query(
+            "INSERT INTO relation_types(id,kb_id,key,label,temporal)
+             VALUES ($1,$2,'acquired','acquired','event')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(f.kb)
+        .execute(&f.pool)
+        .await?;
+        for (request, code) in [
+            (
+                json!({ "property": "based_in", "direction": "forward", "marks": "sometimes" }),
+                "unknown_marks",
+            ),
+            (
+                json!({ "property": "acquired", "direction": "forward", "marks": "start" }),
+                "marks_needs_state",
+            ),
+            (
+                json!({ "property": null, "marks": "start" }),
+                "marks_needs_state",
+            ),
+        ] {
+            let (status, body) = f.call(&f.editor, "POST", &path, Some(request)).await?;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+            assert_eq!(body["code"], code, "{body}");
+        }
+        let b = phrase_bindings::bindings(&f.pool, f.kb).await?.remove(0);
+        assert_eq!(
+            (b.relation_type_id.is_some(), b.marks.as_deref()),
+            (true, Some("start")),
+            "a refused request writes nothing"
+        );
         anyhow::Ok(())
     }
     .await;

@@ -791,6 +791,10 @@ export type AlignmentItem =
         candidates?: number;
       } | null;
       decided_at: string;
+      /** 人绑过、还没说单个日期标哪一端的签名（#966）：现在绑到的属性与方向。
+       *  两票不一致的条目两个都是 null */
+      bound_to: string | null;
+      direction: "forward" | "reverse" | null;
     }
   | {
       kind: "kind_word";
@@ -839,7 +843,11 @@ export interface ErrataItem {
 export interface AlignmentVote {
   property: string;
   direction: "forward" | "reverse";
+  /** 状态属性下，只带一个日期的陈述那个日期标的是什么（#966）；事件与恒常没有 */
+  marks?: AlignmentMarks | null;
 }
+/** 单个日期在状态上标的是开始、结束，还是都不是（`phrase_bindings.marks`，#966） */
+export type AlignmentMarks = "start" | "end" | "none";
 
 export interface OntologyDefect {
   id: string;
@@ -2584,10 +2592,12 @@ export const api = {
     bindingId: string,
     property: string | null,
     direction: "forward" | "reverse",
+    /** 只在状态属性下给；null = 不说（只带一个日期的陈述留在开放图谱） */
+    marks: AlignmentMarks | null,
   ) =>
     request<{ ok: boolean; job_id: number; status: "accepted" }>(
       `/api/v1/kbs/${kbId}/review/alignment/phrases/${bindingId}`,
-      { method: "POST", body: JSON.stringify({ property, direction }) },
+      { method: "POST", body: JSON.stringify({ property, direction, marks }) },
     ),
   /** 人批或驳一条蕴含规则：答 202 和 job id，隐含事实在后台算（0044 决定 3 第五片） */
   decideAlignmentRule: (kbId: string, ruleId: string, approve: boolean) =>

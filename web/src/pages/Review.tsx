@@ -1,4 +1,5 @@
 import { alignmentErrorMessage } from "./reviewErrors";
+import { asksMarks, phraseStart } from "./alignmentPhrase";
 import { useEffect, useState } from "react";
 import { LayoutDashboard } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,6 +13,7 @@ import {
   type ReviewTypeFilter,
   type OntologyDefect,
   type AlignmentItem,
+  type AlignmentMarks,
   type ErrataItem,
   type EntityTypeView,
   type RelationTypeView,
@@ -701,10 +703,22 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
  * 因为人要判断的正是它对不对。概念名与源是身份，unit 是答里必须带的量纲。 */
 /** 本体自己的一处自相矛盾。**两个按钮而不是三个**——这一档压根没看数据，
  *  所以没有「数据错了」这条出路，只能是「我去改了本体」或「先放着」。 */
-function voteText(v: { property: string; direction: string } | string | null | undefined): string {
+function voteText(
+  v: { property: string; direction: string; marks?: AlignmentMarks | null } | string | null | undefined,
+): string {
   if (v === undefined || v === null) return S.review.alignmentNone;
   if (typeof v === "string") return v;
-  return `${v.property} · ${v.direction === "reverse" ? S.review.alignmentReverse : S.review.alignmentForward}`;
+  const side = v.direction === "reverse" ? S.review.alignmentReverse : S.review.alignmentForward;
+  const marks = v.marks ? ` · ${S.review.alignmentMarks} ${marksText(v.marks)}` : "";
+  return `${v.property} · ${side}${marks}`;
+}
+
+function marksText(m: AlignmentMarks): string {
+  return m === "start"
+    ? S.review.alignmentMarksStart
+    : m === "end"
+      ? S.review.alignmentMarksEnd
+      : S.review.alignmentMarksNone;
 }
 
 /** 对齐器提的一条蕴含规则（0044 决定 3 第五片）：这种形状还蕴含哪条属性、宾语怎么来；人批或驳 */
@@ -791,7 +805,8 @@ function AlignmentRuleRow({
   );
 }
 
-/** 一条短语签名：短语、两端的类、例句、两票；人选属性与方向，或「没有」 */
+/** 一条短语签名：短语、两端的类、例句、两票；人选属性与方向，或「没有」。
+ *  选的是状态属性时，还要说单个日期标的是开始、结束，还是都不是（#966） */
 function AlignmentPhraseRow({
   item,
   properties,
@@ -801,18 +816,25 @@ function AlignmentPhraseRow({
   item: Extract<AlignmentItem, { kind: "phrase" }>;
   properties: RelationTypeView[];
   busy: boolean;
-  onDecide: (property: string | null, direction: "forward" | "reverse") => void;
+  onDecide: (
+    property: string | null,
+    direction: "forward" | "reverse",
+    marks: AlignmentMarks | null,
+  ) => void;
 }) {
   const first = item.votes?.first ?? null;
   const second = item.votes?.second ?? null;
-  const [property, setProperty] = useState<string>(first?.property ?? second?.property ?? "");
-  const [direction, setDirection] = useState<"forward" | "reverse">(
-    first?.direction ?? second?.direction ?? "forward",
-  );
+  const start = phraseStart(item);
+  const [property, setProperty] = useState<string>(start.property);
+  const [direction, setDirection] = useState<"forward" | "reverse">(start.direction);
+  const [marks, setMarks] = useState<AlignmentMarks | null>(start.marks);
   // 字面值当宾语的签名只配属性（attribute），两样东西之间的只配关系（relation）
   const fitting = properties.filter((p) =>
     item.object_is_value ? p.kind === "attribute" : p.kind === "relation",
   );
+  const state = asksMarks(fitting, property);
+  // 状态属性下单个日期标什么没有预选：人选了才能绑
+  const unread = state && marks === null;
   return (
     <div className="glass rounded-panel p-3">
       <div className="flex items-baseline gap-2 flex-wrap">
@@ -829,9 +851,17 @@ function AlignmentPhraseRow({
           ))}
         </div>
       )}
-      <div className="mt-1 text-small text-ink-2">
-        {S.review.alignmentVotes(voteText(first), voteText(second))}
-      </div>
+      {item.bound_to && (
+        <div className="mt-1 text-small text-ink-2">
+          {S.review.alignmentAwaitsMarks(item.bound_to)}
+        </div>
+      )}
+      {/* 绑上了的签名只在代理投过票时列两票：它们各说了单个日期标什么 */}
+      {(!item.bound_to || first || second) && (
+        <div className="mt-1 text-small text-ink-2">
+          {S.review.alignmentVotes(voteText(first), voteText(second))}
+        </div>
+      )}
       {/* 候选多到没问模型的签名（0053）：说清是这个原因，不是两票都投了空 */}
       {item.votes?.reason === "too_many_candidates" && (
         <div className="mt-1 text-small text-ink-2">
@@ -860,7 +890,39 @@ function AlignmentPhraseRow({
             ]}
           />
         )}
-        <Button size="sm" disabled={busy} onClick={() => onDecide(property || null, direction)}>
+        {state && (
+          <>
+            <span className="text-small text-ink-2">{S.review.alignmentMarks}</span>
+            <Segmented<AlignmentMarks | "">
+              size="sm"
+              value={marks ?? ""}
+              onChange={(m) => setMarks(m || null)}
+              options={[
+                {
+                  value: "start",
+                  label: S.review.alignmentMarksStart,
+                  title: S.review.alignmentMarksStartHint,
+                },
+                {
+                  value: "end",
+                  label: S.review.alignmentMarksEnd,
+                  title: S.review.alignmentMarksEndHint,
+                },
+                {
+                  value: "none",
+                  label: S.review.alignmentMarksNone,
+                  title: S.review.alignmentMarksNoneHint,
+                },
+              ]}
+            />
+          </>
+        )}
+        <Button
+          size="sm"
+          disabled={busy || unread}
+          title={unread ? S.review.alignmentMarksRequired : undefined}
+          onClick={() => onDecide(property || null, direction, state ? marks : null)}
+        >
           {property ? S.review.alignmentBind : S.review.alignmentLeaveOpen}
         </Button>
       </div>
@@ -1445,11 +1507,13 @@ export function Review() {
       id,
       property,
       direction,
+      marks,
     }: {
       id: string;
       property: string | null;
       direction: "forward" | "reverse";
-    }) => api.decideAlignmentPhrase(kb!.id, id, property, direction),
+      marks: AlignmentMarks | null;
+    }) => api.decideAlignmentPhrase(kb!.id, id, property, direction, marks),
     // 202：判定收下了，类型化图谱在后台重算；算完 `review` / `graph` 事件会把
     // 队列和图刷一遍，这里只告诉人「已保存」，不编一个数字出来
     onSuccess: () => toast.success(S.review.alignmentAccepted),
@@ -2051,8 +2115,8 @@ export function Review() {
                           alignmentPhraseAction.isPending &&
                           alignmentPhraseAction.variables?.id === item.id
                         }
-                        onDecide={(property, direction) =>
-                          alignmentPhraseAction.mutate({ id: item.id, property, direction })
+                        onDecide={(property, direction, marks) =>
+                          alignmentPhraseAction.mutate({ id: item.id, property, direction, marks })
                         }
                       />
                     ) : item.kind === "rule" ? (

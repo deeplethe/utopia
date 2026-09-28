@@ -81,6 +81,8 @@ async fn overlapping_materializations_create_one_typed_fact() -> anyhow::Result<
             votes: &serde_json::json!({}),
             decided_by: "agent",
             basis: None,
+            marks: None,
+            marks_asked: false,
         },
     )
     .await?;

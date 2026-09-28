@@ -72,6 +72,7 @@ pub async fn propose_rules(
                         label: &p.label,
                         description: &p.description,
                         kind: &p.kind,
+                        temporal: &p.temporal,
                         domains: keys_of(&p.domains),
                         ranges: keys_of(&p.ranges),
                         via: Vec::new(),

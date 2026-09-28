@@ -25,6 +25,8 @@ async fn accept(
                 votes: &json!({}),
                 decided_by: "person",
                 basis: None,
+                marks: None,
+                marks_asked: false,
             }
         )
         .await?
@@ -233,6 +235,8 @@ fn crash_child() {
                 votes: &json!({}),
                 decided_by: "person",
                 basis: None,
+                marks: None,
+                marks_asked: false,
             },
         )
         .await

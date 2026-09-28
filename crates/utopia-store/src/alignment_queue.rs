@@ -29,6 +29,11 @@ pub enum AlignmentItem {
         /// 两票各选了什么：`{"first": {...} | null, "second": {...} | null}`
         votes: Option<serde_json::Value>,
         decided_at: DateTime<Utc>,
+        /// 绑上了、却没说一刻标哪一端的签名（#966）：人绑的，或对齐器问过、两票没说出同一个
+        /// 值的。现在绑到的属性与方向，界面按它预选、只等人补上 marks。undecided 的条目两个
+        /// 都是 None
+        bound_to: Option<String>,
+        direction: Option<String>,
     },
     KindWord {
         kind_word: String,
@@ -85,7 +90,19 @@ struct PhraseRow {
     examples: Vec<String>,
     votes: Option<serde_json::Value>,
     decided_at: DateTime<Utc>,
+    bound_to: Option<String>,
+    direction: Option<String>,
 }
+
+/// 等人定的短语签名：两票不一致的，加上绑到状态属性、却没说一刻标哪一端的（#966）——人绑的
+/// （代理不改人的判定），和对齐器问过、两票没说出同一个值的（只问一次，0053 修订）。不列
+/// 出来，它们名下只说了一刻的陈述就一直不算。这一列之前代理绑上、还没问过的不列：对齐器
+/// 下一轮先问
+pub(crate) const WAITING_PHRASE: &str = "(b.status = 'undecided'
+       OR (b.status = 'bound' AND b.marks IS NULL
+           AND (b.decided_by = 'person' OR b.marks_asked_at IS NOT NULL)
+           AND EXISTS (SELECT 1 FROM relation_types rt
+                        WHERE rt.id = b.relation_type_id AND rt.temporal = 'state')))";
 
 #[derive(sqlx::FromRow)]
 struct KindWordRow {
@@ -102,14 +119,17 @@ pub async fn list(
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<AlignmentItem>> {
-    let phrases: Vec<PhraseRow> = sqlx::query_as(
+    let phrases: Vec<PhraseRow> = sqlx::query_as(&format!(
         "SELECT b.id, b.phrase, st.key AS subject_class, ot.key AS object_class,
-                b.object_is_value, b.statement_count, b.examples, b.votes, b.decided_at
+                b.object_is_value, b.statement_count, b.examples, b.votes, b.decided_at,
+                CASE WHEN b.status = 'bound' THEN p.key END AS bound_to,
+                CASE WHEN b.status = 'bound' THEN b.direction END AS direction
            FROM phrase_bindings b
       LEFT JOIN entity_types st ON st.id = b.subject_type_id
       LEFT JOIN entity_types ot ON ot.id = b.object_type_id
-          WHERE b.kb_id = $1 AND b.status = 'undecided'",
-    )
+      LEFT JOIN relation_types p ON p.id = b.relation_type_id
+          WHERE b.kb_id = $1 AND {WAITING_PHRASE}"
+    ))
     .bind(kb_id)
     .fetch_all(pool)
     .await?;
@@ -154,6 +174,8 @@ pub async fn list(
                     examples: r.examples,
                     votes: r.votes,
                     decided_at: r.decided_at,
+                    bound_to: r.bound_to,
+                    direction: r.direction,
                 },
             )
         })
@@ -204,15 +226,15 @@ pub async fn list(
 
 /// 等人定的条目数，以及最老的一条从什么时候起在等。
 pub async fn waiting(pool: &PgPool, kb_id: Uuid) -> AppResult<(i64, Option<DateTime<Utc>>)> {
-    Ok(sqlx::query_as(
+    Ok(sqlx::query_as(&format!(
         "SELECT count(*), min(decided_at) FROM (
-            SELECT decided_at FROM phrase_bindings WHERE kb_id = $1 AND status = 'undecided'
+            SELECT b.decided_at FROM phrase_bindings b WHERE b.kb_id = $1 AND {WAITING_PHRASE}
             UNION ALL
             SELECT decided_at FROM type_bindings WHERE kb_id = $1 AND status = 'undecided'
             UNION ALL
             SELECT decided_at FROM implication_rules WHERE kb_id = $1 AND status = 'proposed'
-         ) q",
-    )
+         ) q"
+    ))
     .bind(kb_id)
     .fetch_one(pool)
     .await?)

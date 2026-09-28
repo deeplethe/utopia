@@ -125,6 +125,9 @@ export const zh: Strings = {
     concurrency_range: "填一个 1 到 256 之间的数。",
     inference_off: "这个库没有打开物化推理。到设置里开。",
     bad_resolution: "这不是一个有效的裁决。",
+    empty_state_span: "起止相同的状态任何时刻都不成立。给一个晚于起点的终点，或者让它开着。",
+    unknown_marks: "单个日期标的是开始、结束，或者都不是。",
+    marks_needs_state: "只有状态属性才说单个日期标的是什么，事件与恒常属性不说。",
   },
   errDetail: (msg: string, detail: string) => `${msg}（${detail}）`,
   toast: {
@@ -1841,6 +1844,17 @@ export const zh: Strings = {
     alignmentStatements: (n: number) => `${n} 条陈述`,
     alignmentEntities: (n: number) => `${n} 样东西`,
     alignmentVotes: (first: string, second: string) => `两票：${first} · ${second}`,
+    // 状态属性下，单个日期标的是什么（#966）
+    alignmentMarks: "单个日期",
+    alignmentMarksStart: "是开始",
+    alignmentMarksEnd: "是结束",
+    alignmentMarksNone: "都不是",
+    alignmentMarksStartHint: "加入、被任命、接手：从那天起成立",
+    alignmentMarksEndHint: "离开、辞去、卸任：到那天为止",
+    alignmentMarksNoneHint: "只是那时看到它成立：只带一个日期的陈述留在开放图谱",
+    alignmentMarksRequired: "先说单个日期标的是什么。",
+    alignmentAwaitsMarks: (property: string) =>
+      `已绑到 ${property}，单个日期标的是什么还没定。你说之前，只带一个日期的陈述留在开放图谱。`,
     alignmentRuleImplies: (property: string) => `同时蕴含 ${property}`,
     alignmentRuleObjectIsStatement: "宾语：陈述自己的宾语",
     alignmentRuleReading: (reading: string) => `宾语：按「${reading.replace(/_/g, " ")}」从字里读出`,

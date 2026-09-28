@@ -340,6 +340,7 @@ mod tests {
             label: key,
             description: "",
             kind: "relation",
+            temporal: "state",
             domains: vec![],
             ranges: vec![],
             via: vec![],
