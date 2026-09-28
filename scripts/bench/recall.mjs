@@ -205,9 +205,11 @@ function score() {
 // 以及排队到最后一块抽完的秒数（给了 queuedAt 才有）。
 // 「跨块认回」= 一个实体出现在这篇文档**两个以上分块**的事实里：前面的块认下、后面的块接着用，
 // known 管的就是这一件（名字认回也算在内——那半步不受开关管，差出来的是提示词的份）
-// 「近名对」= 名字向量召回给裁决器排的 `name_vector|<余弦>` 那些对（#877，resolution_reviews）：
-// 提示词里没有 known，后面的块更容易换个写法再列一遍同一个东西，这种不会静默合并，
-// 而是在这里多排一对——召回分不动、这个数涨，就是空 known 的代价。一对算进两边实体出现的每篇
+// 「排给裁决的对」= 这一轮进了 resolution_reviews 的疑似同一对，不分是哪条召回通道提的：
+// 提示词里没有 known，后面的块更容易换个写法再列一遍同一个东西，这种不会静默合并（#877），
+// 而是在这里多排一对——召回分不动、这个数涨，就是空 known 的代价。一对算进两边实体出现的每篇。
+// **不按 `name_vector|` 筛**：一对一旦裁了（治理、升级给人、随合并作废），reason 就被裁决改写
+// （`governed|…` 等），原来是哪条通道提的不留痕；按它筛，一轮跑完几乎总是 0
 function stats(queuedAt) {
   const rows = psql(`
     WITH live AS (
@@ -229,7 +231,7 @@ function stats(queuedAt) {
       (SELECT count(*) FROM ents WHERE document_id = d.id),
       (SELECT count(*) FROM ents WHERE document_id = d.id AND n > 1),
       (SELECT count(*) FROM resolution_reviews r
-        WHERE r.kb_id = '${KB}' AND starts_with(r.reason, 'name_vector|')
+        WHERE r.kb_id = '${KB}'${queuedAt ? ` AND r.created_at >= '${queuedAt}'::timestamptz` : ""}
           AND EXISTS (SELECT 1 FROM ents WHERE document_id = d.id AND e IN (r.left_id, r.right_id))),
       coalesce((SELECT string_agg(reason || '=' || s, ' ' ORDER BY reason) FROM
         (SELECT reason, sum(count) AS s FROM extraction_drops WHERE document_id = d.id GROUP BY reason) r), ''),
@@ -240,38 +242,50 @@ function stats(queuedAt) {
     .filter(Boolean);
   const out = {};
   for (const l of rows) {
-    const [file, chunks, extracted, facts, entities, carried, nearPairs, drops, secs] = l.split("\u001f");
+    const [file, chunks, extracted, facts, entities, carried, pairs, drops, secs] = l.split("\u001f");
     out[file.replace(/\.(html|md|pdf)$/i, "")] = {
       chunks: +chunks,
       extracted: +extracted,
       facts: +facts,
       entities: +entities,
       carried: +carried,
-      nearPairs: +nearPairs,
+      pairs: +pairs,
       drops: Object.fromEntries(drops.split(" ").filter(Boolean).map((kv) => [kv.slice(0, kv.lastIndexOf("=")), +kv.slice(kv.lastIndexOf("=") + 1)])),
       seconds: secs === "" ? null : +secs,
     };
   }
-  console.log("\n每篇：块（已抽）/ 事实 / 实体 / 跨块认回 / 近名对 / 秒");
+  console.log("\n每篇：块（已抽）/ 事实 / 实体 / 跨块认回 / 排给裁决的对 / 秒");
   for (const [doc, v] of Object.entries(out)) {
-    console.log(`  ${doc}  ${v.chunks}(${v.extracted}) / ${v.facts} / ${v.entities} / ${v.carried} / ${v.nearPairs} / ${v.seconds ?? "-"}`);
+    console.log(`  ${doc}  ${v.chunks}(${v.extracted}) / ${v.facts} / ${v.entities} / ${v.carried} / ${v.pairs} / ${v.seconds ?? "-"}`);
     const d = Object.entries(v.drops);
     if (d.length) console.log(`    丢弃 ${d.map(([k, n]) => `${k}=${n}`).join(" ")}`);
   }
   return out;
 }
 
-// 全库的近名对，按裁决到哪一步分开：一对可能跨两篇，按篇加起来会重，总数看这里。
-// 轮内裁决器可能已经判了一部分（merged / kept），所以三种状态都算——排过这一对就是代价
-function nearPairs() {
+// 全库排给裁决的对，按裁决到哪一步分开：一对可能跨两篇，按篇加起来会重，总数看这里。
+// 另列现在的 reason 前缀（还待裁的仍是 `name_vector|` / `contains|` 这些通道名，裁过的是裁决写的）。
+// 轮内裁决器可能已经判了一部分（merged / kept），所以三种状态都算——排过这一对就是代价。
+// 只算这一轮排的（created_at 不早于排队那一刻）：每轮开头删实体会连带删掉这些对（外键 CASCADE），
+// 但重抽本身不清它们，不靠那条连带也不会把上一轮的对算进来。--score 没有排队时刻，算的是库里现有的
+function pairs(queuedAt) {
+  const scope = `kb_id = '${KB}' ${queuedAt ? `AND created_at >= '${queuedAt}'::timestamptz` : ""}`;
   const [total, pending, merged, kept] = psql(`
     SELECT concat_ws(chr(31), count(*), count(*) FILTER (WHERE status = 'pending'),
            count(*) FILTER (WHERE status = 'merged'), count(*) FILTER (WHERE status = 'kept'))
-      FROM resolution_reviews WHERE kb_id = '${KB}' AND starts_with(reason, 'name_vector|')`)
+      FROM resolution_reviews WHERE ${scope}`)
     .split("\u001f")
     .map(Number);
-  console.log(`\n近名对（name_vector）${total}：待裁 ${pending} / 合并 ${merged} / 分开 ${kept}`);
-  return { total, pending, merged, kept };
+  const byReason = Object.fromEntries(
+    psql(`SELECT k || '=' || n FROM (SELECT split_part(coalesce(reason, '-'), '|', 1) AS k, count(*) AS n
+           FROM resolution_reviews WHERE ${scope} GROUP BY 1) x ORDER BY k`)
+      .split("\n")
+      .filter(Boolean)
+      .map((kv) => [kv.slice(0, kv.lastIndexOf("=")), +kv.slice(kv.lastIndexOf("=") + 1)]),
+  );
+  console.log(`\n排给裁决的对 ${total}：待裁 ${pending} / 合并 ${merged} / 分开 ${kept}`);
+  console.log(`  现在的 reason：${Object.entries(byReason).map(([k, n]) => `${k}=${n}`).join(" ") || "-"}`);
+  return { total, pending, merged, kept, byReason };
 }
 
 function record(result, perDoc, extra) {
@@ -315,14 +329,14 @@ function table(dir) {
   const row = (name, f) => `| ${name} | ${groups.map(([, rs]) => ms(rs.map(f))).join(" | ")} |`;
   const lines = [`| | ${cols.join(" | ")} |`, `| --- |${cols.map(() => " --- |").join("")}`];
   lines.push(row("总分（/52）", (r) => r.score.pass));
-  lines.push(row("近名对（全库）", (r) => r.nearPairs?.total));
-  lines.push(row("近名对里合并的", (r) => r.nearPairs?.merged));
+  lines.push(row("排给裁决的对（全库）", (r) => r.pairs?.total));
+  lines.push(row("其中合并的", (r) => r.pairs?.merged));
   for (const doc of docs) {
     const d = (r) => r.docs[doc] ?? {};
     lines.push(row(`${doc} 事实`, (r) => d(r).facts));
     lines.push(row(`${doc} 实体`, (r) => d(r).entities));
     lines.push(row(`${doc} 跨块认回`, (r) => d(r).carried));
-    lines.push(row(`${doc} 近名对`, (r) => d(r).nearPairs));
+    lines.push(row(`${doc} 排给裁决的对`, (r) => d(r).pairs));
     lines.push(row(`${doc} 丢弃`, (r) => Object.values(d(r).drops ?? {}).reduce((a, b) => a + b, 0)));
     lines.push(row(`${doc} 秒`, (r) => d(r).seconds));
   }
@@ -346,7 +360,7 @@ function table(dir) {
 }
 
 if (args.score) {
-  record(score(), stats(null), { nearPairs: nearPairs() });
+  record(score(), stats(null), { pairs: pairs(null) });
   process.exit(0);
 }
 
@@ -417,4 +431,4 @@ for (;;) {
   await sleep(30000);
 }
 
-record(score(), stats(queuedAt), { endpoint, nearPairs: nearPairs() });
+record(score(), stats(queuedAt), { endpoint, pairs: pairs(queuedAt) });
