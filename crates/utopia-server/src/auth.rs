@@ -18,7 +18,7 @@ use crate::error::ApiErr;
 use crate::state::AppState;
 
 pub const COOKIE_NAME: &str = "utopia_token";
-const TOKEN_TTL_DAYS: i64 = 7;
+pub const TOKEN_TTL_DAYS: i64 = 7;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Claims {

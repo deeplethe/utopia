@@ -342,7 +342,9 @@ pub struct Callback {
 #[derive(Clone, Deserialize)]
 struct Claims {
     sub: String,
-    nonce: String,
+    /// Login tokens carry the flow's nonce; exchanged tokens were minted for another client's flow.
+    #[serde(default)]
+    nonce: Option<String>,
     iat: i64,
     #[serde(default)]
     azp: Option<String>,
@@ -372,6 +374,22 @@ fn verify_token(
     keys: &JwkSet,
     nonce: &str,
 ) -> Result<Claims, AppError> {
+    let claims = verify_for(c, id_token, keys, &[c.client_id.as_str()])?;
+    if claims.nonce.as_deref() != Some(nonce) {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(claims)
+}
+
+/// Signature, issuer, expiry and audience of an ID token from the configured issuer,
+/// issued to one of `audiences`. `azp`, when present (or when there are several
+/// audiences), must be one of them too.
+fn verify_for(
+    c: &Config,
+    id_token: &str,
+    keys: &JwkSet,
+    audiences: &[&str],
+) -> Result<Claims, AppError> {
     let header = decode_header(id_token).map_err(|_| AppError::Unauthorized)?;
     if header.alg != Algorithm::RS256 {
         return Err(AppError::Unauthorized);
@@ -380,7 +398,7 @@ fn verify_token(
     let mut validation = Validation::new(Algorithm::RS256);
     validation.validate_nbf = true;
     validation.set_issuer(&[&c.issuer]);
-    validation.set_audience(&[&c.client_id]);
+    validation.set_audience(audiences);
     validation.set_required_spec_claims(&["exp", "iss", "aud", "sub", "iat"]);
     let claims = decode::<Claims>(
         id_token,
@@ -389,16 +407,91 @@ fn verify_token(
     )
     .map_err(|_| AppError::Unauthorized)?
     .claims;
-    if claims.nonce != nonce
-        || claims.sub.is_empty()
+    let trusted = |a: &String| audiences.contains(&a.as_str());
+    if claims.sub.is_empty()
         || claims.iat > chrono::Utc::now().timestamp() + 60
-        || claims.azp.as_ref().is_some_and(|a| a != &c.client_id)
+        || claims.azp.as_ref().is_some_and(|a| !trusted(a))
         || (claims.aud.as_array().is_some_and(|a| a.len() > 1)
-            && claims.azp.as_deref() != Some(c.client_id.as_str()))
+            && !claims.azp.as_ref().is_some_and(trusted))
     {
         return Err(AppError::Unauthorized);
     }
     Ok(claims)
+}
+
+/// How old an exchanged ID token may be: it is swapped right after its sign-in.
+const EXCHANGE_MAX_AGE_SECS: i64 = 600;
+
+/// A fresh ID token of Utopia's own client: the sibling app signs in with it too.
+fn verify_exchange_token(c: &Config, id_token: &str, keys: &JwkSet) -> Result<Claims, AppError> {
+    let claims = verify_for(c, id_token, keys, &[c.client_id.as_str()])?;
+    if claims.iat < chrono::Utc::now().timestamp() - EXCHANGE_MAX_AGE_SECS {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(claims)
+}
+
+#[derive(Deserialize)]
+pub struct Exchange {
+    id_token: String,
+}
+
+/// A sibling app (Tusko) signs its user in with Utopia's own SSO client and swaps
+/// the fresh ID token for a Utopia session, so it can call this API as that user.
+/// Only an identity the user linked themselves maps to an account, as with SSO
+/// login; nothing is created or linked here.
+pub async fn exchange(
+    State(s): State<AppState>,
+    Json(body): Json<Exchange>,
+) -> ApiResult<Json<Value>> {
+    let Ok(c) = config() else {
+        return Err(AppError::NotFound.into());
+    };
+    let unavailable = |r: Refusal| {
+        tracing::warn!(reason = %r.reason, "SSO exchange: identity provider unavailable");
+        AppError::invalid("oidc_unavailable", "The identity provider is unavailable")
+    };
+    let meta = metadata(&c).await.map_err(unavailable)?;
+    let jwks_url = endpoint(&c, &meta, "jwks_uri").map_err(unavailable)?;
+    let parse = |v: Value| {
+        serde_json::from_value::<JwkSet>(v).map_err(|e| refuse("unavailable", format!("jwks: {e}")))
+    };
+    let mut keys =
+        parse(cached_json(&jwks_url, false).await.map_err(unavailable)?).map_err(unavailable)?;
+    let kid = decode_header(&body.id_token).ok().and_then(|h| h.kid);
+    if pick_key(&keys, kid.as_deref()).is_none() {
+        keys =
+            parse(cached_json(&jwks_url, true).await.map_err(unavailable)?).map_err(unavailable)?;
+    }
+    let claims = verify_exchange_token(&c, &body.id_token, &keys)?;
+
+    let user_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT i.user_id FROM oidc_identities i JOIN users u ON u.id = i.user_id
+          WHERE i.issuer = $1 AND i.subject = $2 AND u.deactivated_at IS NULL",
+    )
+    .bind(&c.issuer)
+    .bind(&claims.sub)
+    .fetch_optional(&s.pool)
+    .await?;
+    let user_id = user_id.ok_or_else(|| {
+        AppError::invalid(
+            "oidc_unlinked",
+            "This SSO identity is not linked to a Utopia account",
+        )
+    })?;
+    let token = auth::issue_token(&s, user_id)?;
+    let _ = utopia_store::audit::record(
+        &s.pool,
+        None,
+        user_id,
+        "auth.oidc_exchange",
+        "user",
+        Some(user_id),
+        json!({"issuer": c.issuer, "client": claims.azp.or_else(|| claims.aud.as_str().map(String::from))}),
+    )
+    .await;
+    let expires_at = chrono::Utc::now() + chrono::Duration::days(auth::TOKEN_TTL_DAYS);
+    Ok(Json(json!({"token": token, "expires_at": expires_at})))
 }
 
 /// 回调办成的是哪一件事
@@ -813,5 +906,50 @@ mod tests {
         second.common.key_id = Some("other".into());
         two.keys.push(second);
         assert!(super::verify_token(&c, &no_kid, &two, "expected").is_err());
+    }
+
+    #[test]
+    fn exchange_accepts_only_fresh_tokens_of_its_own_client() {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use serde_json::json;
+        let c = config();
+        let key = EncodingKey::from_rsa_pem(include_bytes!(
+            "../../tests/fixtures/oidc_test_only_key.pem"
+        ))
+        .unwrap();
+        let keys: jsonwebtoken::jwk::JwkSet = serde_json::from_str(include_str!(
+            "../../tests/fixtures/oidc_test_only_jwks.json"
+        ))
+        .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let valid = json!({"iss":c.issuer,"aud":c.client_id,"sub":"person-123","nonce":"theirs","iat":now,"exp":now+300});
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("fixture".into());
+        let sign = |claims: &serde_json::Value| encode(&header, claims, &key).unwrap();
+        assert_eq!(
+            super::verify_exchange_token(&c, &sign(&valid), &keys)
+                .unwrap()
+                .sub,
+            "person-123"
+        );
+        for (field, value) in [
+            ("aud", json!("other-client")),
+            ("aud", json!([c.client_id, "other-client"])),
+            ("azp", json!("other-client")),
+            ("iat", json!(now - 3600)),
+            ("exp", json!(now - 3600)),
+            ("iss", json!("https://other.example.test")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(
+                super::verify_exchange_token(&c, &sign(&invalid), &keys).is_err(),
+                "accepted invalid {field}"
+            );
+        }
+        let mut multi = valid.clone();
+        multi["aud"] = json!([c.client_id, "other-client"]);
+        multi["azp"] = json!(c.client_id);
+        assert!(super::verify_exchange_token(&c, &sign(&multi), &keys).is_ok());
     }
 }
