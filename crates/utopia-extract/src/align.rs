@@ -63,9 +63,9 @@ const KIND_WORD_SYSTEM: &str = "\
 You bind the words documents use for kinds of things to the classes of a knowledge base's \
 ontology. Each numbered item is one kind word as the documents wrote it: the word, the \
 spellings seen, some things of this kind by name, the phrases those things take part in, and \
-the candidate classes, each with its key, its label and its definition. For each item, answer \
-with the key of the one candidate class that every thing of this kind is an instance of, or \
-null.\n\
+the keys of its candidate classes. The classes themselves are listed once under \"Classes\", \
+each with its key, its label and its definition. For each item, answer with the key of the one \
+candidate class that every thing of this kind is an instance of, or null.\n\
 \n\
 Output exactly one JSON object and nothing else, one pair per item:\n\
 {\"b\": [[12, \"organization\"], [13, null]]}\n\
@@ -90,16 +90,31 @@ documents: things that \"were founded by\" and \"are based in\" are organization
 5. Never invent a key, never answer with a label or a word of your own, and never choose for \
 an item a key that is not among its candidates. One pair per item, every item answered.";
 
-/// 构造两条消息：常量系统消息 + 逐项的用户消息。每项：id、词、拼写、例子、短语、候选。
-/// 空清单写 `(none)`，模型知道那一栏存在但这次没有证据
+/// 构造两条消息：常量系统消息 + 用户消息。类的定义表一批只写一遍，按第一次出现的次序；
+/// 每项：id、词、拼写、例子、短语、候选的键（次序照给的，第二票倒着给就倒着列）。
+/// 空清单写 `(none)`，模型知道那一栏存在但这次没有证据。
+///
+/// 从前每项下面各列一遍候选的定义：一批二十个词、每个十条候选，同一张表写二十遍，
+/// 一个词一百四十多 token 里一百二是它（bench README，2026-09-29）。与
+/// `phrase_align::build_phrase_messages` 同一条理由
 pub fn build_kind_word_messages(items: &[KindWordItem<'_>]) -> Vec<ChatMessage> {
+    let mut glossary: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for c in items.iter().flat_map(|i| i.candidates.iter()) {
+        if seen.insert(c.key.trim()) {
+            glossary.push(candidate_line(c));
+        }
+    }
     let mut user = String::new();
+    if !glossary.is_empty() {
+        user.push_str(&format!("Classes:\n{}\n\n", glossary.join("\n")));
+    }
     for item in items {
         let candidates = if item.candidates.is_empty() {
             " (none)".to_string()
         } else {
-            let lines: Vec<String> = item.candidates.iter().map(candidate_line).collect();
-            format!("\n{}", lines.join("\n"))
+            let keys: Vec<&str> = item.candidates.iter().map(|c| c.key.trim()).collect();
+            format!(" {}", keys.join(", "))
         };
         user.push_str(&format!(
             "Item {}: \"{}\"\nSpellings: {}\nExamples: {}\nPhrases: {}\nCandidates:{candidates}\n\n",
@@ -629,10 +644,18 @@ mod tests {
         assert!(user.contains("Spellings: \"Company\", \"company\", \"公司\"\n"));
         assert!(user.contains("Examples: \"Brightway Builders\", \"Harbor Estates\"\n"));
         assert!(user.contains("Phrases: \"is based in\", \"was founded by\"\n"));
-        assert!(user.contains(
-            "- organization: Organization — An organized group of people with a shared purpose"
-        ));
-        assert!(user.contains("- person: Person — A human being."));
+        assert!(user.starts_with("Classes:\n- "));
+        assert_eq!(
+            user.matches("- organization: Organization — An organized group of people")
+                .count(),
+            1,
+            "一条定义一批只写一遍"
+        );
+        assert_eq!(user.matches("- person: Person — A human being.").count(), 1);
+        assert!(
+            user.find("- structure: ").unwrap() < user.find("Item 12").unwrap(),
+            "定义表在各项之前"
+        );
 
         assert!(user.contains("Item 13: \"participant\"\n"));
         assert!(user.contains("Spellings: \"participants\"\nExamples: (none)\nPhrases: (none)\n"));
@@ -680,7 +703,8 @@ mod tests {
             candidates: vec![],
         });
         let user = &build_kind_word_messages(&items)[1].content;
-        assert!(user.contains("Candidates:\n- organization\n- place — A location.\n"));
+        assert!(user.starts_with("Classes:\n- organization\n- place — A location.\n\n"));
+        assert!(user.contains("Candidates: organization, place\n"));
         assert!(user.contains("Item 15: \"council\"\n"));
         assert!(user.ends_with("Candidates: (none)"));
     }

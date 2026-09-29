@@ -176,8 +176,12 @@ async function extract(KB) {
   // 温库第二批：只排这一批的文档，老文档的图不动
   const mine = new Set(corpus.docs.map((d) => d.filename));
   const docs = (await api("GET", `/api/v1/kbs/${KB}/documents?limit=500`)).docs.filter((d) => !INTO || mine.has(d.filename));
-  for (const d of docs) await api("POST", `/api/v1/documents/${d.id}/extract`, {});
-  log(`排队抽取 ${docs.length} 篇`);
+  // 配了对话模型的库，文档解析完管线自己排抽取。这里只补没排上的：手动抽取是强制全量
+  // （解雇在跑的任务、从头再抽），对每篇都调一次就是每篇抽两遍——2026-09-28 之前的每篇
+  // token 都多算了一遍抽取
+  const idle = docs.filter((d) => !["queued", "extracting", "done"].includes(d.graph_status));
+  for (const d of idle) await api("POST", `/api/v1/documents/${d.id}/extract`, {});
+  log(`排队抽取 ${idle.length} 篇（管线已排 ${docs.length - idle.length} 篇）`);
   const live = `SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.kb_id='${KB}' AND c.superseded_at IS NULL`;
   await until(() => {
     const done = num(live.replace("count(*)", "count(c.extracted_at)"));

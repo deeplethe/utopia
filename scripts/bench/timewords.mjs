@@ -38,7 +38,10 @@ async function run(n) {
     if (!r.ok) throw new Error(`upload ${d.filename} -> ${r.status} ${(await r.text()).slice(0, 200)}`);
   }
   for (let i = 0; i < 60; i++) { await sleep(3000); if (q(`SELECT count(*) FROM documents WHERE kb_id='${KB}' AND status<>'ready'`) === "0") break; }
-  for (const d of (await api("GET", `/api/v1/kbs/${KB}/documents?limit=50`)).docs) await api("POST", `/api/v1/documents/${d.id}/extract`, {});
+  // 管线解析完自己排抽取；手动抽取是强制全量，只补没排上的，否则每篇抽两遍
+  for (const d of (await api("GET", `/api/v1/kbs/${KB}/documents?limit=50`)).docs) {
+    if (!["queued", "extracting", "done"].includes(d.graph_status)) await api("POST", `/api/v1/documents/${d.id}/extract`, {});
+  }
   for (let i = 0; i < 240; i++) {
     await sleep(5000);
     const pending = q(`SELECT count(*) FROM jobs WHERE status IN ('queued','running') AND kind IN ('extract_document','resolve_time','process_document') AND (payload->>'kb_id'='${KB}' OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id='${KB}'))`);
