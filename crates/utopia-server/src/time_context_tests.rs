@@ -237,3 +237,115 @@ async fn last_week_is_counted_from_the_date_of_its_own_section() -> anyhow::Resu
         .await?;
     run
 }
+
+/// 文档没说自己是哪天的：抽取报了「没有」，就是没有。不再另问一次开头；相对的时间词
+/// 锚不到，等着（C 级），陈述没有见证。
+#[tokio::test]
+async fn a_document_that_states_no_date_is_not_asked_for_one() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let ids: Vec<Uuid> = (0..5).map(|_| Uuid::now_v7()).collect();
+    let (org, ws, kb, doc, chunk) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    sqlx::raw_sql(&format!(
+        "INSERT INTO organizations(id,name) VALUES ('{org}','time-context-undated');
+         INSERT INTO workspaces(id,org_id,name) VALUES ('{ws}','{org}','time-context-undated');
+         INSERT INTO knowledge_bases(id,workspace_id,name) VALUES ('{kb}','{ws}','time-context-undated');
+         INSERT INTO documents(id,kb_id,filename,sha256) VALUES ('{doc}','{kb}','背景.md','x');
+         INSERT INTO chunks(id,kb_id,document_id,seq,text) VALUES
+             ('{chunk}','{kb}','{doc}',0,'# 项目背景\n\n去年，码表一代进入北美市场。');"
+    ))
+    .execute(&pool)
+    .await?;
+    let model = Model {
+        replies: Arc::new(Mutex::new(vec![
+            json!({
+                "e": [["码表一代", "产品", 1], ["北美市场", "市场", 1]],
+                "s": [["去年，码表一代进入北美市场。", "码表一代", "进入", "北美市场", null, null, "去年", null]],
+                "n": [],
+                "t": []
+            })
+            .to_string(),
+            json!({ "m": [[0, "point", {
+                "kind": "anchored", "anchor": {"kind": "document"},
+                "offset": {"count": 1, "unit": "year", "direction": "before"}
+            }, "year"]] })
+            .to_string(),
+        ])),
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let router = Router::new()
+        .route("/chat/completions", post(reply))
+        .with_state(model.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    utopia_store::settings::upsert(
+        &pool,
+        ws,
+        Some(&endpoint),
+        None,
+        Some("scripted"),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let dir = tempfile::tempdir()?;
+    let cfg = utopia_core::config::AppConfig {
+        data_dir: dir.path().to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let search = Arc::new(utopia_search::SearchIndex::open(
+        &dir.path().join("search"),
+    )?);
+    let state = AppState::new(pool.clone(), &cfg, search, "test-only".into());
+
+    let run = async {
+        crate::extraction::extract_document(&state, doc, utopia_core::models::Proposer::default())
+            .await?;
+        resolve_document(&state, doc).await?;
+        let requests = model.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests.len(),
+            2,
+            "one extraction call and one interpretation call; the opening is not read for a date"
+        );
+        for r in &requests {
+            let system = r["messages"][0]["content"].as_str().unwrap_or("");
+            assert!(
+                !system.starts_with("You read the opening of a document"),
+                "the dating prompt is not sent"
+            );
+        }
+        let row: (Option<DateTime<Utc>>, Option<String>, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT valid_from, valid_from_grade, attested_from FROM facts
+              WHERE kb_id = $1 AND layer = 'open'",
+        )
+        .bind(kb)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            row,
+            (None, Some("C".to_string()), None),
+            "no anchor: the time word waits, and the statement has no attestation"
+        );
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+
+    server.abort();
+    sqlx::query("DELETE FROM jobs WHERE payload->>'document_id'=$1 OR payload->>'kb_id'=$2")
+        .bind(doc.to_string())
+        .bind(kb.to_string())
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    run
+}

@@ -97,7 +97,9 @@ pub struct OpenExtraction {
     pub time: Vec<crate::time::TimeEntry>,
     /// items skipped because they were malformed (counted per array item; must be reported by the caller)
     pub skipped: usize,
-    /// the reply was truncated and repaired to the last complete object
+    /// the reply was not valid JSON as a whole and was read item by item: cut off at the
+    /// end, or miswritten somewhere (the caller tells which by whether the reply hit the
+    /// token ceiling)
     pub truncated: bool,
 }
 
@@ -149,15 +151,7 @@ its units, a percentage, an amount, a count, a title, a status. phrase is how th
 what is measured or stated (\"area\", \"was completed\", \"joined\", \"占地面积\"); value is the \
 literal as written. Wording that names or describes something is not a value: that something \
 goes in \"e\" and is linked by a statement with an object. \"1,200 beekeepers joined\" is the \
-thing \"beekeepers\" with \"joined\" = \"1,200\". Write every figure the passage states. In a \
-table, a cell is a statement about its row's thing whose phrase is the column heading. When \
-the column heading names one time (a date, a quarter, a period), it is when instead, the \
-statement is about the thing the table's caption names (the company of a financial statement) \
-and the phrase is the row label as written, path included (\"Operating expenses › Research and \
-development\"); a heading that names a comparison between periods (a change from the quarter \
-before, a change from a year ago) is not a time, it stays the phrase; a unit the caption or a \
-heading gives (\"In millions\") is a qualifier on each such statement. Leave out cells whose \
-column heading is not in the passage.\n\
+thing \"beekeepers\" with \"joined\" = \"1,200\". Write every figure the passage states.{TABLE}\n\
    A list is one statement per member, and so is a subject or object that joins several things \
 (\"the city and the county funded the bridge\" is two statements).\n\
 3. Nothing in a sentence is dropped. When more than two things take part, or the link carries \
@@ -214,6 +208,47 @@ $2 million on March 4, 2011.\" gives:\n\
  \"n\": [],\n\
  \"t\": []}";
 
+/// 表格的读法，只在这一段里有表格时才进系统消息（见 [`has_table`]）：没有表格的段落
+/// 用不上它，而它占系统消息的一成不到
+const OPEN_TABLE_RULES: &str = "\
+ In a \
+table, a cell is a statement about its row's thing whose phrase is the column heading. When \
+the column heading names one time (a date, a quarter, a period), it is when instead, the \
+statement is about the thing the table's caption names (the company of a financial statement) \
+and the phrase is the row label as written, path included (\"Operating expenses › Research and \
+development\"); a heading that names a comparison between periods (a change from the quarter \
+before, a change from a year ago) is not a time, it stays the phrase; a unit the caption or a \
+heading gives (\"In millions\") is a qualifier on each such statement. Leave out cells whose \
+column heading is not in the passage.";
+
+/// 这一段里有没有表格：Markdown 的竖线、HTML 的单元格、制表符，或者一行里用成串空格
+/// 隔开的三栏以上。宁可多认：认错了只是多带一段规则，和从前一样
+fn has_table(passage: &str) -> bool {
+    let lower = passage.to_ascii_lowercase();
+    passage.contains('|')
+        || passage.contains('\t')
+        || lower.contains("<td")
+        || lower.contains("<th")
+        || lower.contains("<tr")
+        || passage.lines().any(|l| {
+            l.trim()
+                .split("  ")
+                .filter(|c| !c.trim().is_empty())
+                .count()
+                >= 3
+        })
+}
+
+/// 这一段的系统消息：规则不变，只有表格的那几句按段落带或不带
+fn system_for(passage: &str) -> String {
+    let table = if has_table(passage) {
+        format!(" {OPEN_TABLE_RULES}")
+    } else {
+        String::new()
+    };
+    OPEN_SYSTEM.replace("{TABLE}", &table)
+}
+
 /// 构造开放抽取的两条消息：常量系统消息 + `Document:` / 开头 / 已知实体 / `Passage:`。
 ///
 /// 没有文档日期、没有类型与关系清单、没有属性——这些都不进提示词。开头与已知实体
@@ -233,7 +268,7 @@ pub fn build_open_messages(
     vec![
         ChatMessage {
             role: "system".into(),
-            content: OPEN_SYSTEM.to_string(),
+            content: system_for(chunk_text),
         },
         ChatMessage {
             role: "user".into(),
@@ -307,6 +342,114 @@ pub(crate) fn repair_truncated_compact(json: &str) -> Option<String> {
         cut = idx;
     }
     None
+}
+
+/// 不合法的回复逐条读（整体解不开时才走这里）。返回 `(各类条目, 写坏的条数)`；一条
+/// 都读不出来是 None。
+///
+/// 从前整体解不开就当回复被截断，退到最后一个能补齐括号的位置，之后的全丢。可模型写坏
+/// 的多半不是结尾：`e` 没关就写起了 `s`，或者 `s` 的结尾少一个 `]`——回复正常结束，坏
+/// 在中间。坏在三分之一处，后面三分之二（十几条陈述、别名、文档的日期）就都没了，而
+/// 这一块照样记成抽完（bench README，2026-09-28）。
+///
+/// 这里不要求整体合法：顺着文本走，`"e"`、`"s"`、`"n"`、`"t"` 后面跟着 `: [` 就是换了
+/// 一类；每遇到一个 `[`，取到与它配平的那个括号，单独解。解得开、里面又没有数组的，是
+/// 一条（条目里从来没有数组：限定词是对象）；否则这一条写坏了，从它的下一个字符接着
+/// 找——套在坏条目里的完整条目照样读得出来。写在 `e` 里的八格条目是陈述，归到 `s`。
+/// 真被截断的回复，最后那条配不平，自然不收，与从前一样
+fn salvage(text: &str) -> Option<(Value, usize)> {
+    let bytes = text.as_bytes();
+    // 字符串的结尾（`i` 在开头的引号上）：返回结尾引号之后的位置；没有结尾就是 None
+    let string_end = |mut i: usize| -> Option<usize> {
+        i += 1;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\\' => i += 2,
+                b'"' => return Some(i + 1),
+                _ => i += 1,
+            }
+        }
+        None
+    };
+    // 与 `i` 上的 `[` 配平的括号的位置
+    let balanced_end = |start: usize| -> Option<usize> {
+        let (mut i, mut depth) = (start, 0usize);
+        while i < bytes.len() {
+            match bytes[i] {
+                b'"' => {
+                    i = string_end(i)?;
+                    continue;
+                }
+                b'[' | b'{' => depth += 1,
+                b']' | b'}' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    };
+    let mut found: [Vec<Value>; 4] = Default::default();
+    let mut section: Option<usize> = None;
+    let mut broken = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let Some(end) = string_end(i) else { break };
+                let key = ["e", "s", "n", "t"]
+                    .iter()
+                    .position(|k| &text[i + 1..end - 1] == *k);
+                let rest = text[end..].trim_start();
+                let after_colon = rest.strip_prefix(':').map(str::trim_start);
+                match (key, after_colon) {
+                    (Some(k), Some(r)) if r.starts_with('[') => {
+                        section = Some(k);
+                        i = text.len() - r.len() + 1;
+                    }
+                    _ => i = end,
+                }
+            }
+            b'[' => {
+                let item = balanced_end(i).and_then(|end| {
+                    let v = serde_json::from_str::<Value>(&text[i..=end]).ok()?;
+                    let arr = v.as_array()?;
+                    (!arr.is_empty() && !arr.iter().any(Value::is_array)).then_some((end, v))
+                });
+                match (item, section) {
+                    (Some((end, v)), Some(k)) => {
+                        let is_statement = k == 0
+                            && v.as_array().is_some_and(|a| {
+                                a.len() >= 8 && a[..3].iter().all(Value::is_string)
+                            });
+                        found[if is_statement { 1 } else { k }].push(v);
+                        i = end + 1;
+                    }
+                    (Some((end, _)), None) => i = end + 1,
+                    (None, _) => {
+                        // 配得平却解不开（或套着别的条目）才算写坏；配不平的是结尾被截断
+                        if section.is_some() && balanced_end(i).is_some() {
+                            broken += 1;
+                        }
+                        i += 1;
+                    }
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    if found.iter().all(Vec::is_empty) {
+        return None;
+    }
+    let [e, s, n, t] = found;
+    Some((
+        serde_json::json!({ "e": e, "s": s, "n": n, "t": t }),
+        broken,
+    ))
 }
 
 /// 顶层某个键下的数组；缺了或不是数组就当空——那不是一条坏记录，是整段没这一类
@@ -424,24 +567,25 @@ fn parse_name(arr: &[Value]) -> Option<OpenName> {
 /// 不分大小写）留第一个，其余计入 `skipped`。主语、宾语的名字不在这里对回 `e`
 pub fn parse_open_response(raw: &str) -> anyhow::Result<OpenExtraction> {
     // 先按常规取块（第一个 `{` 到最后一个 `}`）：解得开就是完整回复，结尾之后
-    // 哪怕跟着废话也不算截断。解不开才从第一个 `{` 取到结尾去修
+    // 哪怕跟着废话也不算截断。解不开才从第一个 `{` 取到结尾逐条读（见 `salvage`）
     let block = json_block(raw)
         .and_then(|b| serde_json::from_str::<Value>(&b).map_err(anyhow::Error::from));
+    let mut skipped = 0usize;
     let (value, truncated) = match block {
         Ok(v) => (v, false),
         Err(e) => {
-            let fixed = json_tail(raw)
-                .and_then(repair_truncated_compact)
-                // 补不回来才是真解析失败：连一个完整条目都没有
+            let (v, broken) = json_tail(raw)
+                .and_then(salvage)
+                // 一条都读不出来才是真解析失败
                 .ok_or_else(|| anyhow::anyhow!("Failed to parse open extraction JSON: {e}"))?;
-            let v = serde_json::from_str::<Value>(&fixed)
-                .map_err(|e| anyhow::anyhow!("Failed to parse open extraction JSON: {e}"))?;
+            skipped = broken;
             (v, true)
         }
     };
 
     let mut out = OpenExtraction {
         truncated,
+        skipped,
         ..Default::default()
     };
     let mut seen = HashSet::new();
@@ -574,15 +718,100 @@ mod tests {
         assert_eq!(x.skipped, 0);
     }
 
-    /// 截在一条陈述的限定词之后：修补退到那个 `}`，留下的半条不够八格，计入 skipped
-    /// 而不是收成一条只有引文的陈述
+    /// 截在一条陈述的限定词之后：那半条配不平，不收成一条只有引文的陈述。它不算写坏
+    /// 的条目：少了它是因为回复被截断，`truncated` 已经说了
     #[test]
-    fn a_half_statement_left_by_the_repair_is_counted() {
+    fn a_half_statement_at_the_cut_is_not_kept() {
         let raw = r#"{"e": [["A", "thing", 1]],
             "s": [["A is b.", "A", "is", null, "b", null, null, null], ["A was c.", "A", "was", null, "c", {"at": "home"}, "in 20"#;
         let x = parse_open_response(raw).unwrap();
         assert!(x.truncated);
         assert_eq!(x.statements.len(), 1);
+        assert_eq!(x.skipped, 0);
+    }
+
+    /// `e` 没关就写起了 `s`（回复正常结束，坏在三分之一处）：从前退到坏处之前，后面的
+    /// 陈述、别名全丢，这一块只剩写进 `e` 里的那一条。逐条读，一条不少
+    #[test]
+    fn statements_written_after_an_unclosed_list_are_all_read() {
+        let raw = r#"```json
+{"e": [["Harbor Bakery", "bakery", 1], ["Hillside School", "school", 1], ["bread", "bread", 0],
+["Harbor Bakery supplies Hillside School.", "Harbor Bakery", "supplies", "Hillside School", null, null, null, null],
+"s": [["Harbor Bakery bakes bread [daily].", "Harbor Bakery", "bakes", "bread", null, {"how often": "daily"}, null, null],
+["Harbor Bakery opened in 2005.", "Harbor Bakery", "opened", null, "opened", null, "2005", null]],
+"n": [["Harbor Bakery", "the Bakery", "The Bakery opened in 2005."]],
+"t": []}
+```"#;
+        let x = parse_open_response(raw).unwrap();
+        assert!(x.truncated, "读是读出来了，回复不合法要标出来");
+        assert_eq!(x.entities.len(), 3);
+        assert_eq!(
+            x.statements
+                .iter()
+                .map(|s| s.phrase.as_str())
+                .collect::<Vec<_>>(),
+            ["supplies", "bakes", "opened"],
+            "写在 e 里的那条八格条目是陈述"
+        );
+        assert_eq!(
+            x.statements[1].quote.as_deref(),
+            Some("Harbor Bakery bakes bread [daily].")
+        );
+        assert_eq!(x.names.len(), 1);
+        assert_eq!(x.skipped, 0);
+    }
+
+    /// `s` 的结尾少写一个 `]`：陈述都在，从前丢的是它后面的 `n` 与 `t`——文档的日期
+    /// 没了，这一篇里数着「今天」的时间就都没处数
+    #[test]
+    fn what_follows_a_miswritten_bracket_is_still_read() {
+        let raw = r#"{"e": [["码表", "产品", 1]],
+"s": [["码表平均售价为849元。", "码表", "平均售价", null, "849元", null, "2025年第四季度", null]}
+,
+"n": [],
+"t": [["now", "提报日期", "2026年8月28日", {"y": 2026, "m": 8, "d": 28}, null]]}"#;
+        let x = parse_open_response(raw).unwrap();
+        assert!(x.truncated);
+        assert_eq!(x.statements.len(), 1);
+        assert_eq!(x.time.len(), 1);
+        assert_eq!(x.skipped, 0);
+    }
+
+    /// 一条写坏了（对象少了 `}`）只丢这一条，计数；前后的照收
+    #[test]
+    fn one_miswritten_item_costs_only_itself() {
+        let raw = r#"{"e": [["A", "thing", 1]],
+"s": [["A is b.", "A", "is", null, "b", null, null, null],
+["A was c.", "A", "was", null, "c", {"at": "home"], "in 2019", null],
+["A has d.", "A", "has", null, "d", null, null, null]],
+"n": [], "t": []}"#;
+        let x = parse_open_response(raw).unwrap();
+        assert!(x.truncated);
+        assert_eq!(
+            x.statements
+                .iter()
+                .map(|s| s.phrase.as_str())
+                .collect::<Vec<_>>(),
+            ["is", "has"]
+        );
+        assert_eq!(x.skipped, 1);
+    }
+
+    /// 一条少了结尾的 `]`，把下一条套了进去：套着别的条目的不是一条，里面那条照收
+    #[test]
+    fn an_item_that_swallowed_the_next_one_gives_the_next_one_back() {
+        let raw = r#"{"e": [["A", "thing", 1]],
+"s": [["A is b.", "A", "is", null, "b", null, null, null,
+["A has d.", "A", "has", null, "d", null, null, null]],
+"n": [], "t": []}"#;
+        let x = parse_open_response(raw).unwrap();
+        assert_eq!(
+            x.statements
+                .iter()
+                .map(|s| s.phrase.as_str())
+                .collect::<Vec<_>>(),
+            ["has"]
+        );
         assert_eq!(x.skipped, 1);
     }
 
@@ -765,6 +994,28 @@ mod tests {
 
     /// 提示词里没有文档日期、没有类型与关系清单、没有编号与句柄；有文件名、开头、
     /// 已知名字与正文，并且按这个顺序
+    #[test]
+    fn the_table_rules_ride_only_with_a_passage_that_has_a_table() {
+        let plain = "The council met on March 4, 2011. It awarded the paving contract.";
+        let system = &build_open_messages("a.md", &[], None, plain)[0].content;
+        assert!(!system.contains("In a table"));
+        assert!(!system.contains("{TABLE}"));
+        assert!(system.contains("Write every figure the passage states.\n"));
+        for table in [
+            "| Item | Q3 2025 |\n|---|---|\n| Revenue | 12 |",
+            "<table><tr><td>Revenue</td><td>12</td></tr></table>",
+            "Revenue\t12\t14",
+            "Revenue      12      14\nCosts        7       8",
+        ] {
+            let system = &build_open_messages("a.md", &[], None, table)[0].content;
+            assert!(
+                system.contains("Write every figure the passage states. In a table, a cell is"),
+                "{table}"
+            );
+            assert!(system.contains("column heading is not in the passage.\n"));
+        }
+    }
+
     #[test]
     fn the_prompt_carries_no_ontology_and_no_document_date() {
         let msgs = build_open_messages(

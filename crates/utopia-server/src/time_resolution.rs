@@ -2,7 +2,7 @@
 //!
 //! 抽取只记时间**词**（`time_mentions`：原样的字、块、偏移、起/止）。这里是它后面的任务：
 //!
-//! 1. **文档时间上下文**（决定 3）。一篇文档只做一次：把开头交给模型，它转写文档自己的日期
+//! 1. **文档时间上下文**（决定 3；0064 起由抽取时各块报上来，这里不再问模型）。从前：把开头交给模型，它转写文档自己的日期
 //!    （落款、备案日、公报的报告年）和文档命名的期间（「fiscal 2027」及其起止）；日期词要在
 //!    开头里核对得到才算数。结果存在 `documents.time_context`；文档自己的日期写进 `doc_time`
 //!    （来源 `content`）。上传时间永远不进来（#714）。
@@ -14,24 +14,21 @@
 //!    B 级，锚不到的是 C 级——C 级什么也不写，等锚点（决定 4、6）。
 //! 4. 结果落到开放陈述的 `valid_from` / `valid_to`（决定 5 的第一根轴），时间轴上才有它。
 
-use crate::extraction::{chat_retrying_rate_limits_at, span_in_quote};
+use crate::extraction::chat_retrying_rate_limits_at;
 use crate::llm_util;
 use crate::state::AppState;
 use chrono::{DateTime, Duration, Months, NaiveDate, NaiveTime, TimeZone, Utc};
 use std::collections::HashMap;
 use utopia_extract::time::{
-    build_dating_messages, build_interpretation_messages, headings_at, now_in_force,
-    parse_dating_response, parse_interpretation_response, Anchor, DateParts, Direction,
-    DocumentDating, Granularity, Interpretation, MentionInput, NamedPeriod, Offset, Reference,
-    Shape, TimeContext, Unit,
+    build_interpretation_messages, headings_at, now_in_force, parse_interpretation_response,
+    Anchor, DateParts, Direction, DocumentDating, Granularity, Interpretation, MentionInput,
+    NamedPeriod, Offset, Reference, Shape, TimeContext, Unit,
 };
 use utopia_store::graph::{truncate_to, ENDED_UNKNOWN, WORLD_PRECISIONS};
 use uuid::Uuid;
 
 /// 一批解释问多少个提及。
 const BATCH: usize = 40;
-/// 文档开头给模型看多少字：落款、报告年、财年定义都在前面
-const OPENING_CHARS: usize = 3000;
 
 /// 一次解析的结果：世界轴上的位置与等级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,7 +379,7 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot resolve time"))?;
 
-    // 1. 文档时间上下文：一篇只问一次。抽取已经报上来的（0064）不再问
+    // 1. 文档时间上下文：抽取时各块报上来的（0064）。这里不问模型
     let context: DocumentDating = match doc.time_context.clone() {
         Some(json) => {
             let context: DocumentDating = serde_json::from_value(json)?;
@@ -394,40 +391,14 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
             }
             context
         }
-        None => {
-            let opening = utopia_store::documents::opening_chunk(pool, document_id)
-                .await?
-                .map(|(_, text)| text)
-                .unwrap_or_default();
-            let opening: String = opening.chars().take(OPENING_CHARS).collect();
-            let messages = build_dating_messages(&doc.filename, &opening);
-            let reply =
-                chat_retrying_rate_limits_at(state, &settings, &client, &messages, Some(0.0))
-                    .await?;
-            let mut dating = parse_dating_response(&reply.text)?;
-            // 日期词要在开头里核对得到（与名字、引文同一条规矩）；核不到的日期不算
-            match dating.date_words.as_deref() {
-                Some(words) if span_in_quote(words, &opening) => {}
-                _ => dating.date = None,
-            }
-            utopia_store::documents::set_time_context(
-                pool,
-                document_id,
-                &serde_json::to_value(&dating)?,
-            )
-            .await?;
-            // 文档自己的日期（决定 3）：只在它还没有内容或来源给的日期时写
-            if crate::extraction_open::dated_at(&doc).is_none() {
-                if let Some((t, _)) = dating.date.as_ref().and_then(parts_to_time) {
-                    utopia_store::documents::set_content_date(pool, document_id, t).await?;
-                }
-            }
-            dating
-        }
+        // 抽取一条日期都没报：文档没说自己是哪天的。不再另问一次开头（0064 决定 1）——
+        // 那一次调用在抽取报了「没有」的文档上问的是同一个问题，测量里二十篇有十六篇这样
+        // 白问；文档里写了日期的，抽取都报上来了
+        None => DocumentDating::default(),
     };
 
-    // 老路读开头定出来的日期（抽取一条都没报的时候）：它就是整篇的起算点，和抽取报上来的
-    // 一样进条目里，下面给陈述作证、给相对的时间词当基准都从条目里找
+    // 这一刀之前读开头定出来、存在文档上的日期（只有日期、没有条目）：它就是整篇的起算点，
+    // 和抽取报上来的一样进条目里，下面给陈述作证、给相对的时间词当基准都从条目里找
     let mut context = context;
     if context.entries.is_empty() {
         if let (Some(date), Some(words)) = (context.date.clone(), context.date_words.clone()) {
