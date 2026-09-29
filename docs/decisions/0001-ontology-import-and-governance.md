@@ -124,9 +124,10 @@ since moved to `scripts/bench/` (0012); these numbers are real but no longer com
 20. **Attributes** (`create_attribute_with_iri`): `rdfs:range` → `datatype` three ways. A mappable XSD
     type gets its datatype; no range → `text`, listed in the preview; a type we cannot express
     (`time`, `gMonth`, `duration`, several ranges, unknown IRIs) → `text` and reported; a type the
-    extractor could never read out of prose (`base64Binary`, `hexBinary`, `XMLLiteral`, `QName`,
-    `ID`, `IDREF`, `ENTITY`) is skipped and reported. The dividing line is "can this value appear in a
-    sentence": skipping protects the prompt, where every attribute is a line paid per chunk. A domain
+    extractor could never read out of prose (`base64Binary`, `XMLLiteral`, `QName`, `ID`, `IDREF`,
+    `ENTITY`) is skipped and reported. The dividing line is "can this value appear in a sentence":
+    skipping protects the prompt, where every attribute is a line paid per chunk. `hexBinary` → `text`:
+    it is written as hex digits, and what it carries in prose is a hash, an address or a flag. A domain
     pointing at a class that was not imported is skipped and counted.
 21. **Multiple inheritance is real.** FOAF's `Person` is both `foaf:Agent` and `geo:SpatialThing`;
     keeping one parent makes attributes on the other branch fail their domain check.
@@ -250,6 +251,9 @@ since moved to `scripts/bench/` (0012); these numbers are real but no longer com
   state their constraints as SHACL shapes (UCO, #923) declare almost none, so every attribute
   without a domain was skipped at import; decision 13 now reads the shapes where a property
   declares neither.
+- 2026-09-29: counted `hexBinary` among the values that never appear in prose. It is written as hex
+  digits, and forensic reports state hashes, addresses and flags in sentences (UCO has 12 such
+  properties, #1001); decision 20 now maps it to `text`. `base64Binary` stays skipped.
 
 ## Open questions
 

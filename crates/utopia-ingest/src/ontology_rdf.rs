@@ -937,13 +937,16 @@ fn resolve_range(ranges: &[String], union: bool, vocab: &VocabDatatypes) -> Rang
 /// `09:00`，而一张 base64 平面图不会出现在散文里；就算文档里真有一段 base64，
 /// 把它当成事实抽出来也是错的。
 ///
+/// `hexBinary` 不在此列：名字里有 binary，写出来却是一串十六进制数字，散文里带的是
+/// 哈希、内存地址、标志位这类值（「该文件的 SHA-256 为 9f86d0…」），抽成事实是对的。
+/// UCO 有 12 个属性是它（#1001 的评审）。
+///
 /// **其余一律降级成 text**——一个抽得出来的值，宁可类型糙一点也别让它没处可去。
 fn unusable(iri: &str) -> bool {
     if let Some(local) = iri.strip_prefix(XSD) {
         return matches!(
             local,
             "base64Binary"
-                | "hexBinary"
                 | "QName"
                 | "NOTATION"
                 | "ID"
@@ -971,11 +974,12 @@ fn datatype_of(iri: &str) -> Option<&'static str> {
             // 我们的日期格式本就是 YYYY[-MM[-DD]]，逐级可省，所以 gYear / gYearMonth 装得下
             "date" | "dateTime" | "dateTimeStamp" | "gYear" | "gYearMonth" => Some("date"),
             "boolean" => Some("bool"),
+            // hexBinary 的写法就是十六进制数字：哈希、地址、标志位，照原样存成文本不丢东西
             "string" | "normalizedString" | "token" | "language" | "Name" | "NCName"
-            | "NMTOKEN" | "anyURI" => Some("text"),
+            | "NMTOKEN" | "anyURI" | "hexBinary" => Some("text"),
             // time / gMonth / gDay / gMonthDay 缺年，duration 系列是时长不是时点 ——
             // 落到 None，再由 unusable() 分流：它们是可读字面量，降级成 text；
-            // 二进制与 XML 内部标识才是真的不收
+            // base64 块与 XML 内部标识才是真的不收
             _ => None,
         };
     }
@@ -1062,15 +1066,25 @@ mod tests {
             map_range(&[format!("{XSD}duration")]),
             RangeMapping::Degraded(_)
         ));
-        // 取值本就不该进图谱：二进制块与 XML 片段，这才是真的跳过
-        assert!(matches!(
-            map_range(&[format!("{XSD}base64Binary")]),
-            RangeMapping::Unusable(_)
-        ));
-        assert!(matches!(
-            map_range(&[format!("{RDF_NS}XMLLiteral")]),
-            RangeMapping::Unusable(_)
-        ));
+        // 十六进制写出来的值：哈希、地址、标志位。它是一个值，照原样存成文本
+        assert_eq!(
+            map_range(&[format!("{XSD}hexBinary")]),
+            RangeMapping::Datatype("text")
+        );
+        // 取值本就不该进图谱：base64 块、XML 片段与 XML 内部标识，这才是真的跳过
+        for unusable in [
+            format!("{XSD}base64Binary"),
+            format!("{RDF_NS}XMLLiteral"),
+            format!("{XSD}QName"),
+        ] {
+            assert!(
+                matches!(
+                    map_range(std::slice::from_ref(&unusable)),
+                    RangeMapping::Unusable(_)
+                ),
+                "{unusable}"
+            );
+        }
     }
 
     /// 多条 range 在 RDFS 里是**交集**（"必须同时是两者"），不是并集。
