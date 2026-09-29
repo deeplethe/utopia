@@ -1,5 +1,7 @@
 name: CI
 
+# 2026-09-29：仓库被删除后恢复，GitHub 把这个 workflow 记成了 deleted，文件在而不再触发。
+# 改动这个文件并推送，GitHub 才重新登记它——这两行注释就是那次改动留下的
 on:
   push:
     # dev 也要跑，为的是缓存：GitHub 只让 PR 读到自己、base 分支和默认分支的缓存，
