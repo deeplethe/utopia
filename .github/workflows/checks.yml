@@ -1,7 +1,8 @@
 name: CI
 
-# 2026-09-29：仓库被删除后恢复，GitHub 把这个 workflow 记成了 deleted，文件在而不再触发。
-# 改动这个文件并推送，GitHub 才重新登记它——这两行注释就是那次改动留下的
+# 2026-09-29：这个文件原来叫 ci.yml。仓库被删除后恢复，GitHub 把那个路径上的 workflow 记成了
+# deleted：文件在、改动它再推送也不重新登记，接口也不让启用。换一个路径，GitHub 当成新的
+# workflow 登记。名字和各 job 的名字不变，分支保护按名字要求的 backend 与 web 照旧对得上
 on:
   push:
     # dev 也要跑，为的是缓存：GitHub 只让 PR 读到自己、base 分支和默认分支的缓存，
