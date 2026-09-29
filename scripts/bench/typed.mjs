@@ -32,7 +32,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { api, login, parseArgs, sleep, until, log, EMAIL, PASSWORD } from "./lib.mjs";
+import { api, login, parseArgs, sleep, until, log, usageByCall, EMAIL, PASSWORD } from "./lib.mjs";
 import { execFileSync } from "node:child_process";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -176,8 +176,12 @@ async function extract(KB) {
   // 温库第二批：只排这一批的文档，老文档的图不动
   const mine = new Set(corpus.docs.map((d) => d.filename));
   const docs = (await api("GET", `/api/v1/kbs/${KB}/documents?limit=500`)).docs.filter((d) => !INTO || mine.has(d.filename));
-  for (const d of docs) await api("POST", `/api/v1/documents/${d.id}/extract`, {});
-  log(`排队抽取 ${docs.length} 篇`);
+  // 配了对话模型的库，文档解析完管线自己排抽取。这里只补没排上的：手动抽取是强制全量
+  // （解雇在跑的任务、从头再抽），对每篇都调一次就是每篇抽两遍——2026-09-28 之前的每篇
+  // token 都多算了一遍抽取
+  const idle = docs.filter((d) => !["queued", "extracting", "done"].includes(d.graph_status));
+  for (const d of idle) await api("POST", `/api/v1/documents/${d.id}/extract`, {});
+  log(`排队抽取 ${idle.length} 篇（管线已排 ${docs.length - idle.length} 篇）`);
   const live = `SELECT count(*) FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.kb_id='${KB}' AND c.superseded_at IS NULL`;
   await until(() => {
     const done = num(live.replace("count(*)", "count(c.extracted_at)"));
@@ -518,6 +522,15 @@ if (SERVER_LOG) {
   };
   const t = result.tokens;
   console.log(`token（服务端日志）：抽取 ${t.extract?.total ?? "-"}，对齐 ${t.align?.total ?? "-"}，勘误 ${t.errata?.total ?? "-"}，合计 ${t.total?.total ?? "-"}，每篇 ${t.total?.per_document ?? "-"}`);
+  // 按调用的种类拆（日志里的 `call=`，系统消息的头一句）：阶段是按时间窗口归的，对齐那一段里
+  // 两票、提规则、读数混在一起，只有这一栏分得开
+  const lines = fs.readFileSync(SERVER_LOG, "utf8").split("\n").filter((l) => {
+    const m = /^(?:\x1b\[[0-9;]*m)*(\S+Z)/.exec(l);
+    return m && m[1] >= stamps.start && m[1] < stamps.end;
+  });
+  result.tokens.by_call = usageByCall(lines.join("\n")).map((u) => ({ ...u, per_document: Math.round((u.prompt + u.completion) / docs) }));
+  for (const u of result.tokens.by_call)
+    console.log(`  ${String(u.prompt + u.completion).padStart(9)}  ${String(u.calls).padStart(5)} 次  每篇 ${String(u.per_document).padStart(6)}  ${u.call}`);
 }
 fs.writeFileSync(OUT, JSON.stringify(result, null, 1));
 console.log(`结果写到 ${OUT}（${result.minutes} 分钟）`);

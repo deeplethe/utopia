@@ -28,7 +28,10 @@ fn temporal_of(alias: &str) -> String {
 }
 
 /// `facts`：读出来的下界——原文给了起点用起点，否则从最早的证据起。
-/// 恒常没有下界（NULL 即开放）：证据日期闸的是「从何时起知道」，恒常的东西不从何时起
+/// 恒常没有下界（NULL 即开放）：证据日期闸的是「从何时起知道」，恒常的东西不从何时起。
+///
+/// 既没有起点也没有见证的行（0064 决定 5）：文档没说它什么时候成立，也没说自己是哪天的，
+/// 下界开放——任何时点都成立。没日期的事件除外，见 [`facts_hold_at`]
 pub fn facts_holds_from(alias: &str) -> String {
     format!(
         "CASE WHEN {temporal} = 'eternal' THEN NULL \
@@ -60,8 +63,21 @@ pub fn facts_holds_to(alias: &str) -> String {
 
 /// `facts`：断言在 T 时刻成立。`$param` 为 NULL 即不过滤。
 /// 两端都可能开放（恒常），所以是纯粹的区间包含
+///
+/// 没日期的事件发生过但不知何时，任何时点都不算成立（0022）。有见证时它的两端同为见证，
+/// 区间是空的；没有见证时（0064 决定 5）两端都是 NULL，读成区间就成了两端开放，所以单独
+/// 挡掉——不拿 `infinity` 当端点，那两个值还要投影给读的人。没有谓词的行（开放陈述）
+/// 的时间语义是 NULL，读作状态：比较用 `IS NOT DISTINCT FROM`，否则整个谓词是 NULL，
+/// 放在 WHERE 里就把每一条开放陈述都滤掉了
 pub fn facts_hold_at(alias: &str, param: usize) -> String {
-    interval_holds_at(&facts_holds_from(alias), &facts_holds_to(alias), param)
+    format!(
+        "(${param}::timestamptz IS NULL \
+          OR (NOT ({temporal} IS NOT DISTINCT FROM 'event' AND {alias}.valid_from IS NULL \
+                   AND {alias}.attested_from IS NULL) \
+              AND {holds}))",
+        temporal = temporal_of(alias),
+        holds = interval_holds_at(&facts_holds_from(alias), &facts_holds_to(alias), param),
+    )
 }
 
 /// 纯粹的区间包含，NULL 一端即开放。派生行与幽灵边（0017 §3，区间在 `detail` 里）

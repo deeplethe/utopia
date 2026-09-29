@@ -1239,7 +1239,7 @@ fn read_span(
     from_precision: Option<&str>,
     to: Option<chrono::DateTime<chrono::Utc>>,
     to_precision: Option<&str>,
-    attested_from: chrono::DateTime<chrono::Utc>,
+    attested_from: Option<chrono::DateTime<chrono::Utc>>,
     attested_to: Option<chrono::DateTime<chrono::Utc>>,
 ) -> (Option<i64>, Option<i64>, bool, bool) {
     use crate::graph::Temporal;
@@ -1251,8 +1251,10 @@ fn read_span(
         // 0031 之前写下的事件行终点是空的，按起点那个桶读
         Temporal::Event => {
             return match from {
+                // 没日期的事件区间为空。没有见证的（0064 决定 5）也一样：两端都落在
+                // 读不到的远处，和任何区间都不相交
                 None => {
-                    let a = attested_from.timestamp();
+                    let a = attested_from.map_or(i64::MAX / 4, |a| a.timestamp());
                     (Some(a), Some(a), true, true)
                 }
                 Some(f) => {
@@ -1268,7 +1270,11 @@ fn read_span(
     }
     let (f, from_anchored) = match from {
         Some(x) => (Some(x.timestamp()), false),
-        None => (Some(attested_from.timestamp()), true),
+        // 没有起点：从见证起；连见证都没有的，下界开放——任何时点都成立（0064 决定 5）
+        None => match attested_from {
+            Some(a) => (Some(a.timestamp()), true),
+            None => (None, false),
+        },
     };
     // 结束未知的行按 CHECK 必带 attested_to；万一没有，按开放读——宁可多推一点，
     // 也不凭空造一个终点
@@ -1510,7 +1516,7 @@ type EdgeRow = (
     Option<String>,
     Option<String>,
     f32,
-    chrono::DateTime<chrono::Utc>,
+    Option<chrono::DateTime<chrono::Utc>>,
     Option<chrono::DateTime<chrono::Utc>>,
 );
 
@@ -1840,7 +1846,7 @@ type AttrFactRow = (
     Option<String>,
     f32,
     Option<Uuid>,
-    chrono::DateTime<chrono::Utc>,
+    Option<chrono::DateTime<chrono::Utc>>,
     Option<chrono::DateTime<chrono::Utc>>,
 );
 

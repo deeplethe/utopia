@@ -547,7 +547,7 @@ impl LlmClient {
             return Err(response_failure("LLM", status, retry_after, resp).await?);
         }
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
-        log_usage(&self.model, &body);
+        log_usage(&self.model, &call_label(messages), &body);
         body["choices"][0]["message"]["content"]
             .as_str()
             .map(|s| strip_reasoning(s).to_string())
@@ -666,6 +666,7 @@ impl LlmClient {
                 model = %self.model,
                 prompt = u.prompt_tokens,
                 completion = u.completion_tokens,
+                call = %call_label(messages),
                 "llm usage"
             );
         }
@@ -1071,7 +1072,36 @@ impl LlmClient {
 ///
 /// 字段名各家不一：OpenAI 用 prompt_tokens_details.cached_tokens，
 /// DeepSeek 用 prompt_cache_hit_tokens。两个都读，谁在读谁。
-fn log_usage(model: &str, body: &serde_json::Value) {
+/// 这一次调用是干什么的：系统消息的头一句，截到六十个字符。
+///
+/// 用量日志从前只有模型和两个数，一篇文档三万 token 花在哪一种调用上（抽取、两票、提规则、
+/// 读数、时间解释）从日志里分不出来，只能按时间窗口猜。系统消息是各处写死的常量，头一句
+/// 各不相同，拿它当标签不必改任何一个调用方。没有系统消息的（对话）标 `-`
+fn call_label(messages: &[ChatMessage]) -> String {
+    let Some(system) = messages.iter().find(|m| m.role == "system") else {
+        return "-".into();
+    };
+    let first = system
+        .content
+        .split(['.', '。', '\n'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    // 标签里不留空格和引号：日志是 `key=value` 的一行，拆的人按空格拆
+    first
+        .chars()
+        .take(60)
+        .map(|c| {
+            if c.is_whitespace() || c == '"' {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+fn log_usage(model: &str, call: &str, body: &serde_json::Value) {
     let u = &body["usage"];
     if u.is_null() {
         return;
@@ -1085,6 +1115,8 @@ fn log_usage(model: &str, body: &serde_json::Value) {
         prompt = n("prompt_tokens"),
         completion = n("completion_tokens"),
         cached,
+        // 排在后面：读日志的脚本按 `model=… prompt=… completion=…` 的次序认这一行
+        call,
         "llm usage"
     );
 }
@@ -1318,6 +1350,26 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_call_is_labelled_by_the_first_sentence_of_its_system_message() {
+        let m = |role: &str, content: &str| ChatMessage {
+            role: role.into(),
+            content: content.into(),
+        };
+        assert_eq!(
+            call_label(&[
+                m(
+                    "system",
+                    "You read one passage of a document and write down what it states, in the passage's own words. Output one JSON object."
+                ),
+                m("user", "Passage: ..."),
+            ]),
+            "You_read_one_passage_of_a_document_and_write_down_what_it_st"
+        );
+        assert_eq!(call_label(&[m("user", "hello")]), "-");
+        assert!(!call_label(&[m("system", "Say \"ok\" now")]).contains('"'));
+    }
     use tokio::io::AsyncWriteExt;
 
     fn client_at(addr: std::net::SocketAddr) -> LlmClient {

@@ -423,7 +423,8 @@ async fn confirm_open(
 ) -> AppResult<Confirmed> {
     // 记录轴的锚点只认文档自己说的日期（#714）：`doc_time_source` 是 content / source
     // 才取 `doc_time`，上传时间与文件 mtime 不算。记忆文档是 'none'，于是这里为空，
-    // `insert_open_statement` 落成此刻——人此刻说的话，人就是证据
+    // 落成此刻——人此刻点了头的话，人就是证据。抽取那条路没有这个缺省（0064 决定 5）：
+    // 那里没有人在场，文档没说的就是没有
     let attested_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
         "SELECT d.doc_time FROM chunks c JOIN documents d ON d.id = c.document_id
           WHERE c.id = $1 AND d.doc_time_source IN ('content', 'source')",
@@ -443,7 +444,7 @@ async fn confirm_open(
         v.subject_id,
         phrase,
         object,
-        attested_at,
+        attested_at.or_else(|| Some(chrono::Utc::now())),
         v.confidence,
     )
     .await?;

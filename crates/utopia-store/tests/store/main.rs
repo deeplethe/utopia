@@ -84,6 +84,7 @@ mod a_secret_is_sealed_at_rest;
 mod a_signature_holds_on_every_path;
 mod a_source_kind_is_listed_once;
 mod a_source_reaches_only_where_it_was_granted;
+mod a_statement_is_attested_by_what_its_document_says;
 mod a_stopped_chat_is_replayed_as_incomplete;
 mod a_time_mention_is_resolved_against_its_document;
 mod a_time_mention_is_words_not_a_date;

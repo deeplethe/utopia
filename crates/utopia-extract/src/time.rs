@@ -36,6 +36,10 @@ use crate::{json_block, json_text};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DateParts {
     pub year: i32,
+    /// 写明的年里的第几季度（「2025年第三季度」「Q3 2025」），1–4；有它就没有月。
+    /// 季度到月份是日历算术，归代码（0045 决定 2）：模型只抄「第三」这个数
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quarter: Option<u32>,
     pub month: Option<u32>,
     pub day: Option<u32>,
     pub hour: Option<u32>,
@@ -55,7 +59,7 @@ impl DateParts {
             Granularity::Hour
         } else if self.day.is_some() {
             Granularity::Day
-        } else if self.month.is_some() {
+        } else if self.month.is_some() || self.quarter.is_some() {
             Granularity::Month
         } else {
             Granularity::Year
@@ -67,6 +71,9 @@ impl DateParts {
 impl fmt::Display for DateParts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.year)?;
+        if let Some(q) = self.quarter {
+            write!(f, "-Q{q}")?;
+        }
         if let Some(m) = self.month {
             write!(f, "-{m:02}")?;
         }
@@ -94,10 +101,106 @@ pub struct NamedPeriod {
     pub to: DateParts,
 }
 
+/// 文档说到的一个日期，连它的名字和它管到哪（0064 决定 1）。抽取每一块时报上来，
+/// 服务端核对字在块里、算出它所在的标题路径，存在文档的时间语境里。
+///
+/// 一篇文档不止一个日期，哪个都不比别的大：提报日期、数据统计截止、生效日期各管各的事。
+/// 相对的时间词从哪天起算，看它所在的那一节里哪个 `now` 在管（[`now_in_force`]）
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimeEntry {
+    /// `now`：文本说话的那一刻（电头、报告的提报日、会议的日期）；
+    /// `date`：文本给了名字的别的日期（截止、生效、期限）；`period`：命名的期间
+    pub kind: String,
+    /// the label as written ("提报日期", "Data as of"); empty for a bare dateline
+    pub name: String,
+    /// the date words as written
+    pub words: String,
+    pub from: DateParts,
+    pub to: Option<DateParts>,
+    /// the headings the entry was stated under, outermost first; it governs what sits under them
+    #[serde(default)]
+    pub scope: Vec<String>,
+    /// the chunk that stated it and where in it (set by the server)
+    #[serde(default)]
+    pub chunk: Option<String>,
+    #[serde(default)]
+    pub char_start: Option<i32>,
+}
+
+/// 块的正文里，这个字符位置之前还在管着的标题，由外到内。
+///
+/// 判据是结构的：行首连着的 `#` 是标题的级，同级或更深的旧标题被新标题顶掉。分块器让
+/// 每一块以它所在的标题开头，所以一块自己的正文就说得出它在哪一节——不靠块与块的先后，
+/// 块并行抽的时候照样成立（#588）
+pub fn headings_at(text: &str, char_pos: usize) -> Vec<String> {
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut seen = 0usize;
+    for line in text.split_inclusive('\n') {
+        if seen > char_pos {
+            break;
+        }
+        let trimmed = line.trim();
+        let level = trimmed.chars().take_while(|c| *c == '#').count();
+        if (1..=6).contains(&level) {
+            let title = trimmed[level..].trim();
+            if !title.is_empty() && trimmed[level..].starts_with(char::is_whitespace) {
+                stack.retain(|(l, _)| *l < level);
+                stack.push((level, title.to_string()));
+            }
+        }
+        seen += line.chars().count();
+    }
+    stack.into_iter().map(|(_, t)| t).collect()
+}
+
+/// 这个位置上管事的那个 `now`：所在的标题路径以它的范围开头的里面，范围最深的那个；
+/// 同一层有几个时取先说的。没有就是 `None`——相对的时间词锚不到，等着（0045 决定 4）
+pub fn now_in_force<'a>(entries: &'a [TimeEntry], path: &[String]) -> Option<&'a TimeEntry> {
+    let mut best: Option<&TimeEntry> = None;
+    for e in entries.iter().filter(|e| e.kind == "now") {
+        if e.scope.len() <= path.len()
+            && e.scope.iter().zip(path).all(|(a, b)| a == b)
+            && best.is_none_or(|b| e.scope.len() > b.scope.len())
+        {
+            best = Some(e);
+        }
+    }
+    best
+}
+
+/// 抽取回复里的一条 `t`：`[kind, name, words, from, to]`。部件是照字抄的数字，出界的、
+/// 缺字的都是坏条目
+pub fn time_entry(item: &Value) -> Option<TimeEntry> {
+    let a = item.as_array()?;
+    let text = |i: usize| a.get(i).and_then(Value::as_str).map(str::trim);
+    let kind = text(0)?.to_lowercase();
+    if !matches!(kind.as_str(), "now" | "date" | "period") {
+        return None;
+    }
+    let words = text(2).filter(|w| !w.is_empty())?;
+    let from = parts(a.get(3)?)?;
+    let to = match a.get(4) {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(parts(v)?),
+    };
+    Some(TimeEntry {
+        kind,
+        name: text(1).unwrap_or("").to_string(),
+        words: words.to_string(),
+        from,
+        to,
+        scope: Vec::new(),
+        chunk: None,
+        char_start: None,
+    })
+}
+
 /// 文档自己的时间语境（决定 3）：从开头读出来、存在文档上、每块都带着
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DocumentDating {
+    /// 抽取时各块报上来的日期（0064）：有它们就不再另问一次开头
+    pub entries: Vec<TimeEntry>,
     /// the document's own date as the text states it (a dateline, a filing date, a bulletin's
     /// reporting year); None when the text gives none
     pub date: Option<DateParts>,
@@ -132,6 +235,9 @@ pub enum Shape {
 pub enum Granularity {
     Year,
     Month,
+    /// 阶梯上没有「周」（0024）：说到周的提法（「上周」）落在日这一档。模型照字报 week，
+    /// 从前整条解释因此被当成坏条目丢掉，「上周」就永远没有日期
+    #[serde(alias = "week")]
     Day,
     Hour,
     Minute,
@@ -288,7 +394,9 @@ Output one JSON object and nothing else, shaped like this:\n\
    {\"kind\": \"absolute\", \"from\": {\"y\": 2011, \"m\": 3, \"d\": 4}} — the words state the \
 value. Parts are transcribed digits: y the year, m the month (a month name becomes its number), \
 d the day, and h, min, s for a clock time; write only the parts the words state. A bare year \
-(\"2019\") is {\"y\": 2019} with granularity \"year\". \"to\" is added only for an interval the \
+(\"2019\") is {\"y\": 2019} with granularity \"year\". A quarter of a stated year is written \
+with q, the number of the quarter as the words give it, and no month: \"Q3 2025\" and \"2025年\
+第三季度\" are {\"y\": 2025, \"q\": 3} with granularity \"month\". \"to\" is added only for an interval the \
 words write out with both bounds (\"from March to May 2024\": from {\"y\": 2024, \"m\": 3}, to \
 {\"y\": 2024, \"m\": 5}).\n\
    {\"kind\": \"anchored\", \"anchor\": {\"kind\": \"document\"}, \"offset\": {\"count\": 1, \
@@ -444,7 +552,12 @@ fn parts(v: &Value) -> Option<DateParts> {
         return None;
     }
     let year = i32::try_from(int(v.get("y")?)?).ok()?;
+    let quarter = part(v, "q", 1..=4)?;
     let month = part(v, "m", 1..=12)?;
+    // 季度和月不同时写：写了季度就是说到季度为止
+    if quarter.is_some() && month.is_some() {
+        return None;
+    }
     let day = part(v, "d", 1..=31)?;
     let hour = part(v, "h", 0..=23)?;
     let minute = part(v, "min", 0..=59)?;
@@ -461,6 +574,7 @@ fn parts(v: &Value) -> Option<DateParts> {
     }
     Some(DateParts {
         year,
+        quarter,
         month,
         day,
         hour,
@@ -644,8 +758,126 @@ pub fn parse_interpretation_response(
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_headings_in_force_are_read_from_the_chunk_itself() {
+        let text = "# 周报汇编\n\n## 第35周周报\n\n提报日期：2026年8月28日\n\n### 风险\n无。\n\n## 第36周周报\n\n上周开售。\n";
+        let at = |needle: &str| {
+            text.chars().count() - text[text.find(needle).unwrap()..].chars().count()
+        };
+        assert_eq!(
+            headings_at(text, at("提报日期")),
+            vec!["周报汇编", "第35周周报"]
+        );
+        assert_eq!(
+            headings_at(text, at("无。")),
+            vec!["周报汇编", "第35周周报", "风险"]
+        );
+        // 同级的新标题顶掉旧的，连同它下面更深的
+        assert_eq!(
+            headings_at(text, at("上周开售")),
+            vec!["周报汇编", "第36周周报"]
+        );
+        // `#` 后面没有空白的不是标题（`#588`、`#标签`）
+        assert_eq!(
+            headings_at("#588 是一个编号\n正文", 12),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_now_in_force_is_the_one_of_the_innermost_section_that_holds_the_position() {
+        let entry = |words: &str, scope: &[&str], kind: &str| TimeEntry {
+            kind: kind.into(),
+            name: "提报日期".into(),
+            words: words.into(),
+            from: DateParts {
+                quarter: None,
+                year: 2026,
+                month: Some(9),
+                day: Some(4),
+                hour: None,
+                minute: None,
+                second: None,
+            },
+            to: None,
+            scope: scope.iter().map(|s| s.to_string()).collect(),
+            chunk: None,
+            char_start: None,
+        };
+        let entries = vec![
+            entry("2026年3月28日", &["汇编"], "now"),
+            entry("2026年8月28日", &["汇编", "第35周"], "now"),
+            entry("2026年9月4日", &["汇编", "第36周"], "now"),
+            entry("2026年8月31日", &["汇编", "第36周"], "date"),
+        ];
+        let path = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            now_in_force(&entries, &path(&["汇编", "第36周"]))
+                .unwrap()
+                .words,
+            "2026年9月4日"
+        );
+        assert_eq!(
+            now_in_force(&entries, &path(&["汇编", "第35周", "风险"]))
+                .unwrap()
+                .words,
+            "2026年8月28日"
+        );
+        // 别的节里的不管这里；退到整篇的那个
+        assert_eq!(
+            now_in_force(&entries, &path(&["汇编", "附录"]))
+                .unwrap()
+                .words,
+            "2026年3月28日"
+        );
+        assert!(now_in_force(&entries[1..], &path(&["别的文档"])).is_none());
+    }
+
+    #[test]
+    fn a_quarter_of_a_stated_year_is_transcribed_not_computed() {
+        let q = parts(&serde_json::json!({"y": 2025, "q": 3})).unwrap();
+        assert_eq!((q.year, q.quarter, q.month), (2025, Some(3), None));
+        assert_eq!(q.granularity(), Granularity::Month);
+        assert_eq!(q.to_string(), "2025-Q3");
+        // 季度和月不同时写；第五季度不存在
+        assert!(parts(&serde_json::json!({"y": 2025, "q": 3, "m": 7})).is_none());
+        assert!(parts(&serde_json::json!({"y": 2025, "q": 5})).is_none());
+        // 老数据里没有这一格：读回来是 None，写出去不带这一格
+        let old: DateParts = serde_json::from_value(serde_json::json!({
+            "year": 2024, "month": 3, "day": null, "hour": null, "minute": null, "second": null
+        }))
+        .unwrap();
+        assert_eq!(old.quarter, None);
+        assert!(serde_json::to_value(&old).unwrap().get("quarter").is_none());
+    }
+
+    #[test]
+    fn a_context_entry_is_read_with_its_parts_and_a_bad_one_is_refused() {
+        let ok = serde_json::json!(["now", "提报日期", "2026年9月4日", {"y": 2026, "m": 9, "d": 4}, null]);
+        let e = time_entry(&ok).unwrap();
+        assert_eq!(
+            (e.kind.as_str(), e.name.as_str(), e.words.as_str()),
+            ("now", "提报日期", "2026年9月4日")
+        );
+        assert_eq!(e.from.to_string(), "2026-09-04");
+        let period = serde_json::json!(["period", "报告期", "2025年1月1日至2025年12月31日", {"y": 2025, "m": 1, "d": 1}, {"y": 2025, "m": 12, "d": 31}]);
+        assert_eq!(
+            time_entry(&period).unwrap().to.unwrap().to_string(),
+            "2025-12-31"
+        );
+        for bad in [
+            serde_json::json!(["today", "x", "2026", {"y": 2026}, null]),
+            serde_json::json!(["now", "x", "", {"y": 2026}, null]),
+            serde_json::json!(["now", "x", "13月", {"y": 2026, "m": 13}, null]),
+            serde_json::json!(["now", "x", "2026"]),
+        ] {
+            assert!(time_entry(&bad).is_none(), "{bad}");
+        }
+    }
+
     fn ymd(y: i32, m: u32, d: u32) -> DateParts {
         DateParts {
+            quarter: None,
             year: y,
             month: Some(m),
             day: Some(d),
@@ -657,6 +889,7 @@ mod tests {
 
     fn year(y: i32) -> DateParts {
         DateParts {
+            quarter: None,
             year: y,
             month: None,
             day: None,
@@ -820,6 +1053,7 @@ mod tests {
             items[8].reference,
             Reference::Absolute {
                 from: DateParts {
+                    quarter: None,
                     year: 2024,
                     month: Some(3),
                     day: None,
@@ -828,6 +1062,7 @@ mod tests {
                     second: None
                 },
                 to: Some(DateParts {
+                    quarter: None,
                     year: 2024,
                     month: Some(5),
                     day: None,

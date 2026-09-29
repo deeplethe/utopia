@@ -833,6 +833,10 @@ pub struct EntityFact {
     /// 不再自己把 NULL 解释成开放
     pub holds_from: Option<DateTime<Utc>>,
     pub holds_to: Option<DateTime<Utc>>,
+    /// 见证从文档的哪条日期来，照文档的字（0064）：「提报日期 2026年9月4日」。没有起点的
+    /// 事实，`holds_from` 就是这个见证的日期——它是「截至」，不是起点
+    #[sqlx(default)]
+    pub attested_by: Option<String>,
     pub confidence: f32,
     pub evidence_count: i64,
     /// 证据全部停留在来源文档的旧版（未被现行内容确认；不代表事实失效）

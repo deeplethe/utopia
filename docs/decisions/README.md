@@ -144,7 +144,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | 0042 | [The chat loop is a runner with hooks](0042-the-chat-loop-is-a-runner-with-hooks.md) | Implemented |  |
 | 0046 | [The app surface is MCP](0046-the-app-surface-is-mcp.md) | Accepted |  |
 | 0063 | [Stopping a chat ends the generation](0063-stopping-a-chat-ends-the-generation.md) | Implemented |  |
-| 0064 | [Extraction reads time as it goes](0064-extraction-reads-time-as-it-goes.md) | Accepted |  |
+| 0064 | [Extraction reads time as it goes](0064-extraction-reads-time-as-it-goes.md) | In progress |  |
 
 ### process
 

@@ -947,6 +947,32 @@ async fn attest_earlier<'e>(
     Ok(())
 }
 
+/// 一条陈述的见证：它所在那一节里文本说话的那一刻，连同那条日期的名字（0064 决定 3）。
+///
+/// 只往早挪（同 [`attest_earlier`]）：同一句话在更早的文档里说过，见证就是更早的那份。
+/// 名字跟着日期走——日期没动，名字也不动。物化出来的类型化行自己没有出处，跟着陈述走
+/// （`materialize::sync_typed_attestation`，调用方在写完一篇文档的陈述之后叫一次）
+pub async fn attest_statement(
+    pool: &PgPool,
+    fact_id: Uuid,
+    at: chrono::DateTime<chrono::Utc>,
+    by: &str,
+) -> AppResult<bool> {
+    let moved = sqlx::query(
+        "UPDATE facts
+            SET attested_from = $2, attested_by = $3
+          WHERE id = $1 AND layer = 'open' AND invalidated_at IS NULL
+            AND (attested_from IS NULL OR attested_from > $2
+                 OR (attested_from = $2 AND attested_by IS DISTINCT FROM $3))",
+    )
+    .bind(fact_id)
+    .bind(at)
+    .bind(by)
+    .execute(pool)
+    .await?;
+    Ok(moved.rows_affected() > 0)
+}
+
 /// 字面值宾语的事实（object_value 通道，问数映射首个消费者）。
 /// 去重：同 (S,P) 且 object_value 完全相等的 live 事实只存一条。
 #[allow(clippy::too_many_arguments)]
@@ -985,8 +1011,10 @@ pub async fn insert_value_fact(
 /// **不走 [`insert_fact_inner`] 那道门**：不问 `predicate_temporal`，不过
 /// `Validity::under`，不写任何 `valid_*`，也不碰时间线。一条开放陈述在世界轴上还
 /// 没有位置——它提到的时间是照抄的字（`time_mentions`），把字读成日期是 0045
-/// 后面那几刀的事。这里只有记录轴：`attested_from` 是文档日期（调用方只在
-/// `doc_time_source IN ('content', 'source')` 时传，#714）或此刻。
+/// 后面那几刀的事。这里只有记录轴：`attested_from` 是来源系统给文档的日期（调用方只在
+/// `doc_time_source IN ('content', 'source')` 时传，#714），没有就留空——**不填此刻**
+/// （0064 决定 5）：处理文档的时刻不是文档说的日期。文档自己说的日期在抽完之后由
+/// [`attest_statement`] 写上来。
 ///
 /// 调用方随后要把 `proposed_predicate = phrase` 写到证据上（[`add_evidence_located`]），
 /// 于是所有已经容得下空谓词的读路径（`fact_surface_predicate`）不改一字就按短语显示它
@@ -1041,12 +1069,12 @@ pub async fn insert_open_statement(
         FactObject::Entity(_) => {
             "INSERT INTO facts (id, kb_id, subject_id, layer, phrase, object_id,
                                 confidence, attested_from)
-             VALUES ($1, $2, $3, 'open', $4, $5, $6, COALESCE($7, now()))"
+             VALUES ($1, $2, $3, 'open', $4, $5, $6, $7)"
         }
         FactObject::Value(_) => {
             "INSERT INTO facts (id, kb_id, subject_id, layer, phrase, object_value,
                                 confidence, attested_from)
-             VALUES ($1, $2, $3, 'open', $4, $5, $6, COALESCE($7, now()))"
+             VALUES ($1, $2, $3, 'open', $4, $5, $6, $7)"
         }
     };
     let mut ins = sqlx::query(insert_sql)
@@ -1070,7 +1098,8 @@ pub async fn insert_open_statement(
 /// 结束端的三种状态与 [`Validity`] 同一张表：`(None, None)` 仍在持续、
 /// `(None, Some("unknown"))` 结束了不知哪天、`(Some(t), Some(精度))` 某时结束。
 /// 结束了不知哪天的要有自己的锚点（`facts_ended_unknown_has_anchor`，#393）：说出结束的
-/// 就是这条陈述自己的文档，锚点取 `attested_from`；其余两种状态把 `attested_to` 清空
+/// 就是这条陈述自己的文档，锚点取 `attested_from`，文档没说自己是哪天的（0064 决定 5）
+/// 就取账本记下它的那一刻；其余两种状态把 `attested_to` 清空
 ///
 /// 没有这一行、它不是开放行、或它已作废：一行不改，返回 `not_an_open_statement`
 pub async fn set_open_validity(
@@ -1092,7 +1121,7 @@ pub async fn set_open_validity(
             SET valid_from = $2, valid_from_precision = $3,
                 valid_to = $4, valid_to_precision = $5, valid_from_grade = $6,
                 attested_to = CASE WHEN $4 IS NULL AND $5 = 'unknown'
-                                   THEN COALESCE(attested_to, attested_from) END
+                                   THEN COALESCE(attested_to, attested_from, recorded_at) END
           WHERE id = $1 AND layer = 'open' AND invalidated_at IS NULL",
     )
     .bind(fact_id)
@@ -1693,7 +1722,7 @@ pub async fn entity_detail(
                 CASE WHEN {subject} = $2 THEN {object} ELSE {subject} END AS other_id,
                 o.canonical_name AS other_name, ot.label AS other_type, f.object_value,
                 f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision,
-                {holds_from} AS holds_from, {holds_to} AS holds_to, f.confidence,
+                {holds_from} AS holds_from, {holds_to} AS holds_to, f.attested_by, f.confidence,
                 (SELECT count(*) FROM fact_evidence fe WHERE fe.fact_id = f.id) AS evidence_count,
                 (EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
                  AND NOT EXISTS (SELECT 1 FROM fact_evidence fe

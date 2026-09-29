@@ -1494,6 +1494,7 @@ mod tests {
             valid_to_precision: None,
             holds_from: Some("2021-01-01T00:00:00Z".parse().unwrap()),
             holds_to: None,
+            attested_by: None,
             confidence: 0.9,
             evidence_count: 1,
             stale: false,

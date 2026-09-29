@@ -1498,6 +1498,7 @@ mod tests {
             valid_to_precision: Some("day".into()),
             holds_from: Some(t("2023-06-01T00:00:00Z")),
             holds_to: Some(t("2024-02-20T00:00:00Z")),
+            attested_by: None,
             confidence: 0.9,
             evidence_count: 1,
             stale: false,

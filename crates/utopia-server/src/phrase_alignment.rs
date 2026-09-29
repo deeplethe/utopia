@@ -184,6 +184,64 @@ fn consider<'a>(
         .collect()
 }
 
+/// 第二票要不要投。第二票防的是「选第一个」冒充一致，要两票一致的是**绑定**；第一票
+/// 说没有一条对得上的签名，第二票怎么答都绑不上：答没有是「无」，答了一条是「拿不定」。
+/// 测量库一轮 864 条签名里第一票说没有的 317 条，没有一条最后绑上（bench README，
+/// 2026-09-28），这一票省下。第一票没答到的也不投：少一票本来就不下结论。
+/// 补问 marks 的照旧投两票：它要两票说同一个值
+fn second_vote_is_due(first: &Vote, first_answered: bool, marks_only: bool) -> bool {
+    marks_only || (first_answered && first.is_some())
+}
+
+/// 类别词规则的宾语是从类别词自己的字里读出来的（「british film」读出英国），只有中心词
+/// 的类别词（「state」「ship」）没有可读的字：一轮 159 个类别词里 127 个是单个词，提出
+/// 的 8 条规则没有一条读得出宾语（bench README，2026-09-28）。这种不问。
+///
+/// 只认得出用空格分词的写法：一串 ASCII 字母是一个词。带连字符、数字的（「1968」、
+/// 「british-governed」）和不分词的文字（「英国电影」）看不出有没有修饰语，照旧问
+fn has_modifier(kind_word: &str) -> bool {
+    !kind_word.trim().chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// 把签名分成批，候选相近的放在一起。返回每批里签名的下标。
+///
+/// 属性定义表在一批里只写一遍，占一次调用输入的将近一半：按到来的次序每十二条切一批时，
+/// 同批的签名互不相干（一条讲出生地、一条讲导演、一条讲所属球队），各自十条候选几乎不
+/// 重叠，合起来就是本体的一半（测量库上九十六条属性里约五十条）。这里只改排法：每条签名
+/// 看到的候选一条不少，判断一字不变。
+///
+/// 贪心：每批从还没排的第一条起，每次加进让这一批的候选并集长得最少的那一条，并列时取
+/// 靠前的——结果只由输入决定，同样的签名每次排成同样的批。没有候选的签名不问模型，
+/// 排在最后，不占有候选的批里的位置
+fn batch_by_candidates<K: Copy + Eq + std::hash::Hash>(
+    sets: &[Vec<K>],
+    size: usize,
+) -> Vec<Vec<usize>> {
+    let size = size.max(1);
+    let mut left: Vec<usize> = (0..sets.len()).filter(|i| !sets[*i].is_empty()).collect();
+    let empty: Vec<usize> = (0..sets.len()).filter(|i| sets[*i].is_empty()).collect();
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    while !left.is_empty() {
+        let first = left.remove(0);
+        let mut batch = vec![first];
+        let mut union: HashSet<K> = sets[first].iter().copied().collect();
+        while batch.len() < size && !left.is_empty() {
+            let (at, _) = left
+                .iter()
+                .enumerate()
+                .map(|(at, i)| (at, sets[*i].iter().filter(|k| !union.contains(k)).count()))
+                .min_by_key(|(at, added)| (*added, *at))
+                .expect("left is not empty");
+            let i = left.remove(at);
+            union.extend(sets[i].iter().copied());
+            batch.push(i);
+        }
+        out.push(batch);
+    }
+    out.extend(empty.chunks(size).map(<[usize]>::to_vec));
+    out
+}
+
 /// 日志里放得下的一段回复：空白折成一个空格，最多这么多字符。
 const SNIPPET_CHARS: usize = 240;
 
@@ -538,8 +596,26 @@ async fn align_phrases_locked(
         );
         // 先把每批的 future 造出来再排队：直接在 map 里返回 async 块会让借用的生命周期
         // 满足不了 tokio::spawn 要的 Send
-        let futures: Vec<_> = todo
-            .chunks(BATCH)
+        // 候选相近的签名排进同一批（见 `batch_by_candidates`）：属性表一批只写一遍，同批的
+        // 签名候选重叠得越多，这张表越短
+        let sets: Vec<Vec<Uuid>> = todo
+            .iter()
+            .map(|s| {
+                let fitting = &considered[&s.key()].0;
+                if fitting.len() > CANDIDATE_LIMIT {
+                    Vec::new()
+                } else {
+                    fitting.iter().map(|p| p.id).collect()
+                }
+            })
+            .collect();
+        let batches: Vec<Vec<&PhraseSignature>> = batch_by_candidates(&sets, BATCH)
+            .into_iter()
+            .map(|group| group.into_iter().map(|i| todo[i]).collect())
+            .collect();
+        let futures: Vec<_> = batches
+            .iter()
+            .map(|batch| batch.as_slice())
             .map(|batch| async move {
                 let (mut bound, mut none, mut undecided, mut skipped, mut failed, mut unanswered) =
                     (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
@@ -566,6 +642,7 @@ async fn align_phrases_locked(
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| !cands[*i].is_empty())
+                .filter(|(i, s)| pass == 0 || second_vote_is_due(&votes[*i].0, answered[*i].0, marks_only.contains_key(&s.key())))
                 .map(|(i, s)| {
                     let mut list: Vec<&RelationTypeView> = cands[i].clone();
                     if pass == 1 {
@@ -753,7 +830,9 @@ async fn align_phrases_locked(
             }
             let (a, b) = &votes[i];
             let (ans_a, ans_b) = answered[i];
-            if !ans_a || !ans_b {
+            // 第一票说没有的不投第二票（见 `second_vote_is_due`）：结论就是没有
+            let asked_twice = second_vote_is_due(a, ans_a, false);
+            if !ans_a || (asked_twice && !ans_b) {
                 // 有一票没答到：不下结论，下次再问
                 unanswered += 1;
                 continue;
@@ -766,7 +845,11 @@ async fn align_phrases_locked(
                     })
                     .unwrap_or(serde_json::Value::Null)
             };
-            let record = serde_json::json!({ "first": show(a), "second": show(b) });
+            let record = if asked_twice {
+                serde_json::json!({ "first": show(a), "second": show(b) })
+            } else {
+                serde_json::json!({ "first": null, "reason": "first_vote_none" })
+            };
             // 两票选的属性与方向（或都说没有）是否一致
             let agree = match (a, b) {
                 (Some((ka, da, _)), Some((kb, db, _))) => ka == kb && da == db,
@@ -946,11 +1029,11 @@ async fn align_phrases_locked(
         // 类别词的候选也开短名单：词加例名嵌入后取最近的属性；没有向量时看全部
         let fresh: Vec<&utopia_store::type_bindings::KindWordSignature> = kind_words
             .iter()
-            .filter(|k| !asked_kind.contains(k.kind_word.as_str()))
+            .filter(|k| !asked_kind.contains(k.kind_word.as_str()) && has_modifier(&k.kind_word))
             .collect();
         let kind_short = shortlist_kind_words(state, settings, kb_id, &fresh).await?;
         for (k, basis) in kind_words.iter().zip(kind_basis.iter()) {
-            if asked_kind.contains(k.kind_word.as_str()) {
+            if asked_kind.contains(k.kind_word.as_str()) || !has_modifier(&k.kind_word) {
                 continue;
             }
             let mut candidates: Vec<&RelationTypeView> = props
@@ -1071,6 +1154,54 @@ mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_kind_word_that_is_only_a_head_word_has_nothing_to_read() {
+        for bare in ["state", "ship", " settlement "] {
+            assert!(!has_modifier(bare), "{bare}");
+        }
+        for readable in [
+            "british film",
+            "1968",
+            "british-governed",
+            "英国电影",
+            "wine area",
+        ] {
+            assert!(has_modifier(readable), "{readable}");
+        }
+    }
+
+    #[test]
+    fn signatures_with_the_same_candidates_share_a_batch() {
+        // 六条签名、三种候选集，交错着来；每批两条
+        let sets: Vec<Vec<u32>> = vec![
+            vec![1, 2],
+            vec![7, 8],
+            vec![],
+            vec![2, 1],
+            vec![8, 9],
+            vec![1, 2, 3],
+        ];
+        let batches = batch_by_candidates(&sets, 2);
+        // 每条签名恰好出现一次
+        let mut all: Vec<usize> = batches.iter().flatten().copied().collect();
+        all.sort_unstable();
+        assert_eq!(all, vec![0, 1, 2, 3, 4, 5]);
+        // 候选一样的排在一起，没有候选的在最后
+        assert_eq!(batches, vec![vec![0, 3], vec![1, 4], vec![5], vec![2]]);
+        // 同样的输入排成同样的批
+        assert_eq!(batch_by_candidates(&sets, 2), batches);
+        // 一批的候选并集比按次序切的小
+        let union = |b: &Vec<usize>| {
+            b.iter()
+                .flat_map(|i| sets[*i].iter())
+                .collect::<HashSet<_>>()
+                .len()
+        };
+        let in_order: usize = [vec![0, 1], vec![2, 3], vec![4, 5]].iter().map(union).sum();
+        let grouped: usize = batches.iter().map(union).sum();
+        assert!(grouped < in_order, "{grouped} < {in_order}");
+    }
+
     #[test]
     fn a_shortlist_keeps_label_matches_and_fills_by_distance_within_the_fitting_set() {
         let ids: Vec<Uuid> = (0..6).map(|_| Uuid::now_v7()).collect();

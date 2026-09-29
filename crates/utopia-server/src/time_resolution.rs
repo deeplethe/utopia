@@ -2,7 +2,7 @@
 //!
 //! 抽取只记时间**词**（`time_mentions`：原样的字、块、偏移、起/止）。这里是它后面的任务：
 //!
-//! 1. **文档时间上下文**（决定 3）。一篇文档只做一次：把开头交给模型，它转写文档自己的日期
+//! 1. **文档时间上下文**（决定 3；0064 起由抽取时各块报上来，这里不再问模型）。从前：把开头交给模型，它转写文档自己的日期
 //!    （落款、备案日、公报的报告年）和文档命名的期间（「fiscal 2027」及其起止）；日期词要在
 //!    开头里核对得到才算数。结果存在 `documents.time_context`；文档自己的日期写进 `doc_time`
 //!    （来源 `content`）。上传时间永远不进来（#714）。
@@ -14,23 +14,21 @@
 //!    B 级，锚不到的是 C 级——C 级什么也不写，等锚点（决定 4、6）。
 //! 4. 结果落到开放陈述的 `valid_from` / `valid_to`（决定 5 的第一根轴），时间轴上才有它。
 
-use crate::extraction::{chat_retrying_rate_limits_at, span_in_quote};
+use crate::extraction::chat_retrying_rate_limits_at;
 use crate::llm_util;
 use crate::state::AppState;
 use chrono::{DateTime, Duration, Months, NaiveDate, NaiveTime, TimeZone, Utc};
 use std::collections::HashMap;
 use utopia_extract::time::{
-    build_dating_messages, build_interpretation_messages, parse_dating_response,
-    parse_interpretation_response, Anchor, DateParts, Direction, DocumentDating, Granularity,
-    Interpretation, MentionInput, Offset, Reference, Shape, TimeContext, Unit,
+    build_interpretation_messages, headings_at, now_in_force, parse_interpretation_response,
+    Anchor, DateParts, Direction, DocumentDating, Granularity, Interpretation, MentionInput,
+    NamedPeriod, Offset, Reference, Shape, TimeContext, Unit,
 };
 use utopia_store::graph::{truncate_to, ENDED_UNKNOWN, WORLD_PRECISIONS};
 use uuid::Uuid;
 
 /// 一批解释问多少个提及。
 const BATCH: usize = 40;
-/// 文档开头给模型看多少字：落款、报告年、财年定义都在前面
-const OPENING_CHARS: usize = 3000;
 
 /// 一次解析的结果：世界轴上的位置与等级。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +51,9 @@ const UNRESOLVED: Resolved = Resolved {
 
 /// 数字部分 → 时刻与精度。精度是字写到的那一档：只有年就是年。
 fn parts_to_time(p: &DateParts) -> Option<(DateTime<Utc>, &'static str)> {
+    // 写明的季度从它的头一个月起（日历季度；财年的季度走命名的期间）
+    let month = p.month.or(p.quarter.map(|q| (q - 1) * 3 + 1));
+    let p = &DateParts { month, ..p.clone() };
     let date = NaiveDate::from_ymd_opt(p.year, p.month.unwrap_or(1), p.day.unwrap_or(1))?;
     let time = NaiveTime::from_hms_opt(
         p.hour.unwrap_or(0),
@@ -248,6 +249,15 @@ fn resolve_one(
                 return UNRESOLVED;
             };
             let until = to.as_ref().and_then(parts_to_time);
+            // 一个季度是三个月的区间：到它最后一个月为止
+            if let (Some(_), None) = (from.quarter, &until) {
+                let last = t.checked_add_months(Months::new(2)).map(|m| (m, "month"));
+                let shape = match interp.shape {
+                    Shape::Point | Shape::Duration => Shape::Interval,
+                    s => s,
+                };
+                return place(shape, Some((t, "month")), last, "A");
+            }
             place(interp.shape, Some((t, coarser(p, g))), until, "A")
         }
         Reference::Anchored { anchor, offset } => {
@@ -369,55 +379,109 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     let client = llm_util::chat_client(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot resolve time"))?;
 
-    // 1. 文档时间上下文：一篇只问一次
+    // 1. 文档时间上下文：抽取时各块报上来的（0064）。这里不问模型
     let context: DocumentDating = match doc.time_context.clone() {
-        Some(json) => serde_json::from_value(json)?,
-        None => {
-            let opening = utopia_store::documents::opening_chunk(pool, document_id)
-                .await?
-                .map(|(_, text)| text)
-                .unwrap_or_default();
-            let opening: String = opening.chars().take(OPENING_CHARS).collect();
-            let messages = build_dating_messages(&doc.filename, &opening);
-            let reply =
-                chat_retrying_rate_limits_at(state, &settings, &client, &messages, Some(0.0))
-                    .await?;
-            let mut dating = parse_dating_response(&reply.text)?;
-            // 日期词要在开头里核对得到（与名字、引文同一条规矩）；核不到的日期不算
-            match dating.date_words.as_deref() {
-                Some(words) if span_in_quote(words, &opening) => {}
-                _ => dating.date = None,
-            }
-            utopia_store::documents::set_time_context(
-                pool,
-                document_id,
-                &serde_json::to_value(&dating)?,
-            )
-            .await?;
-            // 文档自己的日期（决定 3）：只在它还没有内容或来源给的日期时写
+        Some(json) => {
+            let context: DocumentDating = serde_json::from_value(json)?;
+            // 整篇的起算点照旧记成文档的日期（文库排序、引擎给没起点的行排次序都读它）
             if crate::extraction_open::dated_at(&doc).is_none() {
-                if let Some((t, _)) = dating.date.as_ref().and_then(parts_to_time) {
+                if let Some((t, _)) = context.date.as_ref().and_then(parts_to_time) {
                     utopia_store::documents::set_content_date(pool, document_id, t).await?;
                 }
             }
-            dating
+            context
         }
+        // 抽取一条日期都没报：文档没说自己是哪天的。不再另问一次开头（0064 决定 1）——
+        // 那一次调用在抽取报了「没有」的文档上问的是同一个问题，测量里二十篇有十六篇这样
+        // 白问；文档里写了日期的，抽取都报上来了
+        None => DocumentDating::default(),
     };
+
+    // 这一刀之前读开头定出来、存在文档上的日期（只有日期、没有条目）：它就是整篇的起算点，
+    // 和抽取报上来的一样进条目里，下面给陈述作证、给相对的时间词当基准都从条目里找
+    let mut context = context;
+    if context.entries.is_empty() {
+        if let (Some(date), Some(words)) = (context.date.clone(), context.date_words.clone()) {
+            context.entries.push(utopia_extract::time::TimeEntry {
+                kind: "now".into(),
+                name: String::new(),
+                words,
+                from: date,
+                to: None,
+                scope: Vec::new(),
+                chunk: None,
+                char_start: None,
+            });
+        }
+    }
+    attest_statements(state, &doc, &context).await?;
+
+    // 抽取报上来的期间（0064）并进文档命名的期间里：解释时按名字指它
+    for e in context
+        .entries
+        .clone()
+        .iter()
+        .filter(|e| e.kind == "period")
+    {
+        let name = if e.name.is_empty() { &e.words } else { &e.name };
+        if let (Some(to), false) = (
+            e.to.clone(),
+            context
+                .periods
+                .iter()
+                .any(|p| p.name.eq_ignore_ascii_case(name)),
+        ) {
+            context.periods.push(NamedPeriod {
+                name: name.clone(),
+                from: e.from.clone(),
+                to,
+            });
+        }
+    }
+    let context = context;
 
     // 2. 提及：同一篇里同样的字在同样的句子里只解释一次
     let mentions = utopia_store::time_mentions::for_document(pool, document_id).await?;
     if mentions.is_empty() {
         return Ok(());
     }
-    let mut distinct: Vec<(String, String)> = Vec::new();
-    let mut index: HashMap<(String, String), usize> = HashMap::new();
+    // 每条提及所在的那一节里管事的起算点（0064 决定 4）：从它那一块正文里的标题读出所在的
+    // 节，再在文档报上来的日期里找范围最深的那个 `now`。一篇文档里两份周报各有各的提报日，
+    // 「上周」在哪一节就从哪一节的日期起算。没有条目的文档（老的、推送来的）照旧用文档的日期
+    let chunk_text: HashMap<Uuid, String> =
+        sqlx::query_as::<_, (Uuid, String)>("SELECT id, text FROM chunks WHERE document_id = $1")
+            .bind(document_id)
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    let now_of = |m: &utopia_store::time_mentions::MentionToResolve| -> Option<usize> {
+        let text = chunk_text.get(&m.chunk_id)?;
+        let path = headings_at(text, usize::try_from(m.char_start).unwrap_or(0));
+        let found = now_in_force(&context.entries, &path)?;
+        context.entries.iter().position(|e| std::ptr::eq(e, found))
+    };
+    type Key = (String, String, Option<usize>);
+    let mut distinct: Vec<Key> = Vec::new();
+    let mut index: HashMap<Key, usize> = HashMap::new();
+    let mut key_of: HashMap<Uuid, Key> = HashMap::new();
     for m in &mentions {
-        let key = (m.text.clone(), m.sentence.clone());
+        let key = (m.text.clone(), m.sentence.clone(), now_of(m));
+        key_of.insert(m.id, key.clone());
         if !index.contains_key(&key) {
             index.insert(key.clone(), distinct.len());
             distinct.push(key);
         }
     }
+    // 算的时候文档的日期换成那一节的起算点
+    let context_at = |now: Option<usize>| -> DocumentDating {
+        let mut c = context.clone();
+        if let Some(e) = now.and_then(|i| context.entries.get(i)) {
+            c.date = Some(e.from.clone());
+            c.date_words = Some(e.words.clone());
+        }
+        c
+    };
     let ctx = TimeContext {
         date: context.date.as_ref(),
         date_words: context.date_words.as_deref(),
@@ -426,22 +490,36 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     };
     let mut resolved: HashMap<usize, (Interpretation, Resolved)> = HashMap::new();
     let mut malformed = 0usize;
-    for (batch_no, batch) in distinct.chunks(BATCH).enumerate() {
-        let base = (batch_no * BATCH) as i64;
-        let inputs: Vec<MentionInput<'_>> = batch
-            .iter()
-            .enumerate()
-            .map(|(i, (text, sentence))| MentionInput {
-                id: base + i as i64,
-                text,
-                sentence,
-            })
-            .collect();
-        let ids: Vec<i64> = inputs.iter().map(|m| m.id).collect();
-        let messages = build_interpretation_messages(&ctx, &inputs);
-        let reply =
-            match chat_retrying_rate_limits_at(state, &settings, &client, &messages, Some(0.0))
-                .await
+    // 问两轮：第一轮全部，第二轮只问第一轮没答到的。模型漏答的提及从前就留着字、没有解释，
+    // 也没有人再问（测量台上的「上周」三遍都是这样）
+    let mut todo: Vec<usize> = (0..distinct.len()).collect();
+    for round in 0..2 {
+        if round == 1 {
+            todo.retain(|i| !resolved.contains_key(i));
+            if todo.is_empty() {
+                break;
+            }
+            tracing::info!(%document_id, unanswered = todo.len(), "时间解释有没答到的，再问一次");
+        }
+        for batch in todo.clone().chunks(BATCH) {
+            let inputs: Vec<MentionInput<'_>> = batch
+                .iter()
+                .map(|&i| MentionInput {
+                    id: i as i64,
+                    text: &distinct[i].0,
+                    sentence: &distinct[i].1,
+                })
+                .collect();
+            let ids: Vec<i64> = inputs.iter().map(|m| m.id).collect();
+            let messages = build_interpretation_messages(&ctx, &inputs);
+            let reply = match chat_retrying_rate_limits_at(
+                state,
+                &settings,
+                &client,
+                &messages,
+                Some(0.0),
+            )
+            .await
             {
                 Ok(r) => r,
                 Err(e) => {
@@ -449,34 +527,43 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
                     continue;
                 }
             };
-        let (interps, skipped) = match parse_interpretation_response(&reply.text, &ids) {
-            Ok(x) => x,
-            Err(e) => {
-                tracing::warn!(%document_id, error = %e, "时间解释回复解析失败，这一批留作未解析");
-                continue;
-            }
-        };
-        malformed += skipped;
-        // 两遍：先算不靠别的提及的，再算指着别的提及的
-        let mut earlier: HashMap<i64, Resolved> = HashMap::new();
-        let anchored_to_mention = |i: &Interpretation| {
-            matches!(
-                &i.reference,
-                Reference::Anchored {
-                    anchor: Anchor::Mention { .. },
-                    ..
+            let (interps, skipped) = match parse_interpretation_response(&reply.text, &ids) {
+                Ok(x) => x,
+                Err(e) => {
+                    tracing::warn!(%document_id, error = %e, "时间解释回复解析失败，这一批留作未解析");
+                    continue;
                 }
-            )
-        };
-        for pass in 0..2 {
-            for interp in interps
-                .iter()
-                .filter(|i| anchored_to_mention(i) == (pass == 1))
-            {
-                let r = resolve_one(interp, &context, &earlier);
-                earlier.insert(interp.id, r);
-                if let Ok(i) = usize::try_from(interp.id) {
-                    resolved.insert(i, (interp.clone(), r));
+            };
+            malformed += skipped;
+            if skipped > 0 {
+                // 坏条目要看得见是哪一条、坏在哪：只报一个数的话，「上周」三遍都没日期也查不出原因
+                tracing::warn!(%document_id, skipped, reply = %reply.text.chars().take(600).collect::<String>(), "时间解释里有读不了的条目");
+            }
+            // 两遍：先算不靠别的提及的，再算指着别的提及的
+            let mut earlier: HashMap<i64, Resolved> = HashMap::new();
+            let anchored_to_mention = |i: &Interpretation| {
+                matches!(
+                    &i.reference,
+                    Reference::Anchored {
+                        anchor: Anchor::Mention { .. },
+                        ..
+                    }
+                )
+            };
+            for pass in 0..2 {
+                for interp in interps
+                    .iter()
+                    .filter(|i| anchored_to_mention(i) == (pass == 1))
+                {
+                    let now = usize::try_from(interp.id)
+                        .ok()
+                        .and_then(|i| distinct.get(i))
+                        .and_then(|k| k.2);
+                    let r = resolve_one(interp, &context_at(now), &earlier);
+                    earlier.insert(interp.id, r);
+                    if let Ok(i) = usize::try_from(interp.id) {
+                        resolved.insert(i, (interp.clone(), r));
+                    }
                 }
             }
         }
@@ -486,7 +573,7 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     let mut per_fact: HashMap<Uuid, (Option<Resolved>, Option<Resolved>)> = HashMap::new();
     let (mut a, mut b, mut c) = (0usize, 0usize, 0usize);
     for m in &mentions {
-        let Some(&i) = index.get(&(m.text.clone(), m.sentence.clone())) else {
+        let Some(&i) = key_of.get(&m.id).and_then(|k| index.get(k)) else {
             continue;
         };
         let Some((interp, r)) = resolved.get(&i) else {
@@ -555,6 +642,61 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     Ok(())
 }
 
+/// 这篇文档的陈述各由它所在那一节里文本说话的那一刻作证（0064 决定 3）。
+///
+/// 一条陈述在哪一节，看它的引文在它那一块里的位置、那一块正文里的标题；管着它的是范围
+/// 最深的那个 `now`。没有的不写——见证留空，这条陈述在任何时点都成立（决定 5）。
+/// 这是「截至」，不是起点：报告里的「所属市场为全球」说的是那天是这样，不是从那天起
+async fn attest_statements(
+    state: &AppState,
+    doc: &utopia_core::models::Document,
+    context: &DocumentDating,
+) -> anyhow::Result<()> {
+    if !context.entries.iter().any(|e| e.kind == "now") {
+        return Ok(());
+    }
+    let pool = &state.pool;
+    let rows: Vec<(Uuid, String, Option<i32>)> = sqlx::query_as(
+        "SELECT fe.fact_id, c.text, fe.quote_start
+           FROM fact_evidence fe
+           JOIN facts f ON f.id = fe.fact_id
+           JOIN chunks c ON c.id = fe.chunk_id
+          WHERE fe.document_id = $1 AND f.layer = 'open' AND f.invalidated_at IS NULL",
+    )
+    .bind(doc.id)
+    .fetch_all(pool)
+    .await?;
+    let mut moved = 0usize;
+    for (fact_id, text, start) in rows {
+        let path = headings_at(&text, usize::try_from(start.unwrap_or(0)).unwrap_or(0));
+        let Some(now) = now_in_force(&context.entries, &path) else {
+            continue;
+        };
+        let Some((at, _)) = parts_to_time(&now.from) else {
+            continue;
+        };
+        let by = if now.name.is_empty() {
+            now.words.clone()
+        } else {
+            format!("{} {}", now.name, now.words)
+        };
+        if utopia_store::graph::attest_statement(pool, fact_id, at, &by).await? {
+            moved += 1;
+        }
+    }
+    // 已经物化出来的类型化行跟着它们的陈述走
+    let typed = utopia_store::materialize::sync_typed_attestation(pool, doc.kb_id).await?;
+    if moved > 0 || typed > 0 {
+        tracing::info!(document_id = %doc.id, statements = moved, typed, "陈述按它所在那一节的日期作了证");
+        state.emit_graph(doc.kb_id);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "time_context_tests.rs"]
+mod context_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +704,7 @@ mod tests {
 
     fn parts(y: i32, m: Option<u32>, d: Option<u32>) -> DateParts {
         DateParts {
+            quarter: None,
             year: y,
             month: m,
             day: d,
@@ -575,6 +718,7 @@ mod tests {
     }
     fn ctx_dated(y: i32, m: u32, d: u32) -> DocumentDating {
         DocumentDating {
+            entries: Vec::new(),
             date: Some(parts(y, Some(m), Some(d))),
             date_words: Some("x".into()),
             periods: vec![NamedPeriod {
@@ -700,6 +844,28 @@ mod tests {
             resolve_one(&stated, &DocumentDating::default(), &HashMap::new()).grade,
             "A"
         );
+    }
+
+    #[test]
+    fn a_stated_quarter_is_the_three_months_it_names() {
+        let i = Interpretation {
+            id: 0,
+            shape: Shape::Point,
+            reference: Reference::Absolute {
+                from: DateParts {
+                    quarter: Some(3),
+                    ..parts(2025, None, None)
+                },
+                to: None,
+            },
+            granularity: Granularity::Month,
+        };
+        let r = resolve_one(&i, &DocumentDating::default(), &HashMap::new());
+        assert_eq!(r.grade, "A");
+        assert_eq!(r.from, Some(at("2025-07-01T00:00:00Z")));
+        assert_eq!(r.from_p, Some("month"));
+        assert_eq!(r.to, Some(at("2025-09-01T00:00:00Z")));
+        assert_eq!(r.to_p, Some("month"));
     }
 
     #[test]

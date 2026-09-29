@@ -928,6 +928,8 @@ export const zh: Strings = {
     historyOngoing: "未闭合",
     historicalNote: (n: number) => `另有 ${n} 条历史事实未显示——见时间线 →`,
     undated: "无日期",
+    asOf: (date: string, by: string | null) =>
+      by ? `截至 ${date}（${by}）` : `截至 ${date}`,
     fromEntity: (name) => `从 ${name} 出发`,
     toEntity: (name) => `指向 ${name}`,
     openEntity: (name) => `打开 ${name}`,
