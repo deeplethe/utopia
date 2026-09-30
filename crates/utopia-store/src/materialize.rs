@@ -413,12 +413,13 @@ async fn materialize_in_tx(
         .execute(&mut **tx)
         .await?;
     }
-    // 3a. 见证跟着来源陈述走（0064 决定 3、5）：类型化的行自己没有出处。上面的写入口在
-    //     陈述没有见证时填的是此刻（那是给人写的事实用的缺省），这里改回陈述的
-    sync_typed_attestation(&mut **tx, kb_id).await?;
-    // 3b. 已批准的规则算隐含行（0044 决定 3 第五片）。读数只查缓存：缓存里没有的这一轮
+    // 3a. 已批准的规则算隐含行（0044 决定 3 第五片）。读数只查缓存：缓存里没有的这一轮
     //     不算，`read_phrases` 填上之后再来。短语规则按陈述触发，类别词规则按实体触发
     let implied = imply_in_tx(tx, kb_id, &mut written).await?;
+    // 3b. 见证跟着来源陈述走（0064 决定 3、5）：类型化的行自己没有出处。物化与算隐含行
+    //     用的写入口在陈述没有见证时填的是此刻（那是给人写的事实用的缺省），这里改回陈述的。
+    //     排在 3a 之后：规则算出的行也是这样写下的
+    sync_typed_attestation(&mut **tx, kb_id).await?;
     Ok((
         Outcome {
             retired,
@@ -433,8 +434,12 @@ async fn materialize_in_tx(
 }
 
 /// 类型化行的见证 = 它的来源陈述里最早的那个见证，连同那条日期的名字；来源陈述一条见证
-/// 都没有的，它也没有（任何时点都成立，0064 决定 5）。只动从陈述物化出来的行：人写的、
-/// 规则算的没有 `typed_fact_sources`，不在这里
+/// 都没有的，它也没有（任何时点都成立，0064 决定 5）。来源陈述有两处：物化进这一行的
+/// （`typed_fact_sources`），和规则读出这一行的（`implied_fact_sources`）；类别词规则的
+/// 来源是实体，不带见证。
+///
+/// 动的行：有陈述物化进来的，和规则算出来的（`implied`）。人写的行只被规则的结论并进来时
+/// 不动——它的见证是人写下它的那一刻，并进来时 `attest_earlier` 已经往早挪过
 pub async fn sync_typed_attestation<'e>(
     ex: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     kb_id: Uuid,
@@ -442,15 +447,23 @@ pub async fn sync_typed_attestation<'e>(
     let moved = sqlx::query(
         "UPDATE facts t
             SET attested_from = src.at, attested_by = src.by
-           FROM (SELECT ts.fact_id,
+           FROM (SELECT u.fact_id,
                         min(s.attested_from) AS at,
                         (array_agg(s.attested_by ORDER BY s.attested_from NULLS LAST, s.id))[1] AS by
-                   FROM typed_fact_sources ts
-                   JOIN facts s ON s.id = ts.statement_id
-                  WHERE s.kb_id = $1
-                  GROUP BY ts.fact_id) src
+                   FROM (SELECT ts.fact_id, ts.statement_id
+                           FROM typed_fact_sources ts
+                           JOIN facts k ON k.id = ts.statement_id AND k.kb_id = $1
+                         UNION ALL
+                         -- 规则的来源按规则的库筛：类别词规则的来源是实体，没有陈述
+                         SELECT i.fact_id, i.statement_id
+                           FROM implied_fact_sources i
+                           JOIN implication_rules r ON r.id = i.rule_id AND r.kb_id = $1) u
+              LEFT JOIN facts s ON s.id = u.statement_id
+                  GROUP BY u.fact_id) src
           WHERE t.id = src.fact_id AND t.kb_id = $1 AND t.layer = 'typed'
             AND t.invalidated_at IS NULL
+            AND (t.implied
+                 OR EXISTS (SELECT 1 FROM typed_fact_sources ts WHERE ts.fact_id = t.id))
             AND (t.attested_from IS DISTINCT FROM src.at
                  OR t.attested_by IS DISTINCT FROM src.by)",
     )
