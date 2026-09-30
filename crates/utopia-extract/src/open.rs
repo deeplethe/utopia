@@ -353,10 +353,12 @@ pub(crate) fn repair_truncated_compact(json: &str) -> Option<String> {
 /// 这一块照样记成抽完（bench README，2026-09-28）。
 ///
 /// 这里不要求整体合法：顺着文本走，`"e"`、`"s"`、`"n"`、`"t"` 后面跟着 `: [` 就是换了
-/// 一类；每遇到一个 `[`，取到与它配平的那个括号，单独解。解得开、里面又没有数组的，是
-/// 一条（条目里从来没有数组：限定词是对象）；否则这一条写坏了，从它的下一个字符接着
-/// 找——套在坏条目里的完整条目照样读得出来。写在 `e` 里的八格条目是陈述，归到 `s`。
-/// 真被截断的回复，最后那条配不平，自然不收，与从前一样
+/// 一类；每遇到一个 `[`，取到与它配平的那个括号，单独解。解得开、第一格不是数组、该有的
+/// 格数之后也没有数组的，是一条。格数之内的数组是某一格写错了类型：与整体读得开时一样，
+/// 只是那一格作废，条目照收（`parse_entity` 等）。格数之后出现数组，是这一条少了 `]`、
+/// 把后面的条目套了进去——它写坏了，从它的下一个字符接着找，套在里面的完整条目照样读得
+/// 出来。第一格就是数组的，分不清是一列条目还是写坏的一条，也进去读。写在 `e` 里的八格
+/// 条目是陈述，归到 `s`。真被截断的回复，最后那条配不平，自然不收，与从前一样
 fn salvage(text: &str) -> Option<(Value, usize)> {
     let bytes = text.as_bytes();
     // 字符串的结尾（`i` 在开头的引号上）：返回结尾引号之后的位置；没有结尾就是 None
@@ -418,14 +420,15 @@ fn salvage(text: &str) -> Option<(Value, usize)> {
                 let item = balanced_end(i).and_then(|end| {
                     let v = serde_json::from_str::<Value>(&text[i..=end]).ok()?;
                     let arr = v.as_array()?;
-                    (!arr.is_empty() && !arr.iter().any(Value::is_array)).then_some((end, v))
+                    let own = section.map_or(0, |k| slots(k, arr));
+                    let one_item = arr.first().is_some_and(|first| !first.is_array())
+                        && arr.iter().skip(own).all(|x| !x.is_array());
+                    one_item.then_some((end, v))
                 });
                 match (item, section) {
                     (Some((end, v)), Some(k)) => {
-                        let is_statement = k == 0
-                            && v.as_array().is_some_and(|a| {
-                                a.len() >= 8 && a[..3].iter().all(Value::is_string)
-                            });
+                        let is_statement =
+                            k == 0 && v.as_array().is_some_and(|a| statement_shaped(a));
                         found[if is_statement { 1 } else { k }].push(v);
                         i = end + 1;
                     }
@@ -450,6 +453,22 @@ fn salvage(text: &str) -> Option<(Value, usize)> {
         serde_json::json!({ "e": e, "s": s, "n": n, "t": t }),
         broken,
     ))
+}
+
+/// 一条该有几格：`e` 三格（写在 `e` 里的陈述八格），`s` 八格，`n` 三格，`t` 五格。
+/// 逐条读时用它分开「一格写错了类型」和「这一条套进了后面的条目」（见 `salvage`）
+fn slots(section: usize, item: &[Value]) -> usize {
+    match section {
+        0 if statement_shaped(item) => 8,
+        1 => 8,
+        3 => 5,
+        _ => 3,
+    }
+}
+
+/// 陈述的形状：至少八格、前三格是字符串（引文、主语、短语）
+fn statement_shaped(item: &[Value]) -> bool {
+    item.len() >= 8 && item[..3].iter().all(Value::is_string)
 }
 
 /// 顶层某个键下的数组；缺了或不是数组就当空——那不是一条坏记录，是整段没这一类
@@ -813,6 +832,71 @@ mod tests {
             ["has"]
         );
         assert_eq!(x.skipped, 1);
+    }
+
+    /// 一格写错了类型（实体的 kind 写成数组、限定词写成一对对的数组）只丢那一格，与整体
+    /// 读得开时一样。逐条读从前整条丢掉，还把那一格里的数组当成一条：kind 里的
+    /// `["company", "org"]` 读成了一个叫 company 的实体，Acme 却没了
+    #[test]
+    fn a_slot_of_the_wrong_type_costs_only_that_slot_when_read_item_by_item() {
+        // `e` 少了结尾的 `]`：整体解不开，逐条读
+        let raw = r#"{"e": [["Acme", ["company", "org"], 1], ["Brightway", "builder", 1],
+"s": [["Lin joined Acme as CEO.", "Lin", "joined", "Acme", null, [["role", "CEO"]], null, null],
+["Lin left Acme.", "Lin", "left", "Acme", null, null, null, null]],
+"n": [], "t": []}"#;
+        let x = parse_open_response(raw).unwrap();
+        assert!(x.truncated);
+        assert_eq!(
+            x.entities
+                .iter()
+                .map(|e| (e.name.as_str(), e.kind.as_str()))
+                .collect::<Vec<_>>(),
+            [("Acme", ""), ("Brightway", "builder")],
+            "no entity is read out of a slot"
+        );
+        assert_eq!(
+            x.statements
+                .iter()
+                .map(|s| s.phrase.as_str())
+                .collect::<Vec<_>>(),
+            ["joined", "left"]
+        );
+        assert!(x.statements[0].qualifiers.is_empty());
+        assert_eq!(x.skipped, 0);
+    }
+
+    /// 同一批条目，一份整体合法，一份只少了关 `e` 的 `]`：两份读出来的一样。条目里有写错
+    /// 类型的格子（kind、named、宾语、字面值、限定词、时间、别名的引文），也有本来就该
+    /// 跳过的（只有七格的陈述）
+    #[test]
+    fn a_reply_read_item_by_item_reads_what_the_whole_reply_reads() {
+        let e =
+            r#"["Acme", ["company", "org"], 1], ["Lin", "person", [1]], ["Harbor", "place", 0]"#;
+        let s = r#"["Lin joined Acme.", "Lin", "joined", ["Acme"], null, [["role", "CEO"]], null, null],
+["Acme sells tools.", "Acme", "sells", null, ["tools", "parts"], null, ["2020"], null],
+["Harbor is old.", "Harbor", "is", null, "old", null, null]"#;
+        let n = r#"["Acme", "Acme Corp", ["Acme Corp is based in Harbor."]]"#;
+        let whole = format!(r#"{{"e": [{e}], "s": [{s}], "n": [{n}], "t": []}}"#);
+        let broken = format!(r#"{{"e": [{e}, "s": [{s}], "n": [{n}], "t": []}}"#);
+        let (w, b) = (
+            parse_open_response(&whole).unwrap(),
+            parse_open_response(&broken).unwrap(),
+        );
+        assert!(!w.truncated && b.truncated);
+        let read = |x: &OpenExtraction| {
+            (
+                format!("{:?}", x.entities),
+                format!("{:?}", x.statements),
+                format!("{:?}", x.names),
+                x.skipped,
+            )
+        };
+        assert_eq!(read(&b), read(&w));
+        assert_eq!(
+            (w.entities.len(), w.statements.len(), w.names.len()),
+            (3, 2, 1)
+        );
+        assert_eq!(w.skipped, 1, "the seven-slot statement, in both");
     }
 
     /// 限定词全是 null 的回复里一个 `}` 都没有：只认 `}` 的修补会把整块作废，
