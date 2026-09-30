@@ -159,8 +159,40 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
             .find(|a| a.key.as_ref() == name)
             .map(|a| a.value.to_string())
     };
+    // 每个 mc:AlternateContent 是否已经读过一种画法；读过之后，其余画法整棵跳过，
+    // `skipping` 是跳过的那棵子树还有几层没收口
+    let mut alternates: Vec<bool> = Vec::new();
+    let mut skipping = 0usize;
     loop {
-        match reader.read_event() {
+        let event = reader.read_event();
+        if skipping > 0 {
+            match event {
+                Ok(Event::Start(_)) => skipping += 1,
+                Ok(Event::End(_)) => skipping -= 1,
+                Ok(Event::Eof) => break,
+                Err(e) => anyhow::bail!("XML parse error: {e}"),
+                _ => {}
+            }
+            continue;
+        }
+        match event {
+            // Word 2010 起一个文本框写两遍：`mc:Choice` 里是 wps 形状，`mc:Fallback` 里是给
+            // 旧版 Word 的 VML，框里的字各有一份。两份都读，同一段字就进来两遍，抽取也各算
+            // 一遍。照标记兼容（markup compatibility）的规矩只取一种画法：第一个 Choice，
+            // 其后的 Choice 和 Fallback 不读
+            Ok(Event::Start(e)) if e.name().as_ref() == "mc:AlternateContent" => {
+                alternates.push(false);
+            }
+            Ok(Event::End(e)) if e.name().as_ref() == "mc:AlternateContent" => {
+                alternates.pop();
+            }
+            Ok(Event::Start(e)) if matches!(e.name().as_ref(), "mc:Choice" | "mc:Fallback") => {
+                match alternates.last_mut() {
+                    Some(taken) if *taken => skipping = 1,
+                    Some(taken) => *taken = true,
+                    None => {}
+                }
+            }
             Ok(Event::Start(e) | Event::Empty(e))
                 if matches!(e.name().as_ref(), "w:br" | "w:cr") =>
             {
