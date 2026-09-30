@@ -63,6 +63,7 @@ export const en = {
     answer_failed: "The answer could not be completed. Ask again.",
     answer_not_saved: "The answer could not be saved. Try again later.",
     search_failed: "The documents could not be searched.",
+    mapping_search_failed: "Relevant data mappings could not be retrieved.",
     stream_ended:
       "The answer stream ended unexpectedly. Reopen the conversation to check its status.",
     stream_lagged: "This page fell behind the answer stream. Reopen the conversation.",

@@ -94,6 +94,7 @@ struct Entry {
     tx: broadcast::Sender<Frame>,
     snap: Arc<RwLock<Snapshot>>,
     cancellation: Cancellation,
+    ready: watch::Sender<bool>,
 }
 
 /// 保留取消信号：Stop 可能早于生成器开始等待。
@@ -133,6 +134,7 @@ pub struct Handle {
     tx: broadcast::Sender<Frame>,
     snap: Arc<RwLock<Snapshot>>,
     cancellation: Cancellation,
+    ready: watch::Sender<bool>,
     registry: Arc<Registry>,
 }
 
@@ -147,6 +149,11 @@ impl Handle {
 
     pub async fn snapshot(&self) -> Snapshot {
         self.snap.read().await.clone()
+    }
+
+    /// 准备成功后才开放订阅；被拒的重试只释放占位，不会留下等待终态的客户端。
+    pub async fn start(&self) {
+        self.ready.send_replace(true);
     }
 
     /// 发一个事件：记进快照，然后广播。
@@ -216,6 +223,7 @@ impl Registry {
             ..Snapshot::default()
         }));
         let cancellation = Cancellation::default();
+        let (ready, _) = watch::channel(false);
         entries.insert(
             conversation_id,
             Entry {
@@ -223,6 +231,7 @@ impl Registry {
                 tx: tx.clone(),
                 snap: snap.clone(),
                 cancellation: cancellation.clone(),
+                ready: ready.clone(),
             },
         );
         Ok(Handle {
@@ -231,6 +240,7 @@ impl Registry {
             tx,
             snap,
             cancellation,
+            ready,
             registry: self.clone(),
         })
     }
@@ -253,11 +263,18 @@ impl Registry {
         &self,
         conversation_id: Uuid,
     ) -> Option<(Snapshot, broadcast::Receiver<Frame>)> {
-        let (snap, tx) = {
+        let (snap, tx, mut ready) = {
             let map = self.0.lock().expect("live registry lock");
             let entry = map.get(&conversation_id)?;
-            (entry.snap.clone(), entry.tx.clone())
+            (
+                entry.snap.clone(),
+                entry.tx.clone(),
+                entry.ready.subscribe(),
+            )
         };
+        // 不持有 ready 的发送端：准备失败释放占位时，等待者会醒来并回到 idle。
+        // 准备成功则接上同一轮，避免过早返回 idle 后错过整个回答。
+        ready.wait_for(|started| *started).await.ok()?;
         // **握着快照的读锁再订阅。** `emit` 是握着写锁广播的，所以这一段
         // 与任何一次 emit 互斥：拿到的快照与订阅起点严丝合缝，
         // 中间那一小段既不会漏、也不会重
@@ -280,9 +297,11 @@ mod tests {
         let registry = Arc::new(Registry::default());
         let id = Uuid::now_v7();
         let old = registry.begin(id).await.unwrap();
+        old.start().await;
         old.emit(delta("old")).await;
         old.retire();
         let current = registry.begin(id).await.unwrap();
+        current.start().await;
         current.emit(delta("new")).await;
         let (snapshot, mut rx) = registry.attach(id).await.unwrap();
         assert_eq!(snapshot.content, "new");
@@ -317,10 +336,12 @@ mod tests {
             let id = Uuid::now_v7();
             let other_id = Uuid::now_v7();
             let other = registry.begin(other_id).await.unwrap();
+            other.start().await;
             other.emit(delta("unrelated")).await;
             let mut handles = Vec::new();
             for index in 0..3 {
                 let handle = registry.begin(id).await.unwrap();
+                handle.start().await;
                 if index < 2 {
                     handle.retire();
                 }
@@ -350,6 +371,7 @@ mod tests {
         let registry = Arc::new(Registry::default());
         let id = Uuid::now_v7();
         let handle = registry.begin(id).await.unwrap();
+        handle.start().await;
         // 两种拿锁顺序都合法：每个增量必须恰好出现在快照或订阅中一次，
         // 既不能重复，也不能遗漏。
         for index in 0..64 {
@@ -370,6 +392,46 @@ mod tests {
             assert_eq!(combined, registry.attach(id).await.unwrap().0.content);
         }
         drop(handle);
+    }
+
+    #[tokio::test]
+    async fn a_preparing_reservation_is_exclusive_but_not_subscribable() {
+        let registry = Arc::new(Registry::default());
+        let id = Uuid::now_v7();
+        let handle = registry.begin(id).await.unwrap();
+        assert!(matches!(
+            registry.begin(id).await,
+            Err(AppError::CodedConflict {
+                code: "answer_running",
+                ..
+            })
+        ));
+        let attached = registry.attach(id);
+        tokio::pin!(attached);
+        assert!(futures_util::poll!(&mut attached).is_pending());
+        drop(handle);
+        assert!(attached.await.is_none());
+        let _next = registry.begin(id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_attachment_waiting_for_preparation_joins_the_started_generation() {
+        let registry = Arc::new(Registry::default());
+        let id = Uuid::now_v7();
+        let handle = registry.begin(id).await.unwrap();
+        let attached = registry.attach(id);
+        tokio::pin!(attached);
+        assert!(futures_util::poll!(&mut attached).is_pending());
+
+        handle.start().await;
+        let (snapshot, mut receiver) = attached.await.unwrap();
+        assert_eq!(snapshot.generation_id, handle.generation_id());
+        handle.emit(delta("answer")).await;
+        assert_eq!(receiver.recv().await.unwrap().data, delta("answer").data);
+        handle
+            .complete(Frame::new("done", json!({"stopped":false}).to_string()))
+            .await;
+        assert_eq!(receiver.recv().await.unwrap().event, "done");
     }
 
     #[tokio::test]
@@ -409,6 +471,7 @@ mod tests {
         let registry = Arc::new(Registry::default());
         let id = Uuid::now_v7();
         let handle = registry.begin(id).await.unwrap();
+        handle.start().await;
         let (_, mut receiver) = registry.attach(id).await.unwrap();
         handle
             .complete(Frame::new("done", json!({"stopped":true}).to_string()))
