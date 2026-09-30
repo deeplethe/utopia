@@ -950,8 +950,8 @@ async fn attest_earlier<'e>(
 /// 一条陈述的见证：它所在那一节里文本说话的那一刻，连同那条日期的名字（0064 决定 3）。
 ///
 /// 只往早挪（同 [`attest_earlier`]）：同一句话在更早的文档里说过，见证就是更早的那份。
-/// 名字跟着日期走——日期没动，名字也不动。物化出来的类型化行自己没有出处，跟着陈述走
-/// （`materialize::sync_typed_attestation`，调用方在写完一篇文档的陈述之后叫一次）
+/// 名字跟着日期走——日期没动，名字也不动。物化出来的、规则算出来的类型化行自己没有出处，
+/// 跟着陈述走（`materialize::sync_typed_attestation`，调用方在写完一篇文档的陈述之后叫一次）
 pub async fn attest_statement(
     pool: &PgPool,
     fact_id: Uuid,

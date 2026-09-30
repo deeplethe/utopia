@@ -20,6 +20,8 @@
 //!   合并二进制的实验里 30% 的运行栽在这里。
 //! - `a_rewritten_row_gets_its_statements_back`：把迁移 0096 原样跑一遍，它同样不按 kb
 //!   过滤——修正行、重复行都按全库找，会改到别的测试正在物化、改写的行。
+//! - `a_row_a_rule_implied_follows_its_statements`：把迁移 0101 原样跑一遍，同样不按 kb
+//!   过滤——它按来源重算全库类型化行的见证，会改到别的测试正在物化的行。
 //!
 //! 新加测试默认放这个目录；只有碰上面那类全局状态时才放顶层，并在这里补一行为什么。
 mod a_batch_decides_like_a_person;

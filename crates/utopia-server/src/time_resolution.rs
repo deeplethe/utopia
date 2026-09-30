@@ -684,7 +684,7 @@ async fn attest_statements(
             moved += 1;
         }
     }
-    // 已经物化出来的类型化行跟着它们的陈述走
+    // 已经物化出来的、规则算出来的类型化行跟着它们的陈述走
     let typed = utopia_store::materialize::sync_typed_attestation(pool, doc.kb_id).await?;
     if moved > 0 || typed > 0 {
         tracing::info!(document_id = %doc.id, statements = moved, typed, "陈述按它所在那一节的日期作了证");
