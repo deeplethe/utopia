@@ -48,7 +48,17 @@ fn draws_text(bytes: &[u8]) -> bool {
     })
 }
 
-/// PDF 的文字层。取不出来时交给外面的 `pdftotext`——它是另一个进程，所以那边再崩也带不走
+/// PDF 的文字层。字体的 ToUnicode 常把字形指到长得一样的部首、连字码位，`pdf_extract`
+/// 读出来的照收：换回它们显示的那个字（[`crate::lookalikes`]）
+pub fn pdf(bytes: &[u8]) -> anyhow::Result<String> {
+    let text = text_layer(bytes)?;
+    Ok(match crate::lookalikes::plain(&text) {
+        std::borrow::Cow::Borrowed(_) => text,
+        std::borrow::Cow::Owned(plain) => plain,
+    })
+}
+
+/// 取文字层。取不出来时交给外面的 `pdftotext`——它是另一个进程，所以那边再崩也带不走
 /// 一个工作线程。
 ///
 /// 回退也空手而归时，[`draws_text`] 决定该说哪句话：这份文件没画过字，那是扫描件，交给
@@ -56,7 +66,7 @@ fn draws_text(bytes: &[u8]) -> bool {
 /// 的原话往外抛。报错的那句话值得较真：说成「没有文字层」会把人支去配一个 OCR 服务，而
 /// 这份文件的文字层好端端地在那儿（#739：同名的 `pdftotext` 有两个实现，Xpdf 那个和缺了
 /// CJK CMap 数据的 Poppler 都会静静地返回空）
-pub fn pdf(bytes: &[u8]) -> anyhow::Result<String> {
+fn text_layer(bytes: &[u8]) -> anyhow::Result<String> {
     let extracted = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem(bytes));
     let original_error = match extracted {
         Ok(Ok(text)) if !text.trim().is_empty() => return Ok(text),
