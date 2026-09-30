@@ -229,11 +229,15 @@ pub(crate) fn sql_literal(s: &str) -> String {
 /// 而注册表里 `127.*` 这种绕过写法它认不全，本机的替身服务会被送进代理拿回 502。
 /// 服务进程该看环境变量，这条规矩与 docker-compose 里的写法一致
 pub(crate) fn http() -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+    Ok(http_builder().build()?)
+}
+
+/// 读字服务另设超时和重定向策略，代理规则仍与其余 HTTP 请求共用。
+pub(crate) fn http_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
         .timeout(HTTP_REQUEST_TIMEOUT)
         .user_agent("utopia")
         .proxy(reqwest::Proxy::custom(|url: &reqwest::Url| proxy_for(url)))
-        .build()?)
 }
 
 fn proxy_for(url: &reqwest::Url) -> Option<reqwest::Url> {

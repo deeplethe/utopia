@@ -123,7 +123,7 @@ pub async fn put(
 
 #[derive(Deserialize)]
 pub struct PutOcrReq {
-    /// `mineru`（缺席也是它，老客户端不带这个字段）或 `ark`（0065）
+    /// `mineru` 或 `ark`（0065）；老客户端不传时保留已有供应商，新设置默认 MinerU
     pub provider: Option<String>,
     /// 空 = 关掉：扫描件、图片照第一刀降级
     pub base_url: Option<String>,
@@ -152,8 +152,11 @@ pub async fn put_ocr(
             .filter(|s| !s.is_empty())
             .map(String::from)
     };
-    let provider = nonempty(&req.provider).unwrap_or_else(|| "mineru".into());
-    if !matches!(provider.as_str(), "mineru" | "ark") {
+    let provider = nonempty(&req.provider);
+    if provider
+        .as_deref()
+        .is_some_and(|p| !matches!(p, "mineru" | "ark"))
+    {
         return Err(utopia_core::AppError::invalid(
             "unsupported_reader_provider",
             "The OCR provider must be mineru or ark",
@@ -164,7 +167,7 @@ pub async fn put_ocr(
     let saved = utopia_store::settings::upsert_ocr(
         &state.pool,
         workspace_id,
-        &provider,
+        provider.as_deref(),
         base_url.as_deref(),
         nonempty(&req.api_key).as_deref(),
         nonempty(&req.backend).as_deref(),

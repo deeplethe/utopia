@@ -486,7 +486,7 @@ async fn with_mineru(f: &Fx, fake: &FakeMineru) -> anyhow::Result<()> {
     utopia_store::settings::upsert_ocr(
         &f.pool,
         f.ws,
-        "mineru",
+        Some("mineru"),
         Some(&format!("{}/ocr/", f.server.uri())),
         Some("ocr-secret"),
         Some("vlm-auto-engine"),
@@ -635,7 +635,7 @@ async fn a_scan_is_read_by_the_vision_model_in_one_pass() -> anyhow::Result<()> 
     utopia_store::settings::upsert_ocr(
         &f.pool,
         f.ws,
-        "ark",
+        Some("ark"),
         Some(&format!("{}/ark", f.server.uri())),
         Some("ark-secret"),
         None,

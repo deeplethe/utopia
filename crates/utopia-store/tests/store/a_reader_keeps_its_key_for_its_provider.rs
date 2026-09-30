@@ -30,7 +30,7 @@ async fn a_reader_keeps_its_key_for_its_provider() -> anyhow::Result<()> {
                 settings::upsert_ocr(
                     &pool,
                     ws,
-                    provider,
+                    Some(provider),
                     Some("https://reader.example"),
                     key,
                     None,
@@ -39,6 +39,11 @@ async fn a_reader_keeps_its_key_for_its_provider() -> anyhow::Result<()> {
                 .await
             }
         };
+        let first = settings::upsert_ocr(&pool, ws, None, None, None, None, None).await?;
+        assert_eq!(
+            first.ocr_provider, "mineru",
+            "old clients default on first save"
+        );
         let s = save("mineru", Some("mineru-key")).await?;
         assert_eq!(s.ocr_provider, "mineru");
         assert_eq!(s.ocr_api_key.as_deref(), Some("mineru-key"));
@@ -61,6 +66,35 @@ async fn a_reader_keeps_its_key_for_its_provider() -> anyhow::Result<()> {
         let keyed = save("ark", Some("ark-key")).await?;
         assert_eq!(keyed.ocr_api_key.as_deref(), Some("ark-key"));
         assert!(keyed.ocr_ready());
+        // 老客户端只改地址：缺席的供应商和模型不能把已配好的方舟清掉。
+        let legacy = settings::upsert_ocr(
+            &pool,
+            ws,
+            None,
+            Some("https://reader.example/new"),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        assert_eq!(legacy.ocr_provider, "ark");
+        assert_eq!(legacy.ocr_model.as_deref(), Some("m"));
+        assert_eq!(legacy.ocr_api_key.as_deref(), Some("ark-key"));
+        assert!(legacy.ocr_ready());
+        // 新客户端显式选供应商仍能清空模型；留空密钥只保留这一家的密钥。
+        let cleared = settings::upsert_ocr(
+            &pool,
+            ws,
+            Some("ark"),
+            Some("https://reader.example"),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        assert_eq!(cleared.ocr_model, None);
+        assert_eq!(cleared.ocr_api_key.as_deref(), Some("ark-key"));
+        assert!(!cleared.ocr_ready());
         // 库里存的是封印过的
         let stored: Option<String> =
             sqlx::query_scalar("SELECT ocr_api_key FROM llm_settings WHERE workspace_id = $1")

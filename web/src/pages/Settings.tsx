@@ -1382,7 +1382,7 @@ export function Settings() {
                   <label className={label}>{S.settings.serviceUrl}</label>
                   <Input
                     className="w-full"
-                    placeholder={form.ocr_provider === "ark" ? "https://ark.cn-beijing.volces.com/api/v3" : "http://localhost:8000"}
+                    placeholder={form.ocr_provider === "ark" ? "https://ark.cn-beijing.volces.com/api/plan/v3" : "http://localhost:8000"}
                     value={form.ocr_base_url}
                     onChange={set("ocr_base_url")}
                   />

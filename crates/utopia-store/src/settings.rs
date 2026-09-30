@@ -104,10 +104,11 @@ pub async fn set_chat_reasoning_effort(
 /// `provider` 是 `mineru` 或 `ark`（0065）。**换供应商时旧密钥不保留**：留空保留密钥是给
 /// 「改地址、换后端」用的，把 MinerU 前面那层代理的密钥发给方舟不是任何人想要的。比较和写在
 /// 同一条 SQL 里，两次保存并发也不会把旧密钥带过去
+/// 老客户端不传 `provider`：已有设置保留供应商和未传的模型，新设置默认 MinerU。
 pub async fn upsert_ocr(
     pool: &PgPool,
     workspace_id: Uuid,
-    provider: &str,
+    provider: Option<&str>,
     base_url: Option<&str>,
     api_key: Option<&str>,
     backend: Option<&str>,
@@ -117,15 +118,16 @@ pub async fn upsert_ocr(
     let row: LlmSettings = sqlx::query_as(
         "INSERT INTO llm_settings
              (workspace_id, ocr_provider, ocr_base_url, ocr_api_key, ocr_backend, ocr_model, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, now())
+         VALUES ($1, COALESCE($2, 'mineru'), $3, $4, $5, $6, now())
          ON CONFLICT (workspace_id) DO UPDATE SET
-             ocr_provider = EXCLUDED.ocr_provider,
+             ocr_provider = COALESCE($2, llm_settings.ocr_provider),
              ocr_base_url = EXCLUDED.ocr_base_url,
-             ocr_api_key  = CASE WHEN EXCLUDED.ocr_provider <> llm_settings.ocr_provider
+             ocr_api_key  = CASE WHEN COALESCE($2, llm_settings.ocr_provider) <> llm_settings.ocr_provider
                                  THEN EXCLUDED.ocr_api_key
                                  ELSE COALESCE(EXCLUDED.ocr_api_key, llm_settings.ocr_api_key) END,
              ocr_backend  = EXCLUDED.ocr_backend,
-             ocr_model    = EXCLUDED.ocr_model,
+             ocr_model    = CASE WHEN $2::text IS NULL THEN COALESCE($6, llm_settings.ocr_model)
+                                 ELSE EXCLUDED.ocr_model END,
              updated_at   = now()
          RETURNING *",
     )
