@@ -308,12 +308,16 @@ function record(result, perDoc, extra) {
 // 以及事实集合的重合度——组内两两比（运行间方差本身）与跨组两两比（known 的影响）。
 // 跨组的重合度落在组内的范围里，就是说空 known 挪动的没超出模型自己的抖动
 function table(dir) {
-  const runs = fs
+  const all = fs
     .readdirSync(dir)
     .filter((f) => f.endsWith(".json"))
     .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), "utf8")));
+  // 没抽完的轮次不进组：它的分、事实数、对子数说的都不是这一轮的配置，而是端点那天的状态。
+  // 老记录没有 complete 字段，按每篇的块数看
+  const incomplete = (r) => r.complete === false || Object.values(r.docs ?? {}).some((d) => d.extracted < d.chunks);
+  const runs = all.filter((r) => !incomplete(r));
   if (!runs.length) {
-    console.error(`${dir} 里没有记录`);
+    console.error(`${dir} 里没有抽完的记录`);
     process.exit(1);
   }
   const groups = ["shown", "empty"].map((k) => [k, runs.filter((r) => r.known === k)]).filter(([, rs]) => rs.length);
@@ -345,6 +349,11 @@ function table(dir) {
   // 没等到收尾就记下的轮次（卡住十五分钟才停）：数是快照，单独点名，别混进均值里看不出来
   const unsettled = runs.filter((r) => r.settled === false);
   if (unsettled.length) console.log(`\n没等到收尾的轮次：${unsettled.map((r) => `${r.at}（${r.known}）`).join("、")}`);
+  const skipped = all.filter(incomplete);
+  if (skipped.length) {
+    const blocks = (r) => `${Object.values(r.docs).reduce((s, d) => s + d.extracted, 0)}/${Object.values(r.docs).reduce((s, d) => s + d.chunks, 0)} 块`;
+    console.log(`\n没抽完、不进表的轮次：${skipped.map((r) => `${r.at}（${r.known}，${blocks(r)}）`).join("、")}`);
+  }
 
   // 事实集合的 Jaccard：每篇文档各算，再平均
   const jac = (a, b) => {
@@ -434,6 +443,13 @@ for (;;) {
   last = done;
   await sleep(30000);
 }
+// **抽完才算一轮。** 端点整段不可用时，抽取任务一个个失败、队列就空了，上面的循环照常退出，
+// 后面的收尾等待也立刻满足——记下来的是一轮几乎没抽的数（0/52、几个块），却带着 settled=true，
+// `--table` 会把它当成正常一轮拉进均值。所以按块数判完整：没抽完的轮次记下来但标明，排表时不进组
+const extracted = num(`${live.replace("count(*)", "count(c.extracted_at)")}`);
+const total = num(live);
+const complete = total > 0 && extracted === total;
+if (!complete) console.log(`只抽了 ${extracted}/${total} 块：这一轮不完整，记下来但不进表`);
 
 // **抽完不等于这一轮完了**：对齐、治理、时间消解、裁决还在后头跑，一边补事实一边裁对子
 // （同一篇财报，抽完那一刻 552 条事实，一小时后 565）。不等它们收尾，每轮记下的就是
@@ -467,4 +483,4 @@ for (;;) {
 const settleSeconds = Math.round((Date.now() - settleFrom) / 1000);
 if (settled) console.log(`${stamp()} 收尾完了（抽完之后又等了 ${settleSeconds} 秒）`);
 
-record(score(), stats(queuedAt), { endpoint, pairs: pairs(queuedAt), settled, settleSeconds });
+record(score(), stats(queuedAt), { endpoint, pairs: pairs(queuedAt), complete, settled, settleSeconds });
