@@ -296,7 +296,7 @@ pub fn pptx(bytes: &[u8]) -> anyhow::Result<String> {
     let mut out = String::new();
     for (num, name) in slides {
         let xml = pptx_part(&mut archive, &name)?;
-        let text = extract_xml_text(&xml, "a:t", "a:p")?;
+        let text = extract_xml_text(&xml, "a:t", "a:p", "a:br")?;
         if !text.trim().is_empty() {
             out.push_str(&format!("\n## Slide {num}\n{text}\n"));
         }
@@ -634,14 +634,26 @@ fn read_zip_entry(bytes: &[u8], name: &str) -> anyhow::Result<String> {
     Ok(content)
 }
 
-/// 从 OOXML 里抽取 `text_tag`（如 w:t）内的文本，遇 `para_tag`（如 w:p）结束换行。
-fn extract_xml_text(xml: &str, text_tag: &str, para_tag: &str) -> anyhow::Result<String> {
+/// 从 OOXML 里抽取 `text_tag`（如 a:t）内的文本，遇 `para_tag`（如 a:p）结束换行，
+/// 遇 `break_tag`（如 a:br）也换行。
+fn extract_xml_text(
+    xml: &str,
+    text_tag: &str,
+    para_tag: &str,
+    break_tag: &str,
+) -> anyhow::Result<String> {
     let mut reader = Reader::from_str(xml);
     let mut out = String::new();
     let mut in_text = false;
     loop {
         match reader.read_event() {
             Ok(Event::Start(e)) if e.name().as_ref() == text_tag => in_text = true,
+            // 段落里换的行（Shift+Enter）不是新段落，是两个 run 之间的一个 `<a:br>`。丢了它，
+            // 标题「Q1」换行「2024」读成「Q12024」，季度和年份一起没了（Word 格子里的同一件事
+            // 见 #813）
+            Ok(Event::Start(e) | Event::Empty(e)) if e.name().as_ref() == break_tag => {
+                out.push('\n');
+            }
             Ok(Event::End(e)) => {
                 let name = e.name();
                 if name.as_ref() == text_tag {
