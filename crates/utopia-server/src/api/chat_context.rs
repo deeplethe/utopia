@@ -118,6 +118,20 @@ impl Context {
     pub fn apply(&self, messages: &[Value]) -> Vec<Value> {
         let w = self.0.lock().unwrap();
         let full = protocol(&w.turns, &w.exchange);
+        // rig 的列表开头应当就是这份完整历史，后面至少还有本轮的问题。少了——rig 没把历史
+        // 全交回来，或者给的不是这一轮的列表——按条数替换会把本轮的问题一起吞掉，还不出声。
+        // 这时原样发：请求超长顶多再挨一次 400，也好过一个没有问题的请求（#973 评审的后续）
+        let sent = messages.iter().filter(|m| m["role"] != "system").count();
+        if sent <= full.len() {
+            if !full.is_empty() {
+                tracing::warn!(
+                    stored = full.len(),
+                    sent,
+                    "rig's message list is shorter than the stored history; sending it unchanged"
+                );
+            }
+            return messages.to_vec();
+        }
         let kept = protocol(
             &w.turns[w.start..],
             if w.keeps_exchange() { &w.exchange } else { &[] },
@@ -243,6 +257,30 @@ mod tests {
         let smaller = Context::new(turns.clone(), exchange, 10);
         assert!(smaller.snapshot().0.is_empty(), "then the oldest exchanges");
         assert!(smaller.snapshot().1.is_empty());
+    }
+
+    /// rig 没把完整历史交回来（或者给的不是这一轮的列表）：按条数替换会把本轮的问题吞掉，
+    /// 所以原样发；装着完整历史的列表照常裁
+    #[test]
+    fn a_list_shorter_than_the_history_is_sent_unchanged() {
+        let turns: Turns = vec![
+            ("user".into(), "old".into()),
+            ("assistant".into(), "answer".into()),
+        ];
+        let context = Context::new(turns.clone(), vec![], 3);
+        assert!(context.snapshot().0.is_empty(), "everything is trimmed");
+        let system = json!({"role":"system","content":"preserve system"});
+        let current = json!({"role":"user","content":"make it shorter"});
+        let short = vec![system.clone(), current.clone()];
+        assert_eq!(
+            context.apply(&short),
+            short,
+            "one message where two of history were expected: the question must survive"
+        );
+        let mut whole = vec![system.clone()];
+        whole.extend(protocol(&turns, &[]));
+        whole.push(current.clone());
+        assert_eq!(context.apply(&whole), vec![system, current]);
     }
 
     #[test]

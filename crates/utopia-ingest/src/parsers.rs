@@ -136,15 +136,114 @@ fn pdf_with_poppler(bytes: &[u8]) -> anyhow::Result<String> {
 /// docx：解压 word/document.xml。正文 w:t 取字、w:p 分段；表格（w:tbl）收成网格交给
 /// `table::render_grid`，和 HTML 表走同一套渲染：w:gridSpan 跨列，上下合并（w:vMerge）的
 /// 续格留空，格内段落的左缩进 w:ind 当内边距（小节行靠它折进标签）。套在格子里的表按格子
-/// 文字处理。
+/// 文字处理。标题（有大纲级别的段落，见 [`docx_heading_styles`]）写成 Markdown 标题。
 pub fn docx(bytes: &[u8]) -> anyhow::Result<String> {
-    let xml = read_zip_entry(bytes, "word/document.xml").context("Malformed docx structure")?;
-    docx_xml_to_text(&xml)
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(bytes)).context("Malformed docx structure")?;
+    let xml =
+        read_zip_entry(&mut archive, "word/document.xml").context("Malformed docx structure")?;
+    // 样式表缺了或读不了，正文照读，只是认不出靠样式定的标题
+    let headings = read_zip_entry(&mut archive, "word/styles.xml")
+        .ok()
+        .and_then(|styles| docx_heading_styles(&styles).ok())
+        .unwrap_or_default();
+    docx_xml_to_text(&xml, &headings)
+}
+
+/// 哪些段落样式是标题、第几级（样式 id → 1–9）。
+///
+/// Word 的标题就是有大纲级别的段落：导航窗格和目录都按它列，样式定义里写 `w:outlineLvl`
+/// （从 0 数，9 是正文）。样式 id 靠不住——英文 Word 写 `Heading1`，中文 Word 写 `1`、`2`，
+/// 正文样式是 `a`——内置样式的名字倒是一律写英文的 `heading 1`。所以按这个次序认：样式
+/// 自己的 `w:outlineLvl`，其次名字是 `heading N`，再次顺着 `w:basedOn` 往上找（自定义的
+/// 标题样式多半基于内置标题）。`Title`、`toc 1` 没有大纲级别，不算标题
+pub(crate) fn docx_heading_styles(
+    xml: &str,
+) -> anyhow::Result<std::collections::HashMap<String, u8>> {
+    #[derive(Default)]
+    struct Style {
+        name: Option<String>,
+        based_on: Option<String>,
+        outline: Option<u8>,
+    }
+    let attr = |e: &quick_xml::events::BytesStart<'_>, name: &str| -> Option<String> {
+        e.attributes()
+            .flatten()
+            .find(|a| a.key.as_ref() == name)
+            .map(|a| a.value.to_string())
+    };
+    let mut reader = Reader::from_str(xml);
+    let mut styles: std::collections::HashMap<String, Style> = std::collections::HashMap::new();
+    let mut current: Option<(String, Style)> = None;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) if e.name().as_ref() == "w:style" => {
+                current = (attr(&e, "w:type").as_deref() == Some("paragraph"))
+                    .then(|| attr(&e, "w:styleId"))
+                    .flatten()
+                    .map(|id| (id, Style::default()));
+            }
+            Ok(Event::End(e)) if e.name().as_ref() == "w:style" => {
+                if let Some((id, style)) = current.take() {
+                    styles.insert(id, style);
+                }
+            }
+            Ok(Event::Start(e) | Event::Empty(e)) => {
+                if let Some((_, style)) = current.as_mut() {
+                    match e.name().as_ref() {
+                        "w:name" => style.name = attr(&e, "w:val"),
+                        "w:basedOn" => style.based_on = attr(&e, "w:val"),
+                        "w:outlineLvl" => {
+                            style.outline = attr(&e, "w:val").and_then(|v| v.parse().ok());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => anyhow::bail!("XML parse error: {e}"),
+            _ => {}
+        }
+    }
+    let level_of = |id: &str| -> Option<u8> {
+        let mut id = id;
+        // basedOn 最多往上走十步：Word 自己不会链这么长，写坏了成环的也就此打住
+        for _ in 0..10 {
+            let style = styles.get(id)?;
+            if let Some(outline) = style.outline {
+                return outline_level(outline);
+            }
+            if let Some(n) = style.name.as_deref().and_then(heading_number) {
+                return Some(n);
+            }
+            id = style.based_on.as_deref()?;
+        }
+        None
+    };
+    Ok(styles
+        .keys()
+        .filter_map(|id| Some((id.clone(), level_of(id)?)))
+        .collect())
+}
+
+/// 大纲级别 0–8 是第 1–9 级标题，9 是正文
+fn outline_level(outline: u8) -> Option<u8> {
+    (outline <= 8).then_some(outline + 1)
+}
+
+/// 内置标题样式的名字 `heading 1` … `heading 9`，大小写不论
+fn heading_number(name: &str) -> Option<u8> {
+    let name = name.trim().to_ascii_lowercase();
+    let n: u8 = name.strip_prefix("heading")?.trim().parse().ok()?;
+    (1..=9).contains(&n).then_some(n)
 }
 
 type GridRow = Vec<(String, usize, u32)>;
 
-pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
+pub(crate) fn docx_xml_to_text(
+    xml: &str,
+    headings: &std::collections::HashMap<String, u8>,
+) -> anyhow::Result<String> {
     let mut reader = Reader::from_str(xml);
     let mut out = String::new();
     let mut in_text = false;
@@ -153,6 +252,14 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
     let mut rows: Vec<GridRow> = Vec::new();
     let mut row: GridRow = Vec::new();
     let mut cell: Option<(String, usize, u32)> = None;
+    // 正文里的一段（不在表格里、不是文本框里套着的段）是不是标题。`paragraphs` 数套了几层
+    // w:p，`para_start` 是这一段在 out 里开始的位置。级别先看段落自己写的 w:outlineLvl，
+    // 再看它的样式；两样都只认第一次出现的，w:pPrChange 里记的是修订之前的样式，不算
+    let mut paragraphs = 0usize;
+    let mut para_start = 0usize;
+    let mut own_level: Option<Option<u8>> = None;
+    let mut style_level: Option<Option<u8>> = None;
+    let mut in_revision = false;
     let attr = |e: &quick_xml::events::BytesStart<'_>, name: &str| -> Option<String> {
         e.attributes()
             .flatten()
@@ -161,6 +268,25 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
     };
     loop {
         match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e))
+                if matches!(e.name().as_ref(), "w:pStyle" | "w:outlineLvl") =>
+            {
+                if paragraphs == 1 && cell.is_none() && !in_revision {
+                    if e.name().as_ref() == "w:pStyle" {
+                        style_level.get_or_insert_with(|| {
+                            attr(&e, "w:val").and_then(|id| headings.get(&id).copied())
+                        });
+                    } else {
+                        own_level.get_or_insert_with(|| {
+                            attr(&e, "w:val")
+                                .and_then(|v| v.parse().ok())
+                                .and_then(outline_level)
+                        });
+                    }
+                }
+            }
+            Ok(Event::Start(e)) if e.name().as_ref() == "w:pPrChange" => in_revision = true,
+            Ok(Event::End(e)) if e.name().as_ref() == "w:pPrChange" => in_revision = false,
             Ok(Event::Start(e) | Event::Empty(e))
                 if matches!(e.name().as_ref(), "w:br" | "w:cr") =>
             {
@@ -173,6 +299,14 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
             }
             Ok(Event::Start(e)) => match e.name().as_ref() {
                 "w:t" => in_text = true,
+                "w:p" => {
+                    paragraphs += 1;
+                    if paragraphs == 1 && cell.is_none() {
+                        para_start = out.len();
+                        own_level = None;
+                        style_level = None;
+                    }
+                }
                 "w:tbl" => {
                     depth += 1;
                     if depth == 1 {
@@ -210,10 +344,31 @@ pub(crate) fn docx_xml_to_text(xml: &str) -> anyhow::Result<String> {
             },
             Ok(Event::End(e)) => match e.name().as_ref() {
                 "w:t" => in_text = false,
-                "w:p" => match cell.as_mut() {
-                    Some(c) => c.0.push(' '),
-                    None => out.push('\n'),
-                },
+                "w:p" => {
+                    match cell.as_mut() {
+                        Some(c) => c.0.push(' '),
+                        None => {
+                            // 标题写成一行 Markdown 标题：分块器靠它给每块开头补上所在的各级标题，
+                            // 时间解释靠块里的标题行分节（0064 决定 1 按 cut 2 修订的那段）。没有
+                            // 它，一份 Word 里各节的日期都算成第一节的
+                            let level = own_level.unwrap_or(style_level.flatten());
+                            if let Some(level) = level.filter(|_| paragraphs == 1) {
+                                let title = out[para_start..]
+                                    .split_whitespace()
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                if !title.is_empty() {
+                                    out.truncate(para_start);
+                                    out.push_str(&"#".repeat(usize::from(level.min(6))));
+                                    out.push(' ');
+                                    out.push_str(&title);
+                                }
+                            }
+                            out.push('\n');
+                        }
+                    }
+                    paragraphs = paragraphs.saturating_sub(1);
+                }
                 "w:tc" if depth == 1 => {
                     if let Some(c) = cell.take() {
                         row.push(c);
@@ -561,6 +716,7 @@ pub fn spreadsheet(bytes: &[u8]) -> anyhow::Result<String> {
                     .map(|c| {
                         let text = match c {
                             Data::Empty => String::new(),
+                            Data::DateTime(d) => excel_date(d),
                             other => other.to_string(),
                         };
                         (text, 1, 0)
@@ -584,6 +740,49 @@ pub fn spreadsheet(bytes: &[u8]) -> anyhow::Result<String> {
         }
     }
     Ok(out)
+}
+
+/// 日期格按它显示的样子写。
+///
+/// calamine 按格子挂的数字格式认出了日期，交来的却还是 Excel 存的那个数：从 1899-12-30
+/// 起的天数（1904 纪年的工作簿从 1904-01-01 起），小数部分是一天里的时刻。`Data` 的
+/// Display 原样写这个数，2024-01-15 就成了 45306——文档里没有这个日期了，时间抽取看不见
+/// 它，模型只当它是个量；同一天在 1904 纪年的工作簿里还是另一个数（43844）。
+///
+/// 写成 ISO：整天只写日期，带时刻的加上时刻，整数部分是 0 的只写时刻（`h:mm` 一类格式），
+/// 累计时长（`[h]:mm:ss`）写累计的时分秒。显示用的格式 calamine 不交出来，所以只显示年月
+/// 的格子也写到日。出了 Excel 日历的数照原样写
+fn excel_date(d: &calamine::ExcelDateTime) -> String {
+    let value = d.as_f64();
+    if d.is_duration() {
+        let seconds = (value.abs() * 86_400.0).round() as u64;
+        let sign = if value < 0.0 { "-" } else { "" };
+        return format!(
+            "{sign}{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        );
+    }
+    // Excel 的日历止于 9999-12-31（序数 2958465）；负数它自己也只显示 ####
+    if !(0.0..2_958_466.0).contains(&value) {
+        return value.to_string();
+    }
+    let (year, month, day, hour, minute, second, _) = d.to_ymd_hms_milli();
+    let time = if second == 0 {
+        format!("{hour:02}:{minute:02}")
+    } else {
+        format!("{hour:02}:{minute:02}:{second:02}")
+    };
+    if value < 1.0 {
+        return time;
+    }
+    let date = format!("{year:04}-{month:02}-{day:02}");
+    if (hour, minute, second) == (0, 0, 0) {
+        date
+    } else {
+        format!("{date} {time}")
+    }
 }
 
 /// Decode before conversion so legacy HTML encodings remain supported.
@@ -626,8 +825,10 @@ pub fn csv_text(bytes: &[u8], tsv: bool) -> anyhow::Result<String> {
 
 // ---- 工具 ----
 
-fn read_zip_entry(bytes: &[u8], name: &str) -> anyhow::Result<String> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes.to_vec()))?;
+fn read_zip_entry(
+    archive: &mut zip::ZipArchive<Cursor<&[u8]>>,
+    name: &str,
+) -> anyhow::Result<String> {
     let mut entry = archive.by_name(name)?;
     let mut content = String::new();
     entry.read_to_string(&mut content)?;
@@ -697,7 +898,7 @@ mod tests {
     /// docx 的表：跨列的列头按列拼，"$" 并回数字，表前后的段落照旧
     #[test]
     fn a_docx_table_is_rendered_under_its_headings() {
-        let text = docx_xml_to_text(DOC).unwrap();
+        let text = docx_xml_to_text(DOC, &Default::default()).unwrap();
         assert!(text.starts_with("Segment results\n"), "{text}");
         assert!(
             text.contains(
@@ -715,9 +916,41 @@ mod tests {
 <w:tr><w:tc><w:p><w:r><w:t>Region</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Notes</w:t></w:r></w:p></w:tc></w:tr>
 <w:tr><w:tc><w:p><w:r><w:t>North</w:t></w:r></w:p></w:tc><w:tc><w:tbl><w:tr><w:tc><w:p><w:r><w:t>inner</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>7</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:tc></w:tr>
 </w:tbl></w:body></w:document>"#;
-        let text = docx_xml_to_text(xml).unwrap();
+        let text = docx_xml_to_text(xml, &Default::default()).unwrap();
         assert_eq!(text.matches("| --- |").count(), 1, "{text}");
         assert!(text.contains("| North | inner 7 |"), "{text}");
+    }
+
+    /// 标题样式按大纲级别认，其次按内置名字，再顺着 basedOn 找；样式 id 不作数
+    #[test]
+    fn heading_styles_are_known_by_outline_level_then_name_then_parent() {
+        let styles = r#"<w:styles xmlns:w="x">
+<w:style w:type="paragraph" w:default="1" w:styleId="a"><w:name w:val="Normal"/></w:style>
+<w:style w:type="paragraph" w:styleId="1"><w:name w:val="heading 1"/><w:basedOn w:val="a"/><w:pPr><w:keepNext/><w:outlineLvl w:val="0"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="2"><w:name w:val="heading 2"/><w:basedOn w:val="a"/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="Heading 3"/></w:style>
+<w:style w:type="paragraph" w:styleId="ReportSection"><w:name w:val="Report Section"/><w:basedOn w:val="2"/></w:style>
+<w:style w:type="paragraph" w:styleId="Outlined"><w:name w:val="Outlined"/><w:pPr><w:outlineLvl w:val="3"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="Demoted"><w:name w:val="Demoted"/><w:basedOn w:val="1"/><w:pPr><w:outlineLvl w:val="9"/></w:pPr></w:style>
+<w:style w:type="paragraph" w:styleId="a3"><w:name w:val="Title"/><w:basedOn w:val="a"/></w:style>
+<w:style w:type="paragraph" w:styleId="TOC1"><w:name w:val="toc 1"/><w:basedOn w:val="a"/></w:style>
+<w:style w:type="character" w:styleId="10"><w:name w:val="Heading 1 Char"/><w:basedOn w:val="a0"/></w:style>
+<w:style w:type="paragraph" w:styleId="Loop1"><w:name w:val="Loop 1"/><w:basedOn w:val="Loop2"/></w:style>
+<w:style w:type="paragraph" w:styleId="Loop2"><w:name w:val="Loop 2"/><w:basedOn w:val="Loop1"/></w:style>
+</w:styles>"#;
+        let levels = docx_heading_styles(styles).unwrap();
+        let mut found: Vec<(&str, u8)> = levels.iter().map(|(id, l)| (id.as_str(), *l)).collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                ("1", 1),
+                ("2", 2),
+                ("Heading3", 3),
+                ("Outlined", 4),
+                ("ReportSection", 2)
+            ]
+        );
     }
 
     /// csv 的第一条记录是列头，哪怕列头是年份
