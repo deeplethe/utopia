@@ -1165,7 +1165,7 @@ fn says_out_of_credit(body: &serde_json::Value) -> bool {
 /// 「This model's maximum context length is 1048576 tokens. However, you requested …」
 /// （2026-09-27 实测）。code 在 `err_detail` 只留 message 之前读，不然就丢了
 fn says_context_too_long(body: &serde_json::Value, detail: &str) -> bool {
-    [
+    let says = [
         body.pointer("/error/code"),
         body.pointer("/error/type"),
         body.get("code"),
@@ -1174,7 +1174,39 @@ fn says_context_too_long(body: &serde_json::Value, detail: &str) -> bool {
     .flatten()
     .filter_map(|v| v.as_str())
     .any(|code| code == "context_length_exceeded")
-        || context_wording(detail)
+        || context_wording(detail);
+    // 账目说 messages 装得下、超的是我们自己要的 completion：那不是对话太长，是上限要按
+    // 窗口剩下的来（`stated_completion_ceiling`），重试就能过（#973 评审的后续）
+    says && completion_overflows(detail).is_none()
+}
+
+/// 拒绝里的账目：窗口 W，我们发的 messages 占了 N、completion 要了 M。OpenAI、DeepSeek 和
+/// vLLM 一家的写法："maximum context length is W tokens. However, you requested T tokens
+/// (N in the messages, M in the completion)"。读不全就是 None——别的写法分不出哪部分超了
+fn overflow_ledger(detail: &str) -> Option<(u32, u32, u32)> {
+    let lower = detail.to_ascii_lowercase();
+    let number_before = |marker: &str| -> Option<u32> {
+        let (before, _) = lower.split_once(marker)?;
+        let word = before
+            .trim_end()
+            .rsplit(|c: char| c.is_whitespace() || c == '(')
+            .next()?;
+        number_with_separators(word)
+    };
+    Some((
+        stated_context_window(detail)?,
+        number_before(" in the messages")?,
+        number_before(" in the completion")?,
+    ))
+}
+
+/// 超的是 completion 时，窗口给回答留下的余地；messages 本身就装不下（余地不到
+/// `MIN_CONTEXT_WINDOW_TOKENS`，一段像样的回答都放不进）就是 None，那才是对话太长。
+/// 从前这种拒绝把窗口本身当上限重试，N + W 照样超，重试必然再挨一次
+fn completion_overflows(detail: &str) -> Option<u32> {
+    let (window, messages, completion) = overflow_ledger(detail)?;
+    let room = window.checked_sub(messages)?;
+    (room >= MIN_CONTEXT_WINDOW_TOKENS && room < completion).then_some(room)
 }
 
 /// 各家说「超长」的话。只收实测过或文档写明的：OpenAI 与 DeepSeek 的 "maximum context
@@ -1246,7 +1278,13 @@ fn stated_context_window(detail: &str) -> Option<u32> {
 /// because no completion limit is that small and a stray small number would turn a
 /// refusal into a silently cut reply. A context-window refusal belongs to history
 /// recovery; treating its window as an output ceiling repeats the oversized prompt.
+/// The one exception is a refusal whose own ledger says the messages fit and the
+/// completion did not: the ceiling is then what the window leaves for the answer
+/// (`completion_overflows`), and the retry at that number goes through.
 fn stated_completion_ceiling(detail: &str, sent: u32) -> Option<u32> {
+    if let Some(room) = completion_overflows(detail) {
+        return (room < sent).then_some(room);
+    }
     if context_wording(detail)
         || (!detail.contains("max_tokens") && !detail.contains("max_completion_tokens"))
     {
@@ -1289,6 +1327,77 @@ fn number_with_separators(word: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    /// 账目说 messages 装得下、超的是 completion：不是对话太长，按窗口剩下的余地重试；
+    /// messages 本身装不下（或余地不到 1,024）才是上下文拒绝
+    #[test]
+    fn a_completion_overflow_is_a_ceiling_to_lower_and_not_a_context_refusal() {
+        let fits = "This model's maximum context length is 8192 tokens. However, you requested 69536 tokens (4000 in the messages, 65536 in the completion). Please reduce the length of the messages or completion.";
+        for body in [
+            json!({"error":{"message":fits,"type":"invalid_request_error","code":"invalid_request_error"}}),
+            json!({"error":{"message":fits,"code":"context_length_exceeded"}}),
+        ] {
+            let err = failure("LLM", reqwest::StatusCode::BAD_REQUEST, None, &body, "");
+            assert!(context_too_long(&err).is_none(), "{err:#}");
+            assert!(rejected(&err).is_some(), "{err:#}");
+        }
+        assert_eq!(
+            stated_completion_ceiling(fits, MAX_COMPLETION_TOKENS),
+            Some(4_192)
+        );
+        assert_eq!(
+            stated_completion_ceiling(fits, 4_000),
+            None,
+            "a ceiling is only ever lowered"
+        );
+        for raw in [
+            "This model's maximum context length is 8192 tokens. However, you requested 74536 tokens (9000 in the messages, 65536 in the completion).",
+            "This model's maximum context length is 8192 tokens. However, you requested 73036 tokens (7500 in the messages, 65536 in the completion).",
+        ] {
+            let err = failure("LLM", reqwest::StatusCode::BAD_REQUEST, None, &json!({}), raw);
+            let refusal = context_too_long(&err).expect("the messages do not fit");
+            assert_eq!(refusal.window, Some(8192));
+            assert_eq!(stated_completion_ceiling(raw, MAX_COMPLETION_TOKENS), None);
+        }
+    }
+
+    /// 整条路：小窗口模型拒了我们 65,536 的 max_tokens，重试按窗口剩下的余地要，过了
+    #[tokio::test]
+    async fn a_completion_overflow_is_retried_at_what_the_window_leaves() {
+        let refusal = r#"{"error":{"message":"This model's maximum context length is 8192 tokens. However, you requested 65736 tokens (200 in the messages, 65536 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}"#;
+        let answer = [
+            r#"data: {"choices":[{"delta":{"content":"{\"e\":[]}"}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n\n");
+        let (addr, server, requests) = two_http_responses(
+            ("400 Bad Request", "application/json", refusal),
+            ("200 OK", "text/event-stream", &answer),
+        )
+        .await;
+        let reply = client_at(addr)
+            .chat_at_streaming(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                Some(0.0),
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let sent = requests.await.unwrap();
+        assert_eq!(sent.len(), 2, "the refusal is retried, not surfaced");
+        assert_eq!(sent_max_tokens(&sent[0]), json!(MAX_COMPLETION_TOKENS));
+        assert_eq!(
+            sent_max_tokens(&sent[1]),
+            json!(7_992),
+            "8192 minus the 200 the messages take"
+        );
+        assert_eq!(reply.text, r#"{"e":[]}"#);
+    }
+
     #[test]
     fn context_refusals_keep_the_code_and_only_learn_a_stated_window() {
         // DeepSeek 的原话（2026-09-27 实测，deepseek-chat）：code 只是 invalid_request_error
@@ -1992,8 +2101,21 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
         );
         assert_eq!(
             stated_completion_ceiling("This model's maximum context length is 32768 tokens. However, you requested 65636 tokens (100 in the messages, 65536 in the completion). Please reduce the length of the messages or max_tokens.", sent),
+            Some(32_668),
+            "the messages fit, so the ceiling is what the window leaves for the completion"
+        );
+        assert_eq!(
+            stated_completion_ceiling("This model's maximum context length is 32768 tokens. However, you requested 98304 tokens (32768 in the messages, 65536 in the completion).", sent),
             None,
-            "a context window is not a completion ceiling"
+            "the messages alone fill the window: nothing to lower to"
+        );
+        assert_eq!(
+            stated_completion_ceiling(
+                "maximum context length is 4096 tokens; request has 12000 tokens",
+                sent
+            ),
+            None,
+            "no ledger, so a context window is not a completion ceiling"
         );
         assert_eq!(
             stated_completion_ceiling("max_completion_tokens must be at most 8 tokens", sent),
