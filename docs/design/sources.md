@@ -54,8 +54,9 @@ path with the first row promoted to header. Measured on the NVDA earnings releas
 became 32, none of them a table without its header. DOCX tables, spreadsheets and CSV files are laid on the same grid by their parsers (#750): a DOCX
 cell keeps its column span and the indent of its first paragraph, a sheet's or a CSV file's first
 row with two or more cells is its header even when the headings are years, and a table with no
-figure in it is read as a header row followed by records; the text layer of a PDF carries no table
-structure.
+figure in it is read as a header row followed by records; a sheet's date cell is written as the
+date it shows (ISO, with its time of day, or an elapsed time as hours:minutes:seconds), not as
+Excel's day count; the text layer of a PDF carries no table structure.
 
 **Origin and anchor.** `chunks.origin` (stated, ocr, transcribed, described), `origin_model`, and an
 `anchor` whose shape is checked per origin (page and box; start, end and speakers; page and image or

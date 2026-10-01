@@ -561,6 +561,7 @@ pub fn spreadsheet(bytes: &[u8]) -> anyhow::Result<String> {
                     .map(|c| {
                         let text = match c {
                             Data::Empty => String::new(),
+                            Data::DateTime(d) => excel_date(d),
                             other => other.to_string(),
                         };
                         (text, 1, 0)
@@ -584,6 +585,49 @@ pub fn spreadsheet(bytes: &[u8]) -> anyhow::Result<String> {
         }
     }
     Ok(out)
+}
+
+/// 日期格按它显示的样子写。
+///
+/// calamine 按格子挂的数字格式认出了日期，交来的却还是 Excel 存的那个数：从 1899-12-30
+/// 起的天数（1904 纪年的工作簿从 1904-01-01 起），小数部分是一天里的时刻。`Data` 的
+/// Display 原样写这个数，2024-01-15 就成了 45306——文档里没有这个日期了，时间抽取看不见
+/// 它，模型只当它是个量；同一天在 1904 纪年的工作簿里还是另一个数（43844）。
+///
+/// 写成 ISO：整天只写日期，带时刻的加上时刻，整数部分是 0 的只写时刻（`h:mm` 一类格式），
+/// 累计时长（`[h]:mm:ss`）写累计的时分秒。显示用的格式 calamine 不交出来，所以只显示年月
+/// 的格子也写到日。出了 Excel 日历的数照原样写
+fn excel_date(d: &calamine::ExcelDateTime) -> String {
+    let value = d.as_f64();
+    if d.is_duration() {
+        let seconds = (value.abs() * 86_400.0).round() as u64;
+        let sign = if value < 0.0 { "-" } else { "" };
+        return format!(
+            "{sign}{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        );
+    }
+    // Excel 的日历止于 9999-12-31（序数 2958465）；负数它自己也只显示 ####
+    if !(0.0..2_958_466.0).contains(&value) {
+        return value.to_string();
+    }
+    let (year, month, day, hour, minute, second, _) = d.to_ymd_hms_milli();
+    let time = if second == 0 {
+        format!("{hour:02}:{minute:02}")
+    } else {
+        format!("{hour:02}:{minute:02}:{second:02}")
+    };
+    if value < 1.0 {
+        return time;
+    }
+    let date = format!("{year:04}-{month:02}-{day:02}");
+    if (hour, minute, second) == (0, 0, 0) {
+        date
+    } else {
+        format!("{date} {time}")
+    }
 }
 
 /// Decode before conversion so legacy HTML encodings remain supported.
