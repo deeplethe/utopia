@@ -222,6 +222,8 @@ struct Packer<'a> {
     path: Vec<(u8, Range<usize>)>,
     /// 出现了、还没贴到正文上的标题
     pending: Vec<Range<usize>>,
+    /// 这串 `pending` 标题出现之前的 `path`：它们还没贴上正文时，正在攒的那块仍属于这一章
+    before_pending: Vec<(u8, Range<usize>)>,
     /// 正在攒的块：前缀（章节标题）与正文
     prefix: Vec<Range<usize>>,
     body: Vec<Piece>,
@@ -358,7 +360,15 @@ impl<'a> Packer<'a> {
         let text = self.render(&prefix, &body);
         let start = body.iter().map(|p| p.span().start).min().unwrap_or(0);
         let end = body.iter().map(|p| p.span().end).max().unwrap_or(0);
-        let heading = self.breadcrumb();
+        // 收块时还有没贴上正文的标题，是下一章的第一项放不下（或换了出处）才收的：那几条
+        // 标题跟着下一块走，`path` 已经换成了下一章（同层的上一章也已弹掉），这一块按换章
+        // 之前的路径起名。从前一律取 `path`，在章节交界处收的块都顶着下一章的名字
+        let path = if self.pending.is_empty() {
+            &self.path
+        } else {
+            &self.before_pending
+        };
+        let heading = self.breadcrumb(path);
         self.out.push(ChunkPiece {
             seq: self.out.len() as i32,
             text,
@@ -369,13 +379,12 @@ impl<'a> Packer<'a> {
         });
     }
 
-    fn breadcrumb(&self) -> Option<String> {
-        if self.path.is_empty() {
+    fn breadcrumb(&self, path: &[(u8, Range<usize>)]) -> Option<String> {
+        if path.is_empty() {
             return None;
         }
         Some(
-            self.path
-                .iter()
+            path.iter()
                 .map(|(_, r)| self.text[r.clone()].trim_start_matches('#').trim())
                 .collect::<Vec<_>>()
                 .join(" › "),
@@ -383,6 +392,9 @@ impl<'a> Packer<'a> {
     }
 
     fn heading(&mut self, level: u8, range: Range<usize>) {
+        if self.pending.is_empty() {
+            self.before_pending = self.path.clone();
+        }
         while self.path.last().is_some_and(|(l, _)| *l >= level) {
             self.path.pop();
         }
@@ -502,6 +514,7 @@ pub fn chunk_segments(text: &str, segments: &[Segment], budget: usize) -> Vec<Ch
         out: Vec::new(),
         path: Vec::new(),
         pending: Vec::new(),
+        before_pending: Vec::new(),
         prefix: Vec::new(),
         body: Vec::new(),
         segments,
@@ -526,8 +539,10 @@ pub fn chunk_segments(text: &str, segments: &[Segment], budget: usize) -> Vec<Ch
             } => p.table_unit(caption, head, rows),
         }
     }
-    // 文档以标题收尾：标题自己成一块，总好过丢掉
+    // 文档以标题收尾：攒着的正文先收成一块，标题再自己成一块，总好过丢掉。从前这里直接
+    // 拿标题换掉了正文——还没收的那一块（短文档就是全文）连同它的字一起没了
     if !p.pending.is_empty() {
+        p.flush();
         p.prefix = p.prefix_now();
         p.body = p.pending.drain(..).map(Piece::Text).collect();
     }
@@ -590,6 +605,35 @@ The tenant pays rent monthly.
         assert!(chunk_with_budget(&text, BUDGET_TOKENS)
             .iter()
             .all(|c| c.provenance == Provenance::stated()));
+    }
+
+    /// 换出处时收掉的那一块按它自己那一章起名：下一章的标题已经读到了，可它属于后面的正文
+    #[test]
+    fn a_chunk_closed_by_a_change_of_provenance_is_named_by_its_own_section() {
+        use crate::provenance::{Origin, Provenance, Segment};
+        let stated = "# Lease\n\nThe tenant pays rent monthly.\n\n## Schedule\n\n";
+        let page = "The rent is 1,000 per month.\n\n";
+        let text = format!("{stated}{page}");
+        let segments = vec![
+            Segment {
+                range: 0..stated.len(),
+                provenance: Provenance::stated(),
+            },
+            Segment {
+                range: stated.len()..text.len(),
+                provenance: Provenance {
+                    origin: Origin::Ocr,
+                    model: Some("mineru".into()),
+                    anchor: Some(serde_json::json!({ "page": 1 })),
+                },
+            },
+        ];
+        let chunks = chunk_segments(&text, &segments, BUDGET_TOKENS);
+        assert_eq!(chunks.len(), 2, "{chunks:#?}");
+        assert!(chunks[0].text.contains("rent monthly"), "{chunks:#?}");
+        assert_eq!(chunks[0].heading.as_deref(), Some("Lease"));
+        assert!(chunks[1].text.contains("## Schedule"), "{chunks:#?}");
+        assert_eq!(chunks[1].heading.as_deref(), Some("Lease › Schedule"));
     }
 
     fn table(n_rows: usize) -> String {
@@ -705,6 +749,43 @@ The tenant pays rent monthly.
         assert_eq!(
             &text[third.char_start as usize..third.char_end as usize],
             "### B.1\n\nThird."
+        );
+    }
+
+    /// 一块的面包屑是它装着的那一章，不是它装不下、挪到下一块去的那一章
+    #[test]
+    fn a_chunk_is_named_by_the_section_it_holds() {
+        let text = "# Report\n\n## Part A\n\nFirst.\n\n## Part B\n\nSecond.\n\n### B.1\n\nThird.";
+        let named: Vec<(String, Option<String>)> = chunk_with_budget(text, 14)
+            .into_iter()
+            .map(|p| (p.text.lines().last().unwrap_or("").to_string(), p.heading))
+            .collect();
+        let expected = [
+            ("First.", "Report › Part A"),
+            ("Second.", "Report › Part B"),
+            ("Third.", "Report › Part B › B.1"),
+        ]
+        .map(|(last, heading)| (last.to_string(), Some(heading.to_string())));
+        assert_eq!(named, expected);
+    }
+
+    /// 以标题收尾的文档：攒着的正文先收成一块，标题再自己成一块
+    #[test]
+    fn a_document_that_ends_with_a_heading_keeps_its_last_text() {
+        let text = "# Report\n\nFirst paragraph of the report.\n\nSecond paragraph of the report.\n\n## Appendix\n";
+        let pieces = chunk_with_budget(text, BUDGET_TOKENS);
+        assert_eq!(pieces.len(), 2, "{pieces:#?}");
+        assert!(
+            pieces[0].text.contains("First paragraph of the report.")
+                && pieces[0].text.contains("Second paragraph of the report."),
+            "{pieces:#?}"
+        );
+        assert_eq!(pieces[0].heading.as_deref(), Some("Report"));
+        assert_eq!(pieces[1].text.trim_end(), "# Report\n\n## Appendix");
+        assert_eq!(pieces[1].heading.as_deref(), Some("Report › Appendix"));
+        assert_eq!(
+            text[pieces[1].char_start as usize..pieces[1].char_end as usize].trim_end(),
+            "## Appendix"
         );
     }
 
