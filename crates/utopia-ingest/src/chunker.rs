@@ -113,7 +113,7 @@ fn units(text: &str, blocks: Vec<Block>) -> Vec<Unit> {
                             || text[blk.range.clone()].trim_end().ends_with(':'))
                 };
                 let mut k = i + 1;
-                while k - i < CAPTION_RUN_MAX && blocks.get(k).is_some_and(&caption_like) {
+                while k - i < CAPTION_RUN_MAX && blocks.get(k).is_some_and(caption_like) {
                     k += 1;
                 }
                 let caption = b.range.start..blocks[k - 1].range.end;
