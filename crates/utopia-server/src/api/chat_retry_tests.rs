@@ -204,6 +204,7 @@ async fn a_question_is_not_answered_twice_at_once() -> anyhow::Result<()> {
         utopia_store::conversations::create(&f.pool, f.kb, f.user.id, QUESTION).await?;
     let question = append(&f, conversation_id, "user", QUESTION).await?;
     let running = f.state.live.begin(conversation_id).await.unwrap();
+    running.start().await;
     let Outcome::Refused(status, body) = post(&f, retry(conversation_id, question)).await? else {
         panic!("a retry started while an answer was running");
     };
@@ -281,4 +282,98 @@ async fn every_question_tells_the_interface_its_stored_id() -> anyhow::Result<()
         "{sse}"
     );
     f.cleanup().await
+}
+
+/// 重试资格尚未读完时，另一标签页不能订阅这次随后会被拒绝的占位。
+#[tokio::test]
+async fn a_rejected_retry_does_not_publish_a_stream_to_another_tab() -> anyhow::Result<()> {
+    let Some(f) = fixture(Scripted::new(vec![])).await? else {
+        return Ok(());
+    };
+    let application_name = format!("retry-preparation-{}", f.kb.simple());
+    let retry_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            (*f.pool.connect_options())
+                .clone()
+                .application_name(&application_name),
+        )
+        .await?;
+    let mut retry_state = f.state.clone();
+    retry_state.pool = retry_pool.clone();
+    let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        let id = utopia_store::conversations::create(&f.pool, f.kb, f.user.id, QUESTION).await?;
+        let question = append(&f, id, "user", QUESTION).await?;
+        append(&f, id, "assistant", "Already answered.").await?;
+        let before = stored(&f, id).await?;
+
+        // 只在资格查询上制造等待；它之前的权限检查读其他表，begin 已经占位。
+        let mut lock = f.pool.begin().await?;
+        sqlx::query("LOCK TABLE conversation_messages IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *lock)
+            .await?;
+        let blocker: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *lock)
+            .await?;
+        let pending = chat(
+            State(retry_state),
+            AuthUser(f.user.clone()),
+            Path(f.kb),
+            Json(ChatReq {
+                conversation_id: Some(id),
+                message: QUESTION.into(),
+                retry_message_id: Some(question),
+            }),
+        );
+        tokio::pin!(pending);
+        let waiting = async {
+            while !sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+                  WHERE application_name = $1 AND $2 = ANY(pg_blocking_pids(pid)))",
+            )
+            .bind(&application_name)
+            .bind(blocker)
+            .fetch_one(&f.pool)
+            .await?
+            {}
+            Ok::<_, anyhow::Error>(())
+        };
+        tokio::select! {
+            _ = &mut pending => anyhow::bail!("retry must wait for its qualification query"),
+            result = waiting => result?,
+        }
+        // 直接进入重接的订阅边界，避免单次 poll 只停在 HTTP 权限查询上。
+        let other_tab = f.state.live.attach(id);
+        tokio::pin!(other_tab);
+        anyhow::ensure!(futures_util::poll!(&mut other_tab).is_pending());
+
+        lock.rollback().await?;
+        let refusal = pending
+            .await
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("an answered question was retried"))?
+            .into_response();
+        anyhow::ensure!(refusal.status().as_u16() == 409);
+        let body = axum::body::to_bytes(refusal.into_body(), 65536).await?;
+        anyhow::ensure!(
+            serde_json::from_slice::<serde_json::Value>(&body)?["code"] == "retry_answered"
+        );
+        let other_tab = sse_from(other_tab.await);
+        let body = axum::body::to_bytes(other_tab.into_response().into_body(), 65536).await?;
+        let sse = String::from_utf8_lossy(&body);
+        anyhow::ensure!(sse.contains("event: idle"), "{sse}");
+        anyhow::ensure!(
+            !sse.contains("event: snapshot") && !sse.contains("event: error"),
+            "{sse}"
+        );
+        anyhow::ensure!(stored(&f, id).await? == before);
+        anyhow::ensure!(f.requests().is_empty());
+        drop(f.state.live.begin(id).await?);
+        Ok::<_, anyhow::Error>(())
+    })
+    .await;
+    retry_pool.close().await;
+    f.cleanup().await?;
+    result??;
+    Ok(())
 }

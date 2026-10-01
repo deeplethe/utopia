@@ -63,6 +63,7 @@ export const zh: Strings = {
     answer_failed: "这次没能答完，请再问一次。",
     answer_not_saved: "回答没能保存，请稍后再试。",
     search_failed: "没能检索文档。",
+    mapping_search_failed: "没能检索相关数据映射。",
     stream_ended: "回答的连接意外中断了。重新打开这个对话，看看结果如何。",
     stream_lagged: "这个页面跟不上回答的速度，请重新打开这个对话。",
     model_out_of_credit: "模型账号付不起这次请求。去给账号充值，或者在「管理 → 模型」里换一个能用的端点。",

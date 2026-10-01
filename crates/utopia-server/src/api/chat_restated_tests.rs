@@ -119,6 +119,7 @@ async fn a_stopped_restatement_keeps_its_sources_live_and_after_reload() -> anyh
     assert!(!expected_sources.as_array().unwrap().is_empty());
 
     let handle = f.state.live.begin(id).await?;
+    handle.start().await;
     let cancellation = handle.cancellation();
     let response = sse_from(f.state.live.attach(id).await);
     utopia_store::conversations::append_message(

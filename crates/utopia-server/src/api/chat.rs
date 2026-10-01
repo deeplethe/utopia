@@ -811,7 +811,7 @@ pub async fn chat(
                 Ok(mappings) => mappings,
                 Err(error) => {
                     tracing::warn!(%error, "Could not retrieve conversation mappings");
-                    yield ProducerEvent::Outcome(Err(Failure::new("search_failed", "Could not retrieve relevant mappings.")));
+                    yield ProducerEvent::Outcome(Err(Failure::new("mapping_search_failed", "Could not retrieve relevant mappings.")));
                     return;
                 }
             }
@@ -1199,6 +1199,7 @@ pub async fn chat(
 
     // 生成登记在案，然后**这条连接也只是去「接上」它**——与刷新之后
     // 那条重连走的是同一段代码。两条路分开写的话，迟早只有一条是对的
+    handle.start().await;
     let attached = live.attach(conversation_id).await;
     tokio::spawn(generation::run(
         save_pool,
